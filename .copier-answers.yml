@@ -1,0 +1,12 @@
+# Changes here will be overwritten by Copier
+Authors: '"Joaquim Luis" jluis@ualg.pt'
+JuliaMinVersion: '1.10'
+License: MIT
+LicenseCopyrightHolders: '"Joaquim Luis" jluis@ualg.pt'
+PackageName: InteractiveGMT
+PackageOwner: joa-quim
+PackageUUID: 3c546f1b-5575-514c-865e-7c2fc24caa84
+StrategyConfirmIncluded: false
+StrategyLevel: 1
+StrategyReviewExcluded: false
+_src_path: C:\Users\j\.julia\packages\BestieTemplate\6QVd6

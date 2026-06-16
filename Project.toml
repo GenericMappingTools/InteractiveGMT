@@ -1,0 +1,10 @@
+name = "InteractiveGMT"
+uuid = "3c546f1b-5575-514c-865e-7c2fc24caa84"
+authors = [""Joaquim Luis" jluis@ualg.pt"]
+version = "0.1.0"
+
+[workspace]
+projects = ["test", "docs"]
+
+[compat]
+julia = "1.10"
