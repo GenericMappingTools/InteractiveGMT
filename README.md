@@ -7,3 +7,83 @@
 [![Docs workflow Status](https://github.com/joa-quim/InteractiveGMT.jl/actions/workflows/Docs.yml/badge.svg?branch=main)](https://github.com/joa-quim/InteractiveGMT.jl/actions/workflows/Docs.yml?query=branch%3Amain)
 [![BestieTemplate](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/JuliaBesties/BestieTemplate.jl/main/docs/src/assets/badge.json)](https://github.com/JuliaBesties/BestieTemplate.jl)
 
+Interactive 3-D viewing of [GMT.jl](https://github.com/GenericMappingTools/GMT.jl) data —
+grids, point clouds, and `GMTfv` solids / polygon meshes — in a **self-contained Qt6 + VTK**
+window. No dependency on F3D: its own Qt window, VTK render pipeline, interaction gizmo, cube
+axes, colour bar, shading, vertical curtains, in-window Julia console and data viewer.
+
+> Windows-only (the viewer ships as a Windows DLL). Grew out of the GMTF3D `qtvtk_proto`
+> prototype; see `QTVTK_PLAN.md` and `.wolf/` for design notes and accumulated knowledge.
+
+## Layout
+
+```
+src/        Julia package (the bridge): one file per concern (grid, points, fv, curtain, …)
+deps/       the C/C++ viewer
+  src/      gmtvtk.cpp (umbrella TU) + 00_includes…90_c_api .inc fragments
+  CMakeLists.txt, build.bat, run.bat
+  assets/   bundled demo images (seismic profile for the curtain example)
+examples/   runnable demos (curtain, drape, fv, solids, f3dview, shademesh)
+test/       CI-safe unit tests of the pure-Julia helpers
+```
+
+## Build the viewer
+
+```bat
+deps\build.bat
+```
+
+Needs VS2022 + the VTK 9.6 / Qt6 / TBB deps (toolchain paths are hard-coded in
+`deps/CMakeLists.txt`, `deps/build.bat` and `src/libgmtvtk.jl` — override the Julia side with the
+`INTERACTIVEGMT_VTK_BIN` / `INTERACTIVEGMT_QT_BIN` / `INTERACTIVEGMT_QT_PLAT` env vars). Outputs
+`deps/build/gmtvtk.dll` (the host library this package `dlopen`s) and `deps/build/gmtvtk_demo.exe`
+(a standalone synthetic-peaks demo).
+
+> The viewer is loaded **in-process**: `using InteractiveGMT` `dlopen`s `gmtvtk.dll` into the
+> running Julia session at `__init__`. A `dlopen`'d DLL stays loaded for the life of the session,
+> so after rebuilding `gmtvtk.dll` you **must start a fresh Julia session** to pick up the changes
+> (an old session also keeps the `.dll` locked against the linker). Editing only the Julia side
+> needs just a re-`using`/Revise, no rebuild.
+
+## Quick start
+
+```julia
+using InteractiveGMT, GMT
+G   = GMT.peaks()
+fig = view_grid(G)                 # opens a window, returns a QtFigure handle
+```
+
+The call is **non-blocking**: it returns immediately and a Julia `Timer` pumps the Qt loop
+(~50 Hz) so the REPL stays usable while the window is open. (In a `julia script.jl` run with no
+REPL, end the script with `wait_windows()` to keep the process alive until the window closes.)
+
+## API
+
+| function | shows |
+|----------|-------|
+| `view_grid(G; …)`   | a `GMTgrid` surface (CPT colour or image `drape`, `vcurtain`, overlays) |
+| `view_points(D; …)` | a coloured point cloud (Ctrl+right-drag rubber-band selection) |
+| `view_fv(fv; …)` / `view_fv("torus"; …)` | a `GMTfv` solid / named solid / polygon mesh |
+| `f3dview(x; …)`     | front-door dispatch over all of the above |
+| `add!(fig, D; …)`   | add line/point overlays to a live grid window |
+| `add_curtain!(fig, path; …)` | hang a vertical image curtain (seismic / midwater profile) |
+| `show_table(fig, D)` | display tabular data in the window's Data Viewer tab |
+| `selection(fig)`     | read back the rubber-band-selected point rows |
+| `isalive(fig)` · `save_png(path)` · `wait_windows()` | window utilities |
+
+The functions are documented in their docstrings (and, in depth, in `QTVTK_PLAN.md`). Each
+overlay/curtain is interactive: right-click for a context menu; the **Scene Objects** dock lists
+every element with a show/hide checkbox.
+
+## In-window Julia console
+
+A **Julia Console** dock runs commands straight in the host session (the viewer is in-process),
+with `fig` pre-bound to that window — so `add!(fig, [x y z]; mode=:points)` works with no handle
+typed. See the docstrings / `QTVTK_PLAN.md` for the C++↔Julia callback mechanism.
+
+## Examples
+
+```julia
+include(joinpath(pkgdir(InteractiveGMT), "examples", "solids.jl"))
+include(joinpath(pkgdir(InteractiveGMT), "examples", "curtain.jl"))   # needs network (grdcut)
+```
