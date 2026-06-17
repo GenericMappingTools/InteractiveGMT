@@ -49,6 +49,14 @@ struct Scene {
 	double xfac = 1.0;          // base X actor scale (cos(midlat) for geographic)
 	double zfac = 1.0;          // base Z actor scale (true-scale unit conversion)
 
+	// --- full-resolution DATA layer (decoupled from the render geometry) -----
+	// The grid's z kept once at full res, column-major z[i*gny + j] (GMT layout). Hover readout
+	// and profile cross-sections sample THIS (bilinear), so they stay full-res no matter what the
+	// render path draws (future tiled-LOD pyramid) — and need no vtkCellLocator over the surface.
+	std::vector<float> gridZ;
+	int    gnx = 0, gny = 0;
+	double gx0 = 0, gx1 = 1, gy0 = 0, gy1 = 1;
+
 	// --- flat-2D (top-down ortho map) toggle --------------------------------
 	// One-button switch to a true planimetric map: VE collapsed to 0 (relief flat,
 	// z carried by colour only), orthographic top-down camera, rotation/tilt locked.
@@ -767,6 +775,31 @@ static bool profileHitAt(Scene* s, int dx, int dy) {
 	return false;
 }
 
+// Bilinear sample of the full-res data layer at TRUE coords (x,y). Returns NaN outside the grid
+// or when any of the four corners is NaN (so callers skip it). O(1), no locator, render-LOD
+// independent — the basis for full-res hover + profile under the tiled-LOD render path.
+static double sampleZ(const Scene* s, double x, double y) {
+	if (s->gridZ.empty() || s->gnx < 2 || s->gny < 2)
+		return std::numeric_limits<double>::quiet_NaN();
+	const double dx = (s->gx1 - s->gx0) / (s->gnx - 1);
+	const double dy = (s->gy1 - s->gy0) / (s->gny - 1);
+	if (dx == 0.0 || dy == 0.0)
+		return std::numeric_limits<double>::quiet_NaN();
+	const double fx = (x - s->gx0) / dx, fy = (y - s->gy0) / dy;
+	if (fx < 0.0 || fy < 0.0 || fx > s->gnx - 1 || fy > s->gny - 1)
+		return std::numeric_limits<double>::quiet_NaN();
+	const int i0 = std::min((int)fx, s->gnx - 2), j0 = std::min((int)fy, s->gny - 2);
+	const double tx = fx - i0, ty = fy - j0;
+	const float* Z = s->gridZ.data();                  // column-major: Z[i*gny + j]
+	const double z00 = Z[(size_t)i0     * s->gny + j0    ];
+	const double z10 = Z[(size_t)(i0+1) * s->gny + j0    ];
+	const double z01 = Z[(size_t)i0     * s->gny + j0 + 1];
+	const double z11 = Z[(size_t)(i0+1) * s->gny + j0 + 1];
+	if (std::isnan(z00) || std::isnan(z10) || std::isnan(z01) || std::isnan(z11))
+		return std::numeric_limits<double>::quiet_NaN();
+	return (1-tx)*(1-ty)*z00 + tx*(1-ty)*z10 + (1-tx)*ty*z01 + tx*ty*z11;
+}
+
 // Mouse move (default priority): live coordinate readout. Runs only when the gizmo
 // did not grab the drag (the gizmo's high-priority observer aborts the event then).
 static void onMouseMove(vtkObject*, unsigned long, void* clientData, void* /*cd*/) {
@@ -801,13 +834,20 @@ static void onMouseMove(vtkObject*, unsigned long, void* clientData, void* /*cd*
 					.arg(w[0] / s->xfac, 0, 'f', 3).arg(w[1], 0, 'f', 3)
 					.arg(r).arg(g).arg(b));
 		} else {
-			// z from the unprojected world point: undo the base/VE actor scale (zfac*ve) to recover
-			// TRUE elevation. In flat-2D (VE=0) zsc=0 -> report 0 (the surface is collapsed flat).
-			const double zsc = s->zfac * s->ve;
-			const double ztrue = (zsc != 0.0) ? w[2] / zsc : 0.0;
-			s->win->statusBar()->showMessage(                  // undo the base/VE scale -> true coords
+			const double truex = w[0] / s->xfac, truey = w[1];
+			// z from the full-res DATA layer (render-LOD independent). Fall back to the unprojected
+			// depth z (undo base/VE actor scale zfac*ve) for surfaces with no data layer (FV mesh /
+			// point cloud), and where the sample misses (off-grid / NaN). flat-2D: zsc=0 -> z 0.
+			double ztrue;
+			if (!s->gridZ.empty() && !std::isnan(ztrue = sampleZ(s, truex, truey))) {
+				// got it from the data layer
+			} else {
+				const double zsc = s->zfac * s->ve;
+				ztrue = (zsc != 0.0) ? w[2] / zsc : 0.0;
+			}
+			s->win->statusBar()->showMessage(                  // true coords
 				QString("x = %1    y = %2    z = %3   (VE ×%4)")
-					.arg(w[0] / s->xfac, 0, 'f', 3).arg(w[1], 0, 'f', 3)
+					.arg(truex, 0, 'f', 3).arg(truey, 0, 'f', 3)
 					.arg(ztrue, 0, 'f', 3).arg(s->ve, 0, 'f', 2));
 		}
 	} else {

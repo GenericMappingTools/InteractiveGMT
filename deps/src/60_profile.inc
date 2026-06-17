@@ -123,20 +123,9 @@ static bool pickSurfaceXY(Scene* s, int dx, int dy, double& tx, double& ty) {
 // vertical ray at each densified (x,y) (one true z per sample), then refresh the 3D drape
 // line + the 2D panel. Arc length is in metres (geographic) / data units (cartesian).
 static void computeProfile(Scene* s, double ax, double ay, double bx, double by) {
-	if (!s || !s->surf || !s->surf->GetMapper())
+	if (!s || s->gridZ.empty())                        // sample the full-res DATA layer (no locator)
 		return;
-	if (!s->surfLoc) {                                 // lazy locator over the TRUE-coord polydata
-		vtkPolyData* pd = vtkPolyData::SafeDownCast(s->surf->GetMapper()->GetInput());
-		if (!pd)
-			return;
-		s->surfLoc = vtkSmartPointer<vtkCellLocator>::New();
-		s->surfLoc->SetDataSet(pd);
-		s->surfLoc->BuildLocator();
-	}
 	const int N = 300;
-	const double zspan = (s->zmax > s->zmin) ? (s->zmax - s->zmin) : 1.0;
-	const double zhi = s->zmax + 0.05 * zspan + 1.0;
-	const double zlo = s->zmin - 0.05 * zspan - 1.0;
 	const double m_per_base = (s->zfac > 0.0) ? (1.0 / s->zfac) : 1.0;  // base horiz unit -> metres
 
 	std::vector<double> sv, zv;
@@ -145,17 +134,16 @@ static void computeProfile(Scene* s, double ax, double ay, double bx, double by)
 	for (int i = 0; i < N; ++i) {
 		const double t = (N == 1) ? 0.0 : double(i) / (N - 1);
 		const double x = ax + t * (bx - ax), y = ay + t * (by - ay);
-		double p0[3] = {x, y, zhi}, p1[3] = {x, y, zlo};
-		double tpar, xyz[3], pc[3]; int subId; vtkIdType cid;
-		if (!s->surfLoc->IntersectWithLine(p0, p1, 1e-9, tpar, xyz, pc, subId, cid))
-			continue;                                  // off-surface sample -> skip
+		const double z = sampleZ(s, x, y);             // bilinear, full-res, render-LOD independent
+		if (std::isnan(z))
+			continue;                                  // off-grid / NaN sample -> skip
 		if (have) {
 			const double ddx = (x - lastx) * s->xfac, ddy = (y - lasty);
 			sdist += std::sqrt(ddx * ddx + ddy * ddy) * m_per_base;
 		}
 		lastx = x; lasty = y; have = true;
-		line->InsertNextPoint(x, y, xyz[2]);
-		sv.push_back(sdist); zv.push_back(xyz[2]);
+		line->InsertNextPoint(x, y, z);
+		sv.push_back(sdist); zv.push_back(z);
 	}
 
 	const vtkIdType np = line->GetNumberOfPoints();
