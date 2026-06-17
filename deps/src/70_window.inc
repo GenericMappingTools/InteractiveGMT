@@ -182,7 +182,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// --- cube axes ----------------------------------------------------------
 	s->axes = vtkSmartPointer<vtkCubeAxesActor>::New();
 	s->axes->SetCamera(s->ren->GetActiveCamera());
-	double b[6]; s->surf->GetBounds(b);
+	double b[6]; surfGetBounds(s, b);
 	if (b[5] - b[4] <= 0.0) b[5] = b[4] + 1.0;          // zero Z extent (bare image / flat) -> avoid
 	                                                    // vtkAxisActor 0/0 label-count crash
 	s->axes->SetBounds(b);
@@ -449,10 +449,10 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			s->sav_surfLit  = s->surf->GetProperty()->GetLighting();
 
 			s->ve = 0.0; applyVE(s);               // collapse relief to a plane (z -> colour only)
-			s->surf->GetProperty()->LightingOff(); // flat plane: no hillshade, true albedo
+			for (vtkActor* a : surfActors(s)) a->GetProperty()->LightingOff();  // flat: no hillshade
 			if (s->giz) setGizmoVisible(*s->giz, false);
 
-			double b[6]; s->surf->GetBounds(b);    // top-down orthographic, north (+Y) up
+			double b[6]; surfGetBounds(s, b);      // top-down orthographic, north (+Y) up
 			const double fp[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
 			cam->SetFocalPoint(fp[0], fp[1], fp[2]);
 			cam->SetViewUp(0.0, 1.0, 0.0);
@@ -462,7 +462,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		}
 		else {
 			s->ve = s->sav_ve; applyVE(s);         // restore relief
-			if (s->sav_surfLit) s->surf->GetProperty()->LightingOn();
+			if (s->sav_surfLit) for (vtkActor* a : surfActors(s)) a->GetProperty()->LightingOn();
 			cam->SetParallelProjection(s->sav_parallel);
 			cam->SetPosition(s->sav_pos);
 			cam->SetFocalPoint(s->sav_foc);

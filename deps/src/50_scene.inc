@@ -15,7 +15,7 @@ static void rebuildSceneObjects(Scene* s) {
 	col->setContentsMargins(8, 8, 8, 8);
 	col->setSpacing(4);
 
-	auto addRow = [&](const QString& label, vtkActor* a) {
+	auto addRow = [&](const QString& label, vtkProp3D* a) {   // vtkActor upcasts; surface row passes the tile assembly
 		if (!a)
 			return;
 		QCheckBox* cb = new QCheckBox(label, s->objPanel);
@@ -31,7 +31,7 @@ static void rebuildSceneObjects(Scene* s) {
 	// A bare image has NO surface: don't list one, and the image is the object itself (not an
 	// "Image drape" over a surface).
 	if (!s->imageOnly)
-		addRow(s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName), s->surf);
+		addRow(s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName), surfProp(s));
 	if (s->drape)
 		addRow(s->imageOnly ? (s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName))
 		                    : QString("Image drape"),

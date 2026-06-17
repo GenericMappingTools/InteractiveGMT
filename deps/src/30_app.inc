@@ -60,7 +60,7 @@ void MiddleCB(vtkObject* caller, unsigned long eid, void* clientData, void*) {
 		s->midY = rwi->GetEventPosition()[1];
 		vtkNew<vtkCellPicker> pk;
 		pk->SetTolerance(0.0005);
-		pk->PickFromListOn(); pk->AddPickList(s->surf);   // recenter target = surface only
+		pk->PickFromListOn(); pk->AddPickList(surfProp(s));   // recenter target = surface only
 		s->midPicked = (pk->Pick(s->midX, s->midY, 0.0, ren) != 0);
 		if (s->midPicked) pk->GetPickPosition(s->midPick);
 		handled = true;
@@ -144,7 +144,7 @@ protected:
 	void recenter(double x, double y) {
 		vtkRenderer* ren = s->ren; vtkCamera* cam = ren->GetActiveCamera(); if (!cam) return;
 		vtkNew<vtkCellPicker> pk; pk->SetTolerance(0.0005);
-		pk->PickFromListOn(); pk->AddPickList(s->surf);
+		pk->PickFromListOn(); pk->AddPickList(surfProp(s));
 		if (pk->Pick(x, y, 0.0, ren)) {
 			double pick[3]; pk->GetPickPosition(pick);
 			double pos[3], fp[3]; cam->GetPosition(pos); cam->GetFocalPoint(fp);

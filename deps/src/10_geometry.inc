@@ -30,6 +30,12 @@ struct ExtraObj {
 struct Scene {
 	vtkSmartPointer<vtkRenderer>          ren;
 	vtkSmartPointer<vtkActor>             surf;
+	// Tiled render (plain grid): the surface is split into tile actors held by `surfGroup`
+	// (a vtkAssembly) so ONE transform (base scale + VE) drives them all and GetBounds unions
+	// them. `tiles` lists the parts for per-actor ops (material / edges / colour map). Empty +
+	// null for the single-actor paths (cloud / FV / drape / image) -> helpers fall back to surf.
+	vtkSmartPointer<vtkAssembly>          surfGroup;
+	std::vector<vtkSmartPointer<vtkActor>> tiles;
 	vtkSmartPointer<vtkActor>             drape;   // optional image overlay (CPT base shows under transparent texels)
 	vtkSmartPointer<vtkCubeAxesActor>     axes;
 	vtkSmartPointer<vtkRenderer>          axesRen;  // overlay layer (1) for the Z tick billboards: own headlight (even, view-independent text brightness) + own depth (never occluded by the surface); shares the main camera
@@ -143,6 +149,34 @@ struct Scene {
 	double track0[2] = {0, 0};                         // press point in TRUE (x,y)
 	std::vector<double> profS, profZ;                  // last profile (along-track distance, elevation)
 };
+
+// --- surface accessors: one actor (cloud/FV/drape/image) or a tiled grid -----------------
+// When the grid is tiled, the transform/bounds/visibility live on the vtkAssembly `surfGroup`
+// and the renderable parts are `tiles`; otherwise everything is the single actor `surf`. These
+// helpers hide that split so call sites stay uniform. (Group null + tiles empty -> surf.)
+static inline vtkProp3D* surfProp(Scene* s) {
+	if (s->surfGroup) return s->surfGroup.Get();
+	return s->surf.Get();
+}
+static inline void surfSetScale(Scene* s, double x, double y, double z) {
+	if (vtkProp3D* p = surfProp(s)) p->SetScale(x, y, z);
+}
+static inline void surfGetScale(Scene* s, double sc[3]) {
+	if (vtkProp3D* p = surfProp(s)) p->GetScale(sc); else { sc[0]=sc[1]=sc[2]=1.0; }
+}
+static inline void surfGetBounds(Scene* s, double b[6]) {
+	if (vtkProp3D* p = surfProp(s)) p->GetBounds(b);
+}
+static inline void surfSetVisibility(Scene* s, int v) {
+	if (vtkProp3D* p = surfProp(s)) p->SetVisibility(v);
+}
+// The renderable actors carrying material / mapper / edges. Tiles when tiled, else the surf.
+static inline std::vector<vtkActor*> surfActors(Scene* s) {
+	std::vector<vtkActor*> v;
+	if (!s->tiles.empty()) { for (auto& a : s->tiles) v.push_back(a.Get()); }
+	else if (s->surf)        v.push_back(s->surf.Get());
+	return v;
+}
 
 // Collapse / restore the bottom tabbed panel's BODY, leaving the tab strip (+ the Hide
 // button) visible. Collapsing hides the QTabWidget's page stack and clamps the widget to
@@ -572,7 +606,7 @@ static void rebuildAxisLabels(Scene* s) {
 		return;
 	}
 	if (s->axisTicks) s->axisTicks->SetVisibility(1);
-	double b[6]; s->surf->GetBounds(b);          // drawn (VE-scaled) bounds
+	double b[6]; surfGetBounds(s, b);            // drawn (VE-scaled) bounds
 	const double ctr[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
 	double cam[3]; s->ren->GetActiveCamera()->GetPosition(cam);
 
@@ -642,7 +676,7 @@ static void AxisLabelCB(vtkObject*, unsigned long, void* cd, void*) {
 // zfac unit conversion); the gizmo factor `ve` multiplies the Z. Cube-axis labels
 // stay TRUE because their ranges are pinned to the data ranges, not the bounds.
 static void applyVE(Scene* s) {
-	s->surf->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	surfSetScale(s, s->xfac, 1.0, s->zfac * s->ve);
 	if (s->drape) s->drape->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // overlay tracks the base
 	for (auto& ov : s->overlays)                                       // line/point overlays track the base too
 		if (ov.actor) ov.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
@@ -650,7 +684,7 @@ static void applyVE(Scene* s) {
 		if (cu.actor) cu.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
 	if (s->profLine) s->profLine->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // profile drape tracks the base
 	if (s->rbHL)     s->rbHL->SetScale(s->xfac, 1.0, s->zfac * s->ve);      // selection highlight tracks the cloud
-	double b[6]; s->surf->GetBounds(b);          // bounds already include the scale
+	double b[6]; surfGetBounds(s, b);            // bounds already include the scale
 	// Flat map (VE collapsed to 0 -> zero Z extent): vtkCubeAxesActor computes EACH axis's
 	// label/gridline count even for hidden axes, so a zero Z range gives range/step = 0/0 ->
 	// NaN -> INT_MIN ("Number of labels -2147483647 is invalid"), aborting the render (blank

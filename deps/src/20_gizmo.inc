@@ -77,7 +77,7 @@ void fitSnapView(Scene* s, bool topMode, double fill = -1.0) {
 	vtkRenderer* ren = s->ren;
 	vtkCamera*   cam = ren->GetActiveCamera();
 	ren->ResetCamera();                                   // baseline fit + distance
-	double b[6]; s->surf->GetBounds(b);
+	double b[6]; surfGetBounds(s, b);
 	// ResetCamera centres on ALL visible props (gizmo floats above the surface, cube axes
 	// overhang), which pushes the surface low in the viewport. Pan so the SURFACE bbox centre
 	// is the focal point -> the relief is centred at mid-height, not sitting at the bottom.
@@ -451,9 +451,11 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 		Scene* s = c->s;
 		if (s && s->surf) {
 			int on = s->surf->GetProperty()->GetEdgeVisibility() ? 0 : 1;
-			s->surf->GetProperty()->SetEdgeVisibility(on);
-			s->surf->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12);
-			s->surf->GetProperty()->SetLineWidth(1.0);
+			for (vtkActor* a : surfActors(s)) {       // toggle wire on every tile (or the surface)
+				a->GetProperty()->SetEdgeVisibility(on);
+				a->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12);
+				a->GetProperty()->SetLineWidth(1.0);
+			}
 			if (s->drape) {
 				s->drape->GetProperty()->SetEdgeVisibility(on);
 				s->drape->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12);
@@ -476,7 +478,7 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 			const double dx = lp.x() * r;
 			const double dy = H - lp.y() * r;
 			vtkNew<vtkCellPicker> pk; pk->SetTolerance(0.0005);
-			pk->PickFromListOn(); pk->AddPickList(s->surf);
+			pk->PickFromListOn(); pk->AddPickList(surfProp(s));
 			if (cam && pk->Pick(dx, dy, 0.0, s->ren)) {
 				double pick[3]; pk->GetPickPosition(pick);
 				double pos[3], fp[3]; cam->GetPosition(pos); cam->GetFocalPoint(fp);

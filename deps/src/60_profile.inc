@@ -110,7 +110,7 @@ static bool pickSurfaceXY(Scene* s, int dx, int dy, double& tx, double& ty) {
 	if (!s || !s->ren || !s->surf)
 		return false;
 	vtkNew<vtkCellPicker> pk; pk->SetTolerance(0.0005);
-	pk->PickFromListOn(); pk->AddPickList(s->surf);
+	pk->PickFromListOn(); pk->AddPickList(surfProp(s));
 	if (!pk->Pick((double)dx, (double)dy, 0.0, s->ren))
 		return false;
 	double pp[3]; pk->GetPickPosition(pp);
@@ -223,7 +223,7 @@ protected:
 		if (!cam) return;
 		double x, y; devPx(p, x, y);
 		vtkNew<vtkCellPicker> pk; pk->SetTolerance(0.0005);
-		pk->PickFromListOn(); pk->AddPickList(s->surf);
+		pk->PickFromListOn(); pk->AddPickList(surfProp(s));
 		if (pk->Pick(x, y, 0.0, ren)) {
 			double pick[3]; pk->GetPickPosition(pick);
 			double pos[3], fp[3]; cam->GetPosition(pos); cam->GetFocalPoint(fp);

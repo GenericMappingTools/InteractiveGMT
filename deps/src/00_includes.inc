@@ -112,6 +112,8 @@
 #include <vtkColorTransferFunction.h>
 #include <vtkScalarsToColors.h>
 #include <vtkImageData.h>
+#include <vtkAssembly.h>
+#include <vtkProp3D.h>
 #include <vtkTexture.h>
 #include <vtkImageReader2.h>
 #include <vtkImageReader2Factory.h>

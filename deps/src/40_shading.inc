@@ -44,7 +44,8 @@ static void applyShading(Scene* s) {
 	// material — PBR on the RELIEF SURFACE ONLY. The drape is a textured picture and MUST
 	// stay Phong: VTK's PBR shader samples only SetBaseColorTexture, so a PBR drape ignores
 	// its SetTexture and renders flat grey. Do NOT touch s->drape's material here.
-	if (s->surf) {
+	for (vtkActor* a : surfActors(s)) {   // all tiles (tiled grid) or the single surface
+		vtkProperty* prop = a->GetProperty();
 		if (s->matteSurf) {
 			// fv colour mesh: PURE-DIFFUSE Phong (no specular, no IBL reflection) so every facet
 			// shows its true data colour. Glossy PBR + the bright sky IBL mirrored to a grey
@@ -52,16 +53,16 @@ static void applyShading(Scene* s) {
 			// env texture entirely, so no angle can wash the colour to grey. Must live HERE, not
 			// only in gmtvtk_view_fv: applyShading runs at setup AND on every shading slider and
 			// would otherwise re-clobber the surface back to glossy PBR.
-			s->surf->GetProperty()->SetInterpolationToPhong();
-			s->surf->GetProperty()->SetSpecular(0.0);
-			s->surf->GetProperty()->SetAmbient(0.25);
-			s->surf->GetProperty()->SetDiffuse(0.9);
+			prop->SetInterpolationToPhong();
+			prop->SetSpecular(0.0);
+			prop->SetAmbient(0.25);
+			prop->SetDiffuse(0.9);
 		}
 		else {
-			s->surf->GetProperty()->SetInterpolationToPBR();
-			s->surf->GetProperty()->SetMetallic(s->metallic);
-			s->surf->GetProperty()->SetRoughness(s->roughness);
-			s->surf->GetProperty()->SetBaseIOR(s->ior);   // Fresnel rim-sheen on slopes (F3D = 1.5)
+			prop->SetInterpolationToPBR();
+			prop->SetMetallic(s->metallic);
+			prop->SetRoughness(s->roughness);
+			prop->SetBaseIOR(s->ior);   // Fresnel rim-sheen on slopes (F3D = 1.5)
 		}
 	}
 	// key light: aim from azimuth (deg from north, clockwise) + elevation.
