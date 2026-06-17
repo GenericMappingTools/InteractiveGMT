@@ -17,3 +17,6 @@ deps/build/
 
 # OpenWolf local context (not shared)
 .wolf/
+
+# Claude Code local config (not shared)
+.claude/
