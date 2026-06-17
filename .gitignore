@@ -14,3 +14,6 @@ node_modules
 # build artifacts (regenerable via deps/build.bat)
 deps/build/
 *.log
+
+# OpenWolf local context (not shared)
+.wolf/
