@@ -217,13 +217,14 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 													  double x0, double x1,
 													  double y0, double y1,
 													  double &zmin, double &zmax,
-													  bool triangulate = true) {
+													  bool triangulate = true,
+													  bool wantTC = true) {   // texture coords only needed for image drape
 	vtkNew<vtkPoints>     pts;   pts->SetDataTypeToFloat();
 	vtkNew<vtkFloatArray> zval;  zval->SetName("z");
 	vtkNew<vtkFloatArray> tcoord; tcoord->SetNumberOfComponents(2); tcoord->SetName("tc");
 	pts->Allocate(nx * ny);
 	zval->Allocate(nx * ny);
-	tcoord->Allocate(2 * nx * ny);
+	if (wantTC) tcoord->Allocate(2 * nx * ny);
 
 	const double dx = (nx > 1) ? (x1 - x0) / (nx - 1) : 0.0;
 	const double dy = (ny > 1) ? (y1 - y0) / (ny - 1) : 0.0;
@@ -237,8 +238,10 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 			double zz = z[(vtkIdType)i * ny + j];   // column-major
 			pts->InsertNextPoint(x, y, zz);
 			zval->InsertNextValue(zz);
-			tcoord->InsertNextValue((x - x0) / xspan);   // u: west->east
-			tcoord->InsertNextValue((y - y0) / yspan);   // v: south->north (texture is south-first)
+			if (wantTC) {
+				tcoord->InsertNextValue((x - x0) / xspan);   // u: west->east
+				tcoord->InsertNextValue((y - y0) / yspan);   // v: south->north (texture is south-first)
+			}
 			if (!std::isnan(zz)) {
 				if (zz < zmin) zmin = zz;
 				if (zz > zmax) zmax = zz;
@@ -273,11 +276,43 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 		}
 	}
 
+	// Per-vertex normals computed INLINE from the height field (central differences of z),
+	// so this single polydata feeds the mapper directly and we SKIP vtkPolyDataNormals -> no
+	// full second copy of points+cells+scalars (the dominant grid-RAM waste). Point id order
+	// matches the insert loop above: id = j*nx + i. NaN node / NaN neighbour -> flat up normal.
+	vtkNew<vtkFloatArray> norm; norm->SetNumberOfComponents(3); norm->SetName("Normals");
+	norm->SetNumberOfTuples((vtkIdType)nx * ny);
+	for (int j = 0; j < ny; ++j) {
+		for (int i = 0; i < nx; ++i) {
+			float nxv = 0.f, nyv = 0.f, nzv = 1.f;
+			const float zc = z[(vtkIdType)i * ny + j];
+			if (!std::isnan(zc)) {
+				const int il = i > 0 ? i-1 : i,  ir = i < nx-1 ? i+1 : i;
+				const int jd = j > 0 ? j-1 : j,  ju = j < ny-1 ? j+1 : j;
+				const float zl = z[(vtkIdType)il*ny + j],  zr = z[(vtkIdType)ir*ny + j];
+				const float zb = z[(vtkIdType)i*ny + jd],  zt = z[(vtkIdType)i*ny + ju];
+				if (!std::isnan(zl) && !std::isnan(zr) && !std::isnan(zb) && !std::isnan(zt)) {
+					const double ddx = (ir - il) * dx, ddy = (ju - jd) * dy;
+					const double gx = ddx != 0.0 ? (zr - zl) / ddx : 0.0;
+					const double gy = ddy != 0.0 ? (zt - zb) / ddy : 0.0;
+					double vx = -gx, vy = -gy, vz = 1.0;
+					const double inv = 1.0 / std::sqrt(vx*vx + vy*vy + vz*vz);
+					nxv = (float)(vx*inv); nyv = (float)(vy*inv); nzv = (float)(vz*inv);
+				}
+			}
+			const vtkIdType id = (vtkIdType)j*nx + i;
+			norm->SetTypedComponent(id, 0, nxv);
+			norm->SetTypedComponent(id, 1, nyv);
+			norm->SetTypedComponent(id, 2, nzv);
+		}
+	}
+
 	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
 	pd->SetPoints(pts);
 	pd->SetPolys(cells);
 	pd->GetPointData()->SetScalars(zval);
-	pd->GetPointData()->SetTCoords(tcoord);   // for optional image drape
+	pd->GetPointData()->SetNormals(norm);     // baked normals -> buildAndShow skips vtkPolyDataNormals
+	if (wantTC) pd->GetPointData()->SetTCoords(tcoord);   // for optional image drape
 	return pd;
 }
 

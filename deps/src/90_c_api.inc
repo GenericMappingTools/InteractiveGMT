@@ -54,7 +54,7 @@ GMTVTK_API void* gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 								 const double *cz, const double *crgb, int ncolor, const unsigned char *img,
 								 int iw, int ih, int ibands, int edges, int triangulate, int image_only, const char* title) {
 	double zmin = 0.0, zmax = 1.0;
-	auto pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, triangulate != 0);
+	auto pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, triangulate != 0, /*wantTC=*/img != nullptr);
 	double xfac, zfac, ve0;
 	computeScales(geographic, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
 	Scene* s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, cz, crgb, ncolor, img, iw, ih, ibands, edges, false, geographic, title,

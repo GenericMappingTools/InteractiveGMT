@@ -88,19 +88,22 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		lut = t;
 	}
 
-	// Smooth shading: the raw grid has no normals, so VTK would flat-shade each
-	// quad (faceted, blocky). Generate per-vertex normals without splitting edges.
+	// Smooth shading needs per-vertex normals. A grid polydata arrives with them already baked
+	// in (makeGridFromArray) -> feed it straight to the mapper, NO vtkPolyDataNormals second
+	// copy. An FV/other surface with none still gets them generated here. Point clouds = unlit.
+	const bool hasNormals = pd && pd->GetPointData() && pd->GetPointData()->GetNormals() != nullptr;
 	vtkNew<vtkPolyDataNormals> norms;
-	norms->SetInputData(pd);
-	norms->SetFeatureAngle(90.0);
-	norms->SplittingOff();
-	norms->ConsistencyOn();
+	if (!pointCloud && !hasNormals) {
+		norms->SetInputData(pd);
+		norms->SetFeatureAngle(90.0);
+		norms->SplittingOff();
+		norms->ConsistencyOn();
+	}
 
 	vtkNew<vtkPolyDataMapper> map;
-	// A point cloud needs no normals (unlit) -> feed the polydata straight in; a surface gets
-	// the smoothed normals for shading.
-	if (pointCloud) map->SetInputData(pd);
-	else            map->SetInputConnection(norms->GetOutputPort());
+	// Cloud or already-normalled grid -> direct; bare surface -> through the normals filter.
+	if (pointCloud || hasNormals) map->SetInputData(pd);
+	else                          map->SetInputConnection(norms->GetOutputPort());
 	map->SetLookupTable(lut);
 	map->SetScalarRange(s->zmin, s->zmax);
 	if (ctfRange) map->UseLookupTableScalarRangeOn();  // colours keyed to the CPT's own z nodes
@@ -149,7 +152,8 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// in the translucent pass and blends the picture over the base. A polygon offset
 		// pulls it toward the camera so it wins the depth tie with the base surface.
 		vtkNew<vtkPolyDataMapper> dmap;
-		dmap->SetInputConnection(norms->GetOutputPort());
+		if (hasNormals) dmap->SetInputData(pd);                    // grid: normals baked in
+		else            dmap->SetInputConnection(norms->GetOutputPort());
 		dmap->ScalarVisibilityOff();        // colour comes from the texture, not the CPT
 		vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
 		dmap->SetRelativeCoincidentTopologyPolygonOffsetParameters(-1.0, -1.0);

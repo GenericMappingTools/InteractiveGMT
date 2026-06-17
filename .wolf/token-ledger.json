@@ -2,14 +2,14 @@
   "version": 1,
   "created_at": "2026-06-16T19:49:16.883Z",
   "lifetime": {
-    "total_tokens_estimated": 1558882,
-    "total_reads": 499,
-    "total_writes": 1615,
+    "total_tokens_estimated": 1911341,
+    "total_reads": 552,
+    "total_writes": 1813,
     "total_sessions": 6,
-    "anatomy_hits": 98,
+    "anatomy_hits": 151,
     "anatomy_misses": 401,
-    "repeated_reads_blocked": 597,
-    "estimated_savings_vs_bare_cli": 4186150
+    "repeated_reads_blocked": 668,
+    "estimated_savings_vs_bare_cli": 4971661
   },
   "sessions": [
     {
@@ -12030,6 +12030,1467 @@
         "writes_count": 12,
         "repeated_reads_blocked": 2,
         "anatomy_lookups": 5
+      }
+    },
+    {
+      "id": "session-2026-06-17-2229",
+      "started": "2026-06-17T21:29:04.300Z",
+      "ended": "2026-06-17T22:05:28.315Z",
+      "reads": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 10696,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 12261,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 2819,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 7541,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 1506,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        }
+      ],
+      "writes": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 40,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 68,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 36,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 34,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 24,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 86,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 78,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 39,
+          "action": "edit"
+        }
+      ],
+      "totals": {
+        "input_tokens_estimated": 34823,
+        "output_tokens_estimated": 595,
+        "reads_count": 5,
+        "writes_count": 12,
+        "repeated_reads_blocked": 2,
+        "anatomy_lookups": 5
+      }
+    },
+    {
+      "id": "session-2026-06-17-2229",
+      "started": "2026-06-17T21:29:04.300Z",
+      "ended": "2026-06-17T22:20:26.965Z",
+      "reads": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 10705,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 12545,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 2819,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 7540,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 1506,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 1046,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        }
+      ],
+      "writes": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 40,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 68,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 36,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 34,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 24,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 86,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 78,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 39,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 48,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 536,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 543,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 9,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 61,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 275,
+          "action": "edit"
+        }
+      ],
+      "totals": {
+        "input_tokens_estimated": 36161,
+        "output_tokens_estimated": 2067,
+        "reads_count": 6,
+        "writes_count": 18,
+        "repeated_reads_blocked": 7,
+        "anatomy_lookups": 6
+      }
+    },
+    {
+      "id": "session-2026-06-17-2229",
+      "started": "2026-06-17T21:29:04.300Z",
+      "ended": "2026-06-17T22:49:33.782Z",
+      "reads": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 11182,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 12545,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 2819,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 7540,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 1506,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 1046,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        }
+      ],
+      "writes": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 40,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 68,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 36,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 34,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 24,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 86,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 78,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 39,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 48,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 536,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 543,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 9,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 61,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 275,
+          "action": "edit"
+        }
+      ],
+      "totals": {
+        "input_tokens_estimated": 36638,
+        "output_tokens_estimated": 2067,
+        "reads_count": 6,
+        "writes_count": 18,
+        "repeated_reads_blocked": 8,
+        "anatomy_lookups": 6
+      }
+    },
+    {
+      "id": "session-2026-06-17-2229",
+      "started": "2026-06-17T21:29:04.300Z",
+      "ended": "2026-06-17T22:55:43.939Z",
+      "reads": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 11182,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 12545,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 2819,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 7679,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 1506,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 1046,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        }
+      ],
+      "writes": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 40,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 68,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 36,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 34,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 24,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 86,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 78,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 39,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 48,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 536,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 543,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 9,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 61,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 275,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 550,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 234,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 54,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 177,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 56,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 33,
+          "action": "edit"
+        }
+      ],
+      "totals": {
+        "input_tokens_estimated": 36777,
+        "output_tokens_estimated": 3241,
+        "reads_count": 6,
+        "writes_count": 25,
+        "repeated_reads_blocked": 9,
+        "anatomy_lookups": 6
+      }
+    },
+    {
+      "id": "session-2026-06-17-2229",
+      "started": "2026-06-17T21:29:04.300Z",
+      "ended": "2026-06-17T23:07:21.493Z",
+      "reads": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 11182,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 12545,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 2819,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 7679,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 1506,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 1046,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        }
+      ],
+      "writes": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 40,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 68,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 36,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 34,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 24,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 86,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 78,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 39,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 48,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 536,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 543,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 9,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 61,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 275,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 550,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 234,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 54,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 177,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 56,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 33,
+          "action": "edit"
+        }
+      ],
+      "totals": {
+        "input_tokens_estimated": 36777,
+        "output_tokens_estimated": 3241,
+        "reads_count": 6,
+        "writes_count": 25,
+        "repeated_reads_blocked": 9,
+        "anatomy_lookups": 6
+      }
+    },
+    {
+      "id": "session-2026-06-17-2229",
+      "started": "2026-06-17T21:29:04.300Z",
+      "ended": "2026-06-17T23:08:33.376Z",
+      "reads": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 11182,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 12545,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 2819,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 7679,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 1506,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 1046,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        }
+      ],
+      "writes": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 40,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 68,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 36,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 34,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 24,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 86,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 78,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 39,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 48,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 536,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 543,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 9,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 61,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 275,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 550,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 234,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 54,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 177,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 56,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 33,
+          "action": "edit"
+        }
+      ],
+      "totals": {
+        "input_tokens_estimated": 36777,
+        "output_tokens_estimated": 3241,
+        "reads_count": 6,
+        "writes_count": 25,
+        "repeated_reads_blocked": 9,
+        "anatomy_lookups": 6
+      }
+    },
+    {
+      "id": "session-2026-06-17-2229",
+      "started": "2026-06-17T21:29:04.300Z",
+      "ended": "2026-06-17T23:09:04.049Z",
+      "reads": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 11182,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 12545,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 2819,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 7679,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 1506,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 1046,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        }
+      ],
+      "writes": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 40,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 68,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 36,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 34,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 24,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 86,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 78,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 39,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 48,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 536,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 543,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 9,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 61,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 275,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 550,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 234,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 54,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 177,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 56,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 33,
+          "action": "edit"
+        }
+      ],
+      "totals": {
+        "input_tokens_estimated": 36777,
+        "output_tokens_estimated": 3241,
+        "reads_count": 6,
+        "writes_count": 25,
+        "repeated_reads_blocked": 9,
+        "anatomy_lookups": 6
+      }
+    },
+    {
+      "id": "session-2026-06-17-2229",
+      "started": "2026-06-17T21:29:04.300Z",
+      "ended": "2026-06-17T23:11:08.496Z",
+      "reads": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 11182,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 12545,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 2819,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 7679,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 1506,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 1046,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        }
+      ],
+      "writes": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 40,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 68,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 36,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 34,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 24,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 86,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 78,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 39,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 48,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 536,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 543,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 9,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 61,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 275,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 550,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 234,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 54,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 177,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 56,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 33,
+          "action": "edit"
+        }
+      ],
+      "totals": {
+        "input_tokens_estimated": 36777,
+        "output_tokens_estimated": 3241,
+        "reads_count": 6,
+        "writes_count": 25,
+        "repeated_reads_blocked": 9,
+        "anatomy_lookups": 6
+      }
+    },
+    {
+      "id": "session-2026-06-17-2229",
+      "started": "2026-06-17T21:29:04.300Z",
+      "ended": "2026-06-17T23:23:35.935Z",
+      "reads": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 11182,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 12545,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 2819,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 7679,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 1506,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 1046,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        }
+      ],
+      "writes": [
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 40,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/grid.jl",
+          "tokens_estimated": 68,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 36,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 25,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 34,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 24,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/src/drop.jl",
+          "tokens_estimated": 86,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 78,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 39,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/00_includes.inc",
+          "tokens_estimated": 48,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 536,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 543,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 9,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 61,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 275,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 550,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 234,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/70_window.inc",
+          "tokens_estimated": 54,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 177,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 70,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/10_geometry.inc",
+          "tokens_estimated": 56,
+          "action": "edit"
+        },
+        {
+          "file": "C:/Users/j/.julia/dev/InteractiveGMT/deps/src/90_c_api.inc",
+          "tokens_estimated": 33,
+          "action": "edit"
+        }
+      ],
+      "totals": {
+        "input_tokens_estimated": 36777,
+        "output_tokens_estimated": 3241,
+        "reads_count": 6,
+        "writes_count": 25,
+        "repeated_reads_blocked": 9,
+        "anatomy_lookups": 6
       }
     }
   ],

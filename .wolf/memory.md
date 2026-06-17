@@ -306,3 +306,25 @@ tests in `test/`. OpenWolf knowledge (cerebrum, anatomy, QTVTK_PLAN, qtvtk memor
 | 22:50 | fix: z double*->float* (zero-copy Float32) across all 5 callers + cells->Use32BitStorage() | grid.jl,drop.jl,90_c_api.inc,10_geometry.inc | clean DLL build; ~13GB->~9GB | ~3k |
 | 22:36 | Session end: 12 writes across 4 files (grid.jl, 90_c_api.inc, 10_geometry.inc, drop.jl) | 5 reads | ~35418 tok |
 | 22:53 | Session end: 12 writes across 4 files (grid.jl, 90_c_api.inc, 10_geometry.inc, drop.jl) | 5 reads | ~35418 tok |
+| 23:05 | Session end: 12 writes across 4 files (grid.jl, 90_c_api.inc, 10_geometry.inc, drop.jl) | 5 reads | ~35418 tok |
+| 23:10 | Edited deps/src/00_includes.inc | 2→6 lines | ~44 |
+| 23:10 | Edited deps/src/10_geometry.inc | added 4 condition(s) | ~500 |
+| 23:11 | Edited deps/src/70_window.inc | added 2 condition(s) | ~507 |
+| 23:11 | Edited deps/src/70_window.inc | inline fix | ~9 |
+| 23:11 | Edited deps/src/70_window.inc | 1→2 lines | ~57 |
+| 23:12 | Edited deps/src/90_c_api.inc | added 1 condition(s) | ~256 |
+| 23:20 | Session end: 18 writes across 6 files (grid.jl, 90_c_api.inc, 10_geometry.inc, drop.jl, 00_includes.inc) | 6 reads | ~38228 tok |
+| 23:49 | Session end: 18 writes across 6 files (grid.jl, 90_c_api.inc, 10_geometry.inc, drop.jl, 00_includes.inc) | 6 reads | ~38705 tok |
+| 23:52 | Edited deps/src/10_geometry.inc | added 2 condition(s) | ~513 |
+| 23:52 | Edited deps/src/70_window.inc | added 1 condition(s) | ~218 |
+| 23:52 | Edited deps/src/70_window.inc | added 1 condition(s) | ~51 |
+| 23:54 | Edited deps/src/10_geometry.inc | added 1 condition(s) | ~165 |
+| 23:54 | Edited deps/src/10_geometry.inc | added 1 condition(s) | ~66 |
+| 23:54 | Edited deps/src/10_geometry.inc | added 1 condition(s) | ~52 |
+| 23:54 | Edited deps/src/90_c_api.inc | inline fix | ~31 |
+| 23:55 | Session end: 25 writes across 6 files (grid.jl, 90_c_api.inc, 10_geometry.inc, drop.jl, 00_includes.inc) | 6 reads | ~40018 tok |
+| 00:07 | Session end: 25 writes across 6 files (grid.jl, 90_c_api.inc, 10_geometry.inc, drop.jl, 00_includes.inc) | 6 reads | ~40018 tok |
+| 00:08 | Session end: 25 writes across 6 files (grid.jl, 90_c_api.inc, 10_geometry.inc, drop.jl, 00_includes.inc) | 6 reads | ~40018 tok |
+| 00:09 | Session end: 25 writes across 6 files (grid.jl, 90_c_api.inc, 10_geometry.inc, drop.jl, 00_includes.inc) | 6 reads | ~40018 tok |
+| 00:11 | Session end: 25 writes across 6 files (grid.jl, 90_c_api.inc, 10_geometry.inc, drop.jl, 00_includes.inc) | 6 reads | ~40018 tok |
+| 00:23 | Session end: 25 writes across 6 files (grid.jl, 90_c_api.inc, 10_geometry.inc, drop.jl, 00_includes.inc) | 6 reads | ~40018 tok |

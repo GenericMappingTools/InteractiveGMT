@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-06-17T21:35:27.454Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-06-17T22:54:29.825Z
 > Files: 44 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
@@ -32,14 +32,14 @@
 
 ## deps/src/
 
-- `00_includes.inc` — gmtvtk — self-contained Qt6 + VTK 9.6 3-D viewer for GMT data (native QMenu UI + (~1046 tok)
-- `10_geometry.inc` — Declares ProfilePanel (~10705 tok)
+- `00_includes.inc` — gmtvtk — self-contained Qt6 + VTK 9.6 3-D viewer for GMT data (native QMenu UI + (~1076 tok)
+- `10_geometry.inc` — Declares ProfilePanel (~11407 tok)
 - `20_gizmo.inc` — ============================================================================ (~8889 tok)
 - `30_app.inc` — (Julia) pumps the loop via gmtvtk_process_events so the REPL stays interactive. (~3019 tok)
 - `40_shading.inc` — int: overlay (~1566 tok)
 - `50_scene.inc` — Declares QString (~5596 tok)
-- `70_window.inc` — Declares double (~12261 tok)
-- `90_c_api.inc` — ============================================================================ (~7540 tok)
+- `70_window.inc` — Declares double (~12581 tok)
+- `90_c_api.inc` — ============================================================================ (~7703 tok)
 
 ## deps/src/ (the one TU + its ordered .inc fragments)
 
