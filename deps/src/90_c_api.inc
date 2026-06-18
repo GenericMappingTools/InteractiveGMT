@@ -54,11 +54,26 @@ GMTVTK_API void* gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 								 const double *cz, const double *crgb, int ncolor, const unsigned char *img,
 								 int iw, int ih, int ibands, int edges, int triangulate, int image_only, const char* title) {
 	double zmin = 0.0, zmax = 1.0;
-	auto pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, triangulate != 0, /*wantTC=*/img != nullptr);
+	// Plain CPT grid (no drape, not a bare image) -> TILED render: no giant single polydata; the
+	// tile actors are built in buildAndShow from z. Drape / image_only keep the single-polydata
+	// path. Tiled path still needs the global z range (LUT + Z axis) -> one cheap scan, no alloc.
+	const bool tiled = (img == nullptr) && (image_only == 0);
+	vtkSmartPointer<vtkPolyData> pd;
+	if (tiled) {
+		zmin = 1e30; zmax = -1e30;
+		for (vtkIdType k = 0, ntot = (vtkIdType)nx * ny; k < ntot; ++k) {
+			const float zz = z[k];
+			if (!std::isnan(zz)) { if (zz < zmin) zmin = zz; if (zz > zmax) zmax = zz; }
+		}
+		if (zmin > zmax) { zmin = 0.0; zmax = 1.0; }
+	} else {
+		pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, triangulate != 0, /*wantTC=*/img != nullptr);
+	}
 	double xfac, zfac, ve0;
 	computeScales(geographic, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
 	Scene* s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, cz, crgb, ncolor, img, iw, ih, ibands, edges, false, geographic, title,
-	                        /*objname=*/nullptr, /*imageOnly=*/image_only != 0);
+	                        /*objname=*/nullptr, /*imageOnly=*/image_only != 0,
+	                        /*gz=*/tiled ? z : nullptr, /*gnx=*/nx, /*gny=*/ny);
 	if (s && !image_only) {                            // keep full-res z for hover + profile sampling
 		s->gridZ.assign(z, z + (size_t)nx * ny);       // column-major z[i*ny + j], matches sampleZ
 		s->gnx = nx; s->gny = ny;

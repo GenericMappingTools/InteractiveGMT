@@ -9,7 +9,9 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 int geographic,                                        // !=0 -> x,y are lon,lat (axis titles "lon"/"lat")
 						 const char *title,
 						 const char *objname = nullptr,    // Scene Objects label for the surface ("" -> "Surface")
-						 bool imageOnly = false) {          // bare image: no surface row; readout shows colour
+						 bool imageOnly = false,            // bare image: no surface row; readout shows colour
+						 const float *gz = nullptr,         // non-null -> TILED plain-grid render (pd ignored)
+						 int gnx = 0, int gny = 0) {        // grid dims for the tiled path
 	ensureApp();
 
 	Scene *s = new Scene();
@@ -88,11 +90,51 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		lut = t;
 	}
 
+	// ===== surface: tiled grid (gz) OR single actor (pd) =====================
+	// Declared out here so the drape block below (single-actor path) can share them.
+	bool hasNormals = false;
+	vtkNew<vtkPolyDataNormals> norms;        // polydata-surface path only
+	if (gz && gnx > 1 && gny > 1) {
+		// Tiled plain grid: split into T-node tile actors held by one vtkAssembly. No giant single
+		// polydata, no vtkPolyDataNormals pass (each tile bakes its own normals). ONE transform on
+		// the group drives base scale + VE. P1 = all tiles full-res (no cracks, no skirts needed).
+		s->surfGroup = vtkSmartPointer<vtkAssembly>::New();
+		const int T = 512;                                   // tile node span (shared edge w/ neighbour)
+		const double dxt = (gnx > 1) ? (x1 - x0) / (gnx - 1) : 0.0;
+		const double dyt = (gny > 1) ? (y1 - y0) / (gny - 1) : 0.0;
+		for (int j0 = 0; j0 < gny - 1; j0 += T) {
+			const int j1 = std::min(j0 + T, gny - 1);
+			for (int i0 = 0; i0 < gnx - 1; i0 += T) {
+				const int i1 = std::min(i0 + T, gnx - 1);
+				auto tpd = makeGridTile(gz, gnx, gny, i0, i1, j0, j1, x0, dxt, y0, dyt);
+				vtkNew<vtkPolyDataMapper> tmap;
+				tmap->SetInputData(tpd);
+				tmap->SetLookupTable(lut);
+				tmap->SetScalarRange(s->zmin, s->zmax);
+				if (ctfRange) tmap->UseLookupTableScalarRangeOn();
+				tmap->ScalarVisibilityOn();
+				tmap->InterpolateScalarsBeforeMappingOn();
+				auto a = vtkSmartPointer<vtkActor>::New();
+				a->SetMapper(tmap);
+				a->GetProperty()->SetInterpolationToPBR();
+				a->GetProperty()->SetMetallic(0.0);
+				a->GetProperty()->SetRoughness(0.45);
+				a->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12);
+				a->GetProperty()->SetLineWidth(1.0);
+				a->GetProperty()->SetEdgeVisibility(edges);
+				s->surfGroup->AddPart(a);
+				s->tiles.push_back(a);
+			}
+		}
+		s->surf = s->tiles.empty() ? vtkSmartPointer<vtkActor>::New() : s->tiles.front();
+		s->surfGroup->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		s->ren->AddActor(s->surfGroup);
+	}
+	else {
 	// Smooth shading needs per-vertex normals. A grid polydata arrives with them already baked
 	// in (makeGridFromArray) -> feed it straight to the mapper, NO vtkPolyDataNormals second
 	// copy. An FV/other surface with none still gets them generated here. Point clouds = unlit.
-	const bool hasNormals = pd && pd->GetPointData() && pd->GetPointData()->GetNormals() != nullptr;
-	vtkNew<vtkPolyDataNormals> norms;
+	hasNormals = pd && pd->GetPointData() && pd->GetPointData()->GetNormals() != nullptr;
 	if (!pointCloud && !hasNormals) {
 		norms->SetInputData(pd);
 		norms->SetFeatureAngle(90.0);
@@ -130,6 +172,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	s->surf->GetProperty()->SetEdgeVisibility(edges);         // initial mesh state (default off)
 	s->surf->SetScale(s->xfac, 1.0, s->zfac * s->ve);   // base aspect + unit + initial VE
 	s->ren->AddActor(s->surf);
+	}
 
 	// --- optional image drape -----------------------------------------------
 	// A caller-supplied RGB[A] image is textured over the surface (via the tcoords

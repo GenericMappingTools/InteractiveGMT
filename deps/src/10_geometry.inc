@@ -358,6 +358,75 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 	return pd;
 }
 
+// Build ONE tile of a grid: the inclusive node block [i0..i1] x [j0..j1] of the full column-major
+// z[i*ny + j], as a small quad polydata with baked per-vertex normals (z-scalar for CPT colour).
+// Adjacent tiles SHARE their boundary row/col (i1 == next i0) so the seam has no gap. Normals are
+// computed from the GLOBAL neighbours, so a border vertex's normal matches the neighbouring tile
+// (no lighting seam). No tcoords (the tiled path is the plain CPT grid, never draped). Local point
+// id = (j-j0)*tw + (i-i0). The basis for the tiled-LOD render (P1/P2).
+static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
+												 int i0, int i1, int j0, int j1,
+												 double x0, double dx, double y0, double dy) {
+	const int tw = i1 - i0 + 1, th = j1 - j0 + 1;
+	vtkNew<vtkPoints>     pts;  pts->SetDataTypeToFloat(); pts->Allocate(tw * th);
+	vtkNew<vtkFloatArray> zval; zval->SetName("z");        zval->Allocate(tw * th);
+	vtkNew<vtkFloatArray> nrm;  nrm->SetNumberOfComponents(3); nrm->SetName("Normals");
+	nrm->SetNumberOfTuples((vtkIdType)tw * th);
+
+	for (int j = j0; j <= j1; ++j) {
+		const double y = y0 + j * dy;
+		for (int i = i0; i <= i1; ++i) {
+			const double x = x0 + i * dx;
+			const float zz = z[(vtkIdType)i * ny + j];
+			pts->InsertNextPoint(x, y, zz);
+			zval->InsertNextValue(zz);
+			// normal from GLOBAL central differences (matches the neighbour tile at borders)
+			float nxv = 0.f, nyv = 0.f, nzv = 1.f;
+			if (!std::isnan(zz)) {
+				const int il = i > 0 ? i-1 : i,  ir = i < nx-1 ? i+1 : i;
+				const int jd = j > 0 ? j-1 : j,  ju = j < ny-1 ? j+1 : j;
+				const float zl = z[(vtkIdType)il*ny + j],  zr = z[(vtkIdType)ir*ny + j];
+				const float zb = z[(vtkIdType)i*ny + jd],  zt = z[(vtkIdType)i*ny + ju];
+				if (!std::isnan(zl) && !std::isnan(zr) && !std::isnan(zb) && !std::isnan(zt)) {
+					const double ddx = (ir - il) * dx, ddy = (ju - jd) * dy;
+					const double gx = ddx != 0.0 ? (zr - zl) / ddx : 0.0;
+					const double gy = ddy != 0.0 ? (zt - zb) / ddy : 0.0;
+					double vx = -gx, vy = -gy, vz = 1.0;
+					const double inv = 1.0 / std::sqrt(vx*vx + vy*vy + vz*vz);
+					nxv = (float)(vx*inv); nyv = (float)(vy*inv); nzv = (float)(vz*inv);
+				}
+			}
+			const vtkIdType lid = (vtkIdType)(j - j0) * tw + (i - i0);
+			nrm->SetTypedComponent(lid, 0, nxv);
+			nrm->SetTypedComponent(lid, 1, nyv);
+			nrm->SetTypedComponent(lid, 2, nzv);
+		}
+	}
+
+	vtkNew<vtkCellArray> cells;
+	if ((double)tw * th < 2.0e9) cells->Use32BitStorage();
+	for (int j = 0; j < th - 1; ++j) {
+		for (int i = 0; i < tw - 1; ++i) {
+			const vtkIdType a =  (vtkIdType)j      * tw + i;
+			const vtkIdType b =  (vtkIdType)j      * tw + i + 1;
+			const vtkIdType c =  (vtkIdType)(j + 1)* tw + i + 1;
+			const vtkIdType d =  (vtkIdType)(j + 1)* tw + i;
+			if (std::isnan(zval->GetValue(a)) || std::isnan(zval->GetValue(b)) ||
+				std::isnan(zval->GetValue(c)) || std::isnan(zval->GetValue(d)))
+				continue;
+			const vtkIdType quad[4] = { a, b, c, d };
+			cells->InsertNextCell(4, quad);
+		}
+	}
+
+	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
+	pd->SetPoints(pts);
+	pd->SetPolys(cells);
+	pd->GetPointData()->SetScalars(zval);
+	pd->GetPointData()->SetNormals(nrm);
+	return pd;
+}
+
 // Build a point cloud as vtkPolyData: N vertices (one Verts cell each) coloured by their
 // z scalar. A Verts-only polydata renders as points; the rubber-band selector indexes
 // these point ids. Mirrors GMTF3D view_points' EMPTY-sided mesh (a pure point cloud).
