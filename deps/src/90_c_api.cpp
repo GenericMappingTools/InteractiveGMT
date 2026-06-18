@@ -39,9 +39,25 @@ static void computeScales(int geographic, double x0, double x1, double y0, doubl
 	}
 	const double Hm = std::max(widthM, heightM);
 	const double zspanM = zmax - zmin;
-	ve0 = 1.0;
-	if (zspanM > 0.0 && Hm > 0.0 && zspanM < 0.10 * Hm)
-		ve0 = 0.10 * Hm / zspanM;       // bump relief up to 10% of the footprint
+	// Auto aspect fit: keep the relief between 10% and 100% of the footprint so the
+	// surface is neither a flat sheet nor a vertical needle.
+	double fit = 1.0;
+	if (zspanM > 0.0 && Hm > 0.0) {
+		if (zspanM < 0.10 * Hm)      fit = 0.10 * Hm / zspanM;   // too flat -> raise
+		else if (zspanM > Hm)        fit = Hm / zspanM;          // too tall -> shrink
+	}
+	if (geographic) {
+		// Geographic z is physical metres: VE 1 must mean true 1:1, so the fit is the
+		// DISPLAYED starting exaggeration (the gizmo factor), zfac stays the unit conversion.
+		ve0 = fit;
+	}
+	else {
+		// Cartesian z is an arbitrary unit: "true scale" is meaningless. Fold the fit into
+		// the base zfac and start the displayed VE at 1, so the gizmo / VE dialog operate
+		// in their comfortable 0.01..1e4 range around 1 instead of around a tiny ve0 that
+		// the 0.01 VE floor would snap back up into a needle.
+		zfac = fit; ve0 = 1.0;
+	}
 }
 
 // View a GMT.jl grid (non-blocking; pump gmtvtk_process_events to run the loop).

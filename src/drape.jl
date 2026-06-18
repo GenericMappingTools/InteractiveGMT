@@ -2,10 +2,36 @@
 # buffer (south-first, west->east) and bilinearly sample a grid so (x,y)-only overlays drape
 # onto the relief.
 
+# A `pix(lat, lon, b)` accessor that reads band `b` of the (lat,lon) pixel from a GMTimage's raw
+# array `S`, honouring the I.layout INTERLEAVE char (3rd: 'B' band-planar, 'P' pixel-interleaved):
+#   - Band-planar (or default): the array is genuinely [lon,lat,band] / [lat,lon,band] -> index it.
+#   - Pixel-interleaved ('...P'): gmtread wraps the BIP buffer (R,G,B,R,G,B…, band fastest) into a
+#     nominal (n1,n2,nb) Array WITHOUT permuting, so [.,.,b] reads scrambled channels. Recover the
+#     true pixels by viewing the band-fastest memory: reshape(S, nb, nlon, nlat)[b,lon,lat]
+#     (rowmajor) / reshape(S, nb, nlat, nlon)[b,lat,lon] (colmajor). The row order (lay[1] T/B) and
+#     the nlon/nlat dims are unchanged — only the channel indexing differs.
+function _pixaccess(S, lay, d3::Bool, nb::Int, rowmajor::Bool, nlon::Int, nlat::Int)
+	pixinter = d3 && length(lay) >= 3 && lay[3] == 'P'
+	if pixinter
+		P = rowmajor ? reshape(S, nb, nlon, nlat) : reshape(S, nb, nlat, nlon)
+		return rowmajor ? ((lat, lon, b) -> @inbounds P[b, lon, lat]) : ((lat, lon, b) -> @inbounds P[b, lat, lon])
+	end
+	return d3 ? (rowmajor ? ((lat, lon, b) -> @inbounds S[lon, lat, b]) : ((lat, lon, b) -> @inbounds S[lat, lon, b])) :
+				(rowmajor ? ((lat, lon, b) -> @inbounds S[lon, lat]) : ((lat, lon, b) -> @inbounds S[lat, lon]))
+end
+
+# Does the array's first lat index hold the NORTH row? The layout 1st char (T/B) is the nominal
+# answer ('T' -> north-first), BUT gmtread tags disk-read RGB images "BRPa" while GMT's get_image
+# hands back the raw GDAL buffer UN-flipped, i.e. actually TOP-first (row 1 = north) — verified by
+# matching gmtread row 1 against gdalread (TRBa, genuinely top-first). So the 'B' on a
+# pixel-interleaved image is a mislabel; treat those as north-first. Band-planar images keep the
+# nominal T/B rule (the previously-working path, left untouched).
+_north_first(lay, pixinter::Bool) = pixinter ? true : (isempty(lay) || lay[1] != 'B')
+
 # Pack a GMTimage into a VTK texture buffer, honouring I.layout (mirrors GMTF3D's img_to_texbuf).
-# layout char 2 = 'R' -> array is [lon,lat] (row-major); char 1 != 'B' -> first lat index is
-# north. VTK texture origin is bottom-left, so output row 0 = south, west->east. Grey/2-band
-# expand to RGB. Returns (buf, nlon, nlat, comps).
+# layout char 2 = 'R' -> array is [lon,lat] (row-major); see _north_first for the lat direction.
+# VTK texture origin is bottom-left, so output row 0 = south, west->east. Grey/2-band expand to
+# RGB. Returns (buf, nlon, nlat, comps).
 function _drape_buf(I)
 	S   = I.image
 	d3  = ndims(S) == 3
@@ -13,10 +39,10 @@ function _drape_buf(I)
 	comps = nb >= 4 ? 4 : 3
 	lay = I.layout
 	rowmajor    = length(lay) >= 2 && lay[2] == 'R'   # 'R' -> array is [lon, lat]
-	north_first = isempty(lay) || lay[1] != 'B'       # 'T' (default) -> lat index 1 is north
+	pixinter    = d3 && length(lay) >= 3 && lay[3] == 'P'
+	north_first = _north_first(lay, pixinter)
 	nlon, nlat  = rowmajor ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
-	pix(lat, lon, b) = d3 ? (rowmajor ? S[lon, lat, b] : S[lat, lon, b]) :
-							(rowmajor ? S[lon, lat]    : S[lat, lon])
+	pix = _pixaccess(S, lay, d3, nb, rowmajor, nlon, nlat)
 	buf = Vector{UInt8}(undef, nlat * nlon * comps)
 	k = 1
 	@inbounds for orow in 0:nlat-1               # texture row 0 = SOUTH
@@ -43,10 +69,10 @@ function _drape_to_bbox(I, gx0, gx1, gy0, gy1; outside::Symbol=:shademesh, fill=
 	nb = d3 ? size(S, 3) : 1
 	lay = I.layout
 	rowmajor    = length(lay) >= 2 && lay[2] == 'R'   # 'R' -> array is [lon, lat]
-	north_first = isempty(lay) || lay[1] != 'B'       # 'T' (default) -> lat index 1 is north
+	pixinter    = d3 && length(lay) >= 3 && lay[3] == 'P'
+	north_first = _north_first(lay, pixinter)
 	nlon_i, nlat_i = rowmajor ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
-	pix(lat, lon, b) = d3 ? (rowmajor ? S[lon, lat, b] : S[lat, lon, b]) :
-							(rowmajor ? S[lon, lat]    : S[lat, lon])
+	pix = _pixaccess(S, lay, d3, nb, rowmajor, nlon_i, nlat_i)
 	ir = I.range
 	ix0, ix1, iy0, iy1 = ir[1], ir[2], ir[3], ir[4]
 	dxi = (ix1 - ix0) / nlon_i                         # image increment
@@ -59,7 +85,7 @@ function _drape_to_bbox(I, gx0, gx1, gy0, gy1; outside::Symbol=:shademesh, fill=
 	#   :transparent       -> leave alpha 0 (CPT base shows through; original behaviour)
 	#   :shade / :shademesh -> opaque `fill` grey (a flat shaded sheet). :shademesh adds
 	#                          mesh edges viewer-side (the `edges` flag in view_grid).
-	if outside !== :transparent
+	if (outside !== :transparent)
 		fr, fg, fb = UInt8(fill[1]), UInt8(fill[2]), UInt8(fill[3])
 		@inbounds for p in 0:(nlat*nlon - 1)
 			buf[p*comps+1] = fr; buf[p*comps+2] = fg; buf[p*comps+3] = fb; buf[p*comps+4] = 0xff
@@ -68,7 +94,7 @@ function _drape_to_bbox(I, gx0, gx1, gy0, gy1; outside::Symbol=:shademesh, fill=
 	cdx = (gx1 - gx0) / nlon
 	cdy = (gy1 - gy0) / nlat
 	k = 1
-	@inbounds for orow in 0:nlat-1                      # row 0 = SOUTH
+	@inbounds for orow in 0:nlat-1                     # row 0 = SOUTH
 		yc  = gy0 + (orow + 0.5) * cdy
 		inY = (yc >= iy0) && (yc <= iy1)
 		for col in 1:nlon                              # west -> east

@@ -101,6 +101,7 @@ static void profileClear(Scene* s) {
 	s->profPD = nullptr; s->profStripe = nullptr; s->profStyle = 0;
 	s->profS.clear(); s->profZ.clear();
 	if (s->prof) s->prof->setProfile({}, {});
+	rebuildSceneObjects(s);   // drop the Profile row from the Scene Objects list
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
@@ -200,8 +201,18 @@ static void profilerDrag(Scene* s, int dx, int dy) {
 }
 
 static void profilerEnd(Scene* s) {
-	if (s) s->profiling = false;
+	if (!s) return;
+	s->profiling = false;
+	rebuildSceneObjects(s);   // a profile line now exists -> show its row in the Scene Objects list
 }
+
+// Polygon tool mouse handlers (defined in 85_polygon.cpp, #included later). GLView drives them
+// directly because VTK's adapter doesn't deliver Qt double-clicks as a second LeftButtonPress.
+// Each returns true when it consumed the event (the widget then skips VTK's base handler).
+static bool polygonHandlePress(Scene* s, int button, int x, int y);
+static bool polygonHandleDblClick(Scene* s, int x, int y);
+static bool polygonHandleMove(Scene* s, int x, int y);
+static bool polygonHandleRelease(Scene* s);
 
 class GLView : public QVTKOpenGLNativeWidget {
 public:
@@ -262,7 +273,22 @@ protected:
 			renderWindow()->SetDesiredUpdateRate(15.0);   // LOD decimation while panning
 			return;                     // consume; keep VTK out of the middle button
 		}
+		// Polygon tool: left adds/edits vertices, right removes the last while drawing.
+		if (s && (e->button() == Qt::LeftButton || e->button() == Qt::RightButton)) {
+			double dx, dy; devPx(e->position().toPoint(), dx, dy);
+			if (polygonHandlePress(s, e->button() == Qt::LeftButton ? 0 : 1, (int)dx, (int)dy))
+				return;                 // consumed -> keep VTK (gizmo / dolly) out of it
+		}
 		QVTKOpenGLNativeWidget::mousePressEvent(e);
+	}
+	void mouseDoubleClickEvent(QMouseEvent* e) override {
+		// Double-left-click closes the polygon (draw mode) or enters/leaves vertex-edit mode.
+		if (s && e->button() == Qt::LeftButton) {
+			double dx, dy; devPx(e->position().toPoint(), dx, dy);
+			if (polygonHandleDblClick(s, (int)dx, (int)dy))
+				return;
+		}
+		QVTKOpenGLNativeWidget::mouseDoubleClickEvent(e);
 	}
 	void mouseMoveEvent(QMouseEvent* e) override {
 		if (midDown) {
@@ -270,6 +296,12 @@ protected:
 			if ((cp - midPress).manhattanLength() > 3) midMoved = true;
 			if (midMoved) { panBy(midLast, cp); midLast = cp; }
 			return;
+		}
+		// Polygon tool: extend the draw preview / drag a grabbed vertex (consumes only when active).
+		if (s) {
+			double dx, dy; devPx(e->position().toPoint(), dx, dy);
+			if (polygonHandleMove(s, (int)dx, (int)dy))
+				return;
 		}
 		QVTKOpenGLNativeWidget::mouseMoveEvent(e);
 	}
@@ -281,6 +313,8 @@ protected:
 			renderWindow()->Render();
 			return;
 		}
+		if (s && e->button() == Qt::LeftButton && polygonHandleRelease(s))
+			return;                     // ended a vertex drag
 		QVTKOpenGLNativeWidget::mouseReleaseEvent(e);
 	}
 };

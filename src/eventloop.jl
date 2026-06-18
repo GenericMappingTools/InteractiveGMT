@@ -43,6 +43,34 @@ function stereo!(fig, on::Union{Bool,Integer}=-1)
 end
 
 """
+	_gmtwrite_line(tmp, out, ispoly) -> nothing
+
+Save a line/polygon the C++ viewer wrote as a temp multisegment text file (`tmp`) into `out`,
+in whatever vector format the **extension** implies (`.gpkg`/`.shp`/`.kml`/… via `GMT.gmtwrite`).
+`ispoly` tags the geometry as polygon (else line). Invoked from the viewer's "Save line/polygon…"
+when an OGR extension is chosen (C++ `g_juliaEval` → here). Deletes `tmp` when done.
+"""
+function _gmtwrite_line(tmp::AbstractString, out::AbstractString, ispoly::Bool)
+	try
+		D = GMT.gmtread(String(tmp))
+		geom = ispoly ? 3 : 2                         # wkbPolygon : wkbLineString
+		if D isa AbstractVector
+			for d in D
+				hasproperty(d, :geom) && (d.geom = geom)
+			end
+		elseif hasproperty(D, :geom)
+			D.geom = geom
+		end
+		GMT.gmtwrite(String(out), D)
+	catch err
+		@warn "gmtwrite failed to save the line/polygon" out exception=err
+	finally
+		try; rm(String(tmp); force=true); catch; end
+	end
+	return nothing
+end
+
+"""
 	wait_windows()
 
 Block (yielding, so the Qt pump keeps running) until every viewer window is closed. Useful at

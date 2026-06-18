@@ -20,7 +20,7 @@ axes, colour bar, shading, vertical curtains, in-window Julia console and data v
 ```
 src/        Julia package (the bridge): one file per concern (grid, points, fv, curtain, …)
 deps/       the C/C++ viewer
-  src/      gmtvtk.cpp (umbrella TU) + 00_includes…90_c_api .inc fragments
+  src/      gmtvtk.cpp (umbrella TU) + 00_includes…90_c_api .cpp fragments (#included, not compiled separately)
   CMakeLists.txt, build.bat, run.bat
   assets/   bundled demo images (seismic profile for the curtain example)
 examples/   runnable demos (curtain, drape, fv, solids, f3dview, shademesh)

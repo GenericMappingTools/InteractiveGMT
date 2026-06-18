@@ -17,6 +17,11 @@
 #include <QInputDialog>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QPushButton>
 #include <QSurfaceFormat>
 #include <QString>
 #include <QEvent>
@@ -37,6 +42,8 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
+#include <QFontMetrics>
+#include <functional>
 #include <QFile>
 #include <QTextStream>
 #include <QPlainTextEdit>
@@ -50,6 +57,13 @@
 #include <QToolButton>
 #include <QToolBar>
 #include <QStyle>
+#include <QPixmap>
+#include <QIcon>
+#include <QPolygonF>
+#include <QElapsedTimer>
+#include <QDir>
+#include <QFileInfo>
+#include <QDateTime>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QMimeData>
@@ -139,6 +153,7 @@
 #include <cmath>
 #include <limits>
 #include <vector>
+#include <array>
 #include <set>
 #include <unordered_set>
 

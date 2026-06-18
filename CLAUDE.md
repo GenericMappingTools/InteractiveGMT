@@ -18,10 +18,13 @@ Version `0.1.0`, unregistered. Migrated 2026-06-16 from the GMTF3D `qtvtk_proto`
 - **Two halves.** `deps/` is the C/C++ viewer (a shared lib `gmtvtk.dll` + a tiny C API);
   `src/` is the Julia bridge that `dlopen`s it. They talk only through the `gmtvtk_*` C API.
 - **The C++ is ONE translation unit.** `deps/src/gmtvtk.cpp` `#include`s the ordered fragments
-  `00_includes.inc … 90_c_api.inc`. They are NOT separately compiled — every `static` helper
-  and the `Scene`/`Gizmo` structs keep internal linkage exactly as in the old single `main.cpp`.
-  The host **C API lives in `90_c_api.inc`** (the `extern "C" gmtvtk_*` exports + the demo
-  `main()`). Edit a fragment → rebuild the one TU with `deps/build.bat`.
+  `00_includes.cpp … 90_c_api.cpp`. They carry the `.cpp` extension only so IDEs give them C++
+  language support — they are #included textually and are NOT in the CMake source list, so NOT
+  separately compiled. Never add a fragment to `GMTVTK_SRC` (its file-static helpers would
+  multiply-define). Every `static` helper and the `Scene`/`Gizmo` structs keep internal linkage
+  exactly as in the old single `main.cpp`. The host **C API lives in `90_c_api.cpp`** (the
+  `extern "C" gmtvtk_*` exports + the demo `main()`). Edit a fragment → rebuild the one TU with
+  `deps/build.bat`.
 - **Build is Windows-only.** `deps/build.bat` (Ninja + vcvars64) → `deps/build/gmtvtk.dll`
   (host library) + `deps/build/gmtvtk_demo.exe` (standalone peaks demo). Toolchain paths
   (VTK/Qt/TBB) are hard-coded in `deps/CMakeLists.txt` + `deps/build.bat`.

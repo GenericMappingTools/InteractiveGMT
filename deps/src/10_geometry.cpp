@@ -1,5 +1,6 @@
 struct Gizmo;     // Fledermaus-style scale/tilt/azimuth handle (defined below)
 struct QuadNode;  // tiled-LOD pyramid node (defined below Scene)
+struct Scene;     // the per-window scene (defined below; forward-declared for the line-tool decls)
 
 // A caller-supplied GMTdataset drawn over the surface as lines or points. Each carries
 // its own vtkActor so the right-click context menu can retune its colour / line style /
@@ -26,6 +27,31 @@ struct ExtraObj {
 	vtkSmartPointer<vtkActor> drape;
 	std::string name;                        // label shown in the Scene Objects panel (file name)
 };
+
+// A user-drawn polygon (closed polyline) from the toolbar polygon tool. Vertices are kept in
+// TRUE coords; the line actor is hung in the surface's scaled space (xfac,1,zfac*ve), so it
+// tracks VE like the other overlays. Built by 85_polygon.cpp.
+struct Polygon {
+	std::vector<std::array<double,3>> v;     // vertices, TRUE coords; closed ring (first == last)
+	vtkSmartPointer<vtkActor>    line;       // the closed polyline actor
+	vtkSmartPointer<vtkPolyData> linePD;     // its geometry (rebuilt as vertices move)
+	std::string name;                        // label shown in the Scene Objects panel ("polygon N")
+};
+
+// A handle to one line-like scene object for the shared Line Properties tool (55_lineprops.cpp).
+// `kind` selects how style (solid/dashed/dotted) is applied (each line type stipples differently);
+// `actor` is the renderable. Reachable by right-click on the line OR on its Scene Objects row.
+enum LineKind { LK_Profile, LK_Overlay, LK_Polygon };
+struct LineRef {
+	LineKind  kind;
+	vtkActor* actor = nullptr;
+};
+static void showLineProperties(Scene* s, const LineRef& lr);                 // the properties dialog
+static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name, const QPoint& gp);
+static void lineApplyStyle(Scene* s, const LineRef& lr, int style);
+static int  lineCurrentStyle(Scene* s, const LineRef& lr);
+static void polygonDelete(Scene* s, vtkActor* lineActor);                    // remove a finished polygon
+static int  polyHitPolygon(Scene* s, int x, int y, double tol);             // polygon under cursor? (85)
 
 // ---- scene we hang onto for the callbacks / menu actions --------------------
 struct Scene {
@@ -162,6 +188,25 @@ struct Scene {
 	bool   profiling = false;
 	double track0[2] = {0, 0};                         // press point in TRUE (x,y)
 	std::vector<double> profS, profZ;                  // last profile (along-track distance, elevation)
+
+	// --- polygon draw / edit tool (toolbar polygon button) ------------------
+	// Draw mode (polyMode, toolbar toggle on): left-click adds a vertex, right-click removes the
+	// last, double-left-click closes the polygon. Idle (polyMode off): double-click ON a finished
+	// polygon enters edit mode (polyEdit) — square handles at the vertices, click-drag moves one.
+	std::vector<Polygon> polys;                        // finished polygons
+	bool   polyMode    = false;                        // draw-mode button toggled on
+	bool   polyDrawing = false;                        // mid-building the current polygon
+	std::vector<std::array<double,3>> polyCur;         // in-progress vertices (TRUE coords)
+	vtkSmartPointer<vtkActor>    polyPreview;          // rubber preview: placed verts + segment to cursor
+	vtkSmartPointer<vtkPolyData> polyPreviewPD;
+	int    polyEdit     = -1;                          // index into polys being edited (-1 = none)
+	int    polyDragVert = -1;                          // vertex index being click-dragged (-1 = none)
+	vtkSmartPointer<vtkActor>    polyHandles;          // square vertex handles for the edited polygon
+	vtkSmartPointer<vtkPolyData> polyHandlePD;
+	qint64 polyLastClickMs = -10000;                   // last left-press time (double-click detect)
+	int    polyLastClickX = 0, polyLastClickY = 0;     // last left-press position (px)
+	vtkSmartPointer<vtkCallbackCommand> polyCmd;       // mouse observers (priority above the gizmo)
+	QAction* polyAct = nullptr;                         // toolbar toggle action (checkable)
 };
 
 // --- surface accessors: one actor (cloud/FV/drape/image) or a tiled grid -----------------
@@ -793,6 +838,10 @@ static void applyVE(Scene* s) {
 		if (cu.actor) cu.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
 	if (s->profLine) s->profLine->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // profile drape tracks the base
 	if (s->rbHL)     s->rbHL->SetScale(s->xfac, 1.0, s->zfac * s->ve);      // selection highlight tracks the cloud
+	for (auto& pg : s->polys)                                               // user polygons hang in the scaled space
+		if (pg.line) pg.line->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview
+	if (s->polyHandles) s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // edit-mode vertex handles
 	double b[6]; surfGetBounds(s, b);            // bounds already include the scale
 	// Flat map (VE collapsed to 0 -> zero Z extent): vtkCubeAxesActor computes EACH axis's
 	// label/gridline count even for hidden axes, so a zero Z range gives range/step = 0/0 ->
@@ -955,13 +1004,63 @@ static void onMouseMove(vtkObject*, unsigned long, void* clientData, void* /*cd*
 	// GPU z-buffer pick: read the depth under the cursor and unproject it. O(1) regardless of grid
 	// size — no software cell traversal — so the readout never stalls, needs no cell locator, and
 	// can't OOM on a 200 MB grid (the old vtkCellPicker path did all three). One-pixel glReadPixels.
-	const float zb = s->widget->renderWindow()->GetZbufferDataAtPoint(mx, my);
-	if (zb > 0.0f && zb < 1.0f) {                            // <1 = something drawn here (not far plane)
-		s->ren->SetDisplayPoint((double)mx, (double)my, (double)zb);
-		s->ren->DisplayToWorld();
-		double w4[4]; for (int i = 0; i < 4; ++i) w4[i] = s->ren->GetWorldPoint()[i];
-		if (w4[3] != 0.0) { w4[0] /= w4[3]; w4[1] /= w4[3]; w4[2] /= w4[3]; }
-		const double w[3] = { w4[0], w4[1], w4[2] };
+	// Cursor -> world WITHOUT the GPU z-buffer: GetZbufferDataAtPoint returns 1.0 (far plane)
+	// through the QVTKOpenGLNativeWidget FBO, so the old depth-read never resolved a hit. Build
+	// this pixel's world ray by unprojecting the near (depth 0) and far (depth 1) planes — camera
+	// inverse only, no buffer read — then intersect it with the scene in SCALED world space:
+	//   - grid (gridZ): march the ray against the full-res heightfield (sampleZ), LOD-independent;
+	//   - bare image (imageOnly): hit the flat z=0 drape plane;
+	//   - FV mesh / point cloud: software ray-cast with the resident vtkCellPicker (bounded geom).
+	// Produces a scaled world point w[3] + hit flag; the readout below consumes it unchanged.
+	double w[3] = { 0.0, 0.0, 0.0 };
+	bool hit = false;
+	double nr[4], fr[4];
+	s->ren->SetDisplayPoint((double)mx, (double)my, 0.0); s->ren->DisplayToWorld();
+	for (int i = 0; i < 4; ++i) nr[i] = s->ren->GetWorldPoint()[i];
+	s->ren->SetDisplayPoint((double)mx, (double)my, 1.0); s->ren->DisplayToWorld();
+	for (int i = 0; i < 4; ++i) fr[i] = s->ren->GetWorldPoint()[i];
+	if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
+	if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
+	const double dirx = fr[0] - nr[0], diry = fr[1] - nr[1], dirz = fr[2] - nr[2];
+	const double zsc = s->zfac * s->ve;
+	const double gx  = (s->xfac != 0.0) ? s->xfac : 1.0;
+	if (!s->gridZ.empty()) {
+		// g(t) = Pz(t) - sampleZ(truex,truey)*zsc; first sign change along the ray = nearest
+		// surface crossing, then bisect. NaN (off-grid) segments are skipped.
+		auto eval = [&](double t, double& fval) -> bool {
+			const double X = nr[0] + t*dirx, Y = nr[1] + t*diry, Z = nr[2] + t*dirz;
+			const double h = sampleZ(s, X / gx, Y);
+			if (std::isnan(h)) return false;
+			fval = Z - h * zsc; return true;
+		};
+		const int NS = 512;
+		double pt = 0.0, pf = 0.0; bool have = false;
+		for (int k = 0; k <= NS && !hit; ++k) {
+			const double t = (double)k / NS; double fv;
+			if (!eval(t, fv)) { have = false; continue; }
+			if (have && ((pf <= 0.0 && fv >= 0.0) || (pf >= 0.0 && fv <= 0.0))) {
+				double a = pt, b = t, fa = pf;
+				for (int it = 0; it < 40; ++it) {
+					const double m = 0.5*(a+b); double fm;
+					if (!eval(m, fm)) break;
+					if ((fa <= 0.0 && fm <= 0.0) || (fa >= 0.0 && fm >= 0.0)) { a = m; fa = fm; } else b = m;
+				}
+				const double t0 = 0.5*(a+b);
+				w[0] = nr[0] + t0*dirx; w[1] = nr[1] + t0*diry; w[2] = nr[2] + t0*dirz; hit = true;
+			}
+			pt = t; pf = fv; have = true;
+		}
+	} else if (s->imageOnly) {
+		if (dirz != 0.0) {
+			const double t0 = -nr[2] / dirz;
+			if (t0 >= 0.0 && t0 <= 1.0) { w[0] = nr[0] + t0*dirx; w[1] = nr[1] + t0*diry; w[2] = 0.0; hit = true; }
+		}
+	} else if (s->picker) {
+		if (s->picker->Pick((double)mx, (double)my, 0.0, s->ren) && s->picker->GetCellId() >= 0) {
+			s->picker->GetPickPosition(w); hit = true;
+		}
+	}
+	if (hit) {
 		if (s->imageOnly) {
 			// Bare image: no elevation -> show the pixel COLOUR under the cursor instead of z.
 			// Read it straight from the framebuffer (the drape is unlit, so the pixel is the

@@ -25,9 +25,10 @@ find_package(VTK REQUIRED COMPONENTS
   InteractionStyle InteractionWidgets
   GUISupportQt)
 
-# The whole viewer is ONE translation unit: src/gmtvtk.cpp #includes the src/*.inc fragments
-# (00_includes, 10_geometry, ... 90_c_api). Only gmtvtk.cpp is compiled; the .inc files are
-# textual parts, so all the file-static helpers keep internal linkage just as in the old main.cpp.
+# The whole viewer is ONE translation unit: src/gmtvtk.cpp #includes the src/NN_*.cpp fragments
+# (00_includes, 10_geometry, ... 90_c_api). Only gmtvtk.cpp is in this source list; the fragments
+# are #included textually (NOT compiled separately — do not add them here, or their file-static
+# helpers would multiply-define), keeping internal linkage just as in the old main.cpp.
 set(GMTVTK_SRC src/gmtvtk.cpp)
 
 # Shared library — the Julia/host bridge (C API: gmtvtk_view_grid / gmtvtk_view_demo / ...).

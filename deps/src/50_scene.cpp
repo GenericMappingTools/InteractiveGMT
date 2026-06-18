@@ -15,7 +15,7 @@ static void rebuildSceneObjects(Scene* s) {
 	col->setContentsMargins(8, 8, 8, 8);
 	col->setSpacing(4);
 
-	auto addRow = [&](const QString& label, vtkProp3D* a) {   // vtkActor upcasts; surface row passes the tile assembly
+	auto addRow = [&](const QString& label, vtkProp3D* a, const LineRef* lr = nullptr) {   // vtkActor upcasts; surface row passes the tile assembly
 		if (!a)
 			return;
 		QCheckBox* cb = new QCheckBox(label, s->objPanel);
@@ -25,6 +25,13 @@ static void rebuildSceneObjects(Scene* s) {
 			if (s->widget && s->widget->renderWindow())
 				s->widget->renderWindow()->Render();
 		});
+		if (lr) {                                  // line object: right-click the row -> Line Properties menu
+			LineRef ref = *lr; QString nm = label;
+			cb->setContextMenuPolicy(Qt::CustomContextMenu);
+			QObject::connect(cb, &QWidget::customContextMenuRequested, [s, ref, nm, cb](const QPoint& p) {
+				popupLineObjectMenu(s, ref, nm, cb->mapToGlobal(p));
+			});
+		}
 		col->addWidget(cb);
 	};
 
@@ -36,10 +43,20 @@ static void rebuildSceneObjects(Scene* s) {
 		addRow(s->imageOnly ? (s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName))
 		                    : QString("Image drape"),
 		       s->drape);
-	for (auto& ov : s->overlays)
-		addRow(QString::fromStdString(ov.name), ov.actor);
+	for (auto& ov : s->overlays) {
+		LineRef lr{ LK_Overlay, ov.actor };
+		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? &lr : nullptr);
+	}
 	for (auto& cu : s->curtains)
 		addRow(QString::fromStdString(cu.name), cu.actor);
+	for (auto& pg : s->polys) {                          // user-drawn polygons ("polygon N")
+		LineRef lr{ LK_Polygon, pg.line };
+		addRow(QString::fromStdString(pg.name), pg.line, &lr);
+	}
+	if (s->profLine && s->profLine->GetVisibility()) {  // the profile track (when one exists)
+		LineRef lr{ LK_Profile, s->profLine };
+		addRow("Profile", s->profLine, &lr);
+	}
 	for (auto& ex : s->extras) {                 // grids/images dropped in after the window opened
 		addRow(QString::fromStdString(ex.name), ex.actor);
 		if (ex.drape) addRow(QString::fromStdString(ex.name + " (image)"), ex.drape);
@@ -316,6 +333,12 @@ static void applyLineStyle(Scene* s, vtkActor* a, int style) {
 // visual selection state, just the menu.
 static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& globalPos) {
 	if (!s || !a) return;
+	if (mode == 1) {                         // lines -> the shared Line Properties tool
+		QString nm = "Line";
+		for (auto& o : s->overlays) if (o.actor.Get() == a) { nm = QString::fromStdString(o.name); break; }
+		popupLineObjectMenu(s, LineRef{ LK_Overlay, a }, nm, globalPos);
+		return;
+	}
 	QWidget* win = s->win;
 	QMenu m(win);
 	m.addAction("Overlay color…", [=]() {
@@ -385,89 +408,11 @@ static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& glob
 	m.exec(globalPos);
 }
 
-// Right-click menu for the profile track line: colour, width, line style (solid/dashed/
-// dotted via the same stipple-texture path as overlays), save to a text file, delete.
+// Right-click menu for the profile track line. The property entries now live in the shared Line
+// Properties tool (55_lineprops.cpp); this just routes the profile line to the unified menu.
 static void popupProfileMenu(Scene* s, const QPoint& globalPos) {
 	if (!s || !s->profLine) return;
-	QWidget* win = s->win;
-	vtkActor* a = s->profLine;
-	QMenu m(win);
-
-	m.addAction("Line color…", [=]() {
-		double c[3]; a->GetProperty()->GetColor(c);
-		QColor q = QColorDialog::getColor(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)),
-										  win, "Profile line color");
-		if (!q.isValid()) return;
-		a->GetProperty()->SetColor(q.redF(), q.greenF(), q.blueF());
-		if (s->profStyle != 0) {                          // colour lives in the stipple texture
-			s->profStripe = makeStripeTex(s->profStyle == 1 ? 0.5 : 0.18, q.redF(), q.greenF(), q.blueF());
-			a->SetTexture(s->profStripe);
-		}
-		s->widget->renderWindow()->Render();
-	});
-
-	m.addAction("Line width…", [=]() {
-		bool ok = false;
-		double w = QInputDialog::getDouble(win, "Line width", "width (px):",
-			a->GetProperty()->GetLineWidth(), 0.5, 40.0, 1, &ok);
-		if (ok) {
-			a->GetProperty()->SetLineWidth(w);
-			s->widget->renderWindow()->Render();
-		}
-	});
-
-	auto restyle = [s, a](int style) {
-		if (!s->profPD) return;
-		s->profStyle = style;
-		if (style == 0) {                                 // solid: drop the texture + tcoords
-			a->SetTexture(nullptr);
-			s->profPD->GetPointData()->SetTCoords(nullptr);
-			a->GetProperty()->SetOpacity(1.0);
-			s->profStripe = nullptr;
-		}
-		else {
-			double sc[3]; a->GetScale(sc);
-			double b[6]; s->profPD->GetBounds(b);
-			const double ex = (b[1]-b[0])*sc[0], ey = (b[3]-b[2])*sc[1];
-			double diag = std::sqrt(ex*ex + ey*ey);
-			if (!(diag > 0.0)) diag = 1.0;
-			const double onFrac = (style == 1) ? 0.5 : 0.18;   // dotted = short on -> a dot
-			const double nDiv   = (style == 1) ? 100.0 : 260.0;
-			setStippleTCoords(s->profPD, sc, diag / nDiv);
-			double c[3]; a->GetProperty()->GetColor(c);
-			s->profStripe = makeStripeTex(onFrac, c[0], c[1], c[2]);
-			a->SetTexture(s->profStripe);
-			a->GetProperty()->SetOpacity(0.999);          // force translucent pass so alpha gaps show
-		}
-		if (auto* mm = vtkPolyDataMapper::SafeDownCast(a->GetMapper())) mm->Modified();
-		s->widget->renderWindow()->Render();
-	};
-	QMenu* st = m.addMenu("Line style");
-	st->addAction("Solid",  [=]() { restyle(0); });
-	st->addAction("Dashed", [=]() { restyle(1); });
-	st->addAction("Dotted", [=]() { restyle(2); });
-
-	m.addSeparator();
-	m.addAction("Save profile…", [=]() {
-		if (!s->profPD || !s->profPD->GetPoints()) return;
-		QString fn = QFileDialog::getSaveFileName(win, "Save profile", "profile.txt",
-												  "Text (*.txt *.dat);;All files (*)");
-		if (fn.isEmpty()) return;
-		QFile f(fn);
-		if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
-		QTextStream out(&f);
-		out << "# distance\tx\ty\tz\n";
-		vtkPoints* pts = s->profPD->GetPoints();
-		const vtkIdType np = pts->GetNumberOfPoints();
-		for (vtkIdType i = 0; i < np; ++i) {
-			double p[3]; pts->GetPoint(i, p);
-			const double dd = (i < (vtkIdType)s->profS.size()) ? s->profS[i] : 0.0;
-			out << dd << '\t' << p[0] << '\t' << p[1] << '\t' << p[2] << '\n';
-		}
-		f.close();
-	});
-	m.addAction("Delete profile", [=]() { profileClear(s); });
-	m.exec(globalPos);
+	popupLineObjectMenu(s, LineRef{ LK_Profile, s->profLine }, "Profile", globalPos);
 }
 
 // QVTKOpenGLNativeWidget forwards left/right/wheel to the VTK interactor, but VTK's adapter

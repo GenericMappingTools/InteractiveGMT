@@ -117,6 +117,59 @@ static void onLodCamera(vtkObject*, unsigned long, void* cd, void*) {
 	refineQuadtree(static_cast<Scene*>(cd));
 }
 
+// GRAPHICAL ELEMENT: custom dock title bar that folds the dock HORIZONTALLY.
+// Open  -> a normal horizontal strip: "▾ Title" across the top.
+// Folded -> a thin vertical strip (~one text-height wide) with "▸" at the top and
+// the Title painted rotated 90° (reading bottom->top) down the window edge, so the
+// collapsed dock costs only its strip width instead of leaving its full open width
+// as dead, unusable space. Clicking anywhere on the bar toggles via onClick.
+// (No Q_OBJECT: this TU has no moc — we override virtuals and call a std::function.)
+struct FoldTitleBar : QWidget {
+	QString title;
+	bool    folded    = false;
+	int     openWidth = 0;            // dock width remembered at fold time, restored on un-fold
+	std::function<void()> onClick;
+	explicit FoldTitleBar(const QString& t, QWidget* parent = nullptr)
+		: QWidget(parent), title(t) {
+		setCursor(Qt::PointingHandCursor);
+		setToolTip("Fold / un-fold this panel");
+	}
+	QSize sizeHint() const override {
+		QFontMetrics fm(font());
+		const int thick = fm.height() + 8;                       // strip thickness
+		const int along = fm.horizontalAdvance(title) + thick + 12;
+		return folded ? QSize(thick, along) : QSize(along, thick);
+	}
+	QSize minimumSizeHint() const override { return sizeHint(); }
+	void mousePressEvent(QMouseEvent*) override { if (onClick) onClick(); }
+	void paintEvent(QPaintEvent*) override {
+		QPainter p(this);
+		p.setPen(palette().color(QPalette::WindowText));
+		QFontMetrics fm(font());
+		const QString glyph = folded ? QStringLiteral("▸")  // ▸ folded
+									 : QStringLiteral("▾"); // ▾ open
+		if (!folded) {
+			const int y = (height() + fm.ascent() - fm.descent()) / 2;
+			p.drawText(6, y, glyph + " " + title);
+		} else {
+			// arrow centred near the top of the vertical strip
+			p.drawText(QRect(0, 2, width(), fm.height()), Qt::AlignHCenter, glyph);
+			// title rotated to read bottom->top, filling the strip below the arrow
+			p.save();
+			p.translate(0, height());
+			p.rotate(-90);
+			p.drawText(QRect(4, 0, height() - fm.height() - 8, width()),
+					   Qt::AlignVCenter | Qt::AlignLeft, title);
+			p.restore();
+		}
+	}
+};
+
+// Polygon draw/edit tool (defined in 85_polygon.cpp, #included after this file). The toolbar
+// button toggles draw mode via polygonSetMode; the mouse gestures are driven from GLView.
+static void polygonSetMode(Scene* s, bool on);
+static QIcon makePolygonIcon();
+
 static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 double x0, double x1, double y0, double y1,
 						 double zmin, double zmax,
@@ -594,24 +647,23 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			cam->GetFocalPoint(s->sav_foc);
 			cam->GetViewUp(s->sav_vup);
 			s->sav_parallel = cam->GetParallelProjection();
-			s->sav_ve       = s->ve;
-			s->sav_surfLit  = s->surf->GetProperty()->GetLighting();
 
-			s->ve = 0.0; applyVE(s);               // collapse relief to a plane (z -> colour only)
-			for (vtkActor* a : surfActors(s)) a->GetProperty()->LightingOff();  // flat: no hillshade
+			// 2D = TOP-DOWN ORTHO ONLY. Keep the relief and its PBR lighting exactly as in 3D
+			// (illumination must NOT change) — viewed straight down in parallel projection it reads
+			// as a shaded-relief map. We do NOT flatten (ve) or touch lighting: flattening kills the
+			// hillshade, and LightingOff on PBR renders near-black.
 			if (s->giz) setGizmoVisible(*s->giz, false);
 
-			double b[6]; surfGetBounds(s, b);      // top-down orthographic, north (+Y) up
+			double b[6]; surfGetBounds(s, b);      // north (+Y) up
 			const double fp[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
 			cam->SetFocalPoint(fp[0], fp[1], fp[2]);
 			cam->SetViewUp(0.0, 1.0, 0.0);
-			cam->SetPosition(fp[0], fp[1], fp[2] + 1.0);
+			cam->SetPosition(fp[0], fp[1], b[5] + (b[5]-b[4]) + 1.0);  // above the surface, not inside it
 			cam->ParallelProjectionOn();
+			s->ren->ResetCameraClippingRange();
 			fitSnapView(s, /*topMode=*/true);      // maximize: fill the viewport edge-to-edge
 		}
 		else {
-			s->ve = s->sav_ve; applyVE(s);         // restore relief
-			if (s->sav_surfLit) for (vtkActor* a : surfActors(s)) a->GetProperty()->LightingOn();
 			cam->SetParallelProjection(s->sav_parallel);
 			cam->SetPosition(s->sav_pos);
 			cam->SetFocalPoint(s->sav_foc);
@@ -661,7 +713,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QToolBar* tb = win->addToolBar("Main");
 	tb->setMovable(false);
 	tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-	QAction* actOpen = tb->addAction(win->style()->standardIcon(QStyle::SP_DirOpenIcon), "Open");
+	QAction* actOpen = tb->addAction(win->style()->standardIcon(QStyle::SP_DirOpenIcon), "");  // icon only, no text
 	actOpen->setToolTip("Open a grid / image / table file in a new window");
 	QObject::connect(actOpen, &QAction::triggered, [s, win]() {
 		const QString fn = QFileDialog::getOpenFileName(win, "Open file");
@@ -671,7 +723,27 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		static std::vector<char> buf(1 << 12);
 		g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
 	});
-	tb->addAction(s->act2D);   // same action object as the View menu entry
+	// 2D/3D toggle: a plain text button showing the CURRENT view ("3D" in 3D, "2D" in flat 2D).
+	// Its own QToolButton (not act2D, which keeps the descriptive "Flat 2D (map)" menu text). The
+	// label tracks act2D's checked state, so any toggle source (menu, context menu, bare-image init
+	// in 90_c_api) keeps it in sync.
+	QToolButton* tb2D = new QToolButton(tb);
+	tb2D->setText("3D");
+	tb2D->setToolTip("Toggle flat 2D map / 3D perspective view");
+	QObject::connect(tb2D, &QToolButton::clicked, actToggle2D);
+	QObject::connect(s->act2D, &QAction::toggled, tb2D, [tb2D](bool on){ tb2D->setText(on ? "2D" : "3D"); });
+	tb->addWidget(tb2D);
+
+	// Polygon tool: a checkable toolbar button (pentagon icon). Checked = draw mode — left-click
+	// adds vertices, right-click removes the last, double-left-click closes the polygon. When the
+	// button is OFF, a double-click on a finished polygon enters vertex-edit mode (square handles,
+	// click-drag a vertex). polygonSetMode lives in 85_polygon.cpp.
+	QAction* actPoly = tb->addAction(makePolygonIcon(), "Polygon");   // GRAPHICAL ELEMENT: polygon-draw toggle button
+	actPoly->setCheckable(true);
+	actPoly->setToolTip("Draw a polygon: left-click adds vertices, right-click undoes one, "
+						"double-click closes it. Double-click a polygon to edit its vertices.");
+	s->polyAct = actPoly;
+	QObject::connect(actPoly, &QAction::toggled, [s](bool on){ polygonSetMode(s, on); });
 
 	// --- native right-click context menu over the 3-D view ------------------
 	widget->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -684,6 +756,10 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				s->rbConsume = false;
 				return;
 			}
+			// While drawing a polygon, right-click means "remove last vertex" (handled by the
+			// polygon tool's VTK observer) — never pop the view context menu.
+			if (s->polyMode && s->polyDrawing)
+				return;
 			// If an overlay (GMTdataset line/point) is under the cursor, select it and pop ITS
 			// per-element menu. VTK display coords are bottom-up device px; Qt QPoint is top-down.
 			{
@@ -692,6 +768,12 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				const int    px  = int(pos.x() * dpr), py = int(Hpx - pos.y() * dpr);
 				if (profileHitAt(s, px, py)) {   // profile line sits on top -> its menu wins
 					popupProfileMenu(s, widget->mapToGlobal(pos));
+					return;
+				}
+				const int pgi = polyHitPolygon(s, px, py, 8.0);   // a drawn polygon under the cursor?
+				if (pgi >= 0) {
+					popupLineObjectMenu(s, LineRef{ LK_Polygon, s->polys[pgi].line },
+										QString::fromStdString(s->polys[pgi].name), widget->mapToGlobal(pos));
 					return;
 				}
 				int ovMode = 1;
@@ -711,7 +793,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			}
 			QAction* cg = m.addAction("Gizmo", actToggleGizmo);
 			cg->setCheckable(true); cg->setChecked(s->giz && s->giz->visible);
-			QAction* c2 = m.addAction("Flat 2D (map)", actToggle2D);
+			QAction* c2 = m.addAction("2D", actToggle2D);
 			c2->setCheckable(true); c2->setChecked(s->flat2d);
 			m.addSeparator();
 			m.addAction("Vertical Exaggeration…", actVE);
@@ -857,22 +939,24 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	// --- FOLD button on the side docks --------------------------------------
 	// Qt has no built-in "collapse" affordance, so REPLACE each side dock's default title bar
-	// with a QToolButton (▾ = open, ▸ = folded). Clicking it hides/shows the dock's body widget,
-	// collapsing the dock down to just this title strip and back. This is the fold control the
-	// default Qt title bar (float / close only) never gave us.
-	auto makeFoldable = [](QDockWidget* d, QWidget* body, const QString& titleText) {
-		QToolButton* bar = new QToolButton(d);            // GRAPHICAL ELEMENT: dock title bar = the fold toggle
-		bar->setAutoRaise(true);
-		bar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-		bar->setArrowType(Qt::DownArrow);                 // ▾ : body shown (un-folded)
-		bar->setText(titleText);
-		bar->setToolTip("Fold / un-fold this panel");
-		d->setTitleBarWidget(bar);                        // swap Qt's default title bar for our fold button
-		QObject::connect(bar, &QToolButton::clicked, [d, body, bar]() {
+	// with a FoldTitleBar. Folding hides the body AND shrinks the dock to a thin vertical strip
+	// (resizeDocks), so the collapsed dock no longer leaves its full open width as dead space;
+	// the strip carries the title rotated 90° down the window edge. Un-folding restores the body
+	// and the remembered open width. This is the fold control Qt's default title bar never gave us.
+	auto makeFoldable = [win](QDockWidget* d, QWidget* body, const QString& titleText) {
+		FoldTitleBar* bar = new FoldTitleBar(titleText, d);  // GRAPHICAL ELEMENT: dock title bar = fold toggle
+		d->setTitleBarWidget(bar);                        // swap Qt's default title bar for our fold strip
+		bar->onClick = [win, d, body, bar]() {
 			const bool fold = body->isVisible();          // visible now -> fold it away
-			body->setVisible(!fold);                      // hide body -> dock shrinks to the title strip
-			bar->setArrowType(fold ? Qt::RightArrow : Qt::DownArrow);  // ▸ folded / ▾ open
-		});
+			if (fold) bar->openWidth = d->width();        // remember the open width to restore later
+			body->setVisible(!fold);                      // hide body -> dock can shrink to the strip
+			bar->folded = fold;
+			bar->updateGeometry();                        // sizeHint flips orientation
+			bar->update();
+			const int w = fold ? bar->sizeHint().width()
+							   : (bar->openWidth > 0 ? bar->openWidth : 220);
+			win->resizeDocks({d}, {w}, Qt::Horizontal);   // collapse to / expand from the strip width
+		};
 	};
 	makeFoldable(dock,    panel,        "Shading");        // Shading dock fold button
 	makeFoldable(objDock, s->objPanel,  "Scene Objects");  // Scene Objects dock fold button
@@ -990,6 +1074,8 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Gizmo: scale cone + tilt ring + compass ring at the rotation centre.
 	// Owns its own LeftButton/MouseMove observers at priority 10 and the 'x' toggle.
 	s->giz = enableGizmo(s, 0.01);
+	// Polygon draw/edit tool: gestures are handled in the GLView widget (mouse*Event overrides,
+	// 60_profile.cpp), gated on the tool state, so navigation is untouched when the tool is idle.
 	// non-blocking: return now; the host pumps gmtvtk_process_events().
 	return s;
 }
