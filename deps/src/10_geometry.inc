@@ -1,4 +1,5 @@
-struct Gizmo;   // Fledermaus-style scale/tilt/azimuth handle (defined below)
+struct Gizmo;     // Fledermaus-style scale/tilt/azimuth handle (defined below)
+struct QuadNode;  // tiled-LOD pyramid node (defined below Scene)
 
 // A caller-supplied GMTdataset drawn over the surface as lines or points. Each carries
 // its own vtkActor so the right-click context menu can retune its colour / line style /
@@ -62,6 +63,19 @@ struct Scene {
 	std::vector<float> gridZ;
 	int    gnx = 0, gny = 0;
 	double gx0 = 0, gx1 = 1, gy0 = 0, gy1 = 1;
+	double gdx = 0, gdy = 0;                          // true-coord node spacing (tile build + SSE)
+
+	// --- tiled-LOD pyramid (plain grid) -------------------------------------
+	// Quadtree of tiles; coarse near root, refined per-frame by screen-space error so only the
+	// visible region at the needed resolution is resident. surfGroup holds the live tile actors.
+	QuadNode* quadRoot = nullptr;
+	vtkSmartPointer<vtkScalarsToColors> surfLut;     // shared LUT for lazily-built tiles
+	bool     surfCtfRange = false;
+	int      surfEdges = 0;                           // current wire-edge state (applied to new tiles)
+	uint64_t lodFrame = 0;                            // bumped each refine; tiles store lastUsed
+	size_t   lodResidentBytes = 0;                    // approx resident tile geometry bytes
+	size_t   lodBudgetBytes = (size_t)1 << 30;        // ~1 GiB cap; LRU-evict offscreen tiles past it
+	vtkSmartPointer<vtkCallbackCommand> lodCmd;       // camera-modified observer (drives refine)
 
 	// --- flat-2D (top-down ortho map) toggle --------------------------------
 	// One-button switch to a true planimetric map: VE collapsed to 0 (relief flat,
@@ -177,6 +191,23 @@ static inline std::vector<vtkActor*> surfActors(Scene* s) {
 	else if (s->surf)        v.push_back(s->surf.Get());
 	return v;
 }
+
+// One node of the tiled-LOD quadtree. Covers the inclusive full-grid index region [i0..i1]x[j0..j1],
+// rendered at stride `step` (1 = full res = leaf). `actor` is built lazily and lives in surfGroup
+// while resident; `lastUsed` drives LRU eviction. worldSpacing = true-coord node gap at this step
+// (feeds the screen-space-error test).
+struct QuadNode {
+	int level = 0;
+	int i0 = 0, i1 = 0, j0 = 0, j1 = 0;
+	int step = 1;
+	bool leaf = true;
+	double cx = 0, cy = 0;            // region centre (true coords)
+	double worldSpacing = 0;          // true-coord node gap at this node's step
+	QuadNode* child[4] = { nullptr, nullptr, nullptr, nullptr };
+	vtkSmartPointer<vtkActor> actor;  // null = not resident
+	uint64_t lastUsed = 0;
+	size_t   bytes = 0;
+};
 
 // Collapse / restore the bottom tabbed panel's BODY, leaving the tab strip (+ the Hide
 // button) visible. Collapsing hides the QTabWidget's page stack and clamps the widget to
@@ -366,25 +397,34 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 // id = (j-j0)*tw + (i-i0). The basis for the tiled-LOD render (P1/P2).
 static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 												 int i0, int i1, int j0, int j1,
-												 double x0, double dx, double y0, double dy) {
-	const int tw = i1 - i0 + 1, th = j1 - j0 + 1;
+												 double x0, double dx, double y0, double dy,
+												 int step = 1) {     // step>1 -> coarse LOD tile (sub-sampled)
+	if (step < 1) step = 1;
+	// Sampled global indices for this tile, ALWAYS including the far edge i1/j1 so a coarse tile
+	// still spans its whole region and meets neighbours. step=1 -> every node (full res).
+	std::vector<int> xs, ys;
+	for (int i = i0; i < i1; i += step) xs.push_back(i);  xs.push_back(i1);
+	for (int j = j0; j < j1; j += step) ys.push_back(j);  ys.push_back(j1);
+	const int tw = (int)xs.size(), th = (int)ys.size();
+
 	vtkNew<vtkPoints>     pts;  pts->SetDataTypeToFloat(); pts->Allocate(tw * th);
 	vtkNew<vtkFloatArray> zval; zval->SetName("z");        zval->Allocate(tw * th);
 	vtkNew<vtkFloatArray> nrm;  nrm->SetNumberOfComponents(3); nrm->SetName("Normals");
 	nrm->SetNumberOfTuples((vtkIdType)tw * th);
 
-	for (int j = j0; j <= j1; ++j) {
-		const double y = y0 + j * dy;
-		for (int i = i0; i <= i1; ++i) {
-			const double x = x0 + i * dx;
+	for (int jj = 0; jj < th; ++jj) {
+		const int j = ys[jj]; const double y = y0 + j * dy;
+		const int jd = ys[jj > 0 ? jj-1 : jj], ju = ys[jj < th-1 ? jj+1 : jj];  // sampled neighbours
+		for (int ii = 0; ii < tw; ++ii) {
+			const int i = xs[ii]; const double x = x0 + i * dx;
 			const float zz = z[(vtkIdType)i * ny + j];
 			pts->InsertNextPoint(x, y, zz);
 			zval->InsertNextValue(zz);
-			// normal from GLOBAL central differences (matches the neighbour tile at borders)
+			// normal from the DISPLAYED (sampled) neighbours -> matches this tile's surface, and
+			// neighbour tiles sharing the edge sample the same nodes -> no lighting seam.
+			const int il = xs[ii > 0 ? ii-1 : ii], ir = xs[ii < tw-1 ? ii+1 : ii];
 			float nxv = 0.f, nyv = 0.f, nzv = 1.f;
 			if (!std::isnan(zz)) {
-				const int il = i > 0 ? i-1 : i,  ir = i < nx-1 ? i+1 : i;
-				const int jd = j > 0 ? j-1 : j,  ju = j < ny-1 ? j+1 : j;
 				const float zl = z[(vtkIdType)il*ny + j],  zr = z[(vtkIdType)ir*ny + j];
 				const float zb = z[(vtkIdType)i*ny + jd],  zt = z[(vtkIdType)i*ny + ju];
 				if (!std::isnan(zl) && !std::isnan(zr) && !std::isnan(zb) && !std::isnan(zt)) {
@@ -396,7 +436,7 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 					nxv = (float)(vx*inv); nyv = (float)(vy*inv); nzv = (float)(vz*inv);
 				}
 			}
-			const vtkIdType lid = (vtkIdType)(j - j0) * tw + (i - i0);
+			const vtkIdType lid = (vtkIdType)jj * tw + ii;
 			nrm->SetTypedComponent(lid, 0, nxv);
 			nrm->SetTypedComponent(lid, 1, nyv);
 			nrm->SetTypedComponent(lid, 2, nzv);
@@ -405,12 +445,12 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 
 	vtkNew<vtkCellArray> cells;
 	if ((double)tw * th < 2.0e9) cells->Use32BitStorage();
-	for (int j = 0; j < th - 1; ++j) {
-		for (int i = 0; i < tw - 1; ++i) {
-			const vtkIdType a =  (vtkIdType)j      * tw + i;
-			const vtkIdType b =  (vtkIdType)j      * tw + i + 1;
-			const vtkIdType c =  (vtkIdType)(j + 1)* tw + i + 1;
-			const vtkIdType d =  (vtkIdType)(j + 1)* tw + i;
+	for (int jj = 0; jj < th - 1; ++jj) {
+		for (int ii = 0; ii < tw - 1; ++ii) {
+			const vtkIdType a = (vtkIdType)jj    * tw + ii;
+			const vtkIdType b = (vtkIdType)jj    * tw + ii + 1;
+			const vtkIdType c = (vtkIdType)(jj+1)* tw + ii + 1;
+			const vtkIdType d = (vtkIdType)(jj+1)* tw + ii;
 			if (std::isnan(zval->GetValue(a)) || std::isnan(zval->GetValue(b)) ||
 				std::isnan(zval->GetValue(c)) || std::isnan(zval->GetValue(d)))
 				continue;

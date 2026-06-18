@@ -1,3 +1,122 @@
+// ===== tiled-LOD pyramid: build + per-frame screen-space-error refinement ==================
+// Quadtree over the full grid; each node renders its region at a stride chosen so its sampled span
+// is <= ~512 (leaf = stride 1 = full res). Per camera move, refineNode keeps each visible branch at
+// the coarsest LOD whose node gap still projects to <= tau pixels, building tile actors lazily and
+// LRU-evicting offscreen ones past a byte budget. Only the data layer (Scene::gridZ) is always
+// resident; render geometry is bounded regardless of grid size.
+
+static QuadNode* buildQuadNode(int i0, int i1, int j0, int j1, int level,
+							   double x0, double dx, double y0, double dy) {
+	QuadNode* n = new QuadNode();
+	n->level = level; n->i0 = i0; n->i1 = i1; n->j0 = j0; n->j1 = j1;
+	const int w = i1 - i0, h = j1 - j0;
+	int step = 1; while (w / step > 512 || h / step > 512) step *= 2;   // sampled span <= ~513
+	n->step = step;
+	n->cx = x0 + 0.5 * (i0 + i1) * dx;
+	n->cy = y0 + 0.5 * (j0 + j1) * dy;
+	n->worldSpacing = std::max(std::abs(dx), std::abs(dy)) * step;
+	const int im = (i0 + i1) / 2, jm = (j0 + j1) / 2;
+	if (step == 1 || im <= i0 || jm <= j0) { n->leaf = true; n->step = 1; return n; }
+	n->leaf = false;
+	n->child[0] = buildQuadNode(i0, im, j0, jm, level+1, x0,dx,y0,dy);
+	n->child[1] = buildQuadNode(im, i1, j0, jm, level+1, x0,dx,y0,dy);
+	n->child[2] = buildQuadNode(i0, im, jm, j1, level+1, x0,dx,y0,dy);
+	n->child[3] = buildQuadNode(im, i1, jm, j1, level+1, x0,dx,y0,dy);
+	return n;
+}
+
+static void ensureNodeActor(Scene* s, QuadNode* n) {
+	if (n->actor) return;
+	auto tpd = makeGridTile(s->gridZ.data(), s->gnx, s->gny,
+							n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, n->step);
+	vtkNew<vtkPolyDataMapper> m; m->SetInputData(tpd);
+	m->SetLookupTable(s->surfLut); m->SetScalarRange(s->zmin, s->zmax);
+	if (s->surfCtfRange) m->UseLookupTableScalarRangeOn();
+	m->ScalarVisibilityOn(); m->InterpolateScalarsBeforeMappingOn();
+	auto a = vtkSmartPointer<vtkActor>::New(); a->SetMapper(m);
+	a->GetProperty()->SetInterpolationToPBR();
+	a->GetProperty()->SetMetallic(0.0); a->GetProperty()->SetRoughness(0.45);
+	a->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12); a->GetProperty()->SetLineWidth(1.0);
+	a->GetProperty()->SetEdgeVisibility(s->surfEdges);
+	const vtkIdType npts = tpd->GetPoints()->GetNumberOfPoints();
+	const vtkIdType ncel = tpd->GetPolys()->GetNumberOfCells();
+	n->bytes = (size_t)npts * (12 + 4 + 12) + (size_t)ncel * 20;   // pts + z + normal + quad ids
+	n->actor = a;
+	s->surfGroup->AddPart(a);
+	s->tiles.push_back(a);
+	s->lodResidentBytes += n->bytes;
+}
+
+static void dropNodeActor(Scene* s, QuadNode* n) {
+	if (!n->actor) return;
+	s->surfGroup->RemovePart(n->actor);
+	for (size_t k = 0; k < s->tiles.size(); ++k)
+		if (s->tiles[k] == n->actor) { s->tiles.erase(s->tiles.begin() + k); break; }
+	s->lodResidentBytes = (s->lodResidentBytes >= n->bytes) ? s->lodResidentBytes - n->bytes : 0;
+	n->actor = nullptr; n->bytes = 0;
+}
+
+static void dropSubtree(Scene* s, QuadNode* n) {
+	if (!n) return;
+	dropNodeActor(s, n);
+	for (int k = 0; k < 4; ++k) dropSubtree(s, n->child[k]);
+}
+
+static void collectResident(QuadNode* n, std::vector<QuadNode*>& out) {
+	if (!n) return;
+	if (n->actor) out.push_back(n);
+	for (int k = 0; k < 4; ++k) collectResident(n->child[k], out);
+}
+
+static void evictLRU(Scene* s) {
+	std::vector<QuadNode*> res; collectResident(s->quadRoot, res);
+	std::sort(res.begin(), res.end(), [](QuadNode* a, QuadNode* b){ return a->lastUsed < b->lastUsed; });
+	for (QuadNode* n : res) {
+		if (s->lodResidentBytes <= s->lodBudgetBytes) break;
+		if (n->lastUsed == s->lodFrame) continue;   // never evict a tile drawn this frame
+		dropNodeActor(s, n);
+	}
+}
+
+static void refineNode(Scene* s, QuadNode* n, vtkCamera* cam, const double camPos[3],
+					   double vpH, double tanHalfFov, double parScale, bool parallel, double tau) {
+	// node centre in SCALED world (the assembly applies xfac on X, zfac*ve on Z)
+	const double zmid = 0.5 * (s->zmin + s->zmax) * s->zfac * s->ve;
+	const double pc[3] = { n->cx * s->xfac, n->cy, zmid };
+	const double sp = n->worldSpacing * std::max(s->xfac, 1.0);    // scaled node gap
+	double px;
+	if (parallel) {
+		px = (parScale > 0.0) ? sp * vpH / (2.0 * parScale) : 1e9;
+	} else {
+		const double dvx = pc[0]-camPos[0], dvy = pc[1]-camPos[1], dvz = pc[2]-camPos[2];
+		double dist = std::sqrt(dvx*dvx + dvy*dvy + dvz*dvz); if (dist < 1e-6) dist = 1e-6;
+		px = sp * vpH / (2.0 * dist * tanHalfFov);
+	}
+	if (n->leaf || px <= tau) {
+		ensureNodeActor(s, n); n->lastUsed = s->lodFrame;   // draw at this LOD
+		for (int k = 0; k < 4; ++k) dropSubtree(s, n->child[k]);   // shed finer detail
+	} else {
+		dropNodeActor(s, n);                                 // too coarse -> recurse
+		for (int k = 0; k < 4; ++k) refineNode(s, n->child[k], cam, camPos, vpH, tanHalfFov, parScale, parallel, tau);
+	}
+}
+
+static void refineQuadtree(Scene* s) {
+	if (!s->quadRoot || !s->ren) return;
+	vtkCamera* cam = s->ren->GetActiveCamera(); if (!cam) return;
+	double camPos[3]; cam->GetPosition(camPos);
+	int* sz = s->ren->GetSize(); const double vpH = (sz && sz[1] > 0) ? sz[1] : 600.0;
+	const bool parallel = cam->GetParallelProjection() != 0;
+	const double tanHalf = std::tan(vtkMath::RadiansFromDegrees(cam->GetViewAngle() * 0.5));
+	s->lodFrame++;
+	refineNode(s, s->quadRoot, cam, camPos, vpH, tanHalf, cam->GetParallelScale(), parallel, /*tau=*/2.0);
+	if (s->lodResidentBytes > s->lodBudgetBytes) evictLRU(s);
+}
+
+static void onLodCamera(vtkObject*, unsigned long, void* cd, void*) {
+	refineQuadtree(static_cast<Scene*>(cd));
+}
+
 static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 double x0, double x1, double y0, double y1,
 						 double zmin, double zmax,
@@ -95,40 +214,27 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	bool hasNormals = false;
 	vtkNew<vtkPolyDataNormals> norms;        // polydata-surface path only
 	if (gz && gnx > 1 && gny > 1) {
-		// Tiled plain grid: split into T-node tile actors held by one vtkAssembly. No giant single
-		// polydata, no vtkPolyDataNormals pass (each tile bakes its own normals). ONE transform on
-		// the group drives base scale + VE. P1 = all tiles full-res (no cracks, no skirts needed).
+		// Tiled-LOD plain grid: build the quadtree (indices only) + an empty assembly; tile actors
+		// are created lazily by the screen-space-error refinement (refineQuadtree) and re-evaluated
+		// on every camera move. No giant polydata; resident geometry is bounded by lodBudgetBytes.
 		s->surfGroup = vtkSmartPointer<vtkAssembly>::New();
-		const int T = 512;                                   // tile node span (shared edge w/ neighbour)
-		const double dxt = (gnx > 1) ? (x1 - x0) / (gnx - 1) : 0.0;
-		const double dyt = (gny > 1) ? (y1 - y0) / (gny - 1) : 0.0;
-		for (int j0 = 0; j0 < gny - 1; j0 += T) {
-			const int j1 = std::min(j0 + T, gny - 1);
-			for (int i0 = 0; i0 < gnx - 1; i0 += T) {
-				const int i1 = std::min(i0 + T, gnx - 1);
-				auto tpd = makeGridTile(gz, gnx, gny, i0, i1, j0, j1, x0, dxt, y0, dyt);
-				vtkNew<vtkPolyDataMapper> tmap;
-				tmap->SetInputData(tpd);
-				tmap->SetLookupTable(lut);
-				tmap->SetScalarRange(s->zmin, s->zmax);
-				if (ctfRange) tmap->UseLookupTableScalarRangeOn();
-				tmap->ScalarVisibilityOn();
-				tmap->InterpolateScalarsBeforeMappingOn();
-				auto a = vtkSmartPointer<vtkActor>::New();
-				a->SetMapper(tmap);
-				a->GetProperty()->SetInterpolationToPBR();
-				a->GetProperty()->SetMetallic(0.0);
-				a->GetProperty()->SetRoughness(0.45);
-				a->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12);
-				a->GetProperty()->SetLineWidth(1.0);
-				a->GetProperty()->SetEdgeVisibility(edges);
-				s->surfGroup->AddPart(a);
-				s->tiles.push_back(a);
-			}
-		}
-		s->surf = s->tiles.empty() ? vtkSmartPointer<vtkActor>::New() : s->tiles.front();
+		s->surfLut = lut; s->surfCtfRange = ctfRange; s->surfEdges = edges;
+		// Data layer MUST exist before refineQuadtree (tiles sample s->gridZ). Populate it here from
+		// gz (the caller fills it only AFTER buildAndShow returns, which would be too late).
+		s->gridZ.assign(gz, gz + (size_t)gnx * gny);
+		s->gnx = gnx; s->gny = gny;
+		s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
+		s->gdx = (gnx > 1) ? (x1 - x0) / (gnx - 1) : 0.0;
+		s->gdy = (gny > 1) ? (y1 - y0) / (gny - 1) : 0.0;
+		s->quadRoot = buildQuadNode(0, gnx - 1, 0, gny - 1, 0, x0, s->gdx, y0, s->gdy);
+		s->surf = vtkSmartPointer<vtkActor>::New();   // placeholder handle; real geometry = tiles
 		s->surfGroup->SetScale(s->xfac, 1.0, s->zfac * s->ve);
 		s->ren->AddActor(s->surfGroup);
+		refineQuadtree(s);                            // initial (coarse) population so axes/bounds work
+		s->lodCmd = vtkSmartPointer<vtkCallbackCommand>::New();
+		s->lodCmd->SetCallback(onLodCamera);
+		s->lodCmd->SetClientData(s);
+		s->ren->GetActiveCamera()->AddObserver(vtkCommand::ModifiedEvent, s->lodCmd);
 	}
 	else {
 	// Smooth shading needs per-vertex normals. A grid polydata arrives with them already baked

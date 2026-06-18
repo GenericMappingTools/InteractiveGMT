@@ -74,8 +74,8 @@ GMTVTK_API void* gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 	Scene* s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, cz, crgb, ncolor, img, iw, ih, ibands, edges, false, geographic, title,
 	                        /*objname=*/nullptr, /*imageOnly=*/image_only != 0,
 	                        /*gz=*/tiled ? z : nullptr, /*gnx=*/nx, /*gny=*/ny);
-	if (s && !image_only) {                            // keep full-res z for hover + profile sampling
-		s->gridZ.assign(z, z + (size_t)nx * ny);       // column-major z[i*ny + j], matches sampleZ
+	if (s && !image_only && !tiled) {                  // drape path: keep full-res z for hover/profile
+		s->gridZ.assign(z, z + (size_t)nx * ny);       // (tiled path already populated it in buildAndShow)
 		s->gnx = nx; s->gny = ny;
 		s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
 	}
