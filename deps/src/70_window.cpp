@@ -758,7 +758,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto actToggle2D = [s, setFlat2D]() { setFlat2D(!s->flat2d); };
 	auto actAbout = [win]() {
 		QMessageBox::about(win, "About",
-			"GMT 3-D Viewer\n\nNative Qt UI + VTK 3-D, self-contained.\n\n"
+			"iGMT 3-D Viewer\n\nNative Qt UI + VTK 3-D, self-contained.\n\n"
 			"Left-drag: horizontal = rotate (azimuth), vertical = tilt.\n"
 			"Middle-click: set the centre of rotation to that point.\n"
 			"Right-drag / wheel: zoom.\n"
@@ -796,7 +796,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// --- toolbar row (below the menu bar): quick-access buttons (ParaView-style) ------------
 	// Open file -> hand the path back to Julia (iview auto-dispatches grid/image/dataset into a
 	// NEW window). 2D/3D -> the shared act2D toggle. More buttons can be appended here later.
-	QToolBar* tb = win->addToolBar("Main");
+	QToolBar *tb = win->addToolBar("Main");
 	tb->setMovable(false);
 	tb->setToolButtonStyle(Qt::ToolButtonIconOnly);   // icon-only toolbar — no text labels on any button
 	QAction* actOpen = tb->addAction(win->style()->standardIcon(QStyle::SP_DirOpenIcon), "");  // icon only, no text
@@ -813,7 +813,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// 2D). Its own QToolButton (not act2D, which keeps the descriptive "Flat 2D (map)" menu text).
 	// The icon tracks act2D's checked state, so any toggle source (menu, context menu, bare-image
 	// init in 90_c_api) keeps it in sync.
-	QToolButton* tb2D = new QToolButton(tb);
+	QToolButton *tb2D = new QToolButton(tb);
 	tb2D->setToolButtonStyle(Qt::ToolButtonIconOnly);
 	tb2D->setIcon(makeViewModeIcon(false));
 	tb2D->setToolTip("Toggle flat 2D map / 3D perspective view");
@@ -890,7 +890,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 					return;
 				}
 				int ovMode = 1;
-				vtkActor* ov = pickOverlayAt(s, px, py, ovMode);
+				vtkActor *ov = pickOverlayAt(s, px, py, ovMode);
 				if (ov) {
 					popupOverlayMenu(s, ov, ovMode, widget->mapToGlobal(pos));
 					return;
@@ -901,12 +901,12 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			QAction* ca = m.addAction("Cube Axes", actToggleAxes);
 			ca->setCheckable(true); ca->setChecked(s->axes->GetVisibility());
 			if (s->bar) {                    // no Color Bar entry for bare images
-				QAction* cb = m.addAction("Color Bar", actToggleBar);
+				QAction *cb = m.addAction("Color Bar", actToggleBar);
 				cb->setCheckable(true); cb->setChecked(s->bar->GetVisibility());
 			}
-			QAction* cg = m.addAction("Gizmo", actToggleGizmo);
+			QAction *cg = m.addAction("Gizmo", actToggleGizmo);
 			cg->setCheckable(true); cg->setChecked(s->giz && s->giz->visible);
-			QAction* c2 = m.addAction("2D", actToggle2D);
+			QAction *c2 = m.addAction("2D", actToggle2D);
 			c2->setCheckable(true); c2->setChecked(s->flat2d);
 			m.addSeparator();
 			m.addAction("Vertical Exaggeration…", actVE);
@@ -918,11 +918,11 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Every control writes a Scene field and re-runs applyShading(); this is the
 	// knob set for matching F3D's look without rebuilding (and lets the look be
 	// tuned on a real display, which the headless screenshot path can't show).
-	QDockWidget* dock = new QDockWidget("Shading", win);              // GRAPHICAL ELEMENT: the "Shading" dock — foldable side panel
+	QDockWidget *dock = new QDockWidget("Shading", win);              // GRAPHICAL ELEMENT: the "Shading" dock — foldable side panel
 	dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea); // user may drag-fold it to the LEFT or RIGHT window edge
 	dock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable); // foldable: drag/float/close
-	QWidget* panel = new QWidget(dock);                              // container widget that holds all the shading controls
-	QFormLayout* form = new QFormLayout(panel);                      // label-on-left / control-on-right rows inside the dock
+	QWidget *panel = new QWidget(dock);                              // container widget that holds all the shading controls
+	QFormLayout *form = new QFormLayout(panel);                      // label-on-left / control-on-right rows inside the dock
 
 	// Live tooltip for a slider: maps the raw slider position to the parameter's REAL range
 	// [rmin,rmax] and shows "name: value unit  [rmin … rmax]". Updated on every change AND
@@ -947,7 +947,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// relief can be combined. 100% = opaque image, 0% = image faded out (surface shows
 	// through). Only meaningful with a draped image, so the row exists ONLY when s->drape does.
 	if (s->drape) {
-		QSlider* slDrape = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Drape blend" slider — image-overlay opacity
+		QSlider *slDrape = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Drape blend" slider — image-overlay opacity
 		slDrape->setRange(0, 100); slDrape->setValue(int(s->drape->GetProperty()->GetOpacity() * 100));
 		QObject::connect(slDrape, &QSlider::valueChanged, [s](int v){
 			s->drape->GetProperty()->SetOpacity(v / 100.0);
@@ -957,43 +957,43 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		wireTip(slDrape, "Drape blend", 0, 100, "%", 0);
 	}
 
-	QSlider* slRough = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Roughness" slider — PBR surface roughness
+	QSlider *slRough = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Roughness" slider — PBR surface roughness
 	slRough->setRange(0, 100); slRough->setValue(int(s->roughness * 100));
 	QObject::connect(slRough, &QSlider::valueChanged, [s](int v){ s->roughness = v / 100.0; applyShading(s); });
 	form->addRow("Roughness", slRough);
 	wireTip(slRough, "Roughness", 0.0, 1.0, "", 2);
 
-	QSlider* slMetal = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Metallic" slider — PBR metalness
+	QSlider *slMetal = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Metallic" slider — PBR metalness
 	slMetal->setRange(0, 100); slMetal->setValue(int(s->metallic * 100));
 	QObject::connect(slMetal, &QSlider::valueChanged, [s](int v){ s->metallic = v / 100.0; applyShading(s); });
 	form->addRow("Metallic", slMetal);
 	wireTip(slMetal, "Metallic", 0.0, 1.0, "", 2);
 
-	QSlider* slLight = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Light" slider — key (sun) light intensity
+	QSlider *slLight = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Light" slider — key (sun) light intensity
 	slLight->setRange(0, 300); slLight->setValue(int(s->lightIntensity * 100));
 	QObject::connect(slLight, &QSlider::valueChanged, [s](int v){ s->lightIntensity = v / 100.0; applyShading(s); });
 	form->addRow("Light", slLight);
 	wireTip(slLight, "Light", 0.0, 3.0, "", 2);
 
-	QSlider* slAz = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Sun azimuth" slider — key-light azimuth (deg from north, CW)
+	QSlider *slAz = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Sun azimuth" slider — key-light azimuth (deg from north, CW)
 	slAz->setRange(0, 360); slAz->setValue(int(s->lightAz));
 	QObject::connect(slAz, &QSlider::valueChanged, [s](int v){ s->lightAz = v; applyShading(s); });
 	form->addRow("Sun azimuth", slAz);
 	wireTip(slAz, "Sun azimuth", 0, 360, "deg", 0);
 
-	QSlider* slEl = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Sun elevation" slider — key-light elevation above horizon
+	QSlider *slEl = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Sun elevation" slider — key-light elevation above horizon
 	slEl->setRange(0, 90); slEl->setValue(int(s->lightEl));
 	QObject::connect(slEl, &QSlider::valueChanged, [s](int v){ s->lightEl = v; applyShading(s); });
 	form->addRow("Sun elevation", slEl);
 	wireTip(slEl, "Sun elevation", 0, 90, "deg", 0);
 
-	QSlider* slFill = new QSlider(Qt::Horizontal, panel); // GRAPHICAL ELEMENT: "Fill" slider — fill-light intensity (shadow-side lift)
+	QSlider *slFill = new QSlider(Qt::Horizontal, panel); // GRAPHICAL ELEMENT: "Fill" slider — fill-light intensity (shadow-side lift)
 	slFill->setRange(0, 100); slFill->setValue(int(s->fillIntensity * 100));
 	QObject::connect(slFill, &QSlider::valueChanged, [s](int v){ s->fillIntensity = v / 100.0; applyShading(s); });
 	form->addRow("Fill", slFill);
 	wireTip(slFill, "Fill", 0.0, 1.0, "", 2);
 
-	QSlider* slEnv = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Env (IBL)" slider — image-based-light intensity
+	QSlider *slEnv = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Env (IBL)" slider — image-based-light intensity
 	slEnv->setRange(0, 300); slEnv->setValue(int(s->envIntensity * 100));
 	QObject::connect(slEnv, &QSlider::valueChanged, [s](int v){ s->envIntensity = v / 100.0; applyShading(s); });
 	form->addRow("Env (IBL)", slEnv);
@@ -1006,19 +1006,19 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	form->addRow("SSAO radius", slSSAO);
 	wireTip(slSSAO, "SSAO radius", 0, 200, "%", 0);
 
-	QCheckBox* cbIBL = new QCheckBox(panel); cbIBL->setChecked(s->useIBL);   // GRAPHICAL ELEMENT: "Image-based light" checkbox — toggles IBL
+	QCheckBox *cbIBL = new QCheckBox(panel); cbIBL->setChecked(s->useIBL);   // GRAPHICAL ELEMENT: "Image-based light" checkbox — toggles IBL
 	QObject::connect(cbIBL, &QCheckBox::toggled, [s](bool b){ s->useIBL = b; applyShading(s); });
 	form->addRow("Image-based light", cbIBL);
 
-	QCheckBox* cbSSAO = new QCheckBox(panel); cbSSAO->setChecked(s->useSSAO); // GRAPHICAL ELEMENT: "Ambient occlusion" checkbox — toggles SSAO pass
+	QCheckBox *cbSSAO = new QCheckBox(panel); cbSSAO->setChecked(s->useSSAO); // GRAPHICAL ELEMENT: "Ambient occlusion" checkbox — toggles SSAO pass
 	QObject::connect(cbSSAO, &QCheckBox::toggled, [s](bool b){ s->useSSAO = b; applyShading(s); });
 	form->addRow("Ambient occlusion", cbSSAO);
 
-	QCheckBox* cbTone = new QCheckBox(panel); cbTone->setChecked(s->useTone); // GRAPHICAL ELEMENT: "Tone mapping" checkbox — toggles tone-map pass
+	QCheckBox *cbTone = new QCheckBox(panel); cbTone->setChecked(s->useTone); // GRAPHICAL ELEMENT: "Tone mapping" checkbox — toggles tone-map pass
 	QObject::connect(cbTone, &QCheckBox::toggled, [s](bool b){ s->useTone = b; applyShading(s); });
 	form->addRow("Tone mapping", cbTone);
 
-	QCheckBox* cbFXAA = new QCheckBox(panel); cbFXAA->setChecked(s->useFXAA); // GRAPHICAL ELEMENT: "FXAA" checkbox — toggles anti-alias post-pass
+	QCheckBox *cbFXAA = new QCheckBox(panel); cbFXAA->setChecked(s->useFXAA); // GRAPHICAL ELEMENT: "FXAA" checkbox — toggles anti-alias post-pass
 	QObject::connect(cbFXAA, &QCheckBox::toggled, [s](bool b){ s->useFXAA = b; applyShading(s); });
 	form->addRow("FXAA", cbFXAA);
 
@@ -1028,9 +1028,9 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// when turned ON, uncheck the other two (QSignalBlocker stops their handlers re-firing), then
 	// re-derive ALL Scene flags from the live checkbox states (so an off-handler never wrongly
 	// clears a flag the just-checked box set). hillGrd selects the Lambert vs grdimage style.
-	QCheckBox* cbShadow = new QCheckBox(panel); cbShadow->setChecked(s->useShadows);                  // GRAPHICAL ELEMENT: "Cast shadows" checkbox
-	QCheckBox* cbHillL  = new QCheckBox(panel); cbHillL->setChecked(s->useHillshade && !s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (Lambert)" checkbox
-	QCheckBox* cbHillG  = new QCheckBox(panel); cbHillG->setChecked(s->useHillshade &&  s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (grdimage)" checkbox
+	QCheckBox *cbShadow = new QCheckBox(panel); cbShadow->setChecked(s->useShadows);                  // GRAPHICAL ELEMENT: "Cast shadows" checkbox
+	QCheckBox *cbHillL  = new QCheckBox(panel); cbHillL->setChecked(s->useHillshade && !s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (Lambert)" checkbox
+	QCheckBox *cbHillG  = new QCheckBox(panel); cbHillG->setChecked(s->useHillshade &&  s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (grdimage)" checkbox
 	auto syncShade = [s, cbShadow, cbHillL, cbHillG]() {
 		s->useShadows   = cbShadow->isChecked();
 		s->useHillshade = cbHillL->isChecked() || cbHillG->isChecked();
@@ -1064,13 +1064,13 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	const bool hasShadedBody = !imageOnly && !pointCloud;
 	dock->setVisible(hasShadedBody);                         // GRAPHICAL ELEMENT: Shading dock initial fold state
 	// GRAPHICAL ELEMENT: View menu "Shading Panel" item — folds/un-folds the Shading dock
-	QAction* aShade = mView->addAction("Shading &Panel", [dock](){ dock->setVisible(!dock->isVisible()); });
+	QAction *aShade = mView->addAction("Shading &Panel", [dock](){ dock->setVisible(!dock->isVisible()); });
 	aShade->setCheckable(true); aShade->setChecked(hasShadedBody);   // menu checkmark tracks the dock's visibility
 
 	// --- Scene Objects dock: Fledermaus-style show/hide checkbox per element -
 	// One checkbox for the surface, the image drape (if any), and every line/point
 	// overlay. rebuildSceneObjects() repopulates it whenever an overlay is added.
-	QDockWidget* objDock = new QDockWidget("Scene Objects", win); // GRAPHICAL ELEMENT: the "Scene Objects" dock — foldable side panel
+	QDockWidget *objDock = new QDockWidget("Scene Objects", win); // GRAPHICAL ELEMENT: the "Scene Objects" dock — foldable side panel
 	objDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea); // user may drag-fold it to the LEFT or RIGHT window edge
 	objDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable); // foldable: drag/float/close
 	s->objPanel = new QWidget(objDock);                      // container widget; rebuildSceneObjects() fills it with per-object checkboxes
@@ -1080,7 +1080,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		s->surfName = objname;                // named solid -> checkbox shows the solid name
 	rebuildSceneObjects(s);                                  // populate the per-object show/hide checkboxes now
 	// GRAPHICAL ELEMENT: View menu "Scene Objects Panel" item — folds/un-folds the Scene Objects dock
-	QAction* aObjs = mView->addAction("Scene &Objects Panel", [objDock](){ objDock->setVisible(!objDock->isVisible()); });
+	QAction *aObjs = mView->addAction("Scene &Objects Panel", [objDock](){ objDock->setVisible(!objDock->isVisible()); });
 	aObjs->setCheckable(true); aObjs->setChecked(true);      // menu checkmark tracks the dock's visibility
 
 	// --- FOLD button on the side docks --------------------------------------
@@ -1090,7 +1090,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// the strip carries the title rotated 90° down the window edge. Un-folding restores the body
 	// and the remembered open width. This is the fold control Qt's default title bar never gave us.
 	auto makeFoldable = [win](QDockWidget* d, QWidget* body, const QString& titleText) -> FoldTitleBar* {
-		FoldTitleBar* bar = new FoldTitleBar(titleText, d);  // GRAPHICAL ELEMENT: dock title bar = fold toggle
+		FoldTitleBar *bar = new FoldTitleBar(titleText, d);  // GRAPHICAL ELEMENT: dock title bar = fold toggle
 		d->setTitleBarWidget(bar);                        // swap Qt's default title bar for our fold strip
 		bar->onClick = [win, d, body, bar]() {
 			const bool fold = body->isVisible();          // visible now -> fold it away
@@ -1111,7 +1111,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// --- Bottom tabbed panel: Profile / Julia Console / Data Viewer ----------
 	// ONE dock holds a QTabWidget. A "Hide" button in the tab-bar corner collapses the panel
 	// BODY down to just the tab strip (so the central 3-D view extends) and toggles to "Show".
-	QDockWidget* bottomDock = new QDockWidget("Panels", win);
+	QDockWidget *bottomDock = new QDockWidget("Panels", win);
 	bottomDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
 	QTabWidget*  tabs = new QTabWidget(bottomDock);
 	tabs->setDocumentMode(true);
@@ -1128,8 +1128,8 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Tab 1 — Julia console: the viewer runs in-process in Julia, so a typed command is handed
 	// straight back to Julia (g_juliaEval) and eval'd in Main. The callback binds `fig` to THIS
 	// window, so `add!(fig, D)`, `view_points(...)`, etc. reach the figure with no handle typing.
-	QWidget*     conPanel = new QWidget(tabs);
-	QVBoxLayout* conLay   = new QVBoxLayout(conPanel);
+	QWidget     *conPanel = new QWidget(tabs);
+	QVBoxLayout *conLay   = new QVBoxLayout(conPanel);
 	conLay->setContentsMargins(2, 2, 2, 2);
 	QPlainTextEdit* conOut = new QPlainTextEdit(conPanel);
 	conOut->setReadOnly(true);
@@ -1169,8 +1169,9 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	// "Hide" corner button: collapse the panel body (extend the 3-D view) / restore it.
 	QToolButton* hideBtn = new QToolButton(tabs);
-	hideBtn->setText("Hide");
+	hideBtn->setText(QString::fromUtf8("\xE2\x96\xBE"));   // ▾ open (setBottomCollapsed swaps the glyph)
 	hideBtn->setAutoRaise(true);
+	hideBtn->setCursor(Qt::PointingHandCursor);
 	hideBtn->setToolTip("Collapse this panel to extend the 3-D view");
 	tabs->setCornerWidget(hideBtn, Qt::TopRightCorner);
 	s->bottomHideBtn = hideBtn;
@@ -1197,6 +1198,9 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		int h = s->bottomDock->height();
 		if (h > 0) win->resizeDocks({s->bottomDock}, {h * 3 / 4}, Qt::Vertical);
 	}
+	// Start with the "Panels" dock minimized to its tab strip; the host's show_table /
+	// profile track / View-menu actions un-collapse it on demand (setBottomCollapsed(s,false)).
+	setBottomCollapsed(s, true);
 
 	// interactor must be live before we attach observers
 	widget->renderWindow()->Render();

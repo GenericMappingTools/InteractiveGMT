@@ -302,8 +302,13 @@ static void setBottomCollapsed(Scene* s, bool collapse) {
 	s->bottomTabs->setMaximumHeight(collapse ? s->bottomTabs->tabBar()->sizeHint().height() + 6
 											  : QWIDGETSIZE_MAX);
 	s->bottomCollapsed = collapse;
-	if (s->bottomHideBtn)
-		s->bottomHideBtn->setText(collapse ? "Show" : "Hide");
+	if (s->bottomHideBtn) {
+		// Triangle fold affordance, matching the Scene Objects dock: ▸ collapsed, ▾ open.
+		s->bottomHideBtn->setText(collapse ? QString::fromUtf8("\xE2\x96\xB8")   // ▸
+										   : QString::fromUtf8("\xE2\x96\xBE"));  // ▾
+		s->bottomHideBtn->setToolTip(collapse ? "Expand this panel"
+											  : "Collapse this panel to extend the 3-D view");
+	}
 }
 
 // Profile-track helpers (defined after ProfilePanel, below). DragCB drives these on Ctrl+drag.
