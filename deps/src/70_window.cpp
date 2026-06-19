@@ -168,7 +168,14 @@ struct FoldTitleBar : QWidget {
 // Polygon draw/edit tool (defined in 85_polygon.cpp, #included after this file). The toolbar
 // button toggles draw mode via polygonSetMode; the mouse gestures are driven from GLView.
 static void polygonSetMode(Scene* s, bool on);
+static void polygonToolToggled(Scene* s, QAction* act, Scene::ShapeKind shape, bool on);
 static QIcon makePolygonIcon();
+static QIcon makePolylineIcon();
+static QIcon makeRectIcon();
+static QIcon makeCircleIcon();
+static QIcon makeTextIcon();
+static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only view-toggle button
+static int  polyHitText(Scene* s, int x, int y, double tol);   // text label under the cursor (85_polygon.cpp)
 
 static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 double x0, double x1, double y0, double y1,
@@ -587,7 +594,8 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// pumps the loop), so the window must outlive this stack frame.
 	QMainWindow *win = new QMainWindow();
 	win->setAttribute(Qt::WA_DeleteOnClose);
-	win->setWindowTitle(title ? title : "GMT 3-D Viewer  (Qt + VTK)");
+	win->setWindowTitle(title ? title : "iGMT");
+	win->setWindowIcon(appIcon());          // per-window titlebar icon (matches the app-wide icon)
 	win->resize(1100, 800);
 	win->setCentralWidget(widget);
 	win->statusBar()->showMessage("ready");
@@ -712,7 +720,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// NEW window). 2D/3D -> the shared act2D toggle. More buttons can be appended here later.
 	QToolBar* tb = win->addToolBar("Main");
 	tb->setMovable(false);
-	tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+	tb->setToolButtonStyle(Qt::ToolButtonIconOnly);   // icon-only toolbar — no text labels on any button
 	QAction* actOpen = tb->addAction(win->style()->standardIcon(QStyle::SP_DirOpenIcon), "");  // icon only, no text
 	actOpen->setToolTip("Open a grid / image / table file in a new window");
 	QObject::connect(actOpen, &QAction::triggered, [s, win]() {
@@ -723,27 +731,49 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		static std::vector<char> buf(1 << 12);
 		g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
 	});
-	// 2D/3D toggle: a plain text button showing the CURRENT view ("3D" in 3D, "2D" in flat 2D).
-	// Its own QToolButton (not act2D, which keeps the descriptive "Flat 2D (map)" menu text). The
-	// label tracks act2D's checked state, so any toggle source (menu, context menu, bare-image init
-	// in 90_c_api) keeps it in sync.
+	// 2D/3D toggle: an icon-only button whose glyph shows the CURRENT view ("3D" in 3D, "2D" in flat
+	// 2D). Its own QToolButton (not act2D, which keeps the descriptive "Flat 2D (map)" menu text).
+	// The icon tracks act2D's checked state, so any toggle source (menu, context menu, bare-image
+	// init in 90_c_api) keeps it in sync.
 	QToolButton* tb2D = new QToolButton(tb);
-	tb2D->setText("3D");
+	tb2D->setToolButtonStyle(Qt::ToolButtonIconOnly);
+	tb2D->setIcon(makeViewModeIcon(false));
 	tb2D->setToolTip("Toggle flat 2D map / 3D perspective view");
 	QObject::connect(tb2D, &QToolButton::clicked, actToggle2D);
-	QObject::connect(s->act2D, &QAction::toggled, tb2D, [tb2D](bool on){ tb2D->setText(on ? "2D" : "3D"); });
+	QObject::connect(s->act2D, &QAction::toggled, tb2D, [tb2D](bool on){ tb2D->setIcon(makeViewModeIcon(on)); });
 	tb->addWidget(tb2D);
 
-	// Polygon tool: a checkable toolbar button (pentagon icon). Checked = draw mode — left-click
-	// adds vertices, right-click removes the last, double-left-click closes the polygon. When the
-	// button is OFF, a double-click on a finished polygon enters vertex-edit mode (square handles,
-	// click-drag a vertex). polygonSetMode lives in 85_polygon.cpp.
-	QAction* actPoly = tb->addAction(makePolygonIcon(), "Polygon");   // GRAPHICAL ELEMENT: polygon-draw toggle button
-	actPoly->setCheckable(true);
-	actPoly->setToolTip("Draw a polygon: left-click adds vertices, right-click undoes one, "
-						"double-click closes it. Double-click a polygon to edit its vertices.");
-	s->polyAct = actPoly;
-	QObject::connect(actPoly, &QAction::toggled, [s](bool on){ polygonSetMode(s, on); });
+	tb->addSeparator();
+
+	// --- five draw tools (all icon-only, mutually-exclusive checkable buttons) ----------------
+	// Each routes through the one shape machinery in 85_polygon.cpp; polygonToolToggled sets the
+	// active ShapeKind, untoggles the other four, and enters/leaves draw mode. A drawn shape is a
+	// `Polygon` (vertex ring) so all share preview/edit/delete; only Text differs.
+	//
+	//   Polygon  — left-click adds vertices, right-click undoes, double-click closes (>=3).
+	//   Polyline — same, but double-click ends an OPEN chain (>=2).
+	//   Rectangle/Circle — two clicks (first corner/centre, then opposite corner/edge); a live
+	//                      preview trails the cursor between them.
+	//   Text     — one click on the scene, then a dialog asks for the string.
+	// When all are OFF, double-clicking a finished polygon enters vertex-edit mode (square handles).
+	struct ToolDef { QIcon icon; const char* tip; Scene::ShapeKind kind; };
+	const ToolDef tools[] = {
+		{ makePolygonIcon(),  "Draw a polygon: left-click adds vertices, right-click undoes one, "
+		                      "double-click closes it. Double-click a polygon to edit its vertices.", Scene::SH_Polygon  },
+		{ makePolylineIcon(), "Draw a polyline: left-click adds vertices, right-click undoes one, "
+		                      "double-click ends the open line.",                                     Scene::SH_Polyline },
+		{ makeRectIcon(),     "Draw a rectangle: click one corner, then the opposite corner.",        Scene::SH_Rect     },
+		{ makeCircleIcon(),   "Draw a circle: click the centre, then a point on the edge.",           Scene::SH_Circle   },
+		{ makeTextIcon(),     "Place a text label: click a point on the scene, then type the text.",  Scene::SH_Text     },
+	};
+	for (const ToolDef& td : tools) {
+		QAction* act = tb->addAction(td.icon, "");   // GRAPHICAL ELEMENT: icon-only draw-tool toggle (no text)
+		act->setCheckable(true);
+		act->setToolTip(td.tip);
+		const Scene::ShapeKind kind = td.kind;
+		QObject::connect(act, &QAction::toggled, [s, act, kind](bool on){ polygonToolToggled(s, act, kind, on); });
+		s->shapeActs.push_back(act);
+	}
 
 	// --- native right-click context menu over the 3-D view ------------------
 	widget->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -774,6 +804,11 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				if (pgi >= 0) {
 					popupLineObjectMenu(s, LineRef{ LK_Polygon, s->polys[pgi].line },
 										QString::fromStdString(s->polys[pgi].name), widget->mapToGlobal(pos));
+					return;
+				}
+				const int tHit = polyHitText(s, px, py, 14.0);    // a text label under the cursor?
+				if (tHit >= 0) {
+					textLabelMenu(s, s->texts[tHit].actor, widget->mapToGlobal(pos));
 					return;
 				}
 				int ovMode = 1;
@@ -943,7 +978,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// (resizeDocks), so the collapsed dock no longer leaves its full open width as dead space;
 	// the strip carries the title rotated 90° down the window edge. Un-folding restores the body
 	// and the remembered open width. This is the fold control Qt's default title bar never gave us.
-	auto makeFoldable = [win](QDockWidget* d, QWidget* body, const QString& titleText) {
+	auto makeFoldable = [win](QDockWidget* d, QWidget* body, const QString& titleText) -> FoldTitleBar* {
 		FoldTitleBar* bar = new FoldTitleBar(titleText, d);  // GRAPHICAL ELEMENT: dock title bar = fold toggle
 		d->setTitleBarWidget(bar);                        // swap Qt's default title bar for our fold strip
 		bar->onClick = [win, d, body, bar]() {
@@ -957,9 +992,10 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 							   : (bar->openWidth > 0 ? bar->openWidth : 220);
 			win->resizeDocks({d}, {w}, Qt::Horizontal);   // collapse to / expand from the strip width
 		};
+		return bar;
 	};
 	makeFoldable(dock,    panel,        "Shading");        // Shading dock fold button
-	makeFoldable(objDock, s->objPanel,  "Scene Objects");  // Scene Objects dock fold button
+	s->objFoldBar = makeFoldable(objDock, s->objPanel, "Scene Objects");  // keep the bar so an empty launcher can start folded
 
 	// --- Bottom tabbed panel: Profile / Julia Console / Data Viewer ----------
 	// ONE dock holds a QTabWidget. A "Hide" button in the tab-bar corner collapses the panel
@@ -1043,6 +1079,13 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// both get real width. Without this the window opens at its minimum and the central VTK view
 	// squeezes the right dock to ZERO width -> the Shading dock is invisible ("no docks").
 	win->show();
+
+	// Open the bottom "Panels" dock 25% shorter than its natural height, giving the central
+	// 3-D view more room. resizeDocks only bites after show(), when the layout has a real height.
+	if (s->bottomDock) {
+		int h = s->bottomDock->height();
+		if (h > 0) win->resizeDocks({s->bottomDock}, {h * 3 / 4}, Qt::Vertical);
+	}
 
 	// interactor must be live before we attach observers
 	widget->renderWindow()->Render();

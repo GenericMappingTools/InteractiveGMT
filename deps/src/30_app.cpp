@@ -1,4 +1,5 @@
 // (Julia) pumps the loop via gmtvtk_process_events so the REPL stays interactive.
+#include "_app_icon.h"               // embedded iGMT icon bytes (kAppIconPng / kAppIconPngLen)
 static QApplication* g_app = nullptr;
 static int           g_openWindows = 0;
 static vtkRenderWindow* g_lastRW = nullptr;   // most-recent window, for gmtvtk_save_png
@@ -24,6 +25,16 @@ static JuliaDropFn g_juliaDrop = nullptr;
 static std::unordered_set<Scene*> g_scenes;
 static bool sceneAlive(Scene* s) { return s && g_scenes.count(s) != 0; }
 
+// iGMT application/window icon, decoded once from the embedded PNG (see _app_icon.h).
+static QIcon appIcon() {
+	static QIcon ic = []{
+		QPixmap pm;
+		pm.loadFromData(kAppIconPng, kAppIconPngLen, "PNG");
+		return QIcon(pm);
+	}();
+	return ic;
+}
+
 static void ensureApp() {
 	if (g_app) return;
 	// QApplication needs argc/argv that outlive it; there is none when driven from
@@ -33,6 +44,7 @@ static void ensureApp() {
 	static char* s_argv[] = { s_arg0, nullptr };
 	QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
 	g_app = new QApplication(s_argc, s_argv);
+	g_app->setWindowIcon(appIcon());   // taskbar / app-wide default icon
 }
 
 // Middle button, done by hand (not the default trackball, which the gizmo's left-drag

@@ -87,7 +87,7 @@ GMTVTK_API void* gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 	}
 	double xfac, zfac, ve0;
 	computeScales(geographic, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
-	Scene* s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, cz, crgb, ncolor, img, iw, ih, ibands, edges, false, geographic, title,
+	Scene *s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, cz, crgb, ncolor, img, iw, ih, ibands, edges, false, geographic, title,
 	                        /*objname=*/nullptr, /*imageOnly=*/image_only != 0,
 	                        /*gz=*/tiled ? z : nullptr, /*gnx=*/nx, /*gny=*/ny);
 	if (s && !image_only && !tiled) {                  // drape path: keep full-res z for hover/profile
@@ -101,7 +101,7 @@ GMTVTK_API void* gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 		// orthographic map. image_only==1 -> REFERENCED image: keep the X/Y (lon/lat) axes and
 		// leave a margin so their labels stay on screen. image_only==2 -> PLAIN image (no georef):
 		// hide the axes entirely and fill the viewport edge-to-edge.
-		vtkCamera* cam = s->ren->GetActiveCamera();
+		vtkCamera *cam = s->ren->GetActiveCamera();
 		double fp[3]; cam->GetFocalPoint(fp);
 		cam->SetViewUp(0.0, 1.0, 0.0);
 		cam->SetPosition(fp[0], fp[1], fp[2] + 1.0);
@@ -138,7 +138,7 @@ GMTVTK_API void* gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 // (z metres). `pointsize` in px (<=0 = default). Ctrl+right-drag selects points (box marquee,
 // toggle, Ctrl+Z undo); pick(r,g,b) is the highlight colour for the selected points.
 // Returns the figure handle (Scene*); read the selection back with gmtvtk_get_selection.
-GMTVTK_API void* gmtvtk_view_points(const double* xyz, int npts,
+GMTVTK_API void *gmtvtk_view_points(const double* xyz, int npts,
 									const double* cz, const double* crgb, int ncolor,
 									double x0, double x1, double y0, double y1, int geographic,
 									double pointsize, double pickr, double pickg, double pickb,
@@ -149,7 +149,7 @@ GMTVTK_API void* gmtvtk_view_points(const double* xyz, int npts,
 	auto pd = makePointCloud(xyz, npts, zmin, zmax);
 	double xfac, zfac, ve0;
 	computeScales(geographic, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
-	Scene* s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0,
+	Scene *s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0,
 							cz, crgb, ncolor, nullptr, 0, 0, 0, 0, true, geographic, title);
 	if (!s)
 		return nullptr;
@@ -199,7 +199,7 @@ GMTVTK_API void* gmtvtk_view_fv(const double* xyz, int nv, const int* sides, int
 	const double ve = (zscale > 0.0) ? zscale : 1.0; // GMTfv.zscale already resolves the exaggeration
 	// objname (named solid e.g. "Torus") labels the Scene Objects checkbox; buildAndShow sets it
 	// BEFORE the panel is built so the checkbox is created once with the right name (no overlap).
-	Scene* s = buildAndShow(pd, x0, x1, y0, y1, z0, z1, 1.0, 1.0, ve,
+	Scene *s = buildAndShow(pd, x0, x1, y0, y1, z0, z1, 1.0, 1.0, ve,
 							direct ? nullptr : cz, direct ? nullptr : crgb, nc,
 							nullptr, 0, 0, 0, edges, false, geographic, title, objname);
 	if (!s)
@@ -251,7 +251,7 @@ GMTVTK_API void* gmtvtk_view_fv(const double* xyz, int nv, const int* sides, int
 
 // Number of points currently selected (Ctrl+right-drag) in a point-cloud figure.
 GMTVTK_API int gmtvtk_selection_count(void* handle) {
-	Scene* s = static_cast<Scene*>(handle);
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s))
 		return 0;
 	return (int)s->rbSel.size();
@@ -260,7 +260,7 @@ GMTVTK_API int gmtvtk_selection_count(void* handle) {
 // Copy up to `n` selected point ids (0-based, into the cloud passed to view_points) into
 // `out`. Returns the number copied.
 GMTVTK_API int gmtvtk_get_selection(void* handle, int* out, int n) {
-	Scene* s = static_cast<Scene*>(handle);
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !out)
 		return 0;
 	int k = 0;
@@ -336,12 +336,12 @@ GMTVTK_API int gmtvtk_add_curtain_file_h(void *handle, const double *px, const d
 // tab. Returns 1 if shown, 0 if the handle is dead. The data is copied into the table.
 GMTVTK_API int gmtvtk_set_table(void* handle, const char* name, const double* data,
 								int nrows, int ncols, const char* headers) {
-	Scene* s = static_cast<Scene*>(handle);
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !s->dataTable)
 		return 0;
 	if (nrows < 0) nrows = 0;
 	if (ncols < 0) ncols = 0;
-	QTableWidget* t = s->dataTable;
+	QTableWidget *t = s->dataTable;
 	t->clearContents();
 	t->setColumnCount(ncols);
 	t->setRowCount(nrows);
@@ -357,7 +357,7 @@ GMTVTK_API int gmtvtk_set_table(void* handle, const char* name, const double* da
 		for (int c = 0; c < ncols; ++c) {
 			for (int r = 0; r < nrows; ++r) {
 				double v = data[(size_t)c * nrows + r];
-				QTableWidgetItem* it = new QTableWidgetItem(QString::number(v, 'g', 8));
+				QTableWidgetItem *it = new QTableWidgetItem(QString::number(v, 'g', 8));
 				it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
 				t->setItem(r, c, it);
 			}
@@ -385,7 +385,7 @@ GMTVTK_API int gmtvtk_is_alive(void *handle) {
 // Does this window have a primary surface? 0 for a bare empty() launcher (no data yet); used by
 // the drop handler to decide between PROMOTING an empty window vs adding into a populated one.
 GMTVTK_API int gmtvtk_has_surface(void* handle) {
-	Scene* s = static_cast<Scene*>(handle);
+	Scene *s = static_cast<Scene*>(handle);
 	// emptyStart launcher carries a HIDDEN placeholder surf only -> report "no surface" so a dropped
 	// file PROMOTES into a fresh full window (and the launcher is retired) rather than adding in.
 	return (sceneAlive(s) && s->surf && !s->emptyStart) ? 1 : 0;
@@ -394,7 +394,7 @@ GMTVTK_API int gmtvtk_has_surface(void* handle) {
 // Close a window programmatically (WA_DeleteOnClose -> destroy + bookkeeping). Used to retire an
 // empty launcher once a dropped file has been promoted into a full viewer window.
 GMTVTK_API void gmtvtk_close(void* handle) {
-	Scene* s = static_cast<Scene*>(handle);
+	Scene *s = static_cast<Scene*>(handle);
 	if (sceneAlive(s) && s->win) s->win->close();
 }
 
@@ -405,7 +405,7 @@ GMTVTK_API void gmtvtk_view_demo(void) {
 	double xfac, zfac, ve0;
 	computeScales(0, -3, 3, -3, 3, zmin, zmax, xfac, zfac, ve0);
 	buildAndShow(pd, -3, 3, -3, 3, zmin, zmax, xfac, zfac, ve0, nullptr, nullptr, 0,
-				 nullptr, 0, 0, 0, 0, false, 0, "GMT 3-D Viewer  (Qt + VTK)  —  demo");
+				 nullptr, 0, 0, 0, 0, false, 0, "iGMT  —  demo");
 }
 
 // Register the Julia eval callback used by the in-window console dock. `fn` is a Julia
@@ -425,27 +425,28 @@ GMTVTK_API void gmtvtk_set_drop_callback(JuliaDropFn fn) {
 // It is built through buildAndShow (imageOnly => no colorbar) on a tiny placeholder plane that we
 // then hide, so the window carries the real UI; drop a file (or use the toolbar Open button) to
 // load data, which PROMOTES into a fresh full window (emptyStart -> gmtvtk_has_surface reports 0).
-GMTVTK_API void* gmtvtk_open_empty(const char* title) {
+GMTVTK_API void *gmtvtk_open_empty(const char* title) {
 	double zmin = 0.0, zmax = 1.0;
 	const double x0 = 0.0, x1 = 1.0, y0 = 0.0, y1 = 1.0;
 	float z[4] = {0, 0, 0, 0};
 	auto pd = makeGridFromArray(z, 2, 2, x0, x1, y0, y1, zmin, zmax, /*triangulate=*/true);
 	double xfac, zfac, ve0;
 	computeScales(0, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
-	Scene* s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, nullptr, nullptr, 0,
+	Scene *s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, nullptr, nullptr, 0,
 	                        nullptr, 0, 0, 0, 0, false, 0,
-	                        title ? title : "GMT 3-D Viewer  —  drop a file",
+	                        title ? title : "iGMT  —  drop a file",
 	                        /*objname=*/nullptr, /*imageOnly=*/true);
 	if (!s)
 		return nullptr;
 	s->emptyStart = true;                    // hidden placeholder only -> drop promotes to a real window
+	if (s->objFoldBar && s->objFoldBar->onClick) s->objFoldBar->onClick();  // empty launcher: start with Scene Objects folded
 	if (s->surf) s->surf->SetVisibility(0);  // hide the placeholder plane -> blank canvas
 	s->axes->SetVisibility(0);               // no axes until there is data
 	if (s->giz) setGizmoVisible(*s->giz, false);
 
 	// Same flat-2D state a bare image opens in (top-down ortho, drag-rotation locked, "Flat 2D"
 	// button pressed), with the saved 3-D state primed for a later toggle.
-	vtkCamera* cam = s->ren->GetActiveCamera();
+	vtkCamera *cam = s->ren->GetActiveCamera();
 	double fp[3]; cam->GetFocalPoint(fp);
 	cam->SetViewUp(0.0, 1.0, 0.0);
 	cam->SetPosition(fp[0], fp[1], fp[2] + 1.0);
@@ -480,7 +481,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void* handle, const float* z, int nx, int ny
 									const double* cz, const double* crgb, int ncolor,
 									const unsigned char* img, int iw, int ih, int ibands,
 									int image_only, const char* name) {
-	Scene* s = static_cast<Scene*>(handle);
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
 	double zmin = 0.0, zmax = 1.0;
@@ -515,7 +516,8 @@ GMTVTK_API int gmtvtk_add_surface_h(void* handle, const float* z, int nx, int ny
 			vtkNew<vtkColorTransferFunction> ctf;
 			for (int i = 0; i < ncolor; ++i) ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
 			lut = ctf; ctfRange = true;
-		} else {
+		}
+		else {
 			vtkNew<vtkLookupTable> t;
 			t->SetHueRange(0.667, 0.0); t->SetNumberOfTableValues(256); t->SetRampToLinear();
 			t->SetTableRange(zmin, zmax); t->Build(); lut = t;

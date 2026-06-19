@@ -1,3 +1,74 @@
+static void rebuildSceneObjects(Scene* s);          // defined just below; refreshed after edits
+static void textApplyProps(Scene* s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
+
+// Font / colour editor for a text label. Reachable from the label's Scene-Objects row or a canvas
+// right-click. Edits the string, family (Arial/Courier/Times — VTK's built-in faces), size, colour,
+// bold and italic, then re-applies and re-renders.
+static void textPropsDialog(Scene* s, vtkTextActor3D* act) {
+	TextLabel* tl = nullptr;
+	for (auto& t : s->texts) if (t.actor.Get() == act) { tl = &t; break; }
+	if (!tl) return;
+
+	QDialog d(s->widget);
+	d.setWindowTitle("Text Properties");
+	QFormLayout* fl = new QFormLayout(&d);
+	QLineEdit* eText = new QLineEdit(QString::fromStdString(tl->text), &d);
+	QComboBox* eFont = new QComboBox(&d);
+	eFont->addItems({ "Arial", "Courier", "Times" });
+	eFont->setCurrentText(QString::fromStdString(tl->font));
+	QSpinBox* eSize = new QSpinBox(&d); eSize->setRange(4, 300); eSize->setValue(tl->size);
+	QCheckBox* eBold = new QCheckBox("Bold", &d);   eBold->setChecked(tl->bold);
+	QCheckBox* eItal = new QCheckBox("Italic", &d); eItal->setChecked(tl->italic);
+	QColor col = QColor::fromRgbF(tl->color[0], tl->color[1], tl->color[2]);
+	QPushButton* eColor = new QPushButton(&d);
+	auto paintSwatch = [eColor](const QColor& c) { eColor->setStyleSheet("background:" + c.name()); };
+	paintSwatch(col);
+	QObject::connect(eColor, &QPushButton::clicked, [&]() {
+		const QColor c = QColorDialog::getColor(col, &d, "Text colour");
+		if (c.isValid()) { col = c; paintSwatch(c); }
+	});
+	fl->addRow("Text", eText);
+	fl->addRow("Font", eFont);
+	fl->addRow("Size", eSize);
+	fl->addRow(eBold);
+	fl->addRow(eItal);
+	fl->addRow("Colour", eColor);
+	QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
+	fl->addRow(bb);
+	QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
+	if (d.exec() != QDialog::Accepted) return;
+
+	tl->text   = eText->text().toStdString();
+	tl->font   = eFont->currentText().toStdString();
+	tl->size   = eSize->value();
+	tl->bold   = eBold->isChecked();
+	tl->italic = eItal->isChecked();
+	tl->color[0] = col.redF(); tl->color[1] = col.greenF(); tl->color[2] = col.blueF();
+	textApplyProps(s, *tl);
+	rebuildSceneObjects(s);                            // the row label tracks the (possibly new) text
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Right-click menu for a text label: edit properties or delete it.
+static void textLabelMenu(Scene* s, vtkTextActor3D* act, const QPoint& globalPos) {
+	QMenu m(s->widget);
+	QAction* props = m.addAction("Text Properties…");
+	QAction* del   = m.addAction("Delete text");
+	QAction* chosen = m.exec(globalPos);
+	if (chosen == props) { textPropsDialog(s, act); return; }
+	if (chosen != del) return;
+	for (size_t i = 0; i < s->texts.size(); ++i) {
+		if (s->texts[i].actor.Get() != act) continue;
+		if (s->axesRen) s->axesRen->RemoveActor(act);
+		if (s->ren)     s->ren->RemoveActor(act);   // (harmless if it was on the overlay layer)
+		s->texts.erase(s->texts.begin() + i);
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return;
+	}
+}
+
 static void rebuildSceneObjects(Scene* s) {
 	if (!s || !s->objPanel)
 		return;
@@ -49,9 +120,24 @@ static void rebuildSceneObjects(Scene* s) {
 	}
 	for (auto& cu : s->curtains)
 		addRow(QString::fromStdString(cu.name), cu.actor);
-	for (auto& pg : s->polys) {                          // user-drawn polygons ("polygon N")
+	for (auto& pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
 		LineRef lr{ LK_Polygon, pg.line };
 		addRow(QString::fromStdString(pg.name), pg.line, &lr);
+	}
+	for (auto& tl : s->texts) {                          // user-placed text labels (toggle + right-click Delete)
+		if (!tl.actor) continue;
+		vtkTextActor3D* act = tl.actor.Get();
+		QCheckBox* cb = new QCheckBox(QString::fromStdString(tl.name), s->objPanel);
+		cb->setChecked(act->GetVisibility() != 0);
+		QObject::connect(cb, &QCheckBox::toggled, [s, act](bool on) {
+			act->SetVisibility(on ? 1 : 0);
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		});
+		cb->setContextMenuPolicy(Qt::CustomContextMenu);
+		QObject::connect(cb, &QWidget::customContextMenuRequested, [s, act, cb](const QPoint& p) {
+			textLabelMenu(s, act, cb->mapToGlobal(p));
+		});
+		col->addWidget(cb);
 	}
 	if (s->profLine && s->profLine->GetVisibility()) {  // the profile track (when one exists)
 		LineRef lr{ LK_Profile, s->profLine };

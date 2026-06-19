@@ -122,8 +122,10 @@ end
 function _sample_grid(G::GMTgrid, x::Real, y::Real)
 	ny, nx = size(G.z)
 	r = G.range
-	dx = nx > 1 ? (r[2] - r[1]) / (nx - 1) : 1.0
-	dy = ny > 1 ? (r[4] - r[3]) / (ny - 1) : 1.0
+	#dx = nx > 1 ? (r[2] - r[1]) / (nx - 1) : 1.0
+	dx = (r[2] - r[1]) / (nx - 1)
+	#dy = ny > 1 ? (r[4] - r[3]) / (ny - 1) : 1.0
+	dy = (r[4] - r[3]) / (ny - 1)
 	fx = (x - r[1]) / dx;  fy = (y - r[3]) / dy
 	i = clamp(floor(Int, fx), 0, nx - 2);  tx = clamp(fx - i, 0.0, 1.0)
 	j = clamp(floor(Int, fy), 0, ny - 2);  ty = clamp(fy - j, 0.0, 1.0)

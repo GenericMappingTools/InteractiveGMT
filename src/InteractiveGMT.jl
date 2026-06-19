@@ -15,6 +15,7 @@ Windows-only (the viewer DLL is a Windows binary).
 module InteractiveGMT
 
 using GMT
+#using PrecompileTools
 
 # --- C-API DLL loader (resolved at runtime in __init__; see libgmtvtk.jl) ----------------
 include("libgmtvtk.jl")
@@ -43,6 +44,9 @@ export view_grid, view_image, view_points, view_fv, view_demo, iview,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty
 
+#@compile_workload begin
+#end
+	
 # Load the viewer DLL + register the Julia-console callback. RUNTIME ONLY — a dlopen handle, the
 # dlsym pointers and the @cfunction are all runtime values that cannot be baked into a precompiled
 # image, so they must be created here, never at top level. Tolerant of a missing/unbuilt DLL (and

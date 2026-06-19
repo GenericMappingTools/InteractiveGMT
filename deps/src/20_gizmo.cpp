@@ -314,7 +314,8 @@ void DragCB(vtkObject* caller, unsigned long eid, void* clientData, void*) {
 	// The polygon tool owns the left button while a vertex is being dragged or a polygon is being
 	// drawn — the gizmo must NEVER rotate/tilt then (a vertex edit must not also move the camera).
 	// Abort so neither the gizmo nor the trackball acts on this event.
-	if (c->s->polyDragVert >= 0 || (c->s->polyMode && c->s->polyDrawing)) {
+	if (c->s->polyDragVert >= 0 || c->s->textDrag >= 0 ||
+		(c->s->polyMode && (c->s->polyDrawing || c->s->polyShape == Scene::SH_Text))) {
 		c->grab = Grab::None;
 		if (c->dragCmd) c->dragCmd->SetAbortFlagOnExecute(1);
 		return;

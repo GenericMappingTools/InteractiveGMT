@@ -21,6 +21,7 @@
 #include <QDialogButtonBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QSpinBox>
 #include <QPushButton>
 #include <QSurfaceFormat>
 #include <QString>
@@ -116,6 +117,7 @@
 #include <vtkCylinderSource.h>
 #include <vtkLineSource.h>
 #include <vtkBillboardTextActor3D.h>
+#include <vtkTextActor3D.h>
 #include <vtkTransform.h>
 #include <vtkTransformPolyDataFilter.h>
 #include <vtkLight.h>

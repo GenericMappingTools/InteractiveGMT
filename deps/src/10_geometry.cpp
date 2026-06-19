@@ -1,6 +1,7 @@
 struct Gizmo;     // Fledermaus-style scale/tilt/azimuth handle (defined below)
 struct QuadNode;  // tiled-LOD pyramid node (defined below Scene)
 struct Scene;     // the per-window scene (defined below; forward-declared for the line-tool decls)
+struct FoldTitleBar;  // foldable dock title bar (defined in 70_window.cpp; Scene keeps a ptr to fold programmatically)
 
 // A caller-supplied GMTdataset drawn over the surface as lines or points. Each carries
 // its own vtkActor so the right-click context menu can retune its colour / line style /
@@ -32,10 +33,26 @@ struct ExtraObj {
 // TRUE coords; the line actor is hung in the surface's scaled space (xfac,1,zfac*ve), so it
 // tracks VE like the other overlays. Built by 85_polygon.cpp.
 struct Polygon {
-	std::vector<std::array<double,3>> v;     // vertices, TRUE coords; closed ring (first == last)
-	vtkSmartPointer<vtkActor>    line;       // the closed polyline actor
+	std::vector<std::array<double,3>> v;     // vertices, TRUE coords; closed ring (first == last) when closed
+	vtkSmartPointer<vtkActor>    line;       // the polyline actor
 	vtkSmartPointer<vtkPolyData> linePD;     // its geometry (rebuilt as vertices move)
 	std::string name;                        // label shown in the Scene Objects panel ("polygon N")
+	bool closed = true;                      // closed ring (polygon/rect/circle) vs open chain (polyline)
+};
+
+// A user-placed text label from the toolbar text tool. Lies FLAT on the z=0 (XY) plane: a
+// vtkTextActor3D renders the text into its local XY plane, anchored at (x,y,0). Stored in TRUE
+// coords (x,y); the actor sits in the surface's scaled space (x*xfac). Left-click-drag moves it on
+// the plane; its font (family/size/colour/bold/italic) is editable from the Scene Objects menu.
+struct TextLabel {
+	std::array<double,3> pos;                // anchor on the XY plane, TRUE coords (z always 0)
+	vtkSmartPointer<vtkTextActor3D> actor;
+	std::string text;                        // the shown string (rendered in the scene)
+	std::string name;                        // short Scene Objects label ("Text N")
+	std::string font  = "Arial";             // VTK font family: "Arial" / "Courier" / "Times"
+	int    size  = 18;
+	double color[3] = { 1.0, 1.0, 0.2 };     // default: yellow (readable over relief)
+	bool   bold = false, italic = false;
 };
 
 // A handle to one line-like scene object for the shared Line Properties tool (55_lineprops.cpp).
@@ -142,6 +159,7 @@ struct Scene {
 
 	QAction* act2D = nullptr;        // shared checkable "Flat 2D (map)" action (toolbar + View menu)
 	QWidget* objPanel = nullptr;     // Scene Objects dock content (rebuilt when overlays change)
+	FoldTitleBar* objFoldBar = nullptr;  // Scene Objects dock fold toggle (call ->onClick() to fold/unfold programmatically)
 	std::string surfName;            // Scene Objects label for s->surf ("" -> "Surface"; named solids set it)
 	QPlainTextEdit* console = nullptr;   // Julia console dock output (commands eval'd in Main via g_juliaEval)
 
@@ -193,7 +211,14 @@ struct Scene {
 	// Draw mode (polyMode, toolbar toggle on): left-click adds a vertex, right-click removes the
 	// last, double-left-click closes the polygon. Idle (polyMode off): double-click ON a finished
 	// polygon enters edit mode (polyEdit) — square handles at the vertices, click-drag moves one.
-	std::vector<Polygon> polys;                        // finished polygons
+	// The toolbar offers five draw tools, all routed through this one machinery. Polygon, polyline,
+	// rectangle and circle all finalize into a `Polygon` (a vertex ring; polyline is the only open
+	// one) and so share preview / edit / delete / Scene-Objects / Line-Properties code. Text places
+	// a billboard label instead. polyShape selects which tool the active (checked) button drives.
+	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Rect, SH_Circle, SH_Text };
+	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
+	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
+	std::vector<TextLabel> texts;                      // user-placed text labels
 	bool   polyMode    = false;                        // draw-mode button toggled on
 	bool   polyDrawing = false;                        // mid-building the current polygon
 	std::vector<std::array<double,3>> polyCur;         // in-progress vertices (TRUE coords)
@@ -201,12 +226,14 @@ struct Scene {
 	vtkSmartPointer<vtkPolyData> polyPreviewPD;
 	int    polyEdit     = -1;                          // index into polys being edited (-1 = none)
 	int    polyDragVert = -1;                          // vertex index being click-dragged (-1 = none)
+	int    textDrag     = -1;                          // index into texts being click-dragged (-1 = none)
 	vtkSmartPointer<vtkActor>    polyHandles;          // square vertex handles for the edited polygon
 	vtkSmartPointer<vtkPolyData> polyHandlePD;
 	qint64 polyLastClickMs = -10000;                   // last left-press time (double-click detect)
 	int    polyLastClickX = 0, polyLastClickY = 0;     // last left-press position (px)
 	vtkSmartPointer<vtkCallbackCommand> polyCmd;       // mouse observers (priority above the gizmo)
-	QAction* polyAct = nullptr;                         // toolbar toggle action (checkable)
+	QAction* polyAct = nullptr;                         // active draw toggle action — set on the checked tool
+	std::vector<QAction*> shapeActs;                    // all five draw-tool buttons (for mutual untoggle)
 };
 
 // --- surface accessors: one actor (cloud/FV/drape/image) or a tiled grid -----------------
@@ -840,6 +867,8 @@ static void applyVE(Scene* s) {
 	if (s->rbHL)     s->rbHL->SetScale(s->xfac, 1.0, s->zfac * s->ve);      // selection highlight tracks the cloud
 	for (auto& pg : s->polys)                                               // user polygons hang in the scaled space
 		if (pg.line) pg.line->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	for (auto& tl : s->texts)                                              // text labels lie flat on z=0 (XY plane)
+		if (tl.actor) tl.actor->SetPosition(tl.pos[0] * s->xfac, tl.pos[1], 0.0);
 	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview
 	if (s->polyHandles) s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // edit-mode vertex handles
 	double b[6]; surfGetBounds(s, b);            // bounds already include the scale
