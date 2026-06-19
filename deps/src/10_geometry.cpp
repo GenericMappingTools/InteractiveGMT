@@ -828,20 +828,13 @@ static void rebuildAxisLabels(Scene* s) {
 		}
 	vtkNew<vtkPoints> tp; vtkNew<vtkCellArray> tl;
 	// Terminology: ANNOTATIONS = the coordinate NUMBERS (xlabels/ylabels billboards). LABELS =
-	// the axis NAME titles (axTitle, e.g. "lon"/"lat"). Flat-2D map hides BOTH for a clean
-	// maximized map. A bare image is 2D: show coordinate ANNOTATIONS (when referenced) but never
-	// an axis-NAME LABEL.
-	// Grids: flat-2D hides the coordinate numbers for a clean map. A referenced IMAGE is itself a
-	// 2D map (s->flat2d set at startup) but must KEEP its lon/lat numbers -> never hide for imageOnly.
-	const bool hideAnnot = s->flat2d && !s->imageOnly;
+	// the axis NAME titles (axTitle, e.g. "lon"/"lat"). Flat-2D is a top-down lon/lat MAP: it
+	// KEEPS the X/Y coordinate numbers (like the imageOnly map) and only hides the axis-NAME
+	// titles for a clean look. The Z axis is perpendicular to the screen in top-down view, so it
+	// (line + numbers) is hidden below.
 	const bool hideNames = s->flat2d || s->imageOnly;
-	if (hideAnnot) {
-		for (auto& l : s->xlabels) l->SetVisibility(0);
-		for (auto& l : s->ylabels) l->SetVisibility(0);
-	} else {
-		placeTickBillboards(s, s->xlabels, s->x0, s->x1, b[0], b[1], 0, xEdgeY, b[4], ctr, tp, tl, tickLen);
-		placeTickBillboards(s, s->ylabels, s->y0, s->y1, b[2], b[3], 1, yEdgeX, b[4], ctr, tp, tl, tickLen);
-	}
+	placeTickBillboards(s, s->xlabels, s->x0, s->x1, b[0], b[1], 0, xEdgeY, b[4], ctr, tp, tl, tickLen);
+	placeTickBillboards(s, s->ylabels, s->y0, s->y1, b[2], b[3], 1, yEdgeX, b[4], ctr, tp, tl, tickLen);
 	if (hideNames) {
 		if (s->axTitle[0]) s->axTitle[0]->SetVisibility(0);
 		if (s->axTitle[1]) s->axTitle[1]->SetVisibility(0);
@@ -850,7 +843,17 @@ static void rebuildAxisLabels(Scene* s) {
 		placeAxisTitle(s, s->axTitle[0], 0, 0.5*(b[0]+b[1]), xEdgeY, b[4], ctr, tickLen);
 		placeAxisTitle(s, s->axTitle[1], 1, 0.5*(b[2]+b[3]), yEdgeX, b[4], ctr, tickLen);
 	}
-	placeTickBillboards(s, s->zlabels, s->zmin, s->zmax, b[4], b[5], 2, zx, zy, ctr, tp, tl, tickLen);
+	// Z axis: hide in flat-2D (top-down map -> Z points at the camera, meaningless) or when the
+	// drawn Z extent is degenerate. Drives the cube Z LINE/gridlines + the Z number billboards so
+	// the toggle is self-correcting every render (no stale state on 2D<->3D switch).
+	const bool zHide = s->flat2d || (b[5] - b[4]) <= 0.0;
+	s->axes->SetZAxisVisibility(zHide ? 0 : 1);
+	if (zHide) s->axes->DrawZGridlinesOff(); else s->axes->DrawZGridlinesOn();
+	if (zHide) {
+		for (auto& l : s->zlabels) l->SetVisibility(0);
+	} else {
+		placeTickBillboards(s, s->zlabels, s->zmin, s->zmax, b[4], b[5], 2, zx, zy, ctr, tp, tl, tickLen);
+	}
 	if (s->axisTickPD) {
 		s->axisTickPD->SetPoints(tp);
 		s->axisTickPD->SetLines(tl);
