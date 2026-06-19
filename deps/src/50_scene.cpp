@@ -222,6 +222,129 @@ static void textLabelMenu(Scene* s, vtkTextActor3D* act, const QPoint& globalPos
 	}
 }
 
+// Fledermaus-style type icons for the Scene Objects rows: a tiny glyph that says, at a glance,
+// what kind of element a row is (surface / image / line / points / curtain / polygon / text /
+// colourbar / profile). Drawn into a 16x16 transparent pixmap (matches the small checkbox).
+enum ObjIcon { IC_Surface, IC_Image, IC_Line, IC_Points, IC_Curtain,
+               IC_Polygon, IC_Polyline, IC_Rect, IC_Circle, IC_Text, IC_ColorBar, IC_Profile };
+
+static QPixmap makeObjectIcon(int kind) {
+	// Drawn in a 16-unit coordinate space but rasterised at high DPI (supersampled) so the glyph
+	// stays crisp instead of pixelated. LOGICAL is the on-screen size; dpr the supersample factor.
+	const int    LOGICAL = 18;
+	const qreal  dpr     = 4.0;
+	QPixmap pm(int(LOGICAL * dpr), int(LOGICAL * dpr));
+	pm.setDevicePixelRatio(dpr);
+	pm.fill(Qt::transparent);
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.scale(LOGICAL / 16.0, LOGICAL / 16.0);             // map the 0..16 drawing space onto LOGICAL px
+	auto dots = [&](std::initializer_list<QPointF> ps, const QColor& c) {  // small vertex handles
+		p.setPen(Qt::NoPen); p.setBrush(c);
+		for (const QPointF& q : ps) p.drawEllipse(q, 1.5, 1.5);
+	};
+	switch (kind) {
+	case IC_Surface: {
+		// A tilted, colour-graded mesh patch (perspective top face) — the Fledermaus "surface" look.
+		const QPointF A(1, 10), B(9, 13), C(15, 7), D(7, 3);     // bottom-L, bottom-R, top-R, top-L
+		const int n = 4;
+		auto P = [&](double u, double v) {                       // bilinear over the quad
+			QPointF bot = A * (1 - u) + B * u;
+			QPointF top = D * (1 - u) + C * u;
+			return bot * (1 - v) + top * v;
+		};
+		for (int j = 0; j < n; ++j)                              // colour cells: far(v=1) blue -> near(v=0) tan
+			for (int i = 0; i < n; ++i) {
+				double v = (j + 0.5) / n;
+				QColor c(int(70 + 150 * (1 - v)), int(120 + 70 * (1 - v)), int(190 * v + 60));
+				QPolygonF cell; cell << P((double)i/n, (double)j/n) << P((double)(i+1)/n, (double)j/n)
+				                     << P((double)(i+1)/n, (double)(j+1)/n) << P((double)i/n, (double)(j+1)/n);
+				p.setPen(Qt::NoPen); p.setBrush(c); p.drawPolygon(cell);
+			}
+		p.setPen(QPen(QColor(30, 50, 60), 0.6));                 // mesh lines
+		for (int i = 0; i <= n; ++i) { p.drawLine(P((double)i/n, 0), P((double)i/n, 1));
+		                               p.drawLine(P(0, (double)i/n), P(1, (double)i/n)); }
+		break;
+	}
+	case IC_Image: {                                            // framed picture: sky + hill
+		p.setPen(QPen(QColor(60, 60, 60), 1.0)); p.setBrush(QColor(150, 200, 235));
+		p.drawRect(2, 3, 12, 10);
+		p.setPen(Qt::NoPen); p.setBrush(QColor(110, 160, 90));
+		QPolygonF hill; hill << QPointF(2, 13) << QPointF(6, 7) << QPointF(9, 11) << QPointF(12, 6) << QPointF(14, 13);
+		p.drawPolygon(hill);
+		p.setBrush(QColor(245, 220, 90)); p.drawEllipse(QPointF(11, 5.5), 1.6, 1.6);
+		break;
+	}
+	case IC_Line: {                                            // overlay track: a clean coloured line, no handles
+		p.setPen(QPen(QColor(40, 90, 170), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+		QPolygonF l; l << QPointF(2, 12) << QPointF(6, 5) << QPointF(10, 10) << QPointF(14, 3);
+		p.drawPolyline(l);
+		break;
+	}
+	case IC_Points: {
+		p.setPen(Qt::NoPen); p.setBrush(QColor(210, 90, 60));
+		const QPointF pts[5] = {{3,5},{8,3},{13,6},{5,12},{11,12}};
+		for (auto& q : pts) p.drawEllipse(q, 1.8, 1.8);
+		break;
+	}
+	case IC_Curtain: {                                         // hanging panel with a wavy bottom
+		p.setPen(QPen(QColor(60, 60, 60), 1.0)); p.setBrush(QColor(120, 170, 210, 180));
+		QPainterPath cp; cp.moveTo(2, 2); cp.lineTo(14, 2); cp.lineTo(14, 11);
+		cp.cubicTo(12, 14, 10, 9, 8, 12); cp.cubicTo(6, 14, 4, 10, 2, 12); cp.closeSubpath();
+		p.drawPath(cp);
+		break;
+	}
+	case IC_Polygon: {                                         // irregular closed ring, fill + vertex handles
+		QPolygonF poly; poly << QPointF(3, 5) << QPointF(13, 4) << QPointF(14, 11)
+		                     << QPointF(8, 14) << QPointF(2, 11);
+		p.setPen(QPen(QColor(40, 40, 40), 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+		p.setBrush(QColor(255, 200, 120, 150)); p.drawPolygon(poly);
+		dots({{3,5},{13,4},{14,11},{8,14},{2,11}}, QColor(190, 110, 30));
+		break;
+	}
+	case IC_Polyline: {                                        // open vertex chain, handles at the bends
+		p.setPen(QPen(QColor(40, 40, 40), 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+		QPolygonF l; l << QPointF(2, 13) << QPointF(6, 4) << QPointF(10, 11) << QPointF(14, 4);
+		p.drawPolyline(l);
+		dots({{2,13},{6,4},{10,11},{14,4}}, QColor(40, 40, 40));
+		break;
+	}
+	case IC_Rect: {                                            // rectangle, fill + corner handles
+		p.setPen(QPen(QColor(40, 40, 40), 1.4)); p.setBrush(QColor(255, 200, 120, 150));
+		p.drawRect(3, 4, 10, 9);
+		dots({{3,4},{13,4},{13,13},{3,13}}, QColor(190, 110, 30));
+		break;
+	}
+	case IC_Circle: {                                          // circle outline, light fill
+		p.setPen(QPen(QColor(40, 40, 40), 1.4)); p.setBrush(QColor(255, 200, 120, 150));
+		p.drawEllipse(QPointF(8, 8.5), 6, 6);
+		break;
+	}
+	case IC_Text: {
+		QFont f = p.font(); f.setBold(true); f.setPointSize(11); p.setFont(f);
+		p.setPen(QColor(40, 40, 40)); p.drawText(pm.rect(), Qt::AlignCenter, "T");
+		break;
+	}
+	case IC_ColorBar: {                                        // vertical rainbow strip
+		for (int y = 2; y < 14; ++y) {
+			double t = (y - 2) / 12.0;
+			p.setPen(QColor::fromHsvF(0.66 * (1 - t), 0.85, 0.95));
+			p.drawLine(5, y, 11, y);
+		}
+		p.setPen(QPen(QColor(60, 60, 60), 0.8)); p.setBrush(Qt::NoBrush); p.drawRect(5, 2, 6, 11);
+		break;
+	}
+	case IC_Profile: {                                         // axes + a profile curve
+		p.setPen(QPen(QColor(120, 120, 120), 1.0)); p.drawLine(2, 13, 14, 13); p.drawLine(2, 13, 2, 3);
+		p.setPen(QPen(QColor(200, 70, 60), 1.6));
+		QPainterPath pp; pp.moveTo(2, 10); pp.cubicTo(5, 4, 8, 12, 14, 5);
+		p.drawPath(pp);
+		break;
+	}
+	}
+	p.end();
+	return pm;
+}
+
 static void rebuildSceneObjects(Scene* s) {
 	if (!s || !s->objPanel)
 		return;
@@ -235,84 +358,103 @@ static void rebuildSceneObjects(Scene* s) {
 		}
 		delete old;
 	}
+	// Small checkboxes: the indicator is the ONLY hit target for show/hide. The type icon + the
+	// descriptive label sit to its right; right-clicking the icon/label opens the row's properties
+	// menu (toggle is no longer wired to the text — Fledermaus behaviour the user asked for).
+	s->objPanel->setStyleSheet("QCheckBox::indicator{width:13px;height:13px;}");
 	QVBoxLayout* col = new QVBoxLayout(s->objPanel);
 	col->setContentsMargins(8, 8, 8, 8);
-	col->setSpacing(4);
+	col->setSpacing(3);
 
-	auto addRow = [&](const QString& label, vtkProp3D* a, const LineRef* lr = nullptr) {   // vtkActor upcasts; surface row passes the tile assembly
+	// One row = [checkbox] [type icon] [label]. onToggle drives visibility; onProps (optional) is the
+	// properties menu, opened by a LEFT click on the description label (the checkbox only toggles).
+	auto makeRow = [&](const QString& label, int iconKind, bool checked,
+	                   std::function<void(bool)> onToggle,
+	                   std::function<void(const QPoint&)> onProps,
+	                   const QString& tip = QString()) {
+		QWidget* row = new QWidget(s->objPanel);
+		QHBoxLayout* h = new QHBoxLayout(row);
+		h->setContentsMargins(0, 0, 0, 0);
+		h->setSpacing(5);
+
+		QCheckBox* cb = new QCheckBox(row);                  // box only — no text, so only the box toggles
+		cb->setChecked(checked);
+		cb->setToolTip("Show / hide");
+		QObject::connect(cb, &QCheckBox::toggled, [s, onToggle](bool on) {
+			onToggle(on);
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		});
+
+		QLabel* icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
+		ClickableLabel* text = new ClickableLabel(label, row);   // left-click -> properties
+		if (!tip.isEmpty()) { icon->setToolTip(tip); text->setToolTip(tip); }
+
+		h->addWidget(cb, 0);
+		h->addWidget(icon, 0);
+		h->addWidget(text, 1);
+
+		if (onProps) {                                      // left-click the description -> properties menu
+			text->setCursor(Qt::PointingHandCursor);
+			text->onClick = onProps;
+		}
+		col->addWidget(row);
+	};
+
+	// Actor-backed rows (show/hide = actor visibility); lr != null adds the line-object menu.
+	auto addRow = [&](const QString& label, vtkProp3D* a, int iconKind, const LineRef* lr = nullptr) {
 		if (!a)
 			return;
-		QCheckBox* cb = new QCheckBox(label, s->objPanel);
-		cb->setChecked(a->GetVisibility() != 0);
-		QObject::connect(cb, &QCheckBox::toggled, [s, a](bool on) {
-			a->SetVisibility(on ? 1 : 0);
-			if (s->widget && s->widget->renderWindow())
-				s->widget->renderWindow()->Render();
-		});
-		if (lr) {                                  // line object: right-click the row -> Line Properties menu
-			LineRef ref = *lr; QString nm = label;
-			cb->setContextMenuPolicy(Qt::CustomContextMenu);
-			QObject::connect(cb, &QWidget::customContextMenuRequested, [s, ref, nm, cb](const QPoint& p) {
-				popupLineObjectMenu(s, ref, nm, cb->mapToGlobal(p));
-			});
-		}
-		col->addWidget(cb);
+		std::function<void(const QPoint&)> ctx = nullptr;
+		if (lr) { LineRef ref = *lr; QString nm = label;
+			ctx = [s, ref, nm](const QPoint& g) { popupLineObjectMenu(s, ref, nm, g); }; }
+		makeRow(label, iconKind, a->GetVisibility() != 0,
+		        [a](bool on) { a->SetVisibility(on ? 1 : 0); }, ctx,
+		        lr ? QString("Left-click for properties") : QString());
 	};
 
 	// A bare image has NO surface: don't list one, and the image is the object itself (not an
 	// "Image drape" over a surface).
 	if (!s->imageOnly)
-		addRow(s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName), surfProp(s));
+		addRow(s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName), surfProp(s), IC_Surface);
 	if (s->drape)
 		addRow(s->imageOnly ? (s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName))
 		                    : QString("Image drape"),
-		       s->drape);
-	if (s->bar) {                                        // colorbar: toggle visibility + colormap chooser
-		QCheckBox* cb = new QCheckBox("Color Bar", s->objPanel);
-		cb->setChecked(s->bar->GetVisibility() != 0);
-		cb->setToolTip("Right-click to choose a colormap");
-		QObject::connect(cb, &QCheckBox::toggled, [s](bool on) {
-			setColorbarVisible(s, on);
-			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
-		});
-		cb->setContextMenuPolicy(Qt::CustomContextMenu);
-		QObject::connect(cb, &QWidget::customContextMenuRequested, [s, cb](const QPoint& p) {
-			chooseColormap(s, cb->mapToGlobal(p));
-		});
-		col->addWidget(cb);
-	}
+		       s->drape, IC_Image);
+	if (s->bar)                                          // colorbar: toggle visibility + colormap chooser
+		makeRow("Color Bar", IC_ColorBar, s->bar->GetVisibility() != 0,
+		        [s](bool on) { setColorbarVisible(s, on); },
+		        [s](const QPoint& g) { chooseColormap(s, g); },
+		        "Left-click to choose a colormap");
 	for (auto& ov : s->overlays) {
 		LineRef lr{ LK_Overlay, ov.actor };
-		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? &lr : nullptr);
+		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, ov.mode == 1 ? &lr : nullptr);
 	}
 	for (auto& cu : s->curtains)
-		addRow(QString::fromStdString(cu.name), cu.actor);
+		addRow(QString::fromStdString(cu.name), cu.actor, IC_Curtain);
 	for (auto& pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
 		LineRef lr{ LK_Polygon, pg.line };
-		addRow(QString::fromStdString(pg.name), pg.line, &lr);
+		const QString nm = QString::fromStdString(pg.name);   // name is prefixed per type by polyFinalize
+		int ic = !pg.closed              ? IC_Polyline
+		       : nm.startsWith("rect")   ? IC_Rect
+		       : nm.startsWith("circle") ? IC_Circle
+		                                 : IC_Polygon;
+		addRow(nm, pg.line, ic, &lr);
 	}
-	for (auto& tl : s->texts) {                          // user-placed text labels (toggle + right-click Delete)
+	for (auto& tl : s->texts) {                          // user-placed text labels (toggle + right-click menu)
 		if (!tl.actor) continue;
 		vtkTextActor3D* act = tl.actor.Get();
-		QCheckBox* cb = new QCheckBox(QString::fromStdString(tl.name), s->objPanel);
-		cb->setChecked(act->GetVisibility() != 0);
-		QObject::connect(cb, &QCheckBox::toggled, [s, act](bool on) {
-			act->SetVisibility(on ? 1 : 0);
-			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
-		});
-		cb->setContextMenuPolicy(Qt::CustomContextMenu);
-		QObject::connect(cb, &QWidget::customContextMenuRequested, [s, act, cb](const QPoint& p) {
-			textLabelMenu(s, act, cb->mapToGlobal(p));
-		});
-		col->addWidget(cb);
+		makeRow(QString::fromStdString(tl.name), IC_Text, act->GetVisibility() != 0,
+		        [act](bool on) { act->SetVisibility(on ? 1 : 0); },
+		        [s, act](const QPoint& g) { textLabelMenu(s, act, g); },
+		        "Left-click for properties");
 	}
 	if (s->profLine && s->profLine->GetVisibility()) {  // the profile track (when one exists)
 		LineRef lr{ LK_Profile, s->profLine };
-		addRow("Profile", s->profLine, &lr);
+		addRow("Profile", s->profLine, IC_Profile, &lr);
 	}
 	for (auto& ex : s->extras) {                 // grids/images dropped in after the window opened
-		addRow(QString::fromStdString(ex.name), ex.actor);
-		if (ex.drape) addRow(QString::fromStdString(ex.name + " (image)"), ex.drape);
+		addRow(QString::fromStdString(ex.name), ex.actor, IC_Surface);
+		if (ex.drape) addRow(QString::fromStdString(ex.name + " (image)"), ex.drape, IC_Image);
 	}
 	col->addStretch(1);
 }

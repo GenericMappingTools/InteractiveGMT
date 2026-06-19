@@ -23,30 +23,41 @@
 //  only while they actually handle it, leaving normal navigation untouched when idle.
 // ============================================================================
 
+// Crisp toolbar-icon canvas: a `logical`-px transparent pixmap supersampled `dpr`x, so each glyph
+// is rasterised at high resolution then downscaled by Qt -> no fuzz on any display DPI. Because the
+// pixmap carries the devicePixelRatio, ALL painting (coordinates AND pen widths) is in logical
+// units 0..logical; LOGICAL is the on-screen size. Mirrors makeObjectIcon's supersampling trick.
+static QPixmap iconCanvas(int logical = 24, qreal dpr = 4.0) {
+	QPixmap pm(int(logical * dpr), int(logical * dpr));
+	pm.setDevicePixelRatio(dpr);
+	pm.fill(Qt::transparent);
+	return pm;
+}
+
 // Pentagon outline icon for the toolbar button (drawn, no asset file).
 static QIcon makePolygonIcon() {
-	QPixmap pm(24, 24);
-	pm.fill(Qt::transparent);
+	// An irregular closed ring with vertex handles (matches the Scene Objects polygon icon). A
+	// regular pentagon wrongly implied "draw a pentagon" — this reads as "draw an arbitrary polygon".
+	QPixmap pm = iconCanvas();
 	QPainter p(&pm);
 	p.setRenderHint(QPainter::Antialiasing, true);
-	p.setPen(QPen(QColor(40, 40, 40), 1.8));
-	p.setBrush(QColor(255, 200, 120));
-	QPolygonF poly;                                   // regular pentagon centred in the icon
-	const double cx = 12, cy = 13, r = 9;
-	for (int k = 0; k < 5; ++k) {
-		const double a = -vtkMath::Pi() / 2 + k * 2 * vtkMath::Pi() / 5;
-		poly << QPointF(cx + r * std::cos(a), cy + r * std::sin(a));
-	}
+	QPolygonF poly; poly << QPointF(5, 7) << QPointF(19, 6) << QPointF(21, 16)
+	                     << QPointF(12, 21) << QPointF(3, 16);
+	p.setPen(QPen(QColor(40, 40, 40), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	p.setBrush(QColor(255, 200, 120, 150));
 	p.drawPolygon(poly);
+	p.setPen(Qt::NoPen); p.setBrush(QColor(190, 110, 30));   // vertex handles
+	for (const QPointF& q : poly) p.drawEllipse(q, 2.0, 2.0);
 	p.end();
 	return QIcon(pm);
 }
 
-// Open zig-zag polyline icon (no fill).
+// Open zig-zag polyline icon (no fill). Thin, round-capped/joined so the supersampled stroke
+// reads as a clean sharp line rather than a thick blob.
 static QIcon makePolylineIcon() {
-	QPixmap pm(24, 24); pm.fill(Qt::transparent);
+	QPixmap pm = iconCanvas();
 	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
-	p.setPen(QPen(QColor(40, 40, 40), 2.0));
+	p.setPen(QPen(QColor(40, 40, 40), 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
 	QPolygonF line; line << QPointF(3, 18) << QPointF(9, 6) << QPointF(15, 16) << QPointF(21, 5);
 	p.drawPolyline(line);
 	p.end(); return QIcon(pm);
@@ -54,39 +65,48 @@ static QIcon makePolylineIcon() {
 
 // Square outline icon (light fill).
 static QIcon makeRectIcon() {
-	QPixmap pm(24, 24); pm.fill(Qt::transparent);
+	QPixmap pm = iconCanvas();
 	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
-	p.setPen(QPen(QColor(40, 40, 40), 1.8)); p.setBrush(QColor(255, 200, 120));
+	p.setPen(QPen(QColor(40, 40, 40), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	p.setBrush(QColor(255, 200, 120));
 	p.drawRect(4, 5, 16, 14);
 	p.end(); return QIcon(pm);
 }
 
 // Circle outline icon (light fill).
 static QIcon makeCircleIcon() {
-	QPixmap pm(24, 24); pm.fill(Qt::transparent);
+	QPixmap pm = iconCanvas();
 	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
-	p.setPen(QPen(QColor(40, 40, 40), 1.8)); p.setBrush(QColor(255, 200, 120));
+	p.setPen(QPen(QColor(40, 40, 40), 1.6)); p.setBrush(QColor(255, 200, 120));
 	p.drawEllipse(QPointF(12, 12), 8.5, 8.5);
 	p.end(); return QIcon(pm);
 }
 
-// A bold "T" — the text-tool icon.
+// Text-tool icon: a stylised serif "T". A serif face (Georgia, fallback Times) gives the glyph
+// real bracketed serifs at the foot + arm ends, so it reads as a LETTER T — not the plain-bar
+// cross the geometric version looked like. Rendered as an actual glyph path, supersampled (dpr 4
+// via iconCanvas) and text-antialiased so it stays sharp at the small toolbar size.
 static QIcon makeTextIcon() {
-	QPixmap pm(24, 24); pm.fill(Qt::transparent);
-	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
-	QFont f = p.font(); f.setBold(true); f.setPointSize(15); p.setFont(f);
-	p.setPen(QColor(40, 40, 40));
-	p.drawText(pm.rect(), Qt::AlignCenter, "T");
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	p.setRenderHint(QPainter::TextAntialiasing, true);
+	QFont f("Georgia"); f.setStyleHint(QFont::Serif); f.setBold(true); f.setPointSizeF(16.0);
+	p.setFont(f);
+	p.setPen(QColor(35, 35, 40));
+	p.drawText(QRectF(0, 0, 24, 24), Qt::AlignCenter, "T");
 	p.end(); return QIcon(pm);
 }
 
 // "2D"/"3D" glyph for the icon-only view-toggle button (twoD -> show "2D", else "3D").
 static QIcon makeViewModeIcon(bool twoD) {
-	QPixmap pm(24, 24); pm.fill(Qt::transparent);
-	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
-	QFont f = p.font(); f.setBold(true); f.setPointSize(9); p.setFont(f);
-	p.setPen(QColor(40, 40, 40));
-	p.drawText(pm.rect(), Qt::AlignCenter, twoD ? "2D" : "3D");
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	p.setRenderHint(QPainter::TextAntialiasing, true);
+	QFont f = p.font(); f.setBold(true); f.setPointSizeF(9.5); p.setFont(f);
+	p.setPen(QColor(35, 35, 40));
+	p.drawText(QRectF(0, 0, 24, 24), Qt::AlignCenter, twoD ? "2D" : "3D");
 	p.end(); return QIcon(pm);
 }
 
@@ -425,6 +445,13 @@ static void polygonSetMode(Scene* s, bool on) {
 // other four (mutually exclusive), and enters draw mode; unchecking the active one leaves draw mode.
 static void polygonToolToggled(Scene* s, QAction* act, Scene::ShapeKind shape, bool on) {
 	if (on) {
+		if (s->emptyStart) {                            // blank launcher: nothing to draw ON yet
+			QSignalBlocker bl(act);                     // snap the button back off without re-entering here
+			act->setChecked(false);
+			if (s->win)
+				s->win->statusBar()->showMessage("Load a file first — the draw and text tools need data to draw on.", 4000);
+			return;
+		}
 		s->polyShape = shape;
 		s->polyAct   = act;
 		for (QAction* a : s->shapeActs)                 // exclusive: drop any other checked tool

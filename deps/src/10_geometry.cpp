@@ -3,6 +3,17 @@ struct QuadNode;  // tiled-LOD pyramid node (defined below Scene)
 struct Scene;     // the per-window scene (defined below; forward-declared for the line-tool decls)
 struct FoldTitleBar;  // foldable dock title bar (defined in 70_window.cpp; Scene keeps a ptr to fold programmatically)
 
+// A QLabel that opens something on a plain LEFT click — used for the Scene Objects row labels:
+// left-clicking the element description pops its properties menu (onClick gets the GLOBAL point).
+struct ClickableLabel : QLabel {
+	std::function<void(const QPoint&)> onClick;
+	using QLabel::QLabel;
+	void mousePressEvent(QMouseEvent* e) override {
+		if (e->button() == Qt::LeftButton && onClick) onClick(e->globalPosition().toPoint());
+		else QLabel::mousePressEvent(e);
+	}
+};
+
 // A caller-supplied GMTdataset drawn over the surface as lines or points. Each carries
 // its own vtkActor so the right-click context menu can retune its colour / line style /
 // point size live. Mode: 0 = points, 1 = lines.

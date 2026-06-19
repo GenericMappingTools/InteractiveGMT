@@ -1139,13 +1139,23 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	s->dataTable->horizontalHeader()->setStretchLastSection(true);
 	tabs->addTab(s->dataTable, "Data Viewer");
 
-	// "Hide" corner button: collapse the panel body (extend the 3-D view) / restore it.
-	QToolButton* hideBtn = new QToolButton(tabs);
-	hideBtn->setText(QString::fromUtf8("\xE2\x96\xBE"));   // ▾ open (setBottomCollapsed swaps the glyph)
+	// Custom dock title bar: a fold triangle sitting RIGHT BESIDE the "Panels" word (matching the
+	// Scene Objects / Shading docks), instead of the old hide button lost in the tab-strip corner.
+	// The triangle collapses the panel body (extend the 3-D view) / restores it; glyph swapped by
+	// setBottomCollapsed (▸ collapsed, ▾ open).
+	QWidget*     titleBar = new QWidget(bottomDock);
+	QHBoxLayout* titleLay = new QHBoxLayout(titleBar);
+	titleLay->setContentsMargins(6, 2, 6, 2);
+	titleLay->setSpacing(4);
+	QToolButton* hideBtn = new QToolButton(titleBar);
+	hideBtn->setText(QString::fromUtf8("\xE2\x96\xBE"));   // ▾ open
 	hideBtn->setAutoRaise(true);
 	hideBtn->setCursor(Qt::PointingHandCursor);
 	hideBtn->setToolTip("Collapse this panel to extend the 3-D view");
-	tabs->setCornerWidget(hideBtn, Qt::TopRightCorner);
+	titleLay->addWidget(hideBtn);
+	titleLay->addWidget(new QLabel("Panels", titleBar));
+	titleLay->addStretch(1);
+	bottomDock->setTitleBarWidget(titleBar);
 	s->bottomHideBtn = hideBtn;
 	QObject::connect(hideBtn, &QToolButton::clicked, [s]() { setBottomCollapsed(s, !s->bottomCollapsed); });
 
@@ -1166,22 +1176,32 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (s->surf) s->surf->SetVisibility(0);
 		if (s->axes) s->axes->SetVisibility(0);
 		if (s->giz)  setGizmoVisible(*s->giz, false);
+		// Start the Scene Objects dock FOLDED with no open->fold flash: hide the body and flip the
+		// fold-bar state BEFORE the first paint (so it never renders expanded for a frame); the
+		// strip-width resizeDocks is deferred to just after win->show() (only bites once laid out).
+		if (s->objFoldBar) {
+			s->objFoldBar->openWidth = 220;        // width to restore when the user un-folds
+			s->objPanel->setVisible(false);        // hide body -> dock can shrink to the strip
+			s->objFoldBar->folded = true;
+			s->objFoldBar->updateGeometry();       // sizeHint flips to the thin vertical strip
+		}
 	}
+
+	// Start the "Panels" dock minimized to its tab strip BEFORE the first paint, so it never
+	// flashes full-height then collapses (setBottomCollapsed clamps maxHeight from the tab-bar
+	// sizeHint, no post-show geometry needed). show_table / profile track / View-menu actions
+	// un-collapse it on demand (setBottomCollapsed(s,false)).
+	setBottomCollapsed(s, true);
 
 	// Default window large enough that the LEFT (Scene Objects) and RIGHT (Shading) side docks
 	// both get real width. Without this the window opens at its minimum and the central VTK view
 	// squeezes the right dock to ZERO width -> the Shading dock is invisible ("no docks").
 	win->show();
 
-	// Open the bottom "Panels" dock 25% shorter than its natural height, giving the central
-	// 3-D view more room. resizeDocks only bites after show(), when the layout has a real height.
-	if (s->bottomDock) {
-		int h = s->bottomDock->height();
-		if (h > 0) win->resizeDocks({s->bottomDock}, {h * 3 / 4}, Qt::Vertical);
-	}
-	// Start with the "Panels" dock minimized to its tab strip; the host's show_table /
-	// profile track / View-menu actions un-collapse it on demand (setBottomCollapsed(s,false)).
-	setBottomCollapsed(s, true);
+	// Empty launcher: now that the layout has real geometry, shrink the pre-folded Scene Objects
+	// dock to its strip width (resizeDocks only bites after show()).
+	if (blankStart && s->objFoldBar)
+		win->resizeDocks({objDock}, {s->objFoldBar->sizeHint().width()}, Qt::Horizontal);
 
 	// interactor must be live before we attach observers
 	widget->renderWindow()->Render();

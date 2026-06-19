@@ -463,7 +463,7 @@ GMTVTK_API void *gmtvtk_open_empty(const char* title) {
 	if (!s)
 		return nullptr;
 	s->emptyStart = true;                    // hidden placeholder only -> drop promotes to a real window
-	if (s->objFoldBar && s->objFoldBar->onClick) s->objFoldBar->onClick();  // empty launcher: start with Scene Objects folded
+	// (Scene Objects dock already starts folded with no flash, done in buildAndShow's blankStart block.)
 	if (s->surf) s->surf->SetVisibility(0);  // hide the placeholder plane -> blank canvas
 	s->axes->SetVisibility(0);               // no axes until there is data
 	if (s->giz) setGizmoVisible(*s->giz, false);

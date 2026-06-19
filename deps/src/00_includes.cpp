@@ -31,6 +31,7 @@
 #include <QWidget>
 #include <QFormLayout>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <string>
 #include <QSlider>
 #include <QLabel>
