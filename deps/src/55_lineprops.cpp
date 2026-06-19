@@ -270,6 +270,94 @@ static void lineSavePoints(Scene* s, const LineRef& lr) {
 	g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());   // _gmtwrite_line removes the temp file
 }
 
+// Find the index of the finished polygon whose actor is `a`, or -1. (s->polys can be re-found on
+// every edit so a deleted/reordered polygon never gets a stale index written back.)
+static int polyIndexOfActor(Scene* s, vtkActor* a) {
+	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].line.Get() == a) return (int)i;
+	return -1;
+}
+
+// Floating data viewer for a line object: a non-modal window with a table of its vertices in TRUE
+// coords. Reuses lineGatherPolylines, so it serves polygon / polyline / rect / circle / profile /
+// overlay alike. Columns are #, X, Y, Z. For the drawn shapes (LK_Polygon: polygon / polyline /
+// rect / circle) the X/Y/Z cells are EDITABLE: committing a cell writes the new coordinate back to
+// pg.v, keeps a closed ring's duplicated first/last vertex in sync, and rebuilds + re-renders the
+// outline live. Profile/overlay lines are GMT-owned, so they stay read-only. The window is its own
+// top-level (no parent), deletes itself on close, and does NOT block the viewer.
+static void showLineDataTable(Scene* s, const LineRef& lr, const QString& name) {
+	std::vector<std::vector<std::array<double,3>>> polylines;
+	lineGatherPolylines(s, lr, polylines);
+	if (polylines.empty()) return;
+
+	// Editing writes back to a single polygon ring; only LK_Polygon has that 1:1 row<->pg.v mapping.
+	const bool editable = (lr.kind == LK_Polygon && polylines.size() == 1);
+	const std::vector<std::array<double,3>>& pl = polylines[0];
+	const int nrows = (int)pl.size();
+	vtkActor* actor = lr.actor;
+
+	QDialog* dlg = new QDialog(nullptr);                  // top-level, parentless -> truly floating
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	dlg->setWindowTitle(name.isEmpty() ? QString("Line data") : (name + " — data"));
+	dlg->setWindowFlag(Qt::Window, true);
+	QVBoxLayout* lay = new QVBoxLayout(dlg);
+
+	QTableWidget* tbl = new QTableWidget(nrows, 4, dlg);
+	tbl->setHorizontalHeaderLabels(QStringList() << "#" << "X" << "Y" << "Z");
+	tbl->setSelectionBehavior(QAbstractItemView::SelectRows);
+	if (!editable) tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+	for (int k = 0; k < nrows; ++k) {
+		QTableWidgetItem* idx = new QTableWidgetItem(QString::number(k + 1));
+		idx->setFlags(idx->flags() & ~Qt::ItemIsEditable);   // the "#" column is never editable
+		tbl->setItem(k, 0, idx);
+		for (int c = 0; c < 3; ++c) {
+			QTableWidgetItem* it = new QTableWidgetItem(QString::number(pl[k][c], 'g', 10));
+			if (!editable) it->setFlags(it->flags() & ~Qt::ItemIsEditable);
+			tbl->setItem(k, c + 1, it);
+		}
+	}
+	tbl->resizeColumnsToContents();
+	lay->addWidget(tbl);
+	dlg->resize(360, 420);
+
+	// Live write-back: a committed X/Y/Z cell updates pg.v and rebuilds the outline. Connected only
+	// for editable (LK_Polygon) tables. cellChanged also fires when we programmatically fix a cell,
+	// so a guard flag stops re-entrancy.
+	if (editable) {
+		std::shared_ptr<bool> guard = std::make_shared<bool>(false);
+		QObject::connect(tbl, &QTableWidget::cellChanged, dlg, [s, tbl, actor, guard](int row, int col) {
+			if (*guard || col < 1 || col > 3) return;        // ignore the "#" column / our own edits
+			const int pi = polyIndexOfActor(s, actor);
+			if (pi < 0) return;                              // polygon was deleted -> nothing to write
+			Polygon& pg = s->polys[pi];
+			const int n = (int)pg.v.size();
+			if (row < 0 || row >= n) return;
+			const int ci = col - 1;                          // X=0 / Y=1 / Z=2
+			bool ok = false;
+			const double val = tbl->item(row, col)->text().toDouble(&ok);
+			*guard = true;
+			if (!ok) {                                       // bad number -> restore the old cell text
+				tbl->item(row, col)->setText(QString::number(pg.v[row][ci], 'g', 10));
+				*guard = false;
+				return;
+			}
+			pg.v[row][ci] = val;
+			// Closed ring keeps first == last; mirror the partner vertex and its cell.
+			if (pg.closed && n >= 2 && (pg.v.front() == pg.v.back() || row == 0 || row == n - 1)) {
+				const int partner = (row == 0) ? n - 1 : (row == n - 1) ? 0 : -1;
+				if (partner >= 0) {
+					pg.v[partner][ci] = val;
+					tbl->item(partner, col)->setText(QString::number(val, 'g', 10));
+				}
+			}
+			*guard = false;
+			polyRebuildLine(s, pg);
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		});
+	}
+	dlg->show();                                          // non-modal: REPL + viewer stay live
+}
+
 // The unified right-click menu for a line object: "Line properties…" plus the kind's own actions
 // (profile: save / delete; overlay & polygon: hide; polygon: delete). Shared by the 3-D-view
 // right-click hit-test and the Scene Objects list rows, so both routes give the same menu.
@@ -280,6 +368,8 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 	m.addAction("Line properties…", [s, lr]() { showLineProperties(s, lr); });
 	m.addAction(lr.kind == LK_Polygon ? "Save polygon…" : "Save line…",   // 2D / 3D (grid-interpolated z)
 				[s, lr]() { lineSavePoints(s, lr); });
+	m.addAction("Show data table…",                                      // floating vertex table viewer
+				[s, lr, name]() { showLineDataTable(s, lr, name); });
 	m.addSeparator();
 	if (lr.kind == LK_Profile) {
 		m.addAction("Save profile (with distance)…", [s]() {

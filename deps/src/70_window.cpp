@@ -178,6 +178,7 @@ static QIcon makeTextIcon();
 static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only view-toggle button
 static int  polyHitText(Scene* s, int x, int y, double tol);   // text label under the cursor (85_polygon.cpp)
 
+
 // ============================================================================
 //  Recent files — a persistent (QSettings) MRU of the last kRecentMax opened
 //  files, each tagged by category (0=grid, 1=image, 2=dataset). Julia calls
@@ -823,35 +824,55 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	tb->addSeparator();
 
-	// --- five draw tools (all icon-only, mutually-exclusive checkable buttons) ----------------
-	// Each routes through the one shape machinery in 85_polygon.cpp; polygonToolToggled sets the
-	// active ShapeKind, untoggles the other four, and enters/leaves draw mode. A drawn shape is a
-	// `Polygon` (vertex ring) so all share preview/edit/delete; only Text differs.
+	// --- draw tools: an Illustrator-style flyout (shapes) + a standalone Text button -----------
+	// The four shape tools share ONE toolbar slot (a plain QToolButton in MenuButtonPopup mode): the
+	// slot shows the active tool; its native dropdown arrow opens the family flyout. Each tool is
+	// checkable QAction routed through polygonToolToggled (85_polygon.cpp), which sets the active
+	// ShapeKind, untoggles the others via s->shapeActs, and enters/leaves draw mode — the flyout
+	// only changes how four of them are PRESENTED. A drawn shape is a `Polygon` (vertex ring) so all
+	// share preview/edit/delete. When all tools are OFF, double-clicking a finished polygon enters
+	// vertex-edit mode (square handles).
 	//
 	//   Polygon  — left-click adds vertices, right-click undoes, double-click closes (>=3).
 	//   Polyline — same, but double-click ends an OPEN chain (>=2).
 	//   Rectangle/Circle — two clicks (first corner/centre, then opposite corner/edge); a live
 	//                      preview trails the cursor between them.
-	//   Text     — one click on the scene, then a dialog asks for the string.
-	// When all are OFF, double-clicking a finished polygon enters vertex-edit mode (square handles).
-	struct ToolDef { QIcon icon; const char* tip; Scene::ShapeKind kind; };
-	const ToolDef tools[] = {
-		{ makePolygonIcon(),  "Draw a polygon: left-click adds vertices, right-click undoes one, "
-		                      "double-click closes it. Double-click a polygon to edit its vertices.", Scene::SH_Polygon  },
-		{ makePolylineIcon(), "Draw a polyline: left-click adds vertices, right-click undoes one, "
-		                      "double-click ends the open line.",                                     Scene::SH_Polyline },
-		{ makeRectIcon(),     "Draw a rectangle: click one corner, then the opposite corner.",        Scene::SH_Rect     },
-		{ makeCircleIcon(),   "Draw a circle: click the centre, then a point on the edge.",           Scene::SH_Circle   },
-		{ makeTextIcon(),     "Place a text label: click a point on the scene, then type the text.",  Scene::SH_Text     },
+	//   Text     — one click on the scene, then a dialog asks for the string (own button below).
+	struct ToolDef { QIcon icon; const char* name; const char* tip; Scene::ShapeKind kind; };
+	const ToolDef flyoutTools[] = {
+		{ makePolygonIcon(),  "Polygon",   "Draw a polygon: left-click adds vertices, right-click undoes one, "
+		                                   "double-click closes it. Double-click a polygon to edit its vertices.", Scene::SH_Polygon  },
+		{ makePolylineIcon(), "Polyline",  "Draw a polyline: left-click adds vertices, right-click undoes one, "
+		                                   "double-click ends the open line.",                                     Scene::SH_Polyline },
+		{ makeRectIcon(),     "Rectangle", "Draw a rectangle: click one corner, then the opposite corner.",        Scene::SH_Rect     },
+		{ makeCircleIcon(),   "Circle",    "Draw a circle: click the centre, then a point on the edge.",           Scene::SH_Circle   },
 	};
-	for (const ToolDef& td : tools) {
-		QAction* act = tb->addAction(td.icon, "");   // GRAPHICAL ELEMENT: icon-only draw-tool toggle (no text)
+	QToolButton* flyout = new QToolButton(tb);           // the shared shape slot
+	flyout->setPopupMode(QToolButton::MenuButtonPopup);  // click icon = use tool; click arrow = flyout
+	flyout->setToolButtonStyle(Qt::ToolButtonIconOnly);
+	QMenu* shapeMenu = new QMenu(flyout);                // the dropdown flyout list
+	for (const ToolDef& td : flyoutTools) {
+		QAction* act = shapeMenu->addAction(td.icon, td.name);   // icon + label (the slot itself stays icon-only)
 		act->setCheckable(true);
 		act->setToolTip(td.tip);
 		const Scene::ShapeKind kind = td.kind;
 		QObject::connect(act, &QAction::toggled, [s, act, kind](bool on){ polygonToolToggled(s, act, kind, on); });
 		s->shapeActs.push_back(act);
 	}
+	flyout->setMenu(shapeMenu);
+	flyout->setDefaultAction(shapeMenu->actions().first());      // start on Polygon (icon + tooltip mirror it)
+	// Picking a sibling from the flyout makes it the slot's current tool (Illustrator behaviour): the
+	// chosen action toggles on (its connection enters draw mode) and becomes the button's default.
+	QObject::connect(shapeMenu, &QMenu::triggered, flyout, [flyout](QAction* a){ flyout->setDefaultAction(a); });
+	tb->addWidget(flyout);
+
+	// Text — its own icon-only toggle (not a "drawn shape" family member, but shares the exclusive
+	// s->shapeActs group so selecting it untoggles the active shape tool and vice-versa).
+	QAction* actText = tb->addAction(makeTextIcon(), "");
+	actText->setCheckable(true);
+	actText->setToolTip("Place a text label: click a point on the scene, then type the text.");
+	QObject::connect(actText, &QAction::toggled, [s, actText](bool on){ polygonToolToggled(s, actText, Scene::SH_Text, on); });
+	s->shapeActs.push_back(actText);
 
 	// --- native right-click context menu over the 3-D view ------------------
 	widget->setContextMenuPolicy(Qt::CustomContextMenu);

@@ -68,6 +68,7 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 static void lineApplyStyle(Scene* s, const LineRef& lr, int style);
 static int  lineCurrentStyle(Scene* s, const LineRef& lr);
 static void polygonDelete(Scene* s, vtkActor* lineActor);                    // remove a finished polygon
+static void polyRebuildLine(Scene* s, Polygon& pg);                         // rebuild a polygon actor from pg.v (85)
 static int  polyHitPolygon(Scene* s, int x, int y, double tol);             // polygon under cursor? (85)
 
 // ---- scene we hang onto for the callbacks / menu actions --------------------
