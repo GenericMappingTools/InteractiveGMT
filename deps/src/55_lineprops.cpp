@@ -301,8 +301,13 @@ static void showLineDataTable(Scene* s, const LineRef& lr, const QString& name) 
 	dlg->setWindowFlag(Qt::Window, true);
 	QVBoxLayout* lay = new QVBoxLayout(dlg);
 
-	QTableWidget* tbl = new QTableWidget(nrows, 4, dlg);
-	tbl->setHorizontalHeaderLabels(QStringList() << "#" << "X" << "Y" << "Z");
+	// In flat-2D the Z is a meaningless z=0, so drop the Z column there: cols are #/X/Y (3) in 2D,
+	// #/X/Y/Z (4) in 3D. ncoord = number of coordinate columns drawn (2 or 3).
+	const int  ncoord = s->flat2d ? 2 : 3;
+	QStringList hdr;   hdr << "#" << "X" << "Y";   if (!s->flat2d) hdr << "Z";
+	QTableWidget* tbl = new QTableWidget(nrows, ncoord + 1, dlg);
+	tbl->setHorizontalHeaderLabels(hdr);
+	tbl->verticalHeader()->setVisible(false);            // our "#" column already numbers the rows
 	tbl->setSelectionBehavior(QAbstractItemView::SelectRows);
 	if (!editable) tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
@@ -310,7 +315,7 @@ static void showLineDataTable(Scene* s, const LineRef& lr, const QString& name) 
 		QTableWidgetItem* idx = new QTableWidgetItem(QString::number(k + 1));
 		idx->setFlags(idx->flags() & ~Qt::ItemIsEditable);   // the "#" column is never editable
 		tbl->setItem(k, 0, idx);
-		for (int c = 0; c < 3; ++c) {
+		for (int c = 0; c < ncoord; ++c) {
 			QTableWidgetItem* it = new QTableWidgetItem(QString::number(pl[k][c], 'g', 10));
 			if (!editable) it->setFlags(it->flags() & ~Qt::ItemIsEditable);
 			tbl->setItem(k, c + 1, it);
