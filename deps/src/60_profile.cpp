@@ -213,6 +213,8 @@ static bool polygonHandlePress(Scene* s, int button, int x, int y);
 static bool polygonHandleDblClick(Scene* s, int x, int y);
 static bool polygonHandleMove(Scene* s, int x, int y);
 static bool polygonHandleRelease(Scene* s);
+static int  polyHitHandle(Scene* s, int x, int y, double tol);   // vertex handle under cursor (85)
+static int  polyHitText(Scene* s, int x, int y, double tol);     // text label under cursor (85)
 
 class GLView : public QVTKOpenGLNativeWidget {
 public:
@@ -273,6 +275,13 @@ protected:
 			renderWindow()->SetDesiredUpdateRate(15.0);   // LOD decimation while panning
 			return;                     // consume; keep VTK out of the middle button
 		}
+		// Colorbar: left-press inside its frame grabs it for dragging (overlay, so checked first).
+		if (s && e->button() == Qt::LeftButton) {
+			double dx, dy; devPx(e->position().toPoint(), dx, dy);
+			const int* sz = renderWindow()->GetSize();
+			if (sz[0] > 0 && sz[1] > 0 && colorbarGrab(s, dx / sz[0], dy / sz[1]))
+				return;                 // consumed -> keep VTK (gizmo / dolly) out of it
+		}
 		// Polygon tool: left adds/edits vertices, right removes the last while drawing.
 		if (s && (e->button() == Qt::LeftButton || e->button() == Qt::RightButton)) {
 			double dx, dy; devPx(e->position().toPoint(), dx, dy);
@@ -297,6 +306,27 @@ protected:
 			if (midMoved) { panBy(midLast, cp); midLast = cp; }
 			return;
 		}
+		// Colorbar drag in progress: move it and consume.
+		if (s && s->barDragging) {
+			double dx, dy; devPx(e->position().toPoint(), dx, dy);
+			const int* sz = renderWindow()->GetSize();
+			if (sz[0] > 0 && sz[1] > 0) colorbarDragTo(s, dx / sz[0], dy / sz[1]);
+			return;
+		}
+		// Hover feedback: show the quadruple-arrow over any draggable element (colorbar / polygon
+		// vertex handle in edit mode / text label). Skipped while the draw tool owns a crosshair.
+		if (s && !s->polyMode) {
+			double dx, dy; devPx(e->position().toPoint(), dx, dy);
+			const int* sz = renderWindow()->GetSize();
+			const double nx = sz[0] > 0 ? dx / sz[0] : 0.0;
+			const double ny = sz[1] > 0 ? dy / sz[1] : 0.0;
+			const bool over = colorbarHit(s, nx, ny)
+			               || (s->polyEdit >= 0 && polyHitHandle(s, (int)dx, (int)dy, 10.0) >= 0)
+			               || polyHitText(s, (int)dx, (int)dy, 14.0) >= 0;
+			const bool isAll = cursor().shape() == Qt::SizeAllCursor;
+			if (over && !isAll)       setCursor(Qt::SizeAllCursor);
+			else if (!over && isAll)  unsetCursor();
+		}
 		// Polygon tool: extend the draw preview / drag a grabbed vertex (consumes only when active).
 		if (s) {
 			double dx, dy; devPx(e->position().toPoint(), dx, dy);
@@ -313,6 +343,8 @@ protected:
 			renderWindow()->Render();
 			return;
 		}
+		if (s && e->button() == Qt::LeftButton && colorbarRelease(s))
+			return;                     // ended a colorbar drag
 		if (s && e->button() == Qt::LeftButton && polygonHandleRelease(s))
 			return;                     // ended a vertex drag
 		QVTKOpenGLNativeWidget::mouseReleaseEvent(e);

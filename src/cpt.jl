@@ -43,6 +43,20 @@ function _cpt_nodes_range(zmn, zmx, cmap)
 	end
 end
 
+# Recolour a live grid window with a named GMT colormap (called from the viewer's colorbar chooser
+# via the in-window console bridge, so `fig` is the QtFigure for that window). Recomputes CPT nodes
+# over the grid's own data range and pushes them to the C side (gmtvtk_set_cpt), which mutates the
+# shared colour transfer function so the surface, its LOD tiles and the colorbar all recolour.
+function _recolor(fig::QtFigure, cmap)
+	cz, crgb, n = _cpt_nodes(fig.G, cmap)
+	n < 2 && return "colormap '$cmap' failed (makecpt)"
+	ccall(_fn(:gmtvtk_set_cpt), Cvoid,
+	      (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint),
+	      fig.h, cz, crgb, Cint(n))
+	return "colormap: $cmap"
+end
+_recolor(fig, cmap) = "recolor: only grid windows have a colormap"
+
 # z value -> "#rrggbb" via a GMTcpt colormap matrix (Mx3, stored 0-1 or 0-255). Mirrors GMTF3D z_to_hex.
 function _z_to_hex(z, cmap::AbstractMatrix, zmin, zmax)
 	N = size(cmap, 1)

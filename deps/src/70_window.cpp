@@ -194,7 +194,7 @@ static const int kRecentMax = 21;
 static void loadRecent() {
 	if (g_recentLoaded) return;
 	g_recentLoaded = true;
-	QSettings st("InteractiveGMT", "iGMT");
+	QSettings st("InteractiveGMT", "i'GMT");
 	const QStringList paths = st.value("recent/paths").toStringList();
 	const QVariantList cats  = st.value("recent/cats").toList();
 	for (int i = 0; i < paths.size(); ++i)
@@ -204,7 +204,7 @@ static void loadRecent() {
 static void saveRecent() {
 	QStringList paths; QVariantList cats;
 	for (const RecentItem& r : g_recent) { paths << r.path; cats << r.cat; }
-	QSettings st("InteractiveGMT", "iGMT");
+	QSettings st("InteractiveGMT", "i'GMT");
 	st.setValue("recent/paths", paths);
 	st.setValue("recent/cats", cats);
 }
@@ -224,7 +224,7 @@ static void addRecentFile(const char* cpath, int cat) {
 
 // Rebuild the Recent Files submenu, grouped Grids / Images / Datasets. Each entry shows the file
 // name (full path on hover) and re-opens via the drop path (into THIS window); Clear wipes list.
-static void populateRecentMenu(QMenu* menu, Scene* s) {
+static void populateRecentMenu(QMenu *menu, Scene* s) {
 	loadRecent();
 	menu->clear();
 	static const char* kCatName[3] = { "Grids", "Images", "Datasets" };
@@ -233,7 +233,7 @@ static void populateRecentMenu(QMenu* menu, Scene* s) {
 		bool header = false;
 		for (const RecentItem& r : g_recent) {
 			if (r.cat != c) continue;
-			if (!header) { QAction* h = menu->addAction(kCatName[c]); h->setEnabled(false); header = true; }
+			if (!header) { QAction *h = menu->addAction(kCatName[c]); h->setEnabled(false); header = true; }
 			const QString full = r.path;
 			QAction* act = menu->addAction(QFileInfo(full).fileName());
 			act->setToolTip(full); act->setStatusTip(full);
@@ -335,14 +335,18 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		ctfRange = true;        // the CTF maps absolute z; let the mapper defer to it
 	}
 	else {
-		vtkNew<vtkLookupTable> t;
-		t->SetHueRange(0.667, 0.0);         // fallback blue -> red (demo)
-		t->SetNumberOfTableValues(256);
-		t->SetRampToLinear();
-		t->SetTableRange(s->zmin, s->zmax);
-		t->Build();
+		// Fallback ramp as a vtkColorTransferFunction (NOT a plain LUT) so s->surfLut is ALWAYS a
+		// CTF -> the runtime colormap chooser (gmtvtk_set_cpt) can recolour by mutating its nodes,
+		// which every mapper + the colorbar share by pointer. Blue->red, same look as the old LUT.
+		vtkNew<vtkColorTransferFunction> t;
+		t->SetColorSpaceToHSV();
+		t->HSVWrapOff();
+		t->AddHSVPoint(s->zmin, 0.667, 1.0, 1.0);   // blue (low)
+		t->AddHSVPoint(s->zmax, 0.0,   1.0, 1.0);   // red  (high)
 		lut = t;
+		ctfRange = true;
 	}
+	s->surfLut = lut; s->surfCtfRange = ctfRange;   // shared by surface, LOD tiles AND the colorbar
 
 	// ===== surface: tiled grid (gz) OR single actor (pd) =====================
 	// Declared out here so the drape block below (single-actor path) can share them.
@@ -553,66 +557,9 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	if (!blankStart) rebuildAxisLabels(s);        // billboards (same font/size on X/Y/Z) + single ticks
 
 	// --- scalar bar ---------------------------------------------------------
-	// ===== COLORBAR DIMENSIONS & LOCATION (all in NORMALIZED viewport coords [0..1]) =====
-	// The coloured strip is drawn by vtkScalarBarActor; the TICK MARKS and NUMBERS are drawn
-	// by us (vtkScalarBarActor has NO tick-mark geometry in VTK 9.6, and its built-in labels
-	// overlap the strip on a narrow bar). Drawing them ourselves guarantees: short ticks at the
-	// strip's left edge + numbers right-justified to the LEFT of the ticks => never overlap.
-	const double CB_X0 = 0.93, CB_Y0 = 0.55;   // bottom-left corner of the FRAME
-	const double CB_W  = 0.06, CB_H  = 0.40;   // frame size -> top 0.95, right edge 0.99 (upper-right)
-	const double CB_BARRATIO = 0.30;           // coloured strip = right 30% of CB_W (~0.018 wide ruler)
-	const double CB_TICKLEN  = 0.006;          // SHORT tick length (normalized x), pointing LEFT (halved from 0.012)
-	const double CB_LABELGAP = 0.004;          // gap between a tick's outer end and its number
-	const double barLeft = CB_X0 + CB_W * (1.0 - CB_BARRATIO);   // left edge of the coloured strip
-
-	if (!imageOnly) {     // bare image -> NO colorbar (only grids / point clouds get one)
-	s->bar = vtkSmartPointer<vtkScalarBarActor>::New();
-	s->bar->SetLookupTable(lut);
-	s->bar->SetTitle("");                   // drop the big 'Z' title
-	s->bar->SetDrawTickLabels(false);       // WE draw the numbers (below) — kill the overlapping built-ins
-	s->bar->SetTextPositionToPrecedeScalarBar();
-	s->bar->SetWidth(CB_W); s->bar->SetHeight(CB_H);
-	s->bar->SetPosition(CB_X0, CB_Y0);
-	s->bar->SetBarRatio(CB_BARRATIO);
-	s->ren->AddActor2D(s->bar);             // CPT legend stays: the base surface shows it
-											// wherever the image drape does not cover
-
-	// --- our own tick marks + annotations, aligned to the strip, no overlap ---------------
-	// Nice round values (800, 900, ...) at a constant interval; niceNum picks a 1/2/5 x10^n step.
-	{
-		const double lo = s->zmin, hi = s->zmax;
-		const double step = niceNum(niceNum(hi - lo, false) / 5.0, true);
-		vtkNew<vtkPoints>    tpts;
-		vtkNew<vtkCellArray> tlines;
-		for (double v = std::ceil(lo / step) * step; v <= hi + 1e-9 * (hi - lo); v += step) {
-			const double frac = (v - lo) / (hi - lo);          // 0 at bottom (zmin) .. 1 at top (zmax)
-			const double y    = CB_Y0 + frac * CB_H;
-			// short horizontal tick at the strip's left edge, pointing left
-			vtkIdType a = tpts->InsertNextPoint(barLeft, y, 0.0);
-			vtkIdType b = tpts->InsertNextPoint(barLeft - CB_TICKLEN, y, 0.0);
-			tlines->InsertNextCell(2); tlines->InsertCellPoint(a); tlines->InsertCellPoint(b);
-			// number, right-justified so its RIGHT edge stops short of the tick => never touches strip
-			char buf[32]; snprintf(buf, sizeof buf, "%.0f", v);
-			vtkSmartPointer<vtkTextActor> ta = vtkSmartPointer<vtkTextActor>::New();
-			ta->SetInput(buf);
-			ta->GetTextProperty()->SetColor(0.9, 0.9, 0.9);
-			ta->GetTextProperty()->SetFontSize(10);   // colorbar annotation font (smaller, was 13)
-			ta->GetTextProperty()->SetJustificationToRight();
-			ta->GetTextProperty()->SetVerticalJustificationToCentered();
-			ta->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
-			ta->SetPosition(barLeft - CB_TICKLEN - CB_LABELGAP, y);
-			s->ren->AddActor2D(ta);
-		}
-		vtkNew<vtkPolyData> tpd; tpd->SetPoints(tpts); tpd->SetLines(tlines);
-		vtkNew<vtkCoordinate> nc; nc->SetCoordinateSystemToNormalizedViewport();
-		vtkNew<vtkPolyDataMapper2D> tmap; tmap->SetInputData(tpd); tmap->SetTransformCoordinate(nc);
-		vtkSmartPointer<vtkActor2D> tact = vtkSmartPointer<vtkActor2D>::New();
-		tact->SetMapper(tmap);
-		tact->GetProperty()->SetColor(0.9, 0.9, 0.9);
-		tact->GetProperty()->SetLineWidth(1.5);
-		s->ren->AddActor2D(tact);
-	}
-	}   // end if(!imageOnly) colorbar guard
+	// Coloured strip (vtkScalarBarActor) + our own tick marks / numbers, all positioned from
+	// s->barX0/barY0 so the assembly toggles and DRAGS as one unit. Bare images get no colorbar.
+	buildColorbar(s, lut);
 
 	// Default view: world +Z up; azimuth 0 (look north, +Y) and elevation 35deg above
 	// horizontal. Camera sits due south of the focal point, raised 35deg. Then zoom in so
@@ -672,7 +619,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// pumps the loop), so the window must outlive this stack frame.
 	QMainWindow *win = new QMainWindow();
 	win->setAttribute(Qt::WA_DeleteOnClose);
-	win->setWindowTitle(title ? title : "iGMT");
+	win->setWindowTitle(title ? title : "i'GMT");
 	win->setWindowIcon(appIcon());          // per-window titlebar icon (matches the app-wide icon)
 	win->resize(1100, 800);
 	win->setCentralWidget(widget);
@@ -697,7 +644,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	auto actToggleBar = [s]() {
 		if (!s->bar) return;                 // bare image has no colorbar
-		s->bar->SetVisibility(!s->bar->GetVisibility());
+		setColorbarVisible(s, !colorbarVisible(s));
 		s->widget->renderWindow()->Render();
 	};
 	auto actVE = [s]() {
@@ -763,7 +710,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto actToggle2D = [s, setFlat2D]() { setFlat2D(!s->flat2d); };
 	auto actAbout = [win]() {
 		QMessageBox::about(win, "About",
-			"iGMT 3-D Viewer\n\nNative Qt UI + VTK 3-D, self-contained.\n\n"
+			"i'GMT 3-D Viewer\n\nNative Qt UI + VTK 3-D, self-contained.\n\n"
 			"Left-drag: horizontal = rotate (azimuth), vertical = tilt.\n"
 			"Middle-click: set the centre of rotation to that point.\n"
 			"Right-drag / wheel: zoom.\n"
@@ -927,7 +874,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			ca->setCheckable(true); ca->setChecked(s->axes->GetVisibility());
 			if (s->bar) {                    // no Color Bar entry for bare images
 				QAction *cb = m.addAction("Color Bar", actToggleBar);
-				cb->setCheckable(true); cb->setChecked(s->bar->GetVisibility());
+				cb->setCheckable(true); cb->setChecked(colorbarVisible(s));
 			}
 			QAction *cg = m.addAction("Gizmo", actToggleGizmo);
 			cg->setCheckable(true); cg->setChecked(s->giz && s->giz->visible);

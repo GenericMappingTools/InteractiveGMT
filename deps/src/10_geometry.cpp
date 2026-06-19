@@ -89,7 +89,14 @@ struct Scene {
 	std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> xlabels, ylabels, zlabels;  // tick labels drawn on the camera-near edges (never inside the cube)
 	vtkSmartPointer<vtkBillboardTextActor3D> axTitle[3];   // axis NAME titles (lon/lat/Z or X/Y/Z) as overlay billboards (cube-native titles don't render here)
 	std::string axName[3];                                 // the three axis names, picked by `geographic`
-	vtkSmartPointer<vtkScalarBarActor>    bar;
+	vtkSmartPointer<vtkScalarBarActor>    bar;       // coloured strip only
+	vtkSmartPointer<vtkActor2D>           barTicks;  // our own tick-mark lines (strip has none in VTK 9.6)
+	std::vector<vtkSmartPointer<vtkTextActor>> barLabels;  // our own tick numbers
+	std::vector<double>                   barValues; // value at each tick/label
+	vtkSmartPointer<vtkPoints>            barTickPts;// tick endpoints (rewritten in place on drag)
+	double barX0 = 0.93, barY0 = 0.55;               // colorbar frame bottom-left, normalized (draggable)
+	bool   barDragging = false;
+	double barGrabX = 0, barGrabY = 0;               // mouse-to-origin offset while dragging
 	vtkSmartPointer<vtkCellPicker>        picker;
 	QVTKOpenGLNativeWidget*               widget = nullptr;
 	QMainWindow*                          win    = nullptr;

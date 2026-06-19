@@ -1,6 +1,159 @@
 static void rebuildSceneObjects(Scene* s);          // defined just below; refreshed after edits
 static void textApplyProps(Scene* s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
 
+// Hand a colormap NAME back to the Julia host, which recomputes CPT nodes over the surface's data
+// range and ccalls gmtvtk_set_cpt to recolour live. `fig` is bound to THIS window by _console_eval.
+static void applyColormap(Scene* s, const QString& name) {
+	if (!s || !g_juliaEval || name.isEmpty()) return;
+	std::string cmd = "InteractiveGMT._recolor(fig, \"" + name.toStdString() + "\")";
+	std::vector<char> buf(1 << 12);
+	g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+}
+
+// ===== COLORBAR (scalar bar strip + our own ticks/numbers) ===============================
+// vtkScalarBarActor draws ONLY the coloured strip; the tick marks and numbers are our own 2D
+// actors (VTK 9.6's strip has no tick geometry and its built-in labels overlap a narrow bar).
+// All three are positioned from s->barX0/barY0 so the whole assembly toggles + drags as a unit.
+namespace cbar {
+	constexpr double W = 0.06, H = 0.40;     // frame size (normalized viewport)
+	constexpr double BARRATIO = 0.30;        // coloured strip = right 30% of W
+	constexpr double TICKLEN = 0.006;        // tick length (points LEFT from the strip edge)
+	constexpr double LABELGAP = 0.004;       // gap between a tick's outer end and its number
+}
+
+// Reposition the existing colorbar actors from s->barX0/barY0 — called on build and each drag
+// step. Rewrites coords in place; never recreates actors.
+static void layoutColorbar(Scene* s) {
+	if (!s || !s->bar) return;
+	const double X0 = s->barX0, Y0 = s->barY0;
+	const double barLeft = X0 + cbar::W * (1.0 - cbar::BARRATIO);
+	s->bar->SetPosition(X0, Y0);
+	s->bar->SetWidth(cbar::W); s->bar->SetHeight(cbar::H);
+	const double lo = s->zmin, hi = s->zmax;
+	const double span = (hi > lo) ? (hi - lo) : 1.0;
+	for (size_t i = 0; i < s->barValues.size(); ++i) {
+		const double frac = (s->barValues[i] - lo) / span;       // 0 at bottom (zmin) .. 1 at top
+		const double y = Y0 + frac * cbar::H;
+		if (s->barTickPts) {
+			s->barTickPts->SetPoint(2*i,   barLeft,                y, 0.0);
+			s->barTickPts->SetPoint(2*i+1, barLeft - cbar::TICKLEN, y, 0.0);
+		}
+		if (i < s->barLabels.size() && s->barLabels[i])
+			s->barLabels[i]->SetPosition(barLeft - cbar::TICKLEN - cbar::LABELGAP, y);
+	}
+	if (s->barTickPts) s->barTickPts->Modified();
+}
+
+// Build the colorbar actors once and add them to the renderer. zmin/zmax must already be set.
+static void buildColorbar(Scene* s, vtkScalarsToColors* lut) {
+	if (!s || s->imageOnly) return;          // bare image -> no colorbar
+	s->bar = vtkSmartPointer<vtkScalarBarActor>::New();
+	s->bar->SetLookupTable(lut);
+	s->bar->SetTitle("");                    // drop the big 'Z' title
+	s->bar->SetDrawTickLabels(false);        // WE draw the numbers — kill the overlapping built-ins
+	s->bar->SetTextPositionToPrecedeScalarBar();
+	s->bar->SetBarRatio(cbar::BARRATIO);
+	s->ren->AddActor2D(s->bar);
+
+	// Nice round tick values (800, 900, ...) at a constant 1/2/5 x10^n step.
+	const double lo = s->zmin, hi = s->zmax;
+	const double step = niceNum(niceNum(hi - lo, false) / 5.0, true);
+	s->barValues.clear(); s->barLabels.clear();
+	s->barTickPts = vtkSmartPointer<vtkPoints>::New();
+	vtkNew<vtkCellArray> tlines;
+	for (double v = std::ceil(lo / step) * step; v <= hi + 1e-9 * (hi - lo); v += step) {
+		s->barValues.push_back(v);
+		vtkIdType a = s->barTickPts->InsertNextPoint(0, 0, 0);   // real coords set by layoutColorbar
+		vtkIdType b = s->barTickPts->InsertNextPoint(0, 0, 0);
+		tlines->InsertNextCell(2); tlines->InsertCellPoint(a); tlines->InsertCellPoint(b);
+		char buf[32]; snprintf(buf, sizeof buf, "%.0f", v);
+		vtkSmartPointer<vtkTextActor> ta = vtkSmartPointer<vtkTextActor>::New();
+		ta->SetInput(buf);
+		ta->GetTextProperty()->SetColor(0.9, 0.9, 0.9);
+		ta->GetTextProperty()->SetFontSize(10);
+		ta->GetTextProperty()->SetJustificationToRight();
+		ta->GetTextProperty()->SetVerticalJustificationToCentered();
+		ta->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
+		s->ren->AddActor2D(ta);
+		s->barLabels.push_back(ta);
+	}
+	vtkNew<vtkPolyData> tpd; tpd->SetPoints(s->barTickPts); tpd->SetLines(tlines);
+	vtkNew<vtkCoordinate> nc; nc->SetCoordinateSystemToNormalizedViewport();
+	vtkNew<vtkPolyDataMapper2D> tmap; tmap->SetInputData(tpd); tmap->SetTransformCoordinate(nc);
+	s->barTicks = vtkSmartPointer<vtkActor2D>::New();
+	s->barTicks->SetMapper(tmap);
+	s->barTicks->GetProperty()->SetColor(0.9, 0.9, 0.9);
+	s->barTicks->GetProperty()->SetLineWidth(1.5);
+	s->ren->AddActor2D(s->barTicks);
+
+	layoutColorbar(s);
+}
+
+// Show/hide the WHOLE colorbar (strip + ticks + numbers) together. The old code toggled only the
+// strip, so the numbers kept floating after the strip vanished.
+static void setColorbarVisible(Scene* s, bool on) {
+	if (!s || !s->bar) return;
+	s->bar->SetVisibility(on ? 1 : 0);
+	if (s->barTicks) s->barTicks->SetVisibility(on ? 1 : 0);
+	for (auto& ta : s->barLabels) if (ta) ta->SetVisibility(on ? 1 : 0);
+}
+
+static bool colorbarVisible(Scene* s) { return s && s->bar && s->bar->GetVisibility() != 0; }
+
+// --- colorbar left-drag, handled at the GLView widget level (60_profile.cpp), exactly like the
+// polygon-vertex / text-label drags. Qt delivers the press to the widget BEFORE VTK's interactor
+// adapter, so a VTK observer would lose the race to the trackball — the widget path is the only
+// reliable one in this codebase. nx/ny are NORMALIZED viewport coords (bottom-up, 0..1).
+static bool colorbarHit(Scene* s, double nx, double ny) {   // cursor over the (visible) bar frame?
+	if (!s || !s->bar || !colorbarVisible(s)) return false;
+	const double L = s->barX0 - 0.05, R = s->barX0 + cbar::W;   // include the numbers to the left
+	const double B = s->barY0 - 0.02, T = s->barY0 + cbar::H + 0.02;
+	return nx >= L && nx <= R && ny >= B && ny <= T;
+}
+static bool colorbarGrab(Scene* s, double nx, double ny) {
+	if (!colorbarHit(s, nx, ny)) return false;
+	s->barDragging = true;
+	s->barGrabX = nx - s->barX0;
+	s->barGrabY = ny - s->barY0;
+	return true;
+}
+static bool colorbarDragTo(Scene* s, double nx, double ny) {
+	if (!s || !s->barDragging) return false;
+	s->barX0 = std::min(std::max(nx - s->barGrabX, 0.05), 1.0 - cbar::W);
+	s->barY0 = std::min(std::max(ny - s->barGrabY, 0.0),  1.0 - cbar::H);
+	layoutColorbar(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return true;
+}
+static bool colorbarRelease(Scene* s) {
+	if (!s || !s->barDragging) return false;
+	s->barDragging = false;
+	return true;
+}
+
+// The colormap chooser: a popup of common GMT master CPTs (applied on click) plus a Custom… entry
+// for any name GMT's makecpt accepts. Opened from the colorbar's Scene Objects row.
+static void chooseColormap(Scene* s, const QPoint& gp) {
+	if (!s || !s->bar) return;
+	static const char* kMaps[] = {
+		"viridis", "turbo", "jet", "hot", "haxby", "geo", "relief", "rainbow",
+		"polar", "seis", "gray", "plasma", "magma", "cividis", "roma", "vik",
+	};
+	QMenu m(s->win);
+	for (const char* nm : kMaps) {
+		const QString q = QString::fromLatin1(nm);
+		m.addAction(q, [s, q]() { applyColormap(s, q); });
+	}
+	m.addSeparator();
+	m.addAction("Custom…", [s]() {
+		bool ok = false;
+		const QString nm = QInputDialog::getText(s->win, "Colormap", "GMT CPT name:",
+		                                         QLineEdit::Normal, "", &ok);
+		if (ok) applyColormap(s, nm.trimmed());
+	});
+	m.exec(gp);
+}
+
 // Font / colour editor for a text label. Reachable from the label's Scene-Objects row or a canvas
 // right-click. Edits the string, family (Arial/Courier/Times — VTK's built-in faces), size, colour,
 // bold and italic, then re-applies and re-renders.
@@ -114,6 +267,20 @@ static void rebuildSceneObjects(Scene* s) {
 		addRow(s->imageOnly ? (s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName))
 		                    : QString("Image drape"),
 		       s->drape);
+	if (s->bar) {                                        // colorbar: toggle visibility + colormap chooser
+		QCheckBox* cb = new QCheckBox("Color Bar", s->objPanel);
+		cb->setChecked(s->bar->GetVisibility() != 0);
+		cb->setToolTip("Right-click to choose a colormap");
+		QObject::connect(cb, &QCheckBox::toggled, [s](bool on) {
+			setColorbarVisible(s, on);
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		});
+		cb->setContextMenuPolicy(Qt::CustomContextMenu);
+		QObject::connect(cb, &QWidget::customContextMenuRequested, [s, cb](const QPoint& p) {
+			chooseColormap(s, cb->mapToGlobal(p));
+		});
+		col->addWidget(cb);
+	}
 	for (auto& ov : s->overlays) {
 		LineRef lr{ LK_Overlay, ov.actor };
 		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? &lr : nullptr);

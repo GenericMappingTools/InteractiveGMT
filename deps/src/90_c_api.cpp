@@ -223,7 +223,7 @@ GMTVTK_API void* gmtvtk_view_fv(const double* xyz, int nv, const int* sides, int
 			m->InterpolateScalarsBeforeMappingOff();
 			if (direct) {
 				m->SetColorModeToDirectScalars();     // RGB straight from the cell array
-				if (s->bar) s->bar->VisibilityOff();  // explicit colours have no z legend
+				if (s->bar) setColorbarVisible(s, false);  // explicit colours have no z legend
 			}
 			else {
 				m->SetColorModeToMapScalars();        // face-z through the CTF = same as the bar
@@ -391,6 +391,23 @@ GMTVTK_API int gmtvtk_has_surface(void* handle) {
 	return (sceneAlive(s) && s->surf && !s->emptyStart) ? 1 : 0;
 }
 
+// Recolour a live surface from a new CPT: cz[n] boundary z + crgb[n*3] (0..1). s->surfLut is always
+// a vtkColorTransferFunction, shared by the surface mapper, every LOD tile mapper and the colorbar,
+// so mutating its nodes in place recolours all of them at once. Called from Julia (_recolor) after
+// the colormap chooser picks a name. No-op on a bare image (no surfLut/colorbar).
+GMTVTK_API void gmtvtk_set_cpt(void* handle, const double* cz, const double* crgb, int n) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !cz || !crgb || n < 2) return;
+	vtkColorTransferFunction* ctf = vtkColorTransferFunction::SafeDownCast(s->surfLut);
+	if (!ctf) return;                       // only the CTF path supports live recolour
+	ctf->RemoveAllPoints();
+	for (int i = 0; i < n; ++i)
+		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+	s->surfCtfRange = true;
+	if (s->bar) s->bar->SetLookupTable(s->surfLut);   // refresh the legend strip
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // Close a window programmatically (WA_DeleteOnClose -> destroy + bookkeeping). Used to retire an
 // empty launcher once a dropped file has been promoted into a full viewer window.
 GMTVTK_API void gmtvtk_close(void* handle) {
@@ -411,7 +428,7 @@ GMTVTK_API void gmtvtk_view_demo(void) {
 	double xfac, zfac, ve0;
 	computeScales(0, -3, 3, -3, 3, zmin, zmax, xfac, zfac, ve0);
 	buildAndShow(pd, -3, 3, -3, 3, zmin, zmax, xfac, zfac, ve0, nullptr, nullptr, 0,
-				 nullptr, 0, 0, 0, 0, false, 0, "iGMT  —  demo");
+				 nullptr, 0, 0, 0, 0, false, 0, "i'GMT  —  demo");
 }
 
 // Register the Julia eval callback used by the in-window console dock. `fn` is a Julia
@@ -440,7 +457,7 @@ GMTVTK_API void *gmtvtk_open_empty(const char* title) {
 	computeScales(0, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
 	Scene *s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, nullptr, nullptr, 0,
 	                        nullptr, 0, 0, 0, 0, false, 0,
-	                        title ? title : "iGMT  —  drop a file",
+	                        title ? title : "i'GMT  —  drop a file",
 	                        /*objname=*/nullptr, /*imageOnly=*/true,
 	                        /*gz=*/nullptr, /*gnx=*/0, /*gny=*/0, /*blankStart=*/true);
 	if (!s)
