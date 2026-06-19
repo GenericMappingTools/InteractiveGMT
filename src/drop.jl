@@ -111,7 +111,7 @@ file (anything `GMT.gmtread` understands) onto it — or onto any open viewer wi
 added to that window and listed in its "Scene Objects" panel. Returns a `QtEmpty` handle.
 """
 function iview()
-	h = ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "iGMT  —  drop a file")
+	h = ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "i'GMT  —  drop a file")
 	h == C_NULL && error("iview: could not open the empty window")
 	fig = _register_fig!(QtEmpty(h))
 	_start_pump()

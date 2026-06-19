@@ -19,7 +19,7 @@ G = GMT.grdcut("@earth_relief_04m", region=(-12, 0, 35, 45))
 
 # Hang the seismic profile along the two-point WSW–ENE track, clipped to the seafloor.
 # Form 1 — the `vcurtain=` kwarg of view_grid (one spec, or a vector of specs):
-fig = view_grid(G; cmap=:geo, title="iGMT  —  vertical curtain",
+fig = view_grid(G; cmap=:geo, title="i'GMT  —  vertical curtain",
                 vcurtain = (; image  = SEISMIC_IMG,
                               path   = [-11.045 36.077; -6.9846 36.1846],
                               zrange = (-10000.0, 0.0),

@@ -25,7 +25,7 @@ end
 
 """
 	view_grid(G::GMTgrid; cmap=:geo, drape=nothing, outside=:shademesh, outside_color=200,
-			  title="iGMT", geographic=nothing)
+			  title="i'GMT", geographic=nothing)
 
 Show a GMT.jl grid in the Qt + VTK viewer. Returns a `QtFigure` handle immediately; the
 window stays live while you keep using the REPL. Pass the handle to [`add!`](@ref) to add
@@ -66,7 +66,7 @@ cos(mid-lat)); z assumed metres.
 """
 function view_grid(G::GMTgrid; cmap=:geo, drape=nothing, outside::Symbol=:shademesh, outside_color=200,
 				   triangulate::Bool=true, data=nothing, mode::Symbol=:lines, data_color=nothing, data_size=0,
-				   vcurtain=nothing, title::AbstractString="iGMT",
+				   vcurtain=nothing, title::AbstractString="i'GMT",
 				   geographic::Union{Bool,Nothing}=nothing)
 	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z)   # column-major; viewer reads z[ix*ny + iy]. Float32 = no copy (C stores float anyway)
 	ny, nx = size(z)                  # GMT layout: dim1 = ny (y), dim2 = nx (x)
@@ -122,7 +122,7 @@ function _is_referenced(I::GMTimage)
 end
 
 """
-	view_image(I::GMTimage; title="iGMT", geographic=nothing, axes=nothing)
+	view_image(I::GMTimage; title="i'GMT", geographic=nothing, axes=nothing)
 
 Show a bare `GMTimage` (no elevation) in the viewer: a flat plane textured with the image,
 opened maximized in a top-down orthographic map. Returns a `QtImage` handle immediately (the
@@ -130,7 +130,7 @@ window stays live while you use the REPL). The status-bar readout shows the pixe
 (`rgb = R G B`) under the cursor instead of a z value. `geographic` is auto-detected
 (`GMT.isgeog`); override with `true`/`false`. Also reachable as `iview(I)`.
 """
-function view_image(I::GMTimage; title::String="iGMT",
+function view_image(I::GMTimage; title::String="i'GMT",
 					geographic::Union{Bool,Nothing}=nothing, axes::Union{Bool,Nothing}=nothing)
 	ir = I.range
 	geog = geographic === nothing ? GMT.isgeog(I) : geographic
