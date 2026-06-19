@@ -143,12 +143,22 @@ struct Scene {
 	vtkSmartPointer<vtkSSAOPass>          ssao;   // persistent passes: rebuilding them every
 	vtkSmartPointer<vtkToneMappingPass>   tone;   // applyShading() leaks their GPU FBOs (VTK warns
 	vtkSmartPointer<vtkOpenGLFXAAPass>    fxaa;   // "FrameBufferObject should have been deleted")
+	vtkSmartPointer<vtkCameraPass>        shadowCam;   // cached cast-shadow opaque sequence (sun self-shadowing terrain)
+	vtkSmartPointer<vtkShadowMapBakerPass> shadowBaker; // its depth-map baker (resolution lives here)
 	double ssaoRadius = 0.5, ssaoBias = 1e-4;
 	double lightAz = 315.0, lightEl = 45.0;   // sun azimuth (deg from north, CW) + elevation
 	// F3D material defaults (vtkF3DGenericImporter): roughness 0.3, IOR 1.5, PBR, metallic 0.
 	double roughness = 0.3, metallic = 0.0, ior = 1.5;
 	double lightIntensity = 1.0, fillIntensity = 0.35, envIntensity = 1.0;
 	bool   useSSAO = true, useTone = true, useFXAA = true, useIBL = false;
+	bool   useShadows = false;        // sun cast-shadows (terrain self-shadowing) — OFF by default (opt-in; mutually exclusive with useHillshade)
+	int    shadowRes  = 2048;         // shadow depth-map resolution (higher = crisper shadow edges)
+	bool   useHillshade = false;      // baked hillshade master on/off; rendered UNLIT so relief reads
+									  // even flat-on (2-D map). Alt to lit/PBR. Two styles (s->hillGrd):
+	bool   hillGrd      = false;      //   false = Lambert (mesh-normal N.L, VE-corrected, darken-only),
+									  //   true  = GMT grdimage (z-gradient, VE-independent, HSV illuminate).
+	double hillAmbient  = 0.25;       // Lambert hillshade shadow floor (0 = black valleys, 1 = no shade)
+	double hillGain     = 2.0;        // grdimage relief contrast: atan slope on the z-gradient signal (grdgradient -Nt amp)
 	bool   matteSurf = false;        // fv colour mesh: keep s->surf MATTE (Phong, no specular/IBL) so the
 									 // data colour reads true; glossy PBR mirrored the bright sky env to grey
 									 // on up-facing facets. applyShading honours this (else it re-clobbers it).

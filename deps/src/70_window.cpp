@@ -38,6 +38,7 @@ static void ensureNodeActor(Scene* s, QuadNode* n) {
 	a->GetProperty()->SetMetallic(0.0); a->GetProperty()->SetRoughness(0.45);
 	a->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12); a->GetProperty()->SetLineWidth(1.0);
 	a->GetProperty()->SetEdgeVisibility(s->surfEdges);
+	if (s->useHillshade) applySurfStyle(s, a);   // hillshade on: bake CPT*shade + unlit, like the resident tiles
 	const vtkIdType npts = tpd->GetPoints()->GetNumberOfPoints();
 	const vtkIdType ncel = tpd->GetPolys()->GetNumberOfCells();
 	n->bytes = (size_t)npts * (12 + 4 + 12) + (size_t)ncel * 20;   // pts + z + normal + quad ids
@@ -176,6 +177,78 @@ static QIcon makeCircleIcon();
 static QIcon makeTextIcon();
 static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only view-toggle button
 static int  polyHitText(Scene* s, int x, int y, double tol);   // text label under the cursor (85_polygon.cpp)
+
+// ============================================================================
+//  Recent files — a persistent (QSettings) MRU of the last kRecentMax opened
+//  files, each tagged by category (0=grid, 1=image, 2=dataset). Julia calls
+//  gmtvtk_add_recent(path,cat) after every successful open; the File > Recent
+//  Files submenu rebuilds from this list on aboutToShow (so all windows stay in
+//  sync) and re-opens a pick via iview("path"). Shared process-wide.
+// ============================================================================
+struct RecentItem { QString path; int cat; };
+static std::vector<RecentItem> g_recent;
+static bool g_recentLoaded = false;
+static const int kRecentMax = 21;
+
+static void loadRecent() {
+	if (g_recentLoaded) return;
+	g_recentLoaded = true;
+	QSettings st("InteractiveGMT", "iGMT");
+	const QStringList paths = st.value("recent/paths").toStringList();
+	const QVariantList cats  = st.value("recent/cats").toList();
+	for (int i = 0; i < paths.size(); ++i)
+		g_recent.push_back({ paths[i], (i < cats.size()) ? cats[i].toInt() : 2 });
+}
+
+static void saveRecent() {
+	QStringList paths; QVariantList cats;
+	for (const RecentItem& r : g_recent) { paths << r.path; cats << r.cat; }
+	QSettings st("InteractiveGMT", "iGMT");
+	st.setValue("recent/paths", paths);
+	st.setValue("recent/cats", cats);
+}
+
+// Promote a freshly-opened file to the front of the MRU (de-dup, cap, persist).
+static void addRecentFile(const char* cpath, int cat) {
+	if (!cpath || !*cpath) return;
+	loadRecent();
+	const QString p = QString::fromUtf8(cpath);
+	for (int i = (int)g_recent.size() - 1; i >= 0; --i)            // drop any prior entry for this path
+		if (QString::compare(g_recent[i].path, p, Qt::CaseInsensitive) == 0)
+			g_recent.erase(g_recent.begin() + i);
+	g_recent.insert(g_recent.begin(), { p, (cat >= 0 && cat <= 2) ? cat : 2 });
+	if ((int)g_recent.size() > kRecentMax) g_recent.resize(kRecentMax);
+	saveRecent();
+}
+
+// Rebuild the Recent Files submenu, grouped Grids / Images / Datasets. Each entry shows the file
+// name (full path on hover) and re-opens via the drop path (into THIS window); Clear wipes list.
+static void populateRecentMenu(QMenu* menu, Scene* s) {
+	loadRecent();
+	menu->clear();
+	static const char* kCatName[3] = { "Grids", "Images", "Datasets" };
+	bool any = false;
+	for (int c = 0; c < 3; ++c) {
+		bool header = false;
+		for (const RecentItem& r : g_recent) {
+			if (r.cat != c) continue;
+			if (!header) { QAction* h = menu->addAction(kCatName[c]); h->setEnabled(false); header = true; }
+			const QString full = r.path;
+			QAction* act = menu->addAction(QFileInfo(full).fileName());
+			act->setToolTip(full); act->setStatusTip(full);
+			QObject::connect(act, &QAction::triggered, [s, full]() {
+				if (!g_juliaDrop) return;
+				// Route through the drop path so the file opens INTO this window
+				// (or promotes an empty launcher) instead of spawning a new window.
+				g_juliaDrop(s, full.toStdString().c_str());
+			});
+			any = true;
+		}
+		if (header) menu->addSeparator();
+	}
+	if (!any) { QAction* none = menu->addAction("(no recent files)"); none->setEnabled(false); }
+	else      { menu->addAction("&Clear Recent Files", []() { g_recent.clear(); saveRecent(); }); }
+}
 
 static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 double x0, double x1, double y0, double y1,
@@ -695,6 +768,11 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	QMenu *mFile = win->menuBar()->addMenu("&File");
 	mFile->addAction("Save &Screenshot…", actShot);
+	// Recent Files: persistent MRU, grouped Grids/Images/Datasets, rebuilt each time it opens so a
+	// file opened in any window shows up here too. Re-opens a pick in a NEW window via iview().
+	QMenu* mRecent = mFile->addMenu("Recent &Files");
+	mRecent->setToolTipsVisible(true);                       // show the full path on hover
+	QObject::connect(mRecent, &QMenu::aboutToShow, [mRecent, s]() { populateRecentMenu(mRecent, s); });
 	mFile->addSeparator();
 	mFile->addAction("&Close", [win](){ win->close(); }, QKeySequence::Close);
 
@@ -943,6 +1021,39 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QCheckBox* cbFXAA = new QCheckBox(panel); cbFXAA->setChecked(s->useFXAA); // GRAPHICAL ELEMENT: "FXAA" checkbox — toggles anti-alias post-pass
 	QObject::connect(cbFXAA, &QCheckBox::toggled, [s](bool b){ s->useFXAA = b; applyShading(s); });
 	form->addRow("FXAA", cbFXAA);
+
+	// Three ALTERNATIVE relief looks — Cast shadows (lit self-shadowing), Hillshade/Lambert
+	// (VE-corrected mesh-normal shade) and Hillshade/grdimage (VE-independent z-gradient + GMT
+	// HSV illuminate) — are MUTUALLY EXCLUSIVE but all three may be off. Each toggled handler:
+	// when turned ON, uncheck the other two (QSignalBlocker stops their handlers re-firing), then
+	// re-derive ALL Scene flags from the live checkbox states (so an off-handler never wrongly
+	// clears a flag the just-checked box set). hillGrd selects the Lambert vs grdimage style.
+	QCheckBox* cbShadow = new QCheckBox(panel); cbShadow->setChecked(s->useShadows);                  // GRAPHICAL ELEMENT: "Cast shadows" checkbox
+	QCheckBox* cbHillL  = new QCheckBox(panel); cbHillL->setChecked(s->useHillshade && !s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (Lambert)" checkbox
+	QCheckBox* cbHillG  = new QCheckBox(panel); cbHillG->setChecked(s->useHillshade &&  s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (grdimage)" checkbox
+	auto syncShade = [s, cbShadow, cbHillL, cbHillG]() {
+		s->useShadows   = cbShadow->isChecked();
+		s->useHillshade = cbHillL->isChecked() || cbHillG->isChecked();
+		s->hillGrd      = cbHillG->isChecked();
+		applyShading(s);
+	};
+	QObject::connect(cbShadow, &QCheckBox::toggled, [=](bool b){
+		if (b) { QSignalBlocker bl(cbHillL), bg(cbHillG); cbHillL->setChecked(false); cbHillG->setChecked(false); }
+		syncShade();
+	});
+	form->addRow("Cast shadows", cbShadow);
+
+	QObject::connect(cbHillL, &QCheckBox::toggled, [=](bool b){
+		if (b) { QSignalBlocker bs(cbShadow), bg(cbHillG); cbShadow->setChecked(false); cbHillG->setChecked(false); }
+		syncShade();
+	});
+	form->addRow("Hillshade (Lambert)", cbHillL);
+
+	QObject::connect(cbHillG, &QCheckBox::toggled, [=](bool b){
+		if (b) { QSignalBlocker bs(cbShadow), bl(cbHillL); cbShadow->setChecked(false); cbHillL->setChecked(false); }
+		syncShade();
+	});
+	form->addRow("Hillshade (grdimage)", cbHillG);
 
 	panel->setLayout(form);
 	dock->setWidget(panel);                                  // mount the controls panel into the Shading dock

@@ -398,6 +398,12 @@ GMTVTK_API void gmtvtk_close(void* handle) {
 	if (sceneAlive(s) && s->win) s->win->close();
 }
 
+// Register a freshly-opened file in the persistent Recent Files list (File > Recent Files).
+// Called from Julia after a successful open. cat: 0 = grid, 1 = image, 2 = dataset.
+GMTVTK_API void gmtvtk_add_recent(const char* path, int cat) {
+	addRecentFile(path, cat);
+}
+
 // Standalone demo surface (MATLAB peaks) — no host data needed.
 GMTVTK_API void gmtvtk_view_demo(void) {
 	double zmin = 0.0, zmax = 1.0;

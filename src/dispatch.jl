@@ -62,10 +62,29 @@ end
 function iview(name::AbstractString; kwargs...)
 	lname = lowercase(String(name))
 	(lname in ("grid", "peaks")) && return view_grid(GMT.peaks(); kwargs...)
-	# A real file -> read it (gmtread auto-detects format) and dispatch by the returned type
-	# (grid -> view_grid, image -> view_image, dataset -> points/fv).
-	isfile(name)                 && return iview(GMT.gmtread(name); kwargs...)
+	# A real file -> read it (gmtread auto-detects format), record it in the Recent Files list,
+	# and dispatch by the returned type (grid -> view_grid, image -> view_image, dataset -> points/fv).
+	if isfile(name)
+		data = GMT.gmtread(name)
+		_record_recent(name, data)
+		return iview(data; kwargs...)
+	end
 	return view_fv(name; kwargs...)        # named solid -> the SOLIDS dispatch above
+end
+
+# Push a just-opened file onto the viewer's persistent Recent Files list (File > Recent Files),
+# tagged by category (0 = grid, 1 = image, 2 = dataset/fv) so the menu can group it. Best-effort:
+# a missing DLL symbol or bad path never blocks the open.
+function _record_recent(path::AbstractString, data)
+	cat = data isa GMTgrid  ? 0 :
+	      data isa GMTimage ? 1 :
+	      (data isa GMTdataset || data isa AbstractVector{<:GMTdataset} || data isa GMTfv) ? 2 : -1
+	cat < 0 && return nothing
+	try
+		ccall(_fn(:gmtvtk_add_recent), Cvoid, (Cstring, Cint), abspath(String(path)), cat)
+	catch
+	end
+	return nothing
 end
 
 "Show the built-in synthetic demo surface (no grid needed)."

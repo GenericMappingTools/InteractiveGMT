@@ -67,6 +67,7 @@
 #include <QDateTime>
 #include <QStackedWidget>
 #include <QStringList>
+#include <QSettings>
 #include <QMimeData>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -144,6 +145,17 @@
 #include <vtkToneMappingPass.h>
 #include <vtkOpenGLFXAAPass.h>
 #include <vtkRenderPass.h>
+// Cast-shadow pass chain (sun self-shadowing on terrain).
+#include <vtkShadowMapPass.h>
+#include <vtkShadowMapBakerPass.h>
+#include <vtkSequencePass.h>
+#include <vtkCameraPass.h>
+#include <vtkLightsPass.h>
+#include <vtkOpaquePass.h>
+#include <vtkTranslucentPass.h>
+#include <vtkVolumetricPass.h>
+#include <vtkOverlayPass.h>
+#include <vtkRenderPassCollection.h>
 #include <vtkLightCollection.h>
 #include <vtkVersion.h>
 #include <vtkBillboardTextActor3D.h>

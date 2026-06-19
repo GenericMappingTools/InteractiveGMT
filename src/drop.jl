@@ -14,6 +14,7 @@ function _on_drop(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid
 	path = unsafe_string(cpath)
 	try
 		data = GMT.gmtread(path)
+		_record_recent(path, data)                             # remember it in File > Recent Files
 		if ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) != 0
 			_drop_into(scene, data, basename(path))            # add into the populated window
 		else
