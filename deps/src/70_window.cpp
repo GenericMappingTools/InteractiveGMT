@@ -264,7 +264,8 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 const char *objname = nullptr,    // Scene Objects label for the surface ("" -> "Surface")
 						 bool imageOnly = false,            // bare image: no surface row; readout shows colour
 						 const float *gz = nullptr,         // non-null -> TILED plain-grid render (pd ignored)
-						 int gnx = 0, int gny = 0) {        // grid dims for the tiled path
+						 int gnx = 0, int gny = 0,          // grid dims for the tiled path
+						 bool blankStart = false) {         // empty launcher: open as a clean dark canvas (no axes flash)
 	ensureApp();
 
 	Scene *s = new Scene();
@@ -531,7 +532,10 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		vtkTextProperty* lp = s->axes->GetLabelTextProperty(i);
 		lp->SetColor(1.0, 1.0, 1.0); lp->SetFontFamilyToArial(); lp->BoldOff(); lp->ItalicOff(); lp->ShadowOff();
 	}
-	s->ren->AddActor(s->axes);
+	// Empty launcher (blankStart): the cube axes + tick/label billboards are NEVER added to the
+	// renderer and the initial label build is skipped, so the blank window can't flash an axis box
+	// with numbers for a frame. A dropped file PROMOTES into a fresh full window built normally.
+	if (!blankStart) s->ren->AddActor(s->axes);
 
 	// Our own SINGLE outward tickmarks (rebuilt every render by rebuildAxisLabels). Unlit grey
 	// lines, like the cube's axis lines; the cube's native (doubled) ticks are off.
@@ -544,9 +548,9 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		s->axisTicks->GetProperty()->LightingOff();
 		s->axisTicks->GetProperty()->SetLineWidth(1.0);
 		s->axisTicks->PickableOff();
-		s->ren->AddActor(s->axisTicks);
+		if (!blankStart) s->ren->AddActor(s->axisTicks);
 	}
-	rebuildAxisLabels(s);                         // billboards (same font/size on X/Y/Z) + single ticks
+	if (!blankStart) rebuildAxisLabels(s);        // billboards (same font/size on X/Y/Z) + single ticks
 
 	// --- scalar bar ---------------------------------------------------------
 	// ===== COLORBAR DIMENSIONS & LOCATION (all in NORMALIZED viewport coords [0..1]) =====
@@ -1207,6 +1211,15 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mView->addAction("&Profile Panel",       [showTab, s]()        { showTab(s->prof); });
 	mView->addAction("Julia &Console Panel", [showTab, conPanel]() { showTab(conPanel); });
 	mView->addAction("&Data Viewer Panel",   [showTab, s]()        { showTab(s->dataTable); });
+
+	// Empty launcher / blank start: hide the surface, cube axes and gizmo BEFORE the first paint so
+	// the window opens as a clean dark canvas instead of flashing an empty blue cube-axes box for one
+	// frame (the caller's post-show hides would otherwise only bite on the NEXT render).
+	if (blankStart) {
+		if (s->surf) s->surf->SetVisibility(0);
+		if (s->axes) s->axes->SetVisibility(0);
+		if (s->giz)  setGizmoVisible(*s->giz, false);
+	}
 
 	// Default window large enough that the LEFT (Scene Objects) and RIGHT (Shading) side docks
 	// both get real width. Without this the window opens at its minimum and the central VTK view

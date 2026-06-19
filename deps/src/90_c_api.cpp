@@ -441,7 +441,8 @@ GMTVTK_API void *gmtvtk_open_empty(const char* title) {
 	Scene *s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, nullptr, nullptr, 0,
 	                        nullptr, 0, 0, 0, 0, false, 0,
 	                        title ? title : "iGMT  —  drop a file",
-	                        /*objname=*/nullptr, /*imageOnly=*/true);
+	                        /*objname=*/nullptr, /*imageOnly=*/true,
+	                        /*gz=*/nullptr, /*gnx=*/0, /*gny=*/0, /*blankStart=*/true);
 	if (!s)
 		return nullptr;
 	s->emptyStart = true;                    // hidden placeholder only -> drop promotes to a real window
