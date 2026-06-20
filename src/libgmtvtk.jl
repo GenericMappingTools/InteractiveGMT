@@ -36,6 +36,8 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_promote_surface_h,
 	:gmtvtk_has_surface, :gmtvtk_close, :gmtvtk_add_recent,
 	:gmtvtk_set_cpt, :gmtvtk_raise, :gmtvtk_set_crs,
+	:gmtvtk_set_basemap_callback, :gmtvtk_set_basemap_logo,
+	:gmtvtk_frame_for_image_h, :gmtvtk_fit2d,
 )
 
 # Resolve a loaded C-API function pointer. Errors clearly if the library never loaded.

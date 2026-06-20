@@ -36,6 +36,10 @@
 #include <QSlider>
 #include <QLabel>
 #include <QCheckBox>
+#include <QRadioButton>
+#include <QButtonGroup>
+#include <functional>
+#include <algorithm>
 #include <QToolTip>
 #include <QColorDialog>
 #include <QTimer>

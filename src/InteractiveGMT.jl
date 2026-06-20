@@ -39,6 +39,7 @@ include("points.jl")
 include("fv.jl")
 include("dispatch.jl")
 include("drop.jl")
+include("basemap.jl")    # World Topo Tiles picker (ported from Mirone bg_map.m)
 
 export view_grid, view_image, view_points, view_fv, view_demo, iview,
        add!, add_curtain!, show_table, selection, isalive,
@@ -57,6 +58,7 @@ function __init__()
 		_load_library()
 		_register_console_eval()
 		_register_drop_callback()
+		_register_basemap()
 	catch e
 		@warn "InteractiveGMT: the Qt+VTK viewer DLL could not be loaded; build it with deps/build.bat (Windows only). Viewer calls will error until then." exception=(e,)
 	end

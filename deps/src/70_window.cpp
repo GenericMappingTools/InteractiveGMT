@@ -5,6 +5,76 @@
 // LRU-evicting offscreen ones past a byte budget. Only the data layer (Scene::gridZ) is always
 // resident; render geometry is bounded regardless of grid size.
 
+// ============================================================================================
+// World Topo Tiles basemap picker — port of Mirone's bg_map.m (src_figs/bg_map.m).
+// A world image (data/etopo4_logo.jpg) overlaid with a 4x8 grid of 45-deg tiles. Clicking a tile
+// yields its geographic region; "World Map" mode yields the whole map; the [0 360] radio sets a
+// wrap flag. The result "W/E/S/N/wrap" is handed to Julia (g_juliaBaseMap), which crops the big
+// data/etopo4.jpg and adds it as a referenced (WGS84) flat image. exec() returns Accepted with
+// `region` filled, or Rejected if the user just closed the window.  (Rubber-band sub-region
+// selection from bg_map.m's toggle_region is not ported yet — see .wolf/knowledge/mirone-port.md.)
+// ============================================================================================
+class BaseMapArea : public QWidget {       // the clickable map; no Q_OBJECT (only paint/mouse overrides)
+public:
+	QPixmap logo;
+	std::function<bool()> isTiles;                                            // draw + hit-test grid when true
+	std::function<void(double,double,double,double,const QString&)> onPick;   // (W,E,S,N, name)
+	explicit BaseMapArea(QWidget *p) : QWidget(p) { setMinimumSize(512, 256); }
+protected:
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		if (!logo.isNull()) g.drawPixmap(rect(), logo);
+		if (isTiles && isTiles()) {
+			QPen pen(QColor(230, 230, 230)); pen.setWidth(1); g.setPen(pen);
+			const double w = width(), h = height();
+			for (int n = 1; n < 8; ++n) g.drawLine(QPointF(n * w / 8, 0), QPointF(n * w / 8, h));
+			for (int m = 1; m < 4; ++m) g.drawLine(QPointF(0, m * h / 4), QPointF(w, m * h / 4));
+		}
+	}
+	void mousePressEvent(QMouseEvent *e) override {
+		if (!onPick) return;
+		if (isTiles && isTiles()) {
+			int col = std::clamp(int(e->position().x() * 8 / width()),  0, 7);   // 0..7 left->right
+			int row = std::clamp(int(e->position().y() * 4 / height()), 0, 3);   // 0..3 top->bottom
+			double W = -180.0 + col * 45.0, E = W + 45.0;
+			double N =   90.0 - row * 45.0, S = N - 45.0;
+			onPick(W, E, S, N, QString("%1x%2").arg(row + 1).arg(col + 1));      // name = "row x col" (1-based)
+		} else {
+			onPick(-180.0, 180.0, -90.0, 90.0, "global");                       // whole world
+		}
+	}
+};
+
+class BaseMapPicker : public QDialog {
+public:
+	QString region;                            // "W/E/S/N/wrap" once a tile/map is clicked, else empty
+	BaseMapPicker(QWidget *parent, const QPixmap &logo) : QDialog(parent) {
+		setWindowTitle("World Topo Tiles");
+		auto *v   = new QVBoxLayout(this);
+		auto *top = new QHBoxLayout();
+		auto *rTiles = new QRadioButton("World Map Tiles", this); rTiles->setChecked(true);
+		auto *rWorld = new QRadioButton("World Map", this);
+		auto *g1 = new QButtonGroup(this); g1->addButton(rTiles); g1->addButton(rWorld);
+		auto *r180 = new QRadioButton("[-180 180]", this); r180->setChecked(true);
+		auto *r360 = new QRadioButton("[0 360]", this);
+		auto *g2 = new QButtonGroup(this); g2->addButton(r180); g2->addButton(r360);
+		top->addWidget(rTiles); top->addWidget(rWorld); top->addStretch();
+		top->addWidget(r180);   top->addWidget(r360);
+		v->addLayout(top);
+		auto *map = new BaseMapArea(this);
+		map->logo    = logo;
+		map->isTiles = [rTiles]() { return rTiles->isChecked(); };
+		map->onPick  = [this, r360](double W, double E, double S, double N, const QString &name) {
+			region = QString("%1/%2/%3/%4/%5/%6").arg(W).arg(E).arg(S).arg(N)
+			                                     .arg(r360->isChecked() ? 1 : 0).arg(name);
+			accept();
+		};
+		v->addWidget(map, 1);
+		QObject::connect(rTiles, &QRadioButton::toggled, map, [map]() { map->update(); });
+		resize(680, 380);
+	}
+};
+
 static QuadNode* buildQuadNode(int i0, int i1, int j0, int j1, int level,
 							   double x0, double dx, double y0, double dy) {
 	QuadNode* n = new QuadNode();
@@ -884,6 +954,28 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	tb->addWidget(tb2D);
 
 	tb->addSeparator();
+
+	// Base Map: opens the World Topo Tiles picker (port of Mirone's bg_map.m). A clicked tile's
+	// region "W/E/S/N/wrap/name" is handed to Julia (g_juliaBaseMap), which crops data/etopo4.jpg
+	// and adds it as a referenced flat image (Julia frames an empty launcher to a 2-D map; a window
+	// already showing data just gets the basemap added on top). Sits right BEFORE the polygon tool.
+	QIcon baseMapIcon = []() {
+		QPixmap pm(16, 16); pm.fill(Qt::transparent);
+		QPainter p(&pm); p.setPen(QColor(60, 110, 180));
+		p.drawRect(1, 3, 13, 9);
+		for (int x = 4; x < 14; x += 3) p.drawLine(x, 3, x, 12);    // tile grid columns
+		for (int y = 6; y < 12; y += 3) p.drawLine(1, y, 14, y);    // tile grid rows
+		return QIcon(pm);
+	}();
+	QAction *actBaseMap = tb->addAction(baseMapIcon, "");
+	actBaseMap->setToolTip("Base Map: pick a world topo tile to load as a referenced image");
+	QObject::connect(actBaseMap, &QAction::triggered, [win, s]() {
+		QPixmap logo;
+		if (!g_basemapLogo.isEmpty()) logo.load(g_basemapLogo);
+		BaseMapPicker dlg(win, logo);
+		if (dlg.exec() == QDialog::Accepted && !dlg.region.isEmpty() && g_juliaBaseMap)
+			g_juliaBaseMap(s, dlg.region.toUtf8().constData());
+	});
 
 	// --- draw tools: an Illustrator-style flyout (shapes) + a standalone Text button -----------
 	// The four shape tools share ONE toolbar slot (a plain QToolButton in MenuButtonPopup mode): the

@@ -467,6 +467,58 @@ GMTVTK_API void gmtvtk_set_drop_callback(JuliaDropFn fn) {
 	g_juliaDrop = fn;
 }
 
+// Register the basemap-picker callback. `fn` (Julia @cfunction, signature JuliaBaseMapFn) is called
+// with a clicked tile's geographic region "W/E/S/N/wrap"; Julia crops data/etopo4.jpg + adds it.
+GMTVTK_API void gmtvtk_set_basemap_callback(JuliaBaseMapFn fn) {
+	g_juliaBaseMap = fn;
+}
+
+// Set the path to the world logo image painted in the basemap picker (data/etopo4_logo.jpg).
+GMTVTK_API void gmtvtk_set_basemap_logo(const char* path) {
+	g_basemapLogo = QString::fromUtf8(path ? path : "");
+}
+
+// Prepare an EMPTY launcher to receive geographic IMAGE objects as ExtraObj images. The basemap
+// must NOT promote its first tile into the window's "surface" (that row has no image-properties
+// menu); instead every tile is an ExtraObj image listed in Scene Objects with the same menu. This
+// recomputes the window scales from the image bbox + switches it to a flat-2-D geographic map, then
+// the caller adds the image via gmtvtk_add_surface_h and calls gmtvtk_fit2d. No-op (0) on a window
+// that already has data (caller then just adds the image on top, keeping the current view).
+GMTVTK_API int gmtvtk_frame_for_image_h(void* handle, double x0, double x1, double y0, double y1,
+                                        int geographic) {
+	Scene* s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->emptyStart) return 0;
+	double zmin = 0.0, zmax = 1.0, xfac, zfac, ve0;
+	computeScales(geographic, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
+	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1; s->zmin = zmin; s->zmax = zmax;
+	s->xfac = xfac; s->zfac = zfac; s->ve = ve0;
+	s->imageOnly  = true;             // a basemap is a 2-D map: no colorbar, no surface row
+	s->emptyStart = false;            // real data from here on -> images add via the normal path
+	if (s->surf) s->surf->SetVisibility(0);                 // keep the launcher placeholder hidden
+	s->axes->SetVisibility(1);
+	s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff();
+	return 1;
+}
+
+// Frame the camera to the scene in flat-2-D top-down. Called after adding image objects into a
+// launcher prepared by gmtvtk_frame_for_image_h (the normal add path does not auto-frame because
+// the hidden placeholder still counts as a surface). Sets the shared "Flat 2D" state + button.
+GMTVTK_API void gmtvtk_fit2d(void* handle) {
+	Scene* s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	vtkCamera* cam = s->ren->GetActiveCamera();
+	double fp[3]; cam->GetFocalPoint(fp);
+	cam->SetViewUp(0.0, 1.0, 0.0);
+	cam->SetPosition(fp[0], fp[1], fp[2] + 1.0);
+	cam->ParallelProjectionOn();
+	fitSnapView(s, /*topMode=*/true);
+	s->flat2d = true;
+	if (s->giz) setGizmoVisible(*s->giz, false);
+	if (s->act2D) s->act2D->setChecked(true);
+	s->ren->ResetCameraClippingRange();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // Open an EMPTY viewer window: a FULL-chrome launcher (menus + toolbar + 2-D map) that simply has
 // no data yet -> a blank dark canvas, exactly as if a (still unloaded) image were about to show.
 // It is built through buildAndShow (imageOnly => no colorbar) on a tiny placeholder plane that we

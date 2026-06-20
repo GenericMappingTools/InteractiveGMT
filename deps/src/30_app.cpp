@@ -19,6 +19,14 @@ static JuliaEvalFn g_juliaEval = nullptr;
 typedef void (*JuliaDropFn)(void* scene, const char* path);
 static JuliaDropFn g_juliaDrop = nullptr;
 
+// World Topo Tiles basemap picker (port of Mirone's bg_map.m). The "Base Map" menubar button opens
+// a tile picker; a clicked tile's geographic region ("W/E/S/N/wrap") is handed to Julia (g_juliaBaseMap),
+// which crops data/etopo4.jpg and adds it as a referenced flat image. g_basemapLogo is the path to
+// the world logo image painted in the picker, pushed from Julia via gmtvtk_set_basemap_logo.
+typedef void (*JuliaBaseMapFn)(void* scene, const char* region);
+static JuliaBaseMapFn g_juliaBaseMap = nullptr;
+static QString        g_basemapLogo;
+
 // Live scenes, keyed by the Scene* returned to the host as an opaque figure handle.
 // A handle is valid only while its window is open; the window-destroyed lambda erases
 // it here so a stale handle from a closed figure is rejected instead of dereferenced.
