@@ -519,6 +519,52 @@ GMTVTK_API void gmtvtk_fit2d(void* handle) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
+// Grow the flat geographic frame to also cover [x0,x1]x[y0,y1] (a basemap window getting a 2nd/3rd
+// tile outside the current extent). The base reference plane + cube axes are pinned to the surface
+// bounds (s->x0..y1 + the flat z=0 placeholder grid), so a tile added beyond them left the axes
+// frozen and the hover readout dead outside the first tile's box (sampleZ off-grid -> no hit).
+// We union the bbox, rebuild ONLY the base plane + axes via buildSceneContent (self-cleaning of
+// surface/axes/colorbar — it leaves s->extras/overlays untouched, so already-added tiles survive),
+// keep xfac UNCHANGED (so the existing image actors stay aligned), then refit the flat-2-D view.
+// No-op (0) on a non-flat or already-covering window. Geographic-only (basemap use).
+GMTVTK_API int gmtvtk_grow_frame_h(void* handle, double x0, double x1, double y0, double y1) {
+	Scene* s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || s->emptyStart) return 0;
+	const double nx0 = std::min(s->x0, x0), nx1 = std::max(s->x1, x1);
+	const double ny0 = std::min(s->y0, y0), ny1 = std::max(s->y1, y1);
+	if (nx0 == s->x0 && nx1 == s->x1 && ny0 == s->y0 && ny1 == s->y1)
+		return 0;                                   // new tile already inside the frame -> nothing to do
+	s->x0 = nx0; s->x1 = nx1; s->y0 = ny0; s->y1 = ny1;   // xfac/zfac/ve kept -> extras stay aligned
+	float zblank[4] = { 0, 0, 0, 0 };               // flat z=0 reference plane over the grown union
+	buildSceneContent(s, nullptr, nx0, nx1, ny0, ny1, nullptr, nullptr, 0, nullptr, 0, 0, 0,
+					  /*edges=*/0, /*pointCloud=*/false, /*geographic=*/1,
+					  zblank, 2, 2, /*blankStart=*/false);
+	surfSetVisibility(s, 0);                         // the z=0 plane is a scaffold (bounds + hover) only:
+	                                                 // hide it so it never shows under/around the tiles
+	vtkCamera* cam = s->ren->GetActiveCamera();      // back to the top-down flat-2-D map view
+	s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff();
+	double fp[3]; cam->GetFocalPoint(fp);
+	cam->SetViewUp(0.0, 1.0, 0.0);
+	cam->SetPosition(fp[0], fp[1], fp[2] + 1.0);
+	cam->ParallelProjectionOn();
+	fitSnapView(s, /*topMode=*/true);
+	s->flat2d = true;
+	if (s->giz) setGizmoVisible(*s->giz, false);
+	s->ren->ResetCameraClippingRange();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// Hide the window's base surface plane (keeping its geometry for axis bounds + hover sampling).
+// Used by the basemap path: the promoted flat z=0 plane is only scaffold under the draped tile, so
+// hiding it stops a coloured plane peeking out when the tile is toggled off. Bounds/readout unaffected.
+GMTVTK_API void gmtvtk_hide_surface(void* handle) {
+	Scene* s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	surfSetVisibility(s, 0);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // Open an EMPTY viewer window: a FULL-chrome launcher (menus + toolbar + 2-D map) that simply has
 // no data yet -> a blank dark canvas, exactly as if a (still unloaded) image were about to show.
 // It is built through buildAndShow (imageOnly => no colorbar) on a tiny placeholder plane that we

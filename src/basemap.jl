@@ -73,6 +73,13 @@ function _on_basemap(scene::Ptr{Cvoid}, copt::Cstring)::Cvoid
 			       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
 			      scene, zblank, Cint(2), Cint(2), Float64(dW), Float64(dE), Float64(S), Float64(N),
 			      Cint(1), C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
+			ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), scene)   # plane is scaffold only
+		else
+			# Already a flat geographic map: extend the frame + axes + hover domain to cover this tile
+			# too (no-op if it already fits). Keeps xfac fixed so the existing tiles stay aligned.
+			ccall(_fn(:gmtvtk_grow_frame_h), Cint,
+			      (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble),
+			      scene, Float64(dW), Float64(dE), Float64(S), Float64(N))
 		end
 		_add_image_to_scene(scene, I, name; promote=false)   # always an ExtraObj image -> has the properties menu
 		ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
