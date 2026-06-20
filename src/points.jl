@@ -45,6 +45,7 @@ function view_points(D; cmap=:turbo, pointsize::Real=4, pickcolor=(0.83, 0.83, 0
 		  xmn, xmx, ymn, ymx, Cint(geog), Float64(pointsize),
 		  pr, pg, pb, title)
 	fig = _register_fig!(QtPoints(h, A))
+	_apply_crs!(fig, crs_from(D; geographic=geog))    # store the CRS + reveal the Geography menu if referenced
 	_start_pump()
 	return fig
 end

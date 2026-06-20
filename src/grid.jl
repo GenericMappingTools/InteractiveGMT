@@ -97,6 +97,7 @@ function view_grid(G::GMTgrid; cmap=:geo, drape=nothing, outside::Symbol=:shadem
 		  z, nx, ny, r[1], r[2], r[3], r[4], Cint(geog), cz, crgb, Cint(ncolor),
 		  img, Cint(iw), Cint(ih), Cint(ibands), Cint(edges), Cint(triangulate), Cint(0), title)
 	fig = _register_fig!(QtFigure(h, G))
+	_apply_crs!(fig, crs_from(G; geographic=geog))    # store the CRS + reveal the Geography menu if referenced
 	# Optional GMTdataset overlay (lines or points), added to the window just created.
 	data !== nothing && _add_overlay!(fig, data, mode, data_color, data_size)
 	# Optional vertical curtain(s) (Fledermaus seismic / midwater profile).
@@ -152,6 +153,7 @@ function view_image(I::GMTimage; title::String="i'GMT",
 		  Cint(0), Cint(1), imode, title)               # edges=0, triangulate=1, image_only=imode
 	h == C_NULL && error("view_image: the viewer could not open the window")
 	fig = _register_fig!(QtImage(h, I))
+	_apply_crs!(fig, crs_from(I; geographic=geog))    # store the CRS + reveal the Geography menu if referenced
 	_start_pump()
 	return fig
 end

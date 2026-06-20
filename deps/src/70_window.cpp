@@ -788,6 +788,71 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mView->addSeparator();
 	mView->addAction("Vertical &Exaggeration…", actVE);
 
+	// --- Geography menu (mirrors Mirone's Geography menu, mirone_uis.m lines 459-575) ----------
+	// Plots GMT/GSHHG geographic data (coastlines, borders, rivers) + point datasets (seismicity,
+	// volcanoes, …). Leaf actions are wired to a stub for now; the real plotting lands later.
+	auto geoTODO = [s](const QString &what) {
+		return [s, what]() {
+			if (s->win) s->win->statusBar()->showMessage("Geography: " + what + " — not implemented yet", 3000);
+		};
+	};
+	// GSHHG features come at 4 resolutions (low/intermediate/high/full) — one submenu does all four.
+	auto addResMenu = [&](QMenu *parent, const QString &label) {
+		QMenu *m = parent->addMenu(label);
+		m->addAction("Low resolution",          geoTODO(label + " (low)"));
+		m->addAction("Intermediate resolution", geoTODO(label + " (intermediate)"));
+		m->addAction("High resolution",         geoTODO(label + " (high)"));
+		m->addAction("Full resolution",         geoTODO(label + " (full)"));
+		return m;
+	};
+
+	QMenu *mGeo = win->menuBar()->addMenu("&Geography");
+	s->geoMenu = mGeo;                              // gmtvtk_set_crs reveals it once the data has a CRS
+	mGeo->menuAction()->setVisible(false);         // hidden until a referencing system is known
+	addResMenu(mGeo, "Plot coastline");
+
+	QMenu *mPB = mGeo->addMenu("Plot political boundaries");
+	addResMenu(mPB, "National boundaries");
+	addResMenu(mPB, "State boundaries (US)");
+	addResMenu(mPB, "All boundaries");
+
+	QMenu *mRiv = mGeo->addMenu("Plot rivers");
+	addResMenu(mRiv, "Permanent major rivers");
+	addResMenu(mRiv, "Additional major rivers");
+	addResMenu(mRiv, "Additional rivers");
+	addResMenu(mRiv, "Intermittent rivers - major");
+	addResMenu(mRiv, "Intermittent rivers - additional");
+	addResMenu(mRiv, "Intermittent rivers - minor");
+	addResMenu(mRiv, "All rivers and canals");
+	addResMenu(mRiv, "All permanent rivers");
+	addResMenu(mRiv, "All intermittent rivers");
+
+	mGeo->addSeparator();
+	mGeo->addAction("Global seismicity (1990-2009)", geoTODO("Global seismicity"));
+	mGeo->addAction("Hotspot locations",             geoTODO("Hotspot locations"));
+	mGeo->addAction("Magnetic isochrons",            geoTODO("Magnetic isochrons"));
+	mGeo->addAction("Volcanoes",                     geoTODO("Volcanoes"));
+	mGeo->addAction("Meteorite impacts",             geoTODO("Meteorite impacts"));
+	mGeo->addAction("Hydrothermal sites",            geoTODO("Hydrothermal sites"));
+	mGeo->addAction("Tide Stations",                 geoTODO("Tide Stations"));
+	mGeo->addAction("Tides (download)",              geoTODO("Tides (download)"));
+	mGeo->addAction("Earth Tides",                   geoTODO("Earth Tides"));
+	mGeo->addAction("Fracture Zones",                geoTODO("Fracture Zones"));
+	mGeo->addAction("Plate boundaries",              geoTODO("Plate boundaries"));
+
+	QMenu *mCit = mGeo->addMenu("Cities");
+	mCit->addAction("Major cities", geoTODO("Major cities"));
+	mCit->addAction("Other cities", geoTODO("Other cities"));
+
+	QMenu *mODP = mGeo->addMenu("DSDP/ODP/IODP sites");
+	mODP->addAction("DSDP",          geoTODO("DSDP"));
+	mODP->addAction("ODP",           geoTODO("ODP"));
+	mODP->addAction("IODP",          geoTODO("IODP"));
+	mODP->addAction("DSDP+ODP+IODP", geoTODO("DSDP+ODP+IODP"));
+
+	mGeo->addSeparator();
+	mGeo->addAction("Atlas", geoTODO("Atlas"));
+
 	win->menuBar()->addMenu("&Help")->addAction("&About", actAbout);
 
 	// --- toolbar row (below the menu bar): quick-access buttons (ParaView-style) ------------

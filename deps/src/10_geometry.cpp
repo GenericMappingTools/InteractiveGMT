@@ -191,6 +191,16 @@ struct Scene {
 	std::vector<Curtain> curtains;   // Fledermaus vertical image curtains hung along an XY track
 	std::vector<ExtraObj> extras;    // grids/images dropped into this window after it opened
 
+	// --- coordinate reference system (CRS) ----------------------------------
+	// The single per-window store of the data's georeferencing, pushed down from Julia
+	// (gmtvtk_set_crs) which resolves all three interchangeable forms via GMT.jl. An empty CRS
+	// (no proj4/wkt and epsg==0) means UNREFERENCED data -> the Geography menu stays hidden, since
+	// placing GSHHG coastlines/borders/rivers needs a reference frame.
+	std::string crsProj4, crsWkt;
+	int         crsEpsg = 0;
+	QMenu*      geoMenu = nullptr;   // the Geography menu (built hidden; shown once a CRS is set)
+	bool hasCRS() const { return !crsProj4.empty() || !crsWkt.empty() || crsEpsg != 0; }
+
 	QAction* act2D = nullptr;        // shared checkable "Flat 2D (map)" action (toolbar + View menu)
 	QWidget* objPanel = nullptr;     // Scene Objects dock content (rebuilt when overlays change)
 	FoldTitleBar* objFoldBar = nullptr;  // Scene Objects dock fold toggle (call ->onClick() to fold/unfold programmatically)

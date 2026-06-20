@@ -419,6 +419,19 @@ GMTVTK_API void gmtvtk_set_cpt(void* handle, const double* cz, const double* crg
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
+// Set the window's coordinate reference system (all three interchangeable forms — PROJ4 / WKT /
+// EPSG). Julia resolves them via GMT.jl and pushes them here right after the window opens. Storing
+// any of them marks the data as referenced and reveals the Geography menu (hidden by default since
+// it needs a reference frame); an all-empty CRS hides it again.
+GMTVTK_API void gmtvtk_set_crs(void* handle, const char* proj4, const char* wkt, int epsg) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	s->crsProj4 = proj4 ? proj4 : "";
+	s->crsWkt   = wkt   ? wkt   : "";
+	s->crsEpsg  = epsg;
+	if (s->geoMenu) s->geoMenu->menuAction()->setVisible(s->hasCRS());
+}
+
 // Close a window programmatically (WA_DeleteOnClose -> destroy + bookkeeping). Used to retire an
 // empty launcher once a dropped file has been promoted into a full viewer window.
 GMTVTK_API void gmtvtk_close(void* handle) {

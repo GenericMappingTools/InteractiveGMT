@@ -140,6 +140,7 @@ function _view_fv(fv::GMTfv, xyz::Vector{Float64}, sides::Vector{Cint}, indices:
 		x0, x1, y0, y1, z0, z1,
 		Cint(geographic), zscale, Cint(edges), title, objname)
 	fig = _register_fig!(QtFV(h, fv))
+	_apply_crs!(fig, crs_from(fv; geographic=geographic))   # store the CRS + reveal the Geography menu if referenced
 	_start_pump()
 	return fig
 end

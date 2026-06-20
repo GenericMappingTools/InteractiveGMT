@@ -22,6 +22,7 @@ include("libgmtvtk.jl")
 
 # --- handles, event loop, in-window Julia console ----------------------------------------
 include("types.jl")
+include("crs.jl")        # centralized coordinate-reference-system store (proj4/wkt/epsg)
 include("eventloop.jl")
 include("console.jl")
 
