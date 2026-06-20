@@ -286,12 +286,32 @@ GMTVTK_API void gmtvtk_add_overlay(const double *xyz, int npts, const int *segof
 // the handle is dead. addOverlay re-renders, so the new elements appear immediately.
 GMTVTK_API int gmtvtk_add_overlay_h(void *handle, const double *xyz, int npts, const int *segoff, int nseg,
 								   int mode, double r, double g, double b,
-								   double linewidth, double pointsize) {
+								   double linewidth, double pointsize, const char *name) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s))
 		return 0;
-	addOverlay(s, xyz, npts, segoff, nseg, mode, r, g, b, linewidth, pointsize);
+	addOverlay(s, xyz, npts, segoff, nseg, mode, r, g, b, linewidth, pointsize, name);
 	return 1;
+}
+
+// Add a screen-constant SYMBOL layer to a window by its handle: `npts` (x,y,z) triples in TRUE
+// coords, one GMT symbol code (sym: "c" circle "s" square "t" triangle "i" inv-triangle "d" diamond
+// "h" hexagon "n" pentagon "g" octagon "a" star "x" cross "+" plus "-" dash), `sizePx` = on-screen
+// size in PIXELS (caller converts points->px), `filled` 0/1, (fr,fg,fb) fill + (er,eg,eb) edge rgb
+// 0..1, `edgeWidth` outline px. Symbols stay a constant pixel size at any zoom. Returns 1 if added.
+// `info` (or null) = optional per-point hover text: npts records joined by RS ('\x1e'), each a
+// ready-to-show multi-line block (lines separated by '\n'). Adopted only if it has exactly npts
+// records; the viewer then pops the matching block as a tooltip when the cursor is over a symbol.
+GMTVTK_API int gmtvtk_add_symbols_h(void *handle, const double *xyz, int npts, const char *sym,
+                                    double sizePx, int filled,
+                                    double fr, double fg, double fb,
+                                    double er, double eg, double eb, double edgeWidth,
+                                    const char *name, const char *info) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s))
+		return 0;
+	return addSymbols(s, xyz, npts, std::string(sym ? sym : "c"), sizePx, filled,
+	                  fr, fg, fb, er, eg, eb, edgeWidth, std::string(name ? name : ""), info);
 }
 
 // Add a vertical image "curtain" to a window by its handle (from gmtvtk_view_grid). The
@@ -402,6 +422,50 @@ GMTVTK_API int gmtvtk_has_surface(void* handle) {
 	return (sceneAlive(s) && s->surf && !s->emptyStart) ? 1 : 0;
 }
 
+// Read-only introspection for the test suite: serialize the window's scene state into `buf` as a
+// single semicolon-separated list of key=value tokens (split on ';', then on the first '='). Returns
+// the FULL length (excluding the NUL); if it is >= cap the caller's buffer was too small (re-call
+// with a bigger one). NEVER mutates the scene — purely a snapshot. The reported `axes` flag is
+// whether the cube axes are actually IN the renderer (an empty launcher carries the axes object but
+// does NOT add it), so it doubles as the "coordinate grid present" invariant. Each extra object is
+// emitted as extraN=kind:name (kind = image | grid). No-op (returns 0) on a dead handle.
+GMTVTK_API int gmtvtk_scene_state(void* handle, char* buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	char t[96];
+	auto kvi = [&](const char* k, long v) { o += k; o += '='; o += std::to_string(v); o += ';'; };
+	auto kvd = [&](const char* k, double v) { snprintf(t, sizeof(t), "%s=%.10g;", k, v); o += t; };
+	const bool alive = sceneAlive(s);
+	kvi("alive", alive ? 1 : 0);
+	if (alive) {
+		const int axesShown = (s->axes && s->ren && s->ren->HasViewProp(s->axes)) ? 1 : 0;
+		kvi("has_surface", (s->surf && !s->emptyStart) ? 1 : 0);
+		kvi("emptyStart",  s->emptyStart ? 1 : 0);
+		kvi("imageOnly",   s->imageOnly ? 1 : 0);
+		kvi("flat2d",      s->flat2d ? 1 : 0);
+		kvi("axes",        axesShown);
+		kvi("crs",         s->hasCRS() ? 1 : 0);
+		kvd("x0", s->x0); kvd("x1", s->x1); kvd("y0", s->y0); kvd("y1", s->y1);
+		kvd("zmin", s->zmin); kvd("zmax", s->zmax);
+		kvi("n_extras",   (long)s->extras.size());
+		kvi("n_overlays", (long)s->overlays.size());
+		kvi("n_curtains", (long)s->curtains.size());
+		kvi("n_polys",    (long)s->polys.size());
+		kvi("n_texts",    (long)s->texts.size());
+		kvi("drape",      s->drape ? 1 : 0);
+		kvi("n_table",    s->dataTable ? (long)s->dataTable->rowCount() : -1);
+		o += "surf_name="; o += s->surfName; o += ';';
+		for (size_t i = 0; i < s->extras.size(); ++i) {
+			o += "extra" + std::to_string((int)i) + '=';
+			o += (s->extras[i].isImage ? "image:" : "grid:");
+			o += s->extras[i].name; o += ';';
+		}
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
 // Recolour a live surface from a new CPT: cz[n] boundary z + crgb[n*3] (0..1). s->surfLut is always
 // a vtkColorTransferFunction, shared by the surface mapper, every LOD tile mapper and the colorbar,
 // so mutating its nodes in place recolours all of them at once. Called from Julia (_recolor) after
@@ -476,6 +540,13 @@ GMTVTK_API void gmtvtk_set_basemap_callback(JuliaBaseMapFn fn) {
 // Set the path to the world logo image painted in the basemap picker (data/etopo4_logo.jpg).
 GMTVTK_API void gmtvtk_set_basemap_logo(const char* path) {
 	g_basemapLogo = QString::fromUtf8(path ? path : "");
+}
+
+// Register the Geography-menu callback. `fn` (Julia @cfunction, signature JuliaGeoFn) is called
+// with "<kind>/<res>/W/E/S/N" (the visible region at the current zoom) when a Plot-coastline leaf
+// is chosen; Julia runs GMT.coast and adds the lines via gmtvtk_add_overlay_h. nullptr to detach.
+GMTVTK_API void gmtvtk_set_geography_callback(JuliaGeoFn fn) {
+	g_juliaGeo = fn;
 }
 
 // Prepare an EMPTY launcher to receive geographic IMAGE objects as ExtraObj images. The basemap

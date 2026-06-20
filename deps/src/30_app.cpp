@@ -27,6 +27,14 @@ typedef void (*JuliaBaseMapFn)(void* scene, const char* region);
 static JuliaBaseMapFn g_juliaBaseMap = nullptr;
 static QString        g_basemapLogo;
 
+// Geography menu (Plot coastline / political boundaries / rivers). A leaf action computes the
+// CURRENT visible geographic region (i.e. honouring the zoom level) and hands the request
+// "<kind>/<res>/W/E/S/N" to Julia (g_juliaGeo), which runs GMT.coast and adds the resulting
+// GMTdataset as a line overlay. kind = "coast" (others reserved); res = l/i/h/f. Set via
+// gmtvtk_set_geography_callback. nullptr -> the leaf falls back to a "not implemented" status.
+typedef void (*JuliaGeoFn)(void* scene, const char* req);
+static JuliaGeoFn g_juliaGeo = nullptr;
+
 // Live scenes, keyed by the Scene* returned to the host as an opaque figure handle.
 // A handle is valid only while its window is open; the window-destroyed lambda erases
 // it here so a stale handle from a closed figure is rejected instead of dereferenced.

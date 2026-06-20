@@ -95,6 +95,7 @@
 #include <vtkCoordinate.h>
 #include <vtkPoints.h>
 #include <vtkCellArray.h>
+#include <vtkGlyph3D.h>
 #include <vtkIdList.h>
 #include <vtkFloatArray.h>
 #include <vtkUnsignedCharArray.h>

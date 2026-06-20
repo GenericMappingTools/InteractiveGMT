@@ -27,7 +27,7 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # Every exported C-API symbol resolved at load time.
 const _LIB_SYMBOLS = (
 	:gmtvtk_view_grid, :gmtvtk_view_demo, :gmtvtk_process_events,
-	:gmtvtk_add_overlay, :gmtvtk_add_overlay_h, :gmtvtk_is_alive,
+	:gmtvtk_add_overlay, :gmtvtk_add_overlay_h, :gmtvtk_add_symbols_h, :gmtvtk_is_alive,
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
 	:gmtvtk_view_points, :gmtvtk_selection_count, :gmtvtk_get_selection,
 	:gmtvtk_view_fv, :gmtvtk_set_julia_eval, :gmtvtk_set_table,
@@ -37,6 +37,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_has_surface, :gmtvtk_close, :gmtvtk_add_recent,
 	:gmtvtk_set_cpt, :gmtvtk_raise, :gmtvtk_set_crs,
 	:gmtvtk_set_basemap_callback, :gmtvtk_set_basemap_logo,
+	:gmtvtk_set_geography_callback, :gmtvtk_scene_state,
 	:gmtvtk_frame_for_image_h, :gmtvtk_fit2d, :gmtvtk_grow_frame_h, :gmtvtk_hide_surface,
 )
 

@@ -908,20 +908,73 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			if (s->win) s->win->statusBar()->showMessage("Geography: " + what + " — not implemented yet", 3000);
 		};
 	};
+	// Current visible geographic region (W/E/S/N in TRUE data coords) = the part of the map on
+	// screen at the current zoom. Project the 4 viewport corners onto the z=0 plane (the flat map),
+	// undo the X aspect scale (xfac), take the bbox, and clamp to the data frame. Mirrors the hover
+	// readout's DisplayToWorld ray-to-plane math (10_geometry.cpp). false if no renderer/window.
+	auto visibleRegion = [s](double &W, double &E, double &S, double &N) -> bool {
+		if (!s->ren || !s->widget || !s->widget->renderWindow()) return false;
+		const int *sz = s->widget->renderWindow()->GetSize();
+		const double w = sz[0], h = sz[1];
+		const double gx = (s->xfac != 0.0) ? s->xfac : 1.0;
+		const double corners[4][2] = { {0,0}, {w,0}, {0,h}, {w,h} };
+		bool any = false;
+		for (const auto &c : corners) {
+			double nr[4], fr[4];
+			s->ren->SetDisplayPoint(c[0], c[1], 0.0); s->ren->DisplayToWorld();
+			for (int i = 0; i < 4; ++i) nr[i] = s->ren->GetWorldPoint()[i];
+			s->ren->SetDisplayPoint(c[0], c[1], 1.0); s->ren->DisplayToWorld();
+			for (int i = 0; i < 4; ++i) fr[i] = s->ren->GetWorldPoint()[i];
+			if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
+			if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
+			const double dirz = fr[2] - nr[2];
+			if (dirz == 0.0) continue;                          // ray parallel to the map plane
+			const double t0 = -nr[2] / dirz;
+			const double tx = (nr[0] + t0 * (fr[0] - nr[0])) / gx;
+			const double ty =  nr[1] + t0 * (fr[1] - nr[1]);
+			if (!any) { W = E = tx; S = N = ty; any = true; }
+			else { W = std::min(W, tx); E = std::max(E, tx); S = std::min(S, ty); N = std::max(N, ty); }
+		}
+		if (!any) return false;
+		W = std::max(W, s->x0); E = std::min(E, s->x1);         // never exceed the data frame
+		S = std::max(S, s->y0); N = std::min(N, s->y1);
+		return (E > W && N > S);
+	};
+	// A leaf that fetches a GSHHG feature for the current view: compute the visible region, hand
+	// "<kind>/<res>/W/E/S/N" to Julia, which calls GMT.coast(R=…, D=res, M=true) and adds the lines.
+	auto geoPlot = [s, visibleRegion](const QString &kind, const char *res) {
+		return [s, kind, res, visibleRegion]() {
+			if (!g_juliaGeo) {
+				if (s->win) s->win->statusBar()->showMessage("Geography: callback not registered", 3000);
+				return;
+			}
+			double W, E, S, N;
+			if (!visibleRegion(W, E, S, N)) return;
+			const QString req = QString("%1/%2/%3/%4/%5/%6").arg(kind).arg(res)
+				.arg(W, 0, 'f', 6).arg(E, 0, 'f', 6).arg(S, 0, 'f', 6).arg(N, 0, 'f', 6);
+			g_juliaGeo(s, req.toUtf8().constData());
+		};
+	};
 	// GSHHG features come at 4 resolutions (low/intermediate/high/full) — one submenu does all four.
-	auto addResMenu = [&](QMenu *parent, const QString &label) {
+	// `kind` non-empty wires the leaves to the real geography callback; empty -> the TODO stub.
+	auto addResMenu = [&](QMenu *parent, const QString &label, const QString &kind = QString()) {
 		QMenu *m = parent->addMenu(label);
-		m->addAction("Low resolution",          geoTODO(label + " (low)"));
-		m->addAction("Intermediate resolution", geoTODO(label + " (intermediate)"));
-		m->addAction("High resolution",         geoTODO(label + " (high)"));
-		m->addAction("Full resolution",         geoTODO(label + " (full)"));
+		auto leaf = [&](const char *txt, const char *word, const char *res) {
+			if (kind.isEmpty()) m->addAction(txt, geoTODO(label + " (" + word + ")"));
+			else                m->addAction(txt, geoPlot(kind, res));
+		};
+		leaf("Low resolution",          "low",          "l");
+		leaf("Intermediate resolution", "intermediate", "i");
+		leaf("High resolution",         "high",         "h");
+		leaf("Full resolution",         "full",         "f");
+		leaf("Automatic resolution",    "auto",         "a");
 		return m;
 	};
 
 	QMenu *mGeo = win->menuBar()->addMenu("&Geography");
 	s->geoMenu = mGeo;                              // gmtvtk_set_crs reveals it once the data has a CRS
 	mGeo->menuAction()->setVisible(false);         // hidden until a referencing system is known
-	addResMenu(mGeo, "Plot coastline");
+	addResMenu(mGeo, "Plot coastline", "coast");
 
 	QMenu *mPB = mGeo->addMenu("Plot political boundaries");
 	addResMenu(mPB, "National boundaries");
@@ -943,7 +996,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mGeo->addAction("Global seismicity (1990-2009)", geoTODO("Global seismicity"));
 	mGeo->addAction("Hotspot locations",             geoTODO("Hotspot locations"));
 	mGeo->addAction("Magnetic isochrons",            geoTODO("Magnetic isochrons"));
-	mGeo->addAction("Volcanoes",                     geoTODO("Volcanoes"));
+	mGeo->addAction("Volcanoes",                     geoPlot("volcano", ""));
 	mGeo->addAction("Meteorite impacts",             geoTODO("Meteorite impacts"));
 	mGeo->addAction("Hydrothermal sites",            geoTODO("Hydrothermal sites"));
 	mGeo->addAction("Tide Stations",                 geoTODO("Tide Stations"));
@@ -1103,6 +1156,10 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				const int tHit = polyHitText(s, px, py, 14.0);    // a text label under the cursor?
 				if (tHit >= 0) {
 					textLabelMenu(s, s->texts[tHit].actor, widget->mapToGlobal(pos));
+					return;
+				}
+				if (vtkActor *sym = pickSymbolAt(s, px, py)) {    // symbol layers sit on top
+					symbolLayerMenu(s, sym, widget->mapToGlobal(pos));
 					return;
 				}
 				int ovMode = 1;

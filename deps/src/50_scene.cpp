@@ -1,4 +1,5 @@
 static void rebuildSceneObjects(Scene* s);          // defined just below; refreshed after edits
+static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp);   // symbol-layer properties (defined below)
 static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
 static void textApplyProps(Scene* s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
 
@@ -590,6 +591,13 @@ static void rebuildSceneObjects(Scene *s) {
 		LineRef lr{ LK_Overlay, ov.actor };
 		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, ov.mode == 1 ? &lr : nullptr);
 	}
+	for (auto& sl : s->symbols) {                        // screen-constant symbol layers (props menu)
+		vtkActor* a = sl.actor.Get();
+		makeRow(QString::fromStdString(sl.name), IC_Points, a && a->GetVisibility() != 0,
+		        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
+		        [s, a](const QPoint& g) { symbolLayerMenu(s, a, g); },
+		        "Left-click for symbol properties");
+	}
 	for (auto& cu : s->curtains)
 		addRow(QString::fromStdString(cu.name), cu.actor, IC_Curtain);
 	for (auto& pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
@@ -629,7 +637,8 @@ static void rebuildSceneObjects(Scene *s) {
 }
 
 static void addOverlay(Scene* s, const double* xyz, int npts, const int* segoff, int nseg,
-					   int mode, double r, double g, double b, double linewidth, double pointsize) {
+					   int mode, double r, double g, double b, double linewidth, double pointsize,
+					   const char* name = nullptr) {
 	if (!s || !xyz || npts <= 0)
 		return;
 
@@ -683,11 +692,267 @@ static void addOverlay(Scene* s, const double* xyz, int npts, const int* segoff,
 	s->ren->AddActor(a);
 	Overlay ov{ a, mode };
 	if (mode == 1) ov.baseLine = pd;          // keep the solid geometry for line-style restyling
-	ov.name = (mode == 1 ? "Line " : "Points ") + std::to_string((int)s->overlays.size() + 1);
+	// Source-identity naming: if the caller knows where this came from (a GMT feature, a file, a
+	// dataset) it passes that name and we use it verbatim; otherwise fall back to "Line N"/"Points N".
+	ov.name = (name && name[0]) ? std::string(name)
+	                            : (mode == 1 ? "Line " : "Points ") + std::to_string((int)s->overlays.size() + 1);
 	s->overlays.push_back(ov);
 	rebuildSceneObjects(s);                   // refresh the Scene Objects checkbox list
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
+}
+
+// ---- generic screen-constant SYMBOL layers (volcanoes, seismicity, cities, …) ----------------
+// Build a UNIT glyph (centred at origin, fits a radius-0.5 circle -> diameter 1) for a GMT symbol
+// code. Filled shapes -> a single polygon cell (fill = actor colour, outline = actor EdgeVisibility);
+// open shapes (x + -) -> line cells (no fill, drawn in the edge colour). `filled` is returned so the
+// caller knows whether the fill colour applies. Unknown code -> circle.
+static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string& sym, bool& filled) {
+	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
+	vtkNew<vtkPoints> p;
+	vtkNew<vtkCellArray> ca;
+	const double R = 0.5, D2R = vtkMath::Pi() / 180.0;
+	// closed regular n-gon, first vertex at `startDeg`, on radius R -> one filled polygon
+	auto poly = [&](int n, double startDeg) {
+		filled = true;
+		ca->InsertNextCell(n);
+		for (int i = 0; i < n; ++i) {
+			const double a = (startDeg + i * 360.0 / n) * D2R;
+			ca->InsertCellPoint(p->InsertNextPoint(R * std::cos(a), R * std::sin(a), 0.0));
+		}
+		pd->SetPoints(p); pd->SetPolys(ca);
+	};
+	if      (sym == "c") poly(32, 0.0);    // circle
+	else if (sym == "s") poly(4, 45.0);    // square
+	else if (sym == "t") poly(3, 90.0);    // triangle (apex up)
+	else if (sym == "i") poly(3, -90.0);   // inverted triangle (apex down)
+	else if (sym == "d") poly(4, 90.0);    // diamond
+	else if (sym == "h") poly(6, 0.0);     // hexagon
+	else if (sym == "n") poly(5, 90.0);    // pentagon
+	else if (sym == "g") poly(8, 22.5);    // octagon
+	else if (sym == "a") {                 // 5-point star
+		filled = true;
+		const double ri = 0.20;
+		ca->InsertNextCell(10);
+		for (int i = 0; i < 10; ++i) {
+			const double a = (90.0 + i * 36.0) * D2R, rr = (i % 2 == 0) ? R : ri;
+			ca->InsertCellPoint(p->InsertNextPoint(rr * std::cos(a), rr * std::sin(a), 0.0));
+		}
+		pd->SetPoints(p); pd->SetPolys(ca);
+	}
+	else if (sym == "x" || sym == "+" || sym == "-") {       // open line glyphs
+		filled = false;
+		auto seg = [&](double x0, double y0, double x1, double y1) {
+			const vtkIdType i0 = p->InsertNextPoint(x0, y0, 0.0);
+			const vtkIdType i1 = p->InsertNextPoint(x1, y1, 0.0);
+			ca->InsertNextCell(2); ca->InsertCellPoint(i0); ca->InsertCellPoint(i1);
+		};
+		if      (sym == "x") { seg(-R, -R, R, R); seg(-R, R, R, -R); }   // diagonal cross
+		else if (sym == "+") { seg(-R, 0, R, 0);  seg(0, -R, 0, R);  }   // plus
+		else                 { seg(-R, 0, R, 0); }                       // dash
+		pd->SetPoints(p); pd->SetLines(ca);
+	}
+	else poly(32, 0.0);                    // unknown -> circle
+	return pd;
+}
+
+// Per-frame (renderer StartEvent): rescale every symbol layer's glyph so its on-screen size stays
+// `sizePx` pixels at any zoom. `vph` = world height spanning the full viewport at the focal plane —
+// the SAME camera math the gizmo uses; worldPerPx = vph / viewportHeightPx. The unit glyph is Ø1, so
+// ScaleFactor = sizePx * worldPerPx. ClientData is the Scene*. (Also callable directly to prime it.)
+static void symbolRescaleCB(vtkObject*, unsigned long, void* clientData, void*) {
+	Scene* s = static_cast<Scene*>(clientData);
+	if (!s || !s->ren || s->symbols.empty()) return;
+	vtkCamera* cam = s->ren->GetActiveCamera();
+	if (!cam) return;
+	const int* sz = s->ren->GetSize();
+	const double Hpx = (sz && sz[1] > 0) ? (double)sz[1] : 600.0;   // DEVICE px (matches WorldToDisplay)
+	double vph;
+	if (cam->GetParallelProjection())
+		vph = 2.0 * cam->GetParallelScale();
+	else
+		vph = 2.0 * cam->GetDistance() * std::tan(cam->GetViewAngle() * 0.5 * vtkMath::Pi() / 180.0);
+	// sizePx is LOGICAL pixels (what a user means); 1 logical px = dpr device px, so multiply by dpr.
+	const double dpr = (s->widget) ? s->widget->devicePixelRatioF() : 1.0;
+	const double worldPerLogPx = (vph / Hpx) * dpr;
+	for (auto& sl : s->symbols) {
+		if (!sl.glyph) continue;
+		sl.glyph->SetScaleFactor(std::max(1e-9, sl.sizePx * worldPerLogPx));
+		sl.glyph->Modified();
+	}
+}
+
+// Stamp N glyphs of one GMT symbol code at N (x,y,z) points (TRUE coords). Screen-constant size:
+// x is pre-baked with xfac so the glyph is NOT x-stretched; the actor carries only the z scale so
+// symbols ride VE. The per-frame observer (installed once) keeps `sizePx` literal at any zoom.
+static int addSymbols(Scene* s, const double* xyz, int npts, const std::string& sym,
+                      double sizePx, int filled,
+                      double fr, double fg, double fb,
+                      double er, double eg, double eb, double edgeWidth,
+                      const std::string& name, const char* info = nullptr) {
+	if (!s || !xyz || npts <= 0) return 0;
+
+	vtkNew<vtkPoints> pts; pts->SetDataTypeToDouble(); pts->Allocate(npts);
+	for (int i = 0; i < npts; ++i)
+		pts->InsertNextPoint(xyz[3*i] * s->xfac, xyz[3*i+1], xyz[3*i+2]);   // x baked, z raw
+	vtkSmartPointer<vtkPolyData> in = vtkSmartPointer<vtkPolyData>::New();
+	in->SetPoints(pts);
+
+	bool glyphFilled = true;
+	vtkSmartPointer<vtkPolyData> src = makeSymbolGlyph(sym, glyphFilled);
+	const bool wantFill = glyphFilled && (filled != 0);
+
+	vtkSmartPointer<vtkGlyph3D> g = vtkSmartPointer<vtkGlyph3D>::New();
+	g->SetSourceData(src);
+	g->SetInputData(in);
+	g->SetScaleModeToDataScalingOff();    // uniform size; ScaleFactor driven by the observer
+	g->OrientOff();
+	g->SetScaleFactor(sizePx > 0.0 ? sizePx : 8.0);   // placeholder; primed below + per frame
+
+	vtkNew<vtkPolyDataMapper> map;
+	map->SetInputConnection(g->GetOutputPort());
+	map->ScalarVisibilityOff();
+	vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();   // lift off the z=0 map plane
+	map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -8000.0);
+	map->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -8000.0);
+	map->SetRelativeCoincidentTopologyPointOffsetParameter(-8000.0);
+
+	vtkSmartPointer<vtkActor> a = vtkSmartPointer<vtkActor>::New();
+	a->SetMapper(map);
+	a->GetProperty()->LightingOff();
+	if (wantFill) {
+		a->GetProperty()->SetColor(fr, fg, fb);
+		a->GetProperty()->SetEdgeColor(er, eg, eb);
+		a->GetProperty()->SetEdgeVisibility(edgeWidth > 0.0 ? 1 : 0);
+		a->GetProperty()->SetLineWidth(edgeWidth > 0.0 ? edgeWidth : 1.0);
+	} else {                               // open glyph: drawn in the edge colour, no fill
+		a->GetProperty()->SetColor(er, eg, eb);
+		a->GetProperty()->SetLineWidth(edgeWidth > 0.0 ? edgeWidth : 1.5);
+	}
+	a->SetScale(1.0, 1.0, s->zfac * s->ve);            // ride VE; x already baked
+
+	s->ren->AddActor(a);
+	SymbolLayer sl;
+	sl.actor = a; sl.glyph = g; sl.sizePx = (sizePx > 0.0 ? sizePx : 8.0);
+	sl.filled = wantFill; sl.sym = sym;
+	sl.name = name.empty() ? ("Symbols " + std::to_string((int)s->symbols.size() + 1) + " (" + sym + ")")
+	                       : name;
+	// Per-point hover info (optional): one record per point, records joined by RS ('\x1e'), each
+	// record a ready-to-show multi-line block. Only adopt it when it aligns 1:1 with the points.
+	if (info && info[0]) {
+		std::vector<std::string> recs;
+		const std::string packed(info);
+		size_t a = 0;
+		while (a <= packed.size()) {
+			size_t b = packed.find('\x1e', a);
+			if (b == std::string::npos) { recs.push_back(packed.substr(a)); break; }
+			recs.push_back(packed.substr(a, b - a));
+			a = b + 1;
+		}
+		if ((int)recs.size() == npts)
+			sl.info = std::move(recs);
+	}
+	s->symbols.push_back(sl);
+
+	if (!s->symSizeCmd) {                  // install the per-frame rescaler once per scene
+		vtkSmartPointer<vtkCallbackCommand> cmd = vtkSmartPointer<vtkCallbackCommand>::New();
+		cmd->SetCallback(symbolRescaleCB);
+		cmd->SetClientData(s);
+		s->ren->AddObserver(vtkCommand::StartEvent, cmd);
+		s->symSizeCmd = cmd;
+	}
+	symbolRescaleCB(nullptr, 0, s, nullptr);           // prime size for the first frame
+
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow())
+		s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// Right-click / left-click properties for a symbol layer row: change shape, fill + edge colour,
+// on-screen size and edge width, or delete the layer. Edits the SymbolLayer + its actor/glyph in
+// place (no re-upload of points); size goes through the per-frame rescaler so it stays literal px.
+static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
+	SymbolLayer* sl = nullptr;
+	for (auto& x : s->symbols) if (x.actor.Get() == act) { sl = &x; break; }
+	if (!sl) return;
+	auto reRender = [&] { if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render(); };
+
+	QMenu m(s->widget);
+	QMenu* tm = m.addMenu("Symbol");
+	static const std::pair<const char*, const char*> KINDS[] = {
+		{"Circle","c"}, {"Square","s"}, {"Triangle","t"}, {"Inverted triangle","i"},
+		{"Diamond","d"}, {"Hexagon","h"}, {"Pentagon","n"}, {"Octagon","g"},
+		{"Star","a"}, {"Cross","x"}, {"Plus","+"}, {"Dash","-"} };
+	std::vector<QAction*> kindActs;
+	for (const auto& k : KINDS) {
+		QAction* a = tm->addAction(k.first); a->setCheckable(true); a->setChecked(sl->sym == k.second);
+		kindActs.push_back(a);
+	}
+	QAction* fillA = m.addAction("Fill colour…");
+	QAction* edgeA = m.addAction("Edge colour…");
+	QAction* sizeA = m.addAction("Size (px)…");
+	QAction* sizePtA = m.addAction("Size (points)…");
+	QAction* ewA   = m.addAction("Edge width (px)…");
+	m.addSeparator();
+	QAction* delA  = m.addAction("Delete");
+	QAction* ch = m.exec(gp);
+	if (!ch) return;
+
+	for (size_t i = 0; i < kindActs.size(); ++i) if (ch == kindActs[i]) {     // change shape
+		bool filled = true;
+		sl->sym = KINDS[i].second;
+		sl->glyph->SetSourceData(makeSymbolGlyph(sl->sym, filled));
+		sl->glyph->Modified();
+		sl->filled = filled;
+		sl->actor->GetProperty()->SetEdgeVisibility(filled && sl->actor->GetProperty()->GetLineWidth() > 0 ? 1 : 0);
+		reRender(); return;
+	}
+	if (ch == fillA) {
+		double* c = sl->actor->GetProperty()->GetColor();
+		QColor q = QColorDialog::getColor(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)), s->widget, "Fill colour");
+		if (q.isValid()) { sl->actor->GetProperty()->SetColor(q.redF(), q.greenF(), q.blueF()); reRender(); }
+		return;
+	}
+	if (ch == edgeA) {
+		double* c = sl->actor->GetProperty()->GetEdgeColor();
+		QColor q = QColorDialog::getColor(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)), s->widget, "Edge colour");
+		if (q.isValid()) { sl->actor->GetProperty()->SetEdgeColor(q.redF(), q.greenF(), q.blueF()); reRender(); }
+		return;
+	}
+	if (ch == sizeA) {
+		bool ok = false;
+		double v = QInputDialog::getDouble(s->widget, "Symbol size", "size (px):", sl->sizePx, 1, 400, 1, &ok);
+		if (ok) { sl->sizePx = v; symbolRescaleCB(nullptr, 0, s, nullptr); reRender(); }
+		return;
+	}
+	if (ch == sizePtA) {                          // points: 1 pt = 96/72 px @96dpi
+		bool ok = false;
+		double curPt = sl->sizePx * 72.0 / 96.0;
+		double v = QInputDialog::getDouble(s->widget, "Symbol size", "size (points):", curPt, 1, 300, 1, &ok);
+		if (ok) { sl->sizePx = v * 96.0 / 72.0; symbolRescaleCB(nullptr, 0, s, nullptr); reRender(); }
+		return;
+	}
+	if (ch == ewA) {
+		bool ok = false;
+		double v = QInputDialog::getDouble(s->widget, "Edge width", "width (px):",
+		                                   sl->actor->GetProperty()->GetLineWidth(), 0, 20, 1, &ok);
+		if (ok) {
+			sl->actor->GetProperty()->SetLineWidth(v);
+			if (sl->filled) sl->actor->GetProperty()->SetEdgeVisibility(v > 0 ? 1 : 0);
+			reRender();
+		}
+		return;
+	}
+	if (ch == delA) {
+		for (size_t i = 0; i < s->symbols.size(); ++i) if (s->symbols[i].actor.Get() == act) {
+			if (s->ren) s->ren->RemoveActor(act);
+			s->symbols.erase(s->symbols.begin() + i);
+			break;
+		}
+		rebuildSceneObjects(s); reRender();
+		return;
+	}
 }
 
 // Add a Fledermaus-style vertical "curtain": an image hung on a vertical wall that

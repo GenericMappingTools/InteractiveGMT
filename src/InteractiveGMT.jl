@@ -22,12 +22,14 @@ include("libgmtvtk.jl")
 
 # --- handles, event loop, in-window Julia console ----------------------------------------
 include("types.jl")
+include("introspect.jl") # read-only scene-state snapshot for the test suite
 include("crs.jl")        # centralized coordinate-reference-system store (proj4/wkt/epsg)
 include("eventloop.jl")
 include("console.jl")
 
 # --- shared helpers ----------------------------------------------------------------------
 include("colors.jl")
+include("symbols.jl")    # generic screen-constant symbol layers (volcanoes, seismicity, …)
 include("cpt.jl")
 include("drape.jl")
 
@@ -40,9 +42,10 @@ include("fv.jl")
 include("dispatch.jl")
 include("drop.jl")
 include("basemap.jl")    # World Topo Tiles picker (ported from Mirone bg_map.m)
+include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
 
 export view_grid, view_image, view_points, view_fv, view_demo, iview,
-       add!, add_curtain!, show_table, selection, isalive,
+       add!, add_curtain!, add_symbols!, show_table, selection, isalive,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty
 
@@ -59,6 +62,7 @@ function __init__()
 		_register_console_eval()
 		_register_drop_callback()
 		_register_basemap()
+		_register_geography()
 	catch e
 		@warn "InteractiveGMT: the Qt+VTK viewer DLL could not be loaded; build it with deps/build.bat (Windows only). Viewer calls will error until then." exception=(e,)
 	end

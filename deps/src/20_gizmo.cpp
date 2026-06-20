@@ -369,9 +369,18 @@ void DragCB(vtkObject* caller, unsigned long eid, void* clientData, void*) {
 			c->grab = c->s->flat2d ? Grab::None : hitTest(*c, ren, x, y);   // 2D map: gizmo handles off
 			if (c->grab == Grab::VScale) { c->startY = y; c->startSz = c->curSz; }
 			else if (c->grab == Grab::None) {     // gizmo miss: try an overlay, else rotate/tilt
+				vtkActor* sym = pickSymbolAt(c->s, x, y);   // symbols sit on top -> first
 				int ovMode = 1;
-				vtkActor* ov = pickOverlayAt(c->s, x, y, ovMode);
-				if (ov) {                         // left-click ON a line/point overlay -> its menu
+				vtkActor* ov = sym ? nullptr : pickOverlayAt(c->s, x, y, ovMode);
+				if (sym) {                         // left-click ON a symbol layer -> its menu (deferred)
+					Scene* scS = c->s;
+					const double dprS = scS->widget->devicePixelRatioF();
+					const int    HpxS = scS->widget->renderWindow()->GetSize()[1];
+					QPoint gpS = scS->widget->mapToGlobal(QPoint(int(x / dprS), int((HpxS - y) / dprS)));
+					QTimer::singleShot(0, scS->widget, [scS, sym, gpS]() { symbolLayerMenu(scS, sym, gpS); });
+					c->grab = Grab::None;         // selected; do NOT rotate
+				}
+				else if (ov) {                    // left-click ON a line/point overlay -> its menu                         // left-click ON a line/point overlay -> its menu
 					// Pop its context menu DEFERRED: a modal QMenu must not run inside this VTK
 					// press callback (reentrant event loop). singleShot(0) fires it next loop turn,
 					// after press/release. VTK display (bottom-up device px) -> Qt global (top-down).

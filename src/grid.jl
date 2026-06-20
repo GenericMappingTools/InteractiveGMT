@@ -168,8 +168,8 @@ function _add_overlay!(fig::QtFigure, data, mode::Symbol, data_color, data_size)
 	lw = mode === :lines  ? Float64(data_size) : 0.0
 	ps = mode === :points ? Float64(data_size) : 0.0
 	ok = ccall(_fn(:gmtvtk_add_overlay_h), Cint,
-		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble),
-		  fig.h, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps)
+		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
+		  fig.h, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, "")
 	ok == 0 && @warn "figure window is closed; overlay not added"
 	return fig
 end

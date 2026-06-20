@@ -114,8 +114,8 @@ function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name)
 	lw = mode === :lines ? 2.0 : 0.0
 	ps = mode === :points ? 6.0 : 0.0
 	ok = ccall(_fn(:gmtvtk_add_overlay_h), Cint,
-		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble),
-		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps)
+		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
+		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, String(name === nothing ? "" : name))
 	ok == 0 && @warn "drop: window is closed; dataset not added"
 	return ok != 0
 end

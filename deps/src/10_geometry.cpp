@@ -26,6 +26,22 @@ struct Overlay {
 	std::string name;                        // label shown in the Scene Objects panel
 };
 
+// A generic SCREEN-CONSTANT symbol layer (volcanoes, seismicity, cities, …): N glyphs of one
+// shape (GMT symbol code) stamped at N points by a vtkGlyph3D. The glyph source is a UNIT shape
+// in the XY plane (radius 0.5); a per-frame observer rescales `glyph->SetScaleFactor` so the
+// on-screen size stays `sizePx` pixels at any zoom (same camera math the gizmo uses). Point
+// positions are pre-baked with the surface's xfac (x*xfac) so the glyph itself is NOT distorted;
+// the actor carries only the z scale (1,1,zfac*ve) so symbols ride VE like the other overlays.
+struct SymbolLayer {
+	vtkSmartPointer<vtkActor>   actor;
+	vtkSmartPointer<vtkGlyph3D> glyph;       // source(unit shape) + input(points); ScaleFactor = world size
+	double sizePx = 8.0;                      // requested on-screen size in PIXELS
+	bool   filled = true;                     // filled polygon glyph (fill+edge) vs open line glyph (edge only)
+	std::string sym  = "c";                   // GMT symbol code (for the Scene Objects label / properties)
+	std::string name;                         // label shown in the Scene Objects panel
+	std::vector<std::string> info;            // per-point hover text (multi-line); empty = no hover info
+};
+
 // A Fledermaus-style vertical "curtain": a textured wall hung along an XY track.
 struct Curtain {
 	vtkSmartPointer<vtkActor> actor;
@@ -190,6 +206,8 @@ struct Scene {
 	std::vector<Overlay> overlays;   // GMTdataset line/point overlays (per-element context menus)
 	std::vector<Curtain> curtains;   // Fledermaus vertical image curtains hung along an XY track
 	std::vector<ExtraObj> extras;    // grids/images dropped into this window after it opened
+	std::vector<SymbolLayer> symbols;       // screen-constant glyph layers (volcanoes, seismicity, …)
+	vtkSmartPointer<vtkCommand> symSizeCmd; // per-frame rescale observer, installed once (addSymbols)
 
 	// --- coordinate reference system (CRS) ----------------------------------
 	// The single per-window store of the data's georeferencing, pushed down from Julia
@@ -220,6 +238,7 @@ struct Scene {
 	// Ported from GMTF3D f3d_ext_interactor.cxx: drag a box to (de)select points; the
 	// picked set is highlighted (caller colour) and kept for the host to read back.
 	vtkSmartPointer<vtkPolyData>  cloudPD;        // the point cloud (set by view_points; null for grids)
+	std::string hoverInfo;                        // text of the symbol tooltip currently shown ("" = none)
 	bool   rbEnabled   = false;                   // rubber-band selection active (point clouds only)
 	bool   rbSelecting = false;                   // mid Ctrl+right-drag
 	bool   rbConsume   = false;                   // swallow the context menu this right-release triggers
@@ -948,6 +967,7 @@ static void applyVE(Scene* s) {
 // Build + exec the per-element context menu for an overlay (defined after addOverlay,
 // near the Qt window code). Forward-declared so the gizmo's left-click handler can call it.
 static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& globalPos);
+static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp);   // symbol-layer menu (50_scene.cpp)
 
 // Squared distance from point (px,py) to segment [a,b] (all display coords).
 static double segDist2(double px, double py, const double a[2], const double b[2]) {
@@ -1027,6 +1047,72 @@ static vtkActor* pickOverlayAt(Scene* s, int dx, int dy, int& outMode) {
 	return bestA;
 }
 
+// Nearest SYMBOL layer under the cursor (device px). Symbols sit ON TOP of overlays, so the click
+// dispatcher tests this first. Projects each glyph's anchor point (x already xfac-baked; the actor
+// carries the z scale) to display and takes the nearest within a size-aware tolerance, so big
+// symbols are easy to hit. Returns the layer's actor (-> symbolLayerMenu) or nullptr.
+static vtkActor* pickSymbolAt(Scene* s, int dx, int dy) {
+	if (!s || s->symbols.empty())
+		return nullptr;
+	vtkRenderer* ren = s->ren;
+	vtkActor* bestA = nullptr;
+	double best = 1e30;
+	for (auto& sl : s->symbols) {
+		if (!sl.actor || !sl.actor->GetVisibility() || !sl.glyph)
+			continue;
+		vtkPolyData* pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+		if (!pd || !pd->GetPoints())
+			continue;
+		double sc[3]; sl.actor->GetScale(sc);
+		const double tol2 = std::max(12.0, sl.sizePx * 0.6) * std::max(12.0, sl.sizePx * 0.6);
+		vtkPoints* pts = pd->GetPoints();
+		const vtkIdType np = pts->GetNumberOfPoints();
+		for (vtkIdType i = 0; i < np; ++i) {
+			double p[3]; pts->GetPoint(i, p);
+			ren->SetWorldPoint(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], 1.0);
+			ren->WorldToDisplay();
+			double d[3]; ren->GetDisplayPoint(d);
+			const double ex = d[0]-dx, ey = d[1]-dy, dd = ex*ex + ey*ey;
+			if (dd <= tol2 && dd < best) { best = dd; bestA = sl.actor; }
+		}
+	}
+	return bestA;
+}
+
+// Nearest SYMBOL POINT under the cursor that carries hover info (device px). Mirrors pickSymbolAt
+// but tracks the individual point index so we can fetch its per-point text, and only considers
+// layers that actually have info. On a hit, writes that point's multi-line text to `out` and
+// returns true. Used by onMouseMove to pop a tooltip when hovering e.g. a volcano symbol.
+static bool pickSymbolInfoAt(Scene* s, int dx, int dy, std::string& out) {
+	if (!s || s->symbols.empty())
+		return false;
+	vtkRenderer* ren = s->ren;
+	double best = 1e30; const std::string* bestInfo = nullptr;
+	for (auto& sl : s->symbols) {
+		if (sl.info.empty() || !sl.actor || !sl.actor->GetVisibility() || !sl.glyph)
+			continue;
+		vtkPolyData* pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+		if (!pd || !pd->GetPoints())
+			continue;
+		double sc[3]; sl.actor->GetScale(sc);
+		const double tol = std::max(12.0, sl.sizePx * 0.6);
+		const double tol2 = tol * tol;
+		vtkPoints* pts = pd->GetPoints();
+		const vtkIdType np = pts->GetNumberOfPoints();
+		for (vtkIdType i = 0; i < np; ++i) {
+			if ((size_t)i >= sl.info.size()) break;        // info must align 1:1 with points
+			double p[3]; pts->GetPoint(i, p);
+			ren->SetWorldPoint(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], 1.0);
+			ren->WorldToDisplay();
+			double d[3]; ren->GetDisplayPoint(d);
+			const double ex = d[0]-dx, ey = d[1]-dy, dd = ex*ex + ey*ey;
+			if (dd <= tol2 && dd < best) { best = dd; bestInfo = &sl.info[i]; }
+		}
+	}
+	if (bestInfo) { out = *bestInfo; return true; }
+	return false;
+}
+
 // Is the cursor (VTK display px dx,dy) on the profile line? Same screen-space segment
 // distance test as pickOverlayAt (thin lines miss hardware pickers), on s->profPD.
 static bool profileHitAt(Scene* s, int dx, int dy) {
@@ -1088,6 +1174,24 @@ static void onMouseMove(vtkObject*, unsigned long, void* clientData, void* /*cd*
 		return;
 	int* p = s->widget->interactor()->GetEventPosition();   // device px, bottom-up
 	const int mx = p[0], my = p[1];
+	// Per-symbol hover info: if the cursor is over a symbol that carries metadata (e.g. a volcano),
+	// pop its multi-line text as a tooltip. Anti-flicker: only call showText when the hovered TEXT
+	// CHANGES (Qt keeps a same-text tip fixed, but re-issuing it every move + hideText on near-miss
+	// frames made it strobe), and only hideText on a real hit->miss transition. Offset the tip off
+	// the cursor (+18,+18) so it never sits under the pointer (self-occlusion also caused flicker).
+	{
+		std::string sinfo;
+		if (pickSymbolInfoAt(s, mx, my, sinfo)) {
+			if (sinfo != s->hoverInfo) {
+				QToolTip::showText(QCursor::pos() + QPoint(18, 18),
+				                   QString::fromStdString(sinfo), s->widget);
+				s->hoverInfo = sinfo;
+			}
+		} else if (!s->hoverInfo.empty()) {
+			QToolTip::hideText();
+			s->hoverInfo.clear();
+		}
+	}
 	// GPU z-buffer pick: read the depth under the cursor and unproject it. O(1) regardless of grid
 	// size — no software cell traversal — so the readout never stalls, needs no cell locator, and
 	// can't OOM on a 200 MB grid (the old vtkCellPicker path did all three). One-pixel glReadPixels.
