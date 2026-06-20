@@ -34,6 +34,20 @@ function _crop_etopo4(W, E, S, N)
 	return GMT.gdaltranslate(_etopo4_path(), "-srcwin $xoff $yoff $xs $ys")
 end
 
+# [0 360] whole-world view: chop the image at lon=0, swap the two halves so the western hemisphere
+# ([-180 0]) sits AFTER the eastern ([0 180]), then the longitudes run 0..360 -> a Pacific-centred
+# Earth (mirrors bg_map.m's column concat). etopo4 is band-planar rowmajor ("TRBa": dim1=lon,
+# dim3=band), so a circshift of the lon dim by half the width does the swap without touching bands.
+function _roll_lon_to_360!(I)
+	lay = I.layout
+	rowmajor = length(lay) >= 2 && lay[2] == 'R'
+	londim   = rowmajor ? 1 : 2
+	half     = size(I.image, londim) ÷ 2
+	shifts   = ntuple(d -> d == londim ? -half : 0, ndims(I.image))
+	I.image  = circshift(I.image, shifts)
+	return I
+end
+
 # Per-window set of already-loaded basemap handle names, so re-clicking a loaded tile is ignored.
 const _BASEMAP_LOADED = Dict{Ptr{Cvoid}, Set{String}}()
 
@@ -56,8 +70,16 @@ function _on_basemap(scene::Ptr{Cvoid}, copt::Cstring)::Cvoid
 			"Base image ($tag)"
 		loaded = get!(() -> Set{String}(), _BASEMAP_LOADED, scene)
 		name in loaded && return                                 # already on this window -> ignore
-		I = _crop_etopo4(W, E, S, N)
-		dW, dE = (wrap && W < 0) ? (W + 360, E + 360) : (W, E)   # [0 360] only shifts the displayed X
+		if wrap && tag == "global"
+			# Whole world in [0 360]: swap hemispheres at lon=0 -> Pacific-centred Earth, lon 0..360.
+			I = _crop_etopo4(-180.0, 180.0, S, N)
+			_roll_lon_to_360!(I)
+			dW, dE = 0.0, 360.0
+		else
+			# A tile/region: same pixels, only relabel a western piece into [180 360] for the wrap view.
+			I = _crop_etopo4(W, E, S, N)
+			dW, dE = (wrap && W < 0) ? (W + 360.0, E + 360.0) : (Float64(W), Float64(E))
+		end
 		I.range = [Float64(dW), Float64(dE), Float64(S), Float64(N), 0.0, 255.0]
 		I.proj4 = "+proj=longlat +datum=WGS84 +no_defs"          # so _isgeog(I) -> geographic axes
 		I.epsg  = 4326
