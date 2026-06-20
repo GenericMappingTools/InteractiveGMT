@@ -37,7 +37,12 @@ struct Curtain {
 struct ExtraObj {
 	vtkSmartPointer<vtkActor> actor;
 	vtkSmartPointer<vtkActor> drape;
+	vtkSmartPointer<vtkTexture> tex;         // dropped-image texture (reused to rebuild flat plane / drape)
 	std::string name;                        // label shown in the Scene Objects panel (file name)
+	bool   isImage = false;                  // dropped IMAGE (flat plane / drapeable) vs grid surface
+	bool   draped  = false;                  // image currently draped on the host grid (else a flat plane)
+	double zpos    = 0.0;                    // flat-plane TRUE z — sits above/below the relief, NEVER at z=0
+	double bx0 = 0, bx1 = 0, by0 = 0, by1 = 0;  // image footprint (true coords): tcoords + grid-overlap test
 };
 
 // A user-drawn polygon (closed polyline) from the toolbar polygon tool. Vertices are kept in
@@ -902,6 +907,10 @@ static void applyVE(Scene* s) {
 		if (ov.actor) ov.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
 	for (auto& cu : s->curtains)                                       // curtains hang in the same scaled space
 		if (cu.actor) cu.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	for (auto& ex : s->extras) {                                       // dropped grids/images track the base scale + VE
+		if (ex.actor) ex.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // (flat image z=zpos is baked in geometry -> scale carries VE)
+		if (ex.drape) ex.drape->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	}
 	if (s->profLine) s->profLine->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // profile drape tracks the base
 	if (s->rbHL)     s->rbHL->SetScale(s->xfac, 1.0, s->zfac * s->ve);      // selection highlight tracks the cloud
 	for (auto& pg : s->polys)                                               // user polygons hang in the scaled space

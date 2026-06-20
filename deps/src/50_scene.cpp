@@ -346,7 +346,159 @@ static QPixmap makeObjectIcon(int kind) {
 	return pm;
 }
 
-static void rebuildSceneObjects(Scene* s) {
+// ---- dropped-image placement & draping ------------------------------------
+// An image has no elevation, so a dropped image must NOT sit at z=0 where it would slice through
+// the relief. It rides on a horizontal plane at ex.zpos (TRUE z, defaulting to ON TOP of the
+// surface); it can be raised/lowered (stack) or DRAPED onto the grid when the footprints overlap.
+// imageRebuildActor rebuilds ex.actor for the current mode; the texture (ex.tex) is reused either way.
+
+// Index of the extra owning this actor (re-find each call; the vector may have changed). -1 if gone.
+static int extraIndexOfActor(Scene* s, vtkProp3D* a) {
+	for (size_t i = 0; i < s->extras.size(); ++i)
+		if (s->extras[i].actor.Get() == a) return (int)i;
+	return -1;
+}
+
+// True if the image footprint overlaps the host grid footprint (a drape needs a grid underneath).
+static bool imageOverlapsGrid(Scene* s, const ExtraObj& ex) {
+	if (s->gridZ.empty() || s->gnx < 2 || s->gny < 2) return false;
+	return ex.bx0 < s->gx1 && ex.bx1 > s->gx0 && ex.by0 < s->gy1 && ex.by1 > s->gy0;
+}
+
+// Vertical step for "stack up/down" + the default on-top gap: 2% of the relief range.
+static double imageStackStep(Scene* s) {
+	const double r = s->zmax - s->zmin;
+	return (r > 0) ? 0.02 * r : 1.0;
+}
+
+// (Re)build the image actor for its current flat/draped state and (re)register it in the renderer.
+static void imageRebuildActor(Scene* s, ExtraObj& ex) {
+	if (ex.actor) s->ren->RemoveActor(ex.actor);
+	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
+	const bool drape = ex.draped && imageOverlapsGrid(s, ex);
+	ex.draped = drape;
+	if (drape) {
+		// Drape: sample the grid heightfield over the image∩grid footprint, texture-map the image.
+		const double x0 = std::max(ex.bx0, s->gx0), x1 = std::min(ex.bx1, s->gx1);
+		const double y0 = std::max(ex.by0, s->gy0), y1 = std::min(ex.by1, s->gy1);
+		int nx = std::min(s->gnx, 256), ny = std::min(s->gny, 256);
+		if (nx < 2) nx = 2;
+		if (ny < 2) ny = 2;
+		vtkNew<vtkPoints> pts; pts->SetDataTypeToFloat(); pts->Allocate(nx * ny);
+		vtkNew<vtkFloatArray> tc; tc->SetNumberOfComponents(2); tc->SetName("tc"); tc->Allocate(2 * nx * ny);
+		for (int j = 0; j < ny; ++j) {
+			const double y = y0 + (y1 - y0) * j / (ny - 1);
+			for (int i = 0; i < nx; ++i) {
+				const double x = x0 + (x1 - x0) * i / (nx - 1);
+				double z = sampleZ(s, x, y);
+				if (std::isnan(z)) z = 0.0;
+				pts->InsertNextPoint(x, y, z);
+				tc->InsertNextTuple2((x - ex.bx0) / (ex.bx1 - ex.bx0), (y - ex.by0) / (ex.by1 - ex.by0));
+			}
+		}
+		vtkNew<vtkCellArray> cells;
+		for (int j = 0; j < ny - 1; ++j)
+			for (int i = 0; i < nx - 1; ++i) {
+				vtkIdType q[4] = { (vtkIdType)(j*nx+i), (vtkIdType)(j*nx+i+1),
+				                   (vtkIdType)((j+1)*nx+i+1), (vtkIdType)((j+1)*nx+i) };
+				cells->InsertNextCell(4, q);
+			}
+		pd->SetPoints(pts); pd->SetPolys(cells); pd->GetPointData()->SetTCoords(tc);
+	}
+	else {
+		// Flat horizontal plane at ex.zpos spanning the image bbox (single quad, full-texture tcoords).
+		vtkNew<vtkPoints> pts; pts->SetDataTypeToFloat();
+		pts->InsertNextPoint(ex.bx0, ex.by0, ex.zpos); pts->InsertNextPoint(ex.bx1, ex.by0, ex.zpos);
+		pts->InsertNextPoint(ex.bx1, ex.by1, ex.zpos); pts->InsertNextPoint(ex.bx0, ex.by1, ex.zpos);
+		vtkNew<vtkFloatArray> tc; tc->SetNumberOfComponents(2); tc->SetName("tc");
+		tc->InsertNextTuple2(0, 0); tc->InsertNextTuple2(1, 0); tc->InsertNextTuple2(1, 1); tc->InsertNextTuple2(0, 1);
+		vtkNew<vtkCellArray> cells; vtkIdType q[4] = { 0, 1, 2, 3 }; cells->InsertNextCell(4, q);
+		pd->SetPoints(pts); pd->SetPolys(cells); pd->GetPointData()->SetTCoords(tc);
+	}
+	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pd); map->ScalarVisibilityOff();
+	if (drape) {                              // pull the drape toward the camera so it wins z-fighting on the relief
+		vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
+		map->SetRelativeCoincidentTopologyPolygonOffsetParameters(-1.0, -1.0);
+	}
+	vtkSmartPointer<vtkActor> a = vtkSmartPointer<vtkActor>::New();
+	a->SetMapper(map); a->SetTexture(ex.tex);
+	a->GetProperty()->LightingOff();          // a finished picture: full albedo, no shading
+	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	ex.actor = a;
+	s->ren->AddActor(a);
+}
+
+// Properties menu for a dropped image (left-click its Scene Objects row): order it relative to the
+// surface (top/bottom/stack), drape it on the grid (if footprints overlap), or delete it.
+static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
+	int idx = extraIndexOfActor(s, actor);
+	if (idx < 0) return;
+	const bool draped = s->extras[idx].draped;
+	const bool canDrape = !draped && imageOverlapsGrid(s, s->extras[idx]);
+	QMenu m(s->widget);
+	QAction *aTop = m.addAction("Place on top");
+	QAction *aBot = m.addAction("Place at bottom");
+	QAction *aUp  = m.addAction("Stack up");
+	QAction *aDn  = m.addAction("Stack down");
+	for (QAction *a : { aTop, aBot, aUp, aDn }) a->setEnabled(!draped);   // ordering is for the flat plane only
+	m.addSeparator();
+	QAction *aDrape = m.addAction(draped ? "Undrape (flat)" : "Drape on grid");
+	aDrape->setEnabled(draped || canDrape);
+	m.addSeparator();
+	QAction *aDel = m.addAction("Delete image");
+	QAction *c = m.exec(g);
+	if (!c) return;
+	ExtraObj& ex = s->extras[idx];            // vector unchanged during exec -> index still valid
+	const double step = imageStackStep(s);
+	if (c == aDel) {
+		if (ex.actor) s->ren->RemoveActor(ex.actor);
+		s->extras.erase(s->extras.begin() + idx);
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return;
+	}
+	if (c == aDrape) {
+		ex.draped = !ex.draped;
+		imageRebuildActor(s, ex);
+	}
+	else {
+		// Stacking = the VERTICAL ORDER of the whole pile, in which the RELIEF SURFACE is itself a
+		// member. So with one grid + one image, "Stack down" pushes the image below the surface — the
+		// same as "Place at bottom" (there is nothing else to pass). Build the ordered pile bottom->top
+		// (images sorted by zpos, the surface slotted at its mid-z), move THIS image one slot (or to an
+		// end), then re-derive every image's zpos from its side of the surface.
+		const bool hasSurf = (surfProp(s) != nullptr);
+		const double smid = 0.5 * (s->zmin + s->zmax);
+		struct Slot { bool surf; int idx; double key; };
+		std::vector<Slot> pile;
+		for (size_t i = 0; i < s->extras.size(); ++i)
+			if (s->extras[i].isImage) pile.push_back({ false, (int)i, s->extras[i].zpos });
+		if (hasSurf) pile.push_back({ true, -1, smid });
+		std::sort(pile.begin(), pile.end(), [](const Slot& a, const Slot& b) { return a.key < b.key; });
+		int pos = 0; for (size_t k = 0; k < pile.size(); ++k) if (!pile[k].surf && pile[k].idx == idx) { pos = (int)k; break; }
+		Slot tgt = pile[pos]; pile.erase(pile.begin() + pos);    // pull the image out, then reinsert one slot over
+		int dest = pos;
+		if      (c == aTop) dest = (int)pile.size();             // top of the pile
+		else if (c == aBot) dest = 0;                            // bottom of the pile
+		else if (c == aUp)  dest = std::min(pos + 1, (int)pile.size());   // climb one slot (may cross the surface)
+		else if (c == aDn)  dest = std::max(pos - 1, 0);                  // sink one slot
+		pile.insert(pile.begin() + dest, tgt);
+		// Re-derive z: images below the surface go under zmin, images above go over zmax (step apart).
+		int si = -1; for (size_t k = 0; k < pile.size(); ++k) if (pile[k].surf) { si = (int)k; break; }
+		for (int k = 0; k < (int)pile.size(); ++k) {
+			if (pile[k].surf) continue;
+			ExtraObj& e = s->extras[pile[k].idx];
+			e.zpos = (si < 0)      ? s->zmax + (k + 1) * step          // no surface: stack all above z=zmax
+			       : (k < si)      ? s->zmin - (si - k) * step          // below the relief
+			                       : s->zmax + (k - si) * step;         // above the relief
+		}
+		for (auto &e : s->extras) if (e.isImage) imageRebuildActor(s, e);
+	}
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+static void rebuildSceneObjects(Scene *s) {
 	if (!s || !s->objPanel)
 		return;
 	// Wipe the previous layout + its checkboxes before rebuilding.
@@ -363,22 +515,22 @@ static void rebuildSceneObjects(Scene* s) {
 	// descriptive label sit to its right; right-clicking the icon/label opens the row's properties
 	// menu (toggle is no longer wired to the text — Fledermaus behaviour the user asked for).
 	s->objPanel->setStyleSheet("QCheckBox::indicator{width:13px;height:13px;}");
-	QVBoxLayout* col = new QVBoxLayout(s->objPanel);
+	QVBoxLayout *col = new QVBoxLayout(s->objPanel);
 	col->setContentsMargins(8, 8, 8, 8);
 	col->setSpacing(3);
 
 	// One row = [checkbox] [type icon] [label]. onToggle drives visibility; onProps (optional) is the
 	// properties menu, opened by a LEFT click on the description label (the checkbox only toggles).
-	auto makeRow = [&](const QString& label, int iconKind, bool checked,
+	auto makeRow = [&](const QString &label, int iconKind, bool checked,
 	                   std::function<void(bool)> onToggle,
 	                   std::function<void(const QPoint&)> onProps,
-	                   const QString& tip = QString()) {
-		QWidget* row = new QWidget(s->objPanel);
-		QHBoxLayout* h = new QHBoxLayout(row);
+	                   const QString &tip = QString()) {
+		QWidget *row = new QWidget(s->objPanel);
+		QHBoxLayout *h = new QHBoxLayout(row);
 		h->setContentsMargins(0, 0, 0, 0);
 		h->setSpacing(5);
 
-		QCheckBox* cb = new QCheckBox(row);                  // box only — no text, so only the box toggles
+		QCheckBox *cb = new QCheckBox(row);                  // box only — no text, so only the box toggles
 		cb->setChecked(checked);
 		cb->setToolTip("Show / hide");
 		QObject::connect(cb, &QCheckBox::toggled, [s, onToggle](bool on) {
@@ -386,8 +538,8 @@ static void rebuildSceneObjects(Scene* s) {
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		});
 
-		QLabel* icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
-		ClickableLabel* text = new ClickableLabel(label, row);   // left-click -> properties
+		QLabel *icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
+		ClickableLabel *text = new ClickableLabel(label, row);   // left-click -> properties
 		if (!tip.isEmpty()) { icon->setToolTip(tip); text->setToolTip(tip); }
 
 		h->addWidget(cb, 0);
@@ -418,7 +570,7 @@ static void rebuildSceneObjects(Scene* s) {
 	if (!s->imageOnly) {
 		// Surface row: checkbox toggles visibility; LEFT-clicking the label folds / un-folds the
 		// Shading dock (the surface is what shading acts on), Fledermaus-style.
-		if (vtkProp3D* sp = surfProp(s))
+		if (vtkProp3D *sp = surfProp(s))
 			makeRow(s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName),
 			        IC_Surface, sp->GetVisibility() != 0,
 			        [sp](bool on) { sp->SetVisibility(on ? 1 : 0); },
@@ -449,7 +601,7 @@ static void rebuildSceneObjects(Scene* s) {
 		                                 : IC_Polygon;
 		addRow(nm, pg.line, ic, &lr);
 	}
-	for (auto& tl : s->texts) {                          // user-placed text labels (toggle + right-click menu)
+	for (auto &tl : s->texts) {                          // user-placed text labels (toggle + right-click menu)
 		if (!tl.actor) continue;
 		vtkTextActor3D* act = tl.actor.Get();
 		makeRow(QString::fromStdString(tl.name), IC_Text, act->GetVisibility() != 0,
@@ -462,8 +614,16 @@ static void rebuildSceneObjects(Scene* s) {
 		addRow("Profile", s->profLine, IC_Profile, &lr);
 	}
 	for (auto& ex : s->extras) {                 // grids/images dropped in after the window opened
-		addRow(QString::fromStdString(ex.name), ex.actor, IC_Surface);
-		if (ex.drape) addRow(QString::fromStdString(ex.name + " (image)"), ex.drape, IC_Image);
+		if (ex.isImage) {                        // dropped image: picture icon + ordering/drape/delete menu
+			vtkProp3D* a = ex.actor.Get();
+			makeRow(QString::fromStdString(ex.name), IC_Image, a && a->GetVisibility() != 0,
+			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
+			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
+			        "Left-click for image properties");
+		} else {
+			addRow(QString::fromStdString(ex.name), ex.actor, IC_Surface);
+			if (ex.drape) addRow(QString::fromStdString(ex.name + " (image)"), ex.drape, IC_Image);
+		}
 	}
 	col->addStretch(1);
 }

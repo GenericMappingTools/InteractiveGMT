@@ -529,20 +529,20 @@ GMTVTK_API int gmtvtk_add_surface_h(void* handle, const float* z, int nx, int ny
 	ExtraObj ex;
 	const bool hasImg = (img && iw > 0 && ih > 0 && ibands > 0);
 	if (image_only && hasImg) {
-		// A bare image: the object IS a flat textured plane. No CPT base surface underneath.
+		// A dropped IMAGE: no elevation, so it must NOT sit at z=0 slicing the relief. It rides a
+		// horizontal plane that defaults to ON TOP of the surface (z = zmax + a small gap) and can be
+		// re-ordered / draped via its Scene Objects properties menu (imageObjectMenu). The texture is
+		// kept on the ExtraObj so the actor can be rebuilt flat<->draped without re-uploading pixels.
 		vtkNew<vtkImageData> tex_img;
 		tex_img->SetDimensions(iw, ih, 1);
 		tex_img->AllocateScalars(VTK_UNSIGNED_CHAR, ibands);
 		memcpy(tex_img->GetScalarPointer(), img, (size_t)iw * ih * ibands);
-		vtkNew<vtkTexture> tex; tex->SetInputData(tex_img); tex->InterpolateOn();
-		vtkNew<vtkPolyDataMapper> tmap;
-		tmap->SetInputConnection(norms->GetOutputPort());
-		tmap->ScalarVisibilityOff();
-		ex.actor = vtkSmartPointer<vtkActor>::New();
-		ex.actor->SetMapper(tmap); ex.actor->SetTexture(tex);
-		ex.actor->GetProperty()->LightingOff();
-		ex.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
-		s->ren->AddActor(ex.actor);
+		ex.tex = vtkSmartPointer<vtkTexture>::New();
+		ex.tex->SetInputData(tex_img); ex.tex->InterpolateOn();
+		ex.isImage = true;
+		ex.bx0 = x0; ex.bx1 = x1; ex.by0 = y0; ex.by1 = y1;
+		ex.zpos = s->zmax + imageStackStep(s);     // default: sit just above the relief, never at z=0
+		imageRebuildActor(s, ex);                  // builds ex.actor (flat plane) + adds it to the renderer
 	} else {
 		// A grid: CPT-coloured surface (+ optional image drape on top).
 		vtkSmartPointer<vtkScalarsToColors> lut;
