@@ -33,8 +33,9 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_view_fv, :gmtvtk_set_julia_eval, :gmtvtk_set_table,
 	:gmtvtk_save_png, :gmtvtk_orbit, :gmtvtk_set_stereo,
 	:gmtvtk_open_empty, :gmtvtk_set_drop_callback, :gmtvtk_add_surface_h,
+	:gmtvtk_promote_surface_h,
 	:gmtvtk_has_surface, :gmtvtk_close, :gmtvtk_add_recent,
-	:gmtvtk_set_cpt,
+	:gmtvtk_set_cpt, :gmtvtk_raise,
 )
 
 # Resolve a loaded C-API function pointer. Errors clearly if the library never loaded.

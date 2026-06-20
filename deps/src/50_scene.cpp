@@ -1,4 +1,5 @@
 static void rebuildSceneObjects(Scene* s);          // defined just below; refreshed after edits
+static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
 static void textApplyProps(Scene* s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
 
 // Hand a colormap NAME back to the Julia host, which recomputes CPT nodes over the surface's data
@@ -414,8 +415,16 @@ static void rebuildSceneObjects(Scene* s) {
 
 	// A bare image has NO surface: don't list one, and the image is the object itself (not an
 	// "Image drape" over a surface).
-	if (!s->imageOnly)
-		addRow(s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName), surfProp(s), IC_Surface);
+	if (!s->imageOnly) {
+		// Surface row: checkbox toggles visibility; LEFT-clicking the label folds / un-folds the
+		// Shading dock (the surface is what shading acts on), Fledermaus-style.
+		if (vtkProp3D* sp = surfProp(s))
+			makeRow(s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName),
+			        IC_Surface, sp->GetVisibility() != 0,
+			        [sp](bool on) { sp->SetVisibility(on ? 1 : 0); },
+			        [s](const QPoint&) { toggleShadingFold(s); },
+			        "Left-click to fold / un-fold the Shading panel");
+	}
 	if (s->drape)
 		addRow(s->imageOnly ? (s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName))
 		                    : QString("Image drape"),

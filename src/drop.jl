@@ -7,59 +7,101 @@
 # level — a precompiled @cfunction is invalid), exactly like the in-window console callback.
 
 # Called on the UI thread from inside the Qt pump when a file is dropped on a viewer window.
-# An EMPTY launcher window (no primary surface) is PROMOTED: the file opens a full viewer window
-# (real axes + coordinate readout + Scene Objects panel) and the bare launcher is retired. A
-# populated window gets the file ADDED into it (extra surface/image/overlay).
+# An EMPTY launcher window (no primary surface) is PROMOTED IN PLACE: the SAME window is
+# reconfigured into a full viewer (real scales + axes + colorbar + 3-D view + Scene Objects panel)
+# — the window is reused, NOT replaced. A populated window gets the file ADDED into it (extra
+# surface/image/overlay). `promote` is true exactly when the receiving window is the bare launcher.
 function _on_drop(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid
 	path = unsafe_string(cpath)
 	try
-		data = GMT.gmtread(path)
+		# Already shown in a live window -> raise that window and ignore the duplicate drop.
+		_open_window_for(path) !== nothing && return
+		data  = GMT.gmtread(path)
 		_record_recent(path, data)                             # remember it in File > Recent Files
-		if ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) != 0
-			_drop_into(scene, data, basename(path))            # add into the populated window
-		else
-			iview(data)                                        # promote: full window with axes/readout
-			ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), scene)   # retire the empty launcher
-		end
+		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
+		_drop_into(scene, data, basename(path); promote=empty)
+		_mark_file_open(path, scene)                           # remember it so a re-drop is ignored
 	catch e
 		@warn "drop: could not read/open file" path exception=e
 	end
 	return
 end
 
-# Dispatch the dropped object by type into the window `scene`.
-_drop_into(scene::Ptr{Cvoid}, G::GMTgrid,  name) = _add_grid_to_scene(scene, G, name)
-_drop_into(scene::Ptr{Cvoid}, I::GMTimage, name) = _add_image_to_scene(scene, I, name)
-_drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name) = _add_dataset_to_scene(scene, D, name)
-_drop_into(scene::Ptr{Cvoid}, D::Vector{<:GMTdataset}, name) = _add_dataset_to_scene(scene, D, name)
-_drop_into(scene::Ptr{Cvoid}, x, name) = @warn "drop: unsupported data type" type=typeof(x)
+# Dispatch the dropped object by type into the window `scene`. `promote` reuses the empty launcher.
+_drop_into(scene::Ptr{Cvoid}, G::GMTgrid,  name; promote=false) = _add_grid_to_scene(scene, G, name; promote)
+_drop_into(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false) = _add_image_to_scene(scene, I, name; promote)
+function _drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name; promote=false)
+	promote ? _promote_dataset(scene, D) : _add_dataset_to_scene(scene, D, name)
+end
+function _drop_into(scene::Ptr{Cvoid}, D::Vector{<:GMTdataset}, name; promote=false)
+	promote ? _promote_dataset(scene, D) : _add_dataset_to_scene(scene, D, name)
+end
+_drop_into(scene::Ptr{Cvoid}, x, name; promote=false) = @warn "drop: unsupported data type" type=typeof(x)
 
-# Add a dropped grid as a CPT-coloured surface actor in the window.
-function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:geo)
+# A pure table has no surface to promote the launcher's scales onto. Until in-place dataset
+# promotion exists, fall back to opening it in a fresh full window and retiring the launcher.
+function _promote_dataset(scene::Ptr{Cvoid}, D)
+	iview(D)
+	ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), scene)
+end
+
+# Add a dropped grid as a CPT-coloured surface in the window. On the empty launcher `promote`
+# reconfigures THAT window in place (gmtvtk_promote_surface_h); otherwise it is added as an extra.
+function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:geo, promote=false)
 	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z); ny, nx = size(z); r = G.range
 	cz, crgb, ncolor = _cpt_nodes(G, cmap)
-	ok = ccall(_fn(:gmtvtk_add_surface_h), Cint,
+	geog = _isgeog(G)
+	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
+	ok = promote ?
+		ccall(_fn(fn), Cint,
+		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
+		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name)) :
+		ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
 		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
 		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4],
 		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name))
 	ok == 0 && @warn "drop: window is closed; grid not added"
+	# A promoted launcher reuses the SAME handle but its _FIGREG entry is still the QtEmpty launcher.
+	# Re-register it as a grid figure so `fig` (console / colorbar _recolor) carries the grid + works.
+	promote && ok != 0 && _register_fig!(QtFigure(scene, G))
 	return ok != 0
 end
 
-# Add a dropped image as a flat textured plane in the window.
-function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name)
+# Add a dropped image as a flat textured plane in the window (promote = reuse the empty launcher).
+function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false)
 	ir = I.range
 	z = zeros(Float32, 2, 2)
 	fillu = (UInt8(200), UInt8(200), UInt8(200))
 	img, iw, ih, ibands = _drape_to_bbox(I, ir[1], ir[2], ir[3], ir[4]; outside=:transparent, fill=fillu)
-	ok = ccall(_fn(:gmtvtk_add_surface_h), Cint,
+	geog = _isgeog(I)
+	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
+	ok = promote ?
+		ccall(_fn(fn), Cint,
+		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		  scene, z, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4], Cint(geog),
+		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name)) :
+		ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
 		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
 		  scene, z, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4],
 		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name))
 	ok == 0 && @warn "drop: window is closed; image not added"
+	# As for grids: re-register the promoted launcher so `fig` is the actual image figure.
+	promote && ok != 0 && _register_fig!(QtImage(scene, I))
 	return ok != 0
+end
+
+# Best-effort geographic flag for a dropped grid/image (lon/lat axis titles + cos-lat aspect).
+function _isgeog(G)
+	try
+		return GMT.isgeog(G) ? 1 : 0
+	catch
+		return 0
+	end
 end
 
 # Add a dropped dataset as a line/point overlay in the window. z comes from column 3 if present,

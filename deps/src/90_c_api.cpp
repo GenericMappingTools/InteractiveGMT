@@ -382,6 +382,17 @@ GMTVTK_API int gmtvtk_is_alive(void *handle) {
 	return sceneAlive(static_cast<Scene*>(handle)) ? 1 : 0;
 }
 
+// Bring an existing window to the front. Used when the host detects a file is already open and,
+// instead of opening a duplicate, raises the window that already shows it.
+GMTVTK_API void gmtvtk_raise(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->win) return;
+	s->win->setWindowState(s->win->windowState() & ~Qt::WindowMinimized);
+	s->win->showNormal();
+	s->win->raise();
+	s->win->activateWindow();
+}
+
 // Does this window have a primary surface? 0 for a bare empty() launcher (no data yet); used by
 // the drop handler to decide between PROMOTING an empty window vs adding into a populated one.
 GMTVTK_API int gmtvtk_has_surface(void* handle) {
@@ -582,6 +593,118 @@ GMTVTK_API int gmtvtk_add_surface_h(void* handle, const float* z, int nx, int ny
 	rebuildSceneObjects(s);
 	if (!s->surf && s->extras.size() == 1)   // first content dropped into an empty window: frame it
 		s->ren->ResetCamera();
+	s->ren->ResetCameraClippingRange();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// PROMOTE an empty launcher window into a real grid/image window IN PLACE: the SAME window is
+// reused (no new window, the old one is NOT destroyed). We recompute the scales from the dropped
+// data and rebuild the scene through buildSceneContent — the EXACT same data-build path a fresh
+// view_grid uses — so there is nothing to reproduce and nothing to drift. If the window already
+// has a surface (not an empty launcher) we just add the surface as an extra. Returns 1 / 0.
+GMTVTK_API int gmtvtk_promote_surface_h(void* handle, const float* z, int nx, int ny,
+										double x0, double x1, double y0, double y1, int geographic,
+										const double* cz, const double* crgb, int ncolor,
+										const unsigned char* img, int iw, int ih, int ibands,
+										int image_only, const char* name) {
+	Scene* s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
+		return 0;
+	if (!s->emptyStart)   // already a real window -> ordinary "add into existing window"
+		return gmtvtk_add_surface_h(handle, z, nx, ny, x0, x1, y0, y1,
+									cz, crgb, ncolor, img, iw, ih, ibands, image_only, name);
+
+	const bool hasImg    = (img && iw > 0 && ih > 0 && ibands > 0);
+	const bool imageOnly = (image_only != 0);
+
+	// z range + scales from the REAL data (the launcher's were for the 0..1 placeholder).
+	double zmin = 1e30, zmax = -1e30;
+	for (vtkIdType k = 0, ntot = (vtkIdType)nx * ny; k < ntot; ++k) {
+		const float zz = z[k];
+		if (!std::isnan(zz)) { if (zz < zmin) zmin = zz; if (zz > zmax) zmax = zz; }
+	}
+	if (zmin > zmax) { zmin = 0.0; zmax = 1.0; }
+	double xfac, zfac, ve0;
+	computeScales(geographic, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
+	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1; s->zmin = zmin; s->zmax = zmax;
+	s->xfac = xfac; s->zfac = zfac; s->ve = ve0;
+	s->imageOnly = imageOnly;
+	s->surfName  = (name && name[0]) ? name : "";
+
+	// Plain grid -> TILED path (gz), exactly like gmtvtk_view_grid. Draped image -> single actor
+	// with tcoords (pd) so the texture can sit on it. buildSceneContent removes the launcher's
+	// placeholder content and rebuilds everything (surface, axes, colorbar, default 3-D view, ...).
+	vtkSmartPointer<vtkPolyData> pd;
+	const float* gz = nullptr; int gnx = 0, gny = 0;
+	if (hasImg) {
+		double zlo = zmin, zhi = zmax;
+		pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zlo, zhi, /*triangulate=*/true, /*wantTC=*/true);
+	} else {
+		gz = z; gnx = nx; gny = ny;
+	}
+	buildSceneContent(s, pd, x0, x1, y0, y1, cz, crgb, ncolor, img, iw, ih, ibands,
+					  /*edges=*/0, /*pointCloud=*/false, geographic, gz, gnx, gny, /*blankStart=*/false);
+
+	// The single-actor (drape) path needs full-res z for hover/profile/pick; the tiled path already
+	// populated s->gridZ inside buildSceneContent.
+	if (!gz) {
+		s->gridZ.assign(z, z + (size_t)nx * ny);
+		s->gnx = nx; s->gny = ny;
+		s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
+		s->gdx = (nx > 1) ? (x1 - x0) / (nx - 1) : 0.0;
+		s->gdy = (ny > 1) ? (y1 - y0) / (ny - 1) : 0.0;
+	}
+
+	s->emptyStart = false;
+
+	// Rebuild the gizmo from scratch against the REAL surface, the SAME way a fresh window does (its
+	// haxisLen is measured from the visible surface bounds inside enableGizmo). The launcher's gizmo
+	// was calibrated for the 0..1 placeholder, and hand re-keying it kept yielding a giant horizontal
+	// axis — tearing it down and recreating gives exactly the normal-grid gizmo, no special-casing.
+	disableGizmo(s);
+	s->giz = enableGizmo(s, 0.01);
+
+	// A grid opens in the default oblique 3-D view buildSceneContent already set. A bare image IS a
+	// 2-D map, so drop it into top-down flat-2D (matching gmtvtk_view_grid's image branch).
+	vtkCamera* cam = s->ren->GetActiveCamera();
+	if (imageOnly) {
+		s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff();
+		double fp[3]; cam->GetFocalPoint(fp);
+		cam->SetViewUp(0.0, 1.0, 0.0);
+		cam->SetPosition(fp[0], fp[1], fp[2] + 1.0);
+		cam->ParallelProjectionOn();
+		fitSnapView(s, /*topMode=*/true);
+		s->flat2d = true;
+		cam->GetPosition(s->sav_pos); cam->GetFocalPoint(s->sav_foc);
+		s->sav_vup[0] = 0.0; s->sav_vup[1] = 1.0; s->sav_vup[2] = 0.0;
+		s->sav_parallel = 0; s->sav_ve = s->ve; s->sav_surfLit = false;
+		if (s->giz) setGizmoVisible(*s->giz, false);
+		// NB: setChecked WITHOUT a signal blocker so the toolbar 2D/3D icon (driven by act2D::toggled)
+		// refreshes. The flat-2D toggle is on act2D::triggered, not toggled, so there is no re-entrancy.
+		if (s->act2D) s->act2D->setChecked(true);
+	} else {
+		s->flat2d = false;
+		if (s->act2D) s->act2D->setChecked(false);   // emits toggled -> updates the 2D/3D toolbar icon to "3D"
+		// gizmo already rebuilt and visible by enableGizmo above.
+		// The empty launcher's Shading dock was created HIDDEN (no body to light back then). Now there
+		// IS a surface, so re-show it FOLDED to the side strip — exactly the state a fresh grid opens in,
+		// and what the Surface row click then un-folds. Without this the dock stays permanently hidden
+		// when a grid is opened via Recent Files / drop into the launcher.
+		if (s->shadeDock && s->shadeFoldBar) {
+			if (QWidget* body = s->shadeDock->widget()) body->setVisible(false);
+			s->shadeFoldBar->folded    = true;
+			s->shadeFoldBar->openWidth = 240;
+			s->shadeFoldBar->updateGeometry();
+			s->shadeFoldBar->update();
+			s->shadeDock->setVisible(true);
+			if (s->win)
+				s->win->resizeDocks({s->shadeDock}, {s->shadeFoldBar->sizeHint().width()}, Qt::Horizontal);
+		}
+	}
+
+	rebuildSceneObjects(s);
+	applyShading(s);
 	s->ren->ResetCameraClippingRange();
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return 1;

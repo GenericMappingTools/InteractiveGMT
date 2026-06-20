@@ -166,6 +166,13 @@ struct FoldTitleBar : QWidget {
 	}
 };
 
+// Fold / un-fold the Shading dock programmatically (Surface row click in the Scene Objects panel).
+// Lives here because FoldTitleBar is complete only in this TU fragment; 50_scene.cpp forward-decls it.
+static void toggleShadingFold(Scene *s) {
+	if (s && s->shadeFoldBar && s->shadeFoldBar->onClick)
+		s->shadeFoldBar->onClick();
+}
+
 // Polygon draw/edit tool (defined in 85_polygon.cpp, #included after this file). The toolbar
 // button toggles draw mode via polygonSetMode; the mouse gestures are driven from GLView.
 static void polygonSetMode(Scene* s, bool on);
@@ -251,76 +258,39 @@ static void populateRecentMenu(QMenu *menu, Scene* s) {
 	else      { menu->addAction("&Clear Recent Files", []() { g_recent.clear(); saveRecent(); }); }
 }
 
-static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
-						 double x0, double x1, double y0, double y1,
-						 double zmin, double zmax,
-						 double xfac, double zfac, double ve0,
-						 const double *cz, const double *crgb, int ncolor,  // CPT nodes: cz[n] + crgb[n*3] 0..1; 0 = default
-						 const unsigned char *img, int iw, int ih, int ibands,  // optional drape: RGB[A] iw*ih*ibands, row 0 = south
-						 int edges,                                             // !=0 -> draw mesh edges (GMTF3D :shademesh)
-						 bool pointCloud,                                       // true -> Verts-only cloud: LOD actor, no normals/drape
-						 int geographic,                                        // !=0 -> x,y are lon,lat (axis titles "lon"/"lat")
-						 const char *title,
-						 const char *objname = nullptr,    // Scene Objects label for the surface ("" -> "Surface")
-						 bool imageOnly = false,            // bare image: no surface row; readout shows colour
-						 const float *gz = nullptr,         // non-null -> TILED plain-grid render (pd ignored)
-						 int gnx = 0, int gny = 0,          // grid dims for the tiled path
-						 bool blankStart = false) {         // empty launcher: open as a clean dark canvas (no axes flash)
-	ensureApp();
-
-	Scene *s = new Scene();
-	g_scenes.insert(s);                     // register as a live figure handle
-	s->imageOnly = imageOnly;               // set BEFORE the Scene Objects panel is built (rebuildSceneObjects)
-	s->zmin = zmin; s->zmax = zmax;
-	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1;
-	s->xfac = xfac; s->zfac = zfac; s->ve = ve0;
-
-	// --- VTK render window in a Qt widget -----------------------------------
-	auto *widget = new GLView();
-	vtkNew<vtkGenericOpenGLRenderWindow> rw;
-	rw->SetMultiSamples(0);                 // no hardware MSAA (FXAA post-pass does the AA, like F3D).
-	                                        // 8x MSAA = 8x fragment work every frame -> kills big point clouds.
-	widget->setRenderWindow(rw);
-	s->widget = widget;
-	widget->s = s;                          // GLView handles the middle button itself
-	g_lastRW = rw;
-	g_lastScene = s;                        // gmtvtk_add_overlay targets the most-recent scene
-
-	vtkNew<vtkNamedColors> nc;
-	s->ren = vtkSmartPointer<vtkRenderer>::New();
-	s->ren->GradientBackgroundOn();
-	s->ren->SetBackground(0.16, 0.18, 0.22);    // bottom (dark slate)
-	s->ren->SetBackground2(0.36, 0.42, 0.52);   // top
-	rw->AddRenderer(s->ren);
-
-	// Overlay layer (1) for the Z tick billboards. It shares the MAIN camera (so the labels
-	// track the same view), keeps the lower layer's colour (transparent except where text is),
-	// and clears its own depth so the surface can never occlude the labels. Its default
-	// auto-created headlight lights the always-camera-facing text uniformly -> constant
-	// brightness at every rotation, fixing the "labels go dark/invisible on some angles" bug.
-	rw->SetNumberOfLayers(2);
-	s->axesRen = vtkSmartPointer<vtkRenderer>::New();
-	s->axesRen->SetLayer(1);
-	s->axesRen->InteractiveOff();
-	s->axesRen->PreserveColorBufferOn();
-	s->axesRen->SetActiveCamera(s->ren->GetActiveCamera());
-	rw->AddRenderer(s->axesRen);
-
-	// F3D-style light rig: a 3-point vtkLightKit (key/fill/back/head) instead of
-	// the single flat headlight VTK adds by default. This is what gives F3D's
-	// relief its form-revealing gradients. (F3D: vtkF3DRenderer::UpdateLights.)
-	// Lighting: one user-aimed directional KEY light (azimuth/elevation) + a dim
-	// FILL light, both managed by applyShading. Direction is set there from
-	// s->lightAz / s->lightEl so the Shading dock can move the "sun" live.
-	s->ren->SetAutomaticLightCreation(false);
-	s->keyLight = vtkSmartPointer<vtkLight>::New();
-	s->keyLight->SetLightTypeToSceneLight();
-	s->keyLight->SetPositional(false);          // infinite (directional) light
-	s->fillLight = vtkSmartPointer<vtkLight>::New();
-	s->fillLight->SetLightTypeToHeadlight();    // fills the camera-facing shadow side
-	s->ren->AddLight(s->keyLight);
-	s->ren->AddLight(s->fillLight);
-	s->envTex = makeSkyEnv();
+// ── Per-data scene content ──────────────────────────────────────────────────────────────────
+// Builds EVERYTHING that depends on the data — LUT, surface (tiled or single actor), optional
+// image drape, cube axes + titles/ticks, colorbar, the default 3-D view, the SSAO radius seed,
+// the readout picker and the profile-track line — onto an ALREADY-constructed Scene `s` (its
+// renderer, overlay renderer, lights and env map already exist). Called by buildAndShow for a
+// fresh window AND by gmtvtk_promote_surface_h to turn an empty launcher into a real grid window
+// IN THE SAME window. Because both go through here there is ONE build path and nothing to drift.
+// Self-cleaning: every content actor it is about to (re)create is removed first, so it is
+// idempotent — a fresh Scene has none of them yet and the removals are harmless no-ops.
+//
+// The CALLER must already have set on `s`: imageOnly, x0/x1/y0/y1, zmin/zmax, xfac/zfac/ve.
+static void buildSceneContent(Scene* s, vtkSmartPointer<vtkPolyData> pd,
+                              double x0, double x1, double y0, double y1,
+                              const double* cz, const double* crgb, int ncolor,
+                              const unsigned char* img, int iw, int ih, int ibands,
+                              int edges, bool pointCloud, int geographic,
+                              const float* gz, int gnx, int gny, bool blankStart) {
+	// Drop any previous content first (promotion rebuilds into an existing scene; a fresh scene has
+	// none of these so every removal is a no-op). RemoveActor on an actor not in the renderer is safe.
+	if (s->lodCmd && s->ren->GetActiveCamera()) s->ren->GetActiveCamera()->RemoveObserver(s->lodCmd);
+	s->lodCmd = nullptr; s->quadRoot = nullptr; s->tiles.clear();
+	if (s->surfGroup) s->ren->RemoveActor(s->surfGroup);
+	if (s->surf)      s->ren->RemoveActor(s->surf);
+	if (s->drape)     s->ren->RemoveActor(s->drape);
+	if (s->axes)      s->ren->RemoveActor(s->axes);
+	if (s->axisTicks) s->ren->RemoveActor(s->axisTicks);
+	if (s->profLine)  s->ren->RemoveActor(s->profLine);
+	for (int i = 0; i < 2; ++i) if (s->axTitle[i]) { s->axesRen->RemoveViewProp(s->axTitle[i]); s->axTitle[i] = nullptr; }
+	if (s->bar)      s->ren->RemoveActor2D(s->bar);
+	if (s->barTicks) s->ren->RemoveActor2D(s->barTicks);
+	for (auto& ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
+	s->barLabels.clear(); s->barValues.clear();
+	s->surfGroup = nullptr; s->drape = nullptr; s->bar = nullptr; s->barTicks = nullptr;
 
 	// Colour map. A GMT CPT arrives as control nodes (cz[i] -> crgb[i]); a
 	// vtkColorTransferFunction maps z to colour at those exact (possibly non-uniform,
@@ -538,7 +508,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	}
 	// Empty launcher (blankStart): the cube axes + tick/label billboards are NEVER added to the
 	// renderer and the initial label build is skipped, so the blank window can't flash an axis box
-	// with numbers for a frame. A dropped file PROMOTES into a fresh full window built normally.
+	// with numbers for a frame. A dropped file PROMOTES this same window via buildSceneContent.
 	if (!blankStart) s->ren->AddActor(s->axes);
 
 	// Our own SINGLE outward tickmarks (rebuilt every render by rebuildAxisLabels). Unlit grey
@@ -613,6 +583,81 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		s->profLine->SetVisibility(0);
 		s->ren->AddActor(s->profLine);
 	}
+}
+
+static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
+						 double x0, double x1, double y0, double y1,
+						 double zmin, double zmax,
+						 double xfac, double zfac, double ve0,
+						 const double *cz, const double *crgb, int ncolor,  // CPT nodes: cz[n] + crgb[n*3] 0..1; 0 = default
+						 const unsigned char *img, int iw, int ih, int ibands,  // optional drape: RGB[A] iw*ih*ibands, row 0 = south
+						 int edges,                                             // !=0 -> draw mesh edges (GMTF3D :shademesh)
+						 bool pointCloud,                                       // true -> Verts-only cloud: LOD actor, no normals/drape
+						 int geographic,                                        // !=0 -> x,y are lon,lat (axis titles "lon"/"lat")
+						 const char *title,
+						 const char *objname = nullptr,    // Scene Objects label for the surface ("" -> "Surface")
+						 bool imageOnly = false,            // bare image: no surface row; readout shows colour
+						 const float *gz = nullptr,         // non-null -> TILED plain-grid render (pd ignored)
+						 int gnx = 0, int gny = 0,          // grid dims for the tiled path
+						 bool blankStart = false) {         // empty launcher: open as a clean dark canvas (no axes flash)
+	ensureApp();
+
+	Scene *s = new Scene();
+	g_scenes.insert(s);                     // register as a live figure handle
+	s->imageOnly = imageOnly;               // set BEFORE the Scene Objects panel is built (rebuildSceneObjects)
+	s->zmin = zmin; s->zmax = zmax;
+	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1;
+	s->xfac = xfac; s->zfac = zfac; s->ve = ve0;
+
+	// --- VTK render window in a Qt widget -----------------------------------
+	auto *widget = new GLView();
+	vtkNew<vtkGenericOpenGLRenderWindow> rw;
+	rw->SetMultiSamples(0);                 // no hardware MSAA (FXAA post-pass does the AA, like F3D).
+	                                        // 8x MSAA = 8x fragment work every frame -> kills big point clouds.
+	widget->setRenderWindow(rw);
+	s->widget = widget;
+	widget->s = s;                          // GLView handles the middle button itself
+	g_lastRW = rw;
+	g_lastScene = s;                        // gmtvtk_add_overlay targets the most-recent scene
+
+	vtkNew<vtkNamedColors> nc;
+	s->ren = vtkSmartPointer<vtkRenderer>::New();
+	s->ren->GradientBackgroundOn();
+	s->ren->SetBackground(0.16, 0.18, 0.22);    // bottom (dark slate)
+	s->ren->SetBackground2(0.36, 0.42, 0.52);   // top
+	rw->AddRenderer(s->ren);
+
+	// Overlay layer (1) for the Z tick billboards. It shares the MAIN camera (so the labels
+	// track the same view), keeps the lower layer's colour (transparent except where text is),
+	// and clears its own depth so the surface can never occlude the labels. Its default
+	// auto-created headlight lights the always-camera-facing text uniformly -> constant
+	// brightness at every rotation, fixing the "labels go dark/invisible on some angles" bug.
+	rw->SetNumberOfLayers(2);
+	s->axesRen = vtkSmartPointer<vtkRenderer>::New();
+	s->axesRen->SetLayer(1);
+	s->axesRen->InteractiveOff();
+	s->axesRen->PreserveColorBufferOn();
+	s->axesRen->SetActiveCamera(s->ren->GetActiveCamera());
+	rw->AddRenderer(s->axesRen);
+
+	// F3D-style light rig: a 3-point vtkLightKit (key/fill/back/head) instead of
+	// the single flat headlight VTK adds by default. This is what gives F3D's
+	// relief its form-revealing gradients. (F3D: vtkF3DRenderer::UpdateLights.)
+	// Lighting: one user-aimed directional KEY light (azimuth/elevation) + a dim
+	// FILL light, both managed by applyShading. Direction is set there from
+	// s->lightAz / s->lightEl so the Shading dock can move the "sun" live.
+	s->ren->SetAutomaticLightCreation(false);
+	s->keyLight = vtkSmartPointer<vtkLight>::New();
+	s->keyLight->SetLightTypeToSceneLight();
+	s->keyLight->SetPositional(false);          // infinite (directional) light
+	s->fillLight = vtkSmartPointer<vtkLight>::New();
+	s->fillLight->SetLightTypeToHeadlight();    // fills the camera-facing shadow side
+	s->ren->AddLight(s->keyLight);
+	s->ren->AddLight(s->fillLight);
+	s->envTex = makeSkyEnv();
+
+	buildSceneContent(s, pd, x0, x1, y0, y1, cz, crgb, ncolor, img, iw, ih, ibands,
+	                  edges, pointCloud, geographic, gz, gnx, gny, blankStart);
 
 	// --- main window + native menubar ---------------------------------------
 	// Heap-allocated + delete-on-close: the function returns immediately (the host
@@ -1034,6 +1079,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Verts-only point cloud has nothing to light, so FOLD the dock by default there; the
 	// View menu action still un-folds it on demand.
 	const bool hasShadedBody = !imageOnly && !pointCloud;
+	s->shadeDock = dock;                                     // keep it so a promoted launcher can re-show + fold it
 	dock->setVisible(hasShadedBody);                         // GRAPHICAL ELEMENT: Shading dock initial fold state
 	// GRAPHICAL ELEMENT: View menu "Shading Panel" item — folds/un-folds the Shading dock
 	QAction *aShade = mView->addAction("Shading &Panel", [dock](){ dock->setVisible(!dock->isVisible()); });
@@ -1077,8 +1123,18 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		};
 		return bar;
 	};
-	makeFoldable(dock,    panel,        "Shading");        // Shading dock fold button
+	s->shadeFoldBar = makeFoldable(dock, panel, "Shading");   // keep the bar so the Surface row can fold/un-fold it
 	s->objFoldBar = makeFoldable(objDock, s->objPanel, "Scene Objects");  // keep the bar so an empty launcher can start folded
+
+	// A grid opens with the Shading dock FOLDED to the side strip (it stays one click away on the
+	// Surface row / View menu). Pre-fold BEFORE the first paint so it never flashes open; the
+	// strip-width resizeDocks is deferred to just after win->show() (only bites once laid out).
+	if (hasShadedBody && s->shadeFoldBar) {
+		s->shadeFoldBar->openWidth = 240;       // width to restore when un-folded
+		panel->setVisible(false);               // hide body -> dock shrinks to the strip
+		s->shadeFoldBar->folded = true;
+		s->shadeFoldBar->updateGeometry();      // sizeHint flips to the thin vertical strip
+	}
 
 	// --- Bottom tabbed panel: Profile / Julia Console / Data Viewer ----------
 	// ONE dock holds a QTabWidget. A "Hide" button in the tab-bar corner collapses the panel
@@ -1202,6 +1258,10 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// dock to its strip width (resizeDocks only bites after show()).
 	if (blankStart && s->objFoldBar)
 		win->resizeDocks({objDock}, {s->objFoldBar->sizeHint().width()}, Qt::Horizontal);
+
+	// Shrink the pre-folded Shading dock to its strip width (resizeDocks only bites after show()).
+	if (hasShadedBody && s->shadeFoldBar && s->shadeFoldBar->folded)
+		win->resizeDocks({dock}, {s->shadeFoldBar->sizeHint().width()}, Qt::Horizontal);
 
 	// interactor must be live before we attach observers
 	widget->renderWindow()->Render();

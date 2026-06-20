@@ -65,12 +65,41 @@ function iview(name::AbstractString; kwargs...)
 	# A real file -> read it (gmtread auto-detects format), record it in the Recent Files list,
 	# and dispatch by the returned type (grid -> view_grid, image -> view_image, dataset -> points/fv).
 	if isfile(name)
+		# Never open the same file twice: if it is already shown in a live window, raise that
+		# window and silently ignore this (and every later) request for the same path.
+		_open_window_for(name) !== nothing && return nothing
 		data = GMT.gmtread(name)
 		_record_recent(name, data)
-		return iview(data; kwargs...)
+		fig = iview(data; kwargs...)
+		_mark_file_open(name, _fig_handle(fig))
+		return fig
 	end
 	return view_fv(name; kwargs...)        # named solid -> the SOLIDS dispatch above
 end
+
+# Files currently shown in a live viewer window: abspath => the window's C handle. Used to refuse
+# opening the same file twice (raise the existing window instead). Entries are pruned when their
+# window dies, so a file can be reopened after its window is closed.
+const _OPEN_FILES = Dict{String,Ptr{Cvoid}}()
+
+_filekey(path::AbstractString) = try abspath(String(path)) catch; String(path) end
+
+# If `path` is already shown in a live window, raise that window and return its handle; else nothing
+# (pruning a stale entry whose window has since closed).
+function _open_window_for(path::AbstractString)
+	key = _filekey(path)
+	h = get(_OPEN_FILES, key, nothing)
+	h === nothing && return nothing
+	if ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), h) != 0
+		ccall(_fn(:gmtvtk_raise), Cvoid, (Ptr{Cvoid},), h)
+		return h
+	end
+	delete!(_OPEN_FILES, key)
+	return nothing
+end
+
+# Remember that `path` is now shown in window `handle` (so a repeat open is ignored).
+_mark_file_open(path::AbstractString, handle::Ptr{Cvoid}) = (_OPEN_FILES[_filekey(path)] = handle; nothing)
 
 # Push a just-opened file onto the viewer's persistent Recent Files list (File > Recent Files),
 # tagged by category (0 = grid, 1 = image, 2 = dataset/fv) so the menu can group it. Best-effort:

@@ -39,6 +39,8 @@ struct Gizmo {
 	double centre[3] = {0,0,0};
 	double scale = 1.0;
 	double right[3] = {1,0,0};  // camera screen-right (horizontal-axis direction)
+	double vup[3]   = {0,0,1};  // camera screen-up  (for a stable, camera-relative tilt ring)
+	double vdir[3]  = {0,0,1};  // unit view direction toward the camera (focal -> eye)
 	double haxisLen = 0.0;      // world half-extent of data; 0 = unknown
 	double haxisRatio = 0.0;    // tilt-ring offset in units of `scale` (camera dist); 0 = not yet calibrated
 	                            // calibrated once at startup from haxisLen so the ring keeps a
@@ -59,11 +61,12 @@ namespace {
 constexpr double kBodyZ  = 1.4;     // floating control-body height above focal pt
 constexpr double kConeR  = 0.047;   // vertical arrowhead base radius
 constexpr double kConeH0 = 0.11;    // vertical arrowhead height at scale 1
-constexpr double kRingR  = 0.328;   // ring radius (shared by both rings) — 20% smaller
-constexpr double kRingH  = 0.064;   // ring band width (shared) — 20% smaller
-constexpr double kHaxisFallback = 3.10; // horizontal-axis length when bbox unknown
+constexpr double kRingR  = 0.35;    // ring radius (shared by both rings)
+constexpr double kRingH  = 0.078;   // ring band width (shared)
+constexpr double kHaxisFallback = 1.8;  // tilt-ring offset / horizontal-arm length (fixed multiple of `scale`)
+constexpr double kTiltRingTip   = -12.0; // tilt-ring tip from edge-on toward camera (deg): tall narrow Fledermaus ellipse
 
-void renderWin(Gizmo* g) { g->s->widget->renderWindow()->Render(); }
+void renderWin(Gizmo *g) { g->s->widget->renderWindow()->Render(); }
 
 // Zoom a freshly-positioned snap view (perspective) so the data fills the available viewport.
 //   topMode=false -> fill WIDTH               (front/back/left/right side views)
@@ -72,10 +75,10 @@ void renderWin(Gizmo* g) { g->s->widget->renderWindow()->Render(); }
 // overlay renderer and are NOT counted by ResetCamera) are not clipped. The projected size is
 // measured from the camera's composite transform (immediate, no Render needed); Zoom changes
 // the perspective view angle so a second pass corrects the slight non-linearity.
-void fitSnapView(Scene* s, bool topMode, double fill = -1.0) {
+void fitSnapView(Scene *s, bool topMode, double fill = -1.0) {
 	if (!s || !s->ren || !s->surf || !s->widget) return;
-	vtkRenderer* ren = s->ren;
-	vtkCamera*   cam = ren->GetActiveCamera();
+	vtkRenderer *ren = s->ren;
+	vtkCamera   *cam = ren->GetActiveCamera();
 	ren->ResetCamera();                                   // baseline fit + distance
 	double b[6]; surfGetBounds(s, b);
 	// ResetCamera centres on ALL visible props (gizmo floats above the surface, cube axes
@@ -88,7 +91,7 @@ void fitSnapView(Scene* s, bool topMode, double fill = -1.0) {
 		cam->SetFocalPoint(sc);
 		cam->SetPosition(sc[0]+d[0], sc[1]+d[1], sc[2]+d[2]);
 	}
-	const int* sz = s->widget->renderWindow()->GetSize();
+	const int *sz = s->widget->renderWindow()->GetSize();
 	const double aspect = (sz && sz[1] > 0) ? double(sz[0]) / double(sz[1]) : 1.0;
 	// Top view fills the viewport edge-to-edge (data bbox spans the limiting dim); the lon/lat
 	// tick numbers + titles sit just outside the data and are intentionally pushed off-screen.
@@ -176,7 +179,14 @@ void placeAll(Gizmo& c) {
 	cross3(X, Y, Z); normalize3(Z);
 
 	const double L = s * ((c.haxisRatio > 0.0) ? c.haxisRatio : kHaxisFallback);
-	double tip[3] = { p[0]+L*X[0], p[1]+L*X[1], p[2]+L*X[2] };
+	// Tilt AXIS A = screen-right tipped toward the camera (view dir) by kTiltRingTip. On screen it
+	// still reads horizontal (the depth component projects to ~0), but the disk built PERPENDICULAR
+	// to A is then seen obliquely -> a clean Fledermaus ellipse. The ring's disk is ALWAYS exactly
+	// perpendicular to A (its rotation axis = the horizontal arm).
+	const double tt = kTiltRingTip * vtkMath::Pi() / 180.0;
+	double A[3]; for (int i=0;i<3;++i) A[i] = std::cos(tt)*X[i] + std::sin(tt)*c.vdir[i];
+	normalize3(A);
+	double tip[3] = { p[0]+L*A[0], p[1]+L*A[1], p[2]+L*A[2] };
 
 	if (c.shaftHSrc) {
 		c.shaftHSrc->SetPoint1(p[0],p[1],p[2]);
@@ -184,10 +194,16 @@ void placeAll(Gizmo& c) {
 	}
 	if (c.shaftH) { c.shaftH->SetUserMatrix(nullptr); c.shaftH->SetScale(1.0); c.shaftH->SetPosition(0,0,0); }
 	if (c.harrow) {
+		// Disk strictly PERPENDICULAR to its axis A: normal = A (cylinder axis = local +X = column 0),
+		// columns 1,2 are two unit vectors spanning the plane orthogonal to A. A clean hoop, and
+		// because A is tipped toward the camera it shows as a tidy ellipse, stable at any view.
+		double u1[3], u2[3];
+		cross3(A, c.vup, u1); if (!normalize3(u1)) { cross3(A, c.right, u1); normalize3(u1); }
+		cross3(A, u1, u2); normalize3(u2);
 		vtkNew<vtkMatrix4x4> M; M->Identity();
 		for (int i=0;i<3;++i) {
-			M->SetElement(i,0,s*X[i]); M->SetElement(i,1,s*Y[i]);
-			M->SetElement(i,2,s*Z[i]); M->SetElement(i,3,tip[i]);
+			M->SetElement(i,0,s*A[i]);  M->SetElement(i,1,s*u1[i]);
+			M->SetElement(i,2,s*u2[i]); M->SetElement(i,3,tip[i]);
 		}
 		c.harrow->SetUserMatrix(M);
 	}
@@ -218,14 +234,24 @@ void PlaceCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	vtkCamera* cam = ren->GetActiveCamera();
 	cam->GetFocalPoint(c->centre);
 	double d = cam->GetDistance();
-	if (cam->GetParallelProjection()) d = cam->GetParallelScale() * 2.0;
-	c->scale = std::max(1e-6, 0.085 * d);
+	// FIXED SCREEN SIZE: size the gizmo from the world extent that spans the full viewport HEIGHT at
+	// the focal depth, not from camera distance alone. Distance-only (0.085*d) ignored the view
+	// angle, so zooming by changing the view angle (distance unchanged) left the gizmo at its old
+	// world size -> it shrank on screen as the terrain magnified. `vph` tracks the true projected
+	// scale in both projection modes, so the rings keep a constant pixel size at every zoom.
+	double vph;
+	if (cam->GetParallelProjection())
+		vph = 2.0 * cam->GetParallelScale();
+	else
+		vph = 2.0 * d * std::tan(cam->GetViewAngle() * 0.5 * vtkMath::Pi() / 180.0);
+	c->scale = std::max(1e-6, 0.16 * vph);
 
-	// Calibrate the tilt-ring offset ONCE (first frame): lock the world data-extent position
-	// (slightly outside the cube) to a ratio of `scale`. Thereafter L = scale*ratio, so the ring
-	// keeps a constant SCREEN distance regardless of zoom or focal-point change -> always visible.
+	// Tilt-ring offset = a FIXED multiple of `scale` (L = scale*kHaxisFallback): same screen size at
+	// every zoom and for any grid. Calibrating to the DATA half-width (haxisLen/scale) put the ring at
+	// the cube edge -> off-screen on wide grids; a small fixed constant kept it next to the rings ->
+	// miniscule. kHaxisFallback is tuned to sit just outside the azimuth ring, inside the viewport.
 	if (c->haxisRatio <= 0.0)
-		c->haxisRatio = (c->haxisLen > 1e-9) ? (c->haxisLen / c->scale) : kHaxisFallback;
+		c->haxisRatio = kHaxisFallback;
 
 	double pos[3], foc[3];
 	cam->GetPosition(pos); cam->GetFocalPoint(foc);
@@ -233,6 +259,14 @@ void PlaceCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	double vpn[3] = { pos[0]-foc[0], pos[1]-foc[1], pos[2]-foc[2] };
 	double r[3]; cross3(up, vpn, r);
 	if (normalize3(r)) { c->right[0]=r[0]; c->right[1]=r[1]; c->right[2]=r[2]; }
+
+	// Store the screen basis (view dir toward eye, screen-up) so the tilt ring can be oriented in a
+	// stable CAMERA-relative frame (a Fledermaus-style clean hoop) instead of a world-up frame that
+	// flips/wobbles ("drunk") as the camera azimuth changes.
+	double vd[3] = { vpn[0], vpn[1], vpn[2] };
+	if (normalize3(vd)) { c->vdir[0]=vd[0]; c->vdir[1]=vd[1]; c->vdir[2]=vd[2]; }
+	double vu[3]; cross3(c->vdir, c->right, vu);   // screen-up = vdir x right
+	if (normalize3(vu)) { c->vup[0]=vu[0]; c->vup[1]=vu[1]; c->vup[2]=vu[2]; }
 
 	const double horiz = std::sqrt(vpn[0]*vpn[0]+vpn[1]*vpn[1]);
 	c->incl = std::atan2(std::abs(vpn[2]), horiz) * 180.0 / vtkMath::Pi();
@@ -657,6 +691,31 @@ void ResetViewCB(vtkObject*, unsigned long, void* clientData, void*) {
 }
 
 // Build, add to the scene, wire the follow + drag + key observers.
+// Tear a gizmo down: remove its props, light and interactor/renderer observers, then free it.
+// (Plain `delete s->giz` would leave dangling VTK observers + props in the scene.) Promotion calls
+// this then enableGizmo so the gizmo is rebuilt against the REAL surface bounds through the SAME
+// path a fresh window uses — no hand re-keying of haxisLen/haxisRatio that kept drifting.
+void disableGizmo(Scene *s) {
+	if (!s || !s->giz) return;
+	Gizmo* c = s->giz;
+	vtkRenderer* ren = s->ren;
+	vtkRenderer* tren = s->axesRen ? s->axesRen.Get() : ren;
+	vtkRenderWindowInteractor* rwi = s->widget ? s->widget->interactor() : nullptr;
+	for (vtkActor* a : { c->shaft.Get(), c->shaftH.Get(), c->ring.Get(), c->harrow.Get(), c->vcone.Get() })
+		if (a && ren) ren->RemoveViewProp(a);
+	for (vtkBillboardTextActor3D* t : { c->label.Get(), c->azLabel.Get(), c->inclLabel.Get() })
+		if (t && tren) tren->RemoveViewProp(t);
+	if (c->light && ren) ren->RemoveLight(c->light);
+	if (ren && c->placeTag) ren->RemoveObserver(c->placeTag);
+	if (rwi) {
+		for (int i = 0; i < 3; ++i) if (c->dragTags[i]) rwi->RemoveObserver(c->dragTags[i]);
+		if (c->keyTag)      rwi->RemoveObserver(c->keyTag);
+		if (c->interactTag) rwi->RemoveObserver(c->interactTag);
+	}
+	delete c;
+	s->giz = nullptr;
+}
+
 Gizmo *enableGizmo(Scene *s, double sensitivity) {
 	Gizmo *c = new Gizmo();
 	c->s = s;
@@ -674,8 +733,9 @@ Gizmo *enableGizmo(Scene *s, double sensitivity) {
 	buildGeometry(*c);
 
 	// Cone added LAST so it draws over the rings under the on-top depth offset.
-	ren->AddViewProp(c->shaft);  ren->AddViewProp(c->shaftH); ren->AddViewProp(c->ring);
+	ren->AddViewProp(c->shaft);  ren->AddViewProp(c->ring);
 	ren->AddViewProp(c->harrow); ren->AddViewProp(c->vcone);
+	ren->AddViewProp(c->shaftH);   // horizontal axis added LAST -> drawn AFTER (on top of) the disc
 	// The angle/VE TEXT labels go in the overlay renderer (its headlight lights the camera-facing
 	// text uniformly) so they stay WHITE at every tilt — in s->ren the directional sun lit the text
 	// quads and they dimmed/vanished at some angles.

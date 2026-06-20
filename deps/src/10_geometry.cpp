@@ -189,6 +189,8 @@ struct Scene {
 	QAction* act2D = nullptr;        // shared checkable "Flat 2D (map)" action (toolbar + View menu)
 	QWidget* objPanel = nullptr;     // Scene Objects dock content (rebuilt when overlays change)
 	FoldTitleBar* objFoldBar = nullptr;  // Scene Objects dock fold toggle (call ->onClick() to fold/unfold programmatically)
+	FoldTitleBar* shadeFoldBar = nullptr; // Shading dock fold toggle (Surface row click folds/un-folds it via toggleShadingFold)
+	QDockWidget*  shadeDock    = nullptr;  // the Shading dock itself (re-shown when an empty launcher is promoted to a grid)
 	std::string surfName;            // Scene Objects label for s->surf ("" -> "Surface"; named solids set it)
 	QPlainTextEdit* console = nullptr;   // Julia console dock output (commands eval'd in Main via g_juliaEval)
 
