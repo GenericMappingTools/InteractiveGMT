@@ -49,7 +49,11 @@ function _on_basemap(scene::Ptr{Cvoid}, copt::Cstring)::Cvoid
 		W, E, S, N = parse.(Float64, p[1:4])
 		wrap = length(p) >= 5 && strip(p[5]) == "1"
 		tag  = length(p) >= 6 ? String(strip(p[6])) : "global"
-		name = "Base image ($tag)"
+		# A rubber-band sub-region ("region") is a fresh rectangle each time -> give it a unique name so
+		# successive draws each add their own image (tiles keep the dedup so re-clicking one is a no-op).
+		name = tag == "region" ?
+			"Base image ($(round(W;digits=1))/$(round(E;digits=1))/$(round(S;digits=1))/$(round(N;digits=1)))" :
+			"Base image ($tag)"
 		loaded = get!(() -> Set{String}(), _BASEMAP_LOADED, scene)
 		name in loaded && return                                 # already on this window -> ignore
 		I = _crop_etopo4(W, E, S, N)

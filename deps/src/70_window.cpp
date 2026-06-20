@@ -18,21 +18,34 @@ class BaseMapArea : public QWidget {       // the clickable map; no Q_OBJECT (on
 public:
 	QPixmap logo;
 	std::function<bool()> isTiles;                                            // draw + hit-test grid when true
+	std::function<bool()> isRect;                                             // rubber-band sub-region mode
 	std::function<void(double,double,double,double,const QString&)> onPick;   // (W,E,S,N, name)
 	explicit BaseMapArea(QWidget *p) : QWidget(p) { setMinimumSize(512, 256); }
+	// widget pixel (x,y) -> geographic lon/lat over the whole earth [-180 180]/[-90 90] (UL origin)
+	double pxLon(double x) const { return -180.0 + x / width()  * 360.0; }
+	double pxLat(double y) const { return   90.0 - y / height() * 180.0; }
 protected:
+	bool   dragging = false;
+	QPointF p0, p1;                                                           // rubber-band corners (px)
 	void paintEvent(QPaintEvent *) override {
 		QPainter g(this);
 		if (!logo.isNull()) g.drawPixmap(rect(), logo);
-		if (isTiles && isTiles()) {
+		const bool rectMode = isRect && isRect();
+		if (!rectMode && isTiles && isTiles()) {
 			QPen pen(QColor(230, 230, 230)); pen.setWidth(1); g.setPen(pen);
 			const double w = width(), h = height();
 			for (int n = 1; n < 8; ++n) g.drawLine(QPointF(n * w / 8, 0), QPointF(n * w / 8, h));
 			for (int m = 1; m < 4; ++m) g.drawLine(QPointF(0, m * h / 4), QPointF(w, m * h / 4));
 		}
+		if (dragging) {                                                       // draw the rubber band
+			QPen pen(QColor(255, 80, 80)); pen.setWidth(2); g.setPen(pen);
+			g.setBrush(QColor(255, 80, 80, 40));
+			g.drawRect(QRectF(p0, p1).normalized());
+		}
 	}
 	void mousePressEvent(QMouseEvent *e) override {
 		if (!onPick) return;
+		if (isRect && isRect()) { dragging = true; p0 = p1 = e->position(); update(); return; }
 		if (isTiles && isTiles()) {
 			int col = std::clamp(int(e->position().x() * 8 / width()),  0, 7);   // 0..7 left->right
 			int row = std::clamp(int(e->position().y() * 4 / height()), 0, 3);   // 0..3 top->bottom
@@ -42,6 +55,21 @@ protected:
 		} else {
 			onPick(-180.0, 180.0, -90.0, 90.0, "global");                       // whole world
 		}
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (!dragging) return;
+		p1 = e->position(); update();
+	}
+	void mouseReleaseEvent(QMouseEvent *e) override {
+		if (!dragging) return;
+		dragging = false; p1 = e->position();
+		QRectF r = QRectF(p0, p1).normalized();
+		if (r.width() < 4 || r.height() < 4) { update(); return; }              // ignore a tap / tiny box
+		double W = pxLon(r.left()),   E = pxLon(r.right());
+		double N = pxLat(r.top()),    S = pxLat(r.bottom());                    // top px = larger lat
+		W = std::clamp(W, -180.0, 180.0); E = std::clamp(E, -180.0, 180.0);
+		S = std::clamp(S,  -90.0,  90.0); N = std::clamp(N,  -90.0,  90.0);
+		onPick(W, E, S, N, "region");
 	}
 };
 
@@ -58,12 +86,23 @@ public:
 		auto *r180 = new QRadioButton("[-180 180]", this); r180->setChecked(true);
 		auto *r360 = new QRadioButton("[0 360]", this);
 		auto *g2 = new QButtonGroup(this); g2->addButton(r180); g2->addButton(r360);
+		// middle: a checkable rectangle button -> rubber-band an arbitrary sub-region (Mirone's toggle_region)
+		auto *rRect = new QToolButton(this);
+		rRect->setCheckable(true);
+		rRect->setToolTip("Draw a rectangle to pick an arbitrary region (no tiles)");
+		{	QPixmap pm(28, 18); pm.fill(Qt::transparent);
+			QPainter ic(&pm); QPen pen(QColor(40, 40, 40)); pen.setWidth(2); ic.setPen(pen);
+			ic.drawRect(4, 4, 20, 10); ic.end();
+			rRect->setIcon(QIcon(pm)); rRect->setIconSize(QSize(28, 18));
+		}
 		top->addWidget(rTiles); top->addWidget(rWorld); top->addStretch();
+		top->addWidget(rRect);  top->addStretch();
 		top->addWidget(r180);   top->addWidget(r360);
 		v->addLayout(top);
 		auto *map = new BaseMapArea(this);
 		map->logo    = logo;
 		map->isTiles = [rTiles]() { return rTiles->isChecked(); };
+		map->isRect  = [rRect]()  { return rRect->isChecked(); };
 		map->onPick  = [this, r360](double W, double E, double S, double N, const QString &name) {
 			region = QString("%1/%2/%3/%4/%5/%6").arg(W).arg(E).arg(S).arg(N)
 			                                     .arg(r360->isChecked() ? 1 : 0).arg(name);
@@ -71,6 +110,9 @@ public:
 		};
 		v->addWidget(map, 1);
 		QObject::connect(rTiles, &QRadioButton::toggled, map, [map]() { map->update(); });
+		QObject::connect(rRect,  &QToolButton::toggled,  map, [map](bool on) {
+			map->setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor); map->update();
+		});
 		resize(680, 380);
 	}
 };
