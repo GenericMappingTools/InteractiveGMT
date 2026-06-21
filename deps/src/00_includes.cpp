@@ -70,6 +70,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QDateTime>
+#include <QDateTimeEdit>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QSettings>

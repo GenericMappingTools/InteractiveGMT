@@ -67,6 +67,23 @@ end
     @test fv.zscale > 0
 end
 
+@testitem "tide calendar range guard" tags=[:unit, :fast] begin
+    tr  = InteractiveGMT._tide_range
+    Dt  = InteractiveGMT.GMT.Dates
+    ref = Dt.DateTime(2026, 6, 21, 12, 0, 0)        # fixed "now" so the test is deterministic
+    # A normal 2-day window: starttime echoes the start, days is the decimal span.
+    st, days = tr("2026-06-19T12:00:00", "2026-06-21T12:00:00", ref)
+    @test st == "2026-06-19T12:00:00"
+    @test days ≈ 2.0
+    # Sub-day span -> fractional days.
+    @test tr("2026-06-21T00:00:00", "2026-06-21T06:00:00", ref)[2] ≈ 0.25
+    # Future date/time on either edge is rejected.
+    @test_throws ErrorException tr("2026-06-19T12:00:00", "2026-06-22T00:00:00", ref)
+    @test_throws ErrorException tr("2026-06-25T00:00:00", "2026-06-26T00:00:00", ref)
+    # End must be after start.
+    @test_throws ErrorException tr("2026-06-21T12:00:00", "2026-06-20T12:00:00", ref)
+end
+
 @testitem "table reduction" tags=[:unit, :fast] begin
     tm = InteractiveGMT._table_matrix
     M, cn, nm = tm([1.0 2.0; 3.0 4.0]);  @test size(M) == (2, 2) && nm == "matrix"

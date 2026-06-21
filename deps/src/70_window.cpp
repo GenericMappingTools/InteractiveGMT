@@ -291,6 +291,7 @@ static void polygonSetMode(Scene* s, bool on);
 static void polygonToolToggled(Scene* s, QAction* act, Scene::ShapeKind shape, bool on);
 static QIcon makePolygonIcon();
 static QIcon makePolylineIcon();
+static QIcon makeLineIcon();
 static QIcon makeRectIcon();
 static QIcon makeCircleIcon();
 static QIcon makeTextIcon();
@@ -1099,6 +1100,8 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		                                   "double-click closes it. Double-click a polygon to edit its vertices.", Scene::SH_Polygon  },
 		{ makePolylineIcon(), "Polyline",  "Draw a polyline: left-click adds vertices, right-click undoes one, "
 		                                   "double-click ends the open line.",                                     Scene::SH_Polyline },
+		{ makeLineIcon(),     "Line",      "Draw a straight line: click the start point, then the end point "
+		                                   "(later clicks move the end); double-click ends it.",                   Scene::SH_Line     },
 		{ makeRectIcon(),     "Rectangle", "Draw a rectangle: click one corner, then the opposite corner.",        Scene::SH_Rect     },
 		{ makeCircleIcon(),   "Circle",    "Draw a circle: click the centre, then a point on the edge.",           Scene::SH_Circle   },
 	};

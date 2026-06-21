@@ -63,6 +63,18 @@ static QIcon makePolylineIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// Straight two-point line icon (no fill) with an endpoint handle at each end.
+static QIcon makeLineIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	const QPointF a(4, 19), b(20, 5);
+	p.drawLine(a, b);
+	p.setPen(Qt::NoPen); p.setBrush(QColor(190, 110, 30));
+	p.drawEllipse(a, 2.0, 2.0); p.drawEllipse(b, 2.0, 2.0);
+	p.end(); return QIcon(pm);
+}
+
 // Square outline icon (light fill).
 static QIcon makeRectIcon() {
 	QPixmap pm = iconCanvas();
@@ -566,7 +578,8 @@ static void polyPlaceText(Scene* s, const double w[3]) {
 
 // Left/right press. button: 0 = left, 1 = right.
 static bool polygonHandlePress(Scene* s, int button, int x, int y) {
-	const bool vertexTool = (s->polyShape == Scene::SH_Polygon || s->polyShape == Scene::SH_Polyline);
+	const bool vertexTool = (s->polyShape == Scene::SH_Polygon || s->polyShape == Scene::SH_Polyline ||
+	                         s->polyShape == Scene::SH_Line);
 	if (button == 1) {                                   // right-click: undo last vertex (polygon/polyline)
 		if (s->polyMode && s->polyDrawing && vertexTool) {
 			if (!s->polyCur.empty()) s->polyCur.pop_back();
@@ -599,6 +612,12 @@ static bool polygonHandlePress(Scene* s, int button, int x, int y) {
 		case Scene::SH_Polygon:
 		case Scene::SH_Polyline:                         // every left-click adds a vertex
 			if (!s->polyDrawing) { s->polyDrawing = true; s->polyCur.clear(); }
+			s->polyCur.push_back({ w[0], w[1], w[2] });
+			polyRebuildPreview(s, nullptr);
+			break;
+		case Scene::SH_Line:                             // exactly two points: first click sets the start,
+			if (!s->polyDrawing) { s->polyDrawing = true; s->polyCur.clear(); }
+			if (s->polyCur.size() >= 2) s->polyCur.pop_back();   // any later click just replaces the end point
 			s->polyCur.push_back({ w[0], w[1], w[2] });
 			polyRebuildPreview(s, nullptr);
 			break;
@@ -638,6 +657,9 @@ static bool polygonHandleDblClick(Scene* s, int x, int y) {
 			s->widget->renderWindow()->Render();
 		} else if (s->polyShape == Scene::SH_Polyline && s->polyCur.size() >= 2) {  // >=2 for an open line
 			polyFinalize(s, s->polyCur, false, "polyline");
+			s->widget->renderWindow()->Render();
+		} else if (s->polyShape == Scene::SH_Line && s->polyCur.size() >= 2) {      // two-point open line
+			polyFinalize(s, s->polyCur, false, "line");
 			s->widget->renderWindow()->Render();
 		}
 		return true;

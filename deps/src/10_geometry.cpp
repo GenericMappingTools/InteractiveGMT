@@ -285,7 +285,7 @@ struct Scene {
 	// rectangle and circle all finalize into a `Polygon` (a vertex ring; polyline is the only open
 	// one) and so share preview / edit / delete / Scene-Objects / Line-Properties code. Text places
 	// a billboard label instead. polyShape selects which tool the active (checked) button drives.
-	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Rect, SH_Circle, SH_Text };
+	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text };
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
 	int    vecSeq = 0;                                  // monotonic seed for shared vector-pile stack ranks

@@ -163,8 +163,8 @@ function _on_geography(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid
 			             name="Meteorite Impacts", info=infos)
 		elseif kind == "tides"
 			# Mirone's tide-gauge stations: red stars with a thin black edge, constant on-screen size.
-			# Each carries its Name/Code/Country as a hover tooltip. (A per-station right-click menu —
-			# "Download Mareg (2 days)" / "(Calendar)" — to launch the download tool lands later.)
+			# Each carries its Name/Code/Country as a hover tooltip. Right-click a star for the
+			# "Download Mareg (2 days)" / "(Calendar)" entries -> _on_tides_download.
 			xs, ys, infos = _tides_data(W, E, S, N)
 			isempty(xs) && return
 			add_symbols!(scene, xs, ys; symbol=:star, size=8, sizeunit=:pt, fill=:red, edge=:black, edgewidth=1.0,
@@ -200,21 +200,46 @@ function _register_geography()
 	return
 end
 
+# Turn a [start,end] ISO8601 range (from the C++ calendar dialog) into the (starttime, days) pair
+# GMT.maregrams wants. Rejects any instant in the future — the IOC feed has no future data — and a
+# non-positive span. UTC throughout (the dialog and the Profile time axis are both UTC). Pure (no
+# network), so the test suite can exercise the future-date guard without a download. GMT re-exports
+# DateTime/now; format/UTC come fully-qualified from GMT.Dates (Dates isn't a direct dep here).
+function _tide_range(start_iso::AbstractString, end_iso::AbstractString,
+                     nowt::GMT.Dates.DateTime = GMT.Dates.now(GMT.Dates.UTC))
+	t0 = GMT.Dates.DateTime(start_iso)
+	t1 = GMT.Dates.DateTime(end_iso)
+	(t0 > nowt || t1 > nowt) && error("tides: date/time cannot be in the future")
+	t1 > t0 || error("tides: end date/time must be after the start")
+	days = (t1 - t0).value / 86_400_000          # milliseconds -> days (decimal accepted)
+	return GMT.Dates.format(t0, "yyyy-mm-ddTHH:MM:SS"), days
+end
+
 # C callback for the two "Download Mareg …" entries on a Tide Stations star's right-click menu.
 # `mode` is "2days" | "calendar"; `station` is the clicked star's "Name:/Code:/Country:" hover block,
 # from which we pull the station code. The actual download + parse is GMT.jl's `maregrams` (same IOC
 # Sea Level Monitoring service Mirone's mareg_online used) — we do NOT re-implement it. `maregrams`
 # returns a GMTdataset: col 1 = time (epoch seconds), col 2 = sea level (prs/rad, m); attribs carry
 # the station name/country. We plot it in the window's "Profile" panel (x = time, y = sea level).
-# NOTE: "calendar" should pop a date/range dialog (Mirone's inputdlg) and the Profile panel is shared
-# with the elevation profiler — both need work; see the C-side gmtvtk_show_profile_xy comment.
+# `mode` is "2days" for the quick entry, or "calendar/<startISO>/<endISO>" from the C++ calendar
+# dialog (two date/time editors, UTC, capped at "now"). The Profile panel is shared with the
+# elevation profiler; see the C-side gmtvtk_show_profile_xy comment.
 function _on_tides_download(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring)::Cvoid
 	try
 		station = unsafe_string(cstation)
+		mode    = unsafe_string(cmode)
 		m    = match(r"Code:\s*(\S+)", station)
 		code = m === nothing ? "" : String(m.captures[1])
 		isempty(code) && (@warn "tides: no station code found" station; return)
-		D = GMT.maregrams(code = code, days = 2)        # last 2 days; GMT.jl does the IOC download
+		# "calendar/<startISO>/<endISO>" -> a user-picked range; anything else -> the last 2 days.
+		if startswith(mode, "calendar/")
+			parts = split(mode, '/')
+			length(parts) >= 3 || (@warn "tides: malformed calendar request" mode; return)
+			starttime, days = _tide_range(parts[2], parts[3])
+			D = GMT.maregrams(code = code, starttime = starttime, days = days)
+		else
+			D = GMT.maregrams(code = code, days = 2)    # last 2 days; GMT.jl does the IOC download
+		end
 		(D === nothing || size(D.data, 1) < 2) && (@warn "tides: nothing to plot" code; return)
 		# Drop NaN sea-level samples (gaps) so the panel's min/max stay finite.
 		t  = Float64.(view(D.data, :, 1)); v = Float64.(view(D.data, :, 2))

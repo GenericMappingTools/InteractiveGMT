@@ -1057,7 +1057,42 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 	if (!ch) return;
 
 	if (ch == dl2)   { g_juliaTides(s, "2days",    station.c_str()); return; }
-	if (ch == dlCal) { g_juliaTides(s, "calendar", station.c_str()); return; }
+	if (ch == dlCal) {
+		// Calendar download: pop a small dialog with two calendar-linked date/time editors (start,
+		// end). Default = the last 2 days (start = now-2d, end = now), all in UTC to match the IOC
+		// feed and the Profile time axis. Both editors are capped at "now" via setMaximumDateTime
+		// so no future instant can ever be picked. On OK we hand Julia "calendar/<startISO>/<endISO>"
+		// and _on_tides_download turns that into maregrams(starttime, days). No Q_OBJECT/moc needed
+		// (no new signals/slots — connect to QDialog::accept and a clamp lambda).
+		const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
+		QDialog dlg(s->widget);
+		dlg.setWindowTitle("Download Mareg — date range (UTC)");
+		QFormLayout* fl = new QFormLayout(&dlg);
+		QDateTimeEdit* eStart = new QDateTimeEdit(nowUtc.addDays(-2), &dlg);
+		QDateTimeEdit* eEnd   = new QDateTimeEdit(nowUtc, &dlg);
+		for (QDateTimeEdit* e : { eStart, eEnd }) {
+			e->setDisplayFormat("yyyy-MM-dd HH:mm");
+			e->setCalendarPopup(true);
+			e->setTimeSpec(Qt::UTC);
+			e->setMaximumDateTime(nowUtc);            // guard: no date/time in the future
+		}
+		fl->addRow("Start:", eStart);
+		fl->addRow("End:",   eEnd);
+		QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+		fl->addRow(bb);
+		QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+		// Keep end >= start as either side is edited (clamp toward the moved edge, don't fight the user).
+		QObject::connect(eStart, &QDateTimeEdit::dateTimeChanged, &dlg,
+		                 [eEnd](const QDateTime& d){ if (eEnd->dateTime() < d) eEnd->setDateTime(d); });
+		QObject::connect(eEnd, &QDateTimeEdit::dateTimeChanged, &dlg,
+		                 [eStart](const QDateTime& d){ if (eStart->dateTime() > d) eStart->setDateTime(d); });
+		if (dlg.exec() != QDialog::Accepted) return;
+		const QString req = "calendar/" + eStart->dateTime().toString("yyyy-MM-ddTHH:mm:ss")
+		                  + "/"          + eEnd->dateTime().toString("yyyy-MM-ddTHH:mm:ss");
+		g_juliaTides(s, req.toUtf8().constData(), station.c_str());
+		return;
+	}
 
 	for (size_t i = 0; i < kindActs.size(); ++i) if (ch == kindActs[i]) {     // change shape
 		bool filled = true;
