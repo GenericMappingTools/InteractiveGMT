@@ -997,8 +997,8 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mGeo->addAction("Hotspot locations",             geoTODO("Hotspot locations"));
 	mGeo->addAction("Magnetic isochrons",            geoTODO("Magnetic isochrons"));
 	mGeo->addAction("Volcanoes",                     geoPlot("volcano", ""));
-	mGeo->addAction("Meteorite impacts",             geoTODO("Meteorite impacts"));
-	mGeo->addAction("Hydrothermal sites",            geoTODO("Hydrothermal sites"));
+	mGeo->addAction("Meteorite impacts",             geoPlot("meteorite", ""));
+	mGeo->addAction("Hydrothermal sites",            geoPlot("hydro", ""));
 	mGeo->addAction("Tide Stations",                 geoTODO("Tide Stations"));
 	mGeo->addAction("Tides (download)",              geoPlot("tides", ""));
 	mGeo->addAction("Earth Tides",                   geoTODO("Earth Tides"));
@@ -1054,14 +1054,21 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// region "W/E/S/N/wrap/name" is handed to Julia (g_juliaBaseMap), which crops data/etopo4.jpg
 	// and adds it as a referenced flat image (Julia frames an empty launcher to a 2-D map; a window
 	// already showing data just gets the basemap added on top). Sits right BEFORE the polygon tool.
-	QIcon baseMapIcon = []() {
+	// Prefer the bundled world icon (data/basemap_icon.png, pushed via gmtvtk_set_basemap_icon);
+	// fall back to a hand-painted tile-grid glyph if that path is unset or fails to load.
+	QIcon baseMapIcon;
+	if (!g_basemapIcon.isEmpty()) {
+		QPixmap pm(g_basemapIcon);
+		if (!pm.isNull()) baseMapIcon = QIcon(pm);
+	}
+	if (baseMapIcon.isNull()) {
 		QPixmap pm(16, 16); pm.fill(Qt::transparent);
 		QPainter p(&pm); p.setPen(QColor(60, 110, 180));
 		p.drawRect(1, 3, 13, 9);
 		for (int x = 4; x < 14; x += 3) p.drawLine(x, 3, x, 12);    // tile grid columns
 		for (int y = 6; y < 12; y += 3) p.drawLine(1, y, 14, y);    // tile grid rows
-		return QIcon(pm);
-	}();
+		baseMapIcon = QIcon(pm);
+	}
 	QAction *actBaseMap = tb->addAction(baseMapIcon, "");
 	actBaseMap->setToolTip("Base Map: pick a world topo tile to load as a referenced image");
 	QObject::connect(actBaseMap, &QAction::triggered, [win, s]() {
@@ -1467,9 +1474,19 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	titleLay->addWidget(hideBtn);
 	titleLay->addWidget(new QLabel("Panels", titleBar));
 	titleLay->addStretch(1);
+	// Float/dock button: a custom titleBarWidget suppresses Qt's native drag-to-undock, so we
+	// restore undocking explicitly — toggles the dock between floating and docked (DockWidgetFloatable
+	// is on by default). Once floating, the OS window frame lets the user move it / drag it back to dock.
+	QToolButton* floatBtn = new QToolButton(titleBar);
+	floatBtn->setText(QString::fromUtf8("\xE2\x9D\x90"));   // ❐ float / re-dock
+	floatBtn->setAutoRaise(true);
+	floatBtn->setCursor(Qt::PointingHandCursor);
+	floatBtn->setToolTip("Undock this panel to a floating window / dock it back");
+	titleLay->addWidget(floatBtn);
 	bottomDock->setTitleBarWidget(titleBar);
 	s->bottomHideBtn = hideBtn;
-	QObject::connect(hideBtn, &QToolButton::clicked, [s]() { setBottomCollapsed(s, !s->bottomCollapsed); });
+	QObject::connect(hideBtn,  &QToolButton::clicked, [s]() { setBottomCollapsed(s, !s->bottomCollapsed); });
+	QObject::connect(floatBtn, &QToolButton::clicked, [bottomDock]() { bottomDock->setFloating(!bottomDock->isFloating()); });
 
 	// View-menu items: show the dock, un-collapse it, and bring the matching tab forward.
 	auto showTab = [s](QWidget* page) {

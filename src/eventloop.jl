@@ -7,6 +7,27 @@
 
 const _PUMP = Ref{Union{Timer,Nothing}}(nothing)
 
+# ---------------------------------------------------------------------------------------------
+# Debug log for C-invoked callbacks (_on_geography / _on_drop / console / basemap …). Their
+# stdout is the Julia process stdout, which is LOST under the detached .vbs/.bat launcher, so a
+# print there vanishes. `_dbg` appends to a file instead. OFF by default (zero I/O): set the env
+# var INTERACTIVEGMT_DEBUG to enable — "1" -> %TEMP%/igmt.log, any other value -> that path.
+# Toggle live at the REPL: `ENV["INTERACTIVEGMT_DEBUG"]="1"` (no rebuild/restart). Usage:
+#   _dbg("volc", "W=$W E=$E S=$S N=$N", "n=", length(xs))   # one line, append + flush per call
+# Tail it from another shell:  Get-Content $env:TEMP\igmt.log -Wait -Tail 20
+_dbg_path() = (v = get(ENV, "INTERACTIVEGMT_DEBUG", ""); isempty(v) ? "" : v == "1" ? joinpath(tempdir(), "igmt.log") : v)
+function _dbg(args...)
+	path = _dbg_path()
+	isempty(path) && return                          # disabled -> no file touch, no allocation cost
+	try
+		open(path, "a") do io                        # append-only + closed each call: survives a REPL crash
+			println(io, round(time(); digits=3), "  ", join(string.(args), "  "))
+		end
+	catch                                            # logging must never break a callback
+	end
+	return
+end
+
 function _start_pump()
 	_PUMP[] === nothing || return                    # already pumping
 	_PUMP[] = Timer(0.0; interval=0.02) do t         # ~50 Hz

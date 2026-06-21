@@ -17,74 +17,98 @@ function _geo_dataset(kind::AbstractString, res::Symbol, W, E, S, N)
 	return nothing
 end
 
-# Volcanoes clipped to the visible region, WITH the per-point metadata for hover tooltips. Read via
-# the universal reader (GMT.gmtread) instead of a hand-rolled parser: the bundled Mirone file
-# data/volcanoes.dat is whitespace/tab-separated with LAT col 1, LON col 2, then 4 text columns
-# (name, country, type, age) whose multi-word values are underscore-joined into single tokens. So
-# gmtread returns `.data = [lat lon]` and `.text[k]` = the 4 tokens; we split on whitespace and
-# turn underscores back into spaces. Lons in the file are -180..180; the map region may be 0..360
-# (Pacific-centred whole earth), so a point counts if any of lon±360 lands in [W,E], plotted there.
-# Returns (xs, ys, infos): xs/ys lon/lat in view, infos[k] a 4-line "<label>: <value>" block.
+# Generic reader for a Mirone/NOAA point dataset overlaid by the Geography menu (volcanoes,
+# meteorites, tide gauges, hydrothermal vents, …). ONE GMT call: GMT.gmtselect(path, R=region, f=:g)
+# reads the data file AND clips it to the visible view, with GMT doing the region test INCLUDING
+# longitude periodicity and always returning .data as geographic [lon lat] (so a lat,lon-stored file
+# like volcanoes.dat needs no swap). We normalize each kept lon into the map's [W,E] frame with one
+# mod (map and data may differ: -180..180 vs 0..360, either direction). `datafile` is a bare name
+# under data/. Returns (xs, ys, texts): xs/ys lon/lat in view, texts[k] the row's trailing text
+# (Latin-1-fixed: the files have accented names / "±"); each caller turns texts into its own tooltip.
+function _geo_points(datafile::AbstractString, W, E, S, N)
+	path = joinpath(_PKGROOT, "data", datafile)
+	isfile(path) || (@warn "geography: data file not found" path; return (Float64[], Float64[], String[]))
+	Sr = GMT.gmtselect(path, R=(W, E, S, N), f=:g)        # read + region/lon-periodic clip in ONE call
+	(Sr === nothing || isempty(Sr)) && return (Float64[], Float64[], String[])
+	Sel = Sr isa AbstractVector ? Sr[1] : Sr
+	(Sel.data === nothing || isempty(Sel.data)) && return (Float64[], Float64[], String[])
+	txt = Sel.text
+	n = size(Sel.data, 1)
+	xs = Vector{Float64}(undef, n); texts = Vector{String}(undef, n)
+	for k in 1:n
+		xs[k] = mod(Sel.data[k, 1] - W, 360.0) + W            # lon -> normalize into the map's [W,E] frame
+		rest = (txt !== nothing && k <= length(txt)) ? txt[k] : ""
+		isvalid(rest) || (rest = String(Char.(codeunits(rest))))   # Latin-1 bytes -> chars (valid UTF-8)
+		texts[k] = rest
+	end
+	return xs, Sel.data[:, 2], texts
+end
+
+# Tooltip blocks for the "N positional fields" datasets: split each trailing text into
+# length(labels) whitespace tokens and label them (underscores -> spaces, missing token -> blank).
+function _labeled_infos(texts, labels)
+	infos = Vector{String}(undef, length(texts))
+	for k in eachindex(texts)
+		flds = split(texts[k])
+		lines = String[]
+		for i in eachindex(labels)
+			val = i <= length(flds) ? replace(String(flds[i]), '_' => ' ') : ""
+			push!(lines, string(labels[i], ": ", val))
+		end
+		infos[k] = join(lines, '\n')
+	end
+	return infos
+end
+
+# Volcanoes: trailing text is "<name> <country> <type> <age>", 4 whitespace tokens (multi-word
+# values underscore-joined).
 function _volcano_data(W, E, S, N)
-	path = joinpath(_PKGROOT, "data", "volcanoes.dat")
-	isfile(path) || (@warn "geography: volcanoes.dat not found" path; return (Float64[], Float64[], String[]))
-	Dr = GMT.gmtread(path)
-	D  = Dr isa AbstractVector ? Dr[1] : Dr        # no segment headers -> single GMTdataset
-	lat = D.data[:, 1]; lon = D.data[:, 2]
-	txt = D.text                                   # one trailing-text string per row (the 4 tokens)
-	labels = ("Name", "Country", "Type", "Age")
-	xs = Float64[]; ys = Float64[]; infos = String[]
-	for k in eachindex(lat)
-		S <= lat[k] <= N || continue
-		x = nothing
-		for d in (-360.0, 0.0, 360.0)
-			(W <= lon[k] + d <= E) && (x = lon[k] + d; break)
+	xs, ys, texts = _geo_points("volcanoes.dat", W, E, S, N)
+	return xs, ys, _labeled_infos(texts, ("Name", "Country", "Type", "Age"))
+end
+
+# Hydrothermal vents (NOAA PMEL): trailing text is 5 tokens "<name> <site_activity>
+# <tectonic_setting> <spreading_rate> <depth>" (multi-word underscore-joined, empty="-").
+function _hydro_data(W, E, S, N)
+	xs, ys, texts = _geo_points("hydrothermal_vents.dat", W, E, S, N)
+	return xs, ys, _labeled_infos(texts, ("Name", "Site activity", "Tectonic setting", "Spreading rate", "Depth"))
+end
+
+# Meteorite-impact craters: trailing text is "<name> <diameter(km)> <age> <exposed> <type>", 5
+# whitespace tokens. Like _labeled_infos but with the exposed Y/N decoded to Yes/No and type "-" ->
+# "unknown", so it spells out its own loop.
+function _meteorite_data(W, E, S, N)
+	xs, ys, texts = _geo_points("meteoritos.dat", W, E, S, N)
+	labels = ("Name", "Diameter (km)", "Age", "Exposed", "Type")
+	infos = Vector{String}(undef, length(texts))
+	for k in eachindex(texts)
+		flds = split(texts[k])
+		lines = String[]
+		for i in 1:5
+			raw = i <= length(flds) ? String(flds[i]) : ""
+			if i == 4
+				val = raw == "Y" ? "Yes" : raw == "N" ? "No" : raw
+			elseif i == 5
+				val = raw == "-" ? "unknown" : replace(raw, '_' => ' ')
+			else
+				val = replace(raw, '_' => ' ')
+			end
+			push!(lines, string(labels[i], ": ", val))
 		end
-		x === nothing && continue
-		flds = (txt !== nothing && k <= length(txt)) ? split(txt[k]) : SubString{String}[]
-		lines = ntuple(4) do i                     # underscores -> spaces; missing field -> blank value
-			v = i <= length(flds) ? replace(String(flds[i]), '_' => ' ') : ""
-			string(labels[i], ": ", v)
-		end
-		push!(xs, x); push!(ys, lat[k]); push!(infos, join(lines, '\n'))
+		infos[k] = join(lines, '\n')
 	end
 	return xs, ys, infos
 end
 
-# Tide-gauge stations (Mirone's mareg_online.dat) clipped to the visible region, WITH per-station
-# metadata for hover tooltips. File rows are `lon lat <name> Code: <code> Country: <country>` (names
-# / countries underscore-joined for spaces). gmtread returns `.data = [lon lat]` and `.text[k]` =
-# the trailing "<name> Code: <code> Country: <country>" string; we pull name/code/country by the
-# "Code:"/"Country:" markers (one row in the file drops the "Code:" label, hence the fallback regex)
-# rather than fixed token positions. Lon handling mirrors the volcanoes path (file lon -180..180; the
-# map may be 0..360). Returns (xs, ys, infos): infos[k] a 3-line "Name/Code/Country" block.
+# Tide-gauge stations: trailing text is "<name> Code: <code> Country: <country>" (name/country
+# underscore-joined). The label tokens "Code:"/"Country:" end in ':' -> drop colon-tokens and the 3
+# values left are name/code/country (no regex needed).
 function _tides_data(W, E, S, N)
-	path = joinpath(_PKGROOT, "data", "mareg_online.dat")
-	isfile(path) || (@warn "geography: mareg_online.dat not found" path; return (Float64[], Float64[], String[]))
-	# Hand-parsed, NOT via gmtread: the literal "Code:"/"Country:" colons make GMT's table reader
-	# treat the numeric columns as sexagesimal and mangle lon/lat. Split each row on whitespace —
-	# tok1/tok2 are lon/lat, the rest is "<name> Code: <code> Country: <country>" (underscored).
-	rx  = r"^(.*?)\s+Code:\s+(\S+)\s+Country:\s+(.*?)\s*$"  # canonical
-	rx2 = r"^(\S+):\s+(\S+)\s+Country:\s+(.*?)\s*$"         # fallback for the one row missing "Code:"
-	xs = Float64[]; ys = Float64[]; infos = String[]
-	for ln in eachline(path)
-		isvalid(ln) || (ln = String(Char.(codeunits(ln))))   # file is Latin-1 (Moçambique, São Tomé)
-		toks = split(ln)
-		length(toks) >= 2 || continue
-		lon = tryparse(Float64, toks[1]); lat = tryparse(Float64, toks[2])
-		(lon === nothing || lat === nothing) && continue
-		S <= lat <= N || continue
-		x = nothing
-		for d in (-360.0, 0.0, 360.0)
-			(W <= lon + d <= E) && (x = lon + d; break)
-		end
-		x === nothing && continue
-		rest = length(toks) > 2 ? join(@view(toks[3:end]), ' ') : ""
-		m = match(rx, rest); m === nothing && (m = match(rx2, rest))
-		name, code, ctry = m === nothing ? (replace(rest, '_' => ' '), "", "") :
-			(replace(m.captures[1], '_' => ' '), m.captures[2], replace(m.captures[3], '_' => ' '))
-		info = string("Name: ", name, "\nCode: ", code, "\nCountry: ", ctry)
-		push!(xs, x); push!(ys, lat); push!(infos, info)
+	xs, ys, texts = _geo_points("mareg_online.dat", W, E, S, N)
+	infos = Vector{String}(undef, length(texts))
+	for k in eachindex(texts)
+		vals = [replace(String(t), '_' => ' ') for t in split(texts[k]) if !endswith(t, ':')]
+		infos[k] = string("Name: ", get(vals, 1, ""), "\nCode: ", get(vals, 2, ""), "\nCountry: ", get(vals, 3, ""))
 	end
 	return xs, ys, infos
 end
@@ -128,18 +152,30 @@ function _on_geography(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid
 			# Each symbol carries its 4-field metadata, shown as a tooltip when the mouse hovers it.
 			xs, ys, infos = _volcano_data(W, E, S, N)
 			isempty(xs) && return
-			add_symbols!(scene, xs, ys;
-			             symbol=:triangle, size=12, fill=:yellow, edge=:black, edgewidth=1.0,
+			add_symbols!(scene, xs, ys; symbol=:triangle, size=12, fill=:yellow, edge=:black, edgewidth=1.0,
 			             name="Volcanoes", info=infos)
+		elseif kind == "meteorite"
+			# Mirone style: red filled diamonds with a thin black edge, constant on-screen size.
+			# Each carries its 5-field metadata (name/diameter/age/exposed/type) as a hover tooltip.
+			xs, ys, infos = _meteorite_data(W, E, S, N)
+			isempty(xs) && return
+			add_symbols!(scene, xs, ys; symbol=:diamond, size=11, fill=:red, edge=:black, edgewidth=1.0,
+			             name="Meteorite Impacts", info=infos)
 		elseif kind == "tides"
 			# Mirone's tide-gauge stations: red stars with a thin black edge, constant on-screen size.
 			# Each carries its Name/Code/Country as a hover tooltip. (A per-station right-click menu —
 			# "Download Mareg (2 days)" / "(Calendar)" — to launch the download tool lands later.)
 			xs, ys, infos = _tides_data(W, E, S, N)
 			isempty(xs) && return
-			add_symbols!(scene, xs, ys;
-			             symbol=:star, size=8, sizeunit=:pt, fill=:red, edge=:black, edgewidth=1.0,
+			add_symbols!(scene, xs, ys; symbol=:star, size=8, sizeunit=:pt, fill=:red, edge=:black, edgewidth=1.0,
 			             name="Tide Stations", info=infos)
+		elseif kind == "hydro"
+			# NOAA PMEL hydrothermal vents: orange filled circles with a thin black edge, screen-constant.
+			# Each carries its 5-field metadata (name/site activity/tectonic/spreading rate/depth) as a tooltip.
+			xs, ys, infos = _hydro_data(W, E, S, N)
+			isempty(xs) && return
+			add_symbols!(scene, xs, ys; symbol=:circle, size=9, fill=:orange, edge=:black, edgewidth=1.0,
+			             name="Hydrothermal Vents", info=infos)
 		else
 			D = _geo_dataset(kind, res, W, E, S, N)
 			(D === nothing || isempty(D)) && return
@@ -165,17 +201,32 @@ function _register_geography()
 end
 
 # C callback for the two "Download Mareg …" entries on a Tide Stations star's right-click menu.
-# `mode` is "2days" | "calendar" (how the download window should behave); `station` is the clicked
-# star's "Name:/Code:/Country:" hover block, from which we pull the station code to fetch.
-# TODO: open the Mareg download window. It is not built yet — for now report the request so the
-# menu wiring is testable; the window (mode-driven: a 2-day window vs a calendar picker) lands next.
+# `mode` is "2days" | "calendar"; `station` is the clicked star's "Name:/Code:/Country:" hover block,
+# from which we pull the station code. The actual download + parse is GMT.jl's `maregrams` (same IOC
+# Sea Level Monitoring service Mirone's mareg_online used) — we do NOT re-implement it. `maregrams`
+# returns a GMTdataset: col 1 = time (epoch seconds), col 2 = sea level (prs/rad, m); attribs carry
+# the station name/country. We plot it in the window's "Profile" panel (x = time, y = sea level).
+# NOTE: "calendar" should pop a date/range dialog (Mirone's inputdlg) and the Profile panel is shared
+# with the elevation profiler — both need work; see the C-side gmtvtk_show_profile_xy comment.
 function _on_tides_download(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring)::Cvoid
 	try
-		mode    = unsafe_string(cmode)
 		station = unsafe_string(cstation)
-		m = match(r"Code:\s*(\S+)", station)
+		m    = match(r"Code:\s*(\S+)", station)
 		code = m === nothing ? "" : String(m.captures[1])
-		@info "Tides: download requested (window not built yet)" mode code station
+		isempty(code) && (@warn "tides: no station code found" station; return)
+		D = GMT.maregrams(code = code, days = 2)        # last 2 days; GMT.jl does the IOC download
+		(D === nothing || size(D.data, 1) < 2) && (@warn "tides: nothing to plot" code; return)
+		# Drop NaN sea-level samples (gaps) so the panel's min/max stay finite.
+		t  = Float64.(view(D.data, :, 1)); v = Float64.(view(D.data, :, 2))
+		ok = isfinite.(t) .& isfinite.(v)
+		x  = t[ok]; y = v[ok]
+		length(x) < 2 && (@warn "tides: no finite samples" code; return)
+		nm    = get(D.attrib, "ST_name", "")
+		title = isempty(nm) ? code : "$nm ($code)"
+		ylab  = (length(D.colnames) >= 2) ? D.colnames[2] : "Sea level (m)"
+		ccall(_fn(:gmtvtk_show_profile_xy), Cint,
+		      (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring, Cstring, Cstring, Cint),
+		      scene, x, y, Cint(length(x)), title, "Time (UTC)", ylab, Cint(1))
 	catch e
 		@warn "tides: download callback failed" exception=(e,)
 	end
