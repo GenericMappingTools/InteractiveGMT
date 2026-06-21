@@ -16,10 +16,23 @@ public:
 		setAutoFillBackground(true);
 	}
 	void setProfile(const std::vector<double>& s, const std::vector<double>& z) {
-		m_s = s; m_z = z; update();
+		m_s = s; m_z = z;
+		m_title.clear(); m_xlabel = "Distance"; m_ylabel = "Elevation"; m_isDate = false;
+		update();
+	}
+	// Generic (x,y) series (e.g. a downloaded tide gauge: x = epoch seconds, y = sea level).
+	// isDate -> the x ticks are painted as date/time labels instead of plain numbers.
+	void setSeries(const std::vector<double>& x, const std::vector<double>& y,
+	               const QString& title, const QString& xlabel, const QString& ylabel, bool isDate) {
+		m_s = x; m_z = y;
+		m_title = title; m_xlabel = xlabel; m_ylabel = ylabel; m_isDate = isDate;
+		update();
 	}
 protected:
 	std::vector<double> m_s, m_z;
+	QString m_title;
+	QString m_xlabel = "Distance", m_ylabel = "Elevation";
+	bool    m_isDate = false;
 
 	void paintEvent(QPaintEvent*) override {
 		QPainter p(this);
@@ -50,8 +63,24 @@ protected:
 
 		// gridlines + tick labels (nice 1/2/5 steps)
 		p.setFont(QFont(font().family(), 8));
-		const double sstep = niceNum(niceNum(smax - smin, false) / 6.0, true);
+		double sstep;
+		if (m_isDate) {                              // pick a natural time step (hours .. months)
+			const double span = smax - smin;
+			const double cand[] = {3600, 3*3600, 6*3600, 12*3600, 86400, 2*86400.0,
+			                       7*86400.0, 14*86400.0, 30*86400.0};
+			sstep = cand[(sizeof(cand)/sizeof(cand[0])) - 1];
+			for (double c : cand) if (span / c <= 8) { sstep = c; break; }
+		} else {
+			sstep = niceNum(niceNum(smax - smin, false) / 6.0, true);
+		}
 		const double zstep = niceNum(niceNum(zmax - zmin, false) / 5.0, true);
+		// x-tick label: a date/time string for a date axis, else a plain number.
+		const double xspan = smax - smin;
+		auto xlab = [&](double v) -> QString {
+			if (!m_isDate) return QString::number(v, 'g', 4);
+			QDateTime dt = QDateTime::fromSecsSinceEpoch((qint64)v, Qt::UTC);
+			return dt.toString(xspan < 2*86400 ? "MM-dd hh:mm" : "MM-dd");
+		};
 		p.setPen(QColor(225, 225, 225));
 		for (double v = std::ceil(smin / sstep) * sstep; v <= smax; v += sstep)
 			p.drawLine(QPointF(X(v), plot.top()), QPointF(X(v), plot.bottom()));
@@ -60,8 +89,8 @@ protected:
 
 		p.setPen(QColor(110, 110, 110));
 		for (double v = std::ceil(smin / sstep) * sstep; v <= smax; v += sstep)
-			p.drawText(QRectF(X(v) - 30, plot.bottom() + 2, 60, 16),
-					   Qt::AlignHCenter | Qt::AlignTop, QString::number(v, 'g', 4));
+			p.drawText(QRectF(X(v) - 34, plot.bottom() + 2, 68, 16),
+					   Qt::AlignHCenter | Qt::AlignTop, xlab(v));
 		for (double v = std::ceil(zmin / zstep) * zstep; v <= zmax; v += zstep)
 			p.drawText(QRectF(0, Y(v) - 8, L - 6, 16),
 					   Qt::AlignRight | Qt::AlignVCenter, QString::number(v, 'g', 4));
@@ -81,11 +110,11 @@ protected:
 		p.setPen(Qt::black);
 		p.setFont(QFont(font().family(), 8));
 		p.drawText(QRectF(plot.left(), height() - 16, plot.width(), 14),
-				   Qt::AlignHCenter, "Distance");
+				   Qt::AlignHCenter, m_xlabel);
 		p.save();
 		p.translate(12, plot.center().y());
 		p.rotate(-90);
-		p.drawText(QRectF(-60, -10, 120, 14), Qt::AlignHCenter, "Elevation");
+		p.drawText(QRectF(-60, -10, 120, 14), Qt::AlignHCenter, m_ylabel);
 		p.restore();
 	}
 };

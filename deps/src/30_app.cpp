@@ -26,6 +26,7 @@ static JuliaDropFn g_juliaDrop = nullptr;
 typedef void (*JuliaBaseMapFn)(void* scene, const char* region);
 static JuliaBaseMapFn g_juliaBaseMap = nullptr;
 static QString        g_basemapLogo;
+static QString        g_basemapIcon;   // path to the Base Map toolbar-button icon (data/basemap_icon.png)
 
 // Geography menu (Plot coastline / political boundaries / rivers). A leaf action computes the
 // CURRENT visible geographic region (i.e. honouring the zoom level) and hands the request

@@ -16,6 +16,7 @@ const _ETOPO4_NY = 2700
 _basemap_dir() = joinpath(_PKGROOT, "data")
 _etopo4_path() = joinpath(_basemap_dir(), "etopo4.jpg")
 _etopo4_logo() = joinpath(_basemap_dir(), "etopo4_logo.jpg")
+_basemap_icon() = joinpath(_basemap_dir(), "basemap_icon.png")
 
 # Geographic region (W/E/S/N in the etopo4 [-180 180]/[-90 90] domain) -> gdal -srcwin pixel window
 # (xoff yoff xsize ysize), clamped to the image. Mirrors bg_map.m's pixel arithmetic (origin = the
@@ -118,5 +119,6 @@ function _register_basemap()
 	fptr = @cfunction(_on_basemap, Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_basemap_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	ccall(_fn(:gmtvtk_set_basemap_logo), Cvoid, (Cstring,), _etopo4_logo())
+	ccall(_fn(:gmtvtk_set_basemap_icon), Cvoid, (Cstring,), _basemap_icon())
 	return
 end

@@ -397,6 +397,29 @@ GMTVTK_API int gmtvtk_set_table(void* handle, const char* name, const double* da
 	return 1;
 }
 
+// Plot a generic (x,y) series in the bottom-dock "Profile" panel and surface it. Used by the tide
+// download (x = epoch seconds, y = sea level, isDate=1 -> the x axis paints date/time labels).
+// Returns 0 on a dead window / no panel / fewer than 2 points. NOTE: this reuses the elevation
+// profiler's panel, so a later Ctrl+drag profile overwrites it — the shared panel needs work.
+GMTVTK_API int gmtvtk_show_profile_xy(void *handle, const double *x, const double *y, int n,
+                                      const char *title, const char *xlabel, const char *ylabel,
+                                      int isDate) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->prof || !x || !y || n < 2)
+		return 0;
+	std::vector<double> xv(x, x + n), yv(y, y + n);
+	s->prof->setSeries(xv, yv,
+		QString::fromUtf8(title  ? title  : ""),
+		QString::fromUtf8((xlabel && xlabel[0]) ? xlabel : "x"),
+		QString::fromUtf8((ylabel && ylabel[0]) ? ylabel : "y"),
+		isDate != 0);
+	if (s->bottomDock) s->bottomDock->setVisible(true);
+	setBottomCollapsed(s, false);
+	if (s->bottomTabs) s->bottomTabs->setCurrentWidget(s->prof);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
 // Is a figure handle still live (its window open)?  1 = yes, 0 = closed/invalid.
 GMTVTK_API int gmtvtk_is_alive(void *handle) {
 	return sceneAlive(static_cast<Scene*>(handle)) ? 1 : 0;
@@ -540,6 +563,12 @@ GMTVTK_API void gmtvtk_set_basemap_callback(JuliaBaseMapFn fn) {
 // Set the path to the world logo image painted in the basemap picker (data/etopo4_logo.jpg).
 GMTVTK_API void gmtvtk_set_basemap_logo(const char* path) {
 	g_basemapLogo = QString::fromUtf8(path ? path : "");
+}
+
+// Set the path to the Base Map toolbar button icon (data/basemap_icon.png). Must be set before a
+// window is built (the toolbar reads g_basemapIcon at construction); empty -> hand-painted fallback.
+GMTVTK_API void gmtvtk_set_basemap_icon(const char *path) {
+	g_basemapIcon = QString::fromUtf8(path ? path : "");
 }
 
 // Register the Geography-menu callback. `fn` (Julia @cfunction, signature JuliaGeoFn) is called
