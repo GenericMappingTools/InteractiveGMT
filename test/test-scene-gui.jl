@@ -227,3 +227,100 @@ end
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
 end
+
+# ---- X,Y plot tool (the standalone 2-D plotter) --------------------------------------------------
+
+@testitem "xyplot opens, adds series, analysis grows it, saves a PNG" tags=[:gui, :xyplot] begin
+	IG = InteractiveGMT
+	t = collect(range(0, 2π; length=128))
+	p = xyplot(t, sin.(t); name="sin", title="xy test", xlabel="x", ylabel="y")
+	path = joinpath(tempdir(), "interactivegmt_xy_$(getpid()).png")
+	try
+		IG._pump_once()
+		@test isalive(p)
+		@test length(p.series) == 1
+		add!(p, t, cos.(t); name="cos")
+		@test length(p.series) == 2
+		# a same-domain analysis op (compute + add, the path the Analysis menu drives)
+		nx, ny, _ = IG._xy_compute("remove_mean", p.series[1][1], p.series[1][2])
+		add!(p, nx, ny; name="sin − mean")
+		@test length(p.series) == 3
+		xtime!(p, :date); xtime!(p, :linear)          # mode switch must not throw / crash
+		logscale!(p; y=true); logscale!(p; y=false)   # log toggle must not throw / crash
+		IG._pump_once()
+		isfile(path) && rm(path; force=true)
+		@test save_png(path) == true
+		IG._pump_once()
+		@test isfile(path) && filesize(path) > 0
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), p.h)
+		rm(path; force=true)
+	end
+end
+
+@testitem "iview routes a 2-col table to the X,Y tool; 3-col stays a cloud" tags=[:gui, :xyplot] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	D2 = GMT.mat2ds([0.0 0.0; 1.0 1.0; 2.0 0.5; 3.0 2.0; 4.0 1.5])      # plain x,y table
+	p = iview(D2)                                   # auto-route -> X,Y tool
+	try
+		@test p isa QtXYPlot
+		@test isalive(p)
+		@test length(p.series) == 1
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), p.h)
+	end
+
+	ii = collect(1:30)
+	D3 = GMT.mat2ds(hcat(Float64.(mod.(ii, 7)), Float64.(mod.(2 .* ii, 5)), Float64.(ii) ./ 3))  # x y z -> cloud
+	q = iview(D3)                                   # default 3-col -> 3-D cloud (unchanged behaviour)
+	try
+		@test q isa QtPoints
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), q.h)
+	end
+
+	r = iview(D3; xy=true)                          # force the X,Y tool: cols 2,3 become two series
+	try
+		@test r isa QtXYPlot
+		@test length(r.series) == 2
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), r.h)
+	end
+end
+
+@testitem "clear! empties an X,Y plot" tags=[:gui, :xyplot] begin
+	IG = InteractiveGMT
+	t = collect(range(0, 1; length=32))
+	p = xyplot(t, t; name="a")
+	try
+		add!(p, t, t .^ 2; name="b")
+		@test length(p.series) == 2
+		clear!(p)
+		@test length(p.series) == 0
+		@test isalive(p)
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), p.h)
+	end
+end
+
+# The 3-D Profile -> X,Y tool bridge: a populated Profile panel handed to the X,Y tool must spawn a
+# window whose Julia mirror carries the series (so Save / Analysis work on it — the seed callback).
+@testitem "profile_to_xyplot seeds a mirror with the panel series" tags=[:gui, :xyplot] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
+	f = view_grid(G)
+	q = nothing
+	try
+		x = collect(0.0:0.5:10.0); y = sin.(x)
+		ccall(IG._fn(:gmtvtk_show_profile_xy), Cint,
+			(Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint, Cstring, Cstring, Cstring, Cint),
+			f.h, x, y, length(x), "", "Distance", "Elevation", 0)
+		IG._pump_once()
+		q = profile_to_xyplot(f)
+		@test isalive(q)
+		@test length(q.series) == 1                   # seed callback populated the Julia mirror
+	finally
+		q === nothing || ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), q.h)
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end

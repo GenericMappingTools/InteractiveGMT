@@ -22,6 +22,8 @@ find_package(VTK REQUIRED COMPONENTS
   CommonCore CommonDataModel CommonColor CommonTransforms
   FiltersSources FiltersGeneral
   RenderingCore RenderingOpenGL2 RenderingAnnotation RenderingFreeType RenderingLOD
+  RenderingContext2D RenderingContextOpenGL2
+  ChartsCore ViewsContext2D
   InteractionStyle InteractionWidgets
   GUISupportQt)
 

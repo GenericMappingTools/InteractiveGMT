@@ -40,6 +40,11 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_geography_callback, :gmtvtk_set_tides_callback, :gmtvtk_scene_state,
 	:gmtvtk_frame_for_image_h, :gmtvtk_fit2d, :gmtvtk_grow_frame_h, :gmtvtk_hide_surface,
 	:gmtvtk_show_profile_xy,
+	:gmtvtk_xyplot_open, :gmtvtk_xyplot_add_series, :gmtvtk_xyplot_clear,
+	:gmtvtk_xyplot_is_alive, :gmtvtk_xyplot_close, :gmtvtk_xyplot_raise,
+	:gmtvtk_xyplot_set_callback, :gmtvtk_xyplot_set_labels,
+	:gmtvtk_xyplot_set_analysis_callback, :gmtvtk_open_profile_in_xyplot,
+	:gmtvtk_xyplot_set_seed_callback, :gmtvtk_xyplot_set_xtime, :gmtvtk_xyplot_set_logscale,
 )
 
 # Resolve a loaded C-API function pointer. Errors clearly if the library never loaded.

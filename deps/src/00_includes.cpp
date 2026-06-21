@@ -38,6 +38,7 @@
 #include <QCheckBox>
 #include <QRadioButton>
 #include <QButtonGroup>
+#include <QActionGroup>
 #include <functional>
 #include <algorithm>
 #include <QToolTip>
@@ -72,12 +73,15 @@
 #include <QDateTime>
 #include <QDateTimeEdit>
 #include <QStackedWidget>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QStringList>
 #include <QSettings>
 #include <QMimeData>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QContextMenuEvent>
 #include <QUrl>
 
 #include <QVTKOpenGLNativeWidget.h>
@@ -144,6 +148,18 @@
 #include <vtkImageFlip.h>
 #include <vtkRenderWindow.h>
 #include <vtkInteractorStyleTrackballCamera.h>
+
+// --- 2-D charts (the X,Y plot tool, 65_xyplot.cpp) ---------------------------
+#include <vtkContextView.h>
+#include <vtkContextScene.h>
+#include <vtkChart.h>
+#include <vtkChartXY.h>
+#include <vtkPlot.h>
+#include <vtkPlotPoints.h>
+#include <vtkAxis.h>
+#include <vtkTable.h>
+#include <vtkPen.h>
+#include <vtkStringArray.h>
 
 // --- F3D-style shading (Tier 1: light rig + post passes, no assets) ----------
 #include <vtkLightKit.h>

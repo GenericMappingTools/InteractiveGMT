@@ -40,12 +40,23 @@ struct QtEmpty
 	h::Ptr{Cvoid}
 end
 
+# A live X,Y plot window (the standalone 2-D plotter, the evolution of the Profile). `h` is the
+# opaque C handle (an XYPlot*, NOT a Scene*); it has its OWN is_alive/close C API. `series` keeps a
+# Julia-side copy of every line (x, y, name) added, so File > Save can write it back (the C side
+# owns the vtkTables; Julia keeps the authoritative data it produced).
+mutable struct QtXYPlot
+	h::Ptr{Cvoid}
+	series::Vector{Tuple{Vector{Float64},Vector{Float64},String}}
+end
+QtXYPlot(h::Ptr{Cvoid}) = QtXYPlot(h, Tuple{Vector{Float64},Vector{Float64},String}[])
+
 "True while the figure's window is still open (closing it invalidates the handle)."
 isalive(f::QtFigure)::Bool = ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), f.h) != 0
 isalive(f::QtPoints)::Bool = ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), f.h) != 0
 isalive(f::QtFV)::Bool     = ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), f.h) != 0
 isalive(f::QtImage)::Bool  = ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), f.h) != 0
 isalive(f::QtEmpty)::Bool  = ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), f.h) != 0
+isalive(f::QtXYPlot)::Bool = ccall(_fn(:gmtvtk_xyplot_is_alive), Cint, (Ptr{Cvoid},), f.h) != 0
 
 # Opaque C handle of any figure type (QtFigure / QtPoints / QtFV).
 _fig_handle(fig)::Ptr{Cvoid} = getfield(fig, :h)

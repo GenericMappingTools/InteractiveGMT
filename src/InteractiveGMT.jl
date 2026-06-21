@@ -40,6 +40,9 @@ include("curtain.jl")
 include("points.jl")
 include("fv.jl")
 include("dispatch.jl")
+include("xyplot.jl")     # standalone X,Y plot tool (vtkChartXY); evolution of the Profile
+include("xyanalysis.jl") # X,Y Analysis menu (remove mean/trend, derivatives, FFT, autocorr)
+include("xystick.jl")    # stick (vector) diagrams for the X,Y tool (ecran 'stick')
 include("drop.jl")
 include("basemap.jl")    # World Topo Tiles picker (ported from Mirone bg_map.m)
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
@@ -47,7 +50,8 @@ include("geography.jl")  # Geography menu -> GSHHG coastlines for the current vi
 export view_grid, view_image, view_points, view_fv, view_demo, iview,
        add!, add_curtain!, add_symbols!, show_table, selection, isalive,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!,
-       QtFigure, QtPoints, QtFV, QtImage, QtEmpty
+       xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot,
+       QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot
 
 #@compile_workload begin
 #end
@@ -61,6 +65,9 @@ function __init__()
 		_load_library()
 		_register_console_eval()
 		_register_drop_callback()
+		_register_xy_callback()
+		_register_xy_analysis()
+		_register_xy_seed()
 		_register_basemap()
 		_register_geography()
 		_register_tides()

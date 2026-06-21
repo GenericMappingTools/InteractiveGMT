@@ -7,6 +7,12 @@
 //  NOT a vtkCutter/polyplane, which spills onto the whole surface).
 // ============================================================================
 
+// Forward decl: the standalone X,Y plot tool (65_xyplot.cpp, #included later). The Profile panel's
+// right-click "Open in X,Y plot tool" hands its current (x,y) series to this to spawn a full plotter.
+struct XYPlot;
+static XYPlot* openSeriesInXYTool(const std::vector<double>& x, const std::vector<double>& y,
+                                  const char* title, const char* xlabel, const char* ylabel);
+
 // 2D profile plot. Pure QPainter (VTK has no working context-2D GL backend in this
 // build); a plain QWidget paints axes + the (s,z) polyline.
 class ProfilePanel : public QWidget {
@@ -28,6 +34,12 @@ public:
 		m_title = title; m_xlabel = xlabel; m_ylabel = ylabel; m_isDate = isDate;
 		update();
 	}
+	// Read the currently shown series (for "Open in X,Y plot tool" + its C API).
+	const std::vector<double>& seriesX() const { return m_s; }
+	const std::vector<double>& seriesY() const { return m_z; }
+	QString seriesTitle()  const { return m_title; }
+	QString seriesXLabel() const { return m_xlabel; }
+	QString seriesYLabel() const { return m_ylabel; }
 protected:
 	std::vector<double> m_s, m_z;
 	QString m_title;
@@ -116,6 +128,19 @@ protected:
 		p.rotate(-90);
 		p.drawText(QRectF(-60, -10, 120, 14), Qt::AlignHCenter, m_ylabel);
 		p.restore();
+	}
+
+	// Right-click -> push the currently shown profile/series into a standalone X,Y plot window
+	// (Object Manager + Analysis + save). Works for both the Ctrl-drag elevation profile and a
+	// downloaded tide series — whatever this panel currently shows.
+	void contextMenuEvent(QContextMenuEvent* e) override {
+		QMenu m(this);
+		QAction* a = m.addAction("Open in X,Y plot tool");
+		a->setEnabled(m_s.size() >= 2);
+		if (m.exec(e->globalPos()) == a && m_s.size() >= 2)
+			openSeriesInXYTool(m_s, m_z,
+				m_title.isEmpty() ? "i'GMT  —  Profile" : m_title.toUtf8().constData(),
+				m_xlabel.toUtf8().constData(), m_ylabel.toUtf8().constData());
 	}
 };
 

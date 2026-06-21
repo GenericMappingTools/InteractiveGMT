@@ -420,6 +420,25 @@ GMTVTK_API int gmtvtk_show_profile_xy(void *handle, const double *x, const doubl
 	return 1;
 }
 
+// Open the window's CURRENT profile/series (whatever its bottom-dock Profile panel shows — a
+// Ctrl-drag elevation profile or a downloaded tide series) in a standalone X,Y plot tool window.
+// The programmatic twin of the panel's right-click "Open in X,Y plot tool". Returns the new
+// XYPlot* handle (opaque), or null on a dead window / no panel / fewer than 2 points.
+GMTVTK_API void* gmtvtk_open_profile_in_xyplot(void* handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->prof)
+		return nullptr;
+	const std::vector<double>& X = s->prof->seriesX();
+	const std::vector<double>& Y = s->prof->seriesY();
+	if (X.size() < 2)
+		return nullptr;
+	const QByteArray t = s->prof->seriesTitle().toUtf8();
+	const QByteArray xl = s->prof->seriesXLabel().toUtf8();
+	const QByteArray yl = s->prof->seriesYLabel().toUtf8();
+	return openSeriesInXYTool(X, Y, t.isEmpty() ? "i'GMT  —  Profile" : t.constData(),
+	                          xl.constData(), yl.constData());
+}
+
 // Is a figure handle still live (its window open)?  1 = yes, 0 = closed/invalid.
 GMTVTK_API int gmtvtk_is_alive(void *handle) {
 	return sceneAlive(static_cast<Scene*>(handle)) ? 1 : 0;
@@ -977,6 +996,106 @@ GMTVTK_API int gmtvtk_set_stereo(void* handle, int on) {
 	rw->SetStereoRender(want);
 	rw->Render();
 	return want;
+}
+
+// ============================================================================
+//  X,Y plot tool (65_xyplot.cpp) — standalone 2-D plotter. Its opaque handle is
+//  an XYPlot* (NOT a Scene*), so it has its own is_alive/close/raise. It shares
+//  the QApplication + the gmtvtk_process_events pump with the 3-D windows.
+// ============================================================================
+
+// Open an empty X,Y plot window (non-blocking; pump gmtvtk_process_events). Returns
+// the opaque XYPlot* handle; add curves with gmtvtk_xyplot_add_series.
+GMTVTK_API void *gmtvtk_xyplot_open(const char *title) {
+	return buildXYPlot(title);
+}
+
+// Add one (x,y) series of `n` points to a plot window. `name` labels it in the
+// legend / Object Manager (null -> "Line N"). (r,g,b) in 0..1 is the line colour
+// (pass r<0 for the default); `width` in px (<=0 -> default). Returns the series
+// index, or -1 on a dead handle / bad input. Renders immediately.
+GMTVTK_API int gmtvtk_xyplot_add_series(void *handle, const double *x, const double *y, int n,
+                                        const char *name, double r, double g, double b, double width,
+                                        int lineType, int marker, double markerSize) {
+	return xyAddSeries(static_cast<XYPlot*>(handle), x, y, n, name, r, g, b, width,
+	                   lineType, marker, markerSize);
+}
+
+// Remove every series from a plot window.
+GMTVTK_API void gmtvtk_xyplot_clear(void *handle) {
+	xyClear(static_cast<XYPlot*>(handle));
+}
+
+// Is an X,Y plot handle still live (its window open)? 1 = yes, 0 = closed/invalid.
+GMTVTK_API int gmtvtk_xyplot_is_alive(void *handle) {
+	return xyAlive(static_cast<XYPlot*>(handle)) ? 1 : 0;
+}
+
+// Close an X,Y plot window programmatically.
+GMTVTK_API void gmtvtk_xyplot_close(void *handle) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (xyAlive(p) && p->win) p->win->close();
+}
+
+// Bring an X,Y plot window to the front.
+GMTVTK_API void gmtvtk_xyplot_raise(void *handle) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !p->win) return;
+	p->win->setWindowState(p->win->windowState() & ~Qt::WindowMinimized);
+	p->win->showNormal(); p->win->raise(); p->win->activateWindow();
+}
+
+// Set the X-axis TIME mode of an X,Y plot window: X is read as Unix epoch SECONDS and the bottom
+// axis ticks are formatted accordingly. fmt: 0 = linear (plain numbers), 1 = date (auto by span),
+// 2 = date yyyy-mm-dd, 3 = time HH:MM, 4 = decimal year, 5 = day-of-year. Ticks auto-update on
+// zoom/pan. No-op on a dead handle.
+GMTVTK_API void gmtvtk_xyplot_set_xtime(void *handle, int fmt) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return;
+	xySetXTime(p, fmt);
+}
+
+// Toggle log scaling on an X,Y plot axis. axis: 0 = X (bottom), 1 = Y (left). on != 0 enables.
+// Data must be positive for VTK to activate it. No-op on a dead handle.
+GMTVTK_API void gmtvtk_xyplot_set_logscale(void *handle, int axis, int on) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return;
+	xySetLog(p, axis, on != 0);
+}
+
+// Set the bottom (X) and left (Y) axis titles of an X,Y plot window. Null leaves a
+// title unchanged. Renders.
+GMTVTK_API void gmtvtk_xyplot_set_labels(void *handle, const char *xlabel, const char *ylabel) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return;
+	if (xlabel) p->chart->GetAxis(vtkAxis::BOTTOM)->SetTitle(xlabel);
+	if (ylabel) p->chart->GetAxis(vtkAxis::LEFT)->SetTitle(ylabel);
+	if (p->widget && p->widget->renderWindow())
+		p->widget->renderWindow()->Render();
+}
+
+// Register the File-menu callback (Open / Save / New) for X,Y plot windows. `fn`
+// (Julia @cfunction, signature JuliaXYFn) is called fn(plot, action, sel, path):
+// action "open" | "save" | "new"; sel = selected series index (Save; -1 = none);
+// path = the file chosen in the native dialog. Pass nullptr to detach.
+GMTVTK_API void gmtvtk_xyplot_set_callback(JuliaXYFn fn) {
+	g_juliaXY = fn;
+}
+
+// Register the Analysis-menu callback. `fn` (Julia @cfunction, signature JuliaXYAnaFn) is called
+// fn(plot, op, sel): op = the operation tag, sel = the selected series. Pass nullptr to detach.
+GMTVTK_API void gmtvtk_xyplot_set_analysis_callback(JuliaXYAnaFn fn) {
+	g_juliaXYAna = fn;
+}
+
+// Register the seed callback used when a C++-spawned X,Y window (Profile -> X,Y tool) hands its
+// initial series to Julia so a QtXYPlot mirror is registered. `fn` signature JuliaXYSeedFn; null
+// to detach (the window then adds the series C++-side, losing Julia Save/Analysis on it).
+GMTVTK_API void gmtvtk_xyplot_set_seed_callback(JuliaXYSeedFn fn) {
+	g_juliaXYSeed = fn;
 }
 
 // Standalone executable entry: show the demo surface and block in the loop.

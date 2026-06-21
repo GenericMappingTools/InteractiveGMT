@@ -3,7 +3,18 @@
 # window for) — plus the built-in synthetic demo.
 
 const _POLY2FV_KW = (:cmap, :zscale, :vfrac, :vexag, :isgeog, :ncolor, :triangulate)
+const _XYPLOT_KW  = (:name, :color, :linewidth, :title, :xlabel, :ylabel, :xtime)
 _merge_points(D) = (length(D) == 1) ? D[1] : GMT.mat2ds(reduce(vcat, (d.data for d in D)))
+
+# A plain X,Y curve table: exactly 2 columns, NOT geographic, not a closed polygon. Such a dataset
+# has no natural home on the 3-D map (a 2-col line even errors there), so the front door sends it to
+# the standalone X,Y plot tool. 3-col / geographic data keeps the 3-D map path.
+function _is_xy_table(D::GMTdataset)
+	size(D.data, 2) == 2 || return false
+	_isgeog(D) == 0      || return false       # _isgeog (drop.jl): 1 = geographic
+	return _ds_kind(D) !== :polys
+end
+_xyplot_only(kwargs) = (; (p for p in kwargs if p.first in _XYPLOT_KW)...)
 
 # WKB geometry code -> kind (strip 25D flag bit + fold Z/ZM thousands). 1/4=point, 2/5=line, 3/6=poly.
 _geom_kind(g::Integer) = (c = (g & 0x7fffffff) % 1000;
@@ -40,20 +51,24 @@ iview(fv::GMTfv; kwargs...) = view_fv(fv; kwargs...)   # color=true -> faceted z
 
 iview(I::GMTimage; kwargs...) = view_image(I; kwargs...)   # bare image -> flat top-down map
 
-function iview(D::GMTdataset; kwargs...)
+# `xy` forces the routing: xy=true -> X,Y tool, xy=false -> the 3-D map path; the default (nothing)
+# auto-routes a plain 2-col non-geographic table to the X,Y tool (see _is_xy_table).
+function iview(D::GMTdataset; xy=nothing, kwargs...)
+	(xy === true || (xy === nothing && _is_xy_table(D))) && return xyplot(D; _xyplot_only(kwargs)...)
 	k = _ds_kind(D)
 	(k === :points) && return view_points(D; kwargs...)
-	(k === :lines)  && error("iview: standalone line viewing is not available in the Qt+VTK viewer; overlay lines on a grid with add!(fig, D)")
+	(k === :lines)  && error("iview: standalone line viewing is not available in the Qt+VTK viewer; overlay lines on a grid with add!(fig, D), or open it in the X,Y plot tool with xyplot(D)")
 	pk = filter(p -> p.first in _POLY2FV_KW, kwargs)        # polys -> mesh
 	vk = filter(p -> !(p.first in _POLY2FV_KW), kwargs)
 	return view_fv(poly2fv([D]; pk...); vk...)
 end
 
-function iview(D::Vector{<:GMTdataset}; kwargs...)
+function iview(D::Vector{<:GMTdataset}; xy=nothing, kwargs...)
 	isempty(D) && error("empty GMTdataset vector")
+	(xy === true || (xy === nothing && _is_xy_table(D[1]))) && return xyplot(D; _xyplot_only(kwargs)...)
 	k = _ds_kind(D[1])
 	(k === :points) && return view_points(_merge_points(D); kwargs...)
-	(k === :lines)  && error("iview: standalone line viewing is not available in the Qt+VTK viewer; overlay lines on a grid with add!(fig, D)")
+	(k === :lines)  && error("iview: standalone line viewing is not available in the Qt+VTK viewer; overlay lines on a grid with add!(fig, D), or open it in the X,Y plot tool with xyplot(D)")
 	pk = filter(p -> p.first in _POLY2FV_KW, kwargs)
 	vk = filter(p -> !(p.first in _POLY2FV_KW), kwargs)
 	return view_fv(poly2fv(D; pk...); vk...)
@@ -71,7 +86,9 @@ function iview(name::AbstractString; kwargs...)
 		data = GMT.gmtread(name)
 		_record_recent(name, data)
 		fig = iview(data; kwargs...)
-		_mark_file_open(name, _fig_handle(fig))
+		# The open-once dedup is keyed on the 3-D Scene* alive/raise C API; an X,Y plot window uses a
+		# different handle type, so don't register it there (a repeat open just makes a 2nd window).
+		fig isa QtXYPlot || _mark_file_open(name, _fig_handle(fig))
 		return fig
 	end
 	return view_fv(name; kwargs...)        # named solid -> the SOLIDS dispatch above

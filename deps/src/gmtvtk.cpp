@@ -15,6 +15,7 @@
 //   50_scene       Scene Objects panel, overlays, curtains, line styles, context menus
 //   55_lineprops   shared Line Properties dialog + unified line right-click menu
 //   60_profile     ProfilePanel (2D s,z) + profile sampling + GLView
+//   65_xyplot      standalone X,Y plot tool (vtkChartXY + Object Manager + Data Viewer)
 //   70_window      buildAndShow — the Qt main window
 //   80_rubberband  Ctrl+right-drag point-cloud selection
 //   85_polygon     toolbar polygon draw/edit tool (3-D vertices draped on the relief)
@@ -27,6 +28,7 @@
 #include "50_scene.cpp"
 #include "55_lineprops.cpp"
 #include "60_profile.cpp"
+#include "65_xyplot.cpp"
 #include "70_window.cpp"
 #include "80_rubberband.cpp"
 #include "85_polygon.cpp"
