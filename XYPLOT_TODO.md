@@ -17,8 +17,11 @@ This file is the durable backlog — keep it updated as items land.
   `xyplot`/`add!` kwargs (`linestyle`, `marker`, `markersize`).
 - Analysis (`ecran` "Analysis" menu): Remove Mean, Remove Trend, 1st/2nd derivative, FFT Amplitude,
   FFT PSD, Autocorrelation, **Fit polynomial** (degree dlg), **Savitzky-Golay smoothing** (window
-  dlg, stands in for the smoothing spline), **Butterworth filter** (cutoff+low/high dlg). All
-  dep-free (in-house radix-2 FFT + small LSQ solvers).
+  dlg, stands in for the smoothing spline), **Butterworth filter** (cutoff+low/high dlg),
+  **Filter Outliers / despike** (n-σ dlg; `_despike` = Savitzky-Golay baseline + MAD threshold +
+  interp-fill), **Spector-Grant depth-to-sources** (band+unit dlg; `_spector_grant` fits ln(power)
+  vs k, depth=|slope|/(4π)·unit, overlays the fit labelled "S&G depth=N m"). All dep-free (in-house
+  radix-2 FFT + small LSQ/median solvers).
 - Time axes (X = epoch seconds): date(auto/ymd) / time / decimal-year / day-of-year, auto-updating
   ticks (`xtime!`, `xtime=` kwarg).
 - **Log axes** (X/Y): Misc menu toggles + `logscale!` / `xscale=`/`yscale=` kwargs.
@@ -41,14 +44,11 @@ This file is the durable backlog — keep it updated as items land.
 - "Activate extensional measuring": interactive pick of fault heaves on a profile → plot Heaves /
   Exx (extension strain) / save. Interactive (mouse picking on the curve).
 
-### Spectral depth-to-sources — ecran `dynSlope_CB` (674), `recompSI`, Spector-Grant
-- ~~Fit the **slope → depth to magnetic sources** (Spector & Grant).~~ **DONE** — Analysis > "Depth
-  to sources (Spector-Grant)…" (band [f1,f2] + freq-unit dialog -> op "specgrant:f1:f2:xfac");
-  `_spector_grant` fits ln(power) vs k, depth=|slope|/(4π)·unit; result line labelled
-  "S&G depth=N m". Verified exact on a synthetic spectrum.
-  - TODO refinement: ecran's version is INTERACTIVE (click-drag a band on the spectrum + live
-    readout) — ours is a dialog. Add drag-band selection on the chart later if wanted. Also the
-    "Slope/Intercept" readout + bandpass-on-the-chunk (`do_bandFilter`) not ported.
+### Spectral depth-to-sources refinements — ecran `dynSlope_CB` (674), `recompSI`
+- Core Spector-Grant is **DONE** (see Done). Remaining refinements: ecran's version is INTERACTIVE
+  (click-drag a band on the spectrum + live slope/depth readout) — ours is a dialog. Add drag-band
+  selection on the vtkChartXY chart, the "Slope/Intercept" readout, and bandpass-on-the-chunk
+  (`do_bandFilter`).
 
 ### Sound Velocity Profile — ecran `AnalysisSVP_CB` (2066)
 - Oceanographic SVP tool (sound speed vs depth). Check exactly what it computes in ecran.
@@ -65,9 +65,6 @@ This file is the durable backlog — keep it updated as items land.
 - Emit a GMT batch/script that reproduces the plot. Lower priority.
 
 ### Smaller ecran goodies
-- ~~**Filter Outliers** (`outliers_clean`, cmenu) — despike a line.~~ **DONE** — Analysis > "Filter
-  outliers (despike)…" (n-σ dialog -> op "despike:k"); `_despike` (Savitzky-Golay baseline + MAD
-  robust threshold + interp-fill) in xyanalysis.jl.
 - **Reference a line to another** (`do_reference`, "Reference me") — subtract/relate two series.
 - **Scatter from two CMOP lines** (`make_scatterPlot`).
 - **Red markers** save/restore (`FileSaveRedMark`) — annotation picks.
