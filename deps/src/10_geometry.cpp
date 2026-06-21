@@ -24,6 +24,7 @@ struct Overlay {
 	vtkSmartPointer<vtkTexture>  stripeTex;  // 1-D stipple texture (kept alive) for dashed/dotted
 	int lineStyle = 0;                       // 0 solid, 1 dashed, 2 dotted (so colour edits rebuild it)
 	std::string name;                        // label shown in the Scene Objects panel
+	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
 };
 
 // A generic SCREEN-CONSTANT symbol layer (volcanoes, seismicity, cities, …): N glyphs of one
@@ -40,6 +41,7 @@ struct SymbolLayer {
 	std::string sym  = "c";                   // GMT symbol code (for the Scene Objects label / properties)
 	std::string name;                         // label shown in the Scene Objects panel
 	std::vector<std::string> info;            // per-point hover text (multi-line); empty = no hover info
+	int    stack = 0;                          // draw-order rank in the shared vector pile (higher = on top)
 };
 
 // A Fledermaus-style vertical "curtain": a textured wall hung along an XY track.
@@ -70,6 +72,7 @@ struct Polygon {
 	vtkSmartPointer<vtkPolyData> linePD;     // its geometry (rebuilt as vertices move)
 	std::string name;                        // label shown in the Scene Objects panel ("polygon N")
 	bool closed = true;                      // closed ring (polygon/rect/circle) vs open chain (polyline)
+	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
 };
 
 // A user-placed text label from the toolbar text tool. Lies FLAT on the z=0 (XY) plane: a
@@ -97,6 +100,8 @@ struct LineRef {
 };
 static void showLineProperties(Scene* s, const LineRef& lr);                 // the properties dialog
 static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name, const QPoint& gp);
+static void applyVectorStacking(Scene* s);                      // shared vector-pile draw-order (50_scene.cpp)
+static void restackVector(Scene* s, int* stackPtr, int op);    // move one vector element through the pile
 static void lineApplyStyle(Scene* s, const LineRef& lr, int style);
 static int  lineCurrentStyle(Scene* s, const LineRef& lr);
 static void polygonDelete(Scene* s, vtkActor* lineActor);                    // remove a finished polygon
@@ -283,6 +288,7 @@ struct Scene {
 	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Rect, SH_Circle, SH_Text };
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
+	int    vecSeq = 0;                                  // monotonic seed for shared vector-pile stack ranks
 	std::vector<TextLabel> texts;                      // user-placed text labels
 	bool   polyMode    = false;                        // draw-mode button toggled on
 	bool   polyDrawing = false;                        // mid-building the current polygon

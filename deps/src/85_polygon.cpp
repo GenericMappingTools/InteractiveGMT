@@ -330,7 +330,7 @@ static void polyRebuildHandles(Scene* s) {
 	if (!s->polyHandles) {
 		vtkNew<vtkPolyDataMapper> map; map->SetInputData(s->polyHandlePD); map->ScalarVisibilityOff();
 		vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
-		map->SetRelativeCoincidentTopologyPointOffsetParameter(-9000.0);   // handles on top of the line
+		map->SetRelativeCoincidentTopologyPointOffsetParameter(-200000.0); // handles above ANY pile rank while editing
 		s->polyHandles = vtkSmartPointer<vtkActor>::New();
 		s->polyHandles->SetMapper(map);
 		s->polyHandles->GetProperty()->SetColor(1.0, 1.0, 0.0);            // yellow squares
@@ -402,7 +402,9 @@ static void polyFinalize(Scene* s, std::vector<std::array<double,3>> verts, bool
 	for (auto& p : s->polys) if (p.name.rfind(pre, 0) == 0) ++idx;
 	pg.name = pre + std::to_string(idx);
 	polyRebuildLine(s, pg);
+	pg.stack = s->vecSeq++;                 // new polygon lands on top of the shared vector pile
 	s->polys.push_back(pg);
+	applyVectorStacking(s);                // normalize ranks + set this polygon's draw-order offset
 	s->polyCur.clear();
 	s->polyDrawing = false;
 	if (s->polyPreview) s->polyPreview->SetVisibility(0);
@@ -422,6 +424,7 @@ static void polygonDelete(Scene* s, vtkActor* lineActor) {
 		if (s->polyEdit == i)      polyExitEdit(s);      // was being edited -> drop the handles
 		else if (s->polyEdit > i)  s->polyEdit--;        // keep the edit index valid past the erase
 		s->polys.erase(s->polys.begin() + i);
+		applyVectorStacking(s);                          // renormalize the shared pile after the erase
 		rebuildSceneObjects(s);
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return;

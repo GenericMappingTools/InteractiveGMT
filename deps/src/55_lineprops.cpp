@@ -403,6 +403,20 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 	else {                                               // overlay line
 		m.addAction("Hide overlay", [s, a]() { a->SetVisibility(0); if (s->widget) s->widget->renderWindow()->Render(); });
 	}
+	// Shared vector-pile draw-order: order this line/polygon against ALL other vector elements
+	// (overlays + symbols + polygons). Not for the singleton profile track. Stays on the relief.
+	int* stackPtr = nullptr;
+	if (lr.kind == LK_Overlay)      { for (auto& o  : s->overlays) if (o.actor.Get() == a) { stackPtr = &o.stack;  break; } }
+	else if (lr.kind == LK_Polygon) { for (auto& pg : s->polys)    if (pg.line.Get() == a) { stackPtr = &pg.stack; break; } }
+	const size_t nVec = s->overlays.size() + s->symbols.size() + s->polys.size();
+	if (stackPtr && nVec > 1) {
+		m.addSeparator();
+		auto reRender = [s]() { if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render(); };
+		m.addAction("Place on top",    [s, stackPtr, reRender]() { restackVector(s, stackPtr, 0); reRender(); });
+		m.addAction("Place at bottom", [s, stackPtr, reRender]() { restackVector(s, stackPtr, 1); reRender(); });
+		m.addAction("Stack up",        [s, stackPtr, reRender]() { restackVector(s, stackPtr, 2); reRender(); });
+		m.addAction("Stack down",      [s, stackPtr, reRender]() { restackVector(s, stackPtr, 3); reRender(); });
+	}
 	(void)name;
 	m.exec(gp);
 }

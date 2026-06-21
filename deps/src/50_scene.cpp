@@ -696,7 +696,9 @@ static void addOverlay(Scene* s, const double* xyz, int npts, const int* segoff,
 	// dataset) it passes that name and we use it verbatim; otherwise fall back to "Line N"/"Points N".
 	ov.name = (name && name[0]) ? std::string(name)
 	                            : (mode == 1 ? "Line " : "Points ") + std::to_string((int)s->overlays.size() + 1);
+	ov.stack = s->vecSeq++;                    // new overlay lands on top of the shared vector pile
 	s->overlays.push_back(ov);
+	applyVectorStacking(s);                   // normalize ranks + set this overlay's draw-order offset
 	rebuildSceneObjects(s);                   // refresh the Scene Objects checkbox list
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
@@ -796,6 +798,73 @@ static void symbolRescaleCB(vtkObject*, unsigned long, void* clientData, void*) 
 	}
 }
 
+// ---- shared vector-pile DRAW-ORDER stacking (NOT a z lift) -----------------------------------
+// Per the user's HARD RULE: ALL vector graphics — line overlays, symbol layers, polygons — share
+// ONE ordered pile, and "stacking" only decides WHO DRAWS ON TOP where elements overlap. They stay
+// glued to the relief at their true z (no world-space move). The lever is the per-mapper
+// polygon-offset MAGNITUDE — a more-negative offset pulls an element toward the camera in the depth
+// buffer, so it wins the z-fight. Each element carries a `stack` rank seeded from Scene::vecSeq
+// (monotonic, so a new element lands on top of every other vector element regardless of type).
+//
+// VecItem gathers every vector actor + its stack field into ONE list so the three vectors stack
+// together. polyHandles ride a much-more-negative constant offset (85_polygon.cpp) so edit handles
+// stay visible above any pile rank.
+struct VecItem { vtkActor* actor; int* stack; };
+static std::vector<VecItem> gatherVectorItems(Scene* s) {
+	std::vector<VecItem> v;
+	for (auto& o  : s->overlays) if (o.actor)  v.push_back({ o.actor.Get(),  &o.stack });
+	for (auto& sl : s->symbols)  if (sl.actor)  v.push_back({ sl.actor.Get(), &sl.stack });
+	for (auto& pg : s->polys)    if (pg.line)   v.push_back({ pg.line.Get(),  &pg.stack });
+	return v;
+}
+
+// Normalize every vector element's rank to a contiguous 0..n-1 by current `stack`, then map rank ->
+// polygon-offset. Base -8000 matches the single-element value used at creation, so one element is
+// unchanged. (vtkMapper::SetResolveCoincidentTopologyToPolygonOffset() is already on globally.)
+static void applyVectorStacking(Scene* s) {
+	std::vector<VecItem> it = gatherVectorItems(s);
+	const int n = (int)it.size();
+	if (n == 0) return;
+	std::vector<int> ord(n);
+	for (int i = 0; i < n; ++i) ord[i] = i;
+	std::stable_sort(ord.begin(), ord.end(),
+	                 [&](int a, int b) { return *it[a].stack < *it[b].stack; });
+	for (int k = 0; k < n; ++k) {
+		*it[ord[k]].stack = k;                          // normalize to 0..n-1 (survives deletes)
+		const double u = -8000.0 - k * 2000.0;          // k=0 bottom .. higher k drawn on top
+		if (vtkPolyDataMapper* mp = vtkPolyDataMapper::SafeDownCast(it[ord[k]].actor->GetMapper())) {
+			mp->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, u);
+			mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, u);
+			mp->SetRelativeCoincidentTopologyPointOffsetParameter(u);
+		}
+	}
+}
+
+// Move the element owning *stackPtr through the shared pile (op: 0=top, 1=bottom, 2=up, 3=down),
+// then re-apply offsets. Mirrors imageObjectMenu's pile moves; realization is depth priority.
+static void restackVector(Scene* s, int* stackPtr, int op) {
+	std::vector<VecItem> it = gatherVectorItems(s);
+	const int n = (int)it.size();
+	if (n < 2 || !stackPtr) return;
+	std::vector<int> ord(n);
+	for (int i = 0; i < n; ++i) ord[i] = i;
+	std::stable_sort(ord.begin(), ord.end(),
+	                 [&](int a, int b) { return *it[a].stack < *it[b].stack; });
+	int pos = -1;
+	for (int k = 0; k < n; ++k) if (it[ord[k]].stack == stackPtr) { pos = k; break; }
+	if (pos < 0) return;
+	int dest = (op == 0) ? n - 1
+	         : (op == 1) ? 0
+	         : (op == 2) ? std::min(pos + 1, n - 1)
+	                     : std::max(pos - 1, 0);
+	if (dest == pos) return;
+	const int moved = ord[pos];
+	ord.erase(ord.begin() + pos);
+	ord.insert(ord.begin() + dest, moved);
+	for (int k = 0; k < n; ++k) *it[ord[k]].stack = k;
+	applyVectorStacking(s);
+}
+
 // Stamp N glyphs of one GMT symbol code at N (x,y,z) points (TRUE coords). Screen-constant size:
 // x is pre-baked with xfac so the glyph is NOT x-stretched; the actor carries only the z scale so
 // symbols ride VE. The per-frame observer (installed once) keeps `sizePx` literal at any zoom.
@@ -867,6 +936,7 @@ static int addSymbols(Scene* s, const double* xyz, int npts, const std::string& 
 	SymbolLayer sl;
 	sl.actor = a; sl.glyph = g; sl.sizePx = (sizePx > 0.0 ? sizePx : 8.0);
 	sl.filled = wantFill; sl.sym = sym;
+	sl.stack = s->vecSeq++;              // new layer lands on top of the whole vector pile
 	sl.name = name.empty() ? ("Symbols " + std::to_string((int)s->symbols.size() + 1) + " (" + sym + ")")
 	                       : name;
 	// Per-point hover info (optional): one record per point, records joined by RS ('\x1e'), each
@@ -885,6 +955,7 @@ static int addSymbols(Scene* s, const double* xyz, int npts, const std::string& 
 			sl.info = std::move(recs);
 	}
 	s->symbols.push_back(sl);
+	applyVectorStacking(s);                // normalize ranks + set this layer's draw-order offset
 
 	if (!s->symSizeCmd) {                  // install the per-frame rescaler once per scene
 		vtkSmartPointer<vtkCallbackCommand> cmd = vtkSmartPointer<vtkCallbackCommand>::New();
@@ -971,6 +1042,16 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 	QAction* sizePtA = m.addAction("Size (points)…");
 	QAction* ewA   = m.addAction("Edge width (px)…");
 	m.addSeparator();
+	// Draw-order stacking in the SHARED vector pile (overlays + symbols + polygons): controls who
+	// draws on top where vector elements overlap; they stay on the relief (no z lift). Enabled once
+	// there are 2+ vector elements of ANY type to order against.
+	QAction* topA = m.addAction("Place on top");
+	QAction* botA = m.addAction("Place at bottom");
+	QAction* upA  = m.addAction("Stack up");
+	QAction* dnA  = m.addAction("Stack down");
+	const size_t nVec = s->overlays.size() + s->symbols.size() + s->polys.size();
+	for (QAction* a : { topA, botA, upA, dnA }) a->setEnabled(nVec > 1);
+	m.addSeparator();
 	QAction* delA  = m.addAction("Delete");
 	QAction* ch = m.exec(gp);
 	if (!ch) return;
@@ -1033,12 +1114,17 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 		}
 		return;
 	}
+	if (ch == topA || ch == botA || ch == upA || ch == dnA) {
+		restackVector(s, &sl->stack, ch == topA ? 0 : ch == botA ? 1 : ch == upA ? 2 : 3);
+		reRender(); return;
+	}
 	if (ch == delA) {
 		for (size_t i = 0; i < s->symbols.size(); ++i) if (s->symbols[i].actor.Get() == act) {
 			if (s->ren) s->ren->RemoveActor(act);
 			s->symbols.erase(s->symbols.begin() + i);
 			break;
 		}
+		applyVectorStacking(s);        // renormalize ranks after the removed slot
 		rebuildSceneObjects(s); reRender();
 		return;
 	}
