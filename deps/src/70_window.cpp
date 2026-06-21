@@ -1019,6 +1019,10 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mGeo->addSeparator();
 	mGeo->addAction("Atlas", geoTODO("Atlas"));
 
+	// --- Tools menu: open the standalone X,Y plot tool (blank; ready for File>Open or Julia) ----
+	QMenu *mTools = win->menuBar()->addMenu("&Tools");
+	mTools->addAction("X,Y plot", [] { xyOpenBlankFromHost(); });
+
 	win->menuBar()->addMenu("&Help")->addAction("&About", actAbout);
 
 	// --- toolbar row (below the menu bar): quick-access buttons (ParaView-style) ------------

@@ -86,6 +86,12 @@ static JuliaXYAnaFn g_juliaXYAna = nullptr;
 typedef void (*JuliaXYSeedFn)(void *plot, const double *x, const double *y, int n, const char *name);
 static JuliaXYSeedFn g_juliaXYSeed = nullptr;
 
+// "New blank window" callback: when an EMPTY X,Y window is opened from C++ (the 3-D viewer's
+// Tools > X,Y plot), this lets Julia register a QtXYPlot mirror for it so File>Open / Save /
+// Analysis (which route through Julia) work. fn(plot). nullptr (demo exe) -> no mirror.
+typedef void (*JuliaXYNewFn)(void *plot);
+static JuliaXYNewFn g_juliaXYNew = nullptr;
+
 // ---- helpers ---------------------------------------------------------------
 
 // Default line-colour palette (matplotlib "tab10"), cycled by series index when the
@@ -916,6 +922,15 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->win->activateWindow();
 	rw->Render();
 	return s;
+}
+
+// Open a BLANK X,Y plot window from the host UI (3-D viewer's Tools > X,Y plot) and let Julia
+// register a mirror for it (so its File/Analysis menus work). Returns the new window.
+static XYPlot* xyOpenBlankFromHost() {
+	XYPlot* p = buildXYPlot(nullptr);
+	if (p && g_juliaXYNew)
+		g_juliaXYNew(p);
+	return p;
 }
 
 // Open a standalone X,Y plot window pre-loaded with one (x,y) series. Called by the 3-D viewer's

@@ -1112,6 +1112,18 @@ GMTVTK_API void gmtvtk_xyplot_set_seed_callback(JuliaXYSeedFn fn) {
 	g_juliaXYSeed = fn;
 }
 
+// Register the "new blank X,Y window" callback (3-D viewer Tools > X,Y plot) so Julia registers a
+// mirror for the empty window. `fn` signature JuliaXYNewFn; null to detach.
+GMTVTK_API void gmtvtk_xyplot_set_new_callback(JuliaXYNewFn fn) {
+	g_juliaXYNew = fn;
+}
+
+// Open a blank X,Y plot window exactly as the 3-D viewer's Tools > X,Y plot menu does (opens it in
+// C++ AND registers the Julia mirror via the new-window callback). Returns the XYPlot* handle.
+GMTVTK_API void* gmtvtk_open_xyplot_from_host(void) {
+	return xyOpenBlankFromHost();
+}
+
 // Standalone executable entry: show the demo surface and block in the loop.
 int main(int, char**) {
 	gmtvtk_view_demo();

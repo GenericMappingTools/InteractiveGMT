@@ -197,6 +197,26 @@ function _register_xy_seed()
 	return
 end
 
+# "New blank X,Y window" callback (3-D viewer Tools > X,Y plot opened an empty window in C++):
+# register a Julia mirror so its File>Open / Save / Analysis work.
+function _on_xy_new(plot::Ptr{Cvoid})::Cvoid
+	try
+		get(_FIGREG, plot, nothing) isa QtXYPlot && return
+		_register_fig!(QtXYPlot(plot))
+		_start_pump()
+	catch e
+		_dbg("xy-new", "ERR", sprint(showerror, e))
+		@warn "xyplot new-window registration failed" exception=e
+	end
+	return
+end
+
+function _register_xy_new()
+	fptr = @cfunction(_on_xy_new, Cvoid, (Ptr{Cvoid},))
+	ccall(_fn(:gmtvtk_xyplot_set_new_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
 # ---- File menu callback (C++ File>Open/Save/New -> here) --------------------------------------
 
 # Invoked on the UI thread from inside the Qt pump when a File-menu item is chosen. `action` is

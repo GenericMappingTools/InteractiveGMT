@@ -308,6 +308,21 @@ end
 	end
 end
 
+@testitem "Tools > X,Y plot opens a mirror-registered blank window" tags=[:gui, :xyplot] begin
+	IG = InteractiveGMT
+	h = ccall(IG._fn(:gmtvtk_open_xyplot_from_host), Ptr{Cvoid}, ())   # same path as the menu action
+	try
+		IG._pump_once()
+		@test h != C_NULL
+		p = get(IG._FIGREG, h, nothing)
+		@test p isa QtXYPlot                              # the new-window callback registered a mirror
+		@test isalive(p)
+		@test length(p.series) == 0                       # blank
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), h)
+	end
+end
+
 @testitem "clear! empties an X,Y plot" tags=[:gui, :xyplot] begin
 	IG = InteractiveGMT
 	t = collect(range(0, 1; length=32))
