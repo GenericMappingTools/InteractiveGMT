@@ -63,6 +63,7 @@ function __init__()
 		_register_drop_callback()
 		_register_basemap()
 		_register_geography()
+		_register_tides()
 	catch e
 		@warn "InteractiveGMT: the Qt+VTK viewer DLL could not be loaded; build it with deps/build.bat (Windows only). Viewer calls will error until then." exception=(e,)
 	end

@@ -730,15 +730,29 @@ static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string& sym, bool
 	else if (sym == "h") poly(6, 0.0);     // hexagon
 	else if (sym == "n") poly(5, 90.0);    // pentagon
 	else if (sym == "g") poly(8, 22.5);    // octagon
-	else if (sym == "a") {                 // 5-point star
+	else if (sym == "a") {                 // 5-point star (concave -> hand-triangulated + outline)
+		// The OpenGL2 mapper fan-triangulates a polygon cell from its vertex 0, which fills a CONCAVE
+		// star wrong (the notches get covered -> an arrow blob). So build the FILL as an explicit fan
+		// of triangles from the centre, and carry the 10-segment boundary as a separate closed
+		// polyline. addSymbols paints the triangles with the fill colour and the polyline with the
+		// edge colour (per-cell direct colours), so there are no internal "spoke" edges.
 		filled = true;
 		const double ri = 0.20;
-		ca->InsertNextCell(10);
+		const vtkIdType ctr = p->InsertNextPoint(0.0, 0.0, 0.0);
+		vtkIdType v[10];
 		for (int i = 0; i < 10; ++i) {
 			const double a = (90.0 + i * 36.0) * D2R, rr = (i % 2 == 0) ? R : ri;
-			ca->InsertCellPoint(p->InsertNextPoint(rr * std::cos(a), rr * std::sin(a), 0.0));
+			v[i] = p->InsertNextPoint(rr * std::cos(a), rr * std::sin(a), 0.0);
 		}
-		pd->SetPoints(p); pd->SetPolys(ca);
+		for (int i = 0; i < 10; ++i) {            // fill: centre-fan triangles
+			ca->InsertNextCell(3);
+			ca->InsertCellPoint(ctr); ca->InsertCellPoint(v[i]); ca->InsertCellPoint(v[(i + 1) % 10]);
+		}
+		vtkNew<vtkCellArray> lines;               // outline: closed boundary polyline (no spokes)
+		lines->InsertNextCell(11);
+		for (int i = 0; i < 10; ++i) lines->InsertCellPoint(v[i]);
+		lines->InsertCellPoint(v[0]);
+		pd->SetPoints(p); pd->SetPolys(ca); pd->SetLines(lines);
 	}
 	else if (sym == "x" || sym == "+" || sym == "-") {       // open line glyphs
 		filled = false;
@@ -801,6 +815,21 @@ static int addSymbols(Scene* s, const double* xyz, int npts, const std::string& 
 	bool glyphFilled = true;
 	vtkSmartPointer<vtkPolyData> src = makeSymbolGlyph(sym, glyphFilled);
 	const bool wantFill = glyphFilled && (filled != 0);
+	// A glyph that carries BOTH filled polys and outline lines (the concave star) is coloured PER
+	// CELL — fill triangles in the fill colour, the boundary polyline in the edge colour — so the
+	// outline is the star boundary only (no internal triangulation spokes that EdgeVisibility draws).
+	const bool cellColoured = (src->GetNumberOfLines() > 0 && src->GetNumberOfPolys() > 0);
+	if (cellColoured) {
+		auto to255 = [](double c) { return (unsigned char)(c < 0 ? 0 : c > 1 ? 255 : c * 255.0 + 0.5); };
+		unsigned char cf[3] = { to255(fr), to255(fg), to255(fb) };   // fill (triangles)
+		unsigned char ce[3] = { to255(er), to255(eg), to255(eb) };   // edge (boundary line)
+		const vtkIdType nL = src->GetNumberOfLines(), nP = src->GetNumberOfPolys();
+		vtkNew<vtkUnsignedCharArray> cc; cc->SetNumberOfComponents(3); cc->SetNumberOfTuples(nL + nP);
+		vtkIdType t = 0;                              // vtkPolyData cell order is Verts, Lines, Polys
+		for (vtkIdType i = 0; i < nL; ++i, ++t) cc->SetTypedTuple(t, wantFill ? ce : cf);
+		for (vtkIdType i = 0; i < nP; ++i, ++t) cc->SetTypedTuple(t, cf);
+		src->GetCellData()->SetScalars(cc);
+	}
 
 	vtkSmartPointer<vtkGlyph3D> g = vtkSmartPointer<vtkGlyph3D>::New();
 	g->SetSourceData(src);
@@ -811,7 +840,8 @@ static int addSymbols(Scene* s, const double* xyz, int npts, const std::string& 
 
 	vtkNew<vtkPolyDataMapper> map;
 	map->SetInputConnection(g->GetOutputPort());
-	map->ScalarVisibilityOff();
+	if (cellColoured) { map->ScalarVisibilityOn(); map->SetScalarModeToUseCellData(); map->SetColorModeToDirectScalars(); }
+	else              { map->ScalarVisibilityOff(); }
 	vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();   // lift off the z=0 map plane
 	map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -8000.0);
 	map->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -8000.0);
@@ -823,7 +853,9 @@ static int addSymbols(Scene* s, const double* xyz, int npts, const std::string& 
 	if (wantFill) {
 		a->GetProperty()->SetColor(fr, fg, fb);
 		a->GetProperty()->SetEdgeColor(er, eg, eb);
-		a->GetProperty()->SetEdgeVisibility(edgeWidth > 0.0 ? 1 : 0);
+		// Cell-coloured glyphs (star) draw their outline as a coloured boundary line, NOT actor edges
+		// (which would expose the fill triangulation as spokes); edgeWidth sets that line's width.
+		a->GetProperty()->SetEdgeVisibility((edgeWidth > 0.0 && !cellColoured) ? 1 : 0);
 		a->GetProperty()->SetLineWidth(edgeWidth > 0.0 ? edgeWidth : 1.0);
 	} else {                               // open glyph: drawn in the edge colour, no fill
 		a->GetProperty()->SetColor(er, eg, eb);
@@ -878,7 +910,51 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 	if (!sl) return;
 	auto reRender = [&] { if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render(); };
 
+	// Keep a cell-coloured glyph (a star: filled polys + outline lines) in sync with the layer's
+	// current fill (actor Color) and edge (actor EdgeColor) colours, by repainting its per-cell
+	// direct scalars. For a plain source (no outline lines) it restores ordinary actor colouring +
+	// EdgeVisibility. Call after any shape / fill / edge change so those menu edits keep working.
+	auto applyCellColours = [&] {
+		vtkPolyData* src = vtkPolyData::SafeDownCast(sl->glyph->GetSource());
+		vtkPolyDataMapper* mp = vtkPolyDataMapper::SafeDownCast(sl->actor->GetMapper());
+		if (!src || !mp) return;
+		const vtkIdType nL = src->GetNumberOfLines(), nP = src->GetNumberOfPolys();
+		if (nL > 0 && nP > 0) {                       // cell-coloured (star)
+			auto to255 = [](double c) { return (unsigned char)(c < 0 ? 0 : c > 1 ? 255 : c * 255.0 + 0.5); };
+			double* fc = sl->actor->GetProperty()->GetColor();
+			double* ec = sl->actor->GetProperty()->GetEdgeColor();
+			unsigned char cf[3] = { to255(fc[0]), to255(fc[1]), to255(fc[2]) };
+			unsigned char ce[3] = { to255(ec[0]), to255(ec[1]), to255(ec[2]) };
+			vtkNew<vtkUnsignedCharArray> arr; arr->SetNumberOfComponents(3); arr->SetNumberOfTuples(nL + nP);
+			vtkIdType t = 0;                          // vtkPolyData cell order: Verts, Lines, Polys
+			for (vtkIdType i = 0; i < nL; ++i, ++t) arr->SetTypedTuple(t, sl->filled ? ce : cf);
+			for (vtkIdType i = 0; i < nP; ++i, ++t) arr->SetTypedTuple(t, cf);
+			src->GetCellData()->SetScalars(arr);
+			mp->ScalarVisibilityOn(); mp->SetScalarModeToUseCellData(); mp->SetColorModeToDirectScalars();
+			sl->actor->GetProperty()->SetEdgeVisibility(0);
+		} else {                                      // plain glyph: ordinary actor colouring
+			src->GetCellData()->SetScalars(nullptr);
+			mp->ScalarVisibilityOff();
+			sl->actor->GetProperty()->SetEdgeVisibility(
+				sl->filled && sl->actor->GetProperty()->GetLineWidth() > 0 ? 1 : 0);
+		}
+		src->Modified(); sl->glyph->Modified();
+	};
+
 	QMenu m(s->widget);
+	// Tide-station layers get two download entries at the TOP of the menu. They hand the star under
+	// the cursor (reuse the hover picker to grab its Name/Code/Country block) to Julia, which opens
+	// the Mareg download window in the requested mode. Only shown when a tides callback is registered.
+	QAction* dl2 = nullptr; QAction* dlCal = nullptr; std::string station;
+	if (sl->name == "Tide Stations" && g_juliaTides && s->widget && s->widget->renderWindow()) {
+		const QPoint lp = s->widget->mapFromGlobal(gp);
+		const double r  = s->widget->devicePixelRatioF();
+		const int    H  = s->widget->renderWindow()->GetSize()[1];
+		pickSymbolInfoAt(s, int(lp.x() * r), int(H - lp.y() * r), station);
+		dl2   = m.addAction("Download Mareg (2 days)");
+		dlCal = m.addAction("Download Mareg (Calendar)");
+		m.addSeparator();
+	}
 	QMenu* tm = m.addMenu("Symbol");
 	static const std::pair<const char*, const char*> KINDS[] = {
 		{"Circle","c"}, {"Square","s"}, {"Triangle","t"}, {"Inverted triangle","i"},
@@ -899,25 +975,28 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 	QAction* ch = m.exec(gp);
 	if (!ch) return;
 
+	if (ch == dl2)   { g_juliaTides(s, "2days",    station.c_str()); return; }
+	if (ch == dlCal) { g_juliaTides(s, "calendar", station.c_str()); return; }
+
 	for (size_t i = 0; i < kindActs.size(); ++i) if (ch == kindActs[i]) {     // change shape
 		bool filled = true;
 		sl->sym = KINDS[i].second;
 		sl->glyph->SetSourceData(makeSymbolGlyph(sl->sym, filled));
 		sl->glyph->Modified();
 		sl->filled = filled;
-		sl->actor->GetProperty()->SetEdgeVisibility(filled && sl->actor->GetProperty()->GetLineWidth() > 0 ? 1 : 0);
+		applyCellColours();                          // star -> per-cell outline; others -> actor edges
 		reRender(); return;
 	}
 	if (ch == fillA) {
 		double* c = sl->actor->GetProperty()->GetColor();
 		QColor q = QColorDialog::getColor(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)), s->widget, "Fill colour");
-		if (q.isValid()) { sl->actor->GetProperty()->SetColor(q.redF(), q.greenF(), q.blueF()); reRender(); }
+		if (q.isValid()) { sl->actor->GetProperty()->SetColor(q.redF(), q.greenF(), q.blueF()); applyCellColours(); reRender(); }
 		return;
 	}
 	if (ch == edgeA) {
 		double* c = sl->actor->GetProperty()->GetEdgeColor();
 		QColor q = QColorDialog::getColor(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)), s->widget, "Edge colour");
-		if (q.isValid()) { sl->actor->GetProperty()->SetEdgeColor(q.redF(), q.greenF(), q.blueF()); reRender(); }
+		if (q.isValid()) { sl->actor->GetProperty()->SetEdgeColor(q.redF(), q.greenF(), q.blueF()); applyCellColours(); reRender(); }
 		return;
 	}
 	if (ch == sizeA) {

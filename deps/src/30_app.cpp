@@ -35,6 +35,13 @@ static QString        g_basemapLogo;
 typedef void (*JuliaGeoFn)(void* scene, const char* req);
 static JuliaGeoFn g_juliaGeo = nullptr;
 
+// Tide-station download menu. A right-click on a "Tide Stations" star adds two entries —
+// "Download Mareg (2 days)" / "Download Mareg (Calendar)" — that hand (mode, station) to Julia,
+// which opens the Mareg download window. mode = "2days" | "calendar"; station = the clicked star's
+// "Name:/Code:/Country:" hover block. Set via gmtvtk_set_tides_callback; nullptr -> entries hidden.
+typedef void (*JuliaTidesFn)(void* scene, const char* mode, const char* station);
+static JuliaTidesFn g_juliaTides = nullptr;
+
 // Live scenes, keyed by the Scene* returned to the host as an opaque figure handle.
 // A handle is valid only while its window is open; the window-destroyed lambda erases
 // it here so a stale handle from a closed figure is rejected instead of dereferenced.

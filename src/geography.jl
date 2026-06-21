@@ -51,6 +51,44 @@ function _volcano_data(W, E, S, N)
 	return xs, ys, infos
 end
 
+# Tide-gauge stations (Mirone's mareg_online.dat) clipped to the visible region, WITH per-station
+# metadata for hover tooltips. File rows are `lon lat <name> Code: <code> Country: <country>` (names
+# / countries underscore-joined for spaces). gmtread returns `.data = [lon lat]` and `.text[k]` =
+# the trailing "<name> Code: <code> Country: <country>" string; we pull name/code/country by the
+# "Code:"/"Country:" markers (one row in the file drops the "Code:" label, hence the fallback regex)
+# rather than fixed token positions. Lon handling mirrors the volcanoes path (file lon -180..180; the
+# map may be 0..360). Returns (xs, ys, infos): infos[k] a 3-line "Name/Code/Country" block.
+function _tides_data(W, E, S, N)
+	path = joinpath(_PKGROOT, "data", "mareg_online.dat")
+	isfile(path) || (@warn "geography: mareg_online.dat not found" path; return (Float64[], Float64[], String[]))
+	# Hand-parsed, NOT via gmtread: the literal "Code:"/"Country:" colons make GMT's table reader
+	# treat the numeric columns as sexagesimal and mangle lon/lat. Split each row on whitespace —
+	# tok1/tok2 are lon/lat, the rest is "<name> Code: <code> Country: <country>" (underscored).
+	rx  = r"^(.*?)\s+Code:\s+(\S+)\s+Country:\s+(.*?)\s*$"  # canonical
+	rx2 = r"^(\S+):\s+(\S+)\s+Country:\s+(.*?)\s*$"         # fallback for the one row missing "Code:"
+	xs = Float64[]; ys = Float64[]; infos = String[]
+	for ln in eachline(path)
+		isvalid(ln) || (ln = String(Char.(codeunits(ln))))   # file is Latin-1 (Moçambique, São Tomé)
+		toks = split(ln)
+		length(toks) >= 2 || continue
+		lon = tryparse(Float64, toks[1]); lat = tryparse(Float64, toks[2])
+		(lon === nothing || lat === nothing) && continue
+		S <= lat <= N || continue
+		x = nothing
+		for d in (-360.0, 0.0, 360.0)
+			(W <= lon + d <= E) && (x = lon + d; break)
+		end
+		x === nothing && continue
+		rest = length(toks) > 2 ? join(@view(toks[3:end]), ' ') : ""
+		m = match(rx, rest); m === nothing && (m = match(rx2, rest))
+		name, code, ctry = m === nothing ? (replace(rest, '_' => ' '), "", "") :
+			(replace(m.captures[1], '_' => ' '), m.captures[2], replace(m.captures[3], '_' => ' '))
+		info = string("Name: ", name, "\nCode: ", code, "\nCountry: ", ctry)
+		push!(xs, x); push!(ys, lat); push!(infos, info)
+	end
+	return xs, ys, infos
+end
+
 # Push a GMTdataset (single or multi-segment) onto `scene` as a line overlay at z=0. Direct ccall
 # (not _add_overlay!) because the callback only has the raw Scene*, not a QtFigure with a grid to
 # sample z from — coastlines sit at sea level anyway, and the C overlay polygon-offsets them toward
@@ -93,6 +131,15 @@ function _on_geography(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid
 			add_symbols!(scene, xs, ys;
 			             symbol=:triangle, size=12, fill=:yellow, edge=:black, edgewidth=1.0,
 			             name="Volcanoes", info=infos)
+		elseif kind == "tides"
+			# Mirone's tide-gauge stations: red stars with a thin black edge, constant on-screen size.
+			# Each carries its Name/Code/Country as a hover tooltip. (A per-station right-click menu —
+			# "Download Mareg (2 days)" / "(Calendar)" — to launch the download tool lands later.)
+			xs, ys, infos = _tides_data(W, E, S, N)
+			isempty(xs) && return
+			add_symbols!(scene, xs, ys;
+			             symbol=:star, size=14, fill=:red, edge=:black, edgewidth=1.0,
+			             name="Tide Stations", info=infos)
 		else
 			D = _geo_dataset(kind, res, W, E, S, N)
 			(D === nothing || isempty(D)) && return
@@ -114,5 +161,30 @@ end
 function _register_geography()
 	fptr = @cfunction(_on_geography, Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_geography_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
+# C callback for the two "Download Mareg …" entries on a Tide Stations star's right-click menu.
+# `mode` is "2days" | "calendar" (how the download window should behave); `station` is the clicked
+# star's "Name:/Code:/Country:" hover block, from which we pull the station code to fetch.
+# TODO: open the Mareg download window. It is not built yet — for now report the request so the
+# menu wiring is testable; the window (mode-driven: a 2-day window vs a calendar picker) lands next.
+function _on_tides_download(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring)::Cvoid
+	try
+		mode    = unsafe_string(cmode)
+		station = unsafe_string(cstation)
+		m = match(r"Code:\s*(\S+)", station)
+		code = m === nothing ? "" : String(m.captures[1])
+		@info "Tides: download requested (window not built yet)" mode code station
+	catch e
+		@warn "tides: download callback failed" exception=(e,)
+	end
+	return
+end
+
+# Build the C-callable pointer + register it. Called once from __init__.
+function _register_tides()
+	fptr = @cfunction(_on_tides_download, Cvoid, (Ptr{Cvoid}, Cstring, Cstring))
+	ccall(_fn(:gmtvtk_set_tides_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end

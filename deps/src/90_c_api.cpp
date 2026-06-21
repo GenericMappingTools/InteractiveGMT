@@ -549,6 +549,13 @@ GMTVTK_API void gmtvtk_set_geography_callback(JuliaGeoFn fn) {
 	g_juliaGeo = fn;
 }
 
+// Register the tide-station download callback. The two "Download Mareg …" entries on a Tide
+// Stations star's right-click menu call fn(scene, mode, station): mode "2days" | "calendar",
+// station = the clicked star's "Name:/Code:/Country:" block. Julia opens the download window.
+GMTVTK_API void gmtvtk_set_tides_callback(JuliaTidesFn fn) {
+	g_juliaTides = fn;
+}
+
 // Prepare an EMPTY launcher to receive geographic IMAGE objects as ExtraObj images. The basemap
 // must NOT promote its first tile into the window's "surface" (that row has no image-properties
 // menu); instead every tile is an ExtraObj image listed in Scene Objects with the same menu. This

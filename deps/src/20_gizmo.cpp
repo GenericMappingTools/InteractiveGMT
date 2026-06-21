@@ -544,6 +544,86 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 			}
 		}
 	}
+	// '+'/'-' zoom in/out, centred at the mouse pointer (not the viewport centre). Accept the
+	// shifted '+' ("plus"), bare '=' ("equal") and numpad add for in; "minus"/numpad sub for out.
+	// Works in both ortho and perspective: cam->Zoom() scales ParallelScale or the view angle
+	// (camera does not move), then we pan so the world point under the cursor stays put.
+	{
+		const bool zin  = key && (!strcmp(key,"plus")  || !strcmp(key,"equal") || !strcmp(key,"KP_Add"));
+		const bool zout = key && (!strcmp(key,"minus") || !strcmp(key,"KP_Subtract"));
+		Scene* s = c->s;
+		if ((zin || zout) && s && s->ren && s->widget) {
+			vtkRenderer* ren = s->ren;
+			vtkCamera*   cam = ren->GetActiveCamera();
+			// Qt logical (top-down) cursor -> VTK display (bottom-up device) pixels. Same as 'c'.
+			const QPoint lp = s->widget->mapFromGlobal(QCursor::pos());
+			const double r  = s->widget->devicePixelRatioF();
+			const int    H  = s->widget->renderWindow()->GetSize()[1];
+			const double dx = lp.x() * r;
+			const double dy = H - lp.y() * r;
+			// Display depth (z) of the focal plane; cam->Zoom() leaves the camera in place so this
+			// z is stable across the zoom and can be reused for the before/after unprojection.
+			double fp[3]; cam->GetFocalPoint(fp);
+			ren->SetWorldPoint(fp[0], fp[1], fp[2], 1.0); ren->WorldToDisplay();
+			const double fz = ren->GetDisplayPoint()[2];
+			auto unproject = [&](double out[3]) {
+				ren->SetDisplayPoint(dx, dy, fz); ren->DisplayToWorld();
+				double w[4]; ren->GetWorldPoint(w);
+				out[0] = w[0]/w[3]; out[1] = w[1]/w[3]; out[2] = w[2]/w[3];
+			};
+			double before[3]; unproject(before);
+			cam->Zoom(zin ? 1.25 : 1.0/1.25);
+			double after[3];  unproject(after);
+			double pos[3]; cam->GetPosition(pos);
+			const double sh[3] = { before[0]-after[0], before[1]-after[1], before[2]-after[2] };
+			cam->SetFocalPoint(fp[0]+sh[0], fp[1]+sh[1], fp[2]+sh[2]);
+			cam->SetPosition (pos[0]+sh[0], pos[1]+sh[1], pos[2]+sh[2]);
+			c->curView = 0;                  // zoom/pan moved the camera: a view key should re-snap
+			ren->ResetCameraClippingRange();
+			renderWin(c);
+		}
+	}
+	// Arrow keys pan the view: Left/Right/Up/Down translate camera + focal point in the screen
+	// plane. We unproject the viewport centre and a one-pixel step in +x / +y at the focal-plane
+	// depth to get the two world-space screen axes, then shift by ~12% of the window height. The
+	// camera moves WITH the arrow (Right -> camera moves right -> scene appears to slide left).
+	{
+		const bool pl = key && !strcmp(key,"Left");
+		const bool pr = key && !strcmp(key,"Right");
+		const bool pu = key && !strcmp(key,"Up");
+		const bool pd = key && !strcmp(key,"Down");
+		Scene* s = c->s;
+		if ((pl || pr || pu || pd) && s && s->ren && s->widget) {
+			vtkRenderer* ren = s->ren;
+			vtkCamera*   cam = ren->GetActiveCamera();
+			const int* wh = s->widget->renderWindow()->GetSize();
+			const double cx = wh[0] * 0.5, cy = wh[1] * 0.5;
+			double fp[3]; cam->GetFocalPoint(fp);
+			ren->SetWorldPoint(fp[0], fp[1], fp[2], 1.0); ren->WorldToDisplay();
+			const double fz = ren->GetDisplayPoint()[2];
+			auto unproject = [&](double px, double py, double out[3]) {
+				ren->SetDisplayPoint(px, py, fz); ren->DisplayToWorld();
+				double w[4]; ren->GetWorldPoint(w);
+				out[0] = w[0]/w[3]; out[1] = w[1]/w[3]; out[2] = w[2]/w[3];
+			};
+			double c0[3], cxv[3], cyv[3];
+			unproject(cx, cy, c0);            // viewport centre at focal depth
+			unproject(cx + 1.0, cy, cxv);     // +1 px in screen x
+			unproject(cx, cy + 1.0, cyv);     // +1 px in screen y
+			const double step = wh[1] * 0.12; // pan distance in pixels
+			double sh[3] = {0,0,0};
+			if (pr || pl) { const double sg = pr ? step : -step;
+				for (int i=0;i<3;i++) sh[i] += sg * (cxv[i]-c0[i]); }
+			if (pu || pd) { const double sg = pu ? step : -step;
+				for (int i=0;i<3;i++) sh[i] += sg * (cyv[i]-c0[i]); }
+			double pos[3]; cam->GetPosition(pos);
+			cam->SetFocalPoint(fp[0]+sh[0], fp[1]+sh[1], fp[2]+sh[2]);
+			cam->SetPosition (pos[0]+sh[0], pos[1]+sh[1], pos[2]+sh[2]);
+			c->curView = 0;                  // pan moved the camera: a view key should re-snap
+			ren->ResetCameraClippingRange();
+			renderWin(c);
+		}
+	}
 	// '1' snaps to front view: azimuth 0 (look north, +Y), elevation 0 (horizontal),
 	// world +Z up. Camera due south of the focal point at the same height. Same
 	// convention as the default view (buildAndShow) but with elevation 0.

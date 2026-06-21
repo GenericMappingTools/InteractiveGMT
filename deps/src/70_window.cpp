@@ -1000,7 +1000,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mGeo->addAction("Meteorite impacts",             geoTODO("Meteorite impacts"));
 	mGeo->addAction("Hydrothermal sites",            geoTODO("Hydrothermal sites"));
 	mGeo->addAction("Tide Stations",                 geoTODO("Tide Stations"));
-	mGeo->addAction("Tides (download)",              geoTODO("Tides (download)"));
+	mGeo->addAction("Tides (download)",              geoPlot("tides", ""));
 	mGeo->addAction("Earth Tides",                   geoTODO("Earth Tides"));
 	mGeo->addAction("Fracture Zones",                geoTODO("Fracture Zones"));
 	mGeo->addAction("Plate boundaries",              geoTODO("Plate boundaries"));
