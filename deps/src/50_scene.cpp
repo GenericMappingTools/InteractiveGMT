@@ -999,19 +999,29 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 		if (q.isValid()) { sl->actor->GetProperty()->SetEdgeColor(q.redF(), q.greenF(), q.blueF()); applyCellColours(); reRender(); }
 		return;
 	}
-	if (ch == sizeA) {
-		bool ok = false;
-		double v = QInputDialog::getDouble(s->widget, "Symbol size", "size (px):", sl->sizePx, 1, 400, 1, &ok);
-		if (ok) { sl->sizePx = v; symbolRescaleCB(nullptr, 0, s, nullptr); reRender(); }
-		return;
-	}
-	if (ch == sizePtA) {                          // points: 1 pt = 96/72 px @96dpi
-		bool ok = false;
-		double curPt = sl->sizePx * 72.0 / 96.0;
-		double v = QInputDialog::getDouble(s->widget, "Symbol size", "size (points):", curPt, 1, 300, 1, &ok);
-		if (ok) { sl->sizePx = v * 96.0 / 72.0; symbolRescaleCB(nullptr, 0, s, nullptr); reRender(); }
-		return;
-	}
+	// Size dialogs: a live QDoubleSpinBox so the glyph resizes AS the value changes (not on OK).
+	// px and points share one helper; pxPerUnit converts the spinbox unit to sl->sizePx (1 pt = 96/72 px).
+	auto liveSizeDialog = [&](const char* unitLabel, double pxPerUnit, double lo, double hi) {
+		QDialog dlg(s->widget);
+		dlg.setWindowTitle("Symbol size");
+		QFormLayout* form = new QFormLayout(&dlg);
+		QDoubleSpinBox* box = new QDoubleSpinBox(&dlg);
+		box->setRange(lo, hi); box->setSingleStep(1.0); box->setDecimals(1);
+		box->setValue(sl->sizePx / pxPerUnit);
+		QObject::connect(box, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, sl, pxPerUnit](double v) {
+			sl->sizePx = v * pxPerUnit;
+			symbolRescaleCB(nullptr, 0, s, nullptr);     // re-stamp glyph scale, then redraw
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		});
+		form->addRow(QString("Size (%1)").arg(unitLabel), box);
+		QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+		QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
+		form->addRow(bb);
+		dlg.exec();
+	};
+	if (ch == sizeA)   { liveSizeDialog("px", 1.0, 1, 400); return; }
+	if (ch == sizePtA) { liveSizeDialog("points", 96.0 / 72.0, 1, 300); return; }
 	if (ch == ewA) {
 		bool ok = false;
 		double v = QInputDialog::getDouble(s->widget, "Edge width", "width (px):",
@@ -1293,14 +1303,23 @@ static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& glob
 		tu->setCheckable(true); tu->setChecked(a->GetProperty()->GetRenderLinesAsTubes());
 	}
 	else {                                   // points: size + round toggle
-		m.addAction("Point size…", [=]() {
-			bool ok = false;
-			double sz = QInputDialog::getDouble(win, "Point size", "size (px):",
-				a->GetProperty()->GetPointSize(), 1.0, 60.0, 1, &ok);
-			if (ok) {
+		m.addAction("Point size…", [=]() {           // live spinbox (mirror the Line Properties dialog)
+			QDialog dlg(win);
+			dlg.setWindowTitle("Point size");
+			QFormLayout* form = new QFormLayout(&dlg);
+			QDoubleSpinBox* szBox = new QDoubleSpinBox(&dlg);
+			szBox->setRange(1.0, 60.0); szBox->setSingleStep(1.0); szBox->setDecimals(1);
+			szBox->setValue(a->GetProperty()->GetPointSize());
+			QObject::connect(szBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, a](double sz) {
 				a->GetProperty()->SetPointSize(sz);
-				s->widget->renderWindow()->Render();
-			}
+				if (s->widget) s->widget->renderWindow()->Render();   // apply as the value changes
+			});
+			form->addRow("Size (px)", szBox);
+			QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+			QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+			QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
+			form->addRow(bb);
+			dlg.exec();
 		});
 		QAction* rp = m.addAction("Round points", [=]() {
 			a->GetProperty()->SetRenderPointsAsSpheres(!a->GetProperty()->GetRenderPointsAsSpheres());

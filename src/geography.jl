@@ -138,7 +138,7 @@ function _on_geography(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid
 			xs, ys, infos = _tides_data(W, E, S, N)
 			isempty(xs) && return
 			add_symbols!(scene, xs, ys;
-			             symbol=:star, size=14, fill=:red, edge=:black, edgewidth=1.0,
+			             symbol=:star, size=8, sizeunit=:pt, fill=:red, edge=:black, edgewidth=1.0,
 			             name="Tide Stations", info=infos)
 		else
 			D = _geo_dataset(kind, res, W, E, S, N)
