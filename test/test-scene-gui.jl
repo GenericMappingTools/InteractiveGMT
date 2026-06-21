@@ -288,6 +288,26 @@ end
 	end
 end
 
+@testitem "Spector-Grant fit recovers depth on a live spectrum" tags=[:gui, :xyplot] begin
+	IG = InteractiveGMT
+	h = 500.0
+	k = collect(0.0002:0.0002:0.02)
+	P = 1000.0 .* exp.(-4π * h .* k)                 # synthetic mag power spectrum, depth 500 m
+	p = xyplot(k, P; name="PSD")
+	try
+		IG._pump_once()
+		# the C fit the interactive drag tool uses, over the whole band, unit 1/m
+		d = ccall(IG._fn(:gmtvtk_xyplot_specgrant), Cdouble,
+			(Ptr{Cvoid}, Cint, Cdouble, Cdouble, Cdouble), p.h, Cint(0), 0.0, 1.0, 1.0)
+		@test isapprox(d, 500.0; rtol=1e-3)
+		# bad series -> NaN
+		@test isnan(ccall(IG._fn(:gmtvtk_xyplot_specgrant), Cdouble,
+			(Ptr{Cvoid}, Cint, Cdouble, Cdouble, Cdouble), p.h, Cint(9), 0.0, 1.0, 1.0))
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), p.h)
+	end
+end
+
 @testitem "clear! empties an X,Y plot" tags=[:gui, :xyplot] begin
 	IG = InteractiveGMT
 	t = collect(range(0, 1; length=32))

@@ -1065,6 +1065,20 @@ GMTVTK_API void gmtvtk_xyplot_set_logscale(void *handle, int axis, int on) {
 	xySetLog(p, axis, on != 0);
 }
 
+// Spector-Grant depth-to-sources over band [xa,xb] of series `sel` (the SAME fit the interactive
+// drag tool runs): fit ln(power) vs wavenumber, return depth = |slope|/(4π)·unit in metres. Returns
+// NaN on a dead handle / bad series / < 2 positive-power points in the band. Programmatic twin of
+// the Analysis > "Depth to sources (Spector-Grant)" drag tool.
+GMTVTK_API double gmtvtk_xyplot_specgrant(void *handle, int sel, double xa, double xb, double unit) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return std::nan("");
+	double slope, inter, depth, xlo, xhi;
+	if (!xySGFit(p, sel, xa, xb, unit, slope, inter, depth, xlo, xhi))
+		return std::nan("");
+	return depth;
+}
+
 // Set the bottom (X) and left (Y) axis titles of an X,Y plot window. Null leaves a
 // title unchanged. Renders.
 GMTVTK_API void gmtvtk_xyplot_set_labels(void *handle, const char *xlabel, const char *ylabel) {

@@ -47,6 +47,14 @@ struct XYPlot {
 	double                              lastLo = 0.0, lastHi = 0.0;
 	bool                                ticksBusy = false;
 	vtkSmartPointer<vtkCallbackCommand> ticksCb;
+	// Interactive Spector-Grant tool (left-drag a band on a spectrum -> live depth-to-sources).
+	bool                                sgActive = false;
+	bool                                sgDragging = false;
+	int                                 sgSel = -1;       // target series captured on activation
+	double                              sgX0 = 0.0;       // drag-start frequency
+	double                              sgUnit = 1000.0;  // wavenumber->metres factor (1/km default)
+	vtkPlot                            *sgFit = nullptr;  // the live fit line (not in s->series)
+	vtkSmartPointer<vtkTable>           sgFitTable;
 };
 
 // Live X,Y windows, keyed by the XYPlot* handed back to the host. A handle is
@@ -393,29 +401,119 @@ static bool xyAskButter(QWidget *parent, QString &type, double &fc) {
 	return true;
 }
 
-// Dialog for Spector-Grant depth-to-sources: a frequency band [f1,f2] (0/0 = whole series) + the
-// frequency unit (sets the metres conversion factor). Returns false if cancelled.
-static bool xyAskSpecGrant(QWidget *parent, double &f1, double &f2, double &xf) {
-	QDialog d(parent);
-	d.setWindowTitle("Depth to sources (Spector-Grant)");
-	QFormLayout *fo = new QFormLayout(&d);
-	QDoubleSpinBox *s1 = new QDoubleSpinBox(&d); s1->setDecimals(6); s1->setRange(0.0, 1e12); s1->setValue(0.0);
-	QDoubleSpinBox *s2 = new QDoubleSpinBox(&d); s2->setDecimals(6); s2->setRange(0.0, 1e12); s2->setValue(0.0);
-	QComboBox *uc = new QComboBox(&d); uc->addItems(QStringList() << "1/m" << "1/km" << "1/NM");
-	uc->setCurrentIndex(1);                            // spectra are usually in 1/km
-	fo->addRow("Low frequency (0 = series start)", s1);
-	fo->addRow("High frequency (0 = series end)",  s2);
-	fo->addRow("Frequency unit", uc);
-	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
-	fo->addRow(bb);
-	QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
-	QObject::connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
-	if (d.exec() != QDialog::Accepted)
+// ---- interactive Spector-Grant depth-to-sources (ecran dynSlope) -----------
+// Left-drag a frequency band on a (wavenumber, power) spectrum; fit ln(power) vs k live, draw the
+// fit line over the band and show depth = |slope|/(4π)·unit in the status bar.
+
+// Ask the wavenumber unit (sets the metres factor) when the tool is switched on.
+static bool xyAskFreqUnit(QWidget *parent, double &xf) {
+	QStringList items; items << "1/m" << "1/km" << "1/NM";
+	bool ok = false;
+	const QString it = QInputDialog::getItem(parent, "Spector-Grant", "Frequency unit:", items, 1, false, &ok);
+	if (!ok)
 		return false;
-	f1 = s1->value(); f2 = s2->value();
-	xf = uc->currentIndex() == 0 ? 1.0 : uc->currentIndex() == 1 ? 1000.0 : 1852.0;
+	xf = (it == "1/m") ? 1.0 : (it == "1/km") ? 1000.0 : 1852.0;
 	return true;
 }
+
+// Map a Qt widget point to a DATA x value via the bottom axis (linear x only).
+static double xySGDataX(XYPlot *s, const QPointF &p) {
+	const double px = p.x() * s->widget->devicePixelRatioF();
+	vtkAxis *ax = s->chart->GetAxis(vtkAxis::BOTTOM);
+	float *a1 = ax->GetPoint1(), *a2 = ax->GetPoint2();
+	const double w = a2[0] - a1[0];
+	if (w == 0.0)
+		return ax->GetMinimum();
+	return ax->GetMinimum() + (px - a1[0]) / w * (ax->GetMaximum() - ax->GetMinimum());
+}
+
+// Least-squares fit of ln(power) vs k over band [xa,xb] of series idx (positive power only).
+static bool xySGFit(XYPlot *s, int idx, double xa, double xb, double unit,
+                    double &slope, double &inter, double &depth, double &xlo, double &xhi) {
+	if (idx < 0 || idx >= (int)s->series.size())
+		return false;
+	if (xa > xb) std::swap(xa, xb);
+	vtkTable *t = s->series[idx].table;
+	if (!t) return false;
+	double sx = 0, sy = 0, sxx = 0, sxy = 0; int n = 0;
+	const vtkIdType nr = t->GetNumberOfRows();
+	for (vtkIdType r = 0; r < nr; ++r) {
+		const double x = t->GetValue(r, 0).ToDouble();
+		const double y = t->GetValue(r, 1).ToDouble();
+		if (x < xa || x > xb || !(y > 0.0)) continue;
+		const double ly = std::log(y);
+		sx += x; sy += ly; sxx += x * x; sxy += x * ly; ++n;
+	}
+	if (n < 2) return false;
+	const double den = n * sxx - sx * sx;
+	if (den == 0.0) return false;
+	slope = (n * sxy - sx * sy) / den;
+	inter = (sy - slope * sx) / n;
+	depth = std::abs(slope) / (4.0 * vtkMath::Pi()) * unit;
+	xlo = xa; xhi = xb;
+	return true;
+}
+
+// Recompute the fit for the current drag end and refresh the fit line + status readout.
+static void xySGUpdate(XYPlot *s, double x1) {
+	double slope, inter, depth, xlo, xhi;
+	if (!xySGFit(s, s->sgSel, s->sgX0, x1, s->sgUnit, slope, inter, depth, xlo, xhi))
+		return;
+	if (!s->sgFitTable) {
+		s->sgFitTable = vtkSmartPointer<vtkTable>::New();
+		vtkNew<vtkFloatArray> ax; ax->SetName("k");       s->sgFitTable->AddColumn(ax);
+		vtkNew<vtkFloatArray> ay; ay->SetName("S&G fit"); s->sgFitTable->AddColumn(ay);
+		s->sgFitTable->SetNumberOfRows(2);
+	}
+	s->sgFitTable->SetValue(0, 0, (float)xlo); s->sgFitTable->SetValue(0, 1, (float)std::exp(slope * xlo + inter));
+	s->sgFitTable->SetValue(1, 0, (float)xhi); s->sgFitTable->SetValue(1, 1, (float)std::exp(slope * xhi + inter));
+	if (!s->sgFit) {
+		s->sgFit = s->chart->AddPlot(vtkChart::LINE);
+		s->sgFit->SetColor(0, 0, 0, 255);
+		s->sgFit->SetWidth(2.5f);
+		s->sgFit->SetLabel("S&G fit");
+	}
+	s->sgFit->SetInputData(s->sgFitTable, 0, 1);
+	s->win->statusBar()->showMessage(QString("Spector-Grant:  band Δ=%1   slope=%2   Depth = %3 m")
+		.arg(xhi - xlo, 0, 'g', 4).arg(slope, 0, 'g', 4).arg(depth, 0, 'f', 0));
+	if (s->widget->renderWindow())
+		s->widget->renderWindow()->Render();
+}
+
+// Remove the fit line (tool turned off).
+static void xySGClear(XYPlot *s) {
+	if (s->sgFit) { s->chart->RemovePlotInstance(s->sgFit); s->sgFit = nullptr; }
+	s->sgFitTable = nullptr;
+	if (s->widget && s->widget->renderWindow())
+		s->widget->renderWindow()->Render();
+}
+
+// Qt event filter on the chart widget: while the tool is active, left-drag selects the band and
+// drives the live fit (consuming the events so the chart's own zoom/pan stays out of the way).
+class XYSGFilter : public QObject {
+public:
+	XYPlot *s = nullptr;
+	explicit XYSGFilter(XYPlot *sc, QObject *parent) : QObject(parent), s(sc) {}
+protected:
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		if (!s || !s->sgActive)
+			return QObject::eventFilter(obj, ev);
+		const QEvent::Type t = ev->type();
+		if (t == QEvent::MouseButtonPress) {
+			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
+			if (me->button() == Qt::LeftButton) { s->sgDragging = true; s->sgX0 = xySGDataX(s, me->position()); return true; }
+		}
+		else if (t == QEvent::MouseMove && s->sgDragging) {
+			xySGUpdate(s, xySGDataX(s, static_cast<QMouseEvent*>(ev)->position()));
+			return true;
+		}
+		else if (t == QEvent::MouseButtonRelease && s->sgDragging) {
+			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
+			if (me->button() == Qt::LeftButton) { s->sgDragging = false; return true; }
+		}
+		return QObject::eventFilter(obj, ev);
+	}
+};
 
 // Currently-selected series in the Object Manager (-1 if none / out of range).
 static int xyCurrentSel(XYPlot *s) {
@@ -683,15 +781,24 @@ static XYPlot *buildXYPlot(const char *title) {
 		});
 	}
 	{
-		// Spector & Grant: on a (frequency, power) spectrum, fit ln(power) over a band -> the slope
-		// gives the depth to the magnetic source ensemble. Run it on a PSD/amplitude spectrum series.
-		QAction *a = mAna->addAction("Depth to sources (Spector-Grant)…");
-		QObject::connect(a, &QAction::triggered, s->win, [s, gate] {
-			const int sel = gate(); if (sel < 0) return;
-			double f1, f2, xf;
-			if (!xyAskSpecGrant(s->win, f1, f2, xf)) return;
-			g_juliaXYAna(s, QString("specgrant:%1:%2:%3").arg(f1, 0, 'g', 9).arg(f2, 0, 'g', 9)
-			                    .arg(xf, 0, 'g', 9).toUtf8().constData(), sel);
+		// Spector & Grant (interactive): on a (wavenumber, power) spectrum, LEFT-DRAG a band and the
+		// slope of ln(power) gives the depth to the magnetic source ensemble — live fit line + readout.
+		QAction *a = mAna->addAction("Depth to sources (Spector-Grant)");
+		a->setCheckable(true);
+		QObject::connect(a, &QAction::toggled, s->win, [s, a](bool on) {
+			if (on) {
+				const int sel = xyCurrentSel(s);
+				if (sel < 0) { s->win->statusBar()->showMessage("Select the spectrum series first", 3500); a->setChecked(false); return; }
+				double xf;
+				if (!xyAskFreqUnit(s->win, xf)) { a->setChecked(false); return; }
+				s->sgSel = sel; s->sgUnit = xf; s->sgActive = true;
+				s->win->statusBar()->showMessage("Spector-Grant: left-drag a frequency band on the spectrum");
+			}
+			else {
+				s->sgActive = false; s->sgDragging = false;
+				xySGClear(s);
+				s->win->statusBar()->clearMessage();
+			}
 		});
 	}
 
@@ -780,6 +887,9 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->ticksCb->SetCallback(xyTicksOnRender);
 	s->ticksCb->SetClientData(s);
 	rw->AddObserver(vtkCommand::EndEvent, s->ticksCb);
+
+	// --- interactive Spector-Grant drag-band tool (left-drag while the tool is active) ---
+	s->widget->installEventFilter(new XYSGFilter(s, s->win));
 
 	// --- lifetime bookkeeping (shares the pump/window count with the 3-D viewer) ---
 	g_xyplots.insert(s);

@@ -45,6 +45,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_xyplot_set_callback, :gmtvtk_xyplot_set_labels,
 	:gmtvtk_xyplot_set_analysis_callback, :gmtvtk_open_profile_in_xyplot,
 	:gmtvtk_xyplot_set_seed_callback, :gmtvtk_xyplot_set_xtime, :gmtvtk_xyplot_set_logscale,
+	:gmtvtk_xyplot_specgrant,
 )
 
 # Resolve a loaded C-API function pointer. Errors clearly if the library never loaded.

@@ -19,8 +19,11 @@ This file is the durable backlog — keep it updated as items land.
   FFT PSD, Autocorrelation, **Fit polynomial** (degree dlg), **Savitzky-Golay smoothing** (window
   dlg, stands in for the smoothing spline), **Butterworth filter** (cutoff+low/high dlg),
   **Filter Outliers / despike** (n-σ dlg; `_despike` = Savitzky-Golay baseline + MAD threshold +
-  interp-fill — a faithful port of ecran's one-shot `outliers_clean`). All dep-free (in-house
-  radix-2 FFT + small LSQ/median solvers).
+  interp-fill — a faithful port of ecran's one-shot `outliers_clean`),
+  **Spector-Grant depth-to-sources** — INTERACTIVE: toggle the tool, LEFT-DRAG a band on the
+  spectrum, live fit line + "Depth = N m" readout (`xySGFit`/`XYSGFilter`; same fit exposed via
+  `gmtvtk_xyplot_specgrant` for scripts/tests). All dep-free (in-house radix-2 FFT + small LSQ/
+  median solvers).
 - Time axes (X = epoch seconds): date(auto/ymd) / time / decimal-year / day-of-year, auto-updating
   ticks (`xtime!`, `xtime=` kwarg).
 - **Log axes** (X/Y): Misc menu toggles + `logscale!` / `xscale=`/`yscale=` kwargs.
@@ -43,14 +46,10 @@ This file is the durable backlog — keep it updated as items land.
 - "Activate extensional measuring": interactive pick of fault heaves on a profile → plot Heaves /
   Exx (extension strain) / save. Interactive (mouse picking on the curve).
 
-### Spectral depth-to-sources (Spector-Grant) — PARTIAL, NOT a faithful port — ecran `dynSlope_CB` (674), `recompSI`
-- What exists: a NON-interactive **dialog** (Analysis > "Depth to sources (Spector-Grant)…") that
-  fits ln(power) vs k over a TYPED band and reports depth = |slope|/(4π)·unit (`_spector_grant`,
-  math verified on a synthetic spectrum, op "specgrant:f1:f2:xfac"). It overlays a fit line.
-- NOT done — this is NOT ecran's tool. ecran's `dynSlope_CB` is INTERACTIVE: click-drag a band
-  directly on the spectrum, with a live slope/depth readout and an editable fit line. Also missing:
-  the "Slope/Intercept" context readout and bandpass-on-the-chunk (`do_bandFilter`). A real port
-  needs drag-band selection on the vtkChartXY chart.
+### Spectral depth-to-sources (Spector-Grant) — leftover extras — ecran `dynSlope_CB` (674), `recompSI`
+- The interactive drag-band tool is DONE (see Done). Un-ported ecran extras: an EDITABLE fit line
+  (`ui_edit_polygon`) so you can nudge the endpoints and recompute (`recompSI`), the right-click
+  "Slope/Intercept" context labels, and bandpass-on-the-chunk (`do_bandFilter`). Minor.
 
 ### Sound Velocity Profile — ecran `AnalysisSVP_CB` (2066)
 - Oceanographic SVP tool (sound speed vs depth). Check exactly what it computes in ecran.
