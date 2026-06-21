@@ -645,7 +645,7 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->win->setAttribute(Qt::WA_DeleteOnClose, true);
 	s->win->setWindowTitle(title && title[0] ? QString::fromUtf8(title) : QString("i'GMT  —  X,Y plot"));
 	s->win->setWindowIcon(appIcon());
-	s->win->resize(900, 600);
+	s->win->resize(1060, 560);                         // landscape — better for time-series plots
 
 	// --- central chart ---
 	s->widget = new QVTKOpenGLNativeWidget();
@@ -660,6 +660,15 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->chart->SetShowLegend(true);
 	s->chart->GetAxis(vtkAxis::BOTTOM)->SetTitle("X");   // sensible defaults; Julia overrides via set_labels
 	s->chart->GetAxis(vtkAxis::LEFT)->SetTitle("Y");
+	// Compact tick labels: smaller font + bounded precision so x ticks stop colliding (vtkChartXY
+	// then also fits more of them without overlap). STANDARD notation trims trailing-zero clutter.
+	for (int an : { vtkAxis::BOTTOM, vtkAxis::LEFT }) {
+		vtkAxis *ax = s->chart->GetAxis(an);
+		ax->GetLabelProperties()->SetFontSize(11);
+		ax->GetTitleProperties()->SetFontSize(13);
+		ax->SetNotation(vtkAxis::STANDARD_NOTATION);
+		ax->SetPrecision(4);
+	}
 	s->win->setCentralWidget(s->widget);
 
 	// --- Object Manager dock (left) ---
