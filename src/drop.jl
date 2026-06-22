@@ -22,6 +22,7 @@ function _on_drop(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid
 		_drop_into(scene, data, basename(path); promote=empty)
 		_mark_file_open(path, scene)                           # remember it so a re-drop is ignored
 	catch e
+		_viewer_log_error(scene, "Open '$(basename(path))' FAILED: $(sprint(showerror, e))")
 		@warn "drop: could not read/open file" path exception=e
 	end
 	return

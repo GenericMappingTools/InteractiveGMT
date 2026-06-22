@@ -3,13 +3,28 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp);   // sym
 static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
 static void textApplyProps(Scene* s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
 
+// Append one execution-error line to a window's read-only "Errors" tab and raise it (so a failure in
+// a background op is VISIBLE in the window, not just on the REPL's stderr). Shared by the
+// gmtvtk_log_error export and the fire-and-forget g_juliaEval callers below. Best-effort / no-throw.
+static void sceneLogError(Scene* s, const QString& msg) {
+	if (!s || !sceneAlive(s) || !s->errConsole) return;
+	s->errConsole->appendPlainText(QString("[%1]  %2")
+		.arg(QTime::currentTime().toString("HH:mm:ss")).arg(msg));
+	if (s->bottomTabs) {
+		int idx = s->bottomTabs->indexOf(s->errConsole);
+		if (idx >= 0) s->bottomTabs->setCurrentIndex(idx);   // pop the Errors tab to the front
+	}
+}
+
 // Hand a colormap NAME back to the Julia host, which recomputes CPT nodes over the surface's data
 // range and ccalls gmtvtk_set_cpt to recolour live. `fig` is bound to THIS window by _console_eval.
+// A NEGATIVE return flags a Julia error (|n| bytes of text) -> route it to the Errors tab.
 static void applyColormap(Scene* s, const QString& name) {
 	if (!s || !g_juliaEval || name.isEmpty()) return;
 	std::string cmd = "InteractiveGMT._recolor(fig, \"" + name.toStdString() + "\")";
 	std::vector<char> buf(1 << 12);
-	g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+	int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
 }
 
 // ===== COLORBAR (scalar bar strip + our own ticks/numbers) ===============================

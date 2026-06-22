@@ -231,6 +231,7 @@ struct Scene {
 	QDockWidget*  shadeDock    = nullptr;  // the Shading dock itself (re-shown when an empty launcher is promoted to a grid)
 	std::string surfName;            // Scene Objects label for s->surf ("" -> "Surface"; named solids set it)
 	QPlainTextEdit* console = nullptr;   // Julia console dock output (commands eval'd in Main via g_juliaEval)
+	QPlainTextEdit* errConsole = nullptr; // read-only Errors tab: execution errors from background callbacks (gmtvtk_log_error)
 
 	// --- bottom tabbed panel (Profile / Julia Console / Data Viewer) --------
 	QDockWidget*  bottomDock    = nullptr;   // the single bottom dock holding the tab widget

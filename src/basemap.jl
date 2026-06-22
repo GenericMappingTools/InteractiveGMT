@@ -109,6 +109,7 @@ function _on_basemap(scene::Ptr{Cvoid}, copt::Cstring)::Cvoid
 			  scene, I.proj4, "", Cint(4326))                    # referenced -> reveals Geography menu
 		push!(loaded, name)
 	catch e
+		_viewer_log_error(scene, "Base Map FAILED: $(sprint(showerror, e))")
 		@warn "basemap: could not crop/add the tile" exception=(e,)
 	end
 	return

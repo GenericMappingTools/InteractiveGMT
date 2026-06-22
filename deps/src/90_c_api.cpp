@@ -573,6 +573,14 @@ GMTVTK_API void gmtvtk_set_drop_callback(JuliaDropFn fn) {
 	g_juliaDrop = fn;
 }
 
+// Push one execution-error line into a 3-D viewer window's read-only "Errors" tab and raise that
+// tab (so a failure in a background callback is VISIBLE in the window, not just on the REPL's
+// stderr). `scene` is the window's Scene*; no-op if the handle is dead or has no Errors tab. The
+// X,Y tool has its own twin, gmtvtk_xyplot_log. Best-effort: Julia calls this from catch blocks.
+GMTVTK_API void gmtvtk_log_error(void *scene, const char *msg) {
+	if (msg) sceneLogError(static_cast<Scene*>(scene), QString::fromUtf8(msg));
+}
+
 // Register the basemap-picker callback. `fn` (Julia @cfunction, signature JuliaBaseMapFn) is called
 // with a clicked tile's geographic region "W/E/S/N/wrap"; Julia crops data/etopo4.jpg + adds it.
 GMTVTK_API void gmtvtk_set_basemap_callback(JuliaBaseMapFn fn) {
@@ -1056,6 +1064,15 @@ GMTVTK_API void gmtvtk_xyplot_set_xtime(void *handle, int fmt) {
 	xySetXTime(p, fmt);
 }
 
+// Current page's X-axis time mode (0 = linear, 1..5 as gmtvtk_xyplot_set_xtime). 0 on a dead handle.
+// Lets Julia read the parent page's mode so a derivative result (same x = time) inherits it.
+GMTVTK_API int gmtvtk_xyplot_get_xtime(void *handle) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return 0;
+	return xyCur(p).xTimeFmt;
+}
+
 // Toggle log scaling on an X,Y plot axis. axis: 0 = X (bottom), 1 = Y (left). on != 0 enables.
 // Data must be positive for VTK to activate it. No-op on a dead handle.
 GMTVTK_API void gmtvtk_xyplot_set_logscale(void *handle, int axis, int on) {
@@ -1079,16 +1096,108 @@ GMTVTK_API double gmtvtk_xyplot_specgrant(void *handle, int sel, double xa, doub
 	return depth;
 }
 
+// Append a line to the X,Y window's collapsible Console panel (and echo on the status bar). Used by
+// the Julia callbacks to surface errors/results IN the window instead of only on the REPL's stderr.
+// is_error != 0 auto-expands the (default-collapsed) panel. No-op on a dead handle / null msg.
+GMTVTK_API void gmtvtk_xyplot_log(void *handle, const char *msg, int is_error) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !msg)
+		return;
+	xyLog(p, QString::fromUtf8(msg), is_error != 0);
+}
+
+// Run an Analysis op exactly as the Analysis menu does: gate on the wired callback + the current
+// Object-Manager series (xyCurrentSel, which now defaults to the last series), then dispatch to
+// Julia. Returns the series index used, or -1 if not wired / no series. The programmatic twin of
+// clicking an Analysis menu item — used by tests and scripts.
+GMTVTK_API int gmtvtk_xyplot_run_analysis(void *handle, const char *op) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !op)
+		return -1;
+	if (!g_juliaXYAna) { xyLog(p, "Analysis: not wired (rebuild the DLL + restart Julia)", true); return -1; }
+	const int sel = xyCurrentSel(p);
+	if (sel < 0) { xyLog(p, "Select a series in the Object Manager first", true); return -1; }
+	g_juliaXYAna(p, op, sel);
+	return sel;
+}
+
 // Set the bottom (X) and left (Y) axis titles of an X,Y plot window. Null leaves a
 // title unchanged. Renders.
 GMTVTK_API void gmtvtk_xyplot_set_labels(void *handle, const char *xlabel, const char *ylabel) {
 	XYPlot *p = static_cast<XYPlot*>(handle);
 	if (!xyAlive(p))
 		return;
-	if (xlabel) p->chart->GetAxis(vtkAxis::BOTTOM)->SetTitle(xlabel);
-	if (ylabel) p->chart->GetAxis(vtkAxis::LEFT)->SetTitle(ylabel);
+	if (xlabel) xyCur(p).chart->GetAxis(vtkAxis::BOTTOM)->SetTitle(xlabel);
+	if (ylabel) xyCur(p).chart->GetAxis(vtkAxis::LEFT)->SetTitle(ylabel);
 	if (p->widget && p->widget->renderWindow())
 		p->widget->renderWindow()->Render();
+}
+
+// Add a new PAGE (Excel-like tab) to an X,Y window and switch to it, so the next gmtvtk_xyplot_*
+// calls (add_series / set_labels) land on the fresh page. `name` labels the tab (null -> "Page N").
+// Returns the new page index, or -1 on a dead handle. Used by Julia when an Analysis result's units
+// don't fit the parent axes (FFT / autocorrelation / derivatives).
+GMTVTK_API int gmtvtk_xyplot_add_page(void *handle, const char *name) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return -1;
+	return xyNewPage(p, name, true);
+}
+
+// Number of series on the CURRENT page (-1 on a dead handle). Lets Julia iterate the page for Save.
+GMTVTK_API int gmtvtk_xyplot_series_count(void *handle) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return -1;
+	return (int)xyCur(p).series.size();
+}
+
+// Number of (x,y) points in series `sel` of the current page (-1 on a dead handle / bad index).
+GMTVTK_API int gmtvtk_xyplot_series_npoints(void *handle, int sel) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return -1;
+	std::vector<XYSeries> &series = xyCur(p).series;
+	if (sel < 0 || sel >= (int)series.size() || !series[sel].table)
+		return -1;
+	return (int)series[sel].table->GetNumberOfRows();
+}
+
+// Copy series `sel` (current page) into caller buffers `x`,`y` (each at least `maxn` doubles).
+// Returns the number of points copied (min(npoints, maxn)), or -1 on a dead handle / bad index.
+// The C side owns the vtkTables; this hands Julia a snapshot so Analysis / Save can read the data
+// that lives on the page actually being shown (Julia no longer mirrors per-page series).
+GMTVTK_API int gmtvtk_xyplot_get_series(void *handle, int sel, double *x, double *y, int maxn) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !x || !y || maxn < 1)
+		return -1;
+	std::vector<XYSeries> &series = xyCur(p).series;
+	if (sel < 0 || sel >= (int)series.size() || !series[sel].table)
+		return -1;
+	vtkTable *t = series[sel].table;
+	const int n = std::min(maxn, (int)t->GetNumberOfRows());
+	for (int r = 0; r < n; ++r) {
+		x[r] = t->GetValue(r, 0).ToDouble();
+		y[r] = t->GetValue(r, 1).ToDouble();
+	}
+	return n;
+}
+
+// Name of series `sel` on the current page, into `buf` (capacity `cap`, NUL-terminated). Returns the
+// number of chars written (excluding NUL), or -1 on a dead handle / bad index. Lets Julia label an
+// Analysis result "<name> <suffix>" without mirroring the names.
+GMTVTK_API int gmtvtk_xyplot_series_name(void *handle, int sel, char *buf, int cap) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !buf || cap < 1)
+		return -1;
+	std::vector<XYSeries> &series = xyCur(p).series;
+	if (sel < 0 || sel >= (int)series.size())
+		return -1;
+	const std::string &nm = series[sel].name;
+	const int n = std::min((int)nm.size(), cap - 1);
+	std::memcpy(buf, nm.data(), n);
+	buf[n] = '\0';
+	return n;
 }
 
 // Register the File-menu callback (Open / Save / New) for X,Y plot windows. `fn`

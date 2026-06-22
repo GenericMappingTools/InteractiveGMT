@@ -40,7 +40,21 @@ function _console_eval(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap::Ci
 		(!isempty(txt) && !endswith(txt, "\n")) && (txt *= "\n")
 		txt *= sprint(show, MIME("text/plain"), val)
 	end
-	return _console_write(buf, cap, txt)
+	# Byte count back to C; NEGATIVE flags an error so the caller (e.g. the X,Y tool's collapsed
+	# Console) can pop open / highlight it. Callers that ignore the sign just read |n| bytes.
+	n = _console_write(buf, cap, txt)
+	return err === nothing ? n : Cint(-n)
+end
+
+# Push one execution-error line into a 3-D viewer window's read-only "Errors" tab (gmtvtk_log_error).
+# `scene` is the window's C handle. The X,Y tool has its own twin (_xy_log -> gmtvtk_xyplot_log).
+# Best-effort + NEVER throws, so a catch block can call it without masking the original error.
+function _viewer_log_error(scene::Ptr{Cvoid}, msg::AbstractString)
+	try
+		ccall(_fn(:gmtvtk_log_error), Cvoid, (Ptr{Cvoid}, Cstring), scene, String(msg))
+	catch
+	end
+	return
 end
 
 # Build the C-callable pointer and install it in the DLL. Called once from __init__, after the

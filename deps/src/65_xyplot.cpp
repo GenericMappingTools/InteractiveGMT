@@ -6,16 +6,19 @@
 //  struct (XYPlot) + its own C API (gmtvtk_xyplot_*, in 90_c_api.cpp) and shares
 //  ONLY the QApplication + the gmtvtk_process_events pump with the 3-D viewer.
 //
-//  Phase 1 = the shell + plumbing: open a window, add/remove/toggle (x,y) series
-//  driven from Julia, zoom/pan/legend/grid (vtkChartXY built-ins), a live coord
-//  readout, the Data Viewer table, export PNG. Analysis ops come in Phase 2.
+//  PAGES (Excel-like tabs at the bottom, above the Console): one window holds a
+//  vector of XYPage, each its OWN chart + series + axes/time-mode. Only the
+//  current page's chart sits in the shared vtkContextScene; switching pages swaps
+//  it and rebuilds the Object Manager + Data Viewer. Derived quantities whose
+//  units don't fit the parent axes (FFT, autocorrelation, derivatives) land on a
+//  NEW page instead of a new window — see Julia _on_xy_analysis.
 // ============================================================================
 
 // One plotted curve: its data table (column 0 = X, column 1 = Y) + the chart
 // plot item (owned by the chart) + presentation state.
 struct XYSeries {
 	vtkSmartPointer<vtkTable> table;
-	vtkPlot                  *plot = nullptr;   // owned by s->chart; rebuilt on delete
+	vtkPlot                  *plot = nullptr;   // owned by the page chart; rebuilt on delete
 	std::string               name;
 	double                    r = 0.92, g = 0.67, b = 0.0;
 	double                    width = 1.5;
@@ -25,42 +28,87 @@ struct XYSeries {
 	bool                      visible = true;
 };
 
+// One PAGE inside an X,Y window: its own chart, its own series list, its own axis
+// time-mode + Spector-Grant drag state. Only the current page's chart is mounted
+// in the window's shared scene.
+struct XYPage {
+	vtkSmartPointer<vtkChartXY> chart;          // really an XYChart; owner -> the XYPlot
+	std::vector<XYSeries>       series;
+	std::string                 name;
+	// X-axis time mode: 0 linear, 1 date-auto, 2 date(yyyy-mm-dd), 3 time(HH:MM), 4 decimal year,
+	// 5 day-of-year. When non-zero the bottom axis ticks are formatted from epoch-seconds X and
+	// regenerated on every range change (xyTicksOnRender observer).
+	int                         xTimeFmt = 0;
+	double                      lastLo = 0.0, lastHi = 0.0;
+	bool                        ticksBusy = false;
+	// Interactive Spector-Grant tool (left-drag a band on a spectrum -> live depth-to-sources).
+	bool                        sgActive = false;
+	bool                        sgDragging = false;
+	int                         sgSel = -1;       // target series captured on activation
+	double                      sgX0 = 0.0;       // drag-start frequency
+	double                      sgUnit = 1000.0;  // wavenumber->metres factor (1/km default)
+	vtkPlot                    *sgFit = nullptr;  // the live fit line (not in series)
+	vtkSmartPointer<vtkTable>   sgFitTable;
+};
+
 // A live X,Y plot window. The opaque handle handed to the host is this XYPlot*.
+// Per-curve / per-axis state lives in the PAGES; the window owns only the shared
+// widgets (one VTK view, the Object Manager, the Data Viewer, the Console, tabs).
 struct XYPlot {
 	QMainWindow                        *win = nullptr;
 	QVTKOpenGLNativeWidget             *widget = nullptr;
 	vtkSmartPointer<vtkContextView>     view;
-	vtkSmartPointer<vtkChartXY>         chart;
 	QTreeWidget                        *objMgr = nullptr;      // Object Manager (series list)
 	QTableWidget                       *dataTable = nullptr;   // Data Viewer spreadsheet
 	QDockWidget                        *dataDock = nullptr;    // foldable bottom dock
+	QPlainTextEdit                     *console = nullptr;       // ERRORS tab: read-only execution-error log (xyLog)
+	QPlainTextEdit                     *cmdConsole = nullptr;    // JULIA tab: read-only output of typed commands
+	QLineEdit                          *consoleInput = nullptr;  // interactive julia> line (shares Main with the 3-D viewer)
+	QWidget                            *consolePanel = nullptr;  // collapsible container under the chart
+	QTabWidget                         *xyErrTab = nullptr;      // console body tabs (Errors | Julia); xyLog raises Errors
+	QToolButton                        *consoleToggle = nullptr; // disclosure triangle (collapsed by default)
 	QAction                            *actLegend = nullptr;
 	QAction                            *actGrid = nullptr;
 	QAction                            *actDataView = nullptr;
+	QAction                            *actConsole = nullptr;
 	vtkSmartPointer<vtkCallbackCommand> moveCb;               // mouse-move coord readout
-	std::vector<XYSeries>               series;
+	vtkSmartPointer<vtkCallbackCommand> ticksCb;             // time-axis tick refresh on range change
 	bool                                rebuilding = false;    // guard objMgr itemChanged storms
-	// X-axis time mode: 0 linear, 1 date-auto, 2 date(yyyy-mm-dd), 3 time(HH:MM), 4 decimal year,
-	// 5 day-of-year. When non-zero the bottom axis ticks are formatted from epoch-seconds X and
-	// regenerated on every range change (xyTicksOnRender observer).
-	int                                 xTimeFmt = 0;
-	double                              lastLo = 0.0, lastHi = 0.0;
-	bool                                ticksBusy = false;
-	vtkSmartPointer<vtkCallbackCommand> ticksCb;
-	// Interactive Spector-Grant tool (left-drag a band on a spectrum -> live depth-to-sources).
-	bool                                sgActive = false;
-	bool                                sgDragging = false;
-	int                                 sgSel = -1;       // target series captured on activation
-	double                              sgX0 = 0.0;       // drag-start frequency
-	double                              sgUnit = 1000.0;  // wavenumber->metres factor (1/km default)
-	vtkPlot                            *sgFit = nullptr;  // the live fit line (not in s->series)
-	vtkSmartPointer<vtkTable>           sgFitTable;
+	// pages (Excel-like tabs). Always >= 1; the current one is mounted in the scene.
+	std::vector<XYPage>                 pages;
+	int                                 curPageIdx = 0;
+	QTabBar                            *tabs = nullptr;
+	bool                                tabBusy = false;       // guard QTabBar::currentChanged storms
 };
 
 // Live X,Y windows, keyed by the XYPlot* handed back to the host. A handle is
 // valid only while its window is open (the destroyed-lambda erases it).
 static std::unordered_set<XYPlot*> g_xyplots;
 static bool xyAlive(XYPlot *p) { return p && g_xyplots.count(p) != 0; }
+
+// The current page of a window (always valid once the window is built: there is
+// always at least one page).
+static inline XYPage &xyCur(XYPlot *s) { return s->pages[s->curPageIdx]; }
+
+// Append one timestamped line to the collapsible Console panel AND echo it on the status bar, so a
+// failing Analysis op (or any callback) is VISIBLE in the window instead of vanishing into the
+// REPL's stderr. The panel is collapsed by default; `isError` auto-expands it so genuine failures
+// can't hide, while ordinary info lines just accumulate quietly behind the triangle.
+static void xyLog(XYPlot *s, const QString &msg, bool isError = false) {
+	if (!xyAlive(s))
+		return;
+	if (s->console) {
+		s->console->appendPlainText(QString("[%1]  %2")
+			.arg(QTime::currentTime().toString("HH:mm:ss")).arg(msg));
+		if (isError) {
+			if (s->xyErrTab) s->xyErrTab->setCurrentWidget(s->console);   // raise the Errors tab
+			if (s->consoleToggle && !s->consoleToggle->isChecked())
+				s->consoleToggle->setChecked(true);    // pop open on errors only
+		}
+	}
+	if (s->win)
+		s->win->statusBar()->showMessage(msg, 5000);
+}
 
 // File-menu callback into Julia (Open / Save / New). The host owns data + file IO,
 // so the menu hands Julia the action + the chosen path (the C side runs the native
@@ -72,9 +120,10 @@ static JuliaXYFn g_juliaXY = nullptr;
 
 // Analysis-menu callback into Julia. fn(plot, op, sel): op = the operation tag
 // ("remove_mean" | "remove_trend" | "deriv1" | "deriv2" | "autocorr" | "fft_amp" |
-// "fft_psd"); sel = the Object-Manager-selected series the op runs on. Julia computes
-// the transform and either adds a new series here or opens a new plot window. Set via
-// gmtvtk_xyplot_set_analysis_callback; nullptr -> the items show a status message.
+// "fft_psd"); sel = the Object-Manager-selected series the op runs on. Julia pulls the
+// series data via gmtvtk_xyplot_get_series, computes the transform, then either overlays
+// it on the current page or spawns a NEW page (gmtvtk_xyplot_add_page) for results whose
+// units don't fit the parent axes. Set via gmtvtk_xyplot_set_analysis_callback.
 typedef void (*JuliaXYAnaFn)(void *plot, const char *op, int sel);
 static JuliaXYAnaFn g_juliaXYAna = nullptr;
 
@@ -120,15 +169,17 @@ static void xyApplyStyle(XYSeries &se) {
 	}
 }
 
-// (Re)build the chart's plot items from the series tables. Called after a delete
-// (plot indices shift, so it is simplest to clear + re-add all). Incremental adds
-// add one plot directly. Re-applies style + label + visibility.
+// (Re)build the current page's chart plot items from its series tables. Called after a delete
+// (plot indices shift, so it is simplest to clear + re-add all). Incremental adds add one plot
+// directly. Re-applies style + label + visibility.
 static void xyRebuildPlots(XYPlot *s) {
-	s->chart->ClearPlots();
-	for (auto &se : s->series) {
-		vtkPlot *pl = s->chart->AddPlot(vtkChart::LINE);
+	XYPage &pg = xyCur(s);
+	pg.chart->ClearPlots();
+	for (auto &se : pg.series) {
+		vtkPlot *pl = pg.chart->AddPlot(vtkChart::LINE);
 		pl->SetInputData(se.table, 0, 1);
 		pl->SetLabel(se.name);
+		pl->SetTooltipLabelFormat("%x, %y");   // hover shows ONLY x,y (not the series name)
 		pl->SetVisible(se.visible);
 		se.plot = pl;
 		xyApplyStyle(se);
@@ -137,30 +188,41 @@ static void xyRebuildPlots(XYPlot *s) {
 		s->widget->renderWindow()->Render();
 }
 
-// Rebuild the Object Manager tree from the series list (one checkable row each,
+// Rebuild the Object Manager tree from the CURRENT page's series list (one checkable row each,
 // foreground tinted to the series colour, UserRole = series index).
 static void xyRebuildObjMgr(XYPlot *s) {
 	if (!s->objMgr)
 		return;
+	std::vector<XYSeries> &series = xyCur(s).series;
+	// Remember which series was current so a rebuild (add/delete/rename) doesn't drop the selection —
+	// Analysis ops run on the CURRENT row, so there must always be one once any series exists.
+	QTreeWidgetItem *cur = s->objMgr->currentItem();
+	const int prevSel = cur ? cur->data(0, Qt::UserRole).toInt() : -1;
 	s->rebuilding = true;
 	s->objMgr->clear();
-	for (int i = 0; i < (int)s->series.size(); ++i) {
-		const XYSeries &se = s->series[i];
+	QTreeWidgetItem *toSelect = nullptr;
+	for (int i = 0; i < (int)series.size(); ++i) {
+		const XYSeries &se = series[i];
 		QTreeWidgetItem *it = new QTreeWidgetItem(s->objMgr);
 		it->setText(0, QString::fromStdString(se.name));
 		it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
 		it->setCheckState(0, se.visible ? Qt::Checked : Qt::Unchecked);
 		it->setForeground(0, QColor((int)(se.r * 255), (int)(se.g * 255), (int)(se.b * 255)));
 		it->setData(0, Qt::UserRole, i);
+		if (i == prevSel) toSelect = it;               // restore the prior selection if it survived
+		if (!toSelect && i == (int)series.size() - 1) toSelect = it;  // else default to the last
 	}
 	s->rebuilding = false;
+	if (toSelect)
+		s->objMgr->setCurrentItem(toSelect);            // guarantee a current row for Analysis
 }
 
-// Fill the Data Viewer spreadsheet with one series' (x,y) columns.
+// Fill the Data Viewer spreadsheet with one (current-page) series' (x,y) columns.
 static void xyFillDataTable(XYPlot *s, int idx) {
-	if (!s->dataTable || idx < 0 || idx >= (int)s->series.size())
+	std::vector<XYSeries> &series = xyCur(s).series;
+	if (!s->dataTable || idx < 0 || idx >= (int)series.size())
 		return;
-	const XYSeries &se = s->series[idx];
+	const XYSeries &se = series[idx];
 	vtkTable *t = se.table;
 	const int nrows = t ? (int)t->GetNumberOfRows() : 0;
 	QTableWidget *w = s->dataTable;
@@ -179,21 +241,22 @@ static void xyFillDataTable(XYPlot *s, int idx) {
 	w->resizeColumnsToContents();
 }
 
-// Append one (x,y) series. Returns its index (or -1 on bad input). Renders. `lineType` (vtkPen),
-// `marker` (vtkPlotPoints) and `markerSize` set the presentation; pass lineType<0 / marker<0 /
-// markerSize<=0 for the defaults (solid line, no marker, size 7).
+// Append one (x,y) series to the CURRENT page. Returns its index (or -1 on bad input). Renders.
+// `lineType` (vtkPen), `marker` (vtkPlotPoints) and `markerSize` set the presentation; pass
+// lineType<0 / marker<0 / markerSize<=0 for the defaults (solid line, no marker, size 7).
 static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
                        const char *name, double r, double g, double b, double width,
                        int lineType, int marker, double markerSize) {
 	if (!xyAlive(s) || !x || !y || n < 1)
 		return -1;
+	XYPage &pg = xyCur(s);
 	XYSeries se;
-	se.name  = (name && name[0]) ? name : ("Line " + std::to_string((int)s->series.size() + 1));
+	se.name  = (name && name[0]) ? name : ("Line " + std::to_string((int)pg.series.size() + 1));
 	if (r >= 0.0) {
 		se.r = r; se.g = g; se.b = b;             // explicit colour
 	}
 	else {
-		const double *c = xyPalette((int)s->series.size());   // cycle the default palette
+		const double *c = xyPalette((int)pg.series.size());   // cycle the default palette
 		se.r = c[0]; se.g = c[1]; se.b = c[2];
 	}
 	if (width > 0.0)      se.width = width;
@@ -202,22 +265,25 @@ static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
 	if (markerSize > 0.0) se.markerSize = markerSize;
 
 	se.table = vtkSmartPointer<vtkTable>::New();
-	vtkNew<vtkFloatArray> ax; ax->SetName("X");                       se.table->AddColumn(ax);
+	// X is DOUBLE: epoch-seconds time values (~1.6e9) lose ~128 s of resolution in float32, which
+	// collapses finely-sampled series (e.g. minute-spaced tides) onto duplicate X. Y stays float.
+	vtkNew<vtkDoubleArray> ax; ax->SetName("X");                      se.table->AddColumn(ax);
 	vtkNew<vtkFloatArray> ay; ay->SetName(se.name.c_str());          se.table->AddColumn(ay);
 	se.table->SetNumberOfRows(n);
 	for (int i = 0; i < n; ++i) {
-		se.table->SetValue(i, 0, (float)x[i]);
+		se.table->SetValue(i, 0, x[i]);
 		se.table->SetValue(i, 1, (float)y[i]);
 	}
 
-	vtkPlot *pl = s->chart->AddPlot(vtkChart::LINE);
+	vtkPlot *pl = pg.chart->AddPlot(vtkChart::LINE);
 	pl->SetInputData(se.table, 0, 1);
 	pl->SetLabel(se.name);
+	pl->SetTooltipLabelFormat("%x, %y");   // hover shows ONLY x,y (not the series name)
 	se.plot = pl;
 	xyApplyStyle(se);
 
-	const int idx = (int)s->series.size();
-	s->series.push_back(se);
+	const int idx = (int)pg.series.size();
+	pg.series.push_back(se);
 	xyRebuildObjMgr(s);
 	xyFillDataTable(s, idx);
 	if (s->widget && s->widget->renderWindow())
@@ -225,37 +291,43 @@ static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
 	return idx;
 }
 
-// Drop every series.
+// Drop every series on the current page.
 static void xyClear(XYPlot *s) {
 	if (!xyAlive(s))
 		return;
-	s->chart->ClearPlots();
-	s->series.clear();
+	XYPage &pg = xyCur(s);
+	pg.chart->ClearPlots();
+	pg.series.clear();
 	xyRebuildObjMgr(s);
 	if (s->dataTable) { s->dataTable->clearContents(); s->dataTable->setRowCount(0); }
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
 
-// Delete the series at idx (rebuilds plots + the tree so indices re-sync).
+// Delete the series at idx on the current page (rebuilds plots + the tree so indices re-sync).
 static void xyDeleteSeries(XYPlot *s, int idx) {
-	if (idx < 0 || idx >= (int)s->series.size())
+	std::vector<XYSeries> &series = xyCur(s).series;
+	if (idx < 0 || idx >= (int)series.size())
 		return;
-	s->series.erase(s->series.begin() + idx);
+	series.erase(series.begin() + idx);
 	xyRebuildPlots(s);
 	xyRebuildObjMgr(s);
 	if (s->dataTable) { s->dataTable->clearContents(); s->dataTable->setRowCount(0); }
 }
 
+// (defined below) — needed here for the time-mode status-bar readout.
+static QString xyFmtTimeHover(double t, int fmt);
+
 // Live coordinate readout: map the cursor (interactor event px, bottom-up) into
-// data coords via the chart's bottom/left axes, and show "x, y" in the status bar.
+// data coords via the current page chart's bottom/left axes, and show "x, y".
 static void xyMouseMove(vtkObject *caller, unsigned long, void *clientData, void *) {
 	XYPlot *s = static_cast<XYPlot*>(clientData);
 	vtkRenderWindowInteractor *rwi = vtkRenderWindowInteractor::SafeDownCast(caller);
 	if (!xyAlive(s) || !rwi || !s->win)
 		return;
-	vtkAxis *ax = s->chart->GetAxis(vtkAxis::BOTTOM);
-	vtkAxis *ay = s->chart->GetAxis(vtkAxis::LEFT);
+	XYPage &pg = xyCur(s);
+	vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM);
+	vtkAxis *ay = pg.chart->GetAxis(vtkAxis::LEFT);
 	if (!ax || !ay)
 		return;
 	const int *ep = rwi->GetEventPosition();
@@ -272,7 +344,9 @@ static void xyMouseMove(vtkObject *caller, unsigned long, void *clientData, void
 	}
 	const double dx = ax->GetMinimum() + fx * (ax->GetMaximum() - ax->GetMinimum());
 	const double dy = ay->GetMinimum() + fy * (ay->GetMaximum() - ay->GetMinimum());
-	s->win->statusBar()->showMessage(QString("%1,  %2").arg(dx, 0, 'g', 8).arg(dy, 0, 'g', 6));
+	const QString xs = pg.xTimeFmt ? xyFmtTimeHover(dx, pg.xTimeFmt)
+	                               : QString("%1").arg(dx, 0, 'g', 8);
+	s->win->statusBar()->showMessage(QString("%1,  %2").arg(xs).arg(dy, 0, 'g', 6));
 }
 
 // Export the current plot to a PNG.
@@ -295,9 +369,10 @@ static void xyExportPng(XYPlot *s) {
 // delete-rebuild), then re-renders. Modal (no series add/remove happens while it is open, so the
 // captured `se` reference stays valid).
 static void xyLineProperties(XYPlot *s, int idx) {
-	if (idx < 0 || idx >= (int)s->series.size())
+	std::vector<XYSeries> &series = xyCur(s).series;
+	if (idx < 0 || idx >= (int)series.size())
 		return;
-	XYSeries &se = s->series[idx];
+	XYSeries &se = series[idx];
 
 	QDialog dlg(s->win);
 	dlg.setWindowTitle(QString("Line properties — %1").arg(QString::fromStdString(se.name)));
@@ -348,8 +423,17 @@ static void xyLineProperties(XYPlot *s, int idx) {
 	QObject::connect(msp, qOverload<double>(&QDoubleSpinBox::valueChanged), &dlg,
 		[&, rr](double v) { se.markerSize = v; xyApplyStyle(se); rr(); });
 
-	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+	// Save THIS series to a file (same Julia gmtwrite path as File>Save, but pre-targeted to idx).
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Close, &dlg);
 	form->addRow(bb);
+	QObject::connect(bb->button(QDialogButtonBox::Save), &QPushButton::clicked, &dlg, [s, idx] {
+		if (!g_juliaXY) { xyLog(s, "Save: not wired (rebuild the DLL + restart Julia)", true); return; }
+		const QString fn = QFileDialog::getSaveFileName(s->win, "Save series", QString(),
+			"Text (*.dat *.txt);;CSV (*.csv);;All files (*)");
+		if (fn.isEmpty()) return;
+		g_juliaXY(s, "save", idx, fn.toUtf8().constData());
+		xyLog(s, QString("Saved series #%1 to %2").arg(idx).arg(fn));
+	});
 	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
 	dlg.exec();
 }
@@ -359,25 +443,38 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 	QTreeWidgetItem *it = s->objMgr->itemAt(pos);
 	if (!it)
 		return;
+	s->objMgr->setCurrentItem(it);                     // right-click also PICKS the row (so Analysis /
+	                                                   // Save then target the clicked series, not a stale one)
 	const int idx = it->data(0, Qt::UserRole).toInt();
 	QMenu m(s->objMgr);
 	QAction *aProp = m.addAction("Line properties…");
+	QAction *aSave = m.addAction("Save data…");
 	QAction *aRen = m.addAction("Rename…");
 	QAction *aDel = m.addAction("Delete");
 	QAction *pick = m.exec(s->objMgr->viewport()->mapToGlobal(pos));
+	std::vector<XYSeries> &series = xyCur(s).series;
 	if (pick == aProp) {
 		xyLineProperties(s, idx);
+	}
+	else if (pick == aSave) {
+		// Save THIS series' (x,y) data to a file (same Julia path as File>Save, but targeting the
+		// clicked series). GMT.gmtwrite picks the format from the extension (.dat/.txt/.csv/…).
+		if (!g_juliaXY) { s->win->statusBar()->showMessage("Save: not wired yet", 3000); return; }
+		const QString fn = QFileDialog::getSaveFileName(s->win, "Save series data", QString(),
+			"Text (*.dat *.txt);;CSV (*.csv);;All files (*)");
+		if (fn.isEmpty()) return;
+		g_juliaXY(s, "save", idx, fn.toUtf8().constData());
 	}
 	else if (pick == aDel) {
 		xyDeleteSeries(s, idx);
 	}
-	else if (pick == aRen && idx >= 0 && idx < (int)s->series.size()) {
+	else if (pick == aRen && idx >= 0 && idx < (int)series.size()) {
 		bool ok = false;
 		const QString nn = QInputDialog::getText(s->win, "Rename series", "Name:",
-			QLineEdit::Normal, QString::fromStdString(s->series[idx].name), &ok);
+			QLineEdit::Normal, QString::fromStdString(series[idx].name), &ok);
 		if (ok && !nn.isEmpty()) {
-			s->series[idx].name = nn.toStdString();
-			if (s->series[idx].plot) s->series[idx].plot->SetLabel(nn.toStdString());
+			series[idx].name = nn.toStdString();
+			if (series[idx].plot) series[idx].plot->SetLabel(nn.toStdString());
 			xyRebuildObjMgr(s);
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		}
@@ -422,10 +519,10 @@ static bool xyAskFreqUnit(QWidget *parent, double &xf) {
 	return true;
 }
 
-// Map a Qt widget point to a DATA x value via the bottom axis (linear x only).
+// Map a Qt widget point to a DATA x value via the current page's bottom axis (linear x only).
 static double xySGDataX(XYPlot *s, const QPointF &p) {
 	const double px = p.x() * s->widget->devicePixelRatioF();
-	vtkAxis *ax = s->chart->GetAxis(vtkAxis::BOTTOM);
+	vtkAxis *ax = xyCur(s).chart->GetAxis(vtkAxis::BOTTOM);
 	float *a1 = ax->GetPoint1(), *a2 = ax->GetPoint2();
 	const double w = a2[0] - a1[0];
 	if (w == 0.0)
@@ -433,13 +530,15 @@ static double xySGDataX(XYPlot *s, const QPointF &p) {
 	return ax->GetMinimum() + (px - a1[0]) / w * (ax->GetMaximum() - ax->GetMinimum());
 }
 
-// Least-squares fit of ln(power) vs k over band [xa,xb] of series idx (positive power only).
+// Least-squares fit of ln(power) vs k over band [xa,xb] of series idx (positive power only) on the
+// current page.
 static bool xySGFit(XYPlot *s, int idx, double xa, double xb, double unit,
                     double &slope, double &inter, double &depth, double &xlo, double &xhi) {
-	if (idx < 0 || idx >= (int)s->series.size())
+	std::vector<XYSeries> &series = xyCur(s).series;
+	if (idx < 0 || idx >= (int)series.size())
 		return false;
 	if (xa > xb) std::swap(xa, xb);
-	vtkTable *t = s->series[idx].table;
+	vtkTable *t = series[idx].table;
 	if (!t) return false;
 	double sx = 0, sy = 0, sxx = 0, sxy = 0; int n = 0;
 	const vtkIdType nr = t->GetNumberOfRows();
@@ -462,34 +561,36 @@ static bool xySGFit(XYPlot *s, int idx, double xa, double xb, double unit,
 
 // Recompute the fit for the current drag end and refresh the fit line + status readout.
 static void xySGUpdate(XYPlot *s, double x1) {
+	XYPage &pg = xyCur(s);
 	double slope, inter, depth, xlo, xhi;
-	if (!xySGFit(s, s->sgSel, s->sgX0, x1, s->sgUnit, slope, inter, depth, xlo, xhi))
+	if (!xySGFit(s, pg.sgSel, pg.sgX0, x1, pg.sgUnit, slope, inter, depth, xlo, xhi))
 		return;
-	if (!s->sgFitTable) {
-		s->sgFitTable = vtkSmartPointer<vtkTable>::New();
-		vtkNew<vtkFloatArray> ax; ax->SetName("k");       s->sgFitTable->AddColumn(ax);
-		vtkNew<vtkFloatArray> ay; ay->SetName("S&G fit"); s->sgFitTable->AddColumn(ay);
-		s->sgFitTable->SetNumberOfRows(2);
+	if (!pg.sgFitTable) {
+		pg.sgFitTable = vtkSmartPointer<vtkTable>::New();
+		vtkNew<vtkFloatArray> ax; ax->SetName("k");       pg.sgFitTable->AddColumn(ax);
+		vtkNew<vtkFloatArray> ay; ay->SetName("S&G fit"); pg.sgFitTable->AddColumn(ay);
+		pg.sgFitTable->SetNumberOfRows(2);
 	}
-	s->sgFitTable->SetValue(0, 0, (float)xlo); s->sgFitTable->SetValue(0, 1, (float)std::exp(slope * xlo + inter));
-	s->sgFitTable->SetValue(1, 0, (float)xhi); s->sgFitTable->SetValue(1, 1, (float)std::exp(slope * xhi + inter));
-	if (!s->sgFit) {
-		s->sgFit = s->chart->AddPlot(vtkChart::LINE);
-		s->sgFit->SetColor(0, 0, 0, 255);
-		s->sgFit->SetWidth(2.5f);
-		s->sgFit->SetLabel("S&G fit");
+	pg.sgFitTable->SetValue(0, 0, (float)xlo); pg.sgFitTable->SetValue(0, 1, (float)std::exp(slope * xlo + inter));
+	pg.sgFitTable->SetValue(1, 0, (float)xhi); pg.sgFitTable->SetValue(1, 1, (float)std::exp(slope * xhi + inter));
+	if (!pg.sgFit) {
+		pg.sgFit = pg.chart->AddPlot(vtkChart::LINE);
+		pg.sgFit->SetColor(0, 0, 0, 255);
+		pg.sgFit->SetWidth(2.5f);
+		pg.sgFit->SetLabel("S&G fit");
 	}
-	s->sgFit->SetInputData(s->sgFitTable, 0, 1);
+	pg.sgFit->SetInputData(pg.sgFitTable, 0, 1);
 	s->win->statusBar()->showMessage(QString("Spector-Grant:  band Δ=%1   slope=%2   Depth = %3 m")
 		.arg(xhi - xlo, 0, 'g', 4).arg(slope, 0, 'g', 4).arg(depth, 0, 'f', 0));
 	if (s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
 
-// Remove the fit line (tool turned off).
+// Remove the fit line from the current page (tool turned off).
 static void xySGClear(XYPlot *s) {
-	if (s->sgFit) { s->chart->RemovePlotInstance(s->sgFit); s->sgFit = nullptr; }
-	s->sgFitTable = nullptr;
+	XYPage &pg = xyCur(s);
+	if (pg.sgFit) { pg.chart->RemovePlotInstance(pg.sgFit); pg.sgFit = nullptr; }
+	pg.sgFitTable = nullptr;
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
@@ -502,41 +603,48 @@ public:
 	explicit XYSGFilter(XYPlot *sc, QObject *parent) : QObject(parent), s(sc) {}
 protected:
 	bool eventFilter(QObject *obj, QEvent *ev) override {
-		if (!s || !s->sgActive)
+		if (!s || !xyAlive(s) || !xyCur(s).sgActive)
 			return QObject::eventFilter(obj, ev);
+		XYPage &pg = xyCur(s);
 		const QEvent::Type t = ev->type();
 		if (t == QEvent::MouseButtonPress) {
 			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
-			if (me->button() == Qt::LeftButton) { s->sgDragging = true; s->sgX0 = xySGDataX(s, me->position()); return true; }
+			if (me->button() == Qt::LeftButton) { pg.sgDragging = true; pg.sgX0 = xySGDataX(s, me->position()); return true; }
 		}
-		else if (t == QEvent::MouseMove && s->sgDragging) {
+		else if (t == QEvent::MouseMove && pg.sgDragging) {
 			xySGUpdate(s, xySGDataX(s, static_cast<QMouseEvent*>(ev)->position()));
 			return true;
 		}
-		else if (t == QEvent::MouseButtonRelease && s->sgDragging) {
+		else if (t == QEvent::MouseButtonRelease && pg.sgDragging) {
 			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
-			if (me->button() == Qt::LeftButton) { s->sgDragging = false; return true; }
+			if (me->button() == Qt::LeftButton) { pg.sgDragging = false; return true; }
 		}
 		return QObject::eventFilter(obj, ev);
 	}
 };
 
-// Currently-selected series in the Object Manager (-1 if none / out of range).
+// Currently-selected series in the Object Manager (current page). Falls back to the LAST series when
+// nothing is explicitly selected (so Analysis "just works" on the obvious series without a prior row
+// click); -1 only when the page has no series at all.
 static int xyCurrentSel(XYPlot *s) {
-	if (!s->objMgr)
+	std::vector<XYSeries> &series = xyCur(s).series;
+	if (!s->objMgr || series.empty())
 		return -1;
 	QTreeWidgetItem *it = s->objMgr->currentItem();
-	if (!it)
-		return -1;
-	const int idx = it->data(0, Qt::UserRole).toInt();
-	return (idx >= 0 && idx < (int)s->series.size()) ? idx : -1;
+	if (it) {
+		const int idx = it->data(0, Qt::UserRole).toInt();
+		if (idx >= 0 && idx < (int)series.size())
+			return idx;
+	}
+	return (int)series.size() - 1;                      // no/invalid selection -> the last series
 }
 
 // ---- time-axis tick formatting ---------------------------------------------
 // The X data is treated as Unix epoch SECONDS (UTC); the chosen mode only changes how the bottom
 // axis tick LABELS read (no data conversion). Ticks regenerate on every range change.
 
-// A natural time step (seconds) so ~ <=8 ticks span `span` seconds: seconds .. decade.
+// A natural time step (seconds) so ~ <=6 ticks span `span` seconds: seconds .. decade. Kept low so
+// the (wide) date labels never collide.
 static double xyNiceDateStep(double span) {
 	static const double c[] = {
 		1, 2, 5, 10, 15, 30,
@@ -548,8 +656,21 @@ static double xyNiceDateStep(double span) {
 	};
 	const int n = (int)(sizeof(c) / sizeof(c[0]));
 	for (int i = 0; i < n; ++i)
-		if (span / c[i] <= 8.0) return c[i];
+		if (span / c[i] <= 6.0) return c[i];
 	return c[n - 1];
+}
+
+// A 1/2/2.5/5 ×10^k "nice" step giving ~`target` ticks across `span`. Used to lay out the LINEAR
+// bottom-axis ticks ourselves so wide labels (e.g. epoch seconds ~1.7e9) can't crowd/overlap the way
+// vtkChartXY's auto ticks do.
+static double xyNiceLinStep(double span, int target) {
+	if (!(span > 0.0) || target < 1)
+		return 1.0;
+	const double raw = span / target;
+	const double mag = std::pow(10.0, std::floor(std::log10(raw)));
+	const double norm = raw / mag;
+	const double step = (norm <= 1.0 ? 1.0 : norm <= 2.0 ? 2.0 : norm <= 2.5 ? 2.5 : norm <= 5.0 ? 5.0 : 10.0);
+	return step * mag;
 }
 
 // Format an epoch-seconds value per the time mode (`span` resolves the "auto" date format).
@@ -580,65 +701,299 @@ static QString xyFmtTime(double t, int fmt, double span) {
 	return QString::number(t);
 }
 
-// Rebuild the bottom-axis custom ticks for the current range (or revert to auto when linear).
-static void xyRefreshDateTicks(XYPlot *s) {
-	vtkAxis *ax = s->chart->GetAxis(vtkAxis::BOTTOM);
-	if (s->xTimeFmt == 0) {
+// Full-resolution time label for the HOVER readout (tooltip + status bar). The tick formatter
+// above goes coarse with the visible span (drops the time-of-day at multi-day spans); a single
+// hovered point must always read to the second, so this keeps date AND time regardless of zoom.
+static QString xyFmtTimeHover(double t, int fmt) {
+	const QDateTime dt = QDateTime::fromSecsSinceEpoch((qint64)llround(t), Qt::UTC);
+	switch (fmt) {
+	case 1: case 2: case 3:                            // any date/time mode -> full date + time
+		return dt.toString("yyyy-MM-dd HH:mm:ss");
+	case 4: {                                          // decimal year, high precision
+		const int y = dt.date().year();
+		const QDateTime y0(QDate(y, 1, 1), QTime(0, 0), Qt::UTC);
+		const QDateTime y1(QDate(y + 1, 1, 1), QTime(0, 0), Qt::UTC);
+		const double frac = double(dt.toSecsSinceEpoch() - y0.toSecsSinceEpoch())
+		                  / double(y1.toSecsSinceEpoch() - y0.toSecsSinceEpoch());
+		return QString::number(y + frac, 'f', 6);
+	}
+	case 5: {                                          // decimal day-of-year, high precision
+		const double doy = dt.date().dayOfYear() + dt.time().msecsSinceStartOfDay() / 86400000.0;
+		return QString::number(doy, 'f', 4);
+	}
+	}
+	return QString::number(t);
+}
+
+// Rebuild the current page's bottom-axis custom ticks for its range. We ALWAYS lay the ticks out
+// ourselves (capped at ~6) — for time modes as dates, otherwise as nice 1/2/2.5/5 round numbers —
+// because vtkChartXY's auto ticks crowd and OVERLAP whenever the labels are wide (e.g. epoch-second
+// X ~1.7e9). The only exception is a log axis, where VTK's own decade ticks are correct, so we hand
+// it back to auto.
+static void xyRefreshTicks(XYPlot *s) {
+	XYPage &pg = xyCur(s);
+	vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM);
+	if (ax->GetLogScaleActive()) {
 		ax->SetCustomTickPositions(nullptr);
 		return;
 	}
 	const double lo = ax->GetMinimum(), hi = ax->GetMaximum();
 	if (!(hi > lo))
 		return;
-	const double span = hi - lo, step = xyNiceDateStep(span);
+	const double span = hi - lo;
 	vtkNew<vtkDoubleArray> pos;
 	vtkNew<vtkStringArray> lab;
-	for (double t = std::ceil(lo / step) * step; t <= hi + 0.5 * step; t += step) {
-		pos->InsertNextValue(t);
-		lab->InsertNextValue(std::string(xyFmtTime(t, s->xTimeFmt, span).toUtf8().constData()));
+	if (pg.xTimeFmt) {
+		const double step = xyNiceDateStep(span);
+		for (double t = std::ceil(lo / step) * step; t <= hi + 0.5 * step; t += step) {
+			pos->InsertNextValue(t);
+			lab->InsertNextValue(std::string(xyFmtTime(t, pg.xTimeFmt, span).toUtf8().constData()));
+		}
+	} else {
+		const double step = xyNiceLinStep(span, 6);
+		for (double t = std::ceil(lo / step) * step; t <= hi + 0.5 * step; t += step) {
+			pos->InsertNextValue(t);
+			lab->InsertNextValue(std::string(QString::number(t, 'g', 6).toUtf8().constData()));
+		}
 	}
 	ax->SetCustomTickPositions(pos, lab);
 }
 
-// Render-end observer: when in a time mode, regenerate ticks if the axis range changed (zoom/pan),
+// Render-end observer: regenerate the bottom-axis ticks if its range changed (zoom/pan/new data),
 // then re-render once. Guarded against reentrancy (the re-render fires EndEvent again with an
 // unchanged range, so it returns early).
 static void xyTicksOnRender(vtkObject *, unsigned long, void *clientData, void *) {
 	XYPlot *s = static_cast<XYPlot*>(clientData);
-	if (!xyAlive(s) || s->xTimeFmt == 0 || s->ticksBusy)
+	if (!xyAlive(s))
 		return;
-	vtkAxis *ax = s->chart->GetAxis(vtkAxis::BOTTOM);
+	XYPage &pg = xyCur(s);
+	if (pg.ticksBusy)
+		return;
+	vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM);
 	const double lo = ax->GetMinimum(), hi = ax->GetMaximum();
 	if (!(hi > lo))
 		return;
 	const double tol = 1e-6 * (std::abs(hi) + std::abs(lo) + 1.0);
-	if (std::abs(lo - s->lastLo) < tol && std::abs(hi - s->lastHi) < tol)
+	if (std::abs(lo - pg.lastLo) < tol && std::abs(hi - pg.lastHi) < tol)
 		return;
-	s->lastLo = lo; s->lastHi = hi; s->ticksBusy = true;
-	xyRefreshDateTicks(s);
+	pg.lastLo = lo; pg.lastHi = hi; pg.ticksBusy = true;
+	xyRefreshTicks(s);
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
-	s->ticksBusy = false;
+	pg.ticksBusy = false;
 }
 
-// Toggle log scaling on an axis (axis 0 = bottom/X, 1 = left/Y). Data must be positive for VTK to
-// actually activate it. Recomputes bounds + renders.
+// Toggle log scaling on a current-page axis (axis 0 = bottom/X, 1 = left/Y). Data must be positive
+// for VTK to actually activate it. Recomputes bounds + renders.
 static void xySetLog(XYPlot *s, int axis, bool on) {
-	vtkAxis *ax = s->chart->GetAxis(axis == 0 ? vtkAxis::BOTTOM : vtkAxis::LEFT);
+	XYPage &pg = xyCur(s);
+	vtkAxis *ax = pg.chart->GetAxis(axis == 0 ? vtkAxis::BOTTOM : vtkAxis::LEFT);
 	ax->SetLogScale(on);
-	s->chart->RecalculateBounds();
+	pg.chart->RecalculateBounds();
+	pg.lastLo = std::numeric_limits<double>::quiet_NaN();   // X log on/off changes the tick scheme
+	pg.lastHi = std::numeric_limits<double>::quiet_NaN();
+	xyRefreshTicks(s);
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
 
-// Set the X-axis time mode (0 = linear, 1..5 see XYPlot::xTimeFmt) + refresh.
+// Set the current page's X-axis time mode (0 = linear, 1..5 see XYPage::xTimeFmt) + refresh.
 static void xySetXTime(XYPlot *s, int fmt) {
-	s->xTimeFmt = fmt;
-	s->lastLo = std::numeric_limits<double>::quiet_NaN();   // force the observer to recompute
-	s->lastHi = std::numeric_limits<double>::quiet_NaN();
-	xyRefreshDateTicks(s);
+	XYPage &pg = xyCur(s);
+	pg.xTimeFmt = fmt;
+	pg.lastLo = std::numeric_limits<double>::quiet_NaN();   // force the observer to recompute
+	pg.lastHi = std::numeric_limits<double>::quiet_NaN();
+	xyRefreshTicks(s);
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
+}
+
+// vtkChartXY subclass whose only job is to format the hover tooltip's X value as a calendar
+// date/time when the current page is in a time mode. VTK's built-in tooltip prints the raw X (epoch
+// seconds, ~1e9) via the plot's "%x" format with no date support, so we override the one virtual
+// that fills the tooltip and build "date,  y" ourselves. Linear mode falls back to the base.
+class XYChart : public vtkChartXY {
+public:
+	static XYChart *New();
+	vtkTypeMacro(XYChart, vtkChartXY);
+	XYPlot *owner = nullptr;                            // set right after New(); never reparented
+protected:
+	void SetTooltipInfo(const vtkContextMouseEvent &mouse, const vtkVector2d &plotPos,
+	                    vtkIdType seriesIndex, vtkPlot *plot, vtkIdType segmentIndex) override {
+		const int fmt = (owner && !owner->pages.empty()) ? owner->pages[owner->curPageIdx].xTimeFmt : 0;
+		if (fmt == 0 || !this->GetTooltip()) {
+			vtkChartXY::SetTooltipInfo(mouse, plotPos, seriesIndex, plot, segmentIndex);
+			return;
+		}
+		const QString lab = xyFmtTimeHover(plotPos.GetX(), fmt)
+		                  + ",  " + QString::number(plotPos.GetY(), 'g', 6);
+		this->GetTooltip()->SetText(lab.toUtf8().constData());
+		this->GetTooltip()->SetPosition(mouse.GetScenePos()[0] + 2, mouse.GetScenePos()[1] + 2);
+	}
+};
+vtkStandardNewMacro(XYChart);
+
+// ---- pages (Excel-like tabs) -----------------------------------------------
+
+// Build a fresh chart configured like the window's first one: owner set (so the tooltip can read
+// the live time mode), legend/grid matching the current toolbar toggles, compact axis labels.
+static vtkSmartPointer<vtkChartXY> xyMakeChart(XYPlot *s) {
+	vtkSmartPointer<XYChart> chart = vtkSmartPointer<XYChart>::New();
+	chart->owner = s;
+	chart->SetShowLegend(s->actLegend ? s->actLegend->isChecked() : true);
+	chart->GetAxis(vtkAxis::BOTTOM)->SetTitle("X");      // sensible defaults; set_labels overrides
+	chart->GetAxis(vtkAxis::LEFT)->SetTitle("Y");
+	const bool grid = s->actGrid ? s->actGrid->isChecked() : true;
+	// Compact tick labels: smaller font + bounded precision so x ticks stop colliding. STANDARD
+	// notation trims trailing-zero clutter.
+	for (int an : { vtkAxis::BOTTOM, vtkAxis::LEFT }) {
+		vtkAxis *ax = chart->GetAxis(an);
+		ax->GetLabelProperties()->SetFontSize(11);
+		ax->GetTitleProperties()->SetFontSize(13);
+		ax->SetNotation(vtkAxis::STANDARD_NOTATION);
+		ax->SetPrecision(4);
+		ax->SetGridVisible(grid);
+	}
+	return chart;
+}
+
+static void xySwitchPage(XYPlot *s, int idx);
+
+// Append a new page (its own chart + empty series list). Inserts a tab. If `switchTo`, makes it
+// current. Returns the new page index.
+static int xyNewPage(XYPlot *s, const char *name, bool switchTo) {
+	XYPage pg;
+	pg.chart = xyMakeChart(s);
+	pg.name  = (name && name[0]) ? name : ("Page " + std::to_string((int)s->pages.size() + 1));
+	s->pages.push_back(std::move(pg));
+	const int idx = (int)s->pages.size() - 1;
+	if (s->tabs) {
+		s->tabBusy = true;
+		s->tabs->insertTab(idx, QString::fromStdString(s->pages[idx].name));
+		s->tabBusy = false;
+	}
+	if (switchTo)
+		xySwitchPage(s, idx);
+	return idx;
+}
+
+// Mount page `idx` in the shared scene (detaching the old one) and rebuild the side panels from it.
+static void xySwitchPage(XYPlot *s, int idx) {
+	if (idx < 0 || idx >= (int)s->pages.size())
+		return;
+	if (s->curPageIdx >= 0 && s->curPageIdx < (int)s->pages.size()) {
+		vtkChartXY *old = s->pages[s->curPageIdx].chart;
+		if (old) s->view->GetScene()->RemoveItem(old);
+	}
+	s->curPageIdx = idx;
+	XYPage &pg = s->pages[idx];
+	s->view->GetScene()->AddItem(pg.chart);
+	if (s->tabs && s->tabs->currentIndex() != idx) {
+		s->tabBusy = true; s->tabs->setCurrentIndex(idx); s->tabBusy = false;
+	}
+	xyRebuildObjMgr(s);
+	if (pg.series.empty()) {
+		if (s->dataTable) { s->dataTable->clearContents(); s->dataTable->setRowCount(0); }
+	} else {
+		xyFillDataTable(s, (int)pg.series.size() - 1);
+	}
+	pg.lastLo = std::numeric_limits<double>::quiet_NaN();   // force a tick recompute for this page
+	pg.lastHi = std::numeric_limits<double>::quiet_NaN();
+	xyRefreshTicks(s);
+	if (s->widget && s->widget->renderWindow())
+		s->widget->renderWindow()->Render();
+}
+
+// Deep-copy page `idx` (its series tables + styles + axis titles + time mode) into a new page and
+// switch to it.
+static void xyDuplicatePage(XYPlot *s, int idx) {
+	if (idx < 0 || idx >= (int)s->pages.size())
+		return;
+	const std::string base = s->pages[idx].name + " copy";
+	const int newIdx = xyNewPage(s, base.c_str(), false);
+	// copy axis titles + time mode from the source
+	XYPage &src = s->pages[idx];
+	XYPage &dst = s->pages[newIdx];
+	dst.chart->GetAxis(vtkAxis::BOTTOM)->SetTitle(src.chart->GetAxis(vtkAxis::BOTTOM)->GetTitle());
+	dst.chart->GetAxis(vtkAxis::LEFT)->SetTitle(src.chart->GetAxis(vtkAxis::LEFT)->GetTitle());
+	dst.xTimeFmt = src.xTimeFmt;
+	for (const XYSeries &so : src.series) {
+		XYSeries se = so;                                // copies style/name; deep-copy the table next
+		se.table = vtkSmartPointer<vtkTable>::New();
+		se.table->DeepCopy(so.table);
+		vtkPlot *pl = dst.chart->AddPlot(vtkChart::LINE);
+		pl->SetInputData(se.table, 0, 1);
+		pl->SetLabel(se.name);
+		pl->SetTooltipLabelFormat("%x, %y");
+		pl->SetVisible(se.visible);
+		se.plot = pl;
+		xyApplyStyle(se);
+		dst.series.push_back(se);
+	}
+	xySwitchPage(s, newIdx);
+}
+
+// Delete page `idx`. Keeps at least one page (a lone page is cleared instead of removed).
+static void xyDeletePage(XYPlot *s, int idx) {
+	if (idx < 0 || idx >= (int)s->pages.size())
+		return;
+	if (s->pages.size() == 1) {                          // never zero pages: just empty the last one
+		xyClear(s);
+		return;
+	}
+	// detach if it is the mounted chart
+	if (idx == s->curPageIdx)
+		s->view->GetScene()->RemoveItem(s->pages[idx].chart);
+	s->pages.erase(s->pages.begin() + idx);
+	if (s->tabs) {
+		s->tabBusy = true;
+		s->tabs->removeTab(idx);
+		s->tabBusy = false;
+	}
+	// pick a valid current page and mount it
+	int next = s->curPageIdx;
+	if (idx < s->curPageIdx)        next = s->curPageIdx - 1;
+	else if (idx == s->curPageIdx)  next = std::min(idx, (int)s->pages.size() - 1);
+	s->curPageIdx = -1;                                  // force xySwitchPage to mount (no stale detach)
+	xySwitchPage(s, next);
+}
+
+// Rename page `idx` (updates the tab text too).
+static void xyRenamePage(XYPlot *s, int idx, const QString &name) {
+	if (idx < 0 || idx >= (int)s->pages.size() || name.isEmpty())
+		return;
+	s->pages[idx].name = name.toStdString();
+	if (s->tabs) {
+		s->tabBusy = true;
+		s->tabs->setTabText(idx, name);
+		s->tabBusy = false;
+	}
+}
+
+// Right-click on the tab bar: New / Duplicate / Rename / Delete the clicked page.
+static void xyTabMenu(XYPlot *s, const QPoint &pos) {
+	const int idx = s->tabs->tabAt(pos);
+	QMenu m(s->tabs);
+	QAction *aNew = m.addAction("New");
+	QAction *aDup = (idx >= 0) ? m.addAction("Duplicate") : nullptr;
+	QAction *aRen = (idx >= 0) ? m.addAction("Rename…")   : nullptr;
+	m.addSeparator();
+	QAction *aDel = (idx >= 0) ? m.addAction("Delete")    : nullptr;
+	QAction *pick = m.exec(s->tabs->mapToGlobal(pos));
+	if (!pick)
+		return;
+	if (pick == aNew) {
+		xyNewPage(s, "", true);
+	} else if (aDup && pick == aDup) {
+		xyDuplicatePage(s, idx);
+	} else if (aRen && pick == aRen) {
+		bool ok = false;
+		const QString nn = QInputDialog::getText(s->win, "Rename page", "Name:",
+			QLineEdit::Normal, QString::fromStdString(s->pages[idx].name), &ok);
+		if (ok) xyRenamePage(s, idx, nn);
+	} else if (aDel && pick == aDel) {
+		xyDeletePage(s, idx);
+	}
 }
 
 // ---- window builder --------------------------------------------------------
@@ -653,7 +1008,7 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->win->setWindowIcon(appIcon());
 	s->win->resize(1060, 560);                         // landscape — better for time-series plots
 
-	// --- central chart ---
+	// --- central VTK view (one shared scene; the current page's chart is mounted into it) ---
 	s->widget = new QVTKOpenGLNativeWidget();
 	vtkNew<vtkGenericOpenGLRenderWindow> rw;
 	s->widget->setRenderWindow(rw.Get());
@@ -661,21 +1016,128 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->view->SetRenderWindow(rw.Get());
 	s->view->SetInteractor(s->widget->interactor());
 	s->view->GetRenderer()->SetBackground(1.0, 1.0, 1.0);
-	s->chart = vtkSmartPointer<vtkChartXY>::New();
-	s->view->GetScene()->AddItem(s->chart.Get());
-	s->chart->SetShowLegend(true);
-	s->chart->GetAxis(vtkAxis::BOTTOM)->SetTitle("X");   // sensible defaults; Julia overrides via set_labels
-	s->chart->GetAxis(vtkAxis::LEFT)->SetTitle("Y");
-	// Compact tick labels: smaller font + bounded precision so x ticks stop colliding (vtkChartXY
-	// then also fits more of them without overlap). STANDARD notation trims trailing-zero clutter.
-	for (int an : { vtkAxis::BOTTOM, vtkAxis::LEFT }) {
-		vtkAxis *ax = s->chart->GetAxis(an);
-		ax->GetLabelProperties()->SetFontSize(11);
-		ax->GetTitleProperties()->SetFontSize(13);
-		ax->SetNotation(vtkAxis::STANDARD_NOTATION);
-		ax->SetPrecision(4);
-	}
-	s->win->setCentralWidget(s->widget);
+
+	// --- collapsible "Panels" fold under the chart + a TWO-TAB body, IDENTICAL in name & structure to
+	// the 3-D viewer (a "Panels" fold over "Julia Console" / "Errors" tabs). Starts COLLAPSED. The body
+	// holds the same two consoles as the viewer:
+	//   • "Julia Console" — interactive REPL: a typed command goes back to Julia (g_juliaEval) and is
+	//                eval'd in the SHARED Main (same session as the 3-D viewer). A command's own error
+	//                shows inline HERE; genuine execution errors land in the Errors tab.
+	//   • "Errors" — read-only sink for execution errors (xyLog: failed Analysis / File / callbacks).
+	//                Auto-pops open + raises on an error so a failure can't stay hidden. ---
+	s->console = new QPlainTextEdit();                  // ERRORS tab body
+	s->console->setReadOnly(true);
+	s->console->setMaximumBlockCount(2000);            // cap memory; oldest lines drop
+	s->console->setFont(QFont("Consolas", 9));
+	s->console->setPlaceholderText("Execution errors (Analysis / File / callbacks) appear here.");
+
+	s->cmdConsole = new QPlainTextEdit();              // JULIA tab — command output
+	s->cmdConsole->setReadOnly(true);
+	s->cmdConsole->setMaximumBlockCount(2000);
+	s->cmdConsole->setFont(QFont("Consolas", 9));
+	s->cmdConsole->setPlaceholderText("Julia output. `fig` is this window — shared session with the 3-D viewer.");
+
+	s->consoleInput = new QLineEdit();                 // JULIA tab — interactive input
+	s->consoleInput->setFont(QFont("Consolas", 9));
+	s->consoleInput->setPlaceholderText("julia>  (Enter to run)");
+	QObject::connect(s->consoleInput, &QLineEdit::returnPressed, s->win, [s]() {
+		const std::string cmd = s->consoleInput->text().toStdString();
+		if (cmd.empty())
+			return;
+		s->consoleInput->clear();
+		if (s->cmdConsole)
+			s->cmdConsole->appendPlainText(QString("julia> ") + QString::fromStdString(cmd));
+		if (!g_juliaEval) {
+			if (s->cmdConsole) s->cmdConsole->appendPlainText("(no Julia eval callback registered)");
+			return;
+		}
+		static std::vector<char> buf(1 << 16);         // 64 KB result buffer (shared, reused)
+		// _console_eval returns the byte count; NEGATIVE flags a Julia error (still |n| bytes of text).
+		int n   = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+		int len = n < 0 ? -n : n;
+		if (len > 0 && s->cmdConsole)                  // command's own error stays inline in the Julia tab
+			s->cmdConsole->appendPlainText(QString::fromUtf8(buf.data(), len));
+	});
+
+	QWidget     *juliaTab = new QWidget();             // JULIA tab = output (stretch) + input line
+	QVBoxLayout *jtLay    = new QVBoxLayout(juliaTab);
+	jtLay->setContentsMargins(0, 0, 0, 0);
+	jtLay->setSpacing(0);
+	jtLay->addWidget(s->cmdConsole, 1);
+	jtLay->addWidget(s->consoleInput, 0);
+
+	QTabWidget *consoleTabs = new QTabWidget();        // the collapsible body: Julia Console | Errors (as in iGMT)
+	consoleTabs->setDocumentMode(true);
+	consoleTabs->setMaximumHeight(150);
+	consoleTabs->addTab(juliaTab, "Julia Console");
+	consoleTabs->addTab(s->console, "Errors");
+	consoleTabs->setVisible(false);                    // hidden => panel collapsed
+	// xyLog appends to s->console; when it raises an error it pops the panel open (below) — make the
+	// Errors tab the front one so the new line is the one the user sees.
+	s->xyErrTab = consoleTabs;
+
+	s->consoleToggle = new QToolButton();
+	s->consoleToggle->setText("Panels");
+	s->consoleToggle->setCheckable(true);
+	s->consoleToggle->setChecked(false);
+	s->consoleToggle->setAutoRaise(true);
+	s->consoleToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+	s->consoleToggle->setArrowType(Qt::RightArrow);    // ▸ collapsed / ▾ expanded
+	QObject::connect(s->consoleToggle, &QToolButton::toggled, s->win, [s, consoleTabs](bool on){
+		consoleTabs->setVisible(on);
+		s->consoleToggle->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+		if (s->actConsole && s->actConsole->isChecked() != on) s->actConsole->setChecked(on);
+	});
+
+	s->consolePanel = new QWidget();
+	QVBoxLayout *cpLayout = new QVBoxLayout(s->consolePanel);
+	cpLayout->setContentsMargins(0, 0, 0, 0);
+	cpLayout->setSpacing(0);
+	cpLayout->addWidget(s->consoleToggle);
+	cpLayout->addWidget(consoleTabs);
+
+	// --- page tab bar (Excel-like): sits between the chart and the Console. A "+" button adds a
+	// page; right-click a tab for New/Duplicate/Rename/Delete. NO per-tab close box (too easy to kill
+	// a page by accident) — Delete lives only in the right-click menu. ---
+	s->tabs = new QTabBar();
+	s->tabs->setShape(QTabBar::RoundedSouth);
+	s->tabs->setExpanding(false);
+	s->tabs->setTabsClosable(false);
+	s->tabs->setDrawBase(false);
+	s->tabs->setContextMenuPolicy(Qt::CustomContextMenu);
+	QToolButton *addPageBtn = new QToolButton();
+	addPageBtn->setText("+");
+	addPageBtn->setAutoRaise(true);
+	addPageBtn->setToolTip("New page");
+	QWidget *tabRow = new QWidget();
+	QHBoxLayout *tabLayout = new QHBoxLayout(tabRow);
+	tabLayout->setContentsMargins(2, 0, 0, 0);
+	tabLayout->setSpacing(2);
+	tabLayout->addWidget(s->tabs, 0);
+	tabLayout->addWidget(addPageBtn, 0);
+	tabLayout->addStretch(1);
+	QObject::connect(addPageBtn, &QToolButton::clicked, s->win, [s]{ xyNewPage(s, "", true); });
+	QObject::connect(s->tabs, &QTabBar::currentChanged, s->win, [s](int idx){
+		if (s->tabBusy || idx < 0 || idx == s->curPageIdx) return;
+		xySwitchPage(s, idx);
+	});
+	QObject::connect(s->tabs, &QTabBar::tabBarDoubleClicked, s->win, [s](int idx){
+		if (idx < 0) return;
+		bool ok = false;
+		const QString nn = QInputDialog::getText(s->win, "Rename page", "Name:",
+			QLineEdit::Normal, QString::fromStdString(s->pages[idx].name), &ok);
+		if (ok) xyRenamePage(s, idx, nn);
+	});
+	QObject::connect(s->tabs, &QWidget::customContextMenuRequested, s->win, [s](const QPoint &p){ xyTabMenu(s, p); });
+
+	QWidget *central = new QWidget();
+	QVBoxLayout *centralLayout = new QVBoxLayout(central);
+	centralLayout->setContentsMargins(0, 0, 0, 0);
+	centralLayout->setSpacing(0);
+	centralLayout->addWidget(s->widget, 1);            // chart takes all the stretch
+	centralLayout->addWidget(tabRow, 0);               // page tabs just under the chart
+	centralLayout->addWidget(s->consolePanel, 0);      // console hugs the bottom
+	s->win->setCentralWidget(central);
 
 	// --- Object Manager dock (left) ---
 	QDockWidget *omDock = new QDockWidget("Object Manager", s->win);
@@ -718,7 +1180,7 @@ static XYPlot *buildXYPlot(const char *title) {
 		g_juliaXY(s, "open", -1, fn.toUtf8().constData()); });
 	QObject::connect(aSave, &QAction::triggered, s->win, [s]{
 		if (!g_juliaXY) { s->win->statusBar()->showMessage("Save: not wired yet", 3000); return; }
-		if (s->series.empty()) { s->win->statusBar()->showMessage("Nothing to save", 3000); return; }
+		if (xyCur(s).series.empty()) { s->win->statusBar()->showMessage("Nothing to save", 3000); return; }
 		const QString fn = QFileDialog::getSaveFileName(s->win, "Save series", QString(),
 			"Text (*.dat *.txt);;CSV (*.csv);;All files (*)");
 		if (fn.isEmpty()) return;
@@ -730,10 +1192,11 @@ static XYPlot *buildXYPlot(const char *title) {
 	QMenu *mAna = mb->addMenu("Analysis");
 	auto addAna = [&](const char *label, const char *op) {
 		QAction *a = mAna->addAction(label);
-		QObject::connect(a, &QAction::triggered, s->win, [s, op] {
-			if (!g_juliaXYAna) { s->win->statusBar()->showMessage("Analysis: not wired", 3000); return; }
+		QObject::connect(a, &QAction::triggered, s->win, [s, op, label] {
+			if (!g_juliaXYAna) { xyLog(s, "Analysis: not wired (rebuild the DLL + restart Julia)"); return; }
 			const int sel = xyCurrentSel(s);
-			if (sel < 0) { s->win->statusBar()->showMessage("Select a series in the Object Manager first", 3500); return; }
+			if (sel < 0) { xyLog(s, "Select a series in the Object Manager first"); return; }
+			xyLog(s, QString("Analysis: %1 on series #%2…").arg(label).arg(sel));
 			g_juliaXYAna(s, op, sel);
 		});
 	};
@@ -750,9 +1213,9 @@ static XYPlot *buildXYPlot(const char *title) {
 	// Parameterised ops (Phase 3): pop a dialog for the parameter, then hand an encoded op tag to
 	// Julia. `gate` returns the selected series (-1 + a status hint if none / not wired).
 	auto gate = [s]() -> int {
-		if (!g_juliaXYAna) { s->win->statusBar()->showMessage("Analysis: not wired", 3000); return -1; }
+		if (!g_juliaXYAna) { xyLog(s, "Analysis: not wired (rebuild the DLL + restart Julia)"); return -1; }
 		const int sel = xyCurrentSel(s);
-		if (sel < 0) s->win->statusBar()->showMessage("Select a series in the Object Manager first", 3500);
+		if (sel < 0) xyLog(s, "Select a series in the Object Manager first");
 		return sel;
 	};
 	{
@@ -801,16 +1264,17 @@ static XYPlot *buildXYPlot(const char *title) {
 		QAction *a = mAna->addAction("Depth to sources (Spector-Grant)");
 		a->setCheckable(true);
 		QObject::connect(a, &QAction::toggled, s->win, [s, a](bool on) {
+			XYPage &pg = xyCur(s);
 			if (on) {
 				const int sel = xyCurrentSel(s);
 				if (sel < 0) { s->win->statusBar()->showMessage("Select the spectrum series first", 3500); a->setChecked(false); return; }
 				double xf;
 				if (!xyAskFreqUnit(s->win, xf)) { a->setChecked(false); return; }
-				s->sgSel = sel; s->sgUnit = xf; s->sgActive = true;
+				pg.sgSel = sel; pg.sgUnit = xf; pg.sgActive = true;
 				s->win->statusBar()->showMessage("Spector-Grant: left-drag a frequency band on the spectrum");
 			}
 			else {
-				s->sgActive = false; s->sgDragging = false;
+				pg.sgActive = false; pg.sgDragging = false;
 				xySGClear(s);
 				s->win->statusBar()->clearMessage();
 			}
@@ -824,6 +1288,10 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->actGrid->setCheckable(true); s->actGrid->setChecked(true);
 	s->actDataView = mMisc->addAction("Data Viewer");
 	s->actDataView->setCheckable(true); s->actDataView->setChecked(false);
+	s->actConsole = mMisc->addAction("Panels");
+	s->actConsole->setCheckable(true); s->actConsole->setChecked(false);
+	QObject::connect(s->actConsole, &QAction::toggled, s->win, [s](bool on){
+		if (s->consoleToggle && s->consoleToggle->isChecked() != on) s->consoleToggle->setChecked(on); });
 	// Time axis (X) — interpret X as epoch seconds and format ticks as date / time / decimal year /
 	// day-of-year. Pure label formatting (no data change); exclusive, like a radio group.
 	QMenu *tMenu = mMisc->addMenu("Time axis (X)");
@@ -849,10 +1317,10 @@ static XYPlot *buildXYPlot(const char *title) {
 	aLogY->setCheckable(true);
 	QObject::connect(aLogY, &QAction::toggled, s->win, [s](bool on){ xySetLog(s, 1, on); });
 	QObject::connect(s->actLegend, &QAction::toggled, s->win, [s](bool on){
-		s->chart->SetShowLegend(on); if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
+		xyCur(s).chart->SetShowLegend(on); if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
 	QObject::connect(s->actGrid, &QAction::toggled, s->win, [s](bool on){
-		s->chart->GetAxis(vtkAxis::BOTTOM)->SetGridVisible(on);
-		s->chart->GetAxis(vtkAxis::LEFT)->SetGridVisible(on);
+		xyCur(s).chart->GetAxis(vtkAxis::BOTTOM)->SetGridVisible(on);
+		xyCur(s).chart->GetAxis(vtkAxis::LEFT)->SetGridVisible(on);
 		if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
 	QObject::connect(s->actDataView, &QAction::toggled, s->win, [s](bool on){ s->dataDock->setVisible(on); });
 	QObject::connect(s->dataDock, &QDockWidget::visibilityChanged, s->win, [s](bool vis){
@@ -864,9 +1332,9 @@ static XYPlot *buildXYPlot(const char *title) {
 	QStyle *st = s->win->style();
 	QAction *tFit = tb->addAction(st->standardIcon(QStyle::SP_BrowserReload), "Zoom to fit");
 	QObject::connect(tFit, &QAction::triggered, s->win, [s]{
-		s->chart->RecalculateBounds();
-		s->chart->GetAxis(vtkAxis::BOTTOM)->SetBehavior(vtkAxis::AUTO);
-		s->chart->GetAxis(vtkAxis::LEFT)->SetBehavior(vtkAxis::AUTO);
+		xyCur(s).chart->RecalculateBounds();
+		xyCur(s).chart->GetAxis(vtkAxis::BOTTOM)->SetBehavior(vtkAxis::AUTO);
+		xyCur(s).chart->GetAxis(vtkAxis::LEFT)->SetBehavior(vtkAxis::AUTO);
 		if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
 	tb->addAction(s->actLegend);
 	tb->addAction(s->actGrid);
@@ -878,11 +1346,12 @@ static XYPlot *buildXYPlot(const char *title) {
 	// --- Object Manager interactions ---
 	QObject::connect(s->objMgr, &QTreeWidget::itemChanged, s->win, [s](QTreeWidgetItem *it, int){
 		if (s->rebuilding) return;
+		std::vector<XYSeries> &series = xyCur(s).series;
 		const int idx = it->data(0, Qt::UserRole).toInt();
-		if (idx < 0 || idx >= (int)s->series.size()) return;
+		if (idx < 0 || idx >= (int)series.size()) return;
 		const bool on = (it->checkState(0) == Qt::Checked);
-		s->series[idx].visible = on;
-		if (s->series[idx].plot) s->series[idx].plot->SetVisible(on);
+		series[idx].visible = on;
+		if (series[idx].plot) series[idx].plot->SetVisible(on);
 		if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
 	QObject::connect(s->objMgr, &QTreeWidget::itemSelectionChanged, s->win, [s]{
 		QTreeWidgetItem *it = s->objMgr->currentItem();
@@ -916,6 +1385,10 @@ static XYPlot *buildXYPlot(const char *title) {
 		delete s;                                   // struct outlives the QMainWindow; free it here
 	});
 
+	// First page (mounts a chart in the scene + adds its tab). Must come AFTER objMgr/dataTable/tabs
+	// exist so xySwitchPage can populate them.
+	xyNewPage(s, "Page 1", true);
+
 	s->win->statusBar()->showMessage("X,Y plot — add series from Julia (xyplot / add!)");
 	s->win->show();
 	s->win->raise();
@@ -943,8 +1416,8 @@ static XYPlot* openSeriesInXYTool(const std::vector<double>& x, const std::vecto
 	XYPlot* p = buildXYPlot(title);
 	if (!p)
 		return nullptr;
-	if (xlabel && xlabel[0]) p->chart->GetAxis(vtkAxis::BOTTOM)->SetTitle(xlabel);
-	if (ylabel && ylabel[0]) p->chart->GetAxis(vtkAxis::LEFT)->SetTitle(ylabel);
+	if (xlabel && xlabel[0]) xyCur(p).chart->GetAxis(vtkAxis::BOTTOM)->SetTitle(xlabel);
+	if (ylabel && ylabel[0]) xyCur(p).chart->GetAxis(vtkAxis::LEFT)->SetTitle(ylabel);
 	if (g_juliaXYSeed)                                 // let Julia register a mirror + add the series
 		g_juliaXYSeed(p, x.data(), y.data(), (int)x.size(), "Profile");
 	else                                               // no host (demo exe) -> add directly

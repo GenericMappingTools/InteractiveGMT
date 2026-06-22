@@ -188,6 +188,7 @@ function _on_geography(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid
 			_add_geo_overlay(scene, D; name=src)
 		end
 	catch e
+		_viewer_log_error(scene, "Geography FAILED: $(sprint(showerror, e))")
 		@warn "geography: could not fetch/add the feature" exception=(e,)
 	end
 	return
@@ -220,10 +221,11 @@ end
 # from which we pull the station code. The actual download + parse is GMT.jl's `maregrams` (same IOC
 # Sea Level Monitoring service Mirone's mareg_online used) — we do NOT re-implement it. `maregrams`
 # returns a GMTdataset: col 1 = time (epoch seconds), col 2 = sea level (prs/rad, m); attribs carry
-# the station name/country. We plot it in the window's "Profile" panel (x = time, y = sea level).
-# `mode` is "2days" for the quick entry, or "calendar/<startISO>/<endISO>" from the C++ calendar
-# dialog (two date/time editors, UTC, capped at "now"). The Profile panel is shared with the
-# elevation profiler; see the C-side gmtvtk_show_profile_xy comment.
+# the station name/country. We open it in a fresh standalone X,Y plot window (x = time, y = sea
+# level) rather than the shared 3-D Profile panel, so each download stands alone with its own
+# Object Manager / Analysis / save. `mode` is "2days" for the quick entry, or
+# "calendar/<startISO>/<endISO>" from the C++ calendar dialog (two date/time editors, UTC, capped
+# at "now").
 function _on_tides_download(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring)::Cvoid
 	try
 		station = unsafe_string(cstation)
@@ -249,10 +251,12 @@ function _on_tides_download(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring
 		nm    = get(D.attrib, "ST_name", "")
 		title = isempty(nm) ? code : "$nm ($code)"
 		ylab  = (length(D.colnames) >= 2) ? D.colnames[2] : "Sea level (m)"
-		ccall(_fn(:gmtvtk_show_profile_xy), Cint,
-		      (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring, Cstring, Cstring, Cint),
-		      scene, x, y, Cint(length(x)), title, "Time (UTC)", ylab, Cint(1))
+		# Open the series in its OWN standalone X,Y plot window (Object Manager + Analysis + save)
+		# instead of overwriting the 3-D viewer's shared bottom-dock Profile panel. X is epoch
+		# seconds -> xtime=:date paints date/time labels (matches the old isDate=1 path).
+		xyplot(x, y; name=title, title=title, xlabel="Time (UTC)", ylabel=ylab, xtime=:date)
 	catch e
+		_viewer_log_error(scene, "Tides download FAILED: $(sprint(showerror, e))")
 		@warn "tides: download callback failed" exception=(e,)
 	end
 	return

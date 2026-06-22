@@ -267,7 +267,8 @@ static void lineSavePoints(Scene* s, const LineRef& lr) {
 	std::string cmd = "InteractiveGMT._gmtwrite_line(raw\"" + tmp.toStdString() + "\", raw\"" +
 					  fn.toStdString() + "\", " + (isPoly ? "true" : "false") + ")";
 	std::vector<char> buf(1 << 12);
-	g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());   // _gmtwrite_line removes the temp file
+	int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());   // _gmtwrite_line removes the temp file
+	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));     // save failed -> Errors tab
 }
 
 // Find the index of the finished polygon whose actor is `a`, or -1. (s->polys can be re-found on

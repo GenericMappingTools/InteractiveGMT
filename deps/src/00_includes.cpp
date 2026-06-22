@@ -160,6 +160,9 @@
 #include <vtkTable.h>
 #include <vtkPen.h>
 #include <vtkStringArray.h>
+#include <vtkTooltipItem.h>
+#include <vtkContextMouseEvent.h>
+#include <vtkObjectFactory.h>
 
 // --- F3D-style shading (Tier 1: light rig + post passes, no assets) ----------
 #include <vtkLightKit.h>

@@ -86,18 +86,18 @@ end
 	@test eout < 0.3 * ein                          # smoothing pulls it back toward the clean signal
 end
 
-@testitem "FFT / inverse FFT round-trip + amplitude peak" tags=[:unit, :fast] begin
+@testitem "GMT FFT round-trip + spectrum1d peak" tags=[:unit, :fast] begin
 	IG = InteractiveGMT
-	a = ComplexF64[ complex(sin(0.3k), 0.0) for k in 0:63 ]
-	orig = copy(a)
-	IG._fft_radix2!(a); IG._ifft_radix2!(a)
-	@test maximum(abs.(a .- orig)) < 1e-9
-	# amplitude spectrum: a tone lands at its frequency bin
+	# forward+inverse through GMT_FFT_1D recovers the input (single precision -> ~1e-6)
+	v = ComplexF64[ complex(sin(0.3k), 0.0) for k in 0:60 ]   # not a power of two on purpose
+	back = IG._gmt_ifft(IG._gmt_fft(real.(v)))
+	@test maximum(abs.(back .- v)) < 1e-5
+	# spectrum via GMT.spectrum1d: a tone lands at its frequency bin
 	t = collect(0.0:0.01:5.11)                      # dt=0.01, N=512 (power of two)
 	f0 = 5.0
-	fr, amp = IG._amp_spectrum(t, sin.(2π * f0 .* t))
+	fr, amp = IG._spectrum1d(t, sin.(2π * f0 .* t); want=:amp)
 	ipk = argmax(amp)
-	@test abs(fr[ipk] - f0) < 0.3                    # bin spacing ~0.195 Hz
+	@test abs(fr[ipk] - f0) < 0.5
 end
 
 @testitem "Butterworth low-pass attenuates a high tone" tags=[:unit, :fast] begin

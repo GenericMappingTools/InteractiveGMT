@@ -238,6 +238,7 @@ function _on_xy(plot::Ptr{Cvoid}, caction::Cstring, sel::Cint, cpath::Cstring)::
 		end
 	catch e
 		_dbg("xy", action, "ERR", sprint(showerror, e))
+		_xy_log(plot, "File $action FAILED: $(sprint(showerror, e))"; err=true)   # show IN the window
 		@warn "xyplot $action failed" path exception=e
 	end
 	return
@@ -268,12 +269,42 @@ function _xy_open_file(p::QtXYPlot, path)
 	return
 end
 
-# File > Save: write the selected series (or all, if sel < 0) to `path`. The format follows the
-# extension (GMT.gmtwrite: .dat/.txt plain, .csv, OGR vector formats, …).
+# Pull series `sel` (0-based) of the window's CURRENT page straight from the C side (it owns the
+# vtkTables). Returns (x, y) Float64 vectors, or nothing if the handle/index is bad. With pages the
+# Julia mirror no longer tracks per-page series, so Analysis / Save read the live page from here.
+function _xy_get_series(plot::Ptr{Cvoid}, sel::Integer)
+	n = ccall(_fn(:gmtvtk_xyplot_series_npoints), Cint, (Ptr{Cvoid}, Cint), plot, Cint(sel))
+	n <= 0 && return nothing
+	x = Vector{Float64}(undef, n); y = Vector{Float64}(undef, n)
+	got = ccall(_fn(:gmtvtk_xyplot_get_series), Cint,
+	            (Ptr{Cvoid}, Cint, Ptr{Float64}, Ptr{Float64}, Cint), plot, Cint(sel), x, y, Cint(n))
+	got <= 0 && return nothing
+	return (resize!(x, got), resize!(y, got))
+end
+
+# Name of series `sel` (0-based) on the current page (C-owned). "" on a bad handle/index.
+function _xy_series_name(plot::Ptr{Cvoid}, sel::Integer)
+	buf = Vector{UInt8}(undef, 256)
+	n = ccall(_fn(:gmtvtk_xyplot_series_name), Cint,
+	          (Ptr{Cvoid}, Cint, Ptr{UInt8}, Cint), plot, Cint(sel), buf, Cint(length(buf)))
+	n <= 0 && return ""
+	return String(@view buf[1:n])
+end
+
+# File > Save: write the selected series (or all, if sel < 0) of the CURRENT page to `path`. The
+# format follows the extension (GMT.gmtwrite: .dat/.txt plain, .csv, OGR vector formats, …). Data is
+# pulled from the C side (the page actually shown), so Save targets the right page once tabs exist.
 function _xy_save(p::QtXYPlot, sel::Int, path)
-	isempty(p.series) && return
-	idxs = (sel >= 0 && sel < length(p.series)) ? (sel+1:sel+1) : (1:length(p.series))
-	mats = [GMT.mat2ds(hcat(p.series[i][1], p.series[i][2])) for i in idxs]
+	cnt = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), p.h)
+	cnt <= 0 && return
+	idxs = (0 <= sel < cnt) ? (sel:sel) : (0:cnt-1)
+	mats = GMTdataset[]
+	for i in idxs
+		xy = _xy_get_series(p.h, i)
+		xy === nothing && continue
+		push!(mats, GMT.mat2ds(hcat(xy[1], xy[2])))
+	end
+	isempty(mats) && return
 	GMT.gmtwrite(String(path), length(mats) == 1 ? mats[1] : mats)
 	return
 end

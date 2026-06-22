@@ -1039,7 +1039,8 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// Build iview("…") with the path safely quoted (raw string => backslashes are literal).
 		std::string cmd = "InteractiveGMT.iview(raw\"" + fn.toStdString() + "\")";
 		static std::vector<char> buf(1 << 12);
-		g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+		int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // open failed -> Errors tab
 	});
 	// 2D/3D toggle: an icon-only button whose glyph shows the CURRENT view ("3D" in 3D, "2D" in flat
 	// 2D). Its own QToolButton (not act2D, which keeps the descriptive "Flat 2D (map)" menu text).
@@ -1452,12 +1453,26 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			return;
 		}
 		static std::vector<char> buf(1 << 16);   // 64 KB result buffer (shared, reused)
-		int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
-		if (n > 0)
-			conOut->appendPlainText(QString::fromUtf8(buf.data(), n));
+		// _console_eval returns the byte count; NEGATIVE flags a Julia error (still |n| bytes of text).
+		int n   = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+		int len = n < 0 ? -n : n;
+		if (len > 0)
+			conOut->appendPlainText(QString::fromUtf8(buf.data(), len));
 	});
 
-	// Tab 2 — Data Viewer: a read-only spreadsheet for a GMTdataset / plain matrix / vector,
+	// Tab 2 — Errors: a READ-ONLY sink for execution errors from background callbacks (drop, coastlines,
+	// basemap, tides, recolour, …). Those used to vanish into the REPL's stderr; Julia now also ccalls
+	// gmtvtk_log_error -> here, raising this tab so a failure can't pass unseen. Typed-command errors stay
+	// inline in the Julia Console tab; THIS tab is the program-side error log.
+	QPlainTextEdit* errOut = new QPlainTextEdit(tabs);
+	errOut->setReadOnly(true);
+	errOut->setMaximumBlockCount(2000);
+	errOut->setFont(QFont("Consolas", 10));
+	errOut->setPlaceholderText("Execution errors from menu actions / background callbacks appear here.");
+	tabs->addTab(errOut, "Errors");
+	s->errConsole = errOut;
+
+	// Tab 3 — Data Viewer: a read-only spreadsheet for a GMTdataset / plain matrix / vector,
 	// filled from Julia via gmtvtk_set_table (e.g. show_table(fig, D)).
 	s->dataTable = new QTableWidget(tabs);
 	s->dataTable->setEditTriggers(QAbstractItemView::NoEditTriggers);

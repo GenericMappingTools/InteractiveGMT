@@ -30,7 +30,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_add_overlay, :gmtvtk_add_overlay_h, :gmtvtk_add_symbols_h, :gmtvtk_is_alive,
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
 	:gmtvtk_view_points, :gmtvtk_selection_count, :gmtvtk_get_selection,
-	:gmtvtk_view_fv, :gmtvtk_set_julia_eval, :gmtvtk_set_table,
+	:gmtvtk_view_fv, :gmtvtk_set_julia_eval, :gmtvtk_set_table, :gmtvtk_log_error,
 	:gmtvtk_save_png, :gmtvtk_orbit, :gmtvtk_set_stereo,
 	:gmtvtk_open_empty, :gmtvtk_set_drop_callback, :gmtvtk_add_surface_h,
 	:gmtvtk_promote_surface_h,
@@ -46,6 +46,9 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_xyplot_set_analysis_callback, :gmtvtk_open_profile_in_xyplot,
 	:gmtvtk_xyplot_set_seed_callback, :gmtvtk_xyplot_set_xtime, :gmtvtk_xyplot_set_logscale,
 	:gmtvtk_xyplot_specgrant, :gmtvtk_xyplot_set_new_callback, :gmtvtk_open_xyplot_from_host,
+	:gmtvtk_xyplot_log, :gmtvtk_xyplot_run_analysis,
+	:gmtvtk_xyplot_add_page, :gmtvtk_xyplot_series_count, :gmtvtk_xyplot_series_npoints,
+	:gmtvtk_xyplot_get_series, :gmtvtk_xyplot_series_name, :gmtvtk_xyplot_get_xtime,
 )
 
 # Resolve a loaded C-API function pointer. Errors clearly if the library never loaded.
