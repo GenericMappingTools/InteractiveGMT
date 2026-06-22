@@ -80,22 +80,45 @@ end
 Open a `GMTdataset` (or a multi-segment vector) in the X,Y plot tool: column 1 is X, columns 2…n
 are Y series; each segment of a vector becomes its own line. Same keywords as the vector form.
 """
-function xyplot(D::GMTdataset; kwargs...)
-	m = D.data
-	size(m, 2) < 2 && error("xyplot: dataset needs at least 2 columns (x, y)")
-	return xyplot(Float64.(@view m[:, 1]), Float64.(m[:, 2:end]); kwargs...)
+# Real column names of a GMTdataset (or a fallback), one per column. Used so the Object Manager /
+# Data Viewer / Analysis pulldowns show the ACTUAL column names (lon, height, …), not "Line N".
+function _ds_colnames(seg, ncol::Integer)
+	cn = (seg isa GMTdataset && !isempty(seg.colnames)) ? seg.colnames : String[]
+	return [ (i <= length(cn) && !isempty(strip(cn[i]))) ? String(cn[i]) :
+	         (i == 1 ? "X" : "col $i") for i in 1:ncol ]
 end
 
-function xyplot(D::AbstractVector{<:GMTdataset}; kwargs...)
+function xyplot(D::GMTdataset; xlabel=nothing, name=nothing, kwargs...)
+	m = D.data
+	size(m, 2) < 2 && error("xyplot: dataset needs at least 2 columns (x, y)")
+	cn = _ds_colnames(D, size(m, 2))
+	x  = Float64.(@view m[:, 1])
+	p  = xyplot(x, Float64.(@view m[:, 2]); name=cn[2],
+	            xlabel=(xlabel === nothing ? cn[1] : xlabel), kwargs...)
+	for c in 3:size(m, 2)
+		add!(p, x, Float64.(@view m[:, c]); name=cn[c])
+	end
+	return p
+end
+
+function xyplot(D::AbstractVector{<:GMTdataset}; xlabel=nothing, name=nothing, kwargs...)
 	segs = [s for s in D if size(s.data, 2) >= 2]
 	isempty(segs) && error("xyplot: no plottable (>= 2 column) segments")
-	m1 = segs[1].data
 	multi = length(segs) > 1
-	p = xyplot(Float64.(@view m1[:, 1]), Float64.(m1[:, 2:end]);
-	           (multi ? (; name="seg 1") : (;))..., kwargs...)
-	for i in 2:length(segs)
-		m = segs[i].data
-		add!(p, Float64.(@view m[:, 1]), Float64.(m[:, 2:end]); name="seg $i")
+	local p
+	for (i, seg) in enumerate(segs)
+		m  = seg.data
+		cn = _ds_colnames(seg, size(m, 2))
+		x  = Float64.(@view m[:, 1])
+		for c in 2:size(m, 2)
+			nm = multi ? "$(cn[c]) (seg $i)" : cn[c]
+			if i == 1 && c == 2
+				p = xyplot(x, Float64.(@view m[:, c]); name=nm,
+				           xlabel=(xlabel === nothing ? cn[1] : xlabel), kwargs...)
+			else
+				add!(p, x, Float64.(@view m[:, c]); name=nm)
+			end
+		end
 	end
 	return p
 end
@@ -261,10 +284,12 @@ function _xy_open_file(p::QtXYPlot, path)
 	for (i, seg) in enumerate(segs)
 		m = seg isa GMTdataset ? seg.data : seg
 		size(m, 2) < 2 && continue                       # need at least x,y
-		x = Float64.(@view m[:, 1])
-		Y = Float64.(m[:, 2:end])
-		nm = nseg > 1 ? "$(basename(path)) seg $i" : basename(path)
-		add!(p, x, Y; name=nm)
+		cn = _ds_colnames(seg, size(m, 2))
+		x  = Float64.(@view m[:, 1])
+		for c in 2:size(m, 2)                            # one series per data column, named by colname
+			nm = nseg > 1 ? "$(cn[c]) (seg $i)" : cn[c]
+			add!(p, x, Float64.(@view m[:, c]); name=nm)
+		end
 	end
 	return
 end

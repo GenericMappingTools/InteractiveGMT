@@ -117,6 +117,55 @@ public:
 	}
 };
 
+// ============================================================================================
+// Background region dialog (File > Background region). A tiny form mirroring Mirone's empty-figure
+// limits chooser: a compass-laid-out W/E/S/N (N on top, W/E flanking, S below), an "Is Geographic?"
+// checkbox (default on) and OK. exec() returns Accepted with `region` = "W/E/S/N/geographic", which
+// the host hands to Julia (g_juliaBgRegion) to open a blank white 2-D map framed to those limits.
+// No Q_OBJECT/moc needed (no new signals/slots). Defaults to the whole geographic earth.
+// ============================================================================================
+class BgRegionDialog : public QDialog {
+public:
+	QString region;                              // "W/E/S/N/geographic" on OK, else empty
+	BgRegionDialog(QWidget *parent) : QDialog(parent) {
+		setWindowTitle("Background region");
+		auto edit = [this](const QString &val) {
+			auto *e = new QLineEdit(val, this);
+			e->setValidator(new QDoubleValidator(e));
+			e->setAlignment(Qt::AlignHCenter);
+			e->setMinimumWidth(110);
+			return e;
+		};
+		QLineEdit *eN = edit("90"), *eS = edit("-90"), *eW = edit("-180"), *eE = edit("180");
+
+		// Compass grid: N row 0 col 1 ; W/E row 1 cols 0/2 ; S row 2 col 1.
+		auto *grid = new QGridLayout();
+		grid->addWidget(eN, 0, 1);
+		grid->addWidget(eW, 1, 0);
+		grid->addWidget(eE, 1, 2);
+		grid->addWidget(eS, 2, 1);
+		grid->setColumnStretch(1, 1);
+
+		auto *geog = new QCheckBox("Is Geographic?", this);
+		geog->setChecked(true);
+
+		auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+		QObject::connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
+		QObject::connect(bb, &QDialogButtonBox::accepted, this, [this, eW, eE, eS, eN, geog]() {
+			region = QString("%1/%2/%3/%4/%5")
+			             .arg(eW->text().trimmed()).arg(eE->text().trimmed())
+			             .arg(eS->text().trimmed()).arg(eN->text().trimmed())
+			             .arg(geog->isChecked() ? 1 : 0);
+			accept();
+		});
+
+		auto *v = new QVBoxLayout(this);
+		v->addLayout(grid);
+		v->addWidget(geog);
+		v->addWidget(bb);
+	}
+};
+
 static QuadNode* buildQuadNode(int i0, int i1, int j0, int j1, int level,
 							   double x0, double dx, double y0, double dy) {
 	QuadNode* n = new QuadNode();
@@ -698,6 +747,171 @@ static void buildSceneContent(Scene* s, vtkSmartPointer<vtkPolyData> pd,
 	}
 }
 
+// ============================================================================
+// Earth Tides dialog (Geography > Earth Tides) — port of Mirone's earth_tides.
+// ============================================================================
+
+// One-shot map-pick: when the user hits "Click point on map" the dialog hides and installs this
+// filter on the render widget; the NEXT left-click (no drag) is converted to lon/lat (ray to the
+// z=0 map plane, undo the X aspect scale) and handed back via cb, then the filter removes itself.
+// No Q_OBJECT/moc needed (no signals/slots). Mirrors the readout math in onMouseMove (10_geometry).
+class MapPickFilter : public QObject {
+public:
+	Scene* s = nullptr;
+	std::function<void(double, double)> cb;
+	bool down = false, moved = false; double px = 0, py = 0;
+	MapPickFilter(Scene* sc, QObject* parent, std::function<void(double, double)> f)
+		: QObject(parent), s(sc), cb(std::move(f)) {}
+protected:
+	bool eventFilter(QObject* obj, QEvent* ev) override {
+		const QEvent::Type t = ev->type();
+		if (t == QEvent::MouseButtonPress) {
+			QMouseEvent* me = static_cast<QMouseEvent*>(ev);
+			if (me->button() == Qt::LeftButton) {
+				down = true; moved = false; px = me->position().x(); py = me->position().y();
+				return true;                                  // swallow so VTK doesn't start a rotate
+			}
+		} else if (t == QEvent::MouseMove && down) {
+			QMouseEvent* me = static_cast<QMouseEvent*>(ev);
+			if (std::abs(me->position().x() - px) > 3 || std::abs(me->position().y() - py) > 3) moved = true;
+			return true;
+		} else if (t == QEvent::MouseButtonRelease && down) {
+			QMouseEvent* me = static_cast<QMouseEvent*>(ev);
+			if (me->button() == Qt::LeftButton) {
+				down = false;
+				if (!moved && s->ren && s->widget && s->widget->renderWindow()) {
+					const double r = s->widget->devicePixelRatioF();
+					const int    H = s->widget->renderWindow()->GetSize()[1];
+					const double mx = me->position().x() * r, my = H - me->position().y() * r;
+					double nr[4], fr[4];
+					s->ren->SetDisplayPoint(mx, my, 0.0); s->ren->DisplayToWorld();
+					for (int i = 0; i < 4; ++i) nr[i] = s->ren->GetWorldPoint()[i];
+					s->ren->SetDisplayPoint(mx, my, 1.0); s->ren->DisplayToWorld();
+					for (int i = 0; i < 4; ++i) fr[i] = s->ren->GetWorldPoint()[i];
+					if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
+					if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
+					const double dz = fr[2] - nr[2];
+					if (dz != 0.0) {
+						const double t0 = -nr[2] / dz;
+						const double gx = (s->xfac != 0.0) ? s->xfac : 1.0;
+						const double lon = (nr[0] + t0 * (fr[0] - nr[0])) / gx;
+						const double lat =  nr[1] + t0 * (fr[1] - nr[1]);
+						if (cb) cb(lon, lat);
+					}
+				}
+				if (s->widget) s->widget->removeEventFilter(this);
+				deleteLater();
+				return true;
+			}
+		}
+		return QObject::eventFilter(obj, ev);
+	}
+};
+
+// Build + run the modeless Earth Tides dialog. (cW..cN) is the current visible region, used to seed
+// Lon/Lat (its centre) and, in grid mode, the computed -R. On OK the chosen settings are packed into
+// the request string and handed to Julia (g_juliaEarthTide). Modeless so "Click point on map" can
+// reach the map: the dialog hides, MapPickFilter grabs the next click, refills Lon/Lat, reshows.
+static void showEarthTidesDialog(Scene* s, double cW, double cE, double cS, double cN) {
+	if (!g_juliaEarthTide) {
+		if (s->win) s->win->statusBar()->showMessage("Earth Tides: callback not registered", 3000);
+		return;
+	}
+	const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
+	QDialog* dlg = new QDialog(s->win);
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	dlg->setWindowTitle("Earth Tides");
+
+	QDateTimeEdit* eStart = new QDateTimeEdit(nowUtc, dlg);
+	QDateTimeEdit* eEnd   = new QDateTimeEdit(nowUtc.addDays(10), dlg);
+	for (QDateTimeEdit* e : { eStart, eEnd }) {
+		e->setDisplayFormat("dd-MMM-yyyy HH:mm:ss"); e->setCalendarPopup(true); e->setTimeSpec(Qt::UTC);
+	}
+	QDoubleSpinBox* eLon = new QDoubleSpinBox(dlg);
+	eLon->setRange(-360.0, 360.0); eLon->setDecimals(4); eLon->setValue(0.5 * (cW + cE));
+	QDoubleSpinBox* eLat = new QDoubleSpinBox(dlg);
+	eLat->setRange(-90.0, 90.0); eLat->setDecimals(4); eLat->setValue(0.5 * (cS + cN));
+
+	QRadioButton* rSeries = new QRadioButton("Time series", dlg); rSeries->setChecked(true);
+	QRadioButton* rGrid   = new QRadioButton("Grid(s)", dlg);
+	QButtonGroup* mode = new QButtonGroup(dlg);
+	mode->addButton(rSeries); mode->addButton(rGrid);
+	// Grid(s) uses a single instant (Start date) over a global region, so freeze End date then; a
+	// time series spans Start->End, so unfreeze it for "Time series".
+	QObject::connect(rGrid, &QRadioButton::toggled, dlg, [eEnd](bool on) { eEnd->setEnabled(!on); });
+	eEnd->setEnabled(!rGrid->isChecked());                 // initial state (series default -> enabled)
+
+	QCheckBox* cV = new QCheckBox("Vertical", dlg); cV->setChecked(true);
+	QCheckBox* cE2 = new QCheckBox("East", dlg);
+	QCheckBox* cN2 = new QCheckBox("North", dlg);
+
+	QPushButton* bPick = new QPushButton("Click point on map", dlg);
+
+	// Grid spacing (degrees) for Grid(s) mode; relevant only when gridding -> enabled with rGrid.
+	QDoubleSpinBox* eInc = new QDoubleSpinBox(dlg);
+	eInc->setRange(0.05, 10.0); eInc->setDecimals(2); eInc->setSingleStep(0.25); eInc->setValue(0.5);
+	QObject::connect(rGrid, &QRadioButton::toggled, dlg, [eInc](bool on) { eInc->setEnabled(on); });
+	eInc->setEnabled(rGrid->isChecked());                  // disabled in the default Time-series mode
+
+	// Layout: left column = dates + mode + components; right column = lon/lat + grid inc + pick + OK.
+	QFormLayout* left = new QFormLayout;
+	left->addRow("Start date:", eStart);
+	left->addRow("End date:",   eEnd);
+	left->addRow(rSeries);
+	left->addRow(rGrid);
+	left->addRow(cV);
+	left->addRow(cE2);
+	left->addRow(cN2);
+
+	QFormLayout* right = new QFormLayout;
+	right->addRow("Lon:", eLon);
+	right->addRow("Lat:", eLat);
+	right->addRow("Grid inc (°):", eInc);
+	right->addRow(bPick);
+	QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
+	right->addRow(bb);
+
+	QHBoxLayout* cols = new QHBoxLayout(dlg);
+	cols->addLayout(left); cols->addSpacing(16); cols->addLayout(right);
+
+	// "Click point on map": hide the dialog, arm a one-shot pick on the map widget; on click refill
+	// Lon/Lat and reshow. (Grid region still comes from the visible extent captured at menu time.)
+	QObject::connect(bPick, &QPushButton::clicked, dlg, [s, dlg, eLon, eLat]() {
+		if (!s->widget) return;
+		dlg->lower();                                       // keep visible (don't hide), just out of the way
+		if (s->win) s->win->statusBar()->showMessage("Earth Tides: click a point on the map…", 5000);
+		MapPickFilter* f = new MapPickFilter(s, s->widget, [dlg, eLon, eLat](double lon, double lat) {
+			eLon->setValue(lon); eLat->setValue(lat);
+			dlg->raise(); dlg->activateWindow();
+		});
+		s->widget->installEventFilter(f);
+	});
+	QObject::connect(bb, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+	QObject::connect(bb, &QDialogButtonBox::accepted, dlg,
+	                 [s, dlg, eStart, eEnd, eLon, eLat, eInc, rGrid, cV, cE2, cN2, cW, cE, cS, cN]() {
+		QString comp;
+		if (cV->isChecked())  comp += 'V';
+		if (cE2->isChecked()) comp += 'E';
+		if (cN2->isChecked()) comp += 'N';
+		if (comp.isEmpty()) {
+			if (s->win) s->win->statusBar()->showMessage("Earth Tides: pick at least one component", 3000);
+			return;
+		}
+		const char* m = rGrid->isChecked() ? "grid" : "series";
+		// req = mode/start/end/lon/lat/comp/inc/W/E/S/N. inc = grid spacing (deg); region fields are
+		// kept for layout stability but ignored by the (always-global) grid path.
+		const QString req = QString("%1/%2/%3/%4/%5/%6/%7/%8/%9/%10/%11").arg(m)
+			.arg(eStart->dateTime().toString("yyyy-MM-ddTHH:mm:ss"))
+			.arg(eEnd->dateTime().toString("yyyy-MM-ddTHH:mm:ss"))
+			.arg(eLon->value(), 0, 'f', 4).arg(eLat->value(), 0, 'f', 4).arg(comp)
+			.arg(eInc->value(), 0, 'f', 4)
+			.arg(cW, 0, 'f', 6).arg(cE, 0, 'f', 6).arg(cS, 0, 'f', 6).arg(cN, 0, 'f', 6);
+		if (s->win) s->win->statusBar()->showMessage("Earth Tides: computing…", 3000);
+		g_juliaEarthTide(s, req.toUtf8().constData());     // keep the dialog open for repeated runs
+	});
+	dlg->show();
+}
+
 static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 double x0, double x1, double y0, double y1,
 						 double zmin, double zmax,
@@ -878,6 +1092,16 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	QMenu *mFile = win->menuBar()->addMenu("&File");
 	mFile->addAction("Save &Screenshot…", actShot);
+	// Background region: open a blank white 2-D map framed to W/E/S/N (default the whole geographic
+	// earth). The dialog hands "W/E/S/N/geographic" to Julia (g_juliaBgRegion), which opens a fresh
+	// window — ready to drop coastlines / overlays onto. Reports if the callback is not wired.
+	mFile->addAction("&Background region…", [win, s]() {
+		BgRegionDialog dlg(win);
+		if (dlg.exec() != QDialog::Accepted || dlg.region.isEmpty()) return;
+		if (g_juliaBgRegion) g_juliaBgRegion(s, dlg.region.toUtf8().constData());
+		else if (s->win) s->win->statusBar()->showMessage("Background region: callback not registered", 3000);
+	});
+	mFile->addSeparator();
 	// Recent Files: persistent MRU, grouped Grids/Images/Datasets, rebuilt each time it opens so a
 	// file opened in any window shows up here too. Re-opens a pick in a NEW window via iview().
 	QMenu* mRecent = mFile->addMenu("Recent &Files");
@@ -1002,7 +1226,11 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mGeo->addAction("Hydrothermal sites",            geoPlot("hydro", ""));
 	mGeo->addAction("Tide Stations",                 geoTODO("Tide Stations"));
 	mGeo->addAction("Tides (download)",              geoPlot("tides", ""));
-	mGeo->addAction("Earth Tides",                   geoTODO("Earth Tides"));
+	mGeo->addAction("Earth Tides", [s, visibleRegion]() {
+		double W = -180, E = 180, S = -90, N = 90;          // whole-earth fallback if no view region
+		visibleRegion(W, E, S, N);
+		showEarthTidesDialog(s, W, E, S, N);
+	});
 	mGeo->addAction("Fracture Zones",                geoTODO("Fracture Zones"));
 	mGeo->addAction("Plate boundaries",              geoTODO("Plate boundaries"));
 

@@ -268,3 +268,80 @@ function _register_tides()
 	ccall(_fn(:gmtvtk_set_tides_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end
+
+# Earth tides (solid-Earth tidal displacement) via GMT.jl's `earthtide` — NOT re-implemented here.
+# The C++ "Earth Tides" dialog (70_window.cpp) hands
+# "<mode>/<startISO>/<endISO>/<lon>/<lat>/<comp>/<W>/<E>/<S>/<N>":
+#   mode = "series" | "grid";  comp = subset of "VEN" (Vertical/East/North).
+# `earthtide` maps components to GMT's -C letters x=East, y=North, z=Vertical.
+const _ET_COMP = Dict('V' => ("z", "Vertical", "vert"), 'E' => ("x", "East", "east"),
+                      'N' => ("y", "North", "north"))
+
+# Time-series mode: GMT.earthtide(L=(lon,lat), T="start/stop/inc") returns a GMTdataset whose
+# columns are Time/East/North/Vertical (Time = Unix epoch seconds). Plot each checked component in a
+# standalone X,Y window with a date/time X axis (xtime=:date matches the epoch-seconds column).
+function _earthtide_series(scene, start, stop, lon, lat, comp)
+	t0 = GMT.Dates.DateTime(start); t1 = GMT.Dates.DateTime(stop)
+	t1 > t0 || error("earthtide: end date/time must be after the start")
+	span_min = (t1 - t0).value / 60_000                  # ms -> minutes
+	inc = max(1, round(Int, span_min / 2000))            # aim ~2000 samples; never finer than 1 min
+	D = GMT.earthtide(L=(lon, lat), T="$start/$stop/$(inc)m")
+	(D === nothing || size(D.data, 1) < 2) && (@warn "earthtide: empty time series"; return)
+	t = Float64.(view(D.data, :, 1))
+	colidx = Dict("East" => 2, "North" => 3, "Vertical" => 4)
+	pl = nothing
+	for ch in comp
+		haskey(_ET_COMP, ch) || continue
+		label = _ET_COMP[ch][2]
+		y = Float64.(view(D.data, :, colidx[label]))
+		if pl === nothing
+			pl = xyplot(t, y; name=label, title="Earth tides @ ($lon, $lat)",
+			            xlabel="Time (UTC)", ylabel="Displacement (m)", xtime=:date)
+		else
+			add!(pl, t, y; name=label)
+		end
+	end
+	return
+end
+
+# Grid mode: GMT.earthtide(R=global, I=1°, T=startISO, C=<letter>) returns a GMTgrid of the chosen
+# component's displacement at one instant. Grids are ALWAYS global (a solid-Earth tide is a whole-
+# planet field). Only the first checked component is gridded (one grid). Opens in its OWN viewer
+# window (iview) — NOT overlaid on the current scene: the tidal displacement is sub-metre, so adding
+# it as a second surface buries it flat under the existing relief (invisible). The surface row in the
+# new window's Scene Objects is named "earth tide <vert|east|north>".
+function _earthtide_grid(scene, start, comp, inc=0.5)
+	letter, _, short = _ET_COMP[first(comp)]
+	G = GMT.earthtide(R=(-180.0, 180.0, -90.0, 90.0), I=inc, T=start, C=letter)
+	(G === nothing) && error("earthtide: grid not produced")
+	iview(G; title="earth tide $short")
+	return
+end
+
+# C callback for the Earth Tides dialog. Parses the request and runs the chosen mode.
+function _on_earthtide(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid
+	try
+		p = split(unsafe_string(creq), '/')
+		length(p) >= 6 || return
+		mode = String(p[1]); start = String(p[2]); stop = String(p[3])
+		lon = parse(Float64, p[4]); lat = parse(Float64, p[5])
+		comp = String(p[6]); isempty(comp) && (comp = "V")
+		if mode == "grid"
+			inc = (length(p) >= 7 && !isempty(p[7])) ? parse(Float64, p[7]) : 0.5
+			_earthtide_grid(scene, start, comp, inc)     # always global; ignores the region fields
+		else
+			_earthtide_series(scene, start, stop, lon, lat, comp)
+		end
+	catch e
+		_viewer_log_error(scene, "Earth Tides FAILED: $(sprint(showerror, e))")
+		@warn "earthtide: callback failed" exception=(e,)
+	end
+	return
+end
+
+# Build the C-callable pointer + register it. Called once from __init__.
+function _register_earthtide()
+	fptr = @cfunction(_on_earthtide, Cvoid, (Ptr{Cvoid}, Cstring))
+	ccall(_fn(:gmtvtk_set_earthtide_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end

@@ -32,10 +32,13 @@
 #include <QFormLayout>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QGridLayout>
+#include <QDoubleValidator>
 #include <string>
 #include <QSlider>
 #include <QLabel>
 #include <QCheckBox>
+#include <QGroupBox>
 #include <QRadioButton>
 #include <QButtonGroup>
 #include <QActionGroup>

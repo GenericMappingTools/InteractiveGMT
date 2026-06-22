@@ -504,6 +504,117 @@ static bool xyAskButter(QWidget *parent, QString &type, double &fc) {
 	return true;
 }
 
+// ---- GMT menu: full spectrum1d interface -----------------------------------
+// Options dialog for GMT's spectrum1d (auto- and cross-spectra). Two pulldowns pick the input
+// series from the current page (the same names shown in the Data Viewer): the 1st series is X(t),
+// the 2nd (default "(none)") is Y(t) for cross-spectra. Builds the op-args string
+// "S=<seg>:D=<dt>:L=<mode>:C=<flags>:y1=<idx>:y2=<idx>:W=<0|1>" consumed Julia-side by _xy_spectrum1d
+// (run through the existing Analysis callback). `sel` = the initially-selected 1st series. Returns
+// false if cancelled.
+static bool xyAskSpectrum1d(QWidget *parent, XYPlot *s, int sel, QString &args) {
+	std::vector<XYSeries> &series = xyCur(s).series;
+	QDialog d(parent);
+	d.setWindowTitle("spectrum1d — auto / cross spectra");
+	QVBoxLayout *top = new QVBoxLayout(&d);
+	QFormLayout *f = new QFormLayout();
+	top->addLayout(f);
+
+	// Both pulldowns offer EVERY column shown in the Data Viewer: the abscissa (X) column (code -1)
+	// AND each series' value column (code = series index). Pick any column for either — no restriction.
+	// (code -2 = "(none)", 2nd pulldown only.) The abscissa label = the bottom-axis title.
+	const char *axt = xyCur(s).chart && xyCur(s).chart->GetAxis(vtkAxis::BOTTOM)
+	                      ? xyCur(s).chart->GetAxis(vtkAxis::BOTTOM)->GetTitle().c_str() : nullptr;
+	const QString xlab = (axt && *axt) ? QString::fromUtf8(axt) : QStringLiteral("X");
+	auto fillCols = [&](QComboBox *cb, bool withNone) {
+		if (withNone) cb->addItem("(none — autospectrum)", -2);
+		cb->addItem(xlab, -1);                                  // the abscissa column
+		for (int i = 0; i < (int)series.size(); ++i)
+			cb->addItem(QString::fromStdString(series[i].name), i);
+	};
+
+	// 1st column X(t): defaults to the OM-selected value column.
+	QComboBox *y1 = new QComboBox(&d);
+	fillCols(y1, false);
+	{ const int at = y1->findData(sel); if (at >= 0) y1->setCurrentIndex(at); }
+	f->addRow("1st column X(t)", y1);
+
+	// 2nd column Y(t) for cross-spectra; default "(none)" => autospectrum of the 1st column.
+	QComboBox *y2 = new QComboBox(&d);
+	fillCols(y2, true);
+	f->addRow("2nd column Y(t)", y2);
+
+	QSpinBox *seg = new QSpinBox(&d);
+	seg->setRange(0, 1 << 24); seg->setValue(0);
+	seg->setSpecialValueText("auto (largest 2^n <= N)");
+	f->addRow("Segment size", seg);
+
+	QLineEdit *dt = new QLineEdit(&d);
+	dt->setPlaceholderText("auto (from X spacing)");
+	f->addRow("Sample interval", dt);
+
+	QComboBox *det = new QComboBox(&d);
+	det->addItems(QStringList() << "Remove linear trend (default)" << "Leave trend"
+	                            << "Remove mean" << "Remove mid-value");
+	f->addRow("Detrend", det);
+
+	QCheckBox *wl = new QCheckBox("X axis = wavelength (1/freq)", &d);
+	f->addRow("", wl);
+
+	// Output components (-C flags). X power is the autospectrum; the rest need a 2nd series.
+	QGroupBox *og = new QGroupBox("Outputs", &d);
+	QVBoxLayout *ol = new QVBoxLayout(og);
+	QCheckBox *cx = new QCheckBox("X power", og); cx->setChecked(true);
+	QCheckBox *cy = new QCheckBox("Y power", og);
+	QCheckBox *cc = new QCheckBox("Cross power", og);
+	QCheckBox *cn = new QCheckBox("Noise power", og);
+	QCheckBox *co = new QCheckBox("Coherency", og);
+	QCheckBox *ca = new QCheckBox("Admittance", og);
+	QCheckBox *cg = new QCheckBox("Gain", og);
+	QCheckBox *cp = new QCheckBox("Phase", og);
+	QCheckBox *crossBoxes[] = {cy, cc, cn, co, ca, cg, cp};
+	ol->addWidget(cx);
+	for (QCheckBox *c : crossBoxes) ol->addWidget(c);
+	top->addWidget(og);
+
+	auto syncCross = [=]{
+		const bool cross = y2->currentData().toInt() != -2;     // -2 = "(none)"
+		for (QCheckBox *c : crossBoxes) c->setEnabled(cross);
+	};
+	QObject::connect(y2, qOverload<int>(&QComboBox::currentIndexChanged), &d, [syncCross](int){ syncCross(); });
+	syncCross();
+
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
+	top->addWidget(bb);
+	QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
+	if (d.exec() != QDialog::Accepted)
+		return false;
+
+	const int y2i = y2->currentData().toInt();
+	const bool cross = y2i != -2;                              // -2 = "(none)" => autospectrum
+	QString flags;
+	if (cx->isChecked()) flags += 'x';
+	if (cross) {
+		if (cy->isChecked()) flags += 'y';
+		if (cc->isChecked()) flags += 'c';
+		if (cn->isChecked()) flags += 'n';
+		if (co->isChecked()) flags += 'o';
+		if (ca->isChecked()) flags += 'a';
+		if (cg->isChecked()) flags += 'g';
+		if (cp->isChecked()) flags += 'p';
+	}
+	if (flags.isEmpty()) flags = "x";
+	args = QString("S=%1:D=%2:L=%3:C=%4:y1=%5:y2=%6:W=%7")
+	           .arg(seg->value())
+	           .arg(dt->text().trimmed())
+	           .arg(det->currentIndex())
+	           .arg(flags)
+	           .arg(y1->currentData().toInt())
+	           .arg(y2i)
+	           .arg(wl->isChecked() ? 1 : 0);
+	return true;
+}
+
 // ---- interactive Spector-Grant depth-to-sources (ecran dynSlope) -----------
 // Left-drag a frequency band on a (wavenumber, power) spectrum; fit ln(power) vs k live, draw the
 // fit line over the band and show depth = |slope|/(4π)·unit in the status bar.
@@ -1278,6 +1389,20 @@ static XYPlot *buildXYPlot(const char *title) {
 				xySGClear(s);
 				s->win->statusBar()->clearMessage();
 			}
+		});
+	}
+
+	// GMT menu — GUI front-ends for GMT modules that operate on table data. Each item pops an options
+	// dialog, then hands an encoded op string to Julia (through the same Analysis callback) which runs
+	// the module via GMT.jl and lands the result on its own page(s).
+	QMenu *mGMT = mb->addMenu("GMT");
+	{
+		QAction *a = mGMT->addAction("spectrum1d…");
+		QObject::connect(a, &QAction::triggered, s->win, [s, gate] {
+			const int sel = gate(); if (sel < 0) return;
+			QString args;
+			if (!xyAskSpectrum1d(s->win, s, sel, args)) return;
+			g_juliaXYAna(s, QString("spectrum1d:%1").arg(args).toUtf8().constData(), sel);
 		});
 	}
 

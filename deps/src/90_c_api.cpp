@@ -598,6 +598,13 @@ GMTVTK_API void gmtvtk_set_basemap_icon(const char *path) {
 	g_basemapIcon = QString::fromUtf8(path ? path : "");
 }
 
+// Register the Background-region callback. `fn` (Julia @cfunction, signature JuliaBgRegionFn) is
+// called with "W/E/S/N/geographic" from the File > Background region dialog; Julia opens a fresh
+// blank white 2-D map framed to those limits. nullptr to detach.
+GMTVTK_API void gmtvtk_set_bgregion_callback(JuliaBgRegionFn fn) {
+	g_juliaBgRegion = fn;
+}
+
 // Register the Geography-menu callback. `fn` (Julia @cfunction, signature JuliaGeoFn) is called
 // with "<kind>/<res>/W/E/S/N" (the visible region at the current zoom) when a Plot-coastline leaf
 // is chosen; Julia runs GMT.coast and adds the lines via gmtvtk_add_overlay_h. nullptr to detach.
@@ -610,6 +617,13 @@ GMTVTK_API void gmtvtk_set_geography_callback(JuliaGeoFn fn) {
 // station = the clicked star's "Name:/Code:/Country:" block. Julia opens the download window.
 GMTVTK_API void gmtvtk_set_tides_callback(JuliaTidesFn fn) {
 	g_juliaTides = fn;
+}
+
+// Register the Earth-tides callback. The Geography > Earth Tides dialog calls fn(scene, req) with
+// "<mode>/<startISO>/<endISO>/<lon>/<lat>/<comp>/<W>/<E>/<S>/<N>" (mode "series"|"grid", comp a
+// subset of "VEN"); Julia runs GMT.earthtide. nullptr to detach.
+GMTVTK_API void gmtvtk_set_earthtide_callback(JuliaEarthTideFn fn) {
+	g_juliaEarthTide = fn;
 }
 
 // Prepare an EMPTY launcher to receive geographic IMAGE objects as ExtraObj images. The basemap

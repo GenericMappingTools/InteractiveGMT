@@ -69,9 +69,9 @@ function _spectrum1d(x, y; want::Symbol=:psd)
 	# composite (freq, PSD, 1σ) table.
 	D = GMT.spectrum1d(reshape(yv, :, 1); size=seg, sample_dist=abs(dt), name=true)
 	M = D isa AbstractVector ? D[1] : D
-	A = M isa GMTdataset ? M.data : Matrix{Float64}(M)
-	f = Float64.(@view A[:, 1]); p = Float64.(@view A[:, 2])
-	return want === :amp ? (f, sqrt.(max.(p, 0.0))) : (f, p)
+	#A = M isa GMTdataset ? M.data : Matrix{Float64}(M)
+	f = Float64.(@view M[:, 1]); p = Float64.(@view M[:, 2])
+	return (want === :amp) ? (f, sqrt.(max.(p, 0.0))) : (f, p)
 end
 
 # Finite-difference gradient on a possibly non-uniform x (central inside, one-sided at the ends).
@@ -81,8 +81,8 @@ function _grad(x, y)
 	@inbounds for i in 2:n-1
 		g[i] = (y[i+1] - y[i-1]) / (x[i+1] - x[i-1])
 	end
-	g[1] = (y[2]   - y[1])   / (x[2]   - x[1])
-	g[n] = (y[n]   - y[n-1]) / (x[n]   - x[n-1])
+	g[1] = (y[2] - y[1])   / (x[2] - x[1])
+	g[n] = (y[n] - y[n-1]) / (x[n] - x[n-1])
 	return g
 end
 
@@ -327,12 +327,157 @@ function _xy_log(plot::Ptr{Cvoid}, msg::AbstractString; err::Bool=false)
 	return
 end
 
+# Open a fresh self-scaled PAGE (Excel-like tab) in THIS window, set its axis titles, and drop one
+# (x,y) curve on it. The add_page ccall switches the current page so the following add! lands on the
+# new tab. Shared by the GMT-module front-ends whose output lives on a different scale than the source.
+function _xy_addpage!(plot::Ptr{Cvoid}, p::QtXYPlot, pagename::AbstractString, x, y, name::AbstractString;
+                      xlabel::AbstractString, ylabel::AbstractString)
+	ccall(_fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), plot, String(pagename))
+	ccall(_fn(:gmtvtk_xyplot_set_labels), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), plot, String(xlabel), String(ylabel))
+	add!(p, x, y; name=String(name))
+	return
+end
+
+# ============================================================================
+# GMT menu — GUI front-ends for GMT modules that work on table data.
+# ============================================================================
+# spectrum1d: a full interface to GMT's spectrum1d (auto- & cross-spectra). The C++ dialog
+# (xyAskSpectrum1d, 65_xyplot.cpp) encodes its choices into the op string. This differs from the
+# Analysis-menu FFT items (a fixed amplitude/PSD autospectrum) by exposing segment size, sample
+# interval, detrend mode, wavelength axis, an optional 2nd series and the full -C output set.
+
+# -C flag -> (GMT.jl output-tuple field, GMT.jl composite column-name stem, display label).
+const _SPEC_FIELD = Dict('x'=>:xpower, 'y'=>:ypower, 'c'=>:cpower, 'n'=>:npower,
+                         'p'=>:phase,  'a'=>:admitt, 'g'=>:gain,   'o'=>:coh)
+const _SPEC_COL   = Dict('x'=>"Xpower", 'y'=>"Ypower", 'c'=>"Cpower", 'n'=>"Npower",
+                         'p'=>"Phase",  'a'=>"Admit",  'g'=>"Gain",   'o'=>"Coher")
+const _SPEC_LABEL = Dict('x'=>"X power", 'y'=>"Y power", 'c'=>"Cross power", 'n'=>"Noise power",
+                         'p'=>"Phase",   'a'=>"Admittance", 'g'=>"Gain",     'o'=>"Coherency")
+
+# Parse a ":"-joined "key=value" arg string (the op payload) into a Dict.
+function _parse_kv(s::AbstractString)
+	d = Dict{String,String}()
+	for tok in split(s, ':')
+		isempty(tok) && continue
+		i = findfirst(==('='), tok)
+		if i === nothing
+			d[String(tok)] = ""
+		else
+			d[String(tok[1:prevind(tok, i)])] = String(tok[nextind(tok, i):end])
+		end
+	end
+	return d
+end
+
+# Resolve a Data-Viewer column code (from the spectrum1d dialog) to (values, abscissa, label).
+#   code == -1 -> the abscissa (X) column itself (X of series 0); no separate abscissa -> dt by index.
+#   code >=  0 -> series `code`'s value (Y) column; abscissa = its own X (used for dt).
+function _xy_col(plot::Ptr{Cvoid}, code::Int)
+	if code == -1
+		xy = _xy_get_series(plot, 0)
+		xy === nothing && return nothing
+		return (xy[1], nothing, "X")
+	end
+	xy = _xy_get_series(plot, code)
+	xy === nothing && return nothing
+	nm = _xy_series_name(plot, code); isempty(nm) && (nm = "series $code")
+	return (xy[2], xy[1], nm)
+end
+
+# Run GMT.spectrum1d on the chosen column (input X(t)) and, for cross-spectra, a second column
+# (output Y(t)); land each requested output component on its own self-scaled page. `args` is the
+# encoded dialog payload "S=…:D=…:L=…:C=<flags>:y1=<code>:y2=<code>:W=<0|1>" where the column codes
+# are -1 (abscissa), -2 (none, y2 only) or a series index. All spectra go through GMT — no in-house
+# FFT here (the Analysis-menu items keep the lighter autospectrum path).
+function _xy_spectrum1d(plot::Ptr{Cvoid}, p::QtXYPlot, args::AbstractString, sel::Int)
+	d = _parse_kv(args)
+	c1 = _xy_col(plot, parse(Int, get(d, "y1", string(sel))))   # 1st-column pulldown -> input X(t)
+	c1 === nothing && return _xy_log(plot, "spectrum1d: could not read the 1st column"; err=true)
+	y, xs, nm = c1
+	N = length(y)
+	N < 4 && return _xy_log(plot, "spectrum1d: need at least 4 points"; err=true)
+
+	flags = get(d, "C", "x"); isempty(flags) && (flags = "x")
+	y2c   = parse(Int, get(d, "y2", "-2"))
+	cross = y2c != -2
+	if !cross && any(c -> c in "ycnpago", flags)
+		return _xy_log(plot, "spectrum1d: cross-spectra outputs (Y/Cross/Noise/Coh/Admit/Gain/Phase) need a 2nd column"; err=true)
+	end
+
+	# input: 1 column (autospectrum) or 2 columns X,Y (cross — 2nd column supplies Y(t)).
+	local inmat
+	if cross
+		c2 = _xy_col(plot, y2c)
+		c2 === nothing && return _xy_log(plot, "spectrum1d: could not read the 2nd column"; err=true)
+		y2 = c2[1]
+		n  = min(length(y), length(y2))
+		n < 4 && return _xy_log(plot, "spectrum1d: 2nd column too short"; err=true)
+		inmat = hcat(Float64.(@view y[1:n]), Float64.(@view y2[1:n]))
+	else
+		inmat = reshape(Float64.(y), :, 1)
+	end
+	Nrows = size(inmat, 1)
+
+	# sample interval: explicit, else from the 1st column's abscissa (index spacing if it IS the
+	# abscissa); segment: explicit (>0) else largest 2^n ≤ N.
+	dt = let v = strip(get(d, "D", ""))
+		isempty(v) ? (xs === nothing ? 1.0 : abs((xs[end] - xs[1]) / (N - 1))) : abs(parse(Float64, v))
+	end
+	dt == 0 && return _xy_log(plot, "spectrum1d: zero sample interval"; err=true)
+	seg = let v = parse(Int, get(d, "S", "0")); v > 0 ? v : prevpow(2, Nrows) end
+	seg < 2 && return _xy_log(plot, "spectrum1d: series too short for a segment"; err=true)
+
+	mode = parse(Int, get(d, "L", "0"))            # 0 remove-trend(default) 1 leave 2 mean 3 mid
+	wl   = get(d, "W", "0") == "1"
+	# -C switches spectrum1d into cross-spectral (2-column) mode; an autospectrum must pass NO -C, so
+	# `output` is set only for the cross case (matching the lighter Analysis-menu autospectrum path).
+	kw = Dict{Symbol,Any}(:size => seg, :sample_dist => dt)
+	if cross
+		syms = [_SPEC_FIELD[c] for c in flags if haskey(_SPEC_FIELD, c)]
+		kw[:output] = (; (sym => true for sym in syms)...)
+	end
+	mode == 1 && (kw[:leave_trend] = true)
+	mode == 2 && (kw[:leave_trend] = "m")
+	mode == 3 && (kw[:leave_trend] = "h")
+	wl && (kw[:wavelength] = true)
+
+	D = GMT.spectrum1d(inmat; kw...)
+	M = D isa AbstractVector ? D[1] : D
+	A = M isa GMTdataset ? M.data : Matrix{Float64}(M)
+	cols = (M isa GMTdataset && !isempty(M.colnames)) ? M.colnames : String[]
+	f  = Float64.(@view A[:, 1])
+	xl = wl ? "wavelength" : "frequency"
+
+	k = 0; nadded = 0
+	for c in flags
+		haskey(_SPEC_COL, c) || continue
+		k += 1
+		col = isempty(cols) ? nothing : findfirst(n -> occursin(_SPEC_COL[c], n), cols)
+		col === nothing && (col = 2k)              # positional fallback: freq, then (value,σ) pairs
+		if col > size(A, 2)
+			_xy_log(plot, "spectrum1d: output '$(_SPEC_LABEL[c])' not in result"; err=true)
+			continue
+		end
+		lab = _SPEC_LABEL[c]; pname = "$nm — $lab"
+		_xy_addpage!(plot, p, pname, f, Float64.(@view A[:, col]), pname; xlabel=xl, ylabel=lab)
+		nadded += 1
+	end
+	_xy_log(plot, "spectrum1d: $nadded page(s) from '$nm'" * (cross ? " ⨯ 2nd series" : "") *
+	              " (seg=$seg, dt=$(round(dt; sigdigits=4)))")
+	return
+end
+
 function _on_xy_analysis(plot::Ptr{Cvoid}, cop::Cstring, sel::Cint)::Cvoid
 	op = unsafe_string(cop)
 	try
 		p = get(_FIGREG, plot, nothing)
 		if !(p isa QtXYPlot)
 			_xy_log(plot, "Analysis '$op': no Julia mirror for this window (open it via xyplot/iview, not File>Open)"; err=true)
+			return
+		end
+		# GMT-module front-ends (GMT menu) carry their own multi-output / multi-series logic.
+		if startswith(op, "spectrum1d:")
+			_xy_spectrum1d(plot, p, op[12:end], Int(sel))
 			return
 		end
 		s = Int(sel)

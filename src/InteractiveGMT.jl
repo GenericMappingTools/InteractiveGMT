@@ -15,7 +15,7 @@ Windows-only (the viewer DLL is a Windows binary).
 module InteractiveGMT
 
 using GMT
-#using PrecompileTools
+using PrecompileTools
 
 # --- C-API DLL loader (resolved at runtime in __init__; see libgmtvtk.jl) ----------------
 include("libgmtvtk.jl")
@@ -45,6 +45,7 @@ include("xyanalysis.jl") # X,Y Analysis menu (remove mean/trend, derivatives, FF
 include("xystick.jl")    # stick (vector) diagrams for the X,Y tool (ecran 'stick')
 include("drop.jl")
 include("basemap.jl")    # World Topo Tiles picker (ported from Mirone bg_map.m)
+include("bgregion.jl")   # File > Background region -> blank white 2-D map framed to W/E/S/N
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
 
 export view_grid, view_image, view_points, view_fv, view_demo, iview,
@@ -53,8 +54,11 @@ export view_grid, view_image, view_points, view_fv, view_demo, iview,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot
 
-#@compile_workload begin
-#end
+@compile_workload begin
+	_load_library(),
+	_register_console_eval(), _register_drop_callback(), _register_xy_callback(), _register_xy_analysis(), _register_xy_seed(),
+	_register_xy_new(), _register_basemap(), _register_bgregion(), _register_geography(), _register_tides(), _register_earthtide()
+end
 	
 # Load the viewer DLL + register the Julia-console callback. RUNTIME ONLY — a dlopen handle, the
 # dlsym pointers and the @cfunction are all runtime values that cannot be baked into a precompiled
@@ -79,8 +83,10 @@ function __init__()
 	                    ("xy-seed",   _register_xy_seed),
 	                    ("xy-new",    _register_xy_new),
 	                    ("basemap",   _register_basemap),
+	                    ("bgregion",  _register_bgregion),
 	                    ("geography", _register_geography),
-	                    ("tides",     _register_tides))
+	                    ("tides",     _register_tides),
+	                    ("earthtide", _register_earthtide))
 		try
 			fn()
 		catch e

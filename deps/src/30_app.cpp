@@ -28,6 +28,14 @@ static JuliaBaseMapFn g_juliaBaseMap = nullptr;
 static QString        g_basemapLogo;
 static QString        g_basemapIcon;   // path to the Base Map toolbar-button icon (data/basemap_icon.png)
 
+// Background region (File > Background region, port of Mirone's empty-figure-with-limits). A small
+// dialog asks for W/E/S/N + "Is Geographic?"; the result "W/E/S/N/geographic" is handed to Julia
+// (g_juliaBgRegion), which opens a fresh window framed to those limits as a blank white 2-D map
+// (axes only, ready for coastlines/overlays). Set via gmtvtk_set_bgregion_callback; nullptr -> the
+// menu entry reports "callback not registered".
+typedef void (*JuliaBgRegionFn)(void* scene, const char* region);
+static JuliaBgRegionFn g_juliaBgRegion = nullptr;
+
 // Geography menu (Plot coastline / political boundaries / rivers). A leaf action computes the
 // CURRENT visible geographic region (i.e. honouring the zoom level) and hands the request
 // "<kind>/<res>/W/E/S/N" to Julia (g_juliaGeo), which runs GMT.coast and adds the resulting
@@ -42,6 +50,14 @@ static JuliaGeoFn g_juliaGeo = nullptr;
 // "Name:/Code:/Country:" hover block. Set via gmtvtk_set_tides_callback; nullptr -> entries hidden.
 typedef void (*JuliaTidesFn)(void* scene, const char* mode, const char* station);
 static JuliaTidesFn g_juliaTides = nullptr;
+
+// Earth-tides dialog (Geography > Earth Tides, port of Mirone's earth_tides). The dialog hands
+// "<mode>/<startISO>/<endISO>/<lon>/<lat>/<comp>/<W>/<E>/<S>/<N>" to Julia (g_juliaEarthTide):
+// mode = "series" | "grid"; comp = subset of "VEN" (Vertical/East/North). Julia runs
+// GMT.earthtide and either opens an X,Y window (time series) or adds a grid to the scene. Set via
+// gmtvtk_set_earthtide_callback; nullptr -> the menu entry reports "callback not registered".
+typedef void (*JuliaEarthTideFn)(void* scene, const char* req);
+static JuliaEarthTideFn g_juliaEarthTide = nullptr;
 
 // Live scenes, keyed by the Scene* returned to the host as an opaque figure handle.
 // A handle is valid only while its window is open; the window-destroyed lambda erases

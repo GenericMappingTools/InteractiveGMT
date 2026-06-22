@@ -21,3 +21,7 @@ deps/build/
 # Claude Code local config (not shared)
 .claude/
 CLAUDE.md
+
+# Local dev notes — NEVER track
+XYPLOT_TODO.md
+QTVTK_PLAN.md
