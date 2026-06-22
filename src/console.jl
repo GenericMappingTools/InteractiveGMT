@@ -60,7 +60,7 @@ end
 # Build the C-callable pointer and install it in the DLL. Called once from __init__, after the
 # library loads. One @cfunction for the whole session.
 function _register_console_eval()
-	fptr = @cfunction(_console_eval, Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint))
+	fptr = @cfunction((s,c,b,n)->Base.invokelatest(_console_eval,s,c,b,n), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint))
 	ccall(_fn(:gmtvtk_set_julia_eval), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end

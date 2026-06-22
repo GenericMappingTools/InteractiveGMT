@@ -527,7 +527,7 @@ end
 
 # Build the C-callable pointer and install it. Called once from __init__.
 function _register_xy_analysis()
-	fptr = @cfunction(_on_xy_analysis, Cvoid, (Ptr{Cvoid}, Cstring, Cint))
+	fptr = @cfunction((s,a,i)->Base.invokelatest(_on_xy_analysis,s,a,i), Cvoid, (Ptr{Cvoid}, Cstring, Cint))
 	ccall(_fn(:gmtvtk_xyplot_set_analysis_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end

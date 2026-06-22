@@ -115,10 +115,18 @@ function _on_basemap(scene::Ptr{Cvoid}, copt::Cstring)::Cvoid
 	return
 end
 
-# Build the C-callable pointer + push the logo path to the viewer. Called once from __init__.
+# Build the C-callable pointer. Lazy (first window) via _ensure_callbacks — the @cfunction is a thin
+# invokelatest trampoline so it drags no GMT into compile.
 function _register_basemap()
-	fptr = @cfunction(_on_basemap, Cvoid, (Ptr{Cvoid}, Cstring))
+	fptr = @cfunction((s,c)->Base.invokelatest(_on_basemap,s,c), Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_basemap_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
+# Push the basemap toolbar logo + menu icon. These are GLOBAL UI assets the viewer applies when it
+# BUILDS each window's toolbar, so they must be set BEFORE the first window — installed eagerly in
+# __init__ (just two static path strings, no GMT inference), NOT deferred with the callback.
+function _install_basemap_assets()
 	ccall(_fn(:gmtvtk_set_basemap_logo), Cvoid, (Cstring,), _etopo4_logo())
 	ccall(_fn(:gmtvtk_set_basemap_icon), Cvoid, (Cstring,), _basemap_icon())
 	return

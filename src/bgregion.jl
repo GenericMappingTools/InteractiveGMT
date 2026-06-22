@@ -59,7 +59,7 @@ end
 
 # Build the C-callable pointer + register it. Called once from __init__.
 function _register_bgregion()
-	fptr = @cfunction(_on_bgregion, Cvoid, (Ptr{Cvoid}, Cstring))
+	fptr = @cfunction((s,c)->Base.invokelatest(_on_bgregion,s,c), Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_bgregion_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end

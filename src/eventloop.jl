@@ -28,7 +28,38 @@ function _dbg(args...)
 	return
 end
 
+# Lazy, one-shot registration of every host callback (console, drop, menu actions). RUNTIME ONLY —
+# each registration runs `@cfunction` whose inference reaches deep into GMT, so doing it in `__init__`
+# made `using InteractiveGMT` pay that cost up front for every feature. Instead we defer to the first
+# window open (every opener calls `_start_pump`): no window => no menus => no need for the callbacks.
+# Guarded by `_CB_DONE`; idempotent. The `@cfunction`s themselves are thin `invokelatest` trampolines
+# (see each `_register_*`) so this stays cheap and never drags GMT into a precompiled image.
+const _CB_DONE = Ref(false)
+function _ensure_callbacks()
+	_CB_DONE[] && return
+	_CB_DONE[] = true                                # set first: a failing reg must not retry forever
+	for (name, fn) in (("console",     _register_console_eval),
+	                    ("drop",        _register_drop_callback),
+	                    ("xy",          _register_xy_callback),
+	                    ("xy-analysis", _register_xy_analysis),
+	                    ("xy-seed",     _register_xy_seed),
+	                    ("xy-new",      _register_xy_new),
+	                    ("basemap",     _register_basemap),
+	                    ("bgregion",    _register_bgregion),
+	                    ("geography",   _register_geography),
+	                    ("tides",       _register_tides),
+	                    ("earthtide",   _register_earthtide))
+		try
+			fn()
+		catch e
+			@warn "InteractiveGMT: registration '$name' failed; that feature will be \"not wired\" in the viewer. Rebuild the DLL (deps/build.bat) and restart Julia if the export is missing." exception=(e,)
+		end
+	end
+	return
+end
+
 function _start_pump()
+	_ensure_callbacks()                              # wire menu/console/drop callbacks once, lazily
 	_PUMP[] === nothing || return                    # already pumping
 	_PUMP[] = Timer(0.0; interval=0.02) do t         # ~50 Hz
 		n = ccall(_fn(:gmtvtk_process_events), Cint, ())

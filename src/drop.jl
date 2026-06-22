@@ -141,7 +141,7 @@ end
 
 # Build the C-callable pointer and install it in the DLL. Called once from __init__.
 function _register_drop_callback()
-	fptr = @cfunction(_on_drop, Cvoid, (Ptr{Cvoid}, Cstring))
+	fptr = @cfunction((s,c)->Base.invokelatest(_on_drop,s,c), Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_drop_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end

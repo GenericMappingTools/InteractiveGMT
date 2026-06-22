@@ -15,7 +15,6 @@ Windows-only (the viewer DLL is a Windows binary).
 module InteractiveGMT
 
 using GMT
-using PrecompileTools
 
 # --- C-API DLL loader (resolved at runtime in __init__; see libgmtvtk.jl) ----------------
 include("libgmtvtk.jl")
@@ -54,44 +53,35 @@ export view_grid, view_image, view_points, view_fv, view_demo, iview,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot
 
-@compile_workload begin
-	_load_library(),
-	_register_console_eval(), _register_drop_callback(), _register_xy_callback(), _register_xy_analysis(), _register_xy_seed(),
-	_register_xy_new(), _register_basemap(), _register_bgregion(), _register_geography(), _register_tides(), _register_earthtide()
-end
-	
+# NB: deliberately NO @compile_workload over the callbacks. `@cfunction` inference reaches into GMT,
+# so precompiling the `_register_*` baked GMT specializations into our pkgimage — the cache ballooned
+# by many MB. Callbacks are now thin invokelatest trampolines registered lazily on first window open
+# (see `_ensure_callbacks` in eventloop.jl); their heavy bodies compile only when a menu is clicked.
+
 # Load the viewer DLL + register the Julia-console callback. RUNTIME ONLY — a dlopen handle, the
 # dlsym pointers and the @cfunction are all runtime values that cannot be baked into a precompiled
 # image, so they must be created here, never at top level. Tolerant of a missing/unbuilt DLL (and
 # of non-Windows) so `using InteractiveGMT` still succeeds; viewer calls then error on first use.
 function __init__()
-	# Loading the DLL is fatal: every registration below dlsyms into it, so if it can't load there
-	# is nothing to wire — warn once and bail (viewer calls then error on first use).
+	# ONLY load the DLL here. The dlopen handle + dlsym pointers are runtime values that can't be
+	# baked into a precompiled image, so they must resolve at load. Everything else (the 11 callback
+	# registrations) is deferred to the first window open via `_ensure_callbacks` (eventloop.jl) — it
+	# kept `using InteractiveGMT` from paying @cfunction inference for every GMT-touching callback.
+	# Tolerant of a missing/unbuilt DLL (and non-Windows) so `using` still succeeds; viewer calls then
+	# error on first use.
 	try
 		_load_library()
+		# Global UI assets the viewer bakes into every window's toolbar at build time, so they must be
+		# set BEFORE the first window opens — cheap static path pushes, no GMT inference (unlike the
+		# callbacks, which stay lazy in _ensure_callbacks). Guarded: a DLL missing the export must not
+		# block loading.
+		try
+			_install_basemap_assets()
+		catch e
+			@warn "InteractiveGMT: could not install basemap toolbar assets (rebuild deps/build.bat if the export is missing)." exception=(e,)
+		end
 	catch e
 		@warn "InteractiveGMT: the Qt+VTK viewer DLL could not be loaded; build it with deps/build.bat (Windows only). Viewer calls will error until then." exception=(e,)
-		return
-	end
-	# Each callback registration is guarded on its own: one failing dlsym (e.g. a DLL built before a
-	# given export existed) must NOT silently skip the others. A skipped registration shows up as
-	# "<feature>: not wired" in the live window, so name the failure here to make that traceable.
-	for (name, fn) in (("console",   _register_console_eval),
-	                    ("drop",      _register_drop_callback),
-	                    ("xy",        _register_xy_callback),
-	                    ("xy-analysis", _register_xy_analysis),
-	                    ("xy-seed",   _register_xy_seed),
-	                    ("xy-new",    _register_xy_new),
-	                    ("basemap",   _register_basemap),
-	                    ("bgregion",  _register_bgregion),
-	                    ("geography", _register_geography),
-	                    ("tides",     _register_tides),
-	                    ("earthtide", _register_earthtide))
-		try
-			fn()
-		catch e
-			@warn "InteractiveGMT: registration '$name' failed; that feature will be \"not wired\" in the viewer. Rebuild the DLL (deps/build.bat) and restart Julia if the export is missing." exception=(e,)
-		end
 	end
 end
 

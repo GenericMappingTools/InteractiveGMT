@@ -215,7 +215,7 @@ end
 
 # Install the seed callback. Called once from __init__.
 function _register_xy_seed()
-	fptr = @cfunction(_on_xy_seed, Cvoid, (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint, Cstring))
+	fptr = @cfunction((s,x,y,n,c)->Base.invokelatest(_on_xy_seed,s,x,y,n,c), Cvoid, (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint, Cstring))
 	ccall(_fn(:gmtvtk_xyplot_set_seed_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end
@@ -235,7 +235,7 @@ function _on_xy_new(plot::Ptr{Cvoid})::Cvoid
 end
 
 function _register_xy_new()
-	fptr = @cfunction(_on_xy_new, Cvoid, (Ptr{Cvoid},))
+	fptr = @cfunction((s)->Base.invokelatest(_on_xy_new,s), Cvoid, (Ptr{Cvoid},))
 	ccall(_fn(:gmtvtk_xyplot_set_new_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end
@@ -336,7 +336,7 @@ end
 
 # Build the C-callable pointer and install it in the DLL. Called once from __init__.
 function _register_xy_callback()
-	fptr = @cfunction(_on_xy, Cvoid, (Ptr{Cvoid}, Cstring, Cint, Cstring))
+	fptr = @cfunction((s,a,i,p)->Base.invokelatest(_on_xy,s,a,i,p), Cvoid, (Ptr{Cvoid}, Cstring, Cint, Cstring))
 	ccall(_fn(:gmtvtk_xyplot_set_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end

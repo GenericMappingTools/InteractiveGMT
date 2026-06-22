@@ -196,7 +196,7 @@ end
 
 # Build the C-callable pointer + register it. Called once from __init__.
 function _register_geography()
-	fptr = @cfunction(_on_geography, Cvoid, (Ptr{Cvoid}, Cstring))
+	fptr = @cfunction((s,c)->Base.invokelatest(_on_geography,s,c), Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_geography_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end
@@ -264,7 +264,7 @@ end
 
 # Build the C-callable pointer + register it. Called once from __init__.
 function _register_tides()
-	fptr = @cfunction(_on_tides_download, Cvoid, (Ptr{Cvoid}, Cstring, Cstring))
+	fptr = @cfunction((s,a,b)->Base.invokelatest(_on_tides_download,s,a,b), Cvoid, (Ptr{Cvoid}, Cstring, Cstring))
 	ccall(_fn(:gmtvtk_set_tides_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end
@@ -341,7 +341,7 @@ end
 
 # Build the C-callable pointer + register it. Called once from __init__.
 function _register_earthtide()
-	fptr = @cfunction(_on_earthtide, Cvoid, (Ptr{Cvoid}, Cstring))
+	fptr = @cfunction((s,c)->Base.invokelatest(_on_earthtide,s,c), Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_earthtide_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end
