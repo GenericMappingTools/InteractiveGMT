@@ -18,12 +18,18 @@
 # already loaded the previous one by the time we replace it). The newest one lingers in TMP — harmless.
 const _LAST_BG = Ref{String}("")
 
-# Run GMT.mosaic and report progress to the viewer's Errors console (the user watches tiles download
-# there). We do NOT redirect stdout/stderr around the download — an fd-level redirect corrupts GMT's
-# tile fetch (it throws, the error gets swallowed into the log, and no image comes back). Instead we
-# count the tiles up front with a cheap `quadonly` pass (pure quadtree math, no download) and bracket
-# the real fetch with a "downloading N tile(s)…" / "mosaic ready WxH" pair. Returns the GMTimage.
-function _mosaic_logged(scene::Ptr{Cvoid}, lon, lat, kw::Dict{Symbol,Any})
+# Append one line to the picker's collapsible "Downloads info" console (gmtvtk_tiles_log). Best-effort.
+_tiles_log(dlg::Ptr{Cvoid}, msg::AbstractString) = (try
+	ccall(_fn(:gmtvtk_tiles_log), Cvoid, (Ptr{Cvoid}, Cstring), dlg, String(msg))
+catch; end; nothing)
+
+# Run GMT.mosaic and report progress to the picker's "Downloads info" console (the user watches tiles
+# download there, not the iGMT viewer's Errors tab). We do NOT redirect stdout/stderr around the
+# download — an fd-level redirect corrupts GMT's tile fetch (it throws, the error gets swallowed into
+# the log, and no image comes back). Instead we count the tiles up front with a cheap `quadonly` pass
+# (pure quadtree math, no download) and bracket the real fetch with a "downloading N tile(s)…" /
+# "mosaic ready WxH" pair, and route GMT.mosaic's per-tile notes via TILE_LOGGER. Returns the GMTimage.
+function _mosaic_logged(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, lon, lat, kw::Dict{Symbol,Any})
 	z = get(kw, :zoom, 0)
 	n = try
 		q  = GMT.mosaic(lon, lat; quadonly=true, kw...)
@@ -32,11 +38,19 @@ function _mosaic_logged(scene::Ptr{Cvoid}, lon, lat, kw::Dict{Symbol,Any})
 	catch
 		0
 	end
-	_viewer_log_error(scene, n > 0 ?
-		"Tiles: downloading $n tile(s) at zoom $z for $(lon[1])/$(lon[2])/$(lat[1])/$(lat[2])…" :
-		"Tiles: fetching $(lon[1])/$(lon[2])/$(lat[1])/$(lat[2]) at zoom $z…")
-	I = GMT.mosaic(lon, lat; kw...)
-	_viewer_log_error(scene, "Tiles: mosaic ready ($(size(I.image, 2))×$(size(I.image, 1)) px)")
+	_tiles_log(dlg, n > 0 ?
+		"downloading $n tile(s) at zoom $z for $(lon[1])/$(lon[2])/$(lat[1])/$(lat[2])…" :
+		"fetching $(lon[1])/$(lon[2])/$(lat[1])/$(lat[2]) at zoom $z…")
+	# Route mosaic's per-tile fetch notes (download URL / cache hit) into the picker console — the
+	# verbose=2 effect, via GMT's TILE_LOGGER hook (no fd-level stdout redirect, which corrupts the
+	# fetch). Reset in a finally so a thrown fetch never leaves a stale logger installed.
+	GMT.TILE_LOGGER[] = m -> _tiles_log(dlg, m)
+	I = try
+		GMT.mosaic(lon, lat; kw...)
+	finally
+		GMT.TILE_LOGGER[] = nothing
+	end
+	_tiles_log(dlg, "mosaic ready ($(size(I.image, 2))×$(size(I.image, 1)) px)")
 	return I
 end
 
@@ -55,8 +69,12 @@ function _on_tiles(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			isempty(prov)  || (kw[:provider] = prov)
 			isempty(cache) || (kw[:cache]    = cache)
 			merc && (kw[:merc] = true)
-			I = _mosaic_logged(scene, [W, E], [S, N], kw)
-			fig = iview(I)                                 # bare image -> new flat top-down viewer window
+			I = _mosaic_logged(scene, dlg, [W, E], [S, N], kw)
+			# NOT iview(I): that promotes the tile as an imageOnly surface -> no Scene Objects properties
+			# row + a bare backing plane (red panel) shows under it. iview_image_obj frames a hidden base
+			# and adds the tile as an ExtraObj image, so it carries the properties/drape/stack/delete menu.
+			name = "Tiles ($(round(W;digits=2))/$(round(E;digits=2))/$(round(S;digits=2))/$(round(N;digits=2)))"
+			fig = iview_image_obj(I, name)                 # framed window, tile as a managed ExtraObj image
 			# We're nested inside the picker's GO-click handler; the fresh window can open BEHIND the
 			# picker, so the user thinks "nothing happened". Raise it to the front.
 			try
@@ -72,7 +90,7 @@ function _on_tiles(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			kw = Dict{Symbol,Any}(:zoom => bz)
 			isempty(prov)  || (kw[:provider] = prov)
 			isempty(cache) || (kw[:cache]    = cache)
-			I = _mosaic_logged(scene, [W, E], [S, N], kw)
+			I = _mosaic_logged(scene, dlg, [W, E], [S, N], kw)
 			png = joinpath(tempdir(), "igmt_tiles_bg_$(time_ns()).png")   # unique name -> never a stale reload
 			GMT.gmtwrite(png, I)
 			isempty(_LAST_BG[]) || rm(_LAST_BG[]; force=true)

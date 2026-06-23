@@ -127,6 +127,16 @@ public:
 // builds the final mosaic (GMT.mosaic, two zoom levels coarser) and opens it in a new viewer. Provider
 // drop-down replaces the (1)(2)(3) image toggles + tilesServers.txt; Cache / Mercator-Geogs / anchor
 // mirror the original. No Q_OBJECT/moc (only paint/mouse overrides; UI wired via lambdas to update()).
+// A minimal, crisp anchor drawn from primitives (the font ⚓ glyph rendered fuzzy/ornate). Centred
+// at `c`, half-height `h`. Used both for the map marker and the toolbar button icon so they match.
+static void paintAnchor(QPainter &g, QPointF c, double h, const QPen &pen) {
+	g.setPen(pen); g.setBrush(Qt::NoBrush);
+	g.drawEllipse(c + QPointF(0, -h - 1), h * 0.30, h * 0.30);                  // ring
+	g.drawLine(c + QPointF(0, -h + 2), c + QPointF(0, h));                      // shank
+	g.drawLine(c + QPointF(-h * 0.6, -h + 3), c + QPointF(h * 0.6, -h + 3));    // stock (crossbar)
+	g.drawArc(QRectF(c.x() - h, c.y(), 2 * h, h * 1.4), 200 * 16, 140 * 16);    // flukes (curved base)
+}
+
 // ============================================================================================
 class TilesArea : public QWidget {       // the clickable map: etopo base + refinable tile mesh
 public:
@@ -138,6 +148,7 @@ public:
 	bool    draggingAnchor = false;                  // grabbed the anchor marker -> drag it with the mouse
 	std::vector<QPoint> sel;                         // selected tiles (tile X,Y at `zoom`); a click toggles one
 	std::function<void()> onViewChanged;             // notify the picker (zoom label, bg request)
+	std::function<void()> onAnchorPlaced;            // notify the picker the anchor was dropped (un-check the button)
 	// Phase 2: a sharper coarser-mosaic background fetched (by Julia) for the current view at high zoom,
 	// painted over the etopo base and under the mesh. Covers its own geo-extent [bgW..bgE]/[bgS..bgN].
 	QPixmap bg;  bool hasBg = false;  double bgW = 0, bgE = 0, bgS = 0, bgN = 0;
@@ -195,6 +206,9 @@ public:
 protected:
 	void paintEvent(QPaintEvent *) override {
 		QPainter g(this);
+		g.setRenderHint(QPainter::Antialiasing, true);       // crisp marker glyph + mesh lines
+		g.setRenderHint(QPainter::TextAntialiasing, true);
+		g.setRenderHint(QPainter::SmoothPixmapTransform, true);
 		g.fillRect(rect(), QColor(20, 30, 50));
 		if (!world.isNull()) {                           // etopo cropped to the current view
 			QRectF src((vW + 180) / 360.0 * world.width(), (90 - vN) / 180.0 * world.height(),
@@ -218,15 +232,18 @@ protected:
 			double T = lat2py(tileY2lat(t.y(), zoom)), B = lat2py(tileY2lat(t.y() + 1, zoom));
 			g.drawRect(QRectF(QPointF(L, T), QPointF(R, B)));
 		}
-		if (hasAnchor) {                                 // the zoom-anchor marker
-			g.setPen(QPen(Qt::black, 1)); g.setBrush(QColor(255, 240, 0));
-			g.drawEllipse(QPointF(lon2px(anchorLon), lat2py(anchorLat)), 5, 5);
+		if (hasAnchor) {                                 // the zoom-anchor marker — same simple anchor as the button
+			QPointF p(lon2px(anchorLon), lat2py(anchorLat));
+			QPen halo(Qt::white, 3.0); halo.setCapStyle(Qt::RoundCap); halo.setJoinStyle(Qt::RoundJoin);
+			QPen ink(Qt::black, 1.5);  ink.setCapStyle(Qt::RoundCap);  ink.setJoinStyle(Qt::RoundJoin);
+			paintAnchor(g, p, 4.7, halo);                // white halo for legibility over the map (2/3 of the button size)
+			paintAnchor(g, p, 4.7, ink);
 		}
 	}
 	void mousePressEvent(QMouseEvent *e) override {
 		double lon = px2lon(e->position().x()), lat = px2lat(e->position().y());
 		if (anchorMode) { hasAnchor = true; anchorLon = lon; anchorLat = lat; anchorMode = false;
-		                  setCursor(Qt::ArrowCursor); update(); return; }
+		                  setCursor(Qt::ArrowCursor); if (onAnchorPlaced) onAnchorPlaced(); update(); return; }
 		if (hasAnchor) {                               // grab the anchor marker (within 9 px) to drag it
 			double ax = lon2px(anchorLon), ay = lat2py(anchorLat);
 			if (std::hypot(e->position().x() - ax, e->position().y() - ay) < 9.0) {
@@ -255,13 +272,35 @@ public:
 	Scene        *scene;
 	TilesArea    *map;
 	QComboBox    *cboProvider;
-	QLineEdit    *edCache;
+	QComboBox    *cboCache;                           // editable cache-dir box + remembered MRU
 	QRadioButton *rMerc;
 	QSlider      *slZoom;
 	QLabel       *lblZoom;
 	QTimer       *bgTimer;                            // debounces the high-zoom background refetch
 	QScrollBar   *hbar, *vbar;                        // pan the view once the mesh is zoomed in
-	QLabel       *status;                             // progress line ("downloading tiles…")
+	QPlainTextEdit *dlLog;                            // collapsible per-tile download/cache console
+	// Append one line to the Downloads-info console (called from Julia via gmtvtk_tiles_log).
+	void logDownload(const QString &line) { if (dlLog) dlLog->appendPlainText(line); }
+	// Cache box: the default entry shows ~/.gmt but is sent to GMT as cache="gmt" (-> ~/.gmt/cache_tileserver).
+	QString gmtCacheLabel() const { return QDir::homePath() + "/.gmt"; }
+	QString cacheSendValue() const {
+		QString c = cboCache->currentText().trimmed();
+		return (c == gmtCacheLabel()) ? QString("gmt") : c;
+	}
+	// Persist every cache dir the user picked/typed (except the synthetic ~/.gmt default) across sessions.
+	void saveCacheList() {
+		QStringList items;
+		for (int i = 0; i < cboCache->count(); ++i)
+			if (cboCache->itemText(i) != gmtCacheLabel()) items << cboCache->itemText(i);
+		QSettings st("InteractiveGMT", "i'GMT");
+		st.setValue("tiles/cacheDirs", items);
+	}
+	void rememberCache(const QString &dir) {
+		if (dir.isEmpty() || dir == gmtCacheLabel()) return;
+		if (cboCache->findText(dir) < 0) cboCache->insertItem(1, dir);   // keep ~/.gmt first
+		cboCache->setCurrentText(dir);
+		saveCacheList();
+	}
 	TilesPicker(QWidget *parent, Scene *s, const QPixmap &world) : QDialog(parent), scene(s) {
 		setWindowTitle("Tiles Tool");
 		auto *v = new QVBoxLayout(this);
@@ -270,7 +309,14 @@ public:
 		cboProvider = new QComboBox(this);
 		cboProvider->addItems({"Bing", "Google", "OSM", "Esri"});
 		cboProvider->setToolTip("Web tile provider for the final mosaic (replaces the (1)(2)(3) image toggles)");
-		auto *btnAnchor = new QToolButton(this); btnAnchor->setText(QString::fromUtf8("\xE2\x9A\x93"));  // anchor glyph
+		auto *btnAnchor = new QToolButton(this);
+		{                                                // icon = the SAME simple anchor as the map marker
+			QPixmap pm(18, 18); pm.fill(Qt::transparent);
+			QPainter pg(&pm); pg.setRenderHint(QPainter::Antialiasing, true);
+			paintAnchor(pg, QPointF(9, 9), 6.0, QPen(Qt::black, 1.5));
+			btnAnchor->setIcon(QIcon(pm));
+		}
+		btnAnchor->setCheckable(true);                   // stays highlighted while the user picks where to drop it
 		btnAnchor->setToolTip("Set zoom anchor point: click this, then click the map");
 		auto *btnGo = new QToolButton(this); btnGo->setText(QString::fromUtf8("\xE2\x96\xB6") + " GO");
 		btnGo->setToolTip("Build the mosaic for the selected tiles (pick two diagonal corners first)");
@@ -307,20 +353,48 @@ public:
 		bot->addSpacing(12); bot->addWidget(rMerc); bot->addWidget(rGeog);
 		bot->addStretch();
 		bot->addWidget(new QLabel("Cache", this));
-		edCache = new QLineEdit(this); edCache->setFixedWidth(160);
-		edCache->setText("gmt");                          // default: ~/.gmt/cache_tileserver (see tooltip)
-		edCache->setToolTip(
-			"Full name of the cache directory where to save the downloaded tiles. If empty, a cache "
-			"directory is created in the system's TMP directory. If cache=\"gmt\" the cache directory is "
-			"created in ~/.gmt/cache_tileserver. NOTE: this normally is needed only for the first time "
-			"you run this function when, if cache != \"\", the cache dir location is saved in the "
-			"~/.gmt/tiles_cache_dir.txt file and used in subsequent calls.");
+		cboCache = new QComboBox(this);
+		cboCache->setEditable(true);
+		cboCache->setMinimumWidth(300);                  // long box (replaces the narrow line edit)
+		cboCache->setInsertPolicy(QComboBox::NoInsert);  // we manage the list ourselves (rememberCache)
+		cboCache->addItem(gmtCacheLabel());              // default entry: ~/.gmt (maps to GMT cache="gmt")
+		{                                                // restore previously used cache dirs (QSettings MRU)
+			QSettings st("InteractiveGMT", "i'GMT");
+			for (const QString &d : st.value("tiles/cacheDirs").toStringList())
+				if (!d.isEmpty() && cboCache->findText(d) < 0) cboCache->addItem(d);
+		}
+		cboCache->setCurrentIndex(0);
+		cboCache->setToolTip(
+			"Directory where downloaded tiles are cached. The default ~/.gmt maps to GMT's "
+			"~/.gmt/cache_tileserver. Pick more dirs with '...'; used dirs are remembered across "
+			"sessions in this drop-down. Leave empty to use the system TMP directory.");
 		auto *btnDir = new QToolButton(this); btnDir->setText("...");  btnDir->setToolTip("Select a cache directory");
-		auto *btnClr = new QToolButton(this); btnClr->setText("C");    btnClr->setToolTip("Clear cache info (not the cache itself)");
-		bot->addWidget(edCache); bot->addWidget(btnDir); bot->addWidget(btnClr);
+		bot->addWidget(cboCache, 1); bot->addWidget(btnDir);
 		v->addLayout(bot);
-		status = new QLabel(this); status->setStyleSheet("color:#555;");   // progress feedback line
-		v->addWidget(status);
+		// --- collapsible "Downloads info" console (folded by default) — the per-tile download / cache
+		//     messages routed here from GMT.mosaic, since the iGMT viewer's Errors tab isn't in view. ---
+		auto *dlHdr = new QHBoxLayout();
+		auto *btnDl = new QToolButton(this);
+		btnDl->setCheckable(true); btnDl->setAutoRaise(true);
+		btnDl->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+		btnDl->setArrowType(Qt::RightArrow); btnDl->setText(" Downloads info");
+		btnDl->setToolTip("Show/hide the per-tile download & cache messages");
+		auto *btnDlClr = new QToolButton(this); btnDlClr->setText("Clear");
+		btnDlClr->setToolTip("Clear the downloads console");
+		dlHdr->addWidget(btnDl); dlHdr->addStretch(); dlHdr->addWidget(btnDlClr);
+		v->addLayout(dlHdr);
+		dlLog = new QPlainTextEdit(this);
+		dlLog->setReadOnly(true); dlLog->setMaximumBlockCount(5000); dlLog->setFixedHeight(120);
+		dlLog->setVisible(false);                         // folded by default
+		{ QFont mono("Consolas"); mono.setStyleHint(QFont::Monospace); mono.setPointSize(8); dlLog->setFont(mono); }
+		v->addWidget(dlLog);
+		QObject::connect(btnDl, &QToolButton::toggled, this, [this, btnDl](bool on) {
+			const int dh = dlLog->height() + 6;          // console height + layout spacing
+			btnDl->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+			if (on) { dlLog->setVisible(true);  resize(width(), height() + dh); }   // grow window, keep the map size
+			else    { resize(width(), height() - dh); dlLog->setVisible(false); }   // shrink window back
+		});
+		QObject::connect(btnDlClr, &QToolButton::clicked, this, [this]() { dlLog->clear(); });
 		// --- wiring ---
 		bgTimer = new QTimer(this); bgTimer->setSingleShot(true);
 		QObject::connect(bgTimer, &QTimer::timeout, this, [this]() { requestBg(); });
@@ -333,7 +407,12 @@ public:
 		QObject::connect(btnZmUp, &QToolButton::clicked, this, [this]() { slZoom->setValue(slZoom->value() + 1); });
 		QObject::connect(hbar, &QScrollBar::valueChanged, this, [this](int val) { onHBar(val); });
 		QObject::connect(vbar, &QScrollBar::valueChanged, this, [this](int val) { onVBar(val); });
-		QObject::connect(btnAnchor, &QToolButton::clicked, this, [this]() { map->anchorMode = true; map->setCursor(Qt::CrossCursor); });
+		// Checkable: stays down (highlighted) while the user decides where to click. Toggle drives the
+		// pick mode; dropping the anchor (or toggling off) clears it.
+		map->onAnchorPlaced = [btnAnchor]() { btnAnchor->setChecked(false); };
+		QObject::connect(btnAnchor, &QToolButton::toggled, this, [this](bool on) {
+			map->anchorMode = on; map->setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+		});
 		QObject::connect(btnGo, &QToolButton::clicked, this, [this]() { doGo(); });
 		QObject::connect(btnHelp, &QToolButton::clicked, this, [this]() {
 			QMessageBox::information(this, "Tiles Tool",
@@ -344,10 +423,10 @@ public:
 				"Mercator/Geogs map to GMT.mosaic options.");
 		});
 		QObject::connect(btnDir, &QToolButton::clicked, this, [this]() {
-			QString d = QFileDialog::getExistingDirectory(this, "Select cache directory", edCache->text());
-			if (!d.isEmpty()) edCache->setText(d);
+			QString start = cacheSendValue(); if (start == "gmt") start = QDir::homePath();
+			QString d = QFileDialog::getExistingDirectory(this, "Select cache directory", start);
+			if (!d.isEmpty()) rememberCache(d);
 		});
-		QObject::connect(btnClr, &QToolButton::clicked, this, [this]() { edCache->clear(); });
 		map->reframe(1);
 		resize(820, 520);
 	}
@@ -393,10 +472,9 @@ private:
 		QString params = QString("bg;%1/%2/%3/%4;%5;%6;%7;%8")
 			.arg(map->vW, 0, 'f', 8).arg(map->vE, 0, 'f', 8).arg(map->vS, 0, 'f', 8).arg(map->vN, 0, 'f', 8)
 			.arg(map->zoom).arg(cboProvider->currentText())
-			.arg(edCache->text()).arg(rMerc->isChecked() ? 1 : 0);
-		status->setText("Fetching background…"); QApplication::processEvents();   // paint before the blocking call
+			.arg(cacheSendValue()).arg(rMerc->isChecked() ? 1 : 0);
+		QApplication::processEvents();                   // paint before the blocking call (progress -> Downloads console)
 		g_juliaTiles(scene, this, params.toUtf8().constData());
-		status->setText("");
 	}
 	void doGo() {
 		if (map->sel.empty()) {
@@ -412,13 +490,13 @@ private:
 		QString params = QString("go;%1/%2/%3/%4;%5;%6;%7;%8")
 			.arg(W, 0, 'f', 8).arg(E, 0, 'f', 8).arg(S, 0, 'f', 8).arg(N, 0, 'f', 8)
 			.arg(map->zoom).arg(cboProvider->currentText())
-			.arg(edCache->text()).arg(rMerc->isChecked() ? 1 : 0);
-		// The fetch blocks the UI thread; flash a status line FIRST (processEvents paints it) so the user
-		// knows the (possibly long, first run also compiles) download is under way, not a hung window.
-		status->setText("Building mosaic — downloading tiles…  (the first run also compiles; please wait)");
+			.arg(cacheSendValue()).arg(rMerc->isChecked() ? 1 : 0);
+		rememberCache(cboCache->currentText());          // persist a typed cache dir across sessions
+		// The fetch blocks the UI thread; note it in the Downloads console + paint before the blocking call
+		// (the first run also compiles), so a watcher sees it isn't hung.
+		logDownload("Building mosaic — downloading tiles…  (the first run also compiles; please wait)");
 		QApplication::processEvents();
 		if (g_juliaTiles) g_juliaTiles(scene, this, params.toUtf8().constData());
-		status->setText("");
 	}
 };
 

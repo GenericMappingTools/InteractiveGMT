@@ -96,6 +96,38 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 	return ok != 0
 end
 
+# Open a NEW window showing a bare image as an **ExtraObj** (so it carries the Scene Objects
+# properties / drape / stack / delete menu) instead of as an imageOnly surface. Mirrors the proven
+# Base Map empty-launcher pattern: open an empty launcher, PROMOTE a HIDDEN blank base over the
+# image bbox (lays down the framed axes + coord grid + coord readout + centred 2-D view), then add
+# the image on top as an ExtraObj. Use this for tool-generated images (e.g. the Tiles Tool mosaic)
+# that must be manageable in the Scene Objects panel — `view_image`/`iview(I)` makes an imageOnly
+# surface with NO properties row and leaves the bare backing plane visible (a red panel under the
+# tile). Returns the QtImage handle.
+function iview_image_obj(I::GMTimage, name::AbstractString; title::String="i'GMT")
+	h = ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), title)
+	h == C_NULL && error("iview_image_obj: could not open the window")
+	ir   = I.range
+	geog = _isgeog(I)
+	zblank = zeros(Float32, 2, 2)
+	# Hidden scaffold: image_only=1 (last Cint) so rebuildSceneObjects skips a row for it; img=NULL.
+	ccall(_fn(:gmtvtk_promote_surface_h), Cint,
+	      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+	       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+	      h, zblank, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4], Cint(geog),
+	      C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
+	ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), h)   # plane is scaffold only
+	_add_image_to_scene(h, I, name; promote=false)              # ExtraObj image -> has properties menu
+	# Referenced image -> store the CRS (reveals the Geography menu + geographic axes).
+	pr = (isdefined(I, :proj4) && I.proj4 isa AbstractString) ? I.proj4 : ""
+	ep = (I.epsg isa Integer && I.epsg > 0) ? Cint(I.epsg) : Cint(0)
+	(pr != "" || ep != 0) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
+	                               h, pr, "", ep)
+	fig = _register_fig!(QtImage(h, I))
+	_start_pump()
+	return fig
+end
+
 # Best-effort geographic flag for a dropped grid/image (lon/lat axis titles + cos-lat aspect).
 function _isgeog(G)
 	try

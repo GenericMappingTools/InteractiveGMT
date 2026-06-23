@@ -620,6 +620,15 @@ GMTVTK_API void gmtvtk_tiles_set_bg(void* dlg, const char* pngpath, double W, do
 	reinterpret_cast<TilesPicker*>(dlg)->map->setBg(QString::fromUtf8(pngpath ? pngpath : ""), W, E, S, N);
 }
 
+// Append one line to the open Tiles-Tool picker's collapsible "Downloads info" console. Called from
+// Julia (GMT.mosaic's per-tile fetch messages via TILE_LOGGER, plus the download/ready bracket), so the
+// user sees tile activity in the picker itself rather than the iGMT viewer's Errors tab. `dlg` = the
+// live TilesPicker* that issued the request.
+GMTVTK_API void gmtvtk_tiles_log(void* dlg, const char* msg) {
+	if (!dlg || !msg) return;
+	reinterpret_cast<TilesPicker*>(dlg)->logDownload(QString::fromUtf8(msg));
+}
+
 // Register the Background-region callback. `fn` (Julia @cfunction, signature JuliaBgRegionFn) is
 // called with "W/E/S/N/geographic" from the File > Background region dialog; Julia opens a fresh
 // blank white 2-D map framed to those limits. nullptr to detach.
