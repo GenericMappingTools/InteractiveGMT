@@ -36,6 +36,7 @@
 #include <QDoubleValidator>
 #include <string>
 #include <QSlider>
+#include <QScrollBar>
 #include <QLabel>
 #include <QCheckBox>
 #include <QGroupBox>

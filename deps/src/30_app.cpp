@@ -28,6 +28,16 @@ static JuliaBaseMapFn g_juliaBaseMap = nullptr;
 static QString        g_basemapLogo;
 static QString        g_basemapIcon;   // path to the Base Map toolbar-button icon (data/basemap_icon.png)
 
+// Tiles Tool (Tools menu, port of Mirone's tiles_tool.m MINUS the url2image download/mosaic, which is
+// replaced by GMT.jl's `mosaic`). The interactive picker hands "op;..." requests to Julia (g_juliaTiles):
+// op "go" builds the final mosaic for the bracketed bbox (GMT.mosaic, two zoom levels coarser) and opens
+// it in a new viewer; op "bg" (Phase 2) fetches a coarser mosaic for the current view and pushes it back.
+// `dlg` is the picker (TilesPicker*) so Julia can call back into it. g_tilesWorld is the path to the
+// equirectangular world image (data/etopo4.jpg) the picker crops/zooms as its base, pushed from Julia.
+typedef void (*JuliaTilesFn)(void* scene, void* dlg, const char* params);
+static JuliaTilesFn g_juliaTiles = nullptr;
+static QString      g_tilesWorld;
+
 // Background region (File > Background region, port of Mirone's empty-figure-with-limits). A small
 // dialog asks for W/E/S/N + "Is Geographic?"; the result "W/E/S/N/geographic" is handed to Julia
 // (g_juliaBgRegion), which opens a fresh window framed to those limits as a blank white 2-D map

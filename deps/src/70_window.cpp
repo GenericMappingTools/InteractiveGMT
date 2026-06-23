@@ -118,6 +118,311 @@ public:
 };
 
 // ============================================================================================
+// Tiles Tool — port of Mirone's tiles_tool.m (src_figs/tiles_tool.m), MINUS the download/mosaic
+// machinery (url2image), which is replaced by GMT.jl's `mosaic`. An interactive world map (the bundled
+// data/etopo4.jpg, equirectangular over [-180 180]/[-90 90]) under a refinable web-tile mesh. Raising
+// the "Zoom Level" slider zooms the view IN (toward the anchor, else the view centre) and refines the
+// mesh to that tile zoom. The user clicks TWO diagonal tiles to bracket a rectangle; GO (green arrow)
+// hands that bbox + zoom + provider + cache + Mercator flag to Julia (g_juliaTiles op "go"), which
+// builds the final mosaic (GMT.mosaic, two zoom levels coarser) and opens it in a new viewer. Provider
+// drop-down replaces the (1)(2)(3) image toggles + tilesServers.txt; Cache / Mercator-Geogs / anchor
+// mirror the original. No Q_OBJECT/moc (only paint/mouse overrides; UI wired via lambdas to update()).
+// ============================================================================================
+class TilesArea : public QWidget {       // the clickable map: etopo base + refinable tile mesh
+public:
+	QPixmap world;                                   // full-res equirectangular etopo, covers [-180 180]/[-90 90]
+	double  vW = -180, vE = 180, vS = -85, vN = 85;  // current geographic view window
+	int     zoom = 1;                                // web-tile zoom level of the mesh
+	bool    hasAnchor = false;  double anchorLon = 0, anchorLat = 0;
+	bool    anchorMode = false;                      // next click sets the anchor instead of a corner tile
+	bool    draggingAnchor = false;                  // grabbed the anchor marker -> drag it with the mouse
+	std::vector<QPoint> sel;                         // selected tiles (tile X,Y at `zoom`); a click toggles one
+	std::function<void()> onViewChanged;             // notify the picker (zoom label, bg request)
+	// Phase 2: a sharper coarser-mosaic background fetched (by Julia) for the current view at high zoom,
+	// painted over the etopo base and under the mesh. Covers its own geo-extent [bgW..bgE]/[bgS..bgN].
+	QPixmap bg;  bool hasBg = false;  double bgW = 0, bgE = 0, bgS = 0, bgN = 0;
+	explicit TilesArea(QWidget *p) : QWidget(p) { setMinimumSize(600, 320); }
+
+	void setBg(const QString &path, double W, double E, double S, double N) {
+		QPixmap pm(path);
+		if (pm.isNull()) return;                     // bad path / unreadable -> keep whatever we had
+		bg = pm; bgW = W; bgE = E; bgS = S; bgN = N; hasBg = true; update();
+	}
+	void clearBg() { if (hasBg) { hasBg = false; bg = QPixmap(); update(); } }
+
+	// Web-Mercator slippy-tile math (matches GMT.mosaic's quadtree): n = 2^zoom tiles per axis.
+	static constexpr double PI = 3.14159265358979323846;
+	static double tileX2lon(double x, int z) { return x / double(1u << z) * 360.0 - 180.0; }
+	static double tileY2lat(double y, int z) { double m = PI * (1.0 - 2.0 * y / double(1u << z)); return std::atan(std::sinh(m)) * 180.0 / PI; }
+	static int    lon2tileX(double lon, int z) { return int(std::floor((lon + 180.0) / 360.0 * double(1u << z))); }
+	static int    lat2tileY(double lat, int z) { double r = lat * PI / 180.0; return int(std::floor((1.0 - std::asinh(std::tan(r)) / PI) / 2.0 * double(1u << z))); }
+	// geographic <-> widget pixel for the current view (equirectangular display)
+	double lon2px(double lon) const { return (lon - vW) / (vE - vW) * width(); }
+	double lat2py(double lat) const { return (vN - lat) / (vN - vS) * height(); }
+	double px2lon(double x)   const { return vW + x / width()  * (vE - vW); }
+	double px2lat(double y)   const { return vN - y / height() * (vN - vS); }
+
+	// Re-frame the view for a new tile zoom: keep ~targetTiles across, centred on the anchor (else the
+	// current view centre), latitude span following the widget aspect so the map isn't distorted. The
+	// view window is shifted (not squashed) when it would overrun the world edges.
+	void reframe(int z) {
+		zoom = std::clamp(z, 1, 19);
+		double cLon = hasAnchor ? anchorLon : (vW + vE) / 2.0;
+		double cLat = hasAnchor ? anchorLat : (vS + vN) / 2.0;
+		const double targetTiles = 10.0;
+		double lonSpan = std::min(360.0, targetTiles * 360.0 / double(1u << zoom));
+		double latSpan = std::min(170.0, lonSpan * double(height()) / double(std::max(1, width())));
+		vW = cLon - lonSpan / 2; vE = cLon + lonSpan / 2;
+		if (vW < -180) { vE += -180 - vW; vW = -180; }   if (vE > 180) { vW -= vE - 180; vE = 180; }
+		vW = std::max(vW, -180.0); vE = std::min(vE, 180.0);
+		vS = cLat - latSpan / 2; vN = cLat + latSpan / 2;
+		if (vS < -85)  { vN += -85 - vS;  vS = -85; }    if (vN > 85)  { vS -= vN - 85;  vN = 85; }
+		vS = std::max(vS, -85.0);  vN = std::min(vN, 85.0);
+		sel.clear();                                     // a re-zoom invalidates the old tile-index selection
+		hasBg = false; bg = QPixmap();                   // and the old background (the picker refetches on release)
+		update(); if (onViewChanged) onViewChanged();
+	}
+	// Pan the view (keeping the current span) so it is centred on (cLon,cLat), clamped inside the world.
+	// The scrollbars drive this; the stale background is dropped and the picker refetches it.
+	void panTo(double cLon, double cLat) {
+		double lonSpan = vE - vW, latSpan = vN - vS;
+		double w0 = std::clamp(cLon - lonSpan / 2, -180.0, 180.0 - lonSpan);
+		double s0 = std::clamp(cLat - latSpan / 2,  -85.0,  85.0 - latSpan);
+		vW = w0; vE = w0 + lonSpan; vS = s0; vN = s0 + latSpan;
+		hasBg = false; bg = QPixmap();
+		update(); if (onViewChanged) onViewChanged();
+	}
+protected:
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.fillRect(rect(), QColor(20, 30, 50));
+		if (!world.isNull()) {                           // etopo cropped to the current view
+			QRectF src((vW + 180) / 360.0 * world.width(), (90 - vN) / 180.0 * world.height(),
+			           (vE - vW) / 360.0 * world.width(), (vN - vS) / 180.0 * world.height());
+			g.drawPixmap(rect(), world, src);
+		}
+		if (hasBg && !bg.isNull()) {                     // sharper coarser-mosaic bg over its geo-extent
+			QRectF tgt(lon2px(bgW), lat2py(bgN), lon2px(bgE) - lon2px(bgW), lat2py(bgS) - lat2py(bgN));
+			g.drawPixmap(tgt, bg, QRectF(bg.rect()));
+		}
+		// the refinable tile mesh: every web-tile boundary intersecting the view at `zoom`
+		g.setPen(QPen(QColor(0, 0, 0, 160), 1));
+		int x0 = lon2tileX(vW, zoom), x1 = lon2tileX(vE, zoom);
+		int y0 = lat2tileY(vN, zoom), y1 = lat2tileY(vS, zoom);     // vN (top) -> smaller tile Y
+		for (int tx = x0; tx <= x1 + 1; ++tx) { double X = lon2px(tileX2lon(tx, zoom)); g.drawLine(QPointF(X, 0), QPointF(X, height())); }
+		for (int ty = y0; ty <= y1 + 1; ++ty) { double Y = lat2py(tileY2lat(ty, zoom)); g.drawLine(QPointF(0, Y), QPointF(width(), Y)); }
+		// selected tiles (a click toggles one): each highlighted yellow. GO uses their union bbox.
+		g.setPen(QPen(QColor(255, 210, 0), 2)); g.setBrush(QColor(255, 230, 0, 90));
+		for (const QPoint &t : sel) {
+			double L = lon2px(tileX2lon(t.x(), zoom)), R = lon2px(tileX2lon(t.x() + 1, zoom));
+			double T = lat2py(tileY2lat(t.y(), zoom)), B = lat2py(tileY2lat(t.y() + 1, zoom));
+			g.drawRect(QRectF(QPointF(L, T), QPointF(R, B)));
+		}
+		if (hasAnchor) {                                 // the zoom-anchor marker
+			g.setPen(QPen(Qt::black, 1)); g.setBrush(QColor(255, 240, 0));
+			g.drawEllipse(QPointF(lon2px(anchorLon), lat2py(anchorLat)), 5, 5);
+		}
+	}
+	void mousePressEvent(QMouseEvent *e) override {
+		double lon = px2lon(e->position().x()), lat = px2lat(e->position().y());
+		if (anchorMode) { hasAnchor = true; anchorLon = lon; anchorLat = lat; anchorMode = false;
+		                  setCursor(Qt::ArrowCursor); update(); return; }
+		if (hasAnchor) {                               // grab the anchor marker (within 9 px) to drag it
+			double ax = lon2px(anchorLon), ay = lat2py(anchorLat);
+			if (std::hypot(e->position().x() - ax, e->position().y() - ay) < 9.0) {
+				draggingAnchor = true; setCursor(Qt::ClosedHandCursor); return;
+			}
+		}
+		QPoint key(lon2tileX(lon, zoom), lat2tileY(lat, zoom));
+		auto it = std::find(sel.begin(), sel.end(), key);
+		if (it != sel.end()) sel.erase(it);            // second click on a selected tile -> deselect it
+		else                 sel.push_back(key);       // otherwise select it
+		update();
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (!draggingAnchor) return;                   // drag the grabbed anchor to follow the cursor
+		anchorLon = std::clamp(px2lon(e->position().x()), vW, vE);
+		anchorLat = std::clamp(px2lat(e->position().y()), vS, vN);
+		update();
+	}
+	void mouseReleaseEvent(QMouseEvent *) override {
+		if (draggingAnchor) { draggingAnchor = false; setCursor(Qt::ArrowCursor); }
+	}
+};
+
+class TilesPicker : public QDialog {
+public:
+	Scene        *scene;
+	TilesArea    *map;
+	QComboBox    *cboProvider;
+	QLineEdit    *edCache;
+	QRadioButton *rMerc;
+	QSlider      *slZoom;
+	QLabel       *lblZoom;
+	QTimer       *bgTimer;                            // debounces the high-zoom background refetch
+	QScrollBar   *hbar, *vbar;                        // pan the view once the mesh is zoomed in
+	QLabel       *status;                             // progress line ("downloading tiles…")
+	TilesPicker(QWidget *parent, Scene *s, const QPixmap &world) : QDialog(parent), scene(s) {
+		setWindowTitle("Tiles Tool");
+		auto *v = new QVBoxLayout(this);
+		// --- top toolbar: provider drop-down, anchor, GO, help ---
+		auto *top = new QHBoxLayout();
+		cboProvider = new QComboBox(this);
+		cboProvider->addItems({"Bing", "Google", "OSM", "Esri"});
+		cboProvider->setToolTip("Web tile provider for the final mosaic (replaces the (1)(2)(3) image toggles)");
+		auto *btnAnchor = new QToolButton(this); btnAnchor->setText(QString::fromUtf8("\xE2\x9A\x93"));  // anchor glyph
+		btnAnchor->setToolTip("Set zoom anchor point: click this, then click the map");
+		auto *btnGo = new QToolButton(this); btnGo->setText(QString::fromUtf8("\xE2\x96\xB6") + " GO");
+		btnGo->setToolTip("Build the mosaic for the selected tiles (pick two diagonal corners first)");
+		auto *btnHelp = new QToolButton(this); btnHelp->setText("?");
+		top->addWidget(new QLabel("Provider", this)); top->addWidget(cboProvider);
+		top->addStretch(); top->addWidget(btnAnchor); top->addWidget(btnGo); top->addWidget(btnHelp);
+		v->addLayout(top);
+		// --- the interactive map + pan scrollbars (vertical at the right, horizontal below) ---
+		map = new TilesArea(this); map->world = world;
+		hbar = new QScrollBar(Qt::Horizontal, this);
+		vbar = new QScrollBar(Qt::Vertical, this);
+		auto *mg = new QGridLayout(); mg->setSpacing(0); mg->setContentsMargins(0, 0, 0, 0);
+		mg->addWidget(map, 0, 0); mg->addWidget(vbar, 0, 1); mg->addWidget(hbar, 1, 0);
+		v->addLayout(mg, 1);
+		// --- bottom: zoom slider + level text, Mercator/Geogs, cache directory ---
+		auto *bot = new QHBoxLayout();
+		bot->addWidget(new QLabel("Zoom Level", this));
+		// arrow buttons at the slider tips for fine +/-1 zoom steps (auto-repeat on hold), as in Mirone.
+		auto *btnZmDn = new QToolButton(this); btnZmDn->setArrowType(Qt::LeftArrow);  btnZmDn->setAutoRepeat(true);
+		auto *btnZmUp = new QToolButton(this); btnZmUp->setArrowType(Qt::RightArrow); btnZmUp->setAutoRepeat(true);
+		btnZmDn->setToolTip("Zoom out one level"); btnZmUp->setToolTip("Zoom in one level");
+		btnZmDn->setFixedWidth(18); btnZmUp->setFixedWidth(18);
+		slZoom = new QSlider(Qt::Horizontal, this); slZoom->setRange(1, 19); slZoom->setValue(1);
+		slZoom->setFixedWidth(200);
+		lblZoom = new QLabel("1", this); lblZoom->setFixedWidth(24);
+		// arrows flush against the slider tips: a zero-spacing sub-layout (the bottom row's spacing
+		// would otherwise leave a gap between each arrow and the slider).
+		auto *zl = new QHBoxLayout(); zl->setSpacing(0); zl->setContentsMargins(0, 0, 0, 0);
+		zl->addWidget(btnZmDn); zl->addWidget(slZoom); zl->addWidget(btnZmUp);
+		bot->addLayout(zl); bot->addWidget(lblZoom);
+		rMerc = new QRadioButton("Mercator", this);
+		auto *rGeog = new QRadioButton("Geogs", this); rGeog->setChecked(true);
+		auto *gMode = new QButtonGroup(this); gMode->addButton(rMerc); gMode->addButton(rGeog);
+		bot->addSpacing(12); bot->addWidget(rMerc); bot->addWidget(rGeog);
+		bot->addStretch();
+		bot->addWidget(new QLabel("Cache", this));
+		edCache = new QLineEdit(this); edCache->setFixedWidth(160);
+		edCache->setText("gmt");                          // default: ~/.gmt/cache_tileserver (see tooltip)
+		edCache->setToolTip(
+			"Full name of the cache directory where to save the downloaded tiles. If empty, a cache "
+			"directory is created in the system's TMP directory. If cache=\"gmt\" the cache directory is "
+			"created in ~/.gmt/cache_tileserver. NOTE: this normally is needed only for the first time "
+			"you run this function when, if cache != \"\", the cache dir location is saved in the "
+			"~/.gmt/tiles_cache_dir.txt file and used in subsequent calls.");
+		auto *btnDir = new QToolButton(this); btnDir->setText("...");  btnDir->setToolTip("Select a cache directory");
+		auto *btnClr = new QToolButton(this); btnClr->setText("C");    btnClr->setToolTip("Clear cache info (not the cache itself)");
+		bot->addWidget(edCache); bot->addWidget(btnDir); bot->addWidget(btnClr);
+		v->addLayout(bot);
+		status = new QLabel(this); status->setStyleSheet("color:#555;");   // progress feedback line
+		v->addWidget(status);
+		// --- wiring ---
+		bgTimer = new QTimer(this); bgTimer->setSingleShot(true);
+		QObject::connect(bgTimer, &QTimer::timeout, this, [this]() { requestBg(); });
+		// ANY view change (zoom OR pan) updates the zoom label, re-syncs the scrollbars, and (debounced
+		// 350 ms) refetches the high-zoom background, so the bg tracks both zoom and pan. reframe()/panTo()
+		// drop the stale bg meanwhile, so it never lags behind the view.
+		map->onViewChanged = [this]() { lblZoom->setText(QString::number(map->zoom)); syncBars(); bgTimer->start(350); };
+		QObject::connect(slZoom, &QSlider::valueChanged, this, [this](int z) { map->reframe(z); });
+		QObject::connect(btnZmDn, &QToolButton::clicked, this, [this]() { slZoom->setValue(slZoom->value() - 1); });
+		QObject::connect(btnZmUp, &QToolButton::clicked, this, [this]() { slZoom->setValue(slZoom->value() + 1); });
+		QObject::connect(hbar, &QScrollBar::valueChanged, this, [this](int val) { onHBar(val); });
+		QObject::connect(vbar, &QScrollBar::valueChanged, this, [this](int val) { onVBar(val); });
+		QObject::connect(btnAnchor, &QToolButton::clicked, this, [this]() { map->anchorMode = true; map->setCursor(Qt::CrossCursor); });
+		QObject::connect(btnGo, &QToolButton::clicked, this, [this]() { doGo(); });
+		QObject::connect(btnHelp, &QToolButton::clicked, this, [this]() {
+			QMessageBox::information(this, "Tiles Tool",
+				"Raise the Zoom Level slider to refine the tile mesh and zoom the view in. Click tiles to "
+				"select them (yellow); click a selected tile again to deselect it. Hit GO to build the "
+				"mosaic of the selected tiles' bounding box (GMT.mosaic, two zoom levels coarser) in a new "
+				"window. Use the anchor button to fix the zoom centre. Provider, Cache directory and "
+				"Mercator/Geogs map to GMT.mosaic options.");
+		});
+		QObject::connect(btnDir, &QToolButton::clicked, this, [this]() {
+			QString d = QFileDialog::getExistingDirectory(this, "Select cache directory", edCache->text());
+			if (!d.isEmpty()) edCache->setText(d);
+		});
+		QObject::connect(btnClr, &QToolButton::clicked, this, [this]() { edCache->clear(); });
+		map->reframe(1);
+		resize(820, 520);
+	}
+private:
+	static constexpr int BG_ZOOM_MIN = 9;   // fetch a sharper background only past this tile zoom (Mirone: >8)
+
+	// Keep the pan scrollbars in step with the current view (called from onViewChanged). A bar is
+	// disabled when the whole world is visible on its axis. blockSignals avoids a pan<->sync loop.
+	void syncBars() {
+		double lonSpan = map->vE - map->vW, latSpan = map->vN - map->vS;
+		hbar->blockSignals(true);
+		bool hp = lonSpan < 359.999;
+		hbar->setEnabled(hp); hbar->setRange(0, hp ? 1000 : 0);
+		hbar->setPageStep(hp ? int(1000.0 * lonSpan / 360.0) : 1000);
+		if (hp) { double cLon = (map->vW + map->vE) / 2;
+			hbar->setValue(int(std::clamp((cLon - (-180 + lonSpan / 2)) / (360 - lonSpan) * 1000.0, 0.0, 1000.0))); }
+		hbar->blockSignals(false);
+		vbar->blockSignals(true);
+		const double worldLat = 170.0;                  // the picker spans latitude -85..85
+		bool vp = latSpan < worldLat - 0.001;
+		vbar->setEnabled(vp); vbar->setRange(0, vp ? 1000 : 0);
+		vbar->setPageStep(vp ? int(1000.0 * latSpan / worldLat) : 1000);
+		if (vp) { double cLat = (map->vS + map->vN) / 2;   // value 0 = north (top of the bar)
+			vbar->setValue(int(std::clamp(((85 - latSpan / 2) - cLat) / (worldLat - latSpan) * 1000.0, 0.0, 1000.0))); }
+		vbar->blockSignals(false);
+	}
+	void onHBar(int val) {
+		double lonSpan = map->vE - map->vW; if (lonSpan >= 360) return;
+		map->panTo((-180 + lonSpan / 2) + val / 1000.0 * (360 - lonSpan), (map->vS + map->vN) / 2);
+	}
+	void onVBar(int val) {
+		double latSpan = map->vN - map->vS; const double worldLat = 170.0; if (latSpan >= worldLat) return;
+		map->panTo((map->vW + map->vE) / 2, (85 - latSpan / 2) - val / 1000.0 * (worldLat - latSpan));
+	}
+
+	// At high zoom the etopo base is too coarse, so ask Julia (op "bg") for a coarser mosaic (two-to-three
+	// zoom levels down) covering the current view; it writes a PNG and pushes it back via gmtvtk_tiles_set_bg.
+	// Below the threshold the etopo base suffices, so just drop any stale background. Synchronous: Julia
+	// fetches + calls back before returning, so `this` stays valid throughout.
+	void requestBg() {
+		if (!g_juliaTiles) return;
+		if (map->zoom < BG_ZOOM_MIN) { map->clearBg(); return; }
+		QString params = QString("bg;%1/%2/%3/%4;%5;%6;%7;%8")
+			.arg(map->vW, 0, 'f', 8).arg(map->vE, 0, 'f', 8).arg(map->vS, 0, 'f', 8).arg(map->vN, 0, 'f', 8)
+			.arg(map->zoom).arg(cboProvider->currentText())
+			.arg(edCache->text()).arg(rMerc->isChecked() ? 1 : 0);
+		status->setText("Fetching background…"); QApplication::processEvents();   // paint before the blocking call
+		g_juliaTiles(scene, this, params.toUtf8().constData());
+		status->setText("");
+	}
+	void doGo() {
+		if (map->sel.empty()) {
+			QMessageBox::warning(this, "Tiles Tool",
+				"Select one or more tiles first (click squares to select; click again to deselect).");
+			return;
+		}
+		int xa = map->sel[0].x(), xb = xa, ya = map->sel[0].y(), yb = ya;
+		for (const QPoint &t : map->sel) { xa = std::min(xa, t.x()); xb = std::max(xb, t.x());
+		                                   ya = std::min(ya, t.y()); yb = std::max(yb, t.y()); }
+		double W = TilesArea::tileX2lon(xa, map->zoom), E = TilesArea::tileX2lon(xb + 1, map->zoom);
+		double N = TilesArea::tileY2lat(ya, map->zoom), S = TilesArea::tileY2lat(yb + 1, map->zoom);
+		QString params = QString("go;%1/%2/%3/%4;%5;%6;%7;%8")
+			.arg(W, 0, 'f', 8).arg(E, 0, 'f', 8).arg(S, 0, 'f', 8).arg(N, 0, 'f', 8)
+			.arg(map->zoom).arg(cboProvider->currentText())
+			.arg(edCache->text()).arg(rMerc->isChecked() ? 1 : 0);
+		// The fetch blocks the UI thread; flash a status line FIRST (processEvents paints it) so the user
+		// knows the (possibly long, first run also compiles) download is under way, not a hung window.
+		status->setText("Building mosaic — downloading tiles…  (the first run also compiles; please wait)");
+		QApplication::processEvents();
+		if (g_juliaTiles) g_juliaTiles(scene, this, params.toUtf8().constData());
+		status->setText("");
+	}
+};
+
+// ============================================================================================
 // Background region dialog (File > Background region). A tiny form mirroring Mirone's empty-figure
 // limits chooser: a compass-laid-out W/E/S/N (N on top, W/E flanking, S below), an "Is Geographic?"
 // checkbox (default on) and OK. exec() returns Accepted with `region` = "W/E/S/N/geographic", which
@@ -1250,6 +1555,16 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// --- Tools menu: open the standalone X,Y plot tool (blank; ready for File>Open or Julia) ----
 	QMenu *mTools = win->menuBar()->addMenu("&Tools");
 	mTools->addAction("X,Y plot", [] { xyOpenBlankFromHost(); });
+	// Tiles Tool (port of Mirone's tiles_tool.m): an interactive world map + refinable web-tile mesh.
+	// Pick two diagonal tiles, hit GO -> Julia builds the mosaic (GMT.mosaic) in a new viewer. Non-modal
+	// (stays open for repeated picks); WA_DeleteOnClose frees it (and its world pixmap) when closed.
+	mTools->addAction("Tiles Tool", [win, s]() {
+		QPixmap world;
+		if (!g_tilesWorld.isEmpty()) world.load(g_tilesWorld);
+		TilesPicker *dlg = new TilesPicker(win, s, world);
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->show();
+	});
 
 	win->menuBar()->addMenu("&Help")->addAction("&About", actAbout);
 

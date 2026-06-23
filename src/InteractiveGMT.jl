@@ -44,6 +44,7 @@ include("xyanalysis.jl") # X,Y Analysis menu (remove mean/trend, derivatives, FF
 include("xystick.jl")    # stick (vector) diagrams for the X,Y tool (ecran 'stick')
 include("drop.jl")
 include("basemap.jl")    # World Topo Tiles picker (ported from Mirone bg_map.m)
+include("tilestool.jl")  # Tools > Tiles Tool (ported from Mirone tiles_tool.m; mosaic via GMT.mosaic)
 include("bgregion.jl")   # File > Background region -> blank white 2-D map framed to W/E/S/N
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
 
@@ -79,6 +80,11 @@ function __init__()
 			_install_basemap_assets()
 		catch e
 			@warn "InteractiveGMT: could not install basemap toolbar assets (rebuild deps/build.bat if the export is missing)." exception=(e,)
+		end
+		try
+			_install_tiles_assets()
+		catch e
+			@warn "InteractiveGMT: could not install Tiles Tool world image (rebuild deps/build.bat if the export is missing)." exception=(e,)
 		end
 	catch e
 		@warn "InteractiveGMT: the Qt+VTK viewer DLL could not be loaded; build it with deps/build.bat (Windows only). Viewer calls will error until then." exception=(e,)

@@ -598,6 +598,28 @@ GMTVTK_API void gmtvtk_set_basemap_icon(const char *path) {
 	g_basemapIcon = QString::fromUtf8(path ? path : "");
 }
 
+// Register the Tiles-Tool callback. `fn` (Julia @cfunction, signature JuliaTilesFn) is called with a
+// "op;..." request from the picker; op "go" hands "go;W/E/S/N;zoom;provider;cache;merc" and Julia builds
+// the mosaic (GMT.mosaic, two zoom levels coarser) into a new viewer. nullptr to detach.
+GMTVTK_API void gmtvtk_set_tiles_callback(JuliaTilesFn fn) {
+	g_juliaTiles = fn;
+}
+
+// Set the equirectangular world image (data/etopo4.jpg, [-180 180]/[-90 90]) the Tiles-Tool picker
+// crops/zooms as its base. Pushed from Julia (gmtvtk_set_tiles_world) at __init__.
+GMTVTK_API void gmtvtk_set_tiles_world(const char* path) {
+	g_tilesWorld = QString::fromUtf8(path ? path : "");
+}
+
+// Phase 2: push a coarser-mosaic background (a PNG written by Julia) into the open Tiles-Tool picker
+// `dlg` (a TilesPicker*), covering [W..E]/[S..N]; painted over the etopo base, under the refined mesh.
+// Called SYNCHRONOUSLY from Julia's op "bg" (so `dlg` is the live picker that issued the request). A
+// bad path / null pixmap is ignored inside setBg.
+GMTVTK_API void gmtvtk_tiles_set_bg(void* dlg, const char* pngpath, double W, double E, double S, double N) {
+	if (!dlg) return;
+	reinterpret_cast<TilesPicker*>(dlg)->map->setBg(QString::fromUtf8(pngpath ? pngpath : ""), W, E, S, N);
+}
+
 // Register the Background-region callback. `fn` (Julia @cfunction, signature JuliaBgRegionFn) is
 // called with "W/E/S/N/geographic" from the File > Background region dialog; Julia opens a fresh
 // blank white 2-D map framed to those limits. nullptr to detach.

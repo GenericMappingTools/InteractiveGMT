@@ -37,6 +37,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_has_surface, :gmtvtk_close, :gmtvtk_add_recent,
 	:gmtvtk_set_cpt, :gmtvtk_raise, :gmtvtk_set_crs,
 	:gmtvtk_set_basemap_callback, :gmtvtk_set_basemap_logo, :gmtvtk_set_basemap_icon,
+	:gmtvtk_set_tiles_callback, :gmtvtk_set_tiles_world, :gmtvtk_tiles_set_bg,
 	:gmtvtk_set_bgregion_callback,
 	:gmtvtk_set_geography_callback, :gmtvtk_set_tides_callback, :gmtvtk_set_earthtide_callback,
 	:gmtvtk_scene_state,

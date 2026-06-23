@@ -45,6 +45,7 @@ function _ensure_callbacks()
 	                    ("xy-seed",     _register_xy_seed),
 	                    ("xy-new",      _register_xy_new),
 	                    ("basemap",     _register_basemap),
+	                    ("tiles",       _register_tiles),
 	                    ("bgregion",    _register_bgregion),
 	                    ("geography",   _register_geography),
 	                    ("tides",       _register_tides),
