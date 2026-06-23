@@ -54,6 +54,34 @@ function _mosaic_logged(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, lon, lat, kw::Dict{S
 	return I
 end
 
+# Partial bbox overlap (ranges are [xmin,xmax,ymin,ymax,…]). True if the rectangles intersect.
+_bbox_overlap(a, b) = (min(a[2], b[2]) > max(a[1], b[1])) && (min(a[4], b[4]) > max(a[3], b[3]))
+
+# Same referencing system? Prefer EPSG when both carry one, else compare PROJ4 token-sets, else
+# treat two unreferenced objects as "compatible" (both plain, no CRS). crs_from already normalises a
+# plain geographic object to WGS84 (epsg 4326), so a lon/lat grid and a geographic mosaic both land
+# on 4326 and match here.
+function _crs_compatible(a::CRS, b::CRS)
+	(a.epsg != 0 && b.epsg != 0) && return a.epsg == b.epsg
+	(!isempty(a.proj4) && !isempty(b.proj4)) && return Set(split(a.proj4)) == Set(split(b.proj4))
+	return !hascrs(a) && !hascrs(b)
+end
+
+# Decide where the freshly built mosaic `I` should go relative to the calling window `scene`:
+#   true  -> add it IN PLACE (scene is an empty launcher, OR holds a grid whose CRS matches the
+#            mosaic AND whose bbox at least partially overlaps it)
+#   false -> open it in a NEW window (image-only window, incompatible grid, or no registry entry)
+# `geog` is the mosaic's geographic flag (false for a Mercator mosaic).
+function _tiles_inplace(scene::Ptr{Cvoid}, I::GMTimage, geog::Bool)::Bool
+	scene == C_NULL && return false
+	ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0 && return true   # empty launcher
+	fig = get(_FIGREG, scene, nothing)
+	fig isa QtFigure || return false                                                  # only a grid qualifies
+	gcrs = crs_from(fig.G; geographic = (_isgeog(fig.G) == 1))
+	icrs = crs_from(I;     geographic = geog)
+	return _crs_compatible(gcrs, icrs) && _bbox_overlap(fig.G.range, I.range)
+end
+
 function _on_tiles(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 	try
 		parts = split(unsafe_string(cparams), ';')
@@ -70,17 +98,23 @@ function _on_tiles(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			isempty(cache) || (kw[:cache]    = cache)
 			merc && (kw[:merc] = true)
 			I = _mosaic_logged(scene, dlg, [W, E], [S, N], kw)
-			# NOT iview(I): that promotes the tile as an imageOnly surface -> no Scene Objects properties
-			# row + a bare backing plane (red panel) shows under it. iview_image_obj frames a hidden base
-			# and adds the tile as an ExtraObj image, so it carries the properties/drape/stack/delete menu.
 			name = "Tiles ($(round(W;digits=2))/$(round(E;digits=2))/$(round(S;digits=2))/$(round(N;digits=2)))"
-			fig = iview_image_obj(I, name)                 # framed window, tile as a managed ExtraObj image
-			# We're nested inside the picker's GO-click handler; the fresh window can open BEHIND the
-			# picker, so the user thinks "nothing happened". Raise it to the front.
-			try
-				h = _fig_handle(fig)
-				h == C_NULL || ccall(_fn(:gmtvtk_raise), Cvoid, (Ptr{Cvoid},), h)
-			catch
+			# Put the mosaic in the CALLING window when it makes sense — an empty launcher, or a grid with
+			# the same CRS and an overlapping bbox; otherwise open a fresh window. Either way the tile is a
+			# managed ExtraObj image (NOT iview(I), which makes an imageOnly surface with no properties row
+			# and a bare red backing plane).
+			if _tiles_inplace(scene, I, !merc)
+				_place_image_in_window(scene, I, name; geographic = !merc)
+				try ccall(_fn(:gmtvtk_raise), Cvoid, (Ptr{Cvoid},), scene) catch end
+			else
+				fig = iview_image_obj(I, name)             # framed new window, tile as ExtraObj image
+				# We're nested inside the picker's GO-click handler; the fresh window can open BEHIND the
+				# picker, so the user thinks "nothing happened". Raise it to the front.
+				try
+					h = _fig_handle(fig)
+					h == C_NULL || ccall(_fn(:gmtvtk_raise), Cvoid, (Ptr{Cvoid},), h)
+				catch
+				end
 			end
 		elseif op == "bg"
 			# Coarser background for the picker's current view at high zoom (Mirone's bgZoomLevel = zoom-3).

@@ -643,6 +643,13 @@ GMTVTK_API void gmtvtk_set_geography_callback(JuliaGeoFn fn) {
 	g_juliaGeo = fn;
 }
 
+// Register the File > Save Grid / Save Image callback. `fn` (Julia @cfunction, signature
+// JuliaSaveFn) is called with "<kind>;<fmt>;<path>" when the user picks a file in the Save dialog;
+// Julia writes the window's primary grid/image to that path. nullptr to detach.
+GMTVTK_API void gmtvtk_set_save_callback(JuliaSaveFn fn) {
+	g_juliaSave = fn;
+}
+
 // Register the tide-station download callback. The two "Download Mareg …" entries on a Tide
 // Stations star's right-click menu call fn(scene, mode, station): mode "2days" | "calendar",
 // station = the clicked star's "Name:/Code:/Country:" block. Julia opens the download window.
@@ -878,8 +885,27 @@ GMTVTK_API int gmtvtk_add_surface_h(void* handle, const float* z, int nx, int ny
 		}
 	}
 
+	// Adopt a dropped GRID as the hover heightfield when this window had none — a blank / image canvas
+	// (imageOnly: a Background-region white plane, or a bare image). The readout then reports the
+	// grid's z instead of the canvas pixel colour. We DO NOT touch imageOnly (the canvas itself is NOT
+	// a grid and must not gain a grid surface row); a separate gridAdopted flag flips just the readout.
+	// The existing AXES extent (x0..y1), CRS and base scales are LEFT UNTOUCHED — the grid is added
+	// INTO the existing frame, not promoted over it. Images carry no elevation, so they are skipped.
+	if (!ex.isImage && s->imageOnly && !s->gridAdopted) {
+		s->gridZ.assign(z, z + (size_t)nx * ny);       // column-major z[i*gny+j], same layout as view_grid
+		s->gnx = nx; s->gny = ny;
+		s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
+		s->gdx = (nx > 1) ? (x1 - x0) / (nx - 1) : 0.0;
+		s->gdy = (ny > 1) ? (y1 - y0) / (ny - 1) : 0.0;
+		s->gridAdopted = true;                         // readout switches from pixel-colour to z
+		surfSetVisibility(s, 0);                       // HIDE the opaque blank canvas so the grid shows through
+		if (s->shadeDock) s->shadeDock->setVisible(true);   // canvas now has a shaded body -> reveal Shading dock
+	}
+
 	ex.name = (name && name[0]) ? name : ("Object " + std::to_string((int)s->extras.size() + 1));
+	const bool addedGrid = !ex.isImage;
 	s->extras.push_back(ex);
+	if (addedGrid) applyShading(s);          // shade the new grid to match the current Shading dock state
 	rebuildSceneObjects(s);
 	if (!s->surf && s->extras.size() == 1)   // first content dropped into an empty window: frame it
 		s->ren->ResetCamera();

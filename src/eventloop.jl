@@ -47,6 +47,7 @@ function _ensure_callbacks()
 	                    ("basemap",     _register_basemap),
 	                    ("tiles",       _register_tiles),
 	                    ("bgregion",    _register_bgregion),
+	                    ("save",        _register_save),
 	                    ("geography",   _register_geography),
 	                    ("tides",       _register_tides),
 	                    ("earthtide",   _register_earthtide))

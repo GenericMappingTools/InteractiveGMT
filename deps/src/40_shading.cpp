@@ -96,7 +96,10 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	if (!pd) return;
 	vtkDataArray *nrm = pd->GetPointData()->GetNormals();
 	vtkDataArray *zs  = pd->GetPointData()->GetScalars();
-	vtkScalarsToColors *lut = s->surfLut ? s->surfLut.Get() : m->GetLookupTable();
+	// Prefer the actor's OWN mapper LUT (a dropped grid extra carries its own CPT); fall back to the
+	// scene's primary LUT. For the primary surface/tiles these are the same object, so this is a no-op
+	// there but lets an extra grid hillshade with its true colours instead of the canvas LUT.
+	vtkScalarsToColors *lut = m->GetLookupTable() ? m->GetLookupTable() : (s->surfLut ? s->surfLut.Get() : nullptr);
 	if (!nrm || !zs || !lut) return;              // no normals/scalars/LUT -> leave as-is
 
 	// sun direction (points FROM scene TO sun): az from north CW, el above horizon.
@@ -195,6 +198,11 @@ static void applyShading(Scene* s) {
 	// material each call or a slider would re-clobber it.
 	for (vtkActor* a : surfActors(s))     // all tiles (tiled grid) or the single surface
 		applySurfStyle(s, a);
+	// Dropped GRID surfaces (extras) are shaded too, so the Shading dock controls them like the
+	// primary relief — each hillshades with its own CPT (hillshadeMapper prefers the actor's LUT).
+	// Image extras are textured pictures (kept unlit) and are left untouched.
+	for (auto& ex : s->extras)
+		if (!ex.isImage && ex.actor) applySurfStyle(s, ex.actor.Get());
 	// key light: aim from azimuth (deg from north, clockwise) + elevation.
 	// dir points FROM the scene TO the sun; for a directional light only the
 	// Position-minus-FocalPoint direction matters.

@@ -450,20 +450,27 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	int idx = extraIndexOfActor(s, actor);
 	if (idx < 0) return;
 	const bool draped = s->extras[idx].draped;
-	const bool canDrape = !draped && imageOverlapsGrid(s, s->extras[idx]);
+	// Stacking orders the image against the RELIEF SURFACE, and drape lays it on the grid — both are
+	// meaningless without a real grid. An image-only window (iview_image_obj) carries only a hidden
+	// blank scaffold plane, which is NOT a grid: sceneHasGrid excludes it (gates on !imageOnly), so
+	// the stack + drape entries grey out when the window holds just image(s).
+	const bool hasGrid = sceneHasGrid(s);
+	const bool canDrape = !draped && hasGrid && imageOverlapsGrid(s, s->extras[idx]);
 	QMenu m(s->widget);
 	QAction *aTop = m.addAction("Place on top");
 	QAction *aBot = m.addAction("Place at bottom");
 	QAction *aUp  = m.addAction("Stack up");
 	QAction *aDn  = m.addAction("Stack down");
-	for (QAction *a : { aTop, aBot, aUp, aDn }) a->setEnabled(!draped);   // ordering is for the flat plane only
+	for (QAction *a : { aTop, aBot, aUp, aDn }) a->setEnabled(!draped && hasGrid);   // need a relief to stack against
 	m.addSeparator();
 	QAction *aDrape = m.addAction(draped ? "Undrape (flat)" : "Drape on grid");
 	aDrape->setEnabled(draped || canDrape);
 	m.addSeparator();
+	QAction *aSave = m.addAction("Save image…");
 	QAction *aDel = m.addAction("Delete image");
 	QAction *c = m.exec(g);
 	if (!c) return;
+	if (c == aSave) { saveObjectDialog(s, "image", QString::fromStdString(s->extras[idx].name)); return; }
 	ExtraObj& ex = s->extras[idx];            // vector unchanged during exec -> index still valid
 	const double step = imageStackStep(s);
 	if (c == aDel) {
@@ -514,6 +521,30 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
+// Properties menu for a dropped GRID surface (its Scene Objects row). EVERY added element must carry
+// a handle menu — for a grid that is: save it to disk, or delete it from the scene. Reached by a
+// left- OR right-click on the row label.
+static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
+	int idx = extraIndexOfActor(s, actor);
+	if (idx < 0) return;
+	const QString nm = QString::fromStdString(s->extras[idx].name);
+	QMenu m(s->widget);
+	QAction *aSave  = m.addAction("Save grid…");
+	m.addSeparator();
+	QAction *aDel   = m.addAction("Delete grid");
+	QAction *c = m.exec(g);
+	if (!c) return;
+	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
+	if (c == aDel) {
+		ExtraObj &ex = s->extras[idx];
+		if (ex.actor) s->ren->RemoveActor(ex.actor);
+		if (ex.drape) s->ren->RemoveActor(ex.drape);
+		s->extras.erase(s->extras.begin() + idx);
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	}
+}
+
 static void rebuildSceneObjects(Scene *s) {
 	if (!s || !s->objPanel)
 		return;
@@ -540,7 +571,8 @@ static void rebuildSceneObjects(Scene *s) {
 	auto makeRow = [&](const QString &label, int iconKind, bool checked,
 	                   std::function<void(bool)> onToggle,
 	                   std::function<void(const QPoint&)> onProps,
-	                   const QString &tip = QString()) {
+	                   const QString &tip = QString(),
+	                   std::function<void(const QPoint&)> onContext = nullptr) {
 		QWidget *row = new QWidget(s->objPanel);
 		QHBoxLayout *h = new QHBoxLayout(row);
 		h->setContentsMargins(0, 0, 0, 0);
@@ -566,6 +598,7 @@ static void rebuildSceneObjects(Scene *s) {
 			text->setCursor(Qt::PointingHandCursor);
 			text->onClick = onProps;
 		}
+		if (onContext) text->onRightClick = onContext;      // right-click the description -> context menu (Save…)
 		col->addWidget(row);
 	};
 
@@ -581,22 +614,42 @@ static void rebuildSceneObjects(Scene *s) {
 		        lr ? QString("Left-click for properties") : QString());
 	};
 
+	// Right-click handler factory for a saveable grid/image row: pops a one-item "Save…" menu that
+	// opens the format-picker dialog for that object (kind = "grid" | "image"; name = the row label,
+	// matched against the Julia object store). kind is a string literal (static lifetime).
+	auto saveCtx = [s](const char* kind, const QString& name) {
+		return [s, kind, name](const QPoint& g) {
+			QMenu m(s->widget);
+			QAction* a = m.addAction(QString("Save %1…").arg(kind));
+			if (m.exec(g) == a) saveObjectDialog(s, kind, name);
+		};
+	};
+
 	// A bare image has NO surface: don't list one, and the image is the object itself (not an
 	// "Image drape" over a surface).
 	if (!s->imageOnly) {
 		// Surface row: checkbox toggles visibility; LEFT-clicking the label folds / un-folds the
-		// Shading dock (the surface is what shading acts on), Fledermaus-style.
-		if (vtkProp3D *sp = surfProp(s))
-			makeRow(s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName),
-			        IC_Surface, sp->GetVisibility() != 0,
+		// Shading dock (the surface is what shading acts on), Fledermaus-style. RIGHT-click -> Save.
+		if (vtkProp3D *sp = surfProp(s)) {
+			const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
+			makeRow(nm, IC_Surface, sp->GetVisibility() != 0,
 			        [sp](bool on) { sp->SetVisibility(on ? 1 : 0); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
-			        "Left-click to fold / un-fold the Shading panel");
+			        "Left-click to fold / un-fold the Shading panel · right-click to save",
+			        saveCtx("grid", nm));
+		}
 	}
-	if (s->drape)
-		addRow(s->imageOnly ? (s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName))
-		                    : QString("Image drape"),
-		       s->drape, IC_Image);
+	if (s->drape) {
+		if (s->imageOnly) {                                 // bare image (view_image): right-click -> Save
+			const QString nm = s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName);
+			vtkProp3D *dp = s->drape;
+			makeRow(nm, IC_Image, dp->GetVisibility() != 0,
+			        [dp](bool on) { dp->SetVisibility(on ? 1 : 0); }, nullptr,
+			        "Right-click to save the image", saveCtx("image", nm));
+		} else {
+			addRow(QString("Image drape"), s->drape, IC_Image);   // a grid's drape texture (not separately saveable)
+		}
+	}
 	if (s->bar)                                          // colorbar: toggle visibility + colormap chooser
 		makeRow("Color Bar", IC_ColorBar, s->bar->GetVisibility() != 0,
 		        [s](bool on) { setColorbarVisible(s, on); },
@@ -637,15 +690,22 @@ static void rebuildSceneObjects(Scene *s) {
 		addRow("Profile", s->profLine, IC_Profile, &lr);
 	}
 	for (auto& ex : s->extras) {                 // grids/images dropped in after the window opened
-		if (ex.isImage) {                        // dropped image: picture icon + ordering/drape/delete menu
+		const QString nm = QString::fromStdString(ex.name);
+		if (ex.isImage) {                        // dropped image: picture icon + ordering/drape/save/delete menu
 			vtkProp3D* a = ex.actor.Get();
-			makeRow(QString::fromStdString(ex.name), IC_Image, a && a->GetVisibility() != 0,
+			makeRow(nm, IC_Image, a && a->GetVisibility() != 0,
 			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
 			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
-			        "Left-click for image properties");
-		} else {
-			addRow(QString::fromStdString(ex.name), ex.actor, IC_Surface);
-			if (ex.drape) addRow(QString::fromStdString(ex.name + " (image)"), ex.drape, IC_Image);
+			        "Left- or right-click for image properties (incl. Save)",
+			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); });
+		} else {                                 // dropped grid: a SURFACE -> dealt EXACTLY like the primary
+			vtkProp3D* a = ex.actor.Get();       // surface handle: left-click folds/un-folds the Shading dock
+			makeRow(nm, IC_Surface, a && a->GetVisibility() != 0,
+			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
+			        [s](const QPoint&) { toggleShadingFold(s); },          // SAME function as the primary surface
+			        "Left-click for Shading · right-click to save / delete",
+			        [s, a](const QPoint& g) { gridObjectMenu(s, a, g); }); // right-click: save / delete
+			if (ex.drape) addRow(nm + " (image)", ex.drape, IC_Image);
 		}
 	}
 	col->addStretch(1);

@@ -65,6 +65,7 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:geo, prom
 		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4],
 		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name))
 	ok == 0 && @warn "drop: window is closed; grid not added"
+	ok != 0 && _remember_object!(scene, :grid, name, G)   # Scene Objects "Save…" / File>Save can write it
 	# A promoted launcher reuses the SAME handle but its _FIGREG entry is still the QtEmpty launcher.
 	# Re-register it as a grid figure so `fig` (console / colorbar _recolor) carries the grid + works.
 	promote && ok != 0 && _register_fig!(QtFigure(scene, G))
@@ -91,6 +92,7 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 		  scene, z, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4],
 		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name))
 	ok == 0 && @warn "drop: window is closed; image not added"
+	ok != 0 && _remember_object!(scene, :image, name, I)  # Scene Objects "Save…" / File>Save can write it
 	# As for grids: re-register the promoted launcher so `fig` is the actual image figure.
 	promote && ok != 0 && _register_fig!(QtImage(scene, I))
 	return ok != 0
@@ -126,6 +128,36 @@ function iview_image_obj(I::GMTimage, name::AbstractString; title::String="i'GMT
 	fig = _register_fig!(QtImage(h, I))
 	_start_pump()
 	return fig
+end
+
+# Add a referenced image INTO an existing window, framing it: an EMPTY launcher gets a hidden
+# scaffold plane over the image bbox (real framed axes + coord readout + flat-2-D view), a POPULATED
+# window grows its frame to include the image; then the image is added on top as a managed ExtraObj
+# image (properties / drape / stack / save menu). The image CRS is pushed so the axes read lon/lat
+# and the Geography menu reveals. Mirrors basemap.jl's in-place path; used by the Tiles Tool to drop
+# its mosaic into the calling window. `geographic` toggles geographic vs linear (e.g. mercator) axes.
+function _place_image_in_window(scene::Ptr{Cvoid}, I::GMTimage, name; geographic::Bool=true)
+	ir = I.range
+	if ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
+		zblank = zeros(Float32, 2, 2)
+		ccall(_fn(:gmtvtk_promote_surface_h), Cint,
+		      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+		       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		      scene, zblank, Cint(2), Cint(2), Float64(ir[1]), Float64(ir[2]), Float64(ir[3]), Float64(ir[4]),
+		      Cint(geographic ? 1 : 0), C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
+		ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), scene)   # scaffold only
+	else
+		# Already framed (grid or earlier image): extend the frame + axes + hover domain to include the
+		# image (no-op if it already fits); keeps xfac fixed so existing actors stay aligned.
+		ccall(_fn(:gmtvtk_grow_frame_h), Cint,
+		      (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble),
+		      scene, Float64(ir[1]), Float64(ir[2]), Float64(ir[3]), Float64(ir[4]))
+	end
+	_add_image_to_scene(scene, I, name; promote=false)             # ExtraObj image -> properties menu
+	crs = crs_from(I; geographic=geographic)
+	hascrs(crs) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
+	                     scene, crs.proj4, crs.wkt, Cint(crs.epsg))   # referenced -> reveals Geography menu
+	return
 end
 
 # Best-effort geographic flag for a dropped grid/image (lon/lat axis titles + cos-lat aspect).

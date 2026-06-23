@@ -1475,14 +1475,28 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	QMenu *mFile = win->menuBar()->addMenu("&File");
 	mFile->addAction("Save &Screenshot…", actShot);
+	// Save Grid / Save Image: each opens the format-picker dialog (saveObjectDialog) for the window's
+	// primary object (empty name). Greyed out when the window holds no grid / no image — refreshed on
+	// every menu open so it tracks drops, basemap tiles, etc.
+	QAction* aSaveGrid  = mFile->addAction("Save &Grid…",  [s]() { saveObjectDialog(s, "grid",  QString()); });
+	QAction* aSaveImage = mFile->addAction("Save &Image…", [s]() { saveObjectDialog(s, "image", QString()); });
 	// Background region: open a blank white 2-D map framed to W/E/S/N (default the whole geographic
 	// earth). The dialog hands "W/E/S/N/geographic" to Julia (g_juliaBgRegion), which opens a fresh
 	// window — ready to drop coastlines / overlays onto. Reports if the callback is not wired.
-	mFile->addAction("&Background region…", [win, s]() {
+	QAction* aBgRegion = mFile->addAction("&Background region…", [win, s]() {
 		BgRegionDialog dlg(win);
 		if (dlg.exec() != QDialog::Accepted || dlg.region.isEmpty()) return;
 		if (g_juliaBgRegion) g_juliaBgRegion(s, dlg.region.toUtf8().constData());
 		else if (s->win) s->win->statusBar()->showMessage("Background region: callback not registered", 3000);
+	});
+	// Per-open gating: Save entries reflect what's loaded; Background region is hidden for good once the
+	// window holds ANY content (a grid, an image, or any dropped extra) — it only makes sense on a bare
+	// launcher whose limits are still up for grabs.
+	QObject::connect(mFile, &QMenu::aboutToShow, [s, aSaveGrid, aSaveImage, aBgRegion]() {
+		aSaveGrid->setEnabled(sceneHasGrid(s));
+		aSaveImage->setEnabled(sceneHasImage(s));
+		const bool hasContent = (s->surf && !s->emptyStart) || !s->extras.empty();
+		aBgRegion->setVisible(!hasContent);
 	});
 	mFile->addSeparator();
 	// Recent Files: persistent MRU, grouped Grids/Images/Datasets, rebuilt each time it opens so a

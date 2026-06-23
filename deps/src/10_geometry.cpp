@@ -6,10 +6,12 @@ struct FoldTitleBar;  // foldable dock title bar (defined in 70_window.cpp; Scen
 // A QLabel that opens something on a plain LEFT click — used for the Scene Objects row labels:
 // left-clicking the element description pops its properties menu (onClick gets the GLOBAL point).
 struct ClickableLabel : QLabel {
-	std::function<void(const QPoint&)> onClick;
+	std::function<void(const QPoint&)> onClick;        // LEFT click  -> properties / fold
+	std::function<void(const QPoint&)> onRightClick;   // RIGHT click -> context menu (e.g. Save…)
 	using QLabel::QLabel;
 	void mousePressEvent(QMouseEvent* e) override {
 		if (e->button() == Qt::LeftButton && onClick) onClick(e->globalPosition().toPoint());
+		else if (e->button() == Qt::RightButton && onRightClick) onRightClick(e->globalPosition().toPoint());
 		else QLabel::mousePressEvent(e);
 	}
 };
@@ -172,6 +174,9 @@ struct Scene {
 	bool   flat2d = false;
 	bool   imageOnly = false;   // loaded as a bare image (no elevation): readout shows pixel colour, not z
 	bool   emptyStart = false;  // full-chrome launcher with no data yet (hidden placeholder); drop -> promote
+	bool   gridAdopted = false; // a real grid was dropped onto an imageOnly canvas (Background region /
+	                            // bare image) and adopted as the hover heightfield -> readout shows z,
+	                            // NOT pixel colour, even though the canvas itself stays imageOnly
 	double sav_pos[3] = {0, 0, 0};
 	double sav_foc[3] = {0, 0, 0};
 	double sav_vup[3] = {0, 0, 1};
@@ -1259,7 +1264,7 @@ static void onMouseMove(vtkObject*, unsigned long, void* clientData, void* /*cd*
 		}
 	}
 	if (hit) {
-		if (s->imageOnly) {
+		if (s->imageOnly && !s->gridAdopted) {
 			// Bare image: no elevation -> show the pixel COLOUR under the cursor instead of z.
 			// Read it straight from the framebuffer (the drape is unlit, so the pixel is the
 			// image's true albedo). p is bottom-up display pixels, matching GetPixelData.

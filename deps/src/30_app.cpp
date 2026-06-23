@@ -54,6 +54,140 @@ static JuliaBgRegionFn g_juliaBgRegion = nullptr;
 typedef void (*JuliaGeoFn)(void* scene, const char* req);
 static JuliaGeoFn g_juliaGeo = nullptr;
 
+// File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
+// filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a
+// short format code (nc/surfer/gtiff/jp2/erdas/envi for grids; those + jpg/png/tif/bmp for images);
+// path = the chosen file. Julia writes the window's primary GMTgrid/GMTimage via GMT.gmtwrite
+// (netCDF/Surfer) or GMT.gdalwrite (the rest). Set via gmtvtk_set_save_callback; nullptr -> the menu
+// entry reports "callback not registered".
+typedef void (*JuliaSaveFn)(void* scene, const char* req);
+static JuliaSaveFn g_juliaSave = nullptr;
+
+// One selectable output format for the Save dialog: a human label, the short code handed to Julia,
+// the QFileDialog filter, and the canonical extension (used to seed/auto-suffix the file name).
+struct SaveFmt { const char* label; const char* code; const char* filter; const char* ext; };
+// Grids: netCDF + Surfer 6 go through GMT.gmtwrite; the rest through GMT.gdalwrite (driver by ext).
+static const SaveFmt kGridFmts[] = {
+	{ "netCDF grid",   "nc",     "netCDF grid (*.nc *.grd)", ".nc"  },
+	{ "GeoTIFF",       "gtiff",  "GeoTIFF (*.tif *.tiff)",   ".tif" },
+	{ "JPEG2000",      "jp2",    "JPEG2000 (*.jp2)",         ".jp2" },
+	{ "Erdas Imagine", "erdas",  "Erdas Imagine (*.img)",    ".img" },
+	{ "Surfer 6 grid", "surfer", "Surfer 6 grid (*.grd)",    ".grd" },
+	{ "ENVI",          "envi",   "ENVI (*.hdr)",             ".hdr" },
+};
+// Images always go through GMT.gdalwrite (driver by extension).
+static const SaveFmt kImageFmts[] = {
+	{ "GeoTIFF",       "gtiff", "GeoTIFF (*.tif *.tiff)", ".tif" },
+	{ "JPEG2000",      "jp2",   "JPEG2000 (*.jp2)",       ".jp2" },
+	{ "Erdas Imagine", "erdas", "Erdas Imagine (*.img)",  ".img" },
+	{ "ENVI",          "envi",  "ENVI (*.hdr)",           ".hdr" },
+	{ "JPEG",          "jpg",   "JPEG (*.jpg *.jpeg)",    ".jpg" },
+	{ "PNG",           "png",   "PNG (*.png)",            ".png" },
+	{ "TIFF",          "tif",   "TIFF (*.tif)",           ".tif" },
+	{ "BMP",           "bmp",   "BMP (*.bmp)",            ".bmp" },
+};
+
+// The "little window" the user asked for: pick an output format from a combo, then a file (Browse
+// runs the native save dialog filtered to that format; changing the format re-suffixes the path).
+// On accept, `code` + `path` carry the choice. isGrid selects the grid vs image format list.
+struct SaveFormatDialog : QDialog {
+	const SaveFmt* fmts; int nfmt;
+	QComboBox* combo; QLineEdit* pathEdit; QPushButton* okBtn;
+	QString code, path;
+
+	static QString sanitize(const QString& n) {                 // object label -> safe file stem
+		QString r; for (QChar c : n) r += (c.isLetterOrNumber() || c == '_' || c == '-') ? c : QChar('_');
+		return r;
+	}
+	void swapExt() {                                            // keep the path's extension == the format
+		QString p = pathEdit->text().trimmed();
+		if (p.isEmpty()) return;
+		int dot = p.lastIndexOf('.');
+		int sep = std::max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+		if (dot > sep) p = p.left(dot);
+		pathEdit->setText(p + fmts[combo->currentIndex()].ext);
+	}
+	SaveFormatDialog(QWidget* parent, bool isGrid, const QString& objName) : QDialog(parent) {
+		fmts = isGrid ? kGridFmts : kImageFmts;
+		nfmt = isGrid ? (int)(sizeof(kGridFmts) / sizeof(kGridFmts[0]))
+		              : (int)(sizeof(kImageFmts) / sizeof(kImageFmts[0]));
+		setWindowTitle(isGrid ? "Save grid" : "Save image");
+		QVBoxLayout* v = new QVBoxLayout(this);
+		if (!objName.isEmpty()) v->addWidget(new QLabel("Object:  " + objName, this));
+
+		QHBoxLayout* fr = new QHBoxLayout();
+		fr->addWidget(new QLabel("Format:", this));
+		combo = new QComboBox(this);
+		for (int i = 0; i < nfmt; ++i) combo->addItem(fmts[i].label);
+		fr->addWidget(combo, 1);
+		v->addLayout(fr);
+
+		QHBoxLayout* pr = new QHBoxLayout();
+		pr->addWidget(new QLabel("File:", this));
+		pathEdit = new QLineEdit(this); pathEdit->setMinimumWidth(300);
+		pr->addWidget(pathEdit, 1);
+		QPushButton* browse = new QPushButton("Browse…", this);
+		pr->addWidget(browse, 0);
+		v->addLayout(pr);
+
+		QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
+		v->addWidget(bb);
+		okBtn = bb->button(QDialogButtonBox::Save);
+		okBtn->setEnabled(false);
+
+		const QString seed = objName.isEmpty() ? QString() : sanitize(objName);
+		QObject::connect(browse, &QPushButton::clicked, this, [this, seed]() {
+			const SaveFmt& f = fmts[combo->currentIndex()];
+			QString start = pathEdit->text().trimmed();
+			if (start.isEmpty() && !seed.isEmpty()) start = seed + f.ext;
+			QString fn = QFileDialog::getSaveFileName(this, "Save as", start, f.filter);
+			if (!fn.isEmpty()) pathEdit->setText(fn);
+		});
+		QObject::connect(pathEdit, &QLineEdit::textChanged, this,
+		                 [this](const QString& t) { okBtn->setEnabled(!t.trimmed().isEmpty()); });
+		QObject::connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+		                 [this](int) { swapExt(); });
+		QObject::connect(bb, &QDialogButtonBox::accepted, this, [this]() {
+			code = fmts[combo->currentIndex()].code;
+			path = pathEdit->text().trimmed();
+			accept();
+		});
+		QObject::connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
+	}
+};
+
+// Open the Save dialog for a scene object and hand the choice to Julia (g_juliaSave) as
+// "<kind>;<fmt>;<path>;<name>". kind = "grid" | "image"; name identifies which object (empty for the
+// File-menu "save the window's grid/image"). nullptr callback -> a status-bar notice.
+static void saveObjectDialog(Scene* s, const char* kind, const QString& name) {
+	if (!g_juliaSave) {
+		if (s && s->win) s->win->statusBar()->showMessage("Save: callback not registered", 3000);
+		return;
+	}
+	const bool isGrid = (QString(kind) == QLatin1String("grid"));
+	SaveFormatDialog dlg(s ? s->win : nullptr, isGrid, name);
+	if (dlg.exec() != QDialog::Accepted || dlg.path.isEmpty()) return;
+	const QString req = QString("%1;%2;%3;%4").arg(QString(kind)).arg(dlg.code).arg(dlg.path).arg(name);
+	g_juliaSave(s, req.toUtf8().constData());
+}
+
+// Does the window hold a saveable grid / image? Used to enable/disable the File>Save entries and to
+// decide which per-object "Save…" to show. A grid = the primary relief surface (not a bare image,
+// not the empty launcher) or any non-image extra. An image = the bare primary image or any image
+// extra (drops / basemap / tiles / iview_image_obj).
+static bool sceneHasGrid(Scene* s) {
+	if (!s) return false;
+	if (s->surf && !s->emptyStart && !s->imageOnly) return true;
+	for (auto& ex : s->extras) if (!ex.isImage) return true;
+	return false;
+}
+static bool sceneHasImage(Scene* s) {
+	if (!s) return false;
+	if (s->drape && s->imageOnly) return true;            // bare image opened by view_image
+	for (auto& ex : s->extras) if (ex.isImage) return true;
+	return false;
+}
+
 // Tide-station download menu. A right-click on a "Tide Stations" star adds two entries —
 // "Download Mareg (2 days)" / "Download Mareg (Calendar)" — that hand (mode, station) to Julia,
 // which opens the Mareg download window. mode = "2days" | "calendar"; station = the clicked star's
