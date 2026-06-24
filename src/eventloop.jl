@@ -49,6 +49,7 @@ function _ensure_callbacks()
 	                    ("bgregion",    _register_bgregion),
 	                    ("save",        _register_save),
 	                    ("geography",   _register_geography),
+	                    ("solid",       _register_solid),
 	                    ("tides",       _register_tides),
 	                    ("earthtide",   _register_earthtide))
 		try

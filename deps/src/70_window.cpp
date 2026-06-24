@@ -727,6 +727,11 @@ static QIcon makeLineIcon();
 static QIcon makeRectIcon();
 static QIcon makeCircleIcon();
 static QIcon makeTextIcon();
+static QIcon makeCubeIcon();        // 3-D Bodies flyout glyphs (85_polygon.cpp)
+static QIcon makeSphereIcon();
+static QIcon makeTorusIcon();
+static QIcon makeCylinderIcon();
+static QIcon makePolyhedronIcon();
 static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only view-toggle button
 static int  polyHitText(Scene* s, int x, int y, double tol);   // text label under the cursor (85_polygon.cpp)
 
@@ -1771,6 +1776,46 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	actText->setToolTip("Place a text label: click a point on the scene, then type the text.");
 	QObject::connect(actText, &QAction::toggled, [s, actText](bool on){ polygonToolToggled(s, actText, Scene::SH_Text, on); });
 	s->shapeActs.push_back(actText);
+
+	// --- 3-D Bodies: a flyout that builds GMT.jl solids (cube/sphere/torus/cylinder/…) ----------
+	// Sibling to the shapes flyout, but every entry is a ONE-SHOT action (NOT a draw-mode toggle):
+	// clicking it hands the solid's GMT name to Julia (g_juliaSolid, 30_app.cpp), which builds the
+	// named GMTfv via the SOLIDS catalogue (fv.jl) and opens it in its own FV viewer window (where the
+	// existing view_fv path already gives it full Scene Objects properties). Closed primitives first,
+	// then the parametric generators (revolve/loft/extrude render demo curves). Slot click = build the
+	// current body; the dropdown arrow opens the flyout; picking a sibling makes it the new default.
+	struct BodyDef { QIcon icon; const char* name; const char* label; const char* tip; };
+	const BodyDef bodyTools[] = {
+		{ makeCubeIcon(),       "cube",         "Cube",         "Create a cube solid."                        },
+		{ makeSphereIcon(),     "sphere",       "Sphere",       "Create a sphere solid."                      },
+		{ makeTorusIcon(),      "torus",        "Torus",        "Create a torus (donut) solid."               },
+		{ makeCylinderIcon(),   "cylinder",     "Cylinder",     "Create a cylinder solid."                    },
+		{ makePolyhedronIcon(), "tetrahedron",  "Tetrahedron",  "Create a tetrahedron solid."                 },
+		{ makePolyhedronIcon(), "octahedron",   "Octahedron",   "Create an octahedron solid."                 },
+		{ makePolyhedronIcon(), "dodecahedron", "Dodecahedron", "Create a dodecahedron solid."                },
+		{ makePolyhedronIcon(), "icosahedron",  "Icosahedron",  "Create an icosahedron solid."                },
+		{ makePolyhedronIcon(), "revolve",      "Revolve",      "Surface of revolution (demo profile curve)." },
+		{ makePolyhedronIcon(), "loft",         "Loft",         "Loft between two curves (demo curves)."      },
+		{ makePolyhedronIcon(), "extrude",      "Extrude",      "Extrude a 2-D shape (demo star outline)."    },
+	};
+	QToolButton* bodyFlyout = new QToolButton(tb);
+	bodyFlyout->setPopupMode(QToolButton::MenuButtonPopup);
+	bodyFlyout->setToolButtonStyle(Qt::ToolButtonIconOnly);
+	bodyFlyout->setToolTip("3-D Bodies: build a GMT solid (cube, sphere, torus, cylinder, …)");
+	QMenu* bodyMenu = new QMenu(bodyFlyout);
+	for (const BodyDef& bd : bodyTools) {
+		QAction* act = bodyMenu->addAction(bd.icon, bd.label);
+		act->setToolTip(bd.tip);
+		const QByteArray nm = bd.name;                          // capture the solid name by value
+		QObject::connect(act, &QAction::triggered, [s, nm]() {
+			if (g_juliaSolid) g_juliaSolid(s, nm.constData());   // nullptr -> not wired; silently ignore
+		});
+	}
+	bodyFlyout->setMenu(bodyMenu);
+	bodyFlyout->setDefaultAction(bodyMenu->actions().first());   // slot starts on Cube (icon + tooltip mirror it)
+	QObject::connect(bodyMenu, &QMenu::triggered, bodyFlyout, [bodyFlyout](QAction* a){ bodyFlyout->setDefaultAction(a); });
+	tb->addSeparator();
+	tb->addWidget(bodyFlyout);
 
 	// --- native right-click context menu over the 3-D view ------------------
 	widget->setContextMenuPolicy(Qt::CustomContextMenu);

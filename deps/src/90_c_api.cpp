@@ -249,6 +249,101 @@ GMTVTK_API void* gmtvtk_view_fv(const double* xyz, int nv, const int* sides, int
 	return s;
 }
 
+// Build a named GMT solid (cube/sphere/torus/…) INTO an existing window IN PLACE — the 3-D Bodies
+// toolbar path. Reuses the SAME window (no new window) when it is an empty launcher OR already holds a
+// body-button solid (then the old body is REPLACED). A window showing REAL data (grid/image/points/
+// poly-mesh) is left untouched and we return 0, so the host instead opens the solid in its own window
+// (gmtvtk_view_fv). Mirrors gmtvtk_promote_surface_h: recompute the scene through buildSceneContent —
+// the EXACT same build path gmtvtk_view_fv uses — so nothing drifts. Returns 1 (reused) / 0 (declined).
+GMTVTK_API int gmtvtk_promote_fv_h(void* handle,
+								   const double* xyz, int nv, const int* sides, int nfaces,
+								   const int* indices, const unsigned char* facergb, const double* facez,
+								   const double* cz, const double* crgb, int ncolor,
+								   double x0, double x1, double y0, double y1, double z0, double z1,
+								   int geographic, double zscale, int edges, const char* objname) {
+	Scene* s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xyz || nv <= 0 || !sides || !indices || nfaces <= 0)
+		return 0;
+	// Only an empty launcher OR a window already holding a body-button solid may be reused; a window
+	// with real data declines (return 0) so the caller opens the solid in a fresh window instead.
+	if (!s->emptyStart && !s->fvSolid)
+		return 0;
+
+	double zmin, zmax;
+	auto pd = makeFvMesh(xyz, nv, sides, nfaces, indices, facergb, facez, zmin, zmax);
+	const bool   direct = (facergb != nullptr);
+	const bool   cellz  = (!direct && facez != nullptr);
+	const int    nc = direct ? 0 : ncolor;
+	const double ve = (zscale > 0.0) ? zscale : 1.0;
+
+	// FV uses UNIT horizontal scale + zscale as VE (matches gmtvtk_view_fv: buildAndShow(...,1,1,ve,...)).
+	// The CALLER's contract for buildSceneContent: set imageOnly, x0..y1, zmin/zmax, xfac/zfac/ve first.
+	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1; s->zmin = z0; s->zmax = z1;
+	s->xfac = 1.0; s->zfac = 1.0; s->ve = ve;
+	s->imageOnly = false;
+	s->surfName  = (objname && objname[0]) ? objname : "";
+
+	buildSceneContent(s, pd, x0, x1, y0, y1, direct ? nullptr : cz, direct ? nullptr : crgb, nc,
+					  nullptr, 0, 0, 0, edges, false, geographic, nullptr, 0, 0, /*blankStart=*/false);
+
+	// Faceted colouring (sharp edges + per-face colours that match the colorbar) — SAME post-step as
+	// gmtvtk_view_fv, replacing buildSceneContent's smooth-normal surface for the direct/cell-z modes.
+	if (direct || cellz) {
+		vtkNew<vtkPolyDataNormals> fn;
+		fn->SetInputData(pd);
+		fn->SplittingOn();
+		fn->SetFeatureAngle(30.0);
+		fn->ConsistencyOn();
+		if (auto* m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper())) {
+			m->SetInputConnection(fn->GetOutputPort());
+			m->SetScalarModeToUseCellData();
+			m->InterpolateScalarsBeforeMappingOff();
+			if (direct) {
+				m->SetColorModeToDirectScalars();
+				if (s->bar) setColorbarVisible(s, false);
+			} else {
+				m->SetColorModeToMapScalars();
+				if (auto* ctf = vtkColorTransferFunction::SafeDownCast(m->GetLookupTable()))
+					ctf->SetClamping(1);
+				m->UseLookupTableScalarRangeOn();
+			}
+			m->ScalarVisibilityOn();
+			m->Modified();
+		}
+		s->matteSurf = true;
+	}
+
+	s->emptyStart = false;
+	s->fvSolid    = true;     // window now holds a body-button solid -> the next body click REPLACES it
+
+	// Rebuild the gizmo from scratch against the REAL surface (the launcher's was sized for the 0..1
+	// placeholder), exactly as gmtvtk_promote_surface_h does for a promoted grid.
+	disableGizmo(s);
+	s->giz = enableGizmo(s, 0.01);
+
+	// A solid is 3-D: leave flat2d OFF, refresh the 2D/3D toolbar icon, force perspective (the launcher
+	// opened in flat-2D ortho), and re-show the Shading dock folded (the launcher hid it with no body).
+	s->flat2d = false;
+	if (s->act2D) s->act2D->setChecked(false);
+	if (vtkCamera* cam = s->ren->GetActiveCamera()) cam->ParallelProjectionOff();
+	if (s->shadeDock && s->shadeFoldBar) {
+		if (QWidget* body = s->shadeDock->widget()) body->setVisible(false);
+		s->shadeFoldBar->folded    = true;
+		s->shadeFoldBar->openWidth = 240;
+		s->shadeFoldBar->updateGeometry();
+		s->shadeFoldBar->update();
+		s->shadeDock->setVisible(true);
+		if (s->win)
+			s->win->resizeDocks({s->shadeDock}, {s->shadeFoldBar->sizeHint().width()}, Qt::Horizontal);
+	}
+
+	rebuildSceneObjects(s);
+	applyShading(s);
+	s->ren->ResetCameraClippingRange();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
 // Number of points currently selected (Ctrl+right-drag) in a point-cloud figure.
 GMTVTK_API int gmtvtk_selection_count(void* handle) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -641,6 +736,13 @@ GMTVTK_API void gmtvtk_set_bgregion_callback(JuliaBgRegionFn fn) {
 // is chosen; Julia runs GMT.coast and adds the lines via gmtvtk_add_overlay_h. nullptr to detach.
 GMTVTK_API void gmtvtk_set_geography_callback(JuliaGeoFn fn) {
 	g_juliaGeo = fn;
+}
+
+// Register the 3-D Bodies toolbar callback. `fn` (Julia @cfunction, signature JuliaSolidFn) is
+// called with a GMT solid name ("cube"/"sphere"/"torus"/…) when the user clicks a body in the
+// flyout; Julia builds the named GMTfv via SOLIDS and opens it with view_fv. nullptr to detach.
+GMTVTK_API void gmtvtk_set_solid_callback(JuliaSolidFn fn) {
+	g_juliaSolid = fn;
 }
 
 // Register the File > Save Grid / Save Image callback. `fn` (Julia @cfunction, signature

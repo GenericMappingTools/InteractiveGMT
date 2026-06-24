@@ -54,6 +54,13 @@ static JuliaBgRegionFn g_juliaBgRegion = nullptr;
 typedef void (*JuliaGeoFn)(void* scene, const char* req);
 static JuliaGeoFn g_juliaGeo = nullptr;
 
+// 3-D Bodies toolbar flyout. Each entry hands a GMT solid NAME ("cube"/"sphere"/"torus"/"cylinder"/
+// "tetrahedron"/… — the SOLIDS catalogue keys in fv.jl) to Julia (g_juliaSolid), which builds the
+// named GMTfv and opens it with view_fv. Set via gmtvtk_set_solid_callback; nullptr -> the buttons
+// silently do nothing (feature reads as "not wired" until the DLL is rebuilt + Julia restarted).
+typedef void (*JuliaSolidFn)(void* scene, const char* name);
+static JuliaSolidFn g_juliaSolid = nullptr;
+
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a
 // short format code (nc/surfer/gtiff/jp2/erdas/envi for grids; those + jpg/png/tif/bmp for images);

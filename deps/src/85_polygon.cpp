@@ -110,6 +110,80 @@ static QIcon makeTextIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// ── 3-D Bodies flyout icons (cube / sphere / torus / cylinder + a generic polyhedron) ──────
+// Small isometric glyphs for the "3-D Bodies" toolbar flyout. Each is a stylised wireframe of the
+// GMT solid the entry builds; the generic polyhedron stands in for the platonic solids and the
+// parametric generators (label disambiguates). Same supersampled iconCanvas trick as the others.
+
+// Cube: front face + top/right parallelograms (simple isometric box).
+static QIcon makeCubeIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	const QPointF a(5, 9), b(14, 6), c(20, 9), d(11, 12);          // top face (a-b-c-d)
+	QPolygonF top; top << a << b << c << d;
+	p.setBrush(QColor(255, 215, 140)); p.drawPolygon(top);
+	QPolygonF front; front << a << d << QPointF(11, 21) << QPointF(5, 18);   // left/front face
+	p.setBrush(QColor(235, 180, 95));  p.drawPolygon(front);
+	QPolygonF right; right << d << c << QPointF(20, 18) << QPointF(11, 21);  // right face
+	p.setBrush(QColor(210, 150, 70));  p.drawPolygon(right);
+	p.end(); return QIcon(pm);
+}
+
+// Sphere: filled circle + equator/meridian ellipses for a 3-D read.
+static QIcon makeSphereIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.5)); p.setBrush(QColor(150, 195, 245));
+	p.drawEllipse(QPointF(12, 12), 8.5, 8.5);
+	p.setBrush(Qt::NoBrush); p.setPen(QPen(QColor(40, 40, 40), 1.0));
+	p.drawEllipse(QPointF(12, 12), 8.5, 3.4);                      // equator
+	p.drawEllipse(QPointF(12, 12), 3.4, 8.5);                      // meridian
+	p.end(); return QIcon(pm);
+}
+
+// Torus: outer + inner ellipse (a donut seen at a slight tilt).
+static QIcon makeTorusIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.5)); p.setBrush(QColor(245, 165, 120));
+	p.drawEllipse(QPointF(12, 12), 9.0, 5.5);                      // outer rim
+	p.setBrush(QColor(255, 255, 255, 0));
+	p.drawEllipse(QPointF(12, 12), 3.6, 2.2);                      // hole
+	p.end(); return QIcon(pm);
+}
+
+// Cylinder: side rectangle capped by top/bottom ellipses.
+static QIcon makeCylinderIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	p.setBrush(QColor(180, 210, 160));
+	p.drawRect(QRectF(5, 6, 14, 12));                             // body
+	p.drawEllipse(QPointF(12, 18), 7.0, 2.6);                     // bottom cap
+	p.setBrush(QColor(205, 230, 185));
+	p.drawEllipse(QPointF(12, 6), 7.0, 2.6);                      // top cap
+	p.end(); return QIcon(pm);
+}
+
+// Generic polyhedron (icosahedron-ish): hexagon outline + spokes. Used for the platonic solids and
+// the parametric generators in the flyout — the action label tells them apart.
+static QIcon makePolyhedronIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	QPolygonF hex;
+	const QPointF ctr(12, 12);
+	for (int k = 0; k < 6; ++k) {
+		double th = M_PI / 6.0 + k * M_PI / 3.0;
+		hex << QPointF(ctr.x() + 9.0 * std::cos(th), ctr.y() + 9.0 * std::sin(th));
+	}
+	p.setBrush(QColor(200, 185, 235)); p.drawPolygon(hex);
+	p.setBrush(Qt::NoBrush);
+	for (int k = 0; k < 6; k += 2) p.drawLine(ctr, hex[k]);        // a few inner edges
+	p.end(); return QIcon(pm);
+}
+
 // "2D"/"3D" glyph for the icon-only view-toggle button (twoD -> show "2D", else "3D").
 static QIcon makeViewModeIcon(bool twoD) {
 	QPixmap pm = iconCanvas();

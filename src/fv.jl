@@ -92,19 +92,18 @@ using the REPL.
 The vertical exaggeration comes from `fv.zscale` (set by `poly2fv`/`tri2fv`); 1 = true 1:1.
 E.g. `view_fv(poly2fv(GMT.gmtread("countries.gmt")))`.
 """
-function view_fv(fv::GMTfv; cmap=:turbo, color=true, edges::Bool=false,
-				 geographic::Union{Bool,Nothing}=nothing,
-				 objname::AbstractString="",
-				 title::AbstractString="GMT FV Viewer)")
-	# --- STUB: resolve every kwarg to a CONCRETE value, then call the typed worker ----------
+# Resolve a GMTfv + colour options to the CONCRETE render arrays the C API takes — never `nothing`;
+# an empty array is the neutral element (a C NULL = "absent"). Shared by the new-window path
+# (`view_fv`/`_view_fv`) and the in-place 3-D Bodies path (`_promote_fv`, solids.jl):
+#   facergb -> explicit per-face RGB (direct colours, no colorbar)
+#   facez   -> per-face mean z       (faceted CPT colours that MATCH the colorbar)
+#   cz/crgb -> CPT control nodes     (for the z-mapped modes)
+# Returns (xyz, sides, indices, facergb, facez, cz, crgb, ncolor, bb, geog, zscale).
+function _fv_resolve(fv::GMTfv; cmap=:turbo, color=true, geographic::Union{Bool,Nothing}=nothing)
 	xyz, sides, indices = _fv_pack(fv)
 	isempty(sides) && error("GMTfv has no faces to render")
 	bb   = _fv_bbox(fv)
 	geog = geographic === nothing ? GMT.isgeog(fv) : Bool(geographic)
-	# Resolve colouring to CONCRETE arrays — never `nothing`. Empty = neutral (absent on the C side):
-	#   facergb -> explicit per-face RGB (direct colours, no colorbar)
-	#   facez   -> per-face mean z       (faceted CPT colours that MATCH the colorbar)
-	#   cz/crgb -> CPT control nodes     (for the z-mapped modes)
 	facergb = UInt8[];  facez = Float64[];  cz = Float64[];  crgb = Float64[];  ncolor = 0
 	(color === :explicit) && (facergb = _fv_facecolors(fv))
 	if isempty(facergb)                                        # z-mapped colouring (matches the bar)
@@ -112,6 +111,16 @@ function view_fv(fv::GMTfv; cmap=:turbo, color=true, edges::Bool=false,
 		(color === false) || (facez = _fv_facez(fv))          # true -> faceted per-face z; false -> smooth per-vertex
 	end
 	zscale = fv.zscale > 0 ? Float64(fv.zscale) : 1.0
+	return (xyz, sides, indices, facergb, facez, cz, crgb, ncolor, bb, geog, zscale)
+end
+
+function view_fv(fv::GMTfv; cmap=:turbo, color=true, edges::Bool=false,
+				 geographic::Union{Bool,Nothing}=nothing,
+				 objname::AbstractString="",
+				 title::AbstractString="GMT FV Viewer)")
+	# --- STUB: resolve every kwarg to a CONCRETE value, then call the typed worker ----------
+	xyz, sides, indices, facergb, facez, cz, crgb, ncolor, bb, geog, zscale =
+		_fv_resolve(fv; cmap=cmap, color=color, geographic=geographic)
 	return _view_fv(fv, xyz, sides, indices, facergb, facez, cz, crgb, ncolor,
 					bb[1], bb[2], bb[3], bb[4], bb[5], bb[6], geog, zscale, edges, String(title), String(objname))
 end

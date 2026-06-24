@@ -177,6 +177,8 @@ struct Scene {
 	bool   gridAdopted = false; // a real grid was dropped onto an imageOnly canvas (Background region /
 	                            // bare image) and adopted as the hover heightfield -> readout shows z,
 	                            // NOT pixel colour, even though the canvas itself stays imageOnly
+	bool   fvSolid = false;     // window's content is a body-button GMT solid (cube/sphere/torus/…) built
+	                            // in place by gmtvtk_promote_fv_h -> a later body click REPLACES it here
 	double sav_pos[3] = {0, 0, 0};
 	double sav_foc[3] = {0, 0, 0};
 	double sav_vup[3] = {0, 0, 1};
