@@ -36,7 +36,7 @@ Front-door dispatcher over the Qt + VTK viewers. `x` may be:
 - a `GMTfv`             -> [`view_fv`](@ref) (faceted z-colour + matching colorbar; `color=:explicit` for baked colours)
 - a `GMTdataset` / `Vector{GMTdataset}` -> points -> [`view_points`](@ref); polygons -> `view_fv(poly2fv(...))`
 - a `String`            -> `"grid"`/`"peaks"` demo or a grid file -> `view_grid`; else a named
-  solid from [`SOLIDS`](@ref) -> [`view_fv`](@ref)
+  solid from SOLIDS -> [`view_fv`](@ref)
 
 With **no argument**, `iview()` opens an empty drag-and-drop launcher window: drop a grid /
 image / table file (anything `GMT.gmtread` reads) onto it — or onto any open viewer window — to

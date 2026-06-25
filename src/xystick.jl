@@ -38,7 +38,7 @@ end
 Draw a **stick (vector) diagram**: at each `t` a vector is plotted from the y=0 baseline. Give the
 vectors as `(u, v)` components, or as `azimuth` degrees (oceanographic: 0° = up/North, clockwise)
 with optional `mag` (default 1). `scale` sizes the sticks (`:auto` ≈ 5 % of the time span per
-full-magnitude vector). Returns a [`QtXYPlot`](@ref); extra keywords (`xlabel`, `ylabel`, `xtime`,
+full-magnitude vector). Returns a QtXYPlot; extra keywords (`xlabel`, `ylabel`, `xtime`,
 `name`) pass through.
 
 ```julia

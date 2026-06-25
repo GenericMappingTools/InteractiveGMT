@@ -4,20 +4,6 @@
 # (eventloop.jl `_start_pump`) keeps the REPL alive — `gmtvtk_process_events` counts these windows
 # too. File > Open/Save and the menu route back here through the `_on_xy` callback.
 
-"""
-    xyplot(x, y; name="", color=nothing, linewidth=0, title="", xlabel="X", ylabel="Y") -> QtXYPlot
-
-Open a standalone **X,Y plot** window and draw the `(x, y)` series. `y` may be a matrix whose
-columns are separate lines sharing the same `x`. `color` accepts a name (`:red`, `"blue"`), a
-0–255 / 0–1 triple, or `nothing` for the default. `xlabel`/`ylabel` set the axis titles. Returns
-a live [`QtXYPlot`](@ref) handle; add more lines with [`add!`](@ref). Non-blocking.
-
-```julia
-t = range(0, 4π; length=400) |> collect
-p = xyplot(t, sin.(t); name="sin", title="demo", ylabel="amplitude")
-add!(p, t, cos.(t); name="cos", color=:blue)
-```
-"""
 # X-axis time modes -> the C `gmtvtk_xyplot_set_xtime` codes. X must be Unix epoch seconds.
 const _XTIME = Dict(:linear => 0, :date => 1, :date_ymd => 2, :time => 3, :decyear => 4, :doy => 5)
 
@@ -29,6 +15,20 @@ const _MARKER    = Dict(:none => 0, :cross => 1, :x => 1, :plus => 2, :square =>
 _style_code(d, v, what) = v === nothing ? -1 :
 	get(d, v, nothing) === nothing ? error("xyplot: unknown $what :$v (have $(sort(collect(keys(d)))))") : d[v]
 
+"""
+    xyplot(x, y; name="", color=nothing, linewidth=0, title="", xlabel="X", ylabel="Y") -> QtXYPlot
+
+Open a standalone **X,Y plot** window and draw the `(x, y)` series. `y` may be a matrix whose
+columns are separate lines sharing the same `x`. `color` accepts a name (`:red`, `"blue"`), a
+0–255 / 0–1 triple, or `nothing` for the default. `xlabel`/`ylabel` set the axis titles. Returns
+a live QtXYPlot handle; add more lines with add!. Non-blocking.
+
+```julia
+t = range(0, 4π; length=400) |> collect
+p = xyplot(t, sin.(t); name="sin", title="demo", ylabel="amplitude")
+add!(p, t, cos.(t); name="cos", color=:blue)
+```
+"""
 function xyplot(x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="", color=nothing,
                 linewidth::Real=0, linestyle=nothing, marker=nothing, markersize::Real=0,
                 title::AbstractString="",
@@ -126,7 +126,7 @@ end
 """
     add!(p::QtXYPlot, x, y; name="", color=nothing, linewidth=0) -> QtXYPlot
 
-Add another `(x, y)` line to an open X,Y plot window. Same keyword semantics as [`xyplot`](@ref).
+Add another `(x, y)` line to an open X,Y plot window. Same keyword semantics as xyplot.
 """
 function add!(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="",
               color=nothing, linewidth::Real=0, linestyle=nothing, marker=nothing, markersize::Real=0)

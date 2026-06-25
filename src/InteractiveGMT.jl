@@ -6,7 +6,7 @@ The viewer is a small C/C++ shared library (`deps/build/gmtvtk.dll`, built by `d
 driven through a tiny C API; this package is the Julia bridge. Calls are NON-BLOCKING: they
 return a live handle immediately and a Julia `Timer` pumps the Qt loop so the REPL stays usable.
 
-Public API: [`view_grid`](@ref), [`view_points`](@ref), [`view_fv`](@ref), [`f3dview`](@ref),
+Public API: [`view_grid`](@ref), [`view_points`](@ref), [`view_fv`](@ref), [`iview`](@ref),
 [`add!`](@ref), [`add_curtain!`](@ref), [`show_table`](@ref), [`selection`](@ref),
 [`poly2fv`](@ref), [`isalive`](@ref), [`save_png`](@ref), [`view_demo`](@ref).
 

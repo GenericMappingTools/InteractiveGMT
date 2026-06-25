@@ -5,8 +5,15 @@ DocMeta.setdocmeta!(InteractiveGMT, :DocTestSetup, :(using InteractiveGMT); recu
 
 # Add titles of sections and overrides page titles
 const titles = Dict(
-    # "10-tutorials" => "Tutorials", # example folder title
-    "91-developer.md" => "Developer docs",
+    "01-getting-started.md" => "Getting Started",
+    "10-grid-viewer.md" => "Grid Viewer",
+    "20-point-clouds.md" => "Point Clouds",
+    "30-solids.md" => "Solids and Meshes",
+    "40-xyplot.md" => "X,Y Plot Tool",
+    "50-utilities.md" => "Utilities",
+    "60-geography.md" => "Geography Tools",
+    "70-tools.md" => "Tools",
+    "95-reference.md" => "API Reference",
 )
 
 function recursively_list_pages(folder; path_prefix="")
@@ -60,7 +67,7 @@ end
 
 makedocs(;
     modules = [InteractiveGMT],
-    authors = ""Joaquim Luis" jluis@ualg.pt",
+    authors = "Joaquim Luis <jluis@ualg.pt>",
     repo = "https://github.com/joa-quim/InteractiveGMT.jl/blob/{commit}{path}#{line}",
     sitename = "InteractiveGMT.jl",
     format = Documenter.HTML(; canonical = "https://joa-quim.github.io/InteractiveGMT.jl"),

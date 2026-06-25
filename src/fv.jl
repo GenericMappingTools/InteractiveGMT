@@ -222,7 +222,7 @@ end
 	view_fv(name::AbstractString; color=true, cmap=:turbo, edges=false, geographic=nothing,
 			title="", solid_kwargs...)
 
-Show a NAMED GMT solid from the [`SOLIDS`](@ref) catalogue (`"cube"`, `"sphere"`, `"torus"`,
+Show a NAMED GMT solid from the SOLIDS catalogue (`"cube"`, `"sphere"`, `"torus"`,
 `"icosahedron"`, `"octahedron"`, `"dodecahedron"`, `"tetrahedron"`, `"cylinder"`, `"revolve"`,
 `"loft"`, `"extrude"`). The solid takes its OWN parameters — any kwarg that is NOT a viewer
 keyword is forwarded untouched to the GMT generator:
