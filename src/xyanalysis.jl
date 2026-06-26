@@ -375,11 +375,11 @@ end
 function _xy_col(plot::Ptr{Cvoid}, code::Int)
 	if code == -1
 		xy = _xy_get_series(plot, 0)
-		xy === nothing && return nothing
+		isempty(xy[1]) && return nothing
 		return (xy[1], nothing, "X")
 	end
 	xy = _xy_get_series(plot, code)
-	xy === nothing && return nothing
+	isempty(xy[1]) && return nothing
 	nm = _xy_series_name(plot, code); isempty(nm) && (nm = "series $code")
 	return (xy[2], xy[1], nm)
 end
@@ -484,7 +484,7 @@ function _on_xy_analysis(plot::Ptr{Cvoid}, cop::Cstring, sel::Cint)::Cvoid
 		# Pull the selected series straight from the C side (the live CURRENT page); the Julia mirror
 		# no longer tracks per-page series now that windows have pages/tabs.
 		xy = _xy_get_series(plot, s)
-		if xy === nothing
+		if isempty(xy[1])
 			_xy_log(plot, "Analysis '$op': could not read series #$s from the current page"; err=true)
 			return
 		end

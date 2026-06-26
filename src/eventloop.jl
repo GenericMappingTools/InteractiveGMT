@@ -51,7 +51,11 @@ function _ensure_callbacks()
 	                    ("geography",   _register_geography),
 	                    ("solid",       _register_solid),
 	                    ("tides",       _register_tides),
-	                    ("earthtide",   _register_earthtide))
+	                    ("earthtide",   _register_earthtide),
+	                    ("grdsample",   _register_grdsample),
+	                    ("gridmeta",    _register_gridmeta),
+	                    ("dimfun",      _register_dimfun),
+	                    ("nswing",      _register_nswing))
 		try
 			fn()
 		catch e

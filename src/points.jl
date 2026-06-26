@@ -51,18 +51,19 @@ function view_points(D; cmap=:turbo, pointsize::Real=4, pickcolor=(0.83, 0.83, 0
 end
 
 """
-	selection(fig::QtPoints) -> Matrix or nothing
+	selection(fig::QtPoints) -> Matrix
 
 Return a copy of the point-cloud rows currently selected with **Ctrl+right-drag** in the
-viewer (`x y z [...]`), or `nothing` if none are selected (or the window is closed).
+viewer (`x y z [...]`), or an EMPTY matrix (0 rows, same columns) if none are selected (or
+the window is closed). Test with `isempty`.
 """
 function selection(fig::QtPoints)
-	isalive(fig) || return nothing
+	isalive(fig) || return fig.D[1:0, :]
 	n = ccall(_fn(:gmtvtk_selection_count), Cint, (Ptr{Cvoid},), fig.h)
-	n <= 0 && return nothing
+	n <= 0 && return fig.D[1:0, :]
 	ids = Vector{Cint}(undef, n)
 	got = ccall(_fn(:gmtvtk_get_selection), Cint, (Ptr{Cvoid}, Ptr{Cint}, Cint), fig.h, ids, Cint(n))
-	got <= 0 && return nothing
+	got <= 0 && return fig.D[1:0, :]
 	rows = Int.(ids[1:got]) .+ 1            # 0-based C ids -> 1-based Julia rows
 	return fig.D[rows, :]
 end

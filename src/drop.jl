@@ -15,7 +15,7 @@ function _on_drop(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid
 	path = unsafe_string(cpath)
 	try
 		# Already shown in a live window -> raise that window and ignore the duplicate drop.
-		_open_window_for(path) !== nothing && return
+		_open_window_for(path) != C_NULL && return
 		data  = GMT.gmtread(path)
 		_record_recent(path, data)                             # remember it in File > Recent Files
 		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0

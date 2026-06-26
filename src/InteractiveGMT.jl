@@ -45,10 +45,14 @@ include("xystick.jl")    # stick (vector) diagrams for the X,Y tool (ecran 'stic
 include("drop.jl")
 include("basemap.jl")    # World Topo Tiles picker (ported from Mirone bg_map.m)
 include("tilestool.jl")  # Tools > Tiles Tool (ported from Mirone tiles_tool.m; mosaic via GMT.mosaic)
+include("dimfun.jl")     # grdsample Region box recompute (port of Mirone dim_funs.m)
+include("grdsample.jl")  # GMT > Resample (grdsample)
 include("bgregion.jl")   # File > Background region -> blank white 2-D map framed to W/E/S/N
 include("savefile.jl")   # File > Save Grid / Save Image -> gmtwrite (netCDF/Surfer) / gdalwrite
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
 include("solids.jl")     # 3-D Bodies toolbar flyout -> GMT solids (cube/sphere/torus/cylinder/…) via view_fv
+include("nswing.jl")     # Geophysics > NSWING tsunami (port of Mirone swan_options.m -> nswing exe)
+include("nested.jl")     # "Nested grids" rectangle tool: host-side blank-grid builder (nesting_sizes.m)
 
 export view_grid, view_image, view_points, view_fv, view_demo, iview,
        add!, add_curtain!, add_symbols!, show_table, selection, isalive,

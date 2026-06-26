@@ -295,15 +295,15 @@ function _xy_open_file(p::QtXYPlot, path)
 end
 
 # Pull series `sel` (0-based) of the window's CURRENT page straight from the C side (it owns the
-# vtkTables). Returns (x, y) Float64 vectors, or nothing if the handle/index is bad. With pages the
+# vtkTables). Returns (x, y) Float64 vectors; both EMPTY if the handle/index is bad. With pages the
 # Julia mirror no longer tracks per-page series, so Analysis / Save read the live page from here.
-function _xy_get_series(plot::Ptr{Cvoid}, sel::Integer)
+function _xy_get_series(plot::Ptr{Cvoid}, sel::Integer)::Tuple{Vector{Float64},Vector{Float64}}
 	n = ccall(_fn(:gmtvtk_xyplot_series_npoints), Cint, (Ptr{Cvoid}, Cint), plot, Cint(sel))
-	n <= 0 && return nothing
+	n <= 0 && return (Float64[], Float64[])
 	x = Vector{Float64}(undef, n); y = Vector{Float64}(undef, n)
 	got = ccall(_fn(:gmtvtk_xyplot_get_series), Cint,
 	            (Ptr{Cvoid}, Cint, Ptr{Float64}, Ptr{Float64}, Cint), plot, Cint(sel), x, y, Cint(n))
-	got <= 0 && return nothing
+	got <= 0 && return (Float64[], Float64[])
 	return (resize!(x, got), resize!(y, got))
 end
 
@@ -326,7 +326,7 @@ function _xy_save(p::QtXYPlot, sel::Int, path)
 	mats = GMTdataset[]
 	for i in idxs
 		xy = _xy_get_series(p.h, i)
-		xy === nothing && continue
+		isempty(xy[1]) && continue
 		push!(mats, GMT.mat2ds(hcat(xy[1], xy[2])))
 	end
 	isempty(mats) && return

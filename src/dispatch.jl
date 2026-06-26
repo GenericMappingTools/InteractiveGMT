@@ -82,7 +82,7 @@ function iview(name::AbstractString; kwargs...)
 	if isfile(name)
 		# Never open the same file twice: if it is already shown in a live window, raise that
 		# window and silently ignore this (and every later) request for the same path.
-		_open_window_for(name) !== nothing && return nothing
+		_open_window_for(name) != C_NULL && return nothing
 		data = GMT.gmtread(name)
 		_record_recent(name, data)
 		fig = iview(data; kwargs...)
@@ -101,18 +101,18 @@ const _OPEN_FILES = Dict{String,Ptr{Cvoid}}()
 
 _filekey(path::AbstractString) = try abspath(String(path)) catch; String(path) end
 
-# If `path` is already shown in a live window, raise that window and return its handle; else nothing
+# If `path` is already shown in a live window, raise that window and return its handle; else C_NULL
 # (pruning a stale entry whose window has since closed).
-function _open_window_for(path::AbstractString)
+function _open_window_for(path::AbstractString)::Ptr{Cvoid}
 	key = _filekey(path)
-	h = get(_OPEN_FILES, key, nothing)
-	h === nothing && return nothing
+	h = get(_OPEN_FILES, key, C_NULL)
+	h === C_NULL && return C_NULL
 	if ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), h) != 0
 		ccall(_fn(:gmtvtk_raise), Cvoid, (Ptr{Cvoid},), h)
 		return h
 	end
 	delete!(_OPEN_FILES, key)
-	return nothing
+	return C_NULL
 end
 
 # Remember that `path` is now shown in window `handle` (so a repeat open is ignored).
