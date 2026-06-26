@@ -513,7 +513,7 @@ static void polyFinalize(Scene* s, std::vector<std::array<double,3>> verts, bool
 	if (pg.nestKind == 1) {
 		nestReflow(s);                     // snap the new nested rectangle to its parent's grid
 		int nnest = 0; for (auto& p : s->polys) if (p.nestKind == 1) ++nnest;
-		if (nnest == 1 && s->objDock) { s->objDock->show(); s->objDock->raise(); }   // first one: reveal where things land
+		if (nnest == 1) unfoldSceneObjects(s);   // first one: reveal AND un-fold the dock so it's visible
 	}
 	// Finishing ends the draw session: untoggle the toolbar button (-> polygonSetMode(false),
 	// which restores the arrow cursor and clears draw state). Falls back if there's no button.
@@ -662,22 +662,65 @@ static void nestNewChild(Scene* s) {
 	nestReflow(s);
 }
 
-// Remove a finished polygon (identified by its line actor): drop the actor, erase it, fix the
-// edit index, and refresh the Scene Objects list. Called from the unified line menu's "Delete".
-static void polygonDelete(Scene* s, vtkActor* lineActor) {
+// Remove a single polygon (by its line actor): drop the actor, erase it, fix the edit index.
+static void polygonEraseOne(Scene* s, vtkActor* lineActor) {
 	for (int i = 0; i < (int)s->polys.size(); ++i) {
 		if (s->polys[i].line.Get() != lineActor) continue;
 		if (s->ren && s->polys[i].line) s->ren->RemoveActor(s->polys[i].line);
-		const bool wasNested = (s->polys[i].nestKind == 1);
 		if (s->polyEdit == i)      polyExitEdit(s);      // was being edited -> drop the handles
 		else if (s->polyEdit > i)  s->polyEdit--;        // keep the edit index valid past the erase
 		s->polys.erase(s->polys.begin() + i);
-		applyVectorStacking(s);                          // renormalize the shared pile after the erase
+		return;
+	}
+}
+
+// Delete the "Nested grid N" blank grid extra (if it was ever created), removing its actors.
+static void nestDeleteGrid(Scene* s, int chainIdx1) {
+	const std::string gn = "Nested grid " + std::to_string(chainIdx1);
+	for (int e = (int)s->extras.size() - 1; e >= 0; --e) {
+		if (s->extras[e].name != gn) continue;
+		if (s->ren && s->extras[e].actor) s->ren->RemoveActor(s->extras[e].actor);
+		if (s->ren && s->extras[e].drape) s->ren->RemoveActor(s->extras[e].drape);
+		s->extras.erase(s->extras.begin() + e);
+	}
+}
+
+// Remove a finished polygon (identified by its line actor). Called from the unified line menu's
+// "Delete". A NESTED-grid rectangle cascades: deleting it also deletes every DESCENDANT rectangle
+// (the nestKind==1 polygons after it in the chain) and their "Nested grid N" blank grids — only the
+// ancestor rectangles (and their grids) remain. An ordinary polygon is a plain single-shape delete.
+static void polygonDelete(Scene* s, vtkActor* lineActor) {
+	int pi = -1;
+	for (int i = 0; i < (int)s->polys.size(); ++i) if (s->polys[i].line.Get() == lineActor) { pi = i; break; }
+	if (pi < 0) return;
+
+	if (s->polys[pi].nestKind != 1) {                    // ordinary shape: just drop it
+		polygonEraseOne(s, lineActor);
+		applyVectorStacking(s);
 		rebuildSceneObjects(s);
-		if (wasNested) nestReflow(s);                    // dropping a level reparents the survivors -> re-snap
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return;
 	}
+
+	// Nested rectangle: find its 0-based position in the chain, then cascade to it + all descendants.
+	int kpos = 0;
+	for (int j = 0; j < pi; ++j) if (s->polys[j].nestKind == 1) ++kpos;
+	int chainTotal = 0; for (auto& p : s->polys) if (p.nestKind == 1) ++chainTotal;
+
+	// Blank grids of this rect + every descendant: chain index (1-based) kpos+1 .. chainTotal.
+	for (int ci = kpos + 1; ci <= chainTotal; ++ci) nestDeleteGrid(s, ci);
+
+	// Descendant rectangles = this one + every nested rect after it. Collect their actors, then erase.
+	std::vector<vtkActor*> kill;
+	{ int seen = 0;
+	  for (auto& p : s->polys) { if (p.nestKind != 1) continue; if (seen >= kpos && p.line) kill.push_back(p.line.Get()); ++seen; } }
+	for (vtkActor* a : kill) polygonEraseOne(s, a);
+
+	applyVectorStacking(s);
+	applyGridStacking(s);
+	nestReflow(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
 // Toolbar toggle: enter/leave draw mode. Switching cancels any in-progress draw and edit.

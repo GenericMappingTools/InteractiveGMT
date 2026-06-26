@@ -1161,6 +1161,15 @@ static void toggleShadingFold(Scene *s) {
 		s->shadeFoldBar->onClick();
 }
 
+// Reveal + UN-FOLD the Scene Objects dock (called when the first nested rectangle lands, so the user
+// sees where the rectangle / its grids show up). Only un-folds if currently folded; no-op otherwise.
+static void unfoldSceneObjects(Scene *s) {
+	if (!s) return;
+	if (s->objDock) { s->objDock->show(); s->objDock->raise(); }
+	if (s->objFoldBar && s->objFoldBar->folded && s->objFoldBar->onClick)
+		s->objFoldBar->onClick();
+}
+
 // Polygon draw/edit tool (defined in 85_polygon.cpp, #included after this file). The toolbar
 // button toggles draw mode via polygonSetMode; the mouse gestures are driven from GLView.
 static void polygonSetMode(Scene* s, bool on);
