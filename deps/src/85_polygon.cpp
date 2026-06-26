@@ -370,6 +370,27 @@ static void polyRectCorners(const double a[3], const double b[3], std::vector<st
 	out = { { a[0], a[1], a[2] }, { b[0], a[1], a[2] }, { b[0], b[1], b[2] }, { a[0], b[1], b[2] } };
 }
 
+// A polygon is a rectangle if it was drawn with a rect tool (isRect) OR it is a nested-grids
+// rectangle (nestKind==1). Single source of truth — every nested rect, whatever the creation
+// path (toolbar draw, chain refine, reflow split), is a rectangle and edits must keep it so.
+static inline bool polyIsRect(const Polygon& pg) { return pg.isRect || pg.nestKind == 1; }
+
+// Drag corner `i` of a rectangle to (wx,wy) while KEEPING it axis-aligned. The ring is the 4
+// corners (+ closing dup) laid out by polyRectCorners: v0=(ax,ay) v1=(bx,ay) v2=(bx,by) v3=(ax,by),
+// so corner i and its opposite (i+2)%4 are the two free diagonal corners. We anchor the opposite
+// corner Q and rebuild the other three from the dragged corner P=(wx,wy): the two neighbours take
+// the mixed (Q.x,P.y)/(P.x,Q.y) coords, the split flipping with i's parity (even/odd winding).
+static void rectDragCorner(Polygon& pg, int i, double wx, double wy) {
+	if (pg.v.size() < 4 || i < 0 || i > 3) return;
+	const int op = (i + 2) % 4;
+	const double qx = pg.v[op][0], qy = pg.v[op][1];
+	const double pz = pg.v[i][2];
+	pg.v[i] = { wx, wy, pz };
+	if (i % 2 == 0) { pg.v[(i+1)%4] = { qx, wy, pg.v[(i+1)%4][2] }; pg.v[(i+3)%4] = { wx, qy, pg.v[(i+3)%4][2] }; }
+	else            { pg.v[(i+1)%4] = { wx, qy, pg.v[(i+1)%4][2] }; pg.v[(i+3)%4] = { qx, wy, pg.v[(i+3)%4][2] }; }
+	if (pg.closed && pg.v.size() >= 2) pg.v.back() = pg.v.front();   // keep the closing dup in sync
+}
+
 // Circle (in the TRUE x,y plane) centred at c, passing through edge point e, as N corner points.
 static void polyCircleCorners(const double c[3], const double e[3], std::vector<std::array<double,3>>& out) {
 	const double r = std::hypot(e[0] - c[0], e[1] - c[1]);
@@ -496,6 +517,7 @@ static int polyHitHandle(Scene* s, int x, int y, double tol) {
 static void polyFinalize(Scene* s, std::vector<std::array<double,3>> verts, bool closed, const char* prefix) {
 	Polygon pg; pg.v = std::move(verts); pg.closed = closed;
 	if (std::string(prefix) == "Nested rectangle") pg.nestKind = 1;   // special "Nested grids" rectangle
+	if (std::string(prefix) == "rectangle" || pg.nestKind == 1) pg.isRect = true;   // rect tools: edits keep it axis-aligned
 	if (closed && pg.v.size() >= 2 && !(pg.v.front() == pg.v.back()))
 		pg.v.push_back(pg.v.front());      // close the ring (first == last)
 	const std::string pre = std::string(prefix) + " ";   // number PER type: "polygon 1", "rectangle 1", ...
@@ -982,13 +1004,17 @@ static bool polygonHandleMove(Scene* s, int x, int y) {
 		double w[3];
 		if (polyPickWorld(s, x, y, w)) {
 			Polygon& pg = s->polys[s->polyEdit];
-			pg.v[s->polyDragVert] = { w[0], w[1], w[2] };
-			const int n = (int)pg.v.size();
-			// For a CLOSED ring (v[0] == v[n-1]) moving vertex 0 must carry the closing point with it
-			// so they never decouple. (Check AFTER assigning v[0]: comparing front()==back() here would
-			// already be false, which is the bug that let them split.) Open polylines have no dup.
-			if (pg.closed && s->polyDragVert == 0 && n >= 2)
-				pg.v[n - 1] = pg.v[0];
+			if (polyIsRect(pg)) {                            // rectangle: keep it axis-aligned (carry the 2 neighbours)
+				rectDragCorner(pg, s->polyDragVert, w[0], w[1]);
+			} else {
+				pg.v[s->polyDragVert] = { w[0], w[1], w[2] };
+				const int n = (int)pg.v.size();
+				// For a CLOSED ring (v[0] == v[n-1]) moving vertex 0 must carry the closing point with it
+				// so they never decouple. (Check AFTER assigning v[0]: comparing front()==back() here would
+				// already be false, which is the bug that let them split.) Open polylines have no dup.
+				if (pg.closed && s->polyDragVert == 0 && n >= 2)
+					pg.v[n - 1] = pg.v[0];
+			}
 			polyRebuildLine(s, pg);
 			polyRebuildHandles(s);
 			s->widget->renderWindow()->Render();

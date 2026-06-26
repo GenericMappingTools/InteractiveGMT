@@ -75,6 +75,7 @@ struct Polygon {
 	vtkSmartPointer<vtkPolyData> linePD;     // its geometry (rebuilt as vertices move)
 	std::string name;                        // label shown in the Scene Objects panel ("polygon N")
 	bool closed = true;                      // closed ring (polygon/rect/circle) vs open chain (polyline)
+	bool isRect = false;                     // drawn with a rectangle tool (SH_Rect/SH_RectN): vertex edits stay axis-aligned
 	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
 	int    nestKind = 0;                     // 0 = ordinary shape; 1 = "Nested grids" rectangle (special menu)
 	double nestXi = 0, nestYi = 0;           // child cell sizes (0 = inherit parent inc; resolved by nestReflow)
