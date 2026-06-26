@@ -243,7 +243,7 @@ static void textLabelMenu(Scene* s, vtkTextActor3D* act, const QPoint& globalPos
 // what kind of element a row is (surface / image / line / points / curtain / polygon / text /
 // colourbar / profile). Drawn into a 16x16 transparent pixmap (matches the small checkbox).
 enum ObjIcon { IC_Surface, IC_Image, IC_Line, IC_Points, IC_Curtain,
-               IC_Polygon, IC_Polyline, IC_Rect, IC_Circle, IC_Text, IC_ColorBar, IC_Profile };
+               IC_Polygon, IC_Polyline, IC_Rect, IC_Circle, IC_Text, IC_ColorBar, IC_Profile, IC_NestRect };
 
 static QPixmap makeObjectIcon(int kind) {
 	// Drawn in a 16-unit coordinate space but rasterised at high DPI (supersampled) so the glyph
@@ -334,6 +334,14 @@ static QPixmap makeObjectIcon(int kind) {
 	case IC_Circle: {                                          // circle outline, light fill
 		p.setPen(QPen(QColor(40, 40, 40), 1.4)); p.setBrush(QColor(255, 200, 120, 150));
 		p.drawEllipse(QPointF(8, 8.5), 6, 6);
+		break;
+	}
+	case IC_NestRect: {                                        // "Nested grids": three concentric thin rects
+		p.setPen(QPen(QColor(40, 40, 40), 0.8, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+		p.setBrush(Qt::NoBrush);
+		p.drawRect(QRectF(1.5, 2.5, 13.0, 11.0));   // outer
+		p.drawRect(QRectF(4.0, 4.5,  8.0,  7.0));   // middle
+		p.drawRect(QRectF(6.5, 6.5,  3.0,  3.0));   // inner
 		break;
 	}
 	case IC_Text: {
@@ -521,15 +529,102 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
+// ---- GRID pile draw-order -------------------------------------------------------------------
+// The base relief surface + every dropped GRID extra form a pile whose order decides who draws on
+// top where grids overlap (e.g. flat nested-grid footprints sitting over the relief, or two grids
+// at the same z). Realised with polygon offset, exactly like the vector pile. NOT for images (they
+// have their own zpos stacking) and NOT for the nested rectangles (those carry no stacking).
+struct GridItem { std::vector<vtkActor*> actors; int* stack; };
+
+static std::vector<GridItem> gatherGridItems(Scene* s) {
+	std::vector<GridItem> v;
+	std::vector<vtkActor*> base = surfActors(s);
+	if (!base.empty()) v.push_back({ base, &s->surfStack });     // the base relief is part of the pile
+	for (auto& ex : s->extras) {
+		if (ex.isImage || !ex.actor) continue;
+		std::vector<vtkActor*> a = { ex.actor.Get() };
+		if (ex.drape) a.push_back(ex.drape.Get());
+		v.push_back({ a, &ex.gstack });
+	}
+	return v;
+}
+
+// Normalize ranks to 0..n-1 by current `stack`, then map rank -> polygon offset (k=0 bottom .. on top).
+static void applyGridStacking(Scene* s) {
+	std::vector<GridItem> it = gatherGridItems(s);
+	const int n = (int)it.size();
+	if (n == 0) return;
+	std::vector<int> ord(n);
+	for (int i = 0; i < n; ++i) ord[i] = i;
+	std::stable_sort(ord.begin(), ord.end(), [&](int a, int b) { return *it[a].stack < *it[b].stack; });
+	for (int k = 0; k < n; ++k) {
+		*it[ord[k]].stack = k;                              // 0..n-1 (survives deletes)
+		const double u = -k * 4000.0;                       // more negative = nearer camera = drawn on top
+		for (vtkActor* a : it[ord[k]].actors)
+			if (vtkPolyDataMapper* mp = vtkPolyDataMapper::SafeDownCast(a->GetMapper()))
+				mp->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, u);
+	}
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Move the grid owning *stackPtr through the pile (op: 0=top, 1=bottom, 2=up, 3=down). Mirrors restackVector.
+static void restackGrid(Scene* s, int* stackPtr, int op) {
+	std::vector<GridItem> it = gatherGridItems(s);
+	const int n = (int)it.size();
+	if (n < 2 || !stackPtr) return;
+	std::vector<int> ord(n);
+	for (int i = 0; i < n; ++i) ord[i] = i;
+	std::stable_sort(ord.begin(), ord.end(), [&](int a, int b) { return *it[a].stack < *it[b].stack; });
+	int pos = -1;
+	for (int k = 0; k < n; ++k) if (it[ord[k]].stack == stackPtr) { pos = k; break; }
+	if (pos < 0) return;
+	int dest = (op == 0) ? n - 1 : (op == 1) ? 0 : (op == 2) ? std::min(pos + 1, n - 1) : std::max(pos - 1, 0);
+	if (dest == pos) return;
+	const int moved = ord[pos];
+	ord.erase(ord.begin() + pos);
+	ord.insert(ord.begin() + dest, moved);
+	for (int k = 0; k < n; ++k) *it[ord[k]].stack = k;
+	applyGridStacking(s);
+}
+
+// Append the 4 grid-pile stacking actions to a grid row's menu, wired to *stackPtr. Enabled only when
+// there are 2+ grids (base relief counts) to order against. Shared by the base surface + extra grids.
+static void addGridStackActions(Scene* s, QMenu& m, int* stackPtr) {
+	const int nGrids = (int)gatherGridItems(s).size();
+	QAction* aTop = m.addAction("Place on top");
+	QAction* aBot = m.addAction("Place at bottom");
+	QAction* aUp  = m.addAction("Stack up");
+	QAction* aDn  = m.addAction("Stack down");
+	for (QAction* a : { aTop, aBot, aUp, aDn }) a->setEnabled(nGrids > 1);
+	QObject::connect(aTop, &QAction::triggered, [s, stackPtr]() { restackGrid(s, stackPtr, 0); rebuildSceneObjects(s); });
+	QObject::connect(aBot, &QAction::triggered, [s, stackPtr]() { restackGrid(s, stackPtr, 1); rebuildSceneObjects(s); });
+	QObject::connect(aUp,  &QAction::triggered, [s, stackPtr]() { restackGrid(s, stackPtr, 2); rebuildSceneObjects(s); });
+	QObject::connect(aDn,  &QAction::triggered, [s, stackPtr]() { restackGrid(s, stackPtr, 3); rebuildSceneObjects(s); });
+}
+
+// Properties menu for the BASE relief surface row: Save + grid-pile stacking (the base is the bottom
+// grid by default but can be re-ordered against dropped / nested grids).
+static void surfaceObjectMenu(Scene* s, const QPoint& gp) {
+	const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
+	QMenu m(s->widget);
+	QAction* aSave = m.addAction("Save grid…");
+	m.addSeparator();
+	addGridStackActions(s, m, &s->surfStack);
+	QAction* c = m.exec(gp);
+	if (c == aSave) saveObjectDialog(s, "grid", nm);
+}
+
 // Properties menu for a dropped GRID surface (its Scene Objects row). EVERY added element must carry
-// a handle menu — for a grid that is: save it to disk, or delete it from the scene. Reached by a
-// left- OR right-click on the row label.
+// a handle menu — for a grid that is: save it to disk, stack it in the grid pile, or delete it.
+// Reached by a left- OR right-click on the row label.
 static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	int idx = extraIndexOfActor(s, actor);
 	if (idx < 0) return;
 	const QString nm = QString::fromStdString(s->extras[idx].name);
 	QMenu m(s->widget);
 	QAction *aSave  = m.addAction("Save grid…");
+	m.addSeparator();
+	addGridStackActions(s, m, &s->extras[idx].gstack);   // grid-pile draw order (base relief + grids)
 	m.addSeparator();
 	QAction *aDel   = m.addAction("Delete grid");
 	QAction *c = m.exec(g);
@@ -635,8 +730,8 @@ static void rebuildSceneObjects(Scene *s) {
 			makeRow(nm, IC_Surface, sp->GetVisibility() != 0,
 			        [sp](bool on) { sp->SetVisibility(on ? 1 : 0); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
-			        "Left-click to fold / un-fold the Shading panel · right-click to save",
-			        saveCtx("grid", nm));
+			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking",
+			        [s](const QPoint& g) { surfaceObjectMenu(s, g); });
 		}
 	}
 	if (s->drape) {
@@ -671,7 +766,8 @@ static void rebuildSceneObjects(Scene *s) {
 	for (auto& pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
 		LineRef lr{ LK_Polygon, pg.line };
 		const QString nm = QString::fromStdString(pg.name);   // name is prefixed per type by polyFinalize
-		int ic = !pg.closed              ? IC_Polyline
+		int ic = pg.nestKind == 1        ? IC_NestRect
+		       : !pg.closed              ? IC_Polyline
 		       : nm.startsWith("rect")   ? IC_Rect
 		       : nm.startsWith("circle") ? IC_Circle
 		                                 : IC_Polygon;

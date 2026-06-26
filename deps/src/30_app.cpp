@@ -61,6 +61,35 @@ static JuliaGeoFn g_juliaGeo = nullptr;
 typedef void (*JuliaSolidFn)(void* scene, const char* name);
 static JuliaSolidFn g_juliaSolid = nullptr;
 
+// grdsample tool (GMT menu). Hands "input;output;I;R;n;r;T" to Julia:
+// input=input grid, output=output filename, I=inc, R=W/E/S/N, n=interp (+c for clipping),
+// r=registration (g/p), T=toggle (1/0). Julia runs GMT.grdsample and views the result.
+typedef void (*JuliaGrdsampleFn)(void* scene, const char* params);
+static JuliaGrdsampleFn g_juliaGrdsample = nullptr;
+
+// NSWING tsunami modelling tool (Geophysics menu). Port of Mirone's swan_options.m driving the nswing
+// executable. The dialog (NswingDialog, 70_window.cpp) hands a newline-separated "key=value" block to
+// Julia (g_juliaNswing), which assembles the nswing command line (-G/-Z/-A/-n, -M, -X, -N, -t, …) and
+// launches it. nullptr -> the RUN button reports "callback not registered".
+typedef void (*JuliaNswingFn)(void* scene, const char* params);
+static JuliaNswingFn g_juliaNswing = nullptr;
+
+// grdsample "OR Ref grid" picker (and grid-metadata prefill). Given a grid/image path, Julia
+// gmtreads its header and returns "W/E/S/N/xinc/yinc/nx/ny" (empty string on failure) so the
+// dialog can fill the Griding Line Geometry boxes. The returned pointer is owned by Julia (a
+// module-global buffer rooted until the next call); C++ copies it immediately, never frees it.
+typedef const char* (*JuliaGridMetaFn)(const char* path);
+static JuliaGridMetaFn g_juliaGridMeta = nullptr;
+
+// grdsample Region box cross-field recompute (port of Mirone's dim_funs.m, implemented in Julia).
+// Called as fn(which, state) when one of the 8 geometry boxes is edited:
+//   which = "xMin|xMax|yMin|yMax|xInc|yInc|nCols|nRows"
+//   state = "xMin/xMax/yMin/yMax/xInc/yInc/nCols/nRows/oneOrZero/xMinOr/xMaxOr/yMinOr/yMaxOr/dms"
+// Returns the 8 recomputed fields "xMin/xMax/yMin/yMax/xInc/yInc/nCols/nRows" (same Julia-owned
+// buffer convention as JuliaGridMetaFn — C++ copies immediately, never frees).
+typedef const char* (*JuliaDimFunFn)(const char* which, const char* state);
+static JuliaDimFunFn g_juliaDimFun = nullptr;
+
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a
 // short format code (nc/surfer/gtiff/jp2/erdas/envi for grids; those + jpg/png/tif/bmp for images);

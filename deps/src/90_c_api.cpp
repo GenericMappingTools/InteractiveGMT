@@ -366,6 +366,24 @@ GMTVTK_API int gmtvtk_get_selection(void* handle, int* out, int n) {
 	return k;
 }
 
+// Set the visibility of an extra object (dropped/added grid or image) found by its Scene Objects
+// name. Used to add a "Nested grid N" blank grid HIDDEN: it still gets a (unchecked) Scene Objects
+// row, but its surface is not drawn. Re-renders + rebuilds the panel so the checkbox tracks it.
+GMTVTK_API int gmtvtk_set_object_visible(void* handle, const char* name, int vis) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name)
+		return 0;
+	for (auto& ex : s->extras) {
+		if (ex.name != name) continue;
+		if (ex.actor) ex.actor->SetVisibility(vis ? 1 : 0);
+		if (ex.drape) ex.drape->SetVisibility(vis ? 1 : 0);
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return 1;
+	}
+	return 0;
+}
+
 // Add a GMTdataset overlay to the most-recent window (call right after gmtvtk_view_grid).
 // `xyz` = npts triples (x,y,z) in true data coords; `segoff` = nseg+1 segment offsets;
 // mode 0 = points, 1 = polylines. rgb in 0..1; linewidth/pointsize in px (<=0 = default).
@@ -622,15 +640,15 @@ GMTVTK_API void gmtvtk_set_cpt(void* handle, const double* cz, const double* crg
 
 // Set the window's coordinate reference system (all three interchangeable forms — PROJ4 / WKT /
 // EPSG). Julia resolves them via GMT.jl and pushes them here right after the window opens. Storing
-// any of them marks the data as referenced and reveals the Geography menu (hidden by default since
-// it needs a reference frame); an all-empty CRS hides it again.
+// any of them marks the data as referenced and enables the Geography menu (disabled by default since
+// it needs a reference frame); an all-empty CRS disables it again.
 GMTVTK_API void gmtvtk_set_crs(void* handle, const char* proj4, const char* wkt, int epsg) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	s->crsProj4 = proj4 ? proj4 : "";
 	s->crsWkt   = wkt   ? wkt   : "";
 	s->crsEpsg  = epsg;
-	if (s->geoMenu) s->geoMenu->menuAction()->setVisible(s->hasCRS());
+	if (s->geoMenu) s->geoMenu->menuAction()->setEnabled(s->hasCRS());
 }
 
 // Close a window programmatically (WA_DeleteOnClose -> destroy + bookkeeping). Used to retire an
@@ -743,6 +761,34 @@ GMTVTK_API void gmtvtk_set_geography_callback(JuliaGeoFn fn) {
 // flyout; Julia builds the named GMTfv via SOLIDS and opens it with view_fv. nullptr to detach.
 GMTVTK_API void gmtvtk_set_solid_callback(JuliaSolidFn fn) {
 	g_juliaSolid = fn;
+}
+
+// Register the grdsample callback (GMT menu). `fn` (Julia @cfunction, signature JuliaGrdsampleFn)
+// is called with (scene, "input;output;I;R;n;r;T;S") when the user runs the grdsample dialog: scene
+// is the receiving window (for "selected" input + adding the result as a layer), S the source
+// element's Scene Objects label. nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdsample_callback(JuliaGrdsampleFn fn) {
+	g_juliaGrdsample = fn;
+}
+
+// Register the NSWING tsunami callback (Geophysics menu). `fn` (Julia @cfunction, JuliaNswingFn) is
+// called with (scene, "key=value\n…") when the user hits RUN in the NSWING dialog: scene is the
+// receiving window, the block carries every field (grids, output mode/name, -M/-Z/-X/-N/-t/…).
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_nswing_callback(JuliaNswingFn fn) {
+	g_juliaNswing = fn;
+}
+
+// Register the grid-metadata callback used by the grdsample dialog's "OR Ref grid" picker.
+// fn(path) returns "W/E/S/N/xinc/yinc/nx/ny" (or "" on failure). nullptr to detach.
+GMTVTK_API void gmtvtk_set_gridmeta_callback(JuliaGridMetaFn fn) {
+	g_juliaGridMeta = fn;
+}
+
+// Register the grdsample Region cross-field recompute callback (Mirone dim_funs.m, in Julia).
+// fn(which, state) -> 8 recomputed "xMin/xMax/yMin/yMax/xInc/yInc/nCols/nRows" fields. nullptr to detach.
+GMTVTK_API void gmtvtk_set_dimfun_callback(JuliaDimFunFn fn) {
+	g_juliaDimFun = fn;
 }
 
 // Register the File > Save Grid / Save Image callback. `fn` (Julia @cfunction, signature
@@ -1006,8 +1052,9 @@ GMTVTK_API int gmtvtk_add_surface_h(void* handle, const float* z, int nx, int ny
 
 	ex.name = (name && name[0]) ? name : ("Object " + std::to_string((int)s->extras.size() + 1));
 	const bool addedGrid = !ex.isImage;
+	if (addedGrid) ex.gstack = ++s->gridSeq;  // newest grid lands on top of the grid pile
 	s->extras.push_back(ex);
-	if (addedGrid) applyShading(s);          // shade the new grid to match the current Shading dock state
+	if (addedGrid) { applyShading(s); applyGridStacking(s); }   // shade + order the new grid in the pile
 	rebuildSceneObjects(s);
 	if (!s->surf && s->extras.size() == 1)   // first content dropped into an empty window: frame it
 		s->ren->ResetCamera();

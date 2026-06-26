@@ -710,6 +710,450 @@ struct FoldTitleBar : QWidget {
 	}
 };
 
+// ============================================================================================
+// grdsample dialog (GMT > Resample). Port of Mirone's grdsample tool.
+// On OK, hands "input;output;I;R;n;r;T" to Julia.
+// ============================================================================================
+class GrdsampleDialog : public QDialog {
+public:
+	QLineEdit *inpEdit, *outEdit;
+	QLineEdit *xMin, *xMax, *xInc, *xN;   // Griding Line Geometry — X Direction row
+	QLineEdit *yMin, *yMax, *yInc, *yN;   // Y Direction row
+	QComboBox *interpCombo;
+	QComboBox *regCombo = nullptr;     // gridline/pixel (also feeds one_or_zero to the dim-fun)
+	QCheckBox *clipCheck;
+	QRadioButton *regGrid, *regPixel;
+	QCheckBox *toggleCheck;
+	// Original (source) limits — caps for the Region boxes (sampled grid can't exceed the input).
+	// Set by fillGeometry from the loaded grid / ref grid; empty = unconstrained.
+	QString xMinOr, xMaxOr, yMinOr, yMaxOr;
+	bool dmsXinc = false, dmsYinc = false;   // last x/y inc typed in dd:mm:ss form (carried to Julia)
+	QLineEdit *refEdit;               // "OR Ref grid" — gmtread its header to fill the boxes
+	QToolButton *inpBtn = nullptr;    // Input grid "..." browse (disabled when a grid is loaded)
+	bool    useSelected = false;      // a grid is loaded -> input is the current window's element
+	QString srcName;                  // Scene Objects label of the loaded element (suffix source)
+	QString params;   // "input;output;I;R;n;r;T;S" on OK  (S = source element name)
+
+	// Fill the Griding Line Geometry boxes from "W/E/S/N/xinc/yinc/nx/ny" (8 slash-separated
+	// fields, as returned by g_juliaGridMeta or built from the current scene). Silent no-op on a
+	// malformed/empty string so a failed gmtread leaves the user's typed values untouched.
+	void fillGeometry(const QString &meta) {
+		const QStringList f = meta.split('/');
+		if (f.size() < 8) return;
+		xMin->setText(f[0]); xMax->setText(f[1]);
+		yMin->setText(f[2]); yMax->setText(f[3]);
+		xInc->setText(f[4]); yInc->setText(f[5]);
+		xN->setText(f[6]);   yN->setText(f[7]);
+		// The source extent caps the Region boxes (sampled grid can't exceed the input grid).
+		xMinOr = f[0]; xMaxOr = f[1]; yMinOr = f[2]; yMaxOr = f[3];
+	}
+
+	// Round-trip the Griding Line Geometry through the Julia dim-fun (port of Mirone's dim_funs.m):
+	// hand it which box changed + all current values + the source caps + registration; write back the
+	// 8 recomputed fields. Programmatic setText() does NOT re-fire editingFinished, so no recursion.
+	void runDimFun(const QString &which) {
+		if (!g_juliaDimFun) return;
+		const int oz = (regCombo && regCombo->currentData().toString() == "p") ? 0 : 1;
+		QString state = QString("%1/%2/%3/%4/%5/%6/%7/%8/%9/%10/%11/%12/%13/%14")
+			.arg(xMin->text().trimmed()).arg(xMax->text().trimmed())
+			.arg(yMin->text().trimmed()).arg(yMax->text().trimmed())
+			.arg(xInc->text().trimmed()).arg(yInc->text().trimmed())
+			.arg(xN->text().trimmed()).arg(yN->text().trimmed())
+			.arg(oz).arg(xMinOr).arg(xMaxOr).arg(yMinOr).arg(yMaxOr)
+			.arg(dmsXinc || dmsYinc ? 1 : 0);
+		const char *out = g_juliaDimFun(which.toUtf8().constData(), state.toUtf8().constData());
+		if (!out) return;
+		const QStringList r = QString::fromUtf8(out).split('/');
+		if (r.size() < 8) return;
+		xMin->setText(r[0]); xMax->setText(r[1]);
+		yMin->setText(r[2]); yMax->setText(r[3]);
+		xInc->setText(r[4]); yInc->setText(r[5]);
+		xN->setText(r[6]);   yN->setText(r[7]);
+	}
+
+	GrdsampleDialog(QWidget *parent, Scene *scene = nullptr) : QDialog(parent) {
+		setWindowTitle("grdsample");
+		setMinimumWidth(400);
+
+		auto *v = new QVBoxLayout(this);
+
+		// --- Input / Output grid files ---
+		auto fileRow = [this](const QString &label, QLineEdit *&edit, QToolButton *&btnOut,
+		                      const QString &filter) -> QLayout* {
+			auto *h = new QHBoxLayout();
+			h->addWidget(new QLabel(label));
+			edit = new QLineEdit(this);
+			edit->setMinimumWidth(250);
+			h->addWidget(edit);
+			auto *btn = new QToolButton(this);
+			btn->setText("...");
+			h->addWidget(btn);
+			btnOut = btn;
+			QObject::connect(btn, &QToolButton::clicked, this, [this, edit, filter]() {
+				QString path = QFileDialog::getOpenFileName(this, "Select grid file", "", filter);
+				if (!path.isEmpty()) edit->setText(path);
+			});
+			return h;
+		};
+
+		QToolButton *outBtn = nullptr;
+		v->addLayout(fileRow("Input grid:",  inpEdit, inpBtn, "Grid files (*.nc *.grd);;All files (*)"));
+		v->addLayout(fileRow("Output grid:", outEdit, outBtn, "Grid files (*.nc *.grd);;All files (*)"));
+
+		// A grid/image is already loaded in this window -> the input IS that element. Show its Scene
+		// Objects label grayed ("using <name>") and lock the input row; on Apply we send "selected".
+		if (scene && scene->surf && !scene->emptyStart) {
+			srcName = scene->surfName.empty()
+			            ? QString(scene->imageOnly ? "Image" : "Surface")
+			            : QString::fromStdString(scene->surfName);
+			useSelected = true;
+			inpEdit->setText("using " + srcName);
+			inpEdit->setReadOnly(true);
+			inpEdit->setEnabled(false);   // grayed
+			inpBtn->setEnabled(false);
+		}
+
+		// --- Griding Line Geometry (Mirone-style table) ---------------------------------------
+		// Two rows (X / Y Direction) × four columns (Min, Max, Spacing, # of lines), plus a "?"
+		// help button on the right. The cross-field recompute logic (edit one -> derive others)
+		// is wired separately once the Julia handler lands; here we only build the layout.
+		auto *geoGroup  = new QGroupBox("Griding Line Geometry", this);
+		auto *geoLayout = new QGridLayout();
+		geoLayout->setHorizontalSpacing(8);
+		geoLayout->setVerticalSpacing(4);
+		auto makeEdit = [this]() {
+			auto *e = new QLineEdit(this);   // no validator: accepts decimal AND dd:mm:ss (Julia validates)
+			e->setAlignment(Qt::AlignLeft);
+			e->setMinimumWidth(90);
+			return e;
+		};
+		xMin = makeEdit(); xMax = makeEdit(); xInc = makeEdit(); xN = makeEdit();
+		yMin = makeEdit(); yMax = makeEdit(); yInc = makeEdit(); yN = makeEdit();
+
+		// Column headers (row 0, cols 1..4), centered over their fields.
+		geoLayout->addWidget(new QLabel("Min"),        0, 1, Qt::AlignHCenter);
+		geoLayout->addWidget(new QLabel("Max"),        0, 2, Qt::AlignHCenter);
+		geoLayout->addWidget(new QLabel("Spacing"),    0, 3, Qt::AlignHCenter);
+		geoLayout->addWidget(new QLabel("# of lines"), 0, 4, Qt::AlignHCenter);
+		// X Direction row.
+		geoLayout->addWidget(new QLabel("X Direction"), 1, 0);
+		geoLayout->addWidget(xMin, 1, 1);
+		geoLayout->addWidget(xMax, 1, 2);
+		geoLayout->addWidget(xInc, 1, 3);
+		geoLayout->addWidget(xN,   1, 4);
+		// Y Direction row.
+		geoLayout->addWidget(new QLabel("Y Direction"), 2, 0);
+		geoLayout->addWidget(yMin, 2, 1);
+		geoLayout->addWidget(yMax, 2, 2);
+		geoLayout->addWidget(yInc, 2, 3);
+		geoLayout->addWidget(yN,   2, 4);
+		// "?" help button spanning both data rows on the far right.
+		auto *helpBtn = new QToolButton(this);
+		helpBtn->setText("?");
+		helpBtn->setToolTip("Edit any two of Min/Max/Spacing/# and the rest are derived.");
+		geoLayout->addWidget(helpBtn, 1, 5, 2, 1);
+
+		geoGroup->setLayout(geoLayout);
+		v->addWidget(geoGroup);
+
+		// --- OR Ref grid: pick a grid/image; gmtread its header to fill the geometry boxes -------
+		auto *refRow = new QHBoxLayout();
+		refRow->addWidget(new QLabel("OR Ref grid"));
+		refEdit = new QLineEdit(this);
+		refEdit->setToolTip("Pick a grid/image; its region, spacing and size fill the boxes above.");
+		refRow->addWidget(refEdit, 1);
+		auto *refBtn = new QToolButton(this);
+		refBtn->setText("...");
+		refRow->addWidget(refBtn);
+		auto loadRef = [this](const QString &path) {
+			if (path.isEmpty()) return;
+			refEdit->setText(path);
+			if (!g_juliaGridMeta) return;
+			const char *m = g_juliaGridMeta(path.toUtf8().constData());
+			if (m) fillGeometry(QString::fromUtf8(m));
+		};
+		QObject::connect(refBtn, &QToolButton::clicked, this, [this, loadRef]() {
+			loadRef(QFileDialog::getOpenFileName(this, "Select reference grid", "",
+			                                     "Grid/Image files (*.nc *.grd *.tif *.tiff);;All files (*)"));
+		});
+		QObject::connect(refEdit, &QLineEdit::editingFinished, this, [this, loadRef]() {
+			loadRef(refEdit->text().trimmed());
+		});
+		v->addLayout(refRow);
+
+		// Prefill the geometry from the window's currently loaded grid/image. Prefer the full-res
+		// data layer (gnx/gdx present); fall back to the render bbox + tile dims. No data -> blank.
+		if (scene) {
+			if (scene->gnx > 1 && scene->gny > 1) {
+				fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8")
+					.arg(scene->gx0).arg(scene->gx1).arg(scene->gy0).arg(scene->gy1)
+					.arg(scene->gdx).arg(scene->gdy).arg(scene->gnx).arg(scene->gny));
+			} else if (scene->x1 > scene->x0 && scene->y1 > scene->y0) {
+				fillGeometry(QString("%1/%2/%3/%4////")   // 8 fields: 4 limits + blank inc/size
+					.arg(scene->x0).arg(scene->x1).arg(scene->y0).arg(scene->y1));
+			}
+		}
+
+		// --- Interpolation + Clip ---
+		auto *interpRow = new QHBoxLayout();
+		interpRow->addWidget(new QLabel("Interpolation:"));
+		interpCombo = new QComboBox(this);
+		interpCombo->addItem("Nearest neighbor", "nearest");
+		interpCombo->addItem("Bilinear", "linear");
+		interpCombo->addItem("Bicubic", "cubic");
+		interpCombo->addItem("B-spline", "bspline");
+		interpCombo->setCurrentIndex(2);  // bicubic default
+		interpCombo->setToolTip("Interpolation method: bicubic (smooth), bilinear, nearest neighbor, B-spline");
+		interpCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+		interpRow->addWidget(interpCombo);          // sized to its content, not stretched
+		clipCheck = new QCheckBox("Clip", this);
+		clipCheck->setToolTip("Clip resampled values to input min/max range");
+		interpRow->addWidget(clipCheck);
+		interpRow->addStretch();
+		v->addLayout(interpRow);
+
+		// --- Registration ---
+		auto *regComboRow = new QHBoxLayout();
+		regComboRow->addWidget(new QLabel("Registration:"));
+		regCombo = new QComboBox(this);
+		regCombo->addItem("Gridline", "g");
+		regCombo->addItem("Pixel", "p");
+		regCombo->setToolTip("Grid registration: gridline (node on corners) or pixel (node centered)");
+		regCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+		regComboRow->addWidget(regCombo);           // sized to its content, not stretched
+		regComboRow->addStretch();
+		v->addLayout(regComboRow);
+
+		// --- Toggle ---
+		toggleCheck = new QCheckBox("Toggle registration", this);
+		toggleCheck->setToolTip("Switch between gridline and pixel registration");
+		v->addWidget(toggleCheck);
+
+		// Region cross-field recompute (Mirone dim_funs.m, now in Julia). Each box recomputes the
+		// others on edit; the @cfunction is fired on focus-out / Enter.
+		QObject::connect(xMin, &QLineEdit::editingFinished, this, [this]{ runDimFun("xMin"); });
+		QObject::connect(xMax, &QLineEdit::editingFinished, this, [this]{ runDimFun("xMax"); });
+		QObject::connect(yMin, &QLineEdit::editingFinished, this, [this]{ runDimFun("yMin"); });
+		QObject::connect(yMax, &QLineEdit::editingFinished, this, [this]{ runDimFun("yMax"); });
+		QObject::connect(xInc, &QLineEdit::editingFinished, this, [this]{ runDimFun("xInc"); });
+		QObject::connect(yInc, &QLineEdit::editingFinished, this, [this]{ runDimFun("yInc"); });
+		QObject::connect(xN,   &QLineEdit::editingFinished, this, [this]{ runDimFun("nCols"); });
+		QObject::connect(yN,   &QLineEdit::editingFinished, this, [this]{ runDimFun("nRows"); });
+
+		// --- Buttons (Apply / Close like Mirone) ---
+		auto *btnRow = new QHBoxLayout();
+		btnRow->addStretch();
+		auto *btnApply = new QPushButton("Apply", this);
+		auto *btnClose = new QPushButton("Close", this);
+		btnRow->addWidget(btnApply);
+		btnRow->addWidget(btnClose);
+		v->addLayout(btnRow);
+
+		QObject::connect(btnClose, &QPushButton::clicked, this, &QDialog::reject);
+		QObject::connect(btnApply, &QPushButton::clicked, this, [this]() {
+			QString xi = xInc->text().trimmed(), yi = yInc->text().trimmed();
+			QString I = xi;
+			if (!yi.isEmpty() && yi != xi) I = xi + "/" + yi;   // anisotropic spacing -> xinc/yinc
+			QString R = QString("%1/%2/%3/%4")
+			                .arg(xMin->text().trimmed()).arg(xMax->text().trimmed())
+			                .arg(yMin->text().trimmed()).arg(yMax->text().trimmed());
+			QString n = interpCombo->currentData().toString();
+			if (clipCheck->isChecked()) n += "+c";
+			QString r = regCombo->currentData().toString();
+			QString T = toggleCheck->isChecked() ? "1" : "0";
+			QString in = useSelected ? QString("selected") : inpEdit->text().trimmed();
+			params = QString("%1;%2;%3;%4;%5;%6;%7;%8")
+				         .arg(in)
+				         .arg(outEdit->text().trimmed())
+				         .arg(I).arg(R).arg(n).arg(r).arg(T).arg(srcName);
+			accept();
+		});
+	}
+};
+
+// ============================================================================================
+// NSWING tsunami modelling — port of Mirone's swan_options.m (src_figs/swan_options.m) driving the
+// `nswing` executable. A modal options dialog mirroring the original window: Source / Nest grids +
+// nesting level, output target (grids / ANUGA .sww / MOST .nc) + name stem, the per-field outputs
+// (surface / total water / Max water -M / 3D netCDF -Z / velocity / momentum), Manning friction -X,
+// maregraphs, and the run parameters (cycles -N, jump -J, time step -t, saving step). RUN assembles a
+// newline-separated "key=value" block and hands it to Julia (g_juliaNswing), which builds + launches
+// the nswing command line. First iteration — semantics will be refined. No Q_OBJECT (lambdas only).
+class NswingDialog : public QDialog {
+public:
+	QString params;                       // "key=value\n…" on RUN, else empty
+	QLineEdit *srcEdit, *nestEdit, *nameEdit, *manningEdit;
+	QLineEdit *maregInEdit, *maregOutEdit, *cumintEdit;
+	QLineEdit *cyclesEdit, *jumpEdit, *dtEdit, *grnEdit;
+	QComboBox *levelCombo;
+	QRadioButton *rGrids, *rAnuga, *rMost;
+	QRadioButton *rSurf, *rTotal;
+	QCheckBox *cMax, *c3D, *cVel, *cMom, *cMareg, *cGeog;
+	QString bcPath;                       // "Bordering": optional boundary-condition file (-B)
+
+	NswingDialog(QWidget *parent, Scene * /*scene*/ = nullptr) : QDialog(parent) {
+		setWindowTitle("NSWING tsunami options");
+		setMinimumWidth(420);
+		auto *v = new QVBoxLayout(this);
+
+		// a labelled file row: <label> [lineedit] [...]  (browse with the given filter)
+		auto fileRow = [this](const QString &label, QLineEdit *&edit, const QString &filter) -> QLayout* {
+			auto *h = new QHBoxLayout();
+			auto *lab = new QLabel(label, this); lab->setMinimumWidth(48);
+			h->addWidget(lab);
+			edit = new QLineEdit(this); edit->setMinimumWidth(240);
+			h->addWidget(edit);
+			auto *btn = new QToolButton(this); btn->setText("...");
+			h->addWidget(btn);
+			QObject::connect(btn, &QToolButton::clicked, this, [this, edit, filter]() {
+				QString p = QFileDialog::getOpenFileName(this, "Select file", "", filter);
+				if (!p.isEmpty()) edit->setText(p);
+			});
+			return h;
+		};
+
+		// --- Input grids: Source + Nest + nesting level -----------------------------------------
+		auto *gIn = new QGroupBox("Input grids", this);
+		auto *iv  = new QVBoxLayout(gIn);
+		iv->addLayout(fileRow("Source", srcEdit,  "Grid files (*.grd *.nc);;All files (*)"));
+		iv->addLayout(fileRow("Nest",   nestEdit, "Grid files (*.grd *.nc);;All files (*)"));
+		levelCombo = new QComboBox(gIn);
+		levelCombo->addItems({"0 -- level ready to use", "1", "2", "3", "4"});
+		levelCombo->setToolTip("Nesting level of the Nest grid (0 = no nesting / ready to use)");
+		iv->addWidget(levelCombo);
+		v->addWidget(gIn);
+
+		// --- Bordering: pick an (experimental) boundary-condition file (-B) ----------------------
+		auto *btnBorder = new QPushButton("Bordering", this);
+		btnBorder->setToolTip("Select a boundary-condition ASCII file (nswing -B, experimental)");
+		QObject::connect(btnBorder, &QPushButton::clicked, this, [this, btnBorder]() {
+			QString p = QFileDialog::getOpenFileName(this, "Select boundary-condition file", "",
+			                                         "BC files (*.dat *.txt);;All files (*)");
+			if (!p.isEmpty()) { bcPath = p; btnBorder->setText("Bordering: " + QFileInfo(p).fileName()); }
+		});
+		v->addWidget(btnBorder);
+
+		// --- Output target + name stem ----------------------------------------------------------
+		auto *gOut = new QGroupBox("Output", this);
+		auto *ov   = new QVBoxLayout(gOut);
+		auto *orow = new QHBoxLayout();
+		rGrids = new QRadioButton("Output grids", gOut); rGrids->setChecked(true);
+		rGrids->setToolTip("Save the field as a series of grids (nswing -G)");
+		rAnuga = new QRadioButton("ANUGA .sww", gOut); rAnuga->setToolTip("Single netCDF in ANUGA .sww format (-A)");
+		rMost  = new QRadioButton("MOST .nc", gOut);   rMost->setToolTip("MOST netCDF triplet (-n)");
+		auto *gOutMode = new QButtonGroup(this);
+		gOutMode->addButton(rGrids); gOutMode->addButton(rAnuga); gOutMode->addButton(rMost);
+		orow->addWidget(rGrids); orow->addWidget(rAnuga); orow->addWidget(rMost);
+		ov->addLayout(orow);
+		auto *nrow = new QHBoxLayout();
+		nrow->addWidget(new QLabel("Name", gOut));
+		nameEdit = new QLineEdit(gOut);
+		nameEdit->setToolTip("Output name stem / file name (grids are numbered using this stem)");
+		nrow->addWidget(nameEdit);
+		ov->addLayout(nrow);
+		v->addWidget(gOut);
+
+		// --- Per-field outputs (active only for the "Output grids" target, as in Mirone) ---------
+		auto *gFld = new QGroupBox("Fields", this);
+		auto *fg   = new QGridLayout(gFld);
+		rSurf  = new QRadioButton("Surface level", gFld); rSurf->setChecked(true);
+		rTotal = new QRadioButton("Total water",   gFld); rTotal->setToolTip("Grids with total water depth (-D)");
+		auto *gField = new QButtonGroup(this); gField->addButton(rSurf); gField->addButton(rTotal);
+		cMax = new QCheckBox("Max water", gFld); cMax->setToolTip("Also write a grid with the max water level (nswing -M)");
+		c3D  = new QCheckBox("3D file",   gFld); c3D->setToolTip("Save the field as one single 3D netCDF (nswing -Z)");
+		cVel = new QCheckBox("Velocity",  gFld); cVel->setToolTip("Write velocity grids (-S, sufixes _U/_V)");
+		cMom = new QCheckBox("Momentum",  gFld); cMom->setToolTip("Write momentum grids (-H)");
+		fg->addWidget(rSurf, 0, 0); fg->addWidget(rTotal, 0, 1); fg->addWidget(cMax, 0, 2);
+		fg->addWidget(c3D,   1, 0); fg->addWidget(cVel,   1, 1); fg->addWidget(cMom, 1, 2);
+		// Manning friction (-X) — the entry missing from the original window.
+		auto *mrow = new QHBoxLayout();
+		mrow->addWidget(new QLabel("Manning friction", gFld));
+		manningEdit = new QLineEdit(gFld);
+		manningEdit->setPlaceholderText("e.g. 0.025  (or comma-separated per level)");
+		manningEdit->setToolTip("Manning friction coefficient(s) (nswing -X<manning0[,manning1,…]>)");
+		mrow->addWidget(manningEdit);
+		fg->addLayout(mrow, 2, 0, 1, 3);
+		v->addWidget(gFld);
+
+		// --- Maregraphs -------------------------------------------------------------------------
+		auto *gMar = new QGroupBox("Maregraphs", this);
+		auto *mv   = new QVBoxLayout(gMar);
+		auto *crow = new QHBoxLayout();
+		cMareg = new QCheckBox("Maregraphs", gMar);
+		cMareg->setToolTip("Compute water height at maregraph locations");
+		crow->addWidget(cMareg);
+		crow->addStretch();
+		crow->addWidget(new QLabel("Saving step", gMar));
+		cumintEdit = new QLineEdit("1", gMar); cumintEdit->setFixedWidth(50);
+		cumintEdit->setToolTip("Maregraph saving step (time = Time step * this)");
+		crow->addWidget(cumintEdit);
+		mv->addLayout(crow);
+		mv->addLayout(fileRow("In file",  maregInEdit,  "Maregraph (*.dat *.xy);;All files (*)"));
+		mv->addLayout(fileRow("Out file", maregOutEdit, "Maregraph (*.dat *.xy);;All files (*)"));
+		v->addWidget(gMar);
+
+		// --- Run parameters ---------------------------------------------------------------------
+		auto *gRun = new QGroupBox(this);
+		auto *rg   = new QGridLayout(gRun);
+		auto numEdit = [this](const QString &val) { auto *e = new QLineEdit(val, this); e->setFixedWidth(70); return e; };
+		cyclesEdit = numEdit("1010"); jumpEdit = numEdit("0"); dtEdit = numEdit(""); grnEdit = numEdit("10");
+		cyclesEdit->setToolTip("Number of cycles (nswing -N)");
+		jumpEdit->setToolTip("Do not output before this modeling time, seconds (-J)");
+		dtEdit->setToolTip("Time step of the simulation, seconds (-t)");
+		grnEdit->setToolTip("Save grids at this cycle interval (the <int> of -G/-Z)");
+		rg->addWidget(new QLabel("N\xC2\xBA of cycles", gRun), 0, 0); rg->addWidget(cyclesEdit, 0, 1);
+		rg->addWidget(new QLabel("Jump initial", gRun),       0, 2); rg->addWidget(jumpEdit,   0, 3);
+		rg->addWidget(new QLabel("Time step (sec)", gRun),    1, 0); rg->addWidget(dtEdit,     1, 1);
+		rg->addWidget(new QLabel("Saving step (cycles)", gRun), 1, 2); rg->addWidget(grnEdit,  1, 3);
+		cGeog = new QCheckBox("Geographic coordinates", gRun);
+		cGeog->setToolTip("Grids are in geographical coordinates (nswing -f)");
+		rg->addWidget(cGeog, 2, 0, 1, 4);
+		v->addWidget(gRun);
+
+		// Fields/Manning only make sense for the grids target (-G); grey them out otherwise.
+		auto syncFields = [this, gFld]() { gFld->setEnabled(rGrids->isChecked()); };
+		QObject::connect(rGrids, &QRadioButton::toggled, this, [syncFields](bool) { syncFields(); });
+		syncFields();
+
+		// --- RUN / Cancel -----------------------------------------------------------------------
+		auto *bb = new QDialogButtonBox(this);
+		auto *runBtn = bb->addButton("RUN", QDialogButtonBox::AcceptRole);
+		runBtn->setDefault(true);
+		bb->addButton(QDialogButtonBox::Cancel);
+		QObject::connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
+		QObject::connect(bb, &QDialogButtonBox::accepted, this, [this]() {
+			const QString mode = rGrids->isChecked() ? "grids" : (rAnuga->isChecked() ? "anuga" : "most");
+			const QString field = rTotal->isChecked() ? "total" : "surface";
+			QStringList L;
+			auto kv = [&L](const char *k, const QString &val) { L << (QString(k) + "=" + val); };
+			kv("source",   srcEdit->text().trimmed());
+			kv("nest",     nestEdit->text().trimmed());
+			kv("level",    QString::number(levelCombo->currentIndex()));
+			kv("bc",       bcPath);
+			kv("outmode",  mode);
+			kv("name",     nameEdit->text().trimmed());
+			kv("field",    field);
+			kv("max",      cMax->isChecked()   ? "1" : "0");
+			kv("netcdf3d", c3D->isChecked()    ? "1" : "0");
+			kv("velocity", cVel->isChecked()   ? "1" : "0");
+			kv("momentum", cMom->isChecked()   ? "1" : "0");
+			kv("manning",  manningEdit->text().trimmed());
+			kv("maregs",   cMareg->isChecked() ? "1" : "0");
+			kv("maregin",  maregInEdit->text().trimmed());
+			kv("maregout", maregOutEdit->text().trimmed());
+			kv("cumint",   cumintEdit->text().trimmed());
+			kv("ncycles",  cyclesEdit->text().trimmed());
+			kv("jump",     jumpEdit->text().trimmed());
+			kv("dt",       dtEdit->text().trimmed());
+			kv("grn",      grnEdit->text().trimmed());
+			kv("geog",     cGeog->isChecked()  ? "1" : "0");
+			params = L.join("\n");
+			accept();
+		});
+		v->addWidget(bb);
+	}
+};
+
 // Fold / un-fold the Shading dock programmatically (Surface row click in the Scene Objects panel).
 // Lives here because FoldTitleBar is complete only in this TU fragment; 50_scene.cpp forward-decls it.
 static void toggleShadingFold(Scene *s) {
@@ -725,6 +1169,7 @@ static QIcon makePolygonIcon();
 static QIcon makePolylineIcon();
 static QIcon makeLineIcon();
 static QIcon makeRectIcon();
+static QIcon makeNestedRectIcon();
 static QIcon makeCircleIcon();
 static QIcon makeTextIcon();
 static QIcon makeCubeIcon();        // 3-D Bodies flyout glyphs (85_polygon.cpp)
@@ -1599,8 +2044,8 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 
 	QMenu *mGeo = win->menuBar()->addMenu("&Geography");
-	s->geoMenu = mGeo;                              // gmtvtk_set_crs reveals it once the data has a CRS
-	mGeo->menuAction()->setVisible(false);         // hidden until a referencing system is known
+	s->geoMenu = mGeo;                              // gmtvtk_set_crs enables it once the data has a CRS
+	mGeo->menuAction()->setEnabled(false);         // disabled until a referencing system is known
 	addResMenu(mGeo, "Plot coastline", "coast");
 
 	QMenu *mPB = mGeo->addMenu("Plot political boundaries");
@@ -1646,8 +2091,16 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mODP->addAction("IODP",          geoTODO("IODP"));
 	mODP->addAction("DSDP+ODP+IODP", geoTODO("DSDP+ODP+IODP"));
 
-	mGeo->addSeparator();
-	mGeo->addAction("Atlas", geoTODO("Atlas"));
+	// --- Geophysics menu: NSWING tsunami modelling (port of Mirone's swan_options.m) -----------
+	// Opens the modal options dialog; on RUN hands the "key=value" parameter block to Julia
+	// (g_juliaNswing), which assembles + launches the nswing command line.
+	QMenu *mGphy = win->menuBar()->addMenu("Geoph&ysics");
+	mGphy->addAction("NSWING tsunami…", [win, s]() {
+		NswingDialog dlg(win, s);
+		if (dlg.exec() != QDialog::Accepted || dlg.params.isEmpty()) return;
+		if (g_juliaNswing) g_juliaNswing(s, dlg.params.toUtf8().constData());
+		else if (s->win) s->win->statusBar()->showMessage("NSWING: callback not registered", 3000);
+	});
 
 	// --- Tools menu: open the standalone X,Y plot tool (blank; ready for File>Open or Julia) ----
 	QMenu *mTools = win->menuBar()->addMenu("&Tools");
@@ -1661,6 +2114,14 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		TilesPicker *dlg = new TilesPicker(win, s, world);
 		dlg->setAttribute(Qt::WA_DeleteOnClose);
 		dlg->show();
+	});
+
+	// --- GMT menu: helper windows to drive GMT modules (TODO: populate with module tools) ----
+	QMenu *mGMT = win->menuBar()->addMenu("&GMT");
+	mGMT->addAction("grdsample", [win, s]() {
+		GrdsampleDialog dlg(win, s);
+		if (dlg.exec() != QDialog::Accepted || !g_juliaGrdsample) return;
+		g_juliaGrdsample(s, dlg.params.toUtf8().constData());
 	});
 
 	win->menuBar()->addMenu("&Help")->addAction("&About", actAbout);
@@ -1748,6 +2209,8 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		{ makeLineIcon(),     "Line",      "Draw a straight line: click the start point, then the end point "
 		                                   "(later clicks move the end); double-click ends it.",                   Scene::SH_Line     },
 		{ makeRectIcon(),     "Rectangle", "Draw a rectangle: click one corner, then the opposite corner.",        Scene::SH_Rect     },
+		{ makeNestedRectIcon(), "Nested grids", "Draw a nested-grids rectangle (constrained dimensions + custom "
+		                                   "context menus): click one corner, then the opposite corner.",          Scene::SH_RectN    },
 		{ makeCircleIcon(),   "Circle",    "Draw a circle: click the centre, then a point on the edge.",           Scene::SH_Circle   },
 	};
 	QToolButton* flyout = new QToolButton(tb);           // the shared shape slot
@@ -2043,6 +2506,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	objDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea); // user may drag-fold it to the LEFT or RIGHT window edge
 	objDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable); // foldable: drag/float/close
 	s->objPanel = new QWidget(objDock);                      // container widget; rebuildSceneObjects() fills it with per-object checkboxes
+	s->objDock  = objDock;                                   // keep a handle so the first nested rect can re-show it
 	objDock->setWidget(s->objPanel);                         // mount that container into the Scene Objects dock
 	win->addDockWidget(Qt::LeftDockWidgetArea, objDock);     // dock the Scene Objects panel to the LEFT edge by default
 	if (objname && objname[0])

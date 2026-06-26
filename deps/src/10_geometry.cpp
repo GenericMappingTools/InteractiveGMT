@@ -63,6 +63,7 @@ struct ExtraObj {
 	bool   draped  = false;                  // image currently draped on the host grid (else a flat plane)
 	double zpos    = 0.0;                    // flat-plane TRUE z — sits above/below the relief, NEVER at z=0
 	double bx0 = 0, bx1 = 0, by0 = 0, by1 = 0;  // image footprint (true coords): tcoords + grid-overlap test
+	int    gstack  = 0;                      // GRID draw-order rank in the grid pile (base relief + grids)
 };
 
 // A user-drawn polygon (closed polyline) from the toolbar polygon tool. Vertices are kept in
@@ -75,6 +76,11 @@ struct Polygon {
 	std::string name;                        // label shown in the Scene Objects panel ("polygon N")
 	bool closed = true;                      // closed ring (polygon/rect/circle) vs open chain (polyline)
 	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
+	int    nestKind = 0;                     // 0 = ordinary shape; 1 = "Nested grids" rectangle (special menu)
+	double nestXi = 0, nestYi = 0;           // child cell sizes (0 = inherit parent inc; resolved by nestReflow)
+	int    nestReg = 0;                       // 0 grid / 1 pixel registration (carried into COMCOT/NSWING info)
+	int    nestIx0 = 0, nestIx1 = 0;          // parent-grid node indices of the snapped W/E edges (1-based on display)
+	int    nestIy0 = 0, nestIy1 = 0;          // parent-grid node indices of the snapped S/N edges
 };
 
 // A user-placed text label from the toolbar text tool. Lies FLAT on the z=0 (XY) plane: a
@@ -104,11 +110,15 @@ static void showLineProperties(Scene* s, const LineRef& lr);                 // 
 static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name, const QPoint& gp);
 static void applyVectorStacking(Scene* s);                      // shared vector-pile draw-order (50_scene.cpp)
 static void restackVector(Scene* s, int* stackPtr, int op);    // move one vector element through the pile
+static void applyGridStacking(Scene* s);                        // grid-pile draw-order: base relief + grids (50_scene.cpp)
+static void restackGrid(Scene* s, int* stackPtr, int op);      // move one grid through the grid pile
 static void lineApplyStyle(Scene* s, const LineRef& lr, int style);
 static int  lineCurrentStyle(Scene* s, const LineRef& lr);
 static void polygonDelete(Scene* s, vtkActor* lineActor);                    // remove a finished polygon
 static void polyRebuildLine(Scene* s, Polygon& pg);                         // rebuild a polygon actor from pg.v (85)
 static int  polyHitPolygon(Scene* s, int x, int y, double tol);             // polygon under cursor? (85)
+static void nestReflow(Scene* s);                                           // re-quantize "Nested grids" chain (85)
+static void nestNewChild(Scene* s);                                         // append a refined nested child (85)
 
 // ---- scene we hang onto for the callbacks / menu actions --------------------
 struct Scene {
@@ -224,15 +234,16 @@ struct Scene {
 	// --- coordinate reference system (CRS) ----------------------------------
 	// The single per-window store of the data's georeferencing, pushed down from Julia
 	// (gmtvtk_set_crs) which resolves all three interchangeable forms via GMT.jl. An empty CRS
-	// (no proj4/wkt and epsg==0) means UNREFERENCED data -> the Geography menu stays hidden, since
+	// (no proj4/wkt and epsg==0) means UNREFERENCED data -> the Geography menu stays disabled, since
 	// placing GSHHG coastlines/borders/rivers needs a reference frame.
 	std::string crsProj4, crsWkt;
 	int         crsEpsg = 0;
-	QMenu*      geoMenu = nullptr;   // the Geography menu (built hidden; shown once a CRS is set)
+	QMenu*      geoMenu = nullptr;   // the Geography menu (built disabled; enabled once a CRS is set)
 	bool hasCRS() const { return !crsProj4.empty() || !crsWkt.empty() || crsEpsg != 0; }
 
 	QAction* act2D = nullptr;        // shared checkable "Flat 2D (map)" action (toolbar + View menu)
 	QWidget* objPanel = nullptr;     // Scene Objects dock content (rebuilt when overlays change)
+	QDockWidget* objDock = nullptr;  // the Scene Objects dock itself (re-shown when the first nested rect lands)
 	FoldTitleBar* objFoldBar = nullptr;  // Scene Objects dock fold toggle (call ->onClick() to fold/unfold programmatically)
 	FoldTitleBar* shadeFoldBar = nullptr; // Shading dock fold toggle (Surface row click folds/un-folds it via toggleShadingFold)
 	QDockWidget*  shadeDock    = nullptr;  // the Shading dock itself (re-shown when an empty launcher is promoted to a grid)
@@ -293,10 +304,12 @@ struct Scene {
 	// rectangle and circle all finalize into a `Polygon` (a vertex ring; polyline is the only open
 	// one) and so share preview / edit / delete / Scene-Objects / Line-Properties code. Text places
 	// a billboard label instead. polyShape selects which tool the active (checked) button drives.
-	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text };
+	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text, SH_RectN };
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
 	int    vecSeq = 0;                                  // monotonic seed for shared vector-pile stack ranks
+	int    surfStack = 0;                               // base relief's rank in the GRID pile (base + grids)
+	int    gridSeq   = 0;                               // monotonic seed for grid-pile ranks (newest on top)
 	std::vector<TextLabel> texts;                      // user-placed text labels
 	bool   polyMode    = false;                        // draw-mode button toggled on
 	bool   polyDrawing = false;                        // mid-building the current polygon

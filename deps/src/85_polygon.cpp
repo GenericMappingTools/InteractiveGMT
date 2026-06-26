@@ -85,6 +85,20 @@ static QIcon makeRectIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// Nested-rectangle icon: three concentric thin outlines (no fill), for the "special" rectangle whose
+// dimensions are constrained / governed by its context menus (props wired later, see MATLAB ref). Thin
+// round-joined pens so all three rings stay visible at the small toolbar size.
+static QIcon makeNestedRectIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.1, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+	p.setBrush(Qt::NoBrush);
+	p.drawRect(QRectF(2.5, 4.0, 19.0, 16.0));    // outer
+	p.drawRect(QRectF(5.5, 7.0, 13.0, 10.0));    // middle
+	p.drawRect(QRectF(8.5, 10.0,  7.0,  4.0));   // inner
+	p.end(); return QIcon(pm);
+}
+
 // Circle outline icon (light fill).
 static QIcon makeCircleIcon() {
 	QPixmap pm = iconCanvas();
@@ -373,9 +387,9 @@ static void polyCircleCorners(const double c[3], const double e[3], std::vector<
 static void polyRebuildPreview(Scene* s, const double* cursor) {
 	if (!s->polyPreviewPD) s->polyPreviewPD = vtkSmartPointer<vtkPolyData>::New();
 	std::vector<std::array<double,3>> verts;
-	if (s->polyShape == Scene::SH_Rect || s->polyShape == Scene::SH_Circle) {
+	if (s->polyShape == Scene::SH_Rect || s->polyShape == Scene::SH_RectN || s->polyShape == Scene::SH_Circle) {
 		if (s->polyDrawing && !s->polyCur.empty() && cursor) {
-			if (s->polyShape == Scene::SH_Rect) polyRectCorners(s->polyCur[0].data(), cursor, verts);
+			if (s->polyShape != Scene::SH_Circle) polyRectCorners(s->polyCur[0].data(), cursor, verts);
 			else                                polyCircleCorners(s->polyCur[0].data(), cursor, verts);
 			if (!verts.empty()) verts.push_back(verts.front());   // close the ring for the preview
 		}
@@ -481,6 +495,7 @@ static int polyHitHandle(Scene* s, int x, int y, double tol) {
 // panel as "polygon N", and the draw tool then ends (button untoggled -> arrow cursor).
 static void polyFinalize(Scene* s, std::vector<std::array<double,3>> verts, bool closed, const char* prefix) {
 	Polygon pg; pg.v = std::move(verts); pg.closed = closed;
+	if (std::string(prefix) == "Nested rectangle") pg.nestKind = 1;   // special "Nested grids" rectangle
 	if (closed && pg.v.size() >= 2 && !(pg.v.front() == pg.v.back()))
 		pg.v.push_back(pg.v.front());      // close the ring (first == last)
 	const std::string pre = std::string(prefix) + " ";   // number PER type: "polygon 1", "rectangle 1", ...
@@ -495,10 +510,156 @@ static void polyFinalize(Scene* s, std::vector<std::array<double,3>> verts, bool
 	s->polyDrawing = false;
 	if (s->polyPreview) s->polyPreview->SetVisibility(0);
 	rebuildSceneObjects(s);                // add the new shape's row to the Scene Objects list
+	if (pg.nestKind == 1) {
+		nestReflow(s);                     // snap the new nested rectangle to its parent's grid
+		int nnest = 0; for (auto& p : s->polys) if (p.nestKind == 1) ++nnest;
+		if (nnest == 1 && s->objDock) { s->objDock->show(); s->objDock->raise(); }   // first one: reveal where things land
+	}
 	// Finishing ends the draw session: untoggle the toolbar button (-> polygonSetMode(false),
 	// which restores the arrow cursor and clears draw state). Falls back if there's no button.
 	if (s->polyAct) s->polyAct->setChecked(false);
 	else            polygonSetMode(s, false);
+}
+
+// ===========================================================================================
+//  "Nested grids" (tsunami) quantization — port of Mirone's nesting_sizes.m
+//
+//  Each nested rectangle's edges snap to its PARENT's grid nodes, shifted half a parent cell
+//  out and half a child cell in, so the child grid is pixel-aligned inside the parent. The
+//  chain is the nestKind==1 polygons in CREATION order (s->polys order, bigger first): the
+//  first's parent is the base grid; each later one's parent is the rectangle before it. Editing
+//  any rectangle reflows it AND every descendant. Mirrors resize2nesting_size + find_nearest.
+// ===========================================================================================
+struct NestLims { double x0, x1, y0, y1, xi, yi; };
+
+// Base grid region + node spacing (grid registration assumed). false if no grid is loaded.
+static bool nestBaseGrid(Scene* s, NestLims& g) {
+	if (s->gridZ.empty() || s->gnx < 2 || s->gny < 2) return false;
+	g.x0 = s->gx0; g.x1 = s->gx1; g.y0 = s->gy0; g.y1 = s->gy1;
+	g.xi = (s->gx1 - s->gx0) / (s->gnx - 1);
+	g.yi = (s->gy1 - s->gy0) / (s->gny - 1);
+	return true;
+}
+
+// Nearest parent node value+index to pt, clamped to [0, n-1]. (find_nearest, but index-based.)
+static void nestNearest(double v0, double inc, int n, double pt, double& val, int& idx) {
+	if (inc == 0.0 || n < 1) { val = v0; idx = 0; return; }
+	int i = (int)std::lround((pt - v0) / inc);
+	if (i < 0) i = 0;
+	if (i > n - 1) i = n - 1;
+	idx = i; val = v0 + i * inc;
+}
+
+// Snap pt to a parent node in one direction: dir<0 floors (node <= pt), dir>0 ceils (node >= pt),
+// clamped to [0, n-1]. Used so a nested rect rounds OUTWARD to enclose the drawn box — nearest-node
+// rounding on both edges can land them on the same node and collapse the rect to zero width.
+static void nestSnapDir(double v0, double inc, int n, double pt, int dir, double& val, int& idx) {
+	if (inc == 0.0 || n < 1) { val = v0; idx = 0; return; }
+	double r = (pt - v0) / inc;
+	int i = dir < 0 ? (int)std::floor(r) : (int)std::ceil(r);
+	if (i < 0) i = 0;
+	if (i > n - 1) i = n - 1;
+	idx = i; val = v0 + i * inc;
+}
+
+// Axis-aligned bbox of a polygon ring.
+static void nestBBox(const Polygon& pg, double& x0, double& x1, double& y0, double& y1) {
+	x0 = y0 = 1e300; x1 = y1 = -1e300;
+	for (auto& v : pg.v) { x0 = std::min(x0, v[0]); x1 = std::max(x1, v[0]);
+	                       y0 = std::min(y0, v[1]); y1 = std::max(y1, v[1]); }
+}
+
+// Force a nested rect's ring to an axis-aligned rectangle at the given limits (z re-draped on rebuild).
+static void nestSetRect(Scene* s, Polygon& pg, double x0, double x1, double y0, double y1) {
+	const double z = pg.v.empty() ? 0.0 : pg.v[0][2];
+	pg.v = { {x0,y0,z}, {x1,y0,z}, {x1,y1,z}, {x0,y1,z}, {x0,y0,z} };
+	pg.closed = true;
+	polyRebuildLine(s, pg);
+}
+
+// Re-quantize the whole nested chain. parent_lims walk the chain (base grid -> rect 1 -> rect 2 ...).
+static void nestReflow(Scene* s) {
+	std::vector<Polygon*> chain;
+	for (auto& pg : s->polys) if (pg.nestKind == 1) chain.push_back(&pg);
+	if (chain.empty()) return;
+	NestLims base; const bool validGrid = nestBaseGrid(s, base);
+	NestLims parent{};
+
+	for (size_t k = 0; k < chain.size(); ++k) {
+		Polygon& pg = *chain[k];
+		double cxi = pg.nestXi, cyi = pg.nestYi;          // child increments (0 = inherit parent)
+		if (k == 0) {
+			if (!validGrid) {                             // parent rect over an empty region: keep it as-is,
+				double bx0, bx1, by0, by1; nestBBox(pg, bx0, bx1, by0, by1);   // and seed the chain from it
+				if (cxi <= 0) cxi = (bx1 - bx0); if (cyi <= 0) cyi = (by1 - by0);
+				pg.nestXi = cxi; pg.nestYi = cyi;
+				parent = { bx0, bx1, by0, by1, cxi, cyi };
+				continue;
+			}
+			parent = base;
+			if (cxi <= 0) cxi = base.xi;
+			if (cyi <= 0) cyi = base.yi;
+		} else {
+			if (cxi <= 0) cxi = parent.xi;
+			if (cyi <= 0) cyi = parent.yi;
+		}
+		pg.nestXi = cxi; pg.nestYi = cyi;                 // make the resolved increments concrete
+
+		double rx0, rx1, ry0, ry1; nestBBox(pg, rx0, rx1, ry0, ry1);   // requested (drawn / edited) edges
+		const int pnx = (int)std::lround((parent.x1 - parent.x0) / parent.xi) + 1;
+		const int pny = (int)std::lround((parent.y1 - parent.y0) / parent.yi) + 1;
+		double vxmin, vxmax, vymin, vymax; int ixmin, ixmax, iymin, iymax;
+		nestSnapDir(parent.x0, parent.xi, pnx, rx0, -1, vxmin, ixmin);   // round outward so the rect
+		nestSnapDir(parent.x0, parent.xi, pnx, rx1, +1, vxmax, ixmax);   // always encloses the drawn box
+		nestSnapDir(parent.y0, parent.yi, pny, ry0, -1, vymin, iymin);   // and never collapses to zero
+		nestSnapDir(parent.y0, parent.yi, pny, ry1, +1, vymax, iymax);
+		if (ixmax <= ixmin) { if (ixmin > 0) { ixmin--; vxmin -= parent.xi; } else if (ixmax < pnx - 1) { ixmax++; vxmax += parent.xi; } }
+		if (iymax <= iymin) { if (iymin > 0) { iymin--; vymin -= parent.yi; } else if (iymax < pny - 1) { iymax++; vymax += parent.yi; } }
+		const double tx0 = vxmin - parent.xi / 2 + cxi / 2;   // half parent cell out, half child cell in
+		const double tx1 = vxmax + parent.xi / 2 - cxi / 2;
+		const double ty0 = vymin - parent.yi / 2 + cyi / 2;
+		const double ty1 = vymax + parent.yi / 2 - cyi / 2;
+		pg.nestIx0 = ixmin; pg.nestIx1 = ixmax; pg.nestIy0 = iymin; pg.nestIy1 = iymax;
+		nestSetRect(s, pg, tx0, tx1, ty0, ty1);
+		parent = { tx0, tx1, ty0, ty1, cxi, cyi };        // this rect is the parent of the next
+	}
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// "New nested grid": append a refined child = the inner half of the current innermost rect, with
+// increments = innermost / refinement factor (Mirone make_new_nested). Then reflow snaps it.
+static void nestNewChild(Scene* s) {
+	std::vector<Polygon*> chain;
+	for (auto& pg : s->polys) if (pg.nestKind == 1) chain.push_back(&pg);
+	if (chain.empty()) return;
+	bool ok = false;
+	const int refine = QInputDialog::getInt(s->win, "Refinement factor", "Enter refinement factor:",
+	                                        5, 1, 100000, 1, &ok);
+	if (!ok || refine <= 0) return;
+	Polygon& inner = *chain.back();
+	double x0, x1, y0, y1; nestBBox(inner, x0, x1, y0, y1);
+	const double dx = x1 - x0, dy = y1 - y0;
+	Polygon pg; pg.nestKind = 1; pg.nestReg = inner.nestReg;
+	pg.nestXi = inner.nestXi / refine;
+	pg.nestYi = inner.nestYi / refine;
+	const double z = inner.v.empty() ? 0.0 : inner.v[0][2];
+	const double nx0 = x0 + dx / 4, nx1 = x1 - dx / 4, ny0 = y0 + dy / 4, ny1 = y1 - dy / 4;
+	pg.v = { {nx0,ny0,z}, {nx1,ny0,z}, {nx1,ny1,z}, {nx0,ny1,z}, {nx0,ny0,z} };
+	pg.closed = true;
+	const std::string pre = "Nested rectangle ";
+	int idx = 1;
+	for (auto& p : s->polys) if (p.name.rfind(pre, 0) == 0) ++idx;
+	pg.name = pre + std::to_string(idx);
+	polyRebuildLine(s, pg);
+	// Inherit ALL of the parent rectangle's properties: registration (above) + the line's full visual
+	// style (colour / width / stipple / opacity), so a child looks and behaves exactly like its parent
+	// and the chain can keep being extended with consistent rectangles.
+	if (inner.line && pg.line) pg.line->GetProperty()->DeepCopy(inner.line->GetProperty());
+	pg.stack = s->vecSeq++;
+	s->polys.push_back(pg);
+	applyVectorStacking(s);
+	nestReflow(s);
 }
 
 // Remove a finished polygon (identified by its line actor): drop the actor, erase it, fix the
@@ -507,11 +668,13 @@ static void polygonDelete(Scene* s, vtkActor* lineActor) {
 	for (int i = 0; i < (int)s->polys.size(); ++i) {
 		if (s->polys[i].line.Get() != lineActor) continue;
 		if (s->ren && s->polys[i].line) s->ren->RemoveActor(s->polys[i].line);
+		const bool wasNested = (s->polys[i].nestKind == 1);
 		if (s->polyEdit == i)      polyExitEdit(s);      // was being edited -> drop the handles
 		else if (s->polyEdit > i)  s->polyEdit--;        // keep the edit index valid past the erase
 		s->polys.erase(s->polys.begin() + i);
 		applyVectorStacking(s);                          // renormalize the shared pile after the erase
 		rebuildSceneObjects(s);
+		if (wasNested) nestReflow(s);                    // dropping a level reparents the survivors -> re-snap
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return;
 	}
@@ -696,15 +859,18 @@ static bool polygonHandlePress(Scene* s, int button, int x, int y) {
 			polyRebuildPreview(s, nullptr);
 			break;
 		case Scene::SH_Rect:
+		case Scene::SH_RectN:
 		case Scene::SH_Circle:                           // two clicks: first sets the anchor, second finalizes
 			if (!s->polyDrawing) {
 				s->polyDrawing = true; s->polyCur.clear();
 				s->polyCur.push_back({ w[0], w[1], w[2] });
 			} else {
 				std::vector<std::array<double,3>> corners;
-				if (s->polyShape == Scene::SH_Rect) polyRectCorners(s->polyCur[0].data(), w, corners);
-				else                                polyCircleCorners(s->polyCur[0].data(), w, corners);
-				polyFinalize(s, corners, true, s->polyShape == Scene::SH_Rect ? "rectangle" : "circle");
+				if (s->polyShape == Scene::SH_Circle) polyCircleCorners(s->polyCur[0].data(), w, corners);
+				else                                  polyRectCorners(s->polyCur[0].data(), w, corners);
+				const char* pre = s->polyShape == Scene::SH_Circle ? "circle"
+				                : s->polyShape == Scene::SH_RectN   ? "Nested rectangle" : "rectangle";
+				polyFinalize(s, corners, true, pre);
 			}
 			break;
 		case Scene::SH_Text: break;                      // handled above
@@ -791,7 +957,13 @@ static bool polygonHandleMove(Scene* s, int x, int y) {
 
 // Left release: end a vertex / text-label drag.
 static bool polygonHandleRelease(Scene* s) {
-	if (s->polyDragVert >= 0) { s->polyDragVert = -1; return true; }
+	if (s->polyDragVert >= 0) {
+		s->polyDragVert = -1;
+		// Edited a nested rectangle: re-quantize it (back to an axis-aligned, snapped rect) + descendants.
+		if (s->polyEdit >= 0 && s->polyEdit < (int)s->polys.size() && s->polys[s->polyEdit].nestKind == 1)
+			nestReflow(s);
+		return true;
+	}
 	if (s->textDrag     >= 0) { s->textDrag     = -1; return true; }
 	return false;
 }

@@ -364,6 +364,71 @@ static void showLineDataTable(Scene* s, const LineRef& lr, const QString& name) 
 	dlg->show();                                          // non-modal: REPL + viewer stay live
 }
 
+// ---- "Nested grids" menu actions (the special tsunami rectangle; see nesting_sizes.m) ----------
+
+// Axis-aligned bbox of the polygon at index pi.
+static void nestPolyBBox(Scene* s, int pi, double& x0, double& x1, double& y0, double& y1) {
+	x0 = y0 = 1e300; x1 = y1 = -1e300;
+	for (auto& v : s->polys[pi].v) { x0 = std::min(x0, v[0]); x1 = std::max(x1, v[0]);
+	                                 y0 = std::min(y0, v[1]); y1 = std::max(y1, v[1]); }
+}
+
+// "Show nesting info": the COMCOT/NSWING -R/-I + start/end indices (1-based) for this nested rect.
+static void nestShowInfo(Scene* s, vtkActor* a) {
+	const int pi = polyIndexOfActor(s, a);
+	if (pi < 0) return;
+	const Polygon& pg = s->polys[pi];
+	double x0, x1, y0, y1; nestPolyBBox(s, pi, x0, x1, y0, y1);
+	const double xi = pg.nestXi, yi = pg.nestYi;
+	const long ncols = (xi > 0) ? (long)std::lround((x1 - x0) / xi) + 1 : 0;
+	const long nrows = (yi > 0) ? (long)std::lround((y1 - y0) / yi) + 1 : 0;
+	QString t;
+	t += QString("-R%1/%2/%3/%4 -I%5/%6\n")
+	         .arg(x0, 0, 'g', 12).arg(x1, 0, 'g', 12).arg(y0, 0, 'g', 12).arg(y1, 0, 'g', 12)
+	         .arg(xi, 0, 'g', 12).arg(yi, 0, 'g', 12);
+	t += QString("nx = %1   ny = %2\n").arg(ncols).arg(nrows);
+	t += QString("x_start = %1\nx_end = %2\ny_start = %3\ny_end = %4")
+	         .arg(pg.nestIx0 + 1).arg(pg.nestIx1 + 1).arg(pg.nestIy0 + 1).arg(pg.nestIy1 + 1);
+	QMessageBox box(QMessageBox::Information, "Nesting info", t, QMessageBox::Ok, s->win);
+	box.setTextInteractionFlags(Qt::TextSelectableByMouse);
+	box.exec();
+}
+
+// "Create blank grid": build a zero grid at this rect's limits/increments via the Julia/GMT host
+// (the C++ viewer has no GMT) and add it to THIS SAME window as a HIDDEN extra surface — it shows
+// up as an (unchecked) "Nested grid N" row in Scene Objects but is not drawn. The scene handle is
+// embedded in the command so Julia adds to this exact window. Deferred a turn so the menu's event
+// finishes first.
+static void nestCreateBlankGrid(Scene* s, vtkActor* a) {
+	const int pi = polyIndexOfActor(s, a);
+	if (pi < 0) return;
+	const Polygon& pg = s->polys[pi];
+	double x0, x1, y0, y1; nestPolyBBox(s, pi, x0, x1, y0, y1);
+	const double xi = pg.nestXi, yi = pg.nestYi;
+	if (!(xi > 0 && yi > 0)) {
+		if (s->win) s->win->statusBar()->showMessage("Nested grid has no cell size yet.", 4000);
+		return;
+	}
+	if (!g_juliaEval) {
+		QMessageBox::warning(s->win, "Create blank grid", "Creating a grid needs the Julia/GMT host.");
+		return;
+	}
+	// Chain position (1-based) of THIS rect among the nested rectangles, so the grid is named to
+	// follow the stack order: base grid first, then "Nested grid 1", "Nested grid 2", … inward.
+	int chainIdx = 0;
+	for (int j = 0; j <= pi; ++j) if (s->polys[j].nestKind == 1) ++chainIdx;
+	auto num = [](double v) { return QString::number(v, 'g', 15); };
+	const QString cmd = QString("InteractiveGMT._nested_blank_grid(Ptr{Cvoid}(UInt(%1)),%2,%3,%4,%5,%6,%7,%8,%9)")
+	                        .arg((qulonglong)reinterpret_cast<uintptr_t>(s))
+	                        .arg(num(x0)).arg(num(x1)).arg(num(y0)).arg(num(y1))
+	                        .arg(num(xi)).arg(num(yi)).arg(s->hasCRS() ? "true" : "false").arg(chainIdx);
+	QTimer::singleShot(0, s->win, [s, cmd]() {
+		std::vector<char> buf(1 << 12);
+		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+	});
+}
+
 // The unified right-click menu for a line object: "Line properties…" plus the kind's own actions
 // (profile: save / delete; overlay & polygon: hide; polygon: delete). Shared by the 3-D-view
 // right-click hit-test and the Scene Objects list rows, so both routes give the same menu.
@@ -371,9 +436,26 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 	if (!s || !lr.actor) return;
 	QMenu m(s->win);
 	vtkActor* a = lr.actor;
+
+	// Is this a "Nested grids" rectangle?
+	bool isNestRect = false;
+	if (lr.kind == LK_Polygon) {
+		const int pi = polyIndexOfActor(s, a);
+		if (pi >= 0 && s->polys[pi].nestKind == 1) isNestRect = true;
+	}
+
+	// EVERY nested rectangle carries the nesting actions at the TOP of the menu, so the chain can
+	// be extended from any level (each "New nested grid" inherits its parent's nesting behaviour).
+	if (isNestRect) {
+		m.addAction("Show nesting info", [s, a]() { nestShowInfo(s, a); });
+		m.addAction("Create blank grid", [s, a]() { nestCreateBlankGrid(s, a); });
+		m.addAction("New nested grid",   [s]()    { nestNewChild(s); });
+		m.addSeparator();
+	}
+
 	m.addAction("Line properties…", [s, lr]() { showLineProperties(s, lr); });
-	m.addAction(lr.kind == LK_Polygon ? "Save polygon…" : "Save line…",   // 2D / 3D (grid-interpolated z)
-				[s, lr]() { lineSavePoints(s, lr); });
+	m.addAction(isNestRect ? "Save rectangle…" : (lr.kind == LK_Polygon ? "Save polygon…" : "Save line…"),
+				[s, lr]() { lineSavePoints(s, lr); });   // 2D / 3D (grid-interpolated z)
 	m.addAction("Show data table…",                                      // floating vertex table viewer
 				[s, lr, name]() { showLineDataTable(s, lr, name); });
 	m.addSeparator();
@@ -399,16 +481,18 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 		m.addAction("Delete profile", [s]() { profileClear(s); rebuildSceneObjects(s); });
 	}
 	else if (lr.kind == LK_Polygon) {
-		m.addAction("Delete polygon", [s, a]() { polygonDelete(s, a); });   // Hide = the Scene Objects checkbox
+		m.addAction(isNestRect ? "Delete rectangle" : "Delete polygon",
+					[s, a]() { polygonDelete(s, a); });   // Hide = the Scene Objects checkbox
 	}
 	else {                                               // overlay line
 		m.addAction("Hide overlay", [s, a]() { a->SetVisibility(0); if (s->widget) s->widget->renderWindow()->Render(); });
 	}
 	// Shared vector-pile draw-order: order this line/polygon against ALL other vector elements
-	// (overlays + symbols + polygons). Not for the singleton profile track. Stays on the relief.
+	// (overlays + symbols + polygons). Not for the singleton profile track, nor for nested-grid
+	// rectangles (the GRIDS carry the stacking, not their defining rectangles).
 	int* stackPtr = nullptr;
 	if (lr.kind == LK_Overlay)      { for (auto& o  : s->overlays) if (o.actor.Get() == a) { stackPtr = &o.stack;  break; } }
-	else if (lr.kind == LK_Polygon) { for (auto& pg : s->polys)    if (pg.line.Get() == a) { stackPtr = &pg.stack; break; } }
+	else if (lr.kind == LK_Polygon && !isNestRect) { for (auto& pg : s->polys) if (pg.line.Get() == a) { stackPtr = &pg.stack; break; } }
 	const size_t nVec = s->overlays.size() + s->symbols.size() + s->polys.size();
 	if (stackPtr && nVec > 1) {
 		m.addSeparator();
