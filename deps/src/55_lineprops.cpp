@@ -429,6 +429,85 @@ static void nestCreateBlankGrid(Scene* s, vtkActor* a) {
 	});
 }
 
+// ---- Length / azimuth / area (CRS-aware, computed in Julia/GMT) --------------------------------
+//
+// Total vertex count across all of a line object's polylines.
+static int lineVertexCount(Scene* s, const LineRef& lr) {
+	std::vector<std::vector<std::array<double,3>>> pls;
+	lineGatherPolylines(s, lr, pls);
+	int n = 0; for (auto& pl : pls) n += (int)pl.size();
+	return n;
+}
+
+// Total straight segments (sum of verts-1 per polyline). 1 = a single straight line -> singular
+// menu labels + a single-number result; >1 = a polyline -> plural labels + a Data Viewer table.
+static int lineSegmentCount(Scene* s, const LineRef& lr) {
+	std::vector<std::vector<std::array<double,3>>> pls;
+	lineGatherPolylines(s, lr, pls);
+	int n = 0; for (auto& pl : pls) if (pl.size() >= 2) n += (int)pl.size() - 1;
+	return n;
+}
+
+// Which objects get the length/azimuth + area properties: drawn polygons and imported overlay
+// LINES, but ONLY when small (<=100 vertices). That single threshold excludes BOTH the coastlines
+// (thousands of points) AND moderately large imported xy files — exactly the user's cut. The
+// profile track is out (it has its own "Save with distance"); points/grids/images are not lines.
+static bool lineMeasurable(Scene* s, const LineRef& lr) {
+	if (lr.kind != LK_Overlay && lr.kind != LK_Polygon) return false;
+	const int n = lineVertexCount(s, lr);
+	return n >= 2 && n <= 100;
+}
+
+// A finished, closed polygon ring (>=4 vertices incl. the repeated first==last) — the only shape an
+// "Area under polygon" makes sense for. Open polylines / rects-in-progress are excluded.
+static bool lineClosedRing(Scene* s, const LineRef& lr) {
+	if (lr.kind != LK_Polygon) return false;
+	const int pi = polyIndexOfActor(s, lr.actor);
+	return pi >= 0 && s->polys[pi].closed && s->polys[pi].v.size() >= 4;
+}
+
+// Hand the object's 2-D vertices to a Julia measure function over the in-process console bridge.
+// `fn` is "_line_measure" (table -> Data Viewer) or "_poly_area" (number -> message box). The temp
+// table, the scene handle and the window's proj4 go across; Julia decides geographic vs cartesian.
+// Deferred a turn (like nestCreateBlankGrid) so the menu's own event finishes before the (possibly
+// slow first-call) GMT compile runs. `box` shows the result in a dialog, else the status bar.
+static void lineRunMeasure(Scene* s, const LineRef& lr, const char* fn, bool box) {
+	if (!g_juliaEval) {
+		QMessageBox::warning(s->win, "Measure", "This computation needs the Julia/GMT host.");
+		return;
+	}
+	std::vector<std::vector<std::array<double,3>>> polylines;
+	lineGatherPolylines(s, lr, polylines);
+	if (polylines.empty()) return;
+	const QString tmp = QDir::tempPath() + "/igmt_measure_" +
+						QString::number(QDateTime::currentMSecsSinceEpoch()) + ".txt";
+	if (!lineWriteTable(s, polylines, /*threeD=*/false, tmp)) return;   // 2-D x y, '>' multisegment
+	const bool isPoly = (lr.kind == LK_Polygon);
+	const QString cmd = QString("InteractiveGMT.%1(Ptr{Cvoid}(UInt(%2)),raw\"%3\",raw\"%4\",%5)")
+							.arg(fn)
+							.arg((qulonglong)reinterpret_cast<uintptr_t>(s))
+							.arg(tmp)
+							.arg(QString::fromStdString(s->crsProj4))
+							.arg(isPoly ? "true" : "false");
+	QTimer::singleShot(0, s->win, [s, cmd, box]() {
+		std::vector<char> buf(1 << 14);
+		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		const QString out = QString::fromUtf8(buf.data(), std::abs(n));
+		if (n < 0) { sceneLogError(s, out); return; }              // Julia threw -> Errors tab
+		if (box) {
+			QMessageBox mb(QMessageBox::Information, "Result", out, QMessageBox::Ok, s->win);
+			mb.setTextInteractionFlags(Qt::TextSelectableByMouse);
+			mb.exec();
+		} else if (!out.isEmpty() && s->win) {
+			s->win->statusBar()->showMessage(out, 6000);           // total length -> status bar
+		}
+	});
+}
+
+// Open the Vertical elastic deformation dialog for a fault line (defined in 70_window.cpp, after the
+// ElasticDialog class — this fragment is #included before it, so forward-declare it here).
+static void faultRunDialog(Scene* s);
+
 // The unified right-click menu for a line object: "Line properties…" plus the kind's own actions
 // (profile: save / delete; overlay & polygon: hide; polygon: delete). Shared by the 3-D-view
 // right-click hit-test and the Scene Objects list rows, so both routes give the same menu.
@@ -437,11 +516,18 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 	QMenu m(s->win);
 	vtkActor* a = lr.actor;
 
-	// Is this a "Nested grids" rectangle?
-	bool isNestRect = false;
+	// Is this a "Nested grids" rectangle, or a Draw-Fault line?
+	bool isNestRect = false, isFault = false;
 	if (lr.kind == LK_Polygon) {
 		const int pi = polyIndexOfActor(s, a);
 		if (pi >= 0 && s->polys[pi].nestKind == 1) isNestRect = true;
+		if (pi >= 0 && s->polys[pi].isFault)       isFault = true;
+	}
+
+	// A fault line's first property is the elastic-deformation dialog (its raison d'être).
+	if (isFault) {
+		m.addAction("Vertical elastic deformation", [s]() { faultRunDialog(s); });
+		m.addSeparator();
 	}
 
 	// EVERY nested rectangle carries the nesting actions at the TOP of the menu, so the chain can
@@ -454,10 +540,24 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 	}
 
 	m.addAction("Line properties…", [s, lr]() { showLineProperties(s, lr); });
-	m.addAction(isNestRect ? "Save rectangle…" : (lr.kind == LK_Polygon ? "Save polygon…" : "Save line…"),
+	m.addAction(isNestRect ? "Save rectangle…"
+			  : isFault    ? "Save line…"
+			  : (lr.kind == LK_Polygon ? "Save polygon…" : "Save line…"),
 				[s, lr]() { lineSavePoints(s, lr); });   // 2D / 3D (grid-interpolated z)
 	m.addAction("Show data table…",                                      // floating vertex table viewer
 				[s, lr, name]() { showLineDataTable(s, lr, name); });
+
+	// CRS-aware measurements (length(s) + azimuth(s) for lines/polygons; area for closed polygons).
+	// Gated to small objects so coastlines / large imports don't get them (lineMeasurable). The "(s)"
+	// turns plural on a polyline (>1 segment); a polyline shows a table, a single line a number (!many).
+	if (lineMeasurable(s, lr)) {
+		const bool    many = lineSegmentCount(s, lr) > 1;
+		const QString sfx  = many ? "s" : "";
+		m.addAction(QString("Line length%1…").arg(sfx), [s, lr, many]() { lineRunMeasure(s, lr, "_line_length",  !many); });
+		m.addAction(QString("Azimuth%1…").arg(sfx),     [s, lr, many]() { lineRunMeasure(s, lr, "_line_azimuth", !many); });
+		if (lineClosedRing(s, lr))
+			m.addAction("Area under polygon…", [s, lr]() { lineRunMeasure(s, lr, "_poly_area", true); });
+	}
 	m.addSeparator();
 	if (lr.kind == LK_Profile) {
 		m.addAction("Save profile (with distance)…", [s]() {
@@ -481,11 +581,12 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 		m.addAction("Delete profile", [s]() { profileClear(s); rebuildSceneObjects(s); });
 	}
 	else if (lr.kind == LK_Polygon) {
-		m.addAction(isNestRect ? "Delete rectangle" : "Delete polygon",
+		m.addAction(isNestRect ? "Delete rectangle" : isFault ? "Delete fault" : "Delete polygon",
 					[s, a]() { polygonDelete(s, a); });   // Hide = the Scene Objects checkbox
 	}
-	else {                                               // overlay line
-		m.addAction("Hide overlay", [s, a]() { a->SetVisibility(0); if (s->widget) s->widget->renderWindow()->Render(); });
+	else {                                               // overlay line (Coastlines, Boundaries, Rivers, imports)
+		m.addAction(QString("Delete %1").arg(name),       // hide = the Scene Objects checkbox; this DELETES
+					[s, a]() { overlayDelete(s, a); });
 	}
 	// Shared vector-pile draw-order: order this line/polygon against ALL other vector elements
 	// (overlays + symbols + polygons). Not for the singleton profile track, nor for nested-grid

@@ -711,32 +711,42 @@ struct FoldTitleBar : QWidget {
 };
 
 // ============================================================================================
-// grdsample dialog (GMT > Resample). Port of Mirone's grdsample tool.
-// On OK, hands "input;output;I;R;n;r;T" to Julia.
+// GeoGridGeometry — reusable "Griding Line Geometry" widget (Mirone-style region/spacing table).
+// Two rows (X / Y Direction) × four columns (Min, Max, Spacing, # of lines) inside a group box,
+// with the cross-field recompute wired through the Julia dim-fun (port of Mirone dim_funs.m), plus
+// an optional "OR Ref grid" picker row (gmtread a grid header -> fill the boxes). Self-contained:
+// a single addWidget() embeds the whole block. Shared by every dialog that needs a region/spacing
+// spec (grdsample, vertical elastic deformation, …). Caller prefills with fillGeometry(), reads
+// back with region()/inc()/and the public box pointers, and keeps it in sync with its own grid
+// registration via setRegistration().
 // ============================================================================================
-class GrdsampleDialog : public QDialog {
+class GeoGridGeometry : public QWidget {
 public:
-	QLineEdit *inpEdit, *outEdit;
-	QLineEdit *xMin, *xMax, *xInc, *xN;   // Griding Line Geometry — X Direction row
+	QLineEdit *xMin, *xMax, *xInc, *xN;   // X Direction row
 	QLineEdit *yMin, *yMax, *yInc, *yN;   // Y Direction row
-	QComboBox *interpCombo;
-	QComboBox *regCombo = nullptr;     // gridline/pixel (also feeds one_or_zero to the dim-fun)
-	QCheckBox *clipCheck;
-	QRadioButton *regGrid, *regPixel;
-	QCheckBox *toggleCheck;
-	// Original (source) limits — caps for the Region boxes (sampled grid can't exceed the input).
-	// Set by fillGeometry from the loaded grid / ref grid; empty = unconstrained.
+	QLineEdit *refEdit = nullptr;         // "OR Ref grid" — present only when withRefGrid
+	// Source-extent caps for the Min/Max boxes (a sampled grid can't exceed the input). Set by
+	// fillGeometry from the loaded/ref grid; empty = unconstrained.
 	QString xMinOr, xMaxOr, yMinOr, yMaxOr;
 	bool dmsXinc = false, dmsYinc = false;   // last x/y inc typed in dd:mm:ss form (carried to Julia)
-	QLineEdit *refEdit;               // "OR Ref grid" — gmtread its header to fill the boxes
-	QToolButton *inpBtn = nullptr;    // Input grid "..." browse (disabled when a grid is loaded)
-	bool    useSelected = false;      // a grid is loaded -> input is the current window's element
-	QString srcName;                  // Scene Objects label of the loaded element (suffix source)
-	QString params;   // "input;output;I;R;n;r;T;S" on OK  (S = source element name)
+	int oneOrZero = 1;                        // 1 gridline / 0 pixel registration (feeds the dim-fun)
 
-	// Fill the Griding Line Geometry boxes from "W/E/S/N/xinc/yinc/nx/ny" (8 slash-separated
-	// fields, as returned by g_juliaGridMeta or built from the current scene). Silent no-op on a
-	// malformed/empty string so a failed gmtread leaves the user's typed values untouched.
+	void setRegistration(bool pixel) { oneOrZero = pixel ? 0 : 1; }
+
+	// "W/E/S/N" region string (blank fields kept blank so the caller can detect "no region").
+	QString region() const {
+		return QString("%1/%2/%3/%4").arg(xMin->text().trimmed()).arg(xMax->text().trimmed())
+		                             .arg(yMin->text().trimmed()).arg(yMax->text().trimmed());
+	}
+	// Increment string: "xinc", or "xinc/yinc" when anisotropic.
+	QString inc() const {
+		QString xi = xInc->text().trimmed(), yi = yInc->text().trimmed();
+		return (!yi.isEmpty() && yi != xi) ? xi + "/" + yi : xi;
+	}
+
+	// Fill the boxes from "W/E/S/N/xinc/yinc/nx/ny" (8 slash-separated fields, as returned by
+	// g_juliaGridMeta or built from the current scene). Silent no-op on a malformed/empty string so
+	// a failed gmtread leaves the user's typed values untouched.
 	void fillGeometry(const QString &meta) {
 		const QStringList f = meta.split('/');
 		if (f.size() < 8) return;
@@ -744,22 +754,21 @@ public:
 		yMin->setText(f[2]); yMax->setText(f[3]);
 		xInc->setText(f[4]); yInc->setText(f[5]);
 		xN->setText(f[6]);   yN->setText(f[7]);
-		// The source extent caps the Region boxes (sampled grid can't exceed the input grid).
+		// The source extent caps the Min/Max boxes (sampled grid can't exceed the input grid).
 		xMinOr = f[0]; xMaxOr = f[1]; yMinOr = f[2]; yMaxOr = f[3];
 	}
 
-	// Round-trip the Griding Line Geometry through the Julia dim-fun (port of Mirone's dim_funs.m):
-	// hand it which box changed + all current values + the source caps + registration; write back the
-	// 8 recomputed fields. Programmatic setText() does NOT re-fire editingFinished, so no recursion.
+	// Round-trip the boxes through the Julia dim-fun (port of Mirone's dim_funs.m): hand it which box
+	// changed + all current values + the source caps + registration; write back the 8 recomputed
+	// fields. Programmatic setText() does NOT re-fire editingFinished, so no recursion.
 	void runDimFun(const QString &which) {
 		if (!g_juliaDimFun) return;
-		const int oz = (regCombo && regCombo->currentData().toString() == "p") ? 0 : 1;
 		QString state = QString("%1/%2/%3/%4/%5/%6/%7/%8/%9/%10/%11/%12/%13/%14")
 			.arg(xMin->text().trimmed()).arg(xMax->text().trimmed())
 			.arg(yMin->text().trimmed()).arg(yMax->text().trimmed())
 			.arg(xInc->text().trimmed()).arg(yInc->text().trimmed())
 			.arg(xN->text().trimmed()).arg(yN->text().trimmed())
-			.arg(oz).arg(xMinOr).arg(xMaxOr).arg(yMinOr).arg(yMaxOr)
+			.arg(oneOrZero).arg(xMinOr).arg(xMaxOr).arg(yMinOr).arg(yMaxOr)
 			.arg(dmsXinc || dmsYinc ? 1 : 0);
 		const char *out = g_juliaDimFun(which.toUtf8().constData(), state.toUtf8().constData());
 		if (!out) return;
@@ -770,6 +779,107 @@ public:
 		xInc->setText(r[4]); yInc->setText(r[5]);
 		xN->setText(r[6]);   yN->setText(r[7]);
 	}
+
+	GeoGridGeometry(QWidget *parent, bool withRefGrid = true) : QWidget(parent) {
+		auto *outer = new QVBoxLayout(this);
+		outer->setContentsMargins(0, 0, 0, 0);
+
+		// --- The 2×4 table inside a group box ---------------------------------------------------
+		auto *geoGroup  = new QGroupBox("Griding Line Geometry", this);
+		auto *geoLayout = new QGridLayout();
+		geoLayout->setHorizontalSpacing(8);
+		geoLayout->setVerticalSpacing(4);
+		auto makeEdit = [this]() {
+			auto *e = new QLineEdit(this);   // no validator: accepts decimal AND dd:mm:ss (Julia validates)
+			e->setAlignment(Qt::AlignLeft);
+			e->setMinimumWidth(90);
+			return e;
+		};
+		xMin = makeEdit(); xMax = makeEdit(); xInc = makeEdit(); xN = makeEdit();
+		yMin = makeEdit(); yMax = makeEdit(); yInc = makeEdit(); yN = makeEdit();
+
+		// Column headers (row 0, cols 1..4), centered over their fields.
+		geoLayout->addWidget(new QLabel("Min"),        0, 1, Qt::AlignHCenter);
+		geoLayout->addWidget(new QLabel("Max"),        0, 2, Qt::AlignHCenter);
+		geoLayout->addWidget(new QLabel("Spacing"),    0, 3, Qt::AlignHCenter);
+		geoLayout->addWidget(new QLabel("# of lines"), 0, 4, Qt::AlignHCenter);
+		// X Direction row.
+		geoLayout->addWidget(new QLabel("X Direction"), 1, 0);
+		geoLayout->addWidget(xMin, 1, 1);
+		geoLayout->addWidget(xMax, 1, 2);
+		geoLayout->addWidget(xInc, 1, 3);
+		geoLayout->addWidget(xN,   1, 4);
+		// Y Direction row.
+		geoLayout->addWidget(new QLabel("Y Direction"), 2, 0);
+		geoLayout->addWidget(yMin, 2, 1);
+		geoLayout->addWidget(yMax, 2, 2);
+		geoLayout->addWidget(yInc, 2, 3);
+		geoLayout->addWidget(yN,   2, 4);
+		// "?" help button spanning both data rows on the far right.
+		auto *helpBtn = new QToolButton(this);
+		helpBtn->setText("?");
+		helpBtn->setToolTip("Edit any two of Min/Max/Spacing/# and the rest are derived.");
+		geoLayout->addWidget(helpBtn, 1, 5, 2, 1);
+
+		geoGroup->setLayout(geoLayout);
+		outer->addWidget(geoGroup);
+
+		// Cross-field recompute (Mirone dim_funs.m, now in Julia). Each box recomputes the others on
+		// focus-out / Enter.
+		QObject::connect(xMin, &QLineEdit::editingFinished, this, [this]{ runDimFun("xMin"); });
+		QObject::connect(xMax, &QLineEdit::editingFinished, this, [this]{ runDimFun("xMax"); });
+		QObject::connect(yMin, &QLineEdit::editingFinished, this, [this]{ runDimFun("yMin"); });
+		QObject::connect(yMax, &QLineEdit::editingFinished, this, [this]{ runDimFun("yMax"); });
+		QObject::connect(xInc, &QLineEdit::editingFinished, this, [this]{ runDimFun("xInc"); });
+		QObject::connect(yInc, &QLineEdit::editingFinished, this, [this]{ runDimFun("yInc"); });
+		QObject::connect(xN,   &QLineEdit::editingFinished, this, [this]{ runDimFun("nCols"); });
+		QObject::connect(yN,   &QLineEdit::editingFinished, this, [this]{ runDimFun("nRows"); });
+
+		// --- Optional "OR Ref grid" row: pick a grid/image; gmtread its header to fill the boxes ----
+		if (withRefGrid) {
+			auto *refRow = new QHBoxLayout();
+			refRow->addWidget(new QLabel("OR Ref grid"));
+			refEdit = new QLineEdit(this);
+			refEdit->setToolTip("Pick a grid/image; its region, spacing and size fill the boxes above.");
+			refRow->addWidget(refEdit, 1);
+			auto *refBtn = new QToolButton(this);
+			refBtn->setText("...");
+			refRow->addWidget(refBtn);
+			auto loadRef = [this](const QString &path) {
+				if (path.isEmpty()) return;
+				refEdit->setText(path);
+				if (!g_juliaGridMeta) return;
+				const char *m = g_juliaGridMeta(path.toUtf8().constData());
+				if (m) fillGeometry(QString::fromUtf8(m));
+			};
+			QObject::connect(refBtn, &QToolButton::clicked, this, [this, loadRef]() {
+				loadRef(QFileDialog::getOpenFileName(this, "Select reference grid", "",
+				                                     "Grid/Image files (*.nc *.grd *.tif *.tiff);;All files (*)"));
+			});
+			QObject::connect(refEdit, &QLineEdit::editingFinished, this, [this, loadRef]() {
+				loadRef(refEdit->text().trimmed());
+			});
+			outer->addLayout(refRow);
+		}
+	}
+};
+
+// ============================================================================================
+// grdsample dialog (GMT > Resample). Port of Mirone's grdsample tool.
+// On OK, hands "input;output;I;R;n;r;T" to Julia.
+// ============================================================================================
+class GrdsampleDialog : public QDialog {
+public:
+	QLineEdit *inpEdit, *outEdit;
+	GeoGridGeometry *geo;             // reusable Griding Line Geometry table (+ OR Ref grid row)
+	QComboBox *interpCombo;
+	QComboBox *regCombo = nullptr;     // gridline/pixel (kept synced into geo->oneOrZero)
+	QCheckBox *clipCheck;
+	QCheckBox *toggleCheck;
+	QToolButton *inpBtn = nullptr;    // Input grid "..." browse (disabled when a grid is loaded)
+	bool    useSelected = false;      // a grid is loaded -> input is the current window's element
+	QString srcName;                  // Scene Objects label of the loaded element (suffix source)
+	QString params;   // "input;output;I;R;n;r;T;S" on OK  (S = source element name)
 
 	GrdsampleDialog(QWidget *parent, Scene *scene = nullptr) : QDialog(parent) {
 		setWindowTitle("grdsample");
@@ -813,83 +923,19 @@ public:
 			inpBtn->setEnabled(false);
 		}
 
-		// --- Griding Line Geometry (Mirone-style table) ---------------------------------------
-		// Two rows (X / Y Direction) × four columns (Min, Max, Spacing, # of lines), plus a "?"
-		// help button on the right. The cross-field recompute logic (edit one -> derive others)
-		// is wired separately once the Julia handler lands; here we only build the layout.
-		auto *geoGroup  = new QGroupBox("Griding Line Geometry", this);
-		auto *geoLayout = new QGridLayout();
-		geoLayout->setHorizontalSpacing(8);
-		geoLayout->setVerticalSpacing(4);
-		auto makeEdit = [this]() {
-			auto *e = new QLineEdit(this);   // no validator: accepts decimal AND dd:mm:ss (Julia validates)
-			e->setAlignment(Qt::AlignLeft);
-			e->setMinimumWidth(90);
-			return e;
-		};
-		xMin = makeEdit(); xMax = makeEdit(); xInc = makeEdit(); xN = makeEdit();
-		yMin = makeEdit(); yMax = makeEdit(); yInc = makeEdit(); yN = makeEdit();
-
-		// Column headers (row 0, cols 1..4), centered over their fields.
-		geoLayout->addWidget(new QLabel("Min"),        0, 1, Qt::AlignHCenter);
-		geoLayout->addWidget(new QLabel("Max"),        0, 2, Qt::AlignHCenter);
-		geoLayout->addWidget(new QLabel("Spacing"),    0, 3, Qt::AlignHCenter);
-		geoLayout->addWidget(new QLabel("# of lines"), 0, 4, Qt::AlignHCenter);
-		// X Direction row.
-		geoLayout->addWidget(new QLabel("X Direction"), 1, 0);
-		geoLayout->addWidget(xMin, 1, 1);
-		geoLayout->addWidget(xMax, 1, 2);
-		geoLayout->addWidget(xInc, 1, 3);
-		geoLayout->addWidget(xN,   1, 4);
-		// Y Direction row.
-		geoLayout->addWidget(new QLabel("Y Direction"), 2, 0);
-		geoLayout->addWidget(yMin, 2, 1);
-		geoLayout->addWidget(yMax, 2, 2);
-		geoLayout->addWidget(yInc, 2, 3);
-		geoLayout->addWidget(yN,   2, 4);
-		// "?" help button spanning both data rows on the far right.
-		auto *helpBtn = new QToolButton(this);
-		helpBtn->setText("?");
-		helpBtn->setToolTip("Edit any two of Min/Max/Spacing/# and the rest are derived.");
-		geoLayout->addWidget(helpBtn, 1, 5, 2, 1);
-
-		geoGroup->setLayout(geoLayout);
-		v->addWidget(geoGroup);
-
-		// --- OR Ref grid: pick a grid/image; gmtread its header to fill the geometry boxes -------
-		auto *refRow = new QHBoxLayout();
-		refRow->addWidget(new QLabel("OR Ref grid"));
-		refEdit = new QLineEdit(this);
-		refEdit->setToolTip("Pick a grid/image; its region, spacing and size fill the boxes above.");
-		refRow->addWidget(refEdit, 1);
-		auto *refBtn = new QToolButton(this);
-		refBtn->setText("...");
-		refRow->addWidget(refBtn);
-		auto loadRef = [this](const QString &path) {
-			if (path.isEmpty()) return;
-			refEdit->setText(path);
-			if (!g_juliaGridMeta) return;
-			const char *m = g_juliaGridMeta(path.toUtf8().constData());
-			if (m) fillGeometry(QString::fromUtf8(m));
-		};
-		QObject::connect(refBtn, &QToolButton::clicked, this, [this, loadRef]() {
-			loadRef(QFileDialog::getOpenFileName(this, "Select reference grid", "",
-			                                     "Grid/Image files (*.nc *.grd *.tif *.tiff);;All files (*)"));
-		});
-		QObject::connect(refEdit, &QLineEdit::editingFinished, this, [this, loadRef]() {
-			loadRef(refEdit->text().trimmed());
-		});
-		v->addLayout(refRow);
+		// --- Griding Line Geometry (reusable widget: 2×4 table + OR Ref grid row) --------------
+		geo = new GeoGridGeometry(this, /*withRefGrid=*/true);
+		v->addWidget(geo);
 
 		// Prefill the geometry from the window's currently loaded grid/image. Prefer the full-res
 		// data layer (gnx/gdx present); fall back to the render bbox + tile dims. No data -> blank.
 		if (scene) {
 			if (scene->gnx > 1 && scene->gny > 1) {
-				fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8")
+				geo->fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8")
 					.arg(scene->gx0).arg(scene->gx1).arg(scene->gy0).arg(scene->gy1)
 					.arg(scene->gdx).arg(scene->gdy).arg(scene->gnx).arg(scene->gny));
 			} else if (scene->x1 > scene->x0 && scene->y1 > scene->y0) {
-				fillGeometry(QString("%1/%2/%3/%4////")   // 8 fields: 4 limits + blank inc/size
+				geo->fillGeometry(QString("%1/%2/%3/%4////")   // 8 fields: 4 limits + blank inc/size
 					.arg(scene->x0).arg(scene->x1).arg(scene->y0).arg(scene->y1));
 			}
 		}
@@ -923,22 +969,14 @@ public:
 		regComboRow->addWidget(regCombo);           // sized to its content, not stretched
 		regComboRow->addStretch();
 		v->addLayout(regComboRow);
+		// Keep the geometry widget's one_or_zero in sync with the chosen registration (gridline=1).
+		QObject::connect(regCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+			[this]() { geo->setRegistration(regCombo->currentData().toString() == "p"); });
 
 		// --- Toggle ---
 		toggleCheck = new QCheckBox("Toggle registration", this);
 		toggleCheck->setToolTip("Switch between gridline and pixel registration");
 		v->addWidget(toggleCheck);
-
-		// Region cross-field recompute (Mirone dim_funs.m, now in Julia). Each box recomputes the
-		// others on edit; the @cfunction is fired on focus-out / Enter.
-		QObject::connect(xMin, &QLineEdit::editingFinished, this, [this]{ runDimFun("xMin"); });
-		QObject::connect(xMax, &QLineEdit::editingFinished, this, [this]{ runDimFun("xMax"); });
-		QObject::connect(yMin, &QLineEdit::editingFinished, this, [this]{ runDimFun("yMin"); });
-		QObject::connect(yMax, &QLineEdit::editingFinished, this, [this]{ runDimFun("yMax"); });
-		QObject::connect(xInc, &QLineEdit::editingFinished, this, [this]{ runDimFun("xInc"); });
-		QObject::connect(yInc, &QLineEdit::editingFinished, this, [this]{ runDimFun("yInc"); });
-		QObject::connect(xN,   &QLineEdit::editingFinished, this, [this]{ runDimFun("nCols"); });
-		QObject::connect(yN,   &QLineEdit::editingFinished, this, [this]{ runDimFun("nRows"); });
 
 		// --- Buttons (Apply / Close like Mirone) ---
 		auto *btnRow = new QHBoxLayout();
@@ -951,12 +989,8 @@ public:
 
 		QObject::connect(btnClose, &QPushButton::clicked, this, &QDialog::reject);
 		QObject::connect(btnApply, &QPushButton::clicked, this, [this]() {
-			QString xi = xInc->text().trimmed(), yi = yInc->text().trimmed();
-			QString I = xi;
-			if (!yi.isEmpty() && yi != xi) I = xi + "/" + yi;   // anisotropic spacing -> xinc/yinc
-			QString R = QString("%1/%2/%3/%4")
-			                .arg(xMin->text().trimmed()).arg(xMax->text().trimmed())
-			                .arg(yMin->text().trimmed()).arg(yMax->text().trimmed());
+			QString I = geo->inc();     // "xinc" or "xinc/yinc" when anisotropic
+			QString R = geo->region();  // "W/E/S/N"
 			QString n = interpCombo->currentData().toString();
 			if (clipCheck->isChecked()) n += "+c";
 			QString r = regCombo->currentData().toString();
@@ -970,6 +1004,545 @@ public:
 		});
 	}
 };
+
+// ============================================================================================
+// BeachballWidget — schematic focal-mechanism "beachball" preview for the elastic-deformation
+// dialog. This is NOT yet a full lower-hemisphere double-couple projection (that arrives with the
+// deformation compute); it draws two opposing black wedges rotated by the fault strike and
+// widened/narrowed by the dip, so the icon updates live as Strike/Dip/Rake are edited. Replace the
+// paintEvent body with the proper Aki-Richards projection when the compute math lands.
+// ============================================================================================
+class BeachballWidget : public QWidget {
+public:
+	double strike = 0, dip = 45, rake = 90;
+	std::function<void()> onClick;   // invoked on click (wired to the Focal Mechanisms demo later)
+
+	BeachballWidget(QWidget *parent = nullptr) : QWidget(parent) {
+		setMinimumSize(72, 72);
+		setCursor(Qt::PointingHandCursor);
+		setToolTip("Focal mechanism — click for the Focal Mechanisms demo");
+	}
+	void setMechanism(double s, double d, double r) { strike = s; dip = d; rake = r; update(); }
+
+protected:
+	void mousePressEvent(QMouseEvent *) override { if (onClick) onClick(); }
+
+	void paintEvent(QPaintEvent *) override {
+		QPainter p(this);
+		p.setRenderHint(QPainter::Antialiasing);
+		// Faint button-style frame so it reads as clickable.
+		p.setPen(QPen(QColor(150, 150, 150), 1.0));
+		p.setBrush(Qt::NoBrush);
+		p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0), 4, 4);
+		const int side = qMin(width(), height()) - 8;
+		QRectF box((width() - side) / 2.0, (height() - side) / 2.0, side, side);
+		// White disc.
+		p.setPen(QPen(Qt::black, 1.5));
+		p.setBrush(Qt::white);
+		p.drawEllipse(box);
+		// Two opposing black wedges; centre from strike, half-width from dip.
+		const double half = qBound(8.0, dip, 90.0);          // each wedge's half-angle (deg)
+		const double c    = 90.0 - strike;                   // north-CW strike -> math angle (0 at 3 o'clock)
+		p.setBrush(Qt::black);
+		p.setPen(Qt::NoPen);
+		auto wedge = [&](double centreDeg) {
+			p.drawPie(box, int((centreDeg - half) * 16), int((2 * half) * 16));   // Qt angles are 1/16 deg, CCW
+		};
+		wedge(c);
+		wedge(c + 180.0);
+		// Outline back on top of the wedges.
+		p.setPen(QPen(Qt::black, 1.5));
+		p.setBrush(Qt::NoBrush);
+		p.drawEllipse(box);
+	}
+};
+
+// Great-circle distance (km) + initial bearing (deg from north, CW) between two lon/lat points.
+// Local spherical fallback for the dialog seed when the Julia/GMT host is unavailable (see
+// faultLineGeom — the normal path now shares the measure menu's GMT geodesic, so the two agree).
+static void geoLineLenAz(double lon1, double lat1, double lon2, double lat2, double& km, double& az) {
+	const double D2R = 3.14159265358979323846 / 180.0, R = 6371.0088;
+	const double p1 = lat1 * D2R, p2 = lat2 * D2R, dl = (lon2 - lon1) * D2R, dp = p2 - p1;
+	const double a = std::sin(dp/2)*std::sin(dp/2) + std::cos(p1)*std::cos(p2)*std::sin(dl/2)*std::sin(dl/2);
+	km = 2.0 * R * std::asin(std::min(1.0, std::sqrt(a)));
+	const double y = std::sin(dl)*std::cos(p2), x = std::cos(p1)*std::sin(p2) - std::sin(p1)*std::cos(p2)*std::cos(dl);
+	az = std::fmod(std::atan2(y, x) / D2R + 360.0, 360.0);     // radians -> deg, wrap to [0,360)
+}
+
+// Find the window's Draw-Fault line and report its total length, its first→last strike azimuth, and
+// whether it is geographic. Length is km (geographic) or data units (cartesian); strike is deg from
+// north, CW. Returns false if there is no fault line. `geog` follows the window CRS when set, else a
+// crude lon/lat-range guess (mirrors GMT.guessgeog) so an unreferenced lon/lat fault still reads geo.
+static bool faultLineGeom(Scene* s, double& len, double& az, bool& geog) {
+	int pi = -1;
+	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
+	if (pi < 0 || s->polys[pi].v.size() < 2) return false;
+	const auto& v = s->polys[pi].v;
+	geog = s->crsProj4.find("longlat") != std::string::npos || s->crsProj4.find("latlong") != std::string::npos;
+	if (s->crsProj4.empty()) {                                  // unknown CRS -> crude range test
+		double x0 = 1e300, x1 = -1e300, y0 = 1e300, y1 = -1e300;
+		for (auto& p : v) { x0 = std::min(x0, p[0]); x1 = std::max(x1, p[0]); y0 = std::min(y0, p[1]); y1 = std::max(y1, p[1]); }
+		geog = (x0 >= -180 && x1 <= 360 && y0 >= -90 && y1 <= 90);
+	}
+	// Length + azimuth come from the SAME Julia/GMT geodesic the "Line length…" measure menu uses
+	// (_fault_lenaz → _seg_dist_azim → mapproject), so the seeded Length matches what the user measures
+	// — no haversine-vs-GMT mismatch. Falls back to the local spherical formula only if the host eval
+	// bridge is unavailable.
+	if (g_juliaEval) {
+		const QString tmp = QDir::tempPath() + "/igmt_faultlen_" +
+							QString::number(QDateTime::currentMSecsSinceEpoch()) + ".txt";
+		QFile f(tmp);
+		if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+			QTextStream ts(&f);
+			ts.setRealNumberPrecision(15);
+			for (auto& p : v) ts << p[0] << ' ' << p[1] << '\n';
+			f.close();
+			const QString cmd = QString("InteractiveGMT._fault_lenaz(raw\"%1\",raw\"%2\")")
+									.arg(tmp).arg(QString::fromStdString(s->crsProj4));
+			std::vector<char> buf(512);
+			int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+			QFile::remove(tmp);
+			if (n > 0) {
+				QStringList p = QString::fromUtf8(buf.data(), n).split('/');
+				if (p.size() >= 3) {
+					bool a, b; double L = p[0].toDouble(&a), Z = p[1].toDouble(&b);
+					if (a && b) { len = L; az = Z; geog = (p[2].toInt() != 0); return true; }
+				}
+			}
+		}
+	}
+
+	// Fallback: local spherical haversine (only when the Julia/GMT host is not registered).
+	len = 0.0;
+	for (size_t k = 1; k < v.size(); ++k) {
+		if (geog) { double d, a; geoLineLenAz(v[k-1][0], v[k-1][1], v[k][0], v[k][1], d, a); len += d; }
+		else       len += std::hypot(v[k][0] - v[k-1][0], v[k][1] - v[k-1][1]);
+	}
+	const auto& A = v.front(); const auto& B = v.back();
+	if (geog) { double d; geoLineLenAz(A[0], A[1], B[0], B[1], d, az); }
+	else        az = std::fmod(std::atan2(B[0] - A[0], B[1] - A[1]) * 180.0 / 3.14159265358979323846 + 360.0, 360.0);
+	return true;
+}
+
+// Move the fault trace's end vertex so the line matches (strike, len) — port of Mirone's
+// edit_FaultStrike_CB / edit_FaultLength_CB. The first vertex is the fixed anchor; the endpoint is
+// the direct-geodesic destination for geographic faults (solved in Julia via GMT.geod, like Mirone's
+// vreckon) or plain trig for cartesian ones. The line collapses to a clean 2-vertex segment from the
+// start, exactly as Mirone sets XData=[x1 lon2], YData=[y1 lat2]. `len` is km (geog) / data units
+// (cart). On success returns true and (if requested) the new endpoint. len <= 0 or no fault -> false.
+static bool faultApplyGeom(Scene* s, double strike, double len, bool geog,
+                           double* lon2o = nullptr, double* lat2o = nullptr) {
+	if (!s || len <= 0) return false;
+	int pi = -1;
+	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
+	if (pi < 0 || s->polys[pi].v.empty()) return false;
+	Polygon& pg = s->polys[pi];
+	const double lon1 = pg.v.front()[0], lat1 = pg.v.front()[1], z0 = pg.v.front()[2];
+	double lon2, lat2;
+	if (geog) {
+		if (!g_juliaFaultGeom) return false;                       // no geodesic solver -> leave trace as-is
+		QStringList p = QString::fromUtf8(g_juliaFaultGeom(lon1, lat1, strike, len)).split('/');
+		if (p.size() < 2) return false;
+		bool a, b; lon2 = p[0].toDouble(&a); lat2 = p[1].toDouble(&b);
+		if (!a || !b) return false;
+	} else {                                                       // cartesian: azimuth from north, CW
+		const double D2R = 3.14159265358979323846 / 180.0;
+		lon2 = lon1 + len * std::sin(strike * D2R);
+		lat2 = lat1 + len * std::cos(strike * D2R);
+	}
+	pg.v = { { lon1, lat1, z0 }, { lon2, lat2, z0 } };             // 2-vertex segment from the fixed start
+	pg.closed = false;
+	polyRebuildLine(s, pg);                                        // re-drapes z + refills the line actor
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	if (lon2o) *lon2o = lon2;
+	if (lat2o) *lat2o = lat2;
+	return true;
+}
+
+// One filled quad cell over `corners` (no closing dup needed for a polygon cell). VTK triangulates
+// the (possibly slightly non-planar, terrain-draped) quad for rendering.
+static void faultBuildPlanePD(vtkPolyData* pd, const std::vector<std::array<double,3>>& corners) {
+	vtkNew<vtkPoints> pts;
+	for (auto& c : corners) pts->InsertNextPoint(c[0], c[1], c[2]);
+	vtkNew<vtkCellArray> polys;
+	vtkNew<vtkIdList>    ids;
+	for (vtkIdType i = 0; i < (vtkIdType)corners.size(); ++i) ids->InsertNextId(i);
+	polys->InsertNextCell(ids);
+	pd->SetPoints(pts);
+	pd->SetPolys(polys);
+	pd->Modified();
+}
+
+// The gray surface-projection patch actor: a filled light-gray quad with a thin black outline. Its
+// polygon offset (-22000) lifts it just above the relief but stays BELOW the trace line actor (whose
+// line offset is -66000 in polyMakeLineActor), so the orange trace always reads on top of the patch
+// — that is how the user tells which long side of the rectangle is the fault trace.
+static vtkSmartPointer<vtkActor> faultMakePlaneActor(Scene* s, vtkPolyData* pd) {
+	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pd); map->ScalarVisibilityOff();
+	vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
+	map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -22000.0);
+	auto a = vtkSmartPointer<vtkActor>::New();
+	a->SetMapper(map);
+	a->GetProperty()->SetColor(0.80, 0.80, 0.80);
+	a->GetProperty()->SetEdgeColor(0.0, 0.0, 0.0);
+	a->GetProperty()->EdgeVisibilityOn();
+	a->GetProperty()->LightingOff();
+	a->PickableOff();
+	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	return a;
+}
+
+// Draw / refresh the surface projection of the dipping fault plane — port of Mirone's
+// edit_FaultDip_CB / edit_FaultWidth_CB patch update (deform_mansinha.m). The trace (front→back of
+// the fault polyline) is one long edge; the opposite edge is offset by off = W·cos(dip) — the
+// horizontal projection of the down-dip width — along azimuth strike+90 (down-dip side). Geographic
+// faults walk that offset with the SAME geodesic solver as the endpoint move (g_juliaFaultGeom,
+// GMT.geod); cartesian ones use plain trig (dx=off·cos(strike), dy=-off·sin(strike), matching
+// Mirone). dip→90 or W→0 collapses the patch to the trace, so it is hidden. `strike` is the seeded
+// first→last azimuth; `width` is km (geographic) / data units (cartesian).
+static void faultUpdatePlane(Scene* s, double width, double dip, double strike, bool geog) {
+	if (!s) return;
+	int pi = -1;
+	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
+	if (pi < 0 || s->polys[pi].v.size() < 2) return;
+	Polygon& pg = s->polys[pi];
+	const double D2R = 3.14159265358979323846 / 180.0;
+	const double off = width * std::cos(dip * D2R);                 // horizontal projection of down-dip width
+	const auto& A = pg.v.front();  const auto& B = pg.v.back();     // trace endpoints (the long edge)
+
+	if (!pg.faultPlanePD) pg.faultPlanePD = vtkSmartPointer<vtkPolyData>::New();
+	if (!pg.faultPlane) {
+		pg.faultPlane = faultMakePlaneActor(s, pg.faultPlanePD);
+		s->ren->AddActor(pg.faultPlane);
+	}
+
+	if (!(off > 0)) {                                              // vertical fault / zero width: no patch
+		pg.faultPlane->VisibilityOff();
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return;
+	}
+
+	double ox0 = A[0], oy0 = A[1], ox1 = B[0], oy1 = B[1];          // the offset (down-dip) edge endpoints
+	if (geog && g_juliaFaultGeom) {
+		QStringList p0 = QString::fromUtf8(g_juliaFaultGeom(A[0], A[1], strike + 90.0, off)).split('/');
+		QStringList p1 = QString::fromUtf8(g_juliaFaultGeom(B[0], B[1], strike + 90.0, off)).split('/');
+		if (p0.size() >= 2) { ox0 = p0[0].toDouble(); oy0 = p0[1].toDouble(); }
+		if (p1.size() >= 2) { ox1 = p1[0].toDouble(); oy1 = p1[1].toDouble(); }
+	} else {
+		ox0 = A[0] + off * std::cos(strike * D2R);  oy0 = A[1] - off * std::sin(strike * D2R);
+		ox1 = B[0] + off * std::cos(strike * D2R);  oy1 = B[1] - off * std::sin(strike * D2R);
+	}
+
+	std::vector<std::array<double,3>> corners = {                  // trace start, trace end, off end, off start
+		{ A[0], A[1], A[2] }, { B[0], B[1], B[2] }, { ox1, oy1, B[2] }, { ox0, oy0, A[2] } };
+	for (auto& c : corners) { const double h = sampleZ(s, c[0], c[1]); if (!std::isnan(h)) c[2] = h; }
+	faultBuildPlanePD(pg.faultPlanePD, corners);
+	pg.faultPlane->VisibilityOn();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// ============================================================================================
+// Vertical elastic deformation dialog — Okada (1985) surface-deformation inputs, port of Mirone's
+// "Vertical elastic deformation" tool. Fault Geometry (length/width/strike/dip/depth/depth-to-top),
+// Dislocation Geometry (strike/rake/slip + N/q discretisation, Hide-fault-planes / SCC toggles, and
+// a live Mw magnitude), shear modulus Mu, a coordinate-mode combo, a schematic beachball preview,
+// and the shared Griding Line Geometry (GeoGridGeometry, no Ref-grid row). The deformation compute
+// is NOT wired yet — Compute / Save fault assemble a `params` string + set `action`, and the dialog
+// accept()s; the host menu hook + Julia callback are added later. No Q_OBJECT (lambdas only).
+// ============================================================================================
+class ElasticDialog : public QDialog {
+public:
+	QLineEdit *fLen, *fWid, *fStrike, *fDip, *fDepth, *fDepTop;   // Fault Geometry
+	QLineEdit *dStrike, *dRake, *dSlip, *dN, *dQ;                 // Dislocation Geometry
+	QLineEdit *muEdit;                                            // shear modulus (x10^10)
+	QCheckBox *hideCheck, *sccCheck;
+	QComboBox *coordCombo;
+	QLabel    *mwLabel;
+	GeoGridGeometry *geo;
+	BeachballWidget *beach;
+	Scene *scn = nullptr;   // owning window's scene (for the live fault-trace endpoint update)
+	std::function<void(const QString&)> onAction;   // host hook fired by Compute / Save fault (non-modal)
+
+	// Live Mw from the seismic moment M0 = mu·L·W·slip (mu in 1e10 Pa, L/W in km -> m, slip in m):
+	// Mw = (2/3)·log10(M0) − 6.07. Shown as "--" until L/W/slip/mu are all positive numbers.
+	void updateMw() {
+		bool a, b, c, d;
+		double L = fLen->text().toDouble(&a), W = fWid->text().toDouble(&b);
+		double slip = dSlip->text().toDouble(&c), mu = muEdit->text().toDouble(&d);
+		if (a && b && c && d && L > 0 && W > 0 && slip > 0 && mu > 0) {
+			double M0 = mu * 1e10 * (L * 1e3) * (W * 1e3) * slip;     // N·m
+			mwLabel->setText(QString("Mw Magnitude = %1").arg((2.0 / 3.0) * std::log10(M0) - 6.07, 0, 'f', 1));
+		} else {
+			mwLabel->setText("Mw Magnitude = --");
+		}
+	}
+
+	void refreshBeachball() {
+		beach->setMechanism(fStrike->text().toDouble(), fDip->text().toDouble(), dRake->text().toDouble());
+	}
+
+	// Snapshot every field into the Scene so the next open of this (rebuilt) dialog restores them.
+	void saveState() {
+		if (!scn) return;
+		Scene::FaultDlgState &st = scn->faultDlg;
+		st.len  = fLen->text();   st.wid    = fWid->text();    st.strike = fStrike->text();
+		st.dip  = fDip->text();   st.depth  = fDepth->text();  st.depTop = fDepTop->text();
+		st.dStrike = dStrike->text(); st.rake = dRake->text(); st.slip   = dSlip->text();
+		st.N    = dN->text();     st.q      = dQ->text();      st.mu     = muEdit->text();
+		st.hide = hideCheck->isChecked(); st.scc = sccCheck->isChecked();
+		st.coord = coordCombo->currentIndex();
+		st.valid = true;
+	}
+
+	// Restore the previously-saved non-geometry fields (Length/Strike are re-seeded from the trace).
+	void loadState(const Scene::FaultDlgState &st) {
+		fLen->setText(st.len);   fWid->setText(st.wid);    fStrike->setText(st.strike);
+		fDip->setText(st.dip);   fDepth->setText(st.depth);fDepTop->setText(st.depTop);
+		dStrike->setText(st.dStrike); dRake->setText(st.rake); dSlip->setText(st.slip);
+		dN->setText(st.N);       dQ->setText(st.q);        muEdit->setText(st.mu);
+		hideCheck->setChecked(st.hide); sccCheck->setChecked(st.scc);
+		coordCombo->setCurrentIndex(st.coord);
+	}
+
+	// Move the fault trace's end vertex to match the typed Strike/Length (delegates to the shared
+	// faultApplyGeom core — see below). Geographic vs cartesian is taken from the coordinate combo.
+	void applyFaultGeom() {
+		if (!scn) return;
+		bool okS, okL;
+		double strike = fStrike->text().toDouble(&okS);
+		double len    = fLen->text().toDouble(&okL);
+		if (!okS || !okL) return;
+		faultApplyGeom(scn, strike, len, coordCombo->currentData().toString() == "geog");
+	}
+
+	// Redraw the gray surface-projection patch from the current Width / Dip / Strike. Called whenever
+	// any of those (or the trace itself) change, so the patch tracks the fault plane live.
+	void updateFaultPlane() {
+		if (!scn) return;
+		faultUpdatePlane(scn, fWid->text().toDouble(), fDip->text().toDouble(),
+						 fStrike->text().toDouble(), coordCombo->currentData().toString() == "geog");
+	}
+
+	ElasticDialog(QWidget *parent, Scene *scene = nullptr) : QDialog(parent) {
+		scn = scene;
+		setWindowTitle("Vertical elastic deformation");
+		auto *v = new QVBoxLayout(this);
+
+		// A labelled field with the label centred ABOVE the box (Mirone's table look).
+		auto vfield = [this](const QString &lab, QLineEdit *&e, const QString &init) -> QWidget* {
+			auto *w  = new QWidget(this);
+			auto *vl = new QVBoxLayout(w); vl->setContentsMargins(0, 0, 0, 0); vl->setSpacing(2);
+			auto *l  = new QLabel(lab, w); l->setAlignment(Qt::AlignHCenter);
+			e = new QLineEdit(init, w); e->setMinimumWidth(80);
+			vl->addWidget(l); vl->addWidget(e);
+			return w;
+		};
+
+		// --- Top row: Fault Geometry | middle column (CONFIRM + Mw + N/q) | Dislocation Geometry ---
+		auto *topRow = new QHBoxLayout();
+
+		// Fault Geometry: 2 columns × 3 rows.
+		auto *faultGroup = new QGroupBox("Fault Geometry", this);
+		auto *fg = new QGridLayout(faultGroup);
+		fg->addWidget(vfield("Length", fLen, ""),     0, 0);
+		fg->addWidget(vfield("Width",  fWid, ""),     0, 1);
+		fg->addWidget(vfield("Strike", fStrike, "0"), 1, 0);
+		fg->addWidget(vfield("Dip",    fDip, "25"),   1, 1);
+		fg->addWidget(vfield("Depth",  fDepth, ""),   2, 0);
+		fg->addWidget(vfield("Depth to Top", fDepTop, "0"), 2, 1);
+		topRow->addWidget(faultGroup);
+
+		// Middle column: CONFIRM (coordinate mode).
+		auto *midCol = new QVBoxLayout();
+		midCol->addStretch();
+		auto *confirmLab = new QLabel("CONFIRM", this);
+		confirmLab->setStyleSheet("color: red; font-weight: bold;");
+		confirmLab->setAlignment(Qt::AlignHCenter);
+		midCol->addWidget(confirmLab);
+		coordCombo = new QComboBox(this);
+		coordCombo->addItem("Geogs", "geog");      // geographic (degrees)
+		coordCombo->addItem("Cart",  "cart");      // cartesian (metres / km)
+		coordCombo->setToolTip("Coordinate type of the fault position and grid limits");
+		midCol->addWidget(coordCombo);
+		midCol->addStretch();
+		topRow->addLayout(midCol);
+
+		// Dislocation Geometry. Mw lives at the bottom of this box.
+		auto *disGroup = new QGroupBox("Dislocation Geometry", this);
+		auto *dg = new QGridLayout(disGroup);
+		dg->addWidget(vfield("Strike", dStrike, "0"),  0, 0);
+		dg->addWidget(vfield("Rake",   dRake, "90"),   0, 1);
+		dg->addWidget(vfield("Slip",   dSlip, "1"),    0, 2);
+		hideCheck = new QCheckBox("Hide fault planes", disGroup);
+		sccCheck  = new QCheckBox("SCC", disGroup);
+		sccCheck->setToolTip("Use the SCC (Self-Consistent Crust) Green functions");
+		dg->addWidget(hideCheck, 1, 0, 1, 2);
+		dg->addWidget(sccCheck,  1, 2);
+		dg->addWidget(vfield("N", dN, "20"),  2, 1);     // sub-fault discretisation
+		dg->addWidget(vfield("q", dQ, "0.3"), 2, 2);
+		mwLabel = new QLabel("Mw Magnitude = --", disGroup);
+		dg->addWidget(mwLabel, 3, 0, 1, 3);
+		// N/q are only meaningful for the SCC Green functions — disabled until SCC is ticked.
+		dN->setEnabled(false); dQ->setEnabled(false);
+		QObject::connect(sccCheck, &QCheckBox::toggled, this, [this](bool on) {
+			dN->setEnabled(on); dQ->setEnabled(on); });
+		topRow->addWidget(disGroup);
+
+		v->addLayout(topRow);
+
+		// --- Mu (shear modulus) row ------------------------------------------------------------
+		auto *muRow = new QHBoxLayout();
+		muRow->addStretch();
+		muRow->addWidget(new QLabel("Mu (x10^10)", this));
+		muEdit = new QLineEdit("3.0", this);
+		muEdit->setMaximumWidth(80);
+		muEdit->setToolTip("Shear modulus / rigidity (×10^10 Pa)");
+		muRow->addWidget(muEdit);
+		v->addLayout(muRow);
+
+		// --- Griding Line Geometry (reused widget, no Ref-grid row here) + beachball & buttons ----
+		auto *botRow = new QHBoxLayout();
+		geo = new GeoGridGeometry(this, /*withRefGrid=*/false);
+		botRow->addWidget(geo, 1);
+
+		auto *rightCol = new QVBoxLayout();
+		beach = new BeachballWidget(this);
+		beach->onClick = [this]() {     // to be wired to the Focal Mechanisms demo later
+			QMessageBox::information(this, "Focal Mechanisms",
+				"Focal Mechanisms demo — not implemented yet.");
+		};
+		rightCol->addWidget(beach, 0, Qt::AlignHCenter);
+		auto *btnRow = new QHBoxLayout();
+		auto *helpBtn    = new QToolButton(this);   helpBtn->setText("?");
+		auto *saveBtn    = new QPushButton("Save fault", this);
+		auto *computeBtn = new QPushButton("Compute", this);
+		// Enter in an edit box must only apply that edit (via editingFinished) — it must NOT trigger a
+		// default button (Compute/Save) nor close the dialog. Strip default/auto-default so Return is
+		// inert at the dialog level; only an explicit click runs Compute / Save fault.
+		for (QPushButton *b : {saveBtn, computeBtn}) { b->setAutoDefault(false); b->setDefault(false); }
+		btnRow->addWidget(helpBtn);
+		btnRow->addWidget(saveBtn);
+		btnRow->addWidget(computeBtn);
+		rightCol->addLayout(btnRow);
+		botRow->addLayout(rightCol);
+		v->addLayout(botRow);
+
+		// Prefill the geometry from the window's loaded grid/image (same logic as grdsample).
+		if (scene) {
+			if (scene->gnx > 1 && scene->gny > 1) {
+				geo->fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8")
+					.arg(scene->gx0).arg(scene->gx1).arg(scene->gy0).arg(scene->gy1)
+					.arg(scene->gdx).arg(scene->gdy).arg(scene->gnx).arg(scene->gny));
+			} else if (scene->x1 > scene->x0 && scene->y1 > scene->y0) {
+				geo->fillGeometry(QString("%1/%2/%3/%4////")
+					.arg(scene->x0).arg(scene->x1).arg(scene->y0).arg(scene->y1));
+			}
+			// Restore the user's previously-typed fields (the dialog is rebuilt every open).
+			const bool hadState = scene->faultDlg.valid;
+			if (hadState) loadState(scene->faultDlg);
+
+			// Seed Length + Strike from the drawn fault line (its raison d'être) — ALWAYS, so a vertex
+			// drag since the last open is honoured. Length is km for a geographic fault, data units
+			// otherwise; Strike is the first→last azimuth. The combo follows the same geographic guess
+			// only on a fresh fault; once the user has a saved state we keep their coordinate choice.
+			double flen = 0, faz = 0; bool fgeo = false;
+			if (faultLineGeom(scene, flen, faz, fgeo)) {
+				fLen->setText(QString::number(flen, 'g', 6));
+				fStrike->setText(QString::number(faz, 'g', 6));
+				dStrike->setText(QString::number(faz, 'g', 6));
+				if (!hadState) {
+					coordCombo->setCurrentIndex(fgeo ? 0 : 1);
+					// First time only (no saved state): seed Width = Length/4 and the derived Depth,
+					// exactly as Mirone's edit_FaultWidth_CB does on a fresh fault. A manual edit later
+					// is preserved by the saved state, so this auto-seed never overrides the user.
+					const double D2R = 3.14159265358979323846 / 180.0;
+					const double w    = flen / 4.0;
+					const double dip  = fDip->text().toDouble();       // default 25
+					const double topd = fDepTop->text().toDouble();    // default 0
+					fWid->setText(QString::number(w, 'g', 6));
+					fDepth->setText(QString::number(topd + w * std::cos((90.0 - dip) * D2R), 'g', 6));
+				}
+			}
+		}
+
+		// Live coupling: Strike mirrored between the two boxes; beachball + Mw track their inputs.
+		// Editing Strike or Length also moves the fault trace's end vertex (Mirone edit_Fault*_CB).
+		QObject::connect(fStrike, &QLineEdit::editingFinished, this, [this]{
+			dStrike->setText(fStrike->text()); refreshBeachball(); applyFaultGeom(); updateFaultPlane(); });
+		QObject::connect(dStrike, &QLineEdit::editingFinished, this, [this]{
+			fStrike->setText(dStrike->text()); refreshBeachball(); });
+		QObject::connect(fLen,  &QLineEdit::editingFinished, this, [this]{ applyFaultGeom(); updateFaultPlane(); });
+		QObject::connect(fDip,  &QLineEdit::editingFinished, this, [this]{ refreshBeachball(); updateFaultPlane(); });
+		QObject::connect(fWid,  &QLineEdit::editingFinished, this, [this]{ updateFaultPlane(); });
+		QObject::connect(coordCombo, &QComboBox::currentIndexChanged, this, [this]{ updateFaultPlane(); });
+		QObject::connect(dRake, &QLineEdit::editingFinished, this, [this]{ refreshBeachball(); });
+		for (QLineEdit *e : {fLen, fWid, dSlip, muEdit})
+			QObject::connect(e, &QLineEdit::editingFinished, this, [this]{ updateMw(); });
+		// Persist every field to the Scene on change, so closing + reopening the dialog restores them.
+		// (Enter-defocus is handled app-wide by EnterDefocusFilter, installed on the QApplication.)
+		for (QLineEdit *e : {fLen, fWid, fStrike, fDip, fDepth, fDepTop, dStrike, dRake, dSlip, dN, dQ, muEdit})
+			QObject::connect(e, &QLineEdit::editingFinished, this, [this]{ saveState(); });
+		QObject::connect(hideCheck, &QCheckBox::toggled, this, [this]{ saveState(); });
+		QObject::connect(sccCheck,  &QCheckBox::toggled, this, [this]{ saveState(); });
+		QObject::connect(coordCombo, &QComboBox::currentIndexChanged, this, [this]{ saveState(); });
+		saveState();          // snapshot the seeded initial state (so first reopen restores it)
+		updateMw();
+		refreshBeachball();
+		updateFaultPlane();   // draw the gray surface-projection patch for the seeded geometry
+
+		// Help.
+		QObject::connect(helpBtn, &QToolButton::clicked, this, [this]{
+			QMessageBox::information(this, "Vertical elastic deformation",
+				"Okada (1985) elastic surface deformation.\n\n"
+				"Fault Geometry: rupture length, width, strike, dip, depth and depth-to-top.\n"
+				"Dislocation Geometry: strike, rake and slip; N/q control sub-fault discretisation.\n"
+				"Mu: shear modulus (×10^10 Pa). Mw is derived from L·W·slip·Mu.\n"
+				"Griding Line Geometry: the output grid region and spacing.");
+		});
+
+		// Compute / Save fault: assemble params + fire the host hook. The dialog is NON-MODAL, so it
+		// stays open (no accept()/close) — the window keeps working while it is up and the user can
+		// keep editing. Compute math + the Julia hook are wired through onAction.
+		auto assemble = [this](const QString &act) {
+			saveState();
+			QString params = QString("%1;%2;%3;%4;%5;%6;%7;%8;%9;%10;%11;%12;%13;%14;%15;%16")
+				.arg(act).arg(coordCombo->currentData().toString())
+				.arg(fLen->text().trimmed()).arg(fWid->text().trimmed())
+				.arg(fStrike->text().trimmed()).arg(fDip->text().trimmed())
+				.arg(fDepth->text().trimmed()).arg(fDepTop->text().trimmed())
+				.arg(dRake->text().trimmed()).arg(dSlip->text().trimmed())
+				.arg(hideCheck->isChecked() ? "1" : "0").arg(sccCheck->isChecked() ? "1" : "0")
+				.arg(dN->text().trimmed()).arg(dQ->text().trimmed())
+				.arg(muEdit->text().trimmed())
+				.arg(geo->region() + ";" + geo->inc());   // R then I, tail of the string
+			if (onAction) onAction(params);
+		};
+		QObject::connect(computeBtn, &QPushButton::clicked, this, [assemble]{ assemble("compute"); });
+		QObject::connect(saveBtn,    &QPushButton::clicked, this, [assemble]{ assemble("save"); });
+	}
+};
+
+// Open the Vertical elastic deformation dialog for the current window (used by a fault line's first
+// property — forward-declared in 55_lineprops.cpp). The dialog prefills its Griding Line Geometry
+// from the window's loaded grid/image (same path as grdsample). On accept, hands params to Julia.
+static void faultRunDialog(Scene* s) {
+	if (!s || !s->win) return;
+	// NON-MODAL: show() (not exec()) so the main window stays interactive while the dialog is up —
+	// editing Strike/Length must update the trace live, not block the UI. Heap-allocated + delete-on-
+	// close so it manages its own lifetime; one dialog per window at a time (reuse if already open).
+	if (s->elasticDlg) { s->elasticDlg->raise(); s->elasticDlg->activateWindow(); return; }
+	ElasticDialog* dlg = new ElasticDialog(s->win, s);
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	s->elasticDlg = dlg;
+	QObject::connect(dlg, &QObject::destroyed, s->win, [s]{ s->elasticDlg = nullptr; });
+	dlg->onAction = [s](const QString& params) {
+		if (g_juliaElastic) g_juliaElastic(s, params.toUtf8().constData());
+		else s->win->statusBar()->showMessage("Elastic deformation: compute not wired yet", 3000);
+	};
+	dlg->show();
+	dlg->raise();
+	dlg->activateWindow();
+}
 
 // ============================================================================================
 // NSWING tsunami modelling — port of Mirone's swan_options.m (src_figs/swan_options.m) driving the
@@ -2100,16 +2673,92 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mODP->addAction("IODP",          geoTODO("IODP"));
 	mODP->addAction("DSDP+ODP+IODP", geoTODO("DSDP+ODP+IODP"));
 
-	// --- Geophysics menu: NSWING tsunami modelling (port of Mirone's swan_options.m) -----------
-	// Opens the modal options dialog; on RUN hands the "key=value" parameter block to Julia
-	// (g_juliaNswing), which assembles + launches the nswing command line.
-	QMenu *mGphy = win->menuBar()->addMenu("Geoph&ysics");
-	mGphy->addAction("NSWING tsunami…", [win, s]() {
-		NswingDialog dlg(win, s);
-		if (dlg.exec() != QDialog::Accepted || dlg.params.isEmpty()) return;
-		if (g_juliaNswing) g_juliaNswing(s, dlg.params.toUtf8().constData());
-		else if (s->win) s->win->statusBar()->showMessage("NSWING: callback not registered", 3000);
-	});
+	// --- Geophysics: a switchable discipline group (native rotating menu) -----------------------
+	// A stock top-level menu (always visible, unlike a widget jammed in the bar). Its title shows a
+	// ▾ to hint it is a switcher. Opening it lists the disciplines (Tsunamis / Seismology); picking
+	// one rotates the menu title to that discipline and repopulates it with that discipline's items
+	// (plus a "‹ Disciplines" entry to switch back), then re-opens so the content shows at once. The
+	// menu is rebuilt in place via three mutually-recursive std::functions (heap, window-lifetime).
+	QMenu *mGphy = win->menuBar()->addMenu("Geophysics ▾");
+
+	// Elastic deformation submenu — built once and re-attached on each Seismology rebuild (parented
+	// to win so the menu's clear() does not delete it). CRS gate relaxed for now: many geographic
+	// grids carry no explicit referencing system yet are valid inputs, so the submenu stays enabled
+	// (the Draw Fault tool still guards the empty launcher).
+	QMenu *mElastic = new QMenu("Elastic deformation", win);
+	s->elasticMenu = mElastic;
+
+	// Draw Fault — a draw-mode tool (a two-point line, like the Line family member) routed through
+	// polygonToolToggled with the SH_Fault kind. The finished fault carries isFault, so its Scene
+	// Objects context menu leads with "Vertical elastic deformation". Joined to the shared exclusive
+	// draw-tool group (s->shapeActs) so it untoggles the toolbar shape tools and vice-versa.
+	QAction *actDrawFault = mElastic->addAction("Draw Fault");
+	actDrawFault->setCheckable(true);
+	actDrawFault->setToolTip("Draw a fault line: click the start point, then the end (double-click ends it). "
+	                         "Its properties hold the Vertical elastic deformation dialog.");
+	QObject::connect(actDrawFault, &QAction::toggled,
+		[s, actDrawFault](bool on) { polygonToolToggled(s, actDrawFault, Scene::SH_Fault, on); });
+	s->shapeActs.push_back(actDrawFault);
+
+	mElastic->addAction("Import Trace Fault", geoTODO("Import Trace Fault"));
+	mElastic->addAction("Import Model Slip",  geoTODO("Import Model Slip"));
+
+	auto *fGroup = new std::function<void()>();   // show the discipline chooser
+	auto *fTsu   = new std::function<void()>();    // show Tsunamis
+	auto *fSeis  = new std::function<void()>();    // show Seismology
+
+	// Re-open the menu at its menubar slot after a rotate (deferred so it runs once the triggering
+	// click has finished closing the menu).
+	auto reopen = [win, mGphy]() {
+		QTimer::singleShot(0, mGphy, [win, mGphy]() {
+			QRect r = win->menuBar()->actionGeometry(mGphy->menuAction());
+			mGphy->popup(win->menuBar()->mapToGlobal(r.bottomLeft()));
+		});
+	};
+
+	*fGroup = [mGphy, fTsu, fSeis]() {
+		mGphy->clear();
+		mGphy->setTitle("Geophysics ▾");
+		mGphy->addAction("Tsunamis",   [fTsu]()  { (*fTsu)(); });
+		mGphy->addAction("Seismology", [fSeis]() { (*fSeis)(); });
+	};
+	auto backItem = [mGphy, fGroup, reopen]() {            // "‹ Disciplines" — return to the chooser
+		mGphy->addAction("‹ Disciplines", [fGroup, reopen]() { (*fGroup)(); reopen(); });
+		mGphy->addSeparator();
+	};
+
+	// Tsunamis discipline — currently just NSWING (port of Mirone's swan_options.m).
+	*fTsu = [mGphy, win, s, backItem, reopen]() {
+		mGphy->clear();
+		mGphy->setTitle("Tsunamis ▾");
+		backItem();
+		mGphy->addAction("NSWING tsunami…", [win, s]() {
+			NswingDialog dlg(win, s);
+			if (dlg.exec() != QDialog::Accepted || dlg.params.isEmpty()) return;
+			if (g_juliaNswing) g_juliaNswing(s, dlg.params.toUtf8().constData());
+			else if (s->win) s->win->statusBar()->showMessage("NSWING: callback not registered", 3000);
+		});
+		reopen();
+	};
+
+	// Seismology discipline — TODO stubs (geoTODO) + the Elastic deformation submenu.
+	*fSeis = [mGphy, mElastic, geoTODO, backItem, reopen]() {
+		mGphy->clear();
+		mGphy->setTitle("Seismology ▾");
+		backItem();
+		mGphy->addAction("Seismicity",                    geoTODO("Seismicity"));
+		mGphy->addAction("Focal mechanisms",              geoTODO("Focal mechanisms"));
+		mGphy->addAction("Focal Mechanisms demo",         geoTODO("Focal Mechanisms demo"));
+		mGphy->addAction("CMT Catalog (Web download)",    geoTODO("CMT Catalog"));
+		mGphy->addAction("Global seismicity (1990-2009)", geoTODO("Global seismicity"));
+		mGphy->addAction("USGS recent seismicity",        geoTODO("USGS recent seismicity"));
+		mGphy->addAction("Ground motions",                geoTODO("Ground motions"));
+		mGphy->addSeparator();
+		mGphy->addMenu(mElastic);
+		reopen();
+	};
+
+	(*fGroup)();   // initial population: the discipline chooser
 
 	// --- Tools menu: open the standalone X,Y plot tool (blank; ready for File>Open or Julia) ----
 	QMenu *mTools = win->menuBar()->addMenu("&Tools");

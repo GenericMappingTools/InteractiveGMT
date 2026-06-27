@@ -76,6 +76,9 @@ struct Polygon {
 	std::string name;                        // label shown in the Scene Objects panel ("polygon N")
 	bool closed = true;                      // closed ring (polygon/rect/circle) vs open chain (polyline)
 	bool isRect = false;                     // drawn with a rectangle tool (SH_Rect/SH_RectN): vertex edits stay axis-aligned
+	bool isFault = false;                    // drawn with the Draw Fault tool (SH_Fault): props hold the elastic-deformation dialog
+	vtkSmartPointer<vtkActor>    faultPlane; // gray surface-projection patch of the dipping fault plane (sits BELOW the trace)
+	vtkSmartPointer<vtkPolyData> faultPlanePD;
 	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
 	int    nestKind = 0;                     // 0 = ordinary shape; 1 = "Nested grids" rectangle (special menu)
 	double nestXi = 0, nestYi = 0;           // child cell sizes (0 = inherit parent inc; resolved by nestReflow)
@@ -116,6 +119,7 @@ static void restackGrid(Scene* s, int* stackPtr, int op);      // move one grid 
 static void lineApplyStyle(Scene* s, const LineRef& lr, int style);
 static int  lineCurrentStyle(Scene* s, const LineRef& lr);
 static void polygonDelete(Scene* s, vtkActor* lineActor);                    // remove a finished polygon
+static void overlayDelete(Scene* s, vtkActor* a);                            // remove an overlay line/point (50)
 static void polyRebuildLine(Scene* s, Polygon& pg);                         // rebuild a polygon actor from pg.v (85)
 static int  polyHitPolygon(Scene* s, int x, int y, double tol);             // polygon under cursor? (85)
 static void nestReflow(Scene* s);                                           // re-quantize "Nested grids" chain (85)
@@ -240,6 +244,7 @@ struct Scene {
 	std::string crsProj4, crsWkt;
 	int         crsEpsg = 0;
 	QMenu*      geoMenu = nullptr;   // the Geography menu (built disabled; enabled once a CRS is set)
+	QMenu*      elasticMenu = nullptr;   // Seismology > Elastic deformation (disabled until a CRS is set)
 	bool hasCRS() const { return !crsProj4.empty() || !crsWkt.empty() || crsEpsg != 0; }
 
 	QAction* act2D = nullptr;        // shared checkable "Flat 2D (map)" action (toolbar + View menu)
@@ -305,7 +310,7 @@ struct Scene {
 	// rectangle and circle all finalize into a `Polygon` (a vertex ring; polyline is the only open
 	// one) and so share preview / edit / delete / Scene-Objects / Line-Properties code. Text places
 	// a billboard label instead. polyShape selects which tool the active (checked) button drives.
-	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text, SH_RectN };
+	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text, SH_RectN, SH_Fault };
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
 	int    vecSeq = 0;                                  // monotonic seed for shared vector-pile stack ranks
@@ -327,6 +332,21 @@ struct Scene {
 	vtkSmartPointer<vtkCallbackCommand> polyCmd;       // mouse observers (priority above the gizmo)
 	QAction* polyAct = nullptr;                         // active draw toggle action — set on the checked tool
 	std::vector<QAction*> shapeActs;                    // all five draw-tool buttons (for mutual untoggle)
+
+	// Vertical elastic deformation dialog state — persisted here so reopening the dialog (it is
+	// rebuilt from scratch each time) restores the user's last-typed Fault/Dislocation values. The
+	// trace geometry (Length/Strike) is always re-seeded from the live fault polyline so a vertex
+	// drag is honoured; these non-geometry fields are restored from memory. Only single faults are
+	// editable, so one slot suffices.
+	struct FaultDlgState {
+		bool valid = false;
+		QString len, wid, strike, dip, depth, depTop;   // Fault Geometry boxes
+		QString dStrike, rake, slip, N, q, mu;          // Dislocation Geometry boxes
+		bool hide = false, scc = false;
+		int  coord = 0;                                  // coordCombo index: 0 = Geogs, 1 = Cart
+	};
+	FaultDlgState faultDlg;
+	QWidget* elasticDlg = nullptr;                      // open (non-modal) Vertical elastic deformation dialog, if any
 };
 
 // --- surface accessors: one actor (cloud/FV/drape/image) or a tiled grid -----------------

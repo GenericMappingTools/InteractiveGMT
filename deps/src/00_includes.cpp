@@ -26,6 +26,7 @@
 #include <QSurfaceFormat>
 #include <QString>
 #include <QEvent>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QDockWidget>
 #include <QWidget>
@@ -43,6 +44,7 @@
 #include <QRadioButton>
 #include <QButtonGroup>
 #include <QActionGroup>
+#include <QWidgetAction>
 #include <functional>
 #include <algorithm>
 #include <QToolTip>

@@ -766,7 +766,8 @@ static void rebuildSceneObjects(Scene *s) {
 	for (auto& pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
 		LineRef lr{ LK_Polygon, pg.line };
 		const QString nm = QString::fromStdString(pg.name);   // name is prefixed per type by polyFinalize
-		int ic = pg.nestKind == 1        ? IC_NestRect
+		int ic = pg.isFault              ? IC_Line        // a fault trace IS a line, not a polygon
+		       : pg.nestKind == 1        ? IC_NestRect
 		       : !pg.closed              ? IC_Polyline
 		       : nm.startsWith("rect")   ? IC_Rect
 		       : nm.startsWith("circle") ? IC_Circle
@@ -1625,6 +1626,21 @@ static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& glob
 		s->widget->renderWindow()->Render();
 	});
 	m.exec(globalPos);
+}
+
+// Delete an overlay line/point element (coastlines, boundaries, rivers, imported xy) by its actor:
+// drop the actor, erase the record, restack and rebuild the Scene Objects list. The TWIN of
+// polygonDelete — overlays hide via the Scene Objects checkbox and DELETE via the unified line menu.
+static void overlayDelete(Scene* s, vtkActor* a) {
+	for (int i = 0; i < (int)s->overlays.size(); ++i) {
+		if (s->overlays[i].actor.Get() != a) continue;
+		if (s->ren && s->overlays[i].actor) s->ren->RemoveActor(s->overlays[i].actor);
+		s->overlays.erase(s->overlays.begin() + i);
+		break;
+	}
+	applyVectorStacking(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
 // Right-click menu for the profile track line. The property entries now live in the shared Line

@@ -74,6 +74,24 @@ static JuliaGrdsampleFn g_juliaGrdsample = nullptr;
 typedef void (*JuliaNswingFn)(void* scene, const char* params);
 static JuliaNswingFn g_juliaNswing = nullptr;
 
+// Vertical elastic deformation (Geophysics menu). Port of Mirone's Okada (1985) surface-deformation
+// tool. The dialog (ElasticDialog, 70_window.cpp) hands a semicolon-separated parameter string
+//   "action;coord;len;wid;strike;dip;depth;depthTop;rake;slip;hide;scc;N;q;mu;R;I"
+// to Julia (g_juliaElastic) on Compute / Save fault. The compute side is not implemented yet;
+// nullptr -> the menu reports "callback not registered".
+typedef void (*JuliaElasticFn)(void* scene, const char* params);
+static JuliaElasticFn g_juliaElastic = nullptr;
+
+// Fault-trace endpoint recompute (Vertical elastic deformation dialog). Port of Mirone's
+// edit_FaultStrike_CB / edit_FaultLength_CB (deform_mansinha.m): when the user edits the Strike or
+// Length box, the fault line's end vertex must move so the drawn trace matches the typed geometry.
+// Mirone solves this with vreckon (direct geodesic); we hand the fixed start point + strike + length
+// (km) to Julia, which calls GMT.geod and returns "lon2/lat2" (Julia-owned buffer, copied at once).
+// Geographic faults only — cartesian faults move the endpoint with plain trig C++-side, no round
+// trip. Set via gmtvtk_set_faultgeom_callback; nullptr -> geographic edits leave the trace unchanged.
+typedef const char* (*JuliaFaultGeomFn)(double lon1, double lat1, double strike, double len_km);
+static JuliaFaultGeomFn g_juliaFaultGeom = nullptr;
+
 // grdsample "OR Ref grid" picker (and grid-metadata prefill). Given a grid/image path, Julia
 // gmtreads its header and returns "W/E/S/N/xinc/yinc/nx/ny" (empty string on failure) so the
 // dialog can fill the Griding Line Geometry boxes. The returned pointer is owned by Julia (a
@@ -255,6 +273,23 @@ static QIcon appIcon() {
 	return ic;
 }
 
+// App-wide rule: pressing Enter/Return in ANY QLineEdit drops keyboard focus, which commits the edit
+// through the normal editingFinished path (so live-update callbacks fire). Installed once on the
+// QApplication so every box in every dialog behaves the same — no per-widget wiring. The event is not
+// consumed, so returnPressed / default-button handlers still run after the defocus.
+class EnterDefocusFilter : public QObject {
+public:
+	using QObject::QObject;
+	bool eventFilter(QObject* obj, QEvent* ev) override {
+		if (ev->type() == QEvent::KeyPress) {
+			const int key = static_cast<QKeyEvent*>(ev)->key();
+			if (key == Qt::Key_Return || key == Qt::Key_Enter)
+				if (auto* le = qobject_cast<QLineEdit*>(obj)) le->clearFocus();
+		}
+		return QObject::eventFilter(obj, ev);
+	}
+};
+
 static void ensureApp() {
 	if (g_app) return;
 	// QApplication needs argc/argv that outlive it; there is none when driven from
@@ -265,6 +300,7 @@ static void ensureApp() {
 	QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
 	g_app = new QApplication(s_argc, s_argv);
 	g_app->setWindowIcon(appIcon());   // taskbar / app-wide default icon
+	g_app->installEventFilter(new EnterDefocusFilter(g_app));   // Enter defocuses any QLineEdit (app-wide)
 }
 
 // Middle button, done by hand (not the default trackball, which the gizmo's left-drag

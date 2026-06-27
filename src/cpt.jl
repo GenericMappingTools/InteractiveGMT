@@ -4,9 +4,11 @@
 const _DEG2M     = 111194.9     # ~1 geographic degree in metres (GMT's value)
 const _GEOG_VFRAC = 0.135       # geog auto: displayed z-range / horizontal extent (~vexag 20)
 
-# GMT's own geographic flag (set from the grid's proj/CRS). peaks & plain mat2grid -> false;
-# a grid/dataset with a geographic CRS -> true. No range heuristic (mis-flagged small grids).
-_isgeographic(G::GMTgrid)::Bool = GMT.isgeog(G)
+# Geographic? Prefer the grid's explicit projection; when it carries none, GMT.guessgeog falls
+# back to a crude range test (limits inside [-180 360 -90 90]) so an UNREFERENCED lon/lat grid is
+# still taken as geographic. Crudeness (a small cartesian grid in that box reads as geographic) is
+# inherent and accepted — the user asked for this guess when no CRS is present.
+_isgeographic(G::GMTgrid)::Bool = GMT.guessgeog(G)
 
 # Build a CPT (plain `makecpt`, LINEAR over the data range) and return its control nodes: z
 # values `cz` and matching RGB `crgb` (0..1, row-major), for a faithful vtkColorTransferFunction

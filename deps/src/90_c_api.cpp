@@ -779,6 +779,44 @@ GMTVTK_API void gmtvtk_set_nswing_callback(JuliaNswingFn fn) {
 	g_juliaNswing = fn;
 }
 
+// Register the Vertical elastic deformation callback. fn(scene, params) is called with the
+// "action;coord;len;wid;…;mu;R;I" string when the user clicks Compute / Save fault. nullptr to detach.
+GMTVTK_API void gmtvtk_set_elastic_callback(JuliaElasticFn fn) {
+	g_juliaElastic = fn;
+}
+
+// Register the fault-trace endpoint callback (Strike/Length edits in the elastic dialog).
+// fn(lon1, lat1, strike, len_km) returns "lon2/lat2" (the direct-geodesic endpoint) or "". nullptr
+// to detach (geographic Strike/Length edits then leave the drawn trace unchanged).
+GMTVTK_API void gmtvtk_set_faultgeom_callback(JuliaFaultGeomFn fn) {
+	g_juliaFaultGeom = fn;
+}
+
+// --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
+// Inject a 2-vertex fault line (lon1,lat1)->(lon2,lat2) into the scene so the apply logic has a
+// target without going through the interactive draw tool. Returns the number of fault polygons.
+GMTVTK_API int gmtvtk_fault_add_test(void* scene, double lon1, double lat1, double lon2, double lat2) {
+	Scene* s = (Scene*)scene; if (!s) return 0;
+	Polygon pg; pg.isFault = true; pg.closed = false; pg.name = "Fault 1";
+	pg.v = { { lon1, lat1, 0.0 }, { lon2, lat2, 0.0 } };
+	pg.stack = s->vecSeq++;
+	polyRebuildLine(s, pg);
+	s->polys.push_back(pg);
+	int n = 0; for (auto& p : s->polys) if (p.isFault) ++n;
+	return n;
+}
+
+// Run the real endpoint-recompute core (the same faultApplyGeom the dialog calls). Writes the new
+// endpoint to out2[0..1] and returns the fault line's vertex count after the apply (0 on failure).
+GMTVTK_API int gmtvtk_fault_apply_test(void* scene, double strike, double len, int geog, double* out2) {
+	Scene* s = (Scene*)scene; if (!s) return 0;
+	double lo = 0, la = 0;
+	if (!faultApplyGeom(s, strike, len, geog != 0, &lo, &la)) return 0;
+	if (out2) { out2[0] = lo; out2[1] = la; }
+	for (auto& p : s->polys) if (p.isFault) return (int)p.v.size();
+	return 0;
+}
+
 // Register the grid-metadata callback used by the grdsample dialog's "OR Ref grid" picker.
 // fn(path) returns "W/E/S/N/xinc/yinc/nx/ny" (or "" on failure). nullptr to detach.
 GMTVTK_API void gmtvtk_set_gridmeta_callback(JuliaGridMetaFn fn) {

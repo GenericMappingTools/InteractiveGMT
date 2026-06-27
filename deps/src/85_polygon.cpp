@@ -517,6 +517,7 @@ static int polyHitHandle(Scene* s, int x, int y, double tol) {
 static void polyFinalize(Scene* s, std::vector<std::array<double,3>> verts, bool closed, const char* prefix) {
 	Polygon pg; pg.v = std::move(verts); pg.closed = closed;
 	if (std::string(prefix) == "Nested rectangle") pg.nestKind = 1;   // special "Nested grids" rectangle
+	if (std::string(prefix) == "fault") pg.isFault = true;            // Draw Fault line: props open the elastic dialog
 	if (std::string(prefix) == "rectangle" || pg.nestKind == 1) pg.isRect = true;   // rect tools: edits keep it axis-aligned
 	if (closed && pg.v.size() >= 2 && !(pg.v.front() == pg.v.back()))
 		pg.v.push_back(pg.v.front());      // close the ring (first == last)
@@ -689,6 +690,7 @@ static void polygonEraseOne(Scene* s, vtkActor* lineActor) {
 	for (int i = 0; i < (int)s->polys.size(); ++i) {
 		if (s->polys[i].line.Get() != lineActor) continue;
 		if (s->ren && s->polys[i].line) s->ren->RemoveActor(s->polys[i].line);
+		if (s->ren && s->polys[i].faultPlane) s->ren->RemoveActor(s->polys[i].faultPlane);
 		if (s->polyEdit == i)      polyExitEdit(s);      // was being edited -> drop the handles
 		else if (s->polyEdit > i)  s->polyEdit--;        // keep the edit index valid past the erase
 		s->polys.erase(s->polys.begin() + i);
@@ -881,7 +883,7 @@ static void polyPlaceText(Scene* s, const double w[3]) {
 // Left/right press. button: 0 = left, 1 = right.
 static bool polygonHandlePress(Scene* s, int button, int x, int y) {
 	const bool vertexTool = (s->polyShape == Scene::SH_Polygon || s->polyShape == Scene::SH_Polyline ||
-	                         s->polyShape == Scene::SH_Line);
+	                         s->polyShape == Scene::SH_Line || s->polyShape == Scene::SH_Fault);
 	if (button == 1) {                                   // right-click: undo last vertex (polygon/polyline)
 		if (s->polyMode && s->polyDrawing && vertexTool) {
 			if (!s->polyCur.empty()) s->polyCur.pop_back();
@@ -918,6 +920,7 @@ static bool polygonHandlePress(Scene* s, int button, int x, int y) {
 			polyRebuildPreview(s, nullptr);
 			break;
 		case Scene::SH_Line:                             // exactly two points: first click sets the start,
+		case Scene::SH_Fault:                            // fault is a two-point line (Draw Fault tool)
 			if (!s->polyDrawing) { s->polyDrawing = true; s->polyCur.clear(); }
 			if (s->polyCur.size() >= 2) s->polyCur.pop_back();   // any later click just replaces the end point
 			s->polyCur.push_back({ w[0], w[1], w[2] });
@@ -965,6 +968,9 @@ static bool polygonHandleDblClick(Scene* s, int x, int y) {
 			s->widget->renderWindow()->Render();
 		} else if (s->polyShape == Scene::SH_Line && s->polyCur.size() >= 2) {      // two-point open line
 			polyFinalize(s, s->polyCur, false, "line");
+			s->widget->renderWindow()->Render();
+		} else if (s->polyShape == Scene::SH_Fault && s->polyCur.size() >= 2) {     // two-point fault line
+			polyFinalize(s, s->polyCur, false, "fault");
 			s->widget->renderWindow()->Render();
 		}
 		return true;

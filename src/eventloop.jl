@@ -55,7 +55,8 @@ function _ensure_callbacks()
 	                    ("grdsample",   _register_grdsample),
 	                    ("gridmeta",    _register_gridmeta),
 	                    ("dimfun",      _register_dimfun),
-	                    ("nswing",      _register_nswing))
+	                    ("nswing",      _register_nswing),
+	                    ("faultgeom",   _register_faultgeom))
 		try
 			fn()
 		catch e
