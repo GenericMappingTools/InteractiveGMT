@@ -421,6 +421,37 @@ static inline std::vector<vtkActor*> surfActors(Scene* s) {
 	return v;
 }
 
+// Topmost VISIBLE raster (base relief or a dropped grid) — target of the 'e' mesh toggle and other
+// per-active-raster ops. Same "highest grid-pile rank wins" rule as resolveActiveGrid (images stack
+// by zpos, not the pile, so they are not raster-mesh targets). `actors` already includes the optional
+// image drape so the wire toggles on both layers together. `edgeState` points at the int holding the
+// current wire state (base relief: s->surfEdges, also stamped on new tiles by buildTileActor); null
+// for a dropped grid (single actor — read EdgeVisibility straight off it).
+struct TopRaster { std::vector<vtkActor*> actors; int* edgeState = nullptr; bool valid = false; };
+
+static inline TopRaster resolveTopRaster(Scene* s) {
+	TopRaster tr;
+	int bestStack = 0; bool have = false;
+	std::vector<vtkActor*> base = surfActors(s);
+	vtkProp3D* sp = surfProp(s);
+	if (!base.empty() && sp && sp->GetVisibility()) {
+		tr.actors = base;
+		if (s->drape) tr.actors.push_back(s->drape.Get());
+		tr.edgeState = &s->surfEdges; tr.valid = true;
+		bestStack = s->surfStack; have = true;
+	}
+	for (auto& ex : s->extras) {
+		if (ex.isImage || !ex.actor || !ex.actor->GetVisibility()) continue;
+		if (!have || ex.gstack >= bestStack) {             // ties impossible (ranks normalized unique)
+			bestStack = ex.gstack; have = true; tr.valid = true;
+			tr.actors = { ex.actor.Get() };
+			if (ex.drape) tr.actors.push_back(ex.drape.Get());
+			tr.edgeState = nullptr;
+		}
+	}
+	return tr;
+}
+
 // One node of the tiled-LOD quadtree. Covers the inclusive full-grid index region [i0..i1]x[j0..j1],
 // rendered at stride `step` (1 = full res = leaf). `actor` is built lazily and lives in surfGroup
 // while resident; `lastUsed` drives LRU eviction. worldSpacing = true-coord node gap at this step

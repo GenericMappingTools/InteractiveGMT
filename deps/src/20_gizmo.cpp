@@ -499,20 +499,21 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	if (key && (key[0]=='x' || key[0]=='X') && key[1]=='\0') {
 		setGizmoVisible(*c, !c->visible); renderWin(c);
 	}
-	// 'e' toggles the surface mesh (wire edges) on the base + drape actors.
+	// 'e' toggles the surface mesh (wire edges) on the TOPMOST VISIBLE raster only (active grid),
+	// not every raster in the window. State source of truth is the active raster's own edge state
+	// (s->surfEdges for the base relief — surf may be stale when tiled — else the actor itself).
 	if (key && (key[0]=='e' || key[0]=='E') && key[1]=='\0') {
 		Scene* s = c->s;
-		if (s && s->surf) {
-			int on = s->surf->GetProperty()->GetEdgeVisibility() ? 0 : 1;
-			for (vtkActor* a : surfActors(s)) {       // toggle wire on every tile (or the surface)
+		TopRaster tr = s ? resolveTopRaster(s) : TopRaster{};
+		if (tr.valid && !tr.actors.empty()) {
+			int cur = tr.edgeState ? *tr.edgeState
+			                       : tr.actors[0]->GetProperty()->GetEdgeVisibility();
+			int on  = cur ? 0 : 1;
+			if (tr.edgeState) *tr.edgeState = on;
+			for (vtkActor* a : tr.actors) {           // base tiles/surf (+drape) OR the active grid (+drape)
 				a->GetProperty()->SetEdgeVisibility(on);
 				a->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12);
 				a->GetProperty()->SetLineWidth(1.0);
-			}
-			if (s->drape) {
-				s->drape->GetProperty()->SetEdgeVisibility(on);
-				s->drape->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12);
-				s->drape->GetProperty()->SetLineWidth(1.0);
 			}
 			renderWin(c);
 		}
