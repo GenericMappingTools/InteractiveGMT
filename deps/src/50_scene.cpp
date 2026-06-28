@@ -19,9 +19,18 @@ static void sceneLogError(Scene* s, const QString& msg) {
 // Hand a colormap NAME back to the Julia host, which recomputes CPT nodes over the surface's data
 // range and ccalls gmtvtk_set_cpt to recolour live. `fig` is bound to THIS window by _console_eval.
 // A NEGATIVE return flags a Julia error (|n| bytes of text) -> route it to the Errors tab.
-static void applyColormap(Scene* s, const QString& name) {
+static void applyColormap(Scene* s, const QString& name, int gridSel) {
 	if (!s || !g_juliaEval || name.isEmpty()) return;
-	std::string cmd = "InteractiveGMT._recolor(fig, \"" + name.toStdString() + "\")";
+	// Recolour the grid the Color Bar row belongs to (gridSel is the grid's UNIQUE GROUP TAG: -1 = base
+	// relief, >0 = a dropped grid's tag). Resolve BY TAG (never by index — indices shift on delete) and
+	// hand Julia THAT grid's own z range so the CPT spans the right grid, not the first one.
+	double zmn = s->zmin, zmx = s->zmax;
+	if (gridSel >= 0)
+		for (auto& ex : s->extras)
+			if (!ex.isImage && ex.tag == gridSel) { zmn = ex.zmin; zmx = ex.zmax; break; }
+	char rng[80];
+	snprintf(rng, sizeof rng, "%.17g, %.17g, %d", zmn, zmx, gridSel);
+	std::string cmd = "InteractiveGMT._recolor_grid(fig, \"" + name.toStdString() + "\", " + rng + ")";
 	std::vector<char> buf(1 << 12);
 	int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
 	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
@@ -46,7 +55,7 @@ static void layoutColorbar(Scene* s) {
 	const double barLeft = X0 + cbar::W * (1.0 - cbar::BARRATIO);
 	s->bar->SetPosition(X0, Y0);
 	s->bar->SetWidth(cbar::W); s->bar->SetHeight(cbar::H);
-	const double lo = s->zmin, hi = s->zmax;
+	const double lo = s->barLo, hi = s->barHi;       // active grid's display range (not the base zmin/zmax)
 	const double span = (hi > lo) ? (hi - lo) : 1.0;
 	for (size_t i = 0; i < s->barValues.size(); ++i) {
 		const double frac = (s->barValues[i] - lo) / span;       // 0 at bottom (zmin) .. 1 at top
@@ -61,9 +70,13 @@ static void layoutColorbar(Scene* s) {
 	if (s->barTickPts) s->barTickPts->Modified();
 }
 
-// Build the colorbar actors once and add them to the renderer. zmin/zmax must already be set.
-static void buildColorbar(Scene* s, vtkScalarsToColors* lut) {
+// Build the colorbar actors and add them to the renderer, for the colour map `lut` over [lo,hi]
+// (the active grid's range — may differ from the base relief's zmin/zmax). Stores the range in
+// barLo/barHi so layoutColorbar places ticks against it.
+static void buildColorbar(Scene* s, vtkScalarsToColors* lut, double lo, double hi) {
 	if (!s || s->imageOnly) return;          // bare image -> no colorbar
+	if (!(hi > lo)) hi = lo + 1.0;           // guard a degenerate (flat) grid
+	s->barLo = lo; s->barHi = hi;
 	s->bar = vtkSmartPointer<vtkScalarBarActor>::New();
 	s->bar->SetLookupTable(lut);
 	s->bar->SetTitle("");                    // drop the big 'Z' title
@@ -73,7 +86,6 @@ static void buildColorbar(Scene* s, vtkScalarsToColors* lut) {
 	s->ren->AddActor2D(s->bar);
 
 	// Nice round tick values (800, 900, ...) at a constant 1/2/5 x10^n step.
-	const double lo = s->zmin, hi = s->zmax;
 	const double step = niceNum(niceNum(hi - lo, false) / 5.0, true);
 	s->barValues.clear(); s->barLabels.clear();
 	s->barTickPts = vtkSmartPointer<vtkPoints>::New();
@@ -150,8 +162,8 @@ static bool colorbarRelease(Scene* s) {
 
 // The colormap chooser: a popup of common GMT master CPTs (applied on click) plus a Custom… entry
 // for any name GMT's makecpt accepts. Opened from the colorbar's Scene Objects row.
-static void chooseColormap(Scene* s, const QPoint& gp) {
-	if (!s || !s->bar) return;
+static void chooseColormap(Scene* s, const QPoint& gp, int gridSel) {
+	if (!s) return;
 	static const char* kMaps[] = {
 		"viridis", "turbo", "jet", "hot", "haxby", "geo", "relief", "rainbow",
 		"polar", "seis", "gray", "plasma", "magma", "cividis", "roma", "vik",
@@ -159,14 +171,14 @@ static void chooseColormap(Scene* s, const QPoint& gp) {
 	QMenu m(s->win);
 	for (const char* nm : kMaps) {
 		const QString q = QString::fromLatin1(nm);
-		m.addAction(q, [s, q]() { applyColormap(s, q); });
+		m.addAction(q, [s, q, gridSel]() { applyColormap(s, q, gridSel); });
 	}
 	m.addSeparator();
-	m.addAction("Custom…", [s]() {
+	m.addAction("Custom…", [s, gridSel]() {
 		bool ok = false;
 		const QString nm = QInputDialog::getText(s->win, "Colormap", "GMT CPT name:",
 		                                         QLineEdit::Normal, "", &ok);
-		if (ok) applyColormap(s, nm.trimmed());
+		if (ok) applyColormap(s, nm.trimmed(), gridSel);
 	});
 	m.exec(gp);
 }
@@ -224,7 +236,7 @@ static void textPropsDialog(Scene* s, vtkTextActor3D* act) {
 static void textLabelMenu(Scene* s, vtkTextActor3D* act, const QPoint& globalPos) {
 	QMenu m(s->widget);
 	QAction* props = m.addAction("Text Properties…");
-	QAction* del   = m.addAction("Delete text");
+	QAction* del   = m.addAction("Remove");
 	QAction* chosen = m.exec(globalPos);
 	if (chosen == props) { textPropsDialog(s, act); return; }
 	if (chosen != del) return;
@@ -243,7 +255,8 @@ static void textLabelMenu(Scene* s, vtkTextActor3D* act, const QPoint& globalPos
 // what kind of element a row is (surface / image / line / points / curtain / polygon / text /
 // colourbar / profile). Drawn into a 16x16 transparent pixmap (matches the small checkbox).
 enum ObjIcon { IC_Surface, IC_Image, IC_Line, IC_Points, IC_Curtain,
-               IC_Polygon, IC_Polyline, IC_Rect, IC_Circle, IC_Text, IC_ColorBar, IC_Profile, IC_NestRect };
+               IC_Polygon, IC_Polyline, IC_Rect, IC_Circle, IC_Text, IC_ColorBar, IC_Profile, IC_NestRect,
+               IC_Axes };
 
 static QPixmap makeObjectIcon(int kind) {
 	// Drawn in a 16-unit coordinate space but rasterised at high DPI (supersampled) so the glyph
@@ -365,6 +378,14 @@ static QPixmap makeObjectIcon(int kind) {
 		p.drawPath(pp);
 		break;
 	}
+	case IC_Axes: {                                            // a small 3-axis corner gizmo (X red, Y green, Z blue)
+		const QPointF O(4, 12);
+		p.setPen(QPen(QColor(210, 70, 60), 1.6)); p.drawLine(O, QPointF(14, 12));   // X -> right
+		p.setPen(QPen(QColor(70, 170, 80), 1.6)); p.drawLine(O, QPointF(4, 2));     // Z -> up
+		p.setPen(QPen(QColor(70, 110, 200), 1.6)); p.drawLine(O, QPointF(11, 6));   // Y -> back/oblique
+		p.setPen(Qt::NoPen); p.setBrush(QColor(50, 50, 50)); p.drawEllipse(O, 1.4, 1.4);
+		break;
+	}
 	}
 	p.end();
 	return pm;
@@ -475,7 +496,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	aDrape->setEnabled(draped || canDrape);
 	m.addSeparator();
 	QAction *aSave = m.addAction("Save image…");
-	QAction *aDel = m.addAction("Delete image");
+	QAction *aDel = m.addAction("Remove");
 	QAction *c = m.exec(g);
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "image", QString::fromStdString(s->extras[idx].name)); return; }
@@ -549,6 +570,74 @@ static std::vector<GridItem> gatherGridItems(Scene* s) {
 	return v;
 }
 
+// Tear the colorbar actors out of the renderer so the bar can be rebuilt for a different (active) grid.
+// Leaves s->barX0/barY0 (drag position) intact so the bar stays put across retargets.
+static void destroyColorbar(Scene* s) {
+	if (!s) return;
+	if (s->bar)      { s->ren->RemoveActor2D(s->bar);      s->bar = nullptr; }
+	if (s->barTicks) { s->ren->RemoveActor2D(s->barTicks); s->barTicks = nullptr; }
+	for (auto& ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
+	s->barLabels.clear();
+	s->barValues.clear();
+	s->barTickPts = nullptr;
+}
+
+// One resolved grid layer: which grid currently drives the readout + colorbar. valid=false when no grid
+// is visible (every grid hidden) -> caller hides the colorbar and clears the readout routing.
+struct ActiveGrid {
+	bool   valid = false;
+	const std::vector<float>* z = nullptr;
+	int    nx = 0, ny = 0;
+	double x0 = 0, x1 = 1, y0 = 0, y1 = 1, zmin = 0, zmax = 1;
+	vtkScalarsToColors* lut = nullptr;
+	bool   showBar = true;     // active grid's per-grid "show colorbar" intent
+};
+
+// The active grid is the TOPMOST VISIBLE grid (highest pile rank). The base relief participates via
+// s->surfStack / s->surfLut / s->zmin-zmax; each dropped grid via its own ExtraObj fields.
+static ActiveGrid resolveActiveGrid(Scene* s) {
+	ActiveGrid ag;
+	int  bestStack = 0;
+	bool have = false;
+	if (!s->gridZ.empty()) {                                   // base relief, if it carries a data layer
+		vtkProp3D* sp = surfProp(s);
+		if (sp && sp->GetVisibility()) {
+			ag.valid = true; ag.z = &s->gridZ; ag.nx = s->gnx; ag.ny = s->gny;
+			ag.x0 = s->gx0; ag.x1 = s->gx1; ag.y0 = s->gy0; ag.y1 = s->gy1;
+			ag.zmin = s->zmin; ag.zmax = s->zmax; ag.lut = s->surfLut; ag.showBar = s->surfShowBar;
+			bestStack = s->surfStack; have = true;
+		}
+	}
+	for (auto& ex : s->extras) {
+		if (ex.isImage || ex.gridZ.empty() || !ex.actor || !ex.actor->GetVisibility()) continue;
+		if (!have || ex.gstack >= bestStack) {                 // ties impossible (ranks normalized unique)
+			bestStack = ex.gstack; have = true; ag.valid = true;
+			ag.z = &ex.gridZ; ag.nx = ex.gnx; ag.ny = ex.gny;
+			ag.x0 = ex.gx0; ag.x1 = ex.gx1; ag.y0 = ex.gy0; ag.y1 = ex.gy1;
+			ag.zmin = ex.zmin; ag.zmax = ex.zmax; ag.lut = ex.lut; ag.showBar = ex.showBar;
+		}
+	}
+	return ag;
+}
+
+// Retarget the single rendered colorbar + the hover/coordinate readout to the active (topmost-visible)
+// grid. Called on every grid add / visibility toggle / restack / delete. No grid visible -> bar hidden.
+static void refreshGridColorbar(Scene* s) {
+	if (!s || s->imageOnly) return;            // bare-image windows never carry a z colorbar
+	ActiveGrid ag = resolveActiveGrid(s);
+	destroyColorbar(s);
+	if (!ag.valid || !ag.lut) {                // nothing visible to colour -> no bar, readout falls back
+		s->actZ = nullptr;
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return;
+	}
+	// Route the hover/coordinate readout to the active grid ALWAYS; only DRAW the bar if this grid wants it.
+	s->actZ = ag.z; s->actNx = ag.nx; s->actNy = ag.ny;
+	s->actX0 = ag.x0; s->actX1 = ag.x1; s->actY0 = ag.y0; s->actY1 = ag.y1;
+	if (ag.showBar) buildColorbar(s, ag.lut, ag.zmin, ag.zmax);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // Normalize ranks to 0..n-1 by current `stack`, then map rank -> polygon offset (k=0 bottom .. on top).
 static void applyGridStacking(Scene* s) {
 	std::vector<GridItem> it = gatherGridItems(s);
@@ -564,6 +653,7 @@ static void applyGridStacking(Scene* s) {
 			if (vtkPolyDataMapper* mp = vtkPolyDataMapper::SafeDownCast(a->GetMapper()))
 				mp->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, u);
 	}
+	refreshGridColorbar(s);                                // topmost grid may have changed -> retarget bar
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
@@ -602,16 +692,71 @@ static void addGridStackActions(Scene* s, QMenu& m, int* stackPtr) {
 	QObject::connect(aDn,  &QAction::triggered, [s, stackPtr]() { restackGrid(s, stackPtr, 3); rebuildSceneObjects(s); });
 }
 
-// Properties menu for the BASE relief surface row: Save + grid-pile stacking (the base is the bottom
-// grid by default but can be re-ordered against dropped / nested grids).
+// Remove the primary surface (grid or image), its colorbar, and its cube axes from the scene,
+// leaving the window open and empty so a new file can be dropped in. Mirrors the self-cleaning
+// prologue of buildSceneContent — same actors removed, same pointers nulled.
+static void sceneRemoveSurface(Scene *s) {
+	if (!s || !s->ren) return;
+	// LOD quad-tree observer + tile cache
+	if (s->lodCmd && s->ren->GetActiveCamera())
+		s->ren->GetActiveCamera()->RemoveObserver(s->lodCmd);
+	s->lodCmd = nullptr; s->quadRoot = nullptr; s->tiles.clear();
+	// Primary surface actors (tiled or single) + image drape
+	if (s->surfGroup) s->ren->RemoveActor(s->surfGroup);
+	if (s->surf)      s->ren->RemoveActor(s->surf);
+	if (s->drape)     s->ren->RemoveActor(s->drape);
+	s->surfGroup = nullptr; s->surf = nullptr; s->drape = nullptr; s->surfLut = nullptr;
+	// Cube axes box + tick geometry + all billboard actors in the overlay renderer
+	if (s->axes)      s->ren->RemoveActor(s->axes);
+	if (s->axisTicks) s->ren->RemoveActor(s->axisTicks);
+	s->axes = nullptr; s->axisTicks = nullptr;
+	if (s->axesRen) {
+		for (int i = 0; i < 3; ++i)
+			if (s->axTitle[i]) { s->axesRen->RemoveViewProp(s->axTitle[i]); s->axTitle[i] = nullptr; }
+		for (auto& l : s->xlabels) if (l) s->axesRen->RemoveViewProp(l);
+		for (auto& l : s->ylabels) if (l) s->axesRen->RemoveViewProp(l);
+		for (auto& l : s->zlabels) if (l) s->axesRen->RemoveViewProp(l);
+		s->xlabels.clear(); s->ylabels.clear(); s->zlabels.clear();
+	}
+	// Colorbar strip + tick lines + numeric labels
+	if (s->bar)      s->ren->RemoveActor2D(s->bar);
+	if (s->barTicks) s->ren->RemoveActor2D(s->barTicks);
+	for (auto& ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
+	s->bar = nullptr; s->barTicks = nullptr;
+	s->barLabels.clear(); s->barValues.clear();
+	// Profile line anchored to the old surface
+	if (s->profLine) { s->ren->RemoveActor(s->profLine); s->profLine = nullptr; }
+	// Full-res z data buffer + active-grid pointer
+	s->gridZ.clear(); s->gnx = 0; s->gny = 0; s->actZ = nullptr;
+	// Mark window as empty — a dropped file will promote into it
+	s->emptyStart   = true;
+	s->imageOnly    = false;
+	s->gridAdopted  = false;
+	s->fvSolid      = false;
+	s->surfName.clear();
+	// Hide the Shading dock when no other loaded grids remain
+	{
+		bool hasOtherGrid = false;
+		for (const auto& ex : s->extras) if (!ex.isImage) { hasOtherGrid = true; break; }
+		if (!hasOtherGrid && s->shadeDock) s->shadeDock->setVisible(false);
+	}
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Properties menu for the BASE relief surface row: Save, grid-pile stacking, and Remove.
 static void surfaceObjectMenu(Scene* s, const QPoint& gp) {
 	const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
 	QMenu m(s->widget);
 	QAction* aSave = m.addAction("Save grid…");
 	m.addSeparator();
 	addGridStackActions(s, m, &s->surfStack);
+	m.addSeparator();
+	QAction* aRem = m.addAction("Remove");                   // removes surface + colorbar + axes; window stays open
 	QAction* c = m.exec(gp);
-	if (c == aSave) saveObjectDialog(s, "grid", nm);
+	if (!c) return;
+	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
+	if (c == aRem) sceneRemoveSurface(s);
 }
 
 // Properties menu for a dropped GRID surface (its Scene Objects row). EVERY added element must carry
@@ -626,7 +771,7 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	m.addSeparator();
 	addGridStackActions(s, m, &s->extras[idx].gstack);   // grid-pile draw order (base relief + grids)
 	m.addSeparator();
-	QAction *aDel   = m.addAction("Delete grid");
+	QAction *aDel   = m.addAction("Remove");
 	QAction *c = m.exec(g);
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
@@ -635,6 +780,7 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 		if (ex.actor) s->ren->RemoveActor(ex.actor);
 		if (ex.drape) s->ren->RemoveActor(ex.drape);
 		s->extras.erase(s->extras.begin() + idx);
+		applyGridStacking(s);                   // renormalize ranks + retarget colorbar to the new topmost
 		rebuildSceneObjects(s);
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	}
@@ -720,36 +866,98 @@ static void rebuildSceneObjects(Scene *s) {
 		};
 	};
 
-	// A bare image has NO surface: don't list one, and the image is the object itself (not an
-	// "Image drape" over a surface).
+	// A thin light horizontal rule that separates one grid GROUP from the next.
+	auto addSeparator = [&]() {
+		QFrame* ln = new QFrame(s->objPanel);
+		ln->setFrameShape(QFrame::HLine); ln->setFrameShadow(QFrame::Plain);
+		ln->setStyleSheet("color:#5a5a5a; background:#5a5a5a; max-height:1px; margin:2px 0;");
+		col->addWidget(ln);
+	};
+	bool firstGroup = true;
+	auto groupGap = [&]() { if (!firstGroup) addSeparator(); firstGroup = false; };
+
+	// This grid's COLORBAR row: per-grid show/hide intent (*flag = &s->surfShowBar or &ex.showBar,
+	// honoured by refreshGridColorbar when the grid is active) + colormap chooser on the label.
+	auto colorbarRow = [&](bool* flag, int gridSel) {
+		makeRow("Color Bar", IC_ColorBar, *flag,
+		        [s, flag](bool on) { *flag = on; refreshGridColorbar(s); },
+		        [s, gridSel](const QPoint& g) { chooseColormap(s, g, gridSel); },
+		        "Show / hide this grid's colorbar · left-click the label to choose a colormap");
+	};
+	// Per-grid / per-image AXES handle. Properties come LATER; for now the box toggles the cube axes
+	// and the label shows a placeholder. Every grid (and referenced image) carries one.
+	auto axesRow = [&]() {
+		const bool av = s->axes && s->axes->GetVisibility() != 0;
+		makeRow("Axes", IC_Axes, av,
+		        [s](bool on) { if (s->axes) s->axes->SetVisibility(on ? 1 : 0); },
+		        [s](const QPoint&) { if (s->win) s->win->statusBar()->showMessage("Axes properties — coming soon", 2500); },
+		        "Axes handle (properties coming soon)");
+	};
+
+	// ── GRID GROUPS ── each grid = [surface][drape?][colorbar][axes], split by a light rule. A bare
+	// image (view_image) is its own group (image row + axes). Non-grid objects follow, after a rule.
 	if (!s->imageOnly) {
-		// Surface row: checkbox toggles visibility; LEFT-clicking the label folds / un-folds the
-		// Shading dock (the surface is what shading acts on), Fledermaus-style. RIGHT-click -> Save.
-		if (vtkProp3D *sp = surfProp(s)) {
+		if (vtkProp3D *sp = surfProp(s)) {                  // base relief grid group
+			groupGap();
 			const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
 			makeRow(nm, IC_Surface, sp->GetVisibility() != 0,
-			        [sp](bool on) { sp->SetVisibility(on ? 1 : 0); },
+			        [s, sp](bool on) { sp->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking",
 			        [s](const QPoint& g) { surfaceObjectMenu(s, g); });
+			if (s->drape) addRow(QString("Image drape"), s->drape, IC_Image);   // grid's drape texture
+			colorbarRow(&s->surfShowBar, -1);    // base relief grid
+			axesRow();
+		}
+	} else if (s->drape) {                                  // bare image (view_image) group
+		groupGap();
+		const QString nm = s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName);
+		vtkProp3D *dp = s->drape;
+		makeRow(nm, IC_Image, dp->GetVisibility() != 0,
+		        [dp](bool on) { dp->SetVisibility(on ? 1 : 0); }, nullptr,
+		        "Right-click for properties (save / delete)",
+		        [s, nm](const QPoint& g) {              // primary image props: Save + Remove
+		            QMenu m(s->widget);
+		            QAction* aSave = m.addAction("Save image…");
+		            m.addSeparator();
+		            QAction* aRem  = m.addAction("Remove"); // removes image + axes; window stays open
+		            QAction* c = m.exec(g);
+		            if (!c) return;
+		            if (c == aSave) saveObjectDialog(s, "image", nm);
+		            else if (c == aRem) sceneRemoveSurface(s);
+		        });
+		axesRow();
+	}
+
+	for (size_t ei = 0; ei < s->extras.size(); ++ei) {      // dropped grids / images: one group each
+		auto& ex = s->extras[ei];
+		const QString nm = QString::fromStdString(ex.name);
+		groupGap();
+		if (ex.isImage) {                                  // dropped image group
+			vtkProp3D* a = ex.actor.Get();
+			makeRow(nm, IC_Image, a && a->GetVisibility() != 0,
+			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
+			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
+			        "Left- or right-click for image properties (incl. Save)",
+			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); });
+			axesRow();
+		} else {                                           // dropped grid group: surface + colorbar + axes
+			vtkProp3D* a = ex.actor.Get();
+			makeRow(nm, IC_Surface, a && a->GetVisibility() != 0,
+			        [s, a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
+			        [s](const QPoint&) { toggleShadingFold(s); },          // SAME function as the primary surface
+			        "Left-click for Shading · right-click to save / delete",
+			        [s, a](const QPoint& g) { gridObjectMenu(s, a, g); }); // right-click: save / delete
+			if (ex.drape) addRow(nm + " (image)", ex.drape, IC_Image);
+			colorbarRow(&ex.showBar, ex.tag);    // resolve by the grid's UNIQUE tag, not its (shifting) index
+			axesRow();
 		}
 	}
-	if (s->drape) {
-		if (s->imageOnly) {                                 // bare image (view_image): right-click -> Save
-			const QString nm = s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName);
-			vtkProp3D *dp = s->drape;
-			makeRow(nm, IC_Image, dp->GetVisibility() != 0,
-			        [dp](bool on) { dp->SetVisibility(on ? 1 : 0); }, nullptr,
-			        "Right-click to save the image", saveCtx("image", nm));
-		} else {
-			addRow(QString("Image drape"), s->drape, IC_Image);   // a grid's drape texture (not separately saveable)
-		}
-	}
-	if (s->bar)                                          // colorbar: toggle visibility + colormap chooser
-		makeRow("Color Bar", IC_ColorBar, s->bar->GetVisibility() != 0,
-		        [s](bool on) { setColorbarVisible(s, on); },
-		        [s](const QPoint& g) { chooseColormap(s, g); },
-		        "Left-click to choose a colormap");
+
+	// ── OTHER OBJECTS ── lines / points / curtains / polygons / text / profile, after a final rule.
+	const bool haveOther = !s->overlays.empty() || !s->symbols.empty() || !s->curtains.empty()
+	                    || !s->polys.empty() || !s->texts.empty() || (s->profLine && s->profLine->GetVisibility());
+	if (haveOther && !firstGroup) addSeparator();
 	for (auto& ov : s->overlays) {
 		LineRef lr{ LK_Overlay, ov.actor };
 		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, ov.mode == 1 ? &lr : nullptr);
@@ -766,7 +974,7 @@ static void rebuildSceneObjects(Scene *s) {
 	for (auto& pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
 		LineRef lr{ LK_Polygon, pg.line };
 		const QString nm = QString::fromStdString(pg.name);   // name is prefixed per type by polyFinalize
-		int ic = pg.isFault              ? IC_Line        // a fault trace IS a line, not a polygon
+		int ic = pg.isFault              ? IC_Line                  // fault trace = ALWAYS the line icon, any vertex count
 		       : pg.nestKind == 1        ? IC_NestRect
 		       : !pg.closed              ? IC_Polyline
 		       : nm.startsWith("rect")   ? IC_Rect
@@ -785,25 +993,6 @@ static void rebuildSceneObjects(Scene *s) {
 	if (s->profLine && s->profLine->GetVisibility()) {  // the profile track (when one exists)
 		LineRef lr{ LK_Profile, s->profLine };
 		addRow("Profile", s->profLine, IC_Profile, &lr);
-	}
-	for (auto& ex : s->extras) {                 // grids/images dropped in after the window opened
-		const QString nm = QString::fromStdString(ex.name);
-		if (ex.isImage) {                        // dropped image: picture icon + ordering/drape/save/delete menu
-			vtkProp3D* a = ex.actor.Get();
-			makeRow(nm, IC_Image, a && a->GetVisibility() != 0,
-			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
-			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
-			        "Left- or right-click for image properties (incl. Save)",
-			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); });
-		} else {                                 // dropped grid: a SURFACE -> dealt EXACTLY like the primary
-			vtkProp3D* a = ex.actor.Get();       // surface handle: left-click folds/un-folds the Shading dock
-			makeRow(nm, IC_Surface, a && a->GetVisibility() != 0,
-			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
-			        [s](const QPoint&) { toggleShadingFold(s); },          // SAME function as the primary surface
-			        "Left-click for Shading · right-click to save / delete",
-			        [s, a](const QPoint& g) { gridObjectMenu(s, a, g); }); // right-click: save / delete
-			if (ex.drape) addRow(nm + " (image)", ex.drape, IC_Image);
-		}
 	}
 	col->addStretch(1);
 }
@@ -1224,7 +1413,7 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 	const size_t nVec = s->overlays.size() + s->symbols.size() + s->polys.size();
 	for (QAction* a : { topA, botA, upA, dnA }) a->setEnabled(nVec > 1);
 	m.addSeparator();
-	QAction* delA  = m.addAction("Delete");
+	QAction* delA  = m.addAction("Remove");
 	QAction* ch = m.exec(gp);
 	if (!ch) return;
 

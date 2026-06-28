@@ -129,6 +129,43 @@ end
 	end
 end
 
+# Per-grid colorbar isolation: recolouring ONE grid's Color Bar must change ONLY that grid's colours,
+# never another grid's (the regression the per-grid lut refactor is meant to guarantee).
+@testitem "colorbar recolour is isolated per grid" tags=[:gui] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G1 = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
+	G2 = GMT.mat2grid(Float32[2(ix + iy) for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
+	f = view_grid(G1)                                  # base relief grid = tag -1
+	try
+		@test IG._add_grid_to_scene(f.h, G2, "g2")     # first dropped grid = tag 1
+		IG._pump_once()
+		st = IG._scene_state(f.h)
+		@test st["n_extras"] == 1
+
+		z = 9.0
+		base0  = IG._grid_rgb_at(f.h, -1, z)           # base relief, tag -1
+		extra0 = IG._grid_rgb_at(f.h,  1, z)           # dropped grid, tag 1
+		@test base0  !== nothing
+		@test extra0 !== nothing
+
+		# Recolour ONLY the dropped grid (tag 1) to a clearly different map.
+		IG._recolor_grid(f, "gray", G2.range[5], G2.range[6], 1)
+		IG._pump_once()
+		base1  = IG._grid_rgb_at(f.h, -1, z)
+		extra1 = IG._grid_rgb_at(f.h,  1, z)
+		@test base1  == base0        # base grid untouched
+		@test extra1 != extra0       # tagged grid changed
+
+		# Recolour ONLY the base grid (tag -1); the dropped grid must stay as just set.
+		IG._recolor_grid(f, "jet", G1.range[5], G1.range[6], -1)
+		IG._pump_once()
+		@test IG._grid_rgb_at(f.h, -1, z) != base1   # base changed
+		@test IG._grid_rgb_at(f.h,  1, z) == extra1  # tagged grid untouched
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 # ---- coverage for the previously-untested scene elements -----------------------------------------
 
 @testitem "add! puts a line overlay on the window" tags=[:gui] begin

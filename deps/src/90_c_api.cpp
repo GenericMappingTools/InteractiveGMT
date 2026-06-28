@@ -89,12 +89,15 @@ GMTVTK_API void* gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 	computeScales(geographic, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
 	Scene *s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, cz, crgb, ncolor, img, iw, ih, ibands, edges, false, geographic, title,
 	                        /*objname=*/nullptr, /*imageOnly=*/image_only != 0,
-	                        /*gz=*/tiled ? z : nullptr, /*gnx=*/nx, /*gny=*/ny);
+	                        /*gz=*/tiled ? z : nullptr, /*gnx=*/nx, /*gny=*/ny,
+	                        /*blankStart=*/false, /*openFlat2D=*/image_only == 0);   // grids open in 2D from frame 1
 	if (s && !image_only && !tiled) {                  // drape path: keep full-res z for hover/profile
 		s->gridZ.assign(z, z + (size_t)nx * ny);       // (tiled path already populated it in buildAndShow)
 		s->gnx = nx; s->gny = ny;
 		s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
 	}
+	// (grids already opened in flat-2D from frame 1 via buildAndShow's openFlat2D — no post-hoc switch,
+	// no 3-D flash.)
 	if (s && image_only) {
 		// Bare image (imageOnly already set inside buildAndShow before the panel was built, so the
 		// Scene Objects list has no "Surface"/"Image drape" rows). Open straight into a top-down
@@ -377,6 +380,7 @@ GMTVTK_API int gmtvtk_set_object_visible(void* handle, const char* name, int vis
 		if (ex.name != name) continue;
 		if (ex.actor) ex.actor->SetVisibility(vis ? 1 : 0);
 		if (ex.drape) ex.drape->SetVisibility(vis ? 1 : 0);
+		if (!ex.isImage) refreshGridColorbar(s);   // grid hidden/shown -> retarget the colorbar + readout
 		rebuildSceneObjects(s);
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return 1;
@@ -636,6 +640,44 @@ GMTVTK_API void gmtvtk_set_cpt(void* handle, const double* cz, const double* crg
 	s->surfCtfRange = true;
 	if (s->bar) s->bar->SetLookupTable(s->surfLut);   // refresh the legend strip
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Recolour ONE grid of a multi-grid window. gridSel: -1 = base relief surface (s->surfLut, shared
+// by the surface, every LOD tile and the colorbar); 0..N-1 = the Nth dropped/added grid (its own
+// ExtraObj lut, shared by that grid's mapper). Mutating the target's CTF nodes in place recolours
+// exactly that grid — fixing the old bug where the colormap chooser on any grid's Color Bar row
+// always recoloured the FIRST grid. refreshGridColorbar then rebuilds the legend strip if the
+// recoloured grid is the active (topmost-visible) one. Called from Julia (_recolor_grid).
+GMTVTK_API void gmtvtk_set_cpt_grid(void* handle, int gridSel, const double* cz, const double* crgb, int n) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !cz || !crgb || n < 2) return;
+	vtkScalarsToColors* lut = nullptr;          // gridSel is the grid's UNIQUE TAG (-1 = base relief)
+	if (gridSel < 0) lut = s->surfLut;
+	else for (auto& ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
+	vtkColorTransferFunction* ctf = vtkColorTransferFunction::SafeDownCast(lut);
+	if (!ctf) return;                         // only the CTF path supports live recolour
+	ctf->RemoveAllPoints();
+	for (int i = 0; i < n; ++i)
+		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+	if (gridSel < 0) s->surfCtfRange = true;
+	refreshGridColorbar(s);                   // retarget/refresh the single legend strip to the active grid
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// TEST PROBE: sample the colour ONE grid's own lut maps a z value to (RGB, 0..1 into out3). gridSel:
+// -1 = base relief (s->surfLut), 0..N-1 = the Nth extra grid (its own lut). Lets the test suite assert
+// per-grid colorbar isolation (recolouring grid A must NOT change grid B's colours). Returns 1 on
+// success, 0 if the handle/grid/lut is missing. Not used by the UI — purely for regression tests.
+GMTVTK_API int gmtvtk_grid_rgb_at(void* handle, int gridSel, double z, double* out3) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !out3) return 0;
+	vtkScalarsToColors* lut = nullptr;          // gridSel is the grid's UNIQUE TAG (-1 = base relief)
+	if (gridSel < 0) lut = s->surfLut;
+	else for (auto& ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
+	if (!lut) return 0;
+	const unsigned char* c = lut->MapValue(z);   // works for both vtkColorTransferFunction and vtkLookupTable
+	out3[0] = c[0] / 255.0; out3[1] = c[1] / 255.0; out3[2] = c[2] / 255.0;
+	return 1;
 }
 
 // Set the window's coordinate reference system (all three interchangeable forms — PROJ4 / WKT /
@@ -1052,6 +1094,13 @@ GMTVTK_API int gmtvtk_add_surface_h(void* handle, const float* z, int nx, int ny
 		ex.actor->GetProperty()->SetRoughness(0.45);
 		ex.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
 		s->ren->AddActor(ex.actor);
+		// Make this dropped grid a FULL layer: keep its full-res z (readout source when it is the active
+		// grid) and its own LUT + z range (so the colorbar can be retargeted to it). applyGridStacking()
+		// below puts it on top -> refreshGridColorbar() makes it the active grid + shows its colorbar.
+		ex.gridZ.assign(z, z + (size_t)nx * ny);
+		ex.gnx = nx; ex.gny = ny;
+		ex.gx0 = x0; ex.gx1 = x1; ex.gy0 = y0; ex.gy1 = y1;
+		ex.zmin = zmin; ex.zmax = zmax; ex.lut = lut;
 		if (hasImg) {                                // grid + drape image on top
 			vtkNew<vtkImageData> tex_img;
 			tex_img->SetDimensions(iw, ih, 1);
@@ -1091,6 +1140,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void* handle, const float* z, int nx, int ny
 	ex.name = (name && name[0]) ? name : ("Object " + std::to_string((int)s->extras.size() + 1));
 	const bool addedGrid = !ex.isImage;
 	if (addedGrid) ex.gstack = ++s->gridSeq;  // newest grid lands on top of the grid pile
+	if (addedGrid) ex.tag    = ++s->gridTagSeq;  // UNIQUE, STABLE group tag (the Color Bar resolves by this)
 	s->extras.push_back(ex);
 	if (addedGrid) { applyShading(s); applyGridStacking(s); }   // shade + order the new grid in the pile
 	rebuildSceneObjects(s);
@@ -1168,8 +1218,8 @@ GMTVTK_API int gmtvtk_promote_surface_h(void* handle, const float* z, int nx, in
 	disableGizmo(s);
 	s->giz = enableGizmo(s, 0.01);
 
-	// A grid opens in the default oblique 3-D view buildSceneContent already set. A bare image IS a
-	// 2-D map, so drop it into top-down flat-2D (matching gmtvtk_view_grid's image branch).
+	// Both a grid and a bare image open in top-down flat-2D (matching gmtvtk_view_grid): grids as a
+	// shaded-relief map, images as the textured plane. The grid branch saves the 3-D view first.
 	vtkCamera* cam = s->ren->GetActiveCamera();
 	if (imageOnly) {
 		s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff();
@@ -1187,9 +1237,12 @@ GMTVTK_API int gmtvtk_promote_surface_h(void* handle, const float* z, int nx, in
 		// refreshes. The flat-2D toggle is on act2D::triggered, not toggled, so there is no re-entrancy.
 		if (s->act2D) s->act2D->setChecked(true);
 	} else {
+		// A grid opens in flat-2D (top-down shaded-relief map) — the SAME switch gmtvtk_view_grid uses
+		// (sceneSetFlat2D saves the just-built oblique 3-D camera for a later switch back). buildSceneContent
+		// left the 3-D camera but the flag still reads 2D from the launcher, so clear it first to FORCE the
+		// switch (and there is no intermediate render here, so the 3-D view never flashes on screen).
 		s->flat2d = false;
-		if (s->act2D) s->act2D->setChecked(false);   // emits toggled -> updates the 2D/3D toolbar icon to "3D"
-		// gizmo already rebuilt and visible by enableGizmo above.
+		sceneSetFlat2D(s, true);
 		// The empty launcher's Shading dock was created HIDDEN (no body to light back then). Now there
 		// IS a surface, so re-show it FOLDED to the side strip — exactly the state a fresh grid opens in,
 		// and what the Surface row click then un-folds. Without this the dock stays permanently hidden

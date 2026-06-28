@@ -38,7 +38,8 @@ function _on_grdsample(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			# Grid -> GMT.grdsample. Region only when all four W/E/S/N fields are present.
 			kw = Dict{Symbol,Any}()
 			!isempty(inc)    && (kw[:inc] = inc)
-			!isempty(interp) && (kw[:interp] = interp)
+			ncode = _grdsample_ncode(interp)
+			!isempty(ncode)  && (kw[:interp] = ncode)
 			!isempty(reg)    && (kw[:reg] = (reg == "p" ? 1 : 0))
 			toggle && (kw[:toggle] = true)
 			rfields = split(region, '/')
@@ -65,6 +66,20 @@ function _on_grdsample(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		@warn "grdsample FAILED" exception=(e,)
 	end
 	return
+end
+
+# Map the dialog's interpolation word (+ optional "+c" clip / other modifiers) to GMT's -n code.
+# GMT -n wants a single letter b|c|l|n, NOT the full word ("-ncubic" fails with error 72).
+function _grdsample_ncode(interp::AbstractString)
+	isempty(interp) && return ""
+	word, rest = let p = split(interp, '+', limit = 2)
+		(String(p[1]), length(p) > 1 ? "+" * String(p[2]) : "")
+	end
+	letter = word == "nearest" ? "n" :
+	         word == "linear"  ? "l" :
+	         word == "cubic"   ? "c" :
+	         word == "bspline" ? "b" : ""
+	return isempty(letter) ? "" : letter * rest
 end
 
 # Resample a GMTimage with GMT.gdalwarp. `inc` -> -tr (x or x/y), `region` (W/E/S/N) -> -te

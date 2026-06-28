@@ -541,7 +541,7 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 
 	m.addAction("Line properties…", [s, lr]() { showLineProperties(s, lr); });
 	m.addAction(isNestRect ? "Save rectangle…"
-			  : isFault    ? "Save line…"
+			  : isFault    ? "Save trace fault…"
 			  : (lr.kind == LK_Polygon ? "Save polygon…" : "Save line…"),
 				[s, lr]() { lineSavePoints(s, lr); });   // 2D / 3D (grid-interpolated z)
 	m.addAction("Show data table…",                                      // floating vertex table viewer
@@ -581,7 +581,7 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 		m.addAction("Delete profile", [s]() { profileClear(s); rebuildSceneObjects(s); });
 	}
 	else if (lr.kind == LK_Polygon) {
-		m.addAction(isNestRect ? "Delete rectangle" : isFault ? "Delete fault" : "Delete polygon",
+		m.addAction(isNestRect ? "Delete rectangle" : isFault ? "Delete fault trace" : "Delete polygon",
 					[s, a]() { polygonDelete(s, a); });   // Hide = the Scene Objects checkbox
 	}
 	else {                                               // overlay line (Coastlines, Boundaries, Rivers, imports)

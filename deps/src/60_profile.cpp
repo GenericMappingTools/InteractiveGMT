@@ -178,7 +178,7 @@ static bool pickSurfaceXY(Scene* s, int dx, int dy, double& tx, double& ty) {
 // vertical ray at each densified (x,y) (one true z per sample), then refresh the 3D drape
 // line + the 2D panel. Arc length is in metres (geographic) / data units (cartesian).
 static void computeProfile(Scene* s, double ax, double ay, double bx, double by) {
-	if (!s || s->gridZ.empty())                        // sample the full-res DATA layer (no locator)
+	if (!s || (s->gridZ.empty() && !(s->actZ && !s->actZ->empty())))   // need a data layer (active grid or base)
 		return;
 	const int N = 300;
 	const double m_per_base = (s->zfac > 0.0) ? (1.0 / s->zfac) : 1.0;  // base horiz unit -> metres
@@ -189,7 +189,7 @@ static void computeProfile(Scene* s, double ax, double ay, double bx, double by)
 	for (int i = 0; i < N; ++i) {
 		const double t = (N == 1) ? 0.0 : double(i) / (N - 1);
 		const double x = ax + t * (bx - ax), y = ay + t * (by - ay);
-		const double z = sampleZ(s, x, y);             // bilinear, full-res, render-LOD independent
+		const double z = sampleActiveZ(s, x, y);       // bilinear on the ACTIVE grid, full-res, LOD independent
 		if (std::isnan(z))
 			continue;                                  // off-grid / NaN sample -> skip
 		if (have) {

@@ -40,6 +40,7 @@
 #include <QScrollBar>
 #include <QLabel>
 #include <QCheckBox>
+#include <QFrame>
 #include <QGroupBox>
 #include <QRadioButton>
 #include <QButtonGroup>

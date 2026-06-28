@@ -10,6 +10,12 @@ const _GEOG_VFRAC = 0.135       # geog auto: displayed z-range / horizontal exte
 # inherent and accepted — the user asked for this guess when no CRS is present.
 _isgeographic(G::GMTgrid)::Bool = GMT.guessgeog(G)
 
+# Default colormap for a grid. GMT tags topo/bathymetry remote grids (earth_relief / gebco /
+# gebcosi / synbath) with cpt == "geo"; only those get the elevation `geo` ramp. Every other grid
+# (computed fields, deformation, gravity, a plain user grid) defaults to `turbo`. Triggered by
+# passing cmap=:auto (the viewer's default); an explicit cmap always wins.
+_default_cmap(G::GMTgrid) = (G.cpt == "geo") ? :geo : :turbo
+
 # Build a CPT (plain `makecpt`, LINEAR over the data range) and return its control nodes: z
 # values `cz` and matching RGB `crgb` (0..1, row-major), for a faithful vtkColorTransferFunction
 # on the C side. Returns (Float64[], Float64[], 0) on failure -> viewer falls back to its ramp.
@@ -58,6 +64,31 @@ function _recolor(fig::QtFigure, cmap)
 	return "colormap: $cmap"
 end
 _recolor(fig, cmap) = "recolor: only grid windows have a colormap"
+
+# Recolour ONE grid of a (possibly multi-grid) window. `gridSel` selects the target inside the C
+# scene: -1 = the base relief surface, 0..N-1 = the Nth dropped/added grid. The C side supplies
+# THAT grid's own [zmin,zmax] so the CPT spans the right grid — fixing the old behaviour where the
+# colormap chooser on any group's Color Bar row always recoloured the first grid. Called from the
+# viewer's colorbar chooser (applyColormap -> _console_eval, so `fig` is bound to this window).
+function _recolor_grid(fig::QtFigure, cmap, zmin, zmax, gridSel)
+	cz, crgb, n = _cpt_nodes_range(zmin, zmax, cmap)
+	n < 2 && return "colormap '$cmap' failed (makecpt)"
+	ccall(_fn(:gmtvtk_set_cpt_grid), Cvoid,
+	      (Ptr{Cvoid}, Cint, Ptr{Float64}, Ptr{Float64}, Cint),
+	      fig.h, Cint(gridSel), cz, crgb, Cint(n))
+	return "colormap: $cmap"
+end
+_recolor_grid(fig, cmap, zmin, zmax, gridSel) = "recolor: only grid windows have a colormap"
+
+# TEST PROBE: the RGB (each 0..1) that ONE grid's own lut maps `z` to. gridSel: -1 = base relief,
+# 0..N-1 = the Nth extra grid. Returns nothing if the window/grid/lut is missing. Used by the suite to
+# assert per-grid colorbar isolation (recolouring one grid must not change another's colours).
+function _grid_rgb_at(h::Ptr{Cvoid}, gridSel::Integer, z::Real)
+	out = zeros(Float64, 3)
+	ok = ccall(_fn(:gmtvtk_grid_rgb_at), Cint,
+	           (Ptr{Cvoid}, Cint, Cdouble, Ptr{Float64}), h, Cint(gridSel), Cdouble(z), out)
+	return ok == 0 ? nothing : (out[1], out[2], out[3])
+end
 
 # z value -> "#rrggbb" via a GMTcpt colormap matrix (Mx3, stored 0-1 or 0-255). Mirrors GMTF3D z_to_hex.
 function _z_to_hex(z, cmap::AbstractMatrix, zmin, zmax)

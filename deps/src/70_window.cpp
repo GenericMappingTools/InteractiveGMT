@@ -856,9 +856,8 @@ public:
 				loadRef(QFileDialog::getOpenFileName(this, "Select reference grid", "",
 				                                     "Grid/Image files (*.nc *.grd *.tif *.tiff);;All files (*)"));
 			});
-			QObject::connect(refEdit, &QLineEdit::editingFinished, this, [this, loadRef]() {
-				loadRef(refEdit->text().trimmed());
-			});
+			// HARD RULE: an edit box must NEVER execute (no editingFinished->module read). The ref grid
+			// is loaded ONLY by the "..." picker button above. See only-action-button-executes-dialog.
 			outer->addLayout(refRow);
 		}
 	}
@@ -880,10 +879,12 @@ public:
 	bool    useSelected = false;      // a grid is loaded -> input is the current window's element
 	QString srcName;                  // Scene Objects label of the loaded element (suffix source)
 	QString params;   // "input;output;I;R;n;r;T;S" on OK  (S = source element name)
+	Scene  *scn = nullptr;    // owning window's scene (for Julia call on Apply)
 
 	GrdsampleDialog(QWidget *parent, Scene *scene = nullptr) : QDialog(parent) {
 		setWindowTitle("grdsample");
 		setMinimumWidth(400);
+		scn = scene;
 
 		auto *v = new QVBoxLayout(this);
 
@@ -983,12 +984,17 @@ public:
 		btnRow->addStretch();
 		auto *btnApply = new QPushButton("Apply", this);
 		auto *btnClose = new QPushButton("Close", this);
+		// HARD RULE: NO edit box may ever execute grdsample. Qt auto-promotes the first QPushButton to
+		// the dialog default, so Return in ANY QLineEdit would click Apply and run the module. Disable
+		// auto-default on BOTH buttons => Enter in an edit box does nothing but finish that edit.
+		btnApply->setAutoDefault(false); btnApply->setDefault(false);
+		btnClose->setAutoDefault(false); btnClose->setDefault(false);
 		btnRow->addWidget(btnApply);
 		btnRow->addWidget(btnClose);
 		v->addLayout(btnRow);
 
 		QObject::connect(btnClose, &QPushButton::clicked, this, &QDialog::reject);
-		QObject::connect(btnApply, &QPushButton::clicked, this, [this]() {
+		QObject::connect(btnApply, &QPushButton::clicked, this, [this, btnApply]() {
 			QString I = geo->inc();     // "xinc" or "xinc/yinc" when anisotropic
 			QString R = geo->region();  // "W/E/S/N"
 			QString n = interpCombo->currentData().toString();
@@ -1000,6 +1006,10 @@ public:
 				         .arg(in)
 				         .arg(outEdit->text().trimmed())
 				         .arg(I).arg(R).arg(n).arg(r).arg(T).arg(srcName);
+			btnApply->setStyleSheet("background:#d4831a; color:white;");  // busy until Julia returns
+			btnApply->setEnabled(false);
+			QApplication::processEvents();
+			if (g_juliaGrdsample) g_juliaGrdsample(scn, params.toUtf8().constData());
 			accept();
 		});
 	}
@@ -1515,16 +1525,48 @@ public:
 				.arg(dN->text().trimmed()).arg(dQ->text().trimmed())
 				.arg(muEdit->text().trimmed())
 				.arg(geo->region() + ";" + geo->inc());   // R then I, tail of the string
+			// Append the fault's start vertex (first vertex of the drawn fault trace) — okada needs it as
+			// x_start/y_start (UpperLeft corner of the fault plane); it is not otherwise in the dialog.
+			double fx0 = std::numeric_limits<double>::quiet_NaN(), fy0 = fx0;
+			if (scn) for (auto& pg : scn->polys) if (pg.isFault && !pg.v.empty()) {
+				fx0 = pg.v.front()[0]; fy0 = pg.v.front()[1]; break; }
+			params += ";" + QString::number(fx0, 'g', 15) + ";" + QString::number(fy0, 'g', 15);
 			if (onAction) onAction(params);
 		};
-		QObject::connect(computeBtn, &QPushButton::clicked, this, [assemble]{ assemble("compute"); });
-		QObject::connect(saveBtn,    &QPushButton::clicked, this, [assemble]{ assemble("save"); });
+		QObject::connect(computeBtn, &QPushButton::clicked, this, [assemble, computeBtn]() {
+			computeBtn->setStyleSheet("background:#d4831a; color:white;");  // busy until Julia returns
+			computeBtn->setEnabled(false);
+			QApplication::processEvents();
+			assemble("compute");
+			computeBtn->setStyleSheet("");
+			computeBtn->setEnabled(true);
+		});
+		QObject::connect(saveBtn, &QPushButton::clicked, this, [assemble, saveBtn]() {
+			saveBtn->setStyleSheet("background:#d4831a; color:white;");  // busy until Julia returns
+			saveBtn->setEnabled(false);
+			QApplication::processEvents();
+			assemble("save");
+			saveBtn->setStyleSheet("");
+			saveBtn->setEnabled(true);
+		});
 	}
 };
 
 // Open the Vertical elastic deformation dialog for the current window (used by a fault line's first
 // property — forward-declared in 55_lineprops.cpp). The dialog prefills its Griding Line Geometry
 // from the window's loaded grid/image (same path as grdsample). On accept, hands params to Julia.
+// Remove the gray fault-plane patch (a dialog-time preview of the dip projection). It is tied to the
+// ElasticDialog's lifetime: dropped when the dialog closes, recreated by the ctor's updateFaultPlane()
+// on reopen. (Deleting the fault itself also removes it, via polygonEraseOne.)
+static void faultRemovePlane(Scene* s) {
+	if (!s) return;
+	for (auto& pg : s->polys) if (pg.isFault && pg.faultPlane) {
+		if (s->ren) s->ren->RemoveActor(pg.faultPlane);
+		pg.faultPlane = nullptr; pg.faultPlanePD = nullptr;
+	}
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 static void faultRunDialog(Scene* s) {
 	if (!s || !s->win) return;
 	// NON-MODAL: show() (not exec()) so the main window stays interactive while the dialog is up —
@@ -1534,7 +1576,7 @@ static void faultRunDialog(Scene* s) {
 	ElasticDialog* dlg = new ElasticDialog(s->win, s);
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
 	s->elasticDlg = dlg;
-	QObject::connect(dlg, &QObject::destroyed, s->win, [s]{ s->elasticDlg = nullptr; });
+	QObject::connect(dlg, &QObject::destroyed, s->win, [s]{ s->elasticDlg = nullptr; faultRemovePlane(s); });
 	dlg->onAction = [s](const QString& params) {
 		if (g_juliaElastic) g_juliaElastic(s, params.toUtf8().constData());
 		else s->win->statusBar()->showMessage("Elastic deformation: compute not wired yet", 3000);
@@ -2106,7 +2148,9 @@ static void buildSceneContent(Scene* s, vtkSmartPointer<vtkPolyData> pd,
 	// --- scalar bar ---------------------------------------------------------
 	// Coloured strip (vtkScalarBarActor) + our own tick marks / numbers, all positioned from
 	// s->barX0/barY0 so the assembly toggles and DRAGS as one unit. Bare images get no colorbar.
-	buildColorbar(s, lut);
+	buildColorbar(s, lut, s->zmin, s->zmax);
+	s->actZ = &s->gridZ; s->actNx = s->gnx; s->actNy = s->gny;   // base relief is the initial active grid
+	s->actX0 = s->gx0; s->actX1 = s->gx1; s->actY0 = s->gy0; s->actY1 = s->gy1;
 
 	// Default view: world +Z up; azimuth 0 (look north, +Y) and elevation 35deg above
 	// horizontal. Camera sits due south of the focal point, raised 35deg. Then zoom in so
@@ -2327,6 +2371,48 @@ static void showEarthTidesDialog(Scene* s, double cW, double cE, double cS, doub
 	dlg->show();
 }
 
+// SINGLE source of truth for the flat-2D <-> 3D view switch. The toolbar flyout, the View menu, the
+// context menu AND the grid/image init in 90_c_api ALL go through here — never re-implement the
+// camera math. 2D = top-down orthographic over the surface bounds, rotation/tilt locked (gated via
+// s->flat2d), gizmo hidden; the 3-D camera is saved on ENTER so leaving 2D restores it. Idempotent:
+// a no-op (bar the act2D checkmark) when already in the requested mode — so a caller that needs to
+// FORCE the 2D camera after rebuilding the scene must reset s->flat2d=false first (the rebuilt scene
+// left the 3-D camera, but the flag may still read 2D from the launcher).
+static void sceneSetFlat2D(Scene* s, bool on) {
+	if (!s || !s->ren) return;
+	if (on == s->flat2d) { if (s->act2D) s->act2D->setChecked(on); return; }
+	vtkCamera* cam = s->ren->GetActiveCamera();
+	s->flat2d = on;
+	if (s->flat2d) {
+		cam->GetPosition(s->sav_pos);          // save the 3D view to restore later
+		cam->GetFocalPoint(s->sav_foc);
+		cam->GetViewUp(s->sav_vup);
+		s->sav_parallel = cam->GetParallelProjection();
+		// 2D = TOP-DOWN ORTHO ONLY. Keep the relief and its PBR lighting exactly as in 3D
+		// (illumination must NOT change) — viewed straight down in parallel projection it reads
+		// as a shaded-relief map. We do NOT flatten (ve) or touch lighting.
+		if (s->giz) setGizmoVisible(*s->giz, false);
+		double b[6]; surfGetBounds(s, b);      // north (+Y) up
+		const double fp[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
+		cam->SetFocalPoint(fp[0], fp[1], fp[2]);
+		cam->SetViewUp(0.0, 1.0, 0.0);
+		cam->SetPosition(fp[0], fp[1], b[5] + (b[5]-b[4]) + 1.0);  // above the surface, not inside it
+		cam->ParallelProjectionOn();
+		s->ren->ResetCameraClippingRange();
+		fitSnapView(s, /*topMode=*/true);      // maximize: fill the viewport edge-to-edge
+	}
+	else {
+		cam->SetParallelProjection(s->sav_parallel);
+		cam->SetPosition(s->sav_pos);
+		cam->SetFocalPoint(s->sav_foc);
+		cam->SetViewUp(s->sav_vup);
+		if (s->giz) setGizmoVisible(*s->giz, true);
+		s->ren->ResetCameraClippingRange();
+	}
+	if (s->act2D) s->act2D->setChecked(s->flat2d);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 double x0, double x1, double y0, double y1,
 						 double zmin, double zmax,
@@ -2341,7 +2427,8 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 bool imageOnly = false,            // bare image: no surface row; readout shows colour
 						 const float *gz = nullptr,         // non-null -> TILED plain-grid render (pd ignored)
 						 int gnx = 0, int gny = 0,          // grid dims for the tiled path
-						 bool blankStart = false) {         // empty launcher: open as a clean dark canvas (no axes flash)
+						 bool blankStart = false,           // empty launcher: open as a clean dark canvas (no axes flash)
+						 bool openFlat2D = false) {         // open in flat-2D from the FIRST frame (grids) — no 3-D flash
 	ensureApp();
 
 	Scene *s = new Scene();
@@ -2454,47 +2541,10 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto actToggleGizmo = [s]() {
 		if (s->giz) { setGizmoVisible(*s->giz, !s->giz->visible); s->widget->renderWindow()->Render(); }
 	};
-	// State-driven flat-2D <-> 3D switch. 2D = collapse VE to a plane, top-down orthographic,
-	// rotation/tilt locked (gated in DragCB via s->flat2d), gizmo hidden. The Z tick billboards
-	// self-hide when the drawn Z extent is zero (placeTickBillboards d0==d1 guard). Idempotent:
-	// calling with the current state is a no-op. The shared act2D checkmark is kept in sync.
-	auto setFlat2D = [s](bool on) {
-		if (on == s->flat2d) { if (s->act2D) s->act2D->setChecked(on); return; }
-		vtkCamera* cam = s->ren->GetActiveCamera();
-		s->flat2d = on;
-		if (s->flat2d) {
-			cam->GetPosition(s->sav_pos);          // save the 3D view to restore later
-			cam->GetFocalPoint(s->sav_foc);
-			cam->GetViewUp(s->sav_vup);
-			s->sav_parallel = cam->GetParallelProjection();
-
-			// 2D = TOP-DOWN ORTHO ONLY. Keep the relief and its PBR lighting exactly as in 3D
-			// (illumination must NOT change) — viewed straight down in parallel projection it reads
-			// as a shaded-relief map. We do NOT flatten (ve) or touch lighting: flattening kills the
-			// hillshade, and LightingOff on PBR renders near-black.
-			if (s->giz) setGizmoVisible(*s->giz, false);
-
-			double b[6]; surfGetBounds(s, b);      // north (+Y) up
-			const double fp[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
-			cam->SetFocalPoint(fp[0], fp[1], fp[2]);
-			cam->SetViewUp(0.0, 1.0, 0.0);
-			cam->SetPosition(fp[0], fp[1], b[5] + (b[5]-b[4]) + 1.0);  // above the surface, not inside it
-			cam->ParallelProjectionOn();
-			s->ren->ResetCameraClippingRange();
-			fitSnapView(s, /*topMode=*/true);      // maximize: fill the viewport edge-to-edge
-		}
-		else {
-			cam->SetParallelProjection(s->sav_parallel);
-			cam->SetPosition(s->sav_pos);
-			cam->SetFocalPoint(s->sav_foc);
-			cam->SetViewUp(s->sav_vup);
-			if (s->giz) setGizmoVisible(*s->giz, true);
-			s->ren->ResetCameraClippingRange();
-		}
-		if (s->act2D) s->act2D->setChecked(s->flat2d);
-		s->widget->renderWindow()->Render();
-	};
-	auto actToggle2D = [s, setFlat2D]() { setFlat2D(!s->flat2d); };
+	// Flat-2D <-> 3D switch — the camera math lives in the file-scope sceneSetFlat2D (the SINGLE
+	// source of truth, shared with the grid/image init in 90_c_api). These are just the UI handles.
+	auto setFlat2D   = [s](bool on) { sceneSetFlat2D(s, on); };
+	auto actToggle2D = [s]() { sceneSetFlat2D(s, !s->flat2d); };
 	auto actAbout = [win]() {
 		QMessageBox::about(win, "About",
 			"i'GMT 3-D Viewer\n\nNative Qt UI + VTK 3-D, self-contained.\n\n"
@@ -2778,8 +2828,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QMenu *mGMT = win->menuBar()->addMenu("&GMT");
 	mGMT->addAction("grdsample", [win, s]() {
 		GrdsampleDialog dlg(win, s);
-		if (dlg.exec() != QDialog::Accepted || !g_juliaGrdsample) return;
-		g_juliaGrdsample(s, dlg.params.toUtf8().constData());
+		dlg.exec();   // Julia is invoked inside the dialog on Apply
 	});
 
 	win->menuBar()->addMenu("&Help")->addAction("&About", actAbout);
@@ -2801,16 +2850,35 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
 		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // open failed -> Errors tab
 	});
-	// 2D/3D toggle: an icon-only button whose glyph shows the CURRENT view ("3D" in 3D, "2D" in flat
-	// 2D). Its own QToolButton (not act2D, which keeps the descriptive "Flat 2D (map)" menu text).
-	// The icon tracks act2D's checked state, so any toggle source (menu, context menu, bare-image
-	// init in 90_c_api) keeps it in sync.
+	// 2D/3D view-mode flyout: a sibling of the shapes / 3-D Bodies families — an icon-only QToolButton
+	// whose glyph shows the CURRENT view ("2D" flat map / "3D" perspective) and whose dropdown arrow
+	// ('v') lists the two modes. Picking one switches via the shared setFlat2D; the slot's glyph +
+	// the active-mode checkmark track act2D's checked state, so EVERY toggle source (this flyout,
+	// the View menu, the context menu, the 2D bare-image / grid init in 90_c_api) keeps it in sync.
+	// (iGMT opens grid windows in 2D — see the grid init in gmtvtk_view_grid, 90_c_api.cpp.)
 	QToolButton *tb2D = new QToolButton(tb);
+	tb2D->setPopupMode(QToolButton::MenuButtonPopup);   // click icon = re-apply current mode; click 'v' = pick mode
 	tb2D->setToolButtonStyle(Qt::ToolButtonIconOnly);
-	tb2D->setIcon(makeViewModeIcon(false));
-	tb2D->setToolTip("Toggle flat 2D map / 3D perspective view");
+	QMenu *viewModeMenu = new QMenu(tb2D);              // the dropdown list: 2D / 3D (text only — no glyph,
+	QAction *actMode2D = viewModeMenu->addAction("2D"); // the slot below carries the glyph icon)
+	QAction *actMode3D = viewModeMenu->addAction("3D");
+	actMode2D->setCheckable(true); actMode3D->setCheckable(true);
+	actMode2D->setToolTip("Flat 2D map (top-down shaded relief)");
+	actMode3D->setToolTip("3D perspective view");
+	QObject::connect(actMode2D, &QAction::triggered, [setFlat2D]() { setFlat2D(true);  });
+	QObject::connect(actMode3D, &QAction::triggered, [setFlat2D]() { setFlat2D(false); });
+	tb2D->setMenu(viewModeMenu);
+	tb2D->setToolTip("View mode: flat 2D map / 3D perspective");
+	// Slot click toggles 2D<->3D; the 'v' dropdown picks a mode. NOT setDefaultAction (that would tie
+	// the button's sunken/checked look to the always-checked menu entry — leaving it permanently
+	// highlighted). Drive the glyph icon ourselves; the checked entry just marks the active mode.
 	QObject::connect(tb2D, &QToolButton::clicked, actToggle2D);
-	QObject::connect(s->act2D, &QAction::toggled, tb2D, [tb2D](bool on){ tb2D->setIcon(makeViewModeIcon(on)); });
+	auto syncViewMode = [tb2D, actMode2D, actMode3D](bool on) {
+		actMode2D->setChecked(on); actMode3D->setChecked(!on);   // dropdown checkmark on the active mode
+		tb2D->setIcon(makeViewModeIcon(on));                     // glyph shows the CURRENT mode
+	};
+	QObject::connect(s->act2D, &QAction::toggled, tb2D, [syncViewMode](bool on){ syncViewMode(on); });
+	syncViewMode(s->flat2d);
 	tb->addWidget(tb2D);
 
 	tb->addSeparator();
@@ -3349,6 +3417,12 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Default window large enough that the LEFT (Scene Objects) and RIGHT (Shading) side docks
 	// both get real width. Without this the window opens at its minimum and the central VTK view
 	// squeezes the right dock to ZERO width -> the Shading dock is invisible ("no docks").
+	// Open in flat-2D from the FIRST painted frame (grids): switch the camera to top-down ortho BEFORE
+	// the window is shown, so the 3-D oblique view buildSceneContent set never flashes on screen. ONE
+	// shared switch (sceneSetFlat2D saves that 3-D camera for a later toggle back). The gizmo is built
+	// further down and hidden there when flat2d is set.
+	if (openFlat2D) sceneSetFlat2D(s, true);
+
 	win->show();
 
 	// Empty launcher: now that the layout has real geometry, shrink the pre-folded Scene Objects
@@ -3390,6 +3464,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Gizmo: scale cone + tilt ring + compass ring at the rotation centre.
 	// Owns its own LeftButton/MouseMove observers at priority 10 and the 'x' toggle.
 	s->giz = enableGizmo(s, 0.01);
+	if (s->flat2d && s->giz) setGizmoVisible(*s->giz, false);   // 2D map: gizmo hidden (camera already top-down)
 	// Polygon draw/edit tool: gestures are handled in the GLView widget (mouse*Event overrides,
 	// 60_profile.cpp), gated on the tool state, so navigation is untouched when the tool is idle.
 	// non-blocking: return now; the host pumps gmtvtk_process_events().

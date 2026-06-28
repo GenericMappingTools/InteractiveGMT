@@ -64,6 +64,20 @@ struct ExtraObj {
 	double zpos    = 0.0;                    // flat-plane TRUE z — sits above/below the relief, NEVER at z=0
 	double bx0 = 0, bx1 = 0, by0 = 0, by1 = 0;  // image footprint (true coords): tcoords + grid-overlap test
 	int    gstack  = 0;                      // GRID draw-order rank in the grid pile (base relief + grids)
+	int    tag     = 0;                      // UNIQUE, STABLE group tag (assigned once at creation from
+	                                         // Scene::gridTagSeq, never reused). The Color Bar row carries
+	                                         // this tag so a recolour always hits THIS grid, regardless of
+	                                         // the grid's current index in s->extras (which shifts on delete).
+	// Per-grid DATA layer + colour state (grids only). A dropped grid is a first-class layer: it carries
+	// its own full-res z (for the hover/coordinate readout when it is the active/displayed grid) and its
+	// own LUT + z range (so the single rendered colorbar can be retargeted to it). Mirrors the base
+	// surface's Scene-level gridZ / surfLut / zmin-zmax. Empty for images.
+	std::vector<float> gridZ;                // full-res z, column-major z[i*gny+j] (same layout as base)
+	int    gnx = 0, gny = 0;
+	double gx0 = 0, gx1 = 1, gy0 = 0, gy1 = 1;
+	double zmin = 0, zmax = 0;               // this grid's own z range (drives its colorbar)
+	vtkSmartPointer<vtkScalarsToColors> lut; // this grid's colour map (for the retargeted colorbar)
+	bool   showBar = true;                   // user wants this grid's colorbar shown (when it is active)
 };
 
 // A user-drawn polygon (closed polyline) from the toolbar polygon tool. Vertices are kept in
@@ -169,6 +183,20 @@ struct Scene {
 	int    gnx = 0, gny = 0;
 	double gx0 = 0, gx1 = 1, gy0 = 0, gy1 = 1;
 	double gdx = 0, gdy = 0;                          // true-coord node spacing (tile build + SSE)
+
+	// --- ACTIVE grid routing (multi-grid windows) ---------------------------
+	// A window can hold several grids (base relief + dropped/computed grids). The "active" grid is the
+	// topmost VISIBLE one; it drives the hover/coordinate readout and is the only grid whose colorbar is
+	// shown. These point the readout at the active grid's data layer (null -> use the base gridZ above).
+	// resolveActiveGrid()/refreshGridColorbar() (50_scene.cpp) set them on every add / toggle / restack.
+	const std::vector<float>* actZ = nullptr;
+	int    actNx = 0, actNy = 0;
+	double actX0 = 0, actX1 = 1, actY0 = 0, actY1 = 1;
+	// The colorbar's CURRENT display range — decoupled from zmin/zmax (which stay the base relief's range
+	// for the cube axes / VE). buildColorbar sets these to the active grid's range; layoutColorbar reads
+	// them so ticks place correctly when the bar is retargeted to a dropped grid.
+	double barLo = 0, barHi = 1;
+	bool   surfShowBar = true;              // base relief: user wants its colorbar shown (when active)
 
 	// --- tiled-LOD pyramid (plain grid) -------------------------------------
 	// Quadtree of tiles; coarse near root, refined per-frame by screen-space error so only the
@@ -316,6 +344,8 @@ struct Scene {
 	int    vecSeq = 0;                                  // monotonic seed for shared vector-pile stack ranks
 	int    surfStack = 0;                               // base relief's rank in the GRID pile (base + grids)
 	int    gridSeq   = 0;                               // monotonic seed for grid-pile ranks (newest on top)
+	int    gridTagSeq = 0;                              // monotonic seed for UNIQUE grid GROUP tags (never reused;
+	                                                    // -1 is reserved for the base relief grid)
 	std::vector<TextLabel> texts;                      // user-placed text labels
 	bool   polyMode    = false;                        // draw-mode button toggled on
 	bool   polyDrawing = false;                        // mid-building the current polygon
@@ -1191,26 +1221,40 @@ static bool profileHitAt(Scene* s, int dx, int dy) {
 // Bilinear sample of the full-res data layer at TRUE coords (x,y). Returns NaN outside the grid
 // or when any of the four corners is NaN (so callers skip it). O(1), no locator, render-LOD
 // independent — the basis for full-res hover + profile under the tiled-LOD render path.
-static double sampleZ(const Scene* s, double x, double y) {
-	if (s->gridZ.empty() || s->gnx < 2 || s->gny < 2)
+static double sampleGrid(const float* Z, int nx, int ny, double gx0, double gx1, double gy0, double gy1,
+                         double x, double y) {
+	if (!Z || nx < 2 || ny < 2)
 		return std::numeric_limits<double>::quiet_NaN();
-	const double dx = (s->gx1 - s->gx0) / (s->gnx - 1);
-	const double dy = (s->gy1 - s->gy0) / (s->gny - 1);
+	const double dx = (gx1 - gx0) / (nx - 1);
+	const double dy = (gy1 - gy0) / (ny - 1);
 	if (dx == 0.0 || dy == 0.0)
 		return std::numeric_limits<double>::quiet_NaN();
-	const double fx = (x - s->gx0) / dx, fy = (y - s->gy0) / dy;
-	if (fx < 0.0 || fy < 0.0 || fx > s->gnx - 1 || fy > s->gny - 1)
+	const double fx = (x - gx0) / dx, fy = (y - gy0) / dy;
+	if (fx < 0.0 || fy < 0.0 || fx > nx - 1 || fy > ny - 1)
 		return std::numeric_limits<double>::quiet_NaN();
-	const int i0 = std::min((int)fx, s->gnx - 2), j0 = std::min((int)fy, s->gny - 2);
+	const int i0 = std::min((int)fx, nx - 2), j0 = std::min((int)fy, ny - 2);
 	const double tx = fx - i0, ty = fy - j0;
-	const float* Z = s->gridZ.data();                  // column-major: Z[i*gny + j]
-	const double z00 = Z[(size_t)i0     * s->gny + j0    ];
-	const double z10 = Z[(size_t)(i0+1) * s->gny + j0    ];
-	const double z01 = Z[(size_t)i0     * s->gny + j0 + 1];
-	const double z11 = Z[(size_t)(i0+1) * s->gny + j0 + 1];
+	const double z00 = Z[(size_t)i0     * ny + j0    ];   // column-major: Z[i*ny + j]
+	const double z10 = Z[(size_t)(i0+1) * ny + j0    ];
+	const double z01 = Z[(size_t)i0     * ny + j0 + 1];
+	const double z11 = Z[(size_t)(i0+1) * ny + j0 + 1];
 	if (std::isnan(z00) || std::isnan(z10) || std::isnan(z01) || std::isnan(z11))
 		return std::numeric_limits<double>::quiet_NaN();
 	return (1-tx)*(1-ty)*z00 + tx*(1-ty)*z10 + (1-tx)*ty*z01 + tx*ty*z11;
+}
+
+// Base relief data layer (profiles / cross-sections sample THIS — unchanged by multi-grid routing).
+static double sampleZ(const Scene* s, double x, double y) {
+	if (s->gridZ.empty()) return std::numeric_limits<double>::quiet_NaN();
+	return sampleGrid(s->gridZ.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, x, y);
+}
+
+// ACTIVE grid data layer — what the hover/coordinate readout reports. Falls back to the base relief
+// when no dropped grid is active (actZ null), so a single-grid window behaves exactly as before.
+static double sampleActiveZ(const Scene* s, double x, double y) {
+	if (s->actZ && !s->actZ->empty())
+		return sampleGrid(s->actZ->data(), s->actNx, s->actNy, s->actX0, s->actX1, s->actY0, s->actY1, x, y);
+	return sampleZ(s, x, y);
 }
 
 // Mouse move (default priority): live coordinate readout. Runs only when the gizmo
@@ -1263,12 +1307,14 @@ static void onMouseMove(vtkObject*, unsigned long, void* clientData, void* /*cd*
 	const double dirx = fr[0] - nr[0], diry = fr[1] - nr[1], dirz = fr[2] - nr[2];
 	const double zsc = s->zfac * s->ve;
 	const double gx  = (s->xfac != 0.0) ? s->xfac : 1.0;
-	if (!s->gridZ.empty()) {
-		// g(t) = Pz(t) - sampleZ(truex,truey)*zsc; first sign change along the ray = nearest
+	// March against the ACTIVE (topmost-visible) grid so the readout tracks the grid actually shown.
+	const bool haveActive = (s->actZ && !s->actZ->empty()) || !s->gridZ.empty();
+	if (haveActive) {
+		// g(t) = Pz(t) - sampleActiveZ(truex,truey)*zsc; first sign change along the ray = nearest
 		// surface crossing, then bisect. NaN (off-grid) segments are skipped.
 		auto eval = [&](double t, double& fval) -> bool {
 			const double X = nr[0] + t*dirx, Y = nr[1] + t*diry, Z = nr[2] + t*dirz;
-			const double h = sampleZ(s, X / gx, Y);
+			const double h = sampleActiveZ(s, X / gx, Y);
 			if (std::isnan(h)) return false;
 			fval = Z - h * zsc; return true;
 		};
@@ -1320,8 +1366,8 @@ static void onMouseMove(vtkObject*, unsigned long, void* clientData, void* /*cd*
 			// depth z (undo base/VE actor scale zfac*ve) for surfaces with no data layer (FV mesh /
 			// point cloud), and where the sample misses (off-grid / NaN). flat-2D: zsc=0 -> z 0.
 			double ztrue;
-			if (!s->gridZ.empty() && !std::isnan(ztrue = sampleZ(s, truex, truey))) {
-				// got it from the data layer
+			if (haveActive && !std::isnan(ztrue = sampleActiveZ(s, truex, truey))) {
+				// got it from the active grid's data layer
 			} else {
 				const double zsc = s->zfac * s->ve;
 				ztrue = (zsc != 0.0) ? w[2] / zsc : 0.0;

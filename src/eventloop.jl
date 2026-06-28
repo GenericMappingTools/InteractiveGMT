@@ -56,7 +56,8 @@ function _ensure_callbacks()
 	                    ("gridmeta",    _register_gridmeta),
 	                    ("dimfun",      _register_dimfun),
 	                    ("nswing",      _register_nswing),
-	                    ("faultgeom",   _register_faultgeom))
+	                    ("faultgeom",   _register_faultgeom),
+	                    ("elastic",     _register_elastic))
 		try
 			fn()
 		catch e

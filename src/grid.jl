@@ -24,14 +24,15 @@ function _pack_dataset(D, G::GMTgrid)
 end
 
 """
-	view_grid(G::GMTgrid; cmap=:geo, drape=nothing, outside=:shademesh, outside_color=200,
+	view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside=:shademesh, outside_color=200,
 			  title="i'GMT", geographic=nothing)
 
 Show a GMT.jl grid in the Qt + VTK viewer. Returns a `QtFigure` handle immediately; the
 window stays live while you keep using the REPL. Pass the handle to [`add!`](@ref) to add
 elements (lines/points) to this window later. `cmap` is any GMT colormap name (e.g. `:geo`,
 `:turbo`, `:rainbow`, `:roma`), applied LINEARLY over the grid's z range via
-`makecpt`; pass `nothing` for the built-in ramp. `drape` is an optional `GMTimage`
+`makecpt`; pass `nothing` for the built-in ramp. The default `:auto` picks `:geo` for
+topo/bathymetry grids (those GMT tags with `cpt == "geo"`) and `:turbo` for everything else. `drape` is an optional `GMTimage`
 textured over the surface instead of the CPT colouring.
 
 `outside` controls the grid area the `drape` image does NOT cover (mirrors GMTF3D):
@@ -64,10 +65,11 @@ fields as [`add_curtain!`](@ref)). E.g.
 the vertical exaggeration is referenced to metres (1°lat ≈ 111111 m, 1°lon = that ×
 cos(mid-lat)); z assumed metres.
 """
-function view_grid(G::GMTgrid; cmap=:geo, drape=nothing, outside::Symbol=:shademesh, outside_color=200,
+function view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside::Symbol=:shademesh, outside_color=200,
 				   triangulate::Bool=true, data=nothing, mode::Symbol=:lines, data_color=nothing, data_size=0,
 				   vcurtain=nothing, title::AbstractString="i'GMT",
 				   geographic::Union{Bool,Nothing}=nothing)
+	cmap === :auto && (cmap = _default_cmap(G))         # geo only for topo/bathymetry grids, else turbo
 	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z)   # column-major; viewer reads z[ix*ny + iy]. Float32 = no copy (C stores float anyway)
 	ny, nx = size(z)                  # GMT layout: dim1 = ny (y), dim2 = nx (x)
 	r = G.range                       # [xmin xmax ymin ymax zmin zmax ...]
