@@ -1015,6 +1015,48 @@ static void rebuildSceneObjects(Scene *s) {
 		       : nm.startsWith("circle") ? IC_Circle
 		                                 : IC_Polygon;
 		addRow(nm, pg.line, ic, &lr);
+
+		// The gray surface-PROJECTION patch is its OWN graphical element — its own handle (hide + Remove).
+		if (pg.isFault && pg.faultPlane) {
+			vtkActor* fp = pg.faultPlane.Get();
+			makeRow(QString("%1 — surface projection").arg(nm), IC_Polygon, fp->GetVisibility() != 0,
+			        [fp](bool on) { fp->SetVisibility(on ? 1 : 0); },
+			        [s, fp](const QPoint& g) {
+			            QMenu m(s->widget);
+			            QAction* aRem = m.addAction("Remove");
+			            if (m.exec(g) != aRem) return;
+			            if (s->ren) s->ren->RemoveActor(fp);
+			            for (auto& p : s->polys) if (p.faultPlane.Get() == fp) {
+			                p.faultPlane = nullptr; p.faultPlanePD = nullptr; break;
+			            }
+			            rebuildSceneObjects(s);
+			            if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			        },
+			        "Gray surface projection of the fault plane · left-click for Remove");
+		}
+
+		// The buried 3-D dipping fault plane is its OWN graphical element with its OWN handle — NOT the
+		// gray surface projection (that is a separate, surface-draped patch). The handle toggles only the
+		// 3-D plane (hidden in flat-2D); left-click the label for a Remove menu.
+		if (pg.isFault && pg.faultPlane3D) {
+			// Capture the STABLE actor pointer (vtkSmartPointer keeps the object alive at a fixed
+			// address even if s->polys reallocates); never a raw Polygon* (that dangles on regrow).
+			vtkActor* fp3 = pg.faultPlane3D.Get();
+			makeRow(QString("%1 — fault plane").arg(nm), IC_Polygon, fp3->GetVisibility() != 0,
+			        [s, fp3](bool on) { fp3->SetVisibility((on && !s->flat2d) ? 1 : 0); },
+			        [s, fp3](const QPoint& g) {
+			            QMenu m(s->widget);
+			            QAction* aRem = m.addAction("Remove");
+			            if (m.exec(g) != aRem) return;
+			            if (s->ren) s->ren->RemoveActor(fp3);
+			            for (auto& p : s->polys) if (p.faultPlane3D.Get() == fp3) {   // null the owning fault's slot
+			                p.faultPlane3D = nullptr; p.faultPlane3DPD = nullptr; break;
+			            }
+			            rebuildSceneObjects(s);
+			            if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			        },
+			        "Buried 3-D fault plane (visible from below the surface) · left-click for Remove");
+		}
 	}
 	for (auto &tl : s->texts) {                          // user-placed text labels (toggle + right-click menu)
 		if (!tl.actor) continue;

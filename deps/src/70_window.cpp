@@ -1183,6 +1183,45 @@ static void faultBuildPlanePD(vtkPolyData* pd, const std::vector<std::array<doub
 	pd->Modified();
 }
 
+// Build the gray surface-PROJECTION patch as a terrain-DRAPED quad mesh: bilinearly interpolate the
+// quad (top edge t0→t1 = the trace, bottom edge b0→b1 = the down-dip projection) into an nu×nv grid
+// and sample z on the relief at every node, so the patch HUGS the ground (its top edge follows the
+// fault trace draped on the surface) instead of cutting a flat chord through the relief.
+static void faultBuildDrapedPatch(Scene* s, vtkPolyData* pd,
+								   const std::array<double,3>& t0, const std::array<double,3>& t1,
+								   const std::array<double,3>& b0, const std::array<double,3>& b1) {
+	double spacing = 0.0;
+	const double sx = std::abs(s->gdx), sy = std::abs(s->gdy);
+	spacing = (sx > 0 && sy > 0) ? std::min(sx, sy) : std::max(sx, sy);
+	const double lenU = std::hypot(t1[0] - t0[0], t1[1] - t0[1]);
+	const double lenV = std::hypot(b0[0] - t0[0], b0[1] - t0[1]);
+	const int nu = (spacing > 0) ? std::clamp((int)std::ceil(lenU / spacing), 1, 400) : 1;
+	const int nv = (spacing > 0) ? std::clamp((int)std::ceil(lenV / spacing), 1, 400) : 1;
+	vtkNew<vtkPoints> pts;
+	for (int j = 0; j <= nv; ++j) {
+		const double v = (double)j / nv;
+		for (int i = 0; i <= nu; ++i) {
+			const double u = (double)i / nu;
+			// bilinear corner blend: top edge t0..t1 at v=0, bottom edge b0..b1 at v=1
+			const double x = (1-v)*((1-u)*t0[0] + u*t1[0]) + v*((1-u)*b0[0] + u*b1[0]);
+			const double y = (1-v)*((1-u)*t0[1] + u*t1[1]) + v*((1-u)*b0[1] + u*b1[1]);
+			double z = (1-v)*((1-u)*t0[2] + u*t1[2]) + v*((1-u)*b0[2] + u*b1[2]);
+			const double h = sampleZ(s, x, y); if (!std::isnan(h)) z = h;
+			pts->InsertNextPoint(x, y, z);
+		}
+	}
+	vtkNew<vtkCellArray> polys;
+	const int stride = nu + 1;
+	for (int j = 0; j < nv; ++j) for (int i = 0; i < nu; ++i) {
+		const vtkIdType a = j*stride + i, b = a + 1, c = a + stride, d = c + 1;
+		vtkNew<vtkIdList> q; q->InsertNextId(a); q->InsertNextId(b); q->InsertNextId(d); q->InsertNextId(c);
+		polys->InsertNextCell(q);
+	}
+	pd->SetPoints(pts);
+	pd->SetPolys(polys);
+	pd->Modified();
+}
+
 // The gray surface-projection patch actor: a filled light-gray quad with a thin black outline. Its
 // polygon offset (-22000) lifts it just above the relief but stays BELOW the trace line actor (whose
 // line offset is -66000 in polyMakeLineActor), so the orange trace always reads on top of the patch
@@ -1194,8 +1233,26 @@ static vtkSmartPointer<vtkActor> faultMakePlaneActor(Scene* s, vtkPolyData* pd) 
 	auto a = vtkSmartPointer<vtkActor>::New();
 	a->SetMapper(map);
 	a->GetProperty()->SetColor(0.80, 0.80, 0.80);
-	a->GetProperty()->SetEdgeColor(0.0, 0.0, 0.0);
+	a->GetProperty()->EdgeVisibilityOff();     // draped fine mesh: a clean gray fill, not a wireframe
+	a->GetProperty()->LightingOff();
+	a->PickableOff();
+	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	return a;
+}
+
+// The actual dipping fault plane in 3-D: a solid warm quad with dark edges. It lives in the MAIN
+// renderer (normal depth testing) and in the SAME scaled space as the gray patch (xfac,1,zfac*ve),
+// with its corners at TRUE buried z (top edge at the deepest trace point, bottom edge W·sin(dip)
+// below). Because it sits UNDER the relief it is occluded by the opaque surface from above — visible
+// only from below / from angles where the terrain does not block it (hidden entirely in flat-2D).
+static vtkSmartPointer<vtkActor> faultMakePlane3DActor(Scene* s, vtkPolyData* pd) {
+	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pd); map->ScalarVisibilityOff();
+	auto a = vtkSmartPointer<vtkActor>::New();
+	a->SetMapper(map);
+	a->GetProperty()->SetColor(0.85, 0.55, 0.25);
+	a->GetProperty()->SetEdgeColor(0.25, 0.12, 0.0);
 	a->GetProperty()->EdgeVisibilityOn();
+	a->GetProperty()->BackfaceCullingOff();   // a fault plane is two-sided: show it from either face
 	a->GetProperty()->LightingOff();
 	a->PickableOff();
 	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);
@@ -1210,24 +1267,28 @@ static vtkSmartPointer<vtkActor> faultMakePlaneActor(Scene* s, vtkPolyData* pd) 
 // GMT.geod); cartesian ones use plain trig (dx=off·cos(strike), dy=-off·sin(strike), matching
 // Mirone). dip→90 or W→0 collapses the patch to the trace, so it is hidden. `strike` is the seeded
 // first→last azimuth; `width` is km (geographic) / data units (cartesian).
-static void faultUpdatePlane(Scene* s, double width, double dip, double strike, bool geog) {
+static void faultUpdatePlane(Scene* s, double width, double strike, double depth, double depTop, bool geog) {
 	if (!s) return;
 	int pi = -1;
 	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
 	if (pi < 0 || s->polys[pi].v.size() < 2) return;
 	Polygon& pg = s->polys[pi];
 	const double D2R = 3.14159265358979323846 / 180.0;
-	const double off = width * std::cos(dip * D2R);                 // horizontal projection of down-dip width
+	const double off = width;                                      // full down-dip width — the map footprint
+	                                                               // matches Save fault (offset by W, no cos dip)
 	const auto& A = pg.v.front();  const auto& B = pg.v.back();     // trace endpoints (the long edge)
 
+	bool created = false;   // a plane actor was added this call -> refresh the Scene Objects list at the end
 	if (!pg.faultPlanePD) pg.faultPlanePD = vtkSmartPointer<vtkPolyData>::New();
 	if (!pg.faultPlane) {
 		pg.faultPlane = faultMakePlaneActor(s, pg.faultPlanePD);
 		s->ren->AddActor(pg.faultPlane);
+		created = true;
 	}
 
 	if (!(off > 0)) {                                              // vertical fault / zero width: no patch
 		pg.faultPlane->VisibilityOff();
+		if (pg.faultPlane3D) pg.faultPlane3D->VisibilityOff();
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return;
 	}
@@ -1243,11 +1304,35 @@ static void faultUpdatePlane(Scene* s, double width, double dip, double strike, 
 		ox1 = B[0] + off * std::cos(strike * D2R);  oy1 = B[1] - off * std::sin(strike * D2R);
 	}
 
-	std::vector<std::array<double,3>> corners = {                  // trace start, trace end, off end, off start
-		{ A[0], A[1], A[2] }, { B[0], B[1], B[2] }, { ox1, oy1, B[2] }, { ox0, oy0, A[2] } };
-	for (auto& c : corners) { const double h = sampleZ(s, c[0], c[1]); if (!std::isnan(h)) c[2] = h; }
-	faultBuildPlanePD(pg.faultPlanePD, corners);
+	// Draped surface-projection patch: top edge = the trace (A→B), bottom edge = its down-dip
+	// projection (ox/oy), the whole patch sampled onto the relief so it hugs the ground.
+	faultBuildDrapedPatch(s, pg.faultPlanePD,
+	                      { A[0], A[1], A[2] }, { B[0], B[1], B[2] },
+	                      { ox0, oy0, A[2] }, { ox1, oy1, B[2] });
 	pg.faultPlane->VisibilityOn();
+
+	// The buried 3-D dipping plane. Its 4 corners are IDENTICAL to what Save fault writes
+	// (push_save_subfault): top edge = the trace (A→B), bottom edge = the full-W down-dip offset
+	// (ox/oy, above), and the vertical extent = depth − depTop (the dialog's Depth / Depth-to-Top
+	// fields), NOT W·sin(dip). The top edge hangs from the trace's own draped relief z so the plane
+	// stays attached to the surface trace; the drop is in true grid-z units (km→m ×1000 for geographic
+	// faults, data units for cartesian). The actor scales z by zfac·ve like the surface, so the plane
+	// carries the SAME vertical exaggeration as the relief.
+	double zA = sampleZ(s, A[0], A[1]); if (std::isnan(zA)) zA = A[2];
+	double zB = sampleZ(s, B[0], B[1]); if (std::isnan(zB)) zB = B[2];
+	const double drop = std::max(0.0, depth - depTop) * (geog ? 1000.0 : 1.0);
+	std::vector<std::array<double,3>> plane3d = {                  // top trace start/end, then bottom off end/start
+		{ A[0], A[1], zA }, { B[0], B[1], zB }, { ox1, oy1, zB - drop }, { ox0, oy0, zA - drop } };
+	if (!pg.faultPlane3DPD) pg.faultPlane3DPD = vtkSmartPointer<vtkPolyData>::New();
+	if (!pg.faultPlane3D) {
+		pg.faultPlane3D = faultMakePlane3DActor(s, pg.faultPlane3DPD);
+		s->ren->AddActor(pg.faultPlane3D);   // main renderer -> depth-tested -> hidden under the relief
+		created = true;
+	}
+	faultBuildPlanePD(pg.faultPlane3DPD, plane3d);
+	pg.faultPlane3D->SetVisibility(s->flat2d ? 0 : 1);
+
+	if (created) rebuildSceneObjects(s);   // a "Fault plane" handle row now exists / must appear
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
@@ -1329,8 +1414,9 @@ public:
 	// any of those (or the trace itself) change, so the patch tracks the fault plane live.
 	void updateFaultPlane() {
 		if (!scn) return;
-		faultUpdatePlane(scn, fWid->text().toDouble(), fDip->text().toDouble(),
-						 fStrike->text().toDouble(), coordCombo->currentData().toString() == "geog");
+		faultUpdatePlane(scn, fWid->text().toDouble(), fStrike->text().toDouble(),
+						 fDepth->text().toDouble(), fDepTop->text().toDouble(),
+						 coordCombo->currentData().toString() == "geog");
 	}
 
 	ElasticDialog(QWidget *parent, Scene *scene = nullptr) : QDialog(parent) {
@@ -1484,6 +1570,8 @@ public:
 		QObject::connect(fLen,  &QLineEdit::editingFinished, this, [this]{ applyFaultGeom(); updateFaultPlane(); });
 		QObject::connect(fDip,  &QLineEdit::editingFinished, this, [this]{ refreshBeachball(); updateFaultPlane(); });
 		QObject::connect(fWid,  &QLineEdit::editingFinished, this, [this]{ updateFaultPlane(); });
+		QObject::connect(fDepth, &QLineEdit::editingFinished, this, [this]{ updateFaultPlane(); });
+		QObject::connect(fDepTop,&QLineEdit::editingFinished, this, [this]{ updateFaultPlane(); });
 		QObject::connect(coordCombo, &QComboBox::currentIndexChanged, this, [this]{ updateFaultPlane(); });
 		QObject::connect(dRake, &QLineEdit::editingFinished, this, [this]{ refreshBeachball(); });
 		for (QLineEdit *e : {fLen, fWid, dSlip, muEdit})
@@ -1513,7 +1601,7 @@ public:
 		// Compute / Save fault: assemble params + fire the host hook. The dialog is NON-MODAL, so it
 		// stays open (no accept()/close) — the window keeps working while it is up and the user can
 		// keep editing. Compute math + the Julia hook are wired through onAction.
-		auto assemble = [this](const QString &act) {
+		auto assemble = [this](const QString &act, const QString &savePath) {
 			saveState();
 			QString params = QString("%1;%2;%3;%4;%5;%6;%7;%8;%9;%10;%11;%12;%13;%14;%15;%16")
 				.arg(act).arg(coordCombo->currentData().toString())
@@ -1531,21 +1619,27 @@ public:
 			if (scn) for (auto& pg : scn->polys) if (pg.isFault && !pg.v.empty()) {
 				fx0 = pg.v.front()[0]; fy0 = pg.v.front()[1]; break; }
 			params += ";" + QString::number(fx0, 'g', 15) + ";" + QString::number(fy0, 'g', 15);
+			params += ";" + savePath;     // field 20: output file for "save" (empty for compute)
 			if (onAction) onAction(params);
 		};
 		QObject::connect(computeBtn, &QPushButton::clicked, this, [assemble, computeBtn]() {
 			computeBtn->setStyleSheet("background:#d4831a; color:white;");  // busy until Julia returns
 			computeBtn->setEnabled(false);
 			QApplication::processEvents();
-			assemble("compute");
+			assemble("compute", QString());
 			computeBtn->setStyleSheet("");
 			computeBtn->setEnabled(true);
 		});
-		QObject::connect(saveBtn, &QPushButton::clicked, this, [assemble, saveBtn]() {
+		// Save fault: pick the output .dat first (Mirone's put_or_get_file), then hand the path to Julia
+		// which writes the sub-fault format. Cancelling the file dialog aborts — no host hook fired.
+		QObject::connect(saveBtn, &QPushButton::clicked, this, [this, assemble, saveBtn]() {
+			QString fn = QFileDialog::getSaveFileName(this, "Save fault (sub-fault format)",
+				"fault.dat", "Data file (*.dat *.txt);;All files (*.*)");
+			if (fn.isEmpty()) return;     // cancelled
 			saveBtn->setStyleSheet("background:#d4831a; color:white;");  // busy until Julia returns
 			saveBtn->setEnabled(false);
 			QApplication::processEvents();
-			assemble("save");
+			assemble("save", fn);
 			saveBtn->setStyleSheet("");
 			saveBtn->setEnabled(true);
 		});
@@ -1555,18 +1649,6 @@ public:
 // Open the Vertical elastic deformation dialog for the current window (used by a fault line's first
 // property — forward-declared in 55_lineprops.cpp). The dialog prefills its Griding Line Geometry
 // from the window's loaded grid/image (same path as grdsample). On accept, hands params to Julia.
-// Remove the gray fault-plane patch (a dialog-time preview of the dip projection). It is tied to the
-// ElasticDialog's lifetime: dropped when the dialog closes, recreated by the ctor's updateFaultPlane()
-// on reopen. (Deleting the fault itself also removes it, via polygonEraseOne.)
-static void faultRemovePlane(Scene* s) {
-	if (!s) return;
-	for (auto& pg : s->polys) if (pg.isFault && pg.faultPlane) {
-		if (s->ren) s->ren->RemoveActor(pg.faultPlane);
-		pg.faultPlane = nullptr; pg.faultPlanePD = nullptr;
-	}
-	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
-}
-
 static void faultRunDialog(Scene* s) {
 	if (!s || !s->win) return;
 	// NON-MODAL: show() (not exec()) so the main window stays interactive while the dialog is up —
@@ -1576,7 +1658,11 @@ static void faultRunDialog(Scene* s) {
 	ElasticDialog* dlg = new ElasticDialog(s->win, s);
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
 	s->elasticDlg = dlg;
-	QObject::connect(dlg, &QObject::destroyed, s->win, [s]{ s->elasticDlg = nullptr; faultRemovePlane(s); });
+	// The fault plane (gray surface patch + buried 3-D plane) PERSISTS after the dialog closes — it is
+	// a permanent scene element with its own Scene Objects handle, not a dialog-time preview. Only the
+	// dialog pointer is cleared here; the plane is removed via its handle's "Remove" or by deleting the
+	// fault (polygonEraseOne).
+	QObject::connect(dlg, &QObject::destroyed, s->win, [s]{ s->elasticDlg = nullptr; });
 	dlg->onAction = [s](const QString& params) {
 		if (g_juliaElastic) g_juliaElastic(s, params.toUtf8().constData());
 		else s->win->statusBar()->showMessage("Elastic deformation: compute not wired yet", 3000);
@@ -2409,6 +2495,9 @@ static void sceneSetFlat2D(Scene* s, bool on) {
 		if (s->giz) setGizmoVisible(*s->giz, true);
 		s->ren->ResetCameraClippingRange();
 	}
+	// The buried 3-D fault plane is meaningless top-down — show it only off flat-2D.
+	for (auto& pg : s->polys) if (pg.isFault && pg.faultPlane3D)
+		pg.faultPlane3D->SetVisibility(s->flat2d ? 0 : 1);
 	if (s->act2D) s->act2D->setChecked(s->flat2d);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }

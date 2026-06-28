@@ -348,7 +348,9 @@ static void polyDrapeCorners(Scene* s, const std::vector<std::array<double,3>>& 
 			out.push_back({ x, y, z });
 		}
 	}
-	out.push_back(corners[m - 1]);                  // the final corner
+	auto last = corners[m - 1];                     // the final corner — drape it too (else it floats
+	if (canDrape) { const double h = sampleZ(s, last[0], last[1]); if (!std::isnan(h)) last[2] = h; }
+	out.push_back(last);                            // at the previous corner's z, off the ground)
 }
 
 // Rebuild the finished-polygon actor `pg` from its vertices. pg.v is a closed ring (first == last);
@@ -690,7 +692,8 @@ static void polygonEraseOne(Scene* s, vtkActor* lineActor) {
 	for (int i = 0; i < (int)s->polys.size(); ++i) {
 		if (s->polys[i].line.Get() != lineActor) continue;
 		if (s->ren && s->polys[i].line) s->ren->RemoveActor(s->polys[i].line);
-		if (s->ren && s->polys[i].faultPlane) s->ren->RemoveActor(s->polys[i].faultPlane);
+		if (s->ren && s->polys[i].faultPlane)   s->ren->RemoveActor(s->polys[i].faultPlane);
+		if (s->ren && s->polys[i].faultPlane3D) s->ren->RemoveActor(s->polys[i].faultPlane3D);
 		if (s->polyEdit == i)      polyExitEdit(s);      // was being edited -> drop the handles
 		else if (s->polyEdit > i)  s->polyEdit--;        // keep the edit index valid past the erase
 		s->polys.erase(s->polys.begin() + i);

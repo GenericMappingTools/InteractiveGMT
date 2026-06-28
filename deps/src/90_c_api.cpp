@@ -869,6 +869,74 @@ GMTVTK_API int gmtvtk_fault_apply_test(void* scene, double strike, double len, i
 	return 0;
 }
 
+// test hook: newline-joined text of every label in the Scene Objects panel (lets the test assert
+// the "<fault> — plane" handle row actually exists).
+GMTVTK_API const char* gmtvtk_objrows_test(void* scene) {
+	static std::string buf; buf.clear();
+	Scene* s = (Scene*)scene; if (!s || !s->objPanel) return "";
+	for (QLabel* l : s->objPanel->findChildren<QLabel*>()) {
+		const std::string t = l->text().toStdString();
+		if (!t.empty()) { buf += t; buf += '\n'; }
+	}
+	return buf.c_str();
+}
+
+// test hook: z-range + vertex count of the fault trace line geometry (draped if z spans the relief,
+// a flat chord if ~constant). out[0]=zmin out[1]=zmax out[2]=npts. Returns 1 if a fault line exists.
+GMTVTK_API int gmtvtk_trace_zbounds_test(void* scene, double* out) {
+	Scene* s = (Scene*)scene; if (!s) return 0;
+	for (auto& p : s->polys) if (p.isFault && p.linePD) {
+		double b[6] = {0,0,0,0,0,0}; p.linePD->GetBounds(b);
+		if (out) { out[0] = b[4]; out[1] = b[5]; out[2] = (double)p.linePD->GetNumberOfPoints(); }
+		return 1;
+	}
+	return 0;
+}
+
+// test hook: flip the flat-2D / 3-D view mode (drives the same sceneSetFlat2D the toolbar uses).
+GMTVTK_API void gmtvtk_set_flat2d_test(void* scene, int on) {
+	Scene* s = (Scene*)scene; if (!s) return;
+	sceneSetFlat2D(s, on != 0);
+}
+
+// test hooks: open / close the REAL Vertical-elastic-deformation dialog (drives the actual lifecycle,
+// so the test sees whether the plane + handle SURVIVE the dialog closing). open returns 1 if a dialog
+// is up; close fires the destroyed handler (WA_DeleteOnClose).
+GMTVTK_API int gmtvtk_fault_open_dialog_test(void* scene) {
+	Scene* s = (Scene*)scene; if (!s) return 0;
+	faultRunDialog(s);
+	return s->elasticDlg ? 1 : 0;
+}
+GMTVTK_API void gmtvtk_fault_close_dialog_test(void* scene) {
+	Scene* s = (Scene*)scene; if (!s || !s->elasticDlg) return;
+	s->elasticDlg->close();
+}
+
+// Run the REAL faultUpdatePlane (gray surface patch + buried 3-D plane) and report the 3-D plane.
+// out[0]=exists out[1]=npts out[2]=visibility out[3]=zTop out[4]=zBot out[5]=grayVisible.
+// Returns 1 when a 3-D plane actor exists. Lets the Julia test assert the plane is actually built.
+GMTVTK_API int gmtvtk_fault_plane_test(void* scene, double width, double dip, double strike,
+                                       int geog, double* out) {
+	Scene* s = (Scene*)scene; if (!s) return 0;
+	const double D2R = 3.14159265358979323846 / 180.0;
+	faultUpdatePlane(s, width, strike, width * std::sin(dip * D2R), 0.0, geog != 0);  // depth from W·sin(dip), depTop 0
+	for (auto& p : s->polys) if (p.isFault && p.faultPlane3D) {
+		double b[6] = {0,0,0,0,0,0};
+		if (p.faultPlane3DPD) p.faultPlane3DPD->GetBounds(b);
+		if (out) {
+			out[0] = 1;
+			out[1] = p.faultPlane3DPD ? (double)p.faultPlane3DPD->GetNumberOfPoints() : 0;
+			out[2] = (double)p.faultPlane3D->GetVisibility();
+			out[3] = b[5];   // zmax = top
+			out[4] = b[4];   // zmin = bottom
+			out[5] = p.faultPlane ? (double)p.faultPlane->GetVisibility() : 0;
+		}
+		return 1;
+	}
+	if (out) for (int i = 0; i < 6; ++i) out[i] = 0;
+	return 0;
+}
+
 // Register the grid-metadata callback used by the grdsample dialog's "OR Ref grid" picker.
 // fn(path) returns "W/E/S/N/xinc/yinc/nx/ny" (or "" on failure). nullptr to detach.
 GMTVTK_API void gmtvtk_set_gridmeta_callback(JuliaGridMetaFn fn) {

@@ -40,7 +40,7 @@ end
 #   5 fStrike    fault strike  (deg from N, CW)
 #   6 dip        fault dip     (deg)
 #   7 depth      fault top-centre depth (km)
-#   8 depTop     depth to top  (km)          (unused here; okada derives the centroid itself)
+#   8 depTop     depth to top  (km)          (compute: unused; save: top-edge depth)
 #   9 rake       dislocation rake (deg)
 #  10 slip       dislocation slip
 #  11 hide       hide-fault-planes flag      (UI only)
@@ -49,6 +49,7 @@ end
 #  15 Mu         shear modulus (×10^10)      (UI only — used for Mw, not the elastic field)
 #  16 R  17 I    output region / increment   (ignored for now: we compute on the window's own grid)
 #  18 xStart 19 yStart   fault start vertex (UpperLeft corner of the fault plane)
+#  20 savePath   output .dat for act=="save" (empty for compute)
 #
 # First iteration: pass the window's loaded GMTgrid (its region + spacing) to GMT.okada and add the
 # resulting vertical-deformation grid back into the same window as "Okada z". R/I, SCC, N/q, Mu and the
@@ -59,8 +60,9 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		getp(i) = length(parts) >= i ? String(strip(parts[i])) : ""
 		num(i)  = (v = tryparse(Float64, getp(i)); v === nothing ? NaN : v)
 
-		L      = num(3);  W     = num(4);  strike = num(5);  dip   = num(6)
-		depth  = num(7);  rake  = num(9);  slip   = num(10)
+		act    = getp(1)
+		L      = num(3);  W      = num(4);  strike = num(5);  dip   = num(6)
+		depth  = num(7);  depTop = num(8);  rake   = num(9);  slip  = num(10)
 		x_start = num(18); y_start = num(19)
 
 		(isnan(x_start) || isnan(y_start)) &&
@@ -68,6 +70,14 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		for (nm, val) in (("Length", L), ("Width", W), ("Strike", strike), ("Dip", dip),
 		                  ("Depth", depth), ("Rake", rake), ("Slip", slip))
 			isnan(val) && error("missing/invalid '$nm'")
+		end
+
+		# Save fault — write the sub-fault-format .dat (port of deform_mansinha.m
+		# push_save_subfault_CB) and return; no Okada compute.
+		if act == "save"
+			_save_subfault(scene, getp(20), x_start, y_start, L, W, strike, dip,
+			               depth, isnan(depTop) ? 0.0 : depTop, rake, slip)
+			return
 		end
 
 		fig = get(_FIGREG, scene, nothing)
@@ -94,5 +104,52 @@ end
 function _register_elastic()
 	fptr = @cfunction((s, c) -> Base.invokelatest(_on_elastic, s, c), Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_elastic_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
+# Fixed-decimal "%.Nf" formatter (Printf is not a package dependency). Mirrors the C printf width so
+# the saved file matches Mirone's deform_mansinha output byte-for-byte.
+function _ffmt(x::Real, n::Int)
+	(isnan(x) || isinf(x)) && return "NaN"
+	neg = x < 0
+	scaled = round(BigInt, abs(float(x)) * BigInt(10)^n)
+	s = lpad(string(scaled), n + 1, '0')
+	int = s[1:end-n]; frac = s[end-n+1:end]
+	return (neg ? "-" : "") * (n == 0 ? int : int * "." * frac)
+end
+
+# Port of deform_mansinha.m push_save_subfault_CB — write the current single fault / single segment in
+# the sub-fault format: header, the 5-point fault-plane boundary (top edge from the trace + the two
+# downdip corners offset perpendicular to strike by the width) and one patch line carrying slip/rake/
+# strike/dip at the fault-trace mid-point. Geographic faults only; the offsets use the direct geodesic
+# (GMT.geod, our circ_geo). x1/y1 = fault start vertex; the end vertex is re-derived from strike+length
+# (the same geodesic the live trace uses), so it needs no extra param. Depths: depTop on the top edge,
+# `depth` (bottom-edge depth) on the downdip corners + patch. Slip written in cm (slip·100).
+function _save_subfault(scene, fname, x1, y1, L, W, strike, dip, depth, depTop, rake, slip)
+	isempty(fname) && error("no output file selected")
+	dest, = GMT.geod([Float64(x1), Float64(y1)], Float64(strike), Float64(L); unit=:km)  # end vertex
+	x2, y2 = dest[1], dest[2]
+	p2, = GMT.geod([x2, y2], strike + 90, W; unit=:km)        # downdip corner below end vertex
+	p1, = GMT.geod([Float64(x1), Float64(y1)], strike + 90, W; unit=:km)   # below start vertex
+	pm, = GMT.geod([Float64(x1), Float64(y1)], strike, L / 2; unit=:km)    # trace mid-point
+
+	open(fname, "w") do io
+		println(io, "#Total number of fault_segments=     1")
+		println(io, "#Fault_segment =   1 nx(Along-strike)=   1 Dx= " * _ffmt(L, 2) *
+		            "km ny(downdip)=   1 Dy= " * _ffmt(W, 2) * "km")
+		println(io, "#Boundary of Fault_segment     1")
+		println(io, "#Lon.  Lat.  Depth")
+		bnd(x, y, d) = println(io, _ffmt(x, 5) * "\t" * _ffmt(y, 5) * "\t" * _ffmt(d, 5))
+		bnd(x1, y1, depTop)
+		bnd(x2, y2, depTop)
+		bnd(p2[1], p2[2], depth)
+		bnd(p1[1], p1[2], depth)
+		bnd(x1, y1, depTop)
+		println(io, "#Lat. Lon. depth slip rake strike dip")
+		println(io, _ffmt(pm[2], 4) * "\t" * _ffmt(pm[1], 4) * "\t" * _ffmt(depth, 3) * "\t" *
+		            _ffmt(slip * 100, 2) * "\t" * _ffmt(rake, 1) * "\t" * _ffmt(strike, 1) * "\t" *
+		            _ffmt(dip, 1))
+	end
+	_viewer_log_error(scene, "Fault saved (sub-fault format) → $fname")
 	return
 end
