@@ -1022,8 +1022,11 @@ static void applyVE(Scene* s) {
 	}
 	if (s->profLine) s->profLine->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // profile drape tracks the base
 	if (s->rbHL)     s->rbHL->SetScale(s->xfac, 1.0, s->zfac * s->ve);      // selection highlight tracks the cloud
-	for (auto& pg : s->polys)                                               // user polygons hang in the scaled space
-		if (pg.line) pg.line->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	for (auto& pg : s->polys) {                                            // user polygons hang in the scaled space
+		if (pg.line)        pg.line->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		if (pg.faultPlane)  pg.faultPlane->SetScale(s->xfac, 1.0, s->zfac * s->ve);   // gray patch rides VE
+		if (pg.faultPlane3D) pg.faultPlane3D->SetScale(s->xfac, 1.0, s->zfac * s->ve);// buried plane rides VE too
+	}
 	for (auto& tl : s->texts)                                              // text labels lie flat on z=0 (XY plane)
 		if (tl.actor) tl.actor->SetPosition(tl.pos[0] * s->xfac, tl.pos[1], 0.0);
 	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview
