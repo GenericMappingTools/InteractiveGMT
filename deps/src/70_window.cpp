@@ -1259,6 +1259,25 @@ static vtkSmartPointer<vtkActor> faultMakePlane3DActor(Scene* s, vtkPolyData* pd
 	return a;
 }
 
+// Flat slip-direction arrows imprinted on the 3-D plane's two faces. A fault is an interface between
+// two blocks moving in OPPOSITE senses, so each face carries an arrow: the surface-facing face shows
+// the rake direction (slip vector at angle `rake` measured in-plane from strike, up-dip at +90), the
+// far face shows rake+180 — the two arrows together read as the relative motion across the plane. The
+// actor lives in the SAME scaled space as the plane (xfac,1,zfac·ve); a tiny ±offset along the plane
+// normal seats each arrow just off its face so depth-testing occludes the far one from either side.
+static vtkSmartPointer<vtkActor> faultMakeArrowsActor(Scene* s, vtkPolyData* pd) {
+	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pd); map->ScalarVisibilityOff();
+	auto a = vtkSmartPointer<vtkActor>::New();
+	a->SetMapper(map);
+	a->GetProperty()->SetColor(1.0, 0.92, 0.10);    // bold yellow: pops on the warm plane from either face
+	a->GetProperty()->EdgeVisibilityOff();
+	a->GetProperty()->BackfaceCullingOff();
+	a->GetProperty()->LightingOff();
+	a->PickableOff();
+	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	return a;
+}
+
 // Draw / refresh the dipping fault plane — port of Mirone's edit_FaultDip_CB / edit_FaultWidth_CB
 // patch update (deform_mansinha.m). The buried 3-D plane is a TRUE dipping rectangle hanging from the
 // surface trace: the trace (front→back of the fault polyline) is the top edge; the down-dip edge is
@@ -1270,7 +1289,7 @@ static vtkSmartPointer<vtkActor> faultMakePlane3DActor(Scene* s, vtkPolyData* pd
 // & degrees (geographic) / data units & degrees (cartesian). NOTE: this is the geometric plane, NOT
 // the Save-fault file boundary (push_save_subfault uses the full-W footprint, a non-geometric Mirone
 // representation) — the two are deliberately different.
-static void faultUpdatePlane(Scene* s, double width, double dip, double strike, bool geog) {
+static void faultUpdatePlane(Scene* s, double width, double dip, double strike, double rake, bool geog) {
 	if (!s) return;
 	int pi = -1;
 	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
@@ -1292,6 +1311,7 @@ static void faultUpdatePlane(Scene* s, double width, double dip, double strike, 
 	if (!(off > 0) && !(vert > 0)) {                              // zero width: nothing to draw
 		pg.faultPlane->VisibilityOff();
 		if (pg.faultPlane3D) pg.faultPlane3D->VisibilityOff();
+		if (pg.faultArrows) pg.faultArrows->VisibilityOff();
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return;
 	}
@@ -1339,6 +1359,65 @@ static void faultUpdatePlane(Scene* s, double width, double dip, double strike, 
 	}
 	faultBuildPlanePD(pg.faultPlane3DPD, plane3d);
 	pg.faultPlane3D->SetVisibility((pg.faultPlane3DShown && !s->flat2d) ? 1 : 0);
+
+	// Slip arrows imprinted on each face. The basis MUST be built in the actor's SCALED render space
+	// (x·xfac, y, z·zfac·ve) — that is where the plane is a true rectangle. Building in raw data coords
+	// mixes degrees (x,y) with metres (z) in one "unit" vector and produces a giant, mis-oriented arrow.
+	// So: scale the corners to render space, build an orthonormal in-plane basis there (strike Uhat,
+	// up-dip Up, normal N forced toward the surface), lay out each flat arrow (shaft quad + head tri) in
+	// the (slip, in-plane-perp) frame at angle `rake` (far face gets rake+180), seat it ±e·N off its
+	// face, then UN-scale every point back to data coords (the actor re-applies the scale on render).
+	if (!pg.faultArrowsPD) pg.faultArrowsPD = vtkSmartPointer<vtkPolyData>::New();
+	if (!pg.faultArrows) {
+		pg.faultArrows = faultMakeArrowsActor(s, pg.faultArrowsPD);
+		s->ren->AddActor(pg.faultArrows);
+	}
+	{
+		const double sx = (s->xfac != 0.0 ? s->xfac : 1.0);
+		const double sz = (s->zfac * s->ve != 0.0 ? s->zfac * s->ve : 1.0);
+		auto toR = [&](const std::array<double,3>& p, double o[3]){ o[0]=p[0]*sx; o[1]=p[1]; o[2]=p[2]*sz; };
+		double R0[3],R1[3],R2[3],R3[3];
+		toR(plane3d[0],R0); toR(plane3d[1],R1); toR(plane3d[2],R2); toR(plane3d[3],R3);
+		double U[3]  = { R1[0]-R0[0], R1[1]-R0[1], R1[2]-R0[2] };   // strike (along trace A->B), render space
+		double Dd[3] = { R3[0]-R0[0], R3[1]-R0[1], R3[2]-R0[2] };   // down-dip (top A -> bottom under A)
+		auto nrm = [](double v[3]){ double l = std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]); if (l>1e-12){v[0]/=l;v[1]/=l;v[2]/=l;} return l; };
+		auto dot = [](const double a[3], const double b[3]){ return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; };
+		auto crs = [](const double a[3], const double b[3], double o[3]){ o[0]=a[1]*b[2]-a[2]*b[1]; o[1]=a[2]*b[0]-a[0]*b[2]; o[2]=a[0]*b[1]-a[1]*b[0]; };
+		double Uhat[3] = { U[0], U[1], U[2] };  double Ulen = nrm(Uhat);
+		double d = dot(Dd, Uhat);
+		double Up[3] = { -(Dd[0]-d*Uhat[0]), -(Dd[1]-d*Uhat[1]), -(Dd[2]-d*Uhat[2]) };  // up-dip (toward surface)
+		double Dplen = nrm(Up);
+		if (Ulen > 1e-9 && Dplen > 1e-9) {
+			double N[3]; crs(Uhat, Up, N); nrm(N); if (N[2] < 0) { N[0]=-N[0]; N[1]=-N[1]; N[2]=-N[2]; }
+			const double rr = rake * D2R;
+			double slip[3] = { std::cos(rr)*Uhat[0] + std::sin(rr)*Up[0],
+			                   std::cos(rr)*Uhat[1] + std::sin(rr)*Up[1],
+			                   std::cos(rr)*Uhat[2] + std::sin(rr)*Up[2] };
+			double perp[3]; crs(N, slip, perp); nrm(perp);
+			double C[3] = { (R0[0]+R1[0]+R2[0]+R3[0])/4.0, (R0[1]+R1[1]+R2[1]+R3[1])/4.0, (R0[2]+R1[2]+R2[2]+R3[2])/4.0 };
+			const double L = 0.5 * std::min(Ulen, Dplen);          // fit the smaller plane edge (render space)
+			const double e = 0.02 * L;                             // off-face seating along N
+			vtkNew<vtkPoints> pts; vtkNew<vtkCellArray> polys;
+			// one flat arrow (shaft quad + head triangle), built in render space then un-scaled on insert
+			auto addArrow = [&](const double c[3], const double dir[3], const double pp[3]) {
+				const double half = 0.5*L, hl = 0.34*L, w = 0.08*L, hw = 0.18*L;
+				auto add = [&](double a, double p){ return pts->InsertNextPoint(
+					(c[0]+a*dir[0]+p*pp[0]) / sx, (c[1]+a*dir[1]+p*pp[1]), (c[2]+a*dir[2]+p*pp[2]) / sz); };
+				vtkIdType s0=add(-half,-w), s1=add(half-hl,-w), s2=add(half-hl,w), s3=add(-half,w);
+				vtkNew<vtkIdList> q; q->InsertNextId(s0); q->InsertNextId(s1); q->InsertNextId(s2); q->InsertNextId(s3); polys->InsertNextCell(q);
+				vtkIdType h0=add(half-hl,-hw), h1=add(half,0.0), h2=add(half-hl,hw);
+				vtkNew<vtkIdList> t; t->InsertNextId(h0); t->InsertNextId(h1); t->InsertNextId(h2); polys->InsertNextCell(t);
+			};
+			double Cf[3] = { C[0]+e*N[0], C[1]+e*N[1], C[2]+e*N[2] };   // surface-facing face: rake
+			double Cb[3] = { C[0]-e*N[0], C[1]-e*N[1], C[2]-e*N[2] };   // far face: rake+180
+			double slipB[3] = { -slip[0], -slip[1], -slip[2] };
+			double perpB[3]; crs(N, slipB, perpB); nrm(perpB);
+			addArrow(Cf, slip,  perp);
+			addArrow(Cb, slipB, perpB);
+			pg.faultArrowsPD->SetPoints(pts); pg.faultArrowsPD->SetPolys(polys); pg.faultArrowsPD->Modified();
+		}
+	}
+	pg.faultArrows->SetVisibility((pg.faultPlane3DShown && !s->flat2d) ? 1 : 0);
 
 	if (created) rebuildSceneObjects(s);   // a "Fault plane" handle row now exists / must appear
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
@@ -1423,7 +1502,7 @@ public:
 	void updateFaultPlane() {
 		if (!scn) return;
 		faultUpdatePlane(scn, fWid->text().toDouble(), fDip->text().toDouble(),
-						 fStrike->text().toDouble(),
+						 fStrike->text().toDouble(), dRake->text().toDouble(),
 						 coordCombo->currentData().toString() == "geog");
 	}
 
@@ -1577,21 +1656,36 @@ public:
 					fDepth->setText(QString::number(topd + w * std::cos((90.0 - dip) * D2R), 'g', 6));
 				}
 			}
+
+			// Seed Slip + Rake from the fault if it carries them (set by Import Trace Fault, which reads
+			// them from the sub-fault file — slip already converted cm->m). The imported file is the
+			// authority for that fault, so these override any remembered state. NaN = not imported ->
+			// leave the dialog's own value untouched. Same fault faultLineGeom picked (first isFault).
+			for (auto& pg : scene->polys) if (pg.isFault) {
+				if (!std::isnan(pg.faultSlip)) dSlip->setText(QString::number(pg.faultSlip, 'g', 6));
+				if (!std::isnan(pg.faultRake)) dRake->setText(QString::number(pg.faultRake, 'g', 6));
+				refreshBeachball(); updateMw();
+				break;
+			}
 		}
 
 		// Live coupling: Strike mirrored between the two boxes; beachball + Mw track their inputs.
 		// Editing Strike or Length also moves the fault trace's end vertex (Mirone edit_Fault*_CB).
+		// Strike / Length drive ONLY the plane PREVIEW. They must NEVER rewrite the drawn trace's
+		// vertices: editingFinished also fires when the dialog loses focus / closes, so calling
+		// applyFaultGeom() here silently re-rotated the user's trace on every close. The trace is the
+		// user's data — left untouched. (applyFaultGeom stays available for an explicit action only.)
 		QObject::connect(fStrike, &QLineEdit::editingFinished, this, [this]{
-			dStrike->setText(fStrike->text()); refreshBeachball(); applyFaultGeom(); updateFaultPlane(); });
+			dStrike->setText(fStrike->text()); refreshBeachball(); updateFaultPlane(); });
 		QObject::connect(dStrike, &QLineEdit::editingFinished, this, [this]{
 			fStrike->setText(dStrike->text()); refreshBeachball(); });
-		QObject::connect(fLen,  &QLineEdit::editingFinished, this, [this]{ applyFaultGeom(); updateFaultPlane(); });
+		QObject::connect(fLen,  &QLineEdit::editingFinished, this, [this]{ updateFaultPlane(); });
 		QObject::connect(fDip,  &QLineEdit::editingFinished, this, [this]{ refreshBeachball(); recomputeDepth(); updateFaultPlane(); });
 		QObject::connect(fWid,  &QLineEdit::editingFinished, this, [this]{ recomputeDepth(); updateFaultPlane(); });
 		QObject::connect(fDepth, &QLineEdit::editingFinished, this, [this]{ updateFaultPlane(); });
 		QObject::connect(fDepTop,&QLineEdit::editingFinished, this, [this]{ recomputeDepth(); updateFaultPlane(); });
 		QObject::connect(coordCombo, &QComboBox::currentIndexChanged, this, [this]{ updateFaultPlane(); });
-		QObject::connect(dRake, &QLineEdit::editingFinished, this, [this]{ refreshBeachball(); });
+		QObject::connect(dRake, &QLineEdit::editingFinished, this, [this]{ refreshBeachball(); updateFaultPlane(); });
 		for (QLineEdit *e : {fLen, fWid, dSlip, muEdit})
 			QObject::connect(e, &QLineEdit::editingFinished, this, [this]{ updateMw(); });
 		// Persist every field to the Scene on change, so closing + reopening the dialog restores them.
@@ -2515,8 +2609,10 @@ static void sceneSetFlat2D(Scene* s, bool on) {
 	}
 	// The buried 3-D fault plane is meaningless top-down — show it only off flat-2D AND when the user
 	// has not hidden it via its handle (faultPlane3DShown).
-	for (auto& pg : s->polys) if (pg.isFault && pg.faultPlane3D)
+	for (auto& pg : s->polys) if (pg.isFault && pg.faultPlane3D) {
 		pg.faultPlane3D->SetVisibility((pg.faultPlane3DShown && !s->flat2d) ? 1 : 0);
+		if (pg.faultArrows) pg.faultArrows->SetVisibility((pg.faultPlane3DShown && !s->flat2d) ? 1 : 0);
+	}
 	if (s->act2D) s->act2D->setChecked(s->flat2d);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
@@ -2858,7 +2954,19 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		[s, actDrawFault](bool on) { polygonToolToggled(s, actDrawFault, Scene::SH_Fault, on); });
 	s->shapeActs.push_back(actDrawFault);
 
-	mElastic->addAction("Import Trace Fault", geoTODO("Import Trace Fault"));
+	// Import Trace Fault — port of Mirone's fault_models.m subfault. Pick a sub-fault-format file;
+	// Julia (g_juliaImportFault) reads it, rebuilds the surface fault trace of every downdip row and
+	// adds each as a Draw-Fault line (gmtvtk_add_fault_h) so it carries the elastic-deformation props.
+	mElastic->addAction("Import Trace Fault", [win, s]() {
+		if (!g_juliaImportFault) {
+			if (s->win) s->win->statusBar()->showMessage("Import Trace Fault: callback not registered", 3000);
+			return;
+		}
+		QString fn = QFileDialog::getOpenFileName(win, "Select sub-fault format file", QString(),
+		                                          "Sub-fault data (*.dat *.DAT);;All files (*)");
+		if (fn.isEmpty()) return;
+		g_juliaImportFault(s, fn.toUtf8().constData());
+	});
 	mElastic->addAction("Import Model Slip",  geoTODO("Import Model Slip"));
 
 	auto *fGroup = new std::function<void()>();   // show the discipline chooser

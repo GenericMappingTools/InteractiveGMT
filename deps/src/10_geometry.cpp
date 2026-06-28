@@ -87,14 +87,22 @@ struct Polygon {
 	std::vector<std::array<double,3>> v;     // vertices, TRUE coords; closed ring (first == last) when closed
 	vtkSmartPointer<vtkActor>    line;       // the polyline actor
 	vtkSmartPointer<vtkPolyData> linePD;     // its geometry (rebuilt as vertices move)
+	vtkSmartPointer<vtkActor>    fill;       // filled face (closed rects/polygons only); colour+opacity INDEPENDENT of the outline
+	vtkSmartPointer<vtkPolyData> fillPD;
+	double fillColor[3] = { 1.0, 0.55, 0.0 };// fill colour (default orange, matches outline); editable in Line Properties
+	double fillOpacity  = 0.0;               // fill transparency (0 = no fill -> outline-only look preserved by default)
 	std::string name;                        // label shown in the Scene Objects panel ("polygon N")
 	bool closed = true;                      // closed ring (polygon/rect/circle) vs open chain (polyline)
 	bool isRect = false;                     // drawn with a rectangle tool (SH_Rect/SH_RectN): vertex edits stay axis-aligned
 	bool isFault = false;                    // drawn with the Draw Fault tool (SH_Fault): props hold the elastic-deformation dialog
+	double faultSlip = std::nan("");         // dislocation slip in METERS (set when imported from a sub-fault file; NaN = unknown -> dialog default)
+	double faultRake = std::nan("");         // dislocation rake in DEGREES (set on import; NaN = unknown -> dialog default)
 	vtkSmartPointer<vtkActor>    faultPlane; // gray surface-projection patch of the dipping fault plane (sits BELOW the trace)
 	vtkSmartPointer<vtkPolyData> faultPlanePD;
 	vtkSmartPointer<vtkActor>    faultPlane3D; // the actual dipping fault plane in 3-D (top buried at the deepest trace point; 3-D-only)
 	vtkSmartPointer<vtkPolyData> faultPlane3DPD;
+	vtkSmartPointer<vtkActor>    faultArrows; // flat slip-direction arrows imprinted on each face of the 3-D plane (rake / rake+180)
+	vtkSmartPointer<vtkPolyData> faultArrowsPD;
 	bool   faultPlane3DShown = true;         // user's desired visibility for the buried plane (actual visibility is this AND not flat-2D)
 	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
 	int    nestKind = 0;                     // 0 = ordinary shape; 1 = "Nested grids" rectangle (special menu)
@@ -138,6 +146,9 @@ static int  lineCurrentStyle(Scene* s, const LineRef& lr);
 static void polygonDelete(Scene* s, vtkActor* lineActor);                    // remove a finished polygon
 static void overlayDelete(Scene* s, vtkActor* a);                            // remove an overlay line/point (50)
 static void polyRebuildLine(Scene* s, Polygon& pg);                         // rebuild a polygon actor from pg.v (85)
+static void polyRebuildFill(Scene* s, Polygon& pg);                         // rebuild a closed polygon's filled face (85)
+static int  polyIndexOfActor(Scene* s, vtkActor* a);                        // index of polygon whose line==a, or -1 (55)
+static bool lineClosedRing(Scene* s, const LineRef& lr);                    // closed polygon ring? (55)
 static int  polyHitPolygon(Scene* s, int x, int y, double tol);             // polygon under cursor? (85)
 static void nestReflow(Scene* s);                                           // re-quantize "Nested grids" chain (85)
 static void nestNewChild(Scene* s);                                         // append a refined nested child (85)
@@ -1025,8 +1036,10 @@ static void applyVE(Scene* s) {
 	if (s->rbHL)     s->rbHL->SetScale(s->xfac, 1.0, s->zfac * s->ve);      // selection highlight tracks the cloud
 	for (auto& pg : s->polys) {                                            // user polygons hang in the scaled space
 		if (pg.line)        pg.line->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		if (pg.fill)        pg.fill->SetScale(s->xfac, 1.0, s->zfac * s->ve);          // filled face rides VE with its outline
 		if (pg.faultPlane)  pg.faultPlane->SetScale(s->xfac, 1.0, s->zfac * s->ve);   // gray patch rides VE
 		if (pg.faultPlane3D) pg.faultPlane3D->SetScale(s->xfac, 1.0, s->zfac * s->ve);// buried plane rides VE too
+		if (pg.faultArrows) pg.faultArrows->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // slip arrows ride VE with the plane
 	}
 	for (auto& tl : s->texts)                                              // text labels lie flat on z=0 (XY plane)
 		if (tl.actor) tl.actor->SetPosition(tl.pos[0] * s->xfac, tl.pos[1], 0.0);

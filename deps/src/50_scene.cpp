@@ -1017,7 +1017,20 @@ static void rebuildSceneObjects(Scene *s) {
 		       : nm.startsWith("rect")   ? IC_Rect
 		       : nm.startsWith("circle") ? IC_Circle
 		                                 : IC_Polygon;
-		addRow(nm, pg.line, ic, &lr);
+		// Custom row (not addRow) so the filled FACE follows the outline's checkbox; the fill's own
+		// opacity still gates whether anything is actually drawn (opacity 0 = no fill).
+		{
+			vtkActor* la = pg.line.Get();
+			vtkActor* fa = pg.fill.Get();
+			LineRef ref = lr; QString nm2 = nm;
+			makeRow(nm, ic, la && la->GetVisibility() != 0,
+			        [la, fa](bool on) {
+			            if (la) la->SetVisibility(on ? 1 : 0);
+			            if (fa) fa->SetVisibility((on && fa->GetProperty()->GetOpacity() > 0.0) ? 1 : 0);
+			        },
+			        [s, ref, nm2](const QPoint& g) { popupLineObjectMenu(s, ref, nm2, g); },
+			        "Left-click for properties");
+		}
 
 		// The gray surface-PROJECTION patch is its OWN graphical element — its own handle (hide + Remove).
 		if (pg.isFault && pg.faultPlane) {
@@ -1047,7 +1060,11 @@ static void rebuildSceneObjects(Scene *s) {
 			vtkActor* fp3 = pg.faultPlane3D.Get();
 			makeRow(QString("%1 — fault plane").arg(nm), IC_Rect, pg.faultPlane3DShown,
 			        [s, fp3](bool on) {
-			            for (auto& p : s->polys) if (p.faultPlane3D.Get() == fp3) { p.faultPlane3DShown = on; break; }
+			            for (auto& p : s->polys) if (p.faultPlane3D.Get() == fp3) {
+			                p.faultPlane3DShown = on;
+			                if (p.faultArrows) p.faultArrows->SetVisibility((on && !s->flat2d) ? 1 : 0);
+			                break;
+			            }
 			            fp3->SetVisibility((on && !s->flat2d) ? 1 : 0); },
 			        [s, fp3](const QPoint& g) {
 			            QMenu m(s->widget);
@@ -1055,6 +1072,8 @@ static void rebuildSceneObjects(Scene *s) {
 			            if (m.exec(g) != aRem) return;
 			            if (s->ren) s->ren->RemoveActor(fp3);
 			            for (auto& p : s->polys) if (p.faultPlane3D.Get() == fp3) {   // null the owning fault's slot
+			                if (p.faultArrows && s->ren) s->ren->RemoveActor(p.faultArrows);
+			                p.faultArrows = nullptr; p.faultArrowsPD = nullptr;
 			                p.faultPlane3D = nullptr; p.faultPlane3DPD = nullptr; break;
 			            }
 			            rebuildSceneObjects(s);

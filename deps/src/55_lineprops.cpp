@@ -131,6 +131,53 @@ static void showLineProperties(Scene* s, const LineRef& lr) {
 	});
 	form->addRow("Opacity", opBox);
 
+	// --- Fill (closed polygons / rectangles only) ----------------------------
+	// A closed ring carries a FILLED FACE whose colour and transparency are INDEPENDENT of the
+	// outline above. Default fill opacity is 0 (no fill) so the historic outline-only look is kept
+	// until the user dials it up here. Open lines / polylines have no fill, so these rows are absent.
+	if (lineClosedRing(s, lr)) {
+		const int pi0 = polyIndexOfActor(s, a);
+		if (pi0 >= 0) {
+			double f0[3]; { Polygon& pg = s->polys[pi0]; f0[0]=pg.fillColor[0]; f0[1]=pg.fillColor[1]; f0[2]=pg.fillColor[2]; }
+
+			QPushButton* fillBtn = new QPushButton(&dlg);
+			auto paintFill = [fillBtn](const QColor& q) {
+				fillBtn->setStyleSheet(QString("background:%1; min-width:64px;").arg(q.name()));
+			};
+			paintFill(QColor(int(f0[0]*255), int(f0[1]*255), int(f0[2]*255)));
+			QObject::connect(fillBtn, &QPushButton::clicked, [&dlg, s, a, paintFill]() {
+				const int pi = polyIndexOfActor(s, a);
+				if (pi < 0) return;
+				Polygon& pg = s->polys[pi];
+				QColor q = QColorDialog::getColor(QColor(int(pg.fillColor[0]*255), int(pg.fillColor[1]*255),
+				                                         int(pg.fillColor[2]*255)), &dlg, "Fill color");
+				if (!q.isValid()) return;
+				pg.fillColor[0]=q.redF(); pg.fillColor[1]=q.greenF(); pg.fillColor[2]=q.blueF();
+				if (pg.fill) pg.fill->GetProperty()->SetColor(pg.fillColor[0], pg.fillColor[1], pg.fillColor[2]);
+				paintFill(q);
+				if (s->widget) s->widget->renderWindow()->Render();
+			});
+			form->addRow("Fill color", fillBtn);
+
+			// Fill transparency: 0 = none (no fill drawn) … 1 = opaque. Independent of the outline opacity.
+			QDoubleSpinBox* fopBox = new QDoubleSpinBox(&dlg);
+			fopBox->setRange(0.0, 1.0); fopBox->setSingleStep(0.05); fopBox->setDecimals(2);
+			fopBox->setValue(s->polys[pi0].fillOpacity);
+			QObject::connect(fopBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, a](double v) {
+				const int pi = polyIndexOfActor(s, a);
+				if (pi < 0) return;
+				Polygon& pg = s->polys[pi];
+				pg.fillOpacity = v;
+				if (pg.fill) {
+					pg.fill->GetProperty()->SetOpacity(v);
+					pg.fill->SetVisibility((v > 0.0 && pg.line && pg.line->GetVisibility()) ? 1 : 0);
+				}
+				if (s->widget) s->widget->renderWindow()->Render();
+			});
+			form->addRow("Fill opacity", fopBox);
+		}
+	}
+
 	QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
 	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
 	QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
@@ -551,12 +598,16 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 	// Gated to small objects so coastlines / large imports don't get them (lineMeasurable). The "(s)"
 	// turns plural on a polyline (>1 segment); a polyline shows a table, a single line a number (!many).
 	if (lineMeasurable(s, lr)) {
-		const bool    many = lineSegmentCount(s, lr) > 1;
-		const QString sfx  = many ? "s" : "";
-		m.addAction(QString("Line length%1…").arg(sfx), [s, lr, many]() { lineRunMeasure(s, lr, "_line_length",  !many); });
-		m.addAction(QString("Azimuth%1…").arg(sfx),     [s, lr, many]() { lineRunMeasure(s, lr, "_line_azimuth", !many); });
-		if (lineClosedRing(s, lr))
+		if (lineClosedRing(s, lr)) {
+			// Rectangles & generic polygons (closed rings): AREA only — NEVER line length / azimuth.
 			m.addAction("Area under polygon…", [s, lr]() { lineRunMeasure(s, lr, "_poly_area", true); });
+		} else {
+			// Open lines / polylines only: length(s) + azimuth(s).
+			const bool    many = lineSegmentCount(s, lr) > 1;
+			const QString sfx  = many ? "s" : "";
+			m.addAction(QString("Line length%1…").arg(sfx), [s, lr, many]() { lineRunMeasure(s, lr, "_line_length",  !many); });
+			m.addAction(QString("Azimuth%1…").arg(sfx),     [s, lr, many]() { lineRunMeasure(s, lr, "_line_azimuth", !many); });
+		}
 	}
 	m.addSeparator();
 	if (lr.kind == LK_Profile) {

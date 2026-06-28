@@ -57,7 +57,8 @@ function _ensure_callbacks()
 	                    ("dimfun",      _register_dimfun),
 	                    ("nswing",      _register_nswing),
 	                    ("faultgeom",   _register_faultgeom),
-	                    ("elastic",     _register_elastic))
+	                    ("elastic",     _register_elastic),
+	                    ("importfault", _register_importfault))
 		try
 			fn()
 		catch e

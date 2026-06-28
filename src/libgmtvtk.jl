@@ -43,7 +43,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_geography_callback, :gmtvtk_set_tides_callback, :gmtvtk_set_earthtide_callback,
 	:gmtvtk_set_solid_callback, :gmtvtk_set_grdsample_callback, :gmtvtk_set_gridmeta_callback,
 	:gmtvtk_set_dimfun_callback, :gmtvtk_set_nswing_callback, :gmtvtk_set_faultgeom_callback,
-	:gmtvtk_set_elastic_callback,
+	:gmtvtk_set_elastic_callback, :gmtvtk_set_importfault_callback, :gmtvtk_add_fault_h,
 	:gmtvtk_fault_add_test, :gmtvtk_fault_apply_test, :gmtvtk_fault_plane_test,
 	:gmtvtk_set_flat2d_test, :gmtvtk_objrows_test,
 	:gmtvtk_fault_open_dialog_test, :gmtvtk_fault_close_dialog_test, :gmtvtk_trace_zbounds_test,

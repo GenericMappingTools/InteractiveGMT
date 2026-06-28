@@ -844,6 +844,35 @@ GMTVTK_API void gmtvtk_set_faultgeom_callback(JuliaFaultGeomFn fn) {
 	g_juliaFaultGeom = fn;
 }
 
+// Register the Import-Trace-Fault callback (Geophysics > Seismology > Elastic deformation). fn(scene,
+// path) reads the sub-fault file and adds the traces via gmtvtk_add_fault_h. nullptr to detach.
+GMTVTK_API void gmtvtk_set_importfault_callback(JuliaImportFaultFn fn) {
+	g_juliaImportFault = fn;
+}
+
+// Add a fault trace LINE to a window by its handle — the host-import twin of the interactive Draw
+// Fault tool. `xy` is `npts` (lon,lat) pairs in TRUE (data) coords; z is draped onto the surface by
+// polyRebuildLine, so the host need not supply it. The line is finalized through the very same path
+// as a drawn fault (polyFinalize with the "fault" prefix), so it lands as an isFault polyline named
+// "fault N" with the Vertical-elastic-deformation context menu — identical properties to Draw Fault.
+// `slip` (METERS) and `rake` (DEGREES) seed the Vertical elastic deformation dialog's Dislocation
+// Geometry boxes when the fault's dialog opens (pass NaN to leave the dialog default). Returns 1 if
+// added, 0 on a dead handle / too few points.
+GMTVTK_API int gmtvtk_add_fault_h(void *handle, const double *xy, int npts, double slip, double rake) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xy || npts < 2) return 0;
+	std::vector<std::array<double,3>> verts;
+	verts.reserve(npts);
+	for (int i = 0; i < npts; ++i) verts.push_back({ xy[2*i], xy[2*i + 1], 0.0 });
+	polyFinalize(s, verts, false, "fault");
+	if (!s->polys.empty()) {                 // polyFinalize pushed the new fault last
+		s->polys.back().faultSlip = slip;    // meters (NaN = unknown)
+		s->polys.back().faultRake = rake;    // degrees (NaN = unknown)
+	}
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Inject a 2-vertex fault line (lon1,lat1)->(lon2,lat2) into the scene so the apply logic has a
 // target without going through the interactive draw tool. Returns the number of fault polygons.
@@ -918,7 +947,7 @@ GMTVTK_API void gmtvtk_fault_close_dialog_test(void* scene) {
 GMTVTK_API int gmtvtk_fault_plane_test(void* scene, double width, double dip, double strike,
                                        int geog, double* out) {
 	Scene* s = (Scene*)scene; if (!s) return 0;
-	faultUpdatePlane(s, width, dip, strike, geog != 0);
+	faultUpdatePlane(s, width, dip, strike, 90.0, geog != 0);   // rake fixed: this test asserts plane geometry, not arrows
 	for (auto& p : s->polys) if (p.isFault && p.faultPlane3D) {
 		double b[6] = {0,0,0,0,0,0};
 		if (p.faultPlane3DPD) p.faultPlane3DPD->GetBounds(b);

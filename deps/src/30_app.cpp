@@ -92,6 +92,15 @@ static JuliaElasticFn g_juliaElastic = nullptr;
 typedef const char* (*JuliaFaultGeomFn)(double lon1, double lat1, double strike, double len_km);
 static JuliaFaultGeomFn g_juliaFaultGeom = nullptr;
 
+// Import Trace Fault (Geophysics > Seismology > Elastic deformation). Port of Mirone's
+// fault_models.m `subfault`: read a sub-fault-format file and lay its surface fault traces into the
+// scene as Draw-Fault lines (isFault polylines that carry the Vertical elastic deformation dialog).
+// The host menu opens a QFileDialog and hands the chosen path to Julia (g_juliaImportFault), which
+// parses the file, rebuilds each downdip row's up-dip trace with GMT.geod and calls
+// gmtvtk_add_fault_h back per trace. nullptr -> the menu reports "callback not registered".
+typedef void (*JuliaImportFaultFn)(void* scene, const char* path);
+static JuliaImportFaultFn g_juliaImportFault = nullptr;
+
 // grdsample "OR Ref grid" picker (and grid-metadata prefill). Given a grid/image path, Julia
 // gmtreads its header and returns "W/E/S/N/xinc/yinc/nx/ny" (empty string on failure) so the
 // dialog can fill the Griding Line Geometry boxes. The returned pointer is owned by Julia (a

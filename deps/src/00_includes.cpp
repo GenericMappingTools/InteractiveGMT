@@ -144,6 +144,7 @@
 #include <vtkMatrix4x4.h>
 #include <vtkPolyDataAlgorithm.h>
 #include <vtkPolyDataNormals.h>
+#include <vtkTriangleFilter.h>
 #include <vtkColorTransferFunction.h>
 #include <vtkScalarsToColors.h>
 #include <vtkImageData.h>

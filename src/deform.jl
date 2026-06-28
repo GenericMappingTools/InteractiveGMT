@@ -107,6 +107,113 @@ function _register_elastic()
 	return
 end
 
+# ── Import Trace Fault ─────────────────────────────────────────────────────────────────────────
+# Port of fault_models.m `subfault`. A sub-fault-format file is a multi-segment text file ('#' header
+# lines) holding the slip model. We only need the surface fault TRACE, so we read just two things:
+#   • the "#Fault_segment … nx(Along-strike)=N Dx=KM ny(downdip)=M Dy=KM" header → nx, Dx, ny
+#   • the patch block (after "#Lat. Lon. depth slip rake strike dip") → columns Lat Lon … strike
+# For each downdip row k we rebuild that row's up-dip edge exactly as Mirone does: shift each of the
+# nx patch reference points BACK along strike by Dx/2 (azimuth strike+180), then append the last point
+# shifted FORWARD by Dx/2 — an (nx+1)-vertex polyline. Mirone uses circ_geo (spherical); we use
+# GMT.geod (the same direct-geodesic helper deform.jl already adopted as our circ_geo, so the import,
+# the live trace edit and the Save-fault math all share one geodesic). Each trace is then handed to
+# gmtvtk_add_fault_h, which finalizes it through the SAME path as the interactive Draw Fault tool, so
+# the imported line carries identical properties (isFault → the Vertical elastic deformation dialog).
+
+# Split a '#'-delimited multi-segment file into (header_lines, numeric_blocks) — the text_read('#')
+# equivalent fault_models.m relies on. Blank lines are skipped; each maximal run of numeric rows
+# becomes one block (a Vector of Float64 rows), in file order.
+function _read_multiseg(path::AbstractString)
+	headers = String[]
+	blocks  = Vector{Vector{Vector{Float64}}}()
+	cur     = Vector{Vector{Float64}}()
+	for raw in eachline(path)
+		ln = strip(raw)
+		isempty(ln) && continue
+		if startswith(ln, '#')
+			isempty(cur) || (push!(blocks, cur); cur = Vector{Vector{Float64}}())
+			push!(headers, ln)
+		else
+			push!(cur, parse.(Float64, split(ln)))
+		end
+	end
+	isempty(cur) || push!(blocks, cur)
+	return headers, blocks
+end
+
+# C callback: read `path`, build the surface fault trace and add it as a Draw-Fault line in the window
+# `scene`, carrying the file's slip (m) + rake to seed the elastic dialog. Errors are logged to the
+# in-window console (never thrown across the ccall).
+function _on_importfault(scene::Ptr{Cvoid}, path::Cstring)::Cvoid
+	try
+		fname = unsafe_string(path)
+		headers, blocks = _read_multiseg(fname)
+
+		# nx / Dx from the "#Fault_segment … nx(Along-strike)=… Dx=…km ny(downdip)=… Dy=…km" header.
+		hseg = nothing
+		for h in headers
+			if occursin("nx(Along-strike)", h); hseg = h; break; end
+		end
+		hseg === nothing && error("not a sub-fault file: no 'Fault_segment … nx(Along-strike)=' header")
+		m = match(r"nx\(Along-strike\)=\s*([\d.]+).*?Dx=\s*([\d.]+).*?ny\(downdip\)=\s*([\d.]+)", hseg)
+		m === nothing && error("could not parse nx/Dx/ny from header: $hseg")
+		nx = round(Int, parse(Float64, m.captures[1]))
+		Dx =            parse(Float64, m.captures[2])
+		ny = round(Int, parse(Float64, m.captures[3]))
+
+		# The patch block is the last numeric block (after "#Lat. Lon. depth slip rake strike dip");
+		# the earlier block is the segment boundary rectangle, which the trace does not need.
+		isempty(blocks) && error("no numeric data found in $fname")
+		P = blocks[end]
+		need = nx * ny
+		length(P) < need && error("expected $need patch rows (nx*ny), found $(length(P))")
+
+		# The SURFACE trace is the up-dip edge of the SHALLOWEST downdip row only. Mirone's subfault
+		# builds one (hidden) FaultTrace line PER downdip row — the deeper rows are progressively offset
+		# perpendicular to strike, so plotting them all would lay down ny parallel lines marching
+		# downdip, NOT a fault trace. Keep just the shallowest row (min mean depth, col 3); robust to
+		# whether the file lists rows top-to-bottom or bottom-to-top.
+		rowdepth(k) = sum(P[(k-1)*nx + i][3] for i in 1:nx) / nx
+		ksurf = argmin([rowdepth(k) for k in 1:ny])
+		lat  = [P[(ksurf-1)*nx + i][1] for i in 1:nx]   # col 1 = Lat
+		lon  = [P[(ksurf-1)*nx + i][2] for i in 1:nx]   # col 2 = Lon
+		strk = [P[(ksurf-1)*nx + i][6] for i in 1:nx]   # col 6 = strike
+
+		# Rebuild that row's up-dip edge: shift each patch point BACK along strike by Dx/2 (azimuth
+		# strike+180), then append the last point shifted FORWARD by Dx/2 — an (nx+1)-vertex polyline.
+		rng = Dx / 2                                    # half the along-strike spacing, in km
+		xy  = Float64[]                                 # interleaved lon,lat for gmtvtk_add_fault_h
+		for i in 1:nx
+			d, = GMT.geod([lon[i], lat[i]], strk[i] + 180, rng; unit=:km)
+			push!(xy, d[1], d[2])
+		end
+		d, = GMT.geod([lon[nx], lat[nx]], strk[1], rng; unit=:km)   # last point forward (row strike)
+		push!(xy, d[1], d[2])
+
+		# Dislocation values for the elastic dialog, from the surface row's first patch: slip (col 4) is
+		# in CENTIMETRES in the sub-fault format → convert to METRES; rake = col 5 (degrees).
+		slip_m = P[(ksurf-1)*nx + 1][4] / 100.0
+		rake   = P[(ksurf-1)*nx + 1][5]
+
+		ok = ccall(_fn(:gmtvtk_add_fault_h), Cint,
+		           (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cdouble, Cdouble),
+		           scene, xy, nx + 1, slip_m, rake)
+		ok == 1 || error("viewer rejected the fault trace (dead window handle?)")
+		_viewer_log_error(scene, "Import Trace Fault: surface trace added from $(basename(fname)) " *
+			"(slip=$(round(slip_m, digits=3)) m, rake=$(round(rake, digits=1))°)")
+	catch e
+		_viewer_log_error(scene, "Import Trace Fault FAILED: $(sprint(showerror, e))")
+		@warn "Import Trace Fault FAILED" exception=(e,)
+	end
+	return
+end
+
+function _register_importfault()
+	fptr = @cfunction((s, p) -> Base.invokelatest(_on_importfault, s, p), Cvoid, (Ptr{Cvoid}, Cstring))
+	ccall(_fn(:gmtvtk_set_importfault_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
 # Fixed-decimal "%.Nf" formatter (Printf is not a package dependency). Mirrors the C printf width so
 # the saved file matches Mirone's deform_mansinha output byte-for-byte.
 function _ffmt(x::Real, n::Int)

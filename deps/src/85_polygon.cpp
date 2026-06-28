@@ -355,6 +355,103 @@ static void polyDrapeCorners(Scene* s, const std::vector<std::array<double,3>>& 
 
 // Rebuild the finished-polygon actor `pg` from its vertices. pg.v is a closed ring (first == last);
 // each edge is draped on the relief so the outline hugs the terrain.
+// Rebuild the filled FACE of a closed polygon/rectangle from its draped ring. The fill colour and
+// opacity live on pg (fillColor/fillOpacity) INDEPENDENT of the outline; default opacity 0 keeps the
+// historic outline-only look until the user dials up transparency in Line Properties. Open polylines
+// have no fill (hidden). The face sits just below the outline (polygon offset) but above the surface.
+static void polyRebuildFill(Scene* s, Polygon& pg) {
+	if (!pg.closed) {                                  // only closed rings can carry a fill
+		if (pg.fill) pg.fill->VisibilityOff();
+		return;
+	}
+	if (!pg.fillPD) pg.fillPD = vtkSmartPointer<vtkPolyData>::New();
+
+	// Boundary = the drawn corners (drop pg.v's closing duplicate). Densified edge points are NOT used
+	// for the fill: triangulating the 3-D draped, non-planar boundary makes vtkPolygon project to a
+	// best-fit plane where the wiggly ring self-intersects -> garbage triangulation (the half-filled
+	// "bowtie"). Need >=3 corners for a face.
+	std::vector<std::array<double,3>> ring = pg.v;
+	if (ring.size() >= 2 && ring.front() == ring.back()) ring.pop_back();
+	if ((int)ring.size() < 3) { if (pg.fill) pg.fill->VisibilityOff(); return; }
+
+	const bool canDrape = !s->gridZ.empty();
+	double spacing = 0.0;
+	if (canDrape) { const double sx = std::abs(s->gdx), sy = std::abs(s->gdy);
+		spacing = (sx > 0 && sy > 0) ? std::min(sx, sy) : std::max(sx, sy); }
+	auto drapeZ = [&](double x, double y) -> double {
+		if (canDrape) { const double h = sampleZ(s, x, y); if (!std::isnan(h)) return h; }
+		return 0.0;
+	};
+
+	// 1) Triangulate the polygon PLANAR in XY (robust; correct shape, handles concave). 2) Subdivide
+	//    each base triangle into a barycentric grid at grid resolution and DRAPE every node onto the
+	//    relief, so the filled face hugs the terrain instead of a flat chord that the hills poke
+	//    through (which read as a half-filled polygon).
+	vtkNew<vtkPoints> flatPts;
+	for (auto& c : ring) flatPts->InsertNextPoint(c[0], c[1], 0.0);
+	vtkNew<vtkCellArray> flatPoly;
+	{ vtkNew<vtkIdList> ids; for (vtkIdType i = 0; i < (vtkIdType)ring.size(); ++i) ids->InsertNextId(i);
+	  flatPoly->InsertNextCell(ids); }
+	vtkNew<vtkPolyData> flat; flat->SetPoints(flatPts); flat->SetPolys(flatPoly);
+	vtkNew<vtkTriangleFilter> tri; tri->SetInputData(flat); tri->Update();
+	vtkPolyData* base = tri->GetOutput();
+	vtkPoints*   bp   = base->GetPoints();
+
+	vtkNew<vtkPoints>    outPts;
+	vtkNew<vtkCellArray> outTris;
+	vtkCellArray* bt = base->GetPolys();
+	bt->InitTraversal();
+	vtkNew<vtkIdList> tids;
+	while (bt->GetNextCell(tids)) {
+		if (tids->GetNumberOfIds() < 3) continue;
+		double A[3], B[3], C[3];
+		bp->GetPoint(tids->GetId(0), A); bp->GetPoint(tids->GetId(1), B); bp->GetPoint(tids->GetId(2), C);
+		const double emax = std::max({ std::hypot(B[0]-A[0], B[1]-A[1]),
+		                               std::hypot(C[0]-B[0], C[1]-B[1]),
+		                               std::hypot(A[0]-C[0], A[1]-C[1]) });
+		int R = 1;                                     // sub-triangles per edge (terrain hug resolution)
+		if (canDrape && spacing > 0.0 && emax > 0.0) R = std::clamp((int)std::ceil(emax / spacing), 1, 48);
+		const vtkIdType base0 = outPts->GetNumberOfPoints();
+		auto off = [R](int i, int j) { return i * (R + 1) - i * (i - 1) / 2 + j; };
+		for (int i = 0; i <= R; ++i) for (int j = 0; j <= R - i; ++j) {
+			const double a = (double)(R - i - j) / R, b = (double)i / R, c = (double)j / R;
+			const double x = a*A[0] + b*B[0] + c*C[0];
+			const double y = a*A[1] + b*B[1] + c*C[1];
+			outPts->InsertNextPoint(x, y, drapeZ(x, y));
+		}
+		for (int i = 0; i < R; ++i) for (int j = 0; j < R - i; ++j) {
+			vtkNew<vtkIdList> t1;
+			t1->InsertNextId(base0 + off(i, j)); t1->InsertNextId(base0 + off(i+1, j)); t1->InsertNextId(base0 + off(i, j+1));
+			outTris->InsertNextCell(t1);
+			if (j < R - i - 1) {
+				vtkNew<vtkIdList> t2;
+				t2->InsertNextId(base0 + off(i+1, j)); t2->InsertNextId(base0 + off(i+1, j+1)); t2->InsertNextId(base0 + off(i, j+1));
+				outTris->InsertNextCell(t2);
+			}
+		}
+	}
+	pg.fillPD->SetPoints(outPts);
+	pg.fillPD->SetPolys(outTris);
+	pg.fillPD->Modified();
+	if (!pg.fill) {
+		vtkNew<vtkPolyDataMapper> map; map->SetInputData(pg.fillPD);   // already triangulated + draped
+		map->ScalarVisibilityOff();
+		vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
+		map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -33000.0);  // above surface, below the outline (-66000)
+		pg.fill = vtkSmartPointer<vtkActor>::New();
+		pg.fill->SetMapper(map);
+		pg.fill->GetProperty()->LightingOff();
+		pg.fill->GetProperty()->EdgeVisibilityOff();
+		pg.fill->GetProperty()->BackfaceCullingOff();
+		pg.fill->PickableOff();
+		s->ren->AddActor(pg.fill);
+	}
+	pg.fill->GetProperty()->SetColor(pg.fillColor[0], pg.fillColor[1], pg.fillColor[2]);
+	pg.fill->GetProperty()->SetOpacity(pg.fillOpacity);
+	pg.fill->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	pg.fill->SetVisibility(pg.fillOpacity > 0.0 ? 1 : 0);   // no fill drawn until the user raises opacity
+}
+
 static void polyRebuildLine(Scene* s, Polygon& pg) {
 	if (!pg.linePD) pg.linePD = vtkSmartPointer<vtkPolyData>::New();
 	std::vector<std::array<double,3>> draped;
@@ -364,6 +461,7 @@ static void polyRebuildLine(Scene* s, Polygon& pg) {
 		pg.line = polyMakeLineActor(s, pg.linePD, 1.0, 0.55, 0.0);   // finished polygons: orange
 		s->ren->AddActor(pg.line);
 	}
+	polyRebuildFill(s, pg);                                          // keep the filled face in sync with the outline
 }
 
 // Axis-aligned rectangle (TRUE x,y) from two opposite corners a,b. z is left at the corners' value
@@ -692,6 +790,7 @@ static void polygonEraseOne(Scene* s, vtkActor* lineActor) {
 	for (int i = 0; i < (int)s->polys.size(); ++i) {
 		if (s->polys[i].line.Get() != lineActor) continue;
 		if (s->ren && s->polys[i].line) s->ren->RemoveActor(s->polys[i].line);
+		if (s->ren && s->polys[i].fill) s->ren->RemoveActor(s->polys[i].fill);
 		if (s->ren && s->polys[i].faultPlane)   s->ren->RemoveActor(s->polys[i].faultPlane);
 		if (s->ren && s->polys[i].faultPlane3D) s->ren->RemoveActor(s->polys[i].faultPlane3D);
 		if (s->polyEdit == i)      polyExitEdit(s);      // was being edited -> drop the handles
