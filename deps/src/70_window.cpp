@@ -1259,24 +1259,27 @@ static vtkSmartPointer<vtkActor> faultMakePlane3DActor(Scene* s, vtkPolyData* pd
 	return a;
 }
 
-// Draw / refresh the surface projection of the dipping fault plane — port of Mirone's
-// edit_FaultDip_CB / edit_FaultWidth_CB patch update (deform_mansinha.m). The trace (front→back of
-// the fault polyline) is one long edge; the opposite edge is offset by off = W·cos(dip) — the
-// horizontal projection of the down-dip width — along azimuth strike+90 (down-dip side). Geographic
-// faults walk that offset with the SAME geodesic solver as the endpoint move (g_juliaFaultGeom,
-// GMT.geod); cartesian ones use plain trig (dx=off·cos(strike), dy=-off·sin(strike), matching
-// Mirone). dip→90 or W→0 collapses the patch to the trace, so it is hidden. `strike` is the seeded
-// first→last azimuth; `width` is km (geographic) / data units (cartesian).
-static void faultUpdatePlane(Scene* s, double width, double strike, double depth, double depTop, bool geog) {
+// Draw / refresh the dipping fault plane — port of Mirone's edit_FaultDip_CB / edit_FaultWidth_CB
+// patch update (deform_mansinha.m). The buried 3-D plane is a TRUE dipping rectangle hanging from the
+// surface trace: the trace (front→back of the fault polyline) is the top edge; the down-dip edge is
+// the down-dip width W decomposed by the dip — horizontal projection off = W·cos(dip) walked along
+// azimuth strike+90 (down-dip side), vertical drop = W·sin(dip). So at VE 1 the rendered dip equals
+// the true dip and the plate is W wide down-dip (with L:W the trace:down-dip ratio). Geographic faults
+// walk the horizontal offset with the SAME geodesic solver as the endpoint move (g_juliaFaultGeom,
+// GMT.geod); cartesian ones use plain trig. `strike` = seeded first→last azimuth; `width`/`dip` are km
+// & degrees (geographic) / data units & degrees (cartesian). NOTE: this is the geometric plane, NOT
+// the Save-fault file boundary (push_save_subfault uses the full-W footprint, a non-geometric Mirone
+// representation) — the two are deliberately different.
+static void faultUpdatePlane(Scene* s, double width, double dip, double strike, bool geog) {
 	if (!s) return;
 	int pi = -1;
 	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
 	if (pi < 0 || s->polys[pi].v.size() < 2) return;
 	Polygon& pg = s->polys[pi];
 	const double D2R = 3.14159265358979323846 / 180.0;
-	const double off = width;                                      // full down-dip width — the map footprint
-	                                                               // matches Save fault (offset by W, no cos dip)
-	const auto& A = pg.v.front();  const auto& B = pg.v.back();     // trace endpoints (the long edge)
+	const double off  = width * std::cos(dip * D2R);               // down-dip horizontal projection (W·cos dip)
+	const double vert = width * std::sin(dip * D2R);               // down-dip vertical drop      (W·sin dip)
+	const auto& A = pg.v.front();  const auto& B = pg.v.back();     // trace endpoints (the long / top edge)
 
 	bool created = false;   // a plane actor was added this call -> refresh the Scene Objects list at the end
 	if (!pg.faultPlanePD) pg.faultPlanePD = vtkSmartPointer<vtkPolyData>::New();
@@ -1286,7 +1289,7 @@ static void faultUpdatePlane(Scene* s, double width, double strike, double depth
 		created = true;
 	}
 
-	if (!(off > 0)) {                                              // vertical fault / zero width: no patch
+	if (!(off > 0) && !(vert > 0)) {                              // zero width: nothing to draw
 		pg.faultPlane->VisibilityOff();
 		if (pg.faultPlane3D) pg.faultPlane3D->VisibilityOff();
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
@@ -1294,33 +1297,38 @@ static void faultUpdatePlane(Scene* s, double width, double strike, double depth
 	}
 
 	double ox0 = A[0], oy0 = A[1], ox1 = B[0], oy1 = B[1];          // the offset (down-dip) edge endpoints
-	if (geog && g_juliaFaultGeom) {
-		QStringList p0 = QString::fromUtf8(g_juliaFaultGeom(A[0], A[1], strike + 90.0, off)).split('/');
-		QStringList p1 = QString::fromUtf8(g_juliaFaultGeom(B[0], B[1], strike + 90.0, off)).split('/');
-		if (p0.size() >= 2) { ox0 = p0[0].toDouble(); oy0 = p0[1].toDouble(); }
-		if (p1.size() >= 2) { ox1 = p1[0].toDouble(); oy1 = p1[1].toDouble(); }
-	} else {
-		ox0 = A[0] + off * std::cos(strike * D2R);  oy0 = A[1] - off * std::sin(strike * D2R);
-		ox1 = B[0] + off * std::cos(strike * D2R);  oy1 = B[1] - off * std::sin(strike * D2R);
+	if (off > 0) {
+		if (geog && g_juliaFaultGeom) {
+			QStringList p0 = QString::fromUtf8(g_juliaFaultGeom(A[0], A[1], strike + 90.0, off)).split('/');
+			QStringList p1 = QString::fromUtf8(g_juliaFaultGeom(B[0], B[1], strike + 90.0, off)).split('/');
+			if (p0.size() >= 2) { ox0 = p0[0].toDouble(); oy0 = p0[1].toDouble(); }
+			if (p1.size() >= 2) { ox1 = p1[0].toDouble(); oy1 = p1[1].toDouble(); }
+		} else {
+			ox0 = A[0] + off * std::cos(strike * D2R);  oy0 = A[1] - off * std::sin(strike * D2R);
+			ox1 = B[0] + off * std::cos(strike * D2R);  oy1 = B[1] - off * std::sin(strike * D2R);
+		}
 	}
 
 	// Draped surface-projection patch: top edge = the trace (A→B), bottom edge = its down-dip
-	// projection (ox/oy), the whole patch sampled onto the relief so it hugs the ground.
-	faultBuildDrapedPatch(s, pg.faultPlanePD,
-	                      { A[0], A[1], A[2] }, { B[0], B[1], B[2] },
-	                      { ox0, oy0, A[2] }, { ox1, oy1, B[2] });
-	pg.faultPlane->VisibilityOn();
+	// projection (ox/oy), the whole patch sampled onto the relief so it hugs the ground. A (near-)
+	// vertical fault has zero footprint -> hide the gray patch (the 3-D plane still draws).
+	if (off > 0) {
+		faultBuildDrapedPatch(s, pg.faultPlanePD,
+		                      { A[0], A[1], A[2] }, { B[0], B[1], B[2] },
+		                      { ox0, oy0, A[2] }, { ox1, oy1, B[2] });
+		pg.faultPlane->VisibilityOn();
+	} else {
+		pg.faultPlane->VisibilityOff();
+	}
 
-	// The buried 3-D dipping plane. Its 4 corners are IDENTICAL to what Save fault writes
-	// (push_save_subfault): top edge = the trace (A→B), bottom edge = the full-W down-dip offset
-	// (ox/oy, above), and the vertical extent = depth − depTop (the dialog's Depth / Depth-to-Top
-	// fields), NOT W·sin(dip). The top edge hangs from the trace's own draped relief z so the plane
-	// stays attached to the surface trace; the drop is in true grid-z units (km→m ×1000 for geographic
-	// faults, data units for cartesian). The actor scales z by zfac·ve like the surface, so the plane
-	// carries the SAME vertical exaggeration as the relief.
+	// The buried 3-D dipping plane: a TRUE rectangle. Top edge = the trace (A→B) hung on the trace's
+	// own draped relief z (so the plane stays welded to the surface trace); bottom edge = the down-dip
+	// offset (ox/oy) dropped by W·sin(dip). The drop is in true grid-z units (km→m ×1000 geographic,
+	// data units cartesian). The actor scales z by zfac·ve like the surface, so the plane carries the
+	// SAME vertical exaggeration as the relief (true dip at VE 1).
 	double zA = sampleZ(s, A[0], A[1]); if (std::isnan(zA)) zA = A[2];
 	double zB = sampleZ(s, B[0], B[1]); if (std::isnan(zB)) zB = B[2];
-	const double drop = std::max(0.0, depth - depTop) * (geog ? 1000.0 : 1.0);
+	const double drop = vert * (geog ? 1000.0 : 1.0);
 	std::vector<std::array<double,3>> plane3d = {                  // top trace start/end, then bottom off end/start
 		{ A[0], A[1], zA }, { B[0], B[1], zB }, { ox1, oy1, zB - drop }, { ox0, oy0, zA - drop } };
 	if (!pg.faultPlane3DPD) pg.faultPlane3DPD = vtkSmartPointer<vtkPolyData>::New();
@@ -1414,8 +1422,8 @@ public:
 	// any of those (or the trace itself) change, so the patch tracks the fault plane live.
 	void updateFaultPlane() {
 		if (!scn) return;
-		faultUpdatePlane(scn, fWid->text().toDouble(), fStrike->text().toDouble(),
-						 fDepth->text().toDouble(), fDepTop->text().toDouble(),
+		faultUpdatePlane(scn, fWid->text().toDouble(), fDip->text().toDouble(),
+						 fStrike->text().toDouble(),
 						 coordCombo->currentData().toString() == "geog");
 	}
 

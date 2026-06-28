@@ -1262,6 +1262,54 @@ static double sampleActiveZ(const Scene* s, double x, double y) {
 	return sampleZ(s, x, y);
 }
 
+// Ray vs one triangle (Möller–Trumbore), all in SCALED world space. dir need not be unit; t is the
+// same near->far parameter as the unproject ray. Returns true + t on a front/back hit (two-sided).
+static bool rayTri(const double o[3], const double d[3],
+                   const double a[3], const double b[3], const double c[3], double& t) {
+	const double e1[3] = { b[0]-a[0], b[1]-a[1], b[2]-a[2] };
+	const double e2[3] = { c[0]-a[0], c[1]-a[1], c[2]-a[2] };
+	const double pq[3] = { d[1]*e2[2]-d[2]*e2[1], d[2]*e2[0]-d[0]*e2[2], d[0]*e2[1]-d[1]*e2[0] };
+	const double det = e1[0]*pq[0] + e1[1]*pq[1] + e1[2]*pq[2];
+	if (std::fabs(det) < 1e-30) return false;
+	const double inv = 1.0/det;
+	const double tv[3] = { o[0]-a[0], o[1]-a[1], o[2]-a[2] };
+	const double u = (tv[0]*pq[0] + tv[1]*pq[1] + tv[2]*pq[2]) * inv;
+	if (u < 0.0 || u > 1.0) return false;
+	const double qv[3] = { tv[1]*e1[2]-tv[2]*e1[1], tv[2]*e1[0]-tv[0]*e1[2], tv[0]*e1[1]-tv[1]*e1[0] };
+	const double v = (d[0]*qv[0] + d[1]*qv[1] + d[2]*qv[2]) * inv;
+	if (v < 0.0 || u + v > 1.0) return false;
+	t = (e2[0]*qv[0] + e2[1]*qv[1] + e2[2]*qv[2]) * inv;
+	return t >= 0.0;
+}
+
+// Hover pick against the buried 3-D fault plane(s). The plane's 4 corners live in the polydata in
+// RAW (true) coords; scale them (xfac,1,zfac*ve) into the same world the unproject ray lives in,
+// ray-cast the two triangles, keep the nearest. On a hit returns the SCALED hit point in wOut and
+// its ray parameter in tOut so the caller can compare depth against the surface hit.
+static bool pickFaultPlaneAt(Scene* s, const double o[3], const double d[3], double wOut[3], double& tOut) {
+	if (s->flat2d) return false;
+	const double zsc = s->zfac * s->ve, gx = (s->xfac != 0.0) ? s->xfac : 1.0;
+	bool got = false; double best = 1e300;
+	for (auto& pg : s->polys) {
+		if (!pg.isFault || !pg.faultPlane3D || !pg.faultPlane3D->GetVisibility()) continue;
+		vtkPoints* P = pg.faultPlane3DPD ? pg.faultPlane3DPD->GetPoints() : nullptr;
+		if (!P || P->GetNumberOfPoints() < 4) continue;
+		double c[4][3];
+		for (int i = 0; i < 4; ++i) {
+			double r[3]; P->GetPoint(i, r);
+			c[i][0] = r[0]*gx; c[i][1] = r[1]; c[i][2] = r[2]*zsc;
+		}
+		double t;
+		if ((rayTri(o, d, c[0], c[1], c[2], t) || rayTri(o, d, c[0], c[2], c[3], t)) && t < best) {
+			best = t; got = true;
+		}
+	}
+	if (!got) return false;
+	wOut[0] = o[0] + best*d[0]; wOut[1] = o[1] + best*d[1]; wOut[2] = o[2] + best*d[2];
+	tOut = best;
+	return true;
+}
+
 // Mouse move (default priority): live coordinate readout. Runs only when the gizmo
 // did not grab the drag (the gizmo's high-priority observer aborts the event then).
 static void onMouseMove(vtkObject*, unsigned long, void* clientData, void* /*cd*/) {
@@ -1350,7 +1398,32 @@ static void onMouseMove(vtkObject*, unsigned long, void* clientData, void* /*cd*
 			s->picker->GetPickPosition(w); hit = true;
 		}
 	}
-	if (hit) {
+	// Buried 3-D fault plane: cast the same ray at its quad. If it is nearer to the camera than the
+	// surface hit (or the surface missed), report the PLANE's own x,y,z so the user can verify the
+	// plane geometry directly (otherwise the plane never shows coordinates at all).
+	bool onPlane = false;
+	{
+		const double o[3]  = { nr[0], nr[1], nr[2] };
+		const double dd[3] = { dirx, diry, dirz };
+		double tHit = 1e300;
+		if (hit) {
+			const double dlen2 = dirx*dirx + diry*diry + dirz*dirz;
+			if (dlen2 > 0.0)
+				tHit = ((w[0]-nr[0])*dirx + (w[1]-nr[1])*diry + (w[2]-nr[2])*dirz) / dlen2;
+		}
+		double wp[3], tp;
+		if (pickFaultPlaneAt(s, o, dd, wp, tp) && (!hit || tp <= tHit)) {
+			w[0] = wp[0]; w[1] = wp[1]; w[2] = wp[2]; hit = true; onPlane = true;
+		}
+	}
+	if (onPlane) {
+		// Plane hit: z is the plane's OWN depth (undo the actor's z scale), not the surface elevation.
+		const double zsc = s->zfac * s->ve;
+		s->win->statusBar()->showMessage(
+			QString("fault plane:  x = %1    y = %2    z = %3   (VE ×%4)")
+				.arg(w[0] / s->xfac, 0, 'f', 3).arg(w[1], 0, 'f', 3)
+				.arg((zsc != 0.0) ? w[2] / zsc : 0.0, 0, 'f', 3).arg(s->ve, 0, 'f', 2));
+	} else if (hit) {
 		if (s->imageOnly && !s->gridAdopted) {
 			// Bare image: no elevation -> show the pixel COLOUR under the cursor instead of z.
 			// Read it straight from the framebuffer (the drape is unlit, so the pixel is the

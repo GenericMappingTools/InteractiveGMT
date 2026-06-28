@@ -918,8 +918,7 @@ GMTVTK_API void gmtvtk_fault_close_dialog_test(void* scene) {
 GMTVTK_API int gmtvtk_fault_plane_test(void* scene, double width, double dip, double strike,
                                        int geog, double* out) {
 	Scene* s = (Scene*)scene; if (!s) return 0;
-	const double D2R = 3.14159265358979323846 / 180.0;
-	faultUpdatePlane(s, width, strike, width * std::sin(dip * D2R), 0.0, geog != 0);  // depth from W·sin(dip), depTop 0
+	faultUpdatePlane(s, width, dip, strike, geog != 0);
 	for (auto& p : s->polys) if (p.isFault && p.faultPlane3D) {
 		double b[6] = {0,0,0,0,0,0};
 		if (p.faultPlane3DPD) p.faultPlane3DPD->GetBounds(b);
