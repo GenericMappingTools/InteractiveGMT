@@ -514,7 +514,7 @@ static int polyHitHandle(Scene* s, int x, int y, double tol) {
 // Close the current draw into a finished polygon (>=3 vertices). The stored ring is explicitly
 // closed (a copy of vertex 0 is appended so first == last), it is listed in the Scene Objects
 // panel as "polygon N", and the draw tool then ends (button untoggled -> arrow cursor).
-static void polyFinalize(Scene* s, std::vector<std::array<double,3>> verts, bool closed, const char* prefix) {
+static void polyFinalize(Scene *s, std::vector<std::array<double,3>> verts, bool closed, const char *prefix) {
 	Polygon pg; pg.v = std::move(verts); pg.closed = closed;
 	if (std::string(prefix) == "Nested rectangle") pg.nestKind = 1;   // special "Nested grids" rectangle
 	if (std::string(prefix) == "fault") pg.isFault = true;            // Draw Fault line: props open the elastic dialog
@@ -535,7 +535,7 @@ static void polyFinalize(Scene* s, std::vector<std::array<double,3>> verts, bool
 	rebuildSceneObjects(s);                // add the new shape's row to the Scene Objects list
 	if (pg.nestKind == 1) {
 		nestReflow(s);                     // snap the new nested rectangle to its parent's grid
-		int nnest = 0; for (auto& p : s->polys) if (p.nestKind == 1) ++nnest;
+		int nnest = 0; for (auto &p : s->polys) if (p.nestKind == 1) ++nnest;
 		if (nnest == 1) unfoldSceneObjects(s);   // first one: reveal AND un-fold the dock so it's visible
 	}
 	// Finishing ends the draw session: untoggle the toolbar button (-> polygonSetMode(false),
@@ -556,7 +556,7 @@ static void polyFinalize(Scene* s, std::vector<std::array<double,3>> verts, bool
 struct NestLims { double x0, x1, y0, y1, xi, yi; };
 
 // Base grid region + node spacing (grid registration assumed). false if no grid is loaded.
-static bool nestBaseGrid(Scene* s, NestLims& g) {
+static bool nestBaseGrid(Scene *s, NestLims &g) {
 	if (s->gridZ.empty() || s->gnx < 2 || s->gny < 2) return false;
 	g.x0 = s->gx0; g.x1 = s->gx1; g.y0 = s->gy0; g.y1 = s->gy1;
 	g.xi = (s->gx1 - s->gx0) / (s->gnx - 1);
@@ -565,7 +565,7 @@ static bool nestBaseGrid(Scene* s, NestLims& g) {
 }
 
 // Nearest parent node value+index to pt, clamped to [0, n-1]. (find_nearest, but index-based.)
-static void nestNearest(double v0, double inc, int n, double pt, double& val, int& idx) {
+static void nestNearest(double v0, double inc, int n, double pt, double &val, int &idx) {
 	if (inc == 0.0 || n < 1) { val = v0; idx = 0; return; }
 	int i = (int)std::lround((pt - v0) / inc);
 	if (i < 0) i = 0;

@@ -594,7 +594,10 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 	int* stackPtr = nullptr;
 	if (lr.kind == LK_Overlay)      { for (auto& o  : s->overlays) if (o.actor.Get() == a) { stackPtr = &o.stack;  break; } }
 	else if (lr.kind == LK_Polygon && !isNestRect) { for (auto& pg : s->polys) if (pg.line.Get() == a) { stackPtr = &pg.stack; break; } }
-	const size_t nVec = s->overlays.size() + s->symbols.size() + s->polys.size();
+	// Draw-order now spans ONE unified pile (base relief + grids + every vector), so a fault drawn on a
+	// grid can be ordered above/below that grid even when it is the only vector. Show the actions whenever
+	// there are 2+ stackable elements to reorder against.
+	const size_t nVec = gatherStackItems(s).size();
 	if (stackPtr && nVec > 1) {
 		m.addSeparator();
 		auto reRender = [s]() { if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render(); };

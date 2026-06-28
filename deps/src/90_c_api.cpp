@@ -619,6 +619,16 @@ GMTVTK_API int gmtvtk_scene_state(void* handle, char* buf, int cap) {
 			o += (s->extras[i].isImage ? "image:" : "grid:");
 			o += s->extras[i].name; o += ';';
 		}
+		// Per-polygon introspection (drives the fault-trace icon/menu regression tests): the icon kind a
+		// row would get + the flags it derives from. "poly<i>=<isFault>,<closed>,<nestKind>:<name>;"
+		for (size_t i = 0; i < s->polys.size(); ++i) {
+			const Polygon& pg = s->polys[i];
+			o += "poly" + std::to_string((int)i) + '=';
+			o += std::to_string(pg.isFault ? 1 : 0) + ',';
+			o += std::to_string(pg.closed  ? 1 : 0) + ',';
+			o += std::to_string(pg.nestKind) + ':';
+			o += pg.name; o += ';';
+		}
 	}
 	const int n = (int)o.size();
 	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
@@ -1139,7 +1149,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void* handle, const float* z, int nx, int ny
 
 	ex.name = (name && name[0]) ? name : ("Object " + std::to_string((int)s->extras.size() + 1));
 	const bool addedGrid = !ex.isImage;
-	if (addedGrid) ex.gstack = ++s->gridSeq;  // newest grid lands on top of the grid pile
+	if (addedGrid) ex.gstack = s->vecSeq++;  // unified pile: newest grid lands on top of EVERYTHING
 	if (addedGrid) ex.tag    = ++s->gridTagSeq;  // UNIQUE, STABLE group tag (the Color Bar resolves by this)
 	s->extras.push_back(ex);
 	if (addedGrid) { applyShading(s); applyGridStacking(s); }   // shade + order the new grid in the pile

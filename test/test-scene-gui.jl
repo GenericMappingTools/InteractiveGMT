@@ -166,6 +166,27 @@ end
 	end
 end
 
+# Fault trace = a 2-point OPEN line flagged isFault. The Scene Objects icon logic (50_scene.cpp) is
+# `pg.isFault ? IC_Line` — ALWAYS the LINE icon, never the polygon icon. Lock the flags that drive it.
+@testitem "fault trace is isFault + open (drives the LINE icon)" tags=[:gui] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
+	f = view_grid(G)
+	try
+		@test ccall(IG._fn(:gmtvtk_fault_add_test), Cint,
+			(Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble), f.h, 2.0, 2.0, 7.0, 7.0) == 1
+		IG._pump_once()
+		buf = zeros(UInt8, 4096)
+		n = ccall(IG._fn(:gmtvtk_scene_state), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), f.h, buf, length(buf))
+		st = String(buf[1:n])
+		poly0 = only(filter(kv -> startswith(kv, "poly0="), split(st, ';')))
+		flags = split(split(poly0, ':')[1], '=')[2]      # "isFault,closed,nestKind"
+		@test flags == "1,0,0"                            # isFault=1 (LINE icon), open, not a nest rect
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 # ---- coverage for the previously-untested scene elements -----------------------------------------
 
 @testitem "add! puts a line overlay on the window" tags=[:gui] begin

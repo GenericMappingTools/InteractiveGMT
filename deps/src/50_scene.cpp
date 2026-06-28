@@ -256,7 +256,7 @@ static void textLabelMenu(Scene* s, vtkTextActor3D* act, const QPoint& globalPos
 // colourbar / profile). Drawn into a 16x16 transparent pixmap (matches the small checkbox).
 enum ObjIcon { IC_Surface, IC_Image, IC_Line, IC_Points, IC_Curtain,
                IC_Polygon, IC_Polyline, IC_Rect, IC_Circle, IC_Text, IC_ColorBar, IC_Profile, IC_NestRect,
-               IC_Axes };
+               IC_Axes, IC_StraightLine };
 
 static QPixmap makeObjectIcon(int kind) {
 	// Drawn in a 16-unit coordinate space but rasterised at high DPI (supersampled) so the glyph
@@ -308,6 +308,11 @@ static QPixmap makeObjectIcon(int kind) {
 		p.setPen(QPen(QColor(40, 90, 170), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
 		QPolygonF l; l << QPointF(2, 12) << QPointF(6, 5) << QPointF(10, 10) << QPointF(14, 3);
 		p.drawPolyline(l);
+		break;
+	}
+	case IC_StraightLine: {                                    // fault trace: ONE straight diagonal segment
+		p.setPen(QPen(QColor(40, 90, 170), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+		p.drawLine(QPointF(2, 13), QPointF(14, 3));
 		break;
 	}
 	case IC_Points: {
@@ -550,23 +555,32 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
-// ---- GRID pile draw-order -------------------------------------------------------------------
-// The base relief surface + every dropped GRID extra form a pile whose order decides who draws on
-// top where grids overlap (e.g. flat nested-grid footprints sitting over the relief, or two grids
-// at the same z). Realised with polygon offset, exactly like the vector pile. NOT for images (they
-// have their own zpos stacking) and NOT for the nested rectangles (those carry no stacking).
-struct GridItem { std::vector<vtkActor*> actors; int* stack; };
+// ---- UNIFIED draw-order pile (base relief + GRIDS + VECTORS) --------------------------------
+// ONE pile so any element — a grid, the base relief, an overlay, a symbol layer, or a polygon /
+// fault trace — can be ordered ABOVE or BELOW any other element it overlaps. Previously grids and
+// vectors lived in two separate piles (vectors hard-wired above all grids), so "Place on top /
+// at bottom" on a fault drawn over a grid had nothing in its own pile to move past and did
+// nothing. Now everything shares one polygon-offset ramp: rank 0 = bottom, higher = drawn on top.
+// Images are excluded (they carry their own zpos stacking).
+//
+// `vec` marks line/point geometry: it gets an extra half-step lift on its LINE/POINT offsets so a
+// vector sitting at the same rank as the surface beneath it stays visible (resolves the z-fight
+// with that surface) without overtaking the next element a full rank up.
+struct StackItem { std::vector<vtkActor*> actors; int* stack; bool vec; };
 
-static std::vector<GridItem> gatherGridItems(Scene* s) {
-	std::vector<GridItem> v;
+static std::vector<StackItem> gatherStackItems(Scene* s) {
+	std::vector<StackItem> v;
 	std::vector<vtkActor*> base = surfActors(s);
-	if (!base.empty()) v.push_back({ base, &s->surfStack });     // the base relief is part of the pile
-	for (auto& ex : s->extras) {
+	if (!base.empty()) v.push_back({ base, &s->surfStack, false });   // base relief
+	for (auto& ex : s->extras) {                                      // dropped grids (images stack via zpos)
 		if (ex.isImage || !ex.actor) continue;
 		std::vector<vtkActor*> a = { ex.actor.Get() };
 		if (ex.drape) a.push_back(ex.drape.Get());
-		v.push_back({ a, &ex.gstack });
+		v.push_back({ a, &ex.gstack, false });
 	}
+	for (auto& o  : s->overlays) if (o.actor) v.push_back({ { o.actor.Get()  }, &o.stack,  true });
+	for (auto& sl : s->symbols)  if (sl.actor) v.push_back({ { sl.actor.Get() }, &sl.stack, true });
+	for (auto& pg : s->polys)    if (pg.line)  v.push_back({ { pg.line.Get()  }, &pg.stack, true });
 	return v;
 }
 
@@ -638,28 +652,44 @@ static void refreshGridColorbar(Scene* s) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
-// Normalize ranks to 0..n-1 by current `stack`, then map rank -> polygon offset (k=0 bottom .. on top).
-static void applyGridStacking(Scene* s) {
-	std::vector<GridItem> it = gatherGridItems(s);
+// Normalize every element's rank to 0..n-1 by current `stack`, then map rank -> polygon offset
+// (k=0 bottom .. higher k drawn on top). Grids/relief and vector lines share the SAME ramp, so a
+// fault can sit above or below the grid it was drawn on.
+static void applyStacking(Scene *s) {
+	std::vector<StackItem> it = gatherStackItems(s);
 	const int n = (int)it.size();
 	if (n == 0) return;
 	std::vector<int> ord(n);
 	for (int i = 0; i < n; ++i) ord[i] = i;
 	std::stable_sort(ord.begin(), ord.end(), [&](int a, int b) { return *it[a].stack < *it[b].stack; });
+	// Spread ranks across a FIXED strong range so the TOP element always wins the depth fight even
+	// against real 3-D terrain occlusion (gentle offsets only resolve near-coplanar z-fights — that is
+	// why a "placed on top" fault used to vanish behind a ridge). 180000 keeps the top just under the
+	// -200000 edit handles so handles still sit above everything while editing.
+	const double step = (n > 1) ? 180000.0 / (n - 1) : 0.0;
 	for (int k = 0; k < n; ++k) {
 		*it[ord[k]].stack = k;                              // 0..n-1 (survives deletes)
-		const double u = -k * 4000.0;                       // more negative = nearer camera = drawn on top
-		for (vtkActor* a : it[ord[k]].actors)
-			if (vtkPolyDataMapper* mp = vtkPolyDataMapper::SafeDownCast(a->GetMapper()))
+		const double u = -k * step;                         // more negative = nearer camera = drawn on top
+		const double uv = u - step * 0.5;                   // vectors: half-step lift to clear coincident surface
+		for (vtkActor *a : it[ord[k]].actors) {
+			if (vtkPolyDataMapper *mp = vtkPolyDataMapper::SafeDownCast(a->GetMapper())) {
 				mp->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, u);
+				if (it[ord[k]].vec) {
+					mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, uv);
+					mp->SetRelativeCoincidentTopologyPointOffsetParameter(uv);
+				}
+			}
+		}
 	}
 	refreshGridColorbar(s);                                // topmost grid may have changed -> retarget bar
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
-// Move the grid owning *stackPtr through the pile (op: 0=top, 1=bottom, 2=up, 3=down). Mirrors restackVector.
-static void restackGrid(Scene* s, int* stackPtr, int op) {
-	std::vector<GridItem> it = gatherGridItems(s);
+// Move the element owning *stackPtr through the unified pile (op: 0=top, 1=bottom, 2=up, 3=down),
+// then re-apply offsets. Works across grids AND vectors — that is what makes a lone fault's stack
+// actions actually do something against the grid under it.
+static void restackStack(Scene *s, int *stackPtr, int op) {
+	std::vector<StackItem> it = gatherStackItems(s);
 	const int n = (int)it.size();
 	if (n < 2 || !stackPtr) return;
 	std::vector<int> ord(n);
@@ -674,13 +704,17 @@ static void restackGrid(Scene* s, int* stackPtr, int op) {
 	ord.erase(ord.begin() + pos);
 	ord.insert(ord.begin() + dest, moved);
 	for (int k = 0; k < n; ++k) *it[ord[k]].stack = k;
-	applyGridStacking(s);
+	applyStacking(s);
 }
+
+// Back-compat aliases: grids and vectors now share ONE pile, so both entry points funnel here.
+static void applyGridStacking(Scene* s) { applyStacking(s); }
+static void restackGrid(Scene* s, int* stackPtr, int op) { restackStack(s, stackPtr, op); }
 
 // Append the 4 grid-pile stacking actions to a grid row's menu, wired to *stackPtr. Enabled only when
 // there are 2+ grids (base relief counts) to order against. Shared by the base surface + extra grids.
 static void addGridStackActions(Scene* s, QMenu& m, int* stackPtr) {
-	const int nGrids = (int)gatherGridItems(s).size();
+	const int nGrids = (int)gatherStackItems(s).size();
 	QAction* aTop = m.addAction("Place on top");
 	QAction* aBot = m.addAction("Place at bottom");
 	QAction* aUp  = m.addAction("Stack up");
@@ -974,7 +1008,7 @@ static void rebuildSceneObjects(Scene *s) {
 	for (auto& pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
 		LineRef lr{ LK_Polygon, pg.line };
 		const QString nm = QString::fromStdString(pg.name);   // name is prefixed per type by polyFinalize
-		int ic = pg.isFault              ? IC_Line                  // fault trace = ALWAYS the line icon, any vertex count
+		int ic = pg.isFault              ? IC_StraightLine          // fault trace = ALWAYS a STRAIGHT line icon (not the zigzag)
 		       : pg.nestKind == 1        ? IC_NestRect
 		       : !pg.closed              ? IC_Polyline
 		       : nm.startsWith("rect")   ? IC_Rect
@@ -1159,72 +1193,14 @@ static void symbolRescaleCB(vtkObject*, unsigned long, void* clientData, void*) 
 	}
 }
 
-// ---- shared vector-pile DRAW-ORDER stacking (NOT a z lift) -----------------------------------
-// Per the user's HARD RULE: ALL vector graphics — line overlays, symbol layers, polygons — share
-// ONE ordered pile, and "stacking" only decides WHO DRAWS ON TOP where elements overlap. They stay
-// glued to the relief at their true z (no world-space move). The lever is the per-mapper
-// polygon-offset MAGNITUDE — a more-negative offset pulls an element toward the camera in the depth
-// buffer, so it wins the z-fight. Each element carries a `stack` rank seeded from Scene::vecSeq
-// (monotonic, so a new element lands on top of every other vector element regardless of type).
-//
-// VecItem gathers every vector actor + its stack field into ONE list so the three vectors stack
-// together. polyHandles ride a much-more-negative constant offset (85_polygon.cpp) so edit handles
-// stay visible above any pile rank.
-struct VecItem { vtkActor* actor; int* stack; };
-static std::vector<VecItem> gatherVectorItems(Scene* s) {
-	std::vector<VecItem> v;
-	for (auto& o  : s->overlays) if (o.actor)  v.push_back({ o.actor.Get(),  &o.stack });
-	for (auto& sl : s->symbols)  if (sl.actor)  v.push_back({ sl.actor.Get(), &sl.stack });
-	for (auto& pg : s->polys)    if (pg.line)   v.push_back({ pg.line.Get(),  &pg.stack });
-	return v;
-}
-
-// Normalize every vector element's rank to a contiguous 0..n-1 by current `stack`, then map rank ->
-// polygon-offset. Base -8000 matches the single-element value used at creation, so one element is
-// unchanged. (vtkMapper::SetResolveCoincidentTopologyToPolygonOffset() is already on globally.)
-static void applyVectorStacking(Scene* s) {
-	std::vector<VecItem> it = gatherVectorItems(s);
-	const int n = (int)it.size();
-	if (n == 0) return;
-	std::vector<int> ord(n);
-	for (int i = 0; i < n; ++i) ord[i] = i;
-	std::stable_sort(ord.begin(), ord.end(),
-	                 [&](int a, int b) { return *it[a].stack < *it[b].stack; });
-	for (int k = 0; k < n; ++k) {
-		*it[ord[k]].stack = k;                          // normalize to 0..n-1 (survives deletes)
-		const double u = -8000.0 - k * 2000.0;          // k=0 bottom .. higher k drawn on top
-		if (vtkPolyDataMapper* mp = vtkPolyDataMapper::SafeDownCast(it[ord[k]].actor->GetMapper())) {
-			mp->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, u);
-			mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, u);
-			mp->SetRelativeCoincidentTopologyPointOffsetParameter(u);
-		}
-	}
-}
-
-// Move the element owning *stackPtr through the shared pile (op: 0=top, 1=bottom, 2=up, 3=down),
-// then re-apply offsets. Mirrors imageObjectMenu's pile moves; realization is depth priority.
-static void restackVector(Scene* s, int* stackPtr, int op) {
-	std::vector<VecItem> it = gatherVectorItems(s);
-	const int n = (int)it.size();
-	if (n < 2 || !stackPtr) return;
-	std::vector<int> ord(n);
-	for (int i = 0; i < n; ++i) ord[i] = i;
-	std::stable_sort(ord.begin(), ord.end(),
-	                 [&](int a, int b) { return *it[a].stack < *it[b].stack; });
-	int pos = -1;
-	for (int k = 0; k < n; ++k) if (it[ord[k]].stack == stackPtr) { pos = k; break; }
-	if (pos < 0) return;
-	int dest = (op == 0) ? n - 1
-	         : (op == 1) ? 0
-	         : (op == 2) ? std::min(pos + 1, n - 1)
-	                     : std::max(pos - 1, 0);
-	if (dest == pos) return;
-	const int moved = ord[pos];
-	ord.erase(ord.begin() + pos);
-	ord.insert(ord.begin() + dest, moved);
-	for (int k = 0; k < n; ++k) *it[ord[k]].stack = k;
-	applyVectorStacking(s);
-}
+// ---- vector DRAW-ORDER stacking ----------------------------------------------------------------
+// Vectors (line overlays, symbol layers, polygons / fault traces) now share the SAME unified pile
+// as the base relief and grids (see applyStacking above) — "stacking" decides WHO DRAWS ON TOP
+// where elements overlap, including a vector versus the grid it sits on. These thin wrappers keep
+// the historical call sites working; they funnel into the one pile. polyHandles ride a much-more-
+// negative constant offset (85_polygon.cpp) so edit handles stay visible above any pile rank.
+static void applyVectorStacking(Scene* s) { applyStacking(s); }
+static void restackVector(Scene* s, int* stackPtr, int op) { restackStack(s, stackPtr, op); }
 
 // Stamp N glyphs of one GMT symbol code at N (x,y,z) points (TRUE coords). Screen-constant size:
 // x is pre-baked with xfac so the glyph is NOT x-stretched; the actor carries only the z scale so

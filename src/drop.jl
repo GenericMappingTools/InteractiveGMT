@@ -55,7 +55,9 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 	# all-equal z would otherwise collapse _cpt_nodes to the viewer's blue ramp). Else build the CPT.
 	cz, crgb, ncolor = color === nothing ? _cpt_nodes(G, cmap) :
 		([-1.0, 1.0], Float64[color[1], color[2], color[3], color[1], color[2], color[3]], 2)
-	geog = _isgeog(G)
+	# guessgeog (not isgeog): a plain lon/lat grid with no embedded proj still reads geographic via
+	# the [-180 360 -90 90] range heuristic, so the Geography menu can be activated (see _apply_crs! below).
+	geog = _isgeographic(G)
 	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
 	ok = promote ?
 		ccall(_fn(fn), Cint,
@@ -70,6 +72,12 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name))
 	ok == 0 && @warn "drop: window is closed; grid not added"
 	ok != 0 && _remember_object!(scene, :grid, name, G)   # Scene Objects "Save…" / File>Save can write it
+	# Store the CRS + reveal the Geography menu if referenced (incl. guessed lon/lat -> WGS84).
+	if ok != 0
+		crs = crs_from(G; geographic=geog)
+		hascrs(crs) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
+		                     scene, crs.proj4, crs.wkt, Cint(crs.epsg))
+	end
 	# A promoted launcher reuses the SAME handle but its _FIGREG entry is still the QtEmpty launcher.
 	# Re-register it as a grid figure so `fig` (console / colorbar _recolor) carries the grid + works.
 	promote && ok != 0 && _register_fig!(QtFigure(scene, G))
@@ -82,7 +90,9 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 	z = zeros(Float32, 2, 2)
 	fillu = (UInt8(200), UInt8(200), UInt8(200))
 	img, iw, ih, ibands = _drape_to_bbox(I, ir[1], ir[2], ir[3], ir[4]; outside=:transparent, fill=fillu)
-	geog = _isgeog(I)
+	# guessgeog (not isgeog): a plain lon/lat image with no embedded proj still reads geographic via
+	# the lon/lat-range heuristic, so geographic axes + the Geography menu activate (set_crs below).
+	geog = try GMT.guessgeog(I) catch; GMT.isgeog(I) end
 	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
 	ok = promote ?
 		ccall(_fn(fn), Cint,
@@ -97,6 +107,12 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name))
 	ok == 0 && @warn "drop: window is closed; image not added"
 	ok != 0 && _remember_object!(scene, :image, name, I)  # Scene Objects "Save…" / File>Save can write it
+	# Store the CRS + reveal the Geography menu if referenced (incl. guessed lon/lat -> WGS84).
+	if ok != 0
+		crs = crs_from(I; geographic=geog)
+		hascrs(crs) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
+		                     scene, crs.proj4, crs.wkt, Cint(crs.epsg))
+	end
 	# As for grids: re-register the promoted launcher so `fig` is the actual image figure.
 	promote && ok != 0 && _register_fig!(QtImage(scene, I))
 	return ok != 0
