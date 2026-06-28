@@ -95,6 +95,7 @@ struct Polygon {
 	vtkSmartPointer<vtkPolyData> faultPlanePD;
 	vtkSmartPointer<vtkActor>    faultPlane3D; // the actual dipping fault plane in 3-D (top buried at the deepest trace point; 3-D-only)
 	vtkSmartPointer<vtkPolyData> faultPlane3DPD;
+	bool   faultPlane3DShown = true;         // user's desired visibility for the buried plane (actual visibility is this AND not flat-2D)
 	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
 	int    nestKind = 0;                     // 0 = ordinary shape; 1 = "Nested grids" rectangle (special menu)
 	double nestXi = 0, nestYi = 0;           // child cell sizes (0 = inherit parent inc; resolved by nestReflow)

@@ -1008,9 +1008,12 @@ static void rebuildSceneObjects(Scene *s) {
 	for (auto& pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
 		LineRef lr{ LK_Polygon, pg.line };
 		const QString nm = QString::fromStdString(pg.name);   // name is prefixed per type by polyFinalize
-		int ic = pg.isFault              ? IC_StraightLine          // fault trace = ALWAYS a STRAIGHT line icon (not the zigzag)
+		// Icon by SHAPE, gated on vertex count for open chains (a 2-point line is a LINE, not a
+		// polyline/polygon): fault/line with 2 vertices -> straight-line icon; >2 -> polyline icon.
+		// Closed rings -> rect / circle / polygon.
+		int ic = pg.isFault              ? (pg.v.size() > 2 ? IC_Polyline : IC_StraightLine)
 		       : pg.nestKind == 1        ? IC_NestRect
-		       : !pg.closed              ? IC_Polyline
+		       : !pg.closed              ? (pg.v.size() > 2 ? IC_Polyline : IC_StraightLine)
 		       : nm.startsWith("rect")   ? IC_Rect
 		       : nm.startsWith("circle") ? IC_Circle
 		                                 : IC_Polygon;
@@ -1019,7 +1022,7 @@ static void rebuildSceneObjects(Scene *s) {
 		// The gray surface-PROJECTION patch is its OWN graphical element — its own handle (hide + Remove).
 		if (pg.isFault && pg.faultPlane) {
 			vtkActor* fp = pg.faultPlane.Get();
-			makeRow(QString("%1 — surface projection").arg(nm), IC_Polygon, fp->GetVisibility() != 0,
+			makeRow(QString("%1 — surface projection").arg(nm), IC_Rect, fp->GetVisibility() != 0,
 			        [fp](bool on) { fp->SetVisibility(on ? 1 : 0); },
 			        [s, fp](const QPoint& g) {
 			            QMenu m(s->widget);
@@ -1042,8 +1045,10 @@ static void rebuildSceneObjects(Scene *s) {
 			// Capture the STABLE actor pointer (vtkSmartPointer keeps the object alive at a fixed
 			// address even if s->polys reallocates); never a raw Polygon* (that dangles on regrow).
 			vtkActor* fp3 = pg.faultPlane3D.Get();
-			makeRow(QString("%1 — fault plane").arg(nm), IC_Polygon, fp3->GetVisibility() != 0,
-			        [s, fp3](bool on) { fp3->SetVisibility((on && !s->flat2d) ? 1 : 0); },
+			makeRow(QString("%1 — fault plane").arg(nm), IC_Rect, pg.faultPlane3DShown,
+			        [s, fp3](bool on) {
+			            for (auto& p : s->polys) if (p.faultPlane3D.Get() == fp3) { p.faultPlane3DShown = on; break; }
+			            fp3->SetVisibility((on && !s->flat2d) ? 1 : 0); },
 			        [s, fp3](const QPoint& g) {
 			            QMenu m(s->widget);
 			            QAction* aRem = m.addAction("Remove");

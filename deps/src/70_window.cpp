@@ -1338,7 +1338,7 @@ static void faultUpdatePlane(Scene* s, double width, double dip, double strike, 
 		created = true;
 	}
 	faultBuildPlanePD(pg.faultPlane3DPD, plane3d);
-	pg.faultPlane3D->SetVisibility(s->flat2d ? 0 : 1);
+	pg.faultPlane3D->SetVisibility((pg.faultPlane3DShown && !s->flat2d) ? 1 : 0);
 
 	if (created) rebuildSceneObjects(s);   // a "Fault plane" handle row now exists / must appear
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
@@ -1425,6 +1425,16 @@ public:
 		faultUpdatePlane(scn, fWid->text().toDouble(), fDip->text().toDouble(),
 						 fStrike->text().toDouble(),
 						 coordCombo->currentData().toString() == "geog");
+	}
+
+	// Derived bottom Depth = Depth-to-Top + W·sin(dip) (Mirone edit_FaultDip_CB / edit_FaultWidth_CB).
+	// Called whenever Dip / Width / Depth-to-Top change so Depth tracks the geometry live.
+	void recomputeDepth() {
+		const double D2R = 3.14159265358979323846 / 180.0;
+		const double w    = fWid->text().toDouble();
+		const double dip  = fDip->text().toDouble();
+		const double topd = fDepTop->text().toDouble();
+		fDepth->setText(QString::number(topd + w * std::sin(dip * D2R), 'g', 6));
 	}
 
 	ElasticDialog(QWidget *parent, Scene *scene = nullptr) : QDialog(parent) {
@@ -1576,10 +1586,10 @@ public:
 		QObject::connect(dStrike, &QLineEdit::editingFinished, this, [this]{
 			fStrike->setText(dStrike->text()); refreshBeachball(); });
 		QObject::connect(fLen,  &QLineEdit::editingFinished, this, [this]{ applyFaultGeom(); updateFaultPlane(); });
-		QObject::connect(fDip,  &QLineEdit::editingFinished, this, [this]{ refreshBeachball(); updateFaultPlane(); });
-		QObject::connect(fWid,  &QLineEdit::editingFinished, this, [this]{ updateFaultPlane(); });
+		QObject::connect(fDip,  &QLineEdit::editingFinished, this, [this]{ refreshBeachball(); recomputeDepth(); updateFaultPlane(); });
+		QObject::connect(fWid,  &QLineEdit::editingFinished, this, [this]{ recomputeDepth(); updateFaultPlane(); });
 		QObject::connect(fDepth, &QLineEdit::editingFinished, this, [this]{ updateFaultPlane(); });
-		QObject::connect(fDepTop,&QLineEdit::editingFinished, this, [this]{ updateFaultPlane(); });
+		QObject::connect(fDepTop,&QLineEdit::editingFinished, this, [this]{ recomputeDepth(); updateFaultPlane(); });
 		QObject::connect(coordCombo, &QComboBox::currentIndexChanged, this, [this]{ updateFaultPlane(); });
 		QObject::connect(dRake, &QLineEdit::editingFinished, this, [this]{ refreshBeachball(); });
 		for (QLineEdit *e : {fLen, fWid, dSlip, muEdit})
@@ -2503,9 +2513,10 @@ static void sceneSetFlat2D(Scene* s, bool on) {
 		if (s->giz) setGizmoVisible(*s->giz, true);
 		s->ren->ResetCameraClippingRange();
 	}
-	// The buried 3-D fault plane is meaningless top-down — show it only off flat-2D.
+	// The buried 3-D fault plane is meaningless top-down — show it only off flat-2D AND when the user
+	// has not hidden it via its handle (faultPlane3DShown).
 	for (auto& pg : s->polys) if (pg.isFault && pg.faultPlane3D)
-		pg.faultPlane3D->SetVisibility(s->flat2d ? 0 : 1);
+		pg.faultPlane3D->SetVisibility((pg.faultPlane3DShown && !s->flat2d) ? 1 : 0);
 	if (s->act2D) s->act2D->setChecked(s->flat2d);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
