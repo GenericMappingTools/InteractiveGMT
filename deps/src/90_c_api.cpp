@@ -1187,7 +1187,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
 	double zmin = 0.0, zmax = 1.0;
-	auto pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, true);
+	auto pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, false);
 
 	vtkNew<vtkPolyDataNormals> norms;
 	norms->SetInputData(pd);
