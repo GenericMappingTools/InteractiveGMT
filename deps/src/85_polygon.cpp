@@ -473,7 +473,9 @@ static void polyRebuildLine(Scene *s, Polygon& pg) {
 	polyDrapeCorners(s, pg.v, draped);
 	polyFillLine(pg.linePD, draped, false);
 	if (!pg.line) {
-		pg.line = polyMakeLineActor(s, pg.linePD, 1.0, 0.55, 0.0);   // finished polygons: orange
+		double cr, cg, cb; prefLineColorRGB(cr, cg, cb);             // Preferences "Default line color"
+		pg.line = polyMakeLineActor(s, pg.linePD, cr, cg, cb);       // (default Orange = the old look)
+		pg.line->GetProperty()->SetLineWidth(prefLineWidthPx());     // Preferences "Default line thickness"
 		s->ren->AddActor(pg.line);
 	}
 	polyRebuildFill(s, pg);                                          // keep the filled face in sync with the outline

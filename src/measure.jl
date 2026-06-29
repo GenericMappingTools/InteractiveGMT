@@ -19,22 +19,48 @@ end
 # Per-vertex incremental distance + azimuth for one segment's x,y vectors. BOTH are aligned to the
 # ARRIVING vertex (GMT's mapproject convention): row i holds the distance/bearing of the segment
 # (i-1)→i, so the FIRST vertex has inc = 0 and azimuth = NaN (no segment arrives at it).
-#   geographic -> GMT.mapproject: -G+i+uk (incremental km), -Af (azimuth). One option per call so the
-#                 appended column is always the LAST one (deterministic to read back).
-#   cartesian  -> planar: hypot (data units) + atand(dx,dy) (bearing N(+Y)→CW), shifted to match.
-function _seg_dist_azim(x::Vector{Float64}, y::Vector{Float64}, geog::Bool)
+#
+# `datype` is the Preferences "Dist/Azim type"; `back` is the "Dir" (Backward → reverse azimuths):
+#   geographic, "Ellipsoidal" -> GMT.invgeod (Karney geodesic on WGS84): dist m, forward az.
+#   geographic, "Spherical"   -> GMT.invgeod on a sphere (+proj=longlat +ellps=sphere).
+#   geographic, "Flat Earth"  -> GMT.mapproject -jf (flat-earth dist km + azimuth).
+#   cartesian -> planar: hypot (data units) + atand(dx,dy) (bearing N(+Y)→CW), shifted to match.
+function _seg_dist_azim(x::Vector{Float64}, y::Vector{Float64}, geog::Bool;
+                        datype::AbstractString="Ellipsoidal", back::Bool=false)
 	n = length(x)
 	n < 2 && return (zeros(n), fill(NaN, n))
 	if geog
-		seg = GMT.mat2ds(hcat(x, y); proj4=GMT.prj4WGS84)          # tag geographic so -G is geodesic
-		inc = GMT.mapproject(seg, track_distances="+i+uk").data[:, end]
-		az  = GMT.mapproject(seg, azim="f", j=:e).data[:, end]   # az[1] = NaN (no arriving seg)
+		if datype == "Flat Earth"
+			seg = GMT.mat2ds(hcat(x, y); proj4=GMT.prj4WGS84)
+			inc = GMT.mapproject(seg, track_distances="+i+uk", j=:f).data[:, end]
+			az  = GMT.mapproject(seg, azim=(back ? "b" : "f"), j=:f).data[:, end]   # az[1] = NaN
+			return (inc, az)
+		end
+		# Ellipsoidal / Spherical via the inverse geodesic (geod). One pair per consecutive vertex.
+		proj = (datype == "Spherical") ? "+proj=longlat +ellps=sphere" : ""
+		p1 = hcat(x[1:end-1], y[1:end-1]);  p2 = hcat(x[2:end], y[2:end])
+		d, a1, _ = GMT.invgeod(p1, p2; proj=proj, backward=back)
+		dv = d  isa Real ? [d]  : d                                # n==2 returns scalars
+		av = a1 isa Real ? [a1] : a1
+		inc = [0.0; dv ./ 1000.0]                                  # m → km, aligned to arriving vertex
+		az  = [NaN; mod.(av, 360.0)]                               # az ∈ [0,360) like mapproject -Af
 		return (inc, az)
 	end
 	dx = diff(x);  dy = diff(y)
 	inc    = [0.0; hypot.(dx, dy)]                              # planar distance, data units
-	seg_az = mod.(atand.(dx, dy), 360.0)                        # bearing of each segment, length n-1
+	seg_az = mod.(atand.(dx, dy) .+ (back ? 180.0 : 0.0), 360.0)  # bearing of each segment, length n-1
 	return (inc, [NaN; seg_az])                                 # align to the arriving vertex (GMT-style)
+end
+
+# Length unit scale + label from the Preferences "Measure units". Distances come out of
+# _seg_dist_azim in km (geographic); this multiplies them into the chosen unit. Cartesian objects
+# have no physical unit, so they always stay in data units regardless of the preference.
+function _length_scale(units::AbstractString, geog::Bool)
+	geog || return (1.0, "units")
+	units == "meters"         && return (1000.0,      "m")
+	units == "nautical miles" && return (1/1.852,     "NM")
+	units == "miles"          && return (1/1.609344,  "mi")
+	return (1.0, "km")                                         # kilometers (default)
 end
 
 # Read the temp table once: the per-segment GMTdataset list, the geographic flag, and the unit label.
@@ -56,14 +82,19 @@ end
 # "Line length(s)…": total length always; for a polyline (>1 segment) also a per-vertex
 # #/X/Y/Δlen/cumlen table in the Data Viewer. CRS-aware via _seg_dist_azim. `ispoly` unused
 # (kept so all three measure entry points share one C-side signature).
-function _line_length(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool)
-	segs, geog, ulab = _measure_load(path, proj4)
+function _line_length(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool,
+                      datype::AbstractString="Ellipsoidal", dir::AbstractString="Forward",
+                      units::AbstractString="kilometers")
+	segs, geog, _ = _measure_load(path, proj4)
+	back = (dir == "Backward")
+	scale, ulab = _length_scale(units, geog)                    # Preferences "Measure units"
 	rows = Vector{NTuple{6,Float64}}()                          # Seg, #, X, Y, Δlen, cumlen
 	total = 0.0
 	for (si, seg) in enumerate(segs)
 		x = Float64.(seg.data[:, 1]);  y = Float64.(seg.data[:, 2])
 		isempty(x) && continue
-		inc, _ = _seg_dist_azim(x, y, geog)
+		inc, _ = _seg_dist_azim(x, y, geog; datype=datype, back=back)
+		inc = inc .* scale                                      # km → chosen unit (1.0 for cartesian)
 		cum = cumsum(inc)
 		total += isempty(cum) ? 0.0 : cum[end]
 		for k in eachindex(x)
@@ -81,13 +112,16 @@ end
 
 # "Azimuth(s)…": for a single straight line the one forward azimuth; for a polyline a per-vertex
 # #/X/Y/azimuth table (forward bearing to the next vertex; last vertex repeats the prior).
-function _line_azimuth(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool)
+function _line_azimuth(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool,
+                       datype::AbstractString="Ellipsoidal", dir::AbstractString="Forward",
+                       units::AbstractString="kilometers")
 	segs, geog, _ = _measure_load(path, proj4)
+	back = (dir == "Backward")
 	rows = Vector{NTuple{5,Float64}}()                          # Seg, #, X, Y, azimuth
 	for (si, seg) in enumerate(segs)
 		x = Float64.(seg.data[:, 1]);  y = Float64.(seg.data[:, 2])
 		isempty(x) && continue
-		_, az = _seg_dist_azim(x, y, geog)
+		_, az = _seg_dist_azim(x, y, geog; datype=datype, back=back)
 		for k in eachindex(x)
 			push!(rows, (Float64(si), Float64(k), x[k], y[k], az[k]))
 		end
@@ -135,27 +169,38 @@ function _fault_lenaz(path::String, proj4::String)
 	return nothing
 end
 
-# Closed-ring polygon area for an x,y matrix. geographic -> GMT.geodesicarea (m² on the ellipsoid);
-# cartesian -> GMT.geomarea (planar, data-unit²). Always positive (orientation-independent). The ring
-# is closed here if the caller's first/last vertex differ.
-function _polygon_area(M::Matrix{Float64}, geog::Bool)::Float64
+# Closed-ring polygon area for an x,y matrix. Returns m² (geographic) or data-unit² (cartesian),
+# always positive (orientation-independent). The ring is closed here if first/last vertex differ.
+#   geographic + "Ellipsoidal" -> GMT.geodesicarea (exact area on the WGS84 ellipsoid).
+#   geographic, anything else  -> GMT.gmtspatial -Q (e.g. spherical geographic area), km² → m².
+#   cartesian                  -> GMT.gmtspatial -Q (planar area, data units²).
+function _polygon_area(M::Matrix{Float64}, geog::Bool, datype::AbstractString="Ellipsoidal")::Float64
 	(M[1, :] != M[end, :]) && (M = vcat(M, M[1:1, :]))         # geometry must be a closed ring
-	geog && return abs(GMT.geodesicarea(GMT.mat2ds(M; geom=GMT.wkbPolygon, proj4=GMT.prj4WGS84)))
-	return abs(GMT.geomarea(GMT.mat2ds(M; geom=GMT.wkbPolygon)))
+	if geog && datype == "Ellipsoidal"
+		return abs(GMT.geodesicarea(GMT.mat2ds(M; geom=GMT.wkbPolygon, proj4=GMT.prj4WGS84)))
+	elseif geog
+		D = GMT.gmtspatial(GMT.mat2ds(M; geom=GMT.wkbPolygon, proj4=GMT.prj4WGS84); area="k")
+		return abs(Float64(D.data[end, end])) * 1e6            # gmtspatial -Qk reports km² → m²
+	end
+	D = GMT.gmtspatial(GMT.mat2ds(M; geom=GMT.wkbPolygon); area=true)
+	return abs(Float64(D.data[end, end]))                      # planar area, data units²
 end
 
-# "Area under polygon…": area via _polygon_area, CRS-aware. Prints the result (km²+m² when geographic,
-# data-unit² when cartesian); the C++ side shows it in a message box.
-function _poly_area(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool)
+# "Area under polygon…": area via _polygon_area, CRS-aware + Preferences Dist/Azim type. Prints the
+# result (km²+m² when geographic, data-unit² when cartesian); the C++ side shows it in a message box.
+# `dir` is accepted (shared C-side signature) but unused — direction has no meaning for an area.
+function _poly_area(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool,
+                    datype::AbstractString="Ellipsoidal", dir::AbstractString="Forward",
+                    units::AbstractString="kilometers")
 	D   = GMT.gmtread(path)
 	seg = isa(D, Vector) ? D[1] : D
 	M   = Float64.(seg.data[:, 1:2])
 	size(M, 1) < 3 && (print("Need at least 3 vertices for an area."); return nothing)
 	if _measure_isgeog(seg, proj4)
-		a_m2 = _polygon_area(M, true)
+		a_m2 = _polygon_area(M, true, datype)
 		print("Area = ", round(a_m2 / 1e6; digits = 4), " km²   (", round(a_m2; digits = 1), " m²)")
 	else
-		print("Area = ", _polygon_area(M, false), "  (data units²)")
+		print("Area = ", _polygon_area(M, false, datype), "  (data units²)")
 	end
 	return nothing
 end

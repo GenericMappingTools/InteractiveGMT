@@ -321,9 +321,10 @@ static void lineSavePoints(Scene *s, const LineRef& lr) {
 	const bool threeD = choice.startsWith("3D");
 
 	const QString defName = isPoly ? "polygon.gpkg" : "line.txt";
-	QString fn = QFileDialog::getSaveFileName(s->win, isPoly ? "Save polygon" : "Save line", defName,
+	QString fn = QFileDialog::getSaveFileName(s->win, isPoly ? "Save polygon" : "Save line", prefStartDir(defName),
 		"GMT table (*.txt *.dat);;GeoPackage (*.gpkg);;Shapefile (*.shp);;KML (*.kml);;All files (*)");
 	if (fn.isEmpty()) return;
+	rememberStartDir(fn);
 
 	const QString ext = QFileInfo(fn).suffix().toLower();
 	const bool ogr = (ext == "gpkg" || ext == "shp" || ext == "kml");
@@ -560,12 +561,18 @@ static void lineRunMeasure(Scene *s, const LineRef& lr, const char *fn, bool box
 						QString::number(QDateTime::currentMSecsSinceEpoch()) + ".txt";
 	if (!lineWriteTable(s, polylines, /*threeD=*/false, tmp)) return;   // 2-D x y, '>' multisegment
 	const bool isPoly = (lr.kind == LK_Polygon);
-	const QString cmd = QString("InteractiveGMT.%1(Ptr{Cvoid}(UInt(%2)),raw\"%3\",raw\"%4\",%5)")
+	// Thread the Preferences Dist/Azim approximation + azimuth direction so the host picks the
+	// matching engine (geod for Ellipsoidal/Spherical, mapproject -jf for Flat Earth; geodesicarea
+	// vs gmtspatial -Q for areas). Defaults applied Julia-side if these are empty.
+	const QString cmd = QString("InteractiveGMT.%1(Ptr{Cvoid}(UInt(%2)),raw\"%3\",raw\"%4\",%5,raw\"%6\",raw\"%7\",raw\"%8\")")
 							.arg(fn)
 							.arg((qulonglong)reinterpret_cast<uintptr_t>(s))
 							.arg(tmp)
 							.arg(QString::fromStdString(s->crsProj4))
-							.arg(isPoly ? "true" : "false");
+							.arg(isPoly ? "true" : "false")
+							.arg(prefDistAzimType())
+							.arg(prefAzimDir())
+							.arg(prefMeasureUnits());
 	QTimer::singleShot(0, s->win, [s, cmd, box]() {
 		std::vector<char> buf(1 << 14);
 		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
@@ -643,9 +650,10 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 	if (lr.kind == LK_Profile) {
 		m.addAction("Save profile (with distance)…", [s]() {
 			if (!s->profPD || !s->profPD->GetPoints()) return;
-			QString fn = QFileDialog::getSaveFileName(s->win, "Save profile", "profile.txt",
+			QString fn = QFileDialog::getSaveFileName(s->win, "Save profile", prefStartDir("profile.txt"),
 													  "Text (*.txt *.dat);;All files (*)");
 			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
 			QFile f(fn);
 			if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
 			QTextStream out(&f);

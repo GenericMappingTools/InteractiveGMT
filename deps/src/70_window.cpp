@@ -550,20 +550,123 @@ public:
 };
 
 // ============================================================================================
-// Preferences dialog (File > Preferences). Placeholder shell — the actual settings UI is still
-// being designed (nothing to configure yet). Opens, shows a note, closes. When real preferences
-// land they live here (persisted via QSettings) and apply to newly opened windows.
+// Preferences dialog (File > Preferences). Layout mirrors deps/ui/preferences.ui (fixed-geometry,
+// hand-coded to match the Qt Designer file). Values persist via QSettings under the "prefs/" group
+// (org "InteractiveGMT", app "i'GMT") and are loaded back on each open. Read a setting anywhere via
+// the prefXXX() accessors (defined in 30_app.cpp so every fragment shares them).
+// Default directory lives in the dirMRU list (prefStartDir/prefDirMRU/rememberStartDir, 30_app.cpp).
 // ============================================================================================
+
 class PreferencesDialog : public QDialog {
 public:
 	PreferencesDialog(QWidget *parent) : QDialog(parent) {
 		setWindowTitle("Preferences");
-		auto *v = new QVBoxLayout(this);
-		v->addWidget(new QLabel("Preferences — UI under design.\nNothing to configure yet.", this));
-		auto *bb = new QDialogButtonBox(QDialogButtonBox::Close, this);
-		QObject::connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
-		QObject::connect(bb, &QDialogButtonBox::accepted, this, &QDialog::accept);
-		v->addWidget(bb);
+		setFixedSize(433, 250);
+
+		// ---- Row 1: measure units | dist/azim type | azimuth direction ---------------------
+		auto *lblUnits = new QLabel("Measure units", this);
+		lblUnits->setGeometry(20, 10, 121, 16);
+		cmbMeasureUnits = new QComboBox(this);
+		cmbMeasureUnits->setGeometry(20, 30, 121, 24);
+		cmbMeasureUnits->addItems({"meters", "kilometers", "nautical miles", "miles", "user-defined"});
+		cmbMeasureUnits->setToolTip("Choose the units used in length calculations.");
+
+		auto *lblDA = new QLabel("Dist/Azim type", this);
+		lblDA->setGeometry(180, 10, 111, 16);
+		cmbDistAzim = new QComboBox(this);
+		cmbDistAzim->setGeometry(180, 30, 121, 24);
+		cmbDistAzim->addItems({"Ellipsoidal", "Spherical", "Flat Earth"});
+		cmbDistAzim->setToolTip("Chose the approximation used in computing distances, areas and azimuths.");
+
+		auto *lblDir = new QLabel("Dir", this);
+		lblDir->setGeometry(340, 10, 31, 16);
+		cmbAzimDir = new QComboBox(this);
+		cmbAzimDir->setGeometry(330, 30, 91, 24);
+		cmbAzimDir->addItems({"Forward", "Backward"});
+		cmbAzimDir->setToolTip("Choose between Forward and Backward azimuths");
+
+		// ---- Row 2: default directory + browse ---------------------------------------------
+		auto *lblDirec = new QLabel("Default directory", this);
+		lblDirec->setGeometry(20, 72, 200, 16);
+		cmbDefaultDir = new QComboBox(this);
+		cmbDefaultDir->setGeometry(20, 90, 365, 24);
+		cmbDefaultDir->setEditable(true);
+		cmbDefaultDir->setToolTip("Loading and saving files will start at this directory by default. "
+		                          "But will change for the used last directory.");
+		auto *btnBrowse = new QToolButton(this);
+		btnBrowse->setGeometry(392, 90, 28, 24);
+		btnBrowse->setText("...");
+		QObject::connect(btnBrowse, &QToolButton::clicked, this, [this]() {
+			QString start = cmbDefaultDir->currentText().trimmed();
+			QString d = QFileDialog::getExistingDirectory(this, "Default directory", start);
+			if (!d.isEmpty()) cmbDefaultDir->setEditText(QDir::toNativeSeparators(d));
+		});
+
+		// ---- Row 3: default line thickness | line color | coastlines color -----------------
+		auto *lblThk = new QLabel("Default line thickness", this);
+		lblThk->setGeometry(20, 140, 141, 16);
+		cmbLineThickness = new QComboBox(this);
+		cmbLineThickness->setGeometry(20, 160, 131, 24);
+		cmbLineThickness->addItems({"1 pt", "2 pt", "3 pt", "4 pt"});
+
+		auto *lblCol = new QLabel("Default line color", this);
+		lblCol->setGeometry(180, 140, 111, 16);
+		cmbLineColor = new QComboBox(this);
+		cmbLineColor->setGeometry(180, 160, 111, 24);
+		// "Orange" (the program's original default line colour, 1.0/0.55/0.0) leads the list so the
+		// familiar look is the default; the rest are the basic named colours (others via Line Properties).
+		cmbLineColor->addItems({"Orange", "Black", "Red", "Magenta", "Cyan", "White", "Green", "Blue", "Yellow"});
+		cmbLineColor->setToolTip("Line color used when creating lines/polygons.");
+
+		auto *lblCoast = new QLabel("Coastlines color", this);
+		lblCoast->setGeometry(320, 140, 111, 16);
+		cmbCoastColor = new QComboBox(this);
+		cmbCoastColor->setGeometry(320, 160, 101, 24);
+		cmbCoastColor->addItems({"Black", "White"});
+		cmbCoastColor->setToolTip("Line color used when ploting coastlines and boundaries.");
+
+		// ---- OK -----------------------------------------------------------------------------
+		auto *btnOK = new QPushButton("OK", this);
+		btnOK->setGeometry(330, 210, 90, 28);
+		btnOK->setDefault(true);
+		QObject::connect(btnOK, &QPushButton::clicked, this, [this]() { save(); accept(); });
+
+		load();
+	}
+
+private:
+	QComboBox *cmbMeasureUnits, *cmbDistAzim, *cmbAzimDir, *cmbDefaultDir;
+	QComboBox *cmbLineThickness, *cmbLineColor, *cmbCoastColor;
+
+	// Select a combo entry by text; for the editable directory combo just set the edit text.
+	static void selectText(QComboBox *c, const QString &txt) {
+		int i = c->findText(txt);
+		if (i >= 0) c->setCurrentIndex(i);
+		else if (c->isEditable() && !txt.isEmpty()) c->setEditText(txt);
+	}
+
+	void load() {
+		selectText(cmbMeasureUnits,  prefMeasureUnits());
+		selectText(cmbDistAzim,      prefDistAzimType());
+		selectText(cmbAzimDir,       prefAzimDir());
+		// Default directory: offer the whole MRU; the head (most-recent) is the active one.
+		cmbDefaultDir->addItems(prefDirMRU());
+		cmbDefaultDir->setCurrentIndex(0);
+		selectText(cmbLineThickness, prefLineThickness());
+		selectText(cmbLineColor,     prefLineColor());
+		selectText(cmbCoastColor,    prefCoastColor());
+	}
+
+	void save() {
+		QSettings st("InteractiveGMT", "i'GMT");
+		st.setValue("prefs/measureUnits",  cmbMeasureUnits->currentText());
+		st.setValue("prefs/distAzimType",  cmbDistAzim->currentText());
+		st.setValue("prefs/azimDir",       cmbAzimDir->currentText());
+		st.setValue("prefs/lineThickness", cmbLineThickness->currentText());
+		st.setValue("prefs/lineColor",     cmbLineColor->currentText());
+		st.setValue("prefs/coastColor",    cmbCoastColor->currentText());
+		// Default directory: push the chosen folder to the front of the MRU (also syncs defaultDir).
+		prefPushDir(cmbDefaultDir->currentText().trimmed());
 	}
 };
 
@@ -894,8 +997,10 @@ public:
 				if (m) fillGeometry(QString::fromUtf8(m));
 			};
 			QObject::connect(refBtn, &QToolButton::clicked, this, [this, loadRef]() {
-				loadRef(QFileDialog::getOpenFileName(this, "Select reference grid", "",
-				                                     "Grid/Image files (*.nc *.grd *.tif *.tiff);;All files (*)"));
+				QString f = QFileDialog::getOpenFileName(this, "Select reference grid", prefStartDir(),
+				                                         "Grid/Image files (*.nc *.grd *.tif *.tiff);;All files (*)");
+				if (!f.isEmpty()) rememberStartDir(f);
+				loadRef(f);
 			});
 			// HARD RULE: an edit box must NEVER execute (no editingFinished->module read). The ref grid
 			// is loaded ONLY by the "..." picker button above. See only-action-button-executes-dialog.
@@ -942,8 +1047,8 @@ public:
 			h->addWidget(btn);
 			btnOut = btn;
 			QObject::connect(btn, &QToolButton::clicked, this, [this, edit, filter]() {
-				QString path = QFileDialog::getOpenFileName(this, "Select grid file", "", filter);
-				if (!path.isEmpty()) edit->setText(path);
+				QString path = QFileDialog::getOpenFileName(this, "Select grid file", prefStartDir(), filter);
+				if (!path.isEmpty()) { edit->setText(path); rememberStartDir(path); }
 			});
 			return h;
 		};
@@ -1797,8 +1902,9 @@ public:
 		// which writes the sub-fault format. Cancelling the file dialog aborts — no host hook fired.
 		QObject::connect(saveBtn, &QPushButton::clicked, this, [this, assemble, saveBtn]() {
 			QString fn = QFileDialog::getSaveFileName(this, "Save fault (sub-fault format)",
-				"fault.dat", "Data file (*.dat *.txt);;All files (*.*)");
+				prefStartDir("fault.dat"), "Data file (*.dat *.txt);;All files (*.*)");
 			if (fn.isEmpty()) return;     // cancelled
+			rememberStartDir(fn);
 			saveBtn->setStyleSheet("background:#d4831a; color:white;");  // busy until Julia returns
 			saveBtn->setEnabled(false);
 			QApplication::processEvents();
@@ -1870,8 +1976,8 @@ public:
 			auto *btn = new QToolButton(this); btn->setText("...");
 			h->addWidget(btn);
 			QObject::connect(btn, &QToolButton::clicked, this, [this, edit, filter]() {
-				QString p = QFileDialog::getOpenFileName(this, "Select file", "", filter);
-				if (!p.isEmpty()) edit->setText(p);
+				QString p = QFileDialog::getOpenFileName(this, "Select file", prefStartDir(), filter);
+				if (!p.isEmpty()) { edit->setText(p); rememberStartDir(p); }
 			});
 			return h;
 		};
@@ -1891,9 +1997,9 @@ public:
 		auto *btnBorder = new QPushButton("Bordering", this);
 		btnBorder->setToolTip("Select a boundary-condition ASCII file (nswing -B, experimental)");
 		QObject::connect(btnBorder, &QPushButton::clicked, this, [this, btnBorder]() {
-			QString p = QFileDialog::getOpenFileName(this, "Select boundary-condition file", "",
+			QString p = QFileDialog::getOpenFileName(this, "Select boundary-condition file", prefStartDir(),
 			                                         "BC files (*.dat *.txt);;All files (*)");
-			if (!p.isEmpty()) { bcPath = p; btnBorder->setText("Bordering: " + QFileInfo(p).fileName()); }
+			if (!p.isEmpty()) { bcPath = p; rememberStartDir(p); btnBorder->setText("Bordering: " + QFileInfo(p).fileName()); }
 		});
 		v->addWidget(btnBorder);
 
@@ -2784,8 +2890,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (ok) { s->ve = v; applyVE(s); }
 	};
 	auto actShot = [s]() {
-		QString fn = QFileDialog::getSaveFileName(s->win, "Save screenshot", "gmtvtk.png", "PNG (*.png)");
+		QString fn = QFileDialog::getSaveFileName(s->win, "Save screenshot", prefStartDir("gmtvtk.png"), "PNG (*.png)");
 		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
 		vtkNew<vtkWindowToImageFilter> w2i;
 		w2i->SetInput(s->widget->renderWindow());
 		w2i->SetScale(2); w2i->Update();
@@ -2812,7 +2919,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 
 	QMenu *mFile = win->menuBar()->addMenu("&File");
-	// Preferences: settings dialog. Placeholder shell for now (UI still being designed).
+	// Preferences: settings dialog (deps/ui/preferences.ui). Values persist via QSettings.
 	mFile->addAction("&Preferences…", [win]() { PreferencesDialog(win).exec(); });
 	mFile->addSeparator();
 	// New Window: open a fresh empty iGMT launcher. Routed through Julia (g_juliaNewWindow) so the
@@ -2921,8 +3028,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			}
 			double W, E, S, N;
 			if (!visibleRegion(W, E, S, N)) return;
-			const QString req = QString("%1/%2/%3/%4/%5/%6").arg(kind).arg(res)
-				.arg(W, 0, 'f', 6).arg(E, 0, 'f', 6).arg(S, 0, 'f', 6).arg(N, 0, 'f', 6);
+			// Trailing field = Preferences "Coastlines color" (Black|White) for the line features
+			// (coast/borders/rivers); point datasets ignore it and keep their own symbol colours.
+			const QString req = QString("%1/%2/%3/%4/%5/%6/%7").arg(kind).arg(res)
+				.arg(W, 0, 'f', 6).arg(E, 0, 'f', 6).arg(S, 0, 'f', 6).arg(N, 0, 'f', 6)
+				.arg(prefCoastColor());
 			g_juliaGeo(s, req.toUtf8().constData());
 		};
 	};
@@ -3025,9 +3135,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			if (s->win) s->win->statusBar()->showMessage("Import Trace Fault: callback not registered", 3000);
 			return;
 		}
-		QString fn = QFileDialog::getOpenFileName(win, "Select sub-fault format file", QString(),
+		QString fn = QFileDialog::getOpenFileName(win, "Select sub-fault format file", prefStartDir(),
 		                                          "Sub-fault data (*.dat *.DAT);;All files (*)");
 		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
 		g_juliaImportFault(s, fn.toUtf8().constData());
 	});
 	mElastic->addAction("Import Model Slip",  geoTODO("Import Model Slip"));
@@ -3121,8 +3232,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QAction *actOpen = tb->addAction(win->style()->standardIcon(QStyle::SP_DirOpenIcon), "");  // icon only, no text
 	actOpen->setToolTip("Open a grid / image / table file in a new window");
 	QObject::connect(actOpen, &QAction::triggered, [s, win]() {
-		const QString fn = QFileDialog::getOpenFileName(win, "Open file");
+		const QString fn = QFileDialog::getOpenFileName(win, "Open file", prefStartDir());
 		if (fn.isEmpty() || !g_juliaEval) return;
+		rememberStartDir(fn);
 		// Build iview("…") with the path safely quoted (raw string => backslashes are literal).
 		std::string cmd = "InteractiveGMT.iview(raw\"" + fn.toStdString() + "\")";
 		static std::vector<char> buf(1 << 12);

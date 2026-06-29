@@ -351,9 +351,10 @@ static void xyMouseMove(vtkObject *caller, unsigned long, void *clientData, void
 
 // Export the current plot to a PNG.
 static void xyExportPng(XYPlot *s) {
-	const QString fn = QFileDialog::getSaveFileName(s->win, "Export plot as PNG", QString(), "PNG image (*.png)");
+	const QString fn = QFileDialog::getSaveFileName(s->win, "Export plot as PNG", prefStartDir("plot.png"), "PNG image (*.png)");
 	if (fn.isEmpty())
 		return;
+	rememberStartDir(fn);
 	vtkNew<vtkWindowToImageFilter> w2i;
 	w2i->SetInput(s->view->GetRenderWindow());
 	w2i->Update();
@@ -428,9 +429,10 @@ static void xyLineProperties(XYPlot *s, int idx) {
 	form->addRow(bb);
 	QObject::connect(bb->button(QDialogButtonBox::Save), &QPushButton::clicked, &dlg, [s, idx] {
 		if (!g_juliaXY) { xyLog(s, "Save: not wired (rebuild the DLL + restart Julia)", true); return; }
-		const QString fn = QFileDialog::getSaveFileName(s->win, "Save series", QString(),
+		const QString fn = QFileDialog::getSaveFileName(s->win, "Save series", prefStartDir("series.dat"),
 			"Text (*.dat *.txt);;CSV (*.csv);;All files (*)");
 		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
 		g_juliaXY(s, "save", idx, fn.toUtf8().constData());
 		xyLog(s, QString("Saved series #%1 to %2").arg(idx).arg(fn));
 	});
@@ -460,9 +462,10 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 		// Save THIS series' (x,y) data to a file (same Julia path as File>Save, but targeting the
 		// clicked series). GMT.gmtwrite picks the format from the extension (.dat/.txt/.csv/…).
 		if (!g_juliaXY) { s->win->statusBar()->showMessage("Save: not wired yet", 3000); return; }
-		const QString fn = QFileDialog::getSaveFileName(s->win, "Save series data", QString(),
+		const QString fn = QFileDialog::getSaveFileName(s->win, "Save series data", prefStartDir("series.dat"),
 			"Text (*.dat *.txt);;CSV (*.csv);;All files (*)");
 		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
 		g_juliaXY(s, "save", idx, fn.toUtf8().constData());
 	}
 	else if (pick == aDel) {
@@ -1285,16 +1288,18 @@ static XYPlot *buildXYPlot(const char *title) {
 		else s->win->statusBar()->showMessage("New: not wired yet", 3000); });
 	QObject::connect(aOpen, &QAction::triggered, s->win, [s]{
 		if (!g_juliaXY) { s->win->statusBar()->showMessage("Open: not wired yet", 3000); return; }
-		const QString fn = QFileDialog::getOpenFileName(s->win, "Open data file", QString(),
+		const QString fn = QFileDialog::getOpenFileName(s->win, "Open data file", prefStartDir(),
 			"Data files (*.dat *.txt *.csv *.xy *.gmt);;All files (*)");
 		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
 		g_juliaXY(s, "open", -1, fn.toUtf8().constData()); });
 	QObject::connect(aSave, &QAction::triggered, s->win, [s]{
 		if (!g_juliaXY) { s->win->statusBar()->showMessage("Save: not wired yet", 3000); return; }
 		if (xyCur(s).series.empty()) { s->win->statusBar()->showMessage("Nothing to save", 3000); return; }
-		const QString fn = QFileDialog::getSaveFileName(s->win, "Save series", QString(),
+		const QString fn = QFileDialog::getSaveFileName(s->win, "Save series", prefStartDir("series.dat"),
 			"Text (*.dat *.txt);;CSV (*.csv);;All files (*)");
 		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
 		g_juliaXY(s, "save", xyCurrentSel(s), fn.toUtf8().constData()); });
 	QObject::connect(aExport, &QAction::triggered, s->win, [s]{ xyExportPng(s); });
 	QObject::connect(aClose,  &QAction::triggered, s->win, [s]{ s->win->close(); });

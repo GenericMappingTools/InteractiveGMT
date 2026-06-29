@@ -5,6 +5,83 @@ static int           g_openWindows = 0;
 static vtkRenderWindow *g_lastRW = nullptr;   // most-recent window, for gmtvtk_save_png
 static Scene *g_lastScene = nullptr;   // most-recent scene, for gmtvtk_add_overlay
 
+// ============================================================================================
+// Default directory (Preferences > Default directory). Every file-open / file-save dialog starts
+// here, so a session keeps working out of the user's chosen folder. The value is the head of an
+// MRU list (prefs/dirMRU in QSettings) so recently used directories persist and are offered in the
+// Preferences combo. prefStartDir() seeds a dialog's start path; rememberStartDir() pushes the
+// directory of a just-chosen file to the front of the MRU after a successful pick.
+// ============================================================================================
+static QStringList prefDirMRU() {
+	QSettings st("InteractiveGMT", "i'GMT");
+	QStringList l = st.value("prefs/dirMRU").toStringList();
+	if (l.isEmpty()) {                                   // migrate the single-value default dir
+		QString d = st.value("prefs/defaultDir").toString().trimmed();
+		if (!d.isEmpty()) l << d;
+	}
+	return l;
+}
+// Push `dir` to the front of the directory MRU (dedup, capped). Keep prefs/defaultDir in sync with
+// the head so the two views of "the default directory" never diverge.
+static void prefPushDir(const QString &dir) {
+	if (dir.isEmpty()) return;
+	QSettings st("InteractiveGMT", "i'GMT");
+	QStringList l = st.value("prefs/dirMRU").toStringList();
+	l.removeAll(dir);
+	l.prepend(dir);
+	while (l.size() > 12) l.removeLast();
+	st.setValue("prefs/dirMRU", l);
+	st.setValue("prefs/defaultDir", dir);
+}
+// Start path for a file dialog. Prefer an explicit per-call seed (e.g. a default file name); when
+// that is empty, fall back to the saved default directory. `seedName`, if given, is appended so a
+// Save dialog opens with a suggested file name inside the default directory.
+static QString prefStartDir(const QString &seedName = QString()) {
+	QStringList l = prefDirMRU();
+	QString dir = l.isEmpty() ? QString() : l.first();
+	if (dir.isEmpty()) return seedName;            // nothing saved -> let Qt pick (cwd)
+	if (seedName.isEmpty()) return dir;
+	return QDir(dir).filePath(seedName);           // dir + "/" + suggested name
+}
+// After a dialog returns `path`, remember its directory as the new default (front of the MRU).
+static void rememberStartDir(const QString &path) {
+	if (path.isEmpty()) return;
+	prefPushDir(QFileInfo(path).absolutePath());
+}
+
+// ---- Preferences scalar settings (File > Preferences). Defined here (early) so every fragment can
+//      read them; the editor dialog lives in 70_window.cpp. Defaults match the combos' first item.
+static QString prefMeasureUnits()  { return QSettings("InteractiveGMT", "i'GMT").value("prefs/measureUnits",  "meters").toString(); }
+static QString prefDistAzimType()  { return QSettings("InteractiveGMT", "i'GMT").value("prefs/distAzimType",  "Ellipsoidal").toString(); }
+static QString prefAzimDir()       { return QSettings("InteractiveGMT", "i'GMT").value("prefs/azimDir",       "Forward").toString(); }
+static QString prefLineThickness() { return QSettings("InteractiveGMT", "i'GMT").value("prefs/lineThickness", "2 pt").toString(); }
+static QString prefLineColor()     { return QSettings("InteractiveGMT", "i'GMT").value("prefs/lineColor",     "Orange").toString(); }
+static QString prefCoastColor()    { return QSettings("InteractiveGMT", "i'GMT").value("prefs/coastColor",    "Black").toString(); }
+
+// Map the "Default line color" name to RGB (0..1). "Orange" (1.0,0.55,0.0) is the program's original
+// unnamed default line colour, kept FIRST in the combo so the familiar look stays the default. Any
+// unknown name falls back to that same orange (never a surprise black). Other colours are still
+// freely settable per-line via Line Properties — the combo only seeds NEW lines/polygons.
+static void prefLineColorRGB(double &r, double &g, double &b) {
+	const QString c = prefLineColor().trimmed().toLower();
+	if      (c == "black")   { r = 0.0; g = 0.0; b = 0.0; }
+	else if (c == "red")     { r = 1.0; g = 0.0; b = 0.0; }
+	else if (c == "magenta") { r = 1.0; g = 0.0; b = 1.0; }
+	else if (c == "cyan")    { r = 0.0; g = 1.0; b = 1.0; }
+	else if (c == "white")   { r = 1.0; g = 1.0; b = 1.0; }
+	else if (c == "green")   { r = 0.0; g = 1.0; b = 0.0; }
+	else if (c == "blue")    { r = 0.0; g = 0.0; b = 1.0; }
+	else if (c == "yellow")  { r = 1.0; g = 1.0; b = 0.0; }
+	else                     { r = 1.0; g = 0.55; b = 0.0; }   // "Orange" / unknown -> the original default
+}
+// "Default line thickness" combo ("N pt") -> VTK line width in px. Scale 1.25 px/pt keeps the old
+// default look exactly: the historical width was 2.5 px == "2 pt" (the default selection).
+static double prefLineWidthPx() {
+	bool ok = false;
+	const int pt = prefLineThickness().section(' ', 0, 0).toInt(&ok);
+	return (ok && pt > 0) ? pt * 1.25 : 2.5;
+}
+
 // Julia console callback. The viewer lives IN-PROCESS in the Julia session, so a console
 // dock can hand a typed command straight back to Julia to eval in Main. `scene` is the
 // window's own Scene* (so the callback can bind `fig` to it); `cmd` is the line typed;
@@ -209,9 +286,9 @@ struct SaveFormatDialog : QDialog {
 		QObject::connect(browse, &QPushButton::clicked, this, [this, seed]() {
 			const SaveFmt& f = fmts[combo->currentIndex()];
 			QString start = pathEdit->text().trimmed();
-			if (start.isEmpty() && !seed.isEmpty()) start = seed + f.ext;
+			if (start.isEmpty()) start = prefStartDir(seed.isEmpty() ? QString() : seed + f.ext);
 			QString fn = QFileDialog::getSaveFileName(this, "Save as", start, f.filter);
-			if (!fn.isEmpty()) pathEdit->setText(fn);
+			if (!fn.isEmpty()) { pathEdit->setText(fn); rememberStartDir(fn); }
 		});
 		QObject::connect(pathEdit, &QLineEdit::textChanged, this,
 		                 [this](const QString& t) { okBtn->setEnabled(!t.trimmed().isEmpty()); });

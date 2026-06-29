@@ -147,6 +147,9 @@ function _on_geography(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid
 		kind = String(p[1])
 		res  = Symbol(strip(p[2]))
 		W, E, S, N = parse.(Float64, p[3:6])
+		# Preferences "Coastlines color" (Black|White): the colour for coast/borders/rivers lines.
+		# Only black or white here — any other colour is set per-object via Line properties.
+		coastrgb = (length(p) >= 7 && lowercase(strip(p[7])) == "white") ? (1.0, 1.0, 1.0) : (0.0, 0.0, 0.0)
 		if kind == "volcano"
 			# Mirone style: yellow filled triangles with a thin black edge, constant on-screen size.
 			# Each symbol carries its 4-field metadata, shown as a tooltip when the mouse hovers it.
@@ -185,7 +188,7 @@ function _on_geography(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid
 			      kind == "borders" ? "Boundaries" :
 			      kind == "rivers"  ? "Rivers"      :
 			      uppercasefirst(kind)
-			_add_geo_overlay(scene, D; name=src)
+			_add_geo_overlay(scene, D; color=coastrgb, name=src)
 		end
 	catch e
 		_viewer_log_error(scene, "Geography FAILED: $(sprint(showerror, e))")

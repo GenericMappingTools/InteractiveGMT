@@ -1,0 +1,350 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>PreferencesDialog</class>
+ <widget class="QDialog" name="PreferencesDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>433</width>
+    <height>250</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Preferences</string>
+  </property>
+  <widget class="QLabel" name="lblMeasureUnits">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>10</y>
+     <width>121</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Measure units</string>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="cmbMeasureUnits">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>30</y>
+     <width>121</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Choose the units used in length calculations.</string>
+   </property>
+   <item>
+    <property name="text">
+     <string>meters</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>kilometers</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>nautical miles</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>miles</string>
+    </property>
+   </item>
+  </widget>
+  <widget class="QLabel" name="lblDefaultDir">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>72</y>
+     <width>200</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Default directory</string>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="cmbDefaultDir">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>90</y>
+     <width>365</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Loading and saving files will start at this directory by default. But will change for the used last directory.</string>
+   </property>
+   <property name="editable">
+    <bool>true</bool>
+   </property>
+   <item>
+    <property name="text">
+     <string>C:\v\</string>
+    </property>
+   </item>
+  </widget>
+  <widget class="QToolButton" name="btnBrowseDir">
+   <property name="geometry">
+    <rect>
+     <x>392</x>
+     <y>90</y>
+     <width>28</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>...</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="lblLineThickness">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>140</y>
+     <width>141</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Default line thickness</string>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="cmbLineThickness">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>160</y>
+     <width>131</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <item>
+    <property name="text">
+     <string>1 pt</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>2 pt</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>3 pt</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>4 pt</string>
+    </property>
+   </item>
+  </widget>
+  <widget class="QLabel" name="lblLineColor">
+   <property name="geometry">
+    <rect>
+     <x>180</x>
+     <y>140</y>
+     <width>111</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Default line color</string>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="cmbLineColor">
+   <property name="geometry">
+    <rect>
+     <x>180</x>
+     <y>160</y>
+     <width>111</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Line color used when creating lines/polygons.</string>
+   </property>
+   <item>
+    <property name="text">
+     <string>Black</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Red</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Magenta</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Cyan</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>White</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Green</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Blue</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Yellow</string>
+    </property>
+   </item>
+  </widget>
+  <widget class="QPushButton" name="btnOK">
+   <property name="geometry">
+    <rect>
+     <x>330</x>
+     <y>210</y>
+     <width>90</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>OK</string>
+   </property>
+   <property name="default">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="cmbDistAzim">
+   <property name="geometry">
+    <rect>
+     <x>180</x>
+     <y>30</y>
+     <width>121</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Chose the approximation used in computing distances, areas and azimuths.</string>
+   </property>
+   <item>
+    <property name="text">
+     <string>Ellipsoidal</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Spherical</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Flat Earth</string>
+    </property>
+   </item>
+  </widget>
+  <widget class="QLabel" name="lblMeasureUnits_2">
+   <property name="geometry">
+    <rect>
+     <x>180</x>
+     <y>10</y>
+     <width>111</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Dist/Azim type</string>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="cmbDistAzim_2">
+   <property name="geometry">
+    <rect>
+     <x>330</x>
+     <y>30</y>
+     <width>91</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Choose between Forward and Backward azimuths</string>
+   </property>
+   <item>
+    <property name="text">
+     <string>Forward</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Backward</string>
+    </property>
+   </item>
+  </widget>
+  <widget class="QLabel" name="lblMeasureUnits_3">
+   <property name="geometry">
+    <rect>
+     <x>330</x>
+     <y>10</y>
+     <width>31</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Dir</string>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="cmbLineColor_2">
+   <property name="geometry">
+    <rect>
+     <x>320</x>
+     <y>160</y>
+     <width>101</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Line color used when ploting coastlines and boundaries.</string>
+   </property>
+   <item>
+    <property name="text">
+     <string>Black</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>White</string>
+    </property>
+   </item>
+  </widget>
+  <widget class="QLabel" name="lblLineColor_2">
+   <property name="geometry">
+    <rect>
+     <x>320</x>
+     <y>140</y>
+     <width>111</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Coastlines color</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
