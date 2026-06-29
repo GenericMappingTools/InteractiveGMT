@@ -564,22 +564,23 @@ static void lineRunMeasure(Scene *s, const LineRef& lr, const char *fn, bool box
 	// Thread the Preferences Dist/Azim approximation + azimuth direction so the host picks the
 	// matching engine (geod for Ellipsoidal/Spherical, mapproject -jf for Flat Earth; geodesicarea
 	// vs gmtspatial -Q for areas). Defaults applied Julia-side if these are empty.
+	const QString distAzimType = prefDistAzimType();   // capture for window title
 	const QString cmd = QString("InteractiveGMT.%1(Ptr{Cvoid}(UInt(%2)),raw\"%3\",raw\"%4\",%5,raw\"%6\",raw\"%7\",raw\"%8\")")
 							.arg(fn)
 							.arg((qulonglong)reinterpret_cast<uintptr_t>(s))
 							.arg(tmp)
 							.arg(QString::fromStdString(s->crsProj4))
 							.arg(isPoly ? "true" : "false")
-							.arg(prefDistAzimType())
+							.arg(distAzimType)
 							.arg(prefAzimDir())
 							.arg(prefMeasureUnits());
-	QTimer::singleShot(0, s->win, [s, cmd, box]() {
+	QTimer::singleShot(0, s->win, [s, cmd, box, distAzimType]() {
 		std::vector<char> buf(1 << 14);
 		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
 		const QString out = QString::fromUtf8(buf.data(), std::abs(n));
 		if (n < 0) { sceneLogError(s, out); return; }              // Julia threw -> Errors tab
 		if (box) {
-			QMessageBox mb(QMessageBox::Information, "Result", out, QMessageBox::Ok, s->win);
+			QMessageBox mb(QMessageBox::Information, QString("Result (%1)").arg(distAzimType), out, QMessageBox::Ok, s->win);
 			mb.setTextInteractionFlags(Qt::TextSelectableByMouse);
 			mb.exec();
 		} else if (!out.isEmpty() && s->win) {

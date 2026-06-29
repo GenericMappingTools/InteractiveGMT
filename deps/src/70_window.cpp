@@ -2955,6 +2955,23 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		aBgRegion->setVisible(!hasContent);
 	});
 	mFile->addSeparator();
+	// Open known file types: file picker that uses same auto-detect logic as drag-and-drop.
+	// Opens into THIS window (or promotes empty launcher) via g_juliaDrop.
+	mFile->addAction("Open &known file types…", [win, s]() {
+		if (!g_juliaDrop) {
+			if (s->win) s->win->statusBar()->showMessage("Open: callback not registered", 3000);
+			return;
+		}
+		const QStringList files = QFileDialog::getOpenFileNames(win, "Open File", prefStartDir());
+		if (!files.isEmpty()) {
+			rememberStartDir(files.first());               // push chosen dir to MRU
+			for (const QString& f : files) {
+				const QByteArray utf8 = f.toUtf8();        // keep buffer alive across call
+				g_juliaDrop(s, utf8.constData());
+			}
+		}
+	});
+	mFile->addSeparator();
 	// Recent Files: persistent MRU, grouped Grids/Images/Datasets, rebuilt each time it opens so a
 	// file opened in any window shows up here too. Re-opens a pick in a NEW window via iview().
 	QMenu *mRecent = mFile->addMenu("Recent &Files");
