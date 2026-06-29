@@ -55,6 +55,7 @@ include("nswing.jl")     # Geophysics > NSWING tsunami (port of Mirone swan_opti
 include("deform.jl")     # Geophysics > Vertical elastic deformation: fault-trace endpoint (deform_mansinha.m)
 include("nested.jl")     # "Nested grids" rectangle tool: host-side blank-grid builder (nesting_sizes.m)
 include("measure.jl")    # line length/azimuth + polygon area for the vector context menu (CRS-aware)
+include("info.jl")       # toolbar "i" button: grdinfo / gdalinfo report on the active grid/image
 
 export view_grid, view_image, view_points, view_fv, view_demo, iview,
        add!, add_curtain!, add_symbols!, show_table, selection, isalive,

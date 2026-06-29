@@ -1,12 +1,12 @@
-static void rebuildSceneObjects(Scene* s);          // defined just below; refreshed after edits
-static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp);   // symbol-layer properties (defined below)
+static void rebuildSceneObjects(Scene *s);          // defined just below; refreshed after edits
+static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp);   // symbol-layer properties (defined below)
 static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
-static void textApplyProps(Scene* s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
+static void textApplyProps(Scene *s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
 
 // Append one execution-error line to a window's read-only "Errors" tab and raise it (so a failure in
 // a background op is VISIBLE in the window, not just on the REPL's stderr). Shared by the
 // gmtvtk_log_error export and the fire-and-forget g_juliaEval callers below. Best-effort / no-throw.
-static void sceneLogError(Scene* s, const QString& msg) {
+static void sceneLogError(Scene *s, const QString& msg) {
 	if (!s || !sceneAlive(s) || !s->errConsole) return;
 	s->errConsole->appendPlainText(QString("[%1]  %2")
 		.arg(QTime::currentTime().toString("HH:mm:ss")).arg(msg));
@@ -19,7 +19,7 @@ static void sceneLogError(Scene* s, const QString& msg) {
 // Hand a colormap NAME back to the Julia host, which recomputes CPT nodes over the surface's data
 // range and ccalls gmtvtk_set_cpt to recolour live. `fig` is bound to THIS window by _console_eval.
 // A NEGATIVE return flags a Julia error (|n| bytes of text) -> route it to the Errors tab.
-static void applyColormap(Scene* s, const QString& name, int gridSel) {
+static void applyColormap(Scene *s, const QString& name, int gridSel) {
 	if (!s || !g_juliaEval || name.isEmpty()) return;
 	// Recolour the grid the Color Bar row belongs to (gridSel is the grid's UNIQUE GROUP TAG: -1 = base
 	// relief, >0 = a dropped grid's tag). Resolve BY TAG (never by index — indices shift on delete) and
@@ -49,7 +49,7 @@ namespace cbar {
 
 // Reposition the existing colorbar actors from s->barX0/barY0 — called on build and each drag
 // step. Rewrites coords in place; never recreates actors.
-static void layoutColorbar(Scene* s) {
+static void layoutColorbar(Scene *s) {
 	if (!s || !s->bar) return;
 	const double X0 = s->barX0, Y0 = s->barY0;
 	const double barLeft = X0 + cbar::W * (1.0 - cbar::BARRATIO);
@@ -73,7 +73,7 @@ static void layoutColorbar(Scene* s) {
 // Build the colorbar actors and add them to the renderer, for the colour map `lut` over [lo,hi]
 // (the active grid's range — may differ from the base relief's zmin/zmax). Stores the range in
 // barLo/barHi so layoutColorbar places ticks against it.
-static void buildColorbar(Scene* s, vtkScalarsToColors* lut, double lo, double hi) {
+static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double hi) {
 	if (!s || s->imageOnly) return;          // bare image -> no colorbar
 	if (!(hi > lo)) hi = lo + 1.0;           // guard a degenerate (flat) grid
 	s->barLo = lo; s->barHi = hi;
@@ -120,33 +120,33 @@ static void buildColorbar(Scene* s, vtkScalarsToColors* lut, double lo, double h
 
 // Show/hide the WHOLE colorbar (strip + ticks + numbers) together. The old code toggled only the
 // strip, so the numbers kept floating after the strip vanished.
-static void setColorbarVisible(Scene* s, bool on) {
+static void setColorbarVisible(Scene *s, bool on) {
 	if (!s || !s->bar) return;
 	s->bar->SetVisibility(on ? 1 : 0);
 	if (s->barTicks) s->barTicks->SetVisibility(on ? 1 : 0);
 	for (auto& ta : s->barLabels) if (ta) ta->SetVisibility(on ? 1 : 0);
 }
 
-static bool colorbarVisible(Scene* s) { return s && s->bar && s->bar->GetVisibility() != 0; }
+static bool colorbarVisible(Scene *s) { return s && s->bar && s->bar->GetVisibility() != 0; }
 
 // --- colorbar left-drag, handled at the GLView widget level (60_profile.cpp), exactly like the
 // polygon-vertex / text-label drags. Qt delivers the press to the widget BEFORE VTK's interactor
 // adapter, so a VTK observer would lose the race to the trackball — the widget path is the only
 // reliable one in this codebase. nx/ny are NORMALIZED viewport coords (bottom-up, 0..1).
-static bool colorbarHit(Scene* s, double nx, double ny) {   // cursor over the (visible) bar frame?
+static bool colorbarHit(Scene *s, double nx, double ny) {   // cursor over the (visible) bar frame?
 	if (!s || !s->bar || !colorbarVisible(s)) return false;
 	const double L = s->barX0 - 0.05, R = s->barX0 + cbar::W;   // include the numbers to the left
 	const double B = s->barY0 - 0.02, T = s->barY0 + cbar::H + 0.02;
 	return nx >= L && nx <= R && ny >= B && ny <= T;
 }
-static bool colorbarGrab(Scene* s, double nx, double ny) {
+static bool colorbarGrab(Scene *s, double nx, double ny) {
 	if (!colorbarHit(s, nx, ny)) return false;
 	s->barDragging = true;
 	s->barGrabX = nx - s->barX0;
 	s->barGrabY = ny - s->barY0;
 	return true;
 }
-static bool colorbarDragTo(Scene* s, double nx, double ny) {
+static bool colorbarDragTo(Scene *s, double nx, double ny) {
 	if (!s || !s->barDragging) return false;
 	s->barX0 = std::min(std::max(nx - s->barGrabX, 0.05), 1.0 - cbar::W);
 	s->barY0 = std::min(std::max(ny - s->barGrabY, 0.0),  1.0 - cbar::H);
@@ -154,7 +154,7 @@ static bool colorbarDragTo(Scene* s, double nx, double ny) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return true;
 }
-static bool colorbarRelease(Scene* s) {
+static bool colorbarRelease(Scene *s) {
 	if (!s || !s->barDragging) return false;
 	s->barDragging = false;
 	return true;
@@ -162,14 +162,14 @@ static bool colorbarRelease(Scene* s) {
 
 // The colormap chooser: a popup of common GMT master CPTs (applied on click) plus a Custom… entry
 // for any name GMT's makecpt accepts. Opened from the colorbar's Scene Objects row.
-static void chooseColormap(Scene* s, const QPoint& gp, int gridSel) {
+static void chooseColormap(Scene *s, const QPoint& gp, int gridSel) {
 	if (!s) return;
-	static const char* kMaps[] = {
+	static const char *kMaps[] = {
 		"viridis", "turbo", "jet", "hot", "haxby", "geo", "relief", "rainbow",
 		"polar", "seis", "gray", "plasma", "magma", "cividis", "roma", "vik",
 	};
 	QMenu m(s->win);
-	for (const char* nm : kMaps) {
+	for (const char *nm : kMaps) {
 		const QString q = QString::fromLatin1(nm);
 		m.addAction(q, [s, q, gridSel]() { applyColormap(s, q, gridSel); });
 	}
@@ -186,23 +186,23 @@ static void chooseColormap(Scene* s, const QPoint& gp, int gridSel) {
 // Font / colour editor for a text label. Reachable from the label's Scene-Objects row or a canvas
 // right-click. Edits the string, family (Arial/Courier/Times — VTK's built-in faces), size, colour,
 // bold and italic, then re-applies and re-renders.
-static void textPropsDialog(Scene* s, vtkTextActor3D* act) {
-	TextLabel* tl = nullptr;
+static void textPropsDialog(Scene *s, vtkTextActor3D *act) {
+	TextLabel *tl = nullptr;
 	for (auto& t : s->texts) if (t.actor.Get() == act) { tl = &t; break; }
 	if (!tl) return;
 
 	QDialog d(s->widget);
 	d.setWindowTitle("Text Properties");
-	QFormLayout* fl = new QFormLayout(&d);
-	QLineEdit* eText = new QLineEdit(QString::fromStdString(tl->text), &d);
-	QComboBox* eFont = new QComboBox(&d);
+	QFormLayout *fl = new QFormLayout(&d);
+	QLineEdit *eText = new QLineEdit(QString::fromStdString(tl->text), &d);
+	QComboBox *eFont = new QComboBox(&d);
 	eFont->addItems({ "Arial", "Courier", "Times" });
 	eFont->setCurrentText(QString::fromStdString(tl->font));
-	QSpinBox* eSize = new QSpinBox(&d); eSize->setRange(4, 300); eSize->setValue(tl->size);
-	QCheckBox* eBold = new QCheckBox("Bold", &d);   eBold->setChecked(tl->bold);
-	QCheckBox* eItal = new QCheckBox("Italic", &d); eItal->setChecked(tl->italic);
+	QSpinBox *eSize = new QSpinBox(&d); eSize->setRange(4, 300); eSize->setValue(tl->size);
+	QCheckBox *eBold = new QCheckBox("Bold", &d);   eBold->setChecked(tl->bold);
+	QCheckBox *eItal = new QCheckBox("Italic", &d); eItal->setChecked(tl->italic);
 	QColor col = QColor::fromRgbF(tl->color[0], tl->color[1], tl->color[2]);
-	QPushButton* eColor = new QPushButton(&d);
+	QPushButton *eColor = new QPushButton(&d);
 	auto paintSwatch = [eColor](const QColor& c) { eColor->setStyleSheet("background:" + c.name()); };
 	paintSwatch(col);
 	QObject::connect(eColor, &QPushButton::clicked, [&]() {
@@ -215,7 +215,7 @@ static void textPropsDialog(Scene* s, vtkTextActor3D* act) {
 	fl->addRow(eBold);
 	fl->addRow(eItal);
 	fl->addRow("Colour", eColor);
-	QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
 	fl->addRow(bb);
 	QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
 	QObject::connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
@@ -233,11 +233,11 @@ static void textPropsDialog(Scene* s, vtkTextActor3D* act) {
 }
 
 // Right-click menu for a text label: edit properties or delete it.
-static void textLabelMenu(Scene* s, vtkTextActor3D* act, const QPoint& globalPos) {
+static void textLabelMenu(Scene *s, vtkTextActor3D *act, const QPoint& globalPos) {
 	QMenu m(s->widget);
-	QAction* props = m.addAction("Text Properties…");
-	QAction* del   = m.addAction("Remove");
-	QAction* chosen = m.exec(globalPos);
+	QAction *props = m.addAction("Text Properties…");
+	QAction *del   = m.addAction("Remove");
+	QAction *chosen = m.exec(globalPos);
 	if (chosen == props) { textPropsDialog(s, act); return; }
 	if (chosen != del) return;
 	for (size_t i = 0; i < s->texts.size(); ++i) {
@@ -403,26 +403,26 @@ static QPixmap makeObjectIcon(int kind) {
 // imageRebuildActor rebuilds ex.actor for the current mode; the texture (ex.tex) is reused either way.
 
 // Index of the extra owning this actor (re-find each call; the vector may have changed). -1 if gone.
-static int extraIndexOfActor(Scene* s, vtkProp3D* a) {
+static int extraIndexOfActor(Scene *s, vtkProp3D *a) {
 	for (size_t i = 0; i < s->extras.size(); ++i)
 		if (s->extras[i].actor.Get() == a) return (int)i;
 	return -1;
 }
 
 // True if the image footprint overlaps the host grid footprint (a drape needs a grid underneath).
-static bool imageOverlapsGrid(Scene* s, const ExtraObj& ex) {
+static bool imageOverlapsGrid(Scene *s, const ExtraObj& ex) {
 	if (s->gridZ.empty() || s->gnx < 2 || s->gny < 2) return false;
 	return ex.bx0 < s->gx1 && ex.bx1 > s->gx0 && ex.by0 < s->gy1 && ex.by1 > s->gy0;
 }
 
 // Vertical step for "stack up/down" + the default on-top gap: 2% of the relief range.
-static double imageStackStep(Scene* s) {
+static double imageStackStep(Scene *s) {
 	const double r = s->zmax - s->zmin;
 	return (r > 0) ? 0.02 * r : 1.0;
 }
 
 // (Re)build the image actor for its current flat/draped state and (re)register it in the renderer.
-static void imageRebuildActor(Scene* s, ExtraObj& ex) {
+static void imageRebuildActor(Scene *s, ExtraObj& ex) {
 	if (ex.actor) s->ren->RemoveActor(ex.actor);
 	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
 	const bool drape = ex.draped && imageOverlapsGrid(s, ex);
@@ -491,11 +491,13 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	const bool hasGrid = sceneHasGrid(s);
 	const bool canDrape = !draped && hasGrid && imageOverlapsGrid(s, s->extras[idx]);
 	QMenu m(s->widget);
-	QAction *aTop = m.addAction("Place on top");
-	QAction *aBot = m.addAction("Place at bottom");
-	QAction *aUp  = m.addAction("Stack up");
-	QAction *aDn  = m.addAction("Stack down");
-	for (QAction *a : { aTop, aBot, aUp, aDn }) a->setEnabled(!draped && hasGrid);   // need a relief to stack against
+	QMenu *stackMenu = m.addMenu("Stack order");
+	QAction *aTop = stackMenu->addAction("Place on top");
+	QAction *aBot = stackMenu->addAction("Place at bottom");
+	QAction *aUp  = stackMenu->addAction("Bring forward");
+	QAction *aDn  = stackMenu->addAction("Send backward");
+	stackMenu->setEnabled(!draped && hasGrid);                                       // need a relief to stack against
+	for (QAction *a : { aTop, aBot, aUp, aDn }) a->setEnabled(!draped && hasGrid);
 	m.addSeparator();
 	QAction *aDrape = m.addAction(draped ? "Undrape (flat)" : "Drape on grid");
 	aDrape->setEnabled(draped || canDrape);
@@ -566,9 +568,9 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 // `vec` marks line/point geometry: it gets an extra half-step lift on its LINE/POINT offsets so a
 // vector sitting at the same rank as the surface beneath it stays visible (resolves the z-fight
 // with that surface) without overtaking the next element a full rank up.
-struct StackItem { std::vector<vtkActor*> actors; int* stack; bool vec; };
+struct StackItem { std::vector<vtkActor*> actors; int *stack; bool vec; };
 
-static std::vector<StackItem> gatherStackItems(Scene* s) {
+static std::vector<StackItem> gatherStackItems(Scene *s) {
 	std::vector<StackItem> v;
 	std::vector<vtkActor*> base = surfActors(s);
 	if (!base.empty()) v.push_back({ base, &s->surfStack, false });   // base relief
@@ -584,9 +586,25 @@ static std::vector<StackItem> gatherStackItems(Scene* s) {
 	return v;
 }
 
+// Park a vector actor in the depth-cleared OVERLAY layer (axesRen, layer 1: shares the main camera but
+// clears its own depth) so it is drawn ON TOP of all 3-D terrain by RENDER ORDER, or move it back to the
+// main 3-D layer. Idempotent. This is how a vector ranked above every raster wins without any depth-
+// offset magic — the exact mechanism the Z-axis labels already use. Removal paths must clear BOTH layers.
+static void setActorTopLayer(Scene *s, vtkActor *a, bool top) {
+	if (!a || !s->ren) return;
+	vtkRenderer *ov = s->axesRen ? s->axesRen.Get() : s->ren.Get();
+	if (top && ov != s->ren.Get()) {
+		if (s->ren->HasViewProp(a)) s->ren->RemoveActor(a);
+		if (!ov->HasViewProp(a))    ov->AddActor(a);
+	} else {
+		if (ov != s->ren.Get() && ov->HasViewProp(a)) ov->RemoveActor(a);
+		if (!s->ren->HasViewProp(a)) s->ren->AddActor(a);
+	}
+}
+
 // Tear the colorbar actors out of the renderer so the bar can be rebuilt for a different (active) grid.
 // Leaves s->barX0/barY0 (drag position) intact so the bar stays put across retargets.
-static void destroyColorbar(Scene* s) {
+static void destroyColorbar(Scene *s) {
 	if (!s) return;
 	if (s->bar)      { s->ren->RemoveActor2D(s->bar);      s->bar = nullptr; }
 	if (s->barTicks) { s->ren->RemoveActor2D(s->barTicks); s->barTicks = nullptr; }
@@ -603,18 +621,18 @@ struct ActiveGrid {
 	const std::vector<float>* z = nullptr;
 	int    nx = 0, ny = 0;
 	double x0 = 0, x1 = 1, y0 = 0, y1 = 1, zmin = 0, zmax = 1;
-	vtkScalarsToColors* lut = nullptr;
+	vtkScalarsToColors *lut = nullptr;
 	bool   showBar = true;     // active grid's per-grid "show colorbar" intent
 };
 
 // The active grid is the TOPMOST VISIBLE grid (highest pile rank). The base relief participates via
 // s->surfStack / s->surfLut / s->zmin-zmax; each dropped grid via its own ExtraObj fields.
-static ActiveGrid resolveActiveGrid(Scene* s) {
+static ActiveGrid resolveActiveGrid(Scene *s) {
 	ActiveGrid ag;
 	int  bestStack = 0;
 	bool have = false;
 	if (!s->gridZ.empty()) {                                   // base relief, if it carries a data layer
-		vtkProp3D* sp = surfProp(s);
+		vtkProp3D *sp = surfProp(s);
 		if (sp && sp->GetVisibility()) {
 			ag.valid = true; ag.z = &s->gridZ; ag.nx = s->gnx; ag.ny = s->gny;
 			ag.x0 = s->gx0; ag.x1 = s->gx1; ag.y0 = s->gy0; ag.y1 = s->gy1;
@@ -636,7 +654,7 @@ static ActiveGrid resolveActiveGrid(Scene* s) {
 
 // Retarget the single rendered colorbar + the hover/coordinate readout to the active (topmost-visible)
 // grid. Called on every grid add / visibility toggle / restack / delete. No grid visible -> bar hidden.
-static void refreshGridColorbar(Scene* s) {
+static void refreshGridColorbar(Scene *s) {
 	if (!s || s->imageOnly) return;            // bare-image windows never carry a z colorbar
 	ActiveGrid ag = resolveActiveGrid(s);
 	destroyColorbar(s);
@@ -662,22 +680,40 @@ static void applyStacking(Scene *s) {
 	std::vector<int> ord(n);
 	for (int i = 0; i < n; ++i) ord[i] = i;
 	std::stable_sort(ord.begin(), ord.end(), [&](int a, int b) { return *it[a].stack < *it[b].stack; });
-	// Spread ranks across a FIXED strong range so the TOP element always wins the depth fight even
-	// against real 3-D terrain occlusion (gentle offsets only resolve near-coplanar z-fights — that is
-	// why a "placed on top" fault used to vanish behind a ridge). 180000 keeps the top just under the
-	// -200000 edit handles so handles still sit above everything while editing.
-	const double step = (n > 1) ? 180000.0 / (n - 1) : 0.0;
+	// SMALL per-rank step: the coincident offset is used ONLY to break near-coplanar z-fights (e.g. two
+	// overlapping grids at the same elevation, a line lying on its grid). It must NOT be large — a big
+	// offset drags a vector so far toward the camera it pokes THROUGH a grid drawn over it. Genuine 3-D
+	// occlusion (a line hidden under taller grid2) is left to real geometry; "always on top" is handled by
+	// the depth-cleared overlay layer, not by offset magnitude. 20000 << the -200000 edit-handle band.
+	const double step = 20000.0;
+	// ANCHOR the ramp on the base relief: it is real lit 3-D terrain, not a coplanar overlay, so it must
+	// keep its build-default coincident offset (0,0) — stamping a huge offset on it saturates the depth
+	// buffer and visibly shifts its shading/tonality. Offsets are computed RELATIVE to the surface rank,
+	// so the surface stays at u=0 regardless of stacking; a vector ranked below it gets a positive (push
+	// away) offset, above it a negative (pull nearer) one. Absent base relief -> anchor 0 (old behaviour).
+	int surfRank = 0;
+	for (int k = 0; k < n; ++k) if (it[ord[k]].stack == &s->surfStack) { surfRank = k; break; }
+	int topRasterRank = -1;
+	for (int k = 0; k < n; ++k) if (!it[ord[k]].vec) topRasterRank = k;   // ranks == position (sorted), so last raster
 	for (int k = 0; k < n; ++k) {
 		*it[ord[k]].stack = k;                              // 0..n-1 (survives deletes)
-		const double u = -k * step;                         // more negative = nearer camera = drawn on top
-		const double uv = u - step * 0.5;                   // vectors: half-step lift to clear coincident surface
+		const bool   vec = it[ord[k]].vec;
+		const double u   = -(k - surfRank) * step;          // rank ramp; base relief stays at 0 (tonality-safe)
+		// A vector gets its PLAIN rank offset (no half-step): it is then nearer than every raster ranked
+		// below it (drawn on top of them) and farther than every raster ranked above it (occluded by them
+		// through real depth). That is exactly what lets a line sit BETWEEN two grids — visible over grid1,
+		// hidden under grid2. A vector ranked above EVERY raster cannot be lifted over taller terrain by any
+		// offset, so it goes to the depth-cleared OVERLAY layer and is drawn on top purely by render order.
+		const bool onTop = vec && topRasterRank >= 0 && k > topRasterRank;
 		for (vtkActor *a : it[ord[k]].actors) {
-			if (vtkPolyDataMapper *mp = vtkPolyDataMapper::SafeDownCast(a->GetMapper())) {
+			if (vec) setActorTopLayer(s, a, onTop);
+			vtkPolyDataMapper *mp = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
+			if (!mp) continue;
+			if (vec) {
+				mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, u);
+				mp->SetRelativeCoincidentTopologyPointOffsetParameter(u);
+			} else {
 				mp->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, u);
-				if (it[ord[k]].vec) {
-					mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, uv);
-					mp->SetRelativeCoincidentTopologyPointOffsetParameter(uv);
-				}
 			}
 		}
 	}
@@ -698,28 +734,41 @@ static void restackStack(Scene *s, int *stackPtr, int op) {
 	int pos = -1;
 	for (int k = 0; k < n; ++k) if (it[ord[k]].stack == stackPtr) { pos = k; break; }
 	if (pos < 0) return;
+	const bool movingVec = it[ord[pos]].vec;
 	int dest = (op == 0) ? n - 1 : (op == 1) ? 0 : (op == 2) ? std::min(pos + 1, n - 1) : std::max(pos - 1, 0);
+	// RULE 1+3: a RASTER (grid/image) must ALWAYS hold the base (rank 0); a VECTOR may never sit under
+	// the base raster. So floor a moving vector at rank 1 (it can still slide between any rasters above).
+	if (movingVec && dest < 1) dest = 1;
 	if (dest == pos) return;
 	const int moved = ord[pos];
 	ord.erase(ord.begin() + pos);
 	ord.insert(ord.begin() + dest, moved);
+	// SAFETY (RULE 1): if the move stranded a vector at the base, pull the lowest raster back down to
+	// rank 0. A lone raster therefore can never be lifted above a vector — one raster always stays base.
+	if (it[ord[0]].vec) {
+		int r = -1;
+		for (int k = 1; k < n; ++k) if (!it[ord[k]].vec) { r = k; break; }
+		if (r > 0) { const int rr = ord[r]; ord.erase(ord.begin() + r); ord.insert(ord.begin(), rr); }
+	}
 	for (int k = 0; k < n; ++k) *it[ord[k]].stack = k;
 	applyStacking(s);
 }
 
 // Back-compat aliases: grids and vectors now share ONE pile, so both entry points funnel here.
-static void applyGridStacking(Scene* s) { applyStacking(s); }
-static void restackGrid(Scene* s, int* stackPtr, int op) { restackStack(s, stackPtr, op); }
+static void applyGridStacking(Scene *s) { applyStacking(s); }
+static void restackGrid(Scene *s, int *stackPtr, int op) { restackStack(s, stackPtr, op); }
 
 // Append the 4 grid-pile stacking actions to a grid row's menu, wired to *stackPtr. Enabled only when
 // there are 2+ grids (base relief counts) to order against. Shared by the base surface + extra grids.
-static void addGridStackActions(Scene* s, QMenu& m, int* stackPtr) {
+static void addGridStackActions(Scene *s, QMenu &m, int *stackPtr) {
 	const int nGrids = (int)gatherStackItems(s).size();
-	QAction* aTop = m.addAction("Place on top");
-	QAction* aBot = m.addAction("Place at bottom");
-	QAction* aUp  = m.addAction("Stack up");
-	QAction* aDn  = m.addAction("Stack down");
-	for (QAction* a : { aTop, aBot, aUp, aDn }) a->setEnabled(nGrids > 1);
+	QMenu *stackMenu = m.addMenu("Stack order");
+	QAction *aTop = stackMenu->addAction("Place on top");
+	QAction *aBot = stackMenu->addAction("Place at bottom");
+	QAction *aUp  = stackMenu->addAction("Bring forward");
+	QAction *aDn  = stackMenu->addAction("Send backward");
+	stackMenu->setEnabled(nGrids > 1);
+	for (QAction *a : { aTop, aBot, aUp, aDn }) a->setEnabled(nGrids > 1);
 	QObject::connect(aTop, &QAction::triggered, [s, stackPtr]() { restackGrid(s, stackPtr, 0); rebuildSceneObjects(s); });
 	QObject::connect(aBot, &QAction::triggered, [s, stackPtr]() { restackGrid(s, stackPtr, 1); rebuildSceneObjects(s); });
 	QObject::connect(aUp,  &QAction::triggered, [s, stackPtr]() { restackGrid(s, stackPtr, 2); rebuildSceneObjects(s); });
@@ -747,9 +796,9 @@ static void sceneRemoveSurface(Scene *s) {
 	if (s->axesRen) {
 		for (int i = 0; i < 3; ++i)
 			if (s->axTitle[i]) { s->axesRen->RemoveViewProp(s->axTitle[i]); s->axTitle[i] = nullptr; }
-		for (auto& l : s->xlabels) if (l) s->axesRen->RemoveViewProp(l);
-		for (auto& l : s->ylabels) if (l) s->axesRen->RemoveViewProp(l);
-		for (auto& l : s->zlabels) if (l) s->axesRen->RemoveViewProp(l);
+		for (auto &l : s->xlabels) if (l) s->axesRen->RemoveViewProp(l);
+		for (auto &l : s->ylabels) if (l) s->axesRen->RemoveViewProp(l);
+		for (auto &l : s->zlabels) if (l) s->axesRen->RemoveViewProp(l);
 		s->xlabels.clear(); s->ylabels.clear(); s->zlabels.clear();
 	}
 	// Colorbar strip + tick lines + numeric labels
@@ -779,15 +828,15 @@ static void sceneRemoveSurface(Scene *s) {
 }
 
 // Properties menu for the BASE relief surface row: Save, grid-pile stacking, and Remove.
-static void surfaceObjectMenu(Scene* s, const QPoint& gp) {
+static void surfaceObjectMenu(Scene *s, const QPoint& gp) {
 	const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
 	QMenu m(s->widget);
-	QAction* aSave = m.addAction("Save grid…");
+	QAction *aSave = m.addAction("Save grid…");
 	m.addSeparator();
 	addGridStackActions(s, m, &s->surfStack);
 	m.addSeparator();
-	QAction* aRem = m.addAction("Remove");                   // removes surface + colorbar + axes; window stays open
-	QAction* c = m.exec(gp);
+	QAction *aRem = m.addAction("Remove");                   // removes surface + colorbar + axes; window stays open
+	QAction *c = m.exec(gp);
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
 	if (c == aRem) sceneRemoveSurface(s);
@@ -824,8 +873,8 @@ static void rebuildSceneObjects(Scene *s) {
 	if (!s || !s->objPanel)
 		return;
 	// Wipe the previous layout + its checkboxes before rebuilding.
-	if (QLayout* old = s->objPanel->layout()) {
-		QLayoutItem* it;
+	if (QLayout *old = s->objPanel->layout()) {
+		QLayoutItem *it;
 		while ((it = old->takeAt(0)) != nullptr) {
 			if (it->widget())
 				it->widget()->deleteLater();
@@ -878,7 +927,7 @@ static void rebuildSceneObjects(Scene *s) {
 	};
 
 	// Actor-backed rows (show/hide = actor visibility); lr != null adds the line-object menu.
-	auto addRow = [&](const QString& label, vtkProp3D* a, int iconKind, const LineRef* lr = nullptr) {
+	auto addRow = [&](const QString& label, vtkProp3D *a, int iconKind, const LineRef *lr = nullptr) {
 		if (!a)
 			return;
 		std::function<void(const QPoint&)> ctx = nullptr;
@@ -892,17 +941,17 @@ static void rebuildSceneObjects(Scene *s) {
 	// Right-click handler factory for a saveable grid/image row: pops a one-item "Save…" menu that
 	// opens the format-picker dialog for that object (kind = "grid" | "image"; name = the row label,
 	// matched against the Julia object store). kind is a string literal (static lifetime).
-	auto saveCtx = [s](const char* kind, const QString& name) {
+	auto saveCtx = [s](const char *kind, const QString& name) {
 		return [s, kind, name](const QPoint& g) {
 			QMenu m(s->widget);
-			QAction* a = m.addAction(QString("Save %1…").arg(kind));
+			QAction *a = m.addAction(QString("Save %1…").arg(kind));
 			if (m.exec(g) == a) saveObjectDialog(s, kind, name);
 		};
 	};
 
 	// A thin light horizontal rule that separates one grid GROUP from the next.
 	auto addSeparator = [&]() {
-		QFrame* ln = new QFrame(s->objPanel);
+		QFrame *ln = new QFrame(s->objPanel);
 		ln->setFrameShape(QFrame::HLine); ln->setFrameShadow(QFrame::Plain);
 		ln->setStyleSheet("color:#5a5a5a; background:#5a5a5a; max-height:1px; margin:2px 0;");
 		col->addWidget(ln);
@@ -912,7 +961,7 @@ static void rebuildSceneObjects(Scene *s) {
 
 	// This grid's COLORBAR row: per-grid show/hide intent (*flag = &s->surfShowBar or &ex.showBar,
 	// honoured by refreshGridColorbar when the grid is active) + colormap chooser on the label.
-	auto colorbarRow = [&](bool* flag, int gridSel) {
+	auto colorbarRow = [&](bool *flag, int gridSel) {
 		makeRow("Color Bar", IC_ColorBar, *flag,
 		        [s, flag](bool on) { *flag = on; refreshGridColorbar(s); },
 		        [s, gridSel](const QPoint& g) { chooseColormap(s, g, gridSel); },
@@ -952,10 +1001,10 @@ static void rebuildSceneObjects(Scene *s) {
 		        "Right-click for properties (save / delete)",
 		        [s, nm](const QPoint& g) {              // primary image props: Save + Remove
 		            QMenu m(s->widget);
-		            QAction* aSave = m.addAction("Save image…");
+		            QAction *aSave = m.addAction("Save image…");
 		            m.addSeparator();
-		            QAction* aRem  = m.addAction("Remove"); // removes image + axes; window stays open
-		            QAction* c = m.exec(g);
+		            QAction *aRem  = m.addAction("Remove"); // removes image + axes; window stays open
+		            QAction *c = m.exec(g);
 		            if (!c) return;
 		            if (c == aSave) saveObjectDialog(s, "image", nm);
 		            else if (c == aRem) sceneRemoveSurface(s);
@@ -968,7 +1017,7 @@ static void rebuildSceneObjects(Scene *s) {
 		const QString nm = QString::fromStdString(ex.name);
 		groupGap();
 		if (ex.isImage) {                                  // dropped image group
-			vtkProp3D* a = ex.actor.Get();
+			vtkProp3D *a = ex.actor.Get();
 			makeRow(nm, IC_Image, a && a->GetVisibility() != 0,
 			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
 			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
@@ -976,7 +1025,7 @@ static void rebuildSceneObjects(Scene *s) {
 			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); });
 			axesRow();
 		} else {                                           // dropped grid group: surface + colorbar + axes
-			vtkProp3D* a = ex.actor.Get();
+			vtkProp3D *a = ex.actor.Get();
 			makeRow(nm, IC_Surface, a && a->GetVisibility() != 0,
 			        [s, a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },          // SAME function as the primary surface
@@ -997,7 +1046,7 @@ static void rebuildSceneObjects(Scene *s) {
 		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, ov.mode == 1 ? &lr : nullptr);
 	}
 	for (auto& sl : s->symbols) {                        // screen-constant symbol layers (props menu)
-		vtkActor* a = sl.actor.Get();
+		vtkActor *a = sl.actor.Get();
 		makeRow(QString::fromStdString(sl.name), IC_Points, a && a->GetVisibility() != 0,
 		        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
 		        [s, a](const QPoint& g) { symbolLayerMenu(s, a, g); },
@@ -1020,8 +1069,8 @@ static void rebuildSceneObjects(Scene *s) {
 		// Custom row (not addRow) so the filled FACE follows the outline's checkbox; the fill's own
 		// opacity still gates whether anything is actually drawn (opacity 0 = no fill).
 		{
-			vtkActor* la = pg.line.Get();
-			vtkActor* fa = pg.fill.Get();
+			vtkActor *la = pg.line.Get();
+			vtkActor *fa = pg.fill.Get();
 			LineRef ref = lr; QString nm2 = nm;
 			makeRow(nm, ic, la && la->GetVisibility() != 0,
 			        [la, fa](bool on) {
@@ -1034,12 +1083,12 @@ static void rebuildSceneObjects(Scene *s) {
 
 		// The gray surface-PROJECTION patch is its OWN graphical element — its own handle (hide + Remove).
 		if (pg.isFault && pg.faultPlane) {
-			vtkActor* fp = pg.faultPlane.Get();
+			vtkActor *fp = pg.faultPlane.Get();
 			makeRow(QString("%1 — surface projection").arg(nm), IC_Rect, fp->GetVisibility() != 0,
 			        [fp](bool on) { fp->SetVisibility(on ? 1 : 0); },
 			        [s, fp](const QPoint& g) {
 			            QMenu m(s->widget);
-			            QAction* aRem = m.addAction("Remove");
+			            QAction *aRem = m.addAction("Remove");
 			            if (m.exec(g) != aRem) return;
 			            if (s->ren) s->ren->RemoveActor(fp);
 			            for (auto& p : s->polys) if (p.faultPlane.Get() == fp) {
@@ -1057,7 +1106,7 @@ static void rebuildSceneObjects(Scene *s) {
 		if (pg.isFault && pg.faultPlane3D) {
 			// Capture the STABLE actor pointer (vtkSmartPointer keeps the object alive at a fixed
 			// address even if s->polys reallocates); never a raw Polygon* (that dangles on regrow).
-			vtkActor* fp3 = pg.faultPlane3D.Get();
+			vtkActor *fp3 = pg.faultPlane3D.Get();
 			makeRow(QString("%1 — fault plane").arg(nm), IC_Rect, pg.faultPlane3DShown,
 			        [s, fp3](bool on) {
 			            for (auto& p : s->polys) if (p.faultPlane3D.Get() == fp3) {
@@ -1068,7 +1117,7 @@ static void rebuildSceneObjects(Scene *s) {
 			            fp3->SetVisibility((on && !s->flat2d) ? 1 : 0); },
 			        [s, fp3](const QPoint& g) {
 			            QMenu m(s->widget);
-			            QAction* aRem = m.addAction("Remove");
+			            QAction *aRem = m.addAction("Remove");
 			            if (m.exec(g) != aRem) return;
 			            if (s->ren) s->ren->RemoveActor(fp3);
 			            for (auto& p : s->polys) if (p.faultPlane3D.Get() == fp3) {   // null the owning fault's slot
@@ -1084,7 +1133,7 @@ static void rebuildSceneObjects(Scene *s) {
 	}
 	for (auto &tl : s->texts) {                          // user-placed text labels (toggle + right-click menu)
 		if (!tl.actor) continue;
-		vtkTextActor3D* act = tl.actor.Get();
+		vtkTextActor3D *act = tl.actor.Get();
 		makeRow(QString::fromStdString(tl.name), IC_Text, act->GetVisibility() != 0,
 		        [act](bool on) { act->SetVisibility(on ? 1 : 0); },
 		        [s, act](const QPoint& g) { textLabelMenu(s, act, g); },
@@ -1097,9 +1146,9 @@ static void rebuildSceneObjects(Scene *s) {
 	col->addStretch(1);
 }
 
-static void addOverlay(Scene* s, const double* xyz, int npts, const int* segoff, int nseg,
+static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff, int nseg,
 					   int mode, double r, double g, double b, double linewidth, double pointsize,
-					   const char* name = nullptr) {
+					   const char *name = nullptr) {
 	if (!s || !xyz || npts <= 0)
 		return;
 
@@ -1237,12 +1286,12 @@ static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string& sym, bool
 // `sizePx` pixels at any zoom. `vph` = world height spanning the full viewport at the focal plane —
 // the SAME camera math the gizmo uses; worldPerPx = vph / viewportHeightPx. The unit glyph is Ø1, so
 // ScaleFactor = sizePx * worldPerPx. ClientData is the Scene*. (Also callable directly to prime it.)
-static void symbolRescaleCB(vtkObject*, unsigned long, void* clientData, void*) {
-	Scene* s = static_cast<Scene*>(clientData);
+static void symbolRescaleCB(vtkObject*, unsigned long, void *clientData, void*) {
+	Scene *s = static_cast<Scene*>(clientData);
 	if (!s || !s->ren || s->symbols.empty()) return;
-	vtkCamera* cam = s->ren->GetActiveCamera();
+	vtkCamera *cam = s->ren->GetActiveCamera();
 	if (!cam) return;
-	const int* sz = s->ren->GetSize();
+	const int *sz = s->ren->GetSize();
 	const double Hpx = (sz && sz[1] > 0) ? (double)sz[1] : 600.0;   // DEVICE px (matches WorldToDisplay)
 	double vph;
 	if (cam->GetParallelProjection())
@@ -1265,17 +1314,17 @@ static void symbolRescaleCB(vtkObject*, unsigned long, void* clientData, void*) 
 // where elements overlap, including a vector versus the grid it sits on. These thin wrappers keep
 // the historical call sites working; they funnel into the one pile. polyHandles ride a much-more-
 // negative constant offset (85_polygon.cpp) so edit handles stay visible above any pile rank.
-static void applyVectorStacking(Scene* s) { applyStacking(s); }
-static void restackVector(Scene* s, int* stackPtr, int op) { restackStack(s, stackPtr, op); }
+static void applyVectorStacking(Scene *s) { applyStacking(s); }
+static void restackVector(Scene *s, int *stackPtr, int op) { restackStack(s, stackPtr, op); }
 
 // Stamp N glyphs of one GMT symbol code at N (x,y,z) points (TRUE coords). Screen-constant size:
 // x is pre-baked with xfac so the glyph is NOT x-stretched; the actor carries only the z scale so
 // symbols ride VE. The per-frame observer (installed once) keeps `sizePx` literal at any zoom.
-static int addSymbols(Scene* s, const double* xyz, int npts, const std::string& sym,
+static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& sym,
                       double sizePx, int filled,
                       double fr, double fg, double fb,
                       double er, double eg, double eb, double edgeWidth,
-                      const std::string& name, const char* info = nullptr) {
+                      const std::string& name, const char *info = nullptr) {
 	if (!s || !xyz || npts <= 0) return 0;
 
 	vtkNew<vtkPoints> pts; pts->SetDataTypeToDouble(); pts->Allocate(npts);
@@ -1378,8 +1427,8 @@ static int addSymbols(Scene* s, const double* xyz, int npts, const std::string& 
 // Right-click / left-click properties for a symbol layer row: change shape, fill + edge colour,
 // on-screen size and edge width, or delete the layer. Edits the SymbolLayer + its actor/glyph in
 // place (no re-upload of points); size goes through the per-frame rescaler so it stays literal px.
-static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
-	SymbolLayer* sl = nullptr;
+static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
+	SymbolLayer *sl = nullptr;
 	for (auto& x : s->symbols) if (x.actor.Get() == act) { sl = &x; break; }
 	if (!sl) return;
 	auto reRender = [&] { if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render(); };
@@ -1389,14 +1438,14 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 	// direct scalars. For a plain source (no outline lines) it restores ordinary actor colouring +
 	// EdgeVisibility. Call after any shape / fill / edge change so those menu edits keep working.
 	auto applyCellColours = [&] {
-		vtkPolyData* src = vtkPolyData::SafeDownCast(sl->glyph->GetSource());
-		vtkPolyDataMapper* mp = vtkPolyDataMapper::SafeDownCast(sl->actor->GetMapper());
+		vtkPolyData *src = vtkPolyData::SafeDownCast(sl->glyph->GetSource());
+		vtkPolyDataMapper *mp = vtkPolyDataMapper::SafeDownCast(sl->actor->GetMapper());
 		if (!src || !mp) return;
 		const vtkIdType nL = src->GetNumberOfLines(), nP = src->GetNumberOfPolys();
 		if (nL > 0 && nP > 0) {                       // cell-coloured (star)
 			auto to255 = [](double c) { return (unsigned char)(c < 0 ? 0 : c > 1 ? 255 : c * 255.0 + 0.5); };
-			double* fc = sl->actor->GetProperty()->GetColor();
-			double* ec = sl->actor->GetProperty()->GetEdgeColor();
+			double *fc = sl->actor->GetProperty()->GetColor();
+			double *ec = sl->actor->GetProperty()->GetEdgeColor();
 			unsigned char cf[3] = { to255(fc[0]), to255(fc[1]), to255(fc[2]) };
 			unsigned char ce[3] = { to255(ec[0]), to255(ec[1]), to255(ec[2]) };
 			vtkNew<vtkUnsignedCharArray> arr; arr->SetNumberOfComponents(3); arr->SetNumberOfTuples(nL + nP);
@@ -1419,7 +1468,7 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 	// Tide-station layers get two download entries at the TOP of the menu. They hand the star under
 	// the cursor (reuse the hover picker to grab its Name/Code/Country block) to Julia, which opens
 	// the Mareg download window in the requested mode. Only shown when a tides callback is registered.
-	QAction* dl2 = nullptr; QAction* dlCal = nullptr; std::string station;
+	QAction *dl2 = nullptr; QAction *dlCal = nullptr; std::string station;
 	if (sl->name == "Tide Stations" && g_juliaTides && s->widget && s->widget->renderWindow()) {
 		const QPoint lp = s->widget->mapFromGlobal(gp);
 		const double r  = s->widget->devicePixelRatioF();
@@ -1429,34 +1478,36 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 		dlCal = m.addAction("Download Mareg (Calendar)");
 		m.addSeparator();
 	}
-	QMenu* tm = m.addMenu("Symbol");
+	QMenu *tm = m.addMenu("Symbol");
 	static const std::pair<const char*, const char*> KINDS[] = {
 		{"Circle","c"}, {"Square","s"}, {"Triangle","t"}, {"Inverted triangle","i"},
 		{"Diamond","d"}, {"Hexagon","h"}, {"Pentagon","n"}, {"Octagon","g"},
 		{"Star","a"}, {"Cross","x"}, {"Plus","+"}, {"Dash","-"} };
 	std::vector<QAction*> kindActs;
 	for (const auto& k : KINDS) {
-		QAction* a = tm->addAction(k.first); a->setCheckable(true); a->setChecked(sl->sym == k.second);
+		QAction *a = tm->addAction(k.first); a->setCheckable(true); a->setChecked(sl->sym == k.second);
 		kindActs.push_back(a);
 	}
-	QAction* fillA = m.addAction("Fill colour…");
-	QAction* edgeA = m.addAction("Edge colour…");
-	QAction* sizeA = m.addAction("Size (px)…");
-	QAction* sizePtA = m.addAction("Size (points)…");
-	QAction* ewA   = m.addAction("Edge width (px)…");
+	QAction *fillA = m.addAction("Fill colour…");
+	QAction *edgeA = m.addAction("Edge colour…");
+	QAction *sizeA = m.addAction("Size (px)…");
+	QAction *sizePtA = m.addAction("Size (points)…");
+	QAction *ewA   = m.addAction("Edge width (px)…");
 	m.addSeparator();
 	// Draw-order stacking in the SHARED vector pile (overlays + symbols + polygons): controls who
 	// draws on top where vector elements overlap; they stay on the relief (no z lift). Enabled once
 	// there are 2+ vector elements of ANY type to order against.
-	QAction* topA = m.addAction("Place on top");
-	QAction* botA = m.addAction("Place at bottom");
-	QAction* upA  = m.addAction("Stack up");
-	QAction* dnA  = m.addAction("Stack down");
+	QMenu *stackMenu = m.addMenu("Stack order");
+	QAction *topA = stackMenu->addAction("Place on top");
+	QAction *botA = stackMenu->addAction("Place at bottom");
+	QAction *upA  = stackMenu->addAction("Bring forward");
+	QAction *dnA  = stackMenu->addAction("Send backward");
 	const size_t nVec = s->overlays.size() + s->symbols.size() + s->polys.size();
-	for (QAction* a : { topA, botA, upA, dnA }) a->setEnabled(nVec > 1);
+	stackMenu->setEnabled(nVec > 1);
+	for (QAction *a : { topA, botA, upA, dnA }) a->setEnabled(nVec > 1);
 	m.addSeparator();
-	QAction* delA  = m.addAction("Remove");
-	QAction* ch = m.exec(gp);
+	QAction *delA  = m.addAction("Remove");
+	QAction *ch = m.exec(gp);
 	if (!ch) return;
 
 	if (ch == dl2)   { g_juliaTides(s, "2days",    station.c_str()); return; }
@@ -1470,10 +1521,10 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 		const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
 		QDialog dlg(s->widget);
 		dlg.setWindowTitle("Download Mareg — date range (UTC)");
-		QFormLayout* fl = new QFormLayout(&dlg);
-		QDateTimeEdit* eStart = new QDateTimeEdit(nowUtc.addDays(-2), &dlg);
-		QDateTimeEdit* eEnd   = new QDateTimeEdit(nowUtc, &dlg);
-		for (QDateTimeEdit* e : { eStart, eEnd }) {
+		QFormLayout *fl = new QFormLayout(&dlg);
+		QDateTimeEdit *eStart = new QDateTimeEdit(nowUtc.addDays(-2), &dlg);
+		QDateTimeEdit *eEnd   = new QDateTimeEdit(nowUtc, &dlg);
+		for (QDateTimeEdit *e : { eStart, eEnd }) {
 			e->setDisplayFormat("yyyy-MM-dd HH:mm");
 			e->setCalendarPopup(true);
 			e->setTimeSpec(Qt::UTC);
@@ -1481,7 +1532,7 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 		}
 		fl->addRow("Start:", eStart);
 		fl->addRow("End:",   eEnd);
-		QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+		QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
 		fl->addRow(bb);
 		QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
 		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
@@ -1507,24 +1558,24 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 		reRender(); return;
 	}
 	if (ch == fillA) {
-		double* c = sl->actor->GetProperty()->GetColor();
+		double *c = sl->actor->GetProperty()->GetColor();
 		QColor q = QColorDialog::getColor(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)), s->widget, "Fill colour");
 		if (q.isValid()) { sl->actor->GetProperty()->SetColor(q.redF(), q.greenF(), q.blueF()); applyCellColours(); reRender(); }
 		return;
 	}
 	if (ch == edgeA) {
-		double* c = sl->actor->GetProperty()->GetEdgeColor();
+		double *c = sl->actor->GetProperty()->GetEdgeColor();
 		QColor q = QColorDialog::getColor(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)), s->widget, "Edge colour");
 		if (q.isValid()) { sl->actor->GetProperty()->SetEdgeColor(q.redF(), q.greenF(), q.blueF()); applyCellColours(); reRender(); }
 		return;
 	}
 	// Size dialogs: a live QDoubleSpinBox so the glyph resizes AS the value changes (not on OK).
 	// px and points share one helper; pxPerUnit converts the spinbox unit to sl->sizePx (1 pt = 96/72 px).
-	auto liveSizeDialog = [&](const char* unitLabel, double pxPerUnit, double lo, double hi) {
+	auto liveSizeDialog = [&](const char *unitLabel, double pxPerUnit, double lo, double hi) {
 		QDialog dlg(s->widget);
 		dlg.setWindowTitle("Symbol size");
-		QFormLayout* form = new QFormLayout(&dlg);
-		QDoubleSpinBox* box = new QDoubleSpinBox(&dlg);
+		QFormLayout *form = new QFormLayout(&dlg);
+		QDoubleSpinBox *box = new QDoubleSpinBox(&dlg);
 		box->setRange(lo, hi); box->setSingleStep(1.0); box->setDecimals(1);
 		box->setValue(sl->sizePx / pxPerUnit);
 		QObject::connect(box, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, sl, pxPerUnit](double v) {
@@ -1533,7 +1584,7 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		});
 		form->addRow(QString("Size (%1)").arg(unitLabel), box);
-		QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+		QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
 		QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
 		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
 		form->addRow(bb);
@@ -1558,7 +1609,8 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 	}
 	if (ch == delA) {
 		for (size_t i = 0; i < s->symbols.size(); ++i) if (s->symbols[i].actor.Get() == act) {
-			if (s->ren) s->ren->RemoveActor(act);
+			if (s->ren)     s->ren->RemoveActor(act);
+			if (s->axesRen) s->axesRen->RemoveActor(act);   // may have been parked on the overlay layer
 			s->symbols.erase(s->symbols.begin() + i);
 			break;
 		}
@@ -1577,7 +1629,7 @@ static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp) {
 // flat top at zmax. img is row-major, row 0 = BOTTOM of the picture, w*h pixels of `comps`
 // each. Shares the surface's scale so the wall rises/falls with the relief under VE.
 // Texture from a raw RGB[A] buffer (row 0 = BOTTOM of the picture, VTK texture origin).
-static vtkSmartPointer<vtkTexture> makeBufferTexture(const unsigned char* img, int w, int h, int comps) {
+static vtkSmartPointer<vtkTexture> makeBufferTexture(const unsigned char *img, int w, int h, int comps) {
 	if (!img || w <= 0 || h <= 0 || comps <= 0)
 		return nullptr;
 	vtkNew<vtkImageData> tex_img;
@@ -1594,7 +1646,7 @@ static vtkSmartPointer<vtkTexture> makeBufferTexture(const unsigned char* img, i
 // layout ambiguity. VTK image readers already place the picture's first (top) scanline at
 // the bottom of the texture image, which matches our tcoord convention (v=1 at the wall
 // top shows the picture top), so NO Y-flip is applied. Use flipv at the call site to invert.
-static vtkSmartPointer<vtkTexture> makeFileTexture(const char* path) {
+static vtkSmartPointer<vtkTexture> makeFileTexture(const char *path) {
 	if (!path || !*path)
 		return nullptr;
 	vtkSmartPointer<vtkImageReader2> reader;
@@ -1609,8 +1661,8 @@ static vtkSmartPointer<vtkTexture> makeFileTexture(const char* path) {
 	return tex;
 }
 
-static void addCurtain(Scene* s, const double* px, const double* py, const double* u, int n,
-					   const double* topz, vtkSmartPointer<vtkTexture> tex,
+static void addCurtain(Scene *s, const double *px, const double *py, const double *u, int n,
+					   const double *topz, vtkSmartPointer<vtkTexture> tex,
 					   double zmin, double zmax, int flipv) {
 	if (!s || !px || !py || n < 2 || !tex || zmax <= zmin)
 		return;
@@ -1671,7 +1723,7 @@ static vtkSmartPointer<vtkTexture> makeStripeTex(double onFrac, double r, double
 	vtkNew<vtkImageData> img;
 	img->SetDimensions(W, 1, 1);
 	img->AllocateScalars(VTK_UNSIGNED_CHAR, 4);
-	unsigned char* p = static_cast<unsigned char*>(img->GetScalarPointer());
+	unsigned char *p = static_cast<unsigned char*>(img->GetScalarPointer());
 	const unsigned char cr = (unsigned char)std::lround(255.0 * r);
 	const unsigned char cg = (unsigned char)std::lround(255.0 * g);
 	const unsigned char cb = (unsigned char)std::lround(255.0 * b);
@@ -1702,9 +1754,9 @@ static vtkSmartPointer<vtkTexture> makeStripeTex(double onFrac, double r, double
 // `period` is a FIXED world length = one dash+gap, so the pattern repeats every `period` along
 // EVERY polyline independently (a coastline's short island segments still get real dots — the
 // old total-length normalization gave each short polyline < 1 repeat -> a solid blob).
-static void setStippleTCoords(vtkPolyData* pd, const double sc[3], double period) {
-	vtkPoints*    sp = pd->GetPoints();
-	vtkCellArray* sl = pd->GetLines();
+static void setStippleTCoords(vtkPolyData *pd, const double sc[3], double period) {
+	vtkPoints *sp = pd->GetPoints();
+	vtkCellArray *sl = pd->GetLines();
 	if (!sp || !sl || !(period > 0.0)) return;
 	const vtkIdType np = sp->GetNumberOfPoints();
 	vtkNew<vtkFloatArray> tc; tc->SetNumberOfComponents(2); tc->SetNumberOfTuples(np);
@@ -1735,11 +1787,11 @@ static void setStippleTCoords(vtkPolyData* pd, const double sc[3], double period
 // TEXTURE on the unchanged line geometry (one cell), so it is cheap and crash-proof regardless
 // of how densely the line is sampled. The texture carries the current colour, so a colour edit
 // re-runs this. `style` is remembered on the Overlay so the colour action can rebuild.
-static void applyLineStyle(Scene* s, vtkActor* a, int style) {
-	Overlay* ov = nullptr;
+static void applyLineStyle(Scene *s, vtkActor *a, int style) {
+	Overlay *ov = nullptr;
 	for (auto& o : s->overlays) if (o.actor.Get() == a) { ov = &o; break; }
 	if (!ov || !ov->baseLine) return;
-	vtkPolyDataMapper* m = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
+	vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
 	if (!m) return;
 	ov->lineStyle = style;
 	m->SetInputData(ov->baseLine);              // geometry never changes
@@ -1773,7 +1825,7 @@ static void applyLineStyle(Scene* s, vtkActor* a, int style) {
 // Per-element context menu for an overlay (lines: colour / width / style / tubes; points:
 // colour / size / round). Pops on a left- OR right-click that lands on the element; no
 // visual selection state, just the menu.
-static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& globalPos) {
+static void popupOverlayMenu(Scene *s, vtkActor *a, int mode, const QPoint& globalPos) {
 	if (!s || !a) return;
 	if (mode == 1) {                         // lines -> the shared Line Properties tool
 		QString nm = "Line";
@@ -1781,7 +1833,7 @@ static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& glob
 		popupLineObjectMenu(s, LineRef{ LK_Overlay, a }, nm, globalPos);
 		return;
 	}
-	QWidget* win = s->win;
+	QWidget *win = s->win;
 	QMenu m(win);
 	m.addAction("Overlay color…", [=]() {
 		double c[3]; a->GetProperty()->GetColor(c);
@@ -1789,7 +1841,7 @@ static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& glob
 		QColor q = QColorDialog::getColor(init, win, "Overlay color");
 		if (q.isValid()) {
 			a->GetProperty()->SetColor(q.redF(), q.greenF(), q.blueF());
-			Overlay* ov = nullptr;                       // a dashed/dotted line carries its colour in
+			Overlay *ov = nullptr;                       // a dashed/dotted line carries its colour in
 			for (auto& o : s->overlays) if (o.actor.Get() == a) { ov = &o; break; }   // the stipple
 			if (ov && ov->lineStyle != 0) applyLineStyle(s, a, ov->lineStyle);         // texture -> rebuild
 			else s->widget->renderWindow()->Render();
@@ -1805,11 +1857,11 @@ static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& glob
 				s->widget->renderWindow()->Render();
 			}
 		});
-		QMenu* st = m.addMenu("Line style");
+		QMenu *st = m.addMenu("Line style");
 		st->addAction("Solid",  [=]() { applyLineStyle(s, a, 0); });
 		st->addAction("Dashed", [=]() { applyLineStyle(s, a, 1); });
 		st->addAction("Dotted", [=]() { applyLineStyle(s, a, 2); });
-		QAction* tu = m.addAction("Render as tubes", [=]() {
+		QAction *tu = m.addAction("Render as tubes", [=]() {
 			const bool on = !a->GetProperty()->GetRenderLinesAsTubes();
 			a->GetProperty()->SetRenderLinesAsTubes(on);
 			if (on) {                            // tube = shaded round cross-section: need lighting,
@@ -1830,8 +1882,8 @@ static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& glob
 		m.addAction("Point size…", [=]() {           // live spinbox (mirror the Line Properties dialog)
 			QDialog dlg(win);
 			dlg.setWindowTitle("Point size");
-			QFormLayout* form = new QFormLayout(&dlg);
-			QDoubleSpinBox* szBox = new QDoubleSpinBox(&dlg);
+			QFormLayout *form = new QFormLayout(&dlg);
+			QDoubleSpinBox *szBox = new QDoubleSpinBox(&dlg);
 			szBox->setRange(1.0, 60.0); szBox->setSingleStep(1.0); szBox->setDecimals(1);
 			szBox->setValue(a->GetProperty()->GetPointSize());
 			QObject::connect(szBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, a](double sz) {
@@ -1839,13 +1891,13 @@ static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& glob
 				if (s->widget) s->widget->renderWindow()->Render();   // apply as the value changes
 			});
 			form->addRow("Size (px)", szBox);
-			QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+			QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
 			QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
 			QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
 			form->addRow(bb);
 			dlg.exec();
 		});
-		QAction* rp = m.addAction("Round points", [=]() {
+		QAction *rp = m.addAction("Round points", [=]() {
 			a->GetProperty()->SetRenderPointsAsSpheres(!a->GetProperty()->GetRenderPointsAsSpheres());
 			s->widget->renderWindow()->Render();
 		});
@@ -1862,10 +1914,11 @@ static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& glob
 // Delete an overlay line/point element (coastlines, boundaries, rivers, imported xy) by its actor:
 // drop the actor, erase the record, restack and rebuild the Scene Objects list. The TWIN of
 // polygonDelete — overlays hide via the Scene Objects checkbox and DELETE via the unified line menu.
-static void overlayDelete(Scene* s, vtkActor* a) {
+static void overlayDelete(Scene *s, vtkActor *a) {
 	for (int i = 0; i < (int)s->overlays.size(); ++i) {
 		if (s->overlays[i].actor.Get() != a) continue;
-		if (s->ren && s->overlays[i].actor) s->ren->RemoveActor(s->overlays[i].actor);
+		if (s->ren && s->overlays[i].actor)     s->ren->RemoveActor(s->overlays[i].actor);
+		if (s->axesRen && s->overlays[i].actor) s->axesRen->RemoveActor(s->overlays[i].actor);  // overlay layer
 		s->overlays.erase(s->overlays.begin() + i);
 		break;
 	}
@@ -1876,7 +1929,7 @@ static void overlayDelete(Scene* s, vtkActor* a) {
 
 // Right-click menu for the profile track line. The property entries now live in the shared Line
 // Properties tool (55_lineprops.cpp); this just routes the profile line to the unified menu.
-static void popupProfileMenu(Scene* s, const QPoint& globalPos) {
+static void popupProfileMenu(Scene *s, const QPoint& globalPos) {
 	if (!s || !s->profLine) return;
 	popupLineObjectMenu(s, LineRef{ LK_Profile, s->profLine }, "Profile", globalPos);
 }

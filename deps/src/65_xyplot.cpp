@@ -81,7 +81,7 @@ struct XYPlot {
 	bool                                tabBusy = false;       // guard QTabBar::currentChanged storms
 };
 
-// Live X,Y windows, keyed by the XYPlot* handed back to the host. A handle is
+// Live X,Y windows, keyed by the XYPlot *handed back to the host. A handle is
 // valid only while its window is open (the destroyed-lambda erases it).
 static std::unordered_set<XYPlot*> g_xyplots;
 static bool xyAlive(XYPlot *p) { return p && g_xyplots.count(p) != 0; }
@@ -1524,8 +1524,8 @@ static XYPlot *buildXYPlot(const char *title) {
 
 // Open a BLANK X,Y plot window from the host UI (3-D viewer's Tools > X,Y plot) and let Julia
 // register a mirror for it (so its File/Analysis menus work). Returns the new window.
-static XYPlot* xyOpenBlankFromHost() {
-	XYPlot* p = buildXYPlot(nullptr);
+static XYPlot *xyOpenBlankFromHost() {
+	XYPlot *p = buildXYPlot(nullptr);
 	if (p && g_juliaXYNew)
 		g_juliaXYNew(p);
 	return p;
@@ -1534,11 +1534,11 @@ static XYPlot* xyOpenBlankFromHost() {
 // Open a standalone X,Y plot window pre-loaded with one (x,y) series. Called by the 3-D viewer's
 // Profile panel ("Open in X,Y plot tool") so a Ctrl-drag elevation profile — or a downloaded tide
 // series — lands in the full plotter. Returns the new window (null on <2 points / mismatch).
-static XYPlot* openSeriesInXYTool(const std::vector<double>& x, const std::vector<double>& y,
-                                  const char* title, const char* xlabel, const char* ylabel) {
+static XYPlot *openSeriesInXYTool(const std::vector<double>& x, const std::vector<double>& y,
+                                  const char *title, const char *xlabel, const char *ylabel) {
 	if (x.size() < 2 || y.size() != x.size())
 		return nullptr;
-	XYPlot* p = buildXYPlot(title);
+	XYPlot *p = buildXYPlot(title);
 	if (!p)
 		return nullptr;
 	if (xlabel && xlabel[0]) xyCur(p).chart->GetAxis(vtkAxis::BOTTOM)->SetTitle(xlabel);

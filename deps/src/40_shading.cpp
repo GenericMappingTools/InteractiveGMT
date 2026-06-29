@@ -5,7 +5,7 @@ static vtkSmartPointer<vtkTexture> makeSkyEnv(double gain = 1.0) {
 	vtkNew<vtkImageData> sky;
 	sky->SetDimensions(W, H, 1);
 	sky->AllocateScalars(VTK_FLOAT, 3);
-	float* px = static_cast<float*>(sky->GetScalarPointer());
+	float *px = static_cast<float*>(sky->GetScalarPointer());
 	for (int y = 0; y < H; ++y) {
 		double v = double(y) / (H - 1);          // 0 top .. 1 bottom
 		double up = 1.0 - v;                      // 0 horizon-ish .. 1 zenith
@@ -160,7 +160,7 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 // style toggles. Shared by applyShading (all actors) and ensureNodeActor (each new LOD tile),
 // so a tile built mid-flight matches the rest.
 static void applySurfStyle(Scene *s, vtkActor *a) {
-	vtkProperty* prop = a->GetProperty();
+	vtkProperty *prop = a->GetProperty();
 	if (s->useHillshade) {
 		// Baked shade IS the shading -> render UNLIT (flat ambient) so colours show verbatim.
 		prop->SetInterpolationToFlat();
@@ -187,7 +187,7 @@ static void applySurfStyle(Scene *s, vtkActor *a) {
 
 // (Re)assemble the post-process pass chain from the Scene's toggles, then apply
 // the live material/light values. Called at setup and from the Shading dock.
-static void applyShading(Scene* s) {
+static void applyShading(Scene *s) {
 	// material — PBR on the RELIEF SURFACE ONLY. The drape is a textured picture and MUST
 	// stay Phong: VTK's PBR shader samples only SetBaseColorTexture, so a PBR drape ignores
 	// its SetTexture and renders flat grey. Do NOT touch s->drape's material here.
@@ -196,7 +196,7 @@ static void applyShading(Scene* s) {
 	// facets — the "grey top row"); useHillshade renders UNLIT with baked CPT*shade colours; else
 	// PBR. applySurfStyle runs at setup AND on every shading slider, so it must re-assert the
 	// material each call or a slider would re-clobber it.
-	for (vtkActor* a : surfActors(s))     // all tiles (tiled grid) or the single surface
+	for (vtkActor *a : surfActors(s))     // all tiles (tiled grid) or the single surface
 		applySurfStyle(s, a);
 	// Dropped GRID surfaces (extras) are shaded too, so the Shading dock controls them like the
 	// primary relief — each hillshades with its own CPT (hillshadeMapper prefers the actor's LUT).

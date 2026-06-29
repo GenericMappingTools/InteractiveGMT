@@ -14,7 +14,7 @@
 enum class Grab { None, VScale, Tilt, Azimuth, Free, Profile };
 
 struct Gizmo {
-	Scene* s = nullptr;
+	Scene *s = nullptr;
 
 	// drawing
 	vtkSmartPointer<vtkActor> shaft, vcone, shaftH, harrow, ring;
@@ -99,7 +99,7 @@ void fitSnapView(Scene *s, bool topMode, double fill = -1.0) {
 	// fill fraction (e.g. a referenced image wants a margin so its lon/lat axes stay visible).
 	const double targetFill = (fill > 0.0) ? fill : (topMode ? 1.0 : 0.88);
 	for (int pass = 0; pass < 2; ++pass) {
-		vtkMatrix4x4* M = cam->GetCompositeProjectionTransformMatrix(aspect, -1.0, 1.0);
+		vtkMatrix4x4 *M = cam->GetCompositeProjectionTransformMatrix(aspect, -1.0, 1.0);
 		double nx0=1e300, nx1=-1e300, ny0=1e300, ny1=-1e300;
 		for (double cx : { b[0], b[1] })
 			for (double cy : { b[2], b[3] })
@@ -119,7 +119,7 @@ void fitSnapView(Scene *s, bool topMode, double fill = -1.0) {
 	ren->ResetCameraClippingRange();
 }
 
-vtkSmartPointer<vtkActor> makeActor(vtkPolyDataAlgorithm* src, double r, double gc, double b) {
+vtkSmartPointer<vtkActor> makeActor(vtkPolyDataAlgorithm *src, double r, double gc, double b) {
 	vtkNew<vtkPolyDataMapper> m;
 	m->SetInputConnection(src->GetOutputPort());
 	// Draw the gizmo ON TOP of the surface via a large negative depth offset.
@@ -132,14 +132,14 @@ vtkSmartPointer<vtkActor> makeActor(vtkPolyDataAlgorithm* src, double r, double 
 	a->GetProperty()->LightingOff();
 	return a;
 }
-void litLook(vtkActor* a) {
+void litLook(vtkActor *a) {
 	a->GetProperty()->LightingOn();
 	a->GetProperty()->SetAmbient(0.6);
 	a->GetProperty()->SetDiffuse(0.5);
 	a->GetProperty()->SetSpecular(0.12);
 	a->GetProperty()->SetSpecularPower(15.0);
 }
-void ringLook(vtkActor* a) { a->GetProperty()->SetColor(0.50,0.50,0.50); litLook(a); }
+void ringLook(vtkActor *a) { a->GetProperty()->SetColor(0.50,0.50,0.50); litLook(a); }
 
 void updateVCone(Gizmo& c) {
 	if (!c.vconeSrc) return;
@@ -167,9 +167,9 @@ bool normalize3(double v[3]) {
 // Place the gizmo. Vertical parts are world-aligned (+Z up); the horizontal axis is
 // oriented along the camera screen-right vector so it stays left-right in the window.
 void placeAll(Gizmo& c) {
-	const double* p = c.centre;
+	const double *p = c.centre;
 	const double s = c.scale;
-	for (vtkActor* a : { c.shaft.Get(), c.vcone.Get(), c.ring.Get() }) {
+	for (vtkActor *a : { c.shaft.Get(), c.vcone.Get(), c.ring.Get() }) {
 		if (a) { a->SetUserMatrix(nullptr); a->SetScale(s); a->SetPosition(p[0],p[1],p[2]); }
 	}
 	double X[3] = { c.right[0], c.right[1], c.right[2] };
@@ -227,11 +227,11 @@ void placeAll(Gizmo& c) {
 }
 
 // StartEvent on the renderer: follow the focal point, size from camera distance.
-void PlaceCB(vtkObject* caller, unsigned long, void* clientData, void*) {
-	Gizmo* c = static_cast<Gizmo*>(clientData);
-	vtkRenderer* ren = vtkRenderer::SafeDownCast(caller);
+void PlaceCB(vtkObject *caller, unsigned long, void *clientData, void*) {
+	Gizmo *c = static_cast<Gizmo*>(clientData);
+	vtkRenderer *ren = vtkRenderer::SafeDownCast(caller);
 	if (!c || !ren || !ren->GetActiveCamera()) return;
-	vtkCamera* cam = ren->GetActiveCamera();
+	vtkCamera *cam = ren->GetActiveCamera();
 	cam->GetFocalPoint(c->centre);
 	double d = cam->GetDistance();
 	// FIXED SCREEN SIZE: size the gizmo from the world extent that spans the full viewport HEIGHT at
@@ -273,14 +273,14 @@ void PlaceCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	// Displayed camera azimuth = compass bearing of the view direction (focal - position),
 	// projected onto the world XY plane. Convention: 0deg = +Y (north), 90deg = +X (east),
 	// clockwise, range 0..360. Same as GMT azimuth (deg CW from north). NB: this is the
-	// camera HEADING readout; the azimuth *gesture* rotates about world +Z (see RotateZ below).
+	// camera HEADING readout; the azimuth *gesture *rotates about world +Z (see RotateZ below).
 	double az = std::atan2(foc[0]-pos[0], foc[1]-pos[1]) * 180.0 / vtkMath::Pi();
 	if (az < 0.0) az += 360.0;
 	c->azimuth = az;
 	placeAll(*c);
 }
 
-void worldToDisplay(vtkRenderer* ren, double wx, double wy, double wz, double out[2]) {
+void worldToDisplay(vtkRenderer *ren, double wx, double wy, double wz, double out[2]) {
 	ren->SetWorldPoint(wx, wy, wz, 1.0);
 	ren->WorldToDisplay();
 	double d[3]; ren->GetDisplayPoint(d); out[0]=d[0]; out[1]=d[1];
@@ -300,9 +300,9 @@ double distToSeg(double px, double py, const double a[2], const double b[2]) {
 }
 
 // Screen-space hit-test of the click against the handles.
-Grab hitTest(Gizmo& c, vtkRenderer* ren, int x, int y) {
+Grab hitTest(Gizmo& c, vtkRenderer *ren, int x, int y) {
 	if (!ren) return Grab::None;
-	const double* p = c.centre;
+	const double *p = c.centre;
 	const double s = c.scale;
 	const double coneH = kConeH0 * std::clamp(c.curSz / c.veBase, 0.15, 8.0);
 
@@ -337,12 +337,12 @@ Grab hitTest(Gizmo& c, vtkRenderer* ren, int x, int y) {
 	return Grab::None;
 }
 
-void DragCB(vtkObject* caller, unsigned long eid, void* clientData, void*) {
-	Gizmo* c = static_cast<Gizmo*>(clientData);
-	vtkRenderWindowInteractor* rwi = vtkRenderWindowInteractor::SafeDownCast(caller);
+void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
+	Gizmo *c = static_cast<Gizmo*>(clientData);
+	vtkRenderWindowInteractor *rwi = vtkRenderWindowInteractor::SafeDownCast(caller);
 	if (!c || !rwi) return;
-	vtkRenderer* ren = c->s->ren;
-	vtkCamera* cam = (ren && ren->GetActiveCamera()) ? ren->GetActiveCamera() : nullptr;
+	vtkRenderer *ren = c->s->ren;
+	vtkCamera *cam = (ren && ren->GetActiveCamera()) ? ren->GetActiveCamera() : nullptr;
 	bool handled = false;
 
 	// The polygon tool / text label / colorbar own the left button while one of them is being
@@ -369,11 +369,11 @@ void DragCB(vtkObject* caller, unsigned long eid, void* clientData, void*) {
 			c->grab = c->s->flat2d ? Grab::None : hitTest(*c, ren, x, y);   // 2D map: gizmo handles off
 			if (c->grab == Grab::VScale) { c->startY = y; c->startSz = c->curSz; }
 			else if (c->grab == Grab::None) {     // gizmo miss: try an overlay, else rotate/tilt
-				vtkActor* sym = pickSymbolAt(c->s, x, y);   // symbols sit on top -> first
+				vtkActor *sym = pickSymbolAt(c->s, x, y);   // symbols sit on top -> first
 				int ovMode = 1;
-				vtkActor* ov = sym ? nullptr : pickOverlayAt(c->s, x, y, ovMode);
+				vtkActor *ov = sym ? nullptr : pickOverlayAt(c->s, x, y, ovMode);
 				if (sym) {                         // left-click ON a symbol layer -> its menu (deferred)
-					Scene* scS = c->s;
+					Scene *scS = c->s;
 					const double dprS = scS->widget->devicePixelRatioF();
 					const int    HpxS = scS->widget->renderWindow()->GetSize()[1];
 					QPoint gpS = scS->widget->mapToGlobal(QPoint(int(x / dprS), int((HpxS - y) / dprS)));
@@ -384,7 +384,7 @@ void DragCB(vtkObject* caller, unsigned long eid, void* clientData, void*) {
 					// Pop its context menu DEFERRED: a modal QMenu must not run inside this VTK
 					// press callback (reentrant event loop). singleShot(0) fires it next loop turn,
 					// after press/release. VTK display (bottom-up device px) -> Qt global (top-down).
-					Scene* sc = c->s;
+					Scene *sc = c->s;
 					const double dpr = sc->widget->devicePixelRatioF();
 					const int    Hpx = sc->widget->renderWindow()->GetSize()[1];
 					QPoint gp = sc->widget->mapToGlobal(QPoint(int(x / dpr), int((Hpx - y) / dpr)));
@@ -482,20 +482,20 @@ void DragCB(vtkObject* caller, unsigned long eid, void* clientData, void*) {
 }
 
 void setGizmoVisible(Gizmo& c, bool on) {
-	for (vtkProp* a : { (vtkProp*)c.shaft.Get(), (vtkProp*)c.shaftH.Get(),
+	for (vtkProp *a : { (vtkProp*)c.shaft.Get(), (vtkProp*)c.shaftH.Get(),
 						(vtkProp*)c.vcone.Get(), (vtkProp*)c.harrow.Get(), (vtkProp*)c.ring.Get() })
 		if (a) a->SetVisibility(on ? 1 : 0);
-	for (vtkBillboardTextActor3D* a : { c.label.Get(), c.azLabel.Get(), c.inclLabel.Get() })
+	for (vtkBillboardTextActor3D *a : { c.label.Get(), c.azLabel.Get(), c.inclLabel.Get() })
 		if (a) a->SetVisibility(on ? 1 : 0);
 	c.visible = on;
 }
 
 // 'x' toggles the gizmo visibility (observe low priority, never abort).
-void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
-	Gizmo* c = static_cast<Gizmo*>(clientData);
-	vtkRenderWindowInteractor* rwi = vtkRenderWindowInteractor::SafeDownCast(caller);
+void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
+	Gizmo *c = static_cast<Gizmo*>(clientData);
+	vtkRenderWindowInteractor *rwi = vtkRenderWindowInteractor::SafeDownCast(caller);
 	if (!c || !rwi) return;
-	const char* key = rwi->GetKeySym();
+	const char *key = rwi->GetKeySym();
 	if (key && (key[0]=='x' || key[0]=='X') && key[1]=='\0') {
 		setGizmoVisible(*c, !c->visible); renderWin(c);
 	}
@@ -503,14 +503,14 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	// not every raster in the window. State source of truth is the active raster's own edge state
 	// (s->surfEdges for the base relief — surf may be stale when tiled — else the actor itself).
 	if (key && (key[0]=='e' || key[0]=='E') && key[1]=='\0') {
-		Scene* s = c->s;
+		Scene *s = c->s;
 		TopRaster tr = s ? resolveTopRaster(s) : TopRaster{};
 		if (tr.valid && !tr.actors.empty()) {
 			int cur = tr.edgeState ? *tr.edgeState
 			                       : tr.actors[0]->GetProperty()->GetEdgeVisibility();
 			int on  = cur ? 0 : 1;
 			if (tr.edgeState) *tr.edgeState = on;
-			for (vtkActor* a : tr.actors) {           // base tiles/surf (+drape) OR the active grid (+drape)
+			for (vtkActor *a : tr.actors) {           // base tiles/surf (+drape) OR the active grid (+drape)
 				a->GetProperty()->SetEdgeVisibility(on);
 				a->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12);
 				a->GetProperty()->SetLineWidth(1.0);
@@ -522,9 +522,9 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	// point to that point and translate the camera by the same delta (pure pan) so the
 	// picked point lands at the centre of the viewport. Same path as the middle-click recenter.
 	if (key && (key[0]=='c' || key[0]=='C') && key[1]=='\0') {
-		Scene* s = c->s;
+		Scene *s = c->s;
 		if (s && s->ren && s->surf && s->widget) {
-			vtkCamera* cam = s->ren->GetActiveCamera();
+			vtkCamera *cam = s->ren->GetActiveCamera();
 			// Qt logical (top-down) cursor -> VTK display (bottom-up device) pixels.
 			const QPoint lp = s->widget->mapFromGlobal(QCursor::pos());
 			const double r = s->widget->devicePixelRatioF();
@@ -552,10 +552,10 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	{
 		const bool zin  = key && (!strcmp(key,"plus")  || !strcmp(key,"equal") || !strcmp(key,"KP_Add"));
 		const bool zout = key && (!strcmp(key,"minus") || !strcmp(key,"KP_Subtract"));
-		Scene* s = c->s;
+		Scene *s = c->s;
 		if ((zin || zout) && s && s->ren && s->widget) {
-			vtkRenderer* ren = s->ren;
-			vtkCamera*   cam = ren->GetActiveCamera();
+			vtkRenderer *ren = s->ren;
+			vtkCamera *cam = ren->GetActiveCamera();
 			// Qt logical (top-down) cursor -> VTK display (bottom-up device) pixels. Same as 'c'.
 			const QPoint lp = s->widget->mapFromGlobal(QCursor::pos());
 			const double r  = s->widget->devicePixelRatioF();
@@ -593,11 +593,11 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 		const bool pr = key && !strcmp(key,"Right");
 		const bool pu = key && !strcmp(key,"Up");
 		const bool pd = key && !strcmp(key,"Down");
-		Scene* s = c->s;
+		Scene *s = c->s;
 		if ((pl || pr || pu || pd) && s && s->ren && s->widget) {
-			vtkRenderer* ren = s->ren;
-			vtkCamera*   cam = ren->GetActiveCamera();
-			const int* wh = s->widget->renderWindow()->GetSize();
+			vtkRenderer *ren = s->ren;
+			vtkCamera *cam = ren->GetActiveCamera();
+			const int *wh = s->widget->renderWindow()->GetSize();
 			const double cx = wh[0] * 0.5, cy = wh[1] * 0.5;
 			double fp[3]; cam->GetFocalPoint(fp);
 			ren->SetWorldPoint(fp[0], fp[1], fp[2], 1.0); ren->WorldToDisplay();
@@ -629,9 +629,9 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	// world +Z up. Camera due south of the focal point at the same height. Same
 	// convention as the default view (buildAndShow) but with elevation 0.
 	if (key && key[0]=='1' && key[1]=='\0') {
-		Scene* s = c->s;
+		Scene *s = c->s;
 		if (s && s->ren && c->curView != 1) {      // already front view -> no-op (not cumulative)
-			vtkCamera* cam = s->ren->GetActiveCamera();
+			vtkCamera *cam = s->ren->GetActiveCamera();
 			double fp[3]; cam->GetFocalPoint(fp);
 			double dist = cam->GetDistance();
 			cam->SetViewUp(0.0, 0.0, 1.0);
@@ -645,9 +645,9 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	// down -Z). At elevation 90 the +Z up-vector is degenerate, so use +Y (north up), which
 	// matches azimuth 0. Map looks down from directly overhead.
 	if (key && key[0]=='2' && key[1]=='\0') {
-		Scene* s = c->s;
+		Scene *s = c->s;
 		if (s && s->ren && c->curView != 2) {      // already top view -> no-op (not cumulative)
-			vtkCamera* cam = s->ren->GetActiveCamera();
+			vtkCamera *cam = s->ren->GetActiveCamera();
 			double fp[3]; cam->GetFocalPoint(fp);
 			double dist = cam->GetDistance();
 			cam->SetViewUp(0.0, 1.0, 0.0);
@@ -666,9 +666,9 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 		// hardwired '3' = stereo-render toggle on the following CharEvent. We only want the
 		// right-view snap. KeyPressEvent (here) runs before CharEvent, so this lands in time.
 		rwi->SetKeyCode(0);
-		Scene* s = c->s;
+		Scene *s = c->s;
 		if (s && s->ren && c->curView != 3) {      // already right view -> no-op (not cumulative)
-			vtkCamera* cam = s->ren->GetActiveCamera();
+			vtkCamera *cam = s->ren->GetActiveCamera();
 			double fp[3]; cam->GetFocalPoint(fp);
 			double dist = cam->GetDistance();
 			cam->SetViewUp(0.0, 0.0, 1.0);
@@ -681,9 +681,9 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	// '4' snaps to back view: azimuth 180 (look south, -Y), elevation 0, world +Z up.
 	// Camera due north of the focal point at the same height. (Front view is azimuth 0.)
 	if (key && key[0]=='4' && key[1]=='\0') {
-		Scene* s = c->s;
+		Scene *s = c->s;
 		if (s && s->ren && c->curView != 4) {      // already back view -> no-op (not cumulative)
-			vtkCamera* cam = s->ren->GetActiveCamera();
+			vtkCamera *cam = s->ren->GetActiveCamera();
 			double fp[3]; cam->GetFocalPoint(fp);
 			double dist = cam->GetDistance();
 			cam->SetViewUp(0.0, 0.0, 1.0);
@@ -696,9 +696,9 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	// '5' snaps to left view: azimuth 90 (look east, +X), elevation 0, world +Z up.
 	// Camera due west of the focal point at the same height (mirror of right view).
 	if (key && key[0]=='5' && key[1]=='\0') {
-		Scene* s = c->s;
+		Scene *s = c->s;
 		if (s && s->ren && c->curView != 5) {      // already left view -> no-op (not cumulative)
-			vtkCamera* cam = s->ren->GetActiveCamera();
+			vtkCamera *cam = s->ren->GetActiveCamera();
 			double fp[3]; cam->GetFocalPoint(fp);
 			double dist = cam->GetDistance();
 			cam->SetViewUp(0.0, 0.0, 1.0);
@@ -712,9 +712,9 @@ void KeyCB(vtkObject* caller, unsigned long, void* clientData, void*) {
 	// direction. Turning it on refits the parallel scale to the data; turning it off
 	// returns to perspective. Does not change the view-snap state.
 	if (key && key[0]=='6' && key[1]=='\0') {
-		Scene* s = c->s;
+		Scene *s = c->s;
 		if (s && s->ren) {
-			vtkCamera* cam = s->ren->GetActiveCamera();
+			vtkCamera *cam = s->ren->GetActiveCamera();
 			cam->SetParallelProjection(cam->GetParallelProjection() ? 0 : 1);   // toggle ortho<->persp
 			// Re-MAXIMIZE in the new projection using the active view's fill mode (side views
 			// fill width; top / free views fill the limiting dim). fitSnapView ResetCameras
@@ -776,8 +776,8 @@ void buildGeometry(Gizmo &c) {
 
 // Any interactor-driven camera move (wheel zoom, middle-button pan, trackball) invalidates
 // the active number-key view-snap, so the next view key re-snaps instead of no-op'ing.
-void ResetViewCB(vtkObject*, unsigned long, void* clientData, void*) {
-	if (Gizmo* c = static_cast<Gizmo*>(clientData)) c->curView = 0;
+void ResetViewCB(vtkObject*, unsigned long, void *clientData, void*) {
+	if (Gizmo *c = static_cast<Gizmo*>(clientData)) c->curView = 0;
 }
 
 // Build, add to the scene, wire the follow + drag + key observers.
@@ -787,13 +787,13 @@ void ResetViewCB(vtkObject*, unsigned long, void* clientData, void*) {
 // path a fresh window uses — no hand re-keying of haxisLen/haxisRatio that kept drifting.
 void disableGizmo(Scene *s) {
 	if (!s || !s->giz) return;
-	Gizmo* c = s->giz;
-	vtkRenderer* ren = s->ren;
-	vtkRenderer* tren = s->axesRen ? s->axesRen.Get() : ren;
-	vtkRenderWindowInteractor* rwi = s->widget ? s->widget->interactor() : nullptr;
-	for (vtkActor* a : { c->shaft.Get(), c->shaftH.Get(), c->ring.Get(), c->harrow.Get(), c->vcone.Get() })
+	Gizmo *c = s->giz;
+	vtkRenderer *ren = s->ren;
+	vtkRenderer *tren = s->axesRen ? s->axesRen.Get() : ren;
+	vtkRenderWindowInteractor *rwi = s->widget ? s->widget->interactor() : nullptr;
+	for (vtkActor *a : { c->shaft.Get(), c->shaftH.Get(), c->ring.Get(), c->harrow.Get(), c->vcone.Get() })
 		if (a && ren) ren->RemoveViewProp(a);
-	for (vtkBillboardTextActor3D* t : { c->label.Get(), c->azLabel.Get(), c->inclLabel.Get() })
+	for (vtkBillboardTextActor3D *t : { c->label.Get(), c->azLabel.Get(), c->inclLabel.Get() })
 		if (t && tren) tren->RemoveViewProp(t);
 	if (c->light && ren) ren->RemoveLight(c->light);
 	if (ren && c->placeTag) ren->RemoveObserver(c->placeTag);
@@ -813,8 +813,8 @@ Gizmo *enableGizmo(Scene *s, double sensitivity) {
 	c->veBase = (s->ve > 0.0) ? s->ve : 1.0;   // baseline so the cone starts at default size regardless of auto-VE
 	c->sensitivity = (sensitivity > 0.0) ? sensitivity : 0.01;
 
-	vtkRenderer* ren = s->ren;
-	vtkRenderWindowInteractor* rwi = s->widget->interactor();
+	vtkRenderer *ren = s->ren;
+	vtkRenderWindowInteractor *rwi = s->widget->interactor();
 
 	// Pin horizontal-axis length to the data bbox (XY half-extent) BEFORE adding gizmo props.
 	double b[6]; ren->ComputeVisiblePropBounds(b);
@@ -829,7 +829,7 @@ Gizmo *enableGizmo(Scene *s, double sensitivity) {
 	// The angle/VE TEXT labels go in the overlay renderer (its headlight lights the camera-facing
 	// text uniformly) so they stay WHITE at every tilt — in s->ren the directional sun lit the text
 	// quads and they dimmed/vanished at some angles.
-	vtkRenderer* tren = s->axesRen ? s->axesRen.Get() : ren;
+	vtkRenderer *tren = s->axesRen ? s->axesRen.Get() : ren;
 	tren->AddViewProp(c->label); tren->AddViewProp(c->azLabel); tren->AddViewProp(c->inclLabel);
 
 	vtkNew<vtkLight> light;

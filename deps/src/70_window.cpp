@@ -567,9 +567,32 @@ public:
 	}
 };
 
-static QuadNode* buildQuadNode(int i0, int i1, int j0, int j1, int level,
+// ============================================================================================
+// Info text popup (toolbar 'i' button). A NON-modal read-only monospace window showing the
+// grdinfo / gdalinfo report for the active grid/image, so it can stay open beside the view.
+// Self-deletes on close (WA_DeleteOnClose). `title` distinguishes the two reporters.
+// ============================================================================================
+static void showInfoText(QWidget *parent, const QString &title, const QString &text) {
+	QDialog *dlg = new QDialog(parent);
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	dlg->setWindowTitle("Info — " + title);
+	dlg->resize(580, 440);
+	auto *v = new QVBoxLayout(dlg);
+	auto *te = new QPlainTextEdit(dlg);
+	te->setReadOnly(true);
+	te->setLineWrapMode(QPlainTextEdit::NoWrap);
+	QFont f("Consolas"); f.setStyleHint(QFont::Monospace); te->setFont(f);
+	te->setPlainText(text.isEmpty() ? "(no output)" : text);
+	v->addWidget(te);
+	auto *bb = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
+	QObject::connect(bb, &QDialogButtonBox::rejected, dlg, &QDialog::close);
+	v->addWidget(bb);
+	dlg->show();
+}
+
+static QuadNode *buildQuadNode(int i0, int i1, int j0, int j1, int level,
 							   double x0, double dx, double y0, double dy) {
-	QuadNode* n = new QuadNode();
+	QuadNode *n = new QuadNode();
 	n->level = level; n->i0 = i0; n->i1 = i1; n->j0 = j0; n->j1 = j1;
 	const int w = i1 - i0, h = j1 - j0;
 	int step = 1; while (w / step > 512 || h / step > 512) step *= 2;   // sampled span <= ~513
@@ -587,7 +610,7 @@ static QuadNode* buildQuadNode(int i0, int i1, int j0, int j1, int level,
 	return n;
 }
 
-static void ensureNodeActor(Scene* s, QuadNode* n) {
+static void ensureNodeActor(Scene *s, QuadNode *n) {
 	if (n->actor) return;
 	auto tpd = makeGridTile(s->gridZ.data(), s->gnx, s->gny,
 							n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, n->step);
@@ -610,7 +633,7 @@ static void ensureNodeActor(Scene* s, QuadNode* n) {
 	s->lodResidentBytes += n->bytes;
 }
 
-static void dropNodeActor(Scene* s, QuadNode* n) {
+static void dropNodeActor(Scene *s, QuadNode *n) {
 	if (!n->actor) return;
 	s->surfGroup->RemovePart(n->actor);
 	for (size_t k = 0; k < s->tiles.size(); ++k)
@@ -619,29 +642,29 @@ static void dropNodeActor(Scene* s, QuadNode* n) {
 	n->actor = nullptr; n->bytes = 0;
 }
 
-static void dropSubtree(Scene* s, QuadNode* n) {
+static void dropSubtree(Scene *s, QuadNode *n) {
 	if (!n) return;
 	dropNodeActor(s, n);
 	for (int k = 0; k < 4; ++k) dropSubtree(s, n->child[k]);
 }
 
-static void collectResident(QuadNode* n, std::vector<QuadNode*>& out) {
+static void collectResident(QuadNode *n, std::vector<QuadNode*>& out) {
 	if (!n) return;
 	if (n->actor) out.push_back(n);
 	for (int k = 0; k < 4; ++k) collectResident(n->child[k], out);
 }
 
-static void evictLRU(Scene* s) {
+static void evictLRU(Scene *s) {
 	std::vector<QuadNode*> res; collectResident(s->quadRoot, res);
-	std::sort(res.begin(), res.end(), [](QuadNode* a, QuadNode* b){ return a->lastUsed < b->lastUsed; });
-	for (QuadNode* n : res) {
+	std::sort(res.begin(), res.end(), [](QuadNode *a, QuadNode *b){ return a->lastUsed < b->lastUsed; });
+	for (QuadNode *n : res) {
 		if (s->lodResidentBytes <= s->lodBudgetBytes) break;
 		if (n->lastUsed == s->lodFrame) continue;   // never evict a tile drawn this frame
 		dropNodeActor(s, n);
 	}
 }
 
-static void refineNode(Scene* s, QuadNode* n, vtkCamera* cam, const double camPos[3],
+static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPos[3],
 					   double vpH, double tanHalfFov, double parScale, bool parallel, double tau) {
 	// node centre in SCALED world (the assembly applies xfac on X, zfac*ve on Z)
 	const double zmid = 0.5 * (s->zmin + s->zmax) * s->zfac * s->ve;
@@ -664,11 +687,11 @@ static void refineNode(Scene* s, QuadNode* n, vtkCamera* cam, const double camPo
 	}
 }
 
-static void refineQuadtree(Scene* s) {
+static void refineQuadtree(Scene *s) {
 	if (!s->quadRoot || !s->ren) return;
-	vtkCamera* cam = s->ren->GetActiveCamera(); if (!cam) return;
+	vtkCamera *cam = s->ren->GetActiveCamera(); if (!cam) return;
 	double camPos[3]; cam->GetPosition(camPos);
-	int* sz = s->ren->GetSize(); const double vpH = (sz && sz[1] > 0) ? sz[1] : 600.0;
+	int *sz = s->ren->GetSize(); const double vpH = (sz && sz[1] > 0) ? sz[1] : 600.0;
 	const bool parallel = cam->GetParallelProjection() != 0;
 	const double tanHalf = std::tan(vtkMath::RadiansFromDegrees(cam->GetViewAngle() * 0.5));
 	s->lodFrame++;
@@ -676,7 +699,7 @@ static void refineQuadtree(Scene* s) {
 	if (s->lodResidentBytes > s->lodBudgetBytes) evictLRU(s);
 }
 
-static void onLodCamera(vtkObject*, unsigned long, void* cd, void*) {
+static void onLodCamera(vtkObject*, unsigned long, void *cd, void*) {
 	refineQuadtree(static_cast<Scene*>(cd));
 }
 
@@ -692,7 +715,7 @@ struct FoldTitleBar : QWidget {
 	bool    folded    = false;
 	int     openWidth = 0;            // dock width remembered at fold time, restored on un-fold
 	std::function<void()> onClick;
-	explicit FoldTitleBar(const QString& t, QWidget* parent = nullptr)
+	explicit FoldTitleBar(const QString& t, QWidget *parent = nullptr)
 		: QWidget(parent), title(t) {
 		setCursor(Qt::PointingHandCursor);
 		setToolTip("Fold / un-fold this panel");
@@ -1101,7 +1124,7 @@ static void geoLineLenAz(double lon1, double lat1, double lon2, double lat2, dou
 // whether it is geographic. Length is km (geographic) or data units (cartesian); strike is deg from
 // north, CW. Returns false if there is no fault line. `geog` follows the window CRS when set, else a
 // crude lon/lat-range guess (mirrors GMT.guessgeog) so an unreferenced lon/lat fault still reads geo.
-static bool faultLineGeom(Scene* s, double& len, double& az, bool& geog) {
+static bool faultLineGeom(Scene *s, double& len, double& az, bool& geog) {
 	int pi = -1;
 	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
 	if (pi < 0 || s->polys[pi].v.size() < 2) return false;
@@ -1158,8 +1181,8 @@ static bool faultLineGeom(Scene* s, double& len, double& az, bool& geog) {
 // vreckon) or plain trig for cartesian ones. The line collapses to a clean 2-vertex segment from the
 // start, exactly as Mirone sets XData=[x1 lon2], YData=[y1 lat2]. `len` is km (geog) / data units
 // (cart). On success returns true and (if requested) the new endpoint. len <= 0 or no fault -> false.
-static bool faultApplyGeom(Scene* s, double strike, double len, bool geog,
-                           double* lon2o = nullptr, double* lat2o = nullptr) {
+static bool faultApplyGeom(Scene *s, double strike, double len, bool geog,
+                           double *lon2o = nullptr, double *lat2o = nullptr) {
 	if (!s || len <= 0) return false;
 	int pi = -1;
 	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
@@ -1189,7 +1212,7 @@ static bool faultApplyGeom(Scene* s, double strike, double len, bool geog,
 
 // One filled quad cell over `corners` (no closing dup needed for a polygon cell). VTK triangulates
 // the (possibly slightly non-planar, terrain-draped) quad for rendering.
-static void faultBuildPlanePD(vtkPolyData* pd, const std::vector<std::array<double,3>>& corners) {
+static void faultBuildPlanePD(vtkPolyData *pd, const std::vector<std::array<double,3>>& corners) {
 	vtkNew<vtkPoints> pts;
 	for (auto& c : corners) pts->InsertNextPoint(c[0], c[1], c[2]);
 	vtkNew<vtkCellArray> polys;
@@ -1205,7 +1228,7 @@ static void faultBuildPlanePD(vtkPolyData* pd, const std::vector<std::array<doub
 // quad (top edge t0→t1 = the trace, bottom edge b0→b1 = the down-dip projection) into an nu×nv grid
 // and sample z on the relief at every node, so the patch HUGS the ground (its top edge follows the
 // fault trace draped on the surface) instead of cutting a flat chord through the relief.
-static void faultBuildDrapedPatch(Scene* s, vtkPolyData* pd,
+static void faultBuildDrapedPatch(Scene *s, vtkPolyData *pd,
 								   const std::array<double,3>& t0, const std::array<double,3>& t1,
 								   const std::array<double,3>& b0, const std::array<double,3>& b1) {
 	double spacing = 0.0;
@@ -1244,7 +1267,7 @@ static void faultBuildDrapedPatch(Scene* s, vtkPolyData* pd,
 // polygon offset (-22000) lifts it just above the relief but stays BELOW the trace line actor (whose
 // line offset is -66000 in polyMakeLineActor), so the orange trace always reads on top of the patch
 // — that is how the user tells which long side of the rectangle is the fault trace.
-static vtkSmartPointer<vtkActor> faultMakePlaneActor(Scene* s, vtkPolyData* pd) {
+static vtkSmartPointer<vtkActor> faultMakePlaneActor(Scene *s, vtkPolyData *pd) {
 	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pd); map->ScalarVisibilityOff();
 	vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
 	map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -22000.0);
@@ -1263,7 +1286,7 @@ static vtkSmartPointer<vtkActor> faultMakePlaneActor(Scene* s, vtkPolyData* pd) 
 // with its corners at TRUE buried z (top edge at the deepest trace point, bottom edge W·sin(dip)
 // below). Because it sits UNDER the relief it is occluded by the opaque surface from above — visible
 // only from below / from angles where the terrain does not block it (hidden entirely in flat-2D).
-static vtkSmartPointer<vtkActor> faultMakePlane3DActor(Scene* s, vtkPolyData* pd) {
+static vtkSmartPointer<vtkActor> faultMakePlane3DActor(Scene *s, vtkPolyData *pd) {
 	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pd); map->ScalarVisibilityOff();
 	auto a = vtkSmartPointer<vtkActor>::New();
 	a->SetMapper(map);
@@ -1283,7 +1306,7 @@ static vtkSmartPointer<vtkActor> faultMakePlane3DActor(Scene* s, vtkPolyData* pd
 // far face shows rake+180 — the two arrows together read as the relative motion across the plane. The
 // actor lives in the SAME scaled space as the plane (xfac,1,zfac·ve); a tiny ±offset along the plane
 // normal seats each arrow just off its face so depth-testing occludes the far one from either side.
-static vtkSmartPointer<vtkActor> faultMakeArrowsActor(Scene* s, vtkPolyData* pd) {
+static vtkSmartPointer<vtkActor> faultMakeArrowsActor(Scene *s, vtkPolyData *pd) {
 	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pd); map->ScalarVisibilityOff();
 	auto a = vtkSmartPointer<vtkActor>::New();
 	a->SetMapper(map);
@@ -1307,7 +1330,7 @@ static vtkSmartPointer<vtkActor> faultMakeArrowsActor(Scene* s, vtkPolyData* pd)
 // & degrees (geographic) / data units & degrees (cartesian). NOTE: this is the geometric plane, NOT
 // the Save-fault file boundary (push_save_subfault uses the full-W footprint, a non-geometric Mirone
 // representation) — the two are deliberately different.
-static void faultUpdatePlane(Scene* s, double width, double dip, double strike, double rake, bool geog, int targetPi = -1) {
+static void faultUpdatePlane(Scene *s, double width, double dip, double strike, double rake, bool geog, int targetPi = -1) {
 	if (!s) return;
 	int pi = targetPi;                                        // import targets the just-added fault; dialog uses first isFault
 	if (pi < 0) for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
@@ -1789,13 +1812,13 @@ public:
 // Open the Vertical elastic deformation dialog for the current window (used by a fault line's first
 // property — forward-declared in 55_lineprops.cpp). The dialog prefills its Griding Line Geometry
 // from the window's loaded grid/image (same path as grdsample). On accept, hands params to Julia.
-static void faultRunDialog(Scene* s) {
+static void faultRunDialog(Scene *s) {
 	if (!s || !s->win) return;
 	// NON-MODAL: show() (not exec()) so the main window stays interactive while the dialog is up —
 	// editing Strike/Length must update the trace live, not block the UI. Heap-allocated + delete-on-
 	// close so it manages its own lifetime; one dialog per window at a time (reuse if already open).
 	if (s->elasticDlg) { s->elasticDlg->raise(); s->elasticDlg->activateWindow(); return; }
-	ElasticDialog* dlg = new ElasticDialog(s->win, s);
+	ElasticDialog *dlg = new ElasticDialog(s->win, s);
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
 	s->elasticDlg = dlg;
 	// The fault plane (gray surface patch + buried 3-D plane) PERSISTS after the dialog closes — it is
@@ -2013,8 +2036,8 @@ static void unfoldSceneObjects(Scene *s) {
 
 // Polygon draw/edit tool (defined in 85_polygon.cpp, #included after this file). The toolbar
 // button toggles draw mode via polygonSetMode; the mouse gestures are driven from GLView.
-static void polygonSetMode(Scene* s, bool on);
-static void polygonToolToggled(Scene* s, QAction* act, Scene::ShapeKind shape, bool on);
+static void polygonSetMode(Scene *s, bool on);
+static void polygonToolToggled(Scene *s, QAction *act, Scene::ShapeKind shape, bool on);
 static QIcon makePolygonIcon();
 static QIcon makePolylineIcon();
 static QIcon makeLineIcon();
@@ -2028,7 +2051,8 @@ static QIcon makeTorusIcon();
 static QIcon makeCylinderIcon();
 static QIcon makePolyhedronIcon();
 static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only view-toggle button
-static int  polyHitText(Scene* s, int x, int y, double tol);   // text label under the cursor (85_polygon.cpp)
+static QIcon makeInfoIcon();                // stylised 'i' glyph for the grdinfo/gdalinfo flyout
+static int  polyHitText(Scene *s, int x, int y, double tol);   // text label under the cursor (85_polygon.cpp)
 
 
 // ============================================================================
@@ -2062,7 +2086,7 @@ static void saveRecent() {
 }
 
 // Promote a freshly-opened file to the front of the MRU (de-dup, cap, persist).
-static void addRecentFile(const char* cpath, int cat) {
+static void addRecentFile(const char *cpath, int cat) {
 	if (!cpath || !*cpath) return;
 	loadRecent();
 	const QString p = QString::fromUtf8(cpath);
@@ -2076,10 +2100,10 @@ static void addRecentFile(const char* cpath, int cat) {
 
 // Rebuild the Recent Files submenu, grouped Grids / Images / Datasets. Each entry shows the file
 // name (full path on hover) and re-opens via the drop path (into THIS window); Clear wipes list.
-static void populateRecentMenu(QMenu *menu, Scene* s) {
+static void populateRecentMenu(QMenu *menu, Scene *s) {
 	loadRecent();
 	menu->clear();
-	static const char* kCatName[3] = { "Grids", "Images", "Datasets" };
+	static const char *kCatName[3] = { "Grids", "Images", "Datasets" };
 	bool any = false;
 	for (int c = 0; c < 3; ++c) {
 		bool header = false;
@@ -2087,7 +2111,7 @@ static void populateRecentMenu(QMenu *menu, Scene* s) {
 			if (r.cat != c) continue;
 			if (!header) { QAction *h = menu->addAction(kCatName[c]); h->setEnabled(false); header = true; }
 			const QString full = r.path;
-			QAction* act = menu->addAction(QFileInfo(full).fileName());
+			QAction *act = menu->addAction(QFileInfo(full).fileName());
 			act->setToolTip(full); act->setStatusTip(full);
 			QObject::connect(act, &QAction::triggered, [s, full]() {
 				if (!g_juliaDrop) return;
@@ -2099,7 +2123,7 @@ static void populateRecentMenu(QMenu *menu, Scene* s) {
 		}
 		if (header) menu->addSeparator();
 	}
-	if (!any) { QAction* none = menu->addAction("(no recent files)"); none->setEnabled(false); }
+	if (!any) { QAction *none = menu->addAction("(no recent files)"); none->setEnabled(false); }
 	else      { menu->addAction("&Clear Recent Files", []() { g_recent.clear(); saveRecent(); }); }
 }
 
@@ -2114,12 +2138,12 @@ static void populateRecentMenu(QMenu *menu, Scene* s) {
 // idempotent — a fresh Scene has none of them yet and the removals are harmless no-ops.
 //
 // The CALLER must already have set on `s`: imageOnly, x0/x1/y0/y1, zmin/zmax, xfac/zfac/ve.
-static void buildSceneContent(Scene* s, vtkSmartPointer<vtkPolyData> pd,
+static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
                               double x0, double x1, double y0, double y1,
-                              const double* cz, const double* crgb, int ncolor,
-                              const unsigned char* img, int iw, int ih, int ibands,
+                              const double *cz, const double *crgb, int ncolor,
+                              const unsigned char *img, int iw, int ih, int ibands,
                               int edges, bool pointCloud, int geographic,
-                              const float* gz, int gnx, int gny, bool blankStart) {
+                              const float *gz, int gnx, int gny, bool blankStart) {
 	// Drop any previous content first (promotion rebuilds into an existing scene; a fresh scene has
 	// none of these so every removal is a no-op). RemoveActor on an actor not in the renderer is safe.
 	if (s->lodCmd && s->ren->GetActiveCamera()) s->ren->GetActiveCamera()->RemoveObserver(s->lodCmd);
@@ -2305,7 +2329,7 @@ static void buildSceneContent(Scene* s, vtkSmartPointer<vtkPolyData> pd,
 	s->axName[1] = geographic ? "lat" : "Y";   // X/Y names only — Z gets NO name title
 	for (int i = 0; i < 2; ++i) {
 		auto t = vtkSmartPointer<vtkBillboardTextActor3D>::New();
-		vtkTextProperty* tp = t->GetTextProperty();
+		vtkTextProperty *tp = t->GetTextProperty();
 		tp->SetColor(1.0, 1.0, 1.0);
 		tp->SetFontFamilyToArial(); tp->BoldOn(); tp->ItalicOff(); tp->ShadowOff();
 		tp->SetFontSize(13);                 // a touch larger + bold so the name reads as a title
@@ -2346,9 +2370,9 @@ static void buildSceneContent(Scene* s, vtkSmartPointer<vtkPolyData> pd,
 	s->axes->YAxisMinorTickVisibilityOff();
 	s->axes->ZAxisMinorTickVisibilityOff();
 	for (int i = 0; i < 3; ++i) {                // white, ARIAL, non-bold -> X/Y/Z share ONE font
-		vtkTextProperty* tp = s->axes->GetTitleTextProperty(i);
+		vtkTextProperty *tp = s->axes->GetTitleTextProperty(i);
 		tp->SetColor(1.0, 1.0, 1.0); tp->SetFontFamilyToArial(); tp->BoldOff(); tp->ItalicOff(); tp->ShadowOff();
-		vtkTextProperty* lp = s->axes->GetLabelTextProperty(i);
+		vtkTextProperty *lp = s->axes->GetLabelTextProperty(i);
 		lp->SetColor(1.0, 1.0, 1.0); lp->SetFontFamilyToArial(); lp->BoldOff(); lp->ItalicOff(); lp->ShadowOff();
 	}
 	// Empty launcher (blankStart): the cube axes + tick/label billboards are NEVER added to the
@@ -2383,7 +2407,7 @@ static void buildSceneContent(Scene* s, vtkSmartPointer<vtkPolyData> pd,
 	// the relief fills most of the display (ResetCamera alone leaves a wide margin).
 	s->ren->ResetCamera();
 	{
-		vtkCamera* cam = s->ren->GetActiveCamera();
+		vtkCamera *cam = s->ren->GetActiveCamera();
 		double fp[3]; cam->GetFocalPoint(fp);
 		double dist = cam->GetDistance();
 		const double el = 35.0 * vtkMath::Pi() / 180.0;
@@ -2442,26 +2466,26 @@ static void buildSceneContent(Scene* s, vtkSmartPointer<vtkPolyData> pd,
 // No Q_OBJECT/moc needed (no signals/slots). Mirrors the readout math in onMouseMove (10_geometry).
 class MapPickFilter : public QObject {
 public:
-	Scene* s = nullptr;
+	Scene *s = nullptr;
 	std::function<void(double, double)> cb;
 	bool down = false, moved = false; double px = 0, py = 0;
-	MapPickFilter(Scene* sc, QObject* parent, std::function<void(double, double)> f)
+	MapPickFilter(Scene *sc, QObject *parent, std::function<void(double, double)> f)
 		: QObject(parent), s(sc), cb(std::move(f)) {}
 protected:
-	bool eventFilter(QObject* obj, QEvent* ev) override {
+	bool eventFilter(QObject *obj, QEvent *ev) override {
 		const QEvent::Type t = ev->type();
 		if (t == QEvent::MouseButtonPress) {
-			QMouseEvent* me = static_cast<QMouseEvent*>(ev);
+			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
 			if (me->button() == Qt::LeftButton) {
 				down = true; moved = false; px = me->position().x(); py = me->position().y();
 				return true;                                  // swallow so VTK doesn't start a rotate
 			}
 		} else if (t == QEvent::MouseMove && down) {
-			QMouseEvent* me = static_cast<QMouseEvent*>(ev);
+			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
 			if (std::abs(me->position().x() - px) > 3 || std::abs(me->position().y() - py) > 3) moved = true;
 			return true;
 		} else if (t == QEvent::MouseButtonRelease && down) {
-			QMouseEvent* me = static_cast<QMouseEvent*>(ev);
+			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
 			if (me->button() == Qt::LeftButton) {
 				down = false;
 				if (!moved && s->ren && s->widget && s->widget->renderWindow()) {
@@ -2497,49 +2521,49 @@ protected:
 // Lon/Lat (its centre) and, in grid mode, the computed -R. On OK the chosen settings are packed into
 // the request string and handed to Julia (g_juliaEarthTide). Modeless so "Click point on map" can
 // reach the map: the dialog hides, MapPickFilter grabs the next click, refills Lon/Lat, reshows.
-static void showEarthTidesDialog(Scene* s, double cW, double cE, double cS, double cN) {
+static void showEarthTidesDialog(Scene *s, double cW, double cE, double cS, double cN) {
 	if (!g_juliaEarthTide) {
 		if (s->win) s->win->statusBar()->showMessage("Earth Tides: callback not registered", 3000);
 		return;
 	}
 	const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
-	QDialog* dlg = new QDialog(s->win);
+	QDialog *dlg = new QDialog(s->win);
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
 	dlg->setWindowTitle("Earth Tides");
 
-	QDateTimeEdit* eStart = new QDateTimeEdit(nowUtc, dlg);
-	QDateTimeEdit* eEnd   = new QDateTimeEdit(nowUtc.addDays(10), dlg);
-	for (QDateTimeEdit* e : { eStart, eEnd }) {
+	QDateTimeEdit *eStart = new QDateTimeEdit(nowUtc, dlg);
+	QDateTimeEdit *eEnd   = new QDateTimeEdit(nowUtc.addDays(10), dlg);
+	for (QDateTimeEdit *e : { eStart, eEnd }) {
 		e->setDisplayFormat("dd-MMM-yyyy HH:mm:ss"); e->setCalendarPopup(true); e->setTimeSpec(Qt::UTC);
 	}
-	QDoubleSpinBox* eLon = new QDoubleSpinBox(dlg);
+	QDoubleSpinBox *eLon = new QDoubleSpinBox(dlg);
 	eLon->setRange(-360.0, 360.0); eLon->setDecimals(4); eLon->setValue(0.5 * (cW + cE));
-	QDoubleSpinBox* eLat = new QDoubleSpinBox(dlg);
+	QDoubleSpinBox *eLat = new QDoubleSpinBox(dlg);
 	eLat->setRange(-90.0, 90.0); eLat->setDecimals(4); eLat->setValue(0.5 * (cS + cN));
 
-	QRadioButton* rSeries = new QRadioButton("Time series", dlg); rSeries->setChecked(true);
-	QRadioButton* rGrid   = new QRadioButton("Grid(s)", dlg);
-	QButtonGroup* mode = new QButtonGroup(dlg);
+	QRadioButton *rSeries = new QRadioButton("Time series", dlg); rSeries->setChecked(true);
+	QRadioButton *rGrid   = new QRadioButton("Grid(s)", dlg);
+	QButtonGroup *mode = new QButtonGroup(dlg);
 	mode->addButton(rSeries); mode->addButton(rGrid);
 	// Grid(s) uses a single instant (Start date) over a global region, so freeze End date then; a
 	// time series spans Start->End, so unfreeze it for "Time series".
 	QObject::connect(rGrid, &QRadioButton::toggled, dlg, [eEnd](bool on) { eEnd->setEnabled(!on); });
 	eEnd->setEnabled(!rGrid->isChecked());                 // initial state (series default -> enabled)
 
-	QCheckBox* cV = new QCheckBox("Vertical", dlg); cV->setChecked(true);
-	QCheckBox* cE2 = new QCheckBox("East", dlg);
-	QCheckBox* cN2 = new QCheckBox("North", dlg);
+	QCheckBox *cV = new QCheckBox("Vertical", dlg); cV->setChecked(true);
+	QCheckBox *cE2 = new QCheckBox("East", dlg);
+	QCheckBox *cN2 = new QCheckBox("North", dlg);
 
-	QPushButton* bPick = new QPushButton("Click point on map", dlg);
+	QPushButton *bPick = new QPushButton("Click point on map", dlg);
 
 	// Grid spacing (degrees) for Grid(s) mode; relevant only when gridding -> enabled with rGrid.
-	QDoubleSpinBox* eInc = new QDoubleSpinBox(dlg);
+	QDoubleSpinBox *eInc = new QDoubleSpinBox(dlg);
 	eInc->setRange(0.05, 10.0); eInc->setDecimals(2); eInc->setSingleStep(0.25); eInc->setValue(0.5);
 	QObject::connect(rGrid, &QRadioButton::toggled, dlg, [eInc](bool on) { eInc->setEnabled(on); });
 	eInc->setEnabled(rGrid->isChecked());                  // disabled in the default Time-series mode
 
 	// Layout: left column = dates + mode + components; right column = lon/lat + grid inc + pick + OK.
-	QFormLayout* left = new QFormLayout;
+	QFormLayout *left = new QFormLayout;
 	left->addRow("Start date:", eStart);
 	left->addRow("End date:",   eEnd);
 	left->addRow(rSeries);
@@ -2548,15 +2572,15 @@ static void showEarthTidesDialog(Scene* s, double cW, double cE, double cS, doub
 	left->addRow(cE2);
 	left->addRow(cN2);
 
-	QFormLayout* right = new QFormLayout;
+	QFormLayout *right = new QFormLayout;
 	right->addRow("Lon:", eLon);
 	right->addRow("Lat:", eLat);
 	right->addRow("Grid inc (°):", eInc);
 	right->addRow(bPick);
-	QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
 	right->addRow(bb);
 
-	QHBoxLayout* cols = new QHBoxLayout(dlg);
+	QHBoxLayout *cols = new QHBoxLayout(dlg);
 	cols->addLayout(left); cols->addSpacing(16); cols->addLayout(right);
 
 	// "Click point on map": hide the dialog, arm a one-shot pick on the map widget; on click refill
@@ -2565,7 +2589,7 @@ static void showEarthTidesDialog(Scene* s, double cW, double cE, double cS, doub
 		if (!s->widget) return;
 		dlg->lower();                                       // keep visible (don't hide), just out of the way
 		if (s->win) s->win->statusBar()->showMessage("Earth Tides: click a point on the map…", 5000);
-		MapPickFilter* f = new MapPickFilter(s, s->widget, [dlg, eLon, eLat](double lon, double lat) {
+		MapPickFilter *f = new MapPickFilter(s, s->widget, [dlg, eLon, eLat](double lon, double lat) {
 			eLon->setValue(lon); eLat->setValue(lat);
 			dlg->raise(); dlg->activateWindow();
 		});
@@ -2582,7 +2606,7 @@ static void showEarthTidesDialog(Scene* s, double cW, double cE, double cS, doub
 			if (s->win) s->win->statusBar()->showMessage("Earth Tides: pick at least one component", 3000);
 			return;
 		}
-		const char* m = rGrid->isChecked() ? "grid" : "series";
+		const char *m = rGrid->isChecked() ? "grid" : "series";
 		// req = mode/start/end/lon/lat/comp/inc/W/E/S/N. inc = grid spacing (deg); region fields are
 		// kept for layout stability but ignored by the (always-global) grid path.
 		const QString req = QString("%1/%2/%3/%4/%5/%6/%7/%8/%9/%10/%11").arg(m)
@@ -2604,10 +2628,10 @@ static void showEarthTidesDialog(Scene* s, double cW, double cE, double cS, doub
 // a no-op (bar the act2D checkmark) when already in the requested mode — so a caller that needs to
 // FORCE the 2D camera after rebuilding the scene must reset s->flat2d=false first (the rebuilt scene
 // left the 3-D camera, but the flag may still read 2D from the launcher).
-static void sceneSetFlat2D(Scene* s, bool on) {
+static void sceneSetFlat2D(Scene *s, bool on) {
 	if (!s || !s->ren) return;
 	if (on == s->flat2d) { if (s->act2D) s->act2D->setChecked(on); return; }
-	vtkCamera* cam = s->ren->GetActiveCamera();
+	vtkCamera *cam = s->ren->GetActiveCamera();
 	s->flat2d = on;
 	if (s->flat2d) {
 		cam->GetPosition(s->sav_pos);          // save the 3D view to restore later
@@ -2645,7 +2669,7 @@ static void sceneSetFlat2D(Scene* s, bool on) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
-static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
+static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 double x0, double x1, double y0, double y1,
 						 double zmin, double zmax,
 						 double xfac, double zfac, double ve0,
@@ -2803,12 +2827,12 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Save Grid / Save Image: each opens the format-picker dialog (saveObjectDialog) for the window's
 	// primary object (empty name). Greyed out when the window holds no grid / no image — refreshed on
 	// every menu open so it tracks drops, basemap tiles, etc.
-	QAction* aSaveGrid  = mFile->addAction("Save &Grid…",  [s]() { saveObjectDialog(s, "grid",  QString()); });
-	QAction* aSaveImage = mFile->addAction("Save &Image…", [s]() { saveObjectDialog(s, "image", QString()); });
+	QAction *aSaveGrid  = mFile->addAction("Save &Grid…",  [s]() { saveObjectDialog(s, "grid",  QString()); });
+	QAction *aSaveImage = mFile->addAction("Save &Image…", [s]() { saveObjectDialog(s, "image", QString()); });
 	// Background region: open a blank white 2-D map framed to W/E/S/N (default the whole geographic
 	// earth). The dialog hands "W/E/S/N/geographic" to Julia (g_juliaBgRegion), which opens a fresh
 	// window — ready to drop coastlines / overlays onto. Reports if the callback is not wired.
-	QAction* aBgRegion = mFile->addAction("&Background region…", [win, s]() {
+	QAction *aBgRegion = mFile->addAction("&Background region…", [win, s]() {
 		BgRegionDialog dlg(win);
 		if (dlg.exec() != QDialog::Accepted || dlg.region.isEmpty()) return;
 		if (g_juliaBgRegion) g_juliaBgRegion(s, dlg.region.toUtf8().constData());
@@ -2826,7 +2850,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mFile->addSeparator();
 	// Recent Files: persistent MRU, grouped Grids/Images/Datasets, rebuilt each time it opens so a
 	// file opened in any window shows up here too. Re-opens a pick in a NEW window via iview().
-	QMenu* mRecent = mFile->addMenu("Recent &Files");
+	QMenu *mRecent = mFile->addMenu("Recent &Files");
 	mRecent->setToolTipsVisible(true);                       // show the full path on hover
 	QObject::connect(mRecent, &QMenu::aboutToShow, [mRecent, s]() { populateRecentMenu(mRecent, s); });
 	mFile->addSeparator();
@@ -3094,7 +3118,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QToolBar *tb = win->addToolBar("Main");
 	tb->setMovable(false);
 	tb->setToolButtonStyle(Qt::ToolButtonIconOnly);   // icon-only toolbar — no text labels on any button
-	QAction* actOpen = tb->addAction(win->style()->standardIcon(QStyle::SP_DirOpenIcon), "");  // icon only, no text
+	QAction *actOpen = tb->addAction(win->style()->standardIcon(QStyle::SP_DirOpenIcon), "");  // icon only, no text
 	actOpen->setToolTip("Open a grid / image / table file in a new window");
 	QObject::connect(actOpen, &QAction::triggered, [s, win]() {
 		const QString fn = QFileDialog::getOpenFileName(win, "Open file");
@@ -3105,6 +3129,38 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
 		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // open failed -> Errors tab
 	});
+	// Info flyout: a stylish 'i' that reports on the active grid/image. Slot click runs the current
+	// reporter (grdinfo by default); the 'v' dropdown switches between GMT.grdinfo and GMT.gdalinfo
+	// (and runs it). Both go through g_juliaEval -> InteractiveGMT._info_text(fig, mode), whose
+	// printed report is shown in a read-only text popup (showInfoText). Mirrors the 2D flyout shape.
+	QToolButton *tbInfo = new QToolButton(tb);
+	tbInfo->setPopupMode(QToolButton::MenuButtonPopup);   // click icon = run current reporter; click 'v' = pick one
+	tbInfo->setToolButtonStyle(Qt::ToolButtonIconOnly);
+	tbInfo->setIcon(makeInfoIcon());                      // glyph stays 'i' regardless of mode
+	tbInfo->setToolTip("Info: report on the active grid / image (grdinfo / gdalinfo)");
+	QMenu *infoMenu = new QMenu(tbInfo);
+	QAction *aGrdinfo  = infoMenu->addAction("grdinfo");
+	QAction *aGdalinfo = infoMenu->addAction("gdalinfo");
+	aGrdinfo->setCheckable(true); aGdalinfo->setCheckable(true);
+	aGrdinfo->setToolTip("GMT.grdinfo — grid header / range report");
+	aGdalinfo->setToolTip("GMT.gdalinfo — GDAL dataset report");
+	auto *infoGroup = new QActionGroup(tbInfo);           // exclusive: exactly one reporter active
+	infoGroup->addAction(aGrdinfo); infoGroup->addAction(aGdalinfo);
+	aGrdinfo->setChecked(true);                           // default = grdinfo
+	tbInfo->setMenu(infoMenu);
+	auto runInfo = [s, win, aGdalinfo]() {
+		if (!g_juliaEval) { if (s->win) s->win->statusBar()->showMessage("Info: Julia eval not registered", 3000); return; }
+		const char *mode = aGdalinfo->isChecked() ? "gdalinfo" : "grdinfo";
+		std::string cmd = std::string("InteractiveGMT._info_text(fig, \"") + mode + "\")";
+		static std::vector<char> buf(1 << 16);
+		int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+		QString txt = QString::fromUtf8(buf.data(), n < 0 ? -n : n);
+		showInfoText(win, QString::fromUtf8(mode), txt);
+	};
+	QObject::connect(tbInfo, &QToolButton::clicked, runInfo);
+	QObject::connect(aGrdinfo,  &QAction::triggered, runInfo);   // picking a reporter also runs it
+	QObject::connect(aGdalinfo, &QAction::triggered, runInfo);
+	// (tbInfo is added to the toolbar at the very END of the row — see after the 3-D Bodies flyout.)
 	// 2D/3D view-mode flyout: a sibling of the shapes / 3-D Bodies families — an icon-only QToolButton
 	// whose glyph shows the CURRENT view ("2D" flat map / "3D" perspective) and whose dropdown arrow
 	// ('v') lists the two modes. Picking one switches via the shared setFlat2D; the slot's glyph +
@@ -3181,7 +3237,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	//   Rectangle/Circle — two clicks (first corner/centre, then opposite corner/edge); a live
 	//                      preview trails the cursor between them.
 	//   Text     — one click on the scene, then a dialog asks for the string (own button below).
-	struct ToolDef { QIcon icon; const char* name; const char* tip; Scene::ShapeKind kind; };
+	struct ToolDef { QIcon icon; const char *name; const char *tip; Scene::ShapeKind kind; };
 	const ToolDef flyoutTools[] = {
 		{ makePolygonIcon(),  "Polygon",   "Draw a polygon: left-click adds vertices, right-click undoes one, "
 		                                   "double-click closes it. Double-click a polygon to edit its vertices.", Scene::SH_Polygon  },
@@ -3194,13 +3250,13 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		                                   "context menus): click one corner, then the opposite corner.",          Scene::SH_RectN    },
 		{ makeCircleIcon(),   "Circle",    "Draw a circle: click the centre, then a point on the edge.",           Scene::SH_Circle   },
 	};
-	QToolButton* flyout = new QToolButton(tb);           // the shared shape slot
+	QToolButton *flyout = new QToolButton(tb);           // the shared shape slot
 	flyout->setPopupMode(QToolButton::MenuButtonPopup);  // click icon = use tool; click arrow = flyout
 	flyout->setToolButtonStyle(Qt::ToolButtonIconOnly);
-	QMenu* shapeMenu = new QMenu(flyout);                // the dropdown flyout list
-	QAction* defaultShape = nullptr;                     // the tool the slot starts on (Line)
+	QMenu *shapeMenu = new QMenu(flyout);                // the dropdown flyout list
+	QAction *defaultShape = nullptr;                     // the tool the slot starts on (Line)
 	for (const ToolDef& td : flyoutTools) {
-		QAction* act = shapeMenu->addAction(td.icon, td.name);   // icon + label (the slot itself stays icon-only)
+		QAction *act = shapeMenu->addAction(td.icon, td.name);   // icon + label (the slot itself stays icon-only)
 		act->setCheckable(true);
 		act->setToolTip(td.tip);
 		const Scene::ShapeKind kind = td.kind;
@@ -3213,12 +3269,12 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	flyout->setDefaultAction(defaultShape ? defaultShape : shapeMenu->actions().first());
 	// Picking a sibling from the flyout makes it the slot's current tool (Illustrator behaviour): the
 	// chosen action toggles on (its connection enters draw mode) and becomes the button's default.
-	QObject::connect(shapeMenu, &QMenu::triggered, flyout, [flyout](QAction* a){ flyout->setDefaultAction(a); });
+	QObject::connect(shapeMenu, &QMenu::triggered, flyout, [flyout](QAction *a){ flyout->setDefaultAction(a); });
 	tb->addWidget(flyout);
 
 	// Text — its own icon-only toggle (not a "drawn shape" family member, but shares the exclusive
 	// s->shapeActs group so selecting it untoggles the active shape tool and vice-versa).
-	QAction* actText = tb->addAction(makeTextIcon(), "");
+	QAction *actText = tb->addAction(makeTextIcon(), "");
 	actText->setCheckable(true);
 	actText->setToolTip("Place a text label: click a point on the scene, then type the text.");
 	QObject::connect(actText, &QAction::toggled, [s, actText](bool on){ polygonToolToggled(s, actText, Scene::SH_Text, on); });
@@ -3231,7 +3287,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// existing view_fv path already gives it full Scene Objects properties). Closed primitives first,
 	// then the parametric generators (revolve/loft/extrude render demo curves). Slot click = build the
 	// current body; the dropdown arrow opens the flyout; picking a sibling makes it the new default.
-	struct BodyDef { QIcon icon; const char* name; const char* label; const char* tip; };
+	struct BodyDef { QIcon icon; const char *name; const char *label; const char *tip; };
 	const BodyDef bodyTools[] = {
 		{ makeCubeIcon(),       "cube",         "Cube",         "Create a cube solid."                        },
 		{ makeSphereIcon(),     "sphere",       "Sphere",       "Create a sphere solid."                      },
@@ -3245,13 +3301,13 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		{ makePolyhedronIcon(), "loft",         "Loft",         "Loft between two curves (demo curves)."      },
 		{ makePolyhedronIcon(), "extrude",      "Extrude",      "Extrude a 2-D shape (demo star outline)."    },
 	};
-	QToolButton* bodyFlyout = new QToolButton(tb);
+	QToolButton *bodyFlyout = new QToolButton(tb);
 	bodyFlyout->setPopupMode(QToolButton::MenuButtonPopup);
 	bodyFlyout->setToolButtonStyle(Qt::ToolButtonIconOnly);
 	bodyFlyout->setToolTip("3-D Bodies: build a GMT solid (cube, sphere, torus, cylinder, …)");
-	QMenu* bodyMenu = new QMenu(bodyFlyout);
+	QMenu *bodyMenu = new QMenu(bodyFlyout);
 	for (const BodyDef& bd : bodyTools) {
-		QAction* act = bodyMenu->addAction(bd.icon, bd.label);
+		QAction *act = bodyMenu->addAction(bd.icon, bd.label);
 		act->setToolTip(bd.tip);
 		const QByteArray nm = bd.name;                          // capture the solid name by value
 		QObject::connect(act, &QAction::triggered, [s, nm]() {
@@ -3260,9 +3316,13 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	}
 	bodyFlyout->setMenu(bodyMenu);
 	bodyFlyout->setDefaultAction(bodyMenu->actions().first());   // slot starts on Cube (icon + tooltip mirror it)
-	QObject::connect(bodyMenu, &QMenu::triggered, bodyFlyout, [bodyFlyout](QAction* a){ bodyFlyout->setDefaultAction(a); });
+	QObject::connect(bodyMenu, &QMenu::triggered, bodyFlyout, [bodyFlyout](QAction *a){ bodyFlyout->setDefaultAction(a); });
 	tb->addSeparator();
 	tb->addWidget(bodyFlyout);
+
+	// Info flyout sits LAST on the toolbar row (built earlier, added here so it's the rightmost item).
+	tb->addSeparator();
+	tb->addWidget(tbInfo);
 
 	// --- native right-click context menu over the 3-D view ------------------
 	widget->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -3313,7 +3373,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			}
 			QMenu m(win);
 			m.addAction("Reset Camera", actReset);
-			QAction* ca = m.addAction("Cube Axes", actToggleAxes);
+			QAction *ca = m.addAction("Cube Axes", actToggleAxes);
 			ca->setCheckable(true); ca->setChecked(s->axes->GetVisibility());
 			if (s->bar) {                    // no Color Bar entry for bare images
 				QAction *cb = m.addAction("Color Bar", actToggleBar);
@@ -3342,7 +3402,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Live tooltip for a slider: maps the raw slider position to the parameter's REAL range
 	// [rmin,rmax] and shows "name: value unit  [rmin … rmax]". Updated on every change AND
 	// popped at the cursor while dragging so the value is visible without hovering first.
-	auto wireTip = [](QSlider* sl, QString name, double rmin, double rmax, QString unit, int dec) {
+	auto wireTip = [](QSlider *sl, QString name, double rmin, double rmax, QString unit, int dec) {
 		auto fmt = [=](int v) {
 			double t    = double(v - sl->minimum()) / double(sl->maximum() - sl->minimum());
 			double real = rmin + t * (rmax - rmin);
@@ -3415,7 +3475,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	wireTip(slEnv, "Env (IBL)", 0.0, 3.0, "", 2);
 
 	const double rad0 = (s->ssaoRadius > 0.0) ? s->ssaoRadius : 0.5;   // slider = 0..200% of seed
-	QSlider* slSSAO = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "SSAO radius" slider — ambient-occlusion sampling radius
+	QSlider *slSSAO = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "SSAO radius" slider — ambient-occlusion sampling radius
 	slSSAO->setRange(0, 200); slSSAO->setValue(100);
 	QObject::connect(slSSAO, &QSlider::valueChanged, [s, rad0](int v){ s->ssaoRadius = rad0 * v / 100.0; applyShading(s); });
 	form->addRow("SSAO radius", slSSAO);
@@ -3506,7 +3566,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// (resizeDocks), so the collapsed dock no longer leaves its full open width as dead space;
 	// the strip carries the title rotated 90° down the window edge. Un-folding restores the body
 	// and the remembered open width. This is the fold control Qt's default title bar never gave us.
-	auto makeFoldable = [win](QDockWidget* d, QWidget* body, const QString& titleText) -> FoldTitleBar* {
+	auto makeFoldable = [win](QDockWidget *d, QWidget *body, const QString& titleText) -> FoldTitleBar* {
 		FoldTitleBar *bar = new FoldTitleBar(titleText, d);  // GRAPHICAL ELEMENT: dock title bar = fold toggle
 		d->setTitleBarWidget(bar);                        // swap Qt's default title bar for our fold strip
 		bar->onClick = [win, d, body, bar]() {
@@ -3540,7 +3600,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// BODY down to just the tab strip (so the central 3-D view extends) and toggles to "Show".
 	QDockWidget *bottomDock = new QDockWidget("Panels", win);
 	bottomDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
-	QTabWidget*  tabs = new QTabWidget(bottomDock);
+	QTabWidget *tabs = new QTabWidget(bottomDock);
 	tabs->setDocumentMode(true);
 	bottomDock->setWidget(tabs);
 	win->addDockWidget(Qt::BottomDockWidgetArea, bottomDock);
@@ -3558,11 +3618,11 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QWidget     *conPanel = new QWidget(tabs);
 	QVBoxLayout *conLay   = new QVBoxLayout(conPanel);
 	conLay->setContentsMargins(2, 2, 2, 2);
-	QPlainTextEdit* conOut = new QPlainTextEdit(conPanel);
+	QPlainTextEdit *conOut = new QPlainTextEdit(conPanel);
 	conOut->setReadOnly(true);
 	conOut->setFont(QFont("Consolas", 10));
 	conOut->setPlaceholderText("Julia output appears here. `fig` is this window. e.g.  add!(fig, [x y z]; mode=:points)");
-	QLineEdit* conIn = new QLineEdit(conPanel);
+	QLineEdit *conIn = new QLineEdit(conPanel);
 	conIn->setFont(QFont("Consolas", 10));
 	conIn->setPlaceholderText("julia>  (Enter to run)");
 	conLay->addWidget(conOut, 1);
@@ -3592,7 +3652,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// basemap, tides, recolour, …). Those used to vanish into the REPL's stderr; Julia now also ccalls
 	// gmtvtk_log_error -> here, raising this tab so a failure can't pass unseen. Typed-command errors stay
 	// inline in the Julia Console tab; THIS tab is the program-side error log.
-	QPlainTextEdit* errOut = new QPlainTextEdit(tabs);
+	QPlainTextEdit *errOut = new QPlainTextEdit(tabs);
 	errOut->setReadOnly(true);
 	errOut->setMaximumBlockCount(2000);
 	errOut->setFont(QFont("Consolas", 10));
@@ -3612,11 +3672,11 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Scene Objects / Shading docks), instead of the old hide button lost in the tab-strip corner.
 	// The triangle collapses the panel body (extend the 3-D view) / restores it; glyph swapped by
 	// setBottomCollapsed (▸ collapsed, ▾ open).
-	QWidget*     titleBar = new QWidget(bottomDock);
-	QHBoxLayout* titleLay = new QHBoxLayout(titleBar);
+	QWidget *titleBar = new QWidget(bottomDock);
+	QHBoxLayout *titleLay = new QHBoxLayout(titleBar);
 	titleLay->setContentsMargins(6, 2, 6, 2);
 	titleLay->setSpacing(4);
-	QToolButton* hideBtn = new QToolButton(titleBar);
+	QToolButton *hideBtn = new QToolButton(titleBar);
 	hideBtn->setText(QString::fromUtf8("\xE2\x96\xBE"));   // ▾ open
 	hideBtn->setAutoRaise(true);
 	hideBtn->setCursor(Qt::PointingHandCursor);
@@ -3627,7 +3687,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Float/dock button: a custom titleBarWidget suppresses Qt's native drag-to-undock, so we
 	// restore undocking explicitly — toggles the dock between floating and docked (DockWidgetFloatable
 	// is on by default). Once floating, the OS window frame lets the user move it / drag it back to dock.
-	QToolButton* floatBtn = new QToolButton(titleBar);
+	QToolButton *floatBtn = new QToolButton(titleBar);
 	floatBtn->setText(QString::fromUtf8("\xE2\x9D\x90"));   // ❐ float / re-dock
 	floatBtn->setAutoRaise(true);
 	floatBtn->setCursor(Qt::PointingHandCursor);
@@ -3639,7 +3699,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QObject::connect(floatBtn, &QToolButton::clicked, [bottomDock]() { bottomDock->setFloating(!bottomDock->isFloating()); });
 
 	// View-menu items: show the dock, un-collapse it, and bring the matching tab forward.
-	auto showTab = [s](QWidget* page) {
+	auto showTab = [s](QWidget *page) {
 		if (s->bottomDock) s->bottomDock->setVisible(true);
 		setBottomCollapsed(s, false);
 		if (s->bottomTabs) s->bottomTabs->setCurrentWidget(page);

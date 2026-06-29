@@ -66,9 +66,9 @@ static void computeScales(int geographic, double x0, double x1, double y0, doubl
 // treats x,y as degrees (z assumed metres). NaN nodes are skipped.
 // Returns an opaque figure handle (the Scene*); pass it to gmtvtk_add_overlay_h to add
 // elements to THIS window later. The handle is valid until the window is closed.
-GMTVTK_API void* gmtvtk_view_grid(const float *z, int nx, int ny, double x0, double x1, double y0, double y1, int geographic,
+GMTVTK_API void *gmtvtk_view_grid(const float *z, int nx, int ny, double x0, double x1, double y0, double y1, int geographic,
 								 const double *cz, const double *crgb, int ncolor, const unsigned char *img,
-								 int iw, int ih, int ibands, int edges, int triangulate, int image_only, const char* title) {
+								 int iw, int ih, int ibands, int edges, int triangulate, int image_only, const char *title) {
 	double zmin = 0.0, zmax = 1.0;
 	// Plain CPT grid (no drape, not a bare image) -> TILED render: no giant single polydata; the
 	// tile actors are built in buildAndShow from z. Drape / image_only keep the single-polydata
@@ -141,11 +141,11 @@ GMTVTK_API void* gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 // (z metres). `pointsize` in px (<=0 = default). Ctrl+right-drag selects points (box marquee,
 // toggle, Ctrl+Z undo); pick(r,g,b) is the highlight colour for the selected points.
 // Returns the figure handle (Scene*); read the selection back with gmtvtk_get_selection.
-GMTVTK_API void *gmtvtk_view_points(const double* xyz, int npts,
-									const double* cz, const double* crgb, int ncolor,
+GMTVTK_API void *gmtvtk_view_points(const double *xyz, int npts,
+									const double *cz, const double *crgb, int ncolor,
 									double x0, double x1, double y0, double y1, int geographic,
 									double pointsize, double pickr, double pickg, double pickb,
-									const char* title) {
+									const char *title) {
 	if (!xyz || npts <= 0)
 		return nullptr;
 	double zmin = 0.0, zmax = 1.0;
@@ -167,7 +167,7 @@ GMTVTK_API void *gmtvtk_view_points(const double* xyz, int npts,
 	s->surf->GetProperty()->SetInterpolationToFlat();
 	// Bypass buildAndShow's vtkPolyDataNormals stage (useless for unlit points) -> the mapper
 	// draws the cloud polydata directly.
-	if (auto* m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper()))
+	if (auto *m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper()))
 		m->SetInputData(pd);
 	// Ctrl+right-drag rubber-band selection over this cloud.
 	enableRubberBand(s, pd, pickr, pickg, pickb);
@@ -182,12 +182,12 @@ GMTVTK_API void *gmtvtk_view_points(const double* xyz, int npts,
 // z. (x0,x1,y0,y1,z0,z1) is the data bbox (z0,z1 label the Z axis). geographic!=0 -> lon/lat
 // axis titles. zscale = vertical exaggeration (GMTfv.zscale; <=0 -> 1). edges!=0 draws cell
 // wires (toggle live with 'e'). Returns the figure handle (Scene*), valid until the window closes.
-GMTVTK_API void* gmtvtk_view_fv(const double* xyz, int nv, const int* sides, int nfaces,
-								const int* indices, const unsigned char* facergb, const double* facez,
-								const double* cz, const double* crgb, int ncolor,
+GMTVTK_API void *gmtvtk_view_fv(const double *xyz, int nv, const int *sides, int nfaces,
+								const int *indices, const unsigned char *facergb, const double *facez,
+								const double *cz, const double *crgb, int ncolor,
 								double x0, double x1, double y0, double y1, double z0, double z1,
-								int geographic, double zscale, int edges, const char* title,
-								const char* objname) {
+								int geographic, double zscale, int edges, const char *title,
+								const char *objname) {
 	if (!xyz || nv <= 0 || !sides || !indices || nfaces <= 0)
 		return nullptr;
 	double zmin, zmax;
@@ -215,7 +215,7 @@ GMTVTK_API void* gmtvtk_view_fv(const double* xyz, int nv, const int* sides, int
 		fn->SplittingOn();
 		fn->SetFeatureAngle(30.0);
 		fn->ConsistencyOn();
-		if (auto* m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper())) {
+		if (auto *m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper())) {
 			m->SetInputConnection(fn->GetOutputPort());
 			m->SetScalarModeToUseCellData();          // colour per FACE (flat), not per vertex
 			// CRITICAL for CELL data: buildAndShow turned InterpolateScalarsBeforeMapping ON (a
@@ -235,7 +235,7 @@ GMTVTK_API void* gmtvtk_view_fv(const double* xyz, int nv, const int* sides, int
 				// node maps to grey instead of the top colour -> a grey ring on the torus crest
 				// (the grid hid it: only one peak vertex hits the limit). Force the CTF to CLAMP
 				// so above-range == top colour, below-range == bottom colour, NEVER grey.
-				if (auto* ctf = vtkColorTransferFunction::SafeDownCast(m->GetLookupTable()))
+				if (auto *ctf = vtkColorTransferFunction::SafeDownCast(m->GetLookupTable()))
 					ctf->SetClamping(1);
 				m->UseLookupTableScalarRangeOn();     // map through the CTF's own [zmin,zmax] node range
 			}
@@ -258,13 +258,13 @@ GMTVTK_API void* gmtvtk_view_fv(const double* xyz, int nv, const int* sides, int
 // poly-mesh) is left untouched and we return 0, so the host instead opens the solid in its own window
 // (gmtvtk_view_fv). Mirrors gmtvtk_promote_surface_h: recompute the scene through buildSceneContent —
 // the EXACT same build path gmtvtk_view_fv uses — so nothing drifts. Returns 1 (reused) / 0 (declined).
-GMTVTK_API int gmtvtk_promote_fv_h(void* handle,
-								   const double* xyz, int nv, const int* sides, int nfaces,
-								   const int* indices, const unsigned char* facergb, const double* facez,
-								   const double* cz, const double* crgb, int ncolor,
+GMTVTK_API int gmtvtk_promote_fv_h(void *handle,
+								   const double *xyz, int nv, const int *sides, int nfaces,
+								   const int *indices, const unsigned char *facergb, const double *facez,
+								   const double *cz, const double *crgb, int ncolor,
 								   double x0, double x1, double y0, double y1, double z0, double z1,
-								   int geographic, double zscale, int edges, const char* objname) {
-	Scene* s = static_cast<Scene*>(handle);
+								   int geographic, double zscale, int edges, const char *objname) {
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !xyz || nv <= 0 || !sides || !indices || nfaces <= 0)
 		return 0;
 	// Only an empty launcher OR a window already holding a body-button solid may be reused; a window
@@ -297,7 +297,7 @@ GMTVTK_API int gmtvtk_promote_fv_h(void* handle,
 		fn->SplittingOn();
 		fn->SetFeatureAngle(30.0);
 		fn->ConsistencyOn();
-		if (auto* m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper())) {
+		if (auto *m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper())) {
 			m->SetInputConnection(fn->GetOutputPort());
 			m->SetScalarModeToUseCellData();
 			m->InterpolateScalarsBeforeMappingOff();
@@ -306,7 +306,7 @@ GMTVTK_API int gmtvtk_promote_fv_h(void* handle,
 				if (s->bar) setColorbarVisible(s, false);
 			} else {
 				m->SetColorModeToMapScalars();
-				if (auto* ctf = vtkColorTransferFunction::SafeDownCast(m->GetLookupTable()))
+				if (auto *ctf = vtkColorTransferFunction::SafeDownCast(m->GetLookupTable()))
 					ctf->SetClamping(1);
 				m->UseLookupTableScalarRangeOn();
 			}
@@ -328,9 +328,9 @@ GMTVTK_API int gmtvtk_promote_fv_h(void* handle,
 	// opened in flat-2D ortho), and re-show the Shading dock folded (the launcher hid it with no body).
 	s->flat2d = false;
 	if (s->act2D) s->act2D->setChecked(false);
-	if (vtkCamera* cam = s->ren->GetActiveCamera()) cam->ParallelProjectionOff();
+	if (vtkCamera *cam = s->ren->GetActiveCamera()) cam->ParallelProjectionOff();
 	if (s->shadeDock && s->shadeFoldBar) {
-		if (QWidget* body = s->shadeDock->widget()) body->setVisible(false);
+		if (QWidget *body = s->shadeDock->widget()) body->setVisible(false);
 		s->shadeFoldBar->folded    = true;
 		s->shadeFoldBar->openWidth = 240;
 		s->shadeFoldBar->updateGeometry();
@@ -348,7 +348,7 @@ GMTVTK_API int gmtvtk_promote_fv_h(void* handle,
 }
 
 // Number of points currently selected (Ctrl+right-drag) in a point-cloud figure.
-GMTVTK_API int gmtvtk_selection_count(void* handle) {
+GMTVTK_API int gmtvtk_selection_count(void *handle) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s))
 		return 0;
@@ -357,7 +357,7 @@ GMTVTK_API int gmtvtk_selection_count(void* handle) {
 
 // Copy up to `n` selected point ids (0-based, into the cloud passed to view_points) into
 // `out`. Returns the number copied.
-GMTVTK_API int gmtvtk_get_selection(void* handle, int* out, int n) {
+GMTVTK_API int gmtvtk_get_selection(void *handle, int *out, int n) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !out)
 		return 0;
@@ -372,7 +372,7 @@ GMTVTK_API int gmtvtk_get_selection(void* handle, int* out, int n) {
 // Set the visibility of an extra object (dropped/added grid or image) found by its Scene Objects
 // name. Used to add a "Nested grid N" blank grid HIDDEN: it still gets a (unchecked) Scene Objects
 // row, but its surface is not drawn. Re-renders + rebuilds the panel so the checkbox tracks it.
-GMTVTK_API int gmtvtk_set_object_visible(void* handle, const char* name, int vis) {
+GMTVTK_API int gmtvtk_set_object_visible(void *handle, const char *name, int vis) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !name)
 		return 0;
@@ -471,8 +471,8 @@ GMTVTK_API int gmtvtk_add_curtain_file_h(void *handle, const double *px, const d
 // data[(size_t)c*nrows + r]. `headers`, if non-null/non-empty, is the column names joined by
 // TAB ('\t'), one per column (missing/empty -> "C1, C2, ..."). `name` (or null) labels the
 // tab. Returns 1 if shown, 0 if the handle is dead. The data is copied into the table.
-GMTVTK_API int gmtvtk_set_table(void* handle, const char* name, const double* data,
-								int nrows, int ncols, const char* headers) {
+GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *data,
+								int nrows, int ncols, const char *headers) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !s->dataTable)
 		return 0;
@@ -540,8 +540,8 @@ GMTVTK_API int gmtvtk_show_profile_xy(void *handle, const double *x, const doubl
 // Open the window's CURRENT profile/series (whatever its bottom-dock Profile panel shows — a
 // Ctrl-drag elevation profile or a downloaded tide series) in a standalone X,Y plot tool window.
 // The programmatic twin of the panel's right-click "Open in X,Y plot tool". Returns the new
-// XYPlot* handle (opaque), or null on a dead window / no panel / fewer than 2 points.
-GMTVTK_API void* gmtvtk_open_profile_in_xyplot(void* handle) {
+// XYPlot *handle (opaque), or null on a dead window / no panel / fewer than 2 points.
+GMTVTK_API void *gmtvtk_open_profile_in_xyplot(void *handle) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !s->prof)
 		return nullptr;
@@ -574,7 +574,7 @@ GMTVTK_API void gmtvtk_raise(void *handle) {
 
 // Does this window have a primary surface? 0 for a bare empty() launcher (no data yet); used by
 // the drop handler to decide between PROMOTING an empty window vs adding into a populated one.
-GMTVTK_API int gmtvtk_has_surface(void* handle) {
+GMTVTK_API int gmtvtk_has_surface(void *handle) {
 	Scene *s = static_cast<Scene*>(handle);
 	// emptyStart launcher carries a HIDDEN placeholder surf only -> report "no surface" so a dropped
 	// file PROMOTES into a fresh full window (and the launcher is retired) rather than adding in.
@@ -588,12 +588,12 @@ GMTVTK_API int gmtvtk_has_surface(void* handle) {
 // whether the cube axes are actually IN the renderer (an empty launcher carries the axes object but
 // does NOT add it), so it doubles as the "coordinate grid present" invariant. Each extra object is
 // emitted as extraN=kind:name (kind = image | grid). No-op (returns 0) on a dead handle.
-GMTVTK_API int gmtvtk_scene_state(void* handle, char* buf, int cap) {
+GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
 	std::string o;
 	char t[96];
-	auto kvi = [&](const char* k, long v) { o += k; o += '='; o += std::to_string(v); o += ';'; };
-	auto kvd = [&](const char* k, double v) { snprintf(t, sizeof(t), "%s=%.10g;", k, v); o += t; };
+	auto kvi = [&](const char *k, long v) { o += k; o += '='; o += std::to_string(v); o += ';'; };
+	auto kvd = [&](const char *k, double v) { snprintf(t, sizeof(t), "%s=%.10g;", k, v); o += t; };
 	const bool alive = sceneAlive(s);
 	kvi("alive", alive ? 1 : 0);
 	if (alive) {
@@ -639,10 +639,10 @@ GMTVTK_API int gmtvtk_scene_state(void* handle, char* buf, int cap) {
 // a vtkColorTransferFunction, shared by the surface mapper, every LOD tile mapper and the colorbar,
 // so mutating its nodes in place recolours all of them at once. Called from Julia (_recolor) after
 // the colormap chooser picks a name. No-op on a bare image (no surfLut/colorbar).
-GMTVTK_API void gmtvtk_set_cpt(void* handle, const double* cz, const double* crgb, int n) {
+GMTVTK_API void gmtvtk_set_cpt(void *handle, const double *cz, const double *crgb, int n) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !cz || !crgb || n < 2) return;
-	vtkColorTransferFunction* ctf = vtkColorTransferFunction::SafeDownCast(s->surfLut);
+	vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(s->surfLut);
 	if (!ctf) return;                       // only the CTF path supports live recolour
 	ctf->RemoveAllPoints();
 	for (int i = 0; i < n; ++i)
@@ -658,13 +658,13 @@ GMTVTK_API void gmtvtk_set_cpt(void* handle, const double* cz, const double* crg
 // exactly that grid — fixing the old bug where the colormap chooser on any grid's Color Bar row
 // always recoloured the FIRST grid. refreshGridColorbar then rebuilds the legend strip if the
 // recoloured grid is the active (topmost-visible) one. Called from Julia (_recolor_grid).
-GMTVTK_API void gmtvtk_set_cpt_grid(void* handle, int gridSel, const double* cz, const double* crgb, int n) {
+GMTVTK_API void gmtvtk_set_cpt_grid(void *handle, int gridSel, const double *cz, const double *crgb, int n) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !cz || !crgb || n < 2) return;
-	vtkScalarsToColors* lut = nullptr;          // gridSel is the grid's UNIQUE TAG (-1 = base relief)
+	vtkScalarsToColors *lut = nullptr;          // gridSel is the grid's UNIQUE TAG (-1 = base relief)
 	if (gridSel < 0) lut = s->surfLut;
 	else for (auto& ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
-	vtkColorTransferFunction* ctf = vtkColorTransferFunction::SafeDownCast(lut);
+	vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(lut);
 	if (!ctf) return;                         // only the CTF path supports live recolour
 	ctf->RemoveAllPoints();
 	for (int i = 0; i < n; ++i)
@@ -678,14 +678,14 @@ GMTVTK_API void gmtvtk_set_cpt_grid(void* handle, int gridSel, const double* cz,
 // -1 = base relief (s->surfLut), 0..N-1 = the Nth extra grid (its own lut). Lets the test suite assert
 // per-grid colorbar isolation (recolouring grid A must NOT change grid B's colours). Returns 1 on
 // success, 0 if the handle/grid/lut is missing. Not used by the UI — purely for regression tests.
-GMTVTK_API int gmtvtk_grid_rgb_at(void* handle, int gridSel, double z, double* out3) {
+GMTVTK_API int gmtvtk_grid_rgb_at(void *handle, int gridSel, double z, double *out3) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !out3) return 0;
-	vtkScalarsToColors* lut = nullptr;          // gridSel is the grid's UNIQUE TAG (-1 = base relief)
+	vtkScalarsToColors *lut = nullptr;          // gridSel is the grid's UNIQUE TAG (-1 = base relief)
 	if (gridSel < 0) lut = s->surfLut;
 	else for (auto& ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
 	if (!lut) return 0;
-	const unsigned char* c = lut->MapValue(z);   // works for both vtkColorTransferFunction and vtkLookupTable
+	const unsigned char *c = lut->MapValue(z);   // works for both vtkColorTransferFunction and vtkLookupTable
 	out3[0] = c[0] / 255.0; out3[1] = c[1] / 255.0; out3[2] = c[2] / 255.0;
 	return 1;
 }
@@ -694,7 +694,7 @@ GMTVTK_API int gmtvtk_grid_rgb_at(void* handle, int gridSel, double z, double* o
 // EPSG). Julia resolves them via GMT.jl and pushes them here right after the window opens. Storing
 // any of them marks the data as referenced and enables the Geography menu (disabled by default since
 // it needs a reference frame); an all-empty CRS disables it again.
-GMTVTK_API void gmtvtk_set_crs(void* handle, const char* proj4, const char* wkt, int epsg) {
+GMTVTK_API void gmtvtk_set_crs(void *handle, const char *proj4, const char *wkt, int epsg) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	s->crsProj4 = proj4 ? proj4 : "";
@@ -705,14 +705,14 @@ GMTVTK_API void gmtvtk_set_crs(void* handle, const char* proj4, const char* wkt,
 
 // Close a window programmatically (WA_DeleteOnClose -> destroy + bookkeeping). Used to retire an
 // empty launcher once a dropped file has been promoted into a full viewer window.
-GMTVTK_API void gmtvtk_close(void* handle) {
+GMTVTK_API void gmtvtk_close(void *handle) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (sceneAlive(s) && s->win) s->win->close();
 }
 
 // Register a freshly-opened file in the persistent Recent Files list (File > Recent Files).
 // Called from Julia after a successful open. cat: 0 = grid, 1 = image, 2 = dataset.
-GMTVTK_API void gmtvtk_add_recent(const char* path, int cat) {
+GMTVTK_API void gmtvtk_add_recent(const char *path, int cat) {
 	addRecentFile(path, cat);
 }
 
@@ -753,7 +753,7 @@ GMTVTK_API void gmtvtk_set_basemap_callback(JuliaBaseMapFn fn) {
 }
 
 // Set the path to the world logo image painted in the basemap picker (data/etopo4_logo.jpg).
-GMTVTK_API void gmtvtk_set_basemap_logo(const char* path) {
+GMTVTK_API void gmtvtk_set_basemap_logo(const char *path) {
 	g_basemapLogo = QString::fromUtf8(path ? path : "");
 }
 
@@ -772,7 +772,7 @@ GMTVTK_API void gmtvtk_set_tiles_callback(JuliaTilesFn fn) {
 
 // Set the equirectangular world image (data/etopo4.jpg, [-180 180]/[-90 90]) the Tiles-Tool picker
 // crops/zooms as its base. Pushed from Julia (gmtvtk_set_tiles_world) at __init__.
-GMTVTK_API void gmtvtk_set_tiles_world(const char* path) {
+GMTVTK_API void gmtvtk_set_tiles_world(const char *path) {
 	g_tilesWorld = QString::fromUtf8(path ? path : "");
 }
 
@@ -780,7 +780,7 @@ GMTVTK_API void gmtvtk_set_tiles_world(const char* path) {
 // `dlg` (a TilesPicker*), covering [W..E]/[S..N]; painted over the etopo base, under the refined mesh.
 // Called SYNCHRONOUSLY from Julia's op "bg" (so `dlg` is the live picker that issued the request). A
 // bad path / null pixmap is ignored inside setBg.
-GMTVTK_API void gmtvtk_tiles_set_bg(void* dlg, const char* pngpath, double W, double E, double S, double N) {
+GMTVTK_API void gmtvtk_tiles_set_bg(void *dlg, const char *pngpath, double W, double E, double S, double N) {
 	if (!dlg) return;
 	reinterpret_cast<TilesPicker*>(dlg)->map->setBg(QString::fromUtf8(pngpath ? pngpath : ""), W, E, S, N);
 }
@@ -788,8 +788,8 @@ GMTVTK_API void gmtvtk_tiles_set_bg(void* dlg, const char* pngpath, double W, do
 // Append one line to the open Tiles-Tool picker's collapsible "Downloads info" console. Called from
 // Julia (GMT.mosaic's per-tile fetch messages via TILE_LOGGER, plus the download/ready bracket), so the
 // user sees tile activity in the picker itself rather than the iGMT viewer's Errors tab. `dlg` = the
-// live TilesPicker* that issued the request.
-GMTVTK_API void gmtvtk_tiles_log(void* dlg, const char* msg) {
+// live TilesPicker *that issued the request.
+GMTVTK_API void gmtvtk_tiles_log(void *dlg, const char *msg) {
 	if (!dlg || !msg) return;
 	reinterpret_cast<TilesPicker*>(dlg)->logDownload(QString::fromUtf8(msg));
 }
@@ -912,8 +912,8 @@ GMTVTK_API int gmtvtk_add_fault_geom_h(void *handle, const double *xy, int npts,
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Inject a 2-vertex fault line (lon1,lat1)->(lon2,lat2) into the scene so the apply logic has a
 // target without going through the interactive draw tool. Returns the number of fault polygons.
-GMTVTK_API int gmtvtk_fault_add_test(void* scene, double lon1, double lat1, double lon2, double lat2) {
-	Scene* s = (Scene*)scene; if (!s) return 0;
+GMTVTK_API int gmtvtk_fault_add_test(void *scene, double lon1, double lat1, double lon2, double lat2) {
+	Scene *s = (Scene*)scene; if (!s) return 0;
 	Polygon pg; pg.isFault = true; pg.closed = false; pg.name = "Fault 1";
 	pg.v = { { lon1, lat1, 0.0 }, { lon2, lat2, 0.0 } };
 	pg.stack = s->vecSeq++;
@@ -925,8 +925,8 @@ GMTVTK_API int gmtvtk_fault_add_test(void* scene, double lon1, double lat1, doub
 
 // Run the real endpoint-recompute core (the same faultApplyGeom the dialog calls). Writes the new
 // endpoint to out2[0..1] and returns the fault line's vertex count after the apply (0 on failure).
-GMTVTK_API int gmtvtk_fault_apply_test(void* scene, double strike, double len, int geog, double* out2) {
-	Scene* s = (Scene*)scene; if (!s) return 0;
+GMTVTK_API int gmtvtk_fault_apply_test(void *scene, double strike, double len, int geog, double *out2) {
+	Scene *s = (Scene*)scene; if (!s) return 0;
 	double lo = 0, la = 0;
 	if (!faultApplyGeom(s, strike, len, geog != 0, &lo, &la)) return 0;
 	if (out2) { out2[0] = lo; out2[1] = la; }
@@ -936,10 +936,10 @@ GMTVTK_API int gmtvtk_fault_apply_test(void* scene, double strike, double len, i
 
 // test hook: newline-joined text of every label in the Scene Objects panel (lets the test assert
 // the "<fault> — plane" handle row actually exists).
-GMTVTK_API const char* gmtvtk_objrows_test(void* scene) {
+GMTVTK_API const char *gmtvtk_objrows_test(void *scene) {
 	static std::string buf; buf.clear();
-	Scene* s = (Scene*)scene; if (!s || !s->objPanel) return "";
-	for (QLabel* l : s->objPanel->findChildren<QLabel*>()) {
+	Scene *s = (Scene*)scene; if (!s || !s->objPanel) return "";
+	for (QLabel *l : s->objPanel->findChildren<QLabel*>()) {
 		const std::string t = l->text().toStdString();
 		if (!t.empty()) { buf += t; buf += '\n'; }
 	}
@@ -948,8 +948,8 @@ GMTVTK_API const char* gmtvtk_objrows_test(void* scene) {
 
 // test hook: z-range + vertex count of the fault trace line geometry (draped if z spans the relief,
 // a flat chord if ~constant). out[0]=zmin out[1]=zmax out[2]=npts. Returns 1 if a fault line exists.
-GMTVTK_API int gmtvtk_trace_zbounds_test(void* scene, double* out) {
-	Scene* s = (Scene*)scene; if (!s) return 0;
+GMTVTK_API int gmtvtk_trace_zbounds_test(void *scene, double *out) {
+	Scene *s = (Scene*)scene; if (!s) return 0;
 	for (auto& p : s->polys) if (p.isFault && p.linePD) {
 		double b[6] = {0,0,0,0,0,0}; p.linePD->GetBounds(b);
 		if (out) { out[0] = b[4]; out[1] = b[5]; out[2] = (double)p.linePD->GetNumberOfPoints(); }
@@ -959,30 +959,30 @@ GMTVTK_API int gmtvtk_trace_zbounds_test(void* scene, double* out) {
 }
 
 // test hook: flip the flat-2D / 3-D view mode (drives the same sceneSetFlat2D the toolbar uses).
-GMTVTK_API void gmtvtk_set_flat2d_test(void* scene, int on) {
-	Scene* s = (Scene*)scene; if (!s) return;
+GMTVTK_API void gmtvtk_set_flat2d_test(void *scene, int on) {
+	Scene *s = (Scene*)scene; if (!s) return;
 	sceneSetFlat2D(s, on != 0);
 }
 
 // test hooks: open / close the REAL Vertical-elastic-deformation dialog (drives the actual lifecycle,
 // so the test sees whether the plane + handle SURVIVE the dialog closing). open returns 1 if a dialog
 // is up; close fires the destroyed handler (WA_DeleteOnClose).
-GMTVTK_API int gmtvtk_fault_open_dialog_test(void* scene) {
-	Scene* s = (Scene*)scene; if (!s) return 0;
+GMTVTK_API int gmtvtk_fault_open_dialog_test(void *scene) {
+	Scene *s = (Scene*)scene; if (!s) return 0;
 	faultRunDialog(s);
 	return s->elasticDlg ? 1 : 0;
 }
-GMTVTK_API void gmtvtk_fault_close_dialog_test(void* scene) {
-	Scene* s = (Scene*)scene; if (!s || !s->elasticDlg) return;
+GMTVTK_API void gmtvtk_fault_close_dialog_test(void *scene) {
+	Scene *s = (Scene*)scene; if (!s || !s->elasticDlg) return;
 	s->elasticDlg->close();
 }
 
 // Run the REAL faultUpdatePlane (gray surface patch + buried 3-D plane) and report the 3-D plane.
 // out[0]=exists out[1]=npts out[2]=visibility out[3]=zTop out[4]=zBot out[5]=grayVisible.
 // Returns 1 when a 3-D plane actor exists. Lets the Julia test assert the plane is actually built.
-GMTVTK_API int gmtvtk_fault_plane_test(void* scene, double width, double dip, double strike,
-                                       int geog, double* out) {
-	Scene* s = (Scene*)scene; if (!s) return 0;
+GMTVTK_API int gmtvtk_fault_plane_test(void *scene, double width, double dip, double strike,
+                                       int geog, double *out) {
+	Scene *s = (Scene*)scene; if (!s) return 0;
 	faultUpdatePlane(s, width, dip, strike, 90.0, geog != 0);   // rake fixed: this test asserts plane geometry, not arrows
 	for (auto& p : s->polys) if (p.isFault && p.faultPlane3D) {
 		double b[6] = {0,0,0,0,0,0};
@@ -1040,9 +1040,9 @@ GMTVTK_API void gmtvtk_set_earthtide_callback(JuliaEarthTideFn fn) {
 // recomputes the window scales from the image bbox + switches it to a flat-2-D geographic map, then
 // the caller adds the image via gmtvtk_add_surface_h and calls gmtvtk_fit2d. No-op (0) on a window
 // that already has data (caller then just adds the image on top, keeping the current view).
-GMTVTK_API int gmtvtk_frame_for_image_h(void* handle, double x0, double x1, double y0, double y1,
+GMTVTK_API int gmtvtk_frame_for_image_h(void *handle, double x0, double x1, double y0, double y1,
                                         int geographic) {
-	Scene* s = static_cast<Scene*>(handle);
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !s->emptyStart) return 0;
 	double zmin = 0.0, zmax = 1.0, xfac, zfac, ve0;
 	computeScales(geographic, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
@@ -1059,10 +1059,10 @@ GMTVTK_API int gmtvtk_frame_for_image_h(void* handle, double x0, double x1, doub
 // Frame the camera to the scene in flat-2-D top-down. Called after adding image objects into a
 // launcher prepared by gmtvtk_frame_for_image_h (the normal add path does not auto-frame because
 // the hidden placeholder still counts as a surface). Sets the shared "Flat 2D" state + button.
-GMTVTK_API void gmtvtk_fit2d(void* handle) {
-	Scene* s = static_cast<Scene*>(handle);
+GMTVTK_API void gmtvtk_fit2d(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
-	vtkCamera* cam = s->ren->GetActiveCamera();
+	vtkCamera *cam = s->ren->GetActiveCamera();
 	double fp[3]; cam->GetFocalPoint(fp);
 	cam->SetViewUp(0.0, 1.0, 0.0);
 	cam->SetPosition(fp[0], fp[1], fp[2] + 1.0);
@@ -1083,8 +1083,8 @@ GMTVTK_API void gmtvtk_fit2d(void* handle) {
 // surface/axes/colorbar — it leaves s->extras/overlays untouched, so already-added tiles survive),
 // keep xfac UNCHANGED (so the existing image actors stay aligned), then refit the flat-2-D view.
 // No-op (0) on a non-flat or already-covering window. Geographic-only (basemap use).
-GMTVTK_API int gmtvtk_grow_frame_h(void* handle, double x0, double x1, double y0, double y1) {
-	Scene* s = static_cast<Scene*>(handle);
+GMTVTK_API int gmtvtk_grow_frame_h(void *handle, double x0, double x1, double y0, double y1) {
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || s->emptyStart) return 0;
 	const double nx0 = std::min(s->x0, x0), nx1 = std::max(s->x1, x1);
 	const double ny0 = std::min(s->y0, y0), ny1 = std::max(s->y1, y1);
@@ -1097,7 +1097,7 @@ GMTVTK_API int gmtvtk_grow_frame_h(void* handle, double x0, double x1, double y0
 					  zblank, 2, 2, /*blankStart=*/false);
 	surfSetVisibility(s, 0);                         // the z=0 plane is a scaffold (bounds + hover) only:
 	                                                 // hide it so it never shows under/around the tiles
-	vtkCamera* cam = s->ren->GetActiveCamera();      // back to the top-down flat-2-D map view
+	vtkCamera *cam = s->ren->GetActiveCamera();      // back to the top-down flat-2-D map view
 	s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff();
 	double fp[3]; cam->GetFocalPoint(fp);
 	cam->SetViewUp(0.0, 1.0, 0.0);
@@ -1114,8 +1114,8 @@ GMTVTK_API int gmtvtk_grow_frame_h(void* handle, double x0, double x1, double y0
 // Hide the window's base surface plane (keeping its geometry for axis bounds + hover sampling).
 // Used by the basemap path: the promoted flat z=0 plane is only scaffold under the draped tile, so
 // hiding it stops a coloured plane peeking out when the tile is toggled off. Bounds/readout unaffected.
-GMTVTK_API void gmtvtk_hide_surface(void* handle) {
-	Scene* s = static_cast<Scene*>(handle);
+GMTVTK_API void gmtvtk_hide_surface(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	surfSetVisibility(s, 0);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
@@ -1126,7 +1126,7 @@ GMTVTK_API void gmtvtk_hide_surface(void* handle) {
 // It is built through buildAndShow (imageOnly => no colorbar) on a tiny placeholder plane that we
 // then hide, so the window carries the real UI; drop a file (or use the toolbar Open button) to
 // load data, which PROMOTES into a fresh full window (emptyStart -> gmtvtk_has_surface reports 0).
-GMTVTK_API void *gmtvtk_open_empty(const char* title) {
+GMTVTK_API void *gmtvtk_open_empty(const char *title) {
 	double zmin = 0.0, zmax = 1.0;
 	const double x0 = 0.0, x1 = 1.0, y0 = 0.0, y1 = 1.0;
 	float z[4] = {0, 0, 0, 0};
@@ -1178,11 +1178,11 @@ GMTVTK_API void *gmtvtk_open_empty(const char* title) {
 // image buffer, additionally a flat textured drape) actor, register it in the Scene Objects
 // panel, and render. Aligns with the window's base scale (xfac/zfac/VE). `name` labels the row.
 // Returns 1 on success, 0 if the handle is dead / inputs invalid.
-GMTVTK_API int gmtvtk_add_surface_h(void* handle, const float* z, int nx, int ny,
+GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny,
 									double x0, double x1, double y0, double y1,
-									const double* cz, const double* crgb, int ncolor,
-									const unsigned char* img, int iw, int ih, int ibands,
-									int image_only, const char* name) {
+									const double *cz, const double *crgb, int ncolor,
+									const unsigned char *img, int iw, int ih, int ibands,
+									int image_only, const char *name) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
@@ -1298,12 +1298,12 @@ GMTVTK_API int gmtvtk_add_surface_h(void* handle, const float* z, int nx, int ny
 // data and rebuild the scene through buildSceneContent — the EXACT same data-build path a fresh
 // view_grid uses — so there is nothing to reproduce and nothing to drift. If the window already
 // has a surface (not an empty launcher) we just add the surface as an extra. Returns 1 / 0.
-GMTVTK_API int gmtvtk_promote_surface_h(void* handle, const float* z, int nx, int ny,
+GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, int ny,
 										double x0, double x1, double y0, double y1, int geographic,
-										const double* cz, const double* crgb, int ncolor,
-										const unsigned char* img, int iw, int ih, int ibands,
-										int image_only, const char* name) {
-	Scene* s = static_cast<Scene*>(handle);
+										const double *cz, const double *crgb, int ncolor,
+										const unsigned char *img, int iw, int ih, int ibands,
+										int image_only, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
 	if (!s->emptyStart)   // already a real window -> ordinary "add into existing window"
@@ -1331,7 +1331,7 @@ GMTVTK_API int gmtvtk_promote_surface_h(void* handle, const float* z, int nx, in
 	// with tcoords (pd) so the texture can sit on it. buildSceneContent removes the launcher's
 	// placeholder content and rebuilds everything (surface, axes, colorbar, default 3-D view, ...).
 	vtkSmartPointer<vtkPolyData> pd;
-	const float* gz = nullptr; int gnx = 0, gny = 0;
+	const float *gz = nullptr; int gnx = 0, gny = 0;
 	if (hasImg) {
 		double zlo = zmin, zhi = zmax;
 		pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zlo, zhi, /*triangulate=*/true, /*wantTC=*/true);
@@ -1362,7 +1362,7 @@ GMTVTK_API int gmtvtk_promote_surface_h(void* handle, const float* z, int nx, in
 
 	// Both a grid and a bare image open in top-down flat-2D (matching gmtvtk_view_grid): grids as a
 	// shaded-relief map, images as the textured plane. The grid branch saves the 3-D view first.
-	vtkCamera* cam = s->ren->GetActiveCamera();
+	vtkCamera *cam = s->ren->GetActiveCamera();
 	if (imageOnly) {
 		s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff();
 		double fp[3]; cam->GetFocalPoint(fp);
@@ -1390,7 +1390,7 @@ GMTVTK_API int gmtvtk_promote_surface_h(void* handle, const float* z, int nx, in
 		// and what the Surface row click then un-folds. Without this the dock stays permanently hidden
 		// when a grid is opened via Recent Files / drop into the launcher.
 		if (s->shadeDock && s->shadeFoldBar) {
-			if (QWidget* body = s->shadeDock->widget()) body->setVisible(false);
+			if (QWidget *body = s->shadeDock->widget()) body->setVisible(false);
 			s->shadeFoldBar->folded    = true;
 			s->shadeFoldBar->openWidth = 240;
 			s->shadeFoldBar->updateGeometry();
@@ -1416,7 +1416,7 @@ GMTVTK_API int gmtvtk_process_events(void) {
 }
 
 // Save a PNG of the most-recent window (for verification/offscreen capture).
-GMTVTK_API int gmtvtk_save_png(const char* path) {
+GMTVTK_API int gmtvtk_save_png(const char *path) {
 	if (!g_lastRW) return 0;
 	vtkNew<vtkWindowToImageFilter> w2i;
 	w2i->SetInput(g_lastRW);
@@ -1432,10 +1432,10 @@ GMTVTK_API int gmtvtk_save_png(const char* path) {
 
 // Orbit a window's camera (azimuth/elevation degrees) + re-render. For scripted verification
 // from a chosen view (the interactive user does this with the mouse).
-GMTVTK_API void gmtvtk_orbit(void* handle, double az, double el, double zoom) {
-	Scene* s = static_cast<Scene*>(handle);
+GMTVTK_API void gmtvtk_orbit(void *handle, double az, double el, double zoom) {
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
-	vtkCamera* cam = s->ren->GetActiveCamera();
+	vtkCamera *cam = s->ren->GetActiveCamera();
 	cam->Azimuth(az);
 	cam->Elevation(el);
 	cam->OrthogonalizeViewUp();
@@ -1448,10 +1448,10 @@ GMTVTK_API void gmtvtk_orbit(void* handle, double az, double el, double zoom) {
 // Sets the stereo TYPE to anaglyph first so it renders on a normal monitor (VTK's default
 // CrystalEyes type needs quad-buffer hardware/shutter glasses and shows nothing without them).
 // Returns the new state: 1 = on, 0 = off, -1 = dead handle.
-GMTVTK_API int gmtvtk_set_stereo(void* handle, int on) {
-	Scene* s = static_cast<Scene*>(handle);
+GMTVTK_API int gmtvtk_set_stereo(void *handle, int on) {
+	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return -1;
-	vtkRenderWindow* rw = s->widget->renderWindow();
+	vtkRenderWindow *rw = s->widget->renderWindow();
 	const int want = (on < 0) ? (rw->GetStereoRender() ? 0 : 1) : (on ? 1 : 0);
 	rw->SetStereoTypeToAnaglyph();
 	rw->SetStereoRender(want);
@@ -1466,7 +1466,7 @@ GMTVTK_API int gmtvtk_set_stereo(void* handle, int on) {
 // ============================================================================
 
 // Open an empty X,Y plot window (non-blocking; pump gmtvtk_process_events). Returns
-// the opaque XYPlot* handle; add curves with gmtvtk_xyplot_add_series.
+// the opaque XYPlot *handle; add curves with gmtvtk_xyplot_add_series.
 GMTVTK_API void *gmtvtk_xyplot_open(const char *title) {
 	return buildXYPlot(title);
 }
@@ -1681,8 +1681,8 @@ GMTVTK_API void gmtvtk_xyplot_set_new_callback(JuliaXYNewFn fn) {
 }
 
 // Open a blank X,Y plot window exactly as the 3-D viewer's Tools > X,Y plot menu does (opens it in
-// C++ AND registers the Julia mirror via the new-window callback). Returns the XYPlot* handle.
-GMTVTK_API void* gmtvtk_open_xyplot_from_host(void) {
+// C++ AND registers the Julia mirror via the new-window callback). Returns the XYPlot *handle.
+GMTVTK_API void *gmtvtk_open_xyplot_from_host(void) {
 	return xyOpenBlankFromHost();
 }
 

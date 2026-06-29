@@ -1,29 +1,29 @@
 // (Julia) pumps the loop via gmtvtk_process_events so the REPL stays interactive.
 #include "_app_icon.h"               // embedded iGMT icon bytes (kAppIconPng / kAppIconPngLen)
-static QApplication* g_app = nullptr;
+static QApplication *g_app = nullptr;
 static int           g_openWindows = 0;
-static vtkRenderWindow* g_lastRW = nullptr;   // most-recent window, for gmtvtk_save_png
-static Scene*           g_lastScene = nullptr;   // most-recent scene, for gmtvtk_add_overlay
+static vtkRenderWindow *g_lastRW = nullptr;   // most-recent window, for gmtvtk_save_png
+static Scene *g_lastScene = nullptr;   // most-recent scene, for gmtvtk_add_overlay
 
 // Julia console callback. The viewer lives IN-PROCESS in the Julia session, so a console
 // dock can hand a typed command straight back to Julia to eval in Main. `scene` is the
 // window's own Scene* (so the callback can bind `fig` to it); `cmd` is the line typed;
 // the result text is written into `outbuf` (capacity `outcap`); returns its length (or -1
 // if no callback registered). Set from Julia via gmtvtk_set_julia_eval.
-typedef int (*JuliaEvalFn)(void* scene, const char* cmd, char* outbuf, int outcap);
+typedef int (*JuliaEvalFn)(void *scene, const char *cmd, char *outbuf, int outcap);
 static JuliaEvalFn g_juliaEval = nullptr;
 
 // File drag-and-drop: a window receives a dropped file and hands its local path to Julia
 // (g_juliaDrop), which reads it (gmtread) and views it in a NEW window. Set via
 // gmtvtk_set_drop_callback. nullptr -> drops ignored.
-typedef void (*JuliaDropFn)(void* scene, const char* path);
+typedef void (*JuliaDropFn)(void *scene, const char *path);
 static JuliaDropFn g_juliaDrop = nullptr;
 
 // World Topo Tiles basemap picker (port of Mirone's bg_map.m). The "Base Map" menubar button opens
 // a tile picker; a clicked tile's geographic region ("W/E/S/N/wrap") is handed to Julia (g_juliaBaseMap),
 // which crops data/etopo4.jpg and adds it as a referenced flat image. g_basemapLogo is the path to
 // the world logo image painted in the picker, pushed from Julia via gmtvtk_set_basemap_logo.
-typedef void (*JuliaBaseMapFn)(void* scene, const char* region);
+typedef void (*JuliaBaseMapFn)(void *scene, const char *region);
 static JuliaBaseMapFn g_juliaBaseMap = nullptr;
 static QString        g_basemapLogo;
 static QString        g_basemapIcon;   // path to the Base Map toolbar-button icon (data/basemap_icon.png)
@@ -34,7 +34,7 @@ static QString        g_basemapIcon;   // path to the Base Map toolbar-button ic
 // it in a new viewer; op "bg" (Phase 2) fetches a coarser mosaic for the current view and pushes it back.
 // `dlg` is the picker (TilesPicker*) so Julia can call back into it. g_tilesWorld is the path to the
 // equirectangular world image (data/etopo4.jpg) the picker crops/zooms as its base, pushed from Julia.
-typedef void (*JuliaTilesFn)(void* scene, void* dlg, const char* params);
+typedef void (*JuliaTilesFn)(void *scene, void *dlg, const char *params);
 static JuliaTilesFn g_juliaTiles = nullptr;
 static QString      g_tilesWorld;
 
@@ -43,14 +43,14 @@ static QString      g_tilesWorld;
 // (g_juliaBgRegion), which opens a fresh window framed to those limits as a blank white 2-D map
 // (axes only, ready for coastlines/overlays). Set via gmtvtk_set_bgregion_callback; nullptr -> the
 // menu entry reports "callback not registered".
-typedef void (*JuliaBgRegionFn)(void* scene, const char* region);
+typedef void (*JuliaBgRegionFn)(void *scene, const char *region);
 static JuliaBgRegionFn g_juliaBgRegion = nullptr;
 
 // New Window (File > New Window). Opens a fresh empty iGMT launcher. Routed through Julia
 // (g_juliaNewWindow) rather than calling gmtvtk_open_empty directly so the new window is tracked
 // in the Julia figure registry — the basis for the (future) inter-window data exchange. nullptr ->
 // the menu entry reports "callback not registered". `scene` is the window the menu was clicked in.
-typedef void (*JuliaNewWindowFn)(void* scene);
+typedef void (*JuliaNewWindowFn)(void *scene);
 static JuliaNewWindowFn g_juliaNewWindow = nullptr;
 
 // Geography menu (Plot coastline / political boundaries / rivers). A leaf action computes the
@@ -58,27 +58,27 @@ static JuliaNewWindowFn g_juliaNewWindow = nullptr;
 // "<kind>/<res>/W/E/S/N" to Julia (g_juliaGeo), which runs GMT.coast and adds the resulting
 // GMTdataset as a line overlay. kind = "coast" (others reserved); res = l/i/h/f. Set via
 // gmtvtk_set_geography_callback. nullptr -> the leaf falls back to a "not implemented" status.
-typedef void (*JuliaGeoFn)(void* scene, const char* req);
+typedef void (*JuliaGeoFn)(void *scene, const char *req);
 static JuliaGeoFn g_juliaGeo = nullptr;
 
 // 3-D Bodies toolbar flyout. Each entry hands a GMT solid NAME ("cube"/"sphere"/"torus"/"cylinder"/
 // "tetrahedron"/… — the SOLIDS catalogue keys in fv.jl) to Julia (g_juliaSolid), which builds the
 // named GMTfv and opens it with view_fv. Set via gmtvtk_set_solid_callback; nullptr -> the buttons
 // silently do nothing (feature reads as "not wired" until the DLL is rebuilt + Julia restarted).
-typedef void (*JuliaSolidFn)(void* scene, const char* name);
+typedef void (*JuliaSolidFn)(void *scene, const char *name);
 static JuliaSolidFn g_juliaSolid = nullptr;
 
 // grdsample tool (GMT menu). Hands "input;output;I;R;n;r;T" to Julia:
 // input=input grid, output=output filename, I=inc, R=W/E/S/N, n=interp (+c for clipping),
 // r=registration (g/p), T=toggle (1/0). Julia runs GMT.grdsample and views the result.
-typedef void (*JuliaGrdsampleFn)(void* scene, const char* params);
+typedef void (*JuliaGrdsampleFn)(void *scene, const char *params);
 static JuliaGrdsampleFn g_juliaGrdsample = nullptr;
 
 // NSWING tsunami modelling tool (Geophysics menu). Port of Mirone's swan_options.m driving the nswing
 // executable. The dialog (NswingDialog, 70_window.cpp) hands a newline-separated "key=value" block to
 // Julia (g_juliaNswing), which assembles the nswing command line (-G/-Z/-A/-n, -M, -X, -N, -t, …) and
 // launches it. nullptr -> the RUN button reports "callback not registered".
-typedef void (*JuliaNswingFn)(void* scene, const char* params);
+typedef void (*JuliaNswingFn)(void *scene, const char *params);
 static JuliaNswingFn g_juliaNswing = nullptr;
 
 // Vertical elastic deformation (Geophysics menu). Port of Mirone's Okada (1985) surface-deformation
@@ -86,7 +86,7 @@ static JuliaNswingFn g_juliaNswing = nullptr;
 //   "action;coord;len;wid;strike;dip;depth;depthTop;rake;slip;hide;scc;N;q;mu;R;I"
 // to Julia (g_juliaElastic) on Compute / Save fault. The compute side is not implemented yet;
 // nullptr -> the menu reports "callback not registered".
-typedef void (*JuliaElasticFn)(void* scene, const char* params);
+typedef void (*JuliaElasticFn)(void *scene, const char *params);
 static JuliaElasticFn g_juliaElastic = nullptr;
 
 // Fault-trace endpoint recompute (Vertical elastic deformation dialog). Port of Mirone's
@@ -105,14 +105,14 @@ static JuliaFaultGeomFn g_juliaFaultGeom = nullptr;
 // The host menu opens a QFileDialog and hands the chosen path to Julia (g_juliaImportFault), which
 // parses the file, rebuilds each downdip row's up-dip trace with GMT.geod and calls
 // gmtvtk_add_fault_h back per trace. nullptr -> the menu reports "callback not registered".
-typedef void (*JuliaImportFaultFn)(void* scene, const char* path);
+typedef void (*JuliaImportFaultFn)(void *scene, const char *path);
 static JuliaImportFaultFn g_juliaImportFault = nullptr;
 
 // grdsample "OR Ref grid" picker (and grid-metadata prefill). Given a grid/image path, Julia
 // gmtreads its header and returns "W/E/S/N/xinc/yinc/nx/ny" (empty string on failure) so the
 // dialog can fill the Griding Line Geometry boxes. The returned pointer is owned by Julia (a
 // module-global buffer rooted until the next call); C++ copies it immediately, never frees it.
-typedef const char* (*JuliaGridMetaFn)(const char* path);
+typedef const char* (*JuliaGridMetaFn)(const char *path);
 static JuliaGridMetaFn g_juliaGridMeta = nullptr;
 
 // grdsample Region box cross-field recompute (port of Mirone's dim_funs.m, implemented in Julia).
@@ -121,7 +121,7 @@ static JuliaGridMetaFn g_juliaGridMeta = nullptr;
 //   state = "xMin/xMax/yMin/yMax/xInc/yInc/nCols/nRows/oneOrZero/xMinOr/xMaxOr/yMinOr/yMaxOr/dms"
 // Returns the 8 recomputed fields "xMin/xMax/yMin/yMax/xInc/yInc/nCols/nRows" (same Julia-owned
 // buffer convention as JuliaGridMetaFn — C++ copies immediately, never frees).
-typedef const char* (*JuliaDimFunFn)(const char* which, const char* state);
+typedef const char* (*JuliaDimFunFn)(const char *which, const char *state);
 static JuliaDimFunFn g_juliaDimFun = nullptr;
 
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
@@ -130,12 +130,12 @@ static JuliaDimFunFn g_juliaDimFun = nullptr;
 // path = the chosen file. Julia writes the window's primary GMTgrid/GMTimage via GMT.gmtwrite
 // (netCDF/Surfer) or GMT.gdalwrite (the rest). Set via gmtvtk_set_save_callback; nullptr -> the menu
 // entry reports "callback not registered".
-typedef void (*JuliaSaveFn)(void* scene, const char* req);
+typedef void (*JuliaSaveFn)(void *scene, const char *req);
 static JuliaSaveFn g_juliaSave = nullptr;
 
 // One selectable output format for the Save dialog: a human label, the short code handed to Julia,
 // the QFileDialog filter, and the canonical extension (used to seed/auto-suffix the file name).
-struct SaveFmt { const char* label; const char* code; const char* filter; const char* ext; };
+struct SaveFmt { const char *label; const char *code; const char *filter; const char *ext; };
 // Grids: netCDF + Surfer 6 go through GMT.gmtwrite; the rest through GMT.gdalwrite (driver by ext).
 static const SaveFmt kGridFmts[] = {
 	{ "netCDF grid",   "nc",     "netCDF grid (*.nc *.grd)", ".nc"  },
@@ -161,8 +161,8 @@ static const SaveFmt kImageFmts[] = {
 // runs the native save dialog filtered to that format; changing the format re-suffixes the path).
 // On accept, `code` + `path` carry the choice. isGrid selects the grid vs image format list.
 struct SaveFormatDialog : QDialog {
-	const SaveFmt* fmts; int nfmt;
-	QComboBox* combo; QLineEdit* pathEdit; QPushButton* okBtn;
+	const SaveFmt *fmts; int nfmt;
+	QComboBox *combo; QLineEdit *pathEdit; QPushButton *okBtn;
 	QString code, path;
 
 	static QString sanitize(const QString& n) {                 // object label -> safe file stem
@@ -177,30 +177,30 @@ struct SaveFormatDialog : QDialog {
 		if (dot > sep) p = p.left(dot);
 		pathEdit->setText(p + fmts[combo->currentIndex()].ext);
 	}
-	SaveFormatDialog(QWidget* parent, bool isGrid, const QString& objName) : QDialog(parent) {
+	SaveFormatDialog(QWidget *parent, bool isGrid, const QString& objName) : QDialog(parent) {
 		fmts = isGrid ? kGridFmts : kImageFmts;
 		nfmt = isGrid ? (int)(sizeof(kGridFmts) / sizeof(kGridFmts[0]))
 		              : (int)(sizeof(kImageFmts) / sizeof(kImageFmts[0]));
 		setWindowTitle(isGrid ? "Save grid" : "Save image");
-		QVBoxLayout* v = new QVBoxLayout(this);
+		QVBoxLayout *v = new QVBoxLayout(this);
 		if (!objName.isEmpty()) v->addWidget(new QLabel("Object:  " + objName, this));
 
-		QHBoxLayout* fr = new QHBoxLayout();
+		QHBoxLayout *fr = new QHBoxLayout();
 		fr->addWidget(new QLabel("Format:", this));
 		combo = new QComboBox(this);
 		for (int i = 0; i < nfmt; ++i) combo->addItem(fmts[i].label);
 		fr->addWidget(combo, 1);
 		v->addLayout(fr);
 
-		QHBoxLayout* pr = new QHBoxLayout();
+		QHBoxLayout *pr = new QHBoxLayout();
 		pr->addWidget(new QLabel("File:", this));
 		pathEdit = new QLineEdit(this); pathEdit->setMinimumWidth(300);
 		pr->addWidget(pathEdit, 1);
-		QPushButton* browse = new QPushButton("Browse…", this);
+		QPushButton *browse = new QPushButton("Browse…", this);
 		pr->addWidget(browse, 0);
 		v->addLayout(pr);
 
-		QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
+		QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
 		v->addWidget(bb);
 		okBtn = bb->button(QDialogButtonBox::Save);
 		okBtn->setEnabled(false);
@@ -229,7 +229,7 @@ struct SaveFormatDialog : QDialog {
 // Open the Save dialog for a scene object and hand the choice to Julia (g_juliaSave) as
 // "<kind>;<fmt>;<path>;<name>". kind = "grid" | "image"; name identifies which object (empty for the
 // File-menu "save the window's grid/image"). nullptr callback -> a status-bar notice.
-static void saveObjectDialog(Scene* s, const char* kind, const QString& name) {
+static void saveObjectDialog(Scene *s, const char *kind, const QString& name) {
 	if (!g_juliaSave) {
 		if (s && s->win) s->win->statusBar()->showMessage("Save: callback not registered", 3000);
 		return;
@@ -245,13 +245,13 @@ static void saveObjectDialog(Scene* s, const char* kind, const QString& name) {
 // decide which per-object "Save…" to show. A grid = the primary relief surface (not a bare image,
 // not the empty launcher) or any non-image extra. An image = the bare primary image or any image
 // extra (drops / basemap / tiles / iview_image_obj).
-static bool sceneHasGrid(Scene* s) {
+static bool sceneHasGrid(Scene *s) {
 	if (!s) return false;
 	if (s->surf && !s->emptyStart && !s->imageOnly) return true;
 	for (auto& ex : s->extras) if (!ex.isImage) return true;
 	return false;
 }
-static bool sceneHasImage(Scene* s) {
+static bool sceneHasImage(Scene *s) {
 	if (!s) return false;
 	if (s->drape && s->imageOnly) return true;            // bare image opened by view_image
 	for (auto& ex : s->extras) if (ex.isImage) return true;
@@ -262,7 +262,7 @@ static bool sceneHasImage(Scene* s) {
 // "Download Mareg (2 days)" / "Download Mareg (Calendar)" — that hand (mode, station) to Julia,
 // which opens the Mareg download window. mode = "2days" | "calendar"; station = the clicked star's
 // "Name:/Code:/Country:" hover block. Set via gmtvtk_set_tides_callback; nullptr -> entries hidden.
-typedef void (*JuliaTidesFn)(void* scene, const char* mode, const char* station);
+typedef void (*JuliaTidesFn)(void *scene, const char *mode, const char *station);
 static JuliaTidesFn g_juliaTides = nullptr;
 
 // Earth-tides dialog (Geography > Earth Tides, port of Mirone's earth_tides). The dialog hands
@@ -270,14 +270,14 @@ static JuliaTidesFn g_juliaTides = nullptr;
 // mode = "series" | "grid"; comp = subset of "VEN" (Vertical/East/North). Julia runs
 // GMT.earthtide and either opens an X,Y window (time series) or adds a grid to the scene. Set via
 // gmtvtk_set_earthtide_callback; nullptr -> the menu entry reports "callback not registered".
-typedef void (*JuliaEarthTideFn)(void* scene, const char* req);
+typedef void (*JuliaEarthTideFn)(void *scene, const char *req);
 static JuliaEarthTideFn g_juliaEarthTide = nullptr;
 
-// Live scenes, keyed by the Scene* returned to the host as an opaque figure handle.
+// Live scenes, keyed by the Scene *returned to the host as an opaque figure handle.
 // A handle is valid only while its window is open; the window-destroyed lambda erases
 // it here so a stale handle from a closed figure is rejected instead of dereferenced.
 static std::unordered_set<Scene*> g_scenes;
-static bool sceneAlive(Scene* s) { return s && g_scenes.count(s) != 0; }
+static bool sceneAlive(Scene *s) { return s && g_scenes.count(s) != 0; }
 
 // iGMT application/window icon, decoded once from the embedded PNG (see _app_icon.h).
 static QIcon appIcon() {
@@ -296,11 +296,11 @@ static QIcon appIcon() {
 class EnterDefocusFilter : public QObject {
 public:
 	using QObject::QObject;
-	bool eventFilter(QObject* obj, QEvent* ev) override {
+	bool eventFilter(QObject *obj, QEvent *ev) override {
 		if (ev->type() == QEvent::KeyPress) {
 			const int key = static_cast<QKeyEvent*>(ev)->key();
 			if (key == Qt::Key_Return || key == Qt::Key_Enter)
-				if (auto* le = qobject_cast<QLineEdit*>(obj)) le->clearFocus();
+				if (auto *le = qobject_cast<QLineEdit*>(obj)) le->clearFocus();
 		}
 		return QObject::eventFilter(obj, ev);
 	}
@@ -312,7 +312,7 @@ static void ensureApp() {
 	// a host, so fabricate a persistent dummy argv.
 	static int   s_argc = 1;
 	static char  s_arg0[] = "gmtvtk";
-	static char* s_argv[] = { s_arg0, nullptr };
+	static char *s_argv[] = { s_arg0, nullptr };
 	QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
 	g_app = new QApplication(s_argc, s_argv);
 	g_app->setWindowIcon(appIcon());   // taskbar / app-wide default icon
@@ -328,12 +328,12 @@ static void ensureApp() {
 //              pinned to the focal point by PlaceCB, follows on the next render.
 // Observed at priority 10; sets the abort flag per-event (so a plain mouse-move with the
 // middle button up still reaches the coordinate readout + gizmo hover).
-void MiddleCB(vtkObject* caller, unsigned long eid, void* clientData, void*) {
-	Scene* s = static_cast<Scene*>(clientData);
-	vtkRenderWindowInteractor* rwi = vtkRenderWindowInteractor::SafeDownCast(caller);
+void MiddleCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
+	Scene *s = static_cast<Scene*>(clientData);
+	vtkRenderWindowInteractor *rwi = vtkRenderWindowInteractor::SafeDownCast(caller);
 	if (!s || !rwi) return;
-	vtkRenderer* ren = s->ren;
-	vtkCamera* cam = (ren && ren->GetActiveCamera()) ? ren->GetActiveCamera() : nullptr;
+	vtkRenderer *ren = s->ren;
+	vtkCamera *cam = (ren && ren->GetActiveCamera()) ? ren->GetActiveCamera() : nullptr;
 	if (!ren || !cam) return;
 	bool handled = false;
 
@@ -395,20 +395,20 @@ void MiddleCB(vtkObject* caller, unsigned long eid, void* clientData, void*) {
 // installed on the widget — the same event path left-drag/right-click already use.
 class MidPanFilter : public QObject {
 public:
-	Scene* s = nullptr;
+	Scene *s = nullptr;
 	bool   down = false, moved = false;
 	double lastX = 0, lastY = 0, pressX = 0, pressY = 0;
-	explicit MidPanFilter(Scene* sc, QObject* parent) : QObject(parent), s(sc) {}
+	explicit MidPanFilter(Scene *sc, QObject *parent) : QObject(parent), s(sc) {}
 protected:
 	// VTK display coords are bottom-up device pixels; Qt gives top-down logical pixels.
-	void devPos(QMouseEvent* me, double& dx, double& dy) {
+	void devPos(QMouseEvent *me, double& dx, double& dy) {
 		const double r = s->widget->devicePixelRatioF();
 		const int    H = s->widget->renderWindow()->GetSize()[1];
 		dx = me->position().x() * r;
 		dy = H - me->position().y() * r;
 	}
 	void panTo(double ox, double oy, double nx, double ny) {
-		vtkRenderer* ren = s->ren; vtkCamera* cam = ren->GetActiveCamera(); if (!cam) return;
+		vtkRenderer *ren = s->ren; vtkCamera *cam = ren->GetActiveCamera(); if (!cam) return;
 		double fp[3]; cam->GetFocalPoint(fp);
 		ren->SetWorldPoint(fp[0], fp[1], fp[2], 1.0); ren->WorldToDisplay();
 		const double depth = ren->GetDisplayPoint()[2];
@@ -426,7 +426,7 @@ protected:
 		s->widget->renderWindow()->Render();
 	}
 	void recenter(double x, double y) {
-		vtkRenderer* ren = s->ren; vtkCamera* cam = ren->GetActiveCamera(); if (!cam) return;
+		vtkRenderer *ren = s->ren; vtkCamera *cam = ren->GetActiveCamera(); if (!cam) return;
 		vtkNew<vtkCellPicker> pk; pk->SetTolerance(0.0005);
 		pk->PickFromListOn(); pk->AddPickList(surfProp(s));
 		if (pk->Pick(x, y, 0.0, ren)) {
@@ -439,11 +439,11 @@ protected:
 			s->widget->renderWindow()->Render();
 		}
 	}
-	bool eventFilter(QObject* obj, QEvent* ev) override {
+	bool eventFilter(QObject *obj, QEvent *ev) override {
 		if (!s || !s->ren) return QObject::eventFilter(obj, ev);
 		const QEvent::Type t = ev->type();
 		if (t == QEvent::MouseButtonPress) {
-			QMouseEvent* me = static_cast<QMouseEvent*>(ev);
+			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
 			if (me->button() == Qt::MiddleButton) {
 				fprintf(stderr, "[mid] PRESS (qt filter)\n"); fflush(stderr);
 				down = true; moved = false;
@@ -452,7 +452,7 @@ protected:
 			}
 		}
 		else if (t == QEvent::MouseMove && down) {
-			QMouseEvent* me = static_cast<QMouseEvent*>(ev);
+			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
 			double x, y; devPos(me, x, y);
 			if (std::abs(x - pressX) > 2 || std::abs(y - pressY) > 2) moved = true;
 			panTo(lastX, lastY, x, y);
@@ -460,7 +460,7 @@ protected:
 			return true;
 		}
 		else if (t == QEvent::MouseButtonRelease && down) {
-			QMouseEvent* me = static_cast<QMouseEvent*>(ev);
+			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
 			if (me->button() == Qt::MiddleButton) {
 				if (!moved) { double x, y; devPos(me, x, y); recenter(x, y); }
 				down = false;
@@ -472,19 +472,19 @@ protected:
 };
 
 // Accept dropped files on a window: on a URL drop, hand each LOCAL file path + THIS window's
-// Scene* to Julia (g_juliaDrop), which reads the file and adds it INTO this window. One filter
+// Scene *to Julia (g_juliaDrop), which reads the file and adds it INTO this window. One filter
 // per window so it knows which Scene received the drop.
 struct DropFilter : QObject {
-	Scene* s = nullptr;
-	explicit DropFilter(Scene* sc) : s(sc) {}
+	Scene *s = nullptr;
+	explicit DropFilter(Scene *sc) : s(sc) {}
 protected:
-	bool eventFilter(QObject* obj, QEvent* ev) override {
+	bool eventFilter(QObject *obj, QEvent *ev) override {
 		const QEvent::Type t = ev->type();
 		if (t == QEvent::DragEnter || t == QEvent::DragMove) {
-			auto* de = static_cast<QDragMoveEvent*>(ev);
+			auto *de = static_cast<QDragMoveEvent*>(ev);
 			if (de->mimeData() && de->mimeData()->hasUrls()) { de->acceptProposedAction(); return true; }
 		} else if (t == QEvent::Drop) {
-			auto* de = static_cast<QDropEvent*>(ev);
+			auto *de = static_cast<QDropEvent*>(ev);
 			if (de->mimeData() && de->mimeData()->hasUrls()) {
 				for (const QUrl& u : de->mimeData()->urls()) {
 					const QString f = u.toLocalFile();
@@ -503,8 +503,8 @@ protected:
 
 // Wire file drag-and-drop into a window (called for EVERY viewer window). The widget must
 // accept drops AND have the filter installed so QEvent::Drop is delivered + intercepted.
-static void enableFileDrops(QMainWindow* win, QWidget* widget, Scene* s) {
-	DropFilter* filt = new DropFilter(s);   // one per window (carries its Scene*); freed with the window
+static void enableFileDrops(QMainWindow *win, QWidget *widget, Scene *s) {
+	DropFilter *filt = new DropFilter(s);   // one per window (carries its Scene*); freed with the window
 	filt->setParent(win);                   // parented to the window -> destroyed with it
 	win->setAcceptDrops(true);
 	widget->setAcceptDrops(true);

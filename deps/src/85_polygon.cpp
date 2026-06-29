@@ -124,6 +124,21 @@ static QIcon makeTextIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// Info-tool icon: a stylised lowercase serif 'i' in a soft rounded blue badge — the universal
+// "information" glyph for the grdinfo / gdalinfo flyout. Dot (tittle) + stem in white for contrast.
+static QIcon makeInfoIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(Qt::NoPen);
+	p.setBrush(QColor(45, 110, 190));
+	p.drawRoundedRect(QRectF(3, 3, 18, 18), 5, 5);            // rounded badge backdrop
+	p.setBrush(Qt::white);
+	p.drawEllipse(QPointF(12, 8.5), 1.7, 1.7);               // tittle (the dot)
+	p.drawRoundedRect(QRectF(10.5, 11, 3, 7), 1.2, 1.2);     // stem
+	p.end(); return QIcon(pm);
+}
+
 // ── 3-D Bodies flyout icons (cube / sphere / torus / cylinder + a generic polyhedron) ──────
 // Small isometric glyphs for the "3-D Bodies" toolbar flyout. Each is a stylised wireframe of the
 // GMT solid the entry builds; the generic polyhedron stands in for the platonic solids and the
@@ -213,7 +228,7 @@ static QIcon makeViewModeIcon(bool twoD) {
 // Cursor (mx,my device px) -> a point ON the scene, returned in TRUE coords. Mirrors the hover
 // ray-cast in onMouseMove: march the unprojected ray against the grid heightfield (sampleZ), the
 // flat image plane, or the FV/point cellpicker. Returns false if the ray misses the scene.
-static bool polyPickWorld(Scene* s, int mx, int my, double outTrue[3]) {
+static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 	double nr[4], fr[4];
 	s->ren->SetDisplayPoint((double)mx, (double)my, 0.0); s->ren->DisplayToWorld();
 	for (int i = 0; i < 4; ++i) nr[i] = s->ren->GetWorldPoint()[i];
@@ -278,15 +293,15 @@ static bool polyPickWorld(Scene* s, int mx, int my, double outTrue[3]) {
 
 // TRUE-coord vertex -> display px (device, bottom-up; matches GetEventPosition), using the same
 // scaled space the actors live in. For hit-testing handles / polygon edges against a click.
-static void polyToDisplay(Scene* s, const std::array<double,3>& v, double d[2]) {
+static void polyToDisplay(Scene *s, const std::array<double,3>& v, double d[2]) {
 	s->ren->SetWorldPoint(v[0]*s->xfac, v[1], v[2]*s->zfac*s->ve, 1.0);
 	s->ren->WorldToDisplay();
-	const double* dp = s->ren->GetDisplayPoint();
+	const double *dp = s->ren->GetDisplayPoint();
 	d[0] = dp[0]; d[1] = dp[1];
 }
 
 // Common look for a 3-D polyline / preview actor sitting above the relief.
-static vtkSmartPointer<vtkActor> polyMakeLineActor(Scene* s, vtkPolyData* pd, double r, double g, double b) {
+static vtkSmartPointer<vtkActor> polyMakeLineActor(Scene *s, vtkPolyData *pd, double r, double g, double b) {
 	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pd); map->ScalarVisibilityOff();
 	vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
 	map->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -66000.0);   // lift the line above the surface
@@ -301,7 +316,7 @@ static vtkSmartPointer<vtkActor> polyMakeLineActor(Scene* s, vtkPolyData* pd, do
 }
 
 // Fill a polydata with a polyline through `verts`; closed adds the return edge to vertex 0.
-static void polyFillLine(vtkPolyData* pd, const std::vector<std::array<double,3>>& verts, bool closed) {
+static void polyFillLine(vtkPolyData *pd, const std::vector<std::array<double,3>>& verts, bool closed) {
 	vtkNew<vtkPoints> pts;
 	for (auto& v : verts) pts->InsertNextPoint(v[0], v[1], v[2]);
 	vtkNew<vtkCellArray> lines;
@@ -321,7 +336,7 @@ static void polyFillLine(vtkPolyData* pd, const std::vector<std::array<double,3>
 // it) with z sampled from the full-res heightfield (sampleZ), so the edge HUGS the terrain instead
 // of cutting a straight chord between corners. Off a grid (image / FV / point cloud there's no
 // heightfield) it falls back to straight segments (linear z). Corner zs are kept as-is.
-static void polyDrapeCorners(Scene* s, const std::vector<std::array<double,3>>& corners,
+static void polyDrapeCorners(Scene *s, const std::vector<std::array<double,3>>& corners,
 							 std::vector<std::array<double,3>>& out) {
 	out.clear();
 	const int m = (int)corners.size();
@@ -359,7 +374,7 @@ static void polyDrapeCorners(Scene* s, const std::vector<std::array<double,3>>& 
 // opacity live on pg (fillColor/fillOpacity) INDEPENDENT of the outline; default opacity 0 keeps the
 // historic outline-only look until the user dials up transparency in Line Properties. Open polylines
 // have no fill (hidden). The face sits just below the outline (polygon offset) but above the surface.
-static void polyRebuildFill(Scene* s, Polygon& pg) {
+static void polyRebuildFill(Scene *s, Polygon& pg) {
 	if (!pg.closed) {                                  // only closed rings can carry a fill
 		if (pg.fill) pg.fill->VisibilityOff();
 		return;
@@ -394,12 +409,12 @@ static void polyRebuildFill(Scene* s, Polygon& pg) {
 	  flatPoly->InsertNextCell(ids); }
 	vtkNew<vtkPolyData> flat; flat->SetPoints(flatPts); flat->SetPolys(flatPoly);
 	vtkNew<vtkTriangleFilter> tri; tri->SetInputData(flat); tri->Update();
-	vtkPolyData* base = tri->GetOutput();
-	vtkPoints*   bp   = base->GetPoints();
+	vtkPolyData *base = tri->GetOutput();
+	vtkPoints *bp   = base->GetPoints();
 
 	vtkNew<vtkPoints>    outPts;
 	vtkNew<vtkCellArray> outTris;
-	vtkCellArray* bt = base->GetPolys();
+	vtkCellArray *bt = base->GetPolys();
 	bt->InitTraversal();
 	vtkNew<vtkIdList> tids;
 	while (bt->GetNextCell(tids)) {
@@ -452,7 +467,7 @@ static void polyRebuildFill(Scene* s, Polygon& pg) {
 	pg.fill->SetVisibility(pg.fillOpacity > 0.0 ? 1 : 0);   // no fill drawn until the user raises opacity
 }
 
-static void polyRebuildLine(Scene* s, Polygon& pg) {
+static void polyRebuildLine(Scene *s, Polygon& pg) {
 	if (!pg.linePD) pg.linePD = vtkSmartPointer<vtkPolyData>::New();
 	std::vector<std::array<double,3>> draped;
 	polyDrapeCorners(s, pg.v, draped);
@@ -505,7 +520,7 @@ static void polyCircleCorners(const double c[3], const double e[3], std::vector<
 // Refresh the in-progress draw preview from polyCur, optionally trailing a segment to `cursor`.
 // Polygon/polyline trail the placed vertices to the cursor (polygon closes the loop, polyline
 // stays open). Rectangle/circle preview the full shape from the first click to the cursor.
-static void polyRebuildPreview(Scene* s, const double* cursor) {
+static void polyRebuildPreview(Scene *s, const double *cursor) {
 	if (!s->polyPreviewPD) s->polyPreviewPD = vtkSmartPointer<vtkPolyData>::New();
 	std::vector<std::array<double,3>> verts;
 	if (s->polyShape == Scene::SH_Rect || s->polyShape == Scene::SH_RectN || s->polyShape == Scene::SH_Circle) {
@@ -531,7 +546,7 @@ static void polyRebuildPreview(Scene* s, const double* cursor) {
 }
 
 // Rebuild the square vertex handles shown for the edited polygon (polyEdit).
-static void polyRebuildHandles(Scene* s) {
+static void polyRebuildHandles(Scene *s) {
 	if (!s->polyHandlePD) s->polyHandlePD = vtkSmartPointer<vtkPolyData>::New();
 	vtkNew<vtkPoints> pts;
 	vtkNew<vtkCellArray> verts;
@@ -565,13 +580,13 @@ static void polyRebuildHandles(Scene* s) {
 	s->polyHandles->SetVisibility(s->polyEdit >= 0 ? 1 : 0);
 }
 
-static void polyEnterEdit(Scene* s, int idx) {
+static void polyEnterEdit(Scene *s, int idx) {
 	s->polyEdit = idx;
 	s->polyDragVert = -1;
 	polyRebuildHandles(s);
 }
 
-static void polyExitEdit(Scene* s) {
+static void polyExitEdit(Scene *s) {
 	s->polyEdit = -1;
 	s->polyDragVert = -1;
 	polyRebuildHandles(s);
@@ -579,7 +594,7 @@ static void polyExitEdit(Scene* s) {
 
 // Index of the finished polygon whose outline (any edge, incl. the closing one) passes within
 // `tol` px of (x,y) display px, or -1. Topmost (last drawn) wins.
-static int polyHitPolygon(Scene* s, int x, int y, double tol) {
+static int polyHitPolygon(Scene *s, int x, int y, double tol) {
 	const double tol2 = tol * tol;
 	for (int pi = (int)s->polys.size() - 1; pi >= 0; --pi) {
 		auto& v = s->polys[pi].v;
@@ -597,7 +612,7 @@ static int polyHitPolygon(Scene* s, int x, int y, double tol) {
 }
 
 // Index of the edited polygon's vertex within `tol` px of (x,y), or -1.
-static int polyHitHandle(Scene* s, int x, int y, double tol) {
+static int polyHitHandle(Scene *s, int x, int y, double tol) {
 	if (s->polyEdit < 0 || s->polyEdit >= (int)s->polys.size()) return -1;
 	const double tol2 = tol * tol;
 	auto& v = s->polys[s->polyEdit].v;
@@ -693,7 +708,7 @@ static void nestBBox(const Polygon& pg, double& x0, double& x1, double& y0, doub
 }
 
 // Force a nested rect's ring to an axis-aligned rectangle at the given limits (z re-draped on rebuild).
-static void nestSetRect(Scene* s, Polygon& pg, double x0, double x1, double y0, double y1) {
+static void nestSetRect(Scene *s, Polygon& pg, double x0, double x1, double y0, double y1) {
 	const double z = pg.v.empty() ? 0.0 : pg.v[0][2];
 	pg.v = { {x0,y0,z}, {x1,y0,z}, {x1,y1,z}, {x0,y1,z}, {x0,y0,z} };
 	pg.closed = true;
@@ -701,7 +716,7 @@ static void nestSetRect(Scene* s, Polygon& pg, double x0, double x1, double y0, 
 }
 
 // Re-quantize the whole nested chain. parent_lims walk the chain (base grid -> rect 1 -> rect 2 ...).
-static void nestReflow(Scene* s) {
+static void nestReflow(Scene *s) {
 	std::vector<Polygon*> chain;
 	for (auto& pg : s->polys) if (pg.nestKind == 1) chain.push_back(&pg);
 	if (chain.empty()) return;
@@ -752,7 +767,7 @@ static void nestReflow(Scene* s) {
 
 // "New nested grid": append a refined child = the inner half of the current innermost rect, with
 // increments = innermost / refinement factor (Mirone make_new_nested). Then reflow snaps it.
-static void nestNewChild(Scene* s) {
+static void nestNewChild(Scene *s) {
 	std::vector<Polygon*> chain;
 	for (auto& pg : s->polys) if (pg.nestKind == 1) chain.push_back(&pg);
 	if (chain.empty()) return;
@@ -786,10 +801,11 @@ static void nestNewChild(Scene* s) {
 }
 
 // Remove a single polygon (by its line actor): drop the actor, erase it, fix the edit index.
-static void polygonEraseOne(Scene* s, vtkActor* lineActor) {
+static void polygonEraseOne(Scene *s, vtkActor *lineActor) {
 	for (int i = 0; i < (int)s->polys.size(); ++i) {
 		if (s->polys[i].line.Get() != lineActor) continue;
 		if (s->ren && s->polys[i].line) s->ren->RemoveActor(s->polys[i].line);
+		if (s->axesRen && s->polys[i].line) s->axesRen->RemoveActor(s->polys[i].line);  // overlay layer (on-top vectors)
 		if (s->ren && s->polys[i].fill) s->ren->RemoveActor(s->polys[i].fill);
 		if (s->ren && s->polys[i].faultPlane)   s->ren->RemoveActor(s->polys[i].faultPlane);
 		if (s->ren && s->polys[i].faultPlane3D) s->ren->RemoveActor(s->polys[i].faultPlane3D);
@@ -801,7 +817,7 @@ static void polygonEraseOne(Scene* s, vtkActor* lineActor) {
 }
 
 // Delete the "Nested grid N" blank grid extra (if it was ever created), removing its actors.
-static void nestDeleteGrid(Scene* s, int chainIdx1) {
+static void nestDeleteGrid(Scene *s, int chainIdx1) {
 	const std::string gn = "Nested grid " + std::to_string(chainIdx1);
 	for (int e = (int)s->extras.size() - 1; e >= 0; --e) {
 		if (s->extras[e].name != gn) continue;
@@ -815,7 +831,7 @@ static void nestDeleteGrid(Scene* s, int chainIdx1) {
 // "Delete". A NESTED-grid rectangle cascades: deleting it also deletes every DESCENDANT rectangle
 // (the nestKind==1 polygons after it in the chain) and their "Nested grid N" blank grids — only the
 // ancestor rectangles (and their grids) remain. An ordinary polygon is a plain single-shape delete.
-static void polygonDelete(Scene* s, vtkActor* lineActor) {
+static void polygonDelete(Scene *s, vtkActor *lineActor) {
 	int pi = -1;
 	for (int i = 0; i < (int)s->polys.size(); ++i) if (s->polys[i].line.Get() == lineActor) { pi = i; break; }
 	if (pi < 0) return;
@@ -840,7 +856,7 @@ static void polygonDelete(Scene* s, vtkActor* lineActor) {
 	std::vector<vtkActor*> kill;
 	{ int seen = 0;
 	  for (auto& p : s->polys) { if (p.nestKind != 1) continue; if (seen >= kpos && p.line) kill.push_back(p.line.Get()); ++seen; } }
-	for (vtkActor* a : kill) polygonEraseOne(s, a);
+	for (vtkActor *a : kill) polygonEraseOne(s, a);
 
 	applyVectorStacking(s);
 	applyGridStacking(s);
@@ -850,7 +866,7 @@ static void polygonDelete(Scene* s, vtkActor* lineActor) {
 }
 
 // Toolbar toggle: enter/leave draw mode. Switching cancels any in-progress draw and edit.
-static void polygonSetMode(Scene* s, bool on) {
+static void polygonSetMode(Scene *s, bool on) {
 	s->polyMode = on;
 	s->polyCur.clear();
 	s->polyDrawing = false;
@@ -864,7 +880,7 @@ static void polygonSetMode(Scene* s, bool on) {
 
 // Toolbar wiring for the five draw tools. Checking a button selects its ShapeKind, untoggles the
 // other four (mutually exclusive), and enters draw mode; unchecking the active one leaves draw mode.
-static void polygonToolToggled(Scene* s, QAction* act, Scene::ShapeKind shape, bool on) {
+static void polygonToolToggled(Scene *s, QAction *act, Scene::ShapeKind shape, bool on) {
 	if (on) {
 		if (s->emptyStart) {                            // blank launcher: nothing to draw ON yet
 			QSignalBlocker bl(act);                     // snap the button back off without re-entering here
@@ -875,7 +891,7 @@ static void polygonToolToggled(Scene* s, QAction* act, Scene::ShapeKind shape, b
 		}
 		s->polyShape = shape;
 		s->polyAct   = act;
-		for (QAction* a : s->shapeActs)                 // exclusive: drop any other checked tool
+		for (QAction *a : s->shapeActs)                 // exclusive: drop any other checked tool
 			if (a != act && a->isChecked()) a->setChecked(false);
 		polygonSetMode(s, true);
 	} else if (s->polyAct == act) {                     // the active tool was switched off
@@ -887,7 +903,7 @@ static void polygonToolToggled(Scene* s, QAction* act, Scene::ShapeKind shape, b
 // Cursor (mx,my device px) -> the point on the z=0 (XY) plane it projects to, in TRUE coords. Used
 // to place / drag flat text labels anywhere, even off the surface (clicking the sky still lands on
 // the plane). Returns false only if the view ray is parallel to the plane.
-static bool pickPlaneXY(Scene* s, int mx, int my, double outTrue[3]) {
+static bool pickPlaneXY(Scene *s, int mx, int my, double outTrue[3]) {
 	double nr[4], fr[4];
 	s->ren->SetDisplayPoint((double)mx, (double)my, 0.0); s->ren->DisplayToWorld();
 	for (int i = 0; i < 4; ++i) nr[i] = s->ren->GetWorldPoint()[i];
@@ -908,8 +924,8 @@ static bool pickPlaneXY(Scene* s, int mx, int my, double outTrue[3]) {
 // (Re)configure a text label's actor from its font fields. The text lies flat in its local XY plane
 // (vtkTextActor3D, no rotation), anchored at (x,y,0) in scaled space. The world size of one font
 // pixel is keyed to the scene extent so the label is a sensible fraction of the data, not 1 unit/px.
-static void textApplyProps(Scene* s, TextLabel& tl) {
-	vtkTextProperty* tp = tl.actor->GetTextProperty();
+static void textApplyProps(Scene *s, TextLabel& tl) {
+	vtkTextProperty *tp = tl.actor->GetTextProperty();
 	tp->SetFontFamilyAsString(tl.font.c_str());
 	tp->SetFontSize(tl.size);
 	tp->SetColor(tl.color[0], tl.color[1], tl.color[2]);
@@ -930,7 +946,7 @@ static void textApplyProps(Scene* s, TextLabel& tl) {
 // label can be large, so we test its actual world bounding box projected to the screen (a tiny
 // centre-only hit would miss clicks on the visible glyphs -> they would fall through and rotate the
 // camera). `tol` pads the box.
-static int polyHitText(Scene* s, int x, int y, double tol) {
+static int polyHitText(Scene *s, int x, int y, double tol) {
 	for (int i = (int)s->texts.size() - 1; i >= 0; --i) {
 		auto& tl = s->texts[i];
 		if (!tl.actor || tl.actor->GetVisibility() == 0) continue;
@@ -942,7 +958,7 @@ static int polyHitText(Scene* s, int x, int y, double tol) {
 		for (int cz = 0; cz < 2; ++cz) {
 			s->ren->SetWorldPoint(b[cx], b[2 + cy], b[4 + cz], 1.0);
 			s->ren->WorldToDisplay();
-			const double* dp = s->ren->GetDisplayPoint();
+			const double *dp = s->ren->GetDisplayPoint();
 			minx = std::min(minx, dp[0]); maxx = std::max(maxx, dp[0]);
 			miny = std::min(miny, dp[1]); maxy = std::max(maxy, dp[1]);
 		}
@@ -953,7 +969,7 @@ static int polyHitText(Scene* s, int x, int y, double tol) {
 
 // Text tool: place a flat label on the XY plane at world point w (TRUE coords, z ignored). Asks for
 // the string; an empty string / Cancel places nothing.
-static void polyPlaceText(Scene* s, const double w[3]) {
+static void polyPlaceText(Scene *s, const double w[3]) {
 	bool ok = false;
 	const QString txt = QInputDialog::getText(s->widget, "Text label", "Text:",
 											  QLineEdit::Normal, "", &ok);
@@ -983,7 +999,7 @@ static void polyPlaceText(Scene* s, const double w[3]) {
 // (x,y) are VTK display px (device, bottom-up), matching polyPickWorld / the projection helpers.
 
 // Left/right press. button: 0 = left, 1 = right.
-static bool polygonHandlePress(Scene* s, int button, int x, int y) {
+static bool polygonHandlePress(Scene *s, int button, int x, int y) {
 	const bool vertexTool = (s->polyShape == Scene::SH_Polygon || s->polyShape == Scene::SH_Polyline ||
 	                         s->polyShape == Scene::SH_Line || s->polyShape == Scene::SH_Fault);
 	if (button == 1) {                                   // right-click: undo last vertex (polygon/polyline)
@@ -1038,7 +1054,7 @@ static bool polygonHandlePress(Scene* s, int button, int x, int y) {
 				std::vector<std::array<double,3>> corners;
 				if (s->polyShape == Scene::SH_Circle) polyCircleCorners(s->polyCur[0].data(), w, corners);
 				else                                  polyRectCorners(s->polyCur[0].data(), w, corners);
-				const char* pre = s->polyShape == Scene::SH_Circle ? "circle"
+				const char *pre = s->polyShape == Scene::SH_Circle ? "circle"
 				                : s->polyShape == Scene::SH_RectN   ? "Nested rectangle" : "rectangle";
 				polyFinalize(s, corners, true, pre);
 			}
@@ -1060,7 +1076,7 @@ static bool polygonHandlePress(Scene* s, int button, int x, int y) {
 // Left double-click: close the polygon / end the polyline (draw mode) or enter/switch/leave edit
 // mode (idle). Rectangle / circle / text finalize on their own clicks, so double-click is a no-op
 // for them beyond being consumed while drawing.
-static bool polygonHandleDblClick(Scene* s, int x, int y) {
+static bool polygonHandleDblClick(Scene *s, int x, int y) {
 	if (s->polyMode && s->polyDrawing) {
 		if (s->polyShape == Scene::SH_Polygon && s->polyCur.size() >= 3) {   // >=3 vertices for an area
 			polyFinalize(s, s->polyCur, true, "polygon");
@@ -1091,7 +1107,7 @@ static bool polygonHandleDblClick(Scene* s, int x, int y) {
 }
 
 // Mouse move: extend the draw preview to the cursor, or drag the grabbed vertex / text label.
-static bool polygonHandleMove(Scene* s, int x, int y) {
+static bool polygonHandleMove(Scene *s, int x, int y) {
 	if (s->textDrag >= 0) {                              // dragging a text label across the XY plane
 		double w[3];
 		if (pickPlaneXY(s, x, y, w) && s->textDrag < (int)s->texts.size()) {
@@ -1133,7 +1149,7 @@ static bool polygonHandleMove(Scene* s, int x, int y) {
 }
 
 // Left release: end a vertex / text-label drag.
-static bool polygonHandleRelease(Scene* s) {
+static bool polygonHandleRelease(Scene *s) {
 	if (s->polyDragVert >= 0) {
 		s->polyDragVert = -1;
 		// Edited a nested rectangle: re-quantize it (back to an axis-aligned, snapped rect) + descendants.

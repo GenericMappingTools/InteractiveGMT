@@ -9,7 +9,7 @@ struct ClickableLabel : QLabel {
 	std::function<void(const QPoint&)> onClick;        // LEFT click  -> properties / fold
 	std::function<void(const QPoint&)> onRightClick;   // RIGHT click -> context menu (e.g. Save…)
 	using QLabel::QLabel;
-	void mousePressEvent(QMouseEvent* e) override {
+	void mousePressEvent(QMouseEvent *e) override {
 		if (e->button() == Qt::LeftButton && onClick) onClick(e->globalPosition().toPoint());
 		else if (e->button() == Qt::RightButton && onRightClick) onRightClick(e->globalPosition().toPoint());
 		else QLabel::mousePressEvent(e);
@@ -137,25 +137,25 @@ struct TextLabel {
 enum LineKind { LK_Profile, LK_Overlay, LK_Polygon };
 struct LineRef {
 	LineKind  kind;
-	vtkActor* actor = nullptr;
+	vtkActor *actor = nullptr;
 };
-static void showLineProperties(Scene* s, const LineRef& lr);                 // the properties dialog
-static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name, const QPoint& gp);
-static void applyVectorStacking(Scene* s);                      // shared vector-pile draw-order (50_scene.cpp)
-static void restackVector(Scene* s, int* stackPtr, int op);    // move one vector element through the pile
-static void applyGridStacking(Scene* s);                        // grid-pile draw-order: base relief + grids (50_scene.cpp)
-static void restackGrid(Scene* s, int* stackPtr, int op);      // move one grid through the grid pile
-static void lineApplyStyle(Scene* s, const LineRef& lr, int style);
-static int  lineCurrentStyle(Scene* s, const LineRef& lr);
-static void polygonDelete(Scene* s, vtkActor* lineActor);                    // remove a finished polygon
-static void overlayDelete(Scene* s, vtkActor* a);                            // remove an overlay line/point (50)
-static void polyRebuildLine(Scene* s, Polygon& pg);                         // rebuild a polygon actor from pg.v (85)
-static void polyRebuildFill(Scene* s, Polygon& pg);                         // rebuild a closed polygon's filled face (85)
-static int  polyIndexOfActor(Scene* s, vtkActor* a);                        // index of polygon whose line==a, or -1 (55)
-static bool lineClosedRing(Scene* s, const LineRef& lr);                    // closed polygon ring? (55)
-static int  polyHitPolygon(Scene* s, int x, int y, double tol);             // polygon under cursor? (85)
-static void nestReflow(Scene* s);                                           // re-quantize "Nested grids" chain (85)
-static void nestNewChild(Scene* s);                                         // append a refined nested child (85)
+static void showLineProperties(Scene *s, const LineRef& lr);                 // the properties dialog
+static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name, const QPoint& gp);
+static void applyVectorStacking(Scene *s);                      // shared vector-pile draw-order (50_scene.cpp)
+static void restackVector(Scene *s, int *stackPtr, int op);    // move one vector element through the pile
+static void applyGridStacking(Scene *s);                        // grid-pile draw-order: base relief + grids (50_scene.cpp)
+static void restackGrid(Scene *s, int *stackPtr, int op);      // move one grid through the grid pile
+static void lineApplyStyle(Scene *s, const LineRef& lr, int style);
+static int  lineCurrentStyle(Scene *s, const LineRef& lr);
+static void polygonDelete(Scene *s, vtkActor *lineActor);                    // remove a finished polygon
+static void overlayDelete(Scene *s, vtkActor *a);                            // remove an overlay line/point (50)
+static void polyRebuildLine(Scene *s, Polygon& pg);                         // rebuild a polygon actor from pg.v (85)
+static void polyRebuildFill(Scene *s, Polygon& pg);                         // rebuild a closed polygon's filled face (85)
+static int  polyIndexOfActor(Scene *s, vtkActor *a);                        // index of polygon whose line==a, or -1 (55)
+static bool lineClosedRing(Scene *s, const LineRef& lr);                    // closed polygon ring? (55)
+static int  polyHitPolygon(Scene *s, int x, int y, double tol);             // polygon under cursor? (85)
+static void nestReflow(Scene *s);                                           // re-quantize "Nested grids" chain (85)
+static void nestNewChild(Scene *s);                                         // append a refined nested child (85)
 
 // ---- scene we hang onto for the callbacks / menu actions --------------------
 struct Scene {
@@ -184,8 +184,8 @@ struct Scene {
 	bool   barDragging = false;
 	double barGrabX = 0, barGrabY = 0;               // mouse-to-origin offset while dragging
 	vtkSmartPointer<vtkCellPicker>        picker;
-	QVTKOpenGLNativeWidget*               widget = nullptr;
-	QMainWindow*                          win    = nullptr;
+	QVTKOpenGLNativeWidget *widget = nullptr;
+	QMainWindow *win    = nullptr;
 	double ve = 1.0;            // vertical exaggeration (gizmo factor, 1 = true scale)
 	double zmin = 0, zmax = 0;  // true (unscaled) z range
 	double x0 = 0, x1 = 1;      // true x range (for cube-axis labels / readout)
@@ -219,7 +219,7 @@ struct Scene {
 	// --- tiled-LOD pyramid (plain grid) -------------------------------------
 	// Quadtree of tiles; coarse near root, refined per-frame by screen-space error so only the
 	// visible region at the needed resolution is resident. surfGroup holds the live tile actors.
-	QuadNode* quadRoot = nullptr;
+	QuadNode *quadRoot = nullptr;
 	vtkSmartPointer<vtkScalarsToColors> surfLut;     // shared LUT for lazily-built tiles
 	bool     surfCtfRange = false;
 	int      surfEdges = 0;                           // current wire-edge state (applied to new tiles)
@@ -289,25 +289,25 @@ struct Scene {
 	// placing GSHHG coastlines/borders/rivers needs a reference frame.
 	std::string crsProj4, crsWkt;
 	int         crsEpsg = 0;
-	QMenu*      geoMenu = nullptr;   // the Geography menu (built disabled; enabled once a CRS is set)
-	QMenu*      elasticMenu = nullptr;   // Seismology > Elastic deformation (disabled until a CRS is set)
+	QMenu *geoMenu = nullptr;   // the Geography menu (built disabled; enabled once a CRS is set)
+	QMenu *elasticMenu = nullptr;   // Seismology > Elastic deformation (disabled until a CRS is set)
 	bool hasCRS() const { return !crsProj4.empty() || !crsWkt.empty() || crsEpsg != 0; }
 
-	QAction* act2D = nullptr;        // shared checkable "Flat 2D (map)" action (toolbar + View menu)
-	QWidget* objPanel = nullptr;     // Scene Objects dock content (rebuilt when overlays change)
-	QDockWidget* objDock = nullptr;  // the Scene Objects dock itself (re-shown when the first nested rect lands)
-	FoldTitleBar* objFoldBar = nullptr;  // Scene Objects dock fold toggle (call ->onClick() to fold/unfold programmatically)
-	FoldTitleBar* shadeFoldBar = nullptr; // Shading dock fold toggle (Surface row click folds/un-folds it via toggleShadingFold)
-	QDockWidget*  shadeDock    = nullptr;  // the Shading dock itself (re-shown when an empty launcher is promoted to a grid)
+	QAction *act2D = nullptr;        // shared checkable "Flat 2D (map)" action (toolbar + View menu)
+	QWidget *objPanel = nullptr;     // Scene Objects dock content (rebuilt when overlays change)
+	QDockWidget *objDock = nullptr;  // the Scene Objects dock itself (re-shown when the first nested rect lands)
+	FoldTitleBar *objFoldBar = nullptr;  // Scene Objects dock fold toggle (call ->onClick() to fold/unfold programmatically)
+	FoldTitleBar *shadeFoldBar = nullptr; // Shading dock fold toggle (Surface row click folds/un-folds it via toggleShadingFold)
+	QDockWidget *shadeDock    = nullptr;  // the Shading dock itself (re-shown when an empty launcher is promoted to a grid)
 	std::string surfName;            // Scene Objects label for s->surf ("" -> "Surface"; named solids set it)
-	QPlainTextEdit* console = nullptr;   // Julia console dock output (commands eval'd in Main via g_juliaEval)
-	QPlainTextEdit* errConsole = nullptr; // read-only Errors tab: execution errors from background callbacks (gmtvtk_log_error)
+	QPlainTextEdit *console = nullptr;   // Julia console dock output (commands eval'd in Main via g_juliaEval)
+	QPlainTextEdit *errConsole = nullptr; // read-only Errors tab: execution errors from background callbacks (gmtvtk_log_error)
 
 	// --- bottom tabbed panel (Profile / Julia Console / Data Viewer) --------
-	QDockWidget*  bottomDock    = nullptr;   // the single bottom dock holding the tab widget
-	QTabWidget*   bottomTabs    = nullptr;   // its QTabWidget; the corner "Hide" collapses the body
-	QTableWidget* dataTable     = nullptr;   // Data Viewer spreadsheet (filled by gmtvtk_set_table)
-	QToolButton*  bottomHideBtn = nullptr;   // tab-bar corner Hide/Show toggle
+	QDockWidget *bottomDock    = nullptr;   // the single bottom dock holding the tab widget
+	QTabWidget *bottomTabs    = nullptr;   // its QTabWidget; the corner "Hide" collapses the body
+	QTableWidget *dataTable     = nullptr;   // Data Viewer spreadsheet (filled by gmtvtk_set_table)
+	QToolButton *bottomHideBtn = nullptr;   // tab-bar corner Hide/Show toggle
 	bool          bottomCollapsed = false;   // panel body collapsed to the tab strip?
 
 	// --- point-cloud rubber-band selection (Ctrl+right-drag) ----------------
@@ -342,7 +342,7 @@ struct Scene {
 	vtkSmartPointer<vtkPolyData>    profPD;            // its geometry (TRUE coords) — for restyle + save
 	vtkSmartPointer<vtkTexture>     profStripe;        // 1-D stipple texture for dashed/dotted style
 	vtkSmartPointer<vtkCellLocator> surfLoc;           // built lazily from surf polydata (TRUE coords)
-	class ProfilePanel*             prof     = nullptr; // 2D (s,z) panel (a tab in the bottom dock)
+	class ProfilePanel *prof     = nullptr; // 2D (s,z) panel (a tab in the bottom dock)
 	int    profStyle = 0;                              // 0 solid, 1 dashed, 2 dotted
 	bool   profiling = false;
 	double track0[2] = {0, 0};                         // press point in TRUE (x,y)
@@ -378,7 +378,7 @@ struct Scene {
 	qint64 polyLastClickMs = -10000;                   // last left-press time (double-click detect)
 	int    polyLastClickX = 0, polyLastClickY = 0;     // last left-press position (px)
 	vtkSmartPointer<vtkCallbackCommand> polyCmd;       // mouse observers (priority above the gizmo)
-	QAction* polyAct = nullptr;                         // active draw toggle action — set on the checked tool
+	QAction *polyAct = nullptr;                         // active draw toggle action — set on the checked tool
 	std::vector<QAction*> shapeActs;                    // all five draw-tool buttons (for mutual untoggle)
 
 	// Vertical elastic deformation dialog state — persisted here so reopening the dialog (it is
@@ -394,31 +394,31 @@ struct Scene {
 		int  coord = 0;                                  // coordCombo index: 0 = Geogs, 1 = Cart
 	};
 	FaultDlgState faultDlg;
-	QWidget* elasticDlg = nullptr;                      // open (non-modal) Vertical elastic deformation dialog, if any
+	QWidget *elasticDlg = nullptr;                      // open (non-modal) Vertical elastic deformation dialog, if any
 };
 
 // --- surface accessors: one actor (cloud/FV/drape/image) or a tiled grid -----------------
 // When the grid is tiled, the transform/bounds/visibility live on the vtkAssembly `surfGroup`
 // and the renderable parts are `tiles`; otherwise everything is the single actor `surf`. These
 // helpers hide that split so call sites stay uniform. (Group null + tiles empty -> surf.)
-static inline vtkProp3D* surfProp(Scene* s) {
+static inline vtkProp3D *surfProp(Scene *s) {
 	if (s->surfGroup) return s->surfGroup.Get();
 	return s->surf.Get();
 }
-static inline void surfSetScale(Scene* s, double x, double y, double z) {
-	if (vtkProp3D* p = surfProp(s)) p->SetScale(x, y, z);
+static inline void surfSetScale(Scene *s, double x, double y, double z) {
+	if (vtkProp3D *p = surfProp(s)) p->SetScale(x, y, z);
 }
-static inline void surfGetScale(Scene* s, double sc[3]) {
-	if (vtkProp3D* p = surfProp(s)) p->GetScale(sc); else { sc[0]=sc[1]=sc[2]=1.0; }
+static inline void surfGetScale(Scene *s, double sc[3]) {
+	if (vtkProp3D *p = surfProp(s)) p->GetScale(sc); else { sc[0]=sc[1]=sc[2]=1.0; }
 }
-static inline void surfGetBounds(Scene* s, double b[6]) {
-	if (vtkProp3D* p = surfProp(s)) p->GetBounds(b);
+static inline void surfGetBounds(Scene *s, double b[6]) {
+	if (vtkProp3D *p = surfProp(s)) p->GetBounds(b);
 }
-static inline void surfSetVisibility(Scene* s, int v) {
-	if (vtkProp3D* p = surfProp(s)) p->SetVisibility(v);
+static inline void surfSetVisibility(Scene *s, int v) {
+	if (vtkProp3D *p = surfProp(s)) p->SetVisibility(v);
 }
 // The renderable actors carrying material / mapper / edges. Tiles when tiled, else the surf.
-static inline std::vector<vtkActor*> surfActors(Scene* s) {
+static inline std::vector<vtkActor*> surfActors(Scene *s) {
 	std::vector<vtkActor*> v;
 	if (!s->tiles.empty()) { for (auto& a : s->tiles) v.push_back(a.Get()); }
 	else if (s->surf)        v.push_back(s->surf.Get());
@@ -431,13 +431,13 @@ static inline std::vector<vtkActor*> surfActors(Scene* s) {
 // image drape so the wire toggles on both layers together. `edgeState` points at the int holding the
 // current wire state (base relief: s->surfEdges, also stamped on new tiles by buildTileActor); null
 // for a dropped grid (single actor — read EdgeVisibility straight off it).
-struct TopRaster { std::vector<vtkActor*> actors; int* edgeState = nullptr; bool valid = false; };
+struct TopRaster { std::vector<vtkActor*> actors; int *edgeState = nullptr; bool valid = false; };
 
-static inline TopRaster resolveTopRaster(Scene* s) {
+static inline TopRaster resolveTopRaster(Scene *s) {
 	TopRaster tr;
 	int bestStack = 0; bool have = false;
 	std::vector<vtkActor*> base = surfActors(s);
-	vtkProp3D* sp = surfProp(s);
+	vtkProp3D *sp = surfProp(s);
 	if (!base.empty() && sp && sp->GetVisibility()) {
 		tr.actors = base;
 		if (s->drape) tr.actors.push_back(s->drape.Get());
@@ -467,7 +467,7 @@ struct QuadNode {
 	bool leaf = true;
 	double cx = 0, cy = 0;            // region centre (true coords)
 	double worldSpacing = 0;          // true-coord node gap at this node's step
-	QuadNode* child[4] = { nullptr, nullptr, nullptr, nullptr };
+	QuadNode *child[4] = { nullptr, nullptr, nullptr, nullptr };
 	vtkSmartPointer<vtkActor> actor;  // null = not resident
 	uint64_t lastUsed = 0;
 	size_t   bytes = 0;
@@ -476,10 +476,10 @@ struct QuadNode {
 // Collapse / restore the bottom tabbed panel's BODY, leaving the tab strip (+ the Hide
 // button) visible. Collapsing hides the QTabWidget's page stack and clamps the widget to
 // the tab-bar height, so the dock shrinks and the 3-D view extends; restore reverses it.
-static void setBottomCollapsed(Scene* s, bool collapse) {
+static void setBottomCollapsed(Scene *s, bool collapse) {
 	if (!s || !s->bottomTabs)
 		return;
-	if (QStackedWidget* body = s->bottomTabs->findChild<QStackedWidget*>("qt_tabwidget_stackedwidget"))
+	if (QStackedWidget *body = s->bottomTabs->findChild<QStackedWidget*>("qt_tabwidget_stackedwidget"))
 		body->setVisible(!collapse);
 	s->bottomTabs->setMaximumHeight(collapse ? s->bottomTabs->tabBar()->sizeHint().height() + 6
 											  : QWIDGETSIZE_MAX);
@@ -494,12 +494,12 @@ static void setBottomCollapsed(Scene* s, bool collapse) {
 }
 
 // Profile-track helpers (defined after ProfilePanel, below). DragCB drives these on Ctrl+drag.
-static void profilerBegin(Scene* s, int dx, int dy);
-static void profilerDrag(Scene* s, int dx, int dy);
-static void profilerEnd(Scene* s);
-static bool profileHitAt(Scene* s, int dx, int dy);              // cursor near the profile line?
-static void popupProfileMenu(Scene* s, const QPoint& globalPos); // its right-click menu
-static void profileClear(Scene* s);                              // wipe the line + 2D panel
+static void profilerBegin(Scene *s, int dx, int dy);
+static void profilerDrag(Scene *s, int dx, int dy);
+static void profilerEnd(Scene *s);
+static bool profileHitAt(Scene *s, int dx, int dy);              // cursor near the profile line?
+static void popupProfileMenu(Scene *s, const QPoint& globalPos); // its right-click menu
+static void profileClear(Scene *s);                              // wipe the line + 2D panel
 
 // MATLAB "peaks" — a recognizable relief surface.
 static double peaks(double x, double y) {
@@ -739,7 +739,7 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 // Build a point cloud as vtkPolyData: N vertices (one Verts cell each) coloured by their
 // z scalar. A Verts-only polydata renders as points; the rubber-band selector indexes
 // these point ids. Mirrors GMTF3D view_points' EMPTY-sided mesh (a pure point cloud).
-static vtkSmartPointer<vtkPolyData> makePointCloud(const double* xyz, int npts,
+static vtkSmartPointer<vtkPolyData> makePointCloud(const double *xyz, int npts,
 												   double& zmin, double& zmax) {
 	vtkNew<vtkPoints>     pts;  pts->SetDataTypeToDouble(); pts->Allocate(npts);
 	vtkNew<vtkFloatArray> zval; zval->SetName("z");        zval->Allocate(npts);
@@ -770,9 +770,9 @@ static vtkSmartPointer<vtkPolyData> makePointCloud(const double* xyz, int npts,
 // scalar drives smooth CPT colouring. Fills zmin/zmax from the vertex z. Mirrors GMTF3D
 // fv_to_mesh's shared-vertex packing (sides/indices), but lets VTK tessellate n-gons + compute
 // normals (no Julia-side normal pass).
-static vtkSmartPointer<vtkPolyData> makeFvMesh(const double* xyz, int nv,
-											   const int* sides, int nfaces, const int* indices,
-											   const unsigned char* facergb, const double* facez,
+static vtkSmartPointer<vtkPolyData> makeFvMesh(const double *xyz, int nv,
+											   const int *sides, int nfaces, const int *indices,
+											   const unsigned char *facergb, const double *facez,
 											   double& zmin, double& zmax) {
 	vtkNew<vtkPoints>     pts;  pts->SetDataTypeToDouble(); pts->SetNumberOfPoints(nv);
 	vtkNew<vtkFloatArray> zval; zval->SetName("z"); zval->SetNumberOfComponents(1); zval->SetNumberOfTuples(nv);
@@ -880,7 +880,7 @@ static void placeTickBillboards(Scene *s,
 
 			if (used >= pool.size()) {            // grow the pool on demand
 				vtkSmartPointer<vtkBillboardTextActor3D> nt = vtkSmartPointer<vtkBillboardTextActor3D>::New();
-				vtkTextProperty* tp = nt->GetTextProperty();
+				vtkTextProperty *tp = nt->GetTextProperty();
 				tp->SetColor(1.0, 1.0, 1.0);
 				tp->SetFontFamilyToArial();          // SAME font + size on X/Y/Z (all billboards)
 				tp->BoldOff(); tp->ItalicOff(); tp->ShadowOff();
@@ -895,7 +895,7 @@ static void placeTickBillboards(Scene *s,
 				(s->axesRen ? s->axesRen : s->ren)->AddViewProp(nt);
 				pool.push_back(nt);
 			}
-			vtkBillboardTextActor3D* t = pool[used];
+			vtkBillboardTextActor3D *t = pool[used];
 			char buf[64]; std::snprintf(buf, sizeof(buf), "%g", v);
 			t->SetInput(buf);
 			t->SetPosition(p[0], p[1], p[2]);
@@ -903,9 +903,9 @@ static void placeTickBillboards(Scene *s,
 			// project the edge point p and the tick end q, then push by |q-p|_screen + a gap.
 			double sp[2], sq[2];
 			s->ren->SetWorldPoint(p[0], p[1], p[2], 1.0); s->ren->WorldToDisplay();
-			{ double* dd = s->ren->GetDisplayPoint(); sp[0] = dd[0]; sp[1] = dd[1]; }
+			{ double *dd = s->ren->GetDisplayPoint(); sp[0] = dd[0]; sp[1] = dd[1]; }
 			s->ren->SetWorldPoint(q[0], q[1], q[2], 1.0); s->ren->WorldToDisplay();
-			{ double* dd = s->ren->GetDisplayPoint(); sq[0] = dd[0]; sq[1] = dd[1]; }
+			{ double *dd = s->ren->GetDisplayPoint(); sq[0] = dd[0]; sq[1] = dd[1]; }
 			double ox = sq[0]-sp[0], oy = sq[1]-sp[1];
 			double tl = std::sqrt(ox*ox + oy*oy);
 			if (tl > 1e-6) { ox /= tl; oy /= tl; } else { ox = 0; oy = -1; }
@@ -914,7 +914,7 @@ static void placeTickBillboards(Scene *s,
 			// Anchor the text's INNER edge at the offset point and let it grow OUTWARD only, so a
 			// long label never spills back inside the cube. The outward screen dir (ox,oy) chooses
 			// the justification: e.g. outward up-right -> anchor bottom-left -> text extends up-right.
-			vtkTextProperty* jp = t->GetTextProperty();
+			vtkTextProperty *jp = t->GetTextProperty();
 			if      (ox >  0.30) jp->SetJustificationToLeft();
 			else if (ox < -0.30) jp->SetJustificationToRight();
 			else                 jp->SetJustificationToCentered();
@@ -931,7 +931,7 @@ static void placeTickBillboards(Scene *s,
 // Place one axis NAME title billboard at the midpoint of the axis' camera-near edge, pushed
 // OUTWARD in screen space past the number labels so it never overlaps them or the cube. Same
 // overlay-billboard mechanism as the tick numbers (cube-native titles don't render in this setup).
-static void placeAxisTitle(Scene* s, vtkBillboardTextActor3D* t, int axis,
+static void placeAxisTitle(Scene *s, vtkBillboardTextActor3D *t, int axis,
 						   double dmid, double fixedA, double fixedB,
 						   const double ctr[3], double tickLen) {
 	if (!t) return;
@@ -948,16 +948,16 @@ static void placeAxisTitle(Scene* s, vtkBillboardTextActor3D* t, int axis,
 	t->SetPosition(p[0], p[1], p[2]);
 	double sp[2], sq[2];
 	s->ren->SetWorldPoint(p[0], p[1], p[2], 1.0); s->ren->WorldToDisplay();
-	{ double* dd = s->ren->GetDisplayPoint(); sp[0] = dd[0]; sp[1] = dd[1]; }
+	{ double *dd = s->ren->GetDisplayPoint(); sp[0] = dd[0]; sp[1] = dd[1]; }
 	s->ren->SetWorldPoint(q[0], q[1], q[2], 1.0); s->ren->WorldToDisplay();
-	{ double* dd = s->ren->GetDisplayPoint(); sq[0] = dd[0]; sq[1] = dd[1]; }
+	{ double *dd = s->ren->GetDisplayPoint(); sq[0] = dd[0]; sq[1] = dd[1]; }
 	double ox = sq[0]-sp[0], oy = sq[1]-sp[1];
 	double tl = std::sqrt(ox*ox + oy*oy);
 	if (tl > 1e-6) { ox /= tl; oy /= tl; } else { ox = 0; oy = -1; }
 	const int off = int(tl) + 96;          // sit WELL past the number labels (they use +16)
 	t->SetDisplayOffset(int(ox * off), int(oy * off));
 	// Anchor so the title grows OUTWARD only (never back over the numbers), same as the numbers.
-	vtkTextProperty* jp = t->GetTextProperty();
+	vtkTextProperty *jp = t->GetTextProperty();
 	if      (ox >  0.30) jp->SetJustificationToLeft();
 	else if (ox < -0.30) jp->SetJustificationToRight();
 	else                 jp->SetJustificationToCentered();
@@ -970,7 +970,7 @@ static void placeAxisTitle(Scene* s, vtkBillboardTextActor3D* t, int axis,
 // Z tick labels are horizontal screen-facing billboards (perpendicular to Z) on the camera-nearest
 // vertical edge; X/Y tick numbers are billboards on the nearer floor edges. Axis NAME titles are
 // also billboards (placeAxisTitle). All recomputed every render as the near edges change with view.
-static void rebuildAxisLabels(Scene* s) {
+static void rebuildAxisLabels(Scene *s) {
 	if (!s->surf || !s->ren || !s->ren->GetActiveCamera())
 		return;
 	// Z labels belong to the Axes Cube: when it is hidden they must hide too. This callback
@@ -1049,14 +1049,14 @@ static void rebuildAxisLabels(Scene* s) {
 }
 
 // Renderer StartEvent -> keep the axis labels on the camera-near edges as the view rotates.
-static void AxisLabelCB(vtkObject*, unsigned long, void* cd, void*) {
+static void AxisLabelCB(vtkObject*, unsigned long, void *cd, void*) {
 	rebuildAxisLabels(static_cast<Scene*>(cd));
 }
 
 // Apply vertical exaggeration. The actor carries the base scale (xfac aspect +
 // zfac unit conversion); the gizmo factor `ve` multiplies the Z. Cube-axis labels
 // stay TRUE because their ranges are pinned to the data ranges, not the bounds.
-static void applyVE(Scene* s) {
+static void applyVE(Scene *s) {
 	surfSetScale(s, s->xfac, 1.0, s->zfac * s->ve);
 	if (s->drape) s->drape->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // overlay tracks the base
 	for (auto& ov : s->overlays)                                       // line/point overlays track the base too
@@ -1098,8 +1098,8 @@ static void applyVE(Scene* s) {
 
 // Build + exec the per-element context menu for an overlay (defined after addOverlay,
 // near the Qt window code). Forward-declared so the gizmo's left-click handler can call it.
-static void popupOverlayMenu(Scene* s, vtkActor* a, int mode, const QPoint& globalPos);
-static void symbolLayerMenu(Scene* s, vtkActor* act, const QPoint& gp);   // symbol-layer menu (50_scene.cpp)
+static void popupOverlayMenu(Scene *s, vtkActor *a, int mode, const QPoint& globalPos);
+static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp);   // symbol-layer menu (50_scene.cpp)
 
 // Squared distance from point (px,py) to segment [a,b] (all display coords).
 static double segDist2(double px, double py, const double a[2], const double b[2]) {
@@ -1117,25 +1117,25 @@ static double segDist2(double px, double py, const double a[2], const double b[2
 // to the screen (applying the actor's scale) and measures the cursor's pixel distance to the
 // line segments (lines) or to the points (points). Returns the closest overlay within `tol`
 // px, or nullptr. Deterministic, no render-pass pick.
-static vtkActor* pickOverlayAt(Scene* s, int dx, int dy, int& outMode) {
+static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int& outMode) {
 	if (!s || s->overlays.empty())
 		return nullptr;
-	vtkRenderer* ren = s->ren;
+	vtkRenderer *ren = s->ren;
 	const double tol = 12.0;             // pick radius in device px
 	double best = tol * tol;             // squared
 	double trueBest = 1e30;              // uncapped nearest (for diagnostics)
-	vtkActor* bestA = nullptr;
+	vtkActor *bestA = nullptr;
 	int bestMode = 1;
 
 	for (auto& ov : s->overlays) {
 		if (!ov.actor || !ov.actor->GetVisibility())
 			continue;
-		vtkPolyDataMapper* m = vtkPolyDataMapper::SafeDownCast(ov.actor->GetMapper());
+		vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(ov.actor->GetMapper());
 		if (!m) continue;
-		vtkPolyData* pd = m->GetInput();
+		vtkPolyData *pd = m->GetInput();
 		if (!pd || !pd->GetPoints()) continue;
 		double sc[3]; ov.actor->GetScale(sc);
-		vtkPoints* pts = pd->GetPoints();
+		vtkPoints *pts = pd->GetPoints();
 		const vtkIdType np = pts->GetNumberOfPoints();
 
 		// project all points to display once (apply the actor's scale; no rot/trans on overlays)
@@ -1149,7 +1149,7 @@ static vtkActor* pickOverlayAt(Scene* s, int dx, int dy, int& outMode) {
 		}
 
 		if (ov.mode == 1) {              // lines: nearest segment
-			vtkCellArray* lines = pd->GetLines();
+			vtkCellArray *lines = pd->GetLines();
 			if (!lines) continue;
 			vtkNew<vtkIdList> idl;
 			lines->InitTraversal();
@@ -1183,21 +1183,21 @@ static vtkActor* pickOverlayAt(Scene* s, int dx, int dy, int& outMode) {
 // dispatcher tests this first. Projects each glyph's anchor point (x already xfac-baked; the actor
 // carries the z scale) to display and takes the nearest within a size-aware tolerance, so big
 // symbols are easy to hit. Returns the layer's actor (-> symbolLayerMenu) or nullptr.
-static vtkActor* pickSymbolAt(Scene* s, int dx, int dy) {
+static vtkActor *pickSymbolAt(Scene *s, int dx, int dy) {
 	if (!s || s->symbols.empty())
 		return nullptr;
-	vtkRenderer* ren = s->ren;
-	vtkActor* bestA = nullptr;
+	vtkRenderer *ren = s->ren;
+	vtkActor *bestA = nullptr;
 	double best = 1e30;
 	for (auto& sl : s->symbols) {
 		if (!sl.actor || !sl.actor->GetVisibility() || !sl.glyph)
 			continue;
-		vtkPolyData* pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+		vtkPolyData *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
 		if (!pd || !pd->GetPoints())
 			continue;
 		double sc[3]; sl.actor->GetScale(sc);
 		const double tol2 = std::max(12.0, sl.sizePx * 0.6) * std::max(12.0, sl.sizePx * 0.6);
-		vtkPoints* pts = pd->GetPoints();
+		vtkPoints *pts = pd->GetPoints();
 		const vtkIdType np = pts->GetNumberOfPoints();
 		for (vtkIdType i = 0; i < np; ++i) {
 			double p[3]; pts->GetPoint(i, p);
@@ -1215,21 +1215,21 @@ static vtkActor* pickSymbolAt(Scene* s, int dx, int dy) {
 // but tracks the individual point index so we can fetch its per-point text, and only considers
 // layers that actually have info. On a hit, writes that point's multi-line text to `out` and
 // returns true. Used by onMouseMove to pop a tooltip when hovering e.g. a volcano symbol.
-static bool pickSymbolInfoAt(Scene* s, int dx, int dy, std::string& out) {
+static bool pickSymbolInfoAt(Scene *s, int dx, int dy, std::string& out) {
 	if (!s || s->symbols.empty())
 		return false;
-	vtkRenderer* ren = s->ren;
-	double best = 1e30; const std::string* bestInfo = nullptr;
+	vtkRenderer *ren = s->ren;
+	double best = 1e30; const std::string *bestInfo = nullptr;
 	for (auto& sl : s->symbols) {
 		if (sl.info.empty() || !sl.actor || !sl.actor->GetVisibility() || !sl.glyph)
 			continue;
-		vtkPolyData* pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+		vtkPolyData *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
 		if (!pd || !pd->GetPoints())
 			continue;
 		double sc[3]; sl.actor->GetScale(sc);
 		const double tol = std::max(12.0, sl.sizePx * 0.6);
 		const double tol2 = tol * tol;
-		vtkPoints* pts = pd->GetPoints();
+		vtkPoints *pts = pd->GetPoints();
 		const vtkIdType np = pts->GetNumberOfPoints();
 		for (vtkIdType i = 0; i < np; ++i) {
 			if ((size_t)i >= sl.info.size()) break;        // info must align 1:1 with points
@@ -1247,11 +1247,11 @@ static bool pickSymbolInfoAt(Scene* s, int dx, int dy, std::string& out) {
 
 // Is the cursor (VTK display px dx,dy) on the profile line? Same screen-space segment
 // distance test as pickOverlayAt (thin lines miss hardware pickers), on s->profPD.
-static bool profileHitAt(Scene* s, int dx, int dy) {
+static bool profileHitAt(Scene *s, int dx, int dy) {
 	if (!s || !s->profLine || !s->profLine->GetVisibility() || !s->profPD || !s->profPD->GetPoints())
 		return false;
-	vtkRenderer* ren = s->ren;
-	vtkPoints* pts = s->profPD->GetPoints();
+	vtkRenderer *ren = s->ren;
+	vtkPoints *pts = s->profPD->GetPoints();
 	const vtkIdType np = pts->GetNumberOfPoints();
 	if (np < 2) return false;
 	double sc[3]; s->profLine->GetScale(sc);
@@ -1275,7 +1275,7 @@ static bool profileHitAt(Scene* s, int dx, int dy) {
 // Bilinear sample of the full-res data layer at TRUE coords (x,y). Returns NaN outside the grid
 // or when any of the four corners is NaN (so callers skip it). O(1), no locator, render-LOD
 // independent — the basis for full-res hover + profile under the tiled-LOD render path.
-static double sampleGrid(const float* Z, int nx, int ny, double gx0, double gx1, double gy0, double gy1,
+static double sampleGrid(const float *Z, int nx, int ny, double gx0, double gx1, double gy0, double gy1,
                          double x, double y) {
 	if (!Z || nx < 2 || ny < 2)
 		return std::numeric_limits<double>::quiet_NaN();
@@ -1298,14 +1298,14 @@ static double sampleGrid(const float* Z, int nx, int ny, double gx0, double gx1,
 }
 
 // Base relief data layer (profiles / cross-sections sample THIS — unchanged by multi-grid routing).
-static double sampleZ(const Scene* s, double x, double y) {
+static double sampleZ(const Scene *s, double x, double y) {
 	if (s->gridZ.empty()) return std::numeric_limits<double>::quiet_NaN();
 	return sampleGrid(s->gridZ.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, x, y);
 }
 
 // ACTIVE grid data layer — what the hover/coordinate readout reports. Falls back to the base relief
 // when no dropped grid is active (actZ null), so a single-grid window behaves exactly as before.
-static double sampleActiveZ(const Scene* s, double x, double y) {
+static double sampleActiveZ(const Scene *s, double x, double y) {
 	if (s->actZ && !s->actZ->empty())
 		return sampleGrid(s->actZ->data(), s->actNx, s->actNy, s->actX0, s->actX1, s->actY0, s->actY1, x, y);
 	return sampleZ(s, x, y);
@@ -1335,13 +1335,13 @@ static bool rayTri(const double o[3], const double d[3],
 // RAW (true) coords; scale them (xfac,1,zfac*ve) into the same world the unproject ray lives in,
 // ray-cast the two triangles, keep the nearest. On a hit returns the SCALED hit point in wOut and
 // its ray parameter in tOut so the caller can compare depth against the surface hit.
-static bool pickFaultPlaneAt(Scene* s, const double o[3], const double d[3], double wOut[3], double& tOut) {
+static bool pickFaultPlaneAt(Scene *s, const double o[3], const double d[3], double wOut[3], double& tOut) {
 	if (s->flat2d) return false;
 	const double zsc = s->zfac * s->ve, gx = (s->xfac != 0.0) ? s->xfac : 1.0;
 	bool got = false; double best = 1e300;
 	for (auto& pg : s->polys) {
 		if (!pg.isFault || !pg.faultPlane3D || !pg.faultPlane3D->GetVisibility()) continue;
-		vtkPoints* P = pg.faultPlane3DPD ? pg.faultPlane3DPD->GetPoints() : nullptr;
+		vtkPoints *P = pg.faultPlane3DPD ? pg.faultPlane3DPD->GetPoints() : nullptr;
 		if (!P || P->GetNumberOfPoints() < 4) continue;
 		double c[4][3];
 		for (int i = 0; i < 4; ++i) {
@@ -1361,12 +1361,12 @@ static bool pickFaultPlaneAt(Scene* s, const double o[3], const double d[3], dou
 
 // Mouse move (default priority): live coordinate readout. Runs only when the gizmo
 // did not grab the drag (the gizmo's high-priority observer aborts the event then).
-static void onMouseMove(vtkObject*, unsigned long, void* clientData, void* /*cd*/) {
-	Scene* s = static_cast<Scene*>(clientData);
+static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*/) {
+	Scene *s = static_cast<Scene*>(clientData);
 	// Skip the readout while rubber-band selection is armed (Ctrl+right-drag owns the cursor).
 	if (s->rbEnabled)
 		return;
-	int* p = s->widget->interactor()->GetEventPosition();   // device px, bottom-up
+	int *p = s->widget->interactor()->GetEventPosition();   // device px, bottom-up
 	const int mx = p[0], my = p[1];
 	// Per-symbol hover info: if the cursor is over a symbol that carries metadata (e.g. a volcano),
 	// pop its multi-line text as a tooltip. Anti-flicker: only call showText when the hovered TEXT

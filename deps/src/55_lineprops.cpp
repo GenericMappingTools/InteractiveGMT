@@ -10,7 +10,7 @@
 // ============================================================================
 
 // Current solid/dashed/dotted style of a line object (so the dialog opens on the right value).
-static int lineCurrentStyle(Scene* s, const LineRef& lr) {
+static int lineCurrentStyle(Scene *s, const LineRef& lr) {
 	if (lr.kind == LK_Profile) return s->profStyle;
 	if (lr.kind == LK_Overlay)
 		for (auto& o : s->overlays) if (o.actor.Get() == lr.actor) return o.lineStyle;
@@ -21,8 +21,8 @@ static int lineCurrentStyle(Scene* s, const LineRef& lr) {
 // go through applyLineStyle (per-overlay stipple texture); the profile rebuilds its own stripe on
 // s->profPD; polygons stay solid (their draped geometry is rebuilt on every vertex edit, which
 // would drop a stipple). Centralised here so the dialog is style-agnostic.
-static void lineApplyStyle(Scene* s, const LineRef& lr, int style) {
-	vtkActor* a = lr.actor;
+static void lineApplyStyle(Scene *s, const LineRef& lr, int style) {
+	vtkActor *a = lr.actor;
 	if (!a) return;
 	if (lr.kind == LK_Overlay) { applyLineStyle(s, a, style); return; }
 	if (lr.kind == LK_Polygon) {                         // polygon: solid only
@@ -53,21 +53,21 @@ static void lineApplyStyle(Scene* s, const LineRef& lr, int style) {
 		a->SetTexture(s->profStripe);
 		a->GetProperty()->SetOpacity(0.999);               // force translucent pass so alpha gaps show
 	}
-	if (auto* mm = vtkPolyDataMapper::SafeDownCast(a->GetMapper())) mm->Modified();
+	if (auto *mm = vtkPolyDataMapper::SafeDownCast(a->GetMapper())) mm->Modified();
 	if (s->widget) s->widget->renderWindow()->Render();
 }
 
 // The dialog. Live-applies every change to the actor; add a row to extend it.
-static void showLineProperties(Scene* s, const LineRef& lr) {
+static void showLineProperties(Scene *s, const LineRef& lr) {
 	if (!s || !lr.actor) return;
-	vtkActor* a = lr.actor;
+	vtkActor *a = lr.actor;
 	QDialog dlg(s->win);
 	dlg.setWindowTitle("Line Properties");
-	QFormLayout* form = new QFormLayout(&dlg);
+	QFormLayout *form = new QFormLayout(&dlg);
 
 	// --- Colour: a swatch button that opens QColorDialog ---------------------
 	double c0[3]; a->GetProperty()->GetColor(c0);
-	QPushButton* colBtn = new QPushButton(&dlg);
+	QPushButton *colBtn = new QPushButton(&dlg);
 	auto paintSwatch = [colBtn](const QColor& q) {
 		colBtn->setStyleSheet(QString("background:%1; min-width:64px;").arg(q.name()));
 	};
@@ -85,17 +85,47 @@ static void showLineProperties(Scene* s, const LineRef& lr) {
 	form->addRow("Color", colBtn);
 
 	// --- Width ---------------------------------------------------------------
-	QDoubleSpinBox* wBox = new QDoubleSpinBox(&dlg);
+	// One underlying VTK line width (pixels), exposed BOTH in pixels and in POINTS (the cartographic
+	// / GMT pen unit). px = pt · dpi/72; the two boxes stay in two-way sync. A guard flag stops the
+	// programmatic setValue of one box from recursing back into the other.
+	double dpi = 72.0;
+	if (s->widget && s->widget->renderWindow() && s->widget->renderWindow()->GetDPI() > 0)
+		dpi = s->widget->renderWindow()->GetDPI();
+	const double pxPerPt = dpi / 72.0;
+	auto wGuard = std::make_shared<bool>(false);
+
+	QDoubleSpinBox *wBox = new QDoubleSpinBox(&dlg);
 	wBox->setRange(0.5, 40.0); wBox->setSingleStep(0.5); wBox->setDecimals(1);
 	wBox->setValue(a->GetProperty()->GetLineWidth());
-	QObject::connect(wBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, a](double w) {
-		a->GetProperty()->SetLineWidth(w);
-		if (s->widget) s->widget->renderWindow()->Render();
-	});
+
+	QDoubleSpinBox *wptBox = new QDoubleSpinBox(&dlg);
+	wptBox->setRange(0.25, 30.0); wptBox->setSingleStep(0.25); wptBox->setDecimals(2);
+	wptBox->setValue(a->GetProperty()->GetLineWidth() / pxPerPt);
+
+	QObject::connect(wBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+		[s, a, wptBox, pxPerPt, wGuard](double w) {
+			if (*wGuard) return;
+			*wGuard = true;
+			a->GetProperty()->SetLineWidth(w);
+			wptBox->setValue(w / pxPerPt);
+			*wGuard = false;
+			if (s->widget) s->widget->renderWindow()->Render();
+		});
+	QObject::connect(wptBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+		[s, a, wBox, pxPerPt, wGuard](double pt) {
+			if (*wGuard) return;
+			*wGuard = true;
+			const double w = pt * pxPerPt;
+			a->GetProperty()->SetLineWidth(w);
+			wBox->setValue(w);
+			*wGuard = false;
+			if (s->widget) s->widget->renderWindow()->Render();
+		});
 	form->addRow("Width (px)", wBox);
+	form->addRow("Width (points)", wptBox);
 
 	// --- Style (solid / dashed / dotted) -------------------------------------
-	QComboBox* stBox = new QComboBox(&dlg);
+	QComboBox *stBox = new QComboBox(&dlg);
 	stBox->addItems(QStringList() << "Solid" << "Dashed" << "Dotted");
 	stBox->setCurrentIndex(lineCurrentStyle(s, lr));
 	if (lr.kind == LK_Polygon) stBox->setEnabled(false);   // polygon outlines: solid only for now
@@ -105,7 +135,7 @@ static void showLineProperties(Scene* s, const LineRef& lr) {
 	form->addRow("Style", stBox);
 
 	// --- Render as tubes -----------------------------------------------------
-	QCheckBox* tubeBox = new QCheckBox(&dlg);
+	QCheckBox *tubeBox = new QCheckBox(&dlg);
 	tubeBox->setChecked(a->GetProperty()->GetRenderLinesAsTubes());
 	QObject::connect(tubeBox, &QCheckBox::toggled, [s, a, wBox](bool on) {
 		a->GetProperty()->SetRenderLinesAsTubes(on);
@@ -122,7 +152,7 @@ static void showLineProperties(Scene* s, const LineRef& lr) {
 	form->addRow("Render as tubes", tubeBox);
 
 	// --- Opacity -------------------------------------------------------------
-	QDoubleSpinBox* opBox = new QDoubleSpinBox(&dlg);
+	QDoubleSpinBox *opBox = new QDoubleSpinBox(&dlg);
 	opBox->setRange(0.05, 1.0); opBox->setSingleStep(0.05); opBox->setDecimals(2);
 	opBox->setValue(a->GetProperty()->GetOpacity());
 	QObject::connect(opBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, a](double v) {
@@ -140,7 +170,7 @@ static void showLineProperties(Scene* s, const LineRef& lr) {
 		if (pi0 >= 0) {
 			double f0[3]; { Polygon& pg = s->polys[pi0]; f0[0]=pg.fillColor[0]; f0[1]=pg.fillColor[1]; f0[2]=pg.fillColor[2]; }
 
-			QPushButton* fillBtn = new QPushButton(&dlg);
+			QPushButton *fillBtn = new QPushButton(&dlg);
 			auto paintFill = [fillBtn](const QColor& q) {
 				fillBtn->setStyleSheet(QString("background:%1; min-width:64px;").arg(q.name()));
 			};
@@ -160,7 +190,7 @@ static void showLineProperties(Scene* s, const LineRef& lr) {
 			form->addRow("Fill color", fillBtn);
 
 			// Fill transparency: 0 = none (no fill drawn) … 1 = opaque. Independent of the outline opacity.
-			QDoubleSpinBox* fopBox = new QDoubleSpinBox(&dlg);
+			QDoubleSpinBox *fopBox = new QDoubleSpinBox(&dlg);
 			fopBox->setRange(0.0, 1.0); fopBox->setSingleStep(0.05); fopBox->setDecimals(2);
 			fopBox->setValue(s->polys[pi0].fillOpacity);
 			QObject::connect(fopBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, a](double v) {
@@ -178,7 +208,7 @@ static void showLineProperties(Scene* s, const LineRef& lr) {
 		}
 	}
 
-	QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
 	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
 	QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
 	form->addRow(bb);
@@ -188,7 +218,7 @@ static void showLineProperties(Scene* s, const LineRef& lr) {
 
 // Collect a line object's polylines in TRUE coords (one inner vector per polyline cell).
 // Polygon -> its closed ring; profile -> the draped track; overlay -> each polyline cell.
-static void lineGatherPolylines(Scene* s, const LineRef& lr,
+static void lineGatherPolylines(Scene *s, const LineRef& lr,
 								std::vector<std::vector<std::array<double,3>>>& out) {
 	out.clear();
 	if (lr.kind == LK_Polygon) {
@@ -196,7 +226,7 @@ static void lineGatherPolylines(Scene* s, const LineRef& lr,
 	}
 	else if (lr.kind == LK_Profile) {
 		if (s->profPD && s->profPD->GetPoints()) {
-			vtkPoints* pts = s->profPD->GetPoints();
+			vtkPoints *pts = s->profPD->GetPoints();
 			std::vector<std::array<double,3>> pl;
 			for (vtkIdType i = 0; i < pts->GetNumberOfPoints(); ++i) {
 				double p[3]; pts->GetPoint(i, p); pl.push_back({ p[0], p[1], p[2] });
@@ -207,8 +237,8 @@ static void lineGatherPolylines(Scene* s, const LineRef& lr,
 	else {                                               // overlay line: walk each polyline cell
 		for (auto& o : s->overlays) {
 			if (o.actor.Get() != lr.actor || !o.baseLine) continue;
-			vtkPoints* pts = o.baseLine->GetPoints();
-			vtkCellArray* lines = o.baseLine->GetLines();
+			vtkPoints *pts = o.baseLine->GetPoints();
+			vtkCellArray *lines = o.baseLine->GetLines();
 			if (pts && lines) {
 				lines->InitTraversal();
 				vtkNew<vtkIdList> ids;
@@ -228,7 +258,7 @@ static void lineGatherPolylines(Scene* s, const LineRef& lr,
 // Write the gathered polylines as a multisegment table. 2D = x y (corners). 3D = x y z, each
 // segment subdivided (one sub-point per grid node) with z INTERPOLATED from the grid below
 // (sampleZ); off a grid, the stored vertex z is used. Multi-segment uses GMT '>' headers.
-static bool lineWriteTable(Scene* s, const std::vector<std::vector<std::array<double,3>>>& polylines,
+static bool lineWriteTable(Scene *s, const std::vector<std::vector<std::array<double,3>>>& polylines,
 						   bool threeD, const QString& path) {
 	QFile f(path);
 	if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
@@ -277,7 +307,7 @@ static bool lineWriteTable(Scene* s, const std::vector<std::vector<std::array<do
 // plain table extension (.txt/.dat) is written directly; an OGR vector extension (.gpkg/.shp/.kml)
 // is written by handing a temp table to GMT.gmtwrite in Julia (the C++ viewer has no GMT) — GMT
 // picks the format from the extension. `g_juliaEval` is the in-process bridge to the host session.
-static void lineSavePoints(Scene* s, const LineRef& lr) {
+static void lineSavePoints(Scene *s, const LineRef& lr) {
 	std::vector<std::vector<std::array<double,3>>> polylines;
 	lineGatherPolylines(s, lr, polylines);
 	if (polylines.empty()) return;
@@ -320,7 +350,7 @@ static void lineSavePoints(Scene* s, const LineRef& lr) {
 
 // Find the index of the finished polygon whose actor is `a`, or -1. (s->polys can be re-found on
 // every edit so a deleted/reordered polygon never gets a stale index written back.)
-static int polyIndexOfActor(Scene* s, vtkActor* a) {
+static int polyIndexOfActor(Scene *s, vtkActor *a) {
 	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].line.Get() == a) return (int)i;
 	return -1;
 }
@@ -332,7 +362,7 @@ static int polyIndexOfActor(Scene* s, vtkActor* a) {
 // pg.v, keeps a closed ring's duplicated first/last vertex in sync, and rebuilds + re-renders the
 // outline live. Profile/overlay lines are GMT-owned, so they stay read-only. The window is its own
 // top-level (no parent), deletes itself on close, and does NOT block the viewer.
-static void showLineDataTable(Scene* s, const LineRef& lr, const QString& name) {
+static void showLineDataTable(Scene *s, const LineRef& lr, const QString& name) {
 	std::vector<std::vector<std::array<double,3>>> polylines;
 	lineGatherPolylines(s, lr, polylines);
 	if (polylines.empty()) return;
@@ -341,30 +371,30 @@ static void showLineDataTable(Scene* s, const LineRef& lr, const QString& name) 
 	const bool editable = (lr.kind == LK_Polygon && polylines.size() == 1);
 	const std::vector<std::array<double,3>>& pl = polylines[0];
 	const int nrows = (int)pl.size();
-	vtkActor* actor = lr.actor;
+	vtkActor *actor = lr.actor;
 
-	QDialog* dlg = new QDialog(nullptr);                  // top-level, parentless -> truly floating
+	QDialog *dlg = new QDialog(nullptr);                  // top-level, parentless -> truly floating
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
 	dlg->setWindowTitle(name.isEmpty() ? QString("Line data") : (name + " — data"));
 	dlg->setWindowFlag(Qt::Window, true);
-	QVBoxLayout* lay = new QVBoxLayout(dlg);
+	QVBoxLayout *lay = new QVBoxLayout(dlg);
 
 	// In flat-2D the Z is a meaningless z=0, so drop the Z column there: cols are #/X/Y (3) in 2D,
 	// #/X/Y/Z (4) in 3D. ncoord = number of coordinate columns drawn (2 or 3).
 	const int  ncoord = s->flat2d ? 2 : 3;
 	QStringList hdr;   hdr << "#" << "X" << "Y";   if (!s->flat2d) hdr << "Z";
-	QTableWidget* tbl = new QTableWidget(nrows, ncoord + 1, dlg);
+	QTableWidget *tbl = new QTableWidget(nrows, ncoord + 1, dlg);
 	tbl->setHorizontalHeaderLabels(hdr);
 	tbl->verticalHeader()->setVisible(false);            // our "#" column already numbers the rows
 	tbl->setSelectionBehavior(QAbstractItemView::SelectRows);
 	if (!editable) tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
 	for (int k = 0; k < nrows; ++k) {
-		QTableWidgetItem* idx = new QTableWidgetItem(QString::number(k + 1));
+		QTableWidgetItem *idx = new QTableWidgetItem(QString::number(k + 1));
 		idx->setFlags(idx->flags() & ~Qt::ItemIsEditable);   // the "#" column is never editable
 		tbl->setItem(k, 0, idx);
 		for (int c = 0; c < ncoord; ++c) {
-			QTableWidgetItem* it = new QTableWidgetItem(QString::number(pl[k][c], 'g', 10));
+			QTableWidgetItem *it = new QTableWidgetItem(QString::number(pl[k][c], 'g', 10));
 			if (!editable) it->setFlags(it->flags() & ~Qt::ItemIsEditable);
 			tbl->setItem(k, c + 1, it);
 		}
@@ -414,14 +444,14 @@ static void showLineDataTable(Scene* s, const LineRef& lr, const QString& name) 
 // ---- "Nested grids" menu actions (the special tsunami rectangle; see nesting_sizes.m) ----------
 
 // Axis-aligned bbox of the polygon at index pi.
-static void nestPolyBBox(Scene* s, int pi, double& x0, double& x1, double& y0, double& y1) {
+static void nestPolyBBox(Scene *s, int pi, double& x0, double& x1, double& y0, double& y1) {
 	x0 = y0 = 1e300; x1 = y1 = -1e300;
 	for (auto& v : s->polys[pi].v) { x0 = std::min(x0, v[0]); x1 = std::max(x1, v[0]);
 	                                 y0 = std::min(y0, v[1]); y1 = std::max(y1, v[1]); }
 }
 
 // "Show nesting info": the COMCOT/NSWING -R/-I + start/end indices (1-based) for this nested rect.
-static void nestShowInfo(Scene* s, vtkActor* a) {
+static void nestShowInfo(Scene *s, vtkActor *a) {
 	const int pi = polyIndexOfActor(s, a);
 	if (pi < 0) return;
 	const Polygon& pg = s->polys[pi];
@@ -446,7 +476,7 @@ static void nestShowInfo(Scene* s, vtkActor* a) {
 // up as an (unchecked) "Nested grid N" row in Scene Objects but is not drawn. The scene handle is
 // embedded in the command so Julia adds to this exact window. Deferred a turn so the menu's event
 // finishes first.
-static void nestCreateBlankGrid(Scene* s, vtkActor* a) {
+static void nestCreateBlankGrid(Scene *s, vtkActor *a) {
 	const int pi = polyIndexOfActor(s, a);
 	if (pi < 0) return;
 	const Polygon& pg = s->polys[pi];
@@ -479,7 +509,7 @@ static void nestCreateBlankGrid(Scene* s, vtkActor* a) {
 // ---- Length / azimuth / area (CRS-aware, computed in Julia/GMT) --------------------------------
 //
 // Total vertex count across all of a line object's polylines.
-static int lineVertexCount(Scene* s, const LineRef& lr) {
+static int lineVertexCount(Scene *s, const LineRef& lr) {
 	std::vector<std::vector<std::array<double,3>>> pls;
 	lineGatherPolylines(s, lr, pls);
 	int n = 0; for (auto& pl : pls) n += (int)pl.size();
@@ -488,7 +518,7 @@ static int lineVertexCount(Scene* s, const LineRef& lr) {
 
 // Total straight segments (sum of verts-1 per polyline). 1 = a single straight line -> singular
 // menu labels + a single-number result; >1 = a polyline -> plural labels + a Data Viewer table.
-static int lineSegmentCount(Scene* s, const LineRef& lr) {
+static int lineSegmentCount(Scene *s, const LineRef& lr) {
 	std::vector<std::vector<std::array<double,3>>> pls;
 	lineGatherPolylines(s, lr, pls);
 	int n = 0; for (auto& pl : pls) if (pl.size() >= 2) n += (int)pl.size() - 1;
@@ -499,7 +529,7 @@ static int lineSegmentCount(Scene* s, const LineRef& lr) {
 // LINES, but ONLY when small (<=100 vertices). That single threshold excludes BOTH the coastlines
 // (thousands of points) AND moderately large imported xy files — exactly the user's cut. The
 // profile track is out (it has its own "Save with distance"); points/grids/images are not lines.
-static bool lineMeasurable(Scene* s, const LineRef& lr) {
+static bool lineMeasurable(Scene *s, const LineRef& lr) {
 	if (lr.kind != LK_Overlay && lr.kind != LK_Polygon) return false;
 	const int n = lineVertexCount(s, lr);
 	return n >= 2 && n <= 100;
@@ -507,7 +537,7 @@ static bool lineMeasurable(Scene* s, const LineRef& lr) {
 
 // A finished, closed polygon ring (>=4 vertices incl. the repeated first==last) — the only shape an
 // "Area under polygon" makes sense for. Open polylines / rects-in-progress are excluded.
-static bool lineClosedRing(Scene* s, const LineRef& lr) {
+static bool lineClosedRing(Scene *s, const LineRef& lr) {
 	if (lr.kind != LK_Polygon) return false;
 	const int pi = polyIndexOfActor(s, lr.actor);
 	return pi >= 0 && s->polys[pi].closed && s->polys[pi].v.size() >= 4;
@@ -518,7 +548,7 @@ static bool lineClosedRing(Scene* s, const LineRef& lr) {
 // table, the scene handle and the window's proj4 go across; Julia decides geographic vs cartesian.
 // Deferred a turn (like nestCreateBlankGrid) so the menu's own event finishes before the (possibly
 // slow first-call) GMT compile runs. `box` shows the result in a dialog, else the status bar.
-static void lineRunMeasure(Scene* s, const LineRef& lr, const char* fn, bool box) {
+static void lineRunMeasure(Scene *s, const LineRef& lr, const char *fn, bool box) {
 	if (!g_juliaEval) {
 		QMessageBox::warning(s->win, "Measure", "This computation needs the Julia/GMT host.");
 		return;
@@ -553,15 +583,15 @@ static void lineRunMeasure(Scene* s, const LineRef& lr, const char* fn, bool box
 
 // Open the Vertical elastic deformation dialog for a fault line (defined in 70_window.cpp, after the
 // ElasticDialog class — this fragment is #included before it, so forward-declare it here).
-static void faultRunDialog(Scene* s);
+static void faultRunDialog(Scene *s);
 
 // The unified right-click menu for a line object: "Line properties…" plus the kind's own actions
 // (profile: save / delete; overlay & polygon: hide; polygon: delete). Shared by the 3-D-view
 // right-click hit-test and the Scene Objects list rows, so both routes give the same menu.
-static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name, const QPoint& gp) {
+static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name, const QPoint& gp) {
 	if (!s || !lr.actor) return;
 	QMenu m(s->win);
-	vtkActor* a = lr.actor;
+	vtkActor *a = lr.actor;
 
 	// Is this a "Nested grids" rectangle, or a Draw-Fault line?
 	bool isNestRect = false, isFault = false;
@@ -620,7 +650,7 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 			if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
 			QTextStream out(&f);
 			out << "# distance\tx\ty\tz\n";
-			vtkPoints* pts = s->profPD->GetPoints();
+			vtkPoints *pts = s->profPD->GetPoints();
 			const vtkIdType np = pts->GetNumberOfPoints();
 			for (vtkIdType i = 0; i < np; ++i) {
 				double p[3]; pts->GetPoint(i, p);
@@ -642,7 +672,7 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 	// Shared vector-pile draw-order: order this line/polygon against ALL other vector elements
 	// (overlays + symbols + polygons). Not for the singleton profile track, nor for nested-grid
 	// rectangles (the GRIDS carry the stacking, not their defining rectangles).
-	int* stackPtr = nullptr;
+	int *stackPtr = nullptr;
 	if (lr.kind == LK_Overlay)      { for (auto& o  : s->overlays) if (o.actor.Get() == a) { stackPtr = &o.stack;  break; } }
 	else if (lr.kind == LK_Polygon && !isNestRect) { for (auto& pg : s->polys) if (pg.line.Get() == a) { stackPtr = &pg.stack; break; } }
 	// Draw-order now spans ONE unified pile (base relief + grids + every vector), so a fault drawn on a
@@ -652,10 +682,11 @@ static void popupLineObjectMenu(Scene* s, const LineRef& lr, const QString& name
 	if (stackPtr && nVec > 1) {
 		m.addSeparator();
 		auto reRender = [s]() { if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render(); };
-		m.addAction("Place on top",    [s, stackPtr, reRender]() { restackVector(s, stackPtr, 0); reRender(); });
-		m.addAction("Place at bottom", [s, stackPtr, reRender]() { restackVector(s, stackPtr, 1); reRender(); });
-		m.addAction("Stack up",        [s, stackPtr, reRender]() { restackVector(s, stackPtr, 2); reRender(); });
-		m.addAction("Stack down",      [s, stackPtr, reRender]() { restackVector(s, stackPtr, 3); reRender(); });
+		QMenu *stackMenu = m.addMenu("Stack order");
+		stackMenu->addAction("Place on top",    [s, stackPtr, reRender]() { restackVector(s, stackPtr, 0); reRender(); });
+		stackMenu->addAction("Place at bottom", [s, stackPtr, reRender]() { restackVector(s, stackPtr, 1); reRender(); });
+		stackMenu->addAction("Bring forward",   [s, stackPtr, reRender]() { restackVector(s, stackPtr, 2); reRender(); });
+		stackMenu->addAction("Send backward",   [s, stackPtr, reRender]() { restackVector(s, stackPtr, 3); reRender(); });
 	}
 	(void)name;
 	m.exec(gp);

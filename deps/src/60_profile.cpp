@@ -10,14 +10,14 @@
 // Forward decl: the standalone X,Y plot tool (65_xyplot.cpp, #included later). The Profile panel's
 // right-click "Open in X,Y plot tool" hands its current (x,y) series to this to spawn a full plotter.
 struct XYPlot;
-static XYPlot* openSeriesInXYTool(const std::vector<double>& x, const std::vector<double>& y,
-                                  const char* title, const char* xlabel, const char* ylabel);
+static XYPlot *openSeriesInXYTool(const std::vector<double>& x, const std::vector<double>& y,
+                                  const char *title, const char *xlabel, const char *ylabel);
 
 // 2D profile plot. Pure QPainter (VTK has no working context-2D GL backend in this
 // build); a plain QWidget paints axes + the (s,z) polyline.
 class ProfilePanel : public QWidget {
 public:
-	ProfilePanel(QWidget* parent = nullptr) : QWidget(parent) {
+	ProfilePanel(QWidget *parent = nullptr) : QWidget(parent) {
 		setMinimumHeight(170);
 		setAutoFillBackground(true);
 	}
@@ -133,9 +133,9 @@ protected:
 	// Right-click -> push the currently shown profile/series into a standalone X,Y plot window
 	// (Object Manager + Analysis + save). Works for both the Ctrl-drag elevation profile and a
 	// downloaded tide series — whatever this panel currently shows.
-	void contextMenuEvent(QContextMenuEvent* e) override {
+	void contextMenuEvent(QContextMenuEvent *e) override {
 		QMenu m(this);
-		QAction* a = m.addAction("Open in X,Y plot tool");
+		QAction *a = m.addAction("Open in X,Y plot tool");
 		a->setEnabled(m_s.size() >= 2);
 		if (m.exec(e->globalPos()) == a && m_s.size() >= 2)
 			openSeriesInXYTool(m_s, m_z,
@@ -145,10 +145,10 @@ protected:
 };
 
 // Wipe the profile: empty the 3D line, drop its texture/state, clear the 2D panel.
-static void profileClear(Scene* s) {
+static void profileClear(Scene *s) {
 	if (!s || !s->profLine) return;
 	vtkNew<vtkPolyData> empty;
-	if (auto* mm = vtkPolyDataMapper::SafeDownCast(s->profLine->GetMapper()))
+	if (auto *mm = vtkPolyDataMapper::SafeDownCast(s->profLine->GetMapper()))
 		mm->SetInputData(empty);
 	s->profLine->SetVisibility(0);
 	s->profLine->SetTexture(nullptr);
@@ -161,7 +161,7 @@ static void profileClear(Scene* s) {
 
 // Pick the surface point under cursor device px (dx,dy) and convert to TRUE (x,y) —
 // undo the actor's horizontal scale (xfac). Returns false if the cursor misses the surface.
-static bool pickSurfaceXY(Scene* s, int dx, int dy, double& tx, double& ty) {
+static bool pickSurfaceXY(Scene *s, int dx, int dy, double& tx, double& ty) {
 	if (!s || !s->ren || !s->surf)
 		return false;
 	vtkNew<vtkCellPicker> pk; pk->SetTolerance(0.0005);
@@ -177,7 +177,7 @@ static bool pickSurfaceXY(Scene* s, int dx, int dy, double& tx, double& ty) {
 // Sample the surface elevation along the straight track (ax,ay)->(bx,by) by shooting a
 // vertical ray at each densified (x,y) (one true z per sample), then refresh the 3D drape
 // line + the 2D panel. Arc length is in metres (geographic) / data units (cartesian).
-static void computeProfile(Scene* s, double ax, double ay, double bx, double by) {
+static void computeProfile(Scene *s, double ax, double ay, double bx, double by) {
 	if (!s || (s->gridZ.empty() && !(s->actZ && !s->actZ->empty())))   // need a data layer (active grid or base)
 		return;
 	const int N = 300;
@@ -210,7 +210,7 @@ static void computeProfile(Scene* s, double ax, double ay, double bx, double by)
 	}
 	vtkNew<vtkPolyData> lpd; lpd->SetPoints(line); lpd->SetLines(ca);
 	s->profPD = lpd;                                   // keep for restyle + save
-	if (auto* m = vtkPolyDataMapper::SafeDownCast(s->profLine->GetMapper()))
+	if (auto *m = vtkPolyDataMapper::SafeDownCast(s->profLine->GetMapper()))
 		m->SetInputData(lpd);
 	s->profLine->SetVisibility(np >= 2 ? 1 : 0);
 	s->profStyle = 0;                                  // a fresh line starts solid
@@ -231,7 +231,7 @@ static void computeProfile(Scene* s, double ax, double ay, double bx, double by)
 		s->widget->renderWindow()->Render();
 }
 
-static void profilerBegin(Scene* s, int dx, int dy) {
+static void profilerBegin(Scene *s, int dx, int dy) {
 	if (!s)
 		return;
 	double tx, ty;
@@ -245,7 +245,7 @@ static void profilerBegin(Scene* s, int dx, int dy) {
 	}
 }
 
-static void profilerDrag(Scene* s, int dx, int dy) {
+static void profilerDrag(Scene *s, int dx, int dy) {
 	if (!s || !s->profiling)
 		return;
 	double tx, ty;
@@ -254,7 +254,7 @@ static void profilerDrag(Scene* s, int dx, int dy) {
 	computeProfile(s, s->track0[0], s->track0[1], tx, ty);
 }
 
-static void profilerEnd(Scene* s) {
+static void profilerEnd(Scene *s) {
 	if (!s) return;
 	s->profiling = false;
 	rebuildSceneObjects(s);   // a profile line now exists -> show its row in the Scene Objects list
@@ -263,16 +263,16 @@ static void profilerEnd(Scene* s) {
 // Polygon tool mouse handlers (defined in 85_polygon.cpp, #included later). GLView drives them
 // directly because VTK's adapter doesn't deliver Qt double-clicks as a second LeftButtonPress.
 // Each returns true when it consumed the event (the widget then skips VTK's base handler).
-static bool polygonHandlePress(Scene* s, int button, int x, int y);
-static bool polygonHandleDblClick(Scene* s, int x, int y);
-static bool polygonHandleMove(Scene* s, int x, int y);
-static bool polygonHandleRelease(Scene* s);
-static int  polyHitHandle(Scene* s, int x, int y, double tol);   // vertex handle under cursor (85)
-static int  polyHitText(Scene* s, int x, int y, double tol);     // text label under cursor (85)
+static bool polygonHandlePress(Scene *s, int button, int x, int y);
+static bool polygonHandleDblClick(Scene *s, int x, int y);
+static bool polygonHandleMove(Scene *s, int x, int y);
+static bool polygonHandleRelease(Scene *s);
+static int  polyHitHandle(Scene *s, int x, int y, double tol);   // vertex handle under cursor (85)
+static int  polyHitText(Scene *s, int x, int y, double tol);     // text label under cursor (85)
 
 class GLView : public QVTKOpenGLNativeWidget {
 public:
-	Scene* s = nullptr;
+	Scene *s = nullptr;
 	GLView() : QVTKOpenGLNativeWidget() {}
 protected:
 	bool   midDown = false, midMoved = false;
@@ -286,7 +286,7 @@ protected:
 	}
 	void recenterAt(const QPoint& p) {
 		if (!s || !s->ren || !s->surf) return;
-		vtkRenderer* ren = s->ren; vtkCamera* cam = ren->GetActiveCamera();
+		vtkRenderer *ren = s->ren; vtkCamera *cam = ren->GetActiveCamera();
 		if (!cam) return;
 		double x, y; devPx(p, x, y);
 		vtkNew<vtkCellPicker> pk; pk->SetTolerance(0.0005);
@@ -303,7 +303,7 @@ protected:
 	}
 	void panBy(const QPoint& prev, const QPoint& cur) {
 		if (!s || !s->ren) return;
-		vtkRenderer* ren = s->ren; vtkCamera* cam = ren->GetActiveCamera();
+		vtkRenderer *ren = s->ren; vtkCamera *cam = ren->GetActiveCamera();
 		if (!cam) return;
 		double ox, oy, nx, ny; devPx(prev, ox, oy); devPx(cur, nx, ny);
 		double fp[3]; cam->GetFocalPoint(fp);
@@ -322,7 +322,7 @@ protected:
 		ren->ResetCameraClippingRange();
 		renderWindow()->Render();
 	}
-	void mousePressEvent(QMouseEvent* e) override {
+	void mousePressEvent(QMouseEvent *e) override {
 		if (e->button() == Qt::MiddleButton) {
 			midDown = true; midMoved = false;
 			midPress = e->position().toPoint(); midLast = midPress;
@@ -332,7 +332,7 @@ protected:
 		// Colorbar: left-press inside its frame grabs it for dragging (overlay, so checked first).
 		if (s && e->button() == Qt::LeftButton) {
 			double dx, dy; devPx(e->position().toPoint(), dx, dy);
-			const int* sz = renderWindow()->GetSize();
+			const int *sz = renderWindow()->GetSize();
 			if (sz[0] > 0 && sz[1] > 0 && colorbarGrab(s, dx / sz[0], dy / sz[1]))
 				return;                 // consumed -> keep VTK (gizmo / dolly) out of it
 		}
@@ -344,7 +344,7 @@ protected:
 		}
 		QVTKOpenGLNativeWidget::mousePressEvent(e);
 	}
-	void mouseDoubleClickEvent(QMouseEvent* e) override {
+	void mouseDoubleClickEvent(QMouseEvent *e) override {
 		// Double-left-click closes the polygon (draw mode) or enters/leaves vertex-edit mode.
 		if (s && e->button() == Qt::LeftButton) {
 			double dx, dy; devPx(e->position().toPoint(), dx, dy);
@@ -353,7 +353,7 @@ protected:
 		}
 		QVTKOpenGLNativeWidget::mouseDoubleClickEvent(e);
 	}
-	void mouseMoveEvent(QMouseEvent* e) override {
+	void mouseMoveEvent(QMouseEvent *e) override {
 		if (midDown) {
 			const QPoint cp = e->position().toPoint();
 			if ((cp - midPress).manhattanLength() > 3) midMoved = true;
@@ -363,7 +363,7 @@ protected:
 		// Colorbar drag in progress: move it and consume.
 		if (s && s->barDragging) {
 			double dx, dy; devPx(e->position().toPoint(), dx, dy);
-			const int* sz = renderWindow()->GetSize();
+			const int *sz = renderWindow()->GetSize();
 			if (sz[0] > 0 && sz[1] > 0) colorbarDragTo(s, dx / sz[0], dy / sz[1]);
 			return;
 		}
@@ -371,7 +371,7 @@ protected:
 		// vertex handle in edit mode / text label). Skipped while the draw tool owns a crosshair.
 		if (s && !s->polyMode) {
 			double dx, dy; devPx(e->position().toPoint(), dx, dy);
-			const int* sz = renderWindow()->GetSize();
+			const int *sz = renderWindow()->GetSize();
 			const double nx = sz[0] > 0 ? dx / sz[0] : 0.0;
 			const double ny = sz[1] > 0 ? dy / sz[1] : 0.0;
 			const bool over = colorbarHit(s, nx, ny)
@@ -389,7 +389,7 @@ protected:
 		}
 		QVTKOpenGLNativeWidget::mouseMoveEvent(e);
 	}
-	void mouseReleaseEvent(QMouseEvent* e) override {
+	void mouseReleaseEvent(QMouseEvent *e) override {
 		if (e->button() == Qt::MiddleButton) {
 			if (midDown && !midMoved) recenterAt(e->position().toPoint());
 			midDown = false;
