@@ -801,6 +801,13 @@ GMTVTK_API void gmtvtk_set_bgregion_callback(JuliaBgRegionFn fn) {
 	g_juliaBgRegion = fn;
 }
 
+// Register the New-Window callback. `fn` (Julia @cfunction, signature JuliaNewWindowFn) is called
+// (with the clicked window's Scene*) from File > New Window; Julia opens a fresh empty launcher and
+// registers it. nullptr to detach.
+GMTVTK_API void gmtvtk_set_newwindow_callback(JuliaNewWindowFn fn) {
+	g_juliaNewWindow = fn;
+}
+
 // Register the Geography-menu callback. `fn` (Julia @cfunction, signature JuliaGeoFn) is called
 // with "<kind>/<res>/W/E/S/N" (the visible region at the current zoom) when a Plot-coastline leaf
 // is chosen; Julia runs GMT.coast and adds the lines via gmtvtk_add_overlay_h. nullptr to detach.

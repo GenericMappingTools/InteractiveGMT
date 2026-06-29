@@ -47,6 +47,7 @@ function _ensure_callbacks()
 	                    ("basemap",     _register_basemap),
 	                    ("tiles",       _register_tiles),
 	                    ("bgregion",    _register_bgregion),
+	                    ("new-window",  _register_new_window),
 	                    ("save",        _register_save),
 	                    ("geography",   _register_geography),
 	                    ("solid",       _register_solid),

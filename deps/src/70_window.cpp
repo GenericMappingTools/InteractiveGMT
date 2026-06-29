@@ -549,6 +549,24 @@ public:
 	}
 };
 
+// ============================================================================================
+// Preferences dialog (File > Preferences). Placeholder shell — the actual settings UI is still
+// being designed (nothing to configure yet). Opens, shows a note, closes. When real preferences
+// land they live here (persisted via QSettings) and apply to newly opened windows.
+// ============================================================================================
+class PreferencesDialog : public QDialog {
+public:
+	PreferencesDialog(QWidget *parent) : QDialog(parent) {
+		setWindowTitle("Preferences");
+		auto *v = new QVBoxLayout(this);
+		v->addWidget(new QLabel("Preferences — UI under design.\nNothing to configure yet.", this));
+		auto *bb = new QDialogButtonBox(QDialogButtonBox::Close, this);
+		QObject::connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
+		QObject::connect(bb, &QDialogButtonBox::accepted, this, &QDialog::accept);
+		v->addWidget(bb);
+	}
+};
+
 static QuadNode* buildQuadNode(int i0, int i1, int j0, int j1, int level,
 							   double x0, double dx, double y0, double dy) {
 	QuadNode* n = new QuadNode();
@@ -2770,6 +2788,17 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 
 	QMenu *mFile = win->menuBar()->addMenu("&File");
+	// Preferences: settings dialog. Placeholder shell for now (UI still being designed).
+	mFile->addAction("&Preferences…", [win]() { PreferencesDialog(win).exec(); });
+	mFile->addSeparator();
+	// New Window: open a fresh empty iGMT launcher. Routed through Julia (g_juliaNewWindow) so the
+	// new window is tracked in the Julia figure registry — the basis for future inter-window data
+	// exchange. Reports if the callback is not wired.
+	mFile->addAction("&New Window", [s]() {
+		if (g_juliaNewWindow) g_juliaNewWindow(s);
+		else if (s->win) s->win->statusBar()->showMessage("New Window: callback not registered", 3000);
+	});
+	mFile->addSeparator();
 	mFile->addAction("Save &Screenshot…", actShot);
 	// Save Grid / Save Image: each opens the format-picker dialog (saveObjectDialog) for the window's
 	// primary object (empty name). Greyed out when the window holds no grid / no image — refreshed on
@@ -3169,6 +3198,7 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	flyout->setPopupMode(QToolButton::MenuButtonPopup);  // click icon = use tool; click arrow = flyout
 	flyout->setToolButtonStyle(Qt::ToolButtonIconOnly);
 	QMenu* shapeMenu = new QMenu(flyout);                // the dropdown flyout list
+	QAction* defaultShape = nullptr;                     // the tool the slot starts on (Line)
 	for (const ToolDef& td : flyoutTools) {
 		QAction* act = shapeMenu->addAction(td.icon, td.name);   // icon + label (the slot itself stays icon-only)
 		act->setCheckable(true);
@@ -3176,9 +3206,11 @@ static Scene* buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		const Scene::ShapeKind kind = td.kind;
 		QObject::connect(act, &QAction::toggled, [s, act, kind](bool on){ polygonToolToggled(s, act, kind, on); });
 		s->shapeActs.push_back(act);
+		if (kind == Scene::SH_Line) defaultShape = act;
 	}
 	flyout->setMenu(shapeMenu);
-	flyout->setDefaultAction(shapeMenu->actions().first());      // start on Polygon (icon + tooltip mirror it)
+	// Start on Line (icon + tooltip mirror it); fall back to the first entry if Line ever goes away.
+	flyout->setDefaultAction(defaultShape ? defaultShape : shapeMenu->actions().first());
 	// Picking a sibling from the flyout makes it the slot's current tool (Illustrator behaviour): the
 	// chosen action toggles on (its connection enters draw mode) and becomes the button's default.
 	QObject::connect(shapeMenu, &QMenu::triggered, flyout, [flyout](QAction* a){ flyout->setDefaultAction(a); });

@@ -244,3 +244,22 @@ function iview()
 	_start_pump()
 	return fig
 end
+
+# C callback for File > New Window. `scene` = the window the menu was clicked in (unused for now;
+# kept for a future "open near / inherit from" behaviour). Opens a fresh empty launcher, tracked in
+# _FIGREG — the registry that the planned inter-window data exchange will address windows through.
+function _on_new_window(::Ptr{Cvoid})::Cvoid
+	try
+		iview()
+	catch e
+		@warn "New Window: could not open a window" exception=(e,)
+	end
+	return
+end
+
+# Build the C-callable pointer + register it. Called once from __init__ (via _ensure_callbacks).
+function _register_new_window()
+	fptr = @cfunction((s)->Base.invokelatest(_on_new_window, s), Cvoid, (Ptr{Cvoid},))
+	ccall(_fn(:gmtvtk_set_newwindow_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end

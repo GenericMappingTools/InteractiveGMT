@@ -46,6 +46,13 @@ static QString      g_tilesWorld;
 typedef void (*JuliaBgRegionFn)(void* scene, const char* region);
 static JuliaBgRegionFn g_juliaBgRegion = nullptr;
 
+// New Window (File > New Window). Opens a fresh empty iGMT launcher. Routed through Julia
+// (g_juliaNewWindow) rather than calling gmtvtk_open_empty directly so the new window is tracked
+// in the Julia figure registry — the basis for the (future) inter-window data exchange. nullptr ->
+// the menu entry reports "callback not registered". `scene` is the window the menu was clicked in.
+typedef void (*JuliaNewWindowFn)(void* scene);
+static JuliaNewWindowFn g_juliaNewWindow = nullptr;
+
 // Geography menu (Plot coastline / political boundaries / rivers). A leaf action computes the
 // CURRENT visible geographic region (i.e. honouring the zoom level) and hands the request
 // "<kind>/<res>/W/E/S/N" to Julia (g_juliaGeo), which runs GMT.coast and adds the resulting
