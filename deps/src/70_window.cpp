@@ -1289,11 +1289,11 @@ static vtkSmartPointer<vtkActor> faultMakeArrowsActor(Scene* s, vtkPolyData* pd)
 // & degrees (geographic) / data units & degrees (cartesian). NOTE: this is the geometric plane, NOT
 // the Save-fault file boundary (push_save_subfault uses the full-W footprint, a non-geometric Mirone
 // representation) — the two are deliberately different.
-static void faultUpdatePlane(Scene* s, double width, double dip, double strike, double rake, bool geog) {
+static void faultUpdatePlane(Scene* s, double width, double dip, double strike, double rake, bool geog, int targetPi = -1) {
 	if (!s) return;
-	int pi = -1;
-	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
-	if (pi < 0 || s->polys[pi].v.size() < 2) return;
+	int pi = targetPi;                                        // import targets the just-added fault; dialog uses first isFault
+	if (pi < 0) for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
+	if (pi < 0 || pi >= (int)s->polys.size() || !s->polys[pi].isFault || s->polys[pi].v.size() < 2) return;
 	Polygon& pg = s->polys[pi];
 	const double D2R = 3.14159265358979323846 / 180.0;
 	const double off  = width * std::cos(dip * D2R);               // down-dip horizontal projection (W·cos dip)
@@ -1657,13 +1657,23 @@ public:
 				}
 			}
 
-			// Seed Slip + Rake from the fault if it carries them (set by Import Trace Fault, which reads
-			// them from the sub-fault file — slip already converted cm->m). The imported file is the
-			// authority for that fault, so these override any remembered state. NaN = not imported ->
-			// leave the dialog's own value untouched. Same fault faultLineGeom picked (first isFault).
+			// Seed Slip/Rake AND the fault geometry (Strike/Dip/Width/Depth-to-Top) from the fault if it
+			// carries them (set by Import Trace Fault, which reads them from the sub-fault file — slip
+			// already converted cm->m, Width = ny·Dy total down-dip). The imported file is the authority
+			// for that fault, so these override the trace-seeded / remembered values. NaN = not imported
+			// -> leave the dialog's own value untouched. Same fault faultLineGeom picked (first isFault).
 			for (auto& pg : scene->polys) if (pg.isFault) {
 				if (!std::isnan(pg.faultSlip)) dSlip->setText(QString::number(pg.faultSlip, 'g', 6));
 				if (!std::isnan(pg.faultRake)) dRake->setText(QString::number(pg.faultRake, 'g', 6));
+				if (!std::isnan(pg.faultStrike)) {
+					fStrike->setText(QString::number(pg.faultStrike, 'g', 6));
+					dStrike->setText(QString::number(pg.faultStrike, 'g', 6));
+				}
+				if (!std::isnan(pg.faultDip))      fDip->setText(QString::number(pg.faultDip, 'g', 6));
+				if (!std::isnan(pg.faultWidth))    fWid->setText(QString::number(pg.faultWidth, 'g', 6));
+				if (!std::isnan(pg.faultDepthTop)) fDepTop->setText(QString::number(pg.faultDepthTop, 'g', 6));
+				if (!std::isnan(pg.faultWidth) || !std::isnan(pg.faultDip) || !std::isnan(pg.faultDepthTop))
+					recomputeDepth();              // derive bottom Depth from the file's Width/Dip/Depth-to-Top
 				refreshBeachball(); updateMw();
 				break;
 			}

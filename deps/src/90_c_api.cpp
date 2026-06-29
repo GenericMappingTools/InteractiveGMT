@@ -873,6 +873,35 @@ GMTVTK_API int gmtvtk_add_fault_h(void *handle, const double *xy, int npts, doub
 	return 1;
 }
 
+// Add a fault trace LINE *with its full slip-model geometry* — the host-import twin of Draw Fault for
+// Import Trace Fault. Same as gmtvtk_add_fault_h (finalizes the trace through polyFinalize → isFault
+// "fault N" line, seeds slip/rake) but ALSO carries the geometry read from the sub-fault file:
+// `strike`/`dip` (DEGREES), `width` = the TOTAL down-dip width ny·Dy (km geog / data units), and
+// `depthTop` = depth to the top of the shallowest patch (km). With the geometry known, it immediately
+// draws the dipping fault plane and ITS SURFACE-PROJECTION RECTANGLE (the gray patch hugging the
+// ground) via faultUpdatePlane — exactly what Mirone's subfault() plots — instead of waiting for the
+// user to open the elastic dialog. `geog` (1/0) selects the geodesic vs cartesian down-dip walk. The
+// geometry is also stored on the polygon so the dialog opens seeded with the file's true values.
+// Returns 1 if added, 0 on a dead handle / too few points.
+GMTVTK_API int gmtvtk_add_fault_geom_h(void *handle, const double *xy, int npts,
+                                       double slip, double rake,
+                                       double strike, double dip, double width, double depthTop, int geog) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xy || npts < 2) return 0;
+	std::vector<std::array<double,3>> verts;
+	verts.reserve(npts);
+	for (int i = 0; i < npts; ++i) verts.push_back({ xy[2*i], xy[2*i + 1], 0.0 });
+	polyFinalize(s, verts, false, "fault");
+	if (s->polys.empty()) return 0;          // polyFinalize pushed the new fault last
+	int pi = (int)s->polys.size() - 1;
+	Polygon &pg = s->polys[pi];
+	pg.faultSlip = slip;  pg.faultRake = rake;          // meters / degrees (NaN = unknown)
+	pg.faultStrike = strike; pg.faultDip = dip; pg.faultWidth = width; pg.faultDepthTop = depthTop;
+	faultUpdatePlane(s, width, dip, strike, rake, geog != 0, pi);   // draw plane + surface-projection rect now
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Inject a 2-vertex fault line (lon1,lat1)->(lon2,lat2) into the scene so the apply logic has a
 // target without going through the interactive draw tool. Returns the number of fault polygons.

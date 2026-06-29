@@ -97,6 +97,10 @@ struct Polygon {
 	bool isFault = false;                    // drawn with the Draw Fault tool (SH_Fault): props hold the elastic-deformation dialog
 	double faultSlip = std::nan("");         // dislocation slip in METERS (set when imported from a sub-fault file; NaN = unknown -> dialog default)
 	double faultRake = std::nan("");         // dislocation rake in DEGREES (set on import; NaN = unknown -> dialog default)
+	double faultStrike   = std::nan("");     // strike in DEGREES (file mean, set on import; NaN = unknown -> seed from trace azimuth)
+	double faultDip      = std::nan("");     // dip in DEGREES (file mean, set on import; NaN = unknown -> dialog default)
+	double faultWidth    = std::nan("");     // TOTAL down-dip width ny·Dy (km geog / data units, set on import; NaN = unknown)
+	double faultDepthTop = std::nan("");     // depth to top of the shallowest patch in km (set on import; NaN = unknown)
 	vtkSmartPointer<vtkActor>    faultPlane; // gray surface-projection patch of the dipping fault plane (sits BELOW the trace)
 	vtkSmartPointer<vtkPolyData> faultPlanePD;
 	vtkSmartPointer<vtkActor>    faultPlane3D; // the actual dipping fault plane in 3-D (top buried at the deepest trace point; 3-D-only)
