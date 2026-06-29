@@ -26,9 +26,9 @@ function _seg_dist_azim(x::Vector{Float64}, y::Vector{Float64}, geog::Bool)
 	n = length(x)
 	n < 2 && return (zeros(n), fill(NaN, n))
 	if geog
-		seg = GMT.mat2ds(hcat(x, y); proj4 = GMT.prj4WGS84)          # tag geographic so -G is geodesic
-		inc = Float64.(GMT.mapproject(seg, track_distances = "+i+uk").data[:, end])
-		az  = Float64.(GMT.mapproject(seg, azim = "f").data[:, end])   # az[1] = NaN (no arriving seg)
+		seg = GMT.mat2ds(hcat(x, y); proj4=GMT.prj4WGS84)          # tag geographic so -G is geodesic
+		inc = GMT.mapproject(seg, track_distances="+i+uk").data[:, end]
+		az  = GMT.mapproject(seg, azim="f", j=:e).data[:, end]   # az[1] = NaN (no arriving seg)
 		return (inc, az)
 	end
 	dx = diff(x);  dy = diff(y)
@@ -118,8 +118,16 @@ function _fault_lenaz(path::String, proj4::String)
 		length(x) < 2 && return nothing
 		inc, _ = _seg_dist_azim(x, y, geog)                            # same per-segment geodesic as measure
 		total  = sum(inc)
-		_, fa  = _seg_dist_azim([x[1], x[end]], [y[1], y[end]], geog)  # first→last forward azimuth
-		az     = length(fa) >= 2 ? fa[2] : NaN
+		# Fault strike = FLAT-EARTH azimuth of the trace's end points (first→last). The okada fault
+		# plane is built on a flat-earth strike, so seed the dialog Strike from the same model rather
+		# than the geodesic azimuth used elsewhere. Cartesian faults are already planar (atan).
+		if geog
+			a  = GMT.mapproject([x[1] y[1]; x[end] y[end]], A="f$(x[1])/$(y[1])", j=:f)
+			az = a.data[end, end]
+		else
+			_, fa = _seg_dist_azim([x[1], x[end]], [y[1], y[end]], geog)
+			az = length(fa) >= 2 ? fa[2] : NaN
+		end
 		print(total, '/', az, '/', geog ? 1 : 0)
 	catch e
 		@warn "fault length/azimuth FAILED" exception=(e,)
