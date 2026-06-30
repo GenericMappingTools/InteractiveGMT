@@ -867,6 +867,22 @@ static void polygonDelete(Scene *s, vtkActor *lineActor) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
+// Delete all slip-model patches with a given groupName (Import Model Slip group). Called from the
+// Scene Objects slip group node's "Delete" property.
+static void deleteSlipGroup(Scene *s, const QString &groupName) {
+	std::string gname = groupName.toStdString();
+	// Collect all actors of patches with this groupName.
+	std::vector<vtkActor*> kill;
+	for (auto& p : s->polys) {
+		if (p.groupName == gname && p.line) kill.push_back(p.line.Get());
+	}
+	// Erase them all.
+	for (vtkActor *a : kill) polygonEraseOne(s, a);
+	applyVectorStacking(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // Toolbar toggle: enter/leave draw mode. Switching cancels any in-progress draw and edit.
 static void polygonSetMode(Scene *s, bool on) {
 	s->polyMode = on;

@@ -627,18 +627,22 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 		m.addSeparator();
 	}
 
-	m.addAction("Line properties…", [s, lr]() { showLineProperties(s, lr); });
-	m.addAction(isNestRect ? "Save rectangle…"
-			  : isFault    ? "Save trace fault…"
-			  : (lr.kind == LK_Polygon ? "Save polygon…" : "Save line…"),
-				[s, lr]() { lineSavePoints(s, lr); });   // 2D / 3D (grid-interpolated z)
-	m.addAction("Show data table…",                                      // floating vertex table viewer
-				[s, lr, name]() { showLineDataTable(s, lr, name); });
+	// Slip-model patches (Import Model Slip) have ONLY the elastic-deformation dialog — no line
+	// properties, save, table, measurements, or delete. The GROUP carries the delete action.
+	if (!isSlip) {
+		m.addAction("Line properties…", [s, lr]() { showLineProperties(s, lr); });
+		m.addAction(isNestRect ? "Save rectangle…"
+				  : isFault    ? "Save trace fault…"
+				  : (lr.kind == LK_Polygon ? "Save polygon…" : "Save line…"),
+					[s, lr]() { lineSavePoints(s, lr); });   // 2D / 3D (grid-interpolated z)
+		m.addAction("Show data table…",                                      // floating vertex table viewer
+					[s, lr, name]() { showLineDataTable(s, lr, name); });
+	}
 
 	// CRS-aware measurements (length(s) + azimuth(s) for lines/polygons; area for closed polygons).
 	// Gated to small objects so coastlines / large imports don't get them (lineMeasurable). The "(s)"
 	// turns plural on a polyline (>1 segment); a polyline shows a table, a single line a number (!many).
-	if (lineMeasurable(s, lr)) {
+	if (!isSlip && lineMeasurable(s, lr)) {
 		if (lineClosedRing(s, lr)) {
 			// Rectangles & generic polygons (closed rings): AREA only — NEVER line length / azimuth.
 			m.addAction("Area under polygon…", [s, lr]() { lineRunMeasure(s, lr, "_poly_area", true); });
@@ -674,8 +678,11 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 		m.addAction("Delete profile", [s]() { profileClear(s); rebuildSceneObjects(s); });
 	}
 	else if (lr.kind == LK_Polygon) {
-		m.addAction(isNestRect ? "Delete rectangle" : isFault ? "Delete fault trace" : "Delete polygon",
-					[s, a]() { polygonDelete(s, a); });   // Hide = the Scene Objects checkbox
+		// Slip-model patches have no delete action; the GROUP carries it.
+		if (!isSlip) {
+			m.addAction(isNestRect ? "Delete rectangle" : isFault ? "Delete fault trace" : "Delete polygon",
+						[s, a]() { polygonDelete(s, a); });   // Hide = the Scene Objects checkbox
+		}
 	}
 	else {                                               // overlay line (Coastlines, Boundaries, Rivers, imports)
 		m.addAction(QString("Delete %1").arg(name),       // hide = the Scene Objects checkbox; this DELETES
@@ -686,7 +693,7 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 	// rectangles (the GRIDS carry the stacking, not their defining rectangles).
 	int *stackPtr = nullptr;
 	if (lr.kind == LK_Overlay)      { for (auto& o  : s->overlays) if (o.actor.Get() == a) { stackPtr = &o.stack;  break; } }
-	else if (lr.kind == LK_Polygon && !isNestRect) { for (auto& pg : s->polys) if (pg.line.Get() == a) { stackPtr = &pg.stack; break; } }
+	else if (lr.kind == LK_Polygon && !isNestRect && !isSlip) { for (auto& pg : s->polys) if (pg.line.Get() == a) { stackPtr = &pg.stack; break; } }
 	// Draw-order now spans ONE unified pile (base relief + grids + every vector), so a fault drawn on a
 	// grid can be ordered above/below that grid even when it is the only vector. Show the actions whenever
 	// there are 2+ stackable elements to reorder against.

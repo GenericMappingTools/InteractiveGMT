@@ -2,6 +2,7 @@ static void rebuildSceneObjects(Scene *s);          // defined just below; refre
 static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp);   // symbol-layer properties (defined below)
 static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
 static void textApplyProps(Scene *s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
+static void deleteSlipGroup(Scene *s, const QString& groupName); // 85_polygon.cpp: delete all patches in a slip model
 
 // Append one execution-error line to a window's read-only "Errors" tab and raise it (so a failure in
 // a background op is VISIBLE in the window, not just on the REPL's stderr). Shared by the
@@ -965,6 +966,56 @@ static void rebuildSceneObjects(Scene *s) {
 	};
 	auto endGroup = [&]() { curParent = nullptr; };
 
+	// Slip-model group (Import Model Slip): a collapsible parent with a "Delete group" property.
+	// Replaces the default beginGroup for slip groups to add the delete menu.
+	auto beginSlipGroup = [&](const QString &name, int iconKind = IC_Rect) {
+		QTreeWidgetItem *grp = new QTreeWidgetItem();
+		tree->addTopLevelItem(grp);
+		grp->setExpanded(false);   // start collapsed: a slip model is many patches
+		curParent = grp;
+
+		// Custom row widget: [checkbox] [icon] [label] with right-click delete menu.
+		QWidget *row = new QWidget(tree);
+		QHBoxLayout *h = new QHBoxLayout(row);
+		h->setContentsMargins(0, 1, 0, 1);
+		h->setSpacing(5);
+
+		// Checkbox toggles all children in this group.
+		QCheckBox *cb = new QCheckBox(row);
+		cb->setToolTip("Show / hide all patches");
+		cb->setChecked(true);   // start checked: patches visible by default
+		QObject::connect(cb, &QCheckBox::toggled, [s, name](bool on) {
+			std::string gname = name.toStdString();
+			// Toggle all patches with this groupName directly on their actors.
+			for (auto& pg : s->polys) {
+				if (pg.groupName != gname) continue;
+				if (pg.line)  pg.line->SetVisibility(on ? 1 : 0);
+				if (pg.fill)  pg.fill->SetVisibility((on && pg.fill->GetProperty()->GetOpacity() > 0.0) ? 1 : 0);
+			}
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		});
+
+		QLabel *icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
+		ClickableLabel *text = new ClickableLabel(name, row);
+		QString tip = "Right-click to delete the entire slip model";
+		icon->setToolTip(tip); text->setToolTip(tip);
+
+		h->addWidget(cb, 0);
+		h->addWidget(icon, 0);
+		h->addWidget(text, 1);
+
+		// Right-click opens delete menu.
+		text->onRightClick = [s, name](const QPoint& g) {
+			QMenu m(s->widget);
+			QAction *aDel = m.addAction(QString("Delete group (%1)").arg(name));
+			if (m.exec(g) == aDel) {
+				deleteSlipGroup(s, name);
+			}
+		};
+
+		tree->setItemWidget(grp, 0, row);
+	};
+
 	// Actor-backed rows (show/hide = actor visibility); lr != null adds the line-object menu.
 	auto addRow = [&](const QString& label, vtkProp3D *a, int iconKind, const LineRef *lr = nullptr) {
 		if (!a)
@@ -1093,8 +1144,7 @@ static void rebuildSceneObjects(Scene *s) {
 			endGroup();  slipGroupOpen.clear();
 		}
 		if (!pg.groupName.empty() && slipGroupOpen.isEmpty()) {
-			beginGroup(QString::fromStdString(pg.groupName), IC_Rect);
-			if (curParent) curParent->setExpanded(false);   // start collapsed: a slip model is many patches
+			beginSlipGroup(QString::fromStdString(pg.groupName), IC_Rect);
 			slipGroupOpen = QString::fromStdString(pg.groupName);
 		}
 		LineRef lr{ LK_Polygon, pg.line };
