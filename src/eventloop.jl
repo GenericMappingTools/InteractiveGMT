@@ -59,7 +59,8 @@ function _ensure_callbacks()
 	                    ("nswing",      _register_nswing),
 	                    ("faultgeom",   _register_faultgeom),
 	                    ("elastic",     _register_elastic),
-	                    ("importfault", _register_importfault))
+	                    ("importfault", _register_importfault),
+	                    ("modelslip",   _register_modelslip))
 		try
 			fn()
 		catch e

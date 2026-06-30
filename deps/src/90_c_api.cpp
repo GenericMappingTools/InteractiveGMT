@@ -909,6 +909,54 @@ GMTVTK_API int gmtvtk_add_fault_geom_h(void *handle, const double *xy, int npts,
 	return 1;
 }
 
+// Register the Import-Model-Slip callback (Geophysics > Seismology > Elastic deformation). fn(scene,
+// path) reads the sub-fault file and adds every patch via gmtvtk_add_slip_patches_h. nullptr to detach.
+GMTVTK_API void gmtvtk_set_modelslip_callback(JuliaModelSlipFn fn) {
+	g_juliaModelSlip = fn;
+}
+
+// Add a whole SLIP MODEL — every sub-fault patch as a filled surface-projection polygon — to a window
+// by its handle. The host-import twin of Import Trace Fault, but for the full Mirone subfault() plot:
+// each patch is a flat quad coloured by its slip (NOT the dipping 3-D plane). `xy` is the concatenated
+// (x,y) vertex pairs of every patch in TRUE (data) coords; `vcounts[i]` = vertex count of patch i
+// (typically 4); `npatch` = number of patches; `rgb` = 3*npatch face colours in 0..1 (one per patch,
+// already mapped from slip by the host); `name` = the Scene Objects group label (e.g. "Slip model")
+// every patch folds under. z is left 0 and draped onto the surface by polyRebuildLine. Each patch is a
+// closed, filled Polygon (so it gets the standard polygon properties menu) named "patch N". The Scene
+// Objects panel + draw-order pile are rebuilt ONCE after the whole batch. Returns the number of patches
+// added, 0 on a dead handle / bad input.
+GMTVTK_API int gmtvtk_add_slip_patches_h(void *handle, const double *xy, const int *vcounts,
+                                         int npatch, const double *rgb, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xy || !vcounts || !rgb || npatch < 1) return 0;
+	const std::string grp = (name && name[0]) ? name : "Slip model";
+	int xyoff = 0, added = 0;
+	for (int p = 0; p < npatch; ++p) {
+		const int nv = vcounts[p];
+		if (nv < 3) { xyoff += 2 * (nv > 0 ? nv : 0); continue; }   // need >=3 corners for a face
+		Polygon pg;
+		pg.v.reserve(nv + 1);
+		for (int i = 0; i < nv; ++i) pg.v.push_back({ xy[xyoff + 2*i], xy[xyoff + 2*i + 1], 0.0 });
+		pg.v.push_back(pg.v.front());                  // close the ring (first == last)
+		xyoff += 2 * nv;
+		pg.closed = true;
+		pg.groupName = grp;
+		pg.name = "patch " + std::to_string(p + 1);
+		pg.fillColor[0] = rgb[3*p]; pg.fillColor[1] = rgb[3*p + 1]; pg.fillColor[2] = rgb[3*p + 2];
+		pg.fillOpacity = 1.0;                          // slip patches are SOLID-filled (Mirone FaceColor)
+		polyRebuildLine(s, pg);                        // builds the outline + the filled face from pg
+		if (pg.line) { pg.line->GetProperty()->SetColor(0.0, 0.0, 0.0); pg.line->GetProperty()->SetLineWidth(0.4); }  // thin black edges (Mirone patch default)
+		pg.stack = s->vecSeq++;                        // each patch lands on the shared vector pile
+		s->polys.push_back(pg);
+		++added;
+	}
+	if (added == 0) return 0;
+	applyVectorStacking(s);                            // normalize ranks + draw-order offsets across the batch
+	rebuildSceneObjects(s);                            // ONE panel rebuild for the whole model
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return added;
+}
+
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Inject a 2-vertex fault line (lon1,lat1)->(lon2,lat2) into the scene so the apply logic has a
 // target without going through the interactive draw tool. Returns the number of fault polygons.

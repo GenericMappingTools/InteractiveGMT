@@ -256,6 +256,128 @@ function _register_importfault()
 	return
 end
 
+# ── Import Model Slip ──────────────────────────────────────────────────────────────────────────
+# Port of fault_models.m `subfault` (the FULL slip model, not just the trace). The same sub-fault
+# file Import Trace Fault reads, but here every sub-fault patch is plotted as its own filled SURFACE-
+# PROJECTION polygon coloured by slip — Mirone's loop of `patch('XData',x,'YData',y,'FaceColor',cor)`.
+# We do NOT draw the dipping 3-D planes (only the surface projections), so the depth column + the
+# hidden FaultTrace lines + the per-patch Okada/Mansinha context menus of the original are skipped.
+
+# circ_geo (Mirone) with np=1 is a single direct-geodesic forward point: the destination at distance
+# `dist_km` along azimuth `az` (deg from north, CW) from (lon,lat). GMT.jl's `circgeo` builds whole
+# circles / regular polygons (a fixed azimuth set around one centre), so the per-patch single-azimuth
+# step is `GMT.geod` — the direct-geodesic primitive `circgeo` is itself built on, and the one
+# deform.jl already adopted as our circ_geo. Returns (lon, lat) in degrees.
+function _geod_fwd(lon, lat, az, dist_km)
+	d, = GMT.geod([Float64(lon), Float64(lat)], Float64(az), Float64(dist_km); unit=:km)
+	return d[1], d[2]
+end
+
+# Port of MATLAB hot(86) reduced to rows 84:-1:23 — the exact 62-colour reversed-hot ramp subfault()
+# builds (`cmap = hot(86); cmap = cmap(84:-1:23,:)`). Returns a 62×3 matrix of RGB in 0..1.
+function _hot_subfault()
+	m = 86;  n = 32                                  # n = fix(3/8*86)
+	r = vcat((1:n) ./ n, ones(m - n))
+	g = vcat(zeros(n), (1:n) ./ n, ones(m - 2n))
+	b = vcat(zeros(2n), (1:(m - 2n)) ./ (m - 2n))
+	return hcat(r, g, b)[84:-1:23, :]
+end
+
+# C callback: read `path`, build the surface-projection quad of every sub-fault patch (Mirone subfault
+# geometry) coloured by slip, and add them as one filled-polygon group ("Slip model") to window `scene`.
+# Errors are logged to the in-window console (never thrown across the ccall).
+function _on_modelslip(scene::Ptr{Cvoid}, path::Cstring)::Cvoid
+	try
+		fname = unsafe_string(path)
+		headers, blocks, blockhdrs = _read_multiseg(fname)
+		isempty(blocks) && error("no numeric data found in $fname")
+
+		# nx / Dx / ny / Dy from the "#Fault_segment … nx(Along-strike)=… Dx=…km ny(downdip)=… Dy=…km" header.
+		hseg = nothing
+		for h in headers
+			if occursin("nx(Along-strike)", h); hseg = h; break; end
+		end
+		hseg === nothing && error("not a sub-fault file: no 'Fault_segment … nx(Along-strike)=' header")
+		mm = match(r"nx\(Along-strike\)=\s*([\d.]+).*?Dx=\s*([\d.]+).*?ny\(downdip\)=\s*([\d.]+).*?Dy=\s*([\d.]+)", hseg)
+		mm === nothing && error("could not parse nx/Dx/ny/Dy from header: $hseg")
+		nx = round(Int, parse(Float64, mm.captures[1]))
+		Dx =            parse(Float64, mm.captures[2])
+		ny = round(Int, parse(Float64, mm.captures[3]))
+		Dy =            parse(Float64, mm.captures[4])
+
+		# Patch block: the ≥7-column slip model (Lat Lon depth slip rake strike dip).
+		pat_i = findlast(b -> !isempty(b) && length(b[1]) >= 7, blocks)
+		pat_i === nothing && error("no patch block (≥7 columns) found in $fname")
+		P = blocks[pat_i]
+		need = nx * ny
+		length(P) < need && error("expected $need patch rows (nx*ny), found $(length(P))")
+		# subfault HARD-CODES the patch columns: col1 = Lat, col2 = Lon, col3 = depth, col4 = slip(cm),
+		# col5 = rake, col6 = strike, col7 = dip. The "#Lon. Lat. …" comment line is misleading (the data
+		# is lat-first), so we ignore it exactly as Mirone's subfault() does — never trust that header.
+		platc, plonc = 1, 2
+
+		# Slip in METRES (col 4 is cm). Colour ramp keyed on the global slip range (Mirone subfault).
+		slipAll = [P[i][4] * 1e-2 for i in 1:need]
+		minSlip, maxSlip = extrema(slipAll)
+		deltaSlip = maxSlip - minSlip
+		deltaSlip == 0 && (deltaSlip = 1.0)            # single-patch model: colour is arbitrary
+		cmap   = _hot_subfault()
+		nCores = size(cmap, 1) - 1                     # 61
+
+		xy      = Float64[]
+		vcounts = Cint[]
+		rgb     = Float64[]
+		for k in 1:ny                                  # loop over downdip rows
+			idx    = (k - 1) * nx + 1 : k * nx
+			tmpy   = [P[i][platc] for i in idx]        # patch reference lat
+			tmpx   = [P[i][plonc] for i in idx]        # patch reference lon
+			strk   = [P[i][6]     for i in idx]
+			dip    = [P[i][7]     for i in idx]
+			slip_k = [P[i][4] * 1e-2 for i in idx]
+
+			# Up-dip edge of the row (nx+1 vertices): shift each reference point back along strike+180 by
+			# Dx/2, then append the last point shifted forward by Dx/2 along the first patch's strike.
+			lon = Vector{Float64}(undef, nx + 1);  lat = similar(lon)
+			for i in 1:nx
+				lon[i], lat[i] = _geod_fwd(tmpx[i], tmpy[i], strk[i] + 180, Dx / 2)
+			end
+			lon[nx+1], lat[nx+1] = _geod_fwd(tmpx[nx], tmpy[nx], strk[1], Dx / 2)
+
+			for i in 1:nx                              # one filled quad per patch
+				# Down-dip corners: walk perpendicular to strike (strike+90) by Dy·cos(dip).
+				rp = Dy * cosd(dip[i])
+				c1lon, c1lat = _geod_fwd(lon[i],   lat[i],   strk[i] + 90, rp)
+				c2lon, c2lat = _geod_fwd(lon[i+1], lat[i+1], strk[i] + 90, rp)
+				push!(xy, lon[i],   lat[i],
+				          lon[i+1], lat[i+1],
+				          c2lon,    c2lat,
+				          c1lon,    c1lat)
+				push!(vcounts, Cint(4))
+				ci = clamp(round(Int, (slip_k[i] - minSlip) / deltaSlip * nCores + 1), 1, size(cmap, 1))
+				push!(rgb, cmap[ci, 1], cmap[ci, 2], cmap[ci, 3])
+			end
+		end
+
+		npatch = length(vcounts)
+		added = GC.@preserve xy vcounts rgb ccall(_fn(:gmtvtk_add_slip_patches_h), Cint,
+			(Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cint}, Cint, Ptr{Cdouble}, Cstring),
+			scene, xy, vcounts, Cint(npatch), rgb, "Slip model")
+		added == 0 && error("viewer rejected the slip model (dead window handle?)")
+		_viewer_log_error(scene, "Import Model Slip: $(basename(fname)) — $added patches " *
+			"(nx=$nx, ny=$ny, slip ∈ [$(round(minSlip, digits=3)), $(round(maxSlip, digits=3))] m)")
+	catch e
+		_viewer_log_error(scene, "Import Model Slip FAILED: $(sprint(showerror, e))")
+		@warn "Import Model Slip FAILED" exception=(e,)
+	end
+	return
+end
+
+function _register_modelslip()
+	fptr = @cfunction((s, p) -> Base.invokelatest(_on_modelslip, s, p), Cvoid, (Ptr{Cvoid}, Cstring))
+	ccall(_fn(:gmtvtk_set_modelslip_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
 # Fixed-decimal "%.Nf" formatter (Printf is not a package dependency). Mirrors the C printf width so
 # the saved file matches Mirone's deform_mansinha output byte-for-byte.
 function _ffmt(x::Real, n::Int)

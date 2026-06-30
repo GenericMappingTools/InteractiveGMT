@@ -1079,7 +1079,19 @@ static void rebuildSceneObjects(Scene *s) {
 	}
 	for (auto& cu : s->curtains)
 		addRow(QString::fromStdString(cu.name), cu.actor, IC_Curtain);
+	QString slipGroupOpen;                               // name of the currently-open slip-patch group node (empty = none)
 	for (auto& pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
+		// Slip-model patches (Import Model Slip) carry a groupName: fold every consecutive patch that
+		// shares it under ONE collapsible parent node so 100s of patches don't flood the panel as a flat
+		// list. Close the open group when the run ends or the name changes.
+		if (!slipGroupOpen.isEmpty() && QString::fromStdString(pg.groupName) != slipGroupOpen) {
+			endGroup();  slipGroupOpen.clear();
+		}
+		if (!pg.groupName.empty() && slipGroupOpen.isEmpty()) {
+			beginGroup(QString::fromStdString(pg.groupName), IC_Polygon);
+			if (curParent) curParent->setExpanded(false);   // start collapsed: a slip model is many patches
+			slipGroupOpen = QString::fromStdString(pg.groupName);
+		}
 		LineRef lr{ LK_Polygon, pg.line };
 		const QString nm = QString::fromStdString(pg.name);   // name is prefixed per type by polyFinalize
 		// Icon by SHAPE, gated on vertex count for open chains (a 2-point line is a LINE, not a
@@ -1163,6 +1175,7 @@ static void rebuildSceneObjects(Scene *s) {
 
 		if (faultGroup) endGroup();
 	}
+	if (!slipGroupOpen.isEmpty()) endGroup();            // close a slip-model group still open at the list's end
 	for (auto &tl : s->texts) {                          // user-placed text labels (toggle + right-click menu)
 		if (!tl.actor) continue;
 		vtkTextActor3D *act = tl.actor.Get();

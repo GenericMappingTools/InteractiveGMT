@@ -92,6 +92,7 @@ struct Polygon {
 	double fillColor[3] = { 1.0, 0.55, 0.0 };// fill colour (default orange, matches outline); editable in Line Properties
 	double fillOpacity  = 0.0;               // fill transparency (0 = no fill -> outline-only look preserved by default)
 	std::string name;                        // label shown in the Scene Objects panel ("polygon N")
+	std::string groupName;                   // when non-empty, polys sharing it fold under ONE collapsible Scene Objects node (e.g. "Slip model" — Import Model Slip patches)
 	bool closed = true;                      // closed ring (polygon/rect/circle) vs open chain (polyline)
 	bool isRect = false;                     // drawn with a rectangle tool (SH_Rect/SH_RectN): vertex edits stay axis-aligned
 	bool isFault = false;                    // drawn with the Draw Fault tool (SH_Fault): props hold the elastic-deformation dialog

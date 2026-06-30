@@ -185,6 +185,16 @@ static JuliaFaultGeomFn g_juliaFaultGeom = nullptr;
 typedef void (*JuliaImportFaultFn)(void *scene, const char *path);
 static JuliaImportFaultFn g_juliaImportFault = nullptr;
 
+// Import Model Slip (Geophysics > Seismology > Elastic deformation). Port of Mirone's
+// fault_models.m `subfault`, full slip model: read a sub-fault-format file and lay EVERY sub-fault
+// patch into the scene as a filled polygon coloured by its slip (the surface projection of each
+// patch — NOT the dipping 3-D planes). The host menu opens a QFileDialog and hands the chosen path
+// to Julia (g_juliaModelSlip), which parses the file, builds each patch's surface-projection quad
+// with the ported circ_geo spherical forward step and calls gmtvtk_add_slip_patches_h with the whole
+// batch. nullptr -> the menu reports "callback not registered".
+typedef void (*JuliaModelSlipFn)(void *scene, const char *path);
+static JuliaModelSlipFn g_juliaModelSlip = nullptr;
+
 // grdsample "OR Ref grid" picker (and grid-metadata prefill). Given a grid/image path, Julia
 // gmtreads its header and returns "W/E/S/N/xinc/yinc/nx/ny" (empty string on failure) so the
 // dialog can fill the Griding Line Geometry boxes. The returned pointer is owned by Julia (a

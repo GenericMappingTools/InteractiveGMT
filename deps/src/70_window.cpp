@@ -3158,7 +3158,21 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		rememberStartDir(fn);
 		g_juliaImportFault(s, fn.toUtf8().constData());
 	});
-	mElastic->addAction("Import Model Slip",  geoTODO("Import Model Slip"));
+	// Import Model Slip — port of Mirone's fault_models.m subfault, full slip model. Same sub-fault
+	// file format as Import Trace Fault, but Julia (g_juliaModelSlip) builds EVERY patch's surface-
+	// projection quad and adds them as filled, slip-coloured polygons (gmtvtk_add_slip_patches_h) —
+	// no dipping 3-D planes (surface projections only).
+	mElastic->addAction("Import Model Slip", [win, s]() {
+		if (!g_juliaModelSlip) {
+			if (s->win) s->win->statusBar()->showMessage("Import Model Slip: callback not registered", 3000);
+			return;
+		}
+		QString fn = QFileDialog::getOpenFileName(win, "Select sub-fault format file", prefStartDir(),
+		                                          "Sub-fault data (*.dat *.DAT);;All files (*)");
+		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
+		g_juliaModelSlip(s, fn.toUtf8().constData());
+	});
 
 	auto *fGroup = new std::function<void()>();   // show the discipline chooser
 	auto *fTsu   = new std::function<void()>();    // show Tsunamis
