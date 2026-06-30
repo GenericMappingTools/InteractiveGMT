@@ -4,6 +4,7 @@ static QApplication *g_app = nullptr;
 static int           g_openWindows = 0;
 static vtkRenderWindow *g_lastRW = nullptr;   // most-recent window, for gmtvtk_save_png
 static Scene *g_lastScene = nullptr;   // most-recent scene, for gmtvtk_add_overlay
+static QProgressDialog *g_progress = nullptr;  // progress dialog for long operations (Okada multi-patch)
 
 // ============================================================================================
 // Default directory (Preferences > Default directory). Every file-open / file-save dialog starts

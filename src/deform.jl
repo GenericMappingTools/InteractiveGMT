@@ -92,27 +92,31 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			if startswith(sp, "MODELSLIP="); msfield = String(sp[length("MODELSLIP=")+1:end]); break; end
 		end
 		if !isempty(msfield)
-			patches = split(msfield, '|'; keepempty=false)
-			isempty(patches) && error("slip model carries no patches")
-			Gsum = nothing
-			for ps in patches
-				f = split(ps, '/')
-				length(f) < 9 && continue
-				x0 = parse(Float64,f[1]); y0 = parse(Float64,f[2]); Lp = parse(Float64,f[3]); Wp = parse(Float64,f[4])
-				strk = parse(Float64,f[5]); dp = parse(Float64,f[6]); dtop = parse(Float64,f[7])
-				rk = parse(Float64,f[8]); sl = parse(Float64,f[9])
-				Gp = GMT.okada(G; x_start=x0, y_start=y0, L=Lp, W=Wp, depth=dtop,
-				               strike=strk, dip=dp, rake=rk, slip=sl)
-				Gsum === nothing ? (Gsum = Gp) : (Gsum.z .+= Gp.z)
+				patches = split(msfield, '|'; keepempty=false)
+				isempty(patches) && error("slip model carries no patches")
+				_progress_show(length(patches), "Okada deformation (multi-patch)")
+				Gsum = nothing
+				valid_count = 0
+				for (i, ps) in enumerate(patches)
+					f = split(ps, '/')
+					length(f) < 9 && continue
+					x0 = parse(Float64,f[1]); y0 = parse(Float64,f[2]); Lp = parse(Float64,f[3]); Wp = parse(Float64,f[4])
+					strk = parse(Float64,f[5]); dp = parse(Float64,f[6]); dtop = parse(Float64,f[7])
+					rk = parse(Float64,f[8]); sl = parse(Float64,f[9])
+					Gp = GMT.okada(G; x_start=x0, y_start=y0, L=Lp, W=Wp, depth=dtop,
+					               strike=strk, dip=dp, rake=rk, slip=sl)
+					Gsum === nothing ? (Gsum = Gp) : (Gsum.z .+= Gp.z)
+					valid_count += 1
+					_progress_update(i)
+				end
+				_progress_close()
+				Gsum === nothing && error("no valid patches in the slip model")
+				zmn, zmx = extrema(Gsum.z); Gsum.range[5] = zmn; Gsum.range[6] = zmx   # z was summed by hand
+				_add_grid_to_scene(scene, Gsum, "Okada z (model)")
+				_viewer_log_error(scene, "Okada: summed $(valid_count) sub-faults → 'Okada z (model)' " *
+					"(z ∈ [$(round(zmn, digits=4)), $(round(zmx, digits=4))])")
+				return
 			end
-			Gsum === nothing && error("no valid patches in the slip model")
-			zmn, zmx = extrema(Gsum.z); Gsum.range[5] = zmn; Gsum.range[6] = zmx   # z was summed by hand
-			_add_grid_to_scene(scene, Gsum, "Okada z (model)")
-			_viewer_log_error(scene, "Okada: summed $(length(patches)) sub-faults → 'Okada z (model)' " *
-				"(z ∈ [$(round(zmn, digits=4)), $(round(zmx, digits=4))])")
-			return
-		end
-
 		# Echo the exact okada call to the console so the user can check the parameters.
 		cmd = "GMT.okada(G; x_start=$x_start, y_start=$y_start, L=$L, W=$W, depth=$depTop, " *
 		      "strike=$strike, dip=$dip, rake=$rake, slip=$slip)"
@@ -137,6 +141,23 @@ function _register_elastic()
 	return
 end
 
+# Progress dialog (for multi-patch Okada)
+# Show a modal progress dialog with range 0..max. Returns true on success.
+function _progress_show(max::Int, title::String="Processing")
+	ccall(_fn(:gmtvtk_progress_show), Cint, (Cint, Cstring), max, title) != 0
+end
+
+# Update the progress value.
+function _progress_update(value::Int)
+	ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), value)
+	nothing
+end
+
+# Close and destroy the progress dialog.
+function _progress_close()
+	ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
+	nothing
+end
 # ── Import Trace Fault ─────────────────────────────────────────────────────────────────────────
 # Port of fault_models.m `subfault`. A sub-fault-format file is a multi-segment text file ('#' header
 # lines) holding the slip model. Like Mirone's subfault we plot the dipping fault PLANE and its surface

@@ -572,6 +572,47 @@ GMTVTK_API void gmtvtk_raise(void *handle) {
 	s->win->activateWindow();
 }
 
+// ============================================================================================
+// Progress dialog for long operations (multi-patch Okada calculation)
+// ============================================================================================
+
+extern QProgressDialog *g_progress;  // from 30_app.cpp
+
+// Show a modal progress dialog with range 0..max. `title` is shown above the bar.
+// The dialog has no cancel button (auto-close only). Returns 1 on success, 0 on failure.
+GMTVTK_API int gmtvtk_progress_show(int max, const char *title) {
+	if (!QApplication::instance()) return 0;
+	if (g_progress) delete g_progress;
+	g_progress = new QProgressDialog();
+	g_progress->setWindowTitle(title ? title : "Processing");
+	g_progress->setRange(0, max);
+	g_progress->setValue(0);
+	g_progress->setMinimumDuration(0);   // show immediately
+	g_progress->setCancelButton(nullptr); // no cancel button
+	g_progress->setWindowModality(Qt::ApplicationModal);
+	g_progress->show();
+	QApplication::processEvents();
+	return 1;
+}
+
+// Update the progress value. Does nothing if no dialog is shown.
+GMTVTK_API void gmtvtk_progress_update(int value) {
+	if (g_progress) {
+		g_progress->setValue(value);
+		QApplication::processEvents();  // keep UI responsive
+	}
+}
+
+// Close and destroy the progress dialog. Safe to call when none exists.
+GMTVTK_API void gmtvtk_progress_close() {
+	if (g_progress) {
+		g_progress->close();
+		delete g_progress;
+		g_progress = nullptr;
+	}
+	QApplication::processEvents();
+}
+
 // Does this window have a primary surface? 0 for a bare empty() launcher (no data yet); used by
 // the drop handler to decide between PROMOTING an empty window vs adding into a populated one.
 GMTVTK_API int gmtvtk_has_surface(void *handle) {

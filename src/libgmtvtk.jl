@@ -61,6 +61,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_xyplot_log, :gmtvtk_xyplot_run_analysis,
 	:gmtvtk_xyplot_add_page, :gmtvtk_xyplot_series_count, :gmtvtk_xyplot_series_npoints,
 	:gmtvtk_xyplot_get_series, :gmtvtk_xyplot_series_name, :gmtvtk_xyplot_get_xtime,
+	:gmtvtk_progress_show, :gmtvtk_progress_update, :gmtvtk_progress_close,
 )
 
 # Resolve a loaded C-API function pointer. Errors clearly if the library never loaded.
