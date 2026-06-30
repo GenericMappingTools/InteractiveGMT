@@ -591,7 +591,7 @@ static void lineRunMeasure(Scene *s, const LineRef& lr, const char *fn, bool box
 
 // Open the Vertical elastic deformation dialog for a fault line (defined in 70_window.cpp, after the
 // ElasticDialog class — this fragment is #included before it, so forward-declare it here).
-static void faultRunDialog(Scene *s);
+static void faultRunDialog(Scene *s, vtkActor *seedPatch = nullptr);
 
 // The unified right-click menu for a line object: "Line properties…" plus the kind's own actions
 // (profile: save / delete; overlay & polygon: hide; polygon: delete). Shared by the 3-D-view
@@ -601,17 +601,20 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 	QMenu m(s->win);
 	vtkActor *a = lr.actor;
 
-	// Is this a "Nested grids" rectangle, or a Draw-Fault line?
-	bool isNestRect = false, isFault = false;
+	// Is this a "Nested grids" rectangle, a Draw-Fault line, or an Import-Model-Slip patch?
+	bool isNestRect = false, isFault = false, isSlip = false;
 	if (lr.kind == LK_Polygon) {
 		const int pi = polyIndexOfActor(s, a);
 		if (pi >= 0 && s->polys[pi].nestKind == 1) isNestRect = true;
 		if (pi >= 0 && s->polys[pi].isFault)       isFault = true;
+		if (pi >= 0 && s->polys[pi].isSlip)        isSlip = true;
 	}
 
-	// A fault line's first property is the elastic-deformation dialog (its raison d'être).
-	if (isFault) {
-		m.addAction("Vertical elastic deformation", [s]() { faultRunDialog(s); });
+	// A fault line's (or slip patch's) first property is the elastic-deformation dialog. For a slip
+	// patch the dialog opens seeded from THIS patch (faultRunDialog finds it via polyIndexOfActor) and
+	// lists every patch of the model in its Faults combo.
+	if (isFault || isSlip) {
+		m.addAction("Vertical elastic deformation", [s, a]() { faultRunDialog(s, a); });
 		m.addSeparator();
 	}
 

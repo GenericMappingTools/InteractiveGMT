@@ -83,6 +83,36 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		fig = get(_FIGREG, scene, nothing)
 		G   = fig isa QtFigure ? fig.G : error("no grid loaded in this window")
 
+		# Slip model (Import Model Slip): the dialog appended a "MODELSLIP=<payload>" field carrying EVERY
+		# sub-fault patch ("x0/y0/L/W/strike/dip/depthTop/rake/slip", patches '|'-separated). Deform with
+		# all of them and SUM the vertical fields — the whole-model Okada deformation.
+		msfield = ""
+		for p in parts
+			sp = strip(p)
+			if startswith(sp, "MODELSLIP="); msfield = String(sp[length("MODELSLIP=")+1:end]); break; end
+		end
+		if !isempty(msfield)
+			patches = split(msfield, '|'; keepempty=false)
+			isempty(patches) && error("slip model carries no patches")
+			Gsum = nothing
+			for ps in patches
+				f = split(ps, '/')
+				length(f) < 9 && continue
+				x0 = parse(Float64,f[1]); y0 = parse(Float64,f[2]); Lp = parse(Float64,f[3]); Wp = parse(Float64,f[4])
+				strk = parse(Float64,f[5]); dp = parse(Float64,f[6]); dtop = parse(Float64,f[7])
+				rk = parse(Float64,f[8]); sl = parse(Float64,f[9])
+				Gp = GMT.okada(G; x_start=x0, y_start=y0, L=Lp, W=Wp, depth=dtop,
+				               strike=strk, dip=dp, rake=rk, slip=sl)
+				Gsum === nothing ? (Gsum = Gp) : (Gsum.z .+= Gp.z)
+			end
+			Gsum === nothing && error("no valid patches in the slip model")
+			zmn, zmx = extrema(Gsum.z); Gsum.range[5] = zmn; Gsum.range[6] = zmx   # z was summed by hand
+			_add_grid_to_scene(scene, Gsum, "Okada z (model)")
+			_viewer_log_error(scene, "Okada: summed $(length(patches)) sub-faults → 'Okada z (model)' " *
+				"(z ∈ [$(round(zmn, digits=4)), $(round(zmx, digits=4))])")
+			return
+		end
+
 		# Echo the exact okada call to the console so the user can check the parameters.
 		cmd = "GMT.okada(G; x_start=$x_start, y_start=$y_start, L=$L, W=$W, depth=$depTop, " *
 		      "strike=$strike, dip=$dip, rake=$rake, slip=$slip)"
@@ -327,12 +357,15 @@ function _on_modelslip(scene::Ptr{Cvoid}, path::Cstring)::Cvoid
 		xy      = Float64[]
 		vcounts = Cint[]
 		rgb     = Float64[]
+		slipA   = Float64[]; rakeA = Float64[]; strikeA = Float64[]; dipA = Float64[]; depthA = Float64[]
 		for k in 1:ny                                  # loop over downdip rows
 			idx    = (k - 1) * nx + 1 : k * nx
 			tmpy   = [P[i][platc] for i in idx]        # patch reference lat
 			tmpx   = [P[i][plonc] for i in idx]        # patch reference lon
 			strk   = [P[i][6]     for i in idx]
 			dip    = [P[i][7]     for i in idx]
+			rake_k = [P[i][5]     for i in idx]
+			dep_k  = [P[i][3]     for i in idx]        # depth to TOP of patch (km) — subfault z origin
 			slip_k = [P[i][4] * 1e-2 for i in idx]
 
 			# Up-dip edge of the row (nx+1 vertices): shift each reference point back along strike+180 by
@@ -355,13 +388,17 @@ function _on_modelslip(scene::Ptr{Cvoid}, path::Cstring)::Cvoid
 				push!(vcounts, Cint(4))
 				ci = clamp(round(Int, (slip_k[i] - minSlip) / deltaSlip * nCores + 1), 1, size(cmap, 1))
 				push!(rgb, cmap[ci, 1], cmap[ci, 2], cmap[ci, 3])
+				push!(slipA, slip_k[i]); push!(rakeA, rake_k[i]); push!(strikeA, strk[i])
+				push!(dipA, dip[i]);     push!(depthA, dep_k[i])
 			end
 		end
 
 		npatch = length(vcounts)
-		added = GC.@preserve xy vcounts rgb ccall(_fn(:gmtvtk_add_slip_patches_h), Cint,
-			(Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cint}, Cint, Ptr{Cdouble}, Cstring),
-			scene, xy, vcounts, Cint(npatch), rgb, "Slip model")
+		added = GC.@preserve xy vcounts rgb slipA rakeA strikeA dipA depthA ccall(_fn(:gmtvtk_add_slip_patches_h), Cint,
+			(Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cint}, Cint, Ptr{Cdouble}, Cstring,
+			 Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cdouble, Ptr{Cint}),
+			scene, xy, vcounts, Cint(npatch), rgb, "Slip model",
+			slipA, rakeA, strikeA, dipA, depthA, Float64(Dx), Float64(Dy), C_NULL)
 		added == 0 && error("viewer rejected the slip model (dead window handle?)")
 		_viewer_log_error(scene, "Import Model Slip: $(basename(fname)) — $added patches " *
 			"(nx=$nx, ny=$ny, slip ∈ [$(round(minSlip, digits=3)), $(round(maxSlip, digits=3))] m)")

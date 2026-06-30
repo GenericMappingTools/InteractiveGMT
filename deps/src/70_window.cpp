@@ -1591,6 +1591,86 @@ public:
 	Scene *scn = nullptr;   // owning window's scene (for the live fault-trace endpoint update)
 	std::function<void(const QString&)> onAction;   // host hook fired by Compute / Save fault (non-modal)
 
+	// ── Import Model Slip support ──────────────────────────────────────────────────────────────
+	// A slip model is many rectangular sub-fault patches (s->polys with isSlip), grouped into
+	// segments (slipSeg). The dialog gains a Segments + Faults selector: picking a fault loads THAT
+	// patch's geometry into the fields; Compute hands the WHOLE model to the host.
+	QComboBox *segCombo = nullptr, *faultCombo = nullptr;   // null when not a slip model
+	QLabel    *segLab = nullptr, *faultLab = nullptr;
+	std::vector<int>              segIds;        // distinct segment ids present, in first-seen order
+	std::vector<std::vector<int>> faultsBySeg;  // poly indices per segment (parallel to segIds)
+	bool slipMode = false;                       // true when the window holds Import-Model-Slip patches
+	bool slipLoading = false;                    // guard: suppress field-edit side effects while loading a patch
+
+	// Collect the window's slip patches into segIds / faultsBySeg (poly indices, in scene order).
+	void collectSlip() {
+		segIds.clear(); faultsBySeg.clear(); slipMode = false;
+		if (!scn) return;
+		for (int i = 0; i < (int)scn->polys.size(); ++i) {
+			if (!scn->polys[i].isSlip) continue;
+			const int sg = scn->polys[i].slipSeg;
+			int pos = -1;
+			for (int k = 0; k < (int)segIds.size(); ++k) if (segIds[k] == sg) { pos = k; break; }
+			if (pos < 0) { pos = (int)segIds.size(); segIds.push_back(sg); faultsBySeg.push_back({}); }
+			faultsBySeg[pos].push_back(i);
+		}
+		slipMode = !segIds.empty();
+	}
+
+	// Load one slip patch's dislocation geometry (poly index `pi`) into the dialog fields. Guarded so
+	// the field editingFinished handlers don't fire side effects (no fault trace to move in slip mode).
+	void loadSlipPatch(int pi) {
+		if (!scn || pi < 0 || pi >= (int)scn->polys.size()) return;
+		Polygon &pg = scn->polys[pi];
+		slipLoading = true;
+		if (!std::isnan(pg.faultLength))   fLen->setText(QString::number(pg.faultLength, 'g', 6));
+		if (!std::isnan(pg.faultWidth))    fWid->setText(QString::number(pg.faultWidth, 'g', 6));
+		if (!std::isnan(pg.faultStrike)) { fStrike->setText(QString::number(pg.faultStrike, 'g', 6));
+		                                   dStrike->setText(QString::number(pg.faultStrike, 'g', 6)); }
+		if (!std::isnan(pg.faultDip))      fDip->setText(QString::number(pg.faultDip, 'g', 6));
+		if (!std::isnan(pg.faultDepthTop)) fDepTop->setText(QString::number(pg.faultDepthTop, 'g', 6));
+		if (!std::isnan(pg.faultSlip))     dSlip->setText(QString::number(pg.faultSlip, 'g', 6));
+		if (!std::isnan(pg.faultRake))     dRake->setText(QString::number(pg.faultRake, 'g', 6));
+		slipLoading = false;
+		recomputeDepth(); refreshBeachball(); updateMw();
+	}
+
+	// Poly index of the currently-selected fault (or -1). Used by Compute for the start vertex.
+	int currentSlipPoly() const {
+		if (!slipMode || !segCombo || !faultCombo) return -1;
+		const int sp = segCombo->currentIndex(), fp = faultCombo->currentIndex();
+		if (sp < 0 || sp >= (int)faultsBySeg.size()) return -1;
+		if (fp < 0 || fp >= (int)faultsBySeg[sp].size()) return -1;
+		return faultsBySeg[sp][fp];
+	}
+
+	// Repopulate the Faults combo from the selected segment, then load the first fault.
+	void rebuildFaultCombo() {
+		if (!segCombo || !faultCombo) return;
+		const int sp = segCombo->currentIndex();
+		faultCombo->blockSignals(true);
+		faultCombo->clear();
+		if (sp >= 0 && sp < (int)faultsBySeg.size())
+			for (int j = 0; j < (int)faultsBySeg[sp].size(); ++j)
+				faultCombo->addItem(QString("Fault %1").arg(j + 1, 2, 10, QChar('0')));
+		faultCombo->setCurrentIndex(0);
+		faultCombo->blockSignals(false);
+		loadSlipPatch(currentSlipPoly());
+	}
+
+	// Assemble the whole model as a patch payload for Compute: patches separated by '|', each
+	// "x0/y0/len/wid/strike/dip/depthTop/rake/slip" (x0,y0 = patch's first ring vertex).
+	QString slipPayload() const {
+		QStringList ps;
+		if (scn) for (auto& pg : scn->polys) if (pg.isSlip && !pg.v.empty()) {
+			ps << QString("%1/%2/%3/%4/%5/%6/%7/%8/%9")
+				.arg(pg.v.front()[0], 0, 'g', 15).arg(pg.v.front()[1], 0, 'g', 15)
+				.arg(pg.faultLength).arg(pg.faultWidth).arg(pg.faultStrike).arg(pg.faultDip)
+				.arg(pg.faultDepthTop).arg(pg.faultRake).arg(pg.faultSlip);
+		}
+		return ps.join("|");
+	}
+
 	// Live Mw from the seismic moment M0 = mu·L·W·slip (mu in 1e10 Pa, L/W in km -> m, slip in m):
 	// Mw = (2/3)·log10(M0) − 6.07. Shown as "--" until L/W/slip/mu are all positive numbers.
 	void updateMw() {
@@ -1635,7 +1715,7 @@ public:
 	// Move the fault trace's end vertex to match the typed Strike/Length (delegates to the shared
 	// faultApplyGeom core — see below). Geographic vs cartesian is taken from the coordinate combo.
 	void applyFaultGeom() {
-		if (!scn) return;
+		if (!scn || slipMode) return;          // slip models have no single trace to move
 		bool okS, okL;
 		double strike = fStrike->text().toDouble(&okS);
 		double len    = fLen->text().toDouble(&okL);
@@ -1646,7 +1726,7 @@ public:
 	// Redraw the gray surface-projection patch from the current Width / Dip / Strike. Called whenever
 	// any of those (or the trace itself) change, so the patch tracks the fault plane live.
 	void updateFaultPlane() {
-		if (!scn) return;
+		if (!scn || slipMode) return;          // slip patches draw no single gray plane preview
 		faultUpdatePlane(scn, fWid->text().toDouble(), fDip->text().toDouble(),
 						 fStrike->text().toDouble(), dRake->text().toDouble(),
 						 coordCombo->currentData().toString() == "geog");
@@ -1662,8 +1742,9 @@ public:
 		fDepth->setText(QString::number(topd + w * std::sin(dip * D2R), 'g', 6));
 	}
 
-	ElasticDialog(QWidget *parent, Scene *scene = nullptr) : QDialog(parent) {
+	ElasticDialog(QWidget *parent, Scene *scene = nullptr, vtkActor *seedPatch = nullptr) : QDialog(parent) {
 		scn = scene;
+		collectSlip();          // discover Import-Model-Slip patches (drives the Segments / Faults selectors)
 		setWindowTitle("Vertical elastic deformation");
 		auto *v = new QVBoxLayout(this);
 
@@ -1691,9 +1772,19 @@ public:
 		fg->addWidget(vfield("Depth to Top", fDepTop, "0"), 2, 1);
 		topRow->addWidget(faultGroup);
 
-		// Middle column: CONFIRM (coordinate mode).
+		// Middle column: Segments + Faults selectors (slip models only) then CONFIRM (coordinate mode).
 		auto *midCol = new QVBoxLayout();
 		midCol->addStretch();
+		// Segments / Faults: present only for an Import-Model-Slip window. Picking a fault loads THAT
+		// patch's geometry into the fields; Compute hands the whole model to the host.
+		segLab = new QLabel("Segments", this);  segLab->setAlignment(Qt::AlignHCenter);
+		segCombo = new QComboBox(this);
+		faultLab = new QLabel("Faults", this);  faultLab->setAlignment(Qt::AlignHCenter);
+		faultCombo = new QComboBox(this);
+		midCol->addWidget(segLab);   midCol->addWidget(segCombo);
+		midCol->addWidget(faultLab); midCol->addWidget(faultCombo);
+		for (QWidget *w : {(QWidget*)segLab, (QWidget*)segCombo, (QWidget*)faultLab, (QWidget*)faultCombo})
+			w->setVisible(slipMode);
 		auto *confirmLab = new QLabel("CONFIRM", this);
 		confirmLab->setStyleSheet("color: red; font-weight: bold;");
 		confirmLab->setAlignment(Qt::AlignHCenter);
@@ -1825,6 +1916,28 @@ public:
 			}
 		}
 
+		// Slip-model selectors: populate Segments, then select the patch the user opened the dialog from
+		// (its context menu passed the clicked patch's line actor). Picking a different fault loads that
+		// patch's geometry; changing segment repopulates the Faults combo.
+		if (slipMode && segCombo && faultCombo) {
+			segCombo->blockSignals(true);
+			for (int k = 0; k < (int)segIds.size(); ++k)
+				segCombo->addItem(QString("Segment %1").arg(segIds[k] + 1));
+			int seedSeg = 0, seedFault = 0;
+			if (seedPatch) for (int k = 0; k < (int)faultsBySeg.size(); ++k)
+				for (int j = 0; j < (int)faultsBySeg[k].size(); ++j) {
+					const int pi = faultsBySeg[k][j];
+					if (pi >= 0 && pi < (int)scn->polys.size() && scn->polys[pi].line.Get() == seedPatch) { seedSeg = k; seedFault = j; }
+				}
+			segCombo->setCurrentIndex(seedSeg);
+			segCombo->blockSignals(false);
+			rebuildFaultCombo();                                   // fills Faults for seedSeg, loads its first
+			if (seedFault >= 0 && seedFault < faultCombo->count()) faultCombo->setCurrentIndex(seedFault);
+			loadSlipPatch(currentSlipPoly());                      // load the exact clicked patch
+			QObject::connect(segCombo,   &QComboBox::currentIndexChanged, this, [this]{ rebuildFaultCombo(); });
+			QObject::connect(faultCombo, &QComboBox::currentIndexChanged, this, [this]{ loadSlipPatch(currentSlipPoly()); });
+		}
+
 		// Live coupling: Strike mirrored between the two boxes; beachball + Mw track their inputs.
 		// Editing Strike or Length also moves the fault trace's end vertex (Mirone edit_Fault*_CB).
 		// Strike / Length drive ONLY the plane PREVIEW. They must NEVER rewrite the drawn trace's
@@ -1884,10 +1997,17 @@ public:
 			// Append the fault's start vertex (first vertex of the drawn fault trace) — okada needs it as
 			// x_start/y_start (UpperLeft corner of the fault plane); it is not otherwise in the dialog.
 			double fx0 = std::numeric_limits<double>::quiet_NaN(), fy0 = fx0;
-			if (scn) for (auto& pg : scn->polys) if (pg.isFault && !pg.v.empty()) {
+			if (slipMode) {                                   // slip model: start vertex = selected patch's corner
+				const int pi = currentSlipPoly();
+				if (pi >= 0 && pi < (int)scn->polys.size() && !scn->polys[pi].v.empty()) {
+					fx0 = scn->polys[pi].v.front()[0]; fy0 = scn->polys[pi].v.front()[1]; }
+			} else if (scn) for (auto& pg : scn->polys) if (pg.isFault && !pg.v.empty()) {
 				fx0 = pg.v.front()[0]; fy0 = pg.v.front()[1]; break; }
 			params += ";" + QString::number(fx0, 'g', 15) + ";" + QString::number(fy0, 'g', 15);
 			params += ";" + savePath;     // field 20: output file for "save" (empty for compute)
+			// Field 21 (slip models only): the WHOLE model as "MODELSLIP=" + patch payload, so Compute
+			// deforms with every sub-fault, not just the selected one.
+			if (slipMode) params += ";MODELSLIP=" + slipPayload();
 			if (onAction) onAction(params);
 		};
 		QObject::connect(computeBtn, &QPushButton::clicked, this, [assemble, computeBtn]() {
@@ -1918,13 +2038,13 @@ public:
 // Open the Vertical elastic deformation dialog for the current window (used by a fault line's first
 // property — forward-declared in 55_lineprops.cpp). The dialog prefills its Griding Line Geometry
 // from the window's loaded grid/image (same path as grdsample). On accept, hands params to Julia.
-static void faultRunDialog(Scene *s) {
+static void faultRunDialog(Scene *s, vtkActor *seedPatch) {
 	if (!s || !s->win) return;
 	// NON-MODAL: show() (not exec()) so the main window stays interactive while the dialog is up —
 	// editing Strike/Length must update the trace live, not block the UI. Heap-allocated + delete-on-
 	// close so it manages its own lifetime; one dialog per window at a time (reuse if already open).
 	if (s->elasticDlg) { s->elasticDlg->raise(); s->elasticDlg->activateWindow(); return; }
-	ElasticDialog *dlg = new ElasticDialog(s->win, s);
+	ElasticDialog *dlg = new ElasticDialog(s->win, s, seedPatch);
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
 	s->elasticDlg = dlg;
 	// The fault plane (gray surface patch + buried 3-D plane) PERSISTS after the dialog closes — it is

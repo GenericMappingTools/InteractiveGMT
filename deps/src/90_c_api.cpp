@@ -921,12 +921,19 @@ GMTVTK_API void gmtvtk_set_modelslip_callback(JuliaModelSlipFn fn) {
 // (x,y) vertex pairs of every patch in TRUE (data) coords; `vcounts[i]` = vertex count of patch i
 // (typically 4); `npatch` = number of patches; `rgb` = 3*npatch face colours in 0..1 (one per patch,
 // already mapped from slip by the host); `name` = the Scene Objects group label (e.g. "Slip model")
-// every patch folds under. z is left 0 and draped onto the surface by polyRebuildLine. Each patch is a
-// closed, filled Polygon (so it gets the standard polygon properties menu) named "patch N". The Scene
-// Objects panel + draw-order pile are rebuilt ONCE after the whole batch. Returns the number of patches
-// added, 0 on a dead handle / bad input.
+// every patch folds under. The per-patch DISLOCATION GEOMETRY arrays (each npatch long; null = absent)
+// — `slip` (m), `rake`/`strike`/`dip` (deg), `depthTop` (km, top of patch) — plus the model-wide
+// `dx`/`dy` patch length/width (km) and optional `seg` segment id — are stored on each patch so its
+// "Vertical elastic deformation" menu opens the dialog seeded from THIS patch and the dialog can list
+// every patch in its Faults combo and Compute the whole model. z is left 0 and draped onto the surface
+// by polyRebuildLine. Each patch is a closed, filled Polygon named "patch N". The Scene Objects panel +
+// draw-order pile are rebuilt ONCE after the whole batch. Returns the number of patches added, 0 on a
+// dead handle / bad input.
 GMTVTK_API int gmtvtk_add_slip_patches_h(void *handle, const double *xy, const int *vcounts,
-                                         int npatch, const double *rgb, const char *name) {
+                                         int npatch, const double *rgb, const char *name,
+                                         const double *slip, const double *rake, const double *strike,
+                                         const double *dip, const double *depthTop,
+                                         double dx, double dy, const int *seg) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !xy || !vcounts || !rgb || npatch < 1) return 0;
 	const std::string grp = (name && name[0]) ? name : "Slip model";
@@ -944,6 +951,15 @@ GMTVTK_API int gmtvtk_add_slip_patches_h(void *handle, const double *xy, const i
 		pg.name = "patch " + std::to_string(p + 1);
 		pg.fillColor[0] = rgb[3*p]; pg.fillColor[1] = rgb[3*p + 1]; pg.fillColor[2] = rgb[3*p + 2];
 		pg.fillOpacity = 1.0;                          // slip patches are SOLID-filled (Mirone FaceColor)
+		pg.isSlip = true;                              // rectangular sub-fault: opens the elastic dialog, lists in its Faults combo
+		pg.slipSeg = seg ? seg[p] : 0;
+		if (slip)     pg.faultSlip     = slip[p];      // dislocation slip (m)
+		if (rake)     pg.faultRake     = rake[p];      // rake (deg)
+		if (strike)   pg.faultStrike   = strike[p];    // strike (deg)
+		if (dip)      pg.faultDip      = dip[p];       // dip (deg)
+		if (depthTop) pg.faultDepthTop = depthTop[p];  // depth to top of patch (km)
+		pg.faultLength = dx;                           // along-strike patch length (km)
+		pg.faultWidth  = dy;                           // down-dip patch width (km)
 		polyRebuildLine(s, pg);                        // builds the outline + the filled face from pg
 		if (pg.line) { pg.line->GetProperty()->SetColor(0.0, 0.0, 0.0); pg.line->GetProperty()->SetLineWidth(0.4); }  // thin black edges (Mirone patch default)
 		pg.stack = s->vecSeq++;                        // each patch lands on the shared vector pile

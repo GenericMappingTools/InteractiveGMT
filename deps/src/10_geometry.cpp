@@ -102,6 +102,9 @@ struct Polygon {
 	double faultDip      = std::nan("");     // dip in DEGREES (file mean, set on import; NaN = unknown -> dialog default)
 	double faultWidth    = std::nan("");     // TOTAL down-dip width ny·Dy (km geog / data units, set on import; NaN = unknown)
 	double faultDepthTop = std::nan("");     // depth to top of the shallowest patch in km (set on import; NaN = unknown)
+	double faultLength   = std::nan("");     // along-strike patch length Dx (km) — Import Model Slip patches (NaN = unknown)
+	bool   isSlip = false;                   // Import Model Slip patch (a rectangular sub-fault): opens the elastic dialog + lists in its Faults combo
+	int    slipSeg = -1;                     // fault-segment index of a slip-model patch (-1 = not a slip patch; usually 0)
 	vtkSmartPointer<vtkActor>    faultPlane; // gray surface-projection patch of the dipping fault plane (sits BELOW the trace)
 	vtkSmartPointer<vtkPolyData> faultPlanePD;
 	vtkSmartPointer<vtkActor>    faultPlane3D; // the actual dipping fault plane in 3-D (top buried at the deepest trace point; 3-D-only)
