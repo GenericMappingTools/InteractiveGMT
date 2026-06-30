@@ -885,21 +885,40 @@ static void rebuildSceneObjects(Scene *s) {
 	// Small checkboxes: the indicator is the ONLY hit target for show/hide. The type icon + the
 	// descriptive label sit to its right; right-clicking the icon/label opens the row's properties
 	// menu (toggle is no longer wired to the text — Fledermaus behaviour the user asked for).
-	s->objPanel->setStyleSheet("QCheckBox::indicator{width:13px;height:13px;}");
+	s->objPanel->setStyleSheet("QCheckBox::indicator{width:13px;height:13px;}"
+	                           "QTreeWidget{border:none;background:transparent;}");
 	QVBoxLayout *col = new QVBoxLayout(s->objPanel);
-	col->setContentsMargins(8, 8, 8, 8);
-	col->setSpacing(3);
+	col->setContentsMargins(2, 2, 2, 2);
+	col->setSpacing(0);
 
-	// One row = [checkbox] [type icon] [label]. onToggle drives visibility; onProps (optional) is the
-	// properties menu, opened by a LEFT click on the description label (the checkbox only toggles).
+	// The panel is a real Qt tree: each grid / image / fault is a collapsible PARENT node, its parts
+	// (surface, drape, colorbar, axes — or trace, surface-projection, fault-plane) are CHILD rows.
+	// Each leaf still hosts the exact same [checkbox][icon][label] widget (so the checkbox alone
+	// toggles, and a left-click on the label opens properties); the tree only adds the grouping.
+	QTreeWidget *tree = new QTreeWidget(s->objPanel);
+	tree->setHeaderHidden(true);
+	tree->setColumnCount(1);
+	tree->setRootIsDecorated(true);              // show expand / collapse arrows on parent nodes
+	tree->setUniformRowHeights(false);           // child rows size to their hosted widget
+	tree->setSelectionMode(QAbstractItemView::NoSelection);
+	tree->setFocusPolicy(Qt::NoFocus);
+	tree->setIndentation(14);
+	col->addWidget(tree);
+
+	// curParent: the group node that newly-made rows attach to. null = top level.
+	QTreeWidgetItem *curParent = nullptr;
+
+	// One row = [checkbox] [type icon] [label] hosted in a tree item (child of curParent, else top-level).
+	// onToggle drives visibility; onProps (optional) is the properties menu, opened by a LEFT click on the
+	// description label (the checkbox only toggles).
 	auto makeRow = [&](const QString &label, int iconKind, bool checked,
 	                   std::function<void(bool)> onToggle,
 	                   std::function<void(const QPoint&)> onProps,
 	                   const QString &tip = QString(),
 	                   std::function<void(const QPoint&)> onContext = nullptr) {
-		QWidget *row = new QWidget(s->objPanel);
+		QWidget *row = new QWidget(tree);
 		QHBoxLayout *h = new QHBoxLayout(row);
-		h->setContentsMargins(0, 0, 0, 0);
+		h->setContentsMargins(0, 1, 0, 1);
 		h->setSpacing(5);
 
 		QCheckBox *cb = new QCheckBox(row);                  // box only — no text, so only the box toggles
@@ -923,8 +942,23 @@ static void rebuildSceneObjects(Scene *s) {
 			text->onClick = onProps;
 		}
 		if (onContext) text->onRightClick = onContext;      // right-click the description -> context menu (Save…)
-		col->addWidget(row);
+
+		QTreeWidgetItem *item = new QTreeWidgetItem();
+		if (curParent) curParent->addChild(item); else tree->addTopLevelItem(item);
+		tree->setItemWidget(item, 0, row);
 	};
+
+	// beginGroup / endGroup: a collapsible PARENT node. Rows made between the two attach as its children.
+	auto beginGroup = [&](const QString &name, int iconKind = -1) {
+		QTreeWidgetItem *grp = new QTreeWidgetItem();
+		grp->setText(0, name);
+		QFont f = grp->font(0); f.setBold(true); grp->setFont(0, f);
+		if (iconKind >= 0) grp->setIcon(0, QIcon(makeObjectIcon(iconKind)));
+		tree->addTopLevelItem(grp);
+		grp->setExpanded(true);
+		curParent = grp;
+	};
+	auto endGroup = [&]() { curParent = nullptr; };
 
 	// Actor-backed rows (show/hide = actor visibility); lr != null adds the line-object menu.
 	auto addRow = [&](const QString& label, vtkProp3D *a, int iconKind, const LineRef *lr = nullptr) {
@@ -949,16 +983,6 @@ static void rebuildSceneObjects(Scene *s) {
 		};
 	};
 
-	// A thin light horizontal rule that separates one grid GROUP from the next.
-	auto addSeparator = [&]() {
-		QFrame *ln = new QFrame(s->objPanel);
-		ln->setFrameShape(QFrame::HLine); ln->setFrameShadow(QFrame::Plain);
-		ln->setStyleSheet("color:#5a5a5a; background:#5a5a5a; max-height:1px; margin:2px 0;");
-		col->addWidget(ln);
-	};
-	bool firstGroup = true;
-	auto groupGap = [&]() { if (!firstGroup) addSeparator(); firstGroup = false; };
-
 	// This grid's COLORBAR row: per-grid show/hide intent (*flag = &s->surfShowBar or &ex.showBar,
 	// honoured by refreshGridColorbar when the grid is active) + colormap chooser on the label.
 	auto colorbarRow = [&](bool *flag, int gridSel) {
@@ -981,9 +1005,9 @@ static void rebuildSceneObjects(Scene *s) {
 	// image (view_image) is its own group (image row + axes). Non-grid objects follow, after a rule.
 	if (!s->imageOnly) {
 		if (vtkProp3D *sp = surfProp(s)) {                  // base relief grid group
-			groupGap();
 			const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
-			makeRow(nm, IC_Surface, sp->GetVisibility() != 0,
+			beginGroup(nm, IC_Surface);
+			makeRow("Surface", IC_Surface, sp->GetVisibility() != 0,
 			        [s, sp](bool on) { sp->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking",
@@ -991,12 +1015,13 @@ static void rebuildSceneObjects(Scene *s) {
 			if (s->drape) addRow(QString("Image drape"), s->drape, IC_Image);   // grid's drape texture
 			colorbarRow(&s->surfShowBar, -1);    // base relief grid
 			axesRow();
+			endGroup();
 		}
 	} else if (s->drape) {                                  // bare image (view_image) group
-		groupGap();
 		const QString nm = s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName);
+		beginGroup(nm, IC_Image);
 		vtkProp3D *dp = s->drape;
-		makeRow(nm, IC_Image, dp->GetVisibility() != 0,
+		makeRow("Image", IC_Image, dp->GetVisibility() != 0,
 		        [dp](bool on) { dp->SetVisibility(on ? 1 : 0); }, nullptr,
 		        "Right-click for properties (save / delete)",
 		        [s, nm](const QPoint& g) {              // primary image props: Save + Remove
@@ -1010,15 +1035,16 @@ static void rebuildSceneObjects(Scene *s) {
 		            else if (c == aRem) sceneRemoveSurface(s);
 		        });
 		axesRow();
+		endGroup();
 	}
 
 	for (size_t ei = 0; ei < s->extras.size(); ++ei) {      // dropped grids / images: one group each
 		auto& ex = s->extras[ei];
 		const QString nm = QString::fromStdString(ex.name);
-		groupGap();
+		beginGroup(nm, ex.isImage ? IC_Image : IC_Surface);
 		if (ex.isImage) {                                  // dropped image group
 			vtkProp3D *a = ex.actor.Get();
-			makeRow(nm, IC_Image, a && a->GetVisibility() != 0,
+			makeRow("Image", IC_Image, a && a->GetVisibility() != 0,
 			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
 			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
 			        "Left- or right-click for image properties (incl. Save)",
@@ -1026,21 +1052,20 @@ static void rebuildSceneObjects(Scene *s) {
 			axesRow();
 		} else {                                           // dropped grid group: surface + colorbar + axes
 			vtkProp3D *a = ex.actor.Get();
-			makeRow(nm, IC_Surface, a && a->GetVisibility() != 0,
+			makeRow("Surface", IC_Surface, a && a->GetVisibility() != 0,
 			        [s, a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },          // SAME function as the primary surface
 			        "Left-click for Shading · right-click to save / delete",
 			        [s, a](const QPoint& g) { gridObjectMenu(s, a, g); }); // right-click: save / delete
-			if (ex.drape) addRow(nm + " (image)", ex.drape, IC_Image);
+			if (ex.drape) addRow("Image drape", ex.drape, IC_Image);
 			colorbarRow(&ex.showBar, ex.tag);    // resolve by the grid's UNIQUE tag, not its (shifting) index
 			axesRow();
 		}
+		endGroup();
 	}
 
-	// ── OTHER OBJECTS ── lines / points / curtains / polygons / text / profile, after a final rule.
-	const bool haveOther = !s->overlays.empty() || !s->symbols.empty() || !s->curtains.empty()
-	                    || !s->polys.empty() || !s->texts.empty() || (s->profLine && s->profLine->GetVisibility());
-	if (haveOther && !firstGroup) addSeparator();
+	// ── OTHER OBJECTS ── lines / points / curtains / polygons / text / profile (top-level rows; a fault
+	// with planes becomes its own group, see below).
 	for (auto& ov : s->overlays) {
 		LineRef lr{ LK_Overlay, ov.actor };
 		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, ov.mode == 1 ? &lr : nullptr);
@@ -1066,13 +1091,18 @@ static void rebuildSceneObjects(Scene *s) {
 		       : nm.startsWith("rect")   ? IC_Rect
 		       : nm.startsWith("circle") ? IC_Circle
 		                                 : IC_Polygon;
+		// A fault that carries a surface-projection and/or a 3-D plane becomes its OWN collapsible group
+		// (trace + surface projection + fault plane as children). A bare 2-point trace stays a top-level row.
+		const bool faultGroup = pg.isFault && (pg.faultPlane || pg.faultPlane3D);
+		if (faultGroup) beginGroup(nm, ic);
+
 		// Custom row (not addRow) so the filled FACE follows the outline's checkbox; the fill's own
 		// opacity still gates whether anything is actually drawn (opacity 0 = no fill).
 		{
 			vtkActor *la = pg.line.Get();
 			vtkActor *fa = pg.fill.Get();
 			LineRef ref = lr; QString nm2 = nm;
-			makeRow(nm, ic, la && la->GetVisibility() != 0,
+			makeRow(faultGroup ? QString("Trace") : nm, ic, la && la->GetVisibility() != 0,
 			        [la, fa](bool on) {
 			            if (la) la->SetVisibility(on ? 1 : 0);
 			            if (fa) fa->SetVisibility((on && fa->GetProperty()->GetOpacity() > 0.0) ? 1 : 0);
@@ -1084,7 +1114,7 @@ static void rebuildSceneObjects(Scene *s) {
 		// The gray surface-PROJECTION patch is its OWN graphical element — its own handle (hide + Remove).
 		if (pg.isFault && pg.faultPlane) {
 			vtkActor *fp = pg.faultPlane.Get();
-			makeRow(QString("%1 — surface projection").arg(nm), IC_Rect, fp->GetVisibility() != 0,
+			makeRow(QString("Surface projection"), IC_Rect, fp->GetVisibility() != 0,
 			        [fp](bool on) { fp->SetVisibility(on ? 1 : 0); },
 			        [s, fp](const QPoint& g) {
 			            QMenu m(s->widget);
@@ -1107,7 +1137,7 @@ static void rebuildSceneObjects(Scene *s) {
 			// Capture the STABLE actor pointer (vtkSmartPointer keeps the object alive at a fixed
 			// address even if s->polys reallocates); never a raw Polygon* (that dangles on regrow).
 			vtkActor *fp3 = pg.faultPlane3D.Get();
-			makeRow(QString("%1 — fault plane").arg(nm), IC_Rect, pg.faultPlane3DShown,
+			makeRow(QString("Fault plane"), IC_Rect, pg.faultPlane3DShown,
 			        [s, fp3](bool on) {
 			            for (auto& p : s->polys) if (p.faultPlane3D.Get() == fp3) {
 			                p.faultPlane3DShown = on;
@@ -1130,6 +1160,8 @@ static void rebuildSceneObjects(Scene *s) {
 			        },
 			        "Buried 3-D fault plane (visible from below the surface) · left-click for Remove");
 		}
+
+		if (faultGroup) endGroup();
 	}
 	for (auto &tl : s->texts) {                          // user-placed text labels (toggle + right-click menu)
 		if (!tl.actor) continue;
@@ -1143,7 +1175,6 @@ static void rebuildSceneObjects(Scene *s) {
 		LineRef lr{ LK_Profile, s->profLine };
 		addRow("Profile", s->profLine, IC_Profile, &lr);
 	}
-	col->addStretch(1);
 }
 
 static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff, int nseg,
