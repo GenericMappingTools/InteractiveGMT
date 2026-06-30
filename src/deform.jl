@@ -160,7 +160,7 @@ end
 # line IMMEDIATELY preceding block i — its column header (e.g. "#Lon. Lat. Depth" vs
 # "#Lat. Lon. depth slip rake strike dip"), needed because the boundary and patch blocks list lon/lat
 # in OPPOSITE order (deform_mansinha.m push_save_subfault).
-function _read_multiseg(path::AbstractString)
+function _read_multiseg(path::String)
 	headers   = String[]
 	blocks    = Vector{Vector{Vector{Float64}}}()
 	blockhdrs = String[]
@@ -211,7 +211,7 @@ function _on_importfault(scene::Ptr{Cvoid}, path::Cstring)::Cvoid
 		nx = round(Int, parse(Float64, m.captures[1]))
 		Dx =            parse(Float64, m.captures[2])
 		ny = round(Int, parse(Float64, m.captures[3]))
-		Dy =            parse(Float64, m.captures[4])   # down-dip patch width (km); ny·Dy = total fault width
+		Dy =            parse(Float64, m.captures[4])   # down-dip patch width (km); ny·Dy = total fault width (nx=segments)
 
 		# Identify the two blocks by width: the BOUNDARY rectangle has 3 columns (Lon Lat Depth), the
 		# PATCH slip model has ≥7 (Lat Lon depth slip rake strike dip). The boundary block holds the
@@ -229,7 +229,7 @@ function _on_importfault(scene::Ptr{Cvoid}, path::Cstring)::Cvoid
 		# Dislocation + plane geometry come from the PATCH block (the physics): slip (col 4, CENTIMETRES
 		# → METRES), rake (col 5), strike (col 6), dip (col 7), depth-to-top (col 3, shallowest patch),
 		# total down-dip width ny·Dy. Means are over the shallowest downdip row.
-		rowdepth(k) = sum(P[(k-1)*nx + i][3] for i in 1:nx) / nx
+		rowdepth(k) = sum(P[(k-1) * nx + i][3] for i in 1:nx) / nx
 		ksurf  = argmin([rowdepth(k) for k in 1:ny])
 		base   = (ksurf - 1) * nx
 		slip_m = P[base + 1][4] / 100.0
@@ -357,8 +357,8 @@ function _on_modelslip(scene::Ptr{Cvoid}, path::Cstring)::Cvoid
 		xy      = Float64[]
 		vcounts = Cint[]
 		rgb     = Float64[]
-		slipA   = Float64[]; rakeA = Float64[]; strikeA = Float64[]; dipA = Float64[]; depthA = Float64[]
-		for k in 1:ny                                  # loop over downdip rows
+		slipA   = Float64[]; rakeA = Float64[]; strikeA = Float64[]; dipA = Float64[]; depthA = Float64[]; segA = Cint[]
+		for k in 1:ny                                  # loop over downdip patches (that is, rows)
 			idx    = (k - 1) * nx + 1 : k * nx
 			tmpy   = [P[i][platc] for i in idx]        # patch reference lat
 			tmpx   = [P[i][plonc] for i in idx]        # patch reference lon
@@ -381,25 +381,23 @@ function _on_modelslip(scene::Ptr{Cvoid}, path::Cstring)::Cvoid
 				rp = Dy * cosd(dip[i])
 				c1lon, c1lat = _geod_fwd(lon[i],   lat[i],   strk[i] + 90, rp)
 				c2lon, c2lat = _geod_fwd(lon[i+1], lat[i+1], strk[i] + 90, rp)
-				push!(xy, lon[i],   lat[i],
-				          lon[i+1], lat[i+1],
-				          c2lon,    c2lat,
-				          c1lon,    c1lat)
+				push!(xy, lon[i], lat[i], lon[i+1], lat[i+1], c2lon, c2lat, c1lon, c1lat)
 				push!(vcounts, Cint(4))
 				ci = clamp(round(Int, (slip_k[i] - minSlip) / deltaSlip * nCores + 1), 1, size(cmap, 1))
 				push!(rgb, cmap[ci, 1], cmap[ci, 2], cmap[ci, 3])
 				push!(slipA, slip_k[i]); push!(rakeA, rake_k[i]); push!(strikeA, strk[i])
 				push!(dipA, dip[i]);     push!(depthA, dep_k[i])
+				push!(segA, Cint(k - 1))  # segment = downdip row index (0-based)
 			end
 		end
 
 		npatch = length(vcounts)
-		added = GC.@preserve xy vcounts rgb slipA rakeA strikeA dipA depthA ccall(_fn(:gmtvtk_add_slip_patches_h), Cint,
+		added = GC.@preserve xy vcounts rgb slipA rakeA strikeA dipA depthA segA ccall(_fn(:gmtvtk_add_slip_patches_h), Cint,
 			(Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cint}, Cint, Ptr{Cdouble}, Cstring,
 			 Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cdouble, Ptr{Cint}),
 			scene, xy, vcounts, Cint(npatch), rgb, "Slip model",
-			slipA, rakeA, strikeA, dipA, depthA, Float64(Dx), Float64(Dy), C_NULL)
-		added == 0 && error("viewer rejected the slip model (dead window handle?)")
+			slipA, rakeA, strikeA, dipA, depthA, Float64(Dx), Float64(Dy), segA)
+		(added == 0) && error("viewer )rejected the slip model (dead window handle?)")
 		_viewer_log_error(scene, "Import Model Slip: $(basename(fname)) — $added patches " *
 			"(nx=$nx, ny=$ny, slip ∈ [$(round(minSlip, digits=3)), $(round(maxSlip, digits=3))] m)")
 	catch e
@@ -453,7 +451,7 @@ function _save_subfault(scene, fname, x1, y1, L, W, strike, dip, depth, depTop, 
 		bnd(p2[1], p2[2], depth)
 		bnd(p1[1], p1[2], depth)
 		bnd(x1, y1, depTop)
-		println(io, "#Lat. Lon. depth slip rake strike dip")
+		println(io, "#Lat Lon depth slip rake strike dip")
 		println(io, _ffmt(pm[2], 4) * "\t" * _ffmt(pm[1], 4) * "\t" * _ffmt(depth, 3) * "\t" *
 		            _ffmt(slip * 100, 2) * "\t" * _ffmt(rake, 1) * "\t" * _ffmt(strike, 1) * "\t" *
 		            _ffmt(dip, 1))

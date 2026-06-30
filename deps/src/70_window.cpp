@@ -1929,10 +1929,13 @@ public:
 					const int pi = faultsBySeg[k][j];
 					if (pi >= 0 && pi < (int)scn->polys.size() && scn->polys[pi].line.Get() == seedPatch) { seedSeg = k; seedFault = j; }
 				}
-			segCombo->setCurrentIndex(seedSeg);
+		// Explicit: always start at Segment 1 (index 0)
+			if (segCombo->count() < 1) segCombo->addItem(QString("Segment 1"));
+			segCombo->setCurrentIndex(0);
 			segCombo->blockSignals(false);
 			rebuildFaultCombo();                                   // fills Faults for seedSeg, loads its first
 			if (seedFault >= 0 && seedFault < faultCombo->count()) faultCombo->setCurrentIndex(seedFault);
+		else faultCombo->setCurrentIndex(0);                   // explicit: always start at Fault 1
 			loadSlipPatch(currentSlipPoly());                      // load the exact clicked patch
 			QObject::connect(segCombo,   &QComboBox::currentIndexChanged, this, [this]{ rebuildFaultCombo(); });
 			QObject::connect(faultCombo, &QComboBox::currentIndexChanged, this, [this]{ loadSlipPatch(currentSlipPoly()); });
@@ -2032,7 +2035,18 @@ public:
 			saveBtn->setStyleSheet("");
 			saveBtn->setEnabled(true);
 		});
+
 	}
+	// Clear focus from any focused widget when clicking dialog background (safety: prevents accidental typing)
+		void mousePressEvent(QMouseEvent *e) override {
+			QWidget *w = childAt(e->pos());
+			// Clear focus if NOT clicking on a focusable widget (edit box, combo, checkbox, button)
+			if (!w || (w->focusPolicy() & Qt::ClickFocus) == 0) {
+				if (QWidget *fw = focusWidget()) fw->clearFocus();
+			}
+			QDialog::mousePressEvent(e);
+		}
+
 };
 
 // Open the Vertical elastic deformation dialog for the current window (used by a fault line's first
