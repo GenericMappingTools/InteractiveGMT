@@ -1093,7 +1093,7 @@ static void rebuildSceneObjects(Scene *s) {
 			endGroup();  slipGroupOpen.clear();
 		}
 		if (!pg.groupName.empty() && slipGroupOpen.isEmpty()) {
-			beginGroup(QString::fromStdString(pg.groupName), IC_Polygon);
+			beginGroup(QString::fromStdString(pg.groupName), IC_Rect);
 			if (curParent) curParent->setExpanded(false);   // start collapsed: a slip model is many patches
 			slipGroupOpen = QString::fromStdString(pg.groupName);
 		}
@@ -1103,6 +1103,7 @@ static void rebuildSceneObjects(Scene *s) {
 		// polyline/polygon): fault/line with 2 vertices -> straight-line icon; >2 -> polyline icon.
 		// Closed rings -> rect / circle / polygon.
 		int ic = pg.isFault              ? (pg.v.size() > 2 ? IC_Polyline : IC_StraightLine)
+		       : !pg.groupName.empty()   ? IC_Rect      // slip-model patches are rectangles, not generic polygons
 		       : pg.nestKind == 1        ? IC_NestRect
 		       : !pg.closed              ? (pg.v.size() > 2 ? IC_Polyline : IC_StraightLine)
 		       : nm.startsWith("rect")   ? IC_Rect
