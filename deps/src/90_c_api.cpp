@@ -1068,6 +1068,13 @@ GMTVTK_API void gmtvtk_set_save_callback(JuliaSaveFn fn) {
 	g_juliaSave = fn;
 }
 
+// Register the Scene Objects "Move to new window" callback (grid rows). fn(scene, "<kind>;<name>")
+// returns 1 if Julia re-opened the grid in a new window (the source window then removes it), 0 on
+// failure (the grid stays put). nullptr to detach.
+GMTVTK_API void gmtvtk_set_move_callback(JuliaMoveFn fn) {
+	g_juliaMove = fn;
+}
+
 // Register the tide-station download callback. The two "Download Mareg …" entries on a Tide
 // Stations star's right-click menu call fn(scene, mode, station): mode "2days" | "calendar",
 // station = the clicked star's "Name:/Code:/Country:" block. Julia opens the download window.

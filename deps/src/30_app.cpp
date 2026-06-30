@@ -220,6 +220,13 @@ static JuliaDimFunFn g_juliaDimFun = nullptr;
 typedef void (*JuliaSaveFn)(void *scene, const char *req);
 static JuliaSaveFn g_juliaSave = nullptr;
 
+// Scene Objects > "Move to new window" (grid rows). The row menu calls fn(scene, "<kind>;<name>")
+// (kind = "grid"); Julia looks up the live GMTgrid and opens it in a NEW iGMT window via view_grid,
+// returning 1 on success. The source window then removes the grid (= a MOVE, not a copy). Set via
+// gmtvtk_set_move_callback; nullptr -> a status-bar notice and the grid stays put.
+typedef int (*JuliaMoveFn)(void *scene, const char *req);
+static JuliaMoveFn g_juliaMove = nullptr;
+
 // One selectable output format for the Save dialog: a human label, the short code handed to Julia,
 // the QFileDialog filter, and the canonical extension (used to seed/auto-suffix the file name).
 struct SaveFmt { const char *label; const char *code; const char *filter; const char *ext; };
@@ -326,6 +333,18 @@ static void saveObjectDialog(Scene *s, const char *kind, const QString& name) {
 	if (dlg.exec() != QDialog::Accepted || dlg.path.isEmpty()) return;
 	const QString req = QString("%1;%2;%3;%4").arg(QString(kind)).arg(dlg.code).arg(dlg.path).arg(name);
 	g_juliaSave(s, req.toUtf8().constData());
+}
+
+// Ask Julia to open the named scene grid in a NEW window (g_juliaMove, req = "<kind>;<name>").
+// Returns true ONLY if Julia reported success — the caller then removes the grid from this window
+// (= a move). A nullptr callback or a Julia failure leaves the source window untouched.
+static bool moveObjectToNewWindow(Scene *s, const char *kind, const QString& name) {
+	if (!g_juliaMove) {
+		if (s && s->win) s->win->statusBar()->showMessage("Move to new window: callback not registered", 3000);
+		return false;
+	}
+	const QString req = QString("%1;%2").arg(QString(kind)).arg(name);
+	return g_juliaMove(s, req.toUtf8().constData()) != 0;
 }
 
 // Does the window hold a saveable grid / image? Used to enable/disable the File>Save entries and to

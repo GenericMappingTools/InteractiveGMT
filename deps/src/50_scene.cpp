@@ -832,6 +832,7 @@ static void surfaceObjectMenu(Scene *s, const QPoint& gp) {
 	const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
 	QMenu m(s->widget);
 	QAction *aSave = m.addAction("Save grid…");
+	QAction *aMove = m.addAction("Move to new window");      // re-open this grid in a fresh iGMT window, then drop it here
 	m.addSeparator();
 	addGridStackActions(s, m, &s->surfStack);
 	m.addSeparator();
@@ -839,6 +840,7 @@ static void surfaceObjectMenu(Scene *s, const QPoint& gp) {
 	QAction *c = m.exec(gp);
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
+	if (c == aMove) { if (moveObjectToNewWindow(s, "grid", nm)) sceneRemoveSurface(s); return; }
 	if (c == aRem) sceneRemoveSurface(s);
 }
 
@@ -851,6 +853,7 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	const QString nm = QString::fromStdString(s->extras[idx].name);
 	QMenu m(s->widget);
 	QAction *aSave  = m.addAction("Save grid…");
+	QAction *aMove  = m.addAction("Move to new window"); // re-open this grid in a fresh iGMT window, then drop it here
 	m.addSeparator();
 	addGridStackActions(s, m, &s->extras[idx].gstack);   // grid-pile draw order (base relief + grids)
 	m.addSeparator();
@@ -858,7 +861,9 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *c = m.exec(g);
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
-	if (c == aDel) {
+	if (c == aMove || c == aDel) {
+		// Move = open this grid in a new window, then delete it from here; a failed move keeps it.
+		if (c == aMove && !moveObjectToNewWindow(s, "grid", nm)) return;
 		ExtraObj &ex = s->extras[idx];
 		if (ex.actor) s->ren->RemoveActor(ex.actor);
 		if (ex.drape) s->ren->RemoveActor(ex.drape);

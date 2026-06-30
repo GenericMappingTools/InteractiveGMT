@@ -116,3 +116,35 @@ function _register_save()
     ccall(_fn(:gmtvtk_set_save_callback), Cvoid, (Ptr{Cvoid},), fptr)
     return
 end
+
+# C callback: req = "<kind>;<name>" (kind = "grid"). Resolve the live scene grid (same lookup as Save)
+# and re-open it in a NEW iGMT window (view_grid). Return 1 on success so the C++ side then removes it
+# from the source window (= a MOVE); 0 on any failure leaves the source untouched. Grids only for now.
+function _on_move(scene::Ptr{Cvoid}, req::Cstring)::Cint
+    kind = ""
+    try
+        parts = split(unsafe_string(req), ';', limit=2)
+        kind = strip(parts[1])
+        name = length(parts) >= 2 ? String(strip(parts[2])) : ""
+        if kind == "grid"
+            G = _find_object(scene, :grid, name)
+            G === nothing && error("No grid to move in this window")
+            view_grid(G; title = isempty(name) ? "i'GMT" : name)
+        else
+            error("Move: unknown kind '$kind'")
+        end
+        return Cint(1)
+    catch e
+        _viewer_log_error(scene, "Move to new window FAILED: $(sprint(showerror, e))")
+        @warn "move: could not open new window" exception=(e,)
+        return Cint(0)
+    end
+end
+
+# Build the C-callable pointer + register it. Lazy (first window) via _ensure_callbacks — the
+# @cfunction is a thin invokelatest trampoline so it drags no GMT into compile.
+function _register_move()
+    fptr = @cfunction((s,c)->Base.invokelatest(_on_move,s,c), Cint, (Ptr{Cvoid}, Cstring))
+    ccall(_fn(:gmtvtk_set_move_callback), Cvoid, (Ptr{Cvoid},), fptr)
+    return
+end

@@ -49,6 +49,7 @@ function _ensure_callbacks()
 	                    ("bgregion",    _register_bgregion),
 	                    ("new-window",  _register_new_window),
 	                    ("save",        _register_save),
+	                    ("move",        _register_move),
 	                    ("geography",   _register_geography),
 	                    ("solid",       _register_solid),
 	                    ("tides",       _register_tides),
