@@ -20,9 +20,13 @@ try
     if isempty(ARGS)
         iview()                       # no files: empty launcher window (drop files onto it)
     else
-        for f in ARGS                 # files dropped on the desktop icon: open each (full viewer)
+        # Files dropped on the desktop icon: open each through the SAME path as a drop onto a
+        # window / File > Open / File > Recent Files — an empty launcher promoted in place by
+        # _on_drop. One shared open-file path; iview(f) (gmtvtk_view_grid) would be a second one.
+        for f in ARGS
             try
-                iview(f)              # iview(::String) reads the file (gmtread) + dispatches by type
+                fig = iview()         # empty launcher window
+                InteractiveGMT._on_drop(InteractiveGMT._fig_handle(fig), abspath(f))
             catch e
                 @warn "could not open dropped file" file=f exception=e
             end

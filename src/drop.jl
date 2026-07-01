@@ -7,30 +7,23 @@
 # level — a precompiled @cfunction is invalid), exactly like the in-window console callback.
 
 # Called on the UI thread from inside the Qt pump when a file is dropped on a viewer window.
-# An EMPTY launcher window is CLOSED and a NEW window is opened (CODE SHARING: reuse the
-# same view_grid/view_image paths as File->Open). A populated window gets the file ADDED into it.
-function _on_drop(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid
-	path = unsafe_string(cpath)
+# An EMPTY launcher window (no primary surface) is PROMOTED IN PLACE: the SAME window is
+# reconfigured into a full viewer (real scales + axes + colorbar + 3-D view + Scene Objects panel)
+# — the window is reused, NOT replaced. A populated window gets the file ADDED into it (extra
+# surface/image/overlay). `promote` is true exactly when the receiving window is the bare launcher.
+# The String method is the ONE open-a-file-into-a-window path: window drop, File > Open,
+# File > Recent Files (all via the Cstring wrapper) AND the desktop-icon drop (iview_app.jl,
+# which opens an empty launcher and routes the file here) — never a second build path.
+_on_drop(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid = _on_drop(scene, unsafe_string(cpath))
+function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 	try
 		# Already shown in a live window -> raise that window and ignore the duplicate drop.
 		_open_window_for(path) != C_NULL && return
 		data  = GMT.gmtread(path)
 		_record_recent(path, data)                             # remember it in File > Recent Files
 		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
-		if empty
-			# Empty launcher: close it, open a NEW window via the standard paths (code sharing)
-			ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), scene)
-			fig = data isa GMTgrid ? view_grid(data; title=basename(path)) :
-			      data isa GMTimage ? view_image(data; title=basename(path)) :
-			      data isa GMTdataset ? view_points(data) :
-			      data isa Vector{<:GMTdataset} ? view_points(data) :
-			      error("drop: unsupported data type")
-			_mark_file_open(path, _fig_handle(fig))
-		else
-			# Populated window: add into it as an extra
-			_drop_into(scene, data, basename(path))
-			_mark_file_open(path, scene)
-		end
+		_drop_into(scene, data, basename(path); promote=empty)
+		_mark_file_open(path, scene)                           # remember it so a re-drop is ignored
 	catch e
 		_viewer_log_error(scene, "Open '$(basename(path))' FAILED: $(sprint(showerror, e))")
 		@warn "drop: could not read/open file" path exception=e
@@ -38,12 +31,16 @@ function _on_drop(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid
 	return
 end
 
-# Dispatch the dropped object by type into the window `scene` (for populated windows only).
-_drop_into(scene::Ptr{Cvoid}, G::GMTgrid,  name) = _add_grid_to_scene(scene, G, name)
-_drop_into(scene::Ptr{Cvoid}, I::GMTimage, name) = _add_image_to_scene(scene, I, name)
-_drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name) = _add_dataset_to_scene(scene, D, name)
-_drop_into(scene::Ptr{Cvoid}, D::Vector{<:GMTdataset}, name) = _add_dataset_to_scene(scene, D, name)
-_drop_into(scene::Ptr{Cvoid}, x, name) = @warn "drop: unsupported data type" type=typeof(x)
+# Dispatch the dropped object by type into the window `scene`. `promote` reuses the empty launcher.
+_drop_into(scene::Ptr{Cvoid}, G::GMTgrid,  name; promote=false) = _add_grid_to_scene(scene, G, name; promote)
+_drop_into(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false) = _add_image_to_scene(scene, I, name; promote)
+function _drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name; promote=false)
+	promote ? _promote_dataset(scene, D) : _add_dataset_to_scene(scene, D, name)
+end
+function _drop_into(scene::Ptr{Cvoid}, D::Vector{<:GMTdataset}, name; promote=false)
+	promote ? _promote_dataset(scene, D) : _add_dataset_to_scene(scene, D, name)
+end
+_drop_into(scene::Ptr{Cvoid}, x, name; promote=false) = @warn "drop: unsupported data type" type=typeof(x)
 
 # A pure table has no surface to promote the launcher's scales onto. Until in-place dataset
 # promotion exists, fall back to opening it in a fresh full window and retiring the launcher.
@@ -51,8 +48,10 @@ function _promote_dataset(scene::Ptr{Cvoid}, D)
 	iview(D)
 	ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), scene)
 end
-# Add a dropped grid as an extra in an existing window.
-function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing)
+
+# Add a dropped grid as a CPT-coloured surface in the window. On the empty launcher `promote`
+# reconfigures THAT window in place (gmtvtk_promote_surface_h); otherwise it is added as an extra.
+function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false)
 	cmap === :auto && (cmap = _default_cmap(G))   # geo only for topo/bathymetry grids, else turbo
 	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z); ny, nx = size(z); r = G.range
 	# `color` (r,g,b in 0..1) forces a SOLID-colour 2-node CPT (used by the flat zero nested grids, whose
@@ -62,7 +61,14 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 	# guessgeog (not isgeog): a plain lon/lat grid with no embedded proj still reads geographic via
 	# the [-180 360 -90 90] range heuristic, so the Geography menu can be activated (see _apply_crs! below).
 	geog = _isgeographic(G)
-	ok = ccall(_fn(:gmtvtk_add_surface_h), Cint,
+	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
+	ok = promote ?
+		ccall(_fn(fn), Cint,
+		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
+		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name)) :
+		ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
 		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
 		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4],
@@ -75,11 +81,14 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 		hascrs(crs) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
 		                     scene, crs.proj4, crs.wkt, Cint(crs.epsg))
 	end
+	# A promoted launcher reuses the SAME handle but its _FIGREG entry is still the QtEmpty launcher.
+	# Re-register it as a grid figure so `fig` (console / colorbar _recolor) carries the grid + works.
+	promote && ok != 0 && _register_fig!(QtFigure(scene, G))
 	return ok != 0
 end
 
-# Add a dropped image as an extra in an existing window.
-function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name)
+# Add a dropped image as a flat textured plane in the window (promote = reuse the empty launcher).
+function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false)
 	ir = I.range
 	z = zeros(Float32, 2, 2)
 	fillu = (UInt8(200), UInt8(200), UInt8(200))
@@ -87,7 +96,14 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name)
 	# guessgeog (not isgeog): a plain lon/lat image with no embedded proj still reads geographic via
 	# the lon/lat-range heuristic, so geographic axes + the Geography menu activate (set_crs below).
 	geog = try GMT.guessgeog(I) catch; GMT.isgeog(I) end
-	ok = ccall(_fn(:gmtvtk_add_surface_h), Cint,
+	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
+	ok = promote ?
+		ccall(_fn(fn), Cint,
+		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		  scene, z, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4], Cint(geog),
+		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name)) :
+		ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
 		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
 		  scene, z, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4],
@@ -100,6 +116,8 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name)
 		hascrs(crs) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
 		                     scene, crs.proj4, crs.wkt, Cint(crs.epsg))
 	end
+	# As for grids: re-register the promoted launcher so `fig` is the actual image figure.
+	promote && ok != 0 && _register_fig!(QtImage(scene, I))
 	return ok != 0
 end
 
