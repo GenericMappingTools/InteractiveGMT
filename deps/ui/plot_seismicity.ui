@@ -1,0 +1,781 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>PlotSeismicityDialog</class>
+ <widget class="QDialog" name="PlotSeismicityDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>540</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Plot seismicity</string>
+  </property>
+  <widget class="QListWidget" name="catalogFormatList">
+   <property name="geometry">
+    <rect>
+     <x>16</x>
+     <y>12</y>
+     <width>463</width>
+     <height>71</height>
+    </rect>
+   </property>
+   <item>
+    <property name="text">
+     <string>USGS Current seismicity</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>ISF formated catalog (ascii)</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>lon,lat,mag,dep,yy,mm,dd,hh,mm,ss</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>lon,lat,dep,mag,yy,mm,dd</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Posit file</string>
+    </property>
+   </item>
+  </widget>
+  <widget class="QToolButton" name="openFileButton">
+   <property name="geometry">
+    <rect>
+     <x>480</x>
+     <y>31</y>
+     <width>32</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>...</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="startYearLabel">
+   <property name="geometry">
+    <rect>
+     <x>16</x>
+     <y>104</y>
+     <width>31</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Start
+year</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="startYearEdit">
+   <property name="geometry">
+    <rect>
+     <x>60</x>
+     <y>104</y>
+     <width>90</width>
+     <height>28</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QLabel" name="startMonthLabel">
+   <property name="geometry">
+    <rect>
+     <x>176</x>
+     <y>104</y>
+     <width>41</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Start
+month</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="startMonthEdit">
+   <property name="geometry">
+    <rect>
+     <x>230</x>
+     <y>104</y>
+     <width>90</width>
+     <height>28</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QLabel" name="startDayLabel">
+   <property name="geometry">
+    <rect>
+     <x>347</x>
+     <y>104</y>
+     <width>41</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Start
+day</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="startDayEdit">
+   <property name="geometry">
+    <rect>
+     <x>390</x>
+     <y>104</y>
+     <width>90</width>
+     <height>28</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QLabel" name="endYearLabel">
+   <property name="geometry">
+    <rect>
+     <x>16</x>
+     <y>140</y>
+     <width>31</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>End
+year</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="endYearEdit">
+   <property name="geometry">
+    <rect>
+     <x>60</x>
+     <y>140</y>
+     <width>90</width>
+     <height>28</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QLabel" name="endMonthLabel">
+   <property name="geometry">
+    <rect>
+     <x>176</x>
+     <y>140</y>
+     <width>41</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>End
+month</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="endMonthEdit">
+   <property name="geometry">
+    <rect>
+     <x>230</x>
+     <y>140</y>
+     <width>90</width>
+     <height>28</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QLabel" name="endDayLabel">
+   <property name="geometry">
+    <rect>
+     <x>347</x>
+     <y>140</y>
+     <width>41</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>End
+day</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="endDayEdit">
+   <property name="geometry">
+    <rect>
+     <x>390</x>
+     <y>140</y>
+     <width>90</width>
+     <height>28</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QGroupBox" name="magnitudeGroupBox">
+   <property name="geometry">
+    <rect>
+     <x>16</x>
+     <y>190</y>
+     <width>501</width>
+     <height>148</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string/>
+   </property>
+   <widget class="QLabel" name="minMagLabel">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>15</y>
+      <width>65</width>
+      <height>28</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Minimum
+magnitude</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="minMagEdit">
+    <property name="geometry">
+     <rect>
+      <x>83</x>
+      <y>15</y>
+      <width>86</width>
+      <height>28</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="maxMagLabel">
+    <property name="geometry">
+     <rect>
+      <x>189</x>
+      <y>15</y>
+      <width>65</width>
+      <height>28</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Maximum
+magnitude</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="maxMagEdit">
+    <property name="geometry">
+     <rect>
+      <x>260</x>
+      <y>15</y>
+      <width>85</width>
+      <height>28</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="allMagnitudesCheckBox">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>360</x>
+      <y>19</y>
+      <width>114</width>
+      <height>19</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>All magnitudes</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="useDifferentSizesCheckBox">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>59</y>
+      <width>477</width>
+      <height>19</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Use different sizes for magnitude intervals</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="magRangeLabel0_3">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>94</y>
+      <width>68</width>
+      <height>14</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>0-3</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="magRangeLabel3_5">
+    <property name="geometry">
+     <rect>
+      <x>94</x>
+      <y>94</y>
+      <width>68</width>
+      <height>14</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>3-5</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="magRangeLabel5_6">
+    <property name="geometry">
+     <rect>
+      <x>176</x>
+      <y>94</y>
+      <width>67</width>
+      <height>14</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>5-6</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="magRangeLabel6_7">
+    <property name="geometry">
+     <rect>
+      <x>257</x>
+      <y>94</y>
+      <width>68</width>
+      <height>14</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>6-7</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="magRangeLabel7_8">
+    <property name="geometry">
+     <rect>
+      <x>339</x>
+      <y>94</y>
+      <width>68</width>
+      <height>14</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>7-8</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="magRangeLabelGt8">
+    <property name="geometry">
+     <rect>
+      <x>421</x>
+      <y>94</y>
+      <width>68</width>
+      <height>14</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>&gt; 8</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="sizeCombo0_3">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>114</y>
+      <width>65</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>4</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QComboBox" name="sizeCombo3_5">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>94</x>
+      <y>114</y>
+      <width>65</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>6</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QComboBox" name="sizeCombo5_6">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>176</x>
+      <y>114</y>
+      <width>65</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>8</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QComboBox" name="sizeCombo6_7">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>257</x>
+      <y>114</y>
+      <width>65</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>10</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QComboBox" name="sizeCombo7_8">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>339</x>
+      <y>114</y>
+      <width>65</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>12</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QComboBox" name="sizeComboGt8">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>421</x>
+      <y>114</y>
+      <width>65</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>15</string>
+     </property>
+    </item>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="depthGroupBox">
+   <property name="geometry">
+    <rect>
+     <x>16</x>
+     <y>348</y>
+     <width>501</width>
+     <height>148</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string/>
+   </property>
+   <widget class="QLabel" name="minDepthLabel">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>15</y>
+      <width>56</width>
+      <height>28</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Minimum
+depth</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="minDepthEdit">
+    <property name="geometry">
+     <rect>
+      <x>74</x>
+      <y>15</y>
+      <width>90</width>
+      <height>28</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>0</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="maxDepthLabel">
+    <property name="geometry">
+     <rect>
+      <x>194</x>
+      <y>15</y>
+      <width>60</width>
+      <height>28</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Maximum
+depth</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="maxDepthEdit">
+    <property name="geometry">
+     <rect>
+      <x>260</x>
+      <y>15</y>
+      <width>85</width>
+      <height>28</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="allDepthsCheckBox">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>360</x>
+      <y>19</y>
+      <width>84</width>
+      <height>19</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>All depths</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="useDifferentColorsCheckBox">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>59</y>
+      <width>477</width>
+      <height>19</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Use different colors for depth intervals</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="depthRangeLabel0_33">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>94</y>
+      <width>84</width>
+      <height>14</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>0-33 km</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="depthRangeLabel33_70">
+    <property name="geometry">
+     <rect>
+      <x>110</x>
+      <y>94</y>
+      <width>84</width>
+      <height>14</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>33-70 km</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="depthRangeLabel70_150">
+    <property name="geometry">
+     <rect>
+      <x>208</x>
+      <y>94</y>
+      <width>85</width>
+      <height>14</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>70-150 km</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="depthRangeLabel150_300">
+    <property name="geometry">
+     <rect>
+      <x>307</x>
+      <y>94</y>
+      <width>84</width>
+      <height>14</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>150-300 km</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="depthRangeLabelGt300">
+    <property name="geometry">
+     <rect>
+      <x>405</x>
+      <y>94</y>
+      <width>84</width>
+      <height>14</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>&gt; 300 km</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="colorCombo0_33">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>114</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>red</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QComboBox" name="colorCombo33_70">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>110</x>
+      <y>114</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>green</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QComboBox" name="colorCombo70_150">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>208</x>
+      <y>114</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>blue</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QComboBox" name="colorCombo150_300">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>307</x>
+      <y>114</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>cyan</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QComboBox" name="colorComboGt300">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>405</x>
+      <y>114</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>yellow</string>
+     </property>
+    </item>
+   </widget>
+  </widget>
+  <widget class="QPushButton" name="okButton">
+   <property name="geometry">
+    <rect>
+     <x>410</x>
+     <y>500</y>
+     <width>100</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>OK</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

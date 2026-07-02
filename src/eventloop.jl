@@ -58,6 +58,7 @@ function _ensure_callbacks()
 	                    ("gridmeta",    _register_gridmeta),
 	                    ("dimfun",      _register_dimfun),
 	                    ("nswing",      _register_nswing),
+	                    ("seismicity",  _register_seismicity),
 	                    ("faultgeom",   _register_faultgeom),
 	                    ("elastic",     _register_elastic),
 	                    ("importfault", _register_importfault),

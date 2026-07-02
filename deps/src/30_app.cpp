@@ -159,6 +159,14 @@ static JuliaGrdsampleFn g_juliaGrdsample = nullptr;
 typedef void (*JuliaNswingFn)(void *scene, const char *params);
 static JuliaNswingFn g_juliaNswing = nullptr;
 
+// Plot seismicity (Geophysics > Seismology). Port of Mirone's earthquakes.m. The dialog
+// (PlotSeismicityDialog, 70_window.cpp) hands a newline-separated "key=value" block to Julia
+// (g_juliaSeismicity), which reads the catalog (USGS web query / ISF / plain-column layouts /
+// Posit), filters by date/magnitude/depth/visible region and stamps the events as screen-constant
+// symbol layers. nullptr -> the menu entry reports "callback not registered".
+typedef void (*JuliaSeismicityFn)(void *scene, const char *params);
+static JuliaSeismicityFn g_juliaSeismicity = nullptr;
+
 // Vertical elastic deformation (Geophysics menu). Port of Mirone's Okada (1985) surface-deformation
 // tool. The dialog (ElasticDialog, 70_window.cpp) hands a semicolon-separated parameter string
 //   "action;coord;len;wid;strike;dip;depth;depthTop;rake;slip;hide;scc;N;q;mu;R;I"

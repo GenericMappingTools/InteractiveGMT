@@ -879,6 +879,14 @@ GMTVTK_API void gmtvtk_set_nswing_callback(JuliaNswingFn fn) {
 	g_juliaNswing = fn;
 }
 
+// Register the Plot seismicity callback (Geophysics > Seismology). `fn` (Julia @cfunction,
+// JuliaSeismicityFn) is called with (scene, "key=value\n…") on the dialog's OK: scene is the
+// receiving window, the block carries format/file/date range/magnitude/depth filters, the
+// per-interval sizes/colours and the visible map region. nullptr to detach.
+GMTVTK_API void gmtvtk_set_seismicity_callback(JuliaSeismicityFn fn) {
+	g_juliaSeismicity = fn;
+}
+
 // Register the Vertical elastic deformation callback. fn(scene, params) is called with the
 // "action;coord;len;wid;…;mu;R;I" string when the user clicks Compute / Save fault. nullptr to detach.
 GMTVTK_API void gmtvtk_set_elastic_callback(JuliaElasticFn fn) {

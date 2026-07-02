@@ -13,9 +13,9 @@ using TestItemRunner
 # `Pkg.test(test_args=["gui"])`, which forwards "gui" into ARGS reliably across the subprocess.
 const _RUN_GUI = ("gui" in ARGS) ||
 	lowercase(strip(get(ENV, "INTERACTIVEGMT_TEST_GUI", "0"), [' ', '"', '\''])) in ("1", "true", "yes", "on")
+# :net testitems hit live web services (e.g. the USGS seismicity query) — opt in the same way.
+const _RUN_NET = ("net" in ARGS) ||
+	lowercase(strip(get(ENV, "INTERACTIVEGMT_TEST_NET", "0"), [' ', '"', '\''])) in ("1", "true", "yes", "on")
 
-if _RUN_GUI
-	@run_package_tests verbose=true
-else
-	@run_package_tests verbose=true filter = ti -> !(:gui in ti.tags)
-end
+@run_package_tests verbose=true filter = ti ->
+	(_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags))

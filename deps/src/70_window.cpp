@@ -2258,6 +2258,184 @@ public:
 	}
 };
 
+// Plot seismicity — port of Mirone's earthquakes.m (src_figs/earthquakes.m). The layout is a
+// FAITHFUL reproduction of deps/ui/plot_seismicity.ui: fixed 520x540 dialog, every widget at
+// its .ui rect (setGeometry, NO Qt layouts — the .ui was arranged by hand and its geometry is
+// the spec). Catalog source list (USGS web query / ISF / two plain-column layouts / Posit) +
+// "..." file picker, a date range, and the magnitude / depth filter groups. "Use different
+// sizes" maps the six magnitude intervals (<3, 3-5, 5-6, 6-7, 7-8, >=8) to symbol sizes; "Use
+// different colors" maps the five depth intervals (0-33, 33-70, 70-150, 150-300, >300 km) to
+// symbol colours; "All magnitudes"/"All depths" re-include NaN-valued events (only meaningful
+// with the interval mode on, as in Mirone). OK assembles a newline-separated "key=value" block
+// for Julia (g_juliaSeismicity), which reads, filters and stamps the events as screen-constant
+// symbol layers. No Q_OBJECT (lambdas only).
+class PlotSeismicityDialog : public QDialog {
+public:
+	QString params;                        // "key=value\n…" on OK, else empty
+	QString filePath;                      // catalog file (empty for the USGS web query)
+	bool builtin = false;                  // "Global seismicity (1990-2009)": the shipped quakes.dat
+	QListWidget *fmtList;
+	QLineEdit *syEdit, *smEdit, *sdEdit, *eyEdit, *emEdit, *edEdit;
+	QLineEdit *magMinEdit, *magMaxEdit, *depMinEdit, *depMaxEdit;
+	QCheckBox *cAllMags, *cMagSizes, *cAllDeps, *cDepColors;
+	QComboBox *sizeCombo[6], *colorCombo[5];
+
+	explicit PlotSeismicityDialog(QWidget *parent, bool builtin_ = false)
+		: QDialog(parent), builtin(builtin_) {
+		setWindowTitle("Plot seismicity");
+		setFixedSize(520, 540);                                        // .ui: 520 x 540
+
+		auto label = [](QWidget *parent, const char *txt, int x, int y, int w, int h) {
+			auto *l = new QLabel(txt, parent); l->setGeometry(x, y, w, h); return l;
+		};
+		auto edit = [](QWidget *parent, int x, int y, int w, int h, const char *text = "") {
+			auto *e = new QLineEdit(text, parent); e->setGeometry(x, y, w, h); return e;
+		};
+
+		// --- Catalog source + "..." file picker (the USGS web query needs no file) ---------------
+		fmtList = new QListWidget(this);
+		fmtList->setGeometry(16, 12, 463, 71);
+		fmtList->addItems({"USGS Current seismicity", "ISF formated catalog (ascii)",
+		                   "lon,lat,mag,dep,yy,mm,dd,hh,mm,ss", "lon,lat,dep,mag,yy,mm,dd", "Posit file"});
+		fmtList->setCurrentRow(0);
+		auto *btnFile = new QToolButton(this);
+		btnFile->setGeometry(480, 31, 32, 32);
+		btnFile->setText("...");
+		btnFile->setToolTip("Select the catalog file (not needed for the USGS web query)");
+		QObject::connect(btnFile, &QToolButton::clicked, this, [this]() {
+			static const char *filters[5] = {
+				"All files (*)",
+				"ISF catalogs (*.isf *.ISF);;All files (*)",
+				"Data files (*.dat *.DAT);;All files (*)",
+				"Data files (*.dat *.DAT);;All files (*)",
+				"Posit files (*.posit *.POSIT);;All files (*)" };
+			const int row = qBound(0, fmtList->currentRow(), 4);
+			QString p = QFileDialog::getOpenFileName(this, "Select earthquakes file", prefStartDir(), filters[row]);
+			if (p.isEmpty()) return;
+			filePath = p; rememberStartDir(p);
+			setWindowTitle("Plot seismicity — " + QFileInfo(p).fileName());
+		});
+		QObject::connect(fmtList, &QListWidget::currentRowChanged, this,
+		                 [btnFile](int row) { btnFile->setEnabled(row != 0); });
+		btnFile->setEnabled(false);                            // row 0 (USGS) is the initial pick
+
+		// --- Date range ---------------------------------------------------------------------------
+		label(this, "Start\nyear",  16,  104, 31, 28);  syEdit = edit(this,  60, 104, 90, 28);
+		label(this, "Start\nmonth", 176, 104, 41, 28);  smEdit = edit(this, 230, 104, 90, 28);
+		label(this, "Start\nday",   347, 104, 41, 28);  sdEdit = edit(this, 390, 104, 90, 28);
+		label(this, "End\nyear",    16,  140, 31, 28);  eyEdit = edit(this,  60, 140, 90, 28);
+		label(this, "End\nmonth",   176, 140, 41, 28);  emEdit = edit(this, 230, 140, 90, 28);
+		label(this, "End\nday",     347, 140, 41, 28);  edEdit = edit(this, 390, 140, 90, 28);
+		for (auto *e : { syEdit, smEdit, sdEdit, eyEdit, emEdit, edEdit })
+			e->setToolTip("empty = no bound");
+		if (builtin) {
+			// "Global seismicity (1990-2009)": the shipped data/quakes.dat — no catalog picking
+			// (Mirone earthquakes.m nargin==1: listbox "Not useful here" + hidden file button) and
+			// the date fields pre-filled to the dataset's span.
+			fmtList->clear();
+			fmtList->addItem("Not useful here");
+			fmtList->setEnabled(false);
+			btnFile->hide();
+			syEdit->setText("1990"); smEdit->setText("1");  sdEdit->setText("1");
+			eyEdit->setText("2009"); emEdit->setText("12"); edEdit->setText("31");
+		}
+
+		// --- Magnitude group: min/max filter + per-interval sizes (untitled frame, as in the .ui) --
+		auto *gMag = new QGroupBox(this);
+		gMag->setGeometry(16, 190, 501, 148);
+		label(gMag, "Minimum\nmagnitude", 12,  15, 65, 28);  magMinEdit = edit(gMag,  83, 15, 86, 28);
+		label(gMag, "Maximum\nmagnitude", 189, 15, 65, 28);  magMaxEdit = edit(gMag, 260, 15, 85, 28);
+		cAllMags = new QCheckBox("All magnitudes", gMag);
+		cAllMags->setGeometry(360, 19, 114, 19);
+		cAllMags->setEnabled(false);
+		cAllMags->setToolTip("Also plot events with an unknown (NaN) magnitude");
+		cMagSizes = new QCheckBox("Use different sizes for magnitude intervals", gMag);
+		cMagSizes->setGeometry(12, 59, 477, 19);
+		static const int   magX[6]   = { 12, 94, 176, 257, 339, 421 };
+		static const char *magLab[6] = { "0-3", "3-5", "5-6", "6-7", "7-8", "> 8" };
+		static const char *magDef[6] = { "4", "6", "8", "10", "12", "15" };
+		for (int k = 0; k < 6; ++k) {
+			label(gMag, magLab[k], magX[k], 94, 68, 14);
+			auto *cb = new QComboBox(gMag);
+			cb->setGeometry(magX[k], 114, 65, 22);
+			cb->setEditable(true);
+			cb->addItem(magDef[k]);                            // one default item, per the .ui
+			cb->setEnabled(false);
+			sizeCombo[k] = cb;
+		}
+		QObject::connect(cMagSizes, &QCheckBox::toggled, this, [this](bool on) {
+			for (auto *cb : sizeCombo) cb->setEnabled(on);
+			cAllMags->setEnabled(on);
+			if (!on) cAllMags->setChecked(false);
+		});
+
+		// --- Depth group: min/max filter + per-interval colours -----------------------------------
+		auto *gDep = new QGroupBox(this);
+		gDep->setGeometry(16, 348, 501, 148);
+		label(gDep, "Minimum\ndepth", 12,  15, 56, 28);  depMinEdit = edit(gDep,  74, 15, 90, 28, "0");
+		label(gDep, "Maximum\ndepth", 194, 15, 60, 28);  depMaxEdit = edit(gDep, 260, 15, 85, 28);
+		cAllDeps = new QCheckBox("All depths", gDep);
+		cAllDeps->setGeometry(360, 19, 84, 19);
+		cAllDeps->setEnabled(false);
+		cAllDeps->setToolTip("Also plot events with an unknown (NaN) depth");
+		cDepColors = new QCheckBox("Use different colors for depth intervals", gDep);
+		cDepColors->setGeometry(12, 59, 477, 19);
+		static const int   depX[5]   = { 12, 110, 208, 307, 405 };
+		static const int   depW[5]   = { 84, 84, 85, 84, 84 };
+		static const char *depLab[5] = { "0-33 km", "33-70 km", "70-150 km", "150-300 km", "> 300 km" };
+		static const char *depDef[5] = { "red", "green", "blue", "cyan", "yellow" };
+		for (int k = 0; k < 5; ++k) {
+			label(gDep, depLab[k], depX[k], 94, depW[k], 14);
+			auto *cb = new QComboBox(gDep);
+			cb->setGeometry(depX[k], 114, 80, 22);
+			cb->setEditable(true);
+			cb->addItem(depDef[k]);                            // one default item, per the .ui
+			cb->setEnabled(false);
+			colorCombo[k] = cb;
+		}
+		QObject::connect(cDepColors, &QCheckBox::toggled, this, [this](bool on) {
+			for (auto *cb : colorCombo) cb->setEnabled(on);
+			cAllDeps->setEnabled(on);
+			if (!on) cAllDeps->setChecked(false);
+		});
+
+		// --- OK (the only action button, per the .ui; Esc rejects) --------------------------------
+		auto *ok = new QPushButton("OK", this);
+		ok->setGeometry(410, 500, 100, 32);
+		ok->setDefault(true);
+		QObject::connect(ok, &QPushButton::clicked, this, [this]() {
+			const int fmt = builtin ? 6 : qBound(0, fmtList->currentRow(), 4) + 1;
+			if (fmt >= 2 && fmt <= 5 && filePath.isEmpty()) {
+				QMessageBox::warning(this, "Plot seismicity",
+				                     "This catalog format needs a file — pick one with the \"...\" button.");
+				return;
+			}
+			QStringList L;
+			auto kv = [&L](const QString &k, const QString &val) { L << k + "=" + val; };
+			kv("format",    QString::number(fmt));
+			kv("file",      filePath);
+			kv("syear",     syEdit->text().trimmed());
+			kv("smonth",    smEdit->text().trimmed());
+			kv("sday",      sdEdit->text().trimmed());
+			kv("eyear",     eyEdit->text().trimmed());
+			kv("emonth",    emEdit->text().trimmed());
+			kv("eday",      edEdit->text().trimmed());
+			kv("magmin",    magMinEdit->text().trimmed());
+			kv("magmax",    magMaxEdit->text().trimmed());
+			kv("allmags",   cAllMags->isChecked()   ? "1" : "0");
+			kv("magsizes",  cMagSizes->isChecked()  ? "1" : "0");
+			for (int k = 0; k < 6; ++k) kv(QString("s%1").arg(k + 1), sizeCombo[k]->currentText().trimmed());
+			kv("depmin",    depMinEdit->text().trimmed());
+			kv("depmax",    depMaxEdit->text().trimmed());
+			kv("alldeps",   cAllDeps->isChecked()   ? "1" : "0");
+			kv("depcolors", cDepColors->isChecked() ? "1" : "0");
+			for (int k = 0; k < 5; ++k) kv(QString("c%1").arg(k + 1), colorCombo[k]->currentText().trimmed());
+			params = L.join("\n");
+			accept();
+		});
+	}
+};
+
 // Fold / un-fold the Shading dock programmatically (Surface row click in the Scene Objects panel).
 // Lives here because FoldTitleBar is complete only in this TU fragment; 50_scene.cpp forward-decls it.
 static void toggleShadingFold(Scene *s) {
@@ -3169,6 +3347,41 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		S = std::max(S, s->y0); N = std::min(N, s->y1);
 		return (E > W && N > S);
 	};
+	// The seismicity events need a base to land on. On an EMPTY launcher, load the whole-world
+	// Base Map IN PLACE (the SAME "global" request the Base Maps picker sends -> _on_basemap
+	// promotes the launcher + adds the etopo4 image) instead of refusing. Runs synchronously, so
+	// on return s->x0..y1 already frame the world. false only if the basemap callback is missing.
+	auto ensureSeisBase = [s]() -> bool {
+		if (!s->emptyStart) return true;
+		if (!g_juliaBaseMap) {
+			if (s->win) s->win->statusBar()->showMessage("Seismicity: Base Map callback not registered", 3000);
+			return false;
+		}
+		g_juliaBaseMap(s, "-180/180/-90/90/0/global");
+		return true;
+	};
+	// Hand a seismicity request to Julia: make sure there is a base map, append the visible map
+	// region (the in-map event crop + the USGS query bbox, like Mirone's in_map_region), send.
+	auto sendSeismicity = [s, visibleRegion, ensureSeisBase](const QString &params) {
+		if (!ensureSeisBase()) return;
+		double W = s->x0, E = s->x1, So = s->y0, No = s->y1;
+		visibleRegion(W, E, So, No);
+		const QString p = params + QString("\nregion=%1/%2/%3/%4")
+			.arg(W, 0, 'f', 6).arg(E, 0, 'f', 6).arg(So, 0, 'f', 6).arg(No, 0, 'f', 6);
+		g_juliaSeismicity(s, p.toUtf8().constData());
+	};
+	// Open the Plot seismicity dialog (Seismology > "Seismicity…" and, with builtin=true,
+	// "Global seismicity (1990-2009)" = the shipped data/quakes.dat — same dialog, same Julia
+	// pipeline).
+	auto openSeismicity = [win, s, sendSeismicity](bool builtin) {
+		if (!g_juliaSeismicity) {
+			if (s->win) s->win->statusBar()->showMessage("Seismicity: callback not registered", 3000);
+			return;
+		}
+		PlotSeismicityDialog dlg(win, builtin);
+		if (dlg.exec() != QDialog::Accepted || dlg.params.isEmpty()) return;
+		sendSeismicity(dlg.params);
+	};
 	// A leaf that fetches a GSHHG feature for the current view: compute the visible region, hand
 	// "<kind>/<res>/W/E/S/N" to Julia, which calls GMT.coast(R=…, D=res, M=true) and adds the lines.
 	auto geoPlot = [s, visibleRegion](const QString &kind, const char *res) {
@@ -3225,7 +3438,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	addResMenu(mRiv, "All intermittent rivers");
 
 	mGeo->addSeparator();
-	mGeo->addAction("Global seismicity (1990-2009)", geoTODO("Global seismicity"));
+	mGeo->addAction("Global seismicity (1990-2009)", [openSeismicity]() { openSeismicity(true); });
 	mGeo->addAction("Hotspot locations",             geoTODO("Hotspot locations"));
 	mGeo->addAction("Magnetic isochrons",            geoTODO("Magnetic isochrons"));
 	mGeo->addAction("Volcanoes",                     geoPlot("volcano", ""));
@@ -3346,17 +3559,26 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		reopen();
 	};
 
-	// Seismology discipline — TODO stubs (geoTODO) + the Elastic deformation submenu.
-	*fSeis = [mGphy, mElastic, geoTODO, backItem, reopen]() {
+	// Seismology discipline — Seismicity (earthquakes.m port) + TODO stubs (geoTODO) + the
+	// Elastic deformation submenu.
+	*fSeis = [mGphy, mElastic, geoTODO, backItem, reopen, s, openSeismicity, sendSeismicity]() {
 		mGphy->clear();
 		mGphy->setTitle("Seismology ▾");
 		backItem();
-		mGphy->addAction("Seismicity",                    geoTODO("Seismicity"));
+		mGphy->addAction("Seismicity…", [openSeismicity]() { openSeismicity(false); });
 		mGphy->addAction("Focal mechanisms",              geoTODO("Focal mechanisms"));
 		mGphy->addAction("Focal Mechanisms demo",         geoTODO("Focal Mechanisms demo"));
 		mGphy->addAction("CMT Catalog (Web download)",    geoTODO("CMT Catalog"));
-		mGphy->addAction("Global seismicity (1990-2009)", geoTODO("Global seismicity"));
-		mGphy->addAction("USGS recent seismicity",        geoTODO("USGS recent seismicity"));
+		mGphy->addAction("Global seismicity (1990-2009)", [openSeismicity]() { openSeismicity(true); });
+		// Direct plot, no dialog: format=1 with no bounds -> GMT.seismicity's own defaults
+		// (events of the last 30 days, M >= 3) over the visible region.
+		mGphy->addAction("USGS recent seismicity", [s, sendSeismicity]() {
+			if (!g_juliaSeismicity) {
+				if (s->win) s->win->statusBar()->showMessage("Seismicity: callback not registered", 3000);
+				return;
+			}
+			sendSeismicity("format=1");
+		});
 		mGphy->addAction("Ground motions",                geoTODO("Ground motions"));
 		mGphy->addSeparator();
 		mGphy->addMenu(mElastic);

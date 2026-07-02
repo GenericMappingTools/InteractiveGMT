@@ -67,6 +67,7 @@
 #include <QTabWidget>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QListWidget>
 #include <QHeaderView>
 #include <QAbstractItemView>
 #include <QToolButton>
