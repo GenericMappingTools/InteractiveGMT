@@ -3103,6 +3103,10 @@ static void sceneSetFlat2D(Scene *s, bool on) {
 		pg.faultPlane3D->SetVisibility((pg.faultPlane3DShown && !s->flat2d) ? 1 : 0);
 		if (pg.faultArrows) pg.faultArrows->SetVisibility((pg.faultPlane3DShown && !s->flat2d) ? 1 : 0);
 	}
+	// solid3D symbol layers (sphere/cube, e.g. buried seismicity) need real depth-tested occlusion in
+	// 3-D but must always show as flat map pins in 2-D (see applyStacking) — re-derive their overlay-
+	// layer placement for the mode we just entered.
+	applyVectorStacking(s);
 	if (s->act2D) s->act2D->setChecked(s->flat2d);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
@@ -3410,6 +3414,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		showBusyDialog("Seismicity");             // indeterminate busy bar for the blocking fetch
 		g_juliaSeismicity(s, p.toUtf8().constData());
 		closeBusyDialog();
+		// The freshly-plotted solid3D event spheres are meant to show unconditionally in flat-2D (map
+		// pins, see applyStacking), but the FIRST time they land in a 2D scene most render invisible;
+		// a manual 2D->3D->2D round-trip through sceneSetFlat2D reliably fixes it (confirmed). Rather
+		// than chase the exact VTK state that trip resets, just DO that round-trip here automatically
+		// so seismicity always comes up fully visible in 2D without the user having to know the trick.
+		if (s->flat2d) { sceneSetFlat2D(s, false); sceneSetFlat2D(s, true); }
 	};
 	// Open the Plot seismicity dialog (Seismology > "Seismicity…" and, with builtin=true,
 	// "Global seismicity (1990-2009)" = the shipped data/quakes.dat — same dialog, same Julia

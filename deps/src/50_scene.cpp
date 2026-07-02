@@ -569,7 +569,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 // `vec` marks line/point geometry: it gets an extra half-step lift on its LINE/POINT offsets so a
 // vector sitting at the same rank as the surface beneath it stays visible (resolves the z-fight
 // with that surface) without overtaking the next element a full rank up.
-struct StackItem { std::vector<vtkActor*> actors; int *stack; bool vec; };
+struct StackItem { std::vector<vtkActor*> actors; int *stack; bool vec; bool solid3D = false; };
 
 static std::vector<StackItem> gatherStackItems(Scene *s) {
 	std::vector<StackItem> v;
@@ -581,9 +581,9 @@ static std::vector<StackItem> gatherStackItems(Scene *s) {
 		if (ex.drape) a.push_back(ex.drape.Get());
 		v.push_back({ a, &ex.gstack, false });
 	}
-	for (auto& o  : s->overlays) if (o.actor) v.push_back({ { o.actor.Get()  }, &o.stack,  true });
-	for (auto& sl : s->symbols)  if (sl.actor) v.push_back({ { sl.actor.Get() }, &sl.stack, true });
-	for (auto& pg : s->polys)    if (pg.line)  v.push_back({ { pg.line.Get()  }, &pg.stack, true });
+	for (auto& o  : s->overlays) if (o.actor) v.push_back({ { o.actor.Get()  }, &o.stack,  true, false });
+	for (auto& sl : s->symbols)  if (sl.actor) v.push_back({ { sl.actor.Get() }, &sl.stack, true, sl.solid3D });
+	for (auto& pg : s->polys)    if (pg.line)  v.push_back({ { pg.line.Get()  }, &pg.stack, true, false });
 	return v;
 }
 
@@ -698,19 +698,31 @@ static void applyStacking(Scene *s) {
 	for (int k = 0; k < n; ++k) if (!it[ord[k]].vec) topRasterRank = k;   // ranks == position (sorted), so last raster
 	for (int k = 0; k < n; ++k) {
 		*it[ord[k]].stack = k;                              // 0..n-1 (survives deletes)
-		const bool   vec = it[ord[k]].vec;
+		const bool   vec     = it[ord[k]].vec;
+		const bool   solid3D = it[ord[k]].solid3D;
 		const double u   = -(k - surfRank) * step;          // rank ramp; base relief stays at 0 (tonality-safe)
 		// A vector gets its PLAIN rank offset (no half-step): it is then nearer than every raster ranked
 		// below it (drawn on top of them) and farther than every raster ranked above it (occluded by them
 		// through real depth). That is exactly what lets a line sit BETWEEN two grids — visible over grid1,
 		// hidden under grid2. A vector ranked above EVERY raster cannot be lifted over taller terrain by any
 		// offset, so it goes to the depth-cleared OVERLAY layer and is drawn on top purely by render order.
-		const bool onTop = vec && topRasterRank >= 0 && k > topRasterRank;
+		// solid3D (sphere/cube) is exempted from the coincident-offset ramp always: it is real lit 3-D
+		// geometry with genuine depth of its own (e.g. a buried earthquake), not a coincident 2-D-ish
+		// overlay, so it never gets an offset bias — real depth decides whether 3-D terrain occludes it.
+		// But in flat-2D (sceneSetFlat2D, top-down ORTHOGRAPHIC camera) that real depth test would just
+		// as legitimately hide a buried event behind the terrain directly above it — wrong there: 2-D is
+		// a MAP view, every marker must show regardless of its true depth, pinned at its surface (x,y).
+		// So flat2d still promotes solid3D to the depth-cleared overlay layer, same as any other vector;
+		// only genuine 3-D perspective gets the real-occlusion treatment. sceneSetFlat2D re-runs this
+		// function on every 2D<->3D toggle so the promotion updates immediately.
+		const bool onTop = vec && (!solid3D || s->flat2d) && topRasterRank >= 0 && k > topRasterRank;
 		for (vtkActor *a : it[ord[k]].actors) {
-			if (vec) setActorTopLayer(s, a, onTop);
+			if (vec) setActorTopLayer(s, a, onTop);         // solid3D: onTop is always false here
 			vtkPolyDataMapper *mp = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
 			if (!mp) continue;
-			if (vec) {
+			if (solid3D) {
+				// leave depth resolution at the mapper's own default (no bias) -> real occlusion
+			} else if (vec) {
 				mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, u);
 				mp->SetRelativeCoincidentTopologyPointOffsetParameter(u);
 			} else {
@@ -1573,6 +1585,11 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& 
 	symbolRescaleCB(nullptr, 0, s, nullptr);           // prime size for the first frame
 
 	rebuildSceneObjects(s);
+	// A stale clip range (computed before this actor existed) can cut it out of the rendered image
+	// even though it's on-screen — sceneSetFlat2D always resets this on a 2D<->3D transition, which
+	// is why a round-trip toggle "fixes" newly-added symbols that would otherwise clip; do it here
+	// too so a fresh layer never depends on a later, unrelated mode toggle to become visible.
+	if (s->ren) s->ren->ResetCameraClippingRange();
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 	return 1;
