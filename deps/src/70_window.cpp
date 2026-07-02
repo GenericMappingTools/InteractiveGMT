@@ -3128,6 +3128,15 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	Scene *s = new Scene();
 	g_scenes.insert(s);                     // register as a live figure handle
 	s->imageOnly = imageOnly;               // set BEFORE the Scene Objects panel is built (rebuildSceneObjects)
+	if (imageOnly) {                        // bare image: unlit picture, nothing PBR/lit to tone-map or occlude.
+		// Tone mapping + SSAO are screen-space passes applied to the WHOLE framebuffer, so even though
+		// the image actor itself is LightingOff (imageRebuildActor), vtkToneMappingPass still remapped
+		// its raw sRGB texture colours as if they were linear HDR radiance -> visibly DARKENED the
+		// picture (e.g. Base Map's etopo4.jpg import). The Shading dock is already folded here because
+		// "nothing to light" (see hasShadedBody below) -- match that intent in the actual pass chain too.
+		s->useTone = false;
+		s->useSSAO = false;
+	}
 	s->zmin = zmin; s->zmax = zmax;
 	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1;
 	s->xfac = xfac; s->zfac = zfac; s->ve = ve0;

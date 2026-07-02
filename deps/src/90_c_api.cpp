@@ -1445,6 +1445,7 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1; s->zmin = zmin; s->zmax = zmax;
 	s->xfac = xfac; s->zfac = zfac; s->ve = ve0;
 	s->imageOnly = imageOnly;
+	if (imageOnly) { s->useTone = false; s->useSSAO = false; }   // bare picture: no PBR/lit content to tone-map/occlude (see buildAndShow)
 	s->surfName  = (name && name[0]) ? name : "";
 
 	// Plain grid -> TILED path (gz), exactly like gmtvtk_view_grid. Draped image -> single actor
