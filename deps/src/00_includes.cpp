@@ -136,6 +136,8 @@
 // --- gizmo (Fledermaus-style scale/tilt/azimuth handle) ----------------------
 #include <vtkConeSource.h>
 #include <vtkCylinderSource.h>
+#include <vtkSphereSource.h>
+#include <vtkCubeSource.h>
 #include <vtkLineSource.h>
 #include <vtkBillboardTextActor3D.h>
 #include <vtkTextActor3D.h>

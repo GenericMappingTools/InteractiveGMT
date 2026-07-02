@@ -35,11 +35,21 @@ struct Overlay {
 // on-screen size stays `sizePx` pixels at any zoom (same camera math the gizmo uses). Point
 // positions are pre-baked with the surface's xfac (x*xfac) so the glyph itself is NOT distorted;
 // the actor carries only the z scale (1,1,zfac*ve) so symbols ride VE like the other overlays.
+// Solid 3-D glyphs ("o" sphere / "u" cube) are a true volume, not flat in Z like the rest — the
+// actor's (1,1,zfac*ve) scale would otherwise squash them into a near-zero-height pancake (zfac
+// converts metres to degree-equivalent world units, typically ~1e-5), so their unit SOURCE is
+// pre-scaled by `zfix` (Z *= 1/(zfac*ve), updated per-frame in symbolRescaleCB) to cancel that
+// factor out before the actor re-applies it — net effect: the glyph reads as a true screen-
+// constant-size ball/box in every axis, same as X/Y, while its CENTRE still sits at the real
+// VE-scaled depth.
 struct SymbolLayer {
 	vtkSmartPointer<vtkActor>   actor;
 	vtkSmartPointer<vtkGlyph3D> glyph;       // source(unit shape) + input(points); ScaleFactor = world size
+	vtkSmartPointer<vtkTransform> zfix;             // solid3D only: Z-cancelling pre-transform on the source
+	vtkSmartPointer<vtkTransformPolyDataFilter> zfixFilter;  // solid3D only: applies `zfix` to the unit source
 	double sizePx = 8.0;                      // requested on-screen size in PIXELS
 	bool   filled = true;                     // filled polygon glyph (fill+edge) vs open line glyph (edge only)
+	bool   solid3D = false;                   // true for "o" sphere / "u" cube (needs the zfix counter-scale)
 	std::string sym  = "c";                   // GMT symbol code (for the Scene Objects label / properties)
 	std::string name;                         // label shown in the Scene Objects panel
 	std::vector<std::string> info;            // per-point hover text (multi-line); empty = no hover info
@@ -1082,6 +1092,8 @@ static void applyVE(Scene *s) {
 	}
 	for (auto& tl : s->texts)                                              // text labels lie flat on z=0 (XY plane)
 		if (tl.actor) tl.actor->SetPosition(tl.pos[0] * s->xfac, tl.pos[1], 0.0);
+	for (auto& sl : s->symbols)                                            // symbol depth (z) rides VE too
+		if (sl.actor) sl.actor->SetScale(1.0, 1.0, s->zfac * s->ve);      // x already baked into the points
 	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview
 	if (s->polyHandles) s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // edit-mode vertex handles
 	double b[6]; surfGetBounds(s, b);            // bounds already include the scale

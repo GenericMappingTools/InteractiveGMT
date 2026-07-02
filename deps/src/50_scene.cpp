@@ -1382,6 +1382,26 @@ static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string& sym, bool
 	return pd;
 }
 
+// Unit-diameter (radius 0.5) SOLID 3-D glyph for "o" (sphere) / "u" (cube) — a true volume, not a
+// flat XY polygon, so it stays visible from any camera angle (the flat glyphs above go edge-on
+// invisible in an oblique 3-D view). Always filled; normals included so LightingOn() actually
+// shades it (addSymbols turns lighting on only for these two codes).
+static vtkSmartPointer<vtkPolyData> makeSolidGlyph(const std::string& sym) {
+	if (sym == "u") {                      // cube: vtkCubeSource has no built-in normals -> compute them
+		vtkNew<vtkCubeSource> cube;
+		cube->SetXLength(1.0); cube->SetYLength(1.0); cube->SetZLength(1.0);
+		vtkNew<vtkPolyDataNormals> norms;
+		norms->SetInputConnection(cube->GetOutputPort());
+		norms->ComputePointNormalsOn(); norms->ComputeCellNormalsOff(); norms->SplittingOn();
+		norms->Update();
+		return norms->GetOutput();
+	}
+	vtkNew<vtkSphereSource> sph;           // sphere: normals are generated automatically
+	sph->SetRadius(0.5); sph->SetThetaResolution(16); sph->SetPhiResolution(16);
+	sph->Update();
+	return sph->GetOutput();
+}
+
 // Per-frame (renderer StartEvent): rescale every symbol layer's glyph so its on-screen size stays
 // `sizePx` pixels at any zoom. `vph` = world height spanning the full viewport at the focal plane —
 // the SAME camera math the gizmo uses; worldPerPx = vph / viewportHeightPx. The unit glyph is Ø1, so
@@ -1405,6 +1425,12 @@ static void symbolRescaleCB(vtkObject*, unsigned long, void *clientData, void*) 
 		if (!sl.glyph) continue;
 		sl.glyph->SetScaleFactor(std::max(1e-9, sl.sizePx * worldPerLogPx));
 		sl.glyph->Modified();
+		if (sl.solid3D && sl.zfix) {           // cancel the actor's (1,1,zfac*ve) Z-squash, see SymbolLayer
+			const double zc = s->zfac * s->ve;
+			const double zInv = (std::fabs(zc) > 1e-12) ? (1.0 / zc) : 0.0;   // ve==0 (flat) -> degenerate, harmless
+			sl.zfix->Identity();
+			sl.zfix->Scale(1.0, 1.0, zInv);
+		}
 	}
 }
 
@@ -1433,8 +1459,9 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& 
 	vtkSmartPointer<vtkPolyData> in = vtkSmartPointer<vtkPolyData>::New();
 	in->SetPoints(pts);
 
+	const bool solid3D = (sym == "o" || sym == "u");      // sphere / cube: true volume, not flat-XY
 	bool glyphFilled = true;
-	vtkSmartPointer<vtkPolyData> src = makeSymbolGlyph(sym, glyphFilled);
+	vtkSmartPointer<vtkPolyData> src = solid3D ? makeSolidGlyph(sym) : makeSymbolGlyph(sym, glyphFilled);
 	const bool wantFill = glyphFilled && (filled != 0);
 	// A glyph that carries BOTH filled polys and outline lines (the concave star) is coloured PER
 	// CELL — fill triangles in the fill colour, the boundary polyline in the edge colour — so the
@@ -1452,8 +1479,23 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& 
 		src->GetCellData()->SetScalars(cc);
 	}
 
+	// Solid 3-D glyphs ride the actor's (1,1,zfac*ve) Z scale for POSITION like every other symbol,
+	// but that would also squash their own volume flat (zfac converts metres to a tiny degree-
+	// equivalent unit). `zfix` pre-divides the unit source's Z by that same factor so it cancels
+	// out after the actor re-applies it — kept live (not baked once) because ve changes at runtime;
+	// symbolRescaleCB updates it every frame alongside the screen-size ScaleFactor.
+	vtkSmartPointer<vtkTransform> zfix;
+	vtkSmartPointer<vtkTransformPolyDataFilter> zfixFilter;
+	if (solid3D) {
+		zfix = vtkSmartPointer<vtkTransform>::New();
+		zfixFilter = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
+		zfixFilter->SetInputData(src);
+		zfixFilter->SetTransform(zfix);
+	}
+
 	vtkSmartPointer<vtkGlyph3D> g = vtkSmartPointer<vtkGlyph3D>::New();
-	g->SetSourceData(src);
+	if (solid3D) g->SetSourceConnection(zfixFilter->GetOutputPort());
+	else         g->SetSourceData(src);
 	g->SetInputData(in);
 	g->SetScaleModeToDataScalingOff();    // uniform size; ScaleFactor driven by the observer
 	g->OrientOff();
@@ -1470,13 +1512,17 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& 
 
 	vtkSmartPointer<vtkActor> a = vtkSmartPointer<vtkActor>::New();
 	a->SetMapper(map);
-	a->GetProperty()->LightingOff();
+	// Flat glyphs are unlit (constant colour, like the gizmo). A sphere/cube needs real shading to
+	// read as a volume rather than a flat disc — that's the whole point of offering them — so turn
+	// lighting ON just for those two; a sphere's fine facet mesh also looks messy with edges drawn,
+	// so skip EdgeVisibility for it (a cube keeps its box outline, which reads fine).
+	a->GetProperty()->SetLighting(solid3D);
 	if (wantFill) {
 		a->GetProperty()->SetColor(fr, fg, fb);
 		a->GetProperty()->SetEdgeColor(er, eg, eb);
 		// Cell-coloured glyphs (star) draw their outline as a coloured boundary line, NOT actor edges
 		// (which would expose the fill triangulation as spokes); edgeWidth sets that line's width.
-		a->GetProperty()->SetEdgeVisibility((edgeWidth > 0.0 && !cellColoured) ? 1 : 0);
+		a->GetProperty()->SetEdgeVisibility((edgeWidth > 0.0 && !cellColoured && sym != "o") ? 1 : 0);
 		a->GetProperty()->SetLineWidth(edgeWidth > 0.0 ? edgeWidth : 1.0);
 	} else {                               // open glyph: drawn in the edge colour, no fill
 		a->GetProperty()->SetColor(er, eg, eb);
@@ -1486,8 +1532,9 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& 
 
 	s->ren->AddActor(a);
 	SymbolLayer sl;
-	sl.actor = a; sl.glyph = g; sl.sizePx = (sizePx > 0.0 ? sizePx : 8.0);
-	sl.filled = wantFill; sl.sym = sym;
+	sl.actor = a; sl.glyph = g; sl.zfix = zfix; sl.zfixFilter = zfixFilter;
+	sl.sizePx = (sizePx > 0.0 ? sizePx : 8.0);
+	sl.filled = wantFill; sl.sym = sym; sl.solid3D = solid3D;
 	sl.stack = s->vecSeq++;              // new layer lands on top of the whole vector pile
 	sl.name = name.empty() ? ("Symbols " + std::to_string((int)s->symbols.size() + 1) + " (" + sym + ")")
 	                       : name;
@@ -1648,12 +1695,13 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 		return;
 	}
 
-	for (size_t i = 0; i < kindActs.size(); ++i) if (ch == kindActs[i]) {     // change shape
+	for (size_t i = 0; i < kindActs.size(); ++i) if (ch == kindActs[i]) {     // change shape (flat glyphs only)
 		bool filled = true;
 		sl->sym = KINDS[i].second;
 		sl->glyph->SetSourceData(makeSymbolGlyph(sl->sym, filled));
 		sl->glyph->Modified();
 		sl->filled = filled;
+		if (sl->solid3D) { sl->solid3D = false; sl->actor->GetProperty()->SetLighting(false); }
 		applyCellColours();                          // star -> per-cell outline; others -> actor edges
 		reRender(); return;
 	}

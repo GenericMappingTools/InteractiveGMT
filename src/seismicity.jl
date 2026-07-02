@@ -201,9 +201,18 @@ function _seis_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, t, keep)
 end
 
 # One layer: circles with a black edge (Mirone's marker style) + per-event hover tooltip.
+# z is the event depth converted to world metres, NEGATIVE (down): the 3-D perspective view then
+# actually shows events at their hypocentre; the flat-2D view is a top-down ORTHOGRAPHIC camera
+# (sceneSetFlat2D, 70_window.cpp), whose projection is along Z, so a nonzero Z never shifts the
+# on-screen lon/lat — events stay exactly projected to the surface there for free. NaN depth (a
+# catalog entry that carries none) falls back to z=0 (surface).
 function _seis_layer(scene::Ptr{Cvoid}, name, sel, lon, lat, dep, mag, t, sizepx, color)
 	infos = [_seis_info(mag[i], dep[i], t[i]) for i in sel]
-	add_symbols!(scene, view(lon, sel), view(lat, sel); symbol=:circle, size=sizepx,
+	zv = [(isnan(dep[i]) ? 0.0 : -dep[i] * 1000.0) for i in sel]
+	# :sphere is a true lit 3-D glyph (symbols.jl) so an event stays visible from any oblique 3-D
+	# angle at its real depth; a flat :circle glyph goes edge-on invisible there (it only reads well
+	# top-down). In flat-2D it still projects to a plain-looking dot like before (ortho top-down cam).
+	add_symbols!(scene, view(lon, sel), view(lat, sel); z=zv, symbol=:sphere, size=sizepx,
 	             fill=color, edge=:black, edgewidth=1.0, name=name, info=infos)
 end
 
