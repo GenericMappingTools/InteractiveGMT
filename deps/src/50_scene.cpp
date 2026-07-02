@@ -1505,10 +1505,17 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& 
 	map->SetInputConnection(g->GetOutputPort());
 	if (cellColoured) { map->ScalarVisibilityOn(); map->SetScalarModeToUseCellData(); map->SetColorModeToDirectScalars(); }
 	else              { map->ScalarVisibilityOff(); }
-	vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();   // lift off the z=0 map plane
-	map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -8000.0);
-	map->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -8000.0);
-	map->SetRelativeCoincidentTopologyPointOffsetParameter(-8000.0);
+	// The huge negative bias below forces a flat glyph to WIN the depth test against the coincident
+	// surface it sits directly on (z=0, e.g. a volcano marker) — it has no real depth of its own.
+	// A solid3D glyph (sphere/cube) DOES carry real depth (e.g. a buried earthquake hypocentre) and
+	// must lose the depth test to genuinely shallower surface geometry above it, or it renders
+	// through solid ground. So leave its mapper at the default (unbiased) depth-test resolution.
+	if (!solid3D) {
+		vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();   // lift off the z=0 map plane
+		map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -8000.0);
+		map->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -8000.0);
+		map->SetRelativeCoincidentTopologyPointOffsetParameter(-8000.0);
+	}
 
 	vtkSmartPointer<vtkActor> a = vtkSmartPointer<vtkActor>::New();
 	a->SetMapper(map);
