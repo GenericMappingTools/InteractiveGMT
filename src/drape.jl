@@ -44,6 +44,15 @@ function _drape_buf(I)
 	nlon, nlat  = rowmajor ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
 	pix = _pixaccess(S, lay, d3, nb, rowmajor, nlon, nlat)
 	buf = Vector{UInt8}(undef, nlat * nlon * comps)
+	_db_fill!(buf, pix, nlon, nlat, comps, nb, north_first)
+	return buf, nlon, nlat, comps
+end
+
+# Function barrier for _drape_buf's hot loop (see the identical note on `_dtb_fill!` below):
+# `pix`'s CONCRETE closure type depends on a runtime branch in `_pixaccess`, so the caller can't
+# infer it -> calling it inline there is a dynamic dispatch PER PIXEL. Passing `pix` as an
+# argument here lets Julia specialize this whole function on its actual (concrete) type.
+function _db_fill!(buf, pix, nlon, nlat, comps, nb, north_first)
 	k = 1
 	@inbounds for orow in 0:nlat-1               # texture row 0 = SOUTH
 		lat = north_first ? (nlat - orow) : (orow + 1)
@@ -55,7 +64,7 @@ function _drape_buf(I)
 			k += comps
 		end
 	end
-	return buf, nlon, nlat, comps
+	return nothing
 end
 
 # Place a GMTimage onto a canvas covering the FULL grid bbox [gx0,gx1]×[gy0,gy1], at the image's
@@ -93,6 +102,20 @@ function _drape_to_bbox(I, gx0, gx1, gy0, gy1; outside::Symbol=:shademesh, fill=
 	end
 	cdx = (gx1 - gx0) / nlon
 	cdy = (gy1 - gy0) / nlat
+	_dtb_fill!(buf, pix, nlon, nlat, comps, nb, north_first, gx0, gy0, cdx, cdy,
+	           ix0, ix1, iy0, iy1, nlon_i, nlat_i)
+	return buf, nlon, nlat, comps
+end
+
+# Function barrier for the hot loop above. MEASURED: `pix`'s concrete closure type depends on a
+# runtime branch in `_pixaccess` (band-planar vs pixel-interleaved vs 2-D), so `_drape_to_bbox`
+# can't infer it -> `pix::Function` (abstract) there -> every `pix(...)` call in the loop was a
+# DYNAMIC DISPATCH. On the full etopo4 world image (5400x2700) that was ~2.6-3.1 s, EVERY call,
+# not just the first (i.e. not a JIT-compile artifact — this is what actually made Base Map /
+# Global seismicity feel frozen). Passing `pix` as an argument to a separate function lets Julia
+# specialize THIS function on its actual (concrete) closure type -> plain inlined calls.
+function _dtb_fill!(buf, pix, nlon, nlat, comps, nb, north_first, gx0, gy0, cdx, cdy,
+                     ix0, ix1, iy0, iy1, nlon_i, nlat_i)
 	k = 1
 	@inbounds for orow in 0:nlat-1                     # row 0 = SOUTH
 		yc  = gy0 + (orow + 0.5) * cdy
@@ -113,7 +136,7 @@ function _drape_to_bbox(I, gx0, gx1, gy0, gy1; outside::Symbol=:shademesh, fill=
 			k += comps
 		end
 	end
-	return buf, nlon, nlat, comps
+	return nothing
 end
 
 # Bilinear sample of grid G at (x,y) -> z, so a 2-D GMTdataset (x,y only) overlay sits ON the

@@ -1,3 +1,23 @@
+// Busy (indeterminate) progress dialog around a blocking Julia call (Seismicity base-map/fetch
+// path). Reuses `g_progress` (30_app.cpp, earlier in this TU) — the same QProgressDialog the
+// gmtvtk_progress_* C API (90_c_api.cpp, later in this TU) drives for the Okada patch loop, just
+// with range (0,0) for Qt's indeterminate busy bar instead of a counted range.
+static void showBusyDialog(const char *title) {
+	if (!QApplication::instance()) return;
+	if (g_progress) delete g_progress;
+	g_progress = new QProgressDialog();
+	g_progress->setWindowTitle(title);
+	g_progress->setRange(0, 0);
+	g_progress->setCancelButton(nullptr);
+	g_progress->setWindowModality(Qt::ApplicationModal);
+	g_progress->show();
+	QApplication::processEvents();
+}
+static void closeBusyDialog() {
+	if (g_progress) { g_progress->close(); delete g_progress; g_progress = nullptr; }
+	QApplication::processEvents();
+}
+
 // ===== tiled-LOD pyramid: build + per-frame screen-space-error refinement ==================
 // Quadtree over the full grid; each node renders its region at a stride chosen so its sampled span
 // is <= ~512 (leaf = stride 1 = full res). Per camera move, refineNode keeps each visible branch at
@@ -3357,18 +3377,30 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			if (s->win) s->win->statusBar()->showMessage("Seismicity: Base Map callback not registered", 3000);
 			return false;
 		}
+		if (s->win) s->win->statusBar()->showMessage("Seismicity: loading base map…");
+		showBusyDialog("Base Map");              // indeterminate busy bar (first-run GMT compile)
 		g_juliaBaseMap(s, "-180/180/-90/90/0/global");
+		closeBusyDialog();
 		return true;
 	};
 	// Hand a seismicity request to Julia: make sure there is a base map, append the visible map
 	// region (the in-map event crop + the USGS query bbox, like Mirone's in_map_region), send.
 	auto sendSeismicity = [s, visibleRegion, ensureSeisBase](const QString &params) {
 		if (!ensureSeisBase()) return;
+		// Paint the base map (just promoted, or already there) BEFORE the blocking catalog fetch,
+		// so the user sees the world map right away instead of a frozen window. Then show a busy
+		// (indeterminate) progress dialog for the fetch itself, which can take a while on the first
+		// call of the session (GMT.seismicity/gmtisf/gmtread JIT compilation) or over a slow link.
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		if (s->win) s->win->statusBar()->showMessage("Seismicity: fetching catalog…  (first run this session also compiles; please wait)");
+		QApplication::processEvents();
 		double W = s->x0, E = s->x1, So = s->y0, No = s->y1;
 		visibleRegion(W, E, So, No);
 		const QString p = params + QString("\nregion=%1/%2/%3/%4")
 			.arg(W, 0, 'f', 6).arg(E, 0, 'f', 6).arg(So, 0, 'f', 6).arg(No, 0, 'f', 6);
+		showBusyDialog("Seismicity");             // indeterminate busy bar for the blocking fetch
 		g_juliaSeismicity(s, p.toUtf8().constData());
+		closeBusyDialog();
 	};
 	// Open the Plot seismicity dialog (Seismology > "Seismicity…" and, with builtin=true,
 	// "Global seismicity (1990-2009)" = the shipped data/quakes.dat — same dialog, same Julia
