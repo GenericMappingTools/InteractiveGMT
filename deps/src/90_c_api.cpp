@@ -1314,10 +1314,7 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
 			if (!mb) { s->mecaBalls.push_back(MecaBall{}); mb = &s->mecaBalls.back(); mb->groupName = grp; mb->event = ei; }
 			if (pg.fill) mb->actors.push_back(pg.fill.Get());
 			if (pg.line) mb->actors.push_back(pg.line.Get());
-			if (!pg.v.empty()) {
-				mb->zLow = std::min(mb->zLow, pg.v[0][2]);           // this rank's baked Z
-				s->mecaAnchorZ = std::min(s->mecaAnchorZ, pg.v[0][2]);   // scene-wide floor, see Scene::mecaAnchorZ
-			}
+			if (!pg.v.empty()) mb->zLow = std::min(mb->zLow, pg.v[0][2]);   // this rank's baked Z (mecaHitAt/mecaUpdateAnchor placeholder)
 			if (role == 2 && !pg.v.empty()) {
 				mb->x0 = mi.cx / mi.nv; mb->y0 = mi.cy / mi.nv;
 				const double ddx = pg.v[0][0] - mb->x0, ddy = pg.v[0][1] - mb->y0;

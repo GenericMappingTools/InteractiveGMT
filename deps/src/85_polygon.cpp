@@ -993,6 +993,50 @@ static int mecaHitAt(Scene *s, int x, int y) {
 
 static void mecaUpdateAnchor(Scene *s, int bi);   // fwd (defined right below)
 
+// Does world point (x,y) [same convention as MecaBall::x0/y0] lie within ANY currently-plotted
+// ball's radius? Pure 2-D geometry, no camera/Z involved at all.
+static bool mecaCoveredByAnyBall(Scene *s, double x, double y) {
+	for (auto &mb : s->mecaBalls) {
+		if (mb.radius <= 0.0) continue;
+		const double cx = mb.x0 + mb.offX, cy = mb.y0 + mb.offY;
+		const double dx = x - cx, dy = y - cy;
+		if (dx*dx + dy*dy <= mb.radius * mb.radius) return true;
+	}
+	return false;
+}
+
+// Sample segment A->B and keep only the runs that are OUTSIDE every ball's circle, as separate
+// polyline cells (outPts flat list + outCounts = vertex count per surviving run). A real ISF
+// catalog can hold thousands of events, pushing mecaBuildPatch's rank-based real-Z separation
+// (z0 + rank*kMecaRankZStep) across a range a fixed-precision depth buffer cannot resolve at that
+// scale in perspective projection — some balls occluded their own trail, others didn't, purely by
+// how far their rank had pushed them from the near clip plane. Z-buffer tricks (this file's
+// previous two attempts) can never be reliable here regardless of the epsilon chosen, because the
+// failure is precision loss at scale, not a wrong ordering. Testing "is this screen point inside
+// this circle" in the SAME flat (x,y) plane the beachballs are defined in sidesteps the Z axis
+// (and the camera) entirely, so it is exact no matter how many events are loaded or how the scene
+// is viewed.
+static void mecaClipTrail(Scene *s, double ax, double ay, double bx, double by,
+                          std::vector<std::array<double,2>> &outPts, std::vector<int> &outCounts) {
+	constexpr int NS = 48;
+	std::vector<std::array<double,2>> run;
+	for (int i = 0; i <= NS; ++i) {
+		const double t = (double)i / NS;
+		const double x = ax + t * (bx - ax), y = ay + t * (by - ay);
+		if (!mecaCoveredByAnyBall(s, x, y)) {
+			run.push_back({ x, y });
+		} else if (run.size() >= 2) {
+			outCounts.push_back((int)run.size());
+			for (auto &p : run) outPts.push_back(p);
+			run.clear();
+		} else run.clear();
+	}
+	if (run.size() >= 2) {
+		outCounts.push_back((int)run.size());
+		for (auto &p : run) outPts.push_back(p);
+	}
+}
+
 // Move ball `bi` so its centre sits at world point (wx,wy) — same xy convention as Polygon::v/
 // MecaBall::x0,y0 (see the struct comment) — and (re)builds its anchor line. The single place that
 // actually repositions a beachball: both the live mouse drag (polygonHandleMove) and the test hook
@@ -1004,29 +1048,24 @@ static void mecaDragTo(Scene *s, int bi, double wx, double wy) {
 	mecaUpdateAnchor(s, bi);
 }
 
-// (Re)build/move the drag-anchor line + dot for ball `bi`: a thin line from its ORIGINAL plotted
-// centre to wherever it currently sits, with a small filled dot marking that original point — the
-// same epicenter-to-symbol convention _focal_plot already draws statically for lon0/lat0 anchor
-// columns (gmtvtk_add_overlay_h), drawn live here from a mouse drag instead. First call builds both
-// actors; later calls just rewrite the line's moving endpoint in place (the dot never moves).
-//
-// Both sit at `az` = a shade below `s->mecaAnchorZ` (the SCENE-WIDE floor over every event/rank ever
-// plotted — NOT just this ball's own zLow) with a PLAIN mapper — deliberately NOT polyMakeLineActor's
-// terrain line-offset (GL polygon-offset does not compare reliably across LINE vs FILL primitives,
-// see mecaBuildPatch's big comment). A real depth-buffer comparison (which every primitive respects
-// identically) against ANY ball's fill/line actors then always wins, so the trail/dot render UNDER
-// every ball, not just the one that owns them — using the per-ball `zLow` here instead once let an
-// UNRELATED earlier/bigger event's ball fail to occlude a trail crossing under it, since that ball's
-// own Z range could sit entirely BELOW this ball's anchor (each event's Z is only ordered relative to
-// itself, not to other events).
+// (Re)build the drag-anchor line + dot for ball `bi`: a thin line from its ORIGINAL plotted centre
+// to wherever it currently sits, with a small filled dot marking that original point — the same
+// epicenter-to-symbol convention _focal_plot already draws statically for lon0/lat0 anchor columns
+// (gmtvtk_add_overlay_h), drawn live here from a mouse drag instead. Occlusion is done by
+// mecaClipTrail/mecaCoveredByAnyBall — GEOMETRIC (2-D, in this xy plane), not a Z-buffer trick (see
+// their comments for why the two earlier Z-based attempts failed at real-catalog scale). The Z
+// coordinate here is therefore just a placeholder to keep the actor in the axesRen overlay plane
+// (never occluded by relief, by construction of that render layer) — it plays no role in hiding the
+// trail under a ball anymore. The full polyline topology is rebuilt every call (the set of visible
+// sub-segments can change shape as the ball moves), so this is NOT a simple move-one-point update
+// like the first version.
 static void mecaUpdateAnchor(Scene *s, int bi) {
 	MecaBall &mb = s->mecaBalls[bi];
-	const double az = s->mecaAnchorZ - 0.5;
+	const double z = mb.zLow;
 	const double x1 = mb.x0 + mb.offX, y1 = mb.y0 + mb.offY;
+
 	if (!mb.anchor) {
 		mb.anchorPD = vtkSmartPointer<vtkPolyData>::New();
-		const std::vector<std::array<double,3>> pts = { { mb.x0, mb.y0, az }, { x1, y1, az } };
-		polyFillLine(mb.anchorPD, pts, false);
 		vtkNew<vtkPolyDataMapper> lmap; lmap->SetInputData(mb.anchorPD); lmap->ScalarVisibilityOff();
 		mb.anchor = vtkSmartPointer<vtkActor>::New();
 		mb.anchor->SetMapper(lmap);
@@ -1038,7 +1077,7 @@ static void mecaUpdateAnchor(Scene *s, int bi) {
 		mb.anchor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
 		(s->axesRen ? s->axesRen : s->ren)->AddActor(mb.anchor);
 
-		vtkNew<vtkPoints> dpts; dpts->InsertNextPoint(mb.x0, mb.y0, az);
+		vtkNew<vtkPoints> dpts; dpts->InsertNextPoint(mb.x0, mb.y0, z);
 		vtkNew<vtkCellArray> dverts; const vtkIdType id0 = 0; dverts->InsertNextCell(1, &id0);
 		vtkNew<vtkPolyData> dotPD; dotPD->SetPoints(dpts); dotPD->SetVerts(dverts);
 		vtkNew<vtkPolyDataMapper> dmap; dmap->SetInputData(dotPD); dmap->ScalarVisibilityOff();
@@ -1052,11 +1091,29 @@ static void mecaUpdateAnchor(Scene *s, int bi) {
 		mb.anchorDot->ForceOpaqueOn();
 		mb.anchorDot->SetScale(s->xfac, 1.0, s->zfac * s->ve);
 		(s->axesRen ? s->axesRen : s->ren)->AddActor(mb.anchorDot);
-		return;
 	}
-	mb.anchorPD->GetPoints()->SetPoint(1, x1, y1, az);
-	mb.anchorPD->GetPoints()->Modified();
+
+	std::vector<std::array<double,2>> segPts;
+	std::vector<int> segCounts;
+	mecaClipTrail(s, mb.x0, mb.y0, x1, y1, segPts, segCounts);
+
+	vtkNew<vtkPoints> pts;
+	vtkNew<vtkCellArray> cells;
+	vtkIdType base = 0;
+	for (int cnt : segCounts) {
+		vtkNew<vtkIdList> ids;
+		for (int i = 0; i < cnt; ++i) {
+			pts->InsertNextPoint(segPts[base + i][0], segPts[base + i][1], z);
+			ids->InsertNextId(base + i);
+		}
+		cells->InsertNextCell(ids);
+		base += cnt;
+	}
+	mb.anchorPD->SetPoints(pts);
+	mb.anchorPD->SetLines(cells);
 	mb.anchorPD->Modified();
+
+	mb.anchorDot->SetVisibility(mecaCoveredByAnyBall(s, mb.x0, mb.y0) ? 0 : 1);
 }
 
 // (Re)configure a text label's actor from its font fields. The text lies flat in its local XY plane
