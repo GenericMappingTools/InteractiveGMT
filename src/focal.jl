@@ -30,7 +30,7 @@ const _MECA_NP = 45   # angular subdivision per nodal-plane arc (patch_meca.m's 
 
 _focal_zero360(a) = a >= 360 ? a - 360 : a < 0 ? a + 360 : a
 
-function _focal_null_axis_strike(str1, dip1, str2, dip2)
+function _focal_null_axis_strike(str1::Float64, dip1::Float64, str2::Float64, dip2::Float64)
 	sd1, cd1 = sind(dip1), cosd(dip1)
 	sd2, cd2 = sind(dip2), cosd(dip2)
 	ss1, cs1 = sind(str1), cosd(str1)
@@ -44,7 +44,7 @@ function _focal_null_axis_strike(str1, dip1, str2, dip2)
 	return phn < 0 ? phn + 360 : phn
 end
 
-_focal_null_axis_dip(str1, dip1, str2, dip2) =
+_focal_null_axis_dip(str1::Float64, dip1::Float64, str2::Float64, dip2::Float64) =
 	abs(asind(clamp(sind(dip1) * sind(dip2) * sind(str1 - str2), -1.0, 1.0)))
 
 # Auxiliary (second) nodal plane — used when the catalog only gives the first nodal plane
@@ -64,7 +64,7 @@ _focal_null_axis_dip(str1, dip1, str2, dip2) =
 # the auxiliary-of-the-auxiliary recovers the ORIGINAL plane exactly, for rake spanning the full
 # -180..180 range (dip-slip, strike-slip, and general oblique) — patch_meca.m's version only had
 # this checked for its handful of hand-verified special cases (rake = 0, ±90).
-function _focal_sdr_to_nu(str, dip, rake)
+function _focal_sdr_to_nu(str::Float64, dip::Float64, rake::Float64)
 	n = (-sind(dip)*sind(str), sind(dip)*cosd(str), -cosd(dip))
 	u = (cosd(rake)*cosd(str) + cosd(dip)*sind(rake)*sind(str),
 	     cosd(rake)*sind(str) - cosd(dip)*sind(rake)*cosd(str),
@@ -72,7 +72,7 @@ function _focal_sdr_to_nu(str, dip, rake)
 	return n, u
 end
 
-function _focal_nu_to_sdr(n, u)
+function _focal_nu_to_sdr(n::Vector{Float64}, u::Vector{Float64})
 	if n[3] > 0
 		n = .-n; u = .-u                       # keep the normal pointing down (dip ∈ [0,90])
 	end
@@ -85,7 +85,7 @@ function _focal_nu_to_sdr(n, u)
 	return str, dip, atand(sinrake, cosrake)
 end
 
-function _focal_second_plane(str1, dip1, rake1)
+function _focal_second_plane(str1::Float64, dip1::Float64, rake1::Float64)
 	n, u = _focal_sdr_to_nu(str1, dip1, rake1)
 	return _focal_nu_to_sdr(u, n)                  # auxiliary plane: normal <-> slip
 end
@@ -105,7 +105,7 @@ of (x,y) in the unit disk (radius 1, origin-centred). Give only the first nodal 
 (`str2=NaN`) to have the second one derived (Aki & Richards files); give both (ISF / Harvard
 CMT / .ndk) to use them directly.
 """
-function _focal_patch_meca(str1, dip1, rake1, str2=NaN, dip2=NaN, rake2=NaN)
+function _focal_patch_meca(str1::Float64, dip1::Float64, rake1::Float64, str2::Float64=NaN, dip2::Float64=NaN, rake2::Float64=NaN)
 	D2R = pi/180;  TWO_PI = 2pi
 	abs(dip1 - 90) < 1e-5 && (dip1 = 90 - 1e-5)
 	rake1 > 180 && (rake1 -= 360)
@@ -237,7 +237,7 @@ end
 
 # P-wave first-motion sign at unit-disk point (x,y) (equal-area lower hemisphere, y = North,
 # x = East): true -> compressive quadrant, false -> dilatational.
-function _focal_comp_at(str, dip, rake, x, y)
+function _focal_comp_at(str::Float64, dip::Float64, rake::Float64, x::Float64, y::Float64)
 	n, u = _focal_sdr_to_nu(str, dip, rake)
 	th = 2 * asin(clamp(hypot(x, y) / sqrt(2), 0.0, 1.0))       # take-off angle from vertical(down)
 	az = atan(x, y)
@@ -265,7 +265,7 @@ Cut the unit disk into its (≤4) beachball sectors along the two nodal curves a
 as compressive/dilatational by the radiation-pattern sign at an interior sample. Every returned
 polygon is SIMPLE (rim arc + two curve halves meeting at the crossing point).
 """
-function _focal_sectors(str1, dip1, rake1, nodal1::AbstractMatrix{Float64}, nodal2::AbstractMatrix{Float64})
+function _focal_sectors(str1::Float64, dip1::Float64, rake1::Float64, nodal1::AbstractMatrix{Float64}, nodal2::AbstractMatrix{Float64})
 	i1, i2, P = _focal_curve_cross(nodal1, nodal2)
 	# halves, each stored rim -> P (crossing point appended/prepended so both halves meet at P)
 	halves = Dict{Tuple{Int,Int},Matrix{Float64}}(       # (curve id, which end) -> rim->P polyline
@@ -318,7 +318,7 @@ end
 
 # Aki & Richards: lon,lat,depth,strike,dip,rake,mag[,lon0,lat0[,extra]] (Mirone n_column 7/9/10 —
 # columns 8-9, when present, are the anchor position the beachball is actually plotted at).
-function _focal_aki(file)
+function _focal_aki(file::String)
 	m = _focal_matrix(file)
 	nc = size(m, 2)
 	nc >= 7 || error("Aki & Richards file: expected >=7 columns (lon,lat,depth,strike,dip,rake,mag), got $nc")
@@ -329,7 +329,7 @@ end
 
 # Harvard CMT convention (plain columns): lon,lat,depth,str1,dip1,rake1,str2,dip2,rake2,mantissa,
 # exponent[,lon0,lat0[,extra]] (Mirone n_column 11/13/14 — columns 12-13 are the anchor).
-function _focal_cmt(file)
+function _focal_cmt(file::String)
 	m = _focal_matrix(file)
 	nc = size(m, 2)
 	nc >= 11 || error("Harvard CMT file: expected >=11 columns (lon,lat,depth,str1,dip1,rake1,str2,dip2,rake2,mantissa,exponent), got $nc")
@@ -345,7 +345,7 @@ end
 # `abstime`: the discrete year/month/day columns are read directly for the "day/month/year" event
 # date label (Mirone's `sprintf('%d/%d/%d', day, month, year)`) — an anchor is not a thing ISF
 # carries, so plon/plat = lon/lat (matches Mirone: `handles.plot_pos = [out_d(1,:)' out_d(2,:)']`).
-function _focal_isf(file, W, E, S, N)
+function _focal_isf(file::String, W::Float64, E::Float64, S::Float64, N::Float64)
 	D = GMT.gmtisf(file; R=(W, E, S, N), focal=true)
 	size(D, 1) == 0 && return _focal_none()
 	m = D.data
@@ -369,7 +369,7 @@ end
 # scalar-moment mantissa at chars 52:56. plon/plat = lon/lat (Mirone: `handles.plot_pos =
 # handles.data(:,1:2)`). A malformed record stops reading there and keeps every event parsed so far
 # (matches Mirone's catch behaviour).
-function _focal_ndk(file)
+function _focal_ndk(file::String)
 	lines = readlines(file)
 	nev = length(lines) ÷ 5
 	nev == 0 && return _focal_none()
@@ -431,19 +431,22 @@ _focal_mag5_default(W, E, S, N) = max(1.0, 0.02 * (E - W) * 111.32 * cosd((S + N
 # the format selection changes — i.e. from the DIALOG itself, before OK is ever clicked. Does two
 # things with the one read: (1) on an EMPTY launcher, frames the basemap to the file's own extent
 # RIGHT THERE (reusing the same _on_basemap crop-and-promote path _on_focal uses at plot time —
-# so the user sees the map while still picking filters, not only after clicking OK); (2) returns
-# the same 2%-of-width mag5size default _focal_plot itself falls back to, for the dialog's
-# "Magnitude 5 size" box. Reads raw lon/lat only (no mag/depth filter, no beachball geometry) —
-# cheap even on a large catalog. Returns NaN on any read failure (wrong format for this file yet,
-# bad/partial path): the C++ side leaves both the map and the field alone in that case.
-function _focal_peek_and_frame(scene::Ptr{Cvoid}, file::AbstractString, fmt::Int)
+# so the user sees the map while still picking filters, not only after clicking OK); (2) prefills
+# EVERY data-derived filter box from the catalog's own values — "Magnitude 5 size" (same
+# 2%-of-width default _focal_plot falls back to), Min/Max magnitude, Min/Max depth — so the dialog
+# never sits there with the boxes still at their .ui placeholder values after a file is read.
+# `print`s a single "mag5/minmag/maxmag/mindepth/maxdepth" line (same g_juliaEval convention as
+# _fault_lenaz: plain stdout, no `show`-quoting) and returns `nothing`; the C++ side splits on '/'.
+# Prints nothing on any read failure (wrong format for this file yet, bad/partial path): the C++
+# side leaves the map and every field alone in that case.
+function _focal_peek_and_frame(scene::Ptr{Cvoid}, file::String, fmt::Int)
 	try
-		isfile(file) || return NaN
-		lon, lat = fmt == 1 ? _focal_isf(file, -180.0, 180.0, -90.0, 90.0)[1:2] :
-		           fmt == 2 ? _focal_aki(file)[1:2] :
-		           fmt == 3 ? _focal_cmt(file)[1:2] :
-		           fmt == 4 ? _focal_ndk(file)[1:2] : (return NaN)
-		isempty(lon) && return NaN
+		isfile(file) || return nothing
+		lon, lat, dep, mag = fmt == 1 ? _focal_isf(file, -180.0, 180.0, -90.0, 90.0)[1:4] :
+		           fmt == 2 ? _focal_aki(file)[1:4] :
+		           fmt == 3 ? _focal_cmt(file)[1:4] :
+		           fmt == 4 ? _focal_ndk(file)[1:4] : (return nothing)
+		isempty(lon) && return nothing
 		W, E = extrema(lon); S, N = extrema(lat)
 		if ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
 			pad(lo, hi) = (hi - lo) < 1e-6 ? (lo - 1.0, hi + 1.0) : (lo - 0.05 * (hi - lo), hi + 0.05 * (hi - lo))
@@ -452,10 +455,12 @@ function _focal_peek_and_frame(scene::Ptr{Cvoid}, file::AbstractString, fmt::Int
 			_on_basemap(scene, "$Wd/$Ed/$Sd/$Nd/0/region")
 			ccall(_fn(:gmtvtk_process_events), Cint, ())
 		end
-		return _focal_mag5_default(W, E, S, N)
+		mag5 = _focal_mag5_default(W, E, S, N)
+		m0, m1 = extrema(mag);  z0, z1 = extrema(dep)
+		print(mag5, '/', m0, '/', m1, '/', z0, '/', z1)
 	catch
-		return NaN
 	end
+	return nothing
 end
 
 # Pack every kept event's compressive+dilatational patches and hand the whole catalog to
