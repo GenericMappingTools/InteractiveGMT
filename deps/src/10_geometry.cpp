@@ -169,6 +169,7 @@ struct MecaBall {
 	                                     // it currently sits (real depth test, no polygon-offset — matches
 	                                     // mecaBuildLines' own cross-primitive-safe technique, not
 	                                     // polyMakeLineActor's terrain line-offset).
+	std::string info;                   // hover metadata (date/magnitude/depth), gmtvtk_set_meca_infos_h
 	std::vector<vtkActor*> actors;      // this event's fill(s) + line actor
 	vtkSmartPointer<vtkActor>    anchor;     // drag-trail LINE, built lazily on first drag
 	vtkSmartPointer<vtkPolyData> anchorPD;
@@ -1446,6 +1447,8 @@ static bool pickFaultPlaneAt(Scene *s, const double o[3], const double d[3], dou
 	return true;
 }
 
+static int mecaHitAt(Scene *s, int x, int y);   // beachball under cursor (defined in 85_polygon.cpp)
+
 // Mouse move (default priority): live coordinate readout. Runs only when the gizmo
 // did not grab the drag (the gizmo's high-priority observer aborts the event then).
 static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*/) {
@@ -1462,7 +1465,12 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 	// the cursor (+18,+18) so it never sits under the pointer (self-occlusion also caused flicker).
 	{
 		std::string sinfo;
-		if (pickSymbolInfoAt(s, mx, my, sinfo)) {
+		bool haveInfo = pickSymbolInfoAt(s, mx, my, sinfo);
+		if (!haveInfo) {                 // focal-mechanism beachball metadata (gmtvtk_set_meca_infos_h)
+			const int bi = mecaHitAt(s, mx, my);
+			if (bi >= 0 && !s->mecaBalls[bi].info.empty()) { sinfo = s->mecaBalls[bi].info; haveInfo = true; }
+		}
+		if (haveInfo) {
 			if (sinfo != s->hoverInfo) {
 				QToolTip::showText(QCursor::pos() + QPoint(18, 18),
 				                   QString::fromStdString(sinfo), s->widget);

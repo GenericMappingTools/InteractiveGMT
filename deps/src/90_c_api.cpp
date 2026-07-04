@@ -1228,6 +1228,42 @@ GMTVTK_API int gmtvtk_add_text_h(void *handle, double x, double y, const char *t
 	return 1;
 }
 
+// Batch form of gmtvtk_add_text_h: `xy` = n (x,y) pairs, `texts` = n records joined by RS
+// ('\x1e', the gmtvtk_add_symbols_h `info` convention). ONE Scene-Objects rebuild + ONE render
+// for the whole batch — the per-call rebuild+Render of the single-label form is what made
+// Focal mechanisms' per-event "Plot event date" loop take ~90 s for a 133-event catalog
+// (2026-07-04); a label loop must come through here instead. Returns the number added.
+GMTVTK_API int gmtvtk_add_texts_h(void *handle, const double *xy, const char *texts, int n,
+                                  double r, double g, double b, int size) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xy || !texts || n < 1) return 0;
+	const char *p = texts;
+	int added = 0;
+	for (int i = 0; i < n; ++i) {
+		const char *e = strchr(p, '\x1e');
+		std::string txt = e ? std::string(p, e - p) : std::string(p);
+		if (!txt.empty()) {
+			TextLabel tl;
+			tl.pos = { xy[2*i], xy[2*i + 1], 0.0 };
+			tl.text = std::move(txt);
+			tl.name = "Text " + std::to_string((int)s->texts.size() + 1);
+			tl.color[0] = r; tl.color[1] = g; tl.color[2] = b;
+			if (size > 0) tl.size = size;
+			tl.actor = vtkSmartPointer<vtkTextActor3D>::New();
+			textApplyProps(s, tl);
+			(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
+			s->texts.push_back(tl);
+			++added;
+		}
+		if (!e) break;
+		p = e + 1;
+	}
+	if (added == 0) return 0;
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return added;
+}
+
 // Add a batch of focal-mechanism "beachball" patches (Seismology > Focal mechanisms) to a window
 // by its handle. Each event contributes TWO consecutive patches — compressive then dilatational,
 // computed in Julia from the nodal-plane geometry (Mirone's patch_meca.m equal-area projection)
@@ -1317,7 +1353,13 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
 			if (!pg.v.empty()) mb->zLow = std::min(mb->zLow, pg.v[0][2]);   // this rank's baked Z (mecaHitAt/mecaUpdateAnchor placeholder)
 			if (role == 2 && !pg.v.empty()) {
 				mb->x0 = mi.cx / mi.nv; mb->y0 = mi.cy / mi.nv;
-				const double ddx = pg.v[0][0] - mb->x0, ddy = pg.v[0][1] - mb->y0;
+				// pg.v[0] is the rim circle's angle-0 vertex, i.e. on the RAW (pre-scale) x-axis —
+				// its raw x-distance from centre is rdeg/xfac (the ellipse's x semi-axis in this
+				// pre-scaled space), NOT the ball's true on-screen radius. The actor's SetScale(xfac,…)
+				// is what turns that ellipse into a round ball; scale ddx by xfac here so mb->radius is
+				// the TRUE visual radius (uniform in every direction), matching what mecaCoveredByAnyBall/
+				// mecaClipTrail (85_polygon.cpp) test against.
+				const double ddx = (pg.v[0][0] - mb->x0) * s->xfac, ddy = pg.v[0][1] - mb->y0;
 				mb->radius = std::sqrt(ddx*ddx + ddy*ddy);
 			}
 		}
@@ -1366,6 +1408,25 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
 	s->ren->ResetCameraClippingRange();
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return added;
+}
+
+// Attach per-EVENT hover metadata (date/magnitude/depth, newline-separated display text) to an
+// already-plotted focal-mechanism batch: infos[ei] goes to the group's ball whose event index is
+// ei — the same 0-based ei the host encoded as evid = ei*3+role in gmtvtk_add_meca_h, so the two
+// calls pair naturally. onMouseMove (10_geometry.cpp) pops the string as a tooltip when the cursor
+// is over that ball, reusing the symbol-hover mechanism (same anti-flicker rules). Returns the
+// number of balls that received a string.
+GMTVTK_API int gmtvtk_set_meca_infos_h(void *handle, const char *name, const char *const *infos, int n) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !infos || n < 1) return 0;
+	const std::string grp = (name && name[0]) ? name : "Focal mechanisms";
+	int nset = 0;
+	for (auto &b : s->mecaBalls)
+		if (b.groupName == grp && b.event >= 0 && b.event < n && infos[b.event]) {
+			b.info = infos[b.event];
+			++nset;
+		}
+	return nset;
 }
 
 // Register the callback for the focal-mechanism GROUP properties dialog (mecaGroupPropsDialog,

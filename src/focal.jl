@@ -533,6 +533,7 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 	# 133-event catalog while the beachballs themselves took 0.5 s (2026-07-04).
 	axyz = Float64[];  asegoff = Cint[]
 	txy = Float64[];  txts = String[]
+	infos = String[]        # per-kept-event hover text (date/mag/depth), index == ei (0-based ei+1)
 	for i in order
 		isnan(mag[i]) && continue
 		dim = mag5 / 5 * max(mag[i], 0.0)      # radius in KM for this event's magnitude
@@ -560,6 +561,11 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 			push!(loops, curve);  push!(cols, rimcolor0);  push!(roles, 2)
 		end
 		ei += 1
+		# Hover metadata for this ball (tooltip via gmtvtk_set_meca_infos_h below). Same order as
+		# ei, so infos[ei+1] is event ei. Date line only for catalogs that carry one (CMT/ISF).
+		push!(infos, string(isempty(date[i]) ? "" : "Date: $(date[i])\n",
+		                    "Magnitude: ", round(mag[i], digits=1),
+		                    "\nDepth: ", round(dep[i], digits=1), " km"))
 		# SCREEN-ROUND placement, in degrees. Beachballs are schematic SYMBOLS (Mirone's printed
 		# patches, psmeca's paper symbols) — they must render as perfect circles on screen at any
 		# latitude, NOT as the geodesically-true ground footprint (tried: GMT.geod destinations —
@@ -607,6 +613,11 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 		scene, xy, vcounts, Cint(length(vcounts)), rgb, evid,
 		compcolor0[1], compcolor0[2], compcolor0[3], dilatcolor0[1], dilatcolor0[2], dilatcolor0[3],
 		rimcolor0[1], rimcolor0[2], rimcolor0[3], rimfrac*100.0, "Focal mechanisms")
+	if n > 0 && !isempty(infos)      # attach the hover tooltips to the balls just plotted
+		GC.@preserve infos ccall(_fn(:gmtvtk_set_meca_infos_h), Cint,
+			(Ptr{Cvoid}, Cstring, Ptr{Cstring}, Cint),
+			scene, "Focal mechanisms", infos, Cint(length(infos)))
+	end
 	return Int(n)
 end
 

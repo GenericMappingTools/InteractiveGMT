@@ -994,47 +994,72 @@ static int mecaHitAt(Scene *s, int x, int y) {
 static void mecaUpdateAnchor(Scene *s, int bi);   // fwd (defined right below)
 
 // Does world point (x,y) [same convention as MecaBall::x0/y0] lie within ANY currently-plotted
-// ball's radius? Pure 2-D geometry, no camera/Z involved at all.
+// ball's radius? Pure 2-D geometry, no camera/Z involved at all. mb.radius is the ball's TRUE
+// on-screen radius (see its assignment in 90_c_api.cpp), which only matches raw (x,y) distances
+// once x is scaled by s->xfac — the actor's own SetScale(xfac,1,…) is what turns the pre-scaled
+// x/xfac ellipse into a round ball, so the test must scale x the SAME way or it compares an
+// ellipse against a circle (this was the actual bug behind "gap before the ball's rim": scaling
+// was missing entirely, not a sampling-resolution issue).
 static bool mecaCoveredByAnyBall(Scene *s, double x, double y) {
+	const double xs = x * s->xfac;
 	for (auto &mb : s->mecaBalls) {
 		if (mb.radius <= 0.0) continue;
-		const double cx = mb.x0 + mb.offX, cy = mb.y0 + mb.offY;
-		const double dx = x - cx, dy = y - cy;
+		const double cx = (mb.x0 + mb.offX) * s->xfac, cy = mb.y0 + mb.offY;
+		const double dx = xs - cx, dy = y - cy;
 		if (dx*dx + dy*dy <= mb.radius * mb.radius) return true;
 	}
 	return false;
 }
 
-// Sample segment A->B and keep only the runs that are OUTSIDE every ball's circle, as separate
-// polyline cells (outPts flat list + outCounts = vertex count per surviving run). A real ISF
-// catalog can hold thousands of events, pushing mecaBuildPatch's rank-based real-Z separation
-// (z0 + rank*kMecaRankZStep) across a range a fixed-precision depth buffer cannot resolve at that
-// scale in perspective projection — some balls occluded their own trail, others didn't, purely by
-// how far their rank had pushed them from the near clip plane. Z-buffer tricks (this file's
-// previous two attempts) can never be reliable here regardless of the epsilon chosen, because the
-// failure is precision loss at scale, not a wrong ordering. Testing "is this screen point inside
-// this circle" in the SAME flat (x,y) plane the beachballs are defined in sidesteps the Z axis
-// (and the camera) entirely, so it is exact no matter how many events are loaded or how the scene
-// is viewed.
+// A->B is a STRAIGHT segment, so clip it against every ball's circle EXACTLY (analytic line-circle
+// intersection). The quadratic is solved in xfac-SCALED space (x multiplied by s->xfac, matching
+// mb.radius's TRUE-visual-radius convention and the actor's own SetScale(xfac,1,…)) — solving it in
+// raw unscaled space compares a circle radius against an ELLIPSE, which was the actual bug: away
+// from the equator (xfac = cos(midlat) < 1) the raw x semi-axis is bigger than the ball's true
+// radius, so the computed "covered" disk was larger than the visible ball in every direction except
+// due x, clipping the line well short of the rim. t is a plain fraction along A->B so it is
+// unaffected by the x-only linear rescaling; only the quadratic's coefficients use scaled x.
+// Emits the surviving OUTSIDE-every-ball runs as separate 2-point polyline cells (outPts flat list +
+// outCounts = vertex count per run, always 2 since each run is itself a straight sub-segment).
 static void mecaClipTrail(Scene *s, double ax, double ay, double bx, double by,
                           std::vector<std::array<double,2>> &outPts, std::vector<int> &outCounts) {
-	constexpr int NS = 48;
-	std::vector<std::array<double,2>> run;
-	for (int i = 0; i <= NS; ++i) {
-		const double t = (double)i / NS;
-		const double x = ax + t * (bx - ax), y = ay + t * (by - ay);
-		if (!mecaCoveredByAnyBall(s, x, y)) {
-			run.push_back({ x, y });
-		} else if (run.size() >= 2) {
-			outCounts.push_back((int)run.size());
-			for (auto &p : run) outPts.push_back(p);
-			run.clear();
-		} else run.clear();
+	const double xf = s->xfac;
+	const double dx = bx - ax, dy = by - ay;             // ORIGINAL segment — used to reconstruct points
+	const double dxs = dx * xf;                          // segment delta in xfac-scaled (true-circle) space
+	const double A = dxs*dxs + dy*dy;
+	if (A <= 0.0) return;                          // zero-length segment: nothing to draw
+
+	std::vector<std::array<double,2>> inside;      // [t0,t1] parametric ranges covered by SOME ball
+	for (auto &mb : s->mecaBalls) {
+		if (mb.radius <= 0.0) continue;
+		const double cx = (mb.x0 + mb.offX) * xf, cy = mb.y0 + mb.offY;
+		const double fx = ax * xf - cx, fy = ay - cy;
+		const double B = 2.0 * (fx*dxs + fy*dy);
+		const double C = fx*fx + fy*fy - mb.radius*mb.radius;
+		const double disc = B*B - 4.0*A*C;
+		if (disc < 0.0) continue;                  // segment never reaches this ball's circle
+		const double sq = std::sqrt(disc);
+		const double t0 = std::max(0.0, (-B - sq) / (2.0*A));
+		const double t1 = std::min(1.0, (-B + sq) / (2.0*A));
+		if (t0 < t1) inside.push_back({ t0, t1 });
 	}
-	if (run.size() >= 2) {
-		outCounts.push_back((int)run.size());
-		for (auto &p : run) outPts.push_back(p);
+	std::sort(inside.begin(), inside.end(),
+	          [](const std::array<double,2> &p, const std::array<double,2> &q) { return p[0] < q[0]; });
+	std::vector<std::array<double,2>> merged;
+	for (auto &iv : inside) {
+		if (!merged.empty() && iv[0] <= merged.back()[1]) merged.back()[1] = std::max(merged.back()[1], iv[1]);
+		else merged.push_back(iv);
 	}
+
+	const auto emitRun = [&](double t0, double t1) {
+		if (t1 - t0 <= 0.0) return;
+		outCounts.push_back(2);
+		outPts.push_back({ ax + t0*dx, ay + t0*dy });
+		outPts.push_back({ ax + t1*dx, ay + t1*dy });
+	};
+	double cursor = 0.0;
+	for (auto &iv : merged) { emitRun(cursor, iv[0]); cursor = iv[1]; }
+	emitRun(cursor, 1.0);
 }
 
 // Move ball `bi` so its centre sits at world point (wx,wy) — same xy convention as Polygon::v/
@@ -1070,7 +1095,7 @@ static void mecaUpdateAnchor(Scene *s, int bi) {
 		mb.anchor = vtkSmartPointer<vtkActor>::New();
 		mb.anchor->SetMapper(lmap);
 		mb.anchor->GetProperty()->SetColor(0.0, 0.0, 0.0);
-		mb.anchor->GetProperty()->SetLineWidth(1.0);
+		mb.anchor->GetProperty()->SetLineWidth(2.0);
 		mb.anchor->GetProperty()->LightingOff();
 		mb.anchor->PickableOff();
 		mb.anchor->ForceOpaqueOn();
