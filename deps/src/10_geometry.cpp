@@ -147,6 +147,21 @@ struct MecaGroupProps {
 	double dilatColor[3]  = { 1.0, 1.0, 1.0 };
 	double rimColor[3]    = { 0.0, 0.0, 0.0 };
 	double rimWidthPct    = 1.0;             // percent of disk radius (dialog units; Julia wants a 0..1 fraction)
+	// Per-event date label ("Plot event date"), OFF by default — matches the import dialog's own
+	// chkPlotEventDate default (unchecked). Font fields mirror TextLabel's so textApplyProps' font
+	// family set ("Arial"/"Courier"/"Times") stays the single source of truth for valid values.
+	bool   plotDate       = false;
+	std::string dateFont  = "Arial";
+	int    dateFontSize   = 7;               // small — a catalog's dates sit right above each ball, one per event
+	double dateColor[3]   = { 0.0, 0.0, 0.0 };   // black — yellow (TextLabel's own default) washes out
+	                                              // against light relief/basemap backgrounds, illegible
+	bool   dateBold       = false;
+	bool   dateItalic     = false;
+	// The group's OWN properties dialog, if currently open (nullptr otherwise). QPointer auto-nulls
+	// when the dialog is destroyed (WA_DeleteOnClose) — mecaGroupPropsDialog (50_scene.cpp) checks
+	// this before building a new one, so re-clicking the Scene Objects row raises the existing window
+	// instead of stacking a fresh duplicate on top of it every time (2026-07-05 bug).
+	QPointer<QDialog> propsDlg;
 };
 
 // One focal-mechanism beachball's DRAG state. A ball = 2 filled sector actors (comp/dilat) + 1
@@ -174,21 +189,43 @@ struct MecaBall {
 	vtkSmartPointer<vtkActor>    anchor;     // drag-trail LINE, built lazily on first drag
 	vtkSmartPointer<vtkPolyData> anchorPD;
 	vtkSmartPointer<vtkActor>    anchorDot;  // small filled dot marking the ORIGINAL point (never moves)
+	vtkProp3D *dateLabel = nullptr;          // this event's "Plot event date" label (TextLabel::mecaEvent
+	                                         // links it back here — gmtvtk_add_meca_h wires this pointer),
+	                                         // nullptr if plotdate was off. RAW, non-owning (s->texts owns
+	                                         // it); mecaDragTo repositions it alongside the ball's own actors.
+	                                         // Only SetPosition (vtkProp3D) is ever called on it, so the
+	                                         // billboard-vs-flat concrete type underneath never matters here.
 };
 
-// A user-placed text label from the toolbar text tool. Lies FLAT on the z=0 (XY) plane: a
-// vtkTextActor3D renders the text into its local XY plane, anchored at (x,y,0). Stored in TRUE
-// coords (x,y); the actor sits in the surface's scaled space (x*xfac). Left-click-drag moves it on
-// the plane; its font (family/size/colour/bold/italic) is editable from the Scene Objects menu.
+// A text label: either a user-placed toolbar annotation, or a batch-owned label (Focal
+// mechanisms' per-event date). The two render DIFFERENTLY, keyed by `groupName`:
+//  - ungrouped (Text tool): lies FLAT on the z=0 (XY) plane — a plain vtkTextActor3D rendered into
+//    its local XY plane, a map "sticker" that tilts/rotates with the terrain.
+//  - grouped (groupName set): a vtkBillboardTextActor3D — always faces the camera at a constant
+//    screen size, like the cube's tick-number labels. A flat decal here read as if the date had
+//    been painted into the terrain/basemap texture from most view angles (2026-07-04 bug).
+// Both are stored in TRUE coords (x,y); the actor sits in the surface's scaled space (x*xfac).
+// Ungrouped labels are left-click-draggable on the plane; font (family/size/colour/bold/italic) is
+// editable from the Scene Objects menu (ungrouped) or the owning batch's properties dialog (grouped).
 struct TextLabel {
 	std::array<double,3> pos;                // anchor on the XY plane, TRUE coords (z always 0)
-	vtkSmartPointer<vtkTextActor3D> actor;
+	// vtkBillboardTextActor3D is NOT a vtkTextActor3D subclass (both derive independently from
+	// vtkProp3D, each with their own SetInput/GetTextProperty) — the field holds the common base;
+	// textApplyProps downcasts to whichever concrete type this label's `groupName` says it built.
+	vtkSmartPointer<vtkProp3D> actor;
 	std::string text;                        // the shown string (rendered in the scene)
 	std::string name;                        // short Scene Objects label ("Text N")
 	std::string font  = "Arial";             // VTK font family: "Arial" / "Courier" / "Times"
 	int    size  = 18;
 	double color[3] = { 1.0, 1.0, 0.2 };     // default: yellow (readable over relief)
 	bool   bold = false, italic = false;
+	std::string groupName;                   // non-empty = owned by a batch (e.g. focal-mechanism date
+	                                          // labels); tags it for bulk find/erase (deleteMecaGroup) and
+	                                          // folds its Scene Objects row under the batch's own row
+	                                          // instead of listing one row per label (rebuildSceneObjects)
+	int mecaEvent = -1;                      // valid iff groupName non-empty: the 0-based event index
+	                                          // (evid/3) this label belongs to — gmtvtk_add_meca_h uses it
+	                                          // to wire MecaBall::dateLabel so a drag carries the label along
 };
 
 // A handle to one line-like scene object for the shared Line Properties tool (55_lineprops.cpp).

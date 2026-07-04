@@ -1232,9 +1232,18 @@ GMTVTK_API int gmtvtk_add_text_h(void *handle, double x, double y, const char *t
 // ('\x1e', the gmtvtk_add_symbols_h `info` convention). ONE Scene-Objects rebuild + ONE render
 // for the whole batch — the per-call rebuild+Render of the single-label form is what made
 // Focal mechanisms' per-event "Plot event date" loop take ~90 s for a 133-event catalog
-// (2026-07-04); a label loop must come through here instead. Returns the number added.
+// (2026-07-04); a label loop must come through here instead. `font` (NULL/"" -> TextLabel's own
+// default "Arial") and `groupName` (NULL/"" -> ungrouped) let a batch owner (Focal mechanisms'
+// date labels) style + tag every label in one call — the tag is what lets deleteMecaGroup find
+// and erase them again, and rebuildSceneObjects fold them under the batch's own row instead of
+// flooding Scene Objects with one row per event. `eventIdx` (may be NULL) is a parallel n-length
+// array giving each label's 0-based event index (evid/3) — gmtvtk_add_meca_h reads the resulting
+// TextLabel::mecaEvent to wire MecaBall::dateLabel, so dragging a ball carries its date along.
+// Returns the number added.
 GMTVTK_API int gmtvtk_add_texts_h(void *handle, const double *xy, const char *texts, int n,
-                                  double r, double g, double b, int size) {
+                                  double r, double g, double b, int size,
+                                  const char *font, int bold, int italic, const char *groupName,
+                                  const int *eventIdx) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !xy || !texts || n < 1) return 0;
 	const char *p = texts;
@@ -1249,7 +1258,19 @@ GMTVTK_API int gmtvtk_add_texts_h(void *handle, const double *xy, const char *te
 			tl.name = "Text " + std::to_string((int)s->texts.size() + 1);
 			tl.color[0] = r; tl.color[1] = g; tl.color[2] = b;
 			if (size > 0) tl.size = size;
-			tl.actor = vtkSmartPointer<vtkTextActor3D>::New();
+			if (font && font[0]) tl.font = font;
+			tl.bold = bold != 0;
+			tl.italic = italic != 0;
+			if (groupName && groupName[0]) tl.groupName = groupName;
+			if (eventIdx) tl.mecaEvent = eventIdx[i];
+			// Batch-owned labels (groupName set, e.g. Focal mechanisms' dates) are BILLBOARDS —
+			// vtkBillboardTextActor3D always faces the camera at a constant screen size, same as the
+			// cube's tick numbers (placeTickBillboards, 10_geometry.cpp). Plain vtkTextActor3D (the
+			// Text-tool's default) instead lies FLAT in the surface's XY plane, which is correct for a
+			// map "sticker" annotation but made the date read as if painted into the terrain/basemap
+			// texture from most view angles — exactly the "burned into background image" complaint.
+			if (tl.groupName.empty()) tl.actor = vtkSmartPointer<vtkTextActor3D>::New();
+			else                      tl.actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
 			textApplyProps(s, tl);
 			(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
 			s->texts.push_back(tl);
@@ -1287,7 +1308,10 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
                                  double compR, double compG, double compB,
                                  double dilatR, double dilatG, double dilatB,
                                  double rimR, double rimG, double rimB, double rimWidthPct,
-                                 const char *name) {
+                                 const char *name,
+                                 int plotDate, const char *dateFont, int dateFontSize,
+                                 double dateR, double dateG, double dateB,
+                                 int dateBold, int dateItalic) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !xy || !vcounts || !rgb || !evid || npatch < 1) return 0;
 	const std::string grp = (name && name[0]) ? name : "Focal mechanisms";
@@ -1368,24 +1392,42 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
 		++added;
 	}
 	if (added == 0) return 0;
-	// Cache this batch's colours/rim-width for the group's properties dialog (mecaGroupPropsDialog,
-	// 50_scene.cpp) to pre-fill from, without asking Julia — the ACTUAL Apply round-trip still goes
-	// through Julia (a new rim width needs fresh geodesic geometry).
-	bool found = false;
-	for (auto &g : s->mecaGroups) if (g.name == grp) {
+	// Cache this batch's colours/rim-width AND date-label settings for the group's properties dialog
+	// (mecaGroupPropsDialog, 50_scene.cpp) to pre-fill from, without asking Julia — the ACTUAL Apply
+	// round-trip still goes through Julia (a new rim width needs fresh geodesic geometry). Every field
+	// the dialog can show MUST be cached here: before this fix only compColor/dilatColor/rimColor/
+	// rimWidthPct were, so opening the dialog on a catalog plotted WITH "Plot event date" on still
+	// showed the checkbox OFF (MecaGroupProps' struct default) — touching any OTHER control (e.g.
+	// outline colour) then fired commit(), which read that wrong OFF state and round-tripped
+	// plotdate=0 to Julia, silently deleting the date labels the user already had on screen.
+	auto fillCache = [&](MecaGroupProps &g) {
 		g.compColor[0]=compR; g.compColor[1]=compG; g.compColor[2]=compB;
 		g.dilatColor[0]=dilatR; g.dilatColor[1]=dilatG; g.dilatColor[2]=dilatB;
 		g.rimColor[0]=rimR; g.rimColor[1]=rimG; g.rimColor[2]=rimB;
 		g.rimWidthPct = rimWidthPct;
-		found = true; break;
-	}
+		g.plotDate = plotDate != 0;
+		g.dateFont = (dateFont && dateFont[0]) ? dateFont : "Arial";
+		g.dateFontSize = dateFontSize > 0 ? dateFontSize : 7;
+		g.dateColor[0]=dateR; g.dateColor[1]=dateG; g.dateColor[2]=dateB;
+		g.dateBold = dateBold != 0;
+		g.dateItalic = dateItalic != 0;
+	};
+	bool found = false;
+	for (auto &g : s->mecaGroups) if (g.name == grp) { fillCache(g); found = true; break; }
 	if (!found) {
 		MecaGroupProps g; g.name = grp;
-		g.compColor[0]=compR; g.compColor[1]=compG; g.compColor[2]=compB;
-		g.dilatColor[0]=dilatR; g.dilatColor[1]=dilatG; g.dilatColor[2]=dilatB;
-		g.rimColor[0]=rimR; g.rimColor[1]=rimG; g.rimColor[2]=rimB;
-		g.rimWidthPct = rimWidthPct;
+		fillCache(g);
 		s->mecaGroups.push_back(g);
+	}
+	// Wire each ball to its "Plot event date" label (gmtvtk_add_texts_h groupName+mecaEvent tag), if
+	// any — so a drag (mecaDragTo, 85_polygon.cpp) carries the date text along instead of leaving it
+	// behind at the epicenter. Idempotent re-scan: safe whether the texts were added before or after
+	// this call, and cheap (at most one match per ball).
+	for (auto &mb : s->mecaBalls) {
+		if (mb.groupName != grp) continue;
+		mb.dateLabel = nullptr;
+		for (auto &tl : s->texts)
+			if (tl.groupName == grp && tl.mecaEvent == mb.event) { mb.dateLabel = tl.actor.Get(); break; }
 	}
 	applyVectorStacking(s);
 	rebuildSceneObjects(s);

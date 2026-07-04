@@ -19,6 +19,7 @@
 #include <QMessageBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QPointer>
 #include <QProgressDialog>
 #include <QComboBox>
 #include <QDoubleSpinBox>

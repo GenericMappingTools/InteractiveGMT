@@ -501,6 +501,15 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 	(isfinite(xfac) && xfac > 0) || (xfac = 1.0)
 	depcolors = _on(d, "depcolors")
 	plotdate = _on(d, "plotdate")
+	# Date-label styling — overridable from the group's properties dialog (mecaGroupPropsDialog,
+	# 50_scene.cpp): "datefont"/"datefontsize"/"datecolor" ("r/g/b" 0-255, same convention as
+	# compcolor/dilatcolor/rimcolor)/"datebold"/"dateitalic". Default Arial 7 BLACK — NOT TextLabel's
+	# own yellow default, which washes out illegibly over light relief/basemap backgrounds; small size
+	# since a catalog packs one date per event right above each ball.
+	datefont = _get(d, "datefont", "Arial")
+	datefontsize = something(tryparse(Int, _get(d, "datefontsize")), 7)
+	datebold = _on(d, "datebold")
+	dateitalic = _on(d, "dateitalic")
 	# Outline (rim + nodal lines) width — dialog/props field "rimwidth", 0..1-ish; ×100 becomes
 	# the stroke's PIXEL width in C++ (0.010 → 1 px). The black lines are a REQUIRED part of a
 	# beachball (they ALWAYS separate the two quadrant colours) — a zero/negative width falls
@@ -516,6 +525,7 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 	compcolor0  = _d2f(_get(d, "compcolor"),  (0.0, 0.0, 0.0))
 	dilatcolor0 = _d2f(_get(d, "dilatcolor"), (1.0, 1.0, 1.0))
 	rimcolor0   = _d2f(_get(d, "rimcolor"),   (0.0, 0.0, 0.0))
+	datecolor   = _d2f(_get(d, "datecolor"),  (0.0, 0.0, 0.0))   # black — yellow washed out over light relief
 	white = dilatcolor0
 	xy = Float64[];  vcounts = Cint[];  rgb = Float64[];  evid = Cint[]
 	# Beachballs are OPAQUE symbols: one ball is an indivisible unit in the depth order — its
@@ -532,7 +542,7 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 	# Objects rebuild + window render, which is what made "Plot event date" take ~90 s for a
 	# 133-event catalog while the beachballs themselves took 0.5 s (2026-07-04).
 	axyz = Float64[];  asegoff = Cint[]
-	txy = Float64[];  txts = String[]
+	txy = Float64[];  txts = String[];  tevid = Cint[]   # tevid[k] = the ei owning txts[k] (drag-follow link)
 	infos = String[]        # per-kept-event hover text (date/mag/depth), index == ei (0-based ei+1)
 	for i in order
 		isnan(mag[i]) && continue
@@ -588,8 +598,10 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 			push!(axyz, lon[i], lat[i], 0.0, plon[i], plat[i], 0.0)
 		end
 		if plotdate && !isempty(date[i])
-			push!(txy, plon[i], plat[i] + rdeg * 1.15)      # just above the rim
+			push!(txy, plon[i], plat[i] + rdeg * 1.4)      # clear of the rim (centred justification means
+			                                                # half the glyph height sits BELOW the anchor)
 			push!(txts, date[i])
+			push!(tevid, Cint(ei))
 		end
 	end
 	if !isempty(asegoff)     # all anchor lines, ONE overlay call (one rebuild+render)
@@ -602,17 +614,29 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 	end
 	if !isempty(txts)        # all date labels, ONE batch call (one rebuild+render)
 		blob = join(txts, '\x1e')
-		GC.@preserve txy blob ccall(_fn(:gmtvtk_add_texts_h), Cint,
-			(Ptr{Cvoid}, Ptr{Cdouble}, Cstring, Cint, Cdouble, Cdouble, Cdouble, Cint),
-			scene, txy, blob, Cint(length(txts)), 0.0, 0.0, 0.0, 12)
+		# tevid tags each label with its owning event (0-based ei) — gmtvtk_add_meca_h (below) reads
+		# TextLabel::mecaEvent to wire MecaBall::dateLabel, so dragging a ball carries its date along.
+		GC.@preserve txy blob tevid ccall(_fn(:gmtvtk_add_texts_h), Cint,
+			(Ptr{Cvoid}, Ptr{Cdouble}, Cstring, Cint, Cdouble, Cdouble, Cdouble, Cint,
+			 Cstring, Cint, Cint, Cstring, Ptr{Cint}),
+			scene, txy, blob, Cint(length(txts)), datecolor[1], datecolor[2], datecolor[3], datefontsize,
+			datefont, Cint(datebold ? 1 : 0), Cint(dateitalic ? 1 : 0), "Focal mechanisms", tevid)
 	end
 	isempty(vcounts) && return 0
+	# plotdate/datefont/datefontsize/datecolor/datebold/dateitalic (computed above) are threaded
+	# through so the C++ side can cache the date-label settings into MecaGroupProps ALONGSIDE the
+	# colours/rim-width — the properties dialog (mecaGroupPropsDialog, 50_scene.cpp) must know this
+	# batch's CURRENT "Plot event date" state, or touching any other control (e.g. outline colour)
+	# silently resets it to OFF and deletes the labels (2026-07-05 bug).
 	n = GC.@preserve xy vcounts rgb evid ccall(_fn(:gmtvtk_add_meca_h), Cint,
 		(Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cint}, Cint, Ptr{Cdouble}, Ptr{Cint},
-		 Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
+		 Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring,
+		 Cint, Cstring, Cint, Cdouble, Cdouble, Cdouble, Cint, Cint),
 		scene, xy, vcounts, Cint(length(vcounts)), rgb, evid,
 		compcolor0[1], compcolor0[2], compcolor0[3], dilatcolor0[1], dilatcolor0[2], dilatcolor0[3],
-		rimcolor0[1], rimcolor0[2], rimcolor0[3], rimfrac*100.0, "Focal mechanisms")
+		rimcolor0[1], rimcolor0[2], rimcolor0[3], rimfrac*100.0, "Focal mechanisms",
+		Cint(plotdate ? 1 : 0), datefont, Cint(datefontsize), datecolor[1], datecolor[2], datecolor[3],
+		Cint(datebold ? 1 : 0), Cint(dateitalic ? 1 : 0))
 	if n > 0 && !isempty(infos)      # attach the hover tooltips to the balls just plotted
 		GC.@preserve infos ccall(_fn(:gmtvtk_set_meca_infos_h), Cint,
 			(Ptr{Cvoid}, Cstring, Ptr{Cstring}, Cint),

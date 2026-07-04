@@ -889,90 +889,178 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	}
 }
 
-// Focal-mechanism GROUP properties: compression / dilatation / outline colour + outline width.
-// Only clicking OK executes anything (Cancel / closing the dialog changes nothing) — a new rim
-// width needs fresh geodesic geometry that only Julia can compute, so Apply round-trips through
-// g_juliaMecaProps: it removes the old batch and re-plots it from the ORIGINAL catalog params with
-// the new colours/width merged in. The local s->mecaGroups cache is updated immediately too, purely
-// so re-opening this dialog before that round-trip finishes still shows what was just picked.
+// Focal-mechanism GROUP properties: compression / dilatation / outline colour + outline width,
+// plus the per-event date label (off/on, font/size/colour/bold/italic). EVERY control applies
+// IMMEDIATELY (user requirement, 2026-07-04) — there is no Apply/OK gate here, unlike this
+// codebase's usual "only the action button executes" dialogs (measure/NSWING/etc, where a text
+// field mid-edit is meaningless). A colour/width/font pick IS already a complete, meaningful value
+// the moment it's chosen, so each control's own change signal fires the SAME commit routine used
+// to round-trip through g_juliaMecaProps (remove the old batch, re-plot from the cached ORIGINAL
+// catalog params with the new overrides merged in) — closing the dialog (OK or Cancel/X, both wired
+// to just close) never "loses" anything since it already happened live.
 static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoint & /*gp*/) {
 	const std::string gname = groupName.toStdString();
-	MecaGroupProps cur;  cur.name = gname;
-	for (auto &g : s->mecaGroups) if (g.name == gname) { cur = g; break; }
+	MecaGroupProps *gp = nullptr;
+	for (auto &g : s->mecaGroups) if (g.name == gname) { gp = &g; break; }
+	if (!gp) { s->mecaGroups.push_back(MecaGroupProps{}); gp = &s->mecaGroups.back(); gp->name = gname; }
+	if (gp->propsDlg) {                        // already open -> bring it to front, don't stack a duplicate
+		gp->propsDlg->raise();
+		gp->propsDlg->activateWindow();
+		return;
+	}
+	MecaGroupProps cur = *gp;
 
-	QDialog dlg(s->widget);
-	dlg.setWindowTitle("Focal mechanisms — properties");
-	QVBoxLayout *lay = new QVBoxLayout(&dlg);
+	QDialog *dlg = new QDialog(s->widget);
+	gp->propsDlg = dlg;
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	dlg->setWindowTitle("Focal mechanisms — properties");
+	QVBoxLayout *lay = new QVBoxLayout(dlg);
 
-	auto colorRow = [&](const QString &label, const double rgb[3]) {
+	// commit() (assigned further down, once every widget exists) is called from every control's
+	// change signal. The dialog is now NON-MODAL (dlg->show(), not exec()) so this function returns
+	// immediately — any lambda referencing local stack variables by reference would dangle the
+	// instant that happens. Hold `commit` in a heap object via shared_ptr so every connect() lambda
+	// (each capturing the shared_ptr BY VALUE, refcounted) keeps it alive for exactly as long as the
+	// widgets/connections themselves live, which is exactly the dialog's own lifetime.
+	auto commit = std::make_shared<std::function<void()>>();
+	auto colorRow = [&](const QString &label, const double rgb[3], const QString &dialogTitle) {
 		QHBoxLayout *h = new QHBoxLayout();
-		h->addWidget(new QLabel(label, &dlg));
-		QPushButton *btn = new QPushButton(&dlg);
+		h->addWidget(new QLabel(label, dlg));
+		QPushButton *btn = new QPushButton(dlg);
 		btn->setFixedWidth(60);
 		auto paint = [btn](double r, double g, double b) {
 			btn->setProperty("r", r); btn->setProperty("g", g); btn->setProperty("b", b);
 			btn->setStyleSheet(QString("background-color: %1;").arg(QColor::fromRgbF(r, g, b).name()));
 		};
 		paint(rgb[0], rgb[1], rgb[2]);
-		QObject::connect(btn, &QPushButton::clicked, [btn, paint]() {
+		QObject::connect(btn, &QPushButton::clicked, [btn, paint, dialogTitle, commit]() {
 			QColor init = QColor::fromRgbF(btn->property("r").toDouble(), btn->property("g").toDouble(), btn->property("b").toDouble());
-			QColor picked = QColorDialog::getColor(init, btn, "Choose colour");
-			if (picked.isValid()) paint(picked.redF(), picked.greenF(), picked.blueF());
+			QColor picked = QColorDialog::getColor(init, btn, dialogTitle);
+			if (picked.isValid()) { paint(picked.redF(), picked.greenF(), picked.blueF()); if (*commit) (*commit)(); }
 		});
 		h->addWidget(btn);
 		lay->addLayout(h);
 		return btn;
 	};
-	QPushButton *compBtn  = colorRow("Compression colour:", cur.compColor);
-	QPushButton *dilatBtn = colorRow("Dilatation colour:",  cur.dilatColor);
-	QPushButton *rimBtn   = colorRow("Outline colour:",     cur.rimColor);
+	QPushButton *compBtn  = colorRow("Compression colour:", cur.compColor, "Choose compression colour");
+	QPushButton *dilatBtn = colorRow("Dilatation colour:",  cur.dilatColor, "Choose dilatation colour");
+	QPushButton *rimBtn   = colorRow("Outline colour:",     cur.rimColor, "Choose outline colour");
 
 	QHBoxLayout *hw = new QHBoxLayout();
-	hw->addWidget(new QLabel("Outline width:", &dlg));
-	QDoubleSpinBox *rimSpin = new QDoubleSpinBox(&dlg);
+	hw->addWidget(new QLabel("Outline width:", dlg));
+	QDoubleSpinBox *rimSpin = new QDoubleSpinBox(dlg);
 	rimSpin->setRange(0.0, 10.0);  rimSpin->setSingleStep(0.1);  rimSpin->setSuffix(" %");
 	rimSpin->setValue(cur.rimWidthPct);
 	hw->addWidget(rimSpin);
 	lay->addLayout(hw);
 
-	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-	QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+	// Per-event date label — OFF by default (matches the import dialog's chkPlotEventDate default).
+	// Font row only makes sense once the checkbox is on, so it's enabled/disabled alongside it.
+	QCheckBox *dateChk = new QCheckBox("Plot event date", dlg);
+	dateChk->setChecked(cur.plotDate);
+	lay->addWidget(dateChk);
+
+	QWidget *fontRow = new QWidget(dlg);
+	QHBoxLayout *hf = new QHBoxLayout(fontRow);
+	hf->setContentsMargins(0, 0, 0, 0);
+	hf->addWidget(new QLabel("Date font:", fontRow));
+	QComboBox *dateFontCombo = new QComboBox(fontRow);
+	dateFontCombo->addItems({ "Arial", "Courier", "Times" });   // textApplyProps' supported font families
+	dateFontCombo->setCurrentText(QString::fromStdString(cur.dateFont));
+	hf->addWidget(dateFontCombo);
+	QSpinBox *dateSizeSpin = new QSpinBox(fontRow);
+	dateSizeSpin->setRange(4, 300);  dateSizeSpin->setValue(cur.dateFontSize);
+	hf->addWidget(dateSizeSpin);
+	QCheckBox *dateBoldChk = new QCheckBox("Bold", fontRow);     dateBoldChk->setChecked(cur.dateBold);
+	QCheckBox *dateItalChk = new QCheckBox("Italic", fontRow);  dateItalChk->setChecked(cur.dateItalic);
+	hf->addWidget(dateBoldChk);
+	hf->addWidget(dateItalChk);
+	QPushButton *dateColorBtn = new QPushButton(fontRow);
+	dateColorBtn->setFixedWidth(60);
+	auto paintDateColor = [dateColorBtn](double r, double g, double b) {
+		dateColorBtn->setProperty("r", r); dateColorBtn->setProperty("g", g); dateColorBtn->setProperty("b", b);
+		dateColorBtn->setStyleSheet(QString("background-color: %1;").arg(QColor::fromRgbF(r, g, b).name()));
+	};
+	paintDateColor(cur.dateColor[0], cur.dateColor[1], cur.dateColor[2]);
+	QObject::connect(dateColorBtn, &QPushButton::clicked, [dateColorBtn, paintDateColor, commit]() {
+		QColor init = QColor::fromRgbF(dateColorBtn->property("r").toDouble(), dateColorBtn->property("g").toDouble(), dateColorBtn->property("b").toDouble());
+		QColor picked = QColorDialog::getColor(init, dateColorBtn, "Choose date colour");
+		if (picked.isValid()) { paintDateColor(picked.redF(), picked.greenF(), picked.blueF()); if (*commit) (*commit)(); }
+	});
+	hf->addWidget(dateColorBtn);
+	lay->addWidget(fontRow);
+	fontRow->setEnabled(dateChk->isChecked());
+	QObject::connect(dateChk, &QCheckBox::toggled, fontRow, &QWidget::setEnabled);
+
+	// Single "Close" button — Qt maps it to the box's rejected() signal; nothing to Apply/Cancel
+	// anymore since every control already committed live, so it just closes the (WA_DeleteOnClose) dialog.
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
+	QObject::connect(bb, &QDialogButtonBox::rejected, dlg, &QDialog::close);
 	lay->addWidget(bb);
 
-	if (dlg.exec() != QDialog::Accepted) return;   // Cancel / close -> nothing changes
+	// The commit routine: read every widget's CURRENT value, update the s->mecaGroups cache, and
+	// round-trip through g_juliaMecaProps — this is what USED to run only after `dlg.exec()`
+	// accepted; now every control's own change signal calls it directly, so the 3-D view updates
+	// as each value is picked instead of waiting for a button that no longer exists.
+	*commit = [=]() {
+		double cc[3] = { compBtn->property("r").toDouble(),  compBtn->property("g").toDouble(),  compBtn->property("b").toDouble() };
+		double dc[3] = { dilatBtn->property("r").toDouble(), dilatBtn->property("g").toDouble(), dilatBtn->property("b").toDouble() };
+		double rc[3] = { rimBtn->property("r").toDouble(),   rimBtn->property("g").toDouble(),   rimBtn->property("b").toDouble() };
+		const double rimPct = rimSpin->value();
+		const bool plotDate = dateChk->isChecked();
+		const std::string dateFont = dateFontCombo->currentText().toStdString();
+		const int dateFontSize = dateSizeSpin->value();
+		double dtc[3] = { dateColorBtn->property("r").toDouble(), dateColorBtn->property("g").toDouble(), dateColorBtn->property("b").toDouble() };
+		const bool dateBold = dateBoldChk->isChecked();
+		const bool dateItalic = dateItalChk->isChecked();
 
-	double cc[3] = { compBtn->property("r").toDouble(),  compBtn->property("g").toDouble(),  compBtn->property("b").toDouble() };
-	double dc[3] = { dilatBtn->property("r").toDouble(), dilatBtn->property("g").toDouble(), dilatBtn->property("b").toDouble() };
-	double rc[3] = { rimBtn->property("r").toDouble(),   rimBtn->property("g").toDouble(),   rimBtn->property("b").toDouble() };
-	const double rimPct = rimSpin->value();
+		auto fillProps = [&](MecaGroupProps &g) {
+			g.compColor[0]=cc[0]; g.compColor[1]=cc[1]; g.compColor[2]=cc[2];
+			g.dilatColor[0]=dc[0]; g.dilatColor[1]=dc[1]; g.dilatColor[2]=dc[2];
+			g.rimColor[0]=rc[0]; g.rimColor[1]=rc[1]; g.rimColor[2]=rc[2];
+			g.rimWidthPct = rimPct;
+			g.plotDate = plotDate;
+			g.dateFont = dateFont;
+			g.dateFontSize = dateFontSize;
+			g.dateColor[0]=dtc[0]; g.dateColor[1]=dtc[1]; g.dateColor[2]=dtc[2];
+			g.dateBold = dateBold;
+			g.dateItalic = dateItalic;
+		};
+		bool found = false;
+		for (auto &g : s->mecaGroups) if (g.name == gname) { fillProps(g); found = true; break; }
+		if (!found) {
+			MecaGroupProps g; g.name = gname;
+			fillProps(g);
+			s->mecaGroups.push_back(g);
+		}
 
-	bool found = false;
-	for (auto &g : s->mecaGroups) if (g.name == gname) {
-		g.compColor[0]=cc[0]; g.compColor[1]=cc[1]; g.compColor[2]=cc[2];
-		g.dilatColor[0]=dc[0]; g.dilatColor[1]=dc[1]; g.dilatColor[2]=dc[2];
-		g.rimColor[0]=rc[0]; g.rimColor[1]=rc[1]; g.rimColor[2]=rc[2];
-		g.rimWidthPct = rimPct;
-		found = true; break;
-	}
-	if (!found) {
-		MecaGroupProps g; g.name = gname;
-		g.compColor[0]=cc[0]; g.compColor[1]=cc[1]; g.compColor[2]=cc[2];
-		g.dilatColor[0]=dc[0]; g.dilatColor[1]=dc[1]; g.dilatColor[2]=dc[2];
-		g.rimColor[0]=rc[0]; g.rimColor[1]=rc[1]; g.rimColor[2]=rc[2];
-		g.rimWidthPct = rimPct;
-		s->mecaGroups.push_back(g);
-	}
+		if (!g_juliaMecaProps) { sceneLogError(s, "Focal mechanisms: properties callback not registered"); return; }
+		char buf[512];
+		std::snprintf(buf, sizeof(buf),
+		              "compcolor=%d/%d/%d\ndilatcolor=%d/%d/%d\nrimcolor=%d/%d/%d\nrimwidth=%.5f\n"
+		              "plotdate=%d\ndatefont=%s\ndatefontsize=%d\ndatecolor=%d/%d/%d\ndatebold=%d\ndateitalic=%d",
+		              (int)(cc[0]*255.0+0.5), (int)(cc[1]*255.0+0.5), (int)(cc[2]*255.0+0.5),
+		              (int)(dc[0]*255.0+0.5), (int)(dc[1]*255.0+0.5), (int)(dc[2]*255.0+0.5),
+		              (int)(rc[0]*255.0+0.5), (int)(rc[1]*255.0+0.5), (int)(rc[2]*255.0+0.5),
+		              rimPct / 100.0,
+		              plotDate ? 1 : 0, dateFont.c_str(), dateFontSize,
+		              (int)(dtc[0]*255.0+0.5), (int)(dtc[1]*255.0+0.5), (int)(dtc[2]*255.0+0.5),
+		              dateBold ? 1 : 0, dateItalic ? 1 : 0);
+		g_juliaMecaProps(s, gname.c_str(), buf);
+	};
 
-	if (!g_juliaMecaProps) { sceneLogError(s, "Focal mechanisms: properties callback not registered"); return; }
-	char buf[256];
-	std::snprintf(buf, sizeof(buf),
-	              "compcolor=%d/%d/%d\ndilatcolor=%d/%d/%d\nrimcolor=%d/%d/%d\nrimwidth=%.5f",
-	              (int)(cc[0]*255.0+0.5), (int)(cc[1]*255.0+0.5), (int)(cc[2]*255.0+0.5),
-	              (int)(dc[0]*255.0+0.5), (int)(dc[1]*255.0+0.5), (int)(dc[2]*255.0+0.5),
-	              (int)(rc[0]*255.0+0.5), (int)(rc[1]*255.0+0.5), (int)(rc[2]*255.0+0.5),
-	              rimPct / 100.0);
-	g_juliaMecaProps(s, gname.c_str(), buf);
+	// Colour buttons (compBtn/dilatBtn/rimBtn via colorRow, dateColorBtn above) are already wired to
+	// commit() at construction. Wire the remaining controls the same way — QColorDialog::getColor is
+	// itself a blocking modal (fires once on its own OK, never mid-drag), so none of this can spam
+	// the round-trip faster than the user actually picks a new value.
+	QObject::connect(rimSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [commit](double) { if (*commit) (*commit)(); });
+	QObject::connect(dateChk, &QCheckBox::toggled, [commit](bool) { if (*commit) (*commit)(); });
+	QObject::connect(dateFontCombo, &QComboBox::currentTextChanged, [commit](const QString &) { if (*commit) (*commit)(); });
+	QObject::connect(dateSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), [commit](int) { if (*commit) (*commit)(); });
+	QObject::connect(dateBoldChk, &QCheckBox::toggled, [commit](bool) { if (*commit) (*commit)(); });
+	QObject::connect(dateItalChk, &QCheckBox::toggled, [commit](bool) { if (*commit) (*commit)(); });
+
+	dlg->show();   // non-modal: the 3-D view stays interactive while values are picked live
 }
 
 static void rebuildSceneObjects(Scene *s) {
@@ -1357,7 +1445,14 @@ static void rebuildSceneObjects(Scene *s) {
 	if (!slipGroupOpen.isEmpty()) endGroup();            // close a slip-model group still open at the list's end
 	for (auto &tl : s->texts) {                          // user-placed text labels (toggle + right-click menu)
 		if (!tl.actor) continue;
-		vtkTextActor3D *act = tl.actor.Get();
+		// Batch-owned labels (Focal mechanisms' per-event date, gmtvtk_add_texts_h groupName tag) get
+		// NO row of their own — a catalog can carry 100s, which would flood this panel exactly like the
+		// meca fill patches would without their own ONE-row-per-batch folding above. They're controlled
+		// entirely by the batch's own row (visibility + Plot event date / font in mecaGroupPropsDialog).
+		if (!tl.groupName.empty()) continue;
+		// Safe: ungrouped labels are always the plain vtkTextActor3D branch (textApplyProps/
+		// gmtvtk_add_text_h/polyPlaceText never build a billboard for an empty groupName).
+		vtkTextActor3D *act = vtkTextActor3D::SafeDownCast(tl.actor);
 		makeRow(QString::fromStdString(tl.name), IC_Text, act->GetVisibility() != 0,
 		        [act](bool on) { act->SetVisibility(on ? 1 : 0); },
 		        [s, act](const QPoint& g) { textLabelMenu(s, act, g); },

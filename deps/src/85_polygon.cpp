@@ -886,14 +886,28 @@ static void deleteSlipGroup(Scene *s, const QString &groupName) {
 
 // Remove a focal-mechanism group: every isMeca patch sharing groupName (same by-groupName removal
 // as deleteSlipGroup — meca patches are never rendered via `pg.line`, only `pg.fill`, but
-// polygonEraseOne now cleans up both from whichever renderer they actually live in) plus the
-// group's cached properties-dialog pre-fill state. Used both by the Scene Objects "Remove" menu AND
-// as the first step of a recolour/re-stroke (Julia removes the old batch, then re-plots fresh).
+// polygonEraseOne now cleans up both from whichever renderer they actually live in). Used both by
+// the Scene Objects "Remove" menu AND as the first step of a recolour/re-stroke (Julia removes the
+// old batch, then re-plots fresh, see _on_meca_props/gmtvtk_remove_meca_group_h). The group's CACHED
+// properties-dialog pre-fill state (s->mecaGroups) is deliberately left alone here — erasing it used
+// to also drop its `propsDlg` QPointer, so a recolour round-trip lost track of the dialog the user was
+// still live-editing, and the next Scene Objects row click opened a SECOND, duplicate window right
+// next to it (2026-07-05 bug). gmtvtk_add_meca_h's own find-or-create overwrites every colour/font
+// field on the surviving entry anyway, so nothing here goes stale except a harmless leftover cache
+// row if the batch is removed for good and never re-plotted under the same name.
 static void deleteMecaGroup(Scene *s, const QString &groupName) {
 	deleteSlipGroup(s, groupName);
 	std::string gname = groupName.toStdString();
-	for (size_t i = 0; i < s->mecaGroups.size(); ++i)
-		if (s->mecaGroups[i].name == gname) { s->mecaGroups.erase(s->mecaGroups.begin() + i); break; }
+	// Drop this batch's date labels too (gmtvtk_add_texts_h groupName tag) — otherwise a recolour/
+	// re-plot round-trip (remove then re-add) would leave the OLD labels behind alongside fresh ones.
+	for (size_t i = s->texts.size(); i-- > 0; ) {
+		if (s->texts[i].groupName != gname) continue;
+		if (s->texts[i].actor) {
+			if (s->axesRen) s->axesRen->RemoveActor(s->texts[i].actor);
+			if (s->ren)     s->ren->RemoveActor(s->texts[i].actor);
+		}
+		s->texts.erase(s->texts.begin() + i);
+	}
 	// Drop this batch's per-event drag state + any anchor lines a user drag left behind — the
 	// fill/line actors they pointed at are already gone (deleteSlipGroup, above).
 	for (auto it = s->mecaBalls.begin(); it != s->mecaBalls.end(); ) {
@@ -1070,6 +1084,19 @@ static void mecaDragTo(Scene *s, int bi, double wx, double wy) {
 	MecaBall &mb = s->mecaBalls[bi];
 	mb.offX = wx - mb.x0; mb.offY = wy - mb.y0;
 	for (vtkActor *a : mb.actors) a->SetPosition(mb.offX * s->xfac, mb.offY, 0.0);
+	// The date label (if "Plot event date" is on) must carry with the ball. Unlike mb.actors
+	// (Polygon-baked geometry that uses a plain additive Position offset), TextLabel's Position IS
+	// its true anchor (textApplyProps sets pos[0]*xfac directly) — re-find the owning TextLabel by
+	// actor pointer (never cache, s->texts can reorder/erase) and recompute that same formula with
+	// the offset added. dateLabel is vtkProp3D* (SetPosition only) — works whether the label
+	// underneath is the flat vtkTextActor3D or the billboard vtkBillboardTextActor3D.
+	if (mb.dateLabel) {
+		for (auto &tl : s->texts) {
+			if (tl.actor.Get() != mb.dateLabel) continue;
+			mb.dateLabel->SetPosition((tl.pos[0] + mb.offX) * s->xfac, tl.pos[1] + mb.offY, 0.0);
+			break;
+		}
+	}
 	mecaUpdateAnchor(s, bi);
 }
 
@@ -1141,23 +1168,49 @@ static void mecaUpdateAnchor(Scene *s, int bi) {
 	mb.anchorDot->SetVisibility(mecaCoveredByAnyBall(s, mb.x0, mb.y0) ? 0 : 1);
 }
 
-// (Re)configure a text label's actor from its font fields. The text lies flat in its local XY plane
-// (vtkTextActor3D, no rotation), anchored at (x,y,0) in scaled space. The world size of one font
-// pixel is keyed to the scene extent so the label is a sensible fraction of the data, not 1 unit/px.
+// (Re)configure a text label's actor from its font fields. Ungrouped: lies flat in its local XY
+// plane (vtkTextActor3D, no rotation), anchored at (x,y,0) in scaled space, font size keyed to the
+// scene extent so the label is a sensible fraction of the data. Grouped (billboard): camera-facing
+// vtkBillboardTextActor3D at a constant screen size — see TextLabel (10_geometry.cpp).
 static void textApplyProps(Scene *s, TextLabel& tl) {
-	vtkTextProperty *tp = tl.actor->GetTextProperty();
+	// `actor` holds one of two unrelated VTK classes (see TextLabel, 10_geometry.cpp) that each
+	// declare their own SetInput/GetTextProperty — `groupName` is what construction (gmtvtk_add_text_h/
+	// gmtvtk_add_texts_h/polyPlaceText) used to pick the type, so it's the discriminator here too.
+	const bool billboard = !tl.groupName.empty();
+	vtkTextActor3D          *ta = billboard ? nullptr : vtkTextActor3D::SafeDownCast(tl.actor);
+	vtkBillboardTextActor3D *ba = billboard ? vtkBillboardTextActor3D::SafeDownCast(tl.actor) : nullptr;
+	vtkTextProperty *tp = billboard ? ba->GetTextProperty() : ta->GetTextProperty();
 	tp->SetFontFamilyAsString(tl.font.c_str());
 	tp->SetFontSize(tl.size);
 	tp->SetColor(tl.color[0], tl.color[1], tl.color[2]);
 	tp->SetBold(tl.bold ? 1 : 0);
 	tp->SetItalic(tl.italic ? 1 : 0);
 	tp->SetJustificationToCentered();
-	tp->SetVerticalJustificationToCentered();
-	tl.actor->SetInput(tl.text.c_str());
-	double b[6]; surfGetBounds(s, b);
-	double ext = std::max(b[1] - b[0], b[3] - b[2]);
-	if (!(ext > 0.0)) ext = 1.0;
-	tl.actor->SetScale(ext / 800.0);                // world units per font pixel
+	// Batch-owned labels (Focal mechanisms' per-event date) sit BOTTOM-justified on their anchor
+	// instead of centred — centred justification put half the glyph height BELOW the anchor point,
+	// which is what drove it down into/touching the ball's rim. Bottom justification makes the whole
+	// label grow UPWARD from the anchor instead. (A translucent background box was tried here too and
+	// reverted — vtkTextProperty draws it as an opaque rectangle sized to the full string bounds, a
+	// big flat gray block that looked far worse than the plain text.) Ordinary user-placed text
+	// labels (Text tool) are unaffected (no groupName), keeping their original centred look.
+	if (tl.groupName.empty()) tp->SetVerticalJustificationToCentered();
+	else                      tp->SetVerticalJustificationToBottom();
+	if (billboard) ba->SetInput(tl.text.c_str()); else ta->SetInput(tl.text.c_str());
+	if (tl.groupName.empty()) {
+		// Text-tool "sticker" label: a plain vtkTextActor3D lying flat in the surface's XY plane, so
+		// its size must be expressed in WORLD units (font pixels scaled by the data extent) — there is
+		// no camera-facing billboard here to keep a constant on-screen size.
+		double b[6]; surfGetBounds(s, b);
+		double ext = std::max(b[1] - b[0], b[3] - b[2]);
+		if (!(ext > 0.0)) ext = 1.0;
+		tl.actor->SetScale(ext / 800.0);                // world units per font pixel
+	} else {
+		// Batch-owned (billboard): vtkBillboardTextActor3D already keeps a constant SCREEN size from
+		// its own TextProperty font size (set above) — an extra world-unit SetScale here would resize
+		// the glyph itself on top of that, same mistake the tick-label billboards (10_geometry.cpp)
+		// deliberately avoid. Leave Scale at its 1,1,1 default.
+		ba->ForceOpaqueOn();            // never depth-sorted/faded as translucent (matches gizmo/tick billboards)
+	}
 	tl.actor->SetPosition(tl.pos[0] * s->xfac, tl.pos[1], 0.0);
 	tl.actor->PickableOff();
 }
@@ -1165,11 +1218,14 @@ static void textApplyProps(Scene *s, TextLabel& tl) {
 // Index of the text label whose RENDERED extent covers (x,y) display px, or -1. Topmost wins. The
 // label can be large, so we test its actual world bounding box projected to the screen (a tiny
 // centre-only hit would miss clicks on the visible glyphs -> they would fall through and rotate the
-// camera). `tol` pads the box.
+// camera). `tol` pads the box. Batch-owned (grouped) labels are excluded — same reasoning as
+// rebuildSceneObjects' own skip: they're controlled entirely by their batch (drag-follow via
+// MecaBall::dateLabel, style via mecaGroupPropsDialog), not by the generic Text-tool click/drag/menu,
+// which also assumes a plain vtkTextActor3D underneath (textLabelMenu/textPropsDialog signatures).
 static int polyHitText(Scene *s, int x, int y, double tol) {
 	for (int i = (int)s->texts.size() - 1; i >= 0; --i) {
 		auto& tl = s->texts[i];
-		if (!tl.actor || tl.actor->GetVisibility() == 0) continue;
+		if (!tl.actor || tl.actor->GetVisibility() == 0 || !tl.groupName.empty()) continue;
 		double b[6]; tl.actor->GetBounds(b);                    // world space (position + scale baked in)
 		if (b[0] > b[1] || b[2] > b[3]) continue;               // not rendered yet -> no valid box
 		double minx = 1e30, miny = 1e30, maxx = -1e30, maxy = -1e30;

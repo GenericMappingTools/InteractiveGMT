@@ -4079,7 +4079,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				}
 				const int tHit = polyHitText(s, px, py, 14.0);    // a text label under the cursor?
 				if (tHit >= 0) {
-					textLabelMenu(s, s->texts[tHit].actor, widget->mapToGlobal(pos));
+					// polyHitText only ever returns ungrouped labels (plain vtkTextActor3D) — see its
+					// own comment (85_polygon.cpp) for why grouped/billboard labels are excluded there.
+					textLabelMenu(s, vtkTextActor3D::SafeDownCast(s->texts[tHit].actor), widget->mapToGlobal(pos));
 					return;
 				}
 				if (vtkActor *sym = pickSymbolAt(s, px, py)) {    // symbol layers sit on top
