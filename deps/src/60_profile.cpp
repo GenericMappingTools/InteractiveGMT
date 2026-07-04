@@ -269,6 +269,7 @@ static bool polygonHandleMove(Scene *s, int x, int y);
 static bool polygonHandleRelease(Scene *s);
 static int  polyHitHandle(Scene *s, int x, int y, double tol);   // vertex handle under cursor (85)
 static int  polyHitText(Scene *s, int x, int y, double tol);     // text label under cursor (85)
+static int  mecaHitAt(Scene *s, int x, int y);                   // focal-mechanism ball under cursor (85)
 
 class GLView : public QVTKOpenGLNativeWidget {
 public:
@@ -376,7 +377,8 @@ protected:
 			const double ny = sz[1] > 0 ? dy / sz[1] : 0.0;
 			const bool over = colorbarHit(s, nx, ny)
 			               || (s->polyEdit >= 0 && polyHitHandle(s, (int)dx, (int)dy, 10.0) >= 0)
-			               || polyHitText(s, (int)dx, (int)dy, 14.0) >= 0;
+			               || polyHitText(s, (int)dx, (int)dy, 14.0) >= 0
+			               || mecaHitAt(s, (int)dx, (int)dy) >= 0;
 			const bool isAll = cursor().shape() == Qt::SizeAllCursor;
 			if (over && !isAll)       setCursor(Qt::SizeAllCursor);
 			else if (!over && isAll)  unsetCursor();

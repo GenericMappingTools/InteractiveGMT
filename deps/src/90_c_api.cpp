@@ -1302,6 +1302,25 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
 		const double z0 = std::isnan(z0raw) ? 0.0 : z0raw;
 		if (!mi.rings.empty()) mecaBuildPatch(s, pg, z0, rank, mi.rings);
 		else                   mecaBuildLines(s, pg, z0, rank, rimWidthPct, mi.plines);
+		// Drag bookkeeping: fold this rank's actor(s) into its EVENT's MecaBall (rank = ei*3+role,
+		// see the struct comment). The role==2 (rim/nodal-line) rank alone carries the authoritative
+		// centre + radius reference, in the SAME xy convention as `xy`/pg.v (x pre-divided by xfac
+		// for the screen-round trick) — mecaHitAt/mecaUpdateAnchor (85_polygon.cpp) reproject it the
+		// same way, so the convention only has to be internally consistent, never "true degrees".
+		{
+			const int ei = rank / 3, role = rank % 3;
+			MecaBall *mb = nullptr;
+			for (auto &b : s->mecaBalls) if (b.groupName == grp && b.event == ei) { mb = &b; break; }
+			if (!mb) { s->mecaBalls.push_back(MecaBall{}); mb = &s->mecaBalls.back(); mb->groupName = grp; mb->event = ei; }
+			if (pg.fill) mb->actors.push_back(pg.fill.Get());
+			if (pg.line) mb->actors.push_back(pg.line.Get());
+			if (!pg.v.empty()) mb->zLow = std::min(mb->zLow, pg.v[0][2]);   // this rank's baked Z
+			if (role == 2 && !pg.v.empty()) {
+				mb->x0 = mi.cx / mi.nv; mb->y0 = mi.cy / mi.nv;
+				const double ddx = pg.v[0][0] - mb->x0, ddy = pg.v[0][1] - mb->y0;
+				mb->radius = std::sqrt(ddx*ddx + ddy*ddy);
+			}
+		}
 		pg.stack = s->vecSeq++;                        // lands on the shared vector pile
 		s->polys.push_back(pg);
 		++added;
@@ -1414,6 +1433,20 @@ GMTVTK_API int gmtvtk_trace_zbounds_test(void *scene, double *out) {
 		return 1;
 	}
 	return 0;
+}
+
+// test hook: drag focal-mechanism ball `idx` (0-based, plot order) by (dx,dy) in its own xy
+// convention (see MecaBall's struct comment) — calls the SAME mecaDragTo the live mouse drag uses,
+// skipping only the screen-to-world projection step. out3 (or null) receives [offX, offY, anchor?].
+// Returns 1 if idx was valid.
+GMTVTK_API int gmtvtk_meca_drag_test(void *scene, int idx, double dx, double dy, double *out3) {
+	Scene *s = (Scene*)scene;
+	if (!s || idx < 0 || idx >= (int)s->mecaBalls.size()) return 0;
+	MecaBall &mb = s->mecaBalls[idx];
+	mecaDragTo(s, idx, mb.x0 + dx, mb.y0 + dy);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	if (out3) { out3[0] = mb.offX; out3[1] = mb.offY; out3[2] = mb.anchor ? 1.0 : 0.0; }
+	return 1;
 }
 
 // test hook: flip the flat-2D / 3-D view mode (drives the same sceneSetFlat2D the toolbar uses).

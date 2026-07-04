@@ -53,6 +53,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_fault_add_test, :gmtvtk_fault_apply_test, :gmtvtk_fault_plane_test,
 	:gmtvtk_set_flat2d_test, :gmtvtk_objrows_test,
 	:gmtvtk_fault_open_dialog_test, :gmtvtk_fault_close_dialog_test, :gmtvtk_trace_zbounds_test,
+	:gmtvtk_meca_drag_test,
 	:gmtvtk_scene_state,
 	:gmtvtk_frame_for_image_h, :gmtvtk_fit2d, :gmtvtk_grow_frame_h, :gmtvtk_hide_surface,
 	:gmtvtk_show_profile_xy,

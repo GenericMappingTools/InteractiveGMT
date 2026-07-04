@@ -894,6 +894,22 @@ static void deleteMecaGroup(Scene *s, const QString &groupName) {
 	std::string gname = groupName.toStdString();
 	for (size_t i = 0; i < s->mecaGroups.size(); ++i)
 		if (s->mecaGroups[i].name == gname) { s->mecaGroups.erase(s->mecaGroups.begin() + i); break; }
+	// Drop this batch's per-event drag state + any anchor lines a user drag left behind — the
+	// fill/line actors they pointed at are already gone (deleteSlipGroup, above).
+	for (auto it = s->mecaBalls.begin(); it != s->mecaBalls.end(); ) {
+		if (it->groupName == gname) {
+			if (it->anchor) {
+				if (s->axesRen) s->axesRen->RemoveActor(it->anchor);
+				if (s->ren)     s->ren->RemoveActor(it->anchor);
+			}
+			if (it->anchorDot) {
+				if (s->axesRen) s->axesRen->RemoveActor(it->anchorDot);
+				if (s->ren)     s->ren->RemoveActor(it->anchorDot);
+			}
+			it = s->mecaBalls.erase(it);
+		} else ++it;
+	}
+	s->mecaDrag = -1;
 }
 
 // Toolbar toggle: enter/leave draw mode. Switching cancels any in-progress draw and edit.
@@ -950,6 +966,94 @@ static bool pickPlaneXY(Scene *s, int mx, int my, double outTrue[3]) {
 	outTrue[1] =  nr[1] + t * (fr[1] - nr[1]);
 	outTrue[2] = 0.0;
 	return true;
+}
+
+// Nearest focal-mechanism BALL under the cursor (display px), or -1. Topmost (last-built) wins.
+// `radius` was captured once at plot time (mecaBuildLines' rim circle, see gmtvtk_add_meca_h) as a
+// pure-x offset from the centre in the SAME xy convention as Polygon::v; projecting both the centre
+// and that offset point through polyToDisplay (which reapplies xfac) recovers the correct on-screen
+// pixel radius without ever reasoning about "true degrees" ourselves — and tracks a live drag
+// automatically since offX/offY are folded into both points identically.
+static int mecaHitAt(Scene *s, int x, int y) {
+	int best = -1; double bestd2 = 1e30;
+	for (int bi = (int)s->mecaBalls.size() - 1; bi >= 0; --bi) {
+		MecaBall &mb = s->mecaBalls[bi];
+		if (mb.radius <= 0.0) continue;
+		const std::array<double,3> c  = { mb.x0 + mb.offX,              mb.y0 + mb.offY, mb.zLow };
+		const std::array<double,3> rp = { mb.x0 + mb.offX + mb.radius,  mb.y0 + mb.offY, mb.zLow };
+		double cd[2], rd[2];
+		polyToDisplay(s, c, cd);
+		polyToDisplay(s, rp, rd);
+		const double rpx = std::max(6.0, std::hypot(rd[0] - cd[0], rd[1] - cd[1]));
+		const double dx = cd[0] - x, dy = cd[1] - y, d2 = dx*dx + dy*dy;
+		if (d2 <= rpx*rpx && d2 < bestd2) { bestd2 = d2; best = bi; }
+	}
+	return best;
+}
+
+static void mecaUpdateAnchor(Scene *s, int bi);   // fwd (defined right below)
+
+// Move ball `bi` so its centre sits at world point (wx,wy) — same xy convention as Polygon::v/
+// MecaBall::x0,y0 (see the struct comment) — and (re)builds its anchor line. The single place that
+// actually repositions a beachball: both the live mouse drag (polygonHandleMove) and the test hook
+// (gmtvtk_meca_drag_test) call this, so a test genuinely exercises the same code that renders.
+static void mecaDragTo(Scene *s, int bi, double wx, double wy) {
+	MecaBall &mb = s->mecaBalls[bi];
+	mb.offX = wx - mb.x0; mb.offY = wy - mb.y0;
+	for (vtkActor *a : mb.actors) a->SetPosition(mb.offX * s->xfac, mb.offY, 0.0);
+	mecaUpdateAnchor(s, bi);
+}
+
+// (Re)build/move the drag-anchor line + dot for ball `bi`: a thin line from its ORIGINAL plotted
+// centre to wherever it currently sits, with a small filled dot marking that original point — the
+// same epicenter-to-symbol convention _focal_plot already draws statically for lon0/lat0 anchor
+// columns (gmtvtk_add_overlay_h), drawn live here from a mouse drag instead. First call builds both
+// actors; later calls just rewrite the line's moving endpoint in place (the dot never moves).
+//
+// Both sit at `az` = a shade below `mb.zLow` (this event's OWN lowest baked Z) with a PLAIN mapper —
+// deliberately NOT polyMakeLineActor's terrain line-offset (GL polygon-offset does not compare
+// reliably across LINE vs FILL primitives, see mecaBuildPatch's big comment) — a real depth-buffer
+// comparison against the ball's own fill/line actors (built the same way) is what mecaBuildPatch/
+// Lines already rely on for reliable cross-primitive occlusion, so being reliably BELOW the ball's
+// own lowest Z guarantees the ball hides the trail/dot wherever it currently sits on screen.
+static void mecaUpdateAnchor(Scene *s, int bi) {
+	MecaBall &mb = s->mecaBalls[bi];
+	const double az = mb.zLow - 0.5;
+	const double x1 = mb.x0 + mb.offX, y1 = mb.y0 + mb.offY;
+	if (!mb.anchor) {
+		mb.anchorPD = vtkSmartPointer<vtkPolyData>::New();
+		const std::vector<std::array<double,3>> pts = { { mb.x0, mb.y0, az }, { x1, y1, az } };
+		polyFillLine(mb.anchorPD, pts, false);
+		vtkNew<vtkPolyDataMapper> lmap; lmap->SetInputData(mb.anchorPD); lmap->ScalarVisibilityOff();
+		mb.anchor = vtkSmartPointer<vtkActor>::New();
+		mb.anchor->SetMapper(lmap);
+		mb.anchor->GetProperty()->SetColor(0.0, 0.0, 0.0);
+		mb.anchor->GetProperty()->SetLineWidth(1.0);
+		mb.anchor->GetProperty()->LightingOff();
+		mb.anchor->PickableOff();
+		mb.anchor->ForceOpaqueOn();
+		mb.anchor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		(s->axesRen ? s->axesRen : s->ren)->AddActor(mb.anchor);
+
+		vtkNew<vtkPoints> dpts; dpts->InsertNextPoint(mb.x0, mb.y0, az);
+		vtkNew<vtkCellArray> dverts; const vtkIdType id0 = 0; dverts->InsertNextCell(1, &id0);
+		vtkNew<vtkPolyData> dotPD; dotPD->SetPoints(dpts); dotPD->SetVerts(dverts);
+		vtkNew<vtkPolyDataMapper> dmap; dmap->SetInputData(dotPD); dmap->ScalarVisibilityOff();
+		mb.anchorDot = vtkSmartPointer<vtkActor>::New();
+		mb.anchorDot->SetMapper(dmap);
+		mb.anchorDot->GetProperty()->SetColor(0.0, 0.0, 0.0);
+		mb.anchorDot->GetProperty()->SetPointSize(7.0);
+		mb.anchorDot->GetProperty()->SetRenderPointsAsSpheres(true);
+		mb.anchorDot->GetProperty()->LightingOff();
+		mb.anchorDot->PickableOff();
+		mb.anchorDot->ForceOpaqueOn();
+		mb.anchorDot->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		(s->axesRen ? s->axesRen : s->ren)->AddActor(mb.anchorDot);
+		return;
+	}
+	mb.anchorPD->GetPoints()->SetPoint(1, x1, y1, az);
+	mb.anchorPD->GetPoints()->Modified();
+	mb.anchorPD->Modified();
 }
 
 // (Re)configure a text label's actor from its font fields. The text lies flat in its local XY plane
@@ -1099,6 +1203,8 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y) {
 		const int h = polyHitHandle(s, x, y, 10.0);
 		if (h >= 0) { s->polyDragVert = h; return true; }
 	}
+	const int mi_ = mecaHitAt(s, x, y);                 // idle: grab a beachball to drag it (leaves an anchor line)
+	if (mi_ >= 0) { s->mecaDrag = mi_; return true; }
 	const int ti = polyHitText(s, x, y, 14.0);          // idle: grab a text label to drag it on the plane
 	if (ti >= 0) { s->textDrag = ti; return true; }
 	return false;                                        // otherwise let VTK navigate normally
@@ -1139,6 +1245,14 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 
 // Mouse move: extend the draw preview to the cursor, or drag the grabbed vertex / text label.
 static bool polygonHandleMove(Scene *s, int x, int y) {
+	if (s->mecaDrag >= 0 && s->mecaDrag < (int)s->mecaBalls.size()) {   // dragging a beachball across the XY plane
+		double w[3];
+		if (pickPlaneXY(s, x, y, w)) {
+			mecaDragTo(s, s->mecaDrag, w[0], w[1]);
+			s->widget->renderWindow()->Render();
+		}
+		return true;
+	}
 	if (s->textDrag >= 0) {                              // dragging a text label across the XY plane
 		double w[3];
 		if (pickPlaneXY(s, x, y, w) && s->textDrag < (int)s->texts.size()) {
@@ -1181,6 +1295,7 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 
 // Left release: end a vertex / text-label drag.
 static bool polygonHandleRelease(Scene *s) {
+	if (s->mecaDrag >= 0) { s->mecaDrag = -1; return true; }
 	if (s->polyDragVert >= 0) {
 		s->polyDragVert = -1;
 		// Edited a nested rectangle: re-quantize it (back to an axis-aligned, snapped rect) + descendants.

@@ -149,6 +149,32 @@ struct MecaGroupProps {
 	double rimWidthPct    = 1.0;             // percent of disk radius (dialog units; Julia wants a 0..1 fraction)
 };
 
+// One focal-mechanism beachball's DRAG state. A ball = 2 filled sector actors (comp/dilat) + 1
+// stroked rim/nodal-line actor, grouped by EVENT (evid/3 — see gmtvtk_add_meca_h/mecaBuildPatch,
+// evid = ei*3+role). Dragging must move all of an event's actors together and leave a thin line
+// from the ball's ORIGINAL plotted position to wherever it was dropped — the same epicenter-to-
+// symbol convention _focal_plot already draws statically for lon0/lat0 anchor columns, here drawn
+// live from a mouse drag instead of read from a file column. `actors` are RAW, non-owning pointers
+// (the owning Polygon in s->polys keeps them alive) — never a cached index into s->polys, which can
+// shift under an unrelated erase elsewhere (see polyIndexOfActor's "never cache" convention).
+struct MecaBall {
+	std::string groupName;              // batch name ("Focal mechanisms"), matches Polygon::groupName
+	int    event = -1;                  // ei (evid/3)
+	double x0 = 0, y0 = 0;               // ORIGINAL plotted centre (same coord convention as Polygon::v)
+	double offX = 0, offY = 0;          // cumulative drag offset from x0/y0 (same convention); 0,0 = never moved
+	double radius = 0;                  // on-screen radius reference (same convention), for hit-testing
+	double zLow = 1e30;                 // MIN baked Z over every rank this event contributed (mecaBuildPatch/
+	                                     // Lines' z0+rank*kMecaRankZStep) — the anchor line/dot render a shade
+	                                     // BELOW this so the ball's own opaque fill always occludes them where
+	                                     // it currently sits (real depth test, no polygon-offset — matches
+	                                     // mecaBuildLines' own cross-primitive-safe technique, not
+	                                     // polyMakeLineActor's terrain line-offset).
+	std::vector<vtkActor*> actors;      // this event's fill(s) + line actor
+	vtkSmartPointer<vtkActor>    anchor;     // drag-trail LINE, built lazily on first drag
+	vtkSmartPointer<vtkPolyData> anchorPD;
+	vtkSmartPointer<vtkActor>    anchorDot;  // small filled dot marking the ORIGINAL point (never moves)
+};
+
 // A user-placed text label from the toolbar text tool. Lies FLAT on the z=0 (XY) plane: a
 // vtkTextActor3D renders the text into its local XY plane, anchored at (x,y,0). Stored in TRUE
 // coords (x,y); the actor sits in the surface's scaled space (x*xfac). Left-click-drag moves it on
@@ -393,6 +419,8 @@ struct Scene {
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
 	std::vector<MecaGroupProps> mecaGroups;            // one entry per focal-mechanism batch groupName
+	std::vector<MecaBall> mecaBalls;                   // one entry per plotted event (drag + anchor line state)
+	int    mecaDrag = -1;                               // index into mecaBalls being click-dragged (-1 = none)
 	int    vecSeq = 0;                                  // monotonic seed for shared vector-pile stack ranks
 	int    surfStack = 0;                               // base relief's rank in the GRID pile (base + grids)
 	int    gridSeq   = 0;                               // monotonic seed for grid-pile ranks (newest on top)
@@ -1109,6 +1137,10 @@ static void applyVE(Scene *s) {
 		if (pg.faultPlane)  pg.faultPlane->SetScale(s->xfac, 1.0, s->zfac * s->ve);   // gray patch rides VE
 		if (pg.faultPlane3D) pg.faultPlane3D->SetScale(s->xfac, 1.0, s->zfac * s->ve);// buried plane rides VE too
 		if (pg.faultArrows) pg.faultArrows->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // slip arrows ride VE with the plane
+	}
+	for (auto& mb : s->mecaBalls) {                                        // drag-anchor line + dot ride VE too
+		if (mb.anchor)    mb.anchor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		if (mb.anchorDot) mb.anchorDot->SetScale(s->xfac, 1.0, s->zfac * s->ve);
 	}
 	for (auto& tl : s->texts)                                              // text labels lie flat on z=0 (XY plane)
 		if (tl.actor) tl.actor->SetPosition(tl.pos[0] * s->xfac, tl.pos[1], 0.0);
