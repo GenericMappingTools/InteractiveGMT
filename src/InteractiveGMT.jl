@@ -53,6 +53,7 @@ include("geography.jl")  # Geography menu -> GSHHG coastlines for the current vi
 include("solids.jl")     # 3-D Bodies toolbar flyout -> GMT solids (cube/sphere/torus/cylinder/…) via view_fv
 include("nswing.jl")     # Geophysics > NSWING tsunami (port of Mirone swan_options.m -> nswing exe)
 include("seismicity.jl") # Geophysics > Seismology > Seismicity (port of Mirone earthquakes.m)
+include("focal.jl")      # Geophysics > Seismology > Focal mechanisms (port of Mirone focal_meca.m)
 include("deform.jl")     # Geophysics > Vertical elastic deformation: fault-trace endpoint (deform_mansinha.m)
 include("nested.jl")     # "Nested grids" rectangle tool: host-side blank-grid builder (nesting_sizes.m)
 include("measure.jl")    # line length/azimuth + polygon area for the vector context menu (CRS-aware)

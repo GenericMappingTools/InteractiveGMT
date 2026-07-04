@@ -123,11 +123,30 @@ struct Polygon {
 	vtkSmartPointer<vtkPolyData> faultArrowsPD;
 	bool   faultPlane3DShown = true;         // user's desired visibility for the buried plane (actual visibility is this AND not flat-2D)
 	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
+	bool   isMeca = false;                   // focal-mechanism beachball patch: excluded from the shared vector
+	                                          // pile (gatherStackItems) — mecaBuildPatch already gives every
+	                                          // patch (fill AND line) its own consistent cross-event rank offset;
+	                                          // applyVectorStacking's generic per-item ramp would otherwise
+	                                          // overwrite the LINE's offset (it never touches fill) with an
+	                                          // unrelated global order, letting an occluded event's outline
+	                                          // bleed through the opaque fill of the one covering it.
 	int    nestKind = 0;                     // 0 = ordinary shape; 1 = "Nested grids" rectangle (special menu)
 	double nestXi = 0, nestYi = 0;           // child cell sizes (0 = inherit parent inc; resolved by nestReflow)
 	int    nestReg = 0;                       // 0 grid / 1 pixel registration (carried into COMCOT/NSWING info)
 	int    nestIx0 = 0, nestIx1 = 0;          // parent-grid node indices of the snapped W/E edges (1-based on display)
 	int    nestIy0 = 0, nestIy1 = 0;          // parent-grid node indices of the snapped S/N edges
+};
+
+// Cached compression/dilatation/rim colour + rim width for ONE focal-mechanism batch (keyed by its
+// Scene Objects groupName) — lets the group's properties dialog pre-fill from the LAST-applied
+// values without asking Julia (the actual re-plot on Apply still round-trips through Julia, since a
+// new rim width needs fresh geodesic geometry — see gmtvtk_set_meca_group_props_h).
+struct MecaGroupProps {
+	std::string name;
+	double compColor[3]   = { 0.0, 0.0, 0.0 };
+	double dilatColor[3]  = { 1.0, 1.0, 1.0 };
+	double rimColor[3]    = { 0.0, 0.0, 0.0 };
+	double rimWidthPct    = 1.0;             // percent of disk radius (dialog units; Julia wants a 0..1 fraction)
 };
 
 // A user-placed text label from the toolbar text tool. Lies FLAT on the z=0 (XY) plane: a
@@ -373,6 +392,7 @@ struct Scene {
 	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text, SH_RectN, SH_Fault };
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
+	std::vector<MecaGroupProps> mecaGroups;            // one entry per focal-mechanism batch groupName
 	int    vecSeq = 0;                                  // monotonic seed for shared vector-pile stack ranks
 	int    surfStack = 0;                               // base relief's rank in the GRID pile (base + grids)
 	int    gridSeq   = 0;                               // monotonic seed for grid-pile ranks (newest on top)
@@ -1195,6 +1215,19 @@ static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int& outMode) {
 	return bestA;
 }
 
+static double sampleZ(const Scene *s, double x, double y);   // defined below (base relief height sampler)
+
+// True (a solid3D glyph carries genuine depth, e.g. a buried earthquake) when `trueZ` sits BELOW
+// the base relief's own height at (trueX,trueY) — i.e. the terrain that visually occludes it (see
+// applyStacking) also occludes it for picking. GetZbufferDataAtPoint can't be used here: it always
+// reads back 1.0 (far plane) through this app's QVTKOpenGLNativeWidget FBO (see the hover-readout
+// ray-march comment below) — sampleZ against the resident heightfield is the same workaround this
+// file already relies on for the coordinate readout. No base grid (NaN) -> never treat as buried.
+static bool solid3DBuried(const Scene *s, double trueX, double trueY, double trueZ) {
+	const double h = sampleZ(s, trueX, trueY);
+	return !std::isnan(h) && trueZ < h;
+}
+
 // Nearest SYMBOL layer under the cursor (device px). Symbols sit ON TOP of overlays, so the click
 // dispatcher tests this first. Projects each glyph's anchor point (x already xfac-baked; the actor
 // carries the z scale) to display and takes the nearest within a size-aware tolerance, so big
@@ -1215,8 +1248,11 @@ static vtkActor *pickSymbolAt(Scene *s, int dx, int dy) {
 		const double tol2 = std::max(12.0, sl.sizePx * 0.6) * std::max(12.0, sl.sizePx * 0.6);
 		vtkPoints *pts = pd->GetPoints();
 		const vtkIdType np = pts->GetNumberOfPoints();
+		const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
 		for (vtkIdType i = 0; i < np; ++i) {
 			double p[3]; pts->GetPoint(i, p);
+			if (sl.solid3D && !s->flat2d && solid3DBuried(s, p[0]*xfacInv, p[1], p[2]))
+				continue;                                    // hidden behind real terrain -> not pickable
 			ren->SetWorldPoint(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], 1.0);
 			ren->WorldToDisplay();
 			double d[3]; ren->GetDisplayPoint(d);
@@ -1247,9 +1283,12 @@ static bool pickSymbolInfoAt(Scene *s, int dx, int dy, std::string& out) {
 		const double tol2 = tol * tol;
 		vtkPoints *pts = pd->GetPoints();
 		const vtkIdType np = pts->GetNumberOfPoints();
+		const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
 		for (vtkIdType i = 0; i < np; ++i) {
 			if ((size_t)i >= sl.info.size()) break;        // info must align 1:1 with points
 			double p[3]; pts->GetPoint(i, p);
+			if (sl.solid3D && !s->flat2d && solid3DBuried(s, p[0]*xfacInv, p[1], p[2]))
+				continue;                                    // hidden behind real terrain -> no tooltip
 			ren->SetWorldPoint(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], 1.0);
 			ren->WorldToDisplay();
 			double d[3]; ren->GetDisplayPoint(d);

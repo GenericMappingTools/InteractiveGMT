@@ -16,7 +16,7 @@ if(NOT TBB_DIR)
   set(TBB_DIR "C:/programs/compa_libs/tbb_GIT/compileds/VC14_64/lib/cmake/TBB")
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets UiTools)
 find_package(TBB REQUIRED CONFIG)
 find_package(VTK REQUIRED COMPONENTS
   CommonCore CommonDataModel CommonColor CommonTransforms
@@ -33,14 +33,20 @@ find_package(VTK REQUIRED COMPONENTS
 # helpers would multiply-define), keeping internal linkage just as in the old main.cpp.
 set(GMTVTK_SRC src/gmtvtk.cpp)
 
+# deps/ui/*.ui are loaded at RUNTIME (QUiLoader, see FocalMechanismsDialog in 70_window.cpp) for
+# dialogs where the .ui must stay the single source of truth — no hand-ported C++ to fall out of
+# sync with. GMTVTK_UI_DIR points at the source tree's ui/ dir (dev-only unregistered package,
+# same pragmatic hard-coded-path style as VTK_DIR/Qt6_DIR/TBB_DIR above).
+add_compile_definitions(GMTVTK_UI_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ui")
+
 # Shared library — the Julia/host bridge (C API: gmtvtk_view_grid / gmtvtk_view_demo / ...).
 add_library(gmtvtk SHARED ${GMTVTK_SRC})
-target_link_libraries(gmtvtk PRIVATE Qt6::Widgets TBB::tbb ${VTK_LIBRARIES})
+target_link_libraries(gmtvtk PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES})
 vtk_module_autoinit(TARGETS gmtvtk MODULES ${VTK_LIBRARIES})
 
 # Standalone demo executable (shows the synthetic peaks surface via the demo main()).
 add_executable(gmtvtk_demo WIN32 ${GMTVTK_SRC})
-target_link_libraries(gmtvtk_demo PRIVATE Qt6::Widgets TBB::tbb ${VTK_LIBRARIES})
+target_link_libraries(gmtvtk_demo PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES})
 vtk_module_autoinit(TARGETS gmtvtk_demo MODULES ${VTK_LIBRARIES})
 
 # ============================================================================

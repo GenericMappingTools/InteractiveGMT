@@ -204,6 +204,22 @@ static JuliaImportFaultFn g_juliaImportFault = nullptr;
 typedef void (*JuliaModelSlipFn)(void *scene, const char *path);
 static JuliaModelSlipFn g_juliaModelSlip = nullptr;
 
+// Focal mechanisms (Geophysics > Seismology). Port of Mirone's focal_meca.m. The dialog
+// (FocalMechanismsDialog, 70_window.cpp) hands a newline-separated "key=value" block to Julia
+// (g_juliaFocal), which reads the chosen catalog (ISF / Aki & Richards / Harvard CMT / CMT
+// .ndk), filters by magnitude/depth, computes each event's compressive/dilatational "beachball"
+// patches (patch_meca.m's equal-area nodal-plane projection) and adds them via
+// gmtvtk_add_meca_h. nullptr -> the menu entry reports "callback not registered".
+typedef void (*JuliaFocalFn)(void *scene, const char *params);
+static JuliaFocalFn g_juliaFocal = nullptr;
+
+// Focal-mechanism GROUP properties (Scene Objects group row, left-click -> mecaGroupPropsDialog,
+// 50_scene.cpp): (scene, groupName, "key=value\n…") for compcolor/dilatcolor/rimcolor/rimwidth.
+// Julia removes the old batch (gmtvtk_remove_meca_group_h) and re-plots it from the ORIGINAL
+// catalog params (stashed at the first plot) with these overrides merged in.
+typedef void (*JuliaMecaPropsFn)(void *scene, const char *groupName, const char *params);
+static JuliaMecaPropsFn g_juliaMecaProps = nullptr;
+
 // grdsample "OR Ref grid" picker (and grid-metadata prefill). Given a grid/image path, Julia
 // gmtreads its header and returns "W/E/S/N/xinc/yinc/nx/ny" (empty string on failure) so the
 // dialog can fill the Griding Line Geometry boxes. The returned pointer is owned by Julia (a

@@ -809,6 +809,7 @@ static void polygonEraseOne(Scene *s, vtkActor *lineActor) {
 		if (s->ren && s->polys[i].line) s->ren->RemoveActor(s->polys[i].line);
 		if (s->axesRen && s->polys[i].line) s->axesRen->RemoveActor(s->polys[i].line);  // overlay layer (on-top vectors)
 		if (s->ren && s->polys[i].fill) s->ren->RemoveActor(s->polys[i].fill);
+		if (s->axesRen && s->polys[i].fill) s->axesRen->RemoveActor(s->polys[i].fill);  // meca fills live here, not s->ren
 		if (s->ren && s->polys[i].faultPlane)   s->ren->RemoveActor(s->polys[i].faultPlane);
 		if (s->ren && s->polys[i].faultPlane3D) s->ren->RemoveActor(s->polys[i].faultPlane3D);
 		if (s->polyEdit == i)      polyExitEdit(s);      // was being edited -> drop the handles
@@ -881,6 +882,18 @@ static void deleteSlipGroup(Scene *s, const QString &groupName) {
 	applyVectorStacking(s);
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Remove a focal-mechanism group: every isMeca patch sharing groupName (same by-groupName removal
+// as deleteSlipGroup — meca patches are never rendered via `pg.line`, only `pg.fill`, but
+// polygonEraseOne now cleans up both from whichever renderer they actually live in) plus the
+// group's cached properties-dialog pre-fill state. Used both by the Scene Objects "Remove" menu AND
+// as the first step of a recolour/re-stroke (Julia removes the old batch, then re-plots fresh).
+static void deleteMecaGroup(Scene *s, const QString &groupName) {
+	deleteSlipGroup(s, groupName);
+	std::string gname = groupName.toStdString();
+	for (size_t i = 0; i < s->mecaGroups.size(); ++i)
+		if (s->mecaGroups[i].name == gname) { s->mecaGroups.erase(s->mecaGroups.begin() + i); break; }
 }
 
 // Toolbar toggle: enter/leave draw mode. Switching cancels any in-progress draw and edit.

@@ -2456,6 +2456,102 @@ public:
 	}
 };
 
+// Focal mechanisms — loads deps/ui/focal_mechanisms.ui at RUNTIME via QUiLoader instead of
+// hand-porting it into C++ widget calls. Every other .ui in deps/ui/ is a spec that gets
+// hand-ported (see the "Do-Not-Repeat .ui geometry is LAW" note above) — that split caused
+// repeated user frustration when a `.ui` edit in Qt Creator didn't show up in the app because
+// the hand-port wasn't manually resynced. For this dialog the .ui IS the running dialog: edit
+// it in Qt Creator, relaunch, done — no C++ resync, ever. Behavior is wired generically by
+// objectName via findChild, so most .ui edits (reflow, spacing, new default) need no C++ change
+// at all; only adding/renaming/removing a NAMED field that OK reads would. OK packs every field
+// into `params` ("key=value\n…", the Geophysics menu appends "region=W/E/S/N"); Julia (g_juliaFocal,
+// src/focal.jl) does the catalog read + beachball plotting.
+class FocalMechanismsDialog {
+public:
+	QDialog *dlg = nullptr;
+	QString params;                        // "key=value\n…" on OK, else empty
+	QString filePath;                      // catalog file
+
+	explicit FocalMechanismsDialog(QWidget *parent) {
+		QUiLoader loader;
+		QFile f(QString(GMTVTK_UI_DIR) + "/focal_mechanisms.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("FocalMechanismsDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("FocalMechanismsDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		QDialog *d = dlg;                      // local copy — member `dlg` can't be lambda-captured
+
+		auto *catalogList = d->findChild<QListWidget *>("catalogFormatList");
+		if (auto *btnOpenFile = d->findChild<QToolButton *>("btnOpenFile")) {
+			QObject::connect(btnOpenFile, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select focal mechanisms file", prefStartDir());
+				if (p.isEmpty()) return;
+				filePath = p; rememberStartDir(p);
+				d->setWindowTitle("Focal mechanisms — " + QFileInfo(p).fileName());
+			});
+		}
+
+		// Plot event date is only meaningful for catalog formats that actually CARRY a date (ISF
+		// row 0, CMT .ndk row 3) — Aki & Richards / plain Harvard CMT column files (rows 1,2) have
+		// none, so the box is disabled + unchecked there (mirrors Mirone's push_readFile_CB, which
+		// enables check_plotDate only after a successful ISF/.ndk read).
+		if (auto *dateCheck = d->findChild<QCheckBox *>("chkPlotEventDate")) {
+			QObject::connect(catalogList, &QListWidget::currentRowChanged, d, [dateCheck](int row) {
+				const bool hasDate = (row == 0 || row == 3);
+				dateCheck->setEnabled(hasDate);
+				if (!hasDate) dateCheck->setChecked(false);
+			});
+		}
+
+		static const char *comboNames[5] = { "cmbDepthColor0_33", "cmbDepthColor33_70",
+			"cmbDepthColor70_150", "cmbDepthColor150_300", "cmbDepthColorGT300" };
+		static const char *labelNames[5] = { "lblDepth0_33", "lblDepth33_70",
+			"lblDepth70_150", "lblDepth150_300", "lblDepthGT300" };
+		if (auto *depthColorsCheck = d->findChild<QCheckBox *>("chkDepthColors")) {
+			QObject::connect(depthColorsCheck, &QCheckBox::toggled, d, [d](bool on) {
+				for (const char *n : comboNames) if (auto *w = d->findChild<QWidget *>(n)) w->setEnabled(on);
+				for (const char *n : labelNames) if (auto *w = d->findChild<QWidget *>(n)) w->setEnabled(on);
+			});
+		}
+
+		if (auto *btnOK = d->findChild<QPushButton *>("btnOK")) {
+			QObject::connect(btnOK, &QPushButton::clicked, d, [this, d, catalogList]() {
+				auto text = [d](const char *name) {
+					auto *e = d->findChild<QLineEdit *>(name);
+					return e ? e->text().trimmed() : QString();
+				};
+				auto checked = [d](const char *name) {
+					auto *c = d->findChild<QCheckBox *>(name);
+					return c && c->isChecked();
+				};
+				QStringList L;
+				auto kv = [&L](const QString &k, const QString &val) { L << k + "=" + val; };
+				kv("format",    QString::number((catalogList ? catalogList->currentRow() : 0) + 1));
+				kv("file",      filePath);
+				kv("magmin",    text("editMinMag"));
+				kv("magmax",    text("editMaxMag"));
+				kv("mag5size",  text("editMag5Size"));
+				kv("depmin",    text("editMinDepth"));
+				kv("depmax",    text("editMaxDepth"));
+				kv("depcolors", checked("chkDepthColors") ? "1" : "0");
+				kv("plotdate",  checked("chkPlotEventDate") ? "1" : "0");
+				for (int k = 0; k < 5; ++k) {
+					auto *cb = d->findChild<QComboBox *>(comboNames[k]);
+					kv(QString("c%1").arg(k + 1), cb ? cb->currentText().trimmed() : QString());
+				}
+				params = L.join("\n");
+				d->accept();
+			});
+		}
+	}
+
+	int exec() { return dlg ? dlg->exec() : QDialog::Rejected; }
+};
+
 // Fold / un-fold the Shading dock programmatically (Surface row click in the Scene Objects panel).
 // Lives here because FoldTitleBar is complete only in this TU fragment; 50_scene.cpp forward-decls it.
 static void toggleShadingFold(Scene *s) {
@@ -3208,9 +3304,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	enableFileDrops(win, widget, s);        // drop a grid/image/table file onto any window to add it
 	s->win = win;
 	++g_openWindows;
-	QObject::connect(win, &QObject::destroyed, [s]() {
+	QObject::connect(win, &QObject::destroyed, [s, rwp = rw.Get()]() {
 		--g_openWindows;
 		if (g_lastScene == s) g_lastScene = nullptr;   // don't let add_overlay touch a freed scene
+		if (g_lastRW == rwp) g_lastRW = nullptr;       // don't let gmtvtk_save_png capture a freed window (crash)
 		g_scenes.erase(s);                             // invalidate any host-held handle to s
 		delete s->giz; delete s;
 	});
@@ -3612,12 +3709,38 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	// Seismology discipline — Seismicity (earthquakes.m port) + TODO stubs (geoTODO) + the
 	// Elastic deformation submenu.
-	*fSeis = [mGphy, mElastic, geoTODO, backItem, reopen, s, openSeismicity, sendSeismicity]() {
+	*fSeis = [mGphy, mElastic, geoTODO, backItem, reopen, s, win, openSeismicity, sendSeismicity, visibleRegion]() {
 		mGphy->clear();
 		mGphy->setTitle("Seismology ▾");
 		backItem();
 		mGphy->addAction("Seismicity…", [openSeismicity]() { openSeismicity(false); });
-		mGphy->addAction("Focal mechanisms",              geoTODO("Focal mechanisms"));
+		mGphy->addAction("Focal mechanisms", [win, s, visibleRegion]() {
+			if (!g_juliaFocal) {
+				if (s->win) s->win->statusBar()->showMessage("Focal mechanisms: callback not registered", 3000);
+				return;
+			}
+			FocalMechanismsDialog dlg(win);
+			double W, E, S, N;
+			if (!visibleRegion(W, E, S, N)) { W = -180; E = 180; S = -90; N = 90; }
+			// The .ui ships Mirone's historical "0.8" (a PRINTED-cm size); mag5size is KILOMETRES
+			// here (N-S beachball radius of a Mw-5 event) — pre-fill a size that is actually
+			// visible at the current zoom: 2% of the visible region's width. Leaving 0.8 km on a
+			// hundreds-of-km map plots sub-pixel balls ("plotted nothing" bug, 2026-07-04);
+			// 5% was tried and read as "awfully big" on a global map.
+			if (dlg.dlg) {
+				if (auto *e = dlg.dlg->findChild<QLineEdit *>("editMag5Size")) {
+					const double wkm = (E - W) * 111.32 * std::cos((S + N) * 0.5 * 0.017453292519943295);
+					e->setText(QString::number(std::max(1.0, std::round(wkm * 0.02))));
+				}
+			}
+			if (dlg.exec() != QDialog::Accepted || dlg.params.isEmpty()) return;
+			const QString p = dlg.params + QString("\nregion=%1/%2/%3/%4")
+				.arg(W, 0, 'f', 6).arg(E, 0, 'f', 6).arg(S, 0, 'f', 6).arg(N, 0, 'f', 6);
+			if (s->win) s->win->statusBar()->showMessage("Focal mechanisms: plotting…");
+			showBusyDialog("Focal mechanisms");   // catalog read + per-event geodesic batch can take many seconds
+			g_juliaFocal(s, p.toUtf8().constData());
+			closeBusyDialog();
+		});
 		mGphy->addAction("Focal Mechanisms demo",         geoTODO("Focal Mechanisms demo"));
 		mGphy->addAction("CMT Catalog (Web download)",    geoTODO("CMT Catalog"));
 		mGphy->addAction("Global seismicity (1990-2009)", [openSeismicity]() { openSeismicity(true); });

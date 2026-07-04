@@ -787,6 +787,29 @@ GMTVTK_API void gmtvtk_log_error(void *scene, const char *msg) {
 	if (msg) sceneLogError(static_cast<Scene*>(scene), QString::fromUtf8(msg));
 }
 
+// Modal error box — for host failures the user MUST see. sceneLogError alone silently drops the
+// message when the window has no Errors console (the bare empty launcher), and even with one the
+// bottom tabs may be folded — "it failed but the reason was written somewhere invisible" reads as
+// "the feature did nothing" (Focal mechanisms bug reports, 2026-07-04). Runs on the UI thread
+// (host callbacks are invoked from menu actions).
+// The window's X actor scale (cos(midlat) for geographic windows, 1 for cartesian) — the host
+// needs it to build symbols that are ROUND ON SCREEN: a symbol drawn in raw degrees is squeezed
+// by xfac on X, so the host pre-divides its X offsets by this (focal-mechanism beachballs; any
+// future screen-round symbol). Returns 1.0 for a dead/unknown handle.
+GMTVTK_API double gmtvtk_get_xfac(void *scene) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!sceneAlive(s) || !(s->xfac > 0.0)) return 1.0;
+	return s->xfac;
+}
+
+GMTVTK_API void gmtvtk_error_box(void *scene, const char *title, const char *msg) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!msg) return;
+	QWidget *parent = (s && sceneAlive(s)) ? static_cast<QWidget*>(s->win) : nullptr;
+	QMessageBox::warning(parent, QString::fromUtf8(title && title[0] ? title : "Error"),
+	                     QString::fromUtf8(msg));
+}
+
 // Register the basemap-picker callback. `fn` (Julia @cfunction, signature JuliaBaseMapFn) is called
 // with a clicked tile's geographic region "W/E/S/N/wrap"; Julia crops data/etopo4.jpg + adds it.
 GMTVTK_API void gmtvtk_set_basemap_callback(JuliaBaseMapFn fn) {
@@ -1020,6 +1043,328 @@ GMTVTK_API int gmtvtk_add_slip_patches_h(void *handle, const double *xy, const i
 	rebuildSceneObjects(s);                            // ONE panel rebuild for the whole model
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return added;
+}
+
+// Register the Focal mechanisms callback (Geophysics > Seismology > Focal mechanisms). fn(scene,
+// params) reads/filters the catalog and adds every event's beachball via gmtvtk_add_meca_h.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_focal_callback(JuliaFocalFn fn) {
+	g_juliaFocal = fn;
+}
+
+// Build ONE flat "meca" patch (outline + fill) directly, bypassing the shared polyRebuildFill
+// triangulator (85_polygon.cpp). That path runs vtkTriangleFilter -> vtkPolygon::Triangulate,
+// which assumes a SIMPLE (non-self-intersecting) polygon; patch_meca's equal-area boundary can
+// carry a hairline self-crossing right at its start/end seam (several pieces of the boundary all
+// meet at the same disk point), which corrupts ear-clipping into a jagged self-crossing fill.
+// vtkContourTriangulator is built for exactly this class of ill-conditioned contour input (it's
+// the tool used for medical-imaging contour reconstruction, where messy/self-touching contours
+// are the norm) and triangulates it correctly. `z0` is a single CONSTANT for the whole patch
+// (sampled once at the event's location, or 0 off a grid) — beachball disks are flat schematic
+// symbols, never terrain-draped (matches Mirone, which draws them on the flat 2-D map).
+//
+// `rank` (this patch's 0-based index within the whole gmtvtk_add_meca_h batch) breaks ties
+// between PHYSICALLY OVERLAPPING beachballs. A dense catalog routinely has two events' disks
+// overlap in world space (their epicentres are closer than the sum of their plotted radii — no
+// data-entry error, just real geology plotted at a schematic symbol size); every other filled-
+// polygon feature in the app (drawn polygons, slip patches) never overlaps another instance of
+// itself, so this never came up before. applyStacking's per-element depth ramp (50_scene.cpp)
+// only touches LINE/POINT coincident-topology params for a "vec" stack item, never polygon
+// params — so every meca fill was left at the SAME fixed offset, and two overlapping fills had
+// no consistent front/back order: the GPU rasterizer's tie-break is whatever triangle happens to
+// win per-pixel, which is why the render looked shredded/random at overlaps, not "wrong" per
+// mechanism (each mechanism's own geometry was already verified correct in isolation). Fix: give
+// every patch (fill AND outline) its OWN small offset step by rank, so patch order — which is
+// catalog order, deterministic — always wins ties consistently, the same way applyStacking's
+// per-rank ramp does for every other vector element.
+// `rings` = ALL the simple closed contours (open form, no duplicated end point; pg.v holds the
+// first one for the pick/Scene-Objects plumbing) sharing ONE depth rank — i.e. one event's
+// whole dilatational sector set or whole compressive sector set, in ONE actor. Grouping per
+// rank instead of one-actor-per-ring matters for real catalogs: a 133-event ISF batch as
+// per-ring actors was ~thousands of VTK actors and rendered "horribly slow"; per-rank it is
+// ≤2 fill actors + 1 line actor per event. The rings of one rank never overlap (disk sectors),
+// so feeding the whole set to vtkContourTriangulator (even-odd across the set = their union)
+// triangulates them together correctly in one pass.
+static void mecaBuildPatch(Scene *s, Polygon &pg, double z0, int rank,
+                           const std::vector<std::vector<std::array<double,3>>> &rings) {
+	// `rank` is the EVENT index (gmtvtk_add_meca_h passes `evid[p]`, NOT the flat patch index `p`) —
+	// every sub-loop and border-ring segment of the SAME event shares one rank, since they never
+	// spatially overlap each other by construction and so never need to out-rank one another. This
+	// keeps the offset magnitude bounded by EVENT COUNT regardless of how finely one event's disk is
+	// subdivided (a dense border ring alone can be 60+ extra patches) — ranking by flat patch index
+	// was tried first and, past a few dozen total patches, its ordering stopped being reliable
+	// (observed: an entire quadrant vanishing). `pg.fill` is NEVER touched by applyVectorStacking
+	// (gatherStackItems, 50_scene.cpp, only registers `pg.line` for the shared vector pile, and
+	// meca's `pg.line` is excluded via `pg.isMeca` besides — see below) — so whatever polygon-offset
+	// we set here is FINAL, nothing downstream overwrites it.
+	// SIGN, empirically verified (a magenta-recolor smoke test isolated it): in THIS pipeline the
+	// LEAST-negative offset wins ties, not the most-negative one (opposite of the usual "negative
+	// pulls toward camera" assumption) — so a later/higher-rank EVENT needs a LESS negative value.
+	// Also carries a REAL (tiny) world-Z separation per event — an ordinary depth-test comparison,
+	// which every primitive type respects identically, unlike GL offset which does NOT compare
+	// reliably across different primitive categories (GL_POLYGON_OFFSET_FILL vs …_LINE) — this is
+	// why `pg.line` is built but never added to any renderer (see below): its outline kept bleeding
+	// through a higher-ranked event's opaque fill despite a "correct" fill-side offset.
+	constexpr double kMecaRankStep = 2000.0;
+	constexpr double kMecaRankZStep = 1.0;
+	std::vector<std::array<double,3>> ring(pg.v.begin(), pg.v.end() - 1);   // pg.v is closed (front==back)
+	for (auto &p : ring) p[2] = z0 + rank * kMecaRankZStep;
+	const double fillU = -33000.0 + kMecaRankStep * rank;   // higher rank (later event) -> wins every earlier one
+
+	// Build the outline actor (other code — Scene Objects rows, click-menu targeting, delete paths —
+	// expects every polygon's `pg.line` to exist and null-checks it defensively) but NEVER add it to
+	// any renderer: a beachball's two parts are each already a SOLID opaque fill (black/white), so
+	// their shared boundary IS the visible nodal-plane line — a stroke drawn on top has no visual
+	// job here, and its GL_POLYGON_OFFSET_LINE bias is a SEPARATE, not-numerically-comparable state
+	// from the fill's GL_POLYGON_OFFSET_FILL bias, so a lower-rank event's own outline kept winning
+	// against a higher-rank event's opaque fill and bled through it. An actor that's never added to
+	// a renderer can never bleed through anything, while `pg.line`'s default VTK visibility (true)
+	// keeps the Scene Objects checkbox state consistent with the (always-visible) fill.
+	if (!pg.linePD) pg.linePD = vtkSmartPointer<vtkPolyData>::New();
+	std::vector<std::array<double,3>> closed = ring; closed.push_back(ring.front());
+	polyFillLine(pg.linePD, closed, false);
+	pg.line = polyMakeLineActor(s, pg.linePD, 0.0, 0.0, 0.0);
+	pg.line->GetProperty()->SetLineWidth(0.6);
+
+	// Triangulate EVERY ring SEPARATELY and append the triangles (union). Feeding the whole set
+	// to ONE vtkContourTriangulator with even-odd across contours was tried and is WRONG here:
+	// adjacent same-colour sectors share whole nodal-curve edges (and near-degenerate mechanisms
+	// produce slightly overlapping sliver sectors), and even-odd CANCELS coincident/overlapping
+	// coverage — a thrust ball's black lens vanished. Per-ring triangulation + append renders
+	// the union: double-painted overlap is harmless for one opaque colour.
+	const double zl = z0 + rank * kMecaRankZStep;
+	vtkNew<vtkAppendPolyData> app;
+	for (const auto &rg : rings) {
+		if (rg.size() < 3) continue;
+		vtkNew<vtkPoints> pts;
+		vtkNew<vtkCellArray> lines;
+		for (auto &p : rg) pts->InsertNextPoint(p[0], p[1], zl);
+		vtkNew<vtkIdList> ids;
+		for (vtkIdType i = 0; i < (vtkIdType)rg.size(); ++i) ids->InsertNextId(i);
+		ids->InsertNextId(0);
+		lines->InsertNextCell(ids);
+		vtkNew<vtkPolyData> contour; contour->SetPoints(pts); contour->SetLines(lines);
+		vtkNew<vtkContourTriangulator> tri; tri->SetInputData(contour); tri->Update();
+		vtkNew<vtkPolyData> piece; piece->ShallowCopy(tri->GetOutput());
+		app->AddInputData(piece);
+	}
+	app->Update();
+
+	if (!pg.fillPD) pg.fillPD = vtkSmartPointer<vtkPolyData>::New();
+	pg.fillPD->ShallowCopy(app->GetOutput());
+	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pg.fillPD); map->ScalarVisibilityOff();
+	vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
+	map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, fillU);
+	pg.fill = vtkSmartPointer<vtkActor>::New();
+	pg.fill->SetMapper(map);
+	pg.fill->GetProperty()->SetColor(pg.fillColor[0], pg.fillColor[1], pg.fillColor[2]);
+	pg.fill->GetProperty()->SetOpacity(1.0);       // beachballs are ALWAYS fully opaque — never translucent
+	pg.fill->GetProperty()->LightingOff();
+	pg.fill->GetProperty()->EdgeVisibilityOff();
+	pg.fill->GetProperty()->BackfaceCullingOff();
+	pg.fill->PickableOff();
+	pg.fill->ForceOpaqueOn();     // hard-pin to VTK's opaque render pass, never the translucent/blended one
+	pg.line->ForceOpaqueOn();
+	pg.fill->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	(s->axesRen ? s->axesRen : s->ren)->AddActor(pg.fill);
+}
+
+// One event's stroke set (rim circle + the two nodal-plane curves) as ONE real LINE actor with
+// a constant PIXEL width — the beachball's black separating lines must be visible at ANY zoom
+// (world-space ribbon quads went sub-pixel and dissolved into dotted noise on small balls, and
+// cost ~135 extra actors per event). Cross-event opacity is safe here because every rank
+// carries a REAL world-Z separation (rank * kMecaRankZStep, plain depth test — reliable across
+// primitive types, unlike GL polygon-offset units): a higher-ranked event's fills sit ABOVE
+// this line actor's z, so lines never bleed through another ball.
+static void mecaBuildLines(Scene *s, Polygon &pg, double z0, int rank, double widthPx,
+                           const std::vector<std::vector<std::array<double,3>>> &plines) {
+	constexpr double kMecaRankZStep = 1.0;   // MUST match mecaBuildPatch
+	const double zl = z0 + rank * kMecaRankZStep;
+	vtkNew<vtkPoints> pts;
+	vtkNew<vtkCellArray> cells;
+	for (const auto &pl : plines) {
+		if (pl.size() < 2) continue;
+		const vtkIdType base = pts->GetNumberOfPoints();
+		for (auto &p : pl) pts->InsertNextPoint(p[0], p[1], zl);
+		vtkNew<vtkIdList> ids;
+		for (vtkIdType i = 0; i < (vtkIdType)pl.size(); ++i) ids->InsertNextId(base + i);
+		cells->InsertNextCell(ids);
+	}
+	if (!pg.linePD) pg.linePD = vtkSmartPointer<vtkPolyData>::New();
+	pg.linePD->SetPoints(pts);
+	pg.linePD->SetLines(cells);
+	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pg.linePD); map->ScalarVisibilityOff();
+	pg.line = vtkSmartPointer<vtkActor>::New();
+	pg.line->SetMapper(map);
+	pg.line->GetProperty()->SetColor(pg.fillColor[0], pg.fillColor[1], pg.fillColor[2]);
+	pg.line->GetProperty()->SetLineWidth((float)std::max(0.5, widthPx));
+	pg.line->GetProperty()->LightingOff();
+	pg.line->PickableOff();
+	pg.line->ForceOpaqueOn();
+	pg.line->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	(s->axesRen ? s->axesRen : s->ren)->AddActor(pg.line);
+}
+
+// Add a flat text label to a window by its handle — the host/import twin of the Text draw tool
+// (polyPlaceText, above). Sits on the XY plane at (x,y), rendered in the overlay layer so it is
+// never occluded by the relief. Used by Focal mechanisms' "Plot event date" option (and any future
+// host-driven label). `size` <= 0 keeps the TextLabel default (18px). Returns 1 if added.
+GMTVTK_API int gmtvtk_add_text_h(void *handle, double x, double y, const char *text,
+                                 double r, double g, double b, int size) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !text || !text[0]) return 0;
+	TextLabel tl;
+	tl.pos = { x, y, 0.0 };
+	tl.text = text;
+	tl.name = "Text " + std::to_string((int)s->texts.size() + 1);
+	tl.color[0] = r; tl.color[1] = g; tl.color[2] = b;
+	if (size > 0) tl.size = size;
+	tl.actor = vtkSmartPointer<vtkTextActor3D>::New();
+	textApplyProps(s, tl);
+	(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
+	s->texts.push_back(tl);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// Add a batch of focal-mechanism "beachball" patches (Seismology > Focal mechanisms) to a window
+// by its handle. Each event contributes TWO consecutive patches — compressive then dilatational,
+// computed in Julia from the nodal-plane geometry (Mirone's patch_meca.m equal-area projection)
+// and centred on the event's lon/lat. Packed exactly like gmtvtk_add_slip_patches_h: `xy` =
+// concatenated (x,y) vertex pairs of every patch, in order; `vcounts[i]` = vertex count of patch
+// i; `npatch` = 2*nevents; `rgb` = 3*npatch face colours (black/white, precomputed by the host).
+// `evid[i]` = the 0-based EVENT index patch i belongs to (Julia assigns it once per kept event,
+// shared by that event's comp/dilat sub-loops AND its border-ring segments) — the cross-event
+// depth-ordering rank is THIS, not the flat patch index `p`: a per-patch rank grows with however
+// many sub-loops/ring-segments an event happens to split into (a dense border ring alone can be
+// 60+ extra patches), inflating the polygon-offset magnitude far beyond what's needed and, past
+// some point, its ordering stops being reliable (observed: an entire quadrant vanishing). Ranking
+// by event index instead keeps the magnitude bounded by EVENT COUNT regardless of how finely any
+// one event's disk is subdivided, and patches sharing the same event legitimately don't need to
+// out-rank each other (comp/dilat/ring never spatially overlap within one event by construction).
+// Patches are PLAIN closed polygons (no isSlip/isFault wiring, unlike the slip-model patches) —
+// clicking one just shows the ordinary polygon Remove/fill menu. `name` = the Scene Objects group
+// label ("Focal mechanisms" if null/empty). Returns the number of patches added.
+GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcounts, int npatch,
+                                 const double *rgb, const int *evid,
+                                 double compR, double compG, double compB,
+                                 double dilatR, double dilatG, double dilatB,
+                                 double rimR, double rimG, double rimB, double rimWidthPct,
+                                 const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xy || !vcounts || !rgb || !evid || npatch < 1) return 0;
+	const std::string grp = (name && name[0]) ? name : "Focal mechanisms";
+	// Wire format: vcounts[p] > 0 = a simple closed FILL ring; vcounts[p] < 0 = |vcounts[p]|
+	// vertices of an open POLYLINE to stroke (rim circle / nodal-plane curve). Entries sharing
+	// the same evid[p] (the cross-event depth rank, ei*3+role from Julia) are batched into ONE
+	// actor — one fill actor per event per colour role, one line actor per event — which is
+	// what keeps a real 100+-event catalog at a few hundred actors instead of tens of thousands
+	// (the "horribly slow" bug, 2026-07-04). rgb is uniform within a rank by construction
+	// (role determines colour), so the first entry's colour serves the whole group.
+	struct MecaIn { int p; std::vector<std::vector<std::array<double,3>>> rings, plines;
+	                double cx = 0.0, cy = 0.0; int nv = 0; };
+	std::map<int, MecaIn> groups;                      // keyed by rank; std::map = build in rank order
+	int xyoff = 0, added = 0;
+	for (int p = 0; p < npatch; ++p) {
+		const bool isline = vcounts[p] < 0;
+		const int nv = isline ? -vcounts[p] : vcounts[p];
+		if (nv < (isline ? 2 : 3)) { xyoff += 2 * nv; continue; }
+		std::vector<std::array<double,3>> rg;
+		rg.reserve(nv);
+		double cx = 0.0, cy = 0.0;
+		for (int i = 0; i < nv; ++i) {
+			const double x = xy[xyoff + 2*i], y = xy[xyoff + 2*i + 1];
+			rg.push_back({ x, y, 0.0 });
+			cx += x; cy += y;
+		}
+		xyoff += 2 * nv;
+		auto it = groups.find(evid[p]);
+		if (it == groups.end()) { it = groups.emplace(evid[p], MecaIn{}).first; it->second.p = p; }
+		MecaIn &mi = it->second;
+		(isline ? mi.plines : mi.rings).push_back(std::move(rg));
+		mi.cx += cx; mi.cy += cy; mi.nv += nv;
+	}
+	for (auto &kv2 : groups) {
+		const int rank = kv2.first;
+		MecaIn &mi = kv2.second;
+		Polygon pg;
+		const auto &vref = mi.rings.empty() ? mi.plines.front() : mi.rings.front();
+		pg.v.assign(vref.begin(), vref.end());
+		pg.v.push_back(pg.v.front());
+		pg.closed = true;
+		pg.isMeca = true;
+		pg.groupName = grp;
+		pg.name = "beachball patch " + std::to_string(mi.p + 1);   // vestigial: isMeca patches never get their own row
+		pg.fillColor[0] = rgb[3*mi.p]; pg.fillColor[1] = rgb[3*mi.p + 1]; pg.fillColor[2] = rgb[3*mi.p + 2];
+		pg.fillOpacity = 1.0;                          // beachball quadrants are SOLID-filled (Mirone FaceColor)
+		const double z0raw = s->gridZ.empty() ? 0.0 : sampleZ(s, mi.cx / mi.nv, mi.cy / mi.nv);
+		const double z0 = std::isnan(z0raw) ? 0.0 : z0raw;
+		if (!mi.rings.empty()) mecaBuildPatch(s, pg, z0, rank, mi.rings);
+		else                   mecaBuildLines(s, pg, z0, rank, rimWidthPct, mi.plines);
+		pg.stack = s->vecSeq++;                        // lands on the shared vector pile
+		s->polys.push_back(pg);
+		++added;
+	}
+	if (added == 0) return 0;
+	// Cache this batch's colours/rim-width for the group's properties dialog (mecaGroupPropsDialog,
+	// 50_scene.cpp) to pre-fill from, without asking Julia — the ACTUAL Apply round-trip still goes
+	// through Julia (a new rim width needs fresh geodesic geometry).
+	bool found = false;
+	for (auto &g : s->mecaGroups) if (g.name == grp) {
+		g.compColor[0]=compR; g.compColor[1]=compG; g.compColor[2]=compB;
+		g.dilatColor[0]=dilatR; g.dilatColor[1]=dilatG; g.dilatColor[2]=dilatB;
+		g.rimColor[0]=rimR; g.rimColor[1]=rimG; g.rimColor[2]=rimB;
+		g.rimWidthPct = rimWidthPct;
+		found = true; break;
+	}
+	if (!found) {
+		MecaGroupProps g; g.name = grp;
+		g.compColor[0]=compR; g.compColor[1]=compG; g.compColor[2]=compB;
+		g.dilatColor[0]=dilatR; g.dilatColor[1]=dilatG; g.dilatColor[2]=dilatB;
+		g.rimColor[0]=rimR; g.rimColor[1]=rimG; g.rimColor[2]=rimB;
+		g.rimWidthPct = rimWidthPct;
+		s->mecaGroups.push_back(g);
+	}
+	applyVectorStacking(s);
+	rebuildSceneObjects(s);
+	// A recolour (gmtvtk_remove_meca_group_h then straight back here) does TWO rebuilds of the Scene
+	// Objects panel back-to-back with no real event-loop turn in between — rebuildSceneObjects wipes
+	// the OLD QTreeWidget via deleteLater(), which normally only actually runs once control returns
+	// to the top of the app's event loop; back-to-back rebuilds can otherwise leave the stale tree
+	// (and its old "Focal mechanisms" row) alive alongside the new one until then. Force the pending
+	// deferred delete through NOW so the panel never shows a transient duplicate row.
+	QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+	// Beachballs are placed at their true world lon/lat (geodesic), but a still-blank empty
+	// launcher's camera is framing its tiny placeholder plane, nowhere near that -> the batch
+	// plots successfully yet is invisible (looked like "loading does nothing"). Same "first
+	// content into an empty window: frame it" rule gmtvtk_add_surface_h already applies. MUST
+	// reset from axesRen (mecaBuildPatch adds pg.fill there, never to s->ren) since ResetCamera
+	// fits ONLY that renderer's own props -> resetting s->ren sees just the hidden placeholder
+	// and leaves the camera pointed at nothing; axesRen shares s->ren's camera object (SetActiveCamera
+	// in buildAndShow) so fitting through it still repositions the one camera both renderers use.
+	if (s->emptyStart) (s->axesRen ? s->axesRen : s->ren)->ResetCamera();
+	s->ren->ResetCameraClippingRange();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return added;
+}
+
+// Register the callback for the focal-mechanism GROUP properties dialog (mecaGroupPropsDialog,
+// 50_scene.cpp): fn(scene, groupName, "key=value\n…") on Apply. nullptr to detach.
+GMTVTK_API void gmtvtk_set_meca_props_callback(JuliaMecaPropsFn fn) {
+	g_juliaMecaProps = fn;
+}
+
+// Remove every isMeca patch sharing groupName (a whole focal-mechanism batch) plus its cached
+// properties-dialog state. Used by the Scene Objects group row's "Remove" menu AND as the first
+// step of a recolour/re-stroke (Julia removes the old batch, then re-plots it fresh — see
+// gmtvtk_set_meca_props_callback). Returns 1 if the scene handle was alive, 0 otherwise.
+GMTVTK_API int gmtvtk_remove_meca_group_h(void *handle, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return 0;
+	deleteMecaGroup(s, QString::fromUtf8(name));
+	QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);   // see gmtvtk_add_meca_h
+	return 1;
 }
 
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------

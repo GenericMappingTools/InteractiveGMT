@@ -3,6 +3,8 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp);   // sym
 static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
 static void textApplyProps(Scene *s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
 static void deleteSlipGroup(Scene *s, const QString& groupName); // 85_polygon.cpp: delete all patches in a slip model
+static void deleteMecaGroup(Scene *s, const QString& groupName); // 85_polygon.cpp: delete a focal-mechanism batch
+static void mecaGroupPropsDialog(Scene *s, const QString& groupName, const QPoint& gp); // defined below
 
 // Append one execution-error line to a window's read-only "Errors" tab and raise it (so a failure in
 // a background op is VISIBLE in the window, not just on the REPL's stderr). Shared by the
@@ -583,7 +585,7 @@ static std::vector<StackItem> gatherStackItems(Scene *s) {
 	}
 	for (auto& o  : s->overlays) if (o.actor) v.push_back({ { o.actor.Get()  }, &o.stack,  true, false });
 	for (auto& sl : s->symbols)  if (sl.actor) v.push_back({ { sl.actor.Get() }, &sl.stack, true, sl.solid3D });
-	for (auto& pg : s->polys)    if (pg.line)  v.push_back({ { pg.line.Get()  }, &pg.stack, true, false });
+	for (auto& pg : s->polys)    if (pg.line && !pg.isMeca) v.push_back({ { pg.line.Get()  }, &pg.stack, true, false });
 	return v;
 }
 
@@ -887,6 +889,92 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	}
 }
 
+// Focal-mechanism GROUP properties: compression / dilatation / outline colour + outline width.
+// Only clicking OK executes anything (Cancel / closing the dialog changes nothing) — a new rim
+// width needs fresh geodesic geometry that only Julia can compute, so Apply round-trips through
+// g_juliaMecaProps: it removes the old batch and re-plots it from the ORIGINAL catalog params with
+// the new colours/width merged in. The local s->mecaGroups cache is updated immediately too, purely
+// so re-opening this dialog before that round-trip finishes still shows what was just picked.
+static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoint & /*gp*/) {
+	const std::string gname = groupName.toStdString();
+	MecaGroupProps cur;  cur.name = gname;
+	for (auto &g : s->mecaGroups) if (g.name == gname) { cur = g; break; }
+
+	QDialog dlg(s->widget);
+	dlg.setWindowTitle("Focal mechanisms — properties");
+	QVBoxLayout *lay = new QVBoxLayout(&dlg);
+
+	auto colorRow = [&](const QString &label, const double rgb[3]) {
+		QHBoxLayout *h = new QHBoxLayout();
+		h->addWidget(new QLabel(label, &dlg));
+		QPushButton *btn = new QPushButton(&dlg);
+		btn->setFixedWidth(60);
+		auto paint = [btn](double r, double g, double b) {
+			btn->setProperty("r", r); btn->setProperty("g", g); btn->setProperty("b", b);
+			btn->setStyleSheet(QString("background-color: %1;").arg(QColor::fromRgbF(r, g, b).name()));
+		};
+		paint(rgb[0], rgb[1], rgb[2]);
+		QObject::connect(btn, &QPushButton::clicked, [btn, paint]() {
+			QColor init = QColor::fromRgbF(btn->property("r").toDouble(), btn->property("g").toDouble(), btn->property("b").toDouble());
+			QColor picked = QColorDialog::getColor(init, btn, "Choose colour");
+			if (picked.isValid()) paint(picked.redF(), picked.greenF(), picked.blueF());
+		});
+		h->addWidget(btn);
+		lay->addLayout(h);
+		return btn;
+	};
+	QPushButton *compBtn  = colorRow("Compression colour:", cur.compColor);
+	QPushButton *dilatBtn = colorRow("Dilatation colour:",  cur.dilatColor);
+	QPushButton *rimBtn   = colorRow("Outline colour:",     cur.rimColor);
+
+	QHBoxLayout *hw = new QHBoxLayout();
+	hw->addWidget(new QLabel("Outline width:", &dlg));
+	QDoubleSpinBox *rimSpin = new QDoubleSpinBox(&dlg);
+	rimSpin->setRange(0.0, 10.0);  rimSpin->setSingleStep(0.1);  rimSpin->setSuffix(" %");
+	rimSpin->setValue(cur.rimWidthPct);
+	hw->addWidget(rimSpin);
+	lay->addLayout(hw);
+
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+	QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+	lay->addWidget(bb);
+
+	if (dlg.exec() != QDialog::Accepted) return;   // Cancel / close -> nothing changes
+
+	double cc[3] = { compBtn->property("r").toDouble(),  compBtn->property("g").toDouble(),  compBtn->property("b").toDouble() };
+	double dc[3] = { dilatBtn->property("r").toDouble(), dilatBtn->property("g").toDouble(), dilatBtn->property("b").toDouble() };
+	double rc[3] = { rimBtn->property("r").toDouble(),   rimBtn->property("g").toDouble(),   rimBtn->property("b").toDouble() };
+	const double rimPct = rimSpin->value();
+
+	bool found = false;
+	for (auto &g : s->mecaGroups) if (g.name == gname) {
+		g.compColor[0]=cc[0]; g.compColor[1]=cc[1]; g.compColor[2]=cc[2];
+		g.dilatColor[0]=dc[0]; g.dilatColor[1]=dc[1]; g.dilatColor[2]=dc[2];
+		g.rimColor[0]=rc[0]; g.rimColor[1]=rc[1]; g.rimColor[2]=rc[2];
+		g.rimWidthPct = rimPct;
+		found = true; break;
+	}
+	if (!found) {
+		MecaGroupProps g; g.name = gname;
+		g.compColor[0]=cc[0]; g.compColor[1]=cc[1]; g.compColor[2]=cc[2];
+		g.dilatColor[0]=dc[0]; g.dilatColor[1]=dc[1]; g.dilatColor[2]=dc[2];
+		g.rimColor[0]=rc[0]; g.rimColor[1]=rc[1]; g.rimColor[2]=rc[2];
+		g.rimWidthPct = rimPct;
+		s->mecaGroups.push_back(g);
+	}
+
+	if (!g_juliaMecaProps) { sceneLogError(s, "Focal mechanisms: properties callback not registered"); return; }
+	char buf[256];
+	std::snprintf(buf, sizeof(buf),
+	              "compcolor=%d/%d/%d\ndilatcolor=%d/%d/%d\nrimcolor=%d/%d/%d\nrimwidth=%.5f",
+	              (int)(cc[0]*255.0+0.5), (int)(cc[1]*255.0+0.5), (int)(cc[2]*255.0+0.5),
+	              (int)(dc[0]*255.0+0.5), (int)(dc[1]*255.0+0.5), (int)(dc[2]*255.0+0.5),
+	              (int)(rc[0]*255.0+0.5), (int)(rc[1]*255.0+0.5), (int)(rc[2]*255.0+0.5),
+	              rimPct / 100.0);
+	g_juliaMecaProps(s, gname.c_str(), buf);
+}
+
 static void rebuildSceneObjects(Scene *s) {
 	if (!s || !s->objPanel)
 		return;
@@ -1148,7 +1236,30 @@ static void rebuildSceneObjects(Scene *s) {
 	for (auto& cu : s->curtains)
 		addRow(QString::fromStdString(cu.name), cu.actor, IC_Curtain);
 	QString slipGroupOpen;                               // name of the currently-open slip-patch group node (empty = none)
+	std::set<std::string> mecaGroupsShown;               // focal-mechanism groupNames already given their ONE row
 	for (auto& pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
+		// Focal-mechanism beachball patches (comp/dilat/rim-ring, dozens to hundreds per catalog) get
+		// NO individual rows at all — just ONE row per batch (groupName), first time it's seen. Left-
+		// click opens the colours/outline properties dialog; right-click offers Remove.
+		if (pg.isMeca) {
+			if (mecaGroupsShown.insert(pg.groupName).second) {
+				const QString gname = QString::fromStdString(pg.groupName);
+				const bool vis = pg.fill && pg.fill->GetVisibility() != 0;
+				makeRow(gname, IC_Polygon, vis,
+				        [s, gname](bool on) {
+				            const std::string gn = gname.toStdString();
+				            for (auto& p : s->polys) if (p.isMeca && p.groupName == gn && p.fill) p.fill->SetVisibility(on ? 1 : 0);
+				        },
+				        [s, gname](const QPoint& g) { mecaGroupPropsDialog(s, gname, g); },
+				        "Left-click for properties (colours, outline) · right-click to remove",
+				        [s, gname](const QPoint& g) {
+				            QMenu m(s->widget);
+				            QAction *aRem = m.addAction("Remove");
+				            if (m.exec(g) == aRem) deleteMecaGroup(s, gname);
+				        });
+			}
+			continue;
+		}
 		// Slip-model patches (Import Model Slip) carry a groupName: fold every consecutive patch that
 		// shares it under ONE collapsible parent node so 100s of patches don't flood the panel as a flat
 		// list. Close the open group when the run ends or the name changes.

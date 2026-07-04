@@ -49,6 +49,7 @@
 #include <QWidgetAction>
 #include <functional>
 #include <algorithm>
+#include <map>
 #include <QToolTip>
 #include <QColorDialog>
 #include <QTimer>
@@ -60,6 +61,7 @@
 #include <QFontMetrics>
 #include <functional>
 #include <QFile>
+#include <QUiLoader>
 #include <QTextStream>
 #include <QPlainTextEdit>
 #include <QLineEdit>
@@ -149,6 +151,8 @@
 #include <vtkPolyDataAlgorithm.h>
 #include <vtkPolyDataNormals.h>
 #include <vtkTriangleFilter.h>
+#include <vtkContourTriangulator.h>
+#include <vtkAppendPolyData.h>
 #include <vtkColorTransferFunction.h>
 #include <vtkScalarsToColors.h>
 #include <vtkImageData.h>

@@ -62,7 +62,9 @@ function _ensure_callbacks()
 	                    ("faultgeom",   _register_faultgeom),
 	                    ("elastic",     _register_elastic),
 	                    ("importfault", _register_importfault),
-	                    ("modelslip",   _register_modelslip))
+	                    ("modelslip",   _register_modelslip),
+	                    ("focal",       _register_focal),
+	                    ("meca-props",  _register_meca_props))
 		try
 			fn()
 		catch e
