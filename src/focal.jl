@@ -72,7 +72,7 @@ function _focal_sdr_to_nu(str::Float64, dip::Float64, rake::Float64)
 	return n, u
 end
 
-function _focal_nu_to_sdr(n::Vector{Float64}, u::Vector{Float64})
+function _focal_nu_to_sdr(n::NTuple{3,Float64}, u::NTuple{3,Float64})
 	if n[3] > 0
 		n = .-n; u = .-u                       # keep the normal pointing down (dip ∈ [0,90])
 	end
@@ -351,7 +351,11 @@ function _focal_isf(file::String, W::Float64, E::Float64, S::Float64, N::Float64
 	m = D.data
 	ci(name) = findfirst(==(name), D.colnames)
 	mantissa = m[:, ci("mantissa")];  expo = m[:, ci("exponent")]
-	mag = @. (log10(mantissa) + expo - 9.1) * 2/3
+	# ISF carries 9999999-style sentinels for a missing scalar moment (seen in real catalogs:
+	# exponent = 9.999999e6 -> "Mw 6666660" poisoning the dialog's Max-magnitude prefill and, if
+	# kept, a planet-sized beachball). Any physically impossible moment -> NaN magnitude; the
+	# plot loop and the filter both already skip NaN-mag events.
+	mag = @. ifelse((mantissa > 0) & (expo < 40), (log10(mantissa) + expo - 9.1) * 2/3, NaN)
 	yy, mo, dd = m[:,ci("year")], m[:,ci("month")], m[:,ci("day")]
 	date = [string(round(Int, dd[i]), "/", round(Int, mo[i]), "/", round(Int, yy[i])) for i in axes(m,1)]
 	lon, lat = m[:,ci("lon")], m[:,ci("lat")]
@@ -456,7 +460,9 @@ function _focal_peek_and_frame(scene::Ptr{Cvoid}, file::String, fmt::Int)
 			ccall(_fn(:gmtvtk_process_events), Cint, ())
 		end
 		mag5 = _focal_mag5_default(W, E, S, N)
-		m0, m1 = extrema(mag);  z0, z1 = extrema(dep)
+		finmag = filter(isfinite, mag)               # sentinel moments are NaN-mag (see _focal_isf)
+		m0, m1 = isempty(finmag) ? (NaN, NaN) : extrema(finmag)
+		z0, z1 = extrema(dep)
 		print(mag5, '/', m0, '/', m1, '/', z0, '/', z1)
 	catch
 	end
@@ -521,6 +527,12 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 	# let every event's comp fill punch through every other event's dilat fill (not opaque).
 	order = sort(collect(idx); by = i -> isnan(mag[i]) ? Inf : mag[i], rev=true)
 	ei = -1     # 0-based EVENT index — bumped once per KEPT event, shared by every patch it contributes
+	# Anchor lines + date labels are ACCUMULATED across the event loop and sent in ONE C call each
+	# after it — the per-event gmtvtk_add_text_h/gmtvtk_add_overlay_h calls each did a full Scene
+	# Objects rebuild + window render, which is what made "Plot event date" take ~90 s for a
+	# 133-event catalog while the beachballs themselves took 0.5 s (2026-07-04).
+	axyz = Float64[];  asegoff = Cint[]
+	txy = Float64[];  txts = String[]
 	for i in order
 		isnan(mag[i]) && continue
 		dim = mag5 / 5 * max(mag[i], 0.0)      # radius in KM for this event's magnitude
@@ -566,19 +578,27 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 			push!(evid, Cint(ei * 3 + role))   # event-dominant rank — see the OPAQUE comment above
 		end
 		if lon[i] != plon[i] || lat[i] != plat[i]           # anchor line, epicenter -> plotted position
-			axyz = Float64[lon[i], lat[i], 0.0, plon[i], plat[i], 0.0]
-			segoff = Cint[0, 2]
-			GC.@preserve axyz segoff ccall(_fn(:gmtvtk_add_overlay_h), Cint,
-				(Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble,
-				 Cdouble, Cdouble, Cstring),
-				scene, axyz, Cint(2), segoff, Cint(1), Cint(1),
-				0.0, 0.0, 0.0, 1.0, -1.0, "Focal mechanisms")
+			push!(asegoff, Cint(length(axyz) ÷ 3))
+			push!(axyz, lon[i], lat[i], 0.0, plon[i], plat[i], 0.0)
 		end
 		if plotdate && !isempty(date[i])
-			ccall(_fn(:gmtvtk_add_text_h), Cint,
-				(Ptr{Cvoid}, Cdouble, Cdouble, Cstring, Cdouble, Cdouble, Cdouble, Cint),
-				scene, plon[i], plat[i] + rdeg * 1.15, date[i], 0.0, 0.0, 0.0, 12)   # just above the rim
+			push!(txy, plon[i], plat[i] + rdeg * 1.15)      # just above the rim
+			push!(txts, date[i])
 		end
+	end
+	if !isempty(asegoff)     # all anchor lines, ONE overlay call (one rebuild+render)
+		push!(asegoff, Cint(length(axyz) ÷ 3))   # terminal offset — addOverlay reads segoff[k+1]
+		GC.@preserve axyz asegoff ccall(_fn(:gmtvtk_add_overlay_h), Cint,
+			(Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble,
+			 Cdouble, Cdouble, Cstring),
+			scene, axyz, Cint(length(axyz) ÷ 3), asegoff, Cint(length(asegoff) - 1), Cint(1),
+			0.0, 0.0, 0.0, 1.0, -1.0, "Focal mechanisms")
+	end
+	if !isempty(txts)        # all date labels, ONE batch call (one rebuild+render)
+		blob = join(txts, '\x1e')
+		GC.@preserve txy blob ccall(_fn(:gmtvtk_add_texts_h), Cint,
+			(Ptr{Cvoid}, Ptr{Cdouble}, Cstring, Cint, Cdouble, Cdouble, Cdouble, Cint),
+			scene, txy, blob, Cint(length(txts)), 0.0, 0.0, 0.0, 12)
 	end
 	isempty(vcounts) && return 0
 	n = GC.@preserve xy vcounts rgb evid ccall(_fn(:gmtvtk_add_meca_h), Cint,

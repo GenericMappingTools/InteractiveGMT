@@ -15,6 +15,7 @@ Windows-only (the viewer DLL is a Windows binary).
 module InteractiveGMT
 
 using GMT
+using PrecompileTools: @setup_workload, @compile_workload
 
 # --- C-API DLL loader (resolved at runtime in __init__; see libgmtvtk.jl) ----------------
 include("libgmtvtk.jl")
@@ -65,10 +66,29 @@ export view_grid, view_image, view_points, view_fv, view_demo, iview,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot
 
-# NB: deliberately NO @compile_workload over the callbacks. `@cfunction` inference reaches into GMT,
-# so precompiling the `_register_*` baked GMT specializations into our pkgimage — the cache ballooned
-# by many MB. Callbacks are now thin invokelatest trampolines registered lazily on first window open
-# (see `_ensure_callbacks` in eventloop.jl); their heavy bodies compile only when a menu is clicked.
+# --- precompile (ALL of it lives HERE, via PrecompileTools — never hidden in other files) ---
+# Callbacks are thin invokelatest trampolines registered lazily on first window open
+# (`_ensure_callbacks`, eventloop.jl), so the workload below never touches a @cfunction. It bakes
+# the expensive pure-Julia work the first use of a menu would otherwise JIT-compile in front of
+# the user — e.g. the first focal plot paid ~3.4 s of JIT vs 0.5 s of real work (2026-07-04,
+# 133-event ISF; beachball geometry alone was 1.5 s). RUN what is GMT-free; ccall-bearing glue
+# gets `precompile` directives only (compiled, never executed — the DLL is absent here).
+@setup_workload begin
+	@compile_workload begin
+		# Focal mechanisms: beachball geometry on two real mechanisms (one-plane Aki derivation
+		# + two-plane general oblique) so every internal helper comes out compiled.
+		for (s1, d1, r1, s2, d2, r2) in ((120.0, 45.0, -30.0, NaN, NaN, NaN),
+		                                 (35.0, 60.0, 100.0, 190.0, 32.0, 73.0))
+			comp, dilat, n1, n2 = _focal_patch_meca(s1, d1, r1, s2, d2, r2)
+			_focal_sectors(s1, d1, r1, n1, n2)
+		end
+		precompile(_focal_filter, (Dict{String,String}, Vector{Float64}, Vector{Float64}, Vector{Float64}, Vector{Float64}))
+		precompile(_focal_plot, (Ptr{Cvoid}, Dict{String,String}, Vector{Float64}, Vector{Float64},
+		                         Vector{Float64}, Vector{Float64}, Vector{Float64}, Vector{Float64},
+		                         Vector{Float64}, Vector{Float64}, Vector{Float64}, Vector{Float64},
+		                         Vector{Float64}, Vector{Float64}, Vector{String}, Vector{Int}))
+	end
+end
 
 # Load the viewer DLL + register the Julia-console callback. RUNTIME ONLY — a dlopen handle, the
 # dlsym pointers and the @cfunction are all runtime values that cannot be baked into a precompiled

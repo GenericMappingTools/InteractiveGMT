@@ -48,7 +48,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_faultgeom_callback,
 	:gmtvtk_set_elastic_callback, :gmtvtk_set_importfault_callback, :gmtvtk_add_fault_h,
 	:gmtvtk_add_fault_geom_h, :gmtvtk_set_modelslip_callback, :gmtvtk_add_slip_patches_h,
-	:gmtvtk_set_focal_callback, :gmtvtk_add_meca_h, :gmtvtk_add_text_h,
+	:gmtvtk_set_focal_callback, :gmtvtk_add_meca_h, :gmtvtk_add_text_h, :gmtvtk_add_texts_h,
 	:gmtvtk_set_meca_props_callback, :gmtvtk_remove_meca_group_h,
 	:gmtvtk_fault_add_test, :gmtvtk_fault_apply_test, :gmtvtk_fault_plane_test,
 	:gmtvtk_set_flat2d_test, :gmtvtk_objrows_test,
