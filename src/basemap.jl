@@ -58,9 +58,13 @@ const _BASEMAP_LOADED = Dict{Ptr{Cvoid}, Set{String}}()
 # place (real scales + geographic coord grid + coord readout + centred view); a populated window
 # keeps its view and gets the tile on top as an ExtraObj image.
 # Re-selecting an already-loaded tile in the same window is ignored.
-function _on_basemap(scene::Ptr{Cvoid}, copt::Cstring)::Cvoid
+_on_basemap(scene::Ptr{Cvoid}, copt::Cstring)::Cvoid = _on_basemap(scene, unsafe_string(copt))
+
+# String-taking body, split out so other Julia callers (e.g. focal.jl, once it knows the
+# data's own extent) can promote/extend a base map directly, without round-tripping through Cstring.
+function _on_basemap(scene::Ptr{Cvoid}, copt::AbstractString)::Cvoid
 	try
-		p = split(unsafe_string(copt), '/')
+		p = split(copt, '/')
 		W, E, S, N = parse.(Float64, p[1:4])
 		wrap = length(p) >= 5 && strip(p[5]) == "1"
 		tag  = length(p) >= 6 ? String(strip(p[6])) : "global"

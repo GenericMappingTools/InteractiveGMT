@@ -422,6 +422,42 @@ function _focal_filter(d, lon, lat, dep, mag)
 	return keep
 end
 
+# N-S radius (km) of a Mw-5 beachball that reads as 2% of a W/E/S/N region's width — the ONE
+# formula both _focal_plot's empty-field fallback and the dialog's live prefill (_focal_peek_mag5)
+# use, so they can never drift apart (same-quantity-same-function).
+_focal_mag5_default(W, E, S, N) = max(1.0, 0.02 * (E - W) * 111.32 * cosd((S + N) / 2))
+
+# Called from C++ (FocalMechanismsDialog, via g_juliaEval) the MOMENT a catalog file is picked or
+# the format selection changes — i.e. from the DIALOG itself, before OK is ever clicked. Does two
+# things with the one read: (1) on an EMPTY launcher, frames the basemap to the file's own extent
+# RIGHT THERE (reusing the same _on_basemap crop-and-promote path _on_focal uses at plot time —
+# so the user sees the map while still picking filters, not only after clicking OK); (2) returns
+# the same 2%-of-width mag5size default _focal_plot itself falls back to, for the dialog's
+# "Magnitude 5 size" box. Reads raw lon/lat only (no mag/depth filter, no beachball geometry) —
+# cheap even on a large catalog. Returns NaN on any read failure (wrong format for this file yet,
+# bad/partial path): the C++ side leaves both the map and the field alone in that case.
+function _focal_peek_and_frame(scene::Ptr{Cvoid}, file::AbstractString, fmt::Int)
+	try
+		isfile(file) || return NaN
+		lon, lat = fmt == 1 ? _focal_isf(file, -180.0, 180.0, -90.0, 90.0)[1:2] :
+		           fmt == 2 ? _focal_aki(file)[1:2] :
+		           fmt == 3 ? _focal_cmt(file)[1:2] :
+		           fmt == 4 ? _focal_ndk(file)[1:2] : (return NaN)
+		isempty(lon) && return NaN
+		W, E = extrema(lon); S, N = extrema(lat)
+		if ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
+			pad(lo, hi) = (hi - lo) < 1e-6 ? (lo - 1.0, hi + 1.0) : (lo - 0.05 * (hi - lo), hi + 0.05 * (hi - lo))
+			Wd, Ed = pad(W, E); Sd, Nd = pad(S, N)
+			Wd = max(Wd, -180.0); Ed = min(Ed, 180.0); Sd = max(Sd, -90.0); Nd = min(Nd, 90.0)
+			_on_basemap(scene, "$Wd/$Ed/$Sd/$Nd/0/region")
+			ccall(_fn(:gmtvtk_process_events), Cint, ())
+		end
+		return _focal_mag5_default(W, E, S, N)
+	catch
+		return NaN
+	end
+end
+
 # Pack every kept event's compressive+dilatational patches and hand the whole catalog to
 # gmtvtk_add_meca_h in ONE call — each patch already carries its own explicit fill colour, so
 # (unlike seismicity's per-bucket symbol layers) there is no need to split into separate objects.
@@ -438,14 +474,15 @@ end
 # beachball; 1° lat = 111.32 km). Mirone's own printed-cm meaning has no equivalent here.
 function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1, str2, dip2, rake2,
                       plon, plat, date, idx)
-	# mag5size = N-S radius, in KM, of a Mw-5 beachball (the dialog pre-fills 2% of the visible
-	# region's width). An empty/zero/garbage field falls back to that same 2%-of-region rule —
-	# NEVER to a fixed small number: 0.8 (Mirone's printed-cm default) read as km plots
-	# sub-pixel, invisible balls ("plotted nothing" bug, 2026-07-04).
+	# mag5size = N-S radius, in KM, of a Mw-5 beachball (the dialog live-prefills this from the
+	# CHOSEN catalog's own extent, see _focal_peek_mag5). An empty/zero/garbage field falls back to
+	# the SAME 2%-of-region rule (_focal_mag5_default) — NEVER to a fixed small number: 0.8
+	# (Mirone's printed-cm default) read as km plots sub-pixel, invisible balls ("plotted nothing"
+	# bug, 2026-07-04).
 	mag5 = something(tryparse(Float64, _get(d, "mag5size")), 0.0)
 	if mag5 <= 0
 		W, E, S, N = _seis_region(d)
-		mag5 = max(1.0, 0.02 * (E - W) * 111.32 * cosd((S + N) / 2))
+		mag5 = _focal_mag5_default(W, E, S, N)
 	end
 	# X actor scale of this window (cos(midlat) geographic, 1 cartesian) — needed for
 	# screen-round symbol placement, see the comment at the vertex loop below.
@@ -565,13 +602,24 @@ _focal_fail(scene, msg) = (_viewer_log_error(scene, msg);
 	ccall(_fn(:gmtvtk_error_box), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), scene, "Focal mechanisms", String(msg)))
 
 # cparams = "key=value\n…" (the same block format NSWING/Seismicity use -> same parser).
+#
+# BASEMAP ORDER, empty launcher: the basemap is placed IMMEDIATELY after the catalog is READ —
+# from the FULL read extent, before the mag/depth filter narrows it to the kept subset. Placing it
+# only once "keep"/idx are known (the earlier version of this fix) meant a filter that excluded
+# every event returned with NO basemap ever shown — the user staring at a blank/frozen window even
+# though the file was read fine and its extent was already known. There is no meaningful "visible
+# region" on an empty launcher either way, so cropping the read (or filter) against the C++ menu's
+# placeholder viewport silently drops every real event ("no events" LIE, 2026-07-04) — read the
+# WHOLE catalog (world crop for the region-cropped ISF reader) regardless. A populated window is
+# unchanged: crop/filter against the current on-screen region, exactly as before.
 function _on_focal(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 	try
 		d = _nswing_parse(unsafe_string(cparams))
 		fmt = something(tryparse(Int, _get(d, "format", "1")), 1)
 		file = _get(d, "file")
 		isempty(file) && error("Focal mechanisms: no catalog file selected")
-		W, E, S, N = _seis_region(d)
+		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
+		W, E, S, N = empty ? (-180.0, 180.0, -90.0, 90.0) : _seis_region(d)
 		lon, lat, dep, mag, str1, dip1, rake1, str2, dip2, rake2, plon, plat, date =
 			fmt == 1 ? _focal_isf(file, W, E, S, N) :
 			fmt == 2 ? _focal_aki(file) :
@@ -580,6 +628,22 @@ function _on_focal(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		if isempty(lon)
 			_focal_fail(scene, "The catalog returned no events.\n\nfile: $file\nformat: $fmt (1=ISF 2=Aki 3=CMT 4=.ndk)\nregion: $W/$E/$S/$N")
 			return
+		end
+		if empty
+			# The file is READ — plot the basemap RIGHT NOW, framed to the WHOLE catalog's own extent
+			# (5% pad; a single-point/degenerate catalog gets a +-1 deg fallback pad), before the
+			# mag/depth filter runs. A filter that excludes everything below still leaves the user
+			# looking at a real map of where the catalog is, not a blank window.
+			pad(lo, hi) = (hi - lo) < 1e-6 ? (lo - 1.0, hi + 1.0) : (lo - 0.05 * (hi - lo), hi + 0.05 * (hi - lo))
+			Wd, Ed = pad(extrema(lon)...)
+			Sd, Nd = pad(extrema(lat)...)
+			Wd = max(Wd, -180.0); Ed = min(Ed, 180.0); Sd = max(Sd, -90.0); Nd = min(Nd, 90.0)
+			_on_basemap(scene, "$Wd/$Ed/$Sd/$Nd/0/region")
+			d["region"] = "$Wd/$Ed/$Sd/$Nd"          # superset of every point read -> filter below is mag/depth-only
+			# Force it to actually PAINT now, before the per-event beachball geometry build — otherwise
+			# the whole read+frame+plot happens inside one blocking call under an indeterminate busy
+			# spinner and the map only appears at the very end, reading as "frozen".
+			ccall(_fn(:gmtvtk_process_events), Cint, ())
 		end
 		keep = _focal_filter(d, lon, lat, dep, mag)
 		idx = findall(keep)

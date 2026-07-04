@@ -2472,7 +2472,7 @@ public:
 	QString params;                        // "key=value\n…" on OK, else empty
 	QString filePath;                      // catalog file
 
-	explicit FocalMechanismsDialog(QWidget *parent) {
+	explicit FocalMechanismsDialog(QWidget *parent, Scene *scene = nullptr) {
 		QUiLoader loader;
 		QFile f(QString(GMTVTK_UI_DIR) + "/focal_mechanisms.ui");
 		if (!f.open(QFile::ReadOnly)) {
@@ -2486,12 +2486,38 @@ public:
 		QDialog *d = dlg;                      // local copy — member `dlg` can't be lambda-captured
 
 		auto *catalogList = d->findChild<QListWidget *>("catalogFormatList");
+		// Live "Magnitude 5 size" default from the CHOSEN FILE's own lon/lat extent — read AFTER
+		// the catalog is picked, not the window's (possibly placeholder, possibly unrelated)
+		// visible region. Best-effort: g_juliaEval round-trips a plain Julia call (_focal_peek_mag5,
+		// src/focal.jl) that returns NaN on any read failure (wrong format for this file yet, bad
+		// path) — the field is simply left alone in that case.
+		auto updateMag5FromData = [this, d, catalogList, scene]() {
+			if (filePath.isEmpty() || !g_juliaEval) return;
+			auto *e = d->findChild<QLineEdit *>("editMag5Size");
+			if (!e) return;
+			const int fmt = (catalogList ? catalogList->currentRow() : 0) + 1;
+			// Pass the window's own Scene* as a raw Julia pointer literal (not through the `fig`
+			// binding g_juliaEval offers) — _focal_peek_and_frame needs the handle itself to call
+			// gmtvtk_has_surface / _on_basemap directly, and works whether or not this scene has a
+			// registered QtFigure.
+			char ptrbuf[32];
+			snprintf(ptrbuf, sizeof ptrbuf, "Ptr{Cvoid}(0x%llx)", (unsigned long long)(uintptr_t)scene);
+			const std::string cmd = "InteractiveGMT._focal_peek_and_frame(" + std::string(ptrbuf) +
+				", raw\"" + filePath.toStdString() + "\", " + std::to_string(fmt) + ")";
+			std::vector<char> buf(256);
+			int n = g_juliaEval(scene, cmd.c_str(), buf.data(), (int)buf.size());
+			if (n <= 0) return;
+			bool ok = false;
+			const double v = QString::fromUtf8(buf.data(), n).trimmed().toDouble(&ok);
+			if (ok && v > 0) e->setText(QString::number(std::max(1.0, std::round(v))));
+		};
 		if (auto *btnOpenFile = d->findChild<QToolButton *>("btnOpenFile")) {
-			QObject::connect(btnOpenFile, &QToolButton::clicked, d, [this, d]() {
+			QObject::connect(btnOpenFile, &QToolButton::clicked, d, [this, d, updateMag5FromData]() {
 				QString p = QFileDialog::getOpenFileName(d, "Select focal mechanisms file", prefStartDir());
 				if (p.isEmpty()) return;
 				filePath = p; rememberStartDir(p);
 				d->setWindowTitle("Focal mechanisms — " + QFileInfo(p).fileName());
+				updateMag5FromData();
 			});
 		}
 
@@ -2500,10 +2526,11 @@ public:
 		// none, so the box is disabled + unchecked there (mirrors Mirone's push_readFile_CB, which
 		// enables check_plotDate only after a successful ISF/.ndk read).
 		if (auto *dateCheck = d->findChild<QCheckBox *>("chkPlotEventDate")) {
-			QObject::connect(catalogList, &QListWidget::currentRowChanged, d, [dateCheck](int row) {
+			QObject::connect(catalogList, &QListWidget::currentRowChanged, d, [dateCheck, updateMag5FromData](int row) {
 				const bool hasDate = (row == 0 || row == 3);
 				dateCheck->setEnabled(hasDate);
 				if (!hasDate) dateCheck->setChecked(false);
+				updateMag5FromData();          // format changed -> re-peek the SAME file under the new format
 			});
 		}
 
@@ -3719,7 +3746,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				if (s->win) s->win->statusBar()->showMessage("Focal mechanisms: callback not registered", 3000);
 				return;
 			}
-			FocalMechanismsDialog dlg(win);
+			FocalMechanismsDialog dlg(win, s);
 			double W, E, S, N;
 			if (!visibleRegion(W, E, S, N)) { W = -180; E = 180; S = -90; N = 90; }
 			// The .ui ships Mirone's historical "0.8" (a PRINTED-cm size); mag5size is KILOMETRES
@@ -3734,6 +3761,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				}
 			}
 			if (dlg.exec() != QDialog::Accepted || dlg.params.isEmpty()) return;
+			// RE-derive the region AFTER the dialog closes, never reuse the pre-dialog snapshot above:
+			// on an empty launcher, picking a file inside the dialog already promoted/framed the
+			// window to the catalog's own extent (_focal_peek_and_frame, src/focal.jl) — the OLD W/E/S/N
+			// (captured before dlg.exec(), on the still-empty placeholder) would crop the read at OK
+			// time against a region that no longer describes this window, dropping every real event
+			// ("catalog returned no events" despite the file being fine and already read once).
+			if (!visibleRegion(W, E, S, N)) { W = -180; E = 180; S = -90; N = 90; }
 			const QString p = dlg.params + QString("\nregion=%1/%2/%3/%4")
 				.arg(W, 0, 'f', 6).arg(E, 0, 'f', 6).arg(S, 0, 'f', 6).arg(N, 0, 'f', 6);
 			if (s->win) s->win->statusBar()->showMessage("Focal mechanisms: plotting…");
