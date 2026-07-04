@@ -421,6 +421,14 @@ struct Scene {
 	std::vector<MecaGroupProps> mecaGroups;            // one entry per focal-mechanism batch groupName
 	std::vector<MecaBall> mecaBalls;                   // one entry per plotted event (drag + anchor line state)
 	int    mecaDrag = -1;                               // index into mecaBalls being click-dragged (-1 = none)
+	double mecaAnchorZ = 1e30;                          // SCENE-WIDE floor (min baked Z over EVERY event/rank
+	                                                    // ever plotted here) — every ball's anchor line/dot
+	                                                    // renders at this minus a margin, so ANY ball (not just
+	                                                    // its own) occludes it on screen: a per-event floor let
+	                                                    // an anchor's Z rank above an UNRELATED earlier/bigger
+	                                                    // event's ball, so that ball failed to hide a trail
+	                                                    // crossing under it (user-reported: "some mechanisms
+	                                                    // hide the lines, others do not").
 	int    vecSeq = 0;                                  // monotonic seed for shared vector-pile stack ranks
 	int    surfStack = 0;                               // base relief's rank in the GRID pile (base + grids)
 	int    gridSeq   = 0;                               // monotonic seed for grid-pile ranks (newest on top)

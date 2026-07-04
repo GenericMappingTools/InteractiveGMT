@@ -1010,15 +1010,18 @@ static void mecaDragTo(Scene *s, int bi, double wx, double wy) {
 // columns (gmtvtk_add_overlay_h), drawn live here from a mouse drag instead. First call builds both
 // actors; later calls just rewrite the line's moving endpoint in place (the dot never moves).
 //
-// Both sit at `az` = a shade below `mb.zLow` (this event's OWN lowest baked Z) with a PLAIN mapper —
-// deliberately NOT polyMakeLineActor's terrain line-offset (GL polygon-offset does not compare
-// reliably across LINE vs FILL primitives, see mecaBuildPatch's big comment) — a real depth-buffer
-// comparison against the ball's own fill/line actors (built the same way) is what mecaBuildPatch/
-// Lines already rely on for reliable cross-primitive occlusion, so being reliably BELOW the ball's
-// own lowest Z guarantees the ball hides the trail/dot wherever it currently sits on screen.
+// Both sit at `az` = a shade below `s->mecaAnchorZ` (the SCENE-WIDE floor over every event/rank ever
+// plotted — NOT just this ball's own zLow) with a PLAIN mapper — deliberately NOT polyMakeLineActor's
+// terrain line-offset (GL polygon-offset does not compare reliably across LINE vs FILL primitives,
+// see mecaBuildPatch's big comment). A real depth-buffer comparison (which every primitive respects
+// identically) against ANY ball's fill/line actors then always wins, so the trail/dot render UNDER
+// every ball, not just the one that owns them — using the per-ball `zLow` here instead once let an
+// UNRELATED earlier/bigger event's ball fail to occlude a trail crossing under it, since that ball's
+// own Z range could sit entirely BELOW this ball's anchor (each event's Z is only ordered relative to
+// itself, not to other events).
 static void mecaUpdateAnchor(Scene *s, int bi) {
 	MecaBall &mb = s->mecaBalls[bi];
-	const double az = mb.zLow - 0.5;
+	const double az = s->mecaAnchorZ - 0.5;
 	const double x1 = mb.x0 + mb.offX, y1 = mb.y0 + mb.offY;
 	if (!mb.anchor) {
 		mb.anchorPD = vtkSmartPointer<vtkPolyData>::New();
