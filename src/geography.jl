@@ -20,15 +20,21 @@ end
 # Generic reader for a Mirone/NOAA point dataset overlaid by the Geography menu (volcanoes,
 # meteorites, tide gauges, hydrothermal vents, …). ONE GMT call: GMT.gmtselect(path, R=region, f=:g)
 # reads the data file AND clips it to the visible view, with GMT doing the region test INCLUDING
-# longitude periodicity and always returning .data as geographic [lon lat] (so a lat,lon-stored file
-# like volcanoes.dat needs no swap). We normalize each kept lon into the map's [W,E] frame with one
-# mod (map and data may differ: -180..180 vs 0..360, either direction). `datafile` is a bare name
-# under data/. Returns (xs, ys, texts): xs/ys lon/lat in view, texts[k] the row's trailing text
-# (Latin-1-fixed: the files have accented names / "±"); each caller turns texts into its own tooltip.
-function _geo_points(datafile::AbstractString, W, E, S, N)
+# longitude periodicity and always returning .data as geographic [lon lat]. Most of these files are
+# lon,lat already (meteoritos.dat, hydrothermal_vents.dat); volcanoes.dat is the odd one stored
+# lat,lon (Mirone legacy format), so its caller passes `latlon=true` -> `-:i` tells GMT the INPUT
+# columns are (lat,lon) and swaps them on read, so the region test and .data below see (lon,lat)
+# like every other file (never hand-swap the columns ourselves post-hoc — GMT's own periodic-lon
+# region test needs the swap BEFORE it runs, not after). We normalize each kept lon into the map's
+# [W,E] frame with one mod (map and data may differ: -180..180 vs 0..360, either direction).
+# `datafile` is a bare name under data/. Returns (xs, ys, texts): xs/ys lon/lat in view, texts[k]
+# the row's trailing text (Latin-1-fixed: the files have accented names / "±"); each caller turns
+# texts into its own tooltip.
+function _geo_points(datafile::AbstractString, W, E, S, N; latlon::Bool=false)
 	path = joinpath(_PKGROOT, "data", datafile)
 	isfile(path) || (@warn "geography: data file not found" path; return (Float64[], Float64[], String[]))
-	Sr = GMT.gmtselect(path, R=(W, E, S, N), f=:g)        # read + region/lon-periodic clip in ONE call
+	Sr = latlon ? GMT.gmtselect(path, R=(W, E, S, N), f=:g, yx="i") :
+	              GMT.gmtselect(path, R=(W, E, S, N), f=:g)         # read + region/lon-periodic clip in ONE call
 	(Sr === nothing || isempty(Sr)) && return (Float64[], Float64[], String[])
 	Sel = Sr isa AbstractVector ? Sr[1] : Sr
 	(Sel.data === nothing || isempty(Sel.data)) && return (Float64[], Float64[], String[])
@@ -61,9 +67,9 @@ function _labeled_infos(texts, labels)
 end
 
 # Volcanoes: trailing text is "<name> <country> <type> <age>", 4 whitespace tokens (multi-word
-# values underscore-joined).
+# values underscore-joined). File is stored lat,lon (not lon,lat like the others) -> latlon=true.
 function _volcano_data(W, E, S, N)
-	xs, ys, texts = _geo_points("volcanoes.dat", W, E, S, N)
+	xs, ys, texts = _geo_points("volcanoes.dat", W, E, S, N; latlon=true)
 	return xs, ys, _labeled_infos(texts, ("Name", "Country", "Type", "Age"))
 end
 
