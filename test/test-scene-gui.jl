@@ -111,16 +111,16 @@ end
 # The Vertical-elastic-deformation fault plane: a fault + the dialog's plane build must create the
 # buried 3-D dipping plane (hidden in flat-2D, shown in 3-D) AND a "<fault> — plane" Scene Objects
 # handle row. This is the regression for the "no 3-D plane / no handle" episode.
-@testitem "fault plane: buried 3-D plane + Scene Objects handle" tags=[:gui] begin
+@testitem "fault plane: buried 3-D plane + Scene Objects handle" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[100*sin(ix/3)+50*cos(iy/4) for iy in 0:40, ix in 0:40]; x=[0.0, 40.0], y=[0.0, 40.0])
 	f = view_grid(G)
 	try
 		IG._pump_once()
-		ccall(IG._fn(:gmtvtk_fault_add_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble),
+		ccall(_test_fn(:gmtvtk_fault_add_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble),
 		      f.h, 5.0, 8.0, 35.0, 30.0)
 		out = zeros(Cdouble, 6)
-		ex = ccall(IG._fn(:gmtvtk_fault_plane_test), Cint,
+		ex = ccall(_test_fn(:gmtvtk_fault_plane_test), Cint,
 		           (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cint, Ptr{Cdouble}), f.h, 20.0, 30.0, 50.0, 0, out)
 		@test ex == 1              # 3-D plane actor exists
 		@test out[2] == 4          # quad: 4 corners
@@ -129,26 +129,26 @@ end
 
 		# view_grid opens flat-2D -> 3-D plane hidden; switching to 3-D reveals it.
 		@test out[3] == 0          # hidden in flat-2D
-		ccall(IG._fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, 0)
+		ccall(_test_fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, 0)
 		IG._pump_once()
-		ccall(IG._fn(:gmtvtk_fault_plane_test), Cint,
+		ccall(_test_fn(:gmtvtk_fault_plane_test), Cint,
 		      (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cint, Ptr{Cdouble}), f.h, 20.0, 30.0, 50.0, 0, out)
 		@test out[3] == 1          # visible in 3-D
 
-		rows = unsafe_string(ccall(IG._fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), f.h))
+		rows = unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), f.h))
 		@test occursin("plane", rows)   # the "<fault> — plane" handle row exists
 
 		# THE bug: the plane was a dialog-time preview, wiped when the dialog closed. Drive the REAL
 		# dialog lifecycle and assert the plane + handle SURVIVE the close.
-		@test ccall(IG._fn(:gmtvtk_fault_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+		@test ccall(_test_fn(:gmtvtk_fault_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
 		IG._pump_once()
-		ccall(IG._fn(:gmtvtk_fault_plane_test), Cint,
+		ccall(_test_fn(:gmtvtk_fault_plane_test), Cint,
 		      (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cint, Ptr{Cdouble}), f.h, 20.0, 30.0, 50.0, 0, out)
-		ccall(IG._fn(:gmtvtk_fault_close_dialog_test), Cvoid, (Ptr{Cvoid},), f.h)
+		ccall(_test_fn(:gmtvtk_fault_close_dialog_test), Cvoid, (Ptr{Cvoid},), f.h)
 		IG._pump_once()
-		@test ccall(IG._fn(:gmtvtk_fault_plane_test), Cint,
+		@test ccall(_test_fn(:gmtvtk_fault_plane_test), Cint,
 		            (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cint, Ptr{Cdouble}), f.h, 20.0, 30.0, 50.0, 0, out) == 1
-		@test occursin("plane", unsafe_string(ccall(IG._fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), f.h)))
+		@test occursin("plane", unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), f.h)))
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
@@ -214,12 +214,12 @@ end
 
 # Fault trace = a 2-point OPEN line flagged isFault. The Scene Objects icon logic (50_scene.cpp) is
 # `pg.isFault ? IC_Line` — ALWAYS the LINE icon, never the polygon icon. Lock the flags that drive it.
-@testitem "fault trace is isFault + open (drives the LINE icon)" tags=[:gui] begin
+@testitem "fault trace is isFault + open (drives the LINE icon)" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
 	f = view_grid(G)
 	try
-		@test ccall(IG._fn(:gmtvtk_fault_add_test), Cint,
+		@test ccall(_test_fn(:gmtvtk_fault_add_test), Cint,
 			(Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble), f.h, 2.0, 2.0, 7.0, 7.0) == 1
 		IG._pump_once()
 		buf = zeros(UInt8, 4096)

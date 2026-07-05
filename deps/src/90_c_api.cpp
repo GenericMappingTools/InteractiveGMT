@@ -1511,6 +1511,9 @@ GMTVTK_API int gmtvtk_remove_meca_group_h(void *handle, const char *name) {
 }
 
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
+// Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
+// The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
+#ifdef GMTVTK_TEST_API
 // Inject a 2-vertex fault line (lon1,lat1)->(lon2,lat2) into the scene so the apply logic has a
 // target without going through the interactive draw tool. Returns the number of fault polygons.
 GMTVTK_API int gmtvtk_fault_add_test(void *scene, double lon1, double lat1, double lon2, double lat2) {
@@ -1725,6 +1728,7 @@ GMTVTK_API int gmtvtk_fault_plane_test(void *scene, double width, double dip, do
 	if (out) for (int i = 0; i < 6; ++i) out[i] = 0;
 	return 0;
 }
+#endif // GMTVTK_TEST_API
 
 // Register the grid-metadata callback used by the grdsample dialog's "OR Ref grid" picker.
 // fn(path) returns "W/E/S/N/xinc/yinc/nx/ny" (or "" on failure). nullptr to detach.

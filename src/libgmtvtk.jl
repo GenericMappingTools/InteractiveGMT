@@ -65,20 +65,6 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_progress_show, :gmtvtk_progress_update, :gmtvtk_progress_close,
 )
 
-# Headless GUI-test hooks, called only from test/test-scene-gui.jl and test/test-fault-geom.jl
-# (they drive/inspect Scene state without real mouse/keyboard input). Kept out of
-# _LIB_SYMBOLS so the production C-API list stays test-free; dlsym'd the same way since
-# this is the one place any gmtvtk_* symbol gets resolved.
-const _LIB_SYMBOLS_TEST = (
-	:gmtvtk_fault_add_test, :gmtvtk_fault_apply_test, :gmtvtk_fault_plane_test,
-	:gmtvtk_set_flat2d_test, :gmtvtk_objrows_test,
-	:gmtvtk_fault_open_dialog_test, :gmtvtk_fault_close_dialog_test, :gmtvtk_trace_zbounds_test,
-	:gmtvtk_meca_drag_test,
-	:gmtvtk_symbol_add_test, :gmtvtk_symbol_drag_test,
-	:gmtvtk_symbol_get_pos_test, :gmtvtk_symbol_ui_drag_test, :gmtvtk_sym_debug_test,
-	:gmtvtk_send_ctrlc_test, :gmtvtk_clipboard_get_test,
-)
-
 # Resolve a loaded C-API function pointer. Errors clearly if the library never loaded.
 @inline function _fn(sym::Symbol)::Ptr{Cvoid}
 	p = get(_LIB_FNS, sym, C_NULL)
@@ -94,9 +80,6 @@ function _load_library()
 	ENV["QT_QPA_PLATFORM_PLUGIN_PATH"] = _QT_PLAT
 	_DLL[] = Libdl.dlopen(_LIB)
 	for s in _LIB_SYMBOLS
-		_LIB_FNS[s] = Libdl.dlsym(_DLL[], s)
-	end
-	for s in _LIB_SYMBOLS_TEST
 		_LIB_FNS[s] = Libdl.dlsym(_DLL[], s)
 	end
 	return

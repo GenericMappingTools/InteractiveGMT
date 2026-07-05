@@ -49,6 +49,18 @@ add_executable(gmtvtk_demo WIN32 ${GMTVTK_SRC})
 target_link_libraries(gmtvtk_demo PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES})
 vtk_module_autoinit(TARGETS gmtvtk_demo MODULES ${VTK_LIBRARIES})
 
+# Test-only shared library — SAME source, built a second time with GMTVTK_TEST_API defined so
+# the gmtvtk_*_test hooks in 90_c_api.cpp (guarded by #ifdef GMTVTK_TEST_API) compile in. The
+# production `gmtvtk` target above gets no such define, so those symbols never enter its export
+# table. Needed as a second full compile (not a separate .cpp) because the test hooks call
+# static-linkage internals (faultApplyGeom, mecaDragTo, addSymbols, ...) that only exist inside
+# this one TU. Built automatically by `deps/build.bat`'s plain `cmake --build build` (Ninja's
+# default target is "all") — no build.bat edit needed.
+add_library(gmtvtk_test SHARED ${GMTVTK_SRC})
+target_compile_definitions(gmtvtk_test PRIVATE GMTVTK_TEST_API)
+target_link_libraries(gmtvtk_test PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES})
+vtk_module_autoinit(TARGETS gmtvtk_test MODULES ${VTK_LIBRARIES})
+
 # ============================================================================
 # Optional redistributable package — gmtvtk.dll + demo + EVERY runtime DLL it
 # needs (VTK, Qt, TBB) + the Qt platform plugins, so the package runs on a box
