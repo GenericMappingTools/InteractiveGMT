@@ -1332,11 +1332,19 @@ static void rebuildSceneObjects(Scene *s) {
 		if (pg.isMeca) {
 			if (mecaGroupsShown.insert(pg.groupName).second) {
 				const QString gname = QString::fromStdString(pg.groupName);
-				const bool vis = pg.fill && pg.fill->GetVisibility() != 0;
+				// A ball's rim/nodal-plane STROKE is `p.line` (mecaBuildLines), a SEPARATE actor from the
+				// comp/dilat FILL (`p.fill`, mecaBuildPatch) — scan the whole group for either, so the row's
+				// checkbox is never stuck unchecked just because the first-seen patch is line-only.
+				bool vis = false;
+				for (auto& p : s->polys) if (p.isMeca && p.groupName == pg.groupName &&
+				                              ((p.fill && p.fill->GetVisibility() != 0) || (p.line && p.line->GetVisibility() != 0))) { vis = true; break; }
 				makeRow(gname, IC_Polygon, vis,
 				        [s, gname](bool on) {
 				            const std::string gn = gname.toStdString();
-				            for (auto& p : s->polys) if (p.isMeca && p.groupName == gn && p.fill) p.fill->SetVisibility(on ? 1 : 0);
+				            for (auto& p : s->polys) if (p.isMeca && p.groupName == gn) {
+				                if (p.fill) p.fill->SetVisibility(on ? 1 : 0);
+				                if (p.line) p.line->SetVisibility(on ? 1 : 0);
+				            }
 				        },
 				        [s, gname](const QPoint& g) { mecaGroupPropsDialog(s, gname, g); },
 				        "Left-click for properties (colours, outline) · right-click to remove",

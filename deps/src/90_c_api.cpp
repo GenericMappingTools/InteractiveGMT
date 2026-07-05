@@ -1089,27 +1089,22 @@ static void mecaBuildPatch(Scene *s, Polygon &pg, double z0, int rank,
                            const std::vector<std::vector<std::array<double,3>>> &rings) {
 	// `rank` is the EVENT index (gmtvtk_add_meca_h passes `evid[p]`, NOT the flat patch index `p`) —
 	// every sub-loop and border-ring segment of the SAME event shares one rank, since they never
-	// spatially overlap each other by construction and so never need to out-rank one another. This
-	// keeps the offset magnitude bounded by EVENT COUNT regardless of how finely one event's disk is
-	// subdivided (a dense border ring alone can be 60+ extra patches) — ranking by flat patch index
-	// was tried first and, past a few dozen total patches, its ordering stopped being reliable
-	// (observed: an entire quadrant vanishing). `pg.fill` is NEVER touched by applyVectorStacking
-	// (gatherStackItems, 50_scene.cpp, only registers `pg.line` for the shared vector pile, and
-	// meca's `pg.line` is excluded via `pg.isMeca` besides — see below) — so whatever polygon-offset
-	// we set here is FINAL, nothing downstream overwrites it.
-	// SIGN, empirically verified (a magenta-recolor smoke test isolated it): in THIS pipeline the
-	// LEAST-negative offset wins ties, not the most-negative one (opposite of the usual "negative
-	// pulls toward camera" assumption) — so a later/higher-rank EVENT needs a LESS negative value.
-	// Also carries a REAL (tiny) world-Z separation per event — an ordinary depth-test comparison,
-	// which every primitive type respects identically, unlike GL offset which does NOT compare
-	// reliably across different primitive categories (GL_POLYGON_OFFSET_FILL vs …_LINE) — this is
-	// why `pg.line` is built but never added to any renderer (see below): its outline kept bleeding
-	// through a higher-ranked event's opaque fill despite a "correct" fill-side offset.
-	constexpr double kMecaRankStep = 2000.0;
+	// spatially overlap each other by construction and so never need to out-rank one another.
+	// (2026-07-05, USER LAW) Every ball's fill is ALWAYS the complete, uncut set of sector triangles
+	// — geometric clipping against a neighbour was tried and reverted same day (it bakes the
+	// neighbour's PLOT-TIME position into this ball's polydata; dragging the neighbour only moves
+	// ITS actor, so the bake goes stale and leaves a permanent "bite" where it used to sit). Cross-
+	// ball occlusion is depth-test ONLY: this fill and mecaBuildLines' stroke both carry the SAME
+	// real-Z-per-rank convention (`zl` below) with NO polygon-offset bias layered on top — an
+	// earlier version added a `fillU` polygon-offset here to order fills, but GL_POLYGON_OFFSET_FILL
+	// and GL_POLYGON_OFFSET_LINE are not numerically comparable biases, so a lower-rank ball's line
+	// could still win the depth test against a higher-rank ball's offset-biased fill regardless of
+	// rank. Plain real Z, shared by every primitive type, compares correctly and — being a normal
+	// depth test — is re-evaluated every frame from each actor's CURRENT transform, so it keeps
+	// tracking correctly through a drag for free, with zero rebuild and zero mutated geometry.
 	constexpr double kMecaRankZStep = 1.0;
 	std::vector<std::array<double,3>> ring(pg.v.begin(), pg.v.end() - 1);   // pg.v is closed (front==back)
 	for (auto &p : ring) p[2] = z0 + rank * kMecaRankZStep;
-	const double fillU = -33000.0 + kMecaRankStep * rank;   // higher rank (later event) -> wins every earlier one
 
 	// Build the outline actor (other code — Scene Objects rows, click-menu targeting, delete paths —
 	// expects every polygon's `pg.line` to exist and null-checks it defensively) but NEVER add it to
@@ -1153,8 +1148,6 @@ static void mecaBuildPatch(Scene *s, Polygon &pg, double z0, int rank,
 	if (!pg.fillPD) pg.fillPD = vtkSmartPointer<vtkPolyData>::New();
 	pg.fillPD->ShallowCopy(app->GetOutput());
 	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pg.fillPD); map->ScalarVisibilityOff();
-	vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
-	map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, fillU);
 	pg.fill = vtkSmartPointer<vtkActor>::New();
 	pg.fill->SetMapper(map);
 	pg.fill->GetProperty()->SetColor(pg.fillColor[0], pg.fillColor[1], pg.fillColor[2]);
@@ -1360,8 +1353,20 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
 		pg.fillOpacity = 1.0;                          // beachball quadrants are SOLID-filled (Mirone FaceColor)
 		const double z0raw = s->gridZ.empty() ? 0.0 : sampleZ(s, mi.cx / mi.nv, mi.cy / mi.nv);
 		const double z0 = std::isnan(z0raw) ? 0.0 : z0raw;
-		if (!mi.rings.empty()) mecaBuildPatch(s, pg, z0, rank, mi.rings);
-		else                   mecaBuildLines(s, pg, z0, rank, rimWidthPct, mi.plines);
+		// (2026-07-05, USER LAW) Every ball's own geometry is ALWAYS the complete, uncut disk —
+		// NEVER permanently clip/delete part of one ball's fill or stroke against a neighbour.
+		// A geometric clip (tried and reverted same day) bakes the neighbour's PLOT-TIME position
+		// into this ball's polydata; dragging only moves the neighbour's actor (SetPosition), so the
+		// bake goes stale and leaves a permanent "bite" where the neighbour USED to be. Occlusion
+		// between balls is depth-test ONLY (see mecaBuildPatch/mecaBuildLines: both fill and line
+		// carry the SAME real-Z-per-rank convention, no incomparable polygon-offset bias) — a real
+		// GPU depth test is re-evaluated every frame from each actor's CURRENT transform, so it
+		// tracks a drag for free with zero rebuild, and never mutates anyone's shape.
+		if (!mi.rings.empty()) {
+			mecaBuildPatch(s, pg, z0, rank, mi.rings);
+		} else {
+			mecaBuildLines(s, pg, z0, rank, rimWidthPct, mi.plines);
+		}
 		// Drag bookkeeping: fold this rank's actor(s) into its EVENT's MecaBall (rank = ei*3+role,
 		// see the struct comment). The role==2 (rim/nodal-line) rank alone carries the authoritative
 		// centre + radius reference, in the SAME xy convention as `xy`/pg.v (x pre-divided by xfac

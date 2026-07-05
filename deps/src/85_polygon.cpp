@@ -885,8 +885,9 @@ static void deleteSlipGroup(Scene *s, const QString &groupName) {
 }
 
 // Remove a focal-mechanism group: every isMeca patch sharing groupName (same by-groupName removal
-// as deleteSlipGroup — meca patches are never rendered via `pg.line`, only `pg.fill`, but
-// polygonEraseOne now cleans up both from whichever renderer they actually live in). Used both by
+// as deleteSlipGroup). NOTE: a meca patch is EITHER a fill (mecaBuildPatch, comp/dilat sectors,
+// `pg.fill` only) OR a line (mecaBuildLines, rim + nodal-plane curves, `pg.line` only, added to
+// axesRen) — polygonEraseOne removes whichever of the two actually exists. Used both by
 // the Scene Objects "Remove" menu AND as the first step of a recolour/re-stroke (Julia removes the
 // old batch, then re-plots fresh, see _on_meca_props/gmtvtk_remove_meca_group_h). The group's CACHED
 // properties-dialog pre-fill state (s->mecaGroups) is deliberately left alone here — erasing it used
@@ -1025,33 +1026,33 @@ static bool mecaCoveredByAnyBall(Scene *s, double x, double y) {
 	return false;
 }
 
-// A->B is a STRAIGHT segment, so clip it against every ball's circle EXACTLY (analytic line-circle
-// intersection). The quadratic is solved in xfac-SCALED space (x multiplied by s->xfac, matching
-// mb.radius's TRUE-visual-radius convention and the actor's own SetScale(xfac,1,…)) — solving it in
-// raw unscaled space compares a circle radius against an ELLIPSE, which was the actual bug: away
-// from the equator (xfac = cos(midlat) < 1) the raw x semi-axis is bigger than the ball's true
-// radius, so the computed "covered" disk was larger than the visible ball in every direction except
-// due x, clipping the line well short of the rim. t is a plain fraction along A->B so it is
+// A->B is a STRAIGHT segment, so clip it against a set of circles EXACTLY (analytic line-circle
+// intersection). `circles[i]` = {cx, cy, radius} in RAW (unscaled) xy — cx is scaled by `xf` inside
+// here, matching the ball's TRUE-visual-radius convention and the actor's own SetScale(xfac,1,…) —
+// solving in raw unscaled space compares a circle radius against an ELLIPSE, which was the actual
+// bug: away from the equator (xfac = cos(midlat) < 1) the raw x semi-axis is bigger than the ball's
+// true radius, so the computed "covered" disk was larger than the visible ball in every direction
+// except due x, clipping the line well short of the rim. t is a plain fraction along A->B so it is
 // unaffected by the x-only linear rescaling; only the quadratic's coefficients use scaled x.
-// Emits the surviving OUTSIDE-every-ball runs as separate 2-point polyline cells (outPts flat list +
-// outCounts = vertex count per run, always 2 since each run is itself a straight sub-segment).
-static void mecaClipTrail(Scene *s, double ax, double ay, double bx, double by,
-                          std::vector<std::array<double,2>> &outPts, std::vector<int> &outCounts) {
-	const double xf = s->xfac;
+// Emits the surviving OUTSIDE-every-circle runs as separate 2-point polyline cells (outPts flat list
+// + outCounts = vertex count per run, always 2 since each run is itself a straight sub-segment).
+static void clipSegmentVsCircles(double xf, double ax, double ay, double bx, double by,
+                                  const std::vector<std::array<double,3>> &circles,
+                                  std::vector<std::array<double,2>> &outPts, std::vector<int> &outCounts) {
 	const double dx = bx - ax, dy = by - ay;             // ORIGINAL segment — used to reconstruct points
 	const double dxs = dx * xf;                          // segment delta in xfac-scaled (true-circle) space
 	const double A = dxs*dxs + dy*dy;
 	if (A <= 0.0) return;                          // zero-length segment: nothing to draw
 
-	std::vector<std::array<double,2>> inside;      // [t0,t1] parametric ranges covered by SOME ball
-	for (auto &mb : s->mecaBalls) {
-		if (mb.radius <= 0.0) continue;
-		const double cx = (mb.x0 + mb.offX) * xf, cy = mb.y0 + mb.offY;
+	std::vector<std::array<double,2>> inside;      // [t0,t1] parametric ranges covered by SOME circle
+	for (auto &c : circles) {
+		if (c[2] <= 0.0) continue;
+		const double cx = c[0] * xf, cy = c[1];
 		const double fx = ax * xf - cx, fy = ay - cy;
 		const double B = 2.0 * (fx*dxs + fy*dy);
-		const double C = fx*fx + fy*fy - mb.radius*mb.radius;
+		const double C = fx*fx + fy*fy - c[2]*c[2];
 		const double disc = B*B - 4.0*A*C;
-		if (disc < 0.0) continue;                  // segment never reaches this ball's circle
+		if (disc < 0.0) continue;                  // segment never reaches this circle
 		const double sq = std::sqrt(disc);
 		const double t0 = std::max(0.0, (-B - sq) / (2.0*A));
 		const double t1 = std::min(1.0, (-B + sq) / (2.0*A));
@@ -1074,6 +1075,17 @@ static void mecaClipTrail(Scene *s, double ax, double ay, double bx, double by,
 	double cursor = 0.0;
 	for (auto &iv : merged) { emitRun(cursor, iv[0]); cursor = iv[1]; }
 	emitRun(cursor, 1.0);
+}
+
+// Anchor-trail flavour: clip against every CURRENTLY-PLOTTED ball (s->mecaBalls), live drag state
+// (offX/offY) included. Thin wrapper over clipSegmentVsCircles.
+static void mecaClipTrail(Scene *s, double ax, double ay, double bx, double by,
+                          std::vector<std::array<double,2>> &outPts, std::vector<int> &outCounts) {
+	std::vector<std::array<double,3>> circles;
+	circles.reserve(s->mecaBalls.size());
+	for (auto &mb : s->mecaBalls)
+		if (mb.radius > 0.0) circles.push_back({ mb.x0 + mb.offX, mb.y0 + mb.offY, mb.radius });
+	clipSegmentVsCircles(s->xfac, ax, ay, bx, by, circles, outPts, outCounts);
 }
 
 // Move ball `bi` so its centre sits at world point (wx,wy) — same xy convention as Polygon::v/

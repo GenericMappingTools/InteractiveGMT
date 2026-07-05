@@ -13,7 +13,7 @@ if(NOT Qt6_DIR)
   set(Qt6_DIR "C:/programs/Qt6/6.11.1/msvc2022_64/lib/cmake/Qt6")
 endif()
 if(NOT TBB_DIR)
-  set(TBB_DIR "C:/programs/compa_libs/tbb_GIT/compileds/VC14_64/lib/cmake/TBB")
+  set(TBB_DIR "C:/programs/compa_libs/oneTBB/compileds/VC14_64/lib/cmake/TBB")
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets UiTools)
@@ -109,7 +109,7 @@ if(GMTVTK_PACKAGE)
 
   # CPack — a flat ZIP (gmtvtk-<version>-win64.zip) with everything under bin/.
   set(CPACK_GENERATOR "ZIP")
-  set(CPACK_PACKAGE_NAME "gmtvtk")
+  set(CPACK_PACKAGE_NAME "iGMT")
   set(CPACK_PACKAGE_VENDOR "InteractiveGMT")
   set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
   set(CPACK_SYSTEM_NAME "win64")
