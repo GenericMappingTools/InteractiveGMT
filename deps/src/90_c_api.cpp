@@ -572,6 +572,14 @@ GMTVTK_API void gmtvtk_raise(void *handle) {
 	s->win->activateWindow();
 }
 
+// Change an already-open window's titlebar (e.g. drag-drop / promote loading a file into the
+// empty launcher, which was built with a generic placeholder title).
+GMTVTK_API void gmtvtk_set_title_h(void *handle, const char *title) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->win || !title) return;
+	s->win->setWindowTitle(QString::fromUtf8(title));
+}
+
 // ============================================================================================
 // Progress dialog for long operations (multi-patch Okada calculation)
 // ============================================================================================

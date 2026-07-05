@@ -23,6 +23,9 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 		_record_recent(path, data)                             # remember it in File > Recent Files
 		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
 		_drop_into(scene, data, basename(path); promote=empty)
+		# Promoting the empty launcher makes this file the window's primary content -> retitle it.
+		# A drop into an already-populated window just adds an extra layer, so its title is left alone.
+		empty && ccall(_fn(:gmtvtk_set_title_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, "i'GMT -- $(basename(path))")
 		_mark_file_open(path, scene)                           # remember it so a re-drop is ignored
 	catch e
 		_viewer_log_error(scene, "Open '$(basename(path))' FAILED: $(sprint(showerror, e))")

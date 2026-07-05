@@ -85,7 +85,9 @@ function iview(name::AbstractString; kwargs...)
 		_open_window_for(name) != C_NULL && return nothing
 		data = GMT.gmtread(name)
 		_record_recent(name, data)
-		fig = iview(data; kwargs...)
+		# Titlebar shows which file is loaded, unless the caller already asked for a specific title.
+		kw = merge((; title="i'GMT -- $(basename(name))"), NamedTuple(kwargs))
+		fig = iview(data; kw...)
 		# The open-once dedup is keyed on the 3-D Scene* alive/raise C API; an X,Y plot window uses a
 		# different handle type, so don't register it there (a repeat open just makes a 2nd window).
 		fig isa QtXYPlot || _mark_file_open(name, _fig_handle(fig))
