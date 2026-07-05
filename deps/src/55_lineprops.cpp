@@ -362,7 +362,9 @@ static int polyIndexOfActor(Scene *s, vtkActor *a) {
 // rect / circle) the X/Y/Z cells are EDITABLE: committing a cell writes the new coordinate back to
 // pg.v, keeps a closed ring's duplicated first/last vertex in sync, and rebuilds + re-renders the
 // outline live. Profile/overlay lines are GMT-owned, so they stay read-only. The window is its own
-// top-level (no parent), deletes itself on close, and does NOT block the viewer.
+// top-level (no parent), deletes itself on close, and does NOT block the viewer. A "Save…" button
+// calls lineSavePoints(s, lr) directly — the exact function "Save line/polygon…" uses — so there
+// is one save path, not a second one reimplemented here.
 static void showLineDataTable(Scene *s, const LineRef& lr, const QString& name) {
 	std::vector<std::vector<std::array<double,3>>> polylines;
 	lineGatherPolylines(s, lr, polylines);
@@ -402,7 +404,14 @@ static void showLineDataTable(Scene *s, const LineRef& lr, const QString& name) 
 	}
 	tbl->resizeColumnsToContents();
 	lay->addWidget(tbl);
-	dlg->resize(360, 420);
+
+	QHBoxLayout *btnRow = new QHBoxLayout();
+	btnRow->addStretch(1);
+	QPushButton *saveBtn = new QPushButton("Save…", dlg);
+	btnRow->addWidget(saveBtn);
+	lay->addLayout(btnRow);
+	QObject::connect(saveBtn, &QPushButton::clicked, dlg, [s, lr]() { lineSavePoints(s, lr); });
+	dlg->resize(360, 450);
 
 	// Live write-back: a committed X/Y/Z cell updates pg.v and rebuilds the outline. Connected only
 	// for editable (LK_Polygon) tables. cellChanged also fires when we programmatically fix a cell,
