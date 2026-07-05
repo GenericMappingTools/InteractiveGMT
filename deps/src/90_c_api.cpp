@@ -1085,7 +1085,7 @@ GMTVTK_API void gmtvtk_set_focal_callback(JuliaFocalFn fn) {
 // ≤2 fill actors + 1 line actor per event. The rings of one rank never overlap (disk sectors),
 // so feeding the whole set to vtkContourTriangulator (even-odd across the set = their union)
 // triangulates them together correctly in one pass.
-static void mecaBuildPatch(Scene *s, Polygon &pg, double z0, int rank,
+static void mecaBuildPatch(Scene *s, Polygon &pg, double z0, int rank, double zStep,
                            const std::vector<std::vector<std::array<double,3>>> &rings) {
 	// `rank` is the EVENT index (gmtvtk_add_meca_h passes `evid[p]`, NOT the flat patch index `p`) —
 	// every sub-loop and border-ring segment of the SAME event shares one rank, since they never
@@ -1094,17 +1094,17 @@ static void mecaBuildPatch(Scene *s, Polygon &pg, double z0, int rank,
 	// — geometric clipping against a neighbour was tried and reverted same day (it bakes the
 	// neighbour's PLOT-TIME position into this ball's polydata; dragging the neighbour only moves
 	// ITS actor, so the bake goes stale and leaves a permanent "bite" where it used to sit). Cross-
-	// ball occlusion is depth-test ONLY: this fill and mecaBuildLines' stroke both carry the SAME
-	// real-Z-per-rank convention (`zl` below) with NO polygon-offset bias layered on top — an
-	// earlier version added a `fillU` polygon-offset here to order fills, but GL_POLYGON_OFFSET_FILL
-	// and GL_POLYGON_OFFSET_LINE are not numerically comparable biases, so a lower-rank ball's line
-	// could still win the depth test against a higher-rank ball's offset-biased fill regardless of
-	// rank. Plain real Z, shared by every primitive type, compares correctly and — being a normal
-	// depth test — is re-evaluated every frame from each actor's CURRENT transform, so it keeps
-	// tracking correctly through a drag for free, with zero rebuild and zero mutated geometry.
-	constexpr double kMecaRankZStep = 1.0;
+	// ball occlusion is depth-test ONLY, via `rank*zStep` applied as the actor's POSITION (see the
+	// SetPosition call below), not baked into the vertex Z — a baked-in-vertex real-Z step (tried and
+	// reverted same day) gets multiplied by the actor's own SetScale(xfac,1,zfac*ve): for geographic
+	// data `zfac` is ~1/111111 (metres-to-degrees), so a "1.0" bake shrinks to ~9e-6 and is lost to
+	// depth-buffer noise regardless of rank — exactly why a lower ball's rim/nodal STROKE kept
+	// showing through a higher ball's opaque FILL ("why do I still see nodal lines behind the top
+	// beachball"). `SetPosition` is applied in PARENT space AFTER Scale (same trick MecaBall drag
+	// already relies on for its X/Y offset), so `zStep` — sized by the caller off a REAL on-screen
+	// quantity (batch reference radius), not a raw world-Z unit — survives ANY zfac/VE combination.
 	std::vector<std::array<double,3>> ring(pg.v.begin(), pg.v.end() - 1);   // pg.v is closed (front==back)
-	for (auto &p : ring) p[2] = z0 + rank * kMecaRankZStep;
+	for (auto &p : ring) p[2] = z0;
 
 	// Build the outline actor (other code — Scene Objects rows, click-menu targeting, delete paths —
 	// expects every polygon's `pg.line` to exist and null-checks it defensively) but NEVER add it to
@@ -1127,7 +1127,7 @@ static void mecaBuildPatch(Scene *s, Polygon &pg, double z0, int rank,
 	// produce slightly overlapping sliver sectors), and even-odd CANCELS coincident/overlapping
 	// coverage — a thrust ball's black lens vanished. Per-ring triangulation + append renders
 	// the union: double-painted overlap is harmless for one opaque colour.
-	const double zl = z0 + rank * kMecaRankZStep;
+	const double zl = z0;
 	vtkNew<vtkAppendPolyData> app;
 	for (const auto &rg : rings) {
 		if (rg.size() < 3) continue;
@@ -1159,20 +1159,19 @@ static void mecaBuildPatch(Scene *s, Polygon &pg, double z0, int rank,
 	pg.fill->ForceOpaqueOn();     // hard-pin to VTK's opaque render pass, never the translucent/blended one
 	pg.line->ForceOpaqueOn();
 	pg.fill->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	pg.fill->SetPosition(0.0, 0.0, rank * zStep);   // cross-ball depth rank — see comment above
 	(s->axesRen ? s->axesRen : s->ren)->AddActor(pg.fill);
 }
 
 // One event's stroke set (rim circle + the two nodal-plane curves) as ONE real LINE actor with
 // a constant PIXEL width — the beachball's black separating lines must be visible at ANY zoom
 // (world-space ribbon quads went sub-pixel and dissolved into dotted noise on small balls, and
-// cost ~135 extra actors per event). Cross-event opacity is safe here because every rank
-// carries a REAL world-Z separation (rank * kMecaRankZStep, plain depth test — reliable across
-// primitive types, unlike GL polygon-offset units): a higher-ranked event's fills sit ABOVE
-// this line actor's z, so lines never bleed through another ball.
-static void mecaBuildLines(Scene *s, Polygon &pg, double z0, int rank, double widthPx,
+// cost ~135 extra actors per event). Cross-event depth ordering is `rank*zStep` via SetPosition
+// (AFTER SetScale, immune to zfac/VE) — MUST match mecaBuildPatch's convention exactly, or a
+// higher-ranked ball's fill and a lower-ranked ball's own stroke stop comparing consistently.
+static void mecaBuildLines(Scene *s, Polygon &pg, double z0, int rank, double zStep, double widthPx,
                            const std::vector<std::vector<std::array<double,3>>> &plines) {
-	constexpr double kMecaRankZStep = 1.0;   // MUST match mecaBuildPatch
-	const double zl = z0 + rank * kMecaRankZStep;
+	const double zl = z0;
 	vtkNew<vtkPoints> pts;
 	vtkNew<vtkCellArray> cells;
 	for (const auto &pl : plines) {
@@ -1195,6 +1194,7 @@ static void mecaBuildLines(Scene *s, Polygon &pg, double z0, int rank, double wi
 	pg.line->PickableOff();
 	pg.line->ForceOpaqueOn();
 	pg.line->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	pg.line->SetPosition(0.0, 0.0, rank * zStep);   // cross-ball depth rank — MUST match mecaBuildPatch
 	(s->axesRen ? s->axesRen : s->ren)->AddActor(pg.line);
 }
 
@@ -1338,6 +1338,22 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
 		(isline ? mi.plines : mi.rings).push_back(std::move(rg));
 		mi.cx += cx; mi.cy += cy; mi.nv += nv;
 	}
+	// A single BATCH-WIDE reference radius (largest ball, from each event's own rim/nodal-line
+	// group) sizes the cross-ball Z-position step below — see mecaBuildPatch's comment for why a
+	// batch-shared, on-screen-scaled step (not a fixed raw-Z unit) is what makes it survive both
+	// geographic vs cartesian zfac AND the user's VE slider.
+	double refRadius = 0.0;
+	for (auto &kv2 : groups) {
+		if (kv2.first % 3 != 2) continue;          // only the rim/nodal-line group has the full disk extent
+		MecaIn &mi = kv2.second;
+		if (mi.plines.empty() || mi.nv == 0) continue;
+		const double ccx = mi.cx / mi.nv, ccy = mi.cy / mi.nv;
+		const auto &first = mi.plines.front();
+		if (first.empty()) continue;
+		const double ddx = (first[0][0] - ccx) * s->xfac, ddy = first[0][1] - ccy;
+		refRadius = std::max(refRadius, std::sqrt(ddx*ddx + ddy*ddy));
+	}
+	const double zStep = (refRadius > 0.0) ? 0.02 * refRadius : 1.0;
 	for (auto &kv2 : groups) {
 		const int rank = kv2.first;
 		MecaIn &mi = kv2.second;
@@ -1363,9 +1379,9 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
 		// GPU depth test is re-evaluated every frame from each actor's CURRENT transform, so it
 		// tracks a drag for free with zero rebuild, and never mutates anyone's shape.
 		if (!mi.rings.empty()) {
-			mecaBuildPatch(s, pg, z0, rank, mi.rings);
+			mecaBuildPatch(s, pg, z0, rank, zStep, mi.rings);
 		} else {
-			mecaBuildLines(s, pg, z0, rank, rimWidthPct, mi.plines);
+			mecaBuildLines(s, pg, z0, rank, zStep, rimWidthPct, mi.plines);
 		}
 		// Drag bookkeeping: fold this rank's actor(s) into its EVENT's MecaBall (rank = ei*3+role,
 		// see the struct comment). The role==2 (rim/nodal-line) rank alone carries the authoritative
@@ -1379,7 +1395,7 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
 			if (!mb) { s->mecaBalls.push_back(MecaBall{}); mb = &s->mecaBalls.back(); mb->groupName = grp; mb->event = ei; }
 			if (pg.fill) mb->actors.push_back(pg.fill.Get());
 			if (pg.line) mb->actors.push_back(pg.line.Get());
-			if (!pg.v.empty()) mb->zLow = std::min(mb->zLow, pg.v[0][2]);   // this rank's baked Z (mecaHitAt/mecaUpdateAnchor placeholder)
+			if (!pg.v.empty()) mb->zLow = std::min(mb->zLow, pg.v[0][2]);   // vertex Z is z0 only now (rank lives in actor Position) — mecaHitAt/mecaUpdateAnchor placeholder, not a real occlusion key
 			if (role == 2 && !pg.v.empty()) {
 				mb->x0 = mi.cx / mi.nv; mb->y0 = mi.cy / mi.nv;
 				// pg.v[0] is the rim circle's angle-0 vertex, i.e. on the RAW (pre-scale) x-axis —

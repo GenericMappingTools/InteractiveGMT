@@ -1095,7 +1095,11 @@ static void mecaClipTrail(Scene *s, double ax, double ay, double bx, double by,
 static void mecaDragTo(Scene *s, int bi, double wx, double wy) {
 	MecaBall &mb = s->mecaBalls[bi];
 	mb.offX = wx - mb.x0; mb.offY = wy - mb.y0;
-	for (vtkActor *a : mb.actors) a->SetPosition(mb.offX * s->xfac, mb.offY, 0.0);
+	// Z is NOT reset to 0 here: mecaBuildPatch/mecaBuildLines already gave each actor a Position Z of
+	// rank*zStep at plot time (the cross-ball depth rank) — only X/Y are a live drag offset, so we must
+	// preserve whatever Z the actor already carries or dragging would flatten every ball to the same
+	// rank and reopen the exact occlusion bug this convention exists to fix.
+	for (vtkActor *a : mb.actors) a->SetPosition(mb.offX * s->xfac, mb.offY, a->GetPosition()[2]);
 	// The date label (if "Plot event date" is on) must carry with the ball. Unlike mb.actors
 	// (Polygon-baked geometry that uses a plain additive Position offset), TextLabel's Position IS
 	// its true anchor (textApplyProps sets pos[0]*xfac directly) — re-find the owning TextLabel by
