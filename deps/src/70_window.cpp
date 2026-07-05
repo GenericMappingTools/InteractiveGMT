@@ -2522,15 +2522,18 @@ public:
 			setIfValid("editMinDepth",  p[3], false);
 			setIfValid("editMaxDepth",  p[4], false);
 		};
-		if (auto *btnOpenFile = d->findChild<QToolButton *>("btnOpenFile")) {
-			QObject::connect(btnOpenFile, &QToolButton::clicked, d, [this, d, updateFieldsFromData]() {
-				QString p = QFileDialog::getOpenFileName(d, "Select focal mechanisms file", prefStartDir());
-				if (p.isEmpty()) return;
-				filePath = p; rememberStartDir(p);
-				d->setWindowTitle("Focal mechanisms — " + QFileInfo(p).fileName());
-				updateFieldsFromData();
-			});
-		}
+		auto openFileDialog = [this, d, updateFieldsFromData]() {
+			QString p = QFileDialog::getOpenFileName(d, "Select focal mechanisms file", prefStartDir());
+			if (p.isEmpty()) return;
+			filePath = p; rememberStartDir(p);
+			d->setWindowTitle("Focal mechanisms — " + QFileInfo(p).fileName());
+			updateFieldsFromData();
+		};
+		if (auto *btnOpenFile = d->findChild<QToolButton *>("btnOpenFile"))
+			QObject::connect(btnOpenFile, &QToolButton::clicked, d, openFileDialog);
+		// Double-click a catalog format in the list = same as Browse: pick the file for that format.
+		if (catalogList)
+			QObject::connect(catalogList, &QListWidget::itemDoubleClicked, d, [openFileDialog](QListWidgetItem *) { openFileDialog(); });
 
 		// Plot event date is only meaningful for catalog formats that actually CARRY a date (ISF
 		// row 0, CMT .ndk row 3) — Aki & Richards / plain Harvard CMT column files (rows 1,2) have

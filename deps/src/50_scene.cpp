@@ -259,7 +259,7 @@ static void textLabelMenu(Scene *s, vtkTextActor3D *act, const QPoint& globalPos
 // colourbar / profile). Drawn into a 16x16 transparent pixmap (matches the small checkbox).
 enum ObjIcon { IC_Surface, IC_Image, IC_Line, IC_Points, IC_Curtain,
                IC_Polygon, IC_Polyline, IC_Rect, IC_Circle, IC_Text, IC_ColorBar, IC_Profile, IC_NestRect,
-               IC_Axes, IC_StraightLine };
+               IC_Axes, IC_StraightLine, IC_Beachball };
 
 static QPixmap makeObjectIcon(int kind) {
 	// Drawn in a 16-unit coordinate space but rasterised at high DPI (supersampled) so the glyph
@@ -363,6 +363,17 @@ static QPixmap makeObjectIcon(int kind) {
 		p.drawRect(QRectF(1.5, 2.5, 13.0, 11.0));   // outer
 		p.drawRect(QRectF(4.0, 4.5,  8.0,  7.0));   // middle
 		p.drawRect(QRectF(6.5, 6.5,  3.0,  3.0));   // inner
+		break;
+	}
+	case IC_Beachball: {                                      // strike-slip focal-mechanism beachball:
+		// circle split by the two (vertical/horizontal) nodal planes into 4 quadrants, alternating
+		// black compressional / white dilatational — the classic strike-slip "bowtie" pattern.
+		const QPointF O(8, 8); const double R = 6.5;
+		p.setPen(Qt::NoPen); p.setBrush(Qt::white); p.drawEllipse(O, R, R);
+		p.setBrush(Qt::black);
+		p.drawPie(QRectF(O.x() - R, O.y() - R, 2 * R, 2 * R), 45 * 16, 90 * 16);
+		p.drawPie(QRectF(O.x() - R, O.y() - R, 2 * R, 2 * R), 225 * 16, 90 * 16);
+		p.setPen(QPen(QColor(20, 20, 20), 1.0)); p.setBrush(Qt::NoBrush); p.drawEllipse(O, R, R);
 		break;
 	}
 	case IC_Text: {
@@ -1338,7 +1349,7 @@ static void rebuildSceneObjects(Scene *s) {
 				bool vis = false;
 				for (auto& p : s->polys) if (p.isMeca && p.groupName == pg.groupName &&
 				                              ((p.fill && p.fill->GetVisibility() != 0) || (p.line && p.line->GetVisibility() != 0))) { vis = true; break; }
-				makeRow(gname, IC_Polygon, vis,
+				makeRow(gname, IC_Beachball, vis,
 				        [s, gname](bool on) {
 				            const std::string gn = gname.toStdString();
 				            for (auto& p : s->polys) if (p.isMeca && p.groupName == gn) {
