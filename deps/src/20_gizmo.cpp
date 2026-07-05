@@ -349,6 +349,7 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 	// dragged — the gizmo must NEVER rotate/tilt then (the drag must not also move the camera).
 	// Abort so neither the gizmo nor the trackball acts on this event.
 	if (c->s->polyDragVert >= 0 || c->s->textDrag >= 0 || c->s->barDragging || c->s->mecaDrag >= 0 ||
+		c->s->symLayerDrag >= 0 ||
 		(c->s->polyMode && (c->s->polyDrawing || c->s->polyShape == Scene::SH_Text))) {
 		c->grab = Grab::None;
 		if (c->dragCmd) c->dragCmd->SetAbortFlagOnExecute(1);
@@ -372,14 +373,10 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 				vtkActor *sym = pickSymbolAt(c->s, x, y);   // symbols sit on top -> first
 				int ovMode = 1;
 				vtkActor *ov = sym ? nullptr : pickOverlayAt(c->s, x, y, ovMode);
-				if (sym) {                         // left-click ON a symbol layer -> its menu (deferred)
-					Scene *scS = c->s;
-					const double dprS = scS->widget->devicePixelRatioF();
-					const int    HpxS = scS->widget->renderWindow()->GetSize()[1];
-					QPoint gpS = scS->widget->mapToGlobal(QPoint(int(x / dprS), int((HpxS - y) / dprS)));
-					QTimer::singleShot(0, scS->widget, [scS, sym, gpS]() { symbolLayerMenu(scS, sym, gpS); });
-					c->grab = Grab::None;         // selected; do NOT rotate
-				}
+				if (sym) {                         // left-click ON a symbol: just don't rotate. Properties
+					c->grab = Grab::None;         // open on MIDDLE-click only (MidPanFilter, 30_app.cpp) —
+				}                                  // a plain left click must stay free for the double-click-
+				                                   // then-drag gesture (polygonHandleDblClick/Move, 85_polygon).
 				else if (ov) {                    // left-click ON a line/point overlay -> its menu                         // left-click ON a line/point overlay -> its menu
 					// Pop its context menu DEFERRED: a modal QMenu must not run inside this VTK
 					// press callback (reentrant event loop). singleShot(0) fires it next loop turn,

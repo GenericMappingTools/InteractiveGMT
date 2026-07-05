@@ -593,7 +593,16 @@ protected:
 		else if (t == QEvent::MouseButtonRelease && down) {
 			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
 			if (me->button() == Qt::MiddleButton) {
-				if (!moved) { double x, y; devPos(me, x, y); recenter(x, y); }
+				if (!moved) {
+					double x, y; devPos(me, x, y);
+					// A plain middle-click (no drag) ON a symbol opens ITS properties — the only
+					// trigger for symbolLayerMenu now (left-click stays free for double-click-drag,
+					// see 20_gizmo.cpp; right-click still opens it too, via the generic context menu).
+					if (vtkActor *sym = pickSymbolAt(s, (int)x, (int)y))
+						symbolLayerMenu(s, sym, s->widget->mapToGlobal(me->position().toPoint()));
+					else
+						recenter(x, y);
+				}
 				down = false;
 				return true;
 			}

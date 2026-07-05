@@ -1695,7 +1695,7 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& 
                       double sizePx, int filled,
                       double fr, double fg, double fb,
                       double er, double eg, double eb, double edgeWidth,
-                      const std::string& name, const char *info = nullptr) {
+                      const std::string& name, const char *info = nullptr, bool oneShot = false) {
 	if (!s || !xyz || npts <= 0) return 0;
 
 	vtkNew<vtkPoints> pts; pts->SetDataTypeToDouble(); pts->Allocate(npts);
@@ -1787,6 +1787,7 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& 
 	sl.actor = a; sl.glyph = g; sl.zfix = zfix; sl.zfixFilter = zfixFilter;
 	sl.sizePx = (sizePx > 0.0 ? sizePx : 8.0);
 	sl.filled = wantFill; sl.sym = sym; sl.solid3D = solid3D;
+	sl.oneShot = oneShot;                // Symbols draw tool: exactly one point, whole-layer drag applies
 	sl.stack = s->vecSeq++;              // new layer lands on top of the whole vector pile
 	sl.name = name.empty() ? ("Symbols " + std::to_string((int)s->symbols.size() + 1) + " (" + sym + ")")
 	                       : name;
@@ -1826,6 +1827,84 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& 
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 	return 1;
+}
+
+// Index of the symbol layer whose actor==a, or -1 (mirrors polyIndexOfActor's "never cache" style —
+// callers re-find by pointer since s->symbols can shift under an unrelated erase elsewhere).
+static int symbolLayerIndexOfActor(Scene *s, vtkActor *a) {
+	for (int i = 0; i < (int)s->symbols.size(); ++i) if (s->symbols[i].actor.Get() == a) return i;
+	return -1;
+}
+
+// Floating data viewer for a symbol layer: a non-modal window with a table of its point(s) in TRUE
+// coords (X un-baked out of xfac). Mirrors showLineDataTable's look/role (55_lineprops.cpp) — same
+// #/X/Y[/Z] columns, same floating/non-modal/WA_DeleteOnClose window. Editable for every layer (a
+// symbol has no "drawn-tool-only" restriction the way LK_Polygon editing does): a committed cell
+// rewrites the point directly in the glyph's input vtkPoints and re-renders. Re-finds the layer by
+// actor pointer on every edit (never caches the index — `act` is the stable identity, matching
+// polyIndexOfActor's convention) so a layer deleted while the table is open just no-ops instead of
+// writing into freed/reused memory.
+static void showSymbolDataTable(Scene *s, vtkActor *act, const QString& name) {
+	const int si0 = symbolLayerIndexOfActor(s, act);
+	if (si0 < 0) return;
+	vtkPolyData *pd0 = vtkPolyData::SafeDownCast(s->symbols[si0].glyph->GetInput());
+	if (!pd0 || !pd0->GetPoints()) return;
+	const int nrows = (int)pd0->GetPoints()->GetNumberOfPoints();
+	if (nrows == 0) return;
+	const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
+
+	QDialog *dlg = new QDialog(nullptr);                  // top-level, parentless -> truly floating
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	dlg->setWindowTitle(name.isEmpty() ? QString("Symbol data") : (name + " — data"));
+	dlg->setWindowFlag(Qt::Window, true);
+	QVBoxLayout *lay = new QVBoxLayout(dlg);
+
+	const int ncoord = s->flat2d ? 2 : 3;
+	QStringList hdr; hdr << "#" << "X" << "Y"; if (!s->flat2d) hdr << "Z";
+	QTableWidget *tbl = new QTableWidget(nrows, ncoord + 1, dlg);
+	tbl->setHorizontalHeaderLabels(hdr);
+	tbl->verticalHeader()->setVisible(false);
+	tbl->setSelectionBehavior(QAbstractItemView::SelectRows);
+
+	for (int k = 0; k < nrows; ++k) {
+		double p[3]; pd0->GetPoints()->GetPoint(k, p);
+		const double row[3] = { p[0] * xfacInv, p[1], p[2] };
+		QTableWidgetItem *idx = new QTableWidgetItem(QString::number(k + 1));
+		idx->setFlags(idx->flags() & ~Qt::ItemIsEditable);   // the "#" column is never editable
+		tbl->setItem(k, 0, idx);
+		for (int c = 0; c < ncoord; ++c)
+			tbl->setItem(k, c + 1, new QTableWidgetItem(QString::number(row[c], 'g', 10)));
+	}
+	tbl->resizeColumnsToContents();
+	lay->addWidget(tbl);
+	dlg->resize(360, 420);
+
+	std::shared_ptr<bool> guard = std::make_shared<bool>(false);
+	QObject::connect(tbl, &QTableWidget::cellChanged, dlg, [s, tbl, act, guard](int row, int col) {
+		if (*guard || col < 1 || col > 3) return;             // ignore the "#" column / our own edits
+		const int si = symbolLayerIndexOfActor(s, act);
+		if (si < 0) return;                                   // layer was deleted -> nothing to write
+		vtkPolyData *pd = vtkPolyData::SafeDownCast(s->symbols[si].glyph->GetInput());
+		if (!pd || !pd->GetPoints() || row < 0 || row >= (int)pd->GetPoints()->GetNumberOfPoints()) return;
+		bool ok = false;
+		const double val = tbl->item(row, col)->text().toDouble(&ok);
+		double p[3]; pd->GetPoints()->GetPoint(row, p);
+		*guard = true;
+		if (!ok) {                                            // bad number -> restore the old cell text
+			const double old = (col == 1) ? p[0] * (s->xfac != 0.0 ? 1.0 / s->xfac : 1.0) : p[col - 1];
+			tbl->item(row, col)->setText(QString::number(old, 'g', 10));
+			*guard = false;
+			return;
+		}
+		if (col == 1) p[0] = val * s->xfac;                   // X: re-bake xfac, matches addSymbols
+		else          p[col - 1] = val;                       // Y / Z
+		pd->GetPoints()->SetPoint(row, p);
+		pd->GetPoints()->Modified();
+		pd->Modified();
+		*guard = false;
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	});
+	dlg->show();                                          // non-modal: REPL + viewer stay live
 }
 
 // Right-click / left-click properties for a symbol layer row: change shape, fill + edge colour,
@@ -1882,6 +1961,8 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 		dlCal = m.addAction("Download Mareg (Calendar)");
 		m.addSeparator();
 	}
+	QAction *tblA = m.addAction("Show data table…");      // floating point-table viewer (X/Y[/Z])
+	m.addSeparator();
 	QMenu *tm = m.addMenu("Symbol");
 	static const std::pair<const char*, const char*> KINDS[] = {
 		{"Circle","c"}, {"Square","s"}, {"Triangle","t"}, {"Inverted triangle","i"},
@@ -1914,6 +1995,7 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 	QAction *ch = m.exec(gp);
 	if (!ch) return;
 
+	if (ch == tblA) { showSymbolDataTable(s, act, QString::fromStdString(sl->name)); return; }
 	if (ch == dl2)   { g_juliaTides(s, "2days",    station.c_str()); return; }
 	if (ch == dlCal) {
 		// Calendar download: pop a small dialog with two calendar-linked date/time editors (start,

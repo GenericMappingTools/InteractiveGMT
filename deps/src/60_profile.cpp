@@ -274,7 +274,7 @@ static int  mecaHitAt(Scene *s, int x, int y);                   // focal-mechan
 class GLView : public QVTKOpenGLNativeWidget {
 public:
 	Scene *s = nullptr;
-	GLView() : QVTKOpenGLNativeWidget() {}
+	GLView() : QVTKOpenGLNativeWidget() { setFocusPolicy(Qt::StrongFocus); }   // so Ctrl+C (keyPressEvent) reaches it
 protected:
 	bool   midDown = false, midMoved = false;
 	QPoint midPress, midLast;
@@ -404,6 +404,25 @@ protected:
 		if (s && e->button() == Qt::LeftButton && polygonHandleRelease(s))
 			return;                     // ended a vertex drag
 		QVTKOpenGLNativeWidget::mouseReleaseEvent(e);
+	}
+	// Ctrl+C while a symbol is armed (double-click "edit mode" selection, see Scene::symArmed) copies
+	// its X/Y[/Z] (TRUE coords, x un-baked out of xfac) to the clipboard as a tab-separated line —
+	// same numeric formatting as the Show Data Table / Save line float precision.
+	void keyPressEvent(QKeyEvent *e) override {
+		if (s && s->symArmed >= 0 && s->symArmed < (int)s->symbols.size() && e->matches(QKeySequence::Copy)) {
+			SymbolLayer &sl = s->symbols[s->symArmed];
+			if (auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput())) {
+				if (pd->GetPoints() && pd->GetPoints()->GetNumberOfPoints() > 0) {
+					double p[3]; pd->GetPoints()->GetPoint(0, p);
+					const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
+					QString txt = QString::number(p[0] * xfacInv, 'g', 10) + "\t" + QString::number(p[1], 'g', 10);
+					if (!s->flat2d) txt += "\t" + QString::number(p[2], 'g', 10);
+					QApplication::clipboard()->setText(txt);
+				}
+			}
+			return;
+		}
+		QVTKOpenGLNativeWidget::keyPressEvent(e);
 	}
 };
 

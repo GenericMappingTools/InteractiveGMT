@@ -108,6 +108,40 @@ static QIcon makeCircleIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// Symbols flyout icons: a SMALL marker centred on the canvas (unlike the big shape-tool icons
+// above) — these place a native screen-constant-size glyph (SymbolLayer), not a drawn shape, so
+// the icon must read as "drop a small marker", not "draw a circle/square". Radii are deliberately
+// a fraction of the shape-tool icons' (~30% canvas fill vs ~75%).
+static QIcon makeSymCircleIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.2)); p.setBrush(QColor(255, 200, 120));
+	p.drawEllipse(QPointF(12, 12), 4.2, 4.2);
+	p.end(); return QIcon(pm);
+}
+static QIcon makeSymSquareIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.2)); p.setBrush(QColor(255, 200, 120));
+	p.drawRect(QRectF(8.2, 8.2, 7.6, 7.6));
+	p.end(); return QIcon(pm);
+}
+static QIcon makeSymStarIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	QPolygonF star;
+	const QPointF c(12, 12);
+	for (int k = 0; k < 10; ++k) {
+		const double r = (k % 2 == 0) ? 4.8 : 2.1;
+		const double a = -vtkMath::Pi()/2.0 + k * vtkMath::Pi()/5.0;
+		star << QPointF(c.x() + r*std::cos(a), c.y() + r*std::sin(a));
+	}
+	p.setPen(QPen(QColor(40, 40, 40), 1.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	p.setBrush(QColor(255, 200, 120));
+	p.drawPolygon(star);
+	p.end(); return QIcon(pm);
+}
+
 // Text-tool icon: a stylised serif "T". A serif face (Georgia, fallback Times) gives the glyph
 // real bracketed serifs at the foot + arm ends, so it reads as a LETTER T — not the plain-bar
 // cross the geometric version looked like. Rendered as an actual glyph path, supersampled (dpr 4
@@ -592,6 +626,68 @@ static void polyExitEdit(Scene *s) {
 	s->polyEdit = -1;
 	s->polyDragVert = -1;
 	polyRebuildHandles(s);
+}
+
+// Rebuild the single yellow "armed" handle shown on a double-click-selected symbol (Scene::symArmed)
+// — visible confirmation that the double-click SELECTED it (mirrors the polygon vertex handles'
+// look/role exactly), and a big, comfortable hit target for the follow-up press+drag (symHitHandle)
+// instead of re-hitting the tiny glyph itself. The handle's point is copied straight from the
+// symbol's own polydata (already x*xfac-baked), so it uses the SAME actor scale convention as
+// SymbolLayer actors (1,1,zfac*ve) — NOT polyHandles' (xfac,1,zfac*ve), which is for RAW-coord
+// polygon vertices.
+static void symRebuildHandle(Scene *s) {
+	if (!s->symHandlePD) s->symHandlePD = vtkSmartPointer<vtkPolyData>::New();
+	vtkNew<vtkPoints> pts;
+	vtkNew<vtkCellArray> verts;
+	if (s->symArmed >= 0 && s->symArmed < (int)s->symbols.size()) {
+		SymbolLayer &sl = s->symbols[s->symArmed];
+		if (auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput())) {
+			if (pd->GetPoints() && pd->GetPoints()->GetNumberOfPoints() > 0) {
+				double p[3]; pd->GetPoints()->GetPoint(0, p);
+				const vtkIdType id = pts->InsertNextPoint(p[0], p[1], p[2]);
+				verts->InsertNextCell(1, &id);
+			}
+		}
+	}
+	s->symHandlePD->SetPoints(pts);
+	s->symHandlePD->SetVerts(verts);
+	s->symHandlePD->Modified();
+	if (!s->symHandle) {
+		vtkNew<vtkPolyDataMapper> map; map->SetInputData(s->symHandlePD); map->ScalarVisibilityOff();
+		map->SetRelativeCoincidentTopologyPointOffsetParameter(-200000.0);
+		s->symHandle = vtkSmartPointer<vtkActor>::New();
+		s->symHandle->SetMapper(map);
+		s->symHandle->GetProperty()->SetColor(1.0, 1.0, 0.0);                // yellow, same as polyHandles
+		s->symHandle->GetProperty()->SetPointSize(16.0);                    // bigger than polyHandles' 11 —
+		                                                                     // symbols are small, needs slack
+		s->symHandle->GetProperty()->SetRenderPointsAsSpheres(false);
+		s->symHandle->GetProperty()->LightingOff();
+		s->symHandle->PickableOff();
+		s->symHandle->SetScale(1.0, 1.0, s->zfac * s->ve);
+		// Goes into the OVERLAY renderer (s->axesRen, layer 1 — same one the Z-axis tick labels use,
+		// "own depth, never occluded by the surface"), NOT s->ren — a separate compositing layer with
+		// its own depth buffer wins trivially against the main scene, no coincident-topology-offset
+		// guesswork needed (an offset-only attempt against the glyph's own filled-polygon depth bias
+		// did NOT reliably win in testing).
+		s->axesRen->AddActor(s->symHandle);
+	}
+	s->symHandle->SetVisibility(s->symArmed >= 0 ? 1 : 0);
+}
+
+// Is (x,y) within tol px of the armed symbol's handle? A fixed, generous tolerance (unlike
+// pickSymbolAt's size-scaled one) since the glyph itself can be tiny — mirrors polyHitHandle's role.
+static bool symHitHandle(Scene *s, int x, int y, double tol) {
+	if (s->symArmed < 0 || s->symArmed >= (int)s->symbols.size()) return false;
+	SymbolLayer &sl = s->symbols[s->symArmed];
+	auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+	if (!pd || !pd->GetPoints() || pd->GetPoints()->GetNumberOfPoints() == 0) return false;
+	double p[3]; pd->GetPoints()->GetPoint(0, p);
+	double sc[3]; sl.actor->GetScale(sc);
+	s->ren->SetWorldPoint(p[0] * sc[0], p[1] * sc[1], p[2] * sc[2], 1.0);
+	s->ren->WorldToDisplay();
+	double d[3]; s->ren->GetDisplayPoint(d);
+	const double dx = d[0] - x, dy = d[1] - y;
+	return (dx * dx + dy * dy) <= tol * tol;
 }
 
 // Index of the finished polygon whose outline (any edge, incl. the closing one) passes within
@@ -1351,6 +1447,22 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y) {
 				polyFinalize(s, corners, true, pre);
 			}
 			break;
+		case Scene::SH_SymCircle:
+		case Scene::SH_SymSquare:
+		case Scene::SH_SymStar: {                        // symbols: ONE click places a NATIVE screen-constant
+			                                              // glyph (SymbolLayer/vtkGlyph3D), not a drawn Polygon —
+			                                              // never deforms on geographic maps (see addSymbols, 50).
+			// 10 points, using the SAME px<->pt constant as the Size (points) property dialog
+			// (symbolLayerMenu's liveSizeDialog, 50_scene.cpp: pxPerUnit = 96.0/72.0) — must match
+			// exactly or the dialog wouldn't read back "10.0" for a symbol placed with this default.
+			const double sizePx = 10.0 * (96.0 / 72.0);
+			const char *sym = s->polyShape == Scene::SH_SymCircle ? "c"
+			                : s->polyShape == Scene::SH_SymSquare ? "s" : "a";
+			addSymbols(s, w, 1, sym, sizePx, 1, 1.0, 0.55, 0.0, 0.0, 0.0, 0.0, 1.0, "", nullptr, true);
+			if (s->polyAct) s->polyAct->setChecked(false);   // one-shot tool, same as every other draw tool
+			else            polygonSetMode(s, false);
+			break;
+		}
 		case Scene::SH_Text: break;                      // handled above
 		}
 		s->widget->renderWindow()->Render();
@@ -1359,6 +1471,10 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y) {
 	if (s->polyEdit >= 0) {                              // edit mode: grab a vertex handle to drag it
 		const int h = polyHitHandle(s, x, y, 10.0);
 		if (h >= 0) { s->polyDragVert = h; return true; }
+	}
+	if (s->symArmed >= 0 && symHitHandle(s, x, y, 16.0)) {   // armed symbol: THIS press starts the
+		s->symLayerDrag = s->symArmed;                        // actual drag (a separate, later gesture
+		return true;                                          // than the dblclick) — generous handle tolerance
 	}
 	const int mi_ = mecaHitAt(s, x, y);                 // idle: grab a beachball to drag it (leaves an anchor line)
 	if (mi_ >= 0) { s->mecaDrag = mi_; return true; }
@@ -1388,6 +1504,16 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 		return true;
 	}
 	if (!s->polyMode) {
+		vtkActor *symAct = pickSymbolAt(s, x, y);        // native symbols: double-click ARMS it for dragging —
+		if (symAct) {                                    // mirrors polyEdit exactly (persists across the
+			const int si = symbolLayerIndexOfActor(s, symAct);   // dblclick's own release; a LATER, separate
+			if (si >= 0 && s->symbols[si].oneShot) {      // press+drag on it is what actually moves it, see
+				s->symArmed = (s->symArmed == si) ? -1 : si;   // polygonHandlePress/symArmed below). Toggle:
+				symRebuildHandle(s);                            // double-click the SAME armed symbol disarms it.
+				s->widget->renderWindow()->Render();            // show the yellow handle NOW (was missing —
+				return true;                                    // silent arming looked like nothing happened)
+			}
+		}
 		const int pi = polyHitPolygon(s, x, y, 8.0);
 		if (s->polyEdit >= 0) {
 			if (pi >= 0 && pi != s->polyEdit) polyEnterEdit(s, pi);   // double-click another -> switch
@@ -1402,6 +1528,22 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 
 // Mouse move: extend the draw preview to the cursor, or drag the grabbed vertex / text label.
 static bool polygonHandleMove(Scene *s, int x, int y) {
+	if (s->symLayerDrag >= 0 && s->symLayerDrag < (int)s->symbols.size()) {   // dragging a native symbol
+		double w[3];
+		if (polyPickWorld(s, x, y, w)) {      // terrain-draped, same pick as the original placement click
+			SymbolLayer& sl = s->symbols[s->symLayerDrag];
+			if (auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput())) {
+				if (pd->GetPoints() && pd->GetPoints()->GetNumberOfPoints() > 0) {
+					pd->GetPoints()->SetPoint(0, w[0] * s->xfac, w[1], w[2]);   // x pre-baked, matches addSymbols
+					pd->GetPoints()->Modified();
+					pd->Modified();
+				}
+			}
+			symRebuildHandle(s);   // keep the yellow handle glued to the moving symbol
+			s->widget->renderWindow()->Render();
+		}
+		return true;
+	}
 	if (s->mecaDrag >= 0 && s->mecaDrag < (int)s->mecaBalls.size()) {   // dragging a beachball across the XY plane
 		double w[3];
 		if (pickPlaneXY(s, x, y, w)) {
@@ -1452,6 +1594,7 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 
 // Left release: end a vertex / text-label drag.
 static bool polygonHandleRelease(Scene *s) {
+	if (s->symLayerDrag >= 0) { s->symLayerDrag = -1; return true; }
 	if (s->mecaDrag >= 0) { s->mecaDrag = -1; return true; }
 	if (s->polyDragVert >= 0) {
 		s->polyDragVert = -1;

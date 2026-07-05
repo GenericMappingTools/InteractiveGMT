@@ -1573,6 +1573,116 @@ GMTVTK_API int gmtvtk_meca_drag_test(void *scene, int idx, double dx, double dy,
 	return 1;
 }
 
+// test hook: diagnostic — s->symArmed, whether the yellow handle actor exists/is visible, and its
+// current point count. out4 = [symArmed, handleExists, handleVisible, handleNumPoints].
+GMTVTK_API void gmtvtk_sym_debug_test(void *scene, double *out4) {
+	Scene *s = (Scene*)scene;
+	if (!s || !out4) return;
+	out4[0] = s->symArmed;
+	out4[1] = s->symHandle ? 1 : 0;
+	out4[2] = (s->symHandle && s->symHandle->GetVisibility()) ? 1 : 0;
+	out4[3] = (s->symHandlePD && s->symHandlePD->GetPoints()) ? s->symHandlePD->GetPoints()->GetNumberOfPoints() : 0;
+}
+
+// test hook: send a synthetic Ctrl+C key press to the GL widget (GLView::keyPressEvent) — same
+// dispatch mechanism as gmtvtk_symbol_ui_drag_test's mouse events, exercising the REAL copy-armed-
+// symbol-to-clipboard code path, not a bypass.
+GMTVTK_API void gmtvtk_send_ctrlc_test(void *scene) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->widget) return;
+	QKeyEvent ev(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier, "c");
+	QApplication::sendEvent(s->widget, &ev);
+}
+
+// test hook: current clipboard text (UTF-8, caller-owned buffer semantics like other _test string
+// getters — returns a pointer to a static buffer, valid until the next call).
+GMTVTK_API const char *gmtvtk_clipboard_get_test() {
+	static std::string buf;
+	buf = QApplication::clipboard()->text().toStdString();
+	return buf.c_str();
+}
+
+// test hook: place a NATIVE symbol (kind 0=circle/1=square/2=star, GMT codes c/s/a) at world
+// (x,y,z), on-screen size `sizePx`, bypassing pixel-picking — mirrors gmtvtk_fault_add_test's
+// world-coords pattern. Calls the SAME addSymbols (oneShot=true) the live one-click Symbols
+// flyout uses. Returns the new layer's index in s->symbols, or -1.
+GMTVTK_API int gmtvtk_symbol_add_test(void *scene, int kind, double x, double y, double z, double sizePx) {
+	Scene *s = (Scene*)scene;
+	if (!s) return -1;
+	const double w[3] = { x, y, z };
+	const char *sym = kind == 0 ? "c" : kind == 1 ? "s" : "a";
+	addSymbols(s, w, 1, sym, sizePx, 1, 1.0, 0.55, 0.0, 0.0, 0.0, 0.0, 1.0, "", nullptr, true);
+	return (int)s->symbols.size() - 1;
+}
+
+// test hook: drag native symbol `idx` (index into s->symbols) to world (x,y,z) — calls the SAME
+// single-point update the live double-click-then-drag uses (mirrors gmtvtk_meca_drag_test).
+GMTVTK_API int gmtvtk_symbol_drag_test(void *scene, int idx, double x, double y, double z) {
+	Scene *s = (Scene*)scene;
+	if (!s || idx < 0 || idx >= (int)s->symbols.size()) return 0;
+	SymbolLayer& sl = s->symbols[idx];
+	auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+	if (!pd || !pd->GetPoints() || pd->GetPoints()->GetNumberOfPoints() == 0) return 0;
+	pd->GetPoints()->SetPoint(0, x * s->xfac, y, z);
+	pd->GetPoints()->Modified();
+	pd->Modified();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// test hook: current world (x,y,z) of symbol layer `idx`'s single point (TRUE coords, x un-baked
+// out of xfac). Returns 1 if idx valid and has a point.
+GMTVTK_API int gmtvtk_symbol_get_pos_test(void *scene, int idx, double *out3) {
+	Scene *s = (Scene*)scene;
+	if (!s || idx < 0 || idx >= (int)s->symbols.size() || !out3) return 0;
+	SymbolLayer &sl = s->symbols[idx];
+	auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+	if (!pd || !pd->GetPoints() || pd->GetPoints()->GetNumberOfPoints() == 0) return 0;
+	double p[3]; pd->GetPoints()->GetPoint(0, p);
+	out3[0] = (s->xfac != 0.0) ? p[0] / s->xfac : p[0];
+	out3[1] = p[1];
+	out3[2] = p[2];
+	return 1;
+}
+
+// test hook: simulate a REAL double-click-then-drag gesture at world (x1,y1,z1), dragging to world
+// (x2,y2,z2), by sending genuine QMouseEvents through s->widget — the SAME Qt dispatch path a live
+// user's mouse goes through (GLView's overridden mousePress/DblClick/Move/ReleaseEvent, the gizmo's
+// abort-guard, the symArmed/symLayerDrag state machine) — NOT just the underlying point-update
+// code (that's gmtvtk_symbol_drag_test). Sequence: press-release-press-DBLCLICK-release (a complete
+// double-click gesture, arms it), THEN a SEPARATE press-move-release (the actual drag).
+GMTVTK_API int gmtvtk_symbol_ui_drag_test(void *scene, double x1, double y1, double z1,
+                                          double x2, double y2, double z2) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->widget || !s->ren || !s->widget->renderWindow()) return 0;
+	vtkRenderer *ren = s->ren;
+	const double zc = s->zfac * s->ve;
+	const double dpr = s->widget->devicePixelRatioF();
+	const int Hpx = s->widget->renderWindow()->GetSize()[1];
+	auto toLogical = [&](double wx, double wy, double wz) -> QPointF {
+		ren->SetWorldPoint(wx * s->xfac, wy, wz * zc, 1.0);
+		ren->WorldToDisplay();
+		double d[3]; ren->GetDisplayPoint(d);
+		return QPointF(d[0] / dpr, (Hpx - d[1]) / dpr);
+	};
+	const QPointF p1 = toLogical(x1, y1, z1), p2 = toLogical(x2, y2, z2);
+	QWidget *w = s->widget;
+	auto send = [&](QEvent::Type t, const QPointF& p, Qt::MouseButton btn, Qt::MouseButtons btns) {
+		QMouseEvent ev(t, p, w->mapToGlobal(p.toPoint()), btn, btns, Qt::NoModifier);
+		QApplication::sendEvent(w, &ev);
+	};
+	send(QEvent::MouseButtonPress,    p1, Qt::LeftButton, Qt::LeftButton);
+	send(QEvent::MouseButtonRelease,  p1, Qt::LeftButton, Qt::NoButton);
+	send(QEvent::MouseButtonPress,    p1, Qt::LeftButton, Qt::LeftButton);
+	send(QEvent::MouseButtonDblClick, p1, Qt::LeftButton, Qt::LeftButton);
+	send(QEvent::MouseButtonRelease,  p1, Qt::LeftButton, Qt::NoButton);
+	send(QEvent::MouseButtonPress,    p1, Qt::LeftButton, Qt::LeftButton);
+	send(QEvent::MouseMove,           p2, Qt::LeftButton, Qt::LeftButton);
+	send(QEvent::MouseButtonRelease,  p2, Qt::LeftButton, Qt::NoButton);
+	s->widget->renderWindow()->Render();
+	return 1;
+}
+
 // test hook: flip the flat-2D / 3-D view mode (drives the same sceneSetFlat2D the toolbar uses).
 GMTVTK_API void gmtvtk_set_flat2d_test(void *scene, int on) {
 	Scene *s = (Scene*)scene; if (!s) return;

@@ -2826,6 +2826,9 @@ static QIcon makeLineIcon();
 static QIcon makeRectIcon();
 static QIcon makeNestedRectIcon();
 static QIcon makeCircleIcon();
+static QIcon makeSymCircleIcon();   // Symbols flyout glyphs (85_polygon.cpp)
+static QIcon makeSymSquareIcon();
+static QIcon makeSymStarIcon();
 static QIcon makeTextIcon();
 static QIcon makeCubeIcon();        // 3-D Bodies flyout glyphs (85_polygon.cpp)
 static QIcon makeSphereIcon();
@@ -4198,6 +4201,42 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// chosen action toggles on (its connection enters draw mode) and becomes the button's default.
 	QObject::connect(shapeMenu, &QMenu::triggered, flyout, [flyout](QAction *a){ flyout->setDefaultAction(a); });
 	tb->addWidget(flyout);
+
+	// --- Symbols flyout: circle/square/star, placed by ONE click (not drag-to-size) -----------
+	// Same ToolDef/QToolButton/QMenu machinery as the shapes flyout above, routed through the SAME
+	// polygonToolToggled (so it shares s->shapeActs mutual exclusion with every other draw tool). A
+	// placed symbol is a NATIVE `SymbolLayer` (addSymbols, oneShot=true, 50_scene.cpp) — the SAME
+	// screen-constant-size vtkGlyph3D system volcanoes/seismicity use, NOT a drawn Polygon ring (a
+	// baked-vertex ring visibly deforms on geographic maps where x/y scale unequally; a glyph never
+	// does). Double-click then drag (polygonHandleDblClick/Move, 85_polygon.cpp) moves the layer's
+	// one point; size/fill/edge-color/width are already generic via the existing symbolLayerMenu.
+	struct SymToolDef { QIcon icon; const char *name; const char *tip; Scene::ShapeKind kind; };
+	const SymToolDef symTools[] = {
+		{ makeSymCircleIcon(), "Circle", "Place a circle symbol: click to drop it. Double-click then drag "
+		                                 "to move it; right-click for size/fill/outline.", Scene::SH_SymCircle },
+		{ makeSymSquareIcon(), "Square", "Place a square symbol: click to drop it. Double-click then drag "
+		                                 "to move it; right-click for size/fill/outline.", Scene::SH_SymSquare },
+		{ makeSymStarIcon(),   "Star",   "Place a star symbol: click to drop it. Double-click then drag "
+		                                 "to move it; right-click for size/fill/outline.",   Scene::SH_SymStar },
+	};
+	QToolButton *symFlyout = new QToolButton(tb);            // the shared symbol slot
+	symFlyout->setPopupMode(QToolButton::MenuButtonPopup);
+	symFlyout->setToolButtonStyle(Qt::ToolButtonIconOnly);
+	QMenu *symMenu = new QMenu(symFlyout);
+	QAction *defaultSym = nullptr;
+	for (const SymToolDef& td : symTools) {
+		QAction *act = symMenu->addAction(td.icon, td.name);
+		act->setCheckable(true);
+		act->setToolTip(td.tip);
+		const Scene::ShapeKind kind = td.kind;
+		QObject::connect(act, &QAction::toggled, [s, act, kind](bool on){ polygonToolToggled(s, act, kind, on); });
+		s->shapeActs.push_back(act);
+		if (!defaultSym) defaultSym = act;
+	}
+	symFlyout->setMenu(symMenu);
+	symFlyout->setDefaultAction(defaultSym);
+	QObject::connect(symMenu, &QMenu::triggered, symFlyout, [symFlyout](QAction *a){ symFlyout->setDefaultAction(a); });
+	tb->addWidget(symFlyout);
 
 	// Text — its own icon-only toggle (not a "drawn shape" family member, but shares the exclusive
 	// s->shapeActs group so selecting it untoggles the active shape tool and vice-versa).

@@ -54,6 +54,9 @@ struct SymbolLayer {
 	std::string name;                         // label shown in the Scene Objects panel
 	std::vector<std::string> info;            // per-point hover text (multi-line); empty = no hover info
 	int    stack = 0;                          // draw-order rank in the shared vector pile (higher = on top)
+	bool   oneShot = false;                   // placed by the Symbols draw tool: exactly ONE point, whole-
+	                                           // layer double-click-then-drag moves that single point
+	                                           // (see symLayerDrag) — false for batch layers (volcanoes etc)
 };
 
 // A Fledermaus-style vertical "curtain": a textured wall hung along an XY track.
@@ -453,7 +456,8 @@ struct Scene {
 	// rectangle and circle all finalize into a `Polygon` (a vertex ring; polyline is the only open
 	// one) and so share preview / edit / delete / Scene-Objects / Line-Properties code. Text places
 	// a billboard label instead. polyShape selects which tool the active (checked) button drives.
-	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text, SH_RectN, SH_Fault };
+	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text, SH_RectN, SH_Fault,
+	                 SH_SymCircle, SH_SymSquare, SH_SymStar };   // Symbols flyout: one-click regular shapes
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
 	std::vector<MecaGroupProps> mecaGroups;            // one entry per focal-mechanism batch groupName
@@ -473,8 +477,15 @@ struct Scene {
 	int    polyEdit     = -1;                          // index into polys being edited (-1 = none)
 	int    polyDragVert = -1;                          // vertex index being click-dragged (-1 = none)
 	int    textDrag     = -1;                          // index into texts being click-dragged (-1 = none)
+	int    symArmed     = -1;                          // index into symbols (an oneShot one) armed for drag by
+	                                                    // a double-click — PERSISTS like polyEdit, until toggled
+	                                                    // off by another double-click (-1 = none)
+	int    symLayerDrag = -1;                          // index into symbols actively being click-dragged RIGHT
+	                                                    // NOW — transient, like polyDragVert (-1 = none)
 	vtkSmartPointer<vtkActor>    polyHandles;          // square vertex handles for the edited polygon
 	vtkSmartPointer<vtkPolyData> polyHandlePD;
+	vtkSmartPointer<vtkActor>    symHandle;            // yellow handle on the armed symbol (symArmed) —
+	vtkSmartPointer<vtkPolyData> symHandlePD;          // visible "selected" feedback + a comfortable drag target
 	qint64 polyLastClickMs = -10000;                   // last left-press time (double-click detect)
 	int    polyLastClickX = 0, polyLastClickY = 0;     // last left-press position (px)
 	vtkSmartPointer<vtkCallbackCommand> polyCmd;       // mouse observers (priority above the gizmo)
