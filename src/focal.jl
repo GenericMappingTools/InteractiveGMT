@@ -426,19 +426,30 @@ function _focal_filter(d, lon, lat, dep, mag)
 	return keep
 end
 
-# N-S radius (km) of a Mw-5 beachball that reads as 2% of a W/E/S/N region's width — the ONE
-# formula both _focal_plot's empty-field fallback and the dialog's live prefill (_focal_peek_mag5)
-# use, so they can never drift apart (same-quantity-same-function).
+# N-S radius (km) that a Mw-5 beachball gets when the dialog's "Magnitude 5 size" field holds
+# the Mirone-default 0.8 cm — 2% of the W/E/S/N region's width, so 0.8 cm always reads as a
+# sensibly-sized ball at any zoom. `_focal_cm_to_km` (below) rescales any OTHER cm value against
+# this same reference, so the two can never drift apart (same-quantity-same-function).
 _focal_mag5_default(W, E, S, N) = max(1.0, 0.02 * (E - W) * 111.32 * cosd((S + N) / 2))
+
+# Mirone's own historical default: the "Magnitude 5 size" field is a PRINTED-cm symbol size
+# (focal_meca.m / psmeca -S convention), same as the .ui's shipped "0.8". There is no fixed page
+# here to give cm a literal ground meaning, so a cm value is a MULTIPLIER on `_focal_mag5_default`:
+# entering the reference 0.8 cm reproduces that 2%-of-region size exactly; 1.6 cm doubles it, 0.4 cm
+# halves it, etc. Restores cm as the user-facing unit (never km — that was a 2026-07-04 workaround
+# that also broke because the .ui's own "0.8" default was then read as 0.8 KILOMETRES = sub-pixel).
+const _FOCAL_MAG5_REF_CM = 0.8
+_focal_cm_to_km(cm, W, E, S, N) = (cm / _FOCAL_MAG5_REF_CM) * _focal_mag5_default(W, E, S, N)
 
 # Called from C++ (FocalMechanismsDialog, via g_juliaEval) the MOMENT a catalog file is picked or
 # the format selection changes — i.e. from the DIALOG itself, before OK is ever clicked. Does two
 # things with the one read: (1) on an EMPTY launcher, frames the basemap to the file's own extent
 # RIGHT THERE (reusing the same _on_basemap crop-and-promote path _on_focal uses at plot time —
 # so the user sees the map while still picking filters, not only after clicking OK); (2) prefills
-# EVERY data-derived filter box from the catalog's own values — "Magnitude 5 size" (same
-# 2%-of-width default _focal_plot falls back to), Min/Max magnitude, Min/Max depth — so the dialog
-# never sits there with the boxes still at their .ui placeholder values after a file is read.
+# every data-derived filter box from the catalog's own values — Min/Max magnitude, Min/Max depth —
+# plus resets "Magnitude 5 size" back to Mirone's fixed 0.8 cm reference (_FOCAL_MAG5_REF_CM; NOT
+# data-derived — cm is a multiplier on the region-relative default, same value for every catalog)
+# so the dialog never sits there with a leftover value from a previously-picked file.
 # `print`s a single "mag5/minmag/maxmag/mindepth/maxdepth" line (same g_juliaEval convention as
 # _fault_lenaz: plain stdout, no `show`-quoting) and returns `nothing`; the C++ side splits on '/'.
 # Prints nothing on any read failure (wrong format for this file yet, bad/partial path): the C++
@@ -459,11 +470,10 @@ function _focal_peek_and_frame(scene::Ptr{Cvoid}, file::String, fmt::Int)
 			_on_basemap(scene, "$Wd/$Ed/$Sd/$Nd/0/region")
 			ccall(_fn(:gmtvtk_process_events), Cint, ())
 		end
-		mag5 = _focal_mag5_default(W, E, S, N)
 		finmag = filter(isfinite, mag)               # sentinel moments are NaN-mag (see _focal_isf)
 		m0, m1 = isempty(finmag) ? (NaN, NaN) : extrema(finmag)
 		z0, z1 = extrema(dep)
-		print(mag5, '/', m0, '/', m1, '/', z0, '/', z1)
+		print(_FOCAL_MAG5_REF_CM, '/', m0, '/', m1, '/', z0, '/', z1)
 	catch
 	end
 	return nothing
@@ -481,20 +491,18 @@ end
 # plain degrees with its X offset pre-divided by the window's own X actor scale
 # (gmtvtk_get_xfac = cos(midlat)); the actor scale then multiplies it back, making screen X/Y
 # offsets exactly equal — a perfect circle on ANY window, no geodesy needed.
-# `mag5size` is the dialog's "Magnitude 5 size" field in **kilometres** (N-S radius of a Mw-5
-# beachball; 1° lat = 111.32 km). Mirone's own printed-cm meaning has no equivalent here.
+# `mag5size` is the dialog's "Magnitude 5 size" field in **centimetres** — Mirone's own
+# printed-symbol convention (focal_meca.m / psmeca -S), default 0.8. Converted to an N-S radius in
+# KM via `_focal_cm_to_km` (a multiplier on the region-relative default), never taken as a literal
+# ground distance — see that function's comment.
 function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1, str2, dip2, rake2,
                       plon, plat, date, idx)
-	# mag5size = N-S radius, in KM, of a Mw-5 beachball (the dialog live-prefills this from the
-	# CHOSEN catalog's own extent, see _focal_peek_mag5). An empty/zero/garbage field falls back to
-	# the SAME 2%-of-region rule (_focal_mag5_default) — NEVER to a fixed small number: 0.8
-	# (Mirone's printed-cm default) read as km plots sub-pixel, invisible balls ("plotted nothing"
-	# bug, 2026-07-04).
-	mag5 = something(tryparse(Float64, _get(d, "mag5size")), 0.0)
-	if mag5 <= 0
-		W, E, S, N = _seis_region(d)
-		mag5 = _focal_mag5_default(W, E, S, N)
-	end
+	# mag5size = cm size of a Mw-5 beachball. Empty/zero/garbage falls back to the reference 0.8 cm
+	# (_FOCAL_MAG5_REF_CM) — i.e. the same 2%-of-region default as leaving the dialog untouched.
+	cm5 = something(tryparse(Float64, _get(d, "mag5size")), 0.0)
+	cm5 <= 0 && (cm5 = _FOCAL_MAG5_REF_CM)
+	W, E, S, N = _seis_region(d)
+	mag5 = _focal_cm_to_km(cm5, W, E, S, N)      # N-S radius in KM for this event's Mw-5 reference
 	# X actor scale of this window (cos(midlat) geographic, 1 cartesian) — needed for
 	# screen-round symbol placement, see the comment at the vertex loop below.
 	xfac = ccall(_fn(:gmtvtk_get_xfac), Cdouble, (Ptr{Cvoid},), scene)

@@ -2486,12 +2486,13 @@ public:
 		QDialog *d = dlg;                      // local copy — member `dlg` can't be lambda-captured
 
 		auto *catalogList = d->findChild<QListWidget *>("catalogFormatList");
-		// Live prefill of EVERY data-derived filter box ("Magnitude 5 size", Min/Max magnitude,
-		// Min/Max depth) from the CHOSEN FILE's own values — read AFTER the catalog is picked, not
-		// the window's (possibly placeholder, possibly unrelated) visible region. Best-effort:
-		// g_juliaEval round-trips a plain Julia call (_focal_peek_and_frame, src/focal.jl) that
-		// prints "mag5/minmag/maxmag/mindepth/maxdepth" on success, nothing on any read failure
-		// (wrong format for this file yet, bad path) — the fields are simply left alone in that case.
+		// Live prefill of Min/Max magnitude and Min/Max depth from the CHOSEN FILE's own values
+		// (read AFTER the catalog is picked, not the window's possibly placeholder/unrelated
+		// visible region), plus a reset of "Magnitude 5 size" back to Mirone's fixed 0.8 cm
+		// reference (not data-derived — see _focal_peek_and_frame). Best-effort: g_juliaEval
+		// round-trips a plain Julia call (_focal_peek_and_frame, src/focal.jl) that prints
+		// "mag5/minmag/maxmag/mindepth/maxdepth" on success, nothing on any read failure (wrong
+		// format for this file yet, bad path) — the fields are simply left alone in that case.
 		auto updateFieldsFromData = [this, d, catalogList, scene]() {
 			if (filePath.isEmpty() || !g_juliaEval) return;
 			const int fmt = (catalogList ? catalogList->currentRow() : 0) + 1;
@@ -2516,7 +2517,7 @@ public:
 				if (!e) return;
 				e->setText(round ? QString::number(std::max(1.0, std::round(v))) : QString::number(v));
 			};
-			setIfValid("editMag5Size",  p[0], true);
+			setIfValid("editMag5Size",  p[0], false);
 			setIfValid("editMinMag",    p[1], false);
 			setIfValid("editMaxMag",    p[2], false);
 			setIfValid("editMinDepth",  p[3], false);
@@ -3765,26 +3766,18 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				return;
 			}
 			FocalMechanismsDialog dlg(win, s);
-			double W, E, S, N;
-			if (!visibleRegion(W, E, S, N)) { W = -180; E = 180; S = -90; N = 90; }
-			// The .ui ships Mirone's historical "0.8" (a PRINTED-cm size); mag5size is KILOMETRES
-			// here (N-S beachball radius of a Mw-5 event) — pre-fill a size that is actually
-			// visible at the current zoom: 2% of the visible region's width. Leaving 0.8 km on a
-			// hundreds-of-km map plots sub-pixel balls ("plotted nothing" bug, 2026-07-04);
-			// 5% was tried and read as "awfully big" on a global map.
-			if (dlg.dlg) {
-				if (auto *e = dlg.dlg->findChild<QLineEdit *>("editMag5Size")) {
-					const double wkm = (E - W) * 111.32 * std::cos((S + N) * 0.5 * 0.017453292519943295);
-					e->setText(QString::number(std::max(1.0, std::round(wkm * 0.02))));
-				}
-			}
+			// The .ui ships Mirone's historical "0.8" — a PRINTED-cm Mag-5 beachball size, same
+			// unit and same default Mirone itself used. No pre-fill override needed: focal.jl
+			// converts cm -> world size itself (mag5size is CENTIMETRES, scaled against the
+			// visible region so 0.8 cm never plots a sub-pixel ball).
 			if (dlg.exec() != QDialog::Accepted || dlg.params.isEmpty()) return;
-			// RE-derive the region AFTER the dialog closes, never reuse the pre-dialog snapshot above:
-			// on an empty launcher, picking a file inside the dialog already promoted/framed the
-			// window to the catalog's own extent (_focal_peek_and_frame, src/focal.jl) — the OLD W/E/S/N
-			// (captured before dlg.exec(), on the still-empty placeholder) would crop the read at OK
-			// time against a region that no longer describes this window, dropping every real event
-			// ("catalog returned no events" despite the file being fine and already read once).
+			// Derive the region AFTER the dialog closes: on an empty launcher, picking a file
+			// inside the dialog already promoted/framed the window to the catalog's own extent
+			// (_focal_peek_and_frame, src/focal.jl) — an EARLIER snapshot (on the still-empty
+			// placeholder) would crop the read at OK time against a region that no longer
+			// describes this window, dropping every real event ("catalog returned no events"
+			// despite the file being fine and already read once).
+			double W, E, S, N;
 			if (!visibleRegion(W, E, S, N)) { W = -180; E = 180; S = -90; N = 90; }
 			const QString p = dlg.params + QString("\nregion=%1/%2/%3/%4")
 				.arg(W, 0, 'f', 6).arg(E, 0, 'f', 6).arg(S, 0, 'f', 6).arg(N, 0, 'f', 6);

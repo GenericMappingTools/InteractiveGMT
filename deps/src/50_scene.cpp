@@ -1003,6 +1003,14 @@ static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoin
 	fontRow->setEnabled(dateChk->isChecked());
 	QObject::connect(dateChk, &QCheckBox::toggled, fontRow, &QWidget::setEnabled);
 
+	// Placeholder — NOT wired to commit()/g_juliaMecaProps, no MecaGroupProps field: purely a
+	// locked stub until repel is actually implemented (planned: GMT.jl's textrepel.jl or a
+	// variant of its algorithm, to spread overlapping beachballs apart).
+	QCheckBox *repelChk = new QCheckBox("Repel", dlg);
+	repelChk->setToolTip("Repel the beachballs such that they do not overlap");
+	repelChk->setEnabled(false);
+	lay->addWidget(repelChk);
+
 	// Single "Close" button — Qt maps it to the box's rejected() signal; nothing to Apply/Cancel
 	// anymore since every control already committed live, so it just closes the (WA_DeleteOnClose) dialog.
 	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
