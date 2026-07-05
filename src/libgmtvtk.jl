@@ -50,13 +50,6 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_add_fault_geom_h, :gmtvtk_set_modelslip_callback, :gmtvtk_add_slip_patches_h,
 	:gmtvtk_set_focal_callback, :gmtvtk_add_meca_h, :gmtvtk_set_meca_infos_h, :gmtvtk_add_text_h, :gmtvtk_add_texts_h,
 	:gmtvtk_set_meca_props_callback, :gmtvtk_remove_meca_group_h,
-	:gmtvtk_fault_add_test, :gmtvtk_fault_apply_test, :gmtvtk_fault_plane_test,
-	:gmtvtk_set_flat2d_test, :gmtvtk_objrows_test,
-	:gmtvtk_fault_open_dialog_test, :gmtvtk_fault_close_dialog_test, :gmtvtk_trace_zbounds_test,
-	:gmtvtk_meca_drag_test,
-	:gmtvtk_symbol_add_test, :gmtvtk_symbol_drag_test,
-	:gmtvtk_symbol_get_pos_test, :gmtvtk_symbol_ui_drag_test, :gmtvtk_sym_debug_test,
-	:gmtvtk_send_ctrlc_test, :gmtvtk_clipboard_get_test,
 	:gmtvtk_scene_state,
 	:gmtvtk_frame_for_image_h, :gmtvtk_fit2d, :gmtvtk_grow_frame_h, :gmtvtk_hide_surface,
 	:gmtvtk_show_profile_xy,
@@ -70,6 +63,20 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_xyplot_add_page, :gmtvtk_xyplot_series_count, :gmtvtk_xyplot_series_npoints,
 	:gmtvtk_xyplot_get_series, :gmtvtk_xyplot_series_name, :gmtvtk_xyplot_get_xtime,
 	:gmtvtk_progress_show, :gmtvtk_progress_update, :gmtvtk_progress_close,
+)
+
+# Headless GUI-test hooks, called only from test/test-scene-gui.jl and test/test-fault-geom.jl
+# (they drive/inspect Scene state without real mouse/keyboard input). Kept out of
+# _LIB_SYMBOLS so the production C-API list stays test-free; dlsym'd the same way since
+# this is the one place any gmtvtk_* symbol gets resolved.
+const _LIB_SYMBOLS_TEST = (
+	:gmtvtk_fault_add_test, :gmtvtk_fault_apply_test, :gmtvtk_fault_plane_test,
+	:gmtvtk_set_flat2d_test, :gmtvtk_objrows_test,
+	:gmtvtk_fault_open_dialog_test, :gmtvtk_fault_close_dialog_test, :gmtvtk_trace_zbounds_test,
+	:gmtvtk_meca_drag_test,
+	:gmtvtk_symbol_add_test, :gmtvtk_symbol_drag_test,
+	:gmtvtk_symbol_get_pos_test, :gmtvtk_symbol_ui_drag_test, :gmtvtk_sym_debug_test,
+	:gmtvtk_send_ctrlc_test, :gmtvtk_clipboard_get_test,
 )
 
 # Resolve a loaded C-API function pointer. Errors clearly if the library never loaded.
@@ -87,6 +94,9 @@ function _load_library()
 	ENV["QT_QPA_PLATFORM_PLUGIN_PATH"] = _QT_PLAT
 	_DLL[] = Libdl.dlopen(_LIB)
 	for s in _LIB_SYMBOLS
+		_LIB_FNS[s] = Libdl.dlsym(_DLL[], s)
+	end
+	for s in _LIB_SYMBOLS_TEST
 		_LIB_FNS[s] = Libdl.dlsym(_DLL[], s)
 	end
 	return
