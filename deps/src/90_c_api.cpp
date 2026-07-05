@@ -1535,6 +1535,22 @@ GMTVTK_API int gmtvtk_fault_add_test(void *scene, double lon1, double lat1, doub
 	return n;
 }
 
+// test hook: inject a polygon/polyline from a flat xyz array (npts * 3 doubles) and put it straight
+// into vertex-edit mode (polyEnterEdit) — bypasses the double-click-to-enter-edit gesture so the
+// Ctrl+C-copies-line-vertices path (60_profile.cpp keyPressEvent) can be tested directly. Returns
+// the new polygon's index (s->polyEdit).
+GMTVTK_API int gmtvtk_poly_edit_add_test(void *scene, const double *xyz, int npts, int closed) {
+	Scene *s = (Scene*)scene; if (!s || npts <= 0) return -1;
+	Polygon pg; pg.closed = closed != 0; pg.name = "test poly";
+	for (int i = 0; i < npts; ++i) pg.v.push_back({ xyz[3*i], xyz[3*i+1], xyz[3*i+2] });
+	pg.stack = s->vecSeq++;
+	polyRebuildLine(s, pg);
+	s->polys.push_back(pg);
+	const int idx = (int)s->polys.size() - 1;
+	polyEnterEdit(s, idx);
+	return s->polyEdit;
+}
+
 // Run the real endpoint-recompute core (the same faultApplyGeom the dialog calls). Writes the new
 // endpoint to out2[0..1] and returns the fault line's vertex count after the apply (0 on failure).
 GMTVTK_API int gmtvtk_fault_apply_test(void *scene, double strike, double len, int geog, double *out2) {
