@@ -482,6 +482,9 @@ struct Scene {
 	                                                    // off by another double-click (-1 = none)
 	int    symLayerDrag = -1;                          // index into symbols actively being click-dragged RIGHT
 	                                                    // NOW — transient, like polyDragVert (-1 = none)
+	int    symDragPressX = 0, symDragPressY = 0;       // press-point (px) for symLayerDrag's threshold gate —
+	                                                    // real movement doesn't commit until past a few px, so a
+	                                                    // plain click on an armed symbol can't nudge its position
 	vtkSmartPointer<vtkActor>    polyHandles;          // square vertex handles for the edited polygon
 	vtkSmartPointer<vtkPolyData> polyHandlePD;
 	vtkSmartPointer<vtkActor>    symHandle;            // yellow handle on the armed symbol (symArmed) —

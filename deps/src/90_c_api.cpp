@@ -1605,6 +1605,19 @@ GMTVTK_API void gmtvtk_send_ctrlc_test(void *scene) {
 	QApplication::sendEvent(s->widget, &ev);
 }
 
+// test hook: current camera position(3)+focal point(3) into out6 — used to prove Ctrl+C does/doesn't
+// leak into the gizmo's bare-'c' recenter-camera hotkey (20_gizmo.cpp KeyCB) when the copy-armed-
+// symbol branch (60_profile.cpp) doesn't consume the event. Returns 1 if scene/camera valid.
+GMTVTK_API int gmtvtk_camera_get_test(void *scene, double *out6) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->ren || !out6) return 0;
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	if (!cam) return 0;
+	double pos[3], fp[3]; cam->GetPosition(pos); cam->GetFocalPoint(fp);
+	for (int i = 0; i < 3; ++i) { out6[i] = pos[i]; out6[3+i] = fp[i]; }
+	return 1;
+}
+
 // test hook: current clipboard text (UTF-8, caller-owned buffer semantics like other _test string
 // getters — returns a pointer to a static buffer, valid until the next call).
 GMTVTK_API const char *gmtvtk_clipboard_get_test() {
@@ -1690,6 +1703,36 @@ GMTVTK_API int gmtvtk_symbol_ui_drag_test(void *scene, double x1, double y1, dou
 	send(QEvent::MouseButtonPress,    p1, Qt::LeftButton, Qt::LeftButton);
 	send(QEvent::MouseMove,           p2, Qt::LeftButton, Qt::LeftButton);
 	send(QEvent::MouseButtonRelease,  p2, Qt::LeftButton, Qt::NoButton);
+	s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// test hook: PLAIN click (press-move-release, NO double-click, NO arm toggle) at world (x,y,z),
+// with the release offset by (dxPx,dyPx) SCREEN pixels from the press — simulates the sub-pixel
+// jitter a real mouse has between down and up on an already-armed symbol, to test whether that
+// alone (i.e. NOT a deliberate drag gesture) nudges the symbol via the symArmed/symLayerDrag
+// press-starts-a-drag-with-no-threshold path (85_polygon.cpp:1475).
+GMTVTK_API int gmtvtk_symbol_click_jitter_test(void *scene, double x, double y, double z,
+                                               double dxPx, double dyPx) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->widget || !s->ren || !s->widget->renderWindow()) return 0;
+	vtkRenderer *ren = s->ren;
+	const double zc = s->zfac * s->ve;
+	const double dpr = s->widget->devicePixelRatioF();
+	const int Hpx = s->widget->renderWindow()->GetSize()[1];
+	ren->SetWorldPoint(x * s->xfac, y, z * zc, 1.0);
+	ren->WorldToDisplay();
+	double d[3]; ren->GetDisplayPoint(d);
+	const QPointF p1(d[0] / dpr, (Hpx - d[1]) / dpr);
+	const QPointF p2 = p1 + QPointF(dxPx, dyPx);
+	QWidget *w = s->widget;
+	auto send = [&](QEvent::Type t, const QPointF& p, Qt::MouseButton btn, Qt::MouseButtons btns) {
+		QMouseEvent ev(t, p, w->mapToGlobal(p.toPoint()), btn, btns, Qt::NoModifier);
+		QApplication::sendEvent(w, &ev);
+	};
+	send(QEvent::MouseButtonPress,   p1, Qt::LeftButton, Qt::LeftButton);
+	send(QEvent::MouseMove,          p2, Qt::LeftButton, Qt::LeftButton);
+	send(QEvent::MouseButtonRelease, p2, Qt::LeftButton, Qt::NoButton);
 	s->widget->renderWindow()->Render();
 	return 1;
 }

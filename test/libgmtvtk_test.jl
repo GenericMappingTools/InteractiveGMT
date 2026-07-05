@@ -30,7 +30,8 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_meca_drag_test,
 	:gmtvtk_symbol_add_test, :gmtvtk_symbol_drag_test,
 	:gmtvtk_symbol_get_pos_test, :gmtvtk_symbol_ui_drag_test, :gmtvtk_sym_debug_test,
-	:gmtvtk_send_ctrlc_test, :gmtvtk_clipboard_get_test,
+	:gmtvtk_symbol_click_jitter_test,
+	:gmtvtk_send_ctrlc_test, :gmtvtk_clipboard_get_test, :gmtvtk_camera_get_test,
 	:gmtvtk_set_faultgeom_callback,   # NOT test-only — dlsym'd here too so we can mirror the
 	                                  # callback registration into this dll's own global.
 )

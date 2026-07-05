@@ -1472,9 +1472,10 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y) {
 		const int h = polyHitHandle(s, x, y, 10.0);
 		if (h >= 0) { s->polyDragVert = h; return true; }
 	}
-	if (s->symArmed >= 0 && symHitHandle(s, x, y, 16.0)) {   // armed symbol: THIS press starts the
-		s->symLayerDrag = s->symArmed;                        // actual drag (a separate, later gesture
-		return true;                                          // than the dblclick) — generous handle tolerance
+	if (s->symArmed >= 0 && symHitHandle(s, x, y, 16.0)) {   // armed symbol: THIS press ARMS a possible
+		s->symLayerDrag = s->symArmed;                        // drag (a separate, later gesture than the
+		s->symDragPressX = x; s->symDragPressY = y;           // dblclick) — generous handle tolerance for the
+		return true;                                          // hit-test, but see the move-threshold gate below
 	}
 	const int mi_ = mecaHitAt(s, x, y);                 // idle: grab a beachball to drag it (leaves an anchor line)
 	if (mi_ >= 0) { s->mecaDrag = mi_; return true; }
@@ -1529,6 +1530,13 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 // Mouse move: extend the draw preview to the cursor, or drag the grabbed vertex / text label.
 static bool polygonHandleMove(Scene *s, int x, int y) {
 	if (s->symLayerDrag >= 0 && s->symLayerDrag < (int)s->symbols.size()) {   // dragging a native symbol
+		// A plain click (press+release near-in-place) has no minimum-movement gate below this point,
+		// so ordinary mouse jitter between down and up would otherwise nudge the symbol's TRUE position
+		// on every click — the "position drifts a little each time" bug. Require real movement past a
+		// few px (same idea as Qt's own drag-start distance) before committing anything.
+		const double ddx = x - s->symDragPressX, ddy = y - s->symDragPressY;
+		if (ddx * ddx + ddy * ddy < 16.0)   // < 4px from the press point: not a real drag yet
+			return true;
 		double w[3];
 		if (polyPickWorld(s, x, y, w)) {      // terrain-draped, same pick as the original placement click
 			SymbolLayer& sl = s->symbols[s->symLayerDrag];

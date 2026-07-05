@@ -518,9 +518,9 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 	// 'c' recenters the view on the surface point under the mouse: reset the camera focal
 	// point to that point and translate the camera by the same delta (pure pan) so the
 	// picked point lands at the centre of the viewport. Same path as the middle-click recenter.
-	if (key && (key[0]=='c' || key[0]=='C') && key[1]=='\0') {
-		Scene *s = c->s;
-		if (s && s->ren && s->surf && s->widget) {
+	if (key && (key[0]=='c' || key[0]=='C') && key[1]=='\0' && !rwi->GetControlKey()) {   // NOT Ctrl+C
+		Scene *s = c->s;                                                                  // (that's copy-armed-
+		if (s && s->ren && s->surf && s->widget) {                                        // symbol-to-clipboard)
 			vtkCamera *cam = s->ren->GetActiveCamera();
 			// Qt logical (top-down) cursor -> VTK display (bottom-up device) pixels.
 			const QPoint lp = s->widget->mapFromGlobal(QCursor::pos());
