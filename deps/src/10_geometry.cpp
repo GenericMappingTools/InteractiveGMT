@@ -495,6 +495,7 @@ struct Scene {
 	};
 	FaultDlgState faultDlg;
 	QWidget *elasticDlg = nullptr;                      // open (non-modal) Vertical elastic deformation dialog, if any
+	QWidget *focalStudioDlg = nullptr;                  // open (non-modal) Focal Meca Studio demo dialog, if any
 };
 
 // --- surface accessors: one actor (cloud/FV/drape/image) or a tiled grid -----------------

@@ -9,6 +9,7 @@
 // exaggeration. The demo build shows a synthetic MATLAB-peaks surface.
 
 #include <QApplication>
+#include <QClipboard>
 #include <QMainWindow>
 #include <QMenuBar>
 #include <QMenu>

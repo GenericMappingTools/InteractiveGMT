@@ -1192,31 +1192,113 @@ class BeachballWidget : public QWidget {
 public:
 	double strike = 0, dip = 45, rake = 90;
 	std::function<void()> onClick;   // invoked on click (wired to the Focal Mechanisms demo later)
+	bool asCanvas = false;            // true = Focal Meca Studio's big preview: no button frame,
+	                                   // real Aki-Richards sectors (via Julia) instead of wedges
+	Scene *hostScene = nullptr;       // scene handle for the g_juliaEval round-trip (asCanvas only)
 
 	BeachballWidget(QWidget *parent = nullptr) : QWidget(parent) {
 		setMinimumSize(72, 72);
 		setCursor(Qt::PointingHandCursor);
 		setToolTip("Focal mechanism — click for the Focal Mechanisms demo");
+		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+		QSizePolicy sp = sizePolicy();
+		sp.setHeightForWidth(true);
+		setSizePolicy(sp);
 	}
-	void setMechanism(double s, double d, double r) { strike = s; dip = d; rake = r; update(); }
+	void setMechanism(double s, double d, double r) {
+		strike = s; dip = d; rake = r;
+		if (asCanvas) refreshPrecise();
+		update();
+	}
+
+	// Forces the LAYOUT to reserve a square rect for this widget (not just the disc it draws
+	// inside whatever rect it gets) — the Focal Meca Studio demo dialog stretches this widget to
+	// fill the space below the Strike/Dip/Rake sliders, and a non-square reservation reads as a
+	// bug (circle floating in a padded rectangle) even though paintEvent already self-centers.
+	bool hasHeightForWidth() const override { return true; }
+	int heightForWidth(int w) const override { return w; }
 
 protected:
 	void mousePressEvent(QMouseEvent *) override { if (onClick) onClick(); }
 
+	// Precise-mode geometry, unit-disk (x,y) origin-centred, y = North — straight from Julia's
+	// _focal_demo_sectors (src/focal.jl), which reuses the SAME _focal_patch_meca/_focal_sectors
+	// the real catalog beachballs use (_focal_plot). NEVER re-derive this projection here — see
+	// .wolf/cerebrum.md "focal-beachball-three-laws" for why that math is one-source-of-truth.
+	std::vector<std::pair<QPolygonF, bool>> sectors;   // (polygon, isCompressive)
+	QPolygonF nodal1, nodal2;
+	bool havePrecise = false;
+
+	static QPolygonF parseCurve(const QString &s) {
+		QPolygonF poly;
+		const auto pts = s.split(';', Qt::SkipEmptyParts);
+		for (const auto &pt : pts) {
+			const auto xy = pt.split(',');
+			if (xy.size() == 2) poly << QPointF(xy[0].toDouble(), xy[1].toDouble());
+		}
+		return poly;
+	}
+
+	void refreshPrecise() {
+		havePrecise = false;
+		if (!hostScene || !g_juliaEval) return;
+		const QString cmd = QString("InteractiveGMT._focal_demo_sectors(%1,%2,%3)")
+								.arg(strike, 0, 'f', 6).arg(dip, 0, 'f', 6).arg(rake, 0, 'f', 6);
+		std::vector<char> buf(8192);
+		int n = g_juliaEval(hostScene, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		if (n <= 0) return;
+		const QString out = QString::fromUtf8(buf.data(), n);
+		const int n1 = out.indexOf("#N1:"), n2 = out.indexOf("#N2:");
+		if (n1 < 0 || n2 < 0) return;
+		sectors.clear();
+		for (const auto &tok : out.left(n1).split('|', Qt::SkipEmptyParts)) {
+			const int c = tok.indexOf(':');
+			if (c < 0) continue;
+			sectors.emplace_back(parseCurve(tok.mid(c + 1)), tok.left(c) == "1");
+		}
+		nodal1 = parseCurve(out.mid(n1 + 4, n2 - (n1 + 4)));
+		nodal2 = parseCurve(out.mid(n2 + 4));
+		havePrecise = !sectors.empty();
+	}
+
 	void paintEvent(QPaintEvent *) override {
 		QPainter p(this);
 		p.setRenderHint(QPainter::Antialiasing);
-		// Faint button-style frame so it reads as clickable.
-		p.setPen(QPen(QColor(150, 150, 150), 1.0));
-		p.setBrush(Qt::NoBrush);
-		p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0), 4, 4);
-		const int side = qMin(width(), height()) - 8;
+		if (!asCanvas) {
+			// Faint button-style frame so it reads as clickable (small icon use only).
+			p.setPen(QPen(QColor(150, 150, 150), 1.0));
+			p.setBrush(Qt::NoBrush);
+			p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0), 4, 4);
+		}
+		const int side = qMin(width(), height()) - (asCanvas ? 2 : 8);
 		QRectF box((width() - side) / 2.0, (height() - side) / 2.0, side, side);
-		// White disc.
+
+		if (asCanvas && havePrecise) {
+			// Unit-disk (x,y), y = North -> screen: cx + x*R, cy - y*R (screen Y is down).
+			const double R = side / 2.0, cx = box.center().x(), cy = box.center().y();
+			auto toScreen = [&](const QPolygonF &u) {
+				QPolygonF s; s.reserve(u.size());
+				for (const auto &pt : u) s << QPointF(cx + pt.x() * R, cy - pt.y() * R);
+				return s;
+			};
+			p.setPen(Qt::NoPen);
+			for (const auto &[poly, iscomp] : sectors) {
+				p.setBrush(iscomp ? Qt::black : Qt::white);
+				p.drawPolygon(toScreen(poly));
+			}
+			// Nodal-plane boundary lines: ALWAYS black, ALWAYS stroked (three-laws rule #2).
+			p.setPen(QPen(Qt::black, 1.5));
+			p.setBrush(Qt::NoBrush);
+			p.drawPolyline(toScreen(nodal1));
+			p.drawPolyline(toScreen(nodal2));
+			p.drawEllipse(box);
+			return;
+		}
+
+		// Fallback: schematic wedges (small icon use, or the Julia bridge isn't up yet).
 		p.setPen(QPen(Qt::black, 1.5));
 		p.setBrush(Qt::white);
 		p.drawEllipse(box);
-		// Two opposing black wedges; centre from strike, half-width from dip.
 		const double half = qBound(8.0, dip, 90.0);          // each wedge's half-angle (deg)
 		const double c    = 90.0 - strike;                   // north-CW strike -> math angle (0 at 3 o'clock)
 		p.setBrush(Qt::black);
@@ -1226,10 +1308,119 @@ protected:
 		};
 		wedge(c);
 		wedge(c + 180.0);
-		// Outline back on top of the wedges.
 		p.setPen(QPen(Qt::black, 1.5));
 		p.setBrush(Qt::NoBrush);
 		p.drawEllipse(box);
+	}
+};
+
+// ============================================================================================
+// FocalMecaStudioDialog — "Focal Meca Studio": a standalone Strike/Dip/Rake sandbox for a single
+// focal mechanism. Opened by clicking the elastic-deformation dialog's BeachballWidget icon (see
+// ElasticDialog's beach->onClick below). Non-modal, one per scene (Scene::focalStudioDlg), same
+// lifetime pattern as ElasticDialog itself (see faultRunDialog). The preview reuses
+// BeachballWidget in its "asCanvas" precise mode (real Aki-Richards sectors via Julia — see
+// .wolf/cerebrum.md "focal-beachball-three-laws"): never a re-derivation of that math here.
+// ============================================================================================
+class FocalMecaStudioDialog : public QDialog {
+public:
+	QSlider *sliderStrike, *sliderDip, *sliderRake;
+	QLineEdit *editStrike, *editDip, *editRake;
+	BeachballWidget *beach;
+
+	FocalMecaStudioDialog(QWidget *parent, Scene *scene, double strike0, double dip0, double rake0)
+		: QDialog(parent)
+	{
+		setWindowTitle("Focal Meca Studio");
+		setAttribute(Qt::WA_DeleteOnClose);
+
+		auto makeRow = [this](const QString &label, int lo, int hi, int val,
+		                       QSlider *&sliderOut, QLineEdit *&editOut) {
+			auto *row = new QHBoxLayout();
+			auto *lab = new QLabel(label, this);
+			lab->setMinimumWidth(50);
+			lab->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+			row->addWidget(lab);
+			auto *leftBtn = new QToolButton(this);
+			leftBtn->setArrowType(Qt::LeftArrow);
+			leftBtn->setMaximumSize(20, 20);
+			row->addWidget(leftBtn);
+			sliderOut = new QSlider(Qt::Horizontal, this);
+			sliderOut->setRange(lo, hi);
+			sliderOut->setValue(val);
+			row->addWidget(sliderOut, 1);
+			auto *rightBtn = new QToolButton(this);
+			rightBtn->setArrowType(Qt::RightArrow);
+			rightBtn->setMaximumSize(20, 20);
+			row->addWidget(rightBtn);
+			editOut = new QLineEdit(QString::number(val), this);
+			editOut->setMaximumWidth(50);
+			editOut->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+			row->addWidget(editOut);
+			QObject::connect(leftBtn, &QToolButton::clicked, sliderOut,
+				[sliderOut]{ sliderOut->setValue(sliderOut->value() - 1); });
+			QObject::connect(rightBtn, &QToolButton::clicked, sliderOut,
+				[sliderOut]{ sliderOut->setValue(sliderOut->value() + 1); });
+			return row;
+		};
+
+		auto *root = new QVBoxLayout(this);
+		auto *paramsCol = new QVBoxLayout();
+		paramsCol->addLayout(makeRow("Strike",    0, 360, (int)std::lround(strike0), sliderStrike, editStrike));
+		paramsCol->addLayout(makeRow("Dip",       0, 90,  (int)std::lround(dip0),    sliderDip,    editDip));
+		paramsCol->addLayout(makeRow("Rake",   -180, 180, (int)std::lround(rake0),   sliderRake,   editRake));
+		root->addLayout(paramsCol);
+
+		auto *beachRow = new QHBoxLayout();
+		beachRow->addStretch(1);
+		beach = new BeachballWidget(this);
+		beach->asCanvas = true;
+		beach->hostScene = scene;
+		beach->setFixedSize(340, 340);
+		beachRow->addWidget(beach);
+		beachRow->addStretch(1);
+		root->addLayout(beachRow);
+
+		auto *btnRow = new QHBoxLayout();
+		btnRow->addStretch(1);
+		auto *btnGmtComm = new QPushButton("GMT comm", this);
+		btnGmtComm->setToolTip("Show the GMT command that reproduces this beachball");
+		btnRow->addWidget(btnGmtComm);
+		root->addLayout(btnRow);
+
+		// Sliders drive the beachball + the numeric readouts; the readouts drive the sliders back
+		// on editingFinished (LOCAL live preview only — no compute/module call from an edit box,
+		// per "only the action button executes a dialog" — there is no action button here because
+		// there is nothing to commit, this dialog IS the preview).
+		auto sync = [this]() {
+			beach->setMechanism(sliderStrike->value(), sliderDip->value(), sliderRake->value());
+			editStrike->setText(QString::number(sliderStrike->value()));
+			editDip->setText(QString::number(sliderDip->value()));
+			editRake->setText(QString::number(sliderRake->value()));
+		};
+		QObject::connect(sliderStrike, &QSlider::valueChanged, this, [sync](int){ sync(); });
+		QObject::connect(sliderDip,    &QSlider::valueChanged, this, [sync](int){ sync(); });
+		QObject::connect(sliderRake,   &QSlider::valueChanged, this, [sync](int){ sync(); });
+		QObject::connect(editStrike, &QLineEdit::editingFinished, this,
+			[this]{ sliderStrike->setValue(editStrike->text().toInt()); });
+		QObject::connect(editDip, &QLineEdit::editingFinished, this,
+			[this]{ sliderDip->setValue(editDip->text().toInt()); });
+		QObject::connect(editRake, &QLineEdit::editingFinished, this,
+			[this]{ sliderRake->setValue(editRake->text().toInt()); });
+
+		QObject::connect(btnGmtComm, &QPushButton::clicked, this, [this]{
+			const QString cmd = QString("GMT.meca((0.0,0.0), strike=%1, dip=%2, rake=%3, mag=5, aki=true)")
+									.arg(sliderStrike->value()).arg(sliderDip->value()).arg(sliderRake->value());
+			QApplication::clipboard()->setText(cmd);
+			QMessageBox box(QMessageBox::Information, "GMT command",
+				cmd + "\n\n(copied to clipboard)", QMessageBox::Close, this);
+			box.setTextInteractionFlags(Qt::TextSelectableByMouse);
+			auto *copyBtn = box.addButton("Copy again", QMessageBox::ActionRole);
+			QObject::connect(copyBtn, &QPushButton::clicked, this, [cmd]{ QApplication::clipboard()->setText(cmd); });
+			box.exec();
+		});
+
+		sync();
 	}
 };
 
@@ -1857,9 +2048,20 @@ public:
 
 		auto *rightCol = new QVBoxLayout();
 		beach = new BeachballWidget(this);
-		beach->onClick = [this]() {     // to be wired to the Focal Mechanisms demo later
-			QMessageBox::information(this, "Focal Mechanisms",
-				"Focal Mechanisms demo — not implemented yet.");
+		beach->onClick = [this]() {
+			if (scn && scn->focalStudioDlg) {
+				scn->focalStudioDlg->raise();
+				scn->focalStudioDlg->activateWindow();
+				return;
+			}
+			auto *dlg = new FocalMecaStudioDialog(this, scn,
+				fStrike->text().toDouble(), fDip->text().toDouble(), dRake->text().toDouble());
+			dlg->setAttribute(Qt::WA_DeleteOnClose);
+			if (scn) {
+				scn->focalStudioDlg = dlg;
+				QObject::connect(dlg, &QObject::destroyed, scn->win, [this]{ if (scn) scn->focalStudioDlg = nullptr; });
+			}
+			dlg->show();
 		};
 		rightCol->addWidget(beach, 0, Qt::AlignHCenter);
 		auto *btnRow = new QHBoxLayout();
@@ -3786,7 +3988,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			g_juliaFocal(s, p.toUtf8().constData());
 			closeBusyDialog();
 		});
-		mGphy->addAction("Focal Mechanisms demo",         geoTODO("Focal Mechanisms demo"));
+		mGphy->addAction("Focal Mechanisms demo", [win, s]() {
+			if (s->focalStudioDlg) { s->focalStudioDlg->raise(); s->focalStudioDlg->activateWindow(); return; }
+			auto *dlg = new FocalMecaStudioDialog(win, s, 0.0, 90.0, 180.0);
+			dlg->setAttribute(Qt::WA_DeleteOnClose);
+			s->focalStudioDlg = dlg;
+			QObject::connect(dlg, &QObject::destroyed, s->win, [s]{ s->focalStudioDlg = nullptr; });
+			dlg->show();
+		});
 		mGphy->addAction("CMT Catalog (Web download)",    geoTODO("CMT Catalog"));
 		mGphy->addAction("Global seismicity (1990-2009)", [openSeismicity]() { openSeismicity(true); });
 		// Direct plot, no dialog: format=1 with no bounds -> GMT.seismicity's own defaults

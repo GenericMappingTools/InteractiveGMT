@@ -300,6 +300,37 @@ function _focal_sectors(str1::Float64, dip1::Float64, rake1::Float64, nodal1::Ab
 	return out
 end
 
+# Called from C++ (BeachballWidget, via g_juliaEval) by the Focal Meca Studio demo dialog on every
+# Strike/Dip/Rake change — serializes _focal_sectors' output (fills) + the two nodal curves (the
+# ALWAYS-black boundary lines) so the widget draws the EXACT SAME geometry as the real catalog
+# beachballs (_focal_plot below), never its own re-approximation — the "three laws" (see
+# .wolf/cerebrum.md "focal-beachball-three-laws") were only hard-won once, here, and must not be
+# re-derived a second time in C++.
+# Output: "<iscomp 0|1>:x,y;x,y;...|<iscomp>:...|#N1:x,y;...;#N2:x,y;...;" (unit-disk, origin-centred,
+# 6 significant digits). Prints nothing on any failure — the C++ side keeps its schematic fallback.
+function _focal_demo_sectors(str1::Float64, dip1::Float64, rake1::Float64)
+	try
+		_comp, _dilat, nodal1, nodal2 = _focal_patch_meca(str1, dip1, rake1)
+		for (poly, iscomp) in _focal_sectors(str1, dip1, rake1, nodal1, nodal2)
+			print(iscomp ? '1' : '0', ':')
+			for i in axes(poly, 1)
+				print(round(poly[i,1], sigdigits=6), ',', round(poly[i,2], sigdigits=6), ';')
+			end
+			print('|')
+		end
+		print("#N1:")
+		for i in axes(nodal1, 1)
+			print(round(nodal1[i,1], sigdigits=6), ',', round(nodal1[i,2], sigdigits=6), ';')
+		end
+		print("#N2:")
+		for i in axes(nodal2, 1)
+			print(round(nodal2[i,1], sigdigits=6), ',', round(nodal2[i,2], sigdigits=6), ';')
+		end
+	catch
+	end
+	return nothing
+end
+
 # ── catalog readers ─────────────────────────────────────────────────────────────────────────
 # All return (lon, lat, dep, mag, str1, dip1, rake1, str2, dip2, rake2, plon, plat, date).
 # str2/dip2/rake2 are NaN-filled for Aki & Richards files (only one nodal plane given —
