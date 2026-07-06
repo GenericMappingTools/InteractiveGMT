@@ -417,7 +417,7 @@ protected:
 	void keyPressEvent(QKeyEvent *e) override {
 		if (s && s->symArmed >= 0 && s->symArmed < (int)s->symbols.size() && e->matches(QKeySequence::Copy)) {
 			SymbolLayer &sl = s->symbols[s->symArmed];
-			if (auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput())) {
+			if (auto *pd = symInputPD(sl)) {
 				if (pd->GetPoints() && pd->GetPoints()->GetNumberOfPoints() > 0) {
 					double p[3]; pd->GetPoints()->GetPoint(0, p);
 					const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;

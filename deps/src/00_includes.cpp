@@ -114,6 +114,7 @@
 #include <vtkPoints.h>
 #include <vtkCellArray.h>
 #include <vtkGlyph3D.h>
+#include <vtkGlyph3DMapper.h>
 #include <vtkIdList.h>
 #include <vtkFloatArray.h>
 #include <vtkUnsignedCharArray.h>

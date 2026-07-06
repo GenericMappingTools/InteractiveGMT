@@ -1673,8 +1673,8 @@ GMTVTK_API int gmtvtk_symbol_add_test(void *scene, int kind, double x, double y,
 GMTVTK_API int gmtvtk_symbol_drag_test(void *scene, int idx, double x, double y, double z) {
 	Scene *s = (Scene*)scene;
 	if (!s || idx < 0 || idx >= (int)s->symbols.size()) return 0;
-	SymbolLayer& sl = s->symbols[idx];
-	auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+	SymbolLayer &sl = s->symbols[idx];
+	auto *pd = symInputPD(sl);
 	if (!pd || !pd->GetPoints() || pd->GetPoints()->GetNumberOfPoints() == 0) return 0;
 	pd->GetPoints()->SetPoint(0, x * s->xfac, y, z);
 	pd->GetPoints()->Modified();
@@ -1689,7 +1689,7 @@ GMTVTK_API int gmtvtk_symbol_get_pos_test(void *scene, int idx, double *out3) {
 	Scene *s = (Scene*)scene;
 	if (!s || idx < 0 || idx >= (int)s->symbols.size() || !out3) return 0;
 	SymbolLayer &sl = s->symbols[idx];
-	auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+	auto *pd = symInputPD(sl);
 	if (!pd || !pd->GetPoints() || pd->GetPoints()->GetNumberOfPoints() == 0) return 0;
 	double p[3]; pd->GetPoints()->GetPoint(0, p);
 	out3[0] = (s->xfac != 0.0) ? p[0] / s->xfac : p[0];

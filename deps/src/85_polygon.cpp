@@ -641,7 +641,7 @@ static void symRebuildHandle(Scene *s) {
 	vtkNew<vtkCellArray> verts;
 	if (s->symArmed >= 0 && s->symArmed < (int)s->symbols.size()) {
 		SymbolLayer &sl = s->symbols[s->symArmed];
-		if (auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput())) {
+		if (auto *pd = symInputPD(sl)) {
 			if (pd->GetPoints() && pd->GetPoints()->GetNumberOfPoints() > 0) {
 				double p[3]; pd->GetPoints()->GetPoint(0, p);
 				const vtkIdType id = pts->InsertNextPoint(p[0], p[1], p[2]);
@@ -679,7 +679,7 @@ static void symRebuildHandle(Scene *s) {
 static bool symHitHandle(Scene *s, int x, int y, double tol) {
 	if (s->symArmed < 0 || s->symArmed >= (int)s->symbols.size()) return false;
 	SymbolLayer &sl = s->symbols[s->symArmed];
-	auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+	auto *pd = symInputPD(sl);
 	if (!pd || !pd->GetPoints() || pd->GetPoints()->GetNumberOfPoints() == 0) return false;
 	double p[3]; pd->GetPoints()->GetPoint(0, p);
 	double sc[3]; sl.actor->GetScale(sc);
@@ -1539,8 +1539,8 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 			return true;
 		double w[3];
 		if (polyPickWorld(s, x, y, w)) {      // terrain-draped, same pick as the original placement click
-			SymbolLayer& sl = s->symbols[s->symLayerDrag];
-			if (auto *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput())) {
+			SymbolLayer &sl = s->symbols[s->symLayerDrag];
+			if (auto *pd = symInputPD(sl)) {
 				if (pd->GetPoints() && pd->GetPoints()->GetNumberOfPoints() > 0) {
 					pd->GetPoints()->SetPoint(0, w[0] * s->xfac, w[1], w[2]);   // x pre-baked, matches addSymbols
 					pd->GetPoints()->Modified();

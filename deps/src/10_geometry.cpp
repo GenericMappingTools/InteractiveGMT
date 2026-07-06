@@ -44,7 +44,15 @@ struct Overlay {
 // VE-scaled depth.
 struct SymbolLayer {
 	vtkSmartPointer<vtkActor>   actor;
-	vtkSmartPointer<vtkGlyph3D> glyph;       // source(unit shape) + input(points); ScaleFactor = world size
+	vtkSmartPointer<vtkGlyph3D> glyph;       // flat glyphs only: source(unit shape)+input(points); CPU-duplicates
+	                                          // the source mesh per point, fine for small/flat shapes but O(N*mesh)
+	                                          // memory — NOT used for solid3D (see glyphMapper).
+	vtkSmartPointer<vtkGlyph3DMapper> glyphMapper;  // solid3D (sphere/cube) only: GPU-instanced glyphing —
+	                                          // renders the SAME small source mesh N times without ever building
+	                                          // one combined N*mesh polydata on the CPU. A large seismicity
+	                                          // catalog (tens of thousands of events) with vtkGlyph3D's real
+	                                          // per-event sphere tessellation was the actual "spheres are slow"
+	                                          // bottleneck (point clouds bypass this entirely — just vertices).
 	vtkSmartPointer<vtkTransform> zfix;             // solid3D only: Z-cancelling pre-transform on the source
 	vtkSmartPointer<vtkTransformPolyDataFilter> zfixFilter;  // solid3D only: applies `zfix` to the unit source
 	double sizePx = 8.0;                      // requested on-screen size in PIXELS
@@ -58,6 +66,24 @@ struct SymbolLayer {
 	                                           // layer double-click-then-drag moves that single point
 	                                           // (see symLayerDrag) — false for batch layers (volcanoes etc)
 };
+
+// SymbolLayer carries exactly ONE of glyph (flat shapes) / glyphMapper (solid3D sphere/cube) — every
+// generic per-layer feature (hover data table, point editing, shape-menu, colour recolouring) goes
+// through these two accessors instead of hard-coding `sl.glyph`, so it works for both pipelines.
+static vtkPolyData *symInputPD(SymbolLayer &sl) {
+	if (sl.glyphMapper) return vtkPolyData::SafeDownCast(sl.glyphMapper->GetInput());
+	if (sl.glyph)       return vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+	return nullptr;
+}
+static vtkPolyData *symSourcePD(SymbolLayer &sl) {
+	if (sl.glyphMapper) return sl.glyphMapper->GetSource(0);
+	if (sl.glyph)       return vtkPolyData::SafeDownCast(sl.glyph->GetSource());
+	return nullptr;
+}
+static void symTouchSource(SymbolLayer &sl) {         // mark the glyph pipeline dirty after an in-place edit
+	if (sl.glyphMapper) sl.glyphMapper->Modified();
+	if (sl.glyph)       sl.glyph->Modified();
+}
 
 // A Fledermaus-style vertical "curtain": a textured wall hung along an XY track.
 struct Curtain {
@@ -1324,9 +1350,9 @@ static vtkActor *pickSymbolAt(Scene *s, int dx, int dy) {
 	vtkActor *bestA = nullptr;
 	double best = 1e30;
 	for (auto& sl : s->symbols) {
-		if (!sl.actor || !sl.actor->GetVisibility() || !sl.glyph)
+		if (!sl.actor || !sl.actor->GetVisibility())
 			continue;
-		vtkPolyData *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+		vtkPolyData *pd = symInputPD(sl);
 		if (!pd || !pd->GetPoints())
 			continue;
 		double sc[3]; sl.actor->GetScale(sc);
@@ -1358,9 +1384,9 @@ static bool pickSymbolInfoAt(Scene *s, int dx, int dy, std::string& out) {
 	vtkRenderer *ren = s->ren;
 	double best = 1e30; const std::string *bestInfo = nullptr;
 	for (auto& sl : s->symbols) {
-		if (sl.info.empty() || !sl.actor || !sl.actor->GetVisibility() || !sl.glyph)
+		if (sl.info.empty() || !sl.actor || !sl.actor->GetVisibility())
 			continue;
-		vtkPolyData *pd = vtkPolyData::SafeDownCast(sl.glyph->GetInput());
+		vtkPolyData *pd = symInputPD(sl);
 		if (!pd || !pd->GetPoints())
 			continue;
 		double sc[3]; sl.actor->GetScale(sc);

@@ -1667,9 +1667,16 @@ static void symbolRescaleCB(vtkObject*, unsigned long, void *clientData, void*) 
 	const double dpr = (s->widget) ? s->widget->devicePixelRatioF() : 1.0;
 	const double worldPerLogPx = (vph / Hpx) * dpr;
 	for (auto& sl : s->symbols) {
-		if (!sl.glyph) continue;
-		sl.glyph->SetScaleFactor(std::max(1e-9, sl.sizePx * worldPerLogPx));
-		sl.glyph->Modified();
+		const double scale = std::max(1e-9, sl.sizePx * worldPerLogPx);
+		if (sl.glyphMapper) {                  // solid3D: GPU-instanced path (vtkGlyph3DMapper)
+			sl.glyphMapper->SetScaleFactor(scale);
+			sl.glyphMapper->Modified();
+		}
+		else if (sl.glyph) {                 // flat glyphs: CPU-duplicated path (vtkGlyph3D)
+			sl.glyph->SetScaleFactor(scale);
+			sl.glyph->Modified();
+		}
+		else continue;
 		if (sl.solid3D && sl.zfix) {           // cancel the actor's (1,1,zfac*ve) Z-squash, see SymbolLayer
 			const double zc = s->zfac * s->ve;
 			const double zInv = (std::fabs(zc) > 1e-12) ? (1.0 / zc) : 0.0;   // ve==0 (flat) -> degenerate, harmless
@@ -1738,32 +1745,53 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& 
 		zfixFilter->SetTransform(zfix);
 	}
 
-	vtkSmartPointer<vtkGlyph3D> g = vtkSmartPointer<vtkGlyph3D>::New();
-	if (solid3D) g->SetSourceConnection(zfixFilter->GetOutputPort());
-	else         g->SetSourceData(src);
-	g->SetInputData(in);
-	g->SetScaleModeToDataScalingOff();    // uniform size; ScaleFactor driven by the observer
-	g->OrientOff();
-	g->SetScaleFactor(sizePx > 0.0 ? sizePx : 8.0);   // placeholder; primed below + per frame
+	// solid3D (sphere/cube) uses vtkGlyph3DMapper — GPU instancing, the source mesh is uploaded ONCE
+	// and drawn N times, never duplicated into one combined CPU polydata. vtkGlyph3D would tessellate
+	// and copy the full sphere mesh (e.g. 16x16 res, ~480 tris) into ONE polydata PER point — for a
+	// 30k-event seismicity catalog that's ~15M triangles built on the CPU every time the source is
+	// touched, which is exactly what made "Global seismicity" slow to plot and to manipulate (point
+	// clouds never hit this path — they render as bare vtkPoints, no glyphing at all).
+	vtkSmartPointer<vtkGlyph3D>       g;
+	vtkSmartPointer<vtkGlyph3DMapper> gm;
+	vtkSmartPointer<vtkMapper> map3D;
+	if (solid3D) {
+		vtkNew<vtkGlyph3DMapper> m;
+		m->SetInputData(in);
+		m->SetSourceConnection(zfixFilter->GetOutputPort());
+		m->SetScaleModeToNoDataScaling();     // uniform size; ScaleFactor driven by the observer
+		m->OrientOff();
+		m->SetScaleFactor(sizePx > 0.0 ? sizePx : 8.0);   // placeholder; primed below + per frame
+		m->ScalarVisibilityOff();
+		gm = m;
+		map3D = m;
+	}
+	else {
+		vtkSmartPointer<vtkGlyph3D> gg = vtkSmartPointer<vtkGlyph3D>::New();
+		gg->SetSourceData(src);
+		gg->SetInputData(in);
+		gg->SetScaleModeToDataScalingOff();    // uniform size; ScaleFactor driven by the observer
+		gg->OrientOff();
+		gg->SetScaleFactor(sizePx > 0.0 ? sizePx : 8.0);   // placeholder; primed below + per frame
+		g = gg;
 
-	vtkNew<vtkPolyDataMapper> map;
-	map->SetInputConnection(g->GetOutputPort());
-	if (cellColoured) { map->ScalarVisibilityOn(); map->SetScalarModeToUseCellData(); map->SetColorModeToDirectScalars(); }
-	else              { map->ScalarVisibilityOff(); }
-	// The huge negative bias below forces a flat glyph to WIN the depth test against the coincident
-	// surface it sits directly on (z=0, e.g. a volcano marker) — it has no real depth of its own.
-	// A solid3D glyph (sphere/cube) DOES carry real depth (e.g. a buried earthquake hypocentre) and
-	// must lose the depth test to genuinely shallower surface geometry above it, or it renders
-	// through solid ground. So leave its mapper at the default (unbiased) depth-test resolution.
-	if (!solid3D) {
+		vtkNew<vtkPolyDataMapper> map;
+		map->SetInputConnection(g->GetOutputPort());
+		if (cellColoured) { map->ScalarVisibilityOn(); map->SetScalarModeToUseCellData(); map->SetColorModeToDirectScalars(); }
+		else              { map->ScalarVisibilityOff(); }
+		// The huge negative bias below forces a flat glyph to WIN the depth test against the coincident
+		// surface it sits directly on (z=0, e.g. a volcano marker) — it has no real depth of its own.
+		// A solid3D glyph (sphere/cube) DOES carry real depth (e.g. a buried earthquake hypocentre) and
+		// must lose the depth test to genuinely shallower surface geometry above it (handled in the
+		// solid3D branch above, which leaves its mapper at the default unbiased depth resolution).
 		vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();   // lift off the z=0 map plane
 		map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -8000.0);
 		map->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -8000.0);
 		map->SetRelativeCoincidentTopologyPointOffsetParameter(-8000.0);
+		map3D = map;
 	}
 
 	vtkSmartPointer<vtkActor> a = vtkSmartPointer<vtkActor>::New();
-	a->SetMapper(map);
+	a->SetMapper(map3D);
 	// Flat glyphs are unlit (constant colour, like the gizmo). A sphere/cube needs real shading to
 	// read as a volume rather than a flat disc — that's the whole point of offering them — so turn
 	// lighting ON just for those two; a sphere's fine facet mesh also looks messy with edges drawn,
@@ -1784,7 +1812,7 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& 
 
 	s->ren->AddActor(a);
 	SymbolLayer sl;
-	sl.actor = a; sl.glyph = g; sl.zfix = zfix; sl.zfixFilter = zfixFilter;
+	sl.actor = a; sl.glyph = g; sl.glyphMapper = gm; sl.zfix = zfix; sl.zfixFilter = zfixFilter;
 	sl.sizePx = (sizePx > 0.0 ? sizePx : 8.0);
 	sl.filled = wantFill; sl.sym = sym; sl.solid3D = solid3D;
 	sl.oneShot = oneShot;                // Symbols draw tool: exactly one point, whole-layer drag applies
@@ -1847,7 +1875,7 @@ static int symbolLayerIndexOfActor(Scene *s, vtkActor *a) {
 static void showSymbolDataTable(Scene *s, vtkActor *act, const QString& name) {
 	const int si0 = symbolLayerIndexOfActor(s, act);
 	if (si0 < 0) return;
-	vtkPolyData *pd0 = vtkPolyData::SafeDownCast(s->symbols[si0].glyph->GetInput());
+	vtkPolyData *pd0 = symInputPD(s->symbols[si0]);
 	if (!pd0 || !pd0->GetPoints()) return;
 	const int nrows = (int)pd0->GetPoints()->GetNumberOfPoints();
 	if (nrows == 0) return;
@@ -1884,7 +1912,7 @@ static void showSymbolDataTable(Scene *s, vtkActor *act, const QString& name) {
 		if (*guard || col < 1 || col > 3) return;             // ignore the "#" column / our own edits
 		const int si = symbolLayerIndexOfActor(s, act);
 		if (si < 0) return;                                   // layer was deleted -> nothing to write
-		vtkPolyData *pd = vtkPolyData::SafeDownCast(s->symbols[si].glyph->GetInput());
+		vtkPolyData *pd = symInputPD(s->symbols[si]);
 		if (!pd || !pd->GetPoints() || row < 0 || row >= (int)pd->GetPoints()->GetNumberOfPoints()) return;
 		bool ok = false;
 		const double val = tbl->item(row, col)->text().toDouble(&ok);
@@ -1921,6 +1949,7 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 	// direct scalars. For a plain source (no outline lines) it restores ordinary actor colouring +
 	// EdgeVisibility. Call after any shape / fill / edge change so those menu edits keep working.
 	auto applyCellColours = [&] {
+		if (!sl->glyph) return;                    // solid3D: plain lit actor colour, no per-cell scalars
 		vtkPolyData *src = vtkPolyData::SafeDownCast(sl->glyph->GetSource());
 		vtkPolyDataMapper *mp = vtkPolyDataMapper::SafeDownCast(sl->actor->GetMapper());
 		if (!src || !mp) return;
@@ -2034,13 +2063,40 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 		return;
 	}
 
-	for (size_t i = 0; i < kindActs.size(); ++i) if (ch == kindActs[i]) {     // change shape (flat glyphs only)
+	for (size_t i = 0; i < kindActs.size(); ++i) if (ch == kindActs[i]) {     // change shape (any -> flat glyph)
 		bool filled = true;
 		sl->sym = KINDS[i].second;
-		sl->glyph->SetSourceData(makeSymbolGlyph(sl->sym, filled));
-		sl->glyph->Modified();
+		if (sl->solid3D) {
+			// Downgrading a sphere/cube to a flat glyph: it currently rides the GPU-instanced
+			// vtkGlyph3DMapper (see addSymbols) with no vtkGlyph3D at all, so rebuild the CPU
+			// glyph pipeline flat symbols use, fed by the SAME points dataset (symInputPD).
+			vtkPolyData *pd = symInputPD(*sl);
+			vtkSmartPointer<vtkGlyph3D> gg = vtkSmartPointer<vtkGlyph3D>::New();
+			gg->SetSourceData(makeSymbolGlyph(sl->sym, filled));
+			gg->SetInputData(pd);
+			gg->SetScaleModeToDataScalingOff();
+			gg->OrientOff();
+			gg->SetScaleFactor(sl->sizePx);
+			vtkNew<vtkPolyDataMapper> map;
+			map->SetInputConnection(gg->GetOutputPort());
+			map->ScalarVisibilityOff();
+			vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
+			map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -8000.0);
+			map->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -8000.0);
+			map->SetRelativeCoincidentTopologyPointOffsetParameter(-8000.0);
+			sl->actor->SetMapper(map);
+			sl->glyph = gg;
+			sl->glyphMapper = nullptr;
+			sl->zfix = nullptr;
+			sl->zfixFilter = nullptr;
+			sl->solid3D = false;
+			sl->actor->GetProperty()->SetLighting(false);
+		}
+		else {
+			sl->glyph->SetSourceData(makeSymbolGlyph(sl->sym, filled));
+			sl->glyph->Modified();
+		}
 		sl->filled = filled;
-		if (sl->solid3D) { sl->solid3D = false; sl->actor->GetProperty()->SetLighting(false); }
 		applyCellColours();                          // star -> per-cell outline; others -> actor edges
 		reRender(); return;
 	}
