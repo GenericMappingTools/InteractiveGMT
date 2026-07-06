@@ -1334,7 +1334,12 @@ static double sampleZ(const Scene *s, double x, double y);   // defined below (b
 // reads back 1.0 (far plane) through this app's QVTKOpenGLNativeWidget FBO (see the hover-readout
 // ray-march comment below) — sampleZ against the resident heightfield is the same workaround this
 // file already relies on for the coordinate readout. No base grid (NaN) -> never treat as buried.
+// `imageOnly` windows (bare basemap picture, e.g. Seismicity's empty-launcher flow) carry only a
+// HIDDEN FLAT z=0 placeholder plane, not real elevation — comparing against it made every event
+// with any real depth (trueZ < 0) read as "buried", killing 3-D hover for every non-zero-depth
+// event (only dep==0 events ever showed a tooltip). That placeholder is not terrain, skip it.
 static bool solid3DBuried(const Scene *s, double trueX, double trueY, double trueZ) {
+	if (s->imageOnly) return false;
 	const double h = sampleZ(s, trueX, trueY);
 	return !std::isnan(h) && trueZ < h;
 }
