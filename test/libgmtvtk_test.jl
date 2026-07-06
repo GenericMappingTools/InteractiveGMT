@@ -25,6 +25,7 @@ const _TEST_FNS = Dict{Symbol,Ptr{Cvoid}}()
 
 const _TEST_SYMBOLS = (
 	:gmtvtk_fault_add_test, :gmtvtk_fault_apply_test, :gmtvtk_fault_plane_test, :gmtvtk_poly_edit_add_test,
+	:gmtvtk_settings_format_test,
 	:gmtvtk_set_flat2d_test, :gmtvtk_objrows_test,
 	:gmtvtk_fault_open_dialog_test, :gmtvtk_fault_close_dialog_test, :gmtvtk_trace_zbounds_test,
 	:gmtvtk_meca_drag_test,

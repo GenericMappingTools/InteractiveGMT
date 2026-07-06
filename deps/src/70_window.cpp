@@ -312,7 +312,7 @@ public:
 		QStringList items;
 		for (int i = 0; i < cboCache->count(); ++i)
 			if (cboCache->itemText(i) != gmtCacheLabel()) items << cboCache->itemText(i);
-		QSettings st("InteractiveGMT", "i'GMT");
+		QSettings st = igmtSettings();
 		st.setValue("tiles/cacheDirs", items);
 	}
 	void rememberCache(const QString &dir) {
@@ -379,7 +379,7 @@ public:
 		cboCache->setInsertPolicy(QComboBox::NoInsert);  // we manage the list ourselves (rememberCache)
 		cboCache->addItem(gmtCacheLabel());              // default entry: ~/.gmt (maps to GMT cache="gmt")
 		{                                                // restore previously used cache dirs (QSettings MRU)
-			QSettings st("InteractiveGMT", "i'GMT");
+			QSettings st = igmtSettings();
 			for (const QString &d : st.value("tiles/cacheDirs").toStringList())
 				if (!d.isEmpty() && cboCache->findText(d) < 0) cboCache->addItem(d);
 		}
@@ -678,7 +678,7 @@ private:
 	}
 
 	void save() {
-		QSettings st("InteractiveGMT", "i'GMT");
+		QSettings st = igmtSettings();
 		st.setValue("prefs/measureUnits",  cmbMeasureUnits->currentText());
 		st.setValue("prefs/distAzimType",  cmbDistAzim->currentText());
 		st.setValue("prefs/azimDir",       cmbAzimDir->currentText());
@@ -2855,7 +2855,7 @@ static const int kRecentMax = 21;
 static void loadRecent() {
 	if (g_recentLoaded) return;
 	g_recentLoaded = true;
-	QSettings st("InteractiveGMT", "i'GMT");
+	QSettings st = igmtSettings();
 	const QStringList paths = st.value("recent/paths").toStringList();
 	const QVariantList cats  = st.value("recent/cats").toList();
 	for (int i = 0; i < paths.size(); ++i)
@@ -2865,7 +2865,7 @@ static void loadRecent() {
 static void saveRecent() {
 	QStringList paths; QVariantList cats;
 	for (const RecentItem& r : g_recent) { paths << r.path; cats << r.cat; }
-	QSettings st("InteractiveGMT", "i'GMT");
+	QSettings st = igmtSettings();
 	st.setValue("recent/paths", paths);
 	st.setValue("recent/cats", cats);
 }

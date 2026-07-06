@@ -6,6 +6,32 @@ static vtkRenderWindow *g_lastRW = nullptr;   // most-recent window, for gmtvtk_
 static Scene *g_lastScene = nullptr;   // most-recent scene, for gmtvtk_add_overlay
 static QProgressDialog *g_progress = nullptr;  // progress dialog for long operations (Okada multi-patch)
 
+// The ONE place that constructs this app's persistent settings store (prefs/dirMRU, Recent Files):
+// ~/.gmt/iGMT.ini — the SAME ~/.gmt directory GMT.jl already reads/writes, not a Windows-registry
+// key or a platform-specific hidden-appdata folder (QSettings(organization, application), the 2-arg
+// convenience constructor, is hardcoded to QSettings::NativeFormat — registry on Windows — and
+// ignores QSettings::setDefaultFormat(); the explicit-fileName constructor sidesteps that entirely).
+static QSettings igmtSettings() {
+	const QString dir = QDir::homePath() + "/.gmt";
+	QDir().mkpath(dir);
+	const QString fn = dir + "/iGMT.ini";
+	// One-time migration from the old registry-backed store (pre-ini-file versions of this app):
+	// only when the new file is still empty of our own keys, so a second run never clobbers
+	// anything the user has already changed under the new store. Uses throwaway QSettings objects
+	// (never returned) so the final `return` below stays a plain elided prvalue construction —
+	// QSettings' copy ctor is deleted, so a named local can't be returned by value here.
+	static bool migrated = false;
+	if (!migrated) {
+		migrated = true;
+		QSettings probe(fn, QSettings::IniFormat);
+		if (!probe.contains("recent/paths") && !probe.contains("prefs/dirMRU") && !probe.contains("prefs/defaultDir")) {
+			QSettings old(QSettings::NativeFormat, QSettings::UserScope, "InteractiveGMT", "i'GMT");
+			for (const QString &k : old.allKeys()) probe.setValue(k, old.value(k));
+		}
+	}
+	return QSettings(fn, QSettings::IniFormat);
+}
+
 // ============================================================================================
 // Default directory (Preferences > Default directory). Every file-open / file-save dialog starts
 // here, so a session keeps working out of the user's chosen folder. The value is the head of an
@@ -14,7 +40,7 @@ static QProgressDialog *g_progress = nullptr;  // progress dialog for long opera
 // directory of a just-chosen file to the front of the MRU after a successful pick.
 // ============================================================================================
 static QStringList prefDirMRU() {
-	QSettings st("InteractiveGMT", "i'GMT");
+	QSettings st = igmtSettings();
 	QStringList l = st.value("prefs/dirMRU").toStringList();
 	if (l.isEmpty()) {                                   // migrate the single-value default dir
 		QString d = st.value("prefs/defaultDir").toString().trimmed();
@@ -26,7 +52,7 @@ static QStringList prefDirMRU() {
 // the head so the two views of "the default directory" never diverge.
 static void prefPushDir(const QString &dir) {
 	if (dir.isEmpty()) return;
-	QSettings st("InteractiveGMT", "i'GMT");
+	QSettings st = igmtSettings();
 	QStringList l = st.value("prefs/dirMRU").toStringList();
 	l.removeAll(dir);
 	l.prepend(dir);

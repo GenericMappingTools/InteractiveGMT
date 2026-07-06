@@ -1522,6 +1522,19 @@ GMTVTK_API int gmtvtk_remove_meca_group_h(void *handle, const char *name) {
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
 #ifdef GMTVTK_TEST_API
+// test hook: diagnostic — the format (0=NativeFormat/registry, 1=IniFormat) and fileName() of the
+// app's actual settings store (igmtSettings(), 30_app.cpp), into a caller buffer. Returns the format.
+GMTVTK_API int gmtvtk_settings_format_test(char *buf, int cap) {
+	QSettings st = igmtSettings();
+	QByteArray fn = st.fileName().toUtf8();
+	if (buf && cap > 0) {
+		int n = std::min((int)fn.size(), cap - 1);
+		memcpy(buf, fn.constData(), n);
+		buf[n] = '\0';
+	}
+	return (int)st.format();
+}
+
 // Inject a 2-vertex fault line (lon1,lat1)->(lon2,lat2) into the scene so the apply logic has a
 // target without going through the interactive draw tool. Returns the number of fault polygons.
 GMTVTK_API int gmtvtk_fault_add_test(void *scene, double lon1, double lat1, double lon2, double lat2) {
