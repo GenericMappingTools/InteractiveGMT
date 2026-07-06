@@ -78,28 +78,61 @@ end
 # Images always go through GDAL (GeoTIFF/JP2/Erdas/ENVI + generic jpg/png/tif/bmp; driver by ext).
 _save_image(I, ::AbstractString, path::AbstractString) = GMT.gdalwrite(path, I)
 
-# C callback: req = "<kind>;<fmt>;<path>;<name>" (name optional/empty). Resolve the named scene
-# object (or the primary), write it in the chosen format. Errors are reported in the Errors console.
+# Screenshot -> GeoTIFF: `tmp` is a plain (non-georeferenced) PNG the C++ side already cropped to
+# the axes interior (no axis numbers/colorbar baked in) for a top-down, north-up, edge-to-edge view
+# of the data bbox (x0,x1,y0,y1) — the only camera state where pixels map affinely to world coords.
+# Re-reads it via the universal `gmtread` and re-tags it with the window's own CRS (proj4/wkt,
+# already resolved by crs.jl and pushed to the C++ side) before writing the real GeoTIFF via GDAL.
+function _save_screenshot_geotiff(tmp::AbstractString, path::AbstractString,
+                                   x0::Float64, x1::Float64, y0::Float64, y1::Float64,
+                                   proj4::AbstractString, wkt::AbstractString)
+    try
+        I = GMT.gmtread(tmp)
+        Iout = mat2img(I.image; x=[x0, x1], y=[y0, y1], proj4=String(proj4), wkt=String(wkt))
+        GMT.gdalwrite(path, Iout)
+    finally
+        rm(tmp, force=true)
+    end
+    return path
+end
+
+# C callback: req = "<kind>;<fmt>;<path>;<name>" (name optional/empty) for kind grid/image, or
+# "geotiff;<tmpPng>;<outPath>;<x0>;<x1>;<y0>;<y1>;<proj4>;<wkt>" for a screenshot GeoTIFF export
+# (see [`_save_screenshot_geotiff`](@ref)). Resolve the named scene object (or the primary), write
+# it in the chosen format. Errors are reported in the Errors console.
 function _on_save(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
     kind = ""
+    path = ""
     try
-        parts = split(unsafe_string(req), ';', limit=4)
-        length(parts) >= 3 || error("Save: malformed request '$(unsafe_string(req))'")
-        kind = strip(parts[1]); fmt = strip(parts[2]); path = String(strip(parts[3]))
-        name = length(parts) >= 4 ? String(strip(parts[4])) : ""
-        isempty(path) && return
-        if kind == "grid"
-            G = _find_object(scene, :grid, name)
-            G === nothing && error("No grid to save in this window")
-            path = _ensure_ext(path, get(_GRID_EXT, fmt, ".nc"), _GRID_EXT)
-            _save_grid(G, fmt, path)
-        elseif kind == "image"
-            I = _find_object(scene, :image, name)
-            I === nothing && error("No image to save in this window")
-            path = _ensure_ext(path, get(_IMG_EXT, fmt, ".tif"), _IMG_EXT)
-            _save_image(I, fmt, path)
+        s = unsafe_string(req)
+        kind = String(strip(split(s, ';', limit=2)[1]))
+        if kind == "geotiff"
+            parts = split(s, ';', limit=9)
+            length(parts) >= 9 || error("Save: malformed screenshot GeoTIFF request '$s'")
+            tmp  = String(strip(parts[2]))
+            path = String(strip(parts[3]))
+            x0, x1 = parse(Float64, parts[4]), parse(Float64, parts[5])
+            y0, y1 = parse(Float64, parts[6]), parse(Float64, parts[7])
+            _save_screenshot_geotiff(tmp, path, x0, x1, y0, y1, strip(parts[8]), strip(parts[9]))
         else
-            error("Save: unknown kind '$kind'")
+            parts = split(s, ';', limit=4)
+            length(parts) >= 3 || error("Save: malformed request '$s'")
+            fmt = strip(parts[2]); path = String(strip(parts[3]))
+            name = length(parts) >= 4 ? String(strip(parts[4])) : ""
+            isempty(path) && return
+            if kind == "grid"
+                G = _find_object(scene, :grid, name)
+                G === nothing && error("No grid to save in this window")
+                path = _ensure_ext(path, get(_GRID_EXT, fmt, ".nc"), _GRID_EXT)
+                _save_grid(G, fmt, path)
+            elseif kind == "image"
+                I = _find_object(scene, :image, name)
+                I === nothing && error("No image to save in this window")
+                path = _ensure_ext(path, get(_IMG_EXT, fmt, ".tif"), _IMG_EXT)
+                _save_image(I, fmt, path)
+            else
+                error("Save: unknown kind '$kind'")
+            end
         end
         _viewer_log_error(scene, "Saved $kind -> $path")
     catch e

@@ -2676,7 +2676,7 @@ public:
 
 	explicit FocalMechanismsDialog(QWidget *parent, Scene *scene = nullptr) {
 		QUiLoader loader;
-		QFile f(QString(GMTVTK_UI_DIR) + "/focal_mechanisms.ui");
+		QFile f(gmtvtkUiDir() + "/focal_mechanisms.ui");
 		if (!f.open(QFile::ReadOnly)) {
 			qWarning("FocalMechanismsDialog: cannot open %s", qUtf8Printable(f.fileName()));
 			return;
@@ -3594,6 +3594,106 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		wr->SetInputConnection(w2i->GetOutputPort());
 		wr->Write();
 	};
+	// Screenshot-GeoTIFF capture: fit the primary raster edge-to-edge in flat top-down 2-D (the
+	// only camera state where screen pixels map affinely to world coordinates), hide the cube axes
+	// + colour bar (decoration, not data), grab the frame, then crop to exactly the axes interior
+	// (the data bbox's own on-screen rectangle) — same NDC projection fitSnapView uses to FIT the
+	// view, run here to READ the pixel rect back. Restores every toggled state before returning.
+	// Writes a plain PNG to `pngPath`; Julia re-reads it and re-georeferences via GDAL (this
+	// function only owns the render — no GMT/GDAL calls belong in the C++ side).
+	auto captureAxesInteriorPng = [s](const QString &pngPath) -> bool {
+		if (!s->ren || !s->surf || !s->widget) return false;
+		const bool wasFlat = s->flat2d;
+		if (!wasFlat) sceneSetFlat2D(s, true);
+		fitSnapView(s, /*topMode=*/true);        // guarantee the data fills edge-to-edge, no stale pan/zoom
+		const int  axesVis = s->axes ? s->axes->GetVisibility() : 0;
+		const bool barVis  = colorbarVisible(s);
+		if (s->axes) s->axes->SetVisibility(0);  // decoration only — never part of the georeferenced pixels
+		if (s->bar)  setColorbarVisible(s, false);
+		s->widget->renderWindow()->Render();
+
+		vtkNew<vtkWindowToImageFilter> w2i;
+		w2i->SetInput(s->widget->renderWindow());
+		w2i->SetScale(2); w2i->Update();
+		vtkImageData *full = w2i->GetOutput();
+		int dims[3]; full->GetDimensions(dims);
+
+		// Project the data bbox through the (now edge-to-edge-fitted) camera to find its own pixel
+		// rectangle within the captured frame.
+		vtkCamera *cam = s->ren->GetActiveCamera();
+		double b[6]; surfGetBounds(s, b);
+		const double aspect = (dims[1] > 0) ? double(dims[0]) / double(dims[1]) : 1.0;
+		vtkMatrix4x4 *M = cam->GetCompositeProjectionTransformMatrix(aspect, -1.0, 1.0);
+		double nx0=1e300, nx1=-1e300, ny0=1e300, ny1=-1e300;
+		for (double cx : { b[0], b[1] })
+			for (double cy : { b[2], b[3] })
+				for (double cz : { b[4], b[5] }) {
+					double p[4] = { cx, cy, cz, 1.0 }, o[4];
+					M->MultiplyPoint(p, o);
+					if (o[3] != 0.0) {
+						const double ndcx = o[0]/o[3], ndcy = o[1]/o[3];
+						nx0 = std::min(nx0, ndcx); nx1 = std::max(nx1, ndcx);
+						ny0 = std::min(ny0, ndcy); ny1 = std::max(ny1, ndcy);
+					}
+				}
+		auto ndcToPix = [](double n, int size) { return std::clamp(int(std::round((n*0.5+0.5) * (size-1))), 0, size-1); };
+		const int px0 = ndcToPix(nx0, dims[0]), px1 = ndcToPix(nx1, dims[0]);
+		const int py0 = ndcToPix(ny0, dims[1]), py1 = ndcToPix(ny1, dims[1]);
+		const bool ok = (px1 > px0 && py1 > py0);
+		if (ok) {
+			const int cw = px1 - px0 + 1, ch = py1 - py0 + 1;
+			vtkNew<vtkImageData> cropped;
+			cropped->SetDimensions(cw, ch, 1);
+			cropped->AllocateScalars(VTK_UNSIGNED_CHAR, 3);
+			for (int row = 0; row < ch; ++row) {
+				auto *src = static_cast<unsigned char*>(full->GetScalarPointer(px0, py0 + row, 0));
+				auto *dst = static_cast<unsigned char*>(cropped->GetScalarPointer(0, row, 0));
+				std::memcpy(dst, src, size_t(cw) * 3);
+			}
+			vtkNew<vtkPNGWriter> wr;
+			wr->SetFileName(pngPath.toLocal8Bit().constData());
+			wr->SetInputData(cropped);
+			wr->Write();
+		}
+
+		if (s->axes) s->axes->SetVisibility(axesVis);
+		if (s->bar)  setColorbarVisible(s, barVis);
+		if (!wasFlat) sceneSetFlat2D(s, false);
+		s->widget->renderWindow()->Render();
+		return ok;
+	};
+	// Save Screenshot GeoTIFF: only meaningful for a grid/image with a known reference system (the
+	// Geography-menu gate, s->hasCRS()) — an unreferenced scene, or a bare solid/mesh, has no W/E/S/N
+	// to write into a geotransform. Capture happens entirely in C++ (captureAxesInteriorPng); the
+	// GDAL write happens in Julia via the existing g_juliaSave callback (kind="geotiff"), reusing the
+	// Save Grid/Save Image plumbing instead of a new C API export.
+	auto actShotGeoTiff = [s, captureAxesInteriorPng]() {
+		if (!s->hasCRS() || !(sceneHasGrid(s) || sceneHasImage(s))) {
+			if (s->win) s->win->statusBar()->showMessage(
+				"Save Screenshot GeoTIFF: needs a grid/image with a known reference system", 4000);
+			return;
+		}
+		QString fn = QFileDialog::getSaveFileName(s->win, "Save screenshot as GeoTIFF",
+												   prefStartDir("gmtvtk.tif"), "GeoTIFF (*.tif *.tiff)");
+		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
+		if (!g_juliaSave) {
+			if (s->win) s->win->statusBar()->showMessage("Save Screenshot GeoTIFF: callback not registered", 3000);
+			return;
+		}
+		const QString tmp = QDir::temp().filePath(QString("igmt_shot_%1.png").arg((quintptr)s));
+		if (!captureAxesInteriorPng(tmp)) {
+			if (s->win) s->win->statusBar()->showMessage("Save Screenshot GeoTIFF: capture failed", 4000);
+			return;
+		}
+		const QString req = QString("geotiff;%1;%2;%3;%4;%5;%6;%7;%8")
+			.arg(tmp, fn)
+			.arg(s->x0, 0, 'g', 17).arg(s->x1, 0, 'g', 17)
+			.arg(s->y0, 0, 'g', 17).arg(s->y1, 0, 'g', 17)
+			.arg(QString::fromStdString(s->crsProj4))
+			.arg(QString::fromStdString(s->crsWkt));
+		g_juliaSave(s, req.toUtf8().constData());
+	};
 	auto actToggleGizmo = [s]() {
 		if (s->giz) { setGizmoVisible(*s->giz, !s->giz->visible); s->widget->renderWindow()->Render(); }
 	};
@@ -3623,7 +3723,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		else if (s->win) s->win->statusBar()->showMessage("New Window: callback not registered", 3000);
 	});
 	mFile->addSeparator();
-	mFile->addAction("Save &Screenshot…", actShot);
+	mFile->addAction("Save Screenshot &img…", actShot);
+	// Save Screenshot GeoTIFF: greyed out unless the window has a grid/image with a known reference
+	// system (s->hasCRS()) — refreshed on every menu open, same gating rule as aSaveGrid/aSaveImage below.
+	QAction *aShotGeoTiff = mFile->addAction("Save Screenshot &GeoTIFF…", actShotGeoTiff);
 	// Save Grid / Save Image: each opens the format-picker dialog (saveObjectDialog) for the window's
 	// primary object (empty name). Greyed out when the window holds no grid / no image — refreshed on
 	// every menu open so it tracks drops, basemap tiles, etc.
@@ -3641,7 +3744,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Per-open gating: Save entries reflect what's loaded; Background region is hidden for good once the
 	// window holds ANY content (a grid, an image, or any dropped extra) — it only makes sense on a bare
 	// launcher whose limits are still up for grabs.
-	QObject::connect(mFile, &QMenu::aboutToShow, [s, aSaveGrid, aSaveImage, aBgRegion]() {
+	QObject::connect(mFile, &QMenu::aboutToShow, [s, aShotGeoTiff, aSaveGrid, aSaveImage, aBgRegion]() {
+		aShotGeoTiff->setEnabled(s->hasCRS() && (sceneHasGrid(s) || sceneHasImage(s)));
 		aSaveGrid->setEnabled(sceneHasGrid(s));
 		aSaveImage->setEnabled(sceneHasImage(s));
 		const bool hasContent = (s->surf && !s->emptyStart) || !s->extras.empty();
