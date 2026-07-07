@@ -16,10 +16,18 @@ const Libdl = Base.Libc.Libdl
 
 # Toolchain runtime DLL dirs (this machine). Dependent DLLs (Qt6*, vtk*) resolve from PATH at
 # load time. Override any of these via the matching ENV var BEFORE `using InteractiveGMT`.
-const _VTK_BIN = get(ENV, "INTERACTIVEGMT_VTK_BIN", raw"C:\programs\compa_libs\VTK-9.6.2\compileds\bin")
-const _QT_BIN  = get(ENV, "INTERACTIVEGMT_QT_BIN",  raw"C:\programs\Qt6\6.11.1\msvc2022_64\bin")
-const _QT_PLAT = get(ENV, "INTERACTIVEGMT_QT_PLAT", raw"C:\programs\Qt6\6.11.1\msvc2022_64\plugins\platforms")
-const _LIB     = joinpath(_PKGROOT, "deps", "build", "gmtvtk.dll")
+#
+# A GMTVTK_PACKAGE=ON build (see deps/CMakeLists.txt) drops every VTK/Qt/TBB runtime DLL plus the
+# Qt platform plugins (platforms/qwindows.dll, via windeployqt) into deps/build/ next to
+# gmtvtk.dll itself — that's the NSIS-installed layout, with no VTK/Qt toolchain on the
+# destination machine at all. Detect that bundle and point straight at it; otherwise fall back
+# to this dev machine's hard-coded toolchain paths (ENV overrides always win either way).
+const _LIB      = joinpath(_PKGROOT, "deps", "build", "gmtvtk.dll")
+const _BIN_DIR  = dirname(_LIB)
+const _BUNDLED  = isdir(joinpath(_BIN_DIR, "platforms"))
+const _VTK_BIN = get(ENV, "INTERACTIVEGMT_VTK_BIN", _BUNDLED ? _BIN_DIR : raw"C:\programs\compa_libs\VTK-9.6.2\compileds\bin")
+const _QT_BIN  = get(ENV, "INTERACTIVEGMT_QT_BIN",  _BUNDLED ? _BIN_DIR : raw"C:\programs\Qt6\6.11.1\msvc2022_64\bin")
+const _QT_PLAT = get(ENV, "INTERACTIVEGMT_QT_PLAT", _BUNDLED ? joinpath(_BIN_DIR, "platforms") : raw"C:\programs\Qt6\6.11.1\msvc2022_64\plugins\platforms")
 
 const _DLL     = Ref{Ptr{Cvoid}}(C_NULL)
 const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()

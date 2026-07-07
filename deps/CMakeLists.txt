@@ -4,6 +4,10 @@ project(gmtvtk VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Declared up here (used below to gate gmtvtk_demo) — see the big comment near the bottom of
+# this file for what it turns on.
+option(GMTVTK_PACKAGE "Bundle all runtime DLLs and enable CPack packaging" OFF)
+
 # Toolchain locations (this machine, verified 2026-06-11). Override on the cmake command line
 # (-DVTK_DIR=... etc.) for a different box.
 if(NOT VTK_DIR)
@@ -44,10 +48,14 @@ add_library(gmtvtk SHARED ${GMTVTK_SRC})
 target_link_libraries(gmtvtk PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES})
 vtk_module_autoinit(TARGETS gmtvtk MODULES ${VTK_LIBRARIES})
 
-# Standalone demo executable (shows the synthetic peaks surface via the demo main()).
-add_executable(gmtvtk_demo WIN32 ${GMTVTK_SRC})
-target_link_libraries(gmtvtk_demo PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES})
-vtk_module_autoinit(TARGETS gmtvtk_demo MODULES ${VTK_LIBRARIES})
+# Standalone demo executable (shows the synthetic peaks surface via the demo main()) — a dev
+# smoke-test binary only (deps/run.bat), no Julia involved. Skipped entirely for a package build:
+# the redistributable installs the real Julia-driven app (iview_app.jl), not this demo.
+if(NOT GMTVTK_PACKAGE)
+  add_executable(gmtvtk_demo WIN32 ${GMTVTK_SRC})
+  target_link_libraries(gmtvtk_demo PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES})
+  vtk_module_autoinit(TARGETS gmtvtk_demo MODULES ${VTK_LIBRARIES})
+endif()
 
 # Test-only shared library — SAME source, built a second time with GMTVTK_TEST_API defined so
 # the gmtvtk_*_test hooks in 90_c_api.cpp (guarded by #ifdef GMTVTK_TEST_API) compile in. The
@@ -62,21 +70,34 @@ target_link_libraries(gmtvtk_test PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${V
 vtk_module_autoinit(TARGETS gmtvtk_test MODULES ${VTK_LIBRARIES})
 
 # ============================================================================
-# Optional redistributable package — gmtvtk.dll + demo + EVERY runtime DLL it
-# needs (VTK, Qt, TBB) + the Qt platform plugins, so the package runs on a box
-# WITHOUT VTK/Qt installed. OFF by default (a normal build wants none of this).
+# Optional redistributable package — gmtvtk.dll + EVERY runtime DLL it needs
+# (VTK, Qt, TBB) + the Qt platform plugins, so the package runs on a box
+# WITHOUT VTK/Qt installed — PLUS the Julia bridge (src/, Project.toml,
+# deps/ui, data/) and an NSIS installer that drops a Desktop + Start Menu icon
+# launching the real Julia-driven app (iview_app.jl). gmtvtk_demo is skipped
+# entirely above when this is ON — it is never built or shipped in the
+# package. OFF by default (a normal dev build wants none of this).
 #
 #   cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGMTVTK_PACKAGE=ON
 #   cmake --build build
-#   cmake --build build --target package      # -> gmtvtk-0.1.0-win64.zip
+#   cmake --build build --target package      # -> iGMT-0.1.0-win64.{zip,exe}
 #
 # How the DLLs are gathered:
 #   * VTK + TBB + Qt6 core DLLs: install(... RUNTIME_DEPENDENCIES ...) scans the
 #     built binaries for their imports and resolves them from the toolchain bins.
 #   * Qt *plugins* (platforms/qwindows.dll, styles, imageformats) are loaded at
-#     RUNTIME, not import-linked, so the scanner cannot see them -> windeployqt.
+#     RUNTIME, not import-linked, so the scanner cannot see them -> windeployqt
+#     (pointed at gmtvtk.dll itself — windeployqt accepts a dll, not just an exe).
+#
+# Installed layout mirrors the dev tree exactly (deps/build/gmtvtk.dll + its
+# runtime DLLs beside it, deps/ui/*.ui, src/, Project.toml, data/) so
+# src/libgmtvtk.jl's _PKGROOT-relative paths and gmtvtk.dll's own runtime
+# self-location (gmtvtkUiDir(), 30_app.cpp) resolve unchanged on the
+# destination machine. The installed launcher (deps/installer/iview_launch.vbs)
+# assumes Julia + this package's deps (GMT.jl, ...) are already
+# installed/instantiated on the destination machine — this does not bundle or
+# bootstrap Julia itself.
 # ============================================================================
-option(GMTVTK_PACKAGE "Bundle all runtime DLLs and enable CPack packaging" OFF)
 
 if(GMTVTK_PACKAGE)
   # Derive the toolchain runtime-DLL dirs from the *_DIR cmake-config locations
@@ -88,13 +109,14 @@ if(GMTVTK_PACKAGE)
   set(_QT_BIN  "${_QT_ROOT}/bin")
   set(_TBB_BIN "${_TBB_ROOT}/bin")
 
-  # Install the two project binaries, and have CMake resolve + install their
-  # dependent DLLs into the same bin dir. System/Windows DLLs are excluded.
-  install(TARGETS gmtvtk gmtvtk_demo
+  # Install gmtvtk.dll into the SAME relative dir the dev build already uses
+  # (deps/build), and have CMake resolve + install its dependent DLLs there
+  # too. System/Windows DLLs are excluded.
+  install(TARGETS gmtvtk
     RUNTIME_DEPENDENCY_SET gmtvtk_deps
-    RUNTIME DESTINATION bin
-    LIBRARY DESTINATION bin
-    ARCHIVE DESTINATION lib)
+    RUNTIME DESTINATION deps/build
+    LIBRARY DESTINATION deps/build
+    ARCHIVE DESTINATION deps/build)
 
   install(RUNTIME_DEPENDENCY_SET gmtvtk_deps
     PRE_EXCLUDE_REGEXES
@@ -102,30 +124,77 @@ if(GMTVTK_PACKAGE)
     POST_EXCLUDE_REGEXES
       ".*[\\/][Ss]ystem32[\\/].*\\.dll$" ".*[\\/]WINDOWS[\\/].*"
     DIRECTORIES "${_VTK_BIN}" "${_QT_BIN}" "${_TBB_BIN}"
-    DESTINATION bin)
+    DESTINATION deps/build)
 
   # Qt runtime plugins (not import-linked) — let windeployqt drop them next to
-  # the installed demo exe. Runs at `cmake --install` / package time.
+  # the installed gmtvtk.dll. Runs at `cmake --install` / package time.
   find_program(WINDEPLOYQT_EXE windeployqt HINTS "${_QT_BIN}")
   if(WINDEPLOYQT_EXE)
     install(CODE "
-      message(STATUS \"windeployqt: staging Qt plugins into bin\")
+      message(STATUS \"windeployqt: staging Qt plugins into deps/build\")
       execute_process(COMMAND \"${WINDEPLOYQT_EXE}\"
         --release --no-translations --no-compiler-runtime
-        --dir \"\${CMAKE_INSTALL_PREFIX}/bin\"
-        \"\${CMAKE_INSTALL_PREFIX}/bin/gmtvtk_demo.exe\")
+        --dir \"\${CMAKE_INSTALL_PREFIX}/deps/build\"
+        \"\${CMAKE_INSTALL_PREFIX}/deps/build/gmtvtk.dll\")
     ")
   else()
     message(WARNING "windeployqt not found in ${_QT_BIN}; Qt platform plugins will be MISSING from the package")
   endif()
 
-  # CPack — a flat ZIP (gmtvtk-<version>-win64.zip) with everything under bin/.
-  set(CPACK_GENERATOR "ZIP")
+  # The Julia bridge — same relative layout as the dev checkout, trailing
+  # slashes so CONTENTS land at DESTINATION (not nested one level deeper).
+  # Only focal_mechanisms.ui ships: it's the ONLY .ui loaded at runtime (QUiLoader,
+  # FocalMechanismsDialog, 70_window.cpp) — every other deps/ui/*.ui is a hand-ported design
+  # reference the running app never reads, not needed on the destination machine.
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../src/"  DESTINATION src)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/ui/focal_mechanisms.ui" DESTINATION deps/ui)
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../data/" DESTINATION data)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../Project.toml"        DESTINATION .)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../iview_app.jl"        DESTINATION .)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/installer/iview_launch.vbs" DESTINATION .)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/igmt.ico"        DESTINATION .)
+
+  # CPack — a portable ZIP plus an NSIS installer (Desktop + Start Menu icon).
+  set(CPACK_GENERATOR "ZIP;NSIS")
   set(CPACK_PACKAGE_NAME "iGMT")
   set(CPACK_PACKAGE_VENDOR "InteractiveGMT")
   set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
   set(CPACK_SYSTEM_NAME "win64")
   set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CPACK_SYSTEM_NAME}")
   set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Self-contained Qt6 + VTK 3-D viewer for GMT.jl (bundled runtime)")
+  set(CPACK_PACKAGE_INSTALL_DIRECTORY "iGMT")
+
+  # NSIS: Desktop + Start Menu shortcuts to the installed launcher, using the
+  # iGMT icon (deps/assets/igmt.ico, same PNG source as the in-app QIcon, see
+  # deps/src/_app_icon.h). The launcher is a .vbs (not an .exe), so this uses
+  # raw NSIS script (CPACK_NSIS_EXTRA_*_COMMANDS) instead of the
+  # CPACK_PACKAGE_EXECUTABLES/CPACK_NSIS_MENU_LINKS machinery, which assumes an
+  # installed .exe.
+  #
+  # include(CPack) DUMPS every CPACK_* variable verbatim into a GENERATED
+  # CPackConfig.cmake as set(VAR "..."), which `cpack.exe` then RE-PARSES as
+  # CMake — so this value gets CMake-string-parsed TWICE. A literal `"` here
+  # closes that second parse's string early and corrupts the .nsi it writes
+  # (verified: produced `CreateShortCut ;$DESKTOP/...` — the `"` vanished and
+  # NSIS then read stray text as a comment, "expects 2-9 parameters, got 0").
+  # `\"` (one literal backslash + quote, i.e. `\\\"` in THIS file's source)
+  # survives the first parse as an escaped quote the second parse then turns
+  # into a real `"` — the double-escaping CPack's own docs call out for
+  # CPACK_NSIS_EXTRA_INSTALL_COMMANDS. Forward slashes throughout (NSIS's file
+  # functions accept "/" fine on Windows; sidesteps a THIRD escaping layer).
+  set(CPACK_NSIS_MUI_ICON    "${CMAKE_CURRENT_SOURCE_DIR}/assets/igmt.ico")
+  set(CPACK_NSIS_MUI_UNIICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/igmt.ico")
+  set(CPACK_NSIS_DISPLAY_NAME "iGMT")
+  set(CPACK_NSIS_PACKAGE_NAME "iGMT")
+  set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "
+    CreateShortCut \\\"$DESKTOP/iGMT.lnk\\\" \\\"$SYSDIR/wscript.exe\\\" '\\\"$INSTDIR/iview_launch.vbs\\\"' \\\"$INSTDIR/igmt.ico\\\"
+    CreateDirectory \\\"$SMPROGRAMS/iGMT\\\"
+    CreateShortCut \\\"$SMPROGRAMS/iGMT/iGMT.lnk\\\" \\\"$SYSDIR/wscript.exe\\\" '\\\"$INSTDIR/iview_launch.vbs\\\"' \\\"$INSTDIR/igmt.ico\\\"
+  ")
+  set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "
+    Delete \\\"$DESKTOP/iGMT.lnk\\\"
+    Delete \\\"$SMPROGRAMS/iGMT/iGMT.lnk\\\"
+    RMDir \\\"$SMPROGRAMS/iGMT\\\"
+  ")
   include(CPack)
 endif()

@@ -447,6 +447,45 @@ static JuliaEarthTideFn g_juliaEarthTide = nullptr;
 static std::unordered_set<Scene*> g_scenes;
 static bool sceneAlive(Scene *s) { return s && g_scenes.count(s) != 0; }
 
+// Two kernel32 calls, hand-declared instead of #include <windows.h>: that header unconditionally
+// drags in wingdi.h (WIN32_LEAN_AND_MEAN does NOT gate it — tried, reverted), whose GDI
+// `Polygon()` function collides with this codebase's own `Polygon` struct (10_geometry.cpp)
+// since it's all one translation unit — `Polygon& pg` then binds to the wrong (function)
+// declaration and fails to parse. This sidesteps the whole header instead of chasing every bare
+// `Polygon` usage into an elaborated `struct Polygon`.
+extern "C" {
+	__declspec(dllimport) int __stdcall GetModuleHandleExA(unsigned long dwFlags, const char *lpModuleName, void **phModule);
+	__declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void *hModule, char *lpFilename, unsigned long nSize);
+}
+
+// Absolute path to the directory gmtvtk.dll itself was loaded from (deps/build for both a dev
+// build and an NSIS-installed tree — see deps/CMakeLists.txt). Resolved via the module handle of
+// an address inside this DLL, NOT argv[0]/applicationDirPath() — when hosted by Julia, argv[0] is
+// a fabricated dummy (see ensureApp) and the real process exe is julia.exe, nowhere near this
+// DLL. Returns empty string if the lookup fails (should not happen for a loaded DLL).
+static QString gmtvtkModuleDir() {
+	const unsigned long GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS = 0x4;
+	const unsigned long GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT = 0x2;
+	void *hm = nullptr;
+	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		reinterpret_cast<const char *>(&gmtvtkModuleDir), &hm);
+	char buf[260];
+	unsigned long n = hm ? GetModuleFileNameA(hm, buf, sizeof(buf)) : 0;
+	if (n == 0) return QString();
+	return QFileInfo(QString::fromLocal8Bit(buf, (int)n)).absolutePath();
+}
+
+// Absolute path to deps/ui/ (the runtime-loaded .ui files, see FocalMechanismsDialog in
+// 70_window.cpp): <module dir>/../ui. GMTVTK_UI_DIR is kept only as a last-resort fallback
+// (module-dir lookup failed).
+static QString gmtvtkUiDir() {
+	QString modDir = gmtvtkModuleDir();
+	if (modDir.isEmpty()) return QString(GMTVTK_UI_DIR);
+	QDir dir(modDir);
+	dir.cdUp();                     // deps/build -> deps
+	return dir.filePath("ui");      // deps/ui
+}
+
 // iGMT application/window icon, decoded once from the embedded PNG (see _app_icon.h).
 static QIcon appIcon() {
 	static QIcon ic = []{
@@ -481,6 +520,13 @@ static void ensureApp() {
 	static int   s_argc = 1;
 	static char  s_arg0[] = "gmtvtk";
 	static char *s_argv[] = { s_arg0, nullptr };
+	// Qt hunts its platform plugin (platforms/qwindows.dll) relative to argv[0]'s directory at
+	// QApplication construction time. argv[0] above is a fabricated dummy, so the real lookup
+	// would land next to the HOST exe (julia.exe) — nowhere near the windeployqt-staged plugins
+	// beside gmtvtk.dll (deps/build, see deps/CMakeLists.txt GMTVTK_PACKAGE) on a box without a
+	// Qt install. Must run BEFORE the QApplication ctor below.
+	QString modDir = gmtvtkModuleDir();
+	if (!modDir.isEmpty()) QCoreApplication::addLibraryPath(modDir);
 	QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
 	g_app = new QApplication(s_argc, s_argv);
 	g_app->setWindowIcon(appIcon());   // taskbar / app-wide default icon
