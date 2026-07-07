@@ -1829,6 +1829,12 @@ GMTVTK_API void gmtvtk_set_save_callback(JuliaSaveFn fn) {
 	g_juliaSave = fn;
 }
 
+// Register the File > Save Screenshot GeoTIFF callback (in-memory pixel hand-off, see
+// JuliaSaveGeoTiffFn). nullptr to detach.
+GMTVTK_API void gmtvtk_set_save_geotiff_callback(JuliaSaveGeoTiffFn fn) {
+	g_juliaSaveGeoTiff = fn;
+}
+
 // Register the Scene Objects "Move to new window" callback (grid rows). fn(scene, "<kind>;<name>")
 // returns 1 if Julia re-opened the grid in a new window (the source window then removes it), 0 on
 // failure (the grid stays put). nullptr to detach.

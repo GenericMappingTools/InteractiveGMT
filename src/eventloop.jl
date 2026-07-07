@@ -49,6 +49,7 @@ function _ensure_callbacks()
 	                    ("bgregion",    _register_bgregion),
 	                    ("new-window",  _register_new_window),
 	                    ("save",        _register_save),
+	                    ("save-geotiff",_register_save_geotiff),
 	                    ("move",        _register_move),
 	                    ("geography",   _register_geography),
 	                    ("solid",       _register_solid),

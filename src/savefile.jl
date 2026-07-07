@@ -1,10 +1,15 @@
-# savefile.jl — File > Save Grid / Save Image  +  per-object "Save…" in the Scene Objects panel.
+# savefile.jl — File > Save Grid / Save Image / Save Screenshot GeoTIFF  +  per-object "Save…" in
+# the Scene Objects panel.
 # The C++ side opens the format-picker dialog (SaveFormatDialog, 30_app.cpp) and hands
 # "<kind>;<fmt>;<path>;<name>" to `_on_save`. We write a scene object — converting to the on-disk
 # format the user picked:
 #   grids  : netCDF (.nc/.grd) + Surfer 6 (.grd) via GMT.gmtwrite;
 #            GeoTIFF / JPEG2000 / Erdas Imagine / ENVI via GMT.gdalwrite (driver from extension)
 #   images : ALL formats via GMT.gdalwrite (GeoTIFF/JP2/Erdas/ENVI + generic jpg/png/tif/bmp)
+#
+# Save Screenshot GeoTIFF is a separate callback (`_on_save_geotiff`, gmtvtk_set_save_geotiff_callback):
+# the C++ side hands over the captured RGB pixels directly in memory (no temp file) and we wrap them
+# straight into a GMTimage via mat2img before the GDAL write.
 #
 # WHICH object is saved: every grid/image added to a window is remembered here (`_remember_object!`)
 # keyed by the window's Scene* — primary surfaces (view_grid/view_image) AND extras (drops, basemap,
@@ -59,16 +64,16 @@ const _IMG_EXT  = Dict("gtiff"=>".tif", "jp2"=>".jp2", "erdas"=>".img", "envi"=>
 
 # Append the format's canonical extension if the chosen name carries no recognised one (QFileDialog
 # usually appends the filter's default suffix, but the user can type a bare name).
-function _ensure_ext(path::AbstractString, want::AbstractString, known)
+function _ensure_ext(path::String, want::String, known)
     lc = lowercase(path)
     any(endswith(lc, e) for e in values(known)) ? String(path) : String(path) * want
 end
 
 # Write a grid: netCDF/Surfer via gmtwrite, everything else via GDAL (driver inferred from the ext).
-function _save_grid(G, fmt::AbstractString, path::AbstractString)
-    if fmt == "nc"
+function _save_grid(G, fmt::String, path::String)
+    if (fmt == "nc")
         GMT.gmtwrite(path, G)                 # netCDF (GMT's default grid format)
-    elseif fmt == "surfer"
+    elseif (fmt == "surfer")
         GMT.gmtwrite(path * "=sf", G)         # Surfer 6 binary grid (GMT grid-format code =sf)
     else
         GMT.gdalwrite(path, G)                # GeoTIFF / JPEG2000 / Erdas(HFA) / ENVI — driver by ext
@@ -76,63 +81,34 @@ function _save_grid(G, fmt::AbstractString, path::AbstractString)
 end
 
 # Images always go through GDAL (GeoTIFF/JP2/Erdas/ENVI + generic jpg/png/tif/bmp; driver by ext).
-_save_image(I, ::AbstractString, path::AbstractString) = GMT.gdalwrite(path, I)
+_save_image(I, ::String, path::String) = GMT.gdalwrite(path, I)
 
-# Screenshot -> GeoTIFF: `tmp` is a plain (non-georeferenced) PNG the C++ side already cropped to
-# the axes interior (no axis numbers/colorbar baked in) for a top-down, north-up, edge-to-edge view
-# of the data bbox (x0,x1,y0,y1) — the only camera state where pixels map affinely to world coords.
-# Re-reads it via the universal `gmtread` and re-tags it with the window's own CRS (proj4/wkt,
-# already resolved by crs.jl and pushed to the C++ side) before writing the real GeoTIFF via GDAL.
-function _save_screenshot_geotiff(tmp::AbstractString, path::AbstractString,
-                                   x0::Float64, x1::Float64, y0::Float64, y1::Float64,
-                                   proj4::AbstractString, wkt::AbstractString)
-    try
-        I = GMT.gmtread(tmp)
-        Iout = mat2img(I.image; x=[x0, x1], y=[y0, y1], proj4=String(proj4), wkt=String(wkt))
-        GMT.gdalwrite(path, Iout)
-    finally
-        rm(tmp, force=true)
-    end
-    return path
-end
-
-# C callback: req = "<kind>;<fmt>;<path>;<name>" (name optional/empty) for kind grid/image, or
-# "geotiff;<tmpPng>;<outPath>;<x0>;<x1>;<y0>;<y1>;<proj4>;<wkt>" for a screenshot GeoTIFF export
-# (see [`_save_screenshot_geotiff`](@ref)). Resolve the named scene object (or the primary), write
-# it in the chosen format. Errors are reported in the Errors console.
+# C callback: req = "<kind>;<fmt>;<path>;<name>" (name optional/empty) for kind grid/image. Resolve
+# the named scene object (or the primary), write it in the chosen format. Errors are reported in the
+# Errors console.
 function _on_save(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
     kind = ""
     path = ""
     try
         s = unsafe_string(req)
-        kind = String(strip(split(s, ';', limit=2)[1]))
-        if kind == "geotiff"
-            parts = split(s, ';', limit=9)
-            length(parts) >= 9 || error("Save: malformed screenshot GeoTIFF request '$s'")
-            tmp  = String(strip(parts[2]))
-            path = String(strip(parts[3]))
-            x0, x1 = parse(Float64, parts[4]), parse(Float64, parts[5])
-            y0, y1 = parse(Float64, parts[6]), parse(Float64, parts[7])
-            _save_screenshot_geotiff(tmp, path, x0, x1, y0, y1, strip(parts[8]), strip(parts[9]))
+        parts = split(s, ';', limit=4)
+        length(parts) >= 3 || error("Save: malformed request '$s'")
+        kind = strip(parts[1])
+        fmt = strip(parts[2]); path = String(strip(parts[3]))
+        name = length(parts) >= 4 ? String(strip(parts[4])) : ""
+        isempty(path) && return
+        if (kind == "grid")
+            G = _find_object(scene, :grid, name)
+            G === nothing && error("No grid to save in this window")
+            path = _ensure_ext(path, get(_GRID_EXT, fmt, ".nc"), _GRID_EXT)
+            _save_grid(G, fmt, path)
+        elseif (kind == "image")
+            I = _find_object(scene, :image, name)
+            I === nothing && error("No image to save in this window")
+            path = _ensure_ext(path, get(_IMG_EXT, fmt, ".tif"), _IMG_EXT)
+            _save_image(I, fmt, path)
         else
-            parts = split(s, ';', limit=4)
-            length(parts) >= 3 || error("Save: malformed request '$s'")
-            fmt = strip(parts[2]); path = String(strip(parts[3]))
-            name = length(parts) >= 4 ? String(strip(parts[4])) : ""
-            isempty(path) && return
-            if kind == "grid"
-                G = _find_object(scene, :grid, name)
-                G === nothing && error("No grid to save in this window")
-                path = _ensure_ext(path, get(_GRID_EXT, fmt, ".nc"), _GRID_EXT)
-                _save_grid(G, fmt, path)
-            elseif kind == "image"
-                I = _find_object(scene, :image, name)
-                I === nothing && error("No image to save in this window")
-                path = _ensure_ext(path, get(_IMG_EXT, fmt, ".tif"), _IMG_EXT)
-                _save_image(I, fmt, path)
-            else
-                error("Save: unknown kind '$kind'")
-            end
+            error("Save: unknown kind '$kind'")
         end
         _viewer_log_error(scene, "Saved $kind -> $path")
     catch e
@@ -147,6 +123,38 @@ end
 function _register_save()
     fptr = @cfunction((s,c)->Base.invokelatest(_on_save,s,c), Cvoid, (Ptr{Cvoid}, Cstring))
     ccall(_fn(:gmtvtk_set_save_callback), Cvoid, (Ptr{Cvoid},), fptr)
+    return
+end
+
+# C callback for File > Save Screenshot GeoTIFF: `rgb` is a packed row-major RGB buffer (top row
+# first, w*h*3 bytes) straight out of VTK's frame grab — no temp file, no PNG encode/decode. Valid
+# only for the duration of this call, so wrap-then-copy immediately (`permutedims` below both
+# reorders VTK's (band,col,row) memory layout into the (row,col,band) `mat2img` expects AND makes
+# the owned copy). Builds the GMTimage in memory and writes the real GeoTIFF via GDAL.
+function _on_save_geotiff(scene::Ptr{Cvoid}, rgb::Ptr{UInt8}, w::Cint, h::Cint, path::Cstring,
+                          x0::Cdouble, x1::Cdouble, y0::Cdouble, y1::Cdouble,
+                          proj4::Cstring, wkt::Cstring)::Cvoid
+    outpath = ""
+    try
+        outpath = unsafe_string(path)
+        view = unsafe_wrap(Array, rgb, (3, Int(w), Int(h)))   # (band, col, row), C memory, borrowed
+        mat = permutedims(view, (3, 2, 1))                    # (row, col, band), owned copy
+        Iout = mat2img(mat; x=[x0, x1], y=[y0, y1], proj4=unsafe_string(proj4), wkt=unsafe_string(wkt))
+        GMT.gdalwrite(outpath, Iout)
+        _viewer_log_error(scene, "Saved geotiff -> $outpath")
+    catch e
+        _viewer_log_error(scene, "Save geotiff FAILED: $(sprint(showerror, e))")
+        @warn "save: could not write screenshot GeoTIFF" exception=(e,)
+    end
+    return
+end
+
+# Build the C-callable pointer + register it. Lazy (first window) via _ensure_callbacks — the
+# @cfunction is a thin invokelatest trampoline so it drags no GMT into compile.
+function _register_save_geotiff()
+    fptr = @cfunction((sc,rgb,w,h,p,x0,x1,y0,y1,pj,wk)->Base.invokelatest(_on_save_geotiff,sc,rgb,w,h,p,x0,x1,y0,y1,pj,wk),
+                       Cvoid, (Ptr{Cvoid}, Ptr{UInt8}, Cint, Cint, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring))
+    ccall(_fn(:gmtvtk_set_save_geotiff_callback), Cvoid, (Ptr{Cvoid},), fptr)
     return
 end
 

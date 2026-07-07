@@ -3599,9 +3599,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// + colour bar (decoration, not data), grab the frame, then crop to exactly the axes interior
 	// (the data bbox's own on-screen rectangle) — same NDC projection fitSnapView uses to FIT the
 	// view, run here to READ the pixel rect back. Restores every toggled state before returning.
-	// Writes a plain PNG to `pngPath`; Julia re-reads it and re-georeferences via GDAL (this
-	// function only owns the render — no GMT/GDAL calls belong in the C++ side).
-	auto captureAxesInteriorPng = [s](const QString &pngPath) -> bool {
+	// Returns the cropped RGB pixels directly in `outRgb`/`outW`/`outH` — no PNG encode, no temp
+	// file. Rows are flipped to top-first while copying (VTK's vtkImageData is bottom-up/y-up;
+	// mat2img on the Julia side defaults to top-first, matching what a re-read PNG would have
+	// given it) so Julia can wrap the buffer straight into a GMTimage. This function only owns the
+	// render — no GMT/GDAL calls belong in the C++ side.
+	auto captureAxesInteriorRGB = [s](std::vector<unsigned char> &outRgb, int &outW, int &outH) -> bool {
 		if (!s->ren || !s->surf || !s->widget) return false;
 		const bool wasFlat = s->flat2d;
 		if (!wasFlat) sceneSetFlat2D(s, true);
@@ -3642,18 +3645,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		const bool ok = (px1 > px0 && py1 > py0);
 		if (ok) {
 			const int cw = px1 - px0 + 1, ch = py1 - py0 + 1;
-			vtkNew<vtkImageData> cropped;
-			cropped->SetDimensions(cw, ch, 1);
-			cropped->AllocateScalars(VTK_UNSIGNED_CHAR, 3);
+			outW = cw; outH = ch;
+			outRgb.resize(size_t(cw) * size_t(ch) * 3);
 			for (int row = 0; row < ch; ++row) {
 				auto *src = static_cast<unsigned char*>(full->GetScalarPointer(px0, py0 + row, 0));
-				auto *dst = static_cast<unsigned char*>(cropped->GetScalarPointer(0, row, 0));
+				unsigned char *dst = outRgb.data() + size_t(ch - 1 - row) * size_t(cw) * 3;  // bottom-up -> top-first
 				std::memcpy(dst, src, size_t(cw) * 3);
 			}
-			vtkNew<vtkPNGWriter> wr;
-			wr->SetFileName(pngPath.toLocal8Bit().constData());
-			wr->SetInputData(cropped);
-			wr->Write();
 		}
 
 		if (s->axes) s->axes->SetVisibility(axesVis);
@@ -3664,10 +3662,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	// Save Screenshot GeoTIFF: only meaningful for a grid/image with a known reference system (the
 	// Geography-menu gate, s->hasCRS()) — an unreferenced scene, or a bare solid/mesh, has no W/E/S/N
-	// to write into a geotransform. Capture happens entirely in C++ (captureAxesInteriorPng); the
-	// GDAL write happens in Julia via the existing g_juliaSave callback (kind="geotiff"), reusing the
-	// Save Grid/Save Image plumbing instead of a new C API export.
-	auto actShotGeoTiff = [s, captureAxesInteriorPng]() {
+	// to write into a geotransform. Capture happens entirely in C++ (captureAxesInteriorRGB); the
+	// pixels are handed to Julia in memory (g_juliaSaveGeoTiff) — no temp file, no PNG round-trip.
+	auto actShotGeoTiff = [s, captureAxesInteriorRGB]() {
 		if (!s->hasCRS() || !(sceneHasGrid(s) || sceneHasImage(s))) {
 			if (s->win) s->win->statusBar()->showMessage(
 				"Save Screenshot GeoTIFF: needs a grid/image with a known reference system", 4000);
@@ -3677,22 +3674,19 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 												   prefStartDir("gmtvtk.tif"), "GeoTIFF (*.tif *.tiff)");
 		if (fn.isEmpty()) return;
 		rememberStartDir(fn);
-		if (!g_juliaSave) {
+		if (!g_juliaSaveGeoTiff) {
 			if (s->win) s->win->statusBar()->showMessage("Save Screenshot GeoTIFF: callback not registered", 3000);
 			return;
 		}
-		const QString tmp = QDir::temp().filePath(QString("igmt_shot_%1.png").arg((quintptr)s));
-		if (!captureAxesInteriorPng(tmp)) {
+		std::vector<unsigned char> rgb;
+		int w = 0, h = 0;
+		if (!captureAxesInteriorRGB(rgb, w, h)) {
 			if (s->win) s->win->statusBar()->showMessage("Save Screenshot GeoTIFF: capture failed", 4000);
 			return;
 		}
-		const QString req = QString("geotiff;%1;%2;%3;%4;%5;%6;%7;%8")
-			.arg(tmp, fn)
-			.arg(s->x0, 0, 'g', 17).arg(s->x1, 0, 'g', 17)
-			.arg(s->y0, 0, 'g', 17).arg(s->y1, 0, 'g', 17)
-			.arg(QString::fromStdString(s->crsProj4))
-			.arg(QString::fromStdString(s->crsWkt));
-		g_juliaSave(s, req.toUtf8().constData());
+		g_juliaSaveGeoTiff(s, rgb.data(), w, h, fn.toUtf8().constData(),
+						   s->x0, s->x1, s->y0, s->y1,
+						   s->crsProj4.c_str(), s->crsWkt.c_str());
 	};
 	auto actToggleGizmo = [s]() {
 		if (s->giz) { setGizmoVisible(*s->giz, !s->giz->visible); s->widget->renderWindow()->Render(); }

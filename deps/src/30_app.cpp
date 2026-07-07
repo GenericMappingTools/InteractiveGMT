@@ -271,6 +271,17 @@ static JuliaDimFunFn g_juliaDimFun = nullptr;
 typedef void (*JuliaSaveFn)(void *scene, const char *req);
 static JuliaSaveFn g_juliaSave = nullptr;
 
+// File > Save Screenshot GeoTIFF. Passes the captured RGB pixels straight to Julia in memory (no
+// temp file, no PNG encode/decode/re-read) — `rgb` is a packed row-major buffer (top row first,
+// like a standard image file), w*h*3 bytes, owned by the caller and only valid for the duration of
+// this call. Julia wraps it directly into a GMTimage (mat2img) and writes the real GeoTIFF via
+// GDAL. Set via gmtvtk_set_save_geotiff_callback; nullptr -> the menu entry reports "callback not
+// registered".
+typedef void (*JuliaSaveGeoTiffFn)(void *scene, const unsigned char *rgb, int w, int h,
+                                    const char *path, double x0, double x1, double y0, double y1,
+                                    const char *proj4, const char *wkt);
+static JuliaSaveGeoTiffFn g_juliaSaveGeoTiff = nullptr;
+
 // Scene Objects > "Move to new window" (grid rows). The row menu calls fn(scene, "<kind>;<name>")
 // (kind = "grid"); Julia looks up the live GMTgrid and opens it in a NEW iGMT window via view_grid,
 // returning 1 on success. The source window then removes the grid (= a MOVE, not a copy). Set via
