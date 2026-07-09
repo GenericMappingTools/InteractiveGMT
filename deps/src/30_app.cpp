@@ -185,6 +185,29 @@ static JuliaGrdsampleFn g_juliaGrdsample = nullptr;
 typedef void (*JuliaNswingFn)(void *scene, const char *params);
 static JuliaNswingFn g_juliaNswing = nullptr;
 
+// IGRF Calculator (Geophysics > Magnetics). Port of Mirone's igrf_options.m, using GMT.jl's magref
+// (mgd77magref) instead of the igrf_m MEX. Two callbacks:
+//   g_juliaIgrfPoint(state): state = "lon/lat/elev_m/date_dec" -> "F/H/X/Y/Z/D/I" (nT x5, deg x2),
+//     or "" on failure. Same Julia-owned-buffer convention as JuliaGridMetaFn/JuliaDimFunFn — C++
+//     copies immediately, never frees. Driven by every Lat/Lon/Elev/Date edit + the map click.
+//   g_juliaIgrfGrid(scene, params): params = "W/E/S/N/xinc/yinc/elev_m/date_dec/fieldcode"
+//     (fieldcode one of T|H|X|Y|Z|D|I). Always opens a NEW viewer window (there is no existing
+//     grid being resampled here, unlike grdsample). nullptr -> the Compute buttons report
+//     "callback not registered".
+typedef const char* (*JuliaIgrfPointFn)(const char *state);
+static JuliaIgrfPointFn g_juliaIgrfPoint = nullptr;
+typedef void (*JuliaIgrfGridFn)(void *scene, const char *params);
+static JuliaIgrfGridFn g_juliaIgrfGrid = nullptr;
+// Input Mag File "Compute" button: params = "infile;outfile;nHeaders;elev_m;date_dec". MVP scope
+// (matches the dialog's own help text, which states 2 columns lon/lat is the MINIMUM it needs):
+// reads the first two whitespace-separated numeric columns of every non-header line, computes
+// Total Field for all of them at the shared Elevation/Date box values, and writes
+// "lon\tlat\tfield" to outfile. Mirone's fuller version (per-row elevation/date columns via an
+// interactive column selector, optional anomaly column) is NOT ported — see docs/GRDSAMPLE_TODO.md
+// for the project's convention of flagging scoped-down ports instead of overclaiming.
+typedef void (*JuliaIgrfFileFn)(void *scene, const char *params);
+static JuliaIgrfFileFn g_juliaIgrfFile = nullptr;
+
 // Plot seismicity (Geophysics > Seismology). Port of Mirone's earthquakes.m. The dialog
 // (PlotSeismicityDialog, 70_window.cpp) hands a newline-separated "key=value" block to Julia
 // (g_juliaSeismicity), which reads the catalog (USGS web query / ISF / plain-column layouts /

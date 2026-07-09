@@ -207,7 +207,7 @@ end
 # Even-odd point-in-polygon membership test (standard ray-cast). Kept as the reference
 # membership definition for _focal_patch_meca's boundaries (used by tests/audits) — NOT a
 # general utility, local to this file on purpose.
-function _focal_pip(P::AbstractMatrix{Float64}, x::Float64, y::Float64)
+function _focal_pip(P::Matrix{Float64}, x::Float64, y::Float64)
 	n = size(P, 1); inside = false; j = n
 	@inbounds for i in 1:n
 		xi, yi = P[i,1], P[i,2];  xj, yj = P[j,1], P[j,2]
@@ -248,7 +248,7 @@ end
 # Crossing of the two nodal polylines: the (i, j, point) minimising segment-segment distance.
 # The curves cross exactly once (at the null-axis projection); closest-approach of the sampled
 # polylines is a robust stand-in for the exact intersection at _MECA_NP resolution.
-function _focal_curve_cross(c1::AbstractMatrix{Float64}, c2::AbstractMatrix{Float64})
+function _focal_curve_cross(c1::Matrix{Float64}, c2::Matrix{Float64})
 	best = Inf;  bi = 1;  bj = 1
 	for i in axes(c1, 1), j in axes(c2, 1)
 		d2 = (c1[i,1]-c2[j,1])^2 + (c1[i,2]-c2[j,2])^2
@@ -265,7 +265,7 @@ Cut the unit disk into its (≤4) beachball sectors along the two nodal curves a
 as compressive/dilatational by the radiation-pattern sign at an interior sample. Every returned
 polygon is SIMPLE (rim arc + two curve halves meeting at the crossing point).
 """
-function _focal_sectors(str1::Float64, dip1::Float64, rake1::Float64, nodal1::AbstractMatrix{Float64}, nodal2::AbstractMatrix{Float64})
+function _focal_sectors(str1::Float64, dip1::Float64, rake1::Float64, nodal1::Matrix{Float64}, nodal2::Matrix{Float64})
 	i1, i2, P = _focal_curve_cross(nodal1, nodal2)
 	# halves, each stored rim -> P (crossing point appended/prepended so both halves meet at P)
 	halves = Dict{Tuple{Int,Int},Matrix{Float64}}(       # (curve id, which end) -> rim->P polyline

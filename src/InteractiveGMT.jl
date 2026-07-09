@@ -53,6 +53,7 @@ include("savefile.jl")   # File > Save Grid / Save Image -> gmtwrite (netCDF/Sur
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
 include("solids.jl")     # 3-D Bodies toolbar flyout -> GMT solids (cube/sphere/torus/cylinder/…) via view_fv
 include("nswing.jl")     # Geophysics > NSWING tsunami (port of Mirone swan_options.m -> nswing exe)
+include("igrf.jl")       # Geophysics > Magnetics > IGRF (port of Mirone igrf_options.m; GMT.magref)
 include("seismicity.jl") # Geophysics > Seismology > Seismicity (port of Mirone earthquakes.m)
 include("focal.jl")      # Geophysics > Seismology > Focal mechanisms (port of Mirone focal_meca.m)
 include("deform.jl")     # Geophysics > Vertical elastic deformation: fault-trace endpoint (deform_mansinha.m)
@@ -73,6 +74,7 @@ export view_grid, view_image, view_points, view_fv, view_demo, iview,
 # the user — e.g. the first focal plot paid ~3.4 s of JIT vs 0.5 s of real work (2026-07-04,
 # 133-event ISF; beachball geometry alone was 1.5 s). RUN what is GMT-free; ccall-bearing glue
 # gets `precompile` directives only (compiled, never executed — the DLL is absent here).
+#=
 @setup_workload begin
 	@compile_workload begin
 		# Focal mechanisms: beachball geometry on two real mechanisms (one-plane Aki derivation
@@ -89,6 +91,7 @@ export view_grid, view_image, view_points, view_fv, view_demo, iview,
 		                         Vector{Float64}, Vector{Float64}, Vector{String}, Vector{Int}))
 	end
 end
+=#
 
 # Load the viewer DLL + register the Julia-console callback. RUNTIME ONLY — a dlopen handle, the
 # dlsym pointers and the @cfunction are all runtime values that cannot be baked into a precompiled

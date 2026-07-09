@@ -910,6 +910,27 @@ GMTVTK_API void gmtvtk_set_nswing_callback(JuliaNswingFn fn) {
 	g_juliaNswing = fn;
 }
 
+// Register the IGRF Calculator's single-point callback (Geophysics > Magnetics > IGRF). fn(state)
+// with state = "lon/lat/elev_m/date_dec" returns "F/H/X/Y/Z/D/I" (or "" on failure). Same
+// Julia-owned-buffer convention as gmtvtk_set_dimfun_callback. nullptr to detach.
+GMTVTK_API void gmtvtk_set_igrf_point_callback(JuliaIgrfPointFn fn) {
+	g_juliaIgrfPoint = fn;
+}
+
+// Register the IGRF Calculator's grid Compute callback. fn(scene, params) with params =
+// "W/E/S/N/xinc/yinc/elev_m/date_dec/fieldcode" (fieldcode one of T|H|X|Y|Z|D|I) opens a new
+// viewer window with the computed field grid. nullptr to detach.
+GMTVTK_API void gmtvtk_set_igrf_grid_callback(JuliaIgrfGridFn fn) {
+	g_juliaIgrfGrid = fn;
+}
+
+// Register the IGRF Calculator's Input Mag File "Compute" callback. fn(scene, params) with
+// params = "infile;outfile;nHeaders;elev_m;date_dec" reads infile's lon/lat columns, computes
+// Total Field for each row and writes the result to outfile. nullptr to detach.
+GMTVTK_API void gmtvtk_set_igrf_file_callback(JuliaIgrfFileFn fn) {
+	g_juliaIgrfFile = fn;
+}
+
 // Register the Plot seismicity callback (Geophysics > Seismology). `fn` (Julia @cfunction,
 // JuliaSeismicityFn) is called with (scene, "key=value\n…") on the dialog's OK: scene is the
 // receiving window, the block carries format/file/date range/magnitude/depth filters, the
@@ -1783,6 +1804,49 @@ GMTVTK_API int gmtvtk_fault_open_dialog_test(void *scene) {
 GMTVTK_API void gmtvtk_fault_close_dialog_test(void *scene) {
 	Scene *s = (Scene*)scene; if (!s || !s->elasticDlg) return;
 	s->elasticDlg->close();
+}
+
+// test hooks: open/close the REAL IGRF Calculator (drives the actual QUiLoader load path, not a
+// stand-in) and report back what it actually loaded — proof the .ui is respected, not a claim.
+// out[0]=width out[1]=height out[2]=mapArea found out[3]=latDec found out[4]=fieldCombo item count
+// out[5]=magFile1Edit found out[6]=xMin(geometry box) found. Returns 1 if the dialog loaded at all.
+static IgrfDialog *g_igrfTestDlg = nullptr;
+GMTVTK_API int gmtvtk_igrf_open_dialog_test(double *out) {
+	ensureApp();   // QWidget ctor crashes hard with no QApplication instance yet
+	if (g_igrfTestDlg && g_igrfTestDlg->dlg) g_igrfTestDlg->dlg->close();
+	g_igrfTestDlg = new IgrfDialog(nullptr, nullptr);
+	if (!g_igrfTestDlg->dlg) return 0;
+	g_igrfTestDlg->dlg->show();
+	QApplication::processEvents();
+	if (out) {
+		out[0] = g_igrfTestDlg->dlg->width();
+		out[1] = g_igrfTestDlg->dlg->height();
+		out[2] = g_igrfTestDlg->mapArea ? 1 : 0;
+		out[3] = g_igrfTestDlg->latDec ? 1 : 0;
+		out[4] = g_igrfTestDlg->fieldCombo ? g_igrfTestDlg->fieldCombo->count() : -1;
+		out[5] = g_igrfTestDlg->magFile1Edit ? 1 : 0;
+		out[6] = g_igrfTestDlg->xMin ? 1 : 0;
+		out[7] = g_igrfTestDlg->dlg->maximumWidth();
+		out[8] = g_igrfTestDlg->dlg->maximumHeight();
+		out[9] = g_igrfTestDlg->dlg->minimumWidth();
+		out[10] = g_igrfTestDlg->dlg->minimumHeight();
+		out[11] = (g_igrfTestDlg->dlg->windowFlags() & Qt::MSWindowsFixedSizeDialogHint) ? 1 : 0;
+		out[12] = g_igrfTestDlg->dlg->layout() ? g_igrfTestDlg->dlg->layout()->sizeConstraint() : -1;
+		out[13] = g_igrfTestDlg->mapArea ? g_igrfTestDlg->mapArea->maximumHeight() : -1;
+	}
+	return 1;
+}
+GMTVTK_API void gmtvtk_igrf_close_dialog_test() {
+	if (g_igrfTestDlg && g_igrfTestDlg->dlg) g_igrfTestDlg->dlg->close();   // WA_DeleteOnClose self-frees the wrapper
+	g_igrfTestDlg = nullptr;
+}
+// Grab an actual PNG of the currently-open test dialog — lets a real visual check happen instead
+// of trusting width/height numbers alone. Returns 1 on success.
+GMTVTK_API int gmtvtk_igrf_screenshot_test(const char *path) {
+	if (!g_igrfTestDlg || !g_igrfTestDlg->dlg) return 0;
+	QApplication::processEvents();
+	QPixmap pm = g_igrfTestDlg->dlg->grab();
+	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
 }
 
 // Run the REAL faultUpdatePlane (gray surface patch + buried 3-D plane) and report the 3-D plane.
