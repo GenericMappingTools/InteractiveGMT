@@ -204,3 +204,48 @@ function _poly_area(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool
 	end
 	return nothing
 end
+
+# "Extract profile…": the grdtrack twin of the Ctrl+left-drag profiler. Sample the window's grid
+# along a drawn line/polyline and open the (distance, elevation) graph in the standalone X,Y plot
+# tool (Object Manager + Analysis + save). The line is DENSIFIED here by the grid's node spacing (a
+# two-vertex straight line becomes a full-resolution track), grdtrack interpolates z on the FULL-res
+# grid, and the distance axis is the same CRS-aware geodesic (_seg_dist_azim) the measure menu and
+# Preferences use — so distances match "Line length…". `dir` has no meaning for a profile.
+function _extract_profile(scene::Ptr{Cvoid}, path::String, proj4::String,
+                          datype::AbstractString="Ellipsoidal", units::AbstractString="kilometers")
+	G = _find_object(scene, :grid, "")
+	G === nothing && (print("No grid to sample."); return nothing)
+	D   = GMT.gmtread(path)
+	seg = isa(D, Vector) ? D[1] : D                             # a drawn line/polyline is one segment
+	x = Float64.(seg.data[:, 1]);  y = Float64.(seg.data[:, 2])
+	length(x) < 2 && (print("Need at least two vertices for a profile."); return nothing)
+
+	# Densify each segment by the grid node spacing (min of |dx|,|dy|) so grdtrack samples the grid at
+	# ~one point per node — mirrors the 3-D save-with-distance subdivision in lineWriteTable.
+	dx = abs(G.inc[1]);  dy = abs(G.inc[2])
+	spacing = (dx > 0 && dy > 0) ? min(dx, dy) : max(dx, dy)
+	xd = Float64[];  yd = Float64[]
+	for i in 1:length(x)-1
+		seglen = hypot(x[i+1] - x[i], y[i+1] - y[i])
+		nsub   = (spacing > 0 && seglen > 0) ? clamp(ceil(Int, seglen / spacing), 1, 20000) : 1
+		for k in 0:nsub-1                                       # a..(b exclusive); next segment writes b
+			t = k / nsub
+			push!(xd, x[i] + t * (x[i+1] - x[i]));  push!(yd, y[i] + t * (y[i+1] - y[i]))
+		end
+	end
+	push!(xd, x[end]);  push!(yd, y[end])
+
+	z    = Float64.(GMT.grdtrack(G, hcat(xd, yd)).data[:, end])   # bilinear on the full-res grid
+	geog = _measure_isgeog(seg, proj4)
+	inc, _        = _seg_dist_azim(xd, yd, geog; datype=datype)   # CRS-aware incremental distance
+	scale, ulab   = _length_scale(units, geog)
+	dist          = cumsum(inc .* scale)
+
+	keep = .!isnan.(z)                                           # drop samples that fell off the grid
+	dist = dist[keep];  z = z[keep]
+	length(z) < 2 && (print("Profile is entirely off the grid."); return nothing)
+
+	xlab = geog ? "Distance ($ulab)" : "Distance"
+	xyplot(dist, z; name="Profile", title="i'GMT  —  Extract profile", xlabel=xlab, ylabel="Elevation")
+	return nothing
+end

@@ -598,6 +598,36 @@ static void lineRunMeasure(Scene *s, const LineRef& lr, const char *fn, bool box
 	});
 }
 
+// "Extract profile…": sample the ACTIVE grid along this drawn line/polyline via GMT.grdtrack (the
+// host owns GMT) and show the (distance, elevation) graph in the bottom-dock Profile panel — the
+// grdtrack twin of the Ctrl+left-drag profiler. The line is densified in Julia by grid spacing, so
+// even a two-vertex straight line yields a full-resolution profile. `_extract_profile` pushes the
+// result back through gmtvtk_show_profile_xy; nothing is returned here. Deferred a turn (like the
+// measurements) so the menu's own event finishes before the possibly-slow first grdtrack compile.
+static void lineExtractProfile(Scene *s, const LineRef& lr) {
+	if (!g_juliaEval) {
+		QMessageBox::warning(s->win, "Extract profile", "This computation needs the Julia/GMT host.");
+		return;
+	}
+	std::vector<std::vector<std::array<double,3>>> polylines;
+	lineGatherPolylines(s, lr, polylines);
+	if (polylines.empty()) return;
+	const QString tmp = QDir::tempPath() + "/igmt_profile_" +
+						QString::number(QDateTime::currentMSecsSinceEpoch()) + ".txt";
+	if (!lineWriteTable(s, polylines, /*threeD=*/false, tmp)) return;   // 2-D x y, '>' multisegment
+	const QString cmd = QString("InteractiveGMT._extract_profile(Ptr{Cvoid}(UInt(%1)),raw\"%2\",raw\"%3\",raw\"%4\",raw\"%5\")")
+							.arg((qulonglong)reinterpret_cast<uintptr_t>(s))
+							.arg(tmp)
+							.arg(QString::fromStdString(s->crsProj4))
+							.arg(prefDistAzimType())
+							.arg(prefMeasureUnits());
+	QTimer::singleShot(0, s->win, [s, cmd]() {
+		std::vector<char> buf(1 << 12);
+		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // Julia threw -> Errors tab
+	});
+}
+
 // Open the Vertical elastic deformation dialog for a fault line (defined in 70_window.cpp, after the
 // ElasticDialog class — this fragment is #included before it, so forward-declare it here).
 static void faultRunDialog(Scene *s, vtkActor *seedPatch = nullptr);
@@ -661,6 +691,9 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 			const QString sfx  = many ? "s" : "";
 			m.addAction(QString("Line length%1…").arg(sfx), [s, lr, many]() { lineRunMeasure(s, lr, "_line_length",  !many); });
 			m.addAction(QString("Azimuth%1…").arg(sfx),     [s, lr, many]() { lineRunMeasure(s, lr, "_line_azimuth", !many); });
+			// Grid profile along the line (grdtrack) — only when this line actually sits on a grid.
+			if (!s->gridZ.empty())
+				m.addAction("Extract profile…", [s, lr]() { lineExtractProfile(s, lr); });
 		}
 	}
 	m.addSeparator();
