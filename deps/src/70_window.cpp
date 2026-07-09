@@ -4886,6 +4886,44 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		dlg.exec();   // Julia is invoked inside the dialog on Apply
 	});
 
+	// --- Grid Tools menu: operations that combine / modify the window's host grid ------------
+	// "Transplant 2nd grid" (port of Mirone utils/transplants.m, IMPLANTGRID mode): pick an external
+	// grid and implant it into THIS window's grid with a smooth seam. A rectangle is NOT required from
+	// here (the rectangle-handle path is the same action wired into a rectangle's context menu, which
+	// passes its W/E/S/N as a clip). The submenu's two entries are the -res choice (host vs implant
+	// resolution). Both hand params to Julia's _on_transplant via g_juliaEval, like Extract profile.
+	QMenu *mGridTools  = win->menuBar()->addMenu("Grid T&ools");
+	QMenu *mTransplant = mGridTools->addMenu("Transplant 2nd grid");
+	auto runTransplant = [win, s](int res) {
+		if (!g_juliaEval) {
+			QMessageBox::warning(win, "Transplant 2nd grid", "This computation needs the Julia/GMT host.");
+			return;
+		}
+		const QString fn = QFileDialog::getOpenFileName(win, "Select grid to implant", prefStartDir(),
+			"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
+		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
+		const QString cmd = QString("InteractiveGMT._on_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",%3,\"\")")
+								.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(fn).arg(res);
+		static std::vector<char> buf(1 << 12);
+		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // Julia threw -> Errors tab
+	};
+	mTransplant->addAction("Keep host resolution",     [runTransplant]() { runTransplant(1); });
+	mTransplant->addAction("Adopt implant resolution", [runTransplant]() { runTransplant(0); });
+
+	// Ctrl+Z undoes the last transplant (restores the original grid kept on the Julia side). The undo
+	// is also offered on the rectangle's context menu (55_lineprops.cpp).
+	QShortcut *scUndoTransplant = new QShortcut(QKeySequence::Undo, win);
+	QObject::connect(scUndoTransplant, &QShortcut::activated, [win, s]() {
+		if (!g_juliaEval) return;
+		const QString cmd = QString("InteractiveGMT._on_transplant_undo(Ptr{Cvoid}(UInt(%1)))")
+								.arg((qulonglong)reinterpret_cast<uintptr_t>(s));
+		static std::vector<char> buf(1 << 12);
+		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+	});
+
 	win->menuBar()->addMenu("&Help")->addAction("&About", actAbout);
 
 	// --- toolbar row (below the menu bar): quick-access buttons (ParaView-style) ------------

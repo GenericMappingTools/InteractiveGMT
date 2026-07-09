@@ -49,6 +49,7 @@
 #include <QButtonGroup>
 #include <QActionGroup>
 #include <QWidgetAction>
+#include <QShortcut>
 #include <functional>
 #include <algorithm>
 #include <map>

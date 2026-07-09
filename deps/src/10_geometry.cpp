@@ -426,6 +426,7 @@ struct Scene {
 	FoldTitleBar *shadeFoldBar = nullptr; // Shading dock fold toggle (Surface row click folds/un-folds it via toggleShadingFold)
 	QDockWidget *shadeDock    = nullptr;  // the Shading dock itself (re-shown when an empty launcher is promoted to a grid)
 	std::string surfName;            // Scene Objects label for s->surf ("" -> "Surface"; named solids set it)
+	bool transplantUndoAvail = false; // a transplant is applied + not yet undone -> offer "Undo transplant" (Julia toggles this via gmtvtk_set_transplant_undo)
 	QPlainTextEdit *console = nullptr;   // Julia console dock output (commands eval'd in Main via g_juliaEval)
 	QPlainTextEdit *errConsole = nullptr; // read-only Errors tab: execution errors from background callbacks (gmtvtk_log_error)
 

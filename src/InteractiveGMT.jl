@@ -58,6 +58,7 @@ include("seismicity.jl") # Geophysics > Seismology > Seismicity (port of Mirone 
 include("focal.jl")      # Geophysics > Seismology > Focal mechanisms (port of Mirone focal_meca.m)
 include("deform.jl")     # Geophysics > Vertical elastic deformation: fault-trace endpoint (deform_mansinha.m)
 include("nested.jl")     # "Nested grids" rectangle tool: host-side blank-grid builder (nesting_sizes.m)
+include("transplant.jl") # Grid Tools > Transplant 2nd grid (port of Mirone utils/transplants.m)
 include("measure.jl")    # line length/azimuth + polygon area for the vector context menu (CRS-aware)
 include("info.jl")       # toolbar "i" button: grdinfo / gdalinfo report on the active grid/image
 

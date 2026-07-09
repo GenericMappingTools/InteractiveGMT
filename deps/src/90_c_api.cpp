@@ -2295,6 +2295,66 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 	return 1;
 }
 
+// Replace the window's BASE grid data IN PLACE (Grid Tools > Transplant 2nd grid, and its undo).
+// Unlike gmtvtk_add_surface_h (which adds a NEW layer) this rebuilds the existing base surface from
+// new z of the SAME region, keeping the user's camera, vertical exaggeration, gizmo, colormap-driving
+// name, AND every extra/overlay/polygon (buildSceneContent's teardown removes only the base surface,
+// axes and colorbar ? see its prologue). Scaling (xfac/zfac/ve) is deliberately KEPT, not recomputed,
+// so the saved camera stays valid and the data edit does not jump the view. `name` (may be empty ->
+// keep current) drives the Scene Objects "Surface" row label.
+GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, int ny,
+                                          double x0, double x1, double y0, double y1, int geographic,
+                                          const double *cz, const double *crgb, int ncolor,
+                                          const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
+		return 0;
+
+	// Snapshot the camera (world coords stay valid because xfac/zfac/ve are unchanged below).
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	double cpos[3], cfoc[3], cvup[3];
+	cam->GetPosition(cpos);  cam->GetFocalPoint(cfoc);  cam->GetViewUp(cvup);
+	const double cpscale = cam->GetParallelScale();
+	const int    cpar    = cam->GetParallelProjection();
+
+	// New z range (for the colorbar) ? but KEEP xfac/zfac/ve so the surface's world scaling is stable.
+	double zmin = 1e30, zmax = -1e30;
+	for (vtkIdType k = 0, ntot = (vtkIdType)nx * ny; k < ntot; ++k) {
+		const float zz = z[k];
+		if (!std::isnan(zz)) { if (zz < zmin) zmin = zz; if (zz > zmax) zmax = zz; }
+	}
+	if (zmin > zmax) { zmin = 0.0; zmax = 1.0; }
+	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1; s->zmin = zmin; s->zmax = zmax;
+	s->imageOnly = false;
+	if (name && name[0]) s->surfName = name;
+
+	// Rebuild ONLY the base surface (tiled gz path). gz fills s->gridZ/gnx/gny/gx*/gd* internally.
+	buildSceneContent(s, nullptr, x0, x1, y0, y1, cz, crgb, ncolor, nullptr, 0, 0, 0,
+	                  /*edges=*/0, /*pointCloud=*/false, geographic, z, nx, ny, /*blankStart=*/false);
+
+	// Rebuild the gizmo against the new surface (as promote does), then restore the camera so the
+	// user's zoom / orientation / 2D-or-3D view is untouched by the data edit.
+	disableGizmo(s);  s->giz = enableGizmo(s, 0.01);
+	cam->SetPosition(cpos);  cam->SetFocalPoint(cfoc);  cam->SetViewUp(cvup);
+	cam->SetParallelProjection(cpar);  if (cpar) cam->SetParallelScale(cpscale);
+	if (s->giz) setGizmoVisible(*s->giz, !s->flat2d);   // flat-2D hides the gizmo, 3-D shows it
+
+	applyVE(s);              // re-scale surface + extras + cube axes to the current VE and new bounds
+	applyStacking(s);        // re-offset extras/vectors against the rebuilt base + refresh colorbar
+	rebuildSceneObjects(s);
+	applyShading(s);
+	s->ren->ResetCameraClippingRange();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// Julia toggles whether a transplant undo is currently available (set true after a transplant, false
+// after it is undone). Gates the "Undo transplant" rectangle-menu entry so it vanishes once applied.
+GMTVTK_API void gmtvtk_set_transplant_undo(void *handle, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (sceneAlive(s)) s->transplantUndoAvail = (on != 0);
+}
+
 // Pump the Qt event loop once. Returns the number of viewer windows still open
 // (0 = all closed; the host can stop pumping).
 GMTVTK_API int gmtvtk_process_events(void) {

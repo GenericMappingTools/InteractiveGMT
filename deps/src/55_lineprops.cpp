@@ -628,6 +628,48 @@ static void lineExtractProfile(Scene *s, const LineRef& lr) {
 	});
 }
 
+// "Transplant 2nd grid…": the rectangle-handle path of Grid Tools > Transplant 2nd grid (port of
+// Mirone utils/transplants.m). The clicked rectangle/polygon's bounding box (W/E/S/N) clips the
+// implant grid before it is implanted into THIS window's host grid — the "connection to rectangle
+// handles". Same _on_transplant as the Grid Tools menu (which passes an empty rect), keep-host-res.
+static void rectTransplant(Scene *s, const LineRef& lr) {
+	if (!g_juliaEval) {
+		QMessageBox::warning(s->win, "Transplant 2nd grid", "This computation needs the Julia/GMT host.");
+		return;
+	}
+	std::vector<std::vector<std::array<double,3>>> polylines;
+	lineGatherPolylines(s, lr, polylines);
+	if (polylines.empty()) return;
+	double w = 1e300, e = -1e300, so = 1e300, no = -1e300;                 // rectangle bounding box
+	for (const auto& pl : polylines)
+		for (const auto& p : pl) {
+			w  = std::min(w,  p[0]);  e  = std::max(e,  p[0]);
+			so = std::min(so, p[1]);  no = std::max(no, p[1]);
+		}
+	if (!(e > w && no > so)) return;
+	const QString fn = QFileDialog::getOpenFileName(s->win, "Select grid to implant", prefStartDir(),
+		"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
+	if (fn.isEmpty()) return;
+	rememberStartDir(fn);
+	const QString rect = QString("%1/%2/%3/%4").arg(w, 0, 'g', 16).arg(e, 0, 'g', 16)
+	                                           .arg(so, 0, 'g', 16).arg(no, 0, 'g', 16);
+	const QString cmd = QString("InteractiveGMT._on_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",1,\"%3\")")
+							.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(fn).arg(rect);
+	std::vector<char> buf(1 << 12);
+	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));         // Julia threw -> Errors tab
+}
+
+// Undo the last transplant (restores the original grid kept on the Julia side). Same action as Ctrl+Z.
+static void rectTransplantUndo(Scene *s) {
+	if (!g_juliaEval) return;
+	const QString cmd = QString("InteractiveGMT._on_transplant_undo(Ptr{Cvoid}(UInt(%1)))")
+							.arg((qulonglong)reinterpret_cast<uintptr_t>(s));
+	std::vector<char> buf(1 << 12);
+	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+}
+
 // Open the Vertical elastic deformation dialog for a fault line (defined in 70_window.cpp, after the
 // ElasticDialog class — this fragment is #included before it, so forward-declare it here).
 static void faultRunDialog(Scene *s, vtkActor *seedPatch = nullptr);
@@ -685,6 +727,14 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 		if (lineClosedRing(s, lr)) {
 			// Rectangles & generic polygons (closed rings): AREA only — NEVER line length / azimuth.
 			m.addAction("Area under polygon…", [s, lr]() { lineRunMeasure(s, lr, "_poly_area", true); });
+			// On a grid: implant an external grid clipped to this rectangle (Grid Tools > Transplant).
+			// "Undo transplant" shows ONLY while a transplant is applied+not-yet-undone (Julia keeps the
+			// flag current via gmtvtk_set_transplant_undo); it disappears once undone here or via Ctrl+Z.
+			if (!isSlip && !s->gridZ.empty()) {
+				m.addAction("Transplant 2nd grid…", [s, lr]() { rectTransplant(s, lr); });
+				if (s->transplantUndoAvail)
+					m.addAction("Undo transplant", [s]() { rectTransplantUndo(s); });
+			}
 		} else {
 			// Open lines / polylines only: length(s) + azimuth(s).
 			const bool    many = lineSegmentCount(s, lr) > 1;

@@ -43,7 +43,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_error_box, :gmtvtk_get_xfac,
 	:gmtvtk_save_png, :gmtvtk_orbit, :gmtvtk_set_stereo,
 	:gmtvtk_open_empty, :gmtvtk_set_drop_callback, :gmtvtk_add_surface_h,
-	:gmtvtk_promote_surface_h,
+	:gmtvtk_promote_surface_h, :gmtvtk_replace_base_grid_h, :gmtvtk_set_transplant_undo,
 	:gmtvtk_has_surface, :gmtvtk_close, :gmtvtk_add_recent,
 	:gmtvtk_set_cpt, :gmtvtk_set_cpt_grid, :gmtvtk_grid_rgb_at, :gmtvtk_raise, :gmtvtk_set_crs,
 	:gmtvtk_set_title_h,
