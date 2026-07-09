@@ -1182,6 +1182,330 @@ public:
 };
 
 // ============================================================================================
+// IGRF Calculator (Geophysics > Magnetics > IGRF) — port of Mirone's igrf_options.m
+// (src_figs/igrf_options.m). Two pieces:
+//   IgrfMapArea — a static world image + a click-to-pick marker. Reuses the SAME etopo4_logo.jpg
+//   asset and pxLon/pxLat pixel<->geographic mapping as BaseMapArea above (g_basemapLogo, already
+//   pushed from Julia via gmtvtk_set_basemap_logo before any window opens), just without
+//   BaseMapArea's tile-grid/rubber-band modes — this one only ever picks a single point,
+//   mirroring igrf_options.m's axes1 + WindowButtonDownFcn.
+//   IgrfDialog — the calculator itself. UNLIKE GrdsampleDialog/ElasticDialog (hand-built C++
+//   widget trees), this one is loaded at RUNTIME from deps/ui/igrf_calculator.ui via QUiLoader
+//   (same technique as FocalMechanismsDialog below) — the .ui is being actively iterated on in Qt
+//   Creator, so hand-porting it desyncs every time it's edited there (see
+//   igrf-no-headers-row.md / the aspect-ratio and layout-spacing fights that preceded this
+//   rewrite). IgrfUiLoader below is a tiny QUiLoader subclass that knows how to instantiate the
+//   one promoted custom widget the .ui references ("IgrfMapWidget" -> IgrfMapArea); every other
+//   widget is a plain Qt class QUiLoader already knows how to build. Both compute paths (point
+//   readout + grid Compute) go through GMT.jl's magref (g_juliaIgrfPoint/g_juliaIgrfGrid,
+//   90_c_api.cpp) instead of Mirone's igrf_m MEX.
+// ============================================================================================
+class IgrfMapArea : public QWidget {       // the clickable map; no Q_OBJECT (only paint/mouse overrides)
+public:
+	QPixmap logo;
+	double markerLon = -8.0, markerLat = 37.0;
+	std::function<void(double, double)> onPick;   // (lon, lat)
+	explicit IgrfMapArea(QWidget *p) : QWidget(p) { setMinimumSize(400, 200); }
+	// Letterboxed image rect: the logo's OWN aspect ratio, centered inside whatever rect the
+	// layout gives this widget — never stretched to fill it (a whole-world image distorted to a
+	// non-2:1 widget reads as visibly wrong coastlines). Falls back to the full widget rect when
+	// there's no logo yet (flat fill background, no aspect to preserve).
+	QRectF imageRect() const {
+		if (logo.isNull()) return rect();
+		QSizeF fitted = QSizeF(logo.size()).scaled(size(), Qt::KeepAspectRatio);
+		QRectF r(QPointF(0, 0), fitted);
+		r.moveCenter(rect().center());
+		return r;
+	}
+	double pxLon(double x, const QRectF &ir) const { return -180.0 + (x - ir.left()) / ir.width()  * 360.0; }
+	double pxLat(double y, const QRectF &ir) const { return   90.0 - (y - ir.top())  / ir.height() * 180.0; }
+	void setMarker(double lon, double lat) { markerLon = lon; markerLat = lat; update(); }
+protected:
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.fillRect(rect(), QColor(30, 60, 110));      // letterbox bars when the widget isn't 2:1
+		QRectF ir = imageRect();
+		if (!logo.isNull()) g.drawPixmap(ir, logo, QRectF(logo.rect()));
+		double mx = ir.left() + (markerLon + 180.0) / 360.0 * ir.width();
+		double my = ir.top()  + (90.0 - markerLat)  / 180.0 * ir.height();
+		QPen pen(Qt::red); pen.setWidth(2); g.setPen(pen);
+		g.setBrush(Qt::NoBrush);
+		g.drawEllipse(QPointF(mx, my), 5, 5);
+		g.drawLine(QPointF(mx - 8, my), QPointF(mx + 8, my));
+		g.drawLine(QPointF(mx, my - 8), QPointF(mx, my + 8));
+	}
+	void mousePressEvent(QMouseEvent *e) override {
+		if (!onPick) return;
+		QRectF ir = imageRect();
+		if (!ir.contains(e->position())) return;      // click landed in a letterbox bar -> ignore
+		double lon = std::clamp(pxLon(e->position().x(), ir), -180.0, 180.0);
+		double lat = std::clamp(pxLat(e->position().y(), ir),  -90.0,  90.0);
+		onPick(lon, lat);
+	}
+};
+
+// QUiLoader that knows how to instantiate the one promoted custom widget igrf_calculator.ui
+// references ("IgrfMapWidget", object name "mapPlot") — every other widget in that .ui is a
+// plain Qt class QUiLoader already builds on its own.
+class IgrfUiLoader : public QUiLoader {
+public:
+	QWidget *createWidget(const QString &className, QWidget *parent = nullptr,
+	                       const QString &name = QString()) override {
+		if (className == "IgrfMapWidget") {
+			auto *w = new IgrfMapArea(parent);
+			w->setObjectName(name);
+			return w;
+		}
+		return QUiLoader::createWidget(className, parent, name);
+	}
+};
+
+class IgrfDialog {
+public:
+	QDialog *dlg = nullptr;
+	IgrfMapArea *mapArea = nullptr;
+	QLineEdit *latDeg, *latMin, *latSec, *latDec;
+	QLineEdit *lonDeg, *lonMin, *lonSec, *lonDec;
+	QLineEdit *elevEdit, *dateDay, *dateMonth, *dateYear, *dateDec;
+	QLabel *totalFieldVal, *incVal, *decVal, *xVal, *yVal, *zVal, *hVal;
+	QLineEdit *xMin, *xMax, *xInc, *xN, *yMin, *yMax, *yInc, *yN, *refEdit;
+	QComboBox *fieldCombo;
+	QLineEdit *magFile1Edit, *magFile2Edit;
+	Scene *scn = nullptr;    // owning window's scene (error reporting only — Compute always opens a NEW window)
+
+	// deg/min/sec (sign on deg) -> decimal degrees, Mirone's edit_LatDeg_CB/edit_LonDeg_CB convention.
+	static double dmsToDec(QLineEdit *d, QLineEdit *m, QLineEdit *s) {
+		double dv = d->text().toDouble(), mv = m->text().toDouble(), sv = s->text().toDouble();
+		return dv < 0 ? dv - mv / 60.0 - sv / 3600.0 : dv + mv / 60.0 + sv / 3600.0;
+	}
+	// decimal degrees -> deg/min/sec (sign on deg only), Mirone's dec2deg('opt') convention.
+	static void decToDms(double v, QLineEdit *d, QLineEdit *m, QLineEdit *s) {
+		int deg = (int)v;                                    // truncate toward zero, sign kept
+		double frac = std::fabs(v - deg);
+		double minF = frac * 60.0;
+		int minI = (int)minF;
+		double sec = (minF - minI) * 60.0;
+		d->setText(QString::number(deg));
+		m->setText(QString::number(minI));
+		s->setText(QString::number(sec, 'f', 2));
+	}
+	// D/M/Y edit boxes -> decimal year via QDate (Mirone's dec_year.m, done with the calendar
+	// instead of hand-rolled leap-year math). Falls back to the current Decimal box on an invalid
+	// date (matches Mirone leaving the box alone rather than crashing).
+	double dateDecFromDMY() const {
+		int d = dateDay->text().toInt(), m = dateMonth->text().toInt(), y = dateYear->text().toInt();
+		QDate dt(y, m, d);
+		if (!dt.isValid()) return dateDec->text().toDouble();
+		return y + (dt.dayOfYear() - 1.0) / dt.daysInYear();
+	}
+
+	// Recompute the Point values from the current Lat/Lon/Elevation/Date boxes (g_juliaIgrfPoint,
+	// GMT.jl magref) and refresh the map marker. Wired to every relevant editingFinished, so the
+	// dialog stays live the same way Mirone's *_CB handlers do — never on a raw keystroke.
+	void recompute() {
+		if (!mapArea || !latDec || !lonDec) return;
+		double lat = latDec->text().toDouble(), lon = lonDec->text().toDouble();
+		mapArea->setMarker(lon, lat);
+		if (!g_juliaIgrfPoint) {
+			if (scn && scn->win) scn->win->statusBar()->showMessage("IGRF: callback not registered", 3000);
+			return;
+		}
+		double elev = elevEdit->text().toDouble(), date = dateDec->text().toDouble();
+		QString state = QString("%1/%2/%3/%4").arg(lon, 0, 'g', 10).arg(lat, 0, 'g', 10)
+			                                  .arg(elev, 0, 'g', 10).arg(date, 0, 'g', 10);
+		const char *out = g_juliaIgrfPoint(state.toUtf8().constData());
+		if (!out) return;
+		const QStringList r = QString::fromUtf8(out).split('/');   // copy immediately (Julia-owned buffer)
+		if (r.size() < 7) return;
+		totalFieldVal->setText(QString::number(r[0].toDouble(), 'f', 0) + " nT");
+		hVal->setText(QString::number(r[1].toDouble(), 'f', 0) + " nT");
+		xVal->setText(QString::number(r[2].toDouble(), 'f', 0) + " nT");
+		yVal->setText(QString::number(r[3].toDouble(), 'f', 0) + " nT");
+		zVal->setText(QString::number(r[4].toDouble(), 'f', 0) + " nT");
+		decVal->setText(QString::number(r[5].toDouble(), 'f', 1) + QString::fromUtf8(" \xc2\xb0"));
+		incVal->setText(QString::number(r[6].toDouble(), 'f', 1) + QString::fromUtf8(" \xc2\xb0"));
+	}
+
+	explicit IgrfDialog(QWidget *parent, Scene *scene = nullptr) {
+		scn = scene;
+		IgrfUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/igrf_calculator.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("IgrfDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("IgrfDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;   // local copy — member `dlg` can't be lambda-captured
+
+		// IgrfMapArea has no Q_OBJECT (paint/mouse overrides only, like BaseMapArea) -> qobject_cast
+		// can't be used; static_cast is safe since IgrfUiLoader is the only thing that ever
+		// constructs an "IgrfMapWidget" instance, and it always builds an IgrfMapArea.
+		mapArea = static_cast<IgrfMapArea *>(d->findChild<QWidget *>("mapPlot"));
+		if (mapArea && !g_basemapLogo.isEmpty()) mapArea->logo.load(g_basemapLogo);
+
+		latDeg = d->findChild<QLineEdit *>("latDeg"); latMin = d->findChild<QLineEdit *>("latMin");
+		latSec = d->findChild<QLineEdit *>("latSec"); latDec = d->findChild<QLineEdit *>("latDec");
+		lonDeg = d->findChild<QLineEdit *>("lonDeg"); lonMin = d->findChild<QLineEdit *>("lonMin");
+		lonSec = d->findChild<QLineEdit *>("lonSec"); lonDec = d->findChild<QLineEdit *>("lonDec");
+		elevEdit  = d->findChild<QLineEdit *>("elevEdit");
+		dateDay   = d->findChild<QLineEdit *>("dateDay");
+		dateMonth = d->findChild<QLineEdit *>("dateMonth");
+		dateYear  = d->findChild<QLineEdit *>("dateYear");
+		dateDec   = d->findChild<QLineEdit *>("dateDec");
+		totalFieldVal = d->findChild<QLabel *>("totalFieldVal");
+		incVal = d->findChild<QLabel *>("incVal"); decVal = d->findChild<QLabel *>("decVal");
+		xVal = d->findChild<QLabel *>("xVal"); yVal = d->findChild<QLabel *>("yVal");
+		zVal = d->findChild<QLabel *>("zVal"); hVal = d->findChild<QLabel *>("hVal");
+		xMin = d->findChild<QLineEdit *>("xMin"); xMax = d->findChild<QLineEdit *>("xMax");
+		xInc = d->findChild<QLineEdit *>("xInc"); xN   = d->findChild<QLineEdit *>("xN");
+		yMin = d->findChild<QLineEdit *>("yMin"); yMax = d->findChild<QLineEdit *>("yMax");
+		yInc = d->findChild<QLineEdit *>("yInc"); yN   = d->findChild<QLineEdit *>("yN");
+		refEdit = d->findChild<QLineEdit *>("refEdit");
+		fieldCombo = d->findChild<QComboBox *>("fieldCombo");
+		magFile1Edit = d->findChild<QLineEdit *>("magFile1Edit");
+		magFile2Edit = d->findChild<QLineEdit *>("magFile2Edit");
+		auto *helpBtn       = d->findChild<QToolButton *>("helpBtn");
+		auto *refBtn        = d->findChild<QToolButton *>("refBtn");
+		auto *geoHelpBtn    = d->findChild<QToolButton *>("geoHelpBtn");
+		auto *geoComputeBtn = d->findChild<QPushButton *>("geoComputeBtn");
+		auto *magHelpBtn    = d->findChild<QToolButton *>("magHelpBtn");
+		auto *magFile1Btn   = d->findChild<QToolButton *>("magFile1Btn");
+		auto *magFile2Btn   = d->findChild<QToolButton *>("magFile2Btn");
+		auto *magComputeBtn = d->findChild<QPushButton *>("magComputeBtn");
+
+		if (helpBtn)    helpBtn->setToolTip("Edit any two of Min/Max/Spacing/# and the rest are derived.");
+		if (geoHelpBtn) geoHelpBtn->setToolTip("Compute the selected field component over the grid above.");
+
+		// --- Lat/Lon DMS<->Decimal + Elevation + Date wiring (Mirone's *_CB conventions) ---
+		if (latDeg) QObject::connect(latDeg, &QLineEdit::editingFinished, d, [this]() {
+			latDec->setText(QString::number(dmsToDec(latDeg, latMin, latSec), 'f', 4)); recompute(); });
+		if (latMin) QObject::connect(latMin, &QLineEdit::editingFinished, d, [this]() {
+			latDec->setText(QString::number(dmsToDec(latDeg, latMin, latSec), 'f', 4)); recompute(); });
+		if (latSec) QObject::connect(latSec, &QLineEdit::editingFinished, d, [this]() {
+			latDec->setText(QString::number(dmsToDec(latDeg, latMin, latSec), 'f', 4)); recompute(); });
+		if (latDec) QObject::connect(latDec, &QLineEdit::editingFinished, d, [this]() {
+			decToDms(latDec->text().toDouble(), latDeg, latMin, latSec); recompute(); });
+
+		if (lonDeg) QObject::connect(lonDeg, &QLineEdit::editingFinished, d, [this]() {
+			lonDec->setText(QString::number(dmsToDec(lonDeg, lonMin, lonSec), 'f', 4)); recompute(); });
+		if (lonMin) QObject::connect(lonMin, &QLineEdit::editingFinished, d, [this]() {
+			lonDec->setText(QString::number(dmsToDec(lonDeg, lonMin, lonSec), 'f', 4)); recompute(); });
+		if (lonSec) QObject::connect(lonSec, &QLineEdit::editingFinished, d, [this]() {
+			lonDec->setText(QString::number(dmsToDec(lonDeg, lonMin, lonSec), 'f', 4)); recompute(); });
+		if (lonDec) QObject::connect(lonDec, &QLineEdit::editingFinished, d, [this]() {
+			decToDms(lonDec->text().toDouble(), lonDeg, lonMin, lonSec); recompute(); });
+
+		if (elevEdit) QObject::connect(elevEdit, &QLineEdit::editingFinished, d, [this]() { recompute(); });
+
+		// D/M/Y -> Decimal is ONE-WAY (matches Mirone's edit_DateDD/MM/YY_CB, which sync Decimal but
+		// NOT the reverse — edit_DateDec_CB never touches the D/M/Y boxes either).
+		auto syncDateDec = [this]() { dateDec->setText(QString::number(dateDecFromDMY(), 'f', 4)); recompute(); };
+		if (dateDay)   QObject::connect(dateDay,   &QLineEdit::editingFinished, d, syncDateDec);
+		if (dateMonth) QObject::connect(dateMonth, &QLineEdit::editingFinished, d, syncDateDec);
+		if (dateYear)  QObject::connect(dateYear,  &QLineEdit::editingFinished, d, syncDateDec);
+		if (dateDec)   QObject::connect(dateDec,   &QLineEdit::editingFinished, d, [this]() { recompute(); });
+
+		if (mapArea) mapArea->onPick = [this](double lon, double lat) {
+			lonDec->setText(QString::number(lon, 'f', 4));
+			latDec->setText(QString::number(lat, 'f', 4));
+			decToDms(lon, lonDeg, lonMin, lonSec);
+			decToDms(lat, latDeg, latMin, latSec);
+			recompute();
+		};
+
+		// --- "OR Ref grid" picker — same behavior as GeoGridGeometry's own refRow (grdsample.jl's
+		// gmtvtk_set_gridmeta_callback). The .ui declares plain widgets here (not a promoted
+		// GeoGridGeometry), so the wiring is inline instead of shared through that C++ class.
+		if (refBtn) QObject::connect(refBtn, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getOpenFileName(d, "Select reference grid", prefStartDir(),
+			                                          "Grid/Image files (*.nc *.grd *.tif *.tiff);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			if (refEdit) refEdit->setText(fn);
+			if (!g_juliaGridMeta) return;
+			const char *m = g_juliaGridMeta(fn.toUtf8().constData());
+			if (!m) return;
+			const QStringList meta = QString::fromUtf8(m).split('/');
+			if (meta.size() < 8) return;
+			xMin->setText(meta[0]); xMax->setText(meta[1]);
+			yMin->setText(meta[2]); yMax->setText(meta[3]);
+			xInc->setText(meta[4]); yInc->setText(meta[5]);
+			xN->setText(meta[6]);   yN->setText(meta[7]);
+		});
+
+		// --- Griding Line Geometry Compute: the .ui's fieldCombo order is "Total field /
+		// Inclination / Declination / X / Y / Z / H" — NOT Mirone's popup order. Map by combo
+		// TEXT, not index, so a future reorder in Designer can't silently desync the field code.
+		if (geoComputeBtn) QObject::connect(geoComputeBtn, &QPushButton::clicked, d, [this, d]() {
+			if (!g_juliaIgrfGrid) {
+				if (scn && scn->win) scn->win->statusBar()->showMessage("IGRF grid: callback not registered", 3000);
+				return;
+			}
+			QString sel = fieldCombo ? fieldCombo->currentText() : "Total field";
+			QString code = sel == "Horiz field" ? "H" : sel == "Comp X" ? "X" : sel == "Comp Y" ? "Y" :
+			                sel == "Comp Z" ? "Z" : sel == "Declination" ? "D" :
+			                sel == "Inclination" ? "I" : "T";
+			QString params = QString("%1/%2/%3/%4/%5/%6/%7/%8/%9")
+				.arg(xMin->text().trimmed()).arg(xMax->text().trimmed())
+				.arg(yMin->text().trimmed()).arg(yMax->text().trimmed())
+				.arg(xInc->text().trimmed()).arg(yInc->text().trimmed())
+				.arg(elevEdit->text().trimmed()).arg(dateDec->text().trimmed())
+				.arg(code);
+			g_juliaIgrfGrid(scn, params.toUtf8().constData());
+		});
+
+		if (magHelpBtn) QObject::connect(magHelpBtn, &QToolButton::clicked, d, [d]() {
+			QMessageBox::information(d, "Input Mag File",
+				"Enter a file with total-field measurements to compute the IGRF at those "
+				"positions. The minimum required is two columns: longitude and latitude. "
+				"Elevation and Date come from the boxes above (a full per-row column selector, "
+				"like Mirone's, is not implemented here — every row uses the same Elevation/Date).");
+		});
+		if (magFile1Btn) QObject::connect(magFile1Btn, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getOpenFileName(d, "Select file", prefStartDir(),
+			                                          "Mag file (*.dat *.DAT);;All Files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			magFile1Edit->setText(fn);
+			QFileInfo fi(fn);
+			magFile2Edit->setText(fi.path() + "/" + fi.completeBaseName() + "_igrf.dat");
+		});
+		if (magFile2Btn) QObject::connect(magFile2Btn, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getSaveFileName(d, "Select File name", prefStartDir(),
+			                                          "Mag file (*.dat *.DAT);;All Files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			magFile2Edit->setText(fn);
+		});
+		if (magComputeBtn) QObject::connect(magComputeBtn, &QPushButton::clicked, d, [this, d]() {
+			if (!g_juliaIgrfFile) {
+				if (scn && scn->win) scn->win->statusBar()->showMessage("IGRF file: callback not registered", 3000);
+				return;
+			}
+			QString in = magFile1Edit->text().trimmed(), out = magFile2Edit->text().trimmed();
+			if (in.isEmpty() || out.isEmpty()) return;
+			// No Headers?/N-of-headers control in the .ui -> always 0 skipped lines.
+			QString params = QString("%1;%2;%3;%4;%5").arg(in).arg(out).arg(QString())
+				.arg(elevEdit->text().trimmed()).arg(dateDec->text().trimmed());
+			g_juliaIgrfFile(scn, params.toUtf8().constData());
+			if (scn && scn->win) scn->win->statusBar()->showMessage("IGRF: file written to " + out, 4000);
+		});
+
+		recompute();
+
+		// Non-modal, heap-allocated usage (menu does `new IgrfDialog(...)`): this wrapper is NOT
+		// itself a QWidget, so nothing frees it when `dlg` closes (WA_DeleteOnClose only frees the
+		// QDialog) — self-delete once the underlying QDialog is destroyed.
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+};
+
+// ============================================================================================
 // BeachballWidget — schematic focal-mechanism "beachball" preview for the elastic-deformation
 // dialog. This is NOT yet a full lower-hemisphere double-couple projection (that arrives with the
 // deformation compute); it draws two opposing black wedges rotated by the fault strike and
@@ -4021,6 +4345,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto *fGroup = new std::function<void()>();   // show the discipline chooser
 	auto *fTsu   = new std::function<void()>();    // show Tsunamis
 	auto *fSeis  = new std::function<void()>();    // show Seismology
+	auto *fMag   = new std::function<void()>();    // show Magnetics
 
 	// Re-open the menu at its menubar slot after a rotate (deferred so it runs once the triggering
 	// click has finished closing the menu).
@@ -4031,11 +4356,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 	};
 
-	*fGroup = [mGphy, fTsu, fSeis]() {
+	*fGroup = [mGphy, fTsu, fSeis, fMag]() {
 		mGphy->clear();
 		mGphy->setTitle("Geophysics ▾");
 		mGphy->addAction("Tsunamis",   [fTsu]()  { (*fTsu)(); });
 		mGphy->addAction("Seismology", [fSeis]() { (*fSeis)(); });
+		mGphy->addAction("Magnetics",  [fMag]()  { (*fMag)(); });
 	};
 	auto backItem = [mGphy, fGroup, reopen]() {            // "‹ Disciplines" — return to the chooser
 		mGphy->addAction("‹ Disciplines", [fGroup, reopen]() { (*fGroup)(); reopen(); });
@@ -4052,6 +4378,18 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			if (dlg.exec() != QDialog::Accepted || dlg.params.isEmpty()) return;
 			if (g_juliaNswing) g_juliaNswing(s, dlg.params.toUtf8().constData());
 			else if (s->win) s->win->statusBar()->showMessage("NSWING: callback not registered", 3000);
+		});
+		reopen();
+	};
+
+	// Magnetics discipline — IGRF Calculator (port of Mirone's igrf_options.m, GMT.jl magref).
+	*fMag = [mGphy, win, s, backItem, reopen]() {
+		mGphy->clear();
+		mGphy->setTitle("Magnetics ▾");
+		backItem();
+		mGphy->addAction("IGRF", [win, s]() {
+			auto *w = new IgrfDialog(win, s);   // self-deletes when its QDialog closes (WA_DeleteOnClose)
+			if (w->dlg) w->dlg->show();
 		});
 		reopen();
 	};
