@@ -1386,8 +1386,8 @@ static void polyPlaceText(Scene *s, const double w[3]) {
 // it consumed the event (the widget then skips the VTK base handler, so the gizmo never rotates).
 // (x,y) are VTK display px (device, bottom-up), matching polyPickWorld / the projection helpers.
 
-// Left/right press. button: 0 = left, 1 = right.
-static bool polygonHandlePress(Scene *s, int button, int x, int y) {
+// Left/right press. button: 0 = left, 1 = right. shift: Shift held (whole-element drag in edit mode).
+static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 	const bool vertexTool = (s->polyShape == Scene::SH_Polygon || s->polyShape == Scene::SH_Polyline ||
 	                         s->polyShape == Scene::SH_Line || s->polyShape == Scene::SH_Fault);
 	if (button == 1) {                                   // right-click: undo last vertex (polygon/polyline)
@@ -1468,8 +1468,18 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y) {
 		s->widget->renderWindow()->Render();
 		return true;
 	}
-	if (s->polyEdit >= 0) {                              // edit mode: grab a vertex handle to drag it
-		const int h = polyHitHandle(s, x, y, 10.0);
+	if (s->polyEdit >= 0) {                              // edit mode
+		if (shift) {                                     // Shift+drag: translate the WHOLE element (any grab point
+			double w[3];                                 // on the line body or a vertex handle)
+			if (polyPickWorld(s, x, y, w) &&
+			    (polyHitHandle(s, x, y, 10.0) >= 0 || polyHitPolygon(s, x, y, 10.0) >= 0)) {
+				s->polyDragWhole = true;
+				s->polyDragLastW[0] = w[0]; s->polyDragLastW[1] = w[1];
+				s->widget->setCursor(Qt::SizeAllCursor); // same thick 4-arrow cross as the other drag ops
+				return true;
+			}
+		}
+		const int h = polyHitHandle(s, x, y, 10.0);      // no Shift: grab a single vertex handle to drag it
 		if (h >= 0) { s->polyDragVert = h; return true; }
 	}
 	if (s->symArmed >= 0 && symHitHandle(s, x, y, 16.0)) {   // armed symbol: THIS press ARMS a possible
@@ -1576,6 +1586,19 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 		s->widget->renderWindow()->Render();
 		return true;
 	}
+	if (s->polyEdit >= 0 && s->polyDragWhole) {         // Shift+drag: translate every vertex by the cursor delta
+		double w[3];
+		if (polyPickWorld(s, x, y, w) && s->polyEdit < (int)s->polys.size()) {
+			const double ddx = w[0] - s->polyDragLastW[0], ddy = w[1] - s->polyDragLastW[1];
+			s->polyDragLastW[0] = w[0]; s->polyDragLastW[1] = w[1];
+			Polygon& pg = s->polys[s->polyEdit];
+			for (auto& p : pg.v) { p[0] += ddx; p[1] += ddy; }
+			polyRebuildLine(s, pg);
+			polyRebuildHandles(s);
+			s->widget->renderWindow()->Render();
+		}
+		return true;
+	}
 	if (s->polyEdit >= 0 && s->polyDragVert >= 0) {
 		double w[3];
 		if (polyPickWorld(s, x, y, w)) {
@@ -1604,6 +1627,13 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 static bool polygonHandleRelease(Scene *s) {
 	if (s->symLayerDrag >= 0) { s->symLayerDrag = -1; return true; }
 	if (s->mecaDrag >= 0) { s->mecaDrag = -1; return true; }
+	if (s->polyDragWhole) {                              // ended a Shift+drag whole-element move
+		s->polyDragWhole = false;
+		s->widget->unsetCursor();                       // drop the crosshair (hover logic restores as needed)
+		if (s->polyEdit >= 0 && s->polyEdit < (int)s->polys.size() && s->polys[s->polyEdit].nestKind == 1)
+			nestReflow(s);                              // nested rect: re-quantize + descendants (same as vertex drag)
+		return true;
+	}
 	if (s->polyDragVert >= 0) {
 		s->polyDragVert = -1;
 		// Edited a nested rectangle: re-quantize it (back to an axis-aligned, snapped rect) + descendants.

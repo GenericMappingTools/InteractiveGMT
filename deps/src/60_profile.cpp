@@ -263,7 +263,7 @@ static void profilerEnd(Scene *s) {
 // Polygon tool mouse handlers (defined in 85_polygon.cpp, #included later). GLView drives them
 // directly because VTK's adapter doesn't deliver Qt double-clicks as a second LeftButtonPress.
 // Each returns true when it consumed the event (the widget then skips VTK's base handler).
-static bool polygonHandlePress(Scene *s, int button, int x, int y);
+static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift);
 static bool polygonHandleDblClick(Scene *s, int x, int y);
 static bool polygonHandleMove(Scene *s, int x, int y);
 static bool polygonHandleRelease(Scene *s);
@@ -341,7 +341,8 @@ protected:
 		// Polygon tool: left adds/edits vertices, right removes the last while drawing.
 		if (s && (e->button() == Qt::LeftButton || e->button() == Qt::RightButton)) {
 			double dx, dy; devPx(e->position().toPoint(), dx, dy);
-			if (polygonHandlePress(s, e->button() == Qt::LeftButton ? 0 : 1, (int)dx, (int)dy))
+			const bool shift = (e->modifiers() & Qt::ShiftModifier) != 0;
+			if (polygonHandlePress(s, e->button() == Qt::LeftButton ? 0 : 1, (int)dx, (int)dy, shift))
 				return;                 // consumed -> keep VTK (gizmo / dolly) out of it
 		}
 		QVTKOpenGLNativeWidget::mousePressEvent(e);
@@ -371,7 +372,7 @@ protected:
 		}
 		// Hover feedback: show the quadruple-arrow over any draggable element (colorbar / polygon
 		// vertex handle in edit mode / text label). Skipped while the draw tool owns a crosshair.
-		if (s && !s->polyMode) {
+		if (s && !s->polyMode && !s->polyDragWhole) {   // skip hover-cursor while a whole-element drag owns the crosshair
 			double dx, dy; devPx(e->position().toPoint(), dx, dy);
 			const int *sz = renderWindow()->GetSize();
 			const double nx = sz[0] > 0 ? dx / sz[0] : 0.0;

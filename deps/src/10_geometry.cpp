@@ -503,6 +503,8 @@ struct Scene {
 	vtkSmartPointer<vtkPolyData> polyPreviewPD;
 	int    polyEdit     = -1;                          // index into polys being edited (-1 = none)
 	int    polyDragVert = -1;                          // vertex index being click-dragged (-1 = none)
+	bool   polyDragWhole = false;                       // Shift+drag in edit mode: translate the WHOLE element
+	double polyDragLastW[2] = {0.0, 0.0};              // last picked world (x,y) for the incremental whole-drag delta
 	int    textDrag     = -1;                          // index into texts being click-dragged (-1 = none)
 	int    symArmed     = -1;                          // index into symbols (an oneShot one) armed for drag by
 	                                                    // a double-click — PERSISTS like polyEdit, until toggled
