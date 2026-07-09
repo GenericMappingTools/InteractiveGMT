@@ -1849,6 +1849,77 @@ GMTVTK_API int gmtvtk_igrf_screenshot_test(const char *path) {
 	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
 }
 
+// test hooks: open/close/screenshot the REAL Geomagnetic Bar Code dialog (same drive-the-actual-
+// widget-then-look pattern as the IGRF hooks above — never trust "didn't throw" for a paint bug).
+GMTVTK_API void *gmtvtk_open_empty(const char *title);   // defined below; forward-declared for the test hook
+
+static MagBarcodeDialog *g_magbarTestDlg = nullptr;
+static void *g_magbarTestWin = nullptr;
+// Goes through the EXACT real path: a real empty window (gmtvtk_open_empty) as parent, no manual
+// resize (the dialog gets whatever size the .ui/layout naturally gives it, same as production) -
+// eliminates "my test harness parented/sized it differently than the real menu action" as a cause.
+GMTVTK_API int gmtvtk_magbarcode_open_dialog_test() {
+	ensureApp();
+	if (g_magbarTestDlg && g_magbarTestDlg->dlg) g_magbarTestDlg->dlg->close();
+	if (!g_magbarTestWin) g_magbarTestWin = gmtvtk_open_empty("magbar test");
+	Scene *s = (Scene*)g_magbarTestWin;
+	if (!s || !s->win) return 0;
+	g_magbarTestDlg = new MagBarcodeDialog(s->win);
+	if (!g_magbarTestDlg->dlg) return 0;
+	g_magbarTestDlg->dlg->show();
+	QApplication::processEvents();
+	return 1;
+}
+GMTVTK_API void gmtvtk_magbarcode_close_dialog_test() {
+	if (g_magbarTestDlg && g_magbarTestDlg->dlg) g_magbarTestDlg->dlg->close();   // WA_DeleteOnClose self-frees
+	g_magbarTestDlg = nullptr;
+}
+GMTVTK_API int gmtvtk_magbarcode_screenshot_test(const char *path) {
+	if (!g_magbarTestDlg || !g_magbarTestDlg->dlg) return 0;
+	QApplication::processEvents();
+	QPixmap pm = g_magbarTestDlg->dlg->grab();
+	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
+}
+// Scroll the view to a given age (Ma) so a screenshot can inspect any part of the timescale.
+GMTVTK_API void gmtvtk_magbarcode_scroll_test(double ageMa) {
+	if (!g_magbarTestDlg || !g_magbarTestDlg->barcodeArea) return;
+	g_magbarTestDlg->barcodeArea->setScroll(ageMa);
+	if (g_magbarTestDlg->scrollBar)
+		g_magbarTestDlg->scrollBar->setValue((int)(g_magbarTestDlg->barcodeArea->scrollY *
+		                                            g_magbarTestDlg->barcodeArea->barHeight));
+	QApplication::processEvents();
+}
+// Simulate a real left click at widget-local (x,y) on barcodeArea, then read back the resulting
+// statusLabel text (proves the click->age readout actually fires through Qt's own event path).
+GMTVTK_API void gmtvtk_magbarcode_click_test(double x, double y, char *outText, int outLen) {
+	if (!g_magbarTestDlg || !g_magbarTestDlg->barcodeArea) return;
+	QPointF pt(x, y);
+	QPoint gpt = g_magbarTestDlg->barcodeArea->mapToGlobal(pt.toPoint());
+	QMouseEvent press(QEvent::MouseButtonPress, pt, gpt, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+	QApplication::sendEvent(g_magbarTestDlg->barcodeArea, &press);
+	QMouseEvent release(QEvent::MouseButtonRelease, pt, gpt, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+	QApplication::sendEvent(g_magbarTestDlg->barcodeArea, &release);
+	QApplication::processEvents();
+	if (outText && outLen > 0 && g_magbarTestDlg->barcodeArea->statusLabel) {
+		QByteArray b = g_magbarTestDlg->barcodeArea->statusLabel->text().toUtf8();
+		int n = std::min((int)b.size(), outLen - 1);
+		memcpy(outText, b.constData(), n);
+		outText[n] = 0;
+	}
+}
+// Chron under a widget-local point (same lookup hover uses) — proves hover targeting + the new
+// data/Cande_Kent_95.dat are wired correctly, without needing a real popup tooltip to screenshot.
+GMTVTK_API void gmtvtk_magbarcode_hover_test(double x, double y, char *outText, int outLen) {
+	if (!g_magbarTestDlg || !g_magbarTestDlg->barcodeArea) return;
+	const auto *c = g_magbarTestDlg->barcodeArea->chronAt(x, y);
+	QByteArray b = c ? c->name.toUtf8() : QByteArray();
+	if (outText && outLen > 0) {
+		int n = std::min((int)b.size(), outLen - 1);
+		memcpy(outText, b.constData(), n);
+		outText[n] = 0;
+	}
+}
+
 // Run the REAL faultUpdatePlane (gray surface patch + buried 3-D plane) and report the 3-D plane.
 // out[0]=exists out[1]=npts out[2]=visibility out[3]=zTop out[4]=zBot out[5]=grayVisible.
 // Returns 1 when a 3-D plane actor exists. Lets the Julia test assert the plane is actually built.
@@ -2299,7 +2370,7 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 // Unlike gmtvtk_add_surface_h (which adds a NEW layer) this rebuilds the existing base surface from
 // new z of the SAME region, keeping the user's camera, vertical exaggeration, gizmo, colormap-driving
 // name, AND every extra/overlay/polygon (buildSceneContent's teardown removes only the base surface,
-// axes and colorbar ? see its prologue). Scaling (xfac/zfac/ve) is deliberately KEPT, not recomputed,
+// axes and colorbar — see its prologue). Scaling (xfac/zfac/ve) is deliberately KEPT, not recomputed,
 // so the saved camera stays valid and the data edit does not jump the view. `name` (may be empty ->
 // keep current) drives the Scene Objects "Surface" row label.
 GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, int ny,
@@ -2317,7 +2388,7 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 	const double cpscale = cam->GetParallelScale();
 	const int    cpar    = cam->GetParallelProjection();
 
-	// New z range (for the colorbar) ? but KEEP xfac/zfac/ve so the surface's world scaling is stable.
+	// New z range (for the colorbar) — but KEEP xfac/zfac/ve so the surface's world scaling is stable.
 	double zmin = 1e30, zmax = -1e30;
 	for (vtkIdType k = 0, ntot = (vtkIdType)nx * ny; k < ntot; ++k) {
 		const float zz = z[k];

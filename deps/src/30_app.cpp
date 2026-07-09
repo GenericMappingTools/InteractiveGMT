@@ -509,6 +509,18 @@ static QString gmtvtkUiDir() {
 	return dir.filePath("ui");      // deps/ui
 }
 
+// Absolute path to the package's data/ dir (data files like Cande_Kent_95.dat, shared with the
+// Julia side's data/ — see hydrothermal_vents.dat, meteoritos.dat). NOT deps/assets: that was an
+// earlier, wrong copy of Cande_Kent_95.dat (stale M-sequence ages); the real one lives here.
+static QString gmtvtkDataDir() {
+	QString modDir = gmtvtkModuleDir();
+	if (modDir.isEmpty()) return QString(GMTVTK_DATA_DIR);
+	QDir dir(modDir);
+	dir.cdUp();                     // deps/build -> deps
+	dir.cdUp();                     // deps -> package root
+	return dir.filePath("data");    // <package root>/data
+}
+
 // iGMT application/window icon, decoded once from the embedded PNG (see _app_icon.h).
 static QIcon appIcon() {
 	static QIcon ic = []{

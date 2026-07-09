@@ -42,6 +42,7 @@ set(GMTVTK_SRC src/gmtvtk.cpp)
 # sync with. GMTVTK_UI_DIR points at the source tree's ui/ dir (dev-only unregistered package,
 # same pragmatic hard-coded-path style as VTK_DIR/Qt6_DIR/TBB_DIR above).
 add_compile_definitions(GMTVTK_UI_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ui")
+add_compile_definitions(GMTVTK_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../data")
 
 # Shared library — the Julia/host bridge (C API: gmtvtk_view_grid / gmtvtk_view_demo / ...).
 add_library(gmtvtk SHARED ${GMTVTK_SRC})

@@ -61,6 +61,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
+#include <QResizeEvent>
 #include <QFontMetrics>
 #include <functional>
 #include <QFile>
