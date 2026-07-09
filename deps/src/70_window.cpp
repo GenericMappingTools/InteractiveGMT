@@ -1506,6 +1506,413 @@ public:
 };
 
 // ============================================================================================
+// Geomagnetic Bar Code — port of Mirone's magbarcode.m (src_figs\magbarcode.m). Displays
+// geomagnetic polarity time scale (black/white bars) with time ruler and geological periods.
+// Three sections: chrons (left), time ruler (middle), geological periods (right). Click to add
+// red pico markers (draggable). Data from Cande_Kent_95.dat (chron name, age_start, age_end).
+// ============================================================================================
+class MagBarcodeArea : public QWidget {
+public:
+	struct Chron {
+		QString name;     // chron name (column 1, e.g., "C1n", "C1r.1n")
+		QString label;    // age_txt (column 4, e.g., "1", "a", "2")
+		double ageStart, ageEnd;
+	};
+	QList<Chron> chrons;
+	double scrollY = 0.0;          // vertical scroll offset (in Ma, from top)
+	double barHeight = 40.0;       // px per 1 Ma. Bumped from a straight 0.75cm/Ma port (~26px) so the
+	                                // short epoch/period boxes (Bru, Gilbert, Pliocene, ...) have room
+	                                // for their rotated label text; see fitRotatedFont for the rest.
+	double tmax = 168.0;           // max time (Ma); data now runs to M29n ~164.82 Ma, +margin
+	struct Pico { double age; };
+	QList<Pico> picos;             // kept sorted by age, like magbarcode.m's UserData ordering
+	int draggedPico = -1;
+	QScrollBar *scrollBar = nullptr;   // set by MagBarcodeDialog; kept in sync on resize
+	QLabel *statusLabel = nullptr;     // set by MagBarcodeDialog; shows the clicked age
+	double topMargin = 12.0;           // px gap below the title bar so the 0 Ma tick and the topmost
+	                                    // box (Bru) aren't jammed against / clipped by the dialog edge
+
+	// Forward/inverse age<->pixel maps. Every draw AND hit-test goes through these, so the top margin
+	// and the scroll offset stay consistent everywhere (change the map once, not in a dozen places).
+	double yOf(double age) const { return (age - scrollY) * barHeight + topMargin; }
+	double ageOf(double y) const { return (y - topMargin) / barHeight + scrollY; }
+
+	explicit MagBarcodeArea(QWidget *p = nullptr) : QWidget(p) {
+		setMouseTracking(true);
+		loadData();
+	}
+
+	void loadData() {
+		QString path = gmtvtkDataDir() + "/Cande_Kent_95.dat";
+		QFile f(path);
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("MagBarcodeArea: cannot open %s", qUtf8Printable(path));
+			return;
+		}
+		chrons.clear();
+		QByteArray data = f.readAll();
+		f.close();
+		QList<QByteArray> lines = data.split('\n');
+		for (const QByteArray &line : lines) {
+			if (line.trimmed().isEmpty() || line.startsWith('#')) continue;
+			QList<QByteArray> parts = line.simplified().split(' ');
+			if (parts.size() < 4) continue;
+			Chron c;
+			c.name = QString::fromUtf8(parts[0]);   // e.g., "C1n", "C1r.1n"
+			c.ageStart = parts[1].toDouble();
+			c.ageEnd = parts[2].toDouble();
+			c.label = QString::fromUtf8(parts[3]);  // e.g., "1", "a", "2"
+			chrons.append(c);
+		}
+	}
+
+	void setScroll(double y) {
+		// Upper bound can go negative when the widget is taller than the whole timescale
+		// (std::clamp is UB if hi<lo) - and the view must never scroll past 0 Ma at the top.
+		double maxY = std::max(0.0, tmax - height() / barHeight);
+		scrollY = std::clamp(y, 0.0, maxY);
+		update();
+	}
+
+	// Shrinks `g`'s font (down to a small floor) until `text`, drawn horizontally, fits within
+	// `availablePx` — used for the rotated period/epoch labels, whose vertical box height varies
+	// a lot (Bru is 0.73 Ma tall, Miocene is 19.5 Ma tall). Never skips a label outright; the
+	// shortest stages (e.g. Coniacian, 0.55 Ma) may still end up at the size floor.
+	static QFont fitRotatedFont(const QPainter &g, const QString &text, double availablePx) {
+		QFont f = g.font();
+		for (qreal pt = 8.0; pt >= 4.0; pt -= 0.5) {
+			f.setPointSizeF(pt);
+			if (QFontMetrics(f).horizontalAdvance(text) <= availablePx - 2.0) return f;
+		}
+		f.setPointSizeF(4.0);
+		return f;
+	}
+
+protected:
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.fillRect(rect(), Qt::white);
+		int w = width(), h = height();
+
+		// Chrons (left 30%)
+		double leftX = 0.1 * w;
+		double chronWidth = 0.3 * w;
+
+		for (int i = 0; i < chrons.size(); i++) {
+			const Chron &c = chrons[i];
+			double yTop = yOf(c.ageStart);
+			double yBottom = yOf(c.ageEnd);
+			if (yBottom < 0 || yTop > h) continue;
+
+			// Every listed row is a normal-polarity interval (all names end 'n') -> always black,
+			// same as magbarcode.m's alternating face-color pattern (odd face = row itself = black,
+			// even face = the unlisted reversed gap between rows = white background, no fill).
+			// No per-bar outline (patch 'DefaultPatchEdgecolor','none' in the original).
+			g.fillRect(QRectF(leftX, yTop, chronWidth, std::max(1.0, yBottom - yTop)), Qt::black);
+
+			// Show label only when age_txt != 'a' (MATLAB: if (~strcmp(age_txt(i),'a')))
+			// MATLAB anchors it 'VerticalAlignment','cap' - the TOP of the text sits at yTop, not
+			// the baseline (drawText's own y) - so offset the baseline down by the font's ascent.
+			if (c.label != "a") {
+				g.setPen(Qt::black);
+				g.drawText(QPointF(0.42 * w, yTop + g.fontMetrics().ascent()), c.label);
+			}
+		}
+
+		// Known geomagnetic periods (leftmost: Bru, Mathu, Gau, Gilbert)
+		// MATLAB: lines at 0.015 and 0.08 of width, period names at 0.04 — spanning ONLY 0-5.4 Ma,
+		// not the whole ruler (unlike the geological-periods brackets below, which span 0-tmax).
+		double knownLeft = 0.015 * w, knownRight = 0.08 * w;
+		double knownYTop = std::clamp(yOf(0.0), 0.0, (double)h);
+		double knownYBot = std::clamp(yOf(5.4), 0.0, (double)h);
+		if (knownYBot > knownYTop) {
+			g.setPen(QPen(Qt::black, 1));
+			g.drawLine(QLineF(knownLeft, knownYTop, knownLeft, knownYBot));
+			g.drawLine(QLineF(knownRight, knownYTop, knownRight, knownYBot));
+		}
+
+		struct KnownPeriod { QString name; double ageTop, ageBottom; };
+		QList<KnownPeriod> known = {
+			{"Bru", 0.0, 0.73},
+			{"Mathuyama", 0.73, 2.5},
+			{"Gauss", 2.5, 3.4},
+			{"Gilbert", 3.4, 5.4}
+		};
+
+		for (const KnownPeriod &kp : known) {
+			double y = yOf(kp.ageTop + (kp.ageBottom - kp.ageTop) / 2.0);
+			if (y < 0 || y > h) continue;
+			g.setPen(Qt::black);
+			g.save();
+			QFont f = fitRotatedFont(g, kp.name, (kp.ageBottom - kp.ageTop) * barHeight);
+			g.setFont(f);
+			// drawText's anchor is the text's START, and after rotate(-90) it extends UPWARD from
+			// there — so anchoring at the box's midpoint (as before) put the WHOLE label above the
+			// midpoint, overflowing into the box above by ~half the label's length. Shift the
+			// anchor down by half the label's rendered width so it's centred on the box instead.
+			// Horizontal placement: after rotate(-90) the glyph strip spans [ox-ascent, ox+descent],
+			// so anchoring the baseline at a fixed left offset let the ascent spill LEFT past x=0 and
+			// get clipped by the window edge. Centre the strip on the column midpoint instead.
+			QFontMetrics fm(f);
+			double colMid = (knownLeft + knownRight) / 2.0;
+			double ox = colMid + (fm.ascent() - fm.descent()) / 2.0;
+			double textW = fm.horizontalAdvance(kp.name);
+			g.translate(QPointF(ox, y + textW / 2.0));
+			g.rotate(-90);
+			g.drawText(QPointF(0, 0), kp.name);
+			g.restore();
+
+			// Period separator line (except after last)
+			double sepY = yOf(kp.ageBottom);
+			if (sepY >= 0 && sepY <= h) {
+				g.setPen(QPen(Qt::black, 0.5));
+				g.drawLine(QLineF(knownLeft, sepY, knownRight, sepY));
+			}
+		}
+
+		// Time ruler (middle)
+		double rulerX = 0.55 * w;
+		g.setPen(QPen(Qt::black, 2));
+		g.drawLine(QLineF(rulerX, std::max(0.0, yOf(0.0)), rulerX, h));
+
+		for (int i = 0; i <= tmax; i += 5) {
+			double y = yOf(i);
+			if (y < 0 || y > h) continue;
+			g.setPen(QPen(Qt::black, 0.5));
+			g.drawLine(QLineF(rulerX, y, 0.58 * w, y));
+			g.setPen(Qt::black);
+			// Vertically CENTRE the label on its tick: the tick points at the middle of the text, not
+			// its top. Baseline = y shifted down by half the text height (ascent-descent)/2.
+			QFontMetrics rfm = g.fontMetrics();
+			g.drawText(QPointF(0.6 * w, y + (rfm.ascent() - rfm.descent()) / 2.0), QString::number(i) + " Ma");
+		}
+
+		for (int i = 0; i <= tmax; i++) {
+			double y = yOf(i);
+			if (y < 0 || y > h) continue;
+			g.setPen(QPen(Qt::black, 0.5));
+			g.drawLine(QLineF(rulerX, y, 0.565 * w, y));
+		}
+
+		// Geological periods (right). The column (and its Plistocene top box) starts at age 0 —
+		// there are no negative times, so clamp the top of the two rails to yOf(0), not y=0.
+		double geoLeft = 0.79 * w, geoRight = 0.88 * w;
+		double geoTop = std::max(0.0, yOf(0.0));
+		g.setPen(QPen(Qt::black, 1));
+		g.drawLine(QLineF(geoLeft, geoTop, geoLeft, h));
+		g.drawLine(QLineF(geoRight, geoTop, geoRight, h));
+		g.drawLine(QLineF(geoLeft, geoTop, geoRight, geoTop));   // cap the box at age 0
+
+		struct Period { QString name; double textAge; double sepAge; };
+		QList<Period> periods = {
+			{" Plistocene", 1.0, 2.0}, {"Pliocene", 3.5, 5.0},
+			{"Miocene", 14.75, 24.5}, {"Oligocene", 31.25, 38.0},
+			{"Eocene", 46.5, 55.0}, {"Paleocene", 60.0, 65.0},
+			{"Maastrichtian", 69.0, 73.0}, {"Campanian", 78.0, 83.0},
+			{"Santonian", 85.2, 87.4}, {"Coniacian", 87.95, 88.5},
+			{"Turonian", 89.75, 91.0}, {"Cenomanian", 94.25, 97.5},
+			{"Albian", 100.25, 103.0}, {"Aptian", 110.0, 119.0},
+			{"Barremian", 122.0, 125.0}, {"Hauterivian", 128.0, 131.0},
+			{"Valanginian", 134.5, 138.0}, {"Berriasian", 141.0, 144.0},
+			{"Tithonian", 147.0, 150.0}, {"Kimmeridgian", 153.0, 156.0},
+			{"Oxfordian", 159.5, 163.0}
+		};
+
+		double prevSep = 0.0;   // each period's own box runs [prevSep, sepAge] (textAge is its midpoint)
+		for (const Period &p : periods) {
+			double boxPx = (p.sepAge - prevSep) * barHeight;
+			// Period name (rotated -90 degrees)
+			double textY = yOf(p.textAge);
+			if (textY >= 0 && textY <= h) {
+				g.setPen(Qt::black);
+				g.save();
+				QFont f = fitRotatedFont(g, p.name, boxPx);
+				g.setFont(f);
+				// see the KnownPeriod loop above: centre the label on its box instead of anchoring
+				// its start at the midpoint (which let it overflow upward into the box above).
+				double textW = QFontMetrics(f).horizontalAdvance(p.name);
+				g.translate(QPointF(0.84 * w, textY + textW / 2.0));
+				g.rotate(-90);
+				g.drawText(QPointF(0, 0), p.name);
+				g.restore();
+			}
+			// Separator line after period
+			double sepY = yOf(p.sepAge);
+			if (sepY >= 0 && sepY <= h) {
+				g.setPen(QPen(Qt::black, 0.5));
+				g.drawLine(QLineF(geoLeft, sepY, geoRight, sepY));
+			}
+			prevSep = p.sepAge;
+		}
+
+		// Pico markers
+		for (const Pico &p : picos) {
+			double y = yOf(p.age);
+			if (y < 0 || y > h) continue;
+			double stickH = 12.0;
+			double arrowX = 0.8 * w;
+			QPolygonF arrow;
+			arrow << QPointF(arrowX, y)
+			      << QPointF(arrowX - stickH / 2, y - stickH / 2)
+			      << QPointF(arrowX - stickH / 4, y - stickH / 2)
+			      << QPointF(arrowX - stickH * 0.55, y)
+			      << QPointF(arrowX - stickH / 4, y + stickH / 2)
+			      << QPointF(arrowX - stickH / 2, y + stickH / 2);
+			g.setBrush(QColor(255, 0, 0, 200));
+			g.setPen(Qt::red);
+			g.drawPolygon(arrow);
+		}
+	}
+
+	// Nearest pico to a screen y, within a small pixel tolerance, or -1.
+	int picoNear(double py) const {
+		for (int i = 0; i < picos.size(); i++) {
+			double y = yOf(picos[i].age);
+			if (std::abs(py - y) < 10) return i;
+		}
+		return -1;
+	}
+
+	// Age (Ma) at a widget-local y, clamped to the visible timescale for display.
+	double ageAtY(double y) const {
+		return std::clamp(ageOf(y), 0.0, tmax);
+	}
+
+	void showAgeAt(double y) {
+		if (statusLabel) statusLabel->setText(QString("Age: %1 Ma").arg(ageAtY(y), 0, 'f', 3));
+	}
+
+public:
+	// Chron under a widget-local point, restricted to the chrons column (left 30%, see paintEvent's
+	// leftX/chronWidth), or nullptr. Public: also used by the gmtvtk_magbarcode_hover_test hook.
+	const Chron *chronAt(double x, double y) const {
+		double leftX = 0.1 * width(), chronWidth = 0.3 * width();
+		if (x < leftX || x > leftX + chronWidth) return nullptr;
+		double age = ageOf(y);
+		for (const Chron &c : chrons)
+			if (age >= c.ageStart && age <= c.ageEnd) return &c;
+		return nullptr;
+	}
+protected:
+
+	// bdn_pico's non-'open' branch: a plain press+drag on an EXISTING marker moves it (never
+	// creates one — that's double-click-only, see mouseDoubleClickEvent). Every left click also
+	// reads out the clicked age at the bottom of the dialog, per user request.
+	void mousePressEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton) return;
+		showAgeAt(e->position().y());
+		draggedPico = picoNear(e->position().y());
+	}
+
+	// wbm_pico: clamp the drag between the neighbouring picos' ages so markers can't cross. When
+	// not dragging, hover shows the chron name/age under the cursor (setMouseTracking is on).
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (draggedPico >= 0) {
+			double age = ageOf(e->position().y());
+			double lo = (draggedPico > 0) ? picos[draggedPico - 1].age : 0.0;
+			double hi = (draggedPico < picos.size() - 1) ? picos[draggedPico + 1].age : tmax;
+			picos[draggedPico].age = std::clamp(age, lo, hi);
+			showAgeAt(e->position().y());
+			update();
+			return;
+		}
+		const Chron *c = chronAt(e->position().x(), e->position().y());
+		if (c) {
+			QToolTip::showText(QCursor::pos(), QString("%1 (%2-%3 Ma)")
+			                    .arg(c->name).arg(c->ageStart, 0, 'f', 3).arg(c->ageEnd, 0, 'f', 3), this);
+		} else {
+			QToolTip::hideText();
+		}
+	}
+
+	void mouseReleaseEvent(QMouseEvent *) override {
+		draggedPico = -1;
+	}
+
+	// bdn_MagBar / bdn_pico's 'open' branch: double-click empty space ADDS a marker, double-click
+	// an existing marker REMOVES it (a single click only selects/drags, see mousePressEvent).
+	void mouseDoubleClickEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton) return;
+		showAgeAt(e->position().y());
+		int hit = picoNear(e->position().y());
+		if (hit >= 0) {
+			picos.removeAt(hit);
+			draggedPico = -1;
+			update();
+			return;
+		}
+		double age = ageOf(e->position().y());
+		if (age < 0 || age > tmax) return;
+		int pos = 0;
+		while (pos < picos.size() && picos[pos].age < age) pos++;
+		picos.insert(pos, Pico{age});
+		update();
+	}
+
+	void resizeEvent(QResizeEvent *ev) override {
+		QWidget::resizeEvent(ev);
+		if (!scrollBar) return;
+		int maxVal = std::max(0, (int)(tmax * barHeight - height()));
+		scrollBar->setRange(0, maxVal);
+		scrollBar->setValue(std::clamp((int)(scrollY * barHeight), 0, maxVal));
+	}
+};
+
+class MagBarcodeUiLoader : public QUiLoader {
+public:
+	QWidget *createWidget(const QString &className, QWidget *parent = nullptr,
+	                       const QString &name = QString()) override {
+		if (className == "MagBarcodeWidget") {
+			auto *w = new MagBarcodeArea(parent);
+			w->setObjectName(name);
+			return w;
+		}
+		return QUiLoader::createWidget(className, parent, name);
+	}
+};
+
+class MagBarcodeDialog {
+public:
+	QDialog *dlg = nullptr;
+	MagBarcodeArea *barcodeArea = nullptr;
+	QScrollBar *scrollBar = nullptr;
+
+	explicit MagBarcodeDialog(QWidget *parent) {
+		MagBarcodeUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/magnetic_barcode.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("MagBarcodeDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("MagBarcodeDialog: QUiLoader failed"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+
+		barcodeArea = static_cast<MagBarcodeArea *>(dlg->findChild<QWidget *>("barcodeWidget"));
+		scrollBar = dlg->findChild<QScrollBar *>("verticalScrollBar");
+		if (barcodeArea) barcodeArea->statusLabel = dlg->findChild<QLabel *>("statusLabel");
+
+		if (scrollBar && barcodeArea) {
+			barcodeArea->scrollBar = scrollBar;   // resizeEvent keeps the range in sync from here on
+			// Start scrolled to the top (0 Ma), like magbarcode.m's initial slider Value=tscal-height
+			// (which sets its Y-reversed axes to show [0,height] first). The range set here is a
+			// pre-layout best guess; resizeEvent corrects it once the dialog's real size is known.
+			scrollBar->setRange(0, std::max(0, (int)(barcodeArea->tmax * barcodeArea->barHeight -
+			                                          barcodeArea->height())));
+			scrollBar->setValue(0);
+			QObject::connect(scrollBar, &QScrollBar::valueChanged, dlg, [this](int value) {
+				if (barcodeArea) barcodeArea->setScroll(value / barcodeArea->barHeight);
+			});
+		}
+
+		QObject::connect(dlg, &QObject::destroyed, dlg, [this]() { delete this; });
+	}
+};
+
+// ============================================================================================
 // BeachballWidget — schematic focal-mechanism "beachball" preview for the elastic-deformation
 // dialog. This is NOT yet a full lower-hemisphere double-couple projection (that arrives with the
 // deformation compute); it draws two opposing black wedges rotated by the fault strike and
@@ -4389,6 +4796,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		backItem();
 		mGphy->addAction("IGRF", [win, s]() {
 			auto *w = new IgrfDialog(win, s);   // self-deletes when its QDialog closes (WA_DeleteOnClose)
+			if (w->dlg) w->dlg->show();
+		});
+		mGphy->addAction("Geomagnetic Bar Code", [win]() {
+			auto *w = new MagBarcodeDialog(win);
 			if (w->dlg) w->dlg->show();
 		});
 		reopen();
