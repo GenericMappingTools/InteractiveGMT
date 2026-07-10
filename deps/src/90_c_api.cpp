@@ -2419,6 +2419,28 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 	return 1;
 }
 
+// Remove an EXTRA grid (a dropped/added grid surface, addressed by its Scene Objects name) IN PLACE,
+// same teardown as the grid row's "Remove" menu item. Used by the "Nested grid N" transplant path:
+// Julia removes the blank grid, then re-adds a FILLED grid under the SAME name. Returns 1 if removed,
+// 0 if no extra grid carried that name (or the window is dead).
+GMTVTK_API int gmtvtk_remove_grid_h(void *handle, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !name[0]) return 0;
+	const std::string want = name;
+	for (size_t i = 0; i < s->extras.size(); ++i) {
+		if (s->extras[i].isImage || s->extras[i].name != want) continue;
+		ExtraObj &ex = s->extras[i];
+		if (s->ren && ex.actor) s->ren->RemoveActor(ex.actor);
+		if (s->ren && ex.drape) s->ren->RemoveActor(ex.drape);
+		s->extras.erase(s->extras.begin() + i);
+		applyGridStacking(s);                    // renormalize ranks + retarget colorbar to the new topmost
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return 1;
+	}
+	return 0;
+}
+
 // Julia toggles whether a transplant undo is currently available (set true after a transplant, false
 // after it is undone). Gates the "Undo transplant" rectangle-menu entry so it vanishes once applied.
 GMTVTK_API void gmtvtk_set_transplant_undo(void *handle, int on) {

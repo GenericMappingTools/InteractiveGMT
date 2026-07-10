@@ -200,6 +200,61 @@ function _on_transplant(scene::Ptr{Cvoid}, implant_path::AbstractString,
 	return nothing
 end
 
+# "Transplant 2nd grid" on a "Nested grid N" BLANK grid (the hollow grid the Nested-grids tool makes
+# for a rectangle). Unlike _on_transplant (which blends an implant into a real HOST grid over a smooth
+# seam), the nested grid has no data — every node is blank — so we simply SAMPLE the implant onto this
+# grid's own nodes and REPLACE the blank values. Nodes the implant doesn't cover keep their blank value.
+# `gname` = the blank grid's Scene Objects name ("Nested grid N"); `implant_path` = grid to sample from.
+# The blank grid is dropped (viewer + registry) and a FILLED grid re-added under the SAME name (visible).
+function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant_path::AbstractString)
+	try
+		name = String(gname)
+		G = _find_object(scene, :grid, name)
+		(G isa GMTgrid) || error("Nested blank grid '$name' not found in this window.")
+
+		I = GMT.gmtread(String(implant_path))
+		I isa GMTgrid || error("The chosen file is not a grid: $(basename(String(implant_path)))")
+
+		x0, x1, y0, y1 = G.range[1], G.range[2], G.range[3], G.range[4]
+		dx, dy = G.inc[1], G.inc[2]
+
+		# Region shared by the blank grid and the implant (grdsample can't leave the implant's extent).
+		w  = max(x0, I.range[1]);  e  = min(x1, I.range[2])
+		so = max(y0, I.range[3]);  no = min(y1, I.range[4])
+		(e > w && no > so) || error("The implant grid does not overlap the nested grid region.")
+
+		# Sample the implant onto THIS grid's node spacing over the overlap, then paste it into a copy of
+		# the blank z (nodes outside the implant footprint keep their blank value).
+		Isamp = GMT.grdsample(I; region=(w, e, so, no), inc=(dx, dy))
+		xv, yv, ny, nx = _grid_xy(G)
+		Z  = eltype(G.z) === Float32 ? copy(G.z) : Float32.(G.z)
+		c0 = round(Int, (Isamp.range[1] - x0) / dx) + 1
+		r0 = round(Int, (Isamp.range[3] - y0) / dy) + 1
+		sy, sx = size(Isamp.z)
+		r1 = min(r0 + sy - 1, size(Z, 1));  c1 = min(c0 + sx - 1, size(Z, 2))
+		Z[r0:r1, c0:c1] .= Float32.(Isamp.z[1:(r1 - r0 + 1), 1:(c1 - c0 + 1)])
+
+		Gout = mat2grid(Z; x=xv, y=yv)
+		isdefined(G, :proj4) && !isempty(G.proj4) && (Gout.proj4 = G.proj4)
+		isdefined(G, :wkt)   && !isempty(G.wkt)   && (Gout.wkt   = G.wkt)
+		Gout.registration = G.registration
+		Gout.title = name
+
+		# Replace the blank grid IN PLACE: drop it (viewer + registry) and re-add the FILLED grid under
+		# the same name. The filled grid builds a real CPT (no solid-colour override) and is visible.
+		ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, name)
+		v = get(_SCENE_OBJS, scene, nothing)
+		v !== nothing && filter!(t -> !(t[1] === :grid && t[2] == name), v)
+		_add_grid_to_scene(scene, Gout, name)
+
+		_viewer_log_error(scene, "Nested grid '$name' filled from $(basename(String(implant_path))).")
+	catch e
+		_viewer_log_error(scene, "Nested transplant FAILED: $(sprint(showerror, e))")
+		@warn "Nested transplant FAILED" exception=(e,)
+	end
+	return nothing
+end
+
 # Undo the transplant on this window: put the kept original subregion back, so the grid is identical
 # to what it was before the transplant.
 function _on_transplant_undo(scene::Ptr{Cvoid})

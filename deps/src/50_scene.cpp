@@ -880,6 +880,12 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QMenu m(s->widget);
 	QAction *aSave  = m.addAction("Save grid…");
 	QAction *aMove  = m.addAction("Move to new window"); // re-open this grid in a fresh iGMT window, then drop it here
+	// A "Nested grid N" blank grid (created hollow by the Nested-grids tool) can be filled: implant a
+	// 2nd grid, sampled onto this grid's nodes, REPLACING the blank nodes. Julia removes this blank
+	// grid + re-adds a filled one under the same name (gmtvtk_remove_grid_h + _add_grid_to_scene).
+	QAction *aTransplant = nullptr;
+	if (g_juliaEval && nm.startsWith("Nested grid "))
+		aTransplant = m.addAction("Transplant 2nd grid…");
 	m.addSeparator();
 	addGridStackActions(s, m, &s->extras[idx].gstack);   // grid-pile draw order (base relief + grids)
 	m.addSeparator();
@@ -887,6 +893,18 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *c = m.exec(g);
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
+	if (aTransplant && c == aTransplant) {               // fill the blank nested grid from an implant grid
+		const QString fn = QFileDialog::getOpenFileName(s->win, "Select grid to implant", prefStartDir(),
+			"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
+		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
+		const QString cmd = QString("InteractiveGMT._on_nested_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",raw\"%3\")")
+			.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(nm).arg(fn);
+		std::vector<char> buf(1 << 12);
+		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+		return;
+	}
 	if (c == aMove || c == aDel) {
 		// Move = open this grid in a new window, then delete it from here; a failed move keeps it.
 		if (c == aMove && !moveObjectToNewWindow(s, "grid", nm)) return;

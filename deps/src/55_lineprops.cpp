@@ -726,14 +726,19 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 	if (!isSlip && lineMeasurable(s, lr)) {
 		if (lineClosedRing(s, lr)) {
 			// Rectangles & generic polygons (closed rings): AREA only — NEVER line length / azimuth.
-			m.addAction("Area under polygon…", [s, lr]() { lineRunMeasure(s, lr, "_poly_area", true); });
-			// On a grid: implant an external grid clipped to this rectangle (Grid Tools > Transplant).
-			// "Undo transplant" shows ONLY while a transplant is applied+not-yet-undone (Julia keeps the
-			// flag current via gmtvtk_set_transplant_undo); it disappears once undone here or via Ctrl+Z.
-			if (!isSlip && !s->gridZ.empty()) {
-				m.addAction("Transplant 2nd grid…", [s, lr]() { rectTransplant(s, lr); });
-				if (s->transplantUndoAvail)
-					m.addAction("Undo transplant", [s]() { rectTransplantUndo(s); });
+			// A "Nested grids" rectangle is excluded: it drives the nesting chain + its own blank grid,
+			// so an area figure / transplant-into-host make no sense on it (the transplant lives on that
+			// rect's "Nested grid N" blank-grid row instead — see gridObjectMenu).
+			if (!isNestRect) {
+				m.addAction("Area under polygon…", [s, lr]() { lineRunMeasure(s, lr, "_poly_area", true); });
+				// On a grid: implant an external grid clipped to this rectangle (Grid Tools > Transplant).
+				// "Undo transplant" shows ONLY while a transplant is applied+not-yet-undone (Julia keeps the
+				// flag current via gmtvtk_set_transplant_undo); it disappears once undone here or via Ctrl+Z.
+				if (!isSlip && !s->gridZ.empty()) {
+					m.addAction("Transplant 2nd grid…", [s, lr]() { rectTransplant(s, lr); });
+					if (s->transplantUndoAvail)
+						m.addAction("Undo transplant", [s]() { rectTransplantUndo(s); });
+				}
 			}
 		} else {
 			// Open lines / polylines only: length(s) + azimuth(s).
