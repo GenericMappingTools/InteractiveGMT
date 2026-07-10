@@ -853,12 +853,38 @@ static void sceneRemoveSurface(Scene *s) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
+// A "Nested grid N" blank grid (hollow, made by the Nested-grids tool) can be FILLED by sampling a 2nd
+// grid onto its nodes ("Transplant 2nd grid…"). Transplantability is an INTRINSIC property of the grid
+// (encoded in its name, carried on G.title), NOT a per-window flag — so the option follows the grid
+// wherever its row lives: as a dropped EXTRA grid (gridObjectMenu) or, after "Move to new window", as
+// that window's BASE surface (surfaceObjectMenu). One predicate, one handler, offered identically.
+static bool gridIsNestedBlank(const QString& nm) { return nm.startsWith("Nested grid "); }
+
+// Run the "Transplant 2nd grid…" fill on the nested blank grid named `nm`: pick an implant file and hand
+// it to Julia (_on_nested_transplant), which samples it onto this grid's nodes. Works for the base
+// surface and for an extra grid alike — Julia detects which and replaces in place / re-adds.
+static void runNestedTransplant(Scene *s, const QString& nm) {
+	if (!g_juliaEval) return;
+	const QString fn = QFileDialog::getOpenFileName(s->win, "Select grid to implant", prefStartDir(),
+		"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
+	if (fn.isEmpty()) return;
+	rememberStartDir(fn);
+	const QString cmd = QString("InteractiveGMT._on_nested_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",raw\"%3\")")
+		.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(nm).arg(fn);
+	std::vector<char> buf(1 << 12);
+	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+}
+
 // Properties menu for the BASE relief surface row: Save, grid-pile stacking, and Remove.
 static void surfaceObjectMenu(Scene *s, const QPoint& gp) {
 	const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
 	QMenu m(s->widget);
 	QAction *aSave = m.addAction("Save grid…");
 	QAction *aMove = m.addAction("Move to new window");      // re-open this grid in a fresh iGMT window, then drop it here
+	QAction *aTransplant = nullptr;                          // present iff this base grid is a nested blank (moved here)
+	if (g_juliaEval && gridIsNestedBlank(nm))
+		aTransplant = m.addAction("Transplant 2nd grid…");
 	m.addSeparator();
 	addGridStackActions(s, m, &s->surfStack);
 	m.addSeparator();
@@ -866,6 +892,7 @@ static void surfaceObjectMenu(Scene *s, const QPoint& gp) {
 	QAction *c = m.exec(gp);
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
+	if (aTransplant && c == aTransplant) { runNestedTransplant(s, nm); return; }
 	if (c == aMove) { if (moveObjectToNewWindow(s, "grid", nm)) sceneRemoveSurface(s); return; }
 	if (c == aRem) sceneRemoveSurface(s);
 }
@@ -884,7 +911,7 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	// 2nd grid, sampled onto this grid's nodes, REPLACING the blank nodes. Julia removes this blank
 	// grid + re-adds a filled one under the same name (gmtvtk_remove_grid_h + _add_grid_to_scene).
 	QAction *aTransplant = nullptr;
-	if (g_juliaEval && nm.startsWith("Nested grid "))
+	if (g_juliaEval && gridIsNestedBlank(nm))
 		aTransplant = m.addAction("Transplant 2nd grid…");
 	m.addSeparator();
 	addGridStackActions(s, m, &s->extras[idx].gstack);   // grid-pile draw order (base relief + grids)
@@ -893,18 +920,7 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *c = m.exec(g);
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
-	if (aTransplant && c == aTransplant) {               // fill the blank nested grid from an implant grid
-		const QString fn = QFileDialog::getOpenFileName(s->win, "Select grid to implant", prefStartDir(),
-			"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
-		if (fn.isEmpty()) return;
-		rememberStartDir(fn);
-		const QString cmd = QString("InteractiveGMT._on_nested_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",raw\"%3\")")
-			.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(nm).arg(fn);
-		std::vector<char> buf(1 << 12);
-		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
-		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
-		return;
-	}
+	if (aTransplant && c == aTransplant) { runNestedTransplant(s, nm); return; }  // fill blank nested grid
 	if (c == aMove || c == aDel) {
 		// Move = open this grid in a new window, then delete it from here; a failed move keeps it.
 		if (c == aMove && !moveObjectToNewWindow(s, "grid", nm)) return;
@@ -1179,15 +1195,51 @@ static void rebuildSceneObjects(Scene *s) {
 		tree->setItemWidget(item, 0, row);
 	};
 
-	// beginGroup / endGroup: a collapsible PARENT node. Rows made between the two attach as its children.
-	auto beginGroup = [&](const QString &name, int iconKind = -1) {
+	// beginGroupHandle / endGroup: a collapsible PARENT node that is ITSELF a full handle — its header
+	// hosts the exact same [checkbox][icon][label] widget a leaf row does, so the container toggles and
+	// carries its own properties menu (same options as the Surface/Image handle it stands for). Rows made
+	// between it and endGroup attach as its children. onToggle drives the container's show/hide; onProps
+	// (left-click) / onContext (right-click) are its properties menus. Any may be null.
+	auto beginGroupHandle = [&](const QString &name, int iconKind, bool checked,
+	                            std::function<void(const QPoint&)> onProps,
+	                            std::function<void(const QPoint&)> onContext,
+	                            const QString &tip = QString()) {
 		QTreeWidgetItem *grp = new QTreeWidgetItem();
-		grp->setText(0, name);
-		QFont f = grp->font(0); f.setBold(true); grp->setFont(0, f);
-		if (iconKind >= 0) grp->setIcon(0, QIcon(makeObjectIcon(iconKind)));
 		tree->addTopLevelItem(grp);
 		grp->setExpanded(true);
 		curParent = grp;
+
+		QWidget *row = new QWidget(tree);
+		QHBoxLayout *h = new QHBoxLayout(row);
+		h->setContentsMargins(0, 1, 0, 1);
+		h->setSpacing(5);
+
+		QCheckBox *cb = new QCheckBox(row);                  // box only — toggles the WHOLE group
+		cb->setChecked(checked);
+		cb->setToolTip("Show / hide the whole group");
+		// The container checkbox drives EVERY containee: it flips each child row's own checkbox, so every
+		// part (surface, drape, colorbar, axes, trace, plane, …) toggles through its own handler.
+		QObject::connect(cb, &QCheckBox::toggled, [s, grp, tree](bool on) {
+			for (int i = 0; i < grp->childCount(); ++i) {
+				QWidget *cw = tree->itemWidget(grp->child(i), 0);
+				if (!cw) continue;
+				QCheckBox *ccb = cw->findChild<QCheckBox*>();
+				if (ccb && ccb->isChecked() != on) ccb->setChecked(on);   // fires the child's own toggle
+			}
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		});
+
+		QLabel *icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
+		ClickableLabel *text = new ClickableLabel(name, row);
+		QFont f = text->font(); f.setBold(true); text->setFont(f);   // container labels stay bold
+		if (!tip.isEmpty()) { icon->setToolTip(tip); text->setToolTip(tip); }
+		if (onProps)   { text->setCursor(Qt::PointingHandCursor); text->onClick = onProps; }
+		if (onContext) text->onRightClick = onContext;
+
+		h->addWidget(cb, 0);
+		h->addWidget(icon, 0);
+		h->addWidget(text, 1);
+		tree->setItemWidget(grp, 0, row);
 	};
 	auto endGroup = [&]() { curParent = nullptr; };
 
@@ -1285,10 +1337,13 @@ static void rebuildSceneObjects(Scene *s) {
 	// ── GRID GROUPS ── each grid = [surface][drape?][colorbar][axes], split by a light rule. A bare
 	// image (view_image) is its own group (image row + axes). Non-grid objects follow, after a rule.
 	if (!s->imageOnly) {
-		if (vtkProp3D *sp = surfProp(s)) {                  // base relief grid group
+		if (vtkProp3D *sp = surfProp(s)) {                  // base relief grid group — header IS the surface handle
 			const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
-			beginGroup(nm, IC_Surface);
-			makeRow("Surface", IC_Surface, sp->GetVisibility() != 0,
+			beginGroupHandle(nm, IC_Surface, sp->GetVisibility() != 0,
+			        [s](const QPoint&) { toggleShadingFold(s); },
+			        [s](const QPoint& g) { surfaceObjectMenu(s, g); },
+			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking");
+			makeRow("Surface", IC_Surface, sp->GetVisibility() != 0,     // Surface leaf handle kept as a child
 			        [s, sp](bool on) { sp->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking",
@@ -1298,23 +1353,25 @@ static void rebuildSceneObjects(Scene *s) {
 			axesRow();
 			endGroup();
 		}
-	} else if (s->drape) {                                  // bare image (view_image) group
+	} else if (s->drape) {                                  // bare image (view_image) group — header IS the image handle
 		const QString nm = s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName);
-		beginGroup(nm, IC_Image);
 		vtkProp3D *dp = s->drape;
-		makeRow("Image", IC_Image, dp->GetVisibility() != 0,
+		std::function<void(const QPoint&)> imgMenu = [s, nm](const QPoint& g) {   // primary image props: Save + Remove
+			QMenu m(s->widget);
+			QAction *aSave = m.addAction("Save image…");
+			m.addSeparator();
+			QAction *aRem  = m.addAction("Remove"); // removes image + axes; window stays open
+			QAction *c = m.exec(g);
+			if (!c) return;
+			if (c == aSave) saveObjectDialog(s, "image", nm);
+			else if (c == aRem) sceneRemoveSurface(s);
+		};
+		beginGroupHandle(nm, IC_Image, dp->GetVisibility() != 0,
+		        imgMenu, imgMenu,
+		        "Left- or right-click for properties (save / remove)");
+		makeRow("Image", IC_Image, dp->GetVisibility() != 0,        // Image leaf handle kept as a child
 		        [dp](bool on) { dp->SetVisibility(on ? 1 : 0); }, nullptr,
-		        "Right-click for properties (save / delete)",
-		        [s, nm](const QPoint& g) {              // primary image props: Save + Remove
-		            QMenu m(s->widget);
-		            QAction *aSave = m.addAction("Save image…");
-		            m.addSeparator();
-		            QAction *aRem  = m.addAction("Remove"); // removes image + axes; window stays open
-		            QAction *c = m.exec(g);
-		            if (!c) return;
-		            if (c == aSave) saveObjectDialog(s, "image", nm);
-		            else if (c == aRem) sceneRemoveSurface(s);
-		        });
+		        "Right-click for properties (save / remove)", imgMenu);
 		axesRow();
 		endGroup();
 	}
@@ -1322,22 +1379,29 @@ static void rebuildSceneObjects(Scene *s) {
 	for (size_t ei = 0; ei < s->extras.size(); ++ei) {      // dropped grids / images: one group each
 		auto& ex = s->extras[ei];
 		const QString nm = QString::fromStdString(ex.name);
-		beginGroup(nm, ex.isImage ? IC_Image : IC_Surface);
-		if (ex.isImage) {                                  // dropped image group
+		if (ex.isImage) {                                  // dropped image group — header IS the image handle
 			vtkProp3D *a = ex.actor.Get();
-			makeRow("Image", IC_Image, a && a->GetVisibility() != 0,
+			beginGroupHandle(nm, IC_Image, a && a->GetVisibility() != 0,
+			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
+			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
+			        "Left- or right-click for image properties (incl. Save)");
+			makeRow("Image", IC_Image, a && a->GetVisibility() != 0,   // Image leaf handle kept as a child
 			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
 			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
 			        "Left- or right-click for image properties (incl. Save)",
 			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); });
 			axesRow();
-		} else {                                           // dropped grid group: surface + colorbar + axes
+		} else {                                           // dropped grid group — header mirrors the surface handle
 			vtkProp3D *a = ex.actor.Get();
-			makeRow("Surface", IC_Surface, a && a->GetVisibility() != 0,
-			        [s, a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
+			beginGroupHandle(nm, IC_Surface, a && a->GetVisibility() != 0,
 			        [s](const QPoint&) { toggleShadingFold(s); },          // SAME function as the primary surface
+			        [s, a](const QPoint& g) { gridObjectMenu(s, a, g); },  // right-click: save / delete
+			        "Left-click for Shading · right-click to save / delete");
+			makeRow("Surface", IC_Surface, a && a->GetVisibility() != 0,   // Surface leaf handle kept as a child
+			        [s, a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
+			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click for Shading · right-click to save / delete",
-			        [s, a](const QPoint& g) { gridObjectMenu(s, a, g); }); // right-click: save / delete
+			        [s, a](const QPoint& g) { gridObjectMenu(s, a, g); });
 			if (ex.drape) addRow("Image drape", ex.drape, IC_Image);
 			colorbarRow(&ex.showBar, ex.tag);    // resolve by the grid's UNIQUE tag, not its (shifting) index
 			axesRow();
@@ -1418,7 +1482,14 @@ static void rebuildSceneObjects(Scene *s) {
 		// A fault that carries a surface-projection and/or a 3-D plane becomes its OWN collapsible group
 		// (trace + surface projection + fault plane as children). A bare 2-point trace stays a top-level row.
 		const bool faultGroup = pg.isFault && (pg.faultPlane || pg.faultPlane3D);
-		if (faultGroup) beginGroup(nm, ic);
+		if (faultGroup) {                                   // container checkbox toggles trace + projection + plane at once
+			LineRef cref = lr; QString cnm = nm;
+			const bool anyVis = pg.line && pg.line->GetVisibility() != 0;
+			beginGroupHandle(nm, ic, anyVis,
+			        [s, cref, cnm](const QPoint& g) { popupLineObjectMenu(s, cref, cnm, g); },
+			        [s, cref, cnm](const QPoint& g) { popupLineObjectMenu(s, cref, cnm, g); },
+			        "Left- or right-click for fault properties");
+		}
 
 		// Custom row (not addRow) so the filled FACE follows the outline's checkbox; the fill's own
 		// opacity still gates whether anything is actually drawn (opacity 0 = no fill).
