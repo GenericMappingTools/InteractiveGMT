@@ -1983,6 +1983,27 @@ GMTVTK_API int gmtvtk_fault_plane_test(void *scene, double width, double dip, do
 	if (out) for (int i = 0; i < 6; ++i) out[i] = 0;
 	return 0;
 }
+
+// test hook: verify NswingDialog's "only RUN executes" invariant for real, instead of by reading the
+// source. Builds a real (never shown) NswingDialog, sends a SYNTHETIC Return keypress straight into
+// its Name field via QApplication::sendEvent (same technique as gmtvtk_meca_drag_test/
+// gmtvtk_symbol_ui_drag_test — drive the real widget, don't call internals directly), and reports
+// whether the dialog ended up ACCEPTED as a result. Never touches g_juliaNswing/GMT.
+GMTVTK_API int gmtvtk_nswing_enter_test(void *scene) {
+	Scene *s = static_cast<Scene*>(scene);
+	NswingDialog dlg(nullptr, s);
+	dlg.show();                                 // QDialog::keyPressEvent's default-button search checks
+	QApplication::processEvents();              // isVisible() — an unshown dialog would false-negative
+	dlg.nameEdit->setFocus();
+	QApplication::processEvents();
+	QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+	QApplication::sendEvent(dlg.nameEdit, &press);
+	QKeyEvent release(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
+	QApplication::sendEvent(dlg.nameEdit, &release);
+	int ran = dlg.result() == QDialog::Accepted ? 1 : 0;
+	dlg.hide();
+	return ran;
+}
 #endif // GMTVTK_TEST_API
 
 // Register the grid-metadata callback used by the grdsample dialog's "OR Ref grid" picker.

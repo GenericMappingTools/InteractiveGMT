@@ -120,6 +120,16 @@ end
 # Remember that `path` is now shown in window `handle` (so a repeat open is ignored).
 _mark_file_open(path::AbstractString, handle::Ptr{Cvoid}) = (_OPEN_FILES[_filekey(path)] = handle; nothing)
 
+# Reverse lookup: the source file path a live window was opened from (empty if it wasn't opened
+# from a file, e.g. a computed/Okada grid, or a demo). Used by NSWING to default its output Name
+# stem beside the bathymetry grid's own file.
+function _path_for_handle(h::Ptr{Cvoid})::String
+	for (k, v) in _OPEN_FILES
+		v == h && return k
+	end
+	return ""
+end
+
 # Push a just-opened file onto the viewer's persistent Recent Files list (File > Recent Files),
 # tagged by category (0 = grid, 1 = image, 2 = dataset/fv) so the menu can group it. Best-effort:
 # a missing DLL symbol or bad path never blocks the open.

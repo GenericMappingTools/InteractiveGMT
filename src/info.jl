@@ -40,3 +40,24 @@ function _info_text(fig, mode::AbstractString)::Nothing
 	print(r === nothing ? "($mode returned nothing)" : _info_to_string(r))
 	return nothing
 end
+
+# Same report, but for a NAMED Scene Objects grid handle (base surface or an extra/nested grid) rather
+# than "the window's active fig" — the grid handle's own "Info (grdinfo)…" menu entry (50_scene.cpp
+# surfaceObjectMenu/gridObjectMenu), reached via the _SCENE_OBJS registry (_find_object, savefile.jl)
+# so it works for extras that a QtFigure/QtImage alone can't reach.
+function _info_text_named(scene::Ptr{Cvoid}, name::AbstractString, mode::AbstractString)::Nothing
+	G = _find_object(scene, :grid, name)
+	if G === nothing
+		print("No grid named \"$name\" found.")
+		return nothing
+	end
+	local r
+	try
+		r = (mode == "gdalinfo") ? GMT.gdalinfo(G) : GMT.grdinfo(G)
+	catch e
+		print("$mode failed: ", sprint(showerror, e))
+		return nothing
+	end
+	print(r === nothing ? "($mode returned nothing)" : _info_to_string(r))
+	return nothing
+end

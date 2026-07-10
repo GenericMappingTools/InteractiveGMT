@@ -5,6 +5,7 @@ static void textApplyProps(Scene *s, TextLabel& tl); // 85_polygon.cpp: re-apply
 static void deleteSlipGroup(Scene *s, const QString& groupName); // 85_polygon.cpp: delete all patches in a slip model
 static void deleteMecaGroup(Scene *s, const QString& groupName); // 85_polygon.cpp: delete a focal-mechanism batch
 static void mecaGroupPropsDialog(Scene *s, const QString& groupName, const QPoint& gp); // defined below
+static void showInfoText(QWidget *parent, const QString &title, const QString &text); // 70_window.cpp: read-only text popup
 
 // Append one execution-error line to a window's read-only "Errors" tab and raise it (so a failure in
 // a background op is VISIBLE in the window, not just on the REPL's stderr). Shared by the
@@ -876,11 +877,25 @@ static void runNestedTransplant(Scene *s, const QString& nm) {
 	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
 }
 
+// Run grdinfo on the named grid (Julia InteractiveGMT._info_text_named, info.jl) and show the report
+// in the same read-only popup the toolbar 'i' button uses. Shared by the base-surface and extra-grid
+// handle menus — one grdinfo entry point, not a per-menu reimplementation.
+static void runGridInfo(Scene *s, const QString &nm) {
+	if (!g_juliaEval) { if (s->win) s->win->statusBar()->showMessage("Info: Julia eval not registered", 3000); return; }
+	const QString cmd = QString("InteractiveGMT._info_text_named(Ptr{Cvoid}(UInt(%1)),raw\"%2\",\"grdinfo\")")
+		.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(nm);
+	std::vector<char> buf(1 << 16);
+	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	QString txt = QString::fromUtf8(buf.data(), n < 0 ? -n : n);
+	showInfoText(s->win, "grdinfo — " + nm, txt);
+}
+
 // Properties menu for the BASE relief surface row: Save, grid-pile stacking, and Remove.
 static void surfaceObjectMenu(Scene *s, const QPoint& gp) {
 	const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
 	QMenu m(s->widget);
 	QAction *aSave = m.addAction("Save grid…");
+	QAction *aInfo = m.addAction("Info (grdinfo)…");
 	QAction *aMove = m.addAction("Move to new window");      // re-open this grid in a fresh iGMT window, then drop it here
 	QAction *aTransplant = nullptr;                          // present iff this base grid is a nested blank (moved here)
 	if (g_juliaEval && gridIsNestedBlank(nm))
@@ -892,6 +907,7 @@ static void surfaceObjectMenu(Scene *s, const QPoint& gp) {
 	QAction *c = m.exec(gp);
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
+	if (c == aInfo) { runGridInfo(s, nm); return; }
 	if (aTransplant && c == aTransplant) { runNestedTransplant(s, nm); return; }
 	if (c == aMove) { if (moveObjectToNewWindow(s, "grid", nm)) sceneRemoveSurface(s); return; }
 	if (c == aRem) sceneRemoveSurface(s);
@@ -906,6 +922,7 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	const QString nm = QString::fromStdString(s->extras[idx].name);
 	QMenu m(s->widget);
 	QAction *aSave  = m.addAction("Save grid…");
+	QAction *aInfo  = m.addAction("Info (grdinfo)…");
 	QAction *aMove  = m.addAction("Move to new window"); // re-open this grid in a fresh iGMT window, then drop it here
 	// A "Nested grid N" blank grid (created hollow by the Nested-grids tool) can be filled: implant a
 	// 2nd grid, sampled onto this grid's nodes, REPLACING the blank nodes. Julia removes this blank
@@ -920,6 +937,7 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *c = m.exec(g);
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
+	if (c == aInfo) { runGridInfo(s, nm); return; }
 	if (aTransplant && c == aTransplant) { runNestedTransplant(s, nm); return; }  // fill blank nested grid
 	if (c == aMove || c == aDel) {
 		// Move = open this grid in a new window, then delete it from here; a failed move keeps it.

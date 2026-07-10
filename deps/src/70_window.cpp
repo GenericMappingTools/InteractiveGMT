@@ -3043,7 +3043,7 @@ public:
 	QLineEdit *maregInEdit, *maregOutEdit, *cumintEdit;
 	QLineEdit *cyclesEdit, *jumpEdit, *dtEdit, *grnEdit;
 	QComboBox *levelCombo;
-	QListWidget *nestList = nullptr;      // in-scene nested-grid chain (info line per "Nested grid N")
+	std::map<int, QString> nestNames;     // level -> in-scene "Nested grid N" name (populateFromScene)
 	QRadioButton *rGrids, *rAnuga, *rMost;
 	QRadioButton *rSurf, *rTotal;
 	QCheckBox *cMax, *c3D, *cVel, *cMom, *cMareg, *cGeog;
@@ -3080,20 +3080,21 @@ public:
 		levelCombo->addItems({"0 -- level ready to use", "1", "2", "3", "4"});
 		levelCombo->setToolTip("Nesting level of the Nest grid (0 = no nesting / ready to use)");
 		iv->addWidget(levelCombo);
-		// Listbox of the nesting chain: one info line per in-scene "Nested grid N" (name · region · dims).
-		nestList = new QListWidget(gIn);
-		nestList->setToolTip("Nested grids found in this window's Scene Objects (base source + its nests)");
-		nestList->setMaximumHeight(88);
-		iv->addWidget(nestList);
 		v->addWidget(gIn);
 
 		// Seed Source + the nest chain from the window's grids: pick an "Okada z" grid as Source and every
 		// "Nested grid N" (in N order) as the nesting chain, mirroring how the user built them in this window.
+		// Each found "Nested grid N" relabels levelCombo's item N to "N -- level ready to use"; picking that
+		// item copies its grid name into the Nest edit box (nestNames, populateFromScene).
 		populateFromScene();
+		QObject::connect(levelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+			auto it = nestNames.find(idx);
+			if (it != nestNames.end()) nestEdit->setText(it->second);
+		});
 
 		// --- Bordering: pick an (experimental) boundary-condition file (-B) ----------------------
 		auto *btnBorder = new QPushButton("Bordering", this);
-		btnBorder->setToolTip("Select a boundary-condition ASCII file (nswing -B, experimental)");
+		btnBorder->setToolTip("Select a boundary-condition ASCII file (nswing -O, experimental)");
 		QObject::connect(btnBorder, &QPushButton::clicked, this, [this, btnBorder]() {
 			QString p = QFileDialog::getOpenFileName(this, "Select boundary-condition file", prefStartDir(),
 			                                         "BC files (*.dat *.txt);;All files (*)");
@@ -3128,7 +3129,7 @@ public:
 		rTotal = new QRadioButton("Total water",   gFld); rTotal->setToolTip("Grids with total water depth (-D)");
 		auto *gField = new QButtonGroup(this); gField->addButton(rSurf); gField->addButton(rTotal);
 		cMax = new QCheckBox("Max water", gFld); cMax->setToolTip("Also write a grid with the max water level (nswing -M)");
-		c3D  = new QCheckBox("3D file",   gFld); c3D->setToolTip("Save the field as one single 3D netCDF (nswing -Z)");
+		c3D  = new QCheckBox("3D file",   gFld); c3D->setToolTip("Save the field as one single 3D netCDF (nswing -G, no +m)");
 		cVel = new QCheckBox("Velocity",  gFld); cVel->setToolTip("Write velocity grids (-S, sufixes _U/_V)");
 		cMom = new QCheckBox("Momentum",  gFld); cMom->setToolTip("Write momentum grids (-H)");
 		fg->addWidget(rSurf, 0, 0); fg->addWidget(rTotal, 0, 1); fg->addWidget(cMax, 0, 2);
@@ -3166,7 +3167,7 @@ public:
 		auto numEdit = [this](const QString &val) { auto *e = new QLineEdit(val, this); e->setFixedWidth(70); return e; };
 		cyclesEdit = numEdit("1010"); jumpEdit = numEdit("0"); dtEdit = numEdit(""); grnEdit = numEdit("10");
 		cyclesEdit->setToolTip("Number of cycles (nswing -N)");
-		jumpEdit->setToolTip("Do not output before this modeling time, seconds (-J)");
+		jumpEdit->setToolTip("Do not output before this modeling time, seconds (-P)");
 		dtEdit->setToolTip("Time step of the simulation, seconds (-t)");
 		grnEdit->setToolTip("Save grids at this cycle interval (the <int> of -G/-Z)");
 		rg->addWidget(new QLabel("N\xC2\xBA of cycles", gRun), 0, 0); rg->addWidget(cyclesEdit, 0, 1);
@@ -3178,16 +3179,45 @@ public:
 		rg->addWidget(cGeog, 2, 0, 1, 4);
 		v->addWidget(gRun);
 
+		// --- Prefill Name / Time step / Geographic from the window's OWN bathymetry grid ---------
+		// Time step: Mirone's CFL estimate (src_figs/tintol.m L55-58): dtCFL = dx / sqrt(|zmin|*g) / 2,
+		// dx = min(x_inc,y_inc) in METRES (degrees * 111000 if geographic). Geographic detection mirrors
+		// faultLineGeom's CRS/bbox heuristic above. Name: "tsu" beside the bathymetry's source file.
+		if (scene_) {
+			bool geog = scene_->crsProj4.find("longlat") != std::string::npos ||
+			            scene_->crsProj4.find("latlong") != std::string::npos;
+			if (scene_->crsProj4.empty())
+				geog = (scene_->gx0 >= -180 && scene_->gx1 <= 360 && scene_->gy0 >= -90 && scene_->gy1 <= 90);
+			cGeog->setChecked(geog);
+
+			double dx = std::min(scene_->gdx, scene_->gdy);
+			if (geog) dx *= 111000.0;
+			double depth = std::fabs(scene_->zmin);
+			if (dx > 0 && depth > 0)
+				dtEdit->setText(QString::number(dx / std::sqrt(depth * 9.8) / 2.0, 'f', 3));
+
+			if (g_juliaEval) {
+				std::vector<char> buf(512);
+				int n = g_juliaEval(scene_, "InteractiveGMT._nswing_default_name(fig.h)", buf.data(), (int)buf.size());
+				nameEdit->setText(n > 0 ? QString::fromUtf8(buf.data(), n) : "tsu");
+			} else {
+				nameEdit->setText("tsu");
+			}
+		}
+
 		// Fields/Manning only make sense for the grids target (-G); grey them out otherwise.
 		auto syncFields = [this, gFld]() { gFld->setEnabled(rGrids->isChecked()); };
 		QObject::connect(rGrids, &QRadioButton::toggled, this, [syncFields](bool) { syncFields(); });
 		syncFields();
 
 		// --- RUN / Cancel -----------------------------------------------------------------------
+		// Neither button gets autoDefault/default: RUN launches a real simulation, so pressing Enter
+		// in ANY field (Name, dt, Manning, …) must NEVER trigger it — only an explicit click on RUN.
 		auto *bb = new QDialogButtonBox(this);
 		auto *runBtn = bb->addButton("RUN", QDialogButtonBox::AcceptRole);
-		runBtn->setDefault(true);
-		bb->addButton(QDialogButtonBox::Cancel);
+		runBtn->setAutoDefault(false); runBtn->setDefault(false);
+		auto *cancelBtn = bb->addButton(QDialogButtonBox::Cancel);
+		cancelBtn->setAutoDefault(false); cancelBtn->setDefault(false);
 		QObject::connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
 		QObject::connect(bb, &QDialogButtonBox::accepted, this, [this]() {
 			const QString mode = rGrids->isChecked() ? "grids" : (rAnuga->isChecked() ? "anuga" : "most");
@@ -3249,14 +3279,26 @@ public:
 		}
 		std::sort(nests.begin(), nests.end(), [](auto &a, auto &b) { return a.first < b.first; });
 		for (auto &pr : nests) {
-			const ExtraObj *ex = pr.second;
-			nestList->addItem(QString("%1 · %2/%3/%4/%5 · %6×%7")
-			                  .arg(QString::fromStdString(ex->name))
-			                  .arg(ex->gx0, 0, 'g', 6).arg(ex->gx1, 0, 'g', 6)
-			                  .arg(ex->gy0, 0, 'g', 6).arg(ex->gy1, 0, 'g', 6)
-			                  .arg(ex->gnx).arg(ex->gny));
+			int level = pr.first;
+			const QString name = QString::fromStdString(pr.second->name);
+			if (level < 1 || level >= levelCombo->count()) continue;   // combo only holds levels 0..4
+			levelCombo->setItemText(level, QString("%1 -- level ready to use").arg(level));
+			nestNames[level] = name;
 		}
 		if (!nests.empty()) nestEdit->setText(QString::fromStdString(nests.front().second->name));
+	}
+
+protected:
+	// Enter/Return anywhere in this dialog (any QLineEdit, e.g. Name) must NEVER fire anything except
+	// an explicit RUN click — same law as every other action-button dialog here. Both RUN and Cancel
+	// have autoDefault/default set false above, but QDialog's own built-in Enter handling (search for
+	// a "default" push button and click it) still ends up accepting the dialog regardless — confirmed
+	// LIVE via the gmtvtk_nswing_enter_test hook (90_c_api.cpp): a synthetic Return in the Name field
+	// accepted the dialog before this override existed. Fix: swallow Return/Enter unconditionally at
+	// the dialog level instead of trusting QDialog's default-button search.
+	void keyPressEvent(QKeyEvent *e) override {
+		if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) { e->accept(); return; }
+		QDialog::keyPressEvent(e);
 	}
 };
 
@@ -4798,6 +4840,20 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		g_juliaModelSlip(s, fn.toUtf8().constData());
 	});
 
+	// Nested grids — a COPY of the shapes-flyout tool (toolbar keeps its own copy too), reachable
+	// straight from the Tsunamis menu. Built ONCE (parented to win, like mElastic) and just re-added
+	// to mGphy inside *fTsu below — mGphy->clear() runs on every discipline switch, so an action
+	// created fresh inside that lambda would leave stale pointers in s->shapeActs once clear()
+	// deletes the old one. Same SH_RectN kind, same shared exclusive draw-tool group (s->shapeActs),
+	// routed through the same polygonToolToggled.
+	QAction *actNestedGridsTsu = new QAction(makeNestedRectIcon(), "Nested grids", win);
+	actNestedGridsTsu->setCheckable(true);
+	actNestedGridsTsu->setToolTip("Draw a nested-grids rectangle (constrained dimensions + custom "
+	                              "context menus): click one corner, then the opposite corner.");
+	QObject::connect(actNestedGridsTsu, &QAction::toggled,
+		[s, actNestedGridsTsu](bool on) { polygonToolToggled(s, actNestedGridsTsu, Scene::SH_RectN, on); });
+	s->shapeActs.push_back(actNestedGridsTsu);
+
 	auto *fGroup = new std::function<void()>();   // show the discipline chooser
 	auto *fTsu   = new std::function<void()>();    // show Tsunamis
 	auto *fSeis  = new std::function<void()>();    // show Seismology
@@ -4825,7 +4881,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 
 	// Tsunamis discipline — currently just NSWING (port of Mirone's swan_options.m).
-	*fTsu = [mGphy, win, s, backItem, reopen]() {
+	*fTsu = [mGphy, win, s, backItem, reopen, actNestedGridsTsu]() {
 		mGphy->clear();
 		mGphy->setTitle("Tsunamis ▾");
 		backItem();
@@ -4836,6 +4892,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			dlg->setAttribute(Qt::WA_DeleteOnClose);
 			dlg->show();
 		});
+		mGphy->addAction(actNestedGridsTsu);
 		reopen();
 	};
 

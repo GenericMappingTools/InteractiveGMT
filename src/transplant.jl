@@ -242,6 +242,11 @@ function _nested_fill!(G::GMTgrid, I::GMTgrid)
 	sy, sx = size(Isamp.z)
 	r1 = min(r0 + sy - 1, size(G.z, 1));  c1 = min(c0 + sx - 1, size(G.z, 2))
 	@views G.z[r0:r1, c0:c1] .= Isamp.z[1:(r1 - r0 + 1), 1:(c1 - c0 + 1)]
+	# G.z was pasted by hand (not through a GMT call that recomputes the header) — G.range[5:6] (z_min,
+	# z_max) is still the blank grid's stale 0/0 unless refreshed here. This is the bug behind NSWING
+	# reading a "blank" nested grid despite real data in G.z: grdinfo (and anything trusting the header
+	# instead of scanning z) sees z_min=z_max=0.
+	zmn, zmx = extrema(G.z);  G.range[5] = zmn;  G.range[6] = zmx
 	return (r0 = r0, r1 = r1, c0 = c0, c1 = c1)
 end
 

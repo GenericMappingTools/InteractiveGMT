@@ -70,7 +70,7 @@ function _ensure_ext(path::String, want::String, known)
 end
 
 # Write a grid: netCDF/Surfer via gmtwrite, everything else via GDAL (driver inferred from the ext).
-function _save_grid(G, fmt::String, path::String)
+function _save_grid(G, fmt::AbstractString, path::String)
 	if (fmt == "nc")
 		GMT.gmtwrite(path, G)                 # netCDF (GMT's default grid format)
 	elseif (fmt == "surfer")
