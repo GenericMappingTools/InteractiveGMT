@@ -217,19 +217,26 @@ function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant
 
 		x0, x1, y0, y1 = G.range[1], G.range[2], G.range[3], G.range[4]
 		dx, dy = G.inc[1], G.inc[2]
+		xv, yv, ny, nx = _grid_xy(G)
 
-		# Region shared by the blank grid and the implant (grdsample can't leave the implant's extent).
+		# Region shared by the blank grid and the implant (grdsample can't leave the implant's extent),
+		# SNAPPED to the blank grid's own nodes so the sampled block lands on integer node indices.
 		w  = max(x0, I.range[1]);  e  = min(x1, I.range[2])
 		so = max(y0, I.range[3]);  no = min(y1, I.range[4])
 		(e > w && no > so) || error("The implant grid does not overlap the nested grid region.")
+		ci0 = max(0, ceil(Int, (w  - x0) / dx - 1e-6));  ci1 = min(nx - 1, floor(Int, (e  - x0) / dx + 1e-6))
+		ri0 = max(0, ceil(Int, (so - y0) / dy - 1e-6));  ri1 = min(ny - 1, floor(Int, (no - y0) / dy + 1e-6))
+		(ci1 >= ci0 && ri1 >= ri0) || error("The implant grid does not overlap the nested grid region.")
+		ws = x0 + ci0 * dx;  es = x0 + ci1 * dx;  sos = y0 + ri0 * dy;  nos = y0 + ri1 * dy
 
-		# Sample the implant onto THIS grid's node spacing over the overlap, then paste it into a copy of
-		# the blank z (nodes outside the implant footprint keep their blank value).
-		Isamp = GMT.grdsample(I; region=(w, e, so, no), inc=(dx, dy))
-		xv, yv, ny, nx = _grid_xy(G)
+		# Sample the implant onto THIS grid's node spacing AND registration over the overlap. Matching the
+		# registration is CRITICAL: the blank grid is gridline-registered but the implant (e.g. earth_relief)
+		# is often pixel-registered — grdsample would then keep pixel nodes (one fewer per axis), leaving the
+		# top row and right column blank. Paste into a copy of the blank z (outside nodes keep the blank value).
+		Isamp = GMT.grdsample(I; region=(ws, es, sos, nos), inc=(dx, dy),
+		                      registration = (G.registration == 0 ? "g" : "p"))
 		Z  = eltype(G.z) === Float32 ? copy(G.z) : Float32.(G.z)
-		c0 = round(Int, (Isamp.range[1] - x0) / dx) + 1
-		r0 = round(Int, (Isamp.range[3] - y0) / dy) + 1
+		c0 = ci0 + 1;  r0 = ri0 + 1
 		sy, sx = size(Isamp.z)
 		r1 = min(r0 + sy - 1, size(Z, 1));  c1 = min(c0 + sx - 1, size(Z, 2))
 		Z[r0:r1, c0:c1] .= Float32.(Isamp.z[1:(r1 - r0 + 1), 1:(c1 - c0 + 1)])
@@ -240,12 +247,20 @@ function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant
 		Gout.registration = G.registration
 		Gout.title = name
 
-		# Replace the blank grid IN PLACE: drop it (viewer + registry) and re-add the FILLED grid under
-		# the same name. The filled grid builds a real CPT (no solid-colour override) and is visible.
-		ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, name)
+		# Replace the blank grid IN PLACE with the FILLED one (real CPT, visible). WHERE the blank grid
+		# lives decides HOW: an EXTRA grid (its own Scene Objects row, exact name match in the registry)
+		# is dropped + re-added; but after "Move to new window" the SAME nested grid is the window's BASE
+		# surface (registered under name "") — there is no extra to remove, so replace the base in place
+		# (gmtvtk_replace_base_grid_h). Keeps the option working identically wherever the grid was moved.
 		v = get(_SCENE_OBJS, scene, nothing)
-		v !== nothing && filter!(t -> !(t[1] === :grid && t[2] == name), v)
-		_add_grid_to_scene(scene, Gout, name)
+		is_extra = v !== nothing && any(t -> t[1] === :grid && t[2] == name, v)
+		if is_extra
+			ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, name)
+			v !== nothing && filter!(t -> !(t[1] === :grid && t[2] == name), v)
+			_add_grid_to_scene(scene, Gout, name)
+		else
+			_apply_host_grid!(scene, Gout, "")   # base surface: replace data in place, keep its surfName
+		end
 
 		_viewer_log_error(scene, "Nested grid '$name' filled from $(basename(String(implant_path))).")
 	catch e
