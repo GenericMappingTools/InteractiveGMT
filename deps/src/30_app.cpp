@@ -7,29 +7,14 @@ static Scene *g_lastScene = nullptr;   // most-recent scene, for gmtvtk_add_over
 static QProgressDialog *g_progress = nullptr;  // progress dialog for long operations (Okada multi-patch)
 
 // The ONE place that constructs this app's persistent settings store (prefs/dirMRU, Recent Files):
-// ~/.gmt/iGMT.ini — the SAME ~/.gmt directory GMT.jl already reads/writes, not a Windows-registry
-// key or a platform-specific hidden-appdata folder (QSettings(organization, application), the 2-arg
-// convenience constructor, is hardcoded to QSettings::NativeFormat — registry on Windows — and
-// ignores QSettings::setDefaultFormat(); the explicit-fileName constructor sidesteps that entirely).
+// ~/.gmt/iGMT.ini — the SAME ~/.gmt directory GMT.jl already reads/writes. NEVER the Windows registry
+// (QSettings(organization, application), the 2-arg convenience constructor, is hardcoded to
+// QSettings::NativeFormat — registry on Windows — so it must never be used anywhere in this codebase;
+// always go through this explicit-fileName constructor instead).
 static QSettings igmtSettings() {
 	const QString dir = QDir::homePath() + "/.gmt";
 	QDir().mkpath(dir);
-	const QString fn = dir + "/iGMT.ini";
-	// One-time migration from the old registry-backed store (pre-ini-file versions of this app):
-	// only when the new file is still empty of our own keys, so a second run never clobbers
-	// anything the user has already changed under the new store. Uses throwaway QSettings objects
-	// (never returned) so the final `return` below stays a plain elided prvalue construction —
-	// QSettings' copy ctor is deleted, so a named local can't be returned by value here.
-	static bool migrated = false;
-	if (!migrated) {
-		migrated = true;
-		QSettings probe(fn, QSettings::IniFormat);
-		if (!probe.contains("recent/paths") && !probe.contains("prefs/dirMRU") && !probe.contains("prefs/defaultDir")) {
-			QSettings old(QSettings::NativeFormat, QSettings::UserScope, "InteractiveGMT", "i'GMT");
-			for (const QString &k : old.allKeys()) probe.setValue(k, old.value(k));
-		}
-	}
-	return QSettings(fn, QSettings::IniFormat);
+	return QSettings(dir + "/iGMT.ini", QSettings::IniFormat);
 }
 
 // ============================================================================================
@@ -78,12 +63,12 @@ static void rememberStartDir(const QString &path) {
 
 // ---- Preferences scalar settings (File > Preferences). Defined here (early) so every fragment can
 //      read them; the editor dialog lives in 70_window.cpp. Defaults match the combos' first item.
-static QString prefMeasureUnits()  { return QSettings("InteractiveGMT", "i'GMT").value("prefs/measureUnits",  "meters").toString(); }
-static QString prefDistAzimType()  { return QSettings("InteractiveGMT", "i'GMT").value("prefs/distAzimType",  "Ellipsoidal").toString(); }
-static QString prefAzimDir()       { return QSettings("InteractiveGMT", "i'GMT").value("prefs/azimDir",       "Forward").toString(); }
-static QString prefLineThickness() { return QSettings("InteractiveGMT", "i'GMT").value("prefs/lineThickness", "2 pt").toString(); }
-static QString prefLineColor()     { return QSettings("InteractiveGMT", "i'GMT").value("prefs/lineColor",     "Orange").toString(); }
-static QString prefCoastColor()    { return QSettings("InteractiveGMT", "i'GMT").value("prefs/coastColor",    "Black").toString(); }
+static QString prefMeasureUnits()  { return igmtSettings().value("prefs/measureUnits",  "meters").toString(); }
+static QString prefDistAzimType()  { return igmtSettings().value("prefs/distAzimType",  "Ellipsoidal").toString(); }
+static QString prefAzimDir()       { return igmtSettings().value("prefs/azimDir",       "Forward").toString(); }
+static QString prefLineThickness() { return igmtSettings().value("prefs/lineThickness", "2 pt").toString(); }
+static QString prefLineColor()     { return igmtSettings().value("prefs/lineColor",     "Orange").toString(); }
+static QString prefCoastColor()    { return igmtSettings().value("prefs/coastColor",    "Black").toString(); }
 
 // Map the "Default line color" name to RGB (0..1). "Orange" (1.0,0.55,0.0) is the program's original
 // unnamed default line colour, kept FIRST in the combo so the familiar look stays the default. Any
