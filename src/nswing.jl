@@ -143,7 +143,7 @@ end
 # stalls at its next allocation (the Qt pump allocates every tick) until the whole run ends. The only way
 # to keep the window live is a separate PROCESS. Two run modes, chosen by whether the inputs are live grid
 # OBJECTS or plain file paths:
-#   • in-memory grids  -> a persistent Distributed WORKER process runs GMT.gmt("nswing … -V", grids...);
+#   • in-memory grids  -> a persistent Distributed WORKER process runs GMT.gmt("nswing … -v", grids...);
 #                         the grids travel in-memory over the socket (NO temp files).
 #   • all file paths   -> detached `gmt nswing … -V` OS process.
 # Either way the run happens off-process, so the main iGMT window never blocks (on any thread count). The
@@ -281,7 +281,7 @@ end
 # grids + command + log path are interpolated into the expression, so the grids travel as plain data; the
 # expression redirects the worker's own stdout/stderr (incl. libgmt's C output) into the log we tail, runs
 # nswing, and yields the error string ("" on success) back through fetch(fut).
-function _nswing_run_worker(scene::Ptr{Cvoid}, cmdstr::String, grids::Vector{Any})
+function _nswing_run_worker(scene::Ptr{Cvoid}, cmdstr::String, grids::Vector{GMTgrid})
 	@async begin
 		try
 			wid  = _nswing_ensure_worker()
@@ -333,7 +333,7 @@ end
 # with a live progress bar. The nswing GMT module takes its grids as trailing OBJECTS (never as `?`/paths
 # baked into the string): the command carries only bare nesting flags -1 -2 … (one per nest) plus the run
 # options + -V, and the grids ride in the arg list in this order —
-#     gmt("nswing -1 -2 … -G… -N… -t… -f -V",  base_bathy,  source,  nest1,  nest2, …)
+#     gmt("nswing -1 -2 … -G… -N… -t… -f -v",  base_bathy,  source,  nest1,  nest2, …)
 # base_bathy = the window's base grid (layer0), source = the dialog Source grid (e.g. "Okada z"), then the
 # scene's "Nested grid N" chain. `-V` makes nswing print its advance as "NN%" which the watcher parses.
 function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
@@ -361,7 +361,7 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 
 		if base isa GMTgrid
 			# ── object run (the normal case): every grid is a live GMTgrid, passed as a trailing arg ──
-			grids = Any[base]                            # primary #1: base bathymetry (layer0)
+			grids = GMTgrid[base]                        # primary #1: base bathymetry (layer0)
 			srcname = _get(d, "source")
 			if !isempty(srcname)                         # primary #2: the Source grid (e.g. Okada z)
 				src = _nswing_grid_ref(scene, srcname)
@@ -372,7 +372,7 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 				cmd *= " -$(n)"
 			end
 			isempty(opts) || (cmd *= " " * join(opts, " "))
-			cmd *= " -V"
+			cmd *= " -v"
 			append!(grids, GMTgrid[G for (_, G) in nests])   # nest objects, in -1,-2,… order
 
 			_viewer_log_error(scene, "NSWING command: $cmd   [+ $(length(grids)) grid objects]")

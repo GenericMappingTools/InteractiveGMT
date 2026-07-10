@@ -714,7 +714,7 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 		m.addAction("Line properties…", [s, lr]() { showLineProperties(s, lr); });
 		m.addAction(isNestRect ? "Save rectangle…"
 				  : isFault    ? "Save trace fault…"
-				  : (lr.kind == LK_Polygon ? "Save polygon…" : "Save line…"),
+				  : (lr.kind == LK_Polygon && lineClosedRing(s, lr) ? "Save polygon…" : "Save line…"),
 					[s, lr]() { lineSavePoints(s, lr); });   // 2D / 3D (grid-interpolated z)
 		m.addAction("Show data table…",                                      // floating vertex table viewer
 					[s, lr, name]() { showLineDataTable(s, lr, name); });
@@ -777,7 +777,8 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 	else if (lr.kind == LK_Polygon) {
 		// Slip-model patches have no delete action; the GROUP carries it.
 		if (!isSlip) {
-			m.addAction(isNestRect ? "Delete rectangle" : isFault ? "Delete fault trace" : "Delete polygon",
+			m.addAction(isNestRect ? "Delete rectangle" : isFault ? "Delete fault trace"
+					  : lineClosedRing(s, lr) ? "Delete polygon" : "Delete line",
 						[s, a]() { polygonDelete(s, a); });   // Hide = the Scene Objects checkbox
 		}
 	}
