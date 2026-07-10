@@ -1318,16 +1318,20 @@ static void rebuildSceneObjects(Scene *s) {
 
 	// This grid's COLORBAR row: per-grid show/hide intent (*flag = &s->surfShowBar or &ex.showBar,
 	// honoured by refreshGridColorbar when the grid is active) + colormap chooser on the label.
-	auto colorbarRow = [&](bool *flag, int gridSel) {
-		makeRow("Color Bar", IC_ColorBar, *flag,
+	// grpVisible gates the row's INITIAL checkbox so a hidden grid group's children start UNCHECKED,
+	// matching its unchecked container (the sacred law: children mirror the container). A hidden
+	// nested grid must not show a ticked Color Bar. Default true keeps every visible grid unchanged.
+	auto colorbarRow = [&](bool *flag, int gridSel, bool grpVisible = true) {
+		makeRow("Color Bar", IC_ColorBar, *flag && grpVisible,
 		        [s, flag](bool on) { *flag = on; refreshGridColorbar(s); },
 		        [s, gridSel](const QPoint& g) { chooseColormap(s, g, gridSel); },
 		        "Show / hide this grid's colorbar · left-click the label to choose a colormap");
 	};
 	// Per-grid / per-image AXES handle. Properties come LATER; for now the box toggles the cube axes
-	// and the label shows a placeholder. Every grid (and referenced image) carries one.
-	auto axesRow = [&]() {
-		const bool av = s->axes && s->axes->GetVisibility() != 0;
+	// and the label shows a placeholder. Every grid (and referenced image) carries one. grpVisible
+	// gates the initial checkbox so a hidden group's Axes row starts unchecked (see colorbarRow).
+	auto axesRow = [&](bool grpVisible = true) {
+		const bool av = grpVisible && s->axes && s->axes->GetVisibility() != 0;
 		makeRow("Axes", IC_Axes, av,
 		        [s](bool on) { if (s->axes) s->axes->SetVisibility(on ? 1 : 0); },
 		        [s](const QPoint&) { if (s->win) s->win->statusBar()->showMessage("Axes properties — coming soon", 2500); },
@@ -1340,9 +1344,9 @@ static void rebuildSceneObjects(Scene *s) {
 		if (vtkProp3D *sp = surfProp(s)) {                  // base relief grid group — header IS the surface handle
 			const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
 			beginGroupHandle(nm, IC_Surface, sp->GetVisibility() != 0,
-			        [s](const QPoint&) { toggleShadingFold(s); },
+			        nullptr,                                              // container does NOT fold the Shading dock (the Surface leaf does)
 			        [s](const QPoint& g) { surfaceObjectMenu(s, g); },
-			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking");
+			        "Checkbox toggles the whole group · right-click for save / stacking");
 			makeRow("Surface", IC_Surface, sp->GetVisibility() != 0,     // Surface leaf handle kept as a child
 			        [s, sp](bool on) { sp->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
@@ -1394,17 +1398,18 @@ static void rebuildSceneObjects(Scene *s) {
 		} else {                                           // dropped grid group — header mirrors the surface handle
 			vtkProp3D *a = ex.actor.Get();
 			beginGroupHandle(nm, IC_Surface, a && a->GetVisibility() != 0,
-			        [s](const QPoint&) { toggleShadingFold(s); },          // SAME function as the primary surface
+			        nullptr,                                               // container does NOT fold the Shading dock (the Surface leaf does)
 			        [s, a](const QPoint& g) { gridObjectMenu(s, a, g); },  // right-click: save / delete
-			        "Left-click for Shading · right-click to save / delete");
+			        "Checkbox toggles the whole group · right-click to save / delete");
 			makeRow("Surface", IC_Surface, a && a->GetVisibility() != 0,   // Surface leaf handle kept as a child
 			        [s, a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click for Shading · right-click to save / delete",
 			        [s, a](const QPoint& g) { gridObjectMenu(s, a, g); });
 			if (ex.drape) addRow("Image drape", ex.drape, IC_Image);
-			colorbarRow(&ex.showBar, ex.tag);    // resolve by the grid's UNIQUE tag, not its (shifting) index
-			axesRow();
+			const bool gvis = a && a->GetVisibility() != 0;   // hidden grid -> children start unchecked (mirror the container)
+			colorbarRow(&ex.showBar, ex.tag, gvis);    // resolve by the grid's UNIQUE tag, not its (shifting) index
+			axesRow(gvis);
 		}
 		endGroup();
 	}
