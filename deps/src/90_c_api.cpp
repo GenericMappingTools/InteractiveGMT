@@ -580,6 +580,17 @@ GMTVTK_API void gmtvtk_set_title_h(void *handle, const char *title) {
 	s->win->setWindowTitle(QString::fromUtf8(title));
 }
 
+// Set the Scene Objects label of the window's BASE surface. gmtvtk_view_grid always opens the base as
+// the unnamed "Surface"; "Move to new window" re-opens a grid there and then calls this so the moved
+// grid KEEPS its name — and with it every name-driven per-row option (e.g. a "Nested grid N" blank
+// grid's "Transplant 2nd grid…"). Null/empty -> back to the default "Surface".
+GMTVTK_API void gmtvtk_set_surface_name_h(void *handle, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	s->surfName = (name && name[0]) ? name : "";
+	rebuildSceneObjects(s);                 // relabel the base row in the Scene Objects panel
+}
+
 // ============================================================================================
 // Progress dialog for long operations (multi-patch Okada calculation)
 // ============================================================================================

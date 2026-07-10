@@ -170,7 +170,13 @@ function _on_move(scene::Ptr{Cvoid}, req::Cstring)::Cint
         if kind == "grid"
             G = _find_object(scene, :grid, name)
             G === nothing && error("No grid to move in this window")
-            view_grid(G; title = isempty(name) ? "i'GMT" : name)
+            fig = view_grid(G; title = isempty(name) ? "i'GMT" : name)
+            # Carry the grid's NAME to the new window's base surface, so it keeps every name-driven
+            # per-row option (a "Nested grid N" blank grid keeps "Transplant 2nd grid…"). view_grid
+            # opens the base unnamed ("Surface"); this relabels it without re-registering under the
+            # name (base stays registered as "" — _on_nested_transplant's base/extra branch relies on that).
+            isempty(name) || ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid,
+                                   (Ptr{Cvoid}, Cstring), _fig_handle(fig), name)
         else
             error("Move: unknown kind '$kind'")
         end
