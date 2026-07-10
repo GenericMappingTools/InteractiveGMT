@@ -15,6 +15,7 @@ Windows-only (the viewer DLL is a Windows binary).
 module InteractiveGMT
 
 using GMT
+using Distributed: addprocs, workers, rmprocs, remotecall, remotecall_eval
 using PrecompileTools: @setup_workload, @compile_workload
 
 # --- C-API DLL loader (resolved at runtime in __init__; see libgmtvtk.jl) ----------------

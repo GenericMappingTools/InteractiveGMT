@@ -28,6 +28,7 @@
 #include <QPushButton>
 #include <QSurfaceFormat>
 #include <QString>
+#include <QRegularExpression>
 #include <QEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>

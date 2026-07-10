@@ -3043,12 +3043,14 @@ public:
 	QLineEdit *maregInEdit, *maregOutEdit, *cumintEdit;
 	QLineEdit *cyclesEdit, *jumpEdit, *dtEdit, *grnEdit;
 	QComboBox *levelCombo;
+	QListWidget *nestList = nullptr;      // in-scene nested-grid chain (info line per "Nested grid N")
 	QRadioButton *rGrids, *rAnuga, *rMost;
 	QRadioButton *rSurf, *rTotal;
 	QCheckBox *cMax, *c3D, *cVel, *cMom, *cMareg, *cGeog;
 	QString bcPath;                       // "Bordering": optional boundary-condition file (-B)
+	Scene *scene_ = nullptr;              // owning window's scene (grid inventory + RUN callback target)
 
-	NswingDialog(QWidget *parent, Scene * /*scene*/ = nullptr) : QDialog(parent) {
+	NswingDialog(QWidget *parent, Scene *scene = nullptr) : QDialog(parent), scene_(scene) {
 		setWindowTitle("NSWING tsunami options");
 		setMinimumWidth(420);
 		auto *v = new QVBoxLayout(this);
@@ -3078,7 +3080,16 @@ public:
 		levelCombo->addItems({"0 -- level ready to use", "1", "2", "3", "4"});
 		levelCombo->setToolTip("Nesting level of the Nest grid (0 = no nesting / ready to use)");
 		iv->addWidget(levelCombo);
+		// Listbox of the nesting chain: one info line per in-scene "Nested grid N" (name · region · dims).
+		nestList = new QListWidget(gIn);
+		nestList->setToolTip("Nested grids found in this window's Scene Objects (base source + its nests)");
+		nestList->setMaximumHeight(88);
+		iv->addWidget(nestList);
 		v->addWidget(gIn);
+
+		// Seed Source + the nest chain from the window's grids: pick an "Okada z" grid as Source and every
+		// "Nested grid N" (in N order) as the nesting chain, mirroring how the user built them in this window.
+		populateFromScene();
 
 		// --- Bordering: pick an (experimental) boundary-condition file (-B) ----------------------
 		auto *btnBorder = new QPushButton("Bordering", this);
@@ -3205,9 +3216,47 @@ public:
 			kv("grn",      grnEdit->text().trimmed());
 			kv("geog",     cGeog->isChecked()  ? "1" : "0");
 			params = L.join("\n");
+			// Non-modal: the RUN button launches NSWING itself (no exec() return to poll). Fire the Julia
+			// callback here, then close (WA_DeleteOnClose frees the dialog).
+			if (!params.isEmpty() && g_juliaNswing) g_juliaNswing(scene_, params.toUtf8().constData());
+			else if (scene_ && scene_->win) scene_->win->statusBar()->showMessage("NSWING: callback not registered", 3000);
 			accept();
 		});
 		v->addWidget(bb);
+	}
+
+	// Seed the Input-grids widgets from the window's live grids (Scene Objects). Source <- the first grid
+	// named "Okada z…"; the nesting chain <- every "Nested grid N" (in N order), each shown in the listbox
+	// as "name · W/E/S/N · nx×ny". Nest edit gets the first nested grid's name. Grids are in-memory scene
+	// objects (names, not file paths) — this is a convenience default; the user can still browse to files.
+	void populateFromScene() {
+		if (!scene_) return;
+		// Source: base surface + any extra grid whose name starts with "Okada z".
+		auto isOkada = [](const std::string &n) { return QString::fromStdString(n).startsWith("Okada z", Qt::CaseInsensitive); };
+		if (isOkada(scene_->surfName)) srcEdit->setText(QString::fromStdString(scene_->surfName));
+		else {
+			for (auto &ex : scene_->extras) {
+				if (!ex.isImage && isOkada(ex.name)) { srcEdit->setText(QString::fromStdString(ex.name)); break; }
+			}
+		}
+		// Nesting chain: "Nested grid N" grids, ordered by N. Collect (N, &ex) then sort so 1,2,3… line up.
+		QRegularExpression re("^Nested grid (\\d+)$");
+		std::vector<std::pair<int, const ExtraObj *>> nests;
+		for (auto &ex : scene_->extras) {
+			if (ex.isImage) continue;
+			auto m = re.match(QString::fromStdString(ex.name));
+			if (m.hasMatch()) nests.emplace_back(m.captured(1).toInt(), &ex);
+		}
+		std::sort(nests.begin(), nests.end(), [](auto &a, auto &b) { return a.first < b.first; });
+		for (auto &pr : nests) {
+			const ExtraObj *ex = pr.second;
+			nestList->addItem(QString("%1 · %2/%3/%4/%5 · %6×%7")
+			                  .arg(QString::fromStdString(ex->name))
+			                  .arg(ex->gx0, 0, 'g', 6).arg(ex->gx1, 0, 'g', 6)
+			                  .arg(ex->gy0, 0, 'g', 6).arg(ex->gy1, 0, 'g', 6)
+			                  .arg(ex->gnx).arg(ex->gny));
+		}
+		if (!nests.empty()) nestEdit->setText(QString::fromStdString(nests.front().second->name));
 	}
 };
 
@@ -4781,10 +4830,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		mGphy->setTitle("Tsunamis ▾");
 		backItem();
 		mGphy->addAction("NSWING tsunami…", [win, s]() {
-			NswingDialog dlg(win, s);
-			if (dlg.exec() != QDialog::Accepted || dlg.params.isEmpty()) return;
-			if (g_juliaNswing) g_juliaNswing(s, dlg.params.toUtf8().constData());
-			else if (s->win) s->win->statusBar()->showMessage("NSWING: callback not registered", 3000);
+			// Non-modal: the 3-D view stays interactive while options are picked. The dialog fires the
+			// NSWING run itself on RUN (see its accept handler) and frees itself on close.
+			auto *dlg = new NswingDialog(win, s);
+			dlg->setAttribute(Qt::WA_DeleteOnClose);
+			dlg->show();
 		});
 		reopen();
 	};

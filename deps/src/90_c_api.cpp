@@ -614,6 +614,35 @@ GMTVTK_API int gmtvtk_progress_show(int max, const char *title) {
 	return 1;
 }
 
+// Show a NON-MODAL progress dialog with range 0..max (max==0 => an indeterminate "busy" marquee). Unlike
+// gmtvtk_progress_show (application-modal, for a tight synchronous loop), this leaves the main window fully
+// interactive — used for a long asynchronous run (NSWING) whose advance is pushed from a Julia Timer via
+// gmtvtk_progress_update while the run proceeds on a separate task. Returns 1 on success, 0 on failure.
+GMTVTK_API int gmtvtk_progress_show_async(int max, const char *title) {
+	if (!QApplication::instance()) return 0;
+	if (g_progress) { delete g_progress; g_progress = nullptr; }
+	g_progress = new QProgressDialog();
+	g_progress->setWindowTitle(title ? title : "Working");
+	g_progress->setLabelText(title ? title : "Working");
+	g_progress->setRange(0, max > 0 ? max : 0);     // max==0 -> busy marquee (indeterminate)
+	g_progress->setValue(0);
+	g_progress->setMinimumDuration(0);              // show immediately
+	g_progress->setCancelButton(nullptr);           // no cancel button
+	g_progress->setWindowModality(Qt::NonModal);    // main window stays interactive during the run
+	g_progress->show();
+	QApplication::processEvents();
+	return 1;
+}
+
+// Set the progress bar's value AND/OR its label text. value < 0 leaves the value untouched (so a caller
+// can update only the status text — e.g. the live nswing -V line + ETA). label == nullptr leaves the text.
+GMTVTK_API void gmtvtk_progress_status(int value, const char *label) {
+	if (!g_progress) return;
+	if (value >= 0)  g_progress->setValue(value);
+	if (label)       g_progress->setLabelText(QString::fromUtf8(label));
+	QApplication::processEvents();
+}
+
 // Update the progress value. Does nothing if no dialog is shown.
 GMTVTK_API void gmtvtk_progress_update(int value) {
 	if (g_progress) {
