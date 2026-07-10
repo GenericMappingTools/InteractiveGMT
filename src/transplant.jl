@@ -20,9 +20,9 @@
 function _grid_xy(G::GMTgrid)
 	ny, nx = size(G.z)
 	reg    = G.registration       # 0 = gridline, 1 = pixel
-	xv = length(G.x) == nx ? collect(Float64, G.x) :
+	xv = (length(G.x) == nx) ? collect(Float64, G.x) :
 	     collect(G.range[1] + (reg == 1 ? G.inc[1] / 2 : 0.0) .+ (0:nx-1) .* G.inc[1])
-	yv = length(G.y) == ny ? collect(Float64, G.y) :
+	yv = (length(G.y) == ny) ? collect(Float64, G.y) :
 	     collect(G.range[3] + (reg == 1 ? G.inc[2] / 2 : 0.0) .+ (0:ny-1) .* G.inc[2])
 	return xv, yv, ny, nx
 end
@@ -69,20 +69,27 @@ function _transplant_grid(H::GMTgrid, I::GMTgrid; keepres::Bool=true, pad::Int=6
 	gi   = .!isnan.(ZZi)
 
 	XX = vcat(XXs[gs], XXi[gi]);  YY = vcat(YYs[gs], YYi[gi]);  ZZ = vcat(ZZs[gs], ZZi[gi])
-	length(ZZ) < 4 && error("Not enough valid nodes to interpolate the seam.")
+	(length(ZZ) < 4) && error("Not enough valid nodes to interpolate the seam.")
 
 	# gmtmbgrid substitute: minimum-curvature surface with the same tension Mirone uses (-T0.25).
-	Gtile = GMT.surface([XX YY ZZ]; region=(tx[1], tx[end], ty[1], ty[end]),
-	                    inc=(hdx, hdy), tension=0.25)
+	#Gtile = GMT.surface([XX YY ZZ]; region=(tx[1], tx[end], ty[1], ty[end]), inc=(hdx, hdy), tension=0.25)
+	opts = "surface -R$(tx[1])/$(tx[end])/$(ty[1])/$(ty[end]) -I$(hdx)/$(hdy) -T0.25"
+	Gtile = GMT.gmt(opts, [XX YY ZZ])
 
-	# Paste the seam tile back into a copy of the (working) host, addressed by host node index.
+	# Paste the seam tile straight into the (working) host z IN PLACE — no whole-grid copy. addressed
+	# by host node index.
 	hxv, hyv, _, _ = _grid_xy(Hwork)
-	Zout = copy(Hwork.z)
+	Zout = Hwork.z
 	r0 = round(Int, (ty[1] - hyv[1]) / hdy) + 1
 	c0 = round(Int, (tx[1] - hxv[1]) / hdx) + 1
 	gny, gnx = size(Gtile.z)
 	r1 = min(r0 + gny - 1, size(Zout, 1));  c1 = min(c0 + gnx - 1, size(Zout, 2))
-	Zout[r0:r1, c0:c1] .= Float32.(Gtile.z[1:(r1 - r0 + 1), 1:(c1 - c0 + 1)])
+	# Undo needs the PRE-transplant values, but we overwrite Zout in place. When keepres (Hwork===H)
+	# Zout IS the registry host's array, so snapshot ONLY the block about to change here, BEFORE the
+	# paste — the sole small copy, replacing the old wasteful whole-grid copy. (!keepres -> Hwork is a
+	# fresh grdsample grid, H untouched, so no per-block snapshot needed; undo keeps whole H instead.)
+	oz = (Hwork === H) ? copy(Zout[r0:r1, c0:c1]) : nothing
+	Zout[r0:r1, c0:c1] .= Gtile.z[1:(r1 - r0 + 1), 1:(c1 - c0 + 1)]
 
 	Gout = mat2grid(Zout; x=hxv, y=hyv)
 	isdefined(H, :proj4)   && !isempty(H.proj4)   && (Gout.proj4   = H.proj4)
@@ -91,7 +98,7 @@ function _transplant_grid(H::GMTgrid, I::GMTgrid; keepres::Bool=true, pad::Int=6
 	# `block` = the ONLY node rectangle that changed (r0:r1, c0:c1). `samegeom` is true when the host
 	# geometry was untouched (keepres) so those indices also address the ORIGINAL host — the undo then
 	# needs to keep just this block; otherwise (resampled host) the whole grid changed.
-	return Gout, (r0 = r0, r1 = r1, c0 = c0, c1 = c1, samegeom = (Hwork === H))
+	return Gout, (r0 = r0, r1 = r1, c0 = c0, c1 = c1, samegeom = (Hwork === H), oz = oz)
 end
 
 # ── modify-in-place + undo ────────────────────────────────────────────────────────────────────
@@ -128,7 +135,7 @@ function _sync_host_grid!(scene::Ptr{Cvoid}, name::AbstractString, G::GMTgrid)
 	if v !== nothing
 		for i in eachindex(v)
 			k, n, _ = v[i]
-			if k === :grid && (isempty(name) || n == name)
+			if (k === :grid && (isempty(name) || n == name))
 				v[i] = (:grid, n, G);  break
 			end
 		end
@@ -139,7 +146,7 @@ end
 
 # Replace the window's base grid surface IN PLACE (data + render), keeping camera/VE/name. Reuses the
 # same CPT build as a normal grid add so the colours follow the new data range.
-function _apply_host_grid!(scene::Ptr{Cvoid}, G::GMTgrid, name::AbstractString)
+function _apply_host_grid!(scene::Ptr{Cvoid}, G::GMTgrid, name::String)
 	cmap             = _default_cmap(G)
 	cz, crgb, ncolor = _cpt_nodes(G, cmap)
 	z    = eltype(G.z) === Float32 ? G.z : Float32.(G.z)
@@ -148,8 +155,7 @@ function _apply_host_grid!(scene::Ptr{Cvoid}, G::GMTgrid, name::AbstractString)
 	ok = ccall(_fn(:gmtvtk_replace_base_grid_h), Cint,
 		(Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
 		 Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring),
-		scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
-		cz, crgb, Cint(ncolor), String(name))
+		scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog), cz, crgb, Cint(ncolor), name)
 	ok == 0 && error("the viewer rejected the base-grid replace (window closed?)")
 	_sync_host_grid!(scene, name, G)
 	return ok
@@ -160,19 +166,18 @@ end
 # (empty for the menu path) that clips the implant before implanting. The host grid is modified IN
 # PLACE (no new layer); the ORIGINAL host is kept so the operation can be undone (Ctrl+Z or the
 # rectangle's context menu).
-function _on_transplant(scene::Ptr{Cvoid}, implant_path::AbstractString,
-                        res::Integer=1, rectstr::AbstractString="")
+function _on_transplant(scene::Ptr{Cvoid}, implant_path::String, res::Int=1, rectstr::String="")
 	try
 		H = _find_object(scene, :grid, "")
-		H === nothing && error("No host grid in this window to transplant into.")
+		(H === nothing) && error("No host grid in this window to transplant into.")
 
-		I = GMT.gmtread(String(implant_path))
+		I = GMT.gmtread(implant_path)
 		I isa GMTgrid || error("The chosen file is not a grid: $(basename(String(implant_path)))")
 
 		# Optional rectangle clip (the rectangle-handle connection). Intersect the rect with the
 		# implant's own range so grdcut never gets an out-of-range region.
-		rf = split(String(rectstr), '/')
-		if length(rf) == 4 && !any(isempty, rf)
+		rf = split(rectstr, '/')
+		if (length(rf) == 4 && !any(isempty, rf))
 			w, e, s, n = parse.(Float64, rf)
 			w = max(w, I.range[1]);  e = min(e, I.range[2])
 			s = max(s, I.range[3]);  n = min(n, I.range[4])
@@ -182,11 +187,11 @@ function _on_transplant(scene::Ptr{Cvoid}, implant_path::AbstractString,
 		Gout, blk = _transplant_grid(H, I; keepres=(res != 0))
 		name = _host_grid_name(scene)
 
-		# Keep ONLY the original subregion that changed (undo restores it exactly). If the host
-		# geometry itself changed (resample), keep the whole original grid instead.
+		# Keep ONLY the original subregion that changed (undo restores it exactly). The snapshot was
+		# taken BEFORE the in-place paste inside _transplant_grid (blk.oz) — reading H.z here would be
+		# too late (already transplanted). If the host geometry itself changed (resample), keep whole H.
 		_TRANSPLANT_ORIG[scene] = blk.samegeom ?
-			(r0 = blk.r0, r1 = blk.r1, c0 = blk.c0, c1 = blk.c1,
-			 z = copy(H.z[blk.r0:blk.r1, blk.c0:blk.c1])) : H
+			(r0 = blk.r0, r1 = blk.r1, c0 = blk.c0, c1 = blk.c1, z = blk.oz) : H
 		_apply_host_grid!(scene, Gout, name)
 		_set_transplant_undo(scene, true)     # an undo is now available (Ctrl+Z / rectangle menu)
 
@@ -206,60 +211,65 @@ end
 # grid's own nodes and REPLACE the blank values. Nodes the implant doesn't cover keep their blank value.
 # `gname` = the blank grid's Scene Objects name ("Nested grid N"); `implant_path` = grid to sample from.
 # The blank grid is dropped (viewer + registry) and a FILLED grid re-added under the SAME name (visible).
-function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant_path::AbstractString)
+
+# Pure core (no scene/registry/ccall — unit-tested): SAMPLE implant `I` onto blank grid `G`'s own node
+# spacing+registration over their overlap and write it INTO `G.z` IN PLACE. The blank grid is discarded
+# regardless, so we fill its OWN z — no copy, no fresh GMTgrid (G already carries the right
+# proj4/wkt/registration/axes). Nodes the implant doesn't cover keep their blank value. grdsample ALWAYS
+# returns a Float32 grid, so Isamp.z pastes straight in; only convert G.z if it somehow isn't Float32.
+# Returns the (r0,r1,c0,c1) node block filled (1-based). Throws if the grids don't overlap.
+function _nested_fill!(G::GMTgrid, I::GMTgrid)
+	x0, x1, y0, y1 = G.range[1], G.range[2], G.range[3], G.range[4]
+	dx, dy = G.inc[1], G.inc[2]
+	ny, nx = size(G.z)
+
+	# Region shared by the blank grid and the implant (grdsample can't leave the implant's extent),
+	# SNAPPED to the blank grid's own nodes so the sampled block lands on integer node indices.
+	w  = max(x0, I.range[1]);  e  = min(x1, I.range[2])
+	so = max(y0, I.range[3]);  no = min(y1, I.range[4])
+	(e > w && no > so) || error("The implant grid does not overlap the nested grid region.")
+	ci0 = max(0, ceil(Int, (w  - x0) / dx - 1e-6));  ci1 = min(nx - 1, floor(Int, (e  - x0) / dx + 1e-6))
+	ri0 = max(0, ceil(Int, (so - y0) / dy - 1e-6));  ri1 = min(ny - 1, floor(Int, (no - y0) / dy + 1e-6))
+	(ci1 >= ci0 && ri1 >= ri0) || error("The implant grid does not overlap the nested grid region.")
+	ws = x0 + ci0 * dx;  es = x0 + ci1 * dx;  sos = y0 + ri0 * dy;  nos = y0 + ri1 * dy
+
+	# Match registration: the blank grid is gridline-registered but the implant (e.g. earth_relief) is
+	# often pixel-registered — grdsample would then keep pixel nodes (one fewer per axis), leaving the
+	# top row and right column blank.
+	Isamp = GMT.grdsample(I; region=(ws, es, sos, nos), inc=(dx, dy),
+	                      registration = (G.registration == 0 ? "g" : "p"))
+	c0 = ci0 + 1;  r0 = ri0 + 1
+	sy, sx = size(Isamp.z)
+	r1 = min(r0 + sy - 1, size(G.z, 1));  c1 = min(c0 + sx - 1, size(G.z, 2))
+	@views G.z[r0:r1, c0:c1] .= Isamp.z[1:(r1 - r0 + 1), 1:(c1 - c0 + 1)]
+	return (r0 = r0, r1 = r1, c0 = c0, c1 = c1)
+end
+
+function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant_path::String)
 	try
 		name = String(gname)
 		G = _find_object(scene, :grid, name)
 		(G isa GMTgrid) || error("Nested blank grid '$name' not found in this window.")
 
-		I = GMT.gmtread(String(implant_path))
-		I isa GMTgrid || error("The chosen file is not a grid: $(basename(String(implant_path)))")
+		I = GMT.gmtread(implant_path)
+		I isa GMTgrid || error("The chosen file is not a grid: $(basename(implant_path))")
 
-		x0, x1, y0, y1 = G.range[1], G.range[2], G.range[3], G.range[4]
-		dx, dy = G.inc[1], G.inc[2]
-		xv, yv, ny, nx = _grid_xy(G)
+		_nested_fill!(G, I)      # fill the blank grid IN PLACE from the implant
+		G.title = name
 
-		# Region shared by the blank grid and the implant (grdsample can't leave the implant's extent),
-		# SNAPPED to the blank grid's own nodes so the sampled block lands on integer node indices.
-		w  = max(x0, I.range[1]);  e  = min(x1, I.range[2])
-		so = max(y0, I.range[3]);  no = min(y1, I.range[4])
-		(e > w && no > so) || error("The implant grid does not overlap the nested grid region.")
-		ci0 = max(0, ceil(Int, (w  - x0) / dx - 1e-6));  ci1 = min(nx - 1, floor(Int, (e  - x0) / dx + 1e-6))
-		ri0 = max(0, ceil(Int, (so - y0) / dy - 1e-6));  ri1 = min(ny - 1, floor(Int, (no - y0) / dy + 1e-6))
-		(ci1 >= ci0 && ri1 >= ri0) || error("The implant grid does not overlap the nested grid region.")
-		ws = x0 + ci0 * dx;  es = x0 + ci1 * dx;  sos = y0 + ri0 * dy;  nos = y0 + ri1 * dy
-
-		# Sample the implant onto THIS grid's node spacing AND registration over the overlap. Matching the
-		# registration is CRITICAL: the blank grid is gridline-registered but the implant (e.g. earth_relief)
-		# is often pixel-registered — grdsample would then keep pixel nodes (one fewer per axis), leaving the
-		# top row and right column blank. Paste into a copy of the blank z (outside nodes keep the blank value).
-		Isamp = GMT.grdsample(I; region=(ws, es, sos, nos), inc=(dx, dy),
-		                      registration = (G.registration == 0 ? "g" : "p"))
-		Z  = eltype(G.z) === Float32 ? copy(G.z) : Float32.(G.z)
-		c0 = ci0 + 1;  r0 = ri0 + 1
-		sy, sx = size(Isamp.z)
-		r1 = min(r0 + sy - 1, size(Z, 1));  c1 = min(c0 + sx - 1, size(Z, 2))
-		Z[r0:r1, c0:c1] .= Float32.(Isamp.z[1:(r1 - r0 + 1), 1:(c1 - c0 + 1)])
-
-		Gout = mat2grid(Z; x=xv, y=yv)
-		isdefined(G, :proj4) && !isempty(G.proj4) && (Gout.proj4 = G.proj4)
-		isdefined(G, :wkt)   && !isempty(G.wkt)   && (Gout.wkt   = G.wkt)
-		Gout.registration = G.registration
-		Gout.title = name
-
-		# Replace the blank grid IN PLACE with the FILLED one (real CPT, visible). WHERE the blank grid
-		# lives decides HOW: an EXTRA grid (its own Scene Objects row, exact name match in the registry)
-		# is dropped + re-added; but after "Move to new window" the SAME nested grid is the window's BASE
-		# surface (registered under name "") — there is no extra to remove, so replace the base in place
-		# (gmtvtk_replace_base_grid_h). Keeps the option working identically wherever the grid was moved.
+		# Show the now-FILLED grid (real CPT, visible). WHERE the blank grid lives decides HOW: an EXTRA
+		# grid (its own Scene Objects row, exact name match in the registry) is dropped + re-added; but
+		# after "Move to new window" the SAME nested grid is the window's BASE surface (registered under
+		# name "") — there is no extra to remove, so replace the base in place (gmtvtk_replace_base_grid_h).
+		# Keeps the option working identically wherever the grid was moved.
 		v = get(_SCENE_OBJS, scene, nothing)
 		is_extra = v !== nothing && any(t -> t[1] === :grid && t[2] == name, v)
 		if is_extra
 			ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, name)
 			v !== nothing && filter!(t -> !(t[1] === :grid && t[2] == name), v)
-			_add_grid_to_scene(scene, Gout, name)
+			_add_grid_to_scene(scene, G, name)
 		else
-			_apply_host_grid!(scene, Gout, "")   # base surface: replace data in place, keep its surfName
+			_apply_host_grid!(scene, G, "")   # base surface: replace data in place, keep its surfName
 		end
 
 		_viewer_log_error(scene, "Nested grid '$name' filled from $(basename(String(implant_path))).")
@@ -275,23 +285,20 @@ end
 function _on_transplant_undo(scene::Ptr{Cvoid})
 	try
 		u = get(_TRANSPLANT_ORIG, scene, nothing)
-		if u === nothing
+		if (u === nothing)
 			_viewer_log_error(scene, "Transplant: nothing to undo.")
 			return nothing
 		end
 		name = _host_grid_name(scene)
-		if u isa GMTgrid                      # whole-grid case (host geometry had changed)
+		if (u isa GMTgrid)                    # whole-grid case (host geometry had changed)
 			_apply_host_grid!(scene, u, name)
 		else                                  # paste the kept original subregion back into the grid
 			G = _find_object(scene, :grid, "")
-			G === nothing && error("No host grid in this window to undo into.")
-			Z = copy(G.z)
-			Z[u.r0:u.r1, u.c0:u.c1] .= u.z
-			G0 = mat2grid(Z; x=collect(G.x), y=collect(G.y))
-			isdefined(G, :proj4) && !isempty(G.proj4) && (G0.proj4 = G.proj4)
-			isdefined(G, :wkt)   && !isempty(G.wkt)   && (G0.wkt   = G.wkt)
-			G0.registration = G.registration
-			_apply_host_grid!(scene, G0, name)
+			(G === nothing) && error("No host grid in this window to undo into.")
+			# Restore the changed block IN PLACE — no copy, no fresh GMTgrid. G (the transplanted host)
+			# is replaced by _apply_host_grid! right after, and already carries proj4/wkt/registration.
+			@views G.z[u.r0:u.r1, u.c0:u.c1] .= u.z
+			_apply_host_grid!(scene, G, name)
 		end
 		delete!(_TRANSPLANT_ORIG, scene)
 		_set_transplant_undo(scene, false)    # nothing left to undo -> hide the rectangle-menu entry
