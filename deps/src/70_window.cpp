@@ -3046,7 +3046,7 @@ public:
 	std::map<int, QString> nestNames;     // level -> in-scene "layerN" name (populateFromScene)
 	QRadioButton *rGrids, *rAnuga, *rMost;
 	QRadioButton *rSurf, *rTotal;
-	QCheckBox *cMax, *c3D, *cVel, *cMom, *cMareg, *cGeog;
+	QCheckBox *cMax, *cVel, *cMom, *cMareg, *cGeog;
 	QString bcPath;                       // "Bordering": optional boundary-condition file (-B)
 	Scene *scene_ = nullptr;              // owning window's scene (grid inventory + RUN callback target)
 
@@ -3077,14 +3077,14 @@ public:
 		iv->addLayout(fileRow("Source", srcEdit,  "Grid files (*.grd *.nc);;All files (*)"));
 		iv->addLayout(fileRow("Nest",   nestEdit, "Grid files (*.grd *.nc);;All files (*)"));
 		levelCombo = new QComboBox(gIn);
-		levelCombo->addItems({"0 -- level ready to use", "1", "2", "3", "4"});
+		levelCombo->addItems({"0 -- level ready to use", "1", "2", "3", "4", "5"});
 		levelCombo->setToolTip("Nesting level of the Nest grid (0 = no nesting / ready to use)");
 		iv->addWidget(levelCombo);
 		v->addWidget(gIn);
 
 		// Seed Source + the nest chain from the window's grids: pick an "Okada z" grid as Source and every
-		// "layerN" (in N order) as the nesting chain, mirroring how the user built them in this window.
-		// Each found "layerN" relabels levelCombo's item N to "N -- level ready to use"; picking that
+		// FILLED (non-all-zero) "layerN" (in N order) as the nesting chain, mirroring how the user built
+		// them in this window. Each found "layerN" relabels levelCombo's item N to "N -- level ready to use"; picking that
 		// item copies its grid name into the Nest edit box (nestNames, populateFromScene).
 		populateFromScene();
 		QObject::connect(levelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
@@ -3106,8 +3106,8 @@ public:
 		auto *gOut = new QGroupBox("Output", this);
 		auto *ov   = new QVBoxLayout(gOut);
 		auto *orow = new QHBoxLayout();
-		rGrids = new QRadioButton("Output grids", gOut); rGrids->setChecked(true);
-		rGrids->setToolTip("Save the field as a series of grids (nswing -G)");
+		rGrids = new QRadioButton("3D nc", gOut); rGrids->setChecked(true);
+		rGrids->setToolTip("Save simulation in a 3D betCDF file");
 		rAnuga = new QRadioButton("ANUGA .sww", gOut); rAnuga->setToolTip("Single netCDF in ANUGA .sww format (-A)");
 		rMost  = new QRadioButton("MOST .nc", gOut);   rMost->setToolTip("MOST netCDF triplet (-n)");
 		auto *gOutMode = new QButtonGroup(this);
@@ -3129,11 +3129,10 @@ public:
 		rTotal = new QRadioButton("Total water",   gFld); rTotal->setToolTip("Grids with total water depth (-D)");
 		auto *gField = new QButtonGroup(this); gField->addButton(rSurf); gField->addButton(rTotal);
 		cMax = new QCheckBox("Max water", gFld); cMax->setToolTip("Also write a grid with the max water level (nswing -M)");
-		c3D  = new QCheckBox("3D file",   gFld); c3D->setToolTip("Save the field as one single 3D netCDF (nswing -G, no +m)");
 		cVel = new QCheckBox("Velocity",  gFld); cVel->setToolTip("Write velocity grids (-S, sufixes _U/_V)");
 		cMom = new QCheckBox("Momentum",  gFld); cMom->setToolTip("Write momentum grids (-H)");
 		fg->addWidget(rSurf, 0, 0); fg->addWidget(rTotal, 0, 1); fg->addWidget(cMax, 0, 2);
-		fg->addWidget(c3D,   1, 0); fg->addWidget(cVel,   1, 1); fg->addWidget(cMom, 1, 2);
+		fg->addWidget(cVel,  1, 0); fg->addWidget(cMom, 1, 1);
 		// Manning friction (-X) — the entry missing from the original window.
 		auto *mrow = new QHBoxLayout();
 		mrow->addWidget(new QLabel("Manning friction", gFld));
@@ -3232,7 +3231,6 @@ public:
 			kv("name",     nameEdit->text().trimmed());
 			kv("field",    field);
 			kv("max",      cMax->isChecked()   ? "1" : "0");
-			kv("netcdf3d", c3D->isChecked()    ? "1" : "0");
 			kv("velocity", cVel->isChecked()   ? "1" : "0");
 			kv("momentum", cMom->isChecked()   ? "1" : "0");
 			kv("manning",  manningEdit->text().trimmed());
@@ -3270,18 +3268,24 @@ public:
 			}
 		}
 		// Nesting chain: "layerN" grids, ordered by N. Collect (N, &ex) then sort so 1,2,3… line up.
+		// A freshly-made "layerN" is a literal all-zero placeholder (nestCreateBlankGrid, 55_lineprops.cpp)
+		// until "Transplant 2nd grid…" fills it with real bathymetry — skip those here so the dialog never
+		// offers a still-blank layer as a ready nesting level (nswing would silently run over zero bathymetry
+		// there; the real guard is _on_nswing's blank check, but the dialog shouldn't seed one as "ready").
 		QRegularExpression re("^layer(\\d+)$");
 		std::vector<std::pair<int, const ExtraObj *>> nests;
 		for (auto &ex : scene_->extras) {
 			if (ex.isImage) continue;
 			auto m = re.match(QString::fromStdString(ex.name));
-			if (m.hasMatch()) nests.emplace_back(m.captured(1).toInt(), &ex);
+			if (!m.hasMatch()) continue;
+			if (std::all_of(ex.gridZ.begin(), ex.gridZ.end(), [](float v) { return v == 0.0f; })) continue;
+			nests.emplace_back(m.captured(1).toInt(), &ex);
 		}
 		std::sort(nests.begin(), nests.end(), [](auto &a, auto &b) { return a.first < b.first; });
 		for (auto &pr : nests) {
 			int level = pr.first;
 			const QString name = QString::fromStdString(pr.second->name);
-			if (level < 1 || level >= levelCombo->count()) continue;   // combo only holds levels 0..4
+			if (level < 1 || level >= levelCombo->count()) continue;   // combo only holds levels 0..5
 			levelCombo->setItemText(level, QString("%1 -- level ready to use").arg(level));
 			nestNames[level] = name;
 		}

@@ -70,7 +70,8 @@ function _nswing_opts(d::Dict{String,String})
 		stem = isempty(name) ? "tsu_time_" : name
 		push!(args, "-G$(stem),$(grn)")                  # nswing -G<name>,<int> — plain stem, no +m
 		_get(d, "field") == "total" && push!(args, "-D") # total water depth
-		_on(d, "max")      && push!(args, "-M")          # max water level grid
+		_on(d, "max")      && push!(args, "-M")          # max water level grid (Max water checkbox)
+		append!(args, ("-M-", "-M+"))                    # min / max-positive water level grids (always on)
 		_on(d, "velocity") && push!(args, "-S")          # velocity grids (_U/_V)
 		_on(d, "momentum") && push!(args, "-H")          # momentum grids
 	elseif mode == "anuga"
