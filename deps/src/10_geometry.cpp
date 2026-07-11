@@ -537,6 +537,7 @@ struct Scene {
 		int  coord = 0;                                  // coordCombo index: 0 = Geogs, 1 = Cart
 	};
 	FaultDlgState faultDlg;
+	QString nswingParams;                               // NSWING dialog fields, saved on close, restored on reopen (raw "key=value\n…" block)
 	QWidget *elasticDlg = nullptr;                      // open (non-modal) Vertical elastic deformation dialog, if any
 	QWidget *focalStudioDlg = nullptr;                  // open (non-modal) Focal Meca Studio demo dialog, if any
 };

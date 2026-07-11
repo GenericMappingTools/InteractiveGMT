@@ -3048,7 +3048,9 @@ public:
 	QRadioButton *rSurf, *rTotal;
 	QCheckBox *cMax, *cVel, *cMom, *cMareg, *cGeog, *cCoriolis;
 	QString bcPath;                       // "Bordering": optional boundary-condition file (-B)
+	QPushButton *btnBorder = nullptr;     // label mirrors bcPath ("Bordering" / "Bordering: <file>")
 	Scene *scene_ = nullptr;              // owning window's scene (grid inventory + RUN callback target)
+	std::map<QLineEdit*, std::function<void()>> fileBrowsers;   // edit -> its "..." browse action (fileRow); double-click runs it too
 
 	NswingDialog(QWidget *parent, Scene *scene = nullptr) : QDialog(parent), scene_(scene) {
 		setWindowTitle("NSWING tsunami options");
@@ -3064,10 +3066,13 @@ public:
 			h->addWidget(edit);
 			auto *btn = new QToolButton(this); btn->setText("...");
 			h->addWidget(btn);
-			QObject::connect(btn, &QToolButton::clicked, this, [this, edit, filter]() {
+			auto browse = [this, edit, filter]() {
 				QString p = QFileDialog::getOpenFileName(this, "Select file", prefStartDir(), filter);
 				if (!p.isEmpty()) { edit->setText(p); rememberStartDir(p); }
-			});
+			};
+			QObject::connect(btn, &QToolButton::clicked, this, browse);
+			edit->installEventFilter(this);      // double-click on the box itself also opens the picker
+			fileBrowsers[edit] = browse;
 			return h;
 		};
 
@@ -3102,9 +3107,9 @@ public:
 		showLevel(levelCombo->currentIndex());
 
 		// --- Bordering: pick an (experimental) boundary-condition file (-B) ----------------------
-		auto *btnBorder = new QPushButton("Bordering", this);
+		btnBorder = new QPushButton("Bordering", this);
 		btnBorder->setToolTip("Select a boundary-condition ASCII file (nswing -O, experimental)");
-		QObject::connect(btnBorder, &QPushButton::clicked, this, [this, btnBorder]() {
+		QObject::connect(btnBorder, &QPushButton::clicked, this, [this]() {
 			QString p = QFileDialog::getOpenFileName(this, "Select boundary-condition file", prefStartDir(),
 			                                         "BC files (*.dat *.txt);;All files (*)");
 			if (!p.isEmpty()) { bcPath = p; rememberStartDir(p); btnBorder->setText("Bordering: " + QFileInfo(p).fileName()); }
@@ -3337,6 +3342,25 @@ public:
 		btnRow->addStretch();
 		btnRow->addWidget(runBtn);
 		v->addLayout(btnRow);
+
+		// Restore this window's last-typed fields (scene_->nswingParams, saved below on close) — applied
+		// LAST so it overrides every default/scene-derived seed above, verbatim, including Source/Nest/
+		// level/bc. QDialog's default closeEvent calls reject() for the title-bar X regardless of
+		// show()-vs-exec(), so `rejected` alone catches every close (RUN never calls accept()/close()
+		// itself, per this dialog's one-instance-per-window design, comment above).
+		if (scene_ && !scene_->nswingParams.isEmpty()) applyParams(scene_->nswingParams);
+		QObject::connect(this, &QDialog::rejected, this, [this]{
+			if (scene_) scene_->nswingParams = collectParams();
+		});
+	}
+
+	// Double-click on a fileRow edit box opens the same "..." picker (fileBrowsers, set up in fileRow).
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		if (ev->type() == QEvent::MouseButtonDblClick) {
+			auto it = fileBrowsers.find(qobject_cast<QLineEdit*>(obj));
+			if (it != fileBrowsers.end()) { it->second(); return true; }
+		}
+		return QDialog::eventFilter(obj, ev);
 	}
 
 	// Run a Julia expression synchronously via the console-eval bridge (g_juliaEval), with `scene_`
@@ -3382,6 +3406,40 @@ public:
 		kv("grn",      grnEdit->text().trimmed());
 		kv("geog",     cGeog->isChecked()  ? "1" : "0");
 		return L.join("\n");
+	}
+
+	// Inverse of collectParams(): push a remembered "key=value\n…" block back into every widget.
+	void applyParams(const QString &s) {
+		std::map<QString, QString> m;
+		for (const QString &line : s.split('\n', Qt::SkipEmptyParts)) {
+			int eq = line.indexOf('=');
+			if (eq >= 0) m[line.left(eq)] = line.mid(eq + 1);
+		}
+		auto get = [&](const char *k) { auto it = m.find(k); return it == m.end() ? QString() : it->second; };
+		srcEdit->setText(get("source"));
+		int lvl = get("level").toInt();
+		if (lvl >= 0 && lvl < levelCombo->count()) levelCombo->setCurrentIndex(lvl);
+		nestEdit->setText(get("nest"));   // AFTER the level index, so its textChanged handler files it under the right level (nestNames)
+		bcPath = get("bc");
+		if (!bcPath.isEmpty()) btnBorder->setText("Bordering: " + QFileInfo(bcPath).fileName());
+		nameEdit->setText(get("name"));
+		manningEdit->setText(get("manning"));
+		maregInEdit->setText(get("maregin"));
+		maregOutEdit->setText(get("maregout"));
+		cumintEdit->setText(get("cumint"));
+		cyclesEdit->setText(get("ncycles"));
+		jumpEdit->setText(get("jump"));
+		dtEdit->setText(get("dt"));
+		grnEdit->setText(get("grn"));
+		const QString mode = get("outmode");
+		(mode == "anuga" ? rAnuga : mode == "most" ? rMost : rGrids)->setChecked(true);
+		(get("field") == "total" ? rTotal : rSurf)->setChecked(true);
+		cMax->setChecked(get("max") == "1");
+		cVel->setChecked(get("velocity") == "1");
+		cMom->setChecked(get("momentum") == "1");
+		cCoriolis->setChecked(get("coriolis") == "1");
+		cMareg->setChecked(get("maregs") == "1");
+		cGeog->setChecked(get("geog") == "1");
 	}
 
 	// Seed the Input-grids widgets from the window's live grids (Scene Objects). Source <- the first grid

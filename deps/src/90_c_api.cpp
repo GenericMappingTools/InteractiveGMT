@@ -629,7 +629,12 @@ GMTVTK_API int gmtvtk_progress_show_async(int max, const char *title) {
 	g_progress->setMinimumDuration(0);              // show immediately
 	g_progress->setCancelButton(nullptr);           // no cancel button
 	g_progress->setWindowModality(Qt::NonModal);    // main window stays interactive during the run
+	// Stays-on-top so a later click on the main iGMT window (during a long run) can't bury it again —
+	// raise()/activateWindow() alone only win the FIRST time, not for the rest of the run.
+	g_progress->setWindowFlags(g_progress->windowFlags() | Qt::WindowStaysOnTopHint);
 	g_progress->show();
+	g_progress->raise();
+	g_progress->activateWindow();
 	QApplication::processEvents();
 	return 1;
 }

@@ -375,37 +375,62 @@ function _nswing_check_nest_fits(parent::GMTgrid, child::GMTgrid, parent_label::
 	return nothing
 end
 
+# Resolve the dialog's OWN Nest field (nestEdit + levelCombo, the "Nest" browse box) the same way
+# Source is resolved (_nswing_grid_ref) -- a Scene Objects grid NAME, or a raw file path. This is what
+# lets a manually browsed/typed nest grid -- one that never became a live "layerN" scene object --
+# actually reach nswing at all. Returns (level, grid-or-path) or `nothing` (no box filled in).
+function _nswing_dialog_nest(scene::Ptr{Cvoid}, d::Dict{String,String})
+	name = _get(d, "nest")
+	level = tryparse(Int, _get(d, "level", "0"))
+	(isempty(name) || level === nothing || level < 1) && return nothing
+	return (level, _nswing_grid_ref(scene, name))
+end
+
 # Every blocking check a run needs to pass, shared by the RUN button's synchronous pre-flight
 # (_nswing_check, below — lets the C++ dialog pop an error and stay open instead of launching+
 # vanishing) and _on_nswing itself (the real run performs the SAME checks, never a subset, so the
 # pre-flight can't pass something the real run then rejects). Throws with a human-readable message
 # on the FIRST problem found; returns (opts, msgs, nests, base, src) for _on_nswing to build the run
 # from — `src` is already resolved here (Scene Objects grid or raw path) so callers never re-resolve.
+# `nests` entries are (level, GMTgrid-or-path), same either/or convention as `src`.
 function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 	opts, msgs = _nswing_opts(d)
 	for m in msgs
 		_viewer_log_error(scene, "NSWING: $m")
 	end
 
-	nests = _nswing_scene_nests(scene)               # [(N, G)…] -> one -N flag + one object each
-	# Each "layerN" starts as a literal all-zero placeholder (_nested_blank_grid, nested.jl)
+	nests = _nswing_scene_nests(scene)               # [(N, G)…] from the live "layerN" scene chain
+	# The dialog's own Nest box only fills a GAP: a level the live scene chain doesn't already cover
+	# (e.g. a file picked directly instead of built in-scene). A level the scene chain already has
+	# wins — it's the live, editable one.
+	extra = _nswing_dialog_nest(scene, d)
+	if extra !== nothing && !any(n == extra[1] for (n, _) in nests)
+		push!(nests, extra)
+		sort!(nests; by = first)
+	end
+
+	# Each SCENE "layerN" starts as a literal all-zero placeholder (_nested_blank_grid, nested.jl)
 	# until Transplant fills it with real bathymetry. Feeding a still-blank one to nswing produces a
 	# real (non-error) run over zero bathymetry there — reads as "output is all zeros" with nothing
 	# in the console to explain why. Fail loud instead of silently simulating on placeholder data.
+	# (A dialog-typed path can't be "blank" in this sense — skipped, same as Source's typed-path branch.)
 	for (n, G) in nests
-		all(iszero, G.z) && error("NSWING: \"layer$n\" is still blank (all zero) — " *
+		G isa GMTgrid && all(iszero, G.z) && error("NSWING: \"layer$n\" is still blank (all zero) — " *
 		                          "fill it with real bathymetry via Transplant before running NSWING")
 	end
 	base = _find_object(scene, :grid, "")             # layer0: the window's base bathymetry grid
 
 	# Every nest level must fit inside its PARENT — bathy for layer1, the previous layer for the rest
 	# (_nswing_check_nest_fits, same rule the "Nested grids" rectangle tool enforces when it builds the
-	# chain). Checked against a REAL bathymetry only; nothing to nest against otherwise.
+	# chain). Checked against a REAL bathymetry only, and only between actual grids (a dialog-typed
+	# path is left unchecked, same as Source's typed-path branch skipping _nswing_check_grid_compat).
 	if base isa GMTgrid
 		parent, parent_label = base, "bathymetry"
 		for (n, G) in nests
-			_nswing_check_nest_fits(parent, G, parent_label, "layer$n")
-			parent, parent_label = G, "layer$n"
+			if G isa GMTgrid
+				_nswing_check_nest_fits(parent, G, parent_label, "layer$n")
+				parent, parent_label = G, "layer$n"
+			end
 		end
 	end
 
@@ -476,9 +501,23 @@ function _nswing_plan_paths(scene::Ptr{Cvoid}, d::Dict{String,String})
 	src_needs_save = src isa GMTgrid
 	src_path = src_needs_save ? joinpath(dir, "source.grd") : String(src)
 
-	nest_paths = [(n, joinpath(dir, "layer$n.grd")) for (n, _) in nests]   # always generated in-session
+	# A nest already resolved to a raw file path (dialog-typed, not a live scene grid) reuses that path
+	# in place — same "already on disk, don't rewrite it" rule Source's typed-path branch follows.
+	# Only a live in-memory nest grid gets a NEW path under `dir`.
+	nest_needs_save = [G isa GMTgrid for (_, G) in nests]
+	nest_paths = [(n, G isa GMTgrid ? joinpath(dir, "layer$n.grd") : String(G)) for (n, G) in nests]
 
-	return (; opts, base, bathy_path, bathy_needs_save, src, src_path, src_needs_save, nests, nest_paths, dir)
+	# ONE list of every path this run will actually WRITE — built here, ONCE, and shared verbatim by
+	# the existence pre-check and the real save step below, so the two can never name different sets.
+	write_targets = String[]
+	bathy_needs_save && push!(write_targets, bathy_path)
+	src_needs_save   && push!(write_targets, src_path)
+	for (needs, (_, p)) in zip(nest_needs_save, nest_paths)
+		needs && push!(write_targets, p)
+	end
+
+	return (; opts, base, bathy_path, bathy_needs_save, src, src_path, src_needs_save,
+	          nests, nest_paths, nest_needs_save, dir, write_targets)
 end
 
 # Which of the files a save WOULD write already exist on disk — printed "\n"-joined so the C++ side can
@@ -486,11 +525,7 @@ end
 function _nswing_existing_files(scene::Ptr{Cvoid}, cparams::AbstractString)
 	d = _nswing_parse(cparams)
 	plan = _nswing_plan_paths(scene, d)
-	targets = String[]
-	plan.bathy_needs_save && push!(targets, plan.bathy_path)
-	plan.src_needs_save   && push!(targets, plan.src_path)
-	append!(targets, [p for (_, p) in plan.nest_paths])
-	print(join(filter(isfile, targets), "\n"))
+	print(join(filter(isfile, plan.write_targets), "\n"))
 	return nothing
 end
 
@@ -501,8 +536,8 @@ function _nswing_save_files(scene::Ptr{Cvoid}, d::Dict{String,String})
 	mkpath(plan.dir)
 	plan.bathy_needs_save && _save_grid(plan.base, "nc", plan.bathy_path)
 	plan.src_needs_save   && _save_grid(plan.src,  "nc", plan.src_path)
-	for ((n, G), (_, p)) in zip(plan.nests, plan.nest_paths)
-		_save_grid(G, "nc", p)
+	for ((n, G), needs, (_, p)) in zip(plan.nests, plan.nest_needs_save, plan.nest_paths)
+		needs && _save_grid(G, "nc", p)
 	end
 	nestflags = ["-$(n)$(p)" for (n, p) in plan.nest_paths]   # nswing CLI: -1<grd> -2<grd> … (path ATTACHED, no space)
 	return plan.opts, plan.bathy_path, plan.src_path, nestflags, plan.dir
@@ -571,7 +606,7 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			end
 			isempty(opts) || (cmd *= " " * join(opts, " "))
 			cmd *= " -v"
-			append!(grids, GMTgrid[G for (_, G) in nests])   # nest objects, in -1,-2,… order
+			append!(grids, GMTgrid[(G isa GMTgrid ? G : GMT.gmtread(String(G))) for (_, G) in nests])   # nest objects, in -1,-2,… order (typed path -> load, same as src above)
 
 			_viewer_log_error(scene, "NSWING command: $cmd   [+ $(length(grids)) grid objects]")
 			_NSWING_RUNNING[] = true
