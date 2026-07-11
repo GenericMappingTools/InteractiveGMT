@@ -3046,7 +3046,7 @@ public:
 	std::map<int, QString> nestNames;     // level -> in-scene "layerN" name (populateFromScene)
 	QRadioButton *rGrids, *rAnuga, *rMost;
 	QRadioButton *rSurf, *rTotal;
-	QCheckBox *cMax, *cVel, *cMom, *cMareg, *cGeog;
+	QCheckBox *cMax, *cVel, *cMom, *cMareg, *cGeog, *cCoriolis;
 	QString bcPath;                       // "Bordering": optional boundary-condition file (-B)
 	Scene *scene_ = nullptr;              // owning window's scene (grid inventory + RUN callback target)
 
@@ -3131,8 +3131,9 @@ public:
 		cMax = new QCheckBox("Max water", gFld); cMax->setToolTip("Also write a grid with the max water level (nswing -M)");
 		cVel = new QCheckBox("Velocity",  gFld); cVel->setToolTip("Write velocity grids (-S, sufixes _U/_V)");
 		cMom = new QCheckBox("Momentum",  gFld); cMom->setToolTip("Write momentum grids (-H)");
-		fg->addWidget(rSurf, 0, 0); fg->addWidget(rTotal, 0, 1); fg->addWidget(cMax, 0, 2);
-		fg->addWidget(cVel,  1, 0); fg->addWidget(cMom, 1, 1);
+		cCoriolis = new QCheckBox("Coriolis", gFld); cCoriolis->setToolTip("Add the Coriolis effect.");
+		fg->addWidget(rSurf, 0, 0); fg->addWidget(rTotal, 0, 1); fg->addWidget(cCoriolis, 0, 2);
+		fg->addWidget(cVel,  1, 0); fg->addWidget(cMom, 1, 1); fg->addWidget(cMax, 1, 2);
 		// Manning friction (-X) — the entry missing from the original window.
 		auto *mrow = new QHBoxLayout();
 		mrow->addWidget(new QLabel("Manning friction", gFld));
@@ -3209,15 +3210,12 @@ public:
 		QObject::connect(rGrids, &QRadioButton::toggled, this, [syncFields](bool) { syncFields(); });
 		syncFields();
 
-		// --- RUN / Cancel -----------------------------------------------------------------------
-		// Neither button gets autoDefault/default: RUN launches a real simulation, so pressing Enter
-		// in ANY field (Name, dt, Manning, …) must NEVER trigger it — only an explicit click on RUN.
+		// --- RUN -------------------------------------------------------------------------------
+		// RUN gets no autoDefault/default: it launches a real simulation, so pressing Enter in ANY
+		// field (Name, dt, Manning, …) must NEVER trigger it — only an explicit click on RUN.
 		auto *bb = new QDialogButtonBox(this);
 		auto *runBtn = bb->addButton("RUN", QDialogButtonBox::AcceptRole);
 		runBtn->setAutoDefault(false); runBtn->setDefault(false);
-		auto *cancelBtn = bb->addButton(QDialogButtonBox::Cancel);
-		cancelBtn->setAutoDefault(false); cancelBtn->setDefault(false);
-		QObject::connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
 		QObject::connect(bb, &QDialogButtonBox::accepted, this, [this]() {
 			const QString mode = rGrids->isChecked() ? "grids" : (rAnuga->isChecked() ? "anuga" : "most");
 			const QString field = rTotal->isChecked() ? "total" : "surface";
@@ -3233,6 +3231,7 @@ public:
 			kv("max",      cMax->isChecked()   ? "1" : "0");
 			kv("velocity", cVel->isChecked()   ? "1" : "0");
 			kv("momentum", cMom->isChecked()   ? "1" : "0");
+			kv("coriolis", cCoriolis->isChecked() ? "1" : "0");
 			kv("manning",  manningEdit->text().trimmed());
 			kv("maregs",   cMareg->isChecked() ? "1" : "0");
 			kv("maregin",  maregInEdit->text().trimmed());
@@ -3294,8 +3293,8 @@ public:
 
 protected:
 	// Enter/Return anywhere in this dialog (any QLineEdit, e.g. Name) must NEVER fire anything except
-	// an explicit RUN click — same law as every other action-button dialog here. Both RUN and Cancel
-	// have autoDefault/default set false above, but QDialog's own built-in Enter handling (search for
+	// an explicit RUN click — same law as every other action-button dialog here. RUN has
+	// autoDefault/default set false above, but QDialog's own built-in Enter handling (search for
 	// a "default" push button and click it) still ends up accepting the dialog regardless — confirmed
 	// LIVE via the gmtvtk_nswing_enter_test hook (90_c_api.cpp): a synthetic Return in the Name field
 	// accepted the dialog before this override existed. Fix: swallow Return/Enter unconditionally at

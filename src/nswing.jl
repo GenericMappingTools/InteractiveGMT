@@ -83,6 +83,7 @@ function _nswing_opts(d::Dict{String,String})
 
 	manning = _get(d, "manning")
 	isempty(manning) || push!(args, "-X$(manning)")      # Manning friction coefficient(s)
+	_on(d, "coriolis") && push!(args, "-C")              # Coriolis effect (Coriolis checkbox)
 
 	if _on(d, "maregs")
 		mi = _get(d, "maregin"); mo = _get(d, "maregout"); ci = _get(d, "cumint", "1")
