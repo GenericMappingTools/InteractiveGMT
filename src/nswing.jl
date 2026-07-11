@@ -325,6 +325,50 @@ function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String})
 	return
 end
 
+# Every blocking check a run needs to pass, shared by the RUN button's synchronous pre-flight
+# (_nswing_check, below — lets the C++ dialog pop an error and stay open instead of launching+
+# vanishing) and _on_nswing itself (the real run performs the SAME checks, never a subset, so the
+# pre-flight can't pass something the real run then rejects). Throws with a human-readable message
+# on the FIRST problem found; returns (opts, msgs, nests, base) for _on_nswing to build the run from.
+function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
+	opts, msgs = _nswing_opts(d)
+	for m in msgs
+		_viewer_log_error(scene, "NSWING: $m")
+	end
+
+	nests = _nswing_scene_nests(scene)               # [(N, G)…] -> one -N flag + one object each
+	# Each "layerN" starts as a literal all-zero placeholder (_nested_blank_grid, nested.jl)
+	# until Transplant fills it with real bathymetry. Feeding a still-blank one to nswing produces a
+	# real (non-error) run over zero bathymetry there — reads as "output is all zeros" with nothing
+	# in the console to explain why. Fail loud instead of silently simulating on placeholder data.
+	for (n, G) in nests
+		all(iszero, G.z) && error("NSWING: \"layer$n\" is still blank (all zero) — " *
+		                          "fill it with real bathymetry via Transplant before running NSWING")
+	end
+	base = _find_object(scene, :grid, "")             # layer0: the window's base bathymetry grid
+
+	srcname = _get(d, "source")
+	if base isa GMTgrid
+		# nswing REQUIRES exactly base+Source (confirmed live: given only 1 grid it returns instantly
+		# with an empty log and no error -- a silent no-op, not a failure). Fail loud instead.
+		isempty(srcname) && error("NSWING: no Source grid selected -- pick a Source (e.g. \"Okada z\") before running")
+	else
+		isempty(srcname) && error("NSWING: no Source grid provided")
+	end
+	return opts, msgs, nests, base
+end
+
+# Synchronous pre-flight check for the RUN button, called via g_juliaEval (NswingDialog's accepted
+# handler, 70_window.cpp) BEFORE the dialog closes. Throws on the first blocking problem — the
+# console-eval bridge turns that into a negative-length buffer the C++ side pops as a QMessageBox,
+# keeping the dialog open instead of launching a doomed run and vanishing. Returns silently (nothing
+# printed) when the fields are good to run.
+function _nswing_check(scene::Ptr{Cvoid}, cparams::AbstractString)
+	d = _nswing_parse(cparams)
+	_nswing_validate(scene, d)
+	return nothing
+end
+
 # C callback: cparams = "key=value\n…". Assemble the CORRECT nswing invocation and run it asynchronously
 # with a live progress bar. The nswing GMT module takes its grids as trailing OBJECTS (never as `?`/paths
 # baked into the string): the command carries only bare nesting flags -1 -2 … (one per nest) plus the run
@@ -339,32 +383,12 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			return
 		end
 		d = _nswing_parse(unsafe_string(cparams))
-		opts, msgs = _nswing_opts(d)
-		for m in msgs
-			_viewer_log_error(scene, "NSWING: $m")
-		end
-
-		nests = _nswing_scene_nests(scene)               # [(N, G)…] -> one -N flag + one object each
-		# Each "layerN" starts as a literal all-zero placeholder (_nested_blank_grid, nested.jl)
-		# until Transplant fills it with real bathymetry. Feeding a still-blank one to nswing produces a
-		# real (non-error) run over zero bathymetry there — reads as "output is all zeros" with nothing
-		# in the console to explain why. Fail loud instead of silently simulating on placeholder data.
-		for (n, G) in nests
-			all(iszero, G.z) && error("NSWING: \"layer$n\" is still blank (all zero) — " *
-			                          "fill it with real bathymetry via Transplant before running NSWING")
-		end
-		base  = _find_object(scene, :grid, "")           # layer0: the window's base bathymetry grid
+		opts, msgs, nests, base = _nswing_validate(scene, d)
 
 		if base isa GMTgrid
 			# ── object run (the normal case): every grid is a live GMTgrid, passed as a trailing arg ──
 			grids = GMTgrid[base]                        # primary #1: base bathymetry (layer0)
-			srcname = _get(d, "source")
-			# nswing REQUIRES exactly base+Source (confirmed live: given only 1 grid it returns instantly
-			# with an empty log and no error -- a silent no-op, not a failure). The file-run branch below
-			# already guarded this; this branch didn't, so a missing Source used to look exactly like "it
-			# ran fine" with a dead progress bar. Fail loud instead.
-			isempty(srcname) && error("NSWING: no Source grid selected -- pick a Source (e.g. \"Okada z\") before running")
-			src = _nswing_grid_ref(scene, srcname)       # primary #2: the Source grid
+			src = _nswing_grid_ref(scene, _get(d, "source"))   # primary #2: the Source grid
 			push!(grids, src isa GMTgrid ? src : GMT.gmtread(String(src)))   # typed path -> load (no temp file)
 			cmd = "nswing"
 			for (n, _) in nests                          # bare nesting flags: layerN -> -N
@@ -380,7 +404,7 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			_nswing_run_worker(scene, cmd, grids)
 		else
 			# ── file run: no scene base grid; Source/Nest are file paths -> detached `gmt nswing` (paths) ──
-			srcpath = _get(d, "source");  isempty(srcpath) && error("NSWING: no Source grid provided")
+			srcpath = _get(d, "source")
 			nestpath = _get(d, "nest");  level = tryparse(Int, _get(d, "level", "0"))
 			args = String[srcpath]
 			(!isempty(nestpath) && level !== nothing && level >= 1) && push!(args, "-$(level)$(nestpath)")

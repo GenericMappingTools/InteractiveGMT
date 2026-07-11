@@ -3243,8 +3243,21 @@ public:
 			kv("grn",      grnEdit->text().trimmed());
 			kv("geog",     cGeog->isChecked()  ? "1" : "0");
 			params = L.join("\n");
-			// Non-modal: the RUN button launches NSWING itself (no exec() return to poll). Fire the Julia
-			// callback here, then close (WA_DeleteOnClose frees the dialog).
+			// Synchronous pre-flight (Julia _nswing_check, nswing.jl) BEFORE closing: g_juliaNswing itself
+			// is fire-and-forget non-modal (no exec() return to poll), so a doomed run used to close this
+			// dialog and vanish, leaving only a console-log line to explain the failure. Now a blocking
+			// problem (no Source, blank nested layer, …) pops a QMessageBox and keeps the dialog open.
+			if (g_juliaEval) {
+				const QString cmd = QString("InteractiveGMT._nswing_check(Ptr{Cvoid}(UInt(%1)),raw\"%2\")")
+				                        .arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(params);
+				std::vector<char> buf(1 << 12);
+				int n = g_juliaEval(scene_, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+				if (n < 0) {
+					QMessageBox::warning(this, "NSWING", QString::fromUtf8(buf.data(), -n));
+					return;   // keep the dialog open
+				}
+			}
+			// Fire the Julia callback, then close (WA_DeleteOnClose frees the dialog).
 			if (!params.isEmpty() && g_juliaNswing) g_juliaNswing(scene_, params.toUtf8().constData());
 			else if (scene_ && scene_->win) scene_->win->statusBar()->showMessage("NSWING: callback not registered", 3000);
 			accept();
