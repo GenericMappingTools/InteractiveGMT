@@ -205,34 +205,28 @@ function _nswing_tail(logf::String, pos::Base.RefValue{Int})
 	return (pct, line, errline)
 end
 
-# Main-thread Timer: tail `logf` for nswing's -V output → drive the bar + a live status label with an ETA.
-# The ETA is estimated from how long the run has taken to reach the current percent (elapsed·(100−p)/(p−p0))
-# — exactly "time from the first few percent of the loops". A leading setup "100%" is IGNORED: tracking only
-# starts once a percent ≤ 98 is seen (the actual time loop), so the bar never jumps to 100 at the start. The
-# raw last line is always shown too, so the dialog is informative even before/without a parseable percent.
+# Main-thread Timer: tail `logf` for nswing's -V "NN %" output → drive the bar + a live ETA label.
+# ETA anchors on the FIRST percent seen (time, pct) and extrapolates: elapsed·(100−p)/(p−p0). The raw
+# last line is shown whenever no percent is available yet (setup phase), so the dialog is never blank.
 # On `isdone()` close the bar and log the outcome (`result()` returns the error string, "" on success).
 function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io = nothing)
-	run_t0   = time()                                 # whole-run wall clock, for the FINAL time estimate
+	t0       = time()                                 # run start: base for both the live ETA and the final total
 	pos      = Ref(0)
-	started  = Ref(false)                             # true once the real % loop begins (a percent ≤ 98)
-	t0       = Ref(0.0);  p0 = Ref(0)                 # timing anchor: wall clock + percent at loop start
+	anchor   = Ref{Union{Nothing,Tuple{Float64,Int}}}(nothing)  # (time, pct) of the first percent seen
 	fatalerr = Ref{Union{String,Nothing}}(nothing)    # nswing's own "[ERROR]" line, if any (see _nswing_tail)
 	Timer(0.2; interval = 0.2) do tm
 		try
 			pct, line, errline = _nswing_tail(logf, pos)
 			errline === nothing || (fatalerr[] = errline)
 			if pct !== nothing
-				(!started[] && pct <= 98) && (started[] = true; t0[] = time(); p0[] = pct)
-				if started[]
-					el  = time() - t0[]
-					eta = pct > p0[] ? el * (100 - pct) / (pct - p0[]) : NaN
-					lbl = "NSWING   $(pct)%" * ((isnan(eta) || eta <= 0) ? "" : "   ~$(_hms(eta)) left")
-					_progress_status(pct, lbl)
-				elseif line !== nothing
-					_progress_status(-1, "NSWING: $line")     # setup phase: show raw output, don't move bar
-				end
+				anchor[] === nothing && (anchor[] = (time(), pct))
+				(at, ap) = anchor[]
+				el  = time() - at
+				eta = pct > ap ? el * (100 - pct) / (pct - ap) : NaN
+				lbl = "NSWING   $(pct)%" * (isnan(eta) ? "" : "   ~$(_hms(eta)) left")
+				_progress_status(pct, lbl)
 			elseif line !== nothing
-				_progress_status(-1, "NSWING: $line")
+				_progress_status(-1, "NSWING: $line")     # setup phase: show raw output, don't move bar
 			end
 			isdone() || return
 			close(tm)
@@ -245,7 +239,7 @@ function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io = not
 			try rm(logf; force = true) catch end
 			_progress_close()
 			_NSWING_RUNNING[] = false
-			total = _hms(time() - run_t0)             # FINAL time estimate: total wall clock for the whole run
+			total = _hms(time() - t0)                 # FINAL time estimate: total wall clock for the whole run
 			isempty(err) ? _viewer_log_error(scene, "NSWING: run finished in $total.") :
 			               _viewer_log_error(scene, "NSWING FAILED after $total: $err")
 		catch e
@@ -363,10 +357,13 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			# ── object run (the normal case): every grid is a live GMTgrid, passed as a trailing arg ──
 			grids = GMTgrid[base]                        # primary #1: base bathymetry (layer0)
 			srcname = _get(d, "source")
-			if !isempty(srcname)                         # primary #2: the Source grid (e.g. Okada z)
-				src = _nswing_grid_ref(scene, srcname)
-				push!(grids, src isa GMTgrid ? src : GMT.gmtread(String(src)))   # typed path -> load (no temp file)
-			end
+			# nswing REQUIRES exactly base+Source (confirmed live: given only 1 grid it returns instantly
+			# with an empty log and no error -- a silent no-op, not a failure). The file-run branch below
+			# already guarded this; this branch didn't, so a missing Source used to look exactly like "it
+			# ran fine" with a dead progress bar. Fail loud instead.
+			isempty(srcname) && error("NSWING: no Source grid selected -- pick a Source (e.g. \"Okada z\") before running")
+			src = _nswing_grid_ref(scene, srcname)       # primary #2: the Source grid
+			push!(grids, src isa GMTgrid ? src : GMT.gmtread(String(src)))   # typed path -> load (no temp file)
 			cmd = "nswing"
 			for (n, _) in nests                          # bare nesting flags: Nested grid N -> -N
 				cmd *= " -$(n)"

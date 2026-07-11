@@ -622,7 +622,7 @@ GMTVTK_API int gmtvtk_progress_show_async(int max, const char *title) {
 	if (!QApplication::instance()) return 0;
 	if (g_progress) { delete g_progress; g_progress = nullptr; }
 	g_progress = new QProgressDialog();
-	g_progress->setWindowTitle(title ? title : "Working");
+	g_progress->setWindowTitle("Working");          // titlebar caption: fixed, distinct from the label text below
 	g_progress->setLabelText(title ? title : "Working");
 	g_progress->setRange(0, max > 0 ? max : 0);     // max==0 -> busy marquee (indeterminate)
 	g_progress->setValue(0);
