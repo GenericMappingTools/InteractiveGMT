@@ -23,6 +23,7 @@
 #include <QPointer>
 #include <QProgressDialog>
 #include <QComboBox>
+#include <QStandardItemModel>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QPushButton>

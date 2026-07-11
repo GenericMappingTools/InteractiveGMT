@@ -3087,10 +3087,19 @@ public:
 		// them in this window. Each found "layerN" relabels levelCombo's item N to "N -- level ready to use"; picking that
 		// item copies its grid name into the Nest edit box (nestNames, populateFromScene).
 		populateFromScene();
-		QObject::connect(levelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
-			auto it = nestNames.find(idx);
-			if (it != nestNames.end()) nestEdit->setText(it->second);
+		QObject::connect(levelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+		                  this, [this](int idx) { showLevel(idx); });
+		QObject::connect(nestEdit, &QLineEdit::textChanged, this, [this](const QString &txt) {
+			const int lvl = levelCombo->currentIndex();
+			if (lvl <= 0) return;               // level 0 has no file, its box is disabled anyway
+			nestNames[lvl] = txt.trimmed();
+			refreshLevelCombo();
 		});
+		// Start on the next OPEN level (level 1 the first time — nothing filled yet), not level 0, so
+		// the Nest box is immediately ready to accept that level's grid name. From here on, only that
+		// one open level or an already-filled one (to replace its name) can ever be selected.
+		levelCombo->setCurrentIndex(std::min(nextOpenLevel(), levelCombo->count() - 1));
+		showLevel(levelCombo->currentIndex());
 
 		// --- Bordering: pick an (experimental) boundary-condition file (-B) ----------------------
 		auto *btnBorder = new QPushButton("Bordering", this);
@@ -3406,12 +3415,57 @@ public:
 		std::sort(nests.begin(), nests.end(), [](auto &a, auto &b) { return a.first < b.first; });
 		for (auto &pr : nests) {
 			int level = pr.first;
-			const QString name = QString::fromStdString(pr.second->name);
 			if (level < 1 || level >= levelCombo->count()) continue;   // combo only holds levels 0..5
-			levelCombo->setItemText(level, QString("%1 -- level ready to use").arg(level));
-			nestNames[level] = name;
+			nestNames[level] = QString::fromStdString(pr.second->name);
 		}
-		if (!nests.empty()) nestEdit->setText(QString::fromStdString(nests.front().second->name));
+		refreshLevelCombo();
+	}
+
+	// Highest filled level + 1 — the single level the Nest box currently accepts NEW input for. Shared
+	// by refreshLevelCombo (which level to leave enabled) and the constructor (which level to start
+	// on), so the two can never disagree about what "open" means.
+	int nextOpenLevel() const {
+		int maxFilled = 0;
+		for (auto &kv : nestNames) if (!kv.second.isEmpty() && kv.first > maxFilled) maxFilled = kv.first;
+		return maxFilled + 1;
+	}
+
+	// Relabel every levelCombo item from `nestNames` ("N -- level ready to use" once filled, else the
+	// bare number) and enable only: level 0 (always — the fixed "in memory" slot), every already-filled
+	// level (so the user can reselect one to see/re-pick its grid), and the SINGLE next unfilled level
+	// (nesting must be built sequentially — level 3 can't be picked before level 2 exists). Every level
+	// beyond that stays disabled/grayed in the dropdown.
+	void refreshLevelCombo() {
+		const int nextOpen = nextOpenLevel();
+		auto *model = qobject_cast<QStandardItemModel *>(levelCombo->model());
+		for (int i = 0; i < levelCombo->count(); ++i) {
+			const bool filled = i > 0 && nestNames.count(i) && !nestNames[i].isEmpty();
+			levelCombo->setItemText(i, i == 0 ? "0 -- level ready to use"
+			                              : filled ? QString("%1 -- level ready to use").arg(i)
+			                                       : QString::number(i));
+			if (model) model->item(i)->setEnabled(i == 0 || filled || i == nextOpen);
+		}
+	}
+
+	// Reflect the selected level in the Nest box: level 0 needs no file ("In memory grid" placeholder,
+	// box disabled); an already-filled level shows its grid name; the (only ever ONE) open level shows
+	// an "Enter grid name for level N" placeholder, ready for the user to browse/type into.
+	void showLevel(int idx) {
+		if (idx <= 0) {
+			nestEdit->setEnabled(false);
+			nestEdit->clear();
+			nestEdit->setPlaceholderText("In memory grid");
+			return;
+		}
+		nestEdit->setEnabled(true);
+		auto it = nestNames.find(idx);
+		if (it != nestNames.end() && !it->second.isEmpty()) {
+			nestEdit->setPlaceholderText(QString());
+			nestEdit->setText(it->second);
+		} else {
+			nestEdit->clear();
+			nestEdit->setPlaceholderText(QString("Enter grid name for level %1").arg(idx));
+		}
 	}
 
 protected:
