@@ -854,12 +854,12 @@ static void sceneRemoveSurface(Scene *s) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
-// A "Nested grid N" blank grid (hollow, made by the Nested-grids tool) can be FILLED by sampling a 2nd
+// A "layerN" blank grid (hollow, made by the Nested-grids tool) can be FILLED by sampling a 2nd
 // grid onto its nodes ("Transplant 2nd grid…"). Transplantability is an INTRINSIC property of the grid
 // (encoded in its name, carried on G.title), NOT a per-window flag — so the option follows the grid
 // wherever its row lives: as a dropped EXTRA grid (gridObjectMenu) or, after "Move to new window", as
 // that window's BASE surface (surfaceObjectMenu). One predicate, one handler, offered identically.
-static bool gridIsNestedBlank(const QString& nm) { return nm.startsWith("Nested grid "); }
+static bool gridIsNestedBlank(const QString& nm) { return QRegularExpression("^layer\\d+$").match(nm).hasMatch(); }
 
 // Run the "Transplant 2nd grid…" fill on the nested blank grid named `nm`: pick an implant file and hand
 // it to Julia (_on_nested_transplant), which samples it onto this grid's nodes. Works for the base

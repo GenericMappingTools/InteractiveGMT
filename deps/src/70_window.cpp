@@ -3043,7 +3043,7 @@ public:
 	QLineEdit *maregInEdit, *maregOutEdit, *cumintEdit;
 	QLineEdit *cyclesEdit, *jumpEdit, *dtEdit, *grnEdit;
 	QComboBox *levelCombo;
-	std::map<int, QString> nestNames;     // level -> in-scene "Nested grid N" name (populateFromScene)
+	std::map<int, QString> nestNames;     // level -> in-scene "layerN" name (populateFromScene)
 	QRadioButton *rGrids, *rAnuga, *rMost;
 	QRadioButton *rSurf, *rTotal;
 	QCheckBox *cMax, *c3D, *cVel, *cMom, *cMareg, *cGeog;
@@ -3083,8 +3083,8 @@ public:
 		v->addWidget(gIn);
 
 		// Seed Source + the nest chain from the window's grids: pick an "Okada z" grid as Source and every
-		// "Nested grid N" (in N order) as the nesting chain, mirroring how the user built them in this window.
-		// Each found "Nested grid N" relabels levelCombo's item N to "N -- level ready to use"; picking that
+		// "layerN" (in N order) as the nesting chain, mirroring how the user built them in this window.
+		// Each found "layerN" relabels levelCombo's item N to "N -- level ready to use"; picking that
 		// item copies its grid name into the Nest edit box (nestNames, populateFromScene).
 		populateFromScene();
 		QObject::connect(levelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
@@ -3256,7 +3256,7 @@ public:
 	}
 
 	// Seed the Input-grids widgets from the window's live grids (Scene Objects). Source <- the first grid
-	// named "Okada z…"; the nesting chain <- every "Nested grid N" (in N order), each shown in the listbox
+	// named "Okada z…"; the nesting chain <- every "layerN" (in N order), each shown in the listbox
 	// as "name · W/E/S/N · nx×ny". Nest edit gets the first nested grid's name. Grids are in-memory scene
 	// objects (names, not file paths) — this is a convenience default; the user can still browse to files.
 	void populateFromScene() {
@@ -3269,8 +3269,8 @@ public:
 				if (!ex.isImage && isOkada(ex.name)) { srcEdit->setText(QString::fromStdString(ex.name)); break; }
 			}
 		}
-		// Nesting chain: "Nested grid N" grids, ordered by N. Collect (N, &ex) then sort so 1,2,3… line up.
-		QRegularExpression re("^Nested grid (\\d+)$");
+		// Nesting chain: "layerN" grids, ordered by N. Collect (N, &ex) then sort so 1,2,3… line up.
+		QRegularExpression re("^layer(\\d+)$");
 		std::vector<std::pair<int, const ExtraObj *>> nests;
 		for (auto &ex : scene_->extras) {
 			if (ex.isImage) continue;

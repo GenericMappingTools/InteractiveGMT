@@ -205,11 +205,11 @@ function _on_transplant(scene::Ptr{Cvoid}, implant_path::String, res::Int=1, rec
 	return nothing
 end
 
-# "Transplant 2nd grid" on a "Nested grid N" BLANK grid (the hollow grid the Nested-grids tool makes
+# "Transplant 2nd grid" on a "layerN" BLANK grid (the hollow grid the Nested-grids tool makes
 # for a rectangle). Unlike _on_transplant (which blends an implant into a real HOST grid over a smooth
 # seam), the nested grid has no data — every node is blank — so we simply SAMPLE the implant onto this
 # grid's own nodes and REPLACE the blank values. Nodes the implant doesn't cover keep their blank value.
-# `gname` = the blank grid's Scene Objects name ("Nested grid N"); `implant_path` = grid to sample from.
+# `gname` = the blank grid's Scene Objects name ("layerN"); `implant_path` = grid to sample from.
 # The blank grid is dropped (viewer + registry) and a FILLED grid re-added under the SAME name (visible).
 
 # Pure core (no scene/registry/ccall — unit-tested): SAMPLE implant `I` onto blank grid `G`'s own node

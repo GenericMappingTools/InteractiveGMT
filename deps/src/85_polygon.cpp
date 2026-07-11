@@ -915,9 +915,9 @@ static void polygonEraseOne(Scene *s, vtkActor *lineActor) {
 	}
 }
 
-// Delete the "Nested grid N" blank grid extra (if it was ever created), removing its actors.
+// Delete the "layerN" blank grid extra (if it was ever created), removing its actors.
 static void nestDeleteGrid(Scene *s, int chainIdx1) {
-	const std::string gn = "Nested grid " + std::to_string(chainIdx1);
+	const std::string gn = "layer" + std::to_string(chainIdx1);
 	for (int e = (int)s->extras.size() - 1; e >= 0; --e) {
 		if (s->extras[e].name != gn) continue;
 		if (s->ren && s->extras[e].actor) s->ren->RemoveActor(s->extras[e].actor);
@@ -928,7 +928,7 @@ static void nestDeleteGrid(Scene *s, int chainIdx1) {
 
 // Remove a finished polygon (identified by its line actor). Called from the unified line menu's
 // "Delete". A NESTED-grid rectangle cascades: deleting it also deletes every DESCENDANT rectangle
-// (the nestKind==1 polygons after it in the chain) and their "Nested grid N" blank grids — only the
+// (the nestKind==1 polygons after it in the chain) and their "layerN" blank grids — only the
 // ancestor rectangles (and their grids) remain. An ordinary polygon is a plain single-shape delete.
 static void polygonDelete(Scene *s, vtkActor *lineActor) {
 	int pi = -1;

@@ -501,7 +501,7 @@ static void nestCreateBlankGrid(Scene *s, vtkActor *a) {
 		return;
 	}
 	// Chain position (1-based) of THIS rect among the nested rectangles, so the grid is named to
-	// follow the stack order: base grid first, then "Nested grid 1", "Nested grid 2", … inward.
+	// follow the stack order: base grid first, then "layer1", "layer2", … inward.
 	int chainIdx = 0;
 	for (int j = 0; j <= pi; ++j) if (s->polys[j].nestKind == 1) ++chainIdx;
 	auto num = [](double v) { return QString::number(v, 'g', 15); };
@@ -728,7 +728,7 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 			// Rectangles & generic polygons (closed rings): AREA only — NEVER line length / azimuth.
 			// A "Nested grids" rectangle is excluded: it drives the nesting chain + its own blank grid,
 			// so an area figure / transplant-into-host make no sense on it (the transplant lives on that
-			// rect's "Nested grid N" blank-grid row instead — see gridObjectMenu).
+			// rect's "layerN" blank-grid row instead — see gridObjectMenu).
 			if (!isNestRect) {
 				m.addAction("Area under polygon…", [s, lr]() { lineRunMeasure(s, lr, "_poly_area", true); });
 				// On a grid: implant an external grid clipped to this rectangle (Grid Tools > Transplant).

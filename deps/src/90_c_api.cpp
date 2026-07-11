@@ -370,7 +370,7 @@ GMTVTK_API int gmtvtk_get_selection(void *handle, int *out, int n) {
 }
 
 // Set the visibility of an extra object (dropped/added grid or image) found by its Scene Objects
-// name. Used to add a "Nested grid N" blank grid HIDDEN: it still gets a (unchecked) Scene Objects
+// name. Used to add a "layerN" blank grid HIDDEN: it still gets a (unchecked) Scene Objects
 // row, but its surface is not drawn. Re-renders + rebuilds the panel so the checkbox tracks it.
 GMTVTK_API int gmtvtk_set_object_visible(void *handle, const char *name, int vis) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -582,7 +582,7 @@ GMTVTK_API void gmtvtk_set_title_h(void *handle, const char *title) {
 
 // Set the Scene Objects label of the window's BASE surface. gmtvtk_view_grid always opens the base as
 // the unnamed "Surface"; "Move to new window" re-opens a grid there and then calls this so the moved
-// grid KEEPS its name — and with it every name-driven per-row option (e.g. a "Nested grid N" blank
+// grid KEEPS its name — and with it every name-driven per-row option (e.g. a "layerN" blank
 // grid's "Transplant 2nd grid…"). Null/empty -> back to the default "Surface".
 GMTVTK_API void gmtvtk_set_surface_name_h(void *handle, const char *name) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -2481,7 +2481,7 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 }
 
 // Remove an EXTRA grid (a dropped/added grid surface, addressed by its Scene Objects name) IN PLACE,
-// same teardown as the grid row's "Remove" menu item. Used by the "Nested grid N" transplant path:
+// same teardown as the grid row's "Remove" menu item. Used by the "layerN" transplant path:
 // Julia removes the blank grid, then re-adds a FILLED grid under the SAME name. Returns 1 if removed,
 // 0 if no extra grid carried that name (or the window is dead).
 GMTVTK_API int gmtvtk_remove_grid_h(void *handle, const char *name) {

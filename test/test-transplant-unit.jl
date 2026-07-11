@@ -64,7 +64,7 @@ end
 @testitem "nested fill: samples implant in place, blank nodes preserved" tags=[:unit, :fast] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	xs = collect(0.0:1.0:10.0)
-	# Blank ("Nested grid N") host: every node NaN, gridline, Float32.
+	# Blank ("layerN") host: every node NaN, gridline, Float32.
 	Gb = GMT.mat2grid(fill(NaN32, length(xs), length(xs)); x = xs, y = xs)
 	xi = collect(3.0:0.5:7.0)
 	I  = GMT.mat2grid(fill(100.0f0, length(xi), length(xi)); x = xi, y = xi)

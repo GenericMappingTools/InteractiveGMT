@@ -122,15 +122,15 @@ function _nswing_grid_ref(scene::Ptr{Cvoid}, name::AbstractString)
 	G isa GMTgrid ? G : String(name)
 end
 
-# Every in-scene "Nested grid N" grid for this window, as (N, GMTgrid) sorted by N — the nesting chain
-# the user built (Nested grid 1 → -1, Nested grid 2 → -2, …). Read straight from the object registry.
+# Every in-scene "layerN" grid for this window, as (N, GMTgrid) sorted by N — the nesting chain
+# the user built (layer1 → -1, layer2 → -2, …). Read straight from the object registry.
 function _nswing_scene_nests(scene::Ptr{Cvoid})
 	out = Tuple{Int,GMTgrid}[]
 	v = get(_SCENE_OBJS, scene, nothing)
 	v === nothing && return out
 	for (k, n, dat) in v
 		(k === :grid && dat isa GMTgrid) || continue
-		m = match(r"^Nested grid (\d+)$", n)
+		m = match(r"^layer(\d+)$", n)
 		m === nothing || push!(out, (parse(Int, m.captures[1]), dat))
 	end
 	sort!(out; by = first)
@@ -329,7 +329,7 @@ end
 # options + -V, and the grids ride in the arg list in this order —
 #     gmt("nswing -1 -2 … -G… -N… -t… -f -v",  base_bathy,  source,  nest1,  nest2, …)
 # base_bathy = the window's base grid (layer0), source = the dialog Source grid (e.g. "Okada z"), then the
-# scene's "Nested grid N" chain. `-V` makes nswing print its advance as "NN%" which the watcher parses.
+# scene's "layerN" chain. `-V` makes nswing print its advance as "NN%" which the watcher parses.
 function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 	try
 		if _NSWING_RUNNING[]
@@ -343,12 +343,12 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		end
 
 		nests = _nswing_scene_nests(scene)               # [(N, G)…] -> one -N flag + one object each
-		# Each "Nested grid N" starts as a literal all-zero placeholder (_nested_blank_grid, nested.jl)
+		# Each "layerN" starts as a literal all-zero placeholder (_nested_blank_grid, nested.jl)
 		# until Transplant fills it with real bathymetry. Feeding a still-blank one to nswing produces a
 		# real (non-error) run over zero bathymetry there — reads as "output is all zeros" with nothing
 		# in the console to explain why. Fail loud instead of silently simulating on placeholder data.
 		for (n, G) in nests
-			all(iszero, G.z) && error("NSWING: \"Nested grid $n\" is still blank (all zero) — " *
+			all(iszero, G.z) && error("NSWING: \"layer$n\" is still blank (all zero) — " *
 			                          "fill it with real bathymetry via Transplant before running NSWING")
 		end
 		base  = _find_object(scene, :grid, "")           # layer0: the window's base bathymetry grid
@@ -365,7 +365,7 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			src = _nswing_grid_ref(scene, srcname)       # primary #2: the Source grid
 			push!(grids, src isa GMTgrid ? src : GMT.gmtread(String(src)))   # typed path -> load (no temp file)
 			cmd = "nswing"
-			for (n, _) in nests                          # bare nesting flags: Nested grid N -> -N
+			for (n, _) in nests                          # bare nesting flags: layerN -> -N
 				cmd *= " -$(n)"
 			end
 			isempty(opts) || (cmd *= " " * join(opts, " "))
