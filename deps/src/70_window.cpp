@@ -3210,59 +3210,169 @@ public:
 		QObject::connect(rGrids, &QRadioButton::toggled, this, [syncFields](bool) { syncFields(); });
 		syncFields();
 
-		// --- RUN -------------------------------------------------------------------------------
-		// RUN gets no autoDefault/default: it launches a real simulation, so pressing Enter in ANY
-		// field (Name, dt, Manning, …) must NEVER trigger it — only an explicit click on RUN.
-		auto *bb = new QDialogButtonBox(this);
-		auto *runBtn = bb->addButton("RUN", QDialogButtonBox::AcceptRole);
+		// --- RUN / Save files & RUN -------------------------------------------------------------
+		// Plain QPushButtons (not a QDialogButtonBox — there's no Cancel to pair RUN with anymore, and
+		// a bare button box gets platform accept-role chrome a sibling QPushButton doesn't, so RUN and
+		// "Save files & RUN" would look visually unequal). Neither gets autoDefault/default: RUN
+		// launches a real simulation, so pressing Enter in ANY field (Name, dt, Manning, …) must NEVER
+		// trigger it — only an explicit click. This dialog is CLOSED ONLY BY THE USER (title-bar X /
+		// WA_DeleteOnClose) — no RUN variant ever calls accept()/close(), success or failure alike, so
+		// the user can watch progress and fire further runs without reopening it.
+		auto *runBtn = new QPushButton("RUN", this);
 		runBtn->setAutoDefault(false); runBtn->setDefault(false);
-		QObject::connect(bb, &QDialogButtonBox::accepted, this, [this]() {
-			const QString mode = rGrids->isChecked() ? "grids" : (rAnuga->isChecked() ? "anuga" : "most");
-			const QString field = rTotal->isChecked() ? "total" : "surface";
-			QStringList L;
-			auto kv = [&L](const char *k, const QString &val) { L << (QString(k) + "=" + val); };
-			kv("source",   srcEdit->text().trimmed());
-			kv("nest",     nestEdit->text().trimmed());
-			kv("level",    QString::number(levelCombo->currentIndex()));
-			kv("bc",       bcPath);
-			kv("outmode",  mode);
-			kv("name",     nameEdit->text().trimmed());
-			kv("field",    field);
-			kv("max",      cMax->isChecked()   ? "1" : "0");
-			kv("velocity", cVel->isChecked()   ? "1" : "0");
-			kv("momentum", cMom->isChecked()   ? "1" : "0");
-			kv("coriolis", cCoriolis->isChecked() ? "1" : "0");
-			kv("manning",  manningEdit->text().trimmed());
-			kv("maregs",   cMareg->isChecked() ? "1" : "0");
-			kv("maregin",  maregInEdit->text().trimmed());
-			kv("maregout", maregOutEdit->text().trimmed());
-			kv("cumint",   cumintEdit->text().trimmed());
-			kv("ncycles",  cyclesEdit->text().trimmed());
-			kv("jump",     jumpEdit->text().trimmed());
-			kv("dt",       dtEdit->text().trimmed());
-			kv("grn",      grnEdit->text().trimmed());
-			kv("geog",     cGeog->isChecked()  ? "1" : "0");
-			params = L.join("\n");
-			// Synchronous pre-flight (Julia _nswing_check, nswing.jl) BEFORE closing: g_juliaNswing itself
-			// is fire-and-forget non-modal (no exec() return to poll), so a doomed run used to close this
-			// dialog and vanish, leaving only a console-log line to explain the failure. Now a blocking
-			// problem (no Source, blank nested layer, …) pops a QMessageBox and keeps the dialog open.
-			if (g_juliaEval) {
-				const QString cmd = QString("InteractiveGMT._nswing_check(Ptr{Cvoid}(UInt(%1)),raw\"%2\")")
-				                        .arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(params);
-				std::vector<char> buf(1 << 12);
-				int n = g_juliaEval(scene_, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
-				if (n < 0) {
-					QMessageBox::warning(this, "NSWING", QString::fromUtf8(buf.data(), -n));
-					return;   // keep the dialog open
-				}
+		QObject::connect(runBtn, &QPushButton::clicked, this, [this]() {
+			params = collectParams();
+			// Synchronous pre-flight (Julia _nswing_check, nswing.jl): a blocking problem (no Source,
+			// blank nested layer, …) pops a QMessageBox instead of launching a doomed run silently.
+			QString out;
+			if (!juliaEvalCall(QString("InteractiveGMT._nswing_check(Ptr{Cvoid}(UInt(%1)),raw\"%2\")")
+			                       .arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(params), out)) {
+				QMessageBox::warning(this, "NSWING", out);
+				return;
 			}
-			// Fire the Julia callback, then close (WA_DeleteOnClose frees the dialog).
 			if (!params.isEmpty() && g_juliaNswing) g_juliaNswing(scene_, params.toUtf8().constData());
 			else if (scene_ && scene_->win) scene_->win->statusBar()->showMessage("NSWING: callback not registered", 3000);
-			accept();
 		});
-		v->addWidget(bb);
+
+		// "Save files & RUN" (lower-left): write every grid this run needs (bathymetry, Source, each
+		// nested layer) to disk, then either just show the equivalent `gmt nswing …` command line, or
+		// launch it for real as a DETACHED OS PROCESS (nswing.jl _nswing_run_external) — unlike the
+		// default RUN button's in-memory worker path, this one's own stdout (-v) feeds the SAME progress
+		// bar via the existing _nswing_watch log-tailer.
+		auto *saveRunBtn = new QPushButton("Save files && RUN", this);
+		saveRunBtn->setAutoDefault(false); saveRunBtn->setDefault(false);
+		QObject::connect(saveRunBtn, &QPushButton::clicked, this, [this]() {
+			QDialog sub(this);
+			sub.setWindowTitle("Save files & RUN");
+			auto *sv = new QVBoxLayout(&sub);
+
+			// Save-to directory: remembered across calls (QSettings "nswing/saveDir"); the FIRST time
+			// (nothing remembered yet) it defaults to the bathymetry (layer0) grid's own file directory
+			// (_nswing_bathy_dir, nswing.jl). User can browse to a different dir; the choice sticks.
+			auto *dirRow = new QHBoxLayout();
+			dirRow->addWidget(new QLabel("Save to", &sub));
+			auto *dirEdit = new QLineEdit(&sub);
+			QSettings dst = igmtSettings();
+			QString remembered = dst.value("nswing/saveDir").toString();
+			if (!remembered.isEmpty()) {
+				dirEdit->setText(remembered);
+			} else {
+				QString bathyDir;
+				juliaEvalCall(QString("InteractiveGMT._nswing_bathy_dir(Ptr{Cvoid}(UInt(%1)))")
+				                  .arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)), bathyDir);
+				dirEdit->setText(bathyDir);
+			}
+			dirRow->addWidget(dirEdit);
+			auto *dirBtn = new QToolButton(&sub); dirBtn->setText("...");
+			QObject::connect(dirBtn, &QToolButton::clicked, &sub, [&sub, dirEdit]() {
+				QString d = QFileDialog::getExistingDirectory(&sub, "Save files to", dirEdit->text());
+				if (!d.isEmpty()) dirEdit->setText(d);
+			});
+			dirRow->addWidget(dirBtn);
+			sv->addLayout(dirRow);
+
+			auto *bShow = new QPushButton("Save files and show GMT command", &sub);
+			auto *bRun  = new QPushButton("Save files and RUN", &sub);
+			sv->addWidget(bShow);
+			sv->addWidget(bRun);
+
+			// Shared by both sub-buttons: build params (+ the chosen save dir), confirm overwrite for
+			// any file that already exists, persist the dir choice, then call `juliaFn`. `ok` reports
+			// whether the call actually went through (false = aborted or failed, a popup already shown);
+			// the return value is `juliaFn`'s printed output either way.
+			auto proceed = [this, dirEdit](const QString &juliaFn, bool &ok) -> QString {
+				ok = false;
+				const QString p = collectParams() + "\nsavedir=" + dirEdit->text().trimmed();
+				QString existing;
+				if (!juliaEvalCall(QString("InteractiveGMT._nswing_existing_files(Ptr{Cvoid}(UInt(%1)),raw\"%2\")")
+				                       .arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(p), existing)) {
+					QMessageBox::warning(this, "NSWING", existing);
+					return QString();
+				}
+				if (!existing.trimmed().isEmpty()) {
+					auto ans = QMessageBox::question(this, "NSWING",
+						"These files already exist and will be overwritten:\n\n" + existing,
+						QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+					if (ans != QMessageBox::Yes) return QString();
+				}
+				QSettings st = igmtSettings();
+				st.setValue("nswing/saveDir", dirEdit->text().trimmed());
+				QString out;
+				if (!juliaEvalCall(QString("InteractiveGMT.%1(Ptr{Cvoid}(UInt(%2)),raw\"%3\")")
+				                       .arg(juliaFn).arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(p), out)) {
+					QMessageBox::warning(this, "NSWING", out);
+					return QString();
+				}
+				ok = true;
+				return out;
+			};
+
+			QObject::connect(bShow, &QPushButton::clicked, &sub, [this, &sub, proceed]() {
+				bool ok = false;
+				QString out = proceed("_nswing_show_cli", ok);
+				if (!ok) return;
+				sub.accept();
+				showInfoText(this, "NSWING — GMT command", out.trimmed());   // dialog stays open: just a preview
+			});
+			QObject::connect(bRun, &QPushButton::clicked, &sub, [this, &sub, proceed]() {
+				bool ok = false;
+				proceed("_on_nswing_save_run", ok);
+				if (!ok) return;
+				sub.accept();   // closes the small picker only; the NSWING dialog itself stays open
+			});
+			sub.exec();
+		});
+
+		auto *btnRow = new QHBoxLayout();
+		btnRow->addWidget(saveRunBtn);
+		btnRow->addStretch();
+		btnRow->addWidget(runBtn);
+		v->addLayout(btnRow);
+	}
+
+	// Run a Julia expression synchronously via the console-eval bridge (g_juliaEval), with `scene_`
+	// as the acting window. Fills `out` with printed stdout and returns true on success; on failure
+	// (an exception in the evaluated code, or the bridge not registered yet) fills `out` with the
+	// error text and returns false. Shared by every synchronous Julia round-trip this dialog makes
+	// (pre-flight check, show-command, save+run launch) — one eval helper, not one per caller.
+	bool juliaEvalCall(const QString &juliaCall, QString &out) {
+		if (!g_juliaEval) { out = "Julia eval bridge not registered"; return false; }
+		std::vector<char> buf(1 << 14);
+		int n = g_juliaEval(scene_, juliaCall.toStdString().c_str(), buf.data(), (int)buf.size());
+		out = QString::fromUtf8(buf.data(), n < 0 ? -n : n);
+		return n >= 0;
+	}
+
+	// Serialize every dialog field into the "key=value\n…" block _on_nswing/_nswing_check/
+	// _nswing_show_cli/_on_nswing_save_run all parse the same way (nswing.jl _nswing_parse). Shared by
+	// the main RUN button and both "Save files & RUN" sub-options — one field list, not three.
+	QString collectParams() {
+		const QString mode = rGrids->isChecked() ? "grids" : (rAnuga->isChecked() ? "anuga" : "most");
+		const QString field = rTotal->isChecked() ? "total" : "surface";
+		QStringList L;
+		auto kv = [&L](const char *k, const QString &val) { L << (QString(k) + "=" + val); };
+		kv("source",   srcEdit->text().trimmed());
+		kv("nest",     nestEdit->text().trimmed());
+		kv("level",    QString::number(levelCombo->currentIndex()));
+		kv("bc",       bcPath);
+		kv("outmode",  mode);
+		kv("name",     nameEdit->text().trimmed());
+		kv("field",    field);
+		kv("max",      cMax->isChecked()   ? "1" : "0");
+		kv("velocity", cVel->isChecked()   ? "1" : "0");
+		kv("momentum", cMom->isChecked()   ? "1" : "0");
+		kv("coriolis", cCoriolis->isChecked() ? "1" : "0");
+		kv("manning",  manningEdit->text().trimmed());
+		kv("maregs",   cMareg->isChecked() ? "1" : "0");
+		kv("maregin",  maregInEdit->text().trimmed());
+		kv("maregout", maregOutEdit->text().trimmed());
+		kv("cumint",   cumintEdit->text().trimmed());
+		kv("ncycles",  cyclesEdit->text().trimmed());
+		kv("jump",     jumpEdit->text().trimmed());
+		kv("dt",       dtEdit->text().trimmed());
+		kv("grn",      grnEdit->text().trimmed());
+		kv("geog",     cGeog->isChecked()  ? "1" : "0");
+		return L.join("\n");
 	}
 
 	// Seed the Input-grids widgets from the window's live grids (Scene Objects). Source <- the first grid
@@ -4902,10 +5012,15 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		mGphy->setTitle("Tsunamis ▾");
 		backItem();
 		mGphy->addAction("NSWING tsunami…", [win, s]() {
-			// Non-modal: the 3-D view stays interactive while options are picked. The dialog fires the
-			// NSWING run itself on RUN (see its accept handler) and frees itself on close.
+			// Non-modal: the 3-D view stays interactive while options are picked, and the dialog itself
+			// stays open across any number of RUN clicks (see its RUN/Save-files&RUN handlers) — closed
+			// only by the user, never by a run. Window flags + explicit NonModal (not just show(), which
+			// alone still leaves a parented QDialog feeling tied-above its parent on some platforms) —
+			// same combo as the other non-modal dialogs in this file (e.g. IgrfDialog).
 			auto *dlg = new NswingDialog(win, s);
 			dlg->setAttribute(Qt::WA_DeleteOnClose);
+			dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+			dlg->setWindowModality(Qt::NonModal);
 			dlg->show();
 		});
 		mGphy->addAction(actNestedGridsTsu);

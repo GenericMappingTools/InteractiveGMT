@@ -147,10 +147,10 @@ end
 # OBJECTS or plain file paths:
 #   • in-memory grids  -> a persistent Distributed WORKER process runs GMT.gmt("nswing … -v", grids...);
 #                         the grids travel in-memory over the socket (NO temp files).
-#   • all file paths   -> detached `gmt nswing … -V` OS process.
+#   • all file paths   -> detached `gmt nswing … -v` OS process.
 # Either way the run happens off-process, so the main iGMT window never blocks (on any thread count). The
 # run writes its stdout/stderr to a small text LOG (not a grid file) that a main-thread Timer tails for the
-# -V "… NN%" advance, driving a NON-MODAL progress bar. Only one run at a time.
+# -v "… NN%" advance, driving a NON-MODAL progress bar. Only one run at a time.
 const _NSWING_RUNNING = Ref(false)
 
 _progress_show_async(max::Int, title::String) =
@@ -207,7 +207,7 @@ function _nswing_tail(logf::String, pos::Base.RefValue{Int})
 	return (pct, line, errline)
 end
 
-# Main-thread Timer: tail `logf` for nswing's -V "NN %" output → drive the bar + a live ETA label.
+# Main-thread Timer: tail `logf` for nswing's -v "NN %" output → drive the bar + a live ETA label.
 # ETA anchors on the FIRST percent seen (time, pct) and extrapolates: elapsed·(100−p)/(p−p0). The raw
 # last line is shown whenever no percent is available yet (setup phase), so the dialog is never blank.
 # On `isdone()` close the bar and log the outcome (`result()` returns the error string, "" on success).
@@ -269,7 +269,7 @@ end
 
 # Worker run: send the resolved GMTgrids to the worker PROCESS (in-memory over the Distributed socket — NO
 # temp files) which runs nswing there, so the main iGMT process never blocks on any thread count. A
-# main-thread Timer tails the worker's log for the -V percentage. Spawn/setup + remotecall run in an @async
+# main-thread Timer tails the worker's log for the -v percentage. Spawn/setup + remotecall run in an @async
 # task (they yield, never freeze).
 #
 # The run is shipped as an EXPRESSION evaluated by Core.eval on the worker (never a named function/closure
@@ -308,11 +308,16 @@ function _nswing_run_worker(scene::Ptr{Cvoid}, cmdstr::String, grids::Vector{GMT
 end
 
 # File-path run: launch a detached `gmt nswing …` OS process, output → log the watcher tails. No thread /
-# redirect needed — a separate process never blocks the Julia runtime.
-function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String})
+# redirect needed — a separate process never blocks the Julia runtime. `dir`, when given, becomes the
+# process's OWN working directory: nswing's output names (-G's stem, the -M-/-M+ mask files, a bare
+# maregraph out file, …) are relative-only with no directory override in the module itself, so without
+# this they land wherever the calling Julia process's cwd happens to be — never the save-files dir the
+# user picked, even though the bathymetry/Source grids we save there sit right next to them.
+function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Union{String,Nothing} = nothing)
 	logf = tempname() * ".nswinglog"
 	io   = open(logf, "w")
 	cmd  = Cmd(vcat("gmt", "nswing", args))
+	dir === nothing || (cmd = Cmd(cmd; dir = dir))
 	proc = try
 		run(pipeline(cmd; stdout = io, stderr = io); wait = false)
 	catch e
@@ -325,11 +330,57 @@ function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String})
 	return
 end
 
+# Region + increment compatibility between a Source grid and the loaded bathymetry — nswing needs
+# them on the SAME grid geometry (same extent, same node spacing). `tol` absorbs float roundoff from
+# reading/writing grids, not real mismatches.
+function _nswing_check_grid_compat(base::GMTgrid, src::GMTgrid, srcname::AbstractString; tol::Float64 = 1e-8)
+	ok = all(isapprox.(base.range[1:4], src.range[1:4]; atol = tol)) &&
+	     all(isapprox.(base.inc,        src.inc;        atol = tol))
+	ok || error("NSWING: Source \"$srcname\" is not compatible with the bathymetry grid " *
+	            "(bathy -R$(join(base.range[1:4], "/")) -I$(join(base.inc, "/"))  vs  " *
+	            "source -R$(join(src.range[1:4], "/")) -I$(join(src.inc, "/")))")
+	return nothing
+end
+
+# Does `child` nest correctly inside `parent` — the SAME geometric rule the "Nested grids" rectangle
+# tool itself enforces when it builds the chain (nestReflow, 85_polygon.cpp, port of Mirone's
+# nesting_sizes.m): the child's region must sit STRICTLY inside the parent's, its cell size must be an
+# INTEGER refinement of the parent's (parent inc / child inc ≈ a whole number), and every child edge
+# must land exactly on a parent grid node (no sub-cell offset) — the alignment nswing's nesting
+# numerics need. `tol` (position units) absorbs float roundoff, not real mismatches.
+function _nswing_check_nest_fits(parent::GMTgrid, child::GMTgrid, parent_label::AbstractString,
+                                  child_label::AbstractString; tol::Float64 = 1e-8)
+	px0, px1, py0, py1 = parent.range[1:4]
+	cx0, cx1, cy0, cy1 = child.range[1:4]
+	fail(msg) = error("NSWING: \"$child_label\" does not nest inside \"$parent_label\" -- $msg " *
+	                  "(parent -R$(join(parent.range[1:4], "/")) -I$(join(parent.inc, "/"))  vs  " *
+	                  "child -R$(join(child.range[1:4], "/")) -I$(join(child.inc, "/")))")
+
+	(cx0 >= px0 - tol && cx1 <= px1 + tol && cy0 >= py0 - tol && cy1 <= py1 + tol) ||
+		fail("its region is not fully inside the parent's region")
+
+	for (pinc, cinc, axis) in ((parent.inc[1], child.inc[1], "X"), (parent.inc[2], child.inc[2], "Y"))
+		cinc > 0 || fail("its $axis increment is zero")
+		ratio = pinc / cinc
+		isapprox(ratio, round(ratio); atol = tol * max(1.0, ratio)) ||
+			fail("its $axis cell size ($cinc) is not an integer refinement of the parent's ($pinc)")
+	end
+
+	for (pv0, pinc, cv, axis, edge) in ((px0, parent.inc[1], cx0, "X", "west"), (px0, parent.inc[1], cx1, "X", "east"),
+	                                     (py0, parent.inc[2], cy0, "Y", "south"), (py0, parent.inc[2], cy1, "Y", "north"))
+		k = (cv - pv0) / pinc
+		isapprox(k, round(k); atol = tol / pinc) ||
+			fail("its $edge edge does not land on a parent grid node")
+	end
+	return nothing
+end
+
 # Every blocking check a run needs to pass, shared by the RUN button's synchronous pre-flight
 # (_nswing_check, below — lets the C++ dialog pop an error and stay open instead of launching+
 # vanishing) and _on_nswing itself (the real run performs the SAME checks, never a subset, so the
 # pre-flight can't pass something the real run then rejects). Throws with a human-readable message
-# on the FIRST problem found; returns (opts, msgs, nests, base) for _on_nswing to build the run from.
+# on the FIRST problem found; returns (opts, msgs, nests, base, src) for _on_nswing to build the run
+# from — `src` is already resolved here (Scene Objects grid or raw path) so callers never re-resolve.
 function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 	opts, msgs = _nswing_opts(d)
 	for m in msgs
@@ -347,6 +398,17 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 	end
 	base = _find_object(scene, :grid, "")             # layer0: the window's base bathymetry grid
 
+	# Every nest level must fit inside its PARENT — bathy for layer1, the previous layer for the rest
+	# (_nswing_check_nest_fits, same rule the "Nested grids" rectangle tool enforces when it builds the
+	# chain). Checked against a REAL bathymetry only; nothing to nest against otherwise.
+	if base isa GMTgrid
+		parent, parent_label = base, "bathymetry"
+		for (n, G) in nests
+			_nswing_check_nest_fits(parent, G, parent_label, "layer$n")
+			parent, parent_label = G, "layer$n"
+		end
+	end
+
 	srcname = _get(d, "source")
 	if base isa GMTgrid
 		# nswing REQUIRES exactly base+Source (confirmed live: given only 1 grid it returns instantly
@@ -355,7 +417,11 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 	else
 		isempty(srcname) && error("NSWING: no Source grid provided")
 	end
-	return opts, msgs, nests, base
+
+	src = isempty(srcname) ? "" : _nswing_grid_ref(scene, srcname)
+	(base isa GMTgrid && src isa GMTgrid) && _nswing_check_grid_compat(base, src, srcname)
+
+	return opts, msgs, nests, base, src
 end
 
 # Synchronous pre-flight check for the RUN button, called via g_juliaEval (NswingDialog's accepted
@@ -369,13 +435,123 @@ function _nswing_check(scene::Ptr{Cvoid}, cparams::AbstractString)
 	return nothing
 end
 
+# The bathymetry (layer0) grid's own known file — the window's originating file, if it was opened
+# from one (_path_for_handle, dispatch.jl). Called via g_juliaEval to seed NswingDialog's save-dir
+# edit box the FIRST time (before anything is remembered in QSettings); prints "" if unknown.
+function _nswing_bathy_dir(scene::Ptr{Cvoid})
+	p = _path_for_handle(scene)
+	print(isempty(p) ? "" : dirname(p))
+	return nothing
+end
+
+# Where "Save files & RUN" writes its grids: the dialog's own "savedir" field (its save-dir edit box —
+# normally already pre-filled/remembered, see _nswing_bathy_dir) if given, else beside the bathymetry's
+# own known file, else pwd().
+function _nswing_save_dir(scene::Ptr{Cvoid}, d::Dict{String,String})
+	savedir = _get(d, "savedir")
+	isempty(savedir) || return savedir
+	path = _path_for_handle(scene)
+	return isempty(path) ? pwd() : dirname(path)
+end
+
+# Decide, for every grid a run needs, where it would live on disk WITHOUT writing anything — shared by
+# the existence pre-check (_nswing_existing_files) and the actual save step (_nswing_save_files), so
+# the two can never name a file differently. Only grids generated INSIDE this session (a Source
+# resolved to a live Scene Objects grid, and the Transplant-filled "layerN" nests) get a NEW path to
+# save to; the bathymetry (layer0) reuses its own known file untouched, and a Source already typed/
+# resolved as a raw file path is left alone too — this dialog only ever writes what didn't already
+# exist on disk. Source/bathymetry compatibility (region+increment) is checked once, in
+# _nswing_validate — every caller here already gets a `src` that passed that check.
+function _nswing_plan_paths(scene::Ptr{Cvoid}, d::Dict{String,String})
+	opts, msgs, nests, base, src = _nswing_validate(scene, d)
+	# A CLI run always needs a REAL bathymetry grid to reference — nswing's own usage lists it as the
+	# first required positional. Fail loud instead of trying to guess one.
+	base isa GMTgrid || error("NSWING: no bathymetry grid in this window to save (open a base grid first)")
+	dir = _nswing_save_dir(scene, d)
+
+	bathy_known = _path_for_handle(scene)
+	bathy_needs_save = isempty(bathy_known)
+	bathy_path = bathy_needs_save ? joinpath(dir, "bathy.grd") : bathy_known
+
+	src_needs_save = src isa GMTgrid
+	src_path = src_needs_save ? joinpath(dir, "source.grd") : String(src)
+
+	nest_paths = [(n, joinpath(dir, "layer$n.grd")) for (n, _) in nests]   # always generated in-session
+
+	return (; opts, base, bathy_path, bathy_needs_save, src, src_path, src_needs_save, nests, nest_paths, dir)
+end
+
+# Which of the files a save WOULD write already exist on disk — printed "\n"-joined so the C++ side can
+# pop an overwrite confirmation BEFORE any writing happens. Empty output = nothing would collide.
+function _nswing_existing_files(scene::Ptr{Cvoid}, cparams::AbstractString)
+	d = _nswing_parse(cparams)
+	plan = _nswing_plan_paths(scene, d)
+	targets = String[]
+	plan.bathy_needs_save && push!(targets, plan.bathy_path)
+	plan.src_needs_save   && push!(targets, plan.src_path)
+	append!(targets, [p for (_, p) in plan.nest_paths])
+	print(join(filter(isfile, targets), "\n"))
+	return nothing
+end
+
+# Write to disk only the grids that need it (per _nswing_plan_paths) and return the CLI's positional/
+# flag pieces: (opts, bathy_path, src_path, nestflags).
+function _nswing_save_files(scene::Ptr{Cvoid}, d::Dict{String,String})
+	plan = _nswing_plan_paths(scene, d)
+	mkpath(plan.dir)
+	plan.bathy_needs_save && _save_grid(plan.base, "nc", plan.bathy_path)
+	plan.src_needs_save   && _save_grid(plan.src,  "nc", plan.src_path)
+	for ((n, G), (_, p)) in zip(plan.nests, plan.nest_paths)
+		_save_grid(G, "nc", p)
+	end
+	nestflags = ["-$(n)$(p)" for (n, p) in plan.nest_paths]   # nswing CLI: -1<grd> -2<grd> … (path ATTACHED, no space)
+	return plan.opts, plan.bathy_path, plan.src_path, nestflags, plan.dir
+end
+
+# Validate, save every grid this run needs, and assemble the CLI arg vector plus the save dir — shared
+# by both "Save files & RUN" sub-options (_nswing_show_cli just prints it; _on_nswing_save_run also
+# launches it, running the process IN that dir so its own relative-only outputs land there too — see
+# _nswing_run_external). CLI positional order confirmed against the LIVE `gmt nswing` usage: `nswing
+# <bathy> <source> [-1<grd> -2<grd> …] <options…>` (see _nswing_opts's mapping notes above).
+function _nswing_prepare_cli(scene::Ptr{Cvoid}, cparams::AbstractString)
+	d = _nswing_parse(cparams)
+	opts, bathy_path, src_path, nestflags, dir = _nswing_save_files(scene, d)
+	return vcat([bathy_path, src_path], nestflags, opts, ["-v"]), dir
+end
+
+# "Save files and show GMT command" sub-option (g_juliaEval, synchronous): save the grids, then PRINT
+# the equivalent `gmt nswing …` command line so the C++ side can pop it in a read-only info box. Does
+# NOT run anything.
+function _nswing_show_cli(scene::Ptr{Cvoid}, cparams::AbstractString)
+	args, dir = _nswing_prepare_cli(scene, cparams)
+	print("cd \"$dir\" && gmt nswing " * join(args, " "))
+	return nothing
+end
+
+# "Save files and RUN" sub-option (g_juliaEval, synchronous call — but the launch itself is
+# non-blocking, same as the rest of this file's async runs): save the grids, then hand the SAME
+# detached-OS-process path the typed-file-paths branch of _on_nswing already uses
+# (_nswing_run_external) — its own stdout (-v) feeds the live progress bar via _nswing_watch, run
+# INSIDE the save dir so nswing's own relative output names land there too.
+function _on_nswing_save_run(scene::Ptr{Cvoid}, cparams::AbstractString)
+	if _NSWING_RUNNING[]
+		error("NSWING: a run is already in progress.")
+	end
+	args, dir = _nswing_prepare_cli(scene, cparams)
+	_viewer_log_error(scene, "NSWING command: (cd $dir) gmt nswing " * join(args, " "))
+	_NSWING_RUNNING[] = true
+	_progress_show_async(100, "NSWING running…")
+	_nswing_run_external(scene, args; dir)
+	return nothing
+end
+
 # C callback: cparams = "key=value\n…". Assemble the CORRECT nswing invocation and run it asynchronously
 # with a live progress bar. The nswing GMT module takes its grids as trailing OBJECTS (never as `?`/paths
 # baked into the string): the command carries only bare nesting flags -1 -2 … (one per nest) plus the run
-# options + -V, and the grids ride in the arg list in this order —
+# options + -v, and the grids ride in the arg list in this order —
 #     gmt("nswing -1 -2 … -G… -N… -t… -f -v",  base_bathy,  source,  nest1,  nest2, …)
 # base_bathy = the window's base grid (layer0), source = the dialog Source grid (e.g. "Okada z"), then the
-# scene's "layerN" chain. `-V` makes nswing print its advance as "NN%" which the watcher parses.
+# scene's "layerN" chain. `-v` makes nswing print its advance as "NN%" which the watcher parses.
 function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 	try
 		if _NSWING_RUNNING[]
@@ -383,12 +559,11 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			return
 		end
 		d = _nswing_parse(unsafe_string(cparams))
-		opts, msgs, nests, base = _nswing_validate(scene, d)
+		opts, msgs, nests, base, src = _nswing_validate(scene, d)
 
 		if base isa GMTgrid
 			# ── object run (the normal case): every grid is a live GMTgrid, passed as a trailing arg ──
 			grids = GMTgrid[base]                        # primary #1: base bathymetry (layer0)
-			src = _nswing_grid_ref(scene, _get(d, "source"))   # primary #2: the Source grid
 			push!(grids, src isa GMTgrid ? src : GMT.gmtread(String(src)))   # typed path -> load (no temp file)
 			cmd = "nswing"
 			for (n, _) in nests                          # bare nesting flags: layerN -> -N
@@ -408,7 +583,7 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			nestpath = _get(d, "nest");  level = tryparse(Int, _get(d, "level", "0"))
 			args = String[srcpath]
 			(!isempty(nestpath) && level !== nothing && level >= 1) && push!(args, "-$(level)$(nestpath)")
-			append!(args, opts);  push!(args, "-V")
+			append!(args, opts);  push!(args, "-v")
 			_viewer_log_error(scene, "NSWING command: gmt nswing " * join(args, " "))
 			_NSWING_RUNNING[] = true
 			_progress_show_async(100, "NSWING running…")
