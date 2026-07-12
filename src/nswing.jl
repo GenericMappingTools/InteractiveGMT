@@ -55,7 +55,7 @@ end
 #  - `-T<cumint>,<in>[,<out>]` (comma-positional) is wrong syntax; real form is
 #    `-T<in>[+o<out>][+t<cumint>]` (verified live, produced the maregraph output file).
 #  - `-n<name>` (MOST format) does not exist in the linked module at all — errors immediately if picked.
-function _nswing_opts(d::Dict{String,String})
+function _nswing_opts(d::Dict{String,String}; max_nest_level::Int=0)
 	args = String[]
 	msgs = String[]
 
@@ -68,7 +68,8 @@ function _nswing_opts(d::Dict{String,String})
 		push!(args, "-G$(stem),$(grn)")                  # nswing -G<name>,<int>
 		_get(d, "field") == "total" && push!(args, "-D") # total water depth
 		_on(d, "max")      && push!(args, "-M")          # max water level grid (Max water checkbox)
-		append!(args, ("-M-", "-M+"))                    # min / max-positive water level grids (always on)
+		# -M-/-M+ only when at least level 2 nested grids exist (not for 0 or 1 level)
+		max_nest_level >= 2 && append!(args, ("-M-", "-M+"))  # min / max-positive water level grids
 		_on(d, "velocity") && push!(args, "-S")          # velocity grids (_U/_V)
 		_on(d, "momentum") && push!(args, "-H")          # momentum grids
 	elseif (mode == "anuga")
@@ -476,12 +477,17 @@ end
 # from — `src` is already resolved here (Scene Objects grid or raw path) so callers never re-resolve.
 # `nests` entries are (level, GMTgrid-or-path), same either/or convention as `src`.
 function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
-	opts, msgs = _nswing_opts(d)
+	# Get nests first to count levels for -M-/-M+ option
+	nests = _nswing_scene_nests(scene)               # [(N, G)…] from the live "layerN" scene chain
+	# Count max nested grid level (level 2+ means at least layer2 exists)
+	max_nest_level = length(nests) > 0 ? maximum(first(n) for (n, _) in nests) : 0
+
+	opts, msgs = _nswing_opts(d; nest_levels=max_nest_level)
 	for m in msgs
 		_viewer_log_error(scene, "NSWING: $m")
 	end
 
-	nests = _nswing_scene_nests(scene)               # [(N, G)…] from the live "layerN" scene chain
+	# Process nests (already fetched above)
 	# The dialog's own Nest chain only fills GAPS: a level the live scene chain doesn't already cover
 	# (e.g. a file picked directly instead of built in-scene). A level the scene chain already has
 	# wins — it's the live, editable one.
