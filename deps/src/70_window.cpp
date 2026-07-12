@@ -3347,6 +3347,25 @@ public:
 			sub.exec();
 		});
 
+		// The stock Qt/Windows push button renders nearly borderless on this dialog's palette, so RUN
+		// and "Save files & RUN" read as flat text, not buttons. Give both a raised edge, padding and
+		// hover/press feedback; RUN gets a green accent (it launches a real simulation) so it's the
+		// obvious primary action, Save stays neutral grey.
+		runBtn->setMinimumHeight(30);
+		runBtn->setStyleSheet(
+			"QPushButton { padding: 6px 22px; font-weight: bold; border: 1px solid #1f7a33;"
+			" border-radius: 5px; color: white;"
+			" background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #4caf50, stop:1 #388e3c); }"
+			"QPushButton:hover { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #5cbf60, stop:1 #43a047); }"
+			"QPushButton:pressed { background: #2e7d32; }");
+		saveRunBtn->setMinimumHeight(30);
+		saveRunBtn->setStyleSheet(
+			"QPushButton { padding: 6px 18px; font-weight: bold; border: 1px solid #7a7a7a;"
+			" border-radius: 5px;"
+			" background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #fbfbfb, stop:1 #dcdcdc); }"
+			"QPushButton:hover { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #ffffff, stop:1 #e8e8e8); }"
+			"QPushButton:pressed { background: #cfcfcf; }");
+
 		auto *btnRow = new QHBoxLayout();
 		btnRow->addWidget(saveRunBtn);
 		btnRow->addStretch();
