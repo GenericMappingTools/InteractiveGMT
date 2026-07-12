@@ -2381,6 +2381,11 @@ GMTVTK_API void gmtvtk_set_cube_layer_callback(JuliaCubeLayerFn fn) {
 	g_juliaCubeLayer = fn;
 }
 
+// Register the "Load all in RAM" callback for the cube layer dock. nullptr to detach.
+GMTVTK_API void gmtvtk_set_cube_loadall_callback(JuliaCubeLoadAllFn fn) {
+	g_juliaCubeLoadAll = fn;
+}
+
 // Show the non-modal 3D cube layer selector dialog. `scene` is the target window, `name` is the
 // cube's base name (for the dialog title), `nLayers` is the number of layers in the cube. The
 // dialog stays open until the user closes it, allowing quick layer switching.

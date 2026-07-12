@@ -64,11 +64,16 @@ _drop_into(scene::Ptr{Cvoid}, G::GMTgrid,  name; promote=false, source="") = _ad
 # cube reader, not GDAL, and is the mechanism GMT.jl's cube support is actually built on --
 # correctness comes first; the try/catch this needs is a one-time cost per dropped file, not a
 # hot loop, so it was never a real problem to begin with.
-const _CUBE_INFO = Dict{Ptr{Cvoid}, @NamedTuple{path::String, name::String, promote::Bool, source::String, zmin::Float64, zmax::Float64}}()
+const _CUBE_INFO = Dict{Ptr{Cvoid}, @NamedTuple{path::String, name::String, promote::Bool, source::String, zmin::Float64, zmax::Float64, n_layers::Int}}()
 const _CUBE_LOADED = Dict{Ptr{Cvoid}, Bool}()
 # The slice currently shown per scene: (layer index, its grid, its cmap). Lets the "global min/max"
 # checkbox rescale the COLOUR in place (no disk read, no surface rebuild) when the layer is unchanged.
 const _CUBE_CUR = Dict{Ptr{Cvoid}, Any}()
+# Optional whole-cube-in-RAM cache (the "Load all in RAM" button). When present, a layer switch
+# slices this in memory (zero-copy `unsafe_wrap` view of the k-th slab) instead of a per-layer disk
+# read -- ~1.4 s off disk vs ~instant from RAM for a large cube. Held for the scene's life; cleared
+# when a new cube is dropped into the same window or the window dies.
+const _CUBE_RAM = Dict{Ptr{Cvoid}, GMTgrid}()
 
 # Header-only probe: (n_layers, zmin, zmax) for a netCDF/grd cube -- n_layers=0 if not a cube (or
 # the header can't be read as one). ONE `grdinfo -Q` call gives both the layer count and the
@@ -94,8 +99,10 @@ end
 # slider dialog. No grid is read here -- the first slice is pulled lazily once the dialog fires
 # its initial layer.
 function _on_3d_cube_dropped(scene::Ptr{Cvoid}, path::String, name::AbstractString, promote::Bool, n_layers::Int, zmin::Float64, zmax::Float64)
-	_CUBE_INFO[scene] = (path=path, name=String(name), promote=promote, source=path, zmin=zmin, zmax=zmax)
+	_CUBE_INFO[scene] = (path=path, name=String(name), promote=promote, source=path, zmin=zmin, zmax=zmax, n_layers=n_layers)
 	_CUBE_LOADED[scene] = false
+	delete!(_CUBE_RAM, scene)   # a fresh cube is not in RAM (the dock button re-enables to match)
+	delete!(_CUBE_CUR, scene)
 	ccall(_fn(:gmtvtk_show_cube_layer_dialog), Cvoid,
 		(Ptr{Cvoid}, Cstring, Cint), scene, name, n_layers)
 end
@@ -123,6 +130,26 @@ function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::C
 		# the checkbox instant AND actually retargets the colorbar.
 		if cur !== nothing && cur.layer == layer_i && get(_CUBE_LOADED, scene, false)
 			_cube_push_cpt(scene, use_global != 0 ? cur.glob : cur.loc)
+			return
+		end
+
+		# Whole cube in RAM (the "Load all in RAM" button): slice the k-th slab in memory instead of
+		# reading it off disk. `_cube_layer_view` returns a GMTgrid whose z aliases the cube's memory
+		# (unsafe_wrap, NO copy), so the rest of the path is identical to the disk case.
+		ram = get(_CUBE_RAM, scene, nothing)
+		if ram !== nothing
+			Gk   = _cube_layer_view(ram, layer_i)
+			cmap = _default_cmap(Gk)
+			if get(_CUBE_LOADED, scene, false)
+				_apply_host_grid!(scene, Gk, layer_name)
+			else
+				_add_grid_to_scene(scene, Gk, layer_name; promote=info.promote, source=info.source)
+				_CUBE_LOADED[scene] = true
+			end
+			loc  = _cpt_nodes(Gk, cmap)
+			glob = _cpt_nodes_range(info.zmin, info.zmax, cmap)
+			_CUBE_CUR[scene] = (layer=layer_i, G=Gk, cmap=cmap, loc=loc, glob=glob)
+			_cube_push_cpt(scene, use_global != 0 ? glob : loc)
 			return
 		end
 
@@ -160,10 +187,61 @@ function _cube_push_cpt(scene::Ptr{Cvoid}, nodes)
 	return
 end
 
-# Register the cube layer callback (lazy registration)
+# Zero-copy 2-D slice of a whole-cube GMTgrid held in RAM: the k-th slab is contiguous (last
+# dimension), so `unsafe_wrap` hands back a real `Matrix{Float32}` that ALIASES the cube's memory
+# -- no data copy. The parent cube stays rooted in `_CUBE_RAM`, so the aliased buffer is valid for
+# as long as this scene keeps the cube. The z-range is left [0,0] here; `_cpt_nodes` rescans the
+# slice for the colour range, and `_apply_host_grid!` only uses the x/y range.
+function _cube_layer_view(C::GMTgrid, k::Int)::GMTgrid
+	nrows, ncols = size(C.z, 1), size(C.z, 2)
+	off = (k - 1) * nrows * ncols + 1
+	zk  = unsafe_wrap(Array, pointer(C.z, off), (nrows, ncols))   # aliases cube memory, no copy
+	inc2 = length(C.inc) >= 2 ? C.inc[1:2] : copy(C.inc)
+	return GMT.GMTgrid(; proj4=C.proj4, wkt=C.wkt, epsg=C.epsg, geog=C.geog,
+		range=Float64[C.range[1], C.range[2], C.range[3], C.range[4], 0.0, 0.0],
+		inc=inc2, registration=C.registration, nodata=C.nodata,
+		x=C.x, y=C.y, z=zk, layout=C.layout, cpt=C.cpt)
+end
+
+# "Load all in RAM" button callback. Read the WHOLE cube into memory so later layer switches slice
+# it in place (see `_cube_layer_view`) instead of reading each slab off disk. Refuses (return 1) if
+# it would not fit in free RAM. Returns: 0 = loaded, 1 = not enough RAM, 2 = error.
+function _on_cube_load_all(scene::Ptr{Cvoid})::Cint
+	try
+		info = get(_CUBE_INFO, scene, nothing)
+		info === nothing && return Cint(2)
+		haskey(_CUBE_RAM, scene) && return Cint(0)          # already resident
+
+		# Bytes per layer from the currently shown slice (already in hand) or a one-layer probe.
+		cur = get(_CUBE_CUR, scene, nothing)
+		nbytes_layer = if cur !== nothing && cur.G isa GMTgrid
+			length(cur.G.z) * sizeof(eltype(cur.G.z))
+		else
+			g1 = GMT.gmtread(info.path, layer=1)
+			g1 === nothing && return Cint(2)
+			length(g1.z) * sizeof(eltype(g1.z))
+		end
+		need = Float64(nbytes_layer) * info.n_layers
+		# Keep a 20% headroom over the raw cube size (transient read buffers + working set).
+		(need * 1.2 > Float64(Sys.free_memory())) && return Cint(1)
+
+		C = GMT.gmtread(info.path, layers=:all)
+		(C isa GMTgrid && ndims(C.z) == 3) || return Cint(2)
+		_CUBE_RAM[scene] = C
+		return Cint(0)
+	catch e
+		@error "Cube load-all failed" exception=(e, catch_backtrace())
+		return Cint(2)
+	end
+end
+
+# Register the cube layer callbacks (lazy registration): the per-layer slider callback and the
+# "Load all in RAM" button callback.
 function _register_cube_callback()
 	ccall(_fn(:gmtvtk_set_cube_layer_callback), Cvoid,
 		(Ptr{Cvoid},), @cfunction(_on_load_cube_layer, Cvoid, (Ptr{Cvoid}, Cint, Cint)))
+	ccall(_fn(:gmtvtk_set_cube_loadall_callback), Cvoid,
+		(Ptr{Cvoid},), @cfunction(_on_cube_load_all, Cint, (Ptr{Cvoid},)))
 end
 _drop_into(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false, source="") = _add_image_to_scene(scene, I, name; promote, source)
 function _drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name; promote=false, source="")

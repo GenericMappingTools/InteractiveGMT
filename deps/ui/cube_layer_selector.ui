@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>412</width>
-    <height>84</height>
+    <height>94</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -46,16 +46,6 @@
      <property name="spacing">
       <number>0</number>
      </property>
-     <item row="0" column="0">
-      <widget class="QCheckBox" name="globalScaleCheck">
-       <property name="text">
-        <string>Scale color to global min/max</string>
-       </property>
-       <property name="checked">
-        <bool>false</bool>
-       </property>
-      </widget>
-     </item>
      <item row="0" column="1">
       <widget class="QLabel" name="layerNoLabel">
        <property name="text">
@@ -95,6 +85,43 @@
        </property>
        <property name="value">
         <number>1</number>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonRow">
+     <item>
+      <widget class="QCheckBox" name="globalScaleCheck">
+       <property name="text">
+        <string>Scale color to global min/max</string>
+       </property>
+       <property name="checked">
+        <bool>false</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="btnSpacer">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="loadRamBtn">
+       <property name="toolTip">
+        <string>Load the whole cube into memory so layer switching is instant (needs enough free RAM)</string>
+       </property>
+       <property name="text">
+        <string>Load all in RAM</string>
        </property>
       </widget>
      </item>

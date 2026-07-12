@@ -3663,6 +3663,12 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 		if (sb)  { sb->setRange(1, nLayers);  sb->setValue(1); }
 		if (spn) { spn->setRange(1, nLayers); spn->setValue(1); }
 		if (lbl) lbl->setText(QString("3D Cube: %1 (%2 layers)").arg(cubeName).arg(nLayers));
+		// New cube in this dock: it is NOT in RAM yet (Julia cleared _CUBE_RAM on the fresh drop),
+		// so re-enable the "Load all in RAM" button.
+		if (auto *rb = s->cubeDlg->findChild<QPushButton *>("loadRamBtn")) {
+			rb->setText("Load all in RAM");
+			rb->setEnabled(true);
+		}
 		s->cubeDlg->show();
 		s->cubeDlg->raise();
 		if (sb && chk && g_juliaCubeLayer) g_juliaCubeLayer(s, sb->value() - 1, chk->isChecked() ? 1 : 0);   // show layer 1 of the new cube
@@ -3766,6 +3772,34 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 		fire();
 	});
 	QObject::connect(chk, &QCheckBox::toggled, dock, [fire](bool) { fire(); });
+
+	// "Load all in RAM": pull the whole cube into memory (Julia checks free RAM first and refuses if
+	// it won't fit). While the (blocking, up to tens of seconds) load runs, show the busy cursor.
+	// Afterwards every layer switch is a memory slice instead of a per-layer disk read.
+	if (auto *ramBtn = content->findChild<QPushButton *>("loadRamBtn")) {
+		QObject::connect(ramBtn, &QPushButton::clicked, dock, [s, ramBtn]() {
+			if (!sceneAlive(s) || !g_juliaCubeLoadAll) return;
+			QApplication::setOverrideCursor(Qt::WaitCursor);
+			QApplication::processEvents();               // let the cursor paint before we block
+			int rc = g_juliaCubeLoadAll(s);
+			QApplication::restoreOverrideCursor();
+			if (rc == 0) {
+				ramBtn->setText("In RAM ✓");
+				ramBtn->setEnabled(false);
+				if (s->win)
+					s->win->statusBar()->showMessage("Cube loaded into RAM — layer switching is now instant", 5000);
+			}
+			else if (rc == 1) {
+				QMessageBox::warning(s->win, "Load all in RAM",
+					"Not enough free RAM to hold the whole cube in memory.\n"
+					"Keeping the per-layer disk reads.");
+			}
+			else {
+				QMessageBox::warning(s->win, "Load all in RAM",
+					"Failed to load the cube into memory.");
+			}
+		});
+	}
 
 	dock->show();    // data (layer 1) is already displayed above, so the panel appears after it
 	dock->raise();

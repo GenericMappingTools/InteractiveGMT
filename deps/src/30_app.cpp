@@ -285,6 +285,12 @@ static JuliaDimFunFn g_juliaDimFun = nullptr;
 typedef void (*JuliaCubeLayerFn)(void *scene, int layerIndex, int useGlobalScale);
 static JuliaCubeLayerFn g_juliaCubeLayer = nullptr;
 
+// "Load all in RAM" button in the cube layer dock: load the whole cube into memory so subsequent
+// layer switches are instant (memory slice) instead of a per-layer disk read. Returns a status:
+// 0 = loaded OK, 1 = not enough free RAM (nothing loaded), 2 = error. Julia does the RAM check.
+typedef int (*JuliaCubeLoadAllFn)(void *scene);
+static JuliaCubeLoadAllFn g_juliaCubeLoadAll = nullptr;
+
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a
 // short format code (nc/surfer/gtiff/jp2/erdas/envi for grids; those + jpg/png/tif/bmp for images);
