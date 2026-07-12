@@ -3051,6 +3051,8 @@ public:
 	QPushButton *btnBorder = nullptr;     // label mirrors bcPath ("Bordering" / "Bordering: <file>")
 	Scene *scene_ = nullptr;              // owning window's scene (grid inventory + RUN callback target)
 	std::map<QLineEdit*, std::function<void()>> fileBrowsers;   // edit -> its "..." browse action (fileRow); double-click runs it too
+	bool nestReady_ = false;              // gate: don't run the load-time nest check during construction/seed
+	QString lastNestChecked_;             // dedup so the same path isn't re-checked on every keystroke/refresh
 
 	NswingDialog(QWidget *parent, Scene *scene = nullptr) : QDialog(parent), scene_(scene) {
 		setWindowTitle("NSWING tsunami options");
@@ -3099,6 +3101,7 @@ public:
 			if (lvl <= 0) return;               // level 0 has no file, its box is disabled anyway
 			nestNames[lvl] = txt.trimmed();
 			refreshLevelCombo();
+			checkNestFile();                    // validate the moment a nest grid FILE is loaded/typed
 		});
 		// Start on the next OPEN level (level 1 the first time — nothing filled yet), not level 0, so
 		// the Nest box is immediately ready to accept that level's grid name. From here on, only that
@@ -3304,6 +3307,13 @@ public:
 					return QString();
 				}
 				if (!existing.trimmed().isEmpty()) {
+					// WHY they're flagged as different (grdinfo -C, disk vs memory, field by field) —
+					// shown BEFORE the Yes/No so an overwrite can be checked, not taken on faith.
+					QString report;
+					juliaEvalCall(QString("InteractiveGMT._nswing_existing_files_report(Ptr{Cvoid}(UInt(%1)),raw\"%2\")")
+					                  .arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(p), report);
+					if (!report.trimmed().isEmpty())
+						showInfoText(this, "NSWING — why these differ", report.trimmed());
 					auto ans = QMessageBox::question(this, "NSWING",
 						"These files already exist and will be overwritten:\n\n" + existing,
 						QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
@@ -3349,9 +3359,33 @@ public:
 		// show()-vs-exec(), so `rejected` alone catches every close (RUN never calls accept()/close()
 		// itself, per this dialog's one-instance-per-window design, comment above).
 		if (scene_ && !scene_->nswingParams.isEmpty()) applyParams(scene_->nswingParams);
+		nestReady_ = true;                    // seeding done — from here, a nest file load runs the check
 		QObject::connect(this, &QDialog::rejected, this, [this]{
 			if (scene_) scene_->nswingParams = collectParams();
 		});
+	}
+
+	// Validate the currently-entered Nest grid the INSTANT its file name is loaded/typed (called from the
+	// nestEdit textChanged handler). Only a real, existing file is checked — a partial path being typed, a
+	// scene grid NAME, or an empty box is ignored. The daughter is checked against its parent (the window
+	// bathymetry for level 1, the previous level otherwise) by nswing's own nesting rule; if it violates,
+	// the exact "does not obey to the nesting rules … X_MIN should be …" message pops immediately, so the
+	// user learns of it here and not only at RUN. (_nswing_check_nest_file, nswing.jl.)
+	void checkNestFile() {
+		if (!nestReady_) return;
+		const int lvl = levelCombo->currentIndex();
+		if (lvl < 1) return;
+		const QString path = nestEdit->text().trimmed();
+		if (path.isEmpty() || !QFileInfo(path).isFile()) { lastNestChecked_.clear(); return; }
+		if (path == lastNestChecked_) return;             // already checked this exact file
+		lastNestChecked_ = path;
+		const QString parentRef = (lvl >= 2 && nestNames.count(lvl - 1)) ? nestNames[lvl - 1] : QString();
+		QString out;
+		const QString expr = QString("InteractiveGMT._nswing_check_nest_file(Ptr{Cvoid}(UInt(%1)),%2,raw\"%3\",raw\"%4\")")
+			.arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(lvl).arg(path).arg(parentRef);
+		if (!juliaEvalCall(expr, out)) { QMessageBox::warning(this, "NSWING", out); return; }
+		if (!out.trimmed().isEmpty())
+			QMessageBox::warning(this, "NSWING — nesting rules", out.trimmed());
 	}
 
 	// Double-click on a fileRow edit box opens the same "..." picker (fileBrowsers, set up in fileRow).
@@ -3387,6 +3421,10 @@ public:
 		kv("source",   srcEdit->text().trimmed());
 		kv("nest",     nestEdit->text().trimmed());
 		kv("level",    QString::number(levelCombo->currentIndex()));
+		// The FULL nest chain (nestNames, every level the user has visited/typed into, not just the one
+		// currently showing in the box above) — a run needs every level, not just the last-selected one.
+		for (auto &pr : nestNames)
+			if (!pr.second.isEmpty()) kv(("nestL" + std::to_string(pr.first)).c_str(), pr.second);
 		kv("bc",       bcPath);
 		kv("outmode",  mode);
 		kv("name",     nameEdit->text().trimmed());
@@ -3417,9 +3455,20 @@ public:
 		}
 		auto get = [&](const char *k) { auto it = m.find(k); return it == m.end() ? QString() : it->second; };
 		srcEdit->setText(get("source"));
+		// Full nest chain FIRST (every "nestL<n>" key, not just the level that happened to be showing
+		// when this was saved). MERGED into whatever populateFromScene() already seeded from live scene
+		// grids, not cleared first — a remembered typed/browsed name overrides a scene one for the SAME
+		// level, but a level populateFromScene found that this save never touched still survives.
+		for (auto &[k, v] : m) {
+			if (!k.startsWith("nestL") || v.isEmpty()) continue;
+			bool ok = false;
+			int lvl = k.mid(5).toInt(&ok);
+			if (ok) nestNames[lvl] = v;
+		}
+		refreshLevelCombo();
 		int lvl = get("level").toInt();
 		if (lvl >= 0 && lvl < levelCombo->count()) levelCombo->setCurrentIndex(lvl);
-		nestEdit->setText(get("nest"));   // AFTER the level index, so its textChanged handler files it under the right level (nestNames)
+		showLevel(levelCombo->currentIndex());   // explicit: setCurrentIndex above only re-fires showLevel on an actual index CHANGE
 		bcPath = get("bc");
 		if (!bcPath.isEmpty()) btnBorder->setText("Bordering: " + QFileInfo(bcPath).fileName());
 		nameEdit->setText(get("name"));

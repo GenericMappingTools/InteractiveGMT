@@ -863,6 +863,10 @@ static void nestReflow(Scene *s) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
+// (The NSWING daughter-grid nesting check — nswing's check_paternity/check_binning — lives in Julia:
+//  nswing.jl `_nest_binning` / `_nswing_nest_msg`. It is pure header arithmetic and needs nothing from
+//  the viewer, so it is NOT a C export.)
+
 // "New nested grid": append a refined child = the inner half of the current innermost rect, with
 // increments = innermost / refinement factor (Mirone make_new_nested). Then reflow snaps it.
 static void nestNewChild(Scene *s) {

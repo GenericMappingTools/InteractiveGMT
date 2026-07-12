@@ -114,20 +114,23 @@ function _nswing_opts(d::Dict{String,String})
 	return args, msgs
 end
 
-# Resolve a Source field to what nswing should receive. The dialog seeds it with a Scene Objects grid
-# NAME (e.g. "Okada z"); look it up in the window's grid registry and hand back the live GMTgrid — nswing
-# takes grid objects directly, so no on-disk conversion is needed. Falls back to the raw string (a typed
-# file path) when the name is not a registered scene grid.
+# Resolve a Source/Nest field to what nswing should receive. The dialog seeds it with a Scene Objects
+# grid NAME (e.g. "Okada z"); look it up in the window's grid registry and hand back the live GMTgrid —
+# nswing takes grid objects directly, so no on-disk conversion is needed. Falls back to the raw string
+# (a typed file path) when the name is not a registered scene grid. Uses the STRICT lookup
+# (_find_object_exact) on purpose — the plain _find_object silently falls back to the window's
+# PRIMARY (bathymetry) grid on a name miss, which would silently substitute the bathymetry for a
+# Source/Nest that didn't resolve, instead of correctly falling through to "treat it as a file path".
 function _nswing_grid_ref(scene::Ptr{Cvoid}, name::AbstractString)
 	isempty(name) && return ""
-	G = _find_object(scene, :grid, String(name))
+	G = _find_object_exact(scene, :grid, String(name))
 	G isa GMTgrid ? G : String(name)
 end
 
 # Every in-scene "layerN" grid for this window, as (N, GMTgrid) sorted by N — the nesting chain
 # the user built (layer1 → -1, layer2 → -2, …). Read straight from the object registry.
 function _nswing_scene_nests(scene::Ptr{Cvoid})
-	out = Tuple{Int,GMTgrid}[]
+	out = Tuple{Int,Any}[]   # value is GMTgrid here, but shares this Vector with dialog-typed paths (String) later
 	v = get(_SCENE_OBJS, scene, nothing)
 	v === nothing && return out
 	for (k, n, dat) in v
@@ -307,6 +310,25 @@ function _nswing_run_worker(scene::Ptr{Cvoid}, cmdstr::String, grids::Vector{GMT
 	return
 end
 
+# libgmtvtk.jl's _load_library() permanently prepends the VTK/Qt toolchain bin dirs (_VTK_BIN,
+# _QT_BIN) onto THIS Julia process's PATH, so gmtvtk.dll's own ccall'd VTK/Qt DLLs resolve. Any
+# child process we spawn afterward inherits that same PATH -- including the detached `gmt nswing`
+# process below. gmt.exe has its OWN dependencies (netcdf/hdf5/proj/gdal/...) that can share a
+# FILENAME with VTK's bundled copies at a different version/ABI; if gmt.exe finds VTK's copy first
+# it can crash on load (access violation, exit code 0xC0000005) even though the exact same command
+# works fine from a normal terminal with a clean PATH. Give the child process PATH with that prefix
+# stripped back off, so it resolves its own dependencies exactly as it would standalone.
+function _nswing_clean_env()
+	path = get(ENV, "PATH", "")
+	prefix = _VTK_BIN * ";" * _QT_BIN * ";"
+	if startswith(path, prefix)
+		path = path[length(prefix)+1:end]
+	end
+	env = copy(ENV)
+	env["PATH"] = path
+	return env
+end
+
 # File-path run: launch a detached `gmt nswing …` OS process, output → log the watcher tails. No thread /
 # redirect needed — a separate process never blocks the Julia runtime. `dir`, when given, becomes the
 # process's OWN working directory: nswing's output names (-G's stem, the -M-/-M+ mask files, a bare
@@ -317,7 +339,10 @@ function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Unio
 	logf = tempname() * ".nswinglog"
 	io   = open(logf, "w")
 	cmd  = Cmd(vcat("gmt", "nswing", args))
-	dir === nothing || (cmd = Cmd(cmd; dir = dir))
+	if dir !== nothing
+		cmd = Cmd(cmd; dir = dir)
+	end
+	cmd = Cmd(cmd; env = _nswing_clean_env())
 	proc = try
 		run(pipeline(cmd; stdout = io, stderr = io); wait = false)
 	catch e
@@ -326,7 +351,28 @@ function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Unio
 		_viewer_log_error(scene, "NSWING: could not launch `gmt nswing` ($(sprint(showerror, e)))")
 		return
 	end
-	_nswing_watch(scene, () -> !process_running(proc), () -> "", logf, io)
+	# The process's OWN exit code is the only reliable success/failure signal — nswing's "[ERROR]"
+	# stdout tag (_nswing_tail) is a bonus catch, not something every failure prints (a missing/wrong
+	# `gmt` on PATH, or a build without the nswing supplement, exits nonzero with its own unrelated
+	# message). Ignoring this (as before) reported "run finished" success no matter what actually
+	# happened — including a `gmt` that doesn't even have nswing, which just does nothing, fast.
+	function _nswing_external_result()
+		if success(proc)
+			return ""
+		end
+		logtext = ""
+		try
+			logtext = strip(read(logf, String))
+		catch
+			# log file already gone or unreadable — fall through with an empty logtext
+		end
+		msg = "gmt nswing exited with code $(proc.exitcode)"
+		if !isempty(logtext)
+			msg = msg * ":\n" * logtext
+		end
+		return msg
+	end
+	_nswing_watch(scene, () -> !process_running(proc), _nswing_external_result, logf, io)
 	return
 end
 
@@ -342,48 +388,89 @@ function _nswing_check_grid_compat(base::GMTgrid, src::GMTgrid, srcname::Abstrac
 	return nothing
 end
 
-# Does `child` nest correctly inside `parent` — the SAME geometric rule the "Nested grids" rectangle
-# tool itself enforces when it builds the chain (nestReflow, 85_polygon.cpp, port of Mirone's
-# nesting_sizes.m): the child's region must sit STRICTLY inside the parent's, its cell size must be an
-# INTEGER refinement of the parent's (parent inc / child inc ≈ a whole number), and every child edge
-# must land exactly on a parent grid node (no sub-cell offset) — the alignment nswing's nesting
-# numerics need. `tol` (position units) absorbs float roundoff, not real mismatches.
+# One corner of the nesting check — a direct port of nswing/tintol's `check_binning`. Measured from the
+# parent origin x0P (parent inc dxP), the daughter corner x0D obeys the rule iff its offset into the
+# parent cell equals dxP/2 ± dxD/2. Pass dxD = +child_inc for a west/south (min) edge, -child_inc for an
+# east/north (max) edge. Tolerance = |child_inc|/4 (tintol.m threshD). Returns (bad::Bool, suggest): on
+# violation, `suggest` is the nearest compliant corner value; else it is unused.
+function _nest_binning(x0P, x0D, dxP, dxD)
+	tol = abs(dxD) / 4
+	n   = trunc((x0D - x0P) / dxP)                    # MATLAB fix()
+	dec = x0D - (x0P + n * dxP)
+	if abs(dec - (dxP / 2 + dxD / 2)) > tol
+		return true, x0P + n * dxP + dxP / 2 + dxD / 2
+	end
+	return false, 0.0
+end
+
+# The exact Mirone/nswing nesting-rule message for a daughter grid vs its parent — "" when it obeys.
+# Pure Julia port of nswing's check_paternity/check_binning (mex/nswing.c), the SAME half-cell rule the
+# "Nested grids" rectangles use: each daughter corner must sit at parent_node ∓ parent_inc/2 ± child_inc/2.
+# The four texts and the "in grid registration" wording (including Mirone's "doughter" spelling) are
+# reproduced verbatim from nswing.c so the console/dialog shows precisely what the tool itself prints.
+function _nswing_nest_msg(parent::GMTgrid, child::GMTgrid)
+	px0, py0 = parent.range[1], parent.range[3]
+	pxi, pyi = parent.inc[1], parent.inc[2]
+	cx0, cx1, cy0, cy1 = child.range[1], child.range[2], child.range[3], child.range[4]
+	cxi, cyi = child.inc[1], child.inc[2]
+	parts = String[]
+	(bad, s) = _nest_binning(px0, cx0, pxi,  cxi)      # X_MIN (west edge)
+	bad && push!(parts, "Lower left corner of doughter grid does not obey to the nesting rules.\nX_MIN should be (in grid registration):\n\t$(_ffmt(s, 6))")
+	(bad, s) = _nest_binning(py0, cy0, pyi,  cyi)      # Y_MIN (south edge)
+	bad && push!(parts, "Lower left corner of doughter grid does not obey to the nesting rules.\nY_MIN should be (in grid registration):\n\t$(_ffmt(s, 6))")
+	(bad, s) = _nest_binning(px0, cx1, pxi, -cxi)      # X_MAX (east edge)
+	bad && push!(parts, "Upper right corner of doughter grid does not obey to the nesting rules.\nX_MAX should be (in grid registration):\n\t$(_ffmt(s, 6))")
+	(bad, s) = _nest_binning(py0, cy1, pyi, -cyi)      # Y_MAX (north edge)
+	bad && push!(parts, "Upper right corner of doughter grid does not obey to the nesting rules.\nY_MAX should be (in grid registration):\n\t$(_ffmt(s, 6))")
+	return join(parts, "\n\n")
+end
+
+# Does `child` nest correctly inside `parent`? Throws the Mirone nesting message on violation (used by
+# the RUN pre-flight so a bad nest can't reach a run). Same authority as the load-time file check.
 function _nswing_check_nest_fits(parent::GMTgrid, child::GMTgrid, parent_label::AbstractString,
-                                  child_label::AbstractString; tol::Float64 = 1e-8)
-	px0, px1, py0, py1 = parent.range[1:4]
-	cx0, cx1, cy0, cy1 = child.range[1:4]
-	fail(msg) = error("NSWING: \"$child_label\" does not nest inside \"$parent_label\" -- $msg " *
-	                  "(parent -R$(join(parent.range[1:4], "/")) -I$(join(parent.inc, "/"))  vs  " *
-	                  "child -R$(join(child.range[1:4], "/")) -I$(join(child.inc, "/")))")
+                                  child_label::AbstractString)
+	msg = _nswing_nest_msg(parent, child)
+	isempty(msg) && return nothing
+	error("NSWING: \"$child_label\" does not nest inside \"$parent_label\".\n$msg")
+end
 
-	(cx0 >= px0 - tol && cx1 <= px1 + tol && cy0 >= py0 - tol && cy1 <= py1 + tol) ||
-		fail("its region is not fully inside the parent's region")
+# Resolve a nest reference (a Scene Objects grid NAME or a raw file path) to a live GMTgrid, or `nothing`.
+function _nswing_resolve_grid(scene::Ptr{Cvoid}, ref::AbstractString)
+	isempty(ref) && return nothing
+	g = _nswing_grid_ref(scene, String(ref))          # scene name -> GMTgrid, else String(path)
+	g isa GMTgrid && return g
+	return try GMT.gmtread(String(g)) catch; nothing end
+end
 
-	for (pinc, cinc, axis) in ((parent.inc[1], child.inc[1], "X"), (parent.inc[2], child.inc[2], "Y"))
-		cinc > 0 || fail("its $axis increment is zero")
-		ratio = pinc / cinc
-		isapprox(ratio, round(ratio); atol = tol * max(1.0, ratio)) ||
-			fail("its $axis cell size ($cinc) is not an integer refinement of the parent's ($pinc)")
-	end
-
-	for (pv0, pinc, cv, axis, edge) in ((px0, parent.inc[1], cx0, "X", "west"), (px0, parent.inc[1], cx1, "X", "east"),
-	                                     (py0, parent.inc[2], cy0, "Y", "south"), (py0, parent.inc[2], cy1, "Y", "north"))
-		k = (cv - pv0) / pinc
-		isapprox(k, round(k); atol = tol / pinc) ||
-			fail("its $edge edge does not land on a parent grid node")
-	end
+# Fired the INSTANT a nest-grid file name is loaded/typed in the dialog (C++ NswingDialog, gated on a
+# real file). Reads the daughter header, resolves its parent (the window's bathymetry for level 1, the
+# previous level's grid otherwise via `parentref`), and PRINTS the Mirone nesting message ("" if it
+# obeys) so the C++ side can pop it immediately — the user never has to reach RUN to learn a nest is bad.
+function _nswing_check_nest_file(scene::Ptr{Cvoid}, level::Integer, childpath::AbstractString,
+                                 parentref::AbstractString)
+	child = _nswing_resolve_grid(scene, childpath)
+	child isa GMTgrid || (print(""); return nothing)  # unreadable / not a grid -> stay silent
+	parent = isempty(parentref) ? _find_object(scene, :grid, "") : _nswing_resolve_grid(scene, parentref)
+	parent isa GMTgrid || (print(""); return nothing) # no parent to check against yet -> silent
+	print(_nswing_nest_msg(parent, child))
 	return nothing
 end
 
-# Resolve the dialog's OWN Nest field (nestEdit + levelCombo, the "Nest" browse box) the same way
-# Source is resolved (_nswing_grid_ref) -- a Scene Objects grid NAME, or a raw file path. This is what
-# lets a manually browsed/typed nest grid -- one that never became a live "layerN" scene object --
-# actually reach nswing at all. Returns (level, grid-or-path) or `nothing` (no box filled in).
-function _nswing_dialog_nest(scene::Ptr{Cvoid}, d::Dict{String,String})
-	name = _get(d, "nest")
-	level = tryparse(Int, _get(d, "level", "0"))
-	(isempty(name) || level === nothing || level < 1) && return nothing
-	return (level, _nswing_grid_ref(scene, name))
+# Resolve the dialog's OWN Nest chain -- every "nestL<n>=<name>" key (one per level the user has
+# visited/typed into, C++ NswingDialog's `nestNames` map, ALL of them, not just the one currently
+# showing in the box) -- the same way Source is resolved (_nswing_grid_ref): a Scene Objects grid
+# NAME, or a raw file path. This is what lets a manually browsed/typed nest grid -- one that never
+# became a live "layerN" scene object -- actually reach nswing. Returns [(level, grid-or-path)…].
+function _nswing_dialog_nests(scene::Ptr{Cvoid}, d::Dict{String,String})
+	out = Tuple{Int,Any}[]
+	for (k, v) in d
+		isempty(v) && continue
+		m = match(r"^nestL(\d+)$", k)
+		m === nothing && continue
+		push!(out, (parse(Int, m.captures[1]), _nswing_grid_ref(scene, v)))
+	end
+	sort!(out; by = first)
+	return out
 end
 
 # Every blocking check a run needs to pass, shared by the RUN button's synchronous pre-flight
@@ -400,37 +487,42 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 	end
 
 	nests = _nswing_scene_nests(scene)               # [(N, G)…] from the live "layerN" scene chain
-	# The dialog's own Nest box only fills a GAP: a level the live scene chain doesn't already cover
+	# The dialog's own Nest chain only fills GAPS: a level the live scene chain doesn't already cover
 	# (e.g. a file picked directly instead of built in-scene). A level the scene chain already has
 	# wins — it's the live, editable one.
-	extra = _nswing_dialog_nest(scene, d)
-	if extra !== nothing && !any(n == extra[1] for (n, _) in nests)
-		push!(nests, extra)
-		sort!(nests; by = first)
+	have = Set(n for (n, _) in nests)
+	for extra in _nswing_dialog_nests(scene, d)
+		extra[1] in have || push!(nests, extra)
+	end
+	sort!(nests; by = first)
+
+	# EVERY nest level gets the SAME checks below, whether it came from a live scene grid or a
+	# dialog-typed/browsed file — a typed path is loaded here (grdread, header + data) SPECIFICALLY so
+	# it obeys the identical nesting rules a scene-built one already does. No exemption for typed
+	# files: that was the bug — a bad nest file used to sail through unchecked.
+	loaded_nests = Tuple{Int,GMTgrid}[]
+	for (n, G) in nests
+		push!(loaded_nests, (n, G isa GMTgrid ? G : GMT.gmtread(String(G))))
 	end
 
 	# Each SCENE "layerN" starts as a literal all-zero placeholder (_nested_blank_grid, nested.jl)
 	# until Transplant fills it with real bathymetry. Feeding a still-blank one to nswing produces a
 	# real (non-error) run over zero bathymetry there — reads as "output is all zeros" with nothing
 	# in the console to explain why. Fail loud instead of silently simulating on placeholder data.
-	# (A dialog-typed path can't be "blank" in this sense — skipped, same as Source's typed-path branch.)
-	for (n, G) in nests
-		G isa GMTgrid && all(iszero, G.z) && error("NSWING: \"layer$n\" is still blank (all zero) — " *
+	for (n, G) in loaded_nests
+		all(iszero, G.z) && error("NSWING: \"layer$n\" is still blank (all zero) — " *
 		                          "fill it with real bathymetry via Transplant before running NSWING")
 	end
 	base = _find_object(scene, :grid, "")             # layer0: the window's base bathymetry grid
 
 	# Every nest level must fit inside its PARENT — bathy for layer1, the previous layer for the rest
 	# (_nswing_check_nest_fits, same rule the "Nested grids" rectangle tool enforces when it builds the
-	# chain). Checked against a REAL bathymetry only, and only between actual grids (a dialog-typed
-	# path is left unchecked, same as Source's typed-path branch skipping _nswing_check_grid_compat).
+	# chain). Checked against a REAL bathymetry only.
 	if base isa GMTgrid
 		parent, parent_label = base, "bathymetry"
-		for (n, G) in nests
-			if G isa GMTgrid
-				_nswing_check_nest_fits(parent, G, parent_label, "layer$n")
-				parent, parent_label = G, "layer$n"
-			end
+		for (n, G) in loaded_nests
+			_nswing_check_nest_fits(parent, G, parent_label, "layer$n")
+			parent, parent_label = G, "layer$n"
 		end
 	end
 
@@ -507,25 +599,78 @@ function _nswing_plan_paths(scene::Ptr{Cvoid}, d::Dict{String,String})
 	nest_needs_save = [G isa GMTgrid for (_, G) in nests]
 	nest_paths = [(n, G isa GMTgrid ? joinpath(dir, "layer$n.grd") : String(G)) for (n, G) in nests]
 
-	# ONE list of every path this run will actually WRITE — built here, ONCE, and shared verbatim by
-	# the existence pre-check and the real save step below, so the two can never name different sets.
-	write_targets = String[]
-	bathy_needs_save && push!(write_targets, bathy_path)
-	src_needs_save   && push!(write_targets, src_path)
-	for (needs, (_, p)) in zip(nest_needs_save, nest_paths)
-		needs && push!(write_targets, p)
+	# Every (path, in-memory grid) this run will actually WRITE — built here, ONCE, and shared verbatim
+	# by the existence pre-check and the real save step below, so the two can never name different sets.
+	# The grid travels alongside the path so the existence check can tell a REAL overwrite (different
+	# content) from a harmless re-save of the same grid (_nswing_grid_differs, grdinfo -C compare).
+	write_targets = Tuple{String,GMTgrid}[]
+	bathy_needs_save && push!(write_targets, (bathy_path, base))
+	src_needs_save   && push!(write_targets, (src_path, src))
+	for (needs, (n, G), (_, p)) in zip(nest_needs_save, nests, nest_paths)
+		needs && push!(write_targets, (p, G))
 	end
 
 	return (; opts, base, bathy_path, bathy_needs_save, src, src_path, src_needs_save,
 	          nests, nest_paths, nest_needs_save, dir, write_targets)
 end
 
-# Which of the files a save WOULD write already exist on disk — printed "\n"-joined so the C++ side can
-# pop an overwrite confirmation BEFORE any writing happens. Empty output = nothing would collide.
+# Column order of `grdinfo -C`'s single numeric row (verified live against GMT.grdinfo(G, C=true)).
+const _NSWING_GRDINFO_FIELDS = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max",
+                                 "dx", "dy", "n_cols", "n_rows", "reg", "isgeog")
+
+# Field-by-field diff between the on-disk grid at `path` and the in-memory grid `G` — both read via
+# `grdinfo -C` (one numeric row, no full-data diff or temp file needed). Returns "" when every field
+# matches; otherwise one "field: disk=… memory=…" line per field that doesn't. A read failure on
+# either side is reported as its own line (NOT swallowed) so "differs" always has a stated reason —
+# never a bare "trust me" file-exists popup.
+function _nswing_grid_diff_report(path::String, G::GMTgrid)::String
+	local a, b
+	try
+		a = GMT.grdinfo(path, C = true).data
+	catch e
+		return "  (could not read $path with grdinfo: $(sprint(showerror, e)))"
+	end
+	try
+		b = GMT.grdinfo(G, C = true).data
+	catch e
+		return "  (could not grdinfo the in-memory grid: $(sprint(showerror, e)))"
+	end
+	lines = String[]
+	for (i, fld) in enumerate(_NSWING_GRDINFO_FIELDS)
+		isapprox(a[i], b[i]; atol = 1e-6, rtol = 1e-6) && continue
+		push!(lines, "  $fld: disk=$(a[i])  memory=$(b[i])")
+	end
+	return join(lines, "\n")
+end
+
+_nswing_grid_differs(path::String, G::GMTgrid) = !isempty(_nswing_grid_diff_report(path, G))
+
+# Which of the files a save WOULD write already exist on disk AND differ from what's about to be
+# written — printed "\n"-joined so the C++ side can pop an overwrite confirmation BEFORE any writing
+# happens. A same-content file on disk (grdinfo -C match) is skipped: re-saving it is a no-op, not a
+# real overwrite, so it never needs asking about. Empty output = nothing would collide.
 function _nswing_existing_files(scene::Ptr{Cvoid}, cparams::AbstractString)
 	d = _nswing_parse(cparams)
 	plan = _nswing_plan_paths(scene, d)
-	print(join(filter(isfile, plan.write_targets), "\n"))
+	targets = [path for (path, G) in plan.write_targets if isfile(path) && _nswing_grid_differs(path, G)]
+	print(join(targets, "\n"))
+	return nothing
+end
+
+# The full field-by-field report for every file _nswing_existing_files flagged — "\n\n"-joined blocks,
+# each headed by its path then its differing grdinfo -C fields (_nswing_grid_diff_report). Popped in a
+# read-only text box (C++ showInfoText) alongside the short Yes/No confirmation, so a flagged overwrite
+# can be checked instead of taken on faith.
+function _nswing_existing_files_report(scene::Ptr{Cvoid}, cparams::AbstractString)
+	d = _nswing_parse(cparams)
+	plan = _nswing_plan_paths(scene, d)
+	blocks = String[]
+	for (path, G) in plan.write_targets
+		isfile(path) || continue
+		rep = _nswing_grid_diff_report(path, G)
+		isempty(rep) || push!(blocks, "$path\n$rep")
+	end
+	print(join(blocks, "\n\n"))
 	return nothing
 end
 
