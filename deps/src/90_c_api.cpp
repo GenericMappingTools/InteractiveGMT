@@ -1380,6 +1380,95 @@ GMTVTK_API int gmtvtk_add_text_h(void *handle, double x, double y, const char *t
 	return 1;
 }
 
+// Serialize the window's USER-placed text labels (Save Session) as "x;y;r;g;b;size;text\n" lines, one
+// per label. Batch/group labels (groupName non-empty, e.g. focal-mechanism date labels) are SKIPPED —
+// they are rebuilt by their owning recipe, not the session's text blob. The text string comes last so
+// it may contain ';' (the reader splits on the first 6 separators); newlines are flattened to spaces.
+// Two-pass like the other serializers (buf=nullptr sizes, second call fills). Session rebuilds each
+// line via gmtvtk_add_text_h.
+GMTVTK_API int gmtvtk_serialize_texts(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	char t[128];
+	if (sceneAlive(s)) {
+		for (auto& tl : s->texts) {
+			if (!tl.groupName.empty()) continue;
+			snprintf(t, sizeof(t), "%.12g;%.12g;%.6g;%.6g;%.6g;%d;",
+			         tl.pos[0], tl.pos[1], tl.color[0], tl.color[1], tl.color[2], tl.size);
+			o += t;
+			std::string txt = tl.text;
+			for (char& c : txt) if (c == '\n' || c == '\r') c = ' ';
+			o += txt; o += '\n';
+		}
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
+// Serialize the window's USER-drawn polygons/polylines/rectangles/circles (Save Session) as one line
+// each:
+//   closed;isRect;lr;lg;lb;lw;lstyle;fr;fg;fb;fop;name;x0,y0,z0|x1,y1,z1|...\n
+// Line colour/width are read off the actor (they live there, not on Polygon); fill colour/opacity and
+// lineStyle come from the struct. SKIPS faults (isFault), nested-grid rects (nestKind) and slip-model
+// patches (groupName) — those are rebuilt by their own recipes, not this generic-polygon blob. `name`
+// is sanitized of the delimiters (; | newline). Two-pass buffer. Session rebuilds via gmtvtk_add_poly_full.
+GMTVTK_API int gmtvtk_serialize_polys(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	char t[160];
+	if (sceneAlive(s)) {
+		for (auto& pg : s->polys) {
+			if (pg.isFault || pg.nestKind != 0 || !pg.groupName.empty()) continue;
+			double lc[3] = { 0, 0, 0 }; double lw = 2.5;
+			if (pg.line) { pg.line->GetProperty()->GetColor(lc); lw = pg.line->GetProperty()->GetLineWidth(); }
+			// field 7 (lstyle) is reserved 0 — Polygon has no per-line dashed/dotted style (that lives on
+			// Overlay). Kept in the format so the reader's fixed 12-field layout is stable.
+			snprintf(t, sizeof(t), "%d;%d;%.6g;%.6g;%.6g;%.6g;%d;%.6g;%.6g;%.6g;%.6g;",
+			         pg.closed ? 1 : 0, pg.isRect ? 1 : 0, lc[0], lc[1], lc[2], lw, 0,
+			         pg.fillColor[0], pg.fillColor[1], pg.fillColor[2], pg.fillOpacity);
+			o += t;
+			std::string nm = pg.name;
+			for (char& c : nm) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
+			o += nm; o += ';';
+			for (size_t i = 0; i < pg.v.size(); ++i) {
+				snprintf(t, sizeof(t), "%.10g,%.10g,%.10g", pg.v[i][0], pg.v[i][1], pg.v[i][2]);
+				o += t; if (i + 1 < pg.v.size()) o += '|';
+			}
+			o += '\n';
+		}
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
+// Rebuild one polygon from a saved session (the inverse of gmtvtk_serialize_polys). `xyz` = npts
+// (x,y,z) triples (the stored ring, closing duplicate included for closed shapes). Builds the line +
+// fill exactly as the draw tool would (polyRebuildLine reads fillColor/fillOpacity from the struct),
+// then stamps the saved outline colour/width onto the actor. lineStyle is stored but not re-applied
+// yet (rebuilt polys are solid). Returns the new polygon's index, or -1.
+GMTVTK_API int gmtvtk_add_poly_full(void *handle, const double *xyz, int npts, int closed, int isRect,
+                                    double lr, double lg, double lb, double lw, int lstyle,
+                                    double fr, double fg, double fb, double fop, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xyz || npts <= 0) return -1;
+	Polygon pg;
+	pg.closed = closed != 0; pg.isRect = isRect != 0;
+	pg.name = (name && name[0]) ? name : "polygon";
+	(void)lstyle;                                   // reserved (Polygon has no dashed/dotted style)
+	pg.fillColor[0] = fr; pg.fillColor[1] = fg; pg.fillColor[2] = fb; pg.fillOpacity = fop;
+	for (int i = 0; i < npts; ++i) pg.v.push_back({ xyz[3*i], xyz[3*i+1], xyz[3*i+2] });
+	polyRebuildLine(s, pg);
+	if (pg.line) { pg.line->GetProperty()->SetColor(lr, lg, lb); pg.line->GetProperty()->SetLineWidth(lw); }
+	pg.stack = s->vecSeq++;
+	s->polys.push_back(pg);
+	applyVectorStacking(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return (int)s->polys.size() - 1;
+}
+
 // Batch form of gmtvtk_add_text_h: `xy` = n (x,y) pairs, `texts` = n records joined by RS
 // ('\x1e', the gmtvtk_add_symbols_h `info` convention). ONE Scene-Objects rebuild + ONE render
 // for the whole batch — the per-call rebuild+Render of the single-label form is what made

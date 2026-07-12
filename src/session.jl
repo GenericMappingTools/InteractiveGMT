@@ -252,6 +252,76 @@ function _session_display(scene::Ptr{Cvoid})
 	return isempty(raw) ? Dict{String,String}() : Dict("state" => raw)
 end
 
+# Serialize the window's user-placed text labels to the C serializer's raw "x;y;r;g;b;size;text\n"
+# blob (empty if none). C++-drawn elements have no add-time recipe, so they are SNAPSHOTTED at save
+# time and rebuilt on load (P3). Two-pass buffer.
+function _serialize_texts_raw(h::Ptr{Cvoid})::String
+	n = ccall(_fn(:gmtvtk_serialize_texts), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, C_NULL, Cint(0))
+	n <= 0 && return ""
+	buf = Vector{UInt8}(undef, n + 1)
+	ccall(_fn(:gmtvtk_serialize_texts), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, buf, Cint(n + 1))
+	return unsafe_string(pointer(buf))
+end
+
+# Serialize the window's user-drawn polygons/polylines/rects/circles to the C serializer's raw blob
+# (one line each; empty if none). Snapshotted at save like text (no add-time recipe). Two-pass buffer.
+function _serialize_polys_raw(h::Ptr{Cvoid})::String
+	n = ccall(_fn(:gmtvtk_serialize_polys), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, C_NULL, Cint(0))
+	n <= 0 && return ""
+	buf = Vector{UInt8}(undef, n + 1)
+	ccall(_fn(:gmtvtk_serialize_polys), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, buf, Cint(n + 1))
+	return unsafe_string(pointer(buf))
+end
+
+# Rebuild polygons from a saved blob into `fig`'s window via gmtvtk_add_poly_full (one per line). Each
+# line is "closed;isRect;lr;lg;lb;lw;lstyle;fr;fg;fb;fop;name;x,y,z|x,y,z|…". Malformed lines skipped.
+function _session_rebuild_polys!(fig, blob::String)
+	(fig === nothing || isempty(blob)) && return
+	h = getfield(fig, :h)
+	for line in split(blob, '\n'; keepempty=false)
+		try
+			p = split(line, ';'; limit=13)
+			length(p) < 13 && continue
+			verts = Float64[]
+			for vp in split(p[13], '|'; keepempty=false)
+				c = split(vp, ',')
+				length(c) < 3 && continue
+				push!(verts, parse(Float64, c[1]), parse(Float64, c[2]), parse(Float64, c[3]))
+			end
+			nv = length(verts) ÷ 3
+			nv == 0 && continue
+			ccall(_fn(:gmtvtk_add_poly_full), Cint,
+			      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+			       Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
+			      h, verts, Cint(nv), Cint(parse(Int, p[1])), Cint(parse(Int, p[2])),
+			      parse(Float64, p[3]), parse(Float64, p[4]), parse(Float64, p[5]), parse(Float64, p[6]),
+			      Cint(parse(Int, p[7])), parse(Float64, p[8]), parse(Float64, p[9]), parse(Float64, p[10]),
+			      parse(Float64, p[11]), String(p[12]))
+		catch e
+			@warn "session: skipped a malformed polygon line" exception=(e,)
+		end
+	end
+	return
+end
+
+# Rebuild the text labels from a saved blob into `fig`'s window via gmtvtk_add_text_h (one per line).
+# Lines are "x;y;r;g;b;size;text" (text last, may contain ';'). Malformed lines are skipped.
+function _session_rebuild_texts!(fig, blob::String)
+	(fig === nothing || isempty(blob)) && return
+	h = getfield(fig, :h)
+	for line in split(blob, '\n'; keepempty=false)
+		p = split(line, ';'; limit=7)
+		length(p) < 7 && continue
+		x = tryparse(Float64, p[1]); y = tryparse(Float64, p[2])
+		r = tryparse(Float64, p[3]); g = tryparse(Float64, p[4]); b = tryparse(Float64, p[5])
+		sz = tryparse(Int, p[6])
+		(x === nothing || y === nothing || r === nothing || g === nothing || b === nothing || sz === nothing) && continue
+		ccall(_fn(:gmtvtk_add_text_h), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cstring, Cdouble, Cdouble, Cdouble, Cint),
+		      h, x, y, String(p[7]), r, g, b, Cint(sz))
+	end
+	return
+end
+
 "File > Save Session: write the `scene` window's recipes + generated data to a `.igmtz` zip at `path`."
 function _on_save_session(scene::Ptr{Cvoid}, path::String)
 	recipes = get(_SESSION_LOG, scene, ElementRecipe[])
@@ -269,6 +339,11 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 	meta = Dict("schema" => "1", "saved" => Libc.strftime("%Y-%m-%dT%H:%M:%S", time()))
 	manifest = _session_write_manifest(meta, _session_display(scene), out)
 	push!(files, ("session.manifest", Vector{UInt8}(codeunits(manifest))))
+	# C++-drawn elements (no add-time recipe) are snapshotted here and rebuilt on load. P3: polygons + text.
+	polys = _serialize_polys_raw(scene)
+	isempty(polys) || push!(files, ("drawn/polys.txt", Vector{UInt8}(codeunits(polys))))
+	texts = _serialize_texts_raw(scene)
+	isempty(texts) || push!(files, ("drawn/texts.txt", Vector{UInt8}(codeunits(texts))))
 	_zip_write(path, files)
 	return path
 end
@@ -403,6 +478,9 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 	for r in recipes
 		fig = _session_replay!(fig, r, _session_load_object(r, entries), display, scene)
 	end
+	# C++-drawn elements rebuilt after the layers exist (P3: polygons + text labels).
+	haskey(entries, "drawn/polys.txt") && _session_rebuild_polys!(fig, String(entries["drawn/polys.txt"]))
+	haskey(entries, "drawn/texts.txt") && _session_rebuild_texts!(fig, String(entries["drawn/texts.txt"]))
 	fig !== nothing && _session_apply_display!(fig, display)
 	return fig
 end
