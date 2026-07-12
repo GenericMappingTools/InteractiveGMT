@@ -56,6 +56,23 @@ function _find_object(scene::Ptr{Cvoid}, kind::Symbol, name::AbstractString)
 	return nothing
 end
 
+# STRICT name lookup: returns the object only on an EXACT (kind,name) match, `nothing` otherwise —
+# unlike _find_object above, this NEVER falls back to "the first/primary object of that kind". A
+# caller resolving a SPECIFIC name (e.g. NSWING's Source/Nest fields, nswing.jl _nswing_grid_ref)
+# needs that: a name that doesn't match a live scene grid must be treated as "not a scene grid" (so
+# it falls through to being read as a raw file path), never silently swapped for an unrelated grid —
+# _find_object's fallback picked the window's PRIMARY (bathymetry) grid for a Source/Nest miss, so a
+# name typo/mismatch silently wrote the bathymetry into source.grd/layerN.grd instead of erroring.
+function _find_object_exact(scene::Ptr{Cvoid}, kind::Symbol, name::AbstractString)
+	isempty(name) && return nothing
+	v = get(_SCENE_OBJS, scene, nothing)
+	v === nothing && return nothing
+	for (k, n, d) in v
+		(k === kind && n == name) && return d
+	end
+	return nothing
+end
+
 # Canonical on-disk extension for each format code (kept in sync with the C++ dialog filters).
 const _GRID_EXT = Dict("nc"=>".nc", "surfer"=>".grd", "gtiff"=>".tif",
 					   "jp2"=>".jp2", "erdas"=>".img", "envi"=>".hdr")
