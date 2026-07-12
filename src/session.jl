@@ -658,31 +658,52 @@ end
 # empty launcher is promoted in place (session loads into it); a populated window (or C_NULL from the
 # console) opens a fresh window instead. Returns the primary figure (or nothing).
 function _on_load_session(scene::Ptr{Cvoid}, path::String)
-	entries = _zip_read(path)
-	haskey(entries, "session.manifest") || error("session: '$path' has no session.manifest")
-	_, display, recipes = _session_read_manifest(String(entries["session.manifest"]))
-	fig = nothing
-	# Replay RASTERS first (grids/images/basemap), then vector/menu layers — vectors are always drawn on
-	# top of grids/images, and the shared draw-order pile ranks by add order, so vectors must be added
-	# LAST to outrank every raster (else e.g. a grid replayed after coastlines would bury them).
-	israster(r) = r.kind in (:basegrid, :image, :dropgrid, :dropimage, :basemap)
-	for r in recipes
-		israster(r) && (fig = _session_replay!(fig, r, _session_load_object(r, entries), display, scene))
+	# Progress dialog already shown from C++ - convert to determinate and update progress
+	ccall(_fn(:gmtvtk_progress_show), Cint, (Cint, Cstring), 100, "Loading Session...")
+	try
+		entries = _zip_read(path)
+		haskey(entries, "session.manifest") || error("session: '$path' has no session.manifest")
+		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 10)
+		_, display, recipes = _session_read_manifest(String(entries["session.manifest"]))
+		fig = nothing
+		# Replay RASTERS first (grids/images/basemap), then vector/menu layers — vectors are always drawn on
+		# top of grids/images, and the shared draw-order pile ranks by add order, so vectors must be added
+		# LAST to outrank every raster (else e.g. a grid replayed after coastlines would bury them).
+		israster(r) = r.kind in (:basegrid, :image, :dropgrid, :dropimage, :basemap)
+		nraster = count(israster, recipes)
+		ri = 0
+		for r in recipes
+			if israster(r)
+				ri += 1
+				ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), round(Int, 10 + 50*ri/nraster))
+				fig = _session_replay!(fig, r, _session_load_object(r, entries), display, scene)
+			end
+		end
+		nvec = length(recipes) - nraster
+		vi = 0
+		for r in recipes
+			if !israster(r)
+				vi += 1
+				ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), round(Int, 60 + 20*vi/nvec))
+				fig = _session_replay!(fig, r, _session_load_object(r, entries), display, scene)
+			end
+		end
+		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 85)
+		# C++-drawn elements rebuilt after the layers exist (P3: polygons, faults/slip, text labels).
+		haskey(entries, "drawn/polys.txt")  && _session_rebuild_polys!(fig, String(entries["drawn/polys.txt"]))
+		haskey(entries, "drawn/faults.txt") && _session_rebuild_faults!(fig, String(entries["drawn/faults.txt"]))
+		haskey(entries, "drawn/texts.txt")  && _session_rebuild_texts!(fig, String(entries["drawn/texts.txt"]))
+		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 95)
+		fig !== nothing && _session_apply_display!(fig, display)
+		# Faults were rebuilt before the display state was applied; re-seat their planes/surface-projection
+		# in the final scaled space now (else they only appear after opening+closing the elastic dialog).
+		if fig !== nothing && haskey(entries, "drawn/faults.txt")
+			ccall(_fn(:gmtvtk_refresh_fault_planes), Cvoid, (Ptr{Cvoid},), getfield(fig, :h))
+		end
+		return fig
+	finally
+		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
 	end
-	for r in recipes
-		israster(r) || (fig = _session_replay!(fig, r, _session_load_object(r, entries), display, scene))
-	end
-	# C++-drawn elements rebuilt after the layers exist (P3: polygons, faults/slip, text labels).
-	haskey(entries, "drawn/polys.txt")  && _session_rebuild_polys!(fig, String(entries["drawn/polys.txt"]))
-	haskey(entries, "drawn/faults.txt") && _session_rebuild_faults!(fig, String(entries["drawn/faults.txt"]))
-	haskey(entries, "drawn/texts.txt")  && _session_rebuild_texts!(fig, String(entries["drawn/texts.txt"]))
-	fig !== nothing && _session_apply_display!(fig, display)
-	# Faults were rebuilt before the display state was applied; re-seat their planes/surface-projection
-	# in the final scaled space now (else they only appear after opening+closing the elastic dialog).
-	if fig !== nothing && haskey(entries, "drawn/faults.txt")
-		ccall(_fn(:gmtvtk_refresh_fault_planes), Cvoid, (Ptr{Cvoid},), getfield(fig, :h))
-	end
-	return fig
 end
 "Console convenience: load a session into a fresh window (no invoking scene)."
 _on_load_session(path::String) = _on_load_session(C_NULL, path)

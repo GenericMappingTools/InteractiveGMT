@@ -4926,8 +4926,22 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				if (s->win) s->win->statusBar()->showMessage("Load Session: callback not registered", 3000);
 				return;
 			}
+			// Show splash screen IMMEDIATELY - BEFORE ANYTHING ELSE
+			if (g_progress) delete g_progress;
+			g_progress = new QProgressDialog(win);
+			g_progress->setWindowTitle("Loading Session...");
+			g_progress->setRange(0, 0);
+			g_progress->setCancelButton(nullptr);
+			g_progress->setWindowModality(Qt::ApplicationModal);
+			g_progress->show();
+			g_progress->raise();
+			g_progress->activateWindow();
+			for (int i = 0; i < 10; i++) QApplication::processEvents();
 			QString f = QFileDialog::getOpenFileName(win, "Load Session", prefStartDir(), "iGMT Session (*.igmtz)");
-			if (f.isEmpty()) return;
+			if (f.isEmpty()) {
+				if (g_progress) { g_progress->close(); delete g_progress; g_progress = nullptr; }
+				return;
+			}
 			rememberStartDir(f);
 			const QByteArray utf8 = f.toUtf8();
 			g_juliaLoadSession(s, utf8.constData());
