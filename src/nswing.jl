@@ -52,9 +52,6 @@ end
 #  - `-G<name>,<int>` alone is the single-3D-netCDF form (this WAS the "3D file" checkbox's meaning);
 #    the per-step separate-grids form is `-G<name>+m,<int>` — the OLD code had it backwards (bare -G for
 #    "series" when unchecked) and used a nonexistent `-Z` option for the checked case.
-#  - `-J<jump>` doesn't exist; the do-not-output-before-time flag is `-P<jump>`.
-#  - `-B<bcfile>` doesn't exist (bare -B collides with GMT's own frame-annotation option); the boundary-
-#    condition file flag is `-O<bcfile>`.
 #  - `-T<cumint>,<in>[,<out>]` (comma-positional) is wrong syntax; real form is
 #    `-T<in>[+o<out>][+t<cumint>]` (verified live, produced the maregraph output file).
 #  - `-n<name>` (MOST format) does not exist in the linked module at all — errors immediately if picked.
@@ -65,19 +62,19 @@ function _nswing_opts(d::Dict{String,String})
 	name = _get(d, "name")
 	grn  = _get(d, "grn", "10")
 	mode = _get(d, "outmode", "grids")
-	if mode == "grids"
+	if (mode == "grids")
 		isempty(name) && push!(msgs, "no output Name stem given")
 		stem = isempty(name) ? "tsu_time_" : name
-		push!(args, "-G$(stem),$(grn)")                  # nswing -G<name>,<int> — plain stem, no +m
+		push!(args, "-G$(stem),$(grn)")                  # nswing -G<name>,<int>
 		_get(d, "field") == "total" && push!(args, "-D") # total water depth
 		_on(d, "max")      && push!(args, "-M")          # max water level grid (Max water checkbox)
 		append!(args, ("-M-", "-M+"))                    # min / max-positive water level grids (always on)
 		_on(d, "velocity") && push!(args, "-S")          # velocity grids (_U/_V)
 		_on(d, "momentum") && push!(args, "-H")          # momentum grids
-	elseif mode == "anuga"
+	elseif (mode == "anuga")
 		isempty(name) && error("NSWING: ANUGA output needs a file Name")
 		push!(args, "-A$(name)")
-	elseif mode == "most"
+	elseif (mode == "most")
 		error("NSWING: MOST (.nc) output is not supported by the installed nswing module (no -n option) — pick Output grids or ANUGA")
 	end
 
@@ -214,7 +211,7 @@ end
 # ETA anchors on the FIRST percent seen (time, pct) and extrapolates: elapsed·(100−p)/(p−p0). The raw
 # last line is shown whenever no percent is available yet (setup phase), so the dialog is never blank.
 # On `isdone()` close the bar and log the outcome (`result()` returns the error string, "" on success).
-function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io = nothing)
+function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io=nothing)
 	t0       = time()                                 # run start: base for both the live ETA and the final total
 	pos      = Ref(0)
 	anchor   = Ref{Union{Nothing,Tuple{Float64,Int}}}(nothing)  # (time, pct) of the first percent seen
@@ -222,7 +219,7 @@ function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io = not
 	Timer(0.2; interval = 0.2) do tm
 		try
 			pct, line, errline = _nswing_tail(logf, pos)
-			errline === nothing || (fatalerr[] = errline)
+			(errline === nothing) || (fatalerr[] = errline)
 			if pct !== nothing
 				anchor[] === nothing && (anchor[] = (time(), pct))
 				(at, ap) = anchor[]
@@ -230,7 +227,7 @@ function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io = not
 				eta = pct > ap ? el * (100 - pct) / (pct - ap) : NaN
 				lbl = "NSWING   $(pct)%" * (isnan(eta) ? "" : "   ~$(_hms(eta)) left")
 				_progress_status(pct, lbl)
-			elseif line !== nothing
+			elseif (line !== nothing)
 				_progress_status(-1, "NSWING: $line")     # setup phase: show raw output, don't move bar
 			end
 			isdone() || return
@@ -344,7 +341,7 @@ function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Unio
 	end
 	cmd = Cmd(cmd; env = _nswing_clean_env())
 	proc = try
-		run(pipeline(cmd; stdout = io, stderr = io); wait = false)
+		run(pipeline(cmd; stdout=io, stderr=io); wait=false)
 	catch e
 		try; close(io) catch end
 		_progress_close();  _NSWING_RUNNING[] = false
@@ -379,7 +376,7 @@ end
 # Region + increment compatibility between a Source grid and the loaded bathymetry — nswing needs
 # them on the SAME grid geometry (same extent, same node spacing). `tol` absorbs float roundoff from
 # reading/writing grids, not real mismatches.
-function _nswing_check_grid_compat(base::GMTgrid, src::GMTgrid, srcname::AbstractString; tol::Float64 = 1e-8)
+function _nswing_check_grid_compat(base::GMTgrid, src::GMTgrid, srcname::AbstractString; tol::Float64=1e-8)
 	ok = all(isapprox.(base.range[1:4], src.range[1:4]; atol = tol)) &&
 	     all(isapprox.(base.inc,        src.inc;        atol = tol))
 	ok || error("NSWING: Source \"$srcname\" is not compatible with the bathymetry grid " *
@@ -427,8 +424,7 @@ end
 
 # Does `child` nest correctly inside `parent`? Throws the Mirone nesting message on violation (used by
 # the RUN pre-flight so a bad nest can't reach a run). Same authority as the load-time file check.
-function _nswing_check_nest_fits(parent::GMTgrid, child::GMTgrid, parent_label::AbstractString,
-                                  child_label::AbstractString)
+function _nswing_check_nest_fits(parent::GMTgrid, child::GMTgrid, parent_label::AbstractString, child_label::AbstractString)
 	msg = _nswing_nest_msg(parent, child)
 	isempty(msg) && return nothing
 	error("NSWING: \"$child_label\" does not nest inside \"$parent_label\".\n$msg")
@@ -446,8 +442,7 @@ end
 # real file). Reads the daughter header, resolves its parent (the window's bathymetry for level 1, the
 # previous level's grid otherwise via `parentref`), and PRINTS the Mirone nesting message ("" if it
 # obeys) so the C++ side can pop it immediately — the user never has to reach RUN to learn a nest is bad.
-function _nswing_check_nest_file(scene::Ptr{Cvoid}, level::Integer, childpath::AbstractString,
-                                 parentref::AbstractString)
+function _nswing_check_nest_file(scene::Ptr{Cvoid}, level::Integer, childpath::AbstractString, parentref::AbstractString)
 	child = _nswing_resolve_grid(scene, childpath)
 	child isa GMTgrid || (print(""); return nothing)  # unreadable / not a grid -> stay silent
 	parent = isempty(parentref) ? _find_object(scene, :grid, "") : _nswing_resolve_grid(scene, parentref)
@@ -494,7 +489,7 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 	for extra in _nswing_dialog_nests(scene, d)
 		extra[1] in have || push!(nests, extra)
 	end
-	sort!(nests; by = first)
+	sort!(nests; by=first)
 
 	# EVERY nest level gets the SAME checks below, whether it came from a live scene grid or a
 	# dialog-typed/browsed file — a typed path is loaded here (grdread, header + data) SPECIFICALLY so
