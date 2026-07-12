@@ -2375,6 +2375,22 @@ GMTVTK_API void gmtvtk_set_earthtide_callback(JuliaEarthTideFn fn) {
 	g_juliaEarthTide = fn;
 }
 
+// Register the 3D cube layer selector callback. Called when the user selects a layer from the
+// non-modal cube layer dialog. nullptr to detach.
+GMTVTK_API void gmtvtk_set_cube_layer_callback(JuliaCubeLayerFn fn) {
+	g_juliaCubeLayer = fn;
+}
+
+// Show the non-modal 3D cube layer selector dialog. `scene` is the target window, `name` is the
+// cube's base name (for the dialog title), `nLayers` is the number of layers in the cube. The
+// dialog stays open until the user closes it, allowing quick layer switching.
+GMTVTK_API void gmtvtk_show_cube_layer_dialog(void *scene, const char *name, int nLayers) {
+	ensureApp();
+	Scene *s = static_cast<Scene*>(scene);
+	if (!sceneAlive(s) || !name || nLayers <= 0) return;
+	showCubeLayerDialog(s, QString::fromUtf8(name), nLayers);   // per-Scene dialog (70_window.cpp)
+}
+
 // Prepare an EMPTY launcher to receive geographic IMAGE objects as ExtraObj images. The basemap
 // must NOT promote its first tile into the window's "surface" (that row has no image-properties
 // menu); instead every tile is an ExtraObj image listed in Scene Objects with the same menu. This

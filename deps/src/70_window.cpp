@@ -3617,6 +3617,125 @@ protected:
 	}
 };
 
+// ── Cube Layer Selector Dialog ───────────────────────────────────────────────────────────────
+// Non-modal dialog for scrubbing through layers of a 3-D NetCDF cube: a native QScrollBar (arrow
+// buttons at each end, like the original Mirone tool) plus an editable QSpinBox, kept in sync both
+// ways, plus a "Scale color to global min/max" checkbox. Every change fires the Julia callback
+// LIVE -- cheap, since each call reads exactly ONE 2-D layer off disk, never the whole cube.
+// Loaded from cube_layer_selector.ui via QUiLoader (same as IgrfDialog).
+//
+// Lifetime is PER-SCENE (Scene::cubeDlg), using the exact safe idiom already proven by
+// elasticDlg/focalStudioDlg: WA_DeleteOnClose frees the QDialog; a `destroyed -> null the slot`
+// connection (context = s->win) clears the Scene pointer when the dialog OR its parent window
+// dies. NO global singleton, NO wrapper object, NO `delete this` -- all state lives in the widgets
+// and capture-by-value lambdas. The previous design (a global g_cubeLayerDlg wrapper that
+// close()d + delete'd a prior instance, and fired the first layer synchronously from its own
+// constructor deep inside the Julia drop callback) crashed with a use-after-free / reentrancy
+// access violation (QWidget handleClose / notifyInternal2); this is the rewrite.
+static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) {
+	if (!sceneAlive(s) || !s->win || nLayers <= 0) return;
+
+	// Re-drop into a window that already has the cube dialog open: just re-point its range at the
+	// new cube and raise it -- recreating would race the old dialog's async close()/destroy teardown
+	// (the very hazard that crashed the old design).
+	if (s->cubeDlg) {
+		auto *sb  = s->cubeDlg->findChild<QScrollBar *>("layerScrollBar");
+		auto *spn = s->cubeDlg->findChild<QSpinBox  *>("layerSpin");
+		auto *chk = s->cubeDlg->findChild<QCheckBox  *>("globalScaleCheck");
+		auto *lbl = s->cubeDlg->findChild<QLabel     *>("infoLabel");   // optional (absent in current .ui)
+		if (sb)  { sb->setRange(1, nLayers);  sb->setValue(1); }
+		if (spn) { spn->setRange(1, nLayers); spn->setValue(1); }
+		if (lbl) lbl->setText(QString("3D Cube: %1 (%2 layers)").arg(cubeName).arg(nLayers));
+		s->cubeDlg->setWindowTitle(QString("%1 -- %2 layers").arg(cubeName).arg(nLayers));
+		s->cubeDlg->raise();
+		s->cubeDlg->activateWindow();
+		if (sb && chk && g_juliaCubeLayer) g_juliaCubeLayer(s, sb->value() - 1, chk->isChecked() ? 1 : 0);   // show layer 1 of the new cube
+		return;
+	}
+
+	QUiLoader loader;
+	QFile f(gmtvtkUiDir() + "/cube_layer_selector.ui");
+	if (!f.open(QFile::ReadOnly)) {
+		qWarning("CubeLayerDialog: cannot open %s", qUtf8Printable(f.fileName()));
+		return;
+	}
+	QDialog *dlg = qobject_cast<QDialog *>(loader.load(&f, s->win));
+	f.close();
+	if (!dlg) { qWarning("CubeLayerDialog: QUiLoader failed to load the .ui"); return; }
+
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+	dlg->setWindowModality(Qt::NonModal);
+
+	auto *sb  = dlg->findChild<QScrollBar *>("layerScrollBar");
+	auto *spn = dlg->findChild<QSpinBox  *>("layerSpin");
+	auto *chk = dlg->findChild<QCheckBox  *>("globalScaleCheck");
+	auto *lbl = dlg->findChild<QLabel     *>("infoLabel");   // OPTIONAL title label -- the current
+	// cube_layer_selector.ui has no such widget (only "layerNoLabel"), so it must NOT be required:
+	// gating the whole dialog on it (as the old code did) silently aborted creation -> no dialog,
+	// no first layer, cube never showed. Only the three CONTROLS are mandatory.
+	if (!sb || !spn || !chk) {
+		qWarning("CubeLayerDialog: failed to find controls (scrollbar/spin/check)");
+		dlg->deleteLater();
+		return;
+	}
+
+	// Windows 11's native style draws scrollbar arrow buttons hairline-thin (only clearly visible on
+	// hover) -- force classic Win32 chrome on JUST this scrollbar so the end arrows are always
+	// visible, like the original Mirone slider. QStyle parented to the scrollbar -> auto-freed.
+	if (QStyle *classicStyle = QStyleFactory::create("windowsvista")) {
+		classicStyle->setParent(sb);
+		sb->setStyle(classicStyle);
+	}
+
+	if (lbl) lbl->setText(QString("3D Cube: %1 (%2 layers)").arg(cubeName).arg(nLayers));
+	dlg->setWindowTitle(QString("%1 -- %2 layers").arg(cubeName).arg(nLayers));   // .ui has no title label
+	sb->setRange(1, nLayers);  sb->setValue(1);
+	spn->setRange(1, nLayers); spn->setValue(1);
+
+	s->cubeDlg = dlg;
+	// Clear the Scene slot when the dialog is destroyed (native X, or when the parent window dies
+	// and takes it along). Context = s->win so a dead window auto-drops the connection.
+	QObject::connect(dlg, &QObject::destroyed, s->win, [s]{ s->cubeDlg = nullptr; });
+
+	// Fires the Julia callback for the current widget state. sb/chk captured by value (raw pointers
+	// valid for the dialog's life; the connections that call this live on the widgets themselves).
+	auto fire = [s, sb, chk]() {
+		if (g_juliaCubeLayer) g_juliaCubeLayer(s, sb->value() - 1, chk->isChecked() ? 1 : 0);
+	};
+
+	// Scrollbar <-> spinbox two-way sync; a shared heap `guard` bool (owned by the dialog, freed
+	// with it) stops the mirrored setValue from re-firing. No wrapper object needed to hold it.
+	bool *guard = new bool(false);
+	QObject::connect(dlg, &QObject::destroyed, dlg, [guard]{ delete guard; });
+	QObject::connect(sb, &QScrollBar::valueChanged, dlg, [spn, guard, fire](int v) {
+		if (*guard) return;
+		*guard = true; spn->setValue(v); *guard = false;
+		fire();
+	});
+	QObject::connect(spn, QOverload<int>::of(&QSpinBox::valueChanged), dlg, [sb, guard, fire](int v) {
+		if (*guard) return;
+		*guard = true; sb->setValue(v); *guard = false;
+		fire();
+	});
+	QObject::connect(chk, &QCheckBox::toggled, dlg, [fire](bool) { fire(); });
+
+	fire();   // render layer 1 FIRST so the cube surface is up before the dialog appears
+
+	// Park the dialog BESIDE the viewer, never centered over it -- centering hid the very image the
+	// slider controls (the whole point of the tool). Sit at the parent's top-right; if that would
+	// run off the screen, fall back to its top-left.
+	QRect wg = s->win->frameGeometry();
+	QScreen *sc = s->win->screen();
+	QRect scr = sc ? sc->availableGeometry() : wg;
+	QPoint pos = wg.topRight() + QPoint(12, 0);
+	if (pos.x() + dlg->width() > scr.right())
+		pos = wg.topLeft() - QPoint(dlg->width() + 12, 0);
+	dlg->move(pos);
+	dlg->show();
+	dlg->raise();
+}
+
 // Plot seismicity — port of Mirone's earthquakes.m (src_figs/earthquakes.m). The layout is a
 // FAITHFUL reproduction of deps/ui/plot_seismicity.ui: fixed 520x540 dialog, every widget at
 // its .ui rect (setGeometry, NO Qt layouts — the .ui was arranged by hand and its geometry is

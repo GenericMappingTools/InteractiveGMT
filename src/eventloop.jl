@@ -40,6 +40,7 @@ function _ensure_callbacks()
 	_CB_DONE[] = true                                # set first: a failing reg must not retry forever
 	for (name, fn) in (("console",     _register_console_eval),
 	                    ("drop",        _register_drop_callback),
+	                    ("cube-layer",  _register_cube_callback),
 	                    ("xy",          _register_xy_callback),
 	                    ("xy-analysis", _register_xy_analysis),
 	                    ("xy-seed",     _register_xy_seed),

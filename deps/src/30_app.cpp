@@ -278,6 +278,13 @@ static JuliaGridMetaFn g_juliaGridMeta = nullptr;
 typedef const char* (*JuliaDimFunFn)(const char *which, const char *state);
 static JuliaDimFunFn g_juliaDimFun = nullptr;
 
+// 3D Cube layer selector dialog callback. Called when the user selects a layer from a 3D cube, or
+// toggles the "Scale color to global min/max" checkbox (useGlobalScale != 0 -> colour by the
+// whole cube's z-range instead of this slice's own). The dialog is non-modal, so the user can
+// switch between layers while keeping the dialog open.
+typedef void (*JuliaCubeLayerFn)(void *scene, int layerIndex, int useGlobalScale);
+static JuliaCubeLayerFn g_juliaCubeLayer = nullptr;
+
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a
 // short format code (nc/surfer/gtiff/jp2/erdas/envi for grids; those + jpg/png/tif/bmp for images);

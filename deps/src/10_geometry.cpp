@@ -540,6 +540,7 @@ struct Scene {
 	QString nswingParams;                               // NSWING dialog fields, saved on close, restored on reopen (raw "key=value\n…" block)
 	QWidget *elasticDlg = nullptr;                      // open (non-modal) Vertical elastic deformation dialog, if any
 	QWidget *focalStudioDlg = nullptr;                  // open (non-modal) Focal Meca Studio demo dialog, if any
+	QWidget *cubeDlg = nullptr;                         // open (non-modal) 3-D cube layer selector dialog, if any
 };
 
 // --- surface accessors: one actor (cloud/FV/drape/image) or a tiled grid -----------------

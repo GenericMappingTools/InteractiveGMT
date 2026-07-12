@@ -43,6 +43,8 @@
 #include <string>
 #include <QSlider>
 #include <QScrollBar>
+#include <QStyleFactory>
+#include <QScreen>
 #include <QLabel>
 #include <QCheckBox>
 #include <QFrame>

@@ -19,10 +19,17 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 	try
 		# Already shown in a live window -> raise that window and ignore the duplicate drop.
 		_open_window_for(path) != C_NULL && return
-		data  = GMT.gmtread(path)
-		_record_recent(path, data)                             # remember it in File > Recent Files
 		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
-		_drop_into(scene, data, basename(path); promote=empty, source=path)
+		# Cube files (3-D netCDF/grd) are NEVER read whole here -- a header-only probe decides
+		# the layer count, then the slider dialog pulls one slice at a time (see _on_3d_cube_dropped).
+		n_layers, zmin, zmax = _cube_probe(path)
+		if n_layers > 1
+			_on_3d_cube_dropped(scene, path, basename(path), empty, n_layers, zmin, zmax)
+		else
+			data = GMT.gmtread(path)
+			_record_recent(path, data)                         # remember it in File > Recent Files
+			_drop_into(scene, data, basename(path); promote=empty, source=path)
+		end
 		# Promoting the empty launcher makes this file the window's primary content -> retitle it.
 		# A drop into an already-populated window just adds an extra layer, so its title is left alone.
 		empty && ccall(_fn(:gmtvtk_set_title_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, "i'GMT -- $(basename(path))")
@@ -38,6 +45,94 @@ end
 # `source` is the on-disk file path (threaded to Save Session so the layer is stored as a file ref,
 # not serialized data); empty for non-file callers.
 _drop_into(scene::Ptr{Cvoid}, G::GMTgrid,  name; promote=false, source="") = _add_grid_to_scene(scene, G, name; promote, source)
+
+# ── 3D cube support: one layer on disk at a time, never the whole cube in memory ──────────────
+# A dropped cube is NEVER read with a plain `GMT.gmtread(path)` (that would materialize every
+# layer). Instead `_cube_probe` reads the file HEADER ONLY (GMT.grdinfo -Q, GMT's own native
+# cube reader -- no data) for the layer count and the whole cube's z-range, and the slider dialog
+# pulls exactly ONE 2-D slice per move straight off disk via `GMT.gmtread(path, layer=k)`.
+# `_CUBE_INFO` remembers the probe (path/name/promote/source/z-range) per scene; `_CUBE_LOADED`
+# tracks whether a slice is already showing so later slider moves REPLACE it in place
+# (`_apply_host_grid!`, the same in-place swap transplant.jl uses) instead of stacking a new grid
+# per step.
+#
+# `_cube_probe` used to detect cube-ness via a GDAL raster-band count (`Gdal.nraster`) instead of
+# `grdinfo -Q`, specifically to avoid a try/catch on every dropped .nc/.grd file. PROVEN WRONG:
+# GDAL opened on the bare filename (no `NETCDF:"file":varname` subdataset selector) only ever
+# reports the file's FIRST 2-D slice as "Band 1" for a genuine multi-layer COARDS cube -- verified
+# live (`Gdal.nraster` returned 1 on a real 6-layer test cube). `grdinfo -Q` uses GMT's own native
+# cube reader, not GDAL, and is the mechanism GMT.jl's cube support is actually built on --
+# correctness comes first; the try/catch this needs is a one-time cost per dropped file, not a
+# hot loop, so it was never a real problem to begin with.
+const _CUBE_INFO = Dict{Ptr{Cvoid}, @NamedTuple{path::String, name::String, promote::Bool, source::String, zmin::Float64, zmax::Float64}}()
+const _CUBE_LOADED = Dict{Ptr{Cvoid}, Bool}()
+
+# Header-only probe: (n_layers, zmin, zmax) for a netCDF/grd cube -- n_layers=0 if not a cube (or
+# the header can't be read as one). ONE `grdinfo -Q` call gives both the layer count and the
+# whole cube's z-range together (no data read either way).
+function _cube_probe(path::String)::Tuple{Int,Float64,Float64}
+	ext = lowercase(splitext(path)[2])
+	(ext != ".nc" && ext != ".grd") && return (0, 0.0, 0.0)
+	local info
+	try
+		info = GMT.grdinfo(path, C=true, Q=true)
+	catch
+		return (0, 0.0, 0.0)   # not a cube (or unreadable) -- falls through to the plain-grid path
+	end
+	inl = findfirst(==("n_layers"), info.colnames)
+	iz1 = findfirst(==("z_min"), info.colnames)
+	iz2 = findfirst(==("z_max"), info.colnames)
+	(inl === nothing || iz1 === nothing || iz2 === nothing) && return (0, 0.0, 0.0)
+	n = Int(info.data[inl])
+	return n > 1 ? (n, Float64(info.data[iz1]), Float64(info.data[iz2])) : (0, 0.0, 0.0)
+end
+
+# Handle a dropped cube file: remember (path, n_layers, global z-range), show the non-modal
+# slider dialog. No grid is read here -- the first slice is pulled lazily once the dialog fires
+# its initial layer.
+function _on_3d_cube_dropped(scene::Ptr{Cvoid}, path::String, name::AbstractString, promote::Bool, n_layers::Int, zmin::Float64, zmax::Float64)
+	_CUBE_INFO[scene] = (path=path, name=String(name), promote=promote, source=path, zmin=zmin, zmax=zmax)
+	_CUBE_LOADED[scene] = false
+	ccall(_fn(:gmtvtk_show_cube_layer_dialog), Cvoid,
+		(Ptr{Cvoid}, Cstring, Cint), scene, name, n_layers)
+end
+
+# Callback: the slider/spinbox moved to `layer_index` (0-based), or the "global min/max" checkbox
+# was toggled (`use_global` != 0). Reads ONLY that one layer off disk and either adds it (first
+# time) or replaces the currently-shown slice in place (every call after) -- the colormap is
+# scaled to this slice's own range, or to the whole cube's range when `use_global` is set.
+function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::Cint)::Cvoid
+	try
+		info = get(_CUBE_INFO, scene, nothing)
+		info === nothing && (@warn "No cube info stored for scene"; return)
+
+		layer_i = Int(layer_index) + 1                     # 0-based (C/UI) -> 1-based (Julia)
+		layer_grid = GMT.gmtread(info.path, layer=layer_i) # lazy: reads ONLY this one 2-D slice
+		layer_grid === nothing && (@warn "Failed to read cube layer $layer_i from $(info.path)"; return)
+		# Stable name across EVERY slider move (not "..._layerN") -- _apply_host_grid!/_sync_host_grid!
+		# match the base grid by name to update it in place; a name that changes every step would
+		# leave the registry pointing at the stale first-loaded layer instead of the current one.
+		layer_name = info.name
+		zrange = use_global != 0 ? (info.zmin, info.zmax) : nothing
+
+		if get(_CUBE_LOADED, scene, false)
+			_apply_host_grid!(scene, layer_grid, layer_name; zrange)   # in-place swap, no new surface
+		else
+			_add_grid_to_scene(scene, layer_grid, layer_name; promote=info.promote, source=info.source, zrange)
+			_CUBE_LOADED[scene] = true
+			_record_recent(info.path, layer_grid)
+		end
+	catch e
+		@error "Failed to load cube layer" exception=e
+	end
+	return
+end
+
+# Register the cube layer callback (lazy registration)
+function _register_cube_callback()
+	ccall(_fn(:gmtvtk_set_cube_layer_callback), Cvoid,
+		(Ptr{Cvoid},), @cfunction(_on_load_cube_layer, Cvoid, (Ptr{Cvoid}, Cint, Cint)))
+end
 _drop_into(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false, source="") = _add_image_to_scene(scene, I, name; promote, source)
 function _drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name; promote=false, source="")
 	promote ? _promote_dataset(scene, D) : _add_dataset_to_scene(scene, D, name)
@@ -56,13 +151,20 @@ end
 
 # Add a dropped grid as a CPT-coloured surface in the window. On the empty launcher `promote`
 # reconfigures THAT window in place (gmtvtk_promote_surface_h); otherwise it is added as an extra.
-function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false, source="", record=true)
+function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false, source="", record=true, zrange=nothing)
+	# `ny, nx = size(z)` on a 3-D array does NOT error in Julia -- it silently drops the third
+	# dimension and proceeds with truncated data, no error anywhere. A cube must never reach here
+	# (the cube-detection probe in _on_drop is supposed to intercept it first); fail loudly if it
+	# ever does, instead of silently rendering wrong/truncated data with no visible error.
+	ndims(G.z) == 3 && error("_add_grid_to_scene got a 3-D cube grid ($(size(G.z))) -- cube detection missed it upstream")
 	cmap === :auto && (cmap = _default_cmap(G))   # geo only for topo/bathymetry grids, else turbo
 	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z); ny, nx = size(z); r = G.range
 	# `color` (r,g,b in 0..1) forces a SOLID-colour 2-node CPT (used by the flat zero nested grids, whose
-	# all-equal z would otherwise collapse _cpt_nodes to the viewer's blue ramp). Else build the CPT.
-	cz, crgb, ncolor = color === nothing ? _cpt_nodes(G, cmap) :
-		([-1.0, 1.0], Float64[color[1], color[2], color[3], color[1], color[2], color[3]], 2)
+	# all-equal z would otherwise collapse _cpt_nodes to the viewer's blue ramp). `zrange` (zmn,zmx)
+	# overrides the CPT's own autoscale (used by the cube layer slider's "global min/max" checkbox
+	# to scale every slice off the whole cube's range instead of each slice's own narrower one).
+	cz, crgb, ncolor = color !== nothing ? ([-1.0, 1.0], Float64[color[1], color[2], color[3], color[1], color[2], color[3]], 2) :
+		zrange !== nothing ? _cpt_nodes_range(zrange[1], zrange[2], cmap) : _cpt_nodes(G, cmap)
 	# guessgeog (not isgeog): a plain lon/lat grid with no embedded proj still reads geographic via
 	# the [-180 360 -90 90] range heuristic, so the Geography menu can be activated (see _apply_crs! below).
 	geog = _isgeographic(G)

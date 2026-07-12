@@ -146,10 +146,11 @@ function _sync_host_grid!(scene::Ptr{Cvoid}, name::AbstractString, G::GMTgrid)
 end
 
 # Replace the window's base grid surface IN PLACE (data + render), keeping camera/VE/name. Reuses the
-# same CPT build as a normal grid add so the colours follow the new data range.
-function _apply_host_grid!(scene::Ptr{Cvoid}, G::GMTgrid, name::String)
+# same CPT build as a normal grid add so the colours follow the new data range. `zrange` (zmn,zmx)
+# overrides the CPT's own autoscale -- used by the cube layer slider's "global min/max" checkbox.
+function _apply_host_grid!(scene::Ptr{Cvoid}, G::GMTgrid, name::String; zrange=nothing)
 	cmap             = _default_cmap(G)
-	cz, crgb, ncolor = _cpt_nodes(G, cmap)
+	cz, crgb, ncolor = zrange !== nothing ? _cpt_nodes_range(zrange[1], zrange[2], cmap) : _cpt_nodes(G, cmap)
 	z    = eltype(G.z) === Float32 ? G.z : Float32.(G.z)
 	ny, nx = size(z);  r = G.range
 	geog = _isgeographic(G)

@@ -65,6 +65,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_add_fault_geom_h, :gmtvtk_set_modelslip_callback, :gmtvtk_add_slip_patches_h,
 	:gmtvtk_set_focal_callback, :gmtvtk_add_meca_h, :gmtvtk_set_meca_infos_h, :gmtvtk_add_text_h, :gmtvtk_add_texts_h,
 	:gmtvtk_set_meca_props_callback, :gmtvtk_remove_meca_group_h,
+	:gmtvtk_set_cube_layer_callback, :gmtvtk_show_cube_layer_dialog,
 	:gmtvtk_scene_state,
 	:gmtvtk_frame_for_image_h, :gmtvtk_fit2d, :gmtvtk_grow_frame_h, :gmtvtk_hide_surface,
 	:gmtvtk_show_profile_xy,
