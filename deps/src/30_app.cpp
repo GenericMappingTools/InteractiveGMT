@@ -170,6 +170,14 @@ static JuliaGrdsampleFn g_juliaGrdsample = nullptr;
 typedef void (*JuliaNswingFn)(void *scene, const char *params);
 static JuliaNswingFn g_juliaNswing = nullptr;
 
+// Save / Load Session (File menu). g_juliaSaveSession(scene, path) writes THIS window's state to a
+// `.igmtz` (session.jl _on_save_session); g_juliaLoadSession(path) rebuilds a window from one
+// (_on_load_session, opens its own window, so no scene arg). nullptr -> "callback not registered".
+typedef void (*JuliaSaveSessionFn)(void *scene, const char *path);
+typedef void (*JuliaLoadSessionFn)(void *scene, const char *path);
+static JuliaSaveSessionFn g_juliaSaveSession = nullptr;
+static JuliaLoadSessionFn g_juliaLoadSession = nullptr;
+
 // IGRF Calculator (Geophysics > Magnetics). Port of Mirone's igrf_options.m, using GMT.jl's magref
 // (mgd77magref) instead of the igrf_m MEX. Two callbacks:
 //   g_juliaIgrfPoint(state): state = "lon/lat/elev_m/date_dec" -> "F/H/X/Y/Z/D/I" (nT x5, deg x2),

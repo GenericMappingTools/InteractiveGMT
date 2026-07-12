@@ -92,6 +92,7 @@ function _transplant_grid(H::GMTgrid, I::GMTgrid; keepres::Bool=true, pad::Int=6
 	Zout[r0:r1, c0:c1] .= Gtile.z[1:(r1 - r0 + 1), 1:(c1 - c0 + 1)]
 
 	Gout = mat2grid(Zout; x=hxv, y=hyv)
+	_grid_command!(Gout, "iGMT Transplant 2nd grid (GMT.surface seam, tension 0.25)")
 	isdefined(H, :proj4)   && !isempty(H.proj4)   && (Gout.proj4   = H.proj4)
 	isdefined(H, :wkt)     && !isempty(H.wkt)     && (Gout.wkt     = H.wkt)
 	Gout.registration = Hwork.registration

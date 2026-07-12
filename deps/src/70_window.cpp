@@ -4897,7 +4897,34 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mRecent->setToolTipsVisible(true);                       // show the full path on hover
 	QObject::connect(mRecent, &QMenu::aboutToShow, [mRecent, s]() { populateRecentMenu(mRecent, s); });
 	mFile->addSeparator();
-	mFile->addAction("&Close", [win](){ win->close(); }, QKeySequence::Close);
+	// Save / Load Session (.igmtz): Save writes THIS window's state (recipes + generated data) to a
+		// single zip; Load rebuilds a window from one. Julia does the work (session.jl); a missing
+		// callback reports in the status bar rather than doing nothing.
+		mFile->addAction("Save &Session…", [win, s]() {
+			if (!g_juliaSaveSession) {
+				if (s->win) s->win->statusBar()->showMessage("Save Session: callback not registered", 3000);
+				return;
+			}
+			QString f = QFileDialog::getSaveFileName(win, "Save Session", prefStartDir(), "iGMT Session (*.igmtz)");
+			if (f.isEmpty()) return;
+			if (!f.endsWith(".igmtz", Qt::CaseInsensitive)) f += ".igmtz";
+			rememberStartDir(f);
+			const QByteArray utf8 = f.toUtf8();
+			g_juliaSaveSession(s, utf8.constData());
+		});
+		mFile->addAction("&Load Session…", [win, s]() {
+			if (!g_juliaLoadSession) {
+				if (s->win) s->win->statusBar()->showMessage("Load Session: callback not registered", 3000);
+				return;
+			}
+			QString f = QFileDialog::getOpenFileName(win, "Load Session", prefStartDir(), "iGMT Session (*.igmtz)");
+			if (f.isEmpty()) return;
+			rememberStartDir(f);
+			const QByteArray utf8 = f.toUtf8();
+			g_juliaLoadSession(s, utf8.constData());
+		});
+		mFile->addSeparator();
+		mFile->addAction("&Close", [win](){ win->close(); }, QKeySequence::Close);
 
 	QMenu *mView = win->menuBar()->addMenu("&View");
 	mView->addAction("&Reset Camera", actReset, QKeySequence("R"));

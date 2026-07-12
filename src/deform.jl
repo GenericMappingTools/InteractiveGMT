@@ -112,6 +112,7 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 				_progress_close()
 				Gsum === nothing && error("no valid patches in the slip model")
 				zmn, zmx = extrema(Gsum.z); Gsum.range[5] = zmn; Gsum.range[6] = zmx   # z was summed by hand
+				_grid_command!(Gsum, "iGMT elastic deformation: sum of $(valid_count) GMT.okada sub-faults")
 				_add_grid_to_scene(scene, Gsum, "Okada z (model)")
 				_viewer_log_error(scene, "Okada: summed $(valid_count) sub-faults → 'Okada z (model)' " *
 					"(z ∈ [$(round(zmn, digits=4)), $(round(zmx, digits=4))])")
@@ -125,6 +126,7 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		Gdef = GMT.okada(G; x_start=x_start, y_start=y_start, L=L, W=W, depth=depTop,
 		                 strike=strike, dip=dip, rake=rake, slip=slip)
 
+		_grid_command!(Gdef, cmd)                     # stamp the exact okada call into GMTgrid.command
 		_add_grid_to_scene(scene, Gdef, "Okada z")
 		_viewer_log_error(scene, "Okada: vertical deformation computed (z ∈ " *
 			"[$(round(minimum(Gdef.z), digits=4)), $(round(maximum(Gdef.z), digits=4))]) → 'Okada z'")

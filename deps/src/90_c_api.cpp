@@ -729,6 +729,81 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	return n;
 }
 
+// Serialize the window's RESTORABLE display state (Save Session) as a ";"-terminated "k=v;" string:
+// vertical exaggeration, flat-2D mode, the full active camera (position/focal/up + parallel scale +
+// view angle + projection flag) and the colorbar frame position. Two-pass like gmtvtk_scene_state
+// (call with buf=nullptr to size, then again to fill). gmtvtk_apply_scene_state consumes this verbatim.
+GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	char t[96];
+	auto kvi = [&](const char *k, long v) { o += k; o += '='; o += std::to_string(v); o += ';'; };
+	auto kvd = [&](const char *k, double v) { snprintf(t, sizeof(t), "%s=%.12g;", k, v); o += t; };
+	if (sceneAlive(s)) {
+		kvi("alive", 1);
+		kvd("ve", s->ve);
+		kvi("flat2d", s->flat2d ? 1 : 0);
+		kvd("barX0", s->barX0); kvd("barY0", s->barY0);
+		if (s->ren) {
+			if (vtkCamera *cam = s->ren->GetActiveCamera()) {
+				double p[3], f[3], u[3];
+				cam->GetPosition(p); cam->GetFocalPoint(f); cam->GetViewUp(u);
+				kvd("cam_px", p[0]); kvd("cam_py", p[1]); kvd("cam_pz", p[2]);
+				kvd("cam_fx", f[0]); kvd("cam_fy", f[1]); kvd("cam_fz", f[2]);
+				kvd("cam_ux", u[0]); kvd("cam_uy", u[1]); kvd("cam_uz", u[2]);
+				kvd("cam_ps", cam->GetParallelScale());
+				kvd("cam_va", cam->GetViewAngle());
+				kvi("cam_par", cam->GetParallelProjection());
+			}
+		}
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
+// Restore the display state produced by gmtvtk_scene_state_full (Load Session). Order matters: VE
+// rescales the geometry and flat-2D moves the camera to top-down, so both run BEFORE the saved camera
+// is applied verbatim on top. Missing keys are left untouched. Each key is matched whole (";key=") so
+// no key can be a substring of another (barX0 vs barY0, ve vs cam_va).
+GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!s || !sceneAlive(s) || !kv) return;
+	const std::string buf = std::string(";") + kv;
+	auto getd = [&](const char *k, double &out) -> bool {
+		const std::string pat = std::string(";") + k + "=";
+		const size_t p = buf.find(pat);
+		if (p == std::string::npos) return false;
+		out = atof(buf.c_str() + p + pat.size());
+		return true;
+	};
+	auto geti = [&](const char *k, int &out) -> bool { double d; if (!getd(k, d)) return false; out = (int)d; return true; };
+
+	double d; int i;
+	if (getd("ve", d) && d > 0.0) { s->ve = d; applyVE(s); }         // VE first: rescales all actors
+	if (geti("flat2d", i)) {                                          // then the 2-D/3-D mode switch
+		if (i && !s->flat2d)      sceneSetFlat2D(s, true);
+		else if (!i && s->flat2d) sceneSetFlat2D(s, false);
+	}
+	if (s->ren) {                                                    // finally the exact saved camera
+		if (vtkCamera *cam = s->ren->GetActiveCamera()) {
+			double px, py, pz, fx, fy, fz, ux, uy, uz, ps, va;
+			if (geti("cam_par", i)) { if (i) cam->ParallelProjectionOn(); else cam->ParallelProjectionOff(); }
+			if (getd("cam_fx", fx) && getd("cam_fy", fy) && getd("cam_fz", fz)) cam->SetFocalPoint(fx, fy, fz);
+			if (getd("cam_px", px) && getd("cam_py", py) && getd("cam_pz", pz)) cam->SetPosition(px, py, pz);
+			if (getd("cam_ux", ux) && getd("cam_uy", uy) && getd("cam_uz", uz)) cam->SetViewUp(ux, uy, uz);
+			if (getd("cam_ps", ps)) cam->SetParallelScale(ps);
+			if (getd("cam_va", va)) cam->SetViewAngle(va);
+			s->ren->ResetCameraClippingRange();
+		}
+	}
+	bool okbar = false; double bx, by;
+	if (getd("barX0", bx)) { s->barX0 = bx; okbar = true; }
+	if (getd("barY0", by)) { s->barY0 = by; okbar = true; }
+	if (okbar && s->bar) layoutColorbar(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // Recolour a live surface from a new CPT: cz[n] boundary z + crgb[n*3] (0..1). s->surfLut is always
 // a vtkColorTransferFunction, shared by the surface mapper, every LOD tile mapper and the colorbar,
 // so mutating its nodes in place recolours all of them at once. Called from Julia (_recolor) after
@@ -953,6 +1028,16 @@ GMTVTK_API void gmtvtk_set_grdsample_callback(JuliaGrdsampleFn fn) {
 // nullptr to detach.
 GMTVTK_API void gmtvtk_set_nswing_callback(JuliaNswingFn fn) {
 	g_juliaNswing = fn;
+}
+
+// Register the Save/Load Session callbacks (File menu). Save: fn(scene, path) writes THIS window's
+// state to `path` (.igmtz); Load: fn(path) rebuilds a window from `path`. session.jl
+// _on_save_session / _on_load_session. nullptr to detach.
+GMTVTK_API void gmtvtk_set_save_session_callback(JuliaSaveSessionFn fn) {
+	g_juliaSaveSession = fn;
+}
+GMTVTK_API void gmtvtk_set_load_session_callback(JuliaLoadSessionFn fn) {
+	g_juliaLoadSession = fn;
 }
 
 // Register the IGRF Calculator's single-point callback (Geophysics > Magnetics > IGRF). fn(state)

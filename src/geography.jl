@@ -146,9 +146,14 @@ function _add_geo_overlay(scene::Ptr{Cvoid}, D; color=(0.0, 0.0, 0.0), linewidth
 end
 
 # C callback: creq = "<kind>/<res>/W/E/S/N". Fetch the feature for the visible region + add it.
-function _on_geography(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid
+_on_geography(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid = _on_geography(scene, unsafe_string(creq))
+
+# The request string IS the full reproduction recipe (feature kind, resolution, region), so Save
+# Session stores it verbatim as a :menu recipe (no data bytes) and Load replays it by re-dispatching
+# here into the rebuilt window. Same entry point drives coast/borders/rivers AND the point layers.
+function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 	try
-		p = split(unsafe_string(creq), '/')
+		p = split(req, '/')
 		length(p) >= 6 || return
 		kind = String(p[1])
 		res  = Symbol(strip(p[2]))
@@ -196,6 +201,9 @@ function _on_geography(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid
 			      uppercasefirst(kind)
 			_add_geo_overlay(scene, D; color=coastrgb, name=src)
 		end
+		# Reached only when a layer was actually added (empty branches return early above): remember the
+		# exact request so Save Session can reproduce this feature. :menu -> no data stored.
+		_session_record!(scene, :geography, :menu; params=Dict{String,Any}("req" => req))
 	catch e
 		_viewer_log_error(scene, "Geography FAILED: $(sprint(showerror, e))")
 		@warn "geography: could not fetch/add the feature" exception=(e,)

@@ -100,6 +100,7 @@ function view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside::Symbol=:shade
 		  img, Cint(iw), Cint(ih), Cint(ibands), Cint(edges), Cint(triangulate), Cint(0), title)
 	fig = _register_fig!(QtFigure(h, G))
 	_remember_object!(h, :grid, "", G)                # File>Save / Scene Objects "Save…" can write it
+	_session_record!(h, :basegrid, :generated)        # Save Session: no source path here -> serialize the grid
 	_apply_crs!(fig, crs_from(G; geographic=geog))    # store the CRS + reveal the Geography menu if referenced
 	# Optional GMTdataset overlay (lines or points), added to the window just created.
 	data !== nothing && _add_overlay!(fig, data, mode, data_color, data_size)
@@ -157,6 +158,7 @@ function view_image(I::GMTimage; title::String="i'GMT",
 	h == C_NULL && error("view_image: the viewer could not open the window")
 	fig = _register_fig!(QtImage(h, I))
 	_remember_object!(h, :image, "", I)               # File>Save / Scene Objects "Save…" can write it
+	_session_record!(h, :image, :generated)           # Save Session: no source path here -> serialize the image
 	_apply_crs!(fig, crs_from(I; geographic=geog))    # store the CRS + reveal the Geography menu if referenced
 	_start_pump()
 	return fig

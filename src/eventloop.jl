@@ -50,6 +50,7 @@ function _ensure_callbacks()
 	                    ("new-window",  _register_new_window),
 	                    ("save",        _register_save),
 	                    ("save-geotiff",_register_save_geotiff),
+	                    ("session",     _register_session),
 	                    ("move",        _register_move),
 	                    ("geography",   _register_geography),
 	                    ("solid",       _register_solid),

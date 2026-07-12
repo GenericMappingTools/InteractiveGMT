@@ -24,6 +24,7 @@ function _nested_blank_grid(scene::Ptr{Cvoid}, x0, x1, y0, y1, xi, yi, geog::Boo
 	xv = collect(range(x0, x1; length = nx))
 	yv = collect(range(y0, y1; length = ny))
 	G  = mat2grid(Z; x = xv, y = yv)
+	_grid_command!(G, "iGMT nested blank grid '$nm' ($(nx)x$(ny), inc $xi/$yi)")
 	G.title = nm
 	if geog
 		G.proj4 = "+proj=longlat +datum=WGS84 +no_defs"

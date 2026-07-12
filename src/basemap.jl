@@ -108,10 +108,14 @@ function _on_basemap(scene::Ptr{Cvoid}, copt::AbstractString)::Cvoid
 			      (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble),
 			      scene, Float64(dW), Float64(dE), Float64(S), Float64(N))
 		end
-		_add_image_to_scene(scene, I, name; promote=false)   # always an ExtraObj image -> has the properties menu
+		# record=false: the cropped tile is REPRODUCIBLE from `copt` (crop etopo4), so Save Session stores a
+		# :menu recipe (below), not the image bytes — don't let _add_image_to_scene also log it as data.
+		_add_image_to_scene(scene, I, name; promote=false, record=false)   # ExtraObj image -> properties menu
 		ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
 			  scene, I.proj4, "", Cint(4326))                    # referenced -> reveals Geography menu
 		push!(loaded, name)
+		# Save Session: the request string reproduces this tile exactly -> :menu recipe, no data bytes.
+		_session_record!(scene, :basemap, :menu; params=Dict{String,Any}("copt" => String(copt)))
 	catch e
 		_viewer_log_error(scene, "Base Map FAILED: $(sprint(showerror, e))")
 		@warn "basemap: could not crop/add the tile" exception=(e,)

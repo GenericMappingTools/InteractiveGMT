@@ -22,7 +22,7 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 		data  = GMT.gmtread(path)
 		_record_recent(path, data)                             # remember it in File > Recent Files
 		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
-		_drop_into(scene, data, basename(path); promote=empty)
+		_drop_into(scene, data, basename(path); promote=empty, source=path)
 		# Promoting the empty launcher makes this file the window's primary content -> retitle it.
 		# A drop into an already-populated window just adds an extra layer, so its title is left alone.
 		empty && ccall(_fn(:gmtvtk_set_title_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, "i'GMT -- $(basename(path))")
@@ -35,15 +35,17 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 end
 
 # Dispatch the dropped object by type into the window `scene`. `promote` reuses the empty launcher.
-_drop_into(scene::Ptr{Cvoid}, G::GMTgrid,  name; promote=false) = _add_grid_to_scene(scene, G, name; promote)
-_drop_into(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false) = _add_image_to_scene(scene, I, name; promote)
-function _drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name; promote=false)
+# `source` is the on-disk file path (threaded to Save Session so the layer is stored as a file ref,
+# not serialized data); empty for non-file callers.
+_drop_into(scene::Ptr{Cvoid}, G::GMTgrid,  name; promote=false, source="") = _add_grid_to_scene(scene, G, name; promote, source)
+_drop_into(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false, source="") = _add_image_to_scene(scene, I, name; promote, source)
+function _drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name; promote=false, source="")
 	promote ? _promote_dataset(scene, D) : _add_dataset_to_scene(scene, D, name)
 end
-function _drop_into(scene::Ptr{Cvoid}, D::Vector{<:GMTdataset}, name; promote=false)
+function _drop_into(scene::Ptr{Cvoid}, D::Vector{<:GMTdataset}, name; promote=false, source="")
 	promote ? _promote_dataset(scene, D) : _add_dataset_to_scene(scene, D, name)
 end
-_drop_into(scene::Ptr{Cvoid}, x, name; promote=false) = @warn "drop: unsupported data type" type=typeof(x)
+_drop_into(scene::Ptr{Cvoid}, x, name; promote=false, source="") = @warn "drop: unsupported data type" type=typeof(x)
 
 # A pure table has no surface to promote the launcher's scales onto. Until in-place dataset
 # promotion exists, fall back to opening it in a fresh full window and retiring the launcher.
@@ -54,7 +56,7 @@ end
 
 # Add a dropped grid as a CPT-coloured surface in the window. On the empty launcher `promote`
 # reconfigures THAT window in place (gmtvtk_promote_surface_h); otherwise it is added as an extra.
-function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false)
+function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false, source="", record=true)
 	cmap === :auto && (cmap = _default_cmap(G))   # geo only for topo/bathymetry grids, else turbo
 	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z); ny, nx = size(z); r = G.range
 	# `color` (r,g,b in 0..1) forces a SOLID-colour 2-node CPT (used by the flat zero nested grids, whose
@@ -78,6 +80,10 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name))
 	ok == 0 && @warn "drop: window is closed; grid not added"
 	ok != 0 && _remember_object!(scene, :grid, name, G)   # Scene Objects "Save…" / File>Save can write it
+	# Save Session: known file path -> store a file ref (:file); no path -> serialize the grid (:generated).
+	# `record=false` suppresses this when a higher-level tool logs its own (menu) recipe (e.g. basemap).
+	(ok != 0 && record) && _session_record!(scene, promote ? :basegrid : :dropgrid,
+	                            isempty(source) ? :generated : :file, source; name=String(name))
 	# Store the CRS + reveal the Geography menu if referenced (incl. guessed lon/lat -> WGS84).
 	if ok != 0
 		crs = crs_from(G; geographic=geog)
@@ -91,7 +97,7 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 end
 
 # Add a dropped image as a flat textured plane in the window (promote = reuse the empty launcher).
-function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false)
+function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false, source="", record=true)
 	ir = I.range
 	z = zeros(Float32, 2, 2)
 	fillu = (UInt8(200), UInt8(200), UInt8(200))
@@ -113,6 +119,10 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name))
 	ok == 0 && @warn "drop: window is closed; image not added"
 	ok != 0 && _remember_object!(scene, :image, name, I)  # Scene Objects "Save…" / File>Save can write it
+	# Save Session: known file path -> file ref (:file); no path -> serialize the image (:generated).
+	# `record=false` suppresses this when a higher-level tool logs its own (menu) recipe (e.g. basemap).
+	(ok != 0 && record) && _session_record!(scene, promote ? :image : :dropimage,
+	                            isempty(source) ? :generated : :file, source; name=String(name))
 	# Store the CRS + reveal the Geography menu if referenced (incl. guessed lon/lat -> WGS84).
 	if ok != 0
 		crs = crs_from(I; geographic=geog)

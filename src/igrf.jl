@@ -62,6 +62,7 @@ function _on_igrf_grid(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		kw = Dict{Symbol,Any}(:R => "$W/$E/$S/$N", :I => "$xinc/$yinc",
 		                       :alt => elev_m / 1000, :onetime => date, fieldsym => true)
 		G = GMT.magref(; kw...)
+		_grid_command!(G, "GMT.magref(; " * join(["$k=$v" for (k, v) in kw], ", ") * ")")
 		# Add to the existing scene (dialog's parent window), named after the field selection.
 		z = eltype(G.z) === Float32 ? G.z : Float32.(G.z); ny, nx = size(z); r = G.range
 		geog = _isgeog(G)

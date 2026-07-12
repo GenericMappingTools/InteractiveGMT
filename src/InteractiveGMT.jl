@@ -51,6 +51,7 @@ include("dimfun.jl")     # grdsample Region box recompute (port of Mirone dim_fu
 include("grdsample.jl")  # GMT > Resample (grdsample)
 include("bgregion.jl")   # File > Background region -> blank white 2-D map framed to W/E/S/N
 include("savefile.jl")   # File > Save Grid / Save Image -> gmtwrite (netCDF/Surfer) / gdalwrite
+include("session.jl")    # File > Save/Load Session (.igmtz): provenance registry + manifest + store-only zip
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
 include("solids.jl")     # 3-D Bodies toolbar flyout -> GMT solids (cube/sphere/torus/cylinder/…) via view_fv
 include("nswing.jl")     # Geophysics > NSWING tsunami (port of Mirone swan_options.m -> nswing exe)
