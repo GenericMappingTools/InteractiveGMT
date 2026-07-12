@@ -66,6 +66,9 @@ _drop_into(scene::Ptr{Cvoid}, G::GMTgrid,  name; promote=false, source="") = _ad
 # hot loop, so it was never a real problem to begin with.
 const _CUBE_INFO = Dict{Ptr{Cvoid}, @NamedTuple{path::String, name::String, promote::Bool, source::String, zmin::Float64, zmax::Float64}}()
 const _CUBE_LOADED = Dict{Ptr{Cvoid}, Bool}()
+# The slice currently shown per scene: (layer index, its grid, its cmap). Lets the "global min/max"
+# checkbox rescale the COLOUR in place (no disk read, no surface rebuild) when the layer is unchanged.
+const _CUBE_CUR = Dict{Ptr{Cvoid}, Any}()
 
 # Header-only probe: (n_layers, zmin, zmax) for a netCDF/grd cube -- n_layers=0 if not a cube (or
 # the header can't be read as one). ONE `grdinfo -Q` call gives both the layer count and the
@@ -98,33 +101,62 @@ function _on_3d_cube_dropped(scene::Ptr{Cvoid}, path::String, name::AbstractStri
 end
 
 # Callback: the slider/spinbox moved to `layer_index` (0-based), or the "global min/max" checkbox
-# was toggled (`use_global` != 0). Reads ONLY that one layer off disk and either adds it (first
-# time) or replaces the currently-shown slice in place (every call after) -- the colormap is
-# scaled to this slice's own range, or to the whole cube's range when `use_global` is set.
+# was toggled (`use_global` != 0). Two very different costs:
+#   * checkbox toggle (SAME layer already shown) -> rescale the COLOUR in place via gmtvtk_set_cpt:
+#     no disk read, no surface rebuild, one Render. This is what made the checkbox feel instant
+#     instead of the old full re-read + geometry rebuild, and it actually moves the colorbar (the
+#     old path let gmtvtk_replace_base_grid recompute the colorbar range from the slice's own data,
+#     so "global" silently did nothing).
+#   * layer change (or first load) -> read that ONE slice off disk, add/replace the surface, cache
+#     it, then apply the colour scaling.
 function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::Cint)::Cvoid
 	try
 		info = get(_CUBE_INFO, scene, nothing)
 		info === nothing && (@warn "No cube info stored for scene"; return)
 
 		layer_i = Int(layer_index) + 1                     # 0-based (C/UI) -> 1-based (Julia)
+		layer_name = info.name                             # stable name so the base grid updates in place
+
+		cur = get(_CUBE_CUR, scene, nothing)
+		# Colour-only change: the slice is unchanged, so just re-push the (already-computed) CPT for
+		# the chosen range -- a single ccall, no makecpt, no disk read, no rebuild. This is what makes
+		# the checkbox instant AND actually retargets the colorbar.
+		if cur !== nothing && cur.layer == layer_i && get(_CUBE_LOADED, scene, false)
+			_cube_push_cpt(scene, use_global != 0 ? cur.glob : cur.loc)
+			return
+		end
+
 		layer_grid = GMT.gmtread(info.path, layer=layer_i) # lazy: reads ONLY this one 2-D slice
 		layer_grid === nothing && (@warn "Failed to read cube layer $layer_i from $(info.path)"; return)
-		# Stable name across EVERY slider move (not "..._layerN") -- _apply_host_grid!/_sync_host_grid!
-		# match the base grid by name to update it in place; a name that changes every step would
-		# leave the registry pointing at the stale first-loaded layer instead of the current one.
-		layer_name = info.name
-		zrange = use_global != 0 ? (info.zmin, info.zmax) : nothing
-
+		cmap = _default_cmap(layer_grid)
 		if get(_CUBE_LOADED, scene, false)
-			_apply_host_grid!(scene, layer_grid, layer_name; zrange)   # in-place swap, no new surface
+			_apply_host_grid!(scene, layer_grid, layer_name)   # in-place swap, no new surface
 		else
-			_add_grid_to_scene(scene, layer_grid, layer_name; promote=info.promote, source=info.source, zrange)
+			_add_grid_to_scene(scene, layer_grid, layer_name; promote=info.promote, source=info.source)
 			_CUBE_LOADED[scene] = true
 			_record_recent(info.path, layer_grid)
 		end
+		# Precompute BOTH CPTs for this slice (the only makecpt cost, paid once per layer read): its
+		# own [zmin,zmax] and the whole cube's global range. Toggling the checkbox then just swaps
+		# between these two cached node sets.
+		loc  = _cpt_nodes(layer_grid, cmap)
+		glob = _cpt_nodes_range(info.zmin, info.zmax, cmap)
+		_CUBE_CUR[scene] = (layer=layer_i, G=layer_grid, cmap=cmap, loc=loc, glob=glob)
+		_cube_push_cpt(scene, use_global != 0 ? glob : loc)
 	catch e
 		@error "Failed to load cube layer" exception=e
 	end
+	return
+end
+
+# Push a precomputed CPT (cz, crgb, n) IN PLACE onto the shared colour transfer function the
+# surface/tiles/colorbar all share -- one ccall + Render, no geometry touched. gmtvtk_set_cpt also
+# retargets the colorbar legend to this CPT's range (the whole point of the global-min/max option).
+function _cube_push_cpt(scene::Ptr{Cvoid}, nodes)
+	cz, crgb, n = nodes
+	n < 2 && return
+	ccall(_fn(:gmtvtk_set_cpt), Cvoid, (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint),
+	      scene, cz, crgb, Cint(n))
 	return
 end
 

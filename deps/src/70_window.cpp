@@ -3617,6 +3617,24 @@ protected:
 	}
 };
 
+// Intercepts the X on the cube-layer dock: closing it would make the cube's layers unreachable, so
+// instead of hiding/destroying, the X RE-DOCKS the panel into the window. The X stays visible (the
+// dock is Closable); this filter just swallows the close and docks it.
+class CubeDockCloseFilter : public QObject {
+public:
+	QDockWidget *dock;
+	explicit CubeDockCloseFilter(QDockWidget *d) : QObject(d), dock(d) {}
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		if (obj == dock && ev->type() == QEvent::Close) {
+			ev->ignore();
+			dock->setFloating(false);   // re-dock into its home (bottom) area
+			dock->show();
+			return true;                // swallow the close -> never destroyed
+		}
+		return QObject::eventFilter(obj, ev);
+	}
+};
+
 // ── Cube Layer Selector Dialog ───────────────────────────────────────────────────────────────
 // Non-modal dialog for scrubbing through layers of a 3-D NetCDF cube: a native QScrollBar (arrow
 // buttons at each end, like the original Mirone tool) plus an editable QSpinBox, kept in sync both
@@ -3635,9 +3653,8 @@ protected:
 static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) {
 	if (!sceneAlive(s) || !s->win || nLayers <= 0) return;
 
-	// Re-drop into a window that already has the cube dialog open: just re-point its range at the
-	// new cube and raise it -- recreating would race the old dialog's async close()/destroy teardown
-	// (the very hazard that crashed the old design).
+	// Re-drop into a window that already has the cube dock open: just re-point its range at the new
+	// cube and raise it.
 	if (s->cubeDlg) {
 		auto *sb  = s->cubeDlg->findChild<QScrollBar *>("layerScrollBar");
 		auto *spn = s->cubeDlg->findChild<QSpinBox  *>("layerSpin");
@@ -3646,12 +3663,15 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 		if (sb)  { sb->setRange(1, nLayers);  sb->setValue(1); }
 		if (spn) { spn->setRange(1, nLayers); spn->setValue(1); }
 		if (lbl) lbl->setText(QString("3D Cube: %1 (%2 layers)").arg(cubeName).arg(nLayers));
-		s->cubeDlg->setWindowTitle(QString("%1 -- %2 layers").arg(cubeName).arg(nLayers));
+		s->cubeDlg->show();
 		s->cubeDlg->raise();
-		s->cubeDlg->activateWindow();
 		if (sb && chk && g_juliaCubeLayer) g_juliaCubeLayer(s, sb->value() - 1, chk->isChecked() ? 1 : 0);   // show layer 1 of the new cube
 		return;
 	}
+
+	QMainWindow *mw = s->win;   // the viewer window is a QMainWindow (hosts objDock etc.)
+
+	if (g_juliaCubeLayer) g_juliaCubeLayer(s, 0, 0);   // display layer 1 BEFORE building the panel
 
 	QUiLoader loader;
 	QFile f(gmtvtkUiDir() + "/cube_layer_selector.ui");
@@ -3659,24 +3679,25 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 		qWarning("CubeLayerDialog: cannot open %s", qUtf8Printable(f.fileName()));
 		return;
 	}
-	QDialog *dlg = qobject_cast<QDialog *>(loader.load(&f, s->win));
+	// The cube layer selector lives INSIDE the viewer window as a bottom QDockWidget (same idiom as
+	// the Scene Objects / shading docks) -- NOT a separate floating window that covered or sat beside
+	// the image. Load the .ui content and host it in the dock (flag it Qt::Widget so the loaded
+	// QDialog embeds as a plain panel instead of trying to be its own window).
+	QWidget *content = qobject_cast<QWidget *>(loader.load(&f, mw));
 	f.close();
-	if (!dlg) { qWarning("CubeLayerDialog: QUiLoader failed to load the .ui"); return; }
+	if (!content) { qWarning("CubeLayerDialog: QUiLoader failed to load the .ui"); return; }
+	content->setWindowFlags(Qt::Widget);
 
-	dlg->setAttribute(Qt::WA_DeleteOnClose);
-	dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
-	dlg->setWindowModality(Qt::NonModal);
-
-	auto *sb  = dlg->findChild<QScrollBar *>("layerScrollBar");
-	auto *spn = dlg->findChild<QSpinBox  *>("layerSpin");
-	auto *chk = dlg->findChild<QCheckBox  *>("globalScaleCheck");
-	auto *lbl = dlg->findChild<QLabel     *>("infoLabel");   // OPTIONAL title label -- the current
+	auto *sb  = content->findChild<QScrollBar *>("layerScrollBar");
+	auto *spn = content->findChild<QSpinBox  *>("layerSpin");
+	auto *chk = content->findChild<QCheckBox  *>("globalScaleCheck");
+	auto *lbl = content->findChild<QLabel     *>("infoLabel");   // OPTIONAL title label -- the current
 	// cube_layer_selector.ui has no such widget (only "layerNoLabel"), so it must NOT be required:
-	// gating the whole dialog on it (as the old code did) silently aborted creation -> no dialog,
-	// no first layer, cube never showed. Only the three CONTROLS are mandatory.
+	// gating the whole thing on it (as the old code did) silently aborted creation -> nothing showed.
+	// Only the three CONTROLS are mandatory.
 	if (!sb || !spn || !chk) {
 		qWarning("CubeLayerDialog: failed to find controls (scrollbar/spin/check)");
-		dlg->deleteLater();
+		content->deleteLater();
 		return;
 	}
 
@@ -3689,51 +3710,65 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 	}
 
 	if (lbl) lbl->setText(QString("3D Cube: %1 (%2 layers)").arg(cubeName).arg(nLayers));
-	dlg->setWindowTitle(QString("%1 -- %2 layers").arg(cubeName).arg(nLayers));   // .ui has no title label
 	sb->setRange(1, nLayers);  sb->setValue(1);
 	spn->setRange(1, nLayers); spn->setValue(1);
 
-	s->cubeDlg = dlg;
-	// Clear the Scene slot when the dialog is destroyed (native X, or when the parent window dies
-	// and takes it along). Context = s->win so a dead window auto-drops the connection.
-	QObject::connect(dlg, &QObject::destroyed, s->win, [s]{ s->cubeDlg = nullptr; });
+	QDockWidget *dock = new QDockWidget("Cube layers", mw);
+	dock->setObjectName("cubeLayerDock");
+	dock->setAllowedAreas(Qt::AllDockWidgetAreas);
+	// Keep the X visible (Closable); a filter turns it into "re-dock" instead of destroy so the
+	// layers can never become unreachable. Bottom is its home dock area.
+	dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+	dock->setWidget(content);
+	mw->addDockWidget(Qt::BottomDockWidgetArea, dock);
+	dock->installEventFilter(new CubeDockCloseFilter(dock));
 
-	// Fires the Julia callback for the current widget state. sb/chk captured by value (raw pointers
-	// valid for the dialog's life; the connections that call this live on the widgets themselves).
+	// Start FLOATING, centered inside the viewer window. Size from the .ui's own geometry, shrunk
+	// 25% (the slider was needlessly long). A floating dock is a top-level widget, so position in
+	// global coords mapped from the window centre.
+	dock->setFloating(true);
+	QSize ui = content->size();   // the .ui's designed size (412x84)
+	dock->resize(ui.width() * 3 / 4, dock->sizeHint().height());
+	dock->move(mw->mapToGlobal(mw->rect().center()) - QPoint(dock->width() / 2, dock->height() / 2));
+
+	s->cubeDlg = dock;
+	// Clear the Scene slot when the dock is destroyed (its X, or when the window dies and takes it
+	// along). Context = mw so a dead window auto-drops the connection.
+	QObject::connect(dock, &QObject::destroyed, mw, [s]{ s->cubeDlg = nullptr; });
+
+	// Fires the Julia callback for the current widget state, and ALWAYS tells the user -- in the
+	// window's status bar -- exactly what the action does: which layer, and whether the colour scale
+	// is this layer's own range or the whole cube's global min/max. Toggling the checkbox looks like
+	// it does "nothing" only because the widget flips instantly; this message makes the actual work
+	// (recolour + colorbar retarget) visible. sb/chk captured by value (raw pointers valid for the
+	// dock's life; the connections that call this live on the widgets themselves).
 	auto fire = [s, sb, chk]() {
+		if (s->win)
+			s->win->statusBar()->showMessage(
+				QString("Cube layer %1  —  colour scale: %2")
+					.arg(sb->value())
+					.arg(chk->isChecked() ? "GLOBAL cube min/max" : "this layer's range"), 5000);
 		if (g_juliaCubeLayer) g_juliaCubeLayer(s, sb->value() - 1, chk->isChecked() ? 1 : 0);
 	};
 
-	// Scrollbar <-> spinbox two-way sync; a shared heap `guard` bool (owned by the dialog, freed
-	// with it) stops the mirrored setValue from re-firing. No wrapper object needed to hold it.
+	// Scrollbar <-> spinbox two-way sync; a shared heap `guard` bool (owned by the dock, freed with
+	// it) stops the mirrored setValue from re-firing.
 	bool *guard = new bool(false);
-	QObject::connect(dlg, &QObject::destroyed, dlg, [guard]{ delete guard; });
-	QObject::connect(sb, &QScrollBar::valueChanged, dlg, [spn, guard, fire](int v) {
+	QObject::connect(dock, &QObject::destroyed, dock, [guard]{ delete guard; });
+	QObject::connect(sb, &QScrollBar::valueChanged, dock, [spn, guard, fire](int v) {
 		if (*guard) return;
 		*guard = true; spn->setValue(v); *guard = false;
 		fire();
 	});
-	QObject::connect(spn, QOverload<int>::of(&QSpinBox::valueChanged), dlg, [sb, guard, fire](int v) {
+	QObject::connect(spn, QOverload<int>::of(&QSpinBox::valueChanged), dock, [sb, guard, fire](int v) {
 		if (*guard) return;
 		*guard = true; sb->setValue(v); *guard = false;
 		fire();
 	});
-	QObject::connect(chk, &QCheckBox::toggled, dlg, [fire](bool) { fire(); });
+	QObject::connect(chk, &QCheckBox::toggled, dock, [fire](bool) { fire(); });
 
-	fire();   // render layer 1 FIRST so the cube surface is up before the dialog appears
-
-	// Park the dialog BESIDE the viewer, never centered over it -- centering hid the very image the
-	// slider controls (the whole point of the tool). Sit at the parent's top-right; if that would
-	// run off the screen, fall back to its top-left.
-	QRect wg = s->win->frameGeometry();
-	QScreen *sc = s->win->screen();
-	QRect scr = sc ? sc->availableGeometry() : wg;
-	QPoint pos = wg.topRight() + QPoint(12, 0);
-	if (pos.x() + dlg->width() > scr.right())
-		pos = wg.topLeft() - QPoint(dlg->width() + 12, 0);
-	dlg->move(pos);
-	dlg->show();
-	dlg->raise();
+	dock->show();    // data (layer 1) is already displayed above, so the panel appears after it
+	dock->raise();
 }
 
 // Plot seismicity — port of Mirone's earthquakes.m (src_figs/earthquakes.m). The layout is a
