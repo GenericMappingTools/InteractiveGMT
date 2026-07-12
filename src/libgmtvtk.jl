@@ -56,7 +56,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_dimfun_callback, :gmtvtk_set_nswing_callback,
 	:gmtvtk_set_save_session_callback, :gmtvtk_set_load_session_callback,
 	:gmtvtk_scene_state_full, :gmtvtk_apply_scene_state, :gmtvtk_serialize_texts,
-	:gmtvtk_serialize_polys, :gmtvtk_add_poly_full,
+	:gmtvtk_serialize_polys, :gmtvtk_add_poly_full, :gmtvtk_serialize_faults,
 	:gmtvtk_set_igrf_point_callback, :gmtvtk_set_igrf_grid_callback, :gmtvtk_set_igrf_file_callback,
 	:gmtvtk_set_seismicity_callback,
 	:gmtvtk_set_faultgeom_callback,

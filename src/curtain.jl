@@ -74,10 +74,11 @@ The curtain shares the surface's vertical scale, so it rises/falls with the reli
 vertical exaggeration changes, and it appears in the **Scene Objects** panel (hideable).
 """
 function add_curtain!(fig::QtFigure, path; image, zrange, spacing::Symbol=:distance,
-					  flipv::Bool=false, clip::Bool=false, clip_n::Int=300)
+					  flipv::Bool=false, clip::Bool=false, clip_n::Int=300, record::Bool=true)
 	isalive(fig) || (@warn "figure window is closed; curtain not added"; return fig)
 	px, py = _curtain_xy(path)
 	length(px) >= 2 || error("a curtain needs at least 2 track points; got $(length(px))")
+	px0, py0 = px, py                                   # ORIGINAL track (clip densifies below) — saved for Session
 	(length(zrange) >= 2 && zrange[2] > zrange[1]) ||
 		error("zrange must be (zmin, zmax) with zmax > zmin; got $zrange")
 	topz = C_NULL
@@ -93,6 +94,23 @@ function add_curtain!(fig::QtFigure, path; image, zrange, spacing::Symbol=:dista
 		  fig.h, px, py, u, Cint(length(px)),
 		  topz, imgpath, Float64(zrange[1]), Float64(zrange[2]), Cint(flipv))
 	ok == 0 && @warn "curtain not added (window closed or image unreadable)"
+	# Save Session: the curtain's source data lives here (not in the C++ Curtain), so capture a :curtain
+	# recipe at add time. A file-path image is stored as a :file ref; an in-memory GMTimage is stashed as
+	# PNG bytes for a sidecar. `record=false` is used on session replay (which re-records explicitly).
+	if ok != 0 && record
+		track = join(("$(px0[i]),$(py0[i])" for i in eachindex(px0)), "|")
+		params = Dict{String,Any}("track" => track, "zmin" => string(zrange[1]), "zmax" => string(zrange[2]),
+		                          "spacing" => String(spacing), "flipv" => string(flipv),
+		                          "clip" => string(clip), "clip_n" => string(clip_n))
+		if image isa AbstractString
+			params["image"] = String(image); params["image_origin"] = "file"
+		else
+			id = _curtain_img_next_id(fig.h)
+			_curtain_img_store!(fig.h, id, read(imgpath))
+			params["image"] = id; params["image_origin"] = "generated"
+		end
+		_session_record!(fig.h, :curtain, :menu; params=params)
+	end
 	return fig
 end
 

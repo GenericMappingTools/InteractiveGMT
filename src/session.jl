@@ -42,6 +42,15 @@ _session_record!(scene::Ptr{Cvoid}, kind, origin, source=""; name="", params=Dic
 "Forget a window's provenance log (call on window close / re-promote)."
 _session_reset!(scene::Ptr{Cvoid}) = (delete!(_SESSION_LOG, scene); nothing)
 
+# In-memory curtain textures pending sidecar serialization (per scene: sidecar id -> PNG bytes). A
+# curtain built from a GMTimage (not a file path) has no on-disk source, so its texture is stashed here
+# at add time (curtain.jl) and written into the zip at save; a file-path curtain stores only the path.
+const _CURTAIN_IMG = Dict{Ptr{Cvoid}, Dict{String,Vector{UInt8}}}()
+_curtain_img_store!(scene::Ptr{Cvoid}, id::String, bytes::Vector{UInt8}) =
+	(get!(() -> Dict{String,Vector{UInt8}}(), _CURTAIN_IMG, scene)[id] = bytes; id)
+_curtain_img_next_id(scene::Ptr{Cvoid})::String =
+	"curtain_" * string(length(get(_CURTAIN_IMG, scene, Dict{String,Vector{UInt8}}())) + 1) * ".png"
+
 # Stamp a computed grid with the GMT.jl command that produced it. GMTgrid carries a `command` string
 # that GMT persists into the netCDF header (grdinfo shows it), so every grid iGMT generates from a
 # GMT.jl call records how it was made. Returns G for inline use.
@@ -304,6 +313,92 @@ function _session_rebuild_polys!(fig, blob::String)
 	return
 end
 
+# Serialize the window's fault traces + slip-model patches (the Polygon kinds serialize_polys skips).
+function _serialize_faults_raw(h::Ptr{Cvoid})::String
+	n = ccall(_fn(:gmtvtk_serialize_faults), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, C_NULL, Cint(0))
+	n <= 0 && return ""
+	buf = Vector{UInt8}(undef, n + 1)
+	ccall(_fn(:gmtvtk_serialize_faults), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, buf, Cint(n + 1))
+	return unsafe_string(pointer(buf))
+end
+
+# Parse "x,y|x,y|…" -> flat Float64[x0,y0,x1,y1,…] (2 per vertex) + vertex count.
+function _parse_xy2(blob::AbstractString)
+	xy = Float64[]
+	for vp in split(blob, '|'; keepempty=false)
+		c = split(vp, ',')
+		length(c) < 2 && continue
+		push!(xy, parse(Float64, c[1]), parse(Float64, c[2]))
+	end
+	return xy, length(xy) ÷ 2
+end
+
+# Rebuild faults + slip models from a saved blob (inverse of gmtvtk_serialize_faults). Fault (F) lines
+# rebuild one at a time (add_fault_geom_h when the plane geometry is known, add_fault_h otherwise);
+# slip (S) lines are grouped by name and rebuilt as one batch per group via gmtvtk_add_slip_patches_h.
+function _session_rebuild_faults!(fig, blob::String)
+	(fig === nothing || isempty(blob)) && return
+	h = getfield(fig, :h)
+	# collect slip patches per group (in file order) for a single batched add each
+	groups = String[]; gpatch = Dict{String,Vector{Vector{SubString{String}}}}()
+	for line in split(blob, '\n'; keepempty=false)
+		try
+			if startswith(line, "F;")
+				p = split(line, ';'; limit=10)
+				length(p) < 10 && continue
+				slip = parse(Float64, p[2]); rake = parse(Float64, p[3])
+				strike = parse(Float64, p[4]); dip = parse(Float64, p[5])
+				width = parse(Float64, p[6]); depthTop = parse(Float64, p[7]); geog = parse(Int, p[8])
+				xy, nv = _parse_xy2(p[10]); nv < 2 && continue
+				if isnan(strike) || isnan(dip) || isnan(width) || isnan(depthTop)
+					ccall(_fn(:gmtvtk_add_fault_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cdouble, Cdouble),
+					      h, xy, Cint(nv), slip, rake)
+				else
+					ccall(_fn(:gmtvtk_add_fault_geom_h), Cint,
+					      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cint),
+					      h, xy, Cint(nv), slip, rake, strike, dip, width, depthTop, Cint(geog))
+				end
+			elseif startswith(line, "S;")
+				p = split(line, ';'; limit=12)
+				length(p) < 12 && continue
+				g = String(p[2])
+				g in groups || push!(groups, g)
+				push!(get!(() -> Vector{Vector{SubString{String}}}(), gpatch, g), p)
+			end
+		catch e
+			@warn "session: skipped a malformed fault line" exception=(e,)
+		end
+	end
+	# one gmtvtk_add_slip_patches_h per group
+	for g in groups
+		try
+			ps = gpatch[g]
+			np = length(ps)
+			xy = Float64[]; vcounts = Cint[]; rgb = Float64[]
+			slip = Float64[]; rake = Float64[]; strike = Float64[]; dip = Float64[]; depthTop = Float64[]; seg = Cint[]
+			dx = 0.0; dy = 0.0
+			for (k, p) in enumerate(ps)
+				vx, nv = _parse_xy2(p[12]); nv < 3 && continue
+				append!(xy, vx); push!(vcounts, Cint(nv))
+				push!(slip, parse(Float64, p[3])); push!(rake, parse(Float64, p[4]))
+				push!(strike, parse(Float64, p[5])); push!(dip, parse(Float64, p[6]))
+				push!(depthTop, parse(Float64, p[7])); push!(seg, Cint(parse(Int, p[10])))
+				fc = split(p[11], ','); append!(rgb, (parse(Float64, fc[1]), parse(Float64, fc[2]), parse(Float64, fc[3])))
+				k == 1 && (dx = parse(Float64, p[8]); dy = parse(Float64, p[9]))   # model-wide length/width
+			end
+			isempty(vcounts) && continue
+			ccall(_fn(:gmtvtk_add_slip_patches_h), Cint,
+			      (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cint}, Cint, Ptr{Cdouble}, Cstring,
+			       Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cdouble, Ptr{Cint}),
+			      h, xy, vcounts, Cint(length(vcounts)), rgb, g,
+			      slip, rake, strike, dip, depthTop, dx, dy, seg)
+		catch e
+			@warn "session: skipped a malformed slip group" group=g exception=(e,)
+		end
+	end
+	return
+end
+
 # Rebuild the text labels from a saved blob into `fig`'s window via gmtvtk_add_text_h (one per line).
 # Lines are "x;y;r;g;b;size;text" (text last, may contain ';'). Malformed lines are skipped.
 function _session_rebuild_texts!(fig, blob::String)
@@ -336,12 +431,24 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 			push!(out, r)
 		end
 	end
+	# Curtains built from in-memory GMTimages: write their stashed PNG textures as sidecars (file-path
+	# curtains keep only the path in their recipe).
+	cimgs = get(_CURTAIN_IMG, scene, Dict{String,Vector{UInt8}}())
+	for r in out
+		if r.kind === :curtain && get(r.params, "image_origin", "") == "generated"
+			b = get(cimgs, get(r.params, "image", ""), nothing)
+			b !== nothing && push!(files, ("data/" * r.params["image"], b))
+		end
+	end
 	meta = Dict("schema" => "1", "saved" => Libc.strftime("%Y-%m-%dT%H:%M:%S", time()))
 	manifest = _session_write_manifest(meta, _session_display(scene), out)
 	push!(files, ("session.manifest", Vector{UInt8}(codeunits(manifest))))
-	# C++-drawn elements (no add-time recipe) are snapshotted here and rebuilt on load. P3: polygons + text.
+	# C++-drawn elements (no add-time recipe) are snapshotted here and rebuilt on load. P3: polygons,
+	# faults/slip models, text.
 	polys = _serialize_polys_raw(scene)
 	isempty(polys) || push!(files, ("drawn/polys.txt", Vector{UInt8}(codeunits(polys))))
+	faults = _serialize_faults_raw(scene)
+	isempty(faults) || push!(files, ("drawn/faults.txt", Vector{UInt8}(codeunits(faults))))
 	texts = _serialize_texts_raw(scene)
 	isempty(texts) || push!(files, ("drawn/texts.txt", Vector{UInt8}(codeunits(texts))))
 	_zip_write(path, files)
@@ -351,6 +458,14 @@ end
 # Rehydrate a recipe's data object: read the disk source (:file) or the zip sidecar (:generated);
 # :menu recipes carry no data (rebuilt from params). Returns the GMT object or nothing.
 function _session_load_object(r::ElementRecipe, entries::Dict{String,Vector{UInt8}})
+	if r.kind === :curtain                               # returns the curtain's image PATH, not a GMT object
+		if get(r.params, "image_origin", "") == "file"
+			return get(r.params, "image", "")
+		end
+		id = get(r.params, "image", ""); key = "data/" * id
+		haskey(entries, key) || (@warn "session: curtain texture missing, skipped" key=key; return nothing)
+		tmp = tempname() * ".png"; write(tmp, entries[key]); return tmp
+	end
 	if r.origin === :file
 		isfile(r.source) || (@warn "session: source file missing, layer skipped" file=r.source; return nothing)
 		return GMT.gmtread(r.source)
@@ -362,6 +477,28 @@ function _session_load_object(r::ElementRecipe, entries::Dict{String,Vector{UInt
 		return data
 	end
 	return nothing
+end
+
+# Rebuild a curtain into `fig`'s grid window from its recipe + texture path. add_curtain! is called
+# with record=false (it would otherwise re-log the temp texture path as a :file curtain); provenance
+# is re-recorded here with the ORIGINAL recipe params, re-stashing the texture bytes for a re-save.
+function _session_replay_curtain!(fig::QtFigure, r::ElementRecipe, imgpath::String)
+	toks = split(get(r.params, "track", ""), '|'; keepempty=false)
+	length(toks) < 2 && return
+	P = Matrix{Float64}(undef, length(toks), 2)
+	for (i, t) in enumerate(toks)
+		c = split(t, ',')
+		length(c) < 2 && return
+		P[i, 1] = parse(Float64, c[1]); P[i, 2] = parse(Float64, c[2])
+	end
+	zr = (parse(Float64, r.params["zmin"]), parse(Float64, r.params["zmax"]))
+	add_curtain!(fig, P; image=imgpath, zrange=zr, spacing=Symbol(get(r.params, "spacing", "distance")),
+	             flipv=parse(Bool, get(r.params, "flipv", "false")), clip=parse(Bool, get(r.params, "clip", "false")),
+	             clip_n=parse(Int, get(r.params, "clip_n", "300")), record=false)
+	h = getfield(fig, :h)
+	_session_record!(h, :curtain, :menu; params=copy(r.params))
+	get(r.params, "image_origin", "") == "generated" && _curtain_img_store!(h, r.params["image"], read(imgpath))
+	return
 end
 
 # Restore an element's name (Scene Objects label / surface name). Extras already carry it (added by
@@ -409,6 +546,9 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 		return fig
 	elseif r.kind === :basemap                           # basemap tile on top of the existing window
 		_on_basemap(h, get(r.params, "copt", ""))
+		return fig
+	elseif r.kind === :curtain                           # `obj` is the texture PATH from _session_load_object
+		(fig isa QtFigure && obj isa AbstractString && !isempty(obj)) && _session_replay_curtain!(fig, r, String(obj))
 		return fig
 	end
 	obj === nothing && return fig                        # data-backed layers: skip on missing source
@@ -478,9 +618,10 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 	for r in recipes
 		fig = _session_replay!(fig, r, _session_load_object(r, entries), display, scene)
 	end
-	# C++-drawn elements rebuilt after the layers exist (P3: polygons + text labels).
-	haskey(entries, "drawn/polys.txt") && _session_rebuild_polys!(fig, String(entries["drawn/polys.txt"]))
-	haskey(entries, "drawn/texts.txt") && _session_rebuild_texts!(fig, String(entries["drawn/texts.txt"]))
+	# C++-drawn elements rebuilt after the layers exist (P3: polygons, faults/slip, text labels).
+	haskey(entries, "drawn/polys.txt")  && _session_rebuild_polys!(fig, String(entries["drawn/polys.txt"]))
+	haskey(entries, "drawn/faults.txt") && _session_rebuild_faults!(fig, String(entries["drawn/faults.txt"]))
+	haskey(entries, "drawn/texts.txt")  && _session_rebuild_texts!(fig, String(entries["drawn/texts.txt"]))
 	fig !== nothing && _session_apply_display!(fig, display)
 	return fig
 end

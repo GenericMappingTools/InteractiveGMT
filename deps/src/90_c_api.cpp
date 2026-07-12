@@ -1469,6 +1469,55 @@ GMTVTK_API int gmtvtk_add_poly_full(void *handle, const double *xyz, int npts, i
 	return (int)s->polys.size() - 1;
 }
 
+// Serialize the window's fault traces AND slip-model patches (Save Session) — the two Polygon kinds
+// the generic gmtvtk_serialize_polys skips. Two record shapes, tagged by the first field:
+//   F;slip;rake;strike;dip;width;depthTop;geog;name;x0,y0|x1,y1|...        (a Draw/Import fault trace)
+//   S;group;slip;rake;strike;dip;depthTop;length;width;seg;fr,fg,fb;x,y|…  (one slip-model patch)
+// Unknown numeric geometry is written by %g as "nan" (the reader turns it back into NaN). Slip-patch
+// vertices drop the closing duplicate (the rebuild re-closes each ring). `geog` (whole-scene proxy =
+// hasCRS) selects the fault plane's geodesic vs cartesian down-dip walk on rebuild. Session rebuilds
+// faults via gmtvtk_add_fault_geom_h/_h and slip groups via gmtvtk_add_slip_patches_h. Two-pass buffer.
+GMTVTK_API int gmtvtk_serialize_faults(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	char t[256];
+	if (sceneAlive(s)) {
+		const int geog = s->hasCRS() ? 1 : 0;
+		for (auto& pg : s->polys) {
+			if (pg.isFault) {
+				std::string nm = pg.name;
+				for (char& c : nm) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
+				snprintf(t, sizeof(t), "F;%.10g;%.10g;%.10g;%.10g;%.10g;%.10g;%d;",
+				         pg.faultSlip, pg.faultRake, pg.faultStrike, pg.faultDip, pg.faultWidth, pg.faultDepthTop, geog);
+				o += t; o += nm; o += ';';
+				for (size_t i = 0; i < pg.v.size(); ++i) {
+					snprintf(t, sizeof(t), "%.10g,%.10g", pg.v[i][0], pg.v[i][1]);
+					o += t; if (i + 1 < pg.v.size()) o += '|';
+				}
+				o += '\n';
+			}
+			else if (pg.isSlip) {
+				std::string grp = pg.groupName;
+				for (char& c : grp) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
+				snprintf(t, sizeof(t), "S;%s;%.10g;%.10g;%.10g;%.10g;%.10g;%.10g;%.10g;%d;%.6g,%.6g,%.6g;",
+				         grp.c_str(), pg.faultSlip, pg.faultRake, pg.faultStrike, pg.faultDip, pg.faultDepthTop,
+				         pg.faultLength, pg.faultWidth, pg.slipSeg, pg.fillColor[0], pg.fillColor[1], pg.fillColor[2]);
+				o += t;
+				size_t nv = pg.v.size();
+				if (nv >= 2 && pg.v.front() == pg.v.back()) --nv;   // drop closing dup (rebuild re-closes)
+				for (size_t i = 0; i < nv; ++i) {
+					snprintf(t, sizeof(t), "%.10g,%.10g", pg.v[i][0], pg.v[i][1]);
+					o += t; if (i + 1 < nv) o += '|';
+				}
+				o += '\n';
+			}
+		}
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
 // Batch form of gmtvtk_add_text_h: `xy` = n (x,y) pairs, `texts` = n records joined by RS
 // ('\x1e', the gmtvtk_add_symbols_h `info` convention). ONE Scene-Objects rebuild + ONE render
 // for the whole batch — the per-call rebuild+Render of the single-label form is what made
