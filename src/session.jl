@@ -232,7 +232,9 @@ end
 # stored `source`. `used` keeps ids unique across the session.
 function _session_pack_generated(scene::Ptr{Cvoid}, r::ElementRecipe, used::Set{String})
 	objkind = _session_obj_kind(r)
-	obj = _find_object(scene, objkind, r.name)
+	# EXACT name match for a named element (never the "first of kind" fallback, which would grab an
+	# unrelated grid and serialize it twice); the unnamed base uses the ordered first-of-kind.
+	obj = isempty(r.name) ? _find_object(scene, objkind, "") : _find_object_exact(scene, objkind, r.name)
 	obj === nothing && error("session: no live $(objkind) named '$(r.name)' to serialize")
 	ext = objkind === :grid ? ".nc" : ".tif"
 	id = _session_sidecar_id(r.name, ext, used)
@@ -364,6 +366,16 @@ function _session_rebuild_faults!(fig, blob::String)
 				g = String(p[2])
 				g in groups || push!(groups, g)
 				push!(get!(() -> Vector{Vector{SubString{String}}}(), gpatch, g), p)
+			elseif startswith(line, "N;")   # "Nested grids" rectangle: N;xi;yi;reg;name;verts
+				p = split(line, ';'; limit=6)
+				length(p) < 6 && continue
+				xi = parse(Float64, p[2]); yi = parse(Float64, p[3]); reg = parse(Int, p[4])
+				name = String(p[5])
+				xy, nv = _parse_xy2(p[6])
+				nv < 2 && continue
+				ccall(_fn(:gmtvtk_add_nested_rect), Cint,
+				      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cint, Cstring),
+				      h, xy, Cint(nv), xi, yi, Cint(reg), name)
 			end
 		catch e
 			@warn "session: skipped a malformed fault line" exception=(e,)
@@ -421,9 +433,13 @@ end
 function _on_save_session(scene::Ptr{Cvoid}, path::String)
 	recipes = get(_SESSION_LOG, scene, ElementRecipe[])
 	files = Tuple{String,Vector{UInt8}}[]
-	out = ElementRecipe[]; used = Set{String}()
+	out = ElementRecipe[]; used = Set{String}(); seen = Set{Tuple{Symbol,String}}()
 	for r in recipes
 		if r.origin === :generated
+			# Dedup: an element can get logged more than once (e.g. a nested layer re-materialized); a
+			# given (kind,name) is one Scene Objects element, so serialize + replay it exactly once.
+			(r.kind, r.name) in seen && continue
+			push!(seen, (r.kind, r.name))
 			id, bytes = _session_pack_generated(scene, r, used)
 			push!(files, ("data/" * id, bytes))
 			push!(out, ElementRecipe(r.kind, :generated, id; name=r.name, params=copy(r.params)))
@@ -618,8 +634,15 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 	haskey(entries, "session.manifest") || error("session: '$path' has no session.manifest")
 	_, display, recipes = _session_read_manifest(String(entries["session.manifest"]))
 	fig = nothing
+	# Replay RASTERS first (grids/images/basemap), then vector/menu layers — vectors are always drawn on
+	# top of grids/images, and the shared draw-order pile ranks by add order, so vectors must be added
+	# LAST to outrank every raster (else e.g. a grid replayed after coastlines would bury them).
+	israster(r) = r.kind in (:basegrid, :image, :dropgrid, :dropimage, :basemap)
 	for r in recipes
-		fig = _session_replay!(fig, r, _session_load_object(r, entries), display, scene)
+		israster(r) && (fig = _session_replay!(fig, r, _session_load_object(r, entries), display, scene))
+	end
+	for r in recipes
+		israster(r) || (fig = _session_replay!(fig, r, _session_load_object(r, entries), display, scene))
 	end
 	# C++-drawn elements rebuilt after the layers exist (P3: polygons, faults/slip, text labels).
 	haskey(entries, "drawn/polys.txt")  && _session_rebuild_polys!(fig, String(entries["drawn/polys.txt"]))

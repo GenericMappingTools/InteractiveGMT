@@ -1511,11 +1511,46 @@ GMTVTK_API int gmtvtk_serialize_faults(void *handle, char *buf, int cap) {
 				}
 				o += '\n';
 			}
+			else if (pg.nestKind == 1) {   // "Nested grids" (tsunami) rectangle — its own quantization params
+				std::string nm = pg.name;
+				for (char& c : nm) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
+				snprintf(t, sizeof(t), "N;%.12g;%.12g;%d;", pg.nestXi, pg.nestYi, pg.nestReg);
+				o += t; o += nm; o += ';';
+				for (size_t i = 0; i < pg.v.size(); ++i) {
+					snprintf(t, sizeof(t), "%.12g,%.12g", pg.v[i][0], pg.v[i][1]);
+					o += t; if (i + 1 < pg.v.size()) o += '|';
+				}
+				o += '\n';
+			}
 		}
 	}
 	const int n = (int)o.size();
 	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
 	return n;
+}
+
+// Rebuild a "Nested grids" (tsunami) rectangle from a saved session (inverse of the N record in
+// gmtvtk_serialize_faults). `xy` = npts (x,y) corner pairs; xi/yi = child cell sizes; reg = grid(0)/
+// pixel(1) registration. Recreates the nestKind==1 Polygon exactly as the draw tool would, then runs
+// nestReflow so it snaps to its parent (base grid / enclosing rect) chain. Returns the polygon index.
+GMTVTK_API int gmtvtk_add_nested_rect(void *handle, const double *xy, int npts,
+                                      double xi, double yi, int reg, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xy || npts < 2) return -1;
+	Polygon pg;
+	pg.closed = true; pg.isRect = true; pg.nestKind = 1;
+	pg.nestXi = xi; pg.nestYi = yi; pg.nestReg = reg;
+	pg.name = (name && name[0]) ? name : "Nested rectangle";
+	for (int i = 0; i < npts; ++i) pg.v.push_back({ xy[2*i], xy[2*i + 1], 0.0 });
+	if (pg.v.size() >= 2 && !(pg.v.front() == pg.v.back())) pg.v.push_back(pg.v.front());   // close the ring
+	polyRebuildLine(s, pg);
+	pg.stack = s->vecSeq++;
+	s->polys.push_back(pg);
+	applyVectorStacking(s);
+	nestReflow(s);                                 // snap to the parent grid / enclosing rect chain
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return (int)s->polys.size() - 1;
 }
 
 // Batch form of gmtvtk_add_text_h: `xy` = n (x,y) pairs, `texts` = n records joined by RS
