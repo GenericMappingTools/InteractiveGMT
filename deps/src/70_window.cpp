@@ -2669,8 +2669,17 @@ public:
 	// any of those (or the trace itself) change, so the patch tracks the fault plane live.
 	void updateFaultPlane() {
 		if (!scn || slipMode) return;          // slip patches draw no single gray plane preview
-		faultUpdatePlane(scn, fWid->text().toDouble(), fDip->text().toDouble(),
-						 fStrike->text().toDouble(), dRake->text().toDouble(),
+		const double wid = fWid->text().toDouble(), dip = fDip->text().toDouble();
+		const double strk = fStrike->text().toDouble(), rake = dRake->text().toDouble();
+		// PERSIST the geometry onto the fault polygon (first isFault — the same one faultUpdatePlane
+		// targets) so Save Session writes real width/dip/strike/rake/depth-to-top, not NaN. Without this
+		// a drawn fault round-trips as a bare trace: the plane only reappears after re-opening this dialog.
+		for (auto& pg : scn->polys) if (pg.isFault) {
+			pg.faultWidth = wid; pg.faultDip = dip; pg.faultStrike = strk; pg.faultRake = rake;
+			pg.faultDepthTop = fDepTop->text().toDouble();
+			break;
+		}
+		faultUpdatePlane(scn, wid, dip, strk, rake,
 						 coordCombo->currentData().toString() == "geog");
 	}
 

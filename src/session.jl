@@ -444,6 +444,9 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 			push!(files, ("data/" * id, bytes))
 			push!(out, ElementRecipe(r.kind, :generated, id; name=r.name, params=copy(r.params)))
 		else
+			# Menu vector layers (coastlines/borders/rivers) replay with the default pen; capture the
+			# live overlay's current pen so Line-properties edits (colour/width/style/opacity) survive.
+			r.kind === :geography && !isempty(r.name) && (r = _session_capture_overlay_pen(scene, r))
 			push!(out, r)
 		end
 	end
@@ -528,6 +531,30 @@ _session_base_scene(target::Ptr{Cvoid})::Ptr{Cvoid} =
 	(target != C_NULL && ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), target) == 0) ?
 		target : getfield(iview(), :h)
 
+# Save-time: read a menu overlay's live pen (colour/width/style/opacity) into the recipe params so
+# Line-properties edits survive a round-trip. Returns `r` unchanged if the overlay isn't found.
+function _session_capture_overlay_pen(scene::Ptr{Cvoid}, r::ElementRecipe)::ElementRecipe
+	out = zeros(Float64, 6)
+	found = ccall(_fn(:gmtvtk_overlay_style_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{Cdouble}), scene, r.name, out)
+	found == 0 && return r
+	p = copy(r.params)
+	p["pen_r"] = out[1]; p["pen_g"] = out[2]; p["pen_b"] = out[3]
+	p["pen_w"] = out[4]; p["pen_style"] = Int(round(out[5])); p["pen_op"] = out[6]
+	return ElementRecipe(r.kind, r.origin, r.source; name=r.name, params=p)
+end
+
+# Load-time: re-apply a captured pen to the just-regenerated overlay. No-op if none was saved. Values
+# arrive as strings from the manifest, so parse each (string() first covers both string + Float64).
+function _session_apply_overlay_pen!(h::Ptr{Cvoid}, r::ElementRecipe)
+	haskey(r.params, "pen_r") || return
+	getp(k, d) = (v = get(r.params, k, nothing); v === nothing ? d : parse(Float64, string(v)))
+	ccall(_fn(:gmtvtk_set_overlay_style_h), Cint,
+	      (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble),
+	      h, r.name, getp("pen_r", 0.0), getp("pen_g", 0.0), getp("pen_b", 0.0),
+	      getp("pen_w", 1.0), round(Int, getp("pen_style", 0.0)), getp("pen_op", 1.0))
+	return
+end
+
 # Replay one recipe. The FIRST layer (fig === nothing) creates the base window: if `target` is an
 # EMPTY launcher (has_surface == 0) it is promoted IN PLACE — the session loads into the window the
 # user invoked Load from — otherwise a new window opens. Later layers add onto that window as extras.
@@ -559,6 +586,7 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 	h = getfield(fig, :h)
 	if r.kind === :geography                             # menu layer: re-dispatch the saved request
 		_on_geography(h, get(r.params, "req", ""))
+		_session_apply_overlay_pen!(h, r)                # re-apply any saved Line-properties edits
 		return fig
 	elseif r.kind === :basemap                           # basemap tile on top of the existing window
 		_on_basemap(h, get(r.params, "copt", ""))
@@ -649,6 +677,11 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 	haskey(entries, "drawn/faults.txt") && _session_rebuild_faults!(fig, String(entries["drawn/faults.txt"]))
 	haskey(entries, "drawn/texts.txt")  && _session_rebuild_texts!(fig, String(entries["drawn/texts.txt"]))
 	fig !== nothing && _session_apply_display!(fig, display)
+	# Faults were rebuilt before the display state was applied; re-seat their planes/surface-projection
+	# in the final scaled space now (else they only appear after opening+closing the elastic dialog).
+	if fig !== nothing && haskey(entries, "drawn/faults.txt")
+		ccall(_fn(:gmtvtk_refresh_fault_planes), Cvoid, (Ptr{Cvoid},), getfield(fig, :h))
+	end
 	return fig
 end
 "Console convenience: load a session into a fresh window (no invoking scene)."

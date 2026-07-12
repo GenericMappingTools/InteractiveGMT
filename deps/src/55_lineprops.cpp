@@ -476,9 +476,7 @@ static void nestShowInfo(Scene *s, vtkActor *a) {
 	t += QString("nx = %1   ny = %2\n").arg(ncols).arg(nrows);
 	t += QString("x_start = %1\nx_end = %2\ny_start = %3\ny_end = %4")
 	         .arg(pg.nestIx0 + 1).arg(pg.nestIx1 + 1).arg(pg.nestIy0 + 1).arg(pg.nestIy1 + 1);
-	QMessageBox box(QMessageBox::Information, "Nesting info", t, QMessageBox::Ok, s->win);
-	box.setTextInteractionFlags(Qt::TextSelectableByMouse);
-	box.exec();
+	showInfoText(s->win, "Nesting info", t);
 }
 
 // "Create blank grid": build a zero grid at this rect's limits/increments via the Julia/GMT host

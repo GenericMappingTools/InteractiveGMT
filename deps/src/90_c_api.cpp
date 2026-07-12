@@ -411,6 +411,45 @@ GMTVTK_API int gmtvtk_add_overlay_h(void *handle, const double *xyz, int npts, c
 	return 1;
 }
 
+// Read a line OVERLAY's current pen by its Scene Objects name, so Save Session can capture edits the
+// user made AFTER the layer was added (coastlines/borders/rivers are :menu recipes that otherwise
+// replay with the default pen). out = { r, g, b, width_px, style(0 solid/1 dashed/2 dotted), opacity }.
+// Returns 1 if a matching overlay was found (out filled), 0 otherwise (out untouched).
+GMTVTK_API int gmtvtk_overlay_style_h(void *handle, const char *name, double *out) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !out) return 0;
+	for (auto& ov : s->overlays) {
+		if (!ov.actor || ov.name != name) continue;
+		double c[3]; ov.actor->GetProperty()->GetColor(c);
+		out[0] = c[0]; out[1] = c[1]; out[2] = c[2];
+		out[3] = ov.actor->GetProperty()->GetLineWidth();
+		out[4] = (double)ov.lineStyle;
+		out[5] = ov.actor->GetProperty()->GetOpacity();
+		return 1;
+	}
+	return 0;
+}
+
+// Apply a pen (colour 0..1, width px, style 0/1/2, opacity) to the line OVERLAY named `name` — the
+// Load Session twin of gmtvtk_overlay_style_h, used to re-apply a coastline/border/river layer's saved
+// edits after it is re-generated with the default pen. Reuses applyLineStyle for the stipple so it
+// matches the Line Properties dialog exactly. Returns 1 if applied, 0 if no overlay matched.
+GMTVTK_API int gmtvtk_set_overlay_style_h(void *handle, const char *name,
+                                          double r, double g, double b, double width, int style, double opacity) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return 0;
+	for (auto& ov : s->overlays) {
+		if (!ov.actor || ov.name != name) continue;
+		ov.actor->GetProperty()->SetColor(r, g, b);       // colour first: applyLineStyle bakes it into the stripe
+		ov.actor->GetProperty()->SetLineWidth(width);
+		applyLineStyle(s, ov.actor, style);               // sets ov.lineStyle + rebuilds the stipple texture (also sets opacity)
+		if (style == 0) ov.actor->GetProperty()->SetOpacity(opacity);   // solid: honour saved opacity (stipple needs its own)
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return 1;
+	}
+	return 0;
+}
+
 // Add a screen-constant SYMBOL layer to a window by its handle: `npts` (x,y,z) triples in TRUE
 // coords, one GMT symbol code (sym: "c" circle "s" square "t" triangle "i" inv-triangle "d" diamond
 // "h" hexagon "n" pentagon "g" octagon "a" star "x" cross "+" plus "-" dash), `sizePx` = on-screen
@@ -1140,6 +1179,26 @@ GMTVTK_API int gmtvtk_add_fault_geom_h(void *handle, const double *xy, int npts,
 	return 1;
 }
 
+// Rebuild the dipping plane + gray surface-projection patch + slip arrows for EVERY fault in the window
+// from each fault's stored geometry. Load Session adds the faults BEFORE it applies the saved display
+// state (VE / flat-2D / camera); calling this AFTER that state is applied re-seats the planes in the
+// final scaled space — the same effect the user otherwise got by opening and closing the elastic dialog.
+// Faults with unknown geometry (NaN width/dip/strike — a bare trace) are skipped. No-op on a dead handle.
+GMTVTK_API void gmtvtk_refresh_fault_planes(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	const bool geog = s->hasCRS();
+	bool any = false;
+	for (int i = 0; i < (int)s->polys.size(); ++i) {
+		Polygon &pg = s->polys[i];
+		if (!pg.isFault || std::isnan(pg.faultWidth) || std::isnan(pg.faultDip) || std::isnan(pg.faultStrike)) continue;
+		faultUpdatePlane(s, pg.faultWidth, pg.faultDip, pg.faultStrike,
+		                 std::isnan(pg.faultRake) ? 0.0 : pg.faultRake, geog, i);
+		any = true;
+	}
+	if (any && s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // Register the Import-Model-Slip callback (Geophysics > Seismology > Elastic deformation). fn(scene,
 // path) reads the sub-fault file and adds every patch via gmtvtk_add_slip_patches_h. nullptr to detach.
 GMTVTK_API void gmtvtk_set_modelslip_callback(JuliaModelSlipFn fn) {
@@ -1532,7 +1591,8 @@ GMTVTK_API int gmtvtk_serialize_faults(void *handle, char *buf, int cap) {
 // Rebuild a "Nested grids" (tsunami) rectangle from a saved session (inverse of the N record in
 // gmtvtk_serialize_faults). `xy` = npts (x,y) corner pairs; xi/yi = child cell sizes; reg = grid(0)/
 // pixel(1) registration. Recreates the nestKind==1 Polygon exactly as the draw tool would, then runs
-// nestReflow so it snaps to its parent (base grid / enclosing rect) chain. Returns the polygon index.
+// nestReflow(snap=false) to recompute the chain indices WITHOUT moving the saved (already-snapped)
+// verts — re-snapping them would grow the rect one parent cell per reflow. Returns the polygon index.
 GMTVTK_API int gmtvtk_add_nested_rect(void *handle, const double *xy, int npts,
                                       double xi, double yi, int reg, const char *name) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -1547,7 +1607,7 @@ GMTVTK_API int gmtvtk_add_nested_rect(void *handle, const double *xy, int npts,
 	pg.stack = s->vecSeq++;
 	s->polys.push_back(pg);
 	applyVectorStacking(s);
-	nestReflow(s);                                 // snap to the parent grid / enclosing rect chain
+	nestReflow(s, false);                          // restore: keep saved verts, only recompute chain indices
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return (int)s->polys.size() - 1;

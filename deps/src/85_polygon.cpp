@@ -814,7 +814,7 @@ static void nestSetRect(Scene *s, Polygon& pg, double x0, double x1, double y0, 
 }
 
 // Re-quantize the whole nested chain. parent_lims walk the chain (base grid -> rect 1 -> rect 2 ...).
-static void nestReflow(Scene *s) {
+static void nestReflow(Scene *s, bool snap) {
 	std::vector<Polygon*> chain;
 	for (auto& pg : s->polys) if (pg.nestKind == 1) chain.push_back(&pg);
 	if (chain.empty()) return;
@@ -842,6 +842,20 @@ static void nestReflow(Scene *s) {
 		pg.nestXi = cxi; pg.nestYi = cyi;                 // make the resolved increments concrete
 
 		double rx0, rx1, ry0, ry1; nestBBox(pg, rx0, rx1, ry0, ry1);   // requested (drawn / edited) edges
+		if (!snap) {
+			// Restore: verts loaded from the session are ALREADY snapped. Re-snapping them would round
+			// the half-parent-cell-out edge outward again and grow the rect one parent cell each reflow.
+			// So leave the verts put; just reverse the tx0 = vxmin - parent.xi/2 + cxi/2 offset to recover
+			// the enclosed node indices, and pass this rect on as the next parent.
+			const double vxmin = rx0 + parent.xi / 2 - cxi / 2, vxmax = rx1 - parent.xi / 2 + cxi / 2;
+			const double vymin = ry0 + parent.yi / 2 - cyi / 2, vymax = ry1 - parent.yi / 2 + cyi / 2;
+			pg.nestIx0 = (int)std::lround((vxmin - parent.x0) / parent.xi);
+			pg.nestIx1 = (int)std::lround((vxmax - parent.x0) / parent.xi);
+			pg.nestIy0 = (int)std::lround((vymin - parent.y0) / parent.yi);
+			pg.nestIy1 = (int)std::lround((vymax - parent.y0) / parent.yi);
+			parent = { rx0, rx1, ry0, ry1, cxi, cyi };
+			continue;
+		}
 		const int pnx = (int)std::lround((parent.x1 - parent.x0) / parent.xi) + 1;
 		const int pny = (int)std::lround((parent.y1 - parent.y0) / parent.yi) + 1;
 		double vxmin, vxmax, vymin, vymax; int ixmin, ixmax, iymin, iymax;

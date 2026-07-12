@@ -280,7 +280,7 @@ static void polyRebuildFill(Scene *s, Polygon& pg);                         // r
 static int  polyIndexOfActor(Scene *s, vtkActor *a);                        // index of polygon whose line==a, or -1 (55)
 static bool lineClosedRing(Scene *s, const LineRef& lr);                    // closed polygon ring? (55)
 static int  polyHitPolygon(Scene *s, int x, int y, double tol);             // polygon under cursor? (85)
-static void nestReflow(Scene *s);                                           // re-quantize "Nested grids" chain (85)
+static void nestReflow(Scene *s, bool snap = true);                         // re-quantize "Nested grids" chain (85); snap=false = don't move verts, only recompute indices (restore)
 static void nestNewChild(Scene *s);                                         // append a refined nested child (85)
 
 // ---- scene we hang onto for the callbacks / menu actions --------------------

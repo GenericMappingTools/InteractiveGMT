@@ -119,6 +119,19 @@ function _tides_data(W, E, S, N)
 	return xs, ys, infos
 end
 
+# The Scene Objects layer name a geography `kind` produces (source-identity naming). Used both when
+# adding the layer and when recording its session recipe, so Save Session can find the live overlay.
+function _geo_layer_name(kind::AbstractString)::String
+	kind == "coast"     ? "Coastlines"          :
+	kind == "borders"   ? "Boundaries"          :
+	kind == "rivers"    ? "Rivers"              :
+	kind == "volcano"   ? "Volcanoes"           :
+	kind == "meteorite" ? "Meteorite Impacts"   :
+	kind == "tides"     ? "Tide Stations"       :
+	kind == "hydro"     ? "Hydrothermal Vents"  :
+	uppercasefirst(String(kind))
+end
+
 # Push a GMTdataset (single or multi-segment) onto `scene` as a line overlay at z=0. Direct ccall
 # (not _add_overlay!) because the callback only has the raw Scene*, not a QtFigure with a grid to
 # sample z from — coastlines sit at sea level anyway, and the C overlay polygon-offsets them toward
@@ -195,15 +208,14 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			(D === nothing || isempty(D)) && return
 			# Source-identity naming: the line layer is named for the GMT feature it came from, so the
 			# Scene Objects list reads "Coastlines"/"Boundaries"/"Rivers" instead of an anonymous "Line N".
-			src = kind == "coast"   ? "Coastlines" :
-			      kind == "borders" ? "Boundaries" :
-			      kind == "rivers"  ? "Rivers"      :
-			      uppercasefirst(kind)
+			# A session may carry saved pen edits (param.pen_*) to re-apply after the default-pen add.
+			src = _geo_layer_name(kind)
 			_add_geo_overlay(scene, D; color=coastrgb, name=src)
 		end
 		# Reached only when a layer was actually added (empty branches return early above): remember the
 		# exact request so Save Session can reproduce this feature. :menu -> no data stored.
-		_session_record!(scene, :geography, :menu; params=Dict{String,Any}("req" => req))
+		_session_record!(scene, :geography, :menu; name=_geo_layer_name(kind),
+		                 params=Dict{String,Any}("req" => req))
 	catch e
 		_viewer_log_error(scene, "Geography FAILED: $(sprint(showerror, e))")
 		@warn "geography: could not fetch/add the feature" exception=(e,)
