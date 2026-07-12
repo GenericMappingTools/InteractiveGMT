@@ -711,9 +711,15 @@ _focal_fail(scene, msg) = (_viewer_log_error(scene, msg);
 # placeholder viewport silently drops every real event ("no events" LIE, 2026-07-04) — read the
 # WHOLE catalog (world crop for the region-cropped ISF reader) regardless. A populated window is
 # unchanged: crop/filter against the current on-screen region, exactly as before.
-function _on_focal(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
+_on_focal(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid = _on_focal(scene, unsafe_string(cparams))
+
+# The catalog request block (file + format + region + mag/depth filter + colours) reproduces the whole
+# beachball layer, so Save Session stores it verbatim as a :focal recipe (no data) and Load re-dispatches
+# here. On an empty launcher this also frames a basemap (recorded as its own earlier recipe), so :focal
+# is always replayed as an extra on top of that.
+function _on_focal(scene::Ptr{Cvoid}, cparams::String)::Cvoid
 	try
-		d = _nswing_parse(unsafe_string(cparams))
+		d = _nswing_parse(cparams)
 		fmt = something(tryparse(Int, _get(d, "format", "1")), 1)
 		file = _get(d, "file")
 		isempty(file) && error("Focal mechanisms: no catalog file selected")
@@ -757,6 +763,8 @@ function _on_focal(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		end
 		_FOCAL_LAST[scene] = (d=d, lon=lon, lat=lat, dep=dep, mag=mag, str1=str1, dip1=dip1, rake1=rake1,
 		                      str2=str2, dip2=dip2, rake2=rake2, plon=plon, plat=plat, date=date, idx=idx)
+		# Save Session: remember the request (newlines escaped to keep it a single manifest value).
+		_session_record!(scene, :focal, :menu; params=Dict{String,Any}("cparams" => replace(cparams, '\n' => '\x1e')))
 		_viewer_log_error(scene, "Focal mechanisms: plotted $(length(idx)) of $(length(lon)) events ($n patches)")
 	catch e
 		_focal_fail(scene, "Focal mechanisms FAILED: $(sprint(showerror, e))")

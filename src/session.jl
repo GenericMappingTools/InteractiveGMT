@@ -550,6 +550,9 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 	elseif r.kind === :curtain                           # `obj` is the texture PATH from _session_load_object
 		(fig isa QtFigure && obj isa AbstractString && !isempty(obj)) && _session_replay_curtain!(fig, r, String(obj))
 		return fig
+	elseif r.kind === :focal                             # re-dispatch the catalog request (newlines unescaped)
+		_on_focal(h, replace(get(r.params, "cparams", ""), '\x1e' => '\n'))
+		return fig
 	end
 	obj === nothing && return fig                        # data-backed layers: skip on missing source
 	if r.kind in (:basegrid, :dropgrid)
