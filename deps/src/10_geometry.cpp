@@ -1651,6 +1651,24 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 			s->picker->GetPickPosition(w); hit = true;
 		}
 	}
+	// Over a grid but the ray hit a NaN hole (no surface there) — the march above found no crossing.
+	// Coordinates must NEVER go blank: intersect the ray with the base map plane (z=0) to recover x,y
+	// (z is then sampled as NaN below and printed literally). Accept only inside the grid footprint so
+	// pointing at empty sky still reads "ready".
+	if (!hit && haveActive && dirz != 0.0) {
+		const double t0 = -nr[2] / dirz;
+		if (t0 >= 0.0) {
+			const double X = nr[0] + t0 * dirx, Y = nr[1] + t0 * diry;
+			const bool useAct = (s->actZ && !s->actZ->empty());
+			const double bx0 = useAct ? s->actX0 : s->gx0, bx1 = useAct ? s->actX1 : s->gx1;
+			const double by0 = useAct ? s->actY0 : s->gy0, by1 = useAct ? s->actY1 : s->gy1;
+			const double tx = X / gx;
+			if (tx >= std::min(bx0, bx1) && tx <= std::max(bx0, bx1) &&
+				Y  >= std::min(by0, by1) && Y  <= std::max(by0, by1)) {
+				w[0] = X; w[1] = Y; w[2] = 0.0; hit = true;
+			}
+		}
+	}
 	// Buried 3-D fault plane: cast the same ray at its quad. If it is nearer to the camera than the
 	// surface hit (or the surface missed), report the PLANE's own x,y,z so the user can verify the
 	// plane geometry directly (otherwise the plane never shows coordinates at all).
@@ -1697,16 +1715,20 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 			// depth z (undo base/VE actor scale zfac*ve) for surfaces with no data layer (FV mesh /
 			// point cloud), and where the sample misses (off-grid / NaN). flat-2D: zsc=0 -> z 0.
 			double ztrue;
-			if (haveActive && !std::isnan(ztrue = sampleActiveZ(s, truex, truey))) {
-				// got it from the active grid's data layer
-			} else {
+			bool zknown = true;
+			if (haveActive) {
+				ztrue = sampleActiveZ(s, truex, truey);
+				zknown = !std::isnan(ztrue);   // NaN hole in the grid -> report z = NaN, never blank
+			}
+			else {
 				const double zsc = s->zfac * s->ve;
 				ztrue = (zsc != 0.0) ? w[2] / zsc : 0.0;
 			}
+			const QString zstr = zknown ? QString::number(ztrue, 'f', 3) : QStringLiteral("NaN");
 			s->win->statusBar()->showMessage(                  // true coords
 				QString("x = %1    y = %2    z = %3   (VE ×%4)")
 					.arg(truex, 0, 'f', 3).arg(truey, 0, 'f', 3)
-					.arg(ztrue, 0, 'f', 3).arg(s->ve, 0, 'f', 2));
+					.arg(zstr).arg(s->ve, 0, 'f', 2));
 		}
 	} else {
 		s->win->statusBar()->showMessage("ready");
