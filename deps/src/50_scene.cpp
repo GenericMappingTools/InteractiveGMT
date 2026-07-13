@@ -2114,11 +2114,12 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 		QAction *a = tm->addAction(k.first); a->setCheckable(true); a->setChecked(sl->sym == k.second);
 		kindActs.push_back(a);
 	}
-	QAction *fillA = m.addAction("Fill colour…");
-	QAction *edgeA = m.addAction("Edge colour…");
-	QAction *sizeA = m.addAction("Size (px)…");
-	QAction *sizePtA = m.addAction("Size (points)…");
-	QAction *ewA   = m.addAction("Edge width (px)…");
+	QMenu *propM = m.addMenu("Symb properties");
+	QAction *fillA = propM->addAction("Fill colour…");
+	QAction *edgeA = propM->addAction("Edge colour…");
+	QAction *sizeA = propM->addAction("Size (px)…");
+	QAction *sizePtA = propM->addAction("Size (points)…");
+	QAction *ewA   = propM->addAction("Edge width (px)…");
 	m.addSeparator();
 	// Draw-order stacking in the SHARED vector pile (overlays + symbols + polygons): controls who
 	// draws on top where vector elements overlap; they stay on the relief (no z lift). Enabled once
