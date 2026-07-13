@@ -248,18 +248,52 @@ function _register_cube_callback()
 end
 _drop_into(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false, source="") = _add_image_to_scene(scene, I, name; promote, source)
 function _drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name; promote=false, source="")
-	promote ? _promote_dataset(scene, D) : _add_dataset_to_scene(scene, D, name)
+	promote ? _promote_dataset(scene, D, name) : _add_dataset_to_scene(scene, D, name)
 end
 function _drop_into(scene::Ptr{Cvoid}, D::Vector{<:GMTdataset}, name; promote=false, source="")
-	promote ? _promote_dataset(scene, D) : _add_dataset_to_scene(scene, D, name)
+	promote ? _promote_dataset(scene, D, name) : _add_dataset_to_scene(scene, D, name)
 end
 _drop_into(scene::Ptr{Cvoid}, x, name; promote=false, source="") = @warn "drop: unsupported data type" type=typeof(x)
 
-# A pure table has no surface to promote the launcher's scales onto. Until in-place dataset
-# promotion exists, fall back to opening it in a fresh full window and retiring the launcher.
-function _promote_dataset(scene::Ptr{Cvoid}, D)
-	iview(D)
-	ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), scene)
+# Promote the bare launcher IN PLACE into a framed map over the dataset's extent, then add the
+# vector as an overlay — the imported line / polyline / points / polygon lands in THIS iGMT window,
+# never spawns the standalone X,Y plot tool or a second window. Same proven empty-launcher pattern
+# basemap.jl / iview_image_obj use: promote a HIDDEN imageOnly scaffold (real framed axes + coord
+# readout + flat-2-D view, no Scene Objects row, no colorbar), then hang the real object on top.
+function _promote_dataset(scene::Ptr{Cvoid}, D, name)
+	W, E, S, N = _dataset_bbox(D)
+	dx = E - W; dy = N - S
+	px = dx == 0 ? 1.0 : 0.05dx; py = dy == 0 ? 1.0 : 0.05dy   # 5 % pad (1.0 for a degenerate axis)
+	W -= px; E += px; S -= py; N += py
+	d1   = D isa AbstractVector ? D[1] : D
+	geog = _isgeog(d1) == 1
+	zblank = zeros(Float32, 2, 2)
+	ccall(_fn(:gmtvtk_promote_surface_h), Cint,
+	      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+	       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+	      scene, zblank, Cint(2), Cint(2), W, E, S, N, Cint(geog ? 1 : 0),
+	      C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
+	ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), scene)   # scaffold plane only
+	if geog
+		crs = crs_from(d1; geographic=true)
+		hascrs(crs) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
+		                     scene, crs.proj4, crs.wkt, Cint(crs.epsg))   # reveals Geography menu
+	end
+	_add_dataset_to_scene(scene, D, name)                          # overlay -> stays in this window
+	return true
+end
+
+# (W, E, S, N) extent of a GMTdataset (single or multi-segment) from its x/y columns.
+function _dataset_bbox(D)
+	segs = (D isa GMTdataset || D isa AbstractMatrix) ? (D,) : collect(D)
+	W = Inf; E = -Inf; S = Inf; N = -Inf
+	for seg in segs
+		m = seg isa GMTdataset ? seg.data : seg
+		x = @view m[:, 1]; y = @view m[:, 2]
+		W = min(W, minimum(x)); E = max(E, maximum(x))
+		S = min(S, minimum(y)); N = max(N, maximum(y))
+	end
+	return Float64(W), Float64(E), Float64(S), Float64(N)
 end
 
 # Add a dropped grid as a CPT-coloured surface in the window. On the empty launcher `promote`
@@ -422,8 +456,15 @@ end
 
 # Add a dropped dataset as a line/point overlay in the window. z comes from column 3 if present,
 # else 0 (there is no host grid to drape on for an arbitrary dropped-on window).
+#
+# A dropped x,y table draws as a LINE / polyline by default — only data whose stored geometry is
+# EXPLICITLY point (WKB point code) starts as points. A plain table (`gmtread` leaves geom unknown)
+# is a line; the user flips it to a scatter via the overlay's "Convert to points" menu item. This is
+# deliberately NOT `_ds_kind` (whose unknown-geometry heuristic guesses :points) — that heuristic
+# still drives the front-door `iview(D)` routing, just not the drop-overlay default.
 function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name)
-	mode = _ds_kind(D) === :points ? :points : :lines
+	d1   = D isa AbstractVector ? first(D) : D
+	mode = _geom_kind(Int(d1.geom)) === :points ? :points : :lines
 	xyz, segoff, nseg, npts = _pack_dataset_flat(D)
 	modei = mode === :lines ? Cint(1) : Cint(0)
 	cr, cg, cb = _ovl_color(nothing, mode)

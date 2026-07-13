@@ -1658,7 +1658,9 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 
 	s->ren->AddActor(a);
 	Overlay ov{ a, mode };
-	if (mode == 1) ov.baseLine = pd;          // keep the solid geometry for line-style restyling
+	ov.baseLine = pd;                         // keep the geometry (both modes) for restyling + line<->points toggle
+	ov.segoff.assign(segoff, segoff + nseg + 1);   // remember segments so a Points overlay can rebuild polylines
+	ov.nseg = nseg;
 	// Source-identity naming: if the caller knows where this came from (a GMT feature, a file, a
 	// dataset) it passes that name and we use it verbatim; otherwise fall back to "Line N"/"Points N".
 	ov.name = (name && name[0]) ? std::string(name)
@@ -1669,6 +1671,49 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	rebuildSceneObjects(s);                   // refresh the Scene Objects checkbox list
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
+}
+
+// Toggle an existing overlay between polyline (mode 1) and points (mode 0) IN PLACE: rebuild the
+// polydata cells from the retained points + segment offsets, no re-add. `toPoints` != 0 -> points.
+// The "Convert to points / Convert to line" menu action (55_lineprops.cpp) drives this.
+static void overlaySetMode(Scene *s, vtkActor *actor, int toPoints) {
+	if (!s || !actor) return;
+	Overlay *ov = nullptr;
+	for (auto& o : s->overlays) if (o.actor.Get() == actor) { ov = &o; break; }
+	if (!ov || !ov->baseLine) return;
+	const int mode = toPoints ? 0 : 1;
+	if (ov->mode == mode) return;
+	vtkPolyData *pd = ov->baseLine;
+	const int npts = (int)pd->GetNumberOfPoints();
+	vtkNew<vtkCellArray> cells;
+	if (mode == 1) {                          // points -> polylines (one cell per stored segment)
+		for (int k = 0; k < ov->nseg; ++k) {
+			const int a = ov->segoff[k], z = ov->segoff[k+1];
+			if (z - a < 2) continue;          // a lone point is not a line
+			cells->InsertNextCell(z - a);
+			for (int i = a; i < z; ++i) cells->InsertCellPoint(i);
+		}
+		pd->SetVerts(nullptr);
+		pd->SetLines(cells);
+	}
+	else {                                    // polylines -> points (one vertex cell per point)
+		for (int i = 0; i < npts; ++i) { cells->InsertNextCell(1); cells->InsertCellPoint(i); }
+		pd->SetLines(nullptr);
+		pd->SetVerts(cells);
+	}
+	pd->Modified();
+	ov->mode = mode;
+	ov->actor->GetProperty()->SetRenderPointsAsSpheres(mode == 0);   // round points, like a fresh Points overlay
+	if (s->widget && s->widget->renderWindow())
+		s->widget->renderWindow()->Render();
+}
+
+// Query an overlay's current mode (1 = line, 0 = points; -1 if the actor is not an overlay). Lets
+// the context menu label the toggle "Convert to points" vs "Convert to line".
+static int overlayMode(Scene *s, vtkActor *actor) {
+	if (s && actor)
+		for (auto& o : s->overlays) if (o.actor.Get() == actor) return o.mode;
+	return -1;
 }
 
 // ---- generic screen-constant SYMBOL layers (volcanoes, seismicity, cities, …) ----------------

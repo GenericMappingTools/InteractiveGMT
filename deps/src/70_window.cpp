@@ -5583,22 +5583,24 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	win->menuBar()->addMenu("&Help")->addAction("&About", actAbout);
 
 	// --- toolbar row (below the menu bar): quick-access buttons (ParaView-style) ------------
-	// Open file -> hand the path back to Julia (iview auto-dispatches grid/image/dataset into a
-	// NEW window). 2D/3D -> the shared act2D toggle. More buttons can be appended here later.
+	// Open file -> route through the SAME drop path as File > Open (g_juliaDrop / _on_drop): the file
+	// opens INTO this window (or promotes an empty launcher), NOT iview() which would spawn a new
+	// window and auto-send a 2-col table to the X,Y tool. 2D/3D -> the shared act2D toggle.
 	QToolBar *tb = win->addToolBar("Main");
 	tb->setMovable(false);
 	tb->setToolButtonStyle(Qt::ToolButtonIconOnly);   // icon-only toolbar — no text labels on any button
 	QAction *actOpen = tb->addAction(win->style()->standardIcon(QStyle::SP_DirOpenIcon), "");  // icon only, no text
-	actOpen->setToolTip("Open a grid / image / table file in a new window");
+	actOpen->setToolTip("Open a grid / image / table file in this window");
 	QObject::connect(actOpen, &QAction::triggered, [s, win]() {
+		if (!g_juliaDrop) {
+			if (s->win) s->win->statusBar()->showMessage("Open: callback not registered", 3000);
+			return;
+		}
 		const QString fn = QFileDialog::getOpenFileName(win, "Open file", prefStartDir());
-		if (fn.isEmpty() || !g_juliaEval) return;
+		if (fn.isEmpty()) return;
 		rememberStartDir(fn);
-		// Build iview("…") with the path safely quoted (raw string => backslashes are literal).
-		std::string cmd = "InteractiveGMT.iview(raw\"" + fn.toStdString() + "\")";
-		static std::vector<char> buf(1 << 12);
-		int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
-		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // open failed -> Errors tab
+		const QByteArray utf8 = fn.toUtf8();          // keep the buffer alive across the call
+		g_juliaDrop(s, utf8.constData());             // into THIS window; a table -> line overlay, never X,Y
 	});
 	// Info flyout: a stylish 'i' that reports on the active grid/image. Slot click runs the current
 	// reporter (grdinfo by default); the 'v' dropdown switches between GMT.grdinfo and GMT.gdalinfo

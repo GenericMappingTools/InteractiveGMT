@@ -22,11 +22,13 @@ struct ClickableLabel : QLabel {
 struct Overlay {
 	vtkSmartPointer<vtkActor> actor;
 	int mode = 1;
-	vtkSmartPointer<vtkPolyData> baseLine;   // the line geometry (always the mapper input)
+	vtkSmartPointer<vtkPolyData> baseLine;   // the mapper input polydata (points always; line- or vert-cells per mode)
 	vtkSmartPointer<vtkTexture>  stripeTex;  // 1-D stipple texture (kept alive) for dashed/dotted
 	int lineStyle = 0;                       // 0 solid, 1 dashed, 2 dotted (so colour edits rebuild it)
 	std::string name;                        // label shown in the Scene Objects panel
 	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
+	std::vector<int> segoff;                 // per-segment start offsets (nseg+1 entries) -> rebuild cells on line<->points toggle
+	int    nseg = 0;                         // segment count (segoff has nseg+1 entries)
 };
 
 // A generic SCREEN-CONSTANT symbol layer (volcanoes, seismicity, cities, …): N glyphs of one

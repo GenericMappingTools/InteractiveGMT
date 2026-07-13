@@ -781,6 +781,13 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 		}
 	}
 	else {                                               // overlay line (Coastlines, Boundaries, Rivers, imports)
+		// Line <-> points toggle: a dropped x,y table draws as a polyline by default; this converts it
+		// to a scatter of points (and back). Label reflects the CURRENT mode.
+		const int omode = overlayMode(s, a);
+		if (omode == 1)
+			m.addAction("Convert to points", [s, a]() { overlaySetMode(s, a, 1); });
+		else if (omode == 0)
+			m.addAction("Convert to line",   [s, a]() { overlaySetMode(s, a, 0); });
 		m.addAction(QString("Delete %1").arg(name),       // hide = the Scene Objects checkbox; this DELETES
 					[s, a]() { overlayDelete(s, a); });
 	}
