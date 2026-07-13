@@ -103,6 +103,9 @@ function _on_3d_cube_dropped(scene::Ptr{Cvoid}, path::String, name::AbstractStri
 	_CUBE_LOADED[scene] = false
 	delete!(_CUBE_RAM, scene)   # a fresh cube is not in RAM (the dock button re-enables to match)
 	delete!(_CUBE_CUR, scene)
+	# Pin the vertical axes to the WHOLE cube's z-range BEFORE the dialog builds layer 1, so the axis
+	# box + Z labels stay put as the user switches layers (each layer's own min/max differs).
+	ccall(_fn(:gmtvtk_set_cube_axes_zrange), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble), scene, zmin, zmax)
 	ccall(_fn(:gmtvtk_show_cube_layer_dialog), Cvoid,
 		(Ptr{Cvoid}, Cstring, Cint), scene, name, n_layers)
 end

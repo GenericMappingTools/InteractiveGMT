@@ -739,6 +739,9 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 		kvi("crs",         s->hasCRS() ? 1 : 0);
 		kvd("x0", s->x0); kvd("x1", s->x1); kvd("y0", s->y0); kvd("y1", s->y1);
 		kvd("zmin", s->zmin); kvd("zmax", s->zmax);
+		kvi("cubeZLock", s->cubeZLock ? 1 : 0);
+		// Axis box Z extent — a cube must report the SAME value on every layer (regression guard).
+		if (s->axes) { double ab[6]; s->axes->GetBounds(ab); kvd("axZ0", ab[4]); kvd("axZ1", ab[5]); }
 		kvi("n_extras",   (long)s->extras.size());
 		kvi("n_overlays", (long)s->overlays.size());
 		kvi("n_curtains", (long)s->curtains.size());
@@ -2384,6 +2387,17 @@ GMTVTK_API void gmtvtk_set_cube_layer_callback(JuliaCubeLayerFn fn) {
 // Register the "Load all in RAM" callback for the cube layer dock. nullptr to detach.
 GMTVTK_API void gmtvtk_set_cube_loadall_callback(JuliaCubeLoadAllFn fn) {
 	g_juliaCubeLoadAll = fn;
+}
+
+// Pin the vertical axis box + Z tick labels to the whole cube's z-range so the axes do NOT shift as
+// the user switches layers (each layer's own min/max differs slightly). Call once when a cube is
+// dropped, BEFORE the first layer builds; pass zmax <= zmin to clear the lock. No render here — the
+// next surface build / applyVE picks it up.
+GMTVTK_API void gmtvtk_set_cube_axes_zrange(void *handle, double zmin, double zmax) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	if (zmax > zmin) { s->cubeZLock = true; s->cubeZMin = zmin; s->cubeZMax = zmax; }
+	else             { s->cubeZLock = false; }
 }
 
 // Show the non-modal 3D cube layer selector dialog. `scene` is the target window, `name` is the

@@ -295,6 +295,11 @@ struct Scene {
 	std::vector<vtkSmartPointer<vtkActor>> tiles;
 	vtkSmartPointer<vtkActor>             drape;   // optional image overlay (CPT base shows under transparent texels)
 	vtkSmartPointer<vtkCubeAxesActor>     axes;
+	// 3-D cube: pin the vertical axis box + Z tick labels to the WHOLE cube's z-range so the axes do
+	// not shift as the user switches layers (each layer's own min/max differs). Set once per cube via
+	// gmtvtk_set_cube_axes_zrange; cubeZMin/Max are UNSCALED data values (scaled by zfac*ve on use).
+	bool   cubeZLock = false;
+	double cubeZMin = 0.0, cubeZMax = 0.0;
 	vtkSmartPointer<vtkRenderer>          axesRen;  // overlay layer (1) for the Z tick billboards: own headlight (even, view-independent text brightness) + own depth (never occluded by the surface); shares the main camera
 	vtkSmartPointer<vtkActor>             axisTicks; // our OWN single outward tickmarks (cube native ticks are doubled across two faces -> off)
 	vtkSmartPointer<vtkPolyData>          axisTickPD;
@@ -1116,6 +1121,16 @@ static void placeAxisTitle(Scene *s, vtkBillboardTextActor3D *t, int axis,
 // Z tick labels are horizontal screen-facing billboards (perpendicular to Z) on the camera-nearest
 // vertical edge; X/Y tick numbers are billboards on the nearer floor edges. Axis NAME titles are
 // also billboards (placeAxisTitle). All recomputed every render as the near edges change with view.
+// 3-D cube: overwrite the (VE-scaled) Z bounds with the whole cube's pinned z-range so the axis
+// box is identical on every layer. No-op unless the scene has a cube z-lock. Scales the stored
+// (unscaled) data range by the current zfac*ve, matching surfGetBounds' scaled space.
+static inline void pinCubeAxisZ(Scene *s, double b[6]) {
+	if (!s->cubeZLock) return;
+	const double zs = s->zfac * s->ve;
+	b[4] = s->cubeZMin * zs;
+	b[5] = s->cubeZMax * zs;
+}
+
 static void rebuildAxisLabels(Scene *s) {
 	if (!s->surf || !s->ren || !s->ren->GetActiveCamera())
 		return;
@@ -1131,6 +1146,7 @@ static void rebuildAxisLabels(Scene *s) {
 	}
 	if (s->axisTicks) s->axisTicks->SetVisibility(1);
 	double b[6]; surfGetBounds(s, b);            // drawn (VE-scaled) bounds
+	pinCubeAxisZ(s, b);                          // cube: hold the Z box to the whole cube's range
 	const double ctr[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
 	double cam[3]; s->ren->GetActiveCamera()->GetPosition(cam);
 
@@ -1185,7 +1201,11 @@ static void rebuildAxisLabels(Scene *s) {
 	if (zHide) {
 		for (auto& l : s->zlabels) l->SetVisibility(0);
 	} else {
-		placeTickBillboards(s, s->zlabels, s->zmin, s->zmax, b[4], b[5], 2, zx, zy, ctr, tp, tl, tickLen);
+		// Cube: label the Z axis with the WHOLE cube's range (matching the pinned box) so the numbers
+		// are identical on every layer; otherwise this layer's own data range.
+		const double zlo = s->cubeZLock ? s->cubeZMin : s->zmin;
+		const double zhi = s->cubeZLock ? s->cubeZMax : s->zmax;
+		placeTickBillboards(s, s->zlabels, zlo, zhi, b[4], b[5], 2, zx, zy, ctr, tp, tl, tickLen);
 	}
 	if (s->axisTickPD) {
 		s->axisTickPD->SetPoints(tp);
@@ -1233,6 +1253,7 @@ static void applyVE(Scene *s) {
 	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview
 	if (s->polyHandles) s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // edit-mode vertex handles
 	double b[6]; surfGetBounds(s, b);            // bounds already include the scale
+	pinCubeAxisZ(s, b);                          // cube: hold the Z box to the whole cube's range
 	// Flat map (VE collapsed to 0 -> zero Z extent): vtkCubeAxesActor computes EACH axis's
 	// label/gridline count even for hidden axes, so a zero Z range gives range/step = 0/0 ->
 	// NaN -> INT_MIN ("Number of labels -2147483647 is invalid"), aborting the render (blank

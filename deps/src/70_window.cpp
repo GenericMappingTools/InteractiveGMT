@@ -4420,6 +4420,8 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	s->axes = vtkSmartPointer<vtkCubeAxesActor>::New();
 	s->axes->SetCamera(s->ren->GetActiveCamera());
 	double b[6]; surfGetBounds(s, b);
+	pinCubeAxisZ(s, b);                                 // cube: pin Z to the whole cube's range at build
+	                                                    // time too (the first layer's build precedes any applyVE)
 	if (b[5] - b[4] <= 0.0) b[5] = b[4] + 1.0;          // zero Z extent (bare image / flat) -> avoid
 	                                                    // vtkAxisActor 0/0 label-count crash
 	s->axes->SetBounds(b);
