@@ -3729,12 +3729,10 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 	mw->addDockWidget(Qt::BottomDockWidgetArea, dock);
 	dock->installEventFilter(new CubeDockCloseFilter(dock));
 
-	// Start FLOATING, centered inside the viewer window. Size from the .ui's own geometry, shrunk
-	// 25% (the slider was needlessly long). A floating dock is a top-level widget, so position in
-	// global coords mapped from the window centre.
+	// Start FLOATING, centered inside the viewer window. Use the .ui's OWN size verbatim — no
+	// override. A floating dock is a top-level widget, so position in global coords from the centre.
 	dock->setFloating(true);
-	QSize ui = content->size();   // the .ui's designed size (412x84)
-	dock->resize(ui.width() * 3 / 4, dock->sizeHint().height());
+	dock->resize(content->sizeHint());
 	dock->move(mw->mapToGlobal(mw->rect().center()) - QPoint(dock->width() / 2, dock->height() / 2));
 
 	s->cubeDlg = dock;
