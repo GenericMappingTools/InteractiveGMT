@@ -6082,24 +6082,23 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QObject::connect(cbFXAA, &QCheckBox::toggled, [s](bool b){ s->useFXAA = b; applyShading(s); });
 	form->addRow("FXAA", cbFXAA);
 
-	// Three ALTERNATIVE relief looks — Cast shadows (lit self-shadowing), Hillshade/Lambert
-	// (VE-corrected mesh-normal shade) and Hillshade/grdimage (VE-independent z-gradient + GMT
-	// HSV illuminate) — are MUTUALLY EXCLUSIVE but all three may be off. Each toggled handler:
-	// when turned ON, uncheck the other two (QSignalBlocker stops their handlers re-firing), then
-	// re-derive ALL Scene flags from the live checkbox states (so an off-handler never wrongly
-	// clears a flag the just-checked box set). hillGrd selects the Lambert vs grdimage style.
-	// "Shaded image (2-D)" is an INDEPENDENT GEOMETRY toggle: ON = render the grid as a fast flat
-	// shaded image, OFF = a real 3-D surface. It works on ANY grid (cube layer or single grid). The
-	// three hillshade looks below are the ILLUMINATION — mutually exclusive AMONG THEMSELVES (all may
-	// be off), applied IN PLACE (no geometry rebuild) to whichever geometry is showing, so they are
-	// cheap and look identical flat vs 3-D (both go through the shared applyReliefShade).
+	// Four ALTERNATIVE relief looks — PBR (lit), Cast shadows (lit self-shadowing), Hillshade/Lambert
+	// and Hillshade/grdimage — are MUTUALLY EXCLUSIVE but all four may be off. Each toggled handler:
+	// when turned ON, uncheck the other three (QSignalBlocker stops their handlers re-firing), then
+	// re-derive ALL Scene flags from the live checkbox states (so an off-handler never wrongly clears
+	// a flag the just-checked box set). hillGrd selects Lambert vs grdimage; litBake selects the PBR
+	// bake (flat image only). PBR is the DEFAULT lit look: on a 3-D surface it IS the GPU shading; on
+	// a flat image it bakes a CPU approximation so "Shaded image" alone matches the loaded grid. With
+	// every look off on a FLAT image the picture is plain CPT, no shade.
+	// "Shaded image (2-D)" is an INDEPENDENT GEOMETRY toggle: ON = fast flat image, OFF = 3-D surface.
 	QCheckBox *cbFlat   = new QCheckBox(panel);                                                        // GRAPHICAL ELEMENT: "Shaded image (2-D)" geometry toggle
+	QCheckBox *cbPBR    = new QCheckBox(panel); cbPBR->setChecked(!s->useHillshade && !s->useShadows); // GRAPHICAL ELEMENT: "Shade (PBR)" lit-look checkbox
 	QCheckBox *cbShadow = new QCheckBox(panel); cbShadow->setChecked(s->useShadows);                  // GRAPHICAL ELEMENT: "Cast shadows" checkbox
 	QCheckBox *cbHillL  = new QCheckBox(panel); cbHillL->setChecked(s->useHillshade && !s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (Lambert)" checkbox
 	QCheckBox *cbHillG  = new QCheckBox(panel); cbHillG->setChecked(s->useHillshade &&  s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (grdimage)" checkbox
 	cbFlat->setChecked(s->layerImgMode);
 	cbFlat->setEnabled(s->gnx > 1 && !s->gridZ.empty());     // enabled whenever there is a grid to flip
-	s->cbFlat = cbFlat; s->cbShadow = cbShadow; s->cbHillL = cbHillL; s->cbHillG = cbHillG;
+	s->cbFlat = cbFlat; s->cbShadow = cbShadow; s->cbHillL = cbHillL; s->cbHillG = cbHillG; s->cbPBR = cbPBR;
 
 	// Geometry toggle: rebuild the base as flat image / surface (rebuildBaseFromStored re-shades + syncs).
 	QObject::connect(cbFlat, &QCheckBox::toggled, [s](bool b){
@@ -6109,41 +6108,57 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	});
 	form->addRow("Shaded image (2-D)", cbFlat);
 
-	// The three hillshade looks: mutually exclusive, illumination only (applyShading, in place).
-	auto syncShade = [s, cbShadow, cbHillL, cbHillG]() {
+	// The four relief looks: mutually exclusive, illumination only (applyShading, in place). syncShade
+	// re-derives the Scene flags from the live checkbox states; each ON handler unchecks the other three.
+	auto syncShade = [s, cbShadow, cbHillL, cbHillG, cbPBR]() {
 		s->useShadows   = cbShadow->isChecked();
 		s->useHillshade = cbHillL->isChecked() || cbHillG->isChecked();
 		s->hillGrd      = cbHillG->isChecked();
+		s->litBake      = cbPBR->isChecked();      // flat PBR bake; a 3-D surface is PBR-lit regardless
 		applyShading(s);
+		if (s->syncFlatEnable) s->syncFlatEnable();  // which sliders are live depends on the chosen look
 	};
+	QObject::connect(cbPBR, &QCheckBox::toggled, [=](bool b){
+		if (b) { QSignalBlocker bs(cbShadow), bl(cbHillL), bg(cbHillG); cbShadow->setChecked(false); cbHillL->setChecked(false); cbHillG->setChecked(false); }
+		syncShade();
+	});
+	form->addRow("Shade (PBR)", cbPBR);
+
 	QObject::connect(cbShadow, &QCheckBox::toggled, [=](bool b){
-		if (b) { QSignalBlocker bl(cbHillL), bg(cbHillG); cbHillL->setChecked(false); cbHillG->setChecked(false); }
+		if (b) { QSignalBlocker bp(cbPBR), bl(cbHillL), bg(cbHillG); cbPBR->setChecked(false); cbHillL->setChecked(false); cbHillG->setChecked(false); }
 		syncShade();
 	});
 	form->addRow("Cast shadows", cbShadow);
 
 	QObject::connect(cbHillL, &QCheckBox::toggled, [=](bool b){
-		if (b) { QSignalBlocker bs(cbShadow), bg(cbHillG); cbShadow->setChecked(false); cbHillG->setChecked(false); }
+		if (b) { QSignalBlocker bp(cbPBR), bs(cbShadow), bg(cbHillG); cbPBR->setChecked(false); cbShadow->setChecked(false); cbHillG->setChecked(false); }
 		syncShade();
 	});
 	form->addRow("Hillshade (Lambert)", cbHillL);
 
 	QObject::connect(cbHillG, &QCheckBox::toggled, [=](bool b){
-		if (b) { QSignalBlocker bs(cbShadow), bl(cbHillL); cbShadow->setChecked(false); cbHillL->setChecked(false); }
+		if (b) { QSignalBlocker bp(cbPBR), bs(cbShadow), bl(cbHillL); cbPBR->setChecked(false); cbShadow->setChecked(false); cbHillL->setChecked(false); }
 		syncShade();
 	});
 	form->addRow("Hillshade (grdimage)", cbHillG);
 
-	// A flat "Shaded image (2-D)" is a baked texture, so the PBR material / light / IBL / occlusion
-	// controls do NOTHING to it — only the two Hillshade boxes (relief style) and the sun Az/El that
-	// feeds them still bite. Grey the dead ones out in flat mode so the dock never offers a control
-	// that silently does nothing; restore them for a real 3-D surface. (cast-shadows is 3-D-only too.)
+	// Grey out the controls a given look can't use, so the dock never offers a control that does
+	// nothing. A flat image is a baked texture: IBL / occlusion / cast-shadows need real 3-D geometry;
+	// the PBR material + key/fill lights feed the bake ONLY in the flat PBR look (else dead); the sun
+	// Az/El feed any flat shade (PBR or hillshade) but not a plain image. Tone / FXAA are screen passes,
+	// useless under a baked hillshade (unlit verbatim colours), so blocked there.
 	s->syncFlatEnable = [=]() {
-		const bool flat = s->layerImgMode;
-		for (QWidget *w : { (QWidget*)slRough, (QWidget*)slMetal, (QWidget*)slLight, (QWidget*)slFill,
-		                    (QWidget*)slEnv, (QWidget*)slSSAO, (QWidget*)cbIBL, (QWidget*)cbSSAO,
-		                    (QWidget*)cbShadow })
-			w->setEnabled(!flat);
+		const bool flat    = s->layerImgMode;
+		const bool hill    = s->useHillshade;
+		const bool pbrBake = flat && s->litBake && !hill;
+		const bool matLive = !flat || pbrBake;                 // PBR material + key/fill lights
+		for (QWidget *w : { (QWidget*)slRough, (QWidget*)slMetal, (QWidget*)slLight, (QWidget*)slFill })
+			w->setEnabled(matLive);
+		const bool sunLive = !flat || hill || pbrBake;         // sun az/el: any lit look, not a plain image
+		slAz->setEnabled(sunLive); slEl->setEnabled(sunLive);
+		for (QWidget *w : { (QWidget*)cbIBL, (QWidget*)slEnv, (QWidget*)cbSSAO, (QWidget*)slSSAO, (QWidget*)cbShadow })
+			w->setEnabled(!flat);                              // 3-D geometry only
+		cbTone->setEnabled(!hill); cbFXAA->setEnabled(!hill);  // screen passes: dead under a hillshade
 	};
 	s->syncFlatEnable();
 

@@ -73,11 +73,12 @@ static void gmtIlluminate(double intensity, double *rgb) {
 //                 grdimage -I look from the TRUE-coord z-gradient normal (VE-independent).
 // ============================================================================
 struct ReliefLight {
-	double Lx, Ly, Lz;          // sun dir, lit convention (Lambert)
+	double Lx, Ly, Lz;          // sun dir, lit convention (Lambert / PBR key light)
 	double LxG, LyG, LzG;       // sun dir, grdimage (inverted elevation)
 	double fx, fz;              // Lambert VE-correction factors (1/xfac, 1/(zfac·ve))
 	double amb, gain, twoOverPi;
 	bool   grd;
+	double rough, keyI, fillI;  // PBR bake: roughness, key + fill light intensity (metallic assumed 0)
 };
 static ReliefLight makeReliefLight(Scene *s) {
 	ReliefLight L;
@@ -89,7 +90,43 @@ static ReliefLight makeReliefLight(Scene *s) {
 	L.fx = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
 	L.fz = (s->zfac * s->ve != 0.0) ? 1.0 / (s->zfac * s->ve) : 1.0;
 	L.amb = s->hillAmbient;  L.gain = s->hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = s->hillGrd;
+	L.rough = s->roughness < 0.05 ? 0.05 : s->roughness;   // clamp so the GGX lobe stays finite
+	L.keyI = s->lightIntensity;  L.fillI = s->fillIntensity;
 	return L;
+}
+
+// CPU approximation of the GPU PBR SURFACE look, baked per flat-image pixel so "Shaded image" alone
+// reproduces the shaded relief a freshly loaded 3-D grid shows — WITHOUT triangulating the grid
+// (the GPU shader rasterises triangles; this shades straight from the data-space normal nv). A 2-D
+// map is viewed straight down, so the view vector is +Z. Metallic-0 dielectric Cook-Torrance:
+// GGX distribution + Smith geometry + Schlick Fresnel for the key light, plus a soft hemispherical
+// fill and a small ambient floor so the shadow side matches the lit surface (which the fill + scene
+// light also lift). Not pixel-identical to the GPU pass — the live Light/Fill/Roughness sliders tune
+// it. rgb (0..1, in albedo / out shaded).
+static inline void applyPBRShade(const ReliefLight &L, const double nv[3], double rgb[3]) {
+	const double Lk[3] = { L.Lx, L.Ly, L.Lz };
+	double NdotL = nv[0]*Lk[0] + nv[1]*Lk[1] + nv[2]*Lk[2]; if (NdotL < 0.0) NdotL = 0.0;
+	double NdotV = nv[2] < 0.0 ? 0.0 : nv[2];                             // V = +Z
+	double H[3] = { Lk[0], Lk[1], Lk[2] + 1.0 };                          // half-vector of Lk and +Z
+	const double hl = std::sqrt(H[0]*H[0] + H[1]*H[1] + H[2]*H[2]);
+	if (hl > 0.0) { H[0] /= hl; H[1] /= hl; H[2] /= hl; }
+	double NdotH = nv[0]*H[0] + nv[1]*H[1] + nv[2]*H[2]; if (NdotH < 0.0) NdotH = 0.0;
+	const double VdotH = H[2] < 0.0 ? 0.0 : H[2];                         // V·H = H.z (V = +Z)
+	const double a2 = L.rough*L.rough*L.rough*L.rough;                    // a = rough^2, a2 = a^2
+	const double dn = NdotH*NdotH*(a2 - 1.0) + 1.0;
+	const double D  = a2 / (vtkMath::Pi()*dn*dn + 1e-9);
+	const double k  = L.rough*L.rough*0.5;
+	const double G  = (NdotV/(NdotV*(1.0-k)+k+1e-9)) * (NdotL/(NdotL*(1.0-k)+k+1e-9));
+	const double F  = 0.04 + 0.96*std::pow(1.0 - VdotH, 5.0);
+	const double spec = (D*G*F) / (4.0*NdotV*NdotL + 1e-4);
+	const double kd = 1.0 - F;
+	for (int i = 0; i < 3; ++i) {
+		const double lit  = (kd*rgb[i] + spec) * L.keyI * NdotL;         // key light (diffuse + specular)
+		const double fill = rgb[i] * L.fillI * (0.5 + 0.5*nv[2]);        // hemispherical fill from above
+		const double amb  = rgb[i] * 0.12;                              // scene-light floor (no black valleys)
+		const double v = lit + fill + amb;
+		rgb[i] = v > 1.0 ? 1.0 : v;
+	}
 }
 // Modulate rgb (0..1, in/out) by the relief shade for a TRUE-coord surface normal nv.
 static inline void applyReliefShade(const ReliefLight &L, const double nv[3], double rgb[3]) {
@@ -142,7 +179,8 @@ static void layerTexSize(int nx, int ny, int &txW, int &txH) {
 // pixel follows the Shading dock, mirroring hillshadeMapper. In flat-image mode the two Hillshade
 // boxes are the ONLY illumination control (PBR lights don't touch a baked texture); with BOTH off
 // the image is drawn as plain CPT colour, no shade — a deliberately available "flat map" look.
-//   * useHillshade OFF          -> plain CPT(z), no shade.
+//   * hillshade OFF + litBake   -> PBR (C): CPU Cook-Torrance, the lit-surface look (applyPBRShade).
+//   * hillshade OFF + !litBake  -> plain CPT(z), no shade.
 //   * useHillshade + hillGrd    -> grdimage (B): data-gradient normal, atan soft-clip, gmt_illuminate.
 //   * useHillshade + !hillGrd   -> Lambert (A): CPT(z) * (ambient + (1-ambient)*max(0, n.L)),
 //                                  darken-only. Uses the DATA-space normal (VE-independent — a flat
@@ -172,7 +210,8 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 		}
 	}
 	const double invspan = (hi > lo) ? (NT - 1) / (hi - lo) : 0.0;
-	const bool   shade = s->useHillshade;
+	const bool   pbr   = !s->useHillshade && s->litBake;   // flat PBR bake (approximates the lit surface)
+	const bool   shade = s->useHillshade || pbr;           // any per-pixel shade (hillshade or PBR)
 	const ReliefLight L = makeReliefLight(s);      // SAME light/style the 3-D surface uses (one source of truth)
 	auto Zc = [&](int ix, int iy) -> double { return z[(size_t)ix * ny + iy]; };   // column-major z[ix*ny+iy]
 	auto clampi = [](int v, int hi2) { return v < 0 ? 0 : (v > hi2 ? hi2 : v); };
@@ -205,7 +244,8 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 			if (len > 0.0) { n0 /= len; n1 /= len; n2 /= len; }
 			const double nv[3] = { n0, n1, n2 };
 			double c[3] = { rgb8[0] / 255.0, rgb8[1] / 255.0, rgb8[2] / 255.0 };
-			applyReliefShade(L, nv, c);                          // SHARED shade (grdimage or Lambert), matches the surface
+			if (pbr) applyPBRShade(L, nv, c);                    // PBR lit look (no hillshade selected)
+			else     applyReliefShade(L, nv, c);                 // SHARED hillshade (grdimage or Lambert), matches the surface
 			p[0] = (unsigned char)std::min(255.0, c[0] * 255.0 + 0.5);
 			p[1] = (unsigned char)std::min(255.0, c[1] * 255.0 + 0.5);
 			p[2] = (unsigned char)std::min(255.0, c[2] * 255.0 + 0.5);
@@ -353,12 +393,15 @@ static void onLayerCamera(vtkObject*, unsigned long, void *cd, void*) {
 // Called at the end of applyShading so the dock always reflects the live state.
 static void syncShadeChecks(Scene *s) {
 	if (!s || !s->cbFlat) return;                       // dock not built yet
-	QSignalBlocker b0(s->cbFlat), b1(s->cbShadow), b2(s->cbHillL), b3(s->cbHillG);
+	QSignalBlocker b0(s->cbFlat), b1(s->cbShadow), b2(s->cbHillL), b3(s->cbHillG), b4(s->cbPBR);
 	s->cbFlat->setEnabled(s->gnx > 1 && !s->gridZ.empty());
 	s->cbFlat->setChecked(s->layerImgMode);
 	s->cbShadow->setChecked(s->useShadows);
 	s->cbHillL->setChecked(s->useHillshade && !s->hillGrd);
 	s->cbHillG->setChecked(s->useHillshade &&  s->hillGrd);
+	// PBR = the lit look with no hillshade / shadows. On a 3-D surface that IS the default (all off);
+	// on a flat image it means the PBR bake is on (litBake). Reflect both so the box tracks reality.
+	s->cbPBR->setChecked(!s->useHillshade && !s->useShadows && (s->layerImgMode ? s->litBake : true));
 	if (s->syncFlatEnable) s->syncFlatEnable();   // grey the flat-dead controls when a layer enters image mode
 }
 

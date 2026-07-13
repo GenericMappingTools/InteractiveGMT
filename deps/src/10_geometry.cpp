@@ -386,7 +386,7 @@ struct Scene {
 	bool   cubeFlatImg = true;  // render the base grid as the flat shaded IMAGE (else a real 3-D surface)
 	int    cubeLayerCur = 0;    // current cube layer index (0-based) + colour-range choice (bookkeeping)
 	int    cubeUseGlobal = 0;
-	QCheckBox *cbFlat = nullptr, *cbShadow = nullptr, *cbHillL = nullptr, *cbHillG = nullptr;   // Shading dock checkboxes
+	QCheckBox *cbFlat = nullptr, *cbShadow = nullptr, *cbHillL = nullptr, *cbHillG = nullptr, *cbPBR = nullptr;   // Shading dock checkboxes
 	std::function<void()> syncFlatEnable;   // grey out the Shading controls that do nothing on a flat baked image
 	// Base grid's CPT (control nodes) + geographic flag, kept so the Shading dock can rebuild the base as
 	// a flat IMAGE or a real SURFACE on demand (rebuildBaseFromStored) from s->gridZ without the host.
@@ -433,6 +433,9 @@ struct Scene {
 									  //   true  = GMT grdimage (z-gradient, VE-independent, HSV illuminate).
 	double hillAmbient  = 0.25;       // Lambert hillshade shadow floor (0 = black valleys, 1 = no shade)
 	double hillGain     = 2.0;        // grdimage relief contrast: atan slope on the z-gradient signal (grdgradient -Nt amp)
+	bool   litBake      = true;       // FLAT image only: bake a CPU PBR shade (approximates the lit 3-D
+	                                  // surface) so "Shaded image" alone reproduces the loaded-grid look.
+	                                  // Mutually exclusive with useHillshade; both off (flat) = plain CPT.
 	bool   matteSurf = false;        // fv colour mesh: keep s->surf MATTE (Phong, no specular/IBL) so the
 									 // data colour reads true; glossy PBR mirrored the bright sky env to grey
 									 // on up-facing facets. applyShading honours this (else it re-clobbers it).

@@ -6,8 +6,8 @@ drawn. It mixes four *unrelated* concerns, so read it by group rather than top-t
 | Group | Purpose |
 |-------|---------|
 | [1. Geometry](#1-geometry) | Flat 2-D map vs real 3-D surface |
-| [2. Relief look](#2-relief-look-illumination) | How the terrain is illuminated (hillshade / cast shadows) |
-| [3. Material & lights](#3-material-lights-pbr) | PBR material + light sliders (only when no hillshade is on) |
+| [2. Relief look](#2-relief-look-illumination) | How the terrain is illuminated (PBR / hillshade / cast shadows) |
+| [3. Material & lights](#3-material-lights-pbr) | PBR material + light sliders (tune the **Shade (PBR)** look) |
 | [4. Post-process](#4-post-process-passes) | Screen-space passes over the whole frame |
 
 Only groups 2–4 are *shading*. Group 1 is a geometry switch that happens to live here.
@@ -23,11 +23,11 @@ A **geometry switch.** ON = flat map, OFF = 3-D surface.
 - **ON** — the grid is drawn as a flat, draped 2-D image (fast map, no relief).
 - **OFF** — the grid is drawn as a real 3-D warped surface.
 
-In flat mode the shade is baked into the texture, so the two [Hillshade](#2-relief-look-illumination)
-boxes are the **only** illumination control — the PBR material / light / IBL / occlusion controls do
-nothing to a baked image and are **greyed out**. With **both** Hillshade boxes off the image is drawn
-as plain CPT colour, no shade (a deliberate flat-map look). The sun **Az / El** still steer whichever
-hillshade is on.
+In flat mode the shade is baked into the texture. The relief look is chosen by the group-2 boxes:
+**Shade (PBR)** bakes a CPU approximation of the lit 3-D surface (so "Shaded image" on its own
+reproduces the loaded-grid look), or a **Hillshade** style, or — with every look off — plain CPT
+colour, no shade (a deliberate flat-map look). The sun **Az / El** steer any lit look; the PBR
+material + Light / Fill sliders are live only under **Shade (PBR)**.
 
 Enabled only when there is a grid to flip (`gnx > 1`).
 
@@ -35,17 +35,19 @@ Enabled only when there is a grid to flip (`gnx > 1`).
 
 ## 2. Relief look (illumination)
 
-Three **mutually exclusive** checkboxes — turning one on unchecks the other two — and **all may be
-off**. With all off, the surface is lit by [group 3](#3-material-lights-pbr) instead.
+Four **mutually exclusive** checkboxes — turning one on unchecks the other three — and **all may be
+off** (on a flat image, all off = plain, unshaded).
 
 | Checkbox | What it does |
 |----------|--------------|
+| **Shade (PBR)** | The default lit look. On a 3-D surface it is the GPU physically-based shading (group 3). On a flat image it bakes a CPU approximation of that same look into the texture, so "Shaded image" alone reproduces the loaded-grid relief. |
 | **Cast shadows** | Lit render where the sun casts real self-shadows on the terrain. 3-D only — a flat plane has no relief, so it is a no-op in 2-D. |
-| **Hillshade (Lambert)** | Baked per-vertex shade `CPT(z) · (ambient + (1-ambient)·max(0, n·L))`. Uses the mesh normal, corrected for vertical exaggeration. Drawn unlit. |
-| **Hillshade (grdimage)** | The GMT `grdimage` look: z-gradient normal, `atan` soft-clip, `gmt_illuminate` in HSV. Independent of vertical exaggeration. Drawn unlit. |
+| **Hillshade (Lambert)** | Baked shade: colour × directional slope shade (`ambient` floor keeps valleys visible). Corrected for vertical exaggeration. Drawn unlit. |
+| **Hillshade (grdimage)** | The GMT `grdimage` look: slope-toward-sun relief, soft-clipped, illuminated in HSV. Independent of vertical exaggeration. Drawn unlit. |
 
 Both hillshades bake colour flat and render **unlit**, so the material and light sliders of
-group 3 have no visible effect while a hillshade is on.
+group 3 have no visible effect while a hillshade is on. The sun **Az / El** (group 3) do steer both
+the hillshades and the PBR bake.
 
 Knobs (fixed defaults, no dock slider): `hillAmbient` = 0.25 (Lambert shadow floor),
 `hillGain` = 2.0 (grdimage contrast). See [Hillshade](hillshade.md) for the full algorithm.
@@ -54,9 +56,19 @@ Knobs (fixed defaults, no dock slider): `hillAmbient` = 0.25 (Lambert shadow flo
 
 ## 3. Material & lights (PBR)
 
-These bite **only when all relief looks in group 2 are off** — i.e. a PBR-lit surface. Under a
-hillshade they do nothing. In flat "Shaded image" mode they are all **greyed out** (a baked texture
-takes no PBR light).
+The default look — selected by **Shade (PBR)** in group 2. A 3-D surface is lit by **physically-based
+rendering (PBR)**: a microfacet (Cook–Torrance) material catching a directional *sun* light plus a
+softer *fill* light, and optionally a sky environment (IBL). This is the shaded relief you see the
+moment a grid is loaded; the surface's own slopes catch the light, so no baked hillshade is needed.
+
+On the GPU this needs 3-D geometry to shade. A flat "Shaded image" has no geometry, so the same look
+is instead **baked on the CPU** into the drape texture (a close approximation — the sky-IBL and
+screen passes don't carry over). These controls tune the look and are **live** on a 3-D surface or a
+flat PBR bake; they are **greyed out** on a flat image showing a hillshade or a plain (unshaded)
+picture, where they'd do nothing. Under a hillshade the baked colour replaces the lighting, so they
+have no effect there either.
+
+The controls below tune the PBR look:
 
 | Control | Effect |
 |---------|--------|
@@ -78,16 +90,19 @@ Screen-space passes applied to the **whole frame** (surface, axes, gridlines and
 | Control | Effect |
 |---------|--------|
 | **Ambient occlusion (SSAO)** checkbox + **SSAO radius** slider | Darkens creases and contact shadows |
-| **Tone mapping** checkbox | HDR → display tone curve |
-| **FXAA** checkbox | Screen-space anti-aliasing. Because it re-samples the whole frame, it can shift the apparent thickness of thin lines. |
+| **Tone mapping** checkbox | HDR → display tone curve. Greyed out under a hillshade (baked colours are shown verbatim). |
+| **FXAA** checkbox | Screen-space anti-aliasing. Greyed out under a hillshade. Because it re-samples the whole frame, it can shift the apparent thickness of thin lines. |
 
 ---
 
 ## Notes / gotchas
 
+- **The default look is PBR** — a freshly loaded grid uses **Shade (PBR)**: physically-based
+  rendering (sun + fill light) on a 3-D surface, or a baked CPU approximation on a flat image.
 - **Group 1 is geometry, not shading** — "Shaded image (2-D)" toggles flat vs 3-D; it never
   shades on its own.
-- **Groups 2 and 3 cancel** — turning a hillshade on silently deadens every group-3 slider,
-  since a hillshade renders unlit.
+- **Only one relief look at a time** — PBR, Cast shadows, and the two Hillshades are mutually
+  exclusive. Under a hillshade the group-3 sliders deaden (a hillshade renders unlit); on a flat
+  image the controls a given look can't use are greyed out, so nothing silently does nothing.
 - **Group 4 is global** — post passes touch the whole frame, not just the surface. In flat 2-D
   the cube-axes X/Y gridlines are suppressed so FXAA no longer re-thicknesses them.
