@@ -215,7 +215,10 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 	const ReliefLight L = makeReliefLight(s);      // SAME light/style the 3-D surface uses (one source of truth)
 	auto Zc = [&](int ix, int iy) -> double { return z[(size_t)ix * ny + iy]; };   // column-major z[ix*ny+iy]
 	auto clampi = [](int v, int hi2) { return v < 0 ? 0 : (v > hi2 ? hi2 : v); };
-	for (int r = 0; r < txH; ++r) {
+	// Per-row parallel: every output row is a disjoint slice of `out`, and every read (z, tbl LUT,
+	// light L) is shared read-only, so no locks. vtkSMPTools runs on VTK's SMP backend (TBB here).
+	vtkSMPTools::For(0, txH, [&](vtkIdType rBeg, vtkIdType rEnd) {
+	for (int r = (int)rBeg; r < (int)rEnd; ++r) {
 		const double ty = (txH > 1) ? wy0 + (wy1 - wy0) * r / (txH - 1) : wy0;   // row r=0 -> south
 		const int iy  = clampi((int)std::lround((ty - gy0) / dy), ny - 1);
 		const int iym = iy > 0 ? iy - 1 : iy, iyp = iy < ny - 1 ? iy + 1 : iy;
@@ -252,6 +255,7 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 			p[3] = 255;
 		}
 	}
+	});
 }
 
 // The visible TRUE-coord rectangle (W,E,S,N) = the part of the flat map on screen at the current
@@ -447,19 +451,31 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	const ReliefLight L = makeReliefLight(s);      // SAME light/style the flat 2-D image bake uses (one source of truth)
 
 	const vtkIdType n = pd->GetNumberOfPoints();
+	// Map EVERY z to its CPT colour in one serial batch: vtkScalarsToColors::MapValue is NOT
+	// thread-safe (returns a pointer into a shared internal buffer), so it can't be called from the
+	// parallel loop. MapScalars is a vectorised, thread-safe alternative that returns an owned RGBA
+	// array; the parallel loop then only does the (stateless) shade maths from those bytes + normals.
+	vtkSmartPointer<vtkUnsignedCharArray> mapped =
+		vtkSmartPointer<vtkUnsignedCharArray>::Take(lut->MapScalars(zs, VTK_COLOR_MODE_MAP_SCALARS, 0));
+	if (!mapped) return;
+	const int mc = mapped->GetNumberOfComponents();      // RGBA = 4
 	vtkSmartPointer<vtkUnsignedCharArray> col = vtkSmartPointer<vtkUnsignedCharArray>::New();
 	col->SetName("hillshade");
 	col->SetNumberOfComponents(3);
 	col->SetNumberOfTuples(n);
-	for (vtkIdType i = 0; i < n; ++i) {
+	// Per-point parallel: disjoint output tuples, all reads (mapped colours, normals, light L) shared
+	// read-only. GetTuple(i, buf) writes the caller's own buffer, so it is safe under concurrent reads.
+	vtkSMPTools::For(0, n, [&](vtkIdType iBeg, vtkIdType iEnd) {
+	for (vtkIdType i = iBeg; i < iEnd; ++i) {
 		double nv[3]; nrm->GetTuple(i, nv);
-		const unsigned char *rgb8 = lut->MapValue(zs->GetComponent(i, 0));   // CPT colour for this z
+		const unsigned char *rgb8 = mapped->GetPointer(i * mc);     // CPT colour for this z (pre-mapped)
 		double c[3] = { rgb8[0] / 255.0, rgb8[1] / 255.0, rgb8[2] / 255.0 };
 		applyReliefShade(L, nv, c);                                 // SHARED shade (grdimage or Lambert)
 		col->SetTypedComponent(i, 0, (unsigned char)(c[0] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 1, (unsigned char)(c[1] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 2, (unsigned char)(c[2] * 255.0 + 0.5));
 	}
+	});
 	pd->GetPointData()->AddArray(col);
 	m->SetScalarModeToUsePointFieldData();
 	m->SelectColorArray("hillshade");

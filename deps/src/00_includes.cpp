@@ -156,6 +156,12 @@
 #include <vtkTransformPolyDataFilter.h>
 #include <vtkLight.h>
 #include <vtkMath.h>
+// vtkSMPTools pulls in TBB's profiling.h, whose `void emit()` method collides with Qt's `emit`
+// keyword macro (-> `void ()` -> syntax error). Undef around the include, then restore Qt's macro.
+#pragma push_macro("emit")
+#undef emit
+#include <vtkSMPTools.h>            // parallel-for (TBB backend) for the hillshade / PBR bakes
+#pragma pop_macro("emit")
 #include <vtkMatrix4x4.h>
 #include <vtkPolyDataAlgorithm.h>
 #include <vtkPolyDataNormals.h>
