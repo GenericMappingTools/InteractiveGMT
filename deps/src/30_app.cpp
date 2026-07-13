@@ -69,6 +69,14 @@ static QString prefAzimDir()       { return igmtSettings().value("prefs/azimDir"
 static QString prefLineThickness() { return igmtSettings().value("prefs/lineThickness", "2 pt").toString(); }
 static QString prefLineColor()     { return igmtSettings().value("prefs/lineColor",     "Orange").toString(); }
 static QString prefCoastColor()    { return igmtSettings().value("prefs/coastColor",    "Black").toString(); }
+// "NaN fill colour": the solid colour grid NaN cells are painted (default white). Stored as a
+// #rrggbb hex string so any colour is selectable via QColorDialog in Preferences.
+static QString prefNanColor()      { return igmtSettings().value("prefs/nanColor",      "#ffffff").toString(); }
+static void prefNanColorRGB(double &r, double &g, double &b) {
+	QColor c(prefNanColor().trimmed());
+	if (!c.isValid()) c = QColor(Qt::white);
+	r = c.redF(); g = c.greenF(); b = c.blueF();
+}
 
 // Map the "Default line color" name to RGB (0..1). "Orange" (1.0,0.55,0.0) is the program's original
 // unnamed default line colour, kept FIRST in the combo so the familiar look stays the default. Any

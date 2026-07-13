@@ -139,14 +139,16 @@ static void layerTexSize(int nx, int ny, int &txW, int &txH) {
 // scene's shading state. The CPT is discretized into a 1024-entry table ONCE (per-pixel
 // vtkColorTransferFunction::GetColor was the cube-scrub stall). Grid is subsampled to the texture
 // size (nearest) but the slope uses full-res neighbours so the hillshade stays crisp. Colour per
-// pixel follows the Shading dock, mirroring hillshadeMapper:
+// pixel follows the Shading dock, mirroring hillshadeMapper. In flat-image mode the two Hillshade
+// boxes are the ONLY illumination control (PBR lights don't touch a baked texture); with BOTH off
+// the image is drawn as plain CPT colour, no shade — a deliberately available "flat map" look.
 //   * useHillshade OFF          -> plain CPT(z), no shade.
 //   * useHillshade + hillGrd    -> grdimage (B): data-gradient normal, atan soft-clip, gmt_illuminate.
 //   * useHillshade + !hillGrd   -> Lambert (A): CPT(z) * (ambient + (1-ambient)*max(0, n.L)),
 //                                  darken-only. Uses the DATA-space normal (VE-independent — a flat
 //                                  image has no displayed relief to VE-correct onto, unlike the 3-D
 //                                  surface Lambert).
-// NaN z -> transparent. Bakes an arbitrary TRUE-coord WINDOW [wx0,wx1]x[wy0,wy1] of the grid (the
+// NaN z -> the Preferences NaN fill colour (opaque). Bakes an arbitrary TRUE-coord WINDOW [wx0,wx1]x[wy0,wy1] of the grid (the
 // whole extent for the base texture, a zoomed sub-rectangle for the detail tile), so the same code
 // serves both the full-map bake and the hi-res zoom refine. This loop IS the cost of a layer switch /
 // relight / zoom refine: no VTK geometry.
@@ -183,7 +185,12 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 			const int ix = clampi((int)std::lround((tx - gx0) / dx), nx - 1);
 			const double zc = Zc(ix, iy);
 			unsigned char *p = out.data() + ((size_t)r * txW + col) * 4;
-			if (std::isnan(zc)) { p[3] = 0; continue; }
+			if (std::isnan(zc)) {   // paint NaN with the Preferences NaN fill colour (opaque)
+				p[0] = (unsigned char)(s->nanColor[0]*255.0+0.5);
+				p[1] = (unsigned char)(s->nanColor[1]*255.0+0.5);
+				p[2] = (unsigned char)(s->nanColor[2]*255.0+0.5);
+				p[3] = 255; continue;
+			}
 			int ti = (int)((zc - lo) * invspan); if (ti < 0) ti = 0; else if (ti > NT - 1) ti = NT - 1;
 			const unsigned char *rgb8 = &tbl[3 * ti];
 			if (!shade) { p[0] = rgb8[0]; p[1] = rgb8[1]; p[2] = rgb8[2]; p[3] = 255; continue; }
@@ -352,6 +359,7 @@ static void syncShadeChecks(Scene *s) {
 	s->cbShadow->setChecked(s->useShadows);
 	s->cbHillL->setChecked(s->useHillshade && !s->hillGrd);
 	s->cbHillG->setChecked(s->useHillshade &&  s->hillGrd);
+	if (s->syncFlatEnable) s->syncFlatEnable();   // grey the flat-dead controls when a layer enters image mode
 }
 
 // Baked hillshade for ONE surface mapper (single actor or a LOD tile). Two ALTERNATIVE styles,

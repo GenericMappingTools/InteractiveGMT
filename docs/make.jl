@@ -8,6 +8,7 @@ const titles = Dict(
     "01-getting-started.md" => "Getting Started",
     "05-preferences.md" => "Preferences",
     "10-grid-viewer.md" => "Grid Viewer",
+    "15-shading.md" => "Shading Dock",
     "20-point-clouds.md" => "Point Clouds",
     "30-solids.md" => "Solids and Meshes",
     "40-xyplot.md" => "X,Y Plot Tool",

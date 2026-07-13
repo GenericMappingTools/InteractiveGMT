@@ -355,6 +355,7 @@ struct Scene {
 	QuadNode *quadRoot = nullptr;
 	vtkSmartPointer<vtkScalarsToColors> surfLut;     // shared LUT for lazily-built tiles
 	bool     surfCtfRange = false;
+	double   nanColor[3] = { 1.0, 1.0, 1.0 };         // Preferences "NaN fill colour" (seeded from QSettings at build)
 	int      surfEdges = 0;                           // current wire-edge state (applied to new tiles)
 	uint64_t lodFrame = 0;                            // bumped each refine; tiles store lastUsed
 	size_t   lodResidentBytes = 0;                    // approx resident tile geometry bytes
@@ -386,6 +387,7 @@ struct Scene {
 	int    cubeLayerCur = 0;    // current cube layer index (0-based) + colour-range choice (bookkeeping)
 	int    cubeUseGlobal = 0;
 	QCheckBox *cbFlat = nullptr, *cbShadow = nullptr, *cbHillL = nullptr, *cbHillG = nullptr;   // Shading dock checkboxes
+	std::function<void()> syncFlatEnable;   // grey out the Shading controls that do nothing on a flat baked image
 	// Base grid's CPT (control nodes) + geographic flag, kept so the Shading dock can rebuild the base as
 	// a flat IMAGE or a real SURFACE on demand (rebuildBaseFromStored) from s->gridZ without the host.
 	std::vector<double> baseCz, baseCrgb;
@@ -730,10 +732,25 @@ static vtkSmartPointer<vtkPolyData> makeGridSurface(int nx, int ny, double x0, d
 	return pd;
 }
 
+// Paint NaN-scalar nodes/cells with the Preferences "NaN fill colour". A vtkColorTransferFunction
+// maps a NaN scalar to its NanColor; the grid builders keep NaN nodes' z SCALAR = NaN (only their
+// geometry z is filled to a finite floor), so those cells render in this colour. No-op for a plain
+// LUT (grids always carry a CTF here).
+static void applyNanColorToLut(vtkScalarsToColors *lut, const double nanRGB[3]) {
+	if (auto *ctf = vtkColorTransferFunction::SafeDownCast(lut)) {
+		ctf->SetNanColor(nanRGB[0], nanRGB[1], nanRGB[2]);
+		ctf->SetNanOpacity(1.0);
+	}
+	else if (auto *tbl = vtkLookupTable::SafeDownCast(lut)) {
+		tbl->SetNanColor(nanRGB[0], nanRGB[1], nanRGB[2], 1.0);
+	}
+}
+
 // Build a surface from a caller-supplied grid (GMT.jl layout): z is column-major,
 // ny rows x nx cols, element (iy,ix) at offset ix*ny+iy, mapping to (x[ix], y[iy])
-// with y ascending. NaN cells are dropped: their points are still emitted (cheap,
-// harmless orphans) but any quad touching a NaN corner is skipped.
+// with y ascending. NaN cells are PAINTED (not dropped): every quad is emitted; a NaN node keeps its
+// z SCALAR = NaN (so the CTF paints it with its NanColor = the Preferences NaN fill colour) but its
+// geometry z is pinned to the grid floor (zmin) so the mesh stays valid (flat filled hole).
 static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, int ny,
 													  double x0, double x1,
 													  double y0, double y1,
@@ -771,6 +788,16 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 	}
 	if (zmin > zmax) { zmin = 0.0; zmax = 1.0; }   // all-NaN guard
 
+	// Pin NaN nodes' GEOMETRY z to the grid floor so a filled hole is a flat sheet (the z SCALAR
+	// stays NaN, so the CTF still paints it with the NaN fill colour). Same id order as the insert
+	// loop above (id = j*nx + i). A NaN coordinate would otherwise corrupt any quad referencing it.
+	for (int j = 0; j < ny; ++j) {
+		for (int i = 0; i < nx; ++i) {
+			if (std::isnan(z[(vtkIdType)i * ny + j]))
+				pts->SetPoint((vtkIdType)j * nx + i, x0 + i * dx, y0 + j * dy, zmin);
+		}
+	}
+
 	vtkNew<vtkCellArray> cells;
 	// vtkCellArray defaults to 64-bit ids on win64. A grid id is < nx*ny; when that fits in
 	// int32 use 32-bit connectivity storage -> halve the cell-array RAM (huge on big grids).
@@ -781,9 +808,8 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 			vtkIdType b =  j      * nx + i + 1;
 			vtkIdType c = (j + 1) * nx + i + 1;
 			vtkIdType d = (j + 1) * nx + i;
-			if (std::isnan(zval->GetValue(a)) || std::isnan(zval->GetValue(b)) ||
-				std::isnan(zval->GetValue(c)) || std::isnan(zval->GetValue(d)))
-				continue;
+			// NaN corners are no longer skipped — the quad is emitted and its NaN nodes render in the
+			// NaN fill colour (z scalar NaN -> CTF NanColor), so the hole is painted instead of void.
 			if (triangulate) {
 				vtkIdType t1[3] = { a, b, c };   // lower-right tri
 				vtkIdType t2[3] = { a, c, d };   // upper-left  tri
@@ -846,6 +872,7 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 												 int i0, int i1, int j0, int j1,
 												 double x0, double dx, double y0, double dy,
+												 double fillZ,       // NaN nodes' geometry z (grid floor) -> painted flat hole
 												 int step = 1) {     // step>1 -> coarse LOD tile (sub-sampled)
 	if (step < 1) step = 1;
 	// Sampled global indices for this tile, ALWAYS including the far edge i1/j1 so a coarse tile
@@ -866,7 +893,9 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 		for (int ii = 0; ii < tw; ++ii) {
 			const int i = xs[ii]; const double x = x0 + i * dx;
 			const float zz = z[(vtkIdType)i * ny + j];
-			pts->InsertNextPoint(x, y, zz);
+			// NaN node: geometry z pinned to the floor (valid mesh, flat hole), z SCALAR kept NaN so
+			// the CTF paints it with the NaN fill colour.
+			pts->InsertNextPoint(x, y, std::isnan(zz) ? fillZ : zz);
 			zval->InsertNextValue(zz);
 			// normal from the DISPLAYED (sampled) neighbours -> matches this tile's surface, and
 			// neighbour tiles sharing the edge sample the same nodes -> no lighting seam.
@@ -899,9 +928,7 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 			const vtkIdType b = (vtkIdType)jj    * tw + ii + 1;
 			const vtkIdType c = (vtkIdType)(jj+1)* tw + ii + 1;
 			const vtkIdType d = (vtkIdType)(jj+1)* tw + ii;
-			if (std::isnan(zval->GetValue(a)) || std::isnan(zval->GetValue(b)) ||
-				std::isnan(zval->GetValue(c)) || std::isnan(zval->GetValue(d)))
-				continue;
+			// NaN corners no longer skip the quad — the hole is painted (NaN scalar -> CTF NanColor).
 			const vtkIdType quad[4] = { a, b, c, d };
 			cells->InsertNextCell(4, quad);
 		}
@@ -1226,6 +1253,11 @@ static void rebuildAxisLabels(Scene *s) {
 	const bool zHide = s->flat2d || (b[5] - b[4]) <= 0.0;
 	s->axes->SetZAxisVisibility(zHide ? 0 : 1);
 	if (zHide) s->axes->DrawZGridlinesOff(); else s->axes->DrawZGridlinesOn();
+	// Flat map (no Z relief): the X/Y gridlines lie coplanar with the image, drawing a graticule
+	// mesh over the map (and thin coplanar lines FXAA then re-thicknesses). Drop them when flat;
+	// keep them in 3-D where they sit on the far box walls as a depth reference.
+	if (zHide) { s->axes->DrawXGridlinesOff(); s->axes->DrawYGridlinesOff(); }
+	else       { s->axes->DrawXGridlinesOn();  s->axes->DrawYGridlinesOn();  }
 	if (zHide) {
 		for (auto& l : s->zlabels) l->SetVisibility(0);
 	} else {
@@ -1292,6 +1324,10 @@ static void applyVE(Scene *s) {
 	s->axes->SetBounds(b);
 	s->axes->SetZAxisVisibility(flatZ ? 0 : 1);
 	if (flatZ) s->axes->DrawZGridlinesOff(); else s->axes->DrawZGridlinesOn();
+	// Flat map: X/Y gridlines go coplanar with the image (a mesh over the map) -> drop them; 3-D
+	// keeps them on the far box walls (see rebuildAxisLabels).
+	if (flatZ) { s->axes->DrawXGridlinesOff(); s->axes->DrawYGridlinesOff(); }
+	else       { s->axes->DrawXGridlinesOn();  s->axes->DrawYGridlinesOn();  }
 	s->axes->SetCamera(s->ren->GetActiveCamera());
 	rebuildAxisLabels(s);                        // Z billboards follow the new drawn extent
 	s->widget->renderWindow()->Render();

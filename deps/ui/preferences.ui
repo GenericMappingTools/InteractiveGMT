@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>433</width>
-    <height>250</height>
+    <height>290</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -219,7 +219,7 @@
    <property name="geometry">
     <rect>
      <x>330</x>
-     <y>210</y>
+     <y>250</y>
      <width>90</width>
      <height>28</height>
     </rect>
@@ -229,6 +229,35 @@
    </property>
    <property name="default">
     <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QLabel" name="lblNanColor">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>200</y>
+     <width>121</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>NaN fill color</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="btnNanColor">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>220</y>
+     <width>60</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Solid colour used to paint grid NaN cells (holes). Click to choose.</string>
+   </property>
+   <property name="text">
+    <string>#ffffff</string>
    </property>
   </widget>
   <widget class="QComboBox" name="cmbDistAzim">

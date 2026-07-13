@@ -581,7 +581,7 @@ class PreferencesDialog : public QDialog {
 public:
 	PreferencesDialog(QWidget *parent) : QDialog(parent) {
 		setWindowTitle("Preferences");
-		setFixedSize(433, 250);
+		setFixedSize(433, 290);
 
 		// ---- Row 1: measure units | dist/azim type | azimuth direction ---------------------
 		auto *lblUnits = new QLabel("Measure units", this);
@@ -645,9 +645,20 @@ public:
 		cmbCoastColor->addItems({"Black", "White"});
 		cmbCoastColor->setToolTip("Line color used when ploting coastlines and boundaries.");
 
+		// ---- Row 4: NaN fill colour (grid holes) -------------------------------------------
+		auto *lblNan = new QLabel("NaN fill color", this);
+		lblNan->setGeometry(20, 200, 121, 16);
+		btnNanColor = new QPushButton(this);
+		btnNanColor->setGeometry(20, 220, 60, 24);
+		btnNanColor->setToolTip("Solid colour used to paint grid NaN cells (holes). Click to choose.");
+		QObject::connect(btnNanColor, &QPushButton::clicked, this, [this]() {
+			QColor c = QColorDialog::getColor(QColor(nanColorHex), this, "NaN fill color");
+			if (c.isValid()) { nanColorHex = c.name(); setNanSwatch(); }
+		});
+
 		// ---- OK -----------------------------------------------------------------------------
 		auto *btnOK = new QPushButton("OK", this);
-		btnOK->setGeometry(330, 210, 90, 28);
+		btnOK->setGeometry(330, 250, 90, 28);
 		btnOK->setDefault(true);
 		QObject::connect(btnOK, &QPushButton::clicked, this, [this]() { save(); accept(); });
 
@@ -657,12 +668,23 @@ public:
 private:
 	QComboBox *cmbMeasureUnits, *cmbDistAzim, *cmbAzimDir, *cmbDefaultDir;
 	QComboBox *cmbLineThickness, *cmbLineColor, *cmbCoastColor;
+	QPushButton *btnNanColor;
+	QString      nanColorHex;   // current NaN fill colour (#rrggbb), edited by the swatch button
 
 	// Select a combo entry by text; for the editable directory combo just set the edit text.
 	static void selectText(QComboBox *c, const QString &txt) {
 		int i = c->findText(txt);
 		if (i >= 0) c->setCurrentIndex(i);
 		else if (c->isEditable() && !txt.isEmpty()) c->setEditText(txt);
+	}
+
+	// Paint the NaN swatch button with the current colour (readable text label = the hex).
+	void setNanSwatch() {
+		QColor c(nanColorHex);
+		if (!c.isValid()) c = QColor(Qt::white);
+		const QString fg = (c.lightnessF() > 0.5) ? "#000000" : "#ffffff";
+		btnNanColor->setStyleSheet(QString("background-color:%1; color:%2;").arg(c.name(), fg));
+		btnNanColor->setText(c.name());
 	}
 
 	void load() {
@@ -675,6 +697,7 @@ private:
 		selectText(cmbLineThickness, prefLineThickness());
 		selectText(cmbLineColor,     prefLineColor());
 		selectText(cmbCoastColor,    prefCoastColor());
+		nanColorHex = prefNanColor(); setNanSwatch();
 	}
 
 	void save() {
@@ -685,6 +708,7 @@ private:
 		st.setValue("prefs/lineThickness", cmbLineThickness->currentText());
 		st.setValue("prefs/lineColor",     cmbLineColor->currentText());
 		st.setValue("prefs/coastColor",    cmbCoastColor->currentText());
+		st.setValue("prefs/nanColor",      nanColorHex);
 		// Default directory: push the chosen folder to the front of the MRU (also syncs defaultDir).
 		prefPushDir(cmbDefaultDir->currentText().trimmed());
 	}
@@ -736,7 +760,7 @@ static QuadNode *buildQuadNode(int i0, int i1, int j0, int j1, int level,
 static void ensureNodeActor(Scene *s, QuadNode *n) {
 	if (n->actor) return;
 	auto tpd = makeGridTile(s->gridZ.data(), s->gnx, s->gny,
-							n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, n->step);
+							n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, s->zmin, n->step);
 	vtkNew<vtkPolyDataMapper> m; m->SetInputData(tpd);
 	m->SetLookupTable(s->surfLut); m->SetScalarRange(s->zmin, s->zmax);
 	if (s->surfCtfRange) m->UseLookupTableScalarRangeOn();
@@ -4322,6 +4346,8 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 		ctfRange = true;
 	}
 	s->surfLut = lut; s->surfCtfRange = ctfRange;   // shared by surface, LOD tiles AND the colorbar
+	prefNanColorRGB(s->nanColor[0], s->nanColor[1], s->nanColor[2]);   // Preferences NaN fill colour
+	applyNanColorToLut(s->surfLut, s->nanColor);    // CTF paints NaN-scalar cells with it
 	// Remember the base CPT + geographic flag so the Shading dock can rebuild this grid as a flat image
 	// or a surface on demand (rebuildBaseFromStored) without the host re-sending the data.
 	if (cz && crgb && ncolor > 0) { s->baseCz.assign(cz, cz + ncolor); s->baseCrgb.assign(crgb, crgb + 3 * ncolor); }
@@ -5064,7 +5090,23 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	QMenu *mFile = win->menuBar()->addMenu("&File");
 	// Preferences: settings dialog (deps/ui/preferences.ui). Values persist via QSettings.
-	mFile->addAction("&Preferences…", [win]() { PreferencesDialog(win).exec(); });
+	mFile->addAction("&Preferences…", [win]() {
+		const QString nanBefore = prefNanColor();
+		PreferencesDialog(win).exec();
+		// NaN fill colour changed -> repaint every open window's grid NaN cells live. The hole
+		// GEOMETRY is already filled (colour-independent); only the CTF NaN colour + baked textures
+		// need refreshing, so update each scene's colour and re-run applyShading (re-bakes hillshade /
+		// flat image and re-renders).
+		if (prefNanColor() != nanBefore) {
+			for (Scene *sc : g_scenes) {
+				if (!sceneAlive(sc)) continue;
+				prefNanColorRGB(sc->nanColor[0], sc->nanColor[1], sc->nanColor[2]);
+				applyNanColorToLut(sc->surfLut, sc->nanColor);
+				for (auto &ex : sc->extras) applyNanColorToLut(ex.lut, sc->nanColor);
+				applyShading(sc);
+			}
+		}
+	});
 	mFile->addSeparator();
 	// New Window: open a fresh empty iGMT launcher. Routed through Julia (g_juliaNewWindow) so the
 	// new window is tracked in the Julia figure registry — the basis for future inter-window data
@@ -6063,6 +6105,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QObject::connect(cbFlat, &QCheckBox::toggled, [s](bool b){
 		s->cubeFlatImg = b;                                  // cube layer switches follow this too
 		rebuildBaseFromStored(s, b);
+		if (s->syncFlatEnable) s->syncFlatEnable();          // grey/un-grey the flat-dead controls
 	});
 	form->addRow("Shaded image (2-D)", cbFlat);
 
@@ -6090,6 +6133,19 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		syncShade();
 	});
 	form->addRow("Hillshade (grdimage)", cbHillG);
+
+	// A flat "Shaded image (2-D)" is a baked texture, so the PBR material / light / IBL / occlusion
+	// controls do NOTHING to it — only the two Hillshade boxes (relief style) and the sun Az/El that
+	// feeds them still bite. Grey the dead ones out in flat mode so the dock never offers a control
+	// that silently does nothing; restore them for a real 3-D surface. (cast-shadows is 3-D-only too.)
+	s->syncFlatEnable = [=]() {
+		const bool flat = s->layerImgMode;
+		for (QWidget *w : { (QWidget*)slRough, (QWidget*)slMetal, (QWidget*)slLight, (QWidget*)slFill,
+		                    (QWidget*)slEnv, (QWidget*)slSSAO, (QWidget*)cbIBL, (QWidget*)cbSSAO,
+		                    (QWidget*)cbShadow })
+			w->setEnabled(!flat);
+	};
+	s->syncFlatEnable();
 
 	panel->setLayout(form);
 	dock->setWidget(panel);                                  // mount the controls panel into the Shading dock

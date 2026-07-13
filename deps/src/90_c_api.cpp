@@ -2618,6 +2618,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 			t->SetHueRange(0.667, 0.0); t->SetNumberOfTableValues(256); t->SetRampToLinear();
 			t->SetTableRange(zmin, zmax); t->Build(); lut = t;
 		}
+		applyNanColorToLut(lut, s->nanColor);   // paint this grid's NaN cells with the NaN fill colour
 		vtkNew<vtkPolyDataMapper> map;
 		map->SetInputConnection(norms->GetOutputPort());
 		map->SetLookupTable(lut); map->SetScalarRange(zmin, zmax);
