@@ -371,6 +371,32 @@ struct Scene {
 	bool   gridAdopted = false; // a real grid was dropped onto an imageOnly canvas (Background region /
 	                            // bare image) and adopted as the hover heightfield -> readout shows z,
 	                            // NOT pixel colour, even though the canvas itself stays imageOnly
+	bool   layerImgMode = false;// base is a grid shown as a FLAT illuminated IMAGE (3-D-cube layer scrub,
+	                            // gmtvtk_show_layer_image_h): a flat quad + hillshade texture, full-res z in
+	                            // gridZ for the readout. A same-size layer switch just repaints the texture
+	                            // (no geometry rebuild). Cleared by buildSceneContent (any real surface build).
+	int    layerTexW = 0, layerTexH = 0;   // baked hillshade texture size (<= grid size; capped so a huge
+	                            // cube's per-layer bake stays cheap). Fast-repaint reuses the texture iff these match.
+	// 3-D-cube shading selection. A cube layer can be shown either as the fast flat shaded IMAGE (the new
+	// "Shaded image (2-D)" algorithm) or, if the user picks one of the surface looks (Cast shadows /
+	// Hillshade Lambert / grdimage) in the Shading dock, as a real 3-D surface with that look. The dock
+	// re-renders the CURRENT layer through g_juliaCubeLayer when the choice changes.
+	bool   isCube = false;      // this window is showing a 3-D-cube layer (cube layer switches read cubeFlatImg)
+	bool   cubeFlatImg = true;  // render the base grid as the flat shaded IMAGE (else a real 3-D surface)
+	int    cubeLayerCur = 0;    // current cube layer index (0-based) + colour-range choice (bookkeeping)
+	int    cubeUseGlobal = 0;
+	QCheckBox *cbFlat = nullptr, *cbShadow = nullptr, *cbHillL = nullptr, *cbHillG = nullptr;   // Shading dock checkboxes
+	// Base grid's CPT (control nodes) + geographic flag, kept so the Shading dock can rebuild the base as
+	// a flat IMAGE or a real SURFACE on demand (rebuildBaseFromStored) from s->gridZ without the host.
+	std::vector<double> baseCz, baseCrgb;
+	int    baseGeog = 0;
+	// Hi-res zoom detail tile: on camera-settle a sharper texture of just the visible region is baked and
+	// laid over the base drape, so a deep zoom is crisp without paying for it during scrubbing.
+	vtkSmartPointer<vtkActor>     layerDetail;
+	vtkSmartPointer<vtkImageData> layerDetailImg;
+	vtkSmartPointer<vtkCallbackCommand> layerCamCmd;   // camera observer -> schedules a settle refine
+	QTimer *layerDetailTimer = nullptr;                // debounce (bake only after the camera stops)
+	double  layerDetailReg[4] = { 0, 0, 0, 0 };        // baked tile region (true W,E,S,N); skip if unchanged
 	bool   fvSolid = false;     // window's content is a body-button GMT solid (cube/sphere/torus/…) built
 	                            // in place by gmtvtk_promote_fv_h -> a later body click REPLACES it here
 	double sav_pos[3] = {0, 0, 0};

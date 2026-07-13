@@ -826,6 +826,27 @@ static void onLodCamera(vtkObject*, unsigned long, void *cd, void*) {
 	refineQuadtree(static_cast<Scene*>(cd));
 }
 
+// Rebuild the window's BASE grid as a flat shaded IMAGE (asImage=true) or a real 3-D SURFACE
+// (asImage=false), from the grid already resident in s->gridZ + its stored CPT — no host round-trip.
+// Drives the Shading dock's "Shaded image (2-D)" geometry toggle, for BOTH a 3-D-cube layer and a
+// plain single grid. The two callees re-shade + sync the dock internally.
+extern "C" __declspec(dllexport) int gmtvtk_show_layer_image_h(void*, const float*, int, int, double, double,
+                                                    double, double, int, const double*, const double*, int, const char*);
+extern "C" __declspec(dllexport) int gmtvtk_replace_base_grid_h(void*, const float*, int, int, double, double,
+                                                     double, double, int, const double*, const double*, int, const char*);
+static void rebuildBaseFromStored(Scene *s, bool asImage) {
+	if (!s || s->gridZ.empty() || s->gnx < 2 || s->gny < 2 || s->baseCz.size() < 2) return;
+	const std::vector<float>  z    = s->gridZ;         // COPY: the callees reassign s->gridZ from this pointer
+	const std::vector<double> cz   = s->baseCz;
+	const std::vector<double> crgb = s->baseCrgb;
+	const int nc = (int)cz.size();
+	const std::string nm = s->surfName;
+	if (asImage)
+		gmtvtk_show_layer_image_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str());
+	else
+		gmtvtk_replace_base_grid_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str());
+}
+
 // GRAPHICAL ELEMENT: custom dock title bar that folds the dock HORIZONTALLY.
 // Open  -> a normal horizontal strip: "▾ Title" across the top.
 // Folded -> a thin vertical strip (~one text-height wide) with "▸" at the top and
@@ -4268,6 +4289,13 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	for (auto& ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
 	s->barLabels.clear(); s->barValues.clear();
 	s->surfGroup = nullptr; s->drape = nullptr; s->bar = nullptr; s->barTicks = nullptr;
+	s->layerImgMode = false;   // any real surface build exits the fast cube-layer image mode
+	if (s->layerCamCmd && s->ren->GetActiveCamera()) s->ren->GetActiveCamera()->RemoveObserver(s->layerCamCmd);
+	s->layerCamCmd = nullptr;
+	if (s->layerDetail) s->ren->RemoveActor(s->layerDetail);
+	s->layerDetail = nullptr; s->layerDetailImg = nullptr;
+	if (s->layerDetailTimer) s->layerDetailTimer->stop();
+	s->layerDetailReg[0] = s->layerDetailReg[1] = 0.0;
 
 	// Colour map. A GMT CPT arrives as control nodes (cz[i] -> crgb[i]); a
 	// vtkColorTransferFunction maps z to colour at those exact (possibly non-uniform,
@@ -4294,6 +4322,10 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 		ctfRange = true;
 	}
 	s->surfLut = lut; s->surfCtfRange = ctfRange;   // shared by surface, LOD tiles AND the colorbar
+	// Remember the base CPT + geographic flag so the Shading dock can rebuild this grid as a flat image
+	// or a surface on demand (rebuildBaseFromStored) without the host re-sending the data.
+	if (cz && crgb && ncolor > 0) { s->baseCz.assign(cz, cz + ncolor); s->baseCrgb.assign(crgb, crgb + 3 * ncolor); }
+	s->baseGeog = geographic;
 
 	// ===== surface: tiled grid (gz) OR single actor (pd) =====================
 	// Declared out here so the drape block below (single-actor path) can share them.
@@ -6014,9 +6046,27 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// when turned ON, uncheck the other two (QSignalBlocker stops their handlers re-firing), then
 	// re-derive ALL Scene flags from the live checkbox states (so an off-handler never wrongly
 	// clears a flag the just-checked box set). hillGrd selects the Lambert vs grdimage style.
+	// "Shaded image (2-D)" is an INDEPENDENT GEOMETRY toggle: ON = render the grid as a fast flat
+	// shaded image, OFF = a real 3-D surface. It works on ANY grid (cube layer or single grid). The
+	// three hillshade looks below are the ILLUMINATION — mutually exclusive AMONG THEMSELVES (all may
+	// be off), applied IN PLACE (no geometry rebuild) to whichever geometry is showing, so they are
+	// cheap and look identical flat vs 3-D (both go through the shared applyReliefShade).
+	QCheckBox *cbFlat   = new QCheckBox(panel);                                                        // GRAPHICAL ELEMENT: "Shaded image (2-D)" geometry toggle
 	QCheckBox *cbShadow = new QCheckBox(panel); cbShadow->setChecked(s->useShadows);                  // GRAPHICAL ELEMENT: "Cast shadows" checkbox
 	QCheckBox *cbHillL  = new QCheckBox(panel); cbHillL->setChecked(s->useHillshade && !s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (Lambert)" checkbox
 	QCheckBox *cbHillG  = new QCheckBox(panel); cbHillG->setChecked(s->useHillshade &&  s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (grdimage)" checkbox
+	cbFlat->setChecked(s->layerImgMode);
+	cbFlat->setEnabled(s->gnx > 1 && !s->gridZ.empty());     // enabled whenever there is a grid to flip
+	s->cbFlat = cbFlat; s->cbShadow = cbShadow; s->cbHillL = cbHillL; s->cbHillG = cbHillG;
+
+	// Geometry toggle: rebuild the base as flat image / surface (rebuildBaseFromStored re-shades + syncs).
+	QObject::connect(cbFlat, &QCheckBox::toggled, [s](bool b){
+		s->cubeFlatImg = b;                                  // cube layer switches follow this too
+		rebuildBaseFromStored(s, b);
+	});
+	form->addRow("Shaded image (2-D)", cbFlat);
+
+	// The three hillshade looks: mutually exclusive, illumination only (applyShading, in place).
 	auto syncShade = [s, cbShadow, cbHillL, cbHillG]() {
 		s->useShadows   = cbShadow->isChecked();
 		s->useHillshade = cbHillL->isChecked() || cbHillG->isChecked();

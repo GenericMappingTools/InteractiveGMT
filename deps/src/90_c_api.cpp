@@ -2389,6 +2389,24 @@ GMTVTK_API void gmtvtk_set_cube_loadall_callback(JuliaCubeLoadAllFn fn) {
 	g_juliaCubeLoadAll = fn;
 }
 
+// Which cube-layer algorithm is selected in the Shading dock: 1 = flat shaded image (fast), 0 = a
+// surface look (Cast shadows / Hillshade). Julia's cube-layer callback reads this to pick how to
+// render the layer.
+GMTVTK_API int gmtvtk_cube_flat_mode(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	return (sceneAlive(s) && s->cubeFlatImg) ? 1 : 0;
+}
+
+// Julia marks the window as showing a 3-D-cube layer (0-based index + colour-range choice) after each
+// render, so the Shading dock can re-render THIS layer when the user switches algorithm and reflect
+// the active choice in its checkboxes (enables the cube-only "Shaded image (2-D)" box).
+GMTVTK_API void gmtvtk_mark_cube(void *handle, int layer_index, int use_global) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	s->isCube = true; s->cubeLayerCur = layer_index; s->cubeUseGlobal = use_global;
+	syncShadeChecks(s);
+}
+
 // Pin the vertical axis box + Z tick labels to the whole cube's z-range so the axes do NOT shift as
 // the user switches layers (each layer's own min/max differs slightly). Call once when a cube is
 // dropped, BEFORE the first layer builds; pass zmax <= zmin to clear the lock. No render here — the
@@ -2831,6 +2849,150 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 
 	applyVE(s);              // re-scale surface + extras + cube axes to the current VE and new bounds
 	applyStacking(s);        // re-offset extras/vectors against the rebuilt base + refresh colorbar
+	rebuildSceneObjects(s);
+	applyShading(s);
+	s->ren->ResetCameraClippingRange();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// Show a 2-D grid layer as a fast ILLUMINATED IMAGE (Mirone-style) — the cheap alternative to a
+// warped 3-D surface for scrubbing the layers of a heavy 3-D cube. The relief is NOT triangulated:
+// a single flat quad carries an nx*ny hillshade texture (bakeLayerRGBA), so a layer switch is a
+// texture repaint + Render, not a per-layer geometry rebuild. The full-res z stays in s->gridZ, so
+// the coordinate readout still reports the true elevation (not a pixel colour) and overlays drape
+// correctly. The colorbar is kept (this is a grid shown as an image, not a bare image).
+//
+// First call (or a grid-size / extent change) builds the flat drape scene; every later same-size
+// call takes the FAST path: overwrite the texture bytes + s->gridZ, one Render. `cz/crgb/ncolor` is
+// the CPT to bake with; the host re-pushes the same CPT (gmtvtk_set_cpt) afterwards so the colorbar
+// legend tracks the chosen (per-layer or whole-cube) range. Returns 1 on success, 0 on failure.
+GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, int ny,
+                                         double x0, double x1, double y0, double y1, int geographic,
+                                         const double *cz, const double *crgb, int ncolor,
+                                         const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !z || nx < 2 || ny < 2 || !cz || !crgb || ncolor < 2)
+		return 0;
+
+	// CPT for baking (a vtkColorTransferFunction over the exact GMT control nodes).
+	vtkNew<vtkColorTransferFunction> ctf;
+	for (int i = 0; i < ncolor; ++i)
+		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+
+	// A cube opens as an illuminated relief map: default a FRESH cube window to the grdimage hillshade
+	// (done before the bake so the very first texture is already shaded). The Shading dock then switches
+	// style (Lambert / off) or moves the sun and relights live via rebakeLayerImage.
+	if (s->emptyStart && !s->layerImgMode) { s->useHillshade = true; s->hillGrd = true; }
+
+	const double dx = (nx > 1) ? (x1 - x0) / (nx - 1) : 0.0;
+	const double dy = (ny > 1) ? (y1 - y0) / (ny - 1) : 0.0;
+	int txW, txH; layerTexSize(nx, ny, txW, txH);      // capped texture size (subsample a heavy cube)
+	std::vector<unsigned char> rgba;
+	bakeLayerRGBA(s, z, nx, ny, x0, y0, dx, dy, ctf, cz[0], cz[ncolor - 1],
+	              x0, x1, y0, y1, txW, txH, rgba);     // base texture = the whole extent
+
+	// ---- FAST path: same window, same grid size + extent -> just repaint the drape texture ----
+	if (s->layerImgMode && s->drape && !s->emptyStart &&
+	    s->gnx == nx && s->gny == ny && s->layerTexW == txW && s->layerTexH == txH &&
+	    s->gx0 == x0 && s->gx1 == x1 && s->gy0 == y0 && s->gy1 == y1) {
+		vtkTexture *tx = s->drape->GetTexture();
+		vtkImageData *id = tx ? vtkImageData::SafeDownCast(tx->GetInput()) : nullptr;
+		int dims[3] = { 0, 0, 0 }; if (id) id->GetDimensions(dims);
+		if (id && dims[0] == txW && dims[1] == txH) {
+			memcpy(id->GetScalarPointer(), rgba.data(), rgba.size());
+			id->Modified(); tx->Modified();
+			s->gridZ.assign(z, z + (size_t)nx * ny);     // hover now reads the NEW layer's z
+			s->zmin = cz[0]; s->zmax = cz[ncolor - 1];
+			if (name && name[0]) s->surfName = name;
+			invalidateLayerDetail(s);   // the zoom detail tile is for the OLD layer -> refresh on settle
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			return 1;
+		}
+	}
+
+	// ---- FULL build: flat draped scene (first layer, or grid size/extent changed) ----
+	const bool fromEmpty = s->emptyStart;
+	const double zmin = cz[0], zmax = cz[ncolor - 1];
+	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1; s->zmin = zmin; s->zmax = zmax;
+	if (name && name[0]) s->surfName = name;
+
+	// Scale: from the real extent on a launcher promote; kept (with a camera snapshot) on an in-place
+	// rebuild so the view does not jump.
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	double cpos[3], cfoc[3], cvup[3], cpscale = 1.0; int cpar = 0;
+	if (fromEmpty) {
+		double xfac, zfac, ve0;
+		computeScales(geographic, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
+		s->xfac = xfac; s->zfac = zfac; s->ve = ve0;
+	}
+	else {
+		cam->GetPosition(cpos); cam->GetFocalPoint(cfoc); cam->GetViewUp(cvup);
+		cpscale = cam->GetParallelScale(); cpar = cam->GetParallelProjection();
+	}
+
+	// Flat 2x2 quad (z=0) with tcoords; the nx*ny hillshade rides on it as the drape texture.
+	const float flatz[4] = { 0.f, 0.f, 0.f, 0.f };
+	double zlo = 0, zhi = 0;
+	vtkSmartPointer<vtkPolyData> pd = makeGridFromArray(flatz, 2, 2, x0, x1, y0, y1, zlo, zhi,
+	                                                    /*triangulate=*/true, /*wantTC=*/true);
+	s->imageOnly = false;          // keep the colorbar + z readout (a grid shown as an image, not a bare image)
+	buildSceneContent(s, pd, x0, x1, y0, y1, cz, crgb, ncolor, rgba.data(), txW, txH, 4,
+	                  /*edges=*/0, /*pointCloud=*/false, geographic, nullptr, 0, 0, /*blankStart=*/false);
+
+	// Full-res data layer for the hover/coordinate readout (the single-actor drape path does NOT
+	// populate gridZ; only the tiled path does — so set it here, and re-point the active-grid routing).
+	s->gridZ.assign(z, z + (size_t)nx * ny);
+	s->gnx = nx; s->gny = ny;
+	s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
+	s->gdx = dx; s->gdy = dy;
+	s->actZ = &s->gridZ; s->actNx = nx; s->actNy = ny;
+	s->actX0 = x0; s->actX1 = x1; s->actY0 = y0; s->actY1 = y1;
+	s->layerImgMode = true;
+	s->layerTexW = txW; s->layerTexH = txH;
+	s->emptyStart = false;
+	if (s->axes) { s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff(); }   // a 2-D map: no Z axis
+
+	// Rebuild the gizmo against the new bounds, then either open flat-2D top-down (launcher promote,
+	// the way a normal grid opens) or restore the previous view (in-place rebuild).
+	disableGizmo(s); s->giz = enableGizmo(s, 0.01);
+	if (fromEmpty) {
+		s->flat2d = false; sceneSetFlat2D(s, true);
+		// The empty launcher created the Shading dock HIDDEN (no body to light back then). There is a
+		// surface now, so reveal it FOLDED to the side strip — exactly as promote_surface_h does, so a
+		// cube layer gets the same live Shading controls (relight via rebakeLayerImage) as any grid.
+		if (s->shadeDock && s->shadeFoldBar) {
+			if (QWidget *body = s->shadeDock->widget()) body->setVisible(false);
+			s->shadeFoldBar->folded    = true;
+			s->shadeFoldBar->openWidth = 240;
+			s->shadeFoldBar->updateGeometry();
+			s->shadeFoldBar->update();
+			s->shadeDock->setVisible(true);
+			if (s->win)
+				s->win->resizeDocks({s->shadeDock}, {s->shadeFoldBar->sizeHint().width()}, Qt::Horizontal);
+		}
+	}
+	else {
+		cam->SetPosition(cpos); cam->SetFocalPoint(cfoc); cam->SetViewUp(cvup);
+		cam->SetParallelProjection(cpar); if (cpar) cam->SetParallelScale(cpscale);
+	}
+	if (s->giz) setGizmoVisible(*s->giz, !s->flat2d);
+
+	// Hi-res zoom detail: a settle-debounced timer re-bakes a sharp tile of the visible region, driven
+	// by a camera-modified observer (see refineLayerDetail / onLayerCamera, 40_shading.cpp).
+	if (!s->layerDetailTimer) {
+		s->layerDetailTimer = new QTimer(s->win);
+		s->layerDetailTimer->setSingleShot(true);
+		QObject::connect(s->layerDetailTimer, &QTimer::timeout, s->win, [s]() { refineLayerDetail(s); });
+	}
+	if (s->layerCamCmd && s->ren->GetActiveCamera()) s->ren->GetActiveCamera()->RemoveObserver(s->layerCamCmd);
+	s->layerCamCmd = vtkSmartPointer<vtkCallbackCommand>::New();
+	s->layerCamCmd->SetCallback(onLayerCamera);
+	s->layerCamCmd->SetClientData(s);
+	s->ren->GetActiveCamera()->AddObserver(vtkCommand::ModifiedEvent, s->layerCamCmd);
+
+	applyVE(s);
+	applyStacking(s);
 	rebuildSceneObjects(s);
 	applyShading(s);
 	s->ren->ResetCameraClippingRange();

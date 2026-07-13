@@ -126,57 +126,92 @@ function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::C
 
 		layer_i = Int(layer_index) + 1                     # 0-based (C/UI) -> 1-based (Julia)
 		layer_name = info.name                             # stable name so the base grid updates in place
-
 		cur = get(_CUBE_CUR, scene, nothing)
-		# Colour-only change: the slice is unchanged, so just re-push the (already-computed) CPT for
-		# the chosen range -- a single ccall, no makecpt, no disk read, no rebuild. This is what makes
-		# the checkbox instant AND actually retargets the colorbar.
-		if cur !== nothing && cur.layer == layer_i && get(_CUBE_LOADED, scene, false)
-			_cube_push_cpt(scene, use_global != 0 ? cur.glob : cur.loc)
-			return
-		end
+		loaded = get(_CUBE_LOADED, scene, false)
+		# The Shading dock picks the algorithm: flat shaded image (fast) OR a real 3-D surface with a
+		# surface look (Cast shadows / Hillshade). Read the selection and render accordingly.
+		flat = ccall(_fn(:gmtvtk_cube_flat_mode), Cint, (Ptr{Cvoid},), scene) != 0
 
-		# Whole cube in RAM (the "Load all in RAM" button): slice the k-th slab in memory instead of
-		# reading it off disk. `_cube_layer_view` returns a GMTgrid whose z aliases the cube's memory
-		# (unsafe_wrap, NO copy), so the rest of the path is identical to the disk case.
-		ram = get(_CUBE_RAM, scene, nothing)
-		if ram !== nothing
-			Gk   = _cube_layer_view(ram, layer_i)
-			cmap = _default_cmap(Gk)
-			if get(_CUBE_LOADED, scene, false)
-				_apply_host_grid!(scene, Gk, layer_name)
+		# Same layer already resident -> reuse the cached slice (no re-read) for a colour toggle OR an
+		# algorithm switch (flat image <-> surface); only the render path differs.
+		if cur !== nothing && cur.layer == layer_i && loaded
+			chosen = use_global != 0 ? cur.glob : cur.loc
+			zr     = use_global != 0 ? (info.zmin, info.zmax) : nothing
+			if flat
+				_show_cube_layer_image!(scene, cur.G, layer_name, chosen)   # cheap texture repaint
 			else
-				_add_grid_to_scene(scene, Gk, layer_name; promote=info.promote, source=info.source)
-				_CUBE_LOADED[scene] = true
+				_apply_host_grid!(scene, cur.G, layer_name; zrange=zr)      # real 3-D surface
 			end
-			loc  = _cpt_nodes(Gk, cmap)
-			glob = _cpt_nodes_range(info.zmin, info.zmax, cmap)
-			_CUBE_CUR[scene] = (layer=layer_i, G=Gk, cmap=cmap, loc=loc, glob=glob)
-			_cube_push_cpt(scene, use_global != 0 ? glob : loc)
+			_CUBE_CUR[scene] = (layer=layer_i, G=cur.G, cmap=cur.cmap, loc=cur.loc, glob=cur.glob, flat=flat)
+			_cube_push_cpt(scene, chosen)
+			_mark_cube(scene, layer_index, use_global)
 			return
 		end
 
-		layer_grid = GMT.gmtread(info.path, layer=layer_i) # lazy: reads ONLY this one 2-D slice
-		layer_grid === nothing && (@warn "Failed to read cube layer $layer_i from $(info.path)"; return)
-		cmap = _default_cmap(layer_grid)
-		if get(_CUBE_LOADED, scene, false)
-			_apply_host_grid!(scene, layer_grid, layer_name)   # in-place swap, no new surface
+		# Fetch the slice: a zero-copy RAM slab ("Load all in RAM") or a lazy one-layer disk read.
+		ram = get(_CUBE_RAM, scene, nothing)
+		Gk  = ram !== nothing ? _cube_layer_view(ram, layer_i) : GMT.gmtread(info.path, layer=layer_i)
+		Gk === nothing && (@warn "Failed to read cube layer $layer_i from $(info.path)"; return)
+		cmap = _default_cmap(Gk)
+		# Precompute BOTH CPTs for this slice (the only makecpt cost, paid once per layer read): its own
+		# [zmin,zmax] and the whole cube's global range. Toggling the checkbox then swaps between them.
+		loc    = _cpt_nodes(Gk, cmap)
+		glob   = _cpt_nodes_range(info.zmin, info.zmax, cmap)
+		chosen = use_global != 0 ? glob : loc
+		first  = !loaded
+		zr     = use_global != 0 ? (info.zmin, info.zmax) : nothing
+		if flat
+			# Fast illuminated image (flat textured plane), NOT a warped 3-D surface.
+			_show_cube_layer_image!(scene, Gk, layer_name, chosen; first=first, source=info.source)
+		elseif first
+			_add_grid_to_scene(scene, Gk, layer_name; promote=info.promote, source=info.source, zrange=zr)
 		else
-			_add_grid_to_scene(scene, layer_grid, layer_name; promote=info.promote, source=info.source)
-			_CUBE_LOADED[scene] = true
-			_record_recent(info.path, layer_grid)
+			_apply_host_grid!(scene, Gk, layer_name; zrange=zr)   # real 3-D surface, in-place swap
 		end
-		# Precompute BOTH CPTs for this slice (the only makecpt cost, paid once per layer read): its
-		# own [zmin,zmax] and the whole cube's global range. Toggling the checkbox then just swaps
-		# between these two cached node sets.
-		loc  = _cpt_nodes(layer_grid, cmap)
-		glob = _cpt_nodes_range(info.zmin, info.zmax, cmap)
-		_CUBE_CUR[scene] = (layer=layer_i, G=layer_grid, cmap=cmap, loc=loc, glob=glob)
-		_cube_push_cpt(scene, use_global != 0 ? glob : loc)
+		if first
+			_CUBE_LOADED[scene] = true
+			ram === nothing && _record_recent(info.path, Gk)
+		end
+		_CUBE_CUR[scene] = (layer=layer_i, G=Gk, cmap=cmap, loc=loc, glob=glob, flat=flat)
+		_cube_push_cpt(scene, chosen)
+		_mark_cube(scene, layer_index, use_global)
 	catch e
-		@error "Failed to load cube layer" exception=e
+		@error "Failed to load cube layer" exception=(e, catch_backtrace())
 	end
 	return
+end
+
+# Tell the viewer this window is showing cube layer `layer_index` (0-based) with the given colour-range
+# choice, so the Shading dock can re-render THIS layer when the user switches shading algorithm.
+_mark_cube(scene::Ptr{Cvoid}, layer_index::Cint, use_global::Cint) =
+	ccall(_fn(:gmtvtk_mark_cube), Cvoid, (Ptr{Cvoid}, Cint, Cint), scene, layer_index, use_global)
+
+# Render a cube layer as a fast ILLUMINATED IMAGE (flat quad + hillshade texture) instead of a
+# warped 3-D surface (gmtvtk_show_layer_image_h). Keeps the full-res z in the viewer for the
+# coordinate readout and keeps the colorbar. `nodes` = (cz, crgb, ncolor) is the CPT to bake with
+# (its range drives the colorbar too). On the first layer it also does the Save / Session / CRS
+# bookkeeping that `_add_grid_to_scene` would. Returns true on success.
+function _show_cube_layer_image!(scene::Ptr{Cvoid}, G::GMTgrid, name::String, nodes;
+                                 first::Bool=false, source::String="")
+	cz, crgb, ncolor = nodes
+	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z)
+	ny, nx = size(z); r = G.range
+	geog = _isgeographic(G)
+	ok = ccall(_fn(:gmtvtk_show_layer_image_h), Cint,
+		(Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+		 Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring),
+		scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
+		cz, crgb, Cint(ncolor), name)
+	ok == 0 && (@warn "cube layer image: the viewer rejected the update (window closed?)"; return false)
+	if first
+		_remember_object!(scene, :grid, name, G)                       # File>Save / Scene Objects "Save…"
+		_session_record!(scene, :basegrid, isempty(source) ? :generated : :file, source; name=name)
+		crs = crs_from(G; geographic=geog)
+		hascrs(crs) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
+		                     scene, crs.proj4, crs.wkt, Cint(crs.epsg))   # reveal the Geography menu if referenced
+		_register_fig!(QtFigure(scene, G))                             # re-register the promoted launcher as a grid fig
+	end
+	return true
 end
 
 # Push a precomputed CPT (cz, crgb, n) IN PLACE onto the shared colour transfer function the

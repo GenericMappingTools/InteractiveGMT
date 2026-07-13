@@ -103,3 +103,61 @@ CPU loop over every surface point each time `applyShading` runs (and once per ne
 tiled-LOD grid (any grid >512 in either dim) it runs per resident tile, so it scales with the drawn
 LOD, not the full grid. Light az/el sliders re-bake (cheap, local). Both single-actor and tiled
 paths bake identical data-unit normals, so the look is uniform and seam-free.
+
+---
+
+## Flat illuminated IMAGE (3-D-cube layer scrubbing)
+
+A 3-D-cube layer is NOT drawn as a warped surface. Rebuilding a full triangulated surface
+(points + triangulation + normals) per layer was too slow to scrub. Instead the layer is a **flat
+quad carrying a baked hillshade texture** — the Mirone approach. Switching layers is a texture
+repaint, no geometry.
+
+**Where:** `deps/src/90_c_api.cpp` — `bakeLayerRGBA()` + the `gmtvtk_show_layer_image_h()` export.
+Host side: `src/drop.jl` `_show_cube_layer_image!` (called by `_on_load_cube_layer`).
+
+**Illumination = Style B (grdimage), baked per texture pixel.** Same recipe as above: central-
+difference z-gradient in TRUE units → normal `n = normalize(-dz/dx, -dz/dy, 1)`; sun with inverted
+elevation `elG = 90 - lightEl`; `raw = n·LG - LzG`; `intensity = (2/π)·atan(hillGain·raw)`; then
+`gmtIlluminate()` modulates `CPT(z)` in HSV. So it reads as a real hillshaded relief map even though
+the geometry is flat and VE is irrelevant. NaN z → transparent (alpha 0). Row 0 = south (drape
+texture origin).
+
+**Two performance rules (learned the hard way — a naive version stalled the UI for seconds):**
+
+1. **CPT as a table, never per-pixel.** The CPT is discretized ONCE per bake into a 1024-entry
+   `unsigned char` table; each pixel is an O(1) index. A per-pixel `vtkColorTransferFunction`
+   lookup over millions of nodes froze the window (the slider dialog vanished for long periods).
+2. **Cap the texture.** `kLayerTexMaxPix` (currently 1.5 M) bounds the baked texture; a heavier
+   grid is subsampled uniformly (aspect kept, `layerTexSize()`). The **full-res z stays in
+   `s->gridZ`**, so the coordinate/z readout is still exact — only the *picture* is capped. The
+   slope still uses full-res grid neighbours, so the hillshade stays crisp at the texture scale.
+
+**Fast path.** `Scene::layerImgMode` + `layerTexW/H`: a same-size/same-extent layer switch just
+`memcpy`s the new RGBA into the existing drape texture + refreshes `gridZ` + one `Render`
+(~0.1 s, bounded regardless of cube size). Any real surface build (`buildSceneContent`) clears
+`layerImgMode`. The colorbar is kept (`imageOnly` stays false) and is retargeted by the host's
+usual `gmtvtk_set_cpt` push right after each switch (the baked texture already holds the colours,
+so that push only moves the legend).
+
+### Shading dock (image mode)
+
+The Shading dock drives a cube layer exactly like a surface. `applyShading()` ends with
+`rebakeLayerImage(s)`, so every dock change relights the flat texture live from `s->gridZ` +
+`s->surfLut` + the current state:
+
+- **Hillshade (grdimage)** — style B above (default for a fresh cube window).
+- **Hillshade (Lambert)** — style A: `CPT(z) * (ambient + (1-ambient)·max(0, n·L))`, darken-only,
+  data-space normal (VE-independent — a flat image has no displayed relief to VE-correct onto).
+- **off** — plain `CPT(z)`, no shade (flat-colour map).
+- **sun az / el / gain / ambient** — move live.
+- **Cast shadows** — 3-D-ONLY: a flat plane has no relief to self-shadow, so it is a no-op here.
+
+### TODO — revisit (illumination pass)
+
+- **Crisper deep zoom (lazy hi-res).** The 1.5 M cap blurs on deep zoom-in. Plan: keep the cheap
+  full-extent bake for scrubbing; on **camera-settle** (not per slider tick) re-bake ONLY the
+  visible region at higher res — the tiled-LOD idea applied to the image. This keeps scrubbing fast
+  and sharpens detail a beat after the zoom stops; it does NOT add per-switch cost.
+- Revisit the whole illumination story here (Lambert vs grdimage vs a shared path for surface AND
+  flat-image modes) so there is ONE hillshade source of truth.

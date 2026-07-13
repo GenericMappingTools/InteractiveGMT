@@ -63,6 +63,297 @@ static void gmtIlluminate(double intensity, double *rgb) {
 	vtkMath::HSVToRGB(hsv, rgb);
 }
 
+// ============================================================================
+// ONE relief-shade source of truth. The 3-D surface mapper (hillshadeMapper) AND the flat 2-D
+// image bake (bakeLayerRGBA) BOTH call applyReliefShade so the SAME grid + sun produces the SAME
+// colours whether drawn as a warped surface or a flat picture. Never fork this maths again.
+//   (A) Lambert   (hillGrd == false): CPT(z) * (ambient + (1-ambient)*max(0, n'·L)), darken-only,
+//                 with the normal VE-corrected onto the displayed relief (n.x/xfac, n.y, n.z/(zfac·ve)).
+//   (B) grdimage  (hillGrd == true):  gmt_illuminate(CPT(z), (2/π)·atan(gain·(n·Lg − Lgz))), the GMT
+//                 grdimage -I look from the TRUE-coord z-gradient normal (VE-independent).
+// ============================================================================
+struct ReliefLight {
+	double Lx, Ly, Lz;          // sun dir, lit convention (Lambert)
+	double LxG, LyG, LzG;       // sun dir, grdimage (inverted elevation)
+	double fx, fz;              // Lambert VE-correction factors (1/xfac, 1/(zfac·ve))
+	double amb, gain, twoOverPi;
+	bool   grd;
+};
+static ReliefLight makeReliefLight(Scene *s) {
+	ReliefLight L;
+	const double az  = s->lightAz * vtkMath::Pi() / 180.0;
+	const double el  = s->lightEl * vtkMath::Pi() / 180.0;
+	L.Lx = std::sin(az) * std::cos(el);  L.Ly = std::cos(az) * std::cos(el);  L.Lz = std::sin(el);
+	const double elG = (90.0 - s->lightEl) * vtkMath::Pi() / 180.0;   // grdimage inverts elevation
+	L.LxG = std::sin(az) * std::cos(elG); L.LyG = std::cos(az) * std::cos(elG); L.LzG = std::sin(elG);
+	L.fx = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
+	L.fz = (s->zfac * s->ve != 0.0) ? 1.0 / (s->zfac * s->ve) : 1.0;
+	L.amb = s->hillAmbient;  L.gain = s->hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = s->hillGrd;
+	return L;
+}
+// Modulate rgb (0..1, in/out) by the relief shade for a TRUE-coord surface normal nv.
+static inline void applyReliefShade(const ReliefLight &L, const double nv[3], double rgb[3]) {
+	if (!L.grd) {                                             // (A) Lambert, VE-corrected, darken-only
+		double cx = nv[0]*L.fx, cy = nv[1], cz = nv[2]*L.fz;
+		const double len = std::sqrt(cx*cx + cy*cy + cz*cz);
+		if (len > 0.0) { cx /= len; cy /= len; cz /= len; }
+		double sh = cx*L.Lx + cy*L.Ly + cz*L.Lz;
+		if (sh < 0.0) sh = 0.0;
+		const double I = L.amb + (1.0 - L.amb) * sh;
+		rgb[0] = std::min(1.0, rgb[0]*I); rgb[1] = std::min(1.0, rgb[1]*I); rgb[2] = std::min(1.0, rgb[2]*I);
+		return;
+	}
+	const double raw   = nv[0]*L.LxG + nv[1]*L.LyG + nv[2]*L.LzG - L.LzG;   // slope-toward-sun; 0 on flat
+	const double inten = L.twoOverPi * std::atan(L.gain * raw);
+	gmtIlluminate(inten, rgb);
+}
+
+// ============================================================================
+// Flat illuminated IMAGE bake (3-D-cube layer scrubbing). A cube layer is drawn as a flat quad
+// carrying a hillshade texture instead of a warped surface (see gmtvtk_show_layer_image_h,
+// 90_c_api.cpp). The SAME illumination the 3-D relief uses is baked per texture pixel here, honouring
+// the SAME Shading-dock toggles (useHillshade master, hillGrd = grdimage vs Lambert, az/el/gain/
+// ambient) so the dock drives a cube layer exactly like a surface — the only difference is the result
+// is written into the drape texture (rebakeLayerImage) rather than a per-vertex colour array.
+// Cast-shadows does NOT apply (a flat plane has no relief to self-shadow); it stays 3-D-only.
+// ============================================================================
+
+// Cap the baked texture to this many pixels. A cube layer's hillshade is a screen picture, never
+// larger than a display needs, so a heavy cube subsamples to here — the per-layer bake cost is then
+// bounded no matter how big the grid is (the full-res z still lives in s->gridZ for the readout).
+static const size_t kLayerTexMaxPix = 1500000;
+
+// Pick the baked texture size (txW,txH) for a grid of nx*ny — the grid size, subsampled uniformly
+// (aspect preserved) once it exceeds kLayerTexMaxPix.
+static void layerTexSize(int nx, int ny, int &txW, int &txH) {
+	txW = nx; txH = ny;
+	const double npix = (double)nx * ny;
+	if (npix > (double)kLayerTexMaxPix) {
+		const double sc = std::sqrt((double)kLayerTexMaxPix / npix);
+		txW = std::max(2, (int)std::lround(nx * sc));
+		txH = std::max(2, (int)std::lround(ny * sc));
+	}
+}
+
+// Bake a txW*txH RGBA texture (row 0 = south, matching the drape origin) from grid z, a CPT and the
+// scene's shading state. The CPT is discretized into a 1024-entry table ONCE (per-pixel
+// vtkColorTransferFunction::GetColor was the cube-scrub stall). Grid is subsampled to the texture
+// size (nearest) but the slope uses full-res neighbours so the hillshade stays crisp. Colour per
+// pixel follows the Shading dock, mirroring hillshadeMapper:
+//   * useHillshade OFF          -> plain CPT(z), no shade.
+//   * useHillshade + hillGrd    -> grdimage (B): data-gradient normal, atan soft-clip, gmt_illuminate.
+//   * useHillshade + !hillGrd   -> Lambert (A): CPT(z) * (ambient + (1-ambient)*max(0, n.L)),
+//                                  darken-only. Uses the DATA-space normal (VE-independent — a flat
+//                                  image has no displayed relief to VE-correct onto, unlike the 3-D
+//                                  surface Lambert).
+// NaN z -> transparent. Bakes an arbitrary TRUE-coord WINDOW [wx0,wx1]x[wy0,wy1] of the grid (the
+// whole extent for the base texture, a zoomed sub-rectangle for the detail tile), so the same code
+// serves both the full-map bake and the hi-res zoom refine. This loop IS the cost of a layer switch /
+// relight / zoom refine: no VTK geometry.
+static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, double gy0,
+                          double dx, double dy, vtkColorTransferFunction *ctf, double lo, double hi,
+                          double wx0, double wx1, double wy0, double wy1,
+                          int txW, int txH, std::vector<unsigned char> &out) {
+	out.assign((size_t)txW * txH * 4, 0);
+	if (!ctf || dx == 0.0 || dy == 0.0) return;
+	// discretize the CPT once
+	const int NT = 1024;
+	std::vector<unsigned char> tbl((size_t)NT * 3);
+	{
+		const double span = (hi > lo) ? (hi - lo) : 1.0;
+		double c[3];
+		for (int i = 0; i < NT; ++i) {
+			ctf->GetColor(lo + span * i / (NT - 1), c);
+			tbl[3*i+0] = (unsigned char)(c[0]*255.0+0.5);
+			tbl[3*i+1] = (unsigned char)(c[1]*255.0+0.5);
+			tbl[3*i+2] = (unsigned char)(c[2]*255.0+0.5);
+		}
+	}
+	const double invspan = (hi > lo) ? (NT - 1) / (hi - lo) : 0.0;
+	const bool   shade = s->useHillshade;
+	const ReliefLight L = makeReliefLight(s);      // SAME light/style the 3-D surface uses (one source of truth)
+	auto Zc = [&](int ix, int iy) -> double { return z[(size_t)ix * ny + iy]; };   // column-major z[ix*ny+iy]
+	auto clampi = [](int v, int hi2) { return v < 0 ? 0 : (v > hi2 ? hi2 : v); };
+	for (int r = 0; r < txH; ++r) {
+		const double ty = (txH > 1) ? wy0 + (wy1 - wy0) * r / (txH - 1) : wy0;   // row r=0 -> south
+		const int iy  = clampi((int)std::lround((ty - gy0) / dy), ny - 1);
+		const int iym = iy > 0 ? iy - 1 : iy, iyp = iy < ny - 1 ? iy + 1 : iy;
+		for (int col = 0; col < txW; ++col) {
+			const double tx = (txW > 1) ? wx0 + (wx1 - wx0) * col / (txW - 1) : wx0;
+			const int ix = clampi((int)std::lround((tx - gx0) / dx), nx - 1);
+			const double zc = Zc(ix, iy);
+			unsigned char *p = out.data() + ((size_t)r * txW + col) * 4;
+			if (std::isnan(zc)) { p[3] = 0; continue; }
+			int ti = (int)((zc - lo) * invspan); if (ti < 0) ti = 0; else if (ti > NT - 1) ti = NT - 1;
+			const unsigned char *rgb8 = &tbl[3 * ti];
+			if (!shade) { p[0] = rgb8[0]; p[1] = rgb8[1]; p[2] = rgb8[2]; p[3] = 255; continue; }
+			// central-difference gradient (full-res neighbours), edge-clamped; NaN neighbour -> flat.
+			const int ixm = ix > 0 ? ix - 1 : ix, ixp = ix < nx - 1 ? ix + 1 : ix;
+			const double za = Zc(ixp, iy), zb = Zc(ixm, iy);
+			const double zu = Zc(ix, iyp), zd = Zc(ix, iym);
+			const double dzdx = (ixp == ixm || std::isnan(za) || std::isnan(zb)) ? 0.0 : (za - zb) / ((ixp - ixm) * dx);
+			const double dzdy = (iyp == iym || std::isnan(zu) || std::isnan(zd)) ? 0.0 : (zu - zd) / ((iyp - iym) * dy);
+			double n0 = -dzdx, n1 = -dzdy, n2 = 1.0;
+			const double len = std::sqrt(n0*n0 + n1*n1 + n2*n2);
+			if (len > 0.0) { n0 /= len; n1 /= len; n2 /= len; }
+			const double nv[3] = { n0, n1, n2 };
+			double c[3] = { rgb8[0] / 255.0, rgb8[1] / 255.0, rgb8[2] / 255.0 };
+			applyReliefShade(L, nv, c);                          // SHARED shade (grdimage or Lambert), matches the surface
+			p[0] = (unsigned char)std::min(255.0, c[0] * 255.0 + 0.5);
+			p[1] = (unsigned char)std::min(255.0, c[1] * 255.0 + 0.5);
+			p[2] = (unsigned char)std::min(255.0, c[2] * 255.0 + 0.5);
+			p[3] = 255;
+		}
+	}
+}
+
+// The visible TRUE-coord rectangle (W,E,S,N) = the part of the flat map on screen at the current
+// zoom. Project the 4 viewport corners onto the z=0 plane, undo the X aspect scale (xfac), take the
+// bbox, clamp to the data frame. Mirrors the hover readout / Geography visibleRegion math. false if
+// nothing visible.
+static bool layerVisibleRegion(Scene *s, double &W, double &E, double &S, double &N) {
+	if (!s->ren || !s->widget || !s->widget->renderWindow()) return false;
+	const int *sz = s->widget->renderWindow()->GetSize();
+	const double w = sz[0], h = sz[1];
+	const double gx = (s->xfac != 0.0) ? s->xfac : 1.0;
+	const double corners[4][2] = { {0,0}, {w,0}, {0,h}, {w,h} };
+	bool any = false;
+	for (const auto &c : corners) {
+		double nr[4], fr[4];
+		s->ren->SetDisplayPoint(c[0], c[1], 0.0); s->ren->DisplayToWorld();
+		for (int i = 0; i < 4; ++i) nr[i] = s->ren->GetWorldPoint()[i];
+		s->ren->SetDisplayPoint(c[0], c[1], 1.0); s->ren->DisplayToWorld();
+		for (int i = 0; i < 4; ++i) fr[i] = s->ren->GetWorldPoint()[i];
+		if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
+		if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
+		const double dirz = fr[2] - nr[2];
+		if (dirz == 0.0) continue;
+		const double t0 = -nr[2] / dirz;
+		const double tx = (nr[0] + t0 * (fr[0] - nr[0])) / gx;
+		const double ty =  nr[1] + t0 * (fr[1] - nr[1]);
+		if (!any) { W = E = tx; S = N = ty; any = true; }
+		else { W = std::min(W, tx); E = std::max(E, tx); S = std::min(S, ty); N = std::max(N, ty); }
+	}
+	if (!any) return false;
+	W = std::max(W, s->gx0); E = std::min(E, s->gx1);
+	S = std::max(S, s->gy0); N = std::min(N, s->gy1);
+	return (E > W && N > S);
+}
+
+// Re-bake the current cube layer's BASE drape texture (whole extent) in place from s->gridZ +
+// s->surfLut + the current Shading state. Called from applyShading, so EVERY Shading-dock change
+// (sun az/el, gain, Lambert/grdimage/off) relights the flat image live — the image-mode counterpart
+// of hillshadeMapper re-colouring a surface. No-op unless the window is in cube-image mode.
+static void invalidateLayerDetail(Scene *s);   // fwd (defined below)
+static void rebakeLayerImage(Scene *s) {
+	if (!s || !s->layerImgMode || !s->drape || s->gridZ.empty() || s->gnx < 2 || s->gny < 2) return;
+	vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(s->surfLut);
+	if (!ctf) return;
+	vtkTexture *tx = s->drape->GetTexture();
+	vtkImageData *id = tx ? vtkImageData::SafeDownCast(tx->GetInput()) : nullptr;
+	if (!id) return;
+	int dims[3] = { 0, 0, 0 }; id->GetDimensions(dims);
+	if (dims[0] != s->layerTexW || dims[1] != s->layerTexH) return;
+	std::vector<unsigned char> rgba;
+	bakeLayerRGBA(s, s->gridZ.data(), s->gnx, s->gny, s->gx0, s->gy0, s->gdx, s->gdy, ctf,
+	              s->zmin, s->zmax, s->gx0, s->gx1, s->gy0, s->gy1, s->layerTexW, s->layerTexH, rgba);
+	if (rgba.size() != (size_t)dims[0] * dims[1] * 4) return;
+	memcpy(id->GetScalarPointer(), rgba.data(), rgba.size());
+	id->Modified(); tx->Modified();
+	invalidateLayerDetail(s);   // shading changed -> the zoom detail tile is stale; refresh on settle
+}
+
+// Bake a HI-RES detail tile over the currently-visible sub-rectangle and lay it over the base drape,
+// so a deep zoom shows crisp relief instead of the magnified base texels. Cheap because it covers
+// only the visible window (bounded by the same kLayerTexMaxPix cap) and fires only when the camera
+// SETTLES (layerDetailTimer), never during interaction or per layer switch. When zoomed out enough
+// that the base texture already resolves the view, the tile is dropped.
+static void refineLayerDetail(Scene *s) {
+	if (!s || !s->layerImgMode || s->gridZ.empty() || s->gnx < 2 || s->gny < 2) return;
+	if (!s->ren || !s->widget || !s->widget->renderWindow()) return;
+	vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(s->surfLut);
+	if (!ctf) return;
+	double W, E, S, N;
+	if (!layerVisibleRegion(s, W, E, S, N)) return;
+	const double fullx = s->gx1 - s->gx0, fully = s->gy1 - s->gy0;
+	if (fullx <= 0.0 || fully <= 0.0) return;
+	// Not zoomed in enough -> the base texture is fine; drop any existing tile.
+	if ((E - W) / fullx > 0.55 && (N - S) / fully > 0.55) {
+		if (s->layerDetail) { s->ren->RemoveActor(s->layerDetail); s->layerDetail = nullptr; s->layerDetailImg = nullptr; }
+		s->layerDetailReg[0] = s->layerDetailReg[1] = 0.0;
+		return;
+	}
+	// Already have (nearly) this region -> nothing to do.
+	auto nearv = [](double a, double b, double span) { return std::abs(a - b) < 0.03 * span; };
+	if (s->layerDetail && s->layerDetail->GetVisibility() &&
+	    nearv(s->layerDetailReg[0], W, fullx) && nearv(s->layerDetailReg[1], E, fullx) &&
+	    nearv(s->layerDetailReg[2], S, fully) && nearv(s->layerDetailReg[3], N, fully))
+		return;
+	// Texture: as many texels as the window has grid nodes, capped (crisp to the data limit).
+	const int wnx = std::max(2, (int)std::lround((E - W) / s->gdx) + 1);
+	const int wny = std::max(2, (int)std::lround((N - S) / s->gdy) + 1);
+	int txW, txH; layerTexSize(wnx, wny, txW, txH);
+	std::vector<unsigned char> rgba;
+	bakeLayerRGBA(s, s->gridZ.data(), s->gnx, s->gny, s->gx0, s->gy0, s->gdx, s->gdy, ctf,
+	              s->zmin, s->zmax, W, E, S, N, txW, txH, rgba);
+	vtkSmartPointer<vtkImageData> id = vtkSmartPointer<vtkImageData>::New();
+	id->SetDimensions(txW, txH, 1);
+	id->AllocateScalars(VTK_UNSIGNED_CHAR, 4);
+	memcpy(id->GetScalarPointer(), rgba.data(), rgba.size());
+	vtkNew<vtkTexture> tex; tex->SetInputData(id); tex->InterpolateOn();
+	// flat quad over [W,E]x[S,N], z=0, full-texture tcoords (row 0 = south).
+	vtkNew<vtkPoints> pts; pts->SetDataTypeToFloat();
+	pts->InsertNextPoint(W, S, 0); pts->InsertNextPoint(E, S, 0); pts->InsertNextPoint(E, N, 0); pts->InsertNextPoint(W, N, 0);
+	vtkNew<vtkFloatArray> tc; tc->SetNumberOfComponents(2); tc->SetName("tc");
+	tc->InsertNextTuple2(0, 0); tc->InsertNextTuple2(1, 0); tc->InsertNextTuple2(1, 1); tc->InsertNextTuple2(0, 1);
+	vtkNew<vtkCellArray> cells; vtkIdType q[4] = { 0, 1, 2, 3 }; cells->InsertNextCell(4, q);
+	vtkNew<vtkPolyData> pd; pd->SetPoints(pts); pd->SetPolys(cells); pd->GetPointData()->SetTCoords(tc);
+	vtkNew<vtkPolyDataMapper> map; map->SetInputData(pd); map->ScalarVisibilityOff();
+	vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
+	map->SetRelativeCoincidentTopologyPolygonOffsetParameters(-2.0, -2.0);   // beat the base drape (-1) on the z-tie
+	if (s->layerDetail) s->ren->RemoveActor(s->layerDetail);
+	s->layerDetail = vtkSmartPointer<vtkActor>::New();
+	s->layerDetail->SetMapper(map);
+	s->layerDetail->SetTexture(tex);
+	s->layerDetail->GetProperty()->LightingOff();
+	s->layerDetail->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	s->layerDetailImg = id;
+	s->layerDetailReg[0] = W; s->layerDetailReg[1] = E; s->layerDetailReg[2] = S; s->layerDetailReg[3] = N;
+	s->ren->AddActor(s->layerDetail);
+	if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// The detail tile is now stale (layer switched / relit): hide it and schedule a fresh refine once
+// the user pauses. Debounced, so rapid scrubbing never bakes a tile mid-flight.
+static void invalidateLayerDetail(Scene *s) {
+	if (!s || !s->layerImgMode) return;
+	if (s->layerDetail) s->layerDetail->SetVisibility(0);
+	s->layerDetailReg[0] = s->layerDetailReg[1] = 0.0;   // force a rebake
+	if (s->layerDetailTimer) s->layerDetailTimer->start(180);
+}
+
+// Camera-modified observer: (re)start the settle timer so the detail tile refines only once the
+// camera stops moving, never every frame during a pan/zoom.
+static void onLayerCamera(vtkObject*, unsigned long, void *cd, void*) {
+	Scene *s = static_cast<Scene*>(cd);
+	if (s && s->layerImgMode && s->layerDetailTimer) s->layerDetailTimer->start(180);
+}
+
+// Mirror the Scene's shading state onto the four Shading-dock checkboxes without re-firing their
+// handlers. "Shaded image (2-D)" is the base GEOMETRY toggle (flat image vs surface) — checked when
+// the base is currently a flat image, enabled whenever there is a grid to flip. The three hillshade
+// looks (Cast shadows / Lambert / grdimage) are the ILLUMINATION, independent of the geometry toggle.
+// Called at the end of applyShading so the dock always reflects the live state.
+static void syncShadeChecks(Scene *s) {
+	if (!s || !s->cbFlat) return;                       // dock not built yet
+	QSignalBlocker b0(s->cbFlat), b1(s->cbShadow), b2(s->cbHillL), b3(s->cbHillG);
+	s->cbFlat->setEnabled(s->gnx > 1 && !s->gridZ.empty());
+	s->cbFlat->setChecked(s->layerImgMode);
+	s->cbShadow->setChecked(s->useShadows);
+	s->cbHillL->setChecked(s->useHillshade && !s->hillGrd);
+	s->cbHillG->setChecked(s->useHillshade &&  s->hillGrd);
+}
+
 // Baked hillshade for ONE surface mapper (single actor or a LOD tile). Two ALTERNATIVE styles,
 // selected by s->hillGrd; both bake a per-point RGB "hillshade" field (active z scalars untouched,
 // so the colour bar still maps z) and the caller renders the surface UNLIT. When off: revert to
@@ -102,23 +393,7 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	vtkScalarsToColors *lut = m->GetLookupTable() ? m->GetLookupTable() : (s->surfLut ? s->surfLut.Get() : nullptr);
 	if (!nrm || !zs || !lut) return;              // no normals/scalars/LUT -> leave as-is
 
-	// sun direction (points FROM scene TO sun): az from north CW, el above horizon.
-	const double az = s->lightAz * vtkMath::Pi() / 180.0;
-	const double el = s->lightEl * vtkMath::Pi() / 180.0;
-	const double Lx = std::sin(az) * std::cos(el);
-	const double Ly = std::cos(az) * std::cos(el);
-	const double Lz = std::sin(el);
-	// Lambert (A): VE-correct the baked TRUE-coord normal onto the displayed relief (xfac,1,zfac*ve).
-	const double fx  = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
-	const double fz  = (s->zfac * s->ve != 0.0) ? 1.0 / (s->zfac * s->ve) : 1.0;
-	const double amb = s->hillAmbient;
-	const double gain = s->hillGain;              // grdimage relief contrast = grdgradient -Nt amp
-	const double twoOverPi = 2.0 / vtkMath::Pi();
-	// grdimage (B): the elevation angle is INVERTED vs the Lambert/lit convention — flip it (90-el).
-	const double elG = (90.0 - s->lightEl) * vtkMath::Pi() / 180.0;
-	const double LxG = std::sin(az) * std::cos(elG);
-	const double LyG = std::cos(az) * std::cos(elG);
-	const double LzG = std::sin(elG);
+	const ReliefLight L = makeReliefLight(s);      // SAME light/style the flat 2-D image bake uses (one source of truth)
 
 	const vtkIdType n = pd->GetNumberOfPoints();
 	vtkSmartPointer<vtkUnsignedCharArray> col = vtkSmartPointer<vtkUnsignedCharArray>::New();
@@ -128,23 +403,8 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	for (vtkIdType i = 0; i < n; ++i) {
 		double nv[3]; nrm->GetTuple(i, nv);
 		const unsigned char *rgb8 = lut->MapValue(zs->GetComponent(i, 0));   // CPT colour for this z
-		if (!s->hillGrd) {                                           // (A) Lambert, VE-corrected, darken-only
-			double cx = nv[0]*fx, cy = nv[1], cz = nv[2]*fz;
-			const double len = std::sqrt(cx*cx + cy*cy + cz*cz);
-			if (len > 0.0) { cx /= len; cy /= len; cz /= len; }
-			double sh = cx*Lx + cy*Ly + cz*Lz;                      // Lambert N.L
-			if (sh < 0.0) sh = 0.0;
-			const double I = amb + (1.0 - amb) * sh;                // ambient floor
-			col->SetTypedComponent(i, 0, (unsigned char)std::min(255.0, rgb8[0] * I));
-			col->SetTypedComponent(i, 1, (unsigned char)std::min(255.0, rgb8[1] * I));
-			col->SetTypedComponent(i, 2, (unsigned char)std::min(255.0, rgb8[2] * I));
-			continue;
-		}
-		// (B) GMT grdimage from the z-gradient (raw TRUE-coord normal), HSV illuminate.
-		const double raw   = nv[0]*LxG + nv[1]*LyG + nv[2]*LzG - LzG;   // slope-toward-sun signal (inverted el); 0 on flat
-		const double inten = twoOverPi * std::atan(gain * raw);     // soft-clip to (-1,1)
 		double c[3] = { rgb8[0] / 255.0, rgb8[1] / 255.0, rgb8[2] / 255.0 };
-		gmtIlluminate(inten, c);                                    // GMT grdimage HSV modulation
+		applyReliefShade(L, nv, c);                                 // SHARED shade (grdimage or Lambert)
 		col->SetTypedComponent(i, 0, (unsigned char)(c[0] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 1, (unsigned char)(c[1] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 2, (unsigned char)(c[2] * 255.0 + 0.5));
@@ -306,6 +566,8 @@ static void applyShading(Scene *s) {
 		chain = s->fxaa;
 	}
 	s->ren->SetPass(chain);
+	rebakeLayerImage(s);   // flat-image mode: relight the drape texture to match the new state (shared shade)
+	syncShadeChecks(s);    // keep the Shading-dock checkboxes in sync with the live state
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
