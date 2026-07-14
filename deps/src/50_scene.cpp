@@ -517,11 +517,15 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aDrape = m.addAction(draped ? "Undrape (flat)" : "Drape on grid");
 	aDrape->setEnabled(draped || canDrape);
 	m.addSeparator();
+	// Percentile histogram stretch -> new 8-bit image row. Meaningful for a wide-range (e.g. 16-bit
+	// satellite) image shown as a fast min-max preview; Julia reports if there is no wider source.
+	QAction *aStretch = m.addAction("Auto histogram stretch (new image)");
 	QAction *aSave = m.addAction("Save image…");
 	QAction *aDel = m.addAction("Remove");
 	QAction *c = m.exec(g);
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "image", QString::fromStdString(s->extras[idx].name)); return; }
+	if (c == aStretch) { stretchImageObject(s, QString::fromStdString(s->extras[idx].name)); return; }
 	ExtraObj& ex = s->extras[idx];            // vector unchanged during exec -> index still valid
 	const double step = imageStackStep(s);
 	if (c == aDel) {
@@ -900,6 +904,9 @@ static void surfaceObjectMenu(Scene *s, const QPoint& gp) {
 	QAction *aTransplant = nullptr;                          // present iff this base grid is a nested blank (moved here)
 	if (g_juliaEval && gridIsNestedBlank(nm))
 		aTransplant = m.addAction("Transplant 2nd grid…");
+	QAction *aCube = nullptr;                                // present iff this base grid is a 3-D cube variable
+	if (s->cubeNLayers > 1 && g_juliaCubeSlider)
+		aCube = m.addAction("Cube layers…");
 	m.addSeparator();
 	addGridStackActions(s, m, &s->surfStack);
 	m.addSeparator();
@@ -909,6 +916,7 @@ static void surfaceObjectMenu(Scene *s, const QPoint& gp) {
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
 	if (c == aInfo) { runGridInfo(s, nm); return; }
 	if (aTransplant && c == aTransplant) { runNestedTransplant(s, nm); return; }
+	if (aCube && c == aCube) { g_juliaCubeSlider(s, nm.toUtf8().constData()); return; }
 	if (c == aMove) { if (moveObjectToNewWindow(s, "grid", nm)) sceneRemoveSurface(s); return; }
 	if (c == aRem) sceneRemoveSurface(s);
 }
@@ -930,6 +938,9 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aTransplant = nullptr;
 	if (g_juliaEval && gridIsNestedBlank(nm))
 		aTransplant = m.addAction("Transplant 2nd grid…");
+	QAction *aCube = nullptr;                             // present iff this extra grid is a 3-D cube variable
+	if (s->extras[idx].cubeLayers > 1 && g_juliaCubeSlider)
+		aCube = m.addAction("Cube layers…");
 	m.addSeparator();
 	addGridStackActions(s, m, &s->extras[idx].gstack);   // grid-pile draw order (base relief + grids)
 	m.addSeparator();
@@ -939,6 +950,7 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
 	if (c == aInfo) { runGridInfo(s, nm); return; }
 	if (aTransplant && c == aTransplant) { runNestedTransplant(s, nm); return; }  // fill blank nested grid
+	if (aCube && c == aCube) { g_juliaCubeSlider(s, nm.toUtf8().constData()); return; }
 	if (c == aMove || c == aDel) {
 		// Move = open this grid in a new window, then delete it from here; a failed move keeps it.
 		if (c == aMove && !moveObjectToNewWindow(s, "grid", nm)) return;
@@ -1380,12 +1392,16 @@ static void rebuildSceneObjects(Scene *s) {
 		vtkProp3D *dp = s->drape;
 		std::function<void(const QPoint&)> imgMenu = [s, nm](const QPoint& g) {   // primary image props: Save + Remove
 			QMenu m(s->widget);
+			// Percentile histogram stretch -> new 8-bit image row (meaningful for a wide-range e.g.
+			// 16-bit satellite band shown as a fast min-max preview; Julia reports if no wider source).
+			QAction *aStretch = m.addAction("Auto histogram stretch (new image)");
 			QAction *aSave = m.addAction("Save image…");
 			m.addSeparator();
 			QAction *aRem  = m.addAction("Remove"); // removes image + axes; window stays open
 			QAction *c = m.exec(g);
 			if (!c) return;
-			if (c == aSave) saveObjectDialog(s, "image", nm);
+			if (c == aStretch) stretchImageObject(s, nm);
+			else if (c == aSave) saveObjectDialog(s, "image", nm);
 			else if (c == aRem) sceneRemoveSurface(s);
 		};
 		beginGroupHandle(nm, IC_Image, dp->GetVisibility() != 0,

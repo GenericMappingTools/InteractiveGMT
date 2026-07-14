@@ -212,3 +212,48 @@ function _register_move()
 	ccall(_fn(:gmtvtk_set_move_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end
+
+# ── "Auto histogram stretch" image handle -> new percentile-stretched 8-bit image ────────────────
+# A non-8-bit dropped image (e.g. a 16-bit satellite band) is shown as a fast linear MIN-MAX 8-bit
+# copy (drop.jl `_stretch_to_u8`). Its full-precision original is stashed here, per window/name, so
+# the row's "Auto histogram stretch" handle can build a NEW image with GMT's percentile histogram
+# stretch (`mat2img(I; stretch=true)` -> find_histo_limits), which usually gives much better contrast
+# than a full-range min-max map. Only populated for images that actually needed conversion.
+const _IMG_ORIG = Dict{Ptr{Cvoid}, Dict{String, GMTimage}}()
+
+_remember_img_orig!(scene::Ptr{Cvoid}, name::String, I::GMTimage) =
+	(scene != C_NULL && (get!(() -> Dict{String,GMTimage}(), _IMG_ORIG, scene)[name] = I); I)
+
+# C callback: req = "image;<name>". Look up the stashed full-precision source (fall back to the live
+# scene image if none), histogram-stretch it to 8-bit, and add the result as a NEW image row in the
+# same window. Errors go to the Errors console.
+function _on_img_stretch(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
+	name = ""
+	try
+		parts = split(unsafe_string(req), ';', limit=2)
+		name = length(parts) >= 2 ? String(strip(parts[2])) : ""
+		d = get(_IMG_ORIG, scene, nothing)
+		Isrc = (d === nothing) ? nothing : get(d, name, nothing)
+		(Isrc === nothing) && (Isrc = _find_object(scene, :image, name))   # fall back to the live image
+		(Isrc === nothing) && error("No source image named '$name' to stretch")
+		# mat2img only histogram-stretches a UInt16 image (it returns an 8-bit one unchanged). So the
+		# stretch is meaningful only when a full-precision source was stashed; on a plain 8-bit image
+		# there is nothing to re-stretch — say so instead of adding an identical duplicate row.
+		eltype(Isrc.image) != UInt16 &&
+			(_viewer_log_error(scene, "Stretch: '$name' is already 8-bit (no wider-range source to stretch)"); return)
+		Istr = GMT.mat2img(Isrc; stretch=true)           # percentile histogram stretch -> 8-bit
+		newname = isempty(name) ? "stretched" : "$name (stretched)"
+		_add_image_to_scene(scene, Istr, newname)        # new row in THIS window
+		_viewer_log_error(scene, "Histogram-stretched image -> '$newname'")
+	catch e
+		_viewer_log_error(scene, "Stretch image FAILED: $(sprint(showerror, e))")
+		@warn "img-stretch: could not build stretched image" exception=(e,)
+	end
+	return
+end
+
+function _register_img_stretch()
+	fptr = @cfunction((s,c)->Base.invokelatest(_on_img_stretch,s,c), Cvoid, (Ptr{Cvoid}, Cstring))
+	ccall(_fn(:gmtvtk_set_img_stretch_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end

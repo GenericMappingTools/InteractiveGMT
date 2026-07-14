@@ -119,6 +119,8 @@ struct ExtraObj {
 	double zmin = 0, zmax = 0;               // this grid's own z range (drives its colorbar)
 	vtkSmartPointer<vtkScalarsToColors> lut; // this grid's colour map (for the retargeted colorbar)
 	bool   showBar = true;                   // user wants this grid's colorbar shown (when it is active)
+	int    cubeLayers = 0;                   // >1 iff this grid is a 3-D-cube variable (its menu offers
+	                                         // "Cube layers…", opening the slider bound to THIS cube)
 };
 
 // A user-drawn polygon (closed polyline) from the toolbar polygon tool. Vertices are kept in
@@ -383,6 +385,7 @@ struct Scene {
 	// Hillshade Lambert / grdimage) in the Shading dock, as a real 3-D surface with that look. The dock
 	// re-renders the CURRENT layer through g_juliaCubeLayer when the choice changes.
 	bool   isCube = false;      // this window is showing a 3-D-cube layer (cube layer switches read cubeFlatImg)
+	int    cubeNLayers = 0;     // >1 iff the BASE surface is a 3-D-cube variable (its menu offers "Cube layers…")
 	bool   cubeFlatImg = true;  // render the base grid as the flat shaded IMAGE (else a real 3-D surface)
 	int    cubeLayerCur = 0;    // current cube layer index (0-based) + colour-range choice (bookkeeping)
 	int    cubeUseGlobal = 0;

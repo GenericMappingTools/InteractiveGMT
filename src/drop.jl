@@ -20,15 +20,51 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 		# Already shown in a live window -> raise that window and ignore the duplicate drop.
 		_open_window_for(path) != C_NULL && return
 		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
-		# Cube files (3-D netCDF/grd) are NEVER read whole here -- a header-only probe decides
-		# the layer count, then the slider dialog pulls one slice at a time (see _on_3d_cube_dropped).
-		n_layers, zmin, zmax = _cube_probe(path)
-		if n_layers > 1
-			_on_3d_cube_dropped(scene, path, basename(path), empty, n_layers, zmin, zmax)
+
+		# A netCDF file can carry SEVERAL named variables (2-D grids and 3-D cubes). When it does,
+		# pop the modal picker so the user chooses which variable to load (or all of them). A plain
+		# single-variable grid returns an empty list and loads straight through.
+		vars = _netcdf_subdatasets(path)
+		if length(vars) > 1
+			rows = join(("$(v.name)\t$(_dims_str(v.dims))\t$(v.typ)" for v in vars), '\n')
+			sel  = Vector{Cint}(undef, length(vars))           # picker fills 0-based indices of ticked vars
+			pre  = Ref{Cint}(0)                                 # "compute per-layer min/max" checkbox state
+			nsel = ccall(_fn(:gmtvtk_pick_netcdf_var), Cint,
+			             (Ptr{Cvoid}, Cstring, Cstring, Ptr{Cint}, Cint, Ptr{Cint}),
+			             scene, basename(path), rows, sel, Cint(length(vars)), pre)
+			nsel <= 0 && return                                # cancelled / nothing ticked -> nothing loaded
+			chosen  = [vars[sel[i] + 1] for i in 1:nsel]
+			prescan = pre[] != 0
+			# A 3-D variable is tagged " (3D)" in the Scene Objects panel so it reads as a cube, not a
+			# plain grid (`_var_dispname`).
+			if length(chosen) == 1                             # single variable -> full cube slider if 3-D
+				v = chosen[1]
+				_open_spec_into(scene, "$(path)?$(v.name)", _var_dispname(v), empty; recent=path, prescan=prescan)
+			else                                               # a subset -> each variable its own surface
+				for (i, v) in enumerate(chosen)
+					spec = "$(path)?$(v.name)"; dn = _var_dispname(v)
+					isbase = empty && i == 1                    # first var promotes the launcher (if empty)
+					if length(v.dims) >= 3                      # a CUBE: read it FULLY (all layers), not one slice
+						if isbase
+							n, zmn, zmx = _cube_probe(spec)
+							_on_3d_cube_dropped(scene, spec, dn, true, n, zmn, zmx; prescan=prescan)  # base + slider
+						else
+							_load_cube_element(scene, spec, dn, prescan)                 # extra; slider via its menu
+						end
+					else                                        # a plain 2-D grid
+						_drop_into(scene, GMT.gmtread(spec), dn; promote=isbase, source=spec)
+					end
+				end
+				# Remember the file (not the "?var" specs) in File > Recent Files.
+				try
+					ccall(_fn(:gmtvtk_add_recent), Cvoid, (Cstring, Cint), abspath(String(path)), Cint(0))
+				catch
+				end
+			end
 		else
-			data = GMT.gmtread(path)
-			_record_recent(path, data)                         # remember it in File > Recent Files
-			_drop_into(scene, data, basename(path); promote=empty, source=path)
+			# Cube files (3-D netCDF/grd) are NEVER read whole here -- a header-only probe decides the
+			# layer count, then the slider dialog pulls one slice at a time (see _on_3d_cube_dropped).
+			_open_spec_into(scene, path, basename(path), empty; recent=path)
 		end
 		# Promoting the empty launcher makes this file the window's primary content -> retitle it.
 		# A drop into an already-populated window just adds an extra layer, so its title is left alone.
@@ -40,6 +76,92 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 	end
 	return
 end
+
+# Open ONE grid/image source (`spec`, a plain path or a "file.nc?var" subdataset) into the window.
+# Header-probes for cube-ness first: a multi-layer 3-D cube goes to the slider dialog (lazy per-slice
+# reads); anything else is read whole and dispatched by type. `recent` is the path recorded in File >
+# Recent Files (the plain file, never the "?var" spec, so a re-open re-shows the variable picker).
+function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::AbstractString, empty::Bool;
+                         recent::AbstractString=spec, prescan::Bool=false)
+	n_layers, zmin, zmax = _cube_probe(spec)
+	if n_layers > 1
+		_on_3d_cube_dropped(scene, String(spec), name, empty, n_layers, zmin, zmax; prescan=prescan)
+	else
+		data = GMT.gmtread(String(spec))
+		isempty(recent) || _record_recent(recent, data)
+		_drop_into(scene, data, name; promote=empty, source=String(spec))
+	end
+	return
+end
+
+# Enumerate the named variables of a multi-variable netCDF file via GDAL's Subdatasets report.
+# Returns a Vector of (name, dims, typ) -- EMPTY for a plain single-variable grid (no Subdatasets
+# block) or a non-netCDF file, in which case the caller loads the file directly (no picker). `dims`
+# is the variable's shape as GDAL reports it ([4,11,21] for a 3-D cube); `typ` is a friendly
+# element-type name. Reading a chosen variable back uses GMT's native "file.nc?var" syntax.
+function _netcdf_subdatasets(path::AbstractString)::Vector{@NamedTuple{name::String, dims::Vector{Int}, typ::String}}
+	out = @NamedTuple{name::String, dims::Vector{Int}, typ::String}[]
+	ext = lowercase(splitext(String(path))[2])
+	(ext != ".nc" && ext != ".grd") && return out
+	local txt
+	try
+		txt = GMT.gdalinfo(String(path))
+	catch
+		return out
+	end
+	(txt isa AbstractString && occursin("SUBDATASET_", txt)) || return out
+	# Pair up SUBDATASET_k_NAME (the variable) with SUBDATASET_k_DESC (its shape + type).
+	names = Dict{Int,String}(); descs = Dict{Int,String}()
+	for line in split(txt, '\n')
+		m = match(r"SUBDATASET_(\d+)_NAME=(.*)", line)
+		if m !== nothing
+			names[parse(Int, m.captures[1])] = strip(String(m.captures[2]))
+			continue
+		end
+		m = match(r"SUBDATASET_(\d+)_DESC=(.*)", line)
+		m !== nothing && (descs[parse(Int, m.captures[1])] = strip(String(m.captures[2])))
+	end
+	for k in sort(collect(keys(names)))
+		nm = _subds_varname(names[k])
+		nm == "" && continue
+		dims, typ = _subds_shape_type(get(descs, k, ""))
+		push!(out, (name=nm, dims=dims, typ=typ))
+	end
+	return out
+end
+
+# Variable name from a GDAL subdataset NAME token: NETCDF:"c:/path/file.nc":varname -> "varname".
+# The path itself can contain ':' (a drive letter), so take everything AFTER the closing quote.
+function _subds_varname(s::AbstractString)::String
+	i = findlast('"', s)
+	tail = i === nothing ? String(s) : s[nextind(s, i):end]
+	return String(strip(lstrip(String(tail), ':')))
+end
+
+# Parse a GDAL subdataset DESC: "[4x11x21] temp (32-bit floating-point)" -> ([4,11,21], "Float32").
+function _subds_shape_type(desc::AbstractString)
+	dims = Int[]
+	md = match(r"\[([0-9x]+)\]", desc)
+	md !== nothing && (dims = [parse(Int, t) for t in split(md.captures[1], 'x')])
+	typ = "?"
+	mt = match(r"\(([^)]+)\)\s*$", desc)
+	mt !== nothing && (typ = _gdal_typename(String(mt.captures[1])))
+	return dims, typ
+end
+
+const _GDAL_TYPES = Dict(
+	"8-bit unsigned integer" => "UInt8",  "8-bit integer" => "Int8",
+	"16-bit unsigned integer" => "UInt16", "16-bit integer" => "Int16",
+	"32-bit unsigned integer" => "UInt32", "32-bit integer" => "Int32",
+	"32-bit floating-point" => "Float32",  "64-bit floating-point" => "Float64")
+_gdal_typename(s::AbstractString) = get(_GDAL_TYPES, String(strip(s)), String(strip(s)))
+
+# Human-readable shape for the picker ("4×11×21").
+_dims_str(dims::Vector{Int}) = isempty(dims) ? "?" : join(string.(dims), "×")
+
+# Scene Objects display name for a picked netCDF variable: a 3-D variable (a cube) gets a " (3D)"
+# suffix so the panel distinguishes it from a plain 2-D grid.
+_var_dispname(v) = length(v.dims) >= 3 ? "$(v.name) (3D)" : String(v.name)
 
 # Dispatch the dropped object by type into the window `scene`. `promote` reuses the empty launcher.
 # `source` is the on-disk file path (threaded to Save Session so the layer is stored as a file ref,
@@ -64,7 +186,10 @@ _drop_into(scene::Ptr{Cvoid}, G::GMTgrid,  name; promote=false, source="") = _ad
 # cube reader, not GDAL, and is the mechanism GMT.jl's cube support is actually built on --
 # correctness comes first; the try/catch this needs is a one-time cost per dropped file, not a
 # hot loop, so it was never a real problem to begin with.
-const _CUBE_INFO = Dict{Ptr{Cvoid}, @NamedTuple{path::String, name::String, promote::Bool, source::String, zmin::Float64, zmax::Float64, n_layers::Int}}()
+# The ACTIVE cube's probe/state per scene. A window may hold SEVERAL cubes (each a separate surface);
+# these per-scene dicts always describe the one the slider currently drives. `isbase` = this cube is
+# the window's base surface (slides in place) vs an extra grid (layer switch = remove + re-add).
+const _CUBE_INFO = Dict{Ptr{Cvoid}, @NamedTuple{path::String, name::String, promote::Bool, isbase::Bool, source::String, zmin::Float64, zmax::Float64, n_layers::Int}}()
 const _CUBE_LOADED = Dict{Ptr{Cvoid}, Bool}()
 # The slice currently shown per scene: (layer index, its grid, its cmap). Lets the "global min/max"
 # checkbox rescale the COLOUR in place (no disk read, no surface rebuild) when the layer is unchanged.
@@ -74,12 +199,52 @@ const _CUBE_CUR = Dict{Ptr{Cvoid}, Any}()
 # read -- ~1.4 s off disk vs ~instant from RAM for a large cube. Held for the scene's life; cleared
 # when a new cube is dropped into the same window or the window dies.
 const _CUBE_RAM = Dict{Ptr{Cvoid}, GMTgrid}()
+# Per-layer (min, max) from the optional prescan (Mirone-style: scan every layer once up front so the
+# whole cube's true range is known). Fills _CUBE_INFO's zmin/zmax with the real global range -- fixing
+# the vertical-axis pin and the slider's "global min/max" colour toggle for cubes whose header omits it
+# (e.g. subdataset "?var" specs, where grdinfo -Q reports no z-range). Kept per scene for future stats.
+const _CUBE_LAYER_MINMAX = Dict{Ptr{Cvoid}, Vector{Tuple{Float64,Float64}}}()
+
+# Registry of ALL cubes in a window, keyed by Scene Objects element name (e.g. "temp (3D)"). Each
+# entry snapshots that cube's full state so the single per-Scene slider dock can be RETARGETED between
+# cubes: a per-element "Cube layers…" menu item activates its cube here and reopens the dock on it.
+# `_CUBE_ACTIVE` is the name currently mounted in the active per-scene dicts above.
+const _CUBES = Dict{Ptr{Cvoid}, Dict{String,NamedTuple}}()
+const _CUBE_ACTIVE = Dict{Ptr{Cvoid}, String}()
+
+# Save the ACTIVE per-scene cube state into the registry under the active name (so switching cubes and
+# coming back remembers the layer / RAM / range).
+function _snapshot_cube!(scene::Ptr{Cvoid})
+	name = get(_CUBE_ACTIVE, scene, ""); isempty(name) && return
+	d = get!(_CUBES, scene, Dict{String,NamedTuple}())
+	d[name] = (info   = _CUBE_INFO[scene],
+	           loaded = get(_CUBE_LOADED, scene, false),
+	           cur    = get(_CUBE_CUR, scene, nothing),
+	           ram    = get(_CUBE_RAM, scene, nothing),
+	           lmm    = get(_CUBE_LAYER_MINMAX, scene, Tuple{Float64,Float64}[]))
+	return
+end
+
+# Load a registered cube's snapshot into the ACTIVE per-scene dicts (make it the slider's target).
+function _activate_cube!(scene::Ptr{Cvoid}, name::String)
+	snap = _CUBES[scene][name]
+	_CUBE_INFO[scene]   = snap.info
+	_CUBE_LOADED[scene] = snap.loaded
+	snap.cur === nothing ? delete!(_CUBE_CUR, scene) : (_CUBE_CUR[scene] = snap.cur)
+	snap.ram === nothing ? delete!(_CUBE_RAM, scene) : (_CUBE_RAM[scene] = snap.ram)
+	_CUBE_LAYER_MINMAX[scene] = snap.lmm
+	_CUBE_ACTIVE[scene] = name
+	return
+end
 
 # Header-only probe: (n_layers, zmin, zmax) for a netCDF/grd cube -- n_layers=0 if not a cube (or
 # the header can't be read as one). ONE `grdinfo -Q` call gives both the layer count and the
 # whole cube's z-range together (no data read either way).
 function _cube_probe(path::String)::Tuple{Int,Float64,Float64}
-	ext = lowercase(splitext(path)[2])
+	# A subdataset spec ("file.nc?var") carries the variable after '?'; the ext check must look at
+	# the file part, not the whole spec (splitext of "…nc?var" yields ".nc?var", never ".nc").
+	base = first(split(path, '?'))
+	ext = lowercase(splitext(base)[2])
 	(ext != ".nc" && ext != ".grd") && return (0, 0.0, 0.0)
 	local info
 	try
@@ -95,19 +260,178 @@ function _cube_probe(path::String)::Tuple{Int,Float64,Float64}
 	return n > 1 ? (n, Float64(info.data[iz1]), Float64(info.data[iz2])) : (0, 0.0, 0.0)
 end
 
+# Read one 2-D slice (1-based `k`) of a cube on disk. A plain single-variable cube uses GMT's
+# `layer=` kwarg (GDAL cube reader). A SUBDATASET spec ("file.nc?var") must instead use GMT's own
+# native COARDS layer syntax "file.nc?var[i]" (0-based) -- the GDAL `layer=` path errors on a "?"
+# spec ("does not contain cube data").
+_read_cube_layer(path::String, k::Int)::Union{GMTgrid,Nothing} =
+	occursin('?', path) ? GMT.gmtread("$(path)[$(k-1)]") : GMT.gmtread(path, layer=k)
+
+# Read a whole cube into a 3-D GMTgrid for the "Load all in RAM" cache. A plain single-var cube uses
+# GMT's layers=:all; a SUBDATASET spec stacks its native "?var[i]" slices into a (ny,nx,nlayers)
+# array -- the same slab layout _cube_layer_view slices in place.
+function _read_whole_cube(path::String, n::Int)::Union{GMTgrid,Nothing}
+	if !occursin('?', path)
+		C = GMT.gmtread(path, layers=:all)
+		return (C isa GMTgrid && ndims(C.z) == 3) ? C : nothing
+	end
+	slabs = GMTgrid[]
+	for i in 0:n-1
+		g = GMT.gmtread("$(path)[$(i)]")
+		g === nothing && return nothing
+		push!(slabs, g)
+	end
+	isempty(slabs) && return nothing
+	z3 = cat((eltype(s.z) === Float32 ? s.z : Float32.(s.z) for s in slabs)...; dims=3)
+	g1 = slabs[1]
+	return GMT.mat2grid(z3; x=g1.x, y=g1.y)
+end
+
 # Handle a dropped cube file: remember (path, n_layers, global z-range), show the non-modal
 # slider dialog. No grid is read here -- the first slice is pulled lazily once the dialog fires
 # its initial layer.
-function _on_3d_cube_dropped(scene::Ptr{Cvoid}, path::String, name::AbstractString, promote::Bool, n_layers::Int, zmin::Float64, zmax::Float64)
-	_CUBE_INFO[scene] = (path=path, name=String(name), promote=promote, source=path, zmin=zmin, zmax=zmax, n_layers=n_layers)
-	_CUBE_LOADED[scene] = false
-	delete!(_CUBE_RAM, scene)   # a fresh cube is not in RAM (the dock button re-enables to match)
-	delete!(_CUBE_CUR, scene)
+function _on_3d_cube_dropped(scene::Ptr{Cvoid}, path::String, name::AbstractString, promote::Bool, n_layers::Int, zmin::Float64, zmax::Float64; prescan::Bool=false)
+	_cube_load_common!(scene, path, String(name), true, promote, n_layers, zmin, zmax, prescan)
+	info = _CUBE_INFO[scene]
 	# Pin the vertical axes to the WHOLE cube's z-range BEFORE the dialog builds layer 1, so the axis
 	# box + Z labels stay put as the user switches layers (each layer's own min/max differs).
-	ccall(_fn(:gmtvtk_set_cube_axes_zrange), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble), scene, zmin, zmax)
+	ccall(_fn(:gmtvtk_set_cube_axes_zrange), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble), scene, info.zmin, info.zmax)
 	ccall(_fn(:gmtvtk_show_cube_layer_dialog), Cvoid,
-		(Ptr{Cvoid}, Cstring, Cint), scene, name, n_layers)
+		(Ptr{Cvoid}, Cstring, Cint), scene, name, n_layers)   # fires layer 1 on the base surface + opens the dock
+	_finish_cube_element!(scene, String(name), n_layers)
+end
+
+# Load an EXTRA cube (one of several selected variables that is 3-D): read it fully (prescan into RAM),
+# mount its first layer as an extra surface, and register it -- but do NOT auto-open the slider (the
+# user opens it from the element's "Cube layers…" menu). `empty` is unused for extras (they never
+# promote); kept for signature symmetry with the base path.
+function _load_cube_element(scene::Ptr{Cvoid}, spec::String, name::String, prescan::Bool)
+	n, zmn, zmx = _cube_probe(spec)
+	n <= 1 && return false
+	prev = get(_CUBE_ACTIVE, scene, "")                      # the cube the open dock (if any) drives
+	_cube_load_common!(scene, spec, name, false, false, n, zmn, zmx, prescan)
+	_on_load_cube_layer(scene, Cint(0), Cint(0))              # mount layer 1 as an extra surface (no dialog)
+	_finish_cube_element!(scene, name, n)
+	# Loading an extra must NOT hijack an open base slider: restore the previously-active cube so the
+	# dock keeps driving it. The extra gets its own slider only when the user picks its "Cube layers…".
+	(!isempty(prev) && prev != name && haskey(get(_CUBES, scene, Dict{String,NamedTuple}()), prev)) &&
+		_activate_cube!(scene, prev)
+	return true
+end
+
+# Shared setup for a cube (base or extra): point the ACTIVE per-scene dicts at it, then optionally
+# prescan (every layer once for the true per-layer + global min/max -- fixes the axis pin + "global
+# min/max" for cubes whose header omits the z-range, e.g. subdataset "?var" specs).
+function _cube_load_common!(scene::Ptr{Cvoid}, path::String, name::String, isbase::Bool, promote::Bool,
+                            n_layers::Int, zmin::Float64, zmax::Float64, prescan::Bool)
+	_CUBE_INFO[scene] = (path=path, name=name, promote=promote, isbase=isbase, source=path,
+	                     zmin=zmin, zmax=zmax, n_layers=n_layers)
+	_CUBE_LOADED[scene] = false
+	delete!(_CUBE_RAM, scene)          # a fresh cube is not in RAM (the dock button re-enables to match)
+	delete!(_CUBE_CUR, scene)
+	delete!(_CUBE_LAYER_MINMAX, scene)
+	_CUBE_ACTIVE[scene] = name         # BEFORE any layer load, so its _snapshot_cube! keys the right cube
+	prescan && _cube_prescan(scene)
+	return
+end
+
+# After a cube's first layer is showing: flag its Scene Objects element so its menu offers
+# "Cube layers…", make it the active cube, and snapshot it into the registry.
+function _finish_cube_element!(scene::Ptr{Cvoid}, name::String, n_layers::Int)
+	ccall(_fn(:gmtvtk_mark_element_cube), Cvoid, (Ptr{Cvoid}, Cstring, Cint), scene, name, Cint(n_layers))
+	_CUBE_ACTIVE[scene] = name   # the just-loaded cube is the active one (base opens its slider now)
+	_snapshot_cube!(scene)
+	return
+end
+
+# C callback: the "Cube layers…" item on a cube element's Scene Objects menu. Retarget the single
+# slider dock to THAT cube (activate its snapshot, re-pin the axis, reopen/re-point the dock).
+function _on_cube_slider(scene::Ptr{Cvoid}, cname::Cstring)::Cvoid
+	try
+		name = unsafe_string(cname)
+		reg = get(_CUBES, scene, nothing)
+		(reg === nothing || !haskey(reg, name)) && (@warn "Cube layers: no cube named $name"; return)
+		_snapshot_cube!(scene)                 # remember where the previously-active cube was
+		_activate_cube!(scene, name)
+		info = _CUBE_INFO[scene]
+		ccall(_fn(:gmtvtk_set_cube_axes_zrange), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble), scene, info.zmin, info.zmax)
+		ccall(_fn(:gmtvtk_show_cube_layer_dialog), Cvoid,
+			(Ptr{Cvoid}, Cstring, Cint), scene, name, info.n_layers)
+	catch e
+		@error "Cube layers menu failed" exception=(e, catch_backtrace())
+	end
+	return
+end
+
+# Min/max of a numeric array IGNORING NaN (GMT grids carry NaN for nodata). Returns (Inf, -Inf) for
+# an all-NaN slice so it contributes nothing to the global range.
+function _finite_extrema(A)::Tuple{Float64,Float64}
+	lo = Inf; hi = -Inf
+	@inbounds for v in A
+		f = Float64(v)
+		isnan(f) && continue
+		f < lo && (lo = f)
+		f > hi && (hi = f)
+	end
+	return lo, hi
+end
+
+# Mirone-style prescan: compute every layer's (min, max) once and store it, then set _CUBE_INFO's
+# zmin/zmax to the true global range. If the whole cube fits in free RAM it is read once (and KEPT in
+# _CUBE_RAM, so later layer switches are instant) and the per-layer extrema are computed IN PARALLEL
+# over the in-memory slabs (GMT's gmtread is NOT thread-safe -- a shared libgmt session -- so the disk
+# read stays single-threaded; only the pure-Julia array scan is threaded). If it does not fit, fall
+# back to a sequential layer-by-layer disk scan (bounded memory, one slice held at a time).
+function _cube_prescan(scene::Ptr{Cvoid})
+	info = get(_CUBE_INFO, scene, nothing); info === nothing && return
+	n = info.n_layers; n < 1 && return
+	mins = fill(Inf, n); maxs = fill(-Inf, n)
+	# Read the first slice up front: it decides whether the whole cube fits in free RAM (20% headroom)
+	# and doubles as layer 1 of the scan (no re-read).
+	g1 = nothing; keepram = false
+	try
+		g1 = _read_cube_layer(info.path, 1)
+		if g1 !== nothing
+			need = Float64(length(g1.z) * sizeof(eltype(g1.z))) * n
+			keepram = need * 1.2 < Float64(Sys.free_memory())
+		end
+	catch e
+		@warn "cube prescan: first-layer read failed" exception=(e,)
+	end
+	# Determinate progress dialog over the n layers -- the read is the slow part (GMT gmtread is serial
+	# and NOT thread-safe). If the cube fits RAM, keep every slice so the per-layer extrema (the fast
+	# part) can run IN PARALLEL afterwards over the in-memory slabs, and cache the cube for instant
+	# layer switching; otherwise scan each slice's extrema inline and drop it (bounded memory).
+	ccall(_fn(:gmtvtk_progress_show), Cint, (Cint, Cstring), Cint(n), "Scanning cube layers…")
+	try
+		slabs = keepram ? Vector{Matrix{Float32}}(undef, n) : nothing
+		for k in 1:n
+			g = (k == 1 && g1 !== nothing) ? g1 : _read_cube_layer(info.path, k)
+			if g !== nothing
+				if keepram
+					slabs[k] = eltype(g.z) === Float32 ? g.z : Float32.(g.z)
+				else
+					mins[k], maxs[k] = _finite_extrema(g.z)
+				end
+			end
+			ccall(_fn(:gmtvtk_progress_status), Cvoid, (Cint, Cstring), Cint(k), "Layer $k / $n")
+		end
+		if keepram && g1 !== nothing
+			z3 = cat(slabs...; dims=3)
+			C  = GMT.mat2grid(z3; x=g1.x, y=g1.y)
+			_CUBE_RAM[scene] = C
+			Threads.@threads for k in 1:n
+				mins[k], maxs[k] = _finite_extrema(@view C.z[:, :, k])
+			end
+		end
+	finally
+		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
+	end
+	_CUBE_LAYER_MINMAX[scene] = collect(zip(mins, maxs))
+	gmin = minimum(mins); gmax = maximum(maxs)
+	isfinite(gmin) && isfinite(gmax) && gmax > gmin &&
+		(_CUBE_INFO[scene] = merge(info, (zmin=gmin, zmax=gmax)))
+	return
 end
 
 # Callback: the slider/spinbox moved to `layer_index` (0-based), or the "global min/max" checkbox
@@ -119,6 +443,27 @@ end
 #     so "global" silently did nothing).
 #   * layer change (or first load) -> read that ONE slice off disk, add/replace the surface, cache
 #     it, then apply the colour scaling.
+# Draw cube layer `G` onto the cube's OWN surface named `name`. The BASE cube uses the fast in-place
+# paths (flat shaded image OR gmtvtk_replace_base_grid); an EXTRA cube (one of several in the window)
+# has no in-place API, so a layer switch removes its surface and re-adds it under the same name (the
+# established extra-grid update pattern -- nested transplant does the same). Extras never use the flat
+# image path (base-only) and are not re-recorded in the session on every layer step.
+function _cube_write_surface!(scene::Ptr{Cvoid}, info, name::String, G::GMTgrid, chosen, zr, flat::Bool, first::Bool)
+	if info.isbase
+		if flat
+			_show_cube_layer_image!(scene, G, name, chosen; first=first, source=info.source)
+		elseif first
+			_add_grid_to_scene(scene, G, name; promote=info.promote, source=info.source, zrange=zr)
+		else
+			_apply_host_grid!(scene, G, name; zrange=zr)
+		end
+	else
+		first || ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, name)
+		_add_grid_to_scene(scene, G, name; promote=false, source=info.source, zrange=zr, record=first)
+	end
+	return
+end
+
 function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::Cint)::Cvoid
 	try
 		info = get(_CUBE_INFO, scene, nothing)
@@ -137,44 +482,44 @@ function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::C
 		if cur !== nothing && cur.layer == layer_i && loaded
 			chosen = use_global != 0 ? cur.glob : cur.loc
 			zr     = use_global != 0 ? (info.zmin, info.zmax) : nothing
-			if flat
-				_show_cube_layer_image!(scene, cur.G, layer_name, chosen)   # cheap texture repaint
-			else
-				_apply_host_grid!(scene, cur.G, layer_name; zrange=zr)      # real 3-D surface
-			end
+			_cube_write_surface!(scene, info, layer_name, cur.G, chosen, zr, flat, false)
 			_CUBE_CUR[scene] = (layer=layer_i, G=cur.G, cmap=cur.cmap, loc=cur.loc, glob=cur.glob, flat=flat)
 			_cube_push_cpt(scene, chosen)
 			_mark_cube(scene, layer_index, use_global)
+			_snapshot_cube!(scene)
 			return
 		end
 
 		# Fetch the slice: a zero-copy RAM slab ("Load all in RAM") or a lazy one-layer disk read.
 		ram = get(_CUBE_RAM, scene, nothing)
-		Gk  = ram !== nothing ? _cube_layer_view(ram, layer_i) : GMT.gmtread(info.path, layer=layer_i)
+		Gk  = ram !== nothing ? _cube_layer_view(ram, layer_i) : _read_cube_layer(info.path, layer_i)
 		Gk === nothing && (@warn "Failed to read cube layer $layer_i from $(info.path)"; return)
 		cmap = _default_cmap(Gk)
 		# Precompute BOTH CPTs for this slice (the only makecpt cost, paid once per layer read): its own
 		# [zmin,zmax] and the whole cube's global range. Toggling the checkbox then swaps between them.
 		loc    = _cpt_nodes(Gk, cmap)
 		glob   = _cpt_nodes_range(info.zmin, info.zmax, cmap)
+		# A CONSTANT (or all-NaN/fill) slice collapses _cpt_nodes to <2 control points; the flat-image
+		# base build then rejects it and the surface never appears. Fall back to the whole-cube range,
+		# or a tiny band around the constant value, so a degenerate layer still renders.
+		if loc[3] < 2
+			lo, _ = _finite_extrema(Gk.z)
+			v   = isfinite(lo) ? lo : 0.0                      # constant value (or 0 for an all-NaN slice)
+			loc = info.zmax > info.zmin ? glob : _cpt_nodes_range(v - 0.5, v + 0.5, cmap)
+		end
+		glob[3] < 2 && (glob = loc)
 		chosen = use_global != 0 ? glob : loc
 		first  = !loaded
 		zr     = use_global != 0 ? (info.zmin, info.zmax) : nothing
-		if flat
-			# Fast illuminated image (flat textured plane), NOT a warped 3-D surface.
-			_show_cube_layer_image!(scene, Gk, layer_name, chosen; first=first, source=info.source)
-		elseif first
-			_add_grid_to_scene(scene, Gk, layer_name; promote=info.promote, source=info.source, zrange=zr)
-		else
-			_apply_host_grid!(scene, Gk, layer_name; zrange=zr)   # real 3-D surface, in-place swap
-		end
+		_cube_write_surface!(scene, info, layer_name, Gk, chosen, zr, flat, first)
 		if first
 			_CUBE_LOADED[scene] = true
-			ram === nothing && _record_recent(info.path, Gk)
+			ram === nothing && info.isbase && _record_recent(info.path, Gk)
 		end
 		_CUBE_CUR[scene] = (layer=layer_i, G=Gk, cmap=cmap, loc=loc, glob=glob, flat=flat)
 		_cube_push_cpt(scene, chosen)
 		_mark_cube(scene, layer_index, use_global)
+		_snapshot_cube!(scene)
 	catch e
 		@error "Failed to load cube layer" exception=(e, catch_backtrace())
 	end
@@ -255,7 +600,7 @@ function _on_cube_load_all(scene::Ptr{Cvoid})::Cint
 		nbytes_layer = if cur !== nothing && cur.G isa GMTgrid
 			length(cur.G.z) * sizeof(eltype(cur.G.z))
 		else
-			g1 = GMT.gmtread(info.path, layer=1)
+			g1 = _read_cube_layer(info.path, 1)
 			g1 === nothing && return Cint(2)
 			length(g1.z) * sizeof(eltype(g1.z))
 		end
@@ -263,9 +608,10 @@ function _on_cube_load_all(scene::Ptr{Cvoid})::Cint
 		# Keep a 20% headroom over the raw cube size (transient read buffers + working set).
 		(need * 1.2 > Float64(Sys.free_memory())) && return Cint(1)
 
-		C = GMT.gmtread(info.path, layers=:all)
+		C = _read_whole_cube(info.path, info.n_layers)
 		(C isa GMTgrid && ndims(C.z) == 3) || return Cint(2)
 		_CUBE_RAM[scene] = C
+		_snapshot_cube!(scene)                              # remember the RAM cube on the active entry
 		return Cint(0)
 	catch e
 		@error "Cube load-all failed" exception=(e, catch_backtrace())
@@ -280,6 +626,8 @@ function _register_cube_callback()
 		(Ptr{Cvoid},), @cfunction(_on_load_cube_layer, Cvoid, (Ptr{Cvoid}, Cint, Cint)))
 	ccall(_fn(:gmtvtk_set_cube_loadall_callback), Cvoid,
 		(Ptr{Cvoid},), @cfunction(_on_cube_load_all, Cint, (Ptr{Cvoid},)))
+	ccall(_fn(:gmtvtk_set_cube_slider_callback), Cvoid,
+		(Ptr{Cvoid},), @cfunction(_on_cube_slider, Cvoid, (Ptr{Cvoid}, Cstring)))
 end
 _drop_into(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false, source="") = _add_image_to_scene(scene, I, name; promote, source)
 function _drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name; promote=false, source="")
@@ -380,8 +728,35 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 	return ok != 0
 end
 
+# Linear min-max stretch of a non-8-bit GMTimage (e.g. a 16-bit satellite band) into a UInt8 grey
+# image, keeping every georef field (mat2img(mat, I) copies proj4/wkt/epsg/range/inc/x/y/layout).
+# Hand-rolled on purpose: GMT.mat2img's own UInt16 scaler boxes per pixel (~17 s / 8 GiB on a
+# 60-Mpx Landsat band); this SIMD loop is ~0.1 s on the same image.
+function _stretch_to_u8(I::GMTimage)
+	m = I.image
+	lo, hi = I.range[5], I.range[6]            # data min/max already carried on the image
+	rng = hi > lo ? Float32(hi - lo) : 1.0f0
+	out = Matrix{UInt8}(undef, size(m))
+	@inbounds @simd for k in eachindex(m)
+		out[k] = round(UInt8, (Float32(Float64(m[k]) - lo) / rng) * 255.0f0)
+	end
+	return GMT.mat2img(out, I)
+end
+
 # Add a dropped image as a flat textured plane in the window (promote = reuse the empty launcher).
 function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false, source="", record=true)
+	# A non-8-bit raster (e.g. a 16-bit Landsat/Sentinel surface-reflectance band) reads as a
+	# UInt16 GMTimage; the drape/texture path is UInt8-only and would trunc-error on any pixel
+	# > 255 (`InexactError: trunc(UInt8, …)`). Contrast-stretch it to an 8-bit grey image first.
+	# NOT GMT.mat2img(I; stretch=true): that path is ~17 s / 8 GiB on a 60-Mpx band (per-pixel
+	# boxing); `_stretch_to_u8` does the same linear min-max stretch in ~0.1 s, keeping the georef.
+	# The min-max display copy REPLACES I, but the original (higher-bit) image is stashed in
+	# _IMG_ORIG so the row's "Auto histogram stretch" handle can re-derive a percentile-stretched
+	# 8-bit image from full precision (see savefile.jl `_on_img_stretch`).
+	if eltype(I.image) != UInt8
+		_remember_img_orig!(scene, String(name), I)
+		I = _stretch_to_u8(I)
+	end
 	ir = I.range
 	z = zeros(Float32, 2, 2)
 	fillu = (UInt8(200), UInt8(200), UInt8(200))

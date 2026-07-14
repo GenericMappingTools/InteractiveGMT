@@ -3848,6 +3848,101 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 	dock->raise();
 }
 
+// ── Multi-variable netCDF picker ────────────────────────────────────────────
+// A dropped netCDF file may hold several named variables (2-D grids and 3-D
+// cubes). `rows` is a "\t"-separated, "\n"-terminated table -- one line per
+// variable, "name\tsize\ttype". Shows a MODAL dialog with a checkbox left of each
+// variable name (load any subset), a "compute per-layer min/max" option, and a
+// Load button. Writes the 0-based indices of the checked variables into `sel`
+// (capacity `maxSel`), sets `*prescan` to whether the min/max option is on, and
+// returns the number of selected variables (0 = cancelled / nothing checked).
+// Modal (exec) on purpose -- the drop handler blocks here and reads the result,
+// then loads the chosen variable(s). No Julia callback fires while the dialog is
+// open, so none of showCubeLayerDialog's reentrancy hazards apply (loading runs
+// after exec() returns, back in the Julia drop handler).
+static int showNetcdfVarDialog(Scene *s, const QString &title, const QString &rows,
+                               int *sel, int maxSel, int *prescan) {
+	if (prescan) *prescan = 1;
+	QWidget *parent = (s && s->win) ? static_cast<QWidget *>(s->win) : nullptr;
+	QStringList lines = rows.split('\n', Qt::SkipEmptyParts);
+	if (lines.isEmpty() || !sel || maxSel <= 0) return 0;
+
+	QDialog dlg(parent);
+	dlg.setWindowTitle(title.isEmpty() ? QStringLiteral("Select netCDF variable(s)") : title);
+	dlg.setModal(true);
+
+	auto *lay  = new QVBoxLayout(&dlg);
+	auto *info = new QLabel(QStringLiteral(
+		"This file holds several variables. Tick the ones to load:"), &dlg);
+	info->setWordWrap(true);
+	lay->addWidget(info);
+
+	auto *table = new QTableWidget(lines.size(), 3, &dlg);
+	table->setHorizontalHeaderLabels({QStringLiteral("Variable"), QStringLiteral("Size"), QStringLiteral("Type")});
+	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+	table->setSelectionBehavior(QAbstractItemView::SelectRows);
+	table->verticalHeader()->setVisible(false);
+	for (int r = 0; r < lines.size(); ++r) {
+		QStringList c = lines[r].split('\t');
+		// The variable-name item carries the checkbox (drawn to the LEFT of the text); UNticked by
+		// default -- the user opts each variable in (nothing loads unless something is ticked).
+		auto *nameItem = new QTableWidgetItem(c.size() > 0 ? c[0] : QString());
+		nameItem->setFlags((nameItem->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable);
+		nameItem->setCheckState(Qt::Unchecked);
+		table->setItem(r, 0, nameItem);
+		table->setItem(r, 1, new QTableWidgetItem(c.size() > 1 ? c[1] : QString()));
+		table->setItem(r, 2, new QTableWidgetItem(c.size() > 2 ? c[2] : QString()));
+	}
+	table->resizeColumnsToContents();
+	table->horizontalHeader()->setStretchLastSection(true);
+	lay->addWidget(table);
+
+	// Select-all / none helpers + the per-layer min/max prescan option.
+	auto *selAll  = new QPushButton(QStringLiteral("Select all"), &dlg);
+	auto *selNone = new QPushButton(QStringLiteral("Select none"), &dlg);
+	auto setAll = [table](Qt::CheckState st) {
+		for (int r = 0; r < table->rowCount(); ++r)
+			if (auto *it = table->item(r, 0)) it->setCheckState(st);
+	};
+	QObject::connect(selAll,  &QPushButton::clicked, &dlg, [setAll]{ setAll(Qt::Checked); });
+	QObject::connect(selNone, &QPushButton::clicked, &dlg, [setAll]{ setAll(Qt::Unchecked); });
+	auto *selRow = new QHBoxLayout;
+	selRow->addWidget(selAll);
+	selRow->addWidget(selNone);
+	selRow->addStretch(1);
+	lay->addLayout(selRow);
+
+	auto *preChk = new QCheckBox(QStringLiteral(
+		"Compute per-layer min/max (fixes the colour scale && vertical axis for 3-D cubes)"), &dlg);
+	preChk->setChecked(true);
+	lay->addWidget(preChk);
+
+	auto *btnBox = new QDialogButtonBox(&dlg);
+	auto *loadBtn = btnBox->addButton(QStringLiteral("Load"), QDialogButtonBox::AcceptRole);
+	btnBox->addButton(QDialogButtonBox::Cancel);
+	lay->addWidget(btnBox);
+
+	QObject::connect(loadBtn, &QPushButton::clicked, &dlg, [&]{ dlg.accept(); });
+	QObject::connect(btnBox, &QDialogButtonBox::rejected, &dlg, [&]{ dlg.reject(); });
+	// Double-click a row = load just that one variable.
+	QObject::connect(table, &QTableWidget::cellDoubleClicked, &dlg, [&](int r, int){
+		setAll(Qt::Unchecked);
+		if (auto *it = table->item(r, 0)) it->setCheckState(Qt::Checked);
+		dlg.accept();
+	});
+
+	dlg.resize(500, qMin(210 + lines.size() * 26, 520));
+	if (dlg.exec() != QDialog::Accepted) return 0;
+
+	if (prescan) *prescan = preChk->isChecked() ? 1 : 0;
+	int n = 0;
+	for (int r = 0; r < lines.size() && n < maxSel; ++r) {
+		auto *it = table->item(r, 0);
+		if (it && it->checkState() == Qt::Checked) sel[n++] = r;
+	}
+	return n;
+}
+
 // Plot seismicity — port of Mirone's earthquakes.m (src_figs/earthquakes.m). The layout is a
 // FAITHFUL reproduction of deps/ui/plot_seismicity.ui: fixed 520x540 dialog, every widget at
 // its .ui rect (setGeometry, NO Qt layouts — the .ui was arranged by hand and its geometry is

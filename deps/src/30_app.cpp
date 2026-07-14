@@ -299,6 +299,12 @@ static JuliaCubeLayerFn g_juliaCubeLayer = nullptr;
 typedef int (*JuliaCubeLoadAllFn)(void *scene);
 static JuliaCubeLoadAllFn g_juliaCubeLoadAll = nullptr;
 
+// "Cube layers…" item in a cube element's Scene Objects menu. A window can hold several cubes (each a
+// separate surface); this asks Julia to make the NAMED cube the active one and (re)open the slider
+// dock bound to it. The single per-Scene dock is retargeted, not duplicated.
+typedef void (*JuliaCubeSliderFn)(void *scene, const char *name);
+static JuliaCubeSliderFn g_juliaCubeSlider = nullptr;
+
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a
 // short format code (nc/surfer/gtiff/jp2/erdas/envi for grids; those + jpg/png/tif/bmp for images);
@@ -325,6 +331,13 @@ static JuliaSaveGeoTiffFn g_juliaSaveGeoTiff = nullptr;
 // gmtvtk_set_move_callback; nullptr -> a status-bar notice and the grid stays put.
 typedef int (*JuliaMoveFn)(void *scene, const char *req);
 static JuliaMoveFn g_juliaMove = nullptr;
+
+// Scene Objects image row > "Auto histogram stretch". Calls fn(scene, "image;<name>"); Julia looks up
+// the image's full-precision source (a 16-bit satellite band shown as a fast min-max 8-bit preview),
+// runs GMT's percentile histogram stretch, and adds the result as a NEW image row in this window.
+// Set via gmtvtk_set_img_stretch_callback; nullptr -> a status-bar notice.
+typedef void (*JuliaImgStretchFn)(void *scene, const char *req);
+static JuliaImgStretchFn g_juliaImgStretch = nullptr;
 
 // One selectable output format for the Save dialog: a human label, the short code handed to Julia,
 // the QFileDialog filter, and the canonical extension (used to seed/auto-suffix the file name).
@@ -444,6 +457,17 @@ static bool moveObjectToNewWindow(Scene *s, const char *kind, const QString& nam
 	}
 	const QString req = QString("%1;%2").arg(QString(kind)).arg(name);
 	return g_juliaMove(s, req.toUtf8().constData()) != 0;
+}
+
+// Ask Julia to build a histogram-stretched 8-bit copy of the named image as a NEW row (g_juliaImgStretch,
+// req = "image;<name>"). A nullptr callback just posts a status-bar notice.
+static void stretchImageObject(Scene *s, const QString& name) {
+	if (!g_juliaImgStretch) {
+		if (s && s->win) s->win->statusBar()->showMessage("Histogram stretch: callback not registered", 3000);
+		return;
+	}
+	const QString req = QString("image;%1").arg(name);
+	g_juliaImgStretch(s, req.toUtf8().constData());
 }
 
 // Does the window hold a saveable grid / image? Used to enable/disable the File>Save entries and to

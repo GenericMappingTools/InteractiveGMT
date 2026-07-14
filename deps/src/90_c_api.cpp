@@ -2364,6 +2364,12 @@ GMTVTK_API void gmtvtk_set_move_callback(JuliaMoveFn fn) {
 	g_juliaMove = fn;
 }
 
+// Register the Scene Objects image-row "Auto histogram stretch" callback. fn(scene, "image;<name>")
+// builds a percentile histogram-stretched 8-bit copy of the named image as a new row. nullptr to detach.
+GMTVTK_API void gmtvtk_set_img_stretch_callback(JuliaImgStretchFn fn) {
+	g_juliaImgStretch = fn;
+}
+
 // Register the tide-station download callback. The two "Download Mareg …" entries on a Tide
 // Stations star's right-click menu call fn(scene, mode, station): mode "2days" | "calendar",
 // station = the clicked star's "Name:/Code:/Country:" block. Julia opens the download window.
@@ -2387,6 +2393,23 @@ GMTVTK_API void gmtvtk_set_cube_layer_callback(JuliaCubeLayerFn fn) {
 // Register the "Load all in RAM" callback for the cube layer dock. nullptr to detach.
 GMTVTK_API void gmtvtk_set_cube_loadall_callback(JuliaCubeLoadAllFn fn) {
 	g_juliaCubeLoadAll = fn;
+}
+
+// Register the per-element "Cube layers…" callback (reopen the slider bound to a named cube). nullptr to detach.
+GMTVTK_API void gmtvtk_set_cube_slider_callback(JuliaCubeSliderFn fn) {
+	g_juliaCubeSlider = fn;
+}
+
+// Flag the Scene Objects element `name` (the base surface or an extra grid) as a 3-D cube with
+// `nLayers` layers, so its properties menu offers "Cube layers…". nLayers <= 1 clears the flag.
+GMTVTK_API void gmtvtk_mark_element_cube(void *scene, const char *name, int nLayers) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!sceneAlive(s) || !name) return;
+	QString nm = QString::fromUtf8(name);
+	int nl = nLayers > 1 ? nLayers : 0;
+	if (!s->surfName.empty() && nm == QString::fromStdString(s->surfName)) { s->cubeNLayers = nl; return; }
+	for (auto &ex : s->extras)
+		if (nm == QString::fromStdString(ex.name)) { ex.cubeLayers = nl; return; }
 }
 
 // Which cube-layer algorithm is selected in the Shading dock: 1 = flat shaded image (fast), 0 = a
@@ -2426,6 +2449,21 @@ GMTVTK_API void gmtvtk_show_cube_layer_dialog(void *scene, const char *name, int
 	Scene *s = static_cast<Scene*>(scene);
 	if (!sceneAlive(s) || !name || nLayers <= 0) return;
 	showCubeLayerDialog(s, QString::fromUtf8(name), nLayers);   // per-Scene dialog (70_window.cpp)
+}
+
+// Show the MODAL multi-variable netCDF picker. `rows` is a "\t"-separated,
+// "\n"-terminated table ("name\tsize\ttype\n..."). Writes the 0-based indices of
+// the ticked variables into `sel` (capacity `maxSel`), sets `*prescan` to whether
+// the per-layer min/max option is on, and returns how many variables were chosen
+// (0 = cancelled). Blocks until the user answers (called synchronously from the
+// Julia drop handler).
+GMTVTK_API int gmtvtk_pick_netcdf_var(void *scene, const char *title, const char *rows,
+                                      int *sel, int maxSel, int *prescan) {
+	ensureApp();
+	Scene *s = static_cast<Scene*>(scene);
+	if (!rows) return 0;
+	return showNetcdfVarDialog(s, QString::fromUtf8(title ? title : ""), QString::fromUtf8(rows),
+	                           sel, maxSel, prescan);
 }
 
 // Prepare an EMPTY launcher to receive geographic IMAGE objects as ExtraObj images. The basemap

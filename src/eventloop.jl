@@ -53,6 +53,7 @@ function _ensure_callbacks()
 	                    ("save-geotiff",_register_save_geotiff),
 	                    ("session",     _register_session),
 	                    ("move",        _register_move),
+	                    ("img-stretch", _register_img_stretch),
 	                    ("geography",   _register_geography),
 	                    ("solid",       _register_solid),
 	                    ("tides",       _register_tides),

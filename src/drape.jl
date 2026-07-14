@@ -21,12 +21,14 @@ function _pixaccess(S, lay, d3::Bool, nb::Int, rowmajor::Bool, nlon::Int, nlat::
 end
 
 # Does the array's first lat index hold the NORTH row? The layout 1st char (T/B) is the nominal
-# answer ('T' -> north-first), BUT gmtread tags disk-read RGB images "BRPa" while GMT's get_image
-# hands back the raw GDAL buffer UN-flipped, i.e. actually TOP-first (row 1 = north) — verified by
-# matching gmtread row 1 against gdalread (TRBa, genuinely top-first). So the 'B' on a
-# pixel-interleaved image is a mislabel; treat those as north-first. Band-planar images keep the
-# nominal T/B rule (the previously-working path, left untouched).
-_north_first(lay, pixinter::Bool) = pixinter ? true : (isempty(lay) || lay[1] != 'B')
+# answer ('T' -> north-first), BUT gmtread's disk image reader hands back the raw GDAL buffer
+# UN-flipped — i.e. actually TOP-first (row 1 = north) — yet tags it 'B' (bottom-first). Verified:
+# gmtread "BRBa"/"BRPa" is the SAME memory gdalread returns as "TRBa" (genuinely top-first). Those
+# disk buffers are always ROW-MAJOR ('R', 2nd char), whether single-band ("BRBa"), grey, or
+# pixel-interleaved RGB ("BRPa"); the 'B' is a mislabel. So ANY row-major image is north-first,
+# regardless of the T/B char. Grid-derived images are COLUMN-MAJOR ('C', e.g. mat2img -> "BCBa")
+# and are genuinely bottom-first, so those honour the nominal T/B label.
+_north_first(lay, rowmajor::Bool) = rowmajor ? true : (isempty(lay) || lay[1] != 'B')
 
 # Pack a GMTimage into a VTK texture buffer, honouring I.layout (mirrors GMTF3D's img_to_texbuf).
 # layout char 2 = 'R' -> array is [lon,lat] (row-major); see _north_first for the lat direction.
@@ -40,7 +42,7 @@ function _drape_buf(I)
 	lay = I.layout
 	rowmajor    = length(lay) >= 2 && lay[2] == 'R'   # 'R' -> array is [lon, lat]
 	pixinter    = d3 && length(lay) >= 3 && lay[3] == 'P'
-	north_first = _north_first(lay, pixinter)
+	north_first = _north_first(lay, rowmajor)
 	nlon, nlat  = rowmajor ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
 	pix = _pixaccess(S, lay, d3, nb, rowmajor, nlon, nlat)
 	buf = Vector{UInt8}(undef, nlat * nlon * comps)
@@ -79,7 +81,7 @@ function _drape_to_bbox(I, gx0, gx1, gy0, gy1; outside::Symbol=:shademesh, fill=
 	lay = I.layout
 	rowmajor    = length(lay) >= 2 && lay[2] == 'R'   # 'R' -> array is [lon, lat]
 	pixinter    = d3 && length(lay) >= 3 && lay[3] == 'P'
-	north_first = _north_first(lay, pixinter)
+	north_first = _north_first(lay, rowmajor)
 	nlon_i, nlat_i = rowmajor ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
 	pix = _pixaccess(S, lay, d3, nb, rowmajor, nlon_i, nlat_i)
 	ir = I.range
