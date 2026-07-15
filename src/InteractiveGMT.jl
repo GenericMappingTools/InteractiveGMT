@@ -63,12 +63,13 @@ include("nested.jl")     # "Nested grids" rectangle tool: host-side blank-grid b
 include("transplant.jl") # Grid Tools > Transplant 2nd grid (port of Mirone utils/transplants.m)
 include("measure.jl")    # line length/azimuth + polygon area for the vector context menu (CRS-aware)
 include("info.jl")       # toolbar "i" button: grdinfo / gdalinfo report on the active grid/image
+include("rtp3d.jl")      # Geophysics > Magnetics: reduce-to-pole via 2-D FFT (port of Mirone utils/rtp3d.m)
 
 export view_grid, view_image, view_points, view_fv, view_demo, iview,
        add!, add_curtain!, add_symbols!, show_table, selection, isalive,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot,
-       QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot
+       QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot, rtp3d
 
 # --- precompile (ALL of it lives HERE, via PrecompileTools — never hidden in other files) ---
 # Callbacks are thin invokelatest trampolines registered lazily on first window open
