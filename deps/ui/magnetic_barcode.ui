@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MagBarcodeDialog</class>
+ <widget class="QDialog" name="MagBarcodeDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>300</width>
+    <height>600</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>240</width>
+    <height>400</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>Geomagnetic Bar Code</string>
+  </property>
+  <layout class="QVBoxLayout" name="outerLayout">
+   <item>
+    <layout class="QHBoxLayout" name="mainLayout">
+     <item>
+      <widget class="MagBarcodeWidget" name="barcodeWidget" native="true">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>180</width>
+         <height>380</height>
+        </size>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QScrollBar" name="verticalScrollBar">
+       <property name="orientation">
+        <enum>Qt::Vertical</enum>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="statusLabel">
+     <property name="text">
+      <string>Hover a chron for its name; click anywhere to read its age.</string>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>MagBarcodeWidget</class>
+   <extends>QWidget</extends>
+   <header>magbarcode_widget.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>
