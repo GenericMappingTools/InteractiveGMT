@@ -7,13 +7,14 @@
 [![Docs workflow Status](https://github.com/joa-quim/InteractiveGMT.jl/actions/workflows/Docs.yml/badge.svg?branch=main)](https://github.com/joa-quim/InteractiveGMT.jl/actions/workflows/Docs.yml?query=branch%3Amain)
 [![BestieTemplate](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/JuliaBesties/BestieTemplate.jl/main/docs/src/assets/badge.json)](https://github.com/JuliaBesties/BestieTemplate.jl)
 
+## NOTE: This is Claude generated README that has more technical details than need.
+
 Interactive 3-D viewing of [GMT.jl](https://github.com/GenericMappingTools/GMT.jl) data —
 grids, point clouds, and `GMTfv` solids / polygon meshes — in a **self-contained Qt6 + VTK**
-window. No dependency on F3D: its own Qt window, VTK render pipeline, interaction gizmo, cube
+window. Its own Qt window, VTK render pipeline, interaction gizmo, cube
 axes, colour bar, shading, vertical curtains, in-window Julia console and data viewer.
 
-> Windows-only (the viewer ships as a Windows DLL). Grew out of the GMTF3D `qtvtk_proto`
-> prototype; see `QTVTK_PLAN.md` and `.wolf/` for design notes and accumulated knowledge.
+> Windows-only (the viewer ships as a Windows DLL). But there is nothing that prevents future Linux and MacOS versions
 
 ## Layout
 
