@@ -23,7 +23,7 @@ const MARKER    = joinpath(BUILD_DIR, ".full_runtime_installed")
 function runtime_tag()
     f = joinpath(DEPS_DIR, "RUNTIME_VERSION")
     isfile(f) || error("deps/RUNTIME_VERSION missing — can't tell which runtime release to fetch")
-    strip(read(f, String))
+    String(strip(read(f, String)))
 end
 
 release_url(tag::String, asset::String) =
