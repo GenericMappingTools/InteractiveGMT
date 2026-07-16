@@ -29,7 +29,14 @@ end
 release_url(tag::String, asset::String) =
     "https://github.com/$REPO/releases/download/$tag/$asset"
 
+# Windows 10 1803+/11 ships a real bsdtar (understands .zip) at System32\tar.exe. Called by
+# FULL PATH, never bare `tar` — a bare `tar` can resolve to Git/MSYS's GNU tar instead (whichever
+# comes first on PATH), which cannot read ZIP at all and fails with a cryptic
+# "does not look like a tar archive" / "Error exit delayed from previous errors".
+const TAR = joinpath(get(ENV, "SystemRoot", "C:\\Windows"), "System32", "tar.exe")
+
 function fetch_and_extract(url::String, dest::String)
+    isfile(TAR) || error("$TAR not found — need Windows 10 1803+ (bsdtar) to unzip gmtvtk binaries")
     zip = joinpath(tempdir(), basename(url))
     @info "InteractiveGMT: downloading gmtvtk binaries" url
     try
@@ -38,7 +45,7 @@ function fetch_and_extract(url::String, dest::String)
         error("failed to download $url — has this asset been uploaded yet? ($e)")
     end
     mkpath(dest)
-    run(`tar -xf $zip -C $dest`)
+    run(`$TAR -xf $zip -C $dest`)
     rm(zip; force=true)
 end
 
