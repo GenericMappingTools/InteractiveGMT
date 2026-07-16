@@ -112,12 +112,18 @@ if(GMTVTK_PACKAGE)
 
   # Install gmtvtk.dll into the SAME relative dir the dev build already uses
   # (deps/build), and have CMake resolve + install its dependent DLLs there
-  # too. System/Windows DLLs are excluded.
+  # too. System/Windows DLLs are excluded. COMPONENT full: this goes into the
+  # big runtime bundle (see the two-zip split below).
   install(TARGETS gmtvtk
     RUNTIME_DEPENDENCY_SET gmtvtk_deps
-    RUNTIME DESTINATION deps/build
-    LIBRARY DESTINATION deps/build
-    ARCHIVE DESTINATION deps/build)
+    RUNTIME DESTINATION deps/build COMPONENT full
+    LIBRARY DESTINATION deps/build COMPONENT full
+    ARCHIVE DESTINATION deps/build COMPONENT full)
+
+  # A SECOND, independent copy of just gmtvtk.dll under its own component —
+  # this is what makes the small "dll-only" zip below. Same file, different
+  # component staging dir; no conflict with the COMPONENT full install above.
+  install(FILES "$<TARGET_FILE:gmtvtk>" DESTINATION deps/build COMPONENT dll)
 
   install(RUNTIME_DEPENDENCY_SET gmtvtk_deps
     PRE_EXCLUDE_REGEXES
@@ -125,10 +131,12 @@ if(GMTVTK_PACKAGE)
     POST_EXCLUDE_REGEXES
       ".*[\\/][Ss]ystem32[\\/].*\\.dll$" ".*[\\/]WINDOWS[\\/].*"
     DIRECTORIES "${_VTK_BIN}" "${_QT_BIN}" "${_TBB_BIN}"
-    DESTINATION deps/build)
+    DESTINATION deps/build
+    COMPONENT full)
 
   # Qt runtime plugins (not import-linked) — let windeployqt drop them next to
   # the installed gmtvtk.dll. Runs at `cmake --install` / package time.
+  # COMPONENT full only — the dll-only zip ships no Qt plugins.
   find_program(WINDEPLOYQT_EXE windeployqt HINTS "${_QT_BIN}")
   if(WINDEPLOYQT_EXE)
     install(CODE "
@@ -137,26 +145,56 @@ if(GMTVTK_PACKAGE)
         --release --no-translations --no-compiler-runtime
         --dir \"\${CMAKE_INSTALL_PREFIX}/deps/build\"
         \"\${CMAKE_INSTALL_PREFIX}/deps/build/gmtvtk.dll\")
-    ")
+    " COMPONENT full)
   else()
     message(WARNING "windeployqt not found in ${_QT_BIN}; Qt platform plugins will be MISSING from the package")
   endif()
 
   # The Julia bridge — same relative layout as the dev checkout, trailing
   # slashes so CONTENTS land at DESTINATION (not nested one level deeper).
-  # Only focal_mechanisms.ui ships: it's the ONLY .ui loaded at runtime (QUiLoader,
-  # FocalMechanismsDialog, 70_window.cpp) — every other deps/ui/*.ui is a hand-ported design
-  # reference the running app never reads, not needed on the destination machine.
-  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../src/"  DESTINATION src)
-  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/ui/focal_mechanisms.ui" DESTINATION deps/ui)
-  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../data/" DESTINATION data)
-  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../Project.toml"        DESTINATION .)
-  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../iview_app.jl"        DESTINATION .)
-  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/installer/iview_launch.vbs" DESTINATION .)
-  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/igmt.ico"        DESTINATION .)
+  # Only these 4 ship: they're the ONLY .ui files loaded at RUNTIME (QUiLoader,
+  # 70_window.cpp — FocalMechanismsDialog/IgrfDialog/MagBarcodeDialog/CubeLayerDialog).
+  # Every other deps/ui/*.ui is a hand-ported design reference the running app never
+  # reads, not needed on the destination machine. COMPONENT full only — the
+  # dll-only zip is just the DLL, the .jl side is already on disk from the git clone.
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../src/"  DESTINATION src COMPONENT full)
+  install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/focal_mechanisms.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/igrf_calculator.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/magnetic_barcode.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/cube_layer_selector.ui"
+    DESTINATION deps/ui COMPONENT full)
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../data/" DESTINATION data COMPONENT full)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../Project.toml"        DESTINATION . COMPONENT full)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../iview_app.jl"        DESTINATION . COMPONENT full)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/installer/iview_launch.vbs" DESTINATION . COMPONENT full)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/igmt.ico"        DESTINATION . COMPONENT full)
 
-  # CPack — a portable ZIP plus an NSIS installer (Desktop + Start Menu icon).
+  # CPack — TWO zips (full runtime bundle + dll-only) plus an NSIS installer
+  # (Desktop + Start Menu icon, always the full bundle — see below).
+  #
+  # CPACK_ARCHIVE_COMPONENT_INSTALL + COMPONENTS_GROUPING IGNORE make the ZIP
+  # generator emit ONE ARCHIVE PER COMPONENT instead of one archive with
+  # everything: component "full" -> CPACK_ARCHIVE_FULL_FILE_NAME.zip (rarely
+  # changes — VTK/Qt/TBB runtime, pinned by deps/RUNTIME_VERSION on the Julia
+  # side), component "dll" -> CPACK_ARCHIVE_DLL_FILE_NAME.zip (just gmtvtk.dll,
+  # re-uploaded to the fixed "dll-latest" release tag on every rebuild — see
+  # deps/build.jl). This does NOT affect NSIS: CPACK_NSIS_COMPONENT_INSTALL is
+  # left OFF (default), so the .exe installer stays monolithic and always
+  # contains the full set regardless of component tags.
+  #
+  # CPACK_COMPONENTS_ALL is deliberately NOT set here — CPack auto-fills it
+  # from the COMPONENT tags on the install() calls above. A hardcoded
+  # set(CPACK_COMPONENTS_ALL "full;dll") here would silently overwrite any
+  # `cpack -D CPACK_COMPONENTS_ALL=dll` passed on the command line: CPack runs
+  # this whole file as a cmake script on every `cpack` invocation, and a plain
+  # set() always wins over a pre-existing -D value. Leaving it unset is what
+  # makes single-component builds (below) actually work.
   set(CPACK_GENERATOR "ZIP;NSIS")
+  set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+  set(CPACK_COMPONENTS_GROUPING IGNORE)
+  set(CPACK_ARCHIVE_FULL_FILE_NAME "iGMT-win64-full")
+  set(CPACK_ARCHIVE_DLL_FILE_NAME  "gmtvtk-win64")
   set(CPACK_PACKAGE_NAME "iGMT")
   set(CPACK_PACKAGE_VENDOR "InteractiveGMT")
   set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")

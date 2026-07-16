@@ -1,0 +1,1 @@
+set(CPACK_COMPONENTS_ALL "full")
