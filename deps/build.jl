@@ -35,6 +35,13 @@ release_url(tag::String, asset::String) =
 # "does not look like a tar archive" / "Error exit delayed from previous errors".
 const TAR = joinpath(get(ENV, "SystemRoot", "C:\\Windows"), "System32", "tar.exe")
 
+# Both zips also contain Project.toml/data/src (the "full" one, for the standalone
+# zip/NSIS user who isn't going through Julia Pkg at all) — but under Pkg those files
+# already exist on disk from the git checkout, and Pkg marks them READ-ONLY on Windows.
+# Extracting the whole archive then fails with "Can't stat existing object: Permission
+# denied" trying to overwrite them. Only deps/build/ (the binaries) is actually needed
+# here, so restrict extraction to that subtree — sidesteps the permission error AND
+# avoids redundantly re-writing files git already gave us.
 function fetch_and_extract(url::String, dest::String)
     isfile(TAR) || error("$TAR not found — need Windows 10 1803+ (bsdtar) to unzip gmtvtk binaries")
     zip = joinpath(tempdir(), basename(url))
@@ -45,7 +52,7 @@ function fetch_and_extract(url::String, dest::String)
         error("failed to download $url — has this asset been uploaded yet? ($e)")
     end
     mkpath(dest)
-    run(`$TAR -xf $zip -C $dest`)
+    run(`$TAR -xf $zip -C $dest deps/build`)
     rm(zip; force=true)
 end
 
