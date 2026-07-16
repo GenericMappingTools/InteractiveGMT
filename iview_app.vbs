@@ -2,39 +2,48 @@
 ' STARTUPINFO SW_HIDE, which the Qt GUI window would inherit and stay invisible. iview_app.jl
 ' hides its own console on startup, so only the viewer window remains.
 '
-' Resolves InteractiveGMT's install path by ASKING JULIA at every launch (Base.find_package —
-' just reads the active project's Manifest, does not load/precompile the package) instead of
-' hardcoding a location. This matters because a git-based Pkg install lives in a content-hashed
-' folder (~/.julia/packages/InteractiveGMT/<hash>/) that gets a NEW <hash> on every
-' `Pkg.update("InteractiveGMT")` — a script that instead finds its OWN folder (fso.GetParentFolderName)
-' would go stale the moment you copy it to a Desktop shortcut and then update. Asking Julia fresh
-' every time means the SAME copy of this file — wherever you put it, including a Desktop shortcut
-' — keeps working across every future update, no re-copying, ever.
+' Path resolution, fast path first:
+'   1. If iview_app.jl sits right next to this script (running in place -- a dev checkout, or
+'      inside a live Pkg package folder), use this script's own folder. Zero overhead, exactly
+'      one julia.exe launch, same speed as always.
+'   2. Only if this is a DETACHED copy (e.g. sitting on your Desktop, so iview_app.jl is NOT next
+'      to it) does it fall back to scanning ~/.julia/packages/InteractiveGMT/* for the
+'      newest-modified folder -- a git-based Pkg install lives in a content-hashed folder that
+'      gets a NEW hash on every Pkg.update, so a Desktop copy of this file needs SOME way to find
+'      the current one. This is a plain filesystem scan, not a Julia subprocess -- still only one
+'      julia.exe launch total, never two.
 '
-' Also works unmodified for a plain dev checkout (this file run in place): Base.find_package
-' resolves `dev`ed packages from the Manifest too, same as `add`ed ones.
-'
-' The lookup expression is written to a temp .jl file rather than passed inline on the command
-' line, to sidestep Windows/VBScript quote-escaping entirely.
+' (An earlier version asked Julia itself, via a second julia.exe subprocess, to resolve the path
+' on every launch -- correct, but doubled startup time. Don't reintroduce that.)
 '
 ' Files dropped ONTO the desktop shortcut arrive here as WScript.Arguments; we forward each path
 ' to Julia, and iview_app.jl opens it (otherwise, with no args, it opens an empty launcher).
 Dim fso : Set fso = CreateObject("Scripting.FileSystemObject")
 Dim sh  : Set sh  = CreateObject("WScript.Shell")
 
-Dim tmp : tmp = sh.ExpandEnvironmentStrings("%TEMP%") & "\igmt_locate_" & CStr(Timer) & ".jl"
-Dim f : Set f = fso.CreateTextFile(tmp, True)
-f.WriteLine "p = Base.find_package(" & Chr(34) & "InteractiveGMT" & Chr(34) & ")"
-f.WriteLine "print(p === nothing ? " & Chr(34) & Chr(34) & " : dirname(dirname(p)))"
-f.Close
+Dim here : here = fso.GetParentFolderName(WScript.ScriptFullName)
 
-Dim ex : Set ex = sh.Exec("julia --startup-file=no " & Chr(34) & tmp & Chr(34))
-Dim here : here = Trim(ex.StdOut.ReadAll())
-fso.DeleteFile tmp, True
+If Not fso.FileExists(here & "\iview_app.jl") Then
+    ' Detached copy -- find the newest InteractiveGMT folder in the Pkg depot.
+    Dim depot : depot = sh.ExpandEnvironmentStrings("%USERPROFILE%") & "\.julia\packages\InteractiveGMT"
+    here = ""
+    If fso.FolderExists(depot) Then
+        Dim subFolder, best
+        best = -1
+        For Each subFolder In fso.GetFolder(depot).SubFolders
+            If fso.FileExists(subFolder.Path & "\iview_app.jl") Then
+                If CDbl(subFolder.DateLastModified) > best Then
+                    best = CDbl(subFolder.DateLastModified)
+                    here = subFolder.Path
+                End If
+            End If
+        Next
+    End If
+End If
 
 If here = "" Then
     MsgBox "Could not locate InteractiveGMT." & vbCrLf & _
-           "Is it added ('] add https://github.com/GenericMappingTools/InteractiveGMT') or dev'd in Julia's default environment?", _
+           "Is it added ('] add https://github.com/GenericMappingTools/InteractiveGMT') in Julia's default environment?", _
            vbExclamation, "iGMT"
     WScript.Quit 1
 End If
