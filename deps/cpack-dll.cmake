@@ -1,1 +1,0 @@
-set(CPACK_COMPONENTS_ALL "dll")

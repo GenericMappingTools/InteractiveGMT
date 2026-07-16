@@ -33,9 +33,11 @@ check `where cpack` first — you're probably invoking the wrong one.
 
 Fallback if you ever are stuck on the VS-bundled cpack: write `CPACK_COMPONENTS_ALL` into
 `CPackProperties.cmake` (in the build dir) instead of passing `-D` — CPack always includes that
-file if present, regardless of which cpack binary you're running. Two templates are checked in
-for this: `deps/cpack-full.cmake` / `deps/cpack-dll.cmake` (copy one over `CPackProperties.cmake`
-before running plain `cpack -G ZIP`).
+file if present, regardless of which cpack binary you're running:
+```
+echo set(CPACK_COMPONENTS_ALL "dll")> CPackProperties.cmake && cpack -G ZIP
+```
+(swap `"dll"` for `"full"` for the runtime zip).
 
 An NSIS installer (`iGMT-<version>-win64.exe`) also gets built alongside — it's monolithic
 (always the full set), unaffected by the component split.
