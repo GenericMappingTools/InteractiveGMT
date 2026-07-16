@@ -16,9 +16,9 @@ using Downloads
 const REPO    = "GenericMappingTools/InteractiveGMT"
 const DLL_TAG = "dll-latest"   # fixed tag; its one asset is re-uploaded in place, never retagged
 
-const DEPS_DIR  = @__DIR__
-const BUILD_DIR = joinpath(DEPS_DIR, "build")
-const MARKER    = joinpath(BUILD_DIR, ".full_runtime_installed")
+const DEPS_DIR = @__DIR__
+const PKG_ROOT = normpath(joinpath(DEPS_DIR, ".."))   # zip paths are relative to here (deps/build/..., src/..., data/...)
+const MARKER   = joinpath(DEPS_DIR, "build", ".full_runtime_installed")
 
 function runtime_tag()
     f = joinpath(DEPS_DIR, "RUNTIME_VERSION")
@@ -45,11 +45,11 @@ end
 function main()
     if !isfile(MARKER)
         # First install: full runtime bundle, pinned to a coarse, rarely-bumped tag.
-        fetch_and_extract(release_url(runtime_tag(), "iGMT-win64-full.zip"), BUILD_DIR)
+        fetch_and_extract(release_url(runtime_tag(), "iGMT-win64-full.zip"), PKG_ROOT)
         touch(MARKER)
     else
         # Update: DLL only, always the same rolling tag/asset.
-        fetch_and_extract(release_url(DLL_TAG, "gmtvtk-win64.zip"), BUILD_DIR)
+        fetch_and_extract(release_url(DLL_TAG, "gmtvtk-win64.zip"), PKG_ROOT)
     end
     @info "InteractiveGMT: gmtvtk binaries installed"
 end
