@@ -64,6 +64,10 @@ function fetch_and_extract(url::String, dest::String)
     rm(zip; force=true)
 end
 
+# The Desktop shortcut is NOT created here. `] dev` never runs this build hook, so it can't be the
+# thing that makes the icon for a dev install -- InteractiveGMT's __init__ (_ensure_desktop_shortcut)
+# owns that instead, firing on the first `using` for dev and add alike.
+
 function main()
     if !isfile(MARKER)
         # First install EVER on this machine: full runtime bundle, pinned to a coarse,
