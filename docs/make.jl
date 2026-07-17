@@ -16,6 +16,7 @@ const titles = Dict(
     "60-geography.md" => "Geography Tools",
     "70-tools.md" => "Tools",
     "95-reference.md" => "API Reference",
+    "hillshade.md" => "Hillshade",
 )
 
 function recursively_list_pages(folder; path_prefix="")
@@ -69,11 +70,12 @@ end
 
 makedocs(;
     modules = [InteractiveGMT],
+    checkdocs = :none,      # API reference (95-reference.md) is hand-curated -- don't require every docstring to appear
     authors = "Joaquim Luis <jluis@ualg.pt>",
-    repo = "https://github.com/joa-quim/InteractiveGMT.jl/blob/{commit}{path}#{line}",
+    repo = Documenter.Remotes.GitHub("GenericMappingTools", "InteractiveGMT"),
     sitename = "InteractiveGMT.jl",
-    format = Documenter.HTML(; canonical = "https://joa-quim.github.io/InteractiveGMT.jl"),
+    format = Documenter.HTML(; canonical = "https://GenericMappingTools.github.io/InteractiveGMT"),
     pages = list_pages(),
 )
 
-deploydocs(; repo = "github.com/joa-quim/InteractiveGMT.jl")
+deploydocs(; repo = "github.com/GenericMappingTools/InteractiveGMT.git", devbranch = "master")

@@ -134,10 +134,12 @@ fig = xyplot([x y])  # Returns QtXYPlot
 
 ```@autodocs
 Modules = [InteractiveGMT]
-filters = [
-    # Exclude internal functions (starting with _)
-    s -> startswith(s, "_"),
-    # Exclude module docstring
-    s -> s == :InteractiveGMT,
-]
+Filter = function(x)
+    try
+        n = string(nameof(x))
+        return n != "InteractiveGMT" && !startswith(n, "_")
+    catch
+        true
+    end
+end
 ```
