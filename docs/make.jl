@@ -74,7 +74,7 @@ makedocs(;
     authors = "Joaquim Luis <jluis@ualg.pt>",
     repo = Documenter.Remotes.GitHub("GenericMappingTools", "InteractiveGMT"),
     sitename = "InteractiveGMT.jl",
-    format = Documenter.HTML(; canonical = "https://GenericMappingTools.github.io/InteractiveGMT"),
+    format = Documenter.HTML(; canonical = "https://www.generic-mapping-tools.org/InteractiveGMT"),
     pages = list_pages(),
 )
 
