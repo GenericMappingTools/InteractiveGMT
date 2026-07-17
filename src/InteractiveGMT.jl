@@ -140,18 +140,23 @@ function __init__()
 	end
 end
 
-# See __init__. The heavy install-shape logic (dev = point at source, add = copy to a stable home)
-# lives in deps/installer/make_desktop_shortcut.vbs; here we only decide WHETHER to (re)run it.
+# See __init__. make_desktop_shortcut.vbs writes the .lnk to the user's REAL desktop (whatever
+# folder Windows resolves it to on this machine) -- we don't try to guess that folder from Julia.
+# Instead a one-time marker in the depot records that we've run, so the vbs is spawned once per
+# install (keyed to this pkgroot) and NOT on every `using`. A different install path (e.g. a new
+# `] add` hash) gets its own marker, so it re-creates its own icon.
 function _ensure_desktop_shortcut()
 	Sys.iswindows() || return
-	desktop = joinpath(get(ENV, "USERPROFILE", homedir()), "Desktop")
-	isdir(desktop) || return
-	isfile(joinpath(desktop, "iGMT.lnk")) && return
 	pkgroot = normpath(joinpath(@__DIR__, ".."))
 	vbs = joinpath(pkgroot, "deps", "installer", "make_desktop_shortcut.vbs")
 	isfile(vbs) || return
+	markerdir = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime")
+	marker = joinpath(markerdir, ".desktop_shortcut_" * string(hash(pkgroot); base=16))
+	isfile(marker) && return
 	cscript = joinpath(get(ENV, "SystemRoot", "C:\\Windows"), "System32", "cscript.exe")
 	run(`$cscript //nologo $vbs $pkgroot`)
+	mkpath(markerdir)
+	touch(marker)
 end
 
 end # module InteractiveGMT

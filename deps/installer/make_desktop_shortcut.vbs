@@ -39,13 +39,13 @@ Else
     End If
 End If
 
-' NEVER sh.SpecialFolders("Desktop") -- on a machine with OneDrive "Known Folder Move" that call
-' returns the OneDrive-synced Desktop (here: "OneDrive - Universidade do Algarve\Ambiente de
-' Trabalho"), and NO shortcut of ours may ever land in OneDrive. Force the real local Desktop,
-' %USERPROFILE%\Desktop. Once Desktop has been redirected that folder may not exist, so create it
-' first -- otherwise CreateShortcut(...).Save fails with "Unable to save shortcut".
-Dim desktop : desktop = sh.ExpandEnvironmentStrings("%USERPROFILE%") & "\Desktop"
-If Not fso.FolderExists(desktop) Then fso.CreateFolder desktop
+' Use sh.SpecialFolders("Desktop") -- the ACTUAL desktop as Windows resolves it for this user,
+' whatever folder that is on this particular machine. A hardcoded "%USERPROFILE%\Desktop" is wrong:
+' on a machine where the shell's Desktop is set to a different folder, %USERPROFILE%\Desktop is an
+' empty, NON-displayed folder, so the .lnk lands there and the user sees no icon at all -- looks
+' exactly like "no shortcut was created". SpecialFolders always returns the one folder whose
+' contents actually appear on screen, so the icon shows up next to the user's other shortcuts.
+Dim desktop : desktop = sh.SpecialFolders("Desktop")
 
 ' EXACTLY ONE icon, and it points STRAIGHT at the real source files in pkgRoot -- never a copy on
 ' the Desktop, never a shortcut whose target is desktop\iview_app.vbs. (An earlier version copied
