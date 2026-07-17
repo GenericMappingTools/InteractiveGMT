@@ -54,6 +54,8 @@ Dim desktop : desktop = sh.SpecialFolders("Desktop")
 ' any stray copies a previous run may have dropped, then create the single .lnk -> source.
 If fso.FileExists(desktop & "\iview_app.vbs") Then fso.DeleteFile desktop & "\iview_app.vbs", True
 If fso.FileExists(desktop & "\igmt.ico") Then fso.DeleteFile desktop & "\igmt.ico", True
+' Old name before the rename to i'GMT -- remove it so the rename doesn't leave two icons.
+If fso.FileExists(desktop & "\iGMT.lnk") Then fso.DeleteFile desktop & "\iGMT.lnk", True
 
 ' Normalize any forward slashes -- callers sometimes pass a "/"-separated pkgRoot, and VBScript's
 ' GetParentFolderName/GetFileName only ever split on "\". A "/"-path would otherwise build broken
@@ -61,7 +63,7 @@ If fso.FileExists(desktop & "\igmt.ico") Then fso.DeleteFile desktop & "\igmt.ic
 pkgRoot = Replace(pkgRoot, "/", "\")
 If Right(pkgRoot, 1) = "\" Then pkgRoot = Left(pkgRoot, Len(pkgRoot) - 1)
 
-Dim link : Set link = sh.CreateShortcut(desktop & "\iGMT.lnk")
+Dim link : Set link = sh.CreateShortcut(desktop & "\i'GMT.lnk")
 link.TargetPath   = pkgRoot & "\iview_app.vbs"
 link.IconLocation = pkgRoot & "\igmt.ico"
 link.WindowStyle  = 7
