@@ -6,7 +6,6 @@
 [![Docs workflow Status](https://github.com/GenericMappingTools/InteractiveGMT/actions/workflows/documentation.yml/badge.svg?branch=master)](https://github.com/GenericMappingTools/InteractiveGMT/actions/workflows/documentation.yml?query=branch%3Amaster)
 [![BestieTemplate](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/JuliaBesties/BestieTemplate.jl/main/docs/src/assets/badge.json)](https://github.com/JuliaBesties/BestieTemplate.jl)
 
-## NOTE: This is Claude generated README that has more technical details than need.
 
 Interactive 3-D viewing of [GMT.jl](https://github.com/GenericMappingTools/GMT.jl) data —
 grids, point clouds, and `GMTfv` solids / polygon meshes — in a **self-contained Qt6 + VTK**
