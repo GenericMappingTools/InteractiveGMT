@@ -4,7 +4,6 @@
 [![Test workflow status](https://github.com/joa-quim/InteractiveGMT.jl/actions/workflows/Test.yml/badge.svg?branch=main)](https://github.com/joa-quim/InteractiveGMT.jl/actions/workflows/Test.yml?query=branch%3Amain)
 [![Coverage](https://codecov.io/gh/joa-quim/InteractiveGMT.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/joa-quim/InteractiveGMT.jl)
 [![Docs workflow Status](https://github.com/GenericMappingTools/InteractiveGMT/actions/workflows/documentation.yml/badge.svg?branch=master)](https://github.com/GenericMappingTools/InteractiveGMT/actions/workflows/documentation.yml?query=branch%3Amaster)
-[![BestieTemplate](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/JuliaBesties/BestieTemplate.jl/main/docs/src/assets/badge.json)](https://github.com/JuliaBesties/BestieTemplate.jl)
 
 
 Interactive 3-D viewing of [GMT.jl](https://github.com/GenericMappingTools/GMT.jl) data —
@@ -25,7 +24,11 @@ using GMT
 iGMTinstall()
 ```
 
-See the [Vision](https://www.generic-mapping-tools.org/InteractiveGMT/dev/00-vision) for where this project is headed.
+## See the [Vision](https://www.generic-mapping-tools.org/InteractiveGMT/dev/00-vision) for where this project is headed.
+
+Example of `i'GMT` in action:
+
+![i'GMT example](docs/assets/example.jpg)
 
 ## Quick start
 
