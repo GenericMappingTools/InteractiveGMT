@@ -4,21 +4,32 @@
 #
 #   * FULL runtime zip (gmtvtk.dll + bundled VTK/Qt/TBB + Qt plugins) — changes rarely,
 #     only when the VTK/Qt/TBB module set changes. Pinned by deps/RUNTIME_VERSION (a git
-#     tag, e.g. "runtime-0.1"). Downloaded ONCE, on first install (no marker in deps/build/).
+#     tag, e.g. "runtime-0.1"). Downloaded ONCE EVER (see SHARED_ROOT below).
 #
 #   * DLL-ONLY zip (just gmtvtk.dll) — can change daily as the C++ side is edited. Lives at
 #     a FIXED, reused release tag (DLL_TAG below); its one asset gets overwritten in place
 #     (`gh release upload dll-latest gmtvtk-win64.zip --clobber`) — no new tag per day.
 #     Re-downloaded on every `Pkg.build("InteractiveGMT")`.
-
+#
+# A regular `Pkg.add`-installed (non-dev) package lives in a content-hashed folder
+# (~/.julia/packages/InteractiveGMT/<hash>/) that gets a BRAND NEW <hash> on every single
+# Pkg.update, even for a one-line .jl change unrelated to the C++ side. If the ~200 MB
+# VTK/Qt/TBB runtime were extracted INTO that folder (as an earlier version of this file did),
+# every update would silently re-download and re-extract the entire runtime again --
+# unacceptable. Fix: extract the runtime into SHARED_ROOT, a location keyed off the Julia
+# DEPOT itself (~/.julia), not off this ephemeral package folder -- the same physical spot
+# survives every Pkg.update, `Pkg.add` or `Pkg.develop` alike, so the runtime is fetched once,
+# ever, no matter how many times the package updates. src/libgmtvtk.jl looks in this same
+# SHARED_ROOT (falling back to it only when there's no LOCAL deps/build/gmtvtk.dll -- i.e. a
+# developer's own `deps/build.bat` build always wins first).
 using Downloads
 
 const REPO    = "GenericMappingTools/InteractiveGMT"
 const DLL_TAG = "dll-latest"   # fixed tag; its one asset is re-uploaded in place, never retagged
 
-const DEPS_DIR = @__DIR__
-const PKG_ROOT = normpath(joinpath(DEPS_DIR, ".."))   # zip paths are relative to here (deps/build/..., src/..., data/...)
-const MARKER   = joinpath(DEPS_DIR, "build", ".full_runtime_installed")
+const DEPS_DIR     = @__DIR__
+const SHARED_ROOT  = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime")   # survives every Pkg.update; zip paths (deps/build/...) are relative to here
+const MARKER       = joinpath(SHARED_ROOT, "deps", "build", ".full_runtime_installed")
 
 function runtime_tag()
     f = joinpath(DEPS_DIR, "RUNTIME_VERSION")
@@ -35,13 +46,10 @@ release_url(tag::String, asset::String) =
 # "does not look like a tar archive" / "Error exit delayed from previous errors".
 const TAR = joinpath(get(ENV, "SystemRoot", "C:\\Windows"), "System32", "tar.exe")
 
-# Both zips also contain Project.toml/data/src (the "full" one, for the standalone
-# zip/NSIS user who isn't going through Julia Pkg at all) — but under Pkg those files
-# already exist on disk from the git checkout, and Pkg marks them READ-ONLY on Windows.
-# Extracting the whole archive then fails with "Can't stat existing object: Permission
-# denied" trying to overwrite them. Only deps/build/ (the binaries) is actually needed
-# here, so restrict extraction to that subtree — sidesteps the permission error AND
-# avoids redundantly re-writing files git already gave us.
+# The full zip also contains Project.toml/data/src (for the standalone zip/NSIS user who isn't
+# going through Julia Pkg at all) — irrelevant here since Pkg already gave us those via git, and
+# SHARED_ROOT only ever needs the binaries. Restrict extraction to deps/build/ so SHARED_ROOT
+# doesn't waste disk space on a redundant copy of data/ and src/.
 function fetch_and_extract(url::String, dest::String)
     isfile(TAR) || error("$TAR not found — need Windows 10 1803+ (bsdtar) to unzip gmtvtk binaries")
     zip = joinpath(tempdir(), basename(url))
@@ -58,14 +66,15 @@ end
 
 function main()
     if !isfile(MARKER)
-        # First install: full runtime bundle, pinned to a coarse, rarely-bumped tag.
-        fetch_and_extract(release_url(runtime_tag(), "iGMT-win64-full.zip"), PKG_ROOT)
+        # First install EVER on this machine: full runtime bundle, pinned to a coarse,
+        # rarely-bumped tag. Never repeated after this, even across many future updates.
+        fetch_and_extract(release_url(runtime_tag(), "iGMT-win64-full.zip"), SHARED_ROOT)
         touch(MARKER)
     else
-        # Update: DLL only, always the same rolling tag/asset.
-        fetch_and_extract(release_url(DLL_TAG, "gmtvtk-win64.zip"), PKG_ROOT)
+        # Every subsequent build: DLL only (~1 MB), always the same rolling tag/asset.
+        fetch_and_extract(release_url(DLL_TAG, "gmtvtk-win64.zip"), SHARED_ROOT)
     end
-    @info "InteractiveGMT: gmtvtk binaries installed"
+    @info "InteractiveGMT: gmtvtk binaries installed" SHARED_ROOT
 end
 
 main()
