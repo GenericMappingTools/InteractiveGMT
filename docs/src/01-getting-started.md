@@ -10,7 +10,7 @@ CurrentModule = InteractiveGMT
 
 ### 1. Julia
 
-Install Julia — **Julia 1.10 is strongly advised** — and make sure it is on your `PATH`. Follow
+Install Julia — **Julia 1.10 is strongly recommended** — and make sure it is on your `PATH`. Follow
 the [Windows install guide](https://www.generic-mapping-tools.org/GMTjl_doc/documentation/general/install_julia_win.html#download-the-installer).
 
 ### 2. GMT.jl
@@ -21,28 +21,19 @@ If not already installed, from the Julia REPL package mode (press `]`):
 ] add GMT
 ```
 
+Make sure you have at least GMT.jl version 1.41.2 (to update GMT.jl do on the Julia console `] up GMT`)
+
 ### 3. InteractiveGMT
 
 ```julia
-] add https://github.com/GenericMappingTools/InteractiveGMT
+using GMT
+
+iGMTinstall()
 ```
 
 ### 4. The iGMT installer (graphical elements)
 
-Download and run the installer:
-
-[iGMT-0.1.0-win64.exe](https://github.com/GenericMappingTools/InteractiveGMT/releases/download/initial-binary-release/iGMT-0.1.0-win64.exe)
-
-Suggested install location: `c:\programs\iGMT`.
-
-### Known annoyances
-
-- The installer should create a desktop icon; if it doesn't, make one yourself from
-  `...\iGMT\iview_app.vbs`.
-- After installing, it may be necessary to run `using InteractiveGMT` once from the Julia REPL
-  before the viewer works.
-
-## Use as a normal Graphical Program
+You have now a new icon on your desktop `i'GMT`. Use it as a normal Graphical Program.
 
 Drag and drop files on the icon or an empty iGMT display. Or use the normal File -> Open ...
 
