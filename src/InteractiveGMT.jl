@@ -20,6 +20,7 @@ using PrecompileTools: @setup_workload, @compile_workload
 
 # --- C-API DLL loader (resolved at runtime in __init__; see libgmtvtk.jl) ----------------
 include("libgmtvtk.jl")
+include("selfupdate.jl") # update!() -- pull + rebuild in place, for a `] dev`-installed checkout
 
 # --- handles, event loop, in-window Julia console ----------------------------------------
 include("types.jl")

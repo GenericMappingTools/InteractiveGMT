@@ -14,16 +14,30 @@ const _PKGROOT = normpath(joinpath(@__DIR__, ".."))
 # Libdl without adding it to [deps]: the stdlib module is re-exposed inside Base.
 const Libdl = Base.Libc.Libdl
 
+# Where's gmtvtk.dll? Checked in order:
+#   1. A LOCAL dev build (deps/build/gmtvtk.dll next to this checkout, from deps/build.bat) --
+#      always wins first, so a developer actively rebuilding the DLL never picks up a stale
+#      cached copy.
+#   2. SHARED_LIB: the depot-wide runtime cache deps/build.jl fetches into
+#      (~/.julia/gmtvtk_runtime/deps/build/gmtvtk.dll) -- this is the Pkg.add/Pkg.develop path.
+#      It's keyed off the Julia DEPOT itself, not off this package's own (possibly
+#      content-hashed, possibly-different-every-update) folder, so the SAME ~200 MB VTK/Qt/TBB
+#      runtime is reused across every future update instead of being re-fetched into a new
+#      folder each time.
+const _LOCAL_LIB  = joinpath(_PKGROOT, "deps", "build", "gmtvtk.dll")
+const _SHARED_LIB = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime", "deps", "build", "gmtvtk.dll")
+const _LIB      = isfile(_LOCAL_LIB) ? _LOCAL_LIB : _SHARED_LIB
+const _BIN_DIR  = dirname(_LIB)
+
 # Toolchain runtime DLL dirs (this machine). Dependent DLLs (Qt6*, vtk*) resolve from PATH at
 # load time. Override any of these via the matching ENV var BEFORE `using InteractiveGMT`.
 #
 # A GMTVTK_PACKAGE=ON build (see deps/CMakeLists.txt) drops every VTK/Qt/TBB runtime DLL plus the
 # Qt platform plugins (platforms/qwindows.dll, via windeployqt) into deps/build/ next to
-# gmtvtk.dll itself — that's the NSIS-installed layout, with no VTK/Qt toolchain on the
-# destination machine at all. Detect that bundle and point straight at it; otherwise fall back
-# to this dev machine's hard-coded toolchain paths (ENV overrides always win either way).
-const _LIB      = joinpath(_PKGROOT, "deps", "build", "gmtvtk.dll")
-const _BIN_DIR  = dirname(_LIB)
+# gmtvtk.dll itself — that's the NSIS-installed / shared-runtime-cache layout, with no VTK/Qt
+# toolchain on the destination machine at all. Detect that bundle and point straight at it;
+# otherwise fall back to this dev machine's hard-coded toolchain paths (ENV overrides always
+# win either way).
 const _BUNDLED  = isdir(joinpath(_BIN_DIR, "platforms"))
 const _VTK_BIN = get(ENV, "INTERACTIVEGMT_VTK_BIN", _BUNDLED ? _BIN_DIR : raw"C:\programs\compa_libs\VTK-9.6.2\compileds\bin")
 const _QT_BIN  = get(ENV, "INTERACTIVEGMT_QT_BIN",  _BUNDLED ? _BIN_DIR : raw"C:\programs\Qt6\6.11.1\msvc2022_64\bin")
