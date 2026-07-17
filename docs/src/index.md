@@ -4,7 +4,7 @@ CurrentModule = InteractiveGMT
 
 # InteractiveGMT
 
-Interactive 3-D viewing of [GMT.jl](https://github.com/GenericMappingTools/GMT.jl) data — grids, point clouds, and GMTfv solids — in a self-contained **Qt6 + VTK** window. No dependency on F3D.
+Interactive 3-D viewing of [GMT.jl](https://github.com/GenericMappingTools/GMT.jl) data — grids, point clouds, and GMTfv solids — in a self-contained **Qt6 + VTK** window.
 
 ## Features
 
@@ -35,16 +35,9 @@ y = sin.(t)
 fig = xyplot([t y])
 ```
 
-## Installation
-
-```julia
-Pkg.add("https://github.com/joa-quim/InteractiveGMT.jl.git")
-```
-
-**Requirements:** Windows only. The viewer DLL is pre-built.
-
 ## Documentation
 
+- [Vision](00-vision.md)
 - [Getting Started](01-getting-started.md)
 - [Grid Viewer](10-grid-viewer.md)
 - [Point Clouds](20-point-clouds.md)
