@@ -5749,7 +5749,27 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
 	});
 
-	win->menuBar()->addMenu("&Help")->addAction("&About", actAbout);
+	QMenu *mHelp = win->menuBar()->addMenu("&Help");
+	mHelp->addAction("&About", actAbout);
+	// Check for Updates: `] dev`-installed checkout only (InteractiveGMT.update!(), selfupdate.jl) --
+	// git fetch+fast-forward-merge, then Pkg.build to relink the DLL. Blocking (network + a rebuild),
+	// so wrap it in the same indeterminate busy dialog every other slow g_juliaEval call uses; the
+	// eval bridge captures update!()'s own println()'d progress lines as its return text (_console_eval,
+	// console.jl), which we just show back verbatim in a message box.
+	mHelp->addAction("Check for &Updates…", [win, s]() {
+		if (!g_juliaEval) {
+			QMessageBox::warning(win, "Check for Updates", "This needs the Julia/GMT host.");
+			return;
+		}
+		showBusyDialog("Checking for updates…");
+		static std::vector<char> buf(1 << 16);
+		int n = g_juliaEval(s, "InteractiveGMT.update!()", buf.data(), (int)buf.size());
+		closeBusyDialog();
+		QString txt = QString::fromUtf8(buf.data(), n < 0 ? -n : n).trimmed();
+		if (txt.isEmpty()) txt = "No output.";
+		if (n < 0) QMessageBox::warning(win, "Check for Updates", txt);
+		else       QMessageBox::information(win, "Check for Updates", txt);
+	});
 
 	// --- toolbar row (below the menu bar): quick-access buttons (ParaView-style) ------------
 	// Open file -> route through the SAME drop path as File > Open (g_juliaDrop / _on_drop): the file

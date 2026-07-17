@@ -27,7 +27,7 @@ function update!()
 
 	repo = LibGit2.GitRepo(_PKGROOT)
 	try
-		@info "InteractiveGMT: fetching latest changes..." path=_PKGROOT
+		println("InteractiveGMT: fetching latest changes... ($_PKGROOT)")
 		LibGit2.fetch(repo)
 		before = LibGit2.head_oid(repo)
 		ok = LibGit2.merge!(repo; fastforward=true)
@@ -35,16 +35,16 @@ function update!()
 		            "This checkout is a normal git repo at $_PKGROOT; resolve manually (e.g. `git status`).")
 		after = LibGit2.head_oid(repo)
 		if before == after
-			@info "InteractiveGMT: already up to date."
+			println("InteractiveGMT: already up to date.")
 			return nothing
 		end
-		@info "InteractiveGMT: updated." from = string(before)[1:8] to = string(after)[1:8]
+		println("InteractiveGMT: updated $(string(before)[1:8]) -> $(string(after)[1:8]).")
 	finally
 		close(repo)
 	end
 
-	@info "InteractiveGMT: rebuilding binaries..."
+	println("InteractiveGMT: rebuilding binaries...")
 	Pkg.build("InteractiveGMT")
-	@info "InteractiveGMT: update complete. Restart Julia to use the new version."
+	println("InteractiveGMT: update complete. Restart Julia to use the new version.")
 	return nothing
 end
