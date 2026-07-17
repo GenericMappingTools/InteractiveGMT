@@ -128,35 +128,31 @@ function __init__()
 	catch e
 		@warn "InteractiveGMT: the Qt+VTK viewer DLL could not be loaded; build it with deps/build.bat (Windows only). Viewer calls will error until then." exception=(e,)
 	end
-
-	# Desktop shortcut (Windows). `] dev` never runs deps/build.jl, so the build hook can't be what
-	# puts the icon there — this is. Cheap isfile check every load; only spawns cscript when the
-	# .lnk is actually missing, so it costs nothing after the first launch and self-heals if the
-	# user deletes it. Non-fatal.
-	try
-		_ensure_desktop_shortcut()
-	catch e
-		@warn "InteractiveGMT: could not create the Desktop shortcut (non-fatal)." exception=(e,)
-	end
 end
 
-# See __init__. make_desktop_shortcut.vbs writes the .lnk to the user's REAL desktop (whatever
-# folder Windows resolves it to on this machine) -- we don't try to guess that folder from Julia.
-# Instead a one-time marker in the depot records that we've run, so the vbs is spawned once per
-# install (keyed to this pkgroot) and NOT on every `using`. A different install path (e.g. a new
-# `] add` hash) gets its own marker, so it re-creates its own icon.
+# make_desktop_shortcut.vbs writes the .lnk to the user's REAL desktop (whatever folder Windows
+# resolves it to on this machine, via SpecialFolders) -- we don't try to guess that folder from
+# Julia. Idempotent: overwrites the one iGMT.lnk, so re-running just refreshes it.
 function _ensure_desktop_shortcut()
 	Sys.iswindows() || return
 	pkgroot = normpath(joinpath(@__DIR__, ".."))
 	vbs = joinpath(pkgroot, "deps", "installer", "make_desktop_shortcut.vbs")
 	isfile(vbs) || return
-	markerdir = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime")
-	marker = joinpath(markerdir, ".desktop_shortcut_" * string(hash(pkgroot); base=16))
-	isfile(marker) && return
 	cscript = joinpath(get(ENV, "SystemRoot", "C:\\Windows"), "System32", "cscript.exe")
 	run(`$cscript //nologo $vbs $pkgroot`)
-	mkpath(markerdir)
-	touch(marker)
+end
+
+# Create the Desktop shortcut as part of COMPILING/installing the package, NOT lazily on first
+# `using`: Pkg auto-precompiles right after `] dev` / `] add` / `] update`, and precompilation
+# evaluates this top-level block, so the icon appears at install time. Guarded on
+# jl_generating_output so it fires only while the precompile image is being generated. Non-fatal --
+# a shortcut problem must never break precompilation.
+if ccall(:jl_generating_output, Cint, ()) == 1
+	try
+		_ensure_desktop_shortcut()
+	catch e
+		@warn "InteractiveGMT: could not create the Desktop shortcut (non-fatal)." exception=(e,)
+	end
 end
 
 end # module InteractiveGMT
