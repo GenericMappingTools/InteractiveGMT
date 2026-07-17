@@ -31,7 +31,7 @@ using GMT
 iGMTinstall()
 ```
 
-### 4. The iGMT installer (graphical elements)
+### 4. The i'GMT
 
 You have now a new icon on your desktop `i'GMT`. Use it as a normal Graphical Program.
 

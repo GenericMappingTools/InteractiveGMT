@@ -16,37 +16,20 @@ axes, colour bar, shading, vertical curtains, in-window Julia console and data v
 
 > Windows-only (the viewer ships as a Windows DLL). But there is nothing that prevents future Linux and MacOS versions
 
-## Layout
 
+## Install
+
+See more extended instructions at [docs]() but basically, have a GMT.jl updated version and do
+
+```julia
+using GMT
+
+iGMTinstall()
 ```
-src/        Julia package (the bridge): one file per concern (grid, points, fv, curtain, …)
-deps/       the C/C++ viewer
-  src/      gmtvtk.cpp (umbrella TU) + 00_includes…90_c_api .cpp fragments (#included, not compiled separately)
-  CMakeLists.txt, build.bat, run.bat
-  assets/   bundled demo images (seismic profile for the curtain example)
-examples/   runnable demos (curtain, drape, fv, solids, f3dview, shademesh)
-test/       CI-safe unit tests of the pure-Julia helpers
-```
-
-## Build the viewer
-
-```bat
-deps\build.bat
-```
-
-Needs VS2022 + the VTK 9.6 / Qt6 / TBB deps (toolchain paths are hard-coded in
-`deps/CMakeLists.txt`, `deps/build.bat` and `src/libgmtvtk.jl` — override the Julia side with the
-`INTERACTIVEGMT_VTK_BIN` / `INTERACTIVEGMT_QT_BIN` / `INTERACTIVEGMT_QT_PLAT` env vars). Outputs
-`deps/build/gmtvtk.dll` (the host library this package `dlopen`s) and `deps/build/gmtvtk_demo.exe`
-(a standalone synthetic-peaks demo).
-
-> The viewer is loaded **in-process**: `using InteractiveGMT` `dlopen`s `gmtvtk.dll` into the
-> running Julia session at `__init__`. A `dlopen`'d DLL stays loaded for the life of the session,
-> so after rebuilding `gmtvtk.dll` you **must start a fresh Julia session** to pick up the changes
-> (an old session also keeps the `.dll` locked against the linker). Editing only the Julia side
-> needs just a re-`using`/Revise, no rebuild.
 
 ## Quick start
+
+Use the `i'GMT` icon that you now have on your desktop. Or, from a Julia REPL
 
 ```julia
 using InteractiveGMT, GMT
