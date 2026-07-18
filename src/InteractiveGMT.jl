@@ -56,6 +56,7 @@ include("session.jl")    # File > Save/Load Session (.igmtz): provenance registr
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
 include("solids.jl")     # 3-D Bodies toolbar flyout -> GMT solids (cube/sphere/torus/cylinder/…) via view_fv
 include("nswing.jl")     # Geophysics > NSWING tsunami (port of Mirone swan_options.m -> nswing exe)
+include("aquamoto.jl")   # Geophysics > Tsunamis > Aquamoto viewer (port of Mirone aquamoto.m netCDF tab)
 include("igrf.jl")       # Geophysics > Magnetics > IGRF (port of Mirone igrf_options.m; GMT.magref)
 include("seismicity.jl") # Geophysics > Seismology > Seismicity (port of Mirone earthquakes.m)
 include("focal.jl")      # Geophysics > Seismology > Focal mechanisms (port of Mirone focal_meca.m)

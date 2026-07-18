@@ -28,8 +28,10 @@
 #include <QSpinBox>
 #include <QPushButton>
 #include <QSurfaceFormat>
+#include <QWindow>
 #include <QString>
 #include <QRegularExpression>
+#include <QBuffer>
 #include <QEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -40,6 +42,8 @@
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QDoubleValidator>
+#include <QIntValidator>
+#include <algorithm>
 #include <string>
 #include <QSlider>
 #include <QScrollBar>
