@@ -54,6 +54,8 @@ mutable struct _AquaState
 	geog::Bool
 	imgbat::Array{UInt8,3}                  # cached land RGB (ny,nx,3); EMPTY (size 0) = not built yet
 	first::Bool                             # true until the first slice has been shown (Save/Session bookkeeping)
+	watercmap::Symbol                       # user-selectable via "Color Bar water" (default :polar)
+	landcmap::Symbol                        # user-selectable via "Color Bar Land" (default :geo)
 end
 
 const _AQUA = Dict{Ptr{Cvoid}, _AquaState}()
@@ -121,6 +123,49 @@ function _aqua_pack_rgba(rgb::Array{UInt8,3})::Vector{UInt8}
 	return buf
 end
 
+# Build + push the STATIC land colorbar legend for `cmap`. LAND is elevation >= 0, so the bar MUST
+# start at sea level (0), never at the ocean-floor depth, AND the ramp is built over the LAND-ONLY
+# span so it matches what _aqua_composite_rgb's imgbat cache actually paints -- both spend the full
+# 256-node ramp on land only. `bat.range[6]` IS the max land elevation whenever any land exists (the
+# overall max of a bathymetry grid always lands on a land cell, since land is defined as z>=0 and
+# the sea floor is negative) -- no scan. Called once at file-open (_aquamoto_open) and again whenever
+# the user picks a different land colormap (_aquamoto_set_cmap, side=1).
+function _aqua_push_land_cpt!(scene::Ptr{Cvoid}, bat::GMTgrid, cmap::Symbol)
+	lbarlo = 0.0                                # displayed LAND range: [0, max land elevation]
+	lbarhi = max(bat.range[6], lbarlo + 0.1)    # falls back to lbarlo+0.1 when the whole area is ocean
+	# Build the CPT DIRECTLY over the land-only span so all 256 nodes land on [0,lbarhi] -- building
+	# over the full bathymetry range (as before) and then keeping only the z>=0 nodes wasted almost
+	# the whole ramp on ocean-floor depths, leaving land with only a handful of distinct colours.
+	lcz, lcrgb, ln = _cpt_nodes_range(lbarlo, lbarhi, cmap)
+	ln < 2 && error("Aquamoto: colormap '$cmap' failed (makecpt)")
+	ccall(_fn(:gmtvtk_aqua_set_land_cpt_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cdouble, Cdouble),
+	      scene, lcz, lcrgb, Cint(ln), Cdouble(lbarlo), Cdouble(lbarhi))
+	return nothing
+end
+
+# Change the WATER (side=0) or LAND (side=1) colormap for an already-open Aquamoto file (the
+# "Color Bar water"/"Color Bar Land" colormap chooser, 50_scene.cpp aquaWaterColorbarRow/
+# aquaLandColorbarRow). Water needs nothing else here -- _aquamoto_slice already recomputes the
+# composite AND the legend from st.watercmap on every call. Land is CACHED (st.imgbat, built once
+# from the static bathymetry -- see _aqua_composite_rgb) so the cache must be invalidated, and its
+# own STATIC legend (built once at open) re-pushed. The caller (C++) re-renders the current slice
+# right after this returns, same contract as _aquamoto_set_var.
+function _aquamoto_set_cmap(scene::Ptr{Cvoid}, side::Int, cmap::String)
+	st = get(_AQUA, scene, nothing)
+	(st === nothing) && error("Aquamoto: no file open in this window")
+	sym = Symbol(cmap)
+	if side == 0
+		st.watercmap = sym
+	elseif side == 1
+		st.landcmap = sym
+		st.imgbat = Array{UInt8}(undef, 0, 0, 0)   # cached bathymetry colourisation used the OLD cmap
+		_aqua_push_land_cpt!(scene, st.bat, sym)
+	else
+		error("Aquamoto: unknown colorbar side $side (0=water, 1=land)")
+	end
+	return nothing
+end
+
 # Open a netCDF file, cache its header (bathymetry grid, EVERY time-varying quantity var name,
 # step count) per window, and immediately scan the ACTIVE variable's layers ONCE for its own
 # min/max (both the WET-cell-only range and the whole-cell range) -- so navigating slices and
@@ -179,20 +224,9 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	end
 	_progress_close()
 
-	# Push the LAND colorbar ONCE (static for the whole file, unlike the per-slice water bar). LAND is
-	# elevation >= 0, so the bar MUST start at sea level (0), never at the ocean-floor depth, AND the
-	# :geo ramp is built over the LAND-ONLY span so it matches what _aqua_composite_rgb's imgbat cache
-	# actually paints (see there) -- both spend the full 256-node ramp on land only. `bat.range[6]` IS
-	# the max land elevation whenever any land exists (the overall max of a bathymetry grid always
-	# lands on a land cell, since land is defined as z>=0 and the sea floor is negative) -- no scan.
-	lbarlo = 0.0                                # displayed LAND range: [0, max land elevation]
-	lbarhi = max(bat.range[6], lbarlo + 0.1)    # falls back to lbarlo+0.1 when the whole area is ocean
-	# Build the CPT DIRECTLY over the land-only span so all 256 nodes land on [0,lbarhi] -- building
-	# over the full bathymetry range (as before) and then keeping only the z>=0 nodes wasted almost
-	# the whole ramp on ocean-floor depths, leaving land with only a handful of distinct colours.
-	lcz, lcrgb, ln = _cpt_nodes_range(lbarlo, lbarhi, :geo)
-	ccall(_fn(:gmtvtk_aqua_set_land_cpt_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cdouble, Cdouble),
-	      scene, lcz, lcrgb, Cint(ln), Cdouble(lbarlo), Cdouble(lbarhi))
+	# Push the LAND colorbar ONCE here (static for the whole file, unlike the per-slice water bar) --
+	# re-pushed later only if the user picks a different land colormap (_aquamoto_set_cmap).
+	_aqua_push_land_cpt!(scene, bat, :geo)
 
 	# Hand the viewer the static bathymetry = the LAND surface for hillshading. Column-major Float32,
 	# the SAME layout as the per-slice stage (zhover) the viewer already receives. The viewer then
@@ -228,7 +262,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 		end
 	end
 
-	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true)
+	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, :polar, :geo)
 	print(nsteps, "|", varname, "|", join(varnames, ","))
 	return nothing
 end
@@ -304,27 +338,30 @@ end
 function _aqua_composite_rgb(bat::Matrix{Float32}, Z::Matrix{Float32}, splitDryWet::Bool,
                              waterlo::Float64, waterhi::Float64, transparency::Float64,
                              imgbat::Array{UInt8,3}, landhi::Float64,
-                             shadeWater::Bool=true, shadeLand::Bool=true)
+                             shadeWater::Bool=true, shadeLand::Bool=true,
+                             watercmap::Symbol=:polar, landcmap::Symbol=:geo)
 	ny, nx = size(Z)
 	if !splitDryWet
-		return _aqua_colorize(Z, waterlo, waterhi, :polar), imgbat
+		return _aqua_colorize(Z, waterlo, waterhi, watercmap), imgbat
 	end
 	indland = abs.(bat .- Z) .< 1e-2
 	Zc = copy(Z)
 	Zc[indland] .= 0.0
 	if isempty(imgbat)                                     # cache: only depends on the (static) bathymetry
+		                                                    # AND landcmap -- caller invalidates (empties
+		                                                    # imgbat) whenever the land colormap changes.
 		# LAND-ONLY range, same as the colorbar (_aquamoto_open) -- colorizing over the FULL bathymetry
 		# range (incl. ocean depths) wasted most of the 256-node ramp on sea floor, leaving land itself
 		# with only a handful of distinct colours (blocky look, and mismatched vs the legend).
 		blo = 0.0
 		bhi = max(landhi, blo + 0.1)
-		imgbat = _aqua_colorize(bat, blo, bhi, :geo)        # :geo already has its own land/sea break
+		imgbat = _aqua_colorize(bat, blo, bhi, landcmap)    # :geo default already has its own land/sea break
 	end
 	# ALWAYS colour BOTH sides -- land from the cached bathymetry, water from the wet stage. NEVER grey a
 	# side out (that made land show up grey when Water was the selected radio). Both images are always
 	# shown; the Shade Water/Shade Land radio only selects which side's LIGHT the Shading dock edits
 	# (aquaShowWater, applied per-side by bakeAquaShade in the viewer), it does not hide either colour.
-	imgwater = _aqua_colorize(Zc, waterlo, waterhi, :polar)                  # diverging: trough/calm/crest
+	imgwater = _aqua_colorize(Zc, waterlo, waterhi, watercmap)               # diverging: trough/calm/crest
 	landrgb  = imgbat
 	alfa = clamp(transparency, 0.0, 1.0)
 	rgb = similar(imgwater)
@@ -383,11 +420,11 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	(waterhi > waterlo) || (waterhi = waterlo + 1.0)     # guard an exactly-flat layer (div-by-zero only)
 	landhi = st.bat.range[6]                           # max land elevation, straight from the grid's OWN known range
 	rgb, st.imgbat = _aqua_composite_rgb(bat, Z, splitDryWet, waterlo, waterhi, transparency, st.imgbat, landhi,
-	                                     shadeWater, shadeLand)
+	                                     shadeWater, shadeLand, st.watercmap, st.landcmap)
 
 	rgba = _aqua_pack_rgba(rgb)
 	zhover = G.z                         # native GMT column-major layout -- passed as-is
-	cz, crgb, n = _cpt_nodes_range(waterlo, waterhi, :polar)   # colourbar legend = the water scale
+	cz, crgb, n = _cpt_nodes_range(waterlo, waterhi, st.watercmap)   # colourbar legend = the water scale
 	r = st.bat.range
 	name = basename(st.path)                                   # handle named after the file, like every other layer
 	ok = ccall(_fn(:gmtvtk_show_layer_rgba_h), Cint,

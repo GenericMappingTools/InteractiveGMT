@@ -527,6 +527,21 @@ static void aquamotoDestroy(Scene *scene) {
 	AquamotoWindow *w = AquamotoWindow::registry().value(scene, nullptr);
 	if (w && w->win) w->win->deleteLater();
 }
+// "Color Bar water"/"Color Bar Land" colormap chooser (50_scene.cpp aquaWaterColorbarRow/
+// aquaLandColorbarRow) -- side 0=water, 1=land. Stores the new cmap in the Julia _AquaState
+// (_aquamoto_set_cmap) then re-renders the current slice through the SAME fireSlice() every other
+// Aquamoto control (split/global/transparency/shade toggles) already uses, so the composited
+// texture AND the picked side's colorbar legend both pick up the new colormap in one call.
+static void aquamotoSetCmap(Scene *scene, int side, const char *cmap) {
+	AquamotoWindow *w = AquamotoWindow::registry().value(scene, nullptr);
+	if (!w || !cmap || !cmap[0]) return;
+	QString out; bool closedNow = false;
+	const bool ok = w->runBlocking(QString("InteractiveGMT._aquamoto_set_cmap(%1,%2,raw\"%3\")")
+	                    .arg(aquaScenePtr(scene)).arg(side).arg(QString::fromUtf8(cmap)), out, closedNow);
+	if (closedNow) return;   // `w` may already be destroyed -- touch NOTHING below
+	if (!ok) { if (w->win) w->win->statusBar()->showMessage("Aquamoto: " + out, 5000); return; }
+	w->fireSlice();
+}
 static const struct AquamotoHookInstaller {
 	AquamotoHookInstaller() {
 		g_aquamotoHasWindow = &aquamotoHasWindow;
@@ -534,5 +549,6 @@ static const struct AquamotoHookInstaller {
 		g_aquamotoIsVisible = &aquamotoIsVisible;
 		g_aquamotoSetVisible = &aquamotoSetVisible;
 		g_aquamotoDestroy   = &aquamotoDestroy;
+		g_aquamotoSetCmap   = &aquamotoSetCmap;
 	}
 } g_aquamotoHookInstaller;

@@ -290,9 +290,13 @@ static bool colorbarRelease(Scene *s) {
 }
 
 // The colormap chooser: a popup of common GMT master CPTs (applied on click) plus a Custom… entry
-// for any name GMT's makecpt accepts. Opened from the colorbar's Scene Objects row.
-static void chooseColormap(Scene *s, const QPoint& gp, int gridSel) {
-	if (!s) return;
+// for any name GMT's makecpt accepts. Opened from the colorbar's Scene Objects row. `apply` is what
+// a picked name DOES — the generic case recolours one grid via applyColormap (see the colorbarRow
+// callers below); Aquamoto's water/land rows (aquaWaterColorbarRow/aquaLandColorbarRow) pass a
+// different `apply` since their colour comes from a host-composited texture, not a scalar+LUT
+// surface, and needs its own Julia entry point + a slice re-render (g_aquamotoSetCmap).
+static void chooseColormap(Scene *s, const QPoint& gp, std::function<void(const QString&)> apply) {
+	if (!s || !apply) return;
 	static const char *kMaps[] = {
 		"viridis", "turbo", "jet", "hot", "haxby", "geo", "relief", "rainbow",
 		"polar", "seis", "gray", "plasma", "magma", "cividis", "roma", "vik",
@@ -300,14 +304,14 @@ static void chooseColormap(Scene *s, const QPoint& gp, int gridSel) {
 	QMenu m(s->win);
 	for (const char *nm : kMaps) {
 		const QString q = QString::fromLatin1(nm);
-		m.addAction(q, [s, q, gridSel]() { applyColormap(s, q, gridSel); });
+		m.addAction(q, [apply, q]() { apply(q); });
 	}
 	m.addSeparator();
-	m.addAction("Custom…", [s, gridSel]() {
+	m.addAction("Custom…", [s, apply]() {
 		bool ok = false;
 		const QString nm = QInputDialog::getText(s->win, "Colormap", "GMT CPT name:",
 		                                         QLineEdit::Normal, "", &ok);
-		if (ok) applyColormap(s, nm.trimmed(), gridSel);
+		if (ok) apply(nm.trimmed());
 	});
 	m.exec(gp);
 }
@@ -1504,7 +1508,9 @@ static void rebuildSceneObjects(Scene *s) {
 	auto colorbarRow = [&](bool *flag, int gridSel, bool grpVisible = true) {
 		makeRow("Color Bar", IC_ColorBar, *flag && grpVisible,
 		        [s, flag](bool on) { *flag = on; refreshGridColorbar(s); },
-		        [s, gridSel](const QPoint& g) { chooseColormap(s, g, gridSel); },
+		        [s, gridSel](const QPoint& g) {
+		            chooseColormap(s, g, [s, gridSel](const QString& nm) { applyColormap(s, nm, gridSel); });
+		        },
 		        "Show / hide this grid's colorbar · left-click the label to choose a colormap");
 	};
 	// Aquamoto's two colorbar rows. Unlike the generic colorbarRow above (checkbox = a separate
@@ -1515,19 +1521,31 @@ static void rebuildSceneObjects(Scene *s) {
 	// Water/Land radio, which is precisely the "not toggling" bug this replaces. Checking either
 	// box also SWITCHES the active side (mirrors clicking the corresponding radio); unchecking one
 	// just hides it without touching the other.
+	// Colormap picks on either side go through g_aquamotoSetCmap (75_aquamoto.cpp): it sets the
+	// side's cmap in the Julia _AquaState and re-renders the CURRENT slice, unlike the generic
+	// applyColormap/gmtvtk_set_cpt_grid path (a host-composited texture has no scalar+LUT surface
+	// for that to recolour — see the flat-image-bake bug this replaces).
 	auto aquaWaterColorbarRow = [&]() {
 		const bool vis = s->bar && s->bar->GetVisibility() != 0;
 		makeRow("Color Bar water", IC_ColorBar, vis,
 		        [s](bool on) { s->surfShowBar = on; if (on) s->aquaShowWater = true; refreshGridColorbar(s); rebuildSceneObjects(s); },
-		        [s](const QPoint& g) { chooseColormap(s, g, -1); },
-		        "Show / hide the Water colorbar · checking it switches to Shade Water");
+		        [s](const QPoint& g) {
+		            chooseColormap(s, g, [s](const QString& nm) {
+		                if (g_aquamotoSetCmap) g_aquamotoSetCmap(s, 0, nm.toUtf8().constData());
+		            });
+		        },
+		        "Show / hide the Water colorbar · checking it switches to Shade Water · left-click the label to choose a colormap");
 	};
 	auto aquaLandColorbarRow = [&]() {
 		const bool vis = s->aquaLandBar && s->aquaLandBar->GetVisibility() != 0;
 		makeRow("Color Bar Land", IC_ColorBar, vis,
 		        [s](bool on) { s->aquaLandShowBar = on; if (on) s->aquaShowWater = false; refreshGridColorbar(s); rebuildSceneObjects(s); },
-		        nullptr,
-		        "Show / hide the Land colorbar · checking it switches to Shade Land");
+		        [s](const QPoint& g) {
+		            chooseColormap(s, g, [s](const QString& nm) {
+		                if (g_aquamotoSetCmap) g_aquamotoSetCmap(s, 1, nm.toUtf8().constData());
+		            });
+		        },
+		        "Show / hide the Land colorbar · checking it switches to Shade Land · left-click the label to choose a colormap");
 	};
 	// Per-grid / per-image AXES handle. Properties come LATER; for now the box toggles the cube axes
 	// and the label shows a placeholder. Every grid (and referenced image) carries one. grpVisible
