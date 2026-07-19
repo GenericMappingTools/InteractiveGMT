@@ -305,6 +305,17 @@ static JuliaCubeLoadAllFn g_juliaCubeLoadAll = nullptr;
 typedef void (*JuliaCubeSliderFn)(void *scene, const char *name);
 static JuliaCubeSliderFn g_juliaCubeSlider = nullptr;
 
+// The Aquamoto control window (75_aquamoto.cpp) closes to HIDDEN, never destroyed; its viewer scene's
+// surface handle offers "Aquamoto viewer…" to re-show it. surfaceObjectMenu (50_scene.cpp) is compiled
+// before 75_aquamoto.cpp, so it reaches the window through these hooks, which 75 installs at load.
+// `has` reports whether `scene` owns an Aquamoto window (gates the menu entry); `reopen` re-shows it.
+struct Scene;
+static bool (*g_aquamotoHasWindow)(Scene *scene) = nullptr;
+static void (*g_aquamotoReopen)(Scene *scene) = nullptr;
+static void (*g_aquamotoSetVisible)(Scene *scene, int on) = nullptr;   // Scene Objects handle checkbox: show/hide the window
+static bool (*g_aquamotoIsVisible)(Scene *scene) = nullptr;            // current window visibility (checkbox initial state)
+static void (*g_aquamotoDestroy)(Scene *scene) = nullptr;             // destroy the window (lifetime-tied to its nc cube surface)
+
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a
 // short format code (nc/surfer/gtiff/jp2/erdas/envi for grids; those + jpg/png/tif/bmp for images);

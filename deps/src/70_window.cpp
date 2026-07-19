@@ -858,6 +858,12 @@ extern "C" __declspec(dllexport) int gmtvtk_show_layer_image_h(void*, const floa
                                                     double, double, int, const double*, const double*, int, const char*);
 extern "C" __declspec(dllexport) int gmtvtk_replace_base_grid_h(void*, const float*, int, int, double, double,
                                                      double, double, int, const double*, const double*, int, const char*);
+// fwd (defined in 90_c_api.cpp; same TU) -- the SHARED flat-image/composite builder.
+static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int txH,
+                              const float *z, int nx, int ny,
+                              double x0, double x1, double y0, double y1, int geographic,
+                              const double *cz, const double *crgb, int ncolor, const char *name, bool isCustom);
+
 static void rebuildBaseFromStored(Scene *s, bool asImage) {
 	if (!s || s->gridZ.empty() || s->gnx < 2 || s->gny < 2 || s->baseCz.size() < 2) return;
 	const std::vector<float>  z    = s->gridZ;         // COPY: the callees reassign s->gridZ from this pointer
@@ -865,10 +871,24 @@ static void rebuildBaseFromStored(Scene *s, bool asImage) {
 	const std::vector<double> crgb = s->baseCrgb;
 	const int nc = (int)cz.size();
 	const std::string nm = s->surfName;
-	if (asImage)
+	if (asImage) {
+		// FLAT image. A tsunami is a host-composited land/water blend with NO single CPT to re-bake from,
+		// so restore it through the SAME custom builder that made it (showLayerImageTail + stored composite
+		// + per-side bakeAquaShade). A plain grid uses the normal flat-image bake.
+		if ((int)s->aquaBaseRGBA.size() == s->gnx * s->gny * 4) {
+			showLayerImageTail(s, s->aquaBaseRGBA.data(), s->gnx, s->gny, z.data(), s->gnx, s->gny,
+			                   s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str(), true);
+			return;
+		}
 		gmtvtk_show_layer_image_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str());
-	else
+	} else {
+		// 3-D SURFACE. SACRED LAW: the same operation uses the same function -- a tsunami warps + hillshades
+		// through the EXACT builder every grid uses (gmtvtk_replace_base_grid_h -> hillshadeMapper), no
+		// special case. Drop the custom-texture flag so it shades as a plain grid; the stored composite
+		// (aquaBaseRGBA) survives, so re-checking "Shaded image (2-D)" restores the flat blend above.
+		s->customLayerTexture = false;
 		gmtvtk_replace_base_grid_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str());
+	}
 }
 
 // GRAPHICAL ELEMENT: custom dock title bar that folds the dock HORIZONTALLY.
@@ -5609,6 +5629,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
 			dlg->setWindowModality(Qt::NonModal);
 			dlg->show();
+		});
+		mGphy->addAction("Aquamoto viewer…", [win, s]() {
+			// Non-modal, own top-level window (aquamoto.ui roots at QMainWindow, loaded verbatim --
+			// no resize/rescale of its own geometry). Closing only HIDES it (AquamotoHideOnClose); this
+			// reuses the SAME window for the scene, with its file/slice/state intact, rather than
+			// spawning a duplicate. Re-accessible afterwards from the layer's Scene Objects handle too.
+			AquamotoWindow::openFor(win, s);
 		});
 		mGphy->addAction(actNestedGridsTsu);
 		reopen();

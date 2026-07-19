@@ -2330,6 +2330,113 @@ GMTVTK_API int gmtvtk_nswing_enter_test(void *scene) {
 	dlg.hide();
 	return ran;
 }
+
+// test hook: open a real AquamotoWindow (loaded from aquamoto.ui via QUiLoader, no parent), show
+// it, and report whether every expected control was actually found by findChild — the exact bug
+// class an "it compiled" claim would miss (a reparenting mistake leaving the window visually
+// empty). Optionally grabs a screenshot to `pngPath` ("" to skip) so the result can be visually
+// verified, not just asserted. Returns: 1 = window + every control found, 0 = the .ui failed to
+// load at all, -1 = window loaded but one or more expected controls were missing.
+GMTVTK_API int gmtvtk_aquamoto_open_test(void *scene, const char *pngPath) {
+	auto *w = new AquamotoWindow(nullptr, (Scene*)scene);
+	if (!w->win) { delete w; return 0; }
+	w->win->show();
+	// Pump events for a bit (not just one processEvents() call) -- a brand-new native window's
+	// first paint can lag the OS theme engine (UxTheme "Scrollbar" data), so a screenshot grabbed
+	// too early can catch an under-themed frame that a normally-running app never shows.
+	{
+		QElapsedTimer t; t.start();
+		while (t.elapsed() < 500) { QApplication::processEvents(QEventLoop::AllEvents, 50); }
+	}
+	const bool allFound = w->pathEdit && w->sliceSlider && w->sliceSpin && w->splitDryWetCheck &&
+	                       w->scaleGlobalCheck && w->waterTransparencySlider && w->showSliceBtn && w->runInBtn;
+	if (pngPath && pngPath[0]) {
+		QPixmap pm = w->win->grab();
+		pm.save(QString::fromUtf8(pngPath));
+		if (w->sliceSlider) {
+			// A separate, upscaled close-up of JUST the slider widget -- the arrow glyphs are only
+			// a few px tall in the full-window shot, easy to miss/misjudge at that scale.
+			QPixmap sl = w->sliceSlider->grab();
+			QPixmap big = sl.scaled(sl.width() * 4, sl.height() * 4);
+			QString p2 = QString::fromUtf8(pngPath) + ".slider.png";
+			big.save(p2);
+		}
+	}
+	return allFound ? 1 : -1;
+}
+
+// test hook: diagnose WHERE the AquamotoWindow's size diverges from the .ui's declared geometry.
+// out[0,1] = win->size() right after QUiLoader::load() (before show()); out[2,3] = win->sizeHint();
+// out[4,5] = win->layout() ? layout()->minimumSize() : (-1,-1); out[6,7] = win->size() after
+// show()+processEvents(). Lets the mismatch be pinned to "load already wrong" vs
+// "content needs more room than 760x640" vs "show() itself re-lays-out" instead of guessing.
+GMTVTK_API int gmtvtk_aquamoto_size_test(void *scene, double *out) {
+	auto *w = new AquamotoWindow(nullptr, (Scene*)scene);
+	if (!w->win) { delete w; return 0; }
+	out[0] = w->win->size().width();  out[1] = w->win->size().height();
+	out[2] = w->win->sizeHint().width(); out[3] = w->win->sizeHint().height();
+	if (w->win->layout()) {
+		out[4] = w->win->layout()->minimumSize().width();
+		out[5] = w->win->layout()->minimumSize().height();
+	} else { out[4] = -1; out[5] = -1; }
+	w->win->show();
+	QApplication::processEvents();
+	out[6] = w->win->size().width(); out[7] = w->win->size().height();
+	return 1;
+}
+
+// test hook: isolate whether a bare "windowsvista"-styled QScrollBar draws arrow buttons AT ALL in
+// this environment -- a standalone QWidget + QScrollBar, nothing from AquamotoWindow/CubeLayerDialog
+// involved, to settle whether the "force windowsvista" trick genuinely works here before blaming
+// any specific dialog's wiring.
+GMTVTK_API int gmtvtk_scrollbar_style_test(const char *pngPath, const char *styleKey) {
+	auto *host = new QWidget(nullptr);
+	host->resize(300, 60);
+	auto *sb = new QScrollBar(Qt::Horizontal, host);
+	sb->setGeometry(10, 20, 260, 20);
+	sb->setRange(1, 180);
+	sb->setValue(1);
+	QString styleName = "(app default, no override)";
+	const QString key = QString::fromUtf8(styleKey ? styleKey : "");
+	if (!key.isEmpty()) {
+		if (QStyle *classicStyle = QStyleFactory::create(key)) {
+			classicStyle->setParent(sb);
+			sb->setStyle(classicStyle);
+			styleName = classicStyle->objectName();
+		} else {
+			styleName = "(create FAILED)";
+		}
+	}
+	host->show();
+	QElapsedTimer t; t.start();
+	while (t.elapsed() < 500) { QApplication::processEvents(QEventLoop::AllEvents, 50); }
+	if (pngPath && pngPath[0]) {
+		QPixmap pm = host->grab();
+		QPixmap big = pm.scaled(pm.width() * 3, pm.height() * 3);
+		big.save(QString::fromUtf8(pngPath));
+	}
+	qWarning("scrollbar_style_test: requested=%s style=%s transient=%d", qUtf8Printable(key),
+	         qUtf8Printable(styleName), sb->style()->styleHint(QStyle::SH_ScrollBar_Transient, nullptr, sb));
+	return 1;
+}
+
+// test hook: flip an Aquamoto scene to "Shade Land" (same state change the Scene Objects "Color Bar
+// Land" checkbox lambda makes, 50_scene.cpp:1489/1496) so the LAND colorbar becomes visible without
+// driving the real Qt checkbox — lets a screenshot show its ACTUAL rendered geometry (bar rect vs
+// tick positions) for diagnosis. Returns 1 on success, 0 on a dead scene.
+GMTVTK_API int gmtvtk_aqua_force_land_bar_test(void *scene) {
+	// NOTE: sceneAlive() checks a file-static registry that does NOT cross the DLL boundary (this
+	// hook is called with a Scene* opened through the PRODUCTION gmtvtk.dll, not this test dll) --
+	// only a null-check here, no registry lookup.
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !s->ren) return 0;
+	s->aquaLandShowBar = true;
+	s->aquaShowWater = false;
+	refreshGridColorbar(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
 #endif // GMTVTK_TEST_API
 
 // Register the grid-metadata callback used by the grdsample dialog's "OR Ref grid" picker.
@@ -2897,39 +3004,26 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 
 // Show a 2-D grid layer as a fast ILLUMINATED IMAGE (Mirone-style) — the cheap alternative to a
 // warped 3-D surface for scrubbing the layers of a heavy 3-D cube. The relief is NOT triangulated:
-// a single flat quad carries an nx*ny hillshade texture (bakeLayerRGBA), so a layer switch is a
-// texture repaint + Render, not a per-layer geometry rebuild. The full-res z stays in s->gridZ, so
-// the coordinate readout still reports the true elevation (not a pixel colour) and overlays drape
-// correctly. The colorbar is kept (this is a grid shown as an image, not a bare image).
+// a single flat quad carries an nx*ny texture, so a layer switch is a texture repaint + Render, not
+// a per-layer geometry rebuild. The full-res z stays in s->gridZ, so the coordinate readout still
+// reports the true elevation (not a pixel colour) and overlays drape correctly. The colorbar is
+// kept (this is a grid shown as an image, not a bare image).
 //
+// Shared tail of gmtvtk_show_layer_image_h (bakes the texture from a CPT + illumination) and
+// gmtvtk_show_layer_rgba_h (the texture arrives ALREADY composited, e.g. Aquamoto's dry/wet blend).
 // First call (or a grid-size / extent change) builds the flat drape scene; every later same-size
 // call takes the FAST path: overwrite the texture bytes + s->gridZ, one Render. `cz/crgb/ncolor` is
-// the CPT to bake with; the host re-pushes the same CPT (gmtvtk_set_cpt) afterwards so the colorbar
-// legend tracks the chosen (per-layer or whole-cube) range. Returns 1 on success, 0 on failure.
-GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, int ny,
-                                         double x0, double x1, double y0, double y1, int geographic,
-                                         const double *cz, const double *crgb, int ncolor,
-                                         const char *name) {
-	Scene *s = static_cast<Scene*>(handle);
-	if (!sceneAlive(s) || !z || nx < 2 || ny < 2 || !cz || !crgb || ncolor < 2)
-		return 0;
-
-	// CPT for baking (a vtkColorTransferFunction over the exact GMT control nodes).
-	vtkNew<vtkColorTransferFunction> ctf;
-	for (int i = 0; i < ncolor; ++i)
-		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
-
-	// A cube opens as an illuminated relief map: default a FRESH cube window to the grdimage hillshade
-	// (done before the bake so the very first texture is already shaded). The Shading dock then switches
-	// style (Lambert / off) or moves the sun and relights live via rebakeLayerImage.
-	if (s->emptyStart && !s->layerImgMode) { s->useHillshade = true; s->hillGrd = true; }
-
+// only the CPT the colourbar legend reflects (the surface itself is 100% covered by the drape, so
+// this never colours a visible pixel). `isCustom` marks the texture as host-composited so the
+// generic relight/hi-res-detail paths (rebakeLayerImage/refineLayerDetail, 40_shading.cpp) never
+// try to regenerate it from gridZ+cpt and stomp it. Returns 1 on success, 0 on a dead/invalid scene.
+static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int txH,
+                              const float *z, int nx, int ny,
+                              double x0, double x1, double y0, double y1, int geographic,
+                              const double *cz, const double *crgb, int ncolor, const char *name,
+                              bool isCustom) {
 	const double dx = (nx > 1) ? (x1 - x0) / (nx - 1) : 0.0;
 	const double dy = (ny > 1) ? (y1 - y0) / (ny - 1) : 0.0;
-	int txW, txH; layerTexSize(nx, ny, txW, txH);      // capped texture size (subsample a heavy cube)
-	std::vector<unsigned char> rgba;
-	bakeLayerRGBA(s, z, nx, ny, x0, y0, dx, dy, ctf, cz[0], cz[ncolor - 1],
-	              x0, x1, y0, y1, txW, txH, rgba);     // base texture = the whole extent
 
 	// ---- FAST path: same window, same grid size + extent -> just repaint the drape texture ----
 	if (s->layerImgMode && s->drape && !s->emptyStart &&
@@ -2939,11 +3033,43 @@ GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, i
 		vtkImageData *id = tx ? vtkImageData::SafeDownCast(tx->GetInput()) : nullptr;
 		int dims[3] = { 0, 0, 0 }; if (id) id->GetDimensions(dims);
 		if (id && dims[0] == txW && dims[1] == txH) {
-			memcpy(id->GetScalarPointer(), rgba.data(), rgba.size());
+			memcpy(id->GetScalarPointer(), rgba, (size_t)txW * txH * 4);
 			id->Modified(); tx->Modified();
 			s->gridZ.assign(z, z + (size_t)nx * ny);     // hover now reads the NEW layer's z
 			s->zmin = cz[0]; s->zmax = cz[ncolor - 1];
 			if (name && name[0]) s->surfName = name;
+			s->customLayerTexture = isCustom;
+			// Aquamoto: keep the UNSHADED composite as the shading base, then relight it through the
+			// SHARED engine (bakeAquaShade -> applyReliefShade), so this slice is hillshaded like the
+			// previous one and the Shading dock keeps driving it. gridZ (above) is this slice's stage.
+			if (isCustom) {
+				s->aquaBaseRGBA.assign(rgba, rgba + (size_t)txW * txH * 4);
+				bakeAquaShade(s);
+			}
+
+			// Recolour + retarget the colorbar to THIS layer -- was previously only s->zmin/zmax being
+			// updated silently, leaving the on-screen bar (ticks, labels, LUT) frozen on whatever layer
+			// built it first (e.g. every later cube-layer switch or Aquamoto slice change never moved
+			// the bar). Mutate s->surfLut's CTF nodes in place (same trick as gmtvtk_set_cpt) so the
+			// surface mapper stays in sync too, then rebuild the bar's ticks/labels for the new range.
+			if (cz && crgb && ncolor > 1) {
+				vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(s->surfLut);
+				if (ctf) {
+					ctf->RemoveAllPoints();
+					for (int i = 0; i < ncolor; ++i)
+						ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+				}
+				s->baseCz.assign(cz, cz + ncolor);
+				s->baseCrgb.assign(crgb, crgb + 3 * ncolor);
+			}
+			destroyColorbar(s);
+			// For an Aquamoto layer, `bar` is specifically the WATER side -- only rebuild/show it while
+			// aquaShowWater is true (the Shade Water/Land radio). Without this gate, every slice repaint
+			// (fireSlice fires right after the radio toggle) unconditionally redrew the water bar and
+			// undid whatever refreshGridColorbar had just done to switch to the land bar.
+			if (s->surfShowBar && (!s->customLayerTexture || s->aquaShowWater))
+				buildColorbar(s, s->surfLut, s->zmin, s->zmax);
+
 			invalidateLayerDetail(s);   // the zoom detail tile is for the OLD layer -> refresh on settle
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 			return 1;
@@ -2976,7 +3102,7 @@ GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, i
 	vtkSmartPointer<vtkPolyData> pd = makeGridFromArray(flatz, 2, 2, x0, x1, y0, y1, zlo, zhi,
 	                                                    /*triangulate=*/true, /*wantTC=*/true);
 	s->imageOnly = false;          // keep the colorbar + z readout (a grid shown as an image, not a bare image)
-	buildSceneContent(s, pd, x0, x1, y0, y1, cz, crgb, ncolor, rgba.data(), txW, txH, 4,
+	buildSceneContent(s, pd, x0, x1, y0, y1, cz, crgb, ncolor, rgba, txW, txH, 4,
 	                  /*edges=*/0, /*pointCloud=*/false, geographic, nullptr, 0, 0, /*blankStart=*/false);
 
 	// Full-res data layer for the hover/coordinate readout (the single-actor drape path does NOT
@@ -2989,6 +3115,18 @@ GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, i
 	s->actX0 = x0; s->actX1 = x1; s->actY0 = y0; s->actY1 = y1;
 	s->layerImgMode = true;
 	s->layerTexW = txW; s->layerTexH = txH;
+	s->customLayerTexture = isCustom;
+	// Aquamoto: stash the UNSHADED composite as the shading base (applyShading below -> bakeAquaShade
+	// relights it through the shared engine). Clear it for a plain baked layer so bakeAquaShade stays a
+	// no-op there.
+	if (isCustom) {
+		s->aquaBaseRGBA.assign(rgba, rgba + (size_t)txW * txH * 4);
+		// Seed each side's OWN light from the current dock ONCE (both start equally lit); thereafter each
+		// side is only ever updated when it is the selected side, so they stay independent.
+		if (!s->aquaWaterShade.valid) s->aquaWaterShade = snapshotShade(s);
+		if (!s->aquaLandShade.valid)  s->aquaLandShade  = snapshotShade(s);
+	}
+	else          { s->aquaBaseRGBA.clear(); s->aquaBathyZ.clear(); }
 	s->emptyStart = false;
 	if (s->axes) { s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff(); }   // a 2-D map: no Z axis
 
@@ -3036,6 +3174,114 @@ GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, i
 	applyShading(s);
 	s->ren->ResetCameraClippingRange();
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, int ny,
+                                         double x0, double x1, double y0, double y1, int geographic,
+                                         const double *cz, const double *crgb, int ncolor,
+                                         const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !z || nx < 2 || ny < 2 || !cz || !crgb || ncolor < 2)
+		return 0;
+
+	// CPT for baking (a vtkColorTransferFunction over the exact GMT control nodes).
+	vtkNew<vtkColorTransferFunction> ctf;
+	for (int i = 0; i < ncolor; ++i)
+		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+
+	// A cube opens as an illuminated relief map: default a FRESH cube window to the grdimage hillshade
+	// (done before the bake so the very first texture is already shaded). The Shading dock then switches
+	// style (Lambert / off) or moves the sun and relights live via rebakeLayerImage.
+	if (s->emptyStart && !s->layerImgMode) { s->useHillshade = true; s->hillGrd = true; }
+
+	const double dx = (nx > 1) ? (x1 - x0) / (nx - 1) : 0.0;
+	const double dy = (ny > 1) ? (y1 - y0) / (ny - 1) : 0.0;
+	int txW, txH; layerTexSize(nx, ny, txW, txH);      // capped texture size (subsample a heavy cube)
+	std::vector<unsigned char> rgba;
+	bakeLayerRGBA(s, z, nx, ny, x0, y0, dx, dy, ctf, cz[0], cz[ncolor - 1],
+	              x0, x1, y0, y1, txW, txH, rgba);     // base texture = the whole extent
+
+	return showLayerImageTail(s, rgba.data(), txW, txH, z, nx, ny, x0, x1, y0, y1, geographic,
+	                          cz, crgb, ncolor, name, /*isCustom=*/false);
+}
+
+// Aquamoto-style variant: the caller (Julia) hands over an ALREADY-COMPOSITED RGBA texture (e.g.
+// a dry-land / wet-water blend that no single CPT could produce) instead of a z array to bake —
+// same flat-quad "first call builds, later same-size calls just repaint" scene as
+// gmtvtk_show_layer_image_h, minus the internal CPT bake. `rgba` is nx*ny*4 bytes (no subsampling —
+// the caller already sized it to the display resolution it wants). `zhover` (nx*ny floats, e.g. the
+// water stage) feeds the coordinate readout the same way gridZ does for the CPT path. `cz/crgb/
+// ncolor` is only the colourbar legend's scale (e.g. the water colour ramp) — it never colours a
+// visible pixel, since the drape covers the surface 100%.
+GMTVTK_API int gmtvtk_show_layer_rgba_h(void *handle, const unsigned char *rgba, int nx, int ny,
+                                        double x0, double x1, double y0, double y1, int geographic,
+                                        const double *cz, const double *crgb, int ncolor,
+                                        const float *zhover, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !rgba || nx < 2 || ny < 2 || !cz || !crgb || ncolor < 2 || !zhover)
+		return 0;
+	// A FRESH tsunami (no base composite pushed yet): WATER opens FLAT (the host-composited 256-colour
+	// :polar image, Mirone-style) -- hillshade relighting saturates the water's steep-gradient normals
+	// and washes the palette toward white/dark, a 2-colour collapse of an image that is really 256.
+	// LAND opens SHADED (grdimage hillshade) by default -- AquaSideShade's own defaults (useHillshade=
+	// true, hillGrd=true) already say so; only WATER needs an explicit flat override. Each side gets
+	// its OWN valid snapshot here so bakeAquaShade never falls back to the live dock state for either.
+	if (s->aquaBaseRGBA.empty()) {
+		s->aquaWaterShade = AquaSideShade{};
+		s->aquaWaterShade.valid = true; s->aquaWaterShade.useHillshade = false; s->aquaWaterShade.hillGrd = false;
+		s->aquaWaterShade.litBake = false;
+		s->aquaLandShade = AquaSideShade{};
+		s->aquaLandShade.valid = true;                    // useHillshade/hillGrd default true -> shaded
+		// Live dock state mirrors whichever side aquaShadeSelWater currently edits, so the Shading
+		// dock checkboxes reflect the truth the first time it's opened on this file.
+		const AquaSideShade &live = s->aquaShadeSelWater ? s->aquaWaterShade : s->aquaLandShade;
+		s->useHillshade = live.useHillshade; s->hillGrd = live.hillGrd; s->litBake = live.litBake;
+	}
+	return showLayerImageTail(s, rgba, nx, ny, zhover, nx, ny, x0, x1, y0, y1, geographic,
+	                          cz, crgb, ncolor, name, /*isCustom=*/true);
+}
+
+// Build/replace Aquamoto's persistent LAND colorbar (the bathymetry range + :geo ramp) once, at
+// file-open time -- it never changes per slice, unlike the water bar showLayerImageTail already
+// refreshes every call. Visibility is decided by refreshGridColorbar (aquaShowWater / aquaLandShowBar),
+// never forced on here. Returns 1 on success, 0 on a dead scene or bad CPT.
+GMTVTK_API int gmtvtk_aqua_set_land_cpt_h(void *handle, const double *cz, const double *crgb, int ncolor,
+                                          double lo, double hi) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !cz || !crgb || ncolor < 2) return 0;
+	vtkNew<vtkColorTransferFunction> ctf;
+	for (int i = 0; i < ncolor; ++i) ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+	s->aquaLandLut = ctf;
+	buildAquaLandColorbar(s, s->aquaLandLut, lo, hi);
+	setAquaLandColorbarVisible(s, s->aquaLandShowBar && !s->aquaShowWater);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// Hand the Aquamoto layer its static BATHYMETRY (the LAND surface for hillshading), column-major
+// z[ix*ny+iy] exactly like gridZ (the per-slice stage = WATER surface). Stored once at file-open;
+// bakeAquaShade then shades LAND pixels from this and WATER pixels from the live stage, both through
+// the SAME applyReliefShade the rest of the app uses. Relights immediately. Returns 1 on success.
+GMTVTK_API int gmtvtk_aqua_set_bathy_h(void *handle, const float *z, int nx, int ny) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !z || nx < 2 || ny < 2) return 0;
+	s->aquaBathyZ.assign(z, z + (size_t)nx * ny);
+	bakeAquaShade(s);   // land surface now available -> relight through the shared engine
+	return 1;
+}
+
+// Display label for the composited water/land surface's OWN Scene Objects group -- the active
+// time-varying quantity variable's real name, whatever the file itself calls it (no assumed
+// naming). The outer per-file wrapper group (rebuildSceneObjects) uses surfName (the file name)
+// instead, so the two never collide. Purely cosmetic: Save/session still key off surfName/name.
+// Returns 1 on success, 0 on a dead scene.
+GMTVTK_API int gmtvtk_aqua_set_var_label_h(void *handle, const char *label) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	s->aquaVarLabel = label ? label : "";
+	rebuildSceneObjects(s);
 	return 1;
 }
 

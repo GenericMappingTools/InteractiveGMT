@@ -287,6 +287,17 @@ static int  polyHitPolygon(Scene *s, int x, int y, double tol);             // p
 static void nestReflow(Scene *s, bool snap = true);                         // re-quantize "Nested grids" chain (85); snap=false = don't move verts, only recompute indices (restore)
 static void nestNewChild(Scene *s);                                         // append a refined nested child (85)
 
+// Per-side illumination snapshot for an Aquamoto layer. WATER and LAND are two SEPARATE images, each
+// with its OWN light: editing the selected side updates only ITS snapshot, and bakeAquaShade re-bakes
+// the OTHER side from its own (unchanged) snapshot -- so a water edit changes NOTHING of the land
+// (no colour, no light), and vice versa. Only geometry (xfac/zfac/ve) is shared (read live from Scene).
+struct AquaSideShade {
+	bool   valid = false;
+	bool   useHillshade = true, hillGrd = true, litBake = false;
+	double lightAz = 315.0, lightEl = 45.0, hillAmbient = 0.3, hillGain = 2.0;
+	double roughness = 0.45, lightIntensity = 1.0, fillIntensity = 0.4;
+};
+
 // ---- scene we hang onto for the callbacks / menu actions --------------------
 struct Scene {
 	vtkSmartPointer<vtkRenderer>          ren;
@@ -351,6 +362,26 @@ struct Scene {
 	double barLo = 0, barHi = 1;
 	bool   surfShowBar = true;              // base relief: user wants its colorbar shown (when active)
 
+	// --- Aquamoto dual colorbar (water / land) ------------------------------
+	// A tsunami netCDF layer (customLayerTexture) needs TWO colour scales at once: `bar` above
+	// (built exactly like any other grid's colorbar by showLayerImageTail) serves as the WATER bar;
+	// this is a SEPARATE, persistent LAND bar for the (static, file-open-time) bathymetry range.
+	// Only one is ever visible at a time, gated by aquaShowWater (mirrors the Aquamoto dialog's
+	// Shade Water/Land radio) ANDed with each side's own Scene-Objects checkbox.
+	vtkSmartPointer<vtkScalarsToColors>    aquaLandLut;      // keeps the land CTF alive (mirrors surfLut)
+	vtkSmartPointer<vtkScalarBarActor>    aquaLandBar;
+	vtkSmartPointer<vtkActor2D>           aquaLandBarTicks;
+	std::vector<vtkSmartPointer<vtkTextActor>> aquaLandBarLabels;
+	std::vector<double>                   aquaLandBarValues;
+	vtkSmartPointer<vtkPoints>            aquaLandBarTickPts;
+	double aquaLandBarLo = 0, aquaLandBarHi = 1;
+	bool   aquaLandShowBar = true;           // Scene-Objects "Color Bar Land" checkbox intent
+	bool   aquaShowWater = true;             // which side is ACTIVE; default water (per spec)
+	std::string aquaVarLabel;                // Scene Objects label for the composited surface's OWN
+	                                          // group = the active variable's real name, whatever the
+	                                          // file itself calls it (gmtvtk_aqua_set_var_label_h);
+	                                          // empty -> rebuildSceneObjects falls back to surfName.
+
 	// --- tiled-LOD pyramid (plain grid) -------------------------------------
 	// Quadtree of tiles; coarse near root, refined per-frame by screen-space error so only the
 	// visible region at the needed resolution is resident. surfGroup holds the live tile actors.
@@ -380,6 +411,22 @@ struct Scene {
 	                            // (no geometry rebuild). Cleared by buildSceneContent (any real surface build).
 	int    layerTexW = 0, layerTexH = 0;   // baked hillshade texture size (<= grid size; capped so a huge
 	                            // cube's per-layer bake stays cheap). Fast-repaint reuses the texture iff these match.
+	bool   customLayerTexture = false;  // the drape texture was supplied ALREADY COMPOSITED by the host
+	                            // (gmtvtk_show_layer_rgba_h, e.g. Aquamoto's dry/wet blend) instead of baked
+	                            // here from a single CPT + illumination -- rebakeLayerImage/refineLayerDetail
+	                            // must never regenerate it from gridZ+cpt, or they would silently overwrite it.
+	// Aquamoto hillshade: shade the host-composited texture through the SAME applyReliefShade the whole
+	// app uses (bakeAquaShade), so the Shading dock's Hillshade drives the tsunami too. aquaBaseRGBA is
+	// the UNSHADED composite (row-major, row0=south, nx*ny*4) re-shaded on every dock change; aquaBathyZ
+	// is the static bathymetry (column-major, like gridZ) = the LAND surface, while gridZ carries the
+	// per-slice stage = the WATER surface. Empty -> not an Aquamoto layer, bakeAquaShade is a no-op.
+	std::vector<unsigned char> aquaBaseRGBA;
+	std::vector<float>         aquaBathyZ;
+	AquaSideShade aquaWaterShade;   // WATER image's OWN light (updated only when Water is the selected side)
+	AquaSideShade aquaLandShade;    // LAND  image's OWN light (updated only when Land  is the selected side)
+	bool aquaShadeSelWater = true;  // which side the Shading dock edits (Shade Water/Land radio). PURE
+	                                // selector: flipping it changes NOTHING visible, NOT the colorbar --
+	                                // it only routes the NEXT shading edit to water (true) or land (false).
 	// 3-D-cube shading selection. A cube layer can be shown either as the fast flat shaded IMAGE (the new
 	// "Shaded image (2-D)" algorithm) or, if the user picks one of the surface looks (Cast shadows /
 	// Hillshade Lambert / grdimage) in the Shading dock, as a real 3-D surface with that look. The dock
