@@ -860,6 +860,10 @@ GMTVTK_API void gmtvtk_set_cpt(void *handle, const double *cz, const double *crg
 		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
 	s->surfCtfRange = true;
 	if (s->bar) s->bar->SetLookupTable(s->surfLut);   // refresh the legend strip
+	// In "flat image" relief look the surface is a PRE-BAKED RGBA texture, not scalar+LUT mapped --
+	// mutating the CTF alone recolours the colorbar but leaves the already-baked pixels untouched.
+	// rebakeLayerImage re-bakes the drape from the (now-updated) CTF; no-op when not in that mode.
+	if (s->layerImgMode && !s->customLayerTexture) rebakeLayerImage(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
@@ -880,7 +884,12 @@ GMTVTK_API void gmtvtk_set_cpt_grid(void *handle, int gridSel, const double *cz,
 	ctf->RemoveAllPoints();
 	for (int i = 0; i < n; ++i)
 		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
-	if (gridSel < 0) s->surfCtfRange = true;
+	if (gridSel < 0) {
+		s->surfCtfRange = true;
+		// Base relief in "flat image" look is a PRE-BAKED RGBA texture, not scalar+LUT mapped --
+		// re-bake it from the just-updated CTF (extras are always live LUT-mapped, no bake needed).
+		if (s->layerImgMode && !s->customLayerTexture) rebakeLayerImage(s);
+	}
 	refreshGridColorbar(s);                   // retarget/refresh the single legend strip to the active grid
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
