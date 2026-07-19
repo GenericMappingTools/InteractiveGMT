@@ -29,7 +29,7 @@
 mutable struct _AquaState
 	path::String                            # the netCDF file
 	varname::String                         # time-varying quantity variable name ("stage", …)
-	bat::GMTgrid                            # bathymetry grid, read once
+	bat::GMTgrid{Float32,2}                 # bathymetry grid, read once
 	nsteps::Int
 	geog::Bool
 	imgbat::Array{UInt8,3}                  # cached land RGB (ny,nx,3); EMPTY (size 0) = not built yet
@@ -73,14 +73,18 @@ function _aqua_colorize(Z::Matrix{T}, zlo::Float64, zhi::Float64, cmap::Symbol):
 	ny, nx = size(Z)
 	rgb = Array{UInt8}(undef, ny, nx, 3)
 	cz, crgb, n = _cpt_nodes_range(zlo, zhi, cmap)
-	if n < 2
+	if (n < 2)
 		fill!(rgb, UInt8(160))
 		return rgb
 	end
-	span = zhi > zlo ? Float64(zhi - zlo) : 1.0
+	# 256-entry LUT (`_cpt_nodes_range` resamples any master CPT to 256 continuous nodes): index each
+	# pixel into it. As long as the [zlo,zhi] range is matched to the data, the full 256-colour palette
+	# is spanned -- the banding earlier came from a MIS-matched range (e.g. :geo over the full bathymetry
+	# left land in only ~16 of the 256 nodes), not from too few palette entries.
+	span = zhi > zlo ? (zhi - zlo) : 1.0
 	invspan = (n - 1) / span
 	@inbounds for j in 1:nx, i in 1:ny
-		v = Z[i, j]
+		v = Float64(Z[i, j])
 		if isnan(v)
 			rgb[i, j, 1] = rgb[i, j, 2] = rgb[i, j, 3] = UInt8(160)
 			continue
@@ -225,10 +229,10 @@ end
 # degenerate (all-equal) range is nudged so `_cpt_nodes_range` never sees zlo==zhi.
 function _aqua_range(vals::Vector{Float64}, useglobal::Bool, globalmin::Float64, globalmax::Float64)
 	if useglobal
-		return (Float64(globalmin), Float64(globalmax))
+		return globalmin, globalmax
 	end
 	isempty(vals) && return (0.0, 1.0)
-	lo, hi = Float64.(extrema(vals))
+	lo, hi = extrema(vals)
 	# A near-zero-width span (not just an EXACT lo==hi) must be caught too -- a tsunami's very first
 	# timestep is essentially all-zero water, so the wet-cell extrema can come out as floating-point
 	# noise like (-1e-14, 2e-15): that passed the old `lo == hi` check untouched and left the
@@ -253,7 +257,7 @@ end
 function _aqua_composite_rgb(bat::Matrix{T}, Z::Matrix{S}, splitDryWet::Bool,
                              waterlo::Float64, waterhi::Float64, transparency::Float64,
                              imgbat::Array{UInt8,3},
-                             shadeWater::Bool = true, shadeLand::Bool = true) where {T<:Real, S<:Real}
+                             shadeWater::Bool=true, shadeLand::Bool=true) where {T<:Real, S<:Real}
 	ny, nx = size(Z)
 	if !splitDryWet
 		return _aqua_colorize(Z, waterlo, waterhi, :polar), imgbat
@@ -272,7 +276,7 @@ function _aqua_composite_rgb(bat::Matrix{T}, Z::Matrix{S}, splitDryWet::Bool,
 	# (aquaShowWater, applied per-side by bakeAquaShade in the viewer), it does not hide either colour.
 	imgwater = _aqua_colorize(Zc, waterlo, waterhi, :polar)                  # diverging: trough/calm/crest
 	landrgb  = imgbat
-	alfa = clamp(Float64(transparency), 0.0, 1.0)
+	alfa = clamp(transparency, 0.0, 1.0)
 	rgb = similar(imgwater)
 	if alfa > 0.01                                          # mixe_images' addweighted cross-blend
 		@inbounds for idx in eachindex(rgb)
@@ -296,15 +300,16 @@ end
 # with the land colour regardless of this value, matching Mirone). `shadeWater`/`shadeLand` are the
 # "Shade Water"/"Shade Land" toggle buttons — see `_aqua_composite_rgb`.
 function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM::Bool, transparency::Float64,
-                         shadeWater::Bool = true, shadeLand::Bool = true)
+                         shadeWater::Bool=true, shadeLand::Bool=true)
 	st = get(_AQUA, scene, nothing)
 	st === nothing && error("Aquamoto: no file open in this window")
 	(0 <= k < st.nsteps) || error("Aquamoto: slice $k out of range (0..$(st.nsteps - 1))")
 	G = GMT.gmtread("$(st.path)?$(st.varname)[$(k)]")
-	Z = eltype(G.z) === Float64 ? G.z : Float64.(G.z)
+	#Z = eltype(G.z) === Float64 ? G.z : Float64.(G.z)		# WTF is that Float64 doing here?
+	Z = G.z
 	bat = st.bat.z
 	ny, nx = size(Z)
-	size(bat) == size(Z) || error("Aquamoto: '$(st.varname)' ($(size(Z))) and bathymetry ($(size(bat))) sizes differ")
+	(size(bat) == size(Z)) || error("Aquamoto: '$(st.varname)' ($(size(Z))) and bathymetry ($(size(bat))) sizes differ")
 
 	# Colourbar min/max = the real min/max of the WATER being displayed, i.e. the actual data range of
 	# exactly the cells this slice colours as water. In Split Dry/Wet that is the WET cells only (the dry
@@ -326,7 +331,7 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	                                     shadeWater, shadeLand)
 
 	rgba = _aqua_pack_rgba(rgb)
-	zhover = eltype(G.z) === Float32 ? G.z : Float32.(G.z)     # native GMT column-major layout -- passed as-is
+	zhover = G.z                         # native GMT column-major layout -- passed as-is
 	cz, crgb, n = _cpt_nodes_range(waterlo, waterhi, :polar)   # colourbar legend = the water scale
 	n < 2 && (cz = [waterlo, waterhi]; crgb = [0.0, 0.0, 1.0, 1.0, 0.0, 0.0]; n = 2)
 	r = st.bat.range
@@ -334,9 +339,8 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	ok = ccall(_fn(:gmtvtk_show_layer_rgba_h), Cint,
 		(Ptr{Cvoid}, Ptr{Cuchar}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
 		 Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cfloat}, Cstring),
-		scene, rgba, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(st.geog),
-		cz, crgb, Cint(n), zhover, name)
-	ok == 0 && error("Aquamoto: the viewer rejected the update (window closed?)")
+		scene, rgba, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(st.geog), cz, crgb, Cint(n), zhover, name)
+	(ok == 0) && error("Aquamoto: the viewer rejected the update (window closed?)")
 	if st.first
 		_remember_object!(scene, :grid, name, st.bat)
 		_session_record!(scene, :basegrid, :file, st.path; name = name)
@@ -372,12 +376,12 @@ function _aquamoto_runin(scene::Ptr{Cvoid})
 	catch e
 		error("Aquamoto: could not contour the inundation mask ($(sprint(showerror, e)))")
 	end
-	D === nothing && error("Aquamoto: the inundation zone has no traceable boundary")
+	(D === nothing) && error("Aquamoto: the inundation zone has no traceable boundary")
 	xyz, segoff, nseg, npts = _pack_dataset(D, st.bat)
 	cr, cg, cb = _ovl_color(nothing, :lines)
 	ok = ccall(_fn(:gmtvtk_add_overlay_h), Cint,
 		(Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
 		scene, xyz, Cint(npts), segoff, Cint(nseg), Cint(1), cr, cg, cb, 0.0, 0.0, "Run-in")
-	ok == 0 && error("Aquamoto: could not draw the inundation boundary (window closed?)")
+	(ok == 0) && error("Aquamoto: could not draw the inundation boundary (window closed?)")
 	return nothing
 end

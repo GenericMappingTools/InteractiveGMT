@@ -3207,7 +3207,11 @@ GMTVTK_API int gmtvtk_show_layer_rgba_h(void *handle, const unsigned char *rgba,
 	// water images are illuminated from the VERY FIRST frame -- not gated on emptyStart, which isn't
 	// guaranteed when Aquamoto opens onto a window that already had content. Later slices keep the dock
 	// state (empty check false). The Shading dock then moves the sun / switches style / turns it off per side.
-	if (s->aquaBaseRGBA.empty()) { s->useHillshade = true; s->hillGrd = true; }
+	// A fresh tsunami shows the FLAT host-composited colours (the full 256-colour :polar/:geo image the
+	// Julia side generates) -- Mirone-style. Hillshade/PBR is OPT-IN via the Shading dock, never forced
+	// on at open (the grdimage relight saturates the water's steep-gradient normals and washes the
+	// palette toward white/dark, which reads as a 2-colour collapse of an image that is really 256).
+	if (s->aquaBaseRGBA.empty()) { s->useHillshade = false; s->hillGrd = false; s->litBake = false; }
 	return showLayerImageTail(s, rgba, nx, ny, zhover, nx, ny, x0, x1, y0, y1, geographic,
 	                          cz, crgb, ncolor, name, /*isCustom=*/true);
 }
