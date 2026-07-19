@@ -54,6 +54,11 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 					else                                        # a plain 2-D grid
 						_drop_into(scene, GMT.gmtread(spec), dn; promote=isbase, source=spec)
 					end
+					# Only the FIRST loaded variable stays active/visible (whether or not it promoted the
+					# launcher -- a drop into an already-populated window never promotes, but i==1 is
+					# still the one meant to be active); every other one loads but starts UNCHECKED in
+					# Scene Objects (same "add hidden" convention aquamoto.jl uses for its own extras).
+					i == 1 || ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, dn, Cint(0))
 				end
 				# Remember the file (not the "?var" specs) in File > Recent Files.
 				try
