@@ -87,6 +87,12 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 	s->bar->SetDrawTickLabels(false);        // WE draw the numbers — kill the overlapping built-ins
 	s->bar->SetTextPositionToPrecedeScalarBar();
 	s->bar->SetBarRatio(cbar::BARRATIO);
+	// Without this, vtkScalarBarActor still auto-shrinks the PAINTED swatch inside its own
+	// Position/Height box to leave internal room for label text metrics -- even with DrawTickLabels
+	// off -- so the coloured strip does not reach the actor's own top/bottom edge (the strip visibly
+	// stops short of the 0 tick our OWN layoutColorbar draws at the true edge). Forces the strip to
+	// fill the full declared height.
+	s->bar->SetUnconstrainedFontSize(true);
 	s->ren->AddActor2D(s->bar);
 
 	// Nice round tick values (800, 900, ...) at a constant 1/2/5 x10^n step.
@@ -177,6 +183,8 @@ static void buildAquaLandColorbar(Scene *s, vtkScalarsToColors *lut, double lo, 
 	s->aquaLandBar->SetDrawTickLabels(false);
 	s->aquaLandBar->SetTextPositionToPrecedeScalarBar();
 	s->aquaLandBar->SetBarRatio(cbar::BARRATIO);
+	s->aquaLandBar->SetUnconstrainedFontSize(true);   // see buildColorbar -- stops the painted strip
+	                                                   // shrinking inside its own Position/Height box
 	s->aquaLandBar->SetVisibility(0);   // hidden until refreshGridColorbar decides it should show
 	s->ren->AddActor2D(s->aquaLandBar);
 
@@ -189,7 +197,16 @@ static void buildAquaLandColorbar(Scene *s, vtkScalarsToColors *lut, double lo, 
 	const double qscale = std::pow(10.0, decimals);
 	vtkNew<vtkCellArray> tlines;
 	s->aquaLandBarTickPts = vtkSmartPointer<vtkPoints>::New();
+	// LAND bar MUST show a tick at exactly `lo` (sea level, 0) -- ceil(lo/step)*step can drift off lo
+	// by floating-point noise and silently skip it. Build the value list explicitly: lo first, then
+	// the regular step grid strictly above it (skip a regular tick that lands on/near lo already).
+	std::vector<double> ticks;
+	ticks.push_back(lo);
 	for (double v = std::ceil(lo / step) * step; v <= hi + 1e-9 * (hi - lo); v += step) {
+		if (v <= lo + 1e-9 * std::max(1.0, hi - lo)) continue;   // don't duplicate the forced `lo` tick
+		ticks.push_back(v);
+	}
+	for (double v : ticks) {
 		s->aquaLandBarValues.push_back(v);
 		vtkIdType a = s->aquaLandBarTickPts->InsertNextPoint(0, 0, 0);
 		vtkIdType b = s->aquaLandBarTickPts->InsertNextPoint(0, 0, 0);
@@ -236,13 +253,16 @@ static void setColorbarVisible(Scene *s, bool on) {
 }
 
 static bool colorbarVisible(Scene *s) { return s && s->bar && s->bar->GetVisibility() != 0; }
+// Aquamoto's LAND bar (see layoutAquaLandColorbar) shares the SAME barX0/barY0 frame as `s->bar` —
+// only one of the two is ever visible at once — so drag hit-testing must treat either as "the bar".
+static bool aquaLandColorbarVisible(Scene *s) { return s && s->aquaLandBar && s->aquaLandBar->GetVisibility() != 0; }
 
 // --- colorbar left-drag, handled at the GLView widget level (60_profile.cpp), exactly like the
 // polygon-vertex / text-label drags. Qt delivers the press to the widget BEFORE VTK's interactor
 // adapter, so a VTK observer would lose the race to the trackball — the widget path is the only
 // reliable one in this codebase. nx/ny are NORMALIZED viewport coords (bottom-up, 0..1).
 static bool colorbarHit(Scene *s, double nx, double ny) {   // cursor over the (visible) bar frame?
-	if (!s || !s->bar || !colorbarVisible(s)) return false;
+	if (!s || (!colorbarVisible(s) && !aquaLandColorbarVisible(s))) return false;
 	const double L = s->barX0 - 0.05, R = s->barX0 + cbar::W;   // include the numbers to the left
 	const double B = s->barY0 - 0.02, T = s->barY0 + cbar::H + 0.02;
 	return nx >= L && nx <= R && ny >= B && ny <= T;
@@ -258,7 +278,8 @@ static bool colorbarDragTo(Scene *s, double nx, double ny) {
 	if (!s || !s->barDragging) return false;
 	s->barX0 = std::min(std::max(nx - s->barGrabX, 0.05), 1.0 - cbar::W);
 	s->barY0 = std::min(std::max(ny - s->barGrabY, 0.0),  1.0 - cbar::H);
-	layoutColorbar(s);
+	layoutColorbar(s);              // repositions s->bar (water/grid) -- harmless no-op if hidden
+	layoutAquaLandColorbar(s);      // repositions the LAND bar too -- whichever is visible moves
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return true;
 }
@@ -1302,6 +1323,12 @@ static void rebuildSceneObjects(Scene *s) {
 
 	// curParent: the group node that newly-made rows attach to. null = top level.
 	QTreeWidgetItem *curParent = nullptr;
+	// parentStack: lets beginGroupHandle/beginSlipGroup NEST (a group opened while curParent is
+	// already set attaches as ITS child instead of a new top-level item) -- used by the Aquamoto file
+	// wrapper (one variable's group nested inside the main per-file group). endGroup restores the
+	// OUTER curParent instead of unconditionally nulling it, so non-nested callers (the overwhelming
+	// majority) see no behaviour change: push null, pop null.
+	std::vector<QTreeWidgetItem*> parentStack;
 
 	// One row = [checkbox] [type icon] [label] hosted in a tree item (child of curParent, else top-level).
 	// onToggle drives visibility; onProps (optional) is the properties menu, opened by a LEFT click on the
@@ -1353,8 +1380,9 @@ static void rebuildSceneObjects(Scene *s) {
 	                            std::function<void(const QPoint&)> onContext,
 	                            const QString &tip = QString()) {
 		QTreeWidgetItem *grp = new QTreeWidgetItem();
-		tree->addTopLevelItem(grp);
+		if (curParent) curParent->addChild(grp); else tree->addTopLevelItem(grp);
 		grp->setExpanded(true);
+		parentStack.push_back(curParent);
 		curParent = grp;
 
 		QWidget *row = new QWidget(tree);
@@ -1389,14 +1417,18 @@ static void rebuildSceneObjects(Scene *s) {
 		h->addWidget(text, 1);
 		tree->setItemWidget(grp, 0, row);
 	};
-	auto endGroup = [&]() { curParent = nullptr; };
+	auto endGroup = [&]() {
+		curParent = parentStack.empty() ? nullptr : parentStack.back();
+		if (!parentStack.empty()) parentStack.pop_back();
+	};
 
 	// Slip-model group (Import Model Slip): a collapsible parent with a "Delete group" property.
 	// Replaces the default beginGroup for slip groups to add the delete menu.
 	auto beginSlipGroup = [&](const QString &name, int iconKind = IC_Rect) {
 		QTreeWidgetItem *grp = new QTreeWidgetItem();
-		tree->addTopLevelItem(grp);
+		if (curParent) curParent->addChild(grp); else tree->addTopLevelItem(grp);
 		grp->setExpanded(false);   // start collapsed: a slip model is many patches
+		parentStack.push_back(curParent);
 		curParent = grp;
 
 		// Custom row widget: [checkbox] [icon] [label] with right-click delete menu.
@@ -1508,11 +1540,23 @@ static void rebuildSceneObjects(Scene *s) {
 		        "Axes handle (properties coming soon)");
 	};
 
+	// ── AQUAMOTO FILE WRAPPER ── every variable loaded from the open tsunami netCDF -- the composited
+	// water/land surface below, PLUS bathymetry and any other static grid loaded alongside it as an
+	// extra -- nests under ONE collapsible parent named after the file: each variable gets its own
+	// group, all hosted in the main group for the file. Scoped strictly to customLayerTexture (an
+	// Aquamoto window) so a plain window's base grid + extras render exactly as before.
+	const bool aquaWrap = s->customLayerTexture;
+	if (aquaWrap) {
+		const QString fileNm = s->surfName.empty() ? QString("Tsunami") : QString::fromStdString(s->surfName);
+		beginGroupHandle(fileNm, IC_Surface, true, nullptr, nullptr, "Every variable loaded from this file");
+	}
+
 	// ── GRID GROUPS ── each grid = [surface][drape?][colorbar][axes], split by a light rule. A bare
 	// image (view_image) is its own group (image row + axes). Non-grid objects follow, after a rule.
 	if (!s->imageOnly) {
 		if (vtkProp3D *sp = surfProp(s)) {                  // base relief grid group — header IS the surface handle
-			const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
+			const QString nm = (s->customLayerTexture && !s->aquaVarLabel.empty()) ? QString::fromStdString(s->aquaVarLabel)
+			                  : s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
 			beginGroupHandle(nm, IC_Surface, sp->GetVisibility() != 0,
 			        nullptr,                                              // container does NOT fold the Shading dock (the Surface leaf does)
 			        [s](const QPoint& g) { surfaceObjectMenu(s, g); },
@@ -1523,7 +1567,9 @@ static void rebuildSceneObjects(Scene *s) {
 			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking",
 			        [s](const QPoint& g) { surfaceObjectMenu(s, g); });
 			if (s->drape) addRow(QString("Image drape"), s->drape, IC_Image);   // grid's drape texture
-			if (s->customLayerTexture) {         // Aquamoto: split into two independent colorbar handles
+			if (s->customLayerTexture) {         // Aquamoto: same file group, but each variable's row is
+				                                  // its OWN independent handle -- never merged into one
+				                                  // combined label/row (that would mix variables together).
 				aquaWaterColorbarRow();
 				aquaLandColorbarRow();
 			} else {
@@ -1592,6 +1638,8 @@ static void rebuildSceneObjects(Scene *s) {
 		}
 		endGroup();
 	}
+
+	if (aquaWrap) endGroup();   // close the per-file wrapper opened above
 
 	// ── OTHER OBJECTS ── lines / points / curtains / polygons / text / profile (top-level rows; a fault
 	// with planes becomes its own group, see below).

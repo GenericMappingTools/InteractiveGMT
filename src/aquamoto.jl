@@ -15,10 +15,12 @@
 #
 # ANUGA's .sww triangulated-mesh path (Show mesh, the 14-formula get_derivedVar, vector/momentum
 # plotting) has no VTK/GMT triangulated-mesh equivalent on hand and is OUT OF SCOPE this pass — the
-# .ui itself ships Show-mesh disabled and Mirone's own set_common() disables the Primary-quantities
-# radios + derived-var checkbox for this exact (COARDS/NSWING) file class, so leaving them inert
-# here is a faithful port, not a scope cut. Shading/illumination is the separate "Shading OR Image"
-# tab (also out of scope): this pass paints flat, unshaded colour.
+# .ui ships Show-mesh + Derived var disabled and they stay that way. The Primary-quantities picker
+# itself (Stage/Xmoment/Ymoment/Or…) IS in scope: every time-varying quantity variable found in the
+# opened nc file is loadable and switchable as the ACTIVE one (`_aqua_find_all_varnames`,
+# `_aquamoto_set_var`) — loading only the first match and silently discarding the rest was a bug,
+# not the intended scope cut. Shading/illumination is the separate "Shading OR Image" tab (also out
+# of scope): this pass paints flat, unshaded colour.
 #
 # Every call comes from the C++ AquamotoWindow (75_aquamoto.cpp) through the generic console-eval
 # bridge (g_juliaEval / juliaEvalCall — the SAME synchronous round-trip NswingDialog already uses
@@ -26,43 +28,88 @@
 # @cfunction/registration is needed for that: only the composited-texture push
 # (gmtvtk_show_layer_rgba_h) is a new C export (see 90_c_api.cpp).
 
-mutable struct _AquaState
-	path::String                            # the netCDF file
-	varname::String                         # time-varying quantity variable name ("stage", …)
-	bat::GMTgrid{Float32,2}                 # bathymetry grid, read once
-	nsteps::Int
-	geog::Bool
-	imgbat::Array{UInt8,3}                  # cached land RGB (ny,nx,3); EMPTY (size 0) = not built yet
-	first::Bool                             # true until the first slice has been shown (Save/Session bookkeeping)
+# Per-variable min/max scan result (see _aqua_scan_layers) -- one of these per varname, ALL built
+# up front at open time so every variable in the file is actually loaded, not just the active one.
+struct _AquaVarScan
 	wetlo::Vector{Float64}                  # per-layer WET-cell min (Inf if a layer is entirely dry)
 	wethi::Vector{Float64}                  # per-layer WET-cell max (-Inf if a layer is entirely dry)
 	alllo::Vector{Float64}                  # per-layer min over EVERY cell (land included)
 	allhi::Vector{Float64}                  # per-layer max over EVERY cell (land included)
 end
 
+mutable struct _AquaState
+	path::String                            # the netCDF file
+	varname::String                         # ACTIVE time-varying quantity variable name ("stage", …)
+	varnames::Vector{String}                # EVERY time-varying quantity variable found in the file
+	scans::Dict{String,_AquaVarScan}        # ALL varnames' scans, built at open time -- every
+	                                         # variable is loaded up front, switching is a lookup
+	bat::GMTgrid{Float32,2}                 # bathymetry grid, read once
+	nsteps::Int
+	geog::Bool
+	imgbat::Array{UInt8,3}                  # cached land RGB (ny,nx,3); EMPTY (size 0) = not built yet
+	first::Bool                             # true until the first slice has been shown (Save/Session bookkeeping)
+end
+
 const _AQUA = Dict{Ptr{Cvoid}, _AquaState}()
 
-# The time-varying variable name NSWING/Mirone actually write. "stage" is the default (surface
-# elevation); try the handful of other names before giving up.
-const _AQUA_VARNAMES = ("stage", "depth", "amp", "z")
+# The time-varying variable names NSWING/Mirone/ANUGA actually write. "stage" is the default
+# (surface elevation); the others are probed too so a plain 2-variable file GDAL doesn't report
+# as multi-subdataset still gets discovered.
+const _AQUA_VARNAMES = ("stage", "depth", "amp", "z", "xmoment", "ymoment", "xmomentum", "ymomentum")
 
-# Pick the time-varying 3-D quantity variable in `path`, skipping `skip` (the bathymetry variable).
-# Prefers the netCDF subdataset introspection this app already has (drop.jl's `_netcdf_subdatasets`,
-# GDAL's Subdatasets report); falls back to probing the handful of known NSWING/Mirone names
-# directly for a plain 2-variable file GDAL doesn't report as multi-subdataset. "" if none found.
-function _aqua_find_varname(path::String, skip::String)
+# Every time-varying (>=3-D) quantity variable in `path`, skipping `skip` (the bathymetry
+# variable) — NOT just the first match: the caller must load and offer ALL of them (Stage/
+# Xmoment/Ymoment/Or… radios+combo), never silently pick one and discard the rest. Prefers the
+# netCDF subdataset introspection this app already has (drop.jl's `_netcdf_subdatasets`, GDAL's
+# Subdatasets report) and TRUSTS it completely once it found anything — GDAL's own report is
+# authoritative for this file, so there is nothing left to guess. Only falls back to probing the
+# handful of known NSWING/Mirone/ANUGA names directly when subdatasets found NOTHING (a plain
+# 2-variable file GDAL doesn't report as multi-subdataset at all). Empty if none found.
+#
+# Do NOT probe fallback names "just in case" once subdatasets already answered: each FAILED
+# GMT.grdinfo probe (a name that doesn't exist in the file) corrupts GMT's shared API session
+# state well enough that the very next, otherwise-valid grdinfo call for the real variable comes
+# back empty and the caller (`_aquamoto_open`) crashes with a BoundsError -- reproduced live
+# against a real NSWING file whose only quantity var is "z": probing stage/depth/amp/xmoment/…
+# first (all misses) made the subsequent grdinfo(...?z, C=true, Q=true) return nothing, so the
+# file failed to open at all. Trusting the subdataset list outright avoids the corrupting probes.
+function _aqua_find_all_varnames(path::String, skip::String)
+	found = String[]
 	for v in _netcdf_subdatasets(path)
 		lowercase(v.name) == lowercase(skip) && continue
-		length(v.dims) >= 3 && return v.name
+		length(v.dims) >= 3 && push!(found, v.name)
 	end
+	isempty(found) || return found
 	for nm in _AQUA_VARNAMES
 		try
 			GMT.grdinfo("$(path)?$(nm)", C = true, Q = true)
-			return nm
+			push!(found, nm)
 		catch
 		end
 	end
-	return ""
+	return found
+end
+
+# Scan every layer of `varname` ONCE for its own min/max (both the WET-cell-only range and the
+# whole-cell range), against the static bathymetry `batz`. Called once per variable found in the
+# file (see `_aquamoto_open`'s loop) -- ALL variables get loaded up front, not just the active one.
+function _aqua_scan_layers(path::String, varname::String, batz::Matrix{Float32}, nsteps::Int)::_AquaVarScan
+	wetlo = fill(Inf, nsteps); wethi = fill(-Inf, nsteps)
+	alllo = fill(Inf, nsteps); allhi = fill(-Inf, nsteps)
+	for k in 0:nsteps-1
+		Z = GMT.gmtread("$(path)?$(varname)[$(k)]").z
+		lo_a, hi_a, lo_w, hi_w = Inf, -Inf, Inf, -Inf
+		@inbounds for i in eachindex(Z)
+			z = Z[i]
+			isnan(z) && continue
+			z < lo_a && (lo_a = z); z > hi_a && (hi_a = z)
+			abs(batz[i] - z) < 1e-2 && continue   # dry cell -> excluded from the wet-only range
+			z < lo_w && (lo_w = z); z > hi_w && (hi_w = z)
+		end
+		alllo[k+1], allhi[k+1] = lo_a, hi_a
+		wetlo[k+1], wethi[k+1] = lo_w, hi_w
+	end
+	return _AquaVarScan(wetlo, wethi, alllo, allhi)
 end
 
 # z -> RGB (UInt8, ny x nx x 3) via a LINEAR cpt built fresh over [zlo,zhi] with `cmap` (any GMT
@@ -73,10 +120,6 @@ function _aqua_colorize(Z::Matrix{T}, zlo::Float64, zhi::Float64, cmap::Symbol):
 	ny, nx = size(Z)
 	rgb = Array{UInt8}(undef, ny, nx, 3)
 	cz, crgb, n = _cpt_nodes_range(zlo, zhi, cmap)
-	if (n < 2)
-		fill!(rgb, UInt8(160))
-		return rgb
-	end
 	# 256-entry LUT (`_cpt_nodes_range` resamples any master CPT to 256 continuous nodes): index each
 	# pixel into it. As long as the [zlo,zhi] range is matched to the data, the full 256-colour palette
 	# is spanned -- the banding earlier came from a MIS-matched range (e.g. :geo over the full bathymetry
@@ -119,17 +162,22 @@ function _aqua_pack_rgba(rgb::Array{UInt8,3})::Vector{UInt8}
 	return buf
 end
 
-# Open a netCDF file, cache its header (bathymetry grid, time-varying var name, step count) per
-# window, and immediately scan every layer ONCE for its own min/max (both the WET-cell-only range
-# and the whole-cell range) -- so navigating slices and toggling "Scale colour to global min/max"
-# are instant lookups afterwards, never a fresh rescan. Prints the step count (parsed by the C++
-# dialog to fill "Time steps = N" + the slider range) on success; throws (shown as an error dialog
-# by the console-eval bridge) on anything it can't make sense of.
+# Open a netCDF file, cache its header (bathymetry grid, EVERY time-varying quantity var name,
+# step count) per window, and immediately scan the ACTIVE variable's layers ONCE for its own
+# min/max (both the WET-cell-only range and the whole-cell range) -- so navigating slices and
+# toggling "Scale colour to global min/max" are instant lookups afterwards, never a fresh rescan.
+# Prints "nsteps|activevar|var1,var2,…" (parsed by the C++ dialog to fill "Time steps = N" + the
+# slider range + the Stage/Xmoment/Ymoment/Or… quantity picker) on success; throws (shown as an
+# error dialog by the console-eval bridge) on anything it can't make sense of.
 function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	isfile(path) || error("Aquamoto: file not found: $path")
-	varname = _aqua_find_varname(path, "bathymetry")
-	isempty(varname) && error("Aquamoto: could not find a time-varying quantity variable in $path " *
+	varnames = _aqua_find_all_varnames(path, "bathymetry")
+	isempty(varnames) && error("Aquamoto: could not find a time-varying quantity variable in $path " *
 	                          "(expected alongside a 'bathymetry' variable — NSWING's own single 3-D netCDF output)")
+	# Default active variable: "stage" if present (NSWING/Mirone's own default), else whichever was
+	# found first.
+	idef = findfirst(==("stage"), varnames)
+	varname = idef === nothing ? varnames[1] : varnames[idef]
 	bat = try
 		GMT.gmtread("$(path)?bathymetry")
 	catch e
@@ -145,52 +193,47 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	geog = _isgeographic(bat)
 
 	batz = bat.z
-	wetlo = fill(Inf, nsteps); wethi = fill(-Inf, nsteps)
-	alllo = fill(Inf, nsteps); allhi = fill(-Inf, nsteps)
-	_progress_show_async(nsteps, "Aquamoto — scanning layers…")
-	for k in 0:nsteps-1
-		Z = GMT.gmtread("$(path)?$(varname)[$(k)]").z
-		lo_a, hi_a, lo_w, hi_w = Inf, -Inf, Inf, -Inf
-		@inbounds for i in eachindex(Z)
-			z = Z[i]
-			isnan(z) && continue
-			z < lo_a && (lo_a = z); z > hi_a && (hi_a = z)
-			abs(batz[i] - z) < 1e-2 && continue   # dry cell -> excluded from the wet-only range
-			z < lo_w && (lo_w = z); z > hi_w && (hi_w = z)
+	# Scan EVERY discovered variable now, not just the active one -- the whole point of this fix is
+	# that no variable in the file is silently left unread. One shared progress bar spans all of them.
+	scans = Dict{String,_AquaVarScan}()
+	_progress_show_async(nsteps * length(varnames), "Aquamoto — scanning layers…")
+	for (vi, vn) in enumerate(varnames)
+		for k in 0:nsteps-1
+			# inline single-layer scan so the ONE progress bar can tick per (var,layer), not per var
+			Z = GMT.gmtread("$(path)?$(vn)[$(k)]").z
+			if k == 0
+				scans[vn] = _AquaVarScan(fill(Inf, nsteps), fill(-Inf, nsteps), fill(Inf, nsteps), fill(-Inf, nsteps))
+			end
+			sc = scans[vn]
+			lo_a, hi_a, lo_w, hi_w = Inf, -Inf, Inf, -Inf
+			@inbounds for i in eachindex(Z)
+				z = Z[i]
+				isnan(z) && continue
+				z < lo_a && (lo_a = z); z > hi_a && (hi_a = z)
+				abs(batz[i] - z) < 1e-2 && continue
+				z < lo_w && (lo_w = z); z > hi_w && (hi_w = z)
+			end
+			sc.alllo[k+1], sc.allhi[k+1] = lo_a, hi_a
+			sc.wetlo[k+1], sc.wethi[k+1] = lo_w, hi_w
+			_progress_status((vi - 1) * nsteps + k + 1,
+			                 "Aquamoto — scanning layers… ($(vn) $(k + 1)/$(nsteps))")
 		end
-		alllo[k+1], allhi[k+1] = lo_a, hi_a
-		wetlo[k+1], wethi[k+1] = lo_w, hi_w
-		# `value` here is the RAW step count, not a percentage: gmtvtk_progress_show_async set the
-		# dialog's range to 0..nsteps, so Qt computes the percentage itself from value/range. Passing
-		# an already-computed 0..100 percentage against that range made the bar finish at
-		# (100/nsteps)*100% instead of 100% -- e.g. ~56% at completion for a 180-step file.
-		_progress_status(k + 1, "Aquamoto — scanning layers… ($(k + 1)/$(nsteps))")
 	end
 	_progress_close()
 
 	# Push the LAND colorbar ONCE (static for the whole file, unlike the per-slice water bar). LAND is
-	# elevation >= 0, so the bar MUST start at sea level (0), never at the ocean-floor depth. Build the
-	# :geo ramp over the FULL bathymetry range (so the colours match what _aqua_composite_rgb's imgbat
-	# actually paints on land — makecpt stretches :geo to the range), then keep only the z >= 0 nodes and
-	# anchor the first exactly at 0. Result: same land colours, colorbar minimum = 0.
-	blo, bhi = extrema(filter(isfinite, batz))
-	blo == bhi && (bhi = blo + 0.1)
-	lcz, lcrgb, ln = _cpt_nodes_range(blo, bhi, :geo)
-	if ln >= 2
-		keep = [i for i in 1:ln if lcz[i] >= 0.0]
-		if length(keep) >= 2
-			flat = Float64[]
-			for i in keep; append!(flat, lcrgb[3(i-1)+1:3(i-1)+3]); end
-			lcz = Float64.(lcz[keep]); lcrgb = flat; ln = length(keep)
-			lcz[1] = 0.0                       # anchor the bar's minimum exactly at sea level
-		end
-	end
-	ln < 2 && (lcz = [0.0, max(bhi, 0.1)]; lcrgb = [0.0, 0.4, 0.0, 0.6, 0.3, 0.1]; ln = 2)
+	# elevation >= 0, so the bar MUST start at sea level (0), never at the ocean-floor depth, AND the
+	# :geo ramp is built over the LAND-ONLY span so it matches what _aqua_composite_rgb's imgbat cache
+	# actually paints (see there) -- both spend the full 256-node ramp on land only.
+	landz = filter(z -> isfinite(z) && z >= 0.0, batz)
 	lbarlo = 0.0                                # displayed LAND range: [0, max land elevation]
-	lbarhi = max(bhi, lbarlo + 0.1)
-	ccall(_fn(:gmtvtk_aqua_set_land_cpt_h), Cint,
-		(Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cdouble, Cdouble),
-		scene, lcz, lcrgb, Cint(ln), Cdouble(lbarlo), Cdouble(lbarhi))
+	lbarhi = isempty(landz) ? 0.1 : max(maximum(landz), lbarlo + 0.1)
+	# Build the CPT DIRECTLY over the land-only span so all 256 nodes land on [0,lbarhi] -- building
+	# over the full bathymetry range (as before) and then keeping only the z>=0 nodes wasted almost
+	# the whole ramp on ocean-floor depths, leaving land with only a handful of distinct colours.
+	lcz, lcrgb, ln = _cpt_nodes_range(lbarlo, lbarhi, :geo)
+	ccall(_fn(:gmtvtk_aqua_set_land_cpt_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cdouble, Cdouble),
+	      scene, lcz, lcrgb, Cint(ln), Cdouble(lbarlo), Cdouble(lbarhi))
 
 	# Hand the viewer the static bathymetry = the LAND surface for hillshading. Column-major Float32,
 	# the SAME layout as the per-slice stage (zhover) the viewer already receives. The viewer then
@@ -198,28 +241,70 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	# (bakeAquaShade) -- so the Shading dock's Hillshade drives the tsunami like any other layer.
 	bz = eltype(batz) === Float32 ? batz : Float32.(batz)
 	bny, bnx = size(bz)
-	ccall(_fn(:gmtvtk_aqua_set_bathy_h), Cint, (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint),
-		scene, bz, Cint(bnx), Cint(bny))
+	ccall(_fn(:gmtvtk_aqua_set_bathy_h), Cint, (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint), scene, bz, Cint(bnx), Cint(bny))
 
-	_AQUA[scene] = _AquaState(String(path), varname, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, wetlo, wethi, alllo, allhi)
-	print(nsteps)
+	# Label the composited water/land surface's OWN Scene Objects group with the active variable's
+	# real name (whatever the file itself calls it -- no assumed naming).
+	ccall(_fn(:gmtvtk_aqua_set_var_label_h), Cint, (Ptr{Cvoid}, Cstring), scene, varname)
+
+	# Load EVERY variable this file actually carries as its OWN Scene Objects group (nested, in the
+	# viewer, under the file's group): bathymetry itself, plus any other static 2-D grid the file
+	# happens to have alongside bathymetry/the time-varying quantity var(s) -- pure enumeration off
+	# the file's real Subdatasets report, no guessed/hard-coded variable names beyond the
+	# already-established "bathymetry" convention this file class uses. Only the ACTIVE quantity
+	# variable ('z'/the composited water surface) starts visible -- every other loaded group
+	# (bathymetry, any extra static grid) starts UNCHECKED (gmtvtk_set_object_visible, the same
+	# "add hidden" call nested.jl's blank-grid path already uses).
+	_add_grid_to_scene(scene, bat, "bathymetry"; promote = false, source = "$(path)?bathymetry")
+	ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, "bathymetry", Cint(0))
+	skipvars = Set(lowercase.(varnames)); push!(skipvars, "bathymetry")
+	for v in _netcdf_subdatasets(path)
+		lowercase(v.name) in skipvars && continue
+		try
+			G = GMT.gmtread("$(path)?$(v.name)")
+			_add_grid_to_scene(scene, G, v.name; promote = false, source = "$(path)?$(v.name)")
+			ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, v.name, Cint(0))
+		catch e
+			@warn "Aquamoto: could not load variable '$(v.name)'" exception=e
+		end
+	end
+
+	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true)
+	print(nsteps, "|", varname, "|", join(varnames, ","))
+	return nothing
+end
+
+# Switch the ACTIVE quantity variable for an already-open file (the Stage/Xmoment/Ymoment/Or…
+# picker). Every variable was already scanned up front in `_aquamoto_open` (`st.scans`), so this
+# is a plain lookup, never a rescan. The caller (C++) re-renders the current slice right after this
+# returns. Throws if `varname` was not among the ones `_aquamoto_open` already found in the file.
+function _aquamoto_set_var(scene::Ptr{Cvoid}, varname::String)
+	st = get(_AQUA, scene, nothing)
+	st === nothing && error("Aquamoto: no file open in this window")
+	varname == st.varname && return nothing   # no-op: already active
+	haskey(st.scans, varname) || error("Aquamoto: '$varname' is not one of this file's quantity variables")
+	st.varname = varname
+	# st.imgbat (the cached land colourisation) depends only on the static bathymetry, never on the
+	# active quantity variable -- left untouched here on purpose.
+	ccall(_fn(:gmtvtk_aqua_set_var_label_h), Cint, (Ptr{Cvoid}, Cstring), scene, varname)
 	return nothing
 end
 
 # Prior-session state for `scene` (if any), so a freshly (re)opened Aquamoto panel on a window that
-# already had a file loaded restores that state instead of starting blank. Prints "path|nsteps", or
-# nothing (empty) if this scene has no cached session.
+# already had a file loaded restores that state instead of starting blank. Prints
+# "path|nsteps|activevar|var1,var2,…", or nothing (empty) if this scene has no cached session.
 function _aquamoto_state(scene::Ptr{Cvoid})
 	st = get(_AQUA, scene, nothing)
 	st === nothing && return nothing
-	print(st.path, "|", st.nsteps)
+	print(st.path, "|", st.nsteps, "|", st.varname, "|", join(st.varnames, ","))
 	return nothing
 end
 
 # The whole-cube WET-cell min/max, derived from the per-layer arrays `_aquamoto_open` already
 # scanned up front (layers that were entirely dry contribute Inf/-Inf and drop out of the filter).
 function _aqua_global_minmax(st::_AquaState)
-	lo = filter(isfinite, st.wetlo); hi = filter(isfinite, st.wethi)
+	sc = st.scans[st.varname]
+	lo = filter(isfinite, sc.wetlo); hi = filter(isfinite, sc.wethi)
 	(isempty(lo) || isempty(hi)) && return (0.0, 1.0)
 	return (minimum(lo), maximum(hi))
 end
@@ -266,8 +351,12 @@ function _aqua_composite_rgb(bat::Matrix{T}, Z::Matrix{S}, splitDryWet::Bool,
 	Zc = copy(Z)
 	Zc[indland] .= 0.0
 	if isempty(imgbat)                                     # cache: only depends on the (static) bathymetry
-		blo, bhi = Float64.(extrema(filter(isfinite, bat)))
-		blo == bhi && (bhi = blo + 0.1)
+		# LAND-ONLY range, same as the colorbar (_aquamoto_open) -- colorizing over the FULL bathymetry
+		# range (incl. ocean depths) wasted most of the 256-node ramp on sea floor, leaving land itself
+		# with only a handful of distinct colours (blocky look, and mismatched vs the legend).
+		landz = filter(z -> isfinite(z) && z >= 0.0, bat)
+		blo = 0.0
+		bhi = isempty(landz) ? 0.1 : max(maximum(landz), blo + 0.1)
 		imgbat = _aqua_colorize(bat, blo, bhi, :geo)        # :geo already has its own land/sea break
 	end
 	# ALWAYS colour BOTH sides -- land from the cached bathymetry, water from the wet stage. NEVER grey a
@@ -318,13 +407,14 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	# "Scale colour to global min/max" checkbox is the only override. Colouring uses this SAME range.
 	# Every range below is a plain lookup into the per-layer arrays `_aquamoto_open` already scanned
 	# up front -- no rescan of `Z` needed here.
+	sc = st.scans[st.varname]
 	if globalMM
 		waterlo, waterhi = _aqua_global_minmax(st)
 	elseif splitDryWet
-		waterlo, waterhi = st.wetlo[k+1], st.wethi[k+1]
+		waterlo, waterhi = sc.wetlo[k+1], sc.wethi[k+1]
 		isfinite(waterlo) || ((waterlo, waterhi) = (0.0, 1.0))   # this layer is entirely dry
 	else
-		waterlo, waterhi = st.alllo[k+1], st.allhi[k+1]
+		waterlo, waterhi = sc.alllo[k+1], sc.allhi[k+1]
 	end
 	waterhi > waterlo || (waterhi = waterlo + 1.0)     # guard an exactly-flat layer (div-by-zero only)
 	rgb, st.imgbat = _aqua_composite_rgb(bat, Z, splitDryWet, waterlo, waterhi, transparency, st.imgbat,
@@ -333,7 +423,6 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	rgba = _aqua_pack_rgba(rgb)
 	zhover = G.z                         # native GMT column-major layout -- passed as-is
 	cz, crgb, n = _cpt_nodes_range(waterlo, waterhi, :polar)   # colourbar legend = the water scale
-	n < 2 && (cz = [waterlo, waterhi]; crgb = [0.0, 0.0, 1.0, 1.0, 0.0, 0.0]; n = 2)
 	r = st.bat.range
 	name = basename(st.path)                                   # handle named after the file, like every other layer
 	ok = ccall(_fn(:gmtvtk_show_layer_rgba_h), Cint,

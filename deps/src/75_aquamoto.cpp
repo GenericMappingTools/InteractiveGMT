@@ -18,10 +18,11 @@
 // dedicated typed callback: no new @cfunction/registration needed, only the composited-texture
 // push (gmtvtk_show_layer_rgba_h, 90_c_api.cpp) is a new C export.
 //
-// Show mesh (ANUGA triangulated-mesh display) and the Primary-quantities radios/derived-var group
-// stay disabled/unwired: the .ui itself ships Show-mesh disabled, and Mirone's own set_common()
-// disables the quantity radios for this exact (COARDS/NSWING) file class — this is a faithful
-// port of that gating, not a scope cut.
+// Show mesh (ANUGA triangulated-mesh display) and Derived var stay disabled/unwired -- the .ui
+// itself ships Show-mesh disabled, and there is no VTK/GMT triangulated-mesh equivalent on hand
+// for the derived-var formulas. The Primary-quantities picker (Stage/Xmoment/Ymoment/Or…) IS wired:
+// every time-varying variable a netCDF file actually has must be loadable and switchable, not just
+// the first match discarding the rest (see aquamoto.jl's _aqua_find_all_varnames/_aquamoto_set_var).
 // ============================================================================================
 
 // Run a Julia expression synchronously via the console-eval bridge, with `scene` as the acting
@@ -98,6 +99,10 @@ public:
 	                                      // see the constructor), not a spinner: user wants a simple box
 	QCheckBox *splitDryWetCheck = nullptr, *scaleGlobalCheck = nullptr;
 	QPushButton *showSliceBtn = nullptr, *runInBtn = nullptr;
+	QRadioButton *stageRadioButton = nullptr, *xmomentRadioButton = nullptr, *ymomentRadioButton = nullptr;
+	QComboBox *orComboBox = nullptr;
+	QString activeVar_;                   // the varname currently selected in the quantity picker
+	bool settingVar_ = false;              // guard: suppress fireSlice while WE are (un)checking radios
 	QRadioButton *shadeWaterBtn = nullptr, *shadeLandBtn = nullptr;   // split which side's colour scale is shown
 	bool opened_ = false;                 // a file has been successfully opened this session
 
@@ -164,6 +169,10 @@ public:
 		runInBtn                = w->findChild<QPushButton *>("plotRunInButton");
 		shadeWaterBtn           = w->findChild<QRadioButton *>("shadeWaterButton");
 		shadeLandBtn            = w->findChild<QRadioButton *>("shadeLandButton");
+		stageRadioButton        = w->findChild<QRadioButton *>("stageRadioButton");
+		xmomentRadioButton      = w->findChild<QRadioButton *>("xmomentRadioButton");
+		ymomentRadioButton      = w->findChild<QRadioButton *>("ymomentRadioButton");
+		orComboBox              = w->findChild<QComboBox *>("orComboBox");
 		auto *browseBtn         = w->findChild<QToolButton *>("browseFileButton");
 
 		// Force Water/Land mutually exclusive with an explicit group -- do NOT rely on QRadioButton's
@@ -178,12 +187,16 @@ public:
 			shadeGroup->addButton(shadeLandBtn);
 		}
 
-		// Show mesh (ANUGA-only) never gets wired -- ships disabled in the .ui and stays that way.
-		// Primary quantities (Stage/Xmoment/Ymoment/Or…) + Derived var: Mirone's own set_common()
-		// disables these for this exact (COARDS/NSWING) file class -- do the same here at runtime,
-		// matching the .ui's own derivedVarCheckBox default rather than inventing new scope.
-		for (const char *nm : {"stageRadioButton", "xmomentRadioButton", "ymomentRadioButton", "orComboBox"})
-			if (QWidget *cw = w->findChild<QWidget *>(nm)) cw->setEnabled(false);
+		// Show mesh (ANUGA-only) never gets wired -- ships disabled in the .ui and stays that way, as
+		// does Derived var (still out of scope: no VTK/GMT triangulated-mesh equivalent on hand).
+		// Primary quantities (Stage/Xmoment/Ymoment/Or…) DO get wired now -- every time-varying
+		// variable the nc file actually has must be loadable, not just the first match (see
+		// aquamoto.jl's _aqua_find_all_varnames/_aquamoto_set_var). Radios/combo start disabled here;
+		// openPath() enables exactly the ones the just-opened file's varnames cover.
+		if (stageRadioButton) stageRadioButton->setEnabled(false);
+		if (xmomentRadioButton) xmomentRadioButton->setEnabled(false);
+		if (ymomentRadioButton) ymomentRadioButton->setEnabled(false);
+		if (orComboBox) { orComboBox->setEnabled(false); orComboBox->clear(); orComboBox->addItem("Or ..."); }
 
 		// sliceNSpinBox is a plain, EDITABLE QLineEdit in aquamoto.ui (not a QSpinBox). setFixedWidth
 		// (not maximumWidth) locks BOTH min and max to the same value -- the layout literally cannot
@@ -288,6 +301,30 @@ public:
 				refreshGridColorbar(scene_); rebuildSceneObjects(scene_);
 			}
 		});
+		// Primary-quantities picker: Stage/Xmoment/Ymoment/Or… switches which nc variable is the
+		// ACTIVE one (see aquamoto.jl's _aquamoto_set_var). Exclusive as a group -- an explicit
+		// QButtonGroup, same reasoning as the shadeWater/shadeLand group above (QUiLoader nesting
+		// doesn't guarantee implicit auto-exclusive grouping).
+		if (stageRadioButton && xmomentRadioButton && ymomentRadioButton) {
+			auto *varGroup = new QButtonGroup(w);
+			varGroup->setExclusive(true);
+			varGroup->addButton(stageRadioButton);
+			varGroup->addButton(xmomentRadioButton);
+			varGroup->addButton(ymomentRadioButton);
+		}
+		auto onVarRadio = [this](QRadioButton *btn) {
+			if (settingVar_ || !btn) return;
+			if (btn->isChecked()) setActiveVar(btn->property("aquaVar").toString());
+		};
+		if (stageRadioButton)   QObject::connect(stageRadioButton,   &QRadioButton::toggled, w, [this, onVarRadio](bool) { onVarRadio(stageRadioButton); });
+		if (xmomentRadioButton) QObject::connect(xmomentRadioButton, &QRadioButton::toggled, w, [this, onVarRadio](bool) { onVarRadio(xmomentRadioButton); });
+		if (ymomentRadioButton) QObject::connect(ymomentRadioButton, &QRadioButton::toggled, w, [this, onVarRadio](bool) { onVarRadio(ymomentRadioButton); });
+		if (orComboBox) {
+			QObject::connect(orComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), w, [this](int idx) {
+				if (settingVar_ || idx <= 0) return;   // index 0 is the "Or ..." placeholder, not a real var
+				setActiveVar(orComboBox->itemData(idx).toString());
+			});
+		}
 		if (waterTransparencySlider) {
 			QObject::connect(waterTransparencySlider, &QSlider::valueChanged, w, [this](int v) {
 				if (waterTransparencyLabel) waterTransparencyLabel->setText(QString("Water transparency %1%").arg(v));
@@ -304,7 +341,7 @@ public:
 		if (aquaEval(scene_, QString("InteractiveGMT._aquamoto_state(%1)").arg(aquaScenePtr(scene_)), state) &&
 		    !state.trimmed().isEmpty()) {
 			const QStringList parts = state.trimmed().split('|');
-			if (parts.size() == 2) {
+			if (parts.size() == 4) {
 				bool nok = false;
 				const int n = parts[1].toInt(&nok);
 				if (nok && n >= 1) {
@@ -317,6 +354,7 @@ public:
 					}
 					if (showSliceBtn) showSliceBtn->setEnabled(true);
 					if (runInBtn) runInBtn->setEnabled(true);
+					populateVarPicker(parts[2], parts[3].split(',', Qt::SkipEmptyParts));
 					opened_ = true;
 				}
 			}
@@ -357,8 +395,9 @@ public:
 			QMessageBox::warning(win, "Aquamoto", out.isEmpty() ? "could not open the file" : out);
 			return;
 		}
+		const QStringList parts = out.trimmed().split('|');   // "nsteps|activevar|var1,var2,…"
 		bool ok = false;
-		int n = out.trimmed().toInt(&ok);
+		int n = parts.isEmpty() ? 0 : parts[0].toInt(&ok);
 		if (!ok || n < 1) n = 1;
 		opened_ = true;
 		if (timeStepsLabel) timeStepsLabel->setText(QString("Time steps = %1").arg(n));
@@ -370,6 +409,61 @@ public:
 		}
 		if (showSliceBtn) showSliceBtn->setEnabled(true);
 		if (runInBtn) runInBtn->setEnabled(true);
+		if (parts.size() == 3) populateVarPicker(parts[1], parts[2].split(',', Qt::SkipEmptyParts));
+		fireSlice();
+	}
+
+	// Fill the Stage/Xmoment/Ymoment/Or… quantity picker from a just-opened (or restored) file's
+	// variable list, and check/select whichever is the currently active one. `settingVar_` guards
+	// every widget mutation here so none of it fires the toggled/currentIndexChanged handlers back
+	// into setActiveVar -- this function only reflects state Julia already has, never changes it.
+	void populateVarPicker(const QString &activeVar, const QStringList &allVars) {
+		settingVar_ = true;
+		activeVar_ = activeVar;
+		if (stageRadioButton)   { stageRadioButton->setEnabled(false);   stageRadioButton->setProperty("aquaVar", QString()); stageRadioButton->setChecked(false); }
+		if (xmomentRadioButton) { xmomentRadioButton->setEnabled(false); xmomentRadioButton->setProperty("aquaVar", QString()); xmomentRadioButton->setChecked(false); }
+		if (ymomentRadioButton) { ymomentRadioButton->setEnabled(false); ymomentRadioButton->setProperty("aquaVar", QString()); ymomentRadioButton->setChecked(false); }
+		if (orComboBox) { orComboBox->clear(); orComboBox->addItem("Or ..."); orComboBox->setEnabled(false); }
+		for (const QString &v : allVars) {
+			const QString lv = v.toLower();
+			if (lv == "stage" && stageRadioButton) {
+				stageRadioButton->setProperty("aquaVar", v); stageRadioButton->setEnabled(true);
+			} else if ((lv == "xmoment" || lv == "xmomentum") && xmomentRadioButton) {
+				xmomentRadioButton->setProperty("aquaVar", v); xmomentRadioButton->setEnabled(true);
+			} else if ((lv == "ymoment" || lv == "ymomentum") && ymomentRadioButton) {
+				ymomentRadioButton->setProperty("aquaVar", v); ymomentRadioButton->setEnabled(true);
+			} else if (orComboBox) {
+				orComboBox->addItem(v, v);
+				orComboBox->setEnabled(true);
+			}
+		}
+		if (stageRadioButton && stageRadioButton->property("aquaVar").toString() == activeVar) {
+			stageRadioButton->setChecked(true);
+		} else if (xmomentRadioButton && xmomentRadioButton->property("aquaVar").toString() == activeVar) {
+			xmomentRadioButton->setChecked(true);
+		} else if (ymomentRadioButton && ymomentRadioButton->property("aquaVar").toString() == activeVar) {
+			ymomentRadioButton->setChecked(true);
+		} else if (orComboBox) {
+			const int idx = orComboBox->findData(activeVar);
+			orComboBox->setCurrentIndex(idx >= 0 ? idx : 0);
+		}
+		settingVar_ = false;
+	}
+
+	// Switch the active quantity variable (called from the Stage/Xmoment/Ymoment/Or… picker) and
+	// re-render the current slice against it. Reentrancy-guarded like every other blocking call here.
+	void setActiveVar(const QString &varname) {
+		if (busy_ || varname.isEmpty() || varname == activeVar_) return;
+		QString out;
+		bool closedNow = false;
+		const bool ok = runBlocking(QString("InteractiveGMT._aquamoto_set_var(%1,raw\"%2\")")
+		                            .arg(aquaScenePtr(scene_)).arg(varname), out, closedNow);
+		if (closedNow) return;   // `this` may already be destroyed -- touch NOTHING below
+		if (!ok) {
+			QMessageBox::warning(win, "Aquamoto", out.isEmpty() ? "could not switch quantity variable" : out);
+			return;
+		}
+		activeVar_ = varname;
 		fireSlice();
 	}
 

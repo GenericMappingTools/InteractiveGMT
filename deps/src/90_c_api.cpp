@@ -2419,6 +2419,24 @@ GMTVTK_API int gmtvtk_scrollbar_style_test(const char *pngPath, const char *styl
 	         qUtf8Printable(styleName), sb->style()->styleHint(QStyle::SH_ScrollBar_Transient, nullptr, sb));
 	return 1;
 }
+
+// test hook: flip an Aquamoto scene to "Shade Land" (same state change the Scene Objects "Color Bar
+// Land" checkbox lambda makes, 50_scene.cpp:1489/1496) so the LAND colorbar becomes visible without
+// driving the real Qt checkbox — lets a screenshot show its ACTUAL rendered geometry (bar rect vs
+// tick positions) for diagnosis. Returns 1 on success, 0 on a dead scene.
+GMTVTK_API int gmtvtk_aqua_force_land_bar_test(void *scene) {
+	// NOTE: sceneAlive() checks a file-static registry that does NOT cross the DLL boundary (this
+	// hook is called with a Scene* opened through the PRODUCTION gmtvtk.dll, not this test dll) --
+	// only a null-check here, no registry lookup.
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !s->ren) return 0;
+	s->aquaLandShowBar = true;
+	s->aquaShowWater = false;
+	refreshGridColorbar(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
 #endif // GMTVTK_TEST_API
 
 // Register the grid-metadata callback used by the grdsample dialog's "OR Ref grid" picker.
@@ -3203,15 +3221,23 @@ GMTVTK_API int gmtvtk_show_layer_rgba_h(void *handle, const unsigned char *rgba,
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !rgba || nx < 2 || ny < 2 || !cz || !crgb || ncolor < 2 || !zhover)
 		return 0;
-	// A FRESH tsunami (no base composite pushed yet) opens hillshaded (grdimage look) so BOTH the land and
-	// water images are illuminated from the VERY FIRST frame -- not gated on emptyStart, which isn't
-	// guaranteed when Aquamoto opens onto a window that already had content. Later slices keep the dock
-	// state (empty check false). The Shading dock then moves the sun / switches style / turns it off per side.
-	// A fresh tsunami shows the FLAT host-composited colours (the full 256-colour :polar/:geo image the
-	// Julia side generates) -- Mirone-style. Hillshade/PBR is OPT-IN via the Shading dock, never forced
-	// on at open (the grdimage relight saturates the water's steep-gradient normals and washes the
-	// palette toward white/dark, which reads as a 2-colour collapse of an image that is really 256).
-	if (s->aquaBaseRGBA.empty()) { s->useHillshade = false; s->hillGrd = false; s->litBake = false; }
+	// A FRESH tsunami (no base composite pushed yet): WATER opens FLAT (the host-composited 256-colour
+	// :polar image, Mirone-style) -- hillshade relighting saturates the water's steep-gradient normals
+	// and washes the palette toward white/dark, a 2-colour collapse of an image that is really 256.
+	// LAND opens SHADED (grdimage hillshade) by default -- AquaSideShade's own defaults (useHillshade=
+	// true, hillGrd=true) already say so; only WATER needs an explicit flat override. Each side gets
+	// its OWN valid snapshot here so bakeAquaShade never falls back to the live dock state for either.
+	if (s->aquaBaseRGBA.empty()) {
+		s->aquaWaterShade = AquaSideShade{};
+		s->aquaWaterShade.valid = true; s->aquaWaterShade.useHillshade = false; s->aquaWaterShade.hillGrd = false;
+		s->aquaWaterShade.litBake = false;
+		s->aquaLandShade = AquaSideShade{};
+		s->aquaLandShade.valid = true;                    // useHillshade/hillGrd default true -> shaded
+		// Live dock state mirrors whichever side aquaShadeSelWater currently edits, so the Shading
+		// dock checkboxes reflect the truth the first time it's opened on this file.
+		const AquaSideShade &live = s->aquaShadeSelWater ? s->aquaWaterShade : s->aquaLandShade;
+		s->useHillshade = live.useHillshade; s->hillGrd = live.hillGrd; s->litBake = live.litBake;
+	}
 	return showLayerImageTail(s, rgba, nx, ny, zhover, nx, ny, x0, x1, y0, y1, geographic,
 	                          cz, crgb, ncolor, name, /*isCustom=*/true);
 }
@@ -3243,6 +3269,19 @@ GMTVTK_API int gmtvtk_aqua_set_bathy_h(void *handle, const float *z, int nx, int
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2) return 0;
 	s->aquaBathyZ.assign(z, z + (size_t)nx * ny);
 	bakeAquaShade(s);   // land surface now available -> relight through the shared engine
+	return 1;
+}
+
+// Display label for the composited water/land surface's OWN Scene Objects group -- the active
+// time-varying quantity variable's real name, whatever the file itself calls it (no assumed
+// naming). The outer per-file wrapper group (rebuildSceneObjects) uses surfName (the file name)
+// instead, so the two never collide. Purely cosmetic: Save/session still key off surfName/name.
+// Returns 1 on success, 0 on a dead scene.
+GMTVTK_API int gmtvtk_aqua_set_var_label_h(void *handle, const char *label) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	s->aquaVarLabel = label ? label : "";
+	rebuildSceneObjects(s);
 	return 1;
 }
 

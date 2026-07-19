@@ -377,6 +377,10 @@ struct Scene {
 	double aquaLandBarLo = 0, aquaLandBarHi = 1;
 	bool   aquaLandShowBar = true;           // Scene-Objects "Color Bar Land" checkbox intent
 	bool   aquaShowWater = true;             // which side is ACTIVE; default water (per spec)
+	std::string aquaVarLabel;                // Scene Objects label for the composited surface's OWN
+	                                          // group = the active variable's real name, whatever the
+	                                          // file itself calls it (gmtvtk_aqua_set_var_label_h);
+	                                          // empty -> rebuildSceneObjects falls back to surfName.
 
 	// --- tiled-LOD pyramid (plain grid) -------------------------------------
 	// Quadtree of tiles; coarse near root, refined per-frame by screen-space error so only the
