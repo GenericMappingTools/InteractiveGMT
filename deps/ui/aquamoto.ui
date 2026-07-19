@@ -94,7 +94,7 @@
             <item>
              <widget class="QLineEdit" name="filePathLineEdit">
               <property name="text">
-               <string>C:\v\tsu\aiai.nc</string>
+               <string/>
               </property>
              </widget>
             </item>
