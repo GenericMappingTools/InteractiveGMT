@@ -32,7 +32,7 @@ mutable struct _AquaState
 	bat::GMTgrid                            # bathymetry grid, read once
 	nsteps::Int
 	geog::Bool
-	imgbat::Union{Nothing,Array{UInt8,3}}   # cached land RGB (ny,nx,3); recomputed only if bat changes
+	imgbat::Array{UInt8,3}                  # cached land RGB (ny,nx,3); EMPTY (size 0) = not built yet
 	first::Bool                             # true until the first slice has been shown (Save/Session bookkeeping)
 	wetlo::Vector{Float64}                  # per-layer WET-cell min (Inf if a layer is entirely dry)
 	wethi::Vector{Float64}                  # per-layer WET-cell max (-Inf if a layer is entirely dry)
@@ -50,7 +50,7 @@ const _AQUA_VARNAMES = ("stage", "depth", "amp", "z")
 # Prefers the netCDF subdataset introspection this app already has (drop.jl's `_netcdf_subdatasets`,
 # GDAL's Subdatasets report); falls back to probing the handful of known NSWING/Mirone names
 # directly for a plain 2-variable file GDAL doesn't report as multi-subdataset. "" if none found.
-function _aqua_find_varname(path::AbstractString, skip::AbstractString)
+function _aqua_find_varname(path::String, skip::String)
 	for v in _netcdf_subdatasets(path)
 		lowercase(v.name) == lowercase(skip) && continue
 		length(v.dims) >= 3 && return v.name
@@ -69,7 +69,7 @@ end
 # colormap name, e.g. :geo, :polar). Nearest-bin lookup against the cpt's own discrete nodes (same
 # convention as cpt.jl's `_z_to_hex`, generalized to a whole array). NaN -> mid-grey. Returns a
 # flat greyed-out array if the cpt itself fails to build (`_cpt_nodes_range` returned nothing usable).
-function _aqua_colorize(Z::AbstractMatrix, zlo::Real, zhi::Real, cmap)::Array{UInt8,3}
+function _aqua_colorize(Z::Matrix{T}, zlo::Float64, zhi::Float64, cmap::Symbol)::Array{UInt8,3} where {T<:Real}
 	ny, nx = size(Z)
 	rgb = Array{UInt8}(undef, ny, nx, 3)
 	cz, crgb, n = _cpt_nodes_range(zlo, zhi, cmap)
@@ -121,7 +121,7 @@ end
 # are instant lookups afterwards, never a fresh rescan. Prints the step count (parsed by the C++
 # dialog to fill "Time steps = N" + the slider range) on success; throws (shown as an error dialog
 # by the console-eval bridge) on anything it can't make sense of.
-function _aquamoto_open(scene::Ptr{Cvoid}, path::AbstractString)
+function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	isfile(path) || error("Aquamoto: file not found: $path")
 	varname = _aqua_find_varname(path, "bathymetry")
 	isempty(varname) && error("Aquamoto: could not find a time-varying quantity variable in $path " *
@@ -197,7 +197,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::AbstractString)
 	ccall(_fn(:gmtvtk_aqua_set_bathy_h), Cint, (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint),
 		scene, bz, Cint(bnx), Cint(bny))
 
-	_AQUA[scene] = _AquaState(String(path), varname, bat, nsteps, geog, nothing, true, wetlo, wethi, alllo, allhi)
+	_AQUA[scene] = _AquaState(String(path), varname, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, wetlo, wethi, alllo, allhi)
 	print(nsteps)
 	return nothing
 end
@@ -223,7 +223,7 @@ end
 # The colour-scale range for a slice: the whole-cube global min/max when `useglobal`, else the
 # extrema of `vals` (already the wet-only values when splitDryWet, the whole slice otherwise). A
 # degenerate (all-equal) range is nudged so `_cpt_nodes_range` never sees zlo==zhi.
-function _aqua_range(vals::AbstractVector, useglobal::Bool, globalmin::Real, globalmax::Real)
+function _aqua_range(vals::Vector{Float64}, useglobal::Bool, globalmin::Float64, globalmax::Float64)
 	if useglobal
 		return (Float64(globalmin), Float64(globalmax))
 	end
@@ -250,10 +250,10 @@ end
 # `shadeWater`/`shadeLand` (only meaningful when `splitDryWet`) let the "Shade Water"/"Shade Land"
 # toggles hide one side's colour scale at a time (flat mid-grey instead) without touching the
 # CACHED real `imgbat` -- so re-enabling a toggle never needs a bathymetry recolour.
-function _aqua_composite_rgb(bat::AbstractMatrix, Z::AbstractMatrix, splitDryWet::Bool,
-                             waterlo::Real, waterhi::Real, transparency::Real,
-                             imgbat::Union{Nothing,Array{UInt8,3}},
-                             shadeWater::Bool = true, shadeLand::Bool = true)
+function _aqua_composite_rgb(bat::Matrix{T}, Z::Matrix{S}, splitDryWet::Bool,
+                             waterlo::Float64, waterhi::Float64, transparency::Float64,
+                             imgbat::Array{UInt8,3},
+                             shadeWater::Bool = true, shadeLand::Bool = true) where {T<:Real, S<:Real}
 	ny, nx = size(Z)
 	if !splitDryWet
 		return _aqua_colorize(Z, waterlo, waterhi, :polar), imgbat
@@ -261,8 +261,8 @@ function _aqua_composite_rgb(bat::AbstractMatrix, Z::AbstractMatrix, splitDryWet
 	indland = (abs.(bat .- Z) .< 1e-2) .| isnan.(Z)
 	Zc = copy(Z)
 	Zc[indland] .= 0.0
-	if imgbat === nothing                                  # cache: only depends on the (static) bathymetry
-		blo, bhi = extrema(filter(isfinite, bat))
+	if isempty(imgbat)                                     # cache: only depends on the (static) bathymetry
+		blo, bhi = Float64.(extrema(filter(isfinite, bat)))
 		blo == bhi && (bhi = blo + 0.1)
 		imgbat = _aqua_colorize(bat, blo, bhi, :geo)        # :geo already has its own land/sea break
 	end
@@ -295,7 +295,7 @@ end
 # transparency slider (mixe_images' cross-blend fraction — land pixels are always hard-overwritten
 # with the land colour regardless of this value, matching Mirone). `shadeWater`/`shadeLand` are the
 # "Shade Water"/"Shade Land" toggle buttons — see `_aqua_composite_rgb`.
-function _aquamoto_slice(scene::Ptr{Cvoid}, k::Integer, splitDryWet::Bool, globalMM::Bool, transparency::Real,
+function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM::Bool, transparency::Float64,
                          shadeWater::Bool = true, shadeLand::Bool = true)
 	st = get(_AQUA, scene, nothing)
 	st === nothing && error("Aquamoto: no file open in this window")

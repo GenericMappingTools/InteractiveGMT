@@ -258,7 +258,7 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 			const double len = std::sqrt(n0*n0 + n1*n1 + n2*n2);
 			if (len > 0.0) { n0 /= len; n1 /= len; n2 /= len; }
 			const double nv[3] = { n0, n1, n2 };
-			double c[3] = { rgb8[0] / 255.0, rgb8[1] / 255.0, rgb8[2] / 255.0 };
+			double c[3] = { cr / 255.0, cg / 255.0, cb / 255.0 };
 			if (pbr) applyPBRShade(L, nv, c);                    // PBR lit look (no hillshade selected)
 			else     applyReliefShade(L, nv, c);                 // SHARED hillshade (grdimage or Lambert), matches the surface
 			p[0] = (unsigned char)std::min(255.0, c[0] * 255.0 + 0.5);
