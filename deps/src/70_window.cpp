@@ -1978,6 +1978,298 @@ public:
 };
 
 // ============================================================================================
+// Reduction to the Pole / Total field to Components (Geophysics > Magnetics > rtp3d.ui) — port of
+// Mirone's parker_stuff.m ('redPole'/'component' cases) + utils/mboard.m (FFT edge-padding). Loaded
+// at RUNTIME via QUiLoader (same technique as IgrfDialog/MagBarcodeDialog — rtp3d.ui references only
+// plain Qt widget classes, so no custom-widget QUiLoader subclass is needed here). ONE dialog class
+// serves BOTH menu entries, gated by `mode`:
+//   mode 0 (RTP)        -> component is forced 0; the North/East/Vert radio group (gb_component)
+//                          is GRAYED (disabled, never hidden — hiding it would collapse the layout
+//                          and shrink the dialog vs Components mode, breaking the SAME-dialog/
+//                          SAME-size guarantee for the SAME grid; see code-sharing-is-law).
+//   mode 1 (Components) -> gb_component is enabled; component comes from whichever radio is checked.
+// The "Bat" row (le_bat/btn_batBrowse) is unused by EITHER mode — rtp3d() takes only the field
+// grid — so it's always disabled here, exactly like parker_stuff.m's 'redPole'/'component' branch
+// (`set(handles.edit_BatGrid,'Enable','off', ...)`); it stays in the .ui for a future Parker
+// direct/inverse mode (parker_stuff.m's other two `what_parker` cases), which DOES need it.
+// Rows/Cols/Mirror/suggested-size lists reproduce parker_stuff.m's FFT-padding UI verbatim:
+// browsing a Field grid reads its native size (reusing g_juliaGridMeta, same call IgrfDialog's "OR
+// Ref grid" row uses) and prefills Rows/Cols to the next 5-smooth (fast-FFT) size >= 1.2x the
+// native size (utils/mboard.m's own default), with the suggested-size listboxes offering the
+// native size plus every larger 5-smooth size; Mirror greys the Rows/Cols controls out (mirror
+// padding always doubles the grid, no target size to pick).
+// If a grid is ALREADY loaded in this window, it's assumed to be the magnetic anomaly: Field is
+// locked to "In memory grid" (no Browse needed) and Rows/Cols/suggested-lists are seeded straight
+// from the loaded grid's own size (scene->gnx/gny) — same "selected" sentinel convention as the
+// grdsample dialog's locked input row. On Compute, `_on_rtp3d` (rtp3d.jl) resolves "selected" via
+// _FIGREG, exactly like grdsample.jl's own "selected" case.
+// ============================================================================================
+class Rtp3DDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	int mode = 0;                                    // 0 = Reduction to the Pole, 1 = Components
+	int nativeNx = 0, nativeNy = 0;                   // last-browsed field grid's own size
+	bool useSelected = false;                         // Field IS the window's already-loaded grid
+	QLineEdit *fieldEdit, *fieldDipEdit, *fieldDecEdit, *magDipEdit, *magDecEdit;
+	QLineEdit *rowsEdit, *colsEdit;
+	QListWidget *rowsList, *colsList;
+	QCheckBox *mirrorChk;
+	QRadioButton *rbNorth, *rbEast, *rbVert;
+
+	// 5-smooth (prime factors <= 5) sizes GMT's FFT is fast on — Mirone utils/mboard.m's `nlist`,
+	// kept identical to rtp3d.jl's own `_FFT_GOOD_SIZES` copy (host UI only needs it for the
+	// suggested-size listboxes; the actual padding math runs in Julia).
+	static const std::vector<int> &goodSizes() {
+		static const std::vector<int> v = {
+			64,72,75,80,81,90,96,100,108,120,125,128,135,144,150,160,162,180,192,200,
+			216,225,240,243,250,256,270,288,300,320,324,360,375,384,400,405,432,450,480,
+			486,500,512,540,576,600,625,640,648,675,720,729,750,768,800,810,864,900,960,
+			972,1000,1024,1080,1125,1152,1200,1215,1250,1280,1296,1350,1440,1458,1500,
+			1536,1600,1620,1728,1800,1875,1920,1944,2000,2025,2048,2160,2187,2250,2304,
+			2400,2430,2500,2560,2592,2700,2880,2916,3000,3072,3125,3200,3240,3375,3456,
+			3600,3645,3750,3840,3888,4000,4096,4320,4374,4500,4608,4800,4860,5000 };
+		return v;
+	}
+	// Next 5-smooth size >= round(n*1.2) (utils/mboard.m's "find the good number ~20% larger");
+	// falls back to `n` itself if that would run off the end of the table.
+	static int suggestedSize(int n) {
+		int target = (int)std::lround(n * 1.2);
+		for (int v : goodSizes()) if (v >= target) return v;
+		return n;
+	}
+	// Fill a listbox with [n, every good size > n], selecting `sel` if present.
+	static void fillSizeList(QListWidget *lw, int n, int sel) {
+		if (!lw) return;
+		lw->clear();
+		lw->addItem(QString::number(n));
+		int selRow = (sel == n) ? 0 : -1;
+		for (int v : goodSizes()) {
+			if (v <= n) continue;
+			lw->addItem(QString::number(v));
+			if (v == sel) selRow = lw->count() - 1;
+		}
+		if (selRow >= 0) lw->setCurrentRow(selRow);
+	}
+
+	explicit Rtp3DDialog(QWidget *parent, Scene *scene, int m) : scn(scene), mode(m) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/rtp3d.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("Rtp3DDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("Rtp3DDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle(mode == 0 ? "Reduction to the Pole" : "Component from total anomaly");
+		QDialog *d = dlg;
+
+		fieldEdit    = d->findChild<QLineEdit *>("le_field");
+		fieldDipEdit = d->findChild<QLineEdit *>("le_fieldDip");
+		fieldDecEdit = d->findChild<QLineEdit *>("le_fieldDec");
+		magDipEdit   = d->findChild<QLineEdit *>("le_magDip");
+		magDecEdit   = d->findChild<QLineEdit *>("le_magDec");
+		rowsEdit = d->findChild<QLineEdit *>("le_rows"); colsEdit = d->findChild<QLineEdit *>("le_cols");
+		rowsList = d->findChild<QListWidget *>("list_rowsSuggested");
+		colsList = d->findChild<QListWidget *>("list_colsSuggested");
+		// Tighten row spacing so more suggested sizes fit in the SAME box (no stylesheet: applying
+		// one switches Qt's style engine to a path that pads rows MORE, not less, and can grow the
+		// dialog's sizeHint — see respect-ui-size-no-code-override). setSpacing(0) + a slightly
+		// smaller font + no reserved icon column is enough on its own.
+		for (QListWidget *lw : {rowsList, colsList}) {
+			if (!lw) continue;
+			lw->setSpacing(0);
+			lw->setIconSize(QSize(0, 0));
+			QFont fnt = lw->font();
+			fnt.setPointSizeF(fnt.pointSizeF() * 0.85);
+			lw->setFont(fnt);
+		}
+		mirrorChk = d->findChild<QCheckBox *>("chk_mirror");
+		rbNorth = d->findChild<QRadioButton *>("rb_northComp");
+		rbEast  = d->findChild<QRadioButton *>("rb_eastComp");
+		rbVert  = d->findChild<QRadioButton *>("rb_vertComp");
+		auto *fieldBrowse = d->findChild<QToolButton *>("btn_fieldBrowse");
+		auto *computeBtn  = d->findChild<QPushButton *>("btn_compute");
+
+		// "Bat" row: not used by rtp3d() in either mode — reserved for a future Parker
+		// direct/inverse mode (parker_stuff.m), which DOES need a bathymetry grid.
+		if (auto *w = d->findChild<QLineEdit *>("le_bat"))     w->setEnabled(false);
+		if (auto *w = d->findChild<QToolButton *>("btn_batBrowse")) w->setEnabled(false);
+		if (auto *w = d->findChild<QLabel *>("lbl_bat"))       w->setEnabled(false);
+
+		// Component radio group only APPLIES in Components mode — but stays VISIBLE (just grayed)
+		// in RTP mode, never hidden, so the dialog's layout/size is identical in both modes for the
+		// same grid (setVisible(false) here previously collapsed the layout and shrank the RTP-mode
+		// window — a same-dialog-different-size regression).
+		if (auto *gbComp = d->findChild<QGroupBox *>("gb_component")) gbComp->setEnabled(mode != 0);
+
+		// A grid is already loaded in THIS window -> assume it's the magnetic anomaly and use it
+		// directly (same "selected" convention as the grdsample dialog above): Field is locked to
+		// "In memory grid", and its native rows/cols (scene->gnx/gny, the full-res data layer) seed
+		// the Rows/Cols boxes + suggested-size lists immediately, with no Browse round-trip needed.
+		if (scene && scene->surf && !scene->emptyStart && !scene->imageOnly) {
+			useSelected = true;
+			fieldEdit->setText("In memory grid");
+			fieldEdit->setReadOnly(true);
+			fieldEdit->setEnabled(false);   // grayed
+			if (fieldBrowse) fieldBrowse->setEnabled(false);
+			if (scene->gnx > 1 && scene->gny > 1) {
+				nativeNx = scene->gnx; nativeNy = scene->gny;
+				int sugX = suggestedSize(nativeNx), sugY = suggestedSize(nativeNy);
+				if (colsEdit) colsEdit->setText(QString::number(sugX));
+				if (rowsEdit) rowsEdit->setText(QString::number(sugY));
+				fillSizeList(colsList, nativeNx, sugX);
+				fillSizeList(rowsList, nativeNy, sugY);
+			}
+
+			// Geographic grid -> check the box, and default BOTH the ambient-field and the
+			// magnetization Dip/Dec boxes to the IGRF 2000 values at the grid's centre (induced
+			// magnetization is the overwhelming default assumption — the user can still overtype
+			// either pair). Same g_juliaIgrfPoint round-trip as IgrfDialog::recompute() above:
+			// "lon/lat/elev_m/date_dec" -> "F/H/X/Y/Z/D/I", D/I are the last two fields.
+			if (scene->hasCRS()) {
+				if (auto *geoChk = d->findChild<QCheckBox *>("chk_geographicCoords")) geoChk->setChecked(true);
+				double cx = 0, cy = 0; bool haveCenter = false;
+				if (scene->gx1 > scene->gx0 && scene->gy1 > scene->gy0) {
+					cx = (scene->gx0 + scene->gx1) / 2.0; cy = (scene->gy0 + scene->gy1) / 2.0; haveCenter = true;
+				} else if (scene->x1 > scene->x0 && scene->y1 > scene->y0) {
+					cx = (scene->x0 + scene->x1) / 2.0; cy = (scene->y0 + scene->y1) / 2.0; haveCenter = true;
+				}
+				if (haveCenter && g_juliaIgrfPoint) {
+					QString state = QString("%1/%2/%3/%4").arg(cx, 0, 'g', 10).arg(cy, 0, 'g', 10)
+					                                      .arg(0.0, 0, 'g', 10).arg(2000.0, 0, 'g', 10);
+					const char *out = g_juliaIgrfPoint(state.toUtf8().constData());
+					if (out) {
+						const QStringList r = QString::fromUtf8(out).split('/');   // copy immediately (Julia-owned buffer)
+						if (r.size() >= 7) {
+							QString dec = QString::number(r[5].toDouble(), 'f', 2);
+							QString inc = QString::number(r[6].toDouble(), 'f', 2);
+							if (fieldDipEdit) fieldDipEdit->setText(inc);
+							if (fieldDecEdit) fieldDecEdit->setText(dec);
+							if (magDipEdit)   magDipEdit->setText(inc);
+							if (magDecEdit)   magDecEdit->setText(dec);
+						}
+					}
+				}
+			}
+		}
+
+		auto setRowsColsEnabled = [this](bool on) {
+			if (rowsEdit) rowsEdit->setEnabled(on);
+			if (colsEdit) colsEdit->setEnabled(on);
+			if (rowsList) rowsList->setEnabled(on);
+			if (colsList) colsList->setEnabled(on);
+		};
+		if (mirrorChk) QObject::connect(mirrorChk, &QCheckBox::toggled, d, [setRowsColsEnabled](bool on) {
+			setRowsColsEnabled(!on);   // mirror padding always doubles the grid — no target size to pick
+		});
+
+		if (rowsList) QObject::connect(rowsList, &QListWidget::currentTextChanged, d, [this](const QString &t) {
+			if (rowsEdit && !t.isEmpty()) rowsEdit->setText(t);
+		});
+		if (colsList) QObject::connect(colsList, &QListWidget::currentTextChanged, d, [this](const QString &t) {
+			if (colsEdit && !t.isEmpty()) colsEdit->setText(t);
+		});
+
+		if (fieldBrowse) QObject::connect(fieldBrowse, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getOpenFileName(d, "Select total-field anomaly grid", prefStartDir(),
+			                                          "Grid files (*.nc *.grd *.tif *.tiff);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			fieldEdit->setText(fn);
+			if (!g_juliaGridMeta) return;
+			const char *m = g_juliaGridMeta(fn.toUtf8().constData());
+			if (!m) return;
+			const QStringList meta = QString::fromUtf8(m).split('/');    // copy immediately (Julia-owned buffer)
+			if (meta.size() < 8) return;
+			nativeNx = meta[6].toInt(); nativeNy = meta[7].toInt();
+			if (nativeNx <= 0 || nativeNy <= 0) return;
+			int sugX = suggestedSize(nativeNx), sugY = suggestedSize(nativeNy);
+			if (colsEdit) colsEdit->setText(QString::number(sugX));
+			if (rowsEdit) rowsEdit->setText(QString::number(sugY));
+			fillSizeList(colsList, nativeNx, sugX);
+			fillSizeList(rowsList, nativeNy, sugY);
+		});
+
+		if (computeBtn) QObject::connect(computeBtn, &QPushButton::clicked, d, [this, d]() {
+			if (!g_juliaRtp3D) {
+				QMessageBox::warning(d, "Error", "RTP: callback not registered (rebuild/restart needed?).");
+				return;
+			}
+			QString field = useSelected ? QString("selected") : fieldEdit->text().trimmed();
+			if (field.isEmpty()) {
+				QMessageBox::warning(d, "Error", "You didn't give me a Field grid. What do you want me to do?");
+				return;
+			}
+			bool okA, okB, okC, okE;
+			double fDip = fieldDipEdit->text().toDouble(&okA), fDec = fieldDecEdit->text().toDouble(&okB);
+			if (!okA || !okB) {
+				QMessageBox::warning(d, "Error", "You need to give me valid magnetic field Inclination and Declination.");
+				return;
+			}
+			double mDip = magDipEdit->text().toDouble(&okC), mDec = magDecEdit->text().toDouble(&okE);
+			if (!okC || !okE) {
+				QMessageBox::warning(d, "Error", "You need to give me valid magnetization Inclination and Declination.");
+				return;
+			}
+			// Components mode: the 3 boxes are NOT mutually exclusive (autoExclusive=false in the .ui,
+			// same as independent checkboxes) — ANY subset can be checked, and EVERY checked one must
+			// get its OWN Compute run / its OWN grid. The old code picked a SINGLE component via a
+			// ternary chain, so checking all 3 silently computed only North — that bug, not the
+			// widgets, is what's fixed here: collect every checked component and run each in turn.
+			std::vector<int> components;
+			if (mode == 0) {
+				components.push_back(0);
+			} else {
+				if (rbNorth->isChecked()) components.push_back(1);
+				if (rbEast->isChecked())  components.push_back(2);
+				if (rbVert->isChecked())  components.push_back(3);
+				if (components.empty()) {
+					QMessageBox::warning(d, "Error", "Check at least one component (North/East/Vert).");
+					return;
+				}
+			}
+			int newRows = rowsEdit ? rowsEdit->text().toInt() : 0;
+			int newCols = colsEdit ? colsEdit->text().toInt() : 0;
+			bool mirror = mirrorChk && mirrorChk->isChecked();
+			static const char *compName[] = { "RTP", "North component", "East component", "Vertical component" };
+			// The result (success/failure) matters HERE, on the dialog the user is actually looking
+			// at — not just as a status-bar flash on the (possibly backgrounded/unnoticed) parent
+			// viewer window, which is why a real Compute failure was previously invisible.
+			showBusyDialog(mode == 0 ? "Computing RTP…" : "Computing components…");
+			QStringList failed;
+			for (int component : components) {
+				QString params = QString("%1;%2;%3;%4;%5;%6;%7;%8;%9")
+					.arg(field).arg(fDip).arg(fDec).arg(mDip).arg(mDec)
+					.arg(component).arg(newRows).arg(newCols).arg(mirror ? "1" : "0");
+				const int ok = g_juliaRtp3D(scn, params.toUtf8().constData());
+				if (!ok) failed << compName[component];
+			}
+			closeBusyDialog();
+			// Dialog stays OPEN — only the user closes it (never auto-close on success; the user may
+			// want to run more components/variants on the same field without reopening).
+			if (failed.isEmpty()) {
+				QMessageBox::information(d, mode == 0 ? "RTP" : "Components",
+					QString("Done — added to Scene Objects as %1. %2 start%3 UNCHECKED (hidden) so "
+					        "it doesn't overlap what's already shown — tick its box to view it.")
+						.arg(components.size() > 1 ? "new grids" : "a new grid")
+						.arg(components.size() > 1 ? "They" : "It")
+						.arg(components.size() > 1 ? "" : "s"));
+			} else {
+				QMessageBox::warning(d, "Error",
+					QString("Failed: %1 — see this window's Errors console for details.").arg(failed.join(", ")));
+			}
+		});
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+};
+
+// ============================================================================================
 // BeachballWidget — schematic focal-mechanism "beachball" preview for the elastic-deformation
 // dialog. This is NOT yet a full lower-hemisphere double-couple projection (that arrives with the
 // deformation compute); it draws two opposing black wedges rotated by the fault strike and
@@ -5652,6 +5944,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 		mGphy->addAction("Geomagnetic Bar Code", [win]() {
 			auto *w = new MagBarcodeDialog(win);
+			if (w->dlg) w->dlg->show();
+		});
+		// Reduction to the Pole / Total field to Components — port of Mirone's parker_stuff.m
+		// ('redPole'/'component' cases). Same dialog class (Rtp3DDialog), gated by mode: 0=RTP
+		// (component forced 0, radio group hidden), 1=Components (radio group picks North/East/Vert).
+		mGphy->addAction("Reduction to the Pole", [win, s]() {
+			auto *w = new Rtp3DDialog(win, s, 0);
+			if (w->dlg) w->dlg->show();
+		});
+		mGphy->addAction("Total field to Components", [win, s]() {
+			auto *w = new Rtp3DDialog(win, s, 1);
 			if (w->dlg) w->dlg->show();
 		});
 		reopen();

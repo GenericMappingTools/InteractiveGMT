@@ -75,6 +75,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_serialize_polys, :gmtvtk_add_poly_full, :gmtvtk_serialize_faults, :gmtvtk_add_nested_rect,
 	:gmtvtk_refresh_fault_planes, :gmtvtk_overlay_style_h, :gmtvtk_set_overlay_style_h,
 	:gmtvtk_set_igrf_point_callback, :gmtvtk_set_igrf_grid_callback, :gmtvtk_set_igrf_file_callback,
+	:gmtvtk_set_rtp3d_callback,
 	:gmtvtk_set_seismicity_callback,
 	:gmtvtk_set_faultgeom_callback,
 	:gmtvtk_set_elastic_callback, :gmtvtk_set_importfault_callback, :gmtvtk_add_fault_h,

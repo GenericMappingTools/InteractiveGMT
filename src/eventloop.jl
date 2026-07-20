@@ -66,6 +66,7 @@ function _ensure_callbacks()
 	                    ("igrf-point",  _register_igrf_point),
 	                    ("igrf-grid",   _register_igrf_grid),
 	                    ("igrf-file",   _register_igrf_file),
+	                    ("rtp3d",       _register_rtp3d),
 	                    ("seismicity",  _register_seismicity),
 	                    ("faultgeom",   _register_faultgeom),
 	                    ("elastic",     _register_elastic),

@@ -209,6 +209,20 @@ static JuliaIgrfGridFn g_juliaIgrfGrid = nullptr;
 typedef void (*JuliaIgrfFileFn)(void *scene, const char *params);
 static JuliaIgrfFileFn g_juliaIgrfFile = nullptr;
 
+// Reduction to the Pole / Total field to Components (Geophysics > Magnetics), port of Mirone's
+// parker_stuff.m ('redPole'/'component' cases) + utils/mboard.m (FFT padding), via GMT.jl's own
+// 1-D FFT (src/rtp3d.jl). ONE dialog (Rtp3DDialog) and ONE callback serve both menu entries; scene
+// is the receiving window (promoted if empty, else the result is added as an extra surface).
+// params = "fieldFile;fieldDip;fieldDec;magDip;magDec;component;newRows;newCols;mirror"
+// (component: 0=RTP forced by the dialog regardless of its radio group, 1/2/3=North/East/Vert;
+// newRows/newCols>grid size triggers Mirone-style FFT-edge padding; mirror "1"/"0"). nullptr to detach.
+// Returns 1 on success, 0 on failure (parse error / grid-add rejected / exception) — unlike most of
+// the fire-and-forget callbacks here, Rtp3DDialog needs a REAL yes/no to tell the user something
+// happened, since the alternative feedback (scene's own Errors console) lives in a DIFFERENT window
+// the user may not be looking at (see the "Compute does nothing, no error" investigation, 2026-07-20).
+typedef int (*JuliaRtp3DFn)(void *scene, const char *params);
+static JuliaRtp3DFn g_juliaRtp3D = nullptr;
+
 // Plot seismicity (Geophysics > Seismology). Port of Mirone's earthquakes.m. The dialog
 // (PlotSeismicityDialog, 70_window.cpp) hands a newline-separated "key=value" block to Julia
 // (g_juliaSeismicity), which reads the catalog (USGS web query / ISF / plain-column layouts /

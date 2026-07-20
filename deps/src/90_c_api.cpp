@@ -1112,6 +1112,13 @@ GMTVTK_API void gmtvtk_set_igrf_file_callback(JuliaIgrfFileFn fn) {
 	g_juliaIgrfFile = fn;
 }
 
+// Register the Reduction to the Pole / Total field to Components Compute callback (Geophysics >
+// Magnetics). fn(scene, params) with params = "fieldFile;fieldDip;fieldDec;magDip;magDec;
+// component;newRows;newCols;mirror" runs rtp3d() and adds the result grid to `scene`. nullptr to detach.
+GMTVTK_API void gmtvtk_set_rtp3d_callback(JuliaRtp3DFn fn) {
+	g_juliaRtp3D = fn;
+}
+
 // Register the Plot seismicity callback (Geophysics > Seismology). `fn` (Julia @cfunction,
 // JuliaSeismicityFn) is called with (scene, "key=value\n…") on the dialog's OK: scene is the
 // receiving window, the block carries format/file/date range/magnitude/depth filters, the
@@ -2784,6 +2791,13 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		ex.actor->GetProperty()->SetMetallic(0.0);
 		ex.actor->GetProperty()->SetRoughness(0.45);
 		ex.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		// A newly ADDED grid starts UNCHECKED (hidden): this function stacks a new grid on top of
+		// whatever the window already shows, and two grids visible/checked at once is never wanted —
+		// the user can't tell anything happened (they overlap) and it's confusing besides. The
+		// Scene Objects "Surface" row checkbox mirrors this actor's own VTK visibility, so this ALONE
+		// makes the row start unchecked, for every caller of this shared function (RTP, IGRF grid,
+		// nested transplant, dropped grids, …) — same operation, same behaviour, no per-caller flag.
+		ex.actor->SetVisibility(0);
 		s->ren->AddActor(ex.actor);
 		// Make this dropped grid a FULL layer: keep its full-res z (readout source when it is the active
 		// grid) and its own LUT + z range (so the colorbar can be retargeted to it). applyGridStacking()

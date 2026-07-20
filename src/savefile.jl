@@ -28,12 +28,24 @@ const _SCENE_OBJS = Dict{Ptr{Cvoid}, Vector{Tuple{Symbol,String,Any}}}()
 
 # Remember a grid/image just added to `scene` so File>Save / the Scene Objects "Save…" can write it.
 # Returns `data` so it can be used inline. name="" is fine for an unnamed primary (lookup falls back
-# to first-of-kind). Idempotent enough: a re-added (kind,name,data) just appends a duplicate.
+# to first-of-kind). Idempotent enough: a re-added (kind,name,data) just appends a duplicate — callers
+# REPLACING a same-named object (e.g. recomputing "North component") must `_forget_object!` first.
 function _remember_object!(scene::Ptr{Cvoid}, kind::Symbol, name, data)
 	scene == C_NULL && return data
 	v = get!(() -> Tuple{Symbol,String,Any}[], _SCENE_OBJS, scene)
 	push!(v, (kind, name === nothing ? "" : String(name), data))
 	return data
+end
+
+# Drop any remembered (kind,name) entries for `scene` — the Julia-side half of "replace, don't pile
+# up" for a re-run under the same name (e.g. RTP3D recomputing "North component"): the C++ actor is
+# removed via `gmtvtk_remove_grid_h`, and THIS drops the stale GMTgrid/GMTimage reference so nothing
+# of the old result lingers in memory or in Save/"selected" lookups. No-op if nothing matches.
+function _forget_object!(scene::Ptr{Cvoid}, kind::Symbol, name::AbstractString)
+	v = get(_SCENE_OBJS, scene, nothing)
+	v === nothing && return
+	filter!(t -> !(t[1] === kind && t[2] == name), v)
+	return
 end
 
 # Resolve the object to save: exact (kind,name) match first; else the first object of `kind` (the
