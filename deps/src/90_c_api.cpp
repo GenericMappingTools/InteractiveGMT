@@ -714,6 +714,15 @@ GMTVTK_API int gmtvtk_has_surface(void *handle) {
 	return (sceneAlive(s) && s->surf && !s->emptyStart) ? 1 : 0;
 }
 
+// Reveal + un-fold the Scene Objects dock (unfoldSceneObjects, 70_window.cpp — same helper the
+// first nested-rectangle drop uses). Called from Julia after RTP3D / Total-field-to-Components
+// finishes, so the user immediately sees the new grid land in the panel instead of it staying
+// folded shut.
+GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (sceneAlive(s)) unfoldSceneObjects(s);
+}
+
 // Read-only introspection for the test suite: serialize the window's scene state into `buf` as a
 // single semicolon-separated list of key=value tokens (split on ';', then on the first '='). Returns
 // the FULL length (excluding the NUL); if it is >= cap the caller's buffer was too small (re-call

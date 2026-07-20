@@ -14,16 +14,30 @@ of the ambient field (`incl_fld`, `decl_fld`) and of the magnetization (`incl_ma
 `component` selects an alternative output instead of the plain RTP: `1` = X/North, `2` = Y/East,
 `3` = Z/Up component. Default `0` is the RTP.
 
+`f3d` must be a `GMTgrid` (not a bare matrix): NaN holes break the FFT (they propagate through the
+whole transform, not just the hole), so `f3d.hasnans` is checked first and `GMT.fillgaps` runs
+automatically when needed, with a progress dialog telling the user why RTP is pausing to do that.
+
 Returns the transformed grid `fout` and the wavenumber array `k`.
 """
-function rtp3d(f3d::Matrix{<:Real}, incl_fld::Real, decl_fld::Real, incl_mag::Real, decl_mag::Real;
-               component::Integer=0)
-	_rtp3d(Float64.(f3d), Float64(incl_fld), Float64(decl_fld), Float64(incl_mag), Float64(decl_mag), Int(component))
+function rtp3d(f3d::GMTgrid{Float32,2}, incl_fld::Real, decl_fld::Real, incl_mag::Real, decl_mag::Real; component::Int=0)
+	# hasnans: 0 = "don't know" (check for real), 1 = confirmed clean, 2 = confirmed has NaNs.
+	has_nans = (f3d.hasnans == 2) || (f3d.hasnans == 0 && any(isnan, f3d.z))
+	mask = nothing							# GMTimage{Bool,2} of the filled holes, or nothing if none
+	if has_nans
+		ccall(_fn(:gmtvtk_progress_show), Cint, (Cint, Cstring), Cint(0), "Filling NaN gaps before FFT…")
+		f3d.hasnans = 2						# Make sure it knows the grid has NaNs, so fillgaps doesn't warn again
+		f3d, mask = GMT.fillgaps(f3d)
+		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
+	end
+	fout, k = _rtp3d(Float64.(f3d.z), Float64(incl_fld), Float64(decl_fld), Float64(incl_mag), Float64(decl_mag), component)
+	!isempty(mask) && (fout[mask.image] .= NaN)		# put the original holes back
+	return fout, k
 end
 
 # Annotate all inputs because Julia recompiles everything if a single input type changes.
 function _rtp3d(f3d::Matrix{Float64}, incl_fld::Float64, decl_fld::Float64, incl_mag::Float64, decl_mag::Float64,
-                 component::Int)
+                component::Int)
 	D2R = pi / 180
 	incl_fld *= D2R;  decl_fld *= D2R
 	incl_mag *= D2R;  decl_mag *= D2R
@@ -203,15 +217,15 @@ function _on_rtp3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		if newRows > ny || newCols > nx
 			if mirror
 				zpad = _mboard_mirror(z)
-				fout, _ = rtp3d(zpad, fieldDip, fieldDec, magDip, magDec; component=component)
+				fout, _ = rtp3d(GMT.mat2grid(Float32.(zpad)), fieldDip, fieldDec, magDip, magDec; component=component)
 				fout = fout[1:ny, 1:nx]
 			else
 				zpad, (dny_n, _, dnx_w, _) = _mboard_taper(z, max(newRows, ny), max(newCols, nx))
-				fout, _ = rtp3d(zpad, fieldDip, fieldDec, magDip, magDec; component=component)
+				fout, _ = rtp3d(GMT.mat2grid(Float32.(zpad)), fieldDip, fieldDec, magDip, magDec; component=component)
 				fout = fout[dny_n+1:dny_n+ny, dnx_w+1:dnx_w+nx]
 			end
 		else
-			fout, _ = rtp3d(z, fieldDip, fieldDec, magDip, magDec; component=component)
+			fout, _ = rtp3d(G, fieldDip, fieldDec, magDip, magDec; component=component)
 		end
 
 		title = component == 0 ? "RTP" : component == 1 ? "North component" :
@@ -250,6 +264,7 @@ function _on_rtp3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			return Cint(0)
 		end
 		_remember_object!(scene, :grid, title, G2)
+		ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
 		return Cint(1)
 	catch e
 		_viewer_log_error(scene, "RTP3D FAILED: $(sprint(showerror, e))")
