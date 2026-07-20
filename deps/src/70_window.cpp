@@ -5492,7 +5492,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			"Middle-click: set the centre of rotation to that point.\n"
 			"Right-drag / wheel: zoom.\n"
 			"Gizmo handles — amber cone: vert. exaggeration;  tip ring: tilt;  "
-			"compass ring: azimuth.   'x' hides/shows the gizmo.");
+			"compass ring: azimuth.   'x' hides/shows the gizmo.\n\n"
+			"gmtvtk.dll built: " __DATE__ " " __TIME__);
 	};
 
 	QMenu *mFile = win->menuBar()->addMenu("&File");

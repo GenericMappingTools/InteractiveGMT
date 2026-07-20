@@ -63,8 +63,13 @@ If fso.FileExists(desktop & "\iGMT.lnk") Then fso.DeleteFile desktop & "\iGMT.ln
 pkgRoot = Replace(pkgRoot, "/", "\")
 If Right(pkgRoot, 1) = "\" Then pkgRoot = Left(pkgRoot, Len(pkgRoot) - 1)
 
+' CreateShortcut on an EXISTING .lnk preloads it from disk -- any property we don't touch stays
+' whatever a previous run (or a stray file dragged onto the icon, which Explorer writes into
+' Arguments) left behind. Arguments MUST be reset every time, or a one-off accidental drop is
+' replayed on every future double-click forever.
 Dim link : Set link = sh.CreateShortcut(desktop & "\i'GMT.lnk")
 link.TargetPath   = pkgRoot & "\iview_app.vbs"
+link.Arguments    = ""
 link.IconLocation = pkgRoot & "\igmt.ico"
 link.WindowStyle  = 7
 link.Save
