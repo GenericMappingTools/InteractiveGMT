@@ -15,6 +15,11 @@ let
 end
 
 import Dates
+let
+    p = get(ENV, "INTERACTIVEGMT_DEBUG", "")
+    path = isempty(p) ? "" : p == "1" ? joinpath(tempdir(), "igmt.log") : p
+    isempty(path) || open(io -> println(io, round(time(); digits=3), "  startup  iview_app.jl script start"), path, "a")
+end
 try
     using InteractiveGMT
     if isempty(ARGS)

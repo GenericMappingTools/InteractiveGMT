@@ -104,6 +104,7 @@ end
 # image, so they must be created here, never at top level. Tolerant of a missing/unbuilt DLL (and
 # of non-Windows) so `using InteractiveGMT` still succeeds; viewer calls then error on first use.
 function __init__()
+	_dbg("startup", "__init__ enter")
 	# ONLY load the DLL here. The dlopen handle + dlsym pointers are runtime values that can't be
 	# baked into a precompiled image, so they must resolve at load. Everything else (the 11 callback
 	# registrations) is deferred to the first window open via `_ensure_callbacks` (eventloop.jl) — it
@@ -129,6 +130,7 @@ function __init__()
 	catch e
 		@warn "InteractiveGMT: the Qt+VTK viewer DLL could not be loaded; build it with deps/build.bat (Windows only). Viewer calls will error until then." exception=(e,)
 	end
+	_dbg("startup", "__init__ exit")
 end
 
 # make_desktop_shortcut.vbs writes the .lnk to the user's REAL desktop (whatever folder Windows

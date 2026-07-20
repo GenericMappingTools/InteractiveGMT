@@ -37,6 +37,7 @@ end
 const _CB_DONE = Ref(false)
 function _ensure_callbacks()
 	_CB_DONE[] && return
+	_dbg("startup", "_ensure_callbacks enter")
 	_CB_DONE[] = true                                # set first: a failing reg must not retry forever
 	for (name, fn) in (("console",     _register_console_eval),
 	                    ("drop",        _register_drop_callback),
@@ -78,12 +79,14 @@ function _ensure_callbacks()
 			@warn "InteractiveGMT: registration '$name' failed; that feature will be \"not wired\" in the viewer. Rebuild the DLL (deps/build.bat) and restart Julia if the export is missing." exception=(e,)
 		end
 	end
+	_dbg("startup", "_ensure_callbacks exit")
 	return
 end
 
 function _start_pump()
 	_ensure_callbacks()                              # wire menu/console/drop callbacks once, lazily
 	_PUMP[] === nothing || return                    # already pumping
+	_dbg("startup", "first pump tick")
 	_PUMP[] = Timer(0.0; interval=0.02) do t         # ~50 Hz
 		n = ccall(_fn(:gmtvtk_process_events), Cint, ())
 		if n <= 0                                     # all windows closed

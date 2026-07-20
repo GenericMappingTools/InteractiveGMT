@@ -628,11 +628,11 @@ end
 # "Load all in RAM" button callback.
 function _register_cube_callback()
 	ccall(_fn(:gmtvtk_set_cube_layer_callback), Cvoid,
-		(Ptr{Cvoid},), @cfunction(_on_load_cube_layer, Cvoid, (Ptr{Cvoid}, Cint, Cint)))
+		(Ptr{Cvoid},), @cfunction((s,a,b)->Base.invokelatest(_on_load_cube_layer,s,a,b), Cvoid, (Ptr{Cvoid}, Cint, Cint)))
 	ccall(_fn(:gmtvtk_set_cube_loadall_callback), Cvoid,
-		(Ptr{Cvoid},), @cfunction(_on_cube_load_all, Cint, (Ptr{Cvoid},)))
+		(Ptr{Cvoid},), @cfunction(s->Base.invokelatest(_on_cube_load_all,s), Cint, (Ptr{Cvoid},)))
 	ccall(_fn(:gmtvtk_set_cube_slider_callback), Cvoid,
-		(Ptr{Cvoid},), @cfunction(_on_cube_slider, Cvoid, (Ptr{Cvoid}, Cstring)))
+		(Ptr{Cvoid},), @cfunction((s,c)->Base.invokelatest(_on_cube_slider,s,c), Cvoid, (Ptr{Cvoid}, Cstring)))
 end
 _drop_into(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false, source="") = _add_image_to_scene(scene, I, name; promote, source)
 function _drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name; promote=false, source="")
@@ -925,10 +925,13 @@ file (anything `GMT.gmtread` understands) onto it — or onto any open viewer wi
 added to that window and listed in its "Scene Objects" panel. Returns a `QtEmpty` handle.
 """
 function iview()
+	_dbg("startup", "iview() enter")
 	h = ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "i'GMT  —  drop a file")
 	h == C_NULL && error("iview: could not open the empty window")
+	_dbg("startup", "gmtvtk_open_empty returned")
 	fig = _register_fig!(QtEmpty(h))
 	_start_pump()
+	_dbg("startup", "iview() exit")
 	return fig
 end
 
