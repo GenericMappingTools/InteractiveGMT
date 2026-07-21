@@ -1292,7 +1292,15 @@ static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoin
 static void rebuildSceneObjects(Scene *s) {
 	if (!s || !s->objPanel)
 		return;
-	// Wipe the previous layout + its checkboxes before rebuilding.
+	// Wipe the previous layout + its checkboxes before rebuilding. deleteLater() (not delete) is
+	// deliberate -- this can run reentrantly from inside a row's own signal (a checkbox toggle that
+	// triggers a visibility change that ends up calling back in here), so the old row widgets must
+	// outlive the current call stack. But a caller that fires several rebuilds back-to-back with no
+	// real event-loop turn between them (session replay: one rebuild per recipe, all inside one
+	// synchronous Julia call) would otherwise have the OLD tree widget still alive and painting
+	// UNDER the new one, overlapping row text until the deferred delete eventually lands. Flushing
+	// DeferredDelete events immediately (safe -- it only runs queued destructors, it doesn't reenter
+	// arbitrary widget code) guarantees the old tree is actually gone before the new one is built.
 	if (QLayout *old = s->objPanel->layout()) {
 		QLayoutItem *it;
 		while ((it = old->takeAt(0)) != nullptr) {
@@ -1301,6 +1309,7 @@ static void rebuildSceneObjects(Scene *s) {
 			delete it;
 		}
 		delete old;
+		QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 	}
 	// Small checkboxes: the indicator is the ONLY hit target for show/hide. The type icon + the
 	// descriptive label sit to its right; right-clicking the icon/label opens the row's properties

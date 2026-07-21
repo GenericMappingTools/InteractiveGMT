@@ -695,6 +695,11 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 		haskey(entries, "drawn/texts.txt")  && _session_rebuild_texts!(fig, String(entries["drawn/texts.txt"]))
 		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 95)
 		fig !== nothing && _session_apply_display!(fig, display)
+		# Same "new content appeared" convention every promote/drop/derive path uses (grid.jl,
+		# clipgrid.jl, grdsample.jl, igrf.jl, rtp3d.jl, deform.jl) -- an empty launcher's Scene
+		# Objects dock starts FOLDED (gmtvtk_open_empty), so a session replayed straight into one
+		# must unfold it too, never leave it collapsed (SACRED_LAW.md derived-variable display law).
+		fig !== nothing && ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), getfield(fig, :h))
 		# Faults were rebuilt before the display state was applied; re-seat their planes/surface-projection
 		# in the final scaled space now (else they only appear after opening+closing the elastic dialog).
 		if fig !== nothing && haskey(entries, "drawn/faults.txt")

@@ -1121,6 +1121,26 @@ GMTVTK_API void gmtvtk_set_load_session_callback(JuliaLoadSessionFn fn) {
 	g_juliaLoadSession = fn;
 }
 
+// Load a .igmtz session into `scene` -- the SAME path (loadSessionIntoWindow, 70_window.cpp) the
+// File > Load Session menu action uses. Called from drop.jl's _on_drop for a dropped/opened .igmtz
+// (window drop, File > Open, Recent Files, desktop-icon drop) so there is ONE session-load path,
+// not a second Julia-side re-derivation of the menu's priming warm-up (SACRED_LAW.md).
+GMTVTK_API void gmtvtk_load_session_h(void *scene, const char *path) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!sceneAlive(s) || !s->win) return;
+	loadSessionIntoWindow(s, s->win, QString::fromUtf8(path));
+}
+
+// Grab the ENTIRE main window (titlebar-to-statusbar, incl. the Scene Objects dock) -- unlike
+// gmtvtk_save_png (VTK render surface only), this is the only way to visually diagnose a Scene
+// Objects panel paint bug (stale/overlapping tree rows etc).
+GMTVTK_API int gmtvtk_window_screenshot(void *scene, const char *path) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!sceneAlive(s) || !s->win) return 0;
+	QPixmap pm = s->win->grab();
+	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
+}
+
 // Register the IGRF Calculator's single-point callback (Geophysics > Magnetics > IGRF). fn(state)
 // with state = "lon/lat/elev_m/date_dec" returns "F/H/X/Y/Z/D/I" (or "" on failure). Same
 // Julia-owned-buffer convention as gmtvtk_set_dimfun_callback. nullptr to detach.
@@ -2267,6 +2287,11 @@ GMTVTK_API int gmtvtk_igrf_screenshot_test(const char *path) {
 	QPixmap pm = g_igrfTestDlg->dlg->grab();
 	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
 }
+
+// test hook: grab the ENTIRE main window (titlebar-to-statusbar, incl. the Scene Objects dock) --
+// unlike gmtvtk_save_png (VTK render surface only), this is the only way to visually diagnose a
+// Scene Objects panel paint bug (stale/overlapping tree rows etc). No processEvents pump here on
+// purpose -- the caller controls timing so a race can be captured, not papered over.
 
 // test hooks: open/close/screenshot the REAL Geomagnetic Bar Code dialog (same drive-the-actual-
 // widget-then-look pattern as the IGRF hooks above — never trust "didn't throw" for a paint bug).

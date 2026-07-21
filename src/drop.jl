@@ -17,6 +17,17 @@
 _on_drop(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid = _on_drop(scene, unsafe_string(cpath))
 function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 	try
+		# A .igmtz is a SAVED SESSION, not a data file -- route through the SAME loader File > Load
+		# Session uses (_on_load_session), never gmtread. Same operation, same function (SACRED_LAW.md).
+		if lowercase(splitext(path)[2]) == ".igmtz"
+			# A .igmtz is a SAVED SESSION, not a data file. Route through gmtvtk_load_session_h, the
+			# EXACT SAME C++ path (loadSessionIntoWindow, 70_window.cpp) File > Load Session uses --
+			# including its priming progress-dialog warm-up, which a brand-new just-created window
+			# (desktop-icon drop -> iview()) needs to avoid garbling the Scene Objects tree. One
+			# session-load path, never a second Julia-side re-derivation (SACRED_LAW.md).
+			ccall(_fn(:gmtvtk_load_session_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, String(path))
+			return
+		end
 		# Already shown in a live window -> raise that window and ignore the duplicate drop.
 		_open_window_for(path) != C_NULL && return
 		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
