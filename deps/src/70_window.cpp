@@ -6566,22 +6566,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 					return;
 				}
 			}
-			QMenu m(win);
-			m.addAction("Reset Camera", actReset);
-			QAction *ca = m.addAction("Cube Axes", actToggleAxes);
-			ca->setCheckable(true); ca->setChecked(s->axes->GetVisibility());
-			if (s->bar) {                    // no Color Bar entry for bare images
-				QAction *cb = m.addAction("Color Bar", actToggleBar);
-				cb->setCheckable(true); cb->setChecked(colorbarVisible(s));
-			}
-			QAction *cg = m.addAction("Gizmo", actToggleGizmo);
-			cg->setCheckable(true); cg->setChecked(s->giz && s->giz->visible);
-			QAction *c2 = m.addAction("2D", actToggle2D);
-			c2->setCheckable(true); c2->setChecked(s->flat2d);
-			m.addSeparator();
-			m.addAction("Vertical Exaggeration…", actVE);
-			m.addAction("Save Screenshot…", actShot);
-			m.exec(widget->mapToGlobal(pos));
 		});
 
 	// --- Shading control dock (live PBR / IBL / post-pass tuning) -----------
