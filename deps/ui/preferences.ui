@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>433</width>
-    <height>290</height>
+    <height>330</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -219,7 +219,7 @@
    <property name="geometry">
     <rect>
      <x>330</x>
-     <y>250</y>
+     <y>290</y>
      <width>90</width>
      <height>28</height>
     </rect>
@@ -229,6 +229,35 @@
    </property>
    <property name="default">
     <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QLabel" name="lblBgColor">
+   <property name="geometry">
+    <rect>
+     <x>160</x>
+     <y>200</y>
+     <width>141</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Background color</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="btnBgColor">
+   <property name="geometry">
+    <rect>
+     <x>160</x>
+     <y>220</y>
+     <width>60</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Solid colour for the 3-D viewer background. Click to choose.</string>
+   </property>
+   <property name="text">
+    <string>#292e38</string>
    </property>
   </widget>
   <widget class="QLabel" name="lblNanColor">

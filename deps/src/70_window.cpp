@@ -581,7 +581,7 @@ class PreferencesDialog : public QDialog {
 public:
 	PreferencesDialog(QWidget *parent) : QDialog(parent) {
 		setWindowTitle("Preferences");
-		setFixedSize(433, 290);
+		setFixedSize(433, 330);
 
 		// ---- Row 1: measure units | dist/azim type | azimuth direction ---------------------
 		auto *lblUnits = new QLabel("Measure units", this);
@@ -656,9 +656,29 @@ public:
 			if (c.isValid()) { nanColorHex = c.name(); setNanSwatch(); }
 		});
 
+		// ---- Row 5: viewer background color --------------------------------------------------
+		auto *lblBg = new QLabel("Background color", this);
+		lblBg->setGeometry(160, 200, 141, 16);
+		btnBgColor = new QPushButton(this);
+		btnBgColor->setGeometry(160, 220, 60, 24);
+		btnBgColor->setToolTip("Solid colour for the 3-D viewer background. Click to choose.");
+		QObject::connect(btnBgColor, &QPushButton::clicked, this, [this]() {
+			QColor start = bgColorHex.isEmpty() ? QColor("#292e38") : QColor(bgColorHex);
+			QColor c = QColorDialog::getColor(start, this, "Background color");
+			if (c.isValid()) { bgColorHex = c.name(); setBgSwatch(); }
+		});
+		// Tiny text-sized reset button, right against the swatch — restores the built-in gradient.
+		auto *btnBgReset = new QToolButton(this);
+		btnBgReset->setText("Reset");
+		btnBgReset->setAutoRaise(true);
+		btnBgReset->setToolTip("Restore the built-in dark-slate/steel-blue gradient background.");
+		btnBgReset->adjustSize();
+		btnBgReset->move(160 + 60 + 4, 220 + (24 - btnBgReset->height()) / 2);
+		QObject::connect(btnBgReset, &QToolButton::clicked, this, [this]() { bgColorHex.clear(); setBgSwatch(); });
+
 		// ---- OK -----------------------------------------------------------------------------
 		auto *btnOK = new QPushButton("OK", this);
-		btnOK->setGeometry(330, 250, 90, 28);
+		btnOK->setGeometry(330, 290, 90, 28);
 		btnOK->setDefault(true);
 		QObject::connect(btnOK, &QPushButton::clicked, this, [this]() { save(); accept(); });
 
@@ -668,8 +688,9 @@ public:
 private:
 	QComboBox *cmbMeasureUnits, *cmbDistAzim, *cmbAzimDir, *cmbDefaultDir;
 	QComboBox *cmbLineThickness, *cmbLineColor, *cmbCoastColor;
-	QPushButton *btnNanColor;
+	QPushButton *btnNanColor, *btnBgColor;
 	QString      nanColorHex;   // current NaN fill colour (#rrggbb), edited by the swatch button
+	QString      bgColorHex;    // current background colour (#rrggbb); empty = built-in gradient default
 
 	// Select a combo entry by text; for the editable directory combo just set the edit text.
 	static void selectText(QComboBox *c, const QString &txt) {
@@ -687,6 +708,21 @@ private:
 		btnNanColor->setText(c.name());
 	}
 
+	// Paint the background swatch button with the current colour; empty bgColorHex (built-in
+	// gradient, restored by the Reset button) shows a neutral swatch instead of a fake hex.
+	void setBgSwatch() {
+		if (bgColorHex.isEmpty()) {
+			btnBgColor->setStyleSheet(QString());
+			btnBgColor->setText("(default)");
+			return;
+		}
+		QColor c(bgColorHex);
+		if (!c.isValid()) c = QColor("#292e38");
+		const QString fg = (c.lightnessF() > 0.5) ? "#000000" : "#ffffff";
+		btnBgColor->setStyleSheet(QString("background-color:%1; color:%2;").arg(c.name(), fg));
+		btnBgColor->setText(c.name());
+	}
+
 	void load() {
 		selectText(cmbMeasureUnits,  prefMeasureUnits());
 		selectText(cmbDistAzim,      prefDistAzimType());
@@ -698,6 +734,7 @@ private:
 		selectText(cmbLineColor,     prefLineColor());
 		selectText(cmbCoastColor,    prefCoastColor());
 		nanColorHex = prefNanColor(); setNanSwatch();
+		bgColorHex = prefBackgroundColor(); setBgSwatch();
 	}
 
 	void save() {
@@ -709,6 +746,7 @@ private:
 		st.setValue("prefs/lineColor",     cmbLineColor->currentText());
 		st.setValue("prefs/coastColor",    cmbCoastColor->currentText());
 		st.setValue("prefs/nanColor",      nanColorHex);
+		st.setValue("prefs/backgroundColor", bgColorHex);
 		// Default directory: push the chosen folder to the front of the MRU (also syncs defaultDir).
 		prefPushDir(cmbDefaultDir->currentText().trimmed());
 	}
@@ -5473,9 +5511,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	vtkNew<vtkNamedColors> nc;
 	s->ren = vtkSmartPointer<vtkRenderer>::New();
-	s->ren->GradientBackgroundOn();
-	s->ren->SetBackground(0.16, 0.18, 0.22);    // bottom (dark slate)
-	s->ren->SetBackground2(0.36, 0.42, 0.52);   // top
+	applyBackgroundPref(s->ren);    // Preferences > Background color (default: dark-slate/steel-blue gradient)
 	rw->AddRenderer(s->ren);
 
 	// Overlay layer (1) for the Z tick billboards. It shares the MAIN camera (so the labels
@@ -5678,6 +5714,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Preferences: settings dialog (deps/ui/preferences.ui). Values persist via QSettings.
 	mFile->addAction("&Preferences…", [win]() {
 		const QString nanBefore = prefNanColor();
+		const QString bgBefore  = prefBackgroundColor();
 		PreferencesDialog(win).exec();
 		// NaN fill colour changed -> repaint every open window's grid NaN cells live. The hole
 		// GEOMETRY is already filled (colour-independent); only the CTF NaN colour + baked textures
@@ -5690,6 +5727,15 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				applyNanColorToLut(sc->surfLut, sc->nanColor);
 				for (auto &ex : sc->extras) applyNanColorToLut(ex.lut, sc->nanColor);
 				applyShading(sc);
+			}
+		}
+		// Background colour changed -> re-run the SAME applyBackgroundPref every open window's
+		// renderer went through at creation time (SACRED_LAW: one function, no inline SetBackground).
+		if (prefBackgroundColor() != bgBefore) {
+			for (Scene *sc : g_scenes) {
+				if (!sceneAlive(sc)) continue;
+				applyBackgroundPref(sc->ren);
+				sc->widget->renderWindow()->Render();
 			}
 		}
 	});

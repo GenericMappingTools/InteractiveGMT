@@ -78,6 +78,24 @@ static void prefNanColorRGB(double &r, double &g, double &b) {
 	r = c.redF(); g = c.greenF(); b = c.blueF();
 }
 
+// "Background color": solid override for the 3-D scene's render background. Empty string (default)
+// keeps the program's built-in dark-slate/steel-blue gradient; any #rrggbb hex picked in
+// Preferences replaces it with a SOLID colour. ONE function applies it — scene creation
+// (buildAndShow, 70_window.cpp) and the Preferences OK handler both call this, never inline
+// SetBackground/GradientBackgroundOn elsewhere (SACRED_LAW: one operation, one function).
+static QString prefBackgroundColor() { return igmtSettings().value("prefs/backgroundColor", "").toString(); }
+static void applyBackgroundPref(vtkRenderer *ren) {
+	QColor c(prefBackgroundColor().trimmed());
+	if (!c.isValid()) {
+		ren->GradientBackgroundOn();
+		ren->SetBackground(0.16, 0.18, 0.22);    // bottom (dark slate)
+		ren->SetBackground2(0.36, 0.42, 0.52);   // top
+	} else {
+		ren->GradientBackgroundOff();
+		ren->SetBackground(c.redF(), c.greenF(), c.blueF());
+	}
+}
+
 // Map the "Default line color" name to RGB (0..1). "Orange" (1.0,0.55,0.0) is the program's original
 // unnamed default line colour, kept FIRST in the combo so the familiar look stays the default. Any
 // unknown name falls back to that same orange (never a surprise black). Other colours are still
