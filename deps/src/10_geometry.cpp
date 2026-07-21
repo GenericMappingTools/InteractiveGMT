@@ -338,6 +338,14 @@ struct Scene {
 	double y0 = 0, y1 = 1;      // true y range
 	double xfac = 1.0;          // base X actor scale (cos(midlat) for geographic)
 	double zfac = 1.0;          // base Z actor scale (true-scale unit conversion)
+	// SACRED_LAW.md "derived-variable axes law": once a crop/derive reframes the window onto a
+	// SUBREGION (gmtvtk_reframe_h), surfGetBounds() must report THAT subregion instead of the
+	// primary surface's own full bounds — every bounds-driven function (applyVE's axes-cube resize,
+	// fitSnapView's camera fit, rebuildAxisLabels' custom tick-label billboards — ALL THREE read
+	// surfGetBounds, never s->axes directly) then automatically stays consistent with the reframe
+	// with ZERO changes to any of them. false = untouched, normal behaviour (report the real actor).
+	bool   viewBoundsOverride = false;
+	double viewBounds[6] = { 0,0,0,0,0,0 };
 
 	// --- full-resolution DATA layer (decoupled from the render geometry) -----
 	// The grid's z kept once at full res, column-major z[i*gny + j] (GMT layout). Hover readout
@@ -646,6 +654,7 @@ static inline void surfGetScale(Scene *s, double sc[3]) {
 	if (vtkProp3D *p = surfProp(s)) p->GetScale(sc); else { sc[0]=sc[1]=sc[2]=1.0; }
 }
 static inline void surfGetBounds(Scene *s, double b[6]) {
+	if (s->viewBoundsOverride) { for (int i = 0; i < 6; ++i) b[i] = s->viewBounds[i]; return; }
 	if (vtkProp3D *p = surfProp(s)) p->GetBounds(b);
 }
 static inline void surfSetVisibility(Scene *s, int v) {

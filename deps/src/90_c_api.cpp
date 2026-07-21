@@ -932,6 +932,27 @@ GMTVTK_API void gmtvtk_set_crs(void *handle, const char *proj4, const char *wkt,
 	if (s->geoMenu) s->geoMenu->menuAction()->setEnabled(s->hasCRS());
 }
 
+// Read the window's CRS back (the counterpart to gmtvtk_set_crs — nothing previously exposed the
+// actual proj4/wkt strings, only a "has one at all" boolean via gmtvtk_scene_state). Used by "Crop
+// Image (with coords)" to georeference a captured picture with the SAME CRS the window itself
+// already carries, so it round-trips through Save Image as a real GeoTIFF. Truncates into the
+// caller's buffers (null-terminated); returns the EPSG code (0 if none / window not alive).
+GMTVTK_API int gmtvtk_get_crs(void *handle, char *proj4buf, int proj4cap, char *wktbuf, int wktcap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (proj4buf && proj4cap > 0) proj4buf[0] = '\0';
+	if (wktbuf && wktcap > 0) wktbuf[0] = '\0';
+	if (!sceneAlive(s)) return 0;
+	if (proj4buf && proj4cap > 0) {
+		std::strncpy(proj4buf, s->crsProj4.c_str(), proj4cap - 1);
+		proj4buf[proj4cap - 1] = '\0';
+	}
+	if (wktbuf && wktcap > 0) {
+		std::strncpy(wktbuf, s->crsWkt.c_str(), wktcap - 1);
+		wktbuf[wktcap - 1] = '\0';
+	}
+	return s->crsEpsg;
+}
+
 // Close a window programmatically (WA_DeleteOnClose -> destroy + bookkeeping). Used to retire an
 // empty launcher once a dropped file has been promoted into a full viewer window.
 GMTVTK_API void gmtvtk_close(void *handle) {
@@ -2675,13 +2696,229 @@ GMTVTK_API int gmtvtk_grow_frame_h(void *handle, double x0, double x1, double y0
 	return 1;
 }
 
-// Hide the window's base surface plane (keeping its geometry for axis bounds + hover sampling).
-// Used by the basemap path: the promoted flat z=0 plane is only scaffold under the draped tile, so
-// hiding it stops a coloured plane peeking out when the tile is toggled off. Bounds/readout unaffected.
+// Hide the window's base surface plane AND its own drape, if any (keeping geometry for axis bounds
+// + hover sampling). Used by the basemap/drop scaffold paths: the promoted flat z=0 plane is only
+// scaffold under the draped tile, which is added as a SEPARATE ExtraObj there, so those callers
+// never have a base s->drape and hiding surf alone was enough. A PRIMARY bare image window
+// (gmtvtk_view_grid with image_only) DOES carry its texture on the base s->drape, not an extra — so
+// this must hide both, or "hide the primary" leaves the actual picture fully visible underneath.
 GMTVTK_API void gmtvtk_hide_surface(void *handle) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	surfSetVisibility(s, 0);
+	if (s->drape) s->drape->SetVisibility(0);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Hide every grid (base surface AND every non-image extra) EXCEPT `keepname` — the ground-truth
+// version of the SACRED_LAW.md derived-variable display rule. Operates DIRECTLY on the live scene
+// (s->extras / s->surf / s->surfName), never through a Julia-side bookkeeping dict — a Julia-side
+// registry can only hide what IT remembers being added, so any grid that reached the scene through
+// a path the registry doesn't track is invisible to a Julia-only fix. Reading straight off the
+// actual actors/names removes that whole class of gap: whatever the Scene Objects panel shows a
+// checkbox for is exactly what this loop can see and hide.
+// `keep_none` != 0 hides EVERY grid, no exceptions (used when the new derived variable is a
+// DIFFERENT kind than what it was derived from — e.g. "Crop Image" capturing a picture FROM a
+// grid: the source to uncheck is a grid, but the result is an image, so there is no grid NAME to
+// pass as `keepname` at all). Without this, an empty/"" `keepname` would be ambiguous with "keep
+// the unnamed base" instead of "keep nothing".
+GMTVTK_API void gmtvtk_hide_other_grids(void *handle, const char *keepname, int keep_none) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	const std::string keep = keepname ? keepname : "";
+	for (auto& ex : s->extras) {
+		if (ex.isImage || (!keep_none && ex.name == keep)) continue;
+		if (ex.actor) ex.actor->SetVisibility(0);
+		if (ex.drape) ex.drape->SetVisibility(0);
+	}
+	if (surfProp(s) && (keep_none || s->surfName != keep)) {
+		surfSetVisibility(s, 0);
+		if (s->drape) s->drape->SetVisibility(0);
+	}
+	refreshGridColorbar(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Same as gmtvtk_hide_other_grids, for images: hide every image (primary bare image AND every
+// image extra) EXCEPT `keepname`, reading directly off the live scene. The primary bare image's
+// texture lives on s->drape gated by s->imageOnly (sceneHasImage's own check), never on a grid's
+// s->surf mesh, so it is hidden the same way gmtvtk_hide_surface already does for that case.
+GMTVTK_API void gmtvtk_hide_other_images(void *handle, const char *keepname) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	const std::string keep = keepname ? keepname : "";
+	for (auto& ex : s->extras) {
+		if (!ex.isImage || ex.name == keep) continue;
+		if (ex.actor) ex.actor->SetVisibility(0);
+		if (ex.drape) ex.drape->SetVisibility(0);
+	}
+	if (s->imageOnly && s->drape && s->surfName != keep) {
+		surfSetVisibility(s, 0);
+		s->drape->SetVisibility(0);
+	}
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Capture the CURRENT render as RGB pixels, cropped to the on-screen rectangle that world bbox
+// (w,e,south,north — plain data coordinates, same convention rectRoiCrop already computes) projects
+// to at the CURRENT camera state (no flat2d forcing, unlike the GeoTIFF export — works at any
+// tilt/zoom). Same proven NDC-projection technique as captureAxesInteriorRGB (70_window.cpp, Save
+// Screenshot GeoTIFF), applied to an arbitrary caller-supplied bbox instead of the whole data bbox.
+// Z isn't sampled per-point (would need the real terrain height under the rectangle); the corners
+// bracket the WHOLE scene's z-range instead, which only ever widens the captured pixel rect a
+// little under a tilted view and is exact in the app's common flat/top-down orthographic mode
+// (z doesn't move screen x/y there at all). Used by Roi Crop Tools' "Crop Image" on a window with
+// no separate bitmap image — the rendered GRID is itself the picture to crop in that case. Axes /
+// colorbar, and every drawn polygon/line overlay/symbol layer (the crop-selection rectangle ITSELF
+// is one of these — it must never bake into the picture it's selecting) are hidden for the capture
+// and restored after. Caller owns the returned buffer (gmtvtk_free_rgb frees it). Returns 1 on
+// success, 0 if the bbox has zero on-screen area (e.g. the rectangle is fully off the viewport).
+GMTVTK_API int gmtvtk_capture_rect_rgb(void *handle, double w, double e, double south, double north,
+                                        unsigned char **outRgb, int *outW, int *outH) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->ren || !s->widget || !outRgb || !outW || !outH) return 0;
+	const int axesVis = s->axes ? s->axes->GetVisibility() : 0;
+	const bool barVis  = colorbarVisible(s);
+	if (s->axes) s->axes->SetVisibility(0);   // decoration only — never part of the captured pixels
+	if (s->bar)  setColorbarVisible(s, false);
+	// The crop-selection rectangle (and any other drawn line/point overlay, symbol layer) is UI
+	// markup, never part of the picture being captured — hide every one for the shot, remember
+	// which were actually visible so only those come back after.
+	std::vector<vtkActor*> hiddenPolyLine, hiddenPolyFill;
+	for (auto& pg : s->polys) {
+		if (pg.line && pg.line->GetVisibility()) { pg.line->SetVisibility(0); hiddenPolyLine.push_back(pg.line.Get()); }
+		if (pg.fill && pg.fill->GetVisibility()) { pg.fill->SetVisibility(0); hiddenPolyFill.push_back(pg.fill.Get()); }
+	}
+	std::vector<vtkActor*> hiddenOverlay;
+	for (auto& ov : s->overlays)
+		if (ov.actor && ov.actor->GetVisibility()) { ov.actor->SetVisibility(0); hiddenOverlay.push_back(ov.actor.Get()); }
+	std::vector<vtkActor*> hiddenSymbol;
+	for (auto& sl : s->symbols)
+		if (sl.actor && sl.actor->GetVisibility()) { sl.actor->SetVisibility(0); hiddenSymbol.push_back(sl.actor.Get()); }
+	s->widget->renderWindow()->Render();
+
+	vtkNew<vtkWindowToImageFilter> w2i;
+	w2i->SetInput(s->widget->renderWindow());
+	w2i->SetScale(2); w2i->Update();
+	vtkImageData *full = w2i->GetOutput();
+	int dims[3]; full->GetDimensions(dims);
+
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	const double aspect = (dims[1] > 0) ? double(dims[0]) / double(dims[1]) : 1.0;
+	vtkMatrix4x4 *M = cam->GetCompositeProjectionTransformMatrix(aspect, -1.0, 1.0);
+	const double bx0 = w * s->xfac, bx1 = e * s->xfac;                    // world/scene units (actor scale)
+	const double bz0 = s->zmin * s->zfac * s->ve, bz1 = s->zmax * s->zfac * s->ve;
+	double nx0=1e300, nx1=-1e300, ny0=1e300, ny1=-1e300;
+	for (double cx : { bx0, bx1 })
+		for (double cy : { south, north })
+			for (double cz : { bz0, bz1 }) {
+				double p[4] = { cx, cy, cz, 1.0 }, o[4];
+				M->MultiplyPoint(p, o);
+				if (o[3] != 0.0) {
+					const double ndcx = o[0]/o[3], ndcy = o[1]/o[3];
+					nx0 = std::min(nx0, ndcx); nx1 = std::max(nx1, ndcx);
+					ny0 = std::min(ny0, ndcy); ny1 = std::max(ny1, ndcy);
+				}
+			}
+	auto ndcToPix = [](double n, int size) { return std::clamp(int(std::round((n*0.5+0.5) * (size-1))), 0, size-1); };
+	const int px0 = ndcToPix(nx0, dims[0]), px1 = ndcToPix(nx1, dims[0]);
+	const int py0 = ndcToPix(ny0, dims[1]), py1 = ndcToPix(ny1, dims[1]);
+	const bool ok = (px1 > px0 && py1 > py0);
+	if (ok) {
+		const int cw = px1 - px0 + 1, ch = py1 - py0 + 1;
+		*outW = cw; *outH = ch;
+		unsigned char *buf = new unsigned char[size_t(cw) * size_t(ch) * 3];
+		for (int row = 0; row < ch; ++row) {
+			auto *src = static_cast<unsigned char*>(full->GetScalarPointer(px0, py0 + row, 0));
+			unsigned char *dst = buf + size_t(ch - 1 - row) * size_t(cw) * 3;   // bottom-up -> top-first
+			std::memcpy(dst, src, size_t(cw) * 3);
+		}
+		*outRgb = buf;
+	}
+	if (s->axes) s->axes->SetVisibility(axesVis);
+	if (s->bar)  setColorbarVisible(s, barVis);
+	for (auto *a : hiddenPolyLine) a->SetVisibility(1);
+	for (auto *a : hiddenPolyFill) a->SetVisibility(1);
+	for (auto *a : hiddenOverlay)  a->SetVisibility(1);
+	for (auto *a : hiddenSymbol)   a->SetVisibility(1);
+	s->widget->renderWindow()->Render();
+	return ok ? 1 : 0;
+}
+
+// Free a buffer returned by gmtvtk_capture_rect_rgb.
+GMTVTK_API void gmtvtk_free_rgb(unsigned char *buf) { delete[] buf; }
+
+// Re-frame the AXES CUBE + camera to an ARBITRARY world bbox (x0,x1,y0,y1 — plain data
+// coordinates), instead of always the window's PRIMARY surface (`s->axes->SetBounds` normally only
+// ever gets set from `surfGetBounds`, e.g. in applyVE — see that function's own comment). Used by
+// Roi Crop Tools: SACRED_LAW.md's group-uncheck/derived-variable laws already make the crop the
+// only thing shown, but the axes cube kept the PARENT's full extent since it never tracked anything
+// but the primary — a derived variable's axes must fit ITS OWN limits. Z isn't re-derived (VE/zmin/
+// zmax are window-wide, unrelated to which XY subregion is framed); the degenerate-Z guard mirrors
+// applyVE's own (a zero Z range makes vtkCubeAxesActor compute NaN label counts and abort the
+// render). Camera re-fit reuses fitSnapView's exact technique (20_gizmo.cpp), generalized to a
+// caller-supplied bbox instead of always surfGetBounds.
+//
+// `keepMargin`: images keep their axis tick LABELS on screen with a margin (fill=0.84 — the SAME
+// value gmtvtk_view_grid's own referenced-image path already uses, 90_c_api.cpp's imode==1 branch)
+// instead of grids' own edge-to-edge fill=1.0 (which deliberately pushes labels off-screen — see
+// fitSnapView's own comment; that is correct, EXISTING behaviour for grids, not something to
+// change). Passing the wrong one for an image wiped its axis labels entirely — found live 2026-07-21.
+GMTVTK_API void gmtvtk_reframe_h(void *handle, double x0, double x1, double y0, double y1, int keepMargin) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->ren || !s->widget || !s->axes) return;
+	vtkRenderer *ren = s->ren;
+	vtkCamera *cam = ren->GetActiveCamera();
+
+	double b[6] = { x0 * s->xfac, x1 * s->xfac, y0, y1,
+	                s->zmin * s->zfac * s->ve, s->zmax * s->zfac * s->ve };
+	if (b[5] <= b[4]) b[5] = b[4] + 1.0;               // degenerate-Z guard, same as applyVE's flatZ case
+	// The ACTUAL visible tick-label TEXT is a separate custom billboard system (rebuildAxisLabels,
+	// 10_geometry.cpp) — NOT vtkCubeAxesActor's own native labels (deliberately off, "different text
+	// engine"). It positions every X/Y/Z billboard from surfGetBounds(), i.e. the PRIMARY SURFACE's
+	// bounds — never from s->axes directly, so SetBounds/SetXAxisRange/SetYAxisRange on s->axes alone
+	// (tried first, still produced NO visible labels) can't fix this. Setting the override here makes
+	// surfGetBounds report the crop's bounds instead, so rebuildAxisLabels below draws labels for the
+	// RIGHT region automatically, with no changes needed to it or any other surfGetBounds caller.
+	s->viewBoundsOverride = true;
+	for (int i = 0; i < 6; ++i) s->viewBounds[i] = b[i];
+	s->axes->SetBounds(b);
+	s->axes->SetXAxisRange(x0, x1);
+	s->axes->SetYAxisRange(y0, y1);
+	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1;    // keep the frame bookkeeping in sync (gmtvtk_grow_frame_h's shrink counterpart)
+
+	{
+		const double sc[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
+		double pos[3], foc[3]; cam->GetPosition(pos); cam->GetFocalPoint(foc);
+		const double d[3] = { pos[0]-foc[0], pos[1]-foc[1], pos[2]-foc[2] };
+		cam->SetFocalPoint(sc);
+		cam->SetPosition(sc[0]+d[0], sc[1]+d[1], sc[2]+d[2]);
+	}
+	const int *sz = s->widget->renderWindow()->GetSize();
+	const double aspect = (sz && sz[1] > 0) ? double(sz[0]) / double(sz[1]) : 1.0;
+	const double targetFill = !s->flat2d ? 0.88 : (keepMargin ? 0.84 : 1.0);
+	for (int pass = 0; pass < 2; ++pass) {
+		vtkMatrix4x4 *M = cam->GetCompositeProjectionTransformMatrix(aspect, -1.0, 1.0);
+		double nx0=1e300, nx1=-1e300, ny0=1e300, ny1=-1e300;
+		for (double cx : { b[0], b[1] })
+			for (double cy : { b[2], b[3] })
+				for (double cz : { b[4], b[5] }) {
+					double p[4] = { cx, cy, cz, 1.0 }, o[4];
+					M->MultiplyPoint(p, o);
+					if (o[3] == 0.0) continue;
+					const double ndcx = o[0]/o[3], ndcy = o[1]/o[3];
+					nx0 = std::min(nx0, ndcx); nx1 = std::max(nx1, ndcx);
+					ny0 = std::min(ny0, ndcy); ny1 = std::max(ny1, ndcy);
+				}
+		const double wfrac = (nx1 - nx0) / 2.0, hfrac = (ny1 - ny0) / 2.0;
+		const double frac = s->flat2d ? std::max(wfrac, hfrac) : wfrac;
+		if (frac <= 1e-6) break;
+		cam->Zoom(targetFill / frac);
+	}
+	ren->ResetCameraClippingRange();
+	rebuildAxisLabels(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 

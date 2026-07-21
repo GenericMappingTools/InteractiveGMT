@@ -194,3 +194,190 @@ the line width or point size in px (`0` = default). Returns `fig`.
 """
 add!(fig::QtFigure, data; mode::Symbol=:lines, color=nothing, size=0) =
 	_add_overlay!(fig, data, mode, color, size)
+
+# Pure crop math for "Roi Crop Tools" (port of Mirone's mirone.m ImageCrop_CB CropaGrid_pure /
+# plain-image-crop cases) — no DLL, no window, so this is what the unit tests exercise directly.
+# GMT.jl's in-memory `crop` (works on both GMTgrid and GMTimage) is the SAME function `GMT.grdcut`
+# itself dispatches to for a plain region-only cut on an in-memory grid (grdcut.jl:81) — so cropping
+# through here and through `grdcut(G; region=...)` must agree exactly; the unit test locks that down.
+_roi_crop_grid(G::GMTgrid, w, e, s, n)   = GMT.crop(G; region=(w, e, s, n))[1]
+_roi_crop_image(I::GMTimage, w, e, s, n) = GMT.crop(I; region=(w, e, s, n))[1]
+
+# "Crop Image" (plain, un-referenced): `GMT.crop` preserves the source image's own CRS, which is
+# correct for "Crop Image (with coords)" but wrong for the plain variant — Mirone's real distinction
+# between the two buttons. Strips proj4/wkt/epsg off a copy so the result carries no georeferencing
+# (still sits at its true world x/y in the shared-axes window; just not GeoTIFF-referenceable).
+function _strip_crs(I::GMTimage)
+	I2 = deepcopy(I)
+	I2.proj4 = ""; I2.wkt = ""; I2.epsg = 0
+	return I2
+end
+
+# Read the window's OWN CRS back (gmtvtk_get_crs, the getter counterpart to _apply_crs!'s
+# gmtvtk_set_crs — nothing previously exposed the actual proj4/wkt strings). Returns NO_CRS if the
+# window carries none.
+function _window_crs(scene::Ptr{Cvoid})
+	proj4buf = zeros(UInt8, 512); wktbuf = zeros(UInt8, 8192)
+	epsg = ccall(_fn(:gmtvtk_get_crs), Cint,
+		(Ptr{Cvoid}, Ptr{UInt8}, Cint, Ptr{UInt8}, Cint),
+		scene, proj4buf, Cint(length(proj4buf)), wktbuf, Cint(length(wktbuf)))
+	z = findfirst(==(0x00), proj4buf); proj4 = String(proj4buf[1:(z === nothing ? 0 : z - 1)])
+	z = findfirst(==(0x00), wktbuf);   wkt   = String(wktbuf[1:(z === nothing ? 0 : z - 1)])
+	return CRS(proj4, wkt, Int(epsg))
+end
+
+# Fallback for "Crop Image"/"Crop Image (with coords)" when the window has no separate bitmap image
+# to crop: the rendered GRID itself IS the picture in that case (Mirone's own architecture always
+# has one — a grid there is displayed AS a pseudocolour image; this app's true-3D grids don't, until
+# captured). Reuses the SAME proven NDC-projection capture technique as File>Save Screenshot GeoTIFF
+# (`gmtvtk_capture_rect_rgb`, 90_c_api.cpp), applied to the rectangle's own bbox instead of the whole
+# data bbox, at the window's CURRENT camera angle (no flat2d forcing).
+#
+# Both variants place the picture at its real world x/y (so it sits correctly in the SHARED-axes
+# window — see SACRED_LAW.md, no exception for "plain"). `coords`: Mirone's real distinction between
+# the two Crop Image buttons was never about axes (this app has none per-image, the WINDOW'S are
+# shared) — it's whether the picture carries real georeferencing at all. `coords=true` attaches the
+# window's own CRS (`_window_crs`), so the result round-trips through File>Save Image as a genuine
+# GeoTIFF; `coords=false` leaves it a bare picture with no proj4/wkt, matching Mirone's un-referenced
+# plain crop.
+function _capture_rect_image(scene::Ptr{Cvoid}, w, e, s, n; coords::Bool=true)
+	pRgb = Ref{Ptr{UInt8}}(C_NULL)
+	pW = Ref{Cint}(0); pH = Ref{Cint}(0)
+	ok = ccall(_fn(:gmtvtk_capture_rect_rgb), Cint,
+		(Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
+		scene, Float64(w), Float64(e), Float64(s), Float64(n), pRgb, pW, pH)
+	ok == 0 && error("Roi Crop: rectangle isn't visible on screen, nothing to capture")
+	try
+		view = unsafe_wrap(Array, pRgb[], (3, Int(pW[]), Int(pH[])))   # (band, col, row), C memory, borrowed
+		mat = permutedims(view, (3, 2, 1))                              # (row, col, band), owned copy
+		if coords
+			crs = _window_crs(scene)
+			return GMT.mat2img(mat; x=[Float64(w), Float64(e)], y=[Float64(s), Float64(n)],
+			                   proj4=crs.proj4, wkt=crs.wkt)
+		else
+			return GMT.mat2img(mat; x=[Float64(w), Float64(e)], y=[Float64(s), Float64(n)])
+		end
+	finally
+		ccall(_fn(:gmtvtk_free_rgb), Cvoid, (Ptr{UInt8},), pRgb[])
+	end
+end
+
+# Hide EVERY known `kind` object in `scene` except `keepname` — the SACRED_LAW.md "uncheck the
+# source" half of the derived-variable display law.
+#
+# Earlier version hid a single guessed "srcname" (`_find_object_named`'s first-match-of-kind). That
+# guess is only right when the window holds exactly one grid/image; the moment it holds more than
+# one (e.g. a base grid PLUS a named extra like "layer0.grd" — the user's own live repro, confirmed
+# by their Scene Objects screenshot showing BOTH still checked after a crop), `_find_object_named`
+# has no way to know which one a freehand rectangle was actually drawn over, so it can guess wrong
+# and hide the WRONG (or no) object, leaving the real source checked. Fix: don't guess — hide ALL
+# other known objects of this kind. This still gives exactly the law's OBSERVABLE guarantee (only
+# the new result ends up checked), and matches this app's own existing one-visible-at-a-time
+# convention for grids (`gmtvtk_add_surface_h`'s own comment: "two grids visible at once is never
+# wanted"), so it's not overreach — dead-in-fact, this is the same guarantee that convention already
+# assumed but never enforced ITSELF for the crop case.
+#
+# For :grid, this goes straight to `gmtvtk_hide_other_grids` (90_c_api.cpp) — GROUND TRUTH,
+# operating directly on the live `s->extras`/`s->surf`, not a Julia-side bookkeeping dict. A dict
+# can only hide what IT remembers being added; if a grid reached the scene through any path the
+# registry doesn't track (or the two ever drift apart), a Julia-only fix is blind to it — reading
+# straight off the actual actors/names removes that class of gap entirely: whatever the Scene
+# Objects panel shows a checkbox for is exactly what the C++ loop can see and hide.
+#
+# :image goes through `gmtvtk_hide_other_images`, the same ground-truth C export as :grid.
+function _hide_other_objects!(scene::Ptr{Cvoid}, kind::Symbol, keepname::AbstractString)
+	if kind === :grid
+		ccall(_fn(:gmtvtk_hide_other_grids), Cvoid, (Ptr{Cvoid}, Cstring, Cint), scene, keepname, Cint(0))
+	elseif kind === :image
+		ccall(_fn(:gmtvtk_hide_other_images), Cvoid, (Ptr{Cvoid}, Cstring), scene, keepname)
+	end
+	return
+end
+
+# Hide EVERY grid in `scene`, no exceptions — used when a NEW derived variable is a different kind
+# than the grid it was derived from (e.g. "Crop Image" capturing a picture FROM a grid: there is no
+# grid NAME to "keep", the whole point is that none of them are the new result).
+function _hide_all_grids!(scene::Ptr{Cvoid})
+	ccall(_fn(:gmtvtk_hide_other_grids), Cvoid, (Ptr{Cvoid}, Cstring, Cint), scene, C_NULL, Cint(1))
+end
+
+# Show `name` (the SACRED_LAW.md "new derived variable starts checked" half). Needed because the
+# shared `gmtvtk_add_surface_h` (90_c_api.cpp:2809, EVERY caller: RTP3D, IGRF, nested transplant,
+# drops) deliberately starts a newly-added grid/image HIDDEN — that default predates this law and is
+# shared app-wide, so it is overridden HERE at the call site (`gmtvtk_set_object_visible`, the same
+# existing toggle every other visibility change already uses) rather than changed for every caller.
+function _show_object!(scene::Ptr{Cvoid}, name::AbstractString)
+	ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, name, Cint(1))
+	return
+end
+
+# "Roi Crop Tools" rectangle context-menu entries (55_lineprops.cpp rectRoiCrop) — port of Mirone's
+# draw_funs.m rectangle item_tools submenu / mirone.m ImageCrop_CB. Crops the window's PRIMARY grid
+# or image (found via savefile.jl's `_find_object_named`, so we also learn what to hide) to the
+# rectangle's bounding box.
+#
+# SACRED_LAW.md derived-variable display law, NO EXCEPTIONS: the crop is a NEW derived variable, so
+# it ALWAYS goes into the SAME window as a new named Scene Objects row
+# (`_add_grid_to_scene`/`_add_image_to_scene` — the SAME shared add-to-scene functions every other
+# drop/derive path uses, never a raw ccall or a new window), starts CHECKED, the source it was
+# cropped from is UNCHECKED (`_hide_other_objects!`), and Scene Objects UNFOLDS to reveal it.
+#
+# `kind`: "grid" | "image" | "image_coords" — an earlier version of this function opened "image"
+# (Mirone's PLAIN, un-georeferenced crop) in a NEW standalone window instead, reasoning that a
+# pixel-space image can't join an already-georeferenced window's shared axes. That reasoning may be
+# true, but carving out an exception to the law is not this function's call to make — the law says
+# ALWAYS, so "image" now follows the exact same same-window path as "image_coords". Both currently
+# behave identically once in-window (Mirone's plain-vs-coords distinction was ONLY meaningful for a
+# standalone window's own axes, which no longer applies) — that's a consequence of the law, not a
+# bug. Only these three basic crops are ported for now; Mirone's fuller ROI toolset
+# (stats/clip/fill-gaps/spectral…) is not.
+function _on_roi_crop(scene::Ptr{Cvoid}, kind::String, rectstr::String)::Cvoid
+	k = ""
+	try
+		k = kind
+		parts = split(rectstr, '/')
+		length(parts) == 4 || error("Roi Crop: malformed rect '$rectstr'")
+		w, e, s, n = parse.(Float64, parts)
+		if k == "grid"
+			srcname, G = _find_object_named(scene, :grid)
+			G === nothing && error("No grid to crop in this window")
+			Gc = _roi_crop_grid(G, w, e, s, n)
+			newname = isempty(srcname) ? "Cropped grid" : "$srcname (cropped)"
+			_add_grid_to_scene(scene, Gc, newname; promote=false)
+			_show_object!(scene, newname)
+			_hide_other_objects!(scene, :grid, newname)
+			ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+			# SACRED_LAW.md group-uncheck/derived-variable laws: the new result's axes must fit ITS
+			# OWN limits, not the parent's — the axes cube otherwise always tracks the PRIMARY
+			# surface only (applyVE, 10_geometry.cpp), regardless of which extra is now active.
+			ccall(_fn(:gmtvtk_reframe_h), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Cint), scene, w, e, s, n, Cint(0))
+		elseif k == "image" || k == "image_coords"
+			srcname, I = _find_object_named(scene, :image)
+			wantCoords = (k == "image_coords")
+			# No separate bitmap image in this window (e.g. a pure grid, no draped/dropped image) ->
+			# capture the rendered grid itself instead of erroring. See `_capture_rect_image`.
+			capturedFromGrid = I === nothing
+			Ic = capturedFromGrid ? _capture_rect_image(scene, w, e, s, n; coords=wantCoords) :
+			     wantCoords       ? _roi_crop_image(I, w, e, s, n) :   # GMT.crop preserves I's own CRS as-is
+			                        _strip_crs(_roi_crop_image(I, w, e, s, n))   # plain: no georeferencing
+			newname = (capturedFromGrid || isempty(srcname)) ? "Cropped image" : "$srcname (cropped)"
+			_add_image_to_scene(scene, Ic, newname; promote=false)
+			_show_object!(scene, newname)
+			_hide_other_objects!(scene, :image, newname)
+			# The captured picture's real SOURCE was a grid (a different kind), not another image —
+			# the law's "uncheck the source" still applies, just against the other kind (SACRED_LAW.md).
+			capturedFromGrid && _hide_all_grids!(scene)
+			ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+			# keepMargin=1: images keep a margin so their axis tick labels stay on screen (matching
+			# gmtvtk_view_grid's own referenced-image path) — unlike grids, which fill edge-to-edge.
+			ccall(_fn(:gmtvtk_reframe_h), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Cint), scene, w, e, s, n, Cint(1))
+		else
+			error("Roi Crop: unknown kind '$k'")
+		end
+		_viewer_log_error(scene, "Cropped $k")
+	catch e
+		_viewer_log_error(scene, "Roi Crop FAILED: $(sprint(showerror, e))")
+		@warn "roi_crop: could not crop" exception=(e,)
+	end
+	return
+end

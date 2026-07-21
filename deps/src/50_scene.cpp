@@ -1585,15 +1585,21 @@ static void rebuildSceneObjects(Scene *s) {
 			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking",
 			        [s](const QPoint& g) { surfaceObjectMenu(s, g); });
 			if (s->drape) addRow(QString("Image drape"), s->drape, IC_Image);   // grid's drape texture
+			// Base-surface children must mirror the container's hidden state exactly like an extra
+			// grid's children do (colorbarRow/axesRow below, in the s->extras loop) — WITHOUT this,
+			// hiding the base surface (e.g. SACRED_LAW.md's "uncheck the source" when a derived
+			// result replaces it) left its Color Bar / Axes rows still shown checked, because both
+			// calls here used to omit the `grpVisible` argument entirely (defaults to true).
+			const bool baseVis = sp->GetVisibility() != 0;
 			if (s->customLayerTexture) {         // Aquamoto: same file group, but each variable's row is
 				                                  // its OWN independent handle -- never merged into one
 				                                  // combined label/row (that would mix variables together).
 				aquaWaterColorbarRow();
 				aquaLandColorbarRow();
 			} else {
-				colorbarRow(&s->surfShowBar, -1);    // base relief grid
+				colorbarRow(&s->surfShowBar, -1, baseVis);    // base relief grid
 			}
-			axesRow();
+			axesRow(baseVis);
 			endGroup();
 		}
 	} else if (s->drape) {                                  // bare image (view_image) group — header IS the image handle
@@ -1619,7 +1625,7 @@ static void rebuildSceneObjects(Scene *s) {
 		makeRow("Image", IC_Image, dp->GetVisibility() != 0,        // Image leaf handle kept as a child
 		        [dp](bool on) { dp->SetVisibility(on ? 1 : 0); }, nullptr,
 		        "Right-click for properties (save / remove)", imgMenu);
-		axesRow();
+		axesRow(dp->GetVisibility() != 0);   // group-uncheck law: Axes mirrors the container (see grid case above)
 		endGroup();
 	}
 
@@ -1637,7 +1643,7 @@ static void rebuildSceneObjects(Scene *s) {
 			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
 			        "Left- or right-click for image properties (incl. Save)",
 			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); });
-			axesRow();
+			axesRow(a && a->GetVisibility() != 0);   // group-uncheck law: Axes mirrors the container
 		} else {                                           // dropped grid group — header mirrors the surface handle
 			vtkProp3D *a = ex.actor.Get();
 			beginGroupHandle(nm, IC_Surface, a && a->GetVisibility() != 0,

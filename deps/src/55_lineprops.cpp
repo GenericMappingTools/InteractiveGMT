@@ -668,6 +668,36 @@ static void rectTransplantUndo(Scene *s) {
 	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
 }
 
+// "Roi Crop Tools" (port of Mirone's draw_funs.m rectangle "ROI Crop Tools" submenu /
+// mirone.m ImageCrop_CB): crop this rectangle's bounding box out of the window's PRIMARY grid or
+// image and open the result as a NEW window. kind: "grid" | "image" (plain, no coord annotations,
+// Mirone's bare `mirone(I)`) | "image_coords" (keeps geo axes, Mirone's `mirone(I,tmp)`). Only the
+// three basic crops are ported for now — Mirone's fuller ROI toolset (stats/clip/fill-gaps/spectral…)
+// is not.
+static void rectRoiCrop(Scene *s, const LineRef& lr, const char *kind) {
+	if (!g_juliaEval) {
+		QMessageBox::warning(s->win, "Roi Crop Tools", "This computation needs the Julia/GMT host.");
+		return;
+	}
+	std::vector<std::vector<std::array<double,3>>> polylines;
+	lineGatherPolylines(s, lr, polylines);
+	if (polylines.empty()) return;
+	double w = 1e300, e = -1e300, so = 1e300, no = -1e300;                 // rectangle bounding box
+	for (const auto& pl : polylines)
+		for (const auto& p : pl) {
+			w  = std::min(w,  p[0]);  e  = std::max(e,  p[0]);
+			so = std::min(so, p[1]);  no = std::max(no, p[1]);
+		}
+	if (!(e > w && no > so)) return;
+	const QString rect = QString("%1/%2/%3/%4").arg(w, 0, 'g', 16).arg(e, 0, 'g', 16)
+	                                           .arg(so, 0, 'g', 16).arg(no, 0, 'g', 16);
+	const QString cmd = QString("InteractiveGMT._on_roi_crop(Ptr{Cvoid}(UInt(%1)),\"%2\",\"%3\")")
+							.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(kind).arg(rect);
+	std::vector<char> buf(1 << 12);
+	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));         // Julia threw -> Errors tab
+}
+
 // Open the Vertical elastic deformation dialog for a fault line (defined in 70_window.cpp, after the
 // ElasticDialog class — this fragment is #included before it, so forward-declare it here).
 static void faultRunDialog(Scene *s, vtkActor *seedPatch = nullptr);
@@ -736,6 +766,21 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 					m.addAction("Transplant 2nd grid…", [s, lr]() { rectTransplant(s, lr); });
 					if (s->transplantUndoAvail)
 						m.addAction("Undo transplant", [s]() { rectTransplantUndo(s); });
+				}
+				// "Roi Crop Tools" (Mirone draw_funs.m item_tools): crop this rectangle out of the
+				// window's primary grid and/or image into a new window.
+				if (!isSlip && (!s->gridZ.empty() || sceneHasImage(s))) {
+					QMenu *roi = m.addMenu("Roi Crop Tools");
+					if (!s->gridZ.empty())
+						roi->addAction("Crop Grid", [s, lr]() { rectRoiCrop(s, lr, "grid"); });
+					// Mirone (draw_funs.m:409-413) shows Crop Image / Crop Image (with coords) for a
+					// GRID too, not only when a separate bitmap image is loaded — its own architecture
+					// always has an underlying rendered image for a grid display. Match that: show
+					// both whenever EITHER a grid or a real image is present, not gated on image alone.
+					if (!s->gridZ.empty() || sceneHasImage(s)) {
+						roi->addAction("Crop Image", [s, lr]() { rectRoiCrop(s, lr, "image"); });
+						roi->addAction("Crop Image (with coords)", [s, lr]() { rectRoiCrop(s, lr, "image_coords"); });
+					}
 				}
 			}
 		} else {

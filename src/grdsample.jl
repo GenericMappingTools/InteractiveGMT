@@ -47,7 +47,15 @@ function _on_grdsample(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			G_out = GMT.grdsample(src; kw...)
 			_grid_command!(G_out, "GMT.grdsample($base; " * join(["$k=$v" for (k, v) in kw], ", ") * ")")
 			if isempty(output)
-				_add_grid_to_scene(scene, G_out, base * " resampled")
+				newname = base * " resampled"
+				_add_grid_to_scene(scene, G_out, newname)
+				# SACRED_LAW.md derived-variable display law: show the new resample, hide every OTHER
+				# grid in the window (`_hide_other_objects!` — hides all of them rather than trying to
+				# translate the dialog's DISPLAY label, e.g. "Surface"/"Image" for an unnamed base —
+				# GrdsampleDialog, 70_window.cpp:1148 — back into a Scene Objects internal name).
+				_show_object!(scene, newname)
+				_hide_other_objects!(scene, :grid, newname)
+				ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
 			else
 				GMT.gmtwrite(output, G_out); view_grid(G_out)
 			end
@@ -55,7 +63,11 @@ function _on_grdsample(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			# Image -> GMT.gdalwarp (grdsample is grid-only).
 			I_out = _gdalwarp_image(src; inc, region, interp)
 			if isempty(output)
-				_add_image_to_scene(scene, I_out, base * " resampled")
+				newname = base * " resampled"
+				_add_image_to_scene(scene, I_out, newname)
+				_show_object!(scene, newname)              # same law as the grid branch above
+				_hide_other_objects!(scene, :image, newname)
+				ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
 			else
 				GMT.gdalwrite(output, I_out); iview_image_obj(I_out, base * " resampled")
 			end

@@ -31,7 +31,10 @@ function rtp3d(f3d::GMTgrid{Float32,2}, incl_fld::Real, decl_fld::Real, incl_mag
 		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
 	end
 	fout, k = _rtp3d(Float64.(f3d.z), Float64(incl_fld), Float64(decl_fld), Float64(incl_mag), Float64(decl_mag), component)
-	!isempty(mask) && (fout[mask.image] .= NaN)		# put the original holes back
+	# `mask` is `nothing` whenever there was nothing to fill (no NaNs at all, or `fillgaps` found none
+	# despite `has_nans` — its own docstring allows that) — `isempty(nothing)` throws MethodError, so
+	# this must short-circuit on the nothing check FIRST, not call isempty on a possibly-nothing mask.
+	(mask !== nothing && !isempty(mask)) && (fout[mask.image] .= NaN)		# put the original holes back
 	return fout, k
 end
 
@@ -264,6 +267,14 @@ function _on_rtp3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			return Cint(0)
 		end
 		_remember_object!(scene, :grid, title, G2)
+		# SACRED_LAW.md derived-variable display law: RTP/component is a NEW derived variable ->
+		# starts CHECKED (grid.jl `_show_object!`; `gmtvtk_add_surface_h` itself always adds a new
+		# extra HIDDEN, see its own comment) and every OTHER grid already in the window is UNCHECKED
+		# (`_hide_other_objects!` — hides all of them rather than guessing which one was "the"
+		# source, since a window can hold more than one grid). No-op on a freshly `promote`d empty
+		# launcher (nothing else was there to hide).
+		_show_object!(scene, title)
+		_hide_other_objects!(scene, :grid, title)
 		ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
 		return Cint(1)
 	catch e

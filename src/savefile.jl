@@ -50,6 +50,24 @@ end
 
 # Resolve the object to save: exact (kind,name) match first; else the first object of `kind` (the
 # primary); else the _FIGREG primary figure. Returns the GMTgrid/GMTimage or nothing.
+# Same lookup as `_find_object`, but also returns the MATCHED name — needed by any derived-variable
+# feature that must know what to hide (SACRED_LAW.md "derived-variable display law": the new result
+# is checked by default, the SOURCE it was derived from is unchecked). name="" means the source is
+# the window's primary/base object (hide via `gmtvtk_hide_surface`, never `gmtvtk_set_object_visible`
+# with an empty name); a non-empty name is a Scene Objects extra (hide via `gmtvtk_set_object_visible`).
+function _find_object_named(scene::Ptr{Cvoid}, kind::Symbol)
+	v = get(_SCENE_OBJS, scene, nothing)
+	if v !== nothing
+		for (k, n, d) in v
+			k === kind && return n, d
+		end
+	end
+	fig = get(_FIGREG, scene, nothing)
+	kind === :grid  && fig isa QtFigure && return "", fig.G
+	kind === :image && fig isa QtImage  && return "", fig.I
+	return "", nothing
+end
+
 function _find_object(scene::Ptr{Cvoid}, kind::Symbol, name::AbstractString)
 	v = get(_SCENE_OBJS, scene, nothing)
 	if v !== nothing
@@ -123,7 +141,7 @@ function _on_save(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
 		parts = split(s, ';', limit=4)
 		length(parts) >= 3 || error("Save: malformed request '$s'")
 		kind = strip(parts[1])
-		fmt = strip(parts[2]); path = String(strip(parts[3]))
+		fmt = String(strip(parts[2])); path = String(strip(parts[3]))
 		name = length(parts) >= 4 ? String(strip(parts[4])) : ""
 		isempty(path) && return
 		if (kind == "grid")

@@ -114,6 +114,12 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 				zmn, zmx = extrema(Gsum.z); Gsum.range[5] = zmn; Gsum.range[6] = zmx   # z was summed by hand
 				_grid_command!(Gsum, "iGMT elastic deformation: sum of $(valid_count) GMT.okada sub-faults")
 				_add_grid_to_scene(scene, Gsum, "Okada z (model)")
+				# SACRED_LAW.md derived-variable display law: show the new result, hide every OTHER
+				# grid in the window (`_hide_other_objects!` — hides all of them rather than guessing
+				# which one was "the" fault-trace host).
+				_show_object!(scene, "Okada z (model)")
+				_hide_other_objects!(scene, :grid, "Okada z (model)")
+				ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
 				_viewer_log_error(scene, "Okada: summed $(valid_count) sub-faults → 'Okada z (model)' " *
 					"(z ∈ [$(round(zmn, digits=4)), $(round(zmx, digits=4))])")
 				return
@@ -128,6 +134,12 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 
 		_grid_command!(Gdef, cmd)                     # stamp the exact okada call into GMTgrid.command
 		_add_grid_to_scene(scene, Gdef, "Okada z")
+		# SACRED_LAW.md derived-variable display law: show the new result, hide every OTHER grid in
+		# the window (`_hide_other_objects!` — hides all of them rather than guessing which one was
+		# "the" fault-trace host).
+		_show_object!(scene, "Okada z")
+		_hide_other_objects!(scene, :grid, "Okada z")
+		ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
 		_viewer_log_error(scene, "Okada: vertical deformation computed (z ∈ " *
 			"[$(round(minimum(Gdef.z), digits=4)), $(round(maximum(Gdef.z), digits=4))]) → 'Okada z'")
 	catch e

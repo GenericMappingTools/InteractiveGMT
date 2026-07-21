@@ -87,6 +87,8 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_cube_slider_callback, :gmtvtk_mark_element_cube,
 	:gmtvtk_scene_state,
 	:gmtvtk_frame_for_image_h, :gmtvtk_fit2d, :gmtvtk_grow_frame_h, :gmtvtk_hide_surface,
+	:gmtvtk_hide_other_grids, :gmtvtk_hide_other_images,
+	:gmtvtk_capture_rect_rgb, :gmtvtk_free_rgb, :gmtvtk_get_crs, :gmtvtk_reframe_h,
 	:gmtvtk_show_profile_xy,
 	:gmtvtk_xyplot_open, :gmtvtk_xyplot_add_series, :gmtvtk_xyplot_clear,
 	:gmtvtk_xyplot_is_alive, :gmtvtk_xyplot_close, :gmtvtk_xyplot_raise,
