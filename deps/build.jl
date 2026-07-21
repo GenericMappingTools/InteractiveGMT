@@ -50,6 +50,36 @@ const TAR = joinpath(get(ENV, "SystemRoot", "C:\\Windows"), "System32", "tar.exe
 # going through Julia Pkg at all) — irrelevant here since Pkg already gave us those via git, and
 # SHARED_ROOT only ever needs the binaries. Restrict extraction to deps/build/ so SHARED_ROOT
 # doesn't waste disk space on a redundant copy of data/ and src/.
+#
+# Help > Check for Updates runs update!() -> Pkg.build IN the same running process that has
+# gmtvtk.dll dlopen'd (in-process viewer, see CLAUDE.md). Windows won't let you overwrite the
+# CONTENT of a DLL file that's currently mapped for execution -- but it WILL let you rename or
+# delete that same file (the loader opens image files with FILE_SHARE_DELETE), which is the
+# standard Windows self-update trick: displace the locked file, then create the new one fresh
+# under the original name. The already-running process keeps using the orphaned old file quite
+# happily; a future dlopen (next Julia session) picks up the new one.
+function _displace_locked_dll(dest::String)
+    dll = joinpath(dest, "deps", "build", "gmtvtk.dll")
+    isfile(dll) || return
+    stale = dll * ".old-$(getpid())-$(round(Int, time()))"
+    try
+        mv(dll, stale; force=true)
+    catch e
+        @warn "InteractiveGMT: couldn't displace the in-use gmtvtk.dll -- update may fail" exception=e
+    end
+end
+
+# Best-effort sweep of orphaned .old-* files left behind by _displace_locked_dll in a PREVIOUS
+# update (that process is gone by now, so these are almost always removable; a leftover failure
+# here is harmless -- it just means one more stale file waits for the next sweep).
+function _sweep_stale_dlls(dest::String)
+    dir = joinpath(dest, "deps", "build")
+    isdir(dir) || return
+    for f in readdir(dir; join=true)
+        occursin(".old-", f) && try rm(f; force=true) catch; end
+    end
+end
+
 function fetch_and_extract(url::String, dest::String)
     isfile(TAR) || error("$TAR not found — need Windows 10 1803+ (bsdtar) to unzip gmtvtk binaries")
     zip = joinpath(tempdir(), basename(url))
@@ -60,6 +90,8 @@ function fetch_and_extract(url::String, dest::String)
         error("failed to download $url — has this asset been uploaded yet? ($e)")
     end
     mkpath(dest)
+    _sweep_stale_dlls(dest)
+    _displace_locked_dll(dest)
     run(`$TAR -xf $zip -C $dest deps/build`)
     rm(zip; force=true)
 end
