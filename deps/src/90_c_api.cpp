@@ -1149,6 +1149,13 @@ GMTVTK_API void gmtvtk_set_rtp3d_callback(JuliaRtp3DFn fn) {
 	g_juliaRtp3D = fn;
 }
 
+// Register the Clip Grid Apply callback (Grid Tools, port of Mirone src_figs/ml_clip.m). fn(scene,
+// params) with params = "below;above;belowVal;aboveVal;inBetween;stretch" clips the window's grid
+// and adds the result to `scene`. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_clipgrid_callback(JuliaClipGridFn fn) {
+	g_juliaClipGrid = fn;
+}
+
 // Register the Plot seismicity callback (Geophysics > Seismology). `fn` (Julia @cfunction,
 // JuliaSeismicityFn) is called with (scene, "key=value\n…") on the dialog's OK: scene is the
 // receiving window, the block carries format/file/date range/magnitude/depth filters, the

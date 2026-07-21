@@ -2270,6 +2270,159 @@ public:
 };
 
 // ============================================================================================
+// Clip Grid (Grid Tools) — port of Mirone's src_figs/ml_clip.m. Replace grid nodes below/above the
+// Below/Above thresholds with the given Value (or replace the whole [Below,Above] band by one Value
+// in "Clip in between" mode), producing a NEW derived grid in the SAME window (SACRED_LAW
+// derived-variable display law, handled Julia-side in _on_clipgrid). Loaded at RUNTIME via QUiLoader
+// from deps/ui/clipp_grid.ui (only plain Qt widget classes, like Rtp3DDialog above).
+//
+// "Statistical Hammering" (bottom half): type a % End-members / n·STD / n·MAD value and hit UP to
+// auto-derive the Below/Above/Value boxes from the data statistics — a g_juliaEval round-trip to
+// InteractiveGMT._clip_stats_str, which prints "low/up" (the actual stats live in Julia, where the
+// grid does). The three stat boxes are mutually clearing (editing one blanks the other two), exactly
+// like ml_clip.m's edit_*_CB. Only UP and Apply run anything (only-action-button-executes-dialog);
+// editing a box never computes.
+//
+// "New grid" vs "Stretch histogram" (mutually-exclusive radios): New grid clips as above; Stretch
+// contrast-clamps both sides to [Below,Above] (Mirone's scaleto8 [below above] data range) — the
+// same shared clip path in Julia, just with belowVal/aboveVal forced to Below/Above. "Compute
+// Histogram" (Mirone's image_enhance) is not ported, so that button is disabled here.
+//
+// Clip needs a grid in the window: the menu opens the dialog only when one is loaded; Below/Above
+// are prefilled from the scene's own z range (scene->zmin/zmax) on construction.
+// ============================================================================================
+class ClipGridDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QLineEdit *belowEdit, *belowValEdit, *aboveEdit, *aboveValEdit;
+	QLineEdit *pctEdit, *nStdEdit, *nMadEdit;
+	QCheckBox *inBetweenChk;
+	QRadioButton *stretchRadio;
+
+	explicit ClipGridDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/clipp_grid.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("ClipGridDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("ClipGridDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("Clip Grid");
+		QDialog *d = dlg;
+
+		belowEdit    = d->findChild<QLineEdit *>("belowLineEdit");
+		belowValEdit = d->findChild<QLineEdit *>("belowValueLineEdit");
+		aboveEdit    = d->findChild<QLineEdit *>("aboveLineEdit");
+		aboveValEdit = d->findChild<QLineEdit *>("aboveValueLineEdit");
+		pctEdit  = d->findChild<QLineEdit *>("percentEndMembersLineEdit");
+		nStdEdit = d->findChild<QLineEdit *>("nStdLineEdit");
+		nMadEdit = d->findChild<QLineEdit *>("nMadLineEdit");
+		inBetweenChk = d->findChild<QCheckBox *>("clipInBetweenCheckBox");
+		stretchRadio = d->findChild<QRadioButton *>("stretchHistogramRadioButton");
+		auto *applyBtn   = d->findChild<QPushButton *>("applyButton");
+		auto *upBtn      = d->findChild<QPushButton *>("upButton");
+		auto *histoBtn   = d->findChild<QPushButton *>("computeHistogramButton");
+
+		// Prefill Below/Above with the grid's own z range (ml_clip.m sets edit_below/above to
+		// z_min/z_max with a %.4g format). scene->zmin/zmax carry the true (unscaled) range.
+		if (scene && scene->zmax > scene->zmin) {
+			if (belowEdit) belowEdit->setText(QString::number(scene->zmin, 'g', 4));
+			if (aboveEdit) aboveEdit->setText(QString::number(scene->zmax, 'g', 4));
+		}
+
+		// "Clip in between": the band [Below,Above] is replaced by the Below Value (used as the
+		// in-between value), so the Above Value box is meaningless — grey it out, like ml_clip.m's
+		// check_inBetween_CB toggling edit_Ab_val's Enable.
+		if (inBetweenChk && aboveValEdit) {
+			QObject::connect(inBetweenChk, &QCheckBox::toggled, d, [this](bool on) {
+				if (aboveValEdit) aboveValEdit->setEnabled(!on);
+			});
+		}
+
+		// The three Statistical-Hammering boxes are mutually clearing: typing in one blanks the
+		// other two (ml_clip.m edit_percent/nSigma/mad_CB). This is pure local UI — it never runs a
+		// compute (that's UP's job) — so textEdited is fine here.
+		auto clearOthers = [](QLineEdit *keep, QLineEdit *a, QLineEdit *b) {
+			if (a && a != keep) a->clear();
+			if (b && b != keep) b->clear();
+		};
+		if (pctEdit)  QObject::connect(pctEdit,  &QLineEdit::textEdited, d, [=](const QString &) { clearOthers(pctEdit,  nStdEdit, nMadEdit); });
+		if (nStdEdit) QObject::connect(nStdEdit, &QLineEdit::textEdited, d, [=](const QString &) { clearOthers(nStdEdit, pctEdit,  nMadEdit); });
+		if (nMadEdit) QObject::connect(nMadEdit, &QLineEdit::textEdited, d, [=](const QString &) { clearOthers(nMadEdit, pctEdit,  nStdEdit); });
+
+		// "Compute Histogram" opens Mirone's image_enhance interactive histogram — not ported. Keep
+		// the button visible (so the dialog matches the .ui) but disabled with an explaining tooltip.
+		if (histoBtn) {
+			histoBtn->setEnabled(false);
+			histoBtn->setToolTip("Interactive histogram (Mirone image_enhance) is not ported yet.");
+		}
+
+		// UP: derive Below/Above (+ their Values) from whichever stat box is filled. The maths needs
+		// the grid, which lives in Julia, so round-trip via g_juliaEval to _clip_stats_str; it prints
+		// "low/up" (or nothing when no stat box is filled).
+		if (upBtn) QObject::connect(upBtn, &QPushButton::clicked, d, [this, d]() {
+			if (!g_juliaEval) { QMessageBox::warning(d, "Clip Grid", "This needs the Julia/GMT host."); return; }
+			const QString sp = QString("%1;%2;%3")
+				.arg(pctEdit  ? pctEdit->text().trimmed()  : QString())
+				.arg(nStdEdit ? nStdEdit->text().trimmed() : QString())
+				.arg(nMadEdit ? nMadEdit->text().trimmed() : QString());
+			const QString cmd = QString("InteractiveGMT._clip_stats_str(Ptr{Cvoid}(UInt(%1)),\"%2\")")
+				.arg((qulonglong)reinterpret_cast<uintptr_t>(scn)).arg(sp);
+			static std::vector<char> buf(1 << 12);
+			int n = g_juliaEval(scn, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+			if (n < 0) { QMessageBox::warning(d, "Clip Grid", QString::fromUtf8(buf.data(), -n)); return; }
+			const QString out = QString::fromUtf8(buf.data(), n).trimmed();
+			if (out.isEmpty()) return;                 // no stat box filled -> nothing to translate
+			const QStringList lu = out.split('/');
+			if (lu.size() != 2) return;
+			if (belowEdit)    belowEdit->setText(lu[0]);
+			if (belowValEdit) belowValEdit->setText(lu[0]);
+			if (aboveEdit)    aboveEdit->setText(lu[1]);
+			if (aboveValEdit) aboveValEdit->setText(lu[1]);
+		});
+
+		// Apply: the ONE action that clips. Validate Below/Above are numeric, then hand every field
+		// to _on_clipgrid. The dialog stays open (run more variants without reopening).
+		if (applyBtn) QObject::connect(applyBtn, &QPushButton::clicked, d, [this, d]() {
+			if (!g_juliaClipGrid) { QMessageBox::warning(d, "Clip Grid", "Clip: callback not registered (rebuild/restart needed?)."); return; }
+			bool okB, okA;
+			const QString below = belowEdit ? belowEdit->text().trimmed() : QString();
+			const QString above = aboveEdit ? aboveEdit->text().trimmed() : QString();
+			below.toDouble(&okB); above.toDouble(&okA);
+			if (!okB || !okA) { QMessageBox::warning(d, "Clip Grid", "Give me valid numeric Below and Above thresholds."); return; }
+			const bool inBetween = inBetweenChk && inBetweenChk->isChecked();
+			const bool stretch   = stretchRadio && stretchRadio->isChecked();
+			const QString params = QString("%1;%2;%3;%4;%5;%6")
+				.arg(below).arg(above)
+				.arg(belowValEdit ? belowValEdit->text().trimmed() : QString())
+				.arg(aboveValEdit ? aboveValEdit->text().trimmed() : QString())
+				.arg(inBetween ? "1" : "0").arg(stretch ? "1" : "0");
+			showBusyDialog(stretch ? "Stretching…" : "Clipping grid…");
+			const int ok = g_juliaClipGrid(scn, params.toUtf8().constData());
+			closeBusyDialog();
+			if (ok)
+				QMessageBox::information(d, "Clip Grid", stretch
+					? "Done — display contrast stretched to [Below, Above]. The grid data is unchanged; "
+					  "widen or narrow Below/Above and Apply again to adjust."
+					: "Done — added to Scene Objects as a new grid, checked (visible); the source grid is "
+					  "now unchecked.");
+			else
+				QMessageBox::warning(d, "Clip Grid",
+					stretch ? "Stretch failed — see this window's Errors console for details."
+					        : "Clip failed — see this window's Errors console for details.");
+		});
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+};
+
+// ============================================================================================
 // BeachballWidget — schematic focal-mechanism "beachball" preview for the elastic-deformation
 // dialog. This is NOT yet a full lower-hemisphere double-couple projection (that arrives with the
 // deformation compute); it draws two opposing black wedges rotated by the fault strike and
@@ -6067,6 +6220,19 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	mTransplant->addAction("Keep host resolution",     [runTransplant]() { runTransplant(1); });
 	mTransplant->addAction("Adopt implant resolution", [runTransplant]() { runTransplant(0); });
+
+	// "Clip Grid" (port of Mirone src_figs/ml_clip.m): threshold/statistical clipping of the window's
+	// grid into a NEW derived grid. Opens the clipp_grid.ui dialog (ClipGridDialog). Only meaningful
+	// with a grid loaded — offer it only then, like the rest of the grid-modifying tools.
+	mGridTools->addSeparator();
+	mGridTools->addAction("Clip Grid…", [win, s]() {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "Clip Grid", "Load a grid into this window first.");
+			return;
+		}
+		auto *w = new ClipGridDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
 
 	// Ctrl+Z undoes the last transplant (restores the original grid kept on the Julia side). The undo
 	// is also offered on the rectangle's context menu (55_lineprops.cpp).

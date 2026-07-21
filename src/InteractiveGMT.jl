@@ -66,6 +66,7 @@ include("transplant.jl") # Grid Tools > Transplant 2nd grid (port of Mirone util
 include("measure.jl")    # line length/azimuth + polygon area for the vector context menu (CRS-aware)
 include("info.jl")       # toolbar "i" button: grdinfo / gdalinfo report on the active grid/image
 include("rtp3d.jl")      # Geophysics > Magnetics: reduce-to-pole via 2-D FFT (port of Mirone utils/rtp3d.m)
+include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid clipping (port of Mirone ml_clip.m)
 
 export view_grid, view_image, view_points, view_fv, view_demo, iview,
        add!, add_curtain!, add_symbols!, show_table, selection, isalive,

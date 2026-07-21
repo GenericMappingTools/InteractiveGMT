@@ -223,6 +223,17 @@ static JuliaIgrfFileFn g_juliaIgrfFile = nullptr;
 typedef int (*JuliaRtp3DFn)(void *scene, const char *params);
 static JuliaRtp3DFn g_juliaRtp3D = nullptr;
 
+// Clip Grid (Grid Tools), port of Mirone's src_figs/ml_clip.m. The dialog (ClipGridDialog,
+// 70_window.cpp, loads deps/ui/clipp_grid.ui) hands "below;above;belowVal;aboveVal;inBetween;stretch"
+// to Julia (_on_clipgrid, src/clipgrid.jl): grid nodes < below get belowVal, > above get aboveVal
+// (empty value = that side not clipped, "NaN" is a valid replacement); inBetween replaces the
+// [below,above] band by belowVal instead; stretch contrast-clamps both sides to [below,above]. The
+// clipped result is added to `scene` as a NEW derived grid. Returns 1 on success, 0 on failure
+// (same real yes/no contract as g_juliaRtp3D — the dialog reports it, the parent's Errors console
+// may be on a window the user isn't looking at). nullptr to detach.
+typedef int (*JuliaClipGridFn)(void *scene, const char *params);
+static JuliaClipGridFn g_juliaClipGrid = nullptr;
+
 // Plot seismicity (Geophysics > Seismology). Port of Mirone's earthquakes.m. The dialog
 // (PlotSeismicityDialog, 70_window.cpp) hands a newline-separated "key=value" block to Julia
 // (g_juliaSeismicity), which reads the catalog (USGS web query / ISF / plain-column layouts /
