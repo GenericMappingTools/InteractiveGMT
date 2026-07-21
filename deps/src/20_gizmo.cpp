@@ -362,8 +362,7 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 		// Tell the render window we're interacting -> vtkLODActor draws its decimated subset
 		// while dragging (the gizmo renders directly, bypassing VTK's normal Start/EndInteraction).
 		c->s->widget->renderWindow()->SetDesiredUpdateRate(15.0);
-		if (rwi->GetControlKey()) {            // Ctrl+left-drag: draw a surface-elevation profile track
-			profilerBegin(c->s, x, y);
+		if (rwi->GetControlKey() && profilerBegin(c->s, x, y)) {   // Ctrl+left-drag on a grid/image: profile track
 			c->grab = Grab::Profile; handled = true;
 		}
 		else {

@@ -737,7 +737,9 @@ static void setBottomCollapsed(Scene *s, bool collapse) {
 }
 
 // Profile-track helpers (defined after ProfilePanel, below). DragCB drives these on Ctrl+drag.
-static void profilerBegin(Scene *s, int dx, int dy);
+// profilerBegin returns false when the cursor misses a data surface (grid/image) — vector-only
+// or an empty Background region has nothing to sample, so the Ctrl+drag must not arm profiling.
+static bool profilerBegin(Scene *s, int dx, int dy);
 static void profilerDrag(Scene *s, int dx, int dy);
 static void profilerEnd(Scene *s);
 static bool profileHitAt(Scene *s, int dx, int dy);              // cursor near the profile line?

@@ -231,18 +231,25 @@ static void computeProfile(Scene *s, double ax, double ay, double bx, double by)
 		s->widget->renderWindow()->Render();
 }
 
-static void profilerBegin(Scene *s, int dx, int dy) {
+static bool profilerBegin(Scene *s, int dx, int dy) {
 	if (!s)
-		return;
+		return false;
+	// A blank empty-launcher plane and a Background-region canvas are both real pickable actors
+	// (imageOnly, no drape) — pickSurfaceXY would hit them same as real data. Gate on the SAME
+	// "does this window actually hold a grid/image" predicate the Save menu uses (30_app.cpp) so
+	// vector-only / Background-region windows never arm a profile track over nothing.
+	if (!sceneHasGrid(s) && !sceneHasImage(s))
+		return false;
 	double tx, ty;
-	if (!pickSurfaceXY(s, dx, dy, tx, ty))
-		return;
+	if (!pickSurfaceXY(s, dx, dy, tx, ty))         // no grid/image under the cursor -> nothing to track
+		return false;
 	s->track0[0] = tx; s->track0[1] = ty; s->profiling = true;
 	if (s->bottomDock) {                       // surface the Profile tab in the bottom dock
 		s->bottomDock->setVisible(true);
 		setBottomCollapsed(s, false);
 		if (s->bottomTabs && s->prof) s->bottomTabs->setCurrentWidget(s->prof);
 	}
+	return true;
 }
 
 static void profilerDrag(Scene *s, int dx, int dy) {
