@@ -372,23 +372,13 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 				vtkActor *sym = pickSymbolAt(c->s, x, y);   // symbols sit on top -> first
 				int ovMode = 1;
 				vtkActor *ov = sym ? nullptr : pickOverlayAt(c->s, x, y, ovMode);
-				if (sym) {                         // left-click ON a symbol: just don't rotate. Properties
-					c->grab = Grab::None;         // open on MIDDLE-click only (MidPanFilter, 30_app.cpp) —
-				}                                  // a plain left click must stay free for the double-click-
-				                                   // then-drag gesture (polygonHandleDblClick/Move, 85_polygon).
-				else if (ov) {                    // left-click ON a line/point overlay -> its menu                         // left-click ON a line/point overlay -> its menu
-					// Pop its context menu DEFERRED: a modal QMenu must not run inside this VTK
-					// press callback (reentrant event loop). singleShot(0) fires it next loop turn,
-					// after press/release. VTK display (bottom-up device px) -> Qt global (top-down).
-					Scene *sc = c->s;
-					const double dpr = sc->widget->devicePixelRatioF();
-					const int    Hpx = sc->widget->renderWindow()->GetSize()[1];
-					QPoint gp = sc->widget->mapToGlobal(QPoint(int(x / dpr), int((Hpx - y) / dpr)));
-					QTimer::singleShot(0, sc->widget, [sc, ov, ovMode, gp]() {
-						popupOverlayMenu(sc, ov, ovMode, gp);
-					});
-					c->grab = Grab::None;         // selected; do NOT rotate
-				}
+				if (sym || ov) {                  // left-click ON a symbol or line/point overlay: just
+					c->grab = Grab::None;         // don't rotate. Properties open on RIGHT-click only
+				}                                  // (customContextMenuRequested, 70_window.cpp) — a plain
+				                                   // left click must stay free for the double-click-then-
+				                                   // drag / edit-mode gesture (polygonHandleDblClick/Move,
+				                                   // 85_polygon.cpp; overlayPromoteSegmentToPolygon for
+				                                   // imported overlays).
 				else {                            // empty space -> axis-locked rotate OR tilt
 					if (!c->s->flat2d)            // 2D map: rotation + tilt locked
 						c->grab = Grab::Free;

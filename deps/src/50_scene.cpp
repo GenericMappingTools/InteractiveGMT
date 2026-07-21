@@ -1960,6 +1960,48 @@ static int overlayMode(Scene *s, vtkActor *actor) {
 	return -1;
 }
 
+// Detach ONE stored segment [segoff[segIdx],segoff[segIdx+1]) from a multi-segment overlay,
+// rebuilding its points + cells from the remaining segments. Used when a segment is promoted into
+// an editable Polygon (85_polygon.cpp overlayPromoteSegmentToPolygon) — the rest of the overlay
+// (e.g. a coastline's other islands) stays exactly as it was.
+static void overlayRemoveSegment(Scene *s, Overlay& ov, int segIdx) {
+	if (!s || segIdx < 0 || segIdx >= ov.nseg || !ov.baseLine) return;
+	vtkPolyData *pd = ov.baseLine;
+	vtkPoints *oldPts = pd->GetPoints();
+	if (!oldPts) return;
+
+	vtkNew<vtkPoints> newPts; newPts->SetDataTypeToDouble();
+	std::vector<int> segoffNew; segoffNew.push_back(0);
+	for (int k = 0; k < ov.nseg; ++k) {
+		if (k == segIdx) continue;
+		const int ka = ov.segoff[k], kz = ov.segoff[k+1];
+		for (int i = ka; i < kz; ++i) {
+			double p[3]; oldPts->GetPoint(i, p);
+			newPts->InsertNextPoint(p);
+		}
+		segoffNew.push_back((int)newPts->GetNumberOfPoints());
+	}
+	ov.segoff = segoffNew;
+	ov.nseg -= 1;
+
+	vtkNew<vtkCellArray> cells;
+	if (ov.mode == 1) {
+		for (int k = 0; k < ov.nseg; ++k) {
+			const int ka = ov.segoff[k], kz = ov.segoff[k+1];
+			if (kz - ka < 2) continue;          // a lone point is not a line
+			cells->InsertNextCell(kz - ka);
+			for (int i = ka; i < kz; ++i) cells->InsertCellPoint(i);
+		}
+		pd->SetLines(cells);
+	}
+	else {
+		for (int i = 0; i < (int)newPts->GetNumberOfPoints(); ++i) { cells->InsertNextCell(1); cells->InsertCellPoint(i); }
+		pd->SetVerts(cells);
+	}
+	pd->SetPoints(newPts);
+	pd->Modified();
+}
+
 // ---- generic screen-constant SYMBOL layers (volcanoes, seismicity, cities, …) ----------------
 // Build a UNIT glyph (centred at origin, fits a radius-0.5 circle -> diameter 1) for a GMT symbol
 // code. Filled shapes -> a single polygon cell (fill = actor colour, outline = actor EdgeVisibility);
@@ -2768,8 +2810,8 @@ static void applyLineStyle(Scene *s, vtkActor *a, int style) {
 }
 
 // Per-element context menu for an overlay (lines: colour / width / style / tubes; points:
-// colour / size / round). Pops on a left- OR right-click that lands on the element; no
-// visual selection state, just the menu.
+// colour / size / round). Pops on a RIGHT-click only (customContextMenuRequested, 70_window.cpp);
+// no visual selection state, just the menu.
 static void popupOverlayMenu(Scene *s, vtkActor *a, int mode, const QPoint& globalPos) {
 	if (!s || !a) return;
 	if (mode == 1) {                         // lines -> the shared Line Properties tool

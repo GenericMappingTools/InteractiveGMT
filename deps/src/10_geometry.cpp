@@ -1417,8 +1417,12 @@ static double segDist2(double px, double py, const double a[2], const double b[2
 // vtkPropPicker/vtkCellPicker miss thin 1-2px lines, so this projects every overlay vertex
 // to the screen (applying the actor's scale) and measures the cursor's pixel distance to the
 // line segments (lines) or to the points (points). Returns the closest overlay within `tol`
-// px, or nullptr. Deterministic, no render-pass pick.
-static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int& outMode) {
+// px, or nullptr. Deterministic, no render-pass pick. `outSeg` (optional): for a line-mode hit,
+// the index into that overlay's own segoff/nseg (which stored polyline this point index falls
+// in) — used by the double-click "promote to editable Polygon" path (85_polygon.cpp) to isolate
+// just the clicked segment. -1 if not applicable (points mode, or no hit).
+static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int& outMode, int *outSeg = nullptr) {
+	if (outSeg) *outSeg = -1;
 	if (!s || s->overlays.empty())
 		return nullptr;
 	vtkRenderer *ren = s->ren;
@@ -1427,6 +1431,8 @@ static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int& outMode) {
 	double trueBest = 1e30;              // uncapped nearest (for diagnostics)
 	vtkActor *bestA = nullptr;
 	int bestMode = 1;
+	Overlay *bestOv = nullptr;
+	vtkIdType bestI0 = -1;
 
 	for (auto& ov : s->overlays) {
 		if (!ov.actor || !ov.actor->GetVisibility())
@@ -1462,7 +1468,7 @@ static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int& outMode) {
 					const double b[2] = { px[i1], py[i1] };
 					const double dd = segDist2((double)dx, (double)dy, a, b);
 					if (dd < trueBest) trueBest = dd;
-					if (dd < best) { best = dd; bestA = ov.actor; bestMode = 1; }
+					if (dd < best) { best = dd; bestA = ov.actor; bestMode = 1; bestOv = &ov; bestI0 = i0; }
 				}
 			}
 		}
@@ -1471,12 +1477,16 @@ static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int& outMode) {
 				const double ex = px[i]-dx, ey = py[i]-dy;
 				const double dd = ex*ex + ey*ey;
 				if (dd < trueBest) trueBest = dd;
-				if (dd < best) { best = dd; bestA = ov.actor; bestMode = 0; }
+				if (dd < best) { best = dd; bestA = ov.actor; bestMode = 0; bestOv = &ov; bestI0 = -1; }
 			}
 		}
 	}
 	(void)trueBest;
 	if (bestA) outMode = bestMode;
+	if (outSeg && bestOv && bestI0 >= 0) {
+		for (int k = 0; k < bestOv->nseg; ++k)
+			if (bestI0 >= bestOv->segoff[k] && bestI0 < bestOv->segoff[k+1]) { *outSeg = k; break; }
+	}
 	return bestA;
 }
 

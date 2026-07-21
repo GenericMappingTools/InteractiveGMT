@@ -1512,6 +1512,51 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 	return false;                                        // otherwise let VTK navigate normally
 }
 
+// Double-click on an IMPORTED overlay line segment (a coastline island, a dropped .xy track, any
+// GMTdataset drawn via gmtvtk_add_overlay_h) promotes just that segment into a real Polygon in
+// s->polys and opens it in the SAME vertex-drag edit mode a drawn line gets (polyEnterEdit) —
+// never a second, forked edit implementation (SACRED_LAW: one operation, one function). The
+// segment's colour/width carry over; the rest of the overlay (other islands/segments) is untouched.
+static void overlayPromoteSegmentToPolygon(Scene *s, Overlay& ov, int segIdx) {
+	if (!s || segIdx < 0 || segIdx >= ov.nseg || !ov.baseLine || !ov.baseLine->GetPoints()) return;
+	vtkPoints *pts = ov.baseLine->GetPoints();
+	const int a = ov.segoff[segIdx], z = ov.segoff[segIdx + 1];
+	if (z - a < 2) return;
+
+	Polygon pg;
+	for (int i = a; i < z; ++i) {
+		double p[3]; pts->GetPoint(i, p);
+		pg.v.push_back({ p[0], p[1], p[2] });
+	}
+	pg.closed = (pg.v.size() >= 3 && pg.v.front() == pg.v.back());
+	double col[3]; ov.actor->GetProperty()->GetColor(col);
+	const double lw = ov.actor->GetProperty()->GetLineWidth();
+	const bool splitOff = ov.nseg > 1;             // more than one segment left in the overlay?
+	vtkActor *ovActor = ov.actor.Get();
+
+	const std::string pre = ov.name + " ";         // number per source, like polyFinalize's "polygon N"
+	int idx = 1;
+	for (auto& p : s->polys) if (p.name.rfind(pre, 0) == 0) ++idx;
+	pg.name = splitOff ? (pre + std::to_string(idx)) : ov.name;
+
+	polyRebuildLine(s, pg);
+	pg.line->GetProperty()->SetColor(col[0], col[1], col[2]);   // keep the overlay's own look, not the default orange
+	pg.line->GetProperty()->SetLineWidth(lw > 0.0 ? lw : 2.5);
+	pg.stack = s->vecSeq++;
+	s->polys.push_back(pg);
+	const int newIdx = (int)s->polys.size() - 1;
+
+	if (splitOff) {
+		overlayRemoveSegment(s, ov, segIdx);       // ov reference still valid: only its OWN fields changed
+		applyVectorStacking(s);
+		rebuildSceneObjects(s);
+	} else {
+		overlayDelete(s, ovActor);                  // whole overlay consumed -> also stacks/rebuilds/renders
+	}
+	polyEnterEdit(s, newIdx);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // Left double-click: close the polygon / end the polyline (draw mode) or enter/switch/leave edit
 // mode (idle). Rectangle / circle / text finalize on their own clicks, so double-click is a no-op
 // for them beyond being consumed while drawing.
@@ -1544,13 +1589,23 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 			}
 		}
 		const int pi = polyHitPolygon(s, x, y, 8.0);
-		if (s->polyEdit >= 0) {
-			if (pi >= 0 && pi != s->polyEdit) polyEnterEdit(s, pi);   // double-click another -> switch
-			else                              polyExitEdit(s);        // off the handles -> leave edit
+		if (pi >= 0) {
+			if (pi == s->polyEdit) polyExitEdit(s);        // double-click the one being edited -> leave
+			else                   polyEnterEdit(s, pi);   // any other drawn polygon -> switch/enter
 			s->widget->renderWindow()->Render();
 			return true;
 		}
-		if (pi >= 0) { polyEnterEdit(s, pi); s->widget->renderWindow()->Render(); return true; }
+		// No drawn polygon hit: an imported overlay line segment (coastline island, dropped .xy
+		// track, …) under the cursor? Promote just that segment into an editable Polygon.
+		int ovMode = 1, segIdx = -1;
+		vtkActor *ovAct = pickOverlayAt(s, x, y, ovMode, &segIdx);
+		if (ovAct && ovMode == 1 && segIdx >= 0) {
+			for (auto& o : s->overlays) if (o.actor.Get() == ovAct) {
+				overlayPromoteSegmentToPolygon(s, o, segIdx);
+				return true;
+			}
+		}
+		if (s->polyEdit >= 0) { polyExitEdit(s); s->widget->renderWindow()->Render(); return true; }
 	}
 	return false;
 }
