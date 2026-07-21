@@ -6405,8 +6405,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		{ makeLineIcon(),     "Line",      "Draw a straight line: click the start point, then the end point "
 		                                   "(later clicks move the end); double-click ends it.",                   Scene::SH_Line     },
 		{ makeRectIcon(),     "Rectangle", "Draw a rectangle: click one corner, then the opposite corner.",        Scene::SH_Rect     },
-		{ makeNestedRectIcon(), "Nested grids", "Draw a nested-grids rectangle (constrained dimensions + custom "
-		                                   "context menus): click one corner, then the opposite corner.",          Scene::SH_RectN    },
 		{ makeCircleIcon(),   "Circle",    "Draw a circle: click the centre, then a point on the edge.",           Scene::SH_Circle   },
 	};
 	QToolButton *flyout = new QToolButton(tb);           // the shared shape slot
