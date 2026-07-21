@@ -6054,8 +6054,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		mGphy->addAction("Seismology", [fSeis]() { (*fSeis)(); });
 		mGphy->addAction("Magnetics",  [fMag]()  { (*fMag)(); });
 	};
-	auto backItem = [mGphy, fGroup, reopen]() {            // "‹ Disciplines" — return to the chooser
-		mGphy->addAction("‹ Disciplines", [fGroup, reopen]() { (*fGroup)(); reopen(); });
+	auto backItem = [mGphy, fTsu, fSeis, fMag](const QString &current) {
+		// Single "‹ Disciplines ›" entry — itself a submenu, direct access to any OTHER discipline
+		// (skips the chooser page entirely). Each fXxx already reopens the menu itself at its end.
+		QMenu *mBack = mGphy->addMenu("‹ Disciplines ›");
+		if (current != "Tsunamis")   mBack->addAction("Tsunamis",   [fTsu]()  { (*fTsu)();  });
+		if (current != "Seismology") mBack->addAction("Seismology", [fSeis]() { (*fSeis)(); });
+		if (current != "Magnetics")  mBack->addAction("Magnetics",  [fMag]()  { (*fMag)();  });
 		mGphy->addSeparator();
 	};
 
@@ -6063,7 +6068,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	*fTsu = [mGphy, win, s, backItem, reopen, actNestedGridsTsu]() {
 		mGphy->clear();
 		mGphy->setTitle("Tsunamis ▾");
-		backItem();
+		backItem("Tsunamis");
 		mGphy->addAction("NSWING tsunami…", [win, s]() {
 			// Non-modal: the 3-D view stays interactive while options are picked, and the dialog itself
 			// stays open across any number of RUN clicks (see its RUN/Save-files&RUN handlers) — closed
@@ -6091,7 +6096,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	*fMag = [mGphy, win, s, backItem, reopen]() {
 		mGphy->clear();
 		mGphy->setTitle("Magnetics ▾");
-		backItem();
+		backItem("Magnetics");
 		mGphy->addAction("IGRF", [win, s]() {
 			auto *w = new IgrfDialog(win, s);   // self-deletes when its QDialog closes (WA_DeleteOnClose)
 			if (w->dlg) w->dlg->show();
@@ -6119,7 +6124,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	*fSeis = [mGphy, mElastic, geoTODO, backItem, reopen, s, win, openSeismicity, sendSeismicity, visibleRegion]() {
 		mGphy->clear();
 		mGphy->setTitle("Seismology ▾");
-		backItem();
+		backItem("Seismology");
 		mGphy->addAction("Seismicity…", [openSeismicity]() { openSeismicity(false); });
 		mGphy->addAction("Focal mechanisms", [win, s, visibleRegion]() {
 			if (!g_juliaFocal) {
