@@ -99,6 +99,17 @@ end
 # Recent Files (the plain file, never the "?var" spec, so a re-open re-shows the variable picker).
 function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::AbstractString, empty::Bool;
                          recent::AbstractString=spec, prescan::Bool=false)
+	# A SHAPENC .nc (written by `shapenc`, shapenc.jl) is vector data (point/polygon/polyline
+	# ensembles) wearing a netCDF extension, not a grid -- `GMT.gmtread`/the cube probe below would
+	# either fail on it or misread it. Recognized by its own "SHAPENC_type" global attribute, then
+	# fed into the SAME Vector{<:GMTdataset} overlay path any other multi-segment file already uses
+	# (`_drop_into`), never a separate display path (SACRED_LAW.md).
+	if _shnc_is_shapenc(String(spec))
+		D = _shnc_read(String(spec))
+		isempty(recent) || _record_recent(recent, D)
+		_drop_into(scene, D, name; promote=empty, source=String(spec))
+		return
+	end
 	n_layers, zmin, zmax = _cube_probe(spec)
 	if n_layers > 1
 		_on_3d_cube_dropped(scene, String(spec), name, empty, n_layers, zmin, zmax; prescan=prescan)
@@ -894,7 +905,7 @@ function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name)
 	xyz, segoff, nseg, npts = _pack_dataset_flat(D)
 	modei = mode === :lines ? Cint(1) : Cint(0)
 	cr, cg, cb = _ovl_color(nothing, mode)
-	lw = mode === :lines ? 2.0 : 0.0
+	lw = 0.0   # <=0 -> C++ addOverlay falls back to Preferences "Default line thickness" (50_scene.cpp)
 	ps = mode === :points ? 6.0 : 0.0
 	ok = ccall(_fn(:gmtvtk_add_overlay_h), Cint,
 		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),

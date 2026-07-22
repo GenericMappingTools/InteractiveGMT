@@ -234,18 +234,25 @@ static void lineGatherPolylines(Scene *s, const LineRef& lr,
 			out.push_back(pl);
 		}
 	}
-	else {                                               // overlay line: walk each polyline cell
+	else {                                               // overlay (line OR points mode): walk each
+		// stored SEGMENT via ov.segoff -- set unconditionally by addOverlay for both modes, so this is
+		// the ONE way to recover an overlay's segments regardless of how its polydata stores cells. A
+		// points-mode overlay (vtkPolyData::SetVerts, no SetLines at all) has ZERO line cells, so the
+		// old GetLines()-traversal silently produced an empty `out` for every points-mode overlay (a
+		// SHAPENC Point ensemble, "Convert to points", ...) -- "Show data table..." did nothing, no
+		// error. ov.segoff/nseg already carry the same segment boundaries GetLines() would have
+		// walked, so reading them directly works for either mode with no branch, instead of a second
+		// points-only traversal bolted on next to this one.
 		for (auto& o : s->overlays) {
 			if (o.actor.Get() != lr.actor || !o.baseLine) continue;
 			vtkPoints *pts = o.baseLine->GetPoints();
-			vtkCellArray *lines = o.baseLine->GetLines();
-			if (pts && lines) {
-				lines->InitTraversal();
-				vtkNew<vtkIdList> ids;
-				while (lines->GetNextCell(ids)) {
+			if (pts && o.nseg > 0 && (int)o.segoff.size() == o.nseg + 1) {
+				for (int k = 0; k < o.nseg; ++k) {
+					const int a = o.segoff[k], z = o.segoff[k + 1];
+					if (z <= a) continue;
 					std::vector<std::array<double,3>> pl;
-					for (vtkIdType k = 0; k < ids->GetNumberOfIds(); ++k) {
-						double p[3]; pts->GetPoint(ids->GetId(k), p); pl.push_back({ p[0], p[1], p[2] });
+					for (int i = a; i < z; ++i) {
+						double p[3]; pts->GetPoint(i, p); pl.push_back({ p[0], p[1], p[2] });
 					}
 					out.push_back(pl);
 				}
@@ -382,10 +389,15 @@ static void showLineDataTable(Scene *s, const LineRef& lr, const QString& name) 
 	dlg->setWindowFlag(Qt::Window, true);
 	QVBoxLayout *lay = new QVBoxLayout(dlg);
 
-	// In flat-2D the Z is a meaningless z=0, so drop the Z column there: cols are #/X/Y (3) in 2D,
-	// #/X/Y/Z (4) in 3D. ncoord = number of coordinate columns drawn (2 or 3).
-	const int  ncoord = s->flat2d ? 2 : 3;
-	QStringList hdr;   hdr << "#" << "X" << "Y";   if (!s->flat2d) hdr << "Z";
+	// In flat-2D a DRAWN shape's (LK_Polygon: rectangle/polygon/circle) Z is genuinely meaningless --
+	// it was drawn on the 2-D screen, z=0 by construction -- so drop that column there: #/X/Y (3) in
+	// 2D, #/X/Y/Z (4) in 3D. An OVERLAY (LK_Overlay: a dropped/imported dataset, e.g. a SHAPENC point
+	// cloud) is different: its Z came from the SOURCE data at import time regardless of how the
+	// window happens to be displaying it right now, so hiding it in flat-2D would silently throw away
+	// real input data the user explicitly asked this table to show -- always show all 3 for overlays.
+	const bool showZ  = !s->flat2d || lr.kind == LK_Overlay;
+	const int  ncoord = showZ ? 3 : 2;
+	QStringList hdr;   hdr << "#" << "X" << "Y";   if (showZ) hdr << "Z";
 	QTableWidget *tbl = new QTableWidget(nrows, ncoord + 1, dlg);
 	tbl->setHorizontalHeaderLabels(hdr);
 	tbl->verticalHeader()->setVisible(false);            // our "#" column already numbers the rows

@@ -1699,8 +1699,14 @@ static void rebuildSceneObjects(Scene *s) {
 			                 "Right-click to remove every line in this group");
 			ovlGroupOpen = QString::fromStdString(ov.groupName);
 		}
+		// popupLineObjectMenu handles LK_Overlay for EITHER mode already (Convert to points/line +
+		// Delete) -- gating &lr to line-mode only left every points-mode overlay (a SHAPENC Point
+		// ensemble, a dropped x,y table converted via "Convert to points", ...) with NO context menu
+		// at all: no properties, no Delete, not even the "Left-click for properties" tooltip. Every
+		// Scene Objects element needs a working properties/Remove menu (SACRED_LAW.md); this was the
+		// one row builder that silently dropped it for one sub-kind of the SAME element type.
 		LineRef lr{ LK_Overlay, ov.actor };
-		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, ov.mode == 1 ? &lr : nullptr);
+		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, &lr);
 	}
 	if (!ovlGroupOpen.isEmpty()) endGroup();
 	for (auto& sl : s->symbols) {                        // screen-constant symbol layers (props menu)
@@ -1926,7 +1932,11 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	a->SetMapper(map);
 	a->GetProperty()->LightingOff();          // overlays read as a flat HUD colour
 	a->GetProperty()->SetColor(r, g, b);
-	a->GetProperty()->SetLineWidth(linewidth > 0.0 ? linewidth : 2.0);
+	// Caller-unspecified width (<=0, e.g. every dropped/imported vector: drop.jl, grid.jl add!,
+	// geography.jl, aquamoto.jl, focal.jl) falls back to Preferences "Default line thickness" --
+	// the SAME preference interactively-drawn polygons already honour (85_polygon.cpp) -- not a
+	// second hardcoded default (SACRED_LAW.md: fix the shared source once, not each call site).
+	a->GetProperty()->SetLineWidth(linewidth > 0.0 ? linewidth : prefLineWidthPx());
 	a->GetProperty()->SetPointSize(pointsize > 0.0 ? pointsize : 6.0);
 	if (mode == 0)
 		a->GetProperty()->SetRenderPointsAsSpheres(true);   // round points (toggle in the menu)
@@ -1959,6 +1969,15 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	s->overlays.push_back(ov);
 	applyVectorStacking(s);                   // normalize ranks + set this overlay's draw-order offset
 	rebuildSceneObjects(s);                   // refresh the Scene Objects checkbox list
+	// Every other actor-adding path (surfaces, images, gizmo, curtains, profiles) resets the
+	// clipping range after adding its actor -- this one didn't. Harmless normally (a real grid's
+	// own bounds already give a comfortably wide clip range), but a promoted EMPTY-launcher scaffold
+	// (_promote_dataset, drop.jl) is a perfectly flat z=0 placeholder, so ResetCamera() at promote
+	// time sets a razor-thin clip slab around z=0 -- any overlay added afterward with real (nonzero)
+	// relief, e.g. a SHAPENC point cloud's actual depth/elevation column, falls outside near/far and
+	// is silently culled: no error, just an empty-looking window. Proven live (CARTA604_IH.nc, a
+	// 17245-pt bathymetry cloud: invisible with real ~-30 m depths, visible with z~0).
+	if (s->ren) s->ren->ResetCameraClippingRange();
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
