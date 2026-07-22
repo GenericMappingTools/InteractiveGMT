@@ -341,15 +341,45 @@ end
 
 # Grid mode: GMT.earthtide(R=global, I=1°, T=startISO, C=<letter>) returns a GMTgrid of the chosen
 # component's displacement at one instant. Grids are ALWAYS global (a solid-Earth tide is a whole-
-# planet field). Only the first checked component is gridded (one grid). Opens in its OWN viewer
-# window (iview) — NOT overlaid on the current scene: the tidal displacement is sub-metre, so adding
-# it as a second surface buries it flat under the existing relief (invisible). The surface row in the
-# new window's Scene Objects is named "earth tide <vert|east|north>".
+# planet field). Only the first checked component is gridded (one grid). Added to the SAME window
+# (promote if empty launcher, else extra surface) — same convention as `_on_igrf_grid`/`_on_rtp3d`,
+# never a new iGMT instance. SACRED_LAW.md derived-variable display law: new named handle
+# ("earth tide <vert|east|north>"), starts CHECKED, every other grid already in the window UNCHECKED
+# (the sub-metre tidal signal would otherwise render invisible flat under existing relief), Scene
+# Objects unfolds.
 function _earthtide_grid(scene, start, comp, inc=0.5)
 	letter, _, short = _ET_COMP[first(comp)]
 	G = GMT.earthtide(R=(-180.0, 180.0, -90.0, 90.0), I=inc, T=start, C=letter)
 	(G === nothing) && error("earthtide: grid not produced")
-	iview(G; title="earth tide $short")
+	_grid_command!(G, "GMT.earthtide(R=(-180.0,180.0,-90.0,90.0), I=$inc, T=\"$start\", C=\"$letter\")")
+	title = "earth tide $short"
+	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z); ny, nx = size(z); r = G.range
+	geog = _isgeog(G)
+	cz, crgb, ncolor = _cpt_nodes(G, :turbo)
+	ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, title)
+	_forget_object!(scene, :grid, title)
+	has_surface = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene)
+	promote = (has_surface == 0)
+	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
+	ok = promote ?
+		ccall(_fn(fn), Cint,
+		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
+		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(title)) :
+		ccall(_fn(fn), Cint,
+		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4],
+		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(title))
+	if ok == 0
+		_viewer_log_error(scene, "Earth Tides: window closed, grid not added")
+		return
+	end
+	_remember_object!(scene, :grid, title, G)
+	_show_object!(scene, title)
+	_hide_other_objects!(scene, :grid, title)
+	ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
 	return
 end
 

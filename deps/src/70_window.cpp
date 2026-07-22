@@ -5883,17 +5883,24 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		S = std::max(S, s->y0); N = std::min(N, s->y1);
 		return (E > W && N > S);
 	};
-	// The seismicity events need a base to land on. On an EMPTY launcher, load the whole-world
-	// Base Map IN PLACE (the SAME "global" request the Base Maps picker sends -> _on_basemap
-	// promotes the launcher + adds the etopo4 image) instead of refusing. Runs synchronously, so
-	// on return s->x0..y1 already frame the world. false only if the basemap callback is missing.
-	auto ensureSeisBase = [s]() -> bool {
+	// SACRED LAW, single source of truth: EVERY Geography/Seismology leaf that plots onto the
+	// window needs something to land on. On an EMPTY launcher, load the whole-world Base Map IN
+	// PLACE (the SAME "global" request the Base Maps picker sends -> _on_basemap promotes the
+	// launcher + adds the etopo4 image) instead of refusing / silently no-op'ing. Runs
+	// synchronously, so on return s->x0..y1 already frame the world. false only if the basemap
+	// callback is missing. ONE function — every current leaf that PLOTS something onto the window
+	// (coastline/borders/rivers, volcanoes/meteorites/hydrothermal/tides, plate boundaries,
+	// seismicity) and every FUTURE Geography leaf that does the same (hotspots, isochrons, cities,
+	// DSDP/ODP/IODP, …) must call this FIRST, never re-derive/duplicate the empty-launcher check or
+	// skip it for one kind. Exception: leaves that only COMPUTE off W/E/S/N and plot nothing (Earth
+	// Tides) don't need a base — gate on that distinction, not on which leaf it happens to be.
+	auto ensureGeoBase = [s]() -> bool {
 		if (!s->emptyStart) return true;
 		if (!g_juliaBaseMap) {
-			if (s->win) s->win->statusBar()->showMessage("Seismicity: Base Map callback not registered", 3000);
+			if (s->win) s->win->statusBar()->showMessage("Geography: Base Map callback not registered", 3000);
 			return false;
 		}
-		if (s->win) s->win->statusBar()->showMessage("Seismicity: loading base map…");
+		if (s->win) s->win->statusBar()->showMessage("Geography: loading base map…");
 		showBusyDialog("Base Map");              // indeterminate busy bar (first-run GMT compile)
 		g_juliaBaseMap(s, "-180/180/-90/90/0/global");
 		closeBusyDialog();
@@ -5901,8 +5908,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	// Hand a seismicity request to Julia: make sure there is a base map, append the visible map
 	// region (the in-map event crop + the USGS query bbox, like Mirone's in_map_region), send.
-	auto sendSeismicity = [s, visibleRegion, ensureSeisBase](const QString &params) {
-		if (!ensureSeisBase()) return;
+	auto sendSeismicity = [s, visibleRegion, ensureGeoBase](const QString &params) {
+		if (!ensureGeoBase()) return;
 		// Paint the base map (just promoted, or already there) BEFORE the blocking catalog fetch,
 		// so the user sees the world map right away instead of a frozen window. Then show a busy
 		// (indeterminate) progress dialog for the fetch itself, which can take a while on the first
@@ -5936,16 +5943,20 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (dlg.exec() != QDialog::Accepted || dlg.params.isEmpty()) return;
 		sendSeismicity(dlg.params);
 	};
-	// A leaf that fetches a GSHHG feature for the current view: compute the visible region, hand
-	// "<kind>/<res>/W/E/S/N" to Julia, which calls GMT.coast(R=…, D=res, M=true) and adds the lines.
-	auto geoPlot = [s, visibleRegion](const QString &kind, const char *res) {
-		return [s, kind, res, visibleRegion]() {
+	// A leaf that fetches a GSHHG/point feature for the current view: ensure a base to land on
+	// (ensureGeoBase, empty-launcher -> world Base Map), compute the visible region, hand
+	// "<kind>/<res>/W/E/S/N" to Julia, which calls GMT.coast(R=…, D=res, M=true) and adds the lines
+	// (or the matching point-dataset reader for volcano/meteorite/hydro/tides/plateboundaries).
+	// EVERY Geography leaf that plots goes through this ONE closure — never a per-kind fork.
+	auto geoPlot = [s, visibleRegion, ensureGeoBase](const QString &kind, const char *res) {
+		return [s, kind, res, visibleRegion, ensureGeoBase]() {
 			if (!g_juliaGeo) {
 				if (s->win) s->win->statusBar()->showMessage("Geography: callback not registered", 3000);
 				return;
 			}
-			double W, E, S, N;
-			if (!visibleRegion(W, E, S, N)) return;
+			if (!ensureGeoBase()) return;
+			double W = -180, E = 180, S = -90, N = 90;          // whole-earth fallback if no view region
+			visibleRegion(W, E, S, N);
 			// Trailing field = Preferences "Coastlines color" (Black|White) for the line features
 			// (coast/borders/rivers); point datasets ignore it and keep their own symbol colours.
 			const QString req = QString("%1/%2/%3/%4/%5/%6/%7").arg(kind).arg(res)
@@ -5971,8 +5982,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 
 	QMenu *mGeo = win->menuBar()->addMenu("&Geography");
-	s->geoMenu = mGeo;                              // gmtvtk_set_crs enables it once the data has a CRS
-	mGeo->menuAction()->setEnabled(false);         // disabled until a referencing system is known
+	s->geoMenu = mGeo;                              // gmtvtk_set_crs keeps it enabled once real data has a CRS
+	mGeo->menuAction()->setEnabled(true);          // unblocked from window-open: leaf actions fall back to
+	                                                 // the whole-earth region (visibleRegion) on an empty launcher
 	addResMenu(mGeo, "Plot coastline", "coast");
 
 	QMenu *mPB = mGeo->addMenu("Plot political boundaries");
@@ -6001,6 +6013,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mGeo->addAction("Tide Stations",                 geoTODO("Tide Stations"));
 	mGeo->addAction("Tides (download)",              geoPlot("tides", ""));
 	mGeo->addAction("Earth Tides", [s, visibleRegion]() {
+		// No basemap needed: Earth Tides computes off W/E/S/N alone, nothing plotted onto a surface.
 		double W = -180, E = 180, S = -90, N = 90;          // whole-earth fallback if no view region
 		visibleRegion(W, E, S, N);
 		showEarthTidesDialog(s, W, E, S, N);
