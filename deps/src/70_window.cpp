@@ -5349,21 +5349,12 @@ static void showEarthTidesDialog(Scene *s, double cW, double cE, double cS, doub
 	QHBoxLayout *cols = new QHBoxLayout(dlg);
 	cols->addLayout(left); cols->addSpacing(16); cols->addLayout(right);
 
-	// "Click point on map": hide the dialog, arm a one-shot pick on the map widget; on click refill
-	// Lon/Lat and reshow. (Grid region still comes from the visible extent captured at menu time.)
-	QObject::connect(bPick, &QPushButton::clicked, dlg, [s, dlg, eLon, eLat]() {
-		if (!s->widget) return;
-		dlg->lower();                                       // keep visible (don't hide), just out of the way
-		if (s->win) s->win->statusBar()->showMessage("Earth Tides: click a point on the map…", 5000);
-		MapPickFilter *f = new MapPickFilter(s, s->widget, [dlg, eLon, eLat](double lon, double lat) {
-			eLon->setValue(lon); eLat->setValue(lat);
-			dlg->raise(); dlg->activateWindow();
-		});
-		s->widget->installEventFilter(f);
-	});
-	QObject::connect(bb, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
-	QObject::connect(bb, &QDialogButtonBox::accepted, dlg,
-	                 [s, dlg, eStart, eEnd, eLon, eLat, eInc, rGrid, cV, cE2, cN2, cW, cE, cS, cN]() {
+	// Single source of truth for "run the request Julia currently has settings for" -- called by the
+	// OK button AND (when in Time series mode) automatically right after a map pick, so picking a
+	// point IS the trigger for a time series, same as SACRED_LAW.md's "only the action button
+	// executes" principle but here the map click doubles as that action button by explicit request.
+	auto runCompute = std::make_shared<std::function<void()>>();
+	*runCompute = [s, eStart, eEnd, eLon, eLat, eInc, rGrid, cV, cE2, cN2, cW, cE, cS, cN]() {
 		QString comp;
 		if (cV->isChecked())  comp += 'V';
 		if (cE2->isChecked()) comp += 'E';
@@ -5383,7 +5374,43 @@ static void showEarthTidesDialog(Scene *s, double cW, double cE, double cS, doub
 			.arg(cW, 0, 'f', 6).arg(cE, 0, 'f', 6).arg(cS, 0, 'f', 6).arg(cN, 0, 'f', 6);
 		if (s->win) s->win->statusBar()->showMessage("Earth Tides: computing…", 3000);
 		g_juliaEarthTide(s, req.toUtf8().constData());     // keep the dialog open for repeated runs
+	};
+	// "Click point on map": get the dialog out of the way, turn the map cursor into a crosshair (the
+	// visible cue that a pick is armed), arm a one-shot pick on the map widget; on click refill
+	// Lon/Lat, restore the cursor + dialog, and (Time series mode only -- Grid(s) is always global,
+	// a point is meaningless there) immediately run the request so the click itself produces the
+	// time series instead of silently doing nothing.
+	// showMinimized(), NOT lower(): dlg is OWNED by s->win (Qt sets the Windows "owned window"
+	// relation), and Windows always keeps an owned popup above its owner in z-order -- asking to
+	// lower the owned dialog below other apps' windows dragged the OWNER (the whole iGMT main
+	// window) down with it, so the map itself vanished behind e.g. the editor instead of the dialog
+	// simply stepping aside. Minimizing only the dialog never touches the owner's stacking.
+	// pickFilter (shared, tracked outside the lambda) lets the dialog's destroyed handler below clean
+	// up an still-armed filter + crosshair cursor if the user closes the dialog without ever clicking.
+	auto pickFilter = std::make_shared<QPointer<MapPickFilter>>();
+	QObject::connect(bPick, &QPushButton::clicked, dlg, [s, dlg, eLon, eLat, rGrid, runCompute, pickFilter]() {
+		if (!s->widget) return;
+		dlg->showMinimized();
+		s->widget->setCursor(Qt::CrossCursor);
+		if (s->win) s->win->statusBar()->showMessage("Earth Tides: click a point on the map…", 5000);
+		MapPickFilter *f = new MapPickFilter(s, s->widget,
+		                                      [s, dlg, eLon, eLat, rGrid, runCompute](double lon, double lat) {
+			eLon->setValue(lon); eLat->setValue(lat);
+			if (s->widget) s->widget->unsetCursor();
+			dlg->showNormal(); dlg->raise(); dlg->activateWindow();
+			if (!rGrid->isChecked()) (*runCompute)();          // Time series: the pick IS the trigger
+		});
+		*pickFilter = f;
+		s->widget->installEventFilter(f);
 	});
+	QObject::connect(dlg, &QObject::destroyed, dlg, [s, pickFilter]() {
+		if (*pickFilter) {
+			if (s->widget) { s->widget->removeEventFilter(*pickFilter); s->widget->unsetCursor(); }
+			pickFilter->data()->deleteLater();
+		}
+	});
+	QObject::connect(bb, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+	QObject::connect(bb, &QDialogButtonBox::accepted, dlg, [runCompute]() { (*runCompute)(); });
 	dlg->show();
 }
 
