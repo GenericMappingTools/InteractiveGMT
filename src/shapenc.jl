@@ -757,3 +757,95 @@ function _shnc_read(path::String)::Vector{GMT.GMTdataset}
 	ccall((:GDALClose, GMT.libgdal), Cint, (_SHNC_H,), ds)
 	out
 end
+
+# ---- OUT/IN boundary polygons (Mirone-style "bounded" point ensembles) --------------------
+
+# Every root-group MDArray name -- used to discover PolyIN_x_y variables, whose two-number suffix
+# is NOT a fixed function of `kk` alone (matches whatever the WRITER's own bookkeeping produced --
+# our own shapenc()'s `ultimo+1`/`j+ultimo`, or Mirone's original shapenc.m convention), so they
+# must be found by scanning, not guessed from kk directly.
+function _shnc_array_names(root)::Vector{String}
+	p = ccall((:GDALGroupGetMDArrayNames, GMT.libgdal), Ptr{Ptr{UInt8}}, (_SHNC_H, Ptr{Ptr{UInt8}}), root, C_NULL)
+	p == C_NULL && return String[]
+	names = String[]
+	i = 0
+	while true
+		sp = unsafe_load(p, i + 1)
+		sp == C_NULL && break
+		push!(names, unsafe_string(sp))
+		i += 1
+	end
+	ccall((:CSLDestroy, GMT.libgdal), Cvoid, (Ptr{Ptr{UInt8}},), p)
+	names
+end
+
+const _SHNC_POLYIN_RE = r"^lonPolyIN_(\d+)_(\d+)$"
+
+# Read one lon/lat variable pair into an Nx2 Matrix, or `nothing` if either is missing.
+function _shnc_read_xyarr(root, xname::String, yname::String, edt_f64)::Union{Nothing, Matrix{Float64}}
+	xarr = _shnc_group_open_array(root, xname)
+	xarr == C_NULL && return nothing
+	yarr = _shnc_group_open_array(root, yname)
+	if yarr == C_NULL
+		_shnc_release_array(xarr)
+		return nothing
+	end
+	n = _shnc_array_count(xarr)
+	x = _shnc_array_read_f64(xarr, edt_f64, n)
+	y = _shnc_array_read_f64(yarr, edt_f64, n)
+	_shnc_release_array(xarr); _shnc_release_array(yarr)
+	[x y]
+end
+
+"""
+    _shnc_read_bounded(path::String) -> Vector{@NamedTuple{kk::String, outp, ins, ds}}
+
+Read a SHAPENC file's ensembles alongside their OUTER/INNER boundary polygons (the SHAPENC
+convention `shapenc()`'s `outer`/`inner` kwargs write, and what a Mirone-original file like
+`enxertos_pascal.nc` already carries): `lonPolyOUT_kk`/`latPolyOUT_kk` and one or more
+`lonPolyIN_x_y`/`latPolyIN_x_y` per ensemble. One `NamedTuple` per ensemble --
+`outp::Union{Nothing,Matrix{Float64}}` (lon/lat ring, `nothing` when this ensemble has no OUTER
+boundary), `ins::Vector{Matrix{Float64}}` (0 or more lon/lat hole rings), and `ds::GMTdataset` (the
+SAME per-ensemble result `_shnc_read` already produces, x,y[,z] + attrib/proj4 -- reused, not
+re-derived, so this is a thin second pass over `_shnc_read`, not a parallel reader). Callers (e.g.
+`drop.jl`) use `outp !== nothing` to decide Mirone's own display convention: plot ONLY the OUT/IN
+boundary, keep the raw point swarm (`ds.data`) hidden until asked for.
+"""
+function _shnc_read_bounded(path::String)
+	ds_list = _shnc_read(path)
+	dsr = _shnc_open_multidim_read(path)
+	root = _shnc_root(dsr)
+	edt_f64 = _shnc_edt_f64()
+	names = _shnc_array_names(root)
+	ids_attr = _shnc_attr_read_str(root, "Ensemble_IDs")
+	kks = if ids_attr === nothing || isempty(ids_attr)
+		n_ens = something(_shnc_attr_read_i32(root, "Number_of_main_ensembles"), 0)
+		string.(1:n_ens)
+	else
+		String.(split(ids_attr, ";"; keepempty=false))
+	end
+
+	out = NamedTuple{(:kk, :outp, :ins, :ds), Tuple{String, Union{Nothing,Matrix{Float64}}, Vector{Matrix{Float64}}, GMT.GMTdataset}}[]
+	for (i, kk) in enumerate(kks)
+		i > length(ds_list) && break   # a multiseg-split ensemble would desync the 1:1 kk<->ds_list
+		                                # assumption below -- bounded ensembles are always single-segment
+		                                # Point swarms in practice, so this just stops safely rather than
+		                                # mismatching kk against the wrong dataset.
+		outp = _shnc_read_xyarr(root, "lonPolyOUT_$kk", "latPolyOUT_$kk", edt_f64)
+		ins = Matrix{Float64}[]
+		for nm in names
+			mm = match(_SHNC_POLYIN_RE, nm)
+			mm === nothing && continue
+			(mm.captures[1] == kk || mm.captures[2] == kk) || continue
+			suf = "$(mm.captures[1])_$(mm.captures[2])"
+			m = _shnc_read_xyarr(root, "lonPolyIN_$suf", "latPolyIN_$suf", edt_f64)
+			m === nothing || push!(ins, m)
+		end
+		push!(out, (kk=kk, outp=outp, ins=ins, ds=ds_list[i]))
+	end
+
+	_shnc_release_edt(edt_f64)
+	ccall((:GDALGroupRelease, GMT.libgdal), Cvoid, (_SHNC_H,), root)
+	ccall((:GDALClose, GMT.libgdal), Cint, (_SHNC_H,), dsr)
+	out
+end

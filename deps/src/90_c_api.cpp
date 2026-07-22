@@ -411,6 +411,62 @@ GMTVTK_API int gmtvtk_add_overlay_h(void *handle, const double *xyz, int npts, c
 	return 1;
 }
 
+// Same as gmtvtk_add_overlay_ex_h (groupName folds Scene Objects rows sharing it under one
+// collapsible parent with hide-all/Remove-all -- SACRED_LAW.md: "each file creates its own master
+// handle"), plus an optional INTERIOR point swarm (x,y,z, `nInterior` points -- null/0 for none)
+// stashed on the new overlay instead of being added to the scene. SHAPENC "bounded ensemble"
+// support (shapenc.jl/drop.jl): Mirone's own convention is to plot only an ensemble's OUTER/INNER
+// boundary polygon, not its raw point swarm -- the swarm rides along on the OUT polygon's Overlay
+// (Overlay::interiorXYZ, 10_geometry.cpp) until the user picks "Plot interior points" in its Scene
+// Objects context menu (popupLineObjectMenu, 55_lineprops.cpp), which adds it as its own ordinary
+// points overlay (in the SAME group) via this SAME addOverlay() -- one function, not a fork.
+// `isShapencBoundary` marks the new overlay as a coverage boundary, not a measurable line --
+// Overlay::isShapencBoundary (10_geometry.cpp) -- so its context menu drops "Line length…"/
+// "Azimuth…"/"Convert to points" (popupLineObjectMenu, 55_lineprops.cpp; user: these make no sense
+// on a SHAPENC OUT/IN polygon). Pass it for BOTH the OUT polygon and its IN holes -- all of a
+// bounded ensemble's boundary rows, not just the outer ring.
+GMTVTK_API int gmtvtk_add_overlay_bounded_h(void *handle, const double *xyz, int npts, const int *segoff, int nseg,
+									   int mode, double r, double g, double b,
+									   double linewidth, double pointsize, const char *name, const char *groupName,
+									   const double *interiorXYZ, int nInterior, int isShapencBoundary) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s))
+		return 0;
+	addOverlay(s, xyz, npts, segoff, nseg, mode, r, g, b, linewidth, pointsize, name, groupName, nullptr,
+	           interiorXYZ, nInterior, isShapencBoundary != 0);
+	return 1;
+}
+
+// Fill caller-allocated `out` (n points -> 3n doubles) with an overlay's raw x,y,z, found by its
+// actor pointer -- ALL in-process, no file (project rule: never write a temp file). COLUMN-MAJOR
+// (out[0..n)=x, out[n..2n)=y, out[2n..3n)=z), NOT interleaved per-point -- so the Julia caller can
+// `reshape(buf, n, 3)` straight into an n×3 Matrix with ZERO copy (matches Julia's own column-major
+// layout exactly); an interleaved fill would force a real copy/transpose on the Julia side to
+// un-interleave it, which is exactly the wasted work this is avoiding by not going through a file.
+// Used by "Point cloud view" (55_lineprops.cpp) to hand a SHAPENC interior-points overlay's swarm to
+// Julia's view_points; `n` must match the overlay's actual point count exactly (the caller already
+// knows it -- it built the menu action from the same vtkPoints this reads). Returns 1 on success, 0
+// if the actor/overlay isn't found or `n` doesn't match.
+GMTVTK_API int gmtvtk_overlay_points_h(void *handle, void *actorPtr, double *out, int n) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !actorPtr || !out || n <= 0)
+		return 0;
+	vtkActor *a = static_cast<vtkActor*>(actorPtr);
+	for (auto& ov : s->overlays) {
+		if (ov.actor.Get() != a || !ov.baseLine)
+			continue;
+		vtkPoints *pts = ov.baseLine->GetPoints();
+		if (!pts || (int)pts->GetNumberOfPoints() != n)
+			return 0;
+		for (int i = 0; i < n; ++i) {
+			double p[3]; pts->GetPoint(i, p);
+			out[i] = p[0]; out[n + i] = p[1]; out[2*n + i] = p[2];
+		}
+		return 1;
+	}
+	return 0;
+}
+
 // Extended form of gmtvtk_add_overlay_h: also tags the overlay with a Scene Objects GROUP name
 // (rebuildSceneObjects folds every overlay sharing the same non-empty group under one collapsible
 // parent row -- same fold the slip-model patches use) and, for line mode, a per-SEGMENT hover info

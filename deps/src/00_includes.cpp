@@ -136,6 +136,7 @@
 #include <vtkCubeAxesActor.h>
 #include <vtkCamera.h>
 #include <vtkCellPicker.h>
+#include <vtkPointPicker.h>
 #include <vtkCellLocator.h>
 #include <vtkPropPicker.h>
 #include <vtkPropCollection.h>

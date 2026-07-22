@@ -1885,9 +1885,16 @@ static void rebuildSceneObjects(Scene *s) {
 	}
 }
 
+// `interiorXYZ`/`nInterior`: SHAPENC "bounded ensemble" support (Mirone convention -- an OUTER
+// boundary polygon wraps a point swarm that's plotted only on demand). Meaningful only when this
+// call is adding the OUT polygon itself: the swarm is stashed on the new Overlay, NOT added to the
+// scene, until the user picks "Plot interior points" (popupLineObjectMenu, 55_lineprops.cpp) --
+// which just calls this SAME function again with mode=0 to add it as its own ordinary overlay.
 static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff, int nseg,
 					   int mode, double r, double g, double b, double linewidth, double pointsize,
-					   const char *name = nullptr, const char *groupName = nullptr, const char *info = nullptr) {
+					   const char *name = nullptr, const char *groupName = nullptr, const char *info = nullptr,
+					   const double *interiorXYZ = nullptr, int nInterior = 0, bool isShapencBoundary = false,
+					   bool isShapencInteriorPoints = false) {
 	if (!s || !xyz || npts <= 0)
 		return;
 
@@ -1965,6 +1972,10 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 		if ((int)recs.size() == nseg)          // adopt only if it aligns 1:1 with the segments, else drop it
 			ov.info = std::move(recs);
 	}
+	if (interiorXYZ && nInterior > 0)
+		ov.interiorXYZ.assign(interiorXYZ, interiorXYZ + 3 * nInterior);
+	ov.isShapencBoundary = isShapencBoundary;
+	ov.isShapencInteriorPoints = isShapencInteriorPoints;
 	ov.stack = s->vecSeq++;                    // new overlay lands on top of the shared vector pile
 	s->overlays.push_back(ov);
 	applyVectorStacking(s);                   // normalize ranks + set this overlay's draw-order offset

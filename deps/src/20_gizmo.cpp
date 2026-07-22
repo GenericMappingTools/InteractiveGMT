@@ -93,11 +93,14 @@ void fitSnapView(Scene *s, bool topMode, double fill = -1.0) {
 	}
 	const int *sz = s->widget->renderWindow()->GetSize();
 	const double aspect = (sz && sz[1] > 0) ? double(sz[0]) / double(sz[1]) : 1.0;
-	// Top view fills the viewport edge-to-edge (data bbox spans the limiting dim); the lon/lat
-	// tick numbers + titles sit just outside the data and are intentionally pushed off-screen.
-	// Side views keep a margin so their annotation text stays visible. Caller may override the
-	// fill fraction (e.g. a referenced image wants a margin so its lon/lat axes stay visible).
-	const double targetFill = (fill > 0.0) ? fill : (topMode ? 1.0 : 0.88);
+	// SACRED_LAW.md: "all mapping displays must have axes on all 4 sides" -- a top view used to
+	// fill the viewport edge-to-edge (fill=1.0) on the LIMITING dimension (whichever of width/
+	// height the data bbox's aspect makes the tighter fit), which left literally zero margin for
+	// that dimension's tick numbers, pushing them off-screen entirely (proven live: a wide bbox's
+	// south-edge X ticks landed at screen row 0 and below -- invisible, not just crowded). Side
+	// views already kept a margin (0.88); top views now get the SAME margin unconditionally, no
+	// more edge-to-edge special case. Caller may still override (e.g. a referenced image's 0.84).
+	const double targetFill = (fill > 0.0) ? fill : 0.88;
 	for (int pass = 0; pass < 2; ++pass) {
 		vtkMatrix4x4 *M = cam->GetCompositeProjectionTransformMatrix(aspect, -1.0, 1.0);
 		double nx0=1e300, nx1=-1e300, ny0=1e300, ny1=-1e300;

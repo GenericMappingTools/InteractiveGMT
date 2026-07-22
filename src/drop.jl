@@ -105,6 +105,7 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 	# fed into the SAME Vector{<:GMTdataset} overlay path any other multi-segment file already uses
 	# (`_drop_into`), never a separate display path (SACRED_LAW.md).
 	if _shnc_is_shapenc(String(spec))
+		_add_shapenc_bounded(scene, String(spec), name, empty, recent) && return
 		D = _shnc_read(String(spec))
 		isempty(recent) || _record_recent(recent, D)
 		_drop_into(scene, D, name; promote=empty, source=String(spec))
@@ -119,6 +120,116 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 		_drop_into(scene, data, name; promote=empty, source=String(spec))
 	end
 	return
+end
+
+# SHAPENC "bounded ensembles" (shapenc.jl's `_shnc_read_bounded`): an OUTER boundary polygon
+# (+ optional INNER holes) wrapping a point swarm. Mirone's own display convention -- plot ONLY the
+# OUT/IN boundary, keep the swarm hidden until the user picks "Plot interior points" in the OUT
+# polygon's Scene Objects menu (55_lineprops.cpp; gmtvtk_add_overlay_bounded_h stashes the swarm on
+# the C++ side, no second Julia round-trip). Returns `false` (does nothing) when the file has no
+# bounded ensemble at all, so the caller falls back to the plain `_shnc_read` + `_drop_into` path
+# unchanged (e.g. CARTA604_IH.nc, a bare point cloud with no OUT/IN polygons).
+function _add_shapenc_bounded(scene::Ptr{Cvoid}, path::String, name::AbstractString, promote::Bool,
+                               recent::AbstractString)::Bool
+	ents = _shnc_read_bounded(path)
+	isempty(ents) && return false
+	any(e -> e.outp !== nothing, ents) || return false
+	isempty(recent) || _record_recent(recent, ents[1].ds)
+
+	if promote
+		shown = GMT.GMTdataset[]
+		for e in ents
+			m = e.outp !== nothing ? e.outp : e.ds.data[:, 1:2]
+			push!(shown, GMT.mat2ds(m; proj4=e.ds.proj4, geom=GMT.wkbPolygon))
+		end
+		W, E, S, N = _dataset_bbox(shown)
+		dx = E - W; dy = N - S
+		px = dx == 0 ? 1.0 : 0.05dx; py = dy == 0 ? 1.0 : 0.05dy
+		W -= px; E += px; S -= py; N += py
+		d1 = ents[1].ds
+		geog = _isgeog(d1) == 1
+		zblank = zeros(Float32, 2, 2)
+		ccall(_fn(:gmtvtk_promote_surface_h), Cint,
+		      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+		       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		      scene, zblank, Cint(2), Cint(2), W, E, S, N, Cint(geog ? 1 : 0),
+		      C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
+		ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), scene)
+		if geog
+			crs = crs_from(d1; geographic=true)
+			hascrs(crs) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
+			                     scene, crs.proj4, crs.wkt, Cint(crs.epsg))
+		end
+	end
+
+	base = String(name)
+	# Every handle this file produces (every OUT boundary, every IN hole, and later every "Plot
+	# interior points" points overlay -- 55_lineprops.cpp propagates the SAME groupName) folds under
+	# ONE master Scene Objects row named for the FILE, with hide-all/Remove-all for free from the
+	# existing groupName mechanism (Geography > Plate boundaries already proved it) -- never a
+	# separate ungrouped row per handle. SACRED_LAW.md: "each file creates its own master handle."
+	gname = isempty(base) ? splitext(basename(path))[1] : base
+	for e in ents
+		if e.outp === nothing            # no boundary for this ensemble -- plain point/line, unchanged
+			_add_dataset_to_scene(scene, e.ds, "ensemble $(e.kk)"; groupName=gname)
+			continue
+		end
+		outds = GMT.mat2ds(e.outp; proj4=e.ds.proj4, geom=GMT.wkbPolygon)
+		xyzOut, segoffOut, nsegOut, nOut = _pack_dataset_flat(outds)
+		cr, cg, cb = _ovl_color(nothing, :lines)
+
+		swarm = e.ds.data
+		nInterior = size(swarm, 1)
+		xyzInterior = Vector{Float64}(undef, 3 * nInterior)
+		@inbounds for k in 1:nInterior
+			xyzInterior[3k-2] = swarm[k, 1]
+			xyzInterior[3k-1] = swarm[k, 2]
+			xyzInterior[3k]   = size(swarm, 2) >= 3 ? swarm[k, 3] : 0.0
+		end
+
+		nm_out = "boundary $(e.kk)"
+		ccall(_fn(:gmtvtk_add_overlay_bounded_h), Cint,
+		      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
+		       Cstring, Cstring, Ptr{Cdouble}, Cint, Cint),
+		      scene, xyzOut, Cint(nOut), segoffOut, Cint(nsegOut), Cint(1), cr, cg, cb, 0.0, 0.0,
+		      nm_out, gname, xyzInterior, Cint(nInterior), Cint(1))
+
+		# IN holes: same bounded API, no interior payload of their own -- also tagged
+		# isShapencBoundary so their own context menu drops Length/Azimuth/Convert-to-points too.
+		for (j, m) in enumerate(e.ins)
+			inds = GMT.mat2ds(m; proj4=e.ds.proj4, geom=GMT.wkbPolygon)
+			xyzIn, segoffIn, nsegIn, nIn = _pack_dataset_flat(inds)
+			ccall(_fn(:gmtvtk_add_overlay_bounded_h), Cint,
+			      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
+			       Cstring, Cstring, Ptr{Cdouble}, Cint, Cint),
+			      scene, xyzIn, Cint(nIn), segoffIn, Cint(nsegIn), Cint(1), cr, cg, cb, 0.0, 0.0,
+			      "$nm_out hole $j", gname, C_NULL, Cint(0), Cint(1))
+		end
+	end
+	true
+end
+
+# C++ bridge target for the "Point cloud view" menu item on a SHAPENC interior-points overlay
+# (55_lineprops.cpp, Overlay::isShapencInteriorPoints): pulls that overlay's raw x,y,z directly into
+# a Julia-owned buffer via gmtvtk_overlay_points_h (ALL in-process -- no temp file, project rule: never
+# write one) and opens it in the REAL 3-D point-cloud viewer (`view_points`: Z axis, colour-by-height,
+# rubber-band select) instead of the flat overlay display. `scene`/`actor` are the raw pointers the
+# C++ click handler embedded in the eval command (same idiom nestCreateBlankGrid already uses for the
+# scene handle); `geog` comes straight from the C++ window's own CRS state (`s->hasCRS()`).
+function _on_pointcloud_view(scene::Ptr{Cvoid}, actor::Ptr{Cvoid}, n::Integer, geog::Bool)
+	n <= 0 && return nothing
+	buf = Vector{Float64}(undef, 3n)
+	ok = ccall(_fn(:gmtvtk_overlay_points_h), Cint,
+	           (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cdouble}, Cint), scene, actor, buf, Cint(n))
+	if ok == 0
+		@warn "Point cloud view: could not read the overlay's points"
+		return nothing
+	end
+	# `buf` is column-major (x-block, y-block, z-block -- gmtvtk_overlay_points_h fills it that way
+	# on purpose) so this reshape is a real Julia Array sharing `buf`'s own memory, zero copy.
+	xyz = reshape(buf, Int(n), 3)
+	view_points(GMT.mat2ds(xyz); geographic=geog)
+	return nothing
 end
 
 # Enumerate the named variables of a multi-variable netCDF file via GDAL's Subdatasets report.
@@ -899,7 +1010,7 @@ end
 # is a line; the user flips it to a scatter via the overlay's "Convert to points" menu item. This is
 # deliberately NOT `_ds_kind` (whose unknown-geometry heuristic guesses :points) — that heuristic
 # still drives the front-door `iview(D)` routing, just not the drop-overlay default.
-function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name)
+function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractString="")
 	d1   = D isa AbstractVector ? first(D) : D
 	mode = _geom_kind(Int(d1.geom)) === :points ? :points : :lines
 	xyz, segoff, nseg, npts = _pack_dataset_flat(D)
@@ -907,9 +1018,17 @@ function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name)
 	cr, cg, cb = _ovl_color(nothing, mode)
 	lw = 0.0   # <=0 -> C++ addOverlay falls back to Preferences "Default line thickness" (50_scene.cpp)
 	ps = mode === :points ? 6.0 : 0.0
-	ok = ccall(_fn(:gmtvtk_add_overlay_h), Cint,
+	nm = String(name === nothing ? "" : name)
+	ok = if isempty(groupName)
+		ccall(_fn(:gmtvtk_add_overlay_h), Cint,
 		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
-		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, String(name === nothing ? "" : name))
+		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm)
+	else
+		ccall(_fn(:gmtvtk_add_overlay_ex_h), Cint,
+		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
+		   Cstring, Cstring, Cstring),
+		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm, String(groupName), C_NULL)
+	end
 	ok == 0 && @warn "drop: window is closed; dataset not added"
 	return ok != 0
 end

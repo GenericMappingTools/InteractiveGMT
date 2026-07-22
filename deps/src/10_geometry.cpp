@@ -36,6 +36,22 @@ struct Overlay {
 	std::vector<std::string> info;           // per-SEGMENT hover text (nseg entries, line mode only); empty =
 	                                          // no hover info. Looked up by pickOverlayInfoAt via pickOverlayAt's
 	                                          // segment index -- same hit-test the context-menu path already uses.
+	std::vector<double> interiorXYZ;         // SHAPENC "bounded ensemble" (OUT polygon + hidden point swarm,
+	                                          // Mirone convention): the swarm's x,y,z, stashed here at add-time
+	                                          // instead of being added to the scene -- empty = not a bounded
+	                                          // OUT polygon, no "Plot interior points" menu item.
+	bool interiorAdded = false;              // true once "Plot interior points" has added the swarm as its
+	                                          // own overlay (that overlay then owns its own Scene Objects row,
+	                                          // checkbox and Delete -- no separate toggle state needed here).
+	bool isShapencBoundary = false;          // a SHAPENC OUT/IN polygon (drop.jl's _add_shapenc_bounded):
+	                                          // a coverage boundary, not a measurable line -- suppresses
+	                                          // "Line length…"/"Azimuth…"/"Convert to points" in its context
+	                                          // menu (same kind of source-intrinsic distinction as Polygon's
+	                                          // isFault/isSlip/nestKind, not a per-call-site special case).
+	bool isShapencInteriorPoints = false;    // the points overlay "Plot interior points" itself added (its
+	                                          // OWN row, not the OUT polygon it came from) -- adds "Quick
+	                                          // grid" (Auto/Set increments…, gridding not implemented yet)
+	                                          // and "Point cloud view" (real 3-D, view_points) to its menu.
 };
 
 // A generic SCREEN-CONSTANT symbol layer (volcanoes, seismicity, cities, …): N glyphs of one
@@ -338,6 +354,15 @@ struct Scene {
 	bool   barDragging = false;
 	double barGrabX = 0, barGrabY = 0;               // mouse-to-origin offset while dragging
 	vtkSmartPointer<vtkCellPicker>        picker;
+	vtkSmartPointer<vtkPointPicker>       pointPicker;   // coordinate-readout fallback for a Verts-only
+	                                                      // point cloud (view_points, "Point cloud view")
+	                                                      // -- vtkCellPicker's ray-cell intersection never
+	                                                      // hits a zero-area vertex cell, so a plain point
+	                                                      // cloud got NO hover readout at all through
+	                                                      // `picker` alone (SACRED_LAW.md: the readout must
+	                                                      // work the same everywhere; this is the missing
+	                                                      // hit-test for the one geometry kind that needs a
+	                                                      // genuinely different picker, not a special case).
 	QVTKOpenGLNativeWidget *widget = nullptr;
 	QMainWindow *win    = nullptr;
 	double ve = 1.0;            // vertical exaggeration (gizmo factor, 1 = true scale)
@@ -1114,6 +1139,40 @@ static double niceNum(double range, bool round) {
 	return nf * std::pow(10.0, expv);
 }
 
+// Same tick geometry as placeTickBillboards below (kept in lockstep on purpose — same spacing via
+// niceNum, same outward-direction math), but NO number billboards: just the outward tick segments,
+// appended to tpts/tlines. Used to complete a flat-2-D map's frame on the far (un-annotated) edge
+// once the near edge already got the real, numbered ticks — SACRED_LAW.md: every mapping display
+// needs axes on all 4 sides, annotations belong on the near (south/west) pair only.
+static void placeTickMarksOnly(double v0, double v1, double d0, double d1,
+		int axis, double fixedA, double fixedB, const double ctr[3],
+		vtkPoints *tpts, vtkCellArray *tlines, double tickLen) {
+	const double vspan = v1 - v0;
+	if (std::abs(vspan) <= 1e-12 || std::abs(d1 - d0) <= 1e-12 || !tpts || !tlines) return;
+	const double range = niceNum(std::abs(vspan), false);
+	const double step  = niceNum(range / 4.0, true);
+	const double lo = std::min(v0, v1), hi = std::max(v0, v1);
+	const double eps = 1e-9 * std::abs(vspan);
+	for (double v = std::ceil(lo / step) * step; v <= hi + eps; v += step) {
+		if (v < lo - eps) continue;
+		const double frac = (v - v0) / vspan;
+		const double dpos = d0 + frac * (d1 - d0);
+		double p[3];
+		if      (axis == 0) { p[0] = dpos;   p[1] = fixedA; p[2] = fixedB; }
+		else if (axis == 1) { p[0] = fixedA; p[1] = dpos;   p[2] = fixedB; }
+		else                { p[0] = fixedA; p[1] = fixedB; p[2] = dpos;   }
+		double wo[3] = { p[0]-ctr[0], p[1]-ctr[1], p[2]-ctr[2] };
+		wo[axis] = 0.0;
+		double wl = std::sqrt(wo[0]*wo[0] + wo[1]*wo[1] + wo[2]*wo[2]);
+		if (wl > 1e-9) { wo[0]/=wl; wo[1]/=wl; wo[2]/=wl; }
+		else { wo[0] = (axis==0?0.0:-1.0); wo[1] = (axis==1?0.0:-1.0); wo[2] = 0.0; }
+		const double q[3] = { p[0]+wo[0]*tickLen, p[1]+wo[1]*tickLen, p[2]+wo[2]*tickLen };
+		vtkIdType ia = tpts->InsertNextPoint(p);
+		vtkIdType ib = tpts->InsertNextPoint(q);
+		tlines->InsertNextCell(2); tlines->InsertCellPoint(ia); tlines->InsertCellPoint(ib);
+	}
+}
+
 // Lay one axis' value labels along the chosen edge as horizontal screen-facing billboards, with
 // ONE clean tickmark per label (appended to tpts/tlines). The tick points OUTWARD in world space
 // (perpendicular to the axis, away from the cube centre) — a SINGLE mark, never the cube's
@@ -1286,15 +1345,23 @@ static void rebuildAxisLabels(Scene *s) {
 	const double diag = std::sqrt((b[1]-b[0])*(b[1]-b[0]) + (b[3]-b[2])*(b[3]-b[2]) + (b[5]-b[4])*(b[5]-b[4]));
 	// ===== TICKMARK LENGTH ===== world length of every axis tick = this fraction of the bbox
 	// diagonal. Lower it for shorter ticks, raise it for longer.
-	const double tickLen = 0.0125 * diag;
+	const double tickLen = 0.00625 * diag;
 	// Pick the candidate value nearer the camera along one coordinate.
 	auto nearer = [](double a, double c, double camc) { return std::abs(camc-a) <= std::abs(camc-c) ? a : c; };
-	const double xEdgeY = nearer(b[2], b[3], cam[1]);   // X labels on nearer y (front/back) floor edge
-	double       yEdgeX = nearer(b[0], b[1], cam[0]);   // Y labels on nearer x (left/right) floor edge
+	double xEdgeY = nearer(b[2], b[3], cam[1]);   // X labels on nearer y (front/back) floor edge
+	double yEdgeX = nearer(b[0], b[1], cam[0]);   // Y labels on nearer x (left/right) floor edge
 	// Top-down view ('2' snap, +Y up): pin the Y (north) annotations to the screen-left (xmin)
 	// edge instead of the camera-near edge, so north labels always sit on the left of the map.
 	double dop[3]; s->ren->GetActiveCamera()->GetDirectionOfProjection(dop);
 	if (dop[2] < -0.999) yEdgeX = b[0];
+	// Flat-2-D is a FIXED top-down view, never rotated -- "nearer the camera" is meaningless there
+	// and, worse, unstable: an orthographic top-down camera's Y position often sits exactly on the
+	// bbox's vertical centre, so `nearer(b[2],b[3],cam[1])` is a near-tie decided by float noise
+	// (proven live: the SAME scene showed X annotations on the bottom edge on one run and not at
+	// all on another). Pin X to south (b[2]) deterministically, same spirit as the existing Y pin
+	// two lines up. SACRED_LAW.md: "all mapping displays must have axes on all 4 sides" -- the
+	// mirrored tick-only marks on the far edges (below) complete the frame.
+	if (s->flat2d) xEdgeY = b[2];
 	// Z: nearest of the 4 vertical edges (compared at mid-height).
 	double zx = b[0], zy = b[2], zbest = 1e300;
 	for (double cx : { b[0], b[1] })
@@ -1311,6 +1378,15 @@ static void rebuildAxisLabels(Scene *s) {
 	const bool hideNames = s->flat2d || s->imageOnly;
 	placeTickBillboards(s, s->xlabels, s->x0, s->x1, b[0], b[1], 0, xEdgeY, b[4], ctr, tp, tl, tickLen);
 	placeTickBillboards(s, s->ylabels, s->y0, s->y1, b[2], b[3], 1, yEdgeX, b[4], ctr, tp, tl, tickLen);
+	if (s->flat2d) {
+		// Complete the frame: plain (un-numbered) ticks on the FAR edge from each annotated one --
+		// south got the real X ticks above, so north gets the mirror; west got the real Y ticks,
+		// so east gets the mirror. SACRED_LAW.md: axes on all 4 sides, always.
+		const double xFar = (xEdgeY == b[2]) ? b[3] : b[2];
+		const double yFar = (yEdgeX == b[0]) ? b[1] : b[0];
+		placeTickMarksOnly(s->x0, s->x1, b[0], b[1], 0, xFar, b[4], ctr, tp, tl, tickLen);
+		placeTickMarksOnly(s->y0, s->y1, b[2], b[3], 1, yFar, b[4], ctr, tp, tl, tickLen);
+	}
 	if (hideNames) {
 		if (s->axTitle[0]) s->axTitle[0]->SetVisibility(0);
 		if (s->axTitle[1]) s->axTitle[1]->SetVisibility(0);
@@ -1338,6 +1414,18 @@ static void rebuildAxisLabels(Scene *s) {
 		const double zlo = s->cubeZLock ? s->cubeZMin : s->zmin;
 		const double zhi = s->cubeZLock ? s->cubeZMax : s->zmax;
 		placeTickBillboards(s, s->zlabels, zlo, zhi, b[4], b[5], 2, zx, zy, ctr, tp, tl, tickLen);
+	}
+	if (s->flat2d) {
+		// The actual 4-side BORDER: a closed rectangle connecting the 4 corners, not just interval
+		// ticks -- SACRED_LAW.md "all mapping displays must have axes on all 4 sides" means a real
+		// frame, same as any GMT map border. Same axisTickPD line pipeline the ticks already use.
+		vtkIdType c0 = tp->InsertNextPoint(b[0], b[2], b[4]);
+		vtkIdType c1 = tp->InsertNextPoint(b[1], b[2], b[4]);
+		vtkIdType c2 = tp->InsertNextPoint(b[1], b[3], b[4]);
+		vtkIdType c3 = tp->InsertNextPoint(b[0], b[3], b[4]);
+		tl->InsertNextCell(5);
+		tl->InsertCellPoint(c0); tl->InsertCellPoint(c1); tl->InsertCellPoint(c2);
+		tl->InsertCellPoint(c3); tl->InsertCellPoint(c0);
 	}
 	if (s->axisTickPD) {
 		s->axisTickPD->SetPoints(tp);
@@ -1819,6 +1907,13 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 	} else if (s->picker) {
 		if (s->picker->Pick((double)mx, (double)my, 0.0, s->ren) && s->picker->GetCellId() >= 0) {
 			s->picker->GetPickPosition(w); hit = true;
+		}
+		// The cell picker never hits a Verts-only point cloud (zero-area cells) -- fall back to
+		// nearest-point picking so a plain point cloud (view_points/"Point cloud view") gets the
+		// SAME LL-corner coordinate readout every other scene kind already has.
+		else if (s->pointPicker && s->pointPicker->Pick((double)mx, (double)my, 0.0, s->ren) &&
+		         s->pointPicker->GetPointId() >= 0) {
+			s->pointPicker->GetPickPosition(w); hit = true;
 		}
 	}
 	// Over a grid but the ray hit a NaN hole (no surface there) — the march above found no crossing.

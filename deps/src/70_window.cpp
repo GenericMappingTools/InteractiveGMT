@@ -5202,6 +5202,11 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	// cell locator is built here; vtkCellPicker would be O(cells) brute force and OOM on big grids.)
 	s->picker = vtkSmartPointer<vtkCellPicker>::New();
 	s->picker->SetTolerance(0.001);
+	// vtkCellPicker's ray-cell intersection never hits a zero-area Verts cell (a point cloud's own
+	// geometry, e.g. view_points/"Point cloud view") -- vtkPointPicker does nearest-point-in-tolerance
+	// picking instead, tried as a fallback in onMouseMove when the cell picker misses.
+	s->pointPicker = vtkSmartPointer<vtkPointPicker>::New();
+	s->pointPicker->SetTolerance(0.01);
 
 	// --- profile track drape line (Ctrl+left-drag fills it) -----------------
 	{

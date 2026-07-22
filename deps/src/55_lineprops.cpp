@@ -730,6 +730,12 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 		if (pi >= 0 && s->polys[pi].isFault)       isFault = true;
 		if (pi >= 0 && s->polys[pi].isSlip)        isSlip = true;
 	}
+	// The matching Overlay entry (LK_Overlay only) -- used below both to gate "Line length…"/
+	// "Azimuth…"/"Convert to points" off a SHAPENC boundary (isShapencBoundary) and to offer "Plot
+	// interior points" when it carries a stashed swarm (interiorXYZ). One lookup, two uses.
+	Overlay *ovp = nullptr;
+	if (lr.kind == LK_Overlay)
+		for (auto& o : s->overlays) if (o.actor.Get() == a) { ovp = &o; break; }
 
 	// A fault line's (or slip patch's) first property is the elastic-deformation dialog. For a slip
 	// patch the dialog opens seeded from THIS patch (faultRunDialog finds it via polyIndexOfActor) and
@@ -771,38 +777,56 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 			// rect's "layerN" blank-grid row instead — see gridObjectMenu).
 			if (!isNestRect) {
 				m.addAction("Area under polygon…", [s, lr]() { lineRunMeasure(s, lr, "_poly_area", true); });
+				// A REAL grid, not the fake 2x2 all-zero placeholder a vector-only empty-launcher
+				// promote uses (see the "Extract profile…" comment above, same class of bug, same fix).
+				const bool hasRealGrid = !s->gridZ.empty() && s->gnx > 2 && s->gny > 2;
 				// On a grid: implant an external grid clipped to this rectangle (Grid Tools > Transplant).
 				// "Undo transplant" shows ONLY while a transplant is applied+not-yet-undone (Julia keeps the
 				// flag current via gmtvtk_set_transplant_undo); it disappears once undone here or via Ctrl+Z.
-				if (!isSlip && !s->gridZ.empty()) {
+				if (!isSlip && hasRealGrid) {
 					m.addAction("Transplant 2nd grid…", [s, lr]() { rectTransplant(s, lr); });
 					if (s->transplantUndoAvail)
 						m.addAction("Undo transplant", [s]() { rectTransplantUndo(s); });
 				}
 				// "Roi Crop Tools" (Mirone draw_funs.m item_tools): crop this rectangle out of the
 				// window's primary grid and/or image into a new window.
-				if (!isSlip && (!s->gridZ.empty() || sceneHasImage(s))) {
+				if (!isSlip && (hasRealGrid || sceneHasImage(s))) {
 					QMenu *roi = m.addMenu("Roi Crop Tools");
-					if (!s->gridZ.empty())
+					if (hasRealGrid)
 						roi->addAction("Crop Grid", [s, lr]() { rectRoiCrop(s, lr, "grid"); });
 					// Mirone (draw_funs.m:409-413) shows Crop Image / Crop Image (with coords) for a
 					// GRID too, not only when a separate bitmap image is loaded — its own architecture
 					// always has an underlying rendered image for a grid display. Match that: show
 					// both whenever EITHER a grid or a real image is present, not gated on image alone.
-					if (!s->gridZ.empty() || sceneHasImage(s)) {
+					if (hasRealGrid || sceneHasImage(s)) {
 						roi->addAction("Crop Image", [s, lr]() { rectRoiCrop(s, lr, "image"); });
 						roi->addAction("Crop Image (with coords)", [s, lr]() { rectRoiCrop(s, lr, "image_coords"); });
 					}
 				}
 			}
 		} else {
-			// Open lines / polylines only: length(s) + azimuth(s).
-			const bool    many = lineSegmentCount(s, lr) > 1;
-			const QString sfx  = many ? "s" : "";
-			m.addAction(QString("Line length%1…").arg(sfx), [s, lr, many]() { lineRunMeasure(s, lr, "_line_length",  !many); });
-			m.addAction(QString("Azimuth%1…").arg(sfx),     [s, lr, many]() { lineRunMeasure(s, lr, "_line_azimuth", !many); });
-			// Grid profile along the line (grdtrack) — only when this line actually sits on a grid.
-			if (!s->gridZ.empty())
+			// Open lines / polylines only: length(s) + azimuth(s). Not for a SHAPENC boundary line
+			// (user: a coverage OUT/IN boundary is not a thing you measure the length/azimuth of) --
+			// Extract profile below keeps its OWN gate (a real grid may still legitimately underlie a
+			// boundary added into an already-populated window), so this is scoped to just these two.
+			if (!ovp || !ovp->isShapencBoundary) {
+				const bool    many = lineSegmentCount(s, lr) > 1;
+				const QString sfx  = many ? "s" : "";
+				m.addAction(QString("Line length%1…").arg(sfx), [s, lr, many]() { lineRunMeasure(s, lr, "_line_length",  !many); });
+				m.addAction(QString("Azimuth%1…").arg(sfx),     [s, lr, many]() { lineRunMeasure(s, lr, "_line_azimuth", !many); });
+			}
+			// Grid profile along the line (grdtrack) — only when this line actually sits on a REAL
+			// grid, not the fake 2x2 all-zero placeholder every vector-only empty-launcher promote
+			// uses to get real framed axes without real data (drop.jl's vector overlays, Background
+			// region, the Coastlines/basemap tile scaffold -- all share the SAME zblank=zeros(2,2)
+			// convention). `!s->gridZ.empty()` alone is true for that placeholder too (it's still a
+			// non-empty 4-element vector), so a boundary polygon dropped with no grid underneath was
+			// wrongly offering "Extract profile..." with nothing real to sample. A genuine grid is
+			// never exactly 2x2 in practice, so gnx/gny > 2 is a safe, minimal-diff signal -- no new
+			// C API parameter needed across the half-dozen legitimate promote call sites (IGRF, RTP,
+			// clipped grids, Geography-derived grids, ...) that also flow through the SAME
+			// gmtvtk_promote_surface_h with real, much finer data.
+			if (!s->gridZ.empty() && s->gnx > 2 && s->gny > 2)
 				m.addAction("Extract profile…", [s, lr]() { lineExtractProfile(s, lr); });
 		}
 	}
@@ -839,12 +863,88 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 	}
 	else {                                               // overlay line (Coastlines, Boundaries, Rivers, imports)
 		// Line <-> points toggle: a dropped x,y table draws as a polyline by default; this converts it
-		// to a scatter of points (and back). Label reflects the CURRENT mode.
-		const int omode = overlayMode(s, a);
-		if (omode == 1)
-			m.addAction("Convert to points", [s, a]() { overlaySetMode(s, a, 1); });
-		else if (omode == 0)
-			m.addAction("Convert to line",   [s, a]() { overlaySetMode(s, a, 0); });
+		// to a scatter of points (and back). Label reflects the CURRENT mode. Not for a SHAPENC
+		// boundary (user: converting a coverage OUT/IN polygon to a point scatter makes no sense).
+		if (!ovp || !ovp->isShapencBoundary) {
+			const int omode = overlayMode(s, a);
+			if (omode == 1)
+				m.addAction("Convert to points", [s, a]() { overlaySetMode(s, a, 1); });
+			else if (omode == 0)
+				m.addAction("Convert to line",   [s, a]() { overlaySetMode(s, a, 0); });
+		}
+		// SHAPENC "bounded ensemble" OUT polygon (shapenc.jl/drop.jl): its hidden point swarm rides
+		// along in Overlay::interiorXYZ instead of being added to the scene. One-shot -- once added,
+		// the swarm is its OWN overlay with its own Scene Objects row/checkbox/Delete, so the item
+		// just disappears rather than needing a second "hide interior points" state to track here.
+		if (ovp && !ovp->interiorXYZ.empty() && !ovp->interiorAdded) {
+			m.addAction("Plot interior points", [s, ovp]() {
+				const int n = (int)ovp->interiorXYZ.size() / 3;
+				if (n <= 0) return;
+				const std::vector<int> pseg = { 0, n };
+				// Same groupName as the OUT polygon itself -- stays under the SAME master file handle
+				// (SACRED_LAW.md: "each file creates its own master handle", ALL of it, not just the
+				// boundary rows), not a separate ungrouped row.
+				const char *gn = ovp->groupName.empty() ? nullptr : ovp->groupName.c_str();
+				addOverlay(s, ovp->interiorXYZ.data(), n, pseg.data(), 1, /*mode=*/0,
+				           1.0, 0.0, 0.0, 0.0, 0.0, (ovp->name + " interior points").c_str(), gn,
+				           /*info=*/nullptr, /*interiorXYZ=*/nullptr, /*nInterior=*/0,
+				           /*isShapencBoundary=*/false, /*isShapencInteriorPoints=*/true);
+				ovp->interiorAdded = true;
+			});
+		}
+		// The points overlay "Plot interior points" itself created (its OWN row, not the OUT polygon):
+		// "Quick grid" (gridding a scattered point cloud into a regular grid -- Auto estimates the
+		// increment from the data spacing, Set increments… asks for it explicitly; NEITHER actually
+		// grids yet, that's deferred) and "Point cloud view" (real 3-D: Z axis, colour-by-height,
+		// rubber-band select -- InteractiveGMT.view_points, via a temp-file bridge since the point
+		// count can be in the hundreds of thousands, too large to embed in a Julia eval string).
+		if (ovp && ovp->isShapencInteriorPoints) {
+			QMenu *qg = m.addMenu("Quick grid");
+			qg->addAction("auto", [s]() {
+				if (s->win) s->win->statusBar()->showMessage("Quick grid (auto): not implemented yet.", 4000);
+			});
+			qg->addAction("set increments", [s]() {
+				QDialog dlg(s->win);
+				dlg.setWindowTitle("Quick grid — increments");
+				QFormLayout *fl = new QFormLayout(&dlg);
+				QLineEdit *exI = new QLineEdit(&dlg);
+				QLineEdit *eyI = new QLineEdit(&dlg);
+				exI->setValidator(new QDoubleValidator(0.0, 1e30, 12, exI));
+				eyI->setValidator(new QDoubleValidator(0.0, 1e30, 12, eyI));
+				fl->addRow("Increment X:", exI);
+				fl->addRow("Increment Y:", eyI);
+				QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+				fl->addRow(bb);
+				QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+				QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+				if (dlg.exec() == QDialog::Accepted && s->win)   // OK is the ONE action button -- gridding itself not implemented yet
+					s->win->statusBar()->showMessage("Quick grid (increments): not implemented yet.", 4000);
+			});
+			m.addAction("Point cloud view", [s, ovp]() {
+				// ALL in-process, no file (project rule: never write a temp file, no exceptions).
+				// Julia calls gmtvtk_overlay_points_h back to fill its OWN buffer directly -- the
+				// actor pointer + point count are embedded in the eval command exactly like
+				// nestCreateBlankGrid's scene handle above, just two pointers instead of one.
+				if (!ovp->baseLine || !ovp->baseLine->GetPoints()) return;
+				const int n = (int)ovp->baseLine->GetPoints()->GetNumberOfPoints();
+				if (n <= 0) return;
+				if (!g_juliaEval) {
+					QMessageBox::warning(s->win, "Point cloud view", "Needs the Julia/GMT host.");
+					return;
+				}
+				vtkActor *actor = ovp->actor.Get();
+				const QString cmd = QString("InteractiveGMT._on_pointcloud_view(Ptr{Cvoid}(UInt(%1)),Ptr{Cvoid}(UInt(%2)),%3,%4)")
+				                        .arg((qulonglong)reinterpret_cast<uintptr_t>(s))
+				                        .arg((qulonglong)reinterpret_cast<uintptr_t>(actor))
+				                        .arg(n)
+				                        .arg(s->hasCRS() ? "true" : "false");
+				QTimer::singleShot(0, s->win, [s, cmd]() {
+					std::vector<char> buf(1 << 12);
+					int n2 = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+					if (n2 < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n2));
+				});
+			});
+		}
 		m.addAction(QString("Delete %1").arg(name),       // hide = the Scene Objects checkbox; this DELETES
 					[s, a]() { overlayDelete(s, a); });
 	}
