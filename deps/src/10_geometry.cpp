@@ -29,6 +29,13 @@ struct Overlay {
 	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
 	std::vector<int> segoff;                 // per-segment start offsets (nseg+1 entries) -> rebuild cells on line<->points toggle
 	int    nseg = 0;                         // segment count (segoff has nseg+1 entries)
+	std::string groupName;                   // Scene Objects group tag ("" = top-level, ungrouped); overlays
+	                                          // sharing a non-empty groupName fold under ONE collapsible parent
+	                                          // row in rebuildSceneObjects (e.g. Geography > Plate boundaries'
+	                                          // 7 boundary-type layers under "Plate boundaries PB")
+	std::vector<std::string> info;           // per-SEGMENT hover text (nseg entries, line mode only); empty =
+	                                          // no hover info. Looked up by pickOverlayInfoAt via pickOverlayAt's
+	                                          // segment index -- same hit-test the context-menu path already uses.
 };
 
 // A generic SCREEN-CONSTANT symbol layer (volcanoes, seismicity, cities, …): N glyphs of one
@@ -279,6 +286,7 @@ static void lineApplyStyle(Scene *s, const LineRef& lr, int style);
 static int  lineCurrentStyle(Scene *s, const LineRef& lr);
 static void polygonDelete(Scene *s, vtkActor *lineActor);                    // remove a finished polygon
 static void overlayDelete(Scene *s, vtkActor *a);                            // remove an overlay line/point (50)
+static void overlayDeleteGroup(Scene *s, const std::string& groupName);      // remove every overlay tagged with groupName (50)
 static void polyRebuildLine(Scene *s, Polygon& pg);                         // rebuild a polygon actor from pg.v (85)
 static void polyRebuildFill(Scene *s, Polygon& pg);                         // rebuild a closed polygon's filled face (85)
 static int  polyIndexOfActor(Scene *s, vtkActor *a);                        // index of polygon whose line==a, or -1 (55)
@@ -1490,6 +1498,28 @@ static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int& outMode, int *outS
 	return bestA;
 }
 
+// Nearest OVERLAY SEGMENT under the cursor that carries hover info (e.g. a plate-boundary
+// velocity/plate-pair block). Reuses pickOverlayAt -- the SAME hit-test the context-menu /
+// "promote clicked segment" paths already use, never a second parallel picker for the same
+// quantity -- to find the nearest line + its segment index, then looks up that Overlay's own
+// info[] by segment. Only line-mode overlays carry per-segment info. Used by onMouseMove to pop
+// a tooltip when hovering e.g. a plate boundary segment.
+static bool pickOverlayInfoAt(Scene *s, int dx, int dy, std::string& out) {
+	int mode = 1, seg = -1;
+	vtkActor *a = pickOverlayAt(s, dx, dy, mode, &seg);
+	if (!a || mode != 1 || seg < 0)
+		return false;
+	for (auto& ov : s->overlays) {
+		if (ov.actor.Get() != a)
+			continue;
+		if (seg >= (int)ov.info.size())
+			return false;
+		out = ov.info[seg];
+		return !out.empty();
+	}
+	return false;
+}
+
 static double sampleZ(const Scene *s, double x, double y);   // defined below (base relief height sampler)
 
 // True (a solid3D glyph carries genuine depth, e.g. a buried earthquake) when `trueZ` sits BELOW
@@ -1717,6 +1747,8 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 			const int bi = mecaHitAt(s, mx, my);
 			if (bi >= 0 && !s->mecaBalls[bi].info.empty()) { sinfo = s->mecaBalls[bi].info; haveInfo = true; }
 		}
+		if (!haveInfo)                   // per-segment overlay metadata (e.g. plate boundaries)
+			haveInfo = pickOverlayInfoAt(s, mx, my, sinfo);
 		if (haveInfo) {
 			if (sinfo != s->hoverInfo) {
 				QToolTip::showText(QCursor::pos() + QPoint(18, 18),

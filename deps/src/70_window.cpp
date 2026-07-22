@@ -6006,7 +6006,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		showEarthTidesDialog(s, W, E, S, N);
 	});
 	mGeo->addAction("Fracture Zones",                geoTODO("Fracture Zones"));
-	mGeo->addAction("Plate boundaries",              geoTODO("Plate boundaries"));
+	mGeo->addAction("Plate boundaries",              geoPlot("plateboundaries", ""));
 
 	QMenu *mCit = mGeo->addMenu("Cities");
 	mCit->addAction("Major cities", geoTODO("Major cities"));

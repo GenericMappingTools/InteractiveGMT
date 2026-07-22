@@ -411,6 +411,33 @@ GMTVTK_API int gmtvtk_add_overlay_h(void *handle, const double *xyz, int npts, c
 	return 1;
 }
 
+// Extended form of gmtvtk_add_overlay_h: also tags the overlay with a Scene Objects GROUP name
+// (rebuildSceneObjects folds every overlay sharing the same non-empty group under one collapsible
+// parent row -- same fold the slip-model patches use) and, for line mode, a per-SEGMENT hover info
+// block: nseg records joined by RS ('\x1e', the gmtvtk_add_symbols_h `info` convention), shown as a
+// tooltip when the cursor hovers that segment (pickOverlayAt's segment index). groupName/info may
+// be null/"" (behaves exactly like gmtvtk_add_overlay_h). Used by Geography > Plate boundaries
+// (7 boundary-type layers, one group, each segment carrying its own type/velocity/plate-pair text).
+// UNLIKE gmtvtk_add_overlay_h, `linewidth` here is in POINTS, not device pixels -- this is the
+// user-facing unit everywhere else a line width is entered (the Line Properties dialog's width
+// box, 55_lineprops.cpp) -- converted to px with the SAME dpi/72 formula that dialog uses, so a
+// layer added here reads back the exact width a user would have typed. `pointsize` (points-mode
+// overlays only) is unchanged, still px. Returns 1 if added.
+GMTVTK_API int gmtvtk_add_overlay_ex_h(void *handle, const double *xyz, int npts, const int *segoff, int nseg,
+								      int mode, double r, double g, double b,
+								      double linewidth, double pointsize,
+								      const char *name, const char *groupName, const char *info) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s))
+		return 0;
+	double dpi = 72.0;
+	if (s->widget && s->widget->renderWindow() && s->widget->renderWindow()->GetDPI() > 0)
+		dpi = s->widget->renderWindow()->GetDPI();
+	const double pxPerPt = dpi / 72.0;
+	addOverlay(s, xyz, npts, segoff, nseg, mode, r, g, b, linewidth * pxPerPt, pointsize, name, groupName, info);
+	return 1;
+}
+
 // Read a line OVERLAY's current pen by its Scene Objects name, so Save Session can capture edits the
 // user made AFTER the layer was added (coastlines/borders/rivers are :menu recipes that otherwise
 // replay with the default pen). out = { r, g, b, width_px, style(0 solid/1 dashed/2 dotted), opacity }.

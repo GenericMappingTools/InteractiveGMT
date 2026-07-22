@@ -1676,10 +1676,33 @@ static void rebuildSceneObjects(Scene *s) {
 
 	// ── OTHER OBJECTS ── lines / points / curtains / polygons / text / profile (top-level rows; a fault
 	// with planes becomes its own group, see below).
+	QString ovlGroupOpen;                                // name of the currently-open overlay-group node (empty = none)
 	for (auto& ov : s->overlays) {
+		// Overlays sharing a non-empty groupName (e.g. Geography > Plate boundaries' 7 boundary-type
+		// layers, added back-to-back in one batch) fold under ONE collapsible parent row instead of
+		// flooding the list -- same consecutive-run fold the slip-model patches use above. The
+		// container's own checkbox cascades to every child row's checkbox via beginGroupHandle's
+		// existing toggle handler, so unchecking the group hides every member (SACRED_LAW: group-
+		// uncheck cascades to every child, full stop).
+		if (!ovlGroupOpen.isEmpty() && QString::fromStdString(ov.groupName) != ovlGroupOpen) {
+			endGroup();  ovlGroupOpen.clear();
+		}
+		if (!ov.groupName.empty() && ovlGroupOpen.isEmpty()) {
+			const std::string gn = ov.groupName;
+			beginGroupHandle(QString::fromStdString(ov.groupName), IC_Line,
+			                 ov.actor && ov.actor->GetVisibility() != 0, nullptr,
+			                 [s, gn](const QPoint& g) {
+			                     QMenu m(s->widget);
+			                     QAction *aRem = m.addAction("Remove");
+			                     if (m.exec(g) == aRem) overlayDeleteGroup(s, gn);
+			                 },
+			                 "Right-click to remove every line in this group");
+			ovlGroupOpen = QString::fromStdString(ov.groupName);
+		}
 		LineRef lr{ LK_Overlay, ov.actor };
 		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, ov.mode == 1 ? &lr : nullptr);
 	}
+	if (!ovlGroupOpen.isEmpty()) endGroup();
 	for (auto& sl : s->symbols) {                        // screen-constant symbol layers (props menu)
 		vtkActor *a = sl.actor.Get();
 		makeRow(QString::fromStdString(sl.name), IC_Points, a && a->GetVisibility() != 0,
@@ -1858,7 +1881,7 @@ static void rebuildSceneObjects(Scene *s) {
 
 static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff, int nseg,
 					   int mode, double r, double g, double b, double linewidth, double pointsize,
-					   const char *name = nullptr) {
+					   const char *name = nullptr, const char *groupName = nullptr, const char *info = nullptr) {
 	if (!s || !xyz || npts <= 0)
 		return;
 
@@ -1918,6 +1941,20 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	// dataset) it passes that name and we use it verbatim; otherwise fall back to "Line N"/"Points N".
 	ov.name = (name && name[0]) ? std::string(name)
 	                            : (mode == 1 ? "Line " : "Points ") + std::to_string((int)s->overlays.size() + 1);
+	if (groupName && groupName[0])
+		ov.groupName = groupName;
+	if (info && info[0] && mode == 1) {        // per-segment hover text: nseg records joined by RS ('\x1e')
+		std::vector<std::string> recs;
+		const char *p = info;
+		while (true) {
+			const char *e = strchr(p, '\x1e');
+			recs.emplace_back(e ? std::string(p, e - p) : std::string(p));
+			if (!e) break;
+			p = e + 1;
+		}
+		if ((int)recs.size() == nseg)          // adopt only if it aligns 1:1 with the segments, else drop it
+			ov.info = std::move(recs);
+	}
 	ov.stack = s->vecSeq++;                    // new overlay lands on top of the shared vector pile
 	s->overlays.push_back(ov);
 	applyVectorStacking(s);                   // normalize ranks + set this overlay's draw-order offset
@@ -2917,6 +2954,23 @@ static void overlayDelete(Scene *s, vtkActor *a) {
 		if (s->axesRen && s->overlays[i].actor) s->axesRen->RemoveActor(s->overlays[i].actor);  // overlay layer
 		s->overlays.erase(s->overlays.begin() + i);
 		break;
+	}
+	applyVectorStacking(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Delete EVERY overlay tagged with `groupName` (the grouped-overlay row's own "Remove" property,
+// e.g. Geography > Plate boundaries' "Plate boundaries PB" handle deleting all 7 boundary-type
+// layers in one go) -- same actor/record removal overlayDelete does per-item, batched into ONE
+// restack + rebuild + render instead of one per member.
+static void overlayDeleteGroup(Scene *s, const std::string& groupName) {
+	if (!s || groupName.empty()) return;
+	for (int i = (int)s->overlays.size() - 1; i >= 0; --i) {
+		if (s->overlays[i].groupName != groupName) continue;
+		if (s->ren && s->overlays[i].actor)     s->ren->RemoveActor(s->overlays[i].actor);
+		if (s->axesRen && s->overlays[i].actor) s->axesRen->RemoveActor(s->overlays[i].actor);
+		s->overlays.erase(s->overlays.begin() + i);
 	}
 	applyVectorStacking(s);
 	rebuildSceneObjects(s);

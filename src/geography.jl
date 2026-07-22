@@ -129,6 +129,7 @@ function _geo_layer_name(kind::AbstractString)::String
 	kind == "meteorite" ? "Meteorite Impacts"   :
 	kind == "tides"     ? "Tide Stations"       :
 	kind == "hydro"     ? "Hydrothermal Vents"  :
+	kind == "plateboundaries" ? _PB_GROUP       :
 	uppercasefirst(String(kind))
 end
 
@@ -203,6 +204,11 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			isempty(xs) && return
 			add_symbols!(scene, xs, ys; symbol=:circle, size=9, fill=:orange, edge=:black, edgewidth=1.0,
 			             name="Hydrothermal Vents", info=infos)
+		elseif kind == "plateboundaries"
+			# Whole-earth static dataset (a few hundred segments total) -- no view-region clip, unlike
+			# coast/borders/rivers. Loads all 7 boundary-type files, grouped in Scene Objects (see
+			# plateboundaries.jl). Bail (no session record) if nothing was added.
+			_load_plate_boundaries(scene) || return
 		else
 			D = _geo_dataset(kind, res, W, E, S, N)
 			(D === nothing || isempty(D)) && return
