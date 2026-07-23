@@ -3,7 +3,7 @@
 # fields `vel` (mm/yr), `azim_vel` (velocity azimuth) and `plate_pair`. Read with GMT.jl's `gmtread`
 # (OGR -> Vector{GMTdataset}, one GMTdataset per segment, `.attrib` carries the field values) — no
 # new SQLite dependency. Each boundary type is added as ONE batched overlay (constant colour, 2 pt
-# line, per-segment hover text via gmtvtk_add_overlay_ex_h), and all seven are tagged with the same
+# line, per-segment hover text, zIsPlaceholder=1 via gmtvtk_add_overlay_ex2_h), and all seven are tagged with the same
 # Scene Objects group name so rebuildSceneObjects (50_scene.cpp) folds them under one collapsible
 # "Plate boundaries PB" row whose checkbox cascades to every member.
 
@@ -47,11 +47,15 @@ function _pb_load_one(scene::Ptr{Cvoid}, file::AbstractString, typename::Abstrac
 	off == 0 && return false
 	r, g, b = _ovl_color(color, :lines)
 	packed = join(infos, '\x1e')
-	ok = ccall(_fn(:gmtvtk_add_overlay_ex_h), Cint,
+	# _ex2_h (not _ex_h): zIsPlaceholder=1 -- source is 2-col OGR (lon,lat), the z=0 pushed above is a
+	# stored-geometry filler, not real data, so "Show data table..." must not invent a Z column
+	# (see [[noconverttopoints-overlay-flag]]). noConvertToPoints=1 -- a plate-boundary line is not a
+	# thing you'd scatter to points either.
+	ok = ccall(_fn(:gmtvtk_add_overlay_ex2_h), Cint,
 	      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble,
-	       Cdouble, Cdouble, Cstring, Cstring, Cstring),
+	       Cdouble, Cdouble, Cstring, Cstring, Cstring, Cint, Cint),
 	      scene, xyz, Cint(off), segoff, Cint(length(segoff) - 1), Cint(1), r, g, b,
-	      2.0, 0.0, typename, _PB_GROUP, packed)
+	      2.0, 0.0, typename, _PB_GROUP, packed, Cint(1), Cint(1))
 	return ok != 0
 end
 
