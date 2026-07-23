@@ -87,6 +87,23 @@ function _sweep_stale_dlls(dest::String)
     end
 end
 
+# GitHub API JSON is small/predictable enough here to scrape with a scoped regex, rather than
+# add a JSON dependency (Project.toml deps are off-limits without explicit authorization). Returns
+# the asset's "updated_at" as a freshness signature, or nothing if the API call fails (caller then
+# falls back to fetching -- staying correct is more important than staying fast).
+function _dll_asset_signature(tag::String, asset::String)
+    api_url = "https://api.github.com/repos/$REPO/releases/tags/$tag"
+    io = IOBuffer()
+    try
+        Downloads.download(api_url, io; headers=["User-Agent" => "InteractiveGMT.jl", "Accept" => "application/vnd.github+json"])
+    catch
+        return nothing
+    end
+    body = String(take!(io))
+    m = match(Regex("\"name\"\\s*:\\s*\"" * asset * "\".*?\"updated_at\"\\s*:\\s*\"([^\"]+)\"", "s"), body)
+    m === nothing ? nothing : m.captures[1]
+end
+
 function fetch_and_extract(url::String, dest::String)
     isfile(TAR) || error("$TAR not found — need Windows 10 1803+ (bsdtar) to unzip gmtvtk binaries")
     zip = joinpath(tempdir(), basename(url))
@@ -114,8 +131,18 @@ function main()
         fetch_and_extract(release_url(runtime_tag(), "iGMT-win64-full.zip"), SHARED_ROOT)
         touch(MARKER)
     else
-        # Every subsequent build: DLL only (~1 MB), always the same rolling tag/asset.
-        fetch_and_extract(release_url(DLL_TAG, "gmtvtk-win64.zip"), SHARED_ROOT)
+        # Every subsequent build: DLL only (~1 MB), always the same rolling tag/asset -- but only
+        # actually re-downloaded when the release asset is newer than what we last synced.
+        asset  = "gmtvtk-win64.zip"
+        dll    = joinpath(SHARED_ROOT, "deps", "build", "gmtvtk.dll")
+        sigf   = joinpath(SHARED_ROOT, "deps", "build", ".dll_release_sig")
+        sig    = _dll_asset_signature(DLL_TAG, asset)
+        if sig !== nothing && isfile(dll) && isfile(sigf) && read(sigf, String) == sig
+            @info "InteractiveGMT: gmtvtk.dll already up to date" SHARED_ROOT
+            return nothing
+        end
+        fetch_and_extract(release_url(DLL_TAG, asset), SHARED_ROOT)
+        sig !== nothing && write(sigf, sig)
     end
     @info "InteractiveGMT: gmtvtk binaries installed" SHARED_ROOT
 end

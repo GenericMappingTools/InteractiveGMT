@@ -25,3 +25,6 @@ CLAUDE.md
 # Local dev notes — NEVER track
 XYPLOT_TODO.md
 QTVTK_PLAN.md
+
+# One-off / temporary code — NEVER track
+src/isocs_shp.jl

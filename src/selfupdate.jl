@@ -35,15 +35,19 @@ function update!()
 		            "This checkout is a normal git repo at $_PKGROOT; resolve manually (e.g. `git status`).")
 		after = LibGit2.head_oid(repo)
 		if before == after
-			println("InteractiveGMT: already up to date.")
-			return nothing
+			println("InteractiveGMT: source already up to date.")
+		else
+			println("InteractiveGMT: source updated $(string(before)[1:8]) -> $(string(after)[1:8]).")
 		end
-		println("InteractiveGMT: updated $(string(before)[1:8]) -> $(string(after)[1:8]).")
 	finally
 		close(repo)
 	end
 
-	println("InteractiveGMT: rebuilding binaries...")
+	# gmtvtk.dll is a separately-rolling release asset (dll-latest, re-uploaded in place on its own
+	# cadence) -- it can be newer than the last source commit, so its refresh is NOT gated behind
+	# a source-diff check above. Pkg.build (deps/build.jl) always re-fetches it unconditionally;
+	# call it every time update! runs, source-changed or not.
+	println("InteractiveGMT: syncing gmtvtk binaries...")
 	Pkg.build("InteractiveGMT")
 	println("InteractiveGMT: update complete. Restart Julia to use the new version.")
 	return nothing
