@@ -69,14 +69,21 @@ function _displace_locked_dll(dest::String)
     end
 end
 
-# Best-effort sweep of orphaned .old-* files left behind by _displace_locked_dll in a PREVIOUS
-# update (that process is gone by now, so these are almost always removable; a leftover failure
-# here is harmless -- it just means one more stale file waits for the next sweep).
+# Sweep of orphaned .old-* files left behind by _displace_locked_dll in a PREVIOUS update (that
+# process is gone by now, so these are almost always removable). A failure here is NOT silently
+# swallowed -- if a stale file can't be removed, we @warn with the exact path and reason so a
+# growing trail is visible instead of assumed away.
 function _sweep_stale_dlls(dest::String)
     dir = joinpath(dest, "deps", "build")
     isdir(dir) || return
     for f in readdir(dir; join=true)
-        occursin(".old-", f) && try rm(f; force=true) catch; end
+        if occursin(".old-", f)
+            try
+                rm(f; force=true)
+            catch e
+                @warn "InteractiveGMT: couldn't remove stale gmtvtk dll -- it will linger" file=f exception=e
+            end
+        end
     end
 end
 
