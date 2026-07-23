@@ -1,9 +1,16 @@
 """
 shapenc.jl — Julia port of Mirone's `utils/shapenc.m`: write a point swarm / polygon / polyline
-(optionally with an outer boundary + inner holes) into a "SHAPENC" netCDF4 container file — a
-handful of named 1-D variables per ensemble sharing a private dimension, plus a small
-zero-dimensional "container" variable that carries the ensemble's BoundingBox (and optional
-name/tag/SegmentBoundaries) as attributes.
+(optionally with an outer boundary + inner holes) into a "SHAPENC" netCDF4 container file — one
+combined Mx2 `"lonLat..."`/`"XY..."` coordinate-pair variable per ensemble (2-D dims: point count x
+2), plus a small zero-dimensional "container" variable that carries the ensemble's BoundingBox (and
+optional name/tag/SegmentBoundaries) as attributes. (A `z`/`Z...` variable stays a separate 1-D
+array for 3-D ensembles — only lon/lat, or X/Y, are paired up.)
+
+This differs from Mirone's ORIGINAL `shapenc.m`, which always wrote lon and lat as two separate
+1-D variables — the read side (`_shnc_read`/`_shnc_read_bounded`, via `_shnc_read_coordpair`) still
+tries the combined array FIRST and falls back to the old separate pair, so both a genuine
+Mirone-written file and any file this port wrote before the combined format existed keep reading
+correctly; only the WRITE side changed.
 
 `shapenc.m` reached the real netCDF library through Mirone's private `nc_funs` MEX wrapper. This
 port has no MEX layer to reuse, so it talks to netCDF directly through **GDAL's multidimensional-
@@ -26,9 +33,10 @@ netCDF reader) before writing this port.
   default does (2 or 3 columns ⇒ point) unless overridden with `point2D`/`polygon2D`/`polygon3D`/
   `polyline2D`/`polyline3D`. 3-D vs 2-D is read straight off the column count (2 vs 3).
 - **`outer`/`inner` boundary polygons** — `outer` (a single polygon) and `inner` (one polygon, or
-  several holes passed as a `Vector`) are written as `lonPolyOUT_k`/`latPolyOUT_k` and
-  `lonPolyIN_1_k`/`latPolyIN_1_k` variables next to the point ensemble they belong to, exactly
-  like the M-file's `'outer'`/`'inner'` name-value pairs. Only meaningful for — and only ever
+  several holes passed as a `Vector`) are written as combined `lonLatPolyOUT_k`/`XYPolyOUT_k` and
+  `lonLatPolyIN_1_k`/`XYPolyIN_1_k` Mx2 variables next to the point ensemble they belong to — same
+  coordinate-pair convention as the main ensemble coords above — functionally like the M-file's
+  `'outer'`/`'inner'` name-value pairs. Only meaningful for — and only ever
   attached to — Point ensembles, same as the original. Limitation: only a SINGLE data ensemble may
   carry outer/inner polygons in this port (the M-file's per-swarm "cell of cells" case — several
   swarms, each with its own outer/inner set — is not implemented; passing multi-swarm `data`
@@ -233,6 +241,25 @@ function _shnc_set_f64v_attr!(owner, isgroup::Bool, name::String, edt_f64, v::Ve
 	_shnc_attr_write_f64v!(a, v)
 	_shnc_release_attr(a)
 end
+# One ensemble's `tag` (or `tags[k]`) applied to its container variable -- a String (-> "name"
+# attribute) or an iterable of (key,value) pairs, each value a String or Vector{Float64}. The ONE
+# place tag values get written, whether from `tag` (first-ensemble-only) or `tags` (per-ensemble).
+function _shnc_write_tag_attrs!(cvar, edt_f64, edt_str, tagval)
+	if tagval isa String
+		_shnc_set_str_attr!(cvar, false, "name", edt_str, tagval)
+	else
+		for (pk, pv) in tagval
+			if pv isa String
+				_shnc_set_str_attr!(cvar, false, pk, edt_str, pv)
+			elseif pv isa Vector{Float64}
+				_shnc_set_f64v_attr!(cvar, false, pk, edt_f64, pv)
+			else
+				error("shapenc: tag value for \"$pk\" must be a String or a numeric vector, got $(typeof(pv))")
+			end
+		end
+	end
+end
+
 function _shnc_set_i32_attr!(owner, isgroup::Bool, name::String, edt_i32, v::Int)
 	a = _shnc_attr_create(owner, isgroup, name, edt_i32)
 	_shnc_attr_write_i32!(a, v)
@@ -259,6 +286,59 @@ function _shnc_write_coord_var!(root, name::String, dim, edt_val, edt_str, data:
 	_shnc_set_str_attr!(arr, false, "units", edt_str, units)
 	_shnc_release_array(arr)
 end
+
+# 2-D sibling of _shnc_create_array/_shnc_array_write! -- used ONLY for the combined lon/lat (or
+# X/Y) coordinate-pair array below (`dims` is always `[dim_n, dim_2]`, never more).
+function _shnc_create_array2(grp, name::String, dims::Vector, edt; deflate::Int=5)
+	opts = deflate <= 0 ? Ptr{Ptr{UInt8}}(C_NULL) : _shnc_csl(["COMPRESS=DEFLATE", "ZLEVEL=$(deflate)"])
+	_shnc_ck(ccall((:GDALGroupCreateMDArray, GMT.libgdal), _SHNC_H,
+	               (_SHNC_H, Cstring, Csize_t, Ptr{_SHNC_H}, _SHNC_H, Ptr{Ptr{UInt8}}),
+	               grp, name, Csize_t(2), dims, edt, opts), "create array $name")
+end
+function _shnc_array_write2!(arr, edt, data::AbstractVector{T}, n::Int) where T <: Union{Float64, Float32}
+	# bufferStride is in ELEMENTS of the linear `data` buffer, not array-index steps -- for a
+	# row-major (dim0=n, dim1=2) interleaved buffer, incrementing the n-index skips a whole
+	# 2-element row (stride 2) while incrementing the xy-index skips 1 element (stride 1).
+	# [1,1] here (the naive guess) silently reads/writes the wrong elements, proven live: rows
+	# past the first came back as leftover `undef` garbage (denormals/NaN), not zeros or an error.
+	start = UInt64[0, 0]; cnt = UInt64[n, 2]; step = Int64[1, 1]; stride = Int64[2, 1]
+	r = ccall((:GDALMDArrayWrite, GMT.libgdal), Cint,
+	          (_SHNC_H, Ptr{UInt64}, Ptr{UInt64}, Ptr{Int64}, Ptr{Int64}, _SHNC_H, Ptr{Cvoid}, Ptr{Cvoid}, Csize_t),
+	          arr, start, cnt, step, stride, edt, data, C_NULL, 0)
+	(r == 0) && error("shapenc: failed writing array data" * ((e = _shnc_lasterr()) == "" ? "" : ": $e"))
+end
+
+# Combined lon/lat ("lonLat...") or X/Y coordinate-PAIR array: ONE Mx2 array instead of two
+# separate M-length 1-D arrays -- the single write path every lon/lat pair in this file goes
+# through (main ensemble coords, PolyOUT, PolyIN alike), never reimplemented per call site.
+#
+# `dim2` (the always-size-2 second dimension) is a handle the CALLER creates once and owns --
+# `shapenc()` creates it ONCE per call and reuses it for every ensemble/PolyOUT/PolyIN written by
+# that call, released once at the end. A version of this that created (or worse, group-searched
+# for) a fresh dim2 on every single call -- i.e. once per array -- was measured live: reused
+# per-call it stays as fast/small as the original two-separate-1D-arrays format; searched or
+# recreated per array it either duplicates a size-2 dim per array (1368x on the Seton isochron
+# file, ~51KB of pure waste) or, if made a truly FILE-WIDE shared dim looked up across 1368
+# separate file-reopen sessions, hits HDF5's per-attach dimension-scale reference-list rewrite cost
+# and gets WORSE on both axes (150s->236s, 15.8MB->23.2MB). Per-CALL reuse (this version) avoids
+# both failure modes because a single call means a single continuous GDAL/HDF5 session -- no
+# reopen-driven reattach cost, and no wasteful one-off dims either.
+function _shnc_write_coordpair_var!(root, name::String, dim_n, dim2, edt_val, edt_str, x::AbstractVector{T}, y::AbstractVector{T}, long_name::NTuple{2,String}, units::NTuple{2,String}) where T <: Union{Float64, Float32}
+	n = length(x)
+	deflate = n >= _SHNC_COMPRESS_MIN_ELEMS ? 5 : 0
+	arr = _shnc_create_array2(root, name, [dim_n, dim2], edt_val; deflate)
+	buf = Vector{T}(undef, 2n)
+	@inbounds for i in 1:n
+		buf[2i - 1] = x[i]; buf[2i] = y[i]
+	end
+	_shnc_array_write2!(arr, edt_val, buf, n)
+	_shnc_set_str_attr!(arr, false, "long_name", edt_str, long_name[1] * "/" * long_name[2])
+	_shnc_set_str_attr!(arr, false, "units", edt_str, units[1])
+	_shnc_release_array(arr)
+end
+
+# "lonLat"/"XY" -- the combined coordinate-pair variable's name stem, geographic vs projected.
+_shnc_coordpair_name(geog::Bool)::String = geog ? "lonLat" : "XY"
 
 function _shnc_attr_read_i32(grp, name::String)::Union{Nothing, Int}
 	attr = ccall((:GDALGroupGetAttribute, GMT.libgdal), _SHNC_H, (_SHNC_H, Cstring), grp, name)
@@ -353,7 +433,7 @@ _shnc_geomkind(geom::Int, ncol::Int) =
 
 """
     shapenc(fname::String, data; outer=nothing, inner=nothing, geog::Bool=true, srs::String="",
-            desc::String="", version::String="", append::Bool=false, tag=nothing,
+            desc::String="", version::String="", append::Bool=false, tag=nothing, tags=nothing,
             multiseg::Bool=false, point2D::Bool=false, polygon2D::Bool=false,
             polygon3D::Bool=false, polyline2D::Bool=false, polyline3D::Bool=false, f64::Bool=false)
 
@@ -369,6 +449,10 @@ docstring for the full write-up of what each option does and its exact scope; sh
 - `append`: add ensemble(s) to an existing SHAPENC file instead of overwriting it.
 - `tag`: a `String` (ensemble `name` attribute) or `(key,value)` pairs (per-attribute), first
   ensemble only.
+- `tags`: like `tag`, but a `Vector` with one entry PER ensemble (`length(tags) == length(data)`),
+  applied to every ensemble instead of only the first — for a single batched call writing many
+  independently-named ensembles at once (e.g. isocs.jl's shapefile batch, one `name`/`fromage` tag
+  per feature). Takes priority over `tag` when both are given.
 - `multiseg`: NaN-pack several segments into ONE ensemble instead of separate ones.
 - `point2D`/`polygon2D`/`polygon3D`/`polyline2D`/`polyline3D`: force the geometry kind instead of
   auto-detecting it from a `GMTdataset`'s `.geom` or the column count.
@@ -391,7 +475,7 @@ shapenc("track.nc", xy; polyline2D=true)                               # force g
 ```
 """
 function shapenc(fname::String, data; outer=nothing, inner=nothing, geog::Bool=true, srs::String="",
-                  desc::String="", version::String="", append::Bool=false, tag=nothing,
+                  desc::String="", version::String="", append::Bool=false, tag=nothing, tags=nothing,
                   multiseg::Bool=false, point2D::Bool=false, polygon2D::Bool=false,
                   polygon3D::Bool=false, polyline2D::Bool=false, polyline3D::Bool=false,
                   ids::Union{Nothing, Vector{String}}=nothing, f64::Bool=false)
@@ -407,6 +491,8 @@ function shapenc(fname::String, data; outer=nothing, inner=nothing, geog::Bool=t
 		error("shapenc: multi-swarm DATA together with OUTER/INNER polygons is not supported by this first-cut port")
 	(ids !== nothing && length(ids) != n_swarms) &&
 		error("shapenc: ids has $(length(ids)) entries but DATA has $n_swarms ensemble(s)")
+	(tags !== nothing && length(tags) != n_swarms) &&
+		error("shapenc: tags has $(length(tags)) entries but DATA has $n_swarms ensemble(s)")
 
 	ncol = size(mats[1], 2)
 	(ncol != 2 && ncol != 3) && error("shapenc: DATA must have 2 or 3 columns (got $ncol)")
@@ -425,6 +511,7 @@ function shapenc(fname::String, data; outer=nothing, inner=nothing, geog::Bool=t
 	long_name = geog ? ("Longitude", "Latitude") : ("X", "Y")
 	units = geog ? ("degrees_east", "degrees_north") : ("meters", "meters")
 	spatial_ref = !isempty(srs) ? srs : (geog ? "+proj=longlat" : "+proj=xy")
+	coordpair_name = _shnc_coordpair_name(geog)
 
 	type_attr = kind == :point ? (is_3D ? "PointZ" : "Point") :
 	            kind == :polygon ? (is_3D ? "PolygonZ" : "Polygon") : (is_3D ? "PolyLineZ" : "PolyLine")
@@ -467,6 +554,13 @@ function shapenc(fname::String, data; outer=nothing, inner=nothing, geog::Bool=t
 	end
 	!isempty(version) && _shnc_set_str_attr!(root, true, "File Version", edt_str, version)
 
+	# ONE shared "xy" dim for every ensemble/PolyOUT/PolyIN this CALL writes (see
+	# _shnc_write_coordpair_var!'s docstring comment for why per-call, not per-array or
+	# file-wide-across-calls). Named uniquely per call (via `ultimo`, the ensemble count already in
+	# the file before this call) so appending into a file that already has ensembles -- possibly
+	# from an earlier call's own "xy_<n>" -- never collides.
+	dim2 = _shnc_create_dim(root, "xy_$(ultimo+1)", 2)
+
 	for (k, m) in enumerate(mats)
 		kk = ids === nothing ? k + ultimo : ids[k]
 		push!(id_list, string(kk))
@@ -477,8 +571,7 @@ function shapenc(fname::String, data; outer=nothing, inner=nothing, geog::Bool=t
 		bb = is_3D ? Float64[xmn, xmx, ymn, ymx, 0.0, 0.0] : Float64[xmn, xmx, ymn, ymx]
 
 		dim = _shnc_create_dim(root, "dimpts_$kk", n_pts)
-		_shnc_write_coord_var!(root, "$(Xname)$(prefix)$kk", dim, edt_coord, edt_str, _shnc_coord(x), long_name[1], units[1])
-		_shnc_write_coord_var!(root, "$(Yname)$(prefix)$kk", dim, edt_coord, edt_str, _shnc_coord(y), long_name[2], units[2])
+		_shnc_write_coordpair_var!(root, "$(coordpair_name)$(prefix)$kk", dim, dim2, edt_coord, edt_str, _shnc_coord(x), _shnc_coord(y), long_name, units)
 		if is_3D
 			z = view(m, :, 3)
 			bb[5], bb[6] = _nanextrema(z)
@@ -491,21 +584,10 @@ function shapenc(fname::String, data; outer=nothing, inner=nothing, geog::Bool=t
 		_shnc_set_f64v_attr!(cvar, false, "BoundingBox", edt_f64, bb)
 		(k == 1 && !isempty(multiseg_pos)) &&
 			_shnc_set_f64v_attr!(cvar, false, "SegmentBoundaries", edt_f64, Float64.(multiseg_pos))
-		if k == 1 && tag !== nothing
-			if tag isa String
-				_shnc_set_str_attr!(cvar, false, "name", edt_str, tag)
-			else
-				for (pk, pv) in tag
-					if pv isa String
-						_shnc_set_str_attr!(cvar, false, pk, edt_str, pv)
-					elseif pv isa Vector{Float64}
-						_shnc_set_f64v_attr!(cvar, false, pk, edt_f64, pv)
-					else
-						error("shapenc: tag value for \"$pk\" must be a String or a numeric vector, got $(typeof(pv))")
-					end
-				end
-			end
-		end
+		# `tags` (one entry per ensemble) takes priority when given; otherwise `tag` applies to the
+		# first ensemble only, same restriction the M-file's own 'tag' option always had.
+		tagval = tags !== nothing ? tags[k] : (k == 1 ? tag : nothing)
+		tagval === nothing || _shnc_write_tag_attrs!(cvar, edt_f64, edt_str, tagval)
 		_shnc_release_array(cvar)
 
 		global_bb[1] = min(global_bb[1], bb[1]); global_bb[2] = max(global_bb[2], bb[2])
@@ -514,20 +596,19 @@ function shapenc(fname::String, data; outer=nothing, inner=nothing, geog::Bool=t
 		# Outer/inner boundary polygons -- only meaningful (and only ever passed) for point ensembles.
 		if kind == :point && outer_mat !== nothing
 			dimo = _shnc_create_dim(root, "dimpolyOUT_$kk", size(outer_mat, 1))
-			_shnc_write_coord_var!(root, "$(Xname)PolyOUT_$kk", dimo, edt_coord, edt_str, _shnc_coord(view(outer_mat, :, 1)), long_name[1], units[1])
-			_shnc_write_coord_var!(root, "$(Yname)PolyOUT_$kk", dimo, edt_coord, edt_str, _shnc_coord(view(outer_mat, :, 2)), long_name[2], units[2])
+			_shnc_write_coordpair_var!(root, "$(coordpair_name)PolyOUT_$kk", dimo, dim2, edt_coord, edt_str, _shnc_coord(view(outer_mat, :, 1)), _shnc_coord(view(outer_mat, :, 2)), long_name, units)
 			_shnc_release_dim(dimo)
 		end
 		if kind == :point && !isempty(inner_mats)
 			for (j, hole) in enumerate(inner_mats)
 				jj = j + ultimo
 				dimi = _shnc_create_dim(root, "dimpolyIN_$(ultimo+1)_$jj", size(hole, 1))
-				_shnc_write_coord_var!(root, "$(Xname)PolyIN_$(ultimo+1)_$jj", dimi, edt_coord, edt_str, _shnc_coord(view(hole, :, 1)), long_name[1], units[1])
-				_shnc_write_coord_var!(root, "$(Yname)PolyIN_$(ultimo+1)_$jj", dimi, edt_coord, edt_str, _shnc_coord(view(hole, :, 2)), long_name[2], units[2])
+				_shnc_write_coordpair_var!(root, "$(coordpair_name)PolyIN_$(ultimo+1)_$jj", dimi, dim2, edt_coord, edt_str, _shnc_coord(view(hole, :, 1)), _shnc_coord(view(hole, :, 2)), long_name, units)
 				_shnc_release_dim(dimi)
 			end
 		end
 	end
+	_shnc_release_dim(dim2)
 
 	_shnc_set_f64v_attr!(root, true, "BoundingBox", edt_f64, global_bb)
 	_shnc_set_i32_attr!(root, true, "Number_of_main_ensembles", edt_i32, ultimo + n_swarms)
@@ -607,6 +688,45 @@ function _shnc_array_read_f64(arr, edt_f64, n::Int)::Vector{Float64}
 	out
 end
 
+# Read a combined Mx2 coordinate-pair array (the "lonLat"/"XY" `_shnc_write_coordpair_var!` writes)
+# back into separate x,y Vectors -- the read-side counterpart, kept next to the 1-D reader above.
+function _shnc_array_read_pairs_f64(arr, edt_f64, n::Int)::Tuple{Vector{Float64}, Vector{Float64}}
+	buf = Vector{Float64}(undef, 2n)
+	# Same row-major bufferStride fix as _shnc_array_write2! (dim0=n -> stride 2, dim1=xy -> stride 1).
+	start = UInt64[0, 0]; cnt = UInt64[n, 2]; step = Int64[1, 1]; stride = Int64[2, 1]
+	r = ccall((:GDALMDArrayRead, GMT.libgdal), Cint,
+	          (_SHNC_H, Ptr{UInt64}, Ptr{UInt64}, Ptr{Int64}, Ptr{Int64}, _SHNC_H, Ptr{Cvoid}, Ptr{Cvoid}, Csize_t),
+	          arr, start, cnt, step, stride, edt_f64, buf, C_NULL, 0)
+	(r == 0) && error("shapenc: failed reading array data" * ((e = _shnc_lasterr()) == "" ? "" : ": $e"))
+	(buf[1:2:end], buf[2:2:end])
+end
+
+# Open+read a lon/lat (or X/Y) coordinate pair, trying the combined "lonLat"/"XY" Mx2 array
+# (current `shapenc` write format) FIRST, then falling back to the old separate lon/lat 1-D arrays
+# -- required to keep reading both genuine Mirone-original SHAPENC files (always separate arrays)
+# and every SHAPENC file this port itself wrote before the combined format existed.
+function _shnc_read_coordpair(root, pairname::String, xname::String, yname::String, edt_f64)::Union{Nothing, Tuple{Vector{Float64}, Vector{Float64}}}
+	parr = _shnc_group_open_array(root, pairname)
+	if parr != C_NULL
+		n = _shnc_array_count(parr) ÷ 2
+		xy = _shnc_array_read_pairs_f64(parr, edt_f64, n)
+		_shnc_release_array(parr)
+		return xy
+	end
+	xarr = _shnc_group_open_array(root, xname)
+	xarr == C_NULL && return nothing
+	yarr = _shnc_group_open_array(root, yname)
+	if yarr == C_NULL
+		_shnc_release_array(xarr)
+		return nothing
+	end
+	n = _shnc_array_count(xarr)
+	x = _shnc_array_read_f64(xarr, edt_f64, n)
+	y = _shnc_array_read_f64(yarr, edt_f64, n)
+	_shnc_release_array(xarr); _shnc_release_array(yarr)
+	(x, y)
+end
+
 # Cheap probe: is `path` a SHAPENC file? (extension + the "SHAPENC_type" global attribute we always
 # write). Returns the type string ("Point"/"PolygonZ"/...) or `nothing`.
 function _shnc_probe_type(path::String)::Union{Nothing, String}
@@ -677,6 +797,7 @@ function _shnc_read(path::String)::Vector{GMT.GMTdataset}
 	bare_geom = startswith(type_attr, "Point") ? GMT.wkbPoint :
 	            startswith(type_attr, "Polygon") ? GMT.wkbPolygon : GMT.wkbLineString
 	Xname, Yname = geog ? ("lon", "lat") : ("X", "Y")
+	coordpair_name = _shnc_coordpair_name(geog)
 	edt_f64 = _shnc_edt_f64()
 	# Ensemble "kk" identities are looked up by NAME (the "Ensemble_IDs" attribute, semicolon-
 	# joined -- written by every `shapenc` call, see there) rather than assumed to be 1..N: a
@@ -694,17 +815,9 @@ function _shnc_read(path::String)::Vector{GMT.GMTdataset}
 	out = GMT.GMTdataset[]
 	for kk in kks
 		for prefix in _SHNC_PREFIXES
-			xarr = _shnc_group_open_array(root, "$(Xname)$(prefix)$kk")
-			xarr == C_NULL && continue
-			yarr = _shnc_group_open_array(root, "$(Yname)$(prefix)$kk")
-			if yarr == C_NULL
-				_shnc_release_array(xarr)
-				continue
-			end
-			n = _shnc_array_count(xarr)
-			x = _shnc_array_read_f64(xarr, edt_f64, n)
-			y = _shnc_array_read_f64(yarr, edt_f64, n)
-			_shnc_release_array(xarr); _shnc_release_array(yarr)
+			xy = _shnc_read_coordpair(root, "$(coordpair_name)$(prefix)$kk", "$(Xname)$(prefix)$kk", "$(Yname)$(prefix)$kk", edt_f64)
+			xy === nothing && continue
+			x, y = xy
 
 			is_3D = prefix == "" ? bare_is_3D : endswith(prefix, "Z_")
 			z = Float64[]
@@ -780,20 +893,14 @@ function _shnc_array_names(root)::Vector{String}
 end
 
 const _SHNC_POLYIN_RE = r"^lonPolyIN_(\d+)_(\d+)$"
+const _SHNC_POLYIN_RE_PAIR = r"^lonLatPolyIN_(\d+)_(\d+)$"
 
-# Read one lon/lat variable pair into an Nx2 Matrix, or `nothing` if either is missing.
-function _shnc_read_xyarr(root, xname::String, yname::String, edt_f64)::Union{Nothing, Matrix{Float64}}
-	xarr = _shnc_group_open_array(root, xname)
-	xarr == C_NULL && return nothing
-	yarr = _shnc_group_open_array(root, yname)
-	if yarr == C_NULL
-		_shnc_release_array(xarr)
-		return nothing
-	end
-	n = _shnc_array_count(xarr)
-	x = _shnc_array_read_f64(xarr, edt_f64, n)
-	y = _shnc_array_read_f64(yarr, edt_f64, n)
-	_shnc_release_array(xarr); _shnc_release_array(yarr)
+# Read one lon/lat coordinate pair into an Nx2 Matrix, or `nothing` if neither the combined
+# "lonLat..." array nor the old separate lon/lat arrays are present (see _shnc_read_coordpair).
+function _shnc_read_xyarr(root, pairname::String, xname::String, yname::String, edt_f64)::Union{Nothing, Matrix{Float64}}
+	xy = _shnc_read_coordpair(root, pairname, xname, yname, edt_f64)
+	xy === nothing && return nothing
+	x, y = xy
 	[x y]
 end
 
@@ -801,9 +908,9 @@ end
     _shnc_read_bounded(path::String) -> Vector{@NamedTuple{kk::String, outp, ins, ds}}
 
 Read a SHAPENC file's ensembles alongside their OUTER/INNER boundary polygons (the SHAPENC
-convention `shapenc()`'s `outer`/`inner` kwargs write, and what a Mirone-original file like
-`enxertos_pascal.nc` already carries): `lonPolyOUT_kk`/`latPolyOUT_kk` and one or more
-`lonPolyIN_x_y`/`latPolyIN_x_y` per ensemble. One `NamedTuple` per ensemble --
+convention `shapenc()`'s `outer`/`inner` kwargs write): a combined `lonLatPolyOUT_kk` (or a
+Mirone-original file's separate `lonPolyOUT_kk`/`latPolyOUT_kk`, e.g. `enxertos_pascal.nc`) and one
+or more `lonLatPolyIN_x_y`/`lonPolyIN_x_y`+`latPolyIN_x_y` per ensemble. One `NamedTuple` per ensemble --
 `outp::Union{Nothing,Matrix{Float64}}` (lon/lat ring, `nothing` when this ensemble has no OUTER
 boundary), `ins::Vector{Matrix{Float64}}` (0 or more lon/lat hole rings), and `ds::GMTdataset` (the
 SAME per-ensemble result `_shnc_read` already produces, x,y[,z] + attrib/proj4 -- reused, not
@@ -831,14 +938,18 @@ function _shnc_read_bounded(path::String)
 		                                # assumption below -- bounded ensembles are always single-segment
 		                                # Point swarms in practice, so this just stops safely rather than
 		                                # mismatching kk against the wrong dataset.
-		outp = _shnc_read_xyarr(root, "lonPolyOUT_$kk", "latPolyOUT_$kk", edt_f64)
+		outp = _shnc_read_xyarr(root, "lonLatPolyOUT_$kk", "lonPolyOUT_$kk", "latPolyOUT_$kk", edt_f64)
 		ins = Matrix{Float64}[]
+		seen_suf = Set{String}()
 		for nm in names
 			mm = match(_SHNC_POLYIN_RE, nm)
+			mm === nothing && (mm = match(_SHNC_POLYIN_RE_PAIR, nm))
 			mm === nothing && continue
 			(mm.captures[1] == kk || mm.captures[2] == kk) || continue
 			suf = "$(mm.captures[1])_$(mm.captures[2])"
-			m = _shnc_read_xyarr(root, "lonPolyIN_$suf", "latPolyIN_$suf", edt_f64)
+			suf in seen_suf && continue
+			push!(seen_suf, suf)
+			m = _shnc_read_xyarr(root, "lonLatPolyIN_$suf", "lonPolyIN_$suf", "latPolyIN_$suf", edt_f64)
 			m === nothing || push!(ins, m)
 		end
 		push!(out, (kk=kk, outp=outp, ins=ins, ds=ds_list[i]))

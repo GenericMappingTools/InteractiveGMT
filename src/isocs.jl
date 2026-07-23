@@ -79,7 +79,7 @@ function isoc2shapenc(fname_in::String, fname_out::String; append::Bool = false)
 	tag = Pair{String, Union{String, Vector{Float64}}}[]
 	push!(tag, "name" => name)
 	append!(tag, attrs)
-	shapenc(fname_out, xy; tag = tag, append = append, polyline2D = true)
+	shapenc(fname_out, xy; tag=tag, append=append, polyline2D=true)
 end
 
 """
@@ -119,10 +119,13 @@ File>Open (`_shnc_is_shapenc`, drop.jl) like any other SHAPENC file.
 
 Re-running this on the same directory/pattern REBUILDS the output file from the CURRENT matching
 file set (any stale copy is removed first) rather than piling more ensembles onto whatever was
-already there. Each isochron is still written through `shapenc`'s ordinary `append=true` path, so
-the result is an ordinary, further-appendable SHAPENC/netCDF4 file — a future targeted replace/add
-tool can open it back up in update mode; this call just doesn't try to guess which of a re-run's
-ensembles should survive.
+already there. All matching files are written in ONE `shapenc(...; ids=..., tags=...)` call (one
+ensemble per file), not a loop of one `shapenc` call per file -- a per-file loop reopens the netCDF
+file from scratch on every call, which is both slower and, worse, forces a fresh per-file
+coordinate-pair dimension (proven live: at 1368-ensemble scale a per-call reopen loop was measurably
+worse on both file size and write time than one batched call). The result is still an ordinary
+SHAPENC/netCDF4 file, further
+appendable later; this call just doesn't try to guess which of a re-run's ensembles should survive.
 
 ### Example
 ```julia
@@ -171,7 +174,9 @@ function isoc2shapenc(; isoc_group::Vector{String} = ["", "", ""])
 	# exist (c13_EU_NA.dat AND c13_NA_EU.dat) and are NOT duplicates, they're two DIFFERENT
 	# reconstructed geometries (one per plate's reference frame), so the full file name is what
 	# unambiguously identifies which one a given ensemble is.
-	wrote_any = false
+	mats = Matrix{Float64}[]
+	ids = String[]
+	tagvecs = Vector{Pair{String, Union{String, Vector{Float64}}}}[]
 	for fn in files
 		stem = splitext(basename(fn))[1]
 		is_fwd = endswith(stem, suffix)
@@ -190,10 +195,12 @@ function isoc2shapenc(; isoc_group::Vector{String} = ["", "", ""])
 		id = stem   # EXACTLY what's in the file name, verbatim -- not a reconstructed short_id+direction
 		tag = Pair{String, Union{String, Vector{Float64}}}["name" => id, "full_name" => hdr_name]
 		append!(tag, attrs)
-		shapenc(outpath, xy; tag = tag, append = wrote_any, polyline2D = true, ids = [id])
-		wrote_any = true
+		push!(mats, xy)
+		push!(ids, id)
+		push!(tagvecs, tag)
 	end
-	wrote_any || error("isoc2shapenc: none of the $(length(files)) matched files parsed as an isochron")
+	isempty(mats) && error("isoc2shapenc: none of the $(length(files)) matched files parsed as an isochron")
+	shapenc(outpath, mats; tags = tagvecs, polyline2D = true, ids = ids)
 	outpath
 end
 
@@ -251,3 +258,8 @@ function shapenc2isoc(fname_nc::String, isoc_name::String, fname_out::String)
 	end
 	fname_out
 end
+
+# isocs_shp.jl (`isoc2shapenc_shp`) is local/gitignored -- not part of the tracked package, so
+# `using InteractiveGMT` must not error when it's absent (same tolerant-include philosophy as
+# libgmtvtk.jl's missing-DLL handling in __init__).
+isfile(joinpath(@__DIR__, "isocs_shp.jl")) && include("isocs_shp.jl")
