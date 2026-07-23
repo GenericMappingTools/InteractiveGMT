@@ -55,6 +55,7 @@ include("savefile.jl")   # File > Save Grid / Save Image -> gmtwrite (netCDF/Sur
 include("session.jl")    # File > Save/Load Session (.igmtz): provenance registry + manifest + store-only zip
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
 include("plateboundaries.jl") # Geography > Plate boundaries -> 7 grouped boundary-type overlays
+include("magneticisochrons.jl") # Geography > Magnetic isochrons > GPlates -> Sutton_isocs.sqlite
 include("solids.jl")     # 3-D Bodies toolbar flyout -> GMT solids (cube/sphere/torus/cylinder/…) via view_fv
 include("nswing.jl")     # Geophysics > NSWING tsunami (port of Mirone swan_options.m -> nswing exe)
 include("aquamoto.jl")   # Geophysics > Tsunamis > Aquamoto viewer (port of Mirone aquamoto.m netCDF tab)

@@ -1894,7 +1894,8 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 					   int mode, double r, double g, double b, double linewidth, double pointsize,
 					   const char *name = nullptr, const char *groupName = nullptr, const char *info = nullptr,
 					   const double *interiorXYZ = nullptr, int nInterior = 0, bool isShapencBoundary = false,
-					   bool isShapencInteriorPoints = false) {
+					   bool isShapencInteriorPoints = false, bool noConvertToPoints = false,
+					   bool zIsPlaceholder = false) {
 	if (!s || !xyz || npts <= 0)
 		return;
 
@@ -1976,6 +1977,8 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 		ov.interiorXYZ.assign(interiorXYZ, interiorXYZ + 3 * nInterior);
 	ov.isShapencBoundary = isShapencBoundary;
 	ov.isShapencInteriorPoints = isShapencInteriorPoints;
+	ov.noConvertToPoints = noConvertToPoints;
+	ov.zIsPlaceholder = zIsPlaceholder;
 	ov.stack = s->vecSeq++;                    // new overlay lands on top of the shared vector pile
 	s->overlays.push_back(ov);
 	applyVectorStacking(s);                   // normalize ranks + set this overlay's draw-order offset

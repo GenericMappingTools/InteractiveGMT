@@ -52,6 +52,18 @@ struct Overlay {
 	                                          // OWN row, not the OUT polygon it came from) -- adds "Quick
 	                                          // grid" (Auto/Set increments…, gridding not implemented yet)
 	                                          // and "Point cloud view" (real 3-D, view_points) to its menu.
+	bool noConvertToPoints = false;          // suppresses ONLY "Convert to points"/"Convert to line" in the
+	                                          // context menu, unlike isShapencBoundary which also drops
+	                                          // "Line length…"/"Azimuth…" -- for lines where scattering to
+	                                          // points makes no sense but length/azimuth still does (e.g.
+	                                          // Geography > Magnetic isochrons > GPlates).
+	bool zIsPlaceholder = false;             // true when the caller's source data was 2-column (x,y only)
+	                                          // and z=0 was a stored-geometry placeholder, NOT real data --
+	                                          // showLineDataTable (55_lineprops.cpp) must not invent/show a Z
+	                                          // column for these (e.g. Magnetic isochrons > GPlates, a 2-col
+	                                          // GPlates export). Default false preserves existing overlays'
+	                                          // "always show Z" behaviour (coastlines/plate boundaries/...)
+	                                          // until each is confirmed to genuinely have no z of its own.
 };
 
 // A generic SCREEN-CONSTANT symbol layer (volcanoes, seismicity, cities, …): N glyphs of one

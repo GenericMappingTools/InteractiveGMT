@@ -6038,7 +6038,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mGeo->addSeparator();
 	mGeo->addAction("Global seismicity (1990-2009)", [openSeismicity]() { openSeismicity(true); });
 	mGeo->addAction("Hotspot locations",             geoTODO("Hotspot locations"));
-	mGeo->addAction("Magnetic isochrons",            geoTODO("Magnetic isochrons"));
+	QMenu *mIsoc = mGeo->addMenu("Magnetic isochrons");
+	mIsoc->addAction("GPlates", geoPlot("isochrons_gplates", ""));
+	mIsoc->addAction("custom",  geoTODO("Magnetic isochrons (custom)"));
 	mGeo->addAction("Volcanoes",                     geoPlot("volcano", ""));
 	mGeo->addAction("Meteorite impacts",             geoPlot("meteorite", ""));
 	mGeo->addAction("Hydrothermal sites",            geoPlot("hydro", ""));

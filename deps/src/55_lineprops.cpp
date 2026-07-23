@@ -389,13 +389,22 @@ static void showLineDataTable(Scene *s, const LineRef& lr, const QString& name) 
 	dlg->setWindowFlag(Qt::Window, true);
 	QVBoxLayout *lay = new QVBoxLayout(dlg);
 
+	// Does this overlay's Z come from real source data, or is it a stored-geometry placeholder
+	// (Overlay::zIsPlaceholder -- e.g. Magnetic isochrons > GPlates, a 2-column x,y export)? Only
+	// LK_Overlay rows have a matching Overlay entry at all.
+	Overlay *ovp = nullptr;
+	if (lr.kind == LK_Overlay)
+		for (auto& o : s->overlays) if (o.actor.Get() == actor) { ovp = &o; break; }
+
 	// In flat-2D a DRAWN shape's (LK_Polygon: rectangle/polygon/circle) Z is genuinely meaningless --
 	// it was drawn on the 2-D screen, z=0 by construction -- so drop that column there: #/X/Y (3) in
 	// 2D, #/X/Y/Z (4) in 3D. An OVERLAY (LK_Overlay: a dropped/imported dataset, e.g. a SHAPENC point
 	// cloud) is different: its Z came from the SOURCE data at import time regardless of how the
 	// window happens to be displaying it right now, so hiding it in flat-2D would silently throw away
-	// real input data the user explicitly asked this table to show -- always show all 3 for overlays.
-	const bool showZ  = !s->flat2d || lr.kind == LK_Overlay;
+	// real input data the user explicitly asked this table to show -- always show all 3 for overlays,
+	// UNLESS the source itself was 2-column and z=0 is only a placeholder (zIsPlaceholder): there is
+	// no real Z to show, so never invent one.
+	const bool showZ  = (!s->flat2d || lr.kind == LK_Overlay) && !(ovp && ovp->zIsPlaceholder);
 	const int  ncoord = showZ ? 3 : 2;
 	QStringList hdr;   hdr << "#" << "X" << "Y";   if (showZ) hdr << "Z";
 	QTableWidget *tbl = new QTableWidget(nrows, ncoord + 1, dlg);
@@ -864,8 +873,10 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 	else {                                               // overlay line (Coastlines, Boundaries, Rivers, imports)
 		// Line <-> points toggle: a dropped x,y table draws as a polyline by default; this converts it
 		// to a scatter of points (and back). Label reflects the CURRENT mode. Not for a SHAPENC
-		// boundary (user: converting a coverage OUT/IN polygon to a point scatter makes no sense).
-		if (!ovp || !ovp->isShapencBoundary) {
+		// boundary (user: converting a coverage OUT/IN polygon to a point scatter makes no sense), nor
+		// for any overlay flagged noConvertToPoints (e.g. Magnetic isochrons -- length/azimuth still
+		// make sense there, just not the points scatter).
+		if (!ovp || !(ovp->isShapencBoundary || ovp->noConvertToPoints)) {
 			const int omode = overlayMode(s, a);
 			if (omode == 1)
 				m.addAction("Convert to points", [s, a]() { overlaySetMode(s, a, 1); });

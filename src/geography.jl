@@ -130,6 +130,7 @@ function _geo_layer_name(kind::AbstractString)::String
 	kind == "tides"     ? "Tide Stations"       :
 	kind == "hydro"     ? "Hydrothermal Vents"  :
 	kind == "plateboundaries" ? _PB_GROUP       :
+	kind == "isochrons_gplates" ? _ISOC_GPLATES_NAME :
 	uppercasefirst(String(kind))
 end
 
@@ -209,6 +210,10 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			# coast/borders/rivers. Loads all 7 boundary-type files, grouped in Scene Objects (see
 			# plateboundaries.jl). Bail (no session record) if nothing was added.
 			_load_plate_boundaries(scene) || return
+		elseif kind == "isochrons_gplates"
+			# Whole-earth static dataset (Sutton_isocs.sqlite), same no-region-clip convention as
+			# plateboundaries above (see magneticisochrons.jl). Bail (no session record) if nothing added.
+			_load_magnetic_isochrons_gplates(scene) || return
 		else
 			D = _geo_dataset(kind, res, W, E, S, N)
 			(D === nothing || isempty(D)) && return

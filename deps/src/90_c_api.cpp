@@ -494,6 +494,31 @@ GMTVTK_API int gmtvtk_add_overlay_ex_h(void *handle, const double *xyz, int npts
 	return 1;
 }
 
+// Same as gmtvtk_add_overlay_ex_h, plus `noConvertToPoints`: suppresses ONLY the "Convert to
+// points"/"Convert to line" context-menu item (Overlay::noConvertToPoints, 10_geometry.cpp) --
+// unlike gmtvtk_add_overlay_bounded_h's isShapencBoundary, "Line length…"/"Azimuth…" stay. Also
+// `zIsPlaceholder`: the caller's source was 2-column (x,y only), z=0 is a stored-geometry filler,
+// not real data -- showLineDataTable (55_lineprops.cpp) must show only #/X/Y, never invent a Z
+// column (Overlay::zIsPlaceholder). Used by Geography > Magnetic isochrons > GPlates (a coverage
+// line you'd still want to measure, just never scatter to points, and whose source truly has no
+// z). Returns 1 if added.
+GMTVTK_API int gmtvtk_add_overlay_ex2_h(void *handle, const double *xyz, int npts, const int *segoff, int nseg,
+								      int mode, double r, double g, double b,
+								      double linewidth, double pointsize,
+								      const char *name, const char *groupName, const char *info,
+								      int noConvertToPoints, int zIsPlaceholder) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s))
+		return 0;
+	double dpi = 72.0;
+	if (s->widget && s->widget->renderWindow() && s->widget->renderWindow()->GetDPI() > 0)
+		dpi = s->widget->renderWindow()->GetDPI();
+	const double pxPerPt = dpi / 72.0;
+	addOverlay(s, xyz, npts, segoff, nseg, mode, r, g, b, linewidth * pxPerPt, pointsize, name, groupName, info,
+	           nullptr, 0, false, false, noConvertToPoints != 0, zIsPlaceholder != 0);
+	return 1;
+}
+
 // Read a line OVERLAY's current pen by its Scene Objects name, so Save Session can capture edits the
 // user made AFTER the layer was added (coastlines/borders/rivers are :menu recipes that otherwise
 // replay with the default pen). out = { r, g, b, width_px, style(0 solid/1 dashed/2 dotted), opacity }.
