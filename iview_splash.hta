@@ -1,0 +1,74 @@
+<html>
+<head>
+<title>iGMT</title>
+<HTA:APPLICATION
+    ID="igmtSplash"
+    APPLICATIONNAME="iGMT"
+    BORDER="none"
+    CAPTION="no"
+    SHOWINTASKBAR="no"
+    SINGLEINSTANCE="yes"
+    SYSMENU="no"
+    MAXIMIZEBUTTON="no"
+    MINIMIZEBUTTON="no"
+    SCROLL="no"
+    SELECTION="no"
+    WINDOWSTATE="normal"
+    NAVIGABLE="no"
+    CONTEXTMENU="no"
+/>
+<script language="JScript">
+// Resize+move as early as possible (before CSS/image load) to minimize the on-screen time at
+// the wrong geometry. Body stays hidden (visibility:hidden below) until onload, so there is no
+// visible content mismatch in between. Size is a fraction of the real screen, not a fixed guess.
+var W = Math.round(screen.availWidth  * 0.30);
+if (W < 520) W = 520;
+var H = Math.round(W * 0.68);
+window.resizeTo(W, H);
+window.moveTo(Math.round((screen.availWidth - W) / 2), Math.round((screen.availHeight - H) / 2));
+</script>
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; background:#1e1e1e; color:#e0e0e0;
+               font-family:"Segoe UI",Tahoma,sans-serif; width:100%; height:100%; }
+  #wrap { width:100%; height:100%; display:flex; flex-direction:column;
+          align-items:center; justify-content:center; border:1px solid #444; box-sizing:border-box; }
+  img { width:34vh; height:34vh; margin-bottom:3vh; }
+  #msg { font-size:4.2vh; }
+  #bar { width:60vw; height:1.4vh; background:#333; margin-top:3.5vh; overflow:hidden; position:relative; }
+  #chunk { width:18vw; height:1.4vh; background:#5b9bd5; position:absolute; left:-18vw;
+           animation:slide 1.1s linear infinite; }
+  @keyframes slide { from { left:-18vw; } to { left:78vw; } }
+</style>
+<script language="JScript">
+// iview_app.jl (the real window-owning Julia process) drops this flag once its window is up.
+// We poll for it instead of any fixed delay because Julia/GMT startup time is variable (cold
+// vs warm precompile cache).
+var fso = new ActiveXObject("Scripting.FileSystemObject");
+var flag = fso.GetSpecialFolder(2).Path + "\\igmt_ready.flag";
+var elapsed = 0;
+var TIMEOUT_MS = 120000;   // safety net: never sit on screen forever if iview_app.jl errors out
+var POLL_MS = 150;
+
+function poll() {
+    elapsed += POLL_MS;
+    if (fso.FileExists(flag) || elapsed >= TIMEOUT_MS) {
+        window.close();
+        return;
+    }
+    setTimeout("poll()", POLL_MS);
+}
+
+window.onload = function () {
+    document.body.style.visibility = "visible";
+    setTimeout("poll()", POLL_MS);
+};
+</script>
+</head>
+<body style="visibility:hidden;">
+  <div id="wrap">
+    <img src="igmt.ico" alt="iGMT" />
+    <div id="msg">Starting iGMT&#8230;</div>
+    <div id="bar"><div id="chunk"></div></div>
+  </div>
+</body>
+</html>

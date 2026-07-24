@@ -97,6 +97,19 @@ If fso.FileExists(here & "\Manifest.toml") Then
     projectArg = "--project=" & Chr(34) & here & Chr(34) & " "
 End If
 
+' Splash: launched IMMEDIATELY via mshta (no Julia/Qt startup cost) so the click gets instant
+' feedback while Julia + package load/precompile -- the variable, unpredictable-length part --
+' happens in the background. Self-closing: iview_app.jl drops a ready-flag once its window is
+' up; the HTA polls for it and closes itself (see iview_splash.hta). Clear any stale flag left
+' by a previous run first, else the NEW splash would see it and close instantly.
+On Error Resume Next
+Dim flagPath : flagPath = sh.ExpandEnvironmentStrings("%TEMP%") & "\igmt_ready.flag"
+If fso.FileExists(flagPath) Then fso.DeleteFile flagPath, True
+On Error Goto 0
+If fso.FileExists(here & "\iview_splash.hta") Then
+    sh.Run "mshta.exe " & Chr(34) & here & "\iview_splash.hta" & Chr(34), 1, False
+End If
+
 Dim extra : extra = ""
 Dim i
 For i = 0 To WScript.Arguments.Count - 1

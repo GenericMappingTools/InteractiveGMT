@@ -20,6 +20,7 @@ let
     path = isempty(p) ? "" : p == "1" ? joinpath(tempdir(), "igmt.log") : p
     isempty(path) || open(io -> println(io, round(time(); digits=3), "  startup  iview_app.jl script start"), path, "a")
 end
+const SPLASH_FLAG = joinpath(tempdir(), "igmt_ready.flag")
 try
     using InteractiveGMT
     if isempty(ARGS)
@@ -37,10 +38,18 @@ try
             end
         end
     end
+    # Signal the desktop-icon splash (iview_splash.hta, polling this same path) that the window
+    # is up, so it can close itself now instead of on a fixed timer.
+    try
+        open(io -> print(io, getpid()), SPLASH_FLAG, "w")
+    catch
+    end
     wait_windows()    # block (yielding, so the Qt pump runs) until the window(s) close
 catch e
     open(joinpath(@__DIR__, "iview_app.log"), "a") do io
         println(io, "[", Dates.now(), "] ", sprint(showerror, e, catch_backtrace()))
     end
     rethrow()
+finally
+    isfile(SPLASH_FLAG) && rm(SPLASH_FLAG; force=true)
 end
