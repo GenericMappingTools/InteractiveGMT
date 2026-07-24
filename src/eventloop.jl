@@ -58,6 +58,7 @@ function _ensure_callbacks()
 	                    ("geography",   _register_geography),
 	                    ("solid",       _register_solid),
 	                    ("tides",       _register_tides),
+	                    ("tidemodel",   _register_tidemodel),
 	                    ("earthtide",   _register_earthtide),
 	                    ("grdsample",   _register_grdsample),
 	                    ("gridmeta",    _register_gridmeta),

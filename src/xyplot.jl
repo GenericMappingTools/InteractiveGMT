@@ -136,6 +136,35 @@ function add!(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat; name::Abstrac
 end
 
 """
+    xynowcross!(p::QtXYPlot, x, y; color=:red, size=10, width=2, name="Now") -> QtXYPlot
+
+Add a screen-constant "+" cross at data point `(x, y)` -- e.g. a "current time" indicator on a
+time-series plot. Unlike `add!(...; marker=:plus)`, this is NOT a vtkPlotPoints marker (VTK's
+marker rendering reuses the plot's own pen width to draw the glyph, so a marker-only series has no
+independently-controllable thickness at all): it's a real 2-segment line path whose data-space
+half-lengths are recomputed every render from the actual per-axis pixel scale, so both arms stay
+visually equal-length on screen no matter how different the X/Y data ranges are, and it keeps that
+shape across zoom/pan/resize. `size` (half-arm-length) and `width` (stroke thickness) are BOTH in
+**points**, not raw screen pixels -- a physical, DPI-independent unit (same reasoning GMT itself
+uses pens in points, never px), converted internally at 96/72 dpi same as `add_symbols!`. Both are
+also live-editable afterward via the series' own "Line properties…" dialog (Object Manager
+right-click) -- note that dialog's spinbox is px internally (VTK's own units), so it will show the
+~1.33x-scaled pixel value, not the points figure this call took.
+"""
+function xynowcross!(p::QtXYPlot, x::Real, y::Real; color=:red, size::Real=10,
+                     width::Real=2, name::AbstractString="Now")
+	isalive(p) || error("xynowcross!: the X,Y plot window is closed")
+	r, g, b = _ovl_color(color, :lines)
+	sizepx = Float64(size) * 96 / 72                                      # points -> pixels @96dpi
+	widthpx = Float64(width) * 96 / 72
+	idx = ccall(_fn(:gmtvtk_xyplot_add_now_cross), Cint,
+	      (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
+	      p.h, Float64(x), Float64(y), r, g, b, sizepx, Float64(widthpx), name)
+	idx >= 0 && push!(p.series, (Float64[x], Float64[y], name))
+	return p
+end
+
+"""
     clear!(p::QtXYPlot) -> QtXYPlot
 
 Remove every series from an open X,Y plot window.
@@ -149,6 +178,18 @@ end
 # Set the axis titles.
 _xy_set_labels(p::QtXYPlot, xl, yl) =
 	ccall(_fn(:gmtvtk_xyplot_set_labels), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), p.h, String(xl), String(yl))
+
+"""
+    xyinfo!(p::QtXYPlot, html::AbstractString) -> QtXYPlot
+
+Set (or clear, with `""`) a rich-text header strip above an X,Y plot window's chart -- e.g. the
+Tide tool's "Next High Tide … / Time now … / Next Low Tide …" lines. Basic HTML (`<b>`, `<br>`,
+inline `color:` spans) is supported (Qt rich text). Hidden when empty.
+"""
+function xyinfo!(p::QtXYPlot, html::AbstractString)
+	isalive(p) && ccall(_fn(:gmtvtk_xyplot_set_info), Cvoid, (Ptr{Cvoid}, Cstring), p.h, String(html))
+	return p
+end
 
 # Push one (vector) or several (matrix-column) series to the window + the Julia-side copy.
 function _xy_add(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat;

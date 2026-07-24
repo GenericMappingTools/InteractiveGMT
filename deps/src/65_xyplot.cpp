@@ -26,6 +26,17 @@ struct XYSeries {
 	int                       marker = 0;       // vtkPlotPoints: NONE=0 CROSS=1 PLUS=2 SQUARE=3 CIRCLE=4 DIAMOND=5
 	double                    markerSize = 7.0;
 	bool                      visible = true;
+	// Screen-constant "+" cross (e.g. Tide tool's "Now" indicator) -- NOT a vtkPlotPoints marker
+	// (VTK's marker glyph rendering literally overwrites the plot's pen width with MarkerSize, so a
+	// marker-only series has no independent thickness control at all; see xyRecomputeCross). Built
+	// instead from a 5-point NaN-broken path (H arm, gap, V arm) whose data-space half-lengths get
+	// recomputed from the CURRENT per-axis pixel scale every render, so both arms stay visually
+	// equal and the true on-screen size (crossSizePx) survives zoom/pan/resize. Reuses `width` for
+	// the (real, working) stroke thickness -- only crossCenterX/Y/crossSizePx are new state.
+	bool                      nowCross = false;
+	double                    crossCenterX = 0.0, crossCenterY = 0.0;
+	double                    crossSizePx = 24.0;
+	double                    lastHx = -1.0, lastHy = -1.0;   // cached data-space half-lengths
 };
 
 // One PAGE inside an X,Y window: its own chart, its own series list, its own axis
@@ -56,6 +67,9 @@ struct XYPage {
 // widgets (one VTK view, the Object Manager, the Data Viewer, the Console, tabs).
 struct XYPlot {
 	QMainWindow                        *win = nullptr;
+	QLabel                             *infoLabel = nullptr;      // optional header strip above the chart
+	                                                                // (e.g. Tide tool's Next High/Now/Next Low)
+	double                              infoFontPt = 8.0;          // user-adjustable via the Object Manager
 	QVTKOpenGLNativeWidget             *widget = nullptr;
 	vtkSmartPointer<vtkContextView>     view;
 	QTreeWidget                        *objMgr = nullptr;      // Object Manager (series list)
@@ -155,7 +169,11 @@ static const double *xyPalette(int i) {
 }
 
 // Push a series' presentation (colour / width / line style / markers) onto its chart plot.
-static void xyApplyStyle(XYSeries &se) {
+// `se.markerSize` is the caller-facing, DPI-independent size (what a spinbox/Julia API sets and
+// shows back) -- scaled by devicePixelRatioF() here, at the one point it actually reaches VTK, so
+// a HiDPI display (this app runs on Windows, where 125%/150% scaling is the common case) doesn't
+// silently render a "size 18" marker at a fraction of that many physical pixels.
+static void xyApplyStyle(XYPlot *s, XYSeries &se) {
 	if (!se.plot)
 		return;
 	se.plot->SetColor((unsigned char)(se.r * 255), (unsigned char)(se.g * 255),
@@ -164,9 +182,56 @@ static void xyApplyStyle(XYSeries &se) {
 	if (se.plot->GetPen())
 		se.plot->GetPen()->SetLineType(se.lineType);
 	if (vtkPlotPoints *pp = vtkPlotPoints::SafeDownCast(se.plot)) {
+		const double dpr = (s && s->widget) ? s->widget->devicePixelRatioF() : 1.0;
 		pp->SetMarkerStyle(se.marker);
-		pp->SetMarkerSize((float)se.markerSize);
+		pp->SetMarkerSize((float)(se.markerSize * dpr));
 	}
+}
+
+// Recompute a "now cross" series' 5-point path (H arm, NaN gap, V arm) from the CURRENT axis pixel
+// scale, so its on-screen half-length is really `crossSizePx` on BOTH axes (equal arms) no matter
+// how different the X and Y data ranges are (e.g. epoch-seconds vs metres) or how far zoomed in/out
+// the chart is. `vtkAxis::GetPoint1()/GetPoint2()` give the axis's onscreen pixel endpoints;
+// dividing the data range by that pixel span gives data-per-pixel, independently for each axis.
+// Returns true if the geometry actually changed (caller only needs to re-render then).
+static bool xyRecomputeCross(XYPage &pg, XYSeries &se) {
+	if (!se.nowCross || !se.table || !pg.chart)
+		return false;
+	vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM);
+	vtkAxis *ay = pg.chart->GetAxis(vtkAxis::LEFT);
+	if (!ax || !ay)
+		return false;
+	float *p1 = ax->GetPoint1(); float *p2 = ax->GetPoint2();
+	float *q1 = ay->GetPoint1(); float *q2 = ay->GetPoint2();
+	const double pxSpanX = std::abs((double)p2[0] - (double)p1[0]);
+	const double pxSpanY = std::abs((double)q2[1] - (double)q1[1]);
+	const double dataSpanX = ax->GetMaximum() - ax->GetMinimum();
+	const double dataSpanY = ay->GetMaximum() - ay->GetMinimum();
+	if (pxSpanX <= 0.0 || pxSpanY <= 0.0 || !(dataSpanX > 0.0) || !(dataSpanY > 0.0))
+		return false;
+	const double hx = se.crossSizePx * (dataSpanX / pxSpanX);
+	const double hy = se.crossSizePx * (dataSpanY / pxSpanY);
+	const double tolX = 1e-6 * std::max(1.0, std::abs(hx));
+	const double tolY = 1e-6 * std::max(1.0, std::abs(hy));
+	if (std::abs(hx - se.lastHx) < tolX && std::abs(hy - se.lastHy) < tolY)
+		return false;
+	se.lastHx = hx; se.lastHy = hy;
+	const double nan = std::numeric_limits<double>::quiet_NaN();
+	se.table->SetValue(0, 0, se.crossCenterX - hx); se.table->SetValue(0, 1, se.crossCenterY);
+	se.table->SetValue(1, 0, se.crossCenterX + hx); se.table->SetValue(1, 1, se.crossCenterY);
+	se.table->SetValue(2, 0, nan);                  se.table->SetValue(2, 1, nan);
+	se.table->SetValue(3, 0, se.crossCenterX);      se.table->SetValue(3, 1, se.crossCenterY - hy);
+	se.table->SetValue(4, 0, se.crossCenterX);      se.table->SetValue(4, 1, se.crossCenterY + hy);
+	se.table->Modified();
+	return true;
+}
+
+// Push infoFontPt onto the header-strip QLabel's stylesheet. Called at creation and whenever the
+// Object Manager's "Info" row > Font size… changes it.
+static void xyApplyInfoStyle(XYPlot *s) {
+	if (!s || !s->infoLabel)
+		return;
+	s->infoLabel->setStyleSheet(QString("font-size: %1pt; padding: 2px;").arg(s->infoFontPt));
 }
 
 // (Re)build the current page's chart plot items from its series tables. Called after a delete
@@ -182,7 +247,7 @@ static void xyRebuildPlots(XYPlot *s) {
 		pl->SetTooltipLabelFormat("%x, %y");   // hover shows ONLY x,y (not the series name)
 		pl->SetVisible(se.visible);
 		se.plot = pl;
-		xyApplyStyle(se);
+		xyApplyStyle(s, se);
 	}
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
@@ -200,6 +265,18 @@ static void xyRebuildObjMgr(XYPlot *s) {
 	const int prevSel = cur ? cur->data(0, Qt::UserRole).toInt() : -1;
 	s->rebuilding = true;
 	s->objMgr->clear();
+	// "Info" row (UserRole -1, never a real series index): only shown once something has actually
+	// been set via gmtvtk_xyplot_set_info (Tide tool's Next High/Now/Next Low strip). Checkbox
+	// toggles the header strip's visibility; right-click gives Font size…/Remove (the strip's own
+	// hide/kill handle, since it isn't a chart series and has no other UI otherwise).
+	if (s->infoLabel && !s->infoLabel->text().isEmpty()) {
+		QTreeWidgetItem *it = new QTreeWidgetItem(s->objMgr);
+		it->setText(0, "Info");
+		QFont f = it->font(0); f.setItalic(true); it->setFont(0, f);
+		it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+		it->setCheckState(0, s->infoLabel->isVisible() ? Qt::Checked : Qt::Unchecked);
+		it->setData(0, Qt::UserRole, -1);
+	}
 	QTreeWidgetItem *toSelect = nullptr;
 	for (int i = 0; i < (int)series.size(); ++i) {
 		const XYSeries &se = series[i];
@@ -280,7 +357,7 @@ static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
 	pl->SetLabel(se.name);
 	pl->SetTooltipLabelFormat("%x, %y");   // hover shows ONLY x,y (not the series name)
 	se.plot = pl;
-	xyApplyStyle(se);
+	xyApplyStyle(s, se);
 
 	const int idx = (int)pg.series.size();
 	pg.series.push_back(se);
@@ -288,6 +365,81 @@ static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
 	xyFillDataTable(s, idx);
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
+	return idx;
+}
+
+// vtkPlotLine subclass whose LEGEND ICON is drawn as a "+" instead of vtkPlotLine's normal
+// straight-line sample -- which is what a plain vtkPlotLine legend shows when MarkerStyle is NONE
+// (our case: the on-chart cross is hand-drawn NaN-broken geometry, not a VTK marker glyph -- see
+// xyRecomputeCross's comment for why). ONLY PaintLegend is overridden; on-chart rendering (Paint)
+// is untouched/inherited from vtkPlotLine, so the actual cross geometry is unaffected.
+class vtkNowCrossPlot : public vtkPlotLine {
+public:
+	static vtkNowCrossPlot *New();
+	vtkTypeMacro(vtkNowCrossPlot, vtkPlotLine);
+	bool PaintLegend(vtkContext2D *painter, const vtkRectf &rect, int) override {
+		painter->ApplyPen(this->Pen);
+		const float cx = rect[0] + 0.5f * rect[2];
+		const float cy = rect[1] + 0.5f * rect[3];
+		const float h  = std::min(rect[2], rect[3]) * 0.42f;
+		painter->DrawLine(cx - h, cy, cx + h, cy);
+		painter->DrawLine(cx, cy - h, cx, cy + h);
+		return true;
+	}
+};
+vtkStandardNewMacro(vtkNowCrossPlot);
+
+// Append a screen-constant "+" cross (e.g. the Tide tool's "Now" indicator). A 5-point NaN-broken
+// path (H arm, gap, V arm) on a vtkNowCrossPlot (so the LEGEND matches what's on the chart -- see
+// above), flagged `nowCross` with its true centre + target on-screen size stored -- xyRecomputeCross
+// (called from xyTicksOnRender on every render) then rescales it to the CURRENT per-axis pixel
+// scale, so it renders as a real equal-armed "+" of `sizePx` on screen regardless of the X/Y
+// data-range mismatch, and keeps that shape across zoom/pan/resize. `widthPx` is the stroke
+// thickness -- an everyday vtkPlotLine width, so it's genuinely, independently controllable (unlike
+// a vtkPlotPoints marker's size/width, which VTK itself conflates into one parameter).
+static int xyAddNowCross(XYPlot *s, double cx, double cy, double r, double g, double b,
+                         double sizePx, double widthPx, const char *name) {
+	if (!xyAlive(s))
+		return -1;
+	XYPage &pg = xyCur(s);
+	XYSeries se;
+	se.name = (name && name[0]) ? name : "Now";
+	se.r = r; se.g = g; se.b = b;
+	if (widthPx > 0.0) se.width = widthPx;
+	se.marker = 0;                                   // no vtkPlotPoints marker glyph on the chart
+	se.nowCross = true;
+	se.crossCenterX = cx; se.crossCenterY = cy;
+	se.crossSizePx = sizePx > 0.0 ? sizePx : 24.0;
+
+	se.table = vtkSmartPointer<vtkTable>::New();
+	vtkNew<vtkDoubleArray> ax; ax->SetName("X");             se.table->AddColumn(ax);
+	vtkNew<vtkFloatArray> ay; ay->SetName(se.name.c_str());  se.table->AddColumn(ay);
+	se.table->SetNumberOfRows(5);
+	// Rough placeholder path -- a real cross only exists once xyRecomputeCross has real axis pixel
+	// spans to work from, which needs the chart to have actually laid out at least once.
+	const double nan = std::numeric_limits<double>::quiet_NaN();
+	const double gx[5] = { cx - 1.0, cx + 1.0, nan, cx, cx };
+	const double gy[5] = { cy, cy, nan, cy - 1.0, cy + 1.0 };
+	for (int i = 0; i < 5; ++i) { se.table->SetValue(i, 0, gx[i]); se.table->SetValue(i, 1, (float)gy[i]); }
+
+	vtkNew<vtkNowCrossPlot> plot;
+	pg.chart->AddPlot(plot);
+	plot->SetInputData(se.table, 0, 1);
+	plot->SetLabel(se.name);
+	plot->SetTooltipLabelFormat("%x, %y");
+	se.plot = plot;
+	xyApplyStyle(s, se);
+
+	const int idx = (int)pg.series.size();
+	pg.series.push_back(se);
+	xyRebuildObjMgr(s);
+	xyFillDataTable(s, idx);
+
+	XYSeries &st = pg.series[idx];                    // recompute the STORED copy, not the local `se`
+	if (xyRecomputeCross(pg, st) && s->widget && s->widget->renderWindow())
+		s->widget->renderWindow()->Render();
+	else if (s->widget && s->widget->renderWindow())
+		s->widget->renderWindow()->Render();          // still show the placeholder path immediately
 	return idx;
 }
 
@@ -392,14 +544,28 @@ static void xyLineProperties(XYPlot *s, int idx) {
 		                                  &dlg, "Line colour");
 		if (!c.isValid()) return;
 		se.r = c.redF(); se.g = c.greenF(); se.b = c.blueF();
-		xyApplyStyle(se); swatch(); xyRebuildObjMgr(s); rr();
+		xyApplyStyle(s, se); swatch(); xyRebuildObjMgr(s); rr();
 	});
 
+	// A "now cross" is created/sized in POINTS (xynowcross!'s `size`/`width`, 96/72 dpi conversion,
+	// same convention `add_symbols!` uses -- physical, DPI-independent, never raw screen px). The
+	// dialog must speak the SAME unit the caller set it in, or editing it live silently changes the
+	// number's meaning underneath the user. `se.width`/`se.crossSizePx` stay stored in px internally
+	// (what VTK/xyRecomputeCross actually consume) -- only the DISPLAYED/EDITED value converts.
+	constexpr double PX_PER_PT = 96.0 / 72.0;
 	QDoubleSpinBox *wsp = new QDoubleSpinBox(&dlg);
-	wsp->setRange(0.5, 12.0); wsp->setSingleStep(0.5); wsp->setValue(se.width);
-	form->addRow("Width (px)", wsp);
-	QObject::connect(wsp, qOverload<double>(&QDoubleSpinBox::valueChanged), &dlg,
-		[&, rr](double v) { se.width = v; xyApplyStyle(se); rr(); });
+	if (se.nowCross) {
+		wsp->setRange(0.25, 20.0); wsp->setSingleStep(0.25);
+		wsp->setValue(se.width / PX_PER_PT);
+		form->addRow("Width (pt)", wsp);
+		QObject::connect(wsp, qOverload<double>(&QDoubleSpinBox::valueChanged), &dlg,
+			[&, rr](double v) { se.width = v * PX_PER_PT; xyApplyStyle(s, se); rr(); });
+	} else {
+		wsp->setRange(0.5, 12.0); wsp->setSingleStep(0.5); wsp->setValue(se.width);
+		form->addRow("Width (px)", wsp);
+		QObject::connect(wsp, qOverload<double>(&QDoubleSpinBox::valueChanged), &dlg,
+			[&, rr](double v) { se.width = v; xyApplyStyle(s, se); rr(); });
+	}
 
 	// combo index -> vtkPen line type
 	static const int kPen[] = { 1, 2, 3, 4, 5, 0 };  // Solid Dashed Dotted Dash-Dot Dash-Dot-Dot None
@@ -408,34 +574,57 @@ static void xyLineProperties(XYPlot *s, int idx) {
 	for (int i = 0; i < 6; ++i) if (kPen[i] == se.lineType) lsc->setCurrentIndex(i);
 	form->addRow("Line style", lsc);
 	QObject::connect(lsc, qOverload<int>(&QComboBox::currentIndexChanged), &dlg,
-		[&, rr](int i) { se.lineType = kPen[i]; xyApplyStyle(se); rr(); });
+		[&, rr](int i) { se.lineType = kPen[i]; xyApplyStyle(s, se); rr(); });
 
-	// combo index == vtkPlotPoints marker style (NONE=0 .. DIAMOND=5)
+	// combo index == vtkPlotPoints marker style (NONE=0 .. DIAMOND=5) -- meaningless for a "now
+	// cross" (always a hand-drawn line path, never a vtkPlotPoints marker), so disabled for one.
 	QComboBox *mkc = new QComboBox(&dlg);
 	mkc->addItems(QStringList() << "None" << "Cross" << "Plus" << "Square" << "Circle" << "Diamond");
 	mkc->setCurrentIndex(se.marker);
+	mkc->setEnabled(!se.nowCross);
 	form->addRow("Marker", mkc);
 	QObject::connect(mkc, qOverload<int>(&QComboBox::currentIndexChanged), &dlg,
-		[&, rr](int i) { se.marker = i; xyApplyStyle(se); rr(); });
+		[&, rr](int i) { se.marker = i; xyApplyStyle(s, se); rr(); });
 
+	// A "now cross" repurposes this field as its true on-screen half-arm-length target, in POINTS
+	// (same PX_PER_PT conversion as Width above) -- xyRecomputeCross re-derives the data-space
+	// geometry from the stored px every render; an ordinary series' vtkPlotPoints marker size (px,
+	// unconverted) is unaffected.
 	QDoubleSpinBox *msp = new QDoubleSpinBox(&dlg);
-	msp->setRange(1.0, 20.0); msp->setValue(se.markerSize);
-	form->addRow("Marker size", msp);
-	QObject::connect(msp, qOverload<double>(&QDoubleSpinBox::valueChanged), &dlg,
-		[&, rr](double v) { se.markerSize = v; xyApplyStyle(se); rr(); });
+	if (se.nowCross) {
+		msp->setRange(2.0, 150.0);
+		msp->setValue(se.crossSizePx / PX_PER_PT);
+		form->addRow("Cross size (pt)", msp);
+		QObject::connect(msp, qOverload<double>(&QDoubleSpinBox::valueChanged), &dlg,
+			[&, s, rr](double v) {
+				se.crossSizePx = v * PX_PER_PT;
+				se.lastHx = -1.0; se.lastHy = -1.0;      // force xyRecomputeCross to apply
+				if (xyRecomputeCross(xyCur(s), se)) rr();
+			});
+	} else {
+		msp->setRange(1.0, 200.0);
+		msp->setValue(se.markerSize);
+		form->addRow("Marker size", msp);
+		QObject::connect(msp, qOverload<double>(&QDoubleSpinBox::valueChanged), &dlg,
+			[&, rr](double v) { se.markerSize = v; xyApplyStyle(s, se); rr(); });
+	}
 
-	// Save THIS series to a file (same Julia gmtwrite path as File>Save, but pre-targeted to idx).
-	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Close, &dlg);
+	// Save THIS series to a file (same Julia gmtwrite path as File>Save, but pre-targeted to idx) --
+	// meaningless for a "now cross" (2 synthetic segments, not real data), so left off for one.
+	QDialogButtonBox *bb = new QDialogButtonBox(
+		se.nowCross ? QDialogButtonBox::Close : (QDialogButtonBox::Save | QDialogButtonBox::Close), &dlg);
 	form->addRow(bb);
-	QObject::connect(bb->button(QDialogButtonBox::Save), &QPushButton::clicked, &dlg, [s, idx] {
-		if (!g_juliaXY) { xyLog(s, "Save: not wired (rebuild the DLL + restart Julia)", true); return; }
-		const QString fn = QFileDialog::getSaveFileName(s->win, "Save series", prefStartDir("series.dat"),
-			"Text (*.dat *.txt);;CSV (*.csv);;All files (*)");
-		if (fn.isEmpty()) return;
-		rememberStartDir(fn);
-		g_juliaXY(s, "save", idx, fn.toUtf8().constData());
-		xyLog(s, QString("Saved series #%1 to %2").arg(idx).arg(fn));
-	});
+	if (!se.nowCross) {
+		QObject::connect(bb->button(QDialogButtonBox::Save), &QPushButton::clicked, &dlg, [s, idx] {
+			if (!g_juliaXY) { xyLog(s, "Save: not wired (rebuild the DLL + restart Julia)", true); return; }
+			const QString fn = QFileDialog::getSaveFileName(s->win, "Save series", prefStartDir("series.dat"),
+				"Text (*.dat *.txt);;CSV (*.csv);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			g_juliaXY(s, "save", idx, fn.toUtf8().constData());
+			xyLog(s, QString("Saved series #%1 to %2").arg(idx).arg(fn));
+		});
+	}
 	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
 	dlg.exec();
 }
@@ -448,6 +637,41 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 	s->objMgr->setCurrentItem(it);                     // right-click also PICKS the row (so Analysis /
 	                                                   // Save then target the clicked series, not a stale one)
 	const int idx = it->data(0, Qt::UserRole).toInt();
+	if (idx == -1) {                                   // "Info" row: font size + its own hide/kill handle
+		QMenu im(s->objMgr);
+		QAction *aFont = im.addAction("Font size…");
+		QAction *aHide = im.addAction(s->infoLabel && s->infoLabel->isVisible() ? "Hide" : "Show");
+		QAction *aRemove = im.addAction("Remove");
+		QAction *ipick = im.exec(s->objMgr->viewport()->mapToGlobal(pos));
+		if (ipick == aFont) {
+			// Live-apply, not a blocking QInputDialog::getInt -- every spin click/keystroke resizes
+			// the strip immediately (same pattern as Line-properties' Width/size fields), a single
+			// "Close" button just dismisses (there's nothing left to commit, it's already applied).
+			QDialog dlg(s->win);
+			dlg.setWindowTitle("Info font size");
+			QFormLayout *fl = new QFormLayout(&dlg);
+			QSpinBox *fsp = new QSpinBox(&dlg);
+			fsp->setRange(6, 36); fsp->setValue((int)s->infoFontPt);
+			fl->addRow("Points:", fsp);
+			QObject::connect(fsp, qOverload<int>(&QSpinBox::valueChanged), &dlg,
+				[s](int v) { s->infoFontPt = v; xyApplyInfoStyle(s); });
+			QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+			fl->addRow(bb);
+			QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
+			QObject::connect(bb, &QDialogButtonBox::clicked, &dlg, &QDialog::accept);
+			dlg.exec();
+		}
+		else if (ipick == aHide && s->infoLabel) {
+			s->infoLabel->setVisible(!s->infoLabel->isVisible());
+			xyRebuildObjMgr(s);
+		}
+		else if (ipick == aRemove && s->infoLabel) {
+			s->infoLabel->setText(QString());
+			s->infoLabel->setVisible(false);
+			xyRebuildObjMgr(s);
+		}
+		return;
+	}
 	QMenu m(s->objMgr);
 	QAction *aProp = m.addAction("Line properties…");
 	QAction *aSave = m.addAction("Save data…");
@@ -873,9 +1097,12 @@ static void xyRefreshTicks(XYPlot *s) {
 	ax->SetCustomTickPositions(pos, lab);
 }
 
-// Render-end observer: regenerate the bottom-axis ticks if its range changed (zoom/pan/new data),
-// then re-render once. Guarded against reentrancy (the re-render fires EndEvent again with an
-// unchanged range, so it returns early).
+// Render-end observer: regenerate the bottom-axis ticks if its range changed (zoom/pan/new data)
+// AND recompute any "now cross" series (xyRecomputeCross) -- decoupled from the tick-range check
+// on purpose: a plain window RESIZE changes the axis' PIXEL span without changing its data range,
+// which the tick check alone would miss but a screen-constant cross must still react to. Re-renders
+// once if either needed it. Guarded against reentrancy (the re-render fires EndEvent again with
+// nothing left changed, so both checks fall through and it returns without looping).
 static void xyTicksOnRender(vtkObject *, unsigned long, void *clientData, void *) {
 	XYPlot *s = static_cast<XYPlot*>(clientData);
 	if (!xyAlive(s))
@@ -883,18 +1110,25 @@ static void xyTicksOnRender(vtkObject *, unsigned long, void *clientData, void *
 	XYPage &pg = xyCur(s);
 	if (pg.ticksBusy)
 		return;
+	bool needRender = false;
 	vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM);
 	const double lo = ax->GetMinimum(), hi = ax->GetMaximum();
-	if (!(hi > lo))
-		return;
-	const double tol = 1e-6 * (std::abs(hi) + std::abs(lo) + 1.0);
-	if (std::abs(lo - pg.lastLo) < tol && std::abs(hi - pg.lastHi) < tol)
-		return;
-	pg.lastLo = lo; pg.lastHi = hi; pg.ticksBusy = true;
-	xyRefreshTicks(s);
-	if (s->widget && s->widget->renderWindow())
+	if (hi > lo) {
+		const double tol = 1e-6 * (std::abs(hi) + std::abs(lo) + 1.0);
+		if (std::abs(lo - pg.lastLo) >= tol || std::abs(hi - pg.lastHi) >= tol) {
+			pg.lastLo = lo; pg.lastHi = hi;
+			xyRefreshTicks(s);
+			needRender = true;
+		}
+	}
+	for (auto &se : pg.series)
+		if (xyRecomputeCross(pg, se))
+			needRender = true;
+	if (needRender && s->widget && s->widget->renderWindow()) {
+		pg.ticksBusy = true;
 		s->widget->renderWindow()->Render();
-	pg.ticksBusy = false;
+		pg.ticksBusy = false;
+	}
 }
 
 // Toggle log scaling on a current-page axis (axis 0 = bottom/X, 1 = left/Y). Data must be positive
@@ -1041,7 +1275,7 @@ static void xyDuplicatePage(XYPlot *s, int idx) {
 		pl->SetTooltipLabelFormat("%x, %y");
 		pl->SetVisible(se.visible);
 		se.plot = pl;
-		xyApplyStyle(se);
+		xyApplyStyle(s, se);
 		dst.series.push_back(se);
 	}
 	xySwitchPage(s, newIdx);
@@ -1244,10 +1478,19 @@ static XYPlot *buildXYPlot(const char *title) {
 	});
 	QObject::connect(s->tabs, &QWidget::customContextMenuRequested, s->win, [s](const QPoint &p){ xyTabMenu(s, p); });
 
+	// Optional header strip above the chart (rich text, e.g. the Tide tool's Next High/Now/Next Low
+	// lines) -- empty/hidden by default, set via gmtvtk_xyplot_set_info.
+	s->infoLabel = new QLabel();
+	s->infoLabel->setTextFormat(Qt::RichText);
+	s->infoLabel->setAlignment(Qt::AlignHCenter);
+	xyApplyInfoStyle(s);
+	s->infoLabel->setVisible(false);
+
 	QWidget *central = new QWidget();
 	QVBoxLayout *centralLayout = new QVBoxLayout(central);
 	centralLayout->setContentsMargins(0, 0, 0, 0);
 	centralLayout->setSpacing(0);
+	centralLayout->addWidget(s->infoLabel, 0);          // header strip, hugs the top
 	centralLayout->addWidget(s->widget, 1);            // chart takes all the stretch
 	centralLayout->addWidget(tabRow, 0);               // page tabs just under the chart
 	centralLayout->addWidget(s->consolePanel, 0);      // console hugs the bottom
@@ -1476,8 +1719,12 @@ static XYPlot *buildXYPlot(const char *title) {
 	// --- Object Manager interactions ---
 	QObject::connect(s->objMgr, &QTreeWidget::itemChanged, s->win, [s](QTreeWidgetItem *it, int){
 		if (s->rebuilding) return;
-		std::vector<XYSeries> &series = xyCur(s).series;
 		const int idx = it->data(0, Qt::UserRole).toInt();
+		if (idx == -1) {                                   // "Info" row: toggle the header strip
+			if (s->infoLabel) s->infoLabel->setVisible(it->checkState(0) == Qt::Checked);
+			return;
+		}
+		std::vector<XYSeries> &series = xyCur(s).series;
 		if (idx < 0 || idx >= (int)series.size()) return;
 		const bool on = (it->checkState(0) == Qt::Checked);
 		series[idx].visible = on;

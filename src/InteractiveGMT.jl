@@ -76,7 +76,7 @@ include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> writ
 export view_grid, view_image, view_points, view_fv, view_demo, iview,
        add!, add_curtain!, add_symbols!, show_table, selection, isalive,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!,
-       xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot,
+       xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot, rtp3d, shapenc, isoc2shapenc, shapenc2isoc
 
 # --- precompile (ALL of it lives HERE, via PrecompileTools — never hidden in other files) ---

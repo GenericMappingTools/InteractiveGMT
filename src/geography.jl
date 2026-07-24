@@ -144,6 +144,34 @@ function _add_city_labels!(scene::Ptr{Cvoid}, xs, ys, names, W, E, S, N, groupNa
 	return
 end
 
+# Tide-prediction stations (harmonic-constituent database, data/xtide.mat = MATLAB v7.3/HDF5). Read
+# straight through GDAL's HDF5 driver (GMT.gdalread on a "HDF5:\"path\"://xharm/<field>" subdataset
+# path) -- no HDF5.jl dependency needed, same as gdalinfo/gdalread everywhere else in this codebase.
+# `xharm/station` is a fixed-width (79-char) space-padded UInt16 array, one row per station; decode
+# with Char.() + strip. Same view-region clip + lon-periodicity mod-normalize as every other point
+# dataset here (_geo_points), just hand-rolled since GMT.gmtselect can't read an HDF5 subdataset.
+function _tidestations_data(W, E, S, N)
+	path = joinpath(_PKGROOT, "data", "xtide.mat")
+	isfile(path) || (@warn "geography: tide-stations data file not found" path; return (Float64[], Float64[], String[]))
+	lon  = vec(GMT.gdalread("HDF5:\"$path\"://xharm/longitude"))
+	lat  = vec(GMT.gdalread("HDF5:\"$path\"://xharm/latitude"))
+	stat = GMT.gdalread("HDF5:\"$path\"://xharm/station")
+	n = length(lon)
+	xs = Float64[]; ys = Float64[]; names = String[]
+	for k in 1:n
+		# The struct array carries ~1536 unused slots (blank name, lon=lat=0) plus one genuinely bad
+		# source record ("Davis Point, California Current", real name but 0,0 coords) -- drop both:
+		# blank name, or a null-island coord, is never a real station.
+		(lon[k] == 0.0 && lat[k] == 0.0) && continue
+		nm = String(strip(String(Char.(view(stat, k, :)))))
+		isempty(nm) && continue
+		x = mod(lon[k] - W, 360.0) + W
+		(x < W || x > E || lat[k] < S || lat[k] > N) && continue
+		push!(xs, x); push!(ys, lat[k]); push!(names, nm)
+	end
+	return xs, ys, names
+end
+
 # Tide-gauge stations: trailing text is "<name> Code: <code> Country: <country>" (name/country
 # underscore-joined). The label tokens "Code:"/"Country:" end in ':' -> drop colon-tokens and the 3
 # values left are name/code/country (no regex needed).
@@ -168,6 +196,7 @@ function _geo_layer_name(kind::AbstractString)::String
 	kind == "city"      ? "Cities"              :
 	kind == "meteorite" ? "Meteorite Impacts"   :
 	kind == "tides"     ? "Tide Stations"       :
+	kind == "tidestations" ? "Tide Prediction Stations" :
 	kind == "hydro"     ? "Hydrothermal Vents"  :
 	kind == "plateboundaries" ? _PB_GROUP       :
 	kind == "isochrons_gplates" ? _ISOC_GPLATES_NAME :
@@ -242,6 +271,13 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			isempty(xs) && return
 			add_symbols!(scene, xs, ys; symbol=:diamond, size=11, fill=:red, edge=:black, edgewidth=1.0,
 			             name="Meteorite Impacts", info=infos)
+		elseif kind == "tidestations"
+			# Tide-prediction stations (xtide.mat harmonic database): yellow filled triangles, thin
+			# black edge, constant on-screen size. Hover shows the station name.
+			xs, ys, names = _tidestations_data(W, E, S, N)
+			isempty(xs) && return
+			add_symbols!(scene, xs, ys; symbol=:triangle, size=8, sizeunit=:pt, fill=:yellow, edge=:black,
+			             edgewidth=1.0, name=_geo_layer_name(kind), info=names)
 		elseif kind == "tides"
 			# Mirone's tide-gauge stations: red stars with a thin black edge, constant on-screen size.
 			# Each carries its Name/Code/Country as a hover tooltip. Right-click a star for the
@@ -358,6 +394,131 @@ end
 function _register_tides()
 	fptr = @cfunction((s,a,b)->Base.invokelatest(_on_tides_download,s,a,b), Cvoid, (Ptr{Cvoid}, Cstring, Cstring))
 	ccall(_fn(:gmtvtk_set_tides_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
+# xtide.mat (harmonic-constituent database, GMT.read_xtidemat) loaded once and cached -- 3316
+# stations' A/kappa sparse matrices are cheap to hold, expensive to re-read from disk per click.
+const _XTIDE_MAT = joinpath(_PKGROOT, "data", "xtide.mat")
+const _XTIDE_CACHE = Ref{Any}(nothing)
+function _xtide_data()
+	_XTIDE_CACHE[] === nothing && (_XTIDE_CACHE[] = GMT.read_xtidemat(_XTIDE_MAT))
+	return _XTIDE_CACHE[]
+end
+
+# 12-hour clock + "UTC" suffix, matching a standard tide-table look ("11:22 PM UTC"). Base `Dates`
+# has no AM/PM format token, so spelled out by hand.
+function _fmt_ampm_utc(dt)
+	h = GMT.Dates.hour(dt); m = GMT.Dates.minute(dt)
+	ap = h < 12 ? "AM" : "PM"
+	h12 = h % 12; h12 == 0 && (h12 = 12)
+	return string(lpad(h12, 2, '0'), ":", lpad(m, 2, '0'), " ", ap, " UTC")
+end
+
+# C callback for the "Plot tides (now)"/"Plot tides (calendar)" entries on a Tide Prediction
+# Stations triangle's right-click menu. `cmode` is "now" or "calendar/<startISO>/<endISO>";
+# `cstation` is the clicked triangle's hover text = the exact station name from _tidestations_data
+# (same strings as xharm.station, no parsing needed, unlike the mareg "Name:/Code:/Country:" block
+# above). Predicts over the requested window at 10-minute resolution via GMT.xtide_predict (harmonic
+# synthesis, station-timezone-corrected -- see t_xtide.jl's "Timezone" docstring section) and opens
+# it in its own standalone X,Y plot window, same convention as `_on_tides_download`.
+#
+# Next High / Next Low + a "Time now" marker on the curve (rich-text header strip via `xyinfo!`,
+# cross via `xynowcross!`) aren't just cosmetic -- they're the intended way to SEE whether the
+# station-timezone correction is right: wrong sign/offset shows up immediately as event clock times
+# that don't match a real tide table (this is how the correction itself was verified, against NOAA
+# CO-OPS predictions for Boston). Marker colour encodes current phase: blue = rising (flood, next
+# event is a High), green = falling (ebb, next event is a Low) -- same convention as common tide
+# apps. Everything is shown in UTC (never the station's nor this computer's local zone) -- one
+# unambiguous reference, matching how `_on_tides_download`'s calendar dialog already works.
+#
+# "now" mode centres the plotted window on the current instant (always shows the cross + info).
+# "calendar" mode plots exactly the user-picked [start,end] -- a harmonic MODEL, unlike the mareg
+# download, so past AND future ranges are both valid, no clamping. If "now" doesn't fall inside
+# that window there's nothing to anchor a "current phase" reading to, so the cross and the Next
+# High/Next Low/Time now strip are skipped entirely (plain curve only).
+function _on_tidemodel(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring)::Cvoid
+	try
+		mode = unsafe_string(cmode)
+		station = unsafe_string(cstation)
+		xtide, xharm = _xtide_data()
+		ista = findfirst(==(station), xharm.station)
+		ista === nothing && (@warn "tide model: station not found" station; return)
+
+		nowutc = GMT.Dates.now(GMT.Dates.UTC)
+		local t0, t1, showNow
+		if mode == "now"
+			t0 = nowutc - GMT.Dates.Minute(5040)          # now - 3.5 days: "now" sits centered
+			t1 = nowutc + GMT.Dates.Minute(5040)          # in a 7-day window
+			showNow = true
+		elseif startswith(mode, "calendar/")
+			parts = split(mode, '/')
+			length(parts) >= 3 || (@warn "tide model: malformed calendar request" mode; return)
+			t0 = GMT.Dates.DateTime(parts[2]); t1 = GMT.Dates.DateTime(parts[3])
+			t1 > t0 || (@warn "tide model: end must be after start" mode; return)
+			showNow = (t0 <= nowutc <= t1)
+		else
+			@warn "tide model: unknown mode" mode
+			return
+		end
+
+		# 10-minute steps, capped at 6000 samples (a very long calendar range coarsens instead of
+		# building an unbounded array).
+		span_min = GMT.Dates.value(t1 - t0) / 60_000
+		nsteps = clamp(round(Int, span_min / 10), 1, 6000)
+		step_min = span_min / nsteps
+		tim = [t0 + GMT.Dates.Millisecond(round(Int64, k * step_min * 60_000)) for k in 0:nsteps]
+		pred = GMT.xtide_predict(xtide, xharm, ista, tim)
+
+		unit = xharm.units[ista]
+		epoch0u = GMT.Dates.DateTime(1970, 1, 1)
+		x = [GMT.Dates.value(t - epoch0u) / 1000.0 for t in tim]        # epoch seconds
+		title = xharm.station[ista]
+		p = xyplot(x, pred; name=title, title="Tide prediction — $title",
+		           xlabel="Time (UTC)", ylabel="$unit (datum $(xharm.datum[ista]))", xtime=:date)
+
+		if showNow
+			# 1-min-resolution hi/lo search over the same window, then keep only events at/after
+			# "now". The very first future event (either type) also gives the CURRENT phase: rising
+			# toward a High, or falling toward a Low.
+			htim, hval, htyp = GMT.xtide_hilo(xtide, xharm, ista, tim)
+			epoch0 = GMT.Dates.DateTime(0, 1, 1)
+			hdt = [epoch0 + GMT.Dates.Millisecond(round(Int64, (t - 1.0) * 86400000)) for t in htim]
+			fut = findall(d -> d >= nowutc, hdt)
+			if !isempty(fut)
+				rising = htyp[fut[1]] == 1
+				iNextHigh = findfirst(k -> htyp[k] == 1, fut)
+				iNextLow  = findfirst(k -> htyp[k] == 0, fut)
+				predNow = GMT.xtide_predict(xtide, xharm, ista, [nowutc])[1]
+
+				lines = String[]
+				if iNextHigh !== nothing
+					k = fut[iNextHigh]
+					push!(lines, "<b>Next High Tide</b> &nbsp;$(_fmt_ampm_utc(hdt[k])) &nbsp; $(round(hval[k], digits=2)) $unit")
+				end
+				push!(lines, "<b>Time now</b> &nbsp;$(_fmt_ampm_utc(nowutc)) &nbsp; $(round(predNow, digits=2)) $unit " *
+				             "&nbsp; ($(rising ? "rising" : "falling"))")
+				if iNextLow !== nothing
+					k = fut[iNextLow]
+					push!(lines, "<b>Next Low Tide</b> &nbsp;$(_fmt_ampm_utc(hdt[k])) &nbsp; $(round(hval[k], digits=2)) $unit")
+				end
+
+				nowx = GMT.Dates.value(nowutc - epoch0u) / 1000.0
+				xynowcross!(p, nowx, predNow; name="Now", color=(rising ? :blue : (0.0, 0.6, 0.0)))
+				xyinfo!(p, join(lines, "<br>"))
+			end
+		end
+	catch e
+		_viewer_log_error(scene, "Plot tides FAILED: $(sprint(showerror, e))")
+		@warn "tide model: callback failed" exception=(e,)
+	end
+	return
+end
+
+# Build the C-callable pointer + register it. Called once from __init__.
+function _register_tidemodel()
+	fptr = @cfunction((s,a,b)->Base.invokelatest(_on_tidemodel,s,a,b), Cvoid, (Ptr{Cvoid}, Cstring, Cstring))
+	ccall(_fn(:gmtvtk_set_tidemodel_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end
 

@@ -2629,6 +2629,22 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 		dlCal = m.addAction("Download Mareg (Calendar)");
 		m.addSeparator();
 	}
+	// Tide-prediction (xtide.mat harmonic model) triangles get two entries at the top, same
+	// reuse-the-hover-picker trick as the download entries above (the hover text IS the exact
+	// station name, no further parsing needed -- see _tidestations_data). "(now)" = the existing
+	// 7-day-centred-on-now window with the Next High/Low + "Now" cross. "(calendar)" lets the user
+	// pick an arbitrary [start,end] (unlike the mareg download's calendar dialog, NOT capped at
+	// "now" -- this is a harmonic MODEL, past and future predictions are equally valid).
+	QAction *plotTidesNowA = nullptr; QAction *plotTidesCalA = nullptr; std::string tideStation;
+	if (sl->name == "Tide Prediction Stations" && g_juliaTideModel && s->widget && s->widget->renderWindow()) {
+		const QPoint lp = s->widget->mapFromGlobal(gp);
+		const double r  = s->widget->devicePixelRatioF();
+		const int    H  = s->widget->renderWindow()->GetSize()[1];
+		pickSymbolInfoAt(s, int(lp.x() * r), int(H - lp.y() * r), tideStation);
+		plotTidesNowA = m.addAction("Plot tides (now)");
+		plotTidesCalA = m.addAction("Plot tides (calendar)");
+		m.addSeparator();
+	}
 	QAction *tblA = m.addAction("Show data table…");      // floating point-table viewer (X/Y[/Z])
 	// Any linked name labels (Cities' city names) get their OWN properties menu on a right-click of
 	// the LABEL itself (70_window.cpp's view dispatch -> batchTextLabelsDialog) — never nested in
@@ -2668,6 +2684,36 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 	if (!ch) return;
 
 	if (ch == tblA) { showSymbolDataTable(s, act, QString::fromStdString(sl->name)); return; }
+	if (ch == plotTidesNowA) { g_juliaTideModel(s, "now", tideStation.c_str()); return; }
+	if (ch == plotTidesCalA) {
+		const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
+		QDialog dlg(s->widget);
+		dlg.setWindowTitle("Plot tides — date range (UTC)");
+		QFormLayout *fl = new QFormLayout(&dlg);
+		QDateTimeEdit *eStart = new QDateTimeEdit(nowUtc.addDays(-3), &dlg);
+		QDateTimeEdit *eEnd   = new QDateTimeEdit(nowUtc.addDays(4), &dlg);
+		for (QDateTimeEdit *e : { eStart, eEnd }) {
+			e->setDisplayFormat("yyyy-MM-dd HH:mm");
+			e->setCalendarPopup(true);
+			e->setTimeSpec(Qt::UTC);
+		}
+		fl->addRow("Start time:", eStart);
+		fl->addRow("End time:",   eEnd);
+		QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+		fl->addRow(bb);
+		QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+		// Keep end >= start as either side is edited (clamp toward the moved edge, don't fight the user).
+		QObject::connect(eStart, &QDateTimeEdit::dateTimeChanged, &dlg,
+		                 [eEnd](const QDateTime& d){ if (eEnd->dateTime() < d) eEnd->setDateTime(d); });
+		QObject::connect(eEnd, &QDateTimeEdit::dateTimeChanged, &dlg,
+		                 [eStart](const QDateTime& d){ if (eStart->dateTime() > d) eStart->setDateTime(d); });
+		if (dlg.exec() != QDialog::Accepted) return;
+		const QString req = "calendar/" + eStart->dateTime().toString("yyyy-MM-ddTHH:mm:ss")
+		                  + "/"          + eEnd->dateTime().toString("yyyy-MM-ddTHH:mm:ss");
+		g_juliaTideModel(s, req.toUtf8().constData(), tideStation.c_str());
+		return;
+	}
 	if (ch == dl2)   { g_juliaTides(s, "2days",    station.c_str()); return; }
 	if (ch == dlCal) {
 		// Calendar download: pop a small dialog with two calendar-linked date/time editors (start,

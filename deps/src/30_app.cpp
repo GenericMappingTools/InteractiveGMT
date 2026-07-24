@@ -567,6 +567,15 @@ static bool sceneHasImage(Scene *s) {
 typedef void (*JuliaTidesFn)(void *scene, const char *mode, const char *station);
 static JuliaTidesFn g_juliaTides = nullptr;
 
+// Tide-prediction menu. A right-click on a "Tide Prediction Stations" triangle adds "Plot tides
+// (now)" / "Plot tides (calendar)", which hand (mode, station) to Julia -- mode is "now" or
+// "calendar/<startISO>/<endISO>"; station is the clicked triangle's hover text (= the exact
+// xtide.mat station name, no parsing needed). Julia harmonic-synthesizes the prediction
+// (GMT.xtide_predict) over the requested window and opens it in a standalone X,Y window. Set via
+// gmtvtk_set_tidemodel_callback; nullptr -> hidden.
+typedef void (*JuliaTideModelFn)(void *scene, const char *mode, const char *station);
+static JuliaTideModelFn g_juliaTideModel = nullptr;
+
 // Earth-tides dialog (Geography > Earth Tides, port of Mirone's earth_tides). The dialog hands
 // "<mode>/<startISO>/<endISO>/<lon>/<lat>/<comp>/<W>/<E>/<S>/<N>" to Julia (g_juliaEarthTide):
 // mode = "series" | "grid"; comp = subset of "VEN" (Vertical/East/North). Julia runs

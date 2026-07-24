@@ -192,6 +192,8 @@
 #include <vtkChartXY.h>
 #include <vtkPlot.h>
 #include <vtkPlotPoints.h>
+#include <vtkPlotLine.h>
+#include <vtkContext2D.h>
 #include <vtkAxis.h>
 #include <vtkTable.h>
 #include <vtkPen.h>

@@ -2695,6 +2695,15 @@ GMTVTK_API void gmtvtk_set_tides_callback(JuliaTidesFn fn) {
 	g_juliaTides = fn;
 }
 
+// Register the tide-prediction callback. The "Plot tides (now)"/"Plot tides (calendar)" entries on
+// a Tide Prediction Stations triangle's right-click menu call fn(scene, mode, station): mode is
+// "now" or "calendar/<startISO>/<endISO>"; station is the clicked triangle's hover text (the
+// station name). Julia harmonic-synthesizes a prediction over the requested window and opens an
+// X,Y plot window.
+GMTVTK_API void gmtvtk_set_tidemodel_callback(JuliaTideModelFn fn) {
+	g_juliaTideModel = fn;
+}
+
 // Register the Earth-tides callback. The Geography > Earth Tides dialog calls fn(scene, req) with
 // "<mode>/<startISO>/<endISO>/<lon>/<lat>/<comp>/<W>/<E>/<S>/<N>" (mode "series"|"grid", comp a
 // subset of "VEN"); Julia runs GMT.earthtide. nullptr to detach.
@@ -3822,6 +3831,16 @@ GMTVTK_API int gmtvtk_xyplot_add_series(void *handle, const double *x, const dou
 	                   lineType, marker, markerSize);
 }
 
+// Add a screen-constant "+" cross at data point (x,y) -- e.g. the Tide tool's "Now" indicator.
+// sizePx is the on-screen half-arm-length target (both arms always equal, independent of X/Y data
+// scale, recomputed every render so it survives zoom/pan/resize); widthPx is the stroke thickness,
+// a real (not VTK-marker-hijacked) line width. Returns the series index, or -1 on a dead handle.
+GMTVTK_API int gmtvtk_xyplot_add_now_cross(void *handle, double x, double y,
+                                           double r, double g, double b,
+                                           double sizePx, double widthPx, const char *name) {
+	return xyAddNowCross(static_cast<XYPlot*>(handle), x, y, r, g, b, sizePx, widthPx, name);
+}
+
 // Remove every series from a plot window.
 GMTVTK_API void gmtvtk_xyplot_clear(void *handle) {
 	xyClear(static_cast<XYPlot*>(handle));
@@ -3924,6 +3943,19 @@ GMTVTK_API void gmtvtk_xyplot_set_labels(void *handle, const char *xlabel, const
 	if (ylabel) xyCur(p).chart->GetAxis(vtkAxis::LEFT)->SetTitle(ylabel);
 	if (p->widget && p->widget->renderWindow())
 		p->widget->renderWindow()->Render();
+}
+
+// Set (or clear, with null/empty) the rich-text header strip above an X,Y plot window's chart —
+// e.g. the Tide tool's "Next High Tide … / Time now … / Next Low Tide …" lines. HTML-ish rich
+// text (Qt::RichText): <b>, <br>, and inline color spans all work. Hidden when empty.
+GMTVTK_API void gmtvtk_xyplot_set_info(void *handle, const char *html) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !p->infoLabel)
+		return;
+	const bool has = html && html[0];
+	p->infoLabel->setText(has ? QString::fromUtf8(html) : QString());
+	p->infoLabel->setVisible(has);
+	xyRebuildObjMgr(p);                    // (dis)appear in the Object Manager along with the text
 }
 
 // Add a new PAGE (Excel-like tab) to an X,Y window and switch to it, so the next gmtvtk_xyplot_*

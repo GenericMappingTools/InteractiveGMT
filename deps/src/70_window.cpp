@@ -6043,7 +6043,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mGeo->addAction("Volcanoes",                     geoPlot("volcano", ""));
 	mGeo->addAction("Meteorite impacts",             geoPlot("meteorite", ""));
 	mGeo->addAction("Hydrothermal sites",            geoPlot("hydro", ""));
-	mGeo->addAction("Tide Stations",                 geoTODO("Tide Stations"));
+	mGeo->addAction("Tide Stations",                 geoPlot("tidestations", ""));
 	mGeo->addAction("Tides (download)",              geoPlot("tides", ""));
 	mGeo->addAction("Earth Tides", [s, visibleRegion]() {
 		// No basemap needed: Earth Tides computes off W/E/S/N alone, nothing plotted onto a surface.
