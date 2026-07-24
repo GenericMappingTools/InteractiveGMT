@@ -1944,7 +1944,7 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	// geography.jl, aquamoto.jl, focal.jl) falls back to Preferences "Default line thickness" --
 	// the SAME preference interactively-drawn polygons already honour (85_polygon.cpp) -- not a
 	// second hardcoded default (SACRED_LAW.md: fix the shared source once, not each call site).
-	a->GetProperty()->SetLineWidth(linewidth > 0.0 ? linewidth : prefLineWidthPx());
+	a->GetProperty()->SetLineWidth(linewidth > 0.0 ? linewidth : prefLineWidthPx(s));
 	a->GetProperty()->SetPointSize(pointsize > 0.0 ? pointsize : 6.0);
 	if (mode == 0)
 		a->GetProperty()->SetRenderPointsAsSpheres(true);   // round points (toggle in the menu)

@@ -782,12 +782,28 @@ _drop_into(scene::Ptr{Cvoid}, x, name; promote=false, source="") = @warn "drop: 
 # basemap.jl / iview_image_obj use: promote a HIDDEN imageOnly scaffold (real framed axes + coord
 # readout + flat-2-D view, no Scene Objects row, no colorbar), then hang the real object on top.
 function _promote_dataset(scene::Ptr{Cvoid}, D, name)
-	W, E, S, N = _dataset_bbox(D)
-	dx = E - W; dy = N - S
-	px = dx == 0 ? 1.0 : 0.05dx; py = dy == 0 ? 1.0 : 0.05dy   # 5 % pad (1.0 for a degenerate axis)
-	W -= px; E += px; S -= py; N += py
+	W, E, S, N = _padded_bbox(_dataset_bbox(D)...)
 	d1   = D isa AbstractVector ? D[1] : D
 	geog = _isgeog(d1) == 1
+	_promote_blank_scaffold(scene, W, E, S, N, geog; crsobj=d1)
+	_add_dataset_to_scene(scene, D, name)                          # overlay -> stays in this window
+	return true
+end
+
+# THE golden rule for ANY vector-only import (line/points/polygon, no grid/image of its own)
+# reaching an EMPTY launcher: give it a background before adding data with nothing to frame it
+# against, geographic or not — a blank scaffold framed to (W,E,S,N) [+5% pad, caller's job], a
+# HIDDEN imageOnly surface (real axes + coord readout + flat-2-D view, no Scene Objects row, no
+# colorbar). Non-geographic data gets the exact SAME scaffold (gmtvtk_promote_surface_h with
+# geog=0 -- a plain Cartesian frame), never a separate "Background region" call; that dialog is
+# just this same primitive's manual menu front-end. `crsobj` (any GMT object, or `nothing`) is
+# read for a real proj4/wkt/epsg via `crs_from`; passing `nothing` still resolves to WGS84 when
+# `geog` is true (crs_from's own plain-lon/lat fallback). ONE function -- `_promote_dataset`
+# (single-dataset drop) and any multi-file importer (e.g. mgd77tracks.jl, cruise tracks) that
+# needs to frame a COMBINED bbox before adding several separately-named overlays both call this,
+# never re-derive the gmtvtk_promote_surface_h/_hide_surface/_set_crs sequence themselves
+# (SACRED_LAW.md).
+function _promote_blank_scaffold(scene::Ptr{Cvoid}, W::Float64, E::Float64, S::Float64, N::Float64, geog::Bool; crsobj=nothing)
 	zblank = zeros(Float32, 2, 2)
 	ccall(_fn(:gmtvtk_promote_surface_h), Cint,
 	      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
@@ -796,12 +812,20 @@ function _promote_dataset(scene::Ptr{Cvoid}, D, name)
 	      C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
 	ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), scene)   # scaffold plane only
 	if geog
-		crs = crs_from(d1; geographic=true)
+		crs = crs_from(crsobj; geographic=true)
 		hascrs(crs) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
 		                     scene, crs.proj4, crs.wkt, Cint(crs.epsg))   # reveals Geography menu
 	end
-	_add_dataset_to_scene(scene, D, name)                          # overlay -> stays in this window
-	return true
+	return
+end
+
+# (W, E, S, N) extent + 5% pad (1.0 for a degenerate axis) -- the shared padding convention every
+# empty-launcher promote uses (`_promote_dataset` and any multi-file caller of
+# `_promote_blank_scaffold` alike).
+function _padded_bbox(W::Float64, E::Float64, S::Float64, N::Float64)
+	dx = E - W; dy = N - S
+	px = dx == 0 ? 1.0 : 0.05dx; py = dy == 0 ? 1.0 : 0.05dy
+	return W - px, E + px, S - py, N + py
 end
 
 # (W, E, S, N) extent of a GMTdataset (single or multi-segment) from its x/y columns.

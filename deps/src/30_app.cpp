@@ -112,12 +112,20 @@ static void prefLineColorRGB(double &r, double &g, double &b) {
 	else if (c == "yellow")  { r = 1.0; g = 1.0; b = 0.0; }
 	else                     { r = 1.0; g = 0.55; b = 0.0; }   // "Orange" / unknown -> the original default
 }
-// "Default line thickness" combo ("N pt") -> VTK line width in px. Scale 1.25 px/pt keeps the old
-// default look exactly: the historical width was 2.5 px == "2 pt" (the default selection).
-static double prefLineWidthPx() {
+// "Default line thickness" combo ("N pt") -> VTK line width in px, using the SAME real-DPI pt<->px
+// conversion every other line-width consumer already uses (55_lineprops.cpp's Width(px)/Width(points)
+// two-way sync; gmtvtk_add_overlay_ex_h/_ex2_h's linewidth-in-points conversion) -- NOT a second,
+// independently-guessed factor (SACRED_LAW.md: one quantity, one function). A stale fixed 1.25 px/pt
+// (a 90 dpi assumption) here made a "1 pt" default round-trip back as "0.56 pt" in the Line
+// Properties dialog on a real ~161 dpi screen -- confirmed live 2026-07-24, fixed at this ONE source.
+static double prefLineWidthPx(Scene *s) {
+	double dpi = 72.0;
+	if (s && s->widget && s->widget->renderWindow() && s->widget->renderWindow()->GetDPI() > 0)
+		dpi = s->widget->renderWindow()->GetDPI();
+	const double pxPerPt = dpi / 72.0;
 	bool ok = false;
 	const int pt = prefLineThickness().section(' ', 0, 0).toInt(&ok);
-	return (ok && pt > 0) ? pt * 1.25 : 2.5;
+	return (ok && pt > 0) ? pt * pxPerPt : 2.0 * pxPerPt;
 }
 
 // Julia console callback. The viewer lives IN-PROCESS in the Julia session, so a console
@@ -240,6 +248,16 @@ static JuliaIgrfFileFn g_juliaIgrfFile = nullptr;
 // the user may not be looking at (see the "Compute does nothing, no error" investigation, 2026-07-20).
 typedef int (*JuliaRtp3DFn)(void *scene, const char *params);
 static JuliaRtp3DFn g_juliaRtp3D = nullptr;
+
+// Import *.gmt/*.nc cruise track file(s) (Geophysics > Magnetics), port of Mirone's
+// GeophysicsImportGmtFile_CB (mirone.m) — plots the navigation (lon/lat) of MGD77+ netCDF cruise
+// files. `path` is either the single file picked, or a list-file (one path per line, "#"-prefixed
+// lines are comments) when `isList` is nonzero. Julia resolves each file, reads it via GMT.jl's own
+// mgd77list, and adds it as a line overlay; a list producing more than one track groups them under
+// one master handle named for the list file (SACRED_LAW master-handle-per-file). nullptr -> the menu
+// entries report "callback not registered".
+typedef void (*JuliaImportGmtFn)(void *scene, const char *path, int isList);
+static JuliaImportGmtFn g_juliaImportGmt = nullptr;
 
 // Clip Grid (Grid Tools), port of Mirone's src_figs/ml_clip.m. The dialog (ClipGridDialog,
 // 70_window.cpp, loads deps/ui/clipp_grid.ui) hands "below;above;belowVal;aboveVal;inBetween;stretch"

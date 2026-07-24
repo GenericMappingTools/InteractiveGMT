@@ -79,6 +79,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_refresh_fault_planes, :gmtvtk_overlay_style_h, :gmtvtk_set_overlay_style_h,
 	:gmtvtk_set_igrf_point_callback, :gmtvtk_set_igrf_grid_callback, :gmtvtk_set_igrf_file_callback,
 	:gmtvtk_set_rtp3d_callback,
+	:gmtvtk_set_import_gmt_callback,
 	:gmtvtk_set_clipgrid_callback,
 	:gmtvtk_set_seismicity_callback,
 	:gmtvtk_set_faultgeom_callback,

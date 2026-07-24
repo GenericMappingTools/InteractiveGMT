@@ -1277,6 +1277,13 @@ GMTVTK_API void gmtvtk_set_rtp3d_callback(JuliaRtp3DFn fn) {
 	g_juliaRtp3D = fn;
 }
 
+// Register the Import *.gmt/*.nc cruise track callback (Geophysics > Magnetics). fn(scene, path,
+// isList) — isList nonzero means `path` is a list-file (one cruise file path per line). nullptr to
+// detach.
+GMTVTK_API void gmtvtk_set_import_gmt_callback(JuliaImportGmtFn fn) {
+	g_juliaImportGmt = fn;
+}
+
 // Register the Clip Grid Apply callback (Grid Tools, port of Mirone src_figs/ml_clip.m). fn(scene,
 // params) with params = "below;above;belowVal;aboveVal;inBetween;stretch" clips the window's grid
 // and adds the result to `scene`. Returns 1/0. nullptr to detach.

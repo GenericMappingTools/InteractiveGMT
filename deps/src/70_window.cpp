@@ -6218,6 +6218,34 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			auto *w = new Rtp3DDialog(win, s, 1);
 			if (w->dlg) w->dlg->show();
 		});
+		// Import *.gmt/*.nc cruise track file(s) — port of Mirone's GeophysicsImportGmtFile_CB
+		// (mirone.m). Plots the navigation of MGD77+ netCDF cruise files (Julia's g_juliaImportGmt,
+		// via GMT.jl's own mgd77list — see src/mgd77tracks.jl). The legacy pre-MGD77 *.gmt binary
+		// format is NOT supported by GMT >= 5's mgd77 suite; Julia reports that per-file in the
+		// window's Errors console rather than guessing at its byte layout.
+		QMenu *mImportGmt = mGphy->addMenu("Import *.gmt/*.nc file(s)");
+		mImportGmt->addAction("Single *.gmt/*.nc file", [win, s]() {
+			if (!g_juliaImportGmt) {
+				if (s->win) s->win->statusBar()->showMessage("Import *.gmt/*.nc file: callback not registered", 3000);
+				return;
+			}
+			QString fn = QFileDialog::getOpenFileName(win, "Select gmt/nc File", prefStartDir(),
+			                                          "gmt/nc files (*.gmt *.GMT *.nc *.NC);;All Files (*.*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			g_juliaImportGmt(s, fn.toUtf8().constData(), 0);
+		});
+		mImportGmt->addAction("List of files", [win, s]() {
+			if (!g_juliaImportGmt) {
+				if (s->win) s->win->statusBar()->showMessage("Import *.gmt/*.nc file: callback not registered", 3000);
+				return;
+			}
+			QString fn = QFileDialog::getOpenFileName(win, "Select list file", prefStartDir(),
+			                                          "Data files (*.dat *.DAT *.txt *.TXT);;All Files (*.*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			g_juliaImportGmt(s, fn.toUtf8().constData(), 1);
+		});
 		reopen();
 	};
 

@@ -509,7 +509,7 @@ static void polyRebuildLine(Scene *s, Polygon& pg) {
 	if (!pg.line) {
 		double cr, cg, cb; prefLineColorRGB(cr, cg, cb);             // Preferences "Default line color"
 		pg.line = polyMakeLineActor(s, pg.linePD, cr, cg, cb);       // (default Orange = the old look)
-		pg.line->GetProperty()->SetLineWidth(prefLineWidthPx());     // Preferences "Default line thickness"
+		pg.line->GetProperty()->SetLineWidth(prefLineWidthPx(s));    // Preferences "Default line thickness"
 		s->ren->AddActor(pg.line);
 	}
 	polyRebuildFill(s, pg);                                          // keep the filled face in sync with the outline
