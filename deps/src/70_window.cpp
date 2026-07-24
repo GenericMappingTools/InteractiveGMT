@@ -929,54 +929,6 @@ static void rebuildBaseFromStored(Scene *s, bool asImage) {
 	}
 }
 
-// GRAPHICAL ELEMENT: custom dock title bar that folds the dock HORIZONTALLY.
-// Open  -> a normal horizontal strip: "▾ Title" across the top.
-// Folded -> a thin vertical strip (~one text-height wide) with "▸" at the top and
-// the Title painted rotated 90° (reading bottom->top) down the window edge, so the
-// collapsed dock costs only its strip width instead of leaving its full open width
-// as dead, unusable space. Clicking anywhere on the bar toggles via onClick.
-// (No Q_OBJECT: this TU has no moc — we override virtuals and call a std::function.)
-struct FoldTitleBar : QWidget {
-	QString title;
-	bool    folded    = false;
-	int     openWidth = 0;            // dock width remembered at fold time, restored on un-fold
-	std::function<void()> onClick;
-	explicit FoldTitleBar(const QString& t, QWidget *parent = nullptr)
-		: QWidget(parent), title(t) {
-		setCursor(Qt::PointingHandCursor);
-		setToolTip("Fold / un-fold this panel");
-	}
-	QSize sizeHint() const override {
-		QFontMetrics fm(font());
-		const int thick = fm.height() + 8;                       // strip thickness
-		const int along = fm.horizontalAdvance(title) + thick + 12;
-		return folded ? QSize(thick, along) : QSize(along, thick);
-	}
-	QSize minimumSizeHint() const override { return sizeHint(); }
-	void mousePressEvent(QMouseEvent*) override { if (onClick) onClick(); }
-	void paintEvent(QPaintEvent*) override {
-		QPainter p(this);
-		p.setPen(palette().color(QPalette::WindowText));
-		QFontMetrics fm(font());
-		const QString glyph = folded ? QStringLiteral("▸")  // ▸ folded
-									 : QStringLiteral("▾"); // ▾ open
-		if (!folded) {
-			const int y = (height() + fm.ascent() - fm.descent()) / 2;
-			p.drawText(6, y, glyph + " " + title);
-		} else {
-			// arrow centred near the top of the vertical strip
-			p.drawText(QRect(0, 2, width(), fm.height()), Qt::AlignHCenter, glyph);
-			// title rotated to read bottom->top, filling the strip below the arrow
-			p.save();
-			p.translate(0, height());
-			p.rotate(-90);
-			p.drawText(QRect(4, 0, height() - fm.height() - 8, width()),
-					   Qt::AlignVCenter | Qt::AlignLeft, title);
-			p.restore();
-		}
-	}
-};
-
 // ============================================================================================
 // GeoGridGeometry — reusable "Griding Line Geometry" widget (Mirone-style region/spacing table).
 // Two rows (X / Y Direction) × four columns (Min, Max, Spacing, # of lines) inside a group box,

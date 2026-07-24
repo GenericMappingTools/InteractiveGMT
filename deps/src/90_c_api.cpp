@@ -2115,6 +2115,33 @@ GMTVTK_API int gmtvtk_remove_meca_group_h(void *handle, const char *name) {
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
 #ifdef GMTVTK_TEST_API
+// test hook: grab an X,Y plot window (titlebar-to-statusbar) as a PNG, so a failing test/manual
+// probe can SEE the live axis/tick state instead of guessing from data alone. Deliberately skips
+// xyAlive's g_xyplots lookup: that registry is a file-static in gmtvtk.dll, invisible from this
+// test dll's own copy (same reason _register_faultgeom_test mirrors callbacks, see
+// test/libgmtvtk_test.jl) -- the handle is still a valid address, so a plain null-check suffices.
+GMTVTK_API int gmtvtk_xyplot_screenshot_test(void *handle, const char *path) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->win || !path) return 0;
+	QPixmap pm = p->win->grab();
+	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
+}
+
+// test hook: fire the Object Manager's "Show in Data Table" action for series `idx` (same call
+// xyObjMgrMenu makes), then grab the resulting floating, parentless QDialog (found by scanning
+// top-level widgets -- it isn't a child of p->win, so p->win->grab() alone would miss it) as a PNG.
+GMTVTK_API int gmtvtk_xyplot_show_table_test(void *handle, int idx, const char *path) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !path) return 0;
+	xyShowDataTable(p, idx);
+	QDialog *dlg = nullptr;
+	for (QWidget *w : QApplication::topLevelWidgets())
+		if (auto *d = qobject_cast<QDialog*>(w); d && d->isVisible()) dlg = d;
+	if (!dlg) return 0;
+	QPixmap pm = dlg->grab();
+	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
+}
+
 // test hook: diagnostic — the format (0=NativeFormat/registry, 1=IniFormat) and fileName() of the
 // app's actual settings store (igmtSettings(), 30_app.cpp), into a caller buffer. Returns the format.
 GMTVTK_API int gmtvtk_settings_format_test(char *buf, int cap) {

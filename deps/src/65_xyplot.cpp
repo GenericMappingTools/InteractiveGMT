@@ -73,17 +73,16 @@ struct XYPlot {
 	QVTKOpenGLNativeWidget             *widget = nullptr;
 	vtkSmartPointer<vtkContextView>     view;
 	QTreeWidget                        *objMgr = nullptr;      // Object Manager (series list)
-	QTableWidget                       *dataTable = nullptr;   // Data Viewer spreadsheet
-	QDockWidget                        *dataDock = nullptr;    // foldable bottom dock
 	QPlainTextEdit                     *console = nullptr;       // ERRORS tab: read-only execution-error log (xyLog)
 	QPlainTextEdit                     *cmdConsole = nullptr;    // JULIA tab: read-only output of typed commands
 	QLineEdit                          *consoleInput = nullptr;  // interactive julia> line (shares Main with the 3-D viewer)
 	QWidget                            *consolePanel = nullptr;  // collapsible container under the chart
 	QTabWidget                         *xyErrTab = nullptr;      // console body tabs (Errors | Julia); xyLog raises Errors
 	QToolButton                        *consoleToggle = nullptr; // disclosure triangle (collapsed by default)
-	QAction                            *actLegend = nullptr;
+	bool                                legendVisible = true;    // legend show/hide, driven by the Object Manager's
+	                                                              // "Legend" row (replaces the old toolbar toggle)
+	double                              legendFontPt = 12.0;     // legend label font size (Legend row's "Font size…")
 	QAction                            *actGrid = nullptr;
-	QAction                            *actDataView = nullptr;
 	QAction                            *actConsole = nullptr;
 	vtkSmartPointer<vtkCallbackCommand> moveCb;               // mouse-move coord readout
 	vtkSmartPointer<vtkCallbackCommand> ticksCb;             // time-axis tick refresh on range change
@@ -277,6 +276,17 @@ static void xyRebuildObjMgr(XYPlot *s) {
 		it->setCheckState(0, s->infoLabel->isVisible() ? Qt::Checked : Qt::Unchecked);
 		it->setData(0, Qt::UserRole, -1);
 	}
+	// "Legend" row (UserRole -2, never a real series index): the chart legend's own handle, replacing
+	// the old "Show legend" toolbar/menu toggle. Checkbox shows/hides it; right-click gives Font size…
+	// (same live-apply pattern as the Info row's Font size…).
+	{
+		QTreeWidgetItem *it = new QTreeWidgetItem(s->objMgr);
+		it->setText(0, "Legend");
+		QFont f = it->font(0); f.setItalic(true); it->setFont(0, f);
+		it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+		it->setCheckState(0, xyCur(s).chart->GetShowLegend() ? Qt::Checked : Qt::Unchecked);
+		it->setData(0, Qt::UserRole, -2);
+	}
 	QTreeWidgetItem *toSelect = nullptr;
 	for (int i = 0; i < (int)series.size(); ++i) {
 		const XYSeries &se = series[i];
@@ -294,28 +304,36 @@ static void xyRebuildObjMgr(XYPlot *s) {
 		s->objMgr->setCurrentItem(toSelect);            // guarantee a current row for Analysis
 }
 
-// Fill the Data Viewer spreadsheet with one (current-page) series' (x,y) columns.
-static void xyFillDataTable(XYPlot *s, int idx) {
+// Save one series' (x,y) data to a file via GMT.gmtwrite (extension picks the format). THE ONE
+// shared "save this series" path: Line Properties' Save button, the Object Manager's "Save data…"
+// action, and the Show-in-Data-Table dialog's Save button all call this SAME function.
+static void xySaveSeries(XYPlot *s, int idx) {
+	if (!g_juliaXY) { xyLog(s, "Save: not wired (rebuild the DLL + restart Julia)", true); return; }
+	const QString fn = QFileDialog::getSaveFileName(s->win, "Save series", prefStartDir("series.dat"),
+		"Text (*.dat *.txt);;CSV (*.csv);;All files (*)");
+	if (fn.isEmpty()) return;
+	rememberStartDir(fn);
+	g_juliaXY(s, "save", idx, fn.toUtf8().constData());
+	xyLog(s, QString("Saved series #%1 to %2").arg(idx).arg(fn));
+}
+
+// "Show in Data Table" — every series (line handle) carries this property in its right-click menu
+// (xyObjMgrMenu). Replaces the old permanently-docked Data Viewer spreadsheet. Calls the SAME
+// buildDataTableDialog (55_lineprops.cpp) the 3-D viewer's per-line "Show data table…" uses, Save
+// button included (xySaveSeries above) — SACRED_LAW: one "pop a table of this object's data"
+// operation, one function, never a second, feature-short reimplementation here.
+static void xyShowDataTable(XYPlot *s, int idx) {
 	std::vector<XYSeries> &series = xyCur(s).series;
-	if (!s->dataTable || idx < 0 || idx >= (int)series.size())
+	if (idx < 0 || idx >= (int)series.size())
 		return;
 	const XYSeries &se = series[idx];
 	vtkTable *t = se.table;
 	const int nrows = t ? (int)t->GetNumberOfRows() : 0;
-	QTableWidget *w = s->dataTable;
-	w->clearContents();
-	w->setColumnCount(2);
-	w->setRowCount(nrows);
-	w->setHorizontalHeaderItem(0, new QTableWidgetItem("X"));
-	w->setHorizontalHeaderItem(1, new QTableWidgetItem(QString::fromStdString(se.name)));
-	for (int r = 0; r < nrows; ++r) {
-		for (int c = 0; c < 2; ++c) {
-			QTableWidgetItem *cell = new QTableWidgetItem(QString::number(t->GetValue(r, c).ToDouble(), 'g', 8));
-			cell->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-			w->setItem(r, c, cell);
-		}
-	}
-	w->resizeColumnsToContents();
+
+	QStringList hdr;  hdr << "#" << "X" << QString::fromStdString(se.name);
+	buildDataTableDialog(QString::fromStdString(se.name) + " — data", nrows, hdr,
+		[t](int row, int col) { return t->GetValue(row, col).ToDouble(); },
+		/*editable=*/false, [s, idx]() { xySaveSeries(s, idx); });
 }
 
 // Append one (x,y) series to the CURRENT page. Returns its index (or -1 on bad input). Renders.
@@ -362,7 +380,6 @@ static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
 	const int idx = (int)pg.series.size();
 	pg.series.push_back(se);
 	xyRebuildObjMgr(s);
-	xyFillDataTable(s, idx);
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 	return idx;
@@ -433,7 +450,6 @@ static int xyAddNowCross(XYPlot *s, double cx, double cy, double r, double g, do
 	const int idx = (int)pg.series.size();
 	pg.series.push_back(se);
 	xyRebuildObjMgr(s);
-	xyFillDataTable(s, idx);
 
 	XYSeries &st = pg.series[idx];                    // recompute the STORED copy, not the local `se`
 	if (xyRecomputeCross(pg, st) && s->widget && s->widget->renderWindow())
@@ -451,7 +467,6 @@ static void xyClear(XYPlot *s) {
 	pg.chart->ClearPlots();
 	pg.series.clear();
 	xyRebuildObjMgr(s);
-	if (s->dataTable) { s->dataTable->clearContents(); s->dataTable->setRowCount(0); }
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
@@ -464,7 +479,6 @@ static void xyDeleteSeries(XYPlot *s, int idx) {
 	series.erase(series.begin() + idx);
 	xyRebuildPlots(s);
 	xyRebuildObjMgr(s);
-	if (s->dataTable) { s->dataTable->clearContents(); s->dataTable->setRowCount(0); }
 }
 
 // (defined below) — needed here for the time-mode status-bar readout.
@@ -499,22 +513,6 @@ static void xyMouseMove(vtkObject *caller, unsigned long, void *clientData, void
 	const QString xs = pg.xTimeFmt ? xyFmtTimeHover(dx, pg.xTimeFmt)
 	                               : QString("%1").arg(dx, 0, 'g', 8);
 	s->win->statusBar()->showMessage(QString("%1,  %2").arg(xs).arg(dy, 0, 'g', 6));
-}
-
-// Export the current plot to a PNG.
-static void xyExportPng(XYPlot *s) {
-	const QString fn = QFileDialog::getSaveFileName(s->win, "Export plot as PNG", prefStartDir("plot.png"), "PNG image (*.png)");
-	if (fn.isEmpty())
-		return;
-	rememberStartDir(fn);
-	vtkNew<vtkWindowToImageFilter> w2i;
-	w2i->SetInput(s->view->GetRenderWindow());
-	w2i->Update();
-	vtkNew<vtkPNGWriter> wr;
-	wr->SetFileName(fn.toUtf8().constData());
-	wr->SetInputConnection(w2i->GetOutputPort());
-	wr->Write();
-	s->win->statusBar()->showMessage("Saved " + fn, 4000);
 }
 
 // Live per-series line-properties dialog: colour / width / line style / marker / marker size. Each
@@ -615,15 +613,8 @@ static void xyLineProperties(XYPlot *s, int idx) {
 		se.nowCross ? QDialogButtonBox::Close : (QDialogButtonBox::Save | QDialogButtonBox::Close), &dlg);
 	form->addRow(bb);
 	if (!se.nowCross) {
-		QObject::connect(bb->button(QDialogButtonBox::Save), &QPushButton::clicked, &dlg, [s, idx] {
-			if (!g_juliaXY) { xyLog(s, "Save: not wired (rebuild the DLL + restart Julia)", true); return; }
-			const QString fn = QFileDialog::getSaveFileName(s->win, "Save series", prefStartDir("series.dat"),
-				"Text (*.dat *.txt);;CSV (*.csv);;All files (*)");
-			if (fn.isEmpty()) return;
-			rememberStartDir(fn);
-			g_juliaXY(s, "save", idx, fn.toUtf8().constData());
-			xyLog(s, QString("Saved series #%1 to %2").arg(idx).arg(fn));
-		});
+		QObject::connect(bb->button(QDialogButtonBox::Save), &QPushButton::clicked, &dlg,
+			[s, idx] { xySaveSeries(s, idx); });
 	}
 	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
 	dlg.exec();
@@ -672,8 +663,43 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 		}
 		return;
 	}
+	if (idx == -2) {                                   // "Legend" row: font size + its own show/hide
+		QMenu lm(s->objMgr);
+		QAction *aFont = lm.addAction("Font size…");
+		QAction *aHide = lm.addAction(xyCur(s).chart->GetShowLegend() ? "Hide" : "Show");
+		QAction *lpick = lm.exec(s->objMgr->viewport()->mapToGlobal(pos));
+		if (lpick == aFont) {
+			// Live-apply, same pattern as the Info row's Font size… above.
+			QDialog dlg(s->win);
+			dlg.setWindowTitle("Legend font size");
+			QFormLayout *fl = new QFormLayout(&dlg);
+			QSpinBox *fsp = new QSpinBox(&dlg);
+			fsp->setRange(6, 36); fsp->setValue((int)s->legendFontPt);
+			fl->addRow("Points:", fsp);
+			QObject::connect(fsp, qOverload<int>(&QSpinBox::valueChanged), &dlg,
+				[s](int v) {
+					s->legendFontPt = v;
+					if (vtkChartLegend *lg = xyCur(s).chart->GetLegend())
+						lg->GetLabelProperties()->SetFontSize(v);
+					if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+				});
+			QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+			fl->addRow(bb);
+			QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
+			QObject::connect(bb, &QDialogButtonBox::clicked, &dlg, &QDialog::accept);
+			dlg.exec();
+		}
+		else if (lpick == aHide) {
+			s->legendVisible = !xyCur(s).chart->GetShowLegend();
+			xyCur(s).chart->SetShowLegend(s->legendVisible);
+			xyRebuildObjMgr(s);
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		}
+		return;
+	}
 	QMenu m(s->objMgr);
 	QAction *aProp = m.addAction("Line properties…");
+	QAction *aTable = m.addAction("Show in Data Table");
 	QAction *aSave = m.addAction("Save data…");
 	QAction *aRen = m.addAction("Rename…");
 	QAction *aDel = m.addAction("Delete");
@@ -682,15 +708,11 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 	if (pick == aProp) {
 		xyLineProperties(s, idx);
 	}
+	else if (pick == aTable) {
+		xyShowDataTable(s, idx);
+	}
 	else if (pick == aSave) {
-		// Save THIS series' (x,y) data to a file (same Julia path as File>Save, but targeting the
-		// clicked series). GMT.gmtwrite picks the format from the extension (.dat/.txt/.csv/…).
-		if (!g_juliaXY) { s->win->statusBar()->showMessage("Save: not wired yet", 3000); return; }
-		const QString fn = QFileDialog::getSaveFileName(s->win, "Save series data", prefStartDir("series.dat"),
-			"Text (*.dat *.txt);;CSV (*.csv);;All files (*)");
-		if (fn.isEmpty()) return;
-		rememberStartDir(fn);
-		g_juliaXY(s, "save", idx, fn.toUtf8().constData());
+		xySaveSeries(s, idx);
 	}
 	else if (pick == aDel) {
 		xyDeleteSeries(s, idx);
@@ -1115,7 +1137,16 @@ static void xyTicksOnRender(vtkObject *, unsigned long, void *clientData, void *
 	const double lo = ax->GetMinimum(), hi = ax->GetMaximum();
 	if (hi > lo) {
 		const double tol = 1e-6 * (std::abs(hi) + std::abs(lo) + 1.0);
-		if (std::abs(lo - pg.lastLo) >= tol || std::abs(hi - pg.lastHi) >= tol) {
+		// NaN lastLo/lastHi (xySetXTime/xySwitchPage/xySetLog's "force a recompute" sentinel) must
+		// count as a forced mismatch: abs(x - NaN) is NaN, and NaN >= tol is ALWAYS false, so the
+		// plain difference check alone can never fire on a NaN baseline -- it would latch this page
+		// out of ticks forever (first hit: xyplot(...; xtime=:date) sets xtime BEFORE any series
+		// exists, so the one immediate xyRefreshTicks call in xySetXTime draws ticks for the
+		// still-empty chart's default axis range; once real data lands and the axis autoscales to
+		// it, this observer must still recompute -- but with a raw NaN comparison it silently never
+		// does, leaving custom tick positions parked outside the real, now-visible range).
+		if (std::isnan(pg.lastLo) || std::isnan(pg.lastHi) ||
+		    std::abs(lo - pg.lastLo) >= tol || std::abs(hi - pg.lastHi) >= tol) {
 			pg.lastLo = lo; pg.lastHi = hi;
 			xyRefreshTicks(s);
 			needRender = true;
@@ -1188,7 +1219,9 @@ vtkStandardNewMacro(XYChart);
 static vtkSmartPointer<vtkChartXY> xyMakeChart(XYPlot *s) {
 	vtkSmartPointer<XYChart> chart = vtkSmartPointer<XYChart>::New();
 	chart->owner = s;
-	chart->SetShowLegend(s->actLegend ? s->actLegend->isChecked() : true);
+	chart->SetShowLegend(s->legendVisible);
+	if (vtkChartLegend *lg = chart->GetLegend())
+		lg->GetLabelProperties()->SetFontSize((int)s->legendFontPt);
 	chart->GetAxis(vtkAxis::BOTTOM)->SetTitle("X");      // sensible defaults; set_labels overrides
 	chart->GetAxis(vtkAxis::LEFT)->SetTitle("Y");
 	const bool grid = s->actGrid ? s->actGrid->isChecked() : true;
@@ -1240,11 +1273,6 @@ static void xySwitchPage(XYPlot *s, int idx) {
 		s->tabBusy = true; s->tabs->setCurrentIndex(idx); s->tabBusy = false;
 	}
 	xyRebuildObjMgr(s);
-	if (pg.series.empty()) {
-		if (s->dataTable) { s->dataTable->clearContents(); s->dataTable->setRowCount(0); }
-	} else {
-		xyFillDataTable(s, (int)pg.series.size() - 1);
-	}
 	pg.lastLo = std::numeric_limits<double>::quiet_NaN();   // force a tick recompute for this page
 	pg.lastHi = std::numeric_limits<double>::quiet_NaN();
 	xyRefreshTicks(s);
@@ -1496,9 +1524,14 @@ static XYPlot *buildXYPlot(const char *title) {
 	centralLayout->addWidget(s->consolePanel, 0);      // console hugs the bottom
 	s->win->setCentralWidget(central);
 
-	// --- Object Manager dock (left) ---
+	// --- Object Manager dock (left): movable only -- NEVER floating, NEVER closable (it can be
+	// folded to a thin strip, never fully killed). Fold control wired up below via FoldTitleBar
+	// (10_geometry.cpp), the SAME shared mechanism the 3-D viewer's Scene Objects dock uses, not a
+	// reimplementation. Initial width capped to ~4 cm (resizeDocks call near the end of this
+	// function), user-resizable afterwards.
 	QDockWidget *omDock = new QDockWidget("Object Manager", s->win);
 	omDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+	omDock->setFeatures(QDockWidget::DockWidgetMovable);
 	s->objMgr = new QTreeWidget(omDock);
 	s->objMgr->setHeaderLabels(QStringList() << "Series");
 	s->objMgr->setRootIsDecorated(false);
@@ -1506,24 +1539,12 @@ static XYPlot *buildXYPlot(const char *title) {
 	omDock->setWidget(s->objMgr);
 	s->win->addDockWidget(Qt::LeftDockWidgetArea, omDock);
 
-	// --- Data Viewer dock (bottom, foldable via the Misc/toolbar toggle) ---
-	s->dataDock = new QDockWidget("Data Viewer", s->win);
-	s->dataDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
-	s->dataTable = new QTableWidget(s->dataDock);
-	s->dataTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-	s->dataTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-	s->dataDock->setWidget(s->dataTable);
-	s->win->addDockWidget(Qt::BottomDockWidgetArea, s->dataDock);
-	s->dataDock->setVisible(false);                 // starts folded away
-
 	// --- menubar ---
 	QMenuBar *mb = s->win->menuBar();
 	QMenu *mFile = mb->addMenu("File");
 	QAction *aNew  = mFile->addAction("New");
 	QAction *aOpen = mFile->addAction("Open…");
 	QAction *aSave = mFile->addAction("Save…");
-	mFile->addSeparator();
-	QAction *aExport = mFile->addAction("Export Image…");
 	mFile->addSeparator();
 	QAction *aClose = mFile->addAction("Close");
 	QObject::connect(aNew, &QAction::triggered, s->win, [s]{
@@ -1544,7 +1565,6 @@ static XYPlot *buildXYPlot(const char *title) {
 		if (fn.isEmpty()) return;
 		rememberStartDir(fn);
 		g_juliaXY(s, "save", xyCurrentSel(s), fn.toUtf8().constData()); });
-	QObject::connect(aExport, &QAction::triggered, s->win, [s]{ xyExportPng(s); });
 	QObject::connect(aClose,  &QAction::triggered, s->win, [s]{ s->win->close(); });
 
 	// Analysis menu — each op runs in Julia on the Object-Manager-selected series.
@@ -1655,12 +1675,8 @@ static XYPlot *buildXYPlot(const char *title) {
 	}
 
 	QMenu *mMisc = mb->addMenu("Misc");
-	s->actLegend = mMisc->addAction("Show legend");
-	s->actLegend->setCheckable(true); s->actLegend->setChecked(true);
 	s->actGrid = mMisc->addAction("Grid");
 	s->actGrid->setCheckable(true); s->actGrid->setChecked(true);
-	s->actDataView = mMisc->addAction("Data Viewer");
-	s->actDataView->setCheckable(true); s->actDataView->setChecked(false);
 	s->actConsole = mMisc->addAction("Panels");
 	s->actConsole->setCheckable(true); s->actConsole->setChecked(false);
 	QObject::connect(s->actConsole, &QAction::toggled, s->win, [s](bool on){
@@ -1689,15 +1705,10 @@ static XYPlot *buildXYPlot(const char *title) {
 	QAction *aLogY = mMisc->addAction("Log Y axis");
 	aLogY->setCheckable(true);
 	QObject::connect(aLogY, &QAction::toggled, s->win, [s](bool on){ xySetLog(s, 1, on); });
-	QObject::connect(s->actLegend, &QAction::toggled, s->win, [s](bool on){
-		xyCur(s).chart->SetShowLegend(on); if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
 	QObject::connect(s->actGrid, &QAction::toggled, s->win, [s](bool on){
 		xyCur(s).chart->GetAxis(vtkAxis::BOTTOM)->SetGridVisible(on);
 		xyCur(s).chart->GetAxis(vtkAxis::LEFT)->SetGridVisible(on);
 		if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
-	QObject::connect(s->actDataView, &QAction::toggled, s->win, [s](bool on){ s->dataDock->setVisible(on); });
-	QObject::connect(s->dataDock, &QDockWidget::visibilityChanged, s->win, [s](bool vis){
-		if (s->actDataView) s->actDataView->setChecked(vis); });
 
 	// --- toolbar ---
 	QToolBar *tb = s->win->addToolBar("Tools");
@@ -1709,12 +1720,7 @@ static XYPlot *buildXYPlot(const char *title) {
 		xyCur(s).chart->GetAxis(vtkAxis::BOTTOM)->SetBehavior(vtkAxis::AUTO);
 		xyCur(s).chart->GetAxis(vtkAxis::LEFT)->SetBehavior(vtkAxis::AUTO);
 		if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
-	tb->addAction(s->actLegend);
 	tb->addAction(s->actGrid);
-	tb->addAction(s->actDataView);
-	tb->addSeparator();
-	QAction *tPng = tb->addAction(st->standardIcon(QStyle::SP_DialogSaveButton), "Export Image…");
-	QObject::connect(tPng, &QAction::triggered, s->win, [s]{ xyExportPng(s); });
 
 	// --- Object Manager interactions ---
 	QObject::connect(s->objMgr, &QTreeWidget::itemChanged, s->win, [s](QTreeWidgetItem *it, int){
@@ -1724,15 +1730,18 @@ static XYPlot *buildXYPlot(const char *title) {
 			if (s->infoLabel) s->infoLabel->setVisible(it->checkState(0) == Qt::Checked);
 			return;
 		}
+		if (idx == -2) {                                   // "Legend" row: toggle the chart legend
+			s->legendVisible = (it->checkState(0) == Qt::Checked);
+			xyCur(s).chart->SetShowLegend(s->legendVisible);
+			if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			return;
+		}
 		std::vector<XYSeries> &series = xyCur(s).series;
 		if (idx < 0 || idx >= (int)series.size()) return;
 		const bool on = (it->checkState(0) == Qt::Checked);
 		series[idx].visible = on;
 		if (series[idx].plot) series[idx].plot->SetVisible(on);
 		if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
-	QObject::connect(s->objMgr, &QTreeWidget::itemSelectionChanged, s->win, [s]{
-		QTreeWidgetItem *it = s->objMgr->currentItem();
-		if (it) xyFillDataTable(s, it->data(0, Qt::UserRole).toInt()); });
 	QObject::connect(s->objMgr, &QTreeWidget::itemDoubleClicked, s->win, [s](QTreeWidgetItem *it, int){
 		if (it) xyLineProperties(s, it->data(0, Qt::UserRole).toInt()); });
 	QObject::connect(s->objMgr, &QWidget::customContextMenuRequested, s->win, [s](const QPoint &p){ xyObjMgrMenu(s, p); });
@@ -1762,14 +1771,41 @@ static XYPlot *buildXYPlot(const char *title) {
 		delete s;                                   // struct outlives the QMainWindow; free it here
 	});
 
-	// First page (mounts a chart in the scene + adds its tab). Must come AFTER objMgr/dataTable/tabs
-	// exist so xySwitchPage can populate them.
+	// First page (mounts a chart in the scene + adds its tab). Must come AFTER objMgr/tabs exist so
+	// xySwitchPage can populate them.
 	xyNewPage(s, "Page 1", true);
+
+	// FOLD control on the Object Manager's title bar -- same shared FoldTitleBar mechanism
+	// (10_geometry.cpp) as the 3-D viewer's Scene Objects dock: click folds it to a thin strip;
+	// with no Closable/Floatable feature (see the dock's setFeatures above) it can be folded, but
+	// never fully closed or torn off. Building the bar + its onClick here (pre-show) is fine --
+	// only the resizeDocks CALLS must wait until after win->show() (see below).
+	const int omPx = qRound(s->win->logicalDpiX() * 4.0 / 2.54);   // ~4 cm target width
+	QMainWindow *xywin = s->win;
+	FoldTitleBar *omBar = new FoldTitleBar("Object Manager", omDock);
+	omDock->setTitleBarWidget(omBar);
+	omBar->onClick = [xywin, omDock, body = static_cast<QWidget*>(s->objMgr), omBar, omPx]() {
+		const bool fold = body->isVisible();          // visible now -> fold it away
+		if (fold) omBar->openWidth = omDock->width(); // remember the open width to restore later
+		body->setVisible(!fold);
+		omBar->folded = fold;
+		omBar->updateGeometry();
+		omBar->update();
+		const int w = fold ? omBar->sizeHint().width()
+						   : (omBar->openWidth > 0 ? omBar->openWidth : omPx);
+		xywin->resizeDocks({ omDock }, { w }, Qt::Horizontal);
+	};
 
 	s->win->statusBar()->showMessage("X,Y plot — add series from Julia (xyplot / add!)");
 	s->win->show();
 	s->win->raise();
 	s->win->activateWindow();
+
+	// Object Manager's INITIAL width only (~4 cm) -- resizeDocks only bites once the window has
+	// real laid-out geometry, i.e. AFTER show() (same rule 70_window.cpp's dock folding follows;
+	// calling it pre-show corrupts the central widget's layout instead of just sizing the dock).
+	s->win->resizeDocks({ omDock }, { omPx }, Qt::Horizontal);
+
 	rw->Render();
 	return s;
 }

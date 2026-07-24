@@ -372,6 +372,58 @@ static int polyIndexOfActor(Scene *s, vtkActor *a) {
 // top-level (no parent), deletes itself on close, and does NOT block the viewer. A "Save…" button
 // calls lineSavePoints(s, lr) directly — the exact function "Save line/polygon…" uses — so there
 // is one save path, not a second one reimplemented here.
+// Build + show a floating, non-modal, parentless "#/coord…" data-table dialog. THE ONE shared
+// builder for every "pop a table of this object's data" action in the app -- the 3-D viewer's
+// per-line "Show data table…" (below) AND the X,Y plot tool's per-series "Show in Data Table"
+// (65_xyplot.cpp xyShowDataTable) both call this SAME function; neither owns its own dialog/table
+// construction (SACRED_LAW: same operation, same function, never a second reimplementation per
+// window type). `hdr` is "#" plus one entry per coordinate column; `val(row,col)` returns column
+// `col`'s (0-based, matching hdr[col+1]) numeric value for `row`. `editable` leaves the "#" column
+// non-editable but opens the coordinate cells for editing -- the caller wires its own cellChanged
+// handler on the returned QTableWidget (write-back rules are caller-specific, e.g. polygon vertices
+// vs. read-only series data). `onSave`, if set, adds a "Save…" button.
+static QTableWidget *buildDataTableDialog(const QString &title, int nrows, const QStringList &hdr,
+                                           const std::function<double(int,int)> &val,
+                                           bool editable, std::function<void()> onSave) {
+	QDialog *dlg = new QDialog(nullptr);                  // top-level, parentless -> truly floating
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	dlg->setWindowTitle(title);
+	dlg->setWindowFlag(Qt::Window, true);
+	QVBoxLayout *lay = new QVBoxLayout(dlg);
+
+	const int ncoord = hdr.size() - 1;
+	QTableWidget *tbl = new QTableWidget(nrows, ncoord + 1, dlg);
+	tbl->setHorizontalHeaderLabels(hdr);
+	tbl->verticalHeader()->setVisible(false);             // our "#" column already numbers the rows
+	tbl->setSelectionBehavior(QAbstractItemView::SelectRows);
+	if (!editable) tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+	for (int k = 0; k < nrows; ++k) {
+		QTableWidgetItem *idx = new QTableWidgetItem(QString::number(k + 1));
+		idx->setFlags(idx->flags() & ~Qt::ItemIsEditable);   // the "#" column is never editable
+		tbl->setItem(k, 0, idx);
+		for (int c = 0; c < ncoord; ++c) {
+			QTableWidgetItem *it = new QTableWidgetItem(QString::number(val(k, c), 'g', 10));
+			if (!editable) it->setFlags(it->flags() & ~Qt::ItemIsEditable);
+			tbl->setItem(k, c + 1, it);
+		}
+	}
+	tbl->resizeColumnsToContents();
+	lay->addWidget(tbl);
+
+	if (onSave) {
+		QHBoxLayout *btnRow = new QHBoxLayout();
+		btnRow->addStretch(1);
+		QPushButton *saveBtn = new QPushButton("Save…", dlg);
+		btnRow->addWidget(saveBtn);
+		lay->addLayout(btnRow);
+		QObject::connect(saveBtn, &QPushButton::clicked, tbl, onSave);
+	}
+	dlg->resize(360, 450);
+	dlg->show();                                          // non-modal: REPL + viewer stay live
+	return tbl;
+}
+
 static void showLineDataTable(Scene *s, const LineRef& lr, const QString& name) {
 	std::vector<std::vector<std::array<double,3>>> polylines;
 	lineGatherPolylines(s, lr, polylines);
@@ -382,12 +434,6 @@ static void showLineDataTable(Scene *s, const LineRef& lr, const QString& name) 
 	const std::vector<std::array<double,3>>& pl = polylines[0];
 	const int nrows = (int)pl.size();
 	vtkActor *actor = lr.actor;
-
-	QDialog *dlg = new QDialog(nullptr);                  // top-level, parentless -> truly floating
-	dlg->setAttribute(Qt::WA_DeleteOnClose);
-	dlg->setWindowTitle(name.isEmpty() ? QString("Line data") : (name + " — data"));
-	dlg->setWindowFlag(Qt::Window, true);
-	QVBoxLayout *lay = new QVBoxLayout(dlg);
 
 	// Does this overlay's Z come from real source data, or is it a stored-geometry placeholder
 	// (Overlay::zIsPlaceholder -- e.g. Magnetic isochrons > GPlates, a 2-column x,y export)? Only
@@ -405,41 +451,19 @@ static void showLineDataTable(Scene *s, const LineRef& lr, const QString& name) 
 	// UNLESS the source itself was 2-column and z=0 is only a placeholder (zIsPlaceholder): there is
 	// no real Z to show, so never invent one.
 	const bool showZ  = (!s->flat2d || lr.kind == LK_Overlay) && !(ovp && ovp->zIsPlaceholder);
-	const int  ncoord = showZ ? 3 : 2;
 	QStringList hdr;   hdr << "#" << "X" << "Y";   if (showZ) hdr << "Z";
-	QTableWidget *tbl = new QTableWidget(nrows, ncoord + 1, dlg);
-	tbl->setHorizontalHeaderLabels(hdr);
-	tbl->verticalHeader()->setVisible(false);            // our "#" column already numbers the rows
-	tbl->setSelectionBehavior(QAbstractItemView::SelectRows);
-	if (!editable) tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
-	for (int k = 0; k < nrows; ++k) {
-		QTableWidgetItem *idx = new QTableWidgetItem(QString::number(k + 1));
-		idx->setFlags(idx->flags() & ~Qt::ItemIsEditable);   // the "#" column is never editable
-		tbl->setItem(k, 0, idx);
-		for (int c = 0; c < ncoord; ++c) {
-			QTableWidgetItem *it = new QTableWidgetItem(QString::number(pl[k][c], 'g', 10));
-			if (!editable) it->setFlags(it->flags() & ~Qt::ItemIsEditable);
-			tbl->setItem(k, c + 1, it);
-		}
-	}
-	tbl->resizeColumnsToContents();
-	lay->addWidget(tbl);
-
-	QHBoxLayout *btnRow = new QHBoxLayout();
-	btnRow->addStretch(1);
-	QPushButton *saveBtn = new QPushButton("Save…", dlg);
-	btnRow->addWidget(saveBtn);
-	lay->addLayout(btnRow);
-	QObject::connect(saveBtn, &QPushButton::clicked, dlg, [s, lr]() { lineSavePoints(s, lr); });
-	dlg->resize(360, 450);
+	QTableWidget *tbl = buildDataTableDialog(
+		name.isEmpty() ? QString("Line data") : (name + " — data"), nrows, hdr,
+		[&pl](int row, int col) { return pl[row][col]; },
+		editable, [s, lr]() { lineSavePoints(s, lr); });
 
 	// Live write-back: a committed X/Y/Z cell updates pg.v and rebuilds the outline. Connected only
 	// for editable (LK_Polygon) tables. cellChanged also fires when we programmatically fix a cell,
 	// so a guard flag stops re-entrancy.
 	if (editable) {
 		std::shared_ptr<bool> guard = std::make_shared<bool>(false);
-		QObject::connect(tbl, &QTableWidget::cellChanged, dlg, [s, tbl, actor, guard](int row, int col) {
+		QObject::connect(tbl, &QTableWidget::cellChanged, tbl, [s, tbl, actor, guard](int row, int col) {
 			if (*guard || col < 1 || col > 3) return;        // ignore the "#" column / our own edits
 			const int pi = polyIndexOfActor(s, actor);
 			if (pi < 0) return;                              // polygon was deleted -> nothing to write
@@ -469,7 +493,6 @@ static void showLineDataTable(Scene *s, const LineRef& lr, const QString& name) 
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		});
 	}
-	dlg->show();                                          // non-modal: REPL + viewer stay live
 }
 
 // ---- "Nested grids" menu actions (the special tsunami rectangle; see nesting_sizes.m) ----------

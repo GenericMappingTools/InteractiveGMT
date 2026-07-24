@@ -190,6 +190,7 @@
 #include <vtkContextScene.h>
 #include <vtkChart.h>
 #include <vtkChartXY.h>
+#include <vtkChartLegend.h>
 #include <vtkPlot.h>
 #include <vtkPlotPoints.h>
 #include <vtkPlotLine.h>
