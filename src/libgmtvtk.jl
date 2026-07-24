@@ -49,7 +49,7 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # Every exported C-API symbol resolved at load time.
 const _LIB_SYMBOLS = (
 	:gmtvtk_view_grid, :gmtvtk_view_demo, :gmtvtk_process_events,
-	:gmtvtk_add_overlay, :gmtvtk_add_overlay_h, :gmtvtk_add_overlay_ex_h, :gmtvtk_add_overlay_ex2_h, :gmtvtk_add_overlay_bounded_h,
+	:gmtvtk_add_overlay, :gmtvtk_add_overlay_h, :gmtvtk_add_overlay_ex_h, :gmtvtk_add_overlay_ex2_h, :gmtvtk_add_overlay_ex3_h, :gmtvtk_add_overlay_bounded_h,
 	:gmtvtk_overlay_points_h,
 	:gmtvtk_add_symbols_h, :gmtvtk_is_alive,
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,

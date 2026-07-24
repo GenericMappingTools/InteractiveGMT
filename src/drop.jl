@@ -1034,16 +1034,29 @@ end
 # is a line; the user flips it to a scatter via the overlay's "Convert to points" menu item. This is
 # deliberately NOT `_ds_kind` (whose unknown-geometry heuristic guesses :points) — that heuristic
 # still drives the front-door `iview(D)` routing, just not the drop-overlay default.
-function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractString="")
+# `color` (nothing -> per-mode default, same as `_ovl_color`'s own convention elsewhere e.g.
+# `_add_grid_to_scene`), `noConvertToPoints`/`noDataTable` (both default false, preserving every
+# existing caller's behaviour exactly) opt an overlay OUT of "Convert to points…"/"Show data
+# table…" for sources where those make no sense (e.g. mgd77tracks.jl's cruise tracks: thousands of
+# raw nav fixes). Routed through gmtvtk_add_overlay_ex3_h only when either flag is set, else the
+# original plain/ex_h calls -- ONE function, extended, not forked.
+function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractString="",
+                                color=nothing, noConvertToPoints::Bool=false, noDataTable::Bool=false)
 	d1   = D isa AbstractVector ? first(D) : D
 	mode = _geom_kind(Int(d1.geom)) === :points ? :points : :lines
 	xyz, segoff, nseg, npts = _pack_dataset_flat(D)
 	modei = mode === :lines ? Cint(1) : Cint(0)
-	cr, cg, cb = _ovl_color(nothing, mode)
+	cr, cg, cb = _ovl_color(color, mode)
 	lw = 0.0   # <=0 -> C++ addOverlay falls back to Preferences "Default line thickness" (50_scene.cpp)
 	ps = mode === :points ? 6.0 : 0.0
 	nm = String(name === nothing ? "" : name)
-	ok = if isempty(groupName)
+	ok = if noConvertToPoints || noDataTable
+		ccall(_fn(:gmtvtk_add_overlay_ex3_h), Cint,
+		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
+		   Cstring, Cstring, Cstring, Cint, Cint, Cint),
+		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm, String(groupName), "",
+		  Cint(noConvertToPoints), Cint(0), Cint(noDataTable))
+	elseif isempty(groupName)
 		ccall(_fn(:gmtvtk_add_overlay_h), Cint,
 		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
 		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm)

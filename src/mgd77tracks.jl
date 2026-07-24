@@ -19,7 +19,9 @@ function _import_gmt_list(listpath::AbstractString)::Vector{String}
 	out = String[]
 	isfile(listpath) || return out
 	for line in eachline(listpath)
-		t = strip(first(split(line)))
+		parts = split(line)
+		isempty(parts) && continue                 # blank / whitespace-only line
+		t = strip(first(parts))
 		(isempty(t) || startswith(t, "#")) && continue
 		push!(out, isabspath(t) ? t : joinpath(dir, t))
 	end
@@ -85,12 +87,14 @@ function _import_gmt_read(scene::Ptr{Cvoid}, path::AbstractString)
 end
 
 # C callback (gmtvtk_set_import_gmt_callback): `cpath` is a single file (isList == 0) or a list
-# file (isList != 0). Each track is read then handed to `_drop_into` (drop.jl) — the SAME
-# dispatcher `_on_drop` itself calls for a dropped/opened GMTdataset, and the SAME convention its
-# own multi-item case (a netCDF file with several variables) already uses for "several new named
-# things from one import, the first one promotes an empty launcher, the rest are added as extras"
-# (`isbase = empty && i == 1`, `_open_spec_into`'s caller in `_on_drop`). No bespoke second
-# promote/add orchestration here (SACRED_LAW.md).
+# file (isList != 0). Every track is read FIRST (Mirone's GeophysicsImportGmtFile_CB reads the
+# WHOLE list via aux_funs('get_mgg',...) before plotting anything, and frames the background from
+# the COMBINED min/max across every track — nargout==8 branch, x_min/x_max/y_min/y_max reduced
+# over ALL k). If the receiving window is a bare empty launcher, it is promoted ONCE to a blank
+# background framed to that combined extent (`_promote_blank_scaffold` + `_dataset_bbox`/
+# `_padded_bbox`, drop.jl — the SAME shared primitives `_promote_dataset` itself is built from,
+# not re-derived). Each track is then added via `_add_dataset_to_scene` (drop.jl) — the SAME
+# adder every other dropped table uses — as its own named Scene Objects row.
 function _on_import_gmt(scene::Ptr{Cvoid}, cpath::Cstring, isList::Cint)::Cvoid
 	try
 		path = unsafe_string(cpath)
@@ -99,16 +103,34 @@ function _on_import_gmt(scene::Ptr{Cvoid}, cpath::Cstring, isList::Cint)::Cvoid
 			_viewer_log_error(scene, "Import *.gmt/*.nc: no files found in list \"$(basename(path))\"")
 			return
 		end
-		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
-		any_added = false
+		tracks = Tuple{String,GMT.GMTdataset}[]
 		for f in files
 			r = _import_gmt_read(scene, f)
-			r === nothing && continue
-			name, D = r
-			_drop_into(scene, D, name; promote=(empty && !any_added), source=f)
-			any_added = true
+			r === nothing || push!(tracks, r)
 		end
-		any_added || _viewer_log_error(scene, "Import *.gmt/*.nc: nothing plotted")
+		if isempty(tracks)
+			_viewer_log_error(scene, "Import *.gmt/*.nc: nothing plotted")
+			return
+		end
+		if ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
+			d1 = tracks[1][2]
+			W, E, S, N = _padded_bbox(_dataset_bbox([t[2] for t in tracks])...)
+			_promote_blank_scaffold(scene, W, E, S, N, _isgeog(d1) == 1; crsobj=d1)
+		end
+		# A list import produces one handle PER TRACK from one source (the list file) -- SACRED_LAW.md
+		# master-handle-per-file: fold them under ONE collapsible group named for the list, with the
+		# group's own hide-all/Remove (`Overlay::groupName`, the SAME mechanism Geography > Plate
+		# boundaries' 7 layers already use). A single-file import stays ungrouped -- one handle is
+		# already its own master, a one-item group would just be clutter.
+		group = isList != 0 ? splitext(basename(path))[1] : ""
+		for (name, D) in tracks
+			# Mirone colours each plotted track randomly (mirone.m:
+			# `colors = rand(numel(track),3)`) so overlapping cruises stay visually distinguishable;
+			# `noConvertToPoints`/`noDataTable`: a cruise track is not a thing you'd scatter to points
+			# or inspect a thousands-of-rows raw nav table for.
+			_add_dataset_to_scene(scene, D, name; groupName=group, color=(rand(), rand(), rand()),
+			                       noConvertToPoints=true, noDataTable=true)
+		end
 	catch e
 		_viewer_log_error(scene, "Import *.gmt/*.nc FAILED: $(sprint(showerror, e))")
 		@warn "import gmt/nc: request failed" exception=(e,)

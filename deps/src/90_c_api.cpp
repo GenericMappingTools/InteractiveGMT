@@ -519,6 +519,27 @@ GMTVTK_API int gmtvtk_add_overlay_ex2_h(void *handle, const double *xyz, int npt
 	return 1;
 }
 
+// Same as gmtvtk_add_overlay_ex2_h, plus `noDataTable`: suppresses "Show data table…" entirely
+// (Overlay::noDataTable, 10_geometry.cpp) -- for overlays whose raw per-vertex table is meaningless
+// to the user (e.g. Geophysics > Magnetics > Import *.gmt/*.nc cruise tracks: thousands of raw nav
+// fixes). Returns 1 if added.
+GMTVTK_API int gmtvtk_add_overlay_ex3_h(void *handle, const double *xyz, int npts, const int *segoff, int nseg,
+								      int mode, double r, double g, double b,
+								      double linewidth, double pointsize,
+								      const char *name, const char *groupName, const char *info,
+								      int noConvertToPoints, int zIsPlaceholder, int noDataTable) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s))
+		return 0;
+	double dpi = 72.0;
+	if (s->widget && s->widget->renderWindow() && s->widget->renderWindow()->GetDPI() > 0)
+		dpi = s->widget->renderWindow()->GetDPI();
+	const double pxPerPt = dpi / 72.0;
+	addOverlay(s, xyz, npts, segoff, nseg, mode, r, g, b, linewidth * pxPerPt, pointsize, name, groupName, info,
+	           nullptr, 0, false, false, noConvertToPoints != 0, zIsPlaceholder != 0, noDataTable != 0);
+	return 1;
+}
+
 // Read a line OVERLAY's current pen by its Scene Objects name, so Save Session can capture edits the
 // user made AFTER the layer was added (coastlines/borders/rivers are :menu recipes that otherwise
 // replay with the default pen). out = { r, g, b, width_px, style(0 solid/1 dashed/2 dotted), opacity }.

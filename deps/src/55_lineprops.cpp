@@ -771,8 +771,9 @@ static void popupLineObjectMenu(Scene *s, const LineRef& lr, const QString& name
 				  : isFault    ? "Save trace fault…"
 				  : (lr.kind == LK_Polygon && lineClosedRing(s, lr) ? "Save polygon…" : "Save line…"),
 					[s, lr]() { lineSavePoints(s, lr); });   // 2D / 3D (grid-interpolated z)
-		m.addAction("Show data table…",                                      // floating vertex table viewer
-					[s, lr, name]() { showLineDataTable(s, lr, name); });
+		if (!ovp || !ovp->noDataTable)                                       // e.g. mgd77 cruise tracks: no table
+			m.addAction("Show data table…",                                  // floating vertex table viewer
+						[s, lr, name]() { showLineDataTable(s, lr, name); });
 	}
 
 	// CRS-aware measurements (length(s) + azimuth(s) for lines/polygons; area for closed polygons).

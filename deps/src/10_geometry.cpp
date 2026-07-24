@@ -64,6 +64,11 @@ struct Overlay {
 	                                          // GPlates export). Default false preserves existing overlays'
 	                                          // "always show Z" behaviour (coastlines/plate boundaries/...)
 	                                          // until each is confirmed to genuinely have no z of its own.
+	bool noDataTable = false;                // suppresses "Show data table…" entirely -- for overlays whose
+	                                          // per-vertex table is meaningless to the user (e.g. Geophysics >
+	                                          // Magnetics > Import *.gmt/*.nc cruise tracks: thousands of raw
+	                                          // nav fixes, no useful per-row content). Default false preserves
+	                                          // every existing overlay's table.
 };
 
 // A generic SCREEN-CONSTANT symbol layer (volcanoes, seismicity, cities, …): N glyphs of one
