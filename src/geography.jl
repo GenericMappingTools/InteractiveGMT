@@ -106,6 +106,44 @@ function _meteorite_data(W, E, S, N)
 	return xs, ys, infos
 end
 
+# World cities (Mirone wcity_major.dat / wcity.dat): 3 cols lon lat name, name underscore-joined
+# for multi-word ("San_Francisco"). Single token -> no _labeled_infos split, just de-underscore.
+function _city_data(datafile::AbstractString, W, E, S, N)
+	xs, ys, texts = _geo_points(datafile, W, E, S, N)
+	names = [replace(strip(t), '_' => ' ') for t in texts]
+	return xs, ys, names
+end
+
+# Name labels next to each city star. SACRED_LAW.md "Text-label law": ALWAYS the billboard kind,
+# EXACTLY like Focal mechanisms / Seismology's event-date labels — non-empty `groupName` ->
+# vtkBillboardTextActor3D, constant on-screen size, Arial black. NEVER the plain/ungrouped
+# vtkTextActor3D kind again: it world-scales off surfGetBounds extent (textApplyProps,
+# 85_polygon.cpp) and renders huge/distorted. `eventIdx` (0-based, matching each point's index in
+# the SAME-named SymbolLayer) is what wires TextLabel::mecaEvent so dragging a star (per-point
+# symbol drag, mirrors mecaDragTo carrying a ball's date label) carries its name label along too —
+# SAME mechanism as Focal mechanisms, not a fork. One batch `gmtvtk_add_texts_h` call (one
+# Scene-Objects rebuild + render). Offset large enough that the label clears the star glyph
+# (10px-ish on-screen at typical zoom) instead of overlapping it.
+function _add_city_labels!(scene::Ptr{Cvoid}, xs, ys, names, W, E, S, N, groupName::AbstractString)
+	n = length(xs)
+	n == 0 && return
+	dx = (E - W) * 0.0022
+	dy = (N - S) * 0.0015
+	xy = Vector{Float64}(undef, 2n)
+	@inbounds for k in 1:n
+		xy[2k-1] = xs[k] + dx
+		xy[2k]   = ys[k] + dy
+	end
+	blob = join(names, '\x1e')
+	evid = Cint.(0:n-1)
+	GC.@preserve xy blob evid ccall(_fn(:gmtvtk_add_texts_h), Cint,
+		(Ptr{Cvoid}, Ptr{Cdouble}, Cstring, Cint, Cdouble, Cdouble, Cdouble, Cint,
+		 Cstring, Cint, Cint, Cstring, Ptr{Cint}),
+		scene, xy, blob, Cint(n), 0.0, 0.0, 0.0, 9,
+		"Arial", Cint(1), Cint(0), groupName, evid)
+	return
+end
+
 # Tide-gauge stations: trailing text is "<name> Code: <code> Country: <country>" (name/country
 # underscore-joined). The label tokens "Code:"/"Country:" end in ':' -> drop colon-tokens and the 3
 # values left are name/code/country (no regex needed).
@@ -126,6 +164,8 @@ function _geo_layer_name(kind::AbstractString)::String
 	kind == "borders"   ? "Boundaries"          :
 	kind == "rivers"    ? "Rivers"              :
 	kind == "volcano"   ? "Volcanoes"           :
+	kind == "city_major" ? "Major Cities"       :
+	kind == "city"      ? "Cities"              :
 	kind == "meteorite" ? "Meteorite Impacts"   :
 	kind == "tides"     ? "Tide Stations"       :
 	kind == "hydro"     ? "Hydrothermal Vents"  :
@@ -183,6 +223,18 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			isempty(xs) && return
 			add_symbols!(scene, xs, ys; symbol=:triangle, size=12, fill=:yellow, edge=:black, edgewidth=1.0,
 			             name="Volcanoes", info=infos)
+		elseif kind == "city_major" || kind == "city"
+			# World cities (Mirone wcity_major.dat/wcity.dat): 7pt filled stars, constant on-screen
+			# size, PLUS a 9pt name label next to each star — SAME billboard text kind as Focal
+			# mechanisms' event dates (see _add_city_labels! SACRED_LAW comment: never the plain/
+			# world-scaled text again).
+			datafile = kind == "city_major" ? "wcity_major.dat" : "wcity.dat"
+			xs, ys, names = _city_data(datafile, W, E, S, N)
+			isempty(xs) && return
+			nm = kind == "city_major" ? "Major Cities" : "Cities"
+			add_symbols!(scene, xs, ys; symbol=:star, size=7, sizeunit=:pt, fill=:blue, edge=:black,
+			             edgewidth=1.0, name=nm, info=names)
+			_add_city_labels!(scene, xs, ys, names, W, E, S, N, nm)
 		elseif kind == "meteorite"
 			# Mirone style: red filled diamonds with a thin black edge, constant on-screen size.
 			# Each carries its 5-field metadata (name/diameter/age/exposed/type) as a hover tooltip.

@@ -270,27 +270,28 @@ struct MecaBall {
 	                                         // billboard-vs-flat concrete type underneath never matters here.
 };
 
-// A text label: either a user-placed toolbar annotation, or a batch-owned label (Focal
-// mechanisms' per-event date). The two render DIFFERENTLY, keyed by `groupName`:
-//  - ungrouped (Text tool): lies FLAT on the z=0 (XY) plane — a plain vtkTextActor3D rendered into
-//    its local XY plane, a map "sticker" that tilts/rotates with the terrain.
-//  - grouped (groupName set): a vtkBillboardTextActor3D — always faces the camera at a constant
-//    screen size, like the cube's tick-number labels. A flat decal here read as if the date had
-//    been painted into the terrain/basemap texture from most view angles (2026-07-04 bug).
-// Both are stored in TRUE coords (x,y); the actor sits in the surface's scaled space (x*xfac).
-// Ungrouped labels are left-click-draggable on the plane; font (family/size/colour/bold/italic) is
-// editable from the Scene Objects menu (ungrouped) or the owning batch's properties dialog (grouped).
+// A text label: either a user-placed toolbar annotation (the "T" Text tool), or a batch-owned
+// label (Focal mechanisms' per-event date, Geography > Cities' name labels). ALWAYS a
+// vtkBillboardTextActor3D — always faces the camera at a constant screen size, like the cube's
+// tick-number labels (STANDING RULE, 2026-07-24: the old plain/flat vtkTextActor3D rendering, which
+// lay flat on the z=0 plane and world-scaled with view extent, is RETIRED for every text label, no
+// exceptions — it read as if painted into the terrain/basemap texture from most view angles, and
+// went huge/distorted at a whole-earth zoom; see .wolf/cerebrum.md's Decision Log for the history).
+// `groupName` (non-empty = owned by a batch) governs BATCH membership only now — bulk find/erase,
+// folding its Scene Objects row under the batch's own row instead of listing one row per label
+// (rebuildSceneObjects), and bottom- vs centre-vertical-justification (textApplyProps) — it no
+// longer selects the render kind. Every label (grouped or not) is directly click-draggable on the
+// plane (polyHitText) and gets its own right-click properties (textLabelMenu for standalone labels,
+// batchTextLabelsDialog — with a this-one/whole-group scope choice — for batch-owned ones). Stored
+// in TRUE coords (x,y); the actor sits in the surface's scaled space (x*xfac).
 struct TextLabel {
 	std::array<double,3> pos;                // anchor on the XY plane, TRUE coords (z always 0)
-	// vtkBillboardTextActor3D is NOT a vtkTextActor3D subclass (both derive independently from
-	// vtkProp3D, each with their own SetInput/GetTextProperty) — the field holds the common base;
-	// textApplyProps downcasts to whichever concrete type this label's `groupName` says it built.
-	vtkSmartPointer<vtkProp3D> actor;
+	vtkSmartPointer<vtkProp3D> actor;         // always a vtkBillboardTextActor3D (see above)
 	std::string text;                        // the shown string (rendered in the scene)
 	std::string name;                        // short Scene Objects label ("Text N")
 	std::string font  = "Arial";             // VTK font family: "Arial" / "Courier" / "Times"
 	int    size  = 18;
-	double color[3] = { 1.0, 1.0, 0.2 };     // default: yellow (readable over relief)
+	double color[3] = { 0.0, 0.0, 0.0 };     // default: black
 	bool   bold = false, italic = false;
 	std::string groupName;                   // non-empty = owned by a batch (e.g. focal-mechanism date
 	                                          // labels); tags it for bulk find/erase (deleteMecaGroup) and
@@ -660,6 +661,14 @@ struct Scene {
 	int    symDragPressX = 0, symDragPressY = 0;       // press-point (px) for symLayerDrag's threshold gate —
 	                                                    // real movement doesn't commit until past a few px, so a
 	                                                    // plain click on an armed symbol can't nudge its position
+	int    symPtDrag = -1;                             // BATCH symbol layer (index into symbols, oneShot==false)
+	                                                    // with a single POINT being click-dragged RIGHT NOW, idle
+	                                                    // (no arm/double-click step, unlike symLayerDrag/symArmed —
+	                                                    // a batch layer has many points, so press-and-drag picks
+	                                                    // the nearest one directly). -1 = none.
+	int    symPtIdx  = -1;                             // which point within symbols[symPtDrag] (-1 = none)
+	double symPtDragLastW[2] = {0.0, 0.0};             // last picked world (x,y) for the incremental drag delta —
+	                                                    // same convention as polyDragLastW
 	vtkSmartPointer<vtkActor>    polyHandles;          // square vertex handles for the edited polygon
 	vtkSmartPointer<vtkPolyData> polyHandlePD;
 	vtkSmartPointer<vtkActor>    symHandle;            // yellow handle on the armed symbol (symArmed) —
@@ -1713,6 +1722,45 @@ static bool pickSymbolInfoAt(Scene *s, int dx, int dy, std::string& out) {
 	}
 	if (bestInfo) { out = *bestInfo; return true; }
 	return false;
+}
+
+// Nearest POINT within a BATCH symbol layer (sl.oneShot == false) under the cursor — the pick half
+// of the per-point drag gesture (polygonHandlePress/Move, 85_polygon.cpp). oneShot symbols (the
+// standalone Draggable Symbol tool) are skipped here: they already have their own double-click-arm-
+// then-drag flow (symArmed/symLayerDrag) with exactly one point, no picking needed. Same projection
+// + tolerance convention as pickSymbolAt/pickSymbolInfoAt. Writes the layer + point index on a hit.
+static bool pickSymbolPointAt(Scene *s, int dx, int dy, int &outLayer, int &outPoint) {
+	if (!s || s->symbols.empty())
+		return false;
+	vtkRenderer *ren = s->ren;
+	double best = 1e30; int bestLayer = -1, bestPoint = -1;
+	for (size_t li = 0; li < s->symbols.size(); ++li) {
+		SymbolLayer &sl = s->symbols[li];
+		if (sl.oneShot || !sl.actor || !sl.actor->GetVisibility())
+			continue;
+		vtkPolyData *pd = symInputPD(sl);
+		if (!pd || !pd->GetPoints())
+			continue;
+		double sc[3]; sl.actor->GetScale(sc);
+		const double tol = std::max(12.0, sl.sizePx * 0.6);
+		const double tol2 = tol * tol;
+		vtkPoints *pts = pd->GetPoints();
+		const vtkIdType np = pts->GetNumberOfPoints();
+		const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
+		for (vtkIdType i = 0; i < np; ++i) {
+			double p[3]; pts->GetPoint(i, p);
+			if (sl.solid3D && !s->flat2d && solid3DBuried(s, p[0]*xfacInv, p[1], p[2]))
+				continue;
+			ren->SetWorldPoint(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], 1.0);
+			ren->WorldToDisplay();
+			double d[3]; ren->GetDisplayPoint(d);
+			const double ex = d[0]-dx, ey = d[1]-dy, dd = ex*ex + ey*ey;
+			if (dd <= tol2 && dd < best) { best = dd; bestLayer = (int)li; bestPoint = (int)i; }
+		}
+	}
+	if (bestLayer < 0) return false;
+	outLayer = bestLayer; outPoint = bestPoint;
+	return true;
 }
 
 // Is the cursor (VTK display px dx,dy) on the profile line? Same screen-space segment

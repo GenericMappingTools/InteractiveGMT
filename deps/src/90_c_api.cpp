@@ -1642,7 +1642,7 @@ GMTVTK_API int gmtvtk_add_text_h(void *handle, double x, double y, const char *t
 	tl.name = "Text " + std::to_string((int)s->texts.size() + 1);
 	tl.color[0] = r; tl.color[1] = g; tl.color[2] = b;
 	if (size > 0) tl.size = size;
-	tl.actor = vtkSmartPointer<vtkTextActor3D>::New();
+	tl.actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();     // ALWAYS billboard, see TextLabel
 	textApplyProps(s, tl);
 	(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
 	s->texts.push_back(tl);
@@ -1860,14 +1860,11 @@ GMTVTK_API int gmtvtk_add_texts_h(void *handle, const double *xy, const char *te
 			tl.italic = italic != 0;
 			if (groupName && groupName[0]) tl.groupName = groupName;
 			if (eventIdx) tl.mecaEvent = eventIdx[i];
-			// Batch-owned labels (groupName set, e.g. Focal mechanisms' dates) are BILLBOARDS —
-			// vtkBillboardTextActor3D always faces the camera at a constant screen size, same as the
-			// cube's tick numbers (placeTickBillboards, 10_geometry.cpp). Plain vtkTextActor3D (the
-			// Text-tool's default) instead lies FLAT in the surface's XY plane, which is correct for a
-			// map "sticker" annotation but made the date read as if painted into the terrain/basemap
-			// texture from most view angles — exactly the "burned into background image" complaint.
-			if (tl.groupName.empty()) tl.actor = vtkSmartPointer<vtkTextActor3D>::New();
-			else                      tl.actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
+			// ALWAYS a billboard (2026-07-24 standing rule, see TextLabel) — vtkBillboardTextActor3D,
+			// camera-facing, constant screen size, same as the cube's tick numbers
+			// (placeTickBillboards, 10_geometry.cpp). The old plain/flat vtkTextActor3D path (lying in
+			// the surface's XY plane) is retired for every text label, batch-owned or not.
+			tl.actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
 			textApplyProps(s, tl);
 			(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
 			s->texts.push_back(tl);

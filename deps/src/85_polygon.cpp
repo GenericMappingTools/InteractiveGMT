@@ -1298,18 +1298,12 @@ static void mecaUpdateAnchor(Scene *s, int bi) {
 	mb.anchorDot->SetVisibility(mecaCoveredByAnyBall(s, mb.x0, mb.y0) ? 0 : 1);
 }
 
-// (Re)configure a text label's actor from its font fields. Ungrouped: lies flat in its local XY
-// plane (vtkTextActor3D, no rotation), anchored at (x,y,0) in scaled space, font size keyed to the
-// scene extent so the label is a sensible fraction of the data. Grouped (billboard): camera-facing
-// vtkBillboardTextActor3D at a constant screen size — see TextLabel (10_geometry.cpp).
+// (Re)configure a text label's actor from its font fields. ALWAYS a vtkBillboardTextActor3D
+// (2026-07-24 standing rule — see TextLabel, 10_geometry.cpp): camera-facing, constant on-screen
+// size, anchored at (x,y,0) in scaled space.
 static void textApplyProps(Scene *s, TextLabel& tl) {
-	// `actor` holds one of two unrelated VTK classes (see TextLabel, 10_geometry.cpp) that each
-	// declare their own SetInput/GetTextProperty — `groupName` is what construction (gmtvtk_add_text_h/
-	// gmtvtk_add_texts_h/polyPlaceText) used to pick the type, so it's the discriminator here too.
-	const bool billboard = !tl.groupName.empty();
-	vtkTextActor3D          *ta = billboard ? nullptr : vtkTextActor3D::SafeDownCast(tl.actor);
-	vtkBillboardTextActor3D *ba = billboard ? vtkBillboardTextActor3D::SafeDownCast(tl.actor) : nullptr;
-	vtkTextProperty *tp = billboard ? ba->GetTextProperty() : ta->GetTextProperty();
+	vtkBillboardTextActor3D *ba = vtkBillboardTextActor3D::SafeDownCast(tl.actor);
+	vtkTextProperty *tp = ba->GetTextProperty();
 	tp->SetFontFamilyAsString(tl.font.c_str());
 	tp->SetFontSize(tl.size);
 	tp->SetColor(tl.color[0], tl.color[1], tl.color[2]);
@@ -1321,26 +1315,12 @@ static void textApplyProps(Scene *s, TextLabel& tl) {
 	// which is what drove it down into/touching the ball's rim. Bottom justification makes the whole
 	// label grow UPWARD from the anchor instead. (A translucent background box was tried here too and
 	// reverted — vtkTextProperty draws it as an opaque rectangle sized to the full string bounds, a
-	// big flat gray block that looked far worse than the plain text.) Ordinary user-placed text
-	// labels (Text tool) are unaffected (no groupName), keeping their original centred look.
+	// big flat gray block that looked far worse than the plain text.) Standalone user-placed text
+	// labels (Text tool, no groupName) are unaffected, keeping their original centred look.
 	if (tl.groupName.empty()) tp->SetVerticalJustificationToCentered();
 	else                      tp->SetVerticalJustificationToBottom();
-	if (billboard) ba->SetInput(tl.text.c_str()); else ta->SetInput(tl.text.c_str());
-	if (tl.groupName.empty()) {
-		// Text-tool "sticker" label: a plain vtkTextActor3D lying flat in the surface's XY plane, so
-		// its size must be expressed in WORLD units (font pixels scaled by the data extent) — there is
-		// no camera-facing billboard here to keep a constant on-screen size.
-		double b[6]; surfGetBounds(s, b);
-		double ext = std::max(b[1] - b[0], b[3] - b[2]);
-		if (!(ext > 0.0)) ext = 1.0;
-		tl.actor->SetScale(ext / 800.0);                // world units per font pixel
-	} else {
-		// Batch-owned (billboard): vtkBillboardTextActor3D already keeps a constant SCREEN size from
-		// its own TextProperty font size (set above) — an extra world-unit SetScale here would resize
-		// the glyph itself on top of that, same mistake the tick-label billboards (10_geometry.cpp)
-		// deliberately avoid. Leave Scale at its 1,1,1 default.
-		ba->ForceOpaqueOn();            // never depth-sorted/faded as translucent (matches gizmo/tick billboards)
-	}
+	ba->SetInput(tl.text.c_str());
+	ba->ForceOpaqueOn();                // never depth-sorted/faded as translucent (matches gizmo/tick billboards)
 	tl.actor->SetPosition(tl.pos[0] * s->xfac, tl.pos[1], 0.0);
 	tl.actor->PickableOff();
 }
@@ -1348,14 +1328,20 @@ static void textApplyProps(Scene *s, TextLabel& tl) {
 // Index of the text label whose RENDERED extent covers (x,y) display px, or -1. Topmost wins. The
 // label can be large, so we test its actual world bounding box projected to the screen (a tiny
 // centre-only hit would miss clicks on the visible glyphs -> they would fall through and rotate the
-// camera). `tol` pads the box. Batch-owned (grouped) labels are excluded — same reasoning as
-// rebuildSceneObjects' own skip: they're controlled entirely by their batch (drag-follow via
-// MecaBall::dateLabel, style via mecaGroupPropsDialog), not by the generic Text-tool click/drag/menu,
-// which also assumes a plain vtkTextActor3D underneath (textLabelMenu/textPropsDialog signatures).
+// camera). `tol` pads the box.
+//
+// Matches EVERY text label, batch-owned or not — all are vtkBillboardTextActor3D now (standing
+// rule, TextLabel, 10_geometry.cpp), so `GetBounds()`/`SetPosition()` (the only calls this function
+// and polygonHandleMove's textDrag branch make on `tl.actor`) work the same for all of them, no
+// downcast needed. Every label is independently click-draggable, not JUST carried along by its
+// owning symbol/ball (which can ALSO carry it, via a separate mechanism — see `symPtDrag`/
+// `mecaDragTo`). The right-click PROPERTIES path (70_window.cpp) still branches on
+// `groupName.empty()` — but only to pick which dialog opens (`textLabelMenu` vs
+// `batchTextLabelsDialog`), never to decide whether one does.
 static int polyHitText(Scene *s, int x, int y, double tol) {
 	for (int i = (int)s->texts.size() - 1; i >= 0; --i) {
 		auto& tl = s->texts[i];
-		if (!tl.actor || tl.actor->GetVisibility() == 0 || !tl.groupName.empty()) continue;
+		if (!tl.actor || tl.actor->GetVisibility() == 0) continue;
 		double b[6]; tl.actor->GetBounds(b);                    // world space (position + scale baked in)
 		if (b[0] > b[1] || b[2] > b[3]) continue;               // not rendered yet -> no valid box
 		double minx = 1e30, miny = 1e30, maxx = -1e30, maxy = -1e30;
@@ -1373,21 +1359,19 @@ static int polyHitText(Scene *s, int x, int y, double tol) {
 	return -1;
 }
 
-// Text tool: place a flat label on the XY plane at world point w (TRUE coords, z ignored). Asks for
-// the string; an empty string / Cancel places nothing.
+// Text tool: place a billboard label on the XY plane at world point w (TRUE coords, z ignored).
+// Asks for string/font/size/colour/bold/italic up front (textFontDialog, 50_scene.cpp — the SAME
+// dialog an existing label's "Text Properties…" uses, never a forked copy); Cancel or an empty
+// string places nothing.
 static void polyPlaceText(Scene *s, const double w[3]) {
-	bool ok = false;
-	const QString txt = QInputDialog::getText(s->widget, "Text label", "Text:",
-											  QLineEdit::Normal, "", &ok);
-	if (ok && !txt.isEmpty()) {
-		TextLabel tl;
+	TextLabel tl;                                            // seeds the dialog with its own defaults
+	if (textFontDialog(s->widget, "New text label", tl.text, tl.font, tl.size, tl.color, tl.bold, tl.italic)) {
 		tl.pos  = { w[0], w[1], 0.0 };
-		tl.text = txt.toStdString();
 		tl.name = "Text " + std::to_string((int)s->texts.size() + 1);   // short list label
-		tl.actor = vtkSmartPointer<vtkTextActor3D>::New();
+		tl.actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();     // ALWAYS billboard, see TextLabel
 		textApplyProps(s, tl);
 		// Add to the overlay layer (axesRen): it shares the main camera but clears its own depth, so
-		// the relief can NEVER occlude the label — text is always on top while still lying flat on XY.
+		// the relief can NEVER occlude the label — text is always on top, camera-facing.
 		(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
 		s->texts.push_back(tl);
 		rebuildSceneObjects(s);
@@ -1505,10 +1489,24 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 		s->symDragPressX = x; s->symDragPressY = y;           // dblclick) — generous handle tolerance for the
 		return true;                                          // hit-test, but see the move-threshold gate below
 	}
+	// Idle: grab a text label to drag it on the plane. Tested BEFORE the symbol-point pick below —
+	// a city's name label sits only a small offset from its star, so their hit zones overlap, and
+	// the label (visually on top, and what the user is actually clicking) must win that overlap.
+	const int ti = polyHitText(s, x, y, 14.0);
+	if (ti >= 0) { s->textDrag = ti; return true; }
+	{
+		int li = -1, pi = -1;
+		double w0[3];
+		// Idle: grab a single point in a BATCH symbol layer (e.g. a Cities star) to drag it, exactly
+		// like mecaHitAt below grabs a beachball — no arm/double-click step (that flow is oneShot-only).
+		if (pickSymbolPointAt(s, x, y, li, pi) && polyPickWorld(s, x, y, w0)) {
+			s->symPtDrag = li; s->symPtIdx = pi;
+			s->symPtDragLastW[0] = w0[0]; s->symPtDragLastW[1] = w0[1];
+			return true;
+		}
+	}
 	const int mi_ = mecaHitAt(s, x, y);                 // idle: grab a beachball to drag it (leaves an anchor line)
 	if (mi_ >= 0) { s->mecaDrag = mi_; return true; }
-	const int ti = polyHitText(s, x, y, 14.0);          // idle: grab a text label to drag it on the plane
-	if (ti >= 0) { s->textDrag = ti; return true; }
 	return false;                                        // otherwise let VTK navigate normally
 }
 
@@ -1635,6 +1633,34 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 		}
 		return true;
 	}
+	if (s->symPtDrag >= 0 && s->symPtDrag < (int)s->symbols.size()) {   // dragging ONE point of a batch symbol
+		double w[3];                                                     // layer (e.g. a Cities star)
+		if (polyPickWorld(s, x, y, w)) {
+			const double ddx = w[0] - s->symPtDragLastW[0], ddy = w[1] - s->symPtDragLastW[1];
+			s->symPtDragLastW[0] = w[0]; s->symPtDragLastW[1] = w[1];
+			SymbolLayer &sl = s->symbols[s->symPtDrag];
+			if (auto *pd = symInputPD(sl)) {
+				vtkPoints *pts = pd->GetPoints();
+				if (pts && s->symPtIdx >= 0 && s->symPtIdx < pts->GetNumberOfPoints()) {
+					double p[3]; pts->GetPoint(s->symPtIdx, p);
+					p[0] += ddx * s->xfac; p[1] += ddy;
+					pts->SetPoint(s->symPtIdx, p);
+					pts->Modified(); pd->Modified();
+				}
+			}
+			// Carry the linked name label along, SAME mechanism as mecaDragTo carrying a ball's date
+			// label — found by (groupName, mecaEvent) instead of a cached pointer since s->texts can
+			// reorder/erase (same reasoning as mecaDragTo's own re-find-by-actor).
+			for (auto &tl : s->texts) {
+				if (tl.groupName != sl.name || tl.mecaEvent != s->symPtIdx) continue;
+				tl.pos[0] += ddx; tl.pos[1] += ddy;
+				if (tl.actor) tl.actor->SetPosition(tl.pos[0] * s->xfac, tl.pos[1], 0.0);
+				break;
+			}
+			s->widget->renderWindow()->Render();
+		}
+		return true;
+	}
 	if (s->mecaDrag >= 0 && s->mecaDrag < (int)s->mecaBalls.size()) {   // dragging a beachball across the XY plane
 		double w[3];
 		if (pickPlaneXY(s, x, y, w)) {
@@ -1699,6 +1725,7 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 // Left release: end a vertex / text-label drag.
 static bool polygonHandleRelease(Scene *s) {
 	if (s->symLayerDrag >= 0) { s->symLayerDrag = -1; return true; }
+	if (s->symPtDrag    >= 0) { s->symPtDrag = -1; s->symPtIdx = -1; return true; }
 	if (s->mecaDrag >= 0) { s->mecaDrag = -1; return true; }
 	if (s->polyDragWhole) {                              // ended a Shift+drag whole-element move
 		s->polyDragWhole = false;

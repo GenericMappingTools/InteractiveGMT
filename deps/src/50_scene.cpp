@@ -316,25 +316,25 @@ static void chooseColormap(Scene *s, const QPoint& gp, std::function<void(const 
 	m.exec(gp);
 }
 
-// Font / colour editor for a text label. Reachable from the label's Scene-Objects row or a canvas
-// right-click. Edits the string, family (Arial/Courier/Times — VTK's built-in faces), size, colour,
-// bold and italic, then re-applies and re-renders.
-static void textPropsDialog(Scene *s, vtkTextActor3D *act) {
-	TextLabel *tl = nullptr;
-	for (auto& t : s->texts) if (t.actor.Get() == act) { tl = &t; break; }
-	if (!tl) return;
-
-	QDialog d(s->widget);
-	d.setWindowTitle("Text Properties");
+// Shared string/font/colour editor for a text label — the ONE dialog both the Text tool's
+// PLACEMENT (polyPlaceText, 85_polygon.cpp — string/font/size/colour/bold/italic chosen up front,
+// not just left at TextLabel's bare defaults) and an EXISTING label's right-click "Text
+// Properties…" (textPropsDialog, below) use, never two forked copies of the same form. Seeded from
+// (and writes back into) the given fields directly. Returns true iff accepted with a non-empty
+// string.
+static bool textFontDialog(QWidget *parent, const QString &title, std::string &text,
+                           std::string &font, int &size, double color[3], bool &bold, bool &italic) {
+	QDialog d(parent);
+	d.setWindowTitle(title);
 	QFormLayout *fl = new QFormLayout(&d);
-	QLineEdit *eText = new QLineEdit(QString::fromStdString(tl->text), &d);
+	QLineEdit *eText = new QLineEdit(QString::fromStdString(text), &d);
 	QComboBox *eFont = new QComboBox(&d);
 	eFont->addItems({ "Arial", "Courier", "Times" });
-	eFont->setCurrentText(QString::fromStdString(tl->font));
-	QSpinBox *eSize = new QSpinBox(&d); eSize->setRange(4, 300); eSize->setValue(tl->size);
-	QCheckBox *eBold = new QCheckBox("Bold", &d);   eBold->setChecked(tl->bold);
-	QCheckBox *eItal = new QCheckBox("Italic", &d); eItal->setChecked(tl->italic);
-	QColor col = QColor::fromRgbF(tl->color[0], tl->color[1], tl->color[2]);
+	eFont->setCurrentText(QString::fromStdString(font));
+	QSpinBox *eSize = new QSpinBox(&d); eSize->setRange(4, 300); eSize->setValue(size);
+	QCheckBox *eBold = new QCheckBox("Bold", &d);   eBold->setChecked(bold);
+	QCheckBox *eItal = new QCheckBox("Italic", &d); eItal->setChecked(italic);
+	QColor col = QColor::fromRgbF(color[0], color[1], color[2]);
 	QPushButton *eColor = new QPushButton(&d);
 	auto paintSwatch = [eColor](const QColor& c) { eColor->setStyleSheet("background:" + c.name()); };
 	paintSwatch(col);
@@ -352,21 +352,33 @@ static void textPropsDialog(Scene *s, vtkTextActor3D *act) {
 	fl->addRow(bb);
 	QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
 	QObject::connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
-	if (d.exec() != QDialog::Accepted) return;
+	if (d.exec() != QDialog::Accepted) return false;
+	text = eText->text().toStdString();
+	if (text.empty()) return false;
+	font   = eFont->currentText().toStdString();
+	size   = eSize->value();
+	bold   = eBold->isChecked();
+	italic = eItal->isChecked();
+	color[0] = col.redF(); color[1] = col.greenF(); color[2] = col.blueF();
+	return true;
+}
 
-	tl->text   = eText->text().toStdString();
-	tl->font   = eFont->currentText().toStdString();
-	tl->size   = eSize->value();
-	tl->bold   = eBold->isChecked();
-	tl->italic = eItal->isChecked();
-	tl->color[0] = col.redF(); tl->color[1] = col.greenF(); tl->color[2] = col.blueF();
+// Font / colour editor for an EXISTING text label. Reachable from the label's Scene-Objects row or
+// a canvas right-click. Edits the string, family (Arial/Courier/Times — VTK's built-in faces),
+// size, colour, bold and italic, then re-applies and re-renders.
+static void textPropsDialog(Scene *s, vtkProp3D *act) {
+	TextLabel *tl = nullptr;
+	for (auto& t : s->texts) if (t.actor.Get() == act) { tl = &t; break; }
+	if (!tl) return;
+	if (!textFontDialog(s->widget, "Text Properties", tl->text, tl->font, tl->size, tl->color, tl->bold, tl->italic))
+		return;
 	textApplyProps(s, *tl);
 	rebuildSceneObjects(s);                            // the row label tracks the (possibly new) text
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
 // Right-click menu for a text label: edit properties or delete it.
-static void textLabelMenu(Scene *s, vtkTextActor3D *act, const QPoint& globalPos) {
+static void textLabelMenu(Scene *s, vtkProp3D *act, const QPoint& globalPos) {
 	QMenu m(s->widget);
 	QAction *props = m.addAction("Text Properties…");
 	QAction *del   = m.addAction("Remove");
@@ -1860,9 +1872,9 @@ static void rebuildSceneObjects(Scene *s) {
 		// meca fill patches would without their own ONE-row-per-batch folding above. They're controlled
 		// entirely by the batch's own row (visibility + Plot event date / font in mecaGroupPropsDialog).
 		if (!tl.groupName.empty()) continue;
-		// Safe: ungrouped labels are always the plain vtkTextActor3D branch (textApplyProps/
-		// gmtvtk_add_text_h/polyPlaceText never build a billboard for an empty groupName).
-		vtkTextActor3D *act = vtkTextActor3D::SafeDownCast(tl.actor);
+		// GetVisibility/SetVisibility are vtkProp3D base methods — no downcast needed, works the
+		// same whether tl.actor is the label's actual concrete type or not.
+		vtkProp3D *act = tl.actor.Get();
 		makeRow(QString::fromStdString(tl.name), IC_Text, act->GetVisibility() != 0,
 		        [act](bool on) { act->SetVisibility(on ? 1 : 0); },
 		        [s, act](const QPoint& g) { textLabelMenu(s, act, g); },
@@ -2458,6 +2470,110 @@ static void showSymbolDataTable(Scene *s, vtkActor *act, const QString& name) {
 	dlg->show();                                          // non-modal: REPL + viewer stay live
 }
 
+// Font/colour/visibility properties for a grouped (billboard) text label, right-clicked directly.
+// `clickedIdx` is the SPECIFIC label under the cursor (index into s->texts) — its CURRENT values
+// seed the dialog, and a scope choice ("This label only" / "All labels in this group") decides
+// whether a change lands on just that one label or every label sharing its `groupName` (e.g. every
+// Cities star name). Same live-edit idea as mecaGroupPropsDialog's date-font controls (font
+// family/size/colour/bold/italic), but standalone: no compression/dilatation/rim colours
+// (meca-specific), no g_juliaMecaProps replot round-trip — these labels are already plotted, so
+// every control just re-`textApplyProps`-s the target label(s) directly and re-renders.
+static void batchTextLabelsDialog(Scene *s, const std::string &groupName, int clickedIdx, const QPoint &gp) {
+	std::vector<TextLabel*> labels;
+	for (auto &tl : s->texts) if (tl.groupName == groupName) labels.push_back(&tl);
+	if (labels.empty()) return;
+	const bool hasClicked = clickedIdx >= 0 && clickedIdx < (int)s->texts.size()
+	                      && s->texts[clickedIdx].groupName == groupName;
+	TextLabel &first = hasClicked ? s->texts[clickedIdx] : *labels.front();
+
+	QDialog *dlg = new QDialog(s->widget);
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	dlg->setWindowTitle(QString::fromStdString(groupName) + " — text label properties");
+	QVBoxLayout *lay = new QVBoxLayout(dlg);
+
+	// Scope choice only makes sense when there's more than one label in the group AND we actually
+	// know which specific one was clicked (a right-click straight on the star, rather than through
+	// some other path with no particular label in mind, has no "this one" to offer).
+	const bool offerScope = hasClicked && labels.size() > 1;
+	QRadioButton *scopeOne = offerScope ? new QRadioButton("This label only", dlg) : nullptr;
+	QRadioButton *scopeAll = offerScope ? new QRadioButton("All labels in this group", dlg) : nullptr;
+	if (offerScope) {
+		scopeOne->setChecked(true);
+		lay->addWidget(scopeOne);
+		lay->addWidget(scopeAll);
+	}
+
+	QCheckBox *visChk = new QCheckBox("Show name", dlg);
+	visChk->setChecked(first.actor && first.actor->GetVisibility() != 0);
+	lay->addWidget(visChk);
+
+	QWidget *fontRow = new QWidget(dlg);
+	QHBoxLayout *hf = new QHBoxLayout(fontRow);
+	hf->setContentsMargins(0, 0, 0, 0);
+	hf->addWidget(new QLabel("Font:", fontRow));
+	QComboBox *fontCombo = new QComboBox(fontRow);
+	fontCombo->addItems({ "Arial", "Courier", "Times" });   // textApplyProps' supported font families
+	fontCombo->setCurrentText(QString::fromStdString(first.font));
+	hf->addWidget(fontCombo);
+	QSpinBox *sizeSpin = new QSpinBox(fontRow);
+	sizeSpin->setRange(4, 300); sizeSpin->setValue(first.size);
+	hf->addWidget(sizeSpin);
+	QCheckBox *boldChk = new QCheckBox("Bold", fontRow);     boldChk->setChecked(first.bold);
+	QCheckBox *italChk = new QCheckBox("Italic", fontRow);   italChk->setChecked(first.italic);
+	hf->addWidget(boldChk);
+	hf->addWidget(italChk);
+	QPushButton *colorBtn = new QPushButton(fontRow);
+	colorBtn->setFixedWidth(60);
+	auto paintColor = [colorBtn](double r, double g, double b) {
+		colorBtn->setProperty("r", r); colorBtn->setProperty("g", g); colorBtn->setProperty("b", b);
+		colorBtn->setStyleSheet(QString("background-color: %1;").arg(QColor::fromRgbF(r, g, b).name()));
+	};
+	paintColor(first.color[0], first.color[1], first.color[2]);
+	auto commit = std::make_shared<std::function<void()>>();
+	QObject::connect(colorBtn, &QPushButton::clicked, [colorBtn, paintColor, commit, dlg]() {
+		QColor init = QColor::fromRgbF(colorBtn->property("r").toDouble(), colorBtn->property("g").toDouble(), colorBtn->property("b").toDouble());
+		QColor picked = QColorDialog::getColor(init, dlg, "Choose text colour");
+		if (picked.isValid()) { paintColor(picked.redF(), picked.greenF(), picked.blueF()); if (*commit) (*commit)(); }
+	});
+	hf->addWidget(colorBtn);
+	lay->addWidget(fontRow);
+
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
+	QObject::connect(bb, &QDialogButtonBox::rejected, dlg, &QDialog::close);
+	lay->addWidget(bb);
+
+	*commit = [=]() {
+		const bool vis = visChk->isChecked();
+		const std::string font = fontCombo->currentText().toStdString();
+		const int size = sizeSpin->value();
+		const bool bold = boldChk->isChecked(), italic = italChk->isChecked();
+		double c[3] = { colorBtn->property("r").toDouble(), colorBtn->property("g").toDouble(), colorBtn->property("b").toDouble() };
+		auto apply = [&](TextLabel &tl) {
+			tl.font = font; tl.size = size; tl.bold = bold; tl.italic = italic;
+			tl.color[0] = c[0]; tl.color[1] = c[1]; tl.color[2] = c[2];
+			textApplyProps(s, tl);
+			if (tl.actor) tl.actor->SetVisibility(vis ? 1 : 0);
+		};
+		if (offerScope && scopeOne->isChecked()) {
+			if (clickedIdx >= 0 && clickedIdx < (int)s->texts.size()) apply(s->texts[clickedIdx]);
+		} else {
+			for (auto &tl : s->texts) if (tl.groupName == groupName) apply(tl);
+		}
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	};
+	if (offerScope) {
+		QObject::connect(scopeOne, &QRadioButton::toggled, dlg, [commit](bool){ (*commit)(); });
+		QObject::connect(scopeAll, &QRadioButton::toggled, dlg, [commit](bool){ (*commit)(); });
+	}
+	QObject::connect(visChk,    &QCheckBox::toggled,          dlg, [commit](bool){ (*commit)(); });
+	QObject::connect(fontCombo, &QComboBox::currentTextChanged, dlg, [commit](const QString&){ (*commit)(); });
+	QObject::connect(sizeSpin,  QOverload<int>::of(&QSpinBox::valueChanged), dlg, [commit](int){ (*commit)(); });
+	QObject::connect(boldChk,   &QCheckBox::toggled,          dlg, [commit](bool){ (*commit)(); });
+	QObject::connect(italChk,   &QCheckBox::toggled,          dlg, [commit](bool){ (*commit)(); });
+	dlg->move(gp);
+	dlg->show();
+}
+
 // Right-click / left-click properties for a symbol layer row: change shape, fill + edge colour,
 // on-screen size and edge width, or delete the layer. Edits the SymbolLayer + its actor/glyph in
 // place (no re-upload of points); size goes through the per-frame rescaler so it stays literal px.
@@ -2514,6 +2630,9 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 		m.addSeparator();
 	}
 	QAction *tblA = m.addAction("Show data table…");      // floating point-table viewer (X/Y[/Z])
+	// Any linked name labels (Cities' city names) get their OWN properties menu on a right-click of
+	// the LABEL itself (70_window.cpp's view dispatch -> batchTextLabelsDialog) — never nested in
+	// here. This menu stays symbol-only: shape/colour/size/stacking/remove.
 	m.addSeparator();
 	QMenu *tm = m.addMenu("Symbol");
 	static const std::pair<const char*, const char*> KINDS[] = {

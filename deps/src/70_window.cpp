@@ -6055,8 +6055,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mGeo->addAction("Plate boundaries",              geoPlot("plateboundaries", ""));
 
 	QMenu *mCit = mGeo->addMenu("Cities");
-	mCit->addAction("Major cities", geoTODO("Major cities"));
-	mCit->addAction("Other cities", geoTODO("Other cities"));
+	mCit->addAction("Major cities", geoPlot("city_major", ""));
+	mCit->addAction("Other cities", geoPlot("city", ""));
 
 	QMenu *mODP = mGeo->addMenu("DSDP/ODP/IODP sites");
 	mODP->addAction("DSDP",          geoTODO("DSDP"));
@@ -6684,10 +6684,18 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 					return;
 				}
 				const int tHit = polyHitText(s, px, py, 14.0);    // a text label under the cursor?
+				// polyHitText matches every label (all are billboards now, 2026-07-24 — all
+				// independently draggable). Each kind gets its OWN properties menu, right on the
+				// label itself, never nested inside the symbol/ball's own menu: standalone (Text tool,
+				// no groupName) -> textLabelMenu (full editor: string/font/colour + Remove);
+				// batch-owned (groupName set) -> batchTextLabelsDialog (font/size/colour/bold/italic/
+				// visibility, offering "this label only" vs "all labels in this group" — `tHit` names
+				// the CLICKED label, so the dialog knows which one "this" means).
 				if (tHit >= 0) {
-					// polyHitText only ever returns ungrouped labels (plain vtkTextActor3D) — see its
-					// own comment (85_polygon.cpp) for why grouped/billboard labels are excluded there.
-					textLabelMenu(s, vtkTextActor3D::SafeDownCast(s->texts[tHit].actor), widget->mapToGlobal(pos));
+					if (s->texts[tHit].groupName.empty())
+						textLabelMenu(s, s->texts[tHit].actor.Get(), widget->mapToGlobal(pos));
+					else
+						batchTextLabelsDialog(s, s->texts[tHit].groupName, tHit, widget->mapToGlobal(pos));
 					return;
 				}
 				if (vtkActor *sym = pickSymbolAt(s, px, py)) {    // symbol layers sit on top

@@ -378,7 +378,9 @@ protected:
 			return;
 		}
 		// Hover feedback: show the quadruple-arrow over any draggable element (colorbar / polygon
-		// vertex handle in edit mode / text label). Skipped while the draw tool owns a crosshair.
+		// vertex handle in edit mode). Skipped while the draw tool owns a crosshair. Deliberately
+		// does NOT cover text labels or batch symbol points (Cities stars etc) — user found the
+		// cursor swap over those annoying (2026-07-24); they're still draggable, just silently.
 		if (s && !s->polyMode && !s->polyDragWhole) {   // skip hover-cursor while a whole-element drag owns the crosshair
 			double dx, dy; devPx(e->position().toPoint(), dx, dy);
 			const int *sz = renderWindow()->GetSize();
@@ -386,7 +388,6 @@ protected:
 			const double ny = sz[1] > 0 ? dy / sz[1] : 0.0;
 			const bool over = colorbarHit(s, nx, ny)
 			               || (s->polyEdit >= 0 && polyHitHandle(s, (int)dx, (int)dy, 10.0) >= 0)
-			               || polyHitText(s, (int)dx, (int)dy, 14.0) >= 0
 			               || mecaHitAt(s, (int)dx, (int)dy) >= 0
 			               || (s->symArmed >= 0 && symHitHandle(s, (int)dx, (int)dy, 16.0));
 			const bool isAll = cursor().shape() == Qt::SizeAllCursor;
