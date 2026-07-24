@@ -1,8 +1,18 @@
 # xyplot.jl — the standalone X,Y plot tool (the evolution of the Profile). Opens a SEPARATE Qt
-# window (vtkChartXY plot + Object Manager + foldable Data Viewer + menubar/toolbar); the C side
-# (deps/src/65_xyplot.cpp) owns the GUI, Julia owns the data. Non-blocking: the shared Qt pump
-# (eventloop.jl `_start_pump`) keeps the REPL alive — `gmtvtk_process_events` counts these windows
-# too. File > Open/Save and the menu route back here through the `_on_xy` callback.
+# window (vtkChartXY plot + Object Manager + menubar/toolbar); the C side (deps/src/65_xyplot.cpp)
+# owns the GUI, Julia owns the data. Non-blocking: the shared Qt pump (eventloop.jl `_start_pump`)
+# keeps the REPL alive — `gmtvtk_process_events` counts these windows too. File > Open/Save and the
+# menu route back here through the `_on_xy` callback.
+
+# LAW (still being tuned): a new vector quantity that needs an X,Y display goes to a NEW PAGE on
+# the X,Y tool window that's already open, NOT a second X,Y Tool instance -- one tool, many pages,
+# each page keeping its own axes/time-mode/series, same as an Excel workbook's sheets. `_XY_CURRENT`
+# tracks the most recently opened/seeded X,Y window (from ANY of its spawn paths: `xyplot()` itself,
+# Profile -> X,Y, the 3-D viewer's Tools > X,Y plot, File > New); `xyplot()` checks it and adds a
+# page instead of a window when it's still alive. Explicit "open a new window" GESTURES (File > New,
+# Tools > X,Y plot) still always create a fresh window on request -- they just also become the new
+# `_XY_CURRENT` target for whatever `xyplot()` call comes next.
+const _XY_CURRENT = Ref{Ptr{Cvoid}}(C_NULL)
 
 # X-axis time modes -> the C `gmtvtk_xyplot_set_xtime` codes. X must be Unix epoch seconds.
 const _XTIME = Dict(:linear => 0, :date => 1, :date_ymd => 2, :time => 3, :decyear => 4, :doy => 5)
@@ -34,10 +44,21 @@ function xyplot(x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="",
                 title::AbstractString="",
                 xlabel::AbstractString="X", ylabel::AbstractString="Y", xtime::Symbol=:linear,
                 xscale::Symbol=:linear, yscale::Symbol=:linear)
-	h = ccall(_fn(:gmtvtk_xyplot_open), Ptr{Cvoid}, (Cstring,), String(title))
-	h == C_NULL && error("xyplot: failed to open the plot window")
-	p = _register_fig!(QtXYPlot(h))
-	_start_pump()
+	local p::QtXYPlot
+	if _XY_CURRENT[] != C_NULL &&
+	   ccall(_fn(:gmtvtk_xyplot_is_alive), Cint, (Ptr{Cvoid},), _XY_CURRENT[]) != 0
+		# One such tool already exists -> new page on it, not a second window (see the LAW note
+		# at the top of this file). `title` becomes the PAGE name here (it labelled the WINDOW
+		# title in the fresh-window branch below).
+		p = _FIGREG[_XY_CURRENT[]]::QtXYPlot
+		ccall(_fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), p.h, String(title))
+	else
+		h = ccall(_fn(:gmtvtk_xyplot_open), Ptr{Cvoid}, (Cstring,), String(title))
+		h == C_NULL && error("xyplot: failed to open the plot window")
+		p = _register_fig!(QtXYPlot(h))
+		_start_pump()
+		_XY_CURRENT[] = h
+	end
 	_xy_set_labels(p, xlabel, ylabel)
 	xtime === :linear || xtime!(p, xtime)
 	_xy_add(p, x, y; name, color, linewidth, linestyle, marker, markersize)
@@ -246,6 +267,8 @@ function _on_xy_seed(plot::Ptr{Cvoid}, cx::Ptr{Float64}, cy::Ptr{Float64}, n::Ci
 			p = _register_fig!(QtXYPlot(plot))
 			_start_pump()
 		end
+		_XY_CURRENT[] = plot   # Profile -> X,Y is an explicit "open a window" gesture; it still
+		                       # becomes the target for whatever xyplot() call comes next
 		add!(p, x, y; name=nm)
 	catch e
 		_dbg("xy-seed", "ERR", sprint(showerror, e))
@@ -265,6 +288,8 @@ end
 # register a Julia mirror so its File>Open / Save / Analysis work.
 function _on_xy_new(plot::Ptr{Cvoid})::Cvoid
 	try
+		_XY_CURRENT[] = plot   # Tools > X,Y plot is an explicit "open a window" gesture; it still
+		                       # becomes the target for whatever xyplot() call comes next
 		get(_FIGREG, plot, nothing) isa QtXYPlot && return
 		_register_fig!(QtXYPlot(plot))
 		_start_pump()
@@ -308,12 +333,14 @@ function _on_xy(plot::Ptr{Cvoid}, caction::Cstring, sel::Cint, cpath::Cstring)::
 	return
 end
 
-# File > New: open a fresh empty X,Y plot window.
+# File > New: open a fresh empty X,Y plot window (an explicit "open a window" gesture -> always a
+# real new window, but it becomes the _XY_CURRENT target for whatever xyplot() call comes next).
 function _xy_open_blank()
 	h = ccall(_fn(:gmtvtk_xyplot_open), Ptr{Cvoid}, (Cstring,), "i'GMT  —  X,Y plot")
 	h == C_NULL && return
 	_register_fig!(QtXYPlot(h))
 	_start_pump()
+	_XY_CURRENT[] = h
 	return
 end
 
