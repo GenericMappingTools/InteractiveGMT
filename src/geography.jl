@@ -344,6 +344,11 @@ function _tide_range(start_iso::AbstractString, end_iso::AbstractString,
 	return GMT.Dates.format(t0, "yyyy-mm-ddTHH:MM:SS"), days
 end
 
+# Tide failures MUST be visible: sceneLogError (Errors tab) alone is silently dropped/missed on
+# fold — same trap that hit Focal mechanisms 3x (see _focal_fail, focal.jl) — so also pop a modal.
+_tides_fail(scene, msg) = (_viewer_log_error(scene, msg);
+	ccall(_fn(:gmtvtk_error_box), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), scene, "Tides download", String(msg)))
+
 # C callback for the two "Download Mareg …" entries on a Tide Stations star's right-click menu.
 # `mode` is "2days" | "calendar"; `station` is the clicked star's "Name:/Code:/Country:" hover block,
 # from which we pull the station code. The actual download + parse is GMT.jl's `maregrams` (same IOC
@@ -360,22 +365,34 @@ function _on_tides_download(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring
 		mode    = unsafe_string(cmode)
 		m    = match(r"Code:\s*(\S+)", station)
 		code = m === nothing ? "" : String(m.captures[1])
-		isempty(code) && (@warn "tides: no station code found" station; return)
+		if isempty(code)
+			_tides_fail(scene, "no station code found in '$station'")
+			@warn "tides: no station code found" station; return
+		end
 		# "calendar/<startISO>/<endISO>" -> a user-picked range; anything else -> the last 2 days.
 		if startswith(mode, "calendar/")
 			parts = split(mode, '/')
-			length(parts) >= 3 || (@warn "tides: malformed calendar request" mode; return)
+			if length(parts) < 3
+				_tides_fail(scene, "malformed calendar request '$mode'")
+				@warn "tides: malformed calendar request" mode; return
+			end
 			starttime, days = _tide_range(parts[2], parts[3])
 			D = GMT.maregrams(code = code, starttime = starttime, days = days)
 		else
 			D = GMT.maregrams(code = code, days = 2)    # last 2 days; GMT.jl does the IOC download
 		end
-		(D === nothing || size(D.data, 1) < 2) && (@warn "tides: nothing to plot" code; return)
+		if D === nothing || size(D.data, 1) < 2
+			_tides_fail(scene, "station '$code' returned no data (IOC feed has none for this station/range)")
+			@warn "tides: nothing to plot" code; return
+		end
 		# Drop NaN sea-level samples (gaps) so the panel's min/max stay finite.
 		t  = Float64.(view(D.data, :, 1)); v = Float64.(view(D.data, :, 2))
 		ok = isfinite.(t) .& isfinite.(v)
 		x  = t[ok]; y = v[ok]
-		length(x) < 2 && (@warn "tides: no finite samples" code; return)
+		if length(x) < 2
+			_tides_fail(scene, "station '$code' data all NaN/gaps, nothing to plot")
+			@warn "tides: no finite samples" code; return
+		end
 		nm    = get(D.attrib, "ST_name", "")
 		title = isempty(nm) ? code : "$nm ($code)"
 		ylab  = (length(D.colnames) >= 2) ? D.colnames[2] : "Sea level (m)"
@@ -384,7 +401,7 @@ function _on_tides_download(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring
 		# seconds -> xtime=:date paints date/time labels (matches the old isDate=1 path).
 		xyplot(x, y; name=title, title=title, xlabel="Time (UTC)", ylabel=ylab, xtime=:date)
 	catch e
-		_viewer_log_error(scene, "Tides download FAILED: $(sprint(showerror, e))")
+		_tides_fail(scene, sprint(showerror, e))
 		@warn "tides: download callback failed" exception=(e,)
 	end
 	return
