@@ -1346,13 +1346,91 @@ static void xyRenamePage(XYPlot *s, int idx, const QString &name) {
 	}
 }
 
-// Right-click on the tab bar: New / Duplicate / Rename / Delete the clicked page.
+// Combined X data range across every series of page `idx` (column 0 of each series' table).
+// Returns false (lo/hi untouched) if the page has no series at all.
+static bool xyPageXRange(XYPlot *s, int idx, double &lo, double &hi) {
+	if (idx < 0 || idx >= (int)s->pages.size())
+		return false;
+	bool any = false;
+	for (const XYSeries &se : s->pages[idx].series) {
+		if (!se.table || se.table->GetNumberOfRows() == 0)
+			continue;
+		vtkDataArray *xcol = vtkDataArray::SafeDownCast(se.table->GetColumn(0));
+		if (!xcol)
+			continue;
+		double r[2];
+		xcol->GetRange(r);
+		if (!any || r[0] < lo) lo = r[0];
+		if (!any || r[1] > hi) hi = r[1];
+		any = true;
+	}
+	return any;
+}
+
+// Copy every series of page `srcIdx` into page `dstIdx` (appends -- the target page's own
+// series are kept). If the two pages' X data ranges don't intersect at all, warns first and
+// asks for confirmation: that usually means the wrong target was picked (e.g. mixing up two
+// unrelated time windows).
+static void xyCopyToPage(XYPlot *s, int srcIdx, int dstIdx) {
+	if (srcIdx < 0 || srcIdx >= (int)s->pages.size() || dstIdx < 0 || dstIdx >= (int)s->pages.size() || srcIdx == dstIdx)
+		return;
+	double sLo, sHi, dLo, dHi;
+	const bool haveSrc = xyPageXRange(s, srcIdx, sLo, sHi);
+	const bool haveDst = xyPageXRange(s, dstIdx, dLo, dHi);
+	if (haveSrc && haveDst && (sHi < dLo || dHi < sLo)) {
+		const QString msg = QString(
+			"\"%1\" spans X = [%2, %3], and \"%4\" spans X = [%5, %6] — these ranges do not "
+			"overlap at all.\n\nCopying data whose X never intersects the target page usually "
+			"means the wrong page was picked.\n\nCopy anyway?")
+			.arg(QString::fromStdString(s->pages[srcIdx].name)).arg(sLo).arg(sHi)
+			.arg(QString::fromStdString(s->pages[dstIdx].name)).arg(dLo).arg(dHi);
+		const auto ans = QMessageBox::warning(s->win, "Copy to Page — X ranges don't overlap", msg,
+			QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+		if (ans != QMessageBox::Yes)
+			return;
+	}
+	XYPage &src = s->pages[srcIdx];
+	XYPage &dst = s->pages[dstIdx];
+	for (const XYSeries &so : src.series) {
+		XYSeries se = so;                                // copies style/name; deep-copy the table next
+		se.table = vtkSmartPointer<vtkTable>::New();
+		se.table->DeepCopy(so.table);
+		vtkPlot *pl = dst.chart->AddPlot(vtkChart::LINE);
+		pl->SetInputData(se.table, 0, 1);
+		pl->SetLabel(se.name);
+		pl->SetTooltipLabelFormat("%x, %y");
+		pl->SetVisible(se.visible);
+		se.plot = pl;
+		xyApplyStyle(s, se);
+		dst.series.push_back(se);
+	}
+	if (dstIdx == s->curPageIdx) {
+		dst.chart->RecalculateBounds();
+		xyRebuildObjMgr(s);
+		dst.lastLo = std::numeric_limits<double>::quiet_NaN();  // force a tick recompute
+		dst.lastHi = std::numeric_limits<double>::quiet_NaN();
+		xyRefreshTicks(s);
+		if (s->widget && s->widget->renderWindow())
+			s->widget->renderWindow()->Render();
+	}
+}
+
+// Right-click on the tab bar: New / Duplicate / Rename / Copy to Page / Delete the clicked page.
 static void xyTabMenu(XYPlot *s, const QPoint &pos) {
 	const int idx = s->tabs->tabAt(pos);
 	QMenu m(s->tabs);
 	QAction *aNew = m.addAction("New");
 	QAction *aDup = (idx >= 0) ? m.addAction("Duplicate") : nullptr;
 	QAction *aRen = (idx >= 0) ? m.addAction("Rename…")   : nullptr;
+	std::vector<std::pair<QAction*, int>> copyTargets;
+	if (idx >= 0 && s->pages.size() > 1) {
+		QMenu *mCopy = m.addMenu("Copy to Page");
+		for (int i = 0; i < (int)s->pages.size(); ++i) {
+			if (i == idx)
+				continue;
+			copyTargets.push_back({mCopy->addAction(QString::fromStdString(s->pages[i].name)), i});
+		}
+	}
 	m.addSeparator();
 	QAction *aDel = (idx >= 0) ? m.addAction("Delete")    : nullptr;
 	QAction *pick = m.exec(s->tabs->mapToGlobal(pos));
@@ -1369,6 +1447,13 @@ static void xyTabMenu(XYPlot *s, const QPoint &pos) {
 		if (ok) xyRenamePage(s, idx, nn);
 	} else if (aDel && pick == aDel) {
 		xyDeletePage(s, idx);
+	} else {
+		for (const auto &ct : copyTargets) {
+			if (pick == ct.first) {
+				xyCopyToPage(s, idx, ct.second);
+				break;
+			}
+		}
 	}
 }
 
