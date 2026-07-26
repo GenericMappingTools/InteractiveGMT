@@ -1,0 +1,667 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  gravmag3d_dialog.ui — Geophysics > Magnetics > "gmtgravmag3d".
+  Loaded at RUNTIME by GravMag3DDialog (deps/src/70_window.cpp) via QUiLoader, so it may only use
+  plain Qt widget classes (no promoted/custom widgets). Every control maps 1:1 onto a GMT.jl
+  `gravmag3d` keyword — the option letter is in each label so the mapping stays obvious:
+    Body tab   : M|body (geometric bodies), Tv|index, Tr|raw_triang, Ts|stl, Q|onebased, noswap
+    Anomaly tab: C|density (gravity)  XOR  H|mag_params (magnetic) — mutually exclusive in GMT
+    Output tab : R|region, I|inc, L|z_obs, Z|level, E|thickness, S|radius, F|track, G|save
+-->
+<ui version="4.0">
+ <class>GravMag3DDialog</class>
+ <widget class="QDialog" name="GravMag3DDialog">
+  <property name="windowTitle">
+   <string>gmtgravmag3d</string>
+  </property>
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>470</width>
+    <height>390</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <property name="spacing">
+    <number>4</number>
+   </property>
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+
+     <!-- ===================== TAB: Body ===================== -->
+     <widget class="QWidget" name="tab_body">
+      <attribute name="title">
+       <string>Body</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_body">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+
+       <item>
+        <widget class="QRadioButton" name="rb_geomBody">
+         <property name="text">
+          <string>Geometric body(s)   (M | body)</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_geom">
+         <item>
+          <widget class="QComboBox" name="cb_shape">
+           <item>
+            <property name="text">
+             <string>prism</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>sphere</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>ellipsoid</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>cylinder</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>cone</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>pyramid</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>bell</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_bodyParams">
+           <property name="toolTip">
+            <string>Slash-separated parameters of the selected shape. Depths are positive UP, so a body below the surface has a negative z.</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_addBody">
+           <property name="text">
+            <string>Add</string>
+           </property>
+           <property name="toolTip">
+            <string>Add this shape to the body list. More than one body can be piled up (they all share the same density / magnetic parameters).</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_bodyList">
+         <item>
+          <widget class="QListWidget" name="list_bodies">
+           <property name="maximumHeight">
+            <number>68</number>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_delBody">
+           <property name="text">
+            <string>Del</string>
+           </property>
+           <property name="toolTip">
+            <string>Remove the selected body from the list</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <widget class="QRadioButton" name="rb_file">
+         <property name="text">
+          <string>Surface/triangles from file</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_file">
+         <item>
+          <widget class="QComboBox" name="cb_fileKind">
+           <property name="toolTip">
+            <string>Which -T flavour the file is</string>
+           </property>
+           <item>
+            <property name="text">
+             <string>raw triangles (Tr)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>index/vertex (Tv)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>STL (Ts)</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_bodyFile">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_bodyFileBrowse">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <widget class="QRadioButton" name="rb_memFV">
+         <property name="text">
+          <string>3-D solid already in this window</string>
+         </property>
+         <property name="toolTip">
+          <string>Use the triangulated solid (GMTfv) loaded in this window. Bodies made of quadrangles (e.g. cube) are not accepted by gravmag3d.</string>
+         </property>
+        </widget>
+       </item>
+
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_flags">
+         <item>
+          <widget class="QCheckBox" name="chk_onebased">
+           <property name="text">
+            <string>1-based indices  (Q)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QCheckBox" name="chk_noswap">
+           <property name="text">
+            <string>Facets are clockwise  (noswap)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="horizontalSpacer_flags">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>10</width>
+             <height>10</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <spacer name="verticalSpacer_body">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ===================== TAB: Anomaly ===================== -->
+     <widget class="QWidget" name="tab_anomaly">
+      <attribute name="title">
+       <string>Anomaly</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_anom">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+
+       <item>
+        <widget class="QRadioButton" name="rb_gravity">
+         <property name="text">
+          <string>Gravity anomaly   (C | density)</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_density">
+         <item>
+          <widget class="QLabel" name="lbl_density">
+           <property name="text">
+            <string>Density</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_density">
+           <property name="text">
+            <string>2700</string>
+           </property>
+           <property name="toolTip">
+            <string>Constant density contrast in SI, or the name of a grid with variable densities</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_densityBrowse">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <widget class="QRadioButton" name="rb_magnetic">
+         <property name="text">
+          <string>Magnetic anomaly   (H | mag_params)</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_mag">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_fDec">
+           <property name="text">
+            <string>Field dec</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLabel" name="lbl_fDip">
+           <property name="text">
+            <string>Field dip</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLabel" name="lbl_mInt">
+           <property name="text">
+            <string>Mag (A/m)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QLabel" name="lbl_mDec">
+           <property name="text">
+            <string>Mag dec</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="4">
+          <widget class="QLabel" name="lbl_mDip">
+           <property name="text">
+            <string>Mag dip</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLineEdit" name="le_fDec">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>0</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="le_fDip">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>90</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="2">
+          <widget class="QLineEdit" name="le_mInt">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>1</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="3">
+          <widget class="QLineEdit" name="le_mDec">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>0</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="4">
+          <widget class="QLineEdit" name="le_mDip">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>90</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="lbl_magNote">
+         <property name="text">
+          <string>Files with more than 3 columns carry their own magnetization; Mag (A/m) is then ignored.</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+
+       <item>
+        <spacer name="verticalSpacer_anom">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ===================== TAB: Output ===================== -->
+     <widget class="QWidget" name="tab_output">
+      <attribute name="title">
+       <string>Output</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_out">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+
+       <item>
+        <layout class="QGridLayout" name="gridLayout_region">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_region">
+           <property name="text">
+            <string>Region  (R)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="le_xmin">
+           <property name="toolTip">
+            <string>xmin</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLineEdit" name="le_xmax">
+           <property name="toolTip">
+            <string>xmax</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QLineEdit" name="le_ymin">
+           <property name="toolTip">
+            <string>ymin</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="4">
+          <widget class="QLineEdit" name="le_ymax">
+           <property name="toolTip">
+            <string>ymax</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lbl_inc">
+           <property name="text">
+            <string>Increment  (I)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="le_xinc">
+           <property name="text">
+            <string>0.1</string>
+           </property>
+           <property name="toolTip">
+            <string>x_inc</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="2">
+          <widget class="QLineEdit" name="le_yinc">
+           <property name="toolTip">
+            <string>y_inc — leave empty to reuse x_inc</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="3" colspan="2">
+          <widget class="QCheckBox" name="chk_geog">
+           <property name="text">
+            <string>Geographic (f=:g)</string>
+           </property>
+           <property name="toolTip">
+            <string>Convert lon/lat to meters with a Flat Earth approximation</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <layout class="QGridLayout" name="gridLayout_misc">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_zobs">
+           <property name="text">
+            <string>Observation level  (L)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="le_zobs">
+           <property name="text">
+            <string>0</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLabel" name="lbl_level">
+           <property name="text">
+            <string>Reference level  (Z)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QLineEdit" name="le_level"/>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lbl_thickness">
+           <property name="text">
+            <string>Layer thickness, m  (E)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="le_thickness">
+           <property name="toolTip">
+            <string>Only for a NON-closed surface whose constant-thickness layer anomaly you want</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="2">
+          <widget class="QLabel" name="lbl_radius">
+           <property name="text">
+            <string>Search radius, km  (S)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="3">
+          <widget class="QLineEdit" name="le_radius">
+           <property name="toolTip">
+            <string>Valid only in two-grids mode or together with a layer thickness [30 km]</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_track">
+         <item>
+          <widget class="QLabel" name="lbl_track">
+           <property name="text">
+            <string>Track  (F)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_track">
+           <property name="toolTip">
+            <string>x,y file with the locations where the anomaly is computed. Mutually exclusive with a grid output — the result comes back as a table.</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_trackBrowse">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_outfile">
+         <item>
+          <widget class="QLabel" name="lbl_outfile">
+           <property name="text">
+            <string>Save as  (G)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_outfile">
+           <property name="toolTip">
+            <string>Optional. The result is always added to this window; give a name here to also write it to disk.</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_outfileBrowse">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <spacer name="verticalSpacer_out">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+    </widget>
+   </item>
+
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="horizontalSpacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>10</width>
+         <height>10</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_compute">
+       <property name="text">
+        <string>Compute</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_close">
+       <property name="text">
+        <string>Close</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

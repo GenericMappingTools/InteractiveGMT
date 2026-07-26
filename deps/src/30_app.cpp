@@ -249,6 +249,20 @@ static JuliaIgrfFileFn g_juliaIgrfFile = nullptr;
 typedef int (*JuliaRtp3DFn)(void *scene, const char *params);
 static JuliaRtp3DFn g_juliaRtp3D = nullptr;
 
+// Gravity/Magnetic anomaly of a 3-D body (Geophysics > Magnetics > gmtgravmag3d) — GMT's gmtgravmag3d
+// (Okabe 1979) through GMT.jl's `gravmag3d` (src/gravmag3d.jl). The dialog (GravMag3DDialog,
+// 70_window.cpp, loads deps/ui/gravmag3d_dialog.ui) hands a NEWLINE-separated "key=value" block:
+//   bodykind=geom|file|memfv, bodies=shape,params|shape,params (geom), file=+filekind=raw|index|stl,
+//   onebased, noswap, mode=grav|mag, density= or magparams=f_dec/f_dip/m_int/m_dec/m_dip,
+//   region=w/e/s/n, inc=xinc[/yinc], geog, zobs, level, thickness, radius, track, outfile
+// (every key but bodykind/mode optional — an absent key means "don't pass that option to GMT").
+// The result grid is added to `scene` as a new derived variable; a `track` run produces a table
+// window instead. Returns 1 on success, 0 on failure — same real yes/no contract as g_juliaRtp3D,
+// since the dialog, not the parent viewer's Errors console, is what the user is looking at.
+// nullptr to detach.
+typedef int (*JuliaGravMag3DFn)(void *scene, const char *params);
+static JuliaGravMag3DFn g_juliaGravMag3D = nullptr;
+
 // Import *.gmt/*.nc cruise track file(s) (Geophysics > Magnetics), port of Mirone's
 // GeophysicsImportGmtFile_CB (mirone.m) — plots the navigation (lon/lat) of MGD77+ netCDF cruise
 // files. `path` is either the single file picked, or a list-file (one path per line, "#"-prefixed

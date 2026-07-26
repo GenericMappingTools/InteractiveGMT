@@ -152,17 +152,22 @@ if(GMTVTK_PACKAGE)
 
   # The Julia bridge — same relative layout as the dev checkout, trailing
   # slashes so CONTENTS land at DESTINATION (not nested one level deeper).
-  # Only these 4 ship: they're the ONLY .ui files loaded at RUNTIME (QUiLoader,
-  # 70_window.cpp — FocalMechanismsDialog/IgrfDialog/MagBarcodeDialog/CubeLayerDialog).
-  # Every other deps/ui/*.ui is a hand-ported design reference the running app never
-  # reads, not needed on the destination machine. COMPONENT full only — the
-  # dll-only zip is just the DLL, the .jl side is already on disk from the git clone.
+  # Only these ship: they're the ONLY .ui files loaded at RUNTIME (QUiLoader — grep
+  # `gmtvtkUiDir() +` across deps/src to check the list is complete; a missing one
+  # means that dialog simply refuses to open on an installed copy). Every other
+  # deps/ui/*.ui is a hand-ported design reference the running app never reads, not
+  # needed on the destination machine. COMPONENT full only — the dll-only zip is just
+  # the DLL, the .jl side is already on disk from the git clone.
   install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../src/"  DESTINATION src COMPONENT full)
   install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/focal_mechanisms.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/igrf_calculator.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/magnetic_barcode.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/cube_layer_selector.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/rtp3d.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/clipp_grid.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/aquamoto.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/gravmag3d_dialog.ui"
     DESTINATION deps/ui COMPONENT full)
   install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../data/" DESTINATION data COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../Project.toml"        DESTINATION . COMPONENT full)

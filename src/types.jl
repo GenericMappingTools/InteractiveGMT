@@ -60,3 +60,6 @@ isalive(f::QtXYPlot)::Bool = ccall(_fn(:gmtvtk_xyplot_is_alive), Cint, (Ptr{Cvoi
 
 # Opaque C handle of any figure type (QtFigure / QtPoints / QtFV).
 _fig_handle(fig)::Ptr{Cvoid} = getfield(fig, :h)
+# ...and the identity for code that already holds the raw `Scene*` (the dialog callbacks are handed
+# one directly by C++, and must reach the same `show_table`/etc. as everything else, not a copy).
+_fig_handle(h::Ptr{Cvoid})::Ptr{Cvoid} = h

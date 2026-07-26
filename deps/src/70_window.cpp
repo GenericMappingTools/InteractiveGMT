@@ -2260,6 +2260,390 @@ public:
 };
 
 // ============================================================================================
+// Gravity/Magnetic anomaly of a 3-D body (Geophysics > Magnetics > gmtgravmag3d) — front-end for
+// GMT's gmtgravmag3d (Okabe 1979), driven through GMT.jl's `gravmag3d` (src/gravmag3d.jl).
+// Loaded at RUNTIME via QUiLoader from deps/ui/gravmag3d_dialog.ui (plain Qt widget classes only,
+// same technique as Rtp3DDialog/ClipGridDialog above).
+//
+// Three mutually-exclusive body sources, one per radio (GMT itself accepts exactly one):
+//   rb_geomBody -> M|body: a LIST of geometric shapes (prism/sphere/…), each "shape,params"; the
+//                  module takes any number of them, all sharing one density / one set of magnetic
+//                  parameters (the module has no way to give each body its own — see the .qmd).
+//   rb_file     -> T+r|raw_triang, T+v|index or T+s|stl, picked by cb_fileKind.
+//   rb_memFV    -> the GMTfv solid already loaded in THIS window (resolved Julia-side from _FIGREG);
+//                  gravmag3d only accepts triangles, so a quadrangle solid (cube) is rejected there.
+// Gravity XOR magnetic is the second exclusive pair (C|density vs H|mag_params are mutually
+// exclusive in GMT) — the unselected side's boxes are GRAYED, never hidden, so the dialog keeps one
+// size in both modes (same rule as Rtp3DDialog's component group).
+//
+// Only Compute runs anything (only-action-button-executes-dialog); the dialog stays open across
+// runs so several bodies/parameter variants can be tried without reopening. The result grid is
+// added to the window by Julia (SACRED_LAW derived-variable display law, handled in _on_gravmag3d);
+// a Track (F) run has no grid at all and comes back as a table window instead. Success is silent —
+// the new grid appearing in the window IS the confirmation; only a failure gets a modal.
+// ============================================================================================
+
+// Every parameter the dialog holds, kept for the LIFETIME OF THE PROCESS: the dialog is deleted when
+// closed (WA_DeleteOnClose), so reopening it from the menu must restore what the user had typed from
+// here, not from the dead widget tree. Written on Compute and on close, read by the constructor.
+struct GravMag3DState {
+	bool valid = false;
+	int shape = 0, fileKind = 0, bodyMode = 0;          // bodyMode: 0 = geometric, 1 = file, 2 = in-window FV
+	bool grav = true, onebased = false, noswap = false, geog = false;
+	QStringList bodies;
+	QString params, bodyFile, density, fDec, fDip, mInt, mDec, mDip;
+	QString xmin, xmax, ymin, ymax, xinc, yinc, zobs, level, thickness, radius, track, outfile;
+};
+static GravMag3DState g_gm3dState;
+
+class GravMag3DDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QComboBox *shapeCb, *fileKindCb;
+	QLineEdit *paramsEdit, *bodyFileEdit, *densityEdit;
+	QLineEdit *fDecEdit, *fDipEdit, *mIntEdit, *mDecEdit, *mDipEdit;
+	QLineEdit *xminEdit, *xmaxEdit, *yminEdit, *ymaxEdit, *xincEdit, *yincEdit;
+	QLineEdit *zobsEdit, *levelEdit, *thickEdit, *radiusEdit, *trackEdit, *outfileEdit;
+	QListWidget *bodyList;
+	QRadioButton *rbGeom, *rbFile, *rbMemFV, *rbGrav, *rbMag;
+	QCheckBox *oneBasedChk, *noSwapChk, *geogChk;
+
+	// Slash-separated parameter template of each shape, verbatim from the gmtgravmag3d docs
+	// (optional trailing fields in brackets). Shown as the params box's placeholder so the order
+	// is never a guess; indices match cb_shape's item order in the .ui.
+	static const char *paramHint(const QString &shape) {
+		if (shape == "prism")     return "side_x/side_y/side_z/z0[/x0/y0]";
+		if (shape == "sphere")    return "rad/z_center[/x0/y0/npts/n_slices]";
+		if (shape == "ellipsoid") return "semi_x/semi_y/semi_z/z_center[/x0/y0/npts/n_slices]";
+		if (shape == "cylinder")  return "rad/height/z0[/x0/y0/npts/n_slices]";
+		if (shape == "cone")      return "semi_x/semi_y/height/z0[/x0/y0/npts]";
+		if (shape == "pyramid")   return "side_x/side_y/height/z0[/x0/y0]";
+		if (shape == "bell")      return "height/sx/sy/z0[/x0/y0/n_sig/npts/n_slices]";
+		return "";
+	}
+
+	explicit GravMag3DDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/gravmag3d_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GravMag3DDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GravMag3DDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+
+		shapeCb     = d->findChild<QComboBox *>("cb_shape");
+		fileKindCb  = d->findChild<QComboBox *>("cb_fileKind");
+		paramsEdit  = d->findChild<QLineEdit *>("le_bodyParams");
+		bodyFileEdit= d->findChild<QLineEdit *>("le_bodyFile");
+		densityEdit = d->findChild<QLineEdit *>("le_density");
+		fDecEdit = d->findChild<QLineEdit *>("le_fDec");  fDipEdit = d->findChild<QLineEdit *>("le_fDip");
+		mIntEdit = d->findChild<QLineEdit *>("le_mInt");  mDecEdit = d->findChild<QLineEdit *>("le_mDec");
+		mDipEdit = d->findChild<QLineEdit *>("le_mDip");
+		xminEdit = d->findChild<QLineEdit *>("le_xmin");  xmaxEdit = d->findChild<QLineEdit *>("le_xmax");
+		yminEdit = d->findChild<QLineEdit *>("le_ymin");  ymaxEdit = d->findChild<QLineEdit *>("le_ymax");
+		xincEdit = d->findChild<QLineEdit *>("le_xinc");  yincEdit = d->findChild<QLineEdit *>("le_yinc");
+		zobsEdit = d->findChild<QLineEdit *>("le_zobs");  levelEdit = d->findChild<QLineEdit *>("le_level");
+		thickEdit= d->findChild<QLineEdit *>("le_thickness"); radiusEdit = d->findChild<QLineEdit *>("le_radius");
+		trackEdit= d->findChild<QLineEdit *>("le_track"); outfileEdit = d->findChild<QLineEdit *>("le_outfile");
+		bodyList = d->findChild<QListWidget *>("list_bodies");
+		rbGeom = d->findChild<QRadioButton *>("rb_geomBody");
+		rbFile = d->findChild<QRadioButton *>("rb_file");
+		rbMemFV= d->findChild<QRadioButton *>("rb_memFV");
+		rbGrav = d->findChild<QRadioButton *>("rb_gravity");
+		rbMag  = d->findChild<QRadioButton *>("rb_magnetic");
+		oneBasedChk = d->findChild<QCheckBox *>("chk_onebased");
+		noSwapChk   = d->findChild<QCheckBox *>("chk_noswap");
+		geogChk     = d->findChild<QCheckBox *>("chk_geog");
+		auto *addBtn   = d->findChild<QToolButton *>("btn_addBody");
+		auto *delBtn   = d->findChild<QToolButton *>("btn_delBody");
+		auto *fileBtn  = d->findChild<QToolButton *>("btn_bodyFileBrowse");
+		auto *densBtn  = d->findChild<QToolButton *>("btn_densityBrowse");
+		auto *trackBtn = d->findChild<QToolButton *>("btn_trackBrowse");
+		auto *outBtn   = d->findChild<QToolButton *>("btn_outfileBrowse");
+		auto *computeBtn = d->findChild<QPushButton *>("btn_compute");
+		auto *closeBtn   = d->findChild<QPushButton *>("btn_close");
+
+		if (bodyList) bodyList->setSpacing(0);
+		if (shapeCb && paramsEdit) {
+			paramsEdit->setPlaceholderText(paramHint(shapeCb->currentText()));
+			QObject::connect(shapeCb, &QComboBox::currentTextChanged, d, [this](const QString &t) {
+				paramsEdit->setPlaceholderText(paramHint(t));
+			});
+		}
+
+		// A grid/surface is already loaded here -> seed the output Region from what the window shows
+		// (the anomaly is nearly always wanted over the SAME area), and pre-tick Geographic when the
+		// scene carries a CRS. Nothing is forced: every box stays editable. A remembered state (below)
+		// wins over this seed — what the user typed themselves is never overwritten by the guess.
+		if (scene && scene->surf && !scene->emptyStart) {
+			double x0 = scene->gx0, x1 = scene->gx1, y0 = scene->gy0, y1 = scene->gy1;
+			if (!(x1 > x0 && y1 > y0)) { x0 = scene->x0; x1 = scene->x1; y0 = scene->y0; y1 = scene->y1; }
+			if (x1 > x0 && y1 > y0) {
+				xminEdit->setText(QString::number(x0, 'g', 10)); xmaxEdit->setText(QString::number(x1, 'g', 10));
+				yminEdit->setText(QString::number(y0, 'g', 10)); ymaxEdit->setText(QString::number(y1, 'g', 10));
+			}
+			if (scene->hasCRS() && geogChk) geogChk->setChecked(true);
+		}
+
+		// --- restore what the user last had (any previous incarnation of this dialog, any window).
+		const GravMag3DState &st = g_gm3dState;
+		if (st.valid) {
+			if (shapeCb)    shapeCb->setCurrentIndex(st.shape);
+			if (fileKindCb) fileKindCb->setCurrentIndex(st.fileKind);
+			if (bodyList)   bodyList->addItems(st.bodies);
+			paramsEdit->setText(st.params);      bodyFileEdit->setText(st.bodyFile);
+			densityEdit->setText(st.density);
+			fDecEdit->setText(st.fDec);  fDipEdit->setText(st.fDip);  mIntEdit->setText(st.mInt);
+			mDecEdit->setText(st.mDec);  mDipEdit->setText(st.mDip);
+			xminEdit->setText(st.xmin);  xmaxEdit->setText(st.xmax);
+			yminEdit->setText(st.ymin);  ymaxEdit->setText(st.ymax);
+			xincEdit->setText(st.xinc);  yincEdit->setText(st.yinc);
+			zobsEdit->setText(st.zobs);  levelEdit->setText(st.level);
+			thickEdit->setText(st.thickness); radiusEdit->setText(st.radius);
+			trackEdit->setText(st.track);     outfileEdit->setText(st.outfile);
+			oneBasedChk->setChecked(st.onebased); noSwapChk->setChecked(st.noswap);
+			geogChk->setChecked(st.geog);
+			QRadioButton *body = st.bodyMode == 1 ? rbFile : st.bodyMode == 2 ? rbMemFV : rbGeom;
+			if (body) body->setChecked(true);
+			if (st.grav) { if (rbGrav) rbGrav->setChecked(true); }
+			else         { if (rbMag)  rbMag->setChecked(true);  }
+		}
+
+		// Snapshot everything back into g_gm3dState. Called on Compute AND on close, so both "run it,
+		// tweak, run again later" and "closed it by mistake" come back with the same parameters.
+		auto saveState = [this]() {
+			GravMag3DState s;
+			s.valid = true;
+			s.shape = shapeCb ? shapeCb->currentIndex() : 0;
+			s.fileKind = fileKindCb ? fileKindCb->currentIndex() : 0;
+			s.bodyMode = (rbFile && rbFile->isChecked()) ? 1 : (rbMemFV && rbMemFV->isChecked()) ? 2 : 0;
+			s.grav = !(rbMag && rbMag->isChecked());
+			s.onebased = oneBasedChk->isChecked();  s.noswap = noSwapChk->isChecked();
+			s.geog = geogChk->isChecked();
+			for (int i = 0; bodyList && i < bodyList->count(); ++i) s.bodies << bodyList->item(i)->text();
+			s.params = paramsEdit->text();   s.bodyFile = bodyFileEdit->text();
+			s.density = densityEdit->text();
+			s.fDec = fDecEdit->text();  s.fDip = fDipEdit->text();  s.mInt = mIntEdit->text();
+			s.mDec = mDecEdit->text();  s.mDip = mDipEdit->text();
+			s.xmin = xminEdit->text();  s.xmax = xmaxEdit->text();
+			s.ymin = yminEdit->text();  s.ymax = ymaxEdit->text();
+			s.xinc = xincEdit->text();  s.yinc = yincEdit->text();
+			s.zobs = zobsEdit->text();  s.level = levelEdit->text();
+			s.thickness = thickEdit->text();  s.radius = radiusEdit->text();
+			s.track = trackEdit->text();      s.outfile = outfileEdit->text();
+			g_gm3dState = s;
+		};
+		// Close (X button or the Close push button, both end up as a QEvent::Close) is where the
+		// snapshot has to happen: `destroyed` fires from ~QObject, with the QDialog part of the object
+		// already gone, so reading the widgets there would be reading through a half-dead object.
+		struct GravMag3DSaveOnClose : QObject {
+			std::function<void()> save;
+			GravMag3DSaveOnClose(QObject *p, std::function<void()> fn) : QObject(p), save(fn) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close) save();
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new GravMag3DSaveOnClose(d, saveState));
+
+		// --- body-source gating: each radio owns its own row(s), the other rows gray out.
+		auto syncBodyMode = [this, addBtn, delBtn, fileBtn]() {
+			const bool geom = rbGeom && rbGeom->isChecked();
+			const bool file = rbFile && rbFile->isChecked();
+			if (shapeCb)    shapeCb->setEnabled(geom);
+			if (paramsEdit) paramsEdit->setEnabled(geom);
+			if (bodyList)   bodyList->setEnabled(geom);
+			if (addBtn)     addBtn->setEnabled(geom);
+			if (delBtn)     delBtn->setEnabled(geom);
+			if (fileKindCb)   fileKindCb->setEnabled(file);
+			if (bodyFileEdit) bodyFileEdit->setEnabled(file);
+			if (fileBtn)      fileBtn->setEnabled(file);
+			// 1-based indices / clockwise facets only mean anything for the surface formats.
+			if (oneBasedChk) oneBasedChk->setEnabled(file || (rbMemFV && rbMemFV->isChecked()));
+			if (noSwapChk)   noSwapChk->setEnabled(file);
+		};
+		for (QRadioButton *rb : {rbGeom, rbFile, rbMemFV})
+			if (rb) QObject::connect(rb, &QRadioButton::toggled, d, [syncBodyMode](bool) { syncBodyMode(); });
+		syncBodyMode();
+
+		// --- gravity XOR magnetic: the idle side is grayed, never hidden (constant dialog size).
+		auto syncAnomMode = [this, densBtn]() {
+			const bool grav = rbGrav && rbGrav->isChecked();
+			if (densityEdit) densityEdit->setEnabled(grav);
+			if (densBtn)     densBtn->setEnabled(grav);
+			for (QLineEdit *e : {fDecEdit, fDipEdit, mIntEdit, mDecEdit, mDipEdit})
+				if (e) e->setEnabled(!grav);
+		};
+		for (QRadioButton *rb : {rbGrav, rbMag})
+			if (rb) QObject::connect(rb, &QRadioButton::toggled, d, [syncAnomMode](bool) { syncAnomMode(); });
+		syncAnomMode();
+
+		// --- body list: Add appends "shape,params", Del drops the selected row.
+		if (addBtn) QObject::connect(addBtn, &QToolButton::clicked, d, [this, d]() {
+			const QString params = paramsEdit->text().trimmed();
+			if (params.isEmpty()) {
+				QMessageBox::warning(d, "Error", QString("Give the %1 parameters first: %2")
+					.arg(shapeCb->currentText()).arg(paramHint(shapeCb->currentText())));
+				return;
+			}
+			bodyList->addItem(shapeCb->currentText() + "," + params);
+			paramsEdit->clear();
+		});
+		if (delBtn) QObject::connect(delBtn, &QToolButton::clicked, d, [this]() {
+			delete bodyList->takeItem(bodyList->currentRow());   // takeItem(-1) returns nullptr, delete is a no-op
+		});
+
+		if (fileBtn) QObject::connect(fileBtn, &QToolButton::clicked, d, [this, d]() {
+			const QString filt = fileKindCb->currentIndex() == 2
+				? "STL files (*.stl *.STL);;All files (*)"
+				: "Triangle files (*.dat *.txt *.xyz);;All files (*)";
+			QString fn = QFileDialog::getOpenFileName(d, "Select body file", prefStartDir(), filt);
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			bodyFileEdit->setText(fn);
+		});
+		if (densBtn) QObject::connect(densBtn, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getOpenFileName(d, "Select variable-density grid", prefStartDir(),
+			                                          "Grid files (*.nc *.grd *.tif *.tiff);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			densityEdit->setText(fn);
+		});
+		if (trackBtn) QObject::connect(trackBtn, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getOpenFileName(d, "Select x,y locations file", prefStartDir(),
+			                                          "Data files (*.dat *.txt *.xy);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			trackEdit->setText(fn);
+		});
+		if (outBtn) QObject::connect(outBtn, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getSaveFileName(d, "Save result as", prefStartDir(),
+			                                          "Grid files (*.nc *.grd);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			outfileEdit->setText(fn);
+		});
+
+		if (closeBtn) QObject::connect(closeBtn, &QPushButton::clicked, d, [d]() { d->close(); });
+
+		if (computeBtn) QObject::connect(computeBtn, &QPushButton::clicked, d, [this, d, saveState]() {
+			if (!g_juliaGravMag3D) {
+				QMessageBox::warning(d, "Error", "gravmag3d: callback not registered (rebuild/restart needed?).");
+				return;
+			}
+			saveState();
+			const bool toTrack = !trackEdit->text().trimmed().isEmpty();
+
+			QString bodyKind, bodies, bodyFile, fileKind;
+			if (rbFile && rbFile->isChecked()) {
+				bodyKind = "file";
+				bodyFile = bodyFileEdit->text().trimmed();
+				if (bodyFile.isEmpty()) {
+					QMessageBox::warning(d, "Error", "Pick the file that describes the body surface.");
+					return;
+				}
+				fileKind = fileKindCb->currentIndex() == 1 ? "index" : fileKindCb->currentIndex() == 2 ? "stl" : "raw";
+			}
+			else if (rbMemFV && rbMemFV->isChecked()) {
+				bodyKind = "memfv";
+			}
+			else {
+				bodyKind = "geom";
+				QStringList lst;
+				for (int i = 0; i < bodyList->count(); ++i) lst << bodyList->item(i)->text();
+				// Convenience only: a shape typed but never "Add"ed is still what the user meant when
+				// the list is empty — no silent drop, and no forcing an extra click for one body.
+				if (lst.isEmpty() && !paramsEdit->text().trimmed().isEmpty())
+					lst << shapeCb->currentText() + "," + paramsEdit->text().trimmed();
+				if (lst.isEmpty()) {
+					QMessageBox::warning(d, "Error", "No body defined: pick a shape, type its parameters and press Add.");
+					return;
+				}
+				bodies = lst.join('|');
+			}
+
+			const bool grav = rbGrav && rbGrav->isChecked();
+			if (grav && densityEdit->text().trimmed().isEmpty()) {
+				QMessageBox::warning(d, "Error", "A gravity anomaly needs a density (constant in SI, or a grid).");
+				return;
+			}
+			QString magParams;
+			if (!grav) {
+				QStringList mp;
+				for (QLineEdit *e : {fDecEdit, fDipEdit, mIntEdit, mDecEdit, mDipEdit}) {
+					bool ok = false;
+					e->text().trimmed().toDouble(&ok);
+					if (!ok) {
+						QMessageBox::warning(d, "Error", "All five magnetic parameters must be numbers.");
+						return;
+					}
+					mp << e->text().trimmed();
+				}
+				magParams = mp.join('/');
+			}
+
+			// Region/increment are what the grid gets sampled on — meaningless (and not asked for)
+			// when the anomaly is computed at the Track locations instead.
+			QString region, inc;
+			if (!toTrack) {
+				const QString xm = xminEdit->text().trimmed(), xM = xmaxEdit->text().trimmed();
+				const QString ym = yminEdit->text().trimmed(), yM = ymaxEdit->text().trimmed();
+				if (xm.isEmpty() || xM.isEmpty() || ym.isEmpty() || yM.isEmpty()) {
+					QMessageBox::warning(d, "Error", "Fill the output Region (xmin xmax ymin ymax) in the Output tab.");
+					return;
+				}
+				region = xm + "/" + xM + "/" + ym + "/" + yM;
+				const QString xi = xincEdit->text().trimmed();
+				if (xi.isEmpty()) {
+					QMessageBox::warning(d, "Error", "Give the output grid increment in the Output tab.");
+					return;
+				}
+				inc = yincEdit->text().trimmed().isEmpty() ? xi : xi + "/" + yincEdit->text().trimmed();
+			}
+
+			// Newline-separated key=value block (same shape as the seismicity dialog's payload): the
+			// option set here is far too wide for a positional list to stay readable on either side.
+			QStringList kv;
+			kv << "bodykind=" + bodyKind;
+			if (!bodies.isEmpty())   kv << "bodies=" + bodies;
+			if (!bodyFile.isEmpty()) { kv << "file=" + bodyFile; kv << "filekind=" + fileKind; }
+			kv << QString("onebased=%1").arg(oneBasedChk->isChecked() && oneBasedChk->isEnabled() ? 1 : 0);
+			kv << QString("noswap=%1").arg(noSwapChk->isChecked() && noSwapChk->isEnabled() ? 1 : 0);
+			kv << QString("mode=") + (grav ? "grav" : "mag");
+			if (grav) kv << "density=" + densityEdit->text().trimmed();
+			else      kv << "magparams=" + magParams;
+			if (!region.isEmpty()) kv << "region=" + region;
+			if (!inc.isEmpty())    kv << "inc=" + inc;
+			kv << QString("geog=%1").arg(geogChk->isChecked() ? 1 : 0);
+			for (auto pair : { std::make_pair(QString("zobs"), zobsEdit), std::make_pair(QString("level"), levelEdit),
+			                   std::make_pair(QString("thickness"), thickEdit), std::make_pair(QString("radius"), radiusEdit),
+			                   std::make_pair(QString("track"), trackEdit), std::make_pair(QString("outfile"), outfileEdit) }) {
+				const QString v = pair.second->text().trimmed();
+				if (!v.isEmpty()) kv << pair.first + "=" + v;
+			}
+
+			showBusyDialog("Computing the anomaly…");
+			const int ok = g_juliaGravMag3D(scn, kv.join('\n').toUtf8().constData());
+			closeBusyDialog();
+			// Success says nothing: the new grid landing in the window (or the table tab, for a track
+			// run) is the confirmation. A FAILURE still gets a modal here — the alternative feedback
+			// lives in the parent viewer's Errors console, which may well be behind this window.
+			if (!ok)
+				QMessageBox::warning(d, "Error", "gravmag3d failed — see this window's Errors console for details.");
+		});
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+};
+
+// ============================================================================================
 // Clip Grid (Grid Tools) — port of Mirone's src_figs/ml_clip.m. Replace grid nodes below/above the
 // Below/Above thresholds with the given Value (or replace the whole [Below,Above] band by one Value
 // in "Clip in between" mode), producing a NEW derived grid in the SAME window (SACRED_LAW
@@ -6108,6 +6492,31 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		mGphy->addAction("Seismology", [fSeis]() { (*fSeis)(); });
 		mGphy->addAction("Magnetics",  [fMag]()  { (*fMag)(); });
 	};
+	// Clicking the "Geophysics ›" row ITSELF (not one of the disciplines in its flyout) goes back to
+	// the neutral chooser — menubar title "Geophysics ▾", all disciplines listed. Qt never emits
+	// triggered() for a submenu's OWN parent row (a click there only opens the flyout), so the click
+	// is intercepted here on the parent menu, before Qt swallows it.
+	struct GphyHomeOnParentClick : QObject {
+		QMenu *menu;
+		std::function<void()> *group;
+		std::function<void()> reopen;
+		GphyHomeOnParentClick(QMenu *m, std::function<void()> *g, std::function<void()> ro)
+			: QObject(m), menu(m), group(g), reopen(ro) {}
+		bool eventFilter(QObject *o, QEvent *e) override {
+			if (e->type() == QEvent::MouseButtonRelease) {
+				QAction *a = menu->actionAt(static_cast<QMouseEvent *>(e)->position().toPoint());
+				if (a && a->menu() && a->text().startsWith("Geophysics")) {
+					menu->close();
+					(*group)();
+					reopen();
+					return true;			// consumed: do NOT let Qt treat it as "just open the flyout"
+				}
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	mGphy->installEventFilter(new GphyHomeOnParentClick(mGphy, fGroup, reopen));
+
 	auto backItem = [mGphy, fTsu, fSeis, fMag](const QString &current) {
 		// Single entry — itself a submenu, direct access to any OTHER discipline (skips the
 		// chooser page entirely). Each fXxx already reopens the menu itself at its end.
@@ -6168,6 +6577,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 		mGphy->addAction("Total field to Components", [win, s]() {
 			auto *w = new Rtp3DDialog(win, s, 1);
+			if (w->dlg) w->dlg->show();
+		});
+		// Anomaly (gravity OR magnetic) of a 3-D body — GMT's gmtgravmag3d (Okabe 1979).
+		mGphy->addAction("gmtgravmag3d", [win, s]() {
+			auto *w = new GravMag3DDialog(win, s);   // self-deletes when its QDialog closes (WA_DeleteOnClose)
 			if (w->dlg) w->dlg->show();
 		});
 		// Import *.gmt/*.nc cruise track file(s) — port of Mirone's GeophysicsImportGmtFile_CB
