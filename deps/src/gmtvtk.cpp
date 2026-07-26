@@ -16,6 +16,7 @@
 //   55_lineprops   shared Line Properties dialog + unified line right-click menu
 //   60_profile     ProfilePanel (2D s,z) + profile sampling + GLView
 //   65_xyplot      standalone X,Y plot tool (vtkChartXY + Object Manager + Data Viewer)
+//   67_gmtedit     standalone MGD77 track editor (3 stacked vtkChartXY panels; gmtedit.m)
 //   75_aquamoto    Aquamoto viewer (tsunami dry/wet netCDF viewer, port of Mirone aquamoto.m) --
 //                  included BEFORE 70_window.cpp, whose Geophysics menu constructs it by name
 //   70_window      buildAndShow — the Qt main window
@@ -31,6 +32,7 @@
 #include "55_lineprops.cpp"
 #include "60_profile.cpp"
 #include "65_xyplot.cpp"
+#include "67_gmtedit.cpp"
 #include "75_aquamoto.cpp"
 #include "70_window.cpp"
 #include "80_rubberband.cpp"

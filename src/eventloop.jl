@@ -69,6 +69,7 @@ function _ensure_callbacks()
 	                    ("igrf-file",   _register_igrf_file),
 	                    ("rtp3d",       _register_rtp3d),
 	                    ("import-gmt",  _register_import_gmt),
+	                    ("gmtedit",     _register_gmtedit),
 	                    ("clipgrid",    _register_clipgrid),
 	                    ("seismicity",  _register_seismicity),
 	                    ("faultgeom",   _register_faultgeom),

@@ -6198,6 +6198,24 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			rememberStartDir(fn);
 			g_juliaImportGmt(s, fn.toUtf8().constData(), 1);
 		});
+		// gmtedit — the MGD77 track editor (port of Mirone's src_figs/gmtedit.m), the sibling of
+		// the Import item in mirone_uis.m. Opens its OWN window (67_gmtedit.cpp), not tied to this
+		// Scene, so it takes no grid/surface and needs none.
+		mGphy->addAction("gmtedit (MGD77 track editor)", [win, s]() {
+			GmtEdit *e = buildGmtEdit("gmtedit", 200.0);
+			if (!e || !g_juliaGmtEdit)
+				return;
+			// This window becomes the editor's parent (gmtedit.m's hMirAxes), so its link tool can
+			// send a clicked record here as a marker.
+			geSetParent(e, s);
+			// Offer the file straight away — gmtedit(FILE) is how Mirone's users reach it.
+			QString fn = QFileDialog::getOpenFileName(win, "Select gmt File", prefStartDir(),
+				"Cruise files (*.nc *.NC *.gmt *.GMT);;MGD77+ netCDF (*.nc *.NC);;"
+				"Legacy *.gmt binary (*.gmt *.GMT);;All Files (*.*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			g_juliaGmtEdit(e, "open", fn.toUtf8().constData());
+		});
 		reopen();
 	};
 

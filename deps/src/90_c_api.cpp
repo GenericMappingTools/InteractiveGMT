@@ -4066,6 +4066,138 @@ GMTVTK_API void gmtvtk_xyplot_set_analysis_callback(JuliaXYAnaFn fn) {
 	g_juliaXYAna = fn;
 }
 
+// ============================================================================
+//  gmtedit — the MGD77 track editor (67_gmtedit.cpp). Its opaque handle is a
+//  GmtEdit* (NOT a Scene*), like the X,Y tool's. Julia owns the data: it reads
+//  the cruise, computes the outlier/nav/despike numbers and writes the netCDF
+//  back; this API is only how the window is filled and read back.
+// ============================================================================
+
+// Open an editor window (non-blocking; pump gmtvtk_process_events). `widthKm` is
+// gmtedit's -L, the width of the displayed distance window. Returns the GmtEdit*.
+GMTVTK_API void *gmtvtk_gmtedit_open(const char *title, double widthKm) {
+	return buildGmtEdit(title, widthKm);
+}
+
+// Is an editor handle still live (its window open)? 1 = yes, 0 = closed/invalid.
+GMTVTK_API int gmtvtk_gmtedit_is_alive(void *handle) {
+	return geAlive(static_cast<GmtEdit*>(handle)) ? 1 : 0;
+}
+
+// Close an editor window programmatically.
+GMTVTK_API void gmtvtk_gmtedit_close(void *handle) {
+	GmtEdit *s = static_cast<GmtEdit*>(handle);
+	if (geAlive(s) && s->win) s->win->close();
+}
+
+// Bring an editor window to the front.
+GMTVTK_API void gmtvtk_gmtedit_raise(void *handle) {
+	GmtEdit *s = static_cast<GmtEdit*>(handle);
+	if (geAlive(s) && s->win) { s->win->raise(); s->win->activateWindow(); }
+}
+
+// Register the one Julia callback the editor talks back through, fn(edit, action, arg).
+// See JuliaGmtEditFn (67_gmtedit.cpp) for the action list. Pass nullptr to detach.
+GMTVTK_API void gmtvtk_set_gmtedit_callback(JuliaGmtEditFn fn) {
+	g_juliaGmtEdit = fn;
+}
+
+// Window title (Julia sets it to "gmtedit <cruise>" after a load).
+GMTVTK_API void gmtvtk_gmtedit_set_title(void *handle, const char *title) {
+	GmtEdit *s = static_cast<GmtEdit*>(handle);
+	if (geAlive(s) && s->win && title) s->win->setWindowTitle(QString::fromUtf8(title));
+}
+
+// The file's plottable variable names, comma-separated (the context-menu submenus).
+GMTVTK_API void gmtvtk_gmtedit_set_varlist(void *handle, const char *csv) {
+	geSetVarList(static_cast<GmtEdit*>(handle), csv);
+}
+
+// Attach the 3-D viewer window (a Scene*) this editor was opened from — gmtedit.m's hMirAxes. It
+// enables the toolbar's link tool, which sends the clicked record to that window as a marker at
+// its own lon/lat. Pass nullptr to detach.
+GMTVTK_API void gmtvtk_gmtedit_set_parent(void *handle, void *scene) {
+	geSetParent(static_cast<GmtEdit*>(handle), scene);
+}
+
+// The shared abscissa: `n` values, `isDist` != 0 when they are km along track (else
+// record numbers). Resets the scroll bar range and any detached segment.
+GMTVTK_API void gmtvtk_gmtedit_set_x(void *handle, const double *x, int n, int isDist) {
+	geSetX(static_cast<GmtEdit*>(handle), x, n, isDist != 0);
+}
+
+// Fill one panel (slot 0..2) with a variable's values plus its name and axis title.
+GMTVTK_API void gmtvtk_gmtedit_set_channel(void *handle, int slot, const char *var,
+                                            const char *label, const double *y, int n) {
+	geSetChannel(static_cast<GmtEdit*>(handle), slot, var, label, y, n);
+}
+
+// Replace one panel's red flags (the outlier detector / nav filter results).
+GMTVTK_API void gmtvtk_gmtedit_set_flags(void *handle, int slot, const int *flags, int n) {
+	geSetFlags(static_cast<GmtEdit*>(handle), slot, flags, n);
+}
+
+// Read one panel's red flags back (1 = flagged). Returns the count written, 0 if the
+// buffer is too small or the handle is dead.
+GMTVTK_API int gmtvtk_gmtedit_get_flags(void *handle, int slot, int *out, int n) {
+	return geGetFlags(static_cast<GmtEdit*>(handle), slot, out, n);
+}
+
+// Read one panel's CURRENT values back (despikes and dragged segments included), in the
+// same record order as gmtvtk_gmtedit_get_flags. Returns the count written.
+GMTVTK_API int gmtvtk_gmtedit_get_channel(void *handle, int slot, double *out, int n) {
+	return geGetChannel(static_cast<GmtEdit*>(handle), slot, out, n);
+}
+
+// Records currently loaded (0 when the window is empty).
+GMTVTK_API int gmtvtk_gmtedit_npoints(void *handle) {
+	GmtEdit *s = static_cast<GmtEdit*>(handle);
+	return geAlive(s) ? s->n : 0;
+}
+
+// Move one point onto a new value (the despike result).
+GMTVTK_API void gmtvtk_gmtedit_set_point(void *handle, int slot, int idx, double y) {
+	geSetPoint(static_cast<GmtEdit*>(handle), slot, idx, y);
+}
+
+// Overlay an extra curve on one panel (a grid sampled along track, or another variable).
+GMTVTK_API void gmtvtk_gmtedit_add_overlay(void *handle, int slot, const double *x, const double *y,
+                                            int n, const char *name, double r, double g, double b,
+                                            double width) {
+	geAddOverlay(static_cast<GmtEdit*>(handle), slot, x, y, n, name, r, g, b, width);
+}
+
+// gmtedit's -P: draw a vertical marker at `x` and open the display centred on it.
+GMTVTK_API void gmtvtk_gmtedit_set_mark(void *handle, double x) {
+	geSetMark(static_cast<GmtEdit*>(handle), x);
+}
+
+// Write the smoothing parameter csaps itself would choose into the outlier dialog's
+// "Smoothing parameter (p)" box (the dialog asks for it whenever the channel changes).
+GMTVTK_API void gmtvtk_gmtedit_set_autop(void *handle, int slot, double p) {
+	GmtEdit *s = static_cast<GmtEdit*>(handle);
+	(void)slot;
+	if (geAlive(s) && s->outlierP)
+		s->outlierP->setText(QString::number(p, 'g', 8));
+}
+
+// Show the nav filter's hit count in its own title, as gmtedit.m's "(found %d)" does.
+GMTVTK_API void gmtvtk_gmtedit_set_navfound(void *handle, int nfound) {
+	GmtEdit *s = static_cast<GmtEdit*>(handle);
+	if (geAlive(s) && s->navDlg)
+		s->navDlg->setWindowTitle(QString("Speed and Slope filter (found %1)").arg(nfound));
+}
+
+// Append one line to the editor's collapsible message panel; `isError` pops it open.
+GMTVTK_API void gmtvtk_gmtedit_log(void *handle, const char *msg, int isError) {
+	geLog(static_cast<GmtEdit*>(handle), QString::fromUtf8(msg ? msg : ""), isError != 0);
+}
+
+// Pop a read-only report window (Cruise Info, and the warnings gmtedit.m puts in a warndlg).
+GMTVTK_API void gmtvtk_gmtedit_message(void *handle, const char *title, const char *text) {
+	geShowMessage(static_cast<GmtEdit*>(handle), title, text);
+}
+
 // Register the seed callback used when a C++-spawned X,Y window (Profile -> X,Y tool) hands its
 // initial series to Julia so a QtXYPlot mirror is registered. `fn` signature JuliaXYSeedFn; null
 // to detach (the window then adds the series C++-side, losing Julia Save/Analysis on it).

@@ -47,6 +47,15 @@ const _MGD77_PROJ4 = "+proj=longlat +datum=WGS84 +no_defs"
 # wrapped module funnels through anyway -- confirmed live (2026-07-24) after `GMT.mgd77list`
 # threw UndefVarError on a real cruise file.
 function _mgd77_track(path::AbstractString)
+	# A legacy pre-MGD77 *.gmt binary has no mgd77list support at all, but gmtedit.jl's
+	# `_ge_gmt_read` now reads the format straight from the layout in Mirone's own mex/gmtlist_m.c.
+	# Handled HERE so cruise-track navigation stays ONE function for both formats (SACRED_LAW.md),
+	# rather than growing a second track extractor next to the editor.
+	if lowercase(splitext(String(path))[2]) == ".gmt"
+		L = _ge_gmt_read(String(path))
+		L.n < 2 && return nothing
+		return GMT.mat2ds(hcat(L.lon, L.lat); proj4=_MGD77_PROJ4, geom=GMT.wkbLineString)
+	end
 	D = GMT.gmt("mgd77list " * path * " -Flon,lat")
 	d1 = D isa AbstractVector ? (isempty(D) ? nothing : first(D)) : D
 	d1 === nothing && return nothing
@@ -68,10 +77,15 @@ function _import_gmt_read(scene::Ptr{Cvoid}, path::AbstractString)
 	isfile(path) || (_viewer_log_error(scene, "Import *.gmt/*.nc: file not found: $path"); return nothing)
 	ext = lowercase(splitext(path)[2])
 	if ext == ".gmt"
-		_viewer_log_error(scene, "Import *.gmt/*.nc: \"$(basename(path))\" is the legacy pre-MGD77 " *
-		                          "*.gmt binary format, which GMT (>= 5) no longer reads -- convert " *
-		                          "it to MGD77+ netCDF (e.g. via mgd77manage) and import the .nc file instead.")
-		return nothing
+		# GMT (>= 5) still cannot read this format, but `_ge_gmt_read` (gmtedit.jl) can — so it is
+		# no longer rejected here. A ".gmt" that is NOT the binary (the ASCII multi-segment tables
+		# that share the extension) still gets a clear per-file message rather than a garbled read.
+		if !_ge_is_legacy_gmt(path)
+			_viewer_log_error(scene, "Import *.gmt/*.nc: \"$(basename(path))\" has a .gmt extension but " *
+			                          "is not a legacy pre-MGD77 binary cruise (its header does not " *
+			                          "describe its own length) -- drop it as a plain table instead.")
+			return nothing
+		end
 	elseif ext != ".nc"
 		_viewer_log_error(scene, "Import *.gmt/*.nc: unsupported extension \"$ext\" ($(basename(path)))")
 		return nothing

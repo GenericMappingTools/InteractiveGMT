@@ -28,6 +28,16 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 			ccall(_fn(:gmtvtk_load_session_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, String(path))
 			return
 		end
+		# An MGD77 cruise (legacy *.gmt binary or MGD77+ netCDF) is TRACK data to be EDITED, not a
+		# grid to be displayed: route it to the track editor, the SAME window Geophysics > Magnetics
+		# > gmtedit opens (SACRED_LAW.md -- one operation, one function). Recognised by CONTENT, so a
+		# plain netCDF grid or an ASCII table that merely wears a .gmt extension is untouched. Without
+		# this a dropped MGD77+ file hit the multi-variable picker and tried to load lon/lat/mtf1 as
+		# grids, which is meaningless for a cruise.
+		if _ge_is_mgd77(String(path))
+			_ge_open_dropped(scene, String(path))
+			return
+		end
 		# Already shown in a live window -> raise that window and ignore the duplicate drop.
 		_open_window_for(path) != C_NULL && return
 		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
