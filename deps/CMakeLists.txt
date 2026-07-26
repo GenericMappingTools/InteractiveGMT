@@ -176,6 +176,7 @@ if(GMTVTK_PACKAGE)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../Project.toml"        DESTINATION . COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../iview_app.jl"        DESTINATION . COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../iview_splash.hta"    DESTINATION . COMPONENT full)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/crystalball.jpg" DESTINATION . COMPONENT full)  # splash background
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/installer/iview_launch.vbs" DESTINATION . COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/igmt.ico"        DESTINATION . COMPONENT full)
 

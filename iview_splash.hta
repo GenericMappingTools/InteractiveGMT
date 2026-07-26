@@ -1,5 +1,6 @@
 <html>
 <head>
+<meta http-equiv="X-UA-Compatible" content="IE=edge" />
 <title>iGMT</title>
 <HTA:APPLICATION
     ID="igmtSplash"
@@ -28,12 +29,26 @@ window.resizeTo(W, H);
 window.moveTo(Math.round((screen.availWidth - W) / 2), Math.round((screen.availHeight - H) / 2));
 </script>
 <style>
-  html, body { margin:0; padding:0; overflow:hidden; background:#55aa00; color:#e0e0e0;
+  /* The crystal-ball nebula fills the splash as a BACKGROUND: `cover` scales it to the window and
+     crops the overflow, so the window keeps the size set in script above (a fraction of the screen)
+     instead of being dictated by the image's own pixel size. The dark colour underneath shows only
+     if the file is missing. JPEG, not the original .webp: an HTA renders in MSHTML, which cannot
+     decode WebP — it would have shown nothing at all. */
+  html, body { margin:0; padding:0; overflow:hidden; color:#e0e0e0;
+               background:#0a0d18 url("crystalball.jpg") center center no-repeat;
+               background-size:cover;
                font-family:"Segoe UI",Tahoma,sans-serif; width:100%; height:100%; }
-  #wrap { width:100%; height:100%; display:flex; flex-direction:column;
+  #wrap { position:relative; width:100%; height:100%; display:flex; flex-direction:column;
           align-items:center; justify-content:center; border:1px solid #444; box-sizing:border-box; }
-  img { width:34vh; height:34vh; margin-bottom:3vh; }
-  #msg { font-size:4.2vh; }
+  /* The icon sits in the UPPER-LEFT corner, not in the centred column: taken out of the flex flow
+     with absolute positioning so the caption and the progress bar stay centred as they were. */
+  /* PIXELS, not vh: this file has no DOCTYPE, so MSHTML renders it in QUIRKS mode where vh/vw are
+     not understood at all. A vh size here was silently dropped and the icon always came out at its
+     natural 32x32, whatever number was written. 120px is the size the original 34vh was ASKING for
+     (34% of the ~354px-tall splash) and never getting. */
+  img { position:absolute; top:0; left:0; width:120px; height:120px; margin:0; }
+  /* The nebula's centre is bright, so the caption gets a dark halo to stay readable over it. */
+  #msg { font-size:4.2vh; text-shadow:0 0 0.6vh #000, 0 0 1.2vh #000; }
   #bar { width:60vw; height:1.4vh; background:#333; margin-top:3.5vh; overflow:hidden; position:relative; }
   #chunk { width:18vw; height:1.4vh; background:#5b9bd5; position:absolute; left:-18vw;
            animation:slide 1.1s linear infinite; }

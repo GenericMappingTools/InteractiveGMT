@@ -1483,6 +1483,16 @@ static void xyUnpark(XYPlot *p) {
 // Append one Scene Objects row per PARKED plot owned by `s` (declared in 50_scene.cpp, called at the
 // very end of rebuildSceneObjects so these land at the BOTTOM of the dock). `addRow` is that
 // function's own row builder — the row is therefore identical in look and behaviour to every other.
+// How many parked plots `s` owns. rebuildSceneObjects asks BEFORE building the bottom strip, so a
+// scene with none gets no strip at all (and the tree keeps the whole dock).
+static int xyParkedCount(Scene *s) {
+	int n = 0;
+	if (!s) return 0;
+	for (XYPlot *p : g_xyplots)
+		if (p->parked && p->owner == s && p->win) ++n;
+	return n;
+}
+
 static void xyAppendParkedRows(Scene *s, const SceneObjRowFn &addRow) {
 	if (!s) return;
 	for (XYPlot *p : g_xyplots) {

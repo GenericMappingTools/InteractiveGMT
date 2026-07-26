@@ -13,6 +13,8 @@ using SceneObjRowFn = std::function<void(const QString &label, int iconKind, boo
                                          std::function<void(const QPoint&)> onContext,
                                          std::function<void()> onDblClick)>;
 static void xyAppendParkedRows(Scene *s, const SceneObjRowFn &addRow);
+static int  xyParkedCount(Scene *s);        // how many of them `s` owns (0 -> no bottom strip at all)
+static void unfoldSceneObjects(Scene *s);   // 70_window.cpp: reveal + unfold the dock
 static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp);   // symbol-layer properties (defined below)
 static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
 static void textApplyProps(Scene *s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
@@ -1911,11 +1913,54 @@ static void rebuildSceneObjects(Scene *s) {
 		        [s](const QPoint&) { if (g_aquamotoReopen) g_aquamotoReopen(s); },
 		        "Show / hide the Aquamoto control window · left-click to raise it");
 	}
-	// LAST rows of the panel: the X,Y plot windows of this scene that were closed with the X. Closing
-	// parks them here instead of destroying them (same "the X only hides it" idea as the Aquamoto
-	// window above); a double-click brings one back and its properties menu holds the real delete.
-	curParent = nullptr;                                 // always top level, whatever came before
-	xyAppendParkedRows(s, makeRow);
+	// Default open width of the dock: 1.5x its own minimum — the width its contents actually need,
+	// plus half again of room. Applied ONCE per window, the first time the panel has anything in it
+	// (a later manual resize is the user's and is never overridden), and never while the panel is
+	// folded, where the fold strip owns the width. It lives here, not at window creation, because an
+	// empty launcher's panel is still empty then: that window used to keep its folded strip width for
+	// good. Deferred by a zero timer so the layout has settled before the resize.
+	{
+		static std::unordered_set<Scene*> objWidthDone;
+		if (s->win && s->objDock && tree->topLevelItemCount() > 0 && !objWidthDone.count(s)) {
+			objWidthDone.insert(s);
+			// An empty launcher starts FOLDED; content has just arrived, so open it — skipping folded
+			// docks (what this used to do) left exactly that window stuck at its 63 px fold strip.
+			unfoldSceneObjects(s);
+			QMainWindow *mw = s->win;
+			QDockWidget *dk = s->objDock;
+			QTimer::singleShot(0, dk, [mw, dk]() {
+				mw->resizeDocks({dk}, {qRound(dk->minimumSizeHint().width() * 1.4)}, Qt::Horizontal);
+			});
+		}
+	}
+
+	// The X,Y plot windows of this scene that were closed with the X live at the BOTTOM EDGE of the
+	// dock — in their own strip UNDER the tree, not merely as the last rows inside it, so they stay
+	// put at the bottom however long the object list grows. Closing parks them here instead of
+	// destroying them (same "the X only hides it" idea as the Aquamoto window above); a double-click
+	// brings one back and its properties menu holds the real delete.
+	if (const int nParked = xyParkedCount(s)) {
+		QTreeWidget *bot = new QTreeWidget(s->objPanel);
+		bot->setHeaderHidden(true);
+		bot->setColumnCount(1);
+		bot->setRootIsDecorated(false);
+		bot->setUniformRowHeights(false);
+		bot->setSelectionMode(QAbstractItemView::NoSelection);
+		bot->setFocusPolicy(Qt::NoFocus);
+		bot->setIndentation(0);
+		bot->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+		col->addWidget(bot, 0);                  // stretch 0: the tree above keeps all the spare height
+		// `makeRow` captures `tree` BY REFERENCE, so re-pointing it here sends the parked rows into the
+		// bottom strip while still building them with the panel's one and only row builder.
+		tree = bot;
+		curParent = nullptr;
+		xyAppendParkedRows(s, makeRow);
+		int h = 4;                               // strip is exactly as tall as its rows: no dead space
+		for (int i = 0; i < bot->topLevelItemCount(); ++i)
+			if (QWidget *w = bot->itemWidget(bot->topLevelItem(i), 0)) h += w->sizeHint().height();
+		bot->setFixedHeight(h);
+		(void)nParked;
+	}
 }
 
 // `interiorXYZ`/`nInterior`: SHAPENC "bounded ensemble" support (Mirone convention -- an OUTER

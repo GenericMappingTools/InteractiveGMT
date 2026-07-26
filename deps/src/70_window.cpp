@@ -2,21 +2,9 @@
 // path). Reuses `g_progress` (30_app.cpp, earlier in this TU) — the same QProgressDialog the
 // gmtvtk_progress_* C API (90_c_api.cpp, later in this TU) drives for the Okada patch loop, just
 // with range (0,0) for Qt's indeterminate busy bar instead of a counted range.
-static void showBusyDialog(const char *title) {
-	if (!QApplication::instance()) return;
-	if (g_progress) delete g_progress;
-	g_progress = new QProgressDialog();
-	g_progress->setWindowTitle(title);
-	g_progress->setRange(0, 0);
-	g_progress->setCancelButton(nullptr);
-	g_progress->setWindowModality(Qt::ApplicationModal);
-	g_progress->show();
-	QApplication::processEvents();
-}
-static void closeBusyDialog() {
-	if (g_progress) { g_progress->close(); delete g_progress; g_progress = nullptr; }
-	QApplication::processEvents();
-}
+// showBusyDialog / closeBusyDialog moved to 30_app.cpp: the file-open path (DropFilter and
+// juliaOpenFile) lives there, earlier in this translation unit, and must be able to put the dialog up
+// BEFORE it calls into Julia.
 
 // ===== tiled-LOD pyramid: build + per-frame screen-space-error refinement ==================
 // Quadtree over the full grid; each node renders its region at a stride chosen so its sampled span
@@ -6283,7 +6271,7 @@ static void populateRecentMenu(QMenu *menu, Scene *s) {
 				if (!g_juliaDrop) return;
 				// Route through the drop path so the file opens INTO this window
 				// (or promotes an empty launcher) instead of spawning a new window.
-				g_juliaDrop(s, full.toStdString().c_str());
+				juliaOpenFile(s, full.toStdString().c_str());
 			});
 			any = true;
 		}
@@ -7236,7 +7224,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			rememberStartDir(files.first());               // push chosen dir to MRU
 			for (const QString& f : files) {
 				const QByteArray utf8 = f.toUtf8();        // keep buffer alive across call
-				g_juliaDrop(s, utf8.constData());
+				juliaOpenFile(s, utf8.constData());        // busy dialog up before Julia is entered
 			}
 		}
 	});
@@ -7899,7 +7887,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (fn.isEmpty()) return;
 		rememberStartDir(fn);
 		const QByteArray utf8 = fn.toUtf8();          // keep the buffer alive across the call
-		g_juliaDrop(s, utf8.constData());             // into THIS window; a table -> line overlay, never X,Y
+		juliaOpenFile(s, utf8.constData());           // into THIS window; a table -> line overlay, never X,Y
 	});
 	// Info flyout: a stylish 'i' that reports on the active grid/image. Slot click runs the current
 	// reporter (grdinfo by default); the 'v' dropdown switches between GMT.grdinfo and GMT.gdalinfo
@@ -8594,10 +8582,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// dock to its strip width (resizeDocks only bites after show()).
 	if (blankStart && s->objFoldBar)
 		win->resizeDocks({objDock}, {s->objFoldBar->sizeHint().width()}, Qt::Horizontal);
-	else
-		// Everything else: the dock opens 2.5 cm wide. A physical width, not a pixel count, so it is
-		// the same strip of desk on any DPI. resizeDocks only bites after show(), hence its place here.
-		win->resizeDocks({objDock}, {qRound(win->logicalDpiX() * 2.5 / 2.54)}, Qt::Horizontal);
+	// The open width (1.5x the dock's own minimum) is NOT set here: an empty launcher has nothing in
+	// its panel yet and only gets content later, when a file is dropped, so sizing at creation missed
+	// exactly that window. rebuildSceneObjects applies it the first time the panel has rows.
 
 	// Shrink the pre-folded Shading dock to its strip width (resizeDocks only bites after show()).
 	if (hasShadedBody && s->shadeFoldBar && s->shadeFoldBar->folded)

@@ -83,11 +83,14 @@ function iview(name::AbstractString; kwargs...)
 		# Never open the same file twice: if it is already shown in a live window, raise that
 		# window and silently ignore this (and every later) request for the same path.
 		_open_window_for(name) != C_NULL && return nothing
-		data = GMT.gmtread(name)
+		# The dialog goes up BEFORE gmtread: on the first open that read is itself a big slice of the
+		# wait (Julia compiles the whole read path). view_grid's own begin/end nests inside this one.
+		_load_dialog_begin("Opening $(basename(name))…")
+		data = try GMT.gmtread(name) catch e; _load_dialog_end(); rethrow(e) end
 		_record_recent(name, data)
 		# Titlebar shows which file is loaded, unless the caller already asked for a specific title.
 		kw = merge((; title="i'GMT -- $(basename(name))"), NamedTuple(kwargs))
-		fig = iview(data; kw...)
+		fig = try iview(data; kw...) finally _load_dialog_end() end
 		# The open-once dedup is keyed on the 3-D Scene* alive/raise C API; an X,Y plot window uses a
 		# different handle type, so don't register it there (a repeat open just makes a 2nd window).
 		fig isa QtXYPlot || _mark_file_open(name, _fig_handle(fig))

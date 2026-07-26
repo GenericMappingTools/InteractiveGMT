@@ -16,6 +16,10 @@
 # which opens an empty launcher and routes the file here) — never a second build path.
 _on_drop(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid = _on_drop(scene, unsafe_string(cpath))
 function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
+	# A dropped file is the other way a first grid arrives, and it pays the same compile + read wait,
+	# so it puts up the same dialog. Re-entrant with view_grid's own pair, and a no-op once the first
+	# open of the session has been paid for.
+	_load_dialog_begin("Opening $(basename(String(path)))…")
 	try
 		# A .igmtz is a SAVED SESSION, not a data file -- route through the SAME loader File > Load
 		# Session uses (_on_load_session), never gmtread. Same operation, same function (SACRED_LAW.md).
@@ -99,6 +103,8 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 	catch e
 		_viewer_log_error(scene, "Open '$(basename(path))' FAILED: $(sprint(showerror, e))")
 		@warn "drop: could not read/open file" path exception=e
+	finally
+		_load_dialog_end()             # comes down whether the open succeeded or blew up
 	end
 	return
 end

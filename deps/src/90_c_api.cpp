@@ -790,6 +790,10 @@ GMTVTK_API int gmtvtk_progress_show(int max, const char *title) {
 // interactive — used for a long asynchronous run (NSWING) whose advance is pushed from a Julia Timer via
 // gmtvtk_progress_update while the run proceeds on a separate task. Returns 1 on success, 0 on failure.
 GMTVTK_API int gmtvtk_progress_show_async(int max, const char *title) {
+	// ensureApp, not a bail-out: the FIRST grid of a session is exactly the slow one worth reporting,
+	// and at that moment no window — and therefore no QApplication — exists yet. Returning 0 here left
+	// that one case, the one the dialog is for, with no dialog at all.
+	ensureApp();
 	if (!QApplication::instance()) return 0;
 	if (g_progress) { delete g_progress; g_progress = nullptr; }
 	g_progress = new QProgressDialog();

@@ -941,6 +941,40 @@ protected:
 };
 
 // Accept dropped files on a window: on a URL drop, hand each LOCAL file path + THIS window's
+// A modal "busy" dialog with an indeterminate bar, for an operation that blocks the UI thread.
+// Lives HERE, not in 70_window.cpp, because the file-open path below has to raise it before it hands
+// control to Julia — and 30_app.cpp comes first in the translation unit.
+static void showBusyDialog(const char *title) {
+	ensureApp();                          // the FIRST open happens before any window, hence before any
+	if (!QApplication::instance()) return; // QApplication: create one rather than skip the dialog
+	if (g_progress) delete g_progress;
+	g_progress = new QProgressDialog();
+	g_progress->setWindowTitle(title);
+	g_progress->setRange(0, 0);
+	g_progress->setCancelButton(nullptr);
+	g_progress->setWindowModality(Qt::ApplicationModal);
+	g_progress->show();
+	g_progress->raise();
+	QApplication::processEvents();        // paint it NOW: what follows never returns to the event loop
+}
+static void closeBusyDialog() {
+	if (g_progress) { g_progress->close(); delete g_progress; g_progress = nullptr; }
+	QApplication::processEvents();
+}
+
+// EVERY route that opens a data file goes through here: drag-and-drop, File > Open, Recent Files,
+// the desktop-icon launch. The point is WHERE the dialog is raised — on this side of the call, before
+// Julia is entered. Julia cannot do it for itself on the first open: its own `_load_dialog_begin` sits
+// inside a method that Julia is still COMPILING, so the dialog only appeared once compilation had
+// finished, i.e. at the same moment as the grid. Here it is on screen before any of that starts.
+static void juliaOpenFile(Scene *s, const char *path) {
+	if (!g_juliaDrop) return;
+	const QString base = QFileInfo(QString::fromUtf8(path)).fileName();
+	showBusyDialog(base.isEmpty() ? "Opening…" : QString("Opening %1…").arg(base).toUtf8().constData());
+	g_juliaDrop(s, path);
+	closeBusyDialog();
+}
+
 // Scene *to Julia (g_juliaDrop), which reads the file and adds it INTO this window. One filter
 // per window so it knows which Scene received the drop.
 struct DropFilter : QObject {
@@ -957,9 +991,9 @@ protected:
 			if (de->mimeData() && de->mimeData()->hasUrls()) {
 				for (const QUrl& u : de->mimeData()->urls()) {
 					const QString f = u.toLocalFile();
-					if (!f.isEmpty() && g_juliaDrop) {
+					if (!f.isEmpty()) {
 						const QByteArray utf8 = f.toUtf8();        // keep the buffer alive across the call
-						g_juliaDrop(s, utf8.constData());
+						juliaOpenFile(s, utf8.constData());        // busy dialog up before Julia is entered
 					}
 				}
 				de->acceptProposedAction();

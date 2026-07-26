@@ -1,6 +1,42 @@
 # view_grid: show a GMTgrid surface in the Qt + VTK viewer, plus the line/point overlay path
 # (`add!` / the view_grid `data=` kwarg).
 
+# ── "please wait" dialog for the FIRST grid of a session ──────────────────────────────────────────
+# Opening the first grid takes a while — Julia compiles the read/view path and Qt+VTK build their
+# first window — and until now that time passed with nothing at all on screen. One busy dialog covers
+# it, put up by whichever path gets there first (view_grid, the file-open dispatch, a drop) and taken
+# down when the window is up.
+#
+# ONLY the first one: later opens are fast, and a dialog that flashes for 200 ms on every open is
+# worse than none. `_LOAD_DEPTH` makes the pair re-entrant — the outermost begin/end wins — so the
+# nested calls (iview -> view_grid, drop -> view_grid) show one dialog, not two.
+const _LOAD_DIALOG_DONE = Ref(false)
+const _LOAD_DEPTH       = Ref(0)
+
+function _load_dialog_begin(msg::AbstractString)
+	_LOAD_DIALOG_DONE[] && return                      # not the first open: no dialog at all
+	_LOAD_DEPTH[] += 1
+	_LOAD_DEPTH[] == 1 || return                       # already showing (nested call)
+	try
+		ccall(_fn(:gmtvtk_progress_show_async), Cint, (Cint, Cstring), Cint(0), String(msg))
+	catch
+		_LOAD_DEPTH[] = 0                              # DLL not loaded / no display: carry on silently
+	end
+	return
+end
+
+function _load_dialog_end()
+	_LOAD_DEPTH[] == 0 && return
+	_LOAD_DEPTH[] -= 1
+	_LOAD_DEPTH[] == 0 || return                       # an outer level is still running
+	_LOAD_DIALOG_DONE[] = true                         # the slow first one is paid for; never again
+	try
+		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
+	catch
+	end
+	return
+end
+
 # Flatten a GMTdataset (single or multi-segment Vector{GMTdataset}) into the C overlay layout:
 # `xyz` = npts triples, `segoff` = nseg+1 segment offsets. z comes from column 3 if present, else
 # is sampled off the surface so the line/points drape on it.
@@ -69,6 +105,7 @@ function view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside::Symbol=:shade
 				   triangulate::Bool=true, data=nothing, mode::Symbol=:lines, data_color=nothing, data_size=0,
 				   vcurtain=nothing, title::AbstractString="i'GMT",
 				   geographic::Union{Bool,Nothing}=nothing)
+	_load_dialog_begin("Opening the grid…")             # closed by _load_dialog_end just before we return
 	cmap === :auto && (cmap = _default_cmap(G))         # geo only for topo/bathymetry grids, else turbo
 	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z)   # column-major; viewer reads z[ix*ny + iy]. Float32 = no copy (C stores float anyway)
 	ny, nx = size(z)                  # GMT layout: dim1 = ny (y), dim2 = nx (x)
@@ -107,6 +144,7 @@ function view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside::Symbol=:shade
 	# Optional vertical curtain(s) (Fledermaus seismic / midwater profile).
 	_add_curtains!(fig, vcurtain)
 	_start_pump()
+	_load_dialog_end()
 	return fig
 end
 
