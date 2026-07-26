@@ -1,4 +1,18 @@
 static void rebuildSceneObjects(Scene *s);          // defined just below; refreshed after edits
+
+// Closing an X,Y plot window with the X does NOT destroy it: the window hides and PARKS as a handle
+// at the bottom of its owner's Scene Objects dock, where a double-click brings it back and its
+// properties menu offers the real deletion. The rows are appended by `xyAppendParkedRows`, defined in
+// 65_xyplot.cpp (later in this same translation unit — XYPlot is not visible here). It is handed
+// `rebuildSceneObjects`'s OWN row builder, so a parked plot's row is made by exactly the same code as
+// every other row in the panel instead of a second look-alike.
+using SceneObjRowFn = std::function<void(const QString &label, int iconKind, bool checked,
+                                         std::function<void(bool)> onToggle,
+                                         std::function<void(const QPoint&)> onProps,
+                                         const QString &tip,
+                                         std::function<void(const QPoint&)> onContext,
+                                         std::function<void()> onDblClick)>;
+static void xyAppendParkedRows(Scene *s, const SceneObjRowFn &addRow);
 static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp);   // symbol-layer properties (defined below)
 static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
 static void textApplyProps(Scene *s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
@@ -1362,7 +1376,8 @@ static void rebuildSceneObjects(Scene *s) {
 	                   std::function<void(bool)> onToggle,
 	                   std::function<void(const QPoint&)> onProps,
 	                   const QString &tip = QString(),
-	                   std::function<void(const QPoint&)> onContext = nullptr) {
+	                   std::function<void(const QPoint&)> onContext = nullptr,
+	                   std::function<void()> onDblClick = nullptr) {
 		QWidget *row = new QWidget(tree);
 		QHBoxLayout *h = new QHBoxLayout(row);
 		h->setContentsMargins(0, 1, 0, 1);
@@ -1389,6 +1404,7 @@ static void rebuildSceneObjects(Scene *s) {
 			text->onClick = onProps;
 		}
 		if (onContext) text->onRightClick = onContext;      // right-click the description -> context menu (Save…)
+		if (onDblClick) text->onDoubleClick = onDblClick;   // double-click -> reopen (a parked X,Y plot)
 
 		QTreeWidgetItem *item = new QTreeWidgetItem();
 		if (curParent) curParent->addChild(item); else tree->addTopLevelItem(item);
@@ -1895,6 +1911,11 @@ static void rebuildSceneObjects(Scene *s) {
 		        [s](const QPoint&) { if (g_aquamotoReopen) g_aquamotoReopen(s); },
 		        "Show / hide the Aquamoto control window · left-click to raise it");
 	}
+	// LAST rows of the panel: the X,Y plot windows of this scene that were closed with the X. Closing
+	// parks them here instead of destroying them (same "the X only hides it" idea as the Aquamoto
+	// window above); a double-click brings one back and its properties menu holds the real delete.
+	curParent = nullptr;                                 // always top level, whatever came before
+	xyAppendParkedRows(s, makeRow);
 }
 
 // `interiorXYZ`/`nInterior`: SHAPENC "bounded ensemble" support (Mirone convention -- an OUTER

@@ -1,0 +1,708 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  grdgradient_dialog.ui — GMT menu > "grdgradient".
+  Tab 1 "Gradient" is Mirone's own grdgradient window, control for control (Azim1/Azim2 lists in a
+  "Horizontal Light Angles" box, the Slope/Aspect checkboxes with the direction-flavour combo, the
+  Boundary condition and Normalization rows) plus its small blue "?" notes. Mirone's window predates
+  a good part of today's module, so tabs 2 and 3 carry what it never had: the Lambertian radiance
+  family (E), an azimuth GRID, the -Da down-slope flavour, region, the normalization statistics file
+  (Q) and a save-to-disk name (G).
+  Loaded at RUNTIME by GrdGradientDialog via QUiLoader — plain Qt widget classes only.
+-->
+<ui version="4.0">
+ <class>GrdGradientDialog</class>
+ <widget class="QDialog" name="GrdGradientDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>586</width>
+    <height>270</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>grdgradient</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <property name="spacing">
+    <number>6</number>
+   </property>
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+
+     <!-- ==================== TAB: Gradient (Mirone's window) ==================== -->
+     <widget class="QWidget" name="tab_gradient">
+      <attribute name="title">
+       <string>Gradient</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_grad">
+       <property name="spacing">
+        <number>6</number>
+       </property>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_top">
+         <item>
+          <widget class="QGroupBox" name="gb_light">
+           <property name="maximumHeight">
+            <number>132</number>
+           </property>
+           <property name="title">
+            <string>Horizontal Light Angles</string>
+           </property>
+           <layout class="QHBoxLayout" name="horizontalLayout_light">
+            <property name="spacing">
+             <number>4</number>
+            </property>
+            <item>
+             <widget class="QLabel" name="lbl_azim1">
+              <property name="text">
+               <string>Azim1</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QListWidget" name="list_azim1">
+              <property name="maximumHeight">
+               <number>96</number>
+              </property>
+              <property name="toolTip">
+               <string>Azimuth of the light source, degrees clockwise from north</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="lbl_azim2">
+              <property name="text">
+               <string>Azim2</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QListWidget" name="list_azim2">
+              <property name="maximumHeight">
+               <number>96</number>
+              </property>
+              <property name="toolTip">
+               <string>Optional second azimuth: both gradients are computed and the larger in magnitude is kept</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QToolButton" name="btn_helpLight">
+              <property name="text">
+               <string>?</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <widget class="QGroupBox" name="gb_direction">
+           <property name="title">
+            <string/>
+           </property>
+           <layout class="QHBoxLayout" name="horizontalLayout_dirBox">
+            <property name="spacing">
+             <number>4</number>
+            </property>
+            <item>
+             <layout class="QVBoxLayout" name="verticalLayout_dir">
+              <property name="spacing">
+               <number>6</number>
+              </property>
+              <item>
+               <widget class="QCheckBox" name="chk_slope">
+                <property name="text">
+                 <string>Compute Slope (percent)</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="chk_aspect">
+                <property name="text">
+                 <string>Gradient direction (Aspect)</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QComboBox" name="cb_dirFlavour">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <item>
+                 <property name="text">
+                  <string>azimuthal direction</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>trignometric angles</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>0-180 degrees orientations</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>add 90 degrees to all angles</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="chk_downSlope">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="text">
+                 <string>report down-slope (aspect)</string>
+                </property>
+                <property name="toolTip">
+                 <string>-Da: the aspect, i.e. the DOWN-slope direction. Unticked, the module reports the up-slope one.</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <widget class="QToolButton" name="btn_helpDir">
+              <property name="text">
+               <string>?</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_bc">
+         <item>
+          <spacer name="horizontalSpacer_bc">
+           <property name="orientation">
+            <enum>Qt::Orientation::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>10</width>
+             <height>10</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+         <item>
+          <widget class="QLabel" name="lbl_boundary">
+           <property name="text">
+            <string>Boundary condition</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="cb_boundary">
+           <item>
+            <property name="text">
+             <string/>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>x</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>y</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>xy</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>g</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_helpBoundary">
+           <property name="text">
+            <string>?</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_norm">
+         <item>
+          <widget class="QLabel" name="lbl_norm">
+           <property name="text">
+            <string>Normalization</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="cb_norm">
+           <item>
+            <property name="text">
+             <string/>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Simple</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Laplace</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Cauchy</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_amp">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="placeholderText">
+            <string>amp</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_sigma">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="placeholderText">
+            <string>sigma</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_offset">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="placeholderText">
+            <string>offset</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_helpNorm">
+           <property name="text">
+            <string>?</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_grad">
+         <property name="orientation">
+          <enum>Qt::Orientation::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ==================== TAB: Lambertian (E) ==================== -->
+     <widget class="QWidget" name="tab_lambert">
+      <attribute name="title">
+       <string>Lambertian</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_lamb">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_lambMode">
+         <item>
+          <widget class="QLabel" name="lbl_lambert">
+           <property name="text">
+            <string>Radiance  (E)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="cb_lambert">
+           <property name="toolTip">
+            <string>Lambertian radiance, for use with grdimage/grdview. Overrides the Gradient tab.</string>
+           </property>
+           <item>
+            <property name="text">
+             <string>(none — use the Gradient tab)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Lambertian, full reflectance</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Lambertian, simple algorithm</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Peucker piecewise linear</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>ESRI-like hillshade (manip)</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_helpLambert">
+           <property name="text">
+            <string>?</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_lambView">
+         <item>
+          <widget class="QLabel" name="lbl_lambView">
+           <property name="text">
+            <string>Light vector:   azimuth</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_lambAzim">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>315</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="lbl_lambElev">
+           <property name="text">
+            <string>elevation</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_lambElev">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>45</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_reflect">
+         <property name="title">
+          <string>Reflectance (full Lambertian only)</string>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_reflect">
+          <property name="spacing">
+           <number>3</number>
+          </property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_ambient">
+            <property name="text">
+             <string>ambient</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="le_ambient">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="placeholderText">
+             <string>0.55</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lbl_difuse">
+            <property name="text">
+             <string>diffuse</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="le_difuse">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="placeholderText">
+             <string>0.6</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_specular">
+            <property name="text">
+             <string>specular</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="le_specular">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="placeholderText">
+             <string>0.4</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="lbl_shine">
+            <property name="text">
+             <string>shine</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QLineEdit" name="le_shine">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="placeholderText">
+             <string>10</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_lamb">
+         <property name="orientation">
+          <enum>Qt::Orientation::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ==================== TAB: Output ==================== -->
+     <widget class="QWidget" name="tab_output">
+      <attribute name="title">
+       <string>Output</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_out">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_azimGrid">
+         <item>
+          <widget class="QLabel" name="lbl_azimGrid">
+           <property name="text">
+            <string>Azimuth from grid  (A)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_azimGrid">
+           <property name="toolTip">
+            <string>A grid of the same domain, spacing and registration as the input: the azimuth is then updated at every node. Overrides Azim1/Azim2.</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_azimGridBrowse">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_region">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_region">
+           <property name="text">
+            <string>Region  (R)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="le_xmin">
+           <property name="toolTip">
+            <string>xmin</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLineEdit" name="le_xmax">
+           <property name="toolTip">
+            <string>xmax</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QLineEdit" name="le_ymin">
+           <property name="toolTip">
+            <string>ymin</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="4">
+          <widget class="QLineEdit" name="le_ymax">
+           <property name="toolTip">
+            <string>ymax</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_stats">
+         <item>
+          <widget class="QLabel" name="lbl_saveStats">
+           <property name="text">
+            <string>Normalization statistics  (Q)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="cb_saveStats">
+           <property name="toolTip">
+            <string>Reuse one offset/sigma across several grids or tiles: save them once, then read them back on later runs.</string>
+           </property>
+           <item>
+            <property name="text">
+             <string>(recompute for this grid)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>save to the statistics file</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>read from the statistics file</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>read, then delete the file</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_outfile">
+         <item>
+          <widget class="QLabel" name="lbl_outfile">
+           <property name="text">
+            <string>Save as  (G)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_outfile">
+           <property name="toolTip">
+            <string>Optional. The result is always added to this window; give a name here to also write it to disk.</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_outfileBrowse">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_out">
+         <property name="orientation">
+          <enum>Qt::Orientation::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="horizontalSpacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>10</width>
+         <height>10</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_ok">
+       <property name="text">
+        <string>Compute</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

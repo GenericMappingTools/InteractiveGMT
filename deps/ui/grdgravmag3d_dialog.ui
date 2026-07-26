@@ -505,28 +505,33 @@
            </property>
           </widget>
          </item>
-         <item row="1" column="0">
+        </layout>
+       </item>
+
+       <item>
+        <layout class="QGridLayout" name="gridLayout_inc">
+         <item row="0" column="0">
           <widget class="QLabel" name="lbl_inc">
            <property name="text">
             <string>Increment  (I)</string>
            </property>
           </widget>
          </item>
-         <item row="1" column="1">
+         <item row="0" column="1">
           <widget class="QLineEdit" name="le_xinc">
            <property name="toolTip">
             <string>x_inc — empty means the input grid's own increment</string>
            </property>
           </widget>
          </item>
-         <item row="1" column="2">
+         <item row="0" column="2">
           <widget class="QLineEdit" name="le_yinc">
            <property name="toolTip">
             <string>y_inc — leave empty to reuse x_inc</string>
            </property>
           </widget>
          </item>
-         <item row="1" column="3" colspan="2">
+         <item row="0" column="3" colspan="2">
           <widget class="QCheckBox" name="chk_geog">
            <property name="text">
             <string>Geographic (f=:g)</string>

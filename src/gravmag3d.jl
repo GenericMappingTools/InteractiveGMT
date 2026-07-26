@@ -47,7 +47,11 @@ function _gm3d_deliver(scene::Ptr{Cvoid}, R, title::String, outfile::AbstractStr
 	ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, title)
 	_forget_object!(scene, :grid, title)
 
-	_grid_command!(G, "InteractiveGMT " * recipe)
+	# A grid produced by a GMT module comes back already carrying THE COMMAND GMT ITSELF RAN (GMT.jl
+	# copies it out of the netCDF header, and grdinfo shows it). That is the authoritative record of
+	# how the grid was made and must NEVER be overwritten by a description of ours — `recipe` is only
+	# a fallback for the paths where GMT left the field empty.
+	isempty(strip(G.command)) && _grid_command!(G, "InteractiveGMT " * recipe)
 	has_surface = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene)
 	if !_add_grid_to_scene(scene, G, title; promote = (has_surface == 0))
 		_viewer_log_error(scene, "$title: window closed, grid not added")

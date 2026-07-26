@@ -1200,19 +1200,21 @@ public:
 		toggleCheck->setToolTip("Switch between gridline and pixel registration");
 		v->addWidget(toggleCheck);
 
-		// --- Buttons (Apply / Close like Mirone) ---
+		// --- Buttons. "Compute" (not "Apply"): every module dialog in this app names its action
+		//     button the same, so the same word always means "run the module".
 		auto *btnRow = new QHBoxLayout();
 		btnRow->addStretch();
-		auto *btnApply = new QPushButton("Apply", this);
+		auto *btnApply = new QPushButton("Compute", this);
 		auto *btnClose = new QPushButton("Close", this);
 		// HARD RULE: NO edit box may ever execute grdsample. Qt auto-promotes the first QPushButton to
-		// the dialog default, so Return in ANY QLineEdit would click Apply and run the module. Disable
+		// the dialog default, so Return in ANY QLineEdit would click Compute and run the module. Disable
 		// auto-default on BOTH buttons => Enter in an edit box does nothing but finish that edit.
 		btnApply->setAutoDefault(false); btnApply->setDefault(false);
 		btnClose->setAutoDefault(false); btnClose->setDefault(false);
 		btnRow->addWidget(btnApply);
 		btnRow->addWidget(btnClose);
 		v->addLayout(btnRow);
+		addManualButton(this, btnRow, "grdsample");   // the green ? disk, lower-left as everywhere else
 
 		QObject::connect(btnClose, &QPushButton::clicked, this, &QDialog::reject);
 		QObject::connect(btnApply, &QPushButton::clicked, this, [this, btnApply]() {
@@ -2539,6 +2541,11 @@ public:
 			outfileEdit->setText(fn);
 		});
 
+		// STANDING RULE: an "OR Ref grid" row under every Region.
+		addRefGridRow(d, d->findChild<QGridLayout *>("gridLayout_region"),
+		              xminEdit, xmaxEdit, yminEdit, ymaxEdit, xincEdit, yincEdit);
+		addManualButton(d, "gmtgravmag3d");
+
 		// Standing rule: double-clicking any file box opens the same chooser its "..." button does.
 		fileBoxDoubleClick(bodyFileEdit, fileBtn);
 		fileBoxDoubleClick(densityEdit,  densBtn);
@@ -2902,6 +2909,11 @@ public:
 			outfileEdit->setText(fn);
 		});
 
+		// STANDING RULE: an "OR Ref grid" row under every Region.
+		addRefGridRow(d, d->findChild<QGridLayout *>("gridLayout_region"),
+		              xminEdit, xmaxEdit, yminEdit, ymaxEdit, xincEdit, yincEdit);
+		addManualButton(d, "grdgravmag3d");
+
 		// Standing rule: double-clicking any file box opens the same chooser its "..." button does.
 		fileBoxDoubleClick(topEdit,     topBtn);
 		fileBoxDoubleClick(botEdit,     botBtn);
@@ -3217,6 +3229,12 @@ public:
 			filterFileEdit->setText(fn);
 		});
 
+		// STANDING RULE: an "OR Ref grid" row under every Region. (grdredpol has no -I, so no
+		// increment boxes to fill.)
+		addRefGridRow(d, d->findChild<QGridLayout *>("gridLayout_region"),
+		              xminEdit, xmaxEdit, yminEdit, ymaxEdit);
+		addManualButton(d, "grdredpol");
+
 		// Standing rule: double-clicking any file box opens the same chooser its "..." button does.
 		fileBoxDoubleClick(inEdit,         inBtn);
 		fileBoxDoubleClick(incGridEdit,    incGridBtn);
@@ -3293,6 +3311,411 @@ public:
 			closeBusyDialog();
 			if (!ok)
 				QMessageBox::warning(d, "Error", "grdredpol failed — see this window's Errors console for details.");
+		});
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+};
+
+// ============================================================================================
+// grdgradient (GMT menu) — directional derivative / gradient of THIS window's grid. The layout is
+// Mirone's own grdgradient window, control for control (Azim1/Azim2 lists in a "Horizontal Light
+// Angles" box, the Slope/Aspect checkboxes with the direction-flavour combo beside them, then the
+// Boundary condition and Normalization rows, OK at the bottom right), including its small blue "?"
+// notes — those explain their own group, and are NOT the manual button (the green disk in the
+// lower-left corner is, same as every other module dialog here).
+//
+// Azim1/Azim2 are LISTS of whole degrees, as in Mirone, not spin boxes: picking a light azimuth is a
+// coarse choice and the list makes the common values one click away. Azim2 carries an empty first row
+// meaning "not used" — supplying it asks the module for both gradients and keeps the larger one.
+// Slope, Aspect and a plain directional derivative are three different outputs of the same module,
+// so the result is named for whichever was asked (a recompute REPLACES that same name).
+// ============================================================================================
+struct GrdGradientState {
+	bool valid = false;
+	int azim1 = -1, azim2 = -1;             // < 0 = the blank row, i.e. not used
+	bool slope = false, aspect = false, downSlope = false;
+	int dirFlavour = 0, boundary = 0, norm = 0, lambert = 0, saveStats = 0;
+	QString amp, sigma, offset;
+	QString lambAzim, lambElev, ambient, difuse, specular, shine;
+	QString azimGrid, xmin, xmax, ymin, ymax, outfile;
+};
+static GrdGradientState g_grdgradState;
+
+class GrdGradientDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QListWidget *azim1List, *azim2List;
+	QCheckBox *slopeChk, *aspectChk, *downSlopeChk;
+	QComboBox *dirCb, *boundaryCb, *normCb, *lambertCb, *saveStatsCb;
+	QLineEdit *ampEdit, *sigmaEdit, *offsetEdit;
+	QLineEdit *lambAzimEdit, *lambElevEdit, *ambientEdit, *difuseEdit, *specularEdit, *shineEdit;
+	QLineEdit *azimGridEdit, *xminEdit, *xmaxEdit, *yminEdit, *ymaxEdit, *outfileEdit;
+
+	explicit GrdGradientDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdgradient_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdGradientDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdGradientDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+
+		azim1List = d->findChild<QListWidget *>("list_azim1");
+		azim2List = d->findChild<QListWidget *>("list_azim2");
+		slopeChk  = d->findChild<QCheckBox *>("chk_slope");
+		aspectChk = d->findChild<QCheckBox *>("chk_aspect");
+		dirCb      = d->findChild<QComboBox *>("cb_dirFlavour");
+		boundaryCb = d->findChild<QComboBox *>("cb_boundary");
+		normCb     = d->findChild<QComboBox *>("cb_norm");
+		ampEdit    = d->findChild<QLineEdit *>("le_amp");
+		sigmaEdit  = d->findChild<QLineEdit *>("le_sigma");
+		offsetEdit = d->findChild<QLineEdit *>("le_offset");
+		downSlopeChk = d->findChild<QCheckBox *>("chk_downSlope");
+		lambertCb    = d->findChild<QComboBox *>("cb_lambert");
+		saveStatsCb  = d->findChild<QComboBox *>("cb_saveStats");
+		lambAzimEdit = d->findChild<QLineEdit *>("le_lambAzim");
+		lambElevEdit = d->findChild<QLineEdit *>("le_lambElev");
+		ambientEdit  = d->findChild<QLineEdit *>("le_ambient");
+		difuseEdit   = d->findChild<QLineEdit *>("le_difuse");
+		specularEdit = d->findChild<QLineEdit *>("le_specular");
+		shineEdit    = d->findChild<QLineEdit *>("le_shine");
+		azimGridEdit = d->findChild<QLineEdit *>("le_azimGrid");
+		xminEdit = d->findChild<QLineEdit *>("le_xmin");  xmaxEdit = d->findChild<QLineEdit *>("le_xmax");
+		yminEdit = d->findChild<QLineEdit *>("le_ymin");  ymaxEdit = d->findChild<QLineEdit *>("le_ymax");
+		outfileEdit = d->findChild<QLineEdit *>("le_outfile");
+		auto *azimGridBtn = d->findChild<QToolButton *>("btn_azimGridBrowse");
+		auto *outBtn      = d->findChild<QToolButton *>("btn_outfileBrowse");
+		auto *okBtn = d->findChild<QPushButton *>("btn_ok");
+
+		// Both lists are Mirone's: a BLANK first row (nothing selected) then 0..359, so row 0 means
+		// "no azimuth". Rows are tightened to a single line of text (tightenListRows) — Mirone-tight,
+		// not Qt's default padded height.
+		for (QListWidget *lw : {azim1List, azim2List}) {
+			lw->addItem(" ");
+			for (int a = 0; a < 360; ++a) lw->addItem(QString::number(a));
+			tightenListRows(lw);
+		}
+
+		const GrdGradientState &st = g_grdgradState;
+		azim1List->setCurrentRow((st.valid && st.azim1 >= 0 && st.azim1 < 360) ? st.azim1 + 1 : 0);
+		azim2List->setCurrentRow((st.valid && st.azim2 >= 0 && st.azim2 < 360) ? st.azim2 + 1 : 0);
+		if (st.valid) {
+			slopeChk->setChecked(st.slope);   aspectChk->setChecked(st.aspect);
+			downSlopeChk->setChecked(st.downSlope);
+			dirCb->setCurrentIndex(st.dirFlavour);
+			boundaryCb->setCurrentIndex(st.boundary);
+			normCb->setCurrentIndex(st.norm);
+			ampEdit->setText(st.amp);  sigmaEdit->setText(st.sigma);  offsetEdit->setText(st.offset);
+			lambertCb->setCurrentIndex(st.lambert);
+			saveStatsCb->setCurrentIndex(st.saveStats);
+			lambAzimEdit->setText(st.lambAzim);  lambElevEdit->setText(st.lambElev);
+			ambientEdit->setText(st.ambient);    difuseEdit->setText(st.difuse);
+			specularEdit->setText(st.specular);  shineEdit->setText(st.shine);
+			azimGridEdit->setText(st.azimGrid);  outfileEdit->setText(st.outfile);
+			xminEdit->setText(st.xmin);  xmaxEdit->setText(st.xmax);
+			yminEdit->setText(st.ymin);  ymaxEdit->setText(st.ymax);
+		}
+		// Region DESCRIBES THE INPUT GRID (the window's own), so it is filled from it, not retyped.
+		if (scene && scene->surf && !scene->emptyStart && st.xmin.isEmpty()) {
+			double x0 = scene->gx0, x1 = scene->gx1, y0 = scene->gy0, y1 = scene->gy1;
+			if (!(x1 > x0 && y1 > y0)) { x0 = scene->x0; x1 = scene->x1; y0 = scene->y0; y1 = scene->y1; }
+			if (x1 > x0 && y1 > y0) {
+				xminEdit->setText(QString::number(x0, 'g', 10)); xmaxEdit->setText(QString::number(x1, 'g', 10));
+				yminEdit->setText(QString::number(y0, 'g', 10)); ymaxEdit->setText(QString::number(y1, 'g', 10));
+			}
+		}
+		azim1List->scrollToItem(azim1List->currentItem(), QAbstractItemView::PositionAtCenter);
+
+		auto saveState = [this]() {
+			GrdGradientState s;
+			s.valid = true;
+			s.azim1 = azim1List->currentRow() - 1;            // row 0 is the blank "not used" entry
+			s.azim2 = azim2List->currentRow() - 1;
+			s.slope = slopeChk->isChecked();  s.aspect = aspectChk->isChecked();
+			s.downSlope = downSlopeChk->isChecked();
+			s.dirFlavour = dirCb->currentIndex();
+			s.boundary = boundaryCb->currentIndex();
+			s.norm = normCb->currentIndex();
+			s.amp = ampEdit->text();  s.sigma = sigmaEdit->text();  s.offset = offsetEdit->text();
+			s.lambert = lambertCb->currentIndex();
+			s.saveStats = saveStatsCb->currentIndex();
+			s.lambAzim = lambAzimEdit->text();  s.lambElev = lambElevEdit->text();
+			s.ambient = ambientEdit->text();    s.difuse = difuseEdit->text();
+			s.specular = specularEdit->text();  s.shine = shineEdit->text();
+			s.azimGrid = azimGridEdit->text();  s.outfile = outfileEdit->text();
+			s.xmin = xminEdit->text();  s.xmax = xmaxEdit->text();
+			s.ymin = yminEdit->text();  s.ymax = ymaxEdit->text();
+			g_grdgradState = s;
+		};
+		struct GrdGradientSaveOnClose : QObject {
+			std::function<void()> save;
+			GrdGradientSaveOnClose(QObject *p, std::function<void()> fn) : QObject(p), save(fn) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close) save();
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new GrdGradientSaveOnClose(d, saveState));
+
+		// --- Mirone's interlocks, verbatim (grdgradient_mir.m). The azimuth lists are never disabled:
+		// picking an azimuth CLEARS the two checkboxes, and ticking a checkbox blanks the azimuths.
+		// The two checkboxes are mutually exclusive without being radio buttons, since both may be off.
+		//   listbox_azim1_CB : row 0 -> also blank azim2; row > 0 -> uncheck slope + direction
+		//   listbox_azim2_CB : azim2 cannot be set while azim1 is blank
+		//   check_*_CB       : blank both azimuths, uncheck the other box; the flavour combo follows
+		//                      the direction box only
+		QObject::connect(azim1List, &QListWidget::currentRowChanged, d, [this](int row) {
+			if (row <= 0) { azim2List->setCurrentRow(0); return; }
+			QSignalBlocker b1(slopeChk), b2(aspectChk);
+			slopeChk->setChecked(false);  aspectChk->setChecked(false);
+			dirCb->setEnabled(false);
+		});
+		QObject::connect(azim2List, &QListWidget::currentRowChanged, d, [this](int row) {
+			if (row > 0 && azim1List->currentRow() == 0) azim2List->setCurrentRow(0);
+		});
+		auto checkPicked = [this](QCheckBox *me, QCheckBox *other) {
+			if (me->isChecked()) {
+				QSignalBlocker b1(azim1List), b2(azim2List), b3(other);
+				azim1List->setCurrentRow(0);  azim2List->setCurrentRow(0);
+				other->setChecked(false);
+			}
+			// The flavour combo and the -Da switch belong to the direction box alone (Mirone enables
+			// the combo there only; -Da is the module option Mirone's window never had).
+			dirCb->setEnabled(aspectChk->isChecked());
+			downSlopeChk->setEnabled(aspectChk->isChecked());
+		};
+		QObject::connect(slopeChk,  &QCheckBox::toggled, d, [this, checkPicked](bool) { checkPicked(slopeChk, aspectChk); });
+		QObject::connect(aspectChk, &QCheckBox::toggled, d, [this, checkPicked](bool) { checkPicked(aspectChk, slopeChk); });
+		dirCb->setEnabled(aspectChk->isChecked());
+		downSlopeChk->setEnabled(aspectChk->isChecked());
+
+		// --- Lambertian radiance (E). GMT states plainly that -E overrides -A, -D and -S, so picking a
+		// radiance grays the whole Gradient tab rather than letting two conflicting requests go out.
+		// Peucker and the ESRI-like "manip" hard-wire azimuth/elevation to 315/45 (the module IGNORES
+		// whatever is typed), and the four reflectance parameters exist only for the full Lambertian —
+		// so each of those follows the mode, grayed when it would be a lie.
+		auto syncLambert = [this]() {
+			const int m = lambertCb->currentIndex();          // 0 none, 1 full, 2 simple, 3 Peucker, 4 manip
+			const bool on = m > 0;
+			const bool takesView = (m == 1 || m == 2);
+			const bool takesRefl = (m == 1);
+			lambAzimEdit->setEnabled(takesView);
+			lambElevEdit->setEnabled(takesView);
+			for (QLineEdit *e : {ambientEdit, difuseEdit, specularEdit, shineEdit}) e->setEnabled(takesRefl);
+			for (QWidget *w : {(QWidget *)azim1List, (QWidget *)azim2List, (QWidget *)slopeChk,
+			                   (QWidget *)aspectChk, (QWidget *)dirCb, (QWidget *)downSlopeChk,
+			                   (QWidget *)azimGridEdit})
+				w->setEnabled(!on);
+			if (!on) {                                        // hand the Gradient tab back its own rules
+				dirCb->setEnabled(aspectChk->isChecked());
+				downSlopeChk->setEnabled(aspectChk->isChecked());
+			}
+		};
+		QObject::connect(lambertCb, &QComboBox::currentIndexChanged, d, [syncLambert](int) { syncLambert(); });
+		syncLambert();
+
+		// --- Normalization boxes, Mirone's edit callbacks: amp needs a normalization picked and a
+		// positive number, sigma needs amp, offset needs sigma; a box that fails its test is cleared,
+		// along with the ones that depend on it. All three stay enabled (Mirone never grays them).
+		auto normEditCheck = [this]() {
+			if (normCb->currentIndex() == 0) {                      // no normalization -> no arguments
+				ampEdit->clear();  sigmaEdit->clear();  offsetEdit->clear();
+				return;
+			}
+			bool ok = false;
+			if (ampEdit->text().trimmed().toDouble(&ok) <= 0 || !ok) {
+				if (!ampEdit->text().trimmed().isEmpty()) ampEdit->clear();
+				sigmaEdit->clear();  offsetEdit->clear();
+				return;
+			}
+			if (sigmaEdit->text().trimmed().toDouble(&ok) <= 0 || !ok) {
+				if (!sigmaEdit->text().trimmed().isEmpty()) sigmaEdit->clear();
+				offsetEdit->clear();
+				return;
+			}
+			if (offsetEdit->text().trimmed().toDouble(&ok) <= 0 || !ok)
+				if (!offsetEdit->text().trimmed().isEmpty()) offsetEdit->clear();
+		};
+		for (QLineEdit *e : {ampEdit, sigmaEdit, offsetEdit})
+			QObject::connect(e, &QLineEdit::editingFinished, d, [normEditCheck]() { normEditCheck(); });
+		QObject::connect(normCb, &QComboBox::currentIndexChanged, d, [this](int idx) {
+			if (idx == 0) { ampEdit->clear();  sigmaEdit->clear();  offsetEdit->clear(); }
+		});
+		for (QLineEdit *e : {ampEdit, sigmaEdit, offsetEdit}) e->setEnabled(true);
+
+		// Mirone's per-group "?" notes. Text is the module's own documentation, condensed.
+		auto note = [d](QToolButton *b, const QString &title, const QString &text) {
+			if (!b) return;
+			QObject::connect(b, &QToolButton::clicked, d, [d, title, text]() {
+				QMessageBox::information(d, title, text);
+			});
+		};
+		note(d->findChild<QToolButton *>("btn_helpLight"), "Horizontal Light Angles",
+			"Azimuth of the light source, in degrees clockwise from north (the +y direction) toward "
+			"east (+x). The NEGATIVE of the directional derivative is computed, so values come out "
+			"positive where the surface slopes downhill in that direction — the right sense for "
+			"illuminating an image.\n\n"
+			"Give a second azimuth to compute the gradient in both directions and keep whichever is "
+			"larger in magnitude: useful for data with two directions of lineated structure "
+			"(e.g. 0 and 270 lights from the north and from the west).");
+		note(d->findChild<QToolButton *>("btn_helpDir"), "Slope and gradient direction",
+			"Compute Slope returns the magnitude of the gradient vectors (as a percentage).\n\n"
+			"Gradient direction returns the ASPECT, the down-slope direction, instead of the "
+			"up-slope one.\n\n"
+			"The combo picks how those angles are reported: azimuthal (clockwise from north) or "
+			"cartesian (counter-clockwise from east); as orientations (0-180) instead of directions "
+			"(0-360); or with 90 degrees added, which turns them into local strikes of the surface.");
+		note(d->findChild<QToolButton *>("btn_helpBoundary"), "Boundary condition",
+			"The first and last row/column of the result depend on what is assumed beyond the grid "
+			"edges.\n\n"
+			"Empty lets GMT decide. Geographic is right for a global lon/lat grid (the edges wrap and "
+			"the poles are handled); periodic wraps in x and y; natural applies a natural-spline "
+			"(zero second derivative) edge.");
+		note(d->findChild<QToolButton *>("btn_helpNorm"), "Normalization",
+			"Without normalization the raw gradients are returned. Otherwise they are offset and "
+			"scaled to a maximum magnitude of amp [1]; offset defaults to the average gradient.\n\n"
+			"linear:  gn = amp * (g - offset) / max(abs(g - offset))\n"
+			"Laplace: a cumulative Laplace distribution, sigma estimated by the L1 norm if empty\n"
+			"Cauchy:  a cumulative Cauchy distribution, sigma estimated by the L2 norm if empty\n\n"
+			"For an intensity grid to illuminate an image, a good first try is Laplace with "
+			"amp = 0.6.");
+
+		note(d->findChild<QToolButton *>("btn_helpLambert"), "Lambertian radiance",
+			"An ideal surface that reflects all the light striking it and looks equally bright from "
+			"every viewing direction — the shading to feed grdimage/grdview. It OVERRIDES the Gradient "
+			"tab.\n\n"
+			"Full reflectance takes the light vector plus ambient [0.55], diffuse [0.6], specular "
+			"[0.4] and shine [10]. The simple algorithm needs only the light vector. Peucker is a "
+			"piecewise linear approximation — faster, and its azimuth/elevation are hardwired to "
+			"315/45. The ESRI-like hillshade is likewise hardwired to 315/45.");
+
+		if (azimGridBtn) QObject::connect(azimGridBtn, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getOpenFileName(d, "Select the azimuth grid", prefStartDir(),
+			                                          "Grid files (*.nc *.grd *.tif *.tiff);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			azimGridEdit->setText(fn);
+		});
+		if (outBtn) QObject::connect(outBtn, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getSaveFileName(d, "Save result as", prefStartDir(),
+			                                          "Grid files (*.nc *.grd);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			outfileEdit->setText(fn);
+		});
+		// Standing rule: double-clicking any file box opens the same chooser its "..." button does.
+		fileBoxDoubleClick(azimGridEdit, azimGridBtn);
+		fileBoxDoubleClick(outfileEdit,  outBtn);
+
+		// STANDING RULE: an "OR Ref grid" row under every Region. (grdgradient has no -I.)
+		addRefGridRow(d, d->findChild<QGridLayout *>("gridLayout_region"),
+		              xminEdit, xmaxEdit, yminEdit, ymaxEdit);
+		addManualButton(d, "grdgradient");
+
+		// Open at the smallest size the .ui's own layout allows, not at whatever Qt inflates the
+		// window to. Done LAST, after every widget is populated and every maximumHeight in the .ui is
+		// in effect, so the minimum is computed from the finished layout.
+		d->adjustSize();
+		d->resize(d->minimumSizeHint());
+
+		if (okBtn) QObject::connect(okBtn, &QPushButton::clicked, d, [this, d, saveState]() {
+			if (!g_juliaGrdGradient) {
+				QMessageBox::warning(d, "Error", "grdgradient: callback not registered (rebuild/restart needed?).");
+				return;
+			}
+			if (!(scn && scn->surf && !scn->emptyStart && !scn->imageOnly)) {
+				QMessageBox::warning(d, "Error", "grdgradient works on the grid loaded in this window, "
+				                                 "and this window has none.");
+				return;
+			}
+			const int lamb = lambertCb->currentIndex();
+			const int a1 = azim1List->currentRow() - 1, a2 = azim2List->currentRow() - 1;
+			const QString azimGrid = azimGridEdit->text().trimmed();
+			// Mirone's own consistency check, extended to the options its window never had: a radiance
+			// or an azimuth grid is just as much "something to do" as an azimuth or a checkbox.
+			if (lamb == 0 && azimGrid.isEmpty() && a1 < 0 && !slopeChk->isChecked() && !aspectChk->isChecked()) {
+				QMessageBox::warning(d, "Chico Clever", "You haven't select anything usefull to do.");
+				return;
+			}
+			saveState();
+
+			QStringList kv;
+			if (lamb > 0) {
+				// -E overrides -A/-D/-S, so nothing from the Gradient tab travels with it.
+				static const char *lm[] = { "", "full", "simple", "peucker", "manip" };
+				kv << QString("lambert=") + lm[lamb];
+				if (lambAzimEdit->isEnabled() && !lambAzimEdit->text().trimmed().isEmpty())
+					kv << "lambazim=" + lambAzimEdit->text().trimmed();
+				if (lambElevEdit->isEnabled() && !lambElevEdit->text().trimmed().isEmpty())
+					kv << "lambelev=" + lambElevEdit->text().trimmed();
+				for (auto pr : { std::make_pair(QString("ambient"), ambientEdit),
+				                 std::make_pair(QString("difuse"), difuseEdit),
+				                 std::make_pair(QString("specular"), specularEdit),
+				                 std::make_pair(QString("shine"), shineEdit) }) {
+					if (pr.second->isEnabled() && !pr.second->text().trimmed().isEmpty())
+						kv << pr.first + "=" + pr.second->text().trimmed();
+				}
+			}
+			else {
+				// An azimuth GRID replaces the two lists: the module updates the azimuth per node.
+				if (!azimGrid.isEmpty()) kv << "azimgrid=" + azimGrid;
+				else if (a1 >= 0) {
+					kv << QString("azim=%1").arg(a1);
+					if (a2 >= 0) kv << QString("azim2=%1").arg(a2);
+				}
+				// Slope forces -D as well (Mirone: opt_S = '-Sp'; opt_D = '-D'), and the flavour letters
+				// belong to the direction box: a = down-slope (aspect), c = trigonometric angles,
+				// o = 0-180 orientations, n = +90.
+				if (slopeChk->isChecked()) {
+					kv << "finddir=";
+					kv << "slope=1";
+				}
+				else if (aspectChk->isChecked()) {
+					static const char *flav[] = { "", "c", "o", "n" };
+					QString flags = downSlopeChk->isChecked() ? "a" : "";
+					flags += flav[dirCb->currentIndex()];
+					kv << "finddir=" + flags;
+				}
+			}
+			// Mirone's -Lx / -Ly / -Lxy / -Lg, which GMT6 spells as the -n option's +b modifier.
+			static const char *bc[] = { "", "x", "y", "xy", "g" };
+			if (boundaryCb->currentIndex() > 0) kv << QString("boundary=") + bc[boundaryCb->currentIndex()];
+			// -N / -Ne / -Nt, with amp then /sigma then /offset appended, exactly as Mirone builds it.
+			static const char *nm[] = { "", "simple", "laplace", "cauchy" };
+			if (normCb->currentIndex() > 0) {
+				kv << QString("norm=") + nm[normCb->currentIndex()];
+				if (!ampEdit->text().trimmed().isEmpty())    kv << "amp=" + ampEdit->text().trimmed();
+				if (!sigmaEdit->text().trimmed().isEmpty())  kv << "sigma=" + sigmaEdit->text().trimmed();
+				if (!offsetEdit->text().trimmed().isEmpty()) kv << "offset=" + offsetEdit->text().trimmed();
+			}
+			// -Q: reuse one offset/sigma across grids or tiles (c = save, r = read, R = read + delete).
+			static const char *qs[] = { "", "c", "r", "R" };
+			if (saveStatsCb->currentIndex() > 0) kv << QString("savestats=") + qs[saveStatsCb->currentIndex()];
+			// -R and -G. All four region boxes or none.
+			const QString xm = xminEdit->text().trimmed(), xM = xmaxEdit->text().trimmed();
+			const QString ym = yminEdit->text().trimmed(), yM = ymaxEdit->text().trimmed();
+			const int nReg = (!xm.isEmpty()) + (!xM.isEmpty()) + (!ym.isEmpty()) + (!yM.isEmpty());
+			if (nReg == 4)      kv << "region=" + xm + "/" + xM + "/" + ym + "/" + yM;
+			else if (nReg != 0) {
+				QMessageBox::warning(d, "Error", "Give all four Region boxes, or leave all four empty "
+				                                 "to use the input grid's own region.");
+				return;
+			}
+			if (!outfileEdit->text().trimmed().isEmpty()) kv << "outfile=" + outfileEdit->text().trimmed();
+
+			showBusyDialog("Computing the gradient…");
+			const int ok = g_juliaGrdGradient(scn, kv.join('\n').toUtf8().constData());
+			closeBusyDialog();
+			if (!ok)
+				QMessageBox::warning(d, "Error", "grdgradient failed — see this window's Errors console for details.");
 		});
 
 		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
@@ -7361,7 +7784,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	// --- Tools menu: open the standalone X,Y plot tool (blank; ready for File>Open or Julia) ----
 	QMenu *mTools = win->menuBar()->addMenu("&Tools");
-	mTools->addAction("X,Y plot", [] { xyOpenBlankFromHost(); });
+	// Opened FROM this viewer, so this viewer's Scene Objects dock is where it parks when closed.
+	mTools->addAction("X,Y plot", [s] { if (XYPlot *p = xyOpenBlankFromHost()) p->owner = s; });
 	// Tiles Tool (port of Mirone's tiles_tool.m): an interactive world map + refinable web-tile mesh.
 	// Pick two diagonal tiles, hit GO -> Julia builds the mosaic (GMT.mosaic) in a new viewer. Non-modal
 	// (stays open for repeated picks); WA_DeleteOnClose frees it (and its world pixmap) when closed.
@@ -7378,6 +7802,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mGMT->addAction("grdsample", [win, s]() {
 		GrdsampleDialog dlg(win, s);
 		dlg.exec();   // Julia is invoked inside the dialog on Apply
+	});
+	mGMT->addAction("grdgradient", [win, s]() {
+		auto *w = new GrdGradientDialog(win, s);   // self-deletes when its QDialog closes (WA_DeleteOnClose)
+		if (w->dlg) w->dlg->show();
 	});
 
 	// --- Grid Tools menu: operations that combine / modify the window's host grid ------------
@@ -8166,6 +8594,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// dock to its strip width (resizeDocks only bites after show()).
 	if (blankStart && s->objFoldBar)
 		win->resizeDocks({objDock}, {s->objFoldBar->sizeHint().width()}, Qt::Horizontal);
+	else
+		// Everything else: the dock opens 2.5 cm wide. A physical width, not a pixel count, so it is
+		// the same strip of desk on any DPI. resizeDocks only bites after show(), hence its place here.
+		win->resizeDocks({objDock}, {qRound(win->logicalDpiX() * 2.5 / 2.54)}, Qt::Horizontal);
 
 	// Shrink the pre-folded Shading dock to its strip width (resizeDocks only bites after show()).
 	if (hasShadedBody && s->shadeFoldBar && s->shadeFoldBar->folded)

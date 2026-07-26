@@ -71,6 +71,8 @@ include("rtp3d.jl")      # Geophysics > Magnetics: reduce-to-pole via 2-D FFT (p
 include("gravmag3d.jl")  # Geophysics > Magnetics > gmtgravmag3d: anomaly of a 3-D body (Okabe)
 include("grdgravmag3d.jl") # Geophysics > Magnetics > grdgravmag3d: same anomaly from one or two grids
 include("grdredpol.jl")  # Geophysics > Magnetics > grdredpol: continuous (differential) RTP
+include("grdgradient.jl") # GMT menu > grdgradient: directional derivative / slope / aspect
+include("manual.jl")     # the green "?" disk on every module dialog -> that module's GMTjl_doc page
 include("mgd77tracks.jl") # Geophysics > Magnetics > Import *.gmt/*.nc file(s): cruise tracks (port of mirone.m GeophysicsImportGmtFile_CB)
 include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid clipping (port of Mirone ml_clip.m)
 include("shapenc.jl")    # write a SHAPENC netCDF file (port of Mirone utils/shapenc.m; GDAL MDArray API, no MEX)

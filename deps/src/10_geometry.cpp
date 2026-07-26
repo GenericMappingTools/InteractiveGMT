@@ -58,11 +58,16 @@ struct FoldTitleBar : QWidget {
 struct ClickableLabel : QLabel {
 	std::function<void(const QPoint&)> onClick;        // LEFT click  -> properties / fold
 	std::function<void(const QPoint&)> onRightClick;   // RIGHT click -> context menu (e.g. Save…)
+	std::function<void()>              onDoubleClick;  // LEFT double click -> reopen / raise (parked X,Y plots)
 	using QLabel::QLabel;
 	void mousePressEvent(QMouseEvent *e) override {
 		if (e->button() == Qt::LeftButton && onClick) onClick(e->globalPosition().toPoint());
 		else if (e->button() == Qt::RightButton && onRightClick) onRightClick(e->globalPosition().toPoint());
 		else QLabel::mousePressEvent(e);
+	}
+	void mouseDoubleClickEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::LeftButton && onDoubleClick) onDoubleClick();
+		else QLabel::mouseDoubleClickEvent(e);
 	}
 };
 

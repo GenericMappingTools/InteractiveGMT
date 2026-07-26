@@ -62,11 +62,21 @@ struct XYPage {
 	vtkSmartPointer<vtkTable>   sgFitTable;
 };
 
+// Reveal + unfold a viewer's Scene Objects dock (defined in 70_window.cpp, later in this same
+// translation unit): a plot that parks there must not land in a folded, invisible panel.
+static void unfoldSceneObjects(Scene *s);
+
 // A live X,Y plot window. The opaque handle handed to the host is this XYPlot*.
 // Per-curve / per-axis state lives in the PAGES; the window owns only the shared
 // widgets (one VTK view, the Object Manager, the Data Viewer, the Console, tabs).
 struct XYPlot {
 	QMainWindow                        *win = nullptr;
+	// The 3-D viewer this plot belongs to, when it was opened from one (gmtvtk_xyplot_set_owner).
+	// It decides WHOSE Scene Objects dock the window parks in when closed with the X. A plot with no
+	// owner (a bare `xyplot()` from the REPL) has no dock to park in, so its X really closes it.
+	Scene                              *owner = nullptr;
+	bool                                parked = false;   // closed with the X: hidden, row in the dock
+	bool                                reallyClose = false;  // set by the row's "Delete" — let the X through
 	QLabel                             *infoLabel = nullptr;      // optional header strip above the chart
 	                                                                // (e.g. Tide tool's Next High/Now/Next Low)
 	double                              infoFontPt = 8.0;          // user-adjustable via the Object Manager
@@ -1457,12 +1467,78 @@ static void xyTabMenu(XYPlot *s, const QPoint &pos) {
 	}
 }
 
+// Bring a parked plot back: show it, raise it, and drop the "parked" mark so the dock stops listing
+// it. ONE function for every way back in (the row's checkbox, its double-click, its "Show" item), so
+// they can never drift apart.
+static void xyUnpark(XYPlot *p) {
+	if (!xyAlive(p) || !p->win) return;
+	p->parked = false;
+	p->win->setWindowState(p->win->windowState() & ~Qt::WindowMinimized);
+	p->win->showNormal();
+	p->win->raise();
+	p->win->activateWindow();
+	if (p->owner && sceneAlive(p->owner)) rebuildSceneObjects(p->owner);
+}
+
+// Append one Scene Objects row per PARKED plot owned by `s` (declared in 50_scene.cpp, called at the
+// very end of rebuildSceneObjects so these land at the BOTTOM of the dock). `addRow` is that
+// function's own row builder — the row is therefore identical in look and behaviour to every other.
+static void xyAppendParkedRows(Scene *s, const SceneObjRowFn &addRow) {
+	if (!s) return;
+	for (XYPlot *p : g_xyplots) {
+		if (!p->parked || p->owner != s || !p->win) continue;
+		const QString title = p->win->windowTitle();
+		// ONE menu, reached by either button — the properties menu and the context menu of this row are
+		// the same thing, so they are the same lambda, not two look-alikes.
+		auto propsMenu = [p](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) xyUnpark(p);
+			else if (pick == aDel) {
+				if (QMessageBox::question(nullptr, "Delete X,Y plot",
+				        QString("Delete \"%1\" for good? Its pages and data go with it.")
+				            .arg(p->win->windowTitle())) != QMessageBox::Yes)
+					return;
+				p->reallyClose = true;      // let the close through the parking filter
+				p->win->close();            // WA_DeleteOnClose -> destroyed -> the row goes with it
+			}
+		};
+		addRow(title, IC_Profile, /*checked=*/false,
+		       // Checkbox: ticking it is just another way of bringing the window back; unticking a
+		       // parked plot means nothing (it is hidden already).
+		       [p](bool on) { if (on) xyUnpark(p); },
+		       propsMenu,
+		       "Closed X,Y plot — double-click to bring it back, click for Show / Delete",
+		       propsMenu,
+		       // Double-click: straight back to the window, no menu.
+		       [p]() { xyUnpark(p); });
+	}
+}
+
 // ---- window builder --------------------------------------------------------
+
+// Which viewer a new plot belongs to — i.e. whose Scene Objects dock it parks in when its window is
+// closed with the X. Resolved HERE, once, for EVERY way of opening a plot (the Tools menu, a profile,
+// Julia's own xyplot() / File > New, the tide and gmtedit tools…): making each call site remember to
+// set an owner is exactly how the feature ended up doing nothing at all. The active viewer window
+// wins; failing that the most recently used one; failing that the only one open.
+static Scene *xyDefaultOwner() {
+	if (QWidget *aw = QApplication::activeWindow())
+		for (Scene *sc : g_scenes)
+			if (sceneAlive(sc) && sc->win && static_cast<QWidget*>(sc->win) == aw) return sc;
+	if (sceneAlive(g_lastScene)) return g_lastScene;
+	if (g_scenes.size() == 1)    return *g_scenes.begin();
+	return nullptr;                     // no viewer at all -> nowhere to park, the X really closes
+}
 
 static XYPlot *buildXYPlot(const char *title) {
 	ensureApp();
 
 	XYPlot *s = new XYPlot();
+	s->owner = xyDefaultOwner();
 	s->win = new QMainWindow();
 	s->win->setAttribute(Qt::WA_DeleteOnClose, true);
 	s->win->setWindowTitle(title && title[0] ? QString::fromUtf8(title) : QString("i'GMT  —  X,Y plot"));
@@ -1846,14 +1922,41 @@ static XYPlot *buildXYPlot(const char *title) {
 	// --- interactive Spector-Grant drag-band tool (left-drag while the tool is active) ---
 	s->widget->installEventFilter(new XYSGFilter(s, s->win));
 
+	// --- the X PARKS the window, it does not destroy it -------------------------------------------
+	// Same contract as the Aquamoto control window: closing hides, and the plot lives on as a handle
+	// at the bottom of its owner's Scene Objects dock (xyAppendParkedRows below), where a double-click
+	// brings it back and the properties menu offers the real deletion. Only that menu (reallyClose)
+	// lets a close through — and a plot with NO owner has nowhere to park, so its X closes for real.
+	struct XYCloseParks : QObject {
+		XYPlot *p;
+		XYCloseParks(QObject *parent, XYPlot *plot) : QObject(parent), p(plot) {}
+		bool eventFilter(QObject *o, QEvent *e) override {
+			if (e->type() == QEvent::Close && p && !p->reallyClose && p->owner && sceneAlive(p->owner)) {
+				e->ignore();
+				p->win->hide();
+				p->parked = true;
+				rebuildSceneObjects(p->owner);
+				// A handle the user cannot see is the same as no handle at all: reveal + unfold the
+				// dock, exactly as a derived grid does when it lands there.
+				unfoldSceneObjects(p->owner);
+				return true;
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	s->win->installEventFilter(new XYCloseParks(s->win, s));
+
 	// --- lifetime bookkeeping (shares the pump/window count with the 3-D viewer) ---
 	g_xyplots.insert(s);
 	g_openWindows++;
 	g_lastRW = rw.Get();
 	QObject::connect(s->win, &QObject::destroyed, [s]{
+		Scene *owner = s->owner;
 		g_xyplots.erase(s);
 		if (g_openWindows > 0) g_openWindows--;
 		delete s;                                   // struct outlives the QMainWindow; free it here
+		// A really-deleted plot must lose its parked row too, or the dock keeps offering a dead handle.
+		if (owner && sceneAlive(owner)) rebuildSceneObjects(owner);
 	});
 
 	// First page (mounts a chart in the scene + adds its tab). Must come AFTER objMgr/tabs exist so

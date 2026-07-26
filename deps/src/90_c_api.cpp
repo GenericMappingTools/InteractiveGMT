@@ -720,8 +720,11 @@ GMTVTK_API void *gmtvtk_open_profile_in_xyplot(void *handle) {
 	const QByteArray t = s->prof->seriesTitle().toUtf8();
 	const QByteArray xl = s->prof->seriesXLabel().toUtf8();
 	const QByteArray yl = s->prof->seriesYLabel().toUtf8();
-	return openSeriesInXYTool(X, Y, t.isEmpty() ? "i'GMT  —  Profile" : t.constData(),
-	                          xl.constData(), yl.constData());
+	XYPlot *p = openSeriesInXYTool(X, Y, t.isEmpty() ? "i'GMT  —  Profile" : t.constData(),
+	                               xl.constData(), yl.constData());
+	// This plot came OUT of `s`, so `s` is where it parks when its window is closed with the X.
+	if (p) p->owner = s;
+	return p;
 }
 
 // Is a figure handle still live (its window open)?  1 = yes, 0 = closed/invalid.
@@ -1317,6 +1320,19 @@ GMTVTK_API void gmtvtk_set_grdgravmag3d_callback(JuliaGrdGravMag3DFn fn) {
 // supplement and adds the continuous-RTP grid to `scene`. nullptr to detach.
 GMTVTK_API void gmtvtk_set_grdredpol_callback(JuliaGrdRedPolFn fn) {
 	g_juliaGrdRedPol = fn;
+}
+
+// Register the "Open full manual page" callback (the green ? disk on every module dialog).
+// fn(name) opens that GMT module's page of the GMTjl_doc manual. nullptr to detach.
+GMTVTK_API void gmtvtk_set_manual_callback(JuliaOpenManualFn fn) {
+	g_juliaOpenManual = fn;
+}
+
+// Register the grdgradient OK callback (GMT menu). fn(scene, params) with params a newline-separated
+// "key=value" block (see JuliaGrdGradientFn in 30_app.cpp) runs GMT.jl's grdgradient() on the
+// window's grid and adds the result. nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdgradient_callback(JuliaGrdGradientFn fn) {
+	g_juliaGrdGradient = fn;
 }
 
 // Register the Import *.gmt/*.nc cruise track callback (Geophysics > Magnetics). fn(scene, path,
@@ -3903,6 +3919,18 @@ GMTVTK_API int gmtvtk_xyplot_is_alive(void *handle) {
 GMTVTK_API void gmtvtk_xyplot_close(void *handle) {
 	XYPlot *p = static_cast<XYPlot*>(handle);
 	if (xyAlive(p) && p->win) p->win->close();
+}
+
+// Tell an X,Y plot window which 3-D viewer it belongs to. That viewer's Scene Objects dock is where
+// the plot PARKS as a handle when its window is closed with the X (instead of being destroyed):
+// double-click the row to bring it back, or use its menu to delete it for good. Without an owner
+// there is no dock to park in and the X closes the window for real, as before. Call right after
+// gmtvtk_xyplot_open when the plot was opened from a viewer window.
+GMTVTK_API void gmtvtk_xyplot_set_owner(void *handle, void *scene) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p)) return;
+	Scene *s = static_cast<Scene*>(scene);
+	p->owner = (s && sceneAlive(s)) ? s : nullptr;
 }
 
 // Bring an X,Y plot window to the front.

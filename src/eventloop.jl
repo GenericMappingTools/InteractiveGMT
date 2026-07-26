@@ -71,6 +71,8 @@ function _ensure_callbacks()
 	                    ("gravmag3d",   _register_gravmag3d),
 	                    ("grdgravmag3d",_register_grdgravmag3d),
 	                    ("grdredpol",   _register_grdredpol),
+	                    ("grdgradient", _register_grdgradient),
+	                    ("manual",      _register_manual),
 	                    ("import-gmt",  _register_import_gmt),
 	                    ("gmtedit",     _register_gmtedit),
 	                    ("clipgrid",    _register_clipgrid),

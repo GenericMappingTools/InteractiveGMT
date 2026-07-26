@@ -61,6 +61,23 @@ static void rememberStartDir(const QString &path) {
 	prefPushDir(QFileInfo(path).absolutePath());
 }
 
+// STANDING RULE: a list of short values (degrees, sizes, counts) must show its rows TIGHT — one line
+// of text and nothing more — the way Mirone's listboxes do. Qt's default row height is far taller
+// than the text, and setSpacing(0) alone does NOT fix it: the padding lives in each item's own
+// sizeHint, so it has to be overridden per item. A stylesheet is the WRONG tool here — applying one
+// switches Qt's style engine to a path that pads rows MORE, not less (learned the hard way on the
+// RTP dialog's lists), which is why this is done through sizeHint and the widget font only.
+// Call it after populating (and after every repopulate).
+static void tightenListRows(QListWidget *lw) {
+	if (!lw) return;
+	lw->setSpacing(0);
+	lw->setIconSize(QSize(0, 0));                  // no reserved icon column
+	lw->setUniformItemSizes(true);                 // lets the view trust one height for every row
+	const int h = QFontMetrics(lw->font()).height();
+	for (int i = 0; i < lw->count(); ++i)
+		lw->item(i)->setSizeHint(QSize(0, h));     // 0 width = keep the view's own width
+}
+
 // STANDING RULE for every dialog in this app (existing and future): a QLineEdit that expects a FILE
 // must also bring up the system file chooser on a DOUBLE-CLICK inside it, not only through its "..."
 // button. Implemented once, here, and by CLICKING THAT BUTTON — the button's own handler already
@@ -305,6 +322,23 @@ static JuliaGrdGravMag3DFn g_juliaGrdGravMag3D = nullptr;
 // Returns 1 on success, 0 on failure, same contract as the two gravmag callbacks. nullptr to detach.
 typedef int (*JuliaGrdRedPolFn)(void *scene, const char *params);
 static JuliaGrdRedPolFn g_juliaGrdRedPol = nullptr;
+
+// "Open full manual page" — the little green ? disk every module dialog carries in its lower-left
+// corner (addManualButton, 70_window.cpp). `name` is the GMT module name; Julia opens that module's
+// page under https://www.generic-mapping-tools.org/GMTjl_doc/. Returns 1 if the page was opened.
+// nullptr to detach.
+typedef int (*JuliaOpenManualFn)(const char *name);
+static JuliaOpenManualFn g_juliaOpenManual = nullptr;
+
+// grdgradient (GMT menu) — directional derivative / slope / aspect of the window's grid, via GMT.jl's
+// `grdgradient` (src/grdgradient.jl). The dialog (GrdGradientDialog, 70_window.cpp, loads
+// deps/ui/grdgradient_dialog.ui) hands a NEWLINE-separated "key=value" block: azim=/azim2= (plain
+// directional derivative) or finddir=<flags>[+slope=1] (slope/aspect mode), boundary=g|p|n,
+// norm=linear|laplace|cauchy with amp=/sigma=/offset=. Absent key = don't pass that option. The
+// result is added to `scene` as a new derived grid, named for what was computed. Returns 1 on
+// success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGrdGradientFn)(void *scene, const char *params);
+static JuliaGrdGradientFn g_juliaGrdGradient = nullptr;
 
 // Import *.gmt/*.nc cruise track file(s) (Geophysics > Magnetics), port of Mirone's
 // GeophysicsImportGmtFile_CB (mirone.m) — plots the navigation (lon/lat) of MGD77+ netCDF cruise
@@ -945,6 +979,109 @@ static void enableFileDrops(QMainWindow *win, QWidget *widget, Scene *s) {
 	widget->setAcceptDrops(true);
 	win->installEventFilter(filt);
 	widget->installEventFilter(filt);
+}
+
+// ============================================================================================
+// "Open full manual page" — a small green disk with a white question mark, sitting in the LOWER-LEFT
+// corner of a module dialog's button row. STANDING RULE: every module dialog carries one. ONE helper
+// for all of them; the icon is painted here, not shipped as an asset, so it scales to whatever size
+// a caller asks for and can never go missing from an install.
+//
+// Clicking it hands the MODULE NAME to Julia (g_juliaOpenManual -> _on_open_manual, src/manual.jl),
+// which opens that module's page under https://www.generic-mapping-tools.org/GMTjl_doc/.
+// Lives in this fragment (not 70_window.cpp) so the dialogs defined EARLIER there can use it too.
+// ============================================================================================
+static QIcon makeHelpDiskIcon(int px) {
+	QPixmap pm(px, px);
+	pm.fill(Qt::transparent);
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(Qt::NoPen);
+	p.setBrush(QColor(46, 160, 67));                     // green disk
+	p.drawEllipse(0, 0, px - 1, px - 1);
+	QFont fnt = p.font();
+	fnt.setBold(true);
+	fnt.setPixelSize(int(px * 0.72));
+	p.setFont(fnt);
+	p.setPen(Qt::white);                                 // white question mark
+	p.drawText(QRect(0, 0, px, px), Qt::AlignCenter, "?");
+	p.end();
+	return QIcon(pm);
+}
+
+// Insert the button at the FRONT of `row` — the dialogs' bottom row starts with a stretch, so index 0
+// puts it hard against the lower-left corner, opposite Compute/Close. This overload is for dialogs
+// built in C++ (their button row has no object name to look up).
+static void addManualButton(QDialog *dlg, QBoxLayout *row, const QString &moduleName) {
+	if (!dlg || !row) return;
+	const int px = 18;
+	auto *btn = new QToolButton(dlg);
+	btn->setIcon(makeHelpDiskIcon(px));
+	btn->setIconSize(QSize(px, px));
+	btn->setAutoRaise(true);                             // no frame: the disk IS the button
+	btn->setCursor(Qt::PointingHandCursor);
+	btn->setToolTip("Open full manual page");
+	btn->setFocusPolicy(Qt::NoFocus);                    // never steals Enter/Tab from the real controls
+	QObject::connect(btn, &QToolButton::clicked, dlg, [dlg, moduleName]() {
+		if (!g_juliaOpenManual) {
+			QMessageBox::warning(dlg, "Manual", "Manual: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		if (!g_juliaOpenManual(moduleName.toUtf8().constData()))
+			QMessageBox::warning(dlg, "Manual",
+				QString("Could not open the manual page for %1.").arg(moduleName));
+	});
+	row->insertWidget(0, btn);
+}
+
+// Same thing for a dialog loaded from a .ui, where the bottom row is the one named
+// "horizontalLayout_buttons" by convention.
+static void addManualButton(QDialog *dlg, const QString &moduleName) {
+	if (!dlg) return;
+	addManualButton(dlg, dlg->findChild<QHBoxLayout *>("horizontalLayout_buttons"), moduleName);
+}
+
+// STANDING RULE: wherever a dialog shows a Region (xmin/xmax/ymin/ymax), an "OR Ref grid" row goes
+// DIRECTLY BELOW it — pick a grid and its own region fills the boxes, exactly as the grdsample
+// dialog's GeoGridGeometry does. Same helper for every such group so the row always looks and
+// behaves the same; `regionGrid` must be a layout holding ONLY the region, so appending lands the
+// row immediately under it. Pass the increment boxes too when the dialog has them: a reference grid
+// then supplies its spacing as well (the meta string carries w/e/s/n/dx/dy/nx/ny).
+//
+// The grid is read ONLY by the "..." button (or a double-click in the box, which clicks it) — never
+// from an edit box's own signal: see only-action-button-executes-dialog.
+static void addRefGridRow(QDialog *dlg, QGridLayout *regionGrid,
+                          QLineEdit *xmin, QLineEdit *xmax, QLineEdit *ymin, QLineEdit *ymax,
+                          QLineEdit *xinc = nullptr, QLineEdit *yinc = nullptr) {
+	if (!dlg || !regionGrid || !xmin || !xmax || !ymin || !ymax) return;
+	const int row = regionGrid->rowCount();
+	auto *lbl = new QLabel("OR Ref grid", dlg);
+	auto *edit = new QLineEdit(dlg);
+	edit->setToolTip("Pick a grid/image; its own region fills the boxes above.");
+	auto *btn = new QToolButton(dlg);
+	btn->setText("...");
+	regionGrid->addWidget(lbl,  row, 0);
+	regionGrid->addWidget(edit, row, 1, 1, 3);
+	regionGrid->addWidget(btn,  row, 4);
+	QObject::connect(btn, &QToolButton::clicked, dlg, [dlg, edit, xmin, xmax, ymin, ymax, xinc, yinc]() {
+		QString f = QFileDialog::getOpenFileName(dlg, "Select reference grid", prefStartDir(),
+		                                         "Grid/Image files (*.nc *.grd *.tif *.tiff);;All files (*)");
+		if (f.isEmpty()) return;
+		rememberStartDir(f);
+		edit->setText(f);
+		if (!g_juliaGridMeta) return;
+		const char *m = g_juliaGridMeta(f.toUtf8().constData());
+		if (!m) return;
+		const QStringList meta = QString::fromUtf8(m).split('/');   // copy at once (Julia-owned buffer)
+		if (meta.size() < 4) return;
+		xmin->setText(meta[0]);  xmax->setText(meta[1]);
+		ymin->setText(meta[2]);  ymax->setText(meta[3]);
+		if (meta.size() >= 6) {
+			if (xinc) xinc->setText(meta[4]);
+			if (yinc) yinc->setText(meta[5]);
+		}
+	});
+	fileBoxDoubleClick(edit, btn);
 }
 
 // Procedural HDR environment for image-based lighting. A flat azimuthal gradient
