@@ -2388,6 +2388,14 @@ public:
 			if (x1 > x0 && y1 > y0) {
 				xminEdit->setText(QString::number(x0, 'g', 10)); xmaxEdit->setText(QString::number(x1, 'g', 10));
 				yminEdit->setText(QString::number(y0, 'g', 10)); ymaxEdit->setText(QString::number(y1, 'g', 10));
+				// ...and the increment from that same grid, so Region and Increment always describe one
+				// consistent thing instead of a seeded region next to an arbitrary default step.
+				const double dx = scene->gdx > 0 ? scene->gdx : (scene->gnx > 1 ? (x1 - x0) / (scene->gnx - 1) : 0);
+				const double dy = scene->gdy > 0 ? scene->gdy : (scene->gny > 1 ? (y1 - y0) / (scene->gny - 1) : 0);
+				if (dx > 0 && dy > 0) {
+					xincEdit->setText(QString::number(dx, 'g', 10));
+					yincEdit->setText(QString::number(dy, 'g', 10));
+				}
 			}
 			if (scene->hasCRS() && geogChk) geogChk->setChecked(true);
 		}
@@ -2531,6 +2539,12 @@ public:
 			outfileEdit->setText(fn);
 		});
 
+		// Standing rule: double-clicking any file box opens the same chooser its "..." button does.
+		fileBoxDoubleClick(bodyFileEdit, fileBtn);
+		fileBoxDoubleClick(densityEdit,  densBtn);
+		fileBoxDoubleClick(trackEdit,    trackBtn);
+		fileBoxDoubleClick(outfileEdit,  outBtn);
+
 		if (closeBtn) QObject::connect(closeBtn, &QPushButton::clicked, d, [d]() { d->close(); });
 
 		if (computeBtn) QObject::connect(computeBtn, &QPushButton::clicked, d, [this, d, saveState]() {
@@ -2637,6 +2651,648 @@ public:
 			// lives in the parent viewer's Errors console, which may well be behind this window.
 			if (!ok)
 				QMessageBox::warning(d, "Error", "gravmag3d failed — see this window's Errors console for details.");
+		});
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+};
+
+// ============================================================================================
+// Gravity/Magnetic anomaly of a body described by GRIDS (Geophysics > Magnetics > grdgravmag3d) —
+// GMT's grdgravmag3d (same Okabe 1979 engine as gmtgravmag3d, different input), through GMT.jl's
+// `grdgravmag3d` (src/grdgravmag3d.jl). Runtime .ui load, exactly like GravMag3DDialog above; the
+// difference is entirely in WHAT the body is:
+//   one grid  -> the anomaly of a constant-thickness layer under that surface (E|thickness), or of
+//                the volume closed at its bottom/top (Z|level = b|t)
+//   two grids -> the anomaly of the volume BETWEEN top and bottom (thickness/radius then apply as
+//                the module documents)
+// Gravity XOR magnetic again, but -H here is richer than gmtgravmag3d's: besides the five angles it
+// takes a component letter, an intensity grid (+m) and an IGRF-variable ambient field (+i/+n), and
+// GMT accepts SEVERAL -H at once — hence separate controls, assembled Julia-side into the one
+// mag_params string (the module's own documented "z -H+n -H+mmag.grd" idiom).
+// Success is silent, failures get a modal, and the parameters survive close/reopen — same three
+// rules as GravMag3DDialog, for the same reasons.
+// ============================================================================================
+struct GrdGravMag3DState {
+	bool valid = false;
+	int zlevel = 0, component = 0, igrf = 0;      // combo indices
+	bool topFromFile = false, useBottom = false, grav = true, geog = false;
+	QString topFile, botFile, thickness, pad, density, magGrid;
+	QString fDec, fDip, mInt, mDec, mDip;
+	QString xmin, xmax, ymin, ymax, xinc, yinc, zobs, radius, threads, track, outfile;
+};
+static GrdGravMag3DState g_grdgm3dState;
+
+class GrdGravMag3DDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QRadioButton *rbTopMem, *rbTopFile, *rbGrav, *rbMag;
+	QCheckBox *useBottomChk, *geogChk;
+	QComboBox *zlevelCb, *componentCb, *igrfCb;
+	QLineEdit *topEdit, *botEdit, *thickEdit, *padEdit, *densityEdit, *magGridEdit;
+	QLineEdit *fDecEdit, *fDipEdit, *mIntEdit, *mDecEdit, *mDipEdit;
+	QLineEdit *xminEdit, *xmaxEdit, *yminEdit, *ymaxEdit, *xincEdit, *yincEdit;
+	QLineEdit *zobsEdit, *radiusEdit, *threadsEdit, *trackEdit, *outfileEdit;
+
+	explicit GrdGravMag3DDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdgravmag3d_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdGravMag3DDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdGravMag3DDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+
+		rbTopMem  = d->findChild<QRadioButton *>("rb_topMem");
+		rbTopFile = d->findChild<QRadioButton *>("rb_topFile");
+		rbGrav    = d->findChild<QRadioButton *>("rb_gravity");
+		rbMag     = d->findChild<QRadioButton *>("rb_magnetic");
+		useBottomChk = d->findChild<QCheckBox *>("chk_useBottom");
+		geogChk      = d->findChild<QCheckBox *>("chk_geog");
+		zlevelCb    = d->findChild<QComboBox *>("cb_zlevel");
+		componentCb = d->findChild<QComboBox *>("cb_component");
+		igrfCb      = d->findChild<QComboBox *>("cb_igrf");
+		topEdit    = d->findChild<QLineEdit *>("le_topFile");   botEdit = d->findChild<QLineEdit *>("le_botFile");
+		thickEdit  = d->findChild<QLineEdit *>("le_thickness"); padEdit = d->findChild<QLineEdit *>("le_pad");
+		densityEdit= d->findChild<QLineEdit *>("le_density");   magGridEdit = d->findChild<QLineEdit *>("le_magGrid");
+		fDecEdit = d->findChild<QLineEdit *>("le_fDec");  fDipEdit = d->findChild<QLineEdit *>("le_fDip");
+		mIntEdit = d->findChild<QLineEdit *>("le_mInt");  mDecEdit = d->findChild<QLineEdit *>("le_mDec");
+		mDipEdit = d->findChild<QLineEdit *>("le_mDip");
+		xminEdit = d->findChild<QLineEdit *>("le_xmin");  xmaxEdit = d->findChild<QLineEdit *>("le_xmax");
+		yminEdit = d->findChild<QLineEdit *>("le_ymin");  ymaxEdit = d->findChild<QLineEdit *>("le_ymax");
+		xincEdit = d->findChild<QLineEdit *>("le_xinc");  yincEdit = d->findChild<QLineEdit *>("le_yinc");
+		zobsEdit = d->findChild<QLineEdit *>("le_zobs");  radiusEdit = d->findChild<QLineEdit *>("le_radius");
+		threadsEdit = d->findChild<QLineEdit *>("le_threads");
+		trackEdit   = d->findChild<QLineEdit *>("le_track");  outfileEdit = d->findChild<QLineEdit *>("le_outfile");
+		auto *topBtn   = d->findChild<QToolButton *>("btn_topBrowse");
+		auto *botBtn   = d->findChild<QToolButton *>("btn_botBrowse");
+		auto *densBtn  = d->findChild<QToolButton *>("btn_densityBrowse");
+		auto *magBtn   = d->findChild<QToolButton *>("btn_magGridBrowse");
+		auto *trackBtn = d->findChild<QToolButton *>("btn_trackBrowse");
+		auto *outBtn   = d->findChild<QToolButton *>("btn_outfileBrowse");
+		auto *computeBtn = d->findChild<QPushButton *>("btn_compute");
+		auto *closeBtn   = d->findChild<QPushButton *>("btn_close");
+
+		// No grid in this window -> "the grid loaded in this window" is not an option; force the file
+		// row (grayed radio, never hidden, so the dialog keeps one size).
+		const bool haveMemGrid = (scene && scene->surf && !scene->emptyStart && !scene->imageOnly);
+		if (!haveMemGrid) {
+			rbTopMem->setEnabled(false);
+			rbTopFile->setChecked(true);
+		}
+		else if (scene->hasCRS() && geogChk) {
+			geogChk->setChecked(true);
+		}
+
+		const GrdGravMag3DState &st = g_grdgm3dState;
+		if (st.valid) {
+			if (st.topFromFile || !haveMemGrid) rbTopFile->setChecked(true);
+			else                                rbTopMem->setChecked(true);
+			useBottomChk->setChecked(st.useBottom);
+			zlevelCb->setCurrentIndex(st.zlevel);
+			componentCb->setCurrentIndex(st.component);
+			igrfCb->setCurrentIndex(st.igrf);
+			topEdit->setText(st.topFile);      botEdit->setText(st.botFile);
+			thickEdit->setText(st.thickness);  padEdit->setText(st.pad);
+			densityEdit->setText(st.density);  magGridEdit->setText(st.magGrid);
+			fDecEdit->setText(st.fDec);  fDipEdit->setText(st.fDip);  mIntEdit->setText(st.mInt);
+			mDecEdit->setText(st.mDec);  mDipEdit->setText(st.mDip);
+			xminEdit->setText(st.xmin);  xmaxEdit->setText(st.xmax);
+			yminEdit->setText(st.ymin);  ymaxEdit->setText(st.ymax);
+			xincEdit->setText(st.xinc);  yincEdit->setText(st.yinc);
+			zobsEdit->setText(st.zobs);  radiusEdit->setText(st.radius);
+			threadsEdit->setText(st.threads);
+			trackEdit->setText(st.track);      outfileEdit->setText(st.outfile);
+			geogChk->setChecked(st.geog);
+			if (st.grav) rbGrav->setChecked(true);
+			else         rbMag->setChecked(true);
+		}
+
+		auto saveState = [this]() {
+			GrdGravMag3DState s;
+			s.valid = true;
+			s.topFromFile = rbTopFile->isChecked();
+			s.useBottom = useBottomChk->isChecked();
+			s.grav = !rbMag->isChecked();
+			s.geog = geogChk->isChecked();
+			s.zlevel = zlevelCb->currentIndex();
+			s.component = componentCb->currentIndex();
+			s.igrf = igrfCb->currentIndex();
+			s.topFile = topEdit->text();      s.botFile = botEdit->text();
+			s.thickness = thickEdit->text();  s.pad = padEdit->text();
+			s.density = densityEdit->text();  s.magGrid = magGridEdit->text();
+			s.fDec = fDecEdit->text();  s.fDip = fDipEdit->text();  s.mInt = mIntEdit->text();
+			s.mDec = mDecEdit->text();  s.mDip = mDipEdit->text();
+			s.xmin = xminEdit->text();  s.xmax = xmaxEdit->text();
+			s.ymin = yminEdit->text();  s.ymax = ymaxEdit->text();
+			s.xinc = xincEdit->text();  s.yinc = yincEdit->text();
+			s.zobs = zobsEdit->text();  s.radius = radiusEdit->text();
+			s.threads = threadsEdit->text();
+			s.track = trackEdit->text();      s.outfile = outfileEdit->text();
+			g_grdgm3dState = s;
+		};
+		struct GrdGravMag3DSaveOnClose : QObject {
+			std::function<void()> save;
+			GrdGravMag3DSaveOnClose(QObject *p, std::function<void()> fn) : QObject(p), save(fn) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close) save();
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new GrdGravMag3DSaveOnClose(d, saveState));
+
+		// Region (R) and Increment (I) DESCRIBE THE INPUT GRID — they are filled from it, never left
+		// for the user to retype. One function, called at construction and again on every event that
+		// changes which grid the input is (the top radio, a newly browsed top file).
+		auto refreshRegionInc = [this, haveMemGrid]() {
+			double w = 0, e = 0, s = 0, n = 0, dx = 0, dy = 0;
+			bool got = false;
+			if (rbTopMem->isChecked() && haveMemGrid && scn) {
+				w = scn->gx0; e = scn->gx1; s = scn->gy0; n = scn->gy1;
+				if (!(e > w && n > s)) { w = scn->x0; e = scn->x1; s = scn->y0; n = scn->y1; }
+				dx = scn->gdx > 0 ? scn->gdx : (scn->gnx > 1 ? (e - w) / (scn->gnx - 1) : 0);
+				dy = scn->gdy > 0 ? scn->gdy : (scn->gny > 1 ? (n - s) / (scn->gny - 1) : 0);
+				got = (e > w && n > s && dx > 0 && dy > 0);
+			}
+			else if (g_juliaGridMeta && !topEdit->text().trimmed().isEmpty()) {
+				// Same "w/e/s/n/dx/dy/nx/ny" round-trip the grdsample and RTP dialogs use.
+				const char *m = g_juliaGridMeta(topEdit->text().trimmed().toUtf8().constData());
+				if (m) {
+					const QStringList meta = QString::fromUtf8(m).split('/');   // copy at once (Julia-owned buffer)
+					if (meta.size() >= 6) {
+						w = meta[0].toDouble(); e = meta[1].toDouble();
+						s = meta[2].toDouble(); n = meta[3].toDouble();
+						dx = meta[4].toDouble(); dy = meta[5].toDouble();
+						got = (e > w && n > s && dx > 0 && dy > 0);
+					}
+				}
+			}
+			if (!got) return;
+			xminEdit->setText(QString::number(w, 'g', 10));  xmaxEdit->setText(QString::number(e, 'g', 10));
+			yminEdit->setText(QString::number(s, 'g', 10));  ymaxEdit->setText(QString::number(n, 'g', 10));
+			xincEdit->setText(QString::number(dx, 'g', 10)); yincEdit->setText(QString::number(dy, 'g', 10));
+		};
+
+		auto syncTop = [this, topBtn, refreshRegionInc]() {
+			const bool file = rbTopFile->isChecked();
+			topEdit->setEnabled(file);
+			if (topBtn) topBtn->setEnabled(file);
+			refreshRegionInc();
+		};
+		QObject::connect(rbTopFile, &QRadioButton::toggled, d, [syncTop](bool) { syncTop(); });
+		syncTop();
+
+		auto syncBottom = [this, botBtn]() {
+			const bool on = useBottomChk->isChecked();
+			botEdit->setEnabled(on);
+			if (botBtn) botBtn->setEnabled(on);
+			// Two-grid mode defines the volume by the grids themselves: no layer thickness, and the
+			// body is not "closed" at a bottom/top plane either.
+			thickEdit->setEnabled(!on);
+			zlevelCb->setEnabled(!on);
+		};
+		QObject::connect(useBottomChk, &QCheckBox::toggled, d, [syncBottom](bool) { syncBottom(); });
+		syncBottom();
+
+		auto syncAnom = [this, densBtn, magBtn]() {
+			const bool grav = rbGrav->isChecked();
+			densityEdit->setEnabled(grav);
+			if (densBtn) densBtn->setEnabled(grav);
+			for (QLineEdit *e : {fDecEdit, fDipEdit, mIntEdit, mDecEdit, mDipEdit}) e->setEnabled(!grav);
+			componentCb->setEnabled(!grav);
+			igrfCb->setEnabled(!grav);
+			magGridEdit->setEnabled(!grav);
+			if (magBtn) magBtn->setEnabled(!grav);
+		};
+		for (QRadioButton *rb : {rbGrav, rbMag})
+			QObject::connect(rb, &QRadioButton::toggled, d, [syncAnom](bool) { syncAnom(); });
+		syncAnom();
+
+		auto browseInto = [d](QLineEdit *target, const QString &caption, const QString &filter) {
+			QString fn = QFileDialog::getOpenFileName(d, caption, prefStartDir(), filter);
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			target->setText(fn);
+		};
+		const QString gridFilter = "Grid files (*.nc *.grd *.tif *.tiff);;All files (*)";
+		if (topBtn)  QObject::connect(topBtn,  &QToolButton::clicked, d, [this, browseInto, gridFilter, refreshRegionInc]() {
+			browseInto(topEdit, "Select the top surface grid", gridFilter);
+			refreshRegionInc();			// a new input grid means new Region/Increment, always
+		});
+		if (botBtn)  QObject::connect(botBtn,  &QToolButton::clicked, d, [this, browseInto, gridFilter]() {
+			browseInto(botEdit, "Select the bottom surface grid", gridFilter); });
+		if (densBtn) QObject::connect(densBtn, &QToolButton::clicked, d, [this, browseInto, gridFilter]() {
+			browseInto(densityEdit, "Select a variable-density grid", gridFilter); });
+		if (magBtn)  QObject::connect(magBtn,  &QToolButton::clicked, d, [this, browseInto, gridFilter]() {
+			browseInto(magGridEdit, "Select the magnetization intensity grid", gridFilter); });
+		if (trackBtn) QObject::connect(trackBtn, &QToolButton::clicked, d, [this, browseInto]() {
+			browseInto(trackEdit, "Select x,y locations file", "Data files (*.dat *.txt *.xy);;All files (*)"); });
+		if (outBtn) QObject::connect(outBtn, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getSaveFileName(d, "Save result as", prefStartDir(),
+			                                          "Grid files (*.nc *.grd);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			outfileEdit->setText(fn);
+		});
+
+		// Standing rule: double-clicking any file box opens the same chooser its "..." button does.
+		fileBoxDoubleClick(topEdit,     topBtn);
+		fileBoxDoubleClick(botEdit,     botBtn);
+		fileBoxDoubleClick(densityEdit, densBtn);
+		fileBoxDoubleClick(magGridEdit, magBtn);
+		fileBoxDoubleClick(trackEdit,   trackBtn);
+		fileBoxDoubleClick(outfileEdit, outBtn);
+
+		if (closeBtn) QObject::connect(closeBtn, &QPushButton::clicked, d, [d]() { d->close(); });
+
+		if (computeBtn) QObject::connect(computeBtn, &QPushButton::clicked, d, [this, d, saveState]() {
+			if (!g_juliaGrdGravMag3D) {
+				QMessageBox::warning(d, "Error", "grdgravmag3d: callback not registered (rebuild/restart needed?).");
+				return;
+			}
+			saveState();
+
+			QString top;
+			if (rbTopFile->isChecked()) {
+				top = topEdit->text().trimmed();
+				if (top.isEmpty()) {
+					QMessageBox::warning(d, "Error", "Pick the top surface grid.");
+					return;
+				}
+			}
+			else {
+				top = "selected";			// resolved Julia-side via _FIGREG, same sentinel as the other dialogs
+			}
+			QString bot;
+			if (useBottomChk->isChecked()) {
+				bot = botEdit->text().trimmed();
+				if (bot.isEmpty()) {
+					QMessageBox::warning(d, "Error", "Two-grid mode is on but no bottom grid was given.");
+					return;
+				}
+			}
+
+			const bool grav = rbGrav->isChecked();
+			if (grav && densityEdit->text().trimmed().isEmpty()) {
+				QMessageBox::warning(d, "Error", "A gravity anomaly needs a density (constant in SI, or a grid).");
+				return;
+			}
+			QString magParams;
+			if (!grav) {
+				// The five angles are only meaningful with a CONSTANT ambient field; with IGRF (+i/+n)
+				// the field's own dec/dip come from the model, and with an intensity grid (+m) the
+				// constant Mag is replaced — so the angle set is only required when neither is in play.
+				const bool useIgrf = igrfCb->currentIndex() != 0;
+				const bool useGrid = !magGridEdit->text().trimmed().isEmpty();
+				if (!useIgrf) {
+					QStringList mp;
+					for (QLineEdit *e : {fDecEdit, fDipEdit, mIntEdit, mDecEdit, mDipEdit}) {
+						bool ok = false;
+						e->text().trimmed().toDouble(&ok);
+						if (!ok) {
+							QMessageBox::warning(d, "Error", "All five magnetic parameters must be numbers "
+							                                 "(or pick a variable IGRF ambient field).");
+							return;
+						}
+						mp << e->text().trimmed();
+					}
+					magParams = mp.join('/');
+				}
+			}
+
+			QStringList kv;
+			kv << "top=" + top;
+			if (!bot.isEmpty()) kv << "bottom=" + bot;
+			kv << QString("mode=") + (grav ? "grav" : "mag");
+			if (grav) kv << "density=" + densityEdit->text().trimmed();
+			else {
+				if (!magParams.isEmpty()) kv << "magparams=" + magParams;
+				static const char *comp[] = { "", "t", "x", "y", "z", "h" };
+				if (componentCb->currentIndex() > 0) kv << QString("component=") + comp[componentCb->currentIndex()];
+				if (igrfCb->currentIndex() > 0)      kv << QString("igrf=") + (igrfCb->currentIndex() == 1 ? "+i" : "+n");
+				if (!magGridEdit->text().trimmed().isEmpty()) kv << "maggrid=" + magGridEdit->text().trimmed();
+			}
+			if (zlevelCb->isEnabled() && zlevelCb->currentIndex() > 0)
+				kv << QString("zlevel=") + (zlevelCb->currentIndex() == 1 ? "bottom" : "top");
+			const QString xm = xminEdit->text().trimmed(), xM = xmaxEdit->text().trimmed();
+			const QString ym = yminEdit->text().trimmed(), yM = ymaxEdit->text().trimmed();
+			const int nReg = (!xm.isEmpty()) + (!xM.isEmpty()) + (!ym.isEmpty()) + (!yM.isEmpty());
+			if (nReg == 4)      kv << "region=" + xm + "/" + xM + "/" + ym + "/" + yM;
+			else if (nReg != 0) {
+				QMessageBox::warning(d, "Error", "Give all four Region boxes, or leave all four empty "
+				                                 "to use the input grid's own region.");
+				return;
+			}
+			const QString xi = xincEdit->text().trimmed(), yi = yincEdit->text().trimmed();
+			if (!xi.isEmpty()) kv << "inc=" + (yi.isEmpty() ? xi : xi + "/" + yi);
+			kv << QString("geog=%1").arg(geogChk->isChecked() ? 1 : 0);
+			for (auto pair : { std::make_pair(QString("thickness"), thickEdit), std::make_pair(QString("pad"), padEdit),
+			                   std::make_pair(QString("zobs"), zobsEdit), std::make_pair(QString("radius"), radiusEdit),
+			                   std::make_pair(QString("threads"), threadsEdit),
+			                   std::make_pair(QString("track"), trackEdit), std::make_pair(QString("outfile"), outfileEdit) }) {
+				if (!pair.second->isEnabled()) continue;   // a grayed control is not part of the run
+				const QString v = pair.second->text().trimmed();
+				if (!v.isEmpty()) kv << pair.first + "=" + v;
+			}
+
+			showBusyDialog("Computing the anomaly…");
+			const int ok = g_juliaGrdGravMag3D(scn, kv.join('\n').toUtf8().constData());
+			closeBusyDialog();
+			if (!ok)
+				QMessageBox::warning(d, "Error", "grdgravmag3d failed — see this window's Errors console for details.");
+		});
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+};
+
+// ============================================================================================
+// Continuous Reduction To the Pole, a.k.a. differential RTP (Geophysics > Magnetics > grdredpol) —
+// GMT's grdredpol supplement (Luis & Miranda 2008, JGR 113 B10105). Runtime .ui load, same shape as
+// the two gravmag dialogs above. Distinct from the plain "Reduction to the Pole" entry (Rtp3DDialog,
+// Mirone's parker_stuff.m): that one assumes ONE field/magnetization direction for the whole grid,
+// this one lets both vary — the grid is decomposed into moving windows (W) where each is taken as
+// locally constant, with a per-point filter rebuilt by Taylor expansion (N turns that off).
+// Direction source is an exclusive pair: IGRF at each point for a given year (T) or one constant
+// dec/dip (C, the classical RTP). Independently, a magnetization inclination (Ei) and/or declination
+// (Ed) grid may be supplied; whatever is NOT given as a grid still comes from IGRF, so those two
+// boxes stay live in both modes.
+// GMT.jl has no verbose wrapper for this supplement, so Julia drives it in MONOLITHIC mode — still
+// one in-process library call.
+// Success is silent, failures get a modal, parameters survive close/reopen, Region is filled from
+// the input grid, and every file box opens its chooser on a double-click: the standing rules.
+// ============================================================================================
+struct GrdRedPolState {
+	bool valid = false;
+	bool inFromFile = false, igrf = true, noTaylor = false;
+	int boundary = 0;
+	QString inFile, year, dec, dip, incGrid, decGrid;
+	QString filtRows, filtCols, winWidth, xmin, xmax, ymin, ymax, outfile, filterFile;
+};
+static GrdRedPolState g_grdredpolState;
+
+class GrdRedPolDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QRadioButton *rbInMem, *rbInFile, *rbIgrf, *rbConst;
+	QCheckBox *noTaylorChk;
+	QComboBox *boundaryCb;
+	QLineEdit *inEdit, *yearEdit, *decEdit, *dipEdit, *incGridEdit, *decGridEdit;
+	QLineEdit *filtRowsEdit, *filtColsEdit, *winWidthEdit;
+	QLineEdit *xminEdit, *xmaxEdit, *yminEdit, *ymaxEdit, *outfileEdit, *filterFileEdit;
+
+	explicit GrdRedPolDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdredpol_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdRedPolDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdRedPolDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+
+		rbInMem  = d->findChild<QRadioButton *>("rb_inMem");
+		rbInFile = d->findChild<QRadioButton *>("rb_inFile");
+		rbIgrf   = d->findChild<QRadioButton *>("rb_igrf");
+		rbConst  = d->findChild<QRadioButton *>("rb_const");
+		noTaylorChk = d->findChild<QCheckBox *>("chk_noTaylor");
+		boundaryCb  = d->findChild<QComboBox *>("cb_boundary");
+		inEdit   = d->findChild<QLineEdit *>("le_inFile");
+		yearEdit = d->findChild<QLineEdit *>("le_year");
+		decEdit  = d->findChild<QLineEdit *>("le_dec");   dipEdit = d->findChild<QLineEdit *>("le_dip");
+		incGridEdit = d->findChild<QLineEdit *>("le_incGrid");
+		decGridEdit = d->findChild<QLineEdit *>("le_decGrid");
+		filtRowsEdit = d->findChild<QLineEdit *>("le_filtRows");
+		filtColsEdit = d->findChild<QLineEdit *>("le_filtCols");
+		winWidthEdit = d->findChild<QLineEdit *>("le_winWidth");
+		xminEdit = d->findChild<QLineEdit *>("le_xmin");  xmaxEdit = d->findChild<QLineEdit *>("le_xmax");
+		yminEdit = d->findChild<QLineEdit *>("le_ymin");  ymaxEdit = d->findChild<QLineEdit *>("le_ymax");
+		outfileEdit    = d->findChild<QLineEdit *>("le_outfile");
+		filterFileEdit = d->findChild<QLineEdit *>("le_filterFile");
+		auto *inBtn      = d->findChild<QToolButton *>("btn_inBrowse");
+		auto *incGridBtn = d->findChild<QToolButton *>("btn_incGridBrowse");
+		auto *decGridBtn = d->findChild<QToolButton *>("btn_decGridBrowse");
+		auto *outBtn     = d->findChild<QToolButton *>("btn_outfileBrowse");
+		auto *filtBtn    = d->findChild<QToolButton *>("btn_filterFileBrowse");
+		auto *computeBtn = d->findChild<QPushButton *>("btn_compute");
+		auto *closeBtn   = d->findChild<QPushButton *>("btn_close");
+
+		const bool haveMemGrid = (scene && scene->surf && !scene->emptyStart && !scene->imageOnly);
+		if (!haveMemGrid) {
+			rbInMem->setEnabled(false);          // grayed, never hidden: the dialog keeps one size
+			rbInFile->setChecked(true);
+		}
+
+		const GrdRedPolState &st = g_grdredpolState;
+		if (st.valid) {
+			if (st.inFromFile || !haveMemGrid) rbInFile->setChecked(true);
+			else                               rbInMem->setChecked(true);
+			if (st.igrf) rbIgrf->setChecked(true);
+			else         rbConst->setChecked(true);
+			noTaylorChk->setChecked(st.noTaylor);
+			boundaryCb->setCurrentIndex(st.boundary);
+			inEdit->setText(st.inFile);      yearEdit->setText(st.year);
+			decEdit->setText(st.dec);        dipEdit->setText(st.dip);
+			incGridEdit->setText(st.incGrid); decGridEdit->setText(st.decGrid);
+			filtRowsEdit->setText(st.filtRows); filtColsEdit->setText(st.filtCols);
+			winWidthEdit->setText(st.winWidth);
+			xminEdit->setText(st.xmin);  xmaxEdit->setText(st.xmax);
+			yminEdit->setText(st.ymin);  ymaxEdit->setText(st.ymax);
+			outfileEdit->setText(st.outfile);  filterFileEdit->setText(st.filterFile);
+		}
+
+		auto saveState = [this]() {
+			GrdRedPolState s;
+			s.valid = true;
+			s.inFromFile = rbInFile->isChecked();
+			s.igrf = rbIgrf->isChecked();
+			s.noTaylor = noTaylorChk->isChecked();
+			s.boundary = boundaryCb->currentIndex();
+			s.inFile = inEdit->text();     s.year = yearEdit->text();
+			s.dec = decEdit->text();       s.dip = dipEdit->text();
+			s.incGrid = incGridEdit->text(); s.decGrid = decGridEdit->text();
+			s.filtRows = filtRowsEdit->text(); s.filtCols = filtColsEdit->text();
+			s.winWidth = winWidthEdit->text();
+			s.xmin = xminEdit->text();  s.xmax = xmaxEdit->text();
+			s.ymin = yminEdit->text();  s.ymax = ymaxEdit->text();
+			s.outfile = outfileEdit->text();  s.filterFile = filterFileEdit->text();
+			g_grdredpolState = s;
+		};
+		struct GrdRedPolSaveOnClose : QObject {
+			std::function<void()> save;
+			GrdRedPolSaveOnClose(QObject *p, std::function<void()> fn) : QObject(p), save(fn) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close) save();
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new GrdRedPolSaveOnClose(d, saveState));
+
+		// Region DESCRIBES THE INPUT GRID — filled from it, refreshed whenever the input changes.
+		// (grdredpol has no -I: the output keeps the input's own increment.)
+		auto refreshRegion = [this, haveMemGrid]() {
+			double w = 0, e = 0, s = 0, n = 0;
+			bool got = false;
+			if (rbInMem->isChecked() && haveMemGrid && scn) {
+				w = scn->gx0; e = scn->gx1; s = scn->gy0; n = scn->gy1;
+				if (!(e > w && n > s)) { w = scn->x0; e = scn->x1; s = scn->y0; n = scn->y1; }
+				got = (e > w && n > s);
+			}
+			else if (g_juliaGridMeta && !inEdit->text().trimmed().isEmpty()) {
+				const char *m = g_juliaGridMeta(inEdit->text().trimmed().toUtf8().constData());
+				if (m) {
+					const QStringList meta = QString::fromUtf8(m).split('/');   // copy at once (Julia-owned buffer)
+					if (meta.size() >= 4) {
+						w = meta[0].toDouble(); e = meta[1].toDouble();
+						s = meta[2].toDouble(); n = meta[3].toDouble();
+						got = (e > w && n > s);
+					}
+				}
+			}
+			if (!got) return;
+			xminEdit->setText(QString::number(w, 'g', 10));  xmaxEdit->setText(QString::number(e, 'g', 10));
+			yminEdit->setText(QString::number(s, 'g', 10));  ymaxEdit->setText(QString::number(n, 'g', 10));
+		};
+
+		auto syncInput = [this, inBtn, refreshRegion]() {
+			const bool file = rbInFile->isChecked();
+			inEdit->setEnabled(file);
+			if (inBtn) inBtn->setEnabled(file);
+			refreshRegion();
+		};
+		QObject::connect(rbInFile, &QRadioButton::toggled, d, [syncInput](bool) { syncInput(); });
+		syncInput();
+
+		// IGRF year vs constant dec/dip: the idle side grays out (never hidden).
+		auto syncDirection = [this]() {
+			const bool igrf = rbIgrf->isChecked();
+			yearEdit->setEnabled(igrf);
+			decEdit->setEnabled(!igrf);
+			dipEdit->setEnabled(!igrf);
+		};
+		for (QRadioButton *rb : {rbIgrf, rbConst})
+			QObject::connect(rb, &QRadioButton::toggled, d, [syncDirection](bool) { syncDirection(); });
+		syncDirection();
+
+		auto browseInto = [d](QLineEdit *target, const QString &caption) {
+			QString fn = QFileDialog::getOpenFileName(d, caption, prefStartDir(),
+			                                          "Grid files (*.nc *.grd *.tif *.tiff);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			target->setText(fn);
+		};
+		if (inBtn) QObject::connect(inBtn, &QToolButton::clicked, d, [this, browseInto, refreshRegion]() {
+			browseInto(inEdit, "Select the magnetic anomaly grid");
+			refreshRegion();			// a new input grid means a new Region, always
+		});
+		if (incGridBtn) QObject::connect(incGridBtn, &QToolButton::clicked, d, [this, browseInto]() {
+			browseInto(incGridEdit, "Select the magnetization inclination grid"); });
+		if (decGridBtn) QObject::connect(decGridBtn, &QToolButton::clicked, d, [this, browseInto]() {
+			browseInto(decGridEdit, "Select the magnetization declination grid"); });
+		if (outBtn) QObject::connect(outBtn, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getSaveFileName(d, "Save the RTP grid as", prefStartDir(),
+			                                          "Grid files (*.nc *.grd);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			outfileEdit->setText(fn);
+		});
+		if (filtBtn) QObject::connect(filtBtn, &QToolButton::clicked, d, [this, d]() {
+			QString fn = QFileDialog::getSaveFileName(d, "Save the filter as", prefStartDir(),
+			                                          "Grid files (*.nc *.grd);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			filterFileEdit->setText(fn);
+		});
+
+		// Standing rule: double-clicking any file box opens the same chooser its "..." button does.
+		fileBoxDoubleClick(inEdit,         inBtn);
+		fileBoxDoubleClick(incGridEdit,    incGridBtn);
+		fileBoxDoubleClick(decGridEdit,    decGridBtn);
+		fileBoxDoubleClick(outfileEdit,    outBtn);
+		fileBoxDoubleClick(filterFileEdit, filtBtn);
+
+		if (closeBtn) QObject::connect(closeBtn, &QPushButton::clicked, d, [d]() { d->close(); });
+
+		if (computeBtn) QObject::connect(computeBtn, &QPushButton::clicked, d, [this, d, saveState]() {
+			if (!g_juliaGrdRedPol) {
+				QMessageBox::warning(d, "Error", "grdredpol: callback not registered (rebuild/restart needed?).");
+				return;
+			}
+			saveState();
+
+			QString in = "selected";		// resolved Julia-side via _FIGREG, same sentinel as the other dialogs
+			if (rbInFile->isChecked()) {
+				in = inEdit->text().trimmed();
+				if (in.isEmpty()) {
+					QMessageBox::warning(d, "Error", "Pick the magnetic anomaly grid.");
+					return;
+				}
+			}
+			// The module itself rejects even or <5 filter sizes ("That was a ridiculous number of
+			// filter coefficients"); catching it here says so on the box the user can actually fix.
+			bool okR = false, okC = false;
+			const int nRow = filtRowsEdit->text().trimmed().toInt(&okR);
+			const int nCol = filtColsEdit->text().trimmed().toInt(&okC);
+			if (!okR || !okC || nRow < 5 || nCol < 5 || nRow % 2 == 0 || nCol % 2 == 0) {
+				QMessageBox::warning(d, "Error", "The filter coefficients (rows/cols) must both be ODD "
+				                                 "numbers of at least 5.");
+				return;
+			}
+
+			QStringList kv;
+			kv << "input=" + in;
+			if (rbIgrf->isChecked()) {
+				kv << "year=" + yearEdit->text().trimmed();
+			}
+			else {
+				bool okD = false, okI = false;
+				decEdit->text().trimmed().toDouble(&okD);
+				dipEdit->text().trimmed().toDouble(&okI);
+				if (!okD || !okI) {
+					QMessageBox::warning(d, "Error", "Constant mode needs a numeric declination and inclination.");
+					return;
+				}
+				kv << "constdec=" + decEdit->text().trimmed();
+				kv << "constdip=" + dipEdit->text().trimmed();
+			}
+			// Ei/Ed stay available in BOTH modes: the module falls back to IGRF for whichever of the
+			// two is not given as a grid.
+			if (!incGridEdit->text().trimmed().isEmpty()) kv << "incgrid=" + incGridEdit->text().trimmed();
+			if (!decGridEdit->text().trimmed().isEmpty()) kv << "decgrid=" + decGridEdit->text().trimmed();
+			kv << QString("filter=%1/%2").arg(nRow).arg(nCol);
+			if (!winWidthEdit->text().trimmed().isEmpty()) kv << "window=" + winWidthEdit->text().trimmed();
+			if (boundaryCb->currentIndex() > 0) kv << QString("boundary=") + (boundaryCb->currentIndex() == 1 ? "m" : "r");
+			if (noTaylorChk->isChecked()) kv << "notaylor=1";
+			const QString xm = xminEdit->text().trimmed(), xM = xmaxEdit->text().trimmed();
+			const QString ym = yminEdit->text().trimmed(), yM = ymaxEdit->text().trimmed();
+			const int nReg = (!xm.isEmpty()) + (!xM.isEmpty()) + (!ym.isEmpty()) + (!yM.isEmpty());
+			if (nReg == 4)      kv << "region=" + xm + "/" + xM + "/" + ym + "/" + yM;
+			else if (nReg != 0) {
+				QMessageBox::warning(d, "Error", "Give all four Region boxes, or leave all four empty "
+				                                 "to use the input grid's own region.");
+				return;
+			}
+			if (!outfileEdit->text().trimmed().isEmpty())    kv << "outfile=" + outfileEdit->text().trimmed();
+			if (!filterFileEdit->text().trimmed().isEmpty()) kv << "filterfile=" + filterFileEdit->text().trimmed();
+
+			showBusyDialog("Computing the continuous RTP…");
+			const int ok = g_juliaGrdRedPol(scn, kv.join('\n').toUtf8().constData());
+			closeBusyDialog();
+			if (!ok)
+				QMessageBox::warning(d, "Error", "grdredpol failed — see this window's Errors console for details.");
 		});
 
 		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
@@ -6582,6 +7238,16 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// Anomaly (gravity OR magnetic) of a 3-D body — GMT's gmtgravmag3d (Okabe 1979).
 		mGphy->addAction("gmtgravmag3d", [win, s]() {
 			auto *w = new GravMag3DDialog(win, s);   // self-deletes when its QDialog closes (WA_DeleteOnClose)
+			if (w->dlg) w->dlg->show();
+		});
+		// Same anomaly, body described by one or two GRIDS instead of triangles.
+		mGphy->addAction("grdgravmag3d", [win, s]() {
+			auto *w = new GrdGravMag3DDialog(win, s);
+			if (w->dlg) w->dlg->show();
+		});
+		// Continuous RTP (differential): field AND magnetization allowed to vary over the grid.
+		mGphy->addAction("grdredpol", [win, s]() {
+			auto *w = new GrdRedPolDialog(win, s);
 			if (w->dlg) w->dlg->show();
 		});
 		// Import *.gmt/*.nc cruise track file(s) — port of Mirone's GeophysicsImportGmtFile_CB

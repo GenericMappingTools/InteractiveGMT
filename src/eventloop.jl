@@ -69,6 +69,8 @@ function _ensure_callbacks()
 	                    ("igrf-file",   _register_igrf_file),
 	                    ("rtp3d",       _register_rtp3d),
 	                    ("gravmag3d",   _register_gravmag3d),
+	                    ("grdgravmag3d",_register_grdgravmag3d),
+	                    ("grdredpol",   _register_grdredpol),
 	                    ("import-gmt",  _register_import_gmt),
 	                    ("gmtedit",     _register_gmtedit),
 	                    ("clipgrid",    _register_clipgrid),

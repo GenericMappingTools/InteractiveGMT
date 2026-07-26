@@ -61,6 +61,28 @@ static void rememberStartDir(const QString &path) {
 	prefPushDir(QFileInfo(path).absolutePath());
 }
 
+// STANDING RULE for every dialog in this app (existing and future): a QLineEdit that expects a FILE
+// must also bring up the system file chooser on a DOUBLE-CLICK inside it, not only through its "..."
+// button. Implemented once, here, and by CLICKING THAT BUTTON — the button's own handler already
+// knows the box's caption, filter and rememberStartDir bookkeeping, so a box keeps exactly ONE
+// file-picking code path (same operation, same function) and the two entry points can never drift.
+// A disabled button (a grayed-out option) means the double-click does nothing, as it should.
+static void fileBoxDoubleClick(QLineEdit *edit, QAbstractButton *browseBtn) {
+	if (!edit || !browseBtn) return;
+	struct DblClickOpensChooser : QObject {
+		QAbstractButton *btn;
+		DblClickOpensChooser(QObject *parent, QAbstractButton *b) : QObject(parent), btn(b) {}
+		bool eventFilter(QObject *o, QEvent *e) override {
+			if (e->type() == QEvent::MouseButtonDblClick && btn && btn->isEnabled()) {
+				btn->click();
+				return true;
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	edit->installEventFilter(new DblClickOpensChooser(edit, browseBtn));
+}
+
 // ---- Preferences scalar settings (File > Preferences). Defined here (early) so every fragment can
 //      read them; the editor dialog lives in 70_window.cpp. Defaults match the combos' first item.
 static QString prefMeasureUnits()  { return igmtSettings().value("prefs/measureUnits",  "meters").toString(); }
@@ -262,6 +284,27 @@ static JuliaRtp3DFn g_juliaRtp3D = nullptr;
 // nullptr to detach.
 typedef int (*JuliaGravMag3DFn)(void *scene, const char *params);
 static JuliaGravMag3DFn g_juliaGravMag3D = nullptr;
+
+// Same anomaly, body described by GRIDS instead of triangles (Geophysics > Magnetics >
+// grdgravmag3d) — GMT's grdgravmag3d through GMT.jl (src/grdgravmag3d.jl). The dialog
+// (GrdGravMag3DDialog, 70_window.cpp, loads deps/ui/grdgravmag3d_dialog.ui) hands a NEWLINE-separated
+// "key=value" block: top=path|selected, bottom=path (two-grid mode), mode=grav|mag, density= or
+// magparams=f_dec/f_dip/m_int/m_dec/m_dip (+ component=t|x|y|z|h, igrf=+i|+n, maggrid=path — GMT
+// takes several -H, Julia assembles them), zlevel=bottom|top, region=w/e/s/n, inc=xinc[/yinc], geog,
+// thickness, pad, zobs, radius, threads, track, outfile. Absent key = don't pass that option.
+// Returns 1 on success, 0 on failure, same contract as g_juliaGravMag3D. nullptr to detach.
+typedef int (*JuliaGrdGravMag3DFn)(void *scene, const char *params);
+static JuliaGrdGravMag3DFn g_juliaGrdGravMag3D = nullptr;
+
+// Continuous Reduction To the Pole / differential RTP (Geophysics > Magnetics > grdredpol) — GMT's
+// grdredpol supplement, driven by src/grdredpol.jl in MONOLITHIC mode (GMT.jl has no verbose wrapper
+// for it). The dialog (GrdRedPolDialog, 70_window.cpp, loads deps/ui/grdredpol_dialog.ui) hands a
+// NEWLINE-separated "key=value" block: input=path|selected, year= (IGRF mode) or constdec=/constdip=
+// (constant mode), incgrid=/decgrid= (Ei/Ed, either mode), filter=m/n, window=, boundary=m|r,
+// notaylor=1, region=w/e/s/n, outfile=, filterfile=. Absent key = don't pass that option.
+// Returns 1 on success, 0 on failure, same contract as the two gravmag callbacks. nullptr to detach.
+typedef int (*JuliaGrdRedPolFn)(void *scene, const char *params);
+static JuliaGrdRedPolFn g_juliaGrdRedPol = nullptr;
 
 // Import *.gmt/*.nc cruise track file(s) (Geophysics > Magnetics), port of Mirone's
 // GeophysicsImportGmtFile_CB (mirone.m) — plots the navigation (lon/lat) of MGD77+ netCDF cruise

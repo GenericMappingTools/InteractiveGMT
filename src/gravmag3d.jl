@@ -19,6 +19,54 @@ function _gm3d_bodies(s::AbstractString)
 	return bods
 end
 
+# Put a finished anomaly where it belongs. SHARED by BOTH potential-field tools (gravmag3d and
+# grdgravmag3d — same operation, same function): the two differ only in how the body is described,
+# not in what happens to the result, so this tail exists exactly once.
+#   `R`       the module's return: a GMTgrid, or a (vector of) GMTdataset in track mode
+#   `title`   the Scene Objects name — one fixed name per anomaly kind, so a recompute REPLACES
+#   `outfile` optional path to also write the result to (the dialogs' G box)
+#   `toTrack` true when the run was a track run (no grid exists at all)
+#   `recipe`  what to stamp into the grid's own command history
+function _gm3d_deliver(scene::Ptr{Cvoid}, R, title::String, outfile::AbstractString,
+                       toTrack::Bool, recipe::String)::Cint
+	# --- Track mode: a table of anomaly values at the given x,y — nothing to put on a surface.
+	if toTrack
+		D = isa(R, Vector) ? R : [R]
+		isempty(D) && error("no data returned for the track locations")
+		isempty(outfile) || GMT.gmtwrite(String(outfile), R)
+		show_table(scene, D; name = title)
+		return Cint(1)
+	end
+
+	isa(R, GMTgrid) || error("got a $(typeof(R)), not a grid")
+	G = R
+	isempty(outfile) || GMT.gmtwrite(String(outfile), G)
+
+	# REPLACE, never pile up: recomputing the same anomaly kind trashes the previous result (the C++
+	# actor AND the stale Julia reference) before adding the new one — same as _on_rtp3d.
+	ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, title)
+	_forget_object!(scene, :grid, title)
+
+	_grid_command!(G, "InteractiveGMT " * recipe)
+	has_surface = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene)
+	if !_add_grid_to_scene(scene, G, title; promote = (has_surface == 0))
+		_viewer_log_error(scene, "$title: window closed, grid not added")
+		return Cint(0)
+	end
+	# SACRED_LAW.md derived-variable display law: the anomaly starts CHECKED, every other grid in the
+	# window is UNCHECKED, and Scene Objects unfolds to reveal it.
+	_show_object!(scene, title)
+	_hide_other_objects!(scene, :grid, title)
+	ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+	# ...and the derived-variable AXES law: the anomaly's region is the one the user asked for, not the
+	# parent grid's, so the axes cube + camera must re-fit to it (keepMargin=0: grids fill edge-to-edge,
+	# the existing grid convention).
+	r = G.range
+	ccall(_fn(:gmtvtk_reframe_h), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Cint),
+	      scene, r[1], r[2], r[3], r[4], Cint(0))
+	return Cint(1)
+end
+
 # C callback (Compute button): `cparams` is the newline-separated "key=value" block described in
 # 30_app.cpp's JuliaGravMag3DFn. Absent key = don't pass that option to GMT, so the module's own
 # defaults stay in charge (never re-stated here).
@@ -83,45 +131,8 @@ function _on_gravmag3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		_on(d, "geog") && (kw[:f] = :g)		# lon/lat -> meters via the module's Flat Earth approximation
 
 		R = arg1 === nothing ? GMT.gravmag3d(; kw...) : GMT.gravmag3d(arg1; kw...)
-
-		# --- Track mode: a table of anomaly values at the given x,y — nothing to put on a surface.
-		if haskey(kw, :track)
-			D = isa(R, Vector) ? R : [R]
-			isempty(D) && error("gravmag3d returned no data for the track locations")
-			outfile = _get(d, "outfile")
-			isempty(outfile) || GMT.gmtwrite(outfile, R)
-			show_table(scene, D; name = title)
-			return Cint(1)
-		end
-
-		isa(R, GMTgrid) || error("gravmag3d returned a $(typeof(R)), not a grid")
-		G = R
-		outfile = _get(d, "outfile")
-		isempty(outfile) || GMT.gmtwrite(outfile, G)
-
-		# REPLACE, never pile up: recomputing the same anomaly kind trashes the previous result (the
-		# C++ actor AND the stale Julia reference) before adding the new one — same as _on_rtp3d.
-		ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, title)
-		_forget_object!(scene, :grid, title)
-
-		_grid_command!(G, "InteractiveGMT gravmag3d " * join(("$k=$v" for (k, v) in kw), ' '))
-		has_surface = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene)
-		if !_add_grid_to_scene(scene, G, title; promote = (has_surface == 0))
-			_viewer_log_error(scene, "gravmag3d: window closed, grid not added")
-			return Cint(0)
-		end
-		# SACRED_LAW.md derived-variable display law: the anomaly starts CHECKED, every other grid in
-		# the window is UNCHECKED, and Scene Objects unfolds to reveal it.
-		_show_object!(scene, title)
-		_hide_other_objects!(scene, :grid, title)
-		ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
-		# ...and the derived-variable AXES law: the anomaly's region is the one the user typed, not
-		# the parent grid's, so the axes cube + camera must re-fit to it (keepMargin=0: grids fill
-		# edge-to-edge, the existing grid convention).
-		r = G.range
-		ccall(_fn(:gmtvtk_reframe_h), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Cint),
-		      scene, r[1], r[2], r[3], r[4], Cint(0))
-		return Cint(1)
+		return _gm3d_deliver(scene, R, title, _get(d, "outfile"), haskey(kw, :track),
+		                     "gravmag3d " * join(("$k=$v" for (k, v) in kw), ' '))
 	catch e
 		_viewer_log_error(scene, "gravmag3d FAILED: $(sprint(showerror, e))")
 		@warn "gravmag3d FAILED" exception=(e,)

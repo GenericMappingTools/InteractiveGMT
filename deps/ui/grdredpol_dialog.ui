@@ -1,0 +1,429 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  grdredpol_dialog.ui — Geophysics > Magnetics > "grdredpol": Continuous Reduction To the Pole
+  (differential RTP, Luis & Miranda 2008). Loaded at RUNTIME by GrdRedPolDialog
+  (deps/src/70_window.cpp) via QUiLoader, so plain Qt widget classes only.
+  Controls map 1:1 onto the module's options (letter shown in the label):
+    input grid, C dec/dip, Ei inc grid, Ed dec grid, F m/n, M m|r, N, W, T, R, G, Z.
+  GMT.jl has no verbose wrapper for this supplement, so Julia drives it in MONOLITHIC mode —
+  still one in-process library call, never an OS subprocess.
+-->
+<ui version="4.0">
+ <class>GrdRedPolDialog</class>
+ <widget class="QDialog" name="GrdRedPolDialog">
+  <property name="windowTitle">
+   <string>grdredpol</string>
+  </property>
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>470</width>
+    <height>420</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <property name="spacing">
+    <number>4</number>
+   </property>
+
+   <!-- ===================== Input anomaly grid ===================== -->
+   <item>
+    <widget class="QGroupBox" name="gb_input">
+     <property name="title">
+      <string>Magnetic anomaly grid</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_input">
+      <property name="spacing">
+       <number>3</number>
+      </property>
+      <item>
+       <widget class="QRadioButton" name="rb_inMem">
+        <property name="text">
+         <string>the grid loaded in this window</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayout_in">
+        <item>
+         <widget class="QRadioButton" name="rb_inFile">
+          <property name="text">
+           <string>from file</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="le_inFile">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QToolButton" name="btn_inBrowse">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+          <property name="text">
+           <string>...</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- ============ Field & magnetization direction ============ -->
+   <item>
+    <widget class="QGroupBox" name="gb_direction">
+     <property name="title">
+      <string>Field and magnetization direction</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_dir">
+      <property name="spacing">
+       <number>3</number>
+      </property>
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayout_igrf">
+        <item>
+         <widget class="QRadioButton" name="rb_igrf">
+          <property name="text">
+           <string>Variable, from IGRF at each point — decimal year  (T)</string>
+          </property>
+          <property name="checked">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="le_year">
+          <property name="text">
+           <string>2000</string>
+          </property>
+          <property name="maximumWidth">
+           <number>70</number>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayout_const">
+        <item>
+         <widget class="QRadioButton" name="rb_const">
+          <property name="text">
+           <string>Constant — classical RTP  (C)</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="lbl_dec">
+          <property name="text">
+           <string>dec</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="le_dec">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+          <property name="text">
+           <string>0</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="lbl_dip">
+          <property name="text">
+           <string>dip</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="le_dip">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+          <property name="text">
+           <string>90</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <layout class="QGridLayout" name="gridLayout_dirGrids">
+        <item row="0" column="0">
+         <widget class="QLabel" name="lbl_incGrid">
+          <property name="text">
+           <string>Magnetization inclination grid  (Ei)</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QLineEdit" name="le_incGrid">
+          <property name="toolTip">
+           <string>Optional. Whatever is not given as a grid comes from IGRF. May be coarser than the anomaly grid.</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="2">
+         <widget class="QToolButton" name="btn_incGridBrowse">
+          <property name="text">
+           <string>...</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="lbl_decGrid">
+          <property name="text">
+           <string>Magnetization declination grid  (Ed)</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QLineEdit" name="le_decGrid">
+          <property name="toolTip">
+           <string>Optional. Whatever is not given as a grid comes from IGRF. May be coarser than the anomaly grid.</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="2">
+         <widget class="QToolButton" name="btn_decGridBrowse">
+          <property name="text">
+           <string>...</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- ===================== Computation ===================== -->
+   <item>
+    <widget class="QGroupBox" name="gb_compute">
+     <property name="title">
+      <string>Computation</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_compute">
+      <property name="spacing">
+       <number>3</number>
+      </property>
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_filter">
+        <property name="text">
+         <string>Filter coefficients, rows/cols  (F)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="le_filtRows">
+        <property name="text">
+         <string>25</string>
+        </property>
+        <property name="toolTip">
+         <string>Must be ODD and at least 5</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLineEdit" name="le_filtCols">
+        <property name="text">
+         <string>25</string>
+        </property>
+        <property name="toolTip">
+         <string>Must be ODD and at least 5</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lbl_winWidth">
+        <property name="text">
+         <string>Moving window width, degrees  (W)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="le_winWidth">
+        <property name="text">
+         <string>5</string>
+        </property>
+        <property name="toolTip">
+         <string>Inside each bin the ambient field and the magnetization vector are taken as constant</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lbl_boundary">
+        <property name="text">
+         <string>Edge boundary condition  (M)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1" colspan="2">
+       <widget class="QComboBox" name="cb_boundary">
+        <item>
+         <property name="text">
+          <string>zero padding</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>mirror edges (Mm)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>replicate edges (Mr)</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item row="3" column="0" colspan="3">
+       <widget class="QCheckBox" name="chk_noTaylor">
+        <property name="text">
+         <string>Do NOT use the Taylor expansion  (N)</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- ===================== Output ===================== -->
+   <item>
+    <widget class="QGroupBox" name="gb_output">
+     <property name="title">
+      <string>Output</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_output">
+      <property name="spacing">
+       <number>3</number>
+      </property>
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_region">
+        <property name="text">
+         <string>Region  (R)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="le_xmin">
+        <property name="toolTip">
+         <string>xmin</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLineEdit" name="le_xmax">
+        <property name="toolTip">
+         <string>xmax</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLineEdit" name="le_ymin">
+        <property name="toolTip">
+         <string>ymin</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="4">
+       <widget class="QLineEdit" name="le_ymax">
+        <property name="toolTip">
+         <string>ymax</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lbl_outfile">
+        <property name="text">
+         <string>Save RTP as  (G)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1" colspan="3">
+       <widget class="QLineEdit" name="le_outfile">
+        <property name="toolTip">
+         <string>Optional. The result is always added to this window; give a name here to also write it to disk.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="4">
+       <widget class="QToolButton" name="btn_outfileBrowse">
+        <property name="text">
+         <string>...</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lbl_filterFile">
+        <property name="text">
+         <string>Save filter as  (Z)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1" colspan="3">
+       <widget class="QLineEdit" name="le_filterFile">
+        <property name="toolTip">
+         <string>Optional. Writes the computed filter to disk.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="4">
+       <widget class="QToolButton" name="btn_filterFileBrowse">
+        <property name="text">
+         <string>...</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="horizontalSpacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>10</width>
+         <height>10</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_compute">
+       <property name="text">
+        <string>Compute</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_close">
+       <property name="text">
+        <string>Close</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

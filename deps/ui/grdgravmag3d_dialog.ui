@@ -1,0 +1,696 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  grdgravmag3d_dialog.ui — Geophysics > Magnetics > "grdgravmag3d". Loaded at RUNTIME by
+  GrdGravMag3DDialog (deps/src/70_window.cpp) via QUiLoader, so plain Qt widget classes only.
+  Every control maps 1:1 onto a GMT.jl `grdgravmag3d` keyword, option letter shown in the label:
+    Grids tab  : grd_top (+ optional grd_bot), E|thickness, Z|level (b|t), Q|pad
+    Anomaly tab: C|density (gravity)  XOR  H|mag_params (magnetic: the 5 angles, a component, an
+                 intensity grid via +m, and/or IGRF-variable field via +i/+n — GMT takes several
+                 -H at once, which is why these are separate controls and not one box)
+    Output tab : R|region, I|inc, L|z_obs, S|radius, F|track, G|save, f=:g, x (threads)
+-->
+<ui version="4.0">
+ <class>GrdGravMag3DDialog</class>
+ <widget class="QDialog" name="GrdGravMag3DDialog">
+  <property name="windowTitle">
+   <string>grdgravmag3d</string>
+  </property>
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>480</width>
+    <height>360</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <property name="spacing">
+    <number>4</number>
+   </property>
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+
+     <!-- ===================== TAB: Grids ===================== -->
+     <widget class="QWidget" name="tab_grids">
+      <attribute name="title">
+       <string>Grids</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_grids">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+
+       <item>
+        <widget class="QRadioButton" name="rb_topMem">
+         <property name="text">
+          <string>Top surface: the grid loaded in this window</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_top">
+         <item>
+          <widget class="QRadioButton" name="rb_topFile">
+           <property name="text">
+            <string>from file</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_topFile">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_topBrowse">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <widget class="QCheckBox" name="chk_useBottom">
+         <property name="text">
+          <string>Bottom grid — compute the effect of the volume BETWEEN the two</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_bot">
+         <item>
+          <widget class="QLineEdit" name="le_botFile">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_botBrowse">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <layout class="QGridLayout" name="gridLayout_geom">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_thickness">
+           <property name="text">
+            <string>Layer thickness, m  (E)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="le_thickness">
+           <property name="toolTip">
+            <string>Ignored in the two-grid mode [500 m]</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLabel" name="lbl_zlevel">
+           <property name="text">
+            <string>Close body at  (Z)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QComboBox" name="cb_zlevel">
+           <property name="toolTip">
+            <string>-Zb closes the body at its bottom (a dome), -Zt at its top (a spoon)</string>
+           </property>
+           <item>
+            <property name="text">
+             <string>(neither)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>bottom</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>top</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lbl_pad">
+           <property name="text">
+            <string>Pad domain  (Q)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1" colspan="3">
+          <widget class="QLineEdit" name="le_pad">
+           <property name="toolTip">
+            <string>n_pad (fake outer-rim width), a pad distance, or w/e/s/n — extends the computation domain beyond the output region</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <spacer name="verticalSpacer_grids">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ===================== TAB: Anomaly ===================== -->
+     <widget class="QWidget" name="tab_anomaly">
+      <attribute name="title">
+       <string>Anomaly</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_anom">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+
+       <item>
+        <widget class="QRadioButton" name="rb_gravity">
+         <property name="text">
+          <string>Gravity anomaly   (C | density)</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_density">
+         <item>
+          <widget class="QLabel" name="lbl_density">
+           <property name="text">
+            <string>Density</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_density">
+           <property name="text">
+            <string>2700</string>
+           </property>
+           <property name="toolTip">
+            <string>Constant density contrast in SI, or the name of a variable-density grid</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_densityBrowse">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <widget class="QRadioButton" name="rb_magnetic">
+         <property name="text">
+          <string>Magnetic anomaly   (H | mag_params)</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_mag">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_fDec">
+           <property name="text">
+            <string>Field dec</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLabel" name="lbl_fDip">
+           <property name="text">
+            <string>Field dip</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLabel" name="lbl_mInt">
+           <property name="text">
+            <string>Mag (A/m)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QLabel" name="lbl_mDec">
+           <property name="text">
+            <string>Mag dec</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="4">
+          <widget class="QLabel" name="lbl_mDip">
+           <property name="text">
+            <string>Mag dip</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLineEdit" name="le_fDec">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>0</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="le_fDip">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>90</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="2">
+          <widget class="QLineEdit" name="le_mInt">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>1</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="3">
+          <widget class="QLineEdit" name="le_mDec">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>0</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="4">
+          <widget class="QLineEdit" name="le_mDip">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>90</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_magExtra">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_component">
+           <property name="text">
+            <string>Component</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QComboBox" name="cb_component">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <item>
+            <property name="text">
+             <string>(default)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>total field (t)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>E-W (x)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>N-S (y)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>vertical (z)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>horizontal (h)</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLabel" name="lbl_igrf">
+           <property name="text">
+            <string>Ambient field</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QComboBox" name="cb_igrf">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="toolTip">
+            <string>Over a large region the ambient field is not constant: -H+i / -H+n take the inclination/declination from IGRF at each node</string>
+           </property>
+           <item>
+            <property name="text">
+             <string>constant (the boxes above)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>variable, IGRF (+i)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>variable, IGRF (+n)</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lbl_magGrid">
+           <property name="text">
+            <string>Intensity grid (+m)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1" colspan="2">
+          <widget class="QLineEdit" name="le_magGrid">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="toolTip">
+            <string>Grid of magnetization intensity; replaces the constant Mag (A/m) above</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="3">
+          <widget class="QToolButton" name="btn_magGridBrowse">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <spacer name="verticalSpacer_anom">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ===================== TAB: Output ===================== -->
+     <widget class="QWidget" name="tab_output">
+      <attribute name="title">
+       <string>Output</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_out">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+
+       <item>
+        <layout class="QGridLayout" name="gridLayout_region">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_region">
+           <property name="text">
+            <string>Region  (R)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="le_xmin">
+           <property name="toolTip">
+            <string>xmin — leave the four boxes empty to use the top grid's own region</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLineEdit" name="le_xmax">
+           <property name="toolTip">
+            <string>xmax</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QLineEdit" name="le_ymin">
+           <property name="toolTip">
+            <string>ymin</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="4">
+          <widget class="QLineEdit" name="le_ymax">
+           <property name="toolTip">
+            <string>ymax</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lbl_inc">
+           <property name="text">
+            <string>Increment  (I)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="le_xinc">
+           <property name="toolTip">
+            <string>x_inc — empty means the input grid's own increment</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="2">
+          <widget class="QLineEdit" name="le_yinc">
+           <property name="toolTip">
+            <string>y_inc — leave empty to reuse x_inc</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="3" colspan="2">
+          <widget class="QCheckBox" name="chk_geog">
+           <property name="text">
+            <string>Geographic (f=:g)</string>
+           </property>
+           <property name="toolTip">
+            <string>Convert lon/lat to meters with a Flat Earth approximation</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <layout class="QGridLayout" name="gridLayout_misc">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_zobs">
+           <property name="text">
+            <string>Observation level  (L)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="le_zobs">
+           <property name="text">
+            <string>0</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLabel" name="lbl_radius">
+           <property name="text">
+            <string>Search radius, km  (S)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QLineEdit" name="le_radius">
+           <property name="toolTip">
+            <string>Two-grid mode, or with a layer thickness [30 km]</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lbl_threads">
+           <property name="text">
+            <string>Cores  (x)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="le_threads">
+           <property name="toolTip">
+            <string>Number of processors to use [all]</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_track">
+         <item>
+          <widget class="QLabel" name="lbl_track">
+           <property name="text">
+            <string>Track  (F)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_track">
+           <property name="toolTip">
+            <string>x,y file with the locations where the anomaly is computed. Mutually exclusive with a grid output — the result comes back as a table.</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_trackBrowse">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_outfile">
+         <item>
+          <widget class="QLabel" name="lbl_outfile">
+           <property name="text">
+            <string>Save as  (G)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_outfile">
+           <property name="toolTip">
+            <string>Optional. The result is always added to this window; give a name here to also write it to disk.</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_outfileBrowse">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <item>
+        <spacer name="verticalSpacer_out">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+    </widget>
+   </item>
+
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="horizontalSpacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>10</width>
+         <height>10</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_compute">
+       <property name="text">
+        <string>Compute</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_close">
+       <property name="text">
+        <string>Close</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

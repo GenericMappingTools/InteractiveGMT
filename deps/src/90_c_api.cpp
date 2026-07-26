@@ -1305,6 +1305,20 @@ GMTVTK_API void gmtvtk_set_gravmag3d_callback(JuliaGravMag3DFn fn) {
 	g_juliaGravMag3D = fn;
 }
 
+// Register the grdgravmag3d Compute callback (Geophysics > Magnetics). fn(scene, params) with params
+// a newline-separated "key=value" block (see JuliaGrdGravMag3DFn in 30_app.cpp) runs GMT.jl's
+// grdgravmag3d() and adds the anomaly grid to `scene`. nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdgravmag3d_callback(JuliaGrdGravMag3DFn fn) {
+	g_juliaGrdGravMag3D = fn;
+}
+
+// Register the grdredpol Compute callback (Geophysics > Magnetics). fn(scene, params) with params a
+// newline-separated "key=value" block (see JuliaGrdRedPolFn in 30_app.cpp) runs the grdredpol
+// supplement and adds the continuous-RTP grid to `scene`. nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdredpol_callback(JuliaGrdRedPolFn fn) {
+	g_juliaGrdRedPol = fn;
+}
+
 // Register the Import *.gmt/*.nc cruise track callback (Geophysics > Magnetics). fn(scene, path,
 // isList) — isList nonzero means `path` is a list-file (one cruise file path per line). nullptr to
 // detach.
