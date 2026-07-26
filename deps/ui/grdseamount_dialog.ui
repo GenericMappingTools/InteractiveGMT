@@ -1,0 +1,850 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  grdseamount_dialog.ui — GMT menu > "grdseamount": synthetic seamounts (Gaussian, parabolic,
+  polynomial, cone or disc; circular or elliptical) built from a table of seamount parameters.
+  Loaded at RUNTIME by GrdSeamountDialog (deps/src/70_window.cpp) via QUiLoader — plain Qt widgets.
+  Option letters are in the labels: C shape, E elliptical, F flattening, D unit, A mask, L list_stats,
+  N normalize, Z level, R region, I inc, G outgrid, T time, Q build_mode, M list, H densities,
+  K density_grid, W density_output.  -S (landslide simulation) is NOT covered by this dialog.
+-->
+<ui version="4.0">
+ <class>GrdSeamountDialog</class>
+ <widget class="QDialog" name="GrdSeamountDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>330</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>grdseamount</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <property name="spacing">
+    <number>4</number>
+   </property>
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+
+     <!-- ==================== TAB: Seamounts ==================== -->
+     <widget class="QWidget" name="tab_seamounts">
+      <attribute name="title">
+       <string>Seamounts</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_smt">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_fromFile">
+         <item>
+          <widget class="QRadioButton" name="rb_fromFile">
+           <property name="text">
+            <string>Seamount table from file</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="horizontalSpacer_fromFile">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>10</width>
+             <height>10</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_demo">
+           <property name="text">
+            <string>Demo seamount</string>
+           </property>
+           <property name="toolTip">
+            <string>Fill the dialog with the grdseamount example: a circular Gaussian seamount at 1W 2S with 30 km basal radius and 4500 m height, on a 1 arc minute grid.</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_table">
+         <item>
+          <widget class="QLineEdit" name="le_table">
+           <property name="toolTip">
+            <string>lon lat radius height — or lon lat azimuth semi-major semi-minor height when elliptical. Extra columns: flattening (F with no value), then start/stop time (T).</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_tableBrowse">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QRadioButton" name="rb_single">
+         <property name="text">
+          <string>A single seamount, typed here</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_single">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_lon">
+           <property name="text">
+            <string>lon</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="le_lon">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLabel" name="lbl_lat">
+           <property name="text">
+            <string>lat</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QLineEdit" name="le_lat">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="4">
+          <widget class="QLabel" name="lbl_height">
+           <property name="text">
+            <string>height</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="5">
+          <widget class="QLineEdit" name="le_height">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lbl_radius">
+           <property name="text">
+            <string>radius</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="le_radius">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="2">
+          <widget class="QLabel" name="lbl_azimuth">
+           <property name="text">
+            <string>azimuth</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="3">
+          <widget class="QLineEdit" name="le_azimuth">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="toolTip">
+            <string>Elliptical seamounts only</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="4">
+          <widget class="QLabel" name="lbl_semi">
+           <property name="text">
+            <string>semi maj/min</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="5">
+          <widget class="QLineEdit" name="le_semiMajor">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="toolTip">
+            <string>Semi-major axis (elliptical only)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="6">
+          <widget class="QLineEdit" name="le_semiMinor">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="toolTip">
+            <string>Semi-minor axis (elliptical only)</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_shape">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_shape">
+           <property name="text">
+            <string>Shape  (C)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QComboBox" name="cb_shape">
+           <item>
+            <property name="text">
+             <string>gaussian</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>cone</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>disc</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>parabola</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>polynomial</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QCheckBox" name="chk_elliptical">
+           <property name="text">
+            <string>Elliptical  (E)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lbl_flattening">
+           <property name="text">
+            <string>Flattening  (F)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="le_flattening">
+           <property name="toolTip">
+            <string>0 (none) up to but not including 1. Truncates seamounts to guyots; ignored for a disc.</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="2">
+          <widget class="QCheckBox" name="chk_flatCol">
+           <property name="text">
+            <string>from the last table column</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="lbl_unit">
+           <property name="text">
+            <string>Cartesian unit  (D)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QComboBox" name="cb_unit">
+           <property name="toolTip">
+            <string>Horizontal distance unit of the input table. Not allowed for geographic data, which is converted to km automatically.</string>
+           </property>
+           <item>
+            <property name="text">
+             <string>(geographic)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>k — km</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>m — minutes</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>n — nautical miles</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>d — degrees</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_smt">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ==================== TAB: Grid ==================== -->
+     <widget class="QWidget" name="tab_grid">
+      <attribute name="title">
+       <string>Grid</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_grid">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_region">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_region">
+           <property name="text">
+            <string>Region  (R)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="le_xmin">
+           <property name="toolTip">
+            <string>xmin</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLineEdit" name="le_xmax">
+           <property name="toolTip">
+            <string>xmax</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QLineEdit" name="le_ymin">
+           <property name="toolTip">
+            <string>ymin</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="4">
+          <widget class="QLineEdit" name="le_ymax">
+           <property name="toolTip">
+            <string>ymax</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_gridmisc">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lbl_inc">
+           <property name="text">
+            <string>Increment  (I)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="le_xinc">
+           <property name="toolTip">
+            <string>x_inc</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLineEdit" name="le_yinc">
+           <property name="toolTip">
+            <string>y_inc — leave empty to reuse x_inc</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lbl_level">
+           <property name="text">
+            <string>Background depth  (Z)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="le_level">
+           <property name="toolTip">
+            <string>Seamounts have positive relief, so a negative level puts them under water [0]</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="2">
+          <widget class="QCheckBox" name="chk_levelNaN">
+           <property name="text">
+            <string>NaN unused nodes</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="lbl_normalize">
+           <property name="text">
+            <string>Normalize to  (N)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QLineEdit" name="le_normalize">
+           <property name="toolTip">
+            <string>Scale the relief so the maximum grid height equals this value</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_mask">
+         <property name="title">
+          <string>Mask grid only  (A)</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+         <property name="checked">
+          <bool>false</bool>
+         </property>
+         <layout class="QHBoxLayout" name="horizontalLayout_mask">
+          <property name="spacing">
+           <number>3</number>
+          </property>
+          <item>
+           <widget class="QLabel" name="lbl_maskOut">
+            <property name="text">
+             <string>outside</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="le_maskOut">
+            <property name="placeholderText">
+             <string>1</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="lbl_maskIn">
+            <property name="text">
+             <string>inside</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="le_maskIn">
+            <property name="placeholderText">
+             <string>NaN</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="lbl_maskScale">
+            <property name="text">
+             <string>radius scale</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="le_maskScale"/>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_outgrid">
+         <item>
+          <widget class="QLabel" name="lbl_outgrid">
+           <property name="text">
+            <string>Save as  (G)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="le_outgrid">
+           <property name="toolTip">
+            <string>Optional; the result is added to this window anyway. With Time set this MUST be a filename template, e.g. smt_%3.1f_%s.nc</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_outgridBrowse">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_grid">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ==================== TAB: Time & density ==================== -->
+     <widget class="QWidget" name="tab_time">
+      <attribute name="title">
+       <string>Time &amp; density</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_time">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <item>
+        <widget class="QGroupBox" name="gb_time">
+         <property name="title">
+          <string>Temporal evolution  (T) — the table needs start/stop time columns</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+         <property name="checked">
+          <bool>false</bool>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_time">
+          <property name="spacing">
+           <number>3</number>
+          </property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_t0">
+            <property name="text">
+             <string>t0</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="le_t0">
+            <property name="toolTip">
+             <string>Years by default; append k for kyr, M for Myr</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lbl_t1">
+            <property name="text">
+             <string>t1</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="le_t1"/>
+          </item>
+          <item row="0" column="4">
+           <widget class="QLabel" name="lbl_dt">
+            <property name="text">
+             <string>dt</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="5">
+           <widget class="QLineEdit" name="le_dt">
+            <property name="toolTip">
+             <string>Time increment — or the NUMBER of steps when the log scale box is ticked</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0" colspan="2">
+           <widget class="QCheckBox" name="chk_logTime">
+            <property name="text">
+             <string>logarithmic time scale</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="lbl_bmode">
+            <property name="text">
+             <string>Build  (Q)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QComboBox" name="cb_bmode">
+            <item>
+             <property name="text">
+              <string>cumulative</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>incremental</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item row="1" column="4">
+           <widget class="QLabel" name="lbl_fmode">
+            <property name="text">
+             <string>flux</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="5">
+           <widget class="QComboBox" name="cb_fmode">
+            <item>
+             <property name="text">
+              <string>gaussian</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>constant</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lbl_list">
+            <property name="text">
+             <string>Grid list  (M)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1" colspan="4">
+           <widget class="QLineEdit" name="le_list">
+            <property name="toolTip">
+             <string>Write the times and names of all grids created to this file (input for grdflexure)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="5">
+           <widget class="QToolButton" name="btn_listBrowse">
+            <property name="text">
+             <string>...</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_density">
+         <property name="title">
+          <string>Variable radial density  (H)</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+         <property name="checked">
+          <bool>false</bool>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_density">
+          <property name="spacing">
+           <number>3</number>
+          </property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_H">
+            <property name="text">
+             <string>H (m)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="le_H"/>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lbl_rhoL">
+            <property name="text">
+             <string>rho low</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="le_rhoL"/>
+          </item>
+          <item row="0" column="4">
+           <widget class="QLabel" name="lbl_rhoH">
+            <property name="text">
+             <string>rho high</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="5">
+           <widget class="QLineEdit" name="le_rhoH"/>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_densify">
+            <property name="text">
+             <string>densify</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="le_densify">
+            <property name="placeholderText">
+             <string>0</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="lbl_power">
+            <property name="text">
+             <string>power</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QLineEdit" name="le_power">
+            <property name="placeholderText">
+             <string>1</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lbl_densityGrid">
+            <property name="text">
+             <string>Crossection  (K)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1" colspan="4">
+           <widget class="QLineEdit" name="le_densityGrid">
+            <property name="toolTip">
+             <string>Grid file for the predicted densities of the reference model</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="5">
+           <widget class="QToolButton" name="btn_densityGridBrowse">
+            <property name="text">
+             <string>...</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="lbl_densityOut">
+            <property name="text">
+             <string>Mean density  (W)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1" colspan="4">
+           <widget class="QLineEdit" name="le_densityOut">
+            <property name="toolTip">
+             <string>Vertically averaged density grid</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="5">
+           <widget class="QToolButton" name="btn_densityOutBrowse">
+            <property name="text">
+             <string>...</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QCheckBox" name="chk_listStats">
+         <property name="text">
+          <string>List area / volume / mean height instead of making a grid  (L)</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_time">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>4</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="horizontalSpacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>10</width>
+         <height>10</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_compute">
+       <property name="text">
+        <string>Compute</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_close">
+       <property name="text">
+        <string>Close</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

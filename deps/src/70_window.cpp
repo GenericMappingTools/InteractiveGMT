@@ -3322,7 +3322,7 @@ public:
 struct GrdGradientState {
 	bool valid = false;
 	int azim1 = -1, azim2 = -1;             // < 0 = the blank row, i.e. not used
-	bool slope = false, aspect = false, downSlope = false;
+	bool slope = false, aspect = false, downSlope = true;   // aspect = down-slope by default (-Da)
 	int dirFlavour = 0, boundary = 0, norm = 0, lambert = 0, saveStats = 0;
 	QString amp, sigma, offset;
 	QString lambAzim, lambElev, ambient, difuse, specular, shine;
@@ -3667,6 +3667,10 @@ public:
 					kv << "slope=1";
 				}
 				else if (aspectChk->isChecked()) {
+					// ASPECT is the DOWN-slope azimuth, which is -Da. A bare -D is the UP-slope
+					// direction, 180 degrees away — Mirone's window sends that despite labelling its
+					// box "Aspect", and copying it verbatim made this checkbox report the wrong angle.
+					// The "report down-slope" tick therefore only remains as a way to turn it OFF.
 					static const char *flav[] = { "", "c", "o", "n" };
 					QString flags = downSlopeChk->isChecked() ? "a" : "";
 					flags += flav[dirCb->currentIndex()];
@@ -3704,6 +3708,380 @@ public:
 			closeBusyDialog();
 			if (!ok)
 				QMessageBox::warning(d, "Error", "grdgradient failed — see this window's Errors console for details.");
+		});
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+};
+
+// ============================================================================================
+// grdseamount (GMT menu) — synthetic seamounts (Gaussian, parabolic, polynomial, cone or disc;
+// circular or elliptical) built from a TABLE of seamount parameters, not from an input grid. Runtime
+// .ui load, same shape as the other module dialogs here.
+//
+// The table is either a file or, for the common one-seamount case, typed into the dialog: the
+// Elliptical box decides which of the two column layouts is live (lon/lat/radius/height, or
+// lon/lat/azimuth/semi-major/semi-minor/height), and the other set grays out rather than sitting
+// there inviting values the module would never read.
+//
+// -S (the landslide simulation) is deliberately NOT here: it is a family of eight coupled modifiers
+// that deserves its own dialog rather than a cramped corner of this one.
+// ============================================================================================
+struct GrdSeamountState {
+	bool valid = false;
+	bool fromFile = true, elliptical = false, flatCol = false, levelNaN = false, listStats = false;
+	bool mask = false, time = false, density = false, logTime = false;
+	int shape = 0, unit = 0, bmode = 0, fmode = 0;
+	QString table, lon, lat, height, radius, azimuth, semiMajor, semiMinor, flattening;
+	QString xmin, xmax, ymin, ymax, xinc, yinc, level, normalize, outgrid;
+	QString maskOut, maskIn, maskScale, t0, t1, dt, list;
+	QString H, rhoL, rhoH, densify, power, densityGrid, densityOut;
+};
+static GrdSeamountState g_grdseamountState;
+
+class GrdSeamountDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QRadioButton *rbFile, *rbSingle;
+	QCheckBox *ellipChk, *flatColChk, *levelNaNChk, *listStatsChk, *logTimeChk;
+	QGroupBox *maskGb, *timeGb, *densityGb;
+	QComboBox *shapeCb, *unitCb, *bmodeCb, *fmodeCb;
+	QLineEdit *tableEdit, *lonEdit, *latEdit, *heightEdit, *radiusEdit, *azimuthEdit,
+	          *semiMajorEdit, *semiMinorEdit, *flatteningEdit;
+	QLineEdit *xminEdit, *xmaxEdit, *yminEdit, *ymaxEdit, *xincEdit, *yincEdit,
+	          *levelEdit, *normalizeEdit, *outgridEdit;
+	QLineEdit *maskOutEdit, *maskInEdit, *maskScaleEdit, *t0Edit, *t1Edit, *dtEdit, *listEdit;
+	QLineEdit *hEdit, *rhoLEdit, *rhoHEdit, *densifyEdit, *powerEdit, *densityGridEdit, *densityOutEdit;
+
+	explicit GrdSeamountDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdseamount_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdSeamountDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdSeamountDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+
+		rbFile   = d->findChild<QRadioButton *>("rb_fromFile");
+		rbSingle = d->findChild<QRadioButton *>("rb_single");
+		ellipChk = d->findChild<QCheckBox *>("chk_elliptical");
+		flatColChk  = d->findChild<QCheckBox *>("chk_flatCol");
+		levelNaNChk = d->findChild<QCheckBox *>("chk_levelNaN");
+		listStatsChk= d->findChild<QCheckBox *>("chk_listStats");
+		logTimeChk  = d->findChild<QCheckBox *>("chk_logTime");
+		maskGb    = d->findChild<QGroupBox *>("gb_mask");
+		timeGb    = d->findChild<QGroupBox *>("gb_time");
+		densityGb = d->findChild<QGroupBox *>("gb_density");
+		shapeCb = d->findChild<QComboBox *>("cb_shape");  unitCb  = d->findChild<QComboBox *>("cb_unit");
+		bmodeCb = d->findChild<QComboBox *>("cb_bmode");  fmodeCb = d->findChild<QComboBox *>("cb_fmode");
+		tableEdit  = d->findChild<QLineEdit *>("le_table");
+		lonEdit    = d->findChild<QLineEdit *>("le_lon");     latEdit    = d->findChild<QLineEdit *>("le_lat");
+		heightEdit = d->findChild<QLineEdit *>("le_height");  radiusEdit = d->findChild<QLineEdit *>("le_radius");
+		azimuthEdit= d->findChild<QLineEdit *>("le_azimuth");
+		semiMajorEdit = d->findChild<QLineEdit *>("le_semiMajor");
+		semiMinorEdit = d->findChild<QLineEdit *>("le_semiMinor");
+		flatteningEdit= d->findChild<QLineEdit *>("le_flattening");
+		xminEdit = d->findChild<QLineEdit *>("le_xmin");  xmaxEdit = d->findChild<QLineEdit *>("le_xmax");
+		yminEdit = d->findChild<QLineEdit *>("le_ymin");  ymaxEdit = d->findChild<QLineEdit *>("le_ymax");
+		xincEdit = d->findChild<QLineEdit *>("le_xinc");  yincEdit = d->findChild<QLineEdit *>("le_yinc");
+		levelEdit = d->findChild<QLineEdit *>("le_level");
+		normalizeEdit = d->findChild<QLineEdit *>("le_normalize");
+		outgridEdit   = d->findChild<QLineEdit *>("le_outgrid");
+		maskOutEdit = d->findChild<QLineEdit *>("le_maskOut");
+		maskInEdit  = d->findChild<QLineEdit *>("le_maskIn");
+		maskScaleEdit = d->findChild<QLineEdit *>("le_maskScale");
+		t0Edit = d->findChild<QLineEdit *>("le_t0");  t1Edit = d->findChild<QLineEdit *>("le_t1");
+		dtEdit = d->findChild<QLineEdit *>("le_dt");  listEdit = d->findChild<QLineEdit *>("le_list");
+		hEdit = d->findChild<QLineEdit *>("le_H");
+		rhoLEdit = d->findChild<QLineEdit *>("le_rhoL");  rhoHEdit = d->findChild<QLineEdit *>("le_rhoH");
+		densifyEdit = d->findChild<QLineEdit *>("le_densify");  powerEdit = d->findChild<QLineEdit *>("le_power");
+		densityGridEdit = d->findChild<QLineEdit *>("le_densityGrid");
+		densityOutEdit  = d->findChild<QLineEdit *>("le_densityOut");
+		auto *tableBtn = d->findChild<QToolButton *>("btn_tableBrowse");
+		auto *demoBtn  = d->findChild<QToolButton *>("btn_demo");
+		auto *outBtn   = d->findChild<QToolButton *>("btn_outgridBrowse");
+		auto *listBtn  = d->findChild<QToolButton *>("btn_listBrowse");
+		auto *dgBtn    = d->findChild<QToolButton *>("btn_densityGridBrowse");
+		auto *doBtn    = d->findChild<QToolButton *>("btn_densityOutBrowse");
+		auto *computeBtn = d->findChild<QPushButton *>("btn_compute");
+		auto *closeBtn   = d->findChild<QPushButton *>("btn_close");
+
+		const GrdSeamountState &st = g_grdseamountState;
+		if (st.valid) {
+			(st.fromFile ? rbFile : rbSingle)->setChecked(true);
+			ellipChk->setChecked(st.elliptical);   flatColChk->setChecked(st.flatCol);
+			levelNaNChk->setChecked(st.levelNaN);  listStatsChk->setChecked(st.listStats);
+			logTimeChk->setChecked(st.logTime);
+			maskGb->setChecked(st.mask);  timeGb->setChecked(st.time);  densityGb->setChecked(st.density);
+			shapeCb->setCurrentIndex(st.shape);  unitCb->setCurrentIndex(st.unit);
+			bmodeCb->setCurrentIndex(st.bmode);  fmodeCb->setCurrentIndex(st.fmode);
+			tableEdit->setText(st.table);
+			lonEdit->setText(st.lon);        latEdit->setText(st.lat);
+			heightEdit->setText(st.height);  radiusEdit->setText(st.radius);
+			azimuthEdit->setText(st.azimuth);
+			semiMajorEdit->setText(st.semiMajor);  semiMinorEdit->setText(st.semiMinor);
+			flatteningEdit->setText(st.flattening);
+			xminEdit->setText(st.xmin);  xmaxEdit->setText(st.xmax);
+			yminEdit->setText(st.ymin);  ymaxEdit->setText(st.ymax);
+			xincEdit->setText(st.xinc);  yincEdit->setText(st.yinc);
+			levelEdit->setText(st.level);  normalizeEdit->setText(st.normalize);
+			outgridEdit->setText(st.outgrid);
+			maskOutEdit->setText(st.maskOut);  maskInEdit->setText(st.maskIn);
+			maskScaleEdit->setText(st.maskScale);
+			t0Edit->setText(st.t0);  t1Edit->setText(st.t1);  dtEdit->setText(st.dt);
+			listEdit->setText(st.list);
+			hEdit->setText(st.H);  rhoLEdit->setText(st.rhoL);  rhoHEdit->setText(st.rhoH);
+			densifyEdit->setText(st.densify);  powerEdit->setText(st.power);
+			densityGridEdit->setText(st.densityGrid);  densityOutEdit->setText(st.densityOut);
+		}
+
+		auto saveState = [this]() {
+			GrdSeamountState s;
+			s.valid = true;
+			s.fromFile = rbFile->isChecked();
+			s.elliptical = ellipChk->isChecked();  s.flatCol = flatColChk->isChecked();
+			s.levelNaN = levelNaNChk->isChecked(); s.listStats = listStatsChk->isChecked();
+			s.logTime = logTimeChk->isChecked();
+			s.mask = maskGb->isChecked();  s.time = timeGb->isChecked();  s.density = densityGb->isChecked();
+			s.shape = shapeCb->currentIndex();  s.unit = unitCb->currentIndex();
+			s.bmode = bmodeCb->currentIndex();  s.fmode = fmodeCb->currentIndex();
+			s.table = tableEdit->text();
+			s.lon = lonEdit->text();        s.lat = latEdit->text();
+			s.height = heightEdit->text();  s.radius = radiusEdit->text();
+			s.azimuth = azimuthEdit->text();
+			s.semiMajor = semiMajorEdit->text();  s.semiMinor = semiMinorEdit->text();
+			s.flattening = flatteningEdit->text();
+			s.xmin = xminEdit->text();  s.xmax = xmaxEdit->text();
+			s.ymin = yminEdit->text();  s.ymax = ymaxEdit->text();
+			s.xinc = xincEdit->text();  s.yinc = yincEdit->text();
+			s.level = levelEdit->text();  s.normalize = normalizeEdit->text();
+			s.outgrid = outgridEdit->text();
+			s.maskOut = maskOutEdit->text();  s.maskIn = maskInEdit->text();
+			s.maskScale = maskScaleEdit->text();
+			s.t0 = t0Edit->text();  s.t1 = t1Edit->text();  s.dt = dtEdit->text();
+			s.list = listEdit->text();
+			s.H = hEdit->text();  s.rhoL = rhoLEdit->text();  s.rhoH = rhoHEdit->text();
+			s.densify = densifyEdit->text();  s.power = powerEdit->text();
+			s.densityGrid = densityGridEdit->text();  s.densityOut = densityOutEdit->text();
+			g_grdseamountState = s;
+		};
+		struct GrdSeamountSaveOnClose : QObject {
+			std::function<void()> save;
+			GrdSeamountSaveOnClose(QObject *p, std::function<void()> fn) : QObject(p), save(fn) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close) save();
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new GrdSeamountSaveOnClose(d, saveState));
+
+		// File row vs typed row, and within the typed row the CIRCULAR columns vs the ELLIPTICAL ones:
+		// only the set the module will actually read stays live.
+		auto syncSource = [this, tableBtn]() {
+			const bool file = rbFile->isChecked();
+			const bool ell  = ellipChk->isChecked();
+			tableEdit->setEnabled(file);
+			if (tableBtn) tableBtn->setEnabled(file);
+			lonEdit->setEnabled(!file);  latEdit->setEnabled(!file);  heightEdit->setEnabled(!file);
+			radiusEdit->setEnabled(!file && !ell);
+			azimuthEdit->setEnabled(!file && ell);
+			semiMajorEdit->setEnabled(!file && ell);
+			semiMinorEdit->setEnabled(!file && ell);
+			// Flattening either comes from the last table column or is typed here — never both.
+			flatteningEdit->setEnabled(!flatColChk->isChecked());
+			flatColChk->setEnabled(file);            // a typed single seamount has no extra column
+		};
+		for (QRadioButton *rb : {rbFile, rbSingle})
+			QObject::connect(rb, &QRadioButton::toggled, d, [syncSource](bool) { syncSource(); });
+		QObject::connect(ellipChk,   &QCheckBox::toggled, d, [syncSource](bool) { syncSource(); });
+		QObject::connect(flatColChk, &QCheckBox::toggled, d, [syncSource](bool) { syncSource(); });
+		syncSource();
+
+		auto browseOpen = [d](QLineEdit *target, const QString &caption, const QString &filter) {
+			QString fn = QFileDialog::getOpenFileName(d, caption, prefStartDir(), filter);
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			target->setText(fn);
+		};
+		auto browseSave = [d](QLineEdit *target, const QString &caption, const QString &filter) {
+			QString fn = QFileDialog::getSaveFileName(d, caption, prefStartDir(), filter);
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			target->setText(fn);
+		};
+		const QString gridFilter = "Grid files (*.nc *.grd);;All files (*)";
+		if (tableBtn) QObject::connect(tableBtn, &QToolButton::clicked, d, [this, browseOpen]() {
+			browseOpen(tableEdit, "Select the seamount table", "Data files (*.dat *.txt *.xy);;All files (*)"); });
+		if (outBtn)  QObject::connect(outBtn,  &QToolButton::clicked, d, [this, browseSave, gridFilter]() {
+			browseSave(outgridEdit, "Save the seamount grid as", gridFilter); });
+		if (listBtn) QObject::connect(listBtn, &QToolButton::clicked, d, [this, browseSave]() {
+			browseSave(listEdit, "Write the grid list to", "Text files (*.txt *.lis);;All files (*)"); });
+		if (dgBtn)   QObject::connect(dgBtn,   &QToolButton::clicked, d, [this, browseSave, gridFilter]() {
+			browseSave(densityGridEdit, "Save the density crossection as", gridFilter); });
+		if (doBtn)   QObject::connect(doBtn,   &QToolButton::clicked, d, [this, browseSave, gridFilter]() {
+			browseSave(densityOutEdit, "Save the mean-density grid as", gridFilter); });
+
+		// "Demo seamount": the grdseamount example — a circular Gaussian seamount of 30 km basal radius
+		// and 4500 m height on a 1 arc minute grid. It is a single record, so it lands in the typed row
+		// rather than the file one.
+		// The position is 1W 2S, the man page's own `echo 1W 2S 30 4500 | gmt grdseamount
+		// -R1:30W/0:30W/2:30S/1:30S -I1m`. The .qmd page writes the same example as [1 2 30 4500] with
+		// that same region, but 1E 2N lies OUTSIDE -1.5/-0.5/-2.5/-1.5, so it builds a grid of zeros —
+		// which is what this button did until now.
+		if (demoBtn) QObject::connect(demoBtn, &QToolButton::clicked, d, [this, syncSource]() {
+			rbSingle->setChecked(true);
+			ellipChk->setChecked(false);
+			flatColChk->setChecked(false);
+			shapeCb->setCurrentIndex(0);                  // gaussian
+			unitCb->setCurrentIndex(0);                   // geographic: no -D
+			lonEdit->setText("-1");    latEdit->setText("-2");
+			radiusEdit->setText("30"); heightEdit->setText("4500");
+			azimuthEdit->clear(); semiMajorEdit->clear(); semiMinorEdit->clear();
+			flatteningEdit->clear();
+			xminEdit->setText("-1.5"); xmaxEdit->setText("-0.5");
+			yminEdit->setText("-2.5"); ymaxEdit->setText("-1.5");
+			xincEdit->setText("1m");   yincEdit->clear();
+			levelEdit->clear(); levelNaNChk->setChecked(false); normalizeEdit->clear();
+			maskGb->setChecked(false); timeGb->setChecked(false); densityGb->setChecked(false);
+			listStatsChk->setChecked(false);
+			syncSource();
+		});
+
+		// Standing rules: a Ref grid row under the Region, the manual button, and a double-click in any
+		// file box opening that box's own chooser.
+		addRefGridRow(d, d->findChild<QGridLayout *>("gridLayout_region"),
+		              xminEdit, xmaxEdit, yminEdit, ymaxEdit, xincEdit, yincEdit);
+		addManualButton(d, "grdseamount");
+		fileBoxDoubleClick(tableEdit,       tableBtn);
+		fileBoxDoubleClick(outgridEdit,     outBtn);
+		fileBoxDoubleClick(listEdit,        listBtn);
+		fileBoxDoubleClick(densityGridEdit, dgBtn);
+		fileBoxDoubleClick(densityOutEdit,  doBtn);
+
+		if (closeBtn) QObject::connect(closeBtn, &QPushButton::clicked, d, [d]() { d->close(); });
+
+		if (computeBtn) QObject::connect(computeBtn, &QPushButton::clicked, d, [this, d, saveState]() {
+			if (!g_juliaGrdSeamount) {
+				QMessageBox::warning(d, "Error", "grdseamount: callback not registered (rebuild/restart needed?).");
+				return;
+			}
+			QStringList kv;
+			const bool ell = ellipChk->isChecked();
+			if (rbFile->isChecked()) {
+				const QString t = tableEdit->text().trimmed();
+				if (t.isEmpty()) {
+					QMessageBox::warning(d, "Error", "Pick the table of seamount parameters.");
+					return;
+				}
+				kv << "table=" + t;
+			}
+			else {
+				// Build the one input record in the module's own column order.
+				QStringList cols;
+				cols << lonEdit->text().trimmed() << latEdit->text().trimmed();
+				if (ell) cols << azimuthEdit->text().trimmed() << semiMajorEdit->text().trimmed()
+				              << semiMinorEdit->text().trimmed();
+				else     cols << radiusEdit->text().trimmed();
+				cols << heightEdit->text().trimmed();
+				for (const QString &c : cols) {
+					bool ok = false;
+					c.toDouble(&ok);
+					if (!ok) {
+						QMessageBox::warning(d, "Error", ell
+							? "A typed elliptical seamount needs lon, lat, azimuth, semi-major, semi-minor and height."
+							: "A typed seamount needs lon, lat, radius and height.");
+						return;
+					}
+				}
+				kv << "record=" + cols.join('/');
+			}
+			// R and I are REQUIRED by the module: there is no input grid to inherit them from.
+			const QString xm = xminEdit->text().trimmed(), xM = xmaxEdit->text().trimmed();
+			const QString ym = yminEdit->text().trimmed(), yM = ymaxEdit->text().trimmed();
+			if (xm.isEmpty() || xM.isEmpty() || ym.isEmpty() || yM.isEmpty()) {
+				QMessageBox::warning(d, "Error", "Fill the output Region — grdseamount has no input grid "
+				                                 "to take it from.");
+				return;
+			}
+			kv << "region=" + xm + "/" + xM + "/" + ym + "/" + yM;
+			const QString xi = xincEdit->text().trimmed(), yi = yincEdit->text().trimmed();
+			if (xi.isEmpty()) {
+				QMessageBox::warning(d, "Error", "Give the output grid increment.");
+				return;
+			}
+			kv << "inc=" + (yi.isEmpty() ? xi : xi + "/" + yi);
+
+			static const char *shp[] = { "gaussian", "cone", "disc", "parabola", "polynomial" };
+			kv << QString("shape=") + shp[shapeCb->currentIndex()];
+			if (ell) kv << "elliptical=1";
+			if (flatColChk->isChecked() && flatColChk->isEnabled()) kv << "flatcol=1";
+			else if (!flatteningEdit->text().trimmed().isEmpty()) kv << "flattening=" + flatteningEdit->text().trimmed();
+			static const char *un[] = { "", "k", "m", "n", "d" };
+			if (unitCb->currentIndex() > 0) kv << QString("unit=") + un[unitCb->currentIndex()];
+			if (!levelEdit->text().trimmed().isEmpty()) kv << "level=" + levelEdit->text().trimmed();
+			if (levelNaNChk->isChecked())               kv << "levelnan=1";
+			if (!normalizeEdit->text().trimmed().isEmpty()) kv << "normalize=" + normalizeEdit->text().trimmed();
+			if (maskGb->isChecked()) {
+				kv << "mask=1";
+				if (!maskOutEdit->text().trimmed().isEmpty())   kv << "maskout=" + maskOutEdit->text().trimmed();
+				if (!maskInEdit->text().trimmed().isEmpty())    kv << "maskin=" + maskInEdit->text().trimmed();
+				if (!maskScaleEdit->text().trimmed().isEmpty()) kv << "maskscale=" + maskScaleEdit->text().trimmed();
+			}
+			if (listStatsChk->isChecked()) kv << "liststats=1";
+			if (timeGb->isChecked()) {
+				const QString t0 = t0Edit->text().trimmed(), t1 = t1Edit->text().trimmed(),
+				              dt = dtEdit->text().trimmed();
+				if (t0.isEmpty()) {
+					QMessageBox::warning(d, "Error", "Temporal evolution needs at least a start time t0.");
+					return;
+				}
+				QString T = t0;
+				if (!t1.isEmpty() && !dt.isEmpty()) T += "/" + t1 + "/" + dt;
+				if (logTimeChk->isChecked()) T += "+l";
+				kv << "time=" + T;
+				static const char *bm[] = { "c", "i" };
+				static const char *fm[] = { "g", "c" };
+				kv << QString("buildmode=") + bm[bmodeCb->currentIndex()] + "/" + fm[fmodeCb->currentIndex()];
+				if (!listEdit->text().trimmed().isEmpty()) kv << "list=" + listEdit->text().trimmed();
+				// With T set the module writes ONE grid PER TIME STEP, so it needs a filename template.
+				if (outgridEdit->text().trimmed().isEmpty()) {
+					QMessageBox::warning(d, "Error", "Temporal evolution writes one grid per time step, so "
+					                                 "Save as must be a filename TEMPLATE, e.g. smt_%3.1f_%s.nc");
+					return;
+				}
+			}
+			if (densityGb->isChecked()) {
+				const QString H = hEdit->text().trimmed(), rl = rhoLEdit->text().trimmed(),
+				              rh = rhoHEdit->text().trimmed();
+				if (H.isEmpty() || rl.isEmpty() || rh.isEmpty()) {
+					QMessageBox::warning(d, "Error", "The density model needs H, rho low and rho high.");
+					return;
+				}
+				kv << "densities=" + H + "/" + rl + "/" + rh;
+				if (!densifyEdit->text().trimmed().isEmpty()) kv << "densify=" + densifyEdit->text().trimmed();
+				if (!powerEdit->text().trimmed().isEmpty())   kv << "denspower=" + powerEdit->text().trimmed();
+				if (!densityGridEdit->text().trimmed().isEmpty()) kv << "densitygrid=" + densityGridEdit->text().trimmed();
+				if (!densityOutEdit->text().trimmed().isEmpty())  kv << "densityout=" + densityOutEdit->text().trimmed();
+			}
+			else if (!densityOutEdit->text().trimmed().isEmpty()) {
+				QMessageBox::warning(d, "Error", "The mean-density grid (W) needs the density model (H) too.");
+				return;
+			}
+			if (!outgridEdit->text().trimmed().isEmpty()) kv << "outgrid=" + outgridEdit->text().trimmed();
+			saveState();
+
+			showBusyDialog("Building the seamounts…");
+			const int ok = g_juliaGrdSeamount(scn, kv.join('\n').toUtf8().constData());
+			closeBusyDialog();
+			if (!ok)
+				QMessageBox::warning(d, "Error", "grdseamount failed — see this window's Errors console for details.");
 		});
 
 		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
@@ -7793,6 +8171,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	});
 	mGMT->addAction("grdgradient", [win, s]() {
 		auto *w = new GrdGradientDialog(win, s);   // self-deletes when its QDialog closes (WA_DeleteOnClose)
+		if (w->dlg) w->dlg->show();
+	});
+	mGMT->addAction("grdseamount", [win, s]() {
+		auto *w = new GrdSeamountDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
 

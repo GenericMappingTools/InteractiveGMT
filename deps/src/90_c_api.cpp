@@ -1339,6 +1339,13 @@ GMTVTK_API void gmtvtk_set_grdgradient_callback(JuliaGrdGradientFn fn) {
 	g_juliaGrdGradient = fn;
 }
 
+// Register the grdseamount Compute callback (GMT menu). fn(scene, params) with params a
+// newline-separated "key=value" block (see JuliaGrdSeamountFn in 30_app.cpp) builds the synthetic
+// seamount grid and adds it to `scene`. nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdseamount_callback(JuliaGrdSeamountFn fn) {
+	g_juliaGrdSeamount = fn;
+}
+
 // Register the Import *.gmt/*.nc cruise track callback (Geophysics > Magnetics). fn(scene, path,
 // isList) — isList nonzero means `path` is a list-file (one cruise file path per line). nullptr to
 // detach.

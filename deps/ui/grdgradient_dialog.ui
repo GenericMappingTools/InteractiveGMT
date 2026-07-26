@@ -160,11 +160,14 @@
                 <property name="enabled">
                  <bool>false</bool>
                 </property>
+                <property name="checked">
+                 <bool>true</bool>
+                </property>
                 <property name="text">
-                 <string>report down-slope (aspect)</string>
+                 <string>down-slope (aspect)</string>
                 </property>
                 <property name="toolTip">
-                 <string>-Da: the aspect, i.e. the DOWN-slope direction. Unticked, the module reports the up-slope one.</string>
+                 <string>-Da: the aspect proper — the azimuth the terrain FACES (down-slope). Untick to report the up-slope direction instead, which is 180 degrees away.</string>
                 </property>
                </widget>
               </item>

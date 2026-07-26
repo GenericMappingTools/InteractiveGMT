@@ -340,6 +340,16 @@ static JuliaOpenManualFn g_juliaOpenManual = nullptr;
 typedef int (*JuliaGrdGradientFn)(void *scene, const char *params);
 static JuliaGrdGradientFn g_juliaGrdGradient = nullptr;
 
+// grdseamount (GMT menu) — synthetic seamounts from a table of parameters, via GMT.jl's
+// `grdseamount` (src/grdseamount.jl). The dialog (GrdSeamountDialog, 70_window.cpp, loads
+// deps/ui/grdseamount_dialog.ui) hands a NEWLINE-separated "key=value" block: table=path or
+// record=lon/lat/[azimuth/semimajor/semiminor|radius]/height, region, inc, shape, elliptical,
+// flattening or flatcol, unit, level, levelnan, normalize, mask+maskout/maskin/maskscale,
+// liststats, time+buildmode+list, densities+densify/denspower/densitygrid/densityout, outgrid.
+// Absent key = don't pass that option. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGrdSeamountFn)(void *scene, const char *params);
+static JuliaGrdSeamountFn g_juliaGrdSeamount = nullptr;
+
 // Import *.gmt/*.nc cruise track file(s) (Geophysics > Magnetics), port of Mirone's
 // GeophysicsImportGmtFile_CB (mirone.m) — plots the navigation (lon/lat) of MGD77+ netCDF cruise
 // files. `path` is either the single file picked, or a list-file (one path per line, "#"-prefixed

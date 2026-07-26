@@ -101,6 +101,17 @@ function _on_grdgradient(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 
 		R = GMT.grdgradient(G; kw...)
+		# FLAT ground has a perfectly good slope — zero — so its direction grid must read 0, not a
+		# hole. GMT leaves NaN wherever the gradient vector is exactly zero (verified: the NaNs of a
+		# seamount on a flat floor coincide one-for-one with the |grad| == 0 nodes, none anywhere the
+		# surface slopes), which peppers any synthetic surface with NaN. Fill those back in — but only
+		# where the INPUT had data, so genuine no-data holes stay holes.
+		if haskey(kw, :find_dir) && !haskey(kw, :slopegrid) && isa(R, GMTgrid) && size(R.z) == size(G.z)
+			@inbounds for k in eachindex(R.z)
+				(isnan(R.z[k]) && !isnan(G.z[k])) && (R.z[k] = 0f0)
+			end
+			R.hasnans = 0                                  # unknown -> let downstream recheck
+		end
 		# -S is an EXTRA output, not a replacement: grdgradient.c writes the -G grid (the directions)
 		# first and the -S grid (the slope magnitudes) second, so asking for a slope hands back BOTH.
 		# Keep whichever the user actually asked for.
