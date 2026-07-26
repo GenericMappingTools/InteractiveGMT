@@ -77,6 +77,7 @@ function _ensure_callbacks()
 	                    ("import-gmt",  _register_import_gmt),
 	                    ("gmtedit",     _register_gmtedit),
 	                    ("clipgrid",    _register_clipgrid),
+	                    ("gridcalc",    _register_gridcalc),
 	                    ("seismicity",  _register_seismicity),
 	                    ("faultgeom",   _register_faultgeom),
 	                    ("elastic",     _register_elastic),

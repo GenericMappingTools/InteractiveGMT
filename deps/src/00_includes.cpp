@@ -76,6 +76,7 @@
 #include <QUiLoader>
 #include <QTextStream>
 #include <QPlainTextEdit>
+#include <QTextCursor>
 #include <QLineEdit>
 #include <QFont>
 #include <QTabWidget>

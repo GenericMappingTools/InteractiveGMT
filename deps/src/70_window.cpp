@@ -4242,6 +4242,196 @@ public:
 };
 
 // ============================================================================================
+// Grid calculator (Grid Tools) — port of Mirone's src_figs/grid_calculator.m. An expression box on
+// top, the list of usable grids below it, a digit/operator keypad and a function keypad on the right.
+// Loaded at RUNTIME via QUiLoader from deps/ui/grid_calculator.ui (plain Qt widget classes only,
+// like ClipGridDialog above).
+//
+// WHICH grids the list shows: every grid of THIS window's Scene Objects whose limits AND increments
+// match the window's base grid exactly — anything else cannot be combined node-by-node, so it is not
+// offered. The list is built Julia-side (_gridcalc_names, gridcalc.jl), where the grids live.
+// "Load Grid" appends a grid from disk; like Mirone it only stores the name (the file is read at
+// Compute time, and only then checked against the same limits/increments).
+//
+// A double-click on a list row pushes that grid into the expression box by NAME. Unlike Mirone, no
+// `&` prefix is needed: Julia substitutes the names textually before the expression is parsed, so a
+// bare label works even with blanks in it (`&name` is still accepted there, and is required only for
+// a label that collides with a function name — see gridToken below). Compute hands the expression +
+// the loaded-file paths to Julia (_on_gridcalc), which evaluates it element-wise and adds the result
+// as a NEW derived grid (SACRED_LAW derived-variable display law).
+// ============================================================================================
+class GridCalculatorDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QPlainTextEdit *cmdEdit = nullptr;
+	QListWidget *listBox = nullptr;
+
+	explicit GridCalculatorDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grid_calculator.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GridCalculatorDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GridCalculatorDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("Grid calculator");
+		QDialog *d = dlg;
+
+		cmdEdit = d->findChild<QPlainTextEdit *>("edit_command");
+		listBox = d->findChild<QListWidget *>("listbox_inArrays");
+
+		// Append text at the end of the expression box and keep the caret there.
+		auto append = [this](const QString &t) {
+			if (!cmdEdit) return;
+			cmdEdit->moveCursor(QTextCursor::End);
+			cmdEdit->insertPlainText(t);
+			cmdEdit->setFocus();
+		};
+
+		// One loop wires every keypad button: the objectName prefix says what kind of token it is, so
+		// adding a button to the .ui needs no C++ change as long as it keeps the naming convention.
+		// Digits/operators/parens are inserted verbatim (spaced, for operators); a function button
+		// inserts "name(" built from its objectName suffix, NOT from its label, so a prettified label
+		// ("log e") can never leak into the expression.
+		for (QPushButton *b : d->findChildren<QPushButton *>()) {
+			const QString nm = b->objectName();
+			b->setAutoDefault(false);  b->setDefault(false);   // Enter in the expression box types a newline
+			b->setFocusPolicy(Qt::NoFocus);                    // …and never clicks a keypad button
+			if (nm.startsWith("push_digit_"))
+				QObject::connect(b, &QPushButton::clicked, d, [append, b]() { append(b->text()); });
+			else if (nm.startsWith("push_op_"))
+				QObject::connect(b, &QPushButton::clicked, d, [append, b]() { append(" " + b->text() + " "); });
+			else if (nm.startsWith("push_fun_")) {
+				const QString fn = nm.mid(9);
+				QObject::connect(b, &QPushButton::clicked, d, [append, fn]() { append(" " + fn + "("); });
+			}
+			else if (nm == "push_par_l") QObject::connect(b, &QPushButton::clicked, d, [append]() { append("("); });
+			else if (nm == "push_par_r") QObject::connect(b, &QPushButton::clicked, d, [append]() { append(")"); });
+			else if (nm == "push_clear") QObject::connect(b, &QPushButton::clicked, d, [this]() { if (cmdEdit) cmdEdit->clear(); });
+		}
+
+		// Double-click pushes the grid's name into the expression (Mirone listbox_inArrays_CB): an empty
+		// box (or one holding a single bare name) is REPLACED, otherwise the token is appended.
+		if (listBox) QObject::connect(listBox, &QListWidget::itemDoubleClicked, d, [this](QListWidgetItem *it) {
+			if (!it || !cmdEdit) return;
+			const QString tok = gridToken(it->text());
+			const QString cur = cmdEdit->toPlainText().trimmed();
+			// A box holding nothing but ONE grid name is REPLACED (picking again = changing your mind);
+			// anything else gets the name appended.
+			bool loneName = cur.isEmpty();
+			for (int i = 0; !loneName && listBox && i < listBox->count(); ++i)
+				loneName = (cur == gridToken(listBox->item(i)->text()));
+			if (loneName)
+				cmdEdit->setPlainText(tok);
+			else {
+				cmdEdit->moveCursor(QTextCursor::End);
+				cmdEdit->insertPlainText(" " + tok);
+			}
+			cmdEdit->setFocus();
+		});
+
+		// "Load Grid" does NOT read the file (Mirone push_loadGrid_CB): it only remembers the name here
+		// and the full path on the item, so Compute can read it then.
+		if (auto *loadBtn = d->findChild<QPushButton *>("push_loadGrid"))
+			QObject::connect(loadBtn, &QPushButton::clicked, d, [this, d]() {
+				const QString fn = QFileDialog::getOpenFileName(d, "Select grid", prefStartDir(),
+					"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
+				if (fn.isEmpty() || !listBox) return;
+				rememberStartDir(fn);
+				auto *it = new QListWidgetItem(QFileInfo(fn).fileName(), listBox);
+				it->setData(Qt::UserRole, fn);
+				it->setToolTip(fn);
+				tightenListRows(listBox);
+			});
+
+		auto compute = [this, d]() { runCompute(d); };
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, compute);
+		if (auto *b = d->findChild<QPushButton *>("push_equal"))   QObject::connect(b, &QPushButton::clicked, d, compute);
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+
+		addManualButton(d, "grdmath");     // the green ? disk, lower-left as in every other dialog
+		fillList();
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	// The Scene Objects label of this window's base grid — the name Julia knows it by is "" (it is the
+	// primary), so the dialog tells Julia which visible label stands for it.
+	QString baseName() const {
+		if (!scn) return QString();
+		return scn->surfName.empty() ? QString("Surface") : QString::fromStdString(scn->surfName);
+	}
+
+	// What a double-click writes into the expression. Grid names are substituted TEXTUALLY on the Julia
+	// side before the expression is parsed, so the BARE label is enough — blanks included. Mirone's
+	// `&name` is still accepted there, and is what a label that collides with a function name (a grid
+	// called "abs") must use, since the bare form would otherwise eat the function call.
+	static QString gridToken(const QString &name) {
+		static const QStringList funcs = {"sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh",
+		                                  "tanh", "exp", "log", "log2", "log10", "sqrt", "abs", "sign",
+		                                  "floor", "ceil", "round", "min", "max", "pi", "e"};
+		return funcs.contains(name) ? "&" + name : name;
+	}
+
+	// Ask Julia which grids of this window are usable (same limits AND increments as the base grid);
+	// it prints one name per line. Grids the user added with "Load Grid" are kept (they carry a path).
+	void fillList() {
+		if (!listBox) return;
+		QList<QListWidgetItem *> loaded;
+		for (int i = listBox->count() - 1; i >= 0; --i)
+			if (!listBox->item(i)->data(Qt::UserRole).toString().isEmpty()) loaded.prepend(listBox->takeItem(i));
+		listBox->clear();
+		if (g_juliaEval && scn) {
+			const QString cmd = QString("InteractiveGMT._gridcalc_names(Ptr{Cvoid}(UInt(%1)),raw\"%2\")")
+				.arg((qulonglong)reinterpret_cast<uintptr_t>(scn)).arg(baseName());
+			std::vector<char> buf(1 << 14);
+			int n = g_juliaEval(scn, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+			if (n > 0) {
+				const QString out = QString::fromUtf8(buf.data(), n);
+				for (const QString &nm : out.split('\n', Qt::SkipEmptyParts))
+					if (!nm.trimmed().isEmpty()) new QListWidgetItem(nm.trimmed(), listBox);
+			}
+		}
+		for (QListWidgetItem *it : loaded) listBox->addItem(it);
+		tightenListRows(listBox);
+	}
+
+	// Compute: the ONE action that evaluates. Hands the expression and the paths of the "Load Grid"
+	// entries to Julia; the dialog stays open so the next expression needs no reopening.
+	void runCompute(QDialog *d) {
+		if (!cmdEdit) return;
+		const QString expr = cmdEdit->toPlainText().simplified();
+		if (expr.isEmpty()) { QMessageBox::warning(d, "Grid calculator", "Type an expression first."); return; }
+		if (!g_juliaGridCalc) {
+			QMessageBox::warning(d, "Grid calculator", "Grid calculator: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		QStringList kv;
+		kv << "expr=" + expr;
+		kv << "base=" + baseName();
+		if (listBox) {
+			int k = 0;
+			for (int i = 0; i < listBox->count(); ++i) {
+				const QString p = listBox->item(i)->data(Qt::UserRole).toString();
+				if (!p.isEmpty()) kv << QString("file%1=%2").arg(++k).arg(p);
+			}
+		}
+		showBusyDialog("Computing…");
+		const int ok = g_juliaGridCalc(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (ok) fillList();      // the result is a new Scene Objects grid -> offer it to the next expression
+		else    QMessageBox::warning(d, "Grid calculator",
+		                             "Compute failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
 // BeachballWidget — schematic focal-mechanism "beachball" preview for the elastic-deformation
 // dialog. This is NOT yet a full lower-hemisphere double-couple projection (that arrives with the
 // deformation compute); it draws two opposing black wedges rotated by the fault strike and
@@ -8214,6 +8404,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			return;
 		}
 		auto *w = new ClipGridDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+
+	// "Grid calculator" (port of Mirone src_figs/grid_calculator.m): combine the window's grids with
+	// an arithmetic expression. Needs at least the base grid to have something to list.
+	mGridTools->addAction("Grid calculator…", [win, s]() {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "Grid calculator", "Load a grid into this window first.");
+			return;
+		}
+		auto *w = new GridCalculatorDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
 

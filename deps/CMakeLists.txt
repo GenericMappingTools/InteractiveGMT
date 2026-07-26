@@ -172,6 +172,7 @@ if(GMTVTK_PACKAGE)
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdredpol_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdgradient_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdseamount_dialog.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grid_calculator.ui"
     DESTINATION deps/ui COMPONENT full)
   install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../data/" DESTINATION data COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../Project.toml"        DESTINATION . COMPONENT full)

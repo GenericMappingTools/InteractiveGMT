@@ -371,6 +371,17 @@ static JuliaImportGmtFn g_juliaImportGmt = nullptr;
 typedef int (*JuliaClipGridFn)(void *scene, const char *params);
 static JuliaClipGridFn g_juliaClipGrid = nullptr;
 
+// Grid calculator (Grid Tools), port of Mirone's src_figs/grid_calculator.m. The dialog
+// (GridCalculatorDialog, 70_window.cpp, loads deps/ui/grid_calculator.ui) hands a newline-separated
+// "key=value" block to Julia (_on_gridcalc, src/gridcalc.jl):
+//   expr=<the expression, grid names written &name or &{name with blanks}>
+//   base=<Scene Objects label of the window's base grid, so &thatname resolves>
+//   file<i>=<path>       (one per grid added with "Load Grid"; matched by file NAME in the expr)
+// The result is added to `scene` as a NEW derived grid (SACRED_LAW derived-variable display law).
+// Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGridCalcFn)(void *scene, const char *params);
+static JuliaGridCalcFn g_juliaGridCalc = nullptr;
+
 // Plot seismicity (Geophysics > Seismology). Port of Mirone's earthquakes.m. The dialog
 // (PlotSeismicityDialog, 70_window.cpp) hands a newline-separated "key=value" block to Julia
 // (g_juliaSeismicity), which reads the catalog (USGS web query / ISF / plain-column layouts /

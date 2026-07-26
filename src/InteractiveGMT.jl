@@ -76,6 +76,7 @@ include("grdseamount.jl") # GMT menu > grdseamount: synthetic seamounts from a p
 include("manual.jl")     # the green "?" disk on every module dialog -> that module's GMTjl_doc page
 include("mgd77tracks.jl") # Geophysics > Magnetics > Import *.gmt/*.nc file(s): cruise tracks (port of mirone.m GeophysicsImportGmtFile_CB)
 include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid clipping (port of Mirone ml_clip.m)
+include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-geometry grids (port of Mirone grid_calculator.m)
 include("shapenc.jl")    # write a SHAPENC netCDF file (port of Mirone utils/shapenc.m; GDAL MDArray API, no MEX)
 include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track editor (port of Mirone src_figs/gmtedit.m)
 include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> write via shapenc
