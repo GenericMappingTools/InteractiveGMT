@@ -1403,6 +1403,13 @@ GMTVTK_API void gmtvtk_set_grdfilter_callback(JuliaGrdFilterFn fn) {
 	g_juliaGrdFilter = fn;
 }
 
+// Tell the viewer where the .ui files are (the host's own deps/ui — they ship WITH the Julia
+// package, while this DLL may be loaded from the depot runtime cache instead). Called once at load
+// time from src/libgmtvtk.jl. An empty/absent path is ignored, so the module-dir rule still applies.
+GMTVTK_API void gmtvtk_set_ui_dir(const char *path) {
+	g_uiDirOverride = (path && path[0]) ? QString::fromUtf8(path) : QString();
+}
+
 // Register the Plot seismicity callback (Geophysics > Seismology). `fn` (Julia @cfunction,
 // JuliaSeismicityFn) is called with (scene, "key=value\n…") on the dialog's OK: scene is the
 // receiving window, the block carries format/file/date range/magnitude/depth filters, the

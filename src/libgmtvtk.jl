@@ -81,7 +81,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_rtp3d_callback,
 	:gmtvtk_set_gravmag3d_callback, :gmtvtk_set_grdgravmag3d_callback, :gmtvtk_set_grdredpol_callback, :gmtvtk_set_manual_callback, :gmtvtk_set_grdgradient_callback, :gmtvtk_set_grdseamount_callback,
 	:gmtvtk_set_import_gmt_callback,
-	:gmtvtk_set_clipgrid_callback, :gmtvtk_set_gridcalc_callback, :gmtvtk_set_grdtrend_callback, :gmtvtk_set_grdlandmask_callback, :gmtvtk_set_grdfilter_callback,
+	:gmtvtk_set_clipgrid_callback, :gmtvtk_set_gridcalc_callback, :gmtvtk_set_grdtrend_callback, :gmtvtk_set_grdlandmask_callback, :gmtvtk_set_grdfilter_callback, :gmtvtk_set_ui_dir,
 	:gmtvtk_set_seismicity_callback,
 	:gmtvtk_set_faultgeom_callback,
 	:gmtvtk_set_elastic_callback, :gmtvtk_set_importfault_callback, :gmtvtk_add_fault_h,
@@ -134,6 +134,14 @@ function _load_library()
 	_DLL[] = Libdl.dlopen(_LIB)
 	for s in _LIB_SYMBOLS
 		_LIB_FNS[s] = Libdl.dlsym(_DLL[], s)
+	end
+	# Tell the viewer where OUR .ui files are. It cannot work this out on its own: it derives the
+	# path from where the DLL itself sits, and for a non-dev install that is the depot runtime cache
+	# (~/.julia/gmtvtk_runtime/deps/build), whose sibling deps/ui may not exist or may hold an older
+	# set than this package — every dialog whose .ui is missing there then silently fails to open.
+	# The .ui ship with the package (they are in git), so _PKGROOT/deps/ui is always the right answer.
+	let uidir = joinpath(_PKGROOT, "deps", "ui")
+		isdir(uidir) && ccall(_fn(:gmtvtk_set_ui_dir), Cvoid, (Cstring,), uidir)
 	end
 	return
 end

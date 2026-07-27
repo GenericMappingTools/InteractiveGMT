@@ -754,10 +754,18 @@ static QString gmtvtkModuleDir() {
 	return QFileInfo(QString::fromLocal8Bit(buf, (int)n)).absolutePath();
 }
 
-// Absolute path to deps/ui/ (the runtime-loaded .ui files, see FocalMechanismsDialog in
-// 70_window.cpp): <module dir>/../ui. GMTVTK_UI_DIR is kept only as a last-resort fallback
-// (module-dir lookup failed).
+// Where the runtime-loaded .ui files are. THE HOST DECIDES, because only it knows: the .ui ship
+// with the Julia package (they are in git next to src/), while the DLL may well be loaded from
+// somewhere else entirely — the depot-wide runtime cache ~/.julia/gmtvtk_runtime/deps/build. In that
+// (normal, non-dev) install <module dir>/../ui is a directory that need not exist, or that holds an
+// OLDER set of .ui than the package: every dialog whose .ui is missing there then refuses to open
+// with "cannot open …". So Julia calls gmtvtk_set_ui_dir(<pkgroot>/deps/ui) at load time and that
+// wins whenever it really exists. The two old rules stay as fallbacks, in their old order, for any
+// host that never sets it (the standalone demo exe, an NSIS tree).
+static QString g_uiDirOverride;
+
 static QString gmtvtkUiDir() {
+	if (!g_uiDirOverride.isEmpty() && QDir(g_uiDirOverride).exists()) return g_uiDirOverride;
 	QString modDir = gmtvtkModuleDir();
 	if (modDir.isEmpty()) return QString(GMTVTK_UI_DIR);
 	QDir dir(modDir);
