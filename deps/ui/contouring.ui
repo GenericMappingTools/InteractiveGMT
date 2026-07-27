@@ -168,7 +168,7 @@
      <item>
       <widget class="QPushButton" name="push_Apply">
        <property name="minimumSize"><size><width>80</width><height>24</height></size></property>
-       <property name="text"><string>Apply</string></property>
+       <property name="text"><string>Compute</string></property>
       </widget>
      </item>
     </layout>

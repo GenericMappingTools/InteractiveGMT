@@ -1473,59 +1473,32 @@ static void xyTabMenu(XYPlot *s, const QPoint &pos) {
 static void xyUnpark(XYPlot *p) {
 	if (!xyAlive(p) || !p->win) return;
 	p->parked = false;
+	if (p->owner && sceneAlive(p->owner)) unparkTool(p->owner, p->win);   // drops the row + rebuilds
 	p->win->setWindowState(p->win->windowState() & ~Qt::WindowMinimized);
 	p->win->showNormal();
 	p->win->raise();
 	p->win->activateWindow();
-	if (p->owner && sceneAlive(p->owner)) rebuildSceneObjects(p->owner);
 }
 
-// Append one Scene Objects row per PARKED plot owned by `s` (declared in 50_scene.cpp, called at the
-// very end of rebuildSceneObjects so these land at the BOTTOM of the dock). `addRow` is that
-// function's own row builder — the row is therefore identical in look and behaviour to every other.
-// How many parked plots `s` owns. rebuildSceneObjects asks BEFORE building the bottom strip, so a
-// scene with none gets no strip at all (and the tree keeps the whole dock).
-static int xyParkedCount(Scene *s) {
-	int n = 0;
-	if (!s) return 0;
-	for (XYPlot *p : g_xyplots)
-		if (p->parked && p->owner == s && p->win) ++n;
-	return n;
-}
-
-static void xyAppendParkedRows(Scene *s, const SceneObjRowFn &addRow) {
-	if (!s) return;
-	for (XYPlot *p : g_xyplots) {
-		if (!p->parked || p->owner != s || !p->win) continue;
-		const QString title = p->win->windowTitle();
-		// ONE menu, reached by either button — the properties menu and the context menu of this row are
-		// the same thing, so they are the same lambda, not two look-alikes.
-		auto propsMenu = [p](const QPoint &g) {
-			QMenu m;
-			QAction *aShow = m.addAction("Show");
-			m.addSeparator();
-			QAction *aDel  = m.addAction("Delete");
-			QAction *pick  = m.exec(g);
-			if (pick == aShow) xyUnpark(p);
-			else if (pick == aDel) {
-				if (QMessageBox::question(nullptr, "Delete X,Y plot",
-				        QString("Delete \"%1\" for good? Its pages and data go with it.")
-				            .arg(p->win->windowTitle())) != QMessageBox::Yes)
-					return;
-				p->reallyClose = true;      // let the close through the parking filter
-				p->win->close();            // WA_DeleteOnClose -> destroyed -> the row goes with it
-			}
-		};
-		addRow(title, IC_Profile, /*checked=*/false,
-		       // Checkbox: ticking it is just another way of bringing the window back; unticking a
-		       // parked plot means nothing (it is hidden already).
-		       [p](bool on) { if (on) xyUnpark(p); },
-		       propsMenu,
-		       "Closed X,Y plot — double-click to bring it back, click for Show / Delete",
-		       propsMenu,
-		       // Double-click: straight back to the window, no menu.
-		       [p]() { xyUnpark(p); });
-	}
+// The parked plot's menu, reached by EITHER button — the row's properties button and its context menu
+// are the same thing, so they are the same lambda, not two look-alikes.
+static std::function<void(const QPoint &)> xyParkedMenu(XYPlot *p) {
+	return [p](const QPoint &g) {
+		QMenu m;
+		QAction *aShow = m.addAction("Show");
+		m.addSeparator();
+		QAction *aDel  = m.addAction("Delete");
+		QAction *pick  = m.exec(g);
+		if (pick == aShow) xyUnpark(p);
+		else if (pick == aDel) {
+			if (QMessageBox::question(nullptr, "Delete X,Y plot",
+			        QString("Delete \"%1\" for good? Its pages and data go with it.")
+			            .arg(p->win->windowTitle())) != QMessageBox::Yes)
+				return;
+			p->reallyClose = true;      // let the close through the parking filter
+			p->win->close();            // WA_DeleteOnClose -> destroyed -> the row goes with it
+		}
+	};
 }
 
 // ---- window builder --------------------------------------------------------
@@ -1945,7 +1918,10 @@ static XYPlot *buildXYPlot(const char *title) {
 				e->ignore();
 				p->win->hide();
 				p->parked = true;
-				rebuildSceneObjects(p->owner);
+				XYPlot *pp = p;                  // a lambda cannot capture a member of the enclosing class
+				parkTool(pp->owner, pp->win, pp->win->windowTitle(), IC_Profile,
+				         "Closed X,Y plot — double-click to bring it back, click for Show / Delete",
+				         [pp]() { xyUnpark(pp); }, xyParkedMenu(pp));
 				// A handle the user cannot see is the same as no handle at all: reveal + unfold the
 				// dock, exactly as a derived grid does when it lands there.
 				unfoldSceneObjects(p->owner);
@@ -1962,11 +1938,12 @@ static XYPlot *buildXYPlot(const char *title) {
 	g_lastRW = rw.Get();
 	QObject::connect(s->win, &QObject::destroyed, [s]{
 		Scene *owner = s->owner;
+		QWidget *w   = s->win;                      // dying, but still the parked entry's identity
 		g_xyplots.erase(s);
 		if (g_openWindows > 0) g_openWindows--;
 		delete s;                                   // struct outlives the QMainWindow; free it here
 		// A really-deleted plot must lose its parked row too, or the dock keeps offering a dead handle.
-		if (owner && sceneAlive(owner)) rebuildSceneObjects(owner);
+		if (owner && sceneAlive(owner)) { unparkTool(owner, w); rebuildSceneObjects(owner); }
 	});
 
 	// First page (mounts a chart in the scene + adds its tab). Must come AFTER objMgr/tabs exist so

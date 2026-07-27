@@ -581,18 +581,74 @@ static void polyRebuildPreview(Scene *s, const double *cursor) {
 	s->polyPreview->SetVisibility(verts.size() >= 2 ? 1 : 0);
 }
 
-// Rebuild the square vertex handles shown for the edited polygon (polyEdit).
+// ONE editable-vertex view over EITHER a drawn Polygon (Scene::polyEdit) or one segment of an
+// OVERLAY edited in place (Scene::ovEdit/ovEditSeg). Handles, hit test and drag all read and write
+// through this, so a contour and a hand-drawn polyline are edited by exactly the same code — the
+// overlay case is not a second edit implementation, it is the same one pointed at other storage.
+// Vertices are in DATA coords for both (the handle actor carries the scene's xfac/VE scale).
+struct EditVerts {
+	Polygon *pg = nullptr;                 // drawn polygon under edit …
+	Overlay *ov = nullptr;                 // … or an overlay, whose segment is [a, z)
+	int a = 0, z = 0;
+
+	bool valid() const { return pg || (ov && ov->baseLine && ov->baseLine->GetPoints() && z - a >= 2); }
+	int  n()     const { return pg ? (int)pg->v.size() : (z - a); }
+	void get(int i, double p[3]) const {
+		if (pg) { p[0] = pg->v[i][0]; p[1] = pg->v[i][1]; p[2] = pg->v[i][2]; }
+		else    ov->baseLine->GetPoints()->GetPoint(a + i, p);
+	}
+	void set(int i, const double p[3]) {
+		if (pg) pg->v[i] = { p[0], p[1], p[2] };
+		else    ov->baseLine->GetPoints()->SetPoint(a + i, p);
+	}
+	// A closed ring stores its first vertex again at the end; one corner must still get ONE handle,
+	// and dragging vertex 0 has to carry that closing copy along.
+	bool closedRing() const {
+		const int m = n();
+		if (m < 2) return false;
+		double p0[3], p1[3];
+		get(0, p0);  get(m - 1, p1);
+		return p0[0] == p1[0] && p0[1] == p1[1] && p0[2] == p1[2];
+	}
+	void commit(Scene *s) {
+		if (pg) polyRebuildLine(s, *pg);
+		else if (ov && ov->baseLine) { ov->baseLine->GetPoints()->Modified(); ov->baseLine->Modified(); }
+	}
+};
+
+static EditVerts editVerts(Scene *s) {
+	EditVerts e;
+	if (!s) return e;
+	if (s->polyEdit >= 0 && s->polyEdit < (int)s->polys.size()) {
+		e.pg = &s->polys[s->polyEdit];
+		e.z  = (int)e.pg->v.size();
+		return e;
+	}
+	if (s->ovEdit >= 0 && s->ovEdit < (int)s->overlays.size()) {
+		Overlay &o = s->overlays[s->ovEdit];
+		if (s->ovEditSeg >= 0 && s->ovEditSeg < o.nseg && (int)o.segoff.size() > s->ovEditSeg + 1) {
+			e.ov = &o;
+			e.a  = o.segoff[s->ovEditSeg];
+			e.z  = o.segoff[s->ovEditSeg + 1];
+		}
+	}
+	return e;
+}
+
+// True while ANY element is under vertex edit — a drawn polygon or an overlay line.
+static bool polyEditing(Scene *s) { return s && (s->polyEdit >= 0 || s->ovEdit >= 0); }
+
+// Rebuild the square vertex handles shown for the element under edit (polygon or overlay segment).
 static void polyRebuildHandles(Scene *s) {
 	if (!s->polyHandlePD) s->polyHandlePD = vtkSmartPointer<vtkPolyData>::New();
 	vtkNew<vtkPoints> pts;
 	vtkNew<vtkCellArray> verts;
-	if (s->polyEdit >= 0 && s->polyEdit < (int)s->polys.size()) {
-		auto &v = s->polys[s->polyEdit].v;
-		// v is a closed ring (first == last) -> drop the duplicate closing point so one corner
-		// gets one handle (dragging vertex 0 carries the closing point with it).
-		const int m = (v.size() >= 2 && v.front() == v.back()) ? (int)v.size() - 1 : (int)v.size();
+	EditVerts ev = editVerts(s);
+	if (ev.valid()) {
+		const int m = ev.closedRing() ? ev.n() - 1 : ev.n();
 		for (int i = 0; i < m; ++i) {
-			const vtkIdType id = pts->InsertNextPoint(v[i][0], v[i][1], v[i][2]);
+			double p[3];  ev.get(i, p);
+			const vtkIdType id = pts->InsertNextPoint(p);
 			verts->InsertNextCell(1, &id);
 		}
 	}
@@ -613,17 +669,28 @@ static void polyRebuildHandles(Scene *s) {
 		s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);
 		s->ren->AddActor(s->polyHandles);
 	}
-	s->polyHandles->SetVisibility(s->polyEdit >= 0 ? 1 : 0);
+	s->polyHandles->SetVisibility(polyEditing(s) ? 1 : 0);
 }
 
 static void polyEnterEdit(Scene *s, int idx) {
 	s->polyEdit = idx;
+	s->ovEdit = -1;  s->ovEditSeg = -1;      // the two edit targets are mutually exclusive
+	s->polyDragVert = -1;
+	polyRebuildHandles(s);
+}
+
+// Edit an OVERLAY line where it lies: no promotion, no copy, no new Scene Objects row. Same entry
+// contract as polyEnterEdit above, pointed at the overlay's own points.
+static void overlayEnterEdit(Scene *s, int ovIdx, int segIdx) {
+	s->polyEdit = -1;
+	s->ovEdit = ovIdx;  s->ovEditSeg = segIdx;
 	s->polyDragVert = -1;
 	polyRebuildHandles(s);
 }
 
 static void polyExitEdit(Scene *s) {
 	s->polyEdit = -1;
+	s->ovEdit = -1;  s->ovEditSeg = -1;
 	s->polyDragVert = -1;
 	polyRebuildHandles(s);
 }
@@ -709,15 +776,17 @@ static int polyHitPolygon(Scene *s, int x, int y, double tol) {
 	return -1;
 }
 
-// Index of the edited polygon's vertex within `tol` px of (x,y), or -1.
+// Index of the edited element's vertex within `tol` px of (x,y), or -1. Works off the same EditVerts
+// view the handles are drawn from, so a handle you can see is always a handle you can grab.
 static int polyHitHandle(Scene *s, int x, int y, double tol) {
-	if (s->polyEdit < 0 || s->polyEdit >= (int)s->polys.size()) return -1;
+	EditVerts ev = editVerts(s);
+	if (!ev.valid()) return -1;
 	const double tol2 = tol * tol;
-	auto &v = s->polys[s->polyEdit].v;
-	const int m = (v.size() >= 2 && v.front() == v.back()) ? (int)v.size() - 1 : (int)v.size();
+	const int m = ev.closedRing() ? ev.n() - 1 : ev.n();
 	int best = -1; double bestd = tol2;
 	for (int i = 0; i < m; ++i) {
-		double d[2]; polyToDisplay(s, v[i], d);
+		double p[3];  ev.get(i, p);
+		double d[2];  polyToDisplay(s, { p[0], p[1], p[2] }, d);
 		const double dx = d[0] - x, dy = d[1] - y, dd = dx*dx + dy*dy;
 		if (dd <= bestd) { bestd = dd; best = i; }
 	}
@@ -1302,11 +1371,20 @@ static void mecaUpdateAnchor(Scene *s, int bi) {
 // (2026-07-24 standing rule — see TextLabel, 10_geometry.cpp): camera-facing, constant on-screen
 // size, anchored at (x,y,0) in scaled space.
 static void textApplyProps(Scene *s, TextLabel &tl) {
+	// Two actor kinds: the billboard every normal label uses, and — for contour annotations only
+	// (TextLabel::flat) — a vtkTextActor3D lying in the XY plane so it can be ROTATED along the line
+	// it labels. Everything below the fork is identical for both; only the placement differs.
 	vtkBillboardTextActor3D *ba = vtkBillboardTextActor3D::SafeDownCast(tl.actor);
-	vtkTextProperty *tp = ba->GetTextProperty();
+	vtkTextActor3D          *fa = vtkTextActor3D::SafeDownCast(tl.actor);
+	vtkTextProperty *tp = ba ? ba->GetTextProperty() : (fa ? fa->GetTextProperty() : nullptr);
+	if (!tp) return;
+	tl.offX = tl.offY = 0.0;                 // centring shift, recomputed below for a flat label
 	tp->SetFontFamilyAsString(tl.font.c_str());
-	tp->SetFontSize(tl.size);
 	tp->SetColor(tl.color[0], tl.color[1], tl.color[2]);
+	tp->SetOpacity(1.0);                // SOLID text, always: no faded/translucent glyphs anywhere
+	tp->ShadowOff();
+	tp->FrameOff();
+	tp->SetBackgroundOpacity(0.0);      // no box behind the text either
 	tp->SetBold(tl.bold ? 1 : 0);
 	tp->SetItalic(tl.italic ? 1 : 0);
 	tp->SetJustificationToCentered();
@@ -1317,11 +1395,75 @@ static void textApplyProps(Scene *s, TextLabel &tl) {
 	// reverted — vtkTextProperty draws it as an opaque rectangle sized to the full string bounds, a
 	// big flat gray block that looked far worse than the plain text.) Standalone user-placed text
 	// labels (Text tool, no groupName) are unaffected, keeping their original centred look.
-	if (tl.groupName.empty()) tp->SetVerticalJustificationToCentered();
-	else                      tp->SetVerticalJustificationToBottom();
-	ba->SetInput(tl.text.c_str());
-	ba->ForceOpaqueOn();                // never depth-sorted/faded as translucent (matches gizmo/tick billboards)
-	tl.actor->SetPosition(tl.pos[0] * s->xfac, tl.pos[1], 0.0);
+	if (tl.groupName.empty() || tl.vcenter) tp->SetVerticalJustificationToCentered();
+	else                                    tp->SetVerticalJustificationToBottom();
+	if (ba) {
+		tp->SetFontSize(tl.size);       // billboard: screen-constant, the size IS the on-screen size
+		ba->SetInput(tl.text.c_str());
+		ba->ForceOpaqueOn();            // never depth-sorted/faded as translucent (matches gizmo/tick billboards)
+	}
+	else {
+		// SOLID, CRISP glyphs. A vtkTextActor3D is a texture on a quad, so its density depends on how
+		// the texture's resolution compares to the pixels it covers: laying it out at the on-screen
+		// size and MAGNIFYING it magnifies the antialiasing too (thin, washed-out — the forbidden
+		// look). The texture is therefore laid out oversampled and the actor scaled DOWN, so the
+		// texture is always minified, never stretched.
+		const int ss = 4;
+		int dpi = (s->widget && s->widget->renderWindow()) ? s->widget->renderWindow()->GetDPI() : 72;
+		if (dpi <= 0) dpi = 72;
+		tp->SetFontSize((int)std::lround(tl.size * ss));
+		fa->SetInput(tl.text.c_str());
+		fa->ForceOpaqueOn();
+
+		// How wide must this label be in WORLD units? Exactly what gmtvtk_label_width_world_h measured
+		// when the gap was cut for it: the string's pixel width at the label's own font size and this
+		// window's DPI, times world-per-pixel. Same measurement, same numbers, so the text cannot come
+		// out a different size from its hole.
+		// The world-per-pixel is read NOW, not remembered from when the label was created: that is what
+		// makes the text SCREEN-CONSTANT — zoom in and this shrinks in world units by the same factor
+		// the view grew, so the label keeps its pixel size. followZoomAnnotations (50_scene.cpp) calls
+		// this again whenever the view changes materially, and re-cuts the line holes with the same
+		// number, so text and hole never drift apart.
+		const double wpp = sceneWorldPerPixel(s);
+		double targetW = 0.0;
+		{
+			vtkNew<vtkTextProperty> mp;
+			mp->SetFontFamilyAsString(tl.font.c_str());
+			mp->SetFontSize(tl.size);
+			mp->SetBold(tl.bold ? 1 : 0);
+			mp->SetItalic(tl.italic ? 1 : 0);
+			int bb[4] = { 0, 0, 0, 0 };
+			vtkTextRenderer *tr = vtkTextRenderer::GetInstance();
+			if (tr && tr->GetBoundingBox(mp, tl.text.c_str(), bb, dpi))
+				targetW = double(bb[1] - bb[0] + 1) * (wpp > 0.0 ? wpp : tl.wscale);
+		}
+
+		// MEASURE the untransformed quad instead of predicting it from the font size: vtkTextActor3D
+		// picks its own texture resolution and its own anchor corner, and guessing at either is what
+		// left the label the wrong size and sitting outside its gap. Ask the actor, then scale it to
+		// the target width and shift it so its CENTRE lands on the anchor.
+		fa->SetOrientation(0.0, 0.0, 0.0);
+		fa->SetScale(1.0, 1.0, 1.0);
+		fa->SetPosition(0.0, 0.0, 0.0);
+		double b[6] = { 0, 0, 0, 0, 0, 0 };
+		fa->GetBounds(b);
+		const double bw = b[1] - b[0], bh = b[3] - b[2];
+		double sc = (bw > 1e-9 && targetW > 0.0) ? targetW / bw
+		                                        : (tl.wscale > 0.0 ? tl.wscale / ss : 1.0);
+		fa->SetScale(sc, sc, sc);
+		fa->SetOrientation(0.0, 0.0, tl.angle);
+		// Anchor - R(angle)*(scaled local centre): puts the middle of the glyphs on the anchor point,
+		// whatever corner the actor measures itself from.
+		const double th = tl.angle * vtkMath::Pi() / 180.0;
+		const double cx = 0.5 * (b[0] + b[1]) * sc, cy = 0.5 * (b[2] + b[3]) * sc;
+		tl.offX = cx * std::cos(th) - cy * std::sin(th);
+		tl.offY = cx * std::sin(th) + cy * std::cos(th);
+		(void)bh;
+	}
+	// z is 0 for every plane label; a contour label carries its contour's real height and so rides
+	// VE exactly like the line does (applyVE re-applies this same expression, offsets included).
+	tl.actor->SetPosition(tl.pos[0] * s->xfac - tl.offX, tl.pos[1] - tl.offY,
+	                      tl.pos[2] * s->zfac * s->ve);
 	tl.actor->PickableOff();
 }
 
@@ -1470,11 +1612,15 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 		s->widget->renderWindow()->Render();
 		return true;
 	}
-	if (s->polyEdit >= 0) {                              // edit mode
+	if (polyEditing(s)) {                                // edit mode (a drawn polygon OR an overlay line)
 		if (shift) {                                     // Shift+drag: translate the WHOLE element (any grab point
 			double w[3];                                 // on the line body or a vertex handle)
+			int ovm = 1, ovs = -1;                       // grabbing the BODY of the overlay under edit counts too
+			vtkActor *ovHit = (s->ovEdit >= 0) ? pickOverlayAt(s, x, y, ovm, &ovs) : nullptr;
+			const bool onEditedOverlay = ovHit && s->ovEdit < (int)s->overlays.size() &&
+			                             s->overlays[s->ovEdit].actor.Get() == ovHit && ovs == s->ovEditSeg;
 			if (polyPickWorld(s, x, y, w) &&
-			    (polyHitHandle(s, x, y, 10.0) >= 0 || polyHitPolygon(s, x, y, 10.0) >= 0)) {
+			    (polyHitHandle(s, x, y, 10.0) >= 0 || polyHitPolygon(s, x, y, 10.0) >= 0 || onEditedOverlay)) {
 				s->polyDragWhole = true;
 				s->polyDragLastW[0] = w[0]; s->polyDragLastW[1] = w[1];
 				s->widget->setCursor(Qt::SizeAllCursor); // same thick 4-arrow cross as the other drag ops
@@ -1536,6 +1682,10 @@ static void overlayPromoteSegmentToPolygon(Scene *s, Overlay &ov, int segIdx) {
 	int idx = 1;
 	for (auto &p : s->polys) if (p.name.rfind(pre, 0) == 0) ++idx;
 	pg.name = splitOff ? (pre + std::to_string(idx)) : ov.name;
+	// A piece taken out of a GROUPED overlay (a contour level, a plate-boundary type…) stays inside
+	// that group: it folds under the same collapsible Scene Objects parent its source hangs from,
+	// instead of appearing as a loose new top-level handle every double-click.
+	pg.groupName = ov.groupName;
 
 	polyRebuildLine(s, pg);
 	pg.line->GetProperty()->SetColor(col[0], col[1], col[2]);   // keep the overlay's own look, not the default orange
@@ -1593,17 +1743,23 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 			s->widget->renderWindow()->Render();
 			return true;
 		}
-		// No drawn polygon hit: an imported overlay line segment (coastline island, dropped .xy
-		// track, …) under the cursor? Promote just that segment into an editable Polygon.
+		// No drawn polygon hit: an imported overlay line (coastline island, dropped .xy track, a
+		// contour, …) under the cursor? Edit it WHERE IT LIES — the handles hang off the overlay's own
+		// points. Nothing is converted, copied or added: no new element, no new Scene Objects row, and
+		// the line does not change identity under the user's hands. Same toggle as a drawn polygon:
+		// double-clicking the one being edited leaves edit mode.
 		int ovMode = 1, segIdx = -1;
 		vtkActor *ovAct = pickOverlayAt(s, x, y, ovMode, &segIdx);
 		if (ovAct && ovMode == 1 && segIdx >= 0) {
-			for (auto &o : s->overlays) if (o.actor.Get() == ovAct) {
-				overlayPromoteSegmentToPolygon(s, o, segIdx);
+			for (int i = 0; i < (int)s->overlays.size(); ++i) {
+				if (s->overlays[i].actor.Get() != ovAct) continue;
+				if (s->ovEdit == i && s->ovEditSeg == segIdx) polyExitEdit(s);
+				else                                         overlayEnterEdit(s, i, segIdx);
+				s->widget->renderWindow()->Render();
 				return true;
 			}
 		}
-		if (s->polyEdit >= 0) { polyExitEdit(s); s->widget->renderWindow()->Render(); return true; }
+		if (polyEditing(s)) { polyExitEdit(s); s->widget->renderWindow()->Render(); return true; }
 	}
 	return false;
 }
@@ -1685,35 +1841,39 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 		s->widget->renderWindow()->Render();
 		return true;
 	}
-	if (s->polyEdit >= 0 && s->polyDragWhole) {         // Shift+drag: translate every vertex by the cursor delta
+	if (polyEditing(s) && s->polyDragWhole) {           // Shift+drag: translate every vertex by the cursor delta
 		double w[3];
-		if (polyPickWorld(s, x, y, w) && s->polyEdit < (int)s->polys.size()) {
+		EditVerts ev = editVerts(s);
+		if (polyPickWorld(s, x, y, w) && ev.valid()) {
 			const double ddx = w[0] - s->polyDragLastW[0], ddy = w[1] - s->polyDragLastW[1];
 			s->polyDragLastW[0] = w[0]; s->polyDragLastW[1] = w[1];
-			Polygon &pg = s->polys[s->polyEdit];
-			for (auto &p : pg.v) { p[0] += ddx; p[1] += ddy; }
-			polyRebuildLine(s, pg);
+			const int n = ev.n();
+			for (int i = 0; i < n; ++i) {
+				double p[3];  ev.get(i, p);
+				p[0] += ddx;  p[1] += ddy;
+				ev.set(i, p);
+			}
+			ev.commit(s);
 			polyRebuildHandles(s);
 			s->widget->renderWindow()->Render();
 		}
 		return true;
 	}
-	if (s->polyEdit >= 0 && s->polyDragVert >= 0) {
+	if (polyEditing(s) && s->polyDragVert >= 0) {
 		double w[3];
-		if (polyPickWorld(s, x, y, w)) {
-			Polygon &pg = s->polys[s->polyEdit];
-			if (polyIsRect(pg)) {                            // rectangle: keep it axis-aligned (carry the 2 neighbours)
-				rectDragCorner(pg, s->polyDragVert, w[0], w[1]);
+		EditVerts ev = editVerts(s);
+		if (ev.valid() && polyPickWorld(s, x, y, w)) {
+			if (ev.pg && polyIsRect(*ev.pg)) {               // rectangle: keep it axis-aligned (carry the 2 neighbours)
+				rectDragCorner(*ev.pg, s->polyDragVert, w[0], w[1]);
 			} else {
-				pg.v[s->polyDragVert] = { w[0], w[1], w[2] };
-				const int n = (int)pg.v.size();
+				const bool ring = ev.closedRing();           // ask BEFORE the move: after it, first != last
+				ev.set(s->polyDragVert, w);
 				// For a CLOSED ring (v[0] == v[n-1]) moving vertex 0 must carry the closing point with it
-				// so they never decouple. (Check AFTER assigning v[0]: comparing front()==back() here would
-				// already be false, which is the bug that let them split.) Open polylines have no dup.
-				if (pg.closed && s->polyDragVert == 0 && n >= 2)
-					pg.v[n - 1] = pg.v[0];
+				// so they never decouple. Open polylines have no dup.
+				if (ring && s->polyDragVert == 0 && ev.n() >= 2)
+					ev.set(ev.n() - 1, w);
 			}
-			polyRebuildLine(s, pg);
+			ev.commit(s);
 			polyRebuildHandles(s);
 			s->widget->renderWindow()->Render();
 		}

@@ -1941,21 +1941,35 @@ GMTVTK_API int gmtvtk_add_nested_rect(void *handle, const double *xy, int npts,
 // flooding Scene Objects with one row per event. `eventIdx` (may be NULL) is a parallel n-length
 // array giving each label's 0-based event index (evid/3) — gmtvtk_add_meca_h reads the resulting
 // TextLabel::mecaEvent to wire MecaBall::dateLabel, so dragging a ball carries its date along.
-// Returns the number added.
-GMTVTK_API int gmtvtk_add_texts_h(void *handle, const double *xy, const char *texts, int n,
+// `vcenter` forces CENTRED vertical justification on a batch-owned label, which textApplyProps
+// otherwise bottom-justifies (TextLabel::vcenter): a contour annotation must straddle its own line,
+// where a focal-mechanism date must grow upward off its ball.
+//
+// `z` and `angleDeg` (both may be NULL) and `flat` serve the ONE exception to the billboard rule
+// (TextLabel::flat, 10_geometry.cpp): a contour label must read ALONG its contour and sit at the
+// contour's own height, neither of which an always-upright camera-facing billboard can do. With
+// flat != 0 the labels are vtkTextActor3D lying in the XY plane, turned by `angleDeg[i]` about Z,
+// anchored at height `z[i]`, and uniformly world-scaled by sceneWorldPerPixel so their size matches
+// the gap the caller cut for them. Returns the number added.
+GMTVTK_API int gmtvtk_add_texts_ex_h(void *handle, const double *xy, const char *texts, int n,
                                   double r, double g, double b, int size,
                                   const char *font, int bold, int italic, const char *groupName,
-                                  const int *eventIdx) {
+                                  const int *eventIdx, int vcenter,
+                                  const double *z, const double *angleDeg, int flat) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !xy || !texts || n < 1) return 0;
 	const char *p = texts;
 	int added = 0;
+	// Flat labels are world-scaled, so they need to know how big a screen pixel is in world units.
+	// Plain world-per-pixel: the device-DPI and oversampling factors belong with the TEXTURE, and
+	// textApplyProps applies them there (see its flat branch).
+	const double wscale = flat ? sceneWorldPerPixel(s) : 0.0;
 	for (int i = 0; i < n; ++i) {
 		const char *e = strchr(p, '\x1e');
 		std::string txt = e ? std::string(p, e - p) : std::string(p);
 		if (!txt.empty()) {
 			TextLabel tl;
-			tl.pos = { xy[2*i], xy[2*i + 1], 0.0 };
+			tl.pos = { xy[2*i], xy[2*i + 1], z ? z[i] : 0.0 };
 			tl.text = std::move(txt);
 			tl.name = "Text " + std::to_string((int)s->texts.size() + 1);
 			tl.color[0] = r; tl.color[1] = g; tl.color[2] = b;
@@ -1965,11 +1979,16 @@ GMTVTK_API int gmtvtk_add_texts_h(void *handle, const double *xy, const char *te
 			tl.italic = italic != 0;
 			if (groupName && groupName[0]) tl.groupName = groupName;
 			if (eventIdx) tl.mecaEvent = eventIdx[i];
-			// ALWAYS a billboard (2026-07-24 standing rule, see TextLabel) — vtkBillboardTextActor3D,
-			// camera-facing, constant screen size, same as the cube's tick numbers
-			// (placeTickBillboards, 10_geometry.cpp). The old plain/flat vtkTextActor3D path (lying in
-			// the surface's XY plane) is retired for every text label, batch-owned or not.
-			tl.actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
+			tl.vcenter = vcenter != 0;
+			tl.flat    = flat != 0;
+			tl.angle   = angleDeg ? angleDeg[i] : 0.0;
+			tl.wscale  = wscale;
+			// A billboard (2026-07-24 standing rule, see TextLabel) — camera-facing, constant screen
+			// size, same as the cube's tick numbers (placeTickBillboards, 10_geometry.cpp) — for every
+			// label EXCEPT the one documented exception: a contour annotation, which has to be rotated
+			// along its line and so must be a flat vtkTextActor3D in the XY plane.
+			if (tl.flat) tl.actor = vtkSmartPointer<vtkTextActor3D>::New();
+			else         tl.actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
 			textApplyProps(s, tl);
 			(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
 			s->texts.push_back(tl);
@@ -1982,6 +2001,16 @@ GMTVTK_API int gmtvtk_add_texts_h(void *handle, const double *xy, const char *te
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return added;
+}
+
+// The original batch-text entry point: gmtvtk_add_texts_ex_h with vcenter = 0, i.e. batch-owned
+// labels keep bottom justification (Focal mechanisms' per-event dates grow upward off their ball).
+GMTVTK_API int gmtvtk_add_texts_h(void *handle, const double *xy, const char *texts, int n,
+                                  double r, double g, double b, int size,
+                                  const char *font, int bold, int italic, const char *groupName,
+                                  const int *eventIdx) {
+	return gmtvtk_add_texts_ex_h(handle, xy, texts, n, r, g, b, size, font, bold, italic,
+	                             groupName, eventIdx, 0, nullptr, nullptr, 0);
 }
 
 // Add a batch of focal-mechanism "beachball" patches (Seismology > Focal mechanisms) to a window
@@ -2216,6 +2245,96 @@ GMTVTK_API int gmtvtk_remove_meca_group_h(void *handle, const char *name) {
 	return 1;
 }
 
+// World-space WIDTH that a screen-constant billboard label of `text` would occupy at the scene's
+// focal depth, given the same font fields gmtvtk_add_texts_h takes. Two steps, both taken in the
+// machinery that actually draws the label: vtkTextRenderer measures the string in PIXELS with the
+// billboards' own text engine (so kerning/bold/italic/font family are the real ones, not a
+// chars * average-width guess), then ONE display->world round trip at the camera's focal point
+// converts pixels to world units (correct under perspective too, unlike a parallel-scale formula).
+// Used by Grid Tools > Contours to leave un-annotated any contour too short to carry its own label
+// (src/contours.jl). Returns 0 on any failure, so a caller can fall back rather than mis-filter.
+// `outHeight` (may be NULL) receives the label's world-space HEIGHT the same way — a caller that has
+// to keep labels from overlapping each other needs both sides of the box, not just its width.
+GMTVTK_API double gmtvtk_label_width_world_h(void *handle, const char *text, int size,
+                                             const char *font, int bold, int italic,
+                                             double *outHeight) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (outHeight) *outHeight = 0.0;
+	if (!sceneAlive(s) || !text || !*text) return 0.0;
+	if (!s->widget || !s->widget->renderWindow()) return 0.0;
+
+	int dpi = s->widget->renderWindow()->GetDPI();
+	if (dpi <= 0) dpi = 72;
+	vtkNew<vtkTextProperty> tp;                               // mirror textApplyProps' font fields
+	tp->SetFontFamilyAsString((font && *font) ? font : "Arial");
+	tp->SetFontSize(size > 0 ? size : 18);
+	tp->SetBold(bold != 0);
+	tp->SetItalic(italic != 0);
+	vtkTextRenderer *tr = vtkTextRenderer::GetInstance();
+	int bb[4] = { 0, 0, 0, 0 };
+	if (!tr || !tr->GetBoundingBox(tp, text, bb, dpi)) return 0.0;
+	const double wpx = double(bb[1] - bb[0] + 1);
+	const double hpx = double(bb[3] - bb[2] + 1);
+	if (!(wpx > 0.0)) return 0.0;
+
+	const double wpp = sceneWorldPerPixel(s);      // the SAME scale the flat label actor is built with
+	if (!(wpp > 0.0)) return 0.0;
+	if (outHeight) *outHeight = hpx * wpp;
+	return wpx * wpp;
+}
+
+// Same as gmtvtk_add_overlay_ex2_h, plus DISPLAY-ONLY holes for annotations. `gapAnchors` are
+// ascending GLOBAL 0-based vertex indices where a label sits, and `gapHalfPx` is how far the hole
+// reaches each side of one in SCREEN PIXELS. The points and the segment offsets stay WHOLE, so the
+// data table, Line length, Save and double-click-to-edit all still see one unbroken polyline — only
+// the drawn line cells have holes (cutting the geometry instead is what made a double-click grab a
+// fragment of a contour and spawn a row per piece).
+//
+// Pixels, not world units, on purpose: the labels are screen-constant, so the holes are re-cut from
+// these same anchors whenever the zoom changes (overlayRebuildGapCells / followZoomAnnotations,
+// 50_scene.cpp) and stay exactly as wide as the text sitting in them. Returns 1 if added.
+GMTVTK_API int gmtvtk_add_overlay_gapped_h(void *handle, const double *xyz, int npts, const int *segoff, int nseg,
+                                      int mode, double r, double g, double b,
+                                      double linewidth, double pointsize,
+                                      const char *name, const char *groupName, const char *info,
+                                      int noConvertToPoints, int zIsPlaceholder,
+                                      const int *gapAnchors, int nGapAnchors, double gapHalfPx,
+                                      int cptColorable) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s))
+		return 0;
+	double dpi = 72.0;
+	if (s->widget && s->widget->renderWindow() && s->widget->renderWindow()->GetDPI() > 0)
+		dpi = s->widget->renderWindow()->GetDPI();
+	const double pxPerPt = dpi / 72.0;
+	addOverlay(s, xyz, npts, segoff, nseg, mode, r, g, b, linewidth * pxPerPt, pointsize, name, groupName, info,
+	           nullptr, 0, false, false, noConvertToPoints != 0, zIsPlaceholder != 0, false,
+	           gapAnchors, nGapAnchors, gapHalfPx, cptColorable != 0);
+	return 1;
+}
+
+// World units per screen pixel at the camera's focal point — the scale everything screen-constant is
+// built from. Exposed so the host can express a size in pixels (Grid Tools > Contours turns its
+// measured label width into the pixel half-width the line holes are cut with).
+GMTVTK_API double gmtvtk_world_per_pixel_h(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0.0;
+	return sceneWorldPerPixel(s);
+}
+
+// test hook: run the REAL double-click handler (polygonHandleDblClick) at the screen position of
+// world point (x,y,z), then report what is under vertex edit. out2 = { polyEdit, ovEdit }, and the
+// return value is ovEditSeg. Lets the test suite check the in-place overlay edit without a mouse.
+GMTVTK_API int gmtvtk_dblclick_test(void *scene, double x, double y, double z, int *out2) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!sceneAlive(s) || !s->widget) return -1;
+	double d[2];
+	polyToDisplay(s, { x, y, z }, d);
+	polygonHandleDblClick(s, (int)std::lround(d[0]), (int)std::lround(d[1]));
+	if (out2) { out2[0] = s->polyEdit; out2[1] = s->ovEdit; }
+	return s->ovEditSeg;
+}
+
 // Remove every line/point OVERLAY tagged with `groupName`, plus the text labels that carry the same
 // group tag (gmtvtk_add_texts_h's groupName) -- the overlay twin of gmtvtk_remove_meca_group_h, and
 // the same "drop the batch's labels too, or a re-plot leaves the old ones behind" rule
@@ -2225,16 +2344,9 @@ GMTVTK_API int gmtvtk_remove_meca_group_h(void *handle, const char *name) {
 GMTVTK_API int gmtvtk_remove_overlay_group_h(void *handle, const char *groupName) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !groupName || !*groupName) return 0;
-	const std::string gn(groupName);
-	for (size_t i = s->texts.size(); i-- > 0; ) {
-		if (s->texts[i].groupName != gn) continue;
-		if (s->texts[i].actor) {
-			if (s->axesRen) s->axesRen->RemoveActor(s->texts[i].actor);
-			if (s->ren)     s->ren->RemoveActor(s->texts[i].actor);
-		}
-		s->texts.erase(s->texts.begin() + i);
-	}
-	overlayDeleteGroup(s, gn);          // does the restack + rebuildSceneObjects + Render
+	// overlayDeleteGroup drops the group's labels too, and does the restack + rebuild + render — so
+	// this export and the group row's own "Remove" cannot behave differently.
+	overlayDeleteGroup(s, std::string(groupName));
 	QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);   // see gmtvtk_add_meca_h
 	return 1;
 }

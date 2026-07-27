@@ -1,20 +1,13 @@
 static void rebuildSceneObjects(Scene *s);          // defined just below; refreshed after edits
 
-// Closing an X,Y plot window with the X does NOT destroy it: the window hides and PARKS as a handle
-// at the bottom of its owner's Scene Objects dock, where a double-click brings it back and its
-// properties menu offers the real deletion. The rows are appended by `xyAppendParkedRows`, defined in
-// 65_xyplot.cpp (later in this same translation unit — XYPlot is not visible here). It is handed
-// `rebuildSceneObjects`'s OWN row builder, so a parked plot's row is made by exactly the same code as
-// every other row in the panel instead of a second look-alike.
-using SceneObjRowFn = std::function<void(const QString &label, int iconKind, bool checked,
-                                         std::function<void(bool)> onToggle,
-                                         std::function<void(const QPoint&)> onProps,
-                                         const QString &tip,
-                                         std::function<void(const QPoint&)> onContext,
-                                         std::function<void()> onDblClick)>;
-static void xyAppendParkedRows(Scene *s, const SceneObjRowFn &addRow);
-static int  xyParkedCount(Scene *s);        // how many of them `s` owns (0 -> no bottom strip at all)
+// Closing a TOOL window with the X does NOT destroy it: the window hides and PARKS as a handle at the
+// bottom of its owner's Scene Objects dock, where a double-click brings it back and its own menu
+// offers the real deletion. Every parkable tool (X,Y plots, the Contours dialog, …) goes on the SAME
+// Scene::parkedTools list and its row is built by `rebuildSceneObjects`'s OWN row builder — so the
+// handle is identical in look and behaviour to every other row, and there is never a second
+// look-alike strip per tool.
 static void unfoldSceneObjects(Scene *s);   // 70_window.cpp: reveal + unfold the dock
+static double sceneWorldPerPixel(Scene *s); // defined below: world units per screen pixel at the focal point
 static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp);   // symbol-layer properties (defined below)
 static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
 static void textApplyProps(Scene *s, TextLabel &tl); // 85_polygon.cpp: re-apply font fields to the actor
@@ -1502,13 +1495,20 @@ static void rebuildSceneObjects(Scene *s) {
 		cb->setToolTip("Show / hide the whole group");
 		// The container checkbox drives EVERY containee: it flips each child row's own checkbox, so every
 		// part (surface, drape, colorbar, axes, trace, plane, …) toggles through its own handler.
-		QObject::connect(cb, &QCheckBox::toggled, [s, grp, tree](bool on) {
+		const std::string gname = name.toStdString();
+		QObject::connect(cb, &QCheckBox::toggled, [s, grp, tree, gname](bool on) {
 			for (int i = 0; i < grp->childCount(); ++i) {
 				QWidget *cw = tree->itemWidget(grp->child(i), 0);
 				if (!cw) continue;
 				QCheckBox *ccb = cw->findChild<QCheckBox*>();
 				if (ccb && ccb->isChecked() != on) ccb->setChecked(on);   // fires the child's own toggle
 			}
+			// A batch's TEXT LABELS carry this group's tag and deliberately have no row of their own
+			// (they would flood the panel), so the loop above cannot reach them — they have to be
+			// toggled here or a hidden group keeps its annotations on screen. SACRED_LAW.md's
+			// group-uncheck law: unchecking the top row hides EVERY element of the group.
+			for (auto &tl : s->texts)
+				if (tl.groupName == gname && tl.actor) tl.actor->SetVisibility(on ? 1 : 0);
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		});
 
@@ -1785,14 +1785,38 @@ static void rebuildSceneObjects(Scene *s) {
 		}
 		if (!ov.groupName.empty() && ovlGroupOpen.isEmpty()) {
 			const std::string gn = ov.groupName;
+			const bool cptable = ov.cptColorable;      // a group of per-level lines (contours)
+			// ONE menu on both buttons — left-click properties and right-click context are the same
+			// thing, so they are the same lambda (never two look-alikes).
+			auto grpMenu = [s, gn, cptable](const QPoint &g) {
+				QMenu m(s->widget);
+				QAction *aCpt = nullptr, *aBlack = nullptr;
+				if (cptable) {
+					// Each line of this group IS one value of the grid, so it can be painted with the
+					// value's own colour out of the grid's colormap. The colours live with the grid on
+					// the Julia side, so ask there (it calls back through gmtvtk_set_overlay_style_h).
+					aCpt   = m.addAction("Color by grid colormap");
+					aBlack = m.addAction("Single color (black)");
+					m.addSeparator();
+				}
+				QAction *aRem = m.addAction("Remove");
+				QAction *pick = m.exec(g);
+				if (pick == aRem) { overlayDeleteGroup(s, gn); return; }
+				if (!pick || !g_juliaEval) return;
+				if (pick == aCpt || pick == aBlack) {
+					const QString cmd = QString("InteractiveGMT._contour_color_by_cpt(Ptr{Cvoid}(UInt(%1)),%2)")
+						.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(pick == aCpt ? 1 : 0);
+					static std::vector<char> buf(1 << 12);
+					int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+					if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+				}
+			};
+			// Start FOLDED, like a grid's group: a contour set is 20+ levels, and a group that unfurls
+			// on every rebuild buries everything else in the panel. s->objExpanded still remembers any
+			// group the user opens by hand.
 			beginGroupHandle(QString::fromStdString(ov.groupName), IC_Line,
-			                 ov.actor && ov.actor->GetVisibility() != 0, nullptr,
-			                 [s, gn](const QPoint &g) {
-			                     QMenu m(s->widget);
-			                     QAction *aRem = m.addAction("Remove");
-			                     if (m.exec(g) == aRem) overlayDeleteGroup(s, gn);
-			                 },
-			                 "Right-click to remove every line in this group");
+			                 ov.actor && ov.actor->GetVisibility() != 0, grpMenu, grpMenu,
+			                 "Click for group properties (colors, Remove)", /*startFolded=*/true);
 			ovlGroupOpen = QString::fromStdString(ov.groupName);
 		}
 		// popupLineObjectMenu handles LK_Overlay for EITHER mode already (Convert to points/line +
@@ -2011,12 +2035,12 @@ static void rebuildSceneObjects(Scene *s) {
 		}
 	}
 
-	// The X,Y plot windows of this scene that were closed with the X live at the BOTTOM EDGE of the
-	// dock — in their own strip UNDER the tree, not merely as the last rows inside it, so they stay
-	// put at the bottom however long the object list grows. Closing parks them here instead of
-	// destroying them (same "the X only hides it" idea as the Aquamoto window above); a double-click
-	// brings one back and its properties menu holds the real delete.
-	if (const int nParked = xyParkedCount(s)) {
+	// The TOOL windows of this scene that were closed with the X live at the BOTTOM EDGE of the dock —
+	// in their own strip UNDER the tree, not merely as the last rows inside it, so they stay put at
+	// the bottom however long the object list grows. Closing parks them here instead of destroying
+	// them (same "the X only hides it" idea as the Aquamoto window above); a double-click brings one
+	// back and its own menu holds the real delete. Every tool kind shares this one strip and builder.
+	if (!s->parkedTools.empty()) {
 		QTreeWidget *bot = new QTreeWidget(s->objPanel);
 		bot->setHeaderHidden(true);
 		bot->setColumnCount(1);
@@ -2031,13 +2055,152 @@ static void rebuildSceneObjects(Scene *s) {
 		// bottom strip while still building them with the panel's one and only row builder.
 		tree = bot;
 		curParent = nullptr;
-		xyAppendParkedRows(s, makeRow);
+		for (const auto &pt : s->parkedTools) {
+			if (!pt.win) continue;
+			// Copy the two actions BY VALUE: the row's lambdas outlive this loop, and parkedTools is a
+			// vector that a later park/unpark can reallocate under a captured reference.
+			auto unpark = pt.unpark;
+			auto menu   = pt.menu;
+			makeRow(pt.label, pt.icon, /*checked=*/false,
+			        // Checkbox: ticking is just another way of bringing the window back; unticking an
+			        // already-hidden tool means nothing.
+			        [unpark](bool on) { if (on && unpark) unpark(); },
+			        menu, pt.tip, menu,
+			        [unpark]() { if (unpark) unpark(); });      // double-click: straight back, no menu
+		}
 		int h = 4;                               // strip is exactly as tall as its rows: no dead space
 		for (int i = 0; i < bot->topLevelItemCount(); ++i)
 			if (QWidget *w = bot->itemWidget(bot->topLevelItem(i), 0)) h += w->sizeHint().height();
 		bot->setFixedHeight(h);
-		(void)nParked;
 	}
+}
+
+// Re-cut the DISPLAY-ONLY holes an overlay carries for its annotations (Overlay::gapAnchors /
+// gapHalfPx). The points and segment offsets are never touched — only the line cells: each anchor
+// loses the stretch of line reaching `gapHalfPx` SCREEN PIXELS to either side of it, measured along
+// the line in the same x-scaled space it is drawn in. Because the half-width is stored in pixels and
+// converted here with the CURRENT sceneWorldPerPixel, a hole is always exactly as wide as the
+// screen-constant label sitting in it, at every zoom.
+static void overlayRebuildGapCells(Scene *s, Overlay &ov) {
+	if (!s || !ov.baseLine || !ov.baseLine->GetPoints() || ov.mode != 1) return;
+	vtkPoints *pts = ov.baseLine->GetPoints();
+	const double half = ov.gapHalfPx * sceneWorldPerPixel(s);
+	vtkNew<vtkCellArray> cells;
+	size_t ai = 0;                                  // cursor into the ascending anchor list
+	for (int k = 0; k + 1 < (int)ov.segoff.size(); ++k) {
+		const int a = ov.segoff[k], z = ov.segoff[k + 1];
+		if (z - a < 2) continue;
+		while (ai < ov.gapAnchors.size() && ov.gapAnchors[ai] < a) ++ai;
+		int runStart = a;
+		while (ai < ov.gapAnchors.size() && ov.gapAnchors[ai] < z && half > 0.0) {
+			const int m = ov.gapAnchors[ai++];
+			double pm[3]; pts->GetPoint(m, pm);
+			int ga = m;  double d = 0.0;            // walk back until `half` of line is behind us
+			while (ga > a && d < half) {
+				double p0[3], p1[3]; pts->GetPoint(ga, p1); pts->GetPoint(ga - 1, p0);
+				d += std::hypot((p1[0] - p0[0]) * s->xfac, p1[1] - p0[1]);
+				--ga;
+			}
+			int gb = m;  d = 0.0;                   // and forward
+			while (gb < z - 1 && d < half) {
+				double p0[3], p1[3]; pts->GetPoint(gb, p0); pts->GetPoint(gb + 1, p1);
+				d += std::hypot((p1[0] - p0[0]) * s->xfac, p1[1] - p0[1]);
+				++gb;
+			}
+			(void)pm;
+			if (gb - ga < 2) continue;              // nothing worth opening up
+			if (ga - runStart >= 1) {               // emit the run that ends at the hole
+				cells->InsertNextCell(ga - runStart + 1);
+				for (int q = runStart; q <= ga; ++q) cells->InsertCellPoint(q);
+			}
+			runStart = gb;                          // resume on the far side
+		}
+		if (z - runStart >= 2) {
+			cells->InsertNextCell(z - runStart);
+			for (int q = runStart; q < z; ++q) cells->InsertCellPoint(q);
+		}
+	}
+	ov.baseLine->SetLines(cells);
+	ov.baseLine->Modified();
+}
+
+// Keep screen-constant annotations honest as the camera moves: re-scale every flat text label and
+// re-cut every annotation hole when the view's world-per-pixel has changed materially. Called from
+// the per-render observer (AxisLabelCB), so it must be cheap — the 2% gate means it does nothing at
+// all on a plain rotate or a small nudge, and the work itself touches only the labels and the few
+// vertices around each anchor.
+static void followZoomAnnotations(Scene *s) {
+	if (!s || !sceneAlive(s)) return;
+	bool anyFlat = false;
+	for (auto &tl : s->texts) if (tl.flat) { anyFlat = true; break; }
+	bool anyGap = false;
+	for (auto &ov : s->overlays) if (!ov.gapAnchors.empty()) { anyGap = true; break; }
+	if (!anyFlat && !anyGap) return;
+	const double wpp = sceneWorldPerPixel(s);
+	if (!(wpp > 0.0)) return;
+	if (s->annotWpp > 0.0 && std::abs(wpp - s->annotWpp) <= 0.02 * s->annotWpp) return;   // no real change
+	s->annotWpp = wpp;
+	for (auto &tl : s->texts) if (tl.flat) textApplyProps(s, tl);
+	for (auto &ov : s->overlays) if (!ov.gapAnchors.empty()) overlayRebuildGapCells(s, ov);
+}
+
+// Park `win` as a handle in `s`'s Scene Objects bottom strip (see Scene::parkedTools). The caller has
+// already hidden the window; this is only the bookkeeping + the dock refresh. Re-parking the same
+// window replaces its entry rather than stacking a second row. `unpark` is what a double-click (or
+// ticking the row) runs; `menu` serves BOTH the properties button and the row's context menu, so a
+// tool cannot end up with two different menus.
+static void parkTool(Scene *s, QWidget *win, const QString &label, int icon, const QString &tip,
+                     std::function<void()> unpark, std::function<void(const QPoint &)> menu) {
+	if (!s || !sceneAlive(s) || !win) return;
+	for (auto &pt : s->parkedTools) {
+		if (pt.win != win) continue;
+		pt.label = label;  pt.tip = tip;  pt.icon = icon;
+		pt.unpark = std::move(unpark);  pt.menu = std::move(menu);
+		rebuildSceneObjects(s);
+		return;
+	}
+	Scene::ParkedTool pt;
+	pt.win = win;  pt.label = label;  pt.tip = tip;  pt.icon = icon;
+	pt.unpark = std::move(unpark);  pt.menu = std::move(menu);
+	s->parkedTools.push_back(std::move(pt));
+	rebuildSceneObjects(s);
+}
+
+// Drop `win`'s parked entry — it is either coming back on screen or being destroyed for good. No-op
+// if it was not parked, so both paths can call it unconditionally.
+static void unparkTool(Scene *s, QWidget *win) {
+	if (!s || !sceneAlive(s) || !win) return;
+	const size_t before = s->parkedTools.size();
+	for (size_t i = s->parkedTools.size(); i-- > 0; )
+		if (s->parkedTools[i].win == win) s->parkedTools.erase(s->parkedTools.begin() + i);
+	if (s->parkedTools.size() != before) rebuildSceneObjects(s);
+}
+
+// World units per SCREEN PIXEL at the camera's focal point. ONE source for every "how big is this on
+// screen" question (gmtvtk_label_width_world_h's px->world conversion AND the world scale a flat
+// contour label is given), so a measured width and the actor built from it can never disagree. One
+// display->world round trip, so it is right under perspective too, unlike a parallel-scale formula.
+// Returns 0 when there is no live renderer to ask.
+static double sceneWorldPerPixel(Scene *s) {
+	if (!s || !sceneAlive(s)) return 0.0;
+	vtkRenderer *ren = s->axesRen ? s->axesRen : s->ren;
+	if (!ren) return 0.0;
+	vtkCamera *cam = ren->GetActiveCamera();
+	if (!cam) return 0.0;
+	double fp[3];
+	cam->GetFocalPoint(fp);
+	ren->SetWorldPoint(fp[0], fp[1], fp[2], 1.0);
+	ren->WorldToDisplay();
+	double dp[3];
+	ren->GetDisplayPoint(dp);
+	double a[4], b[4];
+	ren->SetDisplayPoint(dp[0], dp[1], dp[2]);        ren->DisplayToWorld();  ren->GetWorldPoint(a);
+	ren->SetDisplayPoint(dp[0] + 1.0, dp[1], dp[2]);  ren->DisplayToWorld();  ren->GetWorldPoint(b);
+	if (a[3] != 0.0) { a[0] /= a[3]; a[1] /= a[3]; a[2] /= a[3]; }
+	if (b[3] != 0.0) { b[0] /= b[3]; b[1] /= b[3]; b[2] /= b[3]; }
+	const double d = std::sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) +
+	                           (b[2] - a[2]) * (b[2] - a[2]));
+	return (std::isfinite(d) && d > 0.0) ? d : 0.0;
 }
 
 // `interiorXYZ`/`nInterior`: SHAPENC "bounded ensemble" support (Mirone convention -- an OUTER
@@ -2050,7 +2213,9 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 					   const char *name = nullptr, const char *groupName = nullptr, const char *info = nullptr,
 					   const double *interiorXYZ = nullptr, int nInterior = 0, bool isShapencBoundary = false,
 					   bool isShapencInteriorPoints = false, bool noConvertToPoints = false,
-					   bool zIsPlaceholder = false, bool noDataTable = false) {
+					   bool zIsPlaceholder = false, bool noDataTable = false,
+					   const int *gapAnchors = nullptr, int nGapAnchors = 0, double gapHalfPx = 0.0,
+					   bool cptColorable = false) {
 	if (!s || !xyz || npts <= 0)
 		return;
 
@@ -2058,6 +2223,12 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	for (int i = 0; i < npts; ++i)
 		pts->InsertNextPoint(xyz[3*i], xyz[3*i+1], xyz[3*i+2]);
 
+	// `gaps` = ngaps pairs of GLOBAL 0-based vertex indices (a,b), ascending: the stretch strictly
+	// between a and b is not DRAWN. The points and `segoff` stay whole, so everything that reads the
+	// geometry -- the data table, Line length, double-click-to-edit, Save -- still sees ONE unbroken
+	// polyline. Only the line CELLS have holes. Used by Grid Tools > Contours to open a hole for each
+	// label without chopping the contour into fragments (which is what made a double-click grab a
+	// piece of a contour instead of the contour).
 	vtkNew<vtkCellArray> cells;
 	if (mode == 1) {                          // polylines: one cell per segment
 		for (int k = 0; k < nseg; ++k) {
@@ -2135,8 +2306,14 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	ov.noConvertToPoints = noConvertToPoints;
 	ov.zIsPlaceholder = zIsPlaceholder;
 	ov.noDataTable = noDataTable;
+	if (gapAnchors && nGapAnchors > 0 && gapHalfPx > 0.0) {
+		ov.gapAnchors.assign(gapAnchors, gapAnchors + nGapAnchors);
+		ov.gapHalfPx = gapHalfPx;
+	}
+	ov.cptColorable = cptColorable;
 	ov.stack = s->vecSeq++;                    // new overlay lands on top of the shared vector pile
 	s->overlays.push_back(ov);
+	if (!ov.gapAnchors.empty()) overlayRebuildGapCells(s, s->overlays.back());   // cut the label holes
 	applyVectorStacking(s);                   // normalize ranks + set this overlay's draw-order offset
 	rebuildSceneObjects(s);                   // refresh the Scene Objects checkbox list
 	// Every other actor-adding path (surfaces, images, gizmo, curtains, profiles) resets the
@@ -3295,6 +3472,11 @@ static void overlayDelete(Scene *s, vtkActor *a) {
 		if (s->ren && s->overlays[i].actor)     s->ren->RemoveActor(s->overlays[i].actor);
 		if (s->axesRen && s->overlays[i].actor) s->axesRen->RemoveActor(s->overlays[i].actor);  // overlay layer
 		s->overlays.erase(s->overlays.begin() + i);
+		// In-place overlay edit (Scene::ovEdit) is an INDEX into this vector: drop it if its target
+		// just died, shift it if the erase moved it. A stale index would put vertex handles on some
+		// other line — or read past the end.
+		if (s->ovEdit == i)     { s->ovEdit = -1; s->ovEditSeg = -1; if (s->polyHandles) s->polyHandles->SetVisibility(0); }
+		else if (s->ovEdit > i)   --s->ovEdit;
 		break;
 	}
 	applyVectorStacking(s);
@@ -3308,11 +3490,25 @@ static void overlayDelete(Scene *s, vtkActor *a) {
 // restack + rebuild + render instead of one per member.
 static void overlayDeleteGroup(Scene *s, const std::string &groupName) {
 	if (!s || groupName.empty()) return;
+	// The batch's TEXT LABELS carry the same group tag and have no Scene Objects row of their own
+	// (they are controlled entirely by this group's row), so they must die with it — otherwise
+	// removing a contour set left its elevation numbers floating over the terrain. Same rule
+	// deleteMecaGroup follows for a focal-mechanism batch's date labels.
+	for (size_t i = s->texts.size(); i-- > 0; ) {
+		if (s->texts[i].groupName != groupName) continue;
+		if (s->texts[i].actor) {
+			if (s->axesRen) s->axesRen->RemoveActor(s->texts[i].actor);
+			if (s->ren)     s->ren->RemoveActor(s->texts[i].actor);
+		}
+		s->texts.erase(s->texts.begin() + i);
+	}
 	for (int i = (int)s->overlays.size() - 1; i >= 0; --i) {
 		if (s->overlays[i].groupName != groupName) continue;
 		if (s->ren && s->overlays[i].actor)     s->ren->RemoveActor(s->overlays[i].actor);
 		if (s->axesRen && s->overlays[i].actor) s->axesRen->RemoveActor(s->overlays[i].actor);
 		s->overlays.erase(s->overlays.begin() + i);
+		if (s->ovEdit == i)     { s->ovEdit = -1; s->ovEditSeg = -1; if (s->polyHandles) s->polyHandles->SetVisibility(0); }
+		else if (s->ovEdit > i)   --s->ovEdit;      // see overlayDelete: ovEdit is an index into this vector
 	}
 	applyVectorStacking(s);
 	rebuildSceneObjects(s);

@@ -107,6 +107,18 @@ struct Overlay {
 	                                          // OWN row, not the OUT polygon it came from) -- adds "Quick
 	                                          // grid" (Auto/Set increments…, gridding not implemented yet)
 	                                          // and "Point cloud view" (real 3-D, view_points) to its menu.
+	// Display-only holes for annotations (Grid Tools > Contours). `gapAnchors` are GLOBAL vertex
+	// indices where a label sits; `gapHalfPx` is how far the hole reaches each side of one, in SCREEN
+	// PIXELS. Kept in pixels, not world units, so the hole can be re-cut whenever the zoom changes and
+	// stay exactly as wide as the (screen-constant) label that sits in it. The points and segment
+	// offsets are never touched — only the drawn line cells (overlayRebuildGapCells, 50_scene.cpp).
+	std::vector<int> gapAnchors;
+	double gapHalfPx = 0.0;
+	// This line stands for ONE value of the window's grid (a contour level), so colouring it through
+	// the grid's own colormap is meaningful. Set by Grid Tools > Contours; it is what puts "Color by
+	// grid colormap" on the group's properties menu, instead of the menu having to recognise the
+	// group by name.
+	bool cptColorable = false;
 	bool noConvertToPoints = false;          // suppresses ONLY "Convert to points"/"Convert to line" in the
 	                                          // context menu, unlike isShapencBoundary which also drops
 	                                          // "Line length…"/"Azimuth…" -- for lines where scattering to
@@ -345,9 +357,28 @@ struct MecaBall {
 // plane (polyHitText) and gets its own right-click properties (textLabelMenu for standalone labels,
 // batchTextLabelsDialog — with a this-one/whole-group scope choice — for batch-owned ones). Stored
 // in TRUE coords (x,y); the actor sits in the surface's scaled space (x*xfac).
+//
+// ONE EXCEPTION to the billboard rule, added 2026-07-27 on explicit instruction: a CONTOUR label
+// must READ ALONG ITS CONTOUR (rotated to the local line direction) and sit at the contour's own
+// height — neither of which a billboard can do, since it is by definition always upright and always
+// facing the camera. Those labels set `flat` and are rendered by vtkTextActor3D lying in the XY
+// plane, rotated by `angle` about Z, positioned at the real `pos[2]`, and world-scaled so their size
+// matches the gap cut for them in the line. Nothing else may set `flat`: the standing rule above
+// still governs every user-placed and batch label.
 struct TextLabel {
-	std::array<double,3> pos;                // anchor on the XY plane, TRUE coords (z always 0)
-	vtkSmartPointer<vtkProp3D> actor;         // always a vtkBillboardTextActor3D (see above)
+	std::array<double,3> pos;                // anchor, TRUE coords; z = 0 for plane labels, the annotated
+	                                          // height for a contour label (applyVE scales it by zfac*ve)
+	vtkSmartPointer<vtkProp3D> actor;         // vtkBillboardTextActor3D, or vtkTextActor3D when `flat`
+	double angle = 0.0;                      // `flat` only: rotation about Z in degrees, from the line's own
+	                                          // direction, so the text reads along what it annotates
+	double wscale = 0.0;                     // `flat` only: world units per screen pixel at build time — the
+	                                          // actor's uniform scale, which is what makes a pixel-designed
+	                                          // font come out the size the caller measured in world units
+	bool   flat = false;                     // see the EXCEPTION above; never set for a normal label
+	double offX = 0.0, offY = 0.0;           // `flat` only: shift from the anchor to the actor's own origin,
+	                                          // so the glyphs end up CENTRED on the anchor whatever corner
+	                                          // vtkTextActor3D measures itself from (textApplyProps measures
+	                                          // the real quad and fills this in; applyVE reuses it)
 	std::string text;                        // the shown string (rendered in the scene)
 	std::string name;                        // short Scene Objects label ("Text N")
 	std::string font  = "Arial";             // VTK font family: "Arial" / "Courier" / "Times"
@@ -358,6 +389,10 @@ struct TextLabel {
 	                                          // labels); tags it for bulk find/erase (deleteMecaGroup) and
 	                                          // folds its Scene Objects row under the batch's own row
 	                                          // instead of listing one row per label (rebuildSceneObjects)
+	bool   vcenter = false;                  // force CENTRED vertical justification even for a batch-owned
+	                                          // label (textApplyProps otherwise bottom-justifies those, so
+	                                          // a focal-mechanism date grows upward off its ball). A contour
+	                                          // annotation has to straddle its line, not sit above it.
 	int mecaEvent = -1;                      // valid iff groupName non-empty: the 0-based event index
 	                                          // (evid/3) this label belongs to — gmtvtk_add_meca_h uses it
 	                                          // to wire MecaBall::dateLabel so a drag carries the label along
@@ -768,6 +803,34 @@ struct Scene {
 	QWidget *elasticDlg = nullptr;                      // open (non-modal) Vertical elastic deformation dialog, if any
 	QWidget *focalStudioDlg = nullptr;                  // open (non-modal) Focal Meca Studio demo dialog, if any
 	QWidget *cubeDlg = nullptr;                         // open (non-modal) 3-D cube layer selector dialog, if any
+
+	// A tool window closed with its X does NOT die: it hides and PARKS as a handle in the bottom strip
+	// of THIS window's Scene Objects dock, where a double-click brings it back and its own menu holds
+	// the real delete. ONE list and ONE row builder (rebuildSceneObjects, 50_scene.cpp) for every kind
+	// of parkable tool — X,Y plots, the Contours dialog, whatever comes next — never a per-tool strip.
+	// The owning tool supplies the label/icon/tooltip and the two actions, so parking adds no
+	// knowledge of any particular tool here.
+	struct ParkedTool {
+		QWidget *win = nullptr;                          // the hidden window: also the entry's identity
+		QString  label, tip;
+		int      icon = 0;                                // ObjIcon (50_scene.cpp), int here: not visible yet
+		std::function<void()>               unpark;       // double-click, or ticking the row's checkbox
+		std::function<void(const QPoint &)> menu;         // properties AND context menu: ONE lambda, both buttons
+	};
+	std::vector<ParkedTool> parkedTools;
+
+	// IN-PLACE editing of an OVERLAY line (a contour, a coastline island, a dropped .xy track): the
+	// vertex handles hang off the overlay's own points, so nothing is converted, copied or added —
+	// no new element, no new Scene Objects row. It is the SAME edit gesture and the SAME handle /
+	// hit-test / drag code a drawn polygon uses; `editVerts` (85_polygon.cpp) is the one view both
+	// go through. -1 = not editing an overlay (a drawn polygon may still be under edit via polyEdit;
+	// the two are mutually exclusive).
+	int ovEdit    = -1;                                 // index into `overlays`
+	int ovEditSeg = -1;                                 // which segment of it
+
+	double annotWpp = 0.0;                              // world-per-pixel the screen-constant contour
+	                                                     // annotations were last sized/cut for
+	                                                     // (followZoomAnnotations, 50_scene.cpp)
 };
 
 // --- surface accessors: one actor (cloud/FV/drape/image) or a tiled grid -----------------
@@ -1594,8 +1657,12 @@ static void rebuildAxisLabels(Scene *s) {
 }
 
 // Renderer StartEvent -> keep the axis labels on the camera-near edges as the view rotates.
+static void followZoomAnnotations(Scene *s);   // 50_scene.cpp: keep screen-constant contour labels + their line holes sized to the view
+
 static void AxisLabelCB(vtkObject*, unsigned long, void *cd, void*) {
-	rebuildAxisLabels(static_cast<Scene*>(cd));
+	Scene *s = static_cast<Scene*>(cd);
+	rebuildAxisLabels(s);
+	followZoomAnnotations(s);                  // cheap: gated on a real change in world-per-pixel
 }
 
 // Apply vertical exaggeration. The actor carries the base scale (xfac aspect +
@@ -1625,8 +1692,12 @@ static void applyVE(Scene *s) {
 		if (mb.anchor)    mb.anchor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
 		if (mb.anchorDot) mb.anchorDot->SetScale(s->xfac, 1.0, s->zfac * s->ve);
 	}
-	for (auto &tl : s->texts)                                              // text labels lie flat on z=0 (XY plane)
-		if (tl.actor) tl.actor->SetPosition(tl.pos[0] * s->xfac, tl.pos[1], 0.0);
+	// Text labels sit on the XY plane (pos[2] = 0) unless they annotate something at a real height —
+	// a contour label rides at its own contour's z, so it must follow VE like every other z-bearing
+	// actor above (or it drifts away from the line it belongs to as soon as VE or the view changes).
+	for (auto &tl : s->texts)
+		if (tl.actor) tl.actor->SetPosition(tl.pos[0] * s->xfac - tl.offX, tl.pos[1] - tl.offY,
+		                                    tl.pos[2] * s->zfac * s->ve);
 	for (auto &sl : s->symbols)                                            // symbol depth (z) rides VE too
 		if (sl.actor) sl.actor->SetScale(1.0, 1.0, s->zfac * s->ve);      // x already baked into the points
 	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview

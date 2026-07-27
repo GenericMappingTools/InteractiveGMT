@@ -226,6 +226,7 @@
 #include <vtkVersion.h>
 #include <vtkBillboardTextActor3D.h>
 #include <vtkTextProperty.h>
+#include <vtkTextRenderer.h>          // pixel extent of a string in the billboards' own text engine
 #include <vtkDoubleArray.h>
 
 #include <algorithm>

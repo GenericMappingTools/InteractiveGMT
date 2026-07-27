@@ -4283,7 +4283,7 @@ public:
 
 // ============================================================================================
 // Contours (Grid Tools) — port of Mirone's src_figs/contouring.m. Build a list of elevations (round
-// charting intervals, a start+step series, or one-off values) and Apply traces the window's grid at
+// charting intervals, a start+step series, or one-off values) and Compute traces the window's grid at
 // every one of them, drawing each level as its own line overlay under a single "Contours" Scene
 // Objects group. Loaded at RUNTIME via QUiLoader from deps/ui/contouring.ui (plain Qt widget classes
 // only, like ClipGridDialog above).
@@ -4291,14 +4291,90 @@ public:
 // The tracing is GDAL's marching squares, NOT grdcontour (~8x faster on a 3001x4801 grid) — see
 // src/contours.jl. Everything that touches the grid is one g_juliaEval round-trip: _contour_zrange
 // for the read-only Min/Max prefill (so the range shown and the grid traced can never diverge) and
-// _on_contours for the drawing. Only Apply and the two Delete buttons run anything; the edit boxes
+// _on_contours for the drawing. Only Compute and the two Delete buttons run anything; the edit boxes
 // and the list never compute on their own (only-action-button-executes-dialog).
 //
-// The Delete buttons prune the list AND, once Apply has drawn something, redraw the pruned list —
+// The Delete buttons prune the list AND, once Compute has drawn something, redraw the pruned list —
 // which is Mirone's "delete removes those contours from the figure" behaviour, reached through the
-// SAME _on_contours that Apply uses (Apply always redraws the WHOLE list, wiping the previous set
+// SAME _on_contours that Compute uses (Compute always redraws the WHOLE list, wiping the previous set
 // first), never a second removal path.
+//
+// The X does NOT destroy the dialog: it hides and PARKS as a handle in the bottom strip of this
+// window's Scene Objects dock, exactly like a closed X,Y plot — same Scene::parkedTools list, same
+// parkTool/unparkTool pair, same row builder (50_scene.cpp), so the elevation list the user built
+// survives and a double-click brings it straight back. Only the parked row's own "Delete" really
+// closes it. Re-picking the menu entry re-opens the SAME dialog (g_contourDlgs), never a second one.
 // ============================================================================================
+class ContourDialog;
+static std::map<Scene *, ContourDialog *> g_contourDlgs;   // one Contours dialog per window, alive while parked
+
+// --- the three pieces both Grid Tools > Contours entries share -------------------------------
+// "Automatic" and the Contour Tool dialog are the SAME operation with and without a dialog in front
+// of it, so they go through these and never grow their own copy of the range query, the level
+// guesser or the draw call.
+
+// The z range of the grid that will be contoured, asked of the host (InteractiveGMT._contour_zrange
+// prints "min/max"). Never s->zmin/zmax: the range shown and the grid traced must be one thing.
+static bool contourZRange(Scene *s, double &zmin, double &zmax) {
+	if (!g_juliaEval || !s) return false;
+	const QString cmd = QString("InteractiveGMT._contour_zrange(Ptr{Cvoid}(UInt(%1)))")
+		.arg((qulonglong)reinterpret_cast<uintptr_t>(s));
+	static std::vector<char> buf(1 << 12);
+	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	if (n <= 0) return false;
+	const QStringList mm = QString::fromUtf8(buf.data(), n).trimmed().split('/');
+	if (mm.size() != 2) return false;
+	bool o1 = false, o2 = false;
+	const double a = mm[0].toDouble(&o1), b = mm[1].toDouble(&o2);
+	if (!o1 || !o2) return false;
+	zmin = a;  zmax = b;
+	return true;
+}
+
+// Round charting levels across [lo,hi] — contouring.m's push_GuessIntervals_CB (which asked MATLAB's
+// contourc to guess levels off a synthetic ramp): 1/2/5·10^k steps giving ~12 intervals, snapped to
+// multiples of the step so the values read like chart depths. THE level guesser: "Automatic" and the
+// dialog's "Add Common Charting Intervals" are the same button, one of them without the dialog.
+static QVector<double> contourNiceLevels(double lo, double hi) {
+	QVector<double> v;
+	if (!(hi > lo)) return v;
+	const double raw = (hi - lo) / 12.0;
+	const double mag = std::pow(10.0, std::floor(std::log10(raw)));
+	const double n   = raw / mag;
+	double step = (n <= 1.5) ? 1.0 : (n <= 3.0) ? 2.0 : (n <= 7.0) ? 5.0 : 10.0;
+	step *= mag;
+	const long long k0 = (long long)std::ceil(lo / step);
+	const long long k1 = (long long)std::floor(hi / step);
+	for (long long k = k0; k <= k1 && v.size() < 500; ++k) v.push_back(k * step);
+	return v;
+}
+
+// Trace and draw `levels`. An EMPTY list clears the window's contours. Returns false and reports on
+// failure (Errors tab + a message box on `parent`).
+static bool contourDrawLevels(Scene *s, QWidget *parent, const QString &minPts, bool labels,
+                              const QVector<double> &levels) {
+	if (!g_juliaEval) {
+		QMessageBox::warning(parent, "Contours", "This computation needs the Julia/GMT host.");
+		return false;
+	}
+	QStringList ls;
+	for (double x : levels) ls << QString::number(x, 'g', 12);
+	const QString params = QString("%1;%2;%3").arg(minPts).arg(labels ? "1" : "0").arg(ls.join(','));
+	const QString cmd = QString("InteractiveGMT._on_contours(Ptr{Cvoid}(UInt(%1)),\"%2\")")
+		.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(params);
+	showBusyDialog("Tracing contours…");
+	static std::vector<char> buf(1 << 14);
+	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	closeBusyDialog();
+	if (n < 0) {
+		const QString msg = QString::fromUtf8(buf.data(), -n);
+		sceneLogError(s, msg);
+		QMessageBox::warning(parent, "Contours", msg);
+		return false;
+	}
+	return true;
+}
+
 class ContourDialog {
 public:
 	QDialog *dlg = nullptr;
@@ -4308,23 +4384,42 @@ public:
 	QCheckBox *labelsChk = nullptr;
 	double zmin = 0.0, zmax = 0.0;
 	bool haveRange = false;    // Julia answered with the grid's z range
-	bool applied   = false;    // Apply has drawn at least once -> Delete must refresh the scene
+	bool applied   = false;    // Compute has drawn at least once -> Delete must refresh the scene
+	bool reallyClose = false;  // set by the parked row's "Delete": let the next close through
 
-	// "Add Common Charting Intervals" (contouring.m push_GuessIntervals_CB, which asked MATLAB's
-	// contourc to guess levels off a synthetic ramp): round 1/2/5·10^k steps giving ~12 intervals
-	// across the grid's range, snapped to multiples of the step so the values read like chart depths.
-	static QVector<double> niceLevels(double lo, double hi) {
-		QVector<double> v;
-		if (!(hi > lo)) return v;
-		const double raw = (hi - lo) / 12.0;
-		const double mag = std::pow(10.0, std::floor(std::log10(raw)));
-		const double n   = raw / mag;
-		double step = (n <= 1.5) ? 1.0 : (n <= 3.0) ? 2.0 : (n <= 7.0) ? 5.0 : 10.0;
-		step *= mag;
-		const long long k0 = (long long)std::ceil(lo / step);
-		const long long k1 = (long long)std::floor(hi / step);
-		for (long long k = k0; k <= k1 && v.size() < 500; ++k) v.push_back(k * step);
-		return v;
+	// Bring the dialog back from the dock (double-click, the row's checkbox, its "Show" item). ONE
+	// function for every way back in, like xyUnpark.
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	// The parked row's menu — properties button and context menu are the same lambda, never two.
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();          // destroyed -> the row and this object go with it
+			}
+		};
+	}
+
+	// Drop the registry entry by VALUE, not by `scn`: when the owning viewer window is torn down the
+	// dialog dies with it and the Scene may already be gone, so the key cannot be trusted.
+	~ContourDialog() {
+		for (auto it = g_contourDlgs.begin(); it != g_contourDlgs.end(); )
+			it = (it->second == this) ? g_contourDlgs.erase(it) : std::next(it);
 	}
 
 	QVector<double> levels() const {
@@ -4350,27 +4445,11 @@ public:
 	// The ONE call that draws. `params` = "minpts;labels;lev1,lev2,…"; an empty level list just
 	// clears the window's contours.
 	void redraw(bool announceEmpty) {
-		if (!g_juliaEval) { QMessageBox::warning(dlg, "Contours", "This computation needs the Julia/GMT host."); return; }
 		const QVector<double> v = levels();
 		if (v.isEmpty() && announceEmpty) { QMessageBox::warning(dlg, "Contours", "The elevation list is empty — nothing to contour."); return; }
-		QStringList ls;
-		for (double x : v) ls << QString::number(x, 'g', 12);
-		const QString params = QString("%1;%2;%3")
-			.arg(minPtsEdit ? minPtsEdit->text().trimmed() : QString("0"))
-			.arg(labelsChk && labelsChk->isChecked() ? "1" : "0")
-			.arg(ls.join(','));
-		const QString cmd = QString("InteractiveGMT._on_contours(Ptr{Cvoid}(UInt(%1)),\"%2\")")
-			.arg((qulonglong)reinterpret_cast<uintptr_t>(scn)).arg(params);
-		showBusyDialog("Tracing contours…");
-		static std::vector<char> buf(1 << 14);
-		int n = g_juliaEval(scn, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
-		closeBusyDialog();
-		if (n < 0) {
-			const QString msg = QString::fromUtf8(buf.data(), -n);
-			sceneLogError(scn, msg);
-			QMessageBox::warning(dlg, "Contours", msg);
+		if (!contourDrawLevels(scn, dlg, minPtsEdit ? minPtsEdit->text().trimmed() : QString("0"),
+		                       labelsChk && labelsChk->isChecked(), v))
 			return;
-		}
 		applied = !v.isEmpty();
 	}
 
@@ -4384,11 +4463,35 @@ public:
 		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
 		f.close();
 		if (!dlg) { qWarning("ContourDialog: QUiLoader failed to load the .ui"); return; }
-		dlg->setAttribute(Qt::WA_DeleteOnClose);
 		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		dlg->setWindowTitle("Contours");
 		QDialog *d = dlg;
+		g_contourDlgs[scn] = this;
+
+		// The X PARKS the dialog instead of destroying it — same contract as a closed X,Y plot, and the
+		// same Scene::parkedTools machinery. WA_DeleteOnClose is deliberately NOT set: the dialog (and
+		// the elevation list in it) has to survive being closed. Only the parked row's "Delete" sets
+		// reallyClose and lets a close through.
+		struct CloseParks : QObject {
+			ContourDialog *cd;
+			CloseParks(QObject *parent, ContourDialog *c) : QObject(parent), cd(c) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && cd && !cd->reallyClose && sceneAlive(cd->scn)) {
+					e->ignore();
+					cd->dlg->hide();
+					ContourDialog *c = cd;       // a lambda cannot capture a member of the enclosing class
+					parkTool(c->scn, c->dlg, "Contours", IC_Line,
+					         "Closed Contours dialog — double-click to bring it back, click for Show / Delete",
+					         [c]() { c->unpark(); }, c->parkedMenu());
+					// A handle the user cannot see is the same as no handle at all: reveal + unfold.
+					unfoldSceneObjects(cd->scn);
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		dlg->installEventFilter(new CloseParks(dlg, this));
 
 		list       = d->findChild<QListWidget *>("listbox_ElevValues");
 		zminEdit   = d->findChild<QLineEdit *>("edit_Zmin");
@@ -4405,22 +4508,9 @@ public:
 		auto *delAllBtn = d->findChild<QPushButton *>("push_DeleteAll");
 		auto *applyBtn  = d->findChild<QPushButton *>("push_Apply");
 
-		// Min/Max come from the grid Julia will actually contour (_contour_zrange prints "min/max"),
-		// never from s->zmin/zmax — one source, so the boxes cannot describe a different layer.
-		if (g_juliaEval) {
-			const QString cmd = QString("InteractiveGMT._contour_zrange(Ptr{Cvoid}(UInt(%1)))")
-				.arg((qulonglong)reinterpret_cast<uintptr_t>(scn));
-			static std::vector<char> buf(1 << 12);
-			int n = g_juliaEval(scn, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
-			if (n > 0) {
-				const QStringList mm = QString::fromUtf8(buf.data(), n).trimmed().split('/');
-				if (mm.size() == 2) {
-					bool o1 = false, o2 = false;
-					const double a = mm[0].toDouble(&o1), b = mm[1].toDouble(&o2);
-					if (o1 && o2) { zmin = a; zmax = b; haveRange = true; }
-				}
-			}
-		}
+		// Min/Max come from the grid Julia will actually contour — one source, so the boxes cannot
+		// describe a different layer than the trace does.
+		haveRange = contourZRange(scn, zmin, zmax);
 		if (haveRange) {
 			if (zminEdit) zminEdit->setText(QString::number(zmin, 'g', 8));
 			if (zmaxEdit) zmaxEdit->setText(QString::number(zmax, 'g', 8));
@@ -4428,7 +4518,7 @@ public:
 
 		if (guessBtn) QObject::connect(guessBtn, &QPushButton::clicked, d, [this, d]() {
 			if (!haveRange) { QMessageBox::warning(d, "Contours", "The grid's elevation range is unknown."); return; }
-			setLevels(niceLevels(zmin, zmax));
+			setLevels(contourNiceLevels(zmin, zmax));      // the SAME guesser "Automatic" uses
 		});
 
 		// Add: one value onto the list (contouring.m push_Add_CB — sorts, then clears the box).
@@ -9573,13 +9663,39 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 
-	// "Contours" (port of Mirone src_figs/contouring.m): trace the window's grid at a user-built list
-	// of elevations (GDAL marching squares, see src/contours.jl) and draw them as grouped overlays.
-	mGridTools->addAction("Contours…", [win, s]() {
+	// "Contours" (port of Mirone src_figs/contouring.m): trace the window's grid (GDAL marching
+	// squares, see src/contours.jl) and draw the levels as one grouped overlay set. Two ways in, the
+	// SAME operation behind both — "Automatic" is the tool with its dialog skipped: it asks for the
+	// grid's range and hands contourNiceLevels' guess straight to contourDrawLevels, which is exactly
+	// what the Contour Tool's "Add Common Charting Intervals" + Compute do by hand.
+	QMenu *mContours = mGridTools->addMenu("Contours");
+	auto needGrid = [win, s]() {
 		if (!s->surf || s->emptyStart || s->imageOnly) {
 			QMessageBox::warning(win, "Contours", "Load a grid into this window first.");
+			return false;
+		}
+		return true;
+	};
+	mContours->addAction("Automatic", [win, s, needGrid]() {
+		if (!needGrid()) return;
+		double zmn = 0.0, zmx = 0.0;
+		if (!contourZRange(s, zmn, zmx)) {
+			QMessageBox::warning(win, "Contours", "Could not read this grid's elevation range.");
 			return;
 		}
+		const QVector<double> lv = contourNiceLevels(zmn, zmx);
+		if (lv.isEmpty()) {
+			QMessageBox::warning(win, "Contours", "This grid has no usable elevation range to contour.");
+			return;
+		}
+		contourDrawLevels(s, win, "0", /*labels=*/true, lv);
+	});
+	// One dialog per window: if it is only parked (closed with its X, sitting as a handle at the
+	// bottom of Scene Objects), this brings THAT one back with its elevation list intact.
+	mContours->addAction("Contour Tool…", [win, s, needGrid]() {
+		if (!needGrid()) return;
+		auto it = g_contourDlgs.find(s);
+		if (it != g_contourDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
 		auto *w = new ContourDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
