@@ -4432,6 +4432,164 @@ public:
 };
 
 // ============================================================================================
+// grdtrend (GMT menu) — fit a low-order polynomial trend to the window's grid. Layout is Mirone's
+// grdtrend window (src_figs/grdtrend_mir.m): the What-to-compute radios, the model-parameter combo,
+// Robust Fit and Protect NaNs — plus the options GMT grew since Mirone's port: the 1-D +x/+y fits
+// (model 1-4 there, 1-10 for a surface), -R, and the -W input weight grid with its +s modifier.
+// Loaded at RUNTIME via QUiLoader from deps/ui/grdtrend_dialog.ui.
+//
+// "Weights" is only produced BY the robust fit (GMT writes the weights it used into the -W file), so
+// that radio forces Robust Fit on. "Protect NaNs" only bites on the trend surface — a polynomial
+// covers the input's holes too, and Mirone puts them back — so it greys out for the other two.
+// ============================================================================================
+class GrdTrendDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QComboBox *modelCb = nullptr, *axisCb = nullptr;
+	QCheckBox *robustChk = nullptr, *nanChk = nullptr, *sigmaChk = nullptr;
+	QRadioButton *rbTrend = nullptr, *rbResid = nullptr, *rbWeights = nullptr;
+	QLineEdit *wEdit = nullptr, *outEdit = nullptr;
+	QLineEdit *xmin = nullptr, *xmax = nullptr, *ymin = nullptr, *ymax = nullptr;
+
+	explicit GrdTrendDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdtrend_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdTrendDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdTrendDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("grdtrend");
+		QDialog *d = dlg;
+
+		modelCb   = d->findChild<QComboBox *>("cb_model");
+		axisCb    = d->findChild<QComboBox *>("cb_axis");
+		robustChk = d->findChild<QCheckBox *>("chk_robust");
+		nanChk    = d->findChild<QCheckBox *>("chk_protectNaNs");
+		sigmaChk  = d->findChild<QCheckBox *>("chk_sigma");
+		rbTrend   = d->findChild<QRadioButton *>("rb_trend");
+		rbResid   = d->findChild<QRadioButton *>("rb_residuals");
+		rbWeights = d->findChild<QRadioButton *>("rb_weights");
+		wEdit     = d->findChild<QLineEdit *>("edit_wfile");
+		outEdit   = d->findChild<QLineEdit *>("edit_outfile");
+		xmin = d->findChild<QLineEdit *>("edit_xmin");  xmax = d->findChild<QLineEdit *>("edit_xmax");
+		ymin = d->findChild<QLineEdit *>("edit_ymin");  ymax = d->findChild<QLineEdit *>("edit_ymax");
+
+		if (axisCb) {
+			axisCb->addItem("x and y (surface)", "");
+			axisCb->addItem("x only", "x");
+			axisCb->addItem("y only", "y");
+		}
+		fillModelCombo(3);
+		// A 1-D fit only has 4 terms (m1 + m2*t + m3*t^2 + m4*t^3); a surface has 10. Refill on change,
+		// keeping the current choice when it still fits.
+		if (axisCb) QObject::connect(axisCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+			[this]() { fillModelCombo(modelCb ? modelCb->currentText().toInt() : 3); });
+
+		// Region + increment-less "OR Ref grid" row, the standing rule for every Region group.
+		if (auto *rg = d->findChild<QGridLayout *>("gridLayout_region"))
+			addRefGridRow(d, rg, xmin, xmax, ymin, ymax);
+		// …prefilled from the window's own grid, also the standing rule.
+		if (scene && scene->gnx > 1 && scene->gny > 1) {
+			if (xmin) xmin->setText(QString::number(scene->gx0, 'g', 12));
+			if (xmax) xmax->setText(QString::number(scene->gx1, 'g', 12));
+			if (ymin) ymin->setText(QString::number(scene->gy0, 'g', 12));
+			if (ymax) ymax->setText(QString::number(scene->gy1, 'g', 12));
+		}
+
+		auto *wBtn = d->findChild<QToolButton *>("btn_wfile");
+		if (wBtn && wEdit) {
+			QObject::connect(wBtn, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select weight grid", prefStartDir(),
+					"Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty()) { wEdit->setText(p); rememberStartDir(p); }
+			});
+			fileBoxDoubleClick(wEdit, wBtn);      // double-click in the box opens the chooser
+		}
+		auto *oBtn = d->findChild<QToolButton *>("btn_outfile");
+		if (oBtn && outEdit) {
+			QObject::connect(oBtn, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save result grid", prefStartDir(),
+					"Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty()) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			fileBoxDoubleClick(outEdit, oBtn);
+		}
+
+		// The weights ARE the robust fit's by-product: picking them turns Robust Fit on and locks it.
+		// Protect NaNs only applies to the trend surface.
+		auto syncWhat = [this]() {
+			const bool wantW = rbWeights && rbWeights->isChecked();
+			if (robustChk) {
+				if (wantW && !robustChk->isChecked()) robustChk->setChecked(true);
+				robustChk->setEnabled(!wantW);
+			}
+			if (nanChk) nanChk->setEnabled(rbTrend && rbTrend->isChecked());
+		};
+		for (QRadioButton *rb : { rbTrend, rbResid, rbWeights })
+			if (rb) QObject::connect(rb, &QRadioButton::toggled, d, [syncWhat](bool) { syncWhat(); });
+		syncWhat();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "grdtrend");            // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	// 1..10 for a surface fit, 1..4 for a 1-D (+x / +y) one — the limits the module itself enforces.
+	void fillModelCombo(int keep) {
+		if (!modelCb) return;
+		const bool oneD = axisCb && !axisCb->currentData().toString().isEmpty();
+		const int nmax = oneD ? 4 : 10;
+		QSignalBlocker block(modelCb);
+		modelCb->clear();
+		for (int k = 1; k <= nmax; ++k) modelCb->addItem(QString::number(k));
+		modelCb->setCurrentIndex(qBound(0, (keep > 0 ? keep : 3) - 1, nmax - 1));
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGrdTrend) {
+			QMessageBox::warning(d, "grdtrend", "grdtrend: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		const QString what = (rbResid && rbResid->isChecked())     ? "diff"
+		                   : (rbWeights && rbWeights->isChecked()) ? "weights" : "trend";
+		QStringList kv;
+		kv << "what=" + what;
+		kv << QString("model=%1").arg(modelCb ? modelCb->currentText() : "3");
+		kv << QString("robust=%1").arg(robustChk && robustChk->isChecked() ? 1 : 0);
+		kv << QString("protectnans=%1").arg(nanChk && nanChk->isChecked() ? 1 : 0);
+		kv << "axis=" + (axisCb ? axisCb->currentData().toString() : QString());
+		// -R only when all four boxes are filled, and only when they are not simply the grid's own
+		// limits (an unnarrowed region is not worth passing).
+		if (xmin && xmax && ymin && ymax && !xmin->text().trimmed().isEmpty() && !xmax->text().trimmed().isEmpty()
+		    && !ymin->text().trimmed().isEmpty() && !ymax->text().trimmed().isEmpty())
+			kv << QString("region=%1/%2/%3/%4").arg(xmin->text().trimmed()).arg(xmax->text().trimmed())
+			                                   .arg(ymin->text().trimmed()).arg(ymax->text().trimmed());
+		QString wf = wEdit ? wEdit->text().trimmed() : QString();
+		if (!wf.isEmpty()) {
+			if (sigmaChk && sigmaChk->isChecked()) wf += "+s";
+			kv << "wfile=" + wf;
+		}
+		if (outEdit && !outEdit->text().trimmed().isEmpty()) kv << "outfile=" + outEdit->text().trimmed();
+		kv << "grid=" + QString::fromStdString(activeGridName(scn));   // fit the DISPLAYED layer
+		showBusyDialog("Fitting trend…");
+		const int ok = g_juliaGrdTrend(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "grdtrend",
+		                              "grdtrend failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
 // BeachballWidget — schematic focal-mechanism "beachball" preview for the elastic-deformation
 // dialog. This is NOT yet a full lower-hemisphere double-couple projection (that arrives with the
 // deformation compute); it draws two opposing black wedges rotated by the fault strike and
@@ -8366,6 +8524,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	});
 	mGMT->addAction("grdseamount", [win, s]() {
 		auto *w = new GrdSeamountDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	mGMT->addAction("grdtrend", [win, s]() {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "grdtrend", "Load a grid into this window first.");
+			return;
+		}
+		auto *w = new GrdTrendDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
 

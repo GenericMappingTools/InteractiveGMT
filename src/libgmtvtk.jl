@@ -81,7 +81,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_rtp3d_callback,
 	:gmtvtk_set_gravmag3d_callback, :gmtvtk_set_grdgravmag3d_callback, :gmtvtk_set_grdredpol_callback, :gmtvtk_set_manual_callback, :gmtvtk_set_grdgradient_callback, :gmtvtk_set_grdseamount_callback,
 	:gmtvtk_set_import_gmt_callback,
-	:gmtvtk_set_clipgrid_callback, :gmtvtk_set_gridcalc_callback,
+	:gmtvtk_set_clipgrid_callback, :gmtvtk_set_gridcalc_callback, :gmtvtk_set_grdtrend_callback,
 	:gmtvtk_set_seismicity_callback,
 	:gmtvtk_set_faultgeom_callback,
 	:gmtvtk_set_elastic_callback, :gmtvtk_set_importfault_callback, :gmtvtk_add_fault_h,

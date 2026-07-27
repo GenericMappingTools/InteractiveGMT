@@ -382,6 +382,14 @@ static JuliaClipGridFn g_juliaClipGrid = nullptr;
 typedef int (*JuliaGridCalcFn)(void *scene, const char *params);
 static JuliaGridCalcFn g_juliaGridCalc = nullptr;
 
+// grdtrend (GMT menu), dialog laid out after Mirone's src_figs/grdtrend_mir.m. GrdTrendDialog
+// (70_window.cpp, loads deps/ui/grdtrend_dialog.ui) hands a newline-separated "key=value" block to
+// Julia (_on_grdtrend, src/grdtrend.jl): what=trend|diff|weights, model=<n>, robust, protectnans,
+// axis=|x|y, region, wfile (+ sigma), outfile, grid (the DISPLAYED layer's label). The result is
+// added to `scene` as a NEW derived grid. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGrdTrendFn)(void *scene, const char *params);
+static JuliaGrdTrendFn g_juliaGrdTrend = nullptr;
+
 // Plot seismicity (Geophysics > Seismology). Port of Mirone's earthquakes.m. The dialog
 // (PlotSeismicityDialog, 70_window.cpp) hands a newline-separated "key=value" block to Julia
 // (g_juliaSeismicity), which reads the catalog (USGS web query / ISF / plain-column layouts /

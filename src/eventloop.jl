@@ -78,6 +78,7 @@ function _ensure_callbacks()
 	                    ("gmtedit",     _register_gmtedit),
 	                    ("clipgrid",    _register_clipgrid),
 	                    ("gridcalc",    _register_gridcalc),
+	                    ("grdtrend",    _register_grdtrend),
 	                    ("seismicity",  _register_seismicity),
 	                    ("faultgeom",   _register_faultgeom),
 	                    ("elastic",     _register_elastic),
