@@ -390,6 +390,14 @@ static JuliaGridCalcFn g_juliaGridCalc = nullptr;
 typedef int (*JuliaGrdTrendFn)(void *scene, const char *params);
 static JuliaGrdTrendFn g_juliaGrdTrend = nullptr;
 
+// grdlandmask (GMT menu), dialog laid out after Mirone's grdlandmask window. GrdLandmaskDialog
+// (70_window.cpp, loads deps/ui/grdlandmask_dialog.ui) hands a newline-separated "key=value" block to
+// Julia (_on_grdlandmask, src/grdlandmask.jl): region, inc, res, area, maskvalues, border, pixel,
+// verbose, clip (mask the window's own grid instead of making a bare mask), outfile, grid. The result
+// is added to `scene` as a NEW derived grid. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGrdLandmaskFn)(void *scene, const char *params);
+static JuliaGrdLandmaskFn g_juliaGrdLandmask = nullptr;
+
 // Plot seismicity (Geophysics > Seismology). Port of Mirone's earthquakes.m. The dialog
 // (PlotSeismicityDialog, 70_window.cpp) hands a newline-separated "key=value" block to Julia
 // (g_juliaSeismicity), which reads the catalog (USGS web query / ISF / plain-column layouts /

@@ -987,6 +987,22 @@ public:
 		xN->setText(r[6]);   yN->setText(r[7]);
 	}
 
+	// ADOPT the boxes of a dialog whose .ui carries a COPY of deps/ui/grid_line_geometry.ui (same
+	// object names — that file is the canonical block to copy from). Nothing is built: the very same
+	// behaviour (the dim-fun cross-recompute, the Ref-grid picker, region()/inc()/fillGeometry) is
+	// attached to the widgets Designer already laid out. That is what keeps a .ui-based dialog and a
+	// code-built one on ONE implementation instead of the inline re-wiring igrf_calculator had to do.
+	// Returns nullptr when the host has no such block.
+	static GeoGridGeometry *adopt(QWidget *host) {
+		if (!host) return nullptr;
+		auto *g = new GeoGridGeometry(host, Adopt{});
+		if (!g->xMin || !g->xMax || !g->xInc || !g->xN || !g->yMin || !g->yMax || !g->yInc || !g->yN) {
+			delete g;
+			return nullptr;
+		}
+		return g;
+	}
+
 	GeoGridGeometry(QWidget *parent, bool withRefGrid = true) : QWidget(parent) {
 		auto *outer = new QVBoxLayout(this);
 		outer->setContentsMargins(0, 0, 0, 0);
@@ -1031,16 +1047,7 @@ public:
 		geoGroup->setLayout(geoLayout);
 		outer->addWidget(geoGroup);
 
-		// Cross-field recompute (Mirone dim_funs.m, now in Julia). Each box recomputes the others on
-		// focus-out / Enter.
-		QObject::connect(xMin, &QLineEdit::editingFinished, this, [this]{ runDimFun("xMin"); });
-		QObject::connect(xMax, &QLineEdit::editingFinished, this, [this]{ runDimFun("xMax"); });
-		QObject::connect(yMin, &QLineEdit::editingFinished, this, [this]{ runDimFun("yMin"); });
-		QObject::connect(yMax, &QLineEdit::editingFinished, this, [this]{ runDimFun("yMax"); });
-		QObject::connect(xInc, &QLineEdit::editingFinished, this, [this]{ runDimFun("xInc"); });
-		QObject::connect(yInc, &QLineEdit::editingFinished, this, [this]{ runDimFun("yInc"); });
-		QObject::connect(xN,   &QLineEdit::editingFinished, this, [this]{ runDimFun("nCols"); });
-		QObject::connect(yN,   &QLineEdit::editingFinished, this, [this]{ runDimFun("nRows"); });
+		wireBoxes();
 
 		// --- Optional "OR Ref grid" row: pick a grid/image; gmtread its header to fill the boxes ----
 		if (withRefGrid) {
@@ -1052,23 +1059,56 @@ public:
 			auto *refBtn = new QToolButton(this);
 			refBtn->setText("...");
 			refRow->addWidget(refBtn);
-			auto loadRef = [this](const QString &path) {
-				if (path.isEmpty()) return;
-				refEdit->setText(path);
-				if (!g_juliaGridMeta) return;
-				const char *m = g_juliaGridMeta(path.toUtf8().constData());
-				if (m) fillGeometry(QString::fromUtf8(m));
-			};
-			QObject::connect(refBtn, &QToolButton::clicked, this, [this, loadRef]() {
-				QString f = QFileDialog::getOpenFileName(this, "Select reference grid", prefStartDir(),
-				                                         "Grid/Image files (*.nc *.grd *.tif *.tiff);;All files (*)");
-				if (!f.isEmpty()) rememberStartDir(f);
-				loadRef(f);
-			});
+			wireRefButton(refBtn);
 			// HARD RULE: an edit box must NEVER execute (no editingFinished->module read). The ref grid
 			// is loaded ONLY by the "..." picker button above. See only-action-button-executes-dialog.
 			outer->addLayout(refRow);
 		}
+	}
+
+private:
+	struct Adopt {};                       // tag: take over an existing .ui block instead of building one
+
+	// The adopting constructor. This object is a zero-size, never-shown QWidget whose only job is to
+	// own the wiring — the visible widgets belong to the host .ui.
+	GeoGridGeometry(QWidget *host, Adopt) : QWidget(host) {
+		hide();
+		xMin = host->findChild<QLineEdit *>("xMin");  xMax = host->findChild<QLineEdit *>("xMax");
+		xInc = host->findChild<QLineEdit *>("xInc");  xN   = host->findChild<QLineEdit *>("xN");
+		yMin = host->findChild<QLineEdit *>("yMin");  yMax = host->findChild<QLineEdit *>("yMax");
+		yInc = host->findChild<QLineEdit *>("yInc");  yN   = host->findChild<QLineEdit *>("yN");
+		refEdit = host->findChild<QLineEdit *>("refEdit");
+		if (!xMin || !xMax || !xInc || !xN || !yMin || !yMax || !yInc || !yN) return;
+		wireBoxes();
+		if (auto *refBtn = host->findChild<QToolButton *>("refBtn")) wireRefButton(refBtn);
+	}
+
+	// Cross-field recompute (Mirone dim_funs.m, now in Julia). Each box recomputes the others on
+	// focus-out / Enter.
+	void wireBoxes() {
+		QObject::connect(xMin, &QLineEdit::editingFinished, this, [this]{ runDimFun("xMin"); });
+		QObject::connect(xMax, &QLineEdit::editingFinished, this, [this]{ runDimFun("xMax"); });
+		QObject::connect(yMin, &QLineEdit::editingFinished, this, [this]{ runDimFun("yMin"); });
+		QObject::connect(yMax, &QLineEdit::editingFinished, this, [this]{ runDimFun("yMax"); });
+		QObject::connect(xInc, &QLineEdit::editingFinished, this, [this]{ runDimFun("xInc"); });
+		QObject::connect(yInc, &QLineEdit::editingFinished, this, [this]{ runDimFun("yInc"); });
+		QObject::connect(xN,   &QLineEdit::editingFinished, this, [this]{ runDimFun("nCols"); });
+		QObject::connect(yN,   &QLineEdit::editingFinished, this, [this]{ runDimFun("nRows"); });
+	}
+
+	// "..." picker: gmtread the chosen grid's header and fill the eight boxes from it.
+	void wireRefButton(QAbstractButton *refBtn) {
+		QObject::connect(refBtn, &QAbstractButton::clicked, this, [this]() {
+			QString f = QFileDialog::getOpenFileName(this, "Select reference grid", prefStartDir(),
+			                                         "Grid/Image files (*.nc *.grd *.tif *.tiff);;All files (*)");
+			if (f.isEmpty()) return;
+			rememberStartDir(f);
+			if (refEdit) refEdit->setText(f);
+			if (!g_juliaGridMeta) return;
+			const char *m = g_juliaGridMeta(f.toUtf8().constData());
+			if (m) fillGeometry(QString::fromUtf8(m));
+		});
+		if (refEdit) fileBoxDoubleClick(refEdit, refBtn);   // double-click in the box opens the chooser
 	}
 };
 
@@ -4586,6 +4626,155 @@ public:
 		closeBusyDialog();
 		if (!ok) QMessageBox::warning(d, "grdtrend",
 		                              "grdtrend failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// grdlandmask (GMT menu) — build a wet/dry mask grid from the shoreline database. Layout is Mirone's
+// grdlandmask window: the shared "Griding Line Geometry" block, coastline resolution, Min area (-A),
+// registration, and the five Node values with the Boundary flag. The .ui carries a verbatim copy of
+// deps/ui/grid_line_geometry.ui, and GeoGridGeometry::adopt() takes those widgets over so the
+// geometry block behaves EXACTLY as grdsample's (one implementation, not a re-wiring).
+//
+// Beyond Mirone's template, from grdlandmask.qmd: "auto" resolution, the -E border VALUES (line
+// tracing: one value, or cborder/lborder/iborder/pborder), and the module's second method — hand it
+// a grid and it masks THAT grid instead of producing a bare mask ("Apply the mask to this window's
+// grid"). Mirone's "Force float" is not carried over: GMT.jl hands back a Float32 grid either way,
+// so the checkbox would toggle nothing.
+// ============================================================================================
+class GrdLandmaskDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	GeoGridGeometry *geo = nullptr;        // the adopted .ui block (region + spacing + Ref grid)
+	QComboBox *resCb = nullptr, *lvMinCb = nullptr, *lvMaxCb = nullptr;
+	QLineEdit *areaEdit = nullptr, *borderEdit = nullptr, *outEdit = nullptr;
+	QLineEdit *nodeEdit[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
+	QCheckBox *gridRegChk = nullptr, *verboseChk = nullptr, *boundaryChk = nullptr, *clipChk = nullptr;
+
+	explicit GrdLandmaskDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdlandmask_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdLandmaskDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdLandmaskDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("grdlandmask");
+		QDialog *d = dlg;
+
+		geo = GeoGridGeometry::adopt(d);       // the SAME block grdsample uses, wiring and all
+		resCb   = d->findChild<QComboBox *>("cb_res");
+		lvMinCb = d->findChild<QComboBox *>("cb_levelMin");
+		lvMaxCb = d->findChild<QComboBox *>("cb_levelMax");
+		areaEdit   = d->findChild<QLineEdit *>("edit_area");
+		borderEdit = d->findChild<QLineEdit *>("edit_border");
+		outEdit    = d->findChild<QLineEdit *>("edit_outfile");
+		for (int k = 0; k < 5; ++k) nodeEdit[k] = d->findChild<QLineEdit *>(QString("edit_n%1").arg(k + 1));
+		gridRegChk  = d->findChild<QCheckBox *>("chk_gridReg");
+		verboseChk  = d->findChild<QCheckBox *>("chk_verbose");
+		boundaryChk = d->findChild<QCheckBox *>("chk_boundary");
+		clipChk     = d->findChild<QCheckBox *>("chk_clip");
+
+		if (resCb) {
+			resCb->addItem("crude", "c");         resCb->addItem("low", "l");
+			resCb->addItem("intermediate", "i");  resCb->addItem("high", "h");
+			resCb->addItem("full", "f");          resCb->addItem("auto", "a");   // -Da, newer than Mirone
+			resCb->setCurrentIndex(2);            // intermediate, as in Mirone
+		}
+		for (QComboBox *cb : { lvMinCb, lvMaxCb })
+			if (cb) for (int k = 0; k <= 4; ++k) cb->addItem(QString::number(k));
+		if (lvMaxCb) lvMaxCb->setCurrentIndex(4);
+
+		// Prefill the geometry from the window's own grid — the standing rule for every region spec.
+		if (geo && scene) {
+			if (scene->gnx > 1 && scene->gny > 1)
+				geo->fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8")
+					.arg(scene->gx0).arg(scene->gx1).arg(scene->gy0).arg(scene->gy1)
+					.arg(scene->gdx).arg(scene->gdy).arg(scene->gnx).arg(scene->gny));
+			else if (scene->x1 > scene->x0 && scene->y1 > scene->y0)
+				geo->fillGeometry(QString("%1/%2/%3/%4////").arg(scene->x0).arg(scene->x1)
+					.arg(scene->y0).arg(scene->y1));
+		}
+		if (gridRegChk && geo)
+			QObject::connect(gridRegChk, &QCheckBox::toggled, d,
+			                 [this](bool on) { if (geo) geo->setRegistration(!on); });
+
+		// Border VALUES only mean something with line tracing on.
+		if (boundaryChk && borderEdit) {
+			borderEdit->setEnabled(boundaryChk->isChecked());
+			QObject::connect(boundaryChk, &QCheckBox::toggled, d,
+			                 [this](bool on) { if (borderEdit) borderEdit->setEnabled(on); });
+		}
+		// Masking the window's grid means the geometry IS that grid's — the module takes it from the
+		// grid itself, so the boxes stop being an input.
+		if (clipChk) QObject::connect(clipChk, &QCheckBox::toggled, d, [this, d](bool on) {
+			if (auto *gg = d->findChild<QGroupBox *>("geoGroup")) gg->setEnabled(!on);
+			if (auto *re = d->findChild<QLineEdit *>("refEdit")) re->setEnabled(!on);
+			if (auto *rb = d->findChild<QToolButton *>("refBtn")) rb->setEnabled(!on);
+		});
+
+		if (auto *oBtn = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(oBtn, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save mask grid", prefStartDir(),
+					"Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty()) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, oBtn);
+		}
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "grdlandmask");         // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGrdLandmask) {
+			QMessageBox::warning(d, "grdlandmask", "grdlandmask: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		const bool clip = clipChk && clipChk->isChecked();
+		QStringList kv;
+		if (!clip && geo) {                        // the mask's own region/spacing (ignored when masking a grid)
+			kv << "region=" + geo->region();
+			kv << "inc=" + geo->inc();
+		}
+		kv << QString("clip=%1").arg(clip ? 1 : 0);
+		kv << "res=" + (resCb ? resCb->currentData().toString() : QString("i"));
+		// -A: area[/min_level/max_level]. Levels travel only when they are not the full 0-4 default.
+		QString area = areaEdit ? areaEdit->text().trimmed() : QString();
+		if (!area.isEmpty() && area != "0") {
+			const QString lo = lvMinCb ? lvMinCb->currentText() : QString("0");
+			const QString hi = lvMaxCb ? lvMaxCb->currentText() : QString("4");
+			if (lo != "0" || hi != "4") area += "/" + lo + "/" + hi;
+			kv << "area=" + area;
+		}
+		// -N: the five node values, trimmed to the two-value form when the last three are the default.
+		QStringList nv;
+		for (int k = 0; k < 5; ++k) nv << (nodeEdit[k] ? nodeEdit[k]->text().trimmed() : QString());
+		if (!nv.contains(QString())) {
+			if (nv[2] == "0" && nv[3] == "1" && nv[4] == "0") nv = QStringList{ nv[0], nv[1] };
+			kv << "maskvalues=" + nv.join('/');
+		}
+		if (boundaryChk && boundaryChk->isChecked())
+			kv << "border=" + (borderEdit ? borderEdit->text().trimmed() : QString());
+		kv << QString("pixel=%1").arg(gridRegChk && gridRegChk->isChecked() ? 0 : 1);
+		kv << QString("verbose=%1").arg(verboseChk && verboseChk->isChecked() ? 1 : 0);
+		if (outEdit && !outEdit->text().trimmed().isEmpty()) kv << "outfile=" + outEdit->text().trimmed();
+		kv << "grid=" + QString::fromStdString(activeGridName(scn));   // mask the DISPLAYED layer
+		showBusyDialog("Building land mask…");
+		const int ok = g_juliaGrdLandmask(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "grdlandmask",
+		                              "grdlandmask failed — see this window's Errors console for details.");
 	}
 };
 
@@ -8524,6 +8713,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	});
 	mGMT->addAction("grdseamount", [win, s]() {
 		auto *w = new GrdSeamountDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	// grdlandmask needs no grid at all (it builds a mask from a region), so it is offered always.
+	mGMT->addAction("grdlandmask", [win, s]() {
+		auto *w = new GrdLandmaskDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
 	mGMT->addAction("grdtrend", [win, s]() {

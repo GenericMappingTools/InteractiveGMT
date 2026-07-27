@@ -1389,6 +1389,13 @@ GMTVTK_API void gmtvtk_set_grdtrend_callback(JuliaGrdTrendFn fn) {
 	g_juliaGrdTrend = fn;
 }
 
+// Register the grdlandmask Compute callback (GMT menu). fn(scene, params) with the "key=value" block
+// described in 30_app.cpp builds the wet/dry mask (or masks the window's grid) and adds it to
+// `scene`. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdlandmask_callback(JuliaGrdLandmaskFn fn) {
+	g_juliaGrdLandmask = fn;
+}
+
 // Register the Plot seismicity callback (Geophysics > Seismology). `fn` (Julia @cfunction,
 // JuliaSeismicityFn) is called with (scene, "key=value\n…") on the dialog's OK: scene is the
 // receiving window, the block carries format/file/date range/magnitude/depth filters, the

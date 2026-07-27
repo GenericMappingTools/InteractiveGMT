@@ -78,6 +78,7 @@ include("mgd77tracks.jl") # Geophysics > Magnetics > Import *.gmt/*.nc file(s): 
 include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid clipping (port of Mirone ml_clip.m)
 include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-geometry grids (port of Mirone grid_calculator.m)
 include("grdtrend.jl")   # GMT menu > grdtrend: polynomial trend surface / residuals / robust weights
+include("grdlandmask.jl")# GMT menu > grdlandmask: wet/dry mask grid from the shoreline database
 include("shapenc.jl")    # write a SHAPENC netCDF file (port of Mirone utils/shapenc.m; GDAL MDArray API, no MEX)
 include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track editor (port of Mirone src_figs/gmtedit.m)
 include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> write via shapenc
