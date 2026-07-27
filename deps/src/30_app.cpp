@@ -398,6 +398,14 @@ static JuliaGrdTrendFn g_juliaGrdTrend = nullptr;
 typedef int (*JuliaGrdLandmaskFn)(void *scene, const char *params);
 static JuliaGrdLandmaskFn g_juliaGrdLandmask = nullptr;
 
+// grdfilter (GMT menu), dialog laid out after Mirone's Grdfilter window. GrdFilterDialog
+// (70_window.cpp, loads deps/ui/grdfilter_dialog.ui) hands a newline-separated "key=value" block to
+// Julia (_on_grdfilter, src/grdfilter.jl): filter (the whole -F string, code + width + modifiers),
+// distance, region, inc, nans, toggle, outfile, grid (the DISPLAYED layer's label). The filtered grid
+// is added to `scene` as a NEW derived grid. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGrdFilterFn)(void *scene, const char *params);
+static JuliaGrdFilterFn g_juliaGrdFilter = nullptr;
+
 // Plot seismicity (Geophysics > Seismology). Port of Mirone's earthquakes.m. The dialog
 // (PlotSeismicityDialog, 70_window.cpp) hands a newline-separated "key=value" block to Julia
 // (g_juliaSeismicity), which reads the catalog (USGS web query / ISF / plain-column layouts /

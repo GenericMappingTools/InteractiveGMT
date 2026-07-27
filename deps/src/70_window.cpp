@@ -4779,6 +4779,204 @@ public:
 };
 
 // ============================================================================================
+// grdfilter (GMT menu) — filter a grid in the space domain. Layout is Mirone's Grdfilter window:
+// the shared "Griding Line Geometry" block (adopted from the .ui's verbatim copy of
+// grid_line_geometry.ui, so it behaves exactly as grdsample's), the Filter type + width, and the
+// Distance flag. Loaded at RUNTIME via QUiLoader from deps/ui/grdfilter_dialog.ui.
+//
+// Beyond Mirone's three controls, from grdfilter.qmd: the full filter list (custom/operator weight
+// grids, histogram mode, lower/upper and their signed variants), +h high-pass, +q quantile for the
+// median, /binwidth and +c for the histogram mode, +l/+u for the mode filters, a second width for a
+// RECTANGULAR filter, the -N NaN policy and -T registration toggle. The per-filter extras only light
+// up for the filter that owns them, so the row never offers a knob the chosen filter ignores.
+// ============================================================================================
+class GrdFilterDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	GeoGridGeometry *geo = nullptr;
+	QComboBox *typeCb = nullptr, *distCb = nullptr, *nanCb = nullptr, *modeCb = nullptr;
+	QLineEdit *widthEdit = nullptr, *width2Edit = nullptr, *quantEdit = nullptr, *binEdit = nullptr;
+	QLineEdit *wgridEdit = nullptr, *outEdit = nullptr;
+	QCheckBox *hpChk = nullptr, *centerChk = nullptr, *toggleChk = nullptr;
+
+	explicit GrdFilterDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdfilter_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdFilterDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdFilterDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("grdfilter");
+		QDialog *d = dlg;
+
+		geo = GeoGridGeometry::adopt(d);       // the SAME block grdsample uses, wiring and all
+		typeCb = d->findChild<QComboBox *>("cb_type");
+		distCb = d->findChild<QComboBox *>("cb_dist");
+		nanCb  = d->findChild<QComboBox *>("cb_nans");
+		modeCb = d->findChild<QComboBox *>("cb_mode");
+		widthEdit  = d->findChild<QLineEdit *>("edit_width");
+		width2Edit = d->findChild<QLineEdit *>("edit_width2");
+		quantEdit  = d->findChild<QLineEdit *>("edit_quantile");
+		binEdit    = d->findChild<QLineEdit *>("edit_binwidth");
+		wgridEdit  = d->findChild<QLineEdit *>("edit_wgrid");
+		outEdit    = d->findChild<QLineEdit *>("edit_outfile");
+		hpChk     = d->findChild<QCheckBox *>("chk_highpass");
+		centerChk = d->findChild<QCheckBox *>("chk_centerbins");
+		toggleChk = d->findChild<QCheckBox *>("chk_toggle");
+
+		if (typeCb) {                                    // data = the GMT filter code letter
+			typeCb->addItem("boxcar", "b");              typeCb->addItem("cosine arch", "c");
+			typeCb->addItem("gaussian", "g");            typeCb->addItem("custom (weight grid)", "f");
+			typeCb->addItem("operator (weight grid)", "o");
+			typeCb->addItem("median", "m");              typeCb->addItem("mode (LMS)", "p");
+			typeCb->addItem("histogram mode", "h");
+			typeCb->addItem("lower", "l");               typeCb->addItem("lower, positives only", "L");
+			typeCb->addItem("upper", "u");               typeCb->addItem("upper, negatives only", "U");
+		}
+		if (distCb) {
+			distCb->addItem("p — pixels, width in odd # of pixels", "p");
+			distCb->addItem("0 — grid units, Cartesian", "0");
+			distCb->addItem("1 — degrees, width in km", "1");
+			distCb->addItem("2 — degrees, km, dx scaled by cos(mid y)", "2");
+			distCb->addItem("3 — degrees, km, dx scaled by cos(y)", "3");
+			distCb->addItem("4 — degrees, km, spherical", "4");
+			distCb->addItem("5 — Mercator img units, km, spherical", "5");
+			// A projected/Cartesian grid must NOT get a "degrees" flag, so the default follows the grid:
+			// geographic -> 1 (Mirone's own default), anything else -> 0. baseGeog is the flag the host
+			// set when the grid was added (GMT.guessgeog), the same one the axes and xfac already use.
+			distCb->setCurrentIndex((scene && scene->baseGeog) ? 2 : 1);
+		}
+		if (nanCb) {
+			nanCb->addItem("ignore NaNs", "i");
+			nanCb->addItem("NaN if any NaN in the circle", "p");
+			nanCb->addItem("ignore, but keep input NaNs", "r");
+		}
+		if (modeCb) {
+			modeCb->addItem("average", "");
+			modeCb->addItem("lowermost", "l");
+			modeCb->addItem("uppermost", "u");
+		}
+
+		// Prefill the geometry from the window's own grid — the standing rule for every region spec.
+		if (geo && scene) {
+			if (scene->gnx > 1 && scene->gny > 1)
+				geo->fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8")
+					.arg(scene->gx0).arg(scene->gx1).arg(scene->gy0).arg(scene->gy1)
+					.arg(scene->gdx).arg(scene->gdy).arg(scene->gnx).arg(scene->gny));
+			else if (scene->x1 > scene->x0 && scene->y1 > scene->y0)
+				geo->fillGeometry(QString("%1/%2/%3/%4////").arg(scene->x0).arg(scene->x1)
+					.arg(scene->y0).arg(scene->y1));
+		}
+
+		if (auto *wBtn = d->findChild<QToolButton *>("btn_wgrid")) {
+			QObject::connect(wBtn, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select filter weight grid", prefStartDir(),
+					"Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty()) { wgridEdit->setText(p); rememberStartDir(p); }
+			});
+			if (wgridEdit) fileBoxDoubleClick(wgridEdit, wBtn);
+		}
+		if (auto *oBtn = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(oBtn, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save filtered grid", prefStartDir(),
+					"Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty()) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, oBtn);
+		}
+
+		if (typeCb) QObject::connect(typeCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                             [this]() { syncFilterExtras(); });
+		if (distCb) QObject::connect(distCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                             [this]() { syncFilterExtras(); });
+		syncFilterExtras();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "grdfilter");           // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString code() const { return typeCb ? typeCb->currentData().toString() : QString("b"); }
+	QString dist() const { return distCb ? distCb->currentData().toString() : QString("0"); }
+
+	// Only the knobs the CHOSEN filter actually reads stay live: quantile is the median's, bin width
+	// and Center bins the histogram mode's, the multiple-mode pick belongs to the two mode filters, and
+	// the weight grid to custom/operator (which also have no width of their own). A rectangular filter
+	// (second width) is only legal with distance flag p or 0.
+	void syncFilterExtras() {
+		const QString c = code();
+		const bool isWeightGrid = (c == "f" || c == "o");
+		const bool isMedian     = (c == "m");
+		const bool isHistMode   = (c == "h");
+		const bool isMode       = (c == "p" || c == "h");
+		const bool rectOK       = (dist() == "p" || dist() == "0");
+		if (quantEdit)  quantEdit->setEnabled(isMedian);
+		if (binEdit)    binEdit->setEnabled(isHistMode);
+		if (centerChk)  centerChk->setEnabled(isHistMode);
+		if (modeCb)     modeCb->setEnabled(isMode);
+		if (wgridEdit)  wgridEdit->setEnabled(isWeightGrid);
+		if (auto *b = dlg->findChild<QToolButton *>("btn_wgrid")) b->setEnabled(isWeightGrid);
+		if (widthEdit)  widthEdit->setEnabled(!isWeightGrid);
+		if (width2Edit) width2Edit->setEnabled(!isWeightGrid && rectOK);
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGrdFilter) {
+			QMessageBox::warning(d, "grdfilter", "grdfilter: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		const QString c = code();
+		const bool isWeightGrid = (c == "f" || c == "o");
+		// -F: <code><width>[/width2][+modifiers], or <code><weight grid> for custom/operator.
+		QString F = c;
+		if (isWeightGrid) {
+			const QString wg = wgridEdit ? wgridEdit->text().trimmed() : QString();
+			if (wg.isEmpty()) { QMessageBox::warning(d, "grdfilter", "This filter needs a weight grid."); return; }
+			F += wg;
+		} else {
+			const QString w = widthEdit ? widthEdit->text().trimmed() : QString();
+			if (w.isEmpty()) { QMessageBox::warning(d, "grdfilter", "Give the filter width."); return; }
+			F += w;
+			const QString w2 = (width2Edit && width2Edit->isEnabled()) ? width2Edit->text().trimmed() : QString();
+			if (!w2.isEmpty()) F += "/" + w2;
+			if (c == "h" && binEdit && !binEdit->text().trimmed().isEmpty()) F += "/" + binEdit->text().trimmed();
+		}
+		if (c == "m" && quantEdit && !quantEdit->text().trimmed().isEmpty()) F += "+q" + quantEdit->text().trimmed();
+		if (c == "h" && centerChk && centerChk->isChecked()) F += "+c";
+		if ((c == "p" || c == "h") && modeCb && !modeCb->currentData().toString().isEmpty())
+			F += "+" + modeCb->currentData().toString();
+		if (hpChk && hpChk->isChecked()) F += "+h";
+
+		QStringList kv;
+		kv << "filter=" + F;
+		kv << "distance=" + dist();
+		if (geo) {
+			kv << "region=" + geo->region();
+			kv << "inc=" + geo->inc();
+		}
+		if (nanCb && nanCb->currentData().toString() != "i") kv << "nans=" + nanCb->currentData().toString();
+		if (toggleChk && toggleChk->isChecked()) kv << "toggle=1";
+		if (outEdit && !outEdit->text().trimmed().isEmpty()) kv << "outfile=" + outEdit->text().trimmed();
+		kv << "grid=" + QString::fromStdString(activeGridName(scn));   // filter the DISPLAYED layer
+		showBusyDialog("Filtering…");
+		const int ok = g_juliaGrdFilter(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "grdfilter",
+		                              "grdfilter failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
 // BeachballWidget — schematic focal-mechanism "beachball" preview for the elastic-deformation
 // dialog. This is NOT yet a full lower-hemisphere double-couple projection (that arrives with the
 // deformation compute); it draws two opposing black wedges rotated by the fault strike and
@@ -8713,6 +8911,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	});
 	mGMT->addAction("grdseamount", [win, s]() {
 		auto *w = new GrdSeamountDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	mGMT->addAction("grdfilter", [win, s]() {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "grdfilter", "Load a grid into this window first.");
+			return;
+		}
+		auto *w = new GrdFilterDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
 	// grdlandmask needs no grid at all (it builds a mask from a region), so it is offered always.
