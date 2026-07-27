@@ -117,16 +117,6 @@ function fetch_and_extract(url::String, dest::String)
     _sweep_stale_dlls(dest)
     _displace_locked_dll(dest)
     run(`$TAR -xf $zip -C $dest deps/build`)
-    # …and deps/ui. The dialogs load their .ui at RUNTIME from <dir of the loaded gmtvtk.dll>/../ui
-    # (gmtvtkUiDir, 30_app.cpp), which for a non-dev install is THIS dest — not the package folder.
-    # So a .ui that only exists in the package's own deps/ui never gets seen, and its dialog silently
-    # fails to open ("cannot open …"). The .ui files change together with the DLL that reads them, so
-    # they travel in the same zip. Tolerated missing: the older full-runtime zip has no deps/ui member
-    # and bsdtar errors on an absent path, which must not abort an otherwise good install.
-    try
-        run(pipeline(`$TAR -xf $zip -C $dest deps/ui`; stdout=devnull, stderr=devnull))
-    catch
-    end
     rm(zip; force=true)
 end
 
