@@ -9014,7 +9014,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		s->shadeFoldBar->updateGeometry();      // sizeHint flips to the thin vertical strip
 	}
 
-	// --- Bottom tabbed panel: Profile / Julia Console / Data Viewer ----------
+	// --- Bottom tabbed panel: Profile / Julia Console / Errors ---------------
 	// ONE dock holds a QTabWidget. A "Hide" button in the tab-bar corner collapses the panel
 	// BODY down to just the tab strip (so the central 3-D view extends) and toggles to "Show".
 	QDockWidget *bottomDock = new QDockWidget("Panels", win);
@@ -9079,13 +9079,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	tabs->addTab(errOut, "Errors");
 	s->errConsole = errOut;
 
-	// Tab 3 — Data Viewer: a read-only spreadsheet for a GMTdataset / plain matrix / vector,
-	// filled from Julia via gmtvtk_set_table (e.g. show_table(fig, D)).
-	s->dataTable = new QTableWidget(tabs);
-	s->dataTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-	s->dataTable->setAlternatingRowColors(true);
-	s->dataTable->horizontalHeader()->setStretchLastSection(true);
-	tabs->addTab(s->dataTable, "Data Viewer");
+	// (No "Data Viewer" tab: a table of numbers is shown by THE ONE shared table dialog —
+	// buildDataTableDialog, popped by gmtvtk_set_table / show_table — not by a second spreadsheet
+	// living here. Two implementations of one operation is exactly what SACRED_LAW forbids.)
 
 	// Custom dock title bar: a fold triangle sitting RIGHT BESIDE the "Panels" word (matching the
 	// Scene Objects / Shading docks), instead of the old hide button lost in the tab-strip corner.
@@ -9125,7 +9121,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	mView->addAction("&Profile Panel",       [showTab, s]()        { showTab(s->prof); });
 	mView->addAction("Julia &Console Panel", [showTab, conPanel]() { showTab(conPanel); });
-	mView->addAction("&Data Viewer Panel",   [showTab, s]()        { showTab(s->dataTable); });
+	// No "Data Viewer Panel" entry: there is no such tab any more. A table of numbers pops up in THE
+	// shared table dialog when a result produces one (gmtvtk_set_table / show_table).
 
 	// Empty launcher / blank start: hide the surface, cube axes and gizmo BEFORE the first paint so
 	// the window opens as a clean dark canvas instead of flashing an empty blue cube-axes box for one

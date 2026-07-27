@@ -634,51 +634,66 @@ GMTVTK_API int gmtvtk_add_curtain_file_h(void *handle, const double *px, const d
 	return 1;
 }
 
-// Fill the Data Viewer spreadsheet tab of a window (by handle) with table data, and bring
-// that tab forward. `data` is COLUMN-MAJOR (Julia layout): element (row r, col c) lives at
-// data[(size_t)c*nrows + r]. `headers`, if non-null/non-empty, is the column names joined by
-// TAB ('\t'), one per column (missing/empty -> "C1, C2, ..."). `name` (or null) labels the
-// tab. Returns 1 if shown, 0 if the handle is dead. The data is copied into the table.
+// POP a floating table of `data` for this window — show_table(fig, D) and everything built on it
+// (the polyline Line-length/Azimuth tables, gmtgravmag3d's track mode, grdseamount's statistics).
+// `data` is COLUMN-MAJOR (Julia layout): element (row r, col c) lives at data[(size_t)c*nrows + r].
+// `headers`, if non-null/non-empty, is the column names joined by TAB ('\t'), one per column
+// (missing/empty -> "C1, C2, ..."). `name` (or null) titles the window. Returns 1 if shown, 0 if the
+// handle is dead. The data is COPIED (the caller's pointer is only valid during this call).
+//
+// SACRED_LAW: this pops THE shared table dialog (buildDataTableDialog, 55_lineprops.cpp) — the same
+// one the per-line "Show data table…" and the X,Y tool's "Show in Data Table" use, Save button and
+// all. There is exactly ONE "show a table of numbers" implementation in the app; the old bottom-dock
+// "Data Viewer" spreadsheet tab was a second one, and is gone.
 GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *data,
 								int nrows, int ncols, const char *headers) {
 	Scene *s = static_cast<Scene*>(handle);
-	if (!sceneAlive(s) || !s->dataTable)
+	if (!sceneAlive(s))
 		return 0;
 	if (nrows < 0) nrows = 0;
 	if (ncols < 0) ncols = 0;
-	QTableWidget *t = s->dataTable;
-	t->clearContents();
-	t->setColumnCount(ncols);
-	t->setRowCount(nrows);
 
-	QStringList hdr;
+	QStringList cols;
 	if (headers && headers[0])
-		hdr = QString::fromUtf8(headers).split('\t');
-	for (int c = 0; c < ncols; ++c) {
-		QString h = (c < hdr.size() && !hdr[c].isEmpty()) ? hdr[c] : QString("C%1").arg(c + 1);
-		t->setHorizontalHeaderItem(c, new QTableWidgetItem(h));
-	}
-	if (data) {
-		for (int c = 0; c < ncols; ++c) {
-			for (int r = 0; r < nrows; ++r) {
-				double v = data[(size_t)c * nrows + r];
-				QTableWidgetItem *it = new QTableWidgetItem(QString::number(v, 'g', 8));
-				it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-				t->setItem(r, c, it);
-			}
-		}
-	}
-	t->resizeColumnsToContents();
+		cols = QString::fromUtf8(headers).split('\t');
+	QStringList hdr;  hdr << "#";                       // the builder numbers the rows in column 0
+	for (int c = 0; c < ncols; ++c)
+		hdr << ((c < cols.size() && !cols[c].isEmpty()) ? cols[c] : QString("C%1").arg(c + 1));
 
-	if (s->bottomTabs) {
-		int idx = s->bottomTabs->indexOf(t);
-		if (idx >= 0)
-			s->bottomTabs->setTabText(idx, (name && name[0]) ? QString("Data: %1").arg(QString::fromUtf8(name))
-															  : QString("Data Viewer"));
-		if (s->bottomDock) s->bottomDock->setVisible(true);
-		setBottomCollapsed(s, false);
-		if (idx >= 0) s->bottomTabs->setCurrentIndex(idx);
-	}
+	std::vector<double> vals;                            // own the numbers: the caller's buffer dies now
+	vals.reserve((size_t)nrows * (size_t)ncols);
+	for (int c = 0; c < ncols; ++c)
+		for (int r = 0; r < nrows; ++r)
+			vals.push_back(data ? data[(size_t)c * nrows + r] : 0.0);
+
+	const QString title = (name && name[0]) ? QString::fromUtf8(name) : QString("Data");
+	// Save…: the table as it stands, tab-separated with its header line — the plain text every other
+	// tool in this app can read straight back.
+	auto onSave = [vals, hdr, nrows, ncols, title]() {
+		QString fn = QFileDialog::getSaveFileName(nullptr, "Save table", prefStartDir("table.txt"),
+		                                          "Text (*.txt *.dat *.csv);;All files (*)");
+		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
+		QFile f(fn);
+		if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+		QTextStream out(&f);
+		out << "#";
+		for (int c = 0; c < ncols; ++c) out << '\t' << hdr[c + 1];
+		out << '\n';
+		for (int r = 0; r < nrows; ++r) {
+			for (int c = 0; c < ncols; ++c)
+				out << (c ? "\t" : "") << QString::number(vals[(size_t)c * nrows + r], 'g', 10);
+			out << '\n';
+		}
+		f.close();
+	};
+	QTableWidget *tbl = buildDataTableDialog(title, nrows, hdr,
+		[vals, nrows](int row, int col) { return vals[(size_t)col * nrows + row]; },
+		/*editable=*/false, onSave);
+	// Remember the last table popped for this window, ONLY so gmtvtk_scene_state can report its row
+	// count (n_table). It is parentless and self-deleting, so drop the pointer when it goes.
+	s->dataTable = tbl;
+	if (tbl) QObject::connect(tbl, &QObject::destroyed, tbl, [s]() { if (sceneAlive(s)) s->dataTable = nullptr; });
 	return 1;
 }
 

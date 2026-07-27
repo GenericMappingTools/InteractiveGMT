@@ -632,10 +632,13 @@ struct Scene {
 	QPlainTextEdit *console = nullptr;   // Julia console dock output (commands eval'd in Main via g_juliaEval)
 	QPlainTextEdit *errConsole = nullptr; // read-only Errors tab: execution errors from background callbacks (gmtvtk_log_error)
 
-	// --- bottom tabbed panel (Profile / Julia Console / Data Viewer) --------
+	// --- bottom tabbed panel (Profile / Julia Console / Errors) -------------
 	QDockWidget *bottomDock    = nullptr;   // the single bottom dock holding the tab widget
 	QTabWidget *bottomTabs    = nullptr;   // its QTabWidget; the corner "Hide" collapses the body
-	QTableWidget *dataTable     = nullptr;   // Data Viewer spreadsheet (filled by gmtvtk_set_table)
+	QTableWidget *dataTable     = nullptr;   // LAST floating table popped for this window by
+	                                         // gmtvtk_set_table (show_table). Kept only so
+	                                         // gmtvtk_scene_state can report its row count; the dialog
+	                                         // itself is parentless and self-deleting (nulls this).
 	QToolButton *bottomHideBtn = nullptr;   // tab-bar corner Hide/Show toggle
 	bool          bottomCollapsed = false;   // panel body collapsed to the tab strip?
 
