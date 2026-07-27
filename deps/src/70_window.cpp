@@ -4282,6 +4282,206 @@ public:
 };
 
 // ============================================================================================
+// Contours (Grid Tools) — port of Mirone's src_figs/contouring.m. Build a list of elevations (round
+// charting intervals, a start+step series, or one-off values) and Apply traces the window's grid at
+// every one of them, drawing each level as its own line overlay under a single "Contours" Scene
+// Objects group. Loaded at RUNTIME via QUiLoader from deps/ui/contouring.ui (plain Qt widget classes
+// only, like ClipGridDialog above).
+//
+// The tracing is GDAL's marching squares, NOT grdcontour (~8x faster on a 3001x4801 grid) — see
+// src/contours.jl. Everything that touches the grid is one g_juliaEval round-trip: _contour_zrange
+// for the read-only Min/Max prefill (so the range shown and the grid traced can never diverge) and
+// _on_contours for the drawing. Only Apply and the two Delete buttons run anything; the edit boxes
+// and the list never compute on their own (only-action-button-executes-dialog).
+//
+// The Delete buttons prune the list AND, once Apply has drawn something, redraw the pruned list —
+// which is Mirone's "delete removes those contours from the figure" behaviour, reached through the
+// SAME _on_contours that Apply uses (Apply always redraws the WHOLE list, wiping the previous set
+// first), never a second removal path.
+// ============================================================================================
+class ContourDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QListWidget *list = nullptr;
+	QLineEdit *zminEdit, *zmaxEdit, *minPtsEdit, *singleEdit, *startEdit, *stepEdit;
+	QCheckBox *labelsChk = nullptr;
+	double zmin = 0.0, zmax = 0.0;
+	bool haveRange = false;    // Julia answered with the grid's z range
+	bool applied   = false;    // Apply has drawn at least once -> Delete must refresh the scene
+
+	// "Add Common Charting Intervals" (contouring.m push_GuessIntervals_CB, which asked MATLAB's
+	// contourc to guess levels off a synthetic ramp): round 1/2/5·10^k steps giving ~12 intervals
+	// across the grid's range, snapped to multiples of the step so the values read like chart depths.
+	static QVector<double> niceLevels(double lo, double hi) {
+		QVector<double> v;
+		if (!(hi > lo)) return v;
+		const double raw = (hi - lo) / 12.0;
+		const double mag = std::pow(10.0, std::floor(std::log10(raw)));
+		const double n   = raw / mag;
+		double step = (n <= 1.5) ? 1.0 : (n <= 3.0) ? 2.0 : (n <= 7.0) ? 5.0 : 10.0;
+		step *= mag;
+		const long long k0 = (long long)std::ceil(lo / step);
+		const long long k1 = (long long)std::floor(hi / step);
+		for (long long k = k0; k <= k1 && v.size() < 500; ++k) v.push_back(k * step);
+		return v;
+	}
+
+	QVector<double> levels() const {
+		QVector<double> v;
+		if (!list) return v;
+		for (int i = 0; i < list->count(); ++i) {
+			bool ok = false;
+			const double x = list->item(i)->text().toDouble(&ok);
+			if (ok) v.push_back(x);
+		}
+		return v;
+	}
+
+	// Replace the list with `v`, sorted ascending and de-duplicated (contouring.m sorts on every Add).
+	void setLevels(QVector<double> v) {
+		if (!list) return;
+		std::sort(v.begin(), v.end());
+		v.erase(std::unique(v.begin(), v.end()), v.end());
+		list->clear();
+		for (double x : v) list->addItem(QString::number(x, 'g', 10));
+	}
+
+	// The ONE call that draws. `params` = "minpts;labels;lev1,lev2,…"; an empty level list just
+	// clears the window's contours.
+	void redraw(bool announceEmpty) {
+		if (!g_juliaEval) { QMessageBox::warning(dlg, "Contours", "This computation needs the Julia/GMT host."); return; }
+		const QVector<double> v = levels();
+		if (v.isEmpty() && announceEmpty) { QMessageBox::warning(dlg, "Contours", "The elevation list is empty — nothing to contour."); return; }
+		QStringList ls;
+		for (double x : v) ls << QString::number(x, 'g', 12);
+		const QString params = QString("%1;%2;%3")
+			.arg(minPtsEdit ? minPtsEdit->text().trimmed() : QString("0"))
+			.arg(labelsChk && labelsChk->isChecked() ? "1" : "0")
+			.arg(ls.join(','));
+		const QString cmd = QString("InteractiveGMT._on_contours(Ptr{Cvoid}(UInt(%1)),\"%2\")")
+			.arg((qulonglong)reinterpret_cast<uintptr_t>(scn)).arg(params);
+		showBusyDialog("Tracing contours…");
+		static std::vector<char> buf(1 << 14);
+		int n = g_juliaEval(scn, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		closeBusyDialog();
+		if (n < 0) {
+			const QString msg = QString::fromUtf8(buf.data(), -n);
+			sceneLogError(scn, msg);
+			QMessageBox::warning(dlg, "Contours", msg);
+			return;
+		}
+		applied = !v.isEmpty();
+	}
+
+	explicit ContourDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/contouring.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("ContourDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("ContourDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("Contours");
+		QDialog *d = dlg;
+
+		list       = d->findChild<QListWidget *>("listbox_ElevValues");
+		zminEdit   = d->findChild<QLineEdit *>("edit_Zmin");
+		zmaxEdit   = d->findChild<QLineEdit *>("edit_Zmax");
+		minPtsEdit = d->findChild<QLineEdit *>("edit_minNpts");
+		singleEdit = d->findChild<QLineEdit *>("edit_SingleElev");
+		startEdit  = d->findChild<QLineEdit *>("edit_StartElev");
+		stepEdit   = d->findChild<QLineEdit *>("edit_ElevStep");
+		labelsChk  = d->findChild<QCheckBox *>("check_plotLabels");
+		auto *guessBtn  = d->findChild<QPushButton *>("push_GuessIntervals");
+		auto *addBtn    = d->findChild<QPushButton *>("push_Add");
+		auto *genBtn    = d->findChild<QPushButton *>("push_GenerateIntervals");
+		auto *delSelBtn = d->findChild<QPushButton *>("push_DeleteSelected");
+		auto *delAllBtn = d->findChild<QPushButton *>("push_DeleteAll");
+		auto *applyBtn  = d->findChild<QPushButton *>("push_Apply");
+
+		// Min/Max come from the grid Julia will actually contour (_contour_zrange prints "min/max"),
+		// never from s->zmin/zmax — one source, so the boxes cannot describe a different layer.
+		if (g_juliaEval) {
+			const QString cmd = QString("InteractiveGMT._contour_zrange(Ptr{Cvoid}(UInt(%1)))")
+				.arg((qulonglong)reinterpret_cast<uintptr_t>(scn));
+			static std::vector<char> buf(1 << 12);
+			int n = g_juliaEval(scn, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+			if (n > 0) {
+				const QStringList mm = QString::fromUtf8(buf.data(), n).trimmed().split('/');
+				if (mm.size() == 2) {
+					bool o1 = false, o2 = false;
+					const double a = mm[0].toDouble(&o1), b = mm[1].toDouble(&o2);
+					if (o1 && o2) { zmin = a; zmax = b; haveRange = true; }
+				}
+			}
+		}
+		if (haveRange) {
+			if (zminEdit) zminEdit->setText(QString::number(zmin, 'g', 8));
+			if (zmaxEdit) zmaxEdit->setText(QString::number(zmax, 'g', 8));
+		}
+
+		if (guessBtn) QObject::connect(guessBtn, &QPushButton::clicked, d, [this, d]() {
+			if (!haveRange) { QMessageBox::warning(d, "Contours", "The grid's elevation range is unknown."); return; }
+			setLevels(niceLevels(zmin, zmax));
+		});
+
+		// Add: one value onto the list (contouring.m push_Add_CB — sorts, then clears the box).
+		if (addBtn) QObject::connect(addBtn, &QPushButton::clicked, d, [this, d]() {
+			bool ok = false;
+			const double x = singleEdit ? singleEdit->text().trimmed().toDouble(&ok) : 0.0;
+			if (!ok) { QMessageBox::warning(d, "Contours", "Give me a numeric Single elevation."); return; }
+			QVector<double> v = levels();
+			v.push_back(x);
+			setLevels(v);
+			if (singleEdit) singleEdit->clear();
+		});
+
+		// Generate: start:step:max for a positive step, start:step:min for a negative one — exactly
+		// contouring.m push_GenerateIntervals_CB, including its "Generate how? From the empty outer
+		// space?" complaint when either box is blank.
+		if (genBtn) QObject::connect(genBtn, &QPushButton::clicked, d, [this, d]() {
+			bool ok1 = false, ok2 = false;
+			const double s0 = startEdit ? startEdit->text().trimmed().toDouble(&ok1) : 0.0;
+			const double ds = stepEdit  ? stepEdit->text().trimmed().toDouble(&ok2)  : 0.0;
+			if (!ok1 || !ok2 || ds == 0.0) { QMessageBox::warning(d, "Contours", "Generate how? Give a Starting Elevation and a non-zero Elevation Step."); return; }
+			if (!haveRange)                { QMessageBox::warning(d, "Contours", "The grid's elevation range is unknown."); return; }
+			QVector<double> v;
+			const double stop = (ds > 0) ? zmax : zmin;
+			for (int k = 0; k < 5000; ++k) {
+				const double x = s0 + k * ds;
+				if (ds > 0 ? (x > stop) : (x < stop)) break;
+				v.push_back(x);
+			}
+			setLevels(v);
+		});
+
+		if (delSelBtn) QObject::connect(delSelBtn, &QPushButton::clicked, d, [this]() {
+			if (!list) return;
+			const QList<QListWidgetItem *> sel = list->selectedItems();
+			if (sel.isEmpty()) return;
+			for (QListWidgetItem *it : sel) delete list->takeItem(list->row(it));
+			if (applied) redraw(false);       // those contours leave the window too (contouring.m)
+		});
+
+		if (delAllBtn) QObject::connect(delAllBtn, &QPushButton::clicked, d, [this]() {
+			if (!list) return;
+			list->clear();
+			if (applied) { redraw(false); applied = false; }
+		});
+
+		if (applyBtn) QObject::connect(applyBtn, &QPushButton::clicked, d, [this]() { redraw(true); });
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+};
+
+// ============================================================================================
 // Grid calculator (Grid Tools) — port of Mirone's src_figs/grid_calculator.m. An expression box on
 // top, the list of usable grids below it, a digit/operator keypad and a function keypad on the right.
 // Loaded at RUNTIME via QUiLoader from deps/ui/grid_calculator.ui (plain Qt widget classes only,
@@ -9370,6 +9570,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			return;
 		}
 		auto *w = new ClipGridDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+
+	// "Contours" (port of Mirone src_figs/contouring.m): trace the window's grid at a user-built list
+	// of elevations (GDAL marching squares, see src/contours.jl) and draw them as grouped overlays.
+	mGridTools->addAction("Contours…", [win, s]() {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "Contours", "Load a grid into this window first.");
+			return;
+		}
+		auto *w = new ContourDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
 

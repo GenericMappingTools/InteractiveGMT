@@ -2216,6 +2216,29 @@ GMTVTK_API int gmtvtk_remove_meca_group_h(void *handle, const char *name) {
 	return 1;
 }
 
+// Remove every line/point OVERLAY tagged with `groupName`, plus the text labels that carry the same
+// group tag (gmtvtk_add_texts_h's groupName) -- the overlay twin of gmtvtk_remove_meca_group_h, and
+// the same "drop the batch's labels too, or a re-plot leaves the old ones behind" rule
+// deleteMecaGroup follows. Used by Grid Tools > Contours, whose Apply always redraws the WHOLE
+// elevation list and so must first wipe what the previous Apply drew. Returns 1 if the handle was
+// alive, 0 otherwise.
+GMTVTK_API int gmtvtk_remove_overlay_group_h(void *handle, const char *groupName) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !groupName || !*groupName) return 0;
+	const std::string gn(groupName);
+	for (size_t i = s->texts.size(); i-- > 0; ) {
+		if (s->texts[i].groupName != gn) continue;
+		if (s->texts[i].actor) {
+			if (s->axesRen) s->axesRen->RemoveActor(s->texts[i].actor);
+			if (s->ren)     s->ren->RemoveActor(s->texts[i].actor);
+		}
+		s->texts.erase(s->texts.begin() + i);
+	}
+	overlayDeleteGroup(s, gn);          // does the restack + rebuildSceneObjects + Render
+	QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);   // see gmtvtk_add_meca_h
+	return 1;
+}
+
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.

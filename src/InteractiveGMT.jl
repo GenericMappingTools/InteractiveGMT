@@ -77,6 +77,7 @@ include("manual.jl")     # the green "?" disk on every module dialog -> that mod
 include("mgd77tracks.jl") # Geophysics > Magnetics > Import *.gmt/*.nc file(s): cruise tracks (port of mirone.m GeophysicsImportGmtFile_CB)
 include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid clipping (port of Mirone ml_clip.m)
 include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-geometry grids (port of Mirone grid_calculator.m)
+include("contours.jl")   # Grid Tools > Contours: GDAL-traced contour lines (port of Mirone contouring.m)
 include("grdtrend.jl")   # GMT menu > grdtrend: polynomial trend surface / residuals / robust weights
 include("grdlandmask.jl")# GMT menu > grdlandmask: wet/dry mask grid from the shoreline database
 include("grdfilter.jl")  # GMT menu > grdfilter: space-domain filtering of the window's grid
