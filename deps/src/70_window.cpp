@@ -4977,6 +4977,400 @@ public:
 };
 
 // ============================================================================================
+// Interpolation / griding (GMT menu) — grid an x,y,z table. Layout is Mirone's Surface window
+// (src_figs/griding_mir.m): Input Data File (+ header count), the shared "Griding Line Geometry"
+// block (adopted from the .ui's verbatim copy of grid_line_geometry.ui, so it behaves exactly as
+// grdsample's), the "For Near Neighbor only" search radius + units, the Griding Method combo with
+// its Options button, and Verbose / Plot pts / Compute. Loaded at RUNTIME via QUiLoader from
+// deps/ui/interpolation_dialog.ui.
+//
+// Mirone's method list is followed except for "Minimum Curvature - mbgrid", which is not a GMT
+// module; blockmode, greenspline and sphinterpolate are added because GMT grids with them too.
+//
+// The per-method Options window (Mirone's "Surface op..." dialog) is NOT a second dialog class: the
+// rows differ per module, so ONE builder walks the option table `optionSpec(method)` and produces
+// the window for whichever method is selected. Values survive switching method and re-opening the
+// window (optVals), and travel to Julia as one "opt_<kwarg>=<value>" line each — the Julia side maps
+// them to GMT.jl keywords, so the option NAMES here are GMT.jl keyword names, not option letters.
+// ============================================================================================
+class InterpolationDialog {
+public:
+	// One row of a method's Options window. `key` is the GMT.jl keyword it feeds; `flag` is the GMT
+	// option letter shown to its right, exactly as Mirone's options window does.
+	struct Opt {
+		QString key, label, flag, kind, deflt, tip;
+		QStringList items;      // combo only: "shown text|data" pairs
+	};
+
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	GeoGridGeometry *geo = nullptr;
+	QComboBox *methodCb = nullptr, *unitsCb = nullptr, *coordsCb = nullptr;
+	QLineEdit *inEdit = nullptr, *nhEdit = nullptr, *radiusEdit = nullptr, *outEdit = nullptr;
+	QCheckBox *hdrChk = nullptr, *toggleChk = nullptr, *pixelChk = nullptr,
+	          *verboseChk = nullptr, *plotChk = nullptr;
+	QGroupBox *nnGroup = nullptr;
+	QMap<QString, QMap<QString, QString>> optVals;    // method -> (option key -> value as typed)
+
+	explicit InterpolationDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/interpolation_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("InterpolationDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("InterpolationDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("Interpolate");
+		QDialog *d = dlg;
+
+		geo = GeoGridGeometry::adopt(d);       // the SAME block grdsample uses, wiring and all
+		methodCb = d->findChild<QComboBox *>("cb_method");
+		unitsCb  = d->findChild<QComboBox *>("cb_units");
+		coordsCb = d->findChild<QComboBox *>("cb_coords");
+		inEdit     = d->findChild<QLineEdit *>("edit_infile");
+		nhEdit     = d->findChild<QLineEdit *>("edit_nheaders");
+		radiusEdit = d->findChild<QLineEdit *>("edit_radius");
+		outEdit    = d->findChild<QLineEdit *>("edit_outfile");
+		hdrChk     = d->findChild<QCheckBox *>("chk_headers");
+		toggleChk  = d->findChild<QCheckBox *>("chk_toggle");
+		pixelChk   = d->findChild<QCheckBox *>("chk_pixel");
+		verboseChk = d->findChild<QCheckBox *>("chk_verbose");
+		plotChk    = d->findChild<QCheckBox *>("chk_plotpts");
+		nnGroup    = d->findChild<QGroupBox *>("gb_nn");
+
+		if (methodCb) {                                  // data = the GMT module that does the work
+			methodCb->addItem("Minimum Curvature - surface", "surface");
+			methodCb->addItem("Delaunay Triangulation", "triangulate");
+			methodCb->addItem("Near Neighbor", "nearneighbor");
+			methodCb->addItem("Median", "blockmedian");
+			methodCb->addItem("Mean", "blockmean");
+			methodCb->addItem("Mode", "blockmode");
+			methodCb->addItem("Green's spline", "greenspline");
+			methodCb->addItem("Spherical surface (sphinterpolate)", "sphinterpolate");
+		}
+		if (unitsCb) {
+			unitsCb->addItem("data units", "");          // no unit letter: the radius is in x,y units
+			unitsCb->addItem("degrees", "d");            unitsCb->addItem("arc minutes", "m");
+			unitsCb->addItem("arc seconds", "s");        unitsCb->addItem("meters", "e");
+			unitsCb->addItem("kilometers", "k");         unitsCb->addItem("miles", "M");
+			unitsCb->addItem("nautical miles", "n");     unitsCb->addItem("feet", "f");
+		}
+		if (coordsCb) {
+			coordsCb->addItem("auto", "auto");           // Julia asks GMT.guessgeog about the data
+			coordsCb->addItem("geographic", "geog");
+			coordsCb->addItem("cartesian", "cart");
+		}
+
+		// The window's own grid (when there is one) seeds the geometry, as every region spec does.
+		// Picking a data file below overwrites it with THAT file's limits.
+		if (geo && scene) {
+			if (scene->gnx > 1 && scene->gny > 1)
+				geo->fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8")
+					.arg(scene->gx0).arg(scene->gx1).arg(scene->gy0).arg(scene->gy1)
+					.arg(scene->gdx).arg(scene->gdy).arg(scene->gnx).arg(scene->gny));
+		}
+
+		if (auto *inBtn = d->findChild<QToolButton *>("btn_infile")) {
+			QObject::connect(inBtn, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select x,y,z data file", prefStartDir(),
+					"Data tables (*.dat *.txt *.xyz *.csv);;All files (*)");
+				if (p.isEmpty()) return;
+				inEdit->setText(p);
+				rememberStartDir(p);
+				fillFromData(p);
+			});
+			if (inEdit) fileBoxDoubleClick(inEdit, inBtn);
+		}
+		if (auto *oBtn = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(oBtn, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save gridded result", prefStartDir(),
+					"Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty()) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, oBtn);
+		}
+
+		if (pixelChk) QObject::connect(pixelChk, &QCheckBox::toggled, d, [this](bool on) {
+			if (geo) geo->setRegistration(on);           // the dim-fun must know which registration
+		});
+		if (methodCb) QObject::connect(methodCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                               [this]() { syncMethod(); });
+		syncMethod();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_options")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { showOptions(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		// The green ? disk opens the page of the module CURRENTLY selected, not a fixed one.
+		addManualButton(d, [this]() { return method(); });
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString method() const { return methodCb ? methodCb->currentData().toString() : QString("surface"); }
+
+	// Only Near Neighbor reads the search-radius group (it is that module's REQUIRED -S).
+	void syncMethod() {
+		if (nnGroup) nnGroup->setEnabled(method() == "nearneighbor");
+	}
+
+	// A data file's own limits (and a first guess at the spacing) fill the geometry boxes — the same
+	// g_juliaGridMeta callback the "OR Ref grid" picker uses, which reads a table as happily as a grid.
+	void fillFromData(const QString &path) {
+		if (!geo || !g_juliaGridMeta || path.isEmpty()) return;
+		const char *m = g_juliaGridMeta(path.toUtf8().constData());
+		if (m && *m) geo->fillGeometry(QString::fromUtf8(m));
+	}
+
+	// The option rows of each griding module: GMT.jl keyword, label, the GMT flag Mirone shows next to
+	// the box, the widget kind, and the initial value. Everything a module does NOT offer simply is not
+	// in its list, so no window ever shows a knob its module ignores.
+	static QVector<Opt> optionSpec(const QString &m) {
+		QVector<Opt> v;
+		if (m == "surface") {
+			v.push_back({"mask", "Max radius", "-M", "text", "", "Blank the nodes farther than this from a data point", {}});
+			v.push_back({"maskcells", "Clip cells", "-M", "text", "", "Same as Max radius but counted in CELLS around a constrained node (0 = only its own cell)", {}});
+			v.push_back({"aspect_ratio", "Aspect ratio", "-A", "text", "1", "dy = dx / ar. 'm' uses the cosine of the mean latitude", {}});
+			v.push_back({"convergence", "Convergence limit", "-C", "text", "", "Iteration stops below this max change; append % for a fraction of the data rms", {}});
+			v.push_back({"lower", "Lower limit", "-Ll", "text", "", "A value, a grid file, or 'd' for the minimum data value", {}});
+			v.push_back({"upper", "Upper limit", "-Lu", "text", "", "A value, a grid file, or 'd' for the maximum data value", {}});
+			v.push_back({"iterations", "Max iterations", "-N", "text", "500", "Stop after this many iterations even if not converged", {}});
+			v.push_back({"suggest", "Suggest grid dimensions", "-Q", "check", "0", "Report the sizes with a highly composite factor (nothing is gridded)", {}});
+			v.push_back({"search_radius", "Search radius", "-S", "text", "0.0", "Only used to initialize the grid before the first iteration", {}});
+			v.push_back({"tension_i", "Internal Tension", "-Ti", "text", "0", "0 (minimum curvature) to 1 (harmonic). ~0.25 for potential fields, ~0.35 for topography", {}});
+			v.push_back({"tension_b", "Boundary Tension", "-Tb", "text", "0", "Tension in the boundary condition, 0 to 1", {}});
+			v.push_back({"over_relaxation", "Relaxation Factor", "-Z", "text", "1.4", "1 to 2. Larger converges faster but may go unstable", {}});
+			v.push_back({"breakline", "Breakline file", "-D", "file", "", "x,y,z line whose vertices constrain the nearest nodes directly", {}});
+			v.push_back({"preproc", "Pre-process", "", "combo", "", "Decimate the data per cell first, as the manual strongly advises",
+			             {"none|", "blockmean|blockmean", "blockmedian|blockmedian", "blockmode|blockmode"}});
+		}
+		else if (m == "nearneighbor") {
+			v.push_back({"sectors", "Sectors  n[/n_min]", "-N", "text", "", "Split the search circle in n sectors; a node needs data in at least n_min of them [4/4]", {}});
+			v.push_back({"empty", "Value at empty nodes", "-E", "text", "", "What a node with no data in range gets [NaN]", {}});
+			v.push_back({"weights", "4th column holds weights", "-W", "check", "0", "Multiply the geometric weights by a per-point weight read from column 4", {}});
+		}
+		else if (m == "triangulate") {
+			v.push_back({"empty", "Value at empty nodes", "-E", "text", "", "What a node outside the triangulation gets [NaN]", {}});
+		}
+		else if (m == "blockmean" || m == "blockmedian" || m == "blockmode") {
+			const QString stat = (m == "blockmean") ? "mean" : (m == "blockmedian" ? "median" : "mode");
+			const QString spread = (m == "blockmean") ? "std" : "scale";
+			v.push_back({"field", "Field", "-A", "combo", stat, "Which per-block quantity becomes the grid",
+			             {stat + "|" + stat, spread + "|" + spread, "highest|highest", "lowest|lowest", "weights|weights"}});
+			v.push_back({"center", "Use block center as location", "-C", "check", "0", "Report the block's center instead of the mean position of its points", {}});
+			v.push_back({"weights", "Weighted input (4th column)", "-W", "check", "0", "Column 4 holds the weight of each point", {}});
+			if (m == "blockmedian")
+				v.push_back({"quantile", "Quantile", "-T", "text", "", "Return this quantile (0-1) instead of the median (0.5)", {}});
+			if (m == "blockmode")
+				v.push_back({"histogram_binning", "Histogram binning width", "-D", "text", "", "Bin the data and return the modal bin instead of the LMS mode", {}});
+		}
+		else if (m == "greenspline") {
+			v.push_back({"distmode", "Distance mode", "-Z", "combo", "1", "How distances between data points are measured",
+			             {"1 - x,y user units, Cartesian|1", "2 - x,y degrees, Flat Earth|2",
+			              "3 - x,y degrees, spherical km|3", "4 - x,y degrees, great-circle cosines|4"}});
+			v.push_back({"splines", "Spline type", "-S", "combo", "t", "Which Green function is summed",
+			             {"c - minimum curvature|c", "t - continuous curvature in tension|t",
+			              "r - regularized in tension|r", "l - linear / bilinear|l",
+			              "p - spherical minimum curvature (Parker)|p",
+			              "q - spherical in tension (Wessel & Becker)|q"}});
+			v.push_back({"tension", "Tension (for t, r, q)", "-S", "text", "", "Tension factor 0-1 appended to the spline directive", {}});
+			v.push_back({"approx", "Approximate: eigenvalue cutoff", "-C", "text", "", "Solve by SVD and keep only the eigenvalues above this cutoff", {}});
+			v.push_back({"leave_trend", "Leave the trend alone", "-L", "check", "0", "Do not remove/restore a trend before/after the interpolation", {}});
+		}
+		else if (m == "sphinterpolate") {
+			v.push_back({"tension", "Tension mode", "-Q", "combo", "p", "How tension factors are computed",
+			             {"p - piecewise linear|p", "l - local smooth|l", "g - global smooth|g", "s - smoothing|s"}});
+			v.push_back({"var_tension", "Variable tension", "-T", "check", "0", "Use variable rather than constant tension", {}});
+			v.push_back({"skipdup", "Skip duplicate points", "-D", "check", "0", "The spherical algorithm cannot take duplicates", {}});
+			v.push_back({"scale", "Scale data by max range", "-Z", "check", "0", "Normalize the z range before interpolating", {}});
+		}
+		return v;
+	}
+
+	// The value a row currently holds (what the user typed, else the spec's default).
+	QString optValue(const QString &m, const Opt &o) const {
+		const QMap<QString, QString> vals = optVals.value(m);
+		return vals.contains(o.key) ? vals.value(o.key) : o.deflt;
+	}
+
+	// ONE builder for every method's options window (Mirone's "Surface op..." dialog): a row per entry
+	// of optionSpec(), the GMT flag to its right, and the assembled summary at the bottom. OK stores the
+	// values against the method; Cancel leaves them as they were.
+	void showOptions(QDialog *parent) {
+		const QString m = method();
+		const QVector<Opt> spec = optionSpec(m);
+		if (spec.isEmpty()) return;
+
+		QDialog od(parent);
+		od.setWindowTitle(m + " options");
+		auto *outer = new QVBoxLayout(&od);
+		auto *grid = new QGridLayout();
+		grid->setHorizontalSpacing(8);
+		grid->setVerticalSpacing(4);
+		QVector<QWidget *> widgets;
+		QLineEdit *summary = new QLineEdit(&od);
+		summary->setReadOnly(true);
+
+		int row = 0;
+		for (const Opt &o : spec) {
+			const QString val = optValue(m, o);
+			QWidget *w = nullptr;
+			if (o.kind == "check") {
+				auto *c = new QCheckBox(o.label, &od);
+				c->setChecked(val == "1");
+				grid->addWidget(c, row, 0, 1, 2);
+				w = c;
+			}
+			else if (o.kind == "combo") {
+				auto *c = new QComboBox(&od);
+				for (const QString &it : o.items) {
+					const int bar = it.lastIndexOf('|');
+					c->addItem(it.left(bar), it.mid(bar + 1));
+				}
+				const int ix = c->findData(val);
+				c->setCurrentIndex(ix >= 0 ? ix : 0);
+				grid->addWidget(new QLabel(o.label, &od), row, 0);
+				grid->addWidget(c, row, 1);
+				w = c;
+			}
+			else {                                    // "text" and "file" share the box; file adds a "..."
+				auto *e = new QLineEdit(val, &od);
+				e->setMinimumWidth(o.kind == "file" ? 220 : 90);
+				if (o.kind != "file") e->setMaximumWidth(120);
+				grid->addWidget(new QLabel(o.label, &od), row, 0);
+				grid->addWidget(e, row, 1);
+				if (o.kind == "file") {
+					auto *b = new QToolButton(&od);
+					b->setText("...");
+					QObject::connect(b, &QToolButton::clicked, &od, [e, &od]() {
+						QString p = QFileDialog::getOpenFileName(&od, "Select file", prefStartDir(), "All files (*)");
+						if (!p.isEmpty()) { e->setText(p); rememberStartDir(p); }
+					});
+					grid->addWidget(b, row, 3);
+					fileBoxDoubleClick(e, b);
+				}
+				w = e;
+			}
+			if (!o.tip.isEmpty()) w->setToolTip(o.tip);
+			auto *flagLab = new QLabel(o.flag, &od);
+			flagLab->setStyleSheet("font-weight: bold;");
+			grid->addWidget(flagLab, row, 2);
+			widgets.push_back(w);
+			++row;
+		}
+		outer->addLayout(grid);
+		outer->addWidget(summary);
+
+		auto *btnRow = new QHBoxLayout();
+		auto *cancelBtn = new QPushButton("Cancel", &od);
+		auto *okBtn = new QPushButton("OK", &od);
+		cancelBtn->setAutoDefault(false);  cancelBtn->setDefault(false);
+		okBtn->setAutoDefault(false);      okBtn->setDefault(false);
+		btnRow->addStretch(1);
+		btnRow->addWidget(cancelBtn);
+		btnRow->addWidget(okBtn);
+		outer->addLayout(btnRow);
+		addManualButton(&od, btnRow, m);
+
+		// Harvest the widgets into a (key -> value) map — used both for the live summary and for OK.
+		auto harvest = [&spec, &widgets]() {
+			QMap<QString, QString> out;
+			for (int i = 0; i < spec.size() && i < widgets.size(); ++i) {
+				const Opt &o = spec[i];
+				if (o.kind == "check")
+					out[o.key] = static_cast<QCheckBox *>(widgets[i])->isChecked() ? "1" : "0";
+				else if (o.kind == "combo")
+					out[o.key] = static_cast<QComboBox *>(widgets[i])->currentData().toString();
+				else
+					out[o.key] = static_cast<QLineEdit *>(widgets[i])->text().trimmed();
+			}
+			return out;
+		};
+		auto refresh = [this, m, &harvest, summary]() {
+			const QMap<QString, QString> cur = harvest();
+			QStringList parts;
+			for (const Opt &o : optionSpec(m)) {
+				const QString v = cur.value(o.key);
+				if (v.isEmpty()) continue;
+				if (o.kind == "check" && v != "1") continue;
+				parts << (o.flag.isEmpty() ? o.key + "=" + v : (o.kind == "check" ? o.flag : o.flag + v));
+			}
+			summary->setText(parts.join(' '));
+		};
+		for (QWidget *w : widgets) {
+			if (auto *e = qobject_cast<QLineEdit *>(w))      QObject::connect(e, &QLineEdit::textChanged, &od, [&refresh]() { refresh(); });
+			else if (auto *c = qobject_cast<QCheckBox *>(w)) QObject::connect(c, &QCheckBox::toggled, &od, [&refresh]() { refresh(); });
+			else if (auto *b = qobject_cast<QComboBox *>(w)) QObject::connect(b, QOverload<int>::of(&QComboBox::currentIndexChanged), &od, [&refresh]() { refresh(); });
+		}
+		refresh();
+
+		QObject::connect(cancelBtn, &QPushButton::clicked, &od, &QDialog::reject);
+		QObject::connect(okBtn, &QPushButton::clicked, &od, &QDialog::accept);
+		if (od.exec() == QDialog::Accepted) optVals[m] = harvest();
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaInterpolate) {
+			QMessageBox::warning(d, "Interpolate", "Interpolate: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		const QString in = inEdit ? inEdit->text().trimmed() : QString();
+		if (in.isEmpty()) { QMessageBox::warning(d, "Interpolate", "Give the x,y,z data file to grid."); return; }
+		const QString m = method();
+		if (m == "nearneighbor" && (!radiusEdit || radiusEdit->text().trimmed().isEmpty())) {
+			QMessageBox::warning(d, "Interpolate", "Near Neighbor needs a search radius.");
+			return;
+		}
+		QString R, I;
+		if (geo) { R = geo->region();  I = geo->inc(); }
+		if (I.isEmpty() || R.contains("//") || R.startsWith('/') || R.endsWith('/')) {
+			QMessageBox::warning(d, "Interpolate", "Give the output region and spacing (Griding Line Geometry).");
+			return;
+		}
+
+		QStringList kv;
+		kv << "method=" + m;
+		kv << "infile=" + in;
+		kv << "region=" + R;
+		kv << "inc=" + I;
+		if (hdrChk && hdrChk->isChecked() && nhEdit && !nhEdit->text().trimmed().isEmpty())
+			kv << "headers=" + nhEdit->text().trimmed();
+		if (pixelChk && pixelChk->isChecked())   kv << "pixel=1";
+		if (toggleChk && toggleChk->isChecked()) kv << "toggle=1";
+		if (coordsCb) kv << "coords=" + coordsCb->currentData().toString();
+		if (m == "nearneighbor" && radiusEdit)
+			kv << "radius=" + radiusEdit->text().trimmed() + (unitsCb ? unitsCb->currentData().toString() : QString());
+		if (verboseChk && verboseChk->isChecked()) kv << "verbose=1";
+		if (plotChk && plotChk->isChecked())       kv << "plotpts=1";
+		if (outEdit && !outEdit->text().trimmed().isEmpty()) kv << "outfile=" + outEdit->text().trimmed();
+		// One line per option row that carries a value — a blank box means "let the module default".
+		// A ticked box travels as the word "true", never as "1": several options take a NUMBER whose
+		// legitimate value is 1 (greenspline's distance mode, nearneighbor's sectors), and the Julia
+		// side cannot tell a flag from a value once they look alike.
+		for (const Opt &o : optionSpec(m)) {
+			const QString v = optValue(m, o);
+			if (v.isEmpty()) continue;
+			if (o.kind == "check") {
+				if (v == "1") kv << "opt_" + o.key + "=true";
+				continue;
+			}
+			kv << "opt_" + o.key + "=" + v;
+		}
+
+		showBusyDialog("Griding…");
+		const int ok = g_juliaInterpolate(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "Interpolate",
+		                              "Griding failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
 // BeachballWidget — schematic focal-mechanism "beachball" preview for the elastic-deformation
 // dialog. This is NOT yet a full lower-hemisphere double-couple projection (that arrives with the
 // deformation compute); it draws two opposing black wedges rotated by the fault strike and
@@ -8924,6 +9318,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// grdlandmask needs no grid at all (it builds a mask from a region), so it is offered always.
 	mGMT->addAction("grdlandmask", [win, s]() {
 		auto *w = new GrdLandmaskDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	// Interpolation needs no grid either — it MAKES one from an x,y,z table.
+	mGMT->addAction("Interpolate", [win, s]() {
+		auto *w = new InterpolationDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
 	mGMT->addAction("grdtrend", [win, s]() {

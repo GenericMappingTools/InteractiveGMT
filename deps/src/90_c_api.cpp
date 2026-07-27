@@ -1403,6 +1403,13 @@ GMTVTK_API void gmtvtk_set_grdfilter_callback(JuliaGrdFilterFn fn) {
 	g_juliaGrdFilter = fn;
 }
 
+// Register the interpolation (griding) Compute callback (GMT menu). fn(scene, params) with the
+// "key=value" block described in 30_app.cpp grids the chosen data file with the chosen module and
+// adds the result to `scene`. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_interpolate_callback(JuliaInterpolateFn fn) {
+	g_juliaInterpolate = fn;
+}
+
 // Tell the viewer where the .ui files are (the host's own deps/ui — they ship WITH the Julia
 // package, while this DLL may be loaded from the depot runtime cache instead). Called once at load
 // time from src/libgmtvtk.jl. An empty/absent path is ignored, so the module-dir rule still applies.

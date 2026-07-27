@@ -406,6 +406,17 @@ static JuliaGrdLandmaskFn g_juliaGrdLandmask = nullptr;
 typedef int (*JuliaGrdFilterFn)(void *scene, const char *params);
 static JuliaGrdFilterFn g_juliaGrdFilter = nullptr;
 
+// Interpolation / griding (GMT menu), dialog laid out after Mirone's Surface window
+// (src_figs/griding_mir.m). InterpolationDialog (70_window.cpp, loads deps/ui/interpolation_dialog.ui)
+// hands a newline-separated "key=value" block to Julia (_on_interpolate, src/interpolate.jl):
+// method (surface|nearneighbor|triangulate|blockmean|blockmedian|blockmode|greenspline|sphinterpolate),
+// infile, headers, region, inc, pixel, toggle, coords, radius (nearneighbor's -S, unit appended),
+// verbose, plotpts, outfile, plus one "opt_<kwarg>=<value>" line per row of the method's own Options
+// window. The gridded result is added to `scene` as a NEW derived grid. Returns 1 on success, 0 on
+// failure. nullptr to detach.
+typedef int (*JuliaInterpolateFn)(void *scene, const char *params);
+static JuliaInterpolateFn g_juliaInterpolate = nullptr;
+
 // Plot seismicity (Geophysics > Seismology). Port of Mirone's earthquakes.m. The dialog
 // (PlotSeismicityDialog, 70_window.cpp) hands a newline-separated "key=value" block to Julia
 // (g_juliaSeismicity), which reads the catalog (USGS web query / ISF / plain-column layouts /
@@ -1099,7 +1110,11 @@ static QIcon makeHelpDiskIcon(int px) {
 // Insert the button at the FRONT of `row` — the dialogs' bottom row starts with a stretch, so index 0
 // puts it hard against the lower-left corner, opposite Compute/Close. This overload is for dialogs
 // built in C++ (their button row has no object name to look up).
-static void addManualButton(QDialog *dlg, QBoxLayout *row, const QString &moduleName) {
+// `moduleOf` is asked for the page name AT CLICK TIME, so a dialog that drives several modules (the
+// interpolation dialog: surface / nearneighbor / triangulate / block* / greenspline) opens the page
+// of whatever method is selected right then. The fixed-name overloads below feed it a constant —
+// one implementation of the button, never a second copy for the varying case.
+static void addManualButton(QDialog *dlg, QBoxLayout *row, std::function<QString()> moduleOf) {
 	if (!dlg || !row) return;
 	const int px = 18;
 	auto *btn = new QToolButton(dlg);
@@ -1109,11 +1124,12 @@ static void addManualButton(QDialog *dlg, QBoxLayout *row, const QString &module
 	btn->setCursor(Qt::PointingHandCursor);
 	btn->setToolTip("Open full manual page");
 	btn->setFocusPolicy(Qt::NoFocus);                    // never steals Enter/Tab from the real controls
-	QObject::connect(btn, &QToolButton::clicked, dlg, [dlg, moduleName]() {
+	QObject::connect(btn, &QToolButton::clicked, dlg, [dlg, moduleOf]() {
 		if (!g_juliaOpenManual) {
 			QMessageBox::warning(dlg, "Manual", "Manual: callback not registered (rebuild/restart needed?).");
 			return;
 		}
+		const QString moduleName = moduleOf();
 		if (!g_juliaOpenManual(moduleName.toUtf8().constData()))
 			QMessageBox::warning(dlg, "Manual",
 				QString("Could not open the manual page for %1.").arg(moduleName));
@@ -1121,11 +1137,20 @@ static void addManualButton(QDialog *dlg, QBoxLayout *row, const QString &module
 	row->insertWidget(0, btn);
 }
 
+static void addManualButton(QDialog *dlg, QBoxLayout *row, const QString &moduleName) {
+	addManualButton(dlg, row, [moduleName]() { return moduleName; });
+}
+
 // Same thing for a dialog loaded from a .ui, where the bottom row is the one named
 // "horizontalLayout_buttons" by convention.
 static void addManualButton(QDialog *dlg, const QString &moduleName) {
 	if (!dlg) return;
 	addManualButton(dlg, dlg->findChild<QHBoxLayout *>("horizontalLayout_buttons"), moduleName);
+}
+
+static void addManualButton(QDialog *dlg, std::function<QString()> moduleOf) {
+	if (!dlg) return;
+	addManualButton(dlg, dlg->findChild<QHBoxLayout *>("horizontalLayout_buttons"), std::move(moduleOf));
 }
 
 // STANDING RULE: wherever a dialog shows a Region (xmin/xmax/ymin/ymax), an "OR Ref grid" row goes

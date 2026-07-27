@@ -144,6 +144,21 @@ end
 const _GRIDMETA_BUF = Ref{Vector{UInt8}}(UInt8[0])
 
 function _gridmeta_string(o)::String
+	# A TABLE has no geometry of its own — it has data limits and a sensible spacing to grid it at.
+	# That guess is GMT's (`estimate_RI`, the very one surface/nearneighbor make when -R -I are
+	# missing), never a rule of our own, so the boxes the Interpolate dialog opens with are what GMT
+	# would have chosen anyway.
+	if o isa GMT.GMTdataset || o isa Vector{<:GMT.GMTdataset}
+		w, e, s, n = GMT.get_limits_np(o)[1:4]           # GMT's own limits, not a scan of ours
+		inc = parse(Float64, GMT.estimate_RI(o)[2])
+		# estimate_RI's node count ROUNDS, which for a sparse table can land the last node INSIDE the
+		# data (it once returned a zero-height region for a 5-point set). A prefilled region that does
+		# not cover the data it came from is useless, so the count is rounded UP here — the spacing,
+		# the part that is a judgement call, stays GMT's.
+		nx = max(2, ceil(Int, (e - w) / inc) + 1)
+		ny = max(2, ceil(Int, (n - s) / inc) + 1)
+		return "$w/$(w + (nx - 1) * inc)/$s/$(s + (ny - 1) * inc)/$inc/$inc/$nx/$ny"
+	end
 	if o isa GMT.GMTgrid || o isa GMT.GMTimage
 		r  = o.range
 		dx = o.inc[1]

@@ -80,6 +80,7 @@ include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-ge
 include("grdtrend.jl")   # GMT menu > grdtrend: polynomial trend surface / residuals / robust weights
 include("grdlandmask.jl")# GMT menu > grdlandmask: wet/dry mask grid from the shoreline database
 include("grdfilter.jl")  # GMT menu > grdfilter: space-domain filtering of the window's grid
+include("interpolate.jl")# GMT menu > Interpolate: grid an x,y,z table (surface, nearneighbor, block*, …)
 include("shapenc.jl")    # write a SHAPENC netCDF file (port of Mirone utils/shapenc.m; GDAL MDArray API, no MEX)
 include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track editor (port of Mirone src_figs/gmtedit.m)
 include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> write via shapenc
