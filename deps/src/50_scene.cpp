@@ -1943,7 +1943,7 @@ static void rebuildSceneObjects(Scene *s) {
 		        [s](const QPoint&) { if (g_aquamotoReopen) g_aquamotoReopen(s); },
 		        "Show / hide the Aquamoto control window · left-click to raise it");
 	}
-	// Default open width of the dock: 1.5x its own minimum — the width its contents actually need,
+	// Default open width of the dock: 1.4x its own minimum — the width its contents actually need,
 	// plus half again of room. Applied ONCE per window, the first time the panel has anything in it
 	// (a later manual resize is the user's and is never overridden), and never while the panel is
 	// folded, where the fold strip owns the width. It lives here, not at window creation, because an
