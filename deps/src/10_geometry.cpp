@@ -698,6 +698,11 @@ struct Scene {
 	std::vector<MecaGroupProps> mecaGroups;            // one entry per focal-mechanism batch groupName
 	std::vector<MecaBall> mecaBalls;                   // one entry per plotted event (drag + anchor line state)
 	int    mecaDrag = -1;                               // index into mecaBalls being click-dragged (-1 = none)
+	// Scene Objects group rows the USER has opened by hand, keyed by their label. rebuildSceneObjects
+	// throws the whole tree away and builds a new one on every change, so without this every manual
+	// unfold would snap shut again on the next rebuild. A grid group starts FOLDED (only the container
+	// row shows, not Surface/Color Bar/Axes) and appears here once opened.
+	std::unordered_set<std::string> objExpanded;
 	int    vecSeq = 0;                                  // monotonic seed for shared vector-pile stack ranks
 	int    surfStack = 0;                               // base relief's rank in the GRID pile (base + grids)
 	int    gridSeq   = 0;                               // monotonic seed for grid-pile ranks (newest on top)

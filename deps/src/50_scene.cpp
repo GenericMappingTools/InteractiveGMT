@@ -1448,13 +1448,18 @@ static void rebuildSceneObjects(Scene *s) {
 	// carries its own properties menu (same options as the Surface/Image handle it stands for). Rows made
 	// between it and endGroup attach as its children. onToggle drives the container's show/hide; onProps
 	// (left-click) / onContext (right-click) are its properties menus. Any may be null.
+	// `startFolded` groups show ONLY their container row until the user opens them (a grid: its
+	// Surface / Color Bar / Axes rows stay out of the way). The choice is the user's from then on:
+	// s->objExpanded remembers every group they opened by hand, so the next rebuild — and this
+	// function rebuilds the whole tree on every change — reopens it instead of snapping it shut.
 	auto beginGroupHandle = [&](const QString &name, int iconKind, bool checked,
 	                            std::function<void(const QPoint&)> onProps,
 	                            std::function<void(const QPoint&)> onContext,
-	                            const QString &tip = QString()) {
+	                            const QString &tip = QString(), bool startFolded = false) {
 		QTreeWidgetItem *grp = new QTreeWidgetItem();
 		if (curParent) curParent->addChild(grp); else tree->addTopLevelItem(grp);
-		grp->setExpanded(true);
+		grp->setData(0, Qt::UserRole, name);            // key for the expand/collapse memory below
+		grp->setExpanded(!startFolded || s->objExpanded.count(name.toStdString()) != 0);
 		parentStack.push_back(curParent);
 		curParent = grp;
 
@@ -1647,7 +1652,8 @@ static void rebuildSceneObjects(Scene *s) {
 			beginGroupHandle(nm, IC_Surface, sp->GetVisibility() != 0,
 			        nullptr,                                              // container does NOT fold the Shading dock (the Surface leaf does)
 			        [s](const QPoint &g) { surfaceObjectMenu(s, g); },
-			        "Checkbox toggles the whole group · right-click for save / stacking");
+			        "Checkbox toggles the whole group · right-click for save / stacking",
+			        /*startFolded=*/true);                                // just the grid row until opened
 			makeRow("Surface", IC_Surface, sp->GetVisibility() != 0,     // Surface leaf handle kept as a child
 			        [s, sp](bool on) { sp->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
@@ -1718,7 +1724,8 @@ static void rebuildSceneObjects(Scene *s) {
 			beginGroupHandle(nm, IC_Surface, a && a->GetVisibility() != 0,
 			        nullptr,                                               // container does NOT fold the Shading dock (the Surface leaf does)
 			        [s, a](const QPoint &g) { gridObjectMenu(s, a, g); },  // right-click: save / delete
-			        "Checkbox toggles the whole group · right-click to save / delete");
+			        "Checkbox toggles the whole group · right-click to save / delete",
+			        /*startFolded=*/true);                                 // just the grid row until opened
 			makeRow("Surface", IC_Surface, a && a->GetVisibility() != 0,   // Surface leaf handle kept as a child
 			        [s, a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
@@ -1943,6 +1950,17 @@ static void rebuildSceneObjects(Scene *s) {
 		        [s](const QPoint&) { if (g_aquamotoReopen) g_aquamotoReopen(s); },
 		        "Show / hide the Aquamoto control window · left-click to raise it");
 	}
+	// Remember which groups the user opens / closes by hand (keyed by the label stamped on the item in
+	// beginGroupHandle), so the next rebuild restores that instead of re-folding what they just opened.
+	QObject::connect(tree, &QTreeWidget::itemExpanded, tree, [s](QTreeWidgetItem *it) {
+		const QString nm = it ? it->data(0, Qt::UserRole).toString() : QString();
+		if (!nm.isEmpty()) s->objExpanded.insert(nm.toStdString());
+	});
+	QObject::connect(tree, &QTreeWidget::itemCollapsed, tree, [s](QTreeWidgetItem *it) {
+		const QString nm = it ? it->data(0, Qt::UserRole).toString() : QString();
+		if (!nm.isEmpty()) s->objExpanded.erase(nm.toStdString());
+	});
+
 	// Default open width of the dock: 1.4x its own minimum — the width its contents actually need,
 	// plus half again of room. Applied ONCE per window, the first time the panel has anything in it
 	// (a later manual resize is the user's and is never overridden), and never while the panel is
