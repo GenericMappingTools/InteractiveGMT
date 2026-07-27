@@ -3161,8 +3161,8 @@ GMTVTK_API void gmtvtk_free_rgb(unsigned char *buf) { delete[] buf; }
 // ever gets set from `surfGetBounds`, e.g. in applyVE — see that function's own comment). Used by
 // Roi Crop Tools: SACRED_LAW.md's group-uncheck/derived-variable laws already make the crop the
 // only thing shown, but the axes cube kept the PARENT's full extent since it never tracked anything
-// but the primary — a derived variable's axes must fit ITS OWN limits. Z isn't re-derived (VE/zmin/
-// zmax are window-wide, unrelated to which XY subregion is framed); the degenerate-Z guard mirrors
+// but the primary — a derived variable's axes must fit ITS OWN limits. Z IS re-derived too, from the ACTIVE
+// grid, since a derived variable is a NEW quantity in ITS OWN units; the degenerate-Z guard mirrors
 // applyVE's own (a zero Z range makes vtkCubeAxesActor compute NaN label counts and abort the
 // render). Camera re-fit reuses fitSnapView's exact technique (20_gizmo.cpp), generalized to a
 // caller-supplied bbox instead of always surfGetBounds.
@@ -3178,8 +3178,14 @@ GMTVTK_API void gmtvtk_reframe_h(void *handle, double x0, double x1, double y0, 
 	vtkRenderer *ren = s->ren;
 	vtkCamera *cam = ren->GetActiveCamera();
 
+	// Z comes from the ACTIVE grid (activeGridZRange), NOT s->zmin/zmax: the caller of this function
+	// is always a DERIVED variable, which carries its own units, so the base surface's range would
+	// box and label it wrong (SACRED_LAW.md derived-variable axes law, Z half). Falls back to the
+	// base range when no grid layer resolves (image / cloud / solid window).
+	double zlo = s->zmin, zhi = s->zmax;
+	activeGridZRange(s, zlo, zhi);
 	double b[6] = { x0 * s->xfac, x1 * s->xfac, y0, y1,
-	                s->zmin * s->zfac * s->ve, s->zmax * s->zfac * s->ve };
+	                zlo * s->zfac * s->ve, zhi * s->zfac * s->ve };
 	if (b[5] <= b[4]) b[5] = b[4] + 1.0;               // degenerate-Z guard, same as applyVE's flatZ case
 	// The ACTUAL visible tick-label TEXT is a separate custom billboard system (rebuildAxisLabels,
 	// 10_geometry.cpp) — NOT vtkCubeAxesActor's own native labels (deliberately off, "different text
@@ -3285,8 +3291,13 @@ GMTVTK_API void *gmtvtk_open_empty(const char *title) {
 // image buffer, additionally a flat textured drape) actor, register it in the Scene Objects
 // panel, and render. Aligns with the window's base scale (xfac/zfac/VE). `name` labels the row.
 // Returns 1 on success, 0 if the handle is dead / inputs invalid.
+// `geographic` (!=0 -> x,y are lon,lat) sits in the SAME argument slot as gmtvtk_promote_surface_h's,
+// so the two calls read identically at every call site. It is per-GRID, not per-window: a window
+// built around a geographic parent can perfectly well be showing a CARTESIAN derived grid (a
+// gravmag3d anomaly computed with the dialog's "Geographic" unchecked has x,y in metres), and the
+// axis NAMES follow the ACTIVE grid's flag — see activeGridGeog/syncAxisNames.
 GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny,
-									double x0, double x1, double y0, double y1,
+									double x0, double x1, double y0, double y1, int geographic,
 									const double *cz, const double *crgb, int ncolor,
 									const unsigned char *img, int iw, int ih, int ibands,
 									int image_only, const char *name) {
@@ -3357,7 +3368,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		ex.gridZ.assign(z, z + (size_t)nx * ny);
 		ex.gnx = nx; ex.gny = ny;
 		ex.gx0 = x0; ex.gx1 = x1; ex.gy0 = y0; ex.gy1 = y1;
-		ex.zmin = zmin; ex.zmax = zmax; ex.lut = lut;
+		ex.zmin = zmin; ex.zmax = zmax; ex.lut = lut; ex.geog = geographic ? 1 : 0;
 		if (hasImg) {                                // grid + drape image on top
 			vtkNew<vtkImageData> tex_img;
 			tex_img->SetDimensions(iw, ih, 1);
@@ -3422,7 +3433,7 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
 	if (!s->emptyStart)   // already a real window -> ordinary "add into existing window"
-		return gmtvtk_add_surface_h(handle, z, nx, ny, x0, x1, y0, y1,
+		return gmtvtk_add_surface_h(handle, z, nx, ny, x0, x1, y0, y1, geographic,
 									cz, crgb, ncolor, img, iw, ih, ibands, image_only, name);
 
 	const bool hasImg    = (img && iw > 0 && ih > 0 && ibands > 0);

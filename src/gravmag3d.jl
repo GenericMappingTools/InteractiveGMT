@@ -27,8 +27,16 @@ end
 #   `outfile` optional path to also write the result to (the dialogs' G box)
 #   `toTrack` true when the run was a track run (no grid exists at all)
 #   `recipe`  what to stamp into the grid's own command history
+#   `geographic` the calling dialog's OWN answer for "are x,y lon/lat?", when it HAS one — the
+#             gravmag3d dialogs' "Geographic" checkbox, the gridding dialog's coords combo.
+#             AUTHORITATIVE: passed, it is never re-guessed. Unchecked means the body coordinates
+#             (and so the anomaly's x,y) are METRES and the axes must read "X"/"Y" — a body defined
+#             over a small coordinate span still lands inside guessgeog's lon/lat window, so the
+#             heuristic would wrongly label those axes "lon"/"lat". `nothing` = caller doesn't know,
+#             fall back to the guess (the majority of these tools derive a grid FROM a grid, whose
+#             kind is already carried in the data).
 function _gm3d_deliver(scene::Ptr{Cvoid}, R, title::String, outfile::AbstractString,
-                       toTrack::Bool, recipe::String)::Cint
+                       toTrack::Bool, recipe::String; geographic=nothing)::Cint
 	# --- Track mode: a table of anomaly values at the given x,y — nothing to put on a surface.
 	if toTrack
 		D = isa(R, Vector) ? R : [R]
@@ -53,7 +61,7 @@ function _gm3d_deliver(scene::Ptr{Cvoid}, R, title::String, outfile::AbstractStr
 	# a fallback for the paths where GMT left the field empty.
 	isempty(strip(G.command)) && _grid_command!(G, "InteractiveGMT " * recipe)
 	has_surface = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene)
-	if !_add_grid_to_scene(scene, G, title; promote = (has_surface == 0))
+	if !_add_grid_to_scene(scene, G, title; promote = (has_surface == 0), geographic)
 		_viewer_log_error(scene, "$title: window closed, grid not added")
 		return Cint(0)
 	end
@@ -136,7 +144,8 @@ function _on_gravmag3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 
 		R = arg1 === nothing ? GMT.gravmag3d(; kw...) : GMT.gravmag3d(arg1; kw...)
 		return _gm3d_deliver(scene, R, title, _get(d, "outfile"), haskey(kw, :track),
-		                     "gravmag3d " * join(("$k=$v" for (k, v) in kw), ' '))
+		                     "gravmag3d " * join(("$k=$v" for (k, v) in kw), ' ');
+		                     geographic = _on(d, "geog"))
 	catch e
 		_viewer_log_error(scene, "gravmag3d FAILED: $(sprint(showerror, e))")
 		@warn "gravmag3d FAILED" exception=(e,)

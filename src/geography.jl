@@ -596,16 +596,10 @@ function _earthtide_grid(scene, start, comp, inc=0.5)
 	has_surface = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene)
 	promote = (has_surface == 0)
 	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
-	ok = promote ?
-		ccall(_fn(fn), Cint,
+	ok = ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
 		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
 		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
-		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(title)) :
-		ccall(_fn(fn), Cint,
-		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
-		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
-		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4],
 		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(title))
 	if ok == 0
 		_viewer_log_error(scene, "Earth Tides: window closed, grid not added")

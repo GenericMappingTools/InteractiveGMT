@@ -71,7 +71,8 @@ function _on_grdgravmag3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 
 		R = Gbot === nothing ? GMT.grdgravmag3d(Gtop; kw...) : GMT.grdgravmag3d(Gtop, Gbot; kw...)
 		return _gm3d_deliver(scene, R, title, _get(d, "outfile"), haskey(kw, :track),
-		                     "grdgravmag3d " * join(("$k=$v" for (k, v) in kw), ' '))
+		                     "grdgravmag3d " * join(("$k=$v" for (k, v) in kw), ' ');
+		                     geographic = _on(d, "geog"))
 	catch e
 		_viewer_log_error(scene, "grdgravmag3d FAILED: $(sprint(showerror, e))")
 		@warn "grdgravmag3d FAILED" exception=(e,)

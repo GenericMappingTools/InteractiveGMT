@@ -859,7 +859,7 @@ end
 
 # Add a dropped grid as a CPT-coloured surface in the window. On the empty launcher `promote`
 # reconfigures THAT window in place (gmtvtk_promote_surface_h); otherwise it is added as an extra.
-function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false, source="", record=true, zrange=nothing)
+function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false, source="", record=true, zrange=nothing, geographic=nothing)
 	# `ny, nx = size(z)` on a 3-D array does NOT error in Julia -- it silently drops the third
 	# dimension and proceeds with truncated data, no error anywhere. A cube must never reach here
 	# (the cube-detection probe in _on_drop is supposed to intercept it first); fail loudly if it
@@ -875,7 +875,11 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 		zrange !== nothing ? _cpt_nodes_range(zrange[1], zrange[2], cmap) : _cpt_nodes(G, cmap)
 	# guessgeog (not isgeog): a plain lon/lat grid with no embedded proj still reads geographic via
 	# the [-180 360 -90 90] range heuristic, so the Geography menu can be activated (see _apply_crs! below).
-	geog = _isgeographic(G)
+	# `geographic` OVERRIDES that guess, and must be passed whenever the caller KNOWS the answer: a
+	# gravmag3d anomaly computed with the dialog's "Geographic" unchecked has x,y in METRES, but a body
+	# defined over a small coordinate span still falls inside guessgeog's lon/lat window, so the guess
+	# would label the axes "lon"/"lat". A known truth always beats a heuristic.
+	geog = geographic === nothing ? _isgeographic(G) : geographic::Bool
 	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
 	ok = promote ?
 		ccall(_fn(fn), Cint,
@@ -884,9 +888,9 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
 		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name)) :
 		ccall(_fn(fn), Cint,
-		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
+		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
 		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
-		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4],
+		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
 		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name))
 	ok == 0 && @warn "drop: window is closed; grid not added"
 	ok != 0 && _remember_object!(scene, :grid, name, G)   # Scene Objects "Save…" / File>Save can write it
@@ -950,9 +954,9 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 		  scene, z, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4], Cint(geog),
 		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name)) :
 		ccall(_fn(fn), Cint,
-		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
+		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
 		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
-		  scene, z, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4],
+		  scene, z, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4], Cint(geog),
 		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name))
 	ok == 0 && @warn "drop: window is closed; image not added"
 	ok != 0 && _remember_object!(scene, :image, name, I)  # Scene Objects "Save…" / File>Save can write it

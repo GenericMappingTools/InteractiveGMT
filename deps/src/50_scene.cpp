@@ -802,6 +802,7 @@ struct ActiveGrid {
 	const std::vector<float> *z = nullptr;
 	int    nx = 0, ny = 0;
 	double x0 = 0, x1 = 1, y0 = 0, y1 = 1, zmin = 0, zmax = 1;
+	int    geog = 0;           // this layer's OWN x,y kind (lon/lat vs cartesian) — drives the axis NAMES
 	vtkScalarsToColors *lut = nullptr;
 	bool   showBar = true;     // active grid's per-grid "show colorbar" intent
 	std::string name;          // its Scene Objects label — the key any host-side (Julia) lookup needs,
@@ -820,6 +821,7 @@ static ActiveGrid resolveActiveGrid(Scene *s) {
 			ag.valid = true; ag.z = &s->gridZ; ag.nx = s->gnx; ag.ny = s->gny;
 			ag.x0 = s->gx0; ag.x1 = s->gx1; ag.y0 = s->gy0; ag.y1 = s->gy1;
 			ag.zmin = s->zmin; ag.zmax = s->zmax; ag.lut = s->surfLut; ag.showBar = s->surfShowBar;
+			ag.geog = s->baseGeog;
 			ag.name = s->surfName;
 			bestStack = s->surfStack; have = true;
 		}
@@ -831,10 +833,37 @@ static ActiveGrid resolveActiveGrid(Scene *s) {
 			ag.z = &ex.gridZ; ag.nx = ex.gnx; ag.ny = ex.gny;
 			ag.x0 = ex.gx0; ag.x1 = ex.gx1; ag.y0 = ex.gy0; ag.y1 = ex.gy1;
 			ag.zmin = ex.zmin; ag.zmax = ex.zmax; ag.lut = ex.lut; ag.showBar = ex.showBar;
+			ag.geog = ex.geog;
 			ag.name = ex.name;
 		}
 	}
 	return ag;
+}
+
+// The z (data) range the AXES must annotate — forward-declared in 10_geometry.cpp, where
+// surfGetBounds needs it. SACRED_LAW.md derived-variable axes law: a NEW grid is a NEW quantity
+// with its OWN Z axis and units (a gravity anomaly in mGal computed over a bathymetry grid in m),
+// so it gets ITS OWN axes, never a copy of the parent's. Resolved through the SAME resolveActiveGrid
+// the readout and the colorbar use, so the box, the numbers, the bar and the readout can never
+// describe different layers. false -> no grid layer resolved (point cloud, solid, bare image) or a
+// degenerate range: caller keeps the real actor bounds.
+static bool activeGridZRange(Scene *s, double &zlo, double &zhi) {
+	if (!s) return false;
+	ActiveGrid ag = resolveActiveGrid(s);
+	if (!ag.valid || !(ag.zmax > ag.zmin)) return false;
+	zlo = ag.zmin; zhi = ag.zmax;
+	return true;
+}
+
+// x,y kind of the layer the window is CURRENTLY SHOWING: !=0 -> lon/lat, 0 -> cartesian. Same law and
+// same resolver as activeGridZRange above — a grid we KNOW is cartesian (gravmag3d run with the
+// dialog's "Geographic" unchecked: the body coordinates are metres, so the anomaly's x,y are metres)
+// must read "X"/"Y", never "lon"/"lat" inherited from whatever grid the window was built around.
+// Falls back to the base surface's own flag when no grid layer resolves (cloud, solid, bare image).
+static int activeGridGeog(Scene *s) {
+	if (!s) return 0;
+	ActiveGrid ag = resolveActiveGrid(s);
+	return ag.valid ? ag.geog : s->baseGeog;
 }
 
 // Scene Objects label of the grid the window is CURRENTLY DISPLAYING (topmost visible). Empty when

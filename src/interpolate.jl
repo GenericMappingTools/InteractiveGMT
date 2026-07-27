@@ -127,7 +127,8 @@ function _on_interpolate(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		isa(R, GMTgrid) || error("got a $(typeof(R)), not a grid")
 
 		ok = _gm3d_deliver(scene, R, "Gridded ($method)", _get(d, "outfile"), false,
-		                   "$method " * join(("$k=$v" for (k, v) in kw), ' '))
+		                   "$method " * join(("$k=$v" for (k, v) in kw), ' ');
+		                   geographic = (coords == "auto" ? nothing : geog))
 		# The data points go ON TOP of the new grid (vectors always ride above rasters), from the very
 		# dataset that was gridded — not a second read of the file.
 		if ok == Cint(1) && _on(d, "plotpts")

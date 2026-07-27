@@ -216,6 +216,12 @@ struct ExtraObj {
 	bool   showBar = true;                   // user wants this grid's colorbar shown (when it is active)
 	int    cubeLayers = 0;                   // >1 iff this grid is a 3-D-cube variable (its menu offers
 	                                         // "Cube layers…", opening the slider bound to THIS cube)
+	int    geog = 0;                         // this grid's OWN x,y kind: !=0 -> lon/lat, 0 -> cartesian X/Y.
+	                                         // Mirrors the base surface's Scene-level baseGeog. The axis
+	                                         // NAME titles follow the ACTIVE grid's flag, so a cartesian
+	                                         // derived grid (a gravmag3d anomaly computed with the dialog's
+	                                         // "Geographic" UNCHECKED) is never labelled lon/lat just
+	                                         // because the window's parent grid happened to be geographic.
 };
 
 // A user-drawn polygon (closed polyline) from the toolbar polygon tool. Vertices are kept in
@@ -778,9 +784,27 @@ static inline void surfSetScale(Scene *s, double x, double y, double z) {
 static inline void surfGetScale(Scene *s, double sc[3]) {
 	if (vtkProp3D *p = surfProp(s)) p->GetScale(sc); else { sc[0]=sc[1]=sc[2]=1.0; }
 }
+// The ACTIVE grid layer's own (unscaled) data z range — defined next to resolveActiveGrid
+// (50_scene.cpp), which is also what the readout and the colorbar resolve through, so all three
+// always describe the SAME layer. false = no grid layer at all (point cloud, solid, bare image).
+static bool activeGridZRange(Scene *s, double &zlo, double &zhi);
+static int  activeGridGeog(Scene *s);
+
 static inline void surfGetBounds(Scene *s, double b[6]) {
-	if (s->viewBoundsOverride) { for (int i = 0; i < 6; ++i) b[i] = s->viewBounds[i]; return; }
-	if (vtkProp3D *p = surfProp(s)) p->GetBounds(b);
+	if (s->viewBoundsOverride) { for (int i = 0; i < 6; ++i) b[i] = s->viewBounds[i]; }
+	else if (vtkProp3D *p = surfProp(s)) p->GetBounds(b);
+	// SACRED_LAW.md "derived-variable axes law", Z half: a NEW grid is a NEW quantity with its OWN Z
+	// axis and, more likely than not, its OWN UNITS (a gravity anomaly in mGal computed over a
+	// bathymetry grid in m). It must never wear the parent's Z frame. The X/Y half already reframes
+	// (viewBounds above); Z is taken here, at the ONE source every bounds-driven function reads
+	// (applyVE's axes box, fitSnapView's camera fit, rebuildAxisLabels' tick billboards, the gizmo),
+	// so they all follow the active layer automatically. When the base surface IS the active grid this
+	// returns its own zmin/zmax = the actor bounds, i.e. no change to the ordinary single-grid case.
+	double zlo, zhi;
+	if (activeGridZRange(s, zlo, zhi)) {
+		const double zs = s->zfac * s->ve;
+		b[4] = zlo * zs; b[5] = zhi * zs;
+	}
 }
 static inline void surfSetVisibility(Scene *s, int v) {
 	if (vtkProp3D *p = surfProp(s)) p->SetVisibility(v);
@@ -1409,6 +1433,39 @@ static inline void pinCubeAxisZ(Scene *s, double b[6]) {
 	b[5] = s->cubeZMax * zs;
 }
 
+// Put the axes CUBE's box on `bIn`. ONE function for it: applyVE calls it when the geometry/VE
+// changed, rebuildAxisLabels calls it every render — so when the ACTIVE grid changes (a derived
+// variable in different units becomes the visible one) the box re-fits on its own, with no call
+// site to hunt down. Takes a COPY: the degenerate-Z guard (a zero range makes vtkCubeAxesActor
+// compute a NaN label count and abort the render) must not leak back into the caller's bounds,
+// which drive the flat-map Z-hide test. Only touches the actor when the box actually moved —
+// SetBounds always Modified()s, and this runs inside the render's StartEvent.
+static inline void axesSetBounds(Scene *s, const double bIn[6]) {
+	if (!s->axes) return;
+	double b[6];
+	for (int i = 0; i < 6; ++i) b[i] = bIn[i];
+	if (b[5] <= b[4]) b[5] = b[4] + 1.0;
+	double cur[6]; s->axes->GetBounds(cur);
+	for (int i = 0; i < 6; ++i)
+		if (std::abs(cur[i] - b[i]) > 1e-9 * (1.0 + std::abs(b[i]))) { s->axes->SetBounds(b); return; }
+}
+
+// The X/Y axis NAME titles, from the ACTIVE layer's own x,y kind. Geographic -> "lon"/"lat";
+// cartesian -> "X"/"Y". ONE function for it (buildAndShow seeds the billboards, rebuildAxisLabels
+// calls this every render), so the names re-follow the layer the moment the active one changes —
+// a cartesian derived grid dropped into a geographic window must NOT keep saying lon/lat. Only
+// touches the actors when the name actually changed (this runs inside the render's StartEvent).
+static inline void syncAxisNames(Scene *s) {
+	if (!s) return;
+	const bool geog = activeGridGeog(s) != 0;
+	const char *want[2] = { geog ? "lon" : "X", geog ? "lat" : "Y" };
+	for (int i = 0; i < 2; ++i) {
+		if (s->axName[i] == want[i]) continue;
+		s->axName[i] = want[i];
+		if (s->axTitle[i]) s->axTitle[i]->SetInput(s->axName[i].c_str());
+	}
+}
+
 static void rebuildAxisLabels(Scene *s) {
 	if (!s->surf || !s->ren || !s->ren->GetActiveCamera())
 		return;
@@ -1425,6 +1482,7 @@ static void rebuildAxisLabels(Scene *s) {
 	if (s->axisTicks) s->axisTicks->SetVisibility(1);
 	double b[6]; surfGetBounds(s, b);            // drawn (VE-scaled) bounds
 	pinCubeAxisZ(s, b);                          // cube: hold the Z box to the whole cube's range
+	axesSetBounds(s, b);                         // re-box the cube if the ACTIVE layer's Z changed under us
 	const double ctr[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
 	double cam[3]; s->ren->GetActiveCamera()->GetPosition(cam);
 
@@ -1483,6 +1541,12 @@ static void rebuildAxisLabels(Scene *s) {
 		if (s->axTitle[0]) s->axTitle[0]->SetVisibility(0);
 		if (s->axTitle[1]) s->axTitle[1]->SetVisibility(0);
 	} else {
+		// The NAMES follow the ACTIVE layer's own x,y kind, not the kind the window was BUILT with:
+		// a grid we know for sure is cartesian (a gravmag3d anomaly computed with the dialog's
+		// "Geographic" unchecked -> its x,y are metres) must read "X"/"Y", never the parent grid's
+		// "lon"/"lat". Same shared resolver as the Z range above, so the names, the numbers, the
+		// colorbar and the readout always describe ONE layer.
+		syncAxisNames(s);
 		// X/Y NAME labels at the midpoint of each floor edge, pushed well past the numbers. No Z name.
 		placeAxisTitle(s, s->axTitle[0], 0, 0.5*(b[0]+b[1]), xEdgeY, b[4], ctr, tickLen);
 		placeAxisTitle(s, s->axTitle[1], 1, 0.5*(b[2]+b[3]), yEdgeX, b[4], ctr, tickLen);
@@ -1502,9 +1566,12 @@ static void rebuildAxisLabels(Scene *s) {
 		for (auto &l : s->zlabels) l->SetVisibility(0);
 	} else {
 		// Cube: label the Z axis with the WHOLE cube's range (matching the pinned box) so the numbers
-		// are identical on every layer; otherwise this layer's own data range.
-		const double zlo = s->cubeZLock ? s->cubeZMin : s->zmin;
-		const double zhi = s->cubeZLock ? s->cubeZMax : s->zmax;
+		// are identical on every layer; otherwise the ACTIVE grid's own data range — a derived
+		// variable carries its own units, so annotating it with the base surface's zmin/zmax would
+		// print metres up the side of a milligal anomaly (SACRED_LAW.md derived-variable axes law).
+		double zlo = s->zmin, zhi = s->zmax;
+		activeGridZRange(s, zlo, zhi);
+		if (s->cubeZLock) { zlo = s->cubeZMin; zhi = s->cubeZMax; }
 		placeTickBillboards(s, s->zlabels, zlo, zhi, b[4], b[5], 2, zx, zy, ctr, tp, tl, tickLen);
 	}
 	if (s->flat2d) {
@@ -1572,8 +1639,7 @@ static void applyVE(Scene *s) {
 	// window). Hiding the Z axis is not enough. Feed the axes a tiny non-zero Z range so the
 	// count stays finite; the Z axis line + gridlines are hidden anyway, so nothing shows.
 	const bool flatZ = (b[5] - b[4]) <= 0.0;
-	if (flatZ) b[5] = b[4] + 1.0;                // non-degenerate range for the (hidden) Z axis
-	s->axes->SetBounds(b);
+	axesSetBounds(s, b);                         // shared box setter (carries the same guard)
 	s->axes->SetZAxisVisibility(flatZ ? 0 : 1);
 	if (flatZ) s->axes->DrawZGridlinesOff(); else s->axes->DrawZGridlinesOn();
 	// Flat map: X/Y gridlines go coplanar with the image (a mesh over the map) -> drop them; 3-D
