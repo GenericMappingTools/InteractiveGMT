@@ -228,6 +228,21 @@
         </layout>
        </item>
 
+       <!-- Geographic lives on the FIRST tab, in plain sight: it decides whether the body x,y are
+            lon/lat or metres, so it changes the whole computation AND the result's axes. Buried on
+            the third tab it was easy to miss and easy to get wrong. Same placement as
+            grdgravmag3d_dialog.ui — two dialogs for one tool, one layout habit. -->
+       <item>
+        <widget class="QCheckBox" name="chk_geog">
+         <property name="text">
+          <string>Geographic — body x,y are lon/lat  (f=:g)</string>
+         </property>
+         <property name="toolTip">
+          <string>Convert lon/lat to meters with a Flat Earth approximation. Leave unchecked when the body coordinates are already metres.</string>
+         </property>
+        </widget>
+       </item>
+
        <item>
         <spacer name="verticalSpacer_body">
          <property name="orientation">
@@ -489,16 +504,6 @@
           <widget class="QLineEdit" name="le_yinc">
            <property name="toolTip">
             <string>y_inc — leave empty to reuse x_inc</string>
-           </property>
-          </widget>
-         </item>
-         <item row="0" column="3" colspan="2">
-          <widget class="QCheckBox" name="chk_geog">
-           <property name="text">
-            <string>Geographic (f=:g)</string>
-           </property>
-           <property name="toolTip">
-            <string>Convert lon/lat to meters with a Flat Earth approximation</string>
            </property>
           </widget>
          </item>

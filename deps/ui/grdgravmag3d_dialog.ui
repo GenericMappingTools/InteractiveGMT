@@ -173,6 +173,20 @@
         </layout>
        </item>
 
+       <!-- Geographic lives on the FIRST tab, in plain sight: it decides whether the input x,y are
+            lon/lat or metres, so it changes the whole computation AND the result's axes. Buried on
+            the third tab it was easy to miss and easy to get wrong. -->
+       <item>
+        <widget class="QCheckBox" name="chk_geog">
+         <property name="text">
+          <string>Geographic — grid x,y are lon/lat  (f=:g)</string>
+         </property>
+         <property name="toolTip">
+          <string>Convert lon/lat to meters with a Flat Earth approximation. Leave unchecked when the grid coordinates are already metres.</string>
+         </property>
+        </widget>
+       </item>
+
        <item>
         <spacer name="verticalSpacer_grids">
          <property name="orientation">
@@ -528,16 +542,6 @@
           <widget class="QLineEdit" name="le_yinc">
            <property name="toolTip">
             <string>y_inc — leave empty to reuse x_inc</string>
-           </property>
-          </widget>
-         </item>
-         <item row="0" column="3" colspan="2">
-          <widget class="QCheckBox" name="chk_geog">
-           <property name="text">
-            <string>Geographic (f=:g)</string>
-           </property>
-           <property name="toolTip">
-            <string>Convert lon/lat to meters with a Flat Earth approximation</string>
            </property>
           </widget>
          </item>
