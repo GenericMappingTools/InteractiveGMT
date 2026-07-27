@@ -87,7 +87,7 @@ struct GmtEdit {
 	QPointer<QDialog>   navDlg;
 };
 
-// Live editor windows, keyed by the GmtEdit* handed back to the host.
+// Live editor windows, keyed by the GmtEdit *handed back to the host.
 static std::unordered_set<GmtEdit*> g_gmtedits;
 static bool geAlive(GmtEdit *s) { return s && g_gmtedits.count(s) != 0; }
 
@@ -965,7 +965,7 @@ static GmtEdit *buildGmtEdit(const char *title, double widthKm) {
 }
 
 // ---------------------------------------------------------------------------
-//  host-side setters (the bodies of the gmtvtk_gmtedit_* exports)
+//  host-side setters (the bodies of the gmtvtk_gmtedit_ *exports)
 // ---------------------------------------------------------------------------
 
 static void geSetX(GmtEdit *s, const double *x, int n, bool isDist) {
@@ -1145,7 +1145,7 @@ static void geSetMark(GmtEdit *s, double x) {
 }
 
 // Attach (or detach, with nullptr) the 3-D viewer this editor was opened from, and tell Julia the
-// same handle so its "pickpt" action knows where to stamp the marker. The Scene* travels as text
+// same handle so its "pickpt" action knows where to stamp the marker. The Scene *travels as text
 // because the one callback carries a single string payload; it is the SAME opaque handle Julia
 // already keys its own figure registry on, not a new kind of value.
 static void geSetParent(GmtEdit *s, void *scene) {

@@ -10,7 +10,7 @@
 // Forward decl: the standalone X,Y plot tool (65_xyplot.cpp, #included later). The Profile panel's
 // right-click "Open in X,Y plot tool" hands its current (x,y) series to this to spawn a full plotter.
 struct XYPlot;
-static XYPlot *openSeriesInXYTool(const std::vector<double>& x, const std::vector<double>& y,
+static XYPlot *openSeriesInXYTool(const std::vector<double> &x, const std::vector<double> &y,
                                   const char *title, const char *xlabel, const char *ylabel);
 
 // 2D profile plot. Pure QPainter (VTK has no working context-2D GL backend in this
@@ -21,22 +21,27 @@ public:
 		setMinimumHeight(170);
 		setAutoFillBackground(true);
 	}
-	void setProfile(const std::vector<double>& s, const std::vector<double>& z) {
+	// `gridName` is the label of the grid that was sampled: it becomes the title, so a profile window is
+	// named "Profile <grid name>" and nothing longer.
+	void setProfile(const std::vector<double> &s, const std::vector<double> &z,
+	                const QString &gridName = QString()) {
 		m_s = s; m_z = z;
-		m_title.clear(); m_xlabel = "Distance"; m_ylabel = "Elevation"; m_isDate = false;
+		m_title = z.empty() ? QString() : (gridName.isEmpty() ? QString("Profile")
+		                                                      : QString("Profile %1").arg(gridName));
+		m_xlabel = "Distance"; m_ylabel = "Elevation"; m_isDate = false;
 		update();
 	}
 	// Generic (x,y) series (e.g. a downloaded tide gauge: x = epoch seconds, y = sea level).
 	// isDate -> the x ticks are painted as date/time labels instead of plain numbers.
-	void setSeries(const std::vector<double>& x, const std::vector<double>& y,
-	               const QString& title, const QString& xlabel, const QString& ylabel, bool isDate) {
+	void setSeries(const std::vector<double> &x, const std::vector<double> &y,
+	               const QString &title, const QString &xlabel, const QString &ylabel, bool isDate) {
 		m_s = x; m_z = y;
 		m_title = title; m_xlabel = xlabel; m_ylabel = ylabel; m_isDate = isDate;
 		update();
 	}
 	// Read the currently shown series (for "Open in X,Y plot tool" + its C API).
-	const std::vector<double>& seriesX() const { return m_s; }
-	const std::vector<double>& seriesY() const { return m_z; }
+	const std::vector<double> &seriesX() const { return m_s; }
+	const std::vector<double> &seriesY() const { return m_z; }
 	QString seriesTitle()  const { return m_title; }
 	QString seriesXLabel() const { return m_xlabel; }
 	QString seriesYLabel() const { return m_ylabel; }
@@ -139,7 +144,7 @@ protected:
 		a->setEnabled(m_s.size() >= 2);
 		if (m.exec(e->globalPos()) == a && m_s.size() >= 2)
 			openSeriesInXYTool(m_s, m_z,
-				m_title.isEmpty() ? "i'GMT  —  Profile" : m_title.toUtf8().constData(),
+				m_title.isEmpty() ? "Profile" : m_title.toUtf8().constData(),
 				m_xlabel.toUtf8().constData(), m_ylabel.toUtf8().constData());
 	}
 };
@@ -155,17 +160,27 @@ static void profileClear(Scene *s) {
 	s->profPD = nullptr; s->profStripe = nullptr; s->profStyle = 0;
 	s->profS.clear(); s->profZ.clear();
 	if (s->prof) s->prof->setProfile({}, {});
+	setActorTopLayer(s, s->profLine, false);   // it left the pile -> back to the main 3-D layer
+	applyStacking(s);                          // and re-rank what is left
 	rebuildSceneObjects(s);   // drop the Profile row from the Scene Objects list
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
 // Pick the surface point under cursor device px (dx,dy) and convert to TRUE (x,y) —
 // undo the actor's horizontal scale (xfac). Returns false if the cursor misses the surface.
-static bool pickSurfaceXY(Scene *s, int dx, int dy, double& tx, double& ty) {
+// EVERY VISIBLE data surface is in the pick list, not just the base relief: with a second grid
+// displayed over the first, the cursor is over THAT grid, so the track must start/end on it (the
+// z sampling already follows the topmost-visible grid through sampleActiveZ — the pick has to agree).
+static bool pickSurfaceXY(Scene *s, int dx, int dy, double &tx, double &ty) {
 	if (!s || !s->ren || !s->surf)
 		return false;
 	vtkNew<vtkCellPicker> pk; pk->SetTolerance(0.0005);
-	pk->PickFromListOn(); pk->AddPickList(surfProp(s));
+	pk->PickFromListOn();
+	pk->AddPickList(surfProp(s));
+	for (auto &ex : s->extras) {
+		if (ex.actor && ex.actor->GetVisibility()) pk->AddPickList(ex.actor);
+		if (ex.drape && ex.drape->GetVisibility()) pk->AddPickList(ex.drape);
+	}
 	if (!pk->Pick((double)dx, (double)dy, 0.0, s->ren))
 		return false;
 	double pp[3]; pk->GetPickPosition(pp);
@@ -212,14 +227,22 @@ static void computeProfile(Scene *s, double ax, double ay, double bx, double by)
 	s->profPD = lpd;                                   // keep for restyle + save
 	if (auto *m = vtkPolyDataMapper::SafeDownCast(s->profLine->GetMapper()))
 		m->SetInputData(lpd);
+	const bool wasVisible = s->profLine->GetVisibility() != 0;
 	s->profLine->SetVisibility(np >= 2 ? 1 : 0);
 	s->profStyle = 0;                                  // a fresh line starts solid
 	s->profStripe = nullptr;
 	s->profLine->SetTexture(nullptr);
 	s->profLine->GetProperty()->SetOpacity(1.0);
 	s->profS = sv; s->profZ = zv;
+	// The track is a vector: give it a rank on the SHARED pile and let applyStacking place it — that is
+	// what lifts it above EVERY grid (the law), including a second grid added over the first. Only when
+	// it JOINS the pile; re-ranking on every drag event would renumber the whole pile 60 times a second.
+	if (np >= 2 && !wasVisible) {
+		s->profStack = s->vecSeq++;
+		applyStacking(s);
+	}
 
-	if (s->prof) s->prof->setProfile(sv, zv);
+	if (s->prof) s->prof->setProfile(sv, zv, QString::fromStdString(activeGridName(s)));
 	if (s->win && np >= 2)
 		s->win->statusBar()->showMessage(
 			QString("Profile: 2D distance %1   elevation %2 .. %3   (%4 samples)")
@@ -287,13 +310,13 @@ protected:
 	bool   midDown = false, midMoved = false;
 	QPoint midPress, midLast;
 
-	void devPx(const QPoint& p, double& dx, double& dy) {
+	void devPx(const QPoint &p, double &dx, double &dy) {
 		const double r = devicePixelRatioF();
 		const int    H = renderWindow()->GetSize()[1];
 		dx = p.x() * r;                 // VTK display coords = bottom-up device px
 		dy = H - p.y() * r;
 	}
-	void recenterAt(const QPoint& p) {
+	void recenterAt(const QPoint &p) {
 		if (!s || !s->ren || !s->surf) return;
 		vtkRenderer *ren = s->ren; vtkCamera *cam = ren->GetActiveCamera();
 		if (!cam) return;
@@ -310,7 +333,7 @@ protected:
 			renderWindow()->Render();
 		}
 	}
-	void panBy(const QPoint& prev, const QPoint& cur) {
+	void panBy(const QPoint &prev, const QPoint &cur) {
 		if (!s || !s->ren) return;
 		vtkRenderer *ren = s->ren; vtkCamera *cam = ren->GetActiveCamera();
 		if (!cam) return;

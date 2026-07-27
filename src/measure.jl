@@ -205,15 +205,19 @@ function _poly_area(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool
 	return nothing
 end
 
-# "Extract profile…": the grdtrack twin of the Ctrl+left-drag profiler. Sample the window's grid
+# "Extract profile…": the grdtrack twin of the Ctrl+left-drag profiler. Sample the window's DISPLAYED grid
 # along a drawn line/polyline and open the (distance, elevation) graph in the standalone X,Y plot
 # tool (Object Manager + Analysis + save). The line is DENSIFIED here by the grid's node spacing (a
 # two-vertex straight line becomes a full-resolution track), grdtrack interpolates z on the FULL-res
 # grid, and the distance axis is the same CRS-aware geodesic (_seg_dist_azim) the measure menu and
 # Preferences use — so distances match "Line length…". `dir` has no meaning for a profile.
 function _extract_profile(scene::Ptr{Cvoid}, path::String, proj4::String,
-                          datype::AbstractString="Ellipsoidal", units::AbstractString="kilometers")
-	G = _find_object(scene, :grid, "")
+                          datype::AbstractString="Ellipsoidal", units::AbstractString="kilometers",
+                          gridname::AbstractString="")
+	# `gridname` is the Scene Objects label of the grid ON DISPLAY (the C++ side's activeGridName): with
+	# two grids loaded, grdtrack must sample the VISIBLE one, not the base grid buried under it. Empty
+	# label = the base surface is the visible one, which is also _find_object's first-of-kind fallback.
+	G = _find_object(scene, :grid, String(gridname))
 	G === nothing && (print("No grid to sample."); return nothing)
 	D   = GMT.gmtread(path)
 	seg = isa(D, Vector) ? D[1] : D                             # a drawn line/polyline is one segment
@@ -246,6 +250,9 @@ function _extract_profile(scene::Ptr{Cvoid}, path::String, proj4::String,
 	length(z) < 2 && (print("Profile is entirely off the grid."); return nothing)
 
 	xlab = geog ? "Distance ($ulab)" : "Distance"
-	xyplot(dist, z; name="Profile", title="i'GMT  —  Extract profile", xlabel=xlab, ylabel="Elevation")
+	# Window title = "Profile <grid name>" and nothing longer (same wording the bottom-dock Profile
+	# panel's own "Open in X,Y plot tool" uses, ProfilePanel::setProfile).
+	ttl = isempty(gridname) ? "Profile" : "Profile " * String(gridname)
+	xyplot(dist, z; name=ttl, title=ttl, xlabel=xlab, ylabel="Elevation")
 	return nothing
 end

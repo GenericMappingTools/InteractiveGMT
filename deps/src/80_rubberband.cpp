@@ -8,7 +8,7 @@
 //  Area pick is SCREEN-SPACE (project every point with the actor scale, test box
 //  containment) — hardware pickers miss points (same lesson as pickOverlayAt).
 // ============================================================================
-static void rbSetBox(Scene* s, int x0, int y0, int x1, int y1) {
+static void rbSetBox(Scene *s, int x0, int y0, int x1, int y1) {
 	s->rbBoxPts->SetPoint(0, x0, y0, 0.0);
 	s->rbBoxPts->SetPoint(1, x1, y0, 0.0);
 	s->rbBoxPts->SetPoint(2, x1, y1, 0.0);
@@ -17,11 +17,11 @@ static void rbSetBox(Scene* s, int x0, int y0, int x1, int y1) {
 }
 
 // Rebuild the highlight overlay (selected points drawn on top) from the current set.
-static void rbRebuildHighlight(Scene* s) {
+static void rbRebuildHighlight(Scene *s) {
 	s->rbHLPts->Reset();
 	vtkNew<vtkCellArray> verts;
 	if (s->cloudPD && !s->rbSel.empty()) {
-		vtkPoints* src = s->cloudPD->GetPoints();
+		vtkPoints *src = s->cloudPD->GetPoints();
 		const vtkIdType np = src ? src->GetNumberOfPoints() : 0;
 		for (vtkIdType id : s->rbSel) {
 			if (id < np) {
@@ -38,15 +38,15 @@ static void rbRebuildHighlight(Scene* s) {
 
 // Screen-space area pick: every cloud point projected to display (with the surf actor
 // scale, no rot/trans on the cloud), kept if inside the drag rectangle.
-static void rbAreaPick(Scene* s, int x0, int y0, int x1, int y1, std::vector<vtkIdType>& out) {
+static void rbAreaPick(Scene *s, int x0, int y0, int x1, int y1, std::vector<vtkIdType> &out) {
 	out.clear();
 	if (!s->cloudPD || !s->cloudPD->GetPoints())
 		return;
-	vtkRenderer* ren = s->ren;
+	vtkRenderer *ren = s->ren;
 	const double xlo = std::min(x0, x1), xhi = std::max(x0, x1);
 	const double ylo = std::min(y0, y1), yhi = std::max(y0, y1);
 	double sc[3]; s->surf->GetScale(sc);
-	vtkPoints* pts = s->cloudPD->GetPoints();
+	vtkPoints *pts = s->cloudPD->GetPoints();
 	const vtkIdType np = pts->GetNumberOfPoints();
 	for (vtkIdType i = 0; i < np; ++i) {
 		double p[3]; pts->GetPoint(i, p);
@@ -58,9 +58,9 @@ static void rbAreaPick(Scene* s, int x0, int y0, int x1, int y1, std::vector<vtk
 	}
 }
 
-static void RubberCB(vtkObject* caller, unsigned long eid, void* clientData, void*) {
-	Scene* s = static_cast<Scene*>(clientData);
-	vtkRenderWindowInteractor* rwi = vtkRenderWindowInteractor::SafeDownCast(caller);
+static void RubberCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
+	Scene *s = static_cast<Scene*>(clientData);
+	vtkRenderWindowInteractor *rwi = vtkRenderWindowInteractor::SafeDownCast(caller);
 	if (!s || !rwi || !s->rbEnabled)
 		return;
 	bool handled = false;
@@ -107,7 +107,7 @@ static void RubberCB(vtkObject* caller, unsigned long eid, void* clientData, voi
 		}
 	}
 	else if (eid == vtkCommand::KeyPressEvent) {
-		const char* sym = rwi->GetKeySym();
+		const char *sym = rwi->GetKeySym();
 		if (rwi->GetControlKey() && sym && (sym[0] == 'z' || sym[0] == 'Z') && sym[1] == '\0') {
 			if (!s->rbUndo.empty()) {
 				s->rbSel = std::set<vtkIdType>(s->rbUndo.back().begin(), s->rbUndo.back().end());
@@ -126,7 +126,7 @@ static void RubberCB(vtkObject* caller, unsigned long eid, void* clientData, voi
 // Enable Ctrl+right-drag rubber-band selection on a point-cloud figure. `cloud` is the
 // cloud polydata whose point ids the selection indexes; r,g,b = highlight colour. The
 // interactor must already be live (call after buildAndShow).
-static void enableRubberBand(Scene* s, vtkSmartPointer<vtkPolyData> cloud, double r, double g, double b) {
+static void enableRubberBand(Scene *s, vtkSmartPointer<vtkPolyData> cloud, double r, double g, double b) {
 	if (!s || !s->widget || !s->widget->interactor())
 		return;
 	s->cloudPD = cloud;
@@ -168,7 +168,7 @@ static void enableRubberBand(Scene* s, vtkSmartPointer<vtkPolyData> cloud, doubl
 	cmd->SetCallback(RubberCB);
 	cmd->SetClientData(s);
 	s->rbCmd = cmd;
-	vtkRenderWindowInteractor* rwi = s->widget->interactor();
+	vtkRenderWindowInteractor *rwi = s->widget->interactor();
 	rwi->AddObserver(vtkCommand::RightButtonPressEvent, cmd, 10.0);
 	rwi->AddObserver(vtkCommand::MouseMoveEvent, cmd, 10.0);
 	rwi->AddObserver(vtkCommand::RightButtonReleaseEvent, cmd, 10.0);

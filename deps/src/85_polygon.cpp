@@ -47,7 +47,7 @@ static QIcon makePolygonIcon() {
 	p.setBrush(QColor(255, 200, 120, 150));
 	p.drawPolygon(poly);
 	p.setPen(Qt::NoPen); p.setBrush(QColor(190, 110, 30));   // vertex handles
-	for (const QPointF& q : poly) p.drawEllipse(q, 2.0, 2.0);
+	for (const QPointF &q : poly) p.drawEllipse(q, 2.0, 2.0);
 	p.end();
 	return QIcon(pm);
 }
@@ -275,7 +275,7 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 	const double gx  = (s->xfac != 0.0) ? s->xfac : 1.0;
 
 	if (!s->gridZ.empty()) {
-		auto eval = [&](double t, double& fval) -> bool {
+		auto eval = [&](double t, double &fval) -> bool {
 			const double X = nr[0] + t*dirx, Y = nr[1] + t*diry, Z = nr[2] + t*dirz;
 			const double h = sampleZ(s, X / gx, Y);
 			if (std::isnan(h)) return false;
@@ -327,7 +327,7 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 
 // TRUE-coord vertex -> display px (device, bottom-up; matches GetEventPosition), using the same
 // scaled space the actors live in. For hit-testing handles / polygon edges against a click.
-static void polyToDisplay(Scene *s, const std::array<double,3>& v, double d[2]) {
+static void polyToDisplay(Scene *s, const std::array<double,3> &v, double d[2]) {
 	s->ren->SetWorldPoint(v[0]*s->xfac, v[1], v[2]*s->zfac*s->ve, 1.0);
 	s->ren->WorldToDisplay();
 	const double *dp = s->ren->GetDisplayPoint();
@@ -350,9 +350,9 @@ static vtkSmartPointer<vtkActor> polyMakeLineActor(Scene *s, vtkPolyData *pd, do
 }
 
 // Fill a polydata with a polyline through `verts`; closed adds the return edge to vertex 0.
-static void polyFillLine(vtkPolyData *pd, const std::vector<std::array<double,3>>& verts, bool closed) {
+static void polyFillLine(vtkPolyData *pd, const std::vector<std::array<double,3>> &verts, bool closed) {
 	vtkNew<vtkPoints> pts;
-	for (auto& v : verts) pts->InsertNextPoint(v[0], v[1], v[2]);
+	for (auto &v : verts) pts->InsertNextPoint(v[0], v[1], v[2]);
 	vtkNew<vtkCellArray> lines;
 	const vtkIdType n = (vtkIdType)verts.size();
 	if (n >= 2) {
@@ -370,8 +370,8 @@ static void polyFillLine(vtkPolyData *pd, const std::vector<std::array<double,3>
 // it) with z sampled from the full-res heightfield (sampleZ), so the edge HUGS the terrain instead
 // of cutting a straight chord between corners. Off a grid (image / FV / point cloud there's no
 // heightfield) it falls back to straight segments (linear z). Corner zs are kept as-is.
-static void polyDrapeCorners(Scene *s, const std::vector<std::array<double,3>>& corners,
-							 std::vector<std::array<double,3>>& out) {
+static void polyDrapeCorners(Scene *s, const std::vector<std::array<double,3>> &corners,
+							 std::vector<std::array<double,3>> &out) {
 	out.clear();
 	const int m = (int)corners.size();
 	if (m == 0) return;
@@ -382,8 +382,8 @@ static void polyDrapeCorners(Scene *s, const std::vector<std::array<double,3>>& 
 		spacing = (sx > 0 && sy > 0) ? std::min(sx, sy) : std::max(sx, sy);
 	}
 	for (int i = 0; i < m - 1; ++i) {
-		const auto& a = corners[i];
-		const auto& b = corners[i + 1];
+		const auto &a = corners[i];
+		const auto &b = corners[i + 1];
 		const double dx = b[0] - a[0], dy = b[1] - a[1];
 		const double dist = std::hypot(dx, dy);
 		int nsub = 1;
@@ -408,7 +408,7 @@ static void polyDrapeCorners(Scene *s, const std::vector<std::array<double,3>>& 
 // opacity live on pg (fillColor/fillOpacity) INDEPENDENT of the outline; default opacity 0 keeps the
 // historic outline-only look until the user dials up transparency in Line Properties. Open polylines
 // have no fill (hidden). The face sits just below the outline (polygon offset) but above the surface.
-static void polyRebuildFill(Scene *s, Polygon& pg) {
+static void polyRebuildFill(Scene *s, Polygon &pg) {
 	if (!pg.closed) {                                  // only closed rings can carry a fill
 		if (pg.fill) pg.fill->VisibilityOff();
 		return;
@@ -437,7 +437,7 @@ static void polyRebuildFill(Scene *s, Polygon& pg) {
 	//    relief, so the filled face hugs the terrain instead of a flat chord that the hills poke
 	//    through (which read as a half-filled polygon).
 	vtkNew<vtkPoints> flatPts;
-	for (auto& c : ring) flatPts->InsertNextPoint(c[0], c[1], 0.0);
+	for (auto &c : ring) flatPts->InsertNextPoint(c[0], c[1], 0.0);
 	vtkNew<vtkCellArray> flatPoly;
 	{ vtkNew<vtkIdList> ids; for (vtkIdType i = 0; i < (vtkIdType)ring.size(); ++i) ids->InsertNextId(i);
 	  flatPoly->InsertNextCell(ids); }
@@ -501,7 +501,7 @@ static void polyRebuildFill(Scene *s, Polygon& pg) {
 	pg.fill->SetVisibility(pg.fillOpacity > 0.0 ? 1 : 0);   // no fill drawn until the user raises opacity
 }
 
-static void polyRebuildLine(Scene *s, Polygon& pg) {
+static void polyRebuildLine(Scene *s, Polygon &pg) {
 	if (!pg.linePD) pg.linePD = vtkSmartPointer<vtkPolyData>::New();
 	std::vector<std::array<double,3>> draped;
 	polyDrapeCorners(s, pg.v, draped);
@@ -517,21 +517,21 @@ static void polyRebuildLine(Scene *s, Polygon& pg) {
 
 // Axis-aligned rectangle (TRUE x,y) from two opposite corners a,b. z is left at the corners' value
 // (re-draped by polyDrapeCorners on rebuild). Returns the 4 corners, not yet closed.
-static void polyRectCorners(const double a[3], const double b[3], std::vector<std::array<double,3>>& out) {
+static void polyRectCorners(const double a[3], const double b[3], std::vector<std::array<double,3>> &out) {
 	out = { { a[0], a[1], a[2] }, { b[0], a[1], a[2] }, { b[0], b[1], b[2] }, { a[0], b[1], b[2] } };
 }
 
 // A polygon is a rectangle if it was drawn with a rect tool (isRect) OR it is a nested-grids
 // rectangle (nestKind==1). Single source of truth — every nested rect, whatever the creation
 // path (toolbar draw, chain refine, reflow split), is a rectangle and edits must keep it so.
-static inline bool polyIsRect(const Polygon& pg) { return pg.isRect || pg.nestKind == 1; }
+static inline bool polyIsRect(const Polygon &pg) { return pg.isRect || pg.nestKind == 1; }
 
 // Drag corner `i` of a rectangle to (wx,wy) while KEEPING it axis-aligned. The ring is the 4
 // corners (+ closing dup) laid out by polyRectCorners: v0=(ax,ay) v1=(bx,ay) v2=(bx,by) v3=(ax,by),
 // so corner i and its opposite (i+2)%4 are the two free diagonal corners. We anchor the opposite
 // corner Q and rebuild the other three from the dragged corner P=(wx,wy): the two neighbours take
 // the mixed (Q.x,P.y)/(P.x,Q.y) coords, the split flipping with i's parity (even/odd winding).
-static void rectDragCorner(Polygon& pg, int i, double wx, double wy) {
+static void rectDragCorner(Polygon &pg, int i, double wx, double wy) {
 	if (pg.v.size() < 4 || i < 0 || i > 3) return;
 	const int op = (i + 2) % 4;
 	const double qx = pg.v[op][0], qy = pg.v[op][1];
@@ -543,7 +543,7 @@ static void rectDragCorner(Polygon& pg, int i, double wx, double wy) {
 }
 
 // Circle (in the TRUE x,y plane) centred at c, passing through edge point e, as N corner points.
-static void polyCircleCorners(const double c[3], const double e[3], std::vector<std::array<double,3>>& out) {
+static void polyCircleCorners(const double c[3], const double e[3], std::vector<std::array<double,3>> &out) {
 	const double r = std::hypot(e[0] - c[0], e[1] - c[1]);
 	out.clear();
 	const int N = 72;
@@ -587,7 +587,7 @@ static void polyRebuildHandles(Scene *s) {
 	vtkNew<vtkPoints> pts;
 	vtkNew<vtkCellArray> verts;
 	if (s->polyEdit >= 0 && s->polyEdit < (int)s->polys.size()) {
-		auto& v = s->polys[s->polyEdit].v;
+		auto &v = s->polys[s->polyEdit].v;
 		// v is a closed ring (first == last) -> drop the duplicate closing point so one corner
 		// gets one handle (dragging vertex 0 carries the closing point with it).
 		const int m = (v.size() >= 2 && v.front() == v.back()) ? (int)v.size() - 1 : (int)v.size();
@@ -695,7 +695,7 @@ static bool symHitHandle(Scene *s, int x, int y, double tol) {
 static int polyHitPolygon(Scene *s, int x, int y, double tol) {
 	const double tol2 = tol * tol;
 	for (int pi = (int)s->polys.size() - 1; pi >= 0; --pi) {
-		auto& v = s->polys[pi].v;
+		auto &v = s->polys[pi].v;
 		const int n = (int)v.size();
 		if (n < 2) continue;
 		const int edges = s->polys[pi].closed ? n : (n - 1);   // open polyline: no closing edge
@@ -713,7 +713,7 @@ static int polyHitPolygon(Scene *s, int x, int y, double tol) {
 static int polyHitHandle(Scene *s, int x, int y, double tol) {
 	if (s->polyEdit < 0 || s->polyEdit >= (int)s->polys.size()) return -1;
 	const double tol2 = tol * tol;
-	auto& v = s->polys[s->polyEdit].v;
+	auto &v = s->polys[s->polyEdit].v;
 	const int m = (v.size() >= 2 && v.front() == v.back()) ? (int)v.size() - 1 : (int)v.size();
 	int best = -1; double bestd = tol2;
 	for (int i = 0; i < m; ++i) {
@@ -736,7 +736,7 @@ static void polyFinalize(Scene *s, std::vector<std::array<double,3>> verts, bool
 		pg.v.push_back(pg.v.front());      // close the ring (first == last)
 	const std::string pre = std::string(prefix) + " ";   // number PER type: "polygon 1", "rectangle 1", ...
 	int idx = 1;
-	for (auto& p : s->polys) if (p.name.rfind(pre, 0) == 0) ++idx;
+	for (auto &p : s->polys) if (p.name.rfind(pre, 0) == 0) ++idx;
 	pg.name = pre + std::to_string(idx);
 	polyRebuildLine(s, pg);
 	pg.stack = s->vecSeq++;                 // new polygon lands on top of the shared vector pile
@@ -789,7 +789,7 @@ static void nestNearest(double v0, double inc, int n, double pt, double &val, in
 // Snap pt to a parent node in one direction: dir<0 floors (node <= pt), dir>0 ceils (node >= pt),
 // clamped to [0, n-1]. Used so a nested rect rounds OUTWARD to enclose the drawn box — nearest-node
 // rounding on both edges can land them on the same node and collapse the rect to zero width.
-static void nestSnapDir(double v0, double inc, int n, double pt, int dir, double& val, int& idx) {
+static void nestSnapDir(double v0, double inc, int n, double pt, int dir, double &val, int &idx) {
 	if (inc == 0.0 || n < 1) { val = v0; idx = 0; return; }
 	double r = (pt - v0) / inc;
 	int i = dir < 0 ? (int)std::floor(r) : (int)std::ceil(r);
@@ -799,14 +799,14 @@ static void nestSnapDir(double v0, double inc, int n, double pt, int dir, double
 }
 
 // Axis-aligned bbox of a polygon ring.
-static void nestBBox(const Polygon& pg, double& x0, double& x1, double& y0, double& y1) {
+static void nestBBox(const Polygon &pg, double &x0, double &x1, double &y0, double &y1) {
 	x0 = y0 = 1e300; x1 = y1 = -1e300;
-	for (auto& v : pg.v) { x0 = std::min(x0, v[0]); x1 = std::max(x1, v[0]);
+	for (auto &v : pg.v) { x0 = std::min(x0, v[0]); x1 = std::max(x1, v[0]);
 	                       y0 = std::min(y0, v[1]); y1 = std::max(y1, v[1]); }
 }
 
 // Force a nested rect's ring to an axis-aligned rectangle at the given limits (z re-draped on rebuild).
-static void nestSetRect(Scene *s, Polygon& pg, double x0, double x1, double y0, double y1) {
+static void nestSetRect(Scene *s, Polygon &pg, double x0, double x1, double y0, double y1) {
 	const double z = pg.v.empty() ? 0.0 : pg.v[0][2];
 	pg.v = { {x0,y0,z}, {x1,y0,z}, {x1,y1,z}, {x0,y1,z}, {x0,y0,z} };
 	pg.closed = true;
@@ -816,13 +816,13 @@ static void nestSetRect(Scene *s, Polygon& pg, double x0, double x1, double y0, 
 // Re-quantize the whole nested chain. parent_lims walk the chain (base grid -> rect 1 -> rect 2 ...).
 static void nestReflow(Scene *s, bool snap) {
 	std::vector<Polygon*> chain;
-	for (auto& pg : s->polys) if (pg.nestKind == 1) chain.push_back(&pg);
+	for (auto &pg : s->polys) if (pg.nestKind == 1) chain.push_back(&pg);
 	if (chain.empty()) return;
 	NestLims base; const bool validGrid = nestBaseGrid(s, base);
 	NestLims parent{};
 
 	for (size_t k = 0; k < chain.size(); ++k) {
-		Polygon& pg = *chain[k];
+		Polygon &pg = *chain[k];
 		double cxi = pg.nestXi, cyi = pg.nestYi;          // child increments (0 = inherit parent)
 		if (k == 0) {
 			if (!validGrid) {                             // parent rect over an empty region: keep it as-is,
@@ -885,13 +885,13 @@ static void nestReflow(Scene *s, bool snap) {
 // increments = innermost / refinement factor (Mirone make_new_nested). Then reflow snaps it.
 static void nestNewChild(Scene *s) {
 	std::vector<Polygon*> chain;
-	for (auto& pg : s->polys) if (pg.nestKind == 1) chain.push_back(&pg);
+	for (auto &pg : s->polys) if (pg.nestKind == 1) chain.push_back(&pg);
 	if (chain.empty()) return;
 	bool ok = false;
 	const int refine = QInputDialog::getInt(s->win, "Refinement factor", "Enter refinement factor:",
 	                                        5, 1, 100000, 1, &ok);
 	if (!ok || refine <= 0) return;
-	Polygon& inner = *chain.back();
+	Polygon &inner = *chain.back();
 	double x0, x1, y0, y1; nestBBox(inner, x0, x1, y0, y1);
 	const double dx = x1 - x0, dy = y1 - y0;
 	Polygon pg; pg.nestKind = 1; pg.nestReg = inner.nestReg;
@@ -903,7 +903,7 @@ static void nestNewChild(Scene *s) {
 	pg.closed = true;
 	const std::string pre = "Nested rectangle ";
 	int idx = 1;
-	for (auto& p : s->polys) if (p.name.rfind(pre, 0) == 0) ++idx;
+	for (auto &p : s->polys) if (p.name.rfind(pre, 0) == 0) ++idx;
 	pg.name = pre + std::to_string(idx);
 	polyRebuildLine(s, pg);
 	// Inherit ALL of the parent rectangle's properties: registration (above) + the line's full visual
@@ -964,7 +964,7 @@ static void polygonDelete(Scene *s, vtkActor *lineActor) {
 	// Nested rectangle: find its 0-based position in the chain, then cascade to it + all descendants.
 	int kpos = 0;
 	for (int j = 0; j < pi; ++j) if (s->polys[j].nestKind == 1) ++kpos;
-	int chainTotal = 0; for (auto& p : s->polys) if (p.nestKind == 1) ++chainTotal;
+	int chainTotal = 0; for (auto &p : s->polys) if (p.nestKind == 1) ++chainTotal;
 
 	// Blank grids of this rect + every descendant: chain index (1-based) kpos+1 .. chainTotal.
 	for (int ci = kpos + 1; ci <= chainTotal; ++ci) nestDeleteGrid(s, ci);
@@ -972,7 +972,7 @@ static void polygonDelete(Scene *s, vtkActor *lineActor) {
 	// Descendant rectangles = this one + every nested rect after it. Collect their actors, then erase.
 	std::vector<vtkActor*> kill;
 	{ int seen = 0;
-	  for (auto& p : s->polys) { if (p.nestKind != 1) continue; if (seen >= kpos && p.line) kill.push_back(p.line.Get()); ++seen; } }
+	  for (auto &p : s->polys) { if (p.nestKind != 1) continue; if (seen >= kpos && p.line) kill.push_back(p.line.Get()); ++seen; } }
 	for (vtkActor *a : kill) polygonEraseOne(s, a);
 
 	applyVectorStacking(s);
@@ -988,7 +988,7 @@ static void deleteSlipGroup(Scene *s, const QString &groupName) {
 	std::string gname = groupName.toStdString();
 	// Collect all actors of patches with this groupName.
 	std::vector<vtkActor*> kill;
-	for (auto& p : s->polys) {
+	for (auto &p : s->polys) {
 		if (p.groupName == gname && p.line) kill.push_back(p.line.Get());
 	}
 	// Erase them all.
@@ -1301,7 +1301,7 @@ static void mecaUpdateAnchor(Scene *s, int bi) {
 // (Re)configure a text label's actor from its font fields. ALWAYS a vtkBillboardTextActor3D
 // (2026-07-24 standing rule — see TextLabel, 10_geometry.cpp): camera-facing, constant on-screen
 // size, anchored at (x,y,0) in scaled space.
-static void textApplyProps(Scene *s, TextLabel& tl) {
+static void textApplyProps(Scene *s, TextLabel &tl) {
 	vtkBillboardTextActor3D *ba = vtkBillboardTextActor3D::SafeDownCast(tl.actor);
 	vtkTextProperty *tp = ba->GetTextProperty();
 	tp->SetFontFamilyAsString(tl.font.c_str());
@@ -1340,7 +1340,7 @@ static void textApplyProps(Scene *s, TextLabel& tl) {
 // `batchTextLabelsDialog`), never to decide whether one does.
 static int polyHitText(Scene *s, int x, int y, double tol) {
 	for (int i = (int)s->texts.size() - 1; i >= 0; --i) {
-		auto& tl = s->texts[i];
+		auto &tl = s->texts[i];
 		if (!tl.actor || tl.actor->GetVisibility() == 0) continue;
 		double b[6]; tl.actor->GetBounds(b);                    // world space (position + scale baked in)
 		if (b[0] > b[1] || b[2] > b[3]) continue;               // not rendered yet -> no valid box
@@ -1515,7 +1515,7 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 // s->polys and opens it in the SAME vertex-drag edit mode a drawn line gets (polyEnterEdit) —
 // never a second, forked edit implementation (SACRED_LAW: one operation, one function). The
 // segment's colour/width carry over; the rest of the overlay (other islands/segments) is untouched.
-static void overlayPromoteSegmentToPolygon(Scene *s, Overlay& ov, int segIdx) {
+static void overlayPromoteSegmentToPolygon(Scene *s, Overlay &ov, int segIdx) {
 	if (!s || segIdx < 0 || segIdx >= ov.nseg || !ov.baseLine || !ov.baseLine->GetPoints()) return;
 	vtkPoints *pts = ov.baseLine->GetPoints();
 	const int a = ov.segoff[segIdx], z = ov.segoff[segIdx + 1];
@@ -1534,7 +1534,7 @@ static void overlayPromoteSegmentToPolygon(Scene *s, Overlay& ov, int segIdx) {
 
 	const std::string pre = ov.name + " ";         // number per source, like polyFinalize's "polygon N"
 	int idx = 1;
-	for (auto& p : s->polys) if (p.name.rfind(pre, 0) == 0) ++idx;
+	for (auto &p : s->polys) if (p.name.rfind(pre, 0) == 0) ++idx;
 	pg.name = splitOff ? (pre + std::to_string(idx)) : ov.name;
 
 	polyRebuildLine(s, pg);
@@ -1598,7 +1598,7 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 		int ovMode = 1, segIdx = -1;
 		vtkActor *ovAct = pickOverlayAt(s, x, y, ovMode, &segIdx);
 		if (ovAct && ovMode == 1 && segIdx >= 0) {
-			for (auto& o : s->overlays) if (o.actor.Get() == ovAct) {
+			for (auto &o : s->overlays) if (o.actor.Get() == ovAct) {
 				overlayPromoteSegmentToPolygon(s, o, segIdx);
 				return true;
 			}
@@ -1672,7 +1672,7 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 	if (s->textDrag >= 0) {                              // dragging a text label across the XY plane
 		double w[3];
 		if (pickPlaneXY(s, x, y, w) && s->textDrag < (int)s->texts.size()) {
-			TextLabel& tl = s->texts[s->textDrag];
+			TextLabel &tl = s->texts[s->textDrag];
 			tl.pos = { w[0], w[1], 0.0 };
 			tl.actor->SetPosition(w[0] * s->xfac, w[1], 0.0);
 			s->widget->renderWindow()->Render();
@@ -1690,8 +1690,8 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 		if (polyPickWorld(s, x, y, w) && s->polyEdit < (int)s->polys.size()) {
 			const double ddx = w[0] - s->polyDragLastW[0], ddy = w[1] - s->polyDragLastW[1];
 			s->polyDragLastW[0] = w[0]; s->polyDragLastW[1] = w[1];
-			Polygon& pg = s->polys[s->polyEdit];
-			for (auto& p : pg.v) { p[0] += ddx; p[1] += ddy; }
+			Polygon &pg = s->polys[s->polyEdit];
+			for (auto &p : pg.v) { p[0] += ddx; p[1] += ddy; }
 			polyRebuildLine(s, pg);
 			polyRebuildHandles(s);
 			s->widget->renderWindow()->Render();
@@ -1701,7 +1701,7 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 	if (s->polyEdit >= 0 && s->polyDragVert >= 0) {
 		double w[3];
 		if (polyPickWorld(s, x, y, w)) {
-			Polygon& pg = s->polys[s->polyEdit];
+			Polygon &pg = s->polys[s->polyEdit];
 			if (polyIsRect(pg)) {                            // rectangle: keep it axis-aligned (carry the 2 neighbours)
 				rectDragCorner(pg, s->polyDragVert, w[0], w[1]);
 			} else {

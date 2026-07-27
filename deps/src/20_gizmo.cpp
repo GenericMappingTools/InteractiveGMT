@@ -144,7 +144,7 @@ void litLook(vtkActor *a) {
 }
 void ringLook(vtkActor *a) { a->GetProperty()->SetColor(0.50,0.50,0.50); litLook(a); }
 
-void updateVCone(Gizmo& c) {
+void updateVCone(Gizmo &c) {
 	if (!c.vconeSrc) return;
 	double h = kConeH0 * std::clamp(c.curSz / c.veBase, 0.15, 8.0);  // relative to enable VE -> default size at startup
 	c.vconeSrc->SetHeight(h);
@@ -152,7 +152,7 @@ void updateVCone(Gizmo& c) {
 	c.vconeSrc->SetDirection(0.0, 0.0, 1.0);
 	c.vconeSrc->SetCenter(0.0, 0.0, kBodyZ + 0.5 * h); // base fixed at shaft top
 }
-void updateLabel(Gizmo& c) {
+void updateLabel(Gizmo &c) {
 	if (!c.label) return;
 	char buf[64]; std::snprintf(buf, sizeof(buf), "z x %.2f", c.curSz);
 	c.label->SetInput(buf);
@@ -169,7 +169,7 @@ bool normalize3(double v[3]) {
 
 // Place the gizmo. Vertical parts are world-aligned (+Z up); the horizontal axis is
 // oriented along the camera screen-right vector so it stays left-right in the window.
-void placeAll(Gizmo& c) {
+void placeAll(Gizmo &c) {
 	const double *p = c.centre;
 	const double s = c.scale;
 	for (vtkActor *a : { c.shaft.Get(), c.vcone.Get(), c.ring.Get() }) {
@@ -303,7 +303,7 @@ double distToSeg(double px, double py, const double a[2], const double b[2]) {
 }
 
 // Screen-space hit-test of the click against the handles.
-Grab hitTest(Gizmo& c, vtkRenderer *ren, int x, int y) {
+Grab hitTest(Gizmo &c, vtkRenderer *ren, int x, int y) {
 	if (!ren) return Grab::None;
 	const double *p = c.centre;
 	const double s = c.scale;
@@ -470,7 +470,7 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 	if (c->dragCmd) c->dragCmd->SetAbortFlagOnExecute(handled ? 1 : 0);
 }
 
-void setGizmoVisible(Gizmo& c, bool on) {
+void setGizmoVisible(Gizmo &c, bool on) {
 	for (vtkProp *a : { (vtkProp*)c.shaft.Get(), (vtkProp*)c.shaftH.Get(),
 						(vtkProp*)c.vcone.Get(), (vtkProp*)c.harrow.Get(), (vtkProp*)c.ring.Get() })
 		if (a) a->SetVisibility(on ? 1 : 0);

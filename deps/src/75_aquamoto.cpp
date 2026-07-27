@@ -38,7 +38,7 @@ static bool aquaEval(Scene *scene, const QString &call, QString &out) {
 	return n >= 0;
 }
 
-// The acting window's Scene* as a Julia pointer literal, the same "Ptr{Cvoid}(UInt(...))" spelling
+// The acting window's Scene *as a Julia pointer literal, the same "Ptr{Cvoid}(UInt(...))" spelling
 // NswingDialog's own calls use.
 static QString aquaScenePtr(Scene *scene) {
 	return QString("Ptr{Cvoid}(UInt(%1))").arg((quintptr)scene);

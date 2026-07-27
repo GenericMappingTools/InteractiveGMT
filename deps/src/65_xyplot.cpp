@@ -876,7 +876,7 @@ static bool xyAskSpectrum1d(QWidget *parent, XYPlot *s, int sel, QString &args) 
 
 // ---- interactive Spector-Grant depth-to-sources (ecran dynSlope) -----------
 // Left-drag a frequency band on a (wavenumber, power) spectrum; fit ln(power) vs k live, draw the
-// fit line over the band and show depth = |slope|/(4π)·unit in the status bar.
+// fit line over the band and show depth = |slope|/(4Ï€)·unit in the status bar.
 
 // Ask the wavenumber unit (sets the metres factor) when the tool is switched on.
 static bool xyAskFreqUnit(QWidget *parent, double &xf) {
@@ -950,7 +950,7 @@ static void xySGUpdate(XYPlot *s, double x1) {
 		pg.sgFit->SetLabel("S&G fit");
 	}
 	pg.sgFit->SetInputData(pg.sgFitTable, 0, 1);
-	s->win->statusBar()->showMessage(QString("Spector-Grant:  band Δ=%1   slope=%2   Depth = %3 m")
+	s->win->statusBar()->showMessage(QString("Spector-Grant:  band Î”=%1   slope=%2   Depth = %3 m")
 		.arg(xhi - xlo, 0, 'g', 4).arg(slope, 0, 'g', 4).arg(depth, 0, 'f', 0));
 	if (s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
@@ -1803,7 +1803,7 @@ static XYPlot *buildXYPlot(const char *title) {
 			const int sel = gate(); if (sel < 0) return;
 			bool ok = false;
 			const double k = QInputDialog::getDouble(s->win, "Despike",
-				"Threshold (× robust σ of the residual):", 2.0, 0.5, 20.0, 2, &ok);
+				"Threshold (× robust Ïƒ of the residual):", 2.0, 0.5, 20.0, 2, &ok);
 			if (!ok) return;
 			g_juliaXYAna(s, QString("despike:%1").arg(k, 0, 'g', 6).toUtf8().constData(), sel);
 		});
@@ -2020,7 +2020,7 @@ static XYPlot *xyOpenBlankFromHost() {
 // Open a standalone X,Y plot window pre-loaded with one (x,y) series. Called by the 3-D viewer's
 // Profile panel ("Open in X,Y plot tool") so a Ctrl-drag elevation profile — or a downloaded tide
 // series — lands in the full plotter. Returns the new window (null on <2 points / mismatch).
-static XYPlot *openSeriesInXYTool(const std::vector<double>& x, const std::vector<double>& y,
+static XYPlot *openSeriesInXYTool(const std::vector<double> &x, const std::vector<double> &y,
                                   const char *title, const char *xlabel, const char *ylabel) {
 	if (x.size() < 2 || y.size() != x.size())
 		return nullptr;

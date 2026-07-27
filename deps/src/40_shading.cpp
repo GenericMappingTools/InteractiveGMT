@@ -69,7 +69,7 @@ static void gmtIlluminate(double intensity, double *rgb) {
 // colours whether drawn as a warped surface or a flat picture. Never fork this maths again.
 //   (A) Lambert   (hillGrd == false): CPT(z) * (ambient + (1-ambient)*max(0, n'·L)), darken-only,
 //                 with the normal VE-corrected onto the displayed relief (n.x/xfac, n.y, n.z/(zfac·ve)).
-//   (B) grdimage  (hillGrd == true):  gmt_illuminate(CPT(z), (2/π)·atan(gain·(n·Lg − Lgz))), the GMT
+//   (B) grdimage  (hillGrd == true):  gmt_illuminate(CPT(z), (2/Ï€)·atan(gain·(n·Lg − Lgz))), the GMT
 //                 grdimage -I look from the TRUE-coord z-gradient normal (VE-independent).
 // ============================================================================
 struct ReliefLight {
@@ -660,7 +660,7 @@ static void applyShading(Scene *s) {
 	// Dropped GRID surfaces (extras) are shaded too, so the Shading dock controls them like the
 	// primary relief — each hillshades with its own CPT (hillshadeMapper prefers the actor's LUT).
 	// Image extras are textured pictures (kept unlit) and are left untouched.
-	for (auto& ex : s->extras)
+	for (auto &ex : s->extras)
 		if (!ex.isImage && ex.actor) applySurfStyle(s, ex.actor.Get());
 	// key light: aim from azimuth (deg from north, clockwise) + elevation.
 	// dir points FROM the scene TO the sun; for a directional light only the

@@ -556,7 +556,7 @@ struct SaveFormatDialog : QDialog {
 	QComboBox *combo; QLineEdit *pathEdit; QPushButton *okBtn;
 	QString code, path;
 
-	static QString sanitize(const QString& n) {                 // object label -> safe file stem
+	static QString sanitize(const QString &n) {                 // object label -> safe file stem
 		QString r; for (QChar c : n) r += (c.isLetterOrNumber() || c == '_' || c == '-') ? c : QChar('_');
 		return r;
 	}
@@ -568,7 +568,7 @@ struct SaveFormatDialog : QDialog {
 		if (dot > sep) p = p.left(dot);
 		pathEdit->setText(p + fmts[combo->currentIndex()].ext);
 	}
-	SaveFormatDialog(QWidget *parent, bool isGrid, const QString& objName) : QDialog(parent) {
+	SaveFormatDialog(QWidget *parent, bool isGrid, const QString &objName) : QDialog(parent) {
 		fmts = isGrid ? kGridFmts : kImageFmts;
 		nfmt = isGrid ? (int)(sizeof(kGridFmts) / sizeof(kGridFmts[0]))
 		              : (int)(sizeof(kImageFmts) / sizeof(kImageFmts[0]));
@@ -598,14 +598,14 @@ struct SaveFormatDialog : QDialog {
 
 		const QString seed = objName.isEmpty() ? QString() : sanitize(objName);
 		QObject::connect(browse, &QPushButton::clicked, this, [this, seed]() {
-			const SaveFmt& f = fmts[combo->currentIndex()];
+			const SaveFmt &f = fmts[combo->currentIndex()];
 			QString start = pathEdit->text().trimmed();
 			if (start.isEmpty()) start = prefStartDir(seed.isEmpty() ? QString() : seed + f.ext);
 			QString fn = QFileDialog::getSaveFileName(this, "Save as", start, f.filter);
 			if (!fn.isEmpty()) { pathEdit->setText(fn); rememberStartDir(fn); }
 		});
 		QObject::connect(pathEdit, &QLineEdit::textChanged, this,
-		                 [this](const QString& t) { okBtn->setEnabled(!t.trimmed().isEmpty()); });
+		                 [this](const QString &t) { okBtn->setEnabled(!t.trimmed().isEmpty()); });
 		QObject::connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
 		                 [this](int) { swapExt(); });
 		QObject::connect(bb, &QDialogButtonBox::accepted, this, [this]() {
@@ -620,7 +620,7 @@ struct SaveFormatDialog : QDialog {
 // Open the Save dialog for a scene object and hand the choice to Julia (g_juliaSave) as
 // "<kind>;<fmt>;<path>;<name>". kind = "grid" | "image"; name identifies which object (empty for the
 // File-menu "save the window's grid/image"). nullptr callback -> a status-bar notice.
-static void saveObjectDialog(Scene *s, const char *kind, const QString& name) {
+static void saveObjectDialog(Scene *s, const char *kind, const QString &name) {
 	if (!g_juliaSave) {
 		if (s && s->win) s->win->statusBar()->showMessage("Save: callback not registered", 3000);
 		return;
@@ -635,7 +635,7 @@ static void saveObjectDialog(Scene *s, const char *kind, const QString& name) {
 // Ask Julia to open the named scene grid in a NEW window (g_juliaMove, req = "<kind>;<name>").
 // Returns true ONLY if Julia reported success — the caller then removes the grid from this window
 // (= a move). A nullptr callback or a Julia failure leaves the source window untouched.
-static bool moveObjectToNewWindow(Scene *s, const char *kind, const QString& name) {
+static bool moveObjectToNewWindow(Scene *s, const char *kind, const QString &name) {
 	if (!g_juliaMove) {
 		if (s && s->win) s->win->statusBar()->showMessage("Move to new window: callback not registered", 3000);
 		return false;
@@ -646,7 +646,7 @@ static bool moveObjectToNewWindow(Scene *s, const char *kind, const QString& nam
 
 // Ask Julia to build a histogram-stretched 8-bit copy of the named image as a NEW row (g_juliaImgStretch,
 // req = "image;<name>"). A nullptr callback just posts a status-bar notice.
-static void stretchImageObject(Scene *s, const QString& name) {
+static void stretchImageObject(Scene *s, const QString &name) {
 	if (!g_juliaImgStretch) {
 		if (s && s->win) s->win->statusBar()->showMessage("Histogram stretch: callback not registered", 3000);
 		return;
@@ -662,13 +662,13 @@ static void stretchImageObject(Scene *s, const QString& name) {
 static bool sceneHasGrid(Scene *s) {
 	if (!s) return false;
 	if (s->surf && !s->emptyStart && !s->imageOnly) return true;
-	for (auto& ex : s->extras) if (!ex.isImage) return true;
+	for (auto &ex : s->extras) if (!ex.isImage) return true;
 	return false;
 }
 static bool sceneHasImage(Scene *s) {
 	if (!s) return false;
 	if (s->drape && s->imageOnly) return true;            // bare image opened by view_image
-	for (auto& ex : s->extras) if (ex.isImage) return true;
+	for (auto &ex : s->extras) if (ex.isImage) return true;
 	return false;
 }
 
@@ -705,7 +705,7 @@ static bool sceneAlive(Scene *s) { return s && g_scenes.count(s) != 0; }
 // Two kernel32 calls, hand-declared instead of #include <windows.h>: that header unconditionally
 // drags in wingdi.h (WIN32_LEAN_AND_MEAN does NOT gate it — tried, reverted), whose GDI
 // `Polygon()` function collides with this codebase's own `Polygon` struct (10_geometry.cpp)
-// since it's all one translation unit — `Polygon& pg` then binds to the wrong (function)
+// since it's all one translation unit — `Polygon &pg` then binds to the wrong (function)
 // declaration and fails to parse. This sidesteps the whole header instead of chasing every bare
 // `Polygon` usage into an elaborated `struct Polygon`.
 extern "C" {
@@ -882,7 +882,7 @@ public:
 	explicit MidPanFilter(Scene *sc, QObject *parent) : QObject(parent), s(sc) {}
 protected:
 	// VTK display coords are bottom-up device pixels; Qt gives top-down logical pixels.
-	void devPos(QMouseEvent *me, double& dx, double& dy) {
+	void devPos(QMouseEvent *me, double &dx, double &dy) {
 		const double r = s->widget->devicePixelRatioF();
 		const int    H = s->widget->renderWindow()->GetSize()[1];
 		dx = me->position().x() * r;
@@ -1010,7 +1010,7 @@ protected:
 		} else if (t == QEvent::Drop) {
 			auto *de = static_cast<QDropEvent*>(ev);
 			if (de->mimeData() && de->mimeData()->hasUrls()) {
-				for (const QUrl& u : de->mimeData()->urls()) {
+				for (const QUrl &u : de->mimeData()->urls()) {
 					const QString f = u.toLocalFile();
 					if (!f.isEmpty()) {
 						const QByteArray utf8 = f.toUtf8();        // keep the buffer alive across the call

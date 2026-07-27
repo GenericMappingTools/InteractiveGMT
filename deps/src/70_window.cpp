@@ -1,6 +1,6 @@
 // Busy (indeterminate) progress dialog around a blocking Julia call (Seismicity base-map/fetch
 // path). Reuses `g_progress` (30_app.cpp, earlier in this TU) — the same QProgressDialog the
-// gmtvtk_progress_* C API (90_c_api.cpp, later in this TU) drives for the Okada patch loop, just
+// gmtvtk_progress_ *C API (90_c_api.cpp, later in this TU) drives for the Okada patch loop, just
 // with range (0,0) for Qt's indeterminate busy bar instead of a counted range.
 // showBusyDialog / closeBusyDialog moved to 30_app.cpp: the file-open path (DropFilter and
 // juliaOpenFile) lives there, earlier in this translation unit, and must be able to put the dialog up
@@ -821,7 +821,7 @@ static void dropSubtree(Scene *s, QuadNode *n) {
 	for (int k = 0; k < 4; ++k) dropSubtree(s, n->child[k]);
 }
 
-static void collectResident(QuadNode *n, std::vector<QuadNode*>& out) {
+static void collectResident(QuadNode *n, std::vector<QuadNode*> &out) {
 	if (!n) return;
 	if (n->actor) out.push_back(n);
 	for (int k = 0; k < 4; ++k) collectResident(n->child[k], out);
@@ -4677,7 +4677,7 @@ public:
 // Great-circle distance (km) + initial bearing (deg from north, CW) between two lon/lat points.
 // Local spherical fallback for the dialog seed when the Julia/GMT host is unavailable (see
 // faultLineGeom — the normal path now shares the measure menu's GMT geodesic, so the two agree).
-static void geoLineLenAz(double lon1, double lat1, double lon2, double lat2, double& km, double& az) {
+static void geoLineLenAz(double lon1, double lat1, double lon2, double lat2, double &km, double &az) {
 	const double D2R = 3.14159265358979323846 / 180.0, R = 6371.0088;
 	const double p1 = lat1 * D2R, p2 = lat2 * D2R, dl = (lon2 - lon1) * D2R, dp = p2 - p1;
 	const double a = std::sin(dp/2)*std::sin(dp/2) + std::cos(p1)*std::cos(p2)*std::sin(dl/2)*std::sin(dl/2);
@@ -4690,15 +4690,15 @@ static void geoLineLenAz(double lon1, double lat1, double lon2, double lat2, dou
 // whether it is geographic. Length is km (geographic) or data units (cartesian); strike is deg from
 // north, CW. Returns false if there is no fault line. `geog` follows the window CRS when set, else a
 // crude lon/lat-range guess (mirrors GMT.guessgeog) so an unreferenced lon/lat fault still reads geo.
-static bool faultLineGeom(Scene *s, double& len, double& az, bool& geog) {
+static bool faultLineGeom(Scene *s, double &len, double &az, bool &geog) {
 	int pi = -1;
 	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
 	if (pi < 0 || s->polys[pi].v.size() < 2) return false;
-	const auto& v = s->polys[pi].v;
+	const auto &v = s->polys[pi].v;
 	geog = s->crsProj4.find("longlat") != std::string::npos || s->crsProj4.find("latlong") != std::string::npos;
 	if (s->crsProj4.empty()) {                                  // unknown CRS -> crude range test
 		double x0 = 1e300, x1 = -1e300, y0 = 1e300, y1 = -1e300;
-		for (auto& p : v) { x0 = std::min(x0, p[0]); x1 = std::max(x1, p[0]); y0 = std::min(y0, p[1]); y1 = std::max(y1, p[1]); }
+		for (auto &p : v) { x0 = std::min(x0, p[0]); x1 = std::max(x1, p[0]); y0 = std::min(y0, p[1]); y1 = std::max(y1, p[1]); }
 		geog = (x0 >= -180 && x1 <= 360 && y0 >= -90 && y1 <= 90);
 	}
 	// Length + azimuth come from the SAME Julia/GMT geodesic the "Line length…" measure menu uses
@@ -4712,7 +4712,7 @@ static bool faultLineGeom(Scene *s, double& len, double& az, bool& geog) {
 		if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
 			QTextStream ts(&f);
 			ts.setRealNumberPrecision(15);
-			for (auto& p : v) ts << p[0] << ' ' << p[1] << '\n';
+			for (auto &p : v) ts << p[0] << ' ' << p[1] << '\n';
 			f.close();
 			const QString cmd = QString("InteractiveGMT._fault_lenaz(raw\"%1\",raw\"%2\")")
 									.arg(tmp).arg(QString::fromStdString(s->crsProj4));
@@ -4735,7 +4735,7 @@ static bool faultLineGeom(Scene *s, double& len, double& az, bool& geog) {
 		if (geog) { double d, a; geoLineLenAz(v[k-1][0], v[k-1][1], v[k][0], v[k][1], d, a); len += d; }
 		else       len += std::hypot(v[k][0] - v[k-1][0], v[k][1] - v[k-1][1]);
 	}
-	const auto& A = v.front(); const auto& B = v.back();
+	const auto &A = v.front(); const auto &B = v.back();
 	if (geog) { double d; geoLineLenAz(A[0], A[1], B[0], B[1], d, az); }
 	else        az = std::fmod(std::atan2(B[0] - A[0], B[1] - A[1]) * 180.0 / 3.14159265358979323846 + 360.0, 360.0);
 	return true;
@@ -4753,7 +4753,7 @@ static bool faultApplyGeom(Scene *s, double strike, double len, bool geog,
 	int pi = -1;
 	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
 	if (pi < 0 || s->polys[pi].v.empty()) return false;
-	Polygon& pg = s->polys[pi];
+	Polygon &pg = s->polys[pi];
 	const double lon1 = pg.v.front()[0], lat1 = pg.v.front()[1], z0 = pg.v.front()[2];
 	double lon2, lat2;
 	if (geog) {
@@ -4778,9 +4778,9 @@ static bool faultApplyGeom(Scene *s, double strike, double len, bool geog,
 
 // One filled quad cell over `corners` (no closing dup needed for a polygon cell). VTK triangulates
 // the (possibly slightly non-planar, terrain-draped) quad for rendering.
-static void faultBuildPlanePD(vtkPolyData *pd, const std::vector<std::array<double,3>>& corners) {
+static void faultBuildPlanePD(vtkPolyData *pd, const std::vector<std::array<double,3>> &corners) {
 	vtkNew<vtkPoints> pts;
-	for (auto& c : corners) pts->InsertNextPoint(c[0], c[1], c[2]);
+	for (auto &c : corners) pts->InsertNextPoint(c[0], c[1], c[2]);
 	vtkNew<vtkCellArray> polys;
 	vtkNew<vtkIdList>    ids;
 	for (vtkIdType i = 0; i < (vtkIdType)corners.size(); ++i) ids->InsertNextId(i);
@@ -4795,8 +4795,8 @@ static void faultBuildPlanePD(vtkPolyData *pd, const std::vector<std::array<doub
 // and sample z on the relief at every node, so the patch HUGS the ground (its top edge follows the
 // fault trace draped on the surface) instead of cutting a flat chord through the relief.
 static void faultBuildDrapedPatch(Scene *s, vtkPolyData *pd,
-								   const std::array<double,3>& t0, const std::array<double,3>& t1,
-								   const std::array<double,3>& b0, const std::array<double,3>& b1) {
+								   const std::array<double,3> &t0, const std::array<double,3> &t1,
+								   const std::array<double,3> &b0, const std::array<double,3> &b1) {
 	double spacing = 0.0;
 	const double sx = std::abs(s->gdx), sy = std::abs(s->gdy);
 	spacing = (sx > 0 && sy > 0) ? std::min(sx, sy) : std::max(sx, sy);
@@ -4901,11 +4901,11 @@ static void faultUpdatePlane(Scene *s, double width, double dip, double strike, 
 	int pi = targetPi;                                        // import targets the just-added fault; dialog uses first isFault
 	if (pi < 0) for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
 	if (pi < 0 || pi >= (int)s->polys.size() || !s->polys[pi].isFault || s->polys[pi].v.size() < 2) return;
-	Polygon& pg = s->polys[pi];
+	Polygon &pg = s->polys[pi];
 	const double D2R = 3.14159265358979323846 / 180.0;
 	const double off  = width * std::cos(dip * D2R);               // down-dip horizontal projection (W·cos dip)
 	const double vert = width * std::sin(dip * D2R);               // down-dip vertical drop      (W·sin dip)
-	const auto& A = pg.v.front();  const auto& B = pg.v.back();     // trace endpoints (the long / top edge)
+	const auto &A = pg.v.front();  const auto &B = pg.v.back();     // trace endpoints (the long / top edge)
 
 	bool created = false;   // a plane actor was added this call -> refresh the Scene Objects list at the end
 	if (!pg.faultPlanePD) pg.faultPlanePD = vtkSmartPointer<vtkPolyData>::New();
@@ -4982,7 +4982,7 @@ static void faultUpdatePlane(Scene *s, double width, double dip, double strike, 
 	{
 		const double sx = (s->xfac != 0.0 ? s->xfac : 1.0);
 		const double sz = (s->zfac * s->ve != 0.0 ? s->zfac * s->ve : 1.0);
-		auto toR = [&](const std::array<double,3>& p, double o[3]){ o[0]=p[0]*sx; o[1]=p[1]; o[2]=p[2]*sz; };
+		auto toR = [&](const std::array<double,3> &p, double o[3]){ o[0]=p[0]*sx; o[1]=p[1]; o[2]=p[2]*sz; };
 		double R0[3],R1[3],R2[3],R3[3];
 		toR(plane3d[0],R0); toR(plane3d[1],R1); toR(plane3d[2],R2); toR(plane3d[3],R3);
 		double U[3]  = { R1[0]-R0[0], R1[1]-R0[1], R1[2]-R0[2] };   // strike (along trace A->B), render space
@@ -5123,7 +5123,7 @@ public:
 	// "x0/y0/len/wid/strike/dip/depthTop/rake/slip" (x0,y0 = patch's first ring vertex).
 	QString slipPayload() const {
 		QStringList ps;
-		if (scn) for (auto& pg : scn->polys) if (pg.isSlip && !pg.v.empty()) {
+		if (scn) for (auto &pg : scn->polys) if (pg.isSlip && !pg.v.empty()) {
 			ps << QString("%1/%2/%3/%4/%5/%6/%7/%8/%9")
 				.arg(pg.v.front()[0], 0, 'g', 15).arg(pg.v.front()[1], 0, 'g', 15)
 				.arg(pg.faultLength).arg(pg.faultWidth).arg(pg.faultStrike).arg(pg.faultDip)
@@ -5193,7 +5193,7 @@ public:
 		// PERSIST the geometry onto the fault polygon (first isFault — the same one faultUpdatePlane
 		// targets) so Save Session writes real width/dip/strike/rake/depth-to-top, not NaN. Without this
 		// a drawn fault round-trips as a bare trace: the plane only reappears after re-opening this dialog.
-		for (auto& pg : scn->polys) if (pg.isFault) {
+		for (auto &pg : scn->polys) if (pg.isFault) {
 			pg.faultWidth = wid; pg.faultDip = dip; pg.faultStrike = strk; pg.faultRake = rake;
 			pg.faultDepthTop = fDepTop->text().toDouble();
 			break;
@@ -5380,7 +5380,7 @@ public:
 			// already converted cm->m, Width = ny·Dy total down-dip). The imported file is the authority
 			// for that fault, so these override the trace-seeded / remembered values. NaN = not imported
 			// -> leave the dialog's own value untouched. Same fault faultLineGeom picked (first isFault).
-			for (auto& pg : scene->polys) if (pg.isFault) {
+			for (auto &pg : scene->polys) if (pg.isFault) {
 				if (!std::isnan(pg.faultSlip)) dSlip->setText(QString::number(pg.faultSlip, 'g', 6));
 				if (!std::isnan(pg.faultRake)) dRake->setText(QString::number(pg.faultRake, 'g', 6));
 				if (!std::isnan(pg.faultStrike)) {
@@ -5485,7 +5485,7 @@ public:
 				const int pi = currentSlipPoly();
 				if (pi >= 0 && pi < (int)scn->polys.size() && !scn->polys[pi].v.empty()) {
 					fx0 = scn->polys[pi].v.front()[0]; fy0 = scn->polys[pi].v.front()[1]; }
-			} else if (scn) for (auto& pg : scn->polys) if (pg.isFault && !pg.v.empty()) {
+			} else if (scn) for (auto &pg : scn->polys) if (pg.isFault && !pg.v.empty()) {
 				fx0 = pg.v.front()[0]; fy0 = pg.v.front()[1]; break; }
 			params += ";" + QString::number(fx0, 'g', 15) + ";" + QString::number(fy0, 'g', 15);
 			params += ";" + savePath;     // field 20: output file for "save" (empty for compute)
@@ -5547,7 +5547,7 @@ static void faultRunDialog(Scene *s, vtkActor *seedPatch) {
 	// dialog pointer is cleared here; the plane is removed via its handle's "Remove" or by deleting the
 	// fault (polygonEraseOne).
 	QObject::connect(dlg, &QObject::destroyed, s->win, [s]{ s->elasticDlg = nullptr; });
-	dlg->onAction = [s](const QString& params) {
+	dlg->onAction = [s](const QString &params) {
 		if (g_juliaElastic) g_juliaElastic(s, params.toUtf8().constData());
 		else s->win->statusBar()->showMessage("Elastic deformation: compute not wired yet", 3000);
 	};
@@ -6635,7 +6635,7 @@ public:
 		auto updateFieldsFromData = [this, d, catalogList, scene]() {
 			if (filePath.isEmpty() || !g_juliaEval) return;
 			const int fmt = (catalogList ? catalogList->currentRow() : 0) + 1;
-			// Pass the window's own Scene* as a raw Julia pointer literal (not through the `fig`
+			// Pass the window's own Scene *as a raw Julia pointer literal (not through the `fig`
 			// binding g_juliaEval offers) — _focal_peek_and_frame needs the handle itself to call
 			// gmtvtk_has_surface / _on_basemap directly, and works whether or not this scene has a
 			// registered QtFigure.
@@ -6801,7 +6801,7 @@ static void loadRecent() {
 
 static void saveRecent() {
 	QStringList paths; QVariantList cats;
-	for (const RecentItem& r : g_recent) { paths << r.path; cats << r.cat; }
+	for (const RecentItem &r : g_recent) { paths << r.path; cats << r.cat; }
 	QSettings st = igmtSettings();
 	st.setValue("recent/paths", paths);
 	st.setValue("recent/cats", cats);
@@ -6829,7 +6829,7 @@ static void populateRecentMenu(QMenu *menu, Scene *s) {
 	bool any = false;
 	for (int c = 0; c < 3; ++c) {
 		bool header = false;
-		for (const RecentItem& r : g_recent) {
+		for (const RecentItem &r : g_recent) {
 			if (r.cat != c) continue;
 			if (!header) { QAction *h = menu->addAction(kCatName[c]); h->setEnabled(false); header = true; }
 			const QString full = r.path;
@@ -6875,11 +6875,12 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	if (s->drape)     s->ren->RemoveActor(s->drape);
 	if (s->axes)      s->ren->RemoveActor(s->axes);
 	if (s->axisTicks) s->ren->RemoveActor(s->axisTicks);
-	if (s->profLine)  s->ren->RemoveActor(s->profLine);
+	// profLine is a pile vector -> it may live in the depth-cleared overlay renderer; clear both layers.
+	if (s->profLine) { s->ren->RemoveActor(s->profLine); if (s->axesRen) s->axesRen->RemoveActor(s->profLine); }
 	for (int i = 0; i < 2; ++i) if (s->axTitle[i]) { s->axesRen->RemoveViewProp(s->axTitle[i]); s->axTitle[i] = nullptr; }
 	if (s->bar)      s->ren->RemoveActor2D(s->bar);
 	if (s->barTicks) s->ren->RemoveActor2D(s->barTicks);
-	for (auto& ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
+	for (auto &ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
 	s->barLabels.clear(); s->barValues.clear();
 	s->surfGroup = nullptr; s->drape = nullptr; s->bar = nullptr; s->barTicks = nullptr;
 	s->layerImgMode = false;   // any real surface build exits the fast cube-layer image mode
@@ -7430,7 +7431,7 @@ static void sceneSetFlat2D(Scene *s, bool on) {
 	}
 	// The buried 3-D fault plane is meaningless top-down — show it only off flat-2D AND when the user
 	// has not hidden it via its handle (faultPlane3DShown).
-	for (auto& pg : s->polys) if (pg.isFault && pg.faultPlane3D) {
+	for (auto &pg : s->polys) if (pg.isFault && pg.faultPlane3D) {
 		pg.faultPlane3D->SetVisibility((pg.faultPlane3DShown && !s->flat2d) ? 1 : 0);
 		if (pg.faultArrows) pg.faultArrows->SetVisibility((pg.faultPlane3DShown && !s->flat2d) ? 1 : 0);
 	}
@@ -7790,7 +7791,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		const QStringList files = QFileDialog::getOpenFileNames(win, "Open File", prefStartDir());
 		if (!files.isEmpty()) {
 			rememberStartDir(files.first());               // push chosen dir to MRU
-			for (const QString& f : files) {
+			for (const QString &f : files) {
 				const QByteArray utf8 = f.toUtf8();        // keep buffer alive across call
 				juliaOpenFile(s, utf8.constData());        // busy dialog up before Julia is entered
 			}
@@ -8596,7 +8597,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	flyout->setToolButtonStyle(Qt::ToolButtonIconOnly);
 	QMenu *shapeMenu = new QMenu(flyout);                // the dropdown flyout list
 	QAction *defaultShape = nullptr;                     // the tool the slot starts on (Line)
-	for (const ToolDef& td : flyoutTools) {
+	for (const ToolDef &td : flyoutTools) {
 		QAction *act = shapeMenu->addAction(td.icon, td.name);   // icon + label (the slot itself stays icon-only)
 		act->setCheckable(true);
 		act->setToolTip(td.tip);
@@ -8635,7 +8636,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	symFlyout->setToolButtonStyle(Qt::ToolButtonIconOnly);
 	QMenu *symMenu = new QMenu(symFlyout);
 	QAction *defaultSym = nullptr;
-	for (const SymToolDef& td : symTools) {
+	for (const SymToolDef &td : symTools) {
 		QAction *act = symMenu->addAction(td.icon, td.name);
 		act->setCheckable(true);
 		act->setToolTip(td.tip);
@@ -8683,7 +8684,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	bodyFlyout->setToolButtonStyle(Qt::ToolButtonIconOnly);
 	bodyFlyout->setToolTip("3-D Bodies: build a GMT solid (cube, sphere, torus, cylinder, …)");
 	QMenu *bodyMenu = new QMenu(bodyFlyout);
-	for (const BodyDef& bd : bodyTools) {
+	for (const BodyDef &bd : bodyTools) {
 		QAction *act = bodyMenu->addAction(bd.icon, bd.label);
 		act->setToolTip(bd.tip);
 		const QByteArray nm = bd.name;                          // capture the solid name by value
@@ -8704,7 +8705,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// --- native right-click context menu over the 3-D view ------------------
 	widget->setContextMenuPolicy(Qt::CustomContextMenu);
 	QObject::connect(widget, &QWidget::customContextMenuRequested,
-		[=](const QPoint& pos) {
+		[=](const QPoint &pos) {
 			// Ctrl+right is the rubber-band select gesture on a point cloud, not a menu
 			// request — swallow it (rbConsume is set by the selection release handler).
 			if (s->rbEnabled && (s->rbConsume ||
@@ -8984,7 +8985,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// (resizeDocks), so the collapsed dock no longer leaves its full open width as dead space;
 	// the strip carries the title rotated 90° down the window edge. Un-folding restores the body
 	// and the remembered open width. This is the fold control Qt's default title bar never gave us.
-	auto makeFoldable = [win](QDockWidget *d, QWidget *body, const QString& titleText) -> FoldTitleBar* {
+	auto makeFoldable = [win](QDockWidget *d, QWidget *body, const QString &titleText) -> FoldTitleBar* {
 		FoldTitleBar *bar = new FoldTitleBar(titleText, d);  // GRAPHICAL ELEMENT: dock title bar = fold toggle
 		d->setTitleBarWidget(bar);                        // swap Qt's default title bar for our fold strip
 		bar->onClick = [win, d, body, bar]() {

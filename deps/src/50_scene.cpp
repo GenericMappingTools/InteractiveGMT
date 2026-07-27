@@ -15,18 +15,18 @@ using SceneObjRowFn = std::function<void(const QString &label, int iconKind, boo
 static void xyAppendParkedRows(Scene *s, const SceneObjRowFn &addRow);
 static int  xyParkedCount(Scene *s);        // how many of them `s` owns (0 -> no bottom strip at all)
 static void unfoldSceneObjects(Scene *s);   // 70_window.cpp: reveal + unfold the dock
-static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp);   // symbol-layer properties (defined below)
+static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp);   // symbol-layer properties (defined below)
 static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
-static void textApplyProps(Scene *s, TextLabel& tl); // 85_polygon.cpp: re-apply font fields to the actor
-static void deleteSlipGroup(Scene *s, const QString& groupName); // 85_polygon.cpp: delete all patches in a slip model
-static void deleteMecaGroup(Scene *s, const QString& groupName); // 85_polygon.cpp: delete a focal-mechanism batch
-static void mecaGroupPropsDialog(Scene *s, const QString& groupName, const QPoint& gp); // defined below
+static void textApplyProps(Scene *s, TextLabel &tl); // 85_polygon.cpp: re-apply font fields to the actor
+static void deleteSlipGroup(Scene *s, const QString &groupName); // 85_polygon.cpp: delete all patches in a slip model
+static void deleteMecaGroup(Scene *s, const QString &groupName); // 85_polygon.cpp: delete a focal-mechanism batch
+static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoint &gp); // defined below
 static void showInfoText(QWidget *parent, const QString &title, const QString &text); // 70_window.cpp: read-only text popup
 
 // Append one execution-error line to a window's read-only "Errors" tab and raise it (so a failure in
 // a background op is VISIBLE in the window, not just on the REPL's stderr). Shared by the
 // gmtvtk_log_error export and the fire-and-forget g_juliaEval callers below. Best-effort / no-throw.
-static void sceneLogError(Scene *s, const QString& msg) {
+static void sceneLogError(Scene *s, const QString &msg) {
 	if (!s || !sceneAlive(s) || !s->errConsole) return;
 	s->errConsole->appendPlainText(QString("[%1]  %2")
 		.arg(QTime::currentTime().toString("HH:mm:ss")).arg(msg));
@@ -39,14 +39,14 @@ static void sceneLogError(Scene *s, const QString& msg) {
 // Hand a colormap NAME back to the Julia host, which recomputes CPT nodes over the surface's data
 // range and ccalls gmtvtk_set_cpt to recolour live. `fig` is bound to THIS window by _console_eval.
 // A NEGATIVE return flags a Julia error (|n| bytes of text) -> route it to the Errors tab.
-static void applyColormap(Scene *s, const QString& name, int gridSel) {
+static void applyColormap(Scene *s, const QString &name, int gridSel) {
 	if (!s || !g_juliaEval || name.isEmpty()) return;
 	// Recolour the grid the Color Bar row belongs to (gridSel is the grid's UNIQUE GROUP TAG: -1 = base
 	// relief, >0 = a dropped grid's tag). Resolve BY TAG (never by index — indices shift on delete) and
 	// hand Julia THAT grid's own z range so the CPT spans the right grid, not the first one.
 	double zmn = s->zmin, zmx = s->zmax;
 	if (gridSel >= 0)
-		for (auto& ex : s->extras)
+		for (auto &ex : s->extras)
 			if (!ex.isImage && ex.tag == gridSel) { zmn = ex.zmin; zmx = ex.zmax; break; }
 	char rng[80];
 	snprintf(rng, sizeof rng, "%.17g, %.17g, %d", zmn, zmx, gridSel);
@@ -189,7 +189,7 @@ static void buildAquaLandColorbar(Scene *s, vtkScalarsToColors *lut, double lo, 
 	if (!s) return;
 	if (s->aquaLandBar)      { s->ren->RemoveActor2D(s->aquaLandBar); s->aquaLandBar = nullptr; }
 	if (s->aquaLandBarTicks) { s->ren->RemoveActor2D(s->aquaLandBarTicks); s->aquaLandBarTicks = nullptr; }
-	for (auto& ta : s->aquaLandBarLabels) if (ta) s->ren->RemoveActor2D(ta);
+	for (auto &ta : s->aquaLandBarLabels) if (ta) s->ren->RemoveActor2D(ta);
 	s->aquaLandBarLabels.clear(); s->aquaLandBarValues.clear(); s->aquaLandBarTickPts = nullptr;
 	if (!(hi > lo)) hi = lo + 1.0;
 	s->aquaLandBarLo = lo; s->aquaLandBarHi = hi;
@@ -256,7 +256,7 @@ static void setAquaLandColorbarVisible(Scene *s, bool on) {
 	if (!s || !s->aquaLandBar) return;
 	s->aquaLandBar->SetVisibility(on ? 1 : 0);
 	if (s->aquaLandBarTicks) s->aquaLandBarTicks->SetVisibility(on ? 1 : 0);
-	for (auto& ta : s->aquaLandBarLabels) if (ta) ta->SetVisibility(on ? 1 : 0);
+	for (auto &ta : s->aquaLandBarLabels) if (ta) ta->SetVisibility(on ? 1 : 0);
 }
 
 // Show/hide the WHOLE colorbar (strip + ticks + numbers) together. The old code toggled only the
@@ -265,7 +265,7 @@ static void setColorbarVisible(Scene *s, bool on) {
 	if (!s || !s->bar) return;
 	s->bar->SetVisibility(on ? 1 : 0);
 	if (s->barTicks) s->barTicks->SetVisibility(on ? 1 : 0);
-	for (auto& ta : s->barLabels) if (ta) ta->SetVisibility(on ? 1 : 0);
+	for (auto &ta : s->barLabels) if (ta) ta->SetVisibility(on ? 1 : 0);
 }
 
 static bool colorbarVisible(Scene *s) { return s && s->bar && s->bar->GetVisibility() != 0; }
@@ -311,7 +311,7 @@ static bool colorbarRelease(Scene *s) {
 // callers below); Aquamoto's water/land rows (aquaWaterColorbarRow/aquaLandColorbarRow) pass a
 // different `apply` since their colour comes from a host-composited texture, not a scalar+LUT
 // surface, and needs its own Julia entry point + a slice re-render (g_aquamotoSetCmap).
-static void chooseColormap(Scene *s, const QPoint& gp, std::function<void(const QString&)> apply) {
+static void chooseColormap(Scene *s, const QPoint &gp, std::function<void(const QString&)> apply) {
 	if (!s || !apply) return;
 	static const char *kMaps[] = {
 		"viridis", "turbo", "jet", "hot", "haxby", "geo", "relief", "rainbow",
@@ -352,7 +352,7 @@ static bool textFontDialog(QWidget *parent, const QString &title, std::string &t
 	QCheckBox *eItal = new QCheckBox("Italic", &d); eItal->setChecked(italic);
 	QColor col = QColor::fromRgbF(color[0], color[1], color[2]);
 	QPushButton *eColor = new QPushButton(&d);
-	auto paintSwatch = [eColor](const QColor& c) { eColor->setStyleSheet("background:" + c.name()); };
+	auto paintSwatch = [eColor](const QColor &c) { eColor->setStyleSheet("background:" + c.name()); };
 	paintSwatch(col);
 	QObject::connect(eColor, &QPushButton::clicked, [&]() {
 		const QColor c = QColorDialog::getColor(col, &d, "Text colour");
@@ -384,7 +384,7 @@ static bool textFontDialog(QWidget *parent, const QString &title, std::string &t
 // size, colour, bold and italic, then re-applies and re-renders.
 static void textPropsDialog(Scene *s, vtkProp3D *act) {
 	TextLabel *tl = nullptr;
-	for (auto& t : s->texts) if (t.actor.Get() == act) { tl = &t; break; }
+	for (auto &t : s->texts) if (t.actor.Get() == act) { tl = &t; break; }
 	if (!tl) return;
 	if (!textFontDialog(s->widget, "Text Properties", tl->text, tl->font, tl->size, tl->color, tl->bold, tl->italic))
 		return;
@@ -394,7 +394,7 @@ static void textPropsDialog(Scene *s, vtkProp3D *act) {
 }
 
 // Right-click menu for a text label: edit properties or delete it.
-static void textLabelMenu(Scene *s, vtkProp3D *act, const QPoint& globalPos) {
+static void textLabelMenu(Scene *s, vtkProp3D *act, const QPoint &globalPos) {
 	QMenu m(s->widget);
 	QAction *props = m.addAction("Text Properties…");
 	QAction *del   = m.addAction("Remove");
@@ -429,9 +429,9 @@ static QPixmap makeObjectIcon(int kind) {
 	pm.fill(Qt::transparent);
 	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
 	p.scale(LOGICAL / 16.0, LOGICAL / 16.0);             // map the 0..16 drawing space onto LOGICAL px
-	auto dots = [&](std::initializer_list<QPointF> ps, const QColor& c) {  // small vertex handles
+	auto dots = [&](std::initializer_list<QPointF> ps, const QColor &c) {  // small vertex handles
 		p.setPen(Qt::NoPen); p.setBrush(c);
-		for (const QPointF& q : ps) p.drawEllipse(q, 1.5, 1.5);
+		for (const QPointF &q : ps) p.drawEllipse(q, 1.5, 1.5);
 	};
 	switch (kind) {
 	case IC_Surface: {
@@ -479,7 +479,7 @@ static QPixmap makeObjectIcon(int kind) {
 	case IC_Points: {
 		p.setPen(Qt::NoPen); p.setBrush(QColor(210, 90, 60));
 		const QPointF pts[5] = {{3,5},{8,3},{13,6},{5,12},{11,12}};
-		for (auto& q : pts) p.drawEllipse(q, 1.8, 1.8);
+		for (auto &q : pts) p.drawEllipse(q, 1.8, 1.8);
 		break;
 	}
 	case IC_Curtain: {                                         // hanging panel with a wavy bottom
@@ -582,7 +582,7 @@ static int extraIndexOfActor(Scene *s, vtkProp3D *a) {
 }
 
 // True if the image footprint overlaps the host grid footprint (a drape needs a grid underneath).
-static bool imageOverlapsGrid(Scene *s, const ExtraObj& ex) {
+static bool imageOverlapsGrid(Scene *s, const ExtraObj &ex) {
 	if (s->gridZ.empty() || s->gnx < 2 || s->gny < 2) return false;
 	return ex.bx0 < s->gx1 && ex.bx1 > s->gx0 && ex.by0 < s->gy1 && ex.by1 > s->gy0;
 }
@@ -594,7 +594,7 @@ static double imageStackStep(Scene *s) {
 }
 
 // (Re)build the image actor for its current flat/draped state and (re)register it in the renderer.
-static void imageRebuildActor(Scene *s, ExtraObj& ex) {
+static void imageRebuildActor(Scene *s, ExtraObj &ex) {
 	if (ex.actor) s->ren->RemoveActor(ex.actor);
 	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
 	const bool drape = ex.draped && imageOverlapsGrid(s, ex);
@@ -683,7 +683,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	if (!c) return;
 	if (c == aSave) { saveObjectDialog(s, "image", QString::fromStdString(s->extras[idx].name)); return; }
 	if (c == aStretch) { stretchImageObject(s, QString::fromStdString(s->extras[idx].name)); return; }
-	ExtraObj& ex = s->extras[idx];            // vector unchanged during exec -> index still valid
+	ExtraObj &ex = s->extras[idx];            // vector unchanged during exec -> index still valid
 	const double step = imageStackStep(s);
 	if (c == aDel) {
 		if (ex.actor) s->ren->RemoveActor(ex.actor);
@@ -709,7 +709,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 		for (size_t i = 0; i < s->extras.size(); ++i)
 			if (s->extras[i].isImage) pile.push_back({ false, (int)i, s->extras[i].zpos });
 		if (hasSurf) pile.push_back({ true, -1, smid });
-		std::sort(pile.begin(), pile.end(), [](const Slot& a, const Slot& b) { return a.key < b.key; });
+		std::sort(pile.begin(), pile.end(), [](const Slot &a, const Slot &b) { return a.key < b.key; });
 		int pos = 0; for (size_t k = 0; k < pile.size(); ++k) if (!pile[k].surf && pile[k].idx == idx) { pos = (int)k; break; }
 		Slot tgt = pile[pos]; pile.erase(pile.begin() + pos);    // pull the image out, then reinsert one slot over
 		int dest = pos;
@@ -722,7 +722,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 		int si = -1; for (size_t k = 0; k < pile.size(); ++k) if (pile[k].surf) { si = (int)k; break; }
 		for (int k = 0; k < (int)pile.size(); ++k) {
 			if (pile[k].surf) continue;
-			ExtraObj& e = s->extras[pile[k].idx];
+			ExtraObj &e = s->extras[pile[k].idx];
 			e.zpos = (si < 0)      ? s->zmax + (k + 1) * step          // no surface: stack all above z=zmax
 			       : (k < si)      ? s->zmin - (si - k) * step          // below the relief
 			                       : s->zmax + (k - si) * step;         // above the relief
@@ -750,15 +750,20 @@ static std::vector<StackItem> gatherStackItems(Scene *s) {
 	std::vector<StackItem> v;
 	std::vector<vtkActor*> base = surfActors(s);
 	if (!base.empty()) v.push_back({ base, &s->surfStack, false });   // base relief
-	for (auto& ex : s->extras) {                                      // dropped grids (images stack via zpos)
+	for (auto &ex : s->extras) {                                      // dropped grids (images stack via zpos)
 		if (ex.isImage || !ex.actor) continue;
 		std::vector<vtkActor*> a = { ex.actor.Get() };
 		if (ex.drape) a.push_back(ex.drape.Get());
 		v.push_back({ a, &ex.gstack, false });
 	}
-	for (auto& o  : s->overlays) if (o.actor) v.push_back({ { o.actor.Get()  }, &o.stack,  true, false });
-	for (auto& sl : s->symbols)  if (sl.actor) v.push_back({ { sl.actor.Get() }, &sl.stack, true, sl.solid3D });
-	for (auto& pg : s->polys)    if (pg.line && !pg.isMeca) v.push_back({ { pg.line.Get()  }, &pg.stack, true, false });
+	// The Ctrl+drag profile track is a VECTOR element like any other line: it joins the SAME pile so the
+	// shared "vectors above every raster" rule (applyStacking below) lifts it over grid2 as well — never
+	// a private setActorTopLayer call of its own.
+	if (s->profLine && s->profLine->GetVisibility())
+		v.push_back({ { s->profLine.Get() }, &s->profStack, true, false });
+	for (auto &o  : s->overlays) if (o.actor) v.push_back({ { o.actor.Get()  }, &o.stack,  true, false });
+	for (auto &sl : s->symbols)  if (sl.actor) v.push_back({ { sl.actor.Get() }, &sl.stack, true, sl.solid3D });
+	for (auto &pg : s->polys)    if (pg.line && !pg.isMeca) v.push_back({ { pg.line.Get()  }, &pg.stack, true, false });
 	return v;
 }
 
@@ -784,7 +789,7 @@ static void destroyColorbar(Scene *s) {
 	if (!s) return;
 	if (s->bar)      { s->ren->RemoveActor2D(s->bar);      s->bar = nullptr; }
 	if (s->barTicks) { s->ren->RemoveActor2D(s->barTicks); s->barTicks = nullptr; }
-	for (auto& ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
+	for (auto &ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
 	s->barLabels.clear();
 	s->barValues.clear();
 	s->barTickPts = nullptr;
@@ -794,11 +799,13 @@ static void destroyColorbar(Scene *s) {
 // is visible (every grid hidden) -> caller hides the colorbar and clears the readout routing.
 struct ActiveGrid {
 	bool   valid = false;
-	const std::vector<float>* z = nullptr;
+	const std::vector<float> *z = nullptr;
 	int    nx = 0, ny = 0;
 	double x0 = 0, x1 = 1, y0 = 0, y1 = 1, zmin = 0, zmax = 1;
 	vtkScalarsToColors *lut = nullptr;
 	bool   showBar = true;     // active grid's per-grid "show colorbar" intent
+	std::string name;          // its Scene Objects label — the key any host-side (Julia) lookup needs,
+	                           // so a grdtrack/compute runs on the DISPLAYED grid, not the base one
 };
 
 // The active grid is the TOPMOST VISIBLE grid (highest pile rank). The base relief participates via
@@ -813,19 +820,31 @@ static ActiveGrid resolveActiveGrid(Scene *s) {
 			ag.valid = true; ag.z = &s->gridZ; ag.nx = s->gnx; ag.ny = s->gny;
 			ag.x0 = s->gx0; ag.x1 = s->gx1; ag.y0 = s->gy0; ag.y1 = s->gy1;
 			ag.zmin = s->zmin; ag.zmax = s->zmax; ag.lut = s->surfLut; ag.showBar = s->surfShowBar;
+			ag.name = s->surfName;
 			bestStack = s->surfStack; have = true;
 		}
 	}
-	for (auto& ex : s->extras) {
+	for (auto &ex : s->extras) {
 		if (ex.isImage || ex.gridZ.empty() || !ex.actor || !ex.actor->GetVisibility()) continue;
 		if (!have || ex.gstack >= bestStack) {                 // ties impossible (ranks normalized unique)
 			bestStack = ex.gstack; have = true; ag.valid = true;
 			ag.z = &ex.gridZ; ag.nx = ex.gnx; ag.ny = ex.gny;
 			ag.x0 = ex.gx0; ag.x1 = ex.gx1; ag.y0 = ex.gy0; ag.y1 = ex.gy1;
 			ag.zmin = ex.zmin; ag.zmax = ex.zmax; ag.lut = ex.lut; ag.showBar = ex.showBar;
+			ag.name = ex.name;
 		}
 	}
 	return ag;
+}
+
+// Scene Objects label of the grid the window is CURRENTLY DISPLAYING (topmost visible). Empty when
+// that is the base surface (which the host knows under the empty name) or when no grid is visible.
+// Every host-side computation that must run on what the user is looking at — Extract profile's
+// grdtrack, and any future one — asks HERE, so there is one answer for all of them.
+static std::string activeGridName(Scene *s) {
+	if (!s) return std::string();
+	ActiveGrid ag = resolveActiveGrid(s);
+	return ag.valid ? ag.name : std::string();
 }
 
 // Retarget the single rendered colorbar + the hover/coordinate readout to the active (topmost-visible)
@@ -862,7 +881,16 @@ static void applyStacking(Scene *s) {
 	if (n == 0) return;
 	std::vector<int> ord(n);
 	for (int i = 0; i < n; ++i) ord[i] = i;
-	std::stable_sort(ord.begin(), ord.end(), [&](int a, int b) { return *it[a].stack < *it[b].stack; });
+	// HARD LAW: VECTOR DATA IS ALWAYS ON TOP OF EVERY RASTER. So the pile is sorted RASTERS FIRST, then
+	// vectors — a vector can never end up ranked between two grids (which used to leave a line drawn over
+	// grid1 but hidden under grid2). Within each class the user's own pile order is preserved, so Stack
+	// up/down still reorders vectors among themselves and grids among themselves. Enforced HERE, in the one
+	// place every element's rank is normalized, so every path (add grid, toggle visibility, restack,
+	// profile track, session load) obeys it without its own copy of the rule.
+	std::stable_sort(ord.begin(), ord.end(), [&](int a, int b) {
+		if (it[a].vec != it[b].vec) return !it[a].vec;      // raster (vec=false) below vector
+		return *it[a].stack < *it[b].stack;
+	});
 	// SMALL per-rank step: the coincident offset is used ONLY to break near-coplanar z-fights (e.g. two
 	// overlapping grids at the same elevation, a line lying on its grid). It must NOT be large — a big
 	// offset drags a vector so far toward the camera it pokes THROUGH a grid drawn over it. Genuine 3-D
@@ -883,11 +911,10 @@ static void applyStacking(Scene *s) {
 		const bool   vec     = it[ord[k]].vec;
 		const bool   solid3D = it[ord[k]].solid3D;
 		const double u   = -(k - surfRank) * step;          // rank ramp; base relief stays at 0 (tonality-safe)
-		// A vector gets its PLAIN rank offset (no half-step): it is then nearer than every raster ranked
-		// below it (drawn on top of them) and farther than every raster ranked above it (occluded by them
-		// through real depth). That is exactly what lets a line sit BETWEEN two grids — visible over grid1,
-		// hidden under grid2. A vector ranked above EVERY raster cannot be lifted over taller terrain by any
-		// offset, so it goes to the depth-cleared OVERLAY layer and is drawn on top purely by render order.
+		// A vector gets its PLAIN rank offset (no half-step), which breaks the z-fight against the raster it
+		// lies on. It can no longer be ranked below a raster (see the sort above), so every vector also goes
+		// to the depth-cleared OVERLAY layer and is drawn on top purely by render order — no offset magnitude
+		// could lift a line over taller terrain, which is why the layer, not the offset, enforces the law.
 		// solid3D (sphere/cube) is exempted from the coincident-offset ramp always: it is real lit 3-D
 		// geometry with genuine depth of its own (e.g. a buried earthquake), not a coincident 2-D-ish
 		// overlay, so it never gets an offset bias — real depth decides whether 3-D terrain occludes it.
@@ -930,21 +957,19 @@ static void restackStack(Scene *s, int *stackPtr, int op) {
 	for (int k = 0; k < n; ++k) if (it[ord[k]].stack == stackPtr) { pos = k; break; }
 	if (pos < 0) return;
 	const bool movingVec = it[ord[pos]].vec;
+	int nRaster = 0;
+	for (int k = 0; k < n; ++k) if (!it[ord[k]].vec) ++nRaster;
 	int dest = (op == 0) ? n - 1 : (op == 1) ? 0 : (op == 2) ? std::min(pos + 1, n - 1) : std::max(pos - 1, 0);
-	// RULE 1+3: a RASTER (grid/image) must ALWAYS hold the base (rank 0); a VECTOR may never sit under
-	// the base raster. So floor a moving vector at rank 1 (it can still slide between any rasters above).
-	if (movingVec && dest < 1) dest = 1;
+	// The LAW (vectors always above every raster) clamps the move to the element's own class: a vector
+	// slides only among the vectors (never down into the rasters), a raster only among the rasters (never
+	// up past a vector). Without this clamp "Place at bottom" on a line would silently do nothing after
+	// applyStacking re-sorted it back — clamping makes the menu action mean what it says.
+	if (movingVec) dest = std::max(dest, nRaster);
+	else           dest = std::min(dest, nRaster - 1);
 	if (dest == pos) return;
 	const int moved = ord[pos];
 	ord.erase(ord.begin() + pos);
 	ord.insert(ord.begin() + dest, moved);
-	// SAFETY (RULE 1): if the move stranded a vector at the base, pull the lowest raster back down to
-	// rank 0. A lone raster therefore can never be lifted above a vector — one raster always stays base.
-	if (it[ord[0]].vec) {
-		int r = -1;
-		for (int k = 1; k < n; ++k) if (!it[ord[k]].vec) { r = k; break; }
-		if (r > 0) { const int rr = ord[r]; ord.erase(ord.begin() + r); ord.insert(ord.begin(), rr); }
-	}
 	for (int k = 0; k < n; ++k) *it[ord[k]].stack = k;
 	applyStacking(s);
 }
@@ -1002,11 +1027,16 @@ static void sceneRemoveSurface(Scene *s) {
 	// Colorbar strip + tick lines + numeric labels
 	if (s->bar)      s->ren->RemoveActor2D(s->bar);
 	if (s->barTicks) s->ren->RemoveActor2D(s->barTicks);
-	for (auto& ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
+	for (auto &ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
 	s->bar = nullptr; s->barTicks = nullptr;
 	s->barLabels.clear(); s->barValues.clear();
-	// Profile line anchored to the old surface
-	if (s->profLine) { s->ren->RemoveActor(s->profLine); s->profLine = nullptr; }
+	// Profile line anchored to the old surface. It is a pile vector now, so it may be parked in the
+	// depth-cleared overlay renderer — clear BOTH layers (setActorTopLayer's own contract).
+	if (s->profLine) {
+		s->ren->RemoveActor(s->profLine);
+		if (s->axesRen) s->axesRen->RemoveActor(s->profLine);
+		s->profLine = nullptr;
+	}
 	// Full-res z data buffer + active-grid pointer
 	s->gridZ.clear(); s->gnx = 0; s->gny = 0; s->actZ = nullptr;
 	// Mark window as empty — a dropped file will promote into it
@@ -1018,7 +1048,7 @@ static void sceneRemoveSurface(Scene *s) {
 	// Hide the Shading dock when no other loaded grids remain
 	{
 		bool hasOtherGrid = false;
-		for (const auto& ex : s->extras) if (!ex.isImage) { hasOtherGrid = true; break; }
+		for (const auto &ex : s->extras) if (!ex.isImage) { hasOtherGrid = true; break; }
 		if (!hasOtherGrid && s->shadeDock) s->shadeDock->setVisible(false);
 	}
 	rebuildSceneObjects(s);
@@ -1030,12 +1060,12 @@ static void sceneRemoveSurface(Scene *s) {
 // (encoded in its name, carried on G.title), NOT a per-window flag — so the option follows the grid
 // wherever its row lives: as a dropped EXTRA grid (gridObjectMenu) or, after "Move to new window", as
 // that window's BASE surface (surfaceObjectMenu). One predicate, one handler, offered identically.
-static bool gridIsNestedBlank(const QString& nm) { return QRegularExpression("^layer\\d+$").match(nm).hasMatch(); }
+static bool gridIsNestedBlank(const QString &nm) { return QRegularExpression("^layer\\d+$").match(nm).hasMatch(); }
 
 // Run the "Transplant 2nd grid…" fill on the nested blank grid named `nm`: pick an implant file and hand
 // it to Julia (_on_nested_transplant), which samples it onto this grid's nodes. Works for the base
 // surface and for an extra grid alike — Julia detects which and replaces in place / re-adds.
-static void runNestedTransplant(Scene *s, const QString& nm) {
+static void runNestedTransplant(Scene *s, const QString &nm) {
 	if (!g_juliaEval) return;
 	const QString fn = QFileDialog::getOpenFileName(s->win, "Select grid to implant", prefStartDir(),
 		"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
@@ -1062,7 +1092,7 @@ static void runGridInfo(Scene *s, const QString &nm) {
 }
 
 // Properties menu for the BASE relief surface row: Save, grid-pile stacking, and Remove.
-static void surfaceObjectMenu(Scene *s, const QPoint& gp) {
+static void surfaceObjectMenu(Scene *s, const QPoint &gp) {
 	const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
 	QMenu m(s->widget);
 	QAction *aSave = m.addAction("Save grid…");
@@ -1487,7 +1517,7 @@ static void rebuildSceneObjects(Scene *s) {
 		QObject::connect(cb, &QCheckBox::toggled, [s, name](bool on) {
 			std::string gname = name.toStdString();
 			// Toggle all patches with this groupName directly on their actors.
-			for (auto& pg : s->polys) {
+			for (auto &pg : s->polys) {
 				if (pg.groupName != gname) continue;
 				if (pg.line)  pg.line->SetVisibility(on ? 1 : 0);
 				if (pg.fill)  pg.fill->SetVisibility((on && pg.fill->GetProperty()->GetOpacity() > 0.0) ? 1 : 0);
@@ -1505,7 +1535,7 @@ static void rebuildSceneObjects(Scene *s) {
 		h->addWidget(text, 1);
 
 		// Right-click opens delete menu.
-		text->onRightClick = [s, name](const QPoint& g) {
+		text->onRightClick = [s, name](const QPoint &g) {
 			QMenu m(s->widget);
 			QAction *aDel = m.addAction(QString("Delete group (%1)").arg(name));
 			if (m.exec(g) == aDel) {
@@ -1517,12 +1547,12 @@ static void rebuildSceneObjects(Scene *s) {
 	};
 
 	// Actor-backed rows (show/hide = actor visibility); lr != null adds the line-object menu.
-	auto addRow = [&](const QString& label, vtkProp3D *a, int iconKind, const LineRef *lr = nullptr) {
+	auto addRow = [&](const QString &label, vtkProp3D *a, int iconKind, const LineRef *lr = nullptr) {
 		if (!a)
 			return;
 		std::function<void(const QPoint&)> ctx = nullptr;
 		if (lr) { LineRef ref = *lr; QString nm = label;
-			ctx = [s, ref, nm](const QPoint& g) { popupLineObjectMenu(s, ref, nm, g); }; }
+			ctx = [s, ref, nm](const QPoint &g) { popupLineObjectMenu(s, ref, nm, g); }; }
 		makeRow(label, iconKind, a->GetVisibility() != 0,
 		        [a](bool on) { a->SetVisibility(on ? 1 : 0); }, ctx,
 		        lr ? QString("Left-click for properties") : QString());
@@ -1531,8 +1561,8 @@ static void rebuildSceneObjects(Scene *s) {
 	// Right-click handler factory for a saveable grid/image row: pops a one-item "Save…" menu that
 	// opens the format-picker dialog for that object (kind = "grid" | "image"; name = the row label,
 	// matched against the Julia object store). kind is a string literal (static lifetime).
-	auto saveCtx = [s](const char *kind, const QString& name) {
-		return [s, kind, name](const QPoint& g) {
+	auto saveCtx = [s](const char *kind, const QString &name) {
+		return [s, kind, name](const QPoint &g) {
 			QMenu m(s->widget);
 			QAction *a = m.addAction(QString("Save %1…").arg(kind));
 			if (m.exec(g) == a) saveObjectDialog(s, kind, name);
@@ -1547,8 +1577,8 @@ static void rebuildSceneObjects(Scene *s) {
 	auto colorbarRow = [&](bool *flag, int gridSel, bool grpVisible = true) {
 		makeRow("Color Bar", IC_ColorBar, *flag && grpVisible,
 		        [s, flag](bool on) { *flag = on; refreshGridColorbar(s); },
-		        [s, gridSel](const QPoint& g) {
-		            chooseColormap(s, g, [s, gridSel](const QString& nm) { applyColormap(s, nm, gridSel); });
+		        [s, gridSel](const QPoint &g) {
+		            chooseColormap(s, g, [s, gridSel](const QString &nm) { applyColormap(s, nm, gridSel); });
 		        },
 		        "Show / hide this grid's colorbar · left-click the label to choose a colormap");
 	};
@@ -1568,8 +1598,8 @@ static void rebuildSceneObjects(Scene *s) {
 		const bool vis = s->bar && s->bar->GetVisibility() != 0;
 		makeRow("Color Bar water", IC_ColorBar, vis,
 		        [s](bool on) { s->surfShowBar = on; if (on) s->aquaShowWater = true; refreshGridColorbar(s); rebuildSceneObjects(s); },
-		        [s](const QPoint& g) {
-		            chooseColormap(s, g, [s](const QString& nm) {
+		        [s](const QPoint &g) {
+		            chooseColormap(s, g, [s](const QString &nm) {
 		                if (g_aquamotoSetCmap) g_aquamotoSetCmap(s, 0, nm.toUtf8().constData());
 		            });
 		        },
@@ -1579,8 +1609,8 @@ static void rebuildSceneObjects(Scene *s) {
 		const bool vis = s->aquaLandBar && s->aquaLandBar->GetVisibility() != 0;
 		makeRow("Color Bar Land", IC_ColorBar, vis,
 		        [s](bool on) { s->aquaLandShowBar = on; if (on) s->aquaShowWater = false; refreshGridColorbar(s); rebuildSceneObjects(s); },
-		        [s](const QPoint& g) {
-		            chooseColormap(s, g, [s](const QString& nm) {
+		        [s](const QPoint &g) {
+		            chooseColormap(s, g, [s](const QString &nm) {
 		                if (g_aquamotoSetCmap) g_aquamotoSetCmap(s, 1, nm.toUtf8().constData());
 		            });
 		        },
@@ -1616,13 +1646,13 @@ static void rebuildSceneObjects(Scene *s) {
 			                  : s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
 			beginGroupHandle(nm, IC_Surface, sp->GetVisibility() != 0,
 			        nullptr,                                              // container does NOT fold the Shading dock (the Surface leaf does)
-			        [s](const QPoint& g) { surfaceObjectMenu(s, g); },
+			        [s](const QPoint &g) { surfaceObjectMenu(s, g); },
 			        "Checkbox toggles the whole group · right-click for save / stacking");
 			makeRow("Surface", IC_Surface, sp->GetVisibility() != 0,     // Surface leaf handle kept as a child
 			        [s, sp](bool on) { sp->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking",
-			        [s](const QPoint& g) { surfaceObjectMenu(s, g); });
+			        [s](const QPoint &g) { surfaceObjectMenu(s, g); });
 			if (s->drape) addRow(QString("Image drape"), s->drape, IC_Image);   // grid's drape texture
 			// Base-surface children must mirror the container's hidden state exactly like an extra
 			// grid's children do (colorbarRow/axesRow below, in the s->extras loop) — WITHOUT this,
@@ -1644,7 +1674,7 @@ static void rebuildSceneObjects(Scene *s) {
 	} else if (s->drape) {                                  // bare image (view_image) group — header IS the image handle
 		const QString nm = s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName);
 		vtkProp3D *dp = s->drape;
-		std::function<void(const QPoint&)> imgMenu = [s, nm](const QPoint& g) {   // primary image props: Save + Remove
+		std::function<void(const QPoint&)> imgMenu = [s, nm](const QPoint &g) {   // primary image props: Save + Remove
 			QMenu m(s->widget);
 			// Percentile histogram stretch -> new 8-bit image row (meaningful for a wide-range e.g.
 			// 16-bit satellite band shown as a fast min-max preview; Julia reports if no wider source).
@@ -1669,31 +1699,31 @@ static void rebuildSceneObjects(Scene *s) {
 	}
 
 	for (size_t ei = 0; ei < s->extras.size(); ++ei) {      // dropped grids / images: one group each
-		auto& ex = s->extras[ei];
+		auto &ex = s->extras[ei];
 		const QString nm = QString::fromStdString(ex.name);
 		if (ex.isImage) {                                  // dropped image group — header IS the image handle
 			vtkProp3D *a = ex.actor.Get();
 			beginGroupHandle(nm, IC_Image, a && a->GetVisibility() != 0,
-			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
-			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
+			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
+			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        "Left- or right-click for image properties (incl. Save)");
 			makeRow("Image", IC_Image, a && a->GetVisibility() != 0,   // Image leaf handle kept as a child
 			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
-			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); },
+			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        "Left- or right-click for image properties (incl. Save)",
-			        [s, a](const QPoint& g) { imageObjectMenu(s, a, g); });
+			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); });
 			axesRow(a && a->GetVisibility() != 0);   // group-uncheck law: Axes mirrors the container
 		} else {                                           // dropped grid group — header mirrors the surface handle
 			vtkProp3D *a = ex.actor.Get();
 			beginGroupHandle(nm, IC_Surface, a && a->GetVisibility() != 0,
 			        nullptr,                                               // container does NOT fold the Shading dock (the Surface leaf does)
-			        [s, a](const QPoint& g) { gridObjectMenu(s, a, g); },  // right-click: save / delete
+			        [s, a](const QPoint &g) { gridObjectMenu(s, a, g); },  // right-click: save / delete
 			        "Checkbox toggles the whole group · right-click to save / delete");
 			makeRow("Surface", IC_Surface, a && a->GetVisibility() != 0,   // Surface leaf handle kept as a child
 			        [s, a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click for Shading · right-click to save / delete",
-			        [s, a](const QPoint& g) { gridObjectMenu(s, a, g); });
+			        [s, a](const QPoint &g) { gridObjectMenu(s, a, g); });
 			if (ex.drape) addRow("Image drape", ex.drape, IC_Image);
 			const bool gvis = a && a->GetVisibility() != 0;   // hidden grid -> children start unchecked (mirror the container)
 			colorbarRow(&ex.showBar, ex.tag, gvis);    // resolve by the grid's UNIQUE tag, not its (shifting) index
@@ -1707,7 +1737,7 @@ static void rebuildSceneObjects(Scene *s) {
 	// ── OTHER OBJECTS ── lines / points / curtains / polygons / text / profile (top-level rows; a fault
 	// with planes becomes its own group, see below).
 	QString ovlGroupOpen;                                // name of the currently-open overlay-group node (empty = none)
-	for (auto& ov : s->overlays) {
+	for (auto &ov : s->overlays) {
 		// Overlays sharing a non-empty groupName (e.g. Geography > Plate boundaries' 7 boundary-type
 		// layers, added back-to-back in one batch) fold under ONE collapsible parent row instead of
 		// flooding the list -- same consecutive-run fold the slip-model patches use above. The
@@ -1721,7 +1751,7 @@ static void rebuildSceneObjects(Scene *s) {
 			const std::string gn = ov.groupName;
 			beginGroupHandle(QString::fromStdString(ov.groupName), IC_Line,
 			                 ov.actor && ov.actor->GetVisibility() != 0, nullptr,
-			                 [s, gn](const QPoint& g) {
+			                 [s, gn](const QPoint &g) {
 			                     QMenu m(s->widget);
 			                     QAction *aRem = m.addAction("Remove");
 			                     if (m.exec(g) == aRem) overlayDeleteGroup(s, gn);
@@ -1739,18 +1769,18 @@ static void rebuildSceneObjects(Scene *s) {
 		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, &lr);
 	}
 	if (!ovlGroupOpen.isEmpty()) endGroup();
-	for (auto& sl : s->symbols) {                        // screen-constant symbol layers (props menu)
+	for (auto &sl : s->symbols) {                        // screen-constant symbol layers (props menu)
 		vtkActor *a = sl.actor.Get();
 		makeRow(QString::fromStdString(sl.name), IC_Points, a && a->GetVisibility() != 0,
 		        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
-		        [s, a](const QPoint& g) { symbolLayerMenu(s, a, g); },
+		        [s, a](const QPoint &g) { symbolLayerMenu(s, a, g); },
 		        "Left-click for symbol properties");
 	}
-	for (auto& cu : s->curtains)
+	for (auto &cu : s->curtains)
 		addRow(QString::fromStdString(cu.name), cu.actor, IC_Curtain);
 	QString slipGroupOpen;                               // name of the currently-open slip-patch group node (empty = none)
 	std::set<std::string> mecaGroupsShown;               // focal-mechanism groupNames already given their ONE row
-	for (auto& pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
+	for (auto &pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
 		// Focal-mechanism beachball patches (comp/dilat/rim-ring, dozens to hundreds per catalog) get
 		// NO individual rows at all — just ONE row per batch (groupName), first time it's seen. Left-
 		// click opens the colours/outline properties dialog; right-click offers Remove.
@@ -1761,19 +1791,19 @@ static void rebuildSceneObjects(Scene *s) {
 				// comp/dilat FILL (`p.fill`, mecaBuildPatch) — scan the whole group for either, so the row's
 				// checkbox is never stuck unchecked just because the first-seen patch is line-only.
 				bool vis = false;
-				for (auto& p : s->polys) if (p.isMeca && p.groupName == pg.groupName &&
+				for (auto &p : s->polys) if (p.isMeca && p.groupName == pg.groupName &&
 				                              ((p.fill && p.fill->GetVisibility() != 0) || (p.line && p.line->GetVisibility() != 0))) { vis = true; break; }
 				makeRow(gname, IC_Beachball, vis,
 				        [s, gname](bool on) {
 				            const std::string gn = gname.toStdString();
-				            for (auto& p : s->polys) if (p.isMeca && p.groupName == gn) {
+				            for (auto &p : s->polys) if (p.isMeca && p.groupName == gn) {
 				                if (p.fill) p.fill->SetVisibility(on ? 1 : 0);
 				                if (p.line) p.line->SetVisibility(on ? 1 : 0);
 				            }
 				        },
-				        [s, gname](const QPoint& g) { mecaGroupPropsDialog(s, gname, g); },
+				        [s, gname](const QPoint &g) { mecaGroupPropsDialog(s, gname, g); },
 				        "Left-click for properties (colours, outline) · right-click to remove",
-				        [s, gname](const QPoint& g) {
+				        [s, gname](const QPoint &g) {
 				            QMenu m(s->widget);
 				            QAction *aRem = m.addAction("Remove");
 				            if (m.exec(g) == aRem) deleteMecaGroup(s, gname);
@@ -1810,8 +1840,8 @@ static void rebuildSceneObjects(Scene *s) {
 			LineRef cref = lr; QString cnm = nm;
 			const bool anyVis = pg.line && pg.line->GetVisibility() != 0;
 			beginGroupHandle(nm, ic, anyVis,
-			        [s, cref, cnm](const QPoint& g) { popupLineObjectMenu(s, cref, cnm, g); },
-			        [s, cref, cnm](const QPoint& g) { popupLineObjectMenu(s, cref, cnm, g); },
+			        [s, cref, cnm](const QPoint &g) { popupLineObjectMenu(s, cref, cnm, g); },
+			        [s, cref, cnm](const QPoint &g) { popupLineObjectMenu(s, cref, cnm, g); },
 			        "Left- or right-click for fault properties");
 		}
 
@@ -1826,7 +1856,7 @@ static void rebuildSceneObjects(Scene *s) {
 			            if (la) la->SetVisibility(on ? 1 : 0);
 			            if (fa) fa->SetVisibility((on && fa->GetProperty()->GetOpacity() > 0.0) ? 1 : 0);
 			        },
-			        [s, ref, nm2](const QPoint& g) { popupLineObjectMenu(s, ref, nm2, g); },
+			        [s, ref, nm2](const QPoint &g) { popupLineObjectMenu(s, ref, nm2, g); },
 			        "Left-click for properties");
 		}
 
@@ -1835,12 +1865,12 @@ static void rebuildSceneObjects(Scene *s) {
 			vtkActor *fp = pg.faultPlane.Get();
 			makeRow(QString("Surface projection"), IC_Rect, fp->GetVisibility() != 0,
 			        [fp](bool on) { fp->SetVisibility(on ? 1 : 0); },
-			        [s, fp](const QPoint& g) {
+			        [s, fp](const QPoint &g) {
 			            QMenu m(s->widget);
 			            QAction *aRem = m.addAction("Remove");
 			            if (m.exec(g) != aRem) return;
 			            if (s->ren) s->ren->RemoveActor(fp);
-			            for (auto& p : s->polys) if (p.faultPlane.Get() == fp) {
+			            for (auto &p : s->polys) if (p.faultPlane.Get() == fp) {
 			                p.faultPlane = nullptr; p.faultPlanePD = nullptr; break;
 			            }
 			            rebuildSceneObjects(s);
@@ -1858,18 +1888,18 @@ static void rebuildSceneObjects(Scene *s) {
 			vtkActor *fp3 = pg.faultPlane3D.Get();
 			makeRow(QString("Fault plane"), IC_Rect, pg.faultPlane3DShown,
 			        [s, fp3](bool on) {
-			            for (auto& p : s->polys) if (p.faultPlane3D.Get() == fp3) {
+			            for (auto &p : s->polys) if (p.faultPlane3D.Get() == fp3) {
 			                p.faultPlane3DShown = on;
 			                if (p.faultArrows) p.faultArrows->SetVisibility((on && !s->flat2d) ? 1 : 0);
 			                break;
 			            }
 			            fp3->SetVisibility((on && !s->flat2d) ? 1 : 0); },
-			        [s, fp3](const QPoint& g) {
+			        [s, fp3](const QPoint &g) {
 			            QMenu m(s->widget);
 			            QAction *aRem = m.addAction("Remove");
 			            if (m.exec(g) != aRem) return;
 			            if (s->ren) s->ren->RemoveActor(fp3);
-			            for (auto& p : s->polys) if (p.faultPlane3D.Get() == fp3) {   // null the owning fault's slot
+			            for (auto &p : s->polys) if (p.faultPlane3D.Get() == fp3) {   // null the owning fault's slot
 			                if (p.faultArrows && s->ren) s->ren->RemoveActor(p.faultArrows);
 			                p.faultArrows = nullptr; p.faultArrowsPD = nullptr;
 			                p.faultPlane3D = nullptr; p.faultPlane3DPD = nullptr; break;
@@ -1895,7 +1925,7 @@ static void rebuildSceneObjects(Scene *s) {
 		vtkProp3D *act = tl.actor.Get();
 		makeRow(QString::fromStdString(tl.name), IC_Text, act->GetVisibility() != 0,
 		        [act](bool on) { act->SetVisibility(on ? 1 : 0); },
-		        [s, act](const QPoint& g) { textLabelMenu(s, act, g); },
+		        [s, act](const QPoint &g) { textLabelMenu(s, act, g); },
 		        "Left-click for properties");
 	}
 	if (s->profLine && s->profLine->GetVisibility()) {  // the profile track (when one exists)
@@ -2081,7 +2111,7 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 static void overlaySetMode(Scene *s, vtkActor *actor, int toPoints) {
 	if (!s || !actor) return;
 	Overlay *ov = nullptr;
-	for (auto& o : s->overlays) if (o.actor.Get() == actor) { ov = &o; break; }
+	for (auto &o : s->overlays) if (o.actor.Get() == actor) { ov = &o; break; }
 	if (!ov || !ov->baseLine) return;
 	const int mode = toPoints ? 0 : 1;
 	if (ov->mode == mode) return;
@@ -2114,7 +2144,7 @@ static void overlaySetMode(Scene *s, vtkActor *actor, int toPoints) {
 // the context menu label the toggle "Convert to points" vs "Convert to line".
 static int overlayMode(Scene *s, vtkActor *actor) {
 	if (s && actor)
-		for (auto& o : s->overlays) if (o.actor.Get() == actor) return o.mode;
+		for (auto &o : s->overlays) if (o.actor.Get() == actor) return o.mode;
 	return -1;
 }
 
@@ -2122,7 +2152,7 @@ static int overlayMode(Scene *s, vtkActor *actor) {
 // rebuilding its points + cells from the remaining segments. Used when a segment is promoted into
 // an editable Polygon (85_polygon.cpp overlayPromoteSegmentToPolygon) — the rest of the overlay
 // (e.g. a coastline's other islands) stays exactly as it was.
-static void overlayRemoveSegment(Scene *s, Overlay& ov, int segIdx) {
+static void overlayRemoveSegment(Scene *s, Overlay &ov, int segIdx) {
 	if (!s || segIdx < 0 || segIdx >= ov.nseg || !ov.baseLine) return;
 	vtkPolyData *pd = ov.baseLine;
 	vtkPoints *oldPts = pd->GetPoints();
@@ -2165,7 +2195,7 @@ static void overlayRemoveSegment(Scene *s, Overlay& ov, int segIdx) {
 // code. Filled shapes -> a single polygon cell (fill = actor colour, outline = actor EdgeVisibility);
 // open shapes (x + -) -> line cells (no fill, drawn in the edge colour). `filled` is returned so the
 // caller knows whether the fill colour applies. Unknown code -> circle.
-static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string& sym, bool& filled) {
+static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string &sym, bool &filled) {
 	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
 	vtkNew<vtkPoints> p;
 	vtkNew<vtkCellArray> ca;
@@ -2232,7 +2262,7 @@ static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string& sym, bool
 // flat XY polygon, so it stays visible from any camera angle (the flat glyphs above go edge-on
 // invisible in an oblique 3-D view). Always filled; normals included so LightingOn() actually
 // shades it (addSymbols turns lighting on only for these two codes).
-static vtkSmartPointer<vtkPolyData> makeSolidGlyph(const std::string& sym) {
+static vtkSmartPointer<vtkPolyData> makeSolidGlyph(const std::string &sym) {
 	if (sym == "u") {                      // cube: vtkCubeSource has no built-in normals -> compute them
 		vtkNew<vtkCubeSource> cube;
 		cube->SetXLength(1.0); cube->SetYLength(1.0); cube->SetZLength(1.0);
@@ -2267,7 +2297,7 @@ static void symbolRescaleCB(vtkObject*, unsigned long, void *clientData, void*) 
 	// sizePx is LOGICAL pixels (what a user means); 1 logical px = dpr device px, so multiply by dpr.
 	const double dpr = (s->widget) ? s->widget->devicePixelRatioF() : 1.0;
 	const double worldPerLogPx = (vph / Hpx) * dpr;
-	for (auto& sl : s->symbols) {
+	for (auto &sl : s->symbols) {
 		const double scale = std::max(1e-9, sl.sizePx * worldPerLogPx);
 		if (sl.glyphMapper) {                  // solid3D: GPU-instanced path (vtkGlyph3DMapper)
 			sl.glyphMapper->SetScaleFactor(scale);
@@ -2299,11 +2329,11 @@ static void restackVector(Scene *s, int *stackPtr, int op) { restackStack(s, sta
 // Stamp N glyphs of one GMT symbol code at N (x,y,z) points (TRUE coords). Screen-constant size:
 // x is pre-baked with xfac so the glyph is NOT x-stretched; the actor carries only the z scale so
 // symbols ride VE. The per-frame observer (installed once) keeps `sizePx` literal at any zoom.
-static int addSymbols(Scene *s, const double *xyz, int npts, const std::string& sym,
+static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &sym,
                       double sizePx, int filled,
                       double fr, double fg, double fb,
                       double er, double eg, double eb, double edgeWidth,
-                      const std::string& name, const char *info = nullptr, bool oneShot = false) {
+                      const std::string &name, const char *info = nullptr, bool oneShot = false) {
 	if (!s || !xyz || npts <= 0) return 0;
 
 	vtkNew<vtkPoints> pts; pts->SetDataTypeToDouble(); pts->Allocate(npts);
@@ -2473,7 +2503,7 @@ static int symbolLayerIndexOfActor(Scene *s, vtkActor *a) {
 // actor pointer on every edit (never caches the index — `act` is the stable identity, matching
 // polyIndexOfActor's convention) so a layer deleted while the table is open just no-ops instead of
 // writing into freed/reused memory.
-static void showSymbolDataTable(Scene *s, vtkActor *act, const QString& name) {
+static void showSymbolDataTable(Scene *s, vtkActor *act, const QString &name) {
 	const int si0 = symbolLayerIndexOfActor(s, act);
 	if (si0 < 0) return;
 	vtkPolyData *pd0 = symInputPD(s->symbols[si0]);
@@ -2643,9 +2673,9 @@ static void batchTextLabelsDialog(Scene *s, const std::string &groupName, int cl
 // Right-click / left-click properties for a symbol layer row: change shape, fill + edge colour,
 // on-screen size and edge width, or delete the layer. Edits the SymbolLayer + its actor/glyph in
 // place (no re-upload of points); size goes through the per-frame rescaler so it stays literal px.
-static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
+static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 	SymbolLayer *sl = nullptr;
-	for (auto& x : s->symbols) if (x.actor.Get() == act) { sl = &x; break; }
+	for (auto &x : s->symbols) if (x.actor.Get() == act) { sl = &x; break; }
 	if (!sl) return;
 	auto reRender = [&] { if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render(); };
 
@@ -2722,7 +2752,7 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 		{"Diamond","d"}, {"Hexagon","h"}, {"Pentagon","n"}, {"Octagon","g"},
 		{"Star","a"}, {"Cross","x"}, {"Plus","+"}, {"Dash","-"} };
 	std::vector<QAction*> kindActs;
-	for (const auto& k : KINDS) {
+	for (const auto &k : KINDS) {
 		QAction *a = tm->addAction(k.first); a->setCheckable(true); a->setChecked(sl->sym == k.second);
 		kindActs.push_back(a);
 	}
@@ -2771,9 +2801,9 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 		// Keep end >= start as either side is edited (clamp toward the moved edge, don't fight the user).
 		QObject::connect(eStart, &QDateTimeEdit::dateTimeChanged, &dlg,
-		                 [eEnd](const QDateTime& d){ if (eEnd->dateTime() < d) eEnd->setDateTime(d); });
+		                 [eEnd](const QDateTime &d){ if (eEnd->dateTime() < d) eEnd->setDateTime(d); });
 		QObject::connect(eEnd, &QDateTimeEdit::dateTimeChanged, &dlg,
-		                 [eStart](const QDateTime& d){ if (eStart->dateTime() > d) eStart->setDateTime(d); });
+		                 [eStart](const QDateTime &d){ if (eStart->dateTime() > d) eStart->setDateTime(d); });
 		if (dlg.exec() != QDialog::Accepted) return;
 		const QString req = "calendar/" + eStart->dateTime().toString("yyyy-MM-ddTHH:mm:ss")
 		                  + "/"          + eEnd->dateTime().toString("yyyy-MM-ddTHH:mm:ss");
@@ -2808,9 +2838,9 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint& gp) {
 		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 		// Keep end >= start as either side is edited (clamp toward the moved edge, don't fight the user).
 		QObject::connect(eStart, &QDateTimeEdit::dateTimeChanged, &dlg,
-		                 [eEnd](const QDateTime& d){ if (eEnd->dateTime() < d) eEnd->setDateTime(d); });
+		                 [eEnd](const QDateTime &d){ if (eEnd->dateTime() < d) eEnd->setDateTime(d); });
 		QObject::connect(eEnd, &QDateTimeEdit::dateTimeChanged, &dlg,
-		                 [eStart](const QDateTime& d){ if (eStart->dateTime() > d) eStart->setDateTime(d); });
+		                 [eStart](const QDateTime &d){ if (eStart->dateTime() > d) eStart->setDateTime(d); });
 		if (dlg.exec() != QDialog::Accepted) return;
 		const QString req = "calendar/" + eStart->dateTime().toString("yyyy-MM-ddTHH:mm:ss")
 		                  + "/"          + eEnd->dateTime().toString("yyyy-MM-ddTHH:mm:ss");
@@ -3087,7 +3117,7 @@ static void setStippleTCoords(vtkPolyData *pd, const double sc[3], double period
 // re-runs this. `style` is remembered on the Overlay so the colour action can rebuild.
 static void applyLineStyle(Scene *s, vtkActor *a, int style) {
 	Overlay *ov = nullptr;
-	for (auto& o : s->overlays) if (o.actor.Get() == a) { ov = &o; break; }
+	for (auto &o : s->overlays) if (o.actor.Get() == a) { ov = &o; break; }
 	if (!ov || !ov->baseLine) return;
 	vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
 	if (!m) return;
@@ -3123,11 +3153,11 @@ static void applyLineStyle(Scene *s, vtkActor *a, int style) {
 // Per-element context menu for an overlay (lines: colour / width / style / tubes; points:
 // colour / size / round). Pops on a RIGHT-click only (customContextMenuRequested, 70_window.cpp);
 // no visual selection state, just the menu.
-static void popupOverlayMenu(Scene *s, vtkActor *a, int mode, const QPoint& globalPos) {
+static void popupOverlayMenu(Scene *s, vtkActor *a, int mode, const QPoint &globalPos) {
 	if (!s || !a) return;
 	if (mode == 1) {                         // lines -> the shared Line Properties tool
 		QString nm = "Line";
-		for (auto& o : s->overlays) if (o.actor.Get() == a) { nm = QString::fromStdString(o.name); break; }
+		for (auto &o : s->overlays) if (o.actor.Get() == a) { nm = QString::fromStdString(o.name); break; }
 		popupLineObjectMenu(s, LineRef{ LK_Overlay, a }, nm, globalPos);
 		return;
 	}
@@ -3140,7 +3170,7 @@ static void popupOverlayMenu(Scene *s, vtkActor *a, int mode, const QPoint& glob
 		if (q.isValid()) {
 			a->GetProperty()->SetColor(q.redF(), q.greenF(), q.blueF());
 			Overlay *ov = nullptr;                       // a dashed/dotted line carries its colour in
-			for (auto& o : s->overlays) if (o.actor.Get() == a) { ov = &o; break; }   // the stipple
+			for (auto &o : s->overlays) if (o.actor.Get() == a) { ov = &o; break; }   // the stipple
 			if (ov && ov->lineStyle != 0) applyLineStyle(s, a, ov->lineStyle);         // texture -> rebuild
 			else s->widget->renderWindow()->Render();
 		}
@@ -3229,7 +3259,7 @@ static void overlayDelete(Scene *s, vtkActor *a) {
 // e.g. Geography > Plate boundaries' "Plate boundaries PB" handle deleting all 7 boundary-type
 // layers in one go) -- same actor/record removal overlayDelete does per-item, batched into ONE
 // restack + rebuild + render instead of one per member.
-static void overlayDeleteGroup(Scene *s, const std::string& groupName) {
+static void overlayDeleteGroup(Scene *s, const std::string &groupName) {
 	if (!s || groupName.empty()) return;
 	for (int i = (int)s->overlays.size() - 1; i >= 0; --i) {
 		if (s->overlays[i].groupName != groupName) continue;
@@ -3244,7 +3274,7 @@ static void overlayDeleteGroup(Scene *s, const std::string& groupName) {
 
 // Right-click menu for the profile track line. The property entries now live in the shared Line
 // Properties tool (55_lineprops.cpp); this just routes the profile line to the unified menu.
-static void popupProfileMenu(Scene *s, const QPoint& globalPos) {
+static void popupProfileMenu(Scene *s, const QPoint &globalPos) {
 	if (!s || !s->profLine) return;
 	popupLineObjectMenu(s, LineRef{ LK_Profile, s->profLine }, "Profile", globalPos);
 }

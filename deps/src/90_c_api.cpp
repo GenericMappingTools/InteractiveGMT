@@ -376,7 +376,7 @@ GMTVTK_API int gmtvtk_set_object_visible(void *handle, const char *name, int vis
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !name)
 		return 0;
-	for (auto& ex : s->extras) {
+	for (auto &ex : s->extras) {
 		if (ex.name != name) continue;
 		if (ex.actor) ex.actor->SetVisibility(vis ? 1 : 0);
 		if (ex.drape) ex.drape->SetVisibility(vis ? 1 : 0);
@@ -452,7 +452,7 @@ GMTVTK_API int gmtvtk_overlay_points_h(void *handle, void *actorPtr, double *out
 	if (!sceneAlive(s) || !actorPtr || !out || n <= 0)
 		return 0;
 	vtkActor *a = static_cast<vtkActor*>(actorPtr);
-	for (auto& ov : s->overlays) {
+	for (auto &ov : s->overlays) {
 		if (ov.actor.Get() != a || !ov.baseLine)
 			continue;
 		vtkPoints *pts = ov.baseLine->GetPoints();
@@ -547,7 +547,7 @@ GMTVTK_API int gmtvtk_add_overlay_ex3_h(void *handle, const double *xyz, int npt
 GMTVTK_API int gmtvtk_overlay_style_h(void *handle, const char *name, double *out) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !name || !out) return 0;
-	for (auto& ov : s->overlays) {
+	for (auto &ov : s->overlays) {
 		if (!ov.actor || ov.name != name) continue;
 		double c[3]; ov.actor->GetProperty()->GetColor(c);
 		out[0] = c[0]; out[1] = c[1]; out[2] = c[2];
@@ -567,7 +567,7 @@ GMTVTK_API int gmtvtk_set_overlay_style_h(void *handle, const char *name,
                                           double r, double g, double b, double width, int style, double opacity) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !name) return 0;
-	for (auto& ov : s->overlays) {
+	for (auto &ov : s->overlays) {
 		if (!ov.actor || ov.name != name) continue;
 		ov.actor->GetProperty()->SetColor(r, g, b);       // colour first: applyLineStyle bakes it into the stripe
 		ov.actor->GetProperty()->SetLineWidth(width);
@@ -713,8 +713,8 @@ GMTVTK_API void *gmtvtk_open_profile_in_xyplot(void *handle) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !s->prof)
 		return nullptr;
-	const std::vector<double>& X = s->prof->seriesX();
-	const std::vector<double>& Y = s->prof->seriesY();
+	const std::vector<double> &X = s->prof->seriesX();
+	const std::vector<double> &Y = s->prof->seriesY();
 	if (X.size() < 2)
 		return nullptr;
 	const QByteArray t = s->prof->seriesTitle().toUtf8();
@@ -903,7 +903,7 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 		// Per-polygon introspection (drives the fault-trace icon/menu regression tests): the icon kind a
 		// row would get + the flags it derives from. "poly<i>=<isFault>,<closed>,<nestKind>:<name>;"
 		for (size_t i = 0; i < s->polys.size(); ++i) {
-			const Polygon& pg = s->polys[i];
+			const Polygon &pg = s->polys[i];
 			o += "poly" + std::to_string((int)i) + '=';
 			o += std::to_string(pg.isFault ? 1 : 0) + ',';
 			o += std::to_string(pg.closed  ? 1 : 0) + ',';
@@ -1023,7 +1023,7 @@ GMTVTK_API void gmtvtk_set_cpt_grid(void *handle, int gridSel, const double *cz,
 	if (!sceneAlive(s) || !cz || !crgb || n < 2) return;
 	vtkScalarsToColors *lut = nullptr;          // gridSel is the grid's UNIQUE TAG (-1 = base relief)
 	if (gridSel < 0) lut = s->surfLut;
-	else for (auto& ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
+	else for (auto &ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
 	vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(lut);
 	if (!ctf) return;                         // only the CTF path supports live recolour
 	ctf->RemoveAllPoints();
@@ -1048,7 +1048,7 @@ GMTVTK_API int gmtvtk_grid_rgb_at(void *handle, int gridSel, double z, double *o
 	if (!sceneAlive(s) || !out3) return 0;
 	vtkScalarsToColors *lut = nullptr;          // gridSel is the grid's UNIQUE TAG (-1 = base relief)
 	if (gridSel < 0) lut = s->surfLut;
-	else for (auto& ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
+	else for (auto &ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
 	if (!lut) return 0;
 	const unsigned char *c = lut->MapValue(z);   // works for both vtkColorTransferFunction and vtkLookupTable
 	out3[0] = c[0] / 255.0; out3[1] = c[1] / 255.0; out3[2] = c[2] / 255.0;
@@ -1717,13 +1717,13 @@ GMTVTK_API int gmtvtk_serialize_texts(void *handle, char *buf, int cap) {
 	std::string o;
 	char t[128];
 	if (sceneAlive(s)) {
-		for (auto& tl : s->texts) {
+		for (auto &tl : s->texts) {
 			if (!tl.groupName.empty()) continue;
 			snprintf(t, sizeof(t), "%.12g;%.12g;%.6g;%.6g;%.6g;%d;",
 			         tl.pos[0], tl.pos[1], tl.color[0], tl.color[1], tl.color[2], tl.size);
 			o += t;
 			std::string txt = tl.text;
-			for (char& c : txt) if (c == '\n' || c == '\r') c = ' ';
+			for (char &c : txt) if (c == '\n' || c == '\r') c = ' ';
 			o += txt; o += '\n';
 		}
 	}
@@ -1744,7 +1744,7 @@ GMTVTK_API int gmtvtk_serialize_polys(void *handle, char *buf, int cap) {
 	std::string o;
 	char t[160];
 	if (sceneAlive(s)) {
-		for (auto& pg : s->polys) {
+		for (auto &pg : s->polys) {
 			if (pg.isFault || pg.nestKind != 0 || !pg.groupName.empty()) continue;
 			double lc[3] = { 0, 0, 0 }; double lw = 2.5;
 			if (pg.line) { pg.line->GetProperty()->GetColor(lc); lw = pg.line->GetProperty()->GetLineWidth(); }
@@ -1755,7 +1755,7 @@ GMTVTK_API int gmtvtk_serialize_polys(void *handle, char *buf, int cap) {
 			         pg.fillColor[0], pg.fillColor[1], pg.fillColor[2], pg.fillOpacity);
 			o += t;
 			std::string nm = pg.name;
-			for (char& c : nm) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
+			for (char &c : nm) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
 			o += nm; o += ';';
 			for (size_t i = 0; i < pg.v.size(); ++i) {
 				snprintf(t, sizeof(t), "%.10g,%.10g,%.10g", pg.v[i][0], pg.v[i][1], pg.v[i][2]);
@@ -1809,10 +1809,10 @@ GMTVTK_API int gmtvtk_serialize_faults(void *handle, char *buf, int cap) {
 	char t[256];
 	if (sceneAlive(s)) {
 		const int geog = s->hasCRS() ? 1 : 0;
-		for (auto& pg : s->polys) {
+		for (auto &pg : s->polys) {
 			if (pg.isFault) {
 				std::string nm = pg.name;
-				for (char& c : nm) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
+				for (char &c : nm) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
 				snprintf(t, sizeof(t), "F;%.10g;%.10g;%.10g;%.10g;%.10g;%.10g;%d;",
 				         pg.faultSlip, pg.faultRake, pg.faultStrike, pg.faultDip, pg.faultWidth, pg.faultDepthTop, geog);
 				o += t; o += nm; o += ';';
@@ -1824,7 +1824,7 @@ GMTVTK_API int gmtvtk_serialize_faults(void *handle, char *buf, int cap) {
 			}
 			else if (pg.isSlip) {
 				std::string grp = pg.groupName;
-				for (char& c : grp) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
+				for (char &c : grp) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
 				snprintf(t, sizeof(t), "S;%s;%.10g;%.10g;%.10g;%.10g;%.10g;%.10g;%.10g;%d;%.6g,%.6g,%.6g;",
 				         grp.c_str(), pg.faultSlip, pg.faultRake, pg.faultStrike, pg.faultDip, pg.faultDepthTop,
 				         pg.faultLength, pg.faultWidth, pg.slipSeg, pg.fillColor[0], pg.fillColor[1], pg.fillColor[2]);
@@ -1839,7 +1839,7 @@ GMTVTK_API int gmtvtk_serialize_faults(void *handle, char *buf, int cap) {
 			}
 			else if (pg.nestKind == 1) {   // "Nested grids" (tsunami) rectangle — its own quantization params
 				std::string nm = pg.name;
-				for (char& c : nm) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
+				for (char &c : nm) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
 				snprintf(t, sizeof(t), "N;%.12g;%.12g;%d;", pg.nestXi, pg.nestYi, pg.nestReg);
 				o += t; o += nm; o += ';';
 				for (size_t i = 0; i < pg.v.size(); ++i) {
@@ -2219,7 +2219,7 @@ GMTVTK_API int gmtvtk_fault_add_test(void *scene, double lon1, double lat1, doub
 	pg.stack = s->vecSeq++;
 	polyRebuildLine(s, pg);
 	s->polys.push_back(pg);
-	int n = 0; for (auto& p : s->polys) if (p.isFault) ++n;
+	int n = 0; for (auto &p : s->polys) if (p.isFault) ++n;
 	return n;
 }
 
@@ -2246,7 +2246,7 @@ GMTVTK_API int gmtvtk_fault_apply_test(void *scene, double strike, double len, i
 	double lo = 0, la = 0;
 	if (!faultApplyGeom(s, strike, len, geog != 0, &lo, &la)) return 0;
 	if (out2) { out2[0] = lo; out2[1] = la; }
-	for (auto& p : s->polys) if (p.isFault) return (int)p.v.size();
+	for (auto &p : s->polys) if (p.isFault) return (int)p.v.size();
 	return 0;
 }
 
@@ -2266,7 +2266,7 @@ GMTVTK_API const char *gmtvtk_objrows_test(void *scene) {
 // a flat chord if ~constant). out[0]=zmin out[1]=zmax out[2]=npts. Returns 1 if a fault line exists.
 GMTVTK_API int gmtvtk_trace_zbounds_test(void *scene, double *out) {
 	Scene *s = (Scene*)scene; if (!s) return 0;
-	for (auto& p : s->polys) if (p.isFault && p.linePD) {
+	for (auto &p : s->polys) if (p.isFault && p.linePD) {
 		double b[6] = {0,0,0,0,0,0}; p.linePD->GetBounds(b);
 		if (out) { out[0] = b[4]; out[1] = b[5]; out[2] = (double)p.linePD->GetNumberOfPoints(); }
 		return 1;
@@ -2395,7 +2395,7 @@ GMTVTK_API int gmtvtk_symbol_ui_drag_test(void *scene, double x1, double y1, dou
 	};
 	const QPointF p1 = toLogical(x1, y1, z1), p2 = toLogical(x2, y2, z2);
 	QWidget *w = s->widget;
-	auto send = [&](QEvent::Type t, const QPointF& p, Qt::MouseButton btn, Qt::MouseButtons btns) {
+	auto send = [&](QEvent::Type t, const QPointF &p, Qt::MouseButton btn, Qt::MouseButtons btns) {
 		QMouseEvent ev(t, p, w->mapToGlobal(p.toPoint()), btn, btns, Qt::NoModifier);
 		QApplication::sendEvent(w, &ev);
 	};
@@ -2430,7 +2430,7 @@ GMTVTK_API int gmtvtk_symbol_click_jitter_test(void *scene, double x, double y, 
 	const QPointF p1(d[0] / dpr, (Hpx - d[1]) / dpr);
 	const QPointF p2 = p1 + QPointF(dxPx, dyPx);
 	QWidget *w = s->widget;
-	auto send = [&](QEvent::Type t, const QPointF& p, Qt::MouseButton btn, Qt::MouseButtons btns) {
+	auto send = [&](QEvent::Type t, const QPointF &p, Qt::MouseButton btn, Qt::MouseButtons btns) {
 		QMouseEvent ev(t, p, w->mapToGlobal(p.toPoint()), btn, btns, Qt::NoModifier);
 		QApplication::sendEvent(w, &ev);
 	};
@@ -2586,7 +2586,7 @@ GMTVTK_API int gmtvtk_fault_plane_test(void *scene, double width, double dip, do
                                        int geog, double *out) {
 	Scene *s = (Scene*)scene; if (!s) return 0;
 	faultUpdatePlane(s, width, dip, strike, 90.0, geog != 0);   // rake fixed: this test asserts plane geometry, not arrows
-	for (auto& p : s->polys) if (p.isFault && p.faultPlane3D) {
+	for (auto &p : s->polys) if (p.isFault && p.faultPlane3D) {
 		double b[6] = {0,0,0,0,0,0};
 		if (p.faultPlane3DPD) p.faultPlane3DPD->GetBounds(b);
 		if (out) {
@@ -2719,7 +2719,7 @@ GMTVTK_API int gmtvtk_scrollbar_style_test(const char *pngPath, const char *styl
 // tick positions) for diagnosis. Returns 1 on success, 0 on a dead scene.
 GMTVTK_API int gmtvtk_aqua_force_land_bar_test(void *scene) {
 	// NOTE: sceneAlive() checks a file-static registry that does NOT cross the DLL boundary (this
-	// hook is called with a Scene* opened through the PRODUCTION gmtvtk.dll, not this test dll) --
+	// hook is called with a Scene *opened through the PRODUCTION gmtvtk.dll, not this test dll) --
 	// only a null-check here, no registry lookup.
 	Scene *s = static_cast<Scene*>(scene);
 	if (!s || !s->ren) return 0;
@@ -2982,7 +2982,7 @@ GMTVTK_API void gmtvtk_hide_other_grids(void *handle, const char *keepname, int 
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	const std::string keep = keepname ? keepname : "";
-	for (auto& ex : s->extras) {
+	for (auto &ex : s->extras) {
 		if (ex.isImage || (!keep_none && ex.name == keep)) continue;
 		if (ex.actor) ex.actor->SetVisibility(0);
 		if (ex.drape) ex.drape->SetVisibility(0);
@@ -3004,7 +3004,7 @@ GMTVTK_API void gmtvtk_hide_other_images(void *handle, const char *keepname) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	const std::string keep = keepname ? keepname : "";
-	for (auto& ex : s->extras) {
+	for (auto &ex : s->extras) {
 		if (!ex.isImage || ex.name == keep) continue;
 		if (ex.actor) ex.actor->SetVisibility(0);
 		if (ex.drape) ex.drape->SetVisibility(0);
@@ -3043,15 +3043,15 @@ GMTVTK_API int gmtvtk_capture_rect_rgb(void *handle, double w, double e, double 
 	// markup, never part of the picture being captured — hide every one for the shot, remember
 	// which were actually visible so only those come back after.
 	std::vector<vtkActor*> hiddenPolyLine, hiddenPolyFill;
-	for (auto& pg : s->polys) {
+	for (auto &pg : s->polys) {
 		if (pg.line && pg.line->GetVisibility()) { pg.line->SetVisibility(0); hiddenPolyLine.push_back(pg.line.Get()); }
 		if (pg.fill && pg.fill->GetVisibility()) { pg.fill->SetVisibility(0); hiddenPolyFill.push_back(pg.fill.Get()); }
 	}
 	std::vector<vtkActor*> hiddenOverlay;
-	for (auto& ov : s->overlays)
+	for (auto &ov : s->overlays)
 		if (ov.actor && ov.actor->GetVisibility()) { ov.actor->SetVisibility(0); hiddenOverlay.push_back(ov.actor.Get()); }
 	std::vector<vtkActor*> hiddenSymbol;
-	for (auto& sl : s->symbols)
+	for (auto &sl : s->symbols)
 		if (sl.actor && sl.actor->GetVisibility()) { sl.actor->SetVisibility(0); hiddenSymbol.push_back(sl.actor.Get()); }
 	s->widget->renderWindow()->Render();
 
@@ -3507,7 +3507,7 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 	s->imageOnly = false;
 	if (name && name[0]) s->surfName = name;
 
-	// Rebuild ONLY the base surface (tiled gz path). gz fills s->gridZ/gnx/gny/gx*/gd* internally.
+	// Rebuild ONLY the base surface (tiled gz path). gz fills s->gridZ/gnx/gny/gx*/gd *internally.
 	buildSceneContent(s, nullptr, x0, x1, y0, y1, cz, crgb, ncolor, nullptr, 0, 0, 0,
 	                  /*edges=*/0, /*pointCloud=*/false, geographic, z, nx, ny, /*blankStart=*/false);
 
@@ -3989,7 +3989,7 @@ GMTVTK_API void gmtvtk_xyplot_set_logscale(void *handle, int axis, int on) {
 }
 
 // Spector-Grant depth-to-sources over band [xa,xb] of series `sel` (the SAME fit the interactive
-// drag tool runs): fit ln(power) vs wavenumber, return depth = |slope|/(4π)·unit in metres. Returns
+// drag tool runs): fit ln(power) vs wavenumber, return depth = |slope|/(4Ï€)·unit in metres. Returns
 // NaN on a dead handle / bad series / < 2 positive-power points in the band. Programmatic twin of
 // the Analysis > "Depth to sources (Spector-Grant)" drag tool.
 GMTVTK_API double gmtvtk_xyplot_specgrant(void *handle, int sel, double xa, double xb, double unit) {
