@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MultiscaleDialog</class>
+ <widget class="QDialog" name="MultiscaleDialog">
+  <property name="windowTitle">
+   <string>Multiscale</string>
+  </property>
+  <layout class="QVBoxLayout" name="vlayMain">
+   <item>
+    <widget class="QLabel" name="lbl_title">
+     <property name="font">
+      <font>
+       <pointsize>12</pointsize>
+       <bold>true</bold>
+       <italic>true</italic>
+      </font>
+     </property>
+     <property name="text">
+      <string>Multi-scale methods for Terrain Analysis</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignCenter</set>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="hlayControls">
+     <item>
+      <widget class="QLabel" name="lbl_method">
+       <property name="text">
+        <string>Method</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="cb_method">
+       <property name="toolTip">
+        <string>Select one method</string>
+       </property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>1</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <item><property name="text"><string>Terrain Ruggedness Index</string></property></item>
+       <item><property name="text"><string>Topographic Position Index</string></property></item>
+       <item><property name="text"><string>Roughness (aka Range)</string></property></item>
+       <item><property name="text"><string>Mean</string></property></item>
+       <item><property name="text"><string>Min</string></property></item>
+       <item><property name="text"><string>Max</string></property></item>
+       <item><property name="text"><string>Slope</string></property></item>
+       <item><property name="text"><string>Aspect</string></property></item>
+       <item><property name="text"><string>RMS</string></property></item>
+       <item><property name="text"><string>Trend</string></property></item>
+       <item><property name="text"><string>Residue</string></property></item>
+       <item><property name="text"><string>RMS of Residue</string></property></item>
+       <item><property name="text"><string>AGC (Full Amp)</string></property></item>
+       <item><property name="text"><string>AGC (Local Amp)</string></property></item>
+      </widget>
+     </item>
+     <item>
+      <spacer name="spc_controls">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeType">
+        <enum>QSizePolicy::Fixed</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>16</width>
+         <height>1</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="lbl_win">
+       <property name="text">
+        <string>Window size</string>
+       </property>
+       <property name="toolTip">
+        <string>Width of the rectangular neighborhood (MUST be an odd number)</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QSpinBox" name="sb_win">
+       <property name="toolTip">
+        <string>Width of the rectangular neighborhood (MUST be an odd number)</string>
+       </property>
+       <property name="minimum">
+        <number>3</number>
+       </property>
+       <property name="maximum">
+        <number>999</number>
+       </property>
+       <property name="singleStep">
+        <number>2</number>
+       </property>
+       <property name="value">
+        <number>3</number>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,0 +1,354 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ElasticDialog</class>
+ <widget class="QDialog" name="ElasticDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>720</width>
+    <height>520</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Vertical elastic deformation</string>
+  </property>
+  <!--
+    NOTE: this .ui is a hand-written mirror of the ElasticDialog built in code
+    (deps/src/70_window.cpp). The viewer is a single hand-coded translation unit and
+    does NOT run uic on this file — it exists only so the layout can be reworked in
+    Qt Creator/Designer. Object names match the C++ members (fLen, dSlip, coordCombo,
+    segCombo, faultCombo, geo, beach, …). 'geo' (GeoGridGeometry) and 'beach'
+    (BeachballWidget) are custom widgets, declared as promoted widgets at the bottom.
+  -->
+  <layout class="QVBoxLayout" name="rootLayout">
+   <item>
+    <layout class="QHBoxLayout" name="topRow">
+     <!-- ===== Fault Geometry ===== -->
+     <item>
+      <widget class="QGroupBox" name="faultGroup">
+       <property name="title">
+        <string>Fault Geometry</string>
+       </property>
+       <layout class="QGridLayout" name="faultGrid">
+        <item row="0" column="0">
+         <layout class="QVBoxLayout" name="lenCol">
+          <item>
+           <widget class="QLabel" name="lenLab">
+            <property name="alignment"><set>Qt::AlignHCenter</set></property>
+            <property name="text"><string>Length</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="fLen"/>
+          </item>
+         </layout>
+        </item>
+        <item row="0" column="1">
+         <layout class="QVBoxLayout" name="widCol">
+          <item>
+           <widget class="QLabel" name="widLab">
+            <property name="alignment"><set>Qt::AlignHCenter</set></property>
+            <property name="text"><string>Width</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="fWid"/>
+          </item>
+         </layout>
+        </item>
+        <item row="1" column="0">
+         <layout class="QVBoxLayout" name="fStrikeCol">
+          <item>
+           <widget class="QLabel" name="fStrikeLab">
+            <property name="alignment"><set>Qt::AlignHCenter</set></property>
+            <property name="text"><string>Strike</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="fStrike">
+            <property name="text"><string>0</string></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="1" column="1">
+         <layout class="QVBoxLayout" name="dipCol">
+          <item>
+           <widget class="QLabel" name="dipLab">
+            <property name="alignment"><set>Qt::AlignHCenter</set></property>
+            <property name="text"><string>Dip</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="fDip">
+            <property name="text"><string>25</string></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="2" column="0">
+         <layout class="QVBoxLayout" name="depthCol">
+          <item>
+           <widget class="QLabel" name="depthLab">
+            <property name="alignment"><set>Qt::AlignHCenter</set></property>
+            <property name="text"><string>Depth</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="fDepth"/>
+          </item>
+         </layout>
+        </item>
+        <item row="2" column="1">
+         <layout class="QVBoxLayout" name="depTopCol">
+          <item>
+           <widget class="QLabel" name="depTopLab">
+            <property name="alignment"><set>Qt::AlignHCenter</set></property>
+            <property name="text"><string>Depth to Top</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="fDepTop">
+            <property name="text"><string>0</string></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <!-- ===== Middle column: Segments / Faults / CONFIRM ===== -->
+     <item>
+      <layout class="QVBoxLayout" name="midCol">
+       <item>
+        <spacer name="midTopSpacer">
+         <property name="orientation"><enum>Qt::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QLabel" name="segLab">
+         <property name="alignment"><set>Qt::AlignHCenter</set></property>
+         <property name="text"><string>Segments</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QComboBox" name="segCombo"/>
+       </item>
+       <item>
+        <widget class="QLabel" name="faultLab">
+         <property name="alignment"><set>Qt::AlignHCenter</set></property>
+         <property name="text"><string>Faults</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QComboBox" name="faultCombo"/>
+       </item>
+       <item>
+        <widget class="QLabel" name="confirmLab">
+         <property name="alignment"><set>Qt::AlignHCenter</set></property>
+         <property name="styleSheet"><string notr="true">color: red; font-weight: bold;</string></property>
+         <property name="text"><string>CONFIRM</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QComboBox" name="coordCombo">
+         <property name="toolTip"><string>Coordinate type of the fault position and grid limits</string></property>
+         <item><property name="text"><string>Geogs</string></property></item>
+         <item><property name="text"><string>Cart</string></property></item>
+        </widget>
+       </item>
+       <item>
+        <spacer name="midBotSpacer">
+         <property name="orientation"><enum>Qt::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <!-- ===== Dislocation Geometry ===== -->
+     <item>
+      <widget class="QGroupBox" name="disGroup">
+       <property name="title">
+        <string>Dislocation Geometry</string>
+       </property>
+       <layout class="QGridLayout" name="disGrid">
+        <item row="0" column="0">
+         <layout class="QVBoxLayout" name="dStrikeCol">
+          <item>
+           <widget class="QLabel" name="dStrikeLab">
+            <property name="alignment"><set>Qt::AlignHCenter</set></property>
+            <property name="text"><string>Strike</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="dStrike">
+            <property name="text"><string>0</string></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="0" column="1">
+         <layout class="QVBoxLayout" name="rakeCol">
+          <item>
+           <widget class="QLabel" name="rakeLab">
+            <property name="alignment"><set>Qt::AlignHCenter</set></property>
+            <property name="text"><string>Rake</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="dRake">
+            <property name="text"><string>90</string></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="0" column="2">
+         <layout class="QVBoxLayout" name="slipCol">
+          <item>
+           <widget class="QLabel" name="slipLab">
+            <property name="alignment"><set>Qt::AlignHCenter</set></property>
+            <property name="text"><string>Slip</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="dSlip">
+            <property name="text"><string>1</string></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="1" column="0" colspan="2">
+         <widget class="QCheckBox" name="hideCheck">
+          <property name="text"><string>Hide fault planes</string></property>
+         </widget>
+        </item>
+        <item row="1" column="2">
+         <widget class="QCheckBox" name="sccCheck">
+          <property name="toolTip"><string>Use the SCC (Self-Consistent Crust) Green functions</string></property>
+          <property name="text"><string>SCC</string></property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <layout class="QVBoxLayout" name="nCol">
+          <item>
+           <widget class="QLabel" name="nLab">
+            <property name="alignment"><set>Qt::AlignHCenter</set></property>
+            <property name="text"><string>N</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="dN">
+            <property name="enabled"><bool>false</bool></property>
+            <property name="text"><string>20</string></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="2" column="2">
+         <layout class="QVBoxLayout" name="qCol">
+          <item>
+           <widget class="QLabel" name="qLab">
+            <property name="alignment"><set>Qt::AlignHCenter</set></property>
+            <property name="text"><string>q</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="dQ">
+            <property name="enabled"><bool>false</bool></property>
+            <property name="text"><string>0.3</string></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="3" column="0" colspan="3">
+         <widget class="QLabel" name="mwLabel">
+          <property name="text"><string>Mw Magnitude = --</string></property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- ===== Mu (shear modulus) row ===== -->
+   <item>
+    <layout class="QHBoxLayout" name="muRow">
+     <item>
+      <spacer name="muSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="muLab">
+       <property name="text"><string>Mu (x10^10)</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="muEdit">
+       <property name="maximumSize"><size><width>80</width><height>16777215</height></size></property>
+       <property name="toolTip"><string>Shear modulus / rigidity (×10^10 Pa)</string></property>
+       <property name="text"><string>3.0</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- ===== Bottom row: Griding Line Geometry | beachball + buttons ===== -->
+   <item>
+    <layout class="QHBoxLayout" name="botRow">
+     <item>
+      <widget class="GeoGridGeometry" name="geo" native="true"/>
+     </item>
+     <item>
+      <layout class="QVBoxLayout" name="rightCol">
+       <item>
+        <widget class="BeachballWidget" name="beach" native="true">
+         <property name="minimumSize"><size><width>90</width><height>90</height></size></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="btnRow">
+         <item>
+          <widget class="QToolButton" name="helpBtn">
+           <property name="text"><string>?</string></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="saveBtn">
+           <property name="autoDefault"><bool>false</bool></property>
+           <property name="text"><string>Save fault</string></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="computeBtn">
+           <property name="autoDefault"><bool>false</bool></property>
+           <property name="text"><string>Compute</string></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>GeoGridGeometry</class>
+   <extends>QWidget</extends>
+   <header>geogridgeometry.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>BeachballWidget</class>
+   <extends>QWidget</extends>
+   <header>beachballwidget.h</header>
+   <container>0</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,0 +1,224 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>FocalMecaStudioDialog</class>
+ <widget class="QDialog" name="FocalMecaStudioDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>460</width>
+    <height>500</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Focal Meca Studio</string>
+  </property>
+  <!--
+    NOTE: hand-written mirror for Designer-only layout review (same convention as
+    elastic_deformation.ui) — NOT run through uic; the real dialog gets hand-ported into
+    deps/src/70_window.cpp once the layout is approved.
+
+    Real QSlider + QToolButton arrows per row (v1 used a promoted LabeledSlider, but a promoted
+    widget paints blank in Designer — no slider was visible to review, and the numeric edit
+    stretched to fill the leftover column). Each row is [label][leftBtn][slider][rightBtn][edit]:
+    editStrike/editDip/editRake are fixed-width (findChild<QLineEdit> pattern, same as every other
+    dialog), sliderStrike/sliderDip/sliderRake carry the real ranges (0-360 / 0-90 / -180-180) and
+    stay in sync with the edit box both ways once hand-ported. 'beach' reuses the EXISTING
+    BeachballWidget (elastic_deformation.ui) but at demo size this one needs the REAL
+    Aki-Richards two-colour sector projection (see .wolf/cerebrum.md "focal-beachball-three-laws"),
+    not the schematic wedge placeholder — that upgrade is shared by both dialogs, not forked.
+  -->
+  <layout class="QVBoxLayout" name="rootLayout">
+   <item>
+    <layout class="QVBoxLayout" name="paramsCol">
+     <item>
+      <layout class="QHBoxLayout" name="strikeRow">
+       <item>
+        <widget class="QLabel" name="strikeLab">
+         <property name="minimumSize"><size><width>50</width><height>0</height></size></property>
+         <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+         <property name="text"><string>Strike</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QToolButton" name="strikeLeftBtn">
+         <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
+         <property name="arrowType"><enum>Qt::LeftArrow</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QSlider" name="sliderStrike">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+           <horstretch>1</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="minimum"><number>0</number></property>
+         <property name="maximum"><number>360</number></property>
+         <property name="value"><number>0</number></property>
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QToolButton" name="strikeRightBtn">
+         <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
+         <property name="arrowType"><enum>Qt::RightArrow</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="editStrike">
+         <property name="maximumSize"><size><width>50</width><height>16777215</height></size></property>
+         <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+         <property name="text"><string>0</string></property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="dipRow">
+       <item>
+        <widget class="QLabel" name="dipLab">
+         <property name="minimumSize"><size><width>50</width><height>0</height></size></property>
+         <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+         <property name="text"><string>Dip</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QToolButton" name="dipLeftBtn">
+         <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
+         <property name="arrowType"><enum>Qt::LeftArrow</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QSlider" name="sliderDip">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+           <horstretch>1</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="minimum"><number>0</number></property>
+         <property name="maximum"><number>90</number></property>
+         <property name="value"><number>90</number></property>
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QToolButton" name="dipRightBtn">
+         <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
+         <property name="arrowType"><enum>Qt::RightArrow</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="editDip">
+         <property name="maximumSize"><size><width>50</width><height>16777215</height></size></property>
+         <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+         <property name="text"><string>90</string></property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="rakeRow">
+       <item>
+        <widget class="QLabel" name="rakeLab">
+         <property name="minimumSize"><size><width>50</width><height>0</height></size></property>
+         <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+         <property name="text"><string>Rake</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QToolButton" name="rakeLeftBtn">
+         <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
+         <property name="arrowType"><enum>Qt::LeftArrow</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QSlider" name="sliderRake">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+           <horstretch>1</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="minimum"><number>-180</number></property>
+         <property name="maximum"><number>180</number></property>
+         <property name="value"><number>180</number></property>
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QToolButton" name="rakeRightBtn">
+         <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
+         <property name="arrowType"><enum>Qt::RightArrow</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="editRake">
+         <property name="maximumSize"><size><width>50</width><height>16777215</height></size></property>
+         <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+         <property name="text"><string>180</string></property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="beachRow">
+     <item>
+      <spacer name="beachLeftSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="BeachballWidget" name="beach" native="true">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="minimumSize"><size><width>340</width><height>340</height></size></property>
+       <property name="maximumSize"><size><width>340</width><height>340</height></size></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="beachRightSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="btnRow">
+     <item>
+      <spacer name="btnSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnGmtComm">
+       <property name="toolTip"><string>Show the GMT command that reproduces this beachball</string></property>
+       <property name="text"><string>GMT comm</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>BeachballWidget</class>
+   <extends>QWidget</extends>
+   <header>beachballwidget.h</header>
+   <container>0</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>
