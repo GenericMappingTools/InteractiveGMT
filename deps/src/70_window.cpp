@@ -3370,6 +3370,537 @@ struct GrdGradientState {
 };
 static GrdGradientState g_grdgradState;
 
+// ============================================================================================
+// Illumination — Hillshade (View menu). Port of Mirone's src_figs/shading_params.m: pick a GMT
+// illumination model on the little numbered toolbar, aim the light on the astrolabe dial (azimuth)
+// and on the quarter-circle (elevation), press OK. The maths runs in Julia (src/hillshade.jl) and
+// comes back as a per-node reflectance the shade engine modulates the colours with
+// (gmtvtk_set_shade_intensity_h -> gmtIlluminate, the same modulator Mirone's mex_illuminate is).
+//
+// Mirone's 3 (Peucker) and 5 (Manip Raster) are dropped by request; what remains is renumbered
+// 1..7 CONTINUOUSLY (Mirone's own number in brackets): 1 grdgradient classic, 2 grdgradient
+// Lambertian, 3 Lambertian with lighting [4], 4 ESRI hillshade [6], 5 false colour [7],
+// 6 dynamic range compression [8], 7 remove illumination [9].
+// The false colour keeps BOTH of Mirone's algorithms — its two radio buttons — so the "Old
+// algorithm" (shade_manip_raster) is here with its elevation and Amp factor, even though the
+// stand-alone Manip Raster entry is gone.
+// No Q_OBJECT/moc in the two custom widgets (paint/mouse overrides only, like BaseMapArea).
+// ============================================================================================
+
+// Mirone's axes1 — the astrolabe dial. One RED hand carries the azimuth; the false-colour model
+// shows three (red/green/blue), one per colour channel. Dragging a hand sets its azimuth; clicking
+// anywhere else in the disc grabs the nearest hand, which is shading_params.m's ButtonDown.
+// Azimuth is 0 at NORTH, increasing CLOCKWISE — the GMT convention the light vector uses.
+class AzimuthDial : public QWidget {
+public:
+	double az[3] = { 0.0, 120.0, 240.0 };            // red, green, blue hands
+	bool   three = false;                            // false colour -> show/drag all three
+	std::function<void(int, double)> onChange;       // (hand 0..2, azimuth in degrees)
+	explicit AzimuthDial(QWidget *p) : QWidget(p) {
+		setMinimumSize(112, 112);
+		setCursor(Qt::SizeAllCursor);                // STANDING RULE: every drag uses SizeAll
+	}
+protected:
+	int drag = -1;
+	QPointF centre() const { return QPointF(width() / 2.0, height() / 2.0); }
+	double  radius() const { return std::min(width(), height()) / 2.0 - 6.0; }
+	// Widget point -> azimuth (deg from north, clockwise). Screen y grows DOWN, hence (dx, -dy).
+	double azOf(const QPointF &p) const {
+		const QPointF c = centre();
+		double a = std::atan2(p.x() - c.x(), c.y() - p.y()) * 180.0 / vtkMath::Pi();
+		while (a <   0.0) a += 360.0;
+		while (a >= 360.0) a -= 360.0;
+		return a;
+	}
+	QPointF handTip(double a) const {
+		const QPointF c = centre();
+		const double r = radius(), t = a * vtkMath::Pi() / 180.0;
+		return QPointF(c.x() + r * std::sin(t), c.y() - r * std::cos(t));
+	}
+	int nearestHand(const QPointF &p) const {
+		if (!three) return 0;
+		int best = 0;  double bd = 1e30;
+		for (int k = 0; k < 3; ++k) {
+			const QPointF t = handTip(az[k]);
+			const double d = std::hypot(p.x() - t.x(), p.y() - t.y());
+			if (d < bd) { bd = d; best = k; }
+		}
+		return best;
+	}
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.setRenderHint(QPainter::Antialiasing, true);
+		const QPointF c = centre();
+		const double r = radius();
+		g.setBrush(QColor(28, 28, 32));  g.setPen(QPen(QColor(150, 140, 110), 2));
+		g.drawEllipse(c, r, r);
+		// compass ring: a tick every 15 deg, longer every 90, with the cardinal letters
+		g.setPen(QPen(QColor(150, 140, 110), 1));
+		for (int a = 0; a < 360; a += 15) {
+			const double t = a * vtkMath::Pi() / 180.0;
+			const double f = (a % 90 == 0) ? 0.78 : 0.88;
+			g.drawLine(QPointF(c.x() + f * r * std::sin(t), c.y() - f * r * std::cos(t)),
+			           QPointF(c.x() +     r * std::sin(t), c.y() -     r * std::cos(t)));
+		}
+		g.setPen(QColor(200, 195, 175));
+		QFont f = g.font();  f.setPointSizeF(f.pointSizeF() * 0.85);  g.setFont(f);
+		const char *card[4] = { "N", "E", "S", "W" };
+		for (int k = 0; k < 4; ++k) {
+			const double t = k * 90.0 * vtkMath::Pi() / 180.0;
+			const QPointF q(c.x() + 0.62 * r * std::sin(t), c.y() - 0.62 * r * std::cos(t));
+			g.drawText(QRectF(q.x() - 8, q.y() - 8, 16, 16), Qt::AlignCenter, card[k]);
+		}
+		static const QColor hc[3] = { QColor(230, 40, 40), QColor(40, 200, 60), QColor(70, 110, 255) };
+		const int n = three ? 3 : 1;
+		for (int k = 0; k < n; ++k) {
+			g.setPen(QPen(hc[k], 3, Qt::SolidLine, Qt::RoundCap));
+			g.drawLine(c, handTip(az[k]));
+		}
+		g.setPen(Qt::NoPen);  g.setBrush(QColor(200, 195, 175));
+		g.drawEllipse(c, 2.5, 2.5);
+	}
+	void mousePressEvent(QMouseEvent *e) override {
+		drag = nearestHand(e->position());
+		mouseMoveEvent(e);
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (drag < 0) return;
+		az[drag] = azOf(e->position());
+		update();
+		if (onChange) onChange(drag, az[drag]);
+	}
+	void mouseReleaseEvent(QMouseEvent *) override { drag = -1; }
+};
+
+// Mirone's axes2 — the elevation quarter-circle. The hand swings between 0 (horizon, pointing east)
+// and 90 (overhead); dragging anywhere inside the quadrant moves it, as shading_params.m does.
+class ElevationDial : public QWidget {
+public:
+	double elev = 30.0;
+	std::function<void(double)> onChange;
+	explicit ElevationDial(QWidget *p) : QWidget(p) {
+		setMinimumSize(66, 66);
+		setCursor(Qt::SizeAllCursor);
+	}
+protected:
+	bool drag = false;
+	QPointF origin() const { return QPointF(4.0, height() - 4.0); }        // bottom-left corner
+	double  radius() const { return std::min(width(), height()) - 10.0; }
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.setRenderHint(QPainter::Antialiasing, true);
+		const QPointF o = origin();
+		const double r = radius();
+		g.setPen(QPen(QColor(150, 145, 130), 1));
+		g.drawArc(QRectF(o.x() - r, o.y() - r, 2 * r, 2 * r), 0, 90 * 16);   // first-quadrant arc
+		g.drawLine(o, QPointF(o.x() + r, o.y()));
+		g.drawLine(o, QPointF(o.x(), o.y() - r));
+		const double t = elev * vtkMath::Pi() / 180.0;
+		g.setPen(QPen(QColor(20, 20, 20), 3, Qt::SolidLine, Qt::RoundCap));
+		g.drawLine(o, QPointF(o.x() + r * std::cos(t), o.y() - r * std::sin(t)));
+	}
+	void setFromPoint(const QPointF &p) {
+		const QPointF o = origin();
+		double a = std::atan2(o.y() - p.y(), p.x() - o.x()) * 180.0 / vtkMath::Pi();
+		elev = std::clamp(a, 0.0, 90.0);
+		update();
+		if (onChange) onChange(elev);
+	}
+	void mousePressEvent(QMouseEvent *e) override { drag = true; setFromPoint(e->position()); }
+	void mouseMoveEvent(QMouseEvent *e) override { if (drag) setFromPoint(e->position()); }
+	void mouseReleaseEvent(QMouseEvent *) override { drag = false; }
+};
+
+// Remember the last illumination across openings of the dialog (Mirone rebuilds its window each
+// time, but the light you just aimed is the light you want to nudge next).
+struct HillshadeState {
+	bool    valid = false;
+	int     model = 1;
+	double  azim = 0.0, elev = 30.0;
+	double  azR = 0.0, azG = 120.0, azB = 240.0;
+	bool    oldAlgo = true;                  // false colour: Mirone's radio_oldAlgo starts checked
+	QString ambient = ".55", diffuse = ".6", specular = ".4", shine = "10";
+	QString amp = "125", wavelength;
+};
+static HillshadeState g_hillshadeState;
+
+// One Illumination dialog per window, alive while parked. Closing it with the X does NOT destroy it:
+// it hides and PARKS as a handle at the bottom of that window's Scene Objects dock, exactly like a
+// closed X,Y plot or Contours dialog — same Scene::parkedTools list, same row builder. Re-picking the
+// menu entry brings the SAME dialog back, never a second one.
+class HillshadeDialog;
+static std::map<Scene *, HillshadeDialog *> g_hillshadeDlgs;
+
+class HillshadeDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene   *scn = nullptr;
+	AzimuthDial   *dial = nullptr;
+	ElevationDial *elevDial = nullptr;
+	QLineEdit *eAzim, *eAzR, *eAzG, *eAzB, *eElev;
+	QLineEdit *eAmbient, *eDiffuse, *eSpecular, *eShine, *eWave, *eAmp;
+	QLabel *lAzim, *lElev;
+	QWidget *elevWrap = nullptr;                                       // "Elevation" caption + its dial
+	QWidget *reflBox = nullptr, *waveBox = nullptr, *fcBox = nullptr;   // per-model option panels
+	QRadioButton *rbOldAlgo = nullptr, *rbGrdGrad = nullptr;
+	QButtonGroup *models = nullptr, *algos = nullptr;
+	int model = 1;
+	bool reallyClose = false;   // set by the parked row's "Delete": let the next close through
+
+	// Bring the dialog back from the dock (double-click, the row's checkbox, its "Show" item). ONE
+	// function for every way back in, like xyUnpark / ContourDialog::unpark.
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	// The parked row's menu — properties button and context menu are the same lambda, never two.
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();          // destroyed -> the row and this object go with it
+			}
+		};
+	}
+
+	// Drop the registry entry by VALUE, not by `scn`: when the owning viewer window is torn down the
+	// dialog dies with it and the Scene may already be gone, so the key cannot be trusted.
+	~HillshadeDialog() {
+		for (auto it = g_hillshadeDlgs.begin(); it != g_hillshadeDlgs.end(); )
+			it = (it->second == this) ? g_hillshadeDlgs.erase(it) : std::next(it);
+	}
+
+	explicit HillshadeDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		dlg = new QDialog(parent);
+		// WA_DeleteOnClose is deliberately NOT set: the dialog has to survive being closed so the
+		// parked handle can bring it back with its settings intact. Only the row's "Delete" (which
+		// sets reallyClose) lets a close through.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+		g_hillshadeDlgs[scene] = this;
+
+		struct CloseParks : QObject {
+			HillshadeDialog *hd;
+			CloseParks(QObject *parent, HillshadeDialog *h) : QObject(parent), hd(h) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && hd && !hd->reallyClose && sceneAlive(hd->scn)) {
+					e->ignore();
+					hd->dlg->hide();
+					HillshadeDialog *h = hd;   // a lambda cannot capture a member of the enclosing class
+					parkTool(h->scn, h->dlg, "Illumination", IC_Surface,
+					         "Closed Illumination dialog — double-click to bring it back, click for Show / Delete",
+					         [h]() { h->unpark(); }, h->parkedMenu());
+					unfoldSceneObjects(hd->scn);   // a handle nobody can see is no handle at all
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		dlg->installEventFilter(new CloseParks(dlg, this));
+
+		auto *outer = new QVBoxLayout(d);
+
+		// --- the numbered model toolbar (Mirone's uitoggletools, same order, same tooltips) -------
+		auto *bar = new QHBoxLayout();
+		models = new QButtonGroup(d);
+		models->setExclusive(true);
+		struct Btn { int id; const char *label; const char *tip; };
+		static const Btn btns[] = {
+			{ 1, "1", "GMT grdgradient classic" },
+			{ 2, "2", "GMT grdgradient Lambertian" },
+			{ 3, "3", "Lambertian with lighting" },
+			{ 4, "4", "Hillshade (ESRI)" },
+			{ 5, "5", "False color" },
+			{ 6, "6", "Dynamic Range Compression" },
+		};
+		for (const auto &b : btns) {
+			auto *tb = new QToolButton(d);
+			tb->setText(b.label);  tb->setToolTip(b.tip);
+			tb->setCheckable(true);  tb->setFixedSize(28, 28);
+			models->addButton(tb, b.id);
+			bar->addWidget(tb);
+		}
+		bar->addSpacing(10);
+		// "Remove illumination" is an ACTION, not a model: it strips the shade off the grid there and
+		// then. It is NOT part of the exclusive model group and never touches what the dialog shows —
+		// blanking the window would be the opposite of what it is for.
+		auto *tbOff = new QToolButton(d);
+		tbOff->setText("✕");
+		tbOff->setToolTip("Remove the illumination from the grid (does not change this window)");
+		tbOff->setFixedSize(28, 28);
+		QObject::connect(tbOff, &QToolButton::clicked, d, [this]() { applyRemove(); });
+		bar->addWidget(tbOff);
+		bar->addStretch(1);
+		outer->addLayout(bar);
+
+		// --- the ONE band: azimuth compass | elevation | this model's options ----------------------
+		auto *band = new QHBoxLayout();
+		band->setSpacing(0);
+		dial     = new AzimuthDial(d);
+		elevDial = new ElevationDial(d);
+		dial->setFixedSize(112, 112);
+		elevDial->setFixedSize(72, 72);
+		band->addWidget(dial, 0, Qt::AlignVCenter);
+		band->addSpacing(14);
+		// "Elevation" sits DIRECTLY on its dial (2 px apart), and the caption+dial pair is centred
+		// against the compass beside it — not floated to the top of a tall grid row.
+		lElev = new QLabel("Elevation", d);
+		lElev->setAlignment(Qt::AlignHCenter);
+		elevWrap = new QWidget(d);
+		auto *elevCol = new QVBoxLayout(elevWrap);
+		elevCol->setContentsMargins(0, 0, 0, 0);
+		elevCol->setSpacing(2);
+		elevCol->addWidget(lElev);
+		elevCol->addWidget(elevDial, 0, Qt::AlignHCenter);
+		band->addWidget(elevWrap, 0, Qt::AlignVCenter);
+		band->addSpacing(24);
+
+		auto mkEdit = [d](const QString &txt) {
+			auto *e = new QLineEdit(txt, d);
+			e->setValidator(new QDoubleValidator(e));
+			e->setFixedWidth(52);
+			return e;
+		};
+		// The per-model options sit BESIDE the two dials, never under them: each model's block is its
+		// own panel and all three live in the SAME slot, so the window is one band tall whatever is
+		// selected. Only one panel is ever visible, and a hidden widget takes no space in a layout,
+		// so sharing the slot costs nothing. The slot takes the leftover width (stretch 1) instead of
+		// leaving a dead strip down the right edge.
+		auto *optSlot = new QWidget(d);
+		auto *optLay  = new QGridLayout(optSlot);
+		optLay->setContentsMargins(0, 0, 0, 0);
+		auto mkPanel = [&](QWidget *&box, QFormLayout *&fl) {
+			box = new QWidget(optSlot);
+			fl  = new QFormLayout(box);
+			fl->setContentsMargins(0, 0, 0, 0);
+			fl->setLabelAlignment(Qt::AlignLeft);
+			optLay->addWidget(box, 0, 0);
+		};
+		QFormLayout *flRefl = nullptr, *flWave = nullptr, *flFC = nullptr;
+		mkPanel(reflBox, flRefl);  mkPanel(waveBox, flWave);  mkPanel(fcBox, flFC);
+
+		eAmbient  = mkEdit(".55");   flRefl->addRow("Ambient light", eAmbient);
+		eDiffuse  = mkEdit(".6");    flRefl->addRow("Diffuse reflection", eDiffuse);
+		eSpecular = mkEdit(".4");    flRefl->addRow("Specular reflection", eSpecular);
+		eShine    = mkEdit("10");    flRefl->addRow("Specular shine", eShine);
+		eWave     = mkEdit("");      flWave->addRow("Wavelength (px)", eWave);
+		eWave->setToolTip("Cut-in wavelength of the highpass filter, in pixels. Empty = half the "
+		                  "longer grid side, the ppdrc default.");
+		// False colour: Mirone's two exclusive radios + the Amp factor the old algorithm reads.
+		// shading_params.m gives radio_oldAlgo Value 1, so the old algorithm is the default.
+		rbOldAlgo = new QRadioButton("Old algorithm", d);
+		rbGrdGrad = new QRadioButton("grdgradient", d);
+		rbOldAlgo->setToolTip("Use the older algorithm (Manip Raster / shade_manip_raster)");
+		rbGrdGrad->setToolTip("Compute illumination with grdgradient");
+		algos = new QButtonGroup(d);  algos->setExclusive(true);
+		algos->addButton(rbOldAlgo, 1);  algos->addButton(rbGrdGrad, 0);
+		rbOldAlgo->setChecked(true);
+		eAmp = mkEdit("125");
+		eAmp->setToolTip("Amplitude factor the old algorithm divides its differences by.");
+		flFC->addRow(rbOldAlgo);
+		flFC->addRow("Amp factor", eAmp);
+		flFC->addRow(rbGrdGrad);
+		band->addWidget(optSlot, 1, Qt::AlignVCenter);
+		outer->addLayout(band);
+
+		// --- azimuth / elevation boxes + OK -------------------------------------------------------
+		auto *row = new QHBoxLayout();
+		lAzim = new QLabel("Azimuth", d);
+		eAzim = mkEdit("0");
+		eAzR  = mkEdit("0");    eAzR->setStyleSheet("background:#ff5555;");
+		eAzG  = mkEdit("120");  eAzG->setStyleSheet("background:#55dd66;");
+		eAzB  = mkEdit("240");  eAzB->setStyleSheet("background:#6688ff;");
+		eAzR->setToolTip("Red component azimuth");
+		eAzG->setToolTip("Green component azimuth");
+		eAzB->setToolTip("Blue component azimuth");
+		eElev = mkEdit("30");
+		row->addWidget(lAzim);
+		row->addWidget(eAzim);  row->addWidget(eAzR);  row->addWidget(eAzG);  row->addWidget(eAzB);
+		row->addSpacing(12);
+		row->addWidget(eElev);
+		row->addStretch(1);
+		auto *okBtn = new QPushButton("OK", d);
+		okBtn->setDefault(true);
+		row->addWidget(okBtn);
+		outer->addLayout(row);
+
+		// --- restore the last light, then wire everything ----------------------------------------
+		const HillshadeState &st = g_hillshadeState;
+		if (st.valid) {
+			model = st.model;
+			dial->az[0] = st.azR;  dial->az[1] = st.azG;  dial->az[2] = st.azB;
+			if (st.model != 5) dial->az[0] = st.azim;
+			elevDial->elev = st.elev;
+			eAzim->setText(QString::number(st.azim, 'f', 0));
+			eAzR->setText(QString::number(st.azR, 'f', 0));
+			eAzG->setText(QString::number(st.azG, 'f', 0));
+			eAzB->setText(QString::number(st.azB, 'f', 0));
+			eElev->setText(QString::number(st.elev, 'f', 0));
+			eAmbient->setText(st.ambient);  eDiffuse->setText(st.diffuse);
+			eSpecular->setText(st.specular);  eShine->setText(st.shine);
+			eWave->setText(st.wavelength);  eAmp->setText(st.amp);
+			(st.oldAlgo ? rbOldAlgo : rbGrdGrad)->setChecked(true);
+		}
+
+		// Dial -> boxes. The single azimuth and the red false-colour azimuth are THE SAME hand
+		// (Mirone's h_line(1), tagged 'red', feeds edit_azim or edit_azimR depending on the model).
+		dial->onChange = [this](int hand, double a) {
+			QLineEdit *e = (model == 5) ? (hand == 0 ? eAzR : (hand == 1 ? eAzG : eAzB)) : eAzim;
+			e->setText(QString::number(a, 'f', 0));
+		};
+		elevDial->onChange = [this](double v) { eElev->setText(QString::number(v, 'f', 0)); };
+		// Boxes -> dial (typing a number must move the hand, or the two would disagree).
+		auto bindBox = [this](QLineEdit *e, int hand) {
+			QObject::connect(e, &QLineEdit::editingFinished, dlg, [this, e, hand]() {
+				bool ok = false;
+				const double v = e->text().trimmed().toDouble(&ok);
+				if (!ok) return;
+				dial->az[hand] = std::fmod(std::fmod(v, 360.0) + 360.0, 360.0);
+				dial->update();
+			});
+		};
+		bindBox(eAzim, 0);  bindBox(eAzR, 0);  bindBox(eAzG, 1);  bindBox(eAzB, 2);
+		QObject::connect(eElev, &QLineEdit::editingFinished, d, [this]() {
+			bool ok = false;
+			const double v = eElev->text().trimmed().toDouble(&ok);
+			if (!ok) return;
+			elevDial->elev = std::clamp(v, 0.0, 90.0);
+			elevDial->update();
+		});
+
+		QObject::connect(models, &QButtonGroup::idClicked, d, [this](int id) { setModel(id); });
+		// The false colour's algorithm radio decides whether elevation + Amp factor are read at all,
+		// so it re-runs the same show/hide pass (Mirone's radio_oldAlgo_CB / radio_grdgrad_CB).
+		QObject::connect(algos, &QButtonGroup::idClicked, d, [this](int) { setModel(model); });
+		QObject::connect(okBtn, &QPushButton::clicked, d, [this]() { apply(); });
+
+		if (auto *b = models->button(model)) b->setChecked(true);
+		setModel(model);
+		d->adjustSize();
+		d->resize(d->minimumSizeHint());
+	}
+
+	// shading_params.m's show_needed + toggle_uis: only the controls the picked model actually reads
+	// are shown, and the window title says which model that is.
+	void setModel(int m) {
+		model = m;
+		const bool merc  = (m == 5);
+		const bool takesAzim = (m == 1 || m == 2 || m == 3 || m == 4 || m == 6);
+		// The false colour's OLD algorithm reads the elevation and the Amp factor; its grdgradient
+		// flavour reads neither — Mirone's radio_grdgrad_CB disables edit_elev for exactly that reason.
+		const bool oldAlgo   = merc && rbOldAlgo->isChecked();
+		const bool takesElev = (m == 2 || m == 3 || m == 4) || oldAlgo;
+		const bool takesRefl = (m == 3);
+		const bool takesWave = (m == 6);
+		lAzim->setVisible(takesAzim || merc);
+		eAzim->setVisible(takesAzim);
+		eAzR->setVisible(merc);  eAzG->setVisible(merc);  eAzB->setVisible(merc);
+		elevWrap->setVisible(takesElev);  eElev->setVisible(takesElev);
+		reflBox->setVisible(takesRefl);   // the three panels share one cell; exactly one shows
+		waveBox->setVisible(takesWave);
+		fcBox->setVisible(merc);
+		eAmp->setVisible(oldAlgo);        // the Amp factor belongs to the old algorithm alone
+		if (auto *lbl = fcBox->layout() ? qobject_cast<QFormLayout *>(fcBox->layout()) : nullptr)
+			if (QWidget *w = lbl->labelForField(eAmp)) w->setVisible(oldAlgo);
+		dial->setVisible(takesAzim || merc);
+		dial->three = merc;
+		if (merc) {                       // the red hand is shared: carry it over both ways
+			bool ok = false;
+			const double v = eAzR->text().trimmed().toDouble(&ok);
+			if (ok) dial->az[0] = v;
+		}
+		else {
+			bool ok = false;
+			const double v = eAzim->text().trimmed().toDouble(&ok);
+			if (ok) dial->az[0] = v;
+		}
+		dial->update();
+		static const struct { int m; const char *title; } names[] = {
+			{ 1, "GMT grdgradient" }, { 2, "GMT grdgradient - Lambertian" },
+			{ 3, "Lambertian lighting" }, { 4, "Hillshade" }, { 5, "False color" },
+			{ 6, "Dynamic Range Compression" },
+		};
+		for (const auto &n : names)
+			if (n.m == m) dlg->setWindowTitle(n.title);
+		dlg->adjustSize();
+		dlg->resize(dlg->minimumSizeHint());   // shrink back when a bigger panel is swapped out
+	}
+
+	// The ✕ button: strip the illumination off the grid NOW. Model 7 is the host's "remove" code; the
+	// dialog itself is left exactly as it was, so the light you had aimed is still there to re-apply.
+	void applyRemove() {
+		if (!g_juliaHillshade || !sceneAlive(scn)) return;
+		g_juliaHillshade(scn, "model=7\nazim=0\nelev=0");
+	}
+
+	// STANDING RULE: only this action button runs anything — no edit box ever triggers a compute.
+	void apply() {
+		if (!g_juliaHillshade) {
+			QMessageBox::warning(dlg, "Error", "Illumination: callback not registered "
+			                                   "(rebuild/restart needed?).");
+			return;
+		}
+		if (!(scn && scn->surf && !scn->emptyStart && !scn->imageOnly)) {
+			QMessageBox::warning(dlg, "Error", "Illumination works on the grid loaded in this "
+			                                   "window, and this window has none.");
+			return;
+		}
+		HillshadeState st;
+		st.valid = true;  st.model = model;
+		st.azim = eAzim->text().trimmed().toDouble();
+		st.elev = eElev->text().trimmed().toDouble();
+		st.azR = eAzR->text().trimmed().toDouble();
+		st.azG = eAzG->text().trimmed().toDouble();
+		st.azB = eAzB->text().trimmed().toDouble();
+		st.ambient = eAmbient->text();  st.diffuse = eDiffuse->text();
+		st.specular = eSpecular->text();  st.shine = eShine->text();
+		st.wavelength = eWave->text().trimmed();
+		st.amp = eAmp->text().trimmed();
+		st.oldAlgo = rbOldAlgo->isChecked();
+		g_hillshadeState = st;
+
+		QStringList kv;
+		kv << QString("model=%1").arg(model);
+		kv << QString("azim=%1").arg(st.azim);
+		kv << QString("elev=%1").arg(st.elev);
+		if (model == 3) {
+			kv << "ambient="  + st.ambient.trimmed();
+			kv << "diffuse="  + st.diffuse.trimmed();
+			kv << "specular=" + st.specular.trimmed();
+			kv << "shine="    + st.shine.trimmed();
+		}
+		if (model == 5) {
+			kv << QString("azimR=%1").arg(st.azR);
+			kv << QString("azimG=%1").arg(st.azG);
+			kv << QString("azimB=%1").arg(st.azB);
+			kv << QString("oldalgo=%1").arg(st.oldAlgo ? 1 : 0);
+			if (st.oldAlgo && !st.amp.isEmpty()) kv << "amp=" + st.amp;
+		}
+		if (model == 6 && !st.wavelength.isEmpty()) kv << "wavelength=" + st.wavelength;
+
+		const QByteArray p = kv.join('\n').toUtf8();
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		const int ok = g_juliaHillshade(scn, p.constData());
+		QApplication::restoreOverrideCursor();
+		if (!ok)
+			QMessageBox::warning(dlg, "Illumination", "The illumination could not be computed. "
+			                                          "See the Julia console for the reason.");
+	}
+};
+
 class GrdGradientDialog {
 public:
 	QDialog *dlg = nullptr;
@@ -10231,13 +10762,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	QSlider *slAz = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Sun azimuth" slider — key-light azimuth (deg from north, CW)
 	slAz->setRange(0, 360); slAz->setValue(int(s->lightAz));
-	QObject::connect(slAz, &QSlider::valueChanged, [s](int v){ s->lightAz = v; applyShading(s); });
+	QObject::connect(slAz, &QSlider::valueChanged, [s](int v){ s->lightAz = v; dropExternShade(s); applyShading(s); });
 	form->addRow("Sun azimuth", slAz);
 	wireTip(slAz, "Sun azimuth", 0, 360, "deg", 0);
 
 	QSlider *slEl = new QSlider(Qt::Horizontal, panel);   // GRAPHICAL ELEMENT: "Sun elevation" slider — key-light elevation above horizon
 	slEl->setRange(0, 90); slEl->setValue(int(s->lightEl));
-	QObject::connect(slEl, &QSlider::valueChanged, [s](int v){ s->lightEl = v; applyShading(s); });
+	QObject::connect(slEl, &QSlider::valueChanged, [s](int v){ s->lightEl = v; dropExternShade(s); applyShading(s); });
 	form->addRow("Sun elevation", slEl);
 	wireTip(slEl, "Sun elevation", 0, 90, "deg", 0);
 
@@ -10305,6 +10836,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// The four relief looks: mutually exclusive, illumination only (applyShading, in place). syncShade
 	// re-derives the Scene flags from the live checkbox states; each ON handler unchecks the other three.
 	auto syncShade = [s, cbShadow, cbHillL, cbHillG, cbPBR]() {
+		dropExternShade(s);   // picking a look here replaces whatever the Hillshade tool had loaded
 		s->useShadows   = cbShadow->isChecked();
 		s->useHillshade = cbHillL->isChecked() || cbHillG->isChecked();
 		s->hillGrd      = cbHillG->isChecked();
@@ -10366,6 +10898,18 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	s->shadeDock = dock;                                     // keep it so a promoted launcher can re-show + fold it
 	dock->setVisible(hasShadedBody);                         // GRAPHICAL ELEMENT: Shading dock initial fold state
 	// GRAPHICAL ELEMENT: View menu "Shading Panel" item — folds/un-folds the Shading dock
+	// Mirone's Image > Illuminate, next to the dock it shares its job with (port of shading_params.m).
+	mView->addAction("&Illumination (Hillshade)…", [win, s]() {
+		// Start compiling the illumination models NOW, while the user is still choosing one — see
+		// warmupTool (30_app.cpp). Fires on the re-open path too: the warm-up itself only ever runs
+		// once per session, so the second call costs nothing and we never have to reason about which
+		// of the two paths the user took.
+		warmupTool("illumination");
+		auto it = g_hillshadeDlgs.find(s);       // parked or already open -> the SAME dialog, never a 2nd
+		if (it != g_hillshadeDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+		auto *w = new HillshadeDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
 	QAction *aShade = mView->addAction("Shading &Panel", [dock](){ dock->setVisible(!dock->isVisible()); });
 	aShade->setCheckable(true); aShade->setChecked(hasShadedBody);   // menu checkmark tracks the dock's visibility
 

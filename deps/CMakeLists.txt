@@ -44,6 +44,14 @@ set(GMTVTK_SRC src/gmtvtk.cpp)
 add_compile_definitions(GMTVTK_UI_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ui")
 add_compile_definitions(GMTVTK_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../data")
 
+# The viewer is ONE translation unit (gmtvtk.cpp #includes every NN_*.cpp fragment), so its object
+# file long ago passed the 65279-section COFF limit that /bigobj lifts — the test build, which adds
+# the GMTVTK_TEST_API hooks on top, hit it first ("fatal error C1128"). All three targets compile the
+# same TU, so all three need the flag.
+if(MSVC)
+  add_compile_options(/bigobj)
+endif()
+
 # Shared library — the Julia/host bridge (C API: gmtvtk_view_grid / gmtvtk_view_demo / ...).
 add_library(gmtvtk SHARED ${GMTVTK_SRC})
 target_link_libraries(gmtvtk PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES})

@@ -115,4 +115,8 @@ Dim i
 For i = 0 To WScript.Arguments.Count - 1
     extra = extra & " " & Chr(34) & WScript.Arguments(i) & Chr(34)
 Next
-sh.Run "julia " & projectArg & Chr(34) & here & "\iview_app.jl" & Chr(34) & extra, 7, False
+' -t auto: give Julia real threads. The JIT warm-up (src/warmup.jl) runs a tool's first compilation
+' on a background thread when its dialog opens, so the action button is instant; with a single
+' thread that work shares the UI thread and the dialog stutters while it compiles. Threads also
+' serve the code that already asks for them (Threads.@threads, src/drop.jl).
+sh.Run "julia -t auto " & projectArg & Chr(34) & here & "\iview_app.jl" & Chr(34) & extra, 7, False

@@ -641,6 +641,23 @@ struct Scene {
 	bool   litBake      = true;       // FLAT image only: bake a CPU PBR shade (approximates the lit 3-D
 	                                  // surface) so "Shaded image" alone reproduces the loaded-grid look.
 	                                  // Mutually exclusive with useHillshade; both off (flat) = plain CPT.
+	// --- EXTERNAL illumination (View > "Illumination (Hillshade)…", port of Mirone shading_params.m).
+	// A per-node REFLECTANCE grid computed by GMT grdgradient in Julia (src/hillshade.jl) and pushed
+	// down by gmtvtk_set_shade_intensity_h. When it is present the shade engine takes the intensity
+	// from HERE instead of deriving one from the surface normal — the modulation itself stays
+	// gmtIlluminate(), the one HSV modulator (SACRED_LAW: same operation, same function). Sampled by
+	// WORLD POSITION (sampleGrid), so it serves the surface, the LOD tiles, the flat-image bake and
+	// the Aquamoto composite alike, at any resolution and with no index bookkeeping.
+	std::vector<float> shadeInten;   // column-major inten[ix*shadeInY + iy], the gridZ layout
+	int    shadeInX = 0, shadeInY = 0;
+	double shadeInX0 = 0.0, shadeInX1 = 0.0, shadeInY0 = 0.0, shadeInY1 = 0.0;
+	int    shadeInModel = 0;         // the Mirone illum_model that produced it (0 = none loaded)
+	// "Remove illumination" (the tool's ✕, Mirone's ImageResetOrigImg_CB): NO light at all — the
+	// surface renders UNLIT with its plain CPT colours. Distinct from every look toggle, because
+	// "no hillshade" still leaves the PBR scene lights on and the grid still looks illuminated.
+	// Cleared by anything that turns a light back on (the dock's looks, the sun sliders, a new model).
+	bool   noShade = false;
+
 	bool   matteSurf = false;        // fv colour mesh: keep s->surf MATTE (Phong, no specular/IBL) so the
 									 // data colour reads true; glossy PBR mirrored the bright sky env to grey
 									 // on up-facing facets. applyShading honours this (else it re-clobbers it).

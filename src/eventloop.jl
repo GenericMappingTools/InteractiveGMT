@@ -35,11 +35,20 @@ end
 # Guarded by `_CB_DONE`; idempotent. The `@cfunction`s themselves are thin `invokelatest` trampolines
 # (see each `_register_*`) so this stays cheap and never drags GMT into a precompiled image.
 const _CB_DONE = Ref(false)
+# Regression instrumentation for the busy-cursor bug (see the pump call inside the loop below):
+# `_CB_PUMPS` counts the pumps this block performed, `_CB_MAXGAP` is the LONGEST stretch it left the
+# window unpumped. test/test-startup-pump.jl asserts on both — a pump moved out of the loop drops the
+# count to 0 and blows the gap up to the whole block, which is exactly the freeze that must not return.
+const _CB_PUMPS  = Ref(0)
+const _CB_MAXGAP = Ref(0.0)
 function _ensure_callbacks()
 	_CB_DONE[] && return
 	_dbg("startup", "_ensure_callbacks enter")
 	_CB_DONE[] = true                                # set first: a failing reg must not retry forever
-	for (name, fn) in (("console",     _register_console_eval),
+	_CB_PUMPS[] = 0;  _CB_MAXGAP[] = 0.0
+	_cb_last = time()
+	for (name, fn) in (("warmup",      _register_warmup),
+	                    ("console",     _register_console_eval),
 	                    ("drop",        _register_drop_callback),
 	                    ("cube-layer",  _register_cube_callback),
 	                    ("xy",          _register_xy_callback),
@@ -72,6 +81,7 @@ function _ensure_callbacks()
 	                    ("grdgravmag3d",_register_grdgravmag3d),
 	                    ("grdredpol",   _register_grdredpol),
 	                    ("grdgradient", _register_grdgradient),
+	                    ("hillshade",   _register_hillshade),
 	                    ("grdseamount", _register_grdseamount),
 	                    ("manual",      _register_manual),
 	                    ("import-gmt",  _register_import_gmt),
@@ -93,6 +103,21 @@ function _ensure_callbacks()
 			fn()
 		catch e
 			@warn "InteractiveGMT: registration '$name' failed; that feature will be \"not wired\" in the viewer. Rebuild the DLL (deps/build.bat) and restart Julia if the export is missing." exception=(e,)
+		end
+		# PUMP BETWEEN REGISTRATIONS. This whole block runs AFTER the window is already on screen
+		# (every opener calls `_start_pump` once the window exists) and BEFORE the pump Timer's first
+		# tick, so without this the window sits frozen — visible but unpumped — for the length of the
+		# loop, which Windows shows as a busy cursor for about a second. One `@cfunction` costs a few
+		# ms; a pump between them keeps the window painting and responsive throughout. Returns 0 with
+		# no window open (registration can precede the first window), which is harmless.
+		# DO NOT move this out of the loop — that IS the bug. test/test-startup-pump.jl guards it.
+		now = time()
+		_CB_MAXGAP[] = max(_CB_MAXGAP[], now - _cb_last)
+		_cb_last = now
+		try
+			_CB_PUMPS[] += 1        # counted HERE, next to the pump, so the guard cannot drift from it
+			ccall(_fn(:gmtvtk_process_events), Cint, ())
+		catch
 		end
 	end
 	_dbg("startup", "_ensure_callbacks exit")

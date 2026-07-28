@@ -27,4 +27,6 @@ Dim i
 For i = 0 To WScript.Arguments.Count - 1
     extra = extra & " """ & WScript.Arguments(i) & """"
 Next
-sh.Run "julia --project=""" & here & """ """ & here & "\iview_app.jl""" & extra, 7, False
+' -t auto: real threads, so the JIT warm-up (src/warmup.jl) compiles a tool on a background thread
+' while its dialog is being filled in, instead of stuttering the UI thread.
+sh.Run "julia -t auto --project=""" & here & """ """ & here & "\iview_app.jl""" & extra, 7, False

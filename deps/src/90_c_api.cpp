@@ -385,6 +385,18 @@ GMTVTK_API int gmtvtk_set_object_visible(void *handle, const char *name, int vis
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return 1;
 	}
+	// The BASE surface goes through this SAME setter — not a parallel show/hide pair. gmtvtk_hide_surface
+	// could only hide, and gmtvtk_hide_other_grids already treats base + extras uniformly, so anything
+	// that unchecked the base (the derived-variable display law: "the source is UNCHECKED") had no way
+	// to check it back. "" means the window's primary, the same convention _find_object_named uses.
+	if (s->surf && (!*name || s->surfName == name)) {
+		surfSetVisibility(s, vis ? 1 : 0);
+		if (s->drape) s->drape->SetVisibility(vis ? 1 : 0);
+		refreshGridColorbar(s);
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return 1;
+	}
 	return 0;
 }
 
@@ -1352,6 +1364,65 @@ GMTVTK_API void gmtvtk_set_manual_callback(JuliaOpenManualFn fn) {
 // window's grid and adds the result. nullptr to detach.
 GMTVTK_API void gmtvtk_set_grdgradient_callback(JuliaGrdGradientFn fn) {
 	g_juliaGrdGradient = fn;
+}
+
+// Register the Illumination / Hillshade OK callback (View menu, port of Mirone shading_params.m).
+// fn(scene, params) with params a newline-separated "key=value" block (see JuliaHillshadeFn in
+// 30_app.cpp) computes the reflectance and pushes it back with gmtvtk_set_shade_intensity_h.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_hillshade_callback(JuliaHillshadeFn fn) {
+	g_juliaHillshade = fn;
+}
+
+// Register the JIT warm-up callback (see JuliaWarmupFn / warmupTool in 30_app.cpp). fn(tool) is
+// called when a tool's dialog OPENS, so Julia can start compiling that tool's code while the user
+// is still filling the dialog in. It must return at once (spawn, don't compute). nullptr to detach.
+GMTVTK_API void gmtvtk_set_warmup_callback(JuliaWarmupFn fn) {
+	g_juliaWarmup = fn;
+}
+
+// Load (or clear) the EXTERNAL illumination: a per-node reflectance grid computed by GMT
+// grdgradient in Julia (src/hillshade.jl, the Hillshade tool). `inten` is column-major
+// inten[ix*ny + iy] — the same layout the surface z uses — over the true-coord box [x0,x1]x[y0,y1];
+// `model` is the Mirone illum_model that produced it, kept only so the dialog can report what is
+// loaded. nx < 2 || ny < 2 || inten == nullptr CLEARS it and hands the look back to the Shading dock.
+//
+// Loading one turns the hillshade master ON (the surface must render UNLIT for baked colours to show)
+// and selects the grdimage style, which is the honest label: the modulator this reflectance ends in
+// IS gmt_illuminate, exactly as in Mirone's mex_illuminate. Nothing else about the shade engine
+// changes — applyReliefShade simply takes the intensity from the grid instead of from the normal.
+GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, int nx, int ny,
+                                             double x0, double x1, double y0, double y1, int model) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	if (!inten || nx < 2 || ny < 2) {
+		s->shadeInten.clear();
+		s->shadeInX = s->shadeInY = 0;
+		s->shadeInModel = 0;
+		s->useHillshade = false;
+		// model < 0 is the tool's "Remove illumination" (Mirone's ImageResetOrigImg_CB): EVERY light
+		// goes off, not just this tool's reflectance, so the grid falls back to plain CPT colour. Just
+		// dropping the reflectance would hand it to the Shading dock's own look — still an
+		// illumination, and to the eye "the button did nothing". model == 0 is the plain internal
+		// clear (a model that replaced the shade with its own picture) and leaves the dock alone.
+		if (model < 0) {
+			s->useShadows = false;
+			s->litBake    = false;      // flat-image mode -> plain CPT, no PBR bake
+			s->noShade    = true;       // 3-D surface   -> unlit, plain CPT (applySurfStyle)
+		}
+		applyShading(s);
+		return;
+	}
+	s->shadeInten.assign(inten, inten + (size_t)nx * ny);
+	s->shadeInX = nx;   s->shadeInY = ny;
+	s->shadeInX0 = x0;  s->shadeInX1 = x1;
+	s->shadeInY0 = y0;  s->shadeInY1 = y1;
+	s->shadeInModel = model;
+	s->noShade      = false;                          // a model IS a light: ends "Remove illumination"
+	s->useHillshade = true;
+	s->hillGrd      = true;
+	s->useShadows   = false;                          // cast-shadows is the alternative look, not an add-on
+	applyShading(s);
 }
 
 // Register the grdseamount Compute callback (GMT menu). fn(scene, params) with params a

@@ -81,6 +81,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_igrf_point_callback, :gmtvtk_set_igrf_grid_callback, :gmtvtk_set_igrf_file_callback,
 	:gmtvtk_set_rtp3d_callback,
 	:gmtvtk_set_gravmag3d_callback, :gmtvtk_set_grdgravmag3d_callback, :gmtvtk_set_grdredpol_callback, :gmtvtk_set_manual_callback, :gmtvtk_set_grdgradient_callback, :gmtvtk_set_grdseamount_callback,
+	:gmtvtk_set_hillshade_callback, :gmtvtk_set_shade_intensity_h, :gmtvtk_set_warmup_callback,
 	:gmtvtk_set_import_gmt_callback,
 	:gmtvtk_set_clipgrid_callback, :gmtvtk_set_gridcalc_callback, :gmtvtk_set_grdtrend_callback, :gmtvtk_set_grdlandmask_callback, :gmtvtk_set_grdfilter_callback, :gmtvtk_set_interpolate_callback, :gmtvtk_set_ui_dir,
 	:gmtvtk_set_seismicity_callback,

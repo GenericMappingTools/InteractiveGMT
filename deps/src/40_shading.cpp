@@ -72,6 +72,32 @@ static void gmtIlluminate(double intensity, double *rgb) {
 //   (B) grdimage  (hillGrd == true):  gmt_illuminate(CPT(z), (2/Ï€)·atan(gain·(n·Lg − Lgz))), the GMT
 //                 grdimage -I look from the TRUE-coord z-gradient normal (VE-independent).
 // ============================================================================
+// --- the Hillshade tool's externally-computed reflectance -------------------------------------
+// Present only while an illumination model from View > "Illumination (Hillshade)…" is loaded.
+// Sampled by WORLD position so every consumer (surface, LOD tile, flat bake, Aquamoto) reads the
+// same grid through the same call, whatever its own resolution or point ordering.
+static inline bool haveExternShade(const Scene *s) {
+	return s && s->shadeInX > 1 && s->shadeInY > 1 &&
+	       (int)s->shadeInten.size() == s->shadeInX * s->shadeInY;
+}
+// Forget the loaded model. Any Shading-dock control that AIMS or STYLES the light (sun azimuth /
+// elevation, the four relief looks) calls this first: asking the dock for a different light means
+// the user wants the dock's own light back, so the control must bite instead of sitting inert
+// under a baked GMT reflectance (SACRED_LAW: a shared control never becomes a no-op). The caller
+// re-runs applyShading itself.
+static inline void dropExternShade(Scene *s) {
+	if (!s) return;
+	s->shadeInten.clear();
+	s->shadeInX = s->shadeInY = 0;
+	s->shadeInModel = 0;
+	s->noShade = false;      // asking for a light ends "Remove illumination"
+}
+// Reflectance at TRUE-coord (x,y), or NaN outside the grid / on a NaN node.
+static inline double externShadeAt(const Scene *s, double x, double y) {
+	return sampleGrid(s->shadeInten.data(), s->shadeInX, s->shadeInY,
+	                  s->shadeInX0, s->shadeInX1, s->shadeInY0, s->shadeInY1, x, y);
+}
+
 struct ReliefLight {
 	double Lx, Ly, Lz;          // sun dir, lit convention (Lambert / PBR key light)
 	double LxG, LyG, LzG;       // sun dir, grdimage (inverted elevation)
@@ -129,7 +155,13 @@ static inline void applyPBRShade(const ReliefLight &L, const double nv[3], doubl
 	}
 }
 // Modulate rgb (0..1, in/out) by the relief shade for a TRUE-coord surface normal nv.
-static inline void applyReliefShade(const ReliefLight &L, const double nv[3], double rgb[3]) {
+// `externI`, when given, is a reflectance somebody else already computed for THIS point — the GMT
+// grdgradient intensity the Hillshade tool pushes down (Scene::shadeInten, see hillshade.jl). It
+// replaces the intensity this function would derive from nv; the modulation is the SAME
+// gmtIlluminate() every other path ends in, which is exactly what Mirone's mex_illuminate does.
+static inline void applyReliefShade(const ReliefLight &L, const double nv[3], double rgb[3],
+                                    const double *externI = nullptr) {
+	if (externI) { gmtIlluminate(*externI, rgb); return; }
 	if (!L.grd) {                                             // (A) Lambert, VE-corrected, darken-only
 		double cx = nv[0]*L.fx, cy = nv[1], cz = nv[2]*L.fz;
 		const double len = std::sqrt(cx*cx + cy*cy + cz*cz);
@@ -216,6 +248,7 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 	}
 	const double invspan = (hi > lo) ? (NT - 1) / (hi - lo) : 0.0;
 	const bool   pbr   = !s->useHillshade && s->litBake;   // flat PBR bake (approximates the lit surface)
+	const bool   ext   = haveExternShade(s);               // Hillshade tool: GMT-computed reflectance
 	const bool   shade = s->useHillshade || pbr;           // any per-pixel shade (hillshade or PBR)
 	const ReliefLight L = makeReliefLight(s);      // SAME light/style the 3-D surface uses (one source of truth)
 	auto Zc = [&](int ix, int iy) -> double { return z[(size_t)ix * ny + iy]; };   // column-major z[ix*ny+iy]
@@ -248,6 +281,19 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 				cr = rgb8[0]; cg = rgb8[1]; cb = rgb8[2];
 			}
 			if (!shade) { p[0] = cr; p[1] = cg; p[2] = cb; p[3] = 255; continue; }
+			// Hillshade tool: the reflectance is already known for this world position -> modulate
+			// with it and skip the gradient entirely (the SAME gmtIlluminate the normal path ends in).
+			if (ext) {
+				const double ei = externShadeAt(s, tx, ty);
+				if (!std::isnan(ei)) {
+					double c[3] = { cr / 255.0, cg / 255.0, cb / 255.0 };
+					applyReliefShade(L, nullptr, c, &ei);
+					p[0] = (unsigned char)std::min(255.0, c[0] * 255.0 + 0.5);
+					p[1] = (unsigned char)std::min(255.0, c[1] * 255.0 + 0.5);
+					p[2] = (unsigned char)std::min(255.0, c[2] * 255.0 + 0.5);
+					p[3] = 255; continue;
+				}
+			}
 			// central-difference gradient (full-res neighbours), edge-clamped; NaN neighbour -> flat.
 			const int ixm = ix > 0 ? ix - 1 : ix, ixp = ix < nx - 1 ? ix + 1 : ix;
 			const double za = Zc(ixp, iy), zb = Zc(ixm, iy);
@@ -362,6 +408,7 @@ static void bakeAquaShade(Scene *s) {
 	const AquaSideShade lS = s->aquaLandShade.valid  ? s->aquaLandShade  : snapshotShade(s);
 	const ReliefLight Lw = makeReliefLightSide(s, wS);
 	const ReliefLight Ll = makeReliefLightSide(s, lS);
+	const bool extShade = haveExternShade(s);            // Hillshade tool: GMT-computed reflectance
 	const bool wPbr = !wS.useHillshade && wS.litBake, wShade = (wS.useHillshade || wPbr) && haveStage;
 	const bool lPbr = !lS.useHillshade && lS.litBake, lShade = (lS.useHillshade || lPbr);
 	if (!wShade && !lShade) {                            // neither side shades -> the composite verbatim
@@ -393,6 +440,20 @@ static void bakeAquaShade(Scene *s) {
 				continue;
 			}
 			const ReliefLight &L = land ? Ll : Lw;
+			// Hillshade tool: an externally computed reflectance covers EVERY element type, the
+			// tsunami composite included (SACRED_LAW: no element type opts out of a shared operation).
+			if (extShade) {
+				const double ei = externShadeAt(s, s->gx0 + ix * dx, s->gy0 + iy * dy);
+				if (!std::isnan(ei)) {
+					double c[3] = { base[t] / 255.0, base[t+1] / 255.0, base[t+2] / 255.0 };
+					applyReliefShade(L, nullptr, c, &ei);
+					out[t]   = (unsigned char)std::min(255.0, c[0] * 255.0 + 0.5);
+					out[t+1] = (unsigned char)std::min(255.0, c[1] * 255.0 + 0.5);
+					out[t+2] = (unsigned char)std::min(255.0, c[2] * 255.0 + 0.5);
+					out[t+3] = base[t+3];
+					continue;
+				}
+			}
 			const bool pbr = land ? lPbr : wPbr;
 			const float *z = land ? bathy : stage;
 			const int ixm = ix > 0 ? ix - 1 : ix, ixp = ix < nx - 1 ? ix + 1 : ix;
@@ -591,6 +652,12 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 		vtkSmartPointer<vtkUnsignedCharArray>::Take(lut->MapScalars(zs, VTK_COLOR_MODE_MAP_SCALARS, 0));
 	if (!mapped) return;
 	const int mc = mapped->GetNumberOfComponents();      // RGBA = 4
+	// Hillshade tool: an externally computed reflectance, sampled at each point's TRUE-coord (x,y).
+	// The polydata carries true data coords (the actor holds xfac/ve), so this works for the single
+	// surface and for every LOD tile without either of them knowing its own grid index range.
+	const bool ext = haveExternShade(s);
+	vtkPoints *pts = ext ? pd->GetPoints() : nullptr;
+	if (ext && !pts) return;
 	vtkSmartPointer<vtkUnsignedCharArray> col = vtkSmartPointer<vtkUnsignedCharArray>::New();
 	col->SetName("hillshade");
 	col->SetNumberOfComponents(3);
@@ -602,7 +669,9 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 		double nv[3]; nrm->GetTuple(i, nv);
 		const unsigned char *rgb8 = mapped->GetPointer(i * mc);     // CPT colour for this z (pre-mapped)
 		double c[3] = { rgb8[0] / 255.0, rgb8[1] / 255.0, rgb8[2] / 255.0 };
-		applyReliefShade(L, nv, c);                                 // SHARED shade (grdimage or Lambert)
+		double ei = std::numeric_limits<double>::quiet_NaN();
+		if (ext) { double p[3]; pts->GetPoint(i, p); ei = externShadeAt(s, p[0], p[1]); }
+		applyReliefShade(L, nv, c, std::isnan(ei) ? nullptr : &ei);  // SHARED shade (extern / grdimage / Lambert)
 		col->SetTypedComponent(i, 0, (unsigned char)(c[0] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 1, (unsigned char)(c[1] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 2, (unsigned char)(c[2] * 255.0 + 0.5));
@@ -620,7 +689,15 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 // so a tile built mid-flight matches the rest.
 static void applySurfStyle(Scene *s, vtkActor *a) {
 	vtkProperty *prop = a->GetProperty();
-	if (s->useHillshade) {
+	if (s->noShade) {
+		// No illumination at all: flat, fully ambient, so the CPT colour shows exactly as the colour
+		// bar says. hillshadeMapper below reverts the mapper to live CPT scalars (useHillshade is off
+		// whenever this is on), so nothing modulates the colour either.
+		prop->SetInterpolationToFlat();
+		prop->SetAmbient(1.0); prop->SetDiffuse(0.0); prop->SetSpecular(0.0);
+		prop->SetAmbientColor(1.0, 1.0, 1.0);
+	}
+	else if (s->useHillshade) {
 		// Baked shade IS the shading -> render UNLIT (flat ambient) so colours show verbatim.
 		prop->SetInterpolationToFlat();
 		prop->SetAmbient(1.0); prop->SetDiffuse(0.0); prop->SetSpecular(0.0);

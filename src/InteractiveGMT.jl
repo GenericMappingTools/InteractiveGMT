@@ -27,6 +27,7 @@ include("types.jl")
 include("introspect.jl") # read-only scene-state snapshot for the test suite
 include("crs.jl")        # centralized coordinate-reference-system store (proj4/wkt/epsg)
 include("eventloop.jl")
+include("warmup.jl")     # JIT warm-up: compile a tool's code while its dialog is being filled in
 include("console.jl")
 
 # --- shared helpers ----------------------------------------------------------------------
@@ -72,6 +73,7 @@ include("gravmag3d.jl")  # Geophysics > Magnetics > gmtgravmag3d: anomaly of a 3
 include("grdgravmag3d.jl") # Geophysics > Magnetics > grdgravmag3d: same anomaly from one or two grids
 include("grdredpol.jl")  # Geophysics > Magnetics > grdredpol: continuous (differential) RTP
 include("grdgradient.jl") # GMT menu > grdgradient: directional derivative / slope / aspect
+include("hillshade.jl")  # View > Illumination (Hillshade): GMT illumination models (port of Mirone shading_params.m)
 include("grdseamount.jl") # GMT menu > grdseamount: synthetic seamounts from a parameter table
 include("manual.jl")     # the green "?" disk on every module dialog -> that module's GMTjl_doc page
 include("mgd77tracks.jl") # Geophysics > Magnetics > Import *.gmt/*.nc file(s): cruise tracks (port of mirone.m GeophysicsImportGmtFile_CB)

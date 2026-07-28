@@ -340,6 +340,29 @@ static JuliaOpenManualFn g_juliaOpenManual = nullptr;
 typedef int (*JuliaGrdGradientFn)(void *scene, const char *params);
 static JuliaGrdGradientFn g_juliaGrdGradient = nullptr;
 
+// Illumination / Hillshade (View menu) — the port of Mirone's shading_params.m: pick a GMT
+// illumination model and its light vector, get back a per-node REFLECTANCE which Julia pushes down
+// with gmtvtk_set_shade_intensity_h (src/hillshade.jl). The dialog (HillshadeDialog, 70_window.cpp)
+// hands a NEWLINE-separated "key=value" block: model=1..7 (1 grdgradient classic, 2 grdgradient
+// Lambertian, 3 Lambertian with lighting, 4 ESRI hillshade, 5 false colour, 6 dynamic range
+// compression, 7 remove), azim=, elev=, ambient=/diffuse=/specular=/shine= (model 3),
+// azimR=/azimG=/azimB= + oldalgo=0|1 + amp= (model 5), wavelength= (model 6). Returns 1 on success,
+// 0 on failure. nullptr to detach.
+typedef int (*JuliaHillshadeFn)(void *scene, const char *params);
+static JuliaHillshadeFn g_juliaHillshade = nullptr;
+
+// JIT WARM-UP (src/warmup.jl). Julia compiles a tool's code the first time it RUNS, so the first
+// press of a dialog's action button pays several seconds that have nothing to do with the maths.
+// The fix is to start that compilation when the DIALOG OPENS, in a background task: the seconds the
+// user spends picking a model and a light direction are seconds the compiler is already working.
+// warmupTool() is the one call a menu action makes; everything else (which functions, and whether a
+// second thread is available) is decided in Julia. It returns IMMEDIATELY — it only spawns a task —
+// so it is safe to call straight from a menu handler, and it is a no-op when Julia has not
+// registered a warm-up for that tool name, or has already run it once this session.
+typedef void (*JuliaWarmupFn)(const char *tool);
+static JuliaWarmupFn g_juliaWarmup = nullptr;
+static void warmupTool(const char *tool) { if (g_juliaWarmup) g_juliaWarmup(tool); }
+
 // grdseamount (GMT menu) — synthetic seamounts from a table of parameters, via GMT.jl's
 // `grdseamount` (src/grdseamount.jl). The dialog (GrdSeamountDialog, 70_window.cpp, loads
 // deps/ui/grdseamount_dialog.ui) hands a NEWLINE-separated "key=value" block: table=path or
