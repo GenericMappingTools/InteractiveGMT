@@ -104,7 +104,22 @@ end
 		@test st["axes"] == 1
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), e.h)
-		rm(path; force=true)
+		# The drop path's netCDF subdataset probe (_netcdf_subdatasets, drop.jl) runs GMT.gdalinfo on
+		# every .nc/.grd it sees — and GDAL's dataset cache keeps the file handle open afterward with
+		# no Julia-visible reference to release (confirmed live: a bare `GMT.gdalinfo(path)` alone, no
+		# window/drop involved, leaves the SAME file EBUSY to unlink; GC.gc(), a sleep, and GMT.jl's
+		# own session teardown all failed to clear it). Windows enforces the lock strictly (no
+		# delete-while-open); a few short retries is the standard, safe way to ride out a transient
+		# GDAL/OS file lock without reaching into GDAL's global driver-manager cache from a test.
+		for _ in 1:20
+			try
+				rm(path; force=true)
+				break
+			catch e2
+				e2 isa Base.IOError || rethrow()
+				sleep(0.1)
+			end
+		end
 	end
 end
 
@@ -312,7 +327,7 @@ end
 		st = IG._scene_state(f.h)
 		@test st["alive"] == 1
 		@test st["has_surface"] == 1       # the cloud actor counts as the surface
-		@test selection(f) === nothing      # nothing picked yet
+		@test size(selection(f), 1) == 0    # nothing picked yet -- selection() always returns a Matrix (points.jl docstring)
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
@@ -364,6 +379,11 @@ end
 
 @testitem "iview routes a 2-col table to the X,Y tool; 3-col stays a cloud" tags=[:gui, :xyplot] begin
 	IG = InteractiveGMT; GMT = IG.GMT
+	# "X,Y tool: one window, new page" (xyplot.jl _XY_CURRENT) is deliberate: a live X,Y window means
+	# the NEXT xyplot() call adds a page to it rather than opening a fresh one. A sibling test item's
+	# window may still be closing (gmtvtk_xyplot_close is async, same as gmtvtk_close) and so still
+	# reads as alive here -- force a genuinely FRESH window for this test regardless of ordering/timing.
+	IG._XY_CURRENT[] = C_NULL
 	D2 = GMT.mat2ds([0.0 0.0; 1.0 1.0; 2.0 0.5; 3.0 2.0; 4.0 1.5])      # plain x,y table
 	p = iview(D2)                                   # auto-route -> X,Y tool
 	try
@@ -383,6 +403,7 @@ end
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), q.h)
 	end
 
+	IG._XY_CURRENT[] = C_NULL   # p's window close (line 394) is async and unpumped -- same reuse risk as above
 	r = iview(D3; xy=true)                          # force the X,Y tool: cols 2,3 become two series
 	try
 		@test r isa QtXYPlot
