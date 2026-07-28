@@ -9711,6 +9711,44 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 
+	// "SDG" (port of Mirone mirone.m GridToolsSDG_CB): the Second Derivative in the direction of the
+	// Gradient — the article-76 FOS (foot of the continental slope) detector. Three entries, exactly
+	// Mirone's, and the same operation behind all three (only the sign kept differs). The prompt is
+	// GridToolsSDG_CB's own inputdlg: the cubic-smoothing-spline parameter 'p' of the csaps fit whose
+	// analytic derivatives ARE the SDG (src/sdg.jl), pre-filled — 12 decimals, like the .m — with
+	// csaps's own estimate, fetched from Julia by the same round-trip the Contour dialog uses to fill
+	// its Min/Max.
+	QMenu *mSDG = mGridTools->addMenu("SDG");
+	auto runSDG = [win, s](const char *opt) {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "SDG", "Load a grid into this window first.");
+			return;
+		}
+		if (!g_juliaEval) {
+			QMessageBox::warning(win, "SDG", "This computation needs the Julia/GMT host.");
+			return;
+		}
+		static std::vector<char> buf(1 << 12);
+		const qulonglong sp = (qulonglong)reinterpret_cast<uintptr_t>(s);
+		double p0 = 0.0;
+		const QString q = QString("InteractiveGMT._sdg_default_p(Ptr{Cvoid}(UInt(%1)))").arg(sp);
+		int n = g_juliaEval(s, q.toStdString().c_str(), buf.data(), (int)buf.size());
+		if (n > 0) p0 = QString::fromUtf8(buf.data(), n).trimmed().toDouble();
+		bool ok = false;
+		const double p = QInputDialog::getDouble(win, "Smoothing parameter input",
+			"Enter smoothing p parameter:", p0, 0.0, 1.0, 12, &ok);
+		if (!ok) return;
+		showBusyDialog("Computing SDG…");
+		const QString cmd = QString("InteractiveGMT._on_sdg(Ptr{Cvoid}(UInt(%1)),\"%2\",%3)")
+								.arg(sp).arg(opt).arg(p, 0, 'g', 15);
+		n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		closeBusyDialog();
+		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // Julia threw -> Errors tab
+	};
+	mSDG->addAction("Positive", [runSDG]() { runSDG("positive"); });
+	mSDG->addAction("Negative", [runSDG]() { runSDG("negative"); });
+	mSDG->addAction("Both",     [runSDG]() { runSDG("both"); });
+
 	// Ctrl+Z undoes the last transplant (restores the original grid kept on the Julia side). The undo
 	// is also offered on the rectangle's context menu (55_lineprops.cpp).
 	QShortcut *scUndoTransplant = new QShortcut(QKeySequence::Undo, win);
