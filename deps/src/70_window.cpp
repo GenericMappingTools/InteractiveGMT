@@ -4813,6 +4813,288 @@ public:
 };
 
 // ============================================================================================
+// Empilhador (Tools) — port of Mirone's src_figs/empilhador.m. Stack a list of 2-D grids, or of
+// MODIS/VIIRS/SeaWiFS L2 scenes, into ONE 3-D netCDF (or VTK, or a multi-band TIFF, or a VRT list).
+// Loaded at RUNTIME via QUiLoader from deps/ui/empilhador.ui (plain Qt widget classes only, same
+// technique as ClipGridDialog above).
+//
+// The list comes either from a list file (1, 2 or 3 columns, see GMT.jl's `empilhador` docstring)
+// typed/browsed into the top box, or from data files picked one by one — the browse button accepts
+// both and the list box always shows what will be stacked, in order.
+//
+// "L2 magic" reveals "Use config file"; checking THAT expands the dialog to the right with the four
+// L2 knobs (SST quality, bitflags, cell size, N cells), pre-filled from ~/.gmt/L2config.txt — exactly
+// Mirone's check_L2_CB / check_L2conf_CB pair, whose expansion was a Pos+[0 0 110 0] there and is a
+// show/hide of l2ExtraWidget here (the .ui's own sizeHint decides the width, nothing is resized by
+// hand). Checking "L2 magic" also ticks "Use sub-region?" for the user, as Mirone does: a scene in
+// sensor coordinates has no region of its own to fall back on.
+//
+// Only Compute runs anything (only-action-button-executes-dialog). The dialog stays open afterwards
+// so a second stack can be built without reopening it.
+// ============================================================================================
+class EmpilhadorDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QLineEdit *namesEdit, *northEdit, *southEdit, *westEdit, *eastEdit, *incEdit, *nCellsEdit;
+	QListWidget *fileList;
+	QCheckBox *l2Chk, *l2ConfChk, *regionChk, *bitflagsChk;
+	QComboBox *qualityCombo;
+	QRadioButton *netcdfRadio, *vtkRadio, *multiBandRadio, *vrtRadio;
+	QWidget *l2Extra;
+	int collapsedW = -1;			// width before "Use config file" ever expanded the dialog
+	QStringList oneByOne;			// files picked one by one (Mirone's OneByOneNameList)
+
+	explicit EmpilhadorDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/empilhador.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("EmpilhadorDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("EmpilhadorDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("Empilhador");
+		QDialog *d = dlg;
+
+		namesEdit    = d->findChild<QLineEdit *>("namesLineEdit");
+		northEdit    = d->findChild<QLineEdit *>("northLineEdit");
+		southEdit    = d->findChild<QLineEdit *>("southLineEdit");
+		westEdit     = d->findChild<QLineEdit *>("westLineEdit");
+		eastEdit     = d->findChild<QLineEdit *>("eastLineEdit");
+		incEdit      = d->findChild<QLineEdit *>("incLineEdit");
+		nCellsEdit   = d->findChild<QLineEdit *>("nCellsLineEdit");
+		fileList     = d->findChild<QListWidget *>("fileListWidget");
+		l2Chk        = d->findChild<QCheckBox *>("l2CheckBox");
+		l2ConfChk    = d->findChild<QCheckBox *>("l2ConfigCheckBox");
+		regionChk    = d->findChild<QCheckBox *>("regionCheckBox");
+		bitflagsChk  = d->findChild<QCheckBox *>("bitflagsCheckBox");
+		qualityCombo = d->findChild<QComboBox *>("qualityComboBox");
+		netcdfRadio    = d->findChild<QRadioButton *>("netcdfRadioButton");
+		vtkRadio       = d->findChild<QRadioButton *>("vtkRadioButton");
+		multiBandRadio = d->findChild<QRadioButton *>("multiBandRadioButton");
+		vrtRadio       = d->findChild<QRadioButton *>("vrtRadioButton");
+		l2Extra        = d->findChild<QWidget *>("l2ExtraWidget");
+		auto *browseBtn  = d->findChild<QToolButton *>("browseButton");
+		auto *computeBtn = d->findChild<QPushButton *>("computeButton");
+
+		// The four output radios are exclusive; the .ui does not group them explicitly, so do it
+		// here (a QButtonGroup, not four hand-written toggle handlers).
+		auto *grp = new QButtonGroup(d);
+		grp->setExclusive(true);
+		if (netcdfRadio)    grp->addButton(netcdfRadio);
+		if (vtkRadio)       grp->addButton(vtkRadio);
+		if (multiBandRadio) grp->addButton(multiBandRadio);
+		if (vrtRadio)       grp->addButton(vrtRadio);
+
+		if (l2ConfChk) l2ConfChk->setVisible(false);		// revealed by "L2 magic", as in Mirone
+		if (l2Extra)   l2Extra->setVisible(false);
+		setRegionEnabled(false);
+		if (nCellsEdit && nCellsEdit->text().isEmpty()) nCellsEdit->setText("1");
+
+		if (regionChk) QObject::connect(regionChk, &QCheckBox::toggled, d, [this](bool on) { setRegionEnabled(on); });
+
+		// "L2 magic": reveal the config-file option and tick the sub-region for the user.
+		if (l2Chk) QObject::connect(l2Chk, &QCheckBox::toggled, d, [this](bool on) {
+			if (l2ConfChk) l2ConfChk->setVisible(on);
+			if (on && regionChk) regionChk->setChecked(true);
+			if (!on && l2ConfChk) l2ConfChk->setChecked(false);
+		});
+
+		// "Use config file": expand to the right and fill the four boxes from ~/.gmt/L2config.txt.
+		// Unchecking must give the ORIGINAL size back. `adjustSize()` alone will not do it: it never
+		// shrinks a window the user (or a previous expansion) has already sized, so the collapsed
+		// width is remembered on the first expansion and restored verbatim here — the .ui's own
+		// geometry, not a computed one.
+		if (l2ConfChk) QObject::connect(l2ConfChk, &QCheckBox::toggled, d, [this, d](bool on) {
+			if (on && collapsedW < 0) collapsedW = d->width();
+			if (l2Extra) l2Extra->setVisible(on);
+			if (on) loadConfig();
+			if (on) {
+				d->adjustSize();			// let the .ui's own sizeHint decide the expanded width
+			} else if (collapsedW > 0) {
+				d->layout()->activate();	// hidden widget is out of the layout: recompute, then shrink
+				d->resize(collapsedW, d->height());
+			}
+		});
+
+		// Bitflags and the SST quality level are alternatives, never both (Mirone check_bitflags_CB).
+		if (bitflagsChk && qualityCombo)
+			QObject::connect(bitflagsChk, &QCheckBox::toggled, d, [this](bool on) { qualityCombo->setEnabled(!on); });
+
+		// Browse: a list file, or the data files themselves. Anything that is not a plain text list
+		// is treated as data and appended to the one-by-one list (Mirone's `bin` branch).
+		if (browseBtn) QObject::connect(browseBtn, &QToolButton::clicked, d, [this, d]() {
+			const QStringList sel = QFileDialog::getOpenFileNames(d, "File with the grids list, or the grids themselves",
+				prefStartDir(), "List files (*.txt *.dat);;Data files (*.nc *.grd *.hdf *.h5 *.tif *.tiff *.L2*);;All files (*.*)");
+			if (sel.isEmpty()) return;
+			rememberStartDir(sel.first());
+			if (sel.size() == 1 && isListFile(sel.first())) {
+				oneByOne.clear();
+				if (namesEdit) namesEdit->setText(sel.first());
+				showListFile(sel.first());
+			} else {
+				if (namesEdit) namesEdit->clear();
+				for (const QString &s : sel) oneByOne << s;
+				if (fileList) {
+					fileList->clear();
+					for (const QString &s : oneByOne) fileList->addItem(QFileInfo(s).fileName());
+					tightenListRows(fileList);
+				}
+			}
+		});
+
+		// Typing a name (or a wildcard request) straight into the box and pressing Enter loads it.
+		if (namesEdit) QObject::connect(namesEdit, &QLineEdit::editingFinished, d, [this]() {
+			const QString t = namesEdit->text().trimmed();
+			if (t.isEmpty() || !QFileInfo::exists(t)) return;	// a wildcard is resolved Julia-side
+			oneByOne.clear();
+			showListFile(t);
+		});
+
+		if (computeBtn) QObject::connect(computeBtn, &QPushButton::clicked, d, [this, d]() { compute(d); });
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	void setRegionEnabled(bool on) {
+		if (northEdit) northEdit->setEnabled(on);
+		if (southEdit) southEdit->setEnabled(on);
+		if (westEdit)  westEdit->setEnabled(on);
+		if (eastEdit)  eastEdit->setEnabled(on);
+	}
+
+	// A list file is a text file whose first non-comment line names something that exists.
+	static bool isListFile(const QString &path) {
+		QFile f(path);
+		if (!f.open(QFile::ReadOnly | QFile::Text)) return false;
+		QTextStream ts(&f);
+		for (int k = 0; k < 20 && !ts.atEnd(); ++k) {
+			const QString ln = ts.readLine().trimmed();
+			if (ln.isEmpty() || ln.startsWith('#') || ln.startsWith('@') || ln.startsWith('>')) continue;
+			const QString first = ln.split(QRegularExpression("\\s+")).value(0);
+			const QFileInfo fi(QFileInfo(path).absolutePath() + "/" + first);
+			return QFileInfo::exists(first) || fi.exists();
+		}
+		return false;
+	}
+
+	// Show the names a list file holds, so the user sees what Compute will chew on.
+	void showListFile(const QString &path) {
+		if (!fileList) return;
+		fileList->clear();
+		QFile f(path);
+		if (!f.open(QFile::ReadOnly | QFile::Text)) return;
+		QTextStream ts(&f);
+		while (!ts.atEnd()) {
+			const QString ln = ts.readLine().trimmed();
+			if (ln.isEmpty() || ln.startsWith('#') || ln.startsWith('@') || ln.startsWith('>')) continue;
+			fileList->addItem(QFileInfo(ln.split(QRegularExpression("\\s+")).value(0)).fileName());
+		}
+		tightenListRows(fileList);
+	}
+
+	// Fill the region and the two interpolation boxes from ~/.gmt/L2config.txt. The parsing lives in
+	// Julia (GMT.jl's _emp_sniff_config is the ONE reader of that file); this only asks for the
+	// values, as "w/e/s/n;inc;ncells;quality".
+	void loadConfig() {
+		if (!g_juliaEval) return;
+		static std::vector<char> buf(1 << 12);
+		const QString cmd = QString("InteractiveGMT._emp_config_str()");
+		int n = g_juliaEval(scn, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		if (n <= 0) return;
+		const QStringList p = QString::fromUtf8(buf.data(), n).trimmed().split(';');
+		if (p.size() >= 1 && p[0].count('/') == 3) {
+			const QStringList r = p[0].split('/');
+			if (westEdit)  westEdit->setText(r[0]);
+			if (eastEdit)  eastEdit->setText(r[1]);
+			if (southEdit) southEdit->setText(r[2]);
+			if (northEdit) northEdit->setText(r[3]);
+		}
+		if (p.size() >= 2 && incEdit)    incEdit->setText(p[1]);
+		if (p.size() >= 3 && nCellsEdit) nCellsEdit->setText(p[2]);
+		if (p.size() >= 4 && qualityCombo) {
+			const int i = qualityCombo->findText(p[3]);
+			if (i >= 0) qualityCombo->setCurrentIndex(i);
+		}
+	}
+
+	// Compute: the ONE action button. Ask for the output name, then hand everything to Julia.
+	void compute(QDialog *d) {
+		if (!g_juliaEmpilhador) { QMessageBox::warning(d, "Empilhador", "Empilhador: callback not registered (rebuild/restart needed?)."); return; }
+		const QString list = namesEdit ? namesEdit->text().trimmed() : QString();
+		if (list.isEmpty() && oneByOne.isEmpty()) {
+			QMessageBox::warning(d, "Empilhador", "No files to work on. Give me a list file or pick the files.");
+			return;
+		}
+
+		const bool isVrt  = vrtRadio && vrtRadio->isChecked();
+		const bool isVtk  = vtkRadio && vtkRadio->isChecked();
+		const bool isTiff = multiBandRadio && multiBandRadio->isChecked();
+		const char *fmt   = isVrt ? "vrt" : isVtk ? "vtk" : isTiff ? "tiff" : "netcdf";
+		const QString filter = isVrt  ? "VRT list (*.vrt)"
+		                     : isVtk  ? "VTK format (*.vtk)"
+		                     : isTiff ? "(Geo)Tiff format (*.tiff *.tif)"
+		                              : "netCDF grid format (*.nc *.grd)";
+		const QString out = QFileDialog::getSaveFileName(d, "Output file", prefStartDir(), filter + ";;All files (*.*)");
+		if (out.isEmpty()) return;
+		rememberStartDir(out);
+
+		const bool l2   = l2Chk && l2Chk->isChecked();
+		const bool conf = l2ConfChk && l2ConfChk->isChecked();
+		if (l2 && isTiff) {
+			QMessageBox::warning(d, "Empilhador", "A multi-band image cannot be made out of L2 MODIS scenes.");
+			return;
+		}
+
+		QString p;
+		p += "out=" + out + "\n";
+		p += QString("fmt=%1\n").arg(fmt);
+		if (!list.isEmpty()) p += "list=" + list + "\n";
+		for (int k = 0; k < oneByOne.size(); ++k) p += QString("file%1=%2\n").arg(k).arg(oneByOne[k]);
+		if (regionChk && regionChk->isChecked()) {
+			bool ok[4];
+			const double w = westEdit->text().toDouble(&ok[0]), e = eastEdit->text().toDouble(&ok[1]);
+			const double s = southEdit->text().toDouble(&ok[2]), n = northEdit->text().toDouble(&ok[3]);
+			if (!ok[0] || !ok[1] || !ok[2] || !ok[3]) {
+				QMessageBox::warning(d, "Empilhador", "One or more of the region limits was not provided.");
+				return;
+			}
+			if (w >= e || s >= n) {
+				QMessageBox::warning(d, "Empilhador", "West must be < East and South < North.");
+				return;
+			}
+			p += QString("region=%1/%2/%3/%4\n").arg(w, 0, 'g', 12).arg(e, 0, 'g', 12).arg(s, 0, 'g', 12).arg(n, 0, 'g', 12);
+		}
+		p += QString("l2=%1\n").arg(l2 ? 1 : 0);
+		p += QString("config=%1\n").arg(conf ? 1 : 0);
+		if (l2) {
+			if (bitflagsChk && bitflagsChk->isChecked()) p += "bitflags=1\n";
+			else if (qualityCombo) p += "quality=" + qualityCombo->currentText() + "\n";
+			if (incEdit && !incEdit->text().trimmed().isEmpty())       p += "inc=" + incEdit->text().trimmed() + "\n";
+			if (nCellsEdit && !nCellsEdit->text().trimmed().isEmpty()) p += "ncells=" + nCellsEdit->text().trimmed() + "\n";
+		}
+
+		showBusyDialog("Stacking…");
+		const int ok = g_juliaEmpilhador(scn, p.toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) {
+			QMessageBox::warning(d, "Empilhador", "Stacking failed — see this window's Errors console for details.");
+			return;
+		}
+		// Written. Offer to load it, through the SAME file-open path as a drop or File > Open — a
+		// stacked cube is just a file, and there is only one way into this viewer.
+		const auto r = QMessageBox::question(d, "Empilhador", "Done — wrote\n\n" + out + "\n\nOpen it now?",
+		                                     QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+		if (r == QMessageBox::Yes) juliaOpenFile(scn, out.toUtf8().constData());
+	}
+};
+
+// ============================================================================================
 // Contours (Grid Tools) — port of Mirone's src_figs/contouring.m. Build a list of elevations (round
 // charting intervals, a start+step series, or one-off values) and Compute traces the window's grid at
 // every one of them, drawing each level as its own line overlay under a single "Contours" Scene
@@ -10153,6 +10435,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		TilesPicker *dlg = new TilesPicker(win, s, world);
 		dlg->setAttribute(Qt::WA_DeleteOnClose);
 		dlg->show();
+	});
+	// Empilhador (port of Mirone's empilhador.m): stack a list of grids, or of MODIS/VIIRS/SeaWiFS L2
+	// scenes, into one 3-D netCDF/VTK/multi-band TIFF/VRT. Non-modal, stays open for a second stack.
+	mTools->addAction("Empilhador", [win, s]() {
+		warmupTool("empilhador");
+		EmpilhadorDialog *e = new EmpilhadorDialog(win, s);
+		if (e->dlg) e->dlg->show();
 	});
 
 	// --- GMT menu: helper windows to drive GMT modules (TODO: populate with module tools) ----

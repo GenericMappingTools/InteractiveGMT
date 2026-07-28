@@ -394,6 +394,19 @@ static JuliaImportGmtFn g_juliaImportGmt = nullptr;
 typedef int (*JuliaClipGridFn)(void *scene, const char *params);
 static JuliaClipGridFn g_juliaClipGrid = nullptr;
 
+// Empilhador (Tools), port of Mirone's src_figs/empilhador.m. The dialog (EmpilhadorDialog,
+// 70_window.cpp, loads deps/ui/empilhador.ui) hands a newline-separated "key=value" block to Julia
+// (_on_empilhador, src/empilhador.jl), which calls GMT.jl's `empilhador`:
+//   list=<the list file, or a wildcard request>      | file<i>=<path>   (files picked one by one)
+//   out=<output file>            fmt=netcdf|vtk|tiff|vrt
+//   region=<w/e/s/n>             (absent when "Use sub-region?" is off)
+//   l2=0|1   config=0|1   quality=<-2..2>   bitflags=0|1   inc=<cell size>   ncells=<n>
+// Returns 1 on success, 0 on failure -- same yes/no contract as g_juliaClipGrid, and for the same
+// reason: the dialog has to report it, the parent's Errors console may be on another window.
+// nullptr to detach.
+typedef int (*JuliaEmpilhadorFn)(void *scene, const char *params);
+static JuliaEmpilhadorFn g_juliaEmpilhador = nullptr;
+
 // Grid calculator (Grid Tools), port of Mirone's src_figs/grid_calculator.m. The dialog
 // (GridCalculatorDialog, 70_window.cpp, loads deps/ui/grid_calculator.ui) hands a newline-separated
 // "key=value" block to Julia (_on_gridcalc, src/gridcalc.jl):

@@ -78,6 +78,7 @@ include("grdseamount.jl") # GMT menu > grdseamount: synthetic seamounts from a p
 include("manual.jl")     # the green "?" disk on every module dialog -> that module's GMTjl_doc page
 include("mgd77tracks.jl") # Geophysics > Magnetics > Import *.gmt/*.nc file(s): cruise tracks (port of mirone.m GeophysicsImportGmtFile_CB)
 include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid clipping (port of Mirone ml_clip.m)
+include("empilhador.jl") # Tools > Empilhador: stack grids/L2 scenes into a 3-D file (port of Mirone empilhador.m)
 include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-geometry grids (port of Mirone grid_calculator.m)
 include("contours.jl")   # Grid Tools > Contours: GDAL-traced contour lines (port of Mirone contouring.m)
 include("sdg.jl")        # Grid Tools > SDG: 2nd derivative along the gradient (port of Mirone GridToolsSDG_CB)

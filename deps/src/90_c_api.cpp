@@ -1446,6 +1446,13 @@ GMTVTK_API void gmtvtk_set_clipgrid_callback(JuliaClipGridFn fn) {
 	g_juliaClipGrid = fn;
 }
 
+// Register the Empilhador Compute callback (Tools, port of Mirone src_figs/empilhador.m). fn(scene,
+// params) with params = the "list=/out=/fmt=/region=/l2=..." block described in 30_app.cpp stacks the
+// listed files into one 3-D file. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_empilhador_callback(JuliaEmpilhadorFn fn) {
+	g_juliaEmpilhador = fn;
+}
+
 // Register the Grid calculator Compute callback (Grid Tools, port of Mirone src_figs/grid_calculator.m).
 // fn(scene, params) with params = the "expr=/base=/file<i>=" block described in 30_app.cpp evaluates
 // the expression over the named grids and adds the result to `scene`. Returns 1/0. nullptr to detach.

@@ -87,6 +87,7 @@ function _ensure_callbacks()
 	                    ("import-gmt",  _register_import_gmt),
 	                    ("gmtedit",     _register_gmtedit),
 	                    ("clipgrid",    _register_clipgrid),
+	                    ("empilhador",  _register_empilhador),
 	                    ("gridcalc",    _register_gridcalc),
 	                    ("grdtrend",    _register_grdtrend),
 	                    ("grdlandmask", _register_grdlandmask),
