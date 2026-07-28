@@ -924,7 +924,7 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 		o += "surf_name="; o += s->surfName; o += ';';
 		for (size_t i = 0; i < s->extras.size(); ++i) {
 			o += "extra" + std::to_string((int)i) + '=';
-			o += (s->extras[i].isImage ? "image:" : "grid:");
+			o += (s->extras[i].isImage ? "image:" : s->extras[i].isMesh ? "mesh:" : "grid:");
 			o += s->extras[i].name; o += ';';
 		}
 		// Per-polygon introspection (drives the fault-trace icon/menu regression tests): the icon kind a
@@ -3385,18 +3385,19 @@ GMTVTK_API void gmtvtk_free_rgb(unsigned char *buf) { delete[] buf; }
 // instead of grids' own edge-to-edge fill=1.0 (which deliberately pushes labels off-screen — see
 // fitSnapView's own comment; that is correct, EXISTING behaviour for grids, not something to
 // change). Passing the wrong one for an image wiped its axis labels entirely — found live 2026-07-21.
-GMTVTK_API void gmtvtk_reframe_h(void *handle, double x0, double x1, double y0, double y1, int keepMargin) {
+// Z-EXPLICIT form. Same body; the caller supplies the Z range instead of it being resolved from the
+// active grid. A MESH layer (a VTK .vtp surface, a GMTfv solid) has no grid data layer at all, so
+// activeGridZRange cannot speak for it and would leave the box wearing the previous layer's Z —
+// exactly the mistake SACRED_LAW.md's derived-variable axes law, Z half, is about. gmtvtk_reframe_h
+// below is this function with the grid-resolved Z, NOT a second implementation.
+GMTVTK_API void gmtvtk_reframe_z_h(void *handle, double x0, double x1, double y0, double y1,
+                                   double z0, double z1, int keepMargin) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !s->ren || !s->widget || !s->axes) return;
 	vtkRenderer *ren = s->ren;
 	vtkCamera *cam = ren->GetActiveCamera();
 
-	// Z comes from the ACTIVE grid (activeGridZRange), NOT s->zmin/zmax: the caller of this function
-	// is always a DERIVED variable, which carries its own units, so the base surface's range would
-	// box and label it wrong (SACRED_LAW.md derived-variable axes law, Z half). Falls back to the
-	// base range when no grid layer resolves (image / cloud / solid window).
-	double zlo = s->zmin, zhi = s->zmax;
-	activeGridZRange(s, zlo, zhi);
+	const double zlo = z0, zhi = z1;
 	double b[6] = { x0 * s->xfac, x1 * s->xfac, y0, y1,
 	                zlo * s->zfac * s->ve, zhi * s->zfac * s->ve };
 	if (b[5] <= b[4]) b[5] = b[4] + 1.0;               // degenerate-Z guard, same as applyVE's flatZ case
@@ -3445,6 +3446,115 @@ GMTVTK_API void gmtvtk_reframe_h(void *handle, double x0, double x1, double y0, 
 	ren->ResetCameraClippingRange();
 	rebuildAxisLabels(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Z comes from the ACTIVE grid (activeGridZRange), NOT s->zmin/zmax: the caller of this form is
+// always a DERIVED grid variable, which carries its own units, so the base surface's range would box
+// and label it wrong (SACRED_LAW.md derived-variable axes law, Z half). Falls back to the base range
+// when no grid layer resolves (image / cloud / solid window).
+GMTVTK_API void gmtvtk_reframe_h(void *handle, double x0, double x1, double y0, double y1, int keepMargin) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	double zlo = s->zmin, zhi = s->zmax;
+	activeGridZRange(s, zlo, zhi);
+	gmtvtk_reframe_z_h(handle, x0, x1, y0, y1, zlo, zhi, keepMargin);
+}
+
+// A NEWLY LOADED element has arrived in this window: make it the thing on display. ONE function for
+// the whole "a new file/variable landed" transition, called by every load path so none of them can
+// drift (SACRED_LAW.md derived-variable display law + group-uncheck law):
+//
+//   * every OTHER data layer (base surface, grids, images, meshes) is hidden -> its Scene Objects
+//     group and every child row re-read the live actor visibility and show unchecked
+//   * `name` is made visible and checked
+//   * the axes cube + camera re-frame onto the NEW element's OWN bbox, X, Y *and* Z -- a new
+//     quantity in its own units never wears the previous layer's frame
+//   * Scene Objects is unfolded so the new row is actually on screen, never hidden in a closed group
+//
+// `hasBbox` == 0 skips only the re-frame (caller has no meaningful extent, e.g. a bare table).
+// `keepMargin` follows gmtvtk_reframe_h's convention: 1 for images (keeps tick labels on screen),
+// 0 for grids (edge-to-edge, the existing grid convention).
+GMTVTK_API void gmtvtk_show_new_element_h(void *handle, const char *name,
+                                          double x0, double x1, double y0, double y1,
+                                          double z0, double z1, int hasBbox, int keepMargin) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	const std::string keep = name ? name : "";
+	for (auto &ex : s->extras) {
+		const bool isKeep = (ex.name == keep);
+		if (ex.actor) ex.actor->SetVisibility(isKeep ? 1 : 0);
+		if (ex.drape) ex.drape->SetVisibility(isKeep ? 1 : 0);
+	}
+	if (surfProp(s) && s->surfName != keep) {         // the window's own base layer is a layer too
+		surfSetVisibility(s, 0);
+		if (s->drape) s->drape->SetVisibility(0);
+	}
+	// A MESH is a 3-D body: seen through the flat-2D top-down orthographic camera a cube is just a
+	// square. Switch the window to the 3-D view it would have opened in on its own, through the ONE
+	// 2D<->3D function (sceneSetFlat2D) — never inlined camera maths. Done BEFORE the re-frame, whose
+	// camera fit must run against the view mode the element ends up being shown in.
+	bool wantsPerspective = s->fvSolid && s->surfName == keep;
+	for (auto &ex : s->extras) if (ex.name == keep && ex.isMesh) wantsPerspective = true;
+	if (wantsPerspective && s->flat2d) sceneSetFlat2D(s, false);
+	if (hasBbox) gmtvtk_reframe_z_h(handle, x0, x1, y0, y1, z0, z1, keepMargin);
+	refreshGridColorbar(s);          // bar + hover readout follow whatever is now the visible layer
+	rebuildSceneObjects(s);          // every row's checked state re-read from the live actors
+	unfoldSceneObjects(s);           // ... and the panel actually open, so the new row is visible
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Add a POLYGON MESH (a VTK .vtp/.vtu surface, a GMTfv solid) into an EXISTING window as its own
+// Scene Objects layer -- the mesh counterpart of gmtvtk_add_surface_h. Built with the SAME makeFvMesh
+// the fv viewer uses, hung in the window's own scaled space (xfac, 1, zfac*ve) like every other extra
+// so it tracks VE, and given a stacking rank off the same unified pile. Starts HIDDEN, exactly like a
+// dropped grid does; the caller's gmtvtk_show_new_element_h is what puts it on screen.
+// Returns 1 / 0.
+GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const int *sides, int nfaces,
+                                 const int *indices, const double *cz, const double *crgb, int ncolor,
+                                 const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xyz || nv <= 0 || !sides || !indices || nfaces <= 0) return 0;
+	double zmin, zmax;
+	auto pd = makeFvMesh(xyz, nv, sides, nfaces, indices, nullptr, nullptr, zmin, zmax);
+
+	vtkSmartPointer<vtkScalarsToColors> lut;
+	if (cz && crgb && ncolor > 0) {
+		vtkNew<vtkColorTransferFunction> ctf;
+		for (int i = 0; i < ncolor; ++i) ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+		lut = ctf;
+	}
+	else {
+		vtkNew<vtkLookupTable> t;
+		t->SetHueRange(0.667, 0.0); t->SetNumberOfTableValues(256); t->SetRampToLinear();
+		t->SetTableRange(zmin, zmax); t->Build(); lut = t;
+	}
+	vtkNew<vtkPolyDataNormals> fn;                 // faceted normals: sharp solid edges, like view_fv
+	fn->SetInputData(pd);
+	fn->SplittingOn(); fn->SetFeatureAngle(30.0); fn->ConsistencyOn();
+	vtkNew<vtkPolyDataMapper> map;
+	map->SetInputConnection(fn->GetOutputPort());
+	map->SetLookupTable(lut); map->SetScalarRange(zmin, zmax);
+	map->ScalarVisibilityOn();
+
+	ExtraObj ex;
+	ex.isMesh = true;
+	ex.actor = vtkSmartPointer<vtkActor>::New();
+	ex.actor->SetMapper(map);
+	ex.actor->GetProperty()->SetInterpolationToPBR();
+	ex.actor->GetProperty()->SetMetallic(0.0);
+	ex.actor->GetProperty()->SetRoughness(0.45);
+	ex.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	ex.actor->SetVisibility(0);
+	s->ren->AddActor(ex.actor);
+	ex.name = (name && name[0]) ? name : ("Mesh " + std::to_string((int)s->extras.size() + 1));
+	ex.gstack = s->vecSeq++;                       // unified pile: newest layer lands on top
+	ex.tag    = ++s->gridTagSeq;
+	s->extras.push_back(ex);
+	applyGridStacking(s);
+	rebuildSceneObjects(s);
+	s->ren->ResetCameraClippingRange();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
 }
 
 // Open an EMPTY viewer window: a FULL-chrome launcher (menus + toolbar + 2-D map) that simply has
@@ -4081,6 +4191,100 @@ GMTVTK_API int gmtvtk_aqua_set_var_label_h(void *handle, const char *label) {
 	if (!sceneAlive(s)) return 0;
 	s->aquaVarLabel = label ? label : "";
 	rebuildSceneObjects(s);
+	return 1;
+}
+
+// Open a VTK-format file (.vtp/.vti/.vtr/.vts/.vtu/.vtm/.vtk/.vtkhdf and the .pvt* parallel forms)
+// INTO this window. Neither GMT nor GDAL can parse these, so Julia's `_open_spec_into` catches the
+// extension and routes it here instead of `gmtread` (src/drop.jl); the reading and the classification
+// happen in 87_vtkio.cpp, and the result is handed to the EXACT builders every other data source
+// already uses (SACRED_LAW.md -- one display path per kind of object, never a VTK-only one):
+//
+//   grid-shaped structured data -> gmtvtk_promote_surface_h / gmtvtk_add_surface_h
+//   polygon cells               -> gmtvtk_promote_fv_h / gmtvtk_add_mesh_h
+//   line cells / points only    -> gmtvtk_add_overlay_h (over a blank frame if the window is empty)
+//
+// EVERY kind lands in THIS window -- a VTK file never spawns a second one. Whatever it turned out to
+// hold is then adopted through gmtvtk_show_new_element_h: shown, everything previously displayed
+// hidden/unchecked, axes + camera re-framed onto the new element's own X/Y/Z extent.
+//
+// `promote` != 0 means the receiving window is a bare launcher and may be promoted in place.
+// Returns 1 (loaded), 0 (failed -> `errbuf` says why).
+GMTVTK_API int gmtvtk_open_vtk_h(void *handle, const char *path, const char *name, int promote,
+                                 char *errbuf, int errcap) {
+	auto fail = [errbuf, errcap](const std::string &msg) {
+		if (errbuf && errcap > 0) {
+			const int n = std::min((int)msg.size(), errcap - 1);
+			std::memcpy(errbuf, msg.c_str(), n);
+			errbuf[n] = '\0';
+		}
+		return 0;
+	};
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s))     return fail("window is closed");
+	if (!path || !path[0])  return fail("no file path");
+
+	VtkIoLoad L;
+	std::string err;
+	if (!vtkioLoad(path, L, err)) return fail(err.empty() ? "could not read the VTK file" : err);
+	const char *nm = (name && name[0]) ? name : "";
+	if (s->win) s->win->statusBar()->showMessage(QString::fromStdString("VTK: " + L.detail), 5000);
+	// File > Recent Files is stamped HERE, not by the Julia caller: only now is it known whether the
+	// file held a grid (category 0) or a mesh / vector dataset (category 2).
+	gmtvtk_add_recent(QFileInfo(QString::fromUtf8(path)).absoluteFilePath().toUtf8().constData(),
+	                  L.kind == VtkIoLoad::Grid ? 0 : 2);
+
+	if (L.kind == VtkIoLoad::Grid) {
+		const int ok = promote
+			? gmtvtk_promote_surface_h(handle, L.z.data(), L.nx, L.ny, L.x0, L.x1, L.y0, L.y1, 0,
+			                           nullptr, nullptr, 0, nullptr, 0, 0, 0, 0, nm)
+			: gmtvtk_add_surface_h(handle, L.z.data(), L.nx, L.ny, L.x0, L.x1, L.y0, L.y1, 0,
+			                       nullptr, nullptr, 0, nullptr, 0, 0, 0, 0, nm);
+		if (!ok) return fail("the grid could not be added to the window");
+		double zlo = L.z.empty() ? 0.0 : (double)L.z[0], zhi = zlo;
+		for (float v : L.z) { if (v < zlo) zlo = v; if (v > zhi) zhi = v; }
+		gmtvtk_show_new_element_h(handle, nm, L.x0, L.x1, L.y0, L.y1, zlo, zhi, 1, 0);
+		return 1;
+	}
+
+	if (L.kind == VtkIoLoad::Mesh) {
+		const int nv     = (int)(L.xyz.size() / 3);
+		const int nfaces = (int)L.sides.size();
+		// A mesh loads IN PLACE like everything else -- as its own Scene Objects layer of THIS window,
+		// never a second window. An empty launcher is promoted (the mesh becomes the window's base
+		// surface); a window already holding data gets the mesh as an extra layer.
+		const int ok = promote
+			? gmtvtk_promote_fv_h(handle, L.xyz.data(), nv, L.sides.data(), nfaces, L.indices.data(),
+			                      nullptr, nullptr, nullptr, nullptr, 0,
+			                      L.x0, L.x1, L.y0, L.y1, L.z0, L.z1, 0, 1.0, 0, nm)
+			: gmtvtk_add_mesh_h(handle, L.xyz.data(), nv, L.sides.data(), nfaces, L.indices.data(),
+			                    nullptr, nullptr, 0, nm);
+		if (!ok) return fail("the mesh could not be displayed");
+		gmtvtk_show_new_element_h(handle, nm, L.x0, L.x1, L.y0, L.y1, L.z0, L.z1, 1, 0);
+		return 1;
+	}
+
+	// Lines / points are OVERLAYS, and an overlay needs a frame to live in. An empty launcher gets the
+	// same blank 2x2 hidden base surface the SHAPENC vector path already promotes it with (drop.jl's
+	// _add_shapenc_bounded) -- one way to frame vector data, not a second.
+	if (promote) {
+		const float blank[4] = { 0.f, 0.f, 0.f, 0.f };
+		const double px = (L.x1 - L.x0) * 0.05, py = (L.y1 - L.y0) * 0.05;
+		gmtvtk_promote_surface_h(handle, blank, 2, 2, L.x0 - px, L.x1 + px, L.y0 - py, L.y1 + py, 0,
+		                         nullptr, nullptr, 0, nullptr, 0, 0, 0, 1, "");
+		gmtvtk_hide_surface(handle);
+	}
+	const int npts = (int)(L.xyz.size() / 3);
+	const int mode = (L.kind == VtkIoLoad::Lines) ? 1 : 0;
+	const int nseg = (L.kind == VtkIoLoad::Lines) ? (int)L.segoff.size() - 1 : 0;
+	const int ok = gmtvtk_add_overlay_h(handle, L.xyz.data(), npts,
+	                                    mode ? L.segoff.data() : nullptr, nseg,
+	                                    mode, 0.9, 0.35, 0.1, 0.0, 0.0, nm);
+	if (!ok) return fail("the overlay could not be added to the window");
+	// An overlay is drawn ON TOP of the rasters rather than instead of them, but the rule is the same:
+	// the file that just arrived is what the window shows, framed on ITS extent. The overlay itself is
+	// not in s->extras, so passing its name simply hides every raster layer.
+	gmtvtk_show_new_element_h(handle, nm, L.x0, L.x1, L.y0, L.y1, L.z0, L.z1, 1, 0);
 	return 1;
 }
 

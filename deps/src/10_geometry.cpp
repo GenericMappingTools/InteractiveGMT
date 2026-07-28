@@ -208,6 +208,12 @@ struct ExtraObj {
 	vtkSmartPointer<vtkTexture> tex;         // dropped-image texture (reused to rebuild flat plane / drape)
 	std::string name;                        // label shown in the Scene Objects panel (file name)
 	bool   isImage = false;                  // dropped IMAGE (flat plane / drapeable) vs grid surface
+	bool   isMesh  = false;                  // a POLYGON MESH layer (a VTK .vtp/.vtu surface, a GMTfv
+	                                         // solid) added into this window as an extra. Carries no
+	                                         // gridZ and no LUT, so it never resolves as the active
+	                                         // grid and its Scene Objects group has no Color Bar row —
+	                                         // otherwise an ordinary non-image extra in every respect
+	                                         // (own checkbox, own stacking rank, own axes on adoption).
 	bool   draped  = false;                  // image currently draped on the host grid (else a flat plane)
 	double zpos    = 0.0;                    // flat-plane TRUE z — sits above/below the relief, NEVER at z=0
 	double bx0 = 0, bx1 = 0, by0 = 0, by1 = 0;  // image footprint (true coords): tcoords + grid-overlap test
@@ -1540,7 +1546,20 @@ static inline void axesSetBounds(Scene *s, const double bIn[6]) {
 	if (!s->axes) return;
 	double b[6];
 	for (int i = 0; i < 6; ++i) b[i] = bIn[i];
-	if (b[5] <= b[4]) b[5] = b[4] + 1.0;
+	if (b[5] <= b[4]) b[5] = b[4] + 1.0;         // flat-Z (flat-2D collapses VE to 0) — unchanged rule
+	// X or Y degenerate too: any flat SHEET standing on edge has one (a plane of quads at constant x,
+	// a single-row grid). vtkAxisActor turns a zero span into an invalid tick count ("Number of labels
+	// -2147483647"), so give that axis a span proportionate to the ones that do have extent. Guarded
+	// HERE, at the one axes-cube box setter every caller goes through (applyVE, rebuildAxisLabels,
+	// gmtvtk_reframe_h), so it holds for every data source at once — SACRED_LAW.md's own lesson: fix
+	// the shared source a bounds value has many consumers of, never each call site.
+	for (int k = 0; k < 4; k += 2) {
+		if (b[k + 1] > b[k]) continue;
+		double pad = 0.0;
+		for (int j = 0; j < 6; j += 2) pad = std::max(pad, b[j + 1] - b[j]);
+		pad = (pad > 0.0) ? pad * 0.5 : 1.0;
+		b[k] -= pad; b[k + 1] += pad;
+	}
 	double cur[6]; s->axes->GetBounds(cur);
 	for (int i = 0; i < 6; ++i)
 		if (std::abs(cur[i] - b[i]) > 1e-9 * (1.0 + std::abs(b[i]))) { s->axes->SetBounds(b); return; }

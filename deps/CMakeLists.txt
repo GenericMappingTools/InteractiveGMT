@@ -25,6 +25,13 @@ find_package(TBB REQUIRED CONFIG)
 find_package(VTK REQUIRED COMPONENTS
   CommonCore CommonDataModel CommonColor CommonTransforms
   FiltersSources FiltersGeneral
+  # 87_vtkio.cpp reads/writes VTK's OWN formats natively — nothing else in the project links a VTK
+  # IO module (all grid/image I/O goes through GMT.jl + GDAL on the Julia side). IOXML covers the
+  # XML family (.vti/.vtr/.vts/.vtp/.vtu + the .pvt* parallel forms + .vtm), IOLegacy the old .vtk,
+  # IOHDF the modern .vtkhdf. FiltersGeometry gives vtkDataSetSurfaceFilter, which is how a
+  # structured/unstructured dataset becomes the polydata every iGMT display path already speaks.
+  IOXML IOXMLParser IOLegacy IOHDF
+  FiltersGeometry FiltersCore
   RenderingCore RenderingOpenGL2 RenderingAnnotation RenderingFreeType RenderingLOD
   RenderingContext2D RenderingContextOpenGL2
   ChartsCore ViewsContext2D

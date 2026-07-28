@@ -45,6 +45,8 @@
 #include <QIntValidator>
 #include <algorithm>
 #include <string>
+#include <cstring>
+#include <cmath>
 #include <QSlider>
 #include <QScrollBar>
 #include <QStyleFactory>
@@ -151,6 +153,32 @@
 #include <vtkNamedColors.h>
 #include <vtkSmartPointer.h>
 #include <vtkNew.h>
+
+// --- VTK's own file formats (87_vtkio.cpp) -----------------------------------
+// The generic readers sniff the concrete dataset type themselves, so ONE reader covers the whole
+// XML family and one the whole legacy family — no per-extension reader table to keep in sync.
+#include <vtkDataObject.h>
+#include <vtkDataSet.h>
+#include <vtkImageData.h>
+#include <vtkRectilinearGrid.h>
+#include <vtkStructuredGrid.h>
+#include <vtkUnstructuredGrid.h>
+#include <vtkMultiBlockDataSet.h>
+#include <vtkCompositeDataIterator.h>
+#include <vtkDataArray.h>
+#include <vtkDoubleArray.h>
+#include <vtkXMLGenericDataObjectReader.h>
+#include <vtkGenericDataObjectReader.h>
+#include <vtkXMLMultiBlockDataReader.h>
+#include <vtkHDFReader.h>
+#include <vtkXMLImageDataWriter.h>
+#include <vtkXMLPolyDataWriter.h>
+#include <vtkXMLStructuredGridWriter.h>
+#include <vtkDataSetWriter.h>
+#include <vtkPolyDataWriter.h>
+#include <vtkDataSetSurfaceFilter.h>
+#include <vtkCellArrayIterator.h>
+#include <vtkTriangleFilter.h>
 
 // --- gizmo (Fledermaus-style scale/tilt/azimuth handle) ----------------------
 #include <vtkConeSource.h>

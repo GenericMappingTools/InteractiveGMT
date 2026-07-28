@@ -23,6 +23,7 @@
 //   70_window      buildAndShow — the Qt main window
 //   80_rubberband  Ctrl+right-drag point-cloud selection
 //   85_polygon     toolbar polygon draw/edit tool (3-D vertices draped on the relief)
+//   87_vtkio       VTK's own file formats (.vtp/.vti/.vtu/... ) read + written natively by VTK
 //   90_c_api       extern "C" gmtvtk_ *exports (the host C API) + demo main()
 #include "00_includes.cpp"
 #include "10_geometry.cpp"
@@ -39,4 +40,5 @@
 #include "70_window.cpp"
 #include "80_rubberband.cpp"
 #include "85_polygon.cpp"
+#include "87_vtkio.cpp"
 #include "90_c_api.cpp"

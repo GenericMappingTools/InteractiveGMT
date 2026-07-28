@@ -599,24 +599,32 @@ static JuliaImgStretchFn g_juliaImgStretch = nullptr;
 // the QFileDialog filter, and the canonical extension (used to seed/auto-suffix the file name).
 struct SaveFmt { const char *label; const char *code; const char *filter; const char *ext; };
 // Grids: netCDF + Surfer 6 go through GMT.gmtwrite; the rest through GMT.gdalwrite (driver by ext).
+// The three `vtk_*` codes are the exception — GMT and GDAL cannot write VTK, so saveObjectDialog
+// keeps those in-process and hands them to vtkioSaveObject (87_vtkio.cpp) instead of Julia.
 static const SaveFmt kGridFmts[] = {
-	{ "netCDF grid",   "nc",     "netCDF grid (*.nc *.grd)", ".nc"  },
-	{ "GeoTIFF",       "gtiff",  "GeoTIFF (*.tif *.tiff)",   ".tif" },
-	{ "JPEG2000",      "jp2",    "JPEG2000 (*.jp2)",         ".jp2" },
-	{ "Erdas Imagine", "erdas",  "Erdas Imagine (*.img)",    ".img" },
-	{ "Surfer 6 grid", "surfer", "Surfer 6 grid (*.grd)",    ".grd" },
-	{ "ENVI",          "envi",   "ENVI (*.hdr)",             ".hdr" },
+	{ "netCDF grid",       "nc",         "netCDF grid (*.nc *.grd)",      ".nc"  },
+	{ "GeoTIFF",           "gtiff",      "GeoTIFF (*.tif *.tiff)",        ".tif" },
+	{ "JPEG2000",          "jp2",        "JPEG2000 (*.jp2)",              ".jp2" },
+	{ "Erdas Imagine",     "erdas",      "Erdas Imagine (*.img)",         ".img" },
+	{ "Surfer 6 grid",     "surfer",     "Surfer 6 grid (*.grd)",         ".grd" },
+	{ "ENVI",              "envi",       "ENVI (*.hdr)",                  ".hdr" },
+	{ "VTK XML ImageData", "vtk_vti",    "VTK XML ImageData (*.vti)",     ".vti" },
+	{ "VTK XML PolyData",  "vtk_vtp",    "VTK XML PolyData (*.vtp)",      ".vtp" },
+	{ "VTK legacy",        "vtk_legacy", "VTK legacy (*.vtk)",            ".vtk" },
 };
-// Images always go through GMT.gdalwrite (driver by extension).
+// Images always go through GMT.gdalwrite (driver by extension) — except the VTK entries, which
+// write the layer's own texture raster as a vtkImageData (same in-process path as the grid case).
 static const SaveFmt kImageFmts[] = {
-	{ "GeoTIFF",       "gtiff", "GeoTIFF (*.tif *.tiff)", ".tif" },
-	{ "JPEG2000",      "jp2",   "JPEG2000 (*.jp2)",       ".jp2" },
-	{ "Erdas Imagine", "erdas", "Erdas Imagine (*.img)",  ".img" },
-	{ "ENVI",          "envi",  "ENVI (*.hdr)",           ".hdr" },
-	{ "JPEG",          "jpg",   "JPEG (*.jpg *.jpeg)",    ".jpg" },
-	{ "PNG",           "png",   "PNG (*.png)",            ".png" },
-	{ "TIFF",          "tif",   "TIFF (*.tif)",           ".tif" },
-	{ "BMP",           "bmp",   "BMP (*.bmp)",            ".bmp" },
+	{ "GeoTIFF",           "gtiff",      "GeoTIFF (*.tif *.tiff)",        ".tif" },
+	{ "JPEG2000",          "jp2",        "JPEG2000 (*.jp2)",              ".jp2" },
+	{ "Erdas Imagine",     "erdas",      "Erdas Imagine (*.img)",         ".img" },
+	{ "ENVI",              "envi",       "ENVI (*.hdr)",                  ".hdr" },
+	{ "JPEG",              "jpg",        "JPEG (*.jpg *.jpeg)",           ".jpg" },
+	{ "PNG",               "png",        "PNG (*.png)",                   ".png" },
+	{ "TIFF",              "tif",        "TIFF (*.tif)",                  ".tif" },
+	{ "BMP",               "bmp",        "BMP (*.bmp)",                   ".bmp" },
+	{ "VTK XML ImageData", "vtk_vti",    "VTK XML ImageData (*.vti)",     ".vti" },
+	{ "VTK legacy",        "vtk_legacy", "VTK legacy (*.vtk)",            ".vtk" },
 };
 
 // The "little window" the user asked for: pick an output format from a combo, then a file (Browse
@@ -688,17 +696,36 @@ struct SaveFormatDialog : QDialog {
 	}
 };
 
+// VTK's own formats, written in-process by 87_vtkio.cpp (GMT/GDAL cannot write them, so these never
+// reach g_juliaSave). Forward-declared: 87_vtkio.cpp is #included after this fragment.
+static bool vtkioIsVtkSaveCode(const QString &code);
+static bool vtkioSaveObject(Scene *s, const std::string &name, const std::string &code,
+                            const std::string &path, std::string &err);
+
 // Open the Save dialog for a scene object and hand the choice to Julia (g_juliaSave) as
 // "<kind>;<fmt>;<path>;<name>". kind = "grid" | "image"; name identifies which object (empty for the
 // File-menu "save the window's grid/image"). nullptr callback -> a status-bar notice.
 static void saveObjectDialog(Scene *s, const char *kind, const QString &name) {
+	const bool isGrid = (QString(kind) == QLatin1String("grid"));
+	// The VTK entries are written HERE, so the dialog must still open when Julia's save callback is
+	// missing; only the GMT/GDAL formats need it. The check therefore moves below the format choice.
+	SaveFormatDialog dlg(s ? s->win : nullptr, isGrid, name);
+	if (dlg.exec() != QDialog::Accepted || dlg.path.isEmpty()) return;
+	if (vtkioIsVtkSaveCode(dlg.code)) {
+		std::string err;
+		if (vtkioSaveObject(s, name.toStdString(), dlg.code.toStdString(), dlg.path.toStdString(), err)) {
+			if (s && s->win) s->win->statusBar()->showMessage("Saved " + dlg.path, 4000);
+		}
+		else if (s && s->win) {
+			QMessageBox::warning(s->win, "Save failed",
+			                     "Could not write " + dlg.path + "\n\n" + QString::fromStdString(err));
+		}
+		return;
+	}
 	if (!g_juliaSave) {
 		if (s && s->win) s->win->statusBar()->showMessage("Save: callback not registered", 3000);
 		return;
 	}
-	const bool isGrid = (QString(kind) == QLatin1String("grid"));
-	SaveFormatDialog dlg(s ? s->win : nullptr, isGrid, name);
-	if (dlg.exec() != QDialog::Accepted || dlg.path.isEmpty()) return;
 	const QString req = QString("%1;%2;%3;%4").arg(QString(kind)).arg(dlg.code).arg(dlg.path).arg(name);
 	g_juliaSave(s, req.toUtf8().constData());
 }

@@ -127,15 +127,86 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 		_drop_into(scene, D, name; promote=empty, source=String(spec))
 		return
 	end
+	# VTK's OWN formats (.vtp/.vti/.vtr/.vts/.vtu/.vtm/.vtk/.vtkhdf + the .pvt* parallel forms) are the
+	# one family neither GMT nor GDAL can parse -- `gmtread` just errors on them. VTK reads them
+	# natively, so they are caught HERE and handed to the DLL (gmtvtk_open_vtk_h -> 87_vtkio.cpp),
+	# which classifies the dataset and feeds it to the SAME grid / mesh / overlay builders every other
+	# source uses. `.hdf` / `.h5` are deliberately NOT in this list: plain HDF5 rasters stay on GDAL.
+	# (File > Recent Files is stamped C++-side, where the dataset kind the file turned out to hold --
+	# grid vs mesh/vector -- is actually known.)
+	if _is_vtk_file(String(spec))
+		_open_vtk_into(scene, String(spec), name, empty)
+		return
+	end
 	n_layers, zmin, zmax = _cube_probe(spec)
 	if n_layers > 1
 		_on_3d_cube_dropped(scene, String(spec), name, empty, n_layers, zmin, zmax; prescan=prescan)
 	else
 		data = GMT.gmtread(String(spec))
 		isempty(recent) || _record_recent(recent, data)
-		_drop_into(scene, data, name; promote=empty, source=String(spec))
+		ok = _drop_into(scene, data, name; promote=empty, source=String(spec))
+		ok === false || _adopt_new_element(scene, name, data)   # not all _drop_into methods return Bool
 	end
 	return
+end
+
+# A newly OPENED FILE is what the window shows: it is made visible, everything previously displayed
+# is hidden (its Scene Objects rows go unchecked with it), and the axes cube + camera re-frame onto
+# THIS element's own X/Y/Z extent -- a new file is a new quantity in its own units and never wears
+# the previous layer's frame. One C-side function does all of it (gmtvtk_show_new_element_h), so
+# every load path behaves identically. Called only from the FILE-open path: an in-window computation
+# (a cube layer switch, a nested transplant) manages its own layers and must not be swept up in this.
+function _adopt_new_element(scene::Ptr{Cvoid}, name::AbstractString, data)::Nothing
+	bb = _element_bbox(data)
+	# Images keep a margin so their axis tick labels stay on screen; grids fill edge-to-edge (the
+	# existing grid convention -- see gmtvtk_reframe_h's own `keepMargin` note).
+	margin = data isa GMTimage ? 1 : 0
+	ccall(_fn(:gmtvtk_show_new_element_h), Cvoid,
+	      (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cint),
+	      scene, String(name), bb[1], bb[2], bb[3], bb[4], bb[5], bb[6],
+	      Cint(bb === _NO_BBOX ? 0 : 1), Cint(margin))
+	return nothing
+end
+
+const _NO_BBOX = (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+
+# (xmin,xmax,ymin,ymax,zmin,zmax) of a dropped object, in its own coordinates. Grids and images carry
+# a 6-element `range`; a dataset carries `bbox`. `_NO_BBOX` (returned identically for anything with no
+# usable extent) tells `_adopt_new_element` to skip the re-frame and only do the show/hide half.
+function _element_bbox(data)::NTuple{6,Float64}
+	r = data isa GMTgrid || data isa GMTimage ? data.range :
+	    data isa GMTfv ? _fv_bbox(data) :
+	    data isa GMTdataset ? data.bbox :
+	    (data isa AbstractVector{<:GMTdataset} && !isempty(data)) ? data[1].ds_bbox : Float64[]
+	length(r) < 4 && return _NO_BBOX
+	z0, z1 = length(r) >= 6 ? (Float64(r[5]), Float64(r[6])) : (0.0, 1.0)
+	return (Float64(r[1]), Float64(r[2]), Float64(r[3]), Float64(r[4]), z0, z1)
+end
+
+# ── VTK's own formats ─────────────────────────────────────────────────────────────────────────
+# The extensions VTK reads natively and neither GMT nor GDAL can. `.hdf` / `.h5` are deliberately
+# ABSENT: a plain HDF5 raster is GDAL's, and only VTK's own `.vtkhdf` belongs here.
+const _VTK_EXTS = Set{String}([".vtk", ".vti", ".vtr", ".vts", ".vtp", ".vtu", ".vtm", ".vtmb",
+                               ".pvti", ".pvtr", ".pvts", ".pvtp", ".pvtu", ".vtkhdf"])
+
+# Is this path (or "file?var" spec) a VTK-format file? Splits on '?' first for the same reason
+# `_cube_probe` does: splitext of "…nc?var" yields ".nc?var", never ".nc".
+_is_vtk_file(path::AbstractString) =
+	lowercase(splitext(String(first(split(String(path), '?'))))[2]) in _VTK_EXTS
+
+# Hand a VTK file to the DLL, which reads it (87_vtkio.cpp) and routes the dataset into this window
+# through the ordinary grid / mesh / overlay builders. `promote` means the window is a bare launcher.
+# Returns true if anything was displayed; a failure is reported in the window's Errors console with
+# the reason VTK gave, exactly like any other failed open.
+function _open_vtk_into(scene::Ptr{Cvoid}, path::String, name::AbstractString, promote::Bool)::Bool
+	err = Vector{UInt8}(undef, 512)
+	rc = ccall(_fn(:gmtvtk_open_vtk_h), Cint,
+	           (Ptr{Cvoid}, Cstring, Cstring, Cint, Ptr{UInt8}, Cint),
+	           scene, path, String(name), Cint(promote ? 1 : 0), err, Cint(length(err)))
+	rc != 0 && return true
+	msg = String(err[1:something(findfirst(==(0x00), err), length(err) + 1) - 1])
+	_viewer_log_error(scene, "Open '$(basename(path))' FAILED: $(isempty(msg) ? "unreadable VTK file" : msg)")
+	return false
 end
 
 # SHAPENC "bounded ensembles" (shapenc.jl's `_shnc_read_bounded`): an OUTER boundary polygon

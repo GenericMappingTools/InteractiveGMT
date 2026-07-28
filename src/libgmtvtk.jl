@@ -63,6 +63,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_promote_surface_h, :gmtvtk_replace_base_grid_h, :gmtvtk_show_layer_image_h, :gmtvtk_show_layer_rgba_h,
 	:gmtvtk_aqua_set_land_cpt_h, :gmtvtk_aqua_set_bathy_h, :gmtvtk_aqua_set_var_label_h,
 	:gmtvtk_remove_grid_h, :gmtvtk_set_transplant_undo, :gmtvtk_unfold_scene_objects_h,
+	:gmtvtk_open_vtk_h, :gmtvtk_add_mesh_h, :gmtvtk_show_new_element_h, :gmtvtk_reframe_z_h,
 	:gmtvtk_has_surface, :gmtvtk_close, :gmtvtk_add_recent,
 	:gmtvtk_set_cpt, :gmtvtk_set_cpt_grid, :gmtvtk_grid_rgb_at, :gmtvtk_raise, :gmtvtk_set_crs,
 	:gmtvtk_set_title_h, :gmtvtk_set_surface_name_h,

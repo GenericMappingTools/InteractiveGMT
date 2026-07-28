@@ -1763,7 +1763,10 @@ static void rebuildSceneObjects(Scene *s) {
 			        [s, a](const QPoint &g) { gridObjectMenu(s, a, g); });
 			if (ex.drape) addRow("Image drape", ex.drape, IC_Image);
 			const bool gvis = a && a->GetVisibility() != 0;   // hidden grid -> children start unchecked (mirror the container)
-			colorbarRow(&ex.showBar, ex.tag, gvis);    // resolve by the grid's UNIQUE tag, not its (shifting) index
+			// A MESH layer (VTK .vtp/.vtu surface, GMTfv solid) carries no z data layer and no LUT, so
+			// it never resolves as the active grid -- a Color Bar row would be permanently inert. Every
+			// other row is identical to a grid's.
+			if (!ex.isMesh) colorbarRow(&ex.showBar, ex.tag, gvis);   // resolve by the grid's UNIQUE tag, not its (shifting) index
 			axesRow(gvis);
 		}
 		endGroup();
