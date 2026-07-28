@@ -9711,43 +9711,55 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 
-	// "SDG" (port of Mirone mirone.m GridToolsSDG_CB): the Second Derivative in the direction of the
-	// Gradient — the article-76 FOS (foot of the continental slope) detector. Three entries, exactly
-	// Mirone's, and the same operation behind all three (only the sign kept differs). The prompt is
-	// GridToolsSDG_CB's own inputdlg: the cubic-smoothing-spline parameter 'p' of the csaps fit whose
-	// analytic derivatives ARE the SDG (src/sdg.jl), pre-filled — 12 decimals, like the .m — with
-	// csaps's own estimate, fetched from Julia by the same round-trip the Contour dialog uses to fill
-	// its Min/Max.
-	QMenu *mSDG = mGridTools->addMenu("SDG");
-	auto runSDG = [win, s](const char *opt) {
+	// The two csaps-driven entries: "Spline Smooth" (port of Mirone mirone.m GridToolsSmooth_CB) and
+	// "SDG" (GridToolsSDG_CB) — the same 2-D cubic smoothing spline, one keeping the fitted SURFACE
+	// and the other its analytic derivatives (the Second Derivative in the direction of the Gradient,
+	// the article-76 FOS detector). Mirone puts a separator above the pair; so do we.
+	//
+	// Both ask for the SAME thing with the SAME default, so they ask through ONE function: the .m's
+	// own inputdlg ("Enter smoothing p parameter", 12 decimals), pre-filled with csaps's own estimate
+	// fetched from Julia by the same round-trip the Contour dialog uses to fill its Min/Max. `jlFmt`
+	// carries %1 = the scene pointer and %2 = the chosen p.
+	mGridTools->addSeparator();
+	auto runCsapsTool = [win, s](const char *title, const char *busy, const char *jlFmt) {
 		if (!s->surf || s->emptyStart || s->imageOnly) {
-			QMessageBox::warning(win, "SDG", "Load a grid into this window first.");
+			QMessageBox::warning(win, title, "Load a grid into this window first.");
 			return;
 		}
 		if (!g_juliaEval) {
-			QMessageBox::warning(win, "SDG", "This computation needs the Julia/GMT host.");
+			QMessageBox::warning(win, title, "This computation needs the Julia/GMT host.");
 			return;
 		}
 		static std::vector<char> buf(1 << 12);
 		const qulonglong sp = (qulonglong)reinterpret_cast<uintptr_t>(s);
 		double p0 = 0.0;
-		const QString q = QString("InteractiveGMT._sdg_default_p(Ptr{Cvoid}(UInt(%1)))").arg(sp);
+		const QString q = QString("InteractiveGMT._csaps_default_p(Ptr{Cvoid}(UInt(%1)))").arg(sp);
 		int n = g_juliaEval(s, q.toStdString().c_str(), buf.data(), (int)buf.size());
 		if (n > 0) p0 = QString::fromUtf8(buf.data(), n).trimmed().toDouble();
 		bool ok = false;
 		const double p = QInputDialog::getDouble(win, "Smoothing parameter input",
 			"Enter smoothing p parameter:", p0, 0.0, 1.0, 12, &ok);
 		if (!ok) return;
-		showBusyDialog("Computing SDG…");
-		const QString cmd = QString("InteractiveGMT._on_sdg(Ptr{Cvoid}(UInt(%1)),\"%2\",%3)")
-								.arg(sp).arg(opt).arg(p, 0, 'g', 15);
+		showBusyDialog(busy);
+		const QString cmd = QString(jlFmt).arg(sp).arg(p, 0, 'g', 15);
 		n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
 		closeBusyDialog();
 		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // Julia threw -> Errors tab
 	};
-	mSDG->addAction("Positive", [runSDG]() { runSDG("positive"); });
-	mSDG->addAction("Negative", [runSDG]() { runSDG("negative"); });
-	mSDG->addAction("Both",     [runSDG]() { runSDG("both"); });
+	mGridTools->addAction("Spline Smooth…", [runCsapsTool]() {
+		runCsapsTool("Spline Smooth", "Smoothing the grid…",
+		             "InteractiveGMT._on_spline_smooth(Ptr{Cvoid}(UInt(%1)),%2)");
+	});
+	QMenu *mSDG = mGridTools->addMenu("SDG");
+	mSDG->addAction("Positive", [runCsapsTool]() {
+		runCsapsTool("SDG", "Computing SDG…", "InteractiveGMT._on_sdg(Ptr{Cvoid}(UInt(%1)),\"positive\",%2)");
+	});
+	mSDG->addAction("Negative", [runCsapsTool]() {
+		runCsapsTool("SDG", "Computing SDG…", "InteractiveGMT._on_sdg(Ptr{Cvoid}(UInt(%1)),\"negative\",%2)");
+	});
+	mSDG->addAction("Both", [runCsapsTool]() {
+		runCsapsTool("SDG", "Computing SDG…", "InteractiveGMT._on_sdg(Ptr{Cvoid}(UInt(%1)),\"both\",%2)");
+	});
 
 	// Ctrl+Z undoes the last transplant (restores the original grid kept on the Julia side). The undo
 	// is also offered on the rectangle's context menu (55_lineprops.cpp).

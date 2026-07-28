@@ -193,7 +193,66 @@ function csaps_nodes(x::Vector{Float64}, V::Matrix{Float64}, p::Float64)
 	return f, f1, f2
 end
 
-# --- the SDG itself ------------------------------------------------------------------------------
+# --- what BOTH csaps-driven Grid Tools entries share ---------------------------------------------
+#
+# Spline Smooth (GridToolsSmooth_CB) and SDG (GridToolsSDG_CB) are the same fit — the .m body is
+# literally the same csaps call, one keeping `fnval(pp)` and the other `fnval(fnder(pp))`. So the
+# gap filling, the axis/`p` resolution and the NaN restore live HERE, once, and the two entry points
+# below differ only in which of csaps_nodes's outputs they combine.
+
+# Fill the holes (the .m does it because the spline's reaction to NaNs "makes a hell out of the
+# result with lots of propagation effects"), then hand back everything the two tools need.
+function _csaps_setup(G::GMTgrid, p, who::String)
+	# hasnans: 0 = "don't know" (check for real), 1 = confirmed clean, 2 = confirmed has NaNs.
+	has_nans = (G.hasnans == 2) || (G.hasnans == 0 && any(isnan, G.z))
+	mask = nothing							# GMTimage{Bool,2} of the filled holes, or nothing
+	Gw = G
+	if has_nans
+		Gw = deepcopy(G);  Gw.hasnans = 2	# fillgaps must not warn about a grid we already checked
+		Gw, mask = GMT.fillgaps(Gw)
+	end
+	# GMT.jl grid layout: z is [ny, nx], row 1 = southernmost. Dimension 1 is Y, dimension 2 is X —
+	# the same {Y,X} order csaps is called with in the .m.
+	Z = Float64.(Gw.z)
+	y = Float64.(collect(Gw.y));  x = Float64.(collect(Gw.x))
+	(length(y) == size(Z, 1) && length(x) == size(Z, 2)) ||
+		error("$who: grid axes ($(length(y))×$(length(x))) do not match z ($(size(Z, 1))×$(size(Z, 2)))")
+	pv = Float64(p === nothing ? csaps_p_guess(y) : p)
+	return x, y, Z, mask, pv
+end
+
+# "Obey the law of NaN conservation": punch the original holes back and wrap the result in a grid
+# with `G`'s geometry.
+function _csaps_finish(R::Matrix{Float32}, mask, G::GMTgrid)
+	# `mask` is `nothing` whenever there was nothing to fill (no NaNs at all, or fillgaps found none
+	# despite hasnans — its docstring allows that), so the nothing check MUST short-circuit first:
+	# isempty(nothing) throws. Same guard as rtp3d.jl.
+	(mask !== nothing && !isempty(mask)) && (R[mask.image] .= NaN32)
+	return GMT.mat2grid(R, G)
+end
+
+# --- Spline Smooth (mirone.m GridToolsSmooth_CB) --------------------------------------------------
+
+"""
+    Gs = spline_smooth(G::GMTgrid; p=nothing)
+
+Smooth grid `G` with the same 2-D cubic smoothing spline the SDG is built on, and return the fitted
+SURFACE — Grid Tools > Spline Smooth, the port of Mirone's `GridToolsSmooth_CB`.
+
+`p` is the smoothing parameter: 0 leaves the least-squares bilinear trend, 1 gives back the data
+untouched (an interpolating spline reproduces its own data), and the useful values sit just under 1.
+`nothing` takes csaps's own estimate, [`csaps_p_guess`](@ref), off the Y axis — Mirone's default.
+"""
+function spline_smooth(G::GMTgrid; p=nothing)
+	x, y, Z, mask, pv = _csaps_setup(G, p, "spline_smooth")
+	# f = Ay·Z·Ax': smooth along x, then along y. Only the VALUES are wanted here, so the derivative
+	# outputs of the two passes are dropped (the SDG below is the same fit, keeping the others).
+	P0 = csaps_nodes(x, permutedims(Z), pv)[1]
+	S  = csaps_nodes(y, permutedims(P0), pv)[1]
+	return _csaps_finish(Float32.(S), mask, G)
+end
+
+# --- SDG (mirone.m GridToolsSDG_CB) ---------------------------------------------------------------
 
 """
     R = sdg(G::GMTgrid; p=nothing, sign=:both)
@@ -208,26 +267,8 @@ zeroed) — Mirone's three SDG menu entries.
 """
 function sdg(G::GMTgrid; p=nothing, sign::Symbol=:both)
 	(sign in (:both, :positive, :negative)) || error("sdg: `sign` must be :both, :positive or :negative")
-
-	# hasnans: 0 = "don't know" (check for real), 1 = confirmed clean, 2 = confirmed has NaNs.
-	# The .m fills the gaps first because the spline's reaction to NaNs "makes a hell out of the
-	# result with lots of propagation effects".
-	has_nans = (G.hasnans == 2) || (G.hasnans == 0 && any(isnan, G.z))
-	mask = nothing							# GMTimage{Bool,2} of the filled holes, or nothing
-	Gw = G
-	if has_nans
-		Gw = deepcopy(G);  Gw.hasnans = 2	# fillgaps must not warn about a grid we already checked
-		Gw, mask = GMT.fillgaps(Gw)
-	end
-
-	# GMT.jl grid layout: z is [ny, nx], row 1 = southernmost. Dimension 1 is Y, dimension 2 is X —
-	# the same {Y,X} order csaps is called with in the .m.
-	Z = Float64.(Gw.z)
-	y = Float64.(collect(Gw.y));  x = Float64.(collect(Gw.x))
+	x, y, Z, mask, pv = _csaps_setup(G, p, "sdg")
 	ny, nx = size(Z)
-	(length(y) == ny && length(x) == nx) ||
-		error("sdg: grid axes ($(length(y))×$(length(x))) do not match z ($(ny)×$(nx))")
-	pv = Float64(p === nothing ? csaps_p_guess(y) : p)
 
 	# Tensor-product spline: the surface is the X-smoothing of the Y-smoothing of Z, so every mixed
 	# derivative at the nodes is one 1-D operator per dimension applied in turn. Ax/D1x/D2x below are
@@ -253,23 +294,37 @@ function sdg(G::GMTgrid; p=nothing, sign::Symbol=:both)
 		end
 		R[i, j] = Float32(r)
 	end
-
-	# `mask` is `nothing` whenever there was nothing to fill (no NaNs at all, or fillgaps found none
-	# despite hasnans — its docstring allows that), so the nothing check MUST short-circuit first:
-	# isempty(nothing) throws. Same guard as rtp3d.jl.
-	(mask !== nothing && !isempty(mask)) && (R[mask.image] .= NaN32)
-	return GMT.mat2grid(R, G)
+	return _csaps_finish(R, mask, G)
 end
 
-# g_juliaEval round-trip for the menu's smoothing prompt: prints the default `p`. GridToolsSDG_CB
-# gets it from `csaps({Y(1:5),X(1:5)}, Z(1:5,1:5))` and offers the Y one — p depends on the node
-# spacing alone, so 5 nodes are as good as all of them, and it stays this cheap on a huge grid.
-function _sdg_default_p(scene::Ptr{Cvoid})
+# g_juliaEval round-trip for the smoothing prompt of BOTH tools (they ask for the same `p`, so they
+# ask through the same function). GridToolsSmooth_CB and GridToolsSDG_CB each get the default from
+# `csaps({Y(1:5),X(1:5)}, Z(1:5,1:5))` and offer the Y one — p depends on the node spacing alone, so
+# 5 nodes are as good as all of them, and it stays this cheap on a huge grid.
+function _csaps_default_p(scene::Ptr{Cvoid})
 	G = _find_object(scene, :grid, "")
 	(G isa GMTgrid) || error("No grid loaded in this window")
 	yv = Float64.(collect(G.y))
 	(length(yv) >= 3) || error("Grid has too few rows for a smoothing spline")
 	print(csaps_p_guess(yv[1:min(5, length(yv))]))
+	return nothing
+end
+
+# Menu entry for Grid Tools > Spline Smooth (g_juliaEval, like Transplant and SDG below). The .m's
+# window title is "Spline smoothed grid" plus the p it used; here the p travels in the grid's
+# command string and the handle keeps the fixed name, so recomputing with another p REPLACES the
+# previous result instead of piling a second one up (same convention as SDG's "SDG field").
+function _on_spline_smooth(scene::Ptr{Cvoid}, p::Float64)
+	try
+		G = _find_object(scene, :grid, "")
+		(G isa GMTgrid) || error("No grid loaded in this window")
+		S = spline_smooth(G; p=p)
+		_grid_command!(S, "InteractiveGMT spline smooth csaps_p=$p")
+		_gm3d_deliver(scene, S, "Spline smoothed grid", "", false, "spline_smooth")
+	catch e
+		_viewer_log_error(scene, "Spline Smooth FAILED: $(sprint(showerror, e))")
+		@warn "Spline Smooth FAILED" exception=(e,)
+	end
 	return nothing
 end
 

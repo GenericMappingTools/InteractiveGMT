@@ -10,7 +10,8 @@
 
 @testitem "sdg: helpers present" tags=[:unit, :fast] begin
 	for s in (:_csaps_bands, :_csaps_ldl!, :_csaps_ldl_solve!, :csaps_p_guess, :csaps_nodes,
-	          :sdg, :_sdg_default_p, :_on_sdg)
+	          :_csaps_setup, :_csaps_finish, :_csaps_default_p,
+	          :spline_smooth, :_on_spline_smooth, :sdg, :_on_sdg)
 		@test isdefined(InteractiveGMT, s)
 	end
 end
@@ -153,6 +154,47 @@ end
 	@test all(pos .>= 0) && all(neg .<= 0)
 	@test pos .+ neg ≈ both                                   # nothing else was touched
 	@test_throws ErrorException IG.sdg(G; sign = :sideways)
+end
+
+@testitem "spline_smooth: p=1 returns the data, p=0 the least-squares trend" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	x = collect(0.0:0.1:4.0);  y = collect(-2.0:0.2:2.0)
+	mk(f) = GMT.mat2grid(Float32[f(xx, yy) for yy in y, xx in x]; x = x, y = y)
+	# p = 1 is an INTERPOLATING spline: evaluated at its own data sites it gives the data back.
+	G = mk((a, b) -> a^2 + b^2)
+	@test IG.spline_smooth(G; p = 1.0).z ≈ G.z  atol=1e-4
+	# p = 0 is the least-squares straight line in EACH direction, i.e. the bilinear trend — which a
+	# plane already is, so the plane survives p = 0 untouched...
+	P = mk((a, b) -> 3a + 2b)
+	@test IG.spline_smooth(P; p = 0.0).z ≈ P.z  atol=1e-3
+	# ...while the paraboloid is flattened onto that trend (no curvature left in either direction).
+	S0 = IG.spline_smooth(G; p = 0.0)
+	@test maximum(abs.(S0.z .- G.z)) > 1
+	col = Float64.(S0.z[:, 10])                                   # a column: constant second difference
+	@test maximum(abs.(diff(diff(col)))) < 1e-3
+end
+
+@testitem "spline_smooth: it actually smooths, and keeps geometry + NaNs" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	x = collect(0.0:0.1:4.0);  y = collect(-2.0:0.1:2.0)
+	Z = Float32[xx^2 + yy^2 for yy in y, xx in x]
+	clean = copy(Z)
+	let seed = UInt32(777)                                        # UInt32 throughout (see above)
+		for i in eachindex(Z)
+			seed = UInt32(1664525) * seed + UInt32(1013904223)
+			Z[i] += Float32(0.2) * (Float32(seed >> 8) / Float32(1 << 24) - 0.5f0)   # ±0.1
+		end
+	end
+	Z[10:14, 12:18] .= NaN32                                      # a hole, as a real grid has
+	G = GMT.mat2grid(Z; x = x, y = y)
+	S = IG.spline_smooth(G)                                       # default p = csaps's estimate
+	@test S isa GMT.GMTgrid
+	@test size(S.z) == size(Z)
+	@test S.range[1:4] ≈ G.range[1:4]
+	@test isnan.(S.z) == isnan.(Z)                                # law of NaN conservation
+	# The whole point: closer to the underlying surface than the noisy data was.
+	ok = .!isnan.(Z)
+	@test sum(abs2, S.z[ok] .- clean[ok]) < sum(abs2, Z[ok] .- clean[ok])
 end
 
 @testitem "sdg: the result keeps the grid's geometry, and its NaNs" tags=[:unit, :fast] begin
