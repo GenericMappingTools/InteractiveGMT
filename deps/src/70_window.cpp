@@ -4572,6 +4572,47 @@ public:
 };
 
 // ============================================================================================
+// Terrain Modeling (Grid Tools) — port of Mirone's src_figs/multiscale.m, the chooser in front of
+// the mirblock.c MEX (ported in src/multiscale.jl). multiscale.m is a MODAL one-shot that returns
+// {method, size} and nothing else, so this is a plain function rather than a dialog class: load
+// deps/ui/multiscale.ui, exec(), read the two widgets back.
+//
+// The combo's order IS mirblock's -A<n>, which is why the .m shouts that the two must agree; the
+// authoritative list lives in Julia (MIRBLOCK_METHODS, multiscale.jl) and the .ui repeats it, so
+// only the INDEX travels. The window size must be odd (the .m pops an errordlg and bumps it by one);
+// a QSpinBox stepping by 2 from 3 makes that unreachable, and the round-up below covers a typed-in
+// even number.
+static bool multiscaleAsk(QWidget *parent, int &method, int &nWin) {
+	QUiLoader loader;
+	QFile f(gmtvtkUiDir() + "/multiscale.ui");
+	if (!f.open(QFile::ReadOnly)) {
+		qWarning("multiscaleAsk: cannot open %s", qUtf8Printable(f.fileName()));
+		return false;
+	}
+	QDialog *dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+	f.close();
+	if (!dlg) { qWarning("multiscaleAsk: QUiLoader failed to load the .ui"); return false; }
+	dlg->setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
+	auto *cb = dlg->findChild<QComboBox *>("cb_method");
+	auto *sb = dlg->findChild<QSpinBox *>("sb_win");
+	if (auto *bb = dlg->findChild<QDialogButtonBox *>("buttonBox")) {
+		QObject::connect(bb, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
+		QObject::connect(bb, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+	}
+	if (cb) cb->setCurrentIndex(method);
+	if (sb) sb->setValue(nWin);
+	const bool ok = (dlg->exec() == QDialog::Accepted);
+	if (ok) {
+		if (cb) method = cb->currentIndex();
+		if (sb) nWin = sb->value();
+		if (nWin < 3)  nWin = 3;
+		if (nWin % 2 == 0) nWin++;                  // multiscale.m's "Fixing it"
+	}
+	delete dlg;
+	return ok;
+}
+
+// ============================================================================================
 // Grid calculator (Grid Tools) — port of Mirone's src_figs/grid_calculator.m. An expression box on
 // top, the list of usable grids below it, a digit/operator keypad and a function keypad on the right.
 // Loaded at RUNTIME via QUiLoader from deps/ui/grid_calculator.ui (plain Qt widget classes only,
@@ -9709,6 +9750,30 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		}
 		auto *w = new GridCalculatorDialog(win, s);
 		if (w->dlg) w->dlg->show();
+	});
+
+	// "Terrain Modeling" (port of Mirone src_figs/multiscale.m + the mirblock.c MEX behind it): pick
+	// a moving-window method and a window size, and the chosen quantity is computed for every node.
+	// The chooser is deps/ui/multiscale.ui, loaded at RUNTIME (multiscaleAsk below) — a modal
+	// one-shot like the .m's, whose only job is to hand (method, window) to Julia's _on_multiscale.
+	mGridTools->addAction("Terrain Modeling…", [win, s]() {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "Terrain Modeling", "Load a grid into this window first.");
+			return;
+		}
+		if (!g_juliaEval) {
+			QMessageBox::warning(win, "Terrain Modeling", "This computation needs the Julia/GMT host.");
+			return;
+		}
+		int method = 0, nWin = 3;
+		if (!multiscaleAsk(win, method, nWin)) return;
+		showBusyDialog("Computing…");
+		const QString cmd = QString("InteractiveGMT._on_multiscale(Ptr{Cvoid}(UInt(%1)),%2,%3)")
+								.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(method).arg(nWin);
+		static std::vector<char> buf(1 << 12);
+		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		closeBusyDialog();
+		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // Julia threw -> Errors tab
 	});
 
 	// The two csaps-driven entries: "Spline Smooth" (port of Mirone mirone.m GridToolsSmooth_CB) and

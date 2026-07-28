@@ -79,6 +79,7 @@ include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid cl
 include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-geometry grids (port of Mirone grid_calculator.m)
 include("contours.jl")   # Grid Tools > Contours: GDAL-traced contour lines (port of Mirone contouring.m)
 include("sdg.jl")        # Grid Tools > SDG: 2nd derivative along the gradient (port of Mirone GridToolsSDG_CB)
+include("multiscale.jl") # Grid Tools > Terrain Modeling: moving-window terrain analysis (port of Mirone mirblock.c)
 include("grdtrend.jl")   # GMT menu > grdtrend: polynomial trend surface / residuals / robust weights
 include("grdlandmask.jl")# GMT menu > grdlandmask: wet/dry mask grid from the shoreline database
 include("grdfilter.jl")  # GMT menu > grdfilter: space-domain filtering of the window's grid
