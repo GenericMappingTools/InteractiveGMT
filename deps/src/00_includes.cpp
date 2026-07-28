@@ -136,6 +136,8 @@
 #include <vtkTextActor.h>
 #include <vtkCubeAxesActor.h>
 #include <vtkCamera.h>
+#include <vtkPlane.h>              // Swipe tool: the camera-aligned cut plane (57_swipe.cpp)
+#include <vtkPlaneCollection.h>    // ... and the mapper's plane list, to stamp it idempotently
 #include <vtkCellPicker.h>
 #include <vtkPointPicker.h>
 #include <vtkCellLocator.h>

@@ -679,6 +679,22 @@ struct Scene {
 	QMenu *elasticMenu = nullptr;   // Seismology > Elastic deformation (disabled until a CRS is set)
 	bool hasCRS() const { return !crsProj4.empty() || !crsWkt.empty() || crsEpsg != 0; }
 
+	// --- Swipe tool (compare two rasters across a draggable divider) ---------
+	// See 57_swipe.cpp. ONE camera-aligned cut plane, given to both paired layers with opposite
+	// normals: A keeps the half LEFT of the divider, B the half right of it. The props are RAW
+	// (non-owning) identity handles — every use re-validates them against the live layer list, so a
+	// layer deleted while the tool is on simply drops out. `swipeSavedVis` is the visibility of every
+	// raster before the tool hid the non-paired ones; it is replayed when the tool switches off.
+	bool   swipeOn   = false;
+	double swipeFrac = 0.5;          // divider position as a fraction of the render-window width
+	vtkProp3D *swipeAProp = nullptr;
+	vtkProp3D *swipeBProp = nullptr;
+	vtkSmartPointer<vtkPlane> swipePlaneA, swipePlaneB;
+	vtkSmartPointer<vtkCallbackCommand> swipeCamCmd;   // camera-modified: keep the cut screen-vertical
+	QAction *swipeAct = nullptr;      // the toolbar toggle (enabled only while >=2 rasters exist)
+	QWidget *swipeBar = nullptr;      // the draggable divider overlay, parented on `widget`
+	std::vector<std::pair<vtkProp3D*, int>> swipeSavedVis;
+
 	QAction *act2D = nullptr;        // shared checkable "Flat 2D (map)" action (toolbar + View menu)
 	QWidget *objPanel = nullptr;     // Scene Objects dock content (rebuilt when overlays change)
 	QDockWidget *objDock = nullptr;  // the Scene Objects dock itself (re-shown when the first nested rect lands)

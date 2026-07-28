@@ -173,6 +173,30 @@ static QIcon makeInfoIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// Swipe-tool icon: a framed tile split down the middle — dark raster left, light raster right —
+// with the divider line and its round grab handle drawn exactly as the live overlay draws them, so
+// the button reads as a miniature of what the tool puts on the scene.
+static QIcon makeSwipeIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	const QRectF box(3, 4, 18, 16);
+	p.setPen(Qt::NoPen);
+	p.setBrush(QColor(70, 95, 125));                     // left half: the "before" raster
+	p.drawRect(QRectF(box.left(), box.top(), box.width() * 0.5, box.height()));
+	p.setBrush(QColor(215, 205, 180));                   // right half: the "after" raster
+	p.drawRect(QRectF(box.center().x(), box.top(), box.width() * 0.5, box.height()));
+	p.setBrush(Qt::NoBrush);
+	p.setPen(QPen(QColor(45, 45, 50), 1.2));
+	p.drawRect(box);
+	p.setPen(QPen(QColor(250, 250, 250), 1.4));          // the divider
+	p.drawLine(QPointF(box.center().x(), box.top()), QPointF(box.center().x(), box.bottom()));
+	p.setPen(QPen(QColor(45, 45, 50), 1.0));
+	p.setBrush(QColor(250, 250, 250));
+	p.drawEllipse(box.center(), 3.6, 3.6);               // the grab handle
+	p.end(); return QIcon(pm);
+}
+
 // ── 3-D Bodies flyout icons (cube / sphere / torus / cylinder + a generic polyhedron) ──────
 // Small isometric glyphs for the "3-D Bodies" toolbar flyout. Each is a stylised wireframe of the
 // GMT solid the entry builds; the generic polyhedron stands in for the platonic solids and the

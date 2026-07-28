@@ -8857,6 +8857,7 @@ static QIcon makeCylinderIcon();
 static QIcon makePolyhedronIcon();
 static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only view-toggle button
 static QIcon makeInfoIcon();                // stylised 'i' glyph for the grdinfo/gdalinfo flyout
+static QIcon makeSwipeIcon();               // split-tile glyph for the Swipe toggle (85_polygon.cpp)
 static int  polyHitText(Scene *s, int x, int y, double tol);   // text label under the cursor (85_polygon.cpp)
 
 
@@ -10924,6 +10925,19 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QObject::connect(bodyMenu, &QMenu::triggered, bodyFlyout, [bodyFlyout](QAction *a){ bodyFlyout->setDefaultAction(a); });
 	tb->addSeparator();
 	tb->addWidget(bodyFlyout);
+
+	// Swipe: compare TWO rasters across a draggable vertical divider (57_swipe.cpp). Sits immediately
+	// before the Info flyout. A checkable toggle, ENABLED only while the window holds at least two
+	// grids/images — rebuildSceneObjects re-evaluates that (swipeRefreshAvailability) after every add,
+	// delete or visibility change. With exactly two rasters the pair is implicit; with more, a small
+	// dialog asks which layer to pair the currently-displayed one with.
+	QAction *actSwipe = tb->addAction(makeSwipeIcon(), "");
+	actSwipe->setCheckable(true);
+	actSwipe->setToolTip("Swipe: compare two grids / images across a draggable divider");
+	actSwipe->setEnabled(false);                          // no data yet; availability refreshed on rebuild
+	s->swipeAct = actSwipe;
+	QObject::connect(actSwipe, &QAction::toggled, [s, actSwipe](bool on) { swipeToggled(s, actSwipe, on); });
+	swipeRefreshAvailability(s);
 
 	// Info flyout sits LAST on the toolbar row (built earlier, added here so it's the rightmost item).
 	tb->addSeparator();

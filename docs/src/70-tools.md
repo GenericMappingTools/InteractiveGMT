@@ -52,6 +52,32 @@ Quick-add a world base map tile.
 - **Whole World-Map** — Full globe
 - **[-180 180]** vs **[0 360]** — Pacific-centered
 
+## Swipe Tool
+
+Compare **two** grids/images in one window across a draggable vertical divider: the paired
+layers show on either side of the line.
+
+**Toolbar:** the **[Swipe]** toggle (split-tile icon, immediately before the **[i]** Info
+button). Greyed out until the window holds at least two grids or images.
+
+### Usage
+
+1. Load a second grid/image into the window (drop, **File → Open**, or `add!`)
+2. Click **[Swipe]**
+   - Two rasters: paired automatically
+   - More than two: a dialog asks which layer to pair the displayed one with
+3. **Drag the divider** (or its round handle)
+4. Click **[Swipe]** again to turn it off
+
+### Notes
+
+- Works in the flat 2-D map and the 3-D perspective view; the divider stays a fixed vertical
+  screen line while you rotate, zoom or pan
+- Any pair works — grid/grid, grid/image, image/image. The halves never overlap, so draw order
+  is irrelevant
+- Other rasters are hidden while swiping and restored when it is switched off
+- Deleting a paired layer switches the tool off by itself
+
 ## 3-D Bodies Flyout
 
 Quick-insert geometric solids.

@@ -14,6 +14,7 @@
 //   40_shading     sky env + applyShading (light rig, SSAO/tone/FXAA)
 //   50_scene       Scene Objects panel, overlays, curtains, line styles, context menus
 //   55_lineprops   shared Line Properties dialog + unified line right-click menu
+//   57_swipe       Swipe tool: two rasters split by a draggable camera-aligned cut plane
 //   60_profile     ProfilePanel (2D s,z) + profile sampling + GLView
 //   65_xyplot      standalone X,Y plot tool (vtkChartXY + Object Manager + Data Viewer)
 //   67_gmtedit     standalone MGD77 track editor (3 stacked vtkChartXY panels; gmtedit.m)
@@ -30,6 +31,7 @@
 #include "40_shading.cpp"
 #include "50_scene.cpp"
 #include "55_lineprops.cpp"
+#include "57_swipe.cpp"
 #include "60_profile.cpp"
 #include "65_xyplot.cpp"
 #include "67_gmtedit.cpp"

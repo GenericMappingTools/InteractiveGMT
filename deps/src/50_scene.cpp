@@ -10,6 +10,7 @@ static void unfoldSceneObjects(Scene *s);   // 70_window.cpp: reveal + unfold th
 static double sceneWorldPerPixel(Scene *s); // defined below: world units per screen pixel at the focal point
 static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp);   // symbol-layer properties (defined below)
 static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
+static void swipeRefreshAvailability(Scene *s);     // 57_swipe.cpp: the Swipe button needs >=2 rasters
 static void textApplyProps(Scene *s, TextLabel &tl); // 85_polygon.cpp: re-apply font fields to the actor
 static void deleteSlipGroup(Scene *s, const QString &groupName); // 85_polygon.cpp: delete all patches in a slip model
 static void deleteMecaGroup(Scene *s, const QString &groupName); // 85_polygon.cpp: delete a focal-mechanism batch
@@ -2073,6 +2074,10 @@ static void rebuildSceneObjects(Scene *s) {
 			if (QWidget *w = bot->itemWidget(bot->topLevelItem(i), 0)) h += w->sizeHint().height();
 		bot->setFixedHeight(h);
 	}
+
+	// The Swipe toolbar button needs TWO rasters; the raster set is exactly what was just rebuilt
+	// above, so its enabled state is refreshed here rather than from every add / delete / toggle.
+	swipeRefreshAvailability(s);
 }
 
 // Re-cut the DISPLAY-ONLY holes an overlay carries for its annotations (Overlay::gapAnchors /
