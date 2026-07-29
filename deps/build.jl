@@ -29,6 +29,13 @@ const DLL_TAG = "dll-latest"   # fixed tag; its one asset is re-uploaded in plac
 
 const DEPS_DIR     = @__DIR__
 const SHARED_ROOT  = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime")   # survives every Pkg.update; zip paths (deps/build/...) are relative to here
+# Holds the runtime TAG that is installed, not merely the fact that something is. It used to be an
+# empty sentinel file, which made deps/RUNTIME_VERSION unenforceable: the full bundle was fetched
+# once ever, so bumping the tag reached no existing install, and a gmtvtk.dll linking a VTK module
+# newer than the installed bundle simply failed to load (LoadLibrary can't resolve it -> Julia
+# reports a missing gmtvtk_* symbol, naming nothing useful). With the tag stored, a bump is
+# detected and the newer bundle is fetched. Legacy empty marker = the tag that was pinned when it
+# was written, i.e. treat as current and let the .dll_requires check below catch a real shortfall.
 const MARKER       = joinpath(SHARED_ROOT, "deps", "build", ".full_runtime_installed")
 
 function runtime_tag()
@@ -58,14 +65,29 @@ const TAR = joinpath(get(ENV, "SystemRoot", "C:\\Windows"), "System32", "tar.exe
 # standard Windows self-update trick: displace the locked file, then create the new one fresh
 # under the original name. The already-running process keeps using the orphaned old file quite
 # happily; a future dlopen (next Julia session) picks up the new one.
-function _displace_locked_dll(dest::String)
-    dll = joinpath(dest, "deps", "build", "gmtvtk.dll")
-    isfile(dll) || return
-    stale = dll * ".old-$(getpid())-$(round(Int, time()))"
-    try
-        mv(dll, stale; force=true)
+#
+# Every DLL the zip is about to overwrite gets this treatment, not just gmtvtk.dll: the dll-only
+# zip also carries any VTK module that the pinned full runtime bundle predates (see the
+# _GMTVTK_DLL_EXTRA_MODULES block in deps/CMakeLists.txt), and those are mapped for execution in
+# this process exactly like gmtvtk.dll is. The list comes from the downloaded zip itself, so
+# nothing else in deps/build/ (the ~200 MB bundle) is touched.
+function _displace_locked_dll(dest::String, zip::String)
+    names = try
+        readlines(`$TAR -tf $zip`)
     catch e
-        @warn "InteractiveGMT: couldn't displace the in-use gmtvtk.dll -- update may fail" exception=e
+        @warn "InteractiveGMT: couldn't list the zip -- falling back to displacing gmtvtk.dll only" exception=e
+        ["deps/build/gmtvtk.dll"]
+    end
+    stamp = "$(getpid())-$(round(Int, time()))"
+    for n in names
+        endswith(lowercase(n), ".dll") || continue
+        dll = joinpath(dest, replace(strip(n), '/' => Base.Filesystem.path_separator))
+        isfile(dll) || continue
+        try
+            mv(dll, dll * ".old-$stamp"; force=true)
+        catch e
+            @warn "InteractiveGMT: couldn't displace an in-use dll -- update may fail" file=dll exception=e
+        end
     end
 end
 
@@ -115,7 +137,7 @@ function fetch_and_extract(url::String, dest::String)
     end
     mkpath(dest)
     _sweep_stale_dlls(dest)
-    _displace_locked_dll(dest)
+    _displace_locked_dll(dest, zip)
     run(`$TAR -xf $zip -C $dest deps/build`)
     rm(zip; force=true)
 end
@@ -124,13 +146,52 @@ end
 # thing that makes the icon for a dev install -- InteractiveGMT's __init__ (_ensure_desktop_shortcut)
 # owns that instead, firing on the first `using` for dev and add alike.
 
+# The dll-only zip carries `.dll_requires`: every non-system DLL gmtvtk.dll imports, transitively
+# (written at package time by deps/CMakeLists.txt). Checking it here is the safety net for the one
+# mistake the tag cannot catch — publishing a gmtvtk.dll that links a new VTK module WITHOUT
+# bumping deps/RUNTIME_VERSION. Warn only: the files are already on disk, and refusing the build
+# would leave the user worse off than a viewer that at least explains itself on first use (the
+# same list is repeated by src/libgmtvtk.jl's _missing_runtime_modules when dlopen fails).
+function _check_runtime_manifest()
+    dir = joinpath(SHARED_ROOT, "deps", "build")
+    man = joinpath(dir, ".dll_requires")
+    isfile(man) || return
+    miss = filter(n -> !isfile(joinpath(dir, n)),
+                  filter(n -> !isempty(n) && !startswith(n, "#"), strip.(readlines(man))))
+    isempty(miss) && return
+    @warn """InteractiveGMT: the installed runtime bundle is missing modules this gmtvtk.dll needs.
+             The viewer will not load until they are present. Missing: $(join(miss, ", "))
+             This means the published dll was built against a newer runtime than deps/RUNTIME_VERSION
+             pins ($(runtime_tag())) — please report it.""" SHARED_ROOT
+end
+
 function main()
+    installed = isfile(MARKER) ? String(strip(read(MARKER, String))) : ""
+    want      = runtime_tag()
     if !isfile(MARKER)
         # First install EVER on this machine: full runtime bundle, pinned to a coarse,
-        # rarely-bumped tag. Never repeated after this, even across many future updates.
-        fetch_and_extract(release_url(runtime_tag(), "iGMT-win64-full.zip"), SHARED_ROOT)
-        touch(MARKER)
-    else
+        # rarely-bumped tag.
+        fetch_and_extract(release_url(want, "iGMT-win64-full.zip"), SHARED_ROOT)
+        write(MARKER, want)
+    elseif !isempty(installed) && installed != want
+        # The pinned runtime moved (a new VTK/Qt module set). This is the ONLY path that can
+        # refresh the bundled VTK/Qt on a machine that already has one, so it must not be skipped
+        # — a stale bundle means a gmtvtk.dll that cannot load at all.
+        @warn "InteractiveGMT: bundled VTK/Qt runtime is out of date ($installed -> $want) — downloading the new bundle (~53 MB)."
+        fetch_and_extract(release_url(want, "iGMT-win64-full.zip"), SHARED_ROOT)
+        write(MARKER, want)
+        # Fall through: the full bundle carries a gmtvtk.dll, but the rolling dll-latest asset is
+        # normally newer, so still sync it below.
+        rm(joinpath(SHARED_ROOT, "deps", "build", ".dll_release_sig"); force=true)
+    end
+    if isempty(installed) && filesize(MARKER) == 0
+        # Legacy empty sentinel from before the marker carried a tag. The bundle on disk IS the
+        # one that was pinned when it was written, so stamp it rather than force a 53 MB re-fetch
+        # on every existing install; _check_runtime_manifest() below is what catches it if that
+        # assumption is ever wrong.
+        write(MARKER, want)
+    end
+    let
         # Every subsequent build: DLL only (~1 MB), always the same rolling tag/asset -- but only
         # actually re-downloaded when the release asset is newer than what we last synced.
         asset  = "gmtvtk-win64.zip"
@@ -139,11 +200,13 @@ function main()
         sig    = _dll_asset_signature(DLL_TAG, asset)
         if sig !== nothing && isfile(dll) && isfile(sigf) && read(sigf, String) == sig
             @info "InteractiveGMT: gmtvtk.dll already up to date" SHARED_ROOT
+            _check_runtime_manifest()
             return nothing
         end
         fetch_and_extract(release_url(DLL_TAG, asset), SHARED_ROOT)
         sig !== nothing && write(sigf, sig)
     end
+    _check_runtime_manifest()
     @info "InteractiveGMT: gmtvtk binaries installed" SHARED_ROOT
 end
 
