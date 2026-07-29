@@ -34,6 +34,10 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_symbol_click_jitter_test,
 	:gmtvtk_send_ctrlc_test, :gmtvtk_clipboard_get_test, :gmtvtk_camera_get_test,
 	:gmtvtk_nswing_enter_test,
+	:gmtvtk_visible_region_test,
+	:gmtvtk_swipe_btn_enabled_test, :gmtvtk_swipe_set_mode_test,
+	:gmtvtk_link_toggle_test, :gmtvtk_link_peek_test, :gmtvtk_link_state_test,
+	:gmtvtk_swipe_click_test, :gmtvtk_right_click_test, :gmtvtk_right_button_test,
 	:gmtvtk_set_faultgeom_callback,   # NOT test-only — dlsym'd here too so we can mirror the
 	                                  # callback registration into this dll's own global.
 )

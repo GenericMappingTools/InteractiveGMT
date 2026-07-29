@@ -8858,6 +8858,7 @@ static QIcon makePolyhedronIcon();
 static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only view-toggle button
 static QIcon makeInfoIcon();                // stylised 'i' glyph for the grdinfo/gdalinfo flyout
 static QIcon makeSwipeIcon();               // split-tile glyph for the Swipe toggle (85_polygon.cpp)
+static QIcon makeLinkIcon();                // two-windows-and-a-chain glyph for the Link toggle (85_polygon.cpp)
 static int  polyHitText(Scene *s, int x, int y, double tol);   // text label under the cursor (85_polygon.cpp)
 
 
@@ -9651,8 +9652,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		--g_openWindows;
 		if (g_lastScene == s) g_lastScene = nullptr;   // don't let add_overlay touch a freed scene
 		if (g_lastRW == rwp) g_lastRW = nullptr;       // don't let gmtvtk_save_png capture a freed window (crash)
+		linkUnlinkWindows(s);                          // drop a Link partner's pointer to this scene
 		g_scenes.erase(s);                             // invalidate any host-held handle to s
 		delete s->giz; delete s;
+		for (Scene *o : g_scenes) swipeRefreshAvailability(o);   // one fewer window to link with
 	});
 
 	auto actReset = [s]() {
@@ -9940,36 +9943,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		};
 	};
 	// Current visible geographic region (W/E/S/N in TRUE data coords) = the part of the map on
-	// screen at the current zoom. Project the 4 viewport corners onto the z=0 plane (the flat map),
-	// undo the X aspect scale (xfac), take the bbox, and clamp to the data frame. Mirrors the hover
-	// readout's DisplayToWorld ray-to-plane math (10_geometry.cpp). false if no renderer/window.
+	// screen at the current zoom. sceneVisibleRegion (10_geometry.cpp) is the ONE implementation —
+	// also read by the Link tool's cross-window camera sync (57_swipe.cpp); this local wrapper just
+	// keeps every existing capture-list/call-site below (`[…, visibleRegion, …]`) unchanged.
 	auto visibleRegion = [s](double &W, double &E, double &S, double &N) -> bool {
-		if (!s->ren || !s->widget || !s->widget->renderWindow()) return false;
-		const int *sz = s->widget->renderWindow()->GetSize();
-		const double w = sz[0], h = sz[1];
-		const double gx = (s->xfac != 0.0) ? s->xfac : 1.0;
-		const double corners[4][2] = { {0,0}, {w,0}, {0,h}, {w,h} };
-		bool any = false;
-		for (const auto &c : corners) {
-			double nr[4], fr[4];
-			s->ren->SetDisplayPoint(c[0], c[1], 0.0); s->ren->DisplayToWorld();
-			for (int i = 0; i < 4; ++i) nr[i] = s->ren->GetWorldPoint()[i];
-			s->ren->SetDisplayPoint(c[0], c[1], 1.0); s->ren->DisplayToWorld();
-			for (int i = 0; i < 4; ++i) fr[i] = s->ren->GetWorldPoint()[i];
-			if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
-			if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
-			const double dirz = fr[2] - nr[2];
-			if (dirz == 0.0) continue;                          // ray parallel to the map plane
-			const double t0 = -nr[2] / dirz;
-			const double tx = (nr[0] + t0 * (fr[0] - nr[0])) / gx;
-			const double ty =  nr[1] + t0 * (fr[1] - nr[1]);
-			if (!any) { W = E = tx; S = N = ty; any = true; }
-			else { W = std::min(W, tx); E = std::max(E, tx); S = std::min(S, ty); N = std::max(N, ty); }
-		}
-		if (!any) return false;
-		W = std::max(W, s->x0); E = std::min(E, s->x1);         // never exceed the data frame
-		S = std::max(S, s->y0); N = std::min(N, s->y1);
-		return (E > W && N > S);
+		return sceneVisibleRegion(s, W, E, S, N);
 	};
 	// SACRED LAW, single source of truth: EVERY Geography/Seismology leaf that plots onto the
 	// window needs something to land on. On an EMPTY launcher, load the whole-world Base Map IN
@@ -10926,18 +10904,68 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	tb->addSeparator();
 	tb->addWidget(bodyFlyout);
 
-	// Swipe: compare TWO rasters across a draggable vertical divider (57_swipe.cpp). Sits immediately
-	// before the Info flyout. A checkable toggle, ENABLED only while the window holds at least two
-	// grids/images — rebuildSceneObjects re-evaluates that (swipeRefreshAvailability) after every add,
-	// delete or visibility change. With exactly two rasters the pair is implicit; with more, a small
-	// dialog asks which layer to pair the currently-displayed one with.
-	QAction *actSwipe = tb->addAction(makeSwipeIcon(), "");
+	// Swipe / Link: ONE toolbar slot, two ways to compare two rasters (57_swipe.cpp), sitting
+	// immediately before the Info flyout. Shaped like the 2D/3D flyout (icon-only slot + a native
+	// dropdown arrow). Picking either entry from the dropdown SELECTS that mode AND TURNS IT ON
+	// (swipeSelectMode) — picking a tool out of a menu is the act of starting it; there is no second,
+	// invisible arming click. The slot's own CLICK is then the plain on/off toggle for the selected
+	// mode, via the ONE shared checkable action `actSwipe`, whose `toggled` signal dispatches to
+	// swipeToggled or linkToggled depending on `s->swipeToolMode`. `actSwipe` is not itself added to
+	// the toolbar — only `tbSwipe` is; the two stay in sync explicitly (see the two connections below)
+	// since the button owns the popup menu and must show its own pressed/checked look independently of
+	// any QAction default-action wiring (which would fight the per-mode icon swap — same reasoning
+	// tb2D's own comment gives for avoiding setDefaultAction).
+	//   Swipe — needs >=2 grids/images IN THIS WINDOW; the pair is implicit with exactly two, else a
+	//           dialog asks which layer to pair the displayed one with.
+	//   Link  — >=2 rasters here pairs two of THEM (right-click flips which shows); with only one
+	//           raster here it pairs with another OPEN WINDOW over the same region (right-click
+	//           raises that window, framed on what this one is showing).
+	QToolButton *tbSwipe = new QToolButton(tb);
+	tbSwipe->setPopupMode(QToolButton::MenuButtonPopup);
+	tbSwipe->setToolButtonStyle(Qt::ToolButtonIconOnly);
+	tbSwipe->setCheckable(true);
+	tbSwipe->setEnabled(false);                           // no data yet; availability refreshed on rebuild
+	s->swipeToolBtn = tbSwipe;                            // swipeRefreshAvailability's actual on-screen target
+	QMenu *swipeModeMenu = new QMenu(tbSwipe);
+	QAction *actModeSwipe = swipeModeMenu->addAction("Swipe");
+	QAction *actModeLink  = swipeModeMenu->addAction("Link");
+	actModeSwipe->setCheckable(true); actModeLink->setCheckable(true);
+	actModeSwipe->setToolTip("Swipe: split two layers of this window across a draggable divider");
+	actModeLink->setToolTip("Link: right-click switches which of the two paired layers shows");
+	auto *swipeModeGroup = new QActionGroup(tbSwipe);     // exclusive: exactly one mode selected
+	swipeModeGroup->addAction(actModeSwipe); swipeModeGroup->addAction(actModeLink);
+	actModeSwipe->setChecked(true);                       // default mode = Swipe (unchanged prior behaviour)
+
+	QAction *actSwipe = new QAction(tbSwipe);             // the shared ON/OFF toggle (not itself in the menu)
 	actSwipe->setCheckable(true);
-	actSwipe->setToolTip("Swipe: compare two grids / images across a draggable divider");
-	actSwipe->setEnabled(false);                          // no data yet; availability refreshed on rebuild
 	s->swipeAct = actSwipe;
-	QObject::connect(actSwipe, &QAction::toggled, [s, actSwipe](bool on) { swipeToggled(s, actSwipe, on); });
-	swipeRefreshAvailability(s);
+	QObject::connect(actSwipe, &QAction::toggled, [s, actSwipe](bool on) {
+		s->swipeToolMode == Scene::ToolMode::Link ? linkToggled(s, actSwipe, on) : swipeToggled(s, actSwipe, on);
+	});
+	// swipeSelectMode (57_swipe.cpp) does the actual work (reset off, icon/tooltip, availability) --
+	// the SAME function gmtvtk_swipe_select_mode_h wraps for host/test code, so there is only ONE
+	// place this bookkeeping happens.
+	QObject::connect(actModeSwipe, &QAction::triggered, [s](bool) { swipeSelectMode(s, false); });
+	QObject::connect(actModeLink,  &QAction::triggered, [s](bool) { swipeSelectMode(s, true);  });
+	// tbSwipe's OWN checked state drives its pressed/highlighted look; actSwipe is the "real" model
+	// (what swipeToggled/linkToggled/swipeRefreshAvailability read and set). A click flips tbSwipe's
+	// native checked state FIRST (Qt's own checkable-button handling, before `clicked` fires), so the
+	// handler below just copies that INTO actSwipe; the reverse connection then keeps tbSwipe in sync
+	// whenever actSwipe changes some OTHER way (a cancelled partner pick, the auto-off timer in
+	// swipeRefreshAvailability) — guarded by the equality check so it never fights the click handler.
+	QObject::connect(tbSwipe, &QToolButton::clicked, tbSwipe, [actSwipe, tbSwipe]() {
+		actSwipe->setChecked(tbSwipe->isChecked());
+	});
+	QObject::connect(actSwipe, &QAction::toggled, tbSwipe, [tbSwipe](bool on) {
+		if (tbSwipe->isChecked() != on) tbSwipe->setChecked(on);
+	});
+	tbSwipe->setMenu(swipeModeMenu);
+	tbSwipe->setIcon(makeSwipeIcon());                    // starting glyph (default mode = Swipe)
+	tb->addWidget(tbSwipe);
+	// This window's own availability, AND every other window's: Link's cross-window pairing means a
+	// new window can be the second half every ALREADY-OPEN window was missing (the mirror of the
+	// window-destroyed handler's own re-check).
+	for (Scene *o : g_scenes) swipeRefreshAvailability(o);
 
 	// Info flyout sits LAST on the toolbar row (built earlier, added here so it's the rightmost item).
 	tb->addSeparator();
@@ -10947,6 +10975,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	widget->setContextMenuPolicy(Qt::CustomContextMenu);
 	QObject::connect(widget, &QWidget::customContextMenuRequested,
 		[=](const QPoint &pos) {
+			// Link owns the right button outright while active: the peek itself is driven by the raw
+			// press/release (LinkPeekFilter, 57_swipe.cpp) because a context-menu request cannot
+			// express "held" then "released". All that is left here is to SWALLOW the request the
+			// platform still raises on release (WM_CONTEXTMENU does not come from the Qt mouse event
+			// the filter consumed), so no per-element menu pops in the middle of a peek. Same guards
+			// as the two below it, so a rubber-band selection or a polygon drawing in progress keeps
+			// its own right-click meaning even with Link on.
+			if (s->linkOn && !(s->rbEnabled && (s->rbConsume ||
+				(QApplication::keyboardModifiers() & Qt::ControlModifier))) &&
+				!(s->polyMode && s->polyDrawing))
+				return;
 			// Ctrl+right is the rubber-band select gesture on a point cloud, not a menu
 			// request — swallow it (rbConsume is set by the selection release handler).
 			if (s->rbEnabled && (s->rbConsume ||

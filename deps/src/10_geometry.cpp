@@ -685,8 +685,15 @@ struct Scene {
 	QMenu *elasticMenu = nullptr;   // Seismology > Elastic deformation (disabled until a CRS is set)
 	bool hasCRS() const { return !crsProj4.empty() || !crsWkt.empty() || crsEpsg != 0; }
 
-	// --- Swipe tool (compare two rasters across a draggable divider) ---------
-	// See 57_swipe.cpp. ONE camera-aligned cut plane, given to both paired layers with opposite
+	// --- Swipe / Link tool (two ways to compare two rasters) -----------------
+	// One toolbar slot, two modes (57_swipe.cpp) — `swipeToolMode` picks which one `swipeAct`'s
+	// toggle drives, mirroring the 2D/3D flyout's shape (icon + dropdown) but each mode needs its own
+	// partner-resolution flow before it can turn on, so the dropdown only SELECTS a mode; the slot
+	// click is what toggles the selected mode on/off.
+	enum class ToolMode { Swipe, Link };
+	ToolMode swipeToolMode = ToolMode::Swipe;
+
+	// Swipe: ONE camera-aligned cut plane, given to both paired layers of THIS window with opposite
 	// normals: A keeps the half LEFT of the divider, B the half right of it. The props are RAW
 	// (non-owning) identity handles — every use re-validates them against the live layer list, so a
 	// layer deleted while the tool is on simply drops out. `swipeSavedVis` is the visibility of every
@@ -697,9 +704,41 @@ struct Scene {
 	vtkProp3D *swipeBProp = nullptr;
 	vtkSmartPointer<vtkPlane> swipePlaneA, swipePlaneB;
 	vtkSmartPointer<vtkCallbackCommand> swipeCamCmd;   // camera-modified: keep the cut screen-vertical
-	QAction *swipeAct = nullptr;      // the toolbar toggle (enabled only while >=2 rasters exist)
+	QAction *swipeAct = nullptr;      // the shared toggle (enabled per the ACTIVE mode's own usability)
+	QToolButton *swipeToolBtn = nullptr;  // the VISIBLE toolbar button -- swipeAct is never added to the
+	                                     // toolbar itself (see 70_window.cpp), so its enabled/checked
+	                                     // state does not reach the screen on its own; every setter
+	                                     // that touches swipeAct's enabled state must ALSO touch this.
 	QWidget *swipeBar = nullptr;      // the draggable divider overlay, parented on `widget`
 	std::vector<std::pair<vtkProp3D*, int>> swipeSavedVis;
+
+	// Link shows ONE of a pair at a time instead of splitting them across a divider: a right-click
+	// swaps which one you are looking at, at whatever zoom you are already at. Two flavours, picked
+	// by what the window actually holds (57_swipe.cpp):
+	//   IN-WINDOW  — this window holds >=2 rasters: the SAME pairing swipeLayers/swipePartnerDialog
+	//     give Swipe, and the right-click just flips which of the two is visible. The camera is NEVER
+	//     touched, which is exactly what "respecting the current zoom" means — nothing about the view
+	//     moves, only which raster is drawn. `linkAProp`/`linkBProp` are RAW, non-owning identity
+	//     handles re-validated against the live layer list on every use (same convention as Swipe's
+	//     own aProp/bProp); `linkSavedVis` is every raster's visibility before Link hid the non-paired
+	//     ones, replayed when Link switches off.
+	//   CROSS-WINDOW — this window holds only ONE raster: the partner is ANOTHER OPEN WINDOW whose
+	//     data frame overlaps this one's, and the right-click raises it framed on the region THIS
+	//     window is currently showing. `linkPartnerScene` holds it, set on BOTH scenes so the gesture
+	//     works from either side; it is a RAW handle too, always re-validated with sceneAlive() before
+	//     use (a partner window closed meanwhile is simply dropped, never dereferenced).
+	// The gesture is PRESS-AND-HOLD, not a toggle: hold the right button to peek at the other one,
+	// release to snap back to the one you started on. `linkPeeking` is that held state (so a peek
+	// interrupted by the tool switching off, or by a layer disappearing, still snaps back);
+	// `linkPeekFilter` is the QObject event filter on `widget` that owns the raw press/release —
+	// installed while Link is on, removed when it is off, so right-drag zoom behaves normally again.
+	bool   linkOn = false;
+	bool   linkPeeking = false;
+	QObject *linkPeekFilter = nullptr;
+	vtkProp3D *linkAProp = nullptr;
+	vtkProp3D *linkBProp = nullptr;
+	Scene *linkPartnerScene = nullptr;
+	std::vector<std::pair<vtkProp3D*, int>> linkSavedVis;
 
 	QAction *act2D = nullptr;        // shared checkable "Flat 2D (map)" action (toolbar + View menu)
 	QWidget *objPanel = nullptr;     // Scene Objects dock content (rebuilt when overlays change)
@@ -1563,6 +1602,84 @@ static inline void axesSetBounds(Scene *s, const double bIn[6]) {
 	double cur[6]; s->axes->GetBounds(cur);
 	for (int i = 0; i < 6; ++i)
 		if (std::abs(cur[i] - b[i]) > 1e-9 * (1.0 + std::abs(b[i]))) { s->axes->SetBounds(b); return; }
+}
+
+// Current visible world region (W/E/S/N in TRUE data coords) = the part of the map on screen at the
+// CURRENT camera/zoom: project the 4 viewport corners onto the z=0 plane (the flat map), undo the X
+// aspect scale (xfac), take the bbox, clamp to the data frame. The ONE source of "what's on screen
+// right now" — buildAndShow's own `visibleRegion` lambda (70_window.cpp, used by every Geography/
+// Seismology leaf) is a one-line forwarder to this; the Link tool's cross-window camera sync
+// (57_swipe.cpp) reads the SAME thing off the SOURCE window before pointing the partner at it. false
+// if there is no renderer/window yet (an empty launcher with no camera set up).
+static bool sceneVisibleRegion(Scene *s, double &W, double &E, double &S, double &N) {
+	if (!s || !s->ren || !s->widget || !s->widget->renderWindow()) return false;
+	const int *sz = s->widget->renderWindow()->GetSize();
+	const double w = sz[0], h = sz[1];
+	const double gx = (s->xfac != 0.0) ? s->xfac : 1.0;
+	const double corners[4][2] = { {0,0}, {w,0}, {0,h}, {w,h} };
+	bool any = false;
+	for (const auto &c : corners) {
+		double nr[4], fr[4];
+		s->ren->SetDisplayPoint(c[0], c[1], 0.0); s->ren->DisplayToWorld();
+		for (int i = 0; i < 4; ++i) nr[i] = s->ren->GetWorldPoint()[i];
+		s->ren->SetDisplayPoint(c[0], c[1], 1.0); s->ren->DisplayToWorld();
+		for (int i = 0; i < 4; ++i) fr[i] = s->ren->GetWorldPoint()[i];
+		if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
+		if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
+		const double dirz = fr[2] - nr[2];
+		if (dirz == 0.0) continue;                          // ray parallel to the map plane
+		const double t0 = -nr[2] / dirz;
+		const double tx = (nr[0] + t0 * (fr[0] - nr[0])) / gx;
+		const double ty =  nr[1] + t0 * (fr[1] - nr[1]);
+		if (!any) { W = E = tx; S = N = ty; any = true; }
+		else { W = std::min(W, tx); E = std::max(E, tx); S = std::min(S, ty); N = std::max(N, ty); }
+	}
+	if (!any) return false;
+	W = std::max(W, s->x0); E = std::min(E, s->x1);         // never exceed the data frame
+	S = std::max(S, s->y0); N = std::min(N, s->y1);
+	return (E > W && N > S);
+}
+
+// Point the camera at `b` (an already xfac/zfac/ve-SCALED world bbox) using the SAME re-center +
+// NDC-fit-zoom technique gmtvtk_reframe_z_h/fitSnapView use — WITHOUT touching the axes cube or the
+// scene's own x0/x1/y0/y1 bookkeeping. gmtvtk_reframe_z_h (90_c_api.cpp) is this PLUS that axes/frame
+// bookkeeping, extracted here so a caller that wants to LOOK AT a region without redefining what this
+// window's data frame IS can reuse the exact same maths (SACRED_LAW: fix/share the source, never
+// refork it) — the Link tool's cross-window camera sync (57_swipe.cpp) is exactly that caller: it
+// must never touch the PARTNER window's own axes/frame, only point its camera.
+static void cameraFitToScaledBBox(Scene *s, const double b[6], bool keepMargin) {
+	if (!s || !s->ren || !s->widget || !s->widget->renderWindow()) return;
+	vtkRenderer *ren = s->ren;
+	vtkCamera *cam = ren->GetActiveCamera();
+	{
+		const double sc[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
+		double pos[3], foc[3]; cam->GetPosition(pos); cam->GetFocalPoint(foc);
+		const double d[3] = { pos[0]-foc[0], pos[1]-foc[1], pos[2]-foc[2] };
+		cam->SetFocalPoint(sc);
+		cam->SetPosition(sc[0]+d[0], sc[1]+d[1], sc[2]+d[2]);
+	}
+	const int *sz = s->widget->renderWindow()->GetSize();
+	const double aspect = (sz && sz[1] > 0) ? double(sz[0]) / double(sz[1]) : 1.0;
+	const double targetFill = !s->flat2d ? 0.88 : (keepMargin ? 0.84 : 1.0);
+	for (int pass = 0; pass < 2; ++pass) {
+		vtkMatrix4x4 *M = cam->GetCompositeProjectionTransformMatrix(aspect, -1.0, 1.0);
+		double nx0=1e300, nx1=-1e300, ny0=1e300, ny1=-1e300;
+		for (double cx : { b[0], b[1] })
+			for (double cy : { b[2], b[3] })
+				for (double cz : { b[4], b[5] }) {
+					double p[4] = { cx, cy, cz, 1.0 }, o[4];
+					M->MultiplyPoint(p, o);
+					if (o[3] == 0.0) continue;
+					const double ndcx = o[0]/o[3], ndcy = o[1]/o[3];
+					nx0 = std::min(nx0, ndcx); nx1 = std::max(nx1, ndcx);
+					ny0 = std::min(ny0, ndcy); ny1 = std::max(ny1, ndcy);
+				}
+		const double wfrac = (nx1 - nx0) / 2.0, hfrac = (ny1 - ny0) / 2.0;
+		const double frac = s->flat2d ? std::max(wfrac, hfrac) : wfrac;
+		if (frac <= 1e-6) break;
+		cam->Zoom(targetFill / frac);
+	}
+	ren->ResetCameraClippingRange();
 }
 
 // The X/Y axis NAME titles, from the ACTIVE layer's own x,y kind. Geographic -> "lon"/"lat";

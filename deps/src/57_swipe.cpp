@@ -1,11 +1,11 @@
-// 57_swipe.cpp — the Swipe tool: compare TWO rasters (grids and/or images) in one window by
-// dragging a vertical divider across the scene (the ArcGIS StoryMaps "swipe" gesture).
+// 57_swipe.cpp — two ways to compare TWO rasters, sharing one toolbar slot (Swipe | Link).
 //
-// Mechanism: ONE camera-aligned cut plane, applied to BOTH paired layers with opposite normals —
-// the left layer keeps the half left of the divider, the right layer keeps the half right of it.
-// Because the two halves never overlap there is no z-fighting and no dependence on which layer
-// happens to be higher in the grid pile: the pair can be any two rasters, in any order, a grid
-// against an image just as well as grid against grid.
+// SWIPE compares two layers OF THE SAME WINDOW by dragging a vertical divider across the scene (the
+// ArcGIS StoryMaps "swipe" gesture). Mechanism: ONE camera-aligned cut plane, applied to BOTH paired
+// layers with opposite normals — the left layer keeps the half left of the divider, the right layer
+// keeps the half right of it. Because the two halves never overlap there is no z-fighting and no
+// dependence on which layer happens to be higher in the grid pile: the pair can be any two rasters,
+// in any order, a grid against an image just as well as grid against grid.
 //
 // The plane is rebuilt from the CAMERA (normal = camera right-vector, origin = the world point
 // under the divider's screen x) on every camera change, so the divider stays a fixed vertical line
@@ -21,6 +21,31 @@
 // The divider itself is a narrow Qt overlay widget parented on the VTK widget (not a vtkActor2D):
 // it owns the drag, the grab handle and the cursor with plain Qt mouse events, and leaves every
 // pixel outside its own strip to VTK's interactor.
+//
+// LINK shows only ONE of a pair at a time instead of splitting them across a divider: HOLD THE RIGHT
+// BUTTON to see the other one, RELEASE to snap back to the one you started on — a momentary peek, not
+// a toggle, so the pair is compared by flicking the button rather than by hunting for the way back.
+// That is why Link owns the raw press and release (LinkPeekFilter) instead of the context-menu
+// request the rest of the app uses: one notification cannot say "still held" and then "let go".
+// Two flavours, chosen by what the window actually holds — never by a mode switch the user has to find:
+//   IN-WINDOW    — this window holds >=2 rasters: pair two of them, with the identical pairing Swipe
+//                  uses (swipeLayers / swipePartnerDialog, reused verbatim), and the peek just flips
+//                  which one is visible. The camera is NEVER touched — that is exactly what
+//                  "respecting the current zoom" means, nothing about the view moves.
+//   CROSS-WINDOW — this window holds only ONE raster: pair with ANOTHER OPEN WINDOW, and the peek
+//                  raises it framed on the region THIS window is showing (that is where "at the zoom
+//                  level of the first one" has to be done on purpose, since the partner has its own
+//                  camera), raising this one back on release. The partner's axes/frame are never
+//                  touched, only its camera.
+// Either way the two extents only need to INTERSECT, never match (checked once, when Link turns on)
+// — a linked pair can be a grid and an image of completely different resolution and footprint, as
+// long as they describe overlapping ground.
+//
+// Both modes ARM THE MOMENT THEY ARE PICKED from the toolbar dropdown (swipeSelectMode): choosing a
+// tool out of a menu is the act of starting it, never a silent mode flag awaiting a second click.
+
+static QIcon makeSwipeIcon();               // split-tile glyph (85_polygon.cpp; also fwd-declared in 70_window.cpp)
+static QIcon makeLinkIcon();                 // two-windows-and-a-chain glyph (85_polygon.cpp; ditto)
 
 // One raster layer of a window as the swipe tool sees it: the base surface/image plus every
 // dropped grid/image. `prop` is the identity + visibility handle (exactly what the Scene Objects
@@ -31,6 +56,7 @@ struct SwipeLayer {
 	std::string name;
 	int  rank = 0;              // grid-pile rank; picks the "currently displayed" layer
 	bool visible = false;
+	double x0 = 0, x1 = 0, y0 = 0, y1 = 0;   // TRUE data extent — Link's own-layers-must-intersect check
 };
 
 // Every raster in the window, base first then the extras in add order. Non-raster objects (lines,
@@ -44,6 +70,7 @@ static std::vector<SwipeLayer> swipeLayers(Scene *s) {
 			L.prop = s->drape; L.actors = { s->drape.Get() };
 			L.name = s->surfName.empty() ? std::string("Image") : s->surfName;
 			L.rank = s->surfStack; L.visible = s->drape->GetVisibility() != 0;
+			L.x0 = s->x0; L.x1 = s->x1; L.y0 = s->y0; L.y1 = s->y1;
 			out.push_back(L);
 		}
 	}
@@ -55,6 +82,8 @@ static std::vector<SwipeLayer> swipeLayers(Scene *s) {
 			L.name = (s->customLayerTexture && !s->aquaVarLabel.empty()) ? s->aquaVarLabel
 			       : s->surfName.empty() ? std::string("Surface") : s->surfName;
 			L.rank = s->surfStack; L.visible = sp->GetVisibility() != 0;
+			if (!s->gridZ.empty()) { L.x0 = s->gx0; L.x1 = s->gx1; L.y0 = s->gy0; L.y1 = s->gy1; }
+			else                   { L.x0 = s->x0;  L.x1 = s->x1;  L.y0 = s->y0;  L.y1 = s->y1;  }
 			if (!L.actors.empty()) out.push_back(L);
 		}
 	}
@@ -65,6 +94,8 @@ static std::vector<SwipeLayer> swipeLayers(Scene *s) {
 		if (ex.drape) L.actors.push_back(ex.drape.Get());
 		L.name = ex.name;
 		L.rank = ex.gstack; L.visible = ex.actor->GetVisibility() != 0;
+		if (ex.isImage) { L.x0 = ex.bx0; L.x1 = ex.bx1; L.y0 = ex.by0; L.y1 = ex.by1; }
+		else            { L.x0 = ex.gx0; L.x1 = ex.gx1; L.y0 = ex.gy0; L.y1 = ex.gy1; }
 		out.push_back(L);
 	}
 	return out;
@@ -329,15 +360,314 @@ static void swipeToggled(Scene *s, QAction *act, bool on) {
 		        .arg(QString::fromStdString(L[cur].name), QString::fromStdString(L[other].name)), 4000);
 }
 
-// Keep the toolbar button's enabled state honest: the tool needs two rasters. Called at the end of
-// every rebuildSceneObjects, i.e. after every add / delete / visibility change. Switching the tool
-// off is deferred to the event loop so this never re-enters the rebuild that called it.
+static std::vector<Scene*> linkPartnerWindows(Scene *s);   // other open windows Link could pair with
+
+// Keep the toolbar button's enabled state honest. Enabled when EITHER mode has something to work
+// with — two rasters in THIS window (what Swipe always needs, and Link's in-window pairing), or one
+// raster here plus another OPEN WINDOW over the same region (Link's cross-window pairing). Never
+// gated on the CURRENTLY selected mode: the dropdown that switches mode lives inside this very
+// button, so a slot disabled for the active mode would make the other, usable mode unreachable —
+// picking a mode that then has nothing to pair is refused by that mode's own handler, with a status
+// line saying why. Called at the end of every rebuildSceneObjects, i.e. after every add / delete /
+// visibility change, and for EVERY live scene whenever a window opens or closes (70_window.cpp —
+// gaining or losing a window changes what Link can pair with in every OTHER window too). Switching
+// the tool off is deferred to the event loop so this never re-enters the rebuild that called it.
 static void swipeRefreshAvailability(Scene *s) {
 	if (!s || !s->swipeAct) return;
 	const size_t n = swipeLayers(s).size();
-	s->swipeAct->setEnabled(n >= 2);
-	if (s->swipeOn && n < 2) {
+	const bool usable = (n >= 2) || (n >= 1 && !linkPartnerWindows(s).empty());
+	s->swipeAct->setEnabled(usable);
+	if (s->swipeToolBtn) s->swipeToolBtn->setEnabled(usable);   // the VISIBLE button -- swipeAct alone never reaches the screen
+	if (s->swipeAct->isChecked() && !usable) {
 		QAction *act = s->swipeAct;
 		QTimer::singleShot(0, act, [act]() { act->setChecked(false); });
 	}
+}
+
+// Put the shared toolbar slot IN a mode (icon, tooltip, availability) without arming anything. Not
+// the dropdown's handler — swipeSelectMode below is. Used on its own only where a mode change must
+// NOT re-run the arming flow: Link mirroring its mode onto the partner window it just paired with.
+static void swipeSetMode(Scene *s, bool linkMode) {
+	if (!s || !s->swipeAct) return;
+	s->swipeToolMode = linkMode ? Scene::ToolMode::Link : Scene::ToolMode::Swipe;
+	if (s->swipeToolBtn) {
+		s->swipeToolBtn->setIcon(linkMode ? makeLinkIcon() : makeSwipeIcon());
+		s->swipeToolBtn->setToolTip(linkMode ? "Link: right-click shows the other paired raster / window"
+		                                     : "Swipe: compare two grids / images across a draggable divider");
+	}
+	swipeRefreshAvailability(s);
+}
+
+// The toolbar dropdown's handler: picking a mode SELECTS it AND TURNS IT ON. Picking a tool out of a
+// menu IS the act of starting it — there is no second, invisible arming click. (The two-step version
+// this replaces left Link looking stone dead: the mode was selected, nothing was armed, and a
+// right-click over a raster with no overlay under it falls through every hit test in the context-menu
+// handler and pops no menu at all, so the user got no feedback whatever.) Re-picking the mode already
+// running restarts it with a fresh partner pick, which is why the toggle is unconditionally reset off
+// first. The ONE implementation both dropdown entries (70_window.cpp) call, and the only thing
+// gmtvtk_swipe_select_mode_h (90_c_api.cpp) wraps for host/test code.
+static void swipeSelectMode(Scene *s, bool linkMode) {
+	if (!s || !s->swipeAct) return;
+	if (s->swipeAct->isChecked()) s->swipeAct->setChecked(false);   // always a fresh start
+	swipeSetMode(s, linkMode);
+	if (s->swipeAct->isEnabled()) s->swipeAct->setChecked(true);    // ARM: runs swipeToggled / linkToggled
+}
+
+// ── Link ──────────────────────────────────────────────────────────────────────────────────────
+
+// Every OTHER open window Link could pair THIS one with: alive, actually built, holding at least one
+// raster of its own, and with a data frame that INTERSECTS this window's — the same overlap-not-
+// equality rule the in-window pairing applies to two layers, applied to two whole windows. Sorted by
+// title because g_scenes is an unordered_set and the picker's row order must not wander.
+static std::vector<Scene*> linkPartnerWindows(Scene *s) {
+	std::vector<Scene*> out;
+	if (!s) return out;
+	for (Scene *o : g_scenes) {
+		if (o == s || !o->win || !o->ren) continue;
+		if (swipeLayers(o).empty()) continue;                                   // nothing to show there
+		if (s->x1 <= o->x0 || s->x0 >= o->x1 || s->y1 <= o->y0 || s->y0 >= o->y1) continue;
+		out.push_back(o);
+	}
+	std::sort(out.begin(), out.end(), [](Scene *a, Scene *b) {
+		return a->win->windowTitle() < b->win->windowTitle();
+	});
+	return out;
+}
+
+// Ask which OTHER WINDOW to pair with — the cross-window twin of swipePartnerDialog, same shape and
+// same keyboard/double-click behaviour, only the list's contents differ. nullptr if cancelled.
+static Scene *linkPartnerWindowDialog(Scene *s, const std::vector<Scene*> &cand) {
+	QDialog dlg(s->win);
+	dlg.setWindowTitle("Link — pair with window");
+	QVBoxLayout *lay = new QVBoxLayout(&dlg);
+	lay->addWidget(new QLabel("Right-click in this window will show:", &dlg));
+	QListWidget *list = new QListWidget(&dlg);
+	for (Scene *o : cand) list->addItem(o->win->windowTitle());
+	list->setCurrentRow(0);
+	lay->addWidget(list);
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+	lay->addWidget(bb);
+	QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+	QObject::connect(list, &QListWidget::itemDoubleClicked, &dlg, &QDialog::accept);
+	if (dlg.exec() != QDialog::Accepted) return nullptr;
+	const int row = list->currentRow();
+	return (row >= 0 && row < (int)cand.size()) ? cand[row] : nullptr;
+}
+
+static void linkPeek(Scene *s, bool on);   // the held-right-button peek itself (end of this file)
+
+// Link's gesture is a PRESS-AND-HOLD, so it has to own the raw right-button press and release — a
+// context-menu request is a single notification, it cannot say "still held" or "let go". This filter
+// sits on the VTK widget while Link is on and consumes both, which also stops VTK's own right-drag
+// dolly from zooming the view under the peek. Everything else — every other button, and right-click
+// itself while a rubber-band selection or a polygon drawing is in progress — passes straight
+// through, exactly as the context-menu handler's guards did (70_window.cpp).
+class LinkPeekFilter : public QObject {
+public:
+	explicit LinkPeekFilter(Scene *sc, QObject *parent) : QObject(parent), s(sc) {}
+protected:
+	bool eventFilter(QObject *, QEvent *ev) override {
+		if (!s || !s->linkOn) return false;
+		const bool press = ev->type() == QEvent::MouseButtonPress;
+		if (!press && ev->type() != QEvent::MouseButtonRelease) return false;
+		QMouseEvent *me = static_cast<QMouseEvent*>(ev);
+		if (me->button() != Qt::RightButton) return false;
+		if (s->rbEnabled && (s->rbConsume ||
+			(QApplication::keyboardModifiers() & Qt::ControlModifier))) return false;   // Ctrl+right = select
+		if (s->polyMode && s->polyDrawing) return false;                                 // = remove last vertex
+		linkPeek(s, press);
+		return true;
+	}
+private:
+	Scene *s = nullptr;
+};
+
+// A cross-window pair is stored on BOTH scenes (the right-click gesture works from either side), so
+// it must also be BROKEN from both — set while mirroring the break onto the partner's own toolbar
+// toggle, whose `toggled` handler would otherwise run the whole tear-down a second time.
+static bool g_linkMirroring = false;
+
+// Put the press-and-hold filter on a window's viewport, or take it off again. Idempotent, and the
+// ONE place the filter is created/destroyed — both sides of a cross-window pair go through it.
+static void linkSetPeekFilter(Scene *s, bool on) {
+	if (!s || !s->widget) return;
+	if (on) {
+		if (!s->linkPeekFilter) {
+			LinkPeekFilter *f = new LinkPeekFilter(s, s->widget);
+			s->widget->installEventFilter(f);
+			s->linkPeekFilter = f;
+		}
+	}
+	else if (s->linkPeekFilter) {
+		s->widget->removeEventFilter(s->linkPeekFilter);
+		s->linkPeekFilter->deleteLater();
+		s->linkPeekFilter = nullptr;
+	}
+}
+
+// Drive the partner window's shared toggle to `on` for appearance only: its handler sees the guard
+// and returns, because the pairing bookkeeping is done by the side that initiated it.
+static void linkMirrorToggle(Scene *o, bool on) {
+	if (!o || !o->swipeAct || o->swipeAct->isChecked() == on) return;
+	g_linkMirroring = true;
+	o->swipeAct->setChecked(on);
+	g_linkMirroring = false;
+}
+
+// Break a cross-window pair from both sides. A no-op for an in-window pair, and safe on a half-dead
+// one: a partner whose window has closed is already out of g_scenes, so sceneAlive rejects the stale
+// handle before anything dereferences it.
+static void linkUnlinkWindows(Scene *s) {
+	if (!s) return;
+	Scene *o = s->linkPartnerScene;
+	s->linkPartnerScene = nullptr;
+	if (!o || !sceneAlive(o)) return;
+	if (o->linkPeeking) linkPeek(o, false);            // never leave the partner stuck mid-peek
+	o->linkPartnerScene = nullptr;
+	o->linkOn = false;
+	linkSetPeekFilter(o, false);
+	linkMirrorToggle(o, false);
+}
+
+// The toolbar toggle's handler for Link mode (dispatched from the SAME s->swipeAct::toggled signal
+// swipeToggled uses for Swipe mode — see the toolbar wiring in 70_window.cpp). Two ways to resolve
+// the pair, chosen by what this window actually holds:
+//   >=2 rasters here -> pair two of THEM, EXACTLY as swipeToggled does (implicit with exactly two,
+//                       swipePartnerDialog with more), requiring only that their extents intersect;
+//   exactly 1 raster -> pair with ANOTHER OPEN WINDOW whose frame overlaps this one's.
+// Un-checks itself if there is nothing to pair with, the user cancels, or the two don't overlap.
+static void linkToggled(Scene *s, QAction *act, bool on) {
+	if (!s) return;
+	if (g_linkMirroring) return;      // partner's button is only being kept in sync; not a real toggle
+	if (!on) {
+		if (s->linkPeeking) linkPeek(s, false);        // switched off mid-hold: snap back first
+		if (s->linkOn) {
+			std::vector<SwipeLayer> L = swipeLayers(s);
+			for (auto &kv : s->linkSavedVis)
+				if (swipeIndexOf(L, kv.first) >= 0) kv.first->SetVisibility(kv.second);
+		}
+		linkUnlinkWindows(s);
+		linkSetPeekFilter(s, false);
+		s->linkSavedVis.clear();
+		s->linkOn = false; s->linkAProp = s->linkBProp = nullptr;
+		refreshGridColorbar(s);
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return;
+	}
+	linkUnlinkWindows(s);                              // re-arming always starts from a clean pair
+	std::vector<SwipeLayer> L = swipeLayers(s);
+	if (L.size() >= 2) {
+		int cur = swipeCurrentIndex(L);
+		if (cur < 0) cur = (int)L.size() - 1;          // nothing visible -> link the last one added
+		int other = -1;
+		if (L.size() == 2) other = (cur == 0) ? 1 : 0;
+		else               other = swipePartnerDialog(s, L, cur);   // SAME dialog Swipe uses (shape is identical)
+		if (other < 0) { act->setChecked(false); return; }
+		// The restriction the user asked for: the two do not need to be the same, only to INTERSECT —
+		// otherwise there is nothing sensible to switch to.
+		const SwipeLayer &A = L[cur], &B = L[other];
+		if (A.x1 <= B.x0 || A.x0 >= B.x1 || A.y1 <= B.y0 || A.y0 >= B.y1) {
+			if (s->win) s->win->statusBar()->showMessage(
+				QString("Link: \"%1\" and \"%2\" don't overlap").arg(QString::fromStdString(A.name), QString::fromStdString(B.name)), 4000);
+			act->setChecked(false);
+			return;
+		}
+		s->linkSavedVis.clear();
+		for (const SwipeLayer &lay : L) {
+			s->linkSavedVis.push_back({ lay.prop, lay.prop->GetVisibility() });
+			lay.prop->SetVisibility(lay.prop == A.prop ? 1 : 0);   // start on the CURRENTLY displayed one
+		}
+		s->linkAProp = A.prop; s->linkBProp = B.prop;
+		s->linkOn = true;
+		linkSetPeekFilter(s, true);
+		refreshGridColorbar(s);
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		if (s->win)
+			s->win->statusBar()->showMessage(QString("Link: showing \"%1\" — hold the right button to see \"%2\"")
+			        .arg(QString::fromStdString(A.name), QString::fromStdString(B.name)), 4000);
+		return;
+	}
+	// --- only one raster here: the partner is another WINDOW -------------------------------------
+	std::vector<Scene*> cand = linkPartnerWindows(s);
+	if (L.empty() || cand.empty()) {
+		if (s->win) s->win->statusBar()->showMessage(
+			"Link needs a second grid / image in this window, or another window over the same region", 4000);
+		act->setChecked(false);
+		return;
+	}
+	Scene *o = (cand.size() == 1) ? cand.front() : linkPartnerWindowDialog(s, cand);
+	if (!o) { act->setChecked(false); return; }
+	s->linkPartnerScene = o; o->linkPartnerScene = s;   // both sides: the gesture works from either
+	s->linkOn = true;       o->linkOn = true;
+	linkSetPeekFilter(s, true); linkSetPeekFilter(o, true);
+	swipeSetMode(o, true);                              // partner's own slot must route to Link too
+	linkMirrorToggle(o, true);                          // ... and LOOK on, without re-running the pairing
+	if (s->win)
+		s->win->statusBar()->showMessage(QString("Link: hold the right button to see \"%1\" here-framed")
+		        .arg(o->win->windowTitle()), 4000);
+}
+
+// THE gesture, driven by LinkPeekFilter's raw right-button press (on = true) and release (false):
+// hold to see the OTHER one, let go to snap back to the one you started on. Not a toggle — the
+// starting layer/window is fixed at arm time (`linkAProp`, and `s` itself for a pair of windows), so
+// the peek always ends where it began no matter how many times it is held. Idempotent: a repeated
+// press or a release with nothing held does nothing.
+//   IN-WINDOW pair    — show B while held, A when released. The camera is NEVER touched, so
+//                       whatever region you were looking at stays exactly as framed.
+//   CROSS-WINDOW pair — while held, raise the partner window with its camera pointed at the region
+//                       THIS window is currently showing (sceneVisibleRegion -> cameraFitToScaledBBox,
+//                       both 10_geometry.cpp — the SAME camera-fit maths gmtvtk_reframe_z_h uses,
+//                       never a second copy); on release raise this one back. Only x/y are synced:
+//                       the partner keeps its OWN z bounds (read back through surfGetBounds, which
+//                       resolves the active layer's Z per SACRED_LAW's derived-variable axes law) and
+//                       its own axes/frame are left untouched — this points a camera, it does not
+//                       redefine what that window is.
+static void linkPeek(Scene *s, bool on) {
+	if (!s || !s->linkOn || s->linkPeeking == on) return;
+	if (s->linkPartnerScene) {
+		Scene *o = s->linkPartnerScene;
+		if (!sceneAlive(o) || !o->win || !o->ren) {      // the paired window was closed meanwhile
+			if (s->swipeAct) s->swipeAct->setChecked(false);   // runs linkToggled(s, act, false)
+			if (s->win) s->win->statusBar()->showMessage("Link: the paired window was closed", 3000);
+			return;
+		}
+		s->linkPeeking = on;
+		if (!on) {                                       // released: back to the window you started in
+			if (s->win) { s->win->raise(); s->win->activateWindow(); }
+			return;
+		}
+		double W, E, S, N;
+		if (sceneVisibleRegion(s, W, E, S, N)) {
+			const double w = std::max(W, o->x0), e = std::min(E, o->x1);   // clamp to the partner's own frame
+			const double y0 = std::max(S, o->y0), y1 = std::min(N, o->y1);
+			if (e > w && y1 > y0) {
+				double b[6];
+				surfGetBounds(o, b);                       // partner's own SCALED bounds -> keep its z
+				b[0] = w * o->xfac; b[1] = e * o->xfac;
+				b[2] = y0;          b[3] = y1;
+				cameraFitToScaledBBox(o, b, true);
+				if (o->widget && o->widget->renderWindow()) o->widget->renderWindow()->Render();
+			}
+		}
+		o->win->raise();
+		o->win->activateWindow();
+		return;
+	}
+	std::vector<SwipeLayer> L = swipeLayers(s);
+	const int ia = swipeIndexOf(L, s->linkAProp), ib = swipeIndexOf(L, s->linkBProp);
+	if (ia < 0 || ib < 0) {                             // one of the pair was deleted while Link was on
+		s->linkPeeking = false;
+		if (s->swipeAct) s->swipeAct->setChecked(false);   // runs linkToggled(s, act, false) via the toggle chain
+		if (s->win) s->win->statusBar()->showMessage("Link: one of the paired layers was removed", 3000);
+		return;
+	}
+	s->linkPeeking = on;
+	L[ia].prop->SetVisibility(on ? 0 : 1);              // A is home, B is the one you peek at
+	L[ib].prop->SetVisibility(on ? 1 : 0);
+	refreshGridColorbar(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }

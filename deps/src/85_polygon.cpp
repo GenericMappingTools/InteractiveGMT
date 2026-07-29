@@ -197,6 +197,32 @@ static QIcon makeSwipeIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// Link-tool icon: two small windows side by side joined by a chain link — the Swipe icon's sibling
+// on the SAME toolbar slot (its dropdown picks between the two). Reads as "these two are paired"
+// rather than Swipe's "one tile split in half".
+static QIcon makeLinkIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	auto winGlyph = [&](double x) {
+		QRectF r(x, 5, 8, 12);
+		p.setPen(QPen(QColor(45, 45, 50), 1.2));
+		p.setBrush(QColor(215, 225, 235));
+		p.drawRoundedRect(r, 1.5, 1.5);
+		p.setBrush(QColor(70, 95, 125));                  // titlebar strip
+		p.setPen(Qt::NoPen);
+		p.drawRoundedRect(QRectF(r.left(), r.top(), r.width(), 3.0), 1.5, 1.5);
+	};
+	winGlyph(2.0);
+	winGlyph(14.0);
+	// The chain link between them: two small overlapping rings.
+	p.setPen(QPen(QColor(230, 175, 40), 1.8));
+	p.setBrush(Qt::NoBrush);
+	p.drawEllipse(QPointF(10.6, 13.0), 2.1, 2.1);
+	p.drawEllipse(QPointF(13.4, 13.0), 2.1, 2.1);
+	p.end(); return QIcon(pm);
+}
+
 // ── 3-D Bodies flyout icons (cube / sphere / torus / cylinder + a generic polyhedron) ──────
 // Small isometric glyphs for the "3-D Bodies" toolbar flyout. Each is a stylised wireframe of the
 // GMT solid the entry builds; the generic polyhedron stands in for the platonic solids and the

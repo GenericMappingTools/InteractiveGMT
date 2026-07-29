@@ -2993,6 +2993,99 @@ GMTVTK_API int gmtvtk_aqua_force_land_bar_test(void *scene) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return 1;
 }
+
+// test hook: is the VISIBLE Swipe/Link toolbar button currently enabled? Direct property read, no
+// simulated click -- lets a test catch a model/view desync (swipeAct enabled but the on-screen
+// tbSwipe button left disabled, or vice versa) that driving only the QAction would never expose.
+GMTVTK_API int gmtvtk_swipe_btn_enabled_test(void *scene) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !s->swipeToolBtn) return -1;
+	return s->swipeToolBtn->isEnabled() ? 1 : 0;
+}
+
+// test hook: put the toolbar slot in Swipe or Link mode WITHOUT arming it (swipeSetMode) -- the state
+// the real dropdown produces on its way to arming, isolated so a test can check availability/icon
+// bookkeeping alone. The real dropdown handler is swipeSelectMode = this PLUS the arming click;
+// gmtvtk_swipe_select_mode_h wraps that one.
+GMTVTK_API void gmtvtk_swipe_set_mode_test(void *scene, int linkMode) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s) return;
+	swipeSetMode(s, linkMode != 0);
+}
+
+// test hook: what kind of Link is running on this window -- 0 = off, 1 = in-window pair (two rasters
+// of this window), 2 = cross-window pair (partner is another open window).
+GMTVTK_API int gmtvtk_link_state_test(void *scene) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !s->linkOn) return 0;
+	return s->linkPartnerScene ? 2 : 1;
+}
+
+// test hook: simulate a REAL click on the Swipe/Link toolbar button — QAbstractButton::click(), the
+// SAME press+release+clicked() sequence Qt performs for an actual mouse click. Verifies the ACTUAL
+// signal wiring (tbSwipe -> actSwipe -> swipeToggled/linkToggled), not just calling the internal
+// handler directly. Returns the button's checked state afterward, or -1 if it doesn't exist yet.
+GMTVTK_API int gmtvtk_swipe_click_test(void *scene) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !s->swipeToolBtn) return -1;
+	s->swipeToolBtn->click();
+	return s->swipeToolBtn->isChecked() ? 1 : 0;
+}
+
+// test hook: emit the viewport's customContextMenuRequested signal directly at (x,y) WIDGET-LOCAL
+// pixel coordinates — the SAME signal Qt delivers for a real right-click (Qt::CustomContextMenu
+// policy). Verifies the ACTUAL connected routing lambda (70_window.cpp) -- the Link swallow, the
+// rubber-band/polygon-drawing guards, the per-element hit tests.
+GMTVTK_API void gmtvtk_right_click_test(void *scene, int x, int y) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !s->widget) return;
+	s->widget->customContextMenuRequested(QPoint(x, y));
+}
+
+// test hook: turn Link mode on/off exactly as the real toolbar toggle does (linkToggled,
+// 57_swipe.cpp), without needing to click the real checkable button. Returns 1 if Link ended up ON
+// (0 if it refused — not enough rasters, or the pair doesn't overlap; check status bar text via
+// gmtvtk_objrows_test-style introspection if you need the reason).
+GMTVTK_API int gmtvtk_link_toggle_test(void *scene, int on) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !s->swipeAct) return 0;
+	linkToggled(s, s->swipeAct, on != 0);
+	return s->linkOn ? 1 : 0;
+}
+
+// test hook: Link's press-and-hold peek (linkPeek, 57_swipe.cpp) driven directly — on=1 is "right
+// button held", on=0 is "released". Bypasses the event plumbing; gmtvtk_right_button_test below is
+// the one that goes through it.
+GMTVTK_API void gmtvtk_link_peek_test(void *scene, int on) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s) return;
+	linkPeek(s, on != 0);
+}
+
+// test hook: deliver a REAL right-button press (press=1) or release (press=0) to the viewport at
+// (x,y) WIDGET-LOCAL pixels, exactly as Qt does for a physical click — QApplication::sendEvent runs
+// the installed event filters, so this exercises the ACTUAL LinkPeekFilter wiring (and its
+// rubber-band / polygon-drawing guards), not just linkPeek called by hand.
+GMTVTK_API void gmtvtk_right_button_test(void *scene, int x, int y, int press) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !s->widget) return;
+	const QPointF pos(x, y);
+	QMouseEvent ev(press ? QEvent::MouseButtonPress : QEvent::MouseButtonRelease,
+	               pos, s->widget->mapToGlobal(pos.toPoint()),
+	               Qt::RightButton, press ? Qt::RightButton : Qt::NoButton, Qt::NoModifier);
+	QApplication::sendEvent(s->widget, &ev);
+}
+
+// test hook: read back a window's CURRENT visible world region (sceneVisibleRegion, 10_geometry.cpp)
+// as (W,E,S,N) into `out4`. Returns 0 if there is no renderer yet (an unbuilt empty launcher).
+GMTVTK_API int gmtvtk_visible_region_test(void *scene, double *out4) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !out4) return 0;
+	double W, E, S, N;
+	if (!sceneVisibleRegion(s, W, E, S, N)) return 0;
+	out4[0] = W; out4[1] = E; out4[2] = S; out4[3] = N;
+	return 1;
+}
 #endif // GMTVTK_TEST_API
 
 // Register the grid-metadata callback used by the grdsample dialog's "OR Ref grid" picker.
@@ -3221,6 +3314,20 @@ GMTVTK_API int gmtvtk_grow_frame_h(void *handle, double x0, double x1, double y0
 // never have a base s->drape and hiding surf alone was enough. A PRIMARY bare image window
 // (gmtvtk_view_grid with image_only) DOES carry its texture on the base s->drape, not an extra — so
 // this must hide both, or "hide the primary" leaves the actual picture fully visible underneath.
+// Pick the Swipe/Link toolbar mode programmatically — the SAME entry point the dropdown menu items
+// use (swipeSelectMode, 57_swipe.cpp): reset the shared toggle off, swap the slot's icon/tooltip,
+// re-check availability, then TURN THE PICKED MODE ON (picking is starting — there is no separate
+// arming call, here or in the UI). A real (non-test) export: it is legitimate small
+// host-scriptable UI state, and — unlike a `_test`-dll hook — it runs the availability check
+// against THIS window's own production `g_scenes`, the one that actually has every other open
+// window in it (a test-dll hook has its own separate, always-empty copy of that registry; see the
+// cross-DLL note on gmtvtk_aqua_force_land_bar_test below).
+GMTVTK_API void gmtvtk_swipe_select_mode_h(void *handle, int linkMode) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	swipeSelectMode(s, linkMode != 0);
+}
+
 GMTVTK_API void gmtvtk_hide_surface(void *handle) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
@@ -3389,13 +3496,14 @@ GMTVTK_API void gmtvtk_free_rgb(unsigned char *buf) { delete[] buf; }
 // active grid. A MESH layer (a VTK .vtp surface, a GMTfv solid) has no grid data layer at all, so
 // activeGridZRange cannot speak for it and would leave the box wearing the previous layer's Z —
 // exactly the mistake SACRED_LAW.md's derived-variable axes law, Z half, is about. gmtvtk_reframe_h
-// below is this function with the grid-resolved Z, NOT a second implementation.
+// below is this function with the grid-resolved Z, NOT a second implementation. The camera-fit
+// maths itself lives in ONE place, `cameraFitToScaledBBox` (10_geometry.cpp) — this function is that
+// PLUS the axes/frame-bookkeeping half; the Link tool's cross-window sync (57_swipe.cpp) calls the
+// camera-only half directly, since it must never touch the PARTNER window's own axes/frame.
 GMTVTK_API void gmtvtk_reframe_z_h(void *handle, double x0, double x1, double y0, double y1,
                                    double z0, double z1, int keepMargin) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !s->ren || !s->widget || !s->axes) return;
-	vtkRenderer *ren = s->ren;
-	vtkCamera *cam = ren->GetActiveCamera();
 
 	const double zlo = z0, zhi = z1;
 	double b[6] = { x0 * s->xfac, x1 * s->xfac, y0, y1,
@@ -3415,35 +3523,7 @@ GMTVTK_API void gmtvtk_reframe_z_h(void *handle, double x0, double x1, double y0
 	s->axes->SetYAxisRange(y0, y1);
 	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1;    // keep the frame bookkeeping in sync (gmtvtk_grow_frame_h's shrink counterpart)
 
-	{
-		const double sc[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
-		double pos[3], foc[3]; cam->GetPosition(pos); cam->GetFocalPoint(foc);
-		const double d[3] = { pos[0]-foc[0], pos[1]-foc[1], pos[2]-foc[2] };
-		cam->SetFocalPoint(sc);
-		cam->SetPosition(sc[0]+d[0], sc[1]+d[1], sc[2]+d[2]);
-	}
-	const int *sz = s->widget->renderWindow()->GetSize();
-	const double aspect = (sz && sz[1] > 0) ? double(sz[0]) / double(sz[1]) : 1.0;
-	const double targetFill = !s->flat2d ? 0.88 : (keepMargin ? 0.84 : 1.0);
-	for (int pass = 0; pass < 2; ++pass) {
-		vtkMatrix4x4 *M = cam->GetCompositeProjectionTransformMatrix(aspect, -1.0, 1.0);
-		double nx0=1e300, nx1=-1e300, ny0=1e300, ny1=-1e300;
-		for (double cx : { b[0], b[1] })
-			for (double cy : { b[2], b[3] })
-				for (double cz : { b[4], b[5] }) {
-					double p[4] = { cx, cy, cz, 1.0 }, o[4];
-					M->MultiplyPoint(p, o);
-					if (o[3] == 0.0) continue;
-					const double ndcx = o[0]/o[3], ndcy = o[1]/o[3];
-					nx0 = std::min(nx0, ndcx); nx1 = std::max(nx1, ndcx);
-					ny0 = std::min(ny0, ndcy); ny1 = std::max(ny1, ndcy);
-				}
-		const double wfrac = (nx1 - nx0) / 2.0, hfrac = (ny1 - ny0) / 2.0;
-		const double frac = s->flat2d ? std::max(wfrac, hfrac) : wfrac;
-		if (frac <= 1e-6) break;
-		cam->Zoom(targetFill / frac);
-	}
-	ren->ResetCameraClippingRange();
+	cameraFitToScaledBBox(s, b, keepMargin != 0);
 	rebuildAxisLabels(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
