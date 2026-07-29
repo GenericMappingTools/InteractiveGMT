@@ -25,20 +25,26 @@ function update!()
 		"`] dev`-installed copy. For a plain `Pkg.add` install, use " *
 		"Pkg.update(\"InteractiveGMT\") instead.")
 
+	# A source pull that cannot fast-forward MUST NOT stop the binary sync. These are two
+	# independent things: the .jl source comes from git, gmtvtk.dll + its VTK/Qt runtime come from
+	# release assets. Letting a dirty working tree throw here used to skip Pkg.build entirely, so
+	# "Check for updates" silently did NOTHING on exactly the machines that most needed the new
+	# binaries -- the failure looked like the download being broken when it had never been tried.
 	repo = LibGit2.GitRepo(_PKGROOT)
 	try
 		println("InteractiveGMT: fetching latest changes... ($_PKGROOT)")
 		LibGit2.fetch(repo)
 		before = LibGit2.head_oid(repo)
-		ok = LibGit2.merge!(repo; fastforward=true)
-		ok || error("InteractiveGMT: local changes or diverged history -- couldn't fast-forward. " *
-		            "This checkout is a normal git repo at $_PKGROOT; resolve manually (e.g. `git status`).")
-		after = LibGit2.head_oid(repo)
-		if before == after
-			println("InteractiveGMT: source already up to date.")
+		if LibGit2.merge!(repo; fastforward=true)
+			after = LibGit2.head_oid(repo)
+			println(before == after ? "InteractiveGMT: source already up to date." :
+			        "InteractiveGMT: source updated $(string(before)[1:8]) -> $(string(after)[1:8]).")
 		else
-			println("InteractiveGMT: source updated $(string(before)[1:8]) -> $(string(after)[1:8]).")
+			@warn "InteractiveGMT: couldn't fast-forward the source (local changes or diverged " *
+			      "history) at $_PKGROOT -- keeping the current source and syncing the binaries anyway."
 		end
+	catch e
+		@warn "InteractiveGMT: source update failed -- syncing the binaries anyway." exception=(e,)
 	finally
 		close(repo)
 	end

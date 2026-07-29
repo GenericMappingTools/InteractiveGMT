@@ -162,22 +162,48 @@ end
 # owns that instead, firing on the first `using` for dev and add alike.
 
 # The dll-only zip carries `.dll_requires`: every non-system DLL gmtvtk.dll imports, transitively
-# (written at package time by deps/CMakeLists.txt). Checking it here is the safety net for the one
-# mistake the tag cannot catch — publishing a gmtvtk.dll that links a new VTK module WITHOUT
-# bumping deps/RUNTIME_VERSION. Warn only: the files are already on disk, and refusing the build
-# would leave the user worse off than a viewer that at least explains itself on first use (the
-# same list is repeated by src/libgmtvtk.jl's _missing_runtime_modules when dlopen fails).
-function _check_runtime_manifest()
+# (written at package time by deps/CMakeLists.txt). Returns the ones that are NOT on disk.
+function _missing_modules()
     dir = joinpath(SHARED_ROOT, "deps", "build")
     man = joinpath(dir, ".dll_requires")
-    isfile(man) || return
-    miss = filter(n -> !isfile(joinpath(dir, n)),
-                  filter(n -> !isempty(n) && !startswith(n, "#"), strip.(readlines(man))))
+    isfile(man) || return String[]
+    return filter(n -> !isfile(joinpath(dir, n)),
+                  String.(filter(n -> !isempty(n) && !startswith(n, "#"), strip.(readlines(man)))))
+end
+
+# An install with NO manifest cannot be checked, so it must never be treated as proven-good: it
+# predates .dll_requires, which is precisely the population that can be missing modules. Saying
+# "nothing missing" there is how a broken machine skips its own repair — the manifest arrives WITH
+# the dll zip, so the cure is to fetch that zip, which is what returning false here triggers.
+function _runtime_verified()
+    isfile(joinpath(SHARED_ROOT, "deps", "build", ".dll_requires")) || return false
+    return isempty(_missing_modules())
+end
+
+# SELF-HEAL, not merely diagnose. This is the last thing every build path runs, and it is what
+# makes Help > Check for Updates enough on its own: whatever state the machine got into -- a
+# marker that lies, a runtime bundle older than the dll, an interrupted earlier update -- if a
+# module the dll needs is absent, the full runtime bundle is fetched right here and the viewer
+# works after a restart. No manual download, no instructions to follow. A warning that told the
+# user to go fix it themselves is not a fix; it is the same broken machine with better prose.
+function _ensure_runtime_complete()
+    miss = _missing_modules()
     isempty(miss) && return
-    @warn """InteractiveGMT: the installed runtime bundle is missing modules this gmtvtk.dll needs.
-             The viewer will not load until they are present. Missing: $(join(miss, ", "))
-             This means the published dll was built against a newer runtime than deps/RUNTIME_VERSION
-             pins ($(runtime_tag())) — please report it.""" SHARED_ROOT
+    @warn "InteractiveGMT: the installed runtime is missing modules gmtvtk.dll needs — repairing by re-fetching the full runtime bundle (~53 MB)." missing=join(miss, ", ")
+    try
+        fetch_and_extract(release_url(runtime_tag(), "iGMT-win64-full.zip"), SHARED_ROOT)
+        write(MARKER, runtime_tag())
+    catch e
+        @error "InteractiveGMT: could not fetch the runtime bundle — the viewer will not load." exception=(e,)
+        return
+    end
+    still = _missing_modules()
+    if isempty(still)
+        @info "InteractiveGMT: runtime repaired — all modules present." SHARED_ROOT
+    else
+        @error """InteractiveGMT: still missing modules after re-fetching the runtime bundle: $(join(still, ", ")).
+                  The published $(runtime_tag()) bundle does not contain what this gmtvtk.dll needs — please report it.""" SHARED_ROOT
+    end
 end
 
 function main()
@@ -202,7 +228,7 @@ function main()
     if isempty(installed) && filesize(MARKER) == 0
         # Legacy empty sentinel from before the marker carried a tag. The bundle on disk IS the
         # one that was pinned when it was written, so stamp it rather than force a 53 MB re-fetch
-        # on every existing install; _check_runtime_manifest() below is what catches it if that
+        # on every existing install; _ensure_runtime_complete() below is what catches it if that
         # assumption is ever wrong.
         write(MARKER, want)
     end
@@ -213,15 +239,17 @@ function main()
         dll    = joinpath(SHARED_ROOT, "deps", "build", "gmtvtk.dll")
         sigf   = joinpath(SHARED_ROOT, "deps", "build", ".dll_release_sig")
         sig    = _dll_asset_signature(DLL_TAG, asset)
-        if sig !== nothing && isfile(dll) && isfile(sigf) && read(sigf, String) == sig
+        # The signature short-circuit is a speed optimisation, never a reason to leave a broken
+        # install broken: if a module is missing, re-fetch the dll zip regardless of what the
+        # stored signature says, because that zip is what carries the manifest and the modules.
+        if sig !== nothing && isfile(dll) && isfile(sigf) && read(sigf, String) == sig && _runtime_verified()
             @info "InteractiveGMT: gmtvtk.dll already up to date" SHARED_ROOT
-            _check_runtime_manifest()
             return nothing
         end
         fetch_and_extract(release_url(DLL_TAG, asset), SHARED_ROOT)
         sig !== nothing && write(sigf, sig)
     end
-    _check_runtime_manifest()
+    _ensure_runtime_complete()
     @info "InteractiveGMT: gmtvtk binaries installed" SHARED_ROOT
 end
 
