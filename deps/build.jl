@@ -4,12 +4,27 @@
 #
 #   * FULL runtime zip (gmtvtk.dll + bundled VTK/Qt/TBB + Qt plugins) — changes rarely,
 #     only when the VTK/Qt/TBB module set changes. Pinned by deps/RUNTIME_VERSION (a git
-#     tag, e.g. "runtime-0.1"). Downloaded ONCE EVER (see SHARED_ROOT below).
+#     tag, e.g. "runtime-0.1"). Fetched on first install, and again whenever that pin MOVES.
 #
 #   * DLL-ONLY zip (just gmtvtk.dll) — can change daily as the C++ side is edited. Lives at
 #     a FIXED, reused release tag (DLL_TAG below); its one asset gets overwritten in place
 #     (`gh release upload dll-latest gmtvtk-win64.zip --clobber`) — no new tag per day.
 #     Re-downloaded on every `Pkg.build("InteractiveGMT")`.
+#
+# THE CONTRACT BETWEEN THEM. The small zip's gmtvtk.dll must be loadable against the runtime the
+# big zip installed. Break that — link one VTK module the pinned bundle predates — and every
+# existing install gets a DLL that Windows cannot load at all, reported by Julia as a missing
+# gmtvtk_* symbol that says nothing about the real cause. Three guards, none sufficient alone:
+#
+#   1. deps/check_dll_deps.ps1 — run BEFORE uploading. Walks the dll's transitive imports and
+#      subtracts the published bundle's file list; non-empty remainder = do not publish.
+#   2. .full_runtime_installed stores the installed TAG (not a bare sentinel), so bumping
+#      deps/RUNTIME_VERSION actually re-fetches the bundle on machines that already have one.
+#      That is the fix for the real design hole: the marker used to be empty, making the pin
+#      unenforceable and forcing new modules to hitch a ride in the dll-only zip.
+#   3. .dll_requires — the manifest generated at package time (deps/CMakeLists.txt), checked
+#      after extraction here and again by src/libgmtvtk.jl when dlopen fails, so a shortfall is
+#      reported as the missing MODULE names.
 #
 # A regular `Pkg.add`-installed (non-dev) package lives in a content-hashed folder
 # (~/.julia/packages/InteractiveGMT/<hash>/) that gets a BRAND NEW <hash> on every single

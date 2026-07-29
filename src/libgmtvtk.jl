@@ -122,10 +122,37 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_progress_status, :gmtvtk_progress_close,
 )
 
+# Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is
+# deliberately tolerant (a missing DLL must not break `using`), so its @warn scrolls away long
+# before the user calls a viewer function -- and the error they then hit named a missing SYMBOL,
+# which is a lie whenever the real cause was a dependency Windows could not resolve.
+const _LOAD_ERROR = Ref{String}("")
+
+# Which of gmtvtk.dll's dependencies are absent (B, see deps/build.jl). `.dll_requires` is written
+# beside gmtvtk.dll at package time (deps/CMakeLists.txt) and lists every non-system DLL the
+# viewer imports, transitively. A dependency missing HERE is the one failure mode dlopen reports
+# with the useless "The specified module could not be found" -- naming no module. Returns the
+# missing names, or empty when there is no manifest to check against (a dev build).
+function _missing_runtime_modules()::Vector{String}
+	man = joinpath(_BIN_DIR, ".dll_requires")
+	isfile(man) || return String[]
+	miss = String[]
+	for ln in eachline(man)
+		n = strip(ln)
+		(isempty(n) || startswith(n, '#')) && continue
+		isfile(joinpath(_BIN_DIR, n)) || push!(miss, n)
+	end
+	return miss
+end
+
 # Resolve a loaded C-API function pointer. Errors clearly if the library never loaded.
 @inline function _fn(sym::Symbol)::Ptr{Cvoid}
 	p = get(_LIB_FNS, sym, C_NULL)
-	p == C_NULL && error("InteractiveGMT viewer library not loaded (symbol :$sym). Build deps/build.bat and restart Julia.")
+	if p == C_NULL
+		why = _LOAD_ERROR[]
+		error("InteractiveGMT viewer library not loaded (symbol :$sym)." *
+		      (isempty(why) ? " Build deps/build.bat and restart Julia." : "\n" * why))
+	end
 	return p
 end
 
@@ -135,7 +162,22 @@ function _load_library()
 	isfile(_LIB) || error("gmtvtk.dll not found at $_LIB — build it with deps/build.bat")
 	ENV["PATH"] = _VTK_BIN * ";" * _QT_BIN * ";" * get(ENV, "PATH", "")
 	ENV["QT_QPA_PLATFORM_PLUGIN_PATH"] = _QT_PLAT
-	_DLL[] = Libdl.dlopen(_LIB)
+	# dlopen's own message for an unresolvable dependency names only gmtvtk.dll, never the module
+	# that is actually absent, so turn that into the real answer before it propagates.
+	try
+		_DLL[] = Libdl.dlopen(_LIB)
+	catch e
+		miss = _missing_runtime_modules()
+		_LOAD_ERROR[] = isempty(miss) ?
+			"gmtvtk.dll at $_LIB could not be loaded. If this is a dev build, rebuild with deps/build.bat." :
+			"gmtvtk.dll needs VTK/Qt modules the installed runtime does not have:\n" *
+			"    " * join(miss, ", ") * "\n" *
+			"The bundled runtime is out of date for this viewer build. Fix with:\n" *
+			"    using Pkg; Pkg.build(\"InteractiveGMT\")\n" *
+			"(it will fetch the newer runtime bundle), then restart Julia."
+		@error "InteractiveGMT: " * _LOAD_ERROR[]
+		rethrow()
+	end
 	for s in _LIB_SYMBOLS
 		_LIB_FNS[s] = Libdl.dlsym(_DLL[], s)
 	end
