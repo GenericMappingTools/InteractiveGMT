@@ -24,9 +24,19 @@ const Libdl = Base.Libc.Libdl
 #      content-hashed, possibly-different-every-update) folder, so the SAME ~200 MB VTK/Qt/TBB
 #      runtime is reused across every future update instead of being re-fetched into a new
 #      folder each time.
+#
+# "Wins first" is a PREFERENCE, not a commitment. A local copy that cannot actually be loaded --
+# stale (missing a newer export, so dlsym throws and no symbol resolves at all), or left behind by
+# an older deps/build.jl that extracted releases straight into this folder, where none of the
+# VTK/Qt DLLs sit beside it -- used to end the story: Pkg.build refreshed the SHARED cache that
+# the loader then never looked at, so no amount of re-publishing could fix that machine. Both
+# candidates are now tried in order and the first one that fully loads wins.
 const _LOCAL_LIB  = joinpath(_PKGROOT, "deps", "build", "gmtvtk.dll")
 const _SHARED_LIB = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime", "deps", "build", "gmtvtk.dll")
-const _LIB      = isfile(_LOCAL_LIB) ? _LOCAL_LIB : _SHARED_LIB
+const _LIB_CANDIDATES = filter(isfile, unique([_LOCAL_LIB, _SHARED_LIB]))
+const _LIB      = isempty(_LIB_CANDIDATES) ? _SHARED_LIB : first(_LIB_CANDIDATES)
+# Which one actually loaded — set by _load_library, since that is only known at runtime.
+const _LIB_USED = Ref{String}("")
 const _BIN_DIR  = dirname(_LIB)
 
 # Toolchain runtime DLL dirs (this machine). Dependent DLLs (Qt6*, vtk*) resolve from PATH at
@@ -133,14 +143,14 @@ const _LOAD_ERROR = Ref{String}("")
 # viewer imports, transitively. A dependency missing HERE is the one failure mode dlopen reports
 # with the useless "The specified module could not be found" -- naming no module. Returns the
 # missing names, or empty when there is no manifest to check against (a dev build).
-function _missing_runtime_modules()::Vector{String}
-	man = joinpath(_BIN_DIR, ".dll_requires")
+function _missing_runtime_modules(bin::String = _BIN_DIR)::Vector{String}
+	man = joinpath(bin, ".dll_requires")
 	isfile(man) || return String[]
 	miss = String[]
 	for ln in eachline(man)
 		n = strip(ln)
 		(isempty(n) || startswith(n, '#')) && continue
-		isfile(joinpath(_BIN_DIR, n)) || push!(miss, n)
+		isfile(joinpath(bin, n)) || push!(miss, n)
 	end
 	return miss
 end
@@ -156,31 +166,59 @@ end
 	return p
 end
 
-# Put the toolchain DLLs on PATH, dlopen the viewer, resolve every symbol. Idempotent.
-function _load_library()
-	_DLL[] == C_NULL || return                       # already loaded
-	isfile(_LIB) || error("gmtvtk.dll not found at $_LIB — build it with deps/build.bat")
-	ENV["PATH"] = _VTK_BIN * ";" * _QT_BIN * ";" * get(ENV, "PATH", "")
-	ENV["QT_QPA_PLATFORM_PLUGIN_PATH"] = _QT_PLAT
-	# dlopen's own message for an unresolvable dependency names only gmtvtk.dll, never the module
-	# that is actually absent, so turn that into the real answer before it propagates.
+# One candidate: put ITS OWN toolchain dirs on PATH, dlopen it, resolve EVERY symbol. Returns the
+# failure reason, or nothing on success. A partial success is treated as failure and unloaded: a
+# stale dll that opens fine but lacks one newer export would otherwise leave _LIB_FNS half-filled,
+# and the first viewer call blames a random symbol for a problem that is really "wrong file".
+function _try_load(lib::String)::Union{Nothing,String}
+	bin  = dirname(lib)
+	bund = isdir(joinpath(bin, "platforms"))
+	vtk  = get(ENV, "INTERACTIVEGMT_VTK_BIN", bund ? bin : raw"C:\programs\compa_libs\VTK-9.6.2\compileds\bin")
+	qt   = get(ENV, "INTERACTIVEGMT_QT_BIN",  bund ? bin : raw"C:\programs\Qt6\6.11.1\msvc2022_64\bin")
+	plat = get(ENV, "INTERACTIVEGMT_QT_PLAT", bund ? joinpath(bin, "platforms") : raw"C:\programs\Qt6\6.11.1\msvc2022_64\plugins\platforms")
+	ENV["PATH"] = vtk * ";" * qt * ";" * get(ENV, "PATH", "")
+	ENV["QT_QPA_PLATFORM_PLUGIN_PATH"] = plat
+	h = C_NULL
 	try
-		_DLL[] = Libdl.dlopen(_LIB)
+		h = Libdl.dlopen(lib)
 	catch e
-		miss = _missing_runtime_modules()
-		_LOAD_ERROR[] = isempty(miss) ?
-			"gmtvtk.dll at $_LIB could not be loaded. If this is a dev build, rebuild with deps/build.bat." :
-			"gmtvtk.dll needs VTK/Qt modules the installed runtime does not have:\n" *
-			"    " * join(miss, ", ") * "\n" *
-			"The bundled runtime is out of date for this viewer build. Fix with:\n" *
-			"    using Pkg; Pkg.build(\"InteractiveGMT\")\n" *
-			"(it will fetch the newer runtime bundle), then restart Julia."
-		@error "InteractiveGMT: " * _LOAD_ERROR[]
-		rethrow()
+		# dlopen names only gmtvtk.dll, never the dependency Windows could not find, so say it.
+		miss = _missing_runtime_modules(bin)
+		return isempty(miss) ? "$lib: could not be loaded ($(sprint(showerror, e)))" :
+		       "$lib: missing VTK/Qt modules beside it — $(join(miss, ", "))"
 	end
 	for s in _LIB_SYMBOLS
-		_LIB_FNS[s] = Libdl.dlsym(_DLL[], s)
+		p = Libdl.dlsym(h, s; throw_error=false)
+		if p === nothing
+			Libdl.dlclose(h)
+			empty!(_LIB_FNS)
+			return "$lib: stale build — export :$s is missing"
+		end
+		_LIB_FNS[s] = p
 	end
+	_DLL[] = h
+	_LIB_USED[] = lib
+	return nothing
+end
+
+# Load the viewer: try each candidate in preference order, first one that FULLY loads wins.
+# Idempotent.
+function _load_library()
+	_DLL[] == C_NULL || return                       # already loaded
+	isempty(_LIB_CANDIDATES) && error("gmtvtk.dll not found (looked in $(dirname(_LOCAL_LIB)) and $(dirname(_SHARED_LIB))) — build it with deps/build.bat")
+	why = String[]
+	for lib in _LIB_CANDIDATES
+		r = _try_load(lib)
+		r === nothing && break
+		push!(why, r)
+	end
+	if _DLL[] == C_NULL
+		_LOAD_ERROR[] = join(why, "\n") *
+			"\nFix with:  using Pkg; Pkg.build(\"InteractiveGMT\")   then restart Julia."
+		@error "InteractiveGMT: could not load the viewer library.\n" * _LOAD_ERROR[]
+		error(_LOAD_ERROR[])
+	end
+	isempty(why) || @warn "InteractiveGMT: fell back to $(_LIB_USED[])" skipped=join(why, "; ")
 	# Tell the viewer where OUR .ui files are. It cannot work this out on its own: it derives the
 	# path from where the DLL itself sits, and for a non-dev install that is the depot runtime cache
 	# (~/.julia/gmtvtk_runtime/deps/build), whose sibling deps/ui may not exist or may hold an older

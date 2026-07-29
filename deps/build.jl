@@ -225,12 +225,16 @@ function main()
         # normally newer, so still sync it below.
         rm(joinpath(SHARED_ROOT, "deps", "build", ".dll_release_sig"); force=true)
     end
-    if isempty(installed) && filesize(MARKER) == 0
-        # Legacy empty sentinel from before the marker carried a tag. The bundle on disk IS the
-        # one that was pinned when it was written, so stamp it rather than force a 53 MB re-fetch
-        # on every existing install; _ensure_runtime_complete() below is what catches it if that
-        # assumption is ever wrong.
+    if isempty(installed) && isfile(MARKER)
+        # Legacy empty sentinel from before the marker carried a tag: the bundle on disk is of
+        # UNKNOWN vintage. Stamping it "current" and moving on was WRONG — the full bundle is the
+        # only place newer VTK modules ever come from, so skipping it left exactly these machines
+        # broken however many times the dll-only zip was re-published. Unknown now counts as
+        # stale: fetch the pinned bundle once, and the marker is honest from then on.
+        @warn "InteractiveGMT: runtime bundle of unknown version — fetching the pinned $want bundle once so it is known-complete."
+        fetch_and_extract(release_url(want, "iGMT-win64-full.zip"), SHARED_ROOT)
         write(MARKER, want)
+        rm(joinpath(SHARED_ROOT, "deps", "build", ".dll_release_sig"); force=true)
     end
     let
         # Every subsequent build: DLL only (~1 MB), always the same rolling tag/asset -- but only
