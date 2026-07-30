@@ -869,11 +869,48 @@ _drop_into(scene::Ptr{Cvoid}, x, name; promote=false, source="") = @warn "drop: 
 # basemap.jl / iview_image_obj use: promote a HIDDEN imageOnly scaffold (real framed axes + coord
 # readout + flat-2-D view, no Scene Objects row, no colorbar), then hang the real object on top.
 function _promote_dataset(scene::Ptr{Cvoid}, D, name)
+	# A 3-D POINT CLOUD (a .laz/.las, or any x,y,z swarm) is NOT overlay material: it needs the real
+	# point-cloud display -- CPT colouring by z, its own colour bar, Z axis, VE gizmo, LOD interaction,
+	# rubber-band selection. That is exactly what `view_points` builds, so this window is promoted
+	# through the SAME C++ builder (gmtvtk_promote_points_h -> buildSceneContent(pointCloud=true) +
+	# configurePointCloud), in place, instead of opening a second window (SACRED_LAW.md: one
+	# operation, one function; and an empty launcher is always reused, never replaced).
+	_promote_point_cloud(scene, D, name) && return true
 	W, E, S, N = _padded_bbox(_dataset_bbox(D)...)
 	d1   = D isa AbstractVector ? D[1] : D
 	geog = _isgeog(d1) == 1
 	_promote_blank_scaffold(scene, W, E, S, N, geog; crsobj=d1)
 	_add_dataset_to_scene(scene, D, name)                          # overlay -> stays in this window
+	return true
+end
+
+# Promote THIS window into the 3-D point-cloud viewer over `D`. Returns false (nothing done) when
+# `D` is not a point cloud, or when the C side declines because the window already holds data.
+# The CPT nodes, point size and pick colour are `view_points`'s own defaults, read from the same
+# helpers, so a dropped cloud and `view_points(D)` produce the identical display.
+function _promote_point_cloud(scene::Ptr{Cvoid}, D, name)::Bool
+	_drop_overlay_kind(D) === :points || return false
+	d1 = D isa AbstractVector ? D[1] : D
+	A  = d1.data
+	size(A, 2) >= 3 || return false
+	xyz = Vector{Float64}(undef, 3 * size(A, 1))
+	@inbounds for i in 1:size(A, 1)
+		xyz[3i-2] = Float64(A[i, 1]); xyz[3i-1] = Float64(A[i, 2]); xyz[3i] = Float64(A[i, 3])
+	end
+	xmn, xmx = extrema(@view A[:, 1]);  ymn, ymx = extrema(@view A[:, 2])
+	zmn, zmx = extrema(@view A[:, 3])
+	geog = _isgeog(d1) == 1
+	cz, crgb, ncolor = _cpt_nodes_range(Float64(zmn), Float64(zmx), :turbo)
+	pr, pg, pb = _ovl_color((0.83, 0.83, 0.83), :points)
+	ok = ccall(_fn(:gmtvtk_promote_points_h), Cint,
+	           (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cdouble}, Ptr{Cdouble}, Cint,
+	            Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble,
+	            Cdouble, Cdouble, Cdouble, Cstring),
+	           scene, xyz, Cint(size(A, 1)), cz, crgb, Cint(ncolor),
+	           Float64(xmn), Float64(xmx), Float64(ymn), Float64(ymx), Cint(geog), 4.0,
+	           pr, pg, pb, String(name === nothing ? "" : name))
+	ok == 0 && return false
+	_apply_crs!(scene, crs_from(d1; geographic=geog))
 	return true
 end
 
@@ -1121,20 +1158,39 @@ end
 # else 0 (there is no host grid to drape on for an arbitrary dropped-on window).
 #
 # A dropped x,y table draws as a LINE / polyline by default — only data whose stored geometry is
-# EXPLICITLY point (WKB point code) starts as points. A plain table (`gmtread` leaves geom unknown)
-# is a line; the user flips it to a scatter via the overlay's "Convert to points" menu item. This is
-# deliberately NOT `_ds_kind` (whose unknown-geometry heuristic guesses :points) — that heuristic
-# still drives the front-door `iview(D)` routing, just not the drop-overlay default.
+# EXPLICITLY point (WKB point code), or which `_drop_overlay_kind` recognises as a 3-D point cloud,
+# starts as points. A plain x,y table (`gmtread` leaves geom unknown) is a line; the user flips it to
+# a scatter via the overlay's "Convert to points" menu item.
 # `color` (nothing -> per-mode default, same as `_ovl_color`'s own convention elsewhere e.g.
 # `_add_grid_to_scene`), `noConvertToPoints`/`noDataTable` (both default false, preserving every
 # existing caller's behaviour exactly) opt an overlay OUT of "Convert to points…"/"Show data
 # table…" for sources where those make no sense (e.g. mgd77tracks.jl's cruise tracks: thousands of
 # raw nav fixes). Routed through gmtvtk_add_overlay_ex3_h only when either flag is set, else the
 # original plain/ex_h calls -- ONE function, extended, not forked.
+# :points / :lines for a dropped or opened vector table — the ONE classifier every in-window overlay
+# add goes through.
+#
+#  - stored WKB geometry wins whenever the source actually carries one (point -> :points).
+#  - unknown geometry (what `gmtread` leaves on a plain table, ASCII or LAS/LAZ) with a THIRD
+#    column and a single segment is a 3-D POINT CLOUD -> :points. A .laz is millions of x,y,z rows
+#    with no geometry code; wiring them into one polyline produced a black scribble that also froze
+#    the window. The front door (`iview(file)` -> `_ds_kind` -> `view_points`) always read that same
+#    data as a cloud — one operation, one answer, whichever door it came through (SACRED_LAW.md).
+#  - everything else (2-column x,y table, or several segments = real polylines) stays :lines, which
+#    is the drop default a3158a2 deliberately established; the overlay's "Convert to points…" menu
+#    item still flips it.
+function _drop_overlay_kind(D)::Symbol
+	d1 = D isa AbstractVector ? first(D) : D
+	k  = _geom_kind(Int(d1.geom))
+	k === :points && return :points
+	k === :unknown || return :lines
+	nseg = D isa AbstractVector ? length(D) : 1
+	return (nseg == 1 && size(d1.data, 2) >= 3) ? :points : :lines
+end
+
 function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractString="",
                                 color=nothing, noConvertToPoints::Bool=false, noDataTable::Bool=false)
-	d1   = D isa AbstractVector ? first(D) : D
-	mode = _geom_kind(Int(d1.geom)) === :points ? :points : :lines
+	mode = _drop_overlay_kind(D)
 	xyz, segoff, nseg, npts = _pack_dataset_flat(D)
 	modei = mode === :lines ? Cint(1) : Cint(0)
 	cr, cg, cb = _ovl_color(color, mode)

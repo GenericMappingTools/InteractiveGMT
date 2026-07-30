@@ -523,6 +523,13 @@ struct Scene {
 	// them so ticks place correctly when the bar is retargeted to a dropped grid.
 	double barLo = 0, barHi = 1;
 	bool   surfShowBar = true;              // base relief: user wants its colorbar shown (when active)
+	bool   surfCloud = false;               // the PRIMARY surface is a point cloud (view_points /
+	                                         // "Point cloud view" / a dropped .laz), NOT a heightfield:
+	                                         // it colours by z through surfLut and owns a colorbar +
+	                                         // Z axis exactly like a grid, but carries no gridZ layer.
+	                                         // resolveActiveGrid honours it so the bar/axes/readout all
+	                                         // describe it (a cloud used to resolve to "no active grid",
+	                                         // and every refreshGridColorbar destroyed its colour bar).
 
 	// --- Aquamoto dual colorbar (water / land) ------------------------------
 	// A tsunami netCDF layer (customLayerTexture) needs TWO colour scales at once: `bar` above
@@ -1969,6 +1976,85 @@ static double segDist2(double px, double py, const double a[2], const double b[2
 	return ex*ex + ey*ey;
 }
 
+// World -> display projection as a plain 4x4 multiply. vtkRenderer::WorldToDisplay computes the
+// SAME thing, but rebuilds the camera's composite transform and round-trips through the renderer
+// for EVERY point — fine for a handful of vertices, ruinous for the million-vertex overlays a
+// dropped LiDAR/point-cloud file produces (pickOverlayAt runs on every mouse-move). Built once
+// per pick, then it is pure arithmetic per point.
+struct DisplayProjector {
+	vtkNew<vtkMatrix4x4> M;
+	double ox = 0.0, oy = 0.0, sx = 0.0, sy = 0.0;
+	bool ok = false;
+	explicit DisplayProjector(vtkRenderer *ren) {
+		if (!ren || !ren->GetActiveCamera()) return;
+		M->DeepCopy(ren->GetActiveCamera()->GetCompositeProjectionTransformMatrix(
+		                ren->GetTiledAspectRatio(), 0.0, 1.0));
+		const int *sz = ren->GetSize(), *org = ren->GetOrigin();
+		if (!sz || sz[0] <= 0 || sz[1] <= 0) return;
+		ox = org ? org[0] : 0.0; oy = org ? org[1] : 0.0;
+		sx = 0.5 * sz[0];        sy = 0.5 * sz[1];
+		ok = true;
+	}
+	// (x,y,z) in SCALED world coords -> device px (bottom-up), matching WorldToDisplay's convention.
+	inline void project(double x, double y, double z, double &dx, double &dy) const {
+		const double *m = M->GetData();
+		const double wx = m[0]*x + m[1]*y + m[2]*z  + m[3];
+		const double wy = m[4]*x + m[5]*y + m[6]*z  + m[7];
+		const double ww = m[12]*x + m[13]*y + m[14]*z + m[15];
+		const double iw = (ww != 0.0) ? 1.0 / ww : 0.0;
+		dx = ox + sx * (wx * iw + 1.0);
+		dy = oy + sy * (wy * iw + 1.0);
+	}
+};
+
+// Vertices a single overlay may contribute to ONE hit-test. A point cloud (a dropped .laz is
+// millions of points) is scanned with a stride so the cost per mouse-move stays bounded; at the
+// 12 px tolerance below, a dense cloud still answers the pick with a neighbouring point, which is
+// the same actor and the same Scene Objects row. Without this cap the hover readout (onMouseMove
+// -> pickOverlayInfoAt) projected every vertex of every overlay on EVERY motion event and the
+// window froze solid the moment the user tried to rotate.
+static const vtkIdType kPickVertexBudget = 40000;
+
+// Vertex count of the window's PRIMARY surface actor (0 when it has no polydata mapper input, e.g.
+// the tiled-LOD grid path, whose readout never goes through a picker anyway). Used to recognise a
+// big point cloud before running an O(N)-per-pick VTK picker on it.
+static vtkIdType surfPointCount(const Scene *s) {
+	if (!s || !s->surf) return 0;
+	vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper());
+	if (!m) return 0;
+	vtkPolyData *pd = m->GetInput();
+	return (pd && pd->GetPoints()) ? pd->GetNumberOfPoints() : 0;
+}
+
+// Nearest point of the primary surface's cloud under the cursor (device px), in SCALED world
+// coords -- the coordinate-readout hit-test for a cloud too big for vtkCellPicker/vtkPointPicker.
+// Strided screen-space scan, bounded by kPickVertexBudget, same technique as pickOverlayAt.
+static bool pickCloudPointAt(Scene *s, int dx, int dy, double w[3]) {
+	if (!s || !s->surf) return false;
+	vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper());
+	vtkPolyData *pd = m ? m->GetInput() : nullptr;
+	if (!pd || !pd->GetPoints()) return false;
+	vtkPoints *pts = pd->GetPoints();
+	const vtkIdType np = pts->GetNumberOfPoints();
+	if (np <= 0) return false;
+	const DisplayProjector proj(s->ren);
+	if (!proj.ok) return false;
+	double sc[3]; s->surf->GetScale(sc);
+	const double tol = 12.0;
+	double best = tol * tol;
+	bool found = false;
+	const vtkIdType step = (np > kPickVertexBudget) ? (np / kPickVertexBudget + 1) : 1;
+	for (vtkIdType i = 0; i < np; i += step) {
+		double p[3]; pts->GetPoint(i, p);
+		const double X = p[0]*sc[0], Y = p[1]*sc[1], Z = p[2]*sc[2];
+		double ppx, ppy; proj.project(X, Y, Z, ppx, ppy);
+		const double ex = ppx-dx, ey = ppy-dy;
+		const double dd = ex*ex + ey*ey;
+		if (dd < best) { best = dd; w[0] = X; w[1] = Y; w[2] = Z; found = true; }
+	}
+	return found;
+}
+
 // Pick the overlay nearest the cursor at VTK display coords (dx,dy, bottom-up device px).
 // vtkPropPicker/vtkCellPicker miss thin 1-2px lines, so this projects every overlay vertex
 // to the screen (applying the actor's scale) and measures the cursor's pixel distance to the
@@ -1990,6 +2076,9 @@ static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int &outMode, int *outS
 	Overlay *bestOv = nullptr;
 	vtkIdType bestI0 = -1;
 
+	const DisplayProjector proj(ren);
+	if (!proj.ok) return nullptr;
+
 	for (auto &ov : s->overlays) {
 		if (!ov.actor || !ov.actor->GetVisibility())
 			continue;
@@ -2000,20 +2089,56 @@ static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int &outMode, int *outS
 		double sc[3]; ov.actor->GetScale(sc);
 		vtkPoints *pts = pd->GetPoints();
 		const vtkIdType np = pts->GetNumberOfPoints();
+		if (np <= 0) continue;
+
+		// Cheap whole-overlay reject FIRST: the screen box of the actor's 8 bounds corners contains
+		// every projected vertex, so a cursor outside it (+tol) cannot hit this overlay and its
+		// vertices are never touched. One 8-point projection instead of np.
+		{
+			double b[6]; ov.actor->GetBounds(b);
+			double bx0 = 1e300, bx1 = -1e300, by0 = 1e300, by1 = -1e300;
+			for (int c = 0; c < 8; ++c) {
+				double cx, cy;
+				proj.project(b[(c & 1) ? 1 : 0], b[(c & 2) ? 3 : 2], b[(c & 4) ? 5 : 4], cx, cy);
+				bx0 = std::min(bx0, cx); bx1 = std::max(bx1, cx);
+				by0 = std::min(by0, cy); by1 = std::max(by1, cy);
+			}
+			if (dx < bx0 - tol || dx > bx1 + tol || dy < by0 - tol || dy > by1 + tol)
+				continue;
+		}
+
+		// A vertex count over the budget (a point cloud, or any overlay big enough to stall the
+		// per-mouse-move hover readout) is scanned strided, as nearest VERTEX, in either mode: the
+		// answer is the same actor and — via bestI0 -> segoff below — the same segment, at bounded
+		// cost. Only a within-budget line overlay pays the exact nearest-SEGMENT test.
+		const bool strided = np > kPickVertexBudget;
+		vtkCellArray *lines = (ov.mode == 1) ? pd->GetLines() : nullptr;
+		if (ov.mode == 1 && !lines) continue;
+
+		if (strided || ov.mode != 1) {   // points, or an oversized overlay: nearest vertex
+			const vtkIdType step = strided ? (np / kPickVertexBudget + 1) : 1;
+			for (vtkIdType i = 0; i < np; i += step) {
+				double p[3]; pts->GetPoint(i, p);
+				double ppx, ppy; proj.project(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], ppx, ppy);
+				const double ex = ppx-dx, ey = ppy-dy;
+				const double dd = ex*ex + ey*ey;
+				if (dd < trueBest) trueBest = dd;
+				if (dd < best) {
+					best = dd; bestA = ov.actor; bestMode = ov.mode == 1 ? 1 : 0; bestOv = &ov;
+					bestI0 = (ov.mode == 1) ? i : -1;
+				}
+			}
+			continue;
+		}
 
 		// project all points to display once (apply the actor's scale; no rot/trans on overlays)
 		std::vector<double> px(np), py(np);
 		for (vtkIdType i = 0; i < np; ++i) {
 			double p[3]; pts->GetPoint(i, p);
-			ren->SetWorldPoint(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], 1.0);
-			ren->WorldToDisplay();
-			double d[3]; ren->GetDisplayPoint(d);
-			px[i] = d[0]; py[i] = d[1];
+			proj.project(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], px[i], py[i]);
 		}
 
-		if (ov.mode == 1) {              // lines: nearest segment
-			vtkCellArray *lines = pd->GetLines();
-			if (!lines) continue;
+		{                                // lines: nearest segment
 			vtkNew<vtkIdList> idl;
 			lines->InitTraversal();
 			while (lines->GetNextCell(idl)) {
@@ -2026,14 +2151,6 @@ static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int &outMode, int *outS
 					if (dd < trueBest) trueBest = dd;
 					if (dd < best) { best = dd; bestA = ov.actor; bestMode = 1; bestOv = &ov; bestI0 = i0; }
 				}
-			}
-		}
-		else {                           // points: nearest vertex
-			for (vtkIdType i = 0; i < np; ++i) {
-				const double ex = px[i]-dx, ey = py[i]-dy;
-				const double dd = ex*ex + ey*ey;
-				if (dd < trueBest) trueBest = dd;
-				if (dd < best) { best = dd; bestA = ov.actor; bestMode = 0; bestOv = &ov; bestI0 = -1; }
 			}
 		}
 	}
@@ -2403,6 +2520,12 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 			const double t0 = -nr[2] / dirz;
 			if (t0 >= 0.0 && t0 <= 1.0) { w[0] = nr[0] + t0*dirx; w[1] = nr[1] + t0*diry; w[2] = 0.0; hit = true; }
 		}
+	} else if (s->picker && surfPointCount(s) > kPickVertexBudget) {
+		// A BIG cloud (a .laz is millions of points): both vtkCellPicker and vtkPointPicker walk
+		// every point on every mouse-move -- that is what made rotating a dropped point cloud hang.
+		// Same answer (nearest point under the cursor) at bounded cost: the SAME strided screen-space
+		// scan pickOverlayAt uses, so there is one hit-test technique for big clouds, not two.
+		hit = pickCloudPointAt(s, mx, my, w);
 	} else if (s->picker) {
 		if (s->picker->Pick((double)mx, (double)my, 0.0, s->ren) && s->picker->GetCellId() >= 0) {
 			s->picker->GetPickPosition(w); hit = true;

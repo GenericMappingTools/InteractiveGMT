@@ -138,6 +138,9 @@ GMTVTK_API void *gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 // (z metres). `pointsize` in px (<=0 = default). Ctrl+right-drag selects points (box marquee,
 // toggle, Ctrl+Z undo); pick(r,g,b) is the highlight colour for the selected points.
 // Returns the figure handle (Scene*); read the selection back with gmtvtk_get_selection.
+static void configurePointCloud(Scene *s, vtkSmartPointer<vtkPolyData> pd, double pointsize,
+                                double pickr, double pickg, double pickb);   // defined just below
+
 GMTVTK_API void *gmtvtk_view_points(const double *xyz, int npts,
 									const double *cz, const double *crgb, int ncolor,
 									double x0, double x1, double y0, double y1, int geographic,
@@ -153,8 +156,23 @@ GMTVTK_API void *gmtvtk_view_points(const double *xyz, int npts,
 							cz, crgb, ncolor, nullptr, 0, 0, 0, 0, true, geographic, title);
 	if (!s)
 		return nullptr;
+	configurePointCloud(s, pd, pointsize, pickr, pickg, pickb);
+	s->widget->renderWindow()->Render();
+	return s;
+}
+
+// Turn a scene whose content was just built with buildSceneContent(pointCloud=true) into a real
+// point-cloud display. THE one place the cloud look/behaviour is defined -- gmtvtk_view_points (own
+// window) and gmtvtk_promote_points_h (empty launcher reused in place) both call it, so a cloud
+// looks and behaves identically whichever door opened it (SACRED_LAW.md).
+static void configurePointCloud(Scene *s, vtkSmartPointer<vtkPolyData> pd, double pointsize,
+                                double pickr, double pickg, double pickb) {
+	if (!s || !s->surf)
+		return;
+	s->surfCloud = true;      // the primary surface IS the data layer: colour bar + Z axis + readout
+	                          // resolve through it (resolveActiveGrid, 50_scene.cpp)
 	// Render as round points of the requested size (the Verts-only polydata draws as points).
-	// Lighting OFF: buildAndShow set a PBR material (for surfaces); shading N lit sphere
+	// Lighting OFF: the builder set a PBR material (for surfaces); shading N lit sphere
 	// impostors per frame makes rotate/zoom crawl on big clouds. Flat CPT-coloured points
 	// (round via the sphere impostor mask, but unlit) render far faster and read the same.
 	s->surf->GetProperty()->SetRepresentationToPoints();
@@ -162,14 +180,71 @@ GMTVTK_API void *gmtvtk_view_points(const double *xyz, int npts,
 	s->surf->GetProperty()->SetRenderPointsAsSpheres(false);  // plain GL_POINTS = one fast draw (sphere impostors are fill-heavy)
 	s->surf->GetProperty()->LightingOff();
 	s->surf->GetProperty()->SetInterpolationToFlat();
-	// Bypass buildAndShow's vtkPolyDataNormals stage (useless for unlit points) -> the mapper
+	// Bypass the builder's vtkPolyDataNormals stage (useless for unlit points) -> the mapper
 	// draws the cloud polydata directly.
 	if (auto *m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper()))
 		m->SetInputData(pd);
 	// Ctrl+right-drag rubber-band selection over this cloud.
 	enableRubberBand(s, pd, pickr, pickg, pickb);
-	s->widget->renderWindow()->Render();
-	return s;
+}
+
+// Promote an EMPTY launcher window into a full point-cloud viewer IN PLACE (same window), the
+// cloud becoming the window's PRIMARY surface: CPT colouring by z, colour bar, its own X/Y/Z axes,
+// VE gizmo, LOD interaction, rubber-band selection. Mirrors gmtvtk_promote_fv_h / _surface_h --
+// recompute the scene through buildSceneContent, the EXACT same builder gmtvtk_view_points uses,
+// so a dropped .laz and `view_points(D)` produce the same display. Returns 1 (window reused) or
+// 0 (declined: not an empty launcher -> the caller falls back to an overlay).
+GMTVTK_API int gmtvtk_promote_points_h(void *handle, const double *xyz, int npts,
+                                       const double *cz, const double *crgb, int ncolor,
+                                       double x0, double x1, double y0, double y1, int geographic,
+                                       double pointsize, double pickr, double pickg, double pickb,
+                                       const char *objname) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xyz || npts <= 0)
+		return 0;
+	if (!s->emptyStart)                       // a window with real data keeps it; caller overlays instead
+		return 0;
+
+	double zmin = 0.0, zmax = 1.0;
+	auto pd = makePointCloud(xyz, npts, zmin, zmax);
+	double xfac, zfac, ve0;
+	computeScales(geographic, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
+
+	// buildSceneContent's caller contract: imageOnly, x0..y1, zmin/zmax, xfac/zfac/ve set first.
+	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1; s->zmin = zmin; s->zmax = zmax;
+	s->xfac = xfac; s->zfac = zfac; s->ve = ve0;
+	s->imageOnly = false;
+	s->surfName  = (objname && objname[0]) ? objname : "";
+
+	// A cloud is a 3-D object, and the launcher is sitting in flat-2D ORTHO. Switch to perspective
+	// BEFORE buildSceneContent, not after: its default-view block (ResetCamera + 35deg + Zoom 1.5)
+	// frames the data through whatever projection is active, so fitting under ortho and flipping to
+	// perspective afterwards left the cloud clipped and off-centre.
+	s->flat2d = false;
+	if (s->act2D) s->act2D->setChecked(false);
+	if (vtkCamera *cam = s->ren->GetActiveCamera()) cam->ParallelProjectionOff();
+
+	buildSceneContent(s, pd, x0, x1, y0, y1, cz, crgb, ncolor, nullptr, 0, 0, 0,
+	                  /*edges=*/0, /*pointCloud=*/true, geographic, nullptr, 0, 0, /*blankStart=*/false);
+	s->emptyStart = false;
+
+	// Rebuild the gizmo against the REAL data (the launcher's was sized for the 0..1 placeholder).
+	disableGizmo(s);
+	s->giz = enableGizmo(s, 0.01);
+
+	// applyShading FIRST, configurePointCloud AFTER it -- the same order a fresh window uses
+	// (buildAndShow runs applyShading internally, then gmtvtk_view_points configures the cloud).
+	// applyShading's applySurfStyle re-asserts the PBR/lit material on s->surf, so running it AFTER
+	// the cloud config re-lit the points and washed the CPT colours out to a pale IBL tint.
+	applyShading(s);
+	configurePointCloud(s, pd, pointsize, pickr, pickg, pickb);
+	// Only now (surfCloud set) does the cloud resolve as the active layer -> the bar targets it, and
+	// the Scene Objects rows are built against the bar that actually ends up on screen.
+	refreshGridColorbar(s);
+	rebuildSceneObjects(s);
+	s->ren->ResetCameraClippingRange();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
 }
 
 // View an arbitrary GMTfv mesh (solids / polygons; non-blocking). `xyz` = nv vertex triples

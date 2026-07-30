@@ -839,6 +839,22 @@ static ActiveGrid resolveActiveGrid(Scene *s) {
 	ActiveGrid ag;
 	int  bestStack = 0;
 	bool have = false;
+	// A POINT CLOUD is the window's data layer just as much as a grid is: it colours by z through
+	// s->surfLut, so it owns the colour bar, the Z axis annotation and the hover z the same way.
+	// It simply has no gridZ heightfield (ag.z stays null -- the readout then falls back to its
+	// picker path). Without this a cloud resolved as "no active grid" and EVERY refreshGridColorbar
+	// (rebuildSceneObjects, applyStacking, any visibility toggle) destroyed its bar.
+	if (s->surfCloud && s->gridZ.empty()) {
+		vtkProp3D *sp = surfProp(s);
+		if (sp && sp->GetVisibility() && s->surfLut) {
+			ag.valid = true; ag.z = nullptr; ag.nx = 0; ag.ny = 0;
+			ag.x0 = s->x0; ag.x1 = s->x1; ag.y0 = s->y0; ag.y1 = s->y1;
+			ag.zmin = s->zmin; ag.zmax = s->zmax; ag.lut = s->surfLut; ag.showBar = s->surfShowBar;
+			ag.geog = s->baseGeog;
+			ag.name = s->surfName;
+			bestStack = s->surfStack; have = true;
+		}
+	}
 	if (!s->gridZ.empty()) {                                   // base relief, if it carries a data layer
 		vtkProp3D *sp = surfProp(s);
 		if (sp && sp->GetVisibility()) {
