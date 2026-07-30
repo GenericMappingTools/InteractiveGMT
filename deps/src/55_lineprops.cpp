@@ -558,6 +558,97 @@ static void nestCreateBlankGrid(Scene *s, vtkActor *a) {
 	});
 }
 
+// "Rectangle limits (edit)…": a Mirone-style "Limits" window for ANY drawn rectangle (plain or
+// "Nested grids"). The N/W/E/S boxed labels are pure layout help -- they carry no click handler --
+// and there is no "Is Geographic?" checkbox (this viewer has no independent geographic flag per
+// rectangle). "-R" is informational only: it builds "-RW/E/S/N" from whatever is CURRENTLY typed
+// in the four edit boxes and shows it in a small popup; it never touches the rectangle. OK is the
+// ONE action button -- it applies the typed limits through nestSetRect, the SAME setter a nested
+// rect's vertex-drag release already uses, so a nested rect then re-quantizes via nestReflow exactly
+// as dragging it would.
+static void showRectLimitsDialog(Scene *s, vtkActor *a) {
+	const int pi = polyIndexOfActor(s, a);
+	if (pi < 0) return;
+	double x0, x1, y0, y1; nestPolyBBox(s, pi, x0, x1, y0, y1);   // current W,E,S,N
+
+	QDialog dlg(s->win);
+	dlg.setWindowTitle("Limits");
+
+	auto edit = [&dlg](double val) {
+		auto *e = new QLineEdit(QString::number(val, 'g', 12), &dlg);
+		e->setValidator(new QDoubleValidator(e));
+		e->setAlignment(Qt::AlignHCenter);
+		e->setMinimumWidth(100);
+		return e;
+	};
+	QLineEdit *eN = edit(y1), *eW = edit(x0), *eE = edit(x1), *eS = edit(y0);
+
+	auto compassLbl = [&dlg](const QString &t) {
+		auto *l = new QLabel(t, &dlg);
+		l->setFrameStyle(QFrame::Box | QFrame::Plain);
+		l->setAlignment(Qt::AlignCenter);
+		l->setFixedSize(26, 26);
+		return l;
+	};
+	auto *compass = new QGridLayout();
+	compass->addWidget(compassLbl("N"), 0, 1);
+	compass->addWidget(compassLbl("W"), 1, 0);
+	compass->addWidget(compassLbl("E"), 1, 2);
+	compass->addWidget(compassLbl("S"), 2, 1);
+
+	auto *vals = new QGridLayout();
+	vals->addWidget(eN, 0, 0, 1, 2);
+	vals->addWidget(eW, 1, 0);
+	vals->addWidget(eE, 1, 1);
+	vals->addWidget(eS, 2, 0, 1, 2);
+
+	auto *mid = new QHBoxLayout();
+	mid->addLayout(compass);
+	mid->addLayout(vals, 1);
+
+	auto *btnR = new QPushButton("-R", &dlg);
+	btnR->setToolTip("Show the GMT -R option built from the current box values");
+	auto *top = new QHBoxLayout();
+	top->addStretch();
+	top->addWidget(btnR);
+
+	QObject::connect(btnR, &QPushButton::clicked, [&dlg, eW, eE, eS, eN]() {
+		const QString rtext = QString("-R%1/%2/%3/%4")
+		    .arg(eW->text().trimmed()).arg(eE->text().trimmed())
+		    .arg(eS->text().trimmed()).arg(eN->text().trimmed());
+		QMessageBox::information(&dlg, "-R", rtext);
+	});
+
+	auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+	QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+
+	auto *v = new QVBoxLayout(&dlg);
+	v->addLayout(top);
+	v->addLayout(mid);
+	v->addWidget(bb);
+
+	if (dlg.exec() != QDialog::Accepted) return;
+
+	bool okW = false, okE = false, okS = false, okN = false;
+	const double W = eW->text().toDouble(&okW), E = eE->text().toDouble(&okE);
+	const double S = eS->text().toDouble(&okS), N = eN->text().toDouble(&okN);
+	if (!(okW && okE && okS && okN) || !(E > W) || !(N > S)) {
+		QMessageBox::warning(s->win, "Limits", "Enter valid limits (E > W and N > S).");
+		return;
+	}
+
+	const int pi2 = polyIndexOfActor(s, a);   // re-resolve: the modal exec() may have let other events run
+	if (pi2 < 0) return;
+	Polygon &pg = s->polys[pi2];
+	nestSetRect(s, pg, W, E, S, N);         // set the ring to the new axis-aligned limits + rebuild
+	if (pg.nestKind == 1) nestReflow(s);     // nested rect: re-quantize + cascade descendants (drag-release path)
+	else {
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	}
+}
+
 // ---- Length / azimuth / area (CRS-aware, computed in Julia/GMT) --------------------------------
 //
 // Total vertex count across all of a line object's polylines.
@@ -769,12 +860,13 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 	vtkActor *a = lr.actor;
 
 	// Is this a "Nested grids" rectangle, a Draw-Fault line, or an Import-Model-Slip patch?
-	bool isNestRect = false, isFault = false, isSlip = false;
+	bool isNestRect = false, isFault = false, isSlip = false, isRectShape = false;
 	if (lr.kind == LK_Polygon) {
 		const int pi = polyIndexOfActor(s, a);
 		if (pi >= 0 && s->polys[pi].nestKind == 1) isNestRect = true;
 		if (pi >= 0 && s->polys[pi].isFault)       isFault = true;
 		if (pi >= 0 && s->polys[pi].isSlip)        isSlip = true;
+		if (pi >= 0 && (s->polys[pi].isRect || s->polys[pi].nestKind == 1)) isRectShape = true;
 	}
 	// The matching Overlay entry (LK_Overlay only) -- used below both to gate "Line length…"/
 	// "Azimuth…"/"Convert to points" off a SHAPENC boundary (isShapencBoundary) and to offer "Plot
@@ -812,6 +904,11 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 			m.addAction("Show data table…",                                  // floating vertex table viewer
 						[s, lr, name]() { showLineDataTable(s, lr, name); });
 	}
+
+	// ANY drawn rectangle (plain or "Nested grids") gets a numeric limits editor -- a Mirone-style
+	// "Limits" window (N/W/E/S edit boxes, no geographic checkbox, "-R" previews the string).
+	if (!isSlip && isRectShape)
+		m.addAction("Rectangle limits (edit)…", [s, a]() { showRectLimitsDialog(s, a); });
 
 	// CRS-aware measurements (length(s) + azimuth(s) for lines/polygons; area for closed polygons).
 	// Gated to small objects so coastlines / large imports don't get them (lineMeasurable). The "(s)"

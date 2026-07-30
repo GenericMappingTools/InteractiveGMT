@@ -430,6 +430,7 @@ static bool lineClosedRing(Scene *s, const LineRef &lr);                    // c
 static int  polyHitPolygon(Scene *s, int x, int y, double tol);             // polygon under cursor? (85)
 static void nestReflow(Scene *s, bool snap = true);                         // re-quantize "Nested grids" chain (85); snap=false = don't move verts, only recompute indices (restore)
 static void nestNewChild(Scene *s);                                         // append a refined nested child (85)
+static void nestSetRect(Scene *s, Polygon &pg, double x0, double x1, double y0, double y1);  // force a rect's ring to these axis-aligned limits + rebuild (85)
 
 // Per-side illumination snapshot for an Aquamoto layer. WATER and LAND are two SEPARATE images, each
 // with its OWN light: editing the selected side updates only ITS snapshot, and bakeAquaShade re-bakes
