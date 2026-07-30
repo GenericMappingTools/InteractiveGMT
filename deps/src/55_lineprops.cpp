@@ -616,7 +616,18 @@ static void showRectLimitsDialog(Scene *s, vtkActor *a) {
 		const QString rtext = QString("-R%1/%2/%3/%4")
 		    .arg(eW->text().trimmed()).arg(eE->text().trimmed())
 		    .arg(eS->text().trimmed()).arg(eN->text().trimmed());
-		QMessageBox::information(&dlg, "-R", rtext);
+		QDialog rd(&dlg);
+		rd.setWindowTitle("-R");
+		auto *rv = new QHBoxLayout(&rd);
+		auto *rtxt = new QLineEdit(rtext, &rd);
+		rtxt->setReadOnly(true);
+		rtxt->setMinimumWidth(260);
+		rtxt->selectAll();
+		auto *rcopy = new QPushButton("Copy", &rd);
+		QObject::connect(rcopy, &QPushButton::clicked, [rtext]() { QApplication::clipboard()->setText(rtext); });
+		rv->addWidget(rtxt);
+		rv->addWidget(rcopy);
+		rd.exec();
 	});
 
 	auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);

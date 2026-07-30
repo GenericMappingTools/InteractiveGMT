@@ -91,11 +91,8 @@ GMTVTK_API void *gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 	                        /*objname=*/nullptr, /*imageOnly=*/image_only != 0,
 	                        /*gz=*/tiled ? z : nullptr, /*gnx=*/nx, /*gny=*/ny,
 	                        /*blankStart=*/false, /*openFlat2D=*/image_only == 0);   // grids open in 2D from frame 1
-	if (s && !image_only && !tiled) {                  // drape path: keep full-res z for hover/profile
-		s->gridZ.assign(z, z + (size_t)nx * ny);       // (tiled path already populated it in buildAndShow)
-		s->gnx = nx; s->gny = ny;
-		s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
-	}
+	if (s && !image_only && !tiled)                    // drape path: keep full-res z for hover/profile
+		sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1);   // (tiled path already populated it in buildAndShow)
 	// (grids already opened in flat-2D from frame 1 via buildAndShow's openFlat2D — no post-hoc switch,
 	// no 3-D flash.)
 	if (s && image_only) {
@@ -3473,7 +3470,43 @@ GMTVTK_API int gmtvtk_capture_rect_rgb(void *handle, double w, double e, double 
 	return ok ? 1 : 0;
 }
 
-// Free a buffer returned by gmtvtk_capture_rect_rgb.
+// Capture the rectangle's picture straight FROM THE GRID DATA, at native data resolution, through
+// bakeLayerRGBA (40_shading.cpp) -- the SAME relief-shade source of truth the flat-image drape and
+// its hi-res zoom-detail tile already bake from (SACRED_LAW.md: one shading engine, never forked).
+// Unlike gmtvtk_capture_rect_rgb (a SCREEN-SPACE grab: quality is tied to the CURRENT render-window
+// size and zoom, so a small window or a zoomed-out view yields a tiny/blurry crop even though the
+// underlying grid is full-resolution), this bakes as many pixels as the rectangle spans grid nodes
+// (capped like every other bake, kLayerTexMaxPix) -- resolution matches "Crop Grid"'s own data-space
+// crop, independent of window size or camera angle. Used by Roi Crop Tools' "Crop Image"/"Crop Image
+// (with coords)" whenever there is no separate bitmap image to crop (the rendered GRID IS the
+// picture); falls back (returns 0) to the screen-space capture when there is no baked grid to read
+// (e.g. surfLut isn't a vtkColorTransferFunction), letting the caller keep the old path as a fallback.
+GMTVTK_API int gmtvtk_capture_rect_databaked(void *handle, double w, double e, double south, double north,
+                                              unsigned char **outRgb, int *outW, int *outH) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !outRgb || !outW || !outH) return 0;
+	if (s->gridZ.empty() || s->gnx < 2 || s->gny < 2 || s->gdx == 0.0 || s->gdy == 0.0) return 0;
+	if (!(e > w && north > south)) return 0;
+	vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(s->surfLut);
+	if (!ctf) return 0;
+	const int wnx = std::max(2, (int)std::lround((e - w) / s->gdx) + 1);
+	const int wny = std::max(2, (int)std::lround((north - south) / s->gdy) + 1);
+	int txW, txH; layerTexSize(wnx, wny, txW, txH);
+	std::vector<unsigned char> rgba;
+	bakeLayerRGBA(s, s->gridZ.data(), s->gnx, s->gny, s->gx0, s->gy0, s->gdx, s->gdy, ctf,
+	              s->zmin, s->zmax, w, e, south, north, txW, txH, rgba);
+	if (rgba.size() != (size_t)txW * txH * 4) return 0;
+	unsigned char *buf = new unsigned char[(size_t)txW * txH * 3];
+	for (size_t i = 0, n = (size_t)txW * txH; i < n; ++i) {           // drop alpha; flip row 0 south -> row 0 north
+		const size_t row = i / txW, col = i % txW;
+		const size_t srci = (row * txW + col) * 4, dsti = ((size_t)(txH - 1 - row) * txW + col) * 3;
+		buf[dsti] = rgba[srci]; buf[dsti+1] = rgba[srci+1]; buf[dsti+2] = rgba[srci+2];
+	}
+	*outRgb = buf; *outW = txW; *outH = txH;
+	return 1;
+}
+
+// Free a buffer returned by gmtvtk_capture_rect_rgb / gmtvtk_capture_rect_databaked.
 GMTVTK_API void gmtvtk_free_rgb(unsigned char *buf) { delete[] buf; }
 
 // Re-frame the AXES CUBE + camera to an ARBITRARY world bbox (x0,x1,y0,y1 — plain data
@@ -3538,6 +3571,24 @@ GMTVTK_API void gmtvtk_reframe_h(void *handle, double x0, double x1, double y0, 
 	double zlo = s->zmin, zhi = s->zmax;
 	activeGridZRange(s, zlo, zhi);
 	gmtvtk_reframe_z_h(handle, x0, x1, y0, y1, zlo, zhi, keepMargin);
+}
+
+// Re-frame the window onto the content it actually holds NOW (forward-declared in 10_geometry.cpp for
+// `sceneClearViewOverride`, which calls it after releasing a derived variable's frame pin). Bounds
+// come from `surfGetBounds` — which, with the pin gone, reports the real remaining actors — and are
+// un-scaled back to data coordinates because gmtvtk_reframe_z_h takes plain data limits. `keepMargin`
+// follows the house convention: a picture keeps the margin that holds its tick labels on screen, a
+// grid fills edge-to-edge (see gmtvtk_reframe_z_h's own note).
+static void sceneReframeToContent(Scene *s) {
+	if (!sceneAlive(s) || !s->ren || !s->axes) return;
+	double b[6]; surfGetBounds(s, b);
+	const double xf = (s->xfac != 0.0) ? s->xfac : 1.0;
+	const double zs = s->zfac * s->ve;
+	const double zf = (zs != 0.0) ? zs : 1.0;
+	double zlo, zhi;
+	const bool hasGrid = activeGridZRange(s, zlo, zhi);
+	gmtvtk_reframe_z_h(s, b[0] / xf, b[1] / xf, b[2], b[3], b[4] / zf, b[5] / zf, hasGrid ? 0 : 1);
+	s->viewBoundsOverride = false;     // reframe re-pins it; the "override" now IS the real content
 }
 
 // A NEWLY LOADED element has arrived in this window: make it the thing on display. ONE function for
@@ -3798,11 +3849,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	// The existing AXES extent (x0..y1), CRS and base scales are LEFT UNTOUCHED — the grid is added
 	// INTO the existing frame, not promoted over it. Images carry no elevation, so they are skipped.
 	if (!ex.isImage && s->imageOnly && !s->gridAdopted) {
-		s->gridZ.assign(z, z + (size_t)nx * ny);       // column-major z[i*gny+j], same layout as view_grid
-		s->gnx = nx; s->gny = ny;
-		s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
-		s->gdx = (nx > 1) ? (x1 - x0) / (nx - 1) : 0.0;
-		s->gdy = (ny > 1) ? (y1 - y0) / (ny - 1) : 0.0;
+		sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1);
 		s->gridAdopted = true;                         // readout switches from pixel-colour to z
 		surfSetVisibility(s, 0);                       // HIDE the opaque blank canvas so the grid shows through
 		if (s->shadeDock) s->shadeDock->setVisible(true);   // canvas now has a shaded body -> reveal Shading dock
@@ -3873,13 +3920,8 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 
 	// The single-actor (drape) path needs full-res z for hover/profile/pick; the tiled path already
 	// populated s->gridZ inside buildSceneContent.
-	if (!gz) {
-		s->gridZ.assign(z, z + (size_t)nx * ny);
-		s->gnx = nx; s->gny = ny;
-		s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
-		s->gdx = (nx > 1) ? (x1 - x0) / (nx - 1) : 0.0;
-		s->gdy = (ny > 1) ? (y1 - y0) / (ny - 1) : 0.0;
-	}
+	if (!gz)
+		sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1);
 
 	s->emptyStart = false;
 
@@ -4096,10 +4138,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 
 	// Full-res data layer for the hover/coordinate readout (the single-actor drape path does NOT
 	// populate gridZ; only the tiled path does — so set it here, and re-point the active-grid routing).
-	s->gridZ.assign(z, z + (size_t)nx * ny);
-	s->gnx = nx; s->gny = ny;
-	s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
-	s->gdx = dx; s->gdy = dy;
+	sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1, dx, dy);
 	s->actZ = &s->gridZ; s->actNx = nx; s->actNy = ny;
 	s->actX0 = x0; s->actX1 = x1; s->actY0 = y0; s->actY1 = y1;
 	s->layerImgMode = true;
@@ -4378,13 +4417,22 @@ GMTVTK_API int gmtvtk_remove_grid_h(void *handle, const char *name) {
 	const std::string want = name;
 	for (size_t i = 0; i < s->extras.size(); ++i) {
 		if (s->extras[i].isImage || s->extras[i].name != want) continue;
-		ExtraObj &ex = s->extras[i];
-		if (s->ren && ex.actor) s->ren->RemoveActor(ex.actor);
-		if (s->ren && ex.drape) s->ren->RemoveActor(ex.drape);
-		s->extras.erase(s->extras.begin() + i);
-		applyGridStacking(s);                    // renormalize ranks + retarget colorbar to the new topmost
-		rebuildSceneObjects(s);
-		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		sceneRemoveExtraAt(s, i);                // THE removal (50_scene.cpp), same as the row's Remove
+		return 1;
+	}
+	return 0;
+}
+
+// Remove an EXTRA image by its Scene Objects name — the image twin of gmtvtk_remove_grid_h above,
+// through the SAME `sceneRemoveExtraAt` the image row's own "Remove" uses. Returns 1 if removed, 0 if
+// no extra image carried that name (or the window is dead).
+GMTVTK_API int gmtvtk_remove_image_h(void *handle, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !name[0]) return 0;
+	const std::string want = name;
+	for (size_t i = 0; i < s->extras.size(); ++i) {
+		if (!s->extras[i].isImage || s->extras[i].name != want) continue;
+		sceneRemoveExtraAt(s, i);
 		return 1;
 	}
 	return 0;

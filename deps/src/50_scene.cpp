@@ -17,6 +17,25 @@ static void deleteMecaGroup(Scene *s, const QString &groupName); // 85_polygon.c
 static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoint &gp); // defined below
 static void showInfoText(QWidget *parent, const QString &title, const QString &text); // 70_window.cpp: read-only text popup
 
+// Install the window's full-res DATA LAYER (the z buffer everything non-visual reads: hover readout,
+// profile sampling, the flat-image / crop bakes). ONE setter for all seven fields — SACRED_LAW.md's
+// "same operation, same function": the fields were set inline at four call sites and one of them
+// (gmtvtk_view_grid's non-tiled drape path) filled gridZ/gnx/gny/gx0..gy1 but silently left
+// gdx/gdy at 0, which made every gdx-gated consumer (gmtvtk_capture_rect_databaked, so Roi Crop
+// Tools' "Crop Image") bail to a low-res fallback on exactly the ordinary grid window.
+// `dx`/`dy` <= 0 (the usual case) derive the spacing from the extent; a caller that already knows the
+// grid's own increment (gmtvtk_set_layer_image) passes it verbatim.
+static void sceneSetGridLayer(Scene *s, const float *z, int nx, int ny,
+                              double x0, double x1, double y0, double y1,
+                              double dx = 0.0, double dy = 0.0) {
+	if (!s || !z || nx < 1 || ny < 1) return;
+	s->gridZ.assign(z, z + (size_t)nx * ny);       // column-major z[i*ny+j], the view_grid layout
+	s->gnx = nx; s->gny = ny;
+	s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
+	s->gdx = (dx > 0.0) ? dx : ((nx > 1) ? (x1 - x0) / (nx - 1) : 0.0);
+	s->gdy = (dy > 0.0) ? dy : ((ny > 1) ? (y1 - y0) / (ny - 1) : 0.0);
+}
+
 // Append one execution-error line to a window's read-only "Errors" tab and raise it (so a failure in
 // a background op is VISIBLE in the window, not just on the REPL's stderr). Shared by the
 // gmtvtk_log_error export and the fire-and-forget g_juliaEval callers below. Best-effort / no-throw.
@@ -646,6 +665,23 @@ static void imageRebuildActor(Scene *s, ExtraObj &ex) {
 
 // Properties menu for a dropped image (left-click its Scene Objects row): order it relative to the
 // surface (top/bottom/stack), drape it on the grid (if footprints overlap), or delete it.
+// Remove extras[idx] (a dropped/derived grid or image) from the scene. THE removal — the image row's
+// Remove, the grid row's Remove/Move and both C exports all come here, so a deletion can never behave
+// differently depending on which row it was triggered from (SACRED_LAW.md). `sceneAfterObjectRemoved`
+// carries the "re-show what it hid + release the frame it pinned" half.
+static void sceneRemoveExtraAt(Scene *s, size_t idx) {
+	if (!s || idx >= s->extras.size()) return;
+	ExtraObj &ex = s->extras[idx];
+	if (s->ren && ex.actor) s->ren->RemoveActor(ex.actor);
+	if (s->ren && ex.drape) s->ren->RemoveActor(ex.drape);
+	const bool wasGrid = !ex.isImage;
+	s->extras.erase(s->extras.begin() + idx);
+	sceneAfterObjectRemoved(s);
+	if (wasGrid) applyGridStacking(s);      // renormalize ranks + retarget colorbar to the new topmost
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	int idx = extraIndexOfActor(s, actor);
 	if (idx < 0) return;
@@ -679,13 +715,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	if (c == aStretch) { stretchImageObject(s, QString::fromStdString(s->extras[idx].name)); return; }
 	ExtraObj &ex = s->extras[idx];            // vector unchanged during exec -> index still valid
 	const double step = imageStackStep(s);
-	if (c == aDel) {
-		if (ex.actor) s->ren->RemoveActor(ex.actor);
-		s->extras.erase(s->extras.begin() + idx);
-		rebuildSceneObjects(s);
-		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
-		return;
-	}
+	if (c == aDel) { sceneRemoveExtraAt(s, (size_t)idx); return; }
 	if (c == aDrape) {
 		ex.draped = !ex.draped;
 		imageRebuildActor(s, ex);
@@ -1061,7 +1091,8 @@ static void sceneRemoveSurface(Scene *s) {
 		s->profLine = nullptr;
 	}
 	// Full-res z data buffer + active-grid pointer
-	s->gridZ.clear(); s->gnx = 0; s->gny = 0; s->actZ = nullptr;
+	s->gridZ.clear(); s->gnx = 0; s->gny = 0; s->gdx = 0.0; s->gdy = 0.0; s->actZ = nullptr;
+	s->viewBoundsOverride = false;   // no content left to keep a derived variable's frame pinned to
 	// Mark window as empty — a dropped file will promote into it
 	s->emptyStart   = true;
 	s->imageOnly    = false;
@@ -1178,13 +1209,7 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	if (c == aMove || c == aDel) {
 		// Move = open this grid in a new window, then delete it from here; a failed move keeps it.
 		if (c == aMove && !moveObjectToNewWindow(s, "grid", nm)) return;
-		ExtraObj &ex = s->extras[idx];
-		if (ex.actor) s->ren->RemoveActor(ex.actor);
-		if (ex.drape) s->ren->RemoveActor(ex.drape);
-		s->extras.erase(s->extras.begin() + idx);
-		applyGridStacking(s);                   // renormalize ranks + retarget colorbar to the new topmost
-		rebuildSceneObjects(s);
-		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		sceneRemoveExtraAt(s, (size_t)idx);
 	}
 }
 

@@ -9020,11 +9020,7 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 		s->surfLut = lut; s->surfCtfRange = ctfRange; s->surfEdges = edges;
 		// Data layer MUST exist before refineQuadtree (tiles sample s->gridZ). Populate it here from
 		// gz (the caller fills it only AFTER buildAndShow returns, which would be too late).
-		s->gridZ.assign(gz, gz + (size_t)gnx * gny);
-		s->gnx = gnx; s->gny = gny;
-		s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
-		s->gdx = (gnx > 1) ? (x1 - x0) / (gnx - 1) : 0.0;
-		s->gdy = (gny > 1) ? (y1 - y0) / (gny - 1) : 0.0;
+		sceneSetGridLayer(s, gz, gnx, gny, x0, x1, y0, y1);
 		s->quadRoot = buildQuadNode(0, gnx - 1, 0, gny - 1, 0, x0, s->gdx, y0, s->gdy);
 		s->surf = vtkSmartPointer<vtkActor>::New();   // placeholder handle; real geometry = tiles
 		s->surfGroup->SetScale(s->xfac, 1.0, s->zfac * s->ve);

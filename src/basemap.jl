@@ -85,7 +85,10 @@ function _on_basemap(scene::Ptr{Cvoid}, copt::AbstractString)::Cvoid
 			I = _crop_etopo4(W, E, S, N)
 			dW, dE = (wrap && W < 0) ? (W + 360.0, E + 360.0) : (Float64(W), Float64(E))
 		end
-		I.range = [Float64(dW), Float64(dE), Float64(S), Float64(N), 0.0, 255.0]
+		# The tile comes out of gdaltranslate in PIXEL coordinates (etopo4.jpg carries no georef), so it
+		# needs the FULL georeference — range AND x/y/inc/registration (see `_georef_image!`, drape.jl):
+		# a range-only patch displays fine but hands GMT/GDAL (crop, save) the old pixel axes.
+		_georef_image!(I, dW, dE, S, N)
 		I.proj4 = "+proj=longlat +datum=WGS84 +no_defs"          # so _isgeog(I) -> geographic axes
 		I.epsg  = 4326
 		# An EMPTY launcher has no axes (blankStart). To give the tile the SAME ExtraObj image row +

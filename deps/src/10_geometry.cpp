@@ -1892,6 +1892,67 @@ static void applyVE(Scene *s) {
 	s->widget->renderWindow()->Render();
 }
 
+// SACRED_LAW.md derived-variable axes law, the UNDO half. A derived variable (a crop, an RTP, any
+// "compute X from Y" result) re-frames the window onto ITS OWN limits through `gmtvtk_reframe_h`,
+// which PINS `viewBoundsOverride` so every bounds consumer (axes cube, tick billboards, camera fit,
+// gizmo) follows it. Removing that object must RELEASE the pin: otherwise the axes cube and its tick
+// text stay boxed on a bbox nothing in the scene occupies any more — and since the object's own
+// handle is gone with it, no Scene Objects row can ever clear them again (the user's own repro:
+// "remove the cropped image and it leaves behind its axes that can't be deleted"). Clearing the flag
+// makes `surfGetBounds` fall back to the real remaining content; `applyVE` then re-boxes the cube and
+// rebuilds the labels from it — the SAME path every other frame change goes through, no second
+// axes-fitting implementation. Call from EVERY object-removal site.
+// Re-frame axes + camera onto whatever the scene actually holds now (defined in 90_c_api.cpp, next to
+// the gmtvtk_reframe_* exports it is built from — this fragment is #included long before them).
+static void sceneReframeToContent(Scene *s);
+
+static void sceneClearViewOverride(Scene *s) {
+	if (!s || !s->viewBoundsOverride) return;
+	s->viewBoundsOverride = false;
+	// With the pin released, surfGetBounds reports the REAL remaining content again. Re-frame onto it
+	// through the SAME entry point the crop used to frame itself — axes box, X/Y ranges, the s->x0..y1
+	// bookkeeping (which the crop SHRANK to its own limits) and the camera all come back together,
+	// instead of an axes-only fix that would leave the camera parked on the deleted object.
+	sceneReframeToContent(s);
+	applyVE(s);
+}
+
+// Everything that must happen after ANY raster object is removed from the scene. ONE function, called
+// from every removal site (the image row's Remove, the grid row's Remove/Move, gmtvtk_remove_grid_h),
+// so a deletion can never leave a different kind of wreckage depending on which row it went through.
+//
+// (1) RESTORE THE SOURCE. A derived variable is added CHECKED with its source UNCHECKED
+//     (SACRED_LAW.md derived-variable display law). Deleting the derived result therefore tends to
+//     leave a window in which NOTHING is checked: the source is still hidden and the thing that
+//     replaced it is gone. Same rule as "Remove illumination restores the original" — removing a
+//     derived product must un-hide what it displaced, not just delete itself. The blank scaffold
+//     plane of an image-canvas window (imageOnly) is NOT content and is never restored — it is an
+//     opaque sheet that would cover the map.
+// (2) RELEASE THE FRAME. See sceneClearViewOverride: the axes cube + tick billboards would otherwise
+//     stay boxed on the removed object's bbox, with its handle gone and no row left to clear them.
+static void sceneAfterObjectRemoved(Scene *s) {
+	if (!s) return;
+	bool anyVisible = false;
+	for (auto &ex : s->extras)
+		if (ex.actor && ex.actor->GetVisibility()) { anyVisible = true; break; }
+	if (!anyVisible && !s->imageOnly) {
+		if (vtkProp3D *sp = surfProp(s)) anyVisible = sp->GetVisibility() != 0;
+	}
+	if (!anyVisible) {
+		// Topmost survivor first (extras are the pile, last = most recently added), else the base surface.
+		bool restored = false;
+		for (size_t i = s->extras.size(); i-- > 0; ) {
+			if (!s->extras[i].actor) continue;
+			s->extras[i].actor->SetVisibility(1);
+			if (s->extras[i].drape) s->extras[i].drape->SetVisibility(1);
+			restored = true;
+			break;
+		}
+		if (!restored && !s->imageOnly) surfSetVisibility(s, 1);
+	}
+	sceneClearViewOverride(s);
+}
+
 // Build + exec the per-element context menu for an overlay (defined after addOverlay,
 // near the Qt window code). Forward-declared so the gizmo's left-click handler can call it.
 static void popupOverlayMenu(Scene *s, vtkActor *a, int mode, const QPoint &globalPos);

@@ -30,6 +30,53 @@ end
 # and are genuinely bottom-first, so those honour the nominal T/B label.
 _north_first(lay, rowmajor::Bool) = rowmajor ? true : (isempty(lay) || lay[1] != 'B')
 
+# De-interleave a PIXEL-INTERLEAVED image ('...P', what `gmtread` returns for any RGB raster read
+# from disk: "BRPa") into a genuine band-planar array ('...B'), leaving everything else untouched.
+#
+# The drape/texture path reads such an image correctly (see `_pixaccess`: it recovers the true pixels
+# by viewing the band-fastest memory). GMT/GDAL entry points do NOT — a row-major image sends
+# `GMT.crop` down its `gdaltranslate` branch (GMT/src/crop.jl), and the in-memory GDAL wrapper reads
+# the buffer as if it were band-planar, so an RGB disk image comes back as colour noise (measured:
+# correlation ~0 against the true pixels; a de-interleaved copy of the SAME image gives 1.0). Anything
+# handing a GMTimage to GMT/GDAL must pass it through here first.
+function _to_band_planar(I::GMTimage)
+	lay = I.layout
+	S   = I.image
+	(ndims(S) == 3 && length(lay) >= 3 && lay[3] == 'P') || return I
+	nb = size(S, 3)
+	# Band-fastest memory, whatever the row/column-major char is (the SAME view `_pixaccess` takes):
+	# P[band, dim1, dim2] -> permute to the band-planar (dim1, dim2, band) the nominal shape claims.
+	P  = reshape(S, nb, size(S, 1), size(S, 2))
+	I2 = GMT.mat2img(permutedims(P, (2, 3, 1)), I)
+	I2.layout = lay[1:2] * "B" * lay[4:end]
+	return I2
+end
+
+# Give an image a COMPLETE, self-consistent georeference over [W,E]x[S,N]: range, x/y coordinate
+# vectors, increment and registration, all agreeing with the pixel dims.
+#
+# Setting `I.range` ALONE is not enough and silently breaks everything downstream. The viewer's own
+# drape path places an image from `I.range`, so a range-only patch LOOKS right on screen — but every
+# GMT/GDAL entry point reads `I.x`/`I.y`/`I.inc` instead (`GMT.crop` -> `axes2pix`/`gdaltranslate`),
+# and those still held the pixel coordinates the image was born with. The Base Map tile was the live
+# repro: range said -100/-20/-60/20 while x still ran 1..1200 with inc=1, so cropping a 30x30-degree
+# rectangle out of it returned a 31x31-PIXEL scrap (one pixel per "unit" of a coordinate system that
+# no longer existed) instead of the 450x450 crop the data holds.
+#
+# Pixel registration (`reg=1`, x/y carrying nx+1 / ny+1 node boundaries) is what `gmtread` itself
+# reports for a disk image, so this matches how a genuinely-referenced image arrives.
+function _georef_image!(I::GMTimage, W, E, S, N)
+	lay = I.layout
+	rowmajor = length(lay) >= 2 && lay[2] == 'R'
+	nx, ny = rowmajor ? (size(I.image, 1), size(I.image, 2)) : (size(I.image, 2), size(I.image, 1))
+	I.registration = 1
+	I.inc   = [(E - W) / nx, (N - S) / ny]
+	I.x     = collect(range(Float64(W), Float64(E); length = nx + 1))
+	I.y     = collect(range(Float64(S), Float64(N); length = ny + 1))
+	I.range = [Float64(W), Float64(E), Float64(S), Float64(N), I.range[5], I.range[6]]
+	return I
+end
+
 # Pack a GMTimage into a VTK texture buffer, honouring I.layout (mirrors GMTF3D's img_to_texbuf).
 # layout char 2 = 'R' -> array is [lon,lat] (row-major); see _north_first for the lat direction.
 # VTK texture origin is bottom-left, so output row 0 = south, west->east. Grey/2-band expand to

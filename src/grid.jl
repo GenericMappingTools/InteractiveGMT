@@ -239,7 +239,10 @@ add!(fig::QtFigure, data; mode::Symbol=:lines, color=nothing, size=0) =
 # itself dispatches to for a plain region-only cut on an in-memory grid (grdcut.jl:81) — so cropping
 # through here and through `grdcut(G; region=...)` must agree exactly; the unit test locks that down.
 _roi_crop_grid(G::GMTgrid, w, e, s, n)   = GMT.crop(G; region=(w, e, s, n))[1]
-_roi_crop_image(I::GMTimage, w, e, s, n) = GMT.crop(I; region=(w, e, s, n))[1]
+# `_to_band_planar` FIRST (drape.jl): a disk-read RGB image is pixel-interleaved ("BRPa"), and a
+# row-major image sends `crop` down its gdaltranslate branch, which reads the buffer as band-planar
+# -> colour noise. De-interleaved, the same crop is exact.
+_roi_crop_image(I::GMTimage, w, e, s, n) = GMT.crop(_to_band_planar(I); region=(w, e, s, n))[1]
 
 # "Crop Image" (plain, un-referenced): `GMT.crop` preserves the source image's own CRS, which is
 # correct for "Crop Image (with coords)" but wrong for the plain variant — Mirone's real distinction
@@ -281,9 +284,17 @@ end
 function _capture_rect_image(scene::Ptr{Cvoid}, w, e, s, n; coords::Bool=true)
 	pRgb = Ref{Ptr{UInt8}}(C_NULL)
 	pW = Ref{Cint}(0); pH = Ref{Cint}(0)
-	ok = ccall(_fn(:gmtvtk_capture_rect_rgb), Cint,
+	# Prefer the data-space bake (gmtvtk_capture_rect_databaked): native grid resolution, independent
+	# of the current render-window size / zoom -- the screen-space grab below is only a fallback for
+	# when there's no baked grid to read from (see the export's own doc, 90_c_api.cpp).
+	ok = ccall(_fn(:gmtvtk_capture_rect_databaked), Cint,
 		(Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
 		scene, Float64(w), Float64(e), Float64(s), Float64(n), pRgb, pW, pH)
+	if ok == 0
+		ok = ccall(_fn(:gmtvtk_capture_rect_rgb), Cint,
+			(Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
+			scene, Float64(w), Float64(e), Float64(s), Float64(n), pRgb, pW, pH)
+	end
 	ok == 0 && error("Roi Crop: rectangle isn't visible on screen, nothing to capture")
 	try
 		view = unsafe_wrap(Array, pRgb[], (3, Int(pW[]), Int(pH[])))   # (band, col, row), C memory, borrowed
