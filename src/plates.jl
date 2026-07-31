@@ -639,7 +639,10 @@ function _on_euler(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 	try
 		d  = _nswing_parse(unsafe_string(cparams))
 		op = _get(d, "op")
-		startswith(op, "plate") && (tool = "Plate calculator")
+		startswith(op, "plate")  && (tool = "Plate calculator")
+		startswith(op, "ceuler") && (tool = "Compute Euler pole")
+		op == "ceuler"      && return _ce_start(scene, d)
+		op == "ceuler_stop" && return _ce_stop()
 		op == "rotate"      && return _euler_rotate(scene, d)
 		op == "add"         && return _euler_add(d)
 		op == "interp"      && return _euler_interp(d)

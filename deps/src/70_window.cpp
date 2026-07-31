@@ -7193,6 +7193,441 @@ public:
 };
 
 // ============================================================================================
+// Compute Euler pole (Plates menu) — port of Mirone's src_figs/compute_euler.m. Fits the pole that
+// takes one isochron onto its conjugate, either by the brute-force search over a box of poles or by
+// the Hellinger method. The maths lives in Julia (src/computeeuler.jl + GMT.jl's hellinger_auto);
+// this is the dialog, loaded at RUNTIME via QUiLoader from deps/ui/compute_euler.ui.
+//
+// It goes through the SAME `gmtvtk_set_euler_callback` door as the other two Plates dialogs, with
+// its own `op=ceuler` / `op=ceuler_stop` — one callback for the whole menu.
+//
+// The search can take minutes, so it does NOT block: Julia returns at once and pushes progress and
+// the running best pole back through gmtvtk_compute_euler_progress (below), which drives the
+// progress bar and the five result boxes exactly like the MATLAB dialog's live updates. STOP asks
+// the search to stop; what it then reports is the best it had found, i.e. what is already on screen.
+class ComputeEulerDialog;
+static std::map<Scene *, ComputeEulerDialog *> g_ceulerDlgs;
+static ComputeEulerDialog *g_ceulerRunning = nullptr;    // the dialog whose run is in flight (one at a time)
+
+class ComputeEulerDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	bool reallyClose = false;
+	QComboBox *line1 = nullptr, *line2 = nullptr;
+	QLineEdit *pLon = nullptr, *pLat = nullptr, *pAng = nullptr;
+	QLineEdit *fLon = nullptr, *fLat = nullptr, *fAng = nullptr;
+	QLineEdit *stRes = nullptr, *bfRes = nullptr;
+	QLineEdit *lonRange = nullptr, *latRange = nullptr, *angRange = nullptr;
+	QLineEdit *nLon = nullptr, *nLat = nullptr, *nAng = nullptr;
+	QLineEdit *errFile = nullptr;
+	QLabel *nIntLbl = nullptr;
+	QCheckBox *hellChk = nullptr, *plotResChk = nullptr, *loopChk = nullptr, *showCubeChk = nullptr;
+	QCheckBox *statsChk = nullptr, *ellipseChk = nullptr, *forceChk = nullptr, *segChk = nullptr;
+	QRadioButton *ncRadio = nullptr, *vtkRadio = nullptr;
+	QProgressBar *bar = nullptr;
+	QPushButton *stopBtn = nullptr, *computeBtn = nullptr, *recycleBtn = nullptr;
+	// The N-points boxes double as the Hellinger DP tolerance / volume readout, as in the MATLAB
+	// dialog; their normal contents are kept here while that mode is on.
+	QString savedNLon, savedNLat, savedNAng;
+
+	explicit ComputeEulerDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/compute_euler.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("ComputeEulerDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("ComputeEulerDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+		g_ceulerDlgs[scn] = this;
+
+		// The X parks it (everything set up in it — the two lines, the starting pole, the ranges —
+		// has to survive being closed), same contract as EulerDialog.
+		struct CloseParks : QObject {
+			ComputeEulerDialog *ed;
+			CloseParks(QObject *parent, ComputeEulerDialog *e) : QObject(parent), ed(e) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && ed && !ed->reallyClose && sceneAlive(ed->scn)) {
+					e->ignore();
+					ed->dlg->hide();
+					ComputeEulerDialog *p = ed;
+					parkTool(p->scn, p->dlg, "Compute Euler pole", IC_Line,
+					         "Closed Compute Euler pole dialog — double-click to bring it back, "
+					         "click for Show / Delete",
+					         [p]() { p->unpark(); }, p->parkedMenu());
+					unfoldSceneObjects(ed->scn);
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		dlg->installEventFilter(new CloseParks(dlg, this));
+
+		line1 = d->findChild<QComboBox *>("combo_line1");
+		line2 = d->findChild<QComboBox *>("combo_line2");
+		pLon  = d->findChild<QLineEdit *>("edit_pLon_ini");
+		pLat  = d->findChild<QLineEdit *>("edit_pLat_ini");
+		pAng  = d->findChild<QLineEdit *>("edit_pAng_ini");
+		fLon  = d->findChild<QLineEdit *>("edit_pLon_fim");
+		fLat  = d->findChild<QLineEdit *>("edit_pLat_fim");
+		fAng  = d->findChild<QLineEdit *>("edit_pAng_fim");
+		stRes = d->findChild<QLineEdit *>("edit_InitialResidue");
+		bfRes = d->findChild<QLineEdit *>("edit_BFresidue");
+		lonRange = d->findChild<QLineEdit *>("edit_LonRange");
+		latRange = d->findChild<QLineEdit *>("edit_LatRange");
+		angRange = d->findChild<QLineEdit *>("edit_AngRange");
+		nLon = d->findChild<QLineEdit *>("edit_nLon");
+		nLat = d->findChild<QLineEdit *>("edit_nLat");
+		nAng = d->findChild<QLineEdit *>("edit_nAng");
+		errFile = d->findChild<QLineEdit *>("edit_err_file");
+		nIntLbl = d->findChild<QLabel *>("textNint");
+		hellChk = d->findChild<QCheckBox *>("check_hellinger");
+		plotResChk = d->findChild<QCheckBox *>("check_plotRes");
+		loopChk = d->findChild<QCheckBox *>("check_loopUntil");
+		showCubeChk = d->findChild<QCheckBox *>("check_showCube");
+		statsChk = d->findChild<QCheckBox *>("check_show_stats");
+		ellipseChk = d->findChild<QCheckBox *>("check_error_ellipse");
+		forceChk = d->findChild<QCheckBox *>("check_in_equal_out");
+		segChk = d->findChild<QCheckBox *>("check_color_segmentation");
+		ncRadio = d->findChild<QRadioButton *>("radio_netcdf");
+		vtkRadio = d->findChild<QRadioButton *>("radio_VTK");
+		bar = d->findChild<QProgressBar *>("slider_wait");
+		stopBtn = d->findChild<QPushButton *>("push_stop");
+		computeBtn = d->findChild<QPushButton *>("push_compute");
+		recycleBtn = d->findChild<QPushButton *>("push_reciclePole");
+
+		refillLines();
+		if (auto *b = d->findChild<QPushButton *>("push_pickLines"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() { refillLines(); });
+		wireFileBox(d, "combo_line1", "btn_line1", "Select the moving isochron",
+		            "Line files (*.dat *.txt *.xy);;All files (*)");
+		wireFileBox(d, "combo_line2", "btn_line2", "Select the fixed isochron",
+		            "Line files (*.dat *.txt *.xy);;All files (*)");
+
+		// The Poles selector is the catalogue picker the Euler rotations dialog uses — one picker.
+		if (auto *b = d->findChild<QPushButton *>("push_polesList"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() {
+				std::vector<EulerPole> sel;
+				if (pickPolesFromCatalogue(d, 1, sel) != PolesPick::Use || sel.empty()) return;
+				if (pLon) pLon->setText(QString::number(sel[0].lon));
+				if (pLat) pLat->setText(QString::number(sel[0].lat));
+				if (pAng) pAng->setText(QString::number(sel[0].ang));
+			});
+		// "^": start over from the pole just computed (Mirone's push_reciclePole).
+		if (recycleBtn) QObject::connect(recycleBtn, &QPushButton::clicked, d, [this]() { recyclePole(); });
+
+		if (auto *b = d->findChild<QToolButton *>("push_err_file")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				const QString fn = QFileDialog::getSaveFileName(d, "Save residues grid", QString(),
+					"Residues grid (*.nc *.grd *.vtk);;All files (*)");
+				if (fn.isEmpty()) return;
+				if (errFile) errFile->setText(fn);
+				const QString ext = QFileInfo(fn).suffix().toLower();
+				if (ext == "vtk") { if (vtkRadio) vtkRadio->setChecked(true); }
+				else if (ncRadio) ncRadio->setChecked(true);
+			});
+			fileBoxDoubleClick(errFile, b);      // standing rule: the box opens the chooser too
+		}
+
+		if (hellChk) QObject::connect(hellChk, &QCheckBox::toggled, d, [this](bool) { syncHellinger(); });
+		syncHellinger();
+
+		// The three N-points boxes take "N*Delta" as well as a plain count (Mirone's edit_nInt_CB),
+		// and a changed range re-derives the spacing — so the tooltip always says what the step is.
+		struct NRow { QLineEdit *n; QLineEdit *r; };
+		const NRow rows[3] = { { nLon, lonRange }, { nLat, latRange }, { nAng, angRange } };
+		for (const NRow &row : rows) {
+			if (!row.n || !row.r) continue;
+			QLineEdit *ne = row.n, *re = row.r;
+			QObject::connect(ne, &QLineEdit::editingFinished, d, [this, ne, re]() { syncNInt(ne, re); });
+			QObject::connect(re, &QLineEdit::editingFinished, d, [this, ne, re]() { syncNInt(ne, re); });
+			syncNInt(ne, re);
+		}
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (computeBtn) QObject::connect(computeBtn, &QPushButton::clicked, d, [this]() { run(); });
+		if (stopBtn) QObject::connect(stopBtn, &QPushButton::clicked, d, [this]() { stop(); });
+		addManualButton(dlg, []() { return QString("backtracker"); });
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			if (g_ceulerRunning == this) g_ceulerRunning = nullptr;
+			delete this;
+		});
+	}
+
+	~ComputeEulerDialog() {
+		if (g_ceulerRunning == this) g_ceulerRunning = nullptr;
+		for (auto it = g_ceulerDlgs.begin(); it != g_ceulerDlgs.end(); )
+			it = (it->second == this) ? g_ceulerDlgs.erase(it) : std::next(it);
+	}
+
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel = m.addAction("Delete");
+			QAction *pick = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();
+			}
+		};
+	}
+
+	// Every LINE element of the window, in both combos — the same list (and the same rules about
+	// what counts as a line) the Euler rotations dialog builds. What the user typed is kept.
+	void refillLines() {
+		if (!scn || !sceneAlive(scn)) return;
+		QStringList names;
+		for (auto &pg : scn->polys) {
+			if (pg.isFault || pg.isSlip || pg.nestKind != 0) continue;
+			names << QString::fromStdString(pg.name);
+		}
+		for (auto &ov : scn->overlays) {
+			if (ov.mode != 1) continue;
+			names << QString::fromStdString(ov.name);
+		}
+		for (int k = 0; k < 2; ++k) {
+			QComboBox *c = (k == 0) ? line1 : line2;
+			if (!c) continue;
+			const QString had = c->currentText().trimmed();
+			QSignalBlocker b(c);
+			c->clear();
+			c->addItems(names);
+			if (!had.isEmpty() && names.contains(had)) c->setCurrentText(had);
+			else if (names.size() > k) c->setCurrentIndex(k);      // first line left, second right
+			else c->setCurrentText(had);
+		}
+	}
+
+	// A "..." button that fills an editable combo with a file path. The combo's own line edit gets
+	// the app-wide double-click-opens-the-chooser rule (fileBoxDoubleClick, 30_app.cpp), which works
+	// by CLICKING that same button — so there is one file-picking path, never two that can drift.
+	void wireFileBox(QDialog *d, const char *comboName, const char *btnName, const QString &title,
+	                 const QString &filter) {
+		auto *c = d->findChild<QComboBox *>(comboName);
+		auto *b = d->findChild<QToolButton *>(btnName);
+		if (!c || !b) return;
+		QObject::connect(b, &QToolButton::clicked, d, [c, d, title, filter]() {
+			const QString fn = QFileDialog::getOpenFileName(d, title, QString(), filter);
+			if (!fn.isEmpty()) c->setCurrentText(fn);
+		});
+		fileBoxDoubleClick(c->lineEdit(), b);
+	}
+
+	// check_hellinger_CB: the two methods do not share their controls, so one switch swaps them.
+	void syncHellinger() {
+		const bool on = hellChk && hellChk->isChecked();
+		for (QLineEdit *e : { lonRange, latRange, angRange }) if (e) e->setEnabled(!on);
+		for (QWidget *w : { (QWidget *)errFile, (QWidget *)ncRadio, (QWidget *)vtkRadio,
+		                    (QWidget *)showCubeChk })
+			if (w) w->setVisible(!on);
+		if (auto *lb = dlg->findChild<QLabel *>("text_resid_grid")) lb->setVisible(!on);
+		if (auto *b = dlg->findChild<QToolButton *>("push_err_file")) b->setVisible(!on);
+		for (QWidget *w : { (QWidget *)statsChk, (QWidget *)ellipseChk, (QWidget *)forceChk,
+		                    (QWidget *)segChk })
+			if (w) w->setVisible(on);
+		if (on) {
+			savedNLon = nLon ? nLon->text() : QString();
+			savedNLat = nLat ? nLat->text() : QString();
+			savedNAng = nAng ? nAng->text() : QString();
+			if (nLon) { nLon->setText("8"); nLon->setToolTip(
+				"Tolerance used to break the isochron into linear chunks (the Hellinger segments), in km"); }
+			if (nLat) { nLat->setText(""); nLat->setReadOnly(true);
+				nLat->setToolTip("Volume of the confidence region, in km3"); }
+			if (nAng) nAng->setVisible(false);
+			if (nIntLbl) nIntLbl->setText("DP tolerance");
+		} else {
+			if (nLon && !savedNLon.isEmpty()) nLon->setText(savedNLon);
+			if (nLat) { nLat->setReadOnly(false); if (!savedNLat.isEmpty()) nLat->setText(savedNLat); }
+			if (nAng) { nAng->setVisible(true); if (!savedNAng.isEmpty()) nAng->setText(savedNAng); }
+			if (nIntLbl) nIntLbl->setText("N Points");
+		}
+	}
+
+	// edit_nInt_CB: the box holds either a COUNT of points (forced odd, so the starting pole is one
+	// of them) or the form "N*Delta" (e.g. 100*0.1), which sets the range as well — N is forced even
+	// there, so the count N+1 is again odd. The tooltip reports the resulting spacing either way.
+	// In Hellinger mode these boxes mean something else entirely, so the rule does not apply.
+	void syncNInt(QLineEdit *ne, QLineEdit *re) {
+		if (!ne || !re || (hellChk && hellChk->isChecked())) return;
+		const QString s = ne->text().trimmed();
+		if (s.isEmpty()) return;
+		const int star = s.indexOf('*');
+		double d = 0.0;
+		int nPts = 0;
+		if (star > 0) {
+			bool okN = false, okD = false;
+			const int nInt0 = s.left(star).toInt(&okN);
+			d = s.mid(star + 1).toDouble(&okD);
+			if (!okN || !okD || nInt0 <= 0 || d <= 0) { ne->setText("3"); return; }
+			const int nInt = (nInt0 % 2) ? nInt0 + 1 : nInt0;      // an EVEN number of intervals
+			nPts = nInt + 1;                                        // hence an ODD number of points
+			re->setText(QString::number(nInt * d, 'g', 6));
+		} else {
+			nPts = qAbs(s.toInt());
+			if (nPts <= 0) { ne->setText("3"); return; }
+			if (!(nPts % 2)) nPts += 1;                             // an ODD number of points
+			const double rang = re->text().trimmed().toDouble();
+			d = (nPts > 1) ? rang / (nPts - 1) : 0.0;
+		}
+		QSignalBlocker b(ne);
+		ne->setText(QString::number(nPts));
+		ne->setToolTip(QString("The range interval is divided into this number of equally spaced points\n"
+		                       "Alternatively use the form N*Delta (e.g. 100*0.1) to set up both range and "
+		                       "resolution\nActual point spacing is = %1").arg(d, 0, 'g', 6));
+	}
+
+	void recyclePole() {
+		if (pLon && fLon && !fLon->text().isEmpty()) pLon->setText(fLon->text());
+		if (pLat && fLat && !fLat->text().isEmpty()) pLat->setText(fLat->text());
+		if (pAng && fAng && !fAng->text().isEmpty()) pAng->setText(fAng->text());
+	}
+
+	// The search is running: Compute is out, STOP is in.
+	void setRunning(bool on) {
+		if (computeBtn) computeBtn->setEnabled(!on);
+		if (stopBtn) stopBtn->setEnabled(on);
+		if (!on && bar) bar->setValue(bar->maximum());
+	}
+
+	// gmtvtk_compute_euler_progress lands here: `cur` < 0 means the run is over.
+	void progress(int cur, int nmax, const QString &txt) {
+		const QStringList c = txt.split('\t');
+		auto put = [&c](QLineEdit *e, int i) {
+			if (e && i < c.size() && !c[i].isEmpty()) e->setText(c[i]);
+		};
+		put(fLon, 0); put(fLat, 1); put(fAng, 2); put(stRes, 3); put(bfRes, 4);
+		if (c.size() > 5 && !c[5].isEmpty() && nLat) nLat->setText(c[5]);   // Hellinger's volume
+		if (bar && nmax > 0) {
+			bar->setMaximum(nmax);
+			bar->setValue(cur < 0 ? nmax : cur);
+		}
+		if (cur < 0) {
+			setRunning(false);
+			g_ceulerRunning = nullptr;
+			if (recycleBtn && fLon && !fLon->text().isEmpty()) recycleBtn->setVisible(true);
+			refillLines();                       // the fitted line is an element of the window now
+		}
+	}
+
+	void stop() {
+		if (!g_juliaEuler) return;
+		QStringList kv;
+		kv << "op=ceuler_stop";
+		g_juliaEuler(scn, kv.join("\n").toUtf8().constData());
+		if (stopBtn) stopBtn->setEnabled(false);
+	}
+
+	void run() {
+		if (!dlg) return;
+		if (!g_juliaEuler) {
+			QMessageBox::warning(dlg, "Compute Euler pole", "The Julia side is not connected.");
+			return;
+		}
+		const QString l1 = line1 ? line1->currentText().trimmed() : QString();
+		const QString l2 = line2 ? line2->currentText().trimmed() : QString();
+		if (l1.isEmpty() || l2.isEmpty()) {
+			QMessageBox::warning(dlg, "Compute Euler pole",
+				"Compute an Euler pole with what? It would help if you provide me TWO lines.");
+			return;
+		}
+		if (l1 == l2) {
+			QMessageBox::warning(dlg, "Compute Euler pole", "The two lines must be different.");
+			return;
+		}
+		auto num = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		if (num(pLon).isEmpty() || num(pLat).isEmpty() || num(pAng).isEmpty()) {
+			QMessageBox::warning(dlg, "Compute Euler pole",
+				"I need a first guess of the Euler pole you are seeking for.\n"
+				"Pay attention to the \"Starting Pole Section\".");
+			return;
+		}
+		const bool hell = hellChk && hellChk->isChecked();
+		const bool onlyRes = plotResChk && plotResChk->isChecked();
+
+		// Clear the previous answer, exactly as push_compute_CB does before starting.
+		for (QLineEdit *e : { fLon, fLat, fAng, stRes, bfRes }) if (e) e->clear();
+
+		QStringList kv;
+		kv << "op=ceuler";
+		kv << "line1=" + l1 << "line2=" + l2;
+		kv << "polelon=" + num(pLon) << "polelat=" + num(pLat) << "poleang=" + num(pAng);
+		kv << "lonrange=" + num(lonRange) << "latrange=" + num(latRange) << "angrange=" + num(angRange);
+		kv << "nlon=" + num(nLon) << "nlat=" + num(nLat) << "nang=" + num(nAng);
+		kv << QString("hellinger=%1").arg(hell ? 1 : 0);
+		kv << QString("plotres=%1").arg(onlyRes ? 1 : 0);
+		kv << QString("loop=%1").arg(loopChk && loopChk->isChecked() ? 1 : 0);
+		if (hell) {
+			kv << "dptol=" + num(nLon);            // the N-points box IS the DP tolerance in this mode
+			kv << QString("showstats=%1").arg(statsChk && statsChk->isChecked() ? 1 : 0);
+			kv << QString("ellipse=%1").arg(ellipseChk && ellipseChk->isChecked() ? 1 : 0);
+			kv << QString("forcepole=%1").arg(forceChk && forceChk->isChecked() ? 1 : 0);
+			kv << QString("colorseg=%1").arg(segChk && segChk->isChecked() ? 1 : 0);
+		} else {
+			kv << "residfile=" + (errFile ? errFile->text().trimmed() : QString());
+			kv << QString("residfmt=%1").arg(vtkRadio && vtkRadio->isChecked() ? "vtk" : "nc");
+			kv << QString("showcube=%1").arg(showCubeChk && showCubeChk->isChecked() ? 1 : 0);
+		}
+
+		// Only the brute-force search runs in the background; the other two branches answer at once.
+		const bool async = !hell && !onlyRes;
+		if (async) {
+			if (bar) { bar->setMaximum(qMax(1, num(nLon).toInt())); bar->setValue(0); }
+			setRunning(true);
+			g_ceulerRunning = this;
+		}
+		g_eulerResult.clear();
+		const int ok = g_juliaEuler(scn, kv.join("\n").toUtf8().constData());
+		const QString answer = QString::fromStdString(g_eulerResult);
+		if (!ok) {
+			if (async) { setRunning(false); g_ceulerRunning = nullptr; }
+			QMessageBox::warning(dlg, "Compute Euler pole", answer.isEmpty()
+				? QString("Failed — see this window's Errors console for details.") : answer);
+			return;
+		}
+		if (!async) {
+			refillLines();
+			if (!answer.isEmpty()) {
+				QMessageBox box(QMessageBox::Information, "Compute Euler pole", answer, QMessageBox::Ok, dlg);
+				box.setTextInteractionFlags(Qt::TextSelectableByMouse);
+				box.exec();
+			}
+			if (hell) {
+				// The Hellinger answer came back through the same progress channel; nothing else to do.
+				if (recycleBtn && fLon && !fLon->text().isEmpty()) recycleBtn->setVisible(true);
+			}
+		}
+	}
+};
+
+// The one door Julia's worker pushes progress and results through (src/computeeuler.jl `_ce_push`).
+// `txt` is tab-separated: pole lon, lat, angle, starting residue, best-fit residue [, volume].
+void computeEulerProgress(int cur, int nmax, const QString &txt) {
+	if (g_ceulerRunning && g_ceulerRunning->dlg) { g_ceulerRunning->progress(cur, nmax, txt); return; }
+	// Not a background run (Hellinger, "plot residues only"): the dialog of any live window takes it.
+	for (auto &kv : g_ceulerDlgs)
+		if (kv.second && kv.second->dlg) { kv.second->progress(cur, nmax, txt); return; }
+}
+
+// ============================================================================================
 // grdfilter (GMT menu) — filter a grid in the space domain. Layout is Mirone's Grdfilter window:
 // the shared "Griding Line Geometry" block (adopted from the .ui's verbatim copy of
 // grid_line_geometry.ui, so it behaves exactly as grdsample's), the Filter type + width, and the
@@ -11686,6 +12121,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			auto it = g_plateDlgs.find(s);
 			if (it != g_plateDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
 			auto *w = new PlateCalcDialog(win, s);
+			if (w->dlg) w->dlg->show();
+		});
+		mGphy->addAction("Compute Euler pole…", [win, s]() {
+			auto it = g_ceulerDlgs.find(s);
+			if (it != g_ceulerDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+			auto *w = new ComputeEulerDialog(win, s);
 			if (w->dlg) w->dlg->show();
 		});
 		reopen();

@@ -21,6 +21,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QPointer>
+#include <QProgressBar>
 #include <QProgressDialog>
 #include <QComboBox>
 #include <QStandardItemModel>

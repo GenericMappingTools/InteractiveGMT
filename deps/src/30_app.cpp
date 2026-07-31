@@ -477,6 +477,17 @@ static JuliaInterpolateFn g_juliaInterpolate = nullptr;
 //              "lon lat rate"; empty when the two plates are the same (no motion)
 //   op=platevel  polelon= polelat= polerate= lon= lat=  — the plate velocity at that point, as
 //              "speed azimuth" (mm/yr and degrees cw from N, gmtpmodeler)
+// …and Compute Euler pole (ComputeEulerDialog, Mirone's src_figs/compute_euler.m), same door again:
+//   op=ceuler  line1= line2=<Scene Objects label or file path>  polelon= polelat= poleang=
+//              lonrange= latrange= angrange=  nlon= nlat= nang=   — the search box around the pole
+//              hellinger=0|1  dptol=<km>  showstats=0|1 ellipse=0|1 forcepole=0|1 colorseg=0|1
+//              plotres=0|1   — signed residues of the starting pole only, no pole computed
+//              residfile=<path> residfmt=nc|vtk showcube=0|1   — the (lat, lon, angle) residues cube
+//              loop=0|1      — restart from the pole just found until it stops improving
+//   op=ceuler_stop   — ask the running search to stop; it reports its best so far
+// The brute-force search does NOT block: op=ceuler returns as soon as the worker task is running and
+// the answer arrives through gmtvtk_compute_euler_progress (90_c_api.cpp). The Hellinger and
+// "plot residues only" branches are synchronous and answer through gmtvtk_euler_result as usual.
 // The rotated lines land in `scene` as ONE new Scene Objects group of named lines (the source line
 // stays visible — a rotation is a comparison); `add`/`interp` answer through gmtvtk_euler_result.
 // Returns 1 on success, 0 on failure. nullptr to detach.

@@ -41,6 +41,9 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_euler_open_dialog_test, :gmtvtk_euler_close_dialog_test, :gmtvtk_euler_targets_test,
 	:gmtvtk_euler_arm_pick_test, :gmtvtk_euler_pick_deliver_test,
 	:gmtvtk_euler_parked_test, :gmtvtk_euler_delete_dialog_test,
+	:gmtvtk_ceuler_open_dialog_test, :gmtvtk_ceuler_set_test, :gmtvtk_ceuler_read_test,
+	:gmtvtk_ceuler_compute_test, :gmtvtk_ceuler_stop_test, :gmtvtk_ceuler_delete_dialog_test,
+	:gmtvtk_compute_euler_progress,
 	:gmtvtk_platecalc_open_dialog_test, :gmtvtk_platecalc_close_dialog_test,
 	:gmtvtk_platecalc_delete_dialog_test, :gmtvtk_platecalc_parked_test,
 	:gmtvtk_platecalc_select_test, :gmtvtk_platecalc_calc_test,
@@ -92,6 +95,17 @@ function _register_euler_test()
 	return
 end
 
-export _test_fn, _register_faultgeom_test, _register_euler_test
+# Compute Euler pole: same story as above, plus the run's PROGRESS. Its search reports back through
+# gmtvtk_compute_euler_progress on a Julia Timer, and again that lands in the production dll — so the
+# extra sink InteractiveGMT keeps for exactly this is pointed at this dll's copy of the export.
+function _register_ceuler_test()
+	_register_euler_test()
+	InteractiveGMT._CE_EXTRA_PUSH[] = (cur, mx, txt) ->
+		ccall(_test_fn(:gmtvtk_compute_euler_progress), Cvoid, (Cint, Cint, Cstring),
+		      Cint(cur), Cint(mx), txt)
+	return
+end
+
+export _test_fn, _register_faultgeom_test, _register_euler_test, _register_ceuler_test
 
 end

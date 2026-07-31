@@ -1553,6 +1553,15 @@ GMTVTK_API void gmtvtk_euler_result(const char *txt) {
 	g_eulerResult = (txt && txt[0]) ? txt : "";
 }
 
+// Compute Euler pole: the brute-force search runs on a Julia task, so its progress cannot come back
+// as the return value of a callback. It is pushed here instead — `cur` of the `nmax` longitudes
+// done (a negative `cur` means the run has ended) and `txt`, the tab-separated pole lon, lat,
+// angle, starting residue and best-fit residue (plus the confidence volume, for Hellinger). The
+// dialog writes them straight into its boxes, the way the MATLAB dialog updated them live.
+GMTVTK_API void gmtvtk_compute_euler_progress(int cur, int nmax, const char *txt) {
+	computeEulerProgress(cur, nmax, QString::fromUtf8(txt ? txt : ""));
+}
+
 // Register the grdlandmask Compute callback (GMT menu). fn(scene, params) with the "key=value" block
 // described in 30_app.cpp builds the wet/dry mask (or masks the window's grid) and adds it to
 // `scene`. Returns 1/0. nullptr to detach.
@@ -2990,6 +2999,119 @@ GMTVTK_API void gmtvtk_euler_delete_dialog_test() {
 	g_eulerTestDlg = nullptr;
 	QApplication::processEvents();
 }
+// ---- Compute Euler pole (ComputeEulerDialog) --------------------------------------------------
+// Same three-part shape as the Euler rotations hooks above: open the REAL dialog on a REAL window,
+// drive its widgets by name, read the boxes back. A .ui rename or a QUiLoader failure surfaces here.
+static ComputeEulerDialog *g_ceulerTestDlg = nullptr;
+static void *g_ceulerTestWin = nullptr;
+
+GMTVTK_API int gmtvtk_ceuler_open_dialog_test(void *handle) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s) {
+		if (!g_ceulerTestWin) g_ceulerTestWin = gmtvtk_open_empty("compute euler test");
+		s = static_cast<Scene *>(g_ceulerTestWin);
+	}
+	g_scenes.insert(s);
+	if (!s || !s->win) return 0;
+	auto it = g_ceulerDlgs.find(s);
+	if (it != g_ceulerDlgs.end() && it->second && it->second->dlg) {
+		g_ceulerTestDlg = it->second;
+		g_ceulerTestDlg->unpark();
+		QApplication::processEvents();
+		return 1;
+	}
+	g_ceulerTestDlg = new ComputeEulerDialog(s->win, s);
+	if (!g_ceulerTestDlg->dlg) return 0;
+	g_ceulerTestDlg->dlg->show();
+	QApplication::processEvents();
+	return 1;
+}
+
+// Set one control by name ("line1", "line2", "polelon", "polelat", "poleang", "lonrange",
+// "latrange", "angrange", "nlon", "nlat", "nang", "hellinger", "plotres", "residfile").
+GMTVTK_API int gmtvtk_ceuler_set_test(const char *what, const char *value) {
+	if (!g_ceulerTestDlg || !g_ceulerTestDlg->dlg || !what) return 0;
+	ComputeEulerDialog *D = g_ceulerTestDlg;
+	const QString k = QString::fromUtf8(what);
+	const QString v = QString::fromUtf8(value ? value : "");
+	auto put = [&v](QLineEdit *e) { if (!e) return 0; e->setText(v); return 1; };
+	int r = 0;
+	if      (k == "line1")    { if (D->line1) { D->line1->setCurrentText(v); r = 1; } }
+	else if (k == "line2")    { if (D->line2) { D->line2->setCurrentText(v); r = 1; } }
+	else if (k == "polelon")  r = put(D->pLon);
+	else if (k == "polelat")  r = put(D->pLat);
+	else if (k == "poleang")  r = put(D->pAng);
+	else if (k == "lonrange") r = put(D->lonRange);
+	else if (k == "latrange") r = put(D->latRange);
+	else if (k == "angrange") r = put(D->angRange);
+	// The N-points boxes go through the same "N*Delta" rule typing them does (editingFinished).
+	else if (k == "nlon")     { r = put(D->nLon); D->syncNInt(D->nLon, D->lonRange); }
+	else if (k == "nlat")     { r = put(D->nLat); D->syncNInt(D->nLat, D->latRange); }
+	else if (k == "nang")     { r = put(D->nAng); D->syncNInt(D->nAng, D->angRange); }
+	else if (k == "residfile") r = put(D->errFile);
+	else if (k == "hellinger") { if (D->hellChk) { D->hellChk->setChecked(v == "1"); r = 1; } }
+	else if (k == "plotres")   { if (D->plotResChk) { D->plotResChk->setChecked(v == "1"); r = 1; } }
+	QApplication::processEvents();
+	return r;
+}
+
+// Press Compute. The brute-force search runs on a Julia task, so this returns as soon as it started;
+// the caller then polls gmtvtk_ceuler_read_test("running") / the result boxes.
+GMTVTK_API int gmtvtk_ceuler_compute_test() {
+	if (!g_ceulerTestDlg || !g_ceulerTestDlg->dlg) return 0;
+	g_ceulerTestDlg->run();
+	QApplication::processEvents();
+	return 1;
+}
+
+GMTVTK_API int gmtvtk_ceuler_stop_test() {
+	if (!g_ceulerTestDlg || !g_ceulerTestDlg->dlg) return 0;
+	g_ceulerTestDlg->stop();
+	QApplication::processEvents();
+	return 1;
+}
+
+// Read one box by name ("polelon", "polelat", "poleang", "stresidue", "bfresidue", "lines",
+// "nlat", "nintlabel", "running"). Returns the number of bytes the answer needs.
+GMTVTK_API int gmtvtk_ceuler_read_test(const char *what, char *buf, int cap) {
+	if (!g_ceulerTestDlg || !g_ceulerTestDlg->dlg || !what) return -1;
+	ComputeEulerDialog *D = g_ceulerTestDlg;
+	const QString k = QString::fromUtf8(what);
+	QString v;
+	if      (k == "polelon")   v = D->fLon ? D->fLon->text() : QString();
+	else if (k == "polelat")   v = D->fLat ? D->fLat->text() : QString();
+	else if (k == "poleang")   v = D->fAng ? D->fAng->text() : QString();
+	else if (k == "stresidue") v = D->stRes ? D->stRes->text() : QString();
+	else if (k == "bfresidue") v = D->bfRes ? D->bfRes->text() : QString();
+	else if (k == "nlat")      v = D->nLat ? D->nLat->text() : QString();
+	else if (k == "nlon")      v = D->nLon ? D->nLon->text() : QString();
+	else if (k == "lonrange")  v = D->lonRange ? D->lonRange->text() : QString();
+	else if (k == "nintlabel") v = D->nIntLbl ? D->nIntLbl->text() : QString();
+	else if (k == "running")   v = (D->stopBtn && D->stopBtn->isEnabled()) ? "1" : "0";
+	else if (k == "lines") {                       // what the two combos offer, '\n' joined
+		QStringList all;
+		if (D->line1) for (int i = 0; i < D->line1->count(); ++i) all << D->line1->itemText(i);
+		v = all.join('\n');
+	}
+	const QByteArray cur = v.toUtf8();
+	if (buf && cap > 0) {
+		const int c = (cur.size() < cap - 1) ? cur.size() : cap - 1;
+		memcpy(buf, cur.constData(), c);
+		buf[c] = '\0';
+	}
+	return cur.size();
+}
+
+GMTVTK_API void gmtvtk_ceuler_delete_dialog_test() {
+	if (g_ceulerTestDlg && g_ceulerTestDlg->dlg) {
+		g_ceulerTestDlg->reallyClose = true;
+		g_ceulerTestDlg->dlg->close();
+	}
+	g_ceulerTestDlg = nullptr;
+	QApplication::processEvents();
+}
+
 // 1 when the dialog is currently PARKED (hidden but alive, with its Scene Objects row), 0 when it is
 // on screen, -1 when there is none.
 GMTVTK_API int gmtvtk_euler_parked_test(void *handle) {

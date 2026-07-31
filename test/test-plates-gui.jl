@@ -301,3 +301,89 @@ end
 	ccall(_test_fn(:gmtvtk_euler_delete_dialog_test), Cvoid, ())
 	@test ccall(_test_fn(:gmtvtk_euler_parked_test), Cint, (Ptr{Cvoid},), f.h) == -1
 end
+
+# --- Compute Euler pole (compute_euler.m) ------------------------------------------------------
+# The lines are a real isochron and ITS OWN rotation by a known pole, so the search has an exact
+# answer to find and the test can say what "right" is.
+@testitem "Compute Euler pole: the search recovers the pole the lines were made with" tags=[:gui] setup=[Plates] begin
+	IG = InteractiveGMT
+	f = view_grid(Plates.grid())
+	lat  = collect(36.0:0.1:38.5)
+	iso1 = [(-9.5 .+ 0.4 .* sin.((lat .- 36) .* 2)) lat]
+	iso2 = IG._ce_rotated_line(iso1, 20.0, 60.0, 3.0)
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(iso1), "isoc1")
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(iso2), "isoc2")
+
+	kv = ["op=ceuler", "line1=isoc1", "line2=isoc2", "polelon=19", "polelat=59", "poleang=2.9",
+	      "lonrange=6", "latrange=6", "angrange=0.6", "nlon=13", "nlat=13", "nang=7",
+	      "hellinger=0", "plotres=0", "loop=0", "residfile=", "residfmt=nc", "showcube=0"]
+	@test Plates.send(f.h, kv) == 1                      # returns at once: the search is a task
+	t0 = time()
+	while IG._CE_RUNNING[] && time() - t0 < 120;  sleep(0.05);  end
+	@test !IG._CE_RUNNING[]
+	for _ in 1:40                                        # let the finishing Timer tick
+		occursin("Fitted Line", IG._euler_last_result[]) || occursin("pole", IG._euler_last_result[]) ? break : nothing
+		sleep(0.05)
+	end
+	sleep(0.5)
+	lon, lat_, ang, res = IG._CE_BEST[]
+	@test abs(lon - 20.0) < 1.5 && abs(lat_ - 60.0) < 1.5
+	@test abs(ang - 3.0) < 0.1
+	@test res < 3.0                                      # a few km of a perfect fit
+
+	# The fitted line landed in the window as its own element, and the sources are still there.
+	nm = "Fitted Line (" * IG._ffmt(lon, 2) * "/" * IG._ffmt(lat_, 2) * "/" * IG._ffmt(ang, 3) * ")"
+	@test !isempty(IG._euler_segments(f.h, nm))
+	@test !isempty(IG._euler_segments(f.h, "isoc1"))
+	@test !isempty(IG._euler_segments(f.h, "isoc2"))
+end
+
+@testitem "Compute Euler pole dialog: lists lines, runs, and swaps to Hellinger" tags=[:gui] setup=[Plates, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	GmtvtkTest._register_ceuler_test()
+	f = view_grid(Plates.grid())
+	lat  = collect(36.0:0.1:38.5)
+	iso1 = [(-9.5 .+ 0.4 .* sin.((lat .- 36) .* 2)) lat]
+	iso2 = IG._ce_rotated_line(iso1, 20.0, 60.0, 3.0)
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(iso1), "isoc1")
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(iso2), "isoc2")
+
+	@test ccall(_test_fn(:gmtvtk_ceuler_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	buf = Vector{UInt8}(undef, 512)
+	rd(what) = (ccall(_test_fn(:gmtvtk_ceuler_read_test), Cint, (Cstring, Ptr{UInt8}, Cint),
+	                  what, buf, Cint(512)); unsafe_string(pointer(buf)))
+	set(what, v) = ccall(_test_fn(:gmtvtk_ceuler_set_test), Cint, (Cstring, Cstring), what, string(v))
+	# Both window lines are on offer, and the two boxes start on different ones.
+	@test sort(split(rd("lines"), '\n')) == ["isoc1", "isoc2"]
+
+	for (k, v) in ("line1" => "isoc1", "line2" => "isoc2", "polelon" => "19", "polelat" => "59",
+	               "poleang" => "2.9", "lonrange" => "6", "latrange" => "6", "angrange" => "0.6",
+	               "nlon" => "13", "nlat" => "13", "nang" => "7")
+		@test set(k, v) == 1
+	end
+	@test ccall(_test_fn(:gmtvtk_ceuler_compute_test), Cint, ()) == 1
+	@test rd("running") == "1"                       # Compute is out, STOP is in while it searches
+	t0 = time()
+	while IG._CE_RUNNING[] && time() - t0 < 120;  sleep(0.05);  end
+	sleep(0.8)                                       # the finishing push clears "running"
+	@test rd("running") == "0"
+	@test abs(parse(Float64, rd("poleang")) - 3.0) < 0.1
+	@test abs(parse(Float64, rd("polelon")) - 20.0) < 1.5
+	@test parse(Float64, rd("bfresidue")) < parse(Float64, rd("stresidue"))
+
+	# "N*Delta" in an N-points box sets the RANGE too (Mirone's edit_nInt_CB): 100*0.1 is an even
+	# number of intervals — 101 points — spanning 10 degrees.
+	@test set("nlon", "100*0.1") == 1
+	@test rd("nlon") == "101"
+	@test parse(Float64, rd("lonrange")) ≈ 10.0 atol = 1e-6
+	@test set("nlon", "12") == 1                     # a plain count is forced ODD
+	@test rd("nlon") == "13"
+
+	# The Hellinger switch relabels the N-points column into the DP tolerance, as the MATLAB one does.
+	@test set("hellinger", "1") == 1
+	@test rd("nintlabel") == "DP tolerance"
+	@test set("hellinger", "0") == 1
+	@test rd("nintlabel") == "N Points"
+	ccall(_test_fn(:gmtvtk_ceuler_delete_dialog_test), Cvoid, ())
+end
