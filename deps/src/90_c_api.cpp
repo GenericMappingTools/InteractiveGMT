@@ -3052,6 +3052,9 @@ GMTVTK_API int gmtvtk_ceuler_set_test(const char *what, const char *value) {
 	else if (k == "residfile") r = put(D->errFile);
 	else if (k == "hellinger") { if (D->hellChk) { D->hellChk->setChecked(v == "1"); r = 1; } }
 	else if (k == "plotres")   { if (D->plotResChk) { D->plotResChk->setChecked(v == "1"); r = 1; } }
+	// Press / release "Pick lines from Figure" — the pick answers then arrive through the shared
+	// gmtvtk_euler_pick_deliver_test door (one pick mechanism, one test door).
+	else if (k == "pick")      { if (D->pickBtn) { D->setPickDown(v == "1"); r = 1; } }
 	QApplication::processEvents();
 	return r;
 }
@@ -3089,6 +3092,10 @@ GMTVTK_API int gmtvtk_ceuler_read_test(const char *what, char *buf, int cap) {
 	else if (k == "lonrange")  v = D->lonRange ? D->lonRange->text() : QString();
 	else if (k == "nintlabel") v = D->nIntLbl ? D->nIntLbl->text() : QString();
 	else if (k == "running")   v = (D->stopBtn && D->stopBtn->isEnabled()) ? "1" : "0";
+	else if (k == "visible")   v = D->dlg->isVisible() ? "1" : "0";     // the FIRST open must be visible
+	else if (k == "line1")     v = D->line1 ? D->line1->currentText() : QString();
+	else if (k == "line2")     v = D->line2 ? D->line2->currentText() : QString();
+	else if (k == "pickdown")  v = (D->pickBtn && D->pickBtn->isChecked()) ? "1" : "0";
 	else if (k == "lines") {                       // what the two combos offer, '\n' joined
 		QStringList all;
 		if (D->line1) for (int i = 0; i < D->line1->count(); ++i) all << D->line1->itemText(i);
@@ -3101,6 +3108,78 @@ GMTVTK_API int gmtvtk_ceuler_read_test(const char *what, char *buf, int cap) {
 		buf[c] = '\0';
 	}
 	return cur.size();
+}
+
+// Find an action anywhere in a menu tree whose text CONTAINS `needle` ('&' accelerators ignored).
+// `exact` first over the WHOLE tree, then a contains pass: "Plates" must not land on "GPlates".
+static QAction *menuFindDeep(QWidget *root, const QString &needle, bool exact) {
+	if (!root) return nullptr;
+	for (QAction *a : root->actions()) {
+		QString t = a->text();
+		t.remove('&');
+		t.remove(QChar(0x2026));                       // trailing "…" is decoration, not identity
+		t = t.trimmed();
+		if (exact ? (t.compare(needle, Qt::CaseInsensitive) == 0) : t.contains(needle, Qt::CaseInsensitive))
+			return a;
+		if (QMenu *m = a->menu())
+			if (QAction *r = menuFindDeep(m, needle, exact)) return r;
+	}
+	return nullptr;
+}
+
+// Pick a REAL menu entry exactly as the user does, '/'-separated for the dynamic discipline menus
+// ("Plates/Compute Euler pole" first rebuilds the Geophysics menu into the Plates block, then fires
+// the entry). Returns how many steps actually fired — the only way a test can exercise the menu
+// path itself, which is NOT the same code the *_open_dialog_test hooks run.
+GMTVTK_API int gmtvtk_menu_trigger_test(void *handle, const char *path) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->win || !path) return 0;
+	int n = 0;
+	for (const QString &step : QString::fromUtf8(path).split('/', Qt::SkipEmptyParts)) {
+		QAction *a = menuFindDeep(s->win->menuBar(), step.trimmed(), true);
+		if (!a) a = menuFindDeep(s->win->menuBar(), step.trimmed(), false);
+		if (!a) return n;
+		a->trigger();
+		QApplication::processEvents();
+		++n;
+	}
+	return n;
+}
+
+// The whole menu tree as text, one action per line, indented by depth ("" = no window). Diagnostic
+// companion of gmtvtk_menu_trigger_test: it says what the menus ACTUALLY hold at that moment, which
+// the dynamic discipline menus (they clear and repopulate themselves) make impossible to assume.
+static void menuDumpDeep(QWidget *root, int depth, QString &out) {
+	if (!root || depth > 6) return;
+	for (QAction *a : root->actions()) {
+		QString t = a->text();
+		t.remove('&');
+		out += QString(depth * 2, ' ') + (t.isEmpty() ? QString("---") : t) + '\n';
+		if (QMenu *m = a->menu()) menuDumpDeep(m, depth + 1, out);
+	}
+}
+
+GMTVTK_API int gmtvtk_menu_dump_test(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene *>(handle);
+	QString out;
+	if (s && s->win) menuDumpDeep(s->win->menuBar(), 0, out);
+	const QByteArray cur = out.toUtf8();
+	if (buf && cap > 0) {
+		const int c = (cur.size() < cap - 1) ? cur.size() : cap - 1;
+		memcpy(buf, cur.constData(), c);
+		buf[c] = '\0';
+	}
+	return cur.size();
+}
+
+// Adopt whatever Compute Euler pole dialog this window already has (one opened through the MENU) as
+// the dialog gmtvtk_ceuler_read_test/_set_test talk to. 0 when there is none.
+GMTVTK_API int gmtvtk_ceuler_adopt_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	auto it = g_ceulerDlgs.find(s);
+	if (it == g_ceulerDlgs.end() || !it->second || !it->second->dlg) return 0;
+	g_ceulerTestDlg = it->second;
+	return 1;
 }
 
 GMTVTK_API void gmtvtk_ceuler_delete_dialog_test() {
@@ -3158,7 +3237,8 @@ GMTVTK_API int gmtvtk_euler_arm_pick_test(int mode) {
 GMTVTK_API int gmtvtk_euler_pick_deliver_test(void *handle, const char *names) {
 	Scene *s = static_cast<Scene *>(handle);
 	if (!s || !s->vectorPickCB) return 0;
-	s->vectorPickCB(names ? names : "");
+	auto cb = s->vectorPickCB;              // copy: a tool may end its own pick from inside the answer
+	cb(names ? names : "");
 	QApplication::processEvents();
 	return 1;
 }

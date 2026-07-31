@@ -354,8 +354,9 @@ end
 	rd(what) = (ccall(_test_fn(:gmtvtk_ceuler_read_test), Cint, (Cstring, Ptr{UInt8}, Cint),
 	                  what, buf, Cint(512)); unsafe_string(pointer(buf)))
 	set(what, v) = ccall(_test_fn(:gmtvtk_ceuler_set_test), Cint, (Cstring, Cstring), what, string(v))
-	# Both window lines are on offer, and the two boxes start on different ones.
+	# Both window lines are on offer, and NOTHING is pre-selected — picking is the user's job.
 	@test sort(split(rd("lines"), '\n')) == ["isoc1", "isoc2"]
+	@test rd("line1") == "" && rd("line2") == ""
 
 	for (k, v) in ("line1" => "isoc1", "line2" => "isoc2", "polelon" => "19", "polelat" => "59",
 	               "poleang" => "2.9", "lonrange" => "6", "latrange" => "6", "angrange" => "0.6",
@@ -385,5 +386,52 @@ end
 	@test rd("nintlabel") == "DP tolerance"
 	@test set("hellinger", "0") == 1
 	@test rd("nintlabel") == "N Points"
+	ccall(_test_fn(:gmtvtk_ceuler_delete_dialog_test), Cvoid, ())
+end
+
+@testitem "Compute Euler pole: the Plates menu really carries the entry" tags=[:gui] setup=[Plates, GmtvtkTest] begin
+	_test_fn = GmtvtkTest._test_fn
+	f = view_grid(Plates.grid())
+	# What the user picks: Geophysics > Plates, then Compute Euler pole…. Whether the dialog then
+	# reaches the SCREEN cannot be asserted here — that hangs on the popup grab of a real, open menu,
+	# which trigger() does not create — so this only pins that both entries exist and fire.
+	trig(p) = ccall(_test_fn(:gmtvtk_menu_trigger_test), Cint, (Ptr{Cvoid}, Cstring), f.h, p)
+	@test trig("Plates") == 1
+	@test trig("Compute Euler pole") == 1
+end
+
+@testitem "Compute Euler pole dialog: visible on the FIRST open, and picks lines from the figure" tags=[:gui] setup=[Plates, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	f = view_grid(Plates.grid())
+	lat  = collect(36.0:0.1:38.5)
+	iso1 = [(-9.5 .+ 0.4 .* sin.((lat .- 36) .* 2)) lat]
+	iso2 = IG._ce_rotated_line(iso1, 20.0, 60.0, 3.0)
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(iso1), "isoc1")
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(iso2), "isoc2")
+
+	buf = Vector{UInt8}(undef, 512)
+	rd(what) = (ccall(_test_fn(:gmtvtk_ceuler_read_test), Cint, (Cstring, Ptr{UInt8}, Cint),
+	                  what, buf, Cint(512)); unsafe_string(pointer(buf)))
+	set(what, v) = ccall(_test_fn(:gmtvtk_ceuler_set_test), Cint, (Cstring, Cstring), what, string(v))
+
+	# The very FIRST open must put the dialog on screen (it used to take a second menu pick).
+	@test ccall(_test_fn(:gmtvtk_ceuler_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	@test rd("visible") == "1"
+	@test rd("line1") == "" && rd("line2") == ""
+	@test rd("pickdown") == "0"
+
+	# "Pick lines from Figure" stays DOWN while picking; each double-click answer fills the next box
+	# and the second one ends the pick by itself.
+	@test set("pick", "1") == 1
+	@test rd("pickdown") == "1"
+	@test ccall(_test_fn(:gmtvtk_euler_pick_deliver_test), Cint, (Ptr{Cvoid}, Cstring), f.h, "isoc1") == 1
+	@test rd("line1") == "isoc1" && rd("line2") == ""
+	@test rd("pickdown") == "1"                      # still armed: the second line is missing
+	@test ccall(_test_fn(:gmtvtk_euler_pick_deliver_test), Cint, (Ptr{Cvoid}, Cstring), f.h, "isoc1") == 1
+	@test rd("line2") == ""                          # the same line cannot be both
+	@test ccall(_test_fn(:gmtvtk_euler_pick_deliver_test), Cint, (Ptr{Cvoid}, Cstring), f.h, "isoc2") == 1
+	@test rd("line2") == "isoc2"
+	@test rd("pickdown") == "0"                      # both picked -> the button pops back up
 	ccall(_test_fn(:gmtvtk_ceuler_delete_dialog_test), Cvoid, ())
 end

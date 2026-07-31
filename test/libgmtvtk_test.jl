@@ -43,6 +43,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_euler_parked_test, :gmtvtk_euler_delete_dialog_test,
 	:gmtvtk_ceuler_open_dialog_test, :gmtvtk_ceuler_set_test, :gmtvtk_ceuler_read_test,
 	:gmtvtk_ceuler_compute_test, :gmtvtk_ceuler_stop_test, :gmtvtk_ceuler_delete_dialog_test,
+	:gmtvtk_ceuler_adopt_test, :gmtvtk_menu_trigger_test, :gmtvtk_menu_dump_test,
 	:gmtvtk_compute_euler_progress,
 	:gmtvtk_platecalc_open_dialog_test, :gmtvtk_platecalc_close_dialog_test,
 	:gmtvtk_platecalc_delete_dialog_test, :gmtvtk_platecalc_parked_test,

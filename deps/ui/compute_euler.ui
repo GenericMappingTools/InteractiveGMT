@@ -163,7 +163,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Re-read the window's lines into the two boxes above (the first two are pre-selected)</string>
+    <string>Press it down, then DOUBLE-CLICK each line in the figure: the first goes to First Line, the second to Second Line. It stays down until both are picked</string>
    </property>
    <property name="text">
     <string>Pick lines from Figure</string>

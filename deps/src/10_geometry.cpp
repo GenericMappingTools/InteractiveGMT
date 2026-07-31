@@ -833,6 +833,10 @@ struct Scene {
 	//       inside it answers at once. One-shot: it disarms itself on the second click.
 	// `vectorPickCB` gets the Scene Objects labels, one per line, '\n'-separated ("" = nothing hit).
 	int  vectorPickMode = 0;
+	// CLICK mode only: fire on a LEFT DOUBLE-click instead of a single click (Compute Euler pole's
+	// "Pick lines from Figure"). Same hit test, same callback — vectorPickFire is the one resolver;
+	// this only says WHICH mouse event calls it.
+	bool vectorPickDbl = false;
 	bool vectorPickDrawing = false;                    // RECT: the anchor click has happened
 	std::array<double,3> vectorPickAnchor{ 0, 0, 0 };  // RECT: that anchor, in TRUE world coords
 	int  vectorPickPrevShape = 0;                      // RECT: polyShape before the preview borrowed it

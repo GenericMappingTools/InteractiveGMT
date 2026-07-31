@@ -7226,7 +7226,7 @@ public:
 	QCheckBox *statsChk = nullptr, *ellipseChk = nullptr, *forceChk = nullptr, *segChk = nullptr;
 	QRadioButton *ncRadio = nullptr, *vtkRadio = nullptr;
 	QProgressBar *bar = nullptr;
-	QPushButton *stopBtn = nullptr, *computeBtn = nullptr, *recycleBtn = nullptr;
+	QPushButton *stopBtn = nullptr, *computeBtn = nullptr, *recycleBtn = nullptr, *pickBtn = nullptr;
 	// The N-points boxes double as the Hellinger DP tolerance / volume readout, as in the MATLAB
 	// dialog; their normal contents are kept here while that mode is on.
 	QString savedNLon, savedNLat, savedNAng;
@@ -7254,13 +7254,8 @@ public:
 			bool eventFilter(QObject *o, QEvent *e) override {
 				if (e->type() == QEvent::Close && ed && !ed->reallyClose && sceneAlive(ed->scn)) {
 					e->ignore();
-					ed->dlg->hide();
-					ComputeEulerDialog *p = ed;
-					parkTool(p->scn, p->dlg, "Compute Euler pole", IC_Line,
-					         "Closed Compute Euler pole dialog — double-click to bring it back, "
-					         "click for Show / Delete",
-					         [p]() { p->unpark(); }, p->parkedMenu());
-					unfoldSceneObjects(ed->scn);
+					ed->setPickDown(false);       // a parked dialog never leaves the view armed
+					ed->parkNow();
 					return true;
 				}
 				return QObject::eventFilter(o, e);
@@ -7302,8 +7297,22 @@ public:
 		recycleBtn = d->findChild<QPushButton *>("push_reciclePole");
 
 		refillLines();
-		if (auto *b = d->findChild<QPushButton *>("push_pickLines"))
-			QObject::connect(b, &QPushButton::clicked, d, [this]() { refillLines(); });
+		// "Pick lines from Figure" is a TOGGLE: it stays DOWN for as long as the pick is running, and
+		// while it is down a LEFT DOUBLE-CLICK on a line in the 3-D view drops that line into the first
+		// empty box (First Line, then Second Line). The .ui's flat Windows-11 paint made it read as a
+		// label, so it gets a real raised edge and an unmistakable sunken/highlighted look when down.
+		pickBtn = d->findChild<QPushButton *>("push_pickLines");
+		if (pickBtn) {
+			pickBtn->setCheckable(true);
+			pickBtn->setStyleSheet(
+				"QPushButton { border: 1px solid palette(mid); border-radius: 3px;"
+				" background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+				" stop:0 palette(light), stop:1 palette(button)); }"
+				"QPushButton:hover { border-color: palette(highlight); }"
+				"QPushButton:pressed, QPushButton:checked { border: 2px solid palette(shadow);"
+				" background: palette(highlight); color: palette(highlighted-text); }");
+			QObject::connect(pickBtn, &QPushButton::toggled, d, [this](bool on) { armPick(on); });
+		}
 		wireFileBox(d, "combo_line1", "btn_line1", "Select the moving isochron",
 		            "Line files (*.dat *.txt *.xy);;All files (*)");
 		wireFileBox(d, "combo_line2", "btn_line2", "Select the fixed isochron",
@@ -7356,6 +7365,10 @@ public:
 
 		QObject::connect(d, &QObject::destroyed, d, [this]() {
 			if (g_ceulerRunning == this) g_ceulerRunning = nullptr;
+			if (scn && sceneAlive(scn)) {          // never leave the scene armed for a pick nobody hears
+				if (scn->vectorPickMode == 1) vectorPickDisarm(scn);
+				scn->vectorPickCB = nullptr;
+			}
 			delete this;
 		});
 	}
@@ -7375,6 +7388,20 @@ public:
 		dlg->activateWindow();
 	}
 
+	// Get off the screen but stay alive, with the Scene Objects row that brings it back. ONE function
+	// for every reason to do it — the X, and arming a pick (the dialog must not sit on top of the very
+	// view the user is about to double-click in) — never two ways of parking the same dialog.
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->hide();
+		ComputeEulerDialog *p = this;
+		parkTool(scn, dlg, "Compute Euler pole", IC_Line,
+		         "Closed Compute Euler pole dialog — double-click to bring it back, "
+		         "click for Show / Delete",
+		         [p]() { p->unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);
+	}
+
 	std::function<void(const QPoint &)> parkedMenu() {
 		return [this](const QPoint &g) {
 			QMenu m;
@@ -7392,7 +7419,9 @@ public:
 	}
 
 	// Every LINE element of the window, in both combos — the same list (and the same rules about
-	// what counts as a line) the Euler rotations dialog builds. What the user typed is kept.
+	// what counts as a line) the Euler rotations dialog builds. What the user typed (or picked, or
+	// browsed to) is kept; NOTHING is ever pre-selected — choosing the two lines is the user's job,
+	// so both boxes stay empty until they say otherwise.
 	void refillLines() {
 		if (!scn || !sceneAlive(scn)) return;
 		QStringList names;
@@ -7411,10 +7440,63 @@ public:
 			QSignalBlocker b(c);
 			c->clear();
 			c->addItems(names);
-			if (!had.isEmpty() && names.contains(had)) c->setCurrentText(had);
-			else if (names.size() > k) c->setCurrentIndex(k);      // first line left, second right
-			else c->setCurrentText(had);
+			c->setCurrentIndex(-1);                  // no pre-selection, ever
+			if (!had.isEmpty()) c->setCurrentText(had);   // a file path counts too, list or no list
 		}
+	}
+
+	// Arm / disarm the "point at a line" pick. It is the SAME shared mechanism the Euler rotations
+	// dialog's "Pick in view" uses (Scene::vectorPickMode == 1, resolved by vectorPickFire) — only the
+	// mouse door differs: vectorPickDbl asks for a LEFT DOUBLE-CLICK, as this dialog's button says.
+	void armPick(bool on) {
+		if (!scn || !sceneAlive(scn)) return;
+		if (!on) {
+			if (scn->vectorPickMode == 1) vectorPickDisarm(scn);
+			scn->vectorPickCB = nullptr;
+			return;
+		}
+		refillLines();
+		QPointer<QDialog> guard(dlg);
+		scn->vectorPickCB = [this, guard](const std::string &names) {
+			if (!guard) return;                            // dialog gone meanwhile: drop the answer
+			const QString nm = QString::fromStdString(names).section('\n', 0, 0).trimmed();
+			if (nm.isEmpty()) return;                      // clicked past every line: stay armed
+			const QString l1 = line1 ? line1->currentText().trimmed() : QString();
+			QComboBox *c = (line1 && l1.isEmpty()) ? line1 : line2;
+			if (!c) return;
+			if (c == line2 && nm == l1) return;            // the same line cannot be both
+			c->setCurrentText(nm);
+			const bool done = line1 && line2 && !line1->currentText().trimmed().isEmpty() &&
+			                  !line2->currentText().trimmed().isEmpty();
+			if (done) {
+				setPickDown(false);                        // both picked: the button pops back up
+				unpark();                                  // …and the dialog comes back on screen
+			}
+			else if (scn->win)
+				scn->win->statusBar()->showMessage("Now double-click the SECOND line", 5000);
+		};
+		scn->vectorPickPrevShape = (int)scn->polyShape;
+		scn->vectorPickMode = 1;
+		scn->vectorPickDbl = true;
+		scn->vectorPickDrawing = false;
+		// Out of the way while the user works in the view — parked exactly as the X parks it, so the
+		// Scene Objects row brings it back if they give up half way. It returns by itself on the
+		// second pick.
+		parkNow();
+		if (scn->widget) scn->widget->setCursor(Qt::CrossCursor);
+		if (scn->win) scn->win->statusBar()->showMessage(
+			"Double-click each line in the figure — First Line, then Second Line. The button stays "
+			"down until both are picked (press it again to give up)", 6000);
+	}
+
+	// One place that moves the button and the scene together, so they can never disagree about
+	// whether a pick is running (the button being down IS the "pick in progress" indicator).
+	void setPickDown(bool on) {
+		if (pickBtn) {
+			QSignalBlocker b(pickBtn);
+			pickBtn->setChecked(on);
+		}
+		armPick(on);
 	}
 
 	// A "..." button that fills an editable combo with a file path. The combo's own line edit gets
@@ -12123,11 +12205,59 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			auto *w = new PlateCalcDialog(win, s);
 			if (w->dlg) w->dlg->show();
 		});
+		// The FIRST pick of this entry showed nothing (only a second one did, through the unpark()
+		// branch): this page of the menu is not the menubar's own popup — `reopen()` re-opened it with
+		// mGphy->popup(), whose grab is still being torn down while the action's handler runs, so a
+		// window created and shown from inside it never reached the screen. Deferred with the SAME
+		// singleShot(0) idiom reopen() itself uses: the click finishes closing the menu first, then the
+		// dialog opens, is raised and activated. A .ui that fails to load SAYS so instead of leaving
+		// the entry looking dead.
 		mGphy->addAction("Compute Euler pole…", [win, s]() {
-			auto it = g_ceulerDlgs.find(s);
-			if (it != g_ceulerDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
-			auto *w = new ComputeEulerDialog(win, s);
-			if (w->dlg) w->dlg->show();
+			// Create-or-restore, then MAKE SURE it is on screen. Everything here exists because the
+			// first pick of this entry used to open nothing at all:
+			//   * this page of the menu is not the menubar's own popup — reopen() re-opened it with
+			//     mGphy->popup(), and a window shown while that popup still holds its grab does not
+			//     come up. So the open WAITS for QApplication::activePopupWidget() to be gone.
+			//   * a dialog that ended up off every screen is moved to the middle of its viewer.
+			//   * show/raise/activateWindow always run, restore path included.
+			auto open = [win, s]() {
+				if (!sceneAlive(s)) return;
+				ComputeEulerDialog *ed = nullptr;
+				auto it = g_ceulerDlgs.find(s);
+				if (it != g_ceulerDlgs.end() && it->second && it->second->dlg) ed = it->second;
+				if (ed)
+					ed->unpark();
+				else {
+					auto *w = new ComputeEulerDialog(win, s);
+					if (!w->dlg) {
+						QMessageBox::warning(win, "Compute Euler pole",
+							QString("Could not load %1/compute_euler.ui").arg(gmtvtkUiDir()));
+						return;
+					}
+					ed = w;
+				}
+				QDialog *d = ed->dlg;
+				bool onScreen = false;
+				for (QScreen *sc : QGuiApplication::screens())
+					if (sc->availableGeometry().intersects(d->frameGeometry())) { onScreen = true; break; }
+				if (!onScreen)
+					d->move(win->frameGeometry().center() - QPoint(d->width() / 2, d->height() / 2));
+				d->show();
+				d->raise();
+				d->activateWindow();
+			};
+			// Self-rescheduling until no popup is holding the input grab (~1 s of tries at most, then
+			// it opens anyway — never silently give up on the user's click).
+			auto tries = std::make_shared<int>(0);
+			auto step = std::make_shared<std::function<void()>>();
+			*step = [win, open, tries, step]() {
+				if (QApplication::activePopupWidget() && ++*tries < 30) {
+					QTimer::singleShot(30, win, *step);
+					return;
+				}
+				open();
+			};
+			(*step)();
 		});
 		reopen();
 	};

@@ -1586,6 +1586,7 @@ static void vectorPickDisarm(Scene *s) {
 	if (!s) return;
 	const bool wasRect = (s->vectorPickMode == 2);
 	s->vectorPickMode = 0;
+	s->vectorPickDbl = false;
 	s->vectorPickDrawing = false;
 	if (wasRect) {
 		s->polyDrawing = false;
@@ -1594,6 +1595,57 @@ static void vectorPickDisarm(Scene *s) {
 		s->polyShape = (Scene::ShapeKind)s->vectorPickPrevShape;
 	}
 	if (s->widget) s->widget->unsetCursor();
+}
+
+// The ONE place an armed CLICK pick (Scene::vectorPickMode == 1) resolves what line is under the
+// cursor and answers the tool. Both mouse doors — a single left click, and the double-click variant
+// tools ask for with Scene::vectorPickDbl — call THIS; there is no second hit test anywhere.
+// The two tests, in this order, are the same ones the double-click edit path uses: a drawn Polygon
+// first, then an imported line Overlay. Always returns true: an armed pick consumes the click, so it
+// can never leak into a rotate/drag.
+// Flash the element a pick just answered with, so the user SEES which line was taken: its own actor
+// blinks off/on a few times and is left visible. Lives here, next to the resolver, so EVERY picking
+// tool gets the same feedback — never a highlight re-invented per dialog. Named lookup covers both
+// doors a line can come in through (a drawn Polygon, an imported line Overlay), like the resolver.
+static void blinkElementByName(Scene *s, const std::string &name) {
+	if (!s || !sceneAlive(s) || !s->widget || name.empty()) return;
+	vtkSmartPointer<vtkActor> act;
+	for (auto &pg : s->polys)
+		if (pg.name == name) { act = pg.line; break; }
+	if (!act)
+		for (auto &ov : s->overlays)
+			if (ov.name == name) { act = ov.actor; break; }
+	if (!act || !act->GetVisibility()) return;      // hidden element: nothing to blink
+	auto left = std::make_shared<int>(6);            // three off/on pairs
+	QTimer *t = new QTimer(s->widget);
+	t->setInterval(110);
+	QObject::connect(t, &QTimer::timeout, s->widget, [s, act, left, t]() {
+		if (!sceneAlive(s) || !s->widget) { t->stop(); t->deleteLater(); return; }
+		act->SetVisibility(act->GetVisibility() ? 0 : 1);
+		if (--*left <= 0) { act->SetVisibility(1); t->stop(); t->deleteLater(); }
+		s->widget->renderWindow()->Render();
+	});
+	t->start();
+}
+
+static bool vectorPickFire(Scene *s, int x, int y) {
+	std::string hit;
+	const int pi = polyHitPolygon(s, x, y, 8.0);
+	if (pi >= 0)
+		hit = s->polys[pi].name;
+	else {
+		int ovMode = 1, segIdx = -1;
+		if (vtkActor *ovAct = pickOverlayAt(s, x, y, ovMode, &segIdx)) {
+			for (auto &ov : s->overlays)
+				if (ov.actor.Get() == ovAct) { hit = ov.name; break; }
+		}
+	}
+	blinkElementByName(s, hit);                  // say WHICH line answered, before the tool reacts
+	// Through a COPY: a tool is allowed to end its own pick from inside the answer (both boxes now
+	// full), and that clears Scene::vectorPickCB — which would destroy the very lambda running here.
+	auto cb = s->vectorPickCB;
+	if (cb) cb(hit);                             // stays armed: the tool collects as many as wanted
+	return true;
 }
 
 // Left/right press. button: 0 = left, 1 = right. shift: Shift held (whole-element drag in edit mode).
@@ -1607,19 +1659,10 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 	// every line inside the box on the second. The click is consumed either way, so an armed pick can
 	// never leak into a rotate/drag.
 	if (button == 0 && s->vectorPickMode == 1) {
-		std::string hit;
-		const int pi = polyHitPolygon(s, x, y, 8.0);
-		if (pi >= 0)
-			hit = s->polys[pi].name;
-		else {
-			int ovMode = 1, segIdx = -1;
-			if (vtkActor *ovAct = pickOverlayAt(s, x, y, ovMode, &segIdx)) {
-				for (auto &ov : s->overlays)
-					if (ov.actor.Get() == ovAct) { hit = ov.name; break; }
-			}
-		}
-		if (s->vectorPickCB) s->vectorPickCB(hit);   // stays armed: the tool collects as many as wanted
-		return true;
+		// The tool asked for double-click picking: consume the press (VTK must not rotate under an
+		// armed pick) and let polygonHandleDblClick fire the SAME resolver.
+		if (s->vectorPickDbl) return true;
+		return vectorPickFire(s, x, y);
 	}
 	if (button == 0 && s->vectorPickMode == 2) {
 		double w[3];
@@ -1667,7 +1710,8 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 				if (p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1) { add(ov.name); break; }
 			}
 		}
-		if (s->vectorPickCB) s->vectorPickCB(hits);
+		auto cb = s->vectorPickCB;                   // copy: see vectorPickFire
+		if (cb) cb(hits);
 		s->widget->renderWindow()->Render();
 		return true;
 	}
@@ -1846,6 +1890,8 @@ static void overlayPromoteSegmentToPolygon(Scene *s, Overlay &ov, int segIdx) {
 // mode (idle). Rectangle / circle / text finalize on their own clicks, so double-click is a no-op
 // for them beyond being consumed while drawing.
 static bool polygonHandleDblClick(Scene *s, int x, int y) {
+	// A double-click-armed pick owns the double click before anything else can edit what it points at.
+	if (s->vectorPickMode == 1 && s->vectorPickDbl) return vectorPickFire(s, x, y);
 	if (s->polyMode && s->polyDrawing) {
 		if (s->polyShape == Scene::SH_Polygon && s->polyCur.size() >= 3) {   // >=3 vertices for an area
 			polyFinalize(s, s->polyCur, true, "polygon");
