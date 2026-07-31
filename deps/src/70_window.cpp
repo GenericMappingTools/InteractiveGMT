@@ -5922,6 +5922,764 @@ public:
 	}
 };
 
+// Ends an armed vector pick (85_polygon.cpp — that is where the pick itself is served, so the
+// disarm lives with it; declared here because this fragment is #included first).
+static void vectorPickDisarm(Scene *s);
+
+// ============================================================================================
+// Euler rotations (Plates menu) — port of Mirone's src_figs/euler_stuff.m, re-based on GMT's spotter
+// supplement (which post-dates the Mirone code): the rotations themselves are `backtracker`, the pole
+// algebra is `rotconverter`, and the geodetic-latitude option is `mapproject -Ng` — no rotation maths
+// is re-implemented here or on the Julia side (src/plates.jl). Mirone's three fake tab panels became
+// one real QTabWidget, and its "Pick line from Figure" became the scene-element combo plus a one-shot
+// "Pick in view" click (Scene::vectorPickArmed, resolved by the same hit tests the double-click edit
+// path uses). Loaded at RUNTIME via QUiLoader from deps/ui/euler_stuff.ui.
+// ============================================================================================
+
+// One line of the poles catalogue (data/plates/lista_polos.dat, carried over from Mirone's
+// continents/lista_polos.dat): "lon lat angle age !comment".
+struct EulerPole {
+	double lon = 0, lat = 0, ang = 0, age = 0;
+	QString text;                                  // the whole line, as shown in the picker
+};
+
+static std::vector<EulerPole> readPolesCatalogue() {
+	std::vector<EulerPole> out;
+	QFile f(gmtvtkDataDir() + "/plates/lista_polos.dat");
+	if (!f.open(QFile::ReadOnly | QFile::Text)) return out;
+	QTextStream in(&f);
+	while (!in.atEnd()) {
+		const QString line = in.readLine();
+		const QString t = line.trimmed();
+		if (t.isEmpty() || t.startsWith('#')) continue;
+		// The comment after '!' is the pole's identity (plate pair, chron, author) — keep it in the
+		// display text, parse only the four numbers before it.
+		const QString nums = t.section('!', 0, 0);
+		const QStringList f4 = nums.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+		if (f4.size() < 4) continue;
+		EulerPole p;
+		bool ok1 = false, ok2 = false, ok3 = false, ok4 = false;
+		p.lon = f4[0].toDouble(&ok1); p.lat = f4[1].toDouble(&ok2);
+		p.ang = f4[2].toDouble(&ok3); p.age = f4[3].toDouble(&ok4);
+		if (!(ok1 && ok2 && ok3 && ok4)) continue;
+		p.text = t;
+		out.push_back(p);
+	}
+	return out;
+}
+
+// What the picker was asked to do with the poles the user selected.
+enum class PolesPick { Cancelled, Use, MakeStages };
+
+// The stage-pole options Mirone's choosebox carries in its toolbar (finite2stages' HALF and SIDE).
+struct StageOpts {
+	bool half = false;        // half angles (HALF=2) — the flow-line case, GMT's -M0.5
+	bool inverse = false;     // a_STAGE_b instead of b_STAGE_a (HALF < 0) — the conjugate plate
+	int  side = 1;            // 1 = northern hemisphere (-N), -1 = southern (-S), 0 = positive angles
+};
+
+// Modal catalogue picker. `maxSel` = how many poles the caller can use (1 for the single-pole box, 2
+// for Add poles, 0 = any number for Interpolate poles). `headerPoles` (may be empty) are the poles the
+// ACTIVE line carries in its own header; they are listed FIRST, above the catalogue, exactly as
+// Mirone's push_polesList_CB puts an isochron's own FIN/STG poles on top of lista_polos.dat.
+// "Make stage poles" (only offered when several poles can be picked) is Mirone's choosebox stage
+// path: it returns PolesPick::MakeStages with `opts` filled from the same three controls.
+static PolesPick pickPolesFromCatalogue(QWidget *parent, int maxSel, std::vector<EulerPole> &out,
+                                        const std::vector<EulerPole> &headerPoles = {},
+                                        StageOpts *opts = nullptr) {
+	std::vector<EulerPole> cat = headerPoles;
+	const int nHeader = (int)cat.size();
+	for (const EulerPole &p : readPolesCatalogue()) cat.push_back(p);
+	if (cat.empty()) {
+		QMessageBox::warning(parent, "Poles selector",
+			"No poles catalogue found (data/plates/lista_polos.dat).");
+		return PolesPick::Cancelled;
+	}
+	QDialog dlg(parent);
+	dlg.setWindowTitle(maxSel == 1 ? "Poles selector — pick one"
+	                 : maxSel == 2 ? "Poles selector — pick two (pole 1 first)"
+	                               : "Poles selector — pick the model's poles");
+	dlg.resize(620, 420);
+	auto *v = new QVBoxLayout(&dlg);
+	auto *lw = new QListWidget(&dlg);
+	lw->setSelectionMode(maxSel == 1 ? QAbstractItemView::SingleSelection
+	                                 : QAbstractItemView::ExtendedSelection);
+	QFont mono("Courier New");
+	mono.setStyleHint(QFont::Monospace);
+	lw->setFont(mono);
+	for (size_t i = 0; i < cat.size(); ++i) {
+		auto *it = new QListWidgetItem(cat[i].text, lw);
+		it->setData(Qt::UserRole, (int)i);
+		if ((int)i < nHeader) {                       // the active line's OWN poles, marked as such
+			QFont f = it->font(); f.setBold(true); it->setFont(f);
+		}
+	}
+	tightenListRows(lw);
+	v->addWidget(new QLabel(nHeader > 0 ? "lon   lat   angle   age      (bold = this line's own header poles)"
+	                                    : "lon   lat   angle   age", &dlg));
+	v->addWidget(lw, 1);
+
+	// Mirone's choosebox stage-pole toolbar: half angles, inverse (conjugate) stages, hemisphere.
+	QCheckBox *halfChk = nullptr, *invChk = nullptr;
+	QComboBox *sideCb = nullptr;
+	QPushButton *stagesBtn = nullptr;
+	if (maxSel != 1) {
+		auto *sr = new QHBoxLayout();
+		halfChk = new QCheckBox("Half angles", &dlg);
+		halfChk->setToolTip("Half opening angles — the flow line of a single plate (rotconverter -M0.5)");
+		invChk = new QCheckBox("Inverse stages", &dlg);
+		invChk->setToolTip("Stages of the conjugate plate (a_STAGE_b instead of b_STAGE_a)");
+		sideCb = new QComboBox(&dlg);
+		sideCb->addItem("North hemisphere poles", 1);
+		sideCb->addItem("South hemisphere poles", -1);
+		sideCb->addItem("Positive angles", 0);
+		sr->addWidget(halfChk); sr->addWidget(invChk); sr->addWidget(sideCb); sr->addStretch(1);
+		v->addLayout(sr);
+	}
+
+	auto *row = new QHBoxLayout();
+	if (maxSel != 1) {
+		stagesBtn = new QPushButton("Make stage poles", &dlg);
+		stagesBtn->setAutoDefault(false);
+		stagesBtn->setToolTip("Turn the selected finite poles into a stage-pole file and use it as the "
+		                      "rotation model");
+		row->addWidget(stagesBtn);
+	}
+	row->addStretch(1);
+	auto *ok = new QPushButton("OK", &dlg);
+	auto *cancel = new QPushButton("Cancel", &dlg);
+	ok->setAutoDefault(false); cancel->setAutoDefault(false);
+	row->addWidget(ok); row->addWidget(cancel);
+	v->addLayout(row);
+	PolesPick what = PolesPick::Cancelled;
+	QObject::connect(ok, &QPushButton::clicked, &dlg, [&dlg, &what]() { what = PolesPick::Use; dlg.accept(); });
+	QObject::connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
+	QObject::connect(lw, &QListWidget::itemDoubleClicked, &dlg, [&dlg, &what]() { what = PolesPick::Use; dlg.accept(); });
+	if (stagesBtn) QObject::connect(stagesBtn, &QPushButton::clicked, &dlg, [&dlg, &what]() {
+		what = PolesPick::MakeStages; dlg.accept();
+	});
+	if (dlg.exec() != QDialog::Accepted || what == PolesPick::Cancelled) return PolesPick::Cancelled;
+	if (opts) {
+		opts->half    = halfChk && halfChk->isChecked();
+		opts->inverse = invChk && invChk->isChecked();
+		opts->side    = sideCb ? sideCb->currentData().toInt() : 1;
+	}
+	out.clear();
+	// Selection order is not preserved by Qt, so rows are taken TOP-DOWN — the catalogue's own order,
+	// which is also what "pole 1 first" means for Add poles and what Interpolate poles needs (it
+	// sorts by age anyway).
+	const int cap = (what == PolesPick::MakeStages) ? 0 : maxSel;   // stages always take every selected pole
+	for (int i = 0; i < lw->count(); ++i) {
+		if (!lw->item(i)->isSelected()) continue;
+		out.push_back(cat[(size_t)lw->item(i)->data(Qt::UserRole).toInt()]);
+		if (cap > 0 && (int)out.size() >= cap) break;
+	}
+	return out.empty() ? PolesPick::Cancelled : what;
+}
+
+class EulerDialog;
+// One Euler rotations dialog per window, alive while parked — re-picking the menu entry brings THAT
+// one back (unpark), never a second one. Same registry contract as g_contourDlgs above.
+static std::map<Scene *, EulerDialog *> g_eulerDlgs;
+
+class EulerDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	bool reallyClose = false;   // set by the parked row's "Delete": let the next close through
+	QTabWidget *tabs = nullptr;
+	// Do Rotations
+	QListWidget *targetList = nullptr;
+	QPushButton *pickBtn = nullptr, *rectBtn = nullptr;
+	QLabel *activeLbl = nullptr;
+	QLineEdit *polesEdit = nullptr, *agesEdit = nullptr;
+	QLineEdit *poleLon = nullptr, *poleLat = nullptr, *poleAng = nullptr;
+	QCheckBox *revertChk = nullptr, *geodeticChk = nullptr, *usePoleChk = nullptr;
+	QListWidget *agesList = nullptr;
+	// Add poles
+	QLineEdit *p1Lon = nullptr, *p1Lat = nullptr, *p1Ang = nullptr;
+	QLineEdit *p2Lon = nullptr, *p2Lat = nullptr, *p2Ang = nullptr;
+	QLineEdit *p3Lon = nullptr, *p3Lat = nullptr, *p3Ang = nullptr;
+	// Interpolate poles
+	QLineEdit *finiteEdit = nullptr, *ages2Edit = nullptr, *interpOut = nullptr;
+	QListWidget *ages2List = nullptr;
+	// Poles taken from the catalogue instead of a file (Interpolate poles) — "lon lat ang age;…"
+	QString inlinePoles;
+
+	explicit EulerDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/euler_stuff.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("EulerDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("EulerDialog: QUiLoader failed to load the .ui"); return; }
+		// WA_DeleteOnClose is deliberately NOT set: the X PARKS this dialog instead of destroying it,
+		// exactly as a closed X,Y plot or Contours dialog does — everything set up in it (the picked
+		// lines, the poles file, the ages list) has to survive being closed. See CloseParks below.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+		g_eulerDlgs[scn] = this;
+
+		struct CloseParks : QObject {
+			EulerDialog *ed;
+			CloseParks(QObject *parent, EulerDialog *e) : QObject(parent), ed(e) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && ed && !ed->reallyClose && sceneAlive(ed->scn)) {
+					e->ignore();
+					// An armed pick must not outlive the dialog going away from the screen.
+					vectorPickDisarm(ed->scn);
+					if (ed->pickBtn) { QSignalBlocker b(ed->pickBtn); ed->pickBtn->setChecked(false); }
+					if (ed->rectBtn) { QSignalBlocker b(ed->rectBtn); ed->rectBtn->setChecked(false); }
+					ed->dlg->hide();
+					EulerDialog *p = ed;         // a lambda cannot capture a member of the enclosing class
+					parkTool(p->scn, p->dlg, "Euler rotations", IC_Line,
+					         "Closed Euler rotations dialog — double-click to bring it back, click for Show / Delete",
+					         [p]() { p->unpark(); }, p->parkedMenu());
+					// A handle the user cannot see is the same as no handle at all: reveal + unfold.
+					unfoldSceneObjects(ed->scn);
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		dlg->installEventFilter(new CloseParks(dlg, this));
+
+		tabs        = d->findChild<QTabWidget *>("tabs");
+		targetList  = d->findChild<QListWidget *>("list_targets");
+		pickBtn     = d->findChild<QPushButton *>("push_pick");
+		rectBtn     = d->findChild<QPushButton *>("push_rect");
+		activeLbl   = d->findChild<QLabel *>("lb_active");
+		polesEdit   = d->findChild<QLineEdit *>("edit_polesFile");
+		agesEdit    = d->findChild<QLineEdit *>("edit_agesFile");
+		poleLon     = d->findChild<QLineEdit *>("edit_poleLon");
+		poleLat     = d->findChild<QLineEdit *>("edit_poleLat");
+		poleAng     = d->findChild<QLineEdit *>("edit_poleAng");
+		revertChk   = d->findChild<QCheckBox *>("chk_revert");
+		geodeticChk = d->findChild<QCheckBox *>("chk_geodetic");
+		usePoleChk  = d->findChild<QCheckBox *>("chk_usePole");
+		agesList    = d->findChild<QListWidget *>("list_ages");
+		p1Lon = d->findChild<QLineEdit *>("edit_pole1Lon"); p1Lat = d->findChild<QLineEdit *>("edit_pole1Lat");
+		p1Ang = d->findChild<QLineEdit *>("edit_pole1Ang");
+		p2Lon = d->findChild<QLineEdit *>("edit_pole2Lon"); p2Lat = d->findChild<QLineEdit *>("edit_pole2Lat");
+		p2Ang = d->findChild<QLineEdit *>("edit_pole2Ang");
+		p3Lon = d->findChild<QLineEdit *>("edit_pole3Lon"); p3Lat = d->findChild<QLineEdit *>("edit_pole3Lat");
+		p3Ang = d->findChild<QLineEdit *>("edit_pole3Ang");
+		finiteEdit = d->findChild<QLineEdit *>("edit_finiteFile");
+		ages2Edit  = d->findChild<QLineEdit *>("edit_agesFile2");
+		interpOut  = d->findChild<QLineEdit *>("edit_interpOut");
+		ages2List  = d->findChild<QListWidget *>("list_ages2");
+		tightenListRows(agesList);
+		tightenListRows(ages2List);
+		tightenListRows(targetList);
+
+		refillTargets();
+		// The single-pole boxes only take input when the pole IS the rotation (Mirone's own gating).
+		auto syncPole = [this]() {
+			const bool on = usePoleChk && usePoleChk->isChecked();
+			for (QLineEdit *e : { poleLon, poleLat, poleAng }) if (e) e->setEnabled(on);
+			if (polesEdit) polesEdit->setEnabled(!on);
+			if (agesEdit)  agesEdit->setEnabled(!on);
+			if (agesList)  agesList->setEnabled(!on);
+		};
+		if (usePoleChk) QObject::connect(usePoleChk, &QCheckBox::toggled, d, [syncPole](bool) { syncPole(); });
+		syncPole();
+
+		wireFileBox(d, "edit_polesFile", "btn_polesFile", "Select rotation poles file",
+		            "Rotation poles (*.stg *.rot *.dat *.txt);;All files (*)", false);
+		wireFileBox(d, "edit_finiteFile", "btn_finiteFile", "Select finite rotation poles file",
+		            "Rotation poles (*.rot *.dat *.txt);;All files (*)", false);
+		wireFileBox(d, "edit_interpOut", "btn_interpOut", "Save interpolated poles",
+		            "Poles (*.dat *.stg);;All files (*)", true);
+		wireAgesBox(d, "edit_agesFile", "btn_agesFile", agesList);
+		wireAgesBox(d, "edit_agesFile2", "btn_agesFile2", ages2List);
+
+		// Pick in view / Rect select: arm the scene's vector pick and let clicks in the 3-D window ADD
+		// lines to the selection (Mirone's "Pick line from Figure" and its rubber-band twin). Both
+		// buttons are checkable and mutually exclusive — arming one disarms the other.
+		if (pickBtn) QObject::connect(pickBtn, &QPushButton::toggled, d,
+			[this, d](bool on) { armPick(d, on ? 1 : 0); });
+		if (rectBtn) QObject::connect(rectBtn, &QPushButton::toggled, d,
+			[this, d](bool on) { armPick(d, on ? 2 : 0); });
+		if (targetList) QObject::connect(targetList, &QListWidget::itemSelectionChanged, d,
+			[this]() { setActiveLabel(); });
+		setActiveLabel();
+
+		if (auto *b = d->findChild<QPushButton *>("push_polesList"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { pickSinglePole(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_polesListAdd"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { pickTwoPoles(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_polesListInterp"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { pickModelPoles(d); });
+		// The bar code is the tool Mirone opens from here too — the SAME dialog the Magnetics menu
+		// opens, not a second copy of it.
+		if (auto *b = d->findChild<QPushButton *>("push_magbar"))
+			QObject::connect(b, &QPushButton::clicked, d, [d]() {
+				auto *w = new MagBarcodeDialog(d);
+				if (w->dlg) w->dlg->show();
+			});
+		if (auto *b = d->findChild<QPushButton *>("push_showGMT"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, true); });
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, false); });
+		if (auto *b = d->findChild<QPushButton *>("push_close")) QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		// The manual page follows the tab: the rotations run backtracker, the two pole tabs rotconverter.
+		addManualButton(d, [this]() {
+			return (tabs && tabs->currentIndex() == 0) ? QString("backtracker") : QString("rotconverter");
+		});
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			// Never leave the scene armed for a pick nobody is listening to.
+			if (scn && sceneAlive(scn)) {
+				vectorPickDisarm(scn);
+				scn->vectorPickCB = nullptr;
+			}
+			delete this;
+		});
+	}
+
+	// Drop the registry entry by VALUE, not by `scn`: when the owning viewer window is torn down the
+	// dialog dies with it and the Scene may already be gone, so the key cannot be trusted.
+	~EulerDialog() {
+		for (auto it = g_eulerDlgs.begin(); it != g_eulerDlgs.end(); )
+			it = (it->second == this) ? g_eulerDlgs.erase(it) : std::next(it);
+	}
+
+	// Bring the dialog back from the dock (double-click, the row's checkbox, its "Show" item). ONE
+	// function for every way back in, like xyUnpark / ContourDialog::unpark.
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	// The parked row's menu — properties button and context menu are the same lambda, never two.
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();          // destroyed -> the row and this object go with it
+			}
+		};
+	}
+
+	// mode: 0 = off, 1 = click-to-add, 2 = rubber-band rectangle. The two buttons are exclusive, and
+	// the answer (one or more Scene Objects labels, '\n'-separated) is ADDED to the current selection.
+	void armPick(QDialog *d, int mode) {
+		if (!scn || !sceneAlive(scn)) return;
+		if (mode == 0) { vectorPickDisarm(scn); return; }
+		if (pickBtn && mode != 1 && pickBtn->isChecked()) { QSignalBlocker b(pickBtn); pickBtn->setChecked(false); }
+		if (rectBtn && mode != 2 && rectBtn->isChecked()) { QSignalBlocker b(rectBtn); rectBtn->setChecked(false); }
+		QPointer<QDialog> guard(d);
+		scn->vectorPickCB = [this, guard, mode](const std::string &names) {
+			if (!guard) return;                            // dialog closed meanwhile: drop the answer
+			if (mode == 2) {                               // one-shot: the scene already disarmed itself
+				if (rectBtn) { QSignalBlocker b(rectBtn); rectBtn->setChecked(false); }
+			}
+			if (names.empty()) { setActiveLabel(); return; }
+			refillTargets();
+			if (targetList) {
+				for (const QString &nm : QString::fromStdString(names).split('\n', Qt::SkipEmptyParts)) {
+					for (QListWidgetItem *it : targetList->findItems(nm, Qt::MatchExactly))
+						it->setSelected(true);
+				}
+			}
+			setActiveLabel();
+		};
+		scn->vectorPickPrevShape = (int)scn->polyShape;
+		scn->vectorPickMode = mode;
+		scn->vectorPickDrawing = false;
+		if (scn->widget) scn->widget->setCursor(Qt::CrossCursor);
+		if (scn->win) scn->win->statusBar()->showMessage(
+			mode == 1 ? "Click each line to rotate (the button stays down until you press it again)"
+			          : "Click one corner of the selection rectangle, then the opposite one", 5000);
+	}
+
+	// Every LINE element of the window, whichever door it came in through: drawn polygons/polylines
+	// and imported line overlays alike (SACRED_LAW — one operation, one list). The current selection
+	// survives the refill (rows are re-selected by name).
+	void refillTargets() {
+		if (!targetList || !scn || !sceneAlive(scn)) return;
+		QStringList keep;
+		for (QListWidgetItem *it : targetList->selectedItems()) keep << it->text();
+		QSignalBlocker block(targetList);
+		targetList->clear();
+		for (auto &pg : scn->polys) {
+			if (pg.isFault || pg.isSlip || pg.nestKind != 0) continue;   // not lines to reconstruct
+			targetList->addItem(QString::fromStdString(pg.name));
+		}
+		for (auto &ov : scn->overlays) {
+			if (ov.mode != 1) continue;                                   // point layers are not lines
+			targetList->addItem(QString::fromStdString(ov.name));
+		}
+		tightenListRows(targetList);
+		for (const QString &nm : keep)
+			for (QListWidgetItem *it : targetList->findItems(nm, Qt::MatchExactly))
+				it->setSelected(true);
+	}
+
+	QStringList selectedTargets() const {
+		QStringList v;
+		if (targetList) for (QListWidgetItem *it : targetList->selectedItems()) v << it->text();
+		return v;
+	}
+
+	void setActiveLabel() {
+		if (!activeLbl) return;
+		const QStringList t = selectedTargets();
+		if (t.isEmpty()) {
+			activeLbl->setText("NO ACTIVE LINE");
+			activeLbl->setStyleSheet("color: rgb(200, 0, 0); font-weight: bold;");
+		} else {
+			activeLbl->setText(t.size() == 1 ? "GOT A LINE TO WORK WITH: " + t.first()
+			                                 : QString("GOT %1 LINES TO WORK WITH").arg(t.size()));
+			activeLbl->setStyleSheet("color: rgb(0, 140, 0); font-weight: bold;");
+		}
+	}
+
+	void wireFileBox(QDialog *d, const char *editName, const char *btnName, const QString &title,
+	                 const QString &filter, bool save) {
+		auto *e = d->findChild<QLineEdit *>(editName);
+		auto *b = d->findChild<QToolButton *>(btnName);
+		if (!e || !b) return;
+		QObject::connect(b, &QToolButton::clicked, d, [d, e, title, filter, save]() {
+			const QString p = save ? QFileDialog::getSaveFileName(d, title, prefStartDir(), filter)
+			                       : QFileDialog::getOpenFileName(d, title, prefStartDir(), filter);
+			if (!p.isEmpty()) { e->setText(p); rememberStartDir(p); }
+		});
+		fileBoxDoubleClick(e, b);
+	}
+
+	// The ages box takes a FILE (one age per line, optionally "age chron"), a plain list ("10 20 30")
+	// or a range ("0:5:50") — the same three spellings Mirone accepts. Whatever it resolves to lands in
+	// the list widget, and the LIST is what Compute sends: one place holds the ages, never two.
+	void wireAgesBox(QDialog *d, const char *editName, const char *btnName, QListWidget *lw) {
+		auto *e = d->findChild<QLineEdit *>(editName);
+		auto *b = d->findChild<QToolButton *>(btnName);
+		if (!e || !b || !lw) return;
+		QObject::connect(b, &QToolButton::clicked, d, [d, e, lw]() {
+			const QString p = QFileDialog::getOpenFileName(d, "Select ages file", prefStartDir(),
+			                                               "Ages (*.dat *.txt);;All files (*)");
+			if (p.isEmpty()) return;
+			e->setText(p); rememberStartDir(p);
+			fillAges(lw, p);
+		});
+		fileBoxDoubleClick(e, b);
+		QObject::connect(e, &QLineEdit::editingFinished, d, [e, lw]() { fillAges(lw, e->text().trimmed()); });
+	}
+
+	// age -> row; the numeric value rides in Qt::UserRole so a labelled chron shows its name but still
+	// computes on its number.
+	static void fillAges(QListWidget *lw, const QString &spec) {
+		if (!lw) return;
+		lw->clear();
+		if (spec.isEmpty()) return;
+		auto addAge = [lw](double a, const QString &label) {
+			auto *it = new QListWidgetItem(label.isEmpty() ? QString::number(a, 'g', 10)
+			                                               : label + "    " + QString::number(a, 'g', 10), lw);
+			it->setData(Qt::UserRole, a);
+		};
+		if (QFileInfo(spec).isFile()) {
+			QFile f(spec);
+			if (f.open(QFile::ReadOnly | QFile::Text)) {
+				QTextStream in(&f);
+				while (!in.atEnd()) {
+					const QString t = in.readLine().trimmed();
+					if (t.isEmpty() || t.startsWith('#')) continue;
+					const QStringList c = t.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+					bool ok = false;
+					const double a = c[0].toDouble(&ok);
+					if (!ok) continue;
+					addAge(a, c.size() > 1 ? c[1] : QString());
+				}
+			}
+		} else if (spec.contains(':')) {                    // first:step:last (Mirone's own spelling)
+			const QStringList c = spec.split(':', Qt::SkipEmptyParts);
+			if (c.size() == 3) {
+				bool o1 = false, o2 = false, o3 = false;
+				const double a0 = c[0].toDouble(&o1), st = c[1].toDouble(&o2), a1 = c[2].toDouble(&o3);
+				if (o1 && o2 && o3 && st > 0)
+					for (double a = a0; a <= a1 + 1e-9; a += st) addAge(a, QString());
+			}
+		} else {
+			for (const QString &tok : spec.split(QRegularExpression("[\\s,;]+"), Qt::SkipEmptyParts)) {
+				bool ok = false;
+				const double a = tok.toDouble(&ok);
+				if (ok) addAge(a, QString());
+			}
+		}
+		tightenListRows(lw);
+	}
+
+	static QString agesCsv(QListWidget *lw) {
+		QStringList v;
+		if (lw) for (int i = 0; i < lw->count(); ++i)
+			v << QString::number(lw->item(i)->data(Qt::UserRole).toDouble(), 'g', 12);
+		return v.join(',');
+	}
+	static QString ageLabelsCsv(QListWidget *lw) {
+		QStringList v;
+		if (lw) for (int i = 0; i < lw->count(); ++i) {
+			QString t = lw->item(i)->text();
+			t.replace(',', ' ');
+			v << t.trimmed();
+		}
+		return v.join(',');
+	}
+
+	// The poles the ACTIVE line carries in its OWN header (a Mirone isochron's FIN"…"/STG0"…"/…), asked
+	// of Julia so the header parser stays the ONE that already exists (isocs.jl's _isoc_parse_header).
+	// Answer: one "lon lat ang age !LABEL" line per pole, exactly the catalogue's own spelling.
+	std::vector<EulerPole> headerPoles() {
+		std::vector<EulerPole> out;
+		const QStringList t = selectedTargets();
+		if (t.isEmpty() || !g_juliaEuler) return out;
+		g_eulerResult.clear();
+		QStringList kv;
+		kv << "op=headerpoles" << "target1=" + t.first() << "showcmd=0";
+		if (!g_juliaEuler(scn, kv.join("\n").toUtf8().constData())) return out;
+		for (const QString &ln : QString::fromStdString(g_eulerResult).split('\n', Qt::SkipEmptyParts)) {
+			const QStringList f4 = ln.section('!', 0, 0).split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+			if (f4.size() < 4) continue;
+			EulerPole p;
+			p.lon = f4[0].toDouble(); p.lat = f4[1].toDouble();
+			p.ang = f4[2].toDouble(); p.age = f4[3].toDouble();
+			p.text = ln.trimmed();
+			out.push_back(p);
+		}
+		return out;
+	}
+
+	// Mirone's choosebox stage path (its own file-writing branch was commented out, so this revives
+	// what euler_stuff's "Stage poles" answer was meant to do): turn the picked finite poles into a
+	// stage-pole file and make it THE rotation model of the Do Rotations tab. rotconverter does the
+	// conversion (op=stages, src/plates.jl).
+	void makeStagePoles(QDialog *d, const std::vector<EulerPole> &p, const StageOpts &so) {
+		if (!g_juliaEuler) {
+			QMessageBox::warning(d, "Poles selector", "Euler rotations: callback not registered.");
+			return;
+		}
+		if (p.size() < 2) {
+			QMessageBox::warning(d, "Poles selector", "Pick at least two finite poles to build stages from.");
+			return;
+		}
+		QStringList v;
+		for (const EulerPole &e : p)
+			v << QString("%1 %2 %3 %4").arg(e.lon, 0, 'g', 10).arg(e.lat, 0, 'g', 10)
+			                           .arg(e.ang, 0, 'g', 10).arg(e.age, 0, 'g', 10);
+		g_eulerResult.clear();
+		QStringList kv;
+		kv << "op=stages" << "poles=" + v.join(';')
+		   << QString("half=%1").arg(so.half ? 1 : 0)
+		   << QString("inverse=%1").arg(so.inverse ? 1 : 0)
+		   << QString("side=%1").arg(so.side)
+		   << QString("geodetic=%1").arg(geodeticChk && geodeticChk->isChecked() ? 1 : 0)
+		   << "showcmd=0";
+		const int ok = g_juliaEuler(scn, kv.join("\n").toUtf8().constData());
+		const QString answer = QString::fromStdString(g_eulerResult);
+		if (!ok) {
+			QMessageBox::warning(d, "Stage poles", answer.isEmpty()
+				? QString("Could not build the stage poles.") : answer);
+			return;
+		}
+		// Julia writes the table to a file and reports "<path>\n<the table>".
+		const int nl = answer.indexOf('\n');
+		const QString path = nl < 0 ? answer : answer.left(nl);
+		const QString table = nl < 0 ? QString() : answer.mid(nl + 1);
+		if (polesEdit) polesEdit->setText(path);
+		if (usePoleChk) usePoleChk->setChecked(false);      // the model is the rotation now, not one pole
+		QDialog out(d);
+		out.setWindowTitle("Stage Poles");
+		out.resize(500, 320);
+		auto *lay = new QVBoxLayout(&out);
+		auto *te = new QPlainTextEdit(table, &out);
+		te->setReadOnly(true);
+		QFont mono("Courier New");
+		mono.setStyleHint(QFont::Monospace);
+		te->setFont(mono);
+		lay->addWidget(new QLabel("Now the rotation model of Do Rotations:\n" + path, &out));
+		lay->addWidget(te);
+		auto *b = new QPushButton("Close", &out);
+		b->setAutoDefault(false);
+		QObject::connect(b, &QPushButton::clicked, &out, &QDialog::accept);
+		lay->addWidget(b);
+		out.exec();
+	}
+
+	void pickSinglePole(QDialog *d) {
+		std::vector<EulerPole> p;
+		StageOpts so;
+		const PolesPick what = pickPolesFromCatalogue(d, 1, p, headerPoles(), &so);
+		if (what == PolesPick::Cancelled) return;
+		if (what == PolesPick::MakeStages) { makeStagePoles(d, p, so); return; }
+		if (poleLon) poleLon->setText(QString::number(p[0].lon, 'g', 10));
+		if (poleLat) poleLat->setText(QString::number(p[0].lat, 'g', 10));
+		if (poleAng) poleAng->setText(QString::number(p[0].ang, 'g', 10));
+		if (usePoleChk) usePoleChk->setChecked(true);
+	}
+	void pickTwoPoles(QDialog *d) {
+		std::vector<EulerPole> p;
+		StageOpts so;
+		const PolesPick what = pickPolesFromCatalogue(d, 2, p, headerPoles(), &so);
+		if (what == PolesPick::Cancelled) return;
+		if (what == PolesPick::MakeStages) { makeStagePoles(d, p, so); return; }
+		auto put = [](QLineEdit *lo, QLineEdit *la, QLineEdit *an, const EulerPole &e) {
+			if (lo) lo->setText(QString::number(e.lon, 'g', 10));
+			if (la) la->setText(QString::number(e.lat, 'g', 10));
+			if (an) an->setText(QString::number(e.ang, 'g', 10));
+		};
+		put(p1Lon, p1Lat, p1Ang, p[0]);
+		if (p.size() > 1) put(p2Lon, p2Lat, p2Ang, p[1]);
+	}
+	void pickModelPoles(QDialog *d) {
+		std::vector<EulerPole> p;
+		StageOpts so;
+		const PolesPick what = pickPolesFromCatalogue(d, 0, p, headerPoles(), &so);
+		if (what == PolesPick::Cancelled) return;
+		if (what == PolesPick::MakeStages) { makeStagePoles(d, p, so); return; }
+		QStringList v;
+		for (const EulerPole &e : p)
+			v << QString("%1 %2 %3 %4").arg(e.lon, 0, 'g', 10).arg(e.lat, 0, 'g', 10)
+			                           .arg(e.ang, 0, 'g', 10).arg(e.age, 0, 'g', 10);
+		inlinePoles = v.join(';');
+		if (finiteEdit) finiteEdit->setText(QString("<%1 poles from the catalogue>").arg(p.size()));
+	}
+
+	// Compute (or, with showcmd, just ask what command WOULD run). One entry point for all three tabs
+	// — the tab only decides which "op=" the same callback is handed.
+	void run(QDialog *d, bool showcmd) {
+		if (!g_juliaEuler) {
+			QMessageBox::warning(d, "Euler rotations",
+			                     "Euler rotations: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		const int tab = tabs ? tabs->currentIndex() : 0;
+		QStringList kv;
+		if (tab == 0) {
+			const QStringList targets = selectedTargets();
+			if (targets.isEmpty()) {
+				QMessageBox::warning(d, "Euler rotations", "No line selected — pick one to rotate.");
+				return;
+			}
+			const bool usePole = usePoleChk && usePoleChk->isChecked();
+			if (usePole) {
+				if (!poleLon || !poleLat || !poleAng || poleLon->text().trimmed().isEmpty() ||
+				    poleLat->text().trimmed().isEmpty() || poleAng->text().trimmed().isEmpty()) {
+					QMessageBox::warning(d, "Euler rotations", "Fill the pole's Lon, Lat and Angle.");
+					return;
+				}
+			} else {
+				if (!polesEdit || polesEdit->text().trimmed().isEmpty()) {
+					QMessageBox::warning(d, "Euler rotations", "No rotation poles file given.");
+					return;
+				}
+				if (!agesList || agesList->count() == 0) {
+					QMessageBox::warning(d, "Euler rotations",
+					                     "No ages given — the rotations are computed at those ages.");
+					return;
+				}
+			}
+			kv << "op=rotate";
+			for (int i = 0; i < targets.size(); ++i) kv << QString("target%1=").arg(i + 1) + targets[i];
+			kv << "polesfile=" + (polesEdit ? polesEdit->text().trimmed() : QString());
+			kv << "ages=" + agesCsv(agesList);
+			kv << "agelabels=" + ageLabelsCsv(agesList);
+			kv << QString("revert=%1").arg(revertChk && revertChk->isChecked() ? 1 : 0);
+			kv << QString("geodetic=%1").arg(geodeticChk && geodeticChk->isChecked() ? 1 : 0);
+			kv << QString("usepole=%1").arg(usePole ? 1 : 0);
+			kv << "polelon=" + (poleLon ? poleLon->text().trimmed() : QString());
+			kv << "polelat=" + (poleLat ? poleLat->text().trimmed() : QString());
+			kv << "poleang=" + (poleAng ? poleAng->text().trimmed() : QString());
+		} else if (tab == 1) {
+			auto num = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+			if (num(p1Lon).isEmpty() || num(p1Lat).isEmpty() || num(p1Ang).isEmpty() ||
+			    num(p2Lon).isEmpty() || num(p2Lat).isEmpty() || num(p2Ang).isEmpty()) {
+				QMessageBox::warning(d, "Add poles", "Both poles need Lon, Lat and Angle.");
+				return;
+			}
+			kv << "op=add";
+			kv << "p1lon=" + num(p1Lon) << "p1lat=" + num(p1Lat) << "p1ang=" + num(p1Ang);
+			kv << "p2lon=" + num(p2Lon) << "p2lat=" + num(p2Lat) << "p2ang=" + num(p2Ang);
+		} else {
+			const bool haveFile = finiteEdit && !finiteEdit->text().trimmed().isEmpty() && inlinePoles.isEmpty();
+			if (!haveFile && inlinePoles.isEmpty()) {
+				QMessageBox::warning(d, "Interpolate poles",
+				                     "Give a finite poles file, or pick the poles from the catalogue.");
+				return;
+			}
+			if (!ages2List || ages2List->count() == 0) {
+				QMessageBox::warning(d, "Interpolate poles", "No ages to interpolate at.");
+				return;
+			}
+			kv << "op=interp";
+			kv << "polesfile=" + (haveFile ? finiteEdit->text().trimmed() : QString());
+			kv << "poles=" + inlinePoles;
+			kv << "ages=" + agesCsv(ages2List);
+			kv << "outfile=" + (interpOut ? interpOut->text().trimmed() : QString());
+		}
+		kv << QString("showcmd=%1").arg(showcmd ? 1 : 0);
+
+		g_eulerResult.clear();                           // clear the answer channel before asking
+		if (!showcmd) showBusyDialog("Rotating…");
+		const int ok = g_juliaEuler(scn, kv.join("\n").toUtf8().constData());
+		if (!showcmd) closeBusyDialog();
+		const QString answer = QString::fromStdString(g_eulerResult);
+		if (!ok) {
+			QMessageBox::warning(d, "Euler rotations", answer.isEmpty()
+				? QString("Failed — see this window's Errors console for details.") : answer);
+			return;
+		}
+		if (showcmd) {
+			QMessageBox box(QMessageBox::Information, "GMT command", answer, QMessageBox::Ok, d);
+			box.setTextInteractionFlags(Qt::TextSelectableByMouse);
+			box.exec();
+			return;
+		}
+		if (tab == 0) {
+			refillTargets();                              // the rotated lines are elements too
+		} else if (tab == 1) {
+			// "lon lat angle" from rotconverter
+			const QStringList c = answer.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+			if (c.size() >= 3) {
+				if (p3Lon) p3Lon->setText(c[0]);
+				if (p3Lat) p3Lat->setText(c[1]);
+				if (p3Ang) p3Ang->setText(c[2]);
+			}
+		} else if (!answer.isEmpty()) {
+			QDialog out(d);
+			out.setWindowTitle("Interpolated poles");
+			out.resize(460, 380);
+			auto *v = new QVBoxLayout(&out);
+			auto *te = new QPlainTextEdit(answer, &out);
+			te->setReadOnly(true);
+			QFont mono("Courier New");
+			mono.setStyleHint(QFont::Monospace);
+			te->setFont(mono);
+			v->addWidget(te);
+			auto *b = new QPushButton("Close", &out);
+			b->setAutoDefault(false);
+			QObject::connect(b, &QPushButton::clicked, &out, &QDialog::accept);
+			v->addWidget(b);
+			out.exec();
+		}
+	}
+};
+
 // ============================================================================================
 // grdfilter (GMT menu) — filter a grid in the space domain. Layout is Mirone's Grdfilter window:
 // the shared "Griding Line Geometry" block (adopted from the .ui's verbatim copy of
@@ -10396,6 +11154,18 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 
 	(*fGroup)();   // initial population: the discipline chooser
+
+	// --- Plates: plate kinematics, migrated from Mirone ------------------------------------------
+	// Starts with Euler rotations (Mirone's euler_stuff.m), re-based on GMT's spotter supplement.
+	QMenu *mPlates = win->menuBar()->addMenu("&Plates");
+	mPlates->addAction("Euler rotations…", [win, s]() {
+		// Its X PARKS it (Scene Objects row), so re-picking this entry brings THAT dialog back with
+		// everything still set up in it — never a second, empty one.
+		auto it = g_eulerDlgs.find(s);
+		if (it != g_eulerDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+		auto *w = new EulerDialog(win, s);   // deletes itself when its QDialog is really destroyed
+		if (w->dlg) w->dlg->show();
+	});
 
 	// --- Tools menu: open the standalone X,Y plot tool (blank; ready for File>Open or Julia) ----
 	QMenu *mTools = win->menuBar()->addMenu("&Tools");

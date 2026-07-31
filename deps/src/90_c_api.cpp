@@ -1539,6 +1539,20 @@ GMTVTK_API void gmtvtk_set_grdtrend_callback(JuliaGrdTrendFn fn) {
 	g_juliaGrdTrend = fn;
 }
 
+// Register the Euler rotations Compute callback (Plates menu). fn(scene, params) with the "key=value"
+// block described in 30_app.cpp rotates the chosen line / adds two poles / interpolates a rotation
+// model, all through GMT's spotter modules. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_euler_callback(JuliaEulerFn fn) {
+	g_juliaEuler = fn;
+}
+
+// Julia hands the Euler dialog back whatever the tab it just served has to SAY (the summed pole as
+// "lon lat angle", the interpolated pole table, or the GMT command line). Called from inside the
+// callback; the dialog reads it once the call returns.
+GMTVTK_API void gmtvtk_euler_result(const char *txt) {
+	g_eulerResult = (txt && txt[0]) ? txt : "";
+}
+
 // Register the grdlandmask Compute callback (GMT menu). fn(scene, params) with the "key=value" block
 // described in 30_app.cpp builds the wet/dry mask (or masks the window's grid) and adds it to
 // `scene`. Returns 1/0. nullptr to detach.
@@ -1925,6 +1939,86 @@ GMTVTK_API int gmtvtk_serialize_texts(void *handle, char *buf, int cap) {
 			std::string txt = tl.text;
 			for (char &c : txt) if (c == '\n' || c == '\r') c = ' ';
 			o += txt; o += '\n';
+		}
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
+// Copy ONE vector element's vertices out of the window, looked up by the SAME label Scene Objects
+// shows. Both element families answer here — a drawn Polygon (Scene::polys) and an imported line
+// Overlay (Scene::overlays) — because an operation on "a line" must not care which door the line came
+// in through (SACRED_LAW: one operation, one function). Drawn polygons are searched first, then
+// overlays; the first exact name match wins. Output: one SEGMENT per line, its vertices written "x,y"
+// and joined by '|', in TRUE world coordinates (the stored points are true — only the actor carries
+// xfac/VE). Two-pass buffer, like every other serializer here: call with buf=nullptr for the length,
+// then again with a buffer of that size + 1. Returns 0 when no element carries that name.
+GMTVTK_API int gmtvtk_serialize_vector_h(void *handle, const char *name, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	char t[64];
+	if (sceneAlive(s) && name && name[0]) {
+		const std::string want = name;
+		bool done = false;
+		for (auto &pg : s->polys) {
+			if (pg.name != want) continue;
+			for (size_t i = 0; i < pg.v.size(); ++i) {
+				snprintf(t, sizeof(t), "%.12g,%.12g", pg.v[i][0], pg.v[i][1]);
+				o += t; if (i + 1 < pg.v.size()) o += '|';
+			}
+			o += '\n';
+			done = true;
+			break;
+		}
+		for (auto &ov : s->overlays) {
+			if (done) break;
+			if (ov.name != want) continue;
+			vtkPolyData *pd = ov.baseLine;
+			if (!pd) {
+				if (vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(ov.actor ? ov.actor->GetMapper() : nullptr))
+					pd = m->GetInput();
+			}
+			vtkPoints *pts = pd ? pd->GetPoints() : nullptr;
+			if (!pts) break;
+			const vtkIdType np = pts->GetNumberOfPoints();
+			// segoff holds nseg+1 start offsets; an overlay stored without them is one single segment.
+			std::vector<int> off = ov.segoff;
+			if ((int)off.size() < 2) off = { 0, (int)np };
+			for (size_t k = 0; k + 1 < off.size(); ++k) {
+				const int i0 = off[k], i1 = off[k + 1];
+				for (int i = i0; i < i1 && i < (int)np; ++i) {
+					double p[3]; pts->GetPoint(i, p);
+					snprintf(t, sizeof(t), "%.12g,%.12g", p[0], p[1]);
+					o += t; if (i + 1 < i1 && i + 1 < (int)np) o += '|';
+				}
+				o += '\n';
+			}
+			done = true;
+		}
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
+// The per-segment INFO text of one named line element — for an imported table that is the segment
+// header the file carried ("> 5 EURASIA/NORTH AMERICA FIN\"…\" STG0\"…\"" for a Mirone isochron), which
+// is where an isochron keeps its own Euler poles. One segment per output line; empty when the element
+// has no info (drawn polygons never do). Two-pass buffer, same as the serializers above.
+GMTVTK_API int gmtvtk_vector_info_h(void *handle, const char *name, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	if (sceneAlive(s) && name && name[0]) {
+		const std::string want = name;
+		for (auto &ov : s->overlays) {
+			if (ov.name != want) continue;
+			for (auto &t : ov.info) {
+				std::string one = t;
+				for (char &c : one) if (c == '\n' || c == '\r') c = ' ';
+				o += one; o += '\n';
+			}
+			break;
 		}
 	}
 	const int n = (int)o.size();
@@ -2846,6 +2940,106 @@ GMTVTK_API int gmtvtk_igrf_screenshot_test(const char *path) {
 // test hooks: open/close/screenshot the REAL Geomagnetic Bar Code dialog (same drive-the-actual-
 // widget-then-look pattern as the IGRF hooks above — never trust "didn't throw" for a paint bug).
 GMTVTK_API void *gmtvtk_open_empty(const char *title);   // defined below; forward-declared for the test hook
+
+// test hooks: open/close the REAL Euler rotations dialog on a REAL window (`handle`, or a throwaway
+// empty one when null). Same purpose as the IGRF/bar-code pair: a QUiLoader failure or a widget name
+// that drifted out of the .ui shows up here instead of on the user's first click.
+static EulerDialog *g_eulerTestDlg = nullptr;
+static void *g_eulerTestWin = nullptr;
+GMTVTK_API int gmtvtk_euler_open_dialog_test(void *handle) {
+	ensureApp();
+	// The caller's window was built by gmtvtk.dll, whose `g_scenes` registry is NOT this dll's, so
+	// sceneAlive() would reject a perfectly live handle here — the pointer is taken as given (same
+	// convention as gmtvtk_fault_open_dialog_test). Only a null handle gets a throwaway window.
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s) {
+		if (!g_eulerTestWin) g_eulerTestWin = gmtvtk_open_empty("euler test");
+		s = static_cast<Scene *>(g_eulerTestWin);
+	}
+	// …and the dialog itself asks sceneAlive() before touching the scene (it must, in production), so
+	// this dll's own registry has to know about the borrowed window too.
+	g_scenes.insert(s);
+	if (!s || !s->win) return 0;
+	// Exactly what the menu entry does: a dialog already open (or PARKED) for this window comes back,
+	// it is never doubled.
+	auto it = g_eulerDlgs.find(s);
+	if (it != g_eulerDlgs.end() && it->second && it->second->dlg) {
+		g_eulerTestDlg = it->second;
+		g_eulerTestDlg->unpark();
+		QApplication::processEvents();
+		return 1;
+	}
+	g_eulerTestDlg = new EulerDialog(s->win, s);
+	if (!g_eulerTestDlg->dlg) return 0;
+	g_eulerTestDlg->dlg->show();
+	QApplication::processEvents();
+	return 1;
+}
+// The X: PARKS the dialog (hidden, still alive, a row in Scene Objects) — so the pointer is kept, and
+// gmtvtk_euler_targets_test still answers, which is how a test checks the state survived the close.
+GMTVTK_API void gmtvtk_euler_close_dialog_test() {
+	if (g_eulerTestDlg && g_eulerTestDlg->dlg) g_eulerTestDlg->dlg->close();
+	QApplication::processEvents();
+}
+// Really destroy it (the parked row's "Delete"), for a test that wants a clean window afterwards.
+GMTVTK_API void gmtvtk_euler_delete_dialog_test() {
+	if (g_eulerTestDlg && g_eulerTestDlg->dlg) {
+		g_eulerTestDlg->reallyClose = true;
+		g_eulerTestDlg->dlg->close();
+	}
+	g_eulerTestDlg = nullptr;
+	QApplication::processEvents();
+}
+// 1 when the dialog is currently PARKED (hidden but alive, with its Scene Objects row), 0 when it is
+// on screen, -1 when there is none.
+GMTVTK_API int gmtvtk_euler_parked_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!g_eulerTestDlg || !g_eulerTestDlg->dlg) return -1;
+	const bool hidden = !g_eulerTestDlg->dlg->isVisible();
+	bool row = false;
+	if (s) for (auto &pt : s->parkedTools) if (pt.win == g_eulerTestDlg->dlg) row = true;
+	return (hidden && row) ? 1 : 0;
+}
+// How many line elements the dialog's target list offers, and which of them are selected (joined by
+// '\n' into `buf`) — enough to check the list really sees the window's lines, and that a pick landed,
+// without a screenshot.
+GMTVTK_API int gmtvtk_euler_targets_test(char *buf, int cap) {
+	if (!g_eulerTestDlg || !g_eulerTestDlg->targetList) return -1;
+	QStringList sel;
+	for (QListWidgetItem *it : g_eulerTestDlg->targetList->selectedItems()) sel << it->text();
+	const QByteArray cur = sel.join('\n').toUtf8();
+	if (buf && cap > 0) {
+		const int c = (cur.size() < cap - 1) ? cur.size() : cap - 1;
+		memcpy(buf, cur.constData(), c);
+		buf[c] = '\0';
+	}
+	return g_eulerTestDlg->targetList->count();
+}
+
+// (No "read the Euler answer" hook lives here on purpose: Julia writes that answer into gmtvtk.dll's
+// own g_eulerResult, and THIS dll has a separate copy of it — a hook here would always read empty.
+// The tests check the answer through Julia's own record of it, InteractiveGMT._euler_last_result.)
+
+// Drive the dialog's own pick machinery from a test: arm mode (1 = click, 2 = rectangle) and feed it
+// clicks at TRUE world coordinates, exactly as the interactor would. Returns 1 when the pick was
+// armed / the click was delivered.
+GMTVTK_API int gmtvtk_euler_arm_pick_test(int mode) {
+	if (!g_eulerTestDlg || !g_eulerTestDlg->dlg) return 0;
+	QPushButton *b = (mode == 2) ? g_eulerTestDlg->rectBtn : g_eulerTestDlg->pickBtn;
+	if (!b) return 0;
+	b->setChecked(mode != 0);
+	QApplication::processEvents();
+	return 1;
+}
+// Deliver ONE pick answer the way the scene would (names '\n'-separated) — covers the dialog half of
+// the pick without needing a synthetic mouse event on the render window.
+GMTVTK_API int gmtvtk_euler_pick_deliver_test(void *handle, const char *names) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->vectorPickCB) return 0;
+	s->vectorPickCB(names ? names : "");
+	QApplication::processEvents();
+	return 1;
+}
 
 static MagBarcodeDialog *g_magbarTestDlg = nullptr;
 static void *g_magbarTestWin = nullptr;

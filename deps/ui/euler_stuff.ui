@@ -1,0 +1,449 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>EulerDialog</class>
+ <widget class="QDialog" name="EulerDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>560</width>
+    <height>470</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Euler rotations</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainVerticalLayout">
+   <property name="spacing">
+    <number>8</number>
+   </property>
+   <property name="margin" stdset="0">
+    <number>8</number>
+   </property>
+   <item>
+    <widget class="QTabWidget" name="tabs">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+     <widget class="QWidget" name="tab_rot">
+      <attribute name="title">
+       <string>Do Rotations</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_rot">
+       <item>
+        <widget class="QLabel" name="lb_target">
+         <property name="text"><string>Lines to rotate (several may be selected)</string></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_target">
+         <item>
+          <widget class="QListWidget" name="list_targets">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+             <horstretch>1</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+           <property name="maximumSize"><size><width>16777215</width><height>90</height></size></property>
+           <property name="toolTip"><string>Every line element of this window (imported tables and drawn lines alike). Ctrl/Shift-click to rotate several at once.</string></property>
+           <property name="selectionMode"><enum>QAbstractItemView::SelectionMode::ExtendedSelection</enum></property>
+          </widget>
+         </item>
+         <item>
+          <layout class="QVBoxLayout" name="verticalLayout_pickButtons">
+           <item>
+            <widget class="QPushButton" name="push_pick">
+             <property name="minimumSize"><size><width>96</width><height>24</height></size></property>
+             <property name="toolTip"><string>Stays down: every line you click in the 3-D window is added to the selection. Click the button again to stop.</string></property>
+             <property name="text"><string>Pick in view</string></property>
+             <property name="checkable"><bool>true</bool></property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="push_rect">
+             <property name="minimumSize"><size><width>96</width><height>24</height></size></property>
+             <property name="toolTip"><string>Drag a rectangle in the 3-D window: every line crossing it is added to the selection (click one corner, then the opposite one).</string></property>
+             <property name="text"><string>Rect select</string></property>
+             <property name="checkable"><bool>true</bool></property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="verticalSpacer_pickButtons">
+             <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+             <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="lb_active">
+         <property name="text"><string>NO ACTIVE LINE</string></property>
+         <property name="styleSheet"><string notr="true">color: rgb(200, 0, 0); font-weight: bold;</string></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_rotBody">
+         <item>
+          <layout class="QVBoxLayout" name="verticalLayout_rotLeft">
+           <item>
+            <widget class="QLabel" name="lb_polesFile">
+             <property name="text"><string>Stage poles file</string></property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayout_polesFile">
+             <item>
+              <widget class="QLineEdit" name="edit_polesFile">
+               <property name="toolTip"><string>GMT rotation file: stage poles (lon lat tstart tend angle) or total reconstruction poles (lon lat age angle). Double-click to browse.</string></property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QToolButton" name="btn_polesFile">
+               <property name="text"><string>...</string></property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="chk_revert">
+             <property name="toolTip"><string>Rotate the other way round (backtracker -Df instead of -Db)</string></property>
+             <property name="text"><string>Revert sense of rotation</string></property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="chk_geodetic">
+             <property name="toolTip"><string>Treat the input latitudes as geodetic: convert to geocentric before rotating and back after (mapproject -Ng)</string></property>
+             <property name="text"><string>Geodetic Lats</string></property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="lb_agesFile">
+             <property name="text"><string>Age file</string></property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayout_agesFile">
+             <item>
+              <widget class="QLineEdit" name="edit_agesFile">
+               <property name="toolTip"><string>One age per line, optionally followed by a chron name. Or type the ages directly, e.g. 10 20 30, or a range 0:5:50. Double-click to browse.</string></property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QToolButton" name="btn_agesFile">
+               <property name="text"><string>...</string></property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QListWidget" name="list_ages">
+             <property name="toolTip"><string>The line is rotated to each of these ages</string></property>
+             <property name="selectionMode"><enum>QAbstractItemView::SelectionMode::ExtendedSelection</enum></property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QVBoxLayout" name="verticalLayout_rotRight">
+           <item>
+            <widget class="QGroupBox" name="gb_singlePole">
+             <property name="title"><string>Single pole</string></property>
+             <layout class="QGridLayout" name="gridLayout_pole">
+              <item row="0" column="0">
+               <widget class="QLabel" name="lb_poleLon">
+                <property name="alignment"><set>Qt::AlignmentFlag::AlignHCenter|Qt::AlignmentFlag::AlignVCenter</set></property>
+                <property name="text"><string>Lon</string></property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QLabel" name="lb_poleLat">
+                <property name="alignment"><set>Qt::AlignmentFlag::AlignHCenter|Qt::AlignmentFlag::AlignVCenter</set></property>
+                <property name="text"><string>Lat</string></property>
+               </widget>
+              </item>
+              <item row="0" column="2">
+               <widget class="QLabel" name="lb_poleAng">
+                <property name="alignment"><set>Qt::AlignmentFlag::AlignHCenter|Qt::AlignmentFlag::AlignVCenter</set></property>
+                <property name="text"><string>Angle</string></property>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLineEdit" name="edit_poleLon"/>
+              </item>
+              <item row="1" column="1">
+               <widget class="QLineEdit" name="edit_poleLat"/>
+              </item>
+              <item row="1" column="2">
+               <widget class="QLineEdit" name="edit_poleAng"/>
+              </item>
+              <item row="2" column="0" colspan="3">
+               <widget class="QCheckBox" name="chk_usePole">
+                <property name="toolTip"><string>Rotate by this single finite pole instead of by the poles file + ages</string></property>
+                <property name="text"><string>Use this Pole</string></property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="push_polesList">
+             <property name="minimumSize"><size><width>140</width><height>24</height></size></property>
+             <property name="toolTip"><string>Pick a pole from the catalogue of published Euler poles</string></property>
+             <property name="text"><string>Poles selector</string></property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="push_magbar">
+             <property name="minimumSize"><size><width>140</width><height>24</height></size></property>
+             <property name="toolTip"><string>Open the geomagnetic polarity time scale bar code</string></property>
+             <property name="text"><string>Magnetic Bar Code</string></property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="push_showGMT">
+             <property name="minimumSize"><size><width>140</width><height>24</height></size></property>
+             <property name="toolTip"><string>Show the GMT command this rotation runs</string></property>
+             <property name="text"><string>Show GMT command</string></property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="verticalSpacer_rotRight">
+             <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+             <property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_add">
+      <attribute name="title">
+       <string>Add poles</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_add">
+       <item>
+        <widget class="QLabel" name="lb_addHelp">
+         <property name="text"><string>Total rotation of pole 1 followed by pole 2 (rotconverter A + B)</string></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_add">
+         <item row="0" column="1">
+          <widget class="QLabel" name="lb_addLon">
+           <property name="alignment"><set>Qt::AlignmentFlag::AlignHCenter|Qt::AlignmentFlag::AlignVCenter</set></property>
+           <property name="text"><string>Lon</string></property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLabel" name="lb_addLat">
+           <property name="alignment"><set>Qt::AlignmentFlag::AlignHCenter|Qt::AlignmentFlag::AlignVCenter</set></property>
+           <property name="text"><string>Lat</string></property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QLabel" name="lb_addAng">
+           <property name="alignment"><set>Qt::AlignmentFlag::AlignHCenter|Qt::AlignmentFlag::AlignVCenter</set></property>
+           <property name="text"><string>Angle</string></property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lb_pole1"><property name="text"><string>Pole 1</string></property></widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="edit_pole1Lon"/>
+         </item>
+         <item row="1" column="2">
+          <widget class="QLineEdit" name="edit_pole1Lat"/>
+         </item>
+         <item row="1" column="3">
+          <widget class="QLineEdit" name="edit_pole1Ang"/>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="lb_pole2"><property name="text"><string>Pole 2</string></property></widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QLineEdit" name="edit_pole2Lon"/>
+         </item>
+         <item row="2" column="2">
+          <widget class="QLineEdit" name="edit_pole2Lat"/>
+         </item>
+         <item row="2" column="3">
+          <widget class="QLineEdit" name="edit_pole2Ang"/>
+         </item>
+         <item row="3" column="0">
+          <widget class="QLabel" name="lb_pole3"><property name="text"><string>Sum</string></property></widget>
+         </item>
+         <item row="3" column="1">
+          <widget class="QLineEdit" name="edit_pole3Lon">
+           <property name="readOnly"><bool>true</bool></property>
+          </widget>
+         </item>
+         <item row="3" column="2">
+          <widget class="QLineEdit" name="edit_pole3Lat">
+           <property name="readOnly"><bool>true</bool></property>
+          </widget>
+         </item>
+         <item row="3" column="3">
+          <widget class="QLineEdit" name="edit_pole3Ang">
+           <property name="readOnly"><bool>true</bool></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_addButtons">
+         <item>
+          <widget class="QPushButton" name="push_polesListAdd">
+           <property name="minimumSize"><size><width>140</width><height>24</height></size></property>
+           <property name="toolTip"><string>Pick the two poles from the catalogue</string></property>
+           <property name="text"><string>Poles selector</string></property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="horizontalSpacer_add">
+           <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+           <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_add">
+         <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_interp">
+      <attribute name="title">
+       <string>Interpolate poles</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_interp">
+       <item>
+        <widget class="QLabel" name="lb_interpHelp">
+         <property name="text"><string>Interpolate a finite rotation model at the given ages</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lb_finiteFile">
+         <property name="text"><string>Finite rotation poles file</string></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_finiteFile">
+         <item>
+          <widget class="QLineEdit" name="edit_finiteFile">
+           <property name="toolTip"><string>Total reconstruction poles: lon lat age angle (GMT order) or lon lat angle age (Mirone order) — both are read. Double-click to browse.</string></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_finiteFile">
+           <property name="text"><string>...</string></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_interpPick">
+         <item>
+          <widget class="QPushButton" name="push_polesListInterp">
+           <property name="minimumSize"><size><width>140</width><height>24</height></size></property>
+           <property name="toolTip"><string>Take the poles from the catalogue instead of a file</string></property>
+           <property name="text"><string>Poles selector</string></property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="horizontalSpacer_interp">
+           <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+           <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="lb_agesFile2">
+         <property name="text"><string>Age file</string></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_agesFile2">
+         <item>
+          <widget class="QLineEdit" name="edit_agesFile2">
+           <property name="toolTip"><string>Ages to interpolate at: a file, a list (10 20 30) or a range (0:5:50). Double-click to browse.</string></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_agesFile2">
+           <property name="text"><string>...</string></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QListWidget" name="list_ages2">
+         <property name="toolTip"><string>The model is interpolated at each of these ages</string></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_interpOut">
+         <item>
+          <widget class="QLabel" name="lb_interpOut">
+           <property name="text"><string>Save poles to</string></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="edit_interpOut">
+           <property name="toolTip"><string>Optional. Leave empty to only list the interpolated poles.</string></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QToolButton" name="btn_interpOut">
+           <property name="text"><string>...</string></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <spacer name="verticalSpacer_bottom">
+     <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+     <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+     <property name="sizeHint" stdset="0"><size><width>20</width><height>6</height></size></property>
+    </spacer>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="buttonsSpacer">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="text"><string>Compute</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_close">
+       <property name="minimumSize"><size><width>70</width><height>24</height></size></property>
+       <property name="text"><string>Close</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

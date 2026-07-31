@@ -1188,6 +1188,20 @@ function _drop_overlay_kind(D)::Symbol
 	return (nseg == 1 && size(d1.data, 2) >= 3) ? :points : :lines
 end
 
+# The "> …" header of every segment, or an empty vector when NONE of them has one (the usual case:
+# a plain x,y table). Only called on the add path, so a header-less source pays nothing.
+function _ds_segment_headers(D)::Vector{String}
+	segs = D isa AbstractVector ? D : [D]
+	h = String[]
+	any_txt = false
+	for s in segs
+		t = try String(s.header) catch; "" end
+		isempty(strip(t)) || (any_txt = true)
+		push!(h, t)
+	end
+	return any_txt ? h : String[]
+end
+
 function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractString="",
                                 color=nothing, noConvertToPoints::Bool=false, noDataTable::Bool=false)
 	mode = _drop_overlay_kind(D)
@@ -1197,13 +1211,19 @@ function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractSt
 	lw = 0.0   # <=0 -> C++ addOverlay falls back to Preferences "Default line thickness" (50_scene.cpp)
 	ps = mode === :points ? 6.0 : 0.0
 	nm = String(name === nothing ? "" : name)
+	# A multisegment table's own segment headers are kept as the overlay's per-segment info (the
+	# hover text). For a Mirone isochron that header IS its data — "> 5 EURASIA/NORTH AMERICA
+	# FIN"…" STG0"…"" carries the line's Euler poles, which Plates > Euler rotations' Poles selector
+	# reads back (_euler_header_poles). '\x1e'-packed, the same convention magneticisochrons.jl uses.
+	hdrs = _ds_segment_headers(D)
+	packed = isempty(hdrs) ? "" : join(hdrs, '\x1e')
 	ok = if noConvertToPoints || noDataTable
 		ccall(_fn(:gmtvtk_add_overlay_ex3_h), Cint,
 		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
 		   Cstring, Cstring, Cstring, Cint, Cint, Cint),
-		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm, String(groupName), "",
+		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm, String(groupName), packed,
 		  Cint(noConvertToPoints), Cint(0), Cint(noDataTable))
-	elseif isempty(groupName)
+	elseif isempty(groupName) && isempty(packed)
 		ccall(_fn(:gmtvtk_add_overlay_h), Cint,
 		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
 		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm)
@@ -1211,7 +1231,7 @@ function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractSt
 		ccall(_fn(:gmtvtk_add_overlay_ex_h), Cint,
 		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
 		   Cstring, Cstring, Cstring),
-		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm, String(groupName), C_NULL)
+		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm, String(groupName), packed)
 	end
 	ok == 0 && @warn "drop: window is closed; dataset not added"
 	return ok != 0

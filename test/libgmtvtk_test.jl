@@ -38,6 +38,9 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_swipe_btn_enabled_test, :gmtvtk_swipe_set_mode_test,
 	:gmtvtk_link_toggle_test, :gmtvtk_link_peek_test, :gmtvtk_link_state_test,
 	:gmtvtk_swipe_click_test, :gmtvtk_right_click_test, :gmtvtk_right_button_test,
+	:gmtvtk_euler_open_dialog_test, :gmtvtk_euler_close_dialog_test, :gmtvtk_euler_targets_test,
+	:gmtvtk_euler_arm_pick_test, :gmtvtk_euler_pick_deliver_test,
+	:gmtvtk_euler_parked_test, :gmtvtk_euler_delete_dialog_test,
 	:gmtvtk_set_faultgeom_callback,   # NOT test-only — dlsym'd here too so we can mirror the
 	                                  # callback registration into this dll's own global.
 )

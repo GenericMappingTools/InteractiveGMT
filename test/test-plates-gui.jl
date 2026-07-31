@@ -1,0 +1,204 @@
+# :gui scenarios for Plates > Euler rotations. These open a REAL window through the built gmtvtk.dll,
+# put lines in it, and drive the SAME callback the dialog drives, so the whole path runs: the line's
+# vertices out of the scene (gmtvtk_serialize_vector_h), the GMT spotter call, and the rotated lines
+# back in as new elements. The dialog itself is opened through its test hooks in gmtvtk_test.dll — a
+# QUiLoader failure or a widget name that drifted out of euler_stuff.ui fails here, not on the user's
+# first click. Opt in with INTERACTIVEGMT_TEST_GUI=1 (or `Pkg.test(test_args=["gui"])`).
+
+@testmodule Plates begin
+
+using InteractiveGMT
+const IG = InteractiveGMT
+
+# A small geographic grid (off Portugal) to hang the lines on.
+function grid()
+	IG.GMT.mat2grid(Float32[1000exp(-(((ix - 20) / 8)^2 + ((iy - 15) / 6)^2)) for iy in 0:30, ix in 0:40];
+	                x = collect(range(-10.0, -6.0, length = 41)), y = collect(range(36.0, 39.0, length = 31)),
+	                proj4 = "+proj=longlat +datum=WGS84")
+end
+
+const LINE = [-9.5 36.5; -9.0 37.0; -8.5 37.5; -8.0 38.0]
+
+send(h, kv) = IG._on_euler(h, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+
+end # @testmodule
+
+@testitem "Euler: a line rotated by one finite pole is backtracker's own answer" tags=[:gui] setup=[Plates] begin
+	IG = InteractiveGMT
+	f = view_grid(Plates.grid())
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "testline")
+	@test IG._euler_segments(f.h, "testline")[1] ≈ Plates.LINE
+
+	@test Plates.send(f.h, ["op=rotate", "target=testline", "usepole=1", "polelon=-40.8",
+	                        "polelat=32.8", "poleang=-12.9", "revert=0", "geodetic=0",
+	                        "polesfile=", "ages=", "showcmd=0"]) == 1
+	got = IG._euler_segments(f.h, "testline rot -40.8/32.8/-12.9")
+	@test length(got) == 1
+	ref = IG.GMT.gmt("backtracker -E-40.8/32.8/-12.9 -Db -Q1", Plates.LINE)
+	@test got[1] ≈ (isa(ref, Vector) ? ref[1].data : ref.data)[:, 1:2]
+	# The SOURCE line stays in the window: a reconstruction is read against what it came from.
+	@test IG._euler_segments(f.h, "testline")[1] ≈ Plates.LINE
+end
+
+@testitem "Euler: a rotation model + ages gives one line per age" tags=[:gui] setup=[Plates] begin
+	IG = InteractiveGMT
+	stg = joinpath(tempdir(), "igmt_stage_$(time_ns()).stg")
+	# Cox's EUR-NAM stage poles (lon lat tstart tend angle) — GMT reads this 5-column form as stages.
+	write(stg, """
+	-23.54692\t80.33835\t90.0\t83.0\t-4.3588
+	-22.68443\t80.43997\t83.0\t53.0\t-11.9737
+	-25.56612\t 5.38147\t53.0\t48.0\t 2.5663
+	157.29147\t 6.75318\t48.0\t37.0\t-3.4258
+	129.90000\t68.00000\t37.0\t 0.0\t-7.8000
+	""")
+	try
+		f = view_grid(Plates.grid())
+		IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "isoc")
+		@test Plates.send(f.h, ["op=rotate", "target=isoc", "usepole=0", "polesfile=$stg",
+		                        "ages=37,53", "agelabels=", "revert=0", "geodetic=0", "showcmd=0"]) == 1
+		for a in (37, 53)
+			got = IG._euler_segments(f.h, "isoc @ $(a).0 Ma")
+			@test length(got) == 1
+			ref = IG.GMT.gmt("backtracker -E$stg -Db -Q$a", Plates.LINE)
+			@test got[1] ≈ (isa(ref, Vector) ? ref[1].data : ref.data)[:, 1:2]
+		end
+		# A ONE-POINT target is a flow line, not a rotated point (Mirone's own split).
+		IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds([-9.0 37.0]), "seed")
+		@test Plates.send(f.h, ["op=rotate", "target=seed", "usepole=0", "polesfile=$stg",
+		                        "ages=90", "agelabels=", "revert=0", "geodetic=0", "showcmd=0"]) == 1
+		fl = IG._euler_segments(f.h, "seed flow line")
+		@test length(fl) == 1 && size(fl[1], 1) > 10
+		@test fl[1][1, :] ≈ [-9.0, 37.0] atol = 1e-6         # the path starts at the seed point
+	finally
+		isfile(stg) && rm(stg, force = true)
+	end
+end
+
+@testitem "Euler: Geodetic Lats changes the answer, and is GMT's own conversion" tags=[:gui] setup=[Plates] begin
+	IG = InteractiveGMT
+	f = view_grid(Plates.grid())
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "testline")
+	pole = ["polelon=-40.8", "polelat=32.8", "poleang=-12.9"]
+	@test Plates.send(f.h, ["op=rotate", "target=testline", "usepole=1", pole...,
+	                        "geodetic=0", "revert=0", "polesfile=", "ages=", "showcmd=0"]) == 1
+	@test Plates.send(f.h, ["op=rotate", "target=testline", "usepole=1", pole...,
+	                        "geodetic=1", "revert=0", "polesfile=", "ages=", "showcmd=0"]) == 1
+	plain = IG._euler_segments(f.h, "testline rot -40.8/32.8/-12.9")[1]
+	geod  = IG._euler_segments(f.h, "testline rot -40.8/32.8/-12.9, geodetic")[1]
+	@test size(plain) == size(geod)
+	@test !(plain ≈ geod)                                  # the option must actually bite
+	# …and it bites by exactly mapproject's geodetic<->geocentric latitudes, nothing hand-rolled.
+	inp = IG._euler_lat_convert(Plates.LINE, false)
+	ref = IG.GMT.gmt("backtracker -E-40.8/32.8/-12.9 -Db -Q1", inp)
+	D = (isa(ref, Vector) ? ref[1].data : ref.data)[:, 1:2]
+	@test geod ≈ IG._euler_lat_convert(Matrix{Float64}(D), true)
+end
+
+@testitem "Euler: several lines rotate in one go" tags=[:gui] setup=[Plates] begin
+	IG = InteractiveGMT
+	f = view_grid(Plates.grid())
+	other = [-9.8 36.2; -9.2 36.9; -8.6 37.4]
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "lineA")
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(other), "lineB")
+	@test Plates.send(f.h, ["op=rotate", "target1=lineA", "target2=lineB", "usepole=1",
+	                        "polelon=-40.8", "polelat=32.8", "poleang=-12.9", "revert=0",
+	                        "geodetic=0", "polesfile=", "ages=", "showcmd=0"]) == 1
+	for (nm, src) in (("lineA", Plates.LINE), ("lineB", other))
+		got = IG._euler_segments(f.h, "$nm rot -40.8/32.8/-12.9")
+		@test length(got) == 1
+		ref = IG.GMT.gmt("backtracker -E-40.8/32.8/-12.9 -Db -Q1", src)
+		@test got[1] ≈ (isa(ref, Vector) ? ref[1].data : ref.data)[:, 1:2]
+	end
+	# One bad name among good ones must not sink the rest.
+	@test Plates.send(f.h, ["op=rotate", "target1=lineA", "target2=no such line", "usepole=1",
+	                        "polelon=10", "polelat=20", "poleang=5", "revert=0", "geodetic=0",
+	                        "polesfile=", "ages=", "showcmd=0"]) == 1
+	@test !isempty(IG._euler_segments(f.h, "lineA rot 10.0/20.0/5.0"))
+end
+
+@testitem "Euler: an isochron's own header poles reach the Poles selector" tags=[:gui] setup=[Plates] begin
+	IG = InteractiveGMT
+	answer() = IG._euler_last_result[]     # what the dialog reads back through the C answer channel
+	# A Mirone isochron file: the "> …" header carries the line's own Euler poles.
+	dat = joinpath(tempdir(), "igmt_isoc_$(time_ns()).dat")
+	write(dat, """
+	> 5c EURASIA/NORTH AMERICA FIN"136.53 63.63 -3.951 16.37" STG0"147.6332 51.4257 19.60 16.37 0.3362"
+	-9.5 36.5
+	-9.0 37.0
+	-8.5 37.5
+	""")
+	try
+		f = view_grid(Plates.grid())
+		D = IG.GMT.gmtread(dat)
+		IG._add_dataset_to_scene(f.h, D, "c5c")
+		# The header survived the import as the overlay's own info…
+		n = ccall(IG._fn(:gmtvtk_vector_info_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint),
+		          f.h, "c5c", C_NULL, Cint(0))
+		@test n > 0
+		# …and comes back parsed as catalogue lines (FIN verbatim; STG as lon lat angle t_end).
+		@test Plates.send(f.h, ["op=headerpoles", "target1=c5c", "showcmd=0"]) == 1
+		lines = split(answer(), '\n'; keepempty = false)
+		@test length(lines) == 2
+		@test occursin("!FIN", lines[1]) && occursin("!STG0", lines[2])
+		# Catalogue spelling: lon/lat to 2 decimals, angle to 4 — Mirone's own %.2f/%.3f line format.
+		fin = parse.(Float64, split(split(lines[1], '!')[1]))
+		@test fin ≈ [136.53, 63.63, -3.951, 16.37] atol = 1e-2      # FIN: lon lat ang age, verbatim
+		stg = parse.(Float64, split(split(lines[2], '!')[1]))
+		@test stg ≈ [147.6332, 51.4257, 0.3362, 16.37] atol = 1e-2  # STG: lon lat ANGLE t_end
+		# A line with no header at all answers "no poles", not an error.
+		IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "plain")
+		@test Plates.send(f.h, ["op=headerpoles", "target1=plain", "showcmd=0"]) == 1
+		@test isempty(strip(answer()))
+	finally
+		isfile(dat) && rm(dat, force = true)
+	end
+end
+
+@testitem "Euler dialog: opens, lists the lines, and takes picks" tags=[:gui] setup=[Plates, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	f = view_grid(Plates.grid())
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "testline")
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds([-9.8 36.2; -9.2 36.9]), "otherline")
+	@test ccall(_test_fn(:gmtvtk_euler_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	buf = Vector{UInt8}(undef, 256)
+	sel() = (ccall(_test_fn(:gmtvtk_euler_targets_test), Cint, (Ptr{UInt8}, Cint), buf, Cint(256));
+	         unsafe_string(pointer(buf)))
+	n = ccall(_test_fn(:gmtvtk_euler_targets_test), Cint, (Ptr{UInt8}, Cint), buf, Cint(256))
+	@test n == 2                                            # both lines offered as targets
+	@test isempty(sel())                                    # nothing selected until asked
+	# Click-pick stays armed and ACCUMULATES; a rect pick answers with several names at once.
+	@test ccall(_test_fn(:gmtvtk_euler_arm_pick_test), Cint, (Cint,), Cint(1)) == 1
+	@test ccall(_test_fn(:gmtvtk_euler_pick_deliver_test), Cint, (Ptr{Cvoid}, Cstring), f.h, "testline") == 1
+	@test sel() == "testline"
+	@test ccall(_test_fn(:gmtvtk_euler_pick_deliver_test), Cint, (Ptr{Cvoid}, Cstring), f.h, "otherline") == 1
+	@test sort(split(sel(), '\n')) == ["otherline", "testline"]
+	ccall(_test_fn(:gmtvtk_euler_delete_dialog_test), Cvoid, ())
+end
+
+@testitem "Euler dialog: the X parks it, it does not kill it" tags=[:gui] setup=[Plates, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	f = view_grid(Plates.grid())
+	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "testline")
+	@test ccall(_test_fn(:gmtvtk_euler_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	@test ccall(_test_fn(:gmtvtk_euler_arm_pick_test), Cint, (Cint,), Cint(1)) == 1
+	@test ccall(_test_fn(:gmtvtk_euler_pick_deliver_test), Cint, (Ptr{Cvoid}, Cstring), f.h, "testline") == 1
+	@test ccall(_test_fn(:gmtvtk_euler_parked_test), Cint, (Ptr{Cvoid},), f.h) == 0     # on screen
+	# The X hides it and leaves a handle in Scene Objects — like a closed X,Y plot, not a destroyed one.
+	ccall(_test_fn(:gmtvtk_euler_close_dialog_test), Cvoid, ())
+	@test ccall(_test_fn(:gmtvtk_euler_parked_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	rows = unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), f.h))
+	@test occursin("Euler rotations", rows)
+	# Re-opening brings THAT dialog back, with its selection still set — never a second, empty one.
+	@test ccall(_test_fn(:gmtvtk_euler_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	@test ccall(_test_fn(:gmtvtk_euler_parked_test), Cint, (Ptr{Cvoid},), f.h) == 0
+	buf = Vector{UInt8}(undef, 256)
+	ccall(_test_fn(:gmtvtk_euler_targets_test), Cint, (Ptr{UInt8}, Cint), buf, Cint(256))
+	@test unsafe_string(pointer(buf)) == "testline"
+	rows = unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), f.h))
+	@test !occursin("Euler rotations", rows)                                            # row taken back
+	# "Delete" on the parked row is the only real close.
+	ccall(_test_fn(:gmtvtk_euler_delete_dialog_test), Cvoid, ())
+	@test ccall(_test_fn(:gmtvtk_euler_parked_test), Cint, (Ptr{Cvoid},), f.h) == -1
+end

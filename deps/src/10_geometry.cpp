@@ -822,6 +822,21 @@ struct Scene {
 	                 SH_SymCircle, SH_SymSquare, SH_SymStar };   // Symbols flyout: one-click regular shapes
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
+	// "Point at a line" pick a tool can ARM (Plates > Euler rotations' "Pick in view" / "Rect
+	// select"). Deliberately generic — any later tool that needs the user to point at lines reuses
+	// this one mechanism, not its own.
+	//   1 = CLICK: each left click resolves the line under the cursor through the SAME hit tests the
+	//       double-click edit path uses (polyHitPolygon, then pickOverlayAt). Stays armed, so several
+	//       lines can be collected; the tool disarms it.
+	//   2 = RECT: two clicks (anchor, opposite corner) rubber-band a rectangle — drawn by the SAME
+	//       preview the rectangle DRAW tool uses (polyRebuildPreview) — and every line with a vertex
+	//       inside it answers at once. One-shot: it disarms itself on the second click.
+	// `vectorPickCB` gets the Scene Objects labels, one per line, '\n'-separated ("" = nothing hit).
+	int  vectorPickMode = 0;
+	bool vectorPickDrawing = false;                    // RECT: the anchor click has happened
+	std::array<double,3> vectorPickAnchor{ 0, 0, 0 };  // RECT: that anchor, in TRUE world coords
+	int  vectorPickPrevShape = 0;                      // RECT: polyShape before the preview borrowed it
+	std::function<void(const std::string &)> vectorPickCB;
 	std::vector<MecaGroupProps> mecaGroups;            // one entry per focal-mechanism batch groupName
 	std::vector<MecaBall> mecaBalls;                   // one entry per plotted event (drag + anchor line state)
 	int    mecaDrag = -1;                               // index into mecaBalls being click-dragged (-1 = none)

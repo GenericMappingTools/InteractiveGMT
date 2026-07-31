@@ -1580,10 +1580,97 @@ static void polyPlaceText(Scene *s, const double w[3]) {
 // it consumed the event (the widget then skips the VTK base handler, so the gizmo never rotates).
 // (x,y) are VTK display px (device, bottom-up), matching polyPickWorld / the projection helpers.
 
+// End an armed vector pick (Scene::vectorPickMode): drop the rubber-band preview, hand polyShape back
+// to whatever draw tool owned it, and restore the cursor. Safe to call when nothing is armed.
+static void vectorPickDisarm(Scene *s) {
+	if (!s) return;
+	const bool wasRect = (s->vectorPickMode == 2);
+	s->vectorPickMode = 0;
+	s->vectorPickDrawing = false;
+	if (wasRect) {
+		s->polyDrawing = false;
+		s->polyCur.clear();
+		if (s->polyPreview) s->polyPreview->SetVisibility(0);
+		s->polyShape = (Scene::ShapeKind)s->vectorPickPrevShape;
+	}
+	if (s->widget) s->widget->unsetCursor();
+}
+
 // Left/right press. button: 0 = left, 1 = right. shift: Shift held (whole-element drag in edit mode).
 static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 	const bool vertexTool = (s->polyShape == Scene::SH_Polygon || s->polyShape == Scene::SH_Polyline ||
 	                         s->polyShape == Scene::SH_Line || s->polyShape == Scene::SH_Fault);
+	// A tool armed a "point at a line" pick (Scene::vectorPickMode — Plates > Euler rotations'
+	// "Pick in view" / "Rect select"). CLICK mode resolves the line under the cursor with the SAME
+	// two hit tests, in the same order, the double-click edit path uses: a drawn Polygon first, then
+	// an imported line Overlay. RECT mode collects the anchor on the first click and answers with
+	// every line inside the box on the second. The click is consumed either way, so an armed pick can
+	// never leak into a rotate/drag.
+	if (button == 0 && s->vectorPickMode == 1) {
+		std::string hit;
+		const int pi = polyHitPolygon(s, x, y, 8.0);
+		if (pi >= 0)
+			hit = s->polys[pi].name;
+		else {
+			int ovMode = 1, segIdx = -1;
+			if (vtkActor *ovAct = pickOverlayAt(s, x, y, ovMode, &segIdx)) {
+				for (auto &ov : s->overlays)
+					if (ov.actor.Get() == ovAct) { hit = ov.name; break; }
+			}
+		}
+		if (s->vectorPickCB) s->vectorPickCB(hit);   // stays armed: the tool collects as many as wanted
+		return true;
+	}
+	if (button == 0 && s->vectorPickMode == 2) {
+		double w[3];
+		if (!polyPickWorld(s, x, y, w)) return true;             // off-surface click: ignore, stay armed
+		if (!s->vectorPickDrawing) {                              // first click: drop the anchor
+			s->vectorPickDrawing = true;
+			s->vectorPickAnchor = { w[0], w[1], w[2] };
+			// The rubber-band rectangle IS the draw tool's rectangle preview (polyRebuildPreview keys
+			// off polyShape). polyMode is off while we pick, so polyShape is inert meanwhile; it is put
+			// back the moment the pick ends.
+			s->polyShape = Scene::SH_Rect;
+			s->polyDrawing = true;
+			s->polyCur.clear();
+			s->polyCur.push_back(s->vectorPickAnchor);
+			polyRebuildPreview(s, nullptr);
+			s->widget->renderWindow()->Render();
+			return true;
+		}
+		const double x0 = std::min(s->vectorPickAnchor[0], w[0]), x1 = std::max(s->vectorPickAnchor[0], w[0]);
+		const double y0 = std::min(s->vectorPickAnchor[1], w[1]), y1 = std::max(s->vectorPickAnchor[1], w[1]);
+		vectorPickDisarm(s);
+		// Same rule as Mirone's push_rectSelect_CB: a line counts when ANY of its vertices is inside.
+		std::string hits;
+		auto add = [&hits](const std::string &nm) {
+			if (nm.empty()) return;
+			if (!hits.empty()) hits += '\n';
+			hits += nm;
+		};
+		for (auto &pg : s->polys) {
+			if (pg.isFault || pg.isSlip || pg.nestKind != 0) continue;
+			for (auto &v : pg.v)
+				if (v[0] >= x0 && v[0] <= x1 && v[1] >= y0 && v[1] <= y1) { add(pg.name); break; }
+		}
+		for (auto &ov : s->overlays) {
+			if (ov.mode != 1 || !ov.actor || !ov.actor->GetVisibility()) continue;
+			vtkPolyData *pd = ov.baseLine;
+			if (!pd) {
+				if (vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(ov.actor->GetMapper())) pd = m->GetInput();
+			}
+			vtkPoints *pts = pd ? pd->GetPoints() : nullptr;
+			if (!pts) continue;
+			const vtkIdType np = pts->GetNumberOfPoints();
+			for (vtkIdType i = 0; i < np; ++i) {
+				double p[3]; pts->GetPoint(i, p);
+				if (p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1) { add(ov.name); break; }
+			}
+		}
+		if (s->vectorPickCB) s->vectorPickCB(hits);
+		s->widget->renderWindow()->Render();
+		return true;
+	}
 	if (button == 1) {                                   // right-click: undo last vertex (polygon/polyline)
 		if (s->polyMode && s->polyDrawing && vertexTool) {
 			if (!s->polyCur.empty()) s->polyCur.pop_back();
@@ -1816,6 +1903,14 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 
 // Mouse move: extend the draw preview to the cursor, or drag the grabbed vertex / text label.
 static bool polygonHandleMove(Scene *s, int x, int y) {
+	// An armed RECT vector pick (Scene::vectorPickMode == 2) rubber-bands with the SAME preview the
+	// rectangle draw tool uses — one preview implementation, not a second one for selection.
+	if (s->vectorPickMode == 2 && s->vectorPickDrawing) {
+		double w[3];
+		polyRebuildPreview(s, polyPickWorld(s, x, y, w) ? w : nullptr);
+		s->widget->renderWindow()->Render();
+		return true;
+	}
 	if (s->symLayerDrag >= 0 && s->symLayerDrag < (int)s->symbols.size()) {   // dragging a native symbol
 		// A plain click (press+release near-in-place) has no minimum-movement gate below this point,
 		// so ordinary mouse jitter between down and up would otherwise nudge the symbol's TRUE position

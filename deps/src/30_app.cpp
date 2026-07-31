@@ -453,6 +453,33 @@ static JuliaGrdFilterFn g_juliaGrdFilter = nullptr;
 typedef int (*JuliaInterpolateFn)(void *scene, const char *params);
 static JuliaInterpolateFn g_juliaInterpolate = nullptr;
 
+// Euler rotations (Plates menu). Port of Mirone's src_figs/euler_stuff.m, re-based on GMT's own
+// spotter supplement (which did not exist when the Mirone code was written): every rotation and every
+// bit of pole algebra is a GMT call — backtracker for the line rotations and flow lines, rotconverter
+// for adding / converting / interpolating poles, mapproject -Ng for the geodetic-latitude option.
+// EulerDialog (70_window.cpp, loads deps/ui/euler_stuff.ui) hands a newline-separated "key=value"
+// block to Julia (_on_euler, src/plates.jl); `op` says which of the dialog's three tabs asked:
+//   op=rotate  target<i>=<Scene Objects label>, one per selected line   polesfile=<GMT rotation file>
+//              ages=<comma list>  agelabels=<comma list>  revert=0|1  geodetic=0|1
+//              usepole=0|1  polelon= polelat= poleang=   showcmd=0|1 (report the command, run nothing)
+//   op=add     p1lon= p1lat= p1ang=  p2lon= p2lat= p2ang=
+//   op=interp  polesfile=<finite poles file>  poles=<inline "lon lat ang age;…" from the catalogue>
+//              ages=<comma list>  outfile=<path or empty>
+//   op=headerpoles  target1=<label>   — the Euler poles that line carries in its OWN header (a Mirone
+//              isochron's FIN"…"/STG0"…"), answered as catalogue lines for the Poles selector
+//   op=stages  poles=<inline list>  half=0|1  inverse=0|1  side=1|-1|0  geodetic=0|1  — finite poles
+//              to a stage-pole FILE (rotconverter -Fs [-M0.5] [-N|-S]); answers "<path>\n<table>"
+// The rotated lines land in `scene` as ONE new Scene Objects group of named lines (the source line
+// stays visible — a rotation is a comparison); `add`/`interp` answer through gmtvtk_euler_result.
+// Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaEulerFn)(void *scene, const char *params);
+static JuliaEulerFn g_juliaEuler = nullptr;
+// Julia's answer for the tabs that have one (the summed pole, the interpolated pole table, the GMT
+// command "Show GMT command" asked for). Written from Julia through gmtvtk_euler_result while the
+// callback is still running — the call is synchronous on the UI thread, so the dialog simply clears
+// this before calling and reads it straight after.
+static std::string g_eulerResult;
+
 // Plot seismicity (Geophysics > Seismology). Port of Mirone's earthquakes.m. The dialog
 // (PlotSeismicityDialog, 70_window.cpp) hands a newline-separated "key=value" block to Julia
 // (g_juliaSeismicity), which reads the catalog (USGS web query / ISF / plain-column layouts /

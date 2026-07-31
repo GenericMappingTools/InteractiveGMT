@@ -89,6 +89,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_window_screenshot,
 	:gmtvtk_scene_state_full, :gmtvtk_apply_scene_state, :gmtvtk_serialize_texts,
 	:gmtvtk_serialize_polys, :gmtvtk_add_poly_full, :gmtvtk_serialize_faults, :gmtvtk_add_nested_rect,
+	:gmtvtk_serialize_vector_h, :gmtvtk_vector_info_h, :gmtvtk_set_euler_callback, :gmtvtk_euler_result,
 	:gmtvtk_refresh_fault_planes, :gmtvtk_overlay_style_h, :gmtvtk_set_overlay_style_h,
 	:gmtvtk_set_igrf_point_callback, :gmtvtk_set_igrf_grid_callback, :gmtvtk_set_igrf_file_callback,
 	:gmtvtk_set_rtp3d_callback,
