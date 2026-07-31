@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Plate Calculator. Geometry is Mirone's own, converted from src_figs/plate_calculator.m's
+     LayoutFcn (figure 709x317, MATLAB bottom-left origin -> Qt top-left: y_qt = 317 - y_m - h).
+     Absolute positions on purpose: the window is fixed-size, exactly as Mirone's ('Resize','off'),
+     so every control keeps the size it has there — the edit boxes are 71x21, not stretched.
+     `map_holder` marks the axes rectangle [300 46 401 260]; the C++ side puts the plate map there. -->
+<ui version="4.0">
+ <class>PlateCalculator</class>
+ <widget class="QDialog" name="PlateCalculator">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>709</width><height>317</height></rect>
+  </property>
+  <property name="minimumSize"><size><width>709</width><height>317</height></size></property>
+  <property name="maximumSize"><size><width>709</width><height>317</height></size></property>
+  <property name="windowTitle"><string>Plate Calculator</string></property>
+
+  <widget class="QGroupBox" name="gb_relative">
+   <property name="geometry"><rect><x>8</x><y>2</y><width>92</width><height>96</height></rect></property>
+   <property name="title"><string>Relative</string></property>
+   <widget class="QRadioButton" name="rb_nuvel1a">
+    <property name="geometry"><rect><x>5</x><y>15</y><width>84</width><height>17</height></rect></property>
+    <property name="toolTip"><string>NUVEL-1A relative plate motions (DeMets et al. 1994)</string></property>
+    <property name="text"><string>Nuvel-1A</string></property>
+    <property name="checked"><bool>true</bool></property>
+    <attribute name="buttonGroup"><string>bg_model</string></attribute>
+   </widget>
+   <widget class="QRadioButton" name="rb_morvel">
+    <property name="geometry"><rect><x>5</x><y>35</y><width>84</width><height>17</height></rect></property>
+    <property name="toolTip"><string>MORVEL relative plate motions (DeMets, Gordon &amp; Argus 2010)</string></property>
+    <property name="text"><string>MORVEL</string></property>
+    <attribute name="buttonGroup"><string>bg_model</string></attribute>
+   </widget>
+   <widget class="QRadioButton" name="rb_pbird">
+    <property name="geometry"><rect><x>5</x><y>55</y><width>84</width><height>17</height></rect></property>
+    <property name="toolTip"><string>Peter Bird's PB2002 model — 52 plates</string></property>
+    <property name="text"><string>P. Bird</string></property>
+    <attribute name="buttonGroup"><string>bg_model</string></attribute>
+   </widget>
+   <widget class="QRadioButton" name="rb_geodvel">
+    <property name="geometry"><rect><x>5</x><y>75</y><width>84</width><height>17</height></rect></property>
+    <property name="toolTip"><string>GEODVEL geodetic plate motions (Argus et al. 2010)</string></property>
+    <property name="text"><string>GEODVEL</string></property>
+    <attribute name="buttonGroup"><string>bg_model</string></attribute>
+   </widget>
+  </widget>
+
+  <widget class="QGroupBox" name="gb_absolute">
+   <property name="geometry"><rect><x>104</x><y>2</y><width>116</width><height>96</height></rect></property>
+   <property name="title"><string>Absolute</string></property>
+   <widget class="QRadioButton" name="rb_nnr">
+    <property name="geometry"><rect><x>6</x><y>15</y><width>108</width><height>17</height></rect></property>
+    <property name="toolTip"><string>NUVEL-1A NNR — no-net-rotation frame</string></property>
+    <property name="text"><string>Nuvel-1A NNR</string></property>
+    <attribute name="buttonGroup"><string>bg_model</string></attribute>
+   </widget>
+   <widget class="QRadioButton" name="rb_deos2k">
+    <property name="geometry"><rect><x>6</x><y>35</y><width>108</width><height>17</height></rect></property>
+    <property name="toolTip"><string>DEOS2K absolute plate motions</string></property>
+    <property name="text"><string>DEOS2K</string></property>
+    <attribute name="buttonGroup"><string>bg_model</string></attribute>
+   </widget>
+   <widget class="QRadioButton" name="rb_revel">
+    <property name="geometry"><rect><x>6</x><y>55</y><width>108</width><height>17</height></rect></property>
+    <property name="toolTip"><string>REVEL absolute plate motions (Sella et al. 2002)</string></property>
+    <property name="text"><string>REVEL</string></property>
+    <attribute name="buttonGroup"><string>bg_model</string></attribute>
+   </widget>
+  </widget>
+
+  <widget class="QPushButton" name="push_readme">
+   <property name="geometry"><rect><x>224</x><y>16</y><width>56</width><height>22</height></rect></property>
+   <property name="text"><string>Readme</string></property>
+   <property name="styleSheet"><string>color: rgb(0, 0, 255); font-weight: bold;</string></property>
+  </widget>
+  <widget class="QCheckBox" name="chk_abs2rel">
+   <property name="geometry"><rect><x>224</x><y>62</y><width>60</width><height>17</height></rect></property>
+   <property name="toolTip"><string>Compute relative motion from an absolute model</string></property>
+   <property name="text"><string>Relativize</string></property>
+  </widget>
+
+  <widget class="QLabel" name="lb_fixed">
+   <property name="geometry"><rect><x>10</x><y>106</y><width>62</width><height>15</height></rect></property>
+   <property name="text"><string>Fixed Plate</string></property>
+  </widget>
+  <widget class="QLabel" name="lb_moving">
+   <property name="geometry"><rect><x>150</x><y>106</y><width>71</width><height>15</height></rect></property>
+   <property name="text"><string>Moving Plate</string></property>
+  </widget>
+  <widget class="QComboBox" name="combo_fixed">
+   <property name="geometry"><rect><x>10</x><y>121</y><width>121</width><height>22</height></rect></property>
+   <property name="toolTip"><string>The plate held fixed. Disabled for an absolute model.</string></property>
+  </widget>
+  <widget class="QComboBox" name="combo_moving">
+   <property name="geometry"><rect><x>150</x><y>121</y><width>121</width><height>22</height></rect></property>
+   <property name="toolTip"><string>The plate whose motion is computed</string></property>
+  </widget>
+
+  <widget class="QLabel" name="lb_lon">
+   <property name="geometry"><rect><x>10</x><y>158</y><width>82</width><height>15</height></rect></property>
+   <property name="text"><string>Lon (-180:180)</string></property>
+  </widget>
+  <widget class="QLabel" name="lb_lat">
+   <property name="geometry"><rect><x>110</x><y>158</y><width>72</width><height>15</height></rect></property>
+   <property name="text"><string>Lat (-90:90)</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_lon">
+   <property name="geometry"><rect><x>10</x><y>174</y><width>71</width><height>21</height></rect></property>
+   <property name="toolTip"><string>Longitude of the point. Clicking the map fills this.</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_lat">
+   <property name="geometry"><rect><x>110</x><y>174</y><width>71</width><height>21</height></rect></property>
+   <property name="toolTip"><string>Latitude of the point. Clicking the map fills this.</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_calc">
+   <property name="geometry"><rect><x>205</x><y>174</y><width>66</width><height>21</height></rect></property>
+   <property name="text"><string>Calculate</string></property>
+   <property name="styleSheet"><string>font-weight: bold;</string></property>
+  </widget>
+
+  <widget class="QLabel" name="lb_poleLon">
+   <property name="geometry"><rect><x>10</x><y>207</y><width>82</width><height>15</height></rect></property>
+   <property name="text"><string>Pole Longitude</string></property>
+  </widget>
+  <widget class="QLabel" name="lb_poleLat">
+   <property name="geometry"><rect><x>100</x><y>207</y><width>72</width><height>15</height></rect></property>
+   <property name="text"><string>Pole Latitude</string></property>
+  </widget>
+  <widget class="QLabel" name="lb_poleRate">
+   <property name="geometry"><rect><x>200</x><y>207</y><width>82</width><height>15</height></rect></property>
+   <property name="text"><string>Rate (deg/Ma)</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_poleLon">
+   <property name="geometry"><rect><x>10</x><y>223</y><width>71</width><height>21</height></rect></property>
+   <property name="toolTip"><string>Euler pole longitude. Filled from the plate pair; you may type your own.</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_poleLat">
+   <property name="geometry"><rect><x>100</x><y>223</y><width>71</width><height>21</height></rect></property>
+   <property name="toolTip"><string>Euler pole latitude</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_poleRate">
+   <property name="geometry"><rect><x>200</x><y>223</y><width>71</width><height>21</height></rect></property>
+   <property name="toolTip"><string>Angular velocity in degrees per million years</string></property>
+  </widget>
+
+  <widget class="QFrame" name="frame_result">
+   <property name="geometry"><rect><x>10</x><y>261</y><width>261</width><height>51</height></rect></property>
+   <property name="frameShape"><enum>QFrame::Shape::Box</enum></property>
+   <property name="frameShadow"><enum>QFrame::Shadow::Sunken</enum></property>
+  </widget>
+  <widget class="QLabel" name="lb_speed">
+   <property name="geometry"><rect><x>20</x><y>266</y><width>240</width><height>19</height></rect></property>
+   <property name="text"><string>Speed   = </string></property>
+  </widget>
+  <widget class="QLabel" name="lb_azim">
+   <property name="geometry"><rect><x>20</x><y>289</y><width>240</width><height>19</height></rect></property>
+   <property name="text"><string>Azimuth = </string></property>
+  </widget>
+
+  <widget class="QWidget" name="map_holder" native="true">
+   <property name="geometry"><rect><x>284</x><y>5</y><width>418</width><height>307</height></rect></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+ <buttongroups>
+  <buttongroup name="bg_model"/>
+ </buttongroups>
+</ui>

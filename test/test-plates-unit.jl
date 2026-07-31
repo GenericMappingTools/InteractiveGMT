@@ -120,6 +120,101 @@ end
 	@test isempty(IG._euler_targets(Dict{String,String}()))
 end
 
+@testitem "Plate calculator: every model's poles table is there and readable" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	@test length(IG._PLATE_MODELS) == 7
+	for (key, file) in IG._PLATE_MODELS
+		@test isfile(joinpath(IG._PKGROOT, "data", "plates", file))
+		v = IG._plate_poles(key)
+		@test !isempty(v)
+		@test all(p -> !isempty(p.abbrev) && !isempty(p.name), v)
+	end
+	# Mirone's column order is "AB Name lat lon rate" — a swapped lat/lon would pass unnoticed unless
+	# a known row is checked.
+	nu = IG._plate_poles("Nuvel1A")
+	af = nu[findfirst(p -> p.abbrev == "AF", nu)]
+	@test af.name == "Africa"
+	@test af.lat ≈ 59.160 atol = 1e-3
+	@test af.lon ≈ -73.174 atol = 1e-3
+	@test af.rate ≈ 0.9270 atol = 1e-4
+	@test_throws Exception IG._plate_poles("NoSuchModel")
+end
+
+@testitem "Plate calculator: relative pole is the angular velocity difference" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	# NUVEL-1A Africa relative to Eurasia: the published pole is 21.0N, 20.6W, 0.12 deg/Ma.
+	d = Dict("model" => "Nuvel1A", "fix" => "EU", "mov" => "AF")
+	@test IG._plate_pole(d) == 1
+	c = parse.(Float64, split(IG._euler_last_result[]))
+	@test c[1] ≈ -20.61 atol = 0.02
+	@test c[2] ≈ 21.03 atol = 0.02
+	@test c[3] ≈ 0.1228 atol = 1e-3
+	# Swapping the two plates is the SAME rotation the other way: antipodal pole, same rate.
+	@test IG._plate_pole(Dict("model" => "Nuvel1A", "fix" => "AF", "mov" => "EU")) == 1
+	r = parse.(Float64, split(IG._euler_last_result[]))
+	@test r[2] ≈ -c[2] atol = 0.02
+	@test abs(abs(r[1] - c[1]) - 180.0) < 0.05
+	@test r[3] ≈ c[3] atol = 1e-3
+	# A plate against itself does not move: the answer is empty, which clears the dialog's boxes.
+	@test IG._plate_pole(Dict("model" => "Nuvel1A", "fix" => "AF", "mov" => "AF")) == 1
+	@test isempty(IG._euler_last_result[])
+end
+
+@testitem "Plate calculator: an absolute model answers with the plate's own pole" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	nnr = IG._plate_poles("NNR")
+	au = nnr[findfirst(p -> p.abbrev == "AU", nnr)]
+	# No fixed plate = Mirone's absolute_motion branch: the pole is used verbatim, not composed.
+	@test IG._plate_pole(Dict("model" => "NNR", "fix" => "", "mov" => "AU")) == 1
+	c = parse.(Float64, split(IG._euler_last_result[]))
+	@test c[1] ≈ au.lon atol = 1e-2
+	@test c[2] ≈ au.lat atol = 1e-2
+	@test c[3] ≈ au.rate atol = 1e-4
+	# …and with a fixed plate given, the same model becomes relative ("Make it relative").
+	@test IG._plate_pole(Dict("model" => "NNR", "fix" => "EU", "mov" => "AU")) == 1
+	@test parse.(Float64, split(IG._euler_last_result[]))[3] != c[3]
+end
+
+@testitem "Plate calculator: speed and azimuth at a point" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	# Africa/Eurasia off Gibraltar. Mirone's own formula gives 4.20 mm/yr at azimuth 307.6 deg;
+	# gmtpmodeler does the same job (and the same geodetic->geocentric conversion) to 0.13%.
+	d = Dict("polelon" => "-20.61", "polelat" => "21.03", "polerate" => "0.1228",
+	         "lon" => "-9", "lat" => "36", "showcmd" => "0")
+	@test IG._plate_velocity(d) == 1
+	v = parse.(Float64, split(IG._euler_last_result[]))
+	@test v[1] ≈ 4.2 atol = 0.05
+	@test v[2] ≈ 307.6 atol = 0.2
+	# Azimuth is always reported in 0-360, never gmtpmodeler's -180/180.
+	@test 0.0 <= v[2] <= 360.0
+	# Doubling the rate doubles the speed and leaves the direction alone.
+	@test IG._plate_velocity(merge(d, Dict("polerate" => "0.2456"))) == 1
+	v2 = parse.(Float64, split(IG._euler_last_result[]))
+	@test v2[1] ≈ 2 * v[1] atol = 0.05
+	@test v2[2] ≈ v[2] atol = 0.05
+	# On the pole itself there is no motion at all.
+	@test IG._plate_velocity(merge(d, Dict("lon" => "-20.61", "lat" => "21.03"))) == 1
+	@test parse(Float64, split(IG._euler_last_result[])[1]) ≈ 0.0 atol = 1e-6
+end
+
+@testitem "Plate calculator: refuses what it cannot compute" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	# GC.@preserve: the cconvert buffer is what the Cstring points at, and nothing else roots it.
+	function call(kv)
+		s = Base.cconvert(Cstring, join(kv, "\n"))
+		GC.@preserve s IG._on_euler(Ptr{Cvoid}(UInt(0xDEADDEAD)), Base.unsafe_convert(Cstring, s))
+	end
+	@test call(["op=plates", "model=NoSuchModel"]) == 0
+	@test call(["op=platepole", "model=Nuvel1A", "fix=EU", "mov=ZZ"]) == 0
+	@test call(["op=platevel", "polelon=", "polelat=", "polerate=", "lon=0", "lat=0"]) == 0
+	@test call(["op=platevel", "polelon=0", "polelat=0", "polerate=1", "lon=", "lat="]) == 0
+	# The plate list is what fills the dialog's two combos: "AB<tab>Name", one per plate.
+	@test call(["op=plates", "model=Nuvel1A"]) == 1
+	rows = split(IG._euler_last_result[], '\n', keepempty = false)
+	@test length(rows) == length(IG._plate_poles("Nuvel1A"))
+	@test all(r -> length(split(r, '\t')) == 2, rows)
+end
+
 @testitem "Euler: refuses what it cannot rotate" tags=[:unit, :fast] begin
 	IG = InteractiveGMT
 	call(kv) = IG._on_euler(Ptr{Cvoid}(UInt(0xDEADDEAD)),

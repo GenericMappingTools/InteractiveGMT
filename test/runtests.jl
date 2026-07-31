@@ -17,5 +17,11 @@ const _RUN_GUI = ("gui" in ARGS) ||
 const _RUN_NET = ("net" in ARGS) ||
 	lowercase(strip(get(ENV, "INTERACTIVEGMT_TEST_NET", "0"), [' ', '"', '\''])) in ("1", "true", "yes", "on")
 
+# Run only the testitems whose NAME contains this text (INTERACTIVEGMT_TEST_NAME="Plate calculator").
+# Empty = everything, i.e. what CI does. Purely a development convenience: it keeps a change to one
+# tool from costing a full-suite run on every iteration.
+const _ONLY = strip(get(ENV, "INTERACTIVEGMT_TEST_NAME", ""), [' ', '"', '\''])
+
 @run_package_tests verbose=true filter = ti ->
-	(_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags))
+	(_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags)) &&
+	(isempty(_ONLY) || occursin(_ONLY, ti.name))

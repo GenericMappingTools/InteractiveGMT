@@ -3041,6 +3041,140 @@ GMTVTK_API int gmtvtk_euler_pick_deliver_test(void *handle, const char *names) {
 	return 1;
 }
 
+// test hooks: the REAL Plate calculator dialog on a REAL window. Unlike the Euler pair above these
+// DO exercise the Julia round trip — the dialog fills its combos and its pole boxes from it — which
+// works because the test setup registers the euler callback into THIS dll too and mirrors Julia's
+// answer back through this dll's own gmtvtk_euler_result (see libgmtvtk_test.jl).
+static PlateCalcDialog *g_plateTestDlg = nullptr;
+static void *g_plateTestWin = nullptr;
+GMTVTK_API int gmtvtk_platecalc_open_dialog_test(void *handle) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);         // taken as given, like the Euler hook above
+	if (!s) {
+		if (!g_plateTestWin) g_plateTestWin = gmtvtk_open_empty("plate calc test");
+		s = static_cast<Scene *>(g_plateTestWin);
+	}
+	g_scenes.insert(s);
+	if (!s || !s->win) return 0;
+	auto it = g_plateDlgs.find(s);
+	if (it != g_plateDlgs.end() && it->second && it->second->dlg) {
+		g_plateTestDlg = it->second;
+		g_plateTestDlg->unpark();
+		QApplication::processEvents();
+		return 1;
+	}
+	g_plateTestDlg = new PlateCalcDialog(s->win, s);
+	if (!g_plateTestDlg->dlg) return 0;
+	g_plateTestDlg->dlg->show();
+	QApplication::processEvents();
+	return 1;
+}
+// The X: PARKS it (kept alive), same contract as the Euler dialog's.
+GMTVTK_API void gmtvtk_platecalc_close_dialog_test() {
+	if (g_plateTestDlg && g_plateTestDlg->dlg) g_plateTestDlg->dlg->close();
+	QApplication::processEvents();
+}
+GMTVTK_API void gmtvtk_platecalc_delete_dialog_test() {
+	if (g_plateTestDlg && g_plateTestDlg->dlg) {
+		g_plateTestDlg->reallyClose = true;
+		g_plateTestDlg->dlg->close();
+	}
+	g_plateTestDlg = nullptr;
+	QApplication::processEvents();
+}
+// 1 = parked (hidden + a Scene Objects row), 0 = on screen, -1 = no dialog.
+GMTVTK_API int gmtvtk_platecalc_parked_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!g_plateTestDlg || !g_plateTestDlg->dlg) return -1;
+	const bool hidden = !g_plateTestDlg->dlg->isVisible();
+	bool row = false;
+	if (s) for (auto &pt : s->parkedTools) if (pt.win == g_plateTestDlg->dlg) row = true;
+	return (hidden && row) ? 1 : 0;
+}
+// Drive the three selectors the way a user would: the model radio (by its key), then the two plate
+// combos (by plate abbreviation). Any of them may be empty to leave that one alone. Returns the
+// number of plates the moving combo ended up holding, or -1 when there is no dialog.
+GMTVTK_API int gmtvtk_platecalc_select_test(const char *model, const char *fix, const char *mov) {
+	if (!g_plateTestDlg || !g_plateTestDlg->dlg) return -1;
+	PlateCalcDialog *p = g_plateTestDlg;
+	if (model && *model) {
+		const QString key = QString::fromUtf8(model);
+		for (int i = 0; i < (int)p->modelBtns.size(); ++i)
+			if (p->modelKeys[i] == key) { p->modelBtns[i]->setChecked(true); break; }
+		QApplication::processEvents();
+	}
+	auto pick = [](QComboBox *cb, const char *abbrev) {
+		if (!cb || !abbrev || !*abbrev) return;
+		const int i = cb->findData(QString::fromUtf8(abbrev));
+		if (i >= 0) cb->setCurrentIndex(i);
+	};
+	pick(p->cbFixed, fix);
+	pick(p->cbMoving, mov);
+	QApplication::processEvents();
+	return p->cbMoving ? p->cbMoving->count() : -1;
+}
+// Fill the point boxes and press Calculate, exactly as the button does.
+GMTVTK_API int gmtvtk_platecalc_calc_test(double lon, double lat) {
+	if (!g_plateTestDlg || !g_plateTestDlg->dlg) return 0;
+	if (g_plateTestDlg->edLon) g_plateTestDlg->edLon->setText(QString::number(lon, 'g', 10));
+	if (g_plateTestDlg->edLat) g_plateTestDlg->edLat->setText(QString::number(lat, 'g', 10));
+	g_plateTestDlg->calculate(g_plateTestDlg->dlg, false);
+	QApplication::processEvents();
+	return 1;
+}
+// A click on the plate map, at true lon/lat — the whole bdn_plate path (plate under the point, its
+// nearest neighbour, the pole, the velocity) without a synthetic mouse event.
+GMTVTK_API int gmtvtk_platecalc_map_click_test(double lon, double lat) {
+	if (!g_plateTestDlg || !g_plateTestDlg->map) return 0;
+	g_plateTestDlg->map->pickAt(lon, lat);
+	QApplication::processEvents();
+	return 1;
+}
+// How many plate polygons the map holds for the current model, and the tag of the plate under a
+// point ('' when none) — enough to check the map really loaded and hit-tests where it should.
+GMTVTK_API int gmtvtk_platecalc_map_test(double lon, double lat, char *buf, int cap) {
+	if (!g_plateTestDlg || !g_plateTestDlg->map) return -1;
+	const QByteArray b = g_plateTestDlg->map->plateAt(lon, lat).toUtf8();
+	if (buf && cap > 0) {
+		const int c = (b.size() < cap - 1) ? b.size() : cap - 1;
+		memcpy(buf, b.constData(), c);
+		buf[c] = '\0';
+	}
+	return (int)g_plateTestDlg->map->polys.size();
+}
+// Read one field back: "polelon" | "polelat" | "polerate" | "lon" | "lat" | "speed" | "azim" |
+// "abs2rel" (visible/checked state) | "fixenabled". Returns the text length, -1 when unknown.
+GMTVTK_API int gmtvtk_platecalc_read_test(const char *what, char *buf, int cap) {
+	if (!g_plateTestDlg || !g_plateTestDlg->dlg || !what) return -1;
+	PlateCalcDialog *p = g_plateTestDlg;
+	const QString w = QString::fromUtf8(what);
+	QString v;
+	if      (w == "polelon")    v = p->poleLon  ? p->poleLon->text()  : QString();
+	else if (w == "polelat")    v = p->poleLat  ? p->poleLat->text()  : QString();
+	else if (w == "polerate")   v = p->poleRate ? p->poleRate->text() : QString();
+	else if (w == "lon")        v = p->edLon    ? p->edLon->text()    : QString();
+	else if (w == "lat")        v = p->edLat    ? p->edLat->text()    : QString();
+	else if (w == "speed")      v = p->lbSpeed  ? p->lbSpeed->text()  : QString();
+	else if (w == "azim")       v = p->lbAzim   ? p->lbAzim->text()   : QString();
+	else if (w == "abs2rel")    v = (p->abs2rel && p->abs2rel->isVisible()) ? "1" : "0";
+	else if (w == "fixenabled") v = (p->cbFixed && p->cbFixed->isEnabled()) ? "1" : "0";
+	else return -1;
+	const QByteArray b = v.toUtf8();
+	if (buf && cap > 0) {
+		const int c = (b.size() < cap - 1) ? b.size() : cap - 1;
+		memcpy(buf, b.constData(), c);
+		buf[c] = '\0';
+	}
+	return b.size();
+}
+// Grab the whole dialog: the only way to check the LAYOUT (Mirone's geometry, box sizes, the map).
+GMTVTK_API int gmtvtk_platecalc_screenshot_test(const char *path) {
+	if (!g_plateTestDlg || !g_plateTestDlg->dlg) return 0;
+	QApplication::processEvents();
+	QPixmap pm = g_plateTestDlg->dlg->grab();
+	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
+}
+
 static MagBarcodeDialog *g_magbarTestDlg = nullptr;
 static void *g_magbarTestWin = nullptr;
 // Goes through the EXACT real path: a real empty window (gmtvtk_open_empty) as parent, no manual

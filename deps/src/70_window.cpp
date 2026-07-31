@@ -6681,6 +6681,518 @@ public:
 };
 
 // ============================================================================================
+// Plate calculator (Plates menu) — port of Mirone's src_figs/plate_calculator.m. Pick a plate motion
+// model, a fixed and a moving plate, and it shows the relative Euler pole; give it a point and it
+// shows the speed and azimuth of the moving plate there. Loaded at RUNTIME via QUiLoader from
+// deps/ui/plate_calculator.ui.
+//
+// The maths is not here and not in Julia either: the relative pole is a gmtvector sum of angular
+// velocity vectors and the velocity is gmtpmodeler (src/plates.jl, ops plates/platepole/platevel),
+// reached through the SAME g_juliaEuler channel the Euler rotations dialog uses — one Plates menu,
+// one door.
+//
+// The world map of coloured plate polygons is Mirone's, polygon for polygon: its own nuvel_polyg /
+// PB_polyg / REVEL_polyg .mat files, decoded once into data/plates/<model>_polyg.dat, with the patch
+// list, tags, colours and DRAW ORDER of the matching set_*plate_model. Clicking it does what
+// bdn_plate does: the clicked plate becomes MOVING, its nearest neighbour (data/plates/
+// plate_neighbours.dat == do_plate_comb) becomes FIXED, and the velocity is computed there.
+//
+// Geometry is Mirone's too — the .ui is a straight conversion of its LayoutFcn, fixed 709x317.
+// ============================================================================================
+
+// One filled plate on the map. `pts` are lon/lat; a plate split at the date line is several of
+// these with the same tag, exactly as Mirone draws it as several patches.
+struct PlatePolygon {
+	QString   tag, name;
+	QColor    col;
+	QPolygonF pts;
+};
+
+// The clickable map; no Q_OBJECT (only paint/mouse overrides), like BaseMapArea / IgrfMapArea.
+class PlateMapArea : public QWidget {
+public:
+	std::vector<PlatePolygon> polys;
+	QMap<QString, QStringList> neigh;             // plate -> the plates it borders, this model
+	QString model;
+	double poleLon = 0, poleLat = 0;
+	bool   havePole = false;
+	// (lon, lat, moving plate tag, fixed plate tag). The tags are empty when the click missed
+	// every plate — the point still travels, so the user can compute there by hand.
+	std::function<void(double, double, const QString &, const QString &)> onPick;
+
+	explicit PlateMapArea(QWidget *p) : QWidget(p) {
+		setMinimumSize(200, 120);
+		setCursor(Qt::CrossCursor);
+	}
+
+	// The drawing rectangle, leaving room for the tick labels (left for lat, bottom for lon).
+	QRectF plotRect() const { return QRectF(rect()).adjusted(34, 6, -8, -20); }
+	QPointF toPx(double lon, double lat, const QRectF &r) const {
+		return QPointF(r.left() + (lon + 180.0) / 360.0 * r.width(),
+		               r.top()  + (90.0 - lat)  / 180.0 * r.height());
+	}
+	double pxLon(double x, const QRectF &r) const { return -180.0 + (x - r.left()) / r.width()  * 360.0; }
+	double pxLat(double y, const QRectF &r) const { return   90.0 - (y - r.top())  / r.height() * 180.0; }
+
+	void setPole(double lon, double lat, bool ok) {
+		poleLon = lon; poleLat = lat; havePole = ok;
+		update();
+	}
+
+	// Load one model's polygons + its neighbour table. Both files are plain text shipped in
+	// data/plates; a missing file leaves an empty (blank) map rather than killing the dialog.
+	void setModel(const QString &key) {
+		model = key;
+		polys.clear();
+		neigh.clear();
+		QFile f(gmtvtkDataDir() + "/plates/" + key + "_polyg.dat");
+		if (f.open(QFile::ReadOnly | QFile::Text)) {
+			QTextStream in(&f);
+			while (!in.atEnd()) {
+				const QString ln = in.readLine();
+				if (ln.isEmpty() || ln.startsWith('#')) continue;
+				if (ln.startsWith('>')) {                       // "> AB Name r/g/b"
+					const QStringList c = ln.mid(1).split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+					if (c.size() < 3) continue;
+					PlatePolygon p;
+					p.tag = c[0];
+					p.name = c[1];
+					const QStringList rgb = c[2].split('/');
+					if (rgb.size() == 3) p.col = QColor(rgb[0].toInt(), rgb[1].toInt(), rgb[2].toInt());
+					polys.push_back(p);
+					continue;
+				}
+				if (polys.empty()) continue;
+				const QStringList c = ln.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+				if (c.size() < 2) continue;
+				polys.back().pts << QPointF(c[0].toDouble(), c[1].toDouble());
+			}
+		}
+		QFile n(gmtvtkDataDir() + "/plates/plate_neighbours.dat");
+		if (n.open(QFile::ReadOnly | QFile::Text)) {
+			QTextStream in(&n);
+			while (!in.atEnd()) {
+				const QString ln = in.readLine();
+				if (ln.isEmpty() || ln.startsWith('#')) continue;
+				QStringList c = ln.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+				if (c.size() < 2 || c[0] != key) continue;
+				const QString plate = c[1];
+				c.removeFirst(); c.removeFirst();
+				neigh[plate] = c;
+			}
+		}
+		update();
+	}
+
+	// The plate under a point: the LAST polygon that contains it, because later polygons are painted
+	// over earlier ones — the same "who is on top" answer MATLAB's patch stacking gave Mirone.
+	QString plateAt(double lon, double lat) const {
+		for (int i = (int)polys.size() - 1; i >= 0; --i)
+			if (polys[i].pts.containsPoint(QPointF(lon, lat), Qt::OddEvenFill)) return polys[i].tag;
+		return QString();
+	}
+
+	// bdn_plate's closest-neighbour search, verbatim: the angular distance from the clicked point to
+	// every vertex of each neighbouring plate; the plate with the smallest one is taken as FIXED.
+	QString nearestNeighbour(const QString &tag, double lon, double lat) const {
+		const QStringList cand = neigh.value(tag);
+		const double D2R = M_PI / 180.0;
+		const double c_tet = std::cos((90.0 - lat) * D2R), s_tet = std::sin((90.0 - lat) * D2R);
+		QString best;
+		double bestD = std::numeric_limits<double>::max();
+		for (const QString &ab : cand) {
+			double dmin = std::numeric_limits<double>::max();
+			for (const PlatePolygon &p : polys) {
+				if (p.tag != ab) continue;
+				for (const QPointF &v : p.pts) {
+					double d = c_tet * std::cos((90.0 - v.y()) * D2R) +
+					           s_tet * std::sin((90.0 - v.y()) * D2R) * std::cos((lon - v.x()) * D2R);
+					d = std::acos(std::clamp(d, -1.0, 1.0));
+					if (std::fabs(d) < dmin) dmin = std::fabs(d);
+				}
+			}
+			if (dmin < bestD) { bestD = dmin; best = ab; }
+		}
+		return best;
+	}
+
+	// The whole click answer in one place, so a test can drive it without a synthetic mouse event.
+	void pickAt(double lon, double lat) {
+		QString mov = plateAt(lon, lat);
+		// MORVEL has no Africa pole: its Nubia (NB) is what the Africa polygon stands for here —
+		// Mirone's own remap in bdn_plate.
+		if (model == "MORVEL" && mov == "AF") mov = "NB";
+		const QString fix = mov.isEmpty() ? QString() : nearestNeighbour(mov, lon, lat);
+		if (onPick) onPick(lon, lat, mov, fix);
+	}
+
+protected:
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.setRenderHint(QPainter::Antialiasing, true);
+		const QRectF r = plotRect();
+		g.fillRect(rect(), palette().window());
+		g.fillRect(r, Qt::white);
+		g.save();
+		g.setClipRect(r);
+		QPen edge(Qt::black);
+		edge.setWidthF(0.6);
+		g.setPen(edge);
+		for (const PlatePolygon &p : polys) {
+			QPolygonF px;
+			px.reserve(p.pts.size());
+			for (const QPointF &v : p.pts) px << toPx(v.x(), v.y(), r);
+			g.setBrush(p.col);
+			g.drawPolygon(px);
+		}
+		// The Euler pole, drawn as Mirone draws it: a filled dot where the axis leaves the Earth and
+		// a cross inside a circle where it goes back in (the antipode).
+		if (havePole) {
+			double lo = poleLon;
+			if (lo > 180.0) lo -= 360.0;
+			const QPointF a = toPx(lo, poleLat, r);
+			g.setPen(QPen(Qt::black, 1.5));
+			g.setBrush(Qt::black);
+			g.drawEllipse(a, 3.5, 3.5);
+			double lo2 = lo + 180.0;
+			if (lo2 > 180.0) lo2 -= 360.0;
+			const QPointF b = toPx(lo2, -poleLat, r);
+			g.setBrush(Qt::NoBrush);
+			g.drawEllipse(b, 4.0, 4.0);
+			g.drawLine(QPointF(b.x() - 5, b.y()), QPointF(b.x() + 5, b.y()));
+			g.drawLine(QPointF(b.x(), b.y() - 5), QPointF(b.x(), b.y() + 5));
+		}
+		g.restore();
+		// Frame + ticks, at the same intervals Mirone's axes shows.
+		g.setPen(QPen(Qt::black, 1));
+		g.setBrush(Qt::NoBrush);
+		g.drawRect(r);
+		QFont fnt = g.font();
+		fnt.setPointSizeF(std::max(6.0, fnt.pointSizeF() - 1.5));
+		g.setFont(fnt);
+		for (int lon = -150; lon <= 150; lon += 50) {
+			const double x = toPx(lon, 0, r).x();
+			g.drawLine(QPointF(x, r.bottom()), QPointF(x, r.bottom() - 4));
+			g.drawText(QRectF(x - 22, r.bottom() + 2, 44, 16), Qt::AlignHCenter | Qt::AlignTop,
+			           QString::number(lon));
+		}
+		for (int lat = -80; lat <= 80; lat += 20) {
+			const double y = toPx(0, lat, r).y();
+			g.drawLine(QPointF(r.left(), y), QPointF(r.left() + 4, y));
+			g.drawText(QRectF(r.left() - 34, y - 8, 30, 16), Qt::AlignRight | Qt::AlignVCenter,
+			           QString::number(lat));
+		}
+	}
+	void mousePressEvent(QMouseEvent *e) override {
+		const QRectF r = plotRect();
+		if (!r.contains(e->position())) return;
+		pickAt(std::clamp(pxLon(e->position().x(), r), -180.0, 180.0),
+		       std::clamp(pxLat(e->position().y(), r),  -90.0,  90.0));
+	}
+};
+
+class PlateCalcDialog;
+// One Plate calculator per window, alive while parked — same registry contract as g_eulerDlgs.
+static std::map<Scene *, PlateCalcDialog *> g_plateDlgs;
+
+class PlateCalcDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	bool reallyClose = false;
+	QComboBox *cbFixed = nullptr, *cbMoving = nullptr;
+	QLineEdit *edLon = nullptr, *edLat = nullptr;
+	QLineEdit *poleLon = nullptr, *poleLat = nullptr, *poleRate = nullptr;
+	QLabel *lbSpeed = nullptr, *lbAzim = nullptr;
+	QCheckBox *abs2rel = nullptr;
+	PlateMapArea *map = nullptr;
+	std::vector<QRadioButton *> modelBtns;      // parallel to modelKeys below
+	QStringList modelKeys;
+
+	explicit PlateCalcDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/plate_calculator.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("PlateCalcDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("PlateCalcDialog: QUiLoader failed to load the .ui"); return; }
+		// The X PARKS this dialog (see CloseParks) — the picked model, plates and pole survive it.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+		g_plateDlgs[scn] = this;
+
+		struct CloseParks : QObject {
+			PlateCalcDialog *pd;
+			CloseParks(QObject *parent, PlateCalcDialog *p) : QObject(parent), pd(p) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && pd && !pd->reallyClose && sceneAlive(pd->scn)) {
+					e->ignore();
+					pd->dlg->hide();
+					PlateCalcDialog *p = pd;
+					parkTool(p->scn, p->dlg, "Plate calculator", IC_Line,
+					         "Closed Plate calculator — double-click to bring it back, click for Show / Delete",
+					         [p]() { p->unpark(); }, p->parkedMenu());
+					unfoldSceneObjects(pd->scn);
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		dlg->installEventFilter(new CloseParks(dlg, this));
+
+		cbFixed  = d->findChild<QComboBox *>("combo_fixed");
+		cbMoving = d->findChild<QComboBox *>("combo_moving");
+		edLon    = d->findChild<QLineEdit *>("edit_lon");
+		edLat    = d->findChild<QLineEdit *>("edit_lat");
+		poleLon  = d->findChild<QLineEdit *>("edit_poleLon");
+		poleLat  = d->findChild<QLineEdit *>("edit_poleLat");
+		poleRate = d->findChild<QLineEdit *>("edit_poleRate");
+		lbSpeed  = d->findChild<QLabel *>("lb_speed");
+		lbAzim   = d->findChild<QLabel *>("lb_azim");
+		abs2rel  = d->findChild<QCheckBox *>("chk_abs2rel");
+
+		// The map goes exactly where the .ui's placeholder sits, so its rectangle stays editable in
+		// Designer (QUiLoader builds no custom class of ours — the placeholder is a plain QWidget).
+		if (auto *holder = d->findChild<QWidget *>("map_holder")) {
+			map = new PlateMapArea(d);
+			map->setGeometry(holder->geometry());
+			holder->hide();
+			map->show();
+			// A click IS the tool: it sets the point, the moving plate and the fixed plate, then the
+			// velocity — Mirone's bdn_plate, which ends by calling push_Calculate_CB.
+			map->onPick = [this, d](double lon, double lat, const QString &mov, const QString &fix) {
+				if (edLon) edLon->setText(QString::number(lon, 'f', 3));
+				if (edLat) edLat->setText(QString::number(lat, 'f', 3));
+				if (mov.isEmpty()) {
+					if (scn && scn->win) scn->win->statusBar()->showMessage(
+						"No pole known for that place — pick the plates by hand", 4000);
+					return;
+				}
+				const bool absolute = isAbsolute() && !relativized();
+				auto setCombo = [](QComboBox *cb, const QString &ab) {
+					if (!cb || ab.isEmpty()) return;
+					const int i = cb->findData(ab);
+					if (i >= 0) { QSignalBlocker b(cb); cb->setCurrentIndex(i); }
+				};
+				setCombo(cbMoving, mov);
+				if (!absolute) setCombo(cbFixed, fix);
+				updatePole();
+				calculate(d, true);            // quiet: a click must never raise a message box
+			};
+		}
+
+		// The radio -> model key table. Same seven models Mirone offers, four relative + three absolute.
+		const struct { const char *obj; const char *key; } models[] = {
+			{ "rb_nuvel1a", "Nuvel1A" }, { "rb_morvel", "MORVEL" }, { "rb_pbird", "PB" },
+			{ "rb_geodvel", "GEODVEL" }, { "rb_nnr", "NNR" }, { "rb_deos2k", "DEOS2K" },
+			{ "rb_revel", "REVEL" },
+		};
+		for (const auto &m : models) {
+			if (auto *b = d->findChild<QRadioButton *>(m.obj)) {
+				modelBtns.push_back(b);
+				modelKeys << m.key;
+				QObject::connect(b, &QRadioButton::toggled, d, [this](bool on) { if (on) modelChanged(); });
+			}
+		}
+
+		if (cbFixed) QObject::connect(cbFixed, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+			[this](int) { updatePole(); });
+		if (cbMoving) QObject::connect(cbMoving, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+			[this](int) { updatePole(); });
+		if (abs2rel) QObject::connect(abs2rel, &QCheckBox::toggled, d,
+			[this](bool) { syncMode(); updatePole(); });
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_calc"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { calculate(d, false); });
+		if (auto *b = d->findChild<QPushButton *>("push_readme"))
+			QObject::connect(b, &QPushButton::clicked, d, [d]() { readme(d); });
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+
+		modelChanged();                      // fills the plate combos of the default model (Nuvel-1A)
+	}
+
+	~PlateCalcDialog() {
+		for (auto it = g_plateDlgs.begin(); it != g_plateDlgs.end(); )
+			it = (it->second == this) ? g_plateDlgs.erase(it) : std::next(it);
+	}
+
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();
+			}
+		};
+	}
+
+	QString modelKey() const {
+		for (int i = 0; i < (int)modelBtns.size(); ++i)
+			if (modelBtns[i]->isChecked()) return modelKeys[i];
+		return QString("Nuvel1A");
+	}
+	// The three absolute-motion frames. For them the moving plate's own pole IS the answer, so the
+	// fixed-plate combo means nothing — unless "Make it relative" is ticked (Mirone's abs2rel).
+	bool isAbsolute() const {
+		const QString k = modelKey();
+		return (k == "NNR" || k == "DEOS2K" || k == "REVEL");
+	}
+	bool relativized() const { return abs2rel && abs2rel->isChecked(); }
+
+	// One place asks Julia; `ok` says whether the call succeeded, the return value is its answer.
+	QString ask(const QStringList &kv, bool *ok) {
+		if (ok) *ok = false;
+		if (!g_juliaEuler) return QString();
+		g_eulerResult.clear();
+		const int r = g_juliaEuler(scn, kv.join("\n").toUtf8().constData());
+		if (ok) *ok = (r != 0);
+		return QString::fromStdString(g_eulerResult);
+	}
+
+	void syncMode() {
+		const bool absolute = isAbsolute();
+		if (abs2rel) abs2rel->setVisible(absolute);
+		if (cbFixed) cbFixed->setEnabled(!absolute || relativized());
+	}
+
+	void clearResults() {
+		if (lbSpeed) lbSpeed->setText("Speed   = ");
+		if (lbAzim)  lbAzim->setText("Azimuth = ");
+	}
+
+	// A new model brings a new plate list — both combos are refilled and reset to the first plate,
+	// exactly as Mirone does, and the pole/velocity boxes start over.
+	void modelChanged() {
+		// No modal complaint here: this runs while the dialog is being built (and on every model
+		// change), so a missing callback leaves the combos empty and Calculate does the complaining.
+		if (!cbFixed || !cbMoving || !g_juliaEuler) return;
+		bool ok = false;
+		const QString answer = ask(QStringList() << "op=plates" << "model=" + modelKey(), &ok);
+		if (!ok) {
+			QMessageBox::warning(dlg, "Plate calculator", answer.isEmpty()
+				? QString("Could not read the poles of this model.") : answer);
+			return;
+		}
+		{
+			QSignalBlocker b1(cbFixed), b2(cbMoving);
+			cbFixed->clear();
+			cbMoving->clear();
+			for (const QString &ln : answer.split('\n', Qt::SkipEmptyParts)) {
+				const QStringList c = ln.split('\t');
+				if (c.size() < 2) continue;
+				cbFixed->addItem(c[1], c[0]);
+				cbMoving->addItem(c[1], c[0]);
+			}
+		}
+		if (map) map->setModel(modelKey());          // the map follows the model, like Mirone's patches
+		syncMode();
+		clearResults();
+		updatePole();
+	}
+
+	// The pole of the plate pair, straight into the three boxes. This is a display refresh, not the
+	// tool's result: the velocity is computed only when Calculate is pressed.
+	void updatePole() {
+		if (!cbFixed || !cbMoving || cbMoving->count() == 0 || !g_juliaEuler) return;
+		const bool absolute = isAbsolute() && !relativized();
+		QStringList kv;
+		kv << "op=platepole" << "model=" + modelKey()
+		   << "fix=" + (absolute ? QString() : cbFixed->currentData().toString())
+		   << "mov=" + cbMoving->currentData().toString();
+		bool ok = false;
+		const QString answer = ask(kv, &ok);
+		if (!ok) {
+			QMessageBox::warning(dlg, "Plate calculator", answer.isEmpty()
+				? QString("Could not compute the Euler pole.") : answer);
+			return;
+		}
+		const QStringList c = answer.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+		// Empty answer = no motion (the same plate on both sides): clear the boxes, like Mirone.
+		const bool have = (c.size() >= 3);
+		if (poleLon)  poleLon->setText(have ? c[0] : QString());
+		if (poleLat)  poleLat->setText(have ? c[1] : QString());
+		if (poleRate) poleRate->setText(have ? c[2] : QString());
+		if (map) map->setPole(have ? c[0].toDouble() : 0.0, have ? c[1].toDouble() : 0.0, have);
+		clearResults();
+	}
+
+	// `quiet` = the caller is a map click, where a missing value is normal and a message box would be
+	// noise. The Calculate button passes false and complains, exactly as Mirone's errordlg does.
+	void calculate(QDialog *d, bool quiet) {
+		if (!g_juliaEuler) {
+			if (!quiet) QMessageBox::warning(d, "Plate calculator",
+			                                 "Plate calculator: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		if (txt(poleLon).isEmpty() || txt(poleLat).isEmpty() || txt(poleRate).isEmpty()) {
+			if (!quiet) QMessageBox::warning(d, "Plate calculator", "Euler pole parameters are wrong.");
+			return;
+		}
+		if (txt(edLon).isEmpty() || txt(edLat).isEmpty()) {
+			if (!quiet) QMessageBox::warning(d, "Plate calculator",
+			                                 "Calculate the velocity where? Give a Lon and a Lat.");
+			return;
+		}
+		QStringList kv;
+		kv << "op=platevel" << "polelon=" + txt(poleLon) << "polelat=" + txt(poleLat)
+		   << "polerate=" + txt(poleRate) << "lon=" + txt(edLon) << "lat=" + txt(edLat) << "showcmd=0";
+		bool ok = false;
+		const QString answer = ask(kv, &ok);
+		if (!ok) {
+			if (!quiet) QMessageBox::warning(d, "Plate calculator", answer.isEmpty()
+				? QString("Failed — see this window's Errors console for details.") : answer);
+			return;
+		}
+		const QStringList c = answer.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+		if (c.size() < 2) return;
+		if (lbSpeed) lbSpeed->setText("Speed   = " + c[0] + " mm/yr");
+		if (lbAzim)  lbAzim->setText("Azimuth = " + c[1] + " degree (cw from N)");
+	}
+
+	static void readme(QDialog *d) {
+		const QString msg =
+			"Click around the map and watch the results. The plate you click becomes the MOVING plate, "
+			"its nearest neighbour becomes the FIXED one, and the speed and azimuth are computed at the "
+			"point you clicked. You can also change the point, the plates, or the rotation pole itself by "
+			"hand and press Calculate.\n\n"
+			"The black dot on the map is where the current Euler pole leaves the Earth; the cross inside "
+			"a circle is where it goes back in.\n\n"
+			"The four models on the left are RELATIVE: the pair of plates you choose is what the pole "
+			"describes. The three on the right are ABSOLUTE frames, so the moving plate's own pole is the "
+			"answer and the fixed plate is ignored — unless you tick \"Relativize\", which turns the "
+			"absolute model into a relative one for the chosen pair.\n\n"
+			"Not every model has a pole for every plate polygon: the polygons come from the Nuvel-1A and "
+			"P. Bird plate sets (Mirone's own, and the only ones available), so a click on some areas "
+			"says nothing. Type the point coordinates, choose the plate in the combo and hit Calculate.";
+		QMessageBox box(QMessageBox::Information, "Help on Plate Calculator", msg, QMessageBox::Ok, d);
+		box.setTextInteractionFlags(Qt::TextSelectableByMouse);
+		box.exec();
+	}
+};
+
+// ============================================================================================
 // grdfilter (GMT menu) — filter a grid in the space domain. Layout is Mirone's Grdfilter window:
 // the shared "Griding Line Geometry" block (adopted from the .ui's verbatim copy of
 // grid_line_geometry.ui, so it behaves exactly as grdsample's), the Filter type + width, and the
@@ -10923,10 +11435,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		[s, actNestedGridsTsu](bool on) { polygonToolToggled(s, actNestedGridsTsu, Scene::SH_RectN, on); });
 	s->shapeActs.push_back(actNestedGridsTsu);
 
-	auto *fGroup = new std::function<void()>();   // show the discipline chooser
-	auto *fTsu   = new std::function<void()>();    // show Tsunamis
-	auto *fSeis  = new std::function<void()>();    // show Seismology
-	auto *fMag   = new std::function<void()>();    // show Magnetics
+	auto *fGroup  = new std::function<void()>();   // show the discipline chooser
+	auto *fTsu    = new std::function<void()>();    // show Tsunamis
+	auto *fSeis   = new std::function<void()>();    // show Seismology
+	auto *fMag    = new std::function<void()>();    // show Magnetics
+	auto *fPlates = new std::function<void()>();    // show Plates
 
 	// Re-open the menu at its menubar slot after a rotate (deferred so it runs once the triggering
 	// click has finished closing the menu).
@@ -10937,12 +11450,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 	};
 
-	*fGroup = [mGphy, fTsu, fSeis, fMag]() {
+	*fGroup = [mGphy, fTsu, fSeis, fMag, fPlates]() {
 		mGphy->clear();
 		mGphy->setTitle("Geophysics ▾");
-		mGphy->addAction("Tsunamis",   [fTsu]()  { (*fTsu)(); });
-		mGphy->addAction("Seismology", [fSeis]() { (*fSeis)(); });
-		mGphy->addAction("Magnetics",  [fMag]()  { (*fMag)(); });
+		mGphy->addAction("Tsunamis",   [fTsu]()    { (*fTsu)(); });
+		mGphy->addAction("Seismology", [fSeis]()   { (*fSeis)(); });
+		mGphy->addAction("Magnetics",  [fMag]()    { (*fMag)(); });
+		mGphy->addAction("Plates",     [fPlates]() { (*fPlates)(); });
 	};
 	// Clicking the "Geophysics ›" row ITSELF (not one of the disciplines in its flyout) goes back to
 	// the neutral chooser — menubar title "Geophysics ▾", all disciplines listed. Qt never emits
@@ -10969,13 +11483,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	mGphy->installEventFilter(new GphyHomeOnParentClick(mGphy, fGroup, reopen));
 
-	auto backItem = [mGphy, fTsu, fSeis, fMag](const QString &current) {
+	auto backItem = [mGphy, fTsu, fSeis, fMag, fPlates](const QString &current) {
 		// Single entry — itself a submenu, direct access to any OTHER discipline (skips the
 		// chooser page entirely). Each fXxx already reopens the menu itself at its end.
 		QMenu *mBack = mGphy->addMenu("Geophysics ›");
-		if (current != "Tsunamis")   mBack->addAction("Tsunamis",   [fTsu]()  { (*fTsu)();  });
-		if (current != "Seismology") mBack->addAction("Seismology", [fSeis]() { (*fSeis)(); });
-		if (current != "Magnetics")  mBack->addAction("Magnetics",  [fMag]()  { (*fMag)();  });
+		if (current != "Tsunamis")   mBack->addAction("Tsunamis",   [fTsu]()    { (*fTsu)();    });
+		if (current != "Seismology") mBack->addAction("Seismology", [fSeis]()   { (*fSeis)();   });
+		if (current != "Magnetics")  mBack->addAction("Magnetics",  [fMag]()    { (*fMag)();    });
+		if (current != "Plates")     mBack->addAction("Plates",     [fPlates]() { (*fPlates)(); });
 		mGphy->addSeparator();
 	};
 
@@ -11153,19 +11668,30 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		reopen();
 	};
 
-	(*fGroup)();   // initial population: the discipline chooser
+	// Plates discipline — plate kinematics, migrated from Mirone: Euler rotations (euler_stuff.m)
+	// re-based on GMT's spotter supplement, and the Plate calculator (plate_calculator.m).
+	*fPlates = [mGphy, win, s, backItem, reopen]() {
+		mGphy->clear();
+		mGphy->setTitle("Plates ▾");
+		backItem("Plates");
+		mGphy->addAction("Euler rotations…", [win, s]() {
+			// Its X PARKS it (Scene Objects row), so re-picking this entry brings THAT dialog back with
+			// everything still set up in it — never a second, empty one.
+			auto it = g_eulerDlgs.find(s);
+			if (it != g_eulerDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+			auto *w = new EulerDialog(win, s);   // deletes itself when its QDialog is really destroyed
+			if (w->dlg) w->dlg->show();
+		});
+		mGphy->addAction("Plate calculator…", [win, s]() {
+			auto it = g_plateDlgs.find(s);
+			if (it != g_plateDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+			auto *w = new PlateCalcDialog(win, s);
+			if (w->dlg) w->dlg->show();
+		});
+		reopen();
+	};
 
-	// --- Plates: plate kinematics, migrated from Mirone ------------------------------------------
-	// Starts with Euler rotations (Mirone's euler_stuff.m), re-based on GMT's spotter supplement.
-	QMenu *mPlates = win->menuBar()->addMenu("&Plates");
-	mPlates->addAction("Euler rotations…", [win, s]() {
-		// Its X PARKS it (Scene Objects row), so re-picking this entry brings THAT dialog back with
-		// everything still set up in it — never a second, empty one.
-		auto it = g_eulerDlgs.find(s);
-		if (it != g_eulerDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
-		auto *w = new EulerDialog(win, s);   // deletes itself when its QDialog is really destroyed
-		if (w->dlg) w->dlg->show();
-	});
+	(*fGroup)();   // initial population: the discipline chooser
 
 	// --- Tools menu: open the standalone X,Y plot tool (blank; ready for File>Open or Julia) ----
 	QMenu *mTools = win->menuBar()->addMenu("&Tools");

@@ -267,6 +267,7 @@ if(GMTVTK_PACKAGE)
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdlandmask_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdfilter_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/euler_stuff.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/plate_calculator.ui"
     DESTINATION deps/ui COMPONENT full)
   install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../data/" DESTINATION data COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../Project.toml"        DESTINATION . COMPONENT full)

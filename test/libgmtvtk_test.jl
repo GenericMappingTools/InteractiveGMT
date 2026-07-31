@@ -41,8 +41,13 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_euler_open_dialog_test, :gmtvtk_euler_close_dialog_test, :gmtvtk_euler_targets_test,
 	:gmtvtk_euler_arm_pick_test, :gmtvtk_euler_pick_deliver_test,
 	:gmtvtk_euler_parked_test, :gmtvtk_euler_delete_dialog_test,
+	:gmtvtk_platecalc_open_dialog_test, :gmtvtk_platecalc_close_dialog_test,
+	:gmtvtk_platecalc_delete_dialog_test, :gmtvtk_platecalc_parked_test,
+	:gmtvtk_platecalc_select_test, :gmtvtk_platecalc_calc_test,
+	:gmtvtk_platecalc_read_test, :gmtvtk_platecalc_map_click_test, :gmtvtk_platecalc_map_test,
 	:gmtvtk_set_faultgeom_callback,   # NOT test-only — dlsym'd here too so we can mirror the
 	                                  # callback registration into this dll's own global.
+	:gmtvtk_set_euler_callback, :gmtvtk_euler_result,   # same, for the Plates dialogs.
 )
 
 function _load_test_library()
@@ -70,6 +75,23 @@ function _register_faultgeom_test()
 	return
 end
 
-export _test_fn, _register_faultgeom_test
+# The Plates dialogs (Euler rotations, Plate calculator) ASK Julia for their content, so a dialog
+# built inside gmtvtk_test.dll needs that dll's own g_juliaEuler set. Julia's answer travels the
+# other way through gmtvtk.dll's gmtvtk_euler_result (IG._fn resolves in the production dll), which
+# this dll cannot see — so the wrapper mirrors Julia's own record of the answer
+# (InteractiveGMT._euler_last_result) into THIS dll's copy right after the call returns.
+function _euler_test_cb(scene::Ptr{Cvoid}, params::Cstring)::Cint
+	r = Base.invokelatest(InteractiveGMT._on_euler, scene, params)
+	ccall(_test_fn(:gmtvtk_euler_result), Cvoid, (Cstring,), InteractiveGMT._euler_last_result[])
+	return r
+end
+
+function _register_euler_test()
+	fptr = @cfunction(_euler_test_cb, Cint, (Ptr{Cvoid}, Cstring))
+	ccall(_test_fn(:gmtvtk_set_euler_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
+export _test_fn, _register_faultgeom_test, _register_euler_test
 
 end

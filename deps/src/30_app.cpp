@@ -469,6 +469,14 @@ static JuliaInterpolateFn g_juliaInterpolate = nullptr;
 //              isochron's FIN"…"/STG0"…"), answered as catalogue lines for the Poles selector
 //   op=stages  poles=<inline list>  half=0|1  inverse=0|1  side=1|-1|0  geodetic=0|1  — finite poles
 //              to a stage-pole FILE (rotconverter -Fs [-M0.5] [-N|-S]); answers "<path>\n<table>"
+// The SAME channel carries the Plate calculator (PlateCalcDialog, Mirone's src_figs/plate_calculator.m
+// — one Plates menu, one Julia door):
+//   op=plates    model=<Nuvel1A|MORVEL|PB|GEODVEL|NNR|DEOS2K|REVEL>  — answers one "AB<tab>Name" line
+//              per plate of that model's poles table (data/plates/<model>_poles.dat)
+//   op=platepole model= fix=<abbrev> mov=<abbrev>  — the Euler pole of `mov` relative to `fix`, as
+//              "lon lat rate"; empty when the two plates are the same (no motion)
+//   op=platevel  polelon= polelat= polerate= lon= lat=  — the plate velocity at that point, as
+//              "speed azimuth" (mm/yr and degrees cw from N, gmtpmodeler)
 // The rotated lines land in `scene` as ONE new Scene Objects group of named lines (the source line
 // stays visible — a rotation is a comparison); `add`/`interp` answer through gmtvtk_euler_result.
 // Returns 1 on success, 0 on failure. nullptr to detach.

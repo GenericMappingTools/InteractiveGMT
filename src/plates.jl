@@ -495,23 +495,165 @@ function _euler_stages(d::Dict{String,String})::Cint
 	return Cint(1)
 end
 
+# Plate calculator — port of Mirone's src_figs/plate_calculator.m. Same seven models, same three
+# answers (relative Euler pole, speed, azimuth), with GMT doing all the sphere work:
+#
+#   relative pole   gmtvector  (the poles of a model are ANGULAR VELOCITY vectors, so the motion of
+#                   plate b relative to plate a is the vector difference w_b - w_a — Mirone's
+#                   calculate_pole. gmtvector converts to and from Cartesian; only the scalar scaling
+#                   by the rate and the subtraction are arithmetic, and rotconverter is deliberately
+#                   NOT used: it composes FINITE rotations, which is not the same operation.)
+#   speed/azimuth   gmtpmodeler -E<lon>/<lat>/<rate> -T1 -Sar   (a single rotation is taken as one
+#                   1-Ma stage, so the opening angle IS the rate in deg/Ma; -Sa is the plate motion
+#                   azimuth and -Sr the rate in mm/yr. It converts the point's geodetic latitude to
+#                   geocentric itself — verified to reproduce Mirone's own ellipsoid conversion to
+#                   four decimals — so the point goes in as the plain map coordinate.)
+
+const _PLATE_MODELS = Dict{String,String}(
+	"Nuvel1A" => "Nuvel1A_poles.dat",
+	"MORVEL"  => "MORVEL_poles.dat",
+	"PB"      => "PB_poles.dat",
+	"GEODVEL" => "GEODVEL_poles.dat",
+	"NNR"     => "Nuvel1A_NNR_poles.dat",
+	"DEOS2K"  => "DEOS2K_poles.dat",
+	"REVEL"   => "REVEL_poles.dat",
+)
+
+# One row of a model's poles table: "AB Name lat lon rate" (Mirone's own column order).
+struct PlatePole
+	abbrev::String
+	name::String
+	lat::Float64
+	lon::Float64
+	rate::Float64
+end
+
+const _PLATE_CACHE = Dict{String,Vector{PlatePole}}()
+
+function _plate_poles(model::AbstractString)::Vector{PlatePole}
+	key = String(model)
+	haskey(_PLATE_CACHE, key) && return _PLATE_CACHE[key]
+	file = get(_PLATE_MODELS, key, "")
+	isempty(file) && error("unknown plate motion model \"$model\"")
+	path = joinpath(_PKGROOT, "data", "plates", file)
+	isfile(path) || error("plate poles file not found: $path")
+	out = PlatePole[]
+	for ln in eachline(path)
+		t = strip(ln)
+		(isempty(t) || startswith(t, '#')) && continue
+		c = split(t, r"\s+"; keepempty = false)
+		length(c) < 5 && continue
+		lat  = tryparse(Float64, c[3]);  lon = tryparse(Float64, c[4])
+		rate = tryparse(Float64, c[5])
+		(lat === nothing || lon === nothing || rate === nothing) && continue
+		push!(out, PlatePole(String(c[1]), String(c[2]), lat, lon, rate))
+	end
+	isempty(out) && error("no plates read from $path")
+	_PLATE_CACHE[key] = out
+	return out
+end
+
+_plate_find(v::Vector{PlatePole}, abbrev::AbstractString) =
+	(i = findfirst(p -> p.abbrev == abbrev, v); i === nothing ? 0 : i)
+
+# The angular velocity vectors of the given plates — one gmtvector call for the whole batch.
+function _plate_cart(v::Vector{PlatePole}, idx::Vector{Int})::Matrix{Float64}
+	m = Matrix{Float64}(undef, length(idx), 2)
+	for (k, i) in enumerate(idx);  m[k, 1] = v[i].lon;  m[k, 2] = v[i].lat;  end
+	R = GMT.gmt("gmtvector -Co -fg", m)
+	D = isa(R, Vector) ? vcat([r.data for r in R]...) : R.data
+	out = Matrix{Float64}(D[:, 1:3])
+	for (k, i) in enumerate(idx);  out[k, :] .*= v[i].rate;  end
+	return out
+end
+
+# Cartesian angular velocity vector -> (lon, lat, rate).
+function _plate_spherical(w::Vector{Float64})::Tuple{Float64,Float64,Float64}
+	rate = sqrt(sum(w .^ 2))
+	rate < 1e-12 && return (0.0, 0.0, 0.0)
+	R = GMT.gmt("gmtvector -A$(w[1])/$(w[2])/$(w[3]) -Ci -fg")
+	D = isa(R, Vector) ? R[1].data : R.data
+	return (D[1, 1], D[1, 2], rate)
+end
+
+# op=plates — the plate list of a model, one "AB<tab>Name" line per plate, in file order.
+function _plate_list(d::Dict{String,String})::Cint
+	v = _plate_poles(_get(d, "model", "Nuvel1A"))
+	_euler_result(join(("$(p.abbrev)\t$(p.name)" for p in v), '\n'))
+	return Cint(1)
+end
+
+# op=platepole — the Euler pole of `mov` relative to `fix`. An EMPTY `fix` means an absolute model:
+# the plate's own pole IS the answer (Mirone's absolute_motion branch). Answers "" when there is no
+# motion (the same plate on both sides), which is how the dialog knows to clear its boxes.
+function _plate_pole(d::Dict{String,String})::Cint
+	model = _get(d, "model", "Nuvel1A")
+	v  = _plate_poles(model)
+	im = _plate_find(v, _get(d, "mov"))
+	im == 0 && error("no pole for plate \"$(_get(d, "mov"))\" in $model")
+	local lon::Float64, lat::Float64, rate::Float64
+	fixab = _get(d, "fix")
+	if isempty(fixab)
+		lon, lat, rate = v[im].lon, v[im].lat, v[im].rate
+	else
+		fi = _plate_find(v, fixab)
+		fi == 0 && error("no pole for plate \"$fixab\" in $model")
+		W = _plate_cart(v, [fi, im])
+		lon, lat, rate = _plate_spherical(vec(W[2, :]) .- vec(W[1, :]))
+	end
+	if rate < 1e-12
+		_euler_result("")
+		return Cint(1)
+	end
+	# Two decimals on the pole, four on the rate — Mirone's own widths, and what the boxes show IS
+	# what Calculate then uses, so the printed pole and the printed velocity always agree.
+	_euler_result(join((_ffmt(lon, 2), _ffmt(lat, 2), _ffmt(rate, 4)), ' '))
+	return Cint(1)
+end
+
+# op=platevel — speed (mm/yr) and azimuth (degrees cw from N) of the plate at one point.
+function _plate_velocity(d::Dict{String,String})::Cint
+	g(k) = (v = _euler_num(d, k); v === nothing ? error("Euler pole parameters are wrong") : v)
+	plon, plat, rate = g("polelon"), g("polelat"), g("polerate")
+	alon = _euler_num(d, "lon");  alat = _euler_num(d, "lat")
+	(alon === nothing || alat === nothing) && error("calculate the velocity where?")
+	cmd = "gmtpmodeler -E$plon/$plat/$rate -T1 -Sar -fg"
+	if _on(d, "showcmd")
+		_euler_result(cmd)
+		return Cint(1)
+	end
+	R = GMT.gmt(cmd, [alon alat])
+	D = isa(R, Vector) ? R[1].data : R.data
+	size(D, 1) == 0 && error("gmtpmodeler returned nothing")
+	azim = D[1, 4];  azim < 0 && (azim += 360.0)     # always report in 0-360, like Mirone
+	_euler_result(join((_ffmt(D[1, 5], 1), _ffmt(azim, 1)), ' '))
+	return Cint(1)
+end
+
+# ---------------------------------------------------------------------------------------------
 # C callback (Compute / Show GMT command): `cparams` is the newline-separated "key=value" block
 # described in 30_app.cpp's JuliaEulerFn. Returns Cint 1 on success, 0 on failure.
 function _on_euler(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
+	# The Plates menu's two dialogs share this one door, so the failure message names the right tool.
+	tool = "Euler rotations"
 	try
 		d  = _nswing_parse(unsafe_string(cparams))
 		op = _get(d, "op")
+		startswith(op, "plate") && (tool = "Plate calculator")
 		op == "rotate"      && return _euler_rotate(scene, d)
 		op == "add"         && return _euler_add(d)
 		op == "interp"      && return _euler_interp(d)
 		op == "headerpoles" && return _euler_header_poles(scene, d)
 		op == "stages"      && return _euler_stages(d)
-		error("unknown Euler operation \"$op\"")
+		op == "plates"      && return _plate_list(d)
+		op == "platepole"   && return _plate_pole(d)
+		op == "platevel"    && return _plate_velocity(d)
+		error("unknown Plates operation \"$op\"")
 	catch e
 		msg = sprint(showerror, e)
-		_viewer_log_error(scene, "Euler rotations FAILED: $msg")
-		_euler_result("Euler rotations failed: $msg")
-		@warn "Euler rotations FAILED" exception=(e,)
+		_viewer_log_error(scene, "$tool FAILED: $msg")
+		_euler_result("$tool failed: $msg")
+		@warn "$tool FAILED" exception=(e,)
 		return Cint(0)
 	end
 end

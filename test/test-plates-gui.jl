@@ -1,4 +1,5 @@
-# :gui scenarios for Plates > Euler rotations. These open a REAL window through the built gmtvtk.dll,
+# :gui scenarios for the Plates menu (Euler rotations, Plate calculator). These open a REAL window
+# through the built gmtvtk.dll,
 # put lines in it, and drive the SAME callback the dialog drives, so the whole path runs: the line's
 # vertices out of the scene (gmtvtk_serialize_vector_h), the GMT spotter call, and the rotated lines
 # back in as new elements. The dialog itself is opened through its test hooks in gmtvtk_test.dll — a
@@ -174,6 +175,104 @@ end
 	@test ccall(_test_fn(:gmtvtk_euler_pick_deliver_test), Cint, (Ptr{Cvoid}, Cstring), f.h, "otherline") == 1
 	@test sort(split(sel(), '\n')) == ["otherline", "testline"]
 	ccall(_test_fn(:gmtvtk_euler_delete_dialog_test), Cvoid, ())
+end
+
+@testitem "Plate calculator dialog: model, plates, pole and velocity" tags=[:gui] setup=[Plates, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	# The dialog lives in gmtvtk_test.dll, so THAT dll's Julia callback has to be registered (and its
+	# answer channel mirrored) — otherwise the combos would come up empty.
+	GmtvtkTest._register_euler_test()
+	f = view_grid(Plates.grid())
+	@test ccall(_test_fn(:gmtvtk_platecalc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	buf = Vector{UInt8}(undef, 256)
+	rd(what) = (ccall(_test_fn(:gmtvtk_platecalc_read_test), Cint, (Cstring, Ptr{UInt8}, Cint),
+	                  what, buf, Cint(256)); unsafe_string(pointer(buf)))
+	sel(model, fix, mov) = ccall(_test_fn(:gmtvtk_platecalc_select_test), Cint,
+	                             (Cstring, Cstring, Cstring), model, fix, mov)
+	# Nuvel-1A, Africa relative to Eurasia — the boxes must hold the published pole.
+	@test sel("Nuvel1A", "EU", "AF") == length(IG._plate_poles("Nuvel1A"))
+	@test parse(Float64, rd("polelon")) ≈ -20.61 atol = 0.02
+	@test parse(Float64, rd("polelat")) ≈ 21.03 atol = 0.02
+	@test parse(Float64, rd("polerate")) ≈ 0.1228 atol = 1e-3
+	@test rd("fixenabled") == "1"
+	@test rd("abs2rel") == "0"              # relative model: no "Make it relative" checkbox
+	# Calculate reports the speed and azimuth of that pole at the point.
+	@test ccall(_test_fn(:gmtvtk_platecalc_calc_test), Cint, (Cdouble, Cdouble), -9.0, 36.0) == 1
+	@test occursin("mm/yr", rd("speed"))
+	@test parse(Float64, split(rd("speed"))[3]) ≈ 4.2 atol = 0.05
+	@test parse(Float64, split(rd("azim"))[3]) ≈ 307.6 atol = 0.2
+	# The same plate on both sides does not move: the pole boxes clear, exactly as Mirone's do.
+	@test sel("", "AF", "AF") > 0
+	@test isempty(rd("polelon")) && isempty(rd("polerate"))
+	# An absolute model offers "Make it relative" and locks the fixed-plate combo.
+	@test sel("NNR", "", "AU") > 0
+	@test rd("abs2rel") == "1"
+	@test rd("fixenabled") == "0"
+	nnr = IG._plate_poles("NNR")
+	au = nnr[findfirst(p -> p.abbrev == "AU", nnr)]
+	@test parse(Float64, rd("polerate")) ≈ au.rate atol = 1e-3
+	ccall(_test_fn(:gmtvtk_platecalc_delete_dialog_test), Cvoid, ())
+end
+
+@testitem "Plate calculator map: the plates are there and a click drives the whole tool" tags=[:gui] setup=[Plates, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	GmtvtkTest._register_euler_test()
+	f = view_grid(Plates.grid())
+	@test ccall(_test_fn(:gmtvtk_platecalc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	buf = Vector{UInt8}(undef, 256)
+	rd(what) = (ccall(_test_fn(:gmtvtk_platecalc_read_test), Cint, (Cstring, Ptr{UInt8}, Cint),
+	                  what, buf, Cint(256)); unsafe_string(pointer(buf)))
+	# plate under a point + how many polygons the map holds for the current model
+	at(lon, lat) = (n = ccall(_test_fn(:gmtvtk_platecalc_map_test), Cint, (Cdouble, Cdouble, Ptr{UInt8}, Cint),
+	                          lon, lat, buf, Cint(256)); (n, unsafe_string(pointer(buf))))
+	sel(model) = ccall(_test_fn(:gmtvtk_platecalc_select_test), Cint, (Cstring, Cstring, Cstring),
+	                   model, "", "")
+	@test sel("Nuvel1A") > 0
+	n, tag = at(20.0, 0.0)
+	@test n > 10                            # the Nuvel-1A polygon set really loaded
+	@test tag == "AF"                       # central Africa
+	@test at(-140.0, 0.0)[2] == "PA"        # central Pacific
+	@test at(-60.0, -20.0)[2] == "SA"       # South America
+	# A click IS the tool (Mirone's bdn_plate): point + moving plate + fixed neighbour + velocity.
+	@test ccall(_test_fn(:gmtvtk_platecalc_map_click_test), Cint, (Cdouble, Cdouble), 20.0, 0.0) == 1
+	@test parse(Float64, rd("lon")) ≈ 20.0 atol = 1e-3
+	@test parse(Float64, rd("lat")) ≈ 0.0 atol = 1e-3
+	@test !isempty(rd("polerate"))          # the pair's pole landed in the boxes
+	@test occursin("mm/yr", rd("speed"))    # …and the velocity was computed, with no button pressed
+	@test occursin("degree", rd("azim"))
+	# The map follows the model: P. Bird's 52 plates are a different, bigger set.
+	@test sel("PB") > 0
+	@test at(20.0, 0.0)[1] > n
+	@test at(20.0, 0.0)[2] == "AF"
+	ccall(_test_fn(:gmtvtk_platecalc_delete_dialog_test), Cvoid, ())
+end
+
+@testitem "Plate calculator dialog: the X parks it, it does not kill it" tags=[:gui] setup=[Plates, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	GmtvtkTest._register_euler_test()
+	f = view_grid(Plates.grid())
+	@test ccall(_test_fn(:gmtvtk_platecalc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	@test ccall(_test_fn(:gmtvtk_platecalc_select_test), Cint, (Cstring, Cstring, Cstring),
+	            "PB", "EU", "AF") > 0
+	@test ccall(_test_fn(:gmtvtk_platecalc_parked_test), Cint, (Ptr{Cvoid},), f.h) == 0
+	ccall(_test_fn(:gmtvtk_platecalc_close_dialog_test), Cvoid, ())
+	@test ccall(_test_fn(:gmtvtk_platecalc_parked_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	rows = unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), f.h))
+	@test occursin("Plate calculator", rows)
+	# Re-opening brings THAT dialog back, still on the model and plates it was left on.
+	@test ccall(_test_fn(:gmtvtk_platecalc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	@test ccall(_test_fn(:gmtvtk_platecalc_parked_test), Cint, (Ptr{Cvoid},), f.h) == 0
+	buf = Vector{UInt8}(undef, 256)
+	ccall(_test_fn(:gmtvtk_platecalc_read_test), Cint, (Cstring, Ptr{UInt8}, Cint),
+	      "polerate", buf, Cint(256))
+	@test !isempty(unsafe_string(pointer(buf)))
+	rows = unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), f.h))
+	@test !occursin("Plate calculator", rows)
+	ccall(_test_fn(:gmtvtk_platecalc_delete_dialog_test), Cvoid, ())
+	@test ccall(_test_fn(:gmtvtk_platecalc_parked_test), Cint, (Ptr{Cvoid},), f.h) == -1
 end
 
 @testitem "Euler dialog: the X parks it, it does not kill it" tags=[:gui] setup=[Plates, GmtvtkTest] begin
