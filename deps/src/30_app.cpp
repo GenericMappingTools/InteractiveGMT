@@ -181,6 +181,16 @@ static JuliaEvalFn g_juliaEval = nullptr;
 typedef void (*JuliaDropFn)(void *scene, const char *path);
 static JuliaDropFn g_juliaDrop = nullptr;
 
+// Ctrl+V clipboard paste — the paste twin of the file drop above. What lands on the clipboard is
+// handed to Julia (g_juliaPaste -> paste.jl `_on_paste`), which routes it through the SAME builders
+// a dropped file goes through (SACRED_LAW.md: one operation, one function): an image becomes a
+// GMTimage fed to `_drop_into`, a numeric table becomes a line/polygon overlay (or X,Y series).
+// Exactly one of `text` / `rgb` carries the payload; `rgb` is w*h*nbands row-major bytes, top row
+// first, valid only for the duration of the call. Set via gmtvtk_set_paste_callback.
+typedef void (*JuliaPasteFn)(void *scene, const char *text, const unsigned char *rgb,
+                             int w, int h, int nbands);
+static JuliaPasteFn g_juliaPaste = nullptr;
+
 // World Topo Tiles basemap picker (port of Mirone's bg_map.m). The "Base Map" menubar button opens
 // a tile picker; a clicked tile's geographic region ("W/E/S/N/wrap") is handed to Julia (g_juliaBaseMap),
 // which crops data/etopo4.jpg and adds it as a referenced flat image. g_basemapLogo is the path to
@@ -405,6 +415,34 @@ static JuliaImportGmtFn g_juliaImportGmt = nullptr;
 typedef int (*JuliaClipGridFn)(void *scene, const char *params);
 static JuliaClipGridFn g_juliaClipGrid = nullptr;
 
+// Binarize (Image menu), port of Mirone's src_figs/thresholdit.m. The dialog (BinarizeDialog,
+// 70_window.cpp, loads deps/ui/binarize.ui) hands "op;arg;arg" to Julia (_on_binarize,
+// src/binarize.jl), which owns the grey image, the current mask and its one-level undo:
+//   init                       grab this window's image, push back the histogram + first mask
+//   method;<name>;<revert>     otsu|maxent|mince|isodata|triangle -> level, mask (level pushed back)
+//   level;<level>;<revert>     single-line threshold (the histogram line was dragged)
+//   window;<lo>;<hi>;<revert>  in-window band threshold (the histogram box was dragged/resized)
+//   revert;<0|1>               complement the CURRENT mask (Mirone check_revert_CB)
+//   dust;<size>   fill   label;<n>   undo
+//   ok;<applyOrig>;<useAlpha>  commit: new mask element, or mask the source image (alpha or bg fill)
+// `dlg` is the dialog (BinarizeDialog*) so Julia can push the histogram/preview back into it
+// (gmtvtk_binarize_set_histogram / gmtvtk_binarize_set_preview), same shape as g_juliaLidar.
+// Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaBinarizeFn)(void *scene, void *dlg, const char *params);
+static JuliaBinarizeFn g_juliaBinarize = nullptr;
+
+// "Image -> Show Histogram" (port of Mirone's src_figs/image_histo.m). The dialog (ImageHistoDialog,
+// 70_window.cpp, deps/ui/image_histo.ui) extracts the pixels the window is DISPLAYING — the only
+// part that must happen in C++, since a grid's rendered colours live in VTK — and hands them here.
+// Julia counts them with `GMT.histogray`, the SAME single histogram function the Binarize dialog
+// uses (SACRED_LAW: one quantity, one function — no C++ re-implementation), and pushes the 256 bins
+// per band straight back with gmtvtk_histo_set_counts.
+//   `px`   pixel-interleaved bytes, `nb` components each, `npix` pixels
+//   `dlg`  the ImageHistoDialog* to push the counts into
+// Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaImageHistoFn)(void *scene, void *dlg, const unsigned char *px, int npix, int nb);
+static JuliaImageHistoFn g_juliaImageHisto = nullptr;
+
 // Empilhador (Tools), port of Mirone's src_figs/empilhador.m. The dialog (EmpilhadorDialog,
 // 70_window.cpp, loads deps/ui/empilhador.ui) hands a newline-separated "key=value" block to Julia
 // (_on_empilhador, src/empilhador.jl), which calls GMT.jl's `empilhador`:
@@ -617,6 +655,16 @@ static void (*g_aquamotoSetVisible)(Scene *scene, int on) = nullptr;   // Scene 
 static bool (*g_aquamotoIsVisible)(Scene *scene) = nullptr;            // current window visibility (checkbox initial state)
 static void (*g_aquamotoDestroy)(Scene *scene) = nullptr;             // destroy the window (lifetime-tied to its nc cube surface)
 static void (*g_aquamotoSetCmap)(Scene *scene, int side, const char *cmap) = nullptr;   // side 0=water,1=land; re-renders the current slice
+
+// Same idea for the Binarize dialog (Image menu, 70_window.cpp): closing it only HIDES it, so the
+// image's Scene Objects handle offers "Binarize Image…" to bring it back with its mask and undo
+// intact. imageObjectMenu (50_scene.cpp) is compiled before 70_window.cpp, so it reaches the dialog
+// through these hooks, which 70 installs at load. `has` reports whether the scene owns one (unused
+// for gating today — the entry also OPENS one when there is none); `reopen` shows/creates it.
+// `name` is the Scene Objects name of the image to threshold ("" = the window's primary image), so
+// the dialog works on the image whose handle was clicked, never on "whichever image is first".
+static bool (*g_binarizeHasDialog)(Scene *scene) = nullptr;
+static void (*g_binarizeReopen)(Scene *scene, const char *name) = nullptr;
 
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a
@@ -1197,6 +1245,92 @@ static void enableFileDrops(QMainWindow *win, QWidget *widget, Scene *s) {
 	widget->setAcceptDrops(true);
 	win->installEventFilter(filt);
 	widget->installEventFilter(filt);
+}
+
+// ============================================================================================
+// Ctrl+V — paste the clipboard INTO a window
+// ============================================================================================
+// Ctrl+V keeps its ORDINARY meaning inside any text entry (the in-window Julia console, a dialog's
+// edit box, an editable combo): a window-scoped shortcut fires BEFORE the focus widget sees the
+// key, so the handler first offers the paste to the focused widget when that widget has a paste()
+// slot. Returns true when it did — the caller then does nothing else. Probing the metaobject (not
+// a qobject_cast list of every text class) keeps it quiet and covers widgets we never enumerated.
+static bool pasteIntoFocusedTextEntry() {
+	QWidget *f = QApplication::focusWidget();
+	if (!f || f->metaObject()->indexOfMethod("paste()") < 0) return false;
+	return QMetaObject::invokeMethod(f, "paste");
+}
+
+// Read the clipboard and hand it to `s`'s Julia paste callback. Returns false when the clipboard
+// holds nothing usable (the caller says so in its status bar).
+//  - copied FILES (Explorer's Copy puts file: URLs on the clipboard) go through juliaOpenFile, i.e.
+//    the drop path verbatim — pasting a copied file is opening that file.
+//  - an IMAGE is flattened to packed RGB and handed over as bytes (no temp file, same buffer layout
+//    as the GeoTIFF screenshot path: (band, col, row) once wrapped in Julia).
+//  - TEXT goes over as-is; Julia owns the number parsing.
+static bool scenePasteClipboard(Scene *s) {
+	const QMimeData *md = QApplication::clipboard()->mimeData();
+	if (!md) return false;
+	if (md->hasUrls()) {
+		bool any = false;
+		for (const QUrl &u : md->urls()) {
+			const QString f = u.toLocalFile();
+			if (f.isEmpty()) continue;
+			const QByteArray utf8 = f.toUtf8();      // keep the buffer alive across the call
+			juliaOpenFile(s, utf8.constData());      // busy dialog up before Julia is entered
+			any = true;
+		}
+		if (any) return true;
+	}
+	if (!g_juliaPaste) return false;
+	if (md->hasImage()) {
+		QImage im = qvariant_cast<QImage>(md->imageData());
+		if (!im.isNull()) {
+			if (im.hasAlphaChannel()) {              // flatten onto white: the image path here is RGB
+				QImage flat(im.size(), QImage::Format_RGB888);
+				flat.fill(Qt::white);
+				QPainter p(&flat);
+				p.drawImage(0, 0, im);
+				p.end();
+				im = flat;
+			}
+			else {
+				im = im.convertToFormat(QImage::Format_RGB888);
+			}
+			const int w = im.width(), h = im.height();
+			// Copy row by row: a QImage scanline is padded to a 4-byte boundary, the buffer Julia
+			// wraps must be tightly packed w*3.
+			std::vector<unsigned char> buf((size_t)w * (size_t)h * 3);
+			for (int r = 0; r < h; ++r)
+				memcpy(buf.data() + (size_t)r * (size_t)w * 3, im.constScanLine(r), (size_t)w * 3);
+			showBusyDialog("Pasting image…");        // up before Julia is entered, as for a drop
+			g_juliaPaste(s, "", buf.data(), w, h, 3);
+			closeBusyDialog();
+			return true;
+		}
+	}
+	if (md->hasText() && !md->text().trimmed().isEmpty()) {
+		const QByteArray utf8 = md->text().toUtf8();
+		g_juliaPaste(s, utf8.constData(), nullptr, 0, 0, 0);
+		return true;
+	}
+	return false;
+}
+
+// ONE Ctrl+V mechanism for every window kind (3-D viewer, X,Y tool, …): builds the shared "Paste"
+// action with the standard shortcut and the text-entry hand-back above. The CALLER adds it to its
+// own File menu (that is what activates the shortcut window-wide) and supplies what a paste does
+// there. Never a second key handler per window type.
+static QAction *makePasteAction(QWidget *win, std::function<void()> onPaste) {
+	QAction *a = new QAction("&Paste", win);
+	a->setShortcut(QKeySequence::Paste);
+	a->setShortcutContext(Qt::WindowShortcut);
+	a->setToolTip("Paste the clipboard (image, numeric table, or a copied file) into this window");
+	QObject::connect(a, &QAction::triggered, win, [onPaste]() {
+		if (pasteIntoFocusedTextEntry()) return;    // console / edit box keeps the normal Ctrl+V
+		onPaste();
+	});
+	return a;
 }
 
 // ============================================================================================

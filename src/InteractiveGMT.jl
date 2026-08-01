@@ -47,6 +47,7 @@ include("xyplot.jl")     # standalone X,Y plot tool (vtkChartXY); evolution of t
 include("xyanalysis.jl") # X,Y Analysis menu (remove mean/trend, derivatives, FFT, autocorr)
 include("xystick.jl")    # stick (vector) diagrams for the X,Y tool (ecran 'stick')
 include("drop.jl")
+include("paste.jl")      # Ctrl+V: clipboard image / numeric table -> the SAME builders drop.jl uses
 include("basemap.jl")    # World Topo Tiles picker (ported from Mirone bg_map.m)
 include("tilestool.jl")  # Tools > Tiles Tool (ported from Mirone tiles_tool.m; mosaic via GMT.mosaic)
 include("lidarpt.jl")    # Tools > LIDAR2011 PT (ported from Mirone cartas_militares.m 'nikles' mode)
@@ -79,6 +80,8 @@ include("grdseamount.jl") # GMT menu > grdseamount: synthetic seamounts from a p
 include("manual.jl")     # the green "?" disk on every module dialog -> that module's GMTjl_doc page
 include("mgd77tracks.jl") # Geophysics > Magnetics > Import *.gmt/*.nc file(s): cruise tracks (port of mirone.m GeophysicsImportGmtFile_CB)
 include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid clipping (port of Mirone ml_clip.m)
+include("binarize.jl")   # Image > Binarize Image: threshold an image into a B&W mask (port of Mirone thresholdit.m)
+include("imagehisto.jl") # Image > Show Histogram: histogram of the DISPLAYED image (port of Mirone image_histo.m)
 include("empilhador.jl") # Tools > Empilhador: stack grids/L2 scenes into a 3-D file (port of Mirone empilhador.m)
 include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-geometry grids (port of Mirone grid_calculator.m)
 include("contours.jl")   # Grid Tools > Contours: GDAL-traced contour lines (port of Mirone contouring.m)

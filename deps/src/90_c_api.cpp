@@ -1223,6 +1223,15 @@ GMTVTK_API void gmtvtk_set_drop_callback(JuliaDropFn fn) {
 	g_juliaDrop = fn;
 }
 
+// Register the Ctrl+V paste callback (paste.jl `_on_paste`, signature JuliaPasteFn), called
+// fn(scene, text, rgb, w, h, nbands): exactly one of `text` (a numeric table) and `rgb` (w*h*nbands
+// packed bytes, top row first, borrowed for the call only) carries the clipboard payload. Copied
+// FILES never reach here — they go through the drop callback, the same path a real drop takes.
+// Pass nullptr to detach (Ctrl+V then only handles copied files).
+GMTVTK_API void gmtvtk_set_paste_callback(JuliaPasteFn fn) {
+	g_juliaPaste = fn;
+}
+
 // Push one execution-error line into a 3-D viewer window's read-only "Errors" tab and raise that
 // tab (so a failure in a background callback is VISIBLE in the window, not just on the REPL's
 // stderr). `scene` is the window's Scene*; no-op if the handle is dead or has no Errors tab. The
@@ -1551,6 +1560,49 @@ GMTVTK_API void gmtvtk_set_import_gmt_callback(JuliaImportGmtFn fn) {
 // and adds the result to `scene`. Returns 1/0. nullptr to detach.
 GMTVTK_API void gmtvtk_set_clipgrid_callback(JuliaClipGridFn fn) {
 	g_juliaClipGrid = fn;
+}
+
+// Register the Binarize callback (Image menu, port of Mirone src_figs/thresholdit.m). fn(scene, dlg,
+// params) with params = "op;args" (see JuliaBinarizeFn, 30_app.cpp) does every threshold/clean-up op
+// on the window's image and pushes the result back into `dlg` with the two functions below. Returns
+// 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_binarize_callback(JuliaBinarizeFn fn) {
+	g_juliaBinarize = fn;
+}
+
+// Push the grey-level histogram into the open Binarize dialog `dlg` (a BinarizeDialog*). `counts` is
+// `n` (256) bin counts, as GMT.jl's histogray gives them. Called SYNCHRONOUSLY from Julia's op
+// "init", so `dlg` is the live dialog.
+GMTVTK_API void gmtvtk_binarize_set_histogram(void *dlg, const double *counts, int n) {
+	if (!dlg || !counts || n < 1) return;
+	reinterpret_cast<BinarizeDialog *>(dlg)->setHistogram(counts, n);
+}
+
+// Push the CURRENT mask into the open Binarize dialog `dlg` for display. `mask` is w*h bytes,
+// row-major with the TOP row first, 0 = black / 255 = white (a display copy — Julia keeps the
+// full-resolution mask, this one may be decimated). `level` moves the single-line handle, `lo`/`hi`
+// the window handles; any of them < 0 leaves that handle where the user put it. Called
+// SYNCHRONOUSLY from Julia while it services an op, so `dlg` is the live dialog.
+GMTVTK_API void gmtvtk_binarize_set_preview(void *dlg, int w, int h, const unsigned char *mask,
+                                            double level, double lo, double hi) {
+	if (!dlg) return;
+	reinterpret_cast<BinarizeDialog *>(dlg)->setPreview(w, h, mask, level, lo, hi);
+}
+
+// Register the "Image -> Show Histogram" callback (port of Mirone src_figs/image_histo.m).
+// fn(scene, dlg, px, npix, nb) receives the pixels the window is DISPLAYING and pushes one band's
+// counts at a time back with gmtvtk_histo_set_counts. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_image_histo_callback(JuliaImageHistoFn fn) {
+	g_juliaImageHisto = fn;
+}
+
+// Push one band's histogram into the open Image histogram dialog `dlg` (an ImageHistoDialog*).
+// `band` is 0/1/2 (R,G,B — 0 alone for a single-band display) and `counts` is `n` (256) bin counts,
+// as GMT.jl's histogray gives them. Called SYNCHRONOUSLY from the JuliaImageHistoFn call above, so
+// `dlg` is the live dialog.
+GMTVTK_API void gmtvtk_histo_set_counts(void *dlg, int band, const double *counts, int n) {
+	if (!dlg || !counts || n < 1) return;
+	reinterpret_cast<ImageHistoDialog *>(dlg)->setCounts(band, counts, n);
 }
 
 // Register the Empilhador Compute callback (Tools, port of Mirone src_figs/empilhador.m). fn(scene,

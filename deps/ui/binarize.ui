@@ -1,0 +1,334 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>BinarizeDialog</class>
+ <widget class="QDialog" name="BinarizeDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>715</width>
+    <height>499</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Binarize Image</string>
+  </property>
+  <widget class="QLabel" name="previewLabel">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>4</y>
+     <width>511</width>
+     <height>407</height>
+    </rect>
+   </property>
+   <property name="frameShape">
+    <enum>QFrame::Shape::StyledPanel</enum>
+   </property>
+   <property name="alignment">
+    <set>Qt::AlignmentFlag::AlignCenter</set>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+  </widget>
+  <widget class="BinHistoWidget" name="histoWidget" native="true">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>414</y>
+     <width>695</width>
+     <height>71</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Grey-level histogram. Drag the line (or the window edges/centre) to set the threshold.</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="otsuButton">
+   <property name="geometry">
+    <rect>
+     <x>530</x>
+     <y>10</y>
+     <width>175</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Otsu's method</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="maxEntropyButton">
+   <property name="geometry">
+    <rect>
+     <x>530</x>
+     <y>40</y>
+     <width>175</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Maximum Entropy</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="minCrossEntropyButton">
+   <property name="geometry">
+    <rect>
+     <x>530</x>
+     <y>70</y>
+     <width>175</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Minimum Cross-Entropy</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="isodataButton">
+   <property name="geometry">
+    <rect>
+     <x>530</x>
+     <y>100</y>
+     <width>175</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Isodata method</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="triangleButton">
+   <property name="geometry">
+    <rect>
+     <x>530</x>
+     <y>130</y>
+     <width>175</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Triangle method</string>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="singleLineRadio">
+   <property name="geometry">
+    <rect>
+     <x>530</x>
+     <y>170</y>
+     <width>90</width>
+     <height>19</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Drag one line only to separate black and white</string>
+   </property>
+   <property name="text">
+    <string>Single line</string>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <attribute name="buttonGroup">
+    <string notr="true">thresholdModeGroup</string>
+   </attribute>
+  </widget>
+  <widget class="QRadioButton" name="windowRadio">
+   <property name="geometry">
+    <rect>
+     <x>625</x>
+     <y>170</y>
+     <width>80</width>
+     <height>19</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Inside window is 1, outside is 0. You can drag the window and/or resize it.</string>
+   </property>
+   <property name="text">
+    <string>Window</string>
+   </property>
+   <attribute name="buttonGroup">
+    <string notr="true">thresholdModeGroup</string>
+   </attribute>
+  </widget>
+  <widget class="QCheckBox" name="revertCheck">
+   <property name="geometry">
+    <rect>
+     <x>531</x>
+     <y>212</y>
+     <width>175</width>
+     <height>19</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Invert (negative) thresholded image.</string>
+   </property>
+   <property name="text">
+    <string>Revert (negative)</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="cleanDustButton">
+   <property name="geometry">
+    <rect>
+     <x>530</x>
+     <y>248</y>
+     <width>125</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Remove the isolated small group of white pixels inside black zones.</string>
+   </property>
+   <property name="text">
+    <string>Clean white dust</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="dustSizeEdit">
+   <property name="geometry">
+    <rect>
+     <x>660</x>
+     <y>248</y>
+     <width>45</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Size of &quot;dust&quot; particles in pixels.</string>
+   </property>
+   <property name="text">
+    <string>15</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="fillHolesButton">
+   <property name="geometry">
+    <rect>
+     <x>530</x>
+     <y>276</y>
+     <width>175</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Fill holes.</string>
+   </property>
+   <property name="text">
+    <string>Fill holes</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="labelMatrixButton">
+   <property name="geometry">
+    <rect>
+     <x>530</x>
+     <y>304</y>
+     <width>125</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Show a color image with individual connected components (labels).</string>
+   </property>
+   <property name="text">
+    <string>Label matrix</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="labelEdit">
+   <property name="geometry">
+    <rect>
+     <x>660</x>
+     <y>304</y>
+     <width>45</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>When &gt; 0 make a mask with that label.
+You need to run first the &quot;Label matrix&quot; with 0
+and move the mouse to find the label number.</string>
+   </property>
+   <property name="text">
+    <string>0</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="undoButton">
+   <property name="geometry">
+    <rect>
+     <x>580</x>
+     <y>336</y>
+     <width>23</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Undo previous operation.</string>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="applyOrigCheck">
+   <property name="geometry">
+    <rect>
+     <x>530</x>
+     <y>368</y>
+     <width>110</width>
+     <height>19</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Mask the original image when &quot;Good, I like it&quot;</string>
+   </property>
+   <property name="text">
+    <string>Apply to original</string>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="useAlphaCheck">
+   <property name="geometry">
+    <rect>
+     <x>645</x>
+     <y>368</y>
+     <width>60</width>
+     <height>19</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Mask the original image with an alpha layer</string>
+   </property>
+   <property name="text">
+    <string>Alpha</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="okButton">
+   <property name="geometry">
+    <rect>
+     <x>530</x>
+     <y>388</y>
+     <width>175</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <pointsize>10</pointsize>
+     <bold>true</bold>
+    </font>
+   </property>
+   <property name="toolTip">
+    <string>Create final threshold image</string>
+   </property>
+   <property name="text">
+    <string> Good, I like it</string>
+   </property>
+  </widget>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>BinHistoWidget</class>
+   <extends>QWidget</extends>
+   <header>binhistowidget.h</header>
+   <container>0</container>
+  </customwidget>
+ </customwidgets>
+ <buttongroups>
+  <buttongroup name="thresholdModeGroup"/>
+ </buttongroups>
+</ui>

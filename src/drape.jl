@@ -180,7 +180,9 @@ function _dtb_fill!(buf, pix, nlon, nlat, comps, nb, north_first, gx0, gy0, cdx,
 				buf[k]   = pix(lat, ilon, 1)
 				buf[k+1] = nb >= 2 ? pix(lat, ilon, 2) : pix(lat, ilon, 1)
 				buf[k+2] = nb >= 3 ? pix(lat, ilon, 3) : pix(lat, ilon, 1)
-				buf[k+3] = 0xff                        # opaque where the image covers
+				# Opaque where the image covers — UNLESS the image carries its own alpha band (an
+				# RGBA drop, or Binarize's "Apply to original + Alpha" mask), which then rules.
+				buf[k+3] = nb >= 4 ? pix(lat, ilon, 4) : 0xff
 			end
 			k += comps
 		end

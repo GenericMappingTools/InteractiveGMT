@@ -5283,6 +5283,604 @@ public:
 };
 
 // ============================================================================================
+// Histograms — port of Mirone's src_figs/image_histo.m ("Image -> Show Histogram").
+//
+// NO histogram maths here. The counts come from Julia's `GMT.histogray` — the SAME single function
+// the Binarize dialog already uses (SACRED_LAW: one quantity, one function). C++ only does what
+// only C++ can: hand over the pixels the window is actually SHOWING, and paint the result.
+//
+// `paintMironeHisto` is image_histo's plot_result + localStem: a coloured patch filling
+// [0 x_max]x[0 y_max], black stem lines on top, XLim [0 255], YLim [0 max(counts)]. The Binarize
+// dialog's histogram widget paints through the SAME function, so the two tools can never disagree
+// about what the histogram of an image looks like.
+//
+// The pixels histogrammed are the ones the window actually DISPLAYS (Mirone histograms
+// `get(hMirHand.hImg,'CData')`, the displayed image, never the underlying grid): for a grid that
+// is its rendered colour image — the LUT/shaded colours VTK sends to the GPU — not its z values.
+// ============================================================================================
+
+// image_histo.m's plot_result: the patch first (it is the axes background), then the black stems.
+// `plot` is the axes box in widget coords; y grows down, so a count maps to plot.bottom() - h.
+static void paintMironeHisto(QPainter &g, const QRectF &plot, const double *counts, const QColor &patch) {
+	double ymax = 0.0;
+	for (int k = 0; k < 256; ++k) ymax = std::max(ymax, counts[k]);
+	g.fillRect(plot, patch);                         // patch([0 0 x_max x_max],[0 y_max y_max 0],cor)
+	if (ymax <= 0.0) return;
+	g.setPen(QPen(Qt::black, 1));                    // localStem: line(...,'color','k')
+	for (int k = 0; k < 256; ++k) {
+		if (counts[k] <= 0.0) continue;
+		const double x = plot.left() + (k / 255.0) * plot.width();
+		const double h = (counts[k] / ymax) * plot.height();
+		g.drawLine(QPointF(x, plot.bottom()), QPointF(x, plot.bottom() - h));
+	}
+}
+
+// One of image_histo's three MATLAB axes: the plot box plus the room its tick labels need. The box
+// keeps image_histo_LayoutFcn's 481x120 geometry (left margin 50 for the Y labels, 24 below for the
+// X labels when this is the bottom axes — R and G get no XTick there either, same reason).
+class HistoAxesWidget : public QWidget {   // no Q_OBJECT (paint only, like BinHistoWidget)
+public:
+	double counts[256];
+	QColor patch = QColor(120, 255, 114);   // image_histo's default (grey image); RGB uses the band tint
+	bool   showXAxis = true;                // Mirone strips XTick on the R and G axes
+
+	explicit HistoAxesWidget(QWidget *p) : QWidget(p) {
+		for (double &c : counts) c = 0.0;
+	}
+	void setCounts(const double *c) {
+		for (int k = 0; k < 256; ++k) counts[k] = c ? c[k] : 0.0;
+		update();
+	}
+	QRectF plotRect() const {
+		const double bottomRoom = showXAxis ? 24.0 : 6.0;
+		return QRectF(50.0, 5.0, std::max(10.0, width() - 55.0),
+		              std::max(10.0, height() - 5.0 - bottomRoom));
+	}
+
+protected:
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.fillRect(rect(), palette().window());
+		const QRectF box = plotRect();
+		paintMironeHisto(g, box, counts, patch);
+		double ymax = 0.0;
+		for (double c : counts) ymax = std::max(ymax, c);
+		g.setPen(QPen(Qt::black, 1));
+		g.drawRect(box);
+		// Y ticks: MATLAB's automatic 0 .. y_max labelling, to the left of the box.
+		QFont f = g.font(); f.setPointSizeF(7.5); g.setFont(f);
+		for (int t = 0; t <= 2; ++t) {
+			const double frac = t / 2.0, y = box.bottom() - frac * box.height();
+			g.drawLine(QPointF(box.left() - 4.0, y), QPointF(box.left(), y));
+			g.drawText(QRectF(0.0, y - 7.0, 46.0, 14.0), Qt::AlignRight | Qt::AlignVCenter,
+			           QString::number(qRound(frac * ymax)));
+		}
+		if (!showXAxis) return;
+		for (int t = 0; t <= 4; ++t) {                // grey levels 0 .. 255
+			const int v = (t * 255) / 4;
+			const double x = box.left() + (v / 255.0) * box.width();
+			g.drawLine(QPointF(x, box.bottom()), QPointF(x, box.bottom() + 4.0));
+			g.drawText(QRectF(x - 25.0, box.bottom() + 5.0, 50.0, 14.0), Qt::AlignCenter,
+			           QString::number(v));
+		}
+	}
+};
+
+// The bytes the window actually PUTS ON SCREEN for `act`, and how many components each pixel has.
+// Two display paths, both covered: a textured actor (a dropped image, a drape, the flat-2-D image)
+// shows its texture verbatim; a coloured mesh (a grid surface — live CPT scalars OR the RGBA baked
+// by hillshadeMapper) shows what its mapper maps, which is exactly what vtkMapper::MapScalars
+// returns. No re-derivation of the colours here — that would be a second colour engine.
+static bool actorDisplayedRGB(vtkActor *act, std::vector<unsigned char> &out, int &nb) {
+	out.clear(); nb = 0;
+	if (!act) return false;
+	if (vtkTexture *tx = act->GetTexture()) {
+		if (vtkImageData *id = tx->GetInput()) {
+			if (auto *sc = vtkUnsignedCharArray::SafeDownCast(id->GetPointData()->GetScalars())) {
+				nb = sc->GetNumberOfComponents();
+				const unsigned char *p = sc->GetPointer(0);
+				out.assign(p, p + static_cast<size_t>(sc->GetNumberOfTuples()) * nb);
+				return !out.empty();
+			}
+		}
+	}
+	if (vtkMapper *m = act->GetMapper()) {
+		vtkUnsignedCharArray *c = m->MapScalars(1.0);   // owned by the mapper — do NOT take/delete
+		if (c && c->GetNumberOfTuples() > 0) {
+			nb = c->GetNumberOfComponents();
+			const unsigned char *p = c->GetPointer(0);
+			out.assign(p, p + static_cast<size_t>(c->GetNumberOfTuples()) * nb);
+			return true;
+		}
+	}
+	return false;
+}
+
+// Resolve "the image on display" for this window (optionally the Scene Objects element `name`) and
+// hand back its pixels. Order mirrors what the user sees: a named element first, then the primary
+// bare image / flat-2-D drape, then the grid surface, then the first visible image extra.
+static bool sceneDisplayedRGB(Scene *s, const char *name, std::vector<unsigned char> &out, int &nb,
+                              QString &label) {
+	if (!s) return false;
+	if (name && *name) {
+		for (auto &ex : s->extras) {
+			if (ex.name != name) continue;
+			label = QString::fromStdString(ex.name);
+			if (actorDisplayedRGB(ex.drape, out, nb)) return true;
+			return actorDisplayedRGB(ex.actor, out, nb);
+		}
+	}
+	if (s->drape && s->drape->GetVisibility() && actorDisplayedRGB(s->drape, out, nb)) {
+		label = s->imageOnly ? "image" : "surface";
+		return true;
+	}
+	if (s->surf && s->surf->GetVisibility() && actorDisplayedRGB(s->surf, out, nb)) {
+		label = "surface";
+		return true;
+	}
+	for (auto &ex : s->extras) {
+		vtkActor *a = ex.drape ? ex.drape.Get() : ex.actor.Get();
+		if (!a || !a->GetVisibility()) continue;
+		if (actorDisplayedRGB(a, out, nb)) { label = QString::fromStdString(ex.name); return true; }
+	}
+	return false;
+}
+
+class HistoUiLoader : public QUiLoader {
+public:
+	QWidget *createWidget(const QString &className, QWidget *parent = nullptr,
+	                       const QString &name = QString()) override {
+		if (className == "HistoAxesWidget") {
+			auto *w = new HistoAxesWidget(parent);
+			w->setObjectName(name);
+			return w;
+		}
+		return QUiLoader::createWidget(className, parent, name);
+	}
+};
+
+// The live "Image histogram" window. Julia pushes one band's 256 counts at a time
+// (gmtvtk_histo_set_counts), so the dialog never computes anything itself.
+class ImageHistoDialog {
+public:
+	QDialog *dlg = nullptr;
+	HistoAxesWidget *ax[3] = { nullptr, nullptr, nullptr };
+
+	void setCounts(int band, const double *c, int n) {
+		if (band < 0 || band > 2 || n < 256) return;
+		if (ax[band]) ax[band]->setCounts(c);
+	}
+};
+
+// "Image -> Show Histogram". RGB display -> three stacked axes (R, G, B, top to bottom, tinted like
+// image_histo's plot_result). Single-band display -> image_histo's reshaped figure: axes2/axes3 gone
+// and the dialog shrunk to the one remaining plot (new_height = 400 - 275 + 40 = 165).
+static void showImageHistogram(QWidget *parent, Scene *s, const char *name) {
+	if (!g_juliaImageHisto) {
+		QMessageBox::warning(parent, "Image histogram",
+		                     "Image histogram: callback not registered (rebuild/restart needed?).");
+		return;
+	}
+	std::vector<unsigned char> px;
+	int nb = 0;
+	QString label;
+	if (!sceneDisplayedRGB(s, name, px, nb, label) || nb < 1) {
+		QMessageBox::warning(parent, "Image histogram", "This window has no displayed image to histogram.");
+		return;
+	}
+	const size_t npix = px.size() / static_cast<size_t>(nb);
+	const bool isRGB = (nb >= 3);
+
+	HistoUiLoader loader;
+	QFile f(gmtvtkUiDir() + "/image_histo.ui");
+	if (!f.open(QFile::ReadOnly)) {
+		qWarning("showImageHistogram: cannot open %s", qUtf8Printable(f.fileName()));
+		return;
+	}
+	QDialog *d = qobject_cast<QDialog *>(loader.load(&f, parent));
+	f.close();
+	if (!d) return;
+	d->setAttribute(Qt::WA_DeleteOnClose);
+	d->setWindowTitle(label.isEmpty() ? QString("Image histogram")
+	                                  : QString("Image histogram — %1").arg(label));
+
+	auto *ih = new ImageHistoDialog;
+	ih->dlg = d;
+	// findChild<HistoAxesWidget*> is not possible (no Q_OBJECT — see BinHistoWidget): look the widget
+	// up as a QWidget and cast, exactly like the Binarize dialog does for its histogram widget.
+	ih->ax[0] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes1"));
+	ih->ax[1] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes2"));
+	ih->ax[2] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes3"));
+	if (!ih->ax[0] || !ih->ax[1] || !ih->ax[2]) { delete ih; delete d; return; }
+	QObject::connect(d, &QObject::destroyed, d, [ih]() { delete ih; });
+
+	if (isRGB) {
+		const QColor tint[3] = { QColor(255, 124, 117), QColor(120, 255, 114), QColor(119, 119, 255) };
+		for (int k = 0; k < 3; ++k) {
+			ih->ax[k]->patch = tint[k];
+			ih->ax[k]->showXAxis = (k == 2);  // only the bottom (blue) axes keeps its XTicks
+		}
+	}
+	else {
+		ih->ax[1]->hide(); ih->ax[2]->hide();
+		ih->ax[0]->setGeometry(0, 0, d->width(), 165);
+		ih->ax[0]->showXAxis = true;
+		d->resize(d->width(), 165);
+	}
+	// Julia counts the bands (GMT.histogray) and pushes them straight back into ih->ax[].
+	g_juliaImageHisto(s, ih, px.data(), static_cast<int>(npix), nb);
+	d->show();
+}
+
+// ============================================================================================
+// Binarize Image (Image menu) — port of Mirone's src_figs/thresholdit.m. Turn this window's image
+// into a black-and-white mask by thresholding its grey levels, then clean the mask up (dust,
+// holes, connected-component labels) and either add it as a new element or use it to mask the
+// source image. Loaded at RUNTIME via QUiLoader from deps/ui/binarize.ui, whose geometry is the
+// literal port of thresholdit_LayoutFcn's absolute positions (680x499, MATLAB's bottom-up y
+// converted to Qt's top-down).
+//
+// ALL the maths lives in Julia (src/binarize.jl): the grey image, the histogram, every threshold
+// method, the current mask and its one-level undo. This dialog only paints what Julia pushes back
+// (gmtvtk_binarize_set_histogram / gmtvtk_binarize_set_preview) and sends "op;args" through
+// g_juliaBinarize — so the preview the user judges and the mask "Good, I like it" commits are the
+// SAME mask from the SAME function (SACRED_LAW), never a C++-side re-threshold for speed.
+//
+// The histogram widget below is Mirone's axes2: a stem plot of the 256 grey-level counts with
+// either ONE draggable grey line (single-line mode) or a draggable/resizable red [lo,hi] box
+// (window mode) — its three handles being the left edge, the centre (moves the whole box) and the
+// right edge, exactly like thresholdit.m's hVertLines(1..3). Like there, a drag repaints locally
+// and only the RELEASE re-binarizes (a per-pixel re-threshold on every mouse move would crawl on a
+// big image).
+// ============================================================================================
+// One live Binarize dialog per window: closing it only hides it, so the Image menu must re-show the
+// existing one (mask + undo intact) rather than build a second, empty one. Same bookkeeping as the
+// LIDAR picker's g_lidarDlgs.
+class BinarizeDialog;
+static std::map<Scene *, BinarizeDialog *> g_binarizeDlgs;
+
+class BinHistoWidget : public QWidget {   // no Q_OBJECT (only paint/mouse overrides, like BaseMapArea)
+public:
+	double counts[256];                   // grey-level histogram, as Julia's histogray gives it
+	bool   haveHisto = false;
+	bool   windowMode = false;            // false: single line (level);  true: [lo,hi] band
+	double level = 128.0;                 // single-line threshold, grey level [0 255]
+	double lo = 64.0, hi = 192.0;         // window-mode band, grey levels [0 255]
+	std::function<void()> onReleased;     // a drag finished -> the dialog asks Julia to re-binarize
+
+	explicit BinHistoWidget(QWidget *p) : QWidget(p) {
+		for (double &c : counts) c = 0.0;
+		setMinimumSize(200, 50);
+		setCursor(Qt::SizeAllCursor);     // every drag in iGMT uses SizeAll, never a cross
+	}
+	void setHistogram(const double *c, int n) {
+		for (int k = 0; k < 256; ++k) counts[k] = (c && k < n) ? c[k] : 0.0;
+		haveHisto = true;
+		update();
+	}
+	// Grey level <-> widget x. The plot area is the widget minus a 4 px side margin and the bottom
+	// strip that carries the level text (Mirone's `hText` under the axes).
+	double plotLeft()  const { return 4.0; }
+	double plotRight() const { return width() - 4.0; }
+	double plotBottom() const { return height() - 14.0; }
+	double v2x(double v) const { return plotLeft() + (v / 255.0) * (plotRight() - plotLeft()); }
+	double x2v(double x) const {
+		const double t = (x - plotLeft()) / std::max(1.0, plotRight() - plotLeft());
+		return std::clamp(t * 255.0, 0.0, 255.0);
+	}
+
+protected:
+	int drag = 0;                         // 0 none, 1 the single line, 2 lo, 3 the whole box, 4 hi
+
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.fillRect(rect(), palette().window());
+		const double y0 = plotBottom();
+		// The SAME histogram painter "Image -> Show Histogram" uses (image_histo's plot_result +
+		// localStem: green patch, black stems, YLim [0 max]) — one look, one function.
+		if (haveHisto)
+			paintMironeHisto(g, QRectF(plotLeft(), 2.0, plotRight() - plotLeft(), y0 - 2.0),
+			                 counts, QColor(120, 255, 114));
+		g.setPen(QPen(Qt::black, 1));
+		g.drawLine(QPointF(plotLeft(), y0), QPointF(plotRight(), y0));
+		if (!haveHisto) return;
+		if (windowMode) {                                  // the box + its three red handles
+			const double xl = v2x(lo), xr = v2x(hi), xc = v2x(0.5 * (lo + hi));
+			g.fillRect(QRectF(xl, 0.0, xr - xl, y0), QColor(255, 80, 80, 40));
+			g.setPen(QPen(QColor(220, 40, 40), 2));
+			g.drawLine(QPointF(xl, 0.0), QPointF(xl, y0));
+			g.drawLine(QPointF(xr, 0.0), QPointF(xr, y0));
+			g.setPen(QPen(QColor(220, 40, 40), 2, Qt::DashLine));
+			g.drawLine(QPointF(xc, 0.0), QPointF(xc, y0));
+			g.setPen(palette().windowText().color());
+			g.drawText(QRectF(xl - 40.0, y0, 80.0, 14.0), Qt::AlignCenter, QString::number(qRound(lo)));
+			g.drawText(QRectF(xr - 40.0, y0, 80.0, 14.0), Qt::AlignCenter, QString::number(qRound(hi)));
+		}
+		else {                                             // the single grey line + its level text
+			const double x = v2x(level);
+			g.setPen(QPen(QColor(128, 128, 128), 2));
+			g.drawLine(QPointF(x, 0.0), QPointF(x, y0));
+			QFont f = g.font(); f.setBold(true); g.setFont(f);
+			g.setPen(QColor(102, 102, 102));
+			g.drawText(QRectF(x - 40.0, y0, 80.0, 14.0), Qt::AlignCenter, QString::number(qRound(level)));
+		}
+	}
+	void mousePressEvent(QMouseEvent *e) override {
+		if (!haveHisto) return;
+		const double x = e->position().x();
+		if (windowMode) {
+			const double dl = std::abs(x - v2x(lo)), dr = std::abs(x - v2x(hi));
+			const double dc = std::abs(x - v2x(0.5 * (lo + hi)));
+			const double d  = std::min(dc, std::min(dl, dr));
+			if (d > 8.0) return;                          // clicked away from every handle
+			drag = (d == dl) ? 2 : (d == dc) ? 3 : 4;
+		}
+		else {
+			if (std::abs(x - v2x(level)) > 8.0) return;
+			drag = 1;
+		}
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (!drag) return;
+		const double v = x2v(e->position().x());
+		if (drag == 1) level = v;
+		else if (drag == 2) lo = std::min(v, hi - 1.0);
+		else if (drag == 4) hi = std::max(v, lo + 1.0);
+		else {                                            // the centre handle slides the whole box
+			const double half = 0.5 * (hi - lo);
+			lo = std::clamp(v - half, 0.0, 255.0 - 2.0 * half);
+			hi = lo + 2.0 * half;
+		}
+		update();
+	}
+	void mouseReleaseEvent(QMouseEvent *) override {
+		if (!drag) return;
+		drag = 0;
+		if (onReleased) onReleased();                     // NOW re-binarize (Mirone's VLUpFcn/BoxUpFcn)
+	}
+};
+
+// QUiLoader that knows the one custom class binarize.ui references; everything else in that .ui is
+// a plain Qt class QUiLoader already builds on its own (same technique as IgrfUiLoader).
+class BinarizeUiLoader : public QUiLoader {
+public:
+	QWidget *createWidget(const QString &className, QWidget *parent = nullptr,
+	                       const QString &name = QString()) override {
+		if (className == "BinHistoWidget") {
+			auto *w = new BinHistoWidget(parent);
+			w->setObjectName(name);
+			return w;
+		}
+		return QUiLoader::createWidget(className, parent, name);
+	}
+};
+
+class BinarizeDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	BinHistoWidget *histo = nullptr;
+	QLabel *preview = nullptr;
+	QCheckBox *revertChk = nullptr, *applyOrigChk = nullptr, *useAlphaChk = nullptr;
+	QLineEdit *dustEdit = nullptr, *labelEdit = nullptr;
+	QRadioButton *windowRadio = nullptr;
+	QImage mask;                                          // what Julia last pushed back (grey 0/255)
+	QString srcName;                                      // image to threshold ("" = window primary)
+	bool ready = false;                                   // init succeeded -> the caller may show it
+
+	// Julia pushes the grey-level histogram here once, when the dialog opens (op "init").
+	void setHistogram(const double *c, int n) {
+		if (histo) histo->setHistogram(c, n);
+	}
+	// Julia pushes the current mask here after EVERY op. `data` is w*h bytes, row-major, top row
+	// first, 0 = black / 255 = white. `level` (or lo/hi) < 0 means "leave the handles where they
+	// are" — a method button DOES move them, a dust/fill/undo does not.
+	void setPreview(int w, int h, const unsigned char *data, double level, double lo, double hi) {
+		if (w > 0 && h > 0 && data) {
+			mask = QImage(data, w, h, w, QImage::Format_Grayscale8).copy();
+			if (preview) preview->setPixmap(QPixmap::fromImage(mask).scaled(preview->size(),
+			                                Qt::KeepAspectRatio, Qt::SmoothTransformation));
+		}
+		if (histo) {
+			if (level >= 0.0) histo->level = level;
+			if (lo >= 0.0 && hi >= 0.0) { histo->lo = lo; histo->hi = hi; }
+			histo->update();
+		}
+	}
+	// One door to Julia for every op (SACRED_LAW: one operation, one path). Reports a missing
+	// callback rather than silently doing nothing.
+	bool send(const QString &params) {
+		if (!g_juliaBinarize) {
+			QMessageBox::warning(dlg, "Binarize", "Binarize: callback not registered (rebuild/restart needed?).");
+			return false;
+		}
+		return g_juliaBinarize(scn, this, params.toUtf8().constData()) != 0;
+	}
+	QString revertArg() const { return (revertChk && revertChk->isChecked()) ? "1" : "0"; }
+
+	// `imgName` = Scene Objects name of the image to threshold; empty means the window's primary
+	// image. It goes to Julia with the "init" op, so the dialog always works on the image the user
+	// pointed at (a window can hold several).
+	explicit BinarizeDialog(QWidget *parent, Scene *scene, const QString &imgName = QString())
+	    : scn(scene), srcName(imgName) {
+		BinarizeUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/binarize.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("BinarizeDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("BinarizeDialog: QUiLoader failed to load the .ui"); return; }
+		// NO WA_DeleteOnClose: closing the dialog only HIDES it (QWidget::close on a widget without
+		// that attribute is a hide), so the mask, its undo copy and the histogram handles survive —
+		// re-opening from the Image menu brings back the SAME dialog, work intact (same rule as
+		// Aquamoto's window). It is destroyed only with its parent window, and THAT is when Julia's
+		// per-dialog state is dropped (the "close" op below).
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+
+		// BinHistoWidget has no Q_OBJECT -> static_cast (BinarizeUiLoader is the only thing that
+		// ever builds one), same as IgrfDialog does with IgrfMapArea.
+		histo   = static_cast<BinHistoWidget *>(d->findChild<QWidget *>("histoWidget"));
+		preview = d->findChild<QLabel *>("previewLabel");
+		revertChk    = d->findChild<QCheckBox *>("revertCheck");
+		applyOrigChk = d->findChild<QCheckBox *>("applyOrigCheck");
+		useAlphaChk  = d->findChild<QCheckBox *>("useAlphaCheck");
+		dustEdit  = d->findChild<QLineEdit *>("dustSizeEdit");
+		labelEdit = d->findChild<QLineEdit *>("labelEdit");
+		windowRadio = d->findChild<QRadioButton *>("windowRadio");
+		auto *singleRadio = d->findChild<QRadioButton *>("singleLineRadio");
+		auto *undoBtn = d->findChild<QPushButton *>("undoButton");
+		if (undoBtn) undoBtn->setIcon(d->style()->standardIcon(QStyle::SP_ArrowBack));
+
+		// THE highlight must stay on the button the user last pressed. In a QDialog every QPushButton
+		// is autoDefault by default, and Qt keeps handing the "default" frame back to the FIRST such
+		// button (Otsu) after every click — which is what reads as "the focus jumped back to Otsu".
+		// setFocus() alone cannot win that, the default-button machinery re-paints over it. So: no
+		// button is autoDefault/default here, and each click parks a real, VISIBLE focus on itself.
+		for (QPushButton *b : d->findChildren<QPushButton *>()) {
+			b->setAutoDefault(false);
+			b->setDefault(false);
+			b->setFocusPolicy(Qt::StrongFocus);
+		}
+
+		// The five automatic threshold methods (thresholdit.m's push_*_CB): Julia computes the
+		// level AND the mask, and pushes both back — the histogram line follows the method.
+		auto method = [this](QPushButton *b, const char *name) {
+			return [this, b, name]() { send(QString("method;%1;%2").arg(name).arg(revertArg())); };
+		};
+		// The five method buttons are CHECKABLE and mutually exclusive: the one last pressed stays
+		// visibly down, so which method produced the mask on screen is readable at a glance and
+		// cannot be undone by anything that happens to move the keyboard focus (a raised console
+		// tab, the parent window taking activation, …). Focus alone was not enough.
+		auto *methodGroup = new QButtonGroup(d);
+		methodGroup->setExclusive(true);
+		for (const char *n : { "otsuButton", "maxEntropyButton", "minCrossEntropyButton",
+		                        "isodataButton", "triangleButton" })
+			if (auto *b = d->findChild<QPushButton *>(n)) { b->setCheckable(true); methodGroup->addButton(b); }
+
+		if (auto *b = d->findChild<QPushButton *>("otsuButton"))            QObject::connect(b, &QPushButton::clicked, d, method(b, "otsu"));
+		if (auto *b = d->findChild<QPushButton *>("maxEntropyButton"))      QObject::connect(b, &QPushButton::clicked, d, method(b, "maxent"));
+		if (auto *b = d->findChild<QPushButton *>("minCrossEntropyButton")) QObject::connect(b, &QPushButton::clicked, d, method(b, "mince"));
+		if (auto *b = d->findChild<QPushButton *>("isodataButton"))         QObject::connect(b, &QPushButton::clicked, d, method(b, "isodata"));
+		if (auto *b = d->findChild<QPushButton *>("triangleButton"))        QObject::connect(b, &QPushButton::clicked, d, method(b, "triangle"));
+
+		// Single line <-> Window: only which handles the histogram shows/answers to (radio_*_CB).
+		// Switching does NOT re-binarize — dragging (or a method button) does.
+		if (singleRadio) QObject::connect(singleRadio, &QRadioButton::toggled, d, [this](bool on) {
+			if (histo && on) { histo->windowMode = false; histo->update(); }
+		});
+		if (windowRadio) QObject::connect(windowRadio, &QRadioButton::toggled, d, [this](bool on) {
+			if (histo && on) { histo->windowMode = true; histo->update(); }
+		});
+
+		// Drag release -> re-binarize with the handle(s) the user just moved.
+		if (histo) histo->onReleased = [this]() {
+			if (!histo) return;
+			if (histo->windowMode)
+				send(QString("window;%1;%2;%3").arg(histo->lo, 0, 'f', 2).arg(histo->hi, 0, 'f', 2).arg(revertArg()));
+			else
+				send(QString("level;%1;%2").arg(histo->level, 0, 'f', 2).arg(revertArg()));
+		};
+
+		// Revert: complement the CURRENT mask, whatever produced it (check_revert_CB) — not a
+		// re-threshold, so a cleaned/filled mask keeps its cleaning.
+		if (revertChk) QObject::connect(revertChk, &QCheckBox::toggled, d, [this](bool on) {
+			send(QString("revert;%1").arg(on ? "1" : "0"));
+		});
+
+		// Mask clean-up: dust (bwareaopen + a 2 px hailing distance), holes, labels, undo.
+		if (auto *b = d->findChild<QPushButton *>("cleanDustButton")) QObject::connect(b, &QPushButton::clicked, d, [this]() {
+			send(QString("dust;%1").arg(dustEdit ? dustEdit->text().trimmed() : QString("15")));
+		});
+		if (auto *b = d->findChild<QPushButton *>("fillHolesButton")) QObject::connect(b, &QPushButton::clicked, d, [this]() {
+			send("fill");
+		});
+		if (auto *b = d->findChild<QPushButton *>("labelMatrixButton")) QObject::connect(b, &QPushButton::clicked, d, [this]() {
+			send(QString("label;%1").arg(labelEdit ? labelEdit->text().trimmed() : QString("0")));
+		});
+		if (undoBtn) QObject::connect(undoBtn, &QPushButton::clicked, d, [this]() { send("undo"); });
+
+		// Idiot-proofing of the two numeric boxes, exactly like edit_dustSize_CB / edit_label_CB.
+		if (dustEdit) QObject::connect(dustEdit, &QLineEdit::editingFinished, d, [this]() {
+			bool ok; const double v = dustEdit->text().trimmed().toDouble(&ok);
+			if (!ok || v < 0.0) dustEdit->setText("15");
+		});
+		if (labelEdit) QObject::connect(labelEdit, &QLineEdit::editingFinished, d, [this]() {
+			bool ok; const double v = labelEdit->text().trimmed().toDouble(&ok);
+			if (!ok || v < 0.0) labelEdit->setText("0");
+		});
+
+		// "Good, I like it" — the ONE button that commits (only-action-button-executes-dialog).
+		if (auto *b = d->findChild<QPushButton *>("okButton")) QObject::connect(b, &QPushButton::clicked, d, [this]() {
+			const bool applyOrig = applyOrigChk && applyOrigChk->isChecked();
+			const bool useAlpha  = useAlphaChk  && useAlphaChk->isChecked();
+			showBusyDialog("Binarizing…");
+			const bool ok = send(QString("ok;%1;%2").arg(applyOrig ? "1" : "0").arg(useAlpha ? "1" : "0"));
+			closeBusyDialog();
+			if (ok)
+				QMessageBox::information(dlg, "Binarize", applyOrig
+					? "Done — the source image is now masked."
+					: "Done — the mask was added to Scene Objects, checked (visible); the source image is now unchecked.");
+			else
+				QMessageBox::warning(dlg, "Binarize", "Binarize failed — see this window's Errors console for details.");
+		});
+
+		// Every button parks the focus on ITSELF after it ran — connected LAST, so it fires after the
+		// button's own op handler (a QMessageBox in "Good, I like it" would otherwise leave the focus
+		// wherever the box left it). TabFocusReason, not OtherFocusReason: the Windows style paints
+		// the focus ring only for keyboard-style reasons, so "Other" would move focus invisibly and
+		// still look like the highlight sat on Otsu.
+		for (QPushButton *b : d->findChildren<QPushButton *>())
+			QObject::connect(b, &QPushButton::clicked, d, [this, b]() {
+				if (dlg) dlg->activateWindow();     // take activation back from whatever the op raised
+				b->setFocus(Qt::TabFocusReason);
+			});
+
+		// Ask Julia for the image: it greys it, histograms it and pushes back the first (Otsu) mask —
+		// thresholdit.m's own opening move. No busy dialog: the image is ALREADY in memory, this only
+		// walks its pixels once.
+		if (!send("init;" + srcName)) {
+			QMessageBox::warning(parent, "Binarize", "No image to binarize in this window (or the read failed).");
+			delete d;  dlg = nullptr;
+			return;
+		}
+		ready = true;
+		g_binarizeDlgs[scn] = this;      // the Image menu re-shows THIS one instead of building another
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			for (auto it = g_binarizeDlgs.begin(); it != g_binarizeDlgs.end(); )
+				it = (it->second == this) ? g_binarizeDlgs.erase(it) : std::next(it);
+			if (g_juliaBinarize) g_juliaBinarize(scn, this, "close");   // drop Julia's mask/undo state
+			delete this;
+		});
+	}
+};
+
+// Hooks imageObjectMenu (50_scene.cpp, compiled earlier in this TU) uses to offer "Binarize Image…"
+// on an image's Scene Objects handle: that entry is where a closed (= hidden, never destroyed)
+// Binarize dialog comes back from, mask and undo intact. Installed at load, before any menu can pop.
+static bool binarizeHasDialog(Scene *scene) { return g_binarizeDlgs.count(scene) != 0; }
+static void binarizeReopen(Scene *scene, const char *name) {
+	auto it = g_binarizeDlgs.find(scene);
+	if (it != g_binarizeDlgs.end() && it->second->dlg) {
+		it->second->dlg->show();  it->second->dlg->raise();  it->second->dlg->activateWindow();
+		return;
+	}
+	auto *w = new BinarizeDialog(scene ? scene->win : nullptr, scene, QString::fromUtf8(name ? name : ""));
+	if (w->dlg && w->ready) w->dlg->show();
+	else delete w;
+}
+static const struct BinarizeHookInstaller {
+	BinarizeHookInstaller() {
+		g_binarizeHasDialog = &binarizeHasDialog;
+		g_binarizeReopen    = &binarizeReopen;
+	}
+} g_binarizeHookInstaller;
+
+// ============================================================================================
 // Empilhador (Tools) — port of Mirone's src_figs/empilhador.m. Stack a list of 2-D grids, or of
 // MODIS/VIIRS/SeaWiFS L2 scenes, into ONE 3-D netCDF (or VTK, or a multi-band TIFF, or a VRT list).
 // Loaded at RUNTIME via QUiLoader from deps/ui/empilhador.ui (plain Qt widget classes only, same
@@ -12170,7 +12768,38 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			loadSessionIntoWindow(s, win, f);
 		});
 		mFile->addSeparator();
+		// Ctrl+V: paste the clipboard INTO this window — an image becomes a new image object, a
+		// numeric table a line/polygon overlay (or X,Y series), a copied FILE opens as if dropped.
+		// Shared action (makePasteAction, 30_app.cpp); adding it here is what arms the shortcut.
+		mFile->addAction(makePasteAction(win, [s]() {
+			if (!scenePasteClipboard(s) && s->win)
+				s->win->statusBar()->showMessage("Clipboard holds nothing that can be pasted", 3000);
+		}));
+		mFile->addSeparator();
 		mFile->addAction("&Close", [win](){ win->close(); }, QKeySequence::Close);
+
+	// --- Image menu (mirrors Mirone's Image menu, mirone_uis.m) --------------------------------
+	// Operations on the window's IMAGE (not its grid). First entry: Binarize (thresholdit.m).
+	QMenu *mImage = win->menuBar()->addMenu("&Image");
+	QAction *aBinarize = mImage->addAction("&Binarize Image…", [win, s]() {
+		auto it = g_binarizeDlgs.find(s);                    // hidden earlier? bring back the SAME one
+		if (it != g_binarizeDlgs.end() && it->second->dlg) {
+			it->second->dlg->show();  it->second->dlg->raise();  it->second->dlg->activateWindow();
+			return;
+		}
+		auto *w = new BinarizeDialog(win, s);                // self-deletes with its QDialog
+		if (w->dlg && w->ready) w->dlg->show();
+		else delete w;
+	});
+	// Show Histogram (image_histo.m): the histogram of what the window DISPLAYS — for a grid that is
+	// its rendered colour image, never its z values.
+	QAction *aHisto = mImage->addAction("Show &Histogram", [win, s]() { showImageHistogram(win, s, ""); });
+	// Binarize needs an image to threshold — greyed out (refreshed on every open) when the window
+	// holds none. Show Histogram works off the DISPLAY, so a grid window qualifies too.
+	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto]() {
+		aBinarize->setEnabled(sceneHasImage(s));
+		aHisto->setEnabled(sceneHasImage(s) || sceneHasGrid(s));
+	});
 
 	QMenu *mView = win->menuBar()->addMenu("&View");
 	mView->addAction("&Reset Camera", actReset, QKeySequence("R"));

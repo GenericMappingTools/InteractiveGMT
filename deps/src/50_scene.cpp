@@ -707,10 +707,14 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	// Percentile histogram stretch -> new 8-bit image row. Meaningful for a wide-range (e.g. 16-bit
 	// satellite) image shown as a fast min-max preview; Julia reports if there is no wider source.
 	QAction *aStretch = m.addAction("Auto histogram stretch (new image)");
+	// Binarize: opens the dialog, or brings back the one that was closed (it only HIDES, keeping its
+	// mask + undo) — this handle is where a "minimized" Binarize dialog lives, like Aquamoto's.
+	QAction *aBinarize = g_binarizeReopen ? m.addAction("Binarize Image…") : nullptr;
 	QAction *aSave = m.addAction("Save image…");
 	QAction *aDel = m.addAction("Remove");
 	QAction *c = m.exec(g);
 	if (!c) return;
+	if (aBinarize && c == aBinarize) { g_binarizeReopen(s, s->extras[idx].name.c_str()); return; }
 	if (c == aSave) { saveObjectDialog(s, "image", QString::fromStdString(s->extras[idx].name)); return; }
 	if (c == aStretch) { stretchImageObject(s, QString::fromStdString(s->extras[idx].name)); return; }
 	ExtraObj &ex = s->extras[idx];            // vector unchanged during exec -> index still valid

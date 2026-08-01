@@ -105,6 +105,7 @@
 #include <QStringList>
 #include <QSettings>
 #include <QMimeData>
+#include <QImage>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>

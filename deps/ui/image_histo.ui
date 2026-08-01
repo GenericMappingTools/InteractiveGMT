@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ImageHistoDialog</class>
+ <widget class="QDialog" name="ImageHistoDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>536</width>
+    <height>400</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Image histogram</string>
+  </property>
+  <widget class="HistoAxesWidget" name="axes1" native="true">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>536</width>
+     <height>131</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="HistoAxesWidget" name="axes2" native="true">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>123</y>
+     <width>536</width>
+     <height>126</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="HistoAxesWidget" name="axes3" native="true">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>246</y>
+     <width>536</width>
+     <height>154</height>
+    </rect>
+   </property>
+  </widget>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>HistoAxesWidget</class>
+   <extends>QWidget</extends>
+   <header>histoaxeswidget.h</header>
+   <container>0</container>
+  </customwidget>
+ </customwidgets>
+</ui>
