@@ -1302,6 +1302,41 @@ GMTVTK_API void gmtvtk_tiles_log(void *dlg, const char *msg) {
 	reinterpret_cast<TilesPicker*>(dlg)->logDownload(QString::fromUtf8(msg));
 }
 
+// Register the LIDAR2011-PT callback (Mirone cartas_militares.m 'nikles' mode). `fn` (Julia
+// @cfunction, signature JuliaLidarFn) gets "op;..." from the picker: "init" (asks for the tile table,
+// pushed back via gmtvtk_lidar_set_tiles) and "go;rMin/rMax/cMin/cMax;res;dir" (build the mosaic).
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_lidar_callback(JuliaLidarFn fn) {
+	g_juliaLidar = fn;
+}
+
+// Set the path to the LIDAR2011 picker's background image (data/PTimg_lidar.jpg, mainland Portugal in
+// the survey's metric frame over the extent lidarPT() hard-codes). Pushed from Julia at __init__.
+GMTVTK_API void gmtvtk_set_lidar_image(const char *path) {
+	g_lidarImg = QString::fromUtf8(path ? path : "");
+}
+
+// Push the survey's tile table into the open LIDAR2011 picker `dlg` (a LidarPicker*). `rects` is 4*n
+// doubles — x0,x1,y0,y1 per row, row 0 being the survey's global bounding box — and `names` the
+// matching newline-joined tile names, i.e. exactly the rows Julia read from data/lidarPT.dat with
+// gmtread. Called SYNCHRONOUSLY from Julia's op "init", so `dlg` is the live picker.
+GMTVTK_API void gmtvtk_lidar_set_tiles(void *dlg, const double *rects, const char *names, int n) {
+	if (!dlg || !rects || n < 1) return;
+	QStringList nm = QString::fromUtf8(names ? names : "").split('\n');
+	LidarPicker *p = reinterpret_cast<LidarPicker*>(dlg);
+	p->map->setTiles(rects, nm, n);
+	p->map->update();
+}
+
+// One-line progress text in the open LIDAR2011 picker (replaces Mirone's aguentabar while the tiles
+// are being read). Empty string hides it. `dlg` = the live LidarPicker* that issued the request.
+GMTVTK_API void gmtvtk_lidar_status(void *dlg, const char *msg) {
+	if (!dlg) return;
+	LidarPicker *p = reinterpret_cast<LidarPicker*>(dlg);
+	p->setStatus(QString::fromUtf8(msg ? msg : ""));
+	QApplication::processEvents();          // we are called from inside the blocking build -> paint now
+}
+
 // Register the Background-region callback. `fn` (Julia @cfunction, signature JuliaBgRegionFn) is
 // called with "W/E/S/N/geographic" from the File > Background region dialog; Julia opens a fresh
 // blank white 2-D map framed to those limits. nullptr to detach.

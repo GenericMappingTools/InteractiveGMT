@@ -509,6 +509,476 @@ private:
 };
 
 // ============================================================================================
+// LIDAR2011 PT — port of Mirone's cartas_militares.m in its second mode (menu entry
+// "Tools -> Misc Tools -> LIDAR2011 PT" calls cartas_militares(handles,'nikles'), whose 2-arg branch
+// hands the figure straight to the local `lidarPT` function and returns, so NONE of the 1:25000
+// "Cartas Militares" tile matrix is built). What remains is a mosaic picker over the LIDAR2011 PT
+// survey: a background image of mainland Portugal in the survey's metric frame, the survey's
+// 1600 x 1000 m tile matrix drawn as ONE mesh (only the cells that actually have data), click a cell
+// to select it (red) / click it again to drop it, then "Faz Mosaico" builds the grid spanning the
+// bounding box of everything selected — inner unselected cells included, exactly as the original.
+//
+// Geometry is a literal transcription of cartas_militares_LayoutFcn (absolute pixel positions,
+// y_qt = FigH - y_matlab - h; the figure is 'Resize','off' and sized from the screen: FigH =
+// screenH-65, FigW = round(FigH/2), axes = [0 60 FigW FigH-60]) plus lidarPT()'s own additions
+// (resolution popup + "Faz Mosaico" made visible, In-Web radio disabled, title "LIDAR2011",
+// addHelpLegend's text panel, setSliders' pan sliders).
+//
+// The tile table itself is NOT hard-coded here: Julia reads data/lidarPT.dat with gmtread and pushes
+// it in via gmtvtk_lidar_set_tiles when the dialog opens (op "init") — the same rows Mirone loaded
+// from data/lidarPT.mat (row 1 = the global bounding box, rows 2..N = one 1600x1000 m tile each,
+// with the tile's name in the trailing text field).
+// ============================================================================================
+class LidarArea : public QWidget {       // the clickable map: PT background image + survey tile mesh
+public:
+	static constexpr double XINC = 1600.0;   // LIDAR2011 tile size, metres (lidarPT.m x_inc/y_inc)
+	static constexpr double YINC = 1000.0;
+	// The background image's extent, hard-coded exactly as in lidarPT() ("Hard code this limits.
+	// This is very bug prone solution I know but avoids having to have a .jgw file").
+	static constexpr double BGX0 = -123787.423169315, BGX1 = 92138.1835464904;
+	static constexpr double BGY0 = -303489.079090607, BGY1 = 261783.41534662;
+
+	QPixmap bg;                                        // data/PTimg_lidar.jpg
+	double  dx0 = 0, dx1 = 0, dy0 = 0, dy1 = 0;        // the survey's global bounding box (mosaico row 1)
+	int     nColsQ = 0;                                // (dx1-dx0)/XINC + 1, the row-major index stride
+	std::map<int, QString> cells;                      // linear cell index -> tile name (the data cells)
+	std::set<int>          sel;                        // selected cells (a click toggles one)
+	double  vX0 = 0, vX1 = 1, vY0 = 0, vY1 = 1;        // current view window, map metres
+	double  fX0 = 0, fX1 = 1, fY0 = 0, fY1 = 1;        // the full ("zoomed out") view, for clamping
+	std::function<void()> onViewChanged;               // notify the picker (re-sync the pan sliders)
+	// Left-drag rubber-band zoom (a plain click without movement still toggles a cell); a double-click
+	// zooms back out to the full extent, undoing the cell its first click had just toggled.
+	QPoint  pressPx;  bool dragging = false;  QRect band;
+	int     lastToggled = 0;
+	bool    swallowRelease = false;      // Qt sends a release AFTER a double-click — it must not select
+
+	explicit LidarArea(QWidget *p) : QWidget(p) { setFocusPolicy(Qt::StrongFocus); }
+
+	// Install the tile table pushed from Julia. `rects` is 4*n doubles (x0,x1,y0,y1 per row) and
+	// `names` the matching newline-joined names; row 0 is the survey's global bbox (its name unused),
+	// rows 1..n-1 are the tiles. Index arithmetic is Mirone's verbatim (lidarPT(): col/row from the
+	// tile's lower-left corner, ind = (row-1)*nColsQ + col), so C++ and Julia agree on every cell id.
+	void setTiles(const double *rects, const QStringList &names, int n) {
+		cells.clear(); sel.clear();
+		if (!rects || n < 1) return;
+		dx0 = rects[0]; dx1 = rects[1]; dy0 = rects[2]; dy1 = rects[3];
+		nColsQ = int(std::lround((dx1 - dx0) / XINC)) + 1;
+		for (int k = 1; k < n; ++k) {
+			int col = int(std::lround((rects[4 * k + 0] - dx0) / XINC)) + 1;
+			int row = int(std::lround((rects[4 * k + 2] - dy0) / YINC)) + 1;
+			cells[(row - 1) * nColsQ + col] = (k < names.size()) ? names[k] : QString();
+		}
+		resetView();
+	}
+	// lidarPT()'s initial limits: the data bbox with a wide left/right margin (so the whole background
+	// image fits) and a two-cell margin top/bottom.
+	void resetView() {
+		fX0 = dx0 - 35 * XINC; fX1 = dx1 + 30 * XINC;
+		fY0 = dy0 -  2 * YINC; fY1 = dy1 +  2 * YINC;
+		vX0 = fX0; vX1 = fX1; vY0 = fY0; vY1 = fY1;
+		fitAspect(); update(); if (onViewChanged) onViewChanged();
+	}
+	// 'DataAspectRatio',[1 1 1] — metres must be square on screen, so grow whichever axis is short.
+	void fitAspect() {
+		if (width() < 2 || height() < 2) return;
+		double sx = (vX1 - vX0) / width(), sy = (vY1 - vY0) / height();
+		double s = std::max(sx, sy);
+		double cx = (vX0 + vX1) / 2, cy = (vY0 + vY1) / 2;
+		double hw = s * width() / 2, hh = s * height() / 2;
+		vX0 = cx - hw; vX1 = cx + hw; vY0 = cy - hh; vY1 = cy + hh;
+	}
+	double x2px(double x) const { return (x - vX0) / (vX1 - vX0) * width(); }
+	double y2py(double y) const { return (vY1 - y) / (vY1 - vY0) * height(); }
+	double px2x(double px) const { return vX0 + px / std::max(1, width())  * (vX1 - vX0); }
+	double py2y(double py) const { return vY1 - py / std::max(1, height()) * (vY1 - vY0); }
+
+	// '+'/'-' keys, as in figure1_KeyPressFcn (zoom_j 2 / 0.5): scale the span about the view centre,
+	// never past the full extent.
+	void zoomBy(double f) {
+		double cx = (vX0 + vX1) / 2, cy = (vY0 + vY1) / 2;
+		double hw = (vX1 - vX0) / (2 * f), hh = (vY1 - vY0) / (2 * f);
+		double maxHw = (fX1 - fX0) / 2, maxHh = (fY1 - fY0) / 2;
+		if (hw > maxHw || hh > maxHh) { hw = maxHw; hh = maxHh; cx = (fX0 + fX1) / 2; cy = (fY0 + fY1) / 2; }
+		vX0 = cx - hw; vX1 = cx + hw; vY0 = cy - hh; vY1 = cy + hh;
+		fitAspect(); clampView(); update(); if (onViewChanged) onViewChanged();
+	}
+	// Centre the view on (cx,cy) keeping its span (the arrow keys and the pan sliders drive this).
+	void panTo(double cx, double cy) {
+		double hw = (vX1 - vX0) / 2, hh = (vY1 - vY0) / 2;
+		vX0 = cx - hw; vX1 = cx + hw; vY0 = cy - hh; vY1 = cy + hh;
+		clampView(); update(); if (onViewChanged) onViewChanged();
+	}
+	void panBy(double fx, double fy) {           // fractions of the current span (arrow keys)
+		panTo((vX0 + vX1) / 2 + fx * (vX1 - vX0), (vY0 + vY1) / 2 + fy * (vY1 - vY0));
+	}
+	void clampView() {                            // keep the view inside the full extent
+		double w = vX1 - vX0, h = vY1 - vY0;
+		if (w < fX1 - fX0) { if (vX0 < fX0) { vX0 = fX0; vX1 = fX0 + w; }  if (vX1 > fX1) { vX1 = fX1; vX0 = fX1 - w; } }
+		if (h < fY1 - fY0) { if (vY0 < fY0) { vY0 = fY0; vY1 = fY0 + h; }  if (vY1 > fY1) { vY1 = fY1; vY0 = fY1 - h; } }
+	}
+	// The cell rectangle (map metres) of a linear cell index, and the reverse look-up from a point.
+	QRectF cellRect(int ind) const {
+		int col = (ind - 1) % nColsQ + 1, row = (ind - 1) / nColsQ + 1;
+		double x = dx0 + (col - 1) * XINC, y = dy0 + (row - 1) * YINC;
+		return QRectF(x, y, XINC, YINC);
+	}
+	int cellAt(double x, double y) const {
+		if (nColsQ <= 0) return 0;
+		int col = int(std::floor((x - dx0) / XINC)) + 1;
+		int row = int(std::floor((y - dy0) / YINC)) + 1;
+		if (col < 1 || col > nColsQ || row < 1) return 0;
+		return (row - 1) * nColsQ + col;
+	}
+protected:
+	void resizeEvent(QResizeEvent *) override { fitAspect(); clampView(); if (onViewChanged) onViewChanged(); }
+
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.setRenderHint(QPainter::SmoothPixmapTransform, true);
+		g.fillRect(rect(), QColor(255, 255, 255));
+		if (!bg.isNull()) {                      // the PT background over its hard-coded extent
+			QRectF tgt(x2px(BGX0), y2py(BGY1), x2px(BGX1) - x2px(BGX0), y2py(BGY0) - y2py(BGY1));
+			g.drawPixmap(tgt, bg, QRectF(bg.rect()));
+		}
+		// the survey mesh: one rectangle per data cell, 'EdgeColor','y','FaceColor','none'
+		const double cw = XINC / (vX1 - vX0) * width();          // a cell's on-screen width
+		g.setPen(QPen(QColor(230, 200, 0), 1));
+		g.setBrush(Qt::NoBrush);
+		if (cw >= 1.5) {                                          // below ~1 px the mesh is just noise
+			for (const auto &kv : cells) {
+				QRectF r = cellRect(kv.first);
+				if (r.right() < vX0 || r.left() > vX1 || r.top() > vY1 || r.bottom() < vY0) continue;
+				g.drawRect(QRectF(x2px(r.left()), y2py(r.top() + r.height()),
+				                  x2px(r.right()) - x2px(r.left()),
+				                  y2py(r.top()) - y2py(r.top() + r.height())));
+			}
+		}
+		else {                                                    // zoomed out: a solid coverage blob
+			g.setPen(Qt::NoPen); g.setBrush(QColor(230, 200, 0, 120));
+			for (const auto &kv : cells) {
+				QRectF r = cellRect(kv.first);
+				g.drawRect(QRectF(x2px(r.left()), y2py(r.top() + r.height()),
+				                  std::max(1.0, x2px(r.right()) - x2px(r.left())),
+				                  std::max(1.0, y2py(r.top()) - y2py(r.top() + r.height()))));
+			}
+		}
+		// selected cells — bdnLidar's red patch ('FaceColor','r'), click again to delete it
+		g.setPen(QPen(QColor(180, 0, 0), 1)); g.setBrush(QColor(255, 0, 0, 170));
+		for (int ind : sel) {
+			QRectF r = cellRect(ind);
+			g.drawRect(QRectF(x2px(r.left()), y2py(r.top() + r.height()),
+			                  std::max(1.0, x2px(r.right()) - x2px(r.left())),
+			                  std::max(1.0, y2py(r.top()) - y2py(r.top() + r.height()))));
+		}
+		if (dragging && band.width() > 1 && band.height() > 1) {  // the rubber-band zoom rectangle
+			g.setPen(QPen(QColor(0, 0, 0), 1, Qt::DashLine));
+			g.setBrush(QColor(0, 90, 200, 40));
+			g.drawRect(band);
+		}
+	}
+	// Toggle the cell under a point — the plain-click selection (bdnLidar's red patch, and its
+	// "delete(gco)" when the patch itself is clicked again).
+	void toggleAt(double x, double y) {
+		int ind = cellAt(x, y);
+		lastToggled = 0;
+		if (ind <= 0 || cells.find(ind) == cells.end()) return;   // outside the surveyed area
+		auto it = sel.find(ind);
+		if (it != sel.end()) sel.erase(it);
+		else                 sel.insert(ind);
+		lastToggled = ind;                        // so a double-click can undo this first click
+		update();
+	}
+	void mousePressEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton) return;
+		pressPx = e->position().toPoint();
+		dragging = false;
+		band = QRect(pressPx, pressPx);
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (!(e->buttons() & Qt::LeftButton)) return;
+		QPoint p = e->position().toPoint();
+		if (!dragging && (p - pressPx).manhattanLength() < 5) return;   // still a click, not a drag
+		dragging = true;
+		setCursor(Qt::SizeAllCursor);
+		band = QRect(pressPx, p).normalized();
+		update();
+	}
+	void mouseReleaseEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton) return;
+		// A double-click arrives as press / release / DoubleClick / release: this trailing release must
+		// NOT be read as a fresh click, or every zoom-out would select whatever square sits under it.
+		if (swallowRelease) { swallowRelease = false; return; }
+		if (!dragging) { toggleAt(px2x(e->position().x()), py2y(e->position().y())); return; }
+		dragging = false;
+		unsetCursor();
+		QRect b = band; band = QRect();
+		update();
+		if (b.width() < 5 || b.height() < 5) return;                    // a slip of the hand, not a zoom
+		double x0 = px2x(b.left()), x1 = px2x(b.right());
+		double y1 = py2y(b.top()),  y0 = py2y(b.bottom());
+		vX0 = x0; vX1 = x1; vY0 = y0; vY1 = y1;
+		fitAspect(); clampView(); update(); if (onViewChanged) onViewChanged();
+	}
+	// Double-click zooms back out to the whole survey AND clears the selection — including the cell the
+	// double-click's own first click had just toggled, which is why nothing needs undoing here.
+	void mouseDoubleClickEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton) return;
+		swallowRelease = true;                 // eat the release Qt sends right after this event
+		dragging = false; band = QRect();
+		lastToggled = 0;
+		sel.clear();
+		resetView();
+	}
+};
+
+// One LIDAR2011 picker per window, alive while parked. Closing it with the X does NOT destroy it: it
+// hides and PARKS as a handle at the bottom of that window's Scene Objects dock, exactly like a closed
+// X,Y plot / Contours / Illumination dialog — same Scene::parkedTools list, same parkTool/unparkTool
+// pair, same row builder. Re-picking the menu entry brings the SAME dialog back (selection and chosen
+// directory intact), never a second one.
+class LidarPicker;
+static std::map<Scene *, LidarPicker *> g_lidarDlgs;
+
+class LidarPicker : public QDialog {
+public:
+	Scene       *scene;
+	LidarArea   *map;
+	QComboBox   *cboDir;                      // popup_directory_list — where the *-mis_orto.* tiles live
+	QComboBox   *cboRes;                      // popup_resolution {2 10 20 50} metres
+	QScrollBar  *hbar, *vbar;                 // setSliders' pan pair
+	QLabel      *status;                      // replaces aguentabar ("A ler os fiches")
+	bool         reallyClose = false;         // set by the parked row's "Delete": let the next close through
+
+	void setStatus(const QString &t) { status->setText(t); status->setVisible(!t.isEmpty()); }
+
+	// Bring the dialog back from the dock (double-click, the row's checkbox, its "Show" item). ONE
+	// function for every way back in, like xyUnpark / ContourDialog::unpark.
+	void unpark() {
+		unparkTool(scene, this);
+		setWindowState(windowState() & ~Qt::WindowMinimized);
+		showNormal();
+		raise();
+		activateWindow();
+	}
+	// The parked row's menu — properties button and context menu are the same lambda, never two.
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scene, this);
+				deleteLater();               // destroyed -> the row and this object go with it
+			}
+		};
+	}
+	// Drop the registry entry by VALUE, not by `scene`: when the owning viewer window is torn down the
+	// dialog dies with it and the Scene may already be gone, so the key cannot be trusted.
+	~LidarPicker() override {
+		for (auto it = g_lidarDlgs.begin(); it != g_lidarDlgs.end(); )
+			it = (it->second == this) ? g_lidarDlgs.erase(it) : std::next(it);
+	}
+
+	LidarPicker(QWidget *parent, Scene *s, const QPixmap &img) : QDialog(parent), scene(s) {
+		// --- the figure itself: sized off the screen, fixed (cartas_militares_LayoutFcn) ---
+		const int screenH = QApplication::primaryScreen() ? QApplication::primaryScreen()->availableGeometry().height() : 900;
+		const int H  = screenH - 65;
+		const int W  = int(std::lround(H * 0.5));
+		const int AH = H - 60;                 // axes1 height
+		setWindowTitle("LIDAR2011");           // lidarPT(): set(handles.figure1,'Name','LIDAR2011')
+		setFixedSize(W, H);                    // 'Resize','off'
+
+		map = new LidarArea(this); map->bg = img;
+		map->setGeometry(0, 0, W, AH);         // axes1 = [0 60 FigW AxHeight]
+
+		// addHelpLegend's instruction panel — Mirone paints it permanently over the map's upper-right
+		// quadrant; here it is behind a "?" button instead (in English, and covering the mouse zoom
+		// this port adds), so it never sits on top of the tiles you are trying to click.
+
+		// setSliders(handles, 9, 50): vertical slider down the axes' right edge, horizontal one below it.
+		vbar = new QScrollBar(Qt::Vertical, this);   vbar->setGeometry(W - 9, 0, 9, AH);
+		hbar = new QScrollBar(Qt::Horizontal, this); hbar->setGeometry(0, H - 59, W, 9);
+
+		// --- the bottom control strip ---
+		cboDir = new QComboBox(this);
+		cboDir->setGeometry(10, H - 25, W - 40, 22);              // [10 3 FigW-40 22]
+		cboDir->setEditable(true);
+		cboDir->setToolTip("Select the directory where the LIDAR2011 PT LAZ files reside");
+		{   // Mirone seeds this from mirone_pref.mat's directory_list, with the remembered lidarPT_dir
+			// on top. Ours is the shared iGMT directory MRU (prefs/dirMRU) plus our own saved lidar dir.
+			QSettings st = igmtSettings();
+			QString last = st.value("lidar/dir").toString();
+			if (!last.isEmpty()) cboDir->addItem(last);
+			for (const QString &d : prefDirMRU())
+				if (!d.isEmpty() && cboDir->findText(d) < 0) cboDir->addItem(d);
+			cboDir->setCurrentIndex(0);
+		}
+		QToolButton *btnDir = new QToolButton(this);
+		btnDir->setGeometry(W - 31, H - 26, 21, 23);              // [FigWidth-31 3 21 23]
+		btnDir->setText("...");
+		{ QFont f = btnDir->font(); f.setPointSize(10); f.setBold(true); btnDir->setFont(f); }
+		btnDir->setToolTip("Select a different directory");
+
+		QRadioButton *rInLoco = new QRadioButton("In loco", this);
+		rInLoco->setGeometry(10, H - 45, 75, 15);                 // [10 30 61 15] (widened: Qt font)
+		rInLoco->setChecked(true);
+		rInLoco->setToolTip("When you have the files on disk");
+		rInLoco->setVisible(false);                               // hidden, like its In-Web twin below
+		QRadioButton *rInWeb = new QRadioButton("In Web", this);
+		rInWeb->setGeometry(130, H - 45, 85, 15);                 // [130 30 71 15]
+		rInWeb->setEnabled(false);                                // lidarPT(): set(radio_inWeb,'Enable','off')
+		rInWeb->setVisible(false);                                // ...and hidden here: disk is the only source
+		QButtonGroup *gWhere = new QButtonGroup(this);
+		gWhere->addButton(rInLoco); gWhere->addButton(rInWeb);
+
+		QLabel *txtRes = new QLabel("Resolution ", this);          // Mirone: "Resolução"
+		txtRes->setGeometry(W - 260, H - 42, 80, 16);             // [FigWidth-260 26 80 16]
+		txtRes->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+		cboRes = new QComboBox(this);
+		cboRes->setGeometry(W - 180, H - 47, 62, 21);             // [FigWidth-180 27 40 19], widened:
+		cboRes->addItems({"2", "10", "20", "50"});                // 40 px left no room for the number
+		cboRes->setToolTip("Select resolution of final DTM (in meters)");
+		QPushButton *btnGo = new QPushButton("Do Mosaic", this);   // Mirone: "Faz Mosaico"
+		btnGo->setGeometry(W - 110, H - 47, 100, 21);             // [FigWidth-110 26 100 21]
+		{ QFont f = btnGo->font(); f.setPointSize(10); f.setBold(true); btnGo->setFont(f); }
+
+		// "?" — addHelpLegend's text, on demand. Sits at the left end of the strip, where the two
+		// hidden radios used to be (the right half of that band holds resolution + "Do Mosaic").
+		QToolButton *btnHelp = new QToolButton(this);
+		btnHelp->setGeometry(10, H - 52, 26, 26);
+		btnHelp->setText("?");
+		{ QFont f = btnHelp->font(); f.setPointSize(12); f.setBold(true); btnHelp->setFont(f); }
+		btnHelp->setToolTip("How to use this window");
+
+		// Progress line (Mirone shows an aguentabar while reading the files). Overlaid on the map's
+		// bottom-left so the transcribed control strip keeps its geometry; hidden when idle.
+		status = new QLabel(this);
+		status->setGeometry(6, AH - 24, W - 20, 18);
+		status->setStyleSheet("background: rgba(255,255,255,220); color: #202020; border: 1px solid #808080;");
+		status->setVisible(false);
+
+		// --- wiring ---
+		map->onViewChanged = [this]() { syncBars(); };
+		QObject::connect(hbar, &QScrollBar::valueChanged, this, [this](int v) { onHBar(v); });
+		QObject::connect(vbar, &QScrollBar::valueChanged, this, [this](int v) { onVBar(v); });
+		QObject::connect(btnDir, &QToolButton::clicked, this, [this]() {
+			QString start = cboDir->currentText().trimmed();
+			if (start.isEmpty()) start = prefStartDir();
+			QString d = QFileDialog::getExistingDirectory(this, "Select a directory", start);
+			if (d.isEmpty()) return;
+			if (cboDir->findText(d) < 0) cboDir->insertItem(0, d);
+			cboDir->setCurrentText(d);
+			igmtSettings().setValue("lidar/dir", d);     // Mirone saves lidarPT_dir in mirone_pref.mat
+			prefPushDir(d);
+		});
+		QObject::connect(btnGo, &QPushButton::clicked, this, [this]() { doMosaic(); });
+		QObject::connect(btnHelp, &QToolButton::clicked, this, [this]() {
+			// addHelpLegend's text, translated literally, plus the two mouse-zoom lines this port adds.
+			QMessageBox::information(this, "LIDAR2011 PT",
+				"Select the directory holding the LIDAR2011 tiles.\n\n"
+				"For zoom, use the +/- keys.\nUse the arrows to move horizontally and vertically.\n"
+				"Left-click-drag defines the zoom window.\nDouble left-click unzooms to the full extent.\n\n"
+				"Click a little square to select it. More than one\nselects a rectangle.\n\n"
+				"At the end click \"Do Mosaic\".");
+		});
+		g_lidarDlgs[s] = this;
+		map->setFocus();
+	}
+protected:
+	// The X parks instead of destroying: the picker hides and leaves a handle in this window's Scene
+	// Objects dock, so the cell selection and the chosen data directory survive. Only the parked row's
+	// own "Delete" (which sets reallyClose) lets a close through.
+	void closeEvent(QCloseEvent *e) override {
+		if (reallyClose || !sceneAlive(scene)) { QDialog::closeEvent(e); return; }
+		e->ignore();
+		hide();
+		parkTool(scene, this, "LIDAR2011 PT", IC_Rect,
+		         "Closed LIDAR2011 PT picker — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scene);        // a handle nobody can see is no handle at all
+	}
+	// Escape reaches QDialog::reject(), which hides through done() WITHOUT a close event — that would
+	// leave the picker invisible and unparked. Route it through close() so it parks like the X.
+	void reject() override { close(); }
+	// figure1_KeyPressFcn: '+'/'-' zoom, arrow keys scroll horizontally/vertically.
+	void keyPressEvent(QKeyEvent *e) override {
+		switch (e->key()) {
+			case Qt::Key_Plus:  case Qt::Key_Equal: map->zoomBy(2.0);  return;
+			case Qt::Key_Minus:                     map->zoomBy(0.5);  return;
+			case Qt::Key_Right: map->panBy( 0.25,  0.0); return;
+			case Qt::Key_Left:  map->panBy(-0.25,  0.0); return;
+			case Qt::Key_Up:    map->panBy( 0.0,   0.25); return;
+			case Qt::Key_Down:  map->panBy( 0.0,  -0.25); return;
+		}
+		QDialog::keyPressEvent(e);
+	}
+private:
+	// Keep the pan sliders in step with the view; a slider is disabled while its whole axis is visible.
+	void syncBars() {
+		auto sync = [](QScrollBar *b, double v0, double v1, double f0, double f1, bool invert) {
+			double span = v1 - v0, full = f1 - f0;
+			b->blockSignals(true);
+			bool on = span < full - 1e-6;
+			b->setEnabled(on);
+			b->setRange(0, on ? 1000 : 0);
+			b->setPageStep(on ? int(1000.0 * span / full) : 1000);
+			if (on) {
+				double t = ((v0 + v1) / 2 - (f0 + span / 2)) / (full - span);
+				if (invert) t = 1.0 - t;
+				b->setValue(int(std::clamp(t * 1000.0, 0.0, 1000.0)));
+			}
+			b->blockSignals(false);
+		};
+		sync(hbar, map->vX0, map->vX1, map->fX0, map->fX1, false);
+		sync(vbar, map->vY0, map->vY1, map->fY0, map->fY1, true);   // value 0 = north (top)
+	}
+	void onHBar(int v) {
+		double span = map->vX1 - map->vX0, full = map->fX1 - map->fX0;
+		if (span >= full) return;
+		map->panTo(map->fX0 + span / 2 + v / 1000.0 * (full - span), (map->vY0 + map->vY1) / 2);
+	}
+	void onVBar(int v) {
+		double span = map->vY1 - map->vY0, full = map->fY1 - map->fY0;
+		if (span >= full) return;
+		map->panTo((map->vX0 + map->vX1) / 2, map->fY1 - span / 2 - v / 1000.0 * (full - span));
+	}
+	// push_lidarMosaico_CB: the bounding box of every selected cell (inner unselected cells included),
+	// the decimation resolution and the data directory go to Julia, which reads the tiles and builds
+	// the mosaic grid. Row/col are Mirone's 1-based data-matrix addresses, so Julia can re-derive each
+	// cell's name from the same table it pushed in.
+	void doMosaic() {
+		if (map->sel.empty()) {
+			QMessageBox::warning(this, "LIDAR2011",
+				QString::fromUtf8("Selecciona pelo menos um quadradinho (clica num quadrado do mosaico)."));
+			return;
+		}
+		int rMin = std::numeric_limits<int>::max(), rMax = 0;
+		int cMin = std::numeric_limits<int>::max(), cMax = 0;
+		for (int ind : map->sel) {
+			int col = (ind - 1) % map->nColsQ + 1, row = (ind - 1) / map->nColsQ + 1;
+			rMin = std::min(rMin, row); rMax = std::max(rMax, row);
+			cMin = std::min(cMin, col); cMax = std::max(cMax, col);
+		}
+		QString dir = cboDir->currentText().trimmed();
+		if (dir.isEmpty()) {
+			QMessageBox::warning(this, "LIDAR2011", QString::fromUtf8("Selecciona primeiro o directório dos dados."));
+			return;
+		}
+		igmtSettings().setValue("lidar/dir", dir);
+		QString params = QString("go;%1/%2/%3/%4;%5;%6").arg(rMin).arg(rMax).arg(cMin).arg(cMax)
+		                        .arg(cboRes->currentText()).arg(dir);
+		setStatus(QString::fromUtf8("A ler os fiches…  (a primeira vez também compila)"));
+		QApplication::processEvents();                 // paint the status before the blocking call
+		if (g_juliaLidar) g_juliaLidar(scene, this, params.toUtf8().constData());
+		setStatus("");
+	}
+};
+
+// ============================================================================================
 // Background region dialog (File > Background region). A tiny form mirroring Mirone's empty-figure
 // limits chooser: a compass-laid-out W/E/S/N (N on top, W/E flanking, S below), an "Is Geographic?"
 // checkbox (default on) and OK. exec() returns Accepted with `region` = "W/E/S/N/geographic", which
@@ -12276,6 +12746,22 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (!g_tilesWorld.isEmpty()) world.load(g_tilesWorld);
 		TilesPicker *dlg = new TilesPicker(win, s, world);
 		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->show();
+	});
+	// LIDAR2011 PT (port of Mirone's cartas_militares.m 'nikles' mode): a picker over the LIDAR2011 PT
+	// survey's 1600x1000 m tile matrix; select cells, "Faz Mosaico" -> Julia reads the tiles and opens
+	// the mosaic grid. The tile table is fetched from Julia (op "init") right after construction, so the
+	// mesh is painted from data/lidarPT.dat. Non-modal; WA_DeleteOnClose frees it when closed.
+	mTools->addAction("LIDAR2011 PT", [win, s]() {
+		auto it = g_lidarDlgs.find(s);
+		if (it != g_lidarDlgs.end()) { it->second->unpark(); return; }   // the SAME picker, selection intact
+		warmupTool("lidarpt");
+		QPixmap img;
+		if (!g_lidarImg.isEmpty()) img.load(g_lidarImg);
+		LidarPicker *dlg = new LidarPicker(win, s, img);
+		// WA_DeleteOnClose is deliberately NOT set: closing parks the picker in Scene Objects, and the
+		// parked handle has to be able to bring this same dialog back.
+		if (g_juliaLidar) g_juliaLidar(s, dlg, "init");    // Julia gmtreads data/lidarPT.dat -> setTiles
 		dlg->show();
 	});
 	// Empilhador (port of Mirone's empilhador.m): stack a list of grids, or of MODIS/VIIRS/SeaWiFS L2

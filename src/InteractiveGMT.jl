@@ -49,6 +49,7 @@ include("xystick.jl")    # stick (vector) diagrams for the X,Y tool (ecran 'stic
 include("drop.jl")
 include("basemap.jl")    # World Topo Tiles picker (ported from Mirone bg_map.m)
 include("tilestool.jl")  # Tools > Tiles Tool (ported from Mirone tiles_tool.m; mosaic via GMT.mosaic)
+include("lidarpt.jl")    # Tools > LIDAR2011 PT (ported from Mirone cartas_militares.m 'nikles' mode)
 include("dimfun.jl")     # grdsample Region box recompute (port of Mirone dim_funs.m)
 include("grdsample.jl")  # GMT > Resample (grdsample)
 include("bgregion.jl")   # File > Background region -> blank white 2-D map framed to W/E/S/N
@@ -153,6 +154,11 @@ function __init__()
 			_install_tiles_assets()
 		catch e
 			@warn "InteractiveGMT: could not install Tiles Tool world image (rebuild deps/build.bat if the export is missing)." exception=(e,)
+		end
+		try
+			_install_lidar_assets()
+		catch e
+			@warn "InteractiveGMT: could not install the LIDAR2011 PT background image (rebuild deps/build.bat if the export is missing)." exception=(e,)
 		end
 	catch e
 		@warn "InteractiveGMT: the Qt+VTK viewer DLL could not be loaded; build it with deps/build.bat (Windows only). Viewer calls will error until then." exception=(e,)

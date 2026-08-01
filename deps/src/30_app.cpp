@@ -200,6 +200,17 @@ typedef void (*JuliaTilesFn)(void *scene, void *dlg, const char *params);
 static JuliaTilesFn g_juliaTiles = nullptr;
 static QString      g_tilesWorld;
 
+// LIDAR2011 PT (Tools menu, port of Mirone's cartas_militares.m in its "nikles" = LIDAR mosaic mode).
+// The picker paints data/PTimg_lidar.jpg (mainland Portugal in the ETRS89/PT-TM06-ish metric frame the
+// survey uses) under the survey's 1600x1000 m tile matrix, and hands "op;..." requests to Julia
+// (g_juliaLidar): op "init" asks for the tile table (read with gmtread from data/lidarPT.dat and pushed
+// back via gmtvtk_lidar_set_tiles), op "go" builds the mosaic of the selected cells' bounding box.
+// `dlg` is the picker (LidarPicker*) so Julia can call back into it. g_lidarImg is the background
+// image's path, pushed from Julia at __init__ via gmtvtk_set_lidar_image.
+typedef void (*JuliaLidarFn)(void *scene, void *dlg, const char *params);
+static JuliaLidarFn g_juliaLidar = nullptr;
+static QString      g_lidarImg;
+
 // Background region (File > Background region, port of Mirone's empty-figure-with-limits). A small
 // dialog asks for W/E/S/N + "Is Geographic?"; the result "W/E/S/N/geographic" is handed to Julia
 // (g_juliaBgRegion), which opens a fresh window framed to those limits as a blank white 2-D map

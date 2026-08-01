@@ -57,6 +57,7 @@ function _ensure_callbacks()
 	                    ("xy-new",      _register_xy_new),
 	                    ("basemap",     _register_basemap),
 	                    ("tiles",       _register_tiles),
+	                    ("lidarpt",     _register_lidar),
 	                    ("bgregion",    _register_bgregion),
 	                    ("new-window",  _register_new_window),
 	                    ("save",        _register_save),
