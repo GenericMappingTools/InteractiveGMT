@@ -12665,7 +12665,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	flyout->setPopupMode(QToolButton::MenuButtonPopup);  // click icon = use tool; click arrow = flyout
 	flyout->setToolButtonStyle(Qt::ToolButtonIconOnly);
 	QMenu *shapeMenu = new QMenu(flyout);                // the dropdown flyout list
-	QAction *defaultShape = nullptr;                     // the tool the slot starts on (Line)
+	QAction *defaultShape = nullptr;                     // the tool the slot starts on (Polyline)
 	for (const ToolDef &td : flyoutTools) {
 		QAction *act = shapeMenu->addAction(td.icon, td.name);   // icon + label (the slot itself stays icon-only)
 		act->setCheckable(true);
@@ -12673,10 +12673,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		const Scene::ShapeKind kind = td.kind;
 		QObject::connect(act, &QAction::toggled, [s, act, kind](bool on){ polygonToolToggled(s, act, kind, on); });
 		s->shapeActs.push_back(act);
-		if (kind == Scene::SH_Line) defaultShape = act;
+		if (kind == Scene::SH_Polyline) defaultShape = act;
 	}
 	flyout->setMenu(shapeMenu);
-	// Start on Line (icon + tooltip mirror it); fall back to the first entry if Line ever goes away.
+	// Start on Polyline (icon + tooltip mirror it); fall back to the first entry if Polyline ever goes away.
 	flyout->setDefaultAction(defaultShape ? defaultShape : shapeMenu->actions().first());
 	// Picking a sibling from the flyout makes it the slot's current tool (Illustrator behaviour): the
 	// chosen action toggles on (its connection enters draw mode) and becomes the button's default.

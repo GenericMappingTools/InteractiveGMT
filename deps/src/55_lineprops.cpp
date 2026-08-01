@@ -862,6 +862,10 @@ static void rectRoiCrop(Scene *s, const LineRef &lr, const char *kind) {
 // ElasticDialog class — this fragment is #included before it, so forward-declare it here).
 static void faultRunDialog(Scene *s, vtkActor *seedPatch = nullptr);
 
+// Start a "Copy me" clone-and-follow-mouse (defined in 85_polygon.cpp, #included after this fragment —
+// same forward-declare pattern as faultRunDialog above).
+static void copyMeStart(Scene *s, const Polygon &src);
+
 // The unified right-click menu for a line object: "Line properties…" plus the kind's own actions
 // (profile: save / delete; overlay & polygon: hide; polygon: delete). Shared by the 3-D-view
 // right-click hit-test and the Scene Objects list rows, so both routes give the same menu.
@@ -914,6 +918,16 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 		if (!ovp || !ovp->noDataTable)                                       // e.g. mgd77 cruise tracks: no table
 			m.addAction("Show data table…",                                  // floating vertex table viewer
 						[s, lr, name]() { showLineDataTable(s, lr, name); });
+	}
+
+	// "Copy me": lines, polylines and polygons only — not a rectangle (isRectShape, axis-aligned edits
+	// mean a "free" copy would violate that constraint), not a fault trace or slip patch (own dedicated
+	// dialog/menu). A circle has no distinguishing flag from a generic closed polygon anywhere else in
+	// this menu either, so it rides along as one, same as everywhere else.
+	if (!isSlip && !isFault && !isRectShape && lr.kind == LK_Polygon) {
+		const int cpi = polyIndexOfActor(s, a);
+		if (cpi >= 0)
+			m.addAction("Copy me", [s, cpi]() { if (cpi < (int)s->polys.size()) copyMeStart(s, s->polys[cpi]); });
 	}
 
 	// ANY drawn rectangle (plain or "Nested grids") gets a numeric limits editor -- a Mirone-style

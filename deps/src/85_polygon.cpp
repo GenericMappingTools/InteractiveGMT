@@ -876,6 +876,50 @@ static void polyFinalize(Scene *s, std::vector<std::array<double,3>> verts, bool
 	else            polygonSetMode(s, false);
 }
 
+// Tear down the "Copy me" floating clone (commit or abandon) and reset the drag state.
+static void copyMeEnd(Scene *s) {
+	if (s->copyGhost.fill) s->ren->RemoveActor(s->copyGhost.fill);
+	if (s->copyGhost.line) s->ren->RemoveActor(s->copyGhost.line);
+	s->copyGhost = Polygon{};
+	s->copyDragging = false;
+}
+
+// "Copy me" (line/polyline/polygon context menu, 55_lineprops.cpp): clone `src`'s geometry + look
+// into a floating ghost that tracks the cursor (polygonHandleMove) until a left click drops it
+// (polygonHandlePress), at which point it commits through the SAME polyFinalize a draw tool's
+// double-click uses. The ghost is its OWN Polygon/actor pair, never aliased to `src`'s — assigning
+// vtkSmartPointers would alias the SAME actor into both, so only value fields are copied here.
+static void copyMeStart(Scene *s, const Polygon &src) {
+	if (!s || !s->widget || src.v.empty()) return;
+	copyMeEnd(s);   // abandon any clone already in flight (rare: menu re-invoked mid-drag)
+	s->copyGhost.v           = src.v;
+	s->copyGhost.closed      = src.closed;
+	s->copyGhost.fillColor[0] = src.fillColor[0];
+	s->copyGhost.fillColor[1] = src.fillColor[1];
+	s->copyGhost.fillColor[2] = src.fillColor[2];
+	s->copyGhost.fillOpacity = src.fillOpacity;
+	s->copyGhost.groupName   = src.groupName;
+
+	const QPoint lp = s->widget->mapFromGlobal(QCursor::pos());
+	double w[3];
+	if (polyPickWorld(s, lp.x(), lp.y(), w)) {
+		s->copyAnchorW = { w[0], w[1], w[2] };
+	} else {                                              // off-surface: fall back to the shape's own centroid
+		double cx = 0, cy = 0; const int n = (int)src.v.size();
+		for (auto &v : src.v) { cx += v[0]; cy += v[1]; }
+		s->copyAnchorW = { cx / n, cy / n, 0.0 };
+	}
+
+	polyRebuildLine(s, s->copyGhost);   // first build: creates the ghost's own line/fill actors
+	if (s->copyGhost.line && src.line) {
+		double col[3]; src.line->GetProperty()->GetColor(col);
+		s->copyGhost.line->GetProperty()->SetColor(col[0], col[1], col[2]);
+		s->copyGhost.line->GetProperty()->SetLineWidth(src.line->GetProperty()->GetLineWidth());
+	}
+	s->copyDragging = true;
+	if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // ===========================================================================================
 //  "Nested grids" (tsunami) quantization — port of Mirone's nesting_sizes.m
 //
@@ -1650,6 +1694,39 @@ static bool vectorPickFire(Scene *s, int x, int y) {
 
 // Left/right press. button: 0 = left, 1 = right. shift: Shift held (whole-element drag in edit mode).
 static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
+	// "Copy me" clone in flight: a left click drops it where it stands, committing through the SAME
+	// polyFinalize a draw tool's double-click uses (kind inferred from the clone's own closed/vertex-
+	// count, exactly how the draw tools' own double-click picks "line"/"polyline"/"polygon"). Any
+	// other button is swallowed too — no stray camera nav while a clone is attached to the cursor.
+	if (s->copyDragging) {
+		if (button == 0 && s->copyGhost.v.size() >= 2) {
+			std::vector<std::array<double,3>> verts = s->copyGhost.v;
+			const bool   closed = s->copyGhost.closed;
+			const double fillColor[3] = { s->copyGhost.fillColor[0], s->copyGhost.fillColor[1], s->copyGhost.fillColor[2] };
+			const double fillOpacity  = s->copyGhost.fillOpacity;
+			const std::string groupName = s->copyGhost.groupName;
+			double outCol[3] = { 1.0, 0.55, 0.0 }; double outW = 2.5;
+			if (s->copyGhost.line) {
+				s->copyGhost.line->GetProperty()->GetColor(outCol);
+				outW = s->copyGhost.line->GetProperty()->GetLineWidth();
+			}
+			copyMeEnd(s);
+			const char *prefix = !closed ? (verts.size() == 2 ? "line" : "polyline") : "polygon";
+			polyFinalize(s, verts, closed, prefix);
+			if (!s->polys.empty()) {                        // restyle the just-finalized element to match the copy source
+				Polygon &np = s->polys.back();
+				np.line->GetProperty()->SetColor(outCol[0], outCol[1], outCol[2]);
+				np.line->GetProperty()->SetLineWidth(outW);
+				np.fillColor[0] = fillColor[0]; np.fillColor[1] = fillColor[1]; np.fillColor[2] = fillColor[2];
+				np.fillOpacity  = fillOpacity;
+				np.groupName    = groupName;
+				polyRebuildFill(s, np);
+				if (!groupName.empty()) rebuildSceneObjects(s);   // fold under the source's group (polyFinalize just built it top-level)
+			}
+			if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		}
+		return true;
+	}
 	const bool vertexTool = (s->polyShape == Scene::SH_Polygon || s->polyShape == Scene::SH_Polyline ||
 	                         s->polyShape == Scene::SH_Line || s->polyShape == Scene::SH_Fault);
 	// A tool armed a "point at a line" pick (Scene::vectorPickMode — Plates > Euler rotations'
@@ -1949,6 +2026,20 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 
 // Mouse move: extend the draw preview to the cursor, or drag the grabbed vertex / text label.
 static bool polygonHandleMove(Scene *s, int x, int y) {
+	// "Copy me" clone in flight: translate every vertex by the incremental cursor delta (same
+	// pattern as polyDragWhole below) and redraw through the SAME polyRebuildLine every drawn
+	// shape uses. Takes priority over everything else — nothing else may steal this gesture.
+	if (s->copyDragging) {
+		double w[3];
+		if (polyPickWorld(s, x, y, w)) {
+			const double ddx = w[0] - s->copyAnchorW[0], ddy = w[1] - s->copyAnchorW[1];
+			s->copyAnchorW[0] = w[0]; s->copyAnchorW[1] = w[1];
+			for (auto &v : s->copyGhost.v) { v[0] += ddx; v[1] += ddy; }
+			polyRebuildLine(s, s->copyGhost);
+		}
+		s->widget->renderWindow()->Render();
+		return true;
+	}
 	// An armed RECT vector pick (Scene::vectorPickMode == 2) rubber-bands with the SAME preview the
 	// rectangle draw tool uses — one preview implementation, not a second one for selection.
 	if (s->vectorPickMode == 2 && s->vectorPickDrawing) {

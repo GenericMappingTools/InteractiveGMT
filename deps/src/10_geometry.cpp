@@ -881,6 +881,14 @@ struct Scene {
 	int    symPtIdx  = -1;                             // which point within symbols[symPtDrag] (-1 = none)
 	double symPtDragLastW[2] = {0.0, 0.0};             // last picked world (x,y) for the incremental drag delta —
 	                                                    // same convention as polyDragLastW
+	// "Copy me" (line/polyline/polygon context menu, 85_polygon.cpp copyMeStart/End): a clone follows
+	// the cursor, attached to no button, until a left click drops it. The clone lives HERE as its own
+	// floating Polygon (never pushed into `polys` until commit) and is redrawn every move through the
+	// SAME polyRebuildLine every drawn shape uses; it commits through the SAME polyFinalize a draw
+	// tool's double-click uses — no parallel geometry or finalize path (SACRED_LAW).
+	bool    copyDragging = false;                      // true from "Copy me" click to the commit/left-click
+	Polygon copyGhost;                                  // the floating clone (its own line/fill actors)
+	std::array<double,3> copyAnchorW{ 0, 0, 0 };        // last picked world (x,y) — incremental drag delta, same convention as polyDragLastW
 	vtkSmartPointer<vtkActor>    polyHandles;          // square vertex handles for the edited polygon
 	vtkSmartPointer<vtkPolyData> polyHandlePD;
 	vtkSmartPointer<vtkActor>    symHandle;            // yellow handle on the armed symbol (symArmed) —
