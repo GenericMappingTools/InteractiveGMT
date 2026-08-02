@@ -223,10 +223,42 @@ struct PaletteLegend {
 	bool show = true;                        // the Color Bar row's per-object "want it shown" intent
 };
 
+// ============================ AxesSet =======================================
+// SACRED_LAW.md "Raster-own-axes law", in its final and absolute form: EACH RASTER HAS ITS OWN
+// AXES. PERIOD. Not one shared window cube re-framed to whoever loaded last -- a real, separate
+// set of axes OWNED BY the raster's own master handle container: its own cube, its own tick
+// marks, its own X/Y/Z number billboards, its own axis-name titles, and its own FRAME (the true
+// data limits, in ITS OWN units, that those numbers annotate). It is STRICTLY PROHIBITED for any
+// raster to reuse, inherit, re-frame or hide another raster's axes: the base surface holds
+// `Scene::baseAxes`, every dropped/derived grid, image or mesh holds its own `ExtraObj::ax`, and
+// a Scene Objects "Axes" row toggles THAT set and nothing else.
+//
+// Everything the axes need lives HERE, so there is no window-level axis state left for one handle
+// to reach into. x0..z1 are TRUE DATA coordinates (never the scaled actor space) -- `axesScaledBox`
+// is the ONE place they are turned into the drawn xfac/zfac*ve box, so every consumer of a set's
+// geometry reads the same source (SACRED_LAW.md: fix the shared source, never each call site).
+struct AxesSet {
+	vtkSmartPointer<vtkCubeAxesActor> cube;      // the box + gridlines (native labels/ticks OFF)
+	vtkSmartPointer<vtkActor>         ticks;     // our own single outward tickmarks
+	vtkSmartPointer<vtkPolyData>      tickPD;    // ... their geometry (rewritten every render)
+	std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> xlab, ylab, zlab;  // the value NUMBERS
+	vtkSmartPointer<vtkBillboardTextActor3D> title[2];   // the X/Y axis NAME titles
+	std::string name[2] = { "X", "Y" };          // ... their text, from THIS raster's own `geog`
+	// THIS raster's own frame, in TRUE data coordinates. z0/z1 are in ITS OWN UNITS (a mGal anomaly
+	// over a metre bathymetry keeps mGal), which is the whole point of the Z half of the law.
+	double x0 = 0, x1 = 1, y0 = 0, y1 = 1, z0 = 0, z1 = 1;
+	int    geog  = 0;        // THIS raster's own x,y kind: != 0 -> lon/lat titles, 0 -> X/Y
+	bool   shown = true;     // the owning handle's "Axes" checkbox (its OWN intent)
+	bool   built = false;    // actors created + added to the renderers
+};
+
 // An extra dataset dropped into an existing window (a second grid/image surface). Listed in
 // the Scene Objects panel with its own show/hide checkbox. `drape` is its optional image actor.
 struct ExtraObj {
 	vtkSmartPointer<vtkActor> actor;
+	// This raster's OWN axes (Raster-own-axes law above). Built when the extra is adopted; torn
+	// down with it. NEVER shared with, and never driven by, any other handle in the window.
+	AxesSet ax;
 	vtkSmartPointer<vtkActor> drape;
 	vtkSmartPointer<vtkTexture> tex;         // dropped-image texture (reused to rebuild flat plane / drape)
 	std::string name;                        // label shown in the Scene Objects panel (file name)
@@ -238,6 +270,12 @@ struct ExtraObj {
 	                                         // otherwise an ordinary non-image extra in every respect
 	                                         // (own checkbox, own stacking rank, own axes on adoption).
 	bool   draped  = false;                  // image currently draped on the host grid (else a flat plane)
+	bool   drapeApplied = false;             // the drape's automatic side effects (this image's own Axes
+	                                         // off; the HOST GRID unchecked, above all its axes) have
+	                                         // already fired for the CURRENT drape episode -- see
+	                                         // imageRebuildActor. Latched so the every-rebuild calls
+	                                         // (stacking, VE) cannot keep re-clearing what the user has
+	                                         // since ticked back on by hand.
 	double zpos    = 0.0;                    // flat-plane TRUE z — sits above/below the relief, NEVER at z=0
 	double bx0 = 0, bx1 = 0, by0 = 0, by1 = 0;  // image footprint (true coords): tcoords + grid-overlap test
 	int    gstack  = 0;                      // GRID draw-order rank in the grid pile (base relief + grids)
@@ -482,18 +520,17 @@ struct Scene {
 	vtkSmartPointer<vtkAssembly>          surfGroup;
 	std::vector<vtkSmartPointer<vtkActor>> tiles;
 	vtkSmartPointer<vtkActor>             drape;   // optional image overlay (CPT base shows under transparent texels)
-	vtkSmartPointer<vtkCubeAxesActor>     axes;
+	// The BASE surface's OWN axes (SACRED_LAW.md Raster-own-axes law -- see AxesSet above). This is
+	// the PRIMARY raster's set, not "the window's axes": it is owned by the base surface's own master
+	// handle exactly as every ExtraObj owns `ex.ax`, and nothing else in the window may frame, hide or
+	// re-label it. There is deliberately NO window-level axes state left here for a handle to reach.
+	AxesSet baseAxes;
 	// 3-D cube: pin the vertical axis box + Z tick labels to the WHOLE cube's z-range so the axes do
 	// not shift as the user switches layers (each layer's own min/max differs). Set once per cube via
 	// gmtvtk_set_cube_axes_zrange; cubeZMin/Max are UNSCALED data values (scaled by zfac*ve on use).
 	bool   cubeZLock = false;
 	double cubeZMin = 0.0, cubeZMax = 0.0;
-	vtkSmartPointer<vtkRenderer>          axesRen;  // overlay layer (1) for the Z tick billboards: own headlight (even, view-independent text brightness) + own depth (never occluded by the surface); shares the main camera
-	vtkSmartPointer<vtkActor>             axisTicks; // our OWN single outward tickmarks (cube native ticks are doubled across two faces -> off)
-	vtkSmartPointer<vtkPolyData>          axisTickPD;
-	std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> xlabels, ylabels, zlabels;  // tick labels drawn on the camera-near edges (never inside the cube)
-	vtkSmartPointer<vtkBillboardTextActor3D> axTitle[3];   // axis NAME titles (lon/lat/Z or X/Y/Z) as overlay billboards (cube-native titles don't render here)
-	std::string axName[3];                                 // the three axis names, picked by `geographic`
+	vtkSmartPointer<vtkRenderer>          axesRen;  // overlay layer (1) shared by ALL text/vector billboards (every raster's tick labels, the polygon handles, meca anchors): own headlight (even, view-independent text brightness) + own depth (never occluded by the surface); shares the main camera. A RENDER LAYER, not axis state.
 	vtkSmartPointer<vtkScalarBarActor>    bar;       // coloured strip only
 	vtkSmartPointer<vtkActor2D>           barTicks;  // our own tick-mark lines (strip has none in VTK 9.6)
 	std::vector<vtkSmartPointer<vtkTextActor>> barLabels;  // our own tick numbers
@@ -524,7 +561,7 @@ struct Scene {
 	// SUBREGION (gmtvtk_reframe_h), surfGetBounds() must report THAT subregion instead of the
 	// primary surface's own full bounds — every bounds-driven function (applyVE's axes-cube resize,
 	// fitSnapView's camera fit, rebuildAxisLabels' custom tick-label billboards — ALL THREE read
-	// surfGetBounds, never s->axes directly) then automatically stays consistent with the reframe
+	// surfGetBounds, never s->baseAxes.cube directly) then automatically stays consistent with the reframe
 	// with ZERO changes to any of them. false = untouched, normal behaviour (report the real actor).
 	bool   viewBoundsOverride = false;
 	double viewBounds[6] = { 0,0,0,0,0,0 };
@@ -1665,8 +1702,8 @@ static inline void pinCubeAxisZ(Scene *s, double b[6]) {
 // compute a NaN label count and abort the render) must not leak back into the caller's bounds,
 // which drive the flat-map Z-hide test. Only touches the actor when the box actually moved —
 // SetBounds always Modified()s, and this runs inside the render's StartEvent.
-static inline void axesSetBounds(Scene *s, const double bIn[6]) {
-	if (!s->axes) return;
+static inline void axesSetBounds(Scene *s, AxesSet &A, const double bIn[6]) {
+	if (!A.cube) return;
 	double b[6];
 	for (int i = 0; i < 6; ++i) b[i] = bIn[i];
 	if (b[5] <= b[4]) b[5] = b[4] + 1.0;         // flat-Z (flat-2D collapses VE to 0) — unchanged rule
@@ -1683,9 +1720,163 @@ static inline void axesSetBounds(Scene *s, const double bIn[6]) {
 		pad = (pad > 0.0) ? pad * 0.5 : 1.0;
 		b[k] -= pad; b[k + 1] += pad;
 	}
-	double cur[6]; s->axes->GetBounds(cur);
+	double cur[6]; A.cube->GetBounds(cur);
 	for (int i = 0; i < 6; ++i)
-		if (std::abs(cur[i] - b[i]) > 1e-9 * (1.0 + std::abs(b[i]))) { s->axes->SetBounds(b); return; }
+		if (std::abs(cur[i] - b[i]) > 1e-9 * (1.0 + std::abs(b[i]))) { A.cube->SetBounds(b); return; }
+}
+
+// ===================== per-raster axes: the ONE set of primitives ============
+// SACRED_LAW.md Raster-own-axes law. Every raster's axes go through THESE and only these, so a set
+// can only ever be built, framed, boxed, labelled or torn down as a WHOLE, by its OWN owner.
+
+// A set's drawn (xfac / zfac*ve scaled) box, from ITS OWN true-data frame. The ONE place a set's
+// data limits become world coordinates — the cube box, the tick billboards and the camera fit all
+// read it, so they can never disagree about where a raster's axes are.
+static inline void axesScaledBox(Scene *s, const AxesSet &A, double b[6]) {
+	const double zs = s->zfac * s->ve;
+	b[0] = A.x0 * s->xfac; b[1] = A.x1 * s->xfac;
+	b[2] = A.y0;           b[3] = A.y1;
+	b[4] = A.z0 * zs;      b[5] = A.z1 * zs;
+}
+
+// Point a set at ITS OWN raster's limits. THE only way a frame is ever set: a caller names the set
+// it owns and hands it that raster's own numbers — there is no call that can re-frame "the window",
+// so no handle can move another's axes.
+static inline void axesSetFrame(AxesSet &A, double x0, double x1, double y0, double y1,
+                                double z0, double z1, int geog) {
+	A.x0 = x0; A.x1 = x1; A.y0 = y0; A.y1 = y1; A.z0 = z0; A.z1 = z1; A.geog = geog;
+}
+
+// Build a raster's axes: its own cube, its own tickmark actor, its own two axis-NAME billboards.
+// ONE builder for every raster in the window — the base surface and every dropped/derived grid,
+// image or mesh all get an IDENTICAL, independent set (SACRED_LAW.md: same operation, same
+// function; never a second axes-construction path for "extras"). Idempotent: a set already built
+// is left alone. `addToRen` false = an empty launcher, which must not flash an axis box before it
+// holds data; the set is completed and shown by axesShow once the raster arrives.
+static void axesBuild(Scene *s, AxesSet &A, bool addToRen) {
+	if (A.built || !s || !s->ren) return;
+	A.cube = vtkSmartPointer<vtkCubeAxesActor>::New();
+	A.cube->SetCamera(s->ren->GetActiveCamera());
+	double b[6]; axesScaledBox(s, A, b);
+	if (b[5] - b[4] <= 0.0) b[5] = b[4] + 1.0;      // zero Z extent (bare image / flat) -> avoid
+	                                                 // vtkAxisActor 0/0 label-count crash
+	A.cube->SetBounds(b);
+	A.cube->SetXAxisRange(A.x0, A.x1);               // TRUE labels despite the actor scale
+	A.cube->SetYAxisRange(A.y0, A.y1);
+	A.cube->SetZAxisRange(A.z0, A.z1);
+	A.cube->GetTitleTextProperty(0)->SetColor(0.9, 0.9, 0.9);
+	A.cube->GetLabelTextProperty(0)->SetColor(0.8, 0.8, 0.8);
+	A.cube->GetXAxesLinesProperty()->SetColor(0.7, 0.7, 0.7);
+	// Geographic data -> lon/lat axis names; cartesian -> X/Y. Z always unnamed. Drawn as overlay
+	// billboards (placeAxisTitle), NOT cube-native titles (those don't render in this StaticTriad
+	// setup with native labels off). Clear the cube titles so nothing competes.
+	A.cube->SetXTitle(" "); A.cube->SetYTitle(" "); A.cube->SetZTitle(" ");  // single space, NOT "" — empty makes vtkVectorText error "Text is not set!" every render
+	A.name[0] = A.geog ? "lon" : "X";
+	A.name[1] = A.geog ? "lat" : "Y";                // X/Y names only — Z gets NO name title
+	for (int i = 0; i < 2; ++i) {
+		auto t = vtkSmartPointer<vtkBillboardTextActor3D>::New();
+		vtkTextProperty *tp = t->GetTextProperty();
+		tp->SetColor(1.0, 1.0, 1.0);
+		tp->SetFontFamilyToArial(); tp->BoldOn(); tp->ItalicOff(); tp->ShadowOff();
+		tp->SetFontSize(13);                         // a touch larger + bold so the name reads as a title
+		tp->SetJustificationToCentered();
+		tp->SetVerticalJustificationToCentered();
+		t->SetInput(A.name[i].c_str());
+		t->ForceOpaqueOn();
+		t->PickableOff();
+		t->SetVisibility(0);                         // rebuildAxesFor positions + shows it
+		(s->axesRen ? s->axesRen : s->ren)->AddViewProp(t);   // overlay layer: even brightness, never occluded
+		A.title[i] = t;
+	}
+	A.cube->DrawXGridlinesOn(); A.cube->DrawYGridlinesOn(); A.cube->DrawZGridlinesOn();
+	A.cube->SetGridLineLocation(vtkCubeAxesActor::VTK_GRID_LINES_FURTHEST);
+	// StaticTriad pins X,Y to the zmin FLOOR (coplanar) — Y/X labels are ALWAYS on the bottom
+	// edge, never lifting to a top edge — with native 3-D text (parallel/orthogonal to the axis,
+	// reorienting with the view). Mirrors the user's f3d_ext_cube_axes.cxx (his HARD RULE). Z's
+	// OWN labels run along the axis -> OFF; Z values are drawn as horizontal billboards (ALWAYS
+	// perpendicular to Z) by rebuildAxesFor().
+	A.cube->SetFlyModeToStaticTriad();
+	A.cube->SetTickLocationToOutside();
+	A.cube->SetScreenSize(13.0);
+	A.cube->SetZAxisVisibility(1);                   // draw the Z axis LINE (+ gridlines) like X/Y
+	// Native value labels AND native ticks OFF on ALL THREE axes. rebuildAxesFor draws the values as
+	// identical freetype billboards AND draws our own SINGLE outward tickmark per label (A.ticks) —
+	// the cube's native ticks were doubled across the two faces sharing each edge. Only the cube's
+	// axis LINES + gridlines remain.
+	A.cube->SetXAxisLabelVisibility(0);
+	A.cube->SetYAxisLabelVisibility(0);
+	A.cube->SetZAxisLabelVisibility(0);
+	A.cube->SetXAxisTickVisibility(0);
+	A.cube->SetYAxisTickVisibility(0);
+	A.cube->SetZAxisTickVisibility(0);
+	// MAJOR ticks only on every axis. Minor ticks defaulted ON and made a dense two-directional
+	// comb on Z (its range is thousands, so minor=majorDelta/5 packed ~30 marks; X/Y ranges are
+	// small so theirs stayed sparse) -> Z now ticks like X/Y.
+	A.cube->XAxisMinorTickVisibilityOff();
+	A.cube->YAxisMinorTickVisibilityOff();
+	A.cube->ZAxisMinorTickVisibilityOff();
+	for (int i = 0; i < 3; ++i) {                    // white, ARIAL, non-bold -> X/Y/Z share ONE font
+		vtkTextProperty *tp = A.cube->GetTitleTextProperty(i);
+		tp->SetColor(1.0, 1.0, 1.0); tp->SetFontFamilyToArial(); tp->BoldOff(); tp->ItalicOff(); tp->ShadowOff();
+		vtkTextProperty *lp = A.cube->GetLabelTextProperty(i);
+		lp->SetColor(1.0, 1.0, 1.0); lp->SetFontFamilyToArial(); lp->BoldOff(); lp->ItalicOff(); lp->ShadowOff();
+	}
+	// Our own SINGLE outward tickmarks (rebuilt every render by rebuildAxesFor). Unlit grey lines,
+	// like the cube's axis lines; the cube's native (doubled) ticks are off.
+	A.tickPD = vtkSmartPointer<vtkPolyData>::New();
+	vtkNew<vtkPolyDataMapper> tm; tm->SetInputData(A.tickPD);
+	A.ticks = vtkSmartPointer<vtkActor>::New();
+	A.ticks->SetMapper(tm);
+	A.ticks->GetProperty()->SetColor(0.85, 0.85, 0.85);
+	A.ticks->GetProperty()->LightingOff();
+	A.ticks->GetProperty()->SetLineWidth(1.0);
+	A.ticks->PickableOff();
+	if (addToRen) { s->ren->AddActor(A.cube); s->ren->AddActor(A.ticks); }
+	A.built = addToRen;      // not yet in the renderer -> not finished; axesShow completes it
+}
+
+// Put a built-but-not-yet-added set on screen (the empty-launcher promote path). Separate from
+// axesBuild only so a blank window can hold a set that draws nothing until its raster arrives.
+static inline void axesShow(Scene *s, AxesSet &A) {
+	if (!s || !s->ren || !A.cube || A.built) return;
+	s->ren->AddActor(A.cube);
+	if (A.ticks) s->ren->AddActor(A.ticks);
+	A.built = true;
+}
+
+// Tear a raster's axes down WITH the raster. Removing an object must take its axes with it — the
+// set is the handle's property, so nothing of it may outlive the handle (SACRED_LAW.md "removal
+// undoes what add did"; the user's own repro was a deleted crop leaving behind an axes box no row
+// could ever clear again).
+static void axesDestroy(Scene *s, AxesSet &A) {
+	if (!s) return;
+	vtkRenderer *ov = (s->axesRen ? s->axesRen.Get() : s->ren.Get());
+	if (s->ren) {
+		if (A.cube)  s->ren->RemoveActor(A.cube);
+		if (A.ticks) s->ren->RemoveActor(A.ticks);
+	}
+	if (ov) {
+		for (auto &t : A.title) if (t) ov->RemoveViewProp(t);
+		for (auto &l : A.xlab)  if (l) ov->RemoveViewProp(l);
+		for (auto &l : A.ylab)  if (l) ov->RemoveViewProp(l);
+		for (auto &l : A.zlab)  if (l) ov->RemoveViewProp(l);
+	}
+	A.title[0] = A.title[1] = nullptr;
+	A.xlab.clear(); A.ylab.clear(); A.zlab.clear();
+	A.cube = nullptr; A.ticks = nullptr; A.tickPD = nullptr;
+	A.built = false;
+}
+
+// Hide every renderable piece of a set in one go — used when the owning handle is unchecked, or the
+// set's own "Axes" row is. A set is all-or-nothing: box, ticks, numbers and titles share the owner's
+// fate, so a hidden raster can never leave stray axis text on screen.
+static inline void axesHideAll(AxesSet &A) {
+	if (A.cube)  A.cube->SetVisibility(0);
+	if (A.ticks) A.ticks->SetVisibility(0);
+	for (auto &l : A.xlab)  if (l) l->SetVisibility(0);
+	for (auto &l : A.ylab)  if (l) l->SetVisibility(0);
+	for (auto &l : A.zlab)  if (l) l->SetVisibility(0);
+	for (auto &t : A.title) if (t) t->SetVisibility(0);
 }
 
 // Current visible world region (W/E/S/N in TRUE data coords) = the part of the map on screen at the
@@ -1719,8 +1910,13 @@ static bool sceneVisibleRegion(Scene *s, double &W, double &E, double &S, double
 		else { W = std::min(W, tx); E = std::max(E, tx); S = std::min(S, ty); N = std::max(N, ty); }
 	}
 	if (!any) return false;
-	W = std::max(W, s->x0); E = std::min(E, s->x1);         // never exceed the data frame
-	S = std::max(S, s->y0); N = std::min(N, s->y1);
+	// Never exceed the data frame — of the raster ACTUALLY ON DISPLAY, which is the one the caller
+	// means by "what's on screen right now". s->x0..y1 is the BASE raster's own frame and would clamp
+	// a crop/derived layer back to its parent's extent (SACRED_LAW.md Raster-own-axes law: no reading
+	// another raster's limits). surfGetBounds carries the same answer in scaled space.
+	double fb[6]; surfGetBounds(s, fb);
+	W = std::max(W, fb[0] / gx); E = std::min(E, fb[1] / gx);
+	S = std::max(S, fb[2]);      N = std::min(N, fb[3]);
 	return (E > W && N > S);
 }
 
@@ -1771,34 +1967,35 @@ static void cameraFitToScaledBBox(Scene *s, const double b[6], bool keepMargin) 
 // calls this every render), so the names re-follow the layer the moment the active one changes —
 // a cartesian derived grid dropped into a geographic window must NOT keep saying lon/lat. Only
 // touches the actors when the name actually changed (this runs inside the render's StartEvent).
-static inline void syncAxisNames(Scene *s) {
-	if (!s) return;
-	const bool geog = activeGridGeog(s) != 0;
-	const char *want[2] = { geog ? "lon" : "X", geog ? "lat" : "Y" };
+// Names come from the SET's OWN `geog`, never from "the active layer": a cartesian derived grid is
+// labelled X/Y and the geographic parent it was computed over stays lon/lat, at the same time, on
+// their own axes. Only touches the actors when the name actually changed (runs inside the render's
+// StartEvent).
+static inline void syncAxisNames(Scene *s, AxesSet &A) {
+	(void)s;
+	const char *want[2] = { A.geog ? "lon" : "X", A.geog ? "lat" : "Y" };
 	for (int i = 0; i < 2; ++i) {
-		if (s->axName[i] == want[i]) continue;
-		s->axName[i] = want[i];
-		if (s->axTitle[i]) s->axTitle[i]->SetInput(s->axName[i].c_str());
+		if (A.name[i] == want[i]) continue;
+		A.name[i] = want[i];
+		if (A.title[i]) A.title[i]->SetInput(A.name[i].c_str());
 	}
 }
 
-static void rebuildAxisLabels(Scene *s) {
-	if (!s->surf || !s->ren || !s->ren->GetActiveCamera())
-		return;
-	// Z labels belong to the Axes Cube: when it is hidden they must hide too. This callback
-	// fires every render and would otherwise re-show them, so honour the cube's visibility here.
-	if (s->axes && !s->axes->GetVisibility()) {
-		for (auto &l : s->xlabels) l->SetVisibility(0);
-		for (auto &l : s->ylabels) l->SetVisibility(0);
-		for (auto &l : s->zlabels) l->SetVisibility(0);
-		for (auto &t : s->axTitle) if (t) t->SetVisibility(0);
-		if (s->axisTicks) s->axisTicks->SetVisibility(0);
-		return;
-	}
-	if (s->axisTicks) s->axisTicks->SetVisibility(1);
-	double b[6]; surfGetBounds(s, b);            // drawn (VE-scaled) bounds
-	pinCubeAxisZ(s, b);                          // cube: hold the Z box to the whole cube's range
-	axesSetBounds(s, b);                         // re-box the cube if the ACTIVE layer's Z changed under us
+// Draw ONE raster's axes, from ITS OWN frame. Nothing in here reads the window's primary surface,
+// the "active" grid, or any other handle's state — the entire geometry comes from `A` (SACRED_LAW.md
+// Raster-own-axes law: axes cannot be shared between rasters). `visible` is the owning handle's
+// verdict: its container checkbox AND the set's own Axes row.
+static void rebuildAxesFor(Scene *s, AxesSet &A, bool visible, bool isBase) {
+	if (!s->ren || !s->ren->GetActiveCamera() || !A.cube) return;
+	// Hidden owner (or its own Axes row unchecked): the WHOLE set goes dark. This callback fires
+	// every render and would otherwise re-show the billboards, so honour the verdict here.
+	if (!visible) { axesHideAll(A); return; }
+	A.cube->SetVisibility(1);
+	if (A.ticks) A.ticks->SetVisibility(1);
+	double b[6]; axesScaledBox(s, A, b);         // THIS raster's own drawn (VE-scaled) bounds
+	if (isBase) pinCubeAxisZ(s, b);              // 3-D cube: hold the BASE set's Z box to the whole
+	                                             // cube's range (the cube variable IS the base surface)
+	axesSetBounds(s, A, b);                      // re-box if VE / the raster's own frame moved
 	const double ctr[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
 	double cam[3]; s->ren->GetActiveCamera()->GetPosition(cam);
 
@@ -1842,58 +2039,59 @@ static void rebuildAxisLabels(Scene *s) {
 	// titles for a clean look. The Z axis is perpendicular to the screen in top-down view, so it
 	// (line + numbers) is hidden below.
 	const bool hideNames = s->flat2d || s->imageOnly;
-	placeTickBillboards(s, s->xlabels, s->x0, s->x1, b[0], b[1], 0, xEdgeY, b[4], ctr, tp, tl, tickLen);
-	placeTickBillboards(s, s->ylabels, s->y0, s->y1, b[2], b[3], 1, yEdgeX, b[4], ctr, tp, tl, tickLen);
+	placeTickBillboards(s, A.xlab, A.x0, A.x1, b[0], b[1], 0, xEdgeY, b[4], ctr, tp, tl, tickLen);
+	placeTickBillboards(s, A.ylab, A.y0, A.y1, b[2], b[3], 1, yEdgeX, b[4], ctr, tp, tl, tickLen);
 	if (s->flat2d) {
 		// Complete the frame: plain (un-numbered) ticks on the FAR edge from each annotated one --
 		// south got the real X ticks above, so north gets the mirror; west got the real Y ticks,
 		// so east gets the mirror. SACRED_LAW.md: axes on all 4 sides, always.
 		const double xFar = (xEdgeY == b[2]) ? b[3] : b[2];
 		const double yFar = (yEdgeX == b[0]) ? b[1] : b[0];
-		placeTickMarksOnly(s->x0, s->x1, b[0], b[1], 0, xFar, b[4], ctr, tp, tl, tickLen);
-		placeTickMarksOnly(s->y0, s->y1, b[2], b[3], 1, yFar, b[4], ctr, tp, tl, tickLen);
+		placeTickMarksOnly(A.x0, A.x1, b[0], b[1], 0, xFar, b[4], ctr, tp, tl, tickLen);
+		placeTickMarksOnly(A.y0, A.y1, b[2], b[3], 1, yFar, b[4], ctr, tp, tl, tickLen);
 	}
 	if (hideNames) {
-		if (s->axTitle[0]) s->axTitle[0]->SetVisibility(0);
-		if (s->axTitle[1]) s->axTitle[1]->SetVisibility(0);
-	} else {
-		// The NAMES follow the ACTIVE layer's own x,y kind, not the kind the window was BUILT with:
-		// a grid we know for sure is cartesian (a gravmag3d anomaly computed with the dialog's
-		// "Geographic" unchecked -> its x,y are metres) must read "X"/"Y", never the parent grid's
-		// "lon"/"lat". Same shared resolver as the Z range above, so the names, the numbers, the
-		// colorbar and the readout always describe ONE layer.
-		syncAxisNames(s);
+		if (A.title[0]) A.title[0]->SetVisibility(0);
+		if (A.title[1]) A.title[1]->SetVisibility(0);
+	}
+	else {
+		// The NAMES come from THIS raster's own x,y kind — never from the window or from whatever
+		// layer happens to be "active": a cartesian derived grid (a gravmag3d anomaly computed with
+		// the dialog's "Geographic" unchecked -> its x,y are metres) reads "X"/"Y" on ITS axes while
+		// the geographic parent keeps "lon"/"lat" on ITS OWN, simultaneously.
+		syncAxisNames(s, A);
 		// X/Y NAME labels at the midpoint of each floor edge, pushed well past the numbers. No Z name.
-		placeAxisTitle(s, s->axTitle[0], 0, 0.5*(b[0]+b[1]), xEdgeY, b[4], ctr, tickLen);
-		placeAxisTitle(s, s->axTitle[1], 1, 0.5*(b[2]+b[3]), yEdgeX, b[4], ctr, tickLen);
+		placeAxisTitle(s, A.title[0], 0, 0.5*(b[0]+b[1]), xEdgeY, b[4], ctr, tickLen);
+		placeAxisTitle(s, A.title[1], 1, 0.5*(b[2]+b[3]), yEdgeX, b[4], ctr, tickLen);
 	}
 	// Z axis: hide in flat-2D (top-down map -> Z points at the camera, meaningless) or when the
 	// drawn Z extent is degenerate. Drives the cube Z LINE/gridlines + the Z number billboards so
 	// the toggle is self-correcting every render (no stale state on 2D<->3D switch).
 	const bool zHide = s->flat2d || (b[5] - b[4]) <= 0.0;
-	s->axes->SetZAxisVisibility(zHide ? 0 : 1);
-	if (zHide) s->axes->DrawZGridlinesOff(); else s->axes->DrawZGridlinesOn();
+	A.cube->SetZAxisVisibility(zHide ? 0 : 1);
+	if (zHide) A.cube->DrawZGridlinesOff(); else A.cube->DrawZGridlinesOn();
 	// Flat map (no Z relief): the X/Y gridlines lie coplanar with the image, drawing a graticule
 	// mesh over the map (and thin coplanar lines FXAA then re-thicknesses). Drop them when flat;
 	// keep them in 3-D where they sit on the far box walls as a depth reference.
-	if (zHide) { s->axes->DrawXGridlinesOff(); s->axes->DrawYGridlinesOff(); }
-	else       { s->axes->DrawXGridlinesOn();  s->axes->DrawYGridlinesOn();  }
+	if (zHide) { A.cube->DrawXGridlinesOff(); A.cube->DrawYGridlinesOff(); }
+	else       { A.cube->DrawXGridlinesOn();  A.cube->DrawYGridlinesOn();  }
 	if (zHide) {
-		for (auto &l : s->zlabels) l->SetVisibility(0);
-	} else {
-		// Cube: label the Z axis with the WHOLE cube's range (matching the pinned box) so the numbers
-		// are identical on every layer; otherwise the ACTIVE grid's own data range — a derived
-		// variable carries its own units, so annotating it with the base surface's zmin/zmax would
-		// print metres up the side of a milligal anomaly (SACRED_LAW.md derived-variable axes law).
-		double zlo = s->zmin, zhi = s->zmax;
-		activeGridZRange(s, zlo, zhi);
-		if (s->cubeZLock) { zlo = s->cubeZMin; zhi = s->cubeZMax; }
-		placeTickBillboards(s, s->zlabels, zlo, zhi, b[4], b[5], 2, zx, zy, ctr, tp, tl, tickLen);
+		for (auto &l : A.zlab) l->SetVisibility(0);
+	}
+	else {
+		// The Z NUMBERS come from THIS raster's OWN z range, in ITS OWN UNITS — the third layer of
+		// the derived-variable axes law, now structural: a mGal anomaly can no longer be numbered in
+		// its parent's metres because it does not share, and cannot reach, the parent's axes. The
+		// only override is the 3-D cube's z-lock, which belongs to the BASE surface's own set (the
+		// cube variable IS the base) so every layer of one cube is boxed alike.
+		double zlo = A.z0, zhi = A.z1;
+		if (isBase && s->cubeZLock) { zlo = s->cubeZMin; zhi = s->cubeZMax; }
+		placeTickBillboards(s, A.zlab, zlo, zhi, b[4], b[5], 2, zx, zy, ctr, tp, tl, tickLen);
 	}
 	if (s->flat2d) {
 		// The actual 4-side BORDER: a closed rectangle connecting the 4 corners, not just interval
 		// ticks -- SACRED_LAW.md "all mapping displays must have axes on all 4 sides" means a real
-		// frame, same as any GMT map border. Same axisTickPD line pipeline the ticks already use.
+		// frame, same as any GMT map border. Same tickPD line pipeline the ticks already use.
 		vtkIdType c0 = tp->InsertNextPoint(b[0], b[2], b[4]);
 		vtkIdType c1 = tp->InsertNextPoint(b[1], b[2], b[4]);
 		vtkIdType c2 = tp->InsertNextPoint(b[1], b[3], b[4]);
@@ -1902,11 +2100,68 @@ static void rebuildAxisLabels(Scene *s) {
 		tl->InsertCellPoint(c0); tl->InsertCellPoint(c1); tl->InsertCellPoint(c2);
 		tl->InsertCellPoint(c3); tl->InsertCellPoint(c0);
 	}
-	if (s->axisTickPD) {
-		s->axisTickPD->SetPoints(tp);
-		s->axisTickPD->SetLines(tl);
-		s->axisTickPD->Modified();
+	if (A.tickPD) {
+		A.tickPD->SetPoints(tp);
+		A.tickPD->SetLines(tl);
+		A.tickPD->Modified();
 	}
+}
+
+// The View menu's "Axes cube" entry is a WINDOW-WIDE VIEW COMMAND, not a handle: it flips every
+// raster's OWN intent at once (and the screenshot paths use it to take the decoration out of the
+// captured pixels and put it back). That is not sharing — each set keeps its own `shown` flag and
+// its own frame; this just sets them all, the way "hide all overlays" would. NOTHING here reads or
+// writes another handle's frame, which is what the law forbids.
+static inline bool sceneAxesShown(Scene *s) {
+	if (!s) return false;
+	if (s->baseAxes.shown) return true;
+	for (auto &ex : s->extras) if (ex.ax.shown) return true;
+	return false;
+}
+// Is ANY raster's axes actually ON SCREEN right now? Distinct from sceneAxesShown above, which is
+// the user's INTENT: an empty launcher's set is never added to the renderer (axesBuild's blankStart
+// path) yet its `shown` still defaults true, and a hidden raster's set is intended-on but drawn off.
+// The scene-state dump reports THIS, since a test asking "are there axes" means on screen.
+static inline bool sceneAxesOnScreen(Scene *s) {
+	if (!s) return false;
+	auto live = [](const AxesSet &A) { return A.built && A.cube && A.cube->GetVisibility() != 0; };
+	if (live(s->baseAxes)) return true;
+	for (auto &ex : s->extras) if (live(ex.ax)) return true;
+	return false;
+}
+
+static inline void sceneAxesSetShown(Scene *s, bool on) {
+	if (!s) return;
+	s->baseAxes.shown = on;
+	for (auto &ex : s->extras) ex.ax.shown = on;
+	if (!on) {                      // hide immediately; rebuildAxisLabels re-shows the visible ones
+		axesHideAll(s->baseAxes);
+		for (auto &ex : s->extras) axesHideAll(ex.ax);
+	}
+}
+
+// Is a raster's OWN handle showing? An axes set is a property of its container, so it lives and dies
+// with it — the group-uncheck law, applied to the one child row that used to escape it because the
+// axes were window-level and there was only one of them to gate.
+static inline bool extraVisible(const ExtraObj &ex) {
+	if (ex.actor && ex.actor->GetVisibility()) return true;
+	if (ex.drape && ex.drape->GetVisibility()) return true;
+	return false;
+}
+
+// Every raster's axes, redrawn from ITS OWN frame. This is the whole of the window's axis work: a
+// loop over independent sets, with NO window-level box, NO shared frame and NO "active layer" — two
+// visible rasters draw two sets of axes, each fitted to and numbered in its own limits and units.
+static void rebuildAxisLabels(Scene *s) {
+	if (!s || !s->ren || !s->ren->GetActiveCamera()) return;
+	// The BASE raster is its surface OR, on a bare-image window, its drape — the picture IS the
+	// raster there. Same test shape as extraVisible, so base and extra are judged by one rule.
+	vtkProp3D *sp = surfProp(s);
+	const bool baseVis = (sp && sp->GetVisibility() != 0) ||
+	                     (s->drape && s->drape->GetVisibility() != 0);
+	rebuildAxesFor(s, s->baseAxes, s->baseAxes.shown && baseVis, true);
+	for (auto &ex : s->extras)
+		rebuildAxesFor(s, ex.ax, ex.ax.shown && extraVisible(ex), false);
 }
 
 // Renderer StartEvent -> keep the axis labels on the camera-near edges as the view rotates.
@@ -1955,23 +2210,15 @@ static void applyVE(Scene *s) {
 		if (sl.actor) sl.actor->SetScale(1.0, 1.0, s->zfac * s->ve);      // x already baked into the points
 	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview
 	if (s->polyHandles) s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // edit-mode vertex handles
-	double b[6]; surfGetBounds(s, b);            // bounds already include the scale
-	pinCubeAxisZ(s, b);                          // cube: hold the Z box to the whole cube's range
-	// Flat map (VE collapsed to 0 -> zero Z extent): vtkCubeAxesActor computes EACH axis's
-	// label/gridline count even for hidden axes, so a zero Z range gives range/step = 0/0 ->
-	// NaN -> INT_MIN ("Number of labels -2147483647 is invalid"), aborting the render (blank
-	// window). Hiding the Z axis is not enough. Feed the axes a tiny non-zero Z range so the
-	// count stays finite; the Z axis line + gridlines are hidden anyway, so nothing shows.
-	const bool flatZ = (b[5] - b[4]) <= 0.0;
-	axesSetBounds(s, b);                         // shared box setter (carries the same guard)
-	s->axes->SetZAxisVisibility(flatZ ? 0 : 1);
-	if (flatZ) s->axes->DrawZGridlinesOff(); else s->axes->DrawZGridlinesOn();
-	// Flat map: X/Y gridlines go coplanar with the image (a mesh over the map) -> drop them; 3-D
-	// keeps them on the far box walls (see rebuildAxisLabels).
-	if (flatZ) { s->axes->DrawXGridlinesOff(); s->axes->DrawYGridlinesOff(); }
-	else       { s->axes->DrawXGridlinesOn();  s->axes->DrawYGridlinesOn();  }
-	s->axes->SetCamera(s->ren->GetActiveCamera());
-	rebuildAxisLabels(s);                        // Z billboards follow the new drawn extent
+	// EVERY raster's axes ride VE, each from its OWN frame — there is no window box to resize. The
+	// per-set work (box + degenerate-Z guard + gridline/Z-axis toggles + the billboards) is exactly
+	// what rebuildAxisLabels already does for all of them, so VE only has to re-point the cameras and
+	// let that ONE path run (SACRED_LAW.md: same operation, same function — never a second axes-fitting
+	// implementation living in applyVE).
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	if (s->baseAxes.cube) s->baseAxes.cube->SetCamera(cam);
+	for (auto &ex : s->extras) if (ex.ax.cube) ex.ax.cube->SetCamera(cam);
+	rebuildAxisLabels(s);                        // every set re-boxed + re-labelled from its own limits
 	s->widget->renderWindow()->Render();
 }
 

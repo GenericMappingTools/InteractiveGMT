@@ -107,12 +107,14 @@ GMTVTK_API void *gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 		cam->SetPosition(fp[0], fp[1], fp[2] + 1.0);
 		cam->ParallelProjectionOn();
 		if (image_only == 2) {                 // plain image: no axes, maximize edge-to-edge
-			s->axes->SetVisibility(0);
+			s->baseAxes.shown = false;         // ITS OWN intent — rebuildAxisLabels re-derives the
+			                                    // actor visibility every render, so a bare
+			                                    // SetVisibility(0) here would be undone next frame
 			fitSnapView(s, /*topMode=*/true);
-		} else {                               // referenced image: keep X/Y axes, leave a margin
-			s->axes->SetZAxisVisibility(0);
-			s->axes->DrawZGridlinesOff();
-			fitSnapView(s, /*topMode=*/true, /*fill=*/0.84);
+		}
+		else {                                 // referenced image: keep X/Y axes, leave a margin
+			fitSnapView(s, /*topMode=*/true, /*fill=*/0.84);   // Z axis is hidden by the set's own
+			                                    // flat/degenerate-Z rule (rebuildAxesFor)
 		}
 		// A bare image IS a 2D map: enter flat-2D so the toolbar/menu "Flat 2D" button shows
 		// pressed and drag-rotation is locked. We're already in the top-down ortho view, so don't
@@ -1000,7 +1002,7 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	const bool alive = sceneAlive(s);
 	kvi("alive", alive ? 1 : 0);
 	if (alive) {
-		const int axesShown = (s->axes && s->ren && s->ren->HasViewProp(s->axes)) ? 1 : 0;
+		const int axesShown = sceneAxesOnScreen(s) ? 1 : 0;
 		kvi("has_surface", (s->surf && !s->emptyStart) ? 1 : 0);
 		kvi("emptyStart",  s->emptyStart ? 1 : 0);
 		kvi("imageOnly",   s->imageOnly ? 1 : 0);
@@ -1010,8 +1012,10 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 		kvd("x0", s->x0); kvd("x1", s->x1); kvd("y0", s->y0); kvd("y1", s->y1);
 		kvd("zmin", s->zmin); kvd("zmax", s->zmax);
 		kvi("cubeZLock", s->cubeZLock ? 1 : 0);
-		// Axis box Z extent — a cube must report the SAME value on every layer (regression guard).
-		if (s->axes) { double ab[6]; s->axes->GetBounds(ab); kvd("axZ0", ab[4]); kvd("axZ1", ab[5]); }
+		// Axis box Z extent of the raster ON DISPLAY — a cube must report the SAME value on every
+		// layer (regression guard). Reads the set that raster OWNS, like everything else now does.
+		if (AxesSet *A = axesForActive(s))
+			if (A->cube) { double ab[6]; A->cube->GetBounds(ab); kvd("axZ0", ab[4]); kvd("axZ1", ab[5]); }
 		kvi("n_extras",   (long)s->extras.size());
 		kvi("n_overlays", (long)s->overlays.size());
 		kvi("n_curtains", (long)s->curtains.size());
@@ -4157,8 +4161,8 @@ GMTVTK_API int gmtvtk_frame_for_image_h(void *handle, double x0, double x1, doub
 	s->imageOnly  = true;             // a basemap is a 2-D map: no colorbar, no surface row
 	s->emptyStart = false;            // real data from here on -> images add via the normal path
 	if (s->surf) s->surf->SetVisibility(0);                 // keep the launcher placeholder hidden
-	s->axes->SetVisibility(1);
-	s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff();
+	s->baseAxes.shown = true;                               // the base's OWN intent (the tile that lands
+	                                                         // next is an ExtraObj and brings its OWN axes)
 	return 1;
 }
 
@@ -4181,41 +4185,17 @@ GMTVTK_API void gmtvtk_fit2d(void *handle) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
-// Grow the flat geographic frame to also cover [x0,x1]x[y0,y1] (a basemap window getting a 2nd/3rd
-// tile outside the current extent). The base reference plane + cube axes are pinned to the surface
-// bounds (s->x0..y1 + the flat z=0 placeholder grid), so a tile added beyond them left the axes
-// frozen and the hover readout dead outside the first tile's box (sampleZ off-grid -> no hit).
-// We union the bbox, rebuild ONLY the base plane + axes via buildSceneContent (self-cleaning of
-// surface/axes/colorbar — it leaves s->extras/overlays untouched, so already-added tiles survive),
-// keep xfac UNCHANGED (so the existing image actors stay aligned), then refit the flat-2-D view.
-// No-op (0) on a non-flat or already-covering window. Geographic-only (basemap use).
-GMTVTK_API int gmtvtk_grow_frame_h(void *handle, double x0, double x1, double y0, double y1) {
-	Scene *s = static_cast<Scene*>(handle);
-	if (!sceneAlive(s) || s->emptyStart) return 0;
-	const double nx0 = std::min(s->x0, x0), nx1 = std::max(s->x1, x1);
-	const double ny0 = std::min(s->y0, y0), ny1 = std::max(s->y1, y1);
-	if (nx0 == s->x0 && nx1 == s->x1 && ny0 == s->y0 && ny1 == s->y1)
-		return 0;                                   // new tile already inside the frame -> nothing to do
-	s->x0 = nx0; s->x1 = nx1; s->y0 = ny0; s->y1 = ny1;   // xfac/zfac/ve kept -> extras stay aligned
-	float zblank[4] = { 0, 0, 0, 0 };               // flat z=0 reference plane over the grown union
-	buildSceneContent(s, nullptr, nx0, nx1, ny0, ny1, nullptr, nullptr, 0, nullptr, 0, 0, 0,
-					  /*edges=*/0, /*pointCloud=*/false, /*geographic=*/1,
-					  zblank, 2, 2, /*blankStart=*/false);
-	surfSetVisibility(s, 0);                         // the z=0 plane is a scaffold (bounds + hover) only:
-	                                                 // hide it so it never shows under/around the tiles
-	vtkCamera *cam = s->ren->GetActiveCamera();      // back to the top-down flat-2-D map view
-	s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff();
-	double fp[3]; cam->GetFocalPoint(fp);
-	cam->SetViewUp(0.0, 1.0, 0.0);
-	cam->SetPosition(fp[0], fp[1], fp[2] + 1.0);
-	cam->ParallelProjectionOn();
-	fitSnapView(s, /*topMode=*/true);
-	s->flat2d = true;
-	if (s->giz) setGizmoVisible(*s->giz, false);
-	s->ren->ResetCameraClippingRange();
-	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
-	return 1;
-}
+// REMOVED 2026-08-02 (SACRED_LAW.md raster-own-axes law): this used to grow/union the frame to cover
+// a newly-added basemap tile or Tiles-Tool image. Two failed shapes, both violations: the original
+// unconditionally rebuilt the primary surface via buildSceneContent(s, nullptr, ...) -- destroying a
+// REAL grid/image already loaded, replacing it with a blank z=0 placeholder; patched to skip that
+// case, it became a silent no-op instead -- SACRED_LAW's own opening words, "disabling a control to
+// prevent breakage is NOT a fix — it IS the violation." The actual law: EVERY raster, unconditionally,
+// gets its own axes reframe (gmtvtk_show_new_element_h via Julia's `_adopt_new_element`) — never a
+// merged/grown frame, never a special "it's just a backdrop" exception. Both callers (basemap.jl's
+// `_on_basemap`, drop.jl's `_place_image_in_window`) now call `_adopt_new_element` unconditionally
+// after adding their image, exactly like any other dropped raster. Do not re-add a growth/merge
+// mechanism for this — that shape of fix has already failed twice.
 
 // Hide the window's base surface plane AND its own drape, if any (keeping geometry for axis bounds
 // + hover sampling). Used by the basemap/drop scaffold paths: the promoted flat z=0 plane is only
@@ -4314,9 +4294,10 @@ GMTVTK_API int gmtvtk_capture_rect_rgb(void *handle, double w, double e, double 
                                         unsigned char **outRgb, int *outW, int *outH) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !s->ren || !s->widget || !outRgb || !outW || !outH) return 0;
-	const int axesVis = s->axes ? s->axes->GetVisibility() : 0;
+	const bool axesVis = sceneAxesShown(s);
 	const bool barVis  = colorbarVisible(s);
-	if (s->axes) s->axes->SetVisibility(0);   // decoration only — never part of the captured pixels
+	sceneAxesSetShown(s, false);   // decoration only — never part of the captured pixels (EVERY
+	                                // raster's own set, so none of them bleeds into the capture)
 	if (s->bar)  setColorbarVisible(s, false);
 	// The crop-selection rectangle (and any other drawn line/point overlay, symbol layer) is UI
 	// markup, never part of the picture being captured — hide every one for the shot, remember
@@ -4372,7 +4353,7 @@ GMTVTK_API int gmtvtk_capture_rect_rgb(void *handle, double w, double e, double 
 		}
 		*outRgb = buf;
 	}
-	if (s->axes) s->axes->SetVisibility(axesVis);
+	sceneAxesSetShown(s, axesVis);
 	if (s->bar)  setColorbarVisible(s, barVis);
 	for (auto *a : hiddenPolyLine) a->SetVisibility(1);
 	for (auto *a : hiddenPolyFill) a->SetVisibility(1);
@@ -4421,56 +4402,67 @@ GMTVTK_API int gmtvtk_capture_rect_databaked(void *handle, double w, double e, d
 // Free a buffer returned by gmtvtk_capture_rect_rgb / gmtvtk_capture_rect_databaked.
 GMTVTK_API void gmtvtk_free_rgb(unsigned char *buf) { delete[] buf; }
 
-// Re-frame the AXES CUBE + camera to an ARBITRARY world bbox (x0,x1,y0,y1 — plain data
-// coordinates), instead of always the window's PRIMARY surface (`s->axes->SetBounds` normally only
-// ever gets set from `surfGetBounds`, e.g. in applyVE — see that function's own comment). Used by
-// Roi Crop Tools: SACRED_LAW.md's group-uncheck/derived-variable laws already make the crop the
-// only thing shown, but the axes cube kept the PARENT's full extent since it never tracked anything
-// but the primary — a derived variable's axes must fit ITS OWN limits. Z IS re-derived too, from the ACTIVE
-// grid, since a derived variable is a NEW quantity in ITS OWN units; the degenerate-Z guard mirrors
-// applyVE's own (a zero Z range makes vtkCubeAxesActor compute NaN label counts and abort the
-// render). Camera re-fit reuses fitSnapView's exact technique (20_gizmo.cpp), generalized to a
-// caller-supplied bbox instead of always surfGetBounds.
+// Re-frame ONE RASTER's OWN axes + the camera onto an arbitrary world bbox (x0,x1,y0,y1 -- plain
+// data coordinates). SACRED_LAW.md Raster-own-axes law + derived-variable axes law: a crop, an RTP,
+// a grdgravmag3d anomaly is a NEW quantity in ITS OWN units, so it is framed and numbered in ITS OWN
+// limits -- and it does that by moving ITS OWN set, never a window-level box that the layer it was
+// derived FROM would have to share. `axesForName` picks the set from the Scene Objects label the
+// host already addresses layers by; nameless (nullptr) means "the raster on display", resolved
+// through the SAME resolveActiveGrid the colorbar and the hover readout use.
 //
-// `keepMargin`: images keep their axis tick LABELS on screen with a margin (fill=0.84 — the SAME
+// `keepMargin`: images keep their axis tick LABELS on screen with a margin (fill=0.84 -- the SAME
 // value gmtvtk_view_grid's own referenced-image path already uses, 90_c_api.cpp's imode==1 branch)
-// instead of grids' own edge-to-edge fill=1.0 (which deliberately pushes labels off-screen — see
+// instead of grids' own edge-to-edge fill=1.0 (which deliberately pushes labels off-screen -- see
 // fitSnapView's own comment; that is correct, EXISTING behaviour for grids, not something to
-// change). Passing the wrong one for an image wiped its axis labels entirely — found live 2026-07-21.
-// Z-EXPLICIT form. Same body; the caller supplies the Z range instead of it being resolved from the
-// active grid. A MESH layer (a VTK .vtp surface, a GMTfv solid) has no grid data layer at all, so
-// activeGridZRange cannot speak for it and would leave the box wearing the previous layer's Z —
-// exactly the mistake SACRED_LAW.md's derived-variable axes law, Z half, is about. gmtvtk_reframe_h
-// below is this function with the grid-resolved Z, NOT a second implementation. The camera-fit
-// maths itself lives in ONE place, `cameraFitToScaledBBox` (10_geometry.cpp) — this function is that
-// PLUS the axes/frame-bookkeeping half; the Link tool's cross-window sync (57_swipe.cpp) calls the
-// camera-only half directly, since it must never touch the PARTNER window's own axes/frame.
+// change). Passing the wrong one for an image wiped its axis labels entirely -- found live 2026-07-21.
+//
+// The camera-fit maths itself lives in ONE place, `cameraFitToScaledBBox` (10_geometry.cpp) -- this
+// function is that PLUS the per-raster frame bookkeeping; the Link tool's cross-window sync
+// (57_swipe.cpp) calls the camera-only half directly, since it must never touch the PARTNER
+// window's own axes.
+static void sceneReframeSet(Scene *s, AxesSet *A, double x0, double x1, double y0, double y1,
+                            double z0, double z1, int geog, int keepMargin) {
+	if (!sceneAlive(s) || !s->ren || !s->widget || !A) return;
+	// The raster's own frame, in TRUE data coordinates. Everything downstream (the cube box, the
+	// tick billboards, the axis names) reads it from HERE, so there is exactly one place a raster's
+	// axes can be told what they annotate.
+	axesSetFrame(*A, x0, x1, y0, y1, z0, z1, geog);
+	if (!A->built) axesShow(s, *A);            // first framing of a set built on a blank canvas
+	double b[6]; axesScaledBox(s, *A, b);
+	if (b[5] <= b[4]) b[5] = b[4] + 1.0;       // degenerate-Z guard, same as axesSetBounds' own
+	// The base surface's set doubles as the window's data-frame bookkeeping (s->x0..y1 feed the hover
+	// readout's clamp and sceneVisibleRegion). Keep it in step ONLY when it is the base set being
+	// framed -- an extra's frame is its own business and must never rewrite the window's.
+	if (A == &s->baseAxes) { s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1; }
+	// Camera fit: the VIEW is genuinely shared (one window, one camera), so pointing it at the raster
+	// the user just loaded is not axis state and does not violate the law -- no other raster's AXES
+	// are touched, only what the single camera happens to be looking at.
+	s->viewBoundsOverride = true;              // camera/gizmo bounds follow the framed raster
+	for (int i = 0; i < 6; ++i) s->viewBounds[i] = b[i];
+	cameraFitToScaledBBox(s, b, keepMargin != 0);
+	rebuildAxisLabels(s);                      // every set redrawn from its OWN frame
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Z-EXPLICIT form, addressed BY NAME. A MESH layer (a VTK .vtp surface, a GMTfv solid) has no grid
+// data layer at all, so no resolver can speak for its Z and the caller supplies it.
+GMTVTK_API void gmtvtk_reframe_named_h(void *handle, const char *name,
+                                       double x0, double x1, double y0, double y1,
+                                       double z0, double z1, int geog, int keepMargin) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	sceneReframeSet(s, axesForName(s, name), x0, x1, y0, y1, z0, z1, geog, keepMargin);
+}
+
+// Z-EXPLICIT form for the raster currently on display (the crop / derive tools, which have just made
+// their result the visible one). Not a second implementation -- the same body, with the set resolved
+// by display instead of by name.
 GMTVTK_API void gmtvtk_reframe_z_h(void *handle, double x0, double x1, double y0, double y1,
                                    double z0, double z1, int keepMargin) {
 	Scene *s = static_cast<Scene*>(handle);
-	if (!sceneAlive(s) || !s->ren || !s->widget || !s->axes) return;
-
-	const double zlo = z0, zhi = z1;
-	double b[6] = { x0 * s->xfac, x1 * s->xfac, y0, y1,
-	                zlo * s->zfac * s->ve, zhi * s->zfac * s->ve };
-	if (b[5] <= b[4]) b[5] = b[4] + 1.0;               // degenerate-Z guard, same as applyVE's flatZ case
-	// The ACTUAL visible tick-label TEXT is a separate custom billboard system (rebuildAxisLabels,
-	// 10_geometry.cpp) — NOT vtkCubeAxesActor's own native labels (deliberately off, "different text
-	// engine"). It positions every X/Y/Z billboard from surfGetBounds(), i.e. the PRIMARY SURFACE's
-	// bounds — never from s->axes directly, so SetBounds/SetXAxisRange/SetYAxisRange on s->axes alone
-	// (tried first, still produced NO visible labels) can't fix this. Setting the override here makes
-	// surfGetBounds report the crop's bounds instead, so rebuildAxisLabels below draws labels for the
-	// RIGHT region automatically, with no changes needed to it or any other surfGetBounds caller.
-	s->viewBoundsOverride = true;
-	for (int i = 0; i < 6; ++i) s->viewBounds[i] = b[i];
-	s->axes->SetBounds(b);
-	s->axes->SetXAxisRange(x0, x1);
-	s->axes->SetYAxisRange(y0, y1);
-	s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1;    // keep the frame bookkeeping in sync (gmtvtk_grow_frame_h's shrink counterpart)
-
-	cameraFitToScaledBBox(s, b, keepMargin != 0);
-	rebuildAxisLabels(s);
-	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	if (!sceneAlive(s)) return;
+	AxesSet *A = axesForActive(s);
+	sceneReframeSet(s, A, x0, x1, y0, y1, z0, z1, A ? A->geog : activeGridGeog(s), keepMargin);
 }
 
 // Z comes from the ACTIVE grid (activeGridZRange), NOT s->zmin/zmax: the caller of this form is
@@ -4515,7 +4507,7 @@ GMTVTK_API void gmtvtk_reframe_h(void *handle, double x0, double x1, double y0, 
 // follows the house convention: a picture keeps the margin that holds its tick labels on screen, a
 // grid fills edge-to-edge (see gmtvtk_reframe_z_h's own note).
 static void sceneReframeToContent(Scene *s) {
-	if (!sceneAlive(s) || !s->ren || !s->axes) return;
+	if (!sceneAlive(s) || !s->ren) return;
 	double b[6]; surfGetBounds(s, b);
 	const double xf = (s->xfac != 0.0) ? s->xfac : 1.0;
 	const double zs = s->zfac * s->ve;
@@ -4562,7 +4554,17 @@ GMTVTK_API void gmtvtk_show_new_element_h(void *handle, const char *name,
 	bool wantsPerspective = s->fvSolid && s->surfName == keep;
 	for (auto &ex : s->extras) if (ex.name == keep && ex.isMesh) wantsPerspective = true;
 	if (wantsPerspective && s->flat2d) sceneSetFlat2D(s, false);
-	if (hasBbox) gmtvtk_reframe_z_h(handle, x0, x1, y0, y1, z0, z1, keepMargin);
+	// Frame the axes OF THE RASTER THAT JUST ARRIVED — resolved BY NAME, so this transition can only
+	// ever move that one raster's own set (SACRED_LAW.md Raster-own-axes law). Every other raster in
+	// the window keeps the axes it owns, framed to its own limits, ready to be correct the moment it
+	// is checked back on: that is what makes re-showing an earlier layer impossible to get wrong.
+	// Its geographic flag comes from the raster too, so the axis NAMES follow the data, not the window.
+	if (hasBbox) {
+		AxesSet *A = axesForName(s, name);
+		int geog = s->baseGeog;
+		for (auto &ex : s->extras) if (ex.name == keep) geog = ex.geog;
+		sceneReframeSet(s, A, x0, x1, y0, y1, z0, z1, geog, keepMargin);
+	}
 	refreshGridColorbar(s);          // bar + hover readout follow whatever is now the visible layer
 	rebuildSceneObjects(s);          // every row's checked state re-read from the live actors
 	unfoldSceneObjects(s);           // ... and the panel actually open, so the new row is visible
@@ -4616,6 +4618,15 @@ GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const 
 	ex.gstack = s->vecSeq++;                       // unified pile: newest layer lands on top
 	ex.tag    = ++s->gridTagSeq;
 	s->extras.push_back(ex);
+	{
+		// A mesh is a raster layer in this respect too: it gets ITS OWN axes, framed to its own XY
+		// footprint and its own z range (SACRED_LAW.md Raster-own-axes law). Its bbox comes from the
+		// built geometry, since a mesh carries no grid header.
+		ExtraObj &ne = s->extras.back();
+		double mb[6]; pd->GetBounds(mb);
+		axesSetFrame(ne.ax, mb[0], mb[1], mb[2], mb[3], zmin, zmax, 0);
+		axesBuild(s, ne.ax, true);
+	}
 	applyGridStacking(s);
 	rebuildSceneObjects(s);
 	s->ren->ResetCameraClippingRange();
@@ -4645,7 +4656,7 @@ GMTVTK_API void *gmtvtk_open_empty(const char *title) {
 	s->emptyStart = true;                    // hidden placeholder only -> drop promotes to a real window
 	// (Scene Objects dock already starts folded with no flash, done in buildAndShow's blankStart block.)
 	if (s->surf) s->surf->SetVisibility(0);  // hide the placeholder plane -> blank canvas
-	s->axes->SetVisibility(0);               // no axes until there is data
+	axesHideAll(s->baseAxes);                // no axes until there is data
 	if (s->giz) setGizmoVisible(*s->giz, false);
 
 	// Same flat-2D state a bare image opens in (top-down ortho, drag-rotation locked, "Flat 2D"
@@ -4795,6 +4806,18 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	if (addedGrid) ex.gstack = s->vecSeq++;  // unified pile: newest grid lands on top of EVERYTHING
 	if (addedGrid) ex.tag    = ++s->gridTagSeq;  // UNIQUE, STABLE group tag (the Color Bar resolves by this)
 	s->extras.push_back(ex);
+	{
+		// This raster's OWN axes, born WITH it (SACRED_LAW.md Raster-own-axes law). Framed to ITS OWN
+		// extent, ITS OWN z range in ITS OWN units, ITS OWN geographic flag — never the window's, never
+		// the layer it happens to have been dropped on top of. Built here, at the ONE place an extra
+		// raster comes into existence, so no add path can ever produce a raster without axes of its own.
+		ExtraObj &ne = s->extras.back();
+		if (ne.isImage) axesSetFrame(ne.ax, ne.bx0, ne.bx1, ne.by0, ne.by1, ne.zpos, ne.zpos, geographic ? 1 : 0);
+		else            axesSetFrame(ne.ax, ne.gx0, ne.gx1, ne.gy0, ne.gy1, ne.zmin, ne.zmax, ne.geog);
+		// Starts HIDDEN like the raster itself: the caller's gmtvtk_show_new_element_h is what puts
+		// both on screen. rebuildAxisLabels gates every set on its own owner's visibility anyway.
+		axesBuild(s, ne.ax, true);
+	}
 	if (addedGrid) { applyShading(s); applyGridStacking(s); }   // shade + order the new grid in the pile
 	rebuildSceneObjects(s);
 	if (!s->surf && s->extras.size() == 1)   // first content dropped into an empty window: frame it
@@ -4871,7 +4894,8 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 	// shaded-relief map, images as the textured plane. The grid branch saves the 3-D view first.
 	vtkCamera *cam = s->ren->GetActiveCamera();
 	if (imageOnly) {
-		s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff();
+		// (No Z axis: each set turns its own Z off from its own degenerate/flat-2D rule in rebuildAxesFor
+		// — writing it here would only be undone on the next render, and would touch one chosen set.)
 		double fp[3]; cam->GetFocalPoint(fp);
 		cam->SetViewUp(0.0, 1.0, 0.0);
 		cam->SetPosition(fp[0], fp[1], fp[2] + 1.0);
@@ -5091,7 +5115,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 	}
 	else          { s->aquaBaseRGBA.clear(); s->aquaBathyZ.clear(); }
 	s->emptyStart = false;
-	if (s->axes) { s->axes->SetZAxisVisibility(0); s->axes->DrawZGridlinesOff(); }   // a 2-D map: no Z axis
+	// (2-D map: every set hides its own Z from its own flat/degenerate rule in rebuildAxesFor.)
 
 	// Rebuild the gizmo against the new bounds, then either open flat-2D top-down (launcher promote,
 	// the way a normal grid opens) or restore the previous view (in-place rebuild).
@@ -5295,6 +5319,8 @@ GMTVTK_API int gmtvtk_open_vtk_h(void *handle, const char *path, const char *nam
 			: gmtvtk_add_surface_h(handle, L.z.data(), L.nx, L.ny, L.x0, L.x1, L.y0, L.y1, 0,
 			                       nullptr, nullptr, 0, nullptr, 0, 0, 0, 0, nm);
 		if (!ok) return fail("the grid could not be added to the window");
+		// SACRED_LAW.md raster-own-axes law: EACH raster creates ITS OWN axes, UNCONDITIONALLY --
+		// primary or extra, no exceptions, never reuses/inherits axes already showing.
 		double zlo = L.z.empty() ? 0.0 : (double)L.z[0], zhi = zlo;
 		for (float v : L.z) { if (v < zlo) zlo = v; if (v > zhi) zhi = v; }
 		gmtvtk_show_new_element_h(handle, nm, L.x0, L.x1, L.y0, L.y1, zlo, zhi, 1, 0);
@@ -5314,6 +5340,7 @@ GMTVTK_API int gmtvtk_open_vtk_h(void *handle, const char *path, const char *nam
 			: gmtvtk_add_mesh_h(handle, L.xyz.data(), nv, L.sides.data(), nfaces, L.indices.data(),
 			                    nullptr, nullptr, 0, nm);
 		if (!ok) return fail("the mesh could not be displayed");
+		// SACRED_LAW.md raster-own-axes law: EACH raster/mesh creates ITS OWN axes, UNCONDITIONALLY.
 		gmtvtk_show_new_element_h(handle, nm, L.x0, L.x1, L.y0, L.y1, L.z0, L.z1, 1, 0);
 		return 1;
 	}
@@ -5335,10 +5362,15 @@ GMTVTK_API int gmtvtk_open_vtk_h(void *handle, const char *path, const char *nam
 	                                    mode ? L.segoff.data() : nullptr, nseg,
 	                                    mode, 0.9, 0.35, 0.1, 0.0, 0.0, nm);
 	if (!ok) return fail("the overlay could not be added to the window");
-	// An overlay is drawn ON TOP of the rasters rather than instead of them, but the rule is the same:
-	// the file that just arrived is what the window shows, framed on ITS extent. The overlay itself is
-	// not in s->extras, so passing its name simply hides every raster layer.
-	gmtvtk_show_new_element_h(handle, nm, L.x0, L.x1, L.y0, L.y1, L.z0, L.z1, 1, 0);
+	// SACRED_LAW.md "Vector-import-onto-existing-display law": a line/points OVERLAY is drawn ON TOP
+	// of whatever is already there and must NEVER reframe/hide it — the opposite of the Grid/Mesh
+	// branches above. `gmtvtk_show_new_element_h` (their reframe+hide-others call) is deliberately
+	// NOT called here. The `promote` scaffold above (padded to L's own bbox) already gives an EMPTY
+	// launcher its frame; a populated window keeps its existing raster's axes untouched, exactly like
+	// the GMT-table drop path (drop.jl's `_open_spec_into`, gated off `_adopt_new_element` for
+	// `GMTdataset`/`Vector{GMTdataset}`) — this is the SAME rule for the VTK-file door, not a second
+	// one. Found still violating it 2026-08-02: this call used to fire unconditionally here, framing
+	// the window to the overlay's own extent and hiding every raster under it.
 	return 1;
 }
 

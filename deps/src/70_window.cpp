@@ -13185,11 +13185,10 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	if (s->surfGroup) s->ren->RemoveActor(s->surfGroup);
 	if (s->surf)      s->ren->RemoveActor(s->surf);
 	if (s->drape)     s->ren->RemoveActor(s->drape);
-	if (s->axes)      s->ren->RemoveActor(s->axes);
-	if (s->axisTicks) s->ren->RemoveActor(s->axisTicks);
+	axesDestroy(s, s->baseAxes);       // the BASE raster's own axes go with the base raster (only its
+	                                    // own — every extra keeps the set IT owns, untouched)
 	// profLine is a pile vector -> it may live in the depth-cleared overlay renderer; clear both layers.
 	if (s->profLine) { s->ren->RemoveActor(s->profLine); if (s->axesRen) s->axesRen->RemoveActor(s->profLine); }
-	for (int i = 0; i < 2; ++i) if (s->axTitle[i]) { s->axesRen->RemoveViewProp(s->axTitle[i]); s->axTitle[i] = nullptr; }
 	if (s->bar)      s->ren->RemoveActor2D(s->bar);
 	if (s->barTicks) s->ren->RemoveActor2D(s->barTicks);
 	for (auto &ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
@@ -13350,95 +13349,17 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 		draped = true;
 	}
 
-	// --- cube axes ----------------------------------------------------------
-	s->axes = vtkSmartPointer<vtkCubeAxesActor>::New();
-	s->axes->SetCamera(s->ren->GetActiveCamera());
-	double b[6]; surfGetBounds(s, b);
-	pinCubeAxisZ(s, b);                                 // cube: pin Z to the whole cube's range at build
-	                                                    // time too (the first layer's build precedes any applyVE)
-	if (b[5] - b[4] <= 0.0) b[5] = b[4] + 1.0;          // zero Z extent (bare image / flat) -> avoid
-	                                                    // vtkAxisActor 0/0 label-count crash
-	s->axes->SetBounds(b);
-	s->axes->SetXAxisRange(s->x0, s->x1);               // TRUE labels despite the actor scale
-	s->axes->SetYAxisRange(s->y0, s->y1);
-	s->axes->SetZAxisRange(s->zmin, s->zmax);
-	s->axes->GetTitleTextProperty(0)->SetColor(0.9, 0.9, 0.9);
-	s->axes->GetLabelTextProperty(0)->SetColor(0.8, 0.8, 0.8);
-	for (int ax = 0; ax < 3; ++ax) {
-		s->axes->GetXAxesLinesProperty()->SetColor(0.7, 0.7, 0.7);
-	}
-	// Geographic data -> lon/lat axis names; cartesian -> X/Y. Z always "Z". Drawn as overlay
-	// billboards (placeAxisTitle), NOT cube-native titles (those don't render in this StaticTriad
-	// setup with native labels off). Clear the cube titles so nothing competes.
-	s->axes->SetXTitle(" "); s->axes->SetYTitle(" "); s->axes->SetZTitle(" ");  // single space, NOT "" — empty makes vtkVectorText error "Text is not set!" every render
-	s->axName[0] = geographic ? "lon" : "X";
-	s->axName[1] = geographic ? "lat" : "Y";   // X/Y names only — Z gets NO name title
-	for (int i = 0; i < 2; ++i) {
-		auto t = vtkSmartPointer<vtkBillboardTextActor3D>::New();
-		vtkTextProperty *tp = t->GetTextProperty();
-		tp->SetColor(1.0, 1.0, 1.0);
-		tp->SetFontFamilyToArial(); tp->BoldOn(); tp->ItalicOff(); tp->ShadowOff();
-		tp->SetFontSize(13);                 // a touch larger + bold so the name reads as a title
-		tp->SetJustificationToCentered();
-		tp->SetVerticalJustificationToCentered();
-		t->SetInput(s->axName[i].c_str());
-		t->ForceOpaqueOn();
-		t->PickableOff();
-		t->SetVisibility(0);                 // rebuildAxisLabels positions + shows it
-		s->axesRen->AddViewProp(t);          // overlay layer: even brightness, never occluded
-		s->axTitle[i] = t;
-	}
-	s->axes->DrawXGridlinesOn(); s->axes->DrawYGridlinesOn(); s->axes->DrawZGridlinesOn();
-	s->axes->SetGridLineLocation(vtkCubeAxesActor::VTK_GRID_LINES_FURTHEST);
-	// StaticTriad pins X,Y to the zmin FLOOR (coplanar) — Y/X labels are ALWAYS on the bottom
-	// edge, never lifting to a top edge — with native 3-D text (parallel/orthogonal to the axis,
-	// reorienting with the view). Mirrors the user's f3d_ext_cube_axes.cxx (his HARD RULE). Z's
-	// OWN labels run along the axis -> OFF; Z values are drawn as horizontal billboards (ALWAYS
-	// perpendicular to Z) by rebuildAxisLabels().
-	s->axes->SetFlyModeToStaticTriad();
-	s->axes->SetTickLocationToOutside();
-	s->axes->SetScreenSize(13.0);
-	s->axes->SetZAxisVisibility(1);          // draw the Z axis LINE (+ gridlines) like X/Y
-	// Native value labels AND native ticks OFF on ALL THREE axes. rebuildAxisLabels draws the
-	// values as identical freetype billboards AND draws our own SINGLE outward tickmark per label
-	// (s->axisTicks) — the cube's native ticks were doubled across the two faces sharing each
-	// edge. Only the cube's axis LINES + gridlines remain.
-	s->axes->SetXAxisLabelVisibility(0);
-	s->axes->SetYAxisLabelVisibility(0);
-	s->axes->SetZAxisLabelVisibility(0);
-	s->axes->SetXAxisTickVisibility(0);
-	s->axes->SetYAxisTickVisibility(0);
-	s->axes->SetZAxisTickVisibility(0);
-	// MAJOR ticks only on every axis. Minor ticks defaulted ON and made a dense two-directional
-	// comb on Z (its range is thousands, so minor=majorDelta/5 packed ~30 marks; X/Y ranges are
-	// small so theirs stayed sparse) -> Z now ticks like X/Y.
-	s->axes->XAxisMinorTickVisibilityOff();
-	s->axes->YAxisMinorTickVisibilityOff();
-	s->axes->ZAxisMinorTickVisibilityOff();
-	for (int i = 0; i < 3; ++i) {                // white, ARIAL, non-bold -> X/Y/Z share ONE font
-		vtkTextProperty *tp = s->axes->GetTitleTextProperty(i);
-		tp->SetColor(1.0, 1.0, 1.0); tp->SetFontFamilyToArial(); tp->BoldOff(); tp->ItalicOff(); tp->ShadowOff();
-		vtkTextProperty *lp = s->axes->GetLabelTextProperty(i);
-		lp->SetColor(1.0, 1.0, 1.0); lp->SetFontFamilyToArial(); lp->BoldOff(); lp->ItalicOff(); lp->ShadowOff();
-	}
+	// --- this raster's OWN cube axes ----------------------------------------
+	// SACRED_LAW.md Raster-own-axes law. The BASE surface is a raster like any other, so it gets a
+	// set built by the SAME axesBuild every dropped/derived grid, image and mesh goes through --
+	// there is no separate "the window's axes" construction any more. Its frame is ITS OWN extent,
+	// ITS OWN z range, in ITS OWN units, with ITS OWN geographic flag; nothing else in the window
+	// can reach it and it reaches nothing else.
+	axesSetFrame(s->baseAxes, s->x0, s->x1, s->y0, s->y1, s->zmin, s->zmax, geographic);
 	// Empty launcher (blankStart): the cube axes + tick/label billboards are NEVER added to the
 	// renderer and the initial label build is skipped, so the blank window can't flash an axis box
 	// with numbers for a frame. A dropped file PROMOTES this same window via buildSceneContent.
-	if (!blankStart) s->ren->AddActor(s->axes);
-
-	// Our own SINGLE outward tickmarks (rebuilt every render by rebuildAxisLabels). Unlit grey
-	// lines, like the cube's axis lines; the cube's native (doubled) ticks are off.
-	s->axisTickPD = vtkSmartPointer<vtkPolyData>::New();
-	{
-		vtkNew<vtkPolyDataMapper> tm; tm->SetInputData(s->axisTickPD);
-		s->axisTicks = vtkSmartPointer<vtkActor>::New();
-		s->axisTicks->SetMapper(tm);
-		s->axisTicks->GetProperty()->SetColor(0.85, 0.85, 0.85);
-		s->axisTicks->GetProperty()->LightingOff();
-		s->axisTicks->GetProperty()->SetLineWidth(1.0);
-		s->axisTicks->PickableOff();
-		if (!blankStart) s->ren->AddActor(s->axisTicks);
-	}
+	axesBuild(s, s->baseAxes, !blankStart);
 	if (!blankStart) rebuildAxisLabels(s);        // billboards (same font/size on X/Y/Z) + single ticks
 
 	// --- scalar bar ---------------------------------------------------------
@@ -13886,7 +13807,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		s->widget->renderWindow()->Render();
 	};
 	auto actToggleAxes = [s]() {
-		s->axes->SetVisibility(!s->axes->GetVisibility());
+		sceneAxesSetShown(s, !sceneAxesShown(s));   // window-wide view command: EVERY raster's own set
+		rebuildAxisLabels(s);
+		rebuildSceneObjects(s);                     // the per-raster Axes rows re-read their own intent
 		s->widget->renderWindow()->Render();
 	};
 	auto actToggleBar = [s]() {
@@ -13927,9 +13850,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		const bool wasFlat = s->flat2d;
 		if (!wasFlat) sceneSetFlat2D(s, true);
 		fitSnapView(s, /*topMode=*/true);        // guarantee the data fills edge-to-edge, no stale pan/zoom
-		const int  axesVis = s->axes ? s->axes->GetVisibility() : 0;
+		const bool axesVis = sceneAxesShown(s);
 		const bool barVis  = colorbarVisible(s);
-		if (s->axes) s->axes->SetVisibility(0);  // decoration only — never part of the georeferenced pixels
+		sceneAxesSetShown(s, false);             // decoration only — never part of the georeferenced pixels
 		if (s->bar)  setColorbarVisible(s, false);
 		s->widget->renderWindow()->Render();
 
@@ -13972,7 +13895,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			}
 		}
 
-		if (s->axes) s->axes->SetVisibility(axesVis);
+		sceneAxesSetShown(s, axesVis);
 		if (s->bar)  setColorbarVisible(s, barVis);
 		if (!wasFlat) sceneSetFlat2D(s, false);
 		s->widget->renderWindow()->Render();
@@ -15827,7 +15750,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// frame (the caller's post-show hides would otherwise only bite on the NEXT render).
 	if (blankStart) {
 		if (s->surf) s->surf->SetVisibility(0);
-		if (s->axes) s->axes->SetVisibility(0);
+		axesHideAll(s->baseAxes);                // empty launcher: nothing to annotate yet
 		if (s->giz)  setGizmoVisible(*s->giz, false);
 		// Start the Scene Objects dock FOLDED with no open->fold flash: hide the body and flip the
 		// fold-bar state BEFORE the first paint (so it never renders expanded for a frame); the

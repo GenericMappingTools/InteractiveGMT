@@ -647,6 +647,8 @@ static int extraIndexOfActor(Scene *s, vtkProp3D *a) {
 // True if the image footprint overlaps the host grid footprint (a drape needs a grid underneath).
 static bool imageOverlapsGrid(Scene *s, const ExtraObj &ex) {
 	if (s->gridZ.empty() || s->gnx < 2 || s->gny < 2) return false;
+	if (s->gx1 <= s->gx0 || s->gy1 <= s->gy0) return false;   // degenerate header -> no node lattice
+	                                                           // to build the drape on (imageRebuildActor)
 	return ex.bx0 < s->gx1 && ex.bx1 > s->gx0 && ex.by0 < s->gy1 && ex.by1 > s->gy0;
 }
 
@@ -662,28 +664,75 @@ static void imageRebuildActor(Scene *s, ExtraObj &ex) {
 	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
 	const bool drape = ex.draped && imageOverlapsGrid(s, ex);
 	ex.draped = drape;
+	// DRAPED = the image is painted ONTO the host grid, so the two are ONE thing on screen, standing
+	// inside ONE frame -- the GRID'S. Exactly one set of axes survives a drape, and it is the grid's:
+	//
+	//   * the HOST GRID keeps EVERYTHING -- visible, checked, AXES ON. Its frame is the frame the
+	//     draped picture is being shown in. Draping never switches any of it off. If the grid was
+	//     hidden when the image landed (dropping it ran gmtvtk_show_new_element_h, which hides every
+	//     other layer -- derived-variable display law), draping brings it BACK: you cannot drape a
+	//     picture onto a surface that is switched off, and its Scene Objects row must say so.
+	//   * the IMAGE's own axes go OFF, and only they. Draped, it has no footprint of its own on
+	//     screen, it is wearing the grid's -- a second box over the same relief is the thing being
+	//     removed here.
+	//
+	// The image's axes do not come back on their own -- ONLY a manual tick of its Axes row. Latched on
+	// `drapeApplied` so the every-rebuild calls (stacking, VE) cannot keep clearing a box the user has
+	// since ticked back on by hand.
 	if (drape) {
-		// Drape: sample the grid heightfield over the image∩grid footprint, texture-map the image.
-		const double x0 = std::max(ex.bx0, s->gx0), x1 = std::min(ex.bx1, s->gx1);
-		const double y0 = std::max(ex.by0, s->gy0), y1 = std::min(ex.by1, s->gy1);
-		int nx = std::min(s->gnx, 256), ny = std::min(s->gny, 256);
-		if (nx < 2) nx = 2;
-		if (ny < 2) ny = 2;
+		if (!ex.drapeApplied) {
+			surfSetVisibility(s, 1);                    // the host grid: never left unchecked by a drape
+			ex.ax.shown = false; axesHideAll(ex.ax);    // the IMAGE's own axes -- the only ones touched
+			ex.drapeApplied = true;
+		}
+	}
+	else ex.drapeApplied = false;             // a later re-drape is a new episode and fires again
+	if (drape) {
+		// Drape: the image is painted ON the relief, so the drape mesh must BE the relief — built on
+		// the grid's OWN NODES, at full resolution, over the image∩grid footprint. A polygon offset
+		// (below) then wins the depth tie, exactly as the base surface's own drape does (70_window.cpp:
+		// it simply SHARES the surface polydata, which is the same idea taken to its limit).
+		//
+		// This used to resample the heightfield onto a capped 256x256 lattice. That lattice is a COARSE
+		// APPROXIMATION of the surface: between its samples it cuts straight through the real relief, so
+		// every ridge finer than a lattice cell poked out THROUGH the picture and painted the grid's own
+		// CPT colours over it (the user's repro: yellowish grid relief piercing a draped I.tiff). No
+		// depth bias can fix that — the error is geometric, tens of metres, not z-buffer noise. Sampling
+		// on the nodes themselves makes the drape vertex-for-vertex identical to the surface, so there
+		// is nothing left to pierce.
+		const double dx = (s->gnx > 1) ? (s->gx1 - s->gx0) / (s->gnx - 1) : 0.0;
+		const double dy = (s->gny > 1) ? (s->gy1 - s->gy0) / (s->gny - 1) : 0.0;
+		const double cx0 = std::max(ex.bx0, s->gx0), cx1 = std::min(ex.bx1, s->gx1);
+		const double cy0 = std::max(ex.by0, s->gy0), cy1 = std::min(ex.by1, s->gy1);
+		// Node index window covering the intersection (inclusive), clamped to the grid.
+		const int i0 = std::max(0, (int)std::floor((cx0 - s->gx0) / dx));
+		const int i1 = std::min(s->gnx - 1, (int)std::ceil((cx1 - s->gx0) / dx));
+		const int j0 = std::max(0, (int)std::floor((cy0 - s->gy0) / dy));
+		const int j1 = std::min(s->gny - 1, (int)std::ceil((cy1 - s->gy0) / dy));
+		const int nx = i1 - i0 + 1, ny = j1 - j0 + 1;
 		vtkNew<vtkPoints> pts; pts->SetDataTypeToFloat(); pts->Allocate(nx * ny);
 		vtkNew<vtkFloatArray> tc; tc->SetNumberOfComponents(2); tc->SetName("tc"); tc->Allocate(2 * nx * ny);
+		std::vector<char> ok((size_t)nx * ny, 0);          // node carries real elevation (not NaN)
 		for (int j = 0; j < ny; ++j) {
-			const double y = y0 + (y1 - y0) * j / (ny - 1);
+			const double y = s->gy0 + (j0 + j) * dy;
 			for (int i = 0; i < nx; ++i) {
-				const double x = x0 + (x1 - x0) * i / (nx - 1);
-				double z = sampleZ(s, x, y);
-				if (std::isnan(z)) z = 0.0;
-				pts->InsertNextPoint(x, y, z);
+				const double x = s->gx0 + (i0 + i) * dx;
+				// Straight NODE read (not an interpolation): the surface's own vertex value, so the two
+				// meshes share their vertices exactly. Column-major z[i*gny + j], the gridZ layout.
+				const float zf = s->gridZ[(size_t)(i0 + i) * s->gny + (j0 + j)];
+				const bool good = !std::isnan(zf);
+				ok[(size_t)j * nx + i] = good ? 1 : 0;
+				pts->InsertNextPoint(x, y, good ? (double)zf : 0.0);
 				tc->InsertNextTuple2((x - ex.bx0) / (ex.bx1 - ex.bx0), (y - ex.by0) / (ex.by1 - ex.by0));
 			}
 		}
 		vtkNew<vtkCellArray> cells;
 		for (int j = 0; j < ny - 1; ++j)
 			for (int i = 0; i < nx - 1; ++i) {
+				// Skip any cell touching a NaN node: the surface has no facet there either, and a
+				// NaN-as-zero corner would spike the drape down to z=0 through the relief.
+				if (!ok[(size_t)j*nx+i] || !ok[(size_t)j*nx+i+1] ||
+				    !ok[(size_t)(j+1)*nx+i+1] || !ok[(size_t)(j+1)*nx+i]) continue;
 				vtkIdType q[4] = { (vtkIdType)(j*nx+i), (vtkIdType)(j*nx+i+1),
 				                   (vtkIdType)((j+1)*nx+i+1), (vtkIdType)((j+1)*nx+i) };
 				cells->InsertNextCell(4, q);
@@ -724,6 +773,10 @@ static void sceneRemoveExtraAt(Scene *s, size_t idx) {
 	ExtraObj &ex = s->extras[idx];
 	if (s->ren && ex.actor) s->ren->RemoveActor(ex.actor);
 	if (s->ren && ex.drape) s->ren->RemoveActor(ex.drape);
+	axesDestroy(s, ex.ax);          // its OWN axes die with it — box, ticks, numbers, titles. Nothing
+	                                 // of a deleted raster may outlive its handle (SACRED_LAW.md
+	                                 // "removal undoes what add did"): the old window-level cube left
+	                                 // a stale box behind that no row could ever clear again.
 	const bool wasGrid = !ex.isImage;
 	// Julia keeps the LIVE GMTgrid/GMTimage behind this row in its own registry (_SCENE_OBJS,
 	// savefile.jl). Deleting the actor here without saying so left that object alive and still
@@ -983,6 +1036,41 @@ static int activeGridGeog(Scene *s) {
 	return ag.valid ? ag.geog : s->baseGeog;
 }
 
+// ---- which raster's axes does a call mean? ---------------------------------
+// SACRED_LAW.md Raster-own-axes law. Every axis operation names ONE raster and gets THAT raster's
+// own set — there is no way left to address "the window's axes", which is exactly the point.
+//
+// By NAME: the Scene Objects label the host already uses to address a layer (the same key
+// gmtvtk_show_new_element_h, the colorbar retarget and every host-side compute use), so a load path
+// frames the axes of the thing it just loaded and nothing else. No match / empty -> the base
+// surface's own set, which IS how the host names the primary layer.
+static AxesSet *axesForName(Scene *s, const char *name) {
+	if (!s) return nullptr;
+	const std::string k = name ? name : "";
+	if (!k.empty())
+		for (auto &ex : s->extras) if (ex.name == k) return &ex.ax;
+	return &s->baseAxes;
+}
+
+// By DISPLAY: the set owned by the raster the window is currently showing. Routed through the SAME
+// resolveActiveGrid the hover readout and the colorbar go through, so the box, the numbers, the bar
+// and the readout can never end up describing different layers (the lesson of the derived-variable
+// axes law's second layer: fix the shared source, never each call site).
+static AxesSet *axesForActive(Scene *s) {
+	if (!s) return nullptr;
+	ActiveGrid ag = resolveActiveGrid(s);
+	if (ag.valid && !ag.name.empty())
+		for (auto &ex : s->extras) if (ex.name == ag.name) return &ex.ax;
+	// No grid layer resolved (bare image, cloud, solid): the topmost VISIBLE image extra owns the
+	// display, else the base surface does.
+	ExtraObj *top = nullptr;
+	for (auto &ex : s->extras) {
+		if (!ex.isImage || !extraVisible(ex)) continue;
+		if (!top || ex.zpos >= top->zpos) top = &ex;
+	}
+	return top ? &top->ax : &s->baseAxes;
+}
+
 // Scene Objects label of the grid the window is CURRENTLY DISPLAYING (topmost visible). Empty when
 // that is the base surface (which the host knows under the empty name) or when no grid is visible.
 // Every host-side computation that must run on what the user is looking at — Extract profile's
@@ -1198,18 +1286,8 @@ static void sceneRemoveSurface(Scene *s) {
 	if (s->surf)      s->ren->RemoveActor(s->surf);
 	if (s->drape)     s->ren->RemoveActor(s->drape);
 	s->surfGroup = nullptr; s->surf = nullptr; s->drape = nullptr; s->surfLut = nullptr;
-	// Cube axes box + tick geometry + all billboard actors in the overlay renderer
-	if (s->axes)      s->ren->RemoveActor(s->axes);
-	if (s->axisTicks) s->ren->RemoveActor(s->axisTicks);
-	s->axes = nullptr; s->axisTicks = nullptr;
-	if (s->axesRen) {
-		for (int i = 0; i < 3; ++i)
-			if (s->axTitle[i]) { s->axesRen->RemoveViewProp(s->axTitle[i]); s->axTitle[i] = nullptr; }
-		for (auto &l : s->xlabels) if (l) s->axesRen->RemoveViewProp(l);
-		for (auto &l : s->ylabels) if (l) s->axesRen->RemoveViewProp(l);
-		for (auto &l : s->zlabels) if (l) s->axesRen->RemoveViewProp(l);
-		s->xlabels.clear(); s->ylabels.clear(); s->zlabels.clear();
-	}
+	// The base raster's OWN axes go with it — box, ticks, numbers, titles, as one owned unit.
+	axesDestroy(s, s->baseAxes);
 	// Colorbar strip + tick lines + numeric labels
 	if (s->bar)      s->ren->RemoveActor2D(s->bar);
 	if (s->barTicks) s->ren->RemoveActor2D(s->barTicks);
@@ -1817,15 +1895,18 @@ static void rebuildSceneObjects(Scene *s) {
 		        },
 		        "Show / hide the Land colorbar · checking it switches to Shade Land · left-click the label to choose a colormap");
 	};
-	// Per-grid / per-image AXES handle. Properties come LATER; for now the box toggles the cube axes
-	// and the label shows a placeholder. Every grid (and referenced image) carries one. grpVisible
-	// gates the initial checkbox so a hidden group's Axes row starts unchecked (see colorbarRow).
-	auto axesRow = [&](bool grpVisible = true) {
-		const bool av = grpVisible && s->axes && s->axes->GetVisibility() != 0;
+	// Per-raster AXES handle. `A` is the axes set OWNED BY the raster whose group this row sits in —
+	// its own cube, ticks, numbers and frame. SACRED_LAW.md Raster-own-axes law: this checkbox may
+	// touch THAT set and nothing else. It used to drive the single window-level `s->axes`, so
+	// unchecking one grid's Axes row blanked every other raster's axes as well — the violation this
+	// whole per-raster split exists to make structurally impossible. grpVisible gates the initial
+	// checkbox so a hidden group's Axes row starts unchecked (group-uncheck law, see colorbarRow).
+	auto axesRow = [&](AxesSet *A, bool grpVisible = true) {
+		const bool av = grpVisible && A && A->shown;
 		makeRow("Axes", IC_Axes, av,
-		        [s](bool on) { if (s->axes) s->axes->SetVisibility(on ? 1 : 0); },
+		        [s, A](bool on) { if (A) { A->shown = on; if (!on) axesHideAll(*A); rebuildAxisLabels(s); } },
 		        [s](const QPoint&) { if (s->win) s->win->statusBar()->showMessage("Axes properties — coming soon", 2500); },
-		        "Axes handle (properties coming soon)");
+		        "This raster's own axes (properties coming soon)");
 	};
 
 	// ── AQUAMOTO FILE WRAPPER ── every variable loaded from the open tsunami netCDF -- the composited
@@ -1870,7 +1951,7 @@ static void rebuildSceneObjects(Scene *s) {
 			} else {
 				colorbarRow(&s->surfShowBar, -1, baseVis);    // base relief grid
 			}
-			axesRow(baseVis);
+			axesRow(&s->baseAxes, baseVis);      // the BASE raster's OWN set
 			endGroup();
 		}
 	} else if (s->drape) {                                  // bare image (view_image) group — header IS the image handle
@@ -1910,7 +1991,7 @@ static void rebuildSceneObjects(Scene *s) {
 		        [dp](bool on) { dp->SetVisibility(on ? 1 : 0); }, nullptr,
 		        "Right-click for properties (save / remove)", imgMenu);
 		if (s->palette.n > 0) paletteRow(&s->palette, dp->GetVisibility() != 0);
-		axesRow(dp->GetVisibility() != 0);   // group-uncheck law: Axes mirrors the container (see grid case above)
+		axesRow(&s->baseAxes, dp->GetVisibility() != 0);   // the primary IMAGE's OWN set; group-uncheck law: mirrors the container
 		endGroup();
 	}
 
@@ -1930,7 +2011,7 @@ static void rebuildSceneObjects(Scene *s) {
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); });
 			const bool ivis = a && a->GetVisibility() != 0;
 			if (ex.palette.n > 0) paletteRow(&ex.palette, ivis);
-			axesRow(ivis);                           // group-uncheck law: Axes mirrors the container
+			axesRow(&ex.ax, ivis);                   // THIS image's OWN set; group-uncheck law: mirrors the container
 		} else {                                           // dropped grid group — header mirrors the surface handle
 			vtkProp3D *a = ex.actor.Get();
 			beginGroupHandle(nm, IC_Surface, a && a->GetVisibility() != 0,
@@ -1949,7 +2030,7 @@ static void rebuildSceneObjects(Scene *s) {
 			// it never resolves as the active grid -- a Color Bar row would be permanently inert. Every
 			// other row is identical to a grid's.
 			if (!ex.isMesh) colorbarRow(&ex.showBar, ex.tag, gvis);   // resolve by the grid's UNIQUE tag, not its (shifting) index
-			axesRow(gvis);
+			axesRow(&ex.ax, gvis);                   // THIS grid/mesh's OWN set
 		}
 		endGroup();
 	}
