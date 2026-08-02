@@ -457,6 +457,14 @@ static JuliaImageHistoFn g_juliaImageHisto = nullptr;
 typedef int (*JuliaImageEnhanceFn)(void *scene, void *dlg, const char *params);
 static JuliaImageEnhanceFn g_juliaImageEnhance = nullptr;
 
+// "Image > Image resize" (port of Mirone src_figs/imageresize.m). params = "op;args":
+//   "init;<name>"                    -> Julia answers with gmtvtk_resize_set_size(dlg, w, h)
+//   "resize;<name>;<w>;<h>;<method>" -> gdalwarp -ts w h -r <method> into a new image row
+// method is a gdalwarp -r name (near|bilinear|cubic|average), so the four entries of Mirone's
+// popup_resampMethod arrive as what GDAL is going to be asked for, decided in ONE place (the dialog).
+typedef int (*JuliaImageResizeFn)(void *scene, void *dlg, const char *params);
+static JuliaImageResizeFn g_juliaImageResize = nullptr;
+
 // The Adjust Contrast dialog's ScaterPlot (push_scaterPlot_CB). It plots the bands the user is
 // LOOKING AT — after a Decorrelation Stretch that is the decorrelated image — so the pixels come
 // from sceneDisplayedRGB, the SAME "what is on screen" reader "Image -> Show Histogram" uses, and
@@ -695,6 +703,8 @@ static void (*g_enhanceReopen)(Scene *scene, const char *name) = nullptr;
 // menu bar. ONE function draws it (70_window.cpp `showImageHistogram`); this hook is only how the
 // earlier fragment reaches it. `name` names the image whose handle was clicked ("" = the primary).
 static void (*g_showImageHisto)(Scene *scene, const char *name) = nullptr;
+// Same, for "Image > Image resize": the image's own handle opens it on THAT image.
+static void (*g_showImageResize)(Scene *scene, const char *name) = nullptr;
 
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a

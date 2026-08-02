@@ -1627,6 +1627,20 @@ GMTVTK_API void gmtvtk_enhance_set_band(void *dlg, int band, const double *count
 	reinterpret_cast<ImageEnhanceDialog *>(dlg)->setBand(band, counts, n, lo, hi, nbands);
 }
 
+// Register the "Image > Image resize" callback (port of Mirone src_figs/imageresize.m).
+// fn(scene, dlg, params) with params = "op;args" (see JuliaImageResizeFn, 30_app.cpp). Returns 1/0.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_image_resize_callback(JuliaImageResizeFn fn) {
+	g_juliaImageResize = fn;
+}
+
+// Answer to the Resize Image dialog's "init": the SOURCE image's size in pixels. The dialog cannot
+// measure it itself — the texture it displays was padded to the window bbox by _drape_to_bbox.
+GMTVTK_API void gmtvtk_resize_set_size(void *dlg, int w, int h) {
+	if (!dlg || w < 1 || h < 1) return;
+	reinterpret_cast<ImageResizeDialog *>(dlg)->setSize(w, h);
+}
+
 // Register the Adjust Contrast ScaterPlot callback. fn(scene, px, npix, nb, label) plots the three
 // bands of the pixels the window is DISPLAYING. Returns 1/0. nullptr to detach.
 GMTVTK_API void gmtvtk_set_rgb_scatter_callback(JuliaRgbScatterFn fn) {

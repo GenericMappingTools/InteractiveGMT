@@ -6362,6 +6362,281 @@ static void enhanceReopen(Scene *scene, const char *name) {
 	if (w->dlg && w->ready) w->dlg->show();
 	else delete w;
 }
+// ============================================================================================
+// Image > Image resize — port of Mirone's src_figs/imageresize.m. deps/ui/image_resize.ui carries
+// imageresize_LayoutFcn's absolute geometry (328x261).
+//
+// Everything here is the Photoshop-style bookkeeping of the .m: pixel W/H (in pixels or percent),
+// the "document" size that the same pixels make at a given resolution, and Constrain Proportions
+// tying the two edits together. NOT ONE PIXEL is resampled here — OK hands (w, h, method) to Julia,
+// which calls gdalwarp (src/imageresize.jl). Mirone resamples with cvlib_mex('resize') = OpenCV;
+// the four popup entries map onto gdalwarp's -r: nearest/bilinear/bicubic as named, and "Area
+// Relation" (OpenCV INTER_AREA, "pixel area relation") onto `average`, which is the same
+// definition — each output pixel is the mean of the source pixels its footprint covers.
+// ============================================================================================
+class ImageResizeDialog;
+static std::map<Scene *, ImageResizeDialog *> g_resizeDlgs;
+
+class ImageResizeDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene   *scn = nullptr;
+	bool reallyClose = false;               // set by the parked row's "Delete": let the next close through
+	QLineEdit *ePixW = nullptr, *ePixH = nullptr, *eDocW = nullptr, *eDocH = nullptr, *eRes = nullptr;
+	QComboBox *cPixW = nullptr, *cPixH = nullptr, *cDocW = nullptr, *cDocH = nullptr, *cRes = nullptr;
+	QComboBox *cMethod = nullptr;
+	QCheckBox *kConstrain = nullptr;
+	QString srcName;
+	// handles.* of the .m, same names
+	double imgW = 0, imgH = 0;                    // handles.imgSize(2), handles.imgSize(1)
+	double pixWidth = 0, pixHeight = 0;
+	double docWidth = 0, docHeight = 0;
+	double resolution = 72.0, unitFact = 2.54;
+	bool   isPercent = false, ready = false, filling = false;
+
+	double resolutionFact() const { return unitFact / resolution; }   // handles.resolutionFact
+
+	// Closing PARKS this dialog as a row in Scene Objects — the same parkTool/unparkTool pair the
+	// Adjust Contrast, Binarize, X,Y plot, Contours and Illumination dialogs use. One mechanism.
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();          // destroyed -> the row and this object go with it
+			}
+		};
+	}
+	~ImageResizeDialog() {
+		for (auto it = g_resizeDlgs.begin(); it != g_resizeDlgs.end(); )
+			it = (it->second == this) ? g_resizeDlgs.erase(it) : std::next(it);
+	}
+
+	// Julia answers "init" with the SOURCE image's size (the displayed texture is padded to the
+	// window bbox by _drape_to_bbox, so its dimensions are not the image's).
+	void setSize(int w, int h) {
+		imgW = pixWidth  = w;
+		imgH = pixHeight = h;
+		docWidth  = pixWidth  * resolutionFact();
+		docHeight = pixHeight * resolutionFact();
+		ready = true;
+		refresh();
+	}
+
+	// pix2size + size2pix of the .m, plus the percent display of popup_pixWidth_CB.
+	void refresh() {
+		filling = true;
+		const double w = isPercent ? pixWidth  / std::max(1.0, imgW) * 100.0 : pixWidth;
+		const double h = isPercent ? pixHeight / std::max(1.0, imgH) * 100.0 : pixHeight;
+		ePixW->setText(QString::number(qRound(w)));
+		ePixH->setText(QString::number(qRound(h)));
+		eDocW->setText(QString::number(docWidth, 'g', 6));
+		eDocH->setText(QString::number(docHeight, 'g', 6));
+		eRes->setText(QString::number(cRes->currentIndex() == 0 ? resolution : resolution / 2.54, 'g', 6));
+		filling = false;
+	}
+
+	// edit_pixWidth_CB / edit_pixHeight_CB. `which` = 0 width, 1 height.
+	void pixEdited(int which) {
+		if (filling || !ready) return;
+		QLineEdit *e = which == 0 ? ePixW : ePixH;
+		bool ok = false;
+		double xx = qRound(e->text().trimmed().toDouble(&ok));
+		if (!ok) { refresh(); return; }
+		const double p = xx / 100.0;
+		const double base = which == 0 ? imgW : imgH, other = which == 0 ? imgH : imgW;
+		if (isPercent) xx = base * p;
+		if (xx < 1.0) { refresh(); return; }
+		double &me = which == 0 ? pixWidth : pixHeight;
+		double &you = which == 0 ? pixHeight : pixWidth;
+		const double meOld = me;
+		me = xx;
+		if (kConstrain->isChecked())                       // handles.constrainProp
+			you = isPercent ? other * p : you * me / std::max(1.0, meOld);
+		docWidth  = pixWidth  * resolutionFact();
+		docHeight = pixHeight * resolutionFact();
+		refresh();
+	}
+
+	// edit_docWidth_CB / edit_docHeight_CB: the document size drives the pixel count back.
+	void docEdited(int which) {
+		if (filling || !ready) return;
+		QLineEdit *e = which == 0 ? eDocW : eDocH;
+		bool ok = false;
+		const double xx = e->text().trimmed().toDouble(&ok);
+		if (!ok || xx <= 0.0) { refresh(); return; }
+		double &me = which == 0 ? docWidth : docHeight;
+		double &you = which == 0 ? docHeight : docWidth;
+		const double meOld = me;
+		me = xx;
+		if (kConstrain->isChecked()) you = you * me / std::max(1e-12, meOld);
+		pixWidth  = std::max(1.0, docWidth  / resolutionFact());
+		pixHeight = std::max(1.0, docHeight / resolutionFact());
+		refresh();
+	}
+
+	// edit_docResolution_CB: stored in DPI whatever the popup says, then the pixel counts follow.
+	void resEdited() {
+		if (filling || !ready) return;
+		bool ok = false;
+		const double xx = eRes->text().trimmed().toDouble(&ok);
+		if (!ok || xx <= 0.0) { refresh(); return; }
+		resolution = cRes->currentIndex() == 0 ? qRound(xx) : qRound(xx * 2.54);
+		pixWidth  = std::max(1.0, docWidth  / resolutionFact());
+		pixHeight = std::max(1.0, docHeight / resolutionFact());
+		refresh();
+	}
+};
+
+// The four popup_resampMethod entries, as gdalwarp -r names (see the class comment for "Area Relation").
+static const char *resizeMethodName(int idx) {
+	switch (idx) {
+		case 1:  return "bilinear";
+		case 2:  return "cubic";
+		case 3:  return "average";     // Mirone/OpenCV "Area Relation" = INTER_AREA
+		default: return "near";
+	}
+}
+
+static void showImageResize(QWidget *parent, Scene *s, const char *name) {
+	if (!g_juliaImageResize) {
+		QMessageBox::warning(parent, "Resize Image",
+		                     "Image resize: callback not registered (rebuild/restart needed?).");
+		return;
+	}
+	auto open = g_resizeDlgs.find(s);            // already open (or parked)? that one comes back
+	if (open != g_resizeDlgs.end() && open->second->dlg) { open->second->unpark(); return; }
+	QUiLoader loader;
+	QFile f(gmtvtkUiDir() + "/image_resize.ui");
+	if (!f.open(QFile::ReadOnly)) {
+		qWarning("showImageResize: cannot open %s", qUtf8Printable(f.fileName()));
+		return;
+	}
+	QDialog *d = qobject_cast<QDialog *>(loader.load(&f, parent));
+	f.close();
+	if (!d) return;
+	// NO WA_DeleteOnClose: closing parks the dialog (see CloseParks below), it does not destroy it.
+
+	auto *rd = new ImageResizeDialog;
+	rd->dlg = d;
+	rd->scn = s;
+	rd->srcName = QString::fromUtf8(name ? name : "");
+	rd->ePixW = d->findChild<QLineEdit *>("edit_pixWidth");
+	rd->ePixH = d->findChild<QLineEdit *>("edit_pixHeight");
+	rd->eDocW = d->findChild<QLineEdit *>("edit_docWidth");
+	rd->eDocH = d->findChild<QLineEdit *>("edit_docHeight");
+	rd->eRes  = d->findChild<QLineEdit *>("edit_docResolution");
+	rd->cPixW = d->findChild<QComboBox *>("popup_pixWidth");
+	rd->cPixH = d->findChild<QComboBox *>("popup_pixHeight");
+	rd->cDocW = d->findChild<QComboBox *>("popup_docWidth");
+	rd->cDocH = d->findChild<QComboBox *>("popup_docHeight");
+	rd->cRes  = d->findChild<QComboBox *>("popup_docResolution");
+	rd->cMethod    = d->findChild<QComboBox *>("popup_resampMethod");
+	rd->kConstrain = d->findChild<QCheckBox *>("check_constProportions");
+	QPushButton *bOK = d->findChild<QPushButton *>("push_OK");
+	QPushButton *bCancel = d->findChild<QPushButton *>("push_cancel");
+	// push_cancel is OPTIONAL — the dialog's own X closes it just as well, and demanding it here made
+	// the whole dialog silently refuse to open the moment the button was taken out of the .ui.
+	if (!rd->ePixW || !rd->ePixH || !rd->eDocW || !rd->eDocH || !rd->eRes || !rd->cPixW ||
+	    !rd->cPixH || !rd->cDocW || !rd->cDocH || !rd->cRes || !rd->cMethod || !rd->kConstrain ||
+	    !bOK) {
+		delete rd; delete d; return;
+	}
+	QObject::connect(d, &QObject::destroyed, d, [rd]() { delete rd; });
+	g_resizeDlgs[s] = rd;
+
+	// The X PARKS instead of closing — same filter the Adjust Contrast dialog installs. Only the
+	// parked row's "Delete" (which sets reallyClose) ever lets a close event through.
+	struct CloseParks : QObject {
+		ImageResizeDialog *rd;
+		CloseParks(QObject *parent, ImageResizeDialog *r) : QObject(parent), rd(r) {}
+		bool eventFilter(QObject *o, QEvent *e) override {
+			if (e->type() == QEvent::Close && rd && !rd->reallyClose && sceneAlive(rd->scn)) {
+				e->ignore();
+				rd->dlg->hide();
+				ImageResizeDialog *h = rd;
+				parkTool(h->scn, h->dlg, "Resize Image", IC_Image,
+				         "Closed Resize Image dialog — double-click to bring it back, click for Show / Delete",
+				         [h]() { h->unpark(); }, h->parkedMenu());
+				unfoldSceneObjects(rd->scn);
+				return true;
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	d->installEventFilter(new CloseParks(d, rd));
+
+	QObject::connect(rd->ePixW, &QLineEdit::editingFinished, d, [rd]() { rd->pixEdited(0); });
+	QObject::connect(rd->ePixH, &QLineEdit::editingFinished, d, [rd]() { rd->pixEdited(1); });
+	QObject::connect(rd->eDocW, &QLineEdit::editingFinished, d, [rd]() { rd->docEdited(0); });
+	QObject::connect(rd->eDocH, &QLineEdit::editingFinished, d, [rd]() { rd->docEdited(1); });
+	QObject::connect(rd->eRes,  &QLineEdit::editingFinished, d, [rd]() { rd->resEdited(); });
+	// popup_pixHeight_CB just forwards to popup_pixWidth_CB: the two popups are one control.
+	auto pixUnits = [rd](int v) {
+		if (rd->filling) return;
+		rd->isPercent = (v == 1);
+		rd->filling = true;
+		rd->cPixW->setCurrentIndex(v);  rd->cPixH->setCurrentIndex(v);
+		rd->filling = false;
+		rd->refresh();
+	};
+	QObject::connect(rd->cPixW, QOverload<int>::of(&QComboBox::currentIndexChanged), d, pixUnits);
+	QObject::connect(rd->cPixH, QOverload<int>::of(&QComboBox::currentIndexChanged), d, pixUnits);
+	// popup_docWidth_CB: cm / mm / inch / points, likewise one control for both edits.
+	auto docUnits = [rd](int v) {
+		if (rd->filling) return;
+		rd->unitFact = (v == 1) ? 254.0 : (v == 2) ? 1.0 : (v == 3) ? 1.0 / 72.0 : 2.54;
+		rd->filling = true;
+		rd->cDocW->setCurrentIndex(v);  rd->cDocH->setCurrentIndex(v);
+		rd->filling = false;
+		rd->docWidth  = rd->pixWidth  * rd->resolutionFact();
+		rd->docHeight = rd->pixHeight * rd->resolutionFact();
+		rd->refresh();
+	};
+	QObject::connect(rd->cDocW, QOverload<int>::of(&QComboBox::currentIndexChanged), d, docUnits);
+	QObject::connect(rd->cDocH, QOverload<int>::of(&QComboBox::currentIndexChanged), d, docUnits);
+	// popup_docResolution_CB: display only — the resolution itself never leaves DPI.
+	QObject::connect(rd->cRes, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+	                 [rd](int) { if (!rd->filling) rd->refresh(); });
+
+	if (bCancel) QObject::connect(bCancel, &QPushButton::clicked, d, [d]() { d->close(); });
+	QObject::connect(bOK, &QPushButton::clicked, d, [rd, d, s]() {
+		if (!rd->ready || !g_juliaImageResize) return;
+		const int w = std::max(1, qRound(rd->pixWidth)), h = std::max(1, qRound(rd->pixHeight));
+		const QString req = QString("resize;%1;%2;%3;%4").arg(rd->srcName).arg(w).arg(h)
+		                        .arg(QString::fromLatin1(resizeMethodName(rd->cMethod->currentIndex())));
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		g_juliaImageResize(s, rd, req.toUtf8().constData());
+		QApplication::restoreOverrideCursor();
+		d->close();
+	});
+
+	// Ask Julia for the source image's real size; it answers through gmtvtk_resize_set_size.
+	const QString init = QString("init;%1").arg(rd->srcName);
+	if (!g_juliaImageResize(s, rd, init.toUtf8().constData()) || !rd->ready) {
+		QMessageBox::warning(parent, "Resize Image", "This window has no image to resize.");
+		delete d;          // never opened -> destroy it outright; parking an empty dialog is no use
+		return;
+	}
+	d->setWindowTitle(rd->srcName.isEmpty() ? QString("Resize Image")
+	                                        : QString("Resize Image — %1").arg(rd->srcName));
+	d->show();
+}
+
 static const struct BinarizeHookInstaller {
 	BinarizeHookInstaller() {
 		g_binarizeHasDialog = &binarizeHasDialog;
@@ -6369,6 +6644,9 @@ static const struct BinarizeHookInstaller {
 		g_enhanceReopen     = &enhanceReopen;
 		g_showImageHisto    = [](Scene *s, const char *name) {
 			showImageHistogram(s && s->widget ? s->widget->window() : nullptr, s, name);
+		};
+		g_showImageResize   = [](Scene *s, const char *name) {
+			showImageResize(s && s->widget ? s->widget->window() : nullptr, s, name);
 		};
 	}
 } g_binarizeHookInstaller;
@@ -13287,6 +13565,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Show Histogram (image_histo.m): the histogram of what the window DISPLAYS — for a grid that is
 	// its rendered colour image, never its z values.
 	QAction *aHisto = mImage->addAction("Show &Histogram", [win, s]() { showImageHistogram(win, s, ""); });
+	// Image resize (imageresize.m), where mirone_uis.m puts it: in the Image menu, after a separator.
+	QAction *aResize = mImage->addAction("Image &resize…", [win, s]() {
+		showImageResize(win, s, displayedImageName(s).toUtf8().constData());
+	});
 	// Image Enhance submenu, kept exactly as mirone_uis.m builds it (the numbering included). Only
 	// entry 1 (image_enhance.m) is ported so far; 2 (image_adjust.m) and 3 (ice_m.m) are placeholders.
 	mImage->addSeparator();
@@ -13306,9 +13588,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	aEnh2->setEnabled(false);  aEnh3->setEnabled(false);     // not ported yet
 	// Binarize needs an image to threshold — greyed out (refreshed on every open) when the window
 	// holds none. Show Histogram works off the DISPLAY, so a grid window qualifies too.
-	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto, aEnh1]() {
+	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto, aResize, aEnh1]() {
 		aBinarize->setEnabled(sceneHasImage(s));
 		aHisto->setEnabled(sceneHasImage(s) || sceneHasGrid(s));
+		aResize->setEnabled(sceneHasImage(s));  // resamples the image itself, so it needs a real one
 		aEnh1->setEnabled(sceneHasImage(s));   // it rewrites an image's pixels, so it needs a real one
 	});
 

@@ -93,6 +93,7 @@ function _ensure_callbacks()
 	                    ("forget",      _register_forget),
 	                    ("imagehisto",  _register_image_histo),
 	                    ("imageenhance", _register_image_enhance),
+	                    ("imageresize", _register_image_resize),
 	                    ("empilhador",  _register_empilhador),
 	                    ("gridcalc",    _register_gridcalc),
 	                    ("grdtrend",    _register_grdtrend),

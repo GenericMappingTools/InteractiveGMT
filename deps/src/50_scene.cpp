@@ -722,6 +722,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	// Same "Image > Show Histogram" the menu bar opens, on THIS handle's image (the menu-bar entry
 	// has to guess which image is displayed; here the handle already says which one).
 	QAction *aHisto = g_showImageHisto ? m.addAction("Show Histogram") : nullptr;
+	QAction *aResize = g_showImageResize ? m.addAction("Image resize…") : nullptr;
 	QAction *aSave = m.addAction("Save image…");
 	// Same move a grid row offers (gridObjectMenu): re-open this image in a fresh iGMT window, then
 	// drop it from here. ONE function does the move for both kinds — moveObjectToNewWindow.
@@ -732,6 +733,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	if (aBinarize && c == aBinarize) { g_binarizeReopen(s, s->extras[idx].name.c_str()); return; }
 	if (aEnhance && c == aEnhance) { g_enhanceReopen(s, s->extras[idx].name.c_str()); return; }
 	if (aHisto && c == aHisto) { g_showImageHisto(s, s->extras[idx].name.c_str()); return; }
+	if (aResize && c == aResize) { g_showImageResize(s, s->extras[idx].name.c_str()); return; }
 	if (c == aMove) {
 		const QString nm = QString::fromStdString(s->extras[idx].name);
 		if (!moveObjectToNewWindow(s, "image", nm)) return;   // a failed move leaves the image put
@@ -1795,6 +1797,7 @@ static void rebuildSceneObjects(Scene *s) {
 			QAction *aBinarize = g_binarizeReopen ? m.addAction("Binarize Image…") : nullptr;
 			QAction *aEnhance  = g_enhanceReopen  ? m.addAction("Image Enhance…")  : nullptr;
 			QAction *aHisto    = g_showImageHisto ? m.addAction("Show Histogram")  : nullptr;
+			QAction *aResize   = g_showImageResize ? m.addAction("Image resize…")  : nullptr;
 			QAction *aSave = m.addAction("Save image…");
 			// Same move a grid row offers, for the window's own image: re-open it in a fresh iGMT
 			// window, then drop it from here (moveObjectToNewWindow — the one function for both kinds).
@@ -1807,6 +1810,7 @@ static void rebuildSceneObjects(Scene *s) {
 			else if (aBinarize && c == aBinarize) g_binarizeReopen(s, "");   // "" = the window's primary image
 			else if (aEnhance && c == aEnhance) g_enhanceReopen(s, "");
 			else if (aHisto && c == aHisto) g_showImageHisto(s, "");
+			else if (aResize && c == aResize) g_showImageResize(s, "");
 			else if (c == aSave) saveObjectDialog(s, "image", nm);
 			else if (c == aMove) { if (moveObjectToNewWindow(s, "image", "")) sceneRemoveSurface(s); }
 			else if (c == aRem) sceneRemoveSurface(s);

@@ -1,0 +1,391 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ImageResizeDialog</class>
+ <widget class="QDialog" name="ImageResizeDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>348</width>
+    <height>261</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Resize Image</string>
+  </property>
+  <widget class="QGroupBox" name="group_pixDim">
+   <property name="geometry">
+    <rect>
+     <x>7</x>
+     <y>9</y>
+     <width>241</width>
+     <height>80</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Pixel Dimensions:</string>
+   </property>
+   <widget class="QLabel" name="text_width">
+    <property name="geometry">
+     <rect>
+      <x>22</x>
+      <y>24</y>
+      <width>41</width>
+      <height>15</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Describes the width in pixels</string>
+    </property>
+    <property name="text">
+     <string>Width</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="edit_pixWidth">
+    <property name="geometry">
+     <rect>
+      <x>72</x>
+      <y>23</y>
+      <width>71</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Describes the width in pixels</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="popup_pixWidth">
+    <property name="geometry">
+     <rect>
+      <x>151</x>
+      <y>22</y>
+      <width>81</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <item>
+     <property name="text">
+      <string>pixels</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>percent</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QLabel" name="text_height">
+    <property name="geometry">
+     <rect>
+      <x>22</x>
+      <y>50</y>
+      <width>41</width>
+      <height>18</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Describes the height in pixels</string>
+    </property>
+    <property name="text">
+     <string>Height</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="edit_pixHeight">
+    <property name="geometry">
+     <rect>
+      <x>72</x>
+      <y>50</y>
+      <width>71</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Describes the height in pixels</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="popup_pixHeight">
+    <property name="geometry">
+     <rect>
+      <x>151</x>
+      <y>49</y>
+      <width>81</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <item>
+     <property name="text">
+      <string>pixels</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>percent</string>
+     </property>
+    </item>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="group_docSize">
+   <property name="geometry">
+    <rect>
+     <x>7</x>
+     <y>91</y>
+     <width>241</width>
+     <height>110</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Document Size:</string>
+   </property>
+   <widget class="QLabel" name="text_docWidth">
+    <property name="geometry">
+     <rect>
+      <x>23</x>
+      <y>28</y>
+      <width>41</width>
+      <height>15</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Set the document width</string>
+    </property>
+    <property name="text">
+     <string>Width</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="edit_docWidth">
+    <property name="geometry">
+     <rect>
+      <x>72</x>
+      <y>27</y>
+      <width>71</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Set the document width</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="popup_docWidth">
+    <property name="geometry">
+     <rect>
+      <x>152</x>
+      <y>26</y>
+      <width>81</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <item>
+     <property name="text">
+      <string>cm</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>mm</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>inch</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>points</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QLabel" name="text_docHeight">
+    <property name="geometry">
+     <rect>
+      <x>23</x>
+      <y>54</y>
+      <width>41</width>
+      <height>18</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Set the document height</string>
+    </property>
+    <property name="text">
+     <string>Height</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="edit_docHeight">
+    <property name="geometry">
+     <rect>
+      <x>72</x>
+      <y>54</y>
+      <width>71</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Set the document height</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="popup_docHeight">
+    <property name="geometry">
+     <rect>
+      <x>152</x>
+      <y>53</y>
+      <width>81</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <item>
+     <property name="text">
+      <string>cm</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>mm</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>inch</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>points</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QLabel" name="text_resolution">
+    <property name="geometry">
+     <rect>
+      <x>6</x>
+      <y>81</y>
+      <width>65</width>
+      <height>18</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Set the document resolution</string>
+    </property>
+    <property name="text">
+     <string>Resolution</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="edit_docResolution">
+    <property name="geometry">
+     <rect>
+      <x>72</x>
+      <y>80</y>
+      <width>71</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Set the document resolution</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="popup_docResolution">
+    <property name="geometry">
+     <rect>
+      <x>151</x>
+      <y>80</y>
+      <width>83</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Set the document resolution</string>
+    </property>
+    <item>
+     <property name="text">
+      <string>pixels/inch</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>pixels/cm</string>
+     </property>
+    </item>
+   </widget>
+  </widget>
+  <widget class="QCheckBox" name="check_constProportions">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>235</y>
+     <width>131</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Constrain aspect ratio</string>
+   </property>
+   <property name="text">
+    <string>Keep Proportions</string>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QLabel" name="text_resampMethod">
+   <property name="geometry">
+    <rect>
+     <x>9</x>
+     <y>213</y>
+     <width>111</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Resample Method:</string>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="popup_resampMethod">
+   <property name="geometry">
+    <rect>
+     <x>123</x>
+     <y>210</y>
+     <width>141</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Area Relation averages the source pixels each new pixel covers (gdalwarp -r average)</string>
+   </property>
+   <item>
+    <property name="text">
+     <string>Nearest Neighbor</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Bilinear</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Bicubic</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Area Relation</string>
+    </property>
+   </item>
+  </widget>
+  <widget class="QPushButton" name="push_OK">
+   <property name="geometry">
+    <rect>
+     <x>270</x>
+     <y>235</y>
+     <width>71</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Compute</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
