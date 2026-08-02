@@ -91,6 +91,18 @@ struct Overlay {
 	std::vector<std::string> info;           // per-SEGMENT hover text (nseg entries, line mode only); empty =
 	                                          // no hover info. Looked up by pickOverlayInfoAt via pickOverlayAt's
 	                                          // segment index -- same hit-test the context-menu path already uses.
+	std::vector<std::string> vertexInfo;     // per-VERTEX hover text (npts entries, line OR points mode); empty =
+	                                          // no per-vertex info. The finer-grained twin of `info` above -- a
+	                                          // dropped "x y text" table's own gmtread .text column (drop.jl's
+	                                          // `_ds_vertex_texts`), one string per point, 1:1 with baseLine's
+	                                          // vtkPoints. pickOverlayInfoAt checks this FIRST (via pickOverlayAt's
+	                                          // vertex index), falling back to per-segment `info` otherwise.
+	bool labelsShown = false;                 // "Show point labels" toggle (55_lineprops.cpp): billboard text
+	                                          // labels built from vertexInfo, same mechanism city names use
+	                                          // (gmtvtk_add_texts_h). Tracks whether they are currently added.
+	std::string labelsGroup;                  // text group tag for the toggled labels (lazily set to
+	                                          // "<name> (labels)"), so gmtvtk_remove_overlay_group_h can erase
+	                                          // just them without touching this overlay itself.
 	std::vector<double> interiorXYZ;         // SHAPENC "bounded ensemble" (OUT polygon + hidden point swarm,
 	                                          // Mirone convention): the swarm's x,y,z, stashed here at add-time
 	                                          // instead of being added to the scene -- empty = not a bounded
@@ -435,6 +447,10 @@ static int  lineCurrentStyle(Scene *s, const LineRef &lr);
 static void polygonDelete(Scene *s, vtkActor *lineActor);                    // remove a finished polygon
 static void overlayDelete(Scene *s, vtkActor *a);                            // remove an overlay line/point (50)
 static void overlayDeleteGroup(Scene *s, const std::string &groupName);      // remove every overlay tagged with groupName (50)
+static int addTextsBatch(Scene *s, const double *xy, const char *texts, int n,
+                          double r, double g, double b, int size, const char *font,
+                          int bold, int italic, const char *groupName, const int *eventIdx,
+                          int vcenter, const double *z, const double *angleDeg, int flat);  // batch text labels (90)
 static void polyRebuildLine(Scene *s, Polygon &pg);                         // rebuild a polygon actor from pg.v (85)
 static void polyRebuildFill(Scene *s, Polygon &pg);                         // rebuild a closed polygon's filled face (85)
 static int  polyIndexOfActor(Scene *s, vtkActor *a);                        // index of polygon whose line==a, or -1 (55)
@@ -2123,8 +2139,9 @@ static bool pickCloudPointAt(Scene *s, int dx, int dy, double w[3]) {
 // the index into that overlay's own segoff/nseg (which stored polyline this point index falls
 // in) — used by the double-click "promote to editable Polygon" path (85_polygon.cpp) to isolate
 // just the clicked segment. -1 if not applicable (points mode, or no hit).
-static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int &outMode, int *outSeg = nullptr) {
+static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int &outMode, int *outSeg = nullptr, int *outVertex = nullptr) {
 	if (outSeg) *outSeg = -1;
+	if (outVertex) *outVertex = -1;
 	if (!s || s->overlays.empty())
 		return nullptr;
 	vtkRenderer *ren = s->ren;
@@ -2185,7 +2202,10 @@ static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int &outMode, int *outS
 				if (dd < trueBest) trueBest = dd;
 				if (dd < best) {
 					best = dd; bestA = ov.actor; bestMode = ov.mode == 1 ? 1 : 0; bestOv = &ov;
-					bestI0 = (ov.mode == 1) ? i : -1;
+					bestI0 = i;   // vertex index in EITHER mode -- points-mode overlays have no
+					              // segoff/outSeg use for it, but vertexInfo hover (pickOverlayInfoAt)
+					              // needs it regardless of mode; previously forced -1 for points,
+					              // which silently killed vertex hover for every points-mode overlay.
 				}
 			}
 			continue;
@@ -2220,24 +2240,31 @@ static vtkActor *pickOverlayAt(Scene *s, int dx, int dy, int &outMode, int *outS
 		for (int k = 0; k < bestOv->nseg; ++k)
 			if (bestI0 >= bestOv->segoff[k] && bestI0 < bestOv->segoff[k+1]) { *outSeg = k; break; }
 	}
+	if (outVertex && bestI0 >= 0) *outVertex = (int)bestI0;
 	return bestA;
 }
 
-// Nearest OVERLAY SEGMENT under the cursor that carries hover info (e.g. a plate-boundary
-// velocity/plate-pair block). Reuses pickOverlayAt -- the SAME hit-test the context-menu /
-// "promote clicked segment" paths already use, never a second parallel picker for the same
-// quantity -- to find the nearest line + its segment index, then looks up that Overlay's own
-// info[] by segment. Only line-mode overlays carry per-segment info. Used by onMouseMove to pop
-// a tooltip when hovering e.g. a plate boundary segment.
+// Nearest OVERLAY SEGMENT/VERTEX under the cursor that carries hover info (e.g. a plate-boundary
+// velocity/plate-pair block, or a dropped table's per-row text). Reuses pickOverlayAt -- the SAME
+// hit-test the context-menu / "promote clicked segment" paths already use, never a second parallel
+// picker for the same quantity -- to find the nearest overlay + its vertex (either mode) and segment
+// (line mode only) index. Per-VERTEX info (finer-grained: one entry per point, e.g. a dropped
+// "x y text" table, LINE or POINTS mode alike) is checked FIRST; per-SEGMENT info (e.g. plate-
+// boundary blocks, line mode only) is the fallback. Used by onMouseMove to pop a tooltip when
+// hovering e.g. a plate boundary segment or a dropped table's own point/vertex.
 static bool pickOverlayInfoAt(Scene *s, int dx, int dy, std::string &out) {
-	int mode = 1, seg = -1;
-	vtkActor *a = pickOverlayAt(s, dx, dy, mode, &seg);
-	if (!a || mode != 1 || seg < 0)
+	int mode = 1, seg = -1, vtx = -1;
+	vtkActor *a = pickOverlayAt(s, dx, dy, mode, &seg, &vtx);
+	if (!a)
 		return false;
 	for (auto &ov : s->overlays) {
 		if (ov.actor.Get() != a)
 			continue;
-		if (seg >= (int)ov.info.size())
+		if (vtx >= 0 && vtx < (int)ov.vertexInfo.size() && !ov.vertexInfo[vtx].empty()) {
+			out = ov.vertexInfo[vtx];
+			return true;
+		}
+		if (mode != 1 || seg < 0 || seg >= (int)ov.info.size())
 			return false;
 		out = ov.info[seg];
 		return !out.empty();

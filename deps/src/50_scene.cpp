@@ -2415,7 +2415,7 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 					   bool isShapencInteriorPoints = false, bool noConvertToPoints = false,
 					   bool zIsPlaceholder = false, bool noDataTable = false,
 					   const int *gapAnchors = nullptr, int nGapAnchors = 0, double gapHalfPx = 0.0,
-					   bool cptColorable = false) {
+					   bool cptColorable = false, const char *vertexInfo = nullptr) {
 	if (!s || !xyz || npts <= 0)
 		return;
 
@@ -2499,6 +2499,20 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 		if ((int)recs.size() == nseg)          // adopt only if it aligns 1:1 with the segments, else drop it
 			ov.info = std::move(recs);
 	}
+	if (vertexInfo && vertexInfo[0]) {         // per-VERTEX hover text: npts records joined by RS ('\x1e'),
+	                                            // one per point (drop.jl's `_ds_vertex_texts`) -- the finer
+	                                            // twin of the per-segment `info` above.
+		std::vector<std::string> recs;
+		const char *p = vertexInfo;
+		while (true) {
+			const char *e = strchr(p, '\x1e');
+			recs.emplace_back(e ? std::string(p, e - p) : std::string(p));
+			if (!e) break;
+			p = e + 1;
+		}
+		if ((int)recs.size() == npts)          // adopt only if it aligns 1:1 with the points, else drop it
+			ov.vertexInfo = std::move(recs);
+	}
 	if (interiorXYZ && nInterior > 0)
 		ov.interiorXYZ.assign(interiorXYZ, interiorXYZ + 3 * nInterior);
 	ov.isShapencBoundary = isShapencBoundary;
@@ -2527,6 +2541,59 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	if (s->ren) s->ren->ResetCameraClippingRange();
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
+}
+
+// Batch text-label builder shared by gmtvtk_add_texts_ex_h (the C API export) and any internal
+// caller that needs the SAME billboard-label mechanism city names use (SACRED_LAW.md: one
+// operation, one function) -- e.g. a line overlay's "Show point labels" toggle (55_lineprops.cpp),
+// which cannot call the C API export directly (it runs earlier in this one translation unit, before
+// 90_c_api.cpp's definitions). `xy` = n (x,y) pairs, `texts` = n records joined by RS ('\x1e').
+// `font` (NULL/"" -> TextLabel's own default "Arial") and `groupName` (NULL/"" -> ungrouped) tag the
+// whole batch; `eventIdx` (may be NULL) wires TextLabel::mecaEvent (focal-mechanism date labels).
+// `flat`/`z`/`angleDeg` are the one exception to the billboard rule (contour annotations, which must
+// lie in the XY plane along their own line) -- see gmtvtk_add_texts_ex_h's own comment for the full
+// rationale. Returns the number of labels actually added (blank records are skipped).
+static int addTextsBatch(Scene *s, const double *xy, const char *texts, int n,
+                          double r, double g, double b, int size, const char *font,
+                          int bold, int italic, const char *groupName, const int *eventIdx,
+                          int vcenter, const double *z, const double *angleDeg, int flat) {
+	if (!sceneAlive(s) || !xy || !texts || n < 1) return 0;
+	const char *p = texts;
+	int added = 0;
+	const double wscale = flat ? sceneWorldPerPixel(s) : 0.0;
+	for (int i = 0; i < n; ++i) {
+		const char *e = strchr(p, '\x1e');
+		std::string txt = e ? std::string(p, e - p) : std::string(p);
+		if (!txt.empty()) {
+			TextLabel tl;
+			tl.pos = { xy[2*i], xy[2*i + 1], z ? z[i] : 0.0 };
+			tl.text = std::move(txt);
+			tl.name = "Text " + std::to_string((int)s->texts.size() + 1);
+			tl.color[0] = r; tl.color[1] = g; tl.color[2] = b;
+			if (size > 0) tl.size = size;
+			if (font && font[0]) tl.font = font;
+			tl.bold = bold != 0;
+			tl.italic = italic != 0;
+			if (groupName && groupName[0]) tl.groupName = groupName;
+			if (eventIdx) tl.mecaEvent = eventIdx[i];
+			tl.vcenter = vcenter != 0;
+			tl.flat    = flat != 0;
+			tl.angle   = angleDeg ? angleDeg[i] : 0.0;
+			tl.wscale  = wscale;
+			if (tl.flat) tl.actor = vtkSmartPointer<vtkTextActor3D>::New();
+			else         tl.actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
+			textApplyProps(s, tl);
+			(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
+			s->texts.push_back(tl);
+			++added;
+		}
+		if (!e) break;
+		p = e + 1;
+	}
+	if (added == 0) return 0;
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return added;
 }
 
 // Toggle an existing overlay between polyline (mode 1) and points (mode 0) IN PLACE: rebuild the

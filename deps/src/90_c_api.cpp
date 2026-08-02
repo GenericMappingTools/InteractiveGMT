@@ -624,6 +624,32 @@ GMTVTK_API int gmtvtk_add_overlay_ex3_h(void *handle, const double *xyz, int npt
 	return 1;
 }
 
+// Same as gmtvtk_add_overlay_ex3_h, plus `vertexInfo`: per-VERTEX hover text, npts records joined by
+// RS ('\x1e'), one per point -- the finer-grained twin of `info` (which is per-SEGMENT). Used by a
+// dropped "x y text" table (drop.jl's `_ds_vertex_texts`, gmtread's own trailing text column): the
+// line drawn on top of a referenced grid/image gets per-point hover text (pickOverlayInfoAt,
+// 10_geometry.cpp) AND its Scene Objects context menu offers "Show point labels" (55_lineprops.cpp)
+// to plot that same text as billboard labels, exactly like Geography's city names. NULL/"" behaves
+// exactly like gmtvtk_add_overlay_ex3_h. Returns 1 if added.
+GMTVTK_API int gmtvtk_add_overlay_ex4_h(void *handle, const double *xyz, int npts, const int *segoff, int nseg,
+								      int mode, double r, double g, double b,
+								      double linewidth, double pointsize,
+								      const char *name, const char *groupName, const char *info,
+								      int noConvertToPoints, int zIsPlaceholder, int noDataTable,
+								      const char *vertexInfo) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s))
+		return 0;
+	double dpi = 72.0;
+	if (s->widget && s->widget->renderWindow() && s->widget->renderWindow()->GetDPI() > 0)
+		dpi = s->widget->renderWindow()->GetDPI();
+	const double pxPerPt = dpi / 72.0;
+	addOverlay(s, xyz, npts, segoff, nseg, mode, r, g, b, linewidth * pxPerPt, pointsize, name, groupName, info,
+	           nullptr, 0, false, false, noConvertToPoints != 0, zIsPlaceholder != 0, noDataTable != 0,
+	           nullptr, 0, 0.0, false, vertexInfo);
+	return 1;
+}
+
 // Read a line OVERLAY's current pen by its Scene Objects name, so Save Session can capture edits the
 // user made AFTER the layer was added (coastlines/borders/rivers are :menu recipes that otherwise
 // replay with the default pen). out = { r, g, b, width_px, style(0 solid/1 dashed/2 dotted), opacity }.
@@ -2487,51 +2513,11 @@ GMTVTK_API int gmtvtk_add_texts_ex_h(void *handle, const double *xy, const char 
                                   const char *font, int bold, int italic, const char *groupName,
                                   const int *eventIdx, int vcenter,
                                   const double *z, const double *angleDeg, int flat) {
-	Scene *s = static_cast<Scene*>(handle);
-	if (!sceneAlive(s) || !xy || !texts || n < 1) return 0;
-	const char *p = texts;
-	int added = 0;
-	// Flat labels are world-scaled, so they need to know how big a screen pixel is in world units.
-	// Plain world-per-pixel: the device-DPI and oversampling factors belong with the TEXTURE, and
-	// textApplyProps applies them there (see its flat branch).
-	const double wscale = flat ? sceneWorldPerPixel(s) : 0.0;
-	for (int i = 0; i < n; ++i) {
-		const char *e = strchr(p, '\x1e');
-		std::string txt = e ? std::string(p, e - p) : std::string(p);
-		if (!txt.empty()) {
-			TextLabel tl;
-			tl.pos = { xy[2*i], xy[2*i + 1], z ? z[i] : 0.0 };
-			tl.text = std::move(txt);
-			tl.name = "Text " + std::to_string((int)s->texts.size() + 1);
-			tl.color[0] = r; tl.color[1] = g; tl.color[2] = b;
-			if (size > 0) tl.size = size;
-			if (font && font[0]) tl.font = font;
-			tl.bold = bold != 0;
-			tl.italic = italic != 0;
-			if (groupName && groupName[0]) tl.groupName = groupName;
-			if (eventIdx) tl.mecaEvent = eventIdx[i];
-			tl.vcenter = vcenter != 0;
-			tl.flat    = flat != 0;
-			tl.angle   = angleDeg ? angleDeg[i] : 0.0;
-			tl.wscale  = wscale;
-			// A billboard (2026-07-24 standing rule, see TextLabel) — camera-facing, constant screen
-			// size, same as the cube's tick numbers (placeTickBillboards, 10_geometry.cpp) — for every
-			// label EXCEPT the one documented exception: a contour annotation, which has to be rotated
-			// along its line and so must be a flat vtkTextActor3D in the XY plane.
-			if (tl.flat) tl.actor = vtkSmartPointer<vtkTextActor3D>::New();
-			else         tl.actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
-			textApplyProps(s, tl);
-			(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
-			s->texts.push_back(tl);
-			++added;
-		}
-		if (!e) break;
-		p = e + 1;
-	}
-	if (added == 0) return 0;
-	rebuildSceneObjects(s);
-	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
-	return added;
+	// Thin wrapper: addTextsBatch (50_scene.cpp) is the shared core, also called directly by a line
+	// overlay's "Show point labels" toggle (55_lineprops.cpp), which runs earlier in this translation
+	// unit than this export -- SACRED_LAW.md, one operation, one function.
+	return addTextsBatch(static_cast<Scene*>(handle), xy, texts, n, r, g, b, size, font, bold, italic,
+	                      groupName, eventIdx, vcenter, z, angleDeg, flat);
 }
 
 // The original batch-text entry point: gmtvtk_add_texts_ex_h with vcenter = 0, i.e. batch-owned
@@ -4491,6 +4477,29 @@ GMTVTK_API void gmtvtk_reframe_z_h(void *handle, double x0, double x1, double y0
 // always a DERIVED grid variable, which carries its own units, so the base surface's range would box
 // and label it wrong (SACRED_LAW.md derived-variable axes law, Z half). Falls back to the base range
 // when no grid layer resolves (image / cloud / solid window).
+// Window's currently displayed raster (grid/image) footprint, in plain DATA coordinates (W,E,S,N)
+// -- the SAME bounds source axes/reframe/hover already read (surfGetBounds, 10_geometry.cpp), just
+// un-scaled back from xfac-baked screen space (same un-scale sceneReframeToContent above uses) --
+// plus the WINDOW's own geographic flag (activeGridGeog, the SAME source syncAxisNames uses to pick
+// lon/lat vs X/Y axis names). Used by drop.jl to CLIP a dropped table to what is actually on screen
+// before overlaying it -- "on top of the image" means bounded BY it, never sprawling past its edges
+// (e.g. a whole-earth station catalog dropped on a regional grid). The geographic flag MUST come
+// from the WINDOW, not the dropped table's own (often absent) proj metadata -- a plain ASCII x,y
+// file carries no proj4/wkt of its own, so asking the table "are you geographic?" answered "no" even
+// while sitting on top of a geographic image, silently skipping GMT's periodic-longitude clip
+// (`f=:g`) and corrupting the clip for any table crossing the 180°/0° meridian. Returns 0 (outputs
+// untouched) if the window has no bounds yet (unbuilt empty launcher) -- the caller then skips the
+// clip, not fails the drop.
+GMTVTK_API int gmtvtk_get_display_bounds_h(void *handle, double *out4, int *outGeog) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !out4) return 0;
+	double b[6]; surfGetBounds(s, b);
+	const double xf = (s->xfac != 0.0) ? s->xfac : 1.0;
+	out4[0] = b[0] / xf; out4[1] = b[1] / xf; out4[2] = b[2]; out4[3] = b[3];
+	if (outGeog) *outGeog = activeGridGeog(s);
+	return 1;
+}
+
 GMTVTK_API void gmtvtk_reframe_h(void *handle, double x0, double x1, double y0, double y1, int keepMargin) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;

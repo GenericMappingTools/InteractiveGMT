@@ -145,7 +145,14 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 		data = GMT.gmtread(String(spec))
 		isempty(recent) || _record_recent(recent, data)
 		ok = _drop_into(scene, data, name; promote=empty, source=String(spec))
-		ok === false || _adopt_new_element(scene, name, data)   # not all _drop_into methods return Bool
+		# _adopt_new_element reframes the axes to THIS thing's own extent and hides everything else
+		# in the window -- correct for a new grid/image FILE (it becomes the window's new primary
+		# content), WRONG for a table/vector overlay (it must sit ON TOP of what's already displayed,
+		# never spawn its own axes or hide the raster it was dropped onto). Never called for a
+		# GMTdataset/Vector{GMTdataset} -- `_drop_into`/`_promote_dataset` already handle a table's own
+		# framing (blank-scaffold promote case) or leave the display alone entirely (add-as-extra case).
+		is_table = data isa GMTdataset || data isa AbstractVector{<:GMTdataset}
+		(ok === false || is_table) || _adopt_new_element(scene, name, data)   # not all _drop_into methods return Bool
 	end
 	return
 end
@@ -856,12 +863,37 @@ function _register_cube_callback()
 end
 _drop_into(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false, source="") = _add_image_to_scene(scene, I, name; promote, source)
 function _drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name; promote=false, source="")
-	promote ? _promote_dataset(scene, D, name) : _add_dataset_to_scene(scene, D, name)
+	promote && return _promote_dataset(scene, D, name)
+	Dc = _clip_to_display(scene, D)
+	Dc === nothing ? false : _add_dataset_to_scene(scene, Dc, name)
 end
 function _drop_into(scene::Ptr{Cvoid}, D::Vector{<:GMTdataset}, name; promote=false, source="")
-	promote ? _promote_dataset(scene, D, name) : _add_dataset_to_scene(scene, D, name)
+	promote && return _promote_dataset(scene, D, name)
+	Dc = _clip_to_display(scene, D)
+	Dc === nothing ? false : _add_dataset_to_scene(scene, Dc, name)
 end
 _drop_into(scene::Ptr{Cvoid}, x, name; promote=false, source="") = @warn "drop: unsupported data type" type=typeof(x)
+
+# Clip a dropped table to the window's CURRENTLY DISPLAYED raster (grid/image) footprint before
+# overlaying it -- "on top of the image" means BOUNDED by it, never sprawling past its edges (e.g. a
+# whole-earth station catalog dropped on a regional grid). Falls back to the data UNCLIPPED when the
+# window has no real bounds yet (an unbuilt empty launcher -- never reached here anyway since this is
+# only called on the promote=false, already-populated-window path). Geographic-ness comes from the
+# WINDOW (gmtvtk_get_display_bounds_h's own geog flag, activeGridGeog C++-side) — NOT from the
+# dropped table's own proj metadata: a plain ASCII x,y file carries no proj4/wkt of its own, so
+# asking the TABLE "are you geographic?" answered false even while dropped onto a geographic image,
+# silently skipping GMT's periodic-longitude clip (`f=:g`) for any table crossing the 180°/0°
+# meridian. `f=:g` is the SAME convention `_geo_points` (geography.jl) already uses. Returns
+# `nothing` (caller adds nothing, same as any other empty-result drop) when nothing survives the clip.
+function _clip_to_display(scene::Ptr{Cvoid}, D)
+	b = Vector{Cdouble}(undef, 4)
+	geog = Ref{Cint}(0)
+	ok = ccall(_fn(:gmtvtk_get_display_bounds_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cint}), scene, b, geog)
+	ok == 0 && return D
+	W, E, S, N = b[1], b[2], b[3], b[4]
+	Sel = geog[] != 0 ? GMT.gmtselect(D, R=(W, E, S, N), f=:g) : GMT.gmtselect(D, R=(W, E, S, N))
+	return (Sel === nothing || isempty(Sel)) ? nothing : Sel
+end
 
 # Promote the bare launcher IN PLACE into a framed map over the dataset's extent, then add the
 # vector as an overlay — the imported line / polyline / points / polygon lands in THIS iGMT window,
@@ -1175,8 +1207,8 @@ end
 # `_add_grid_to_scene`), `noConvertToPoints`/`noDataTable` (both default false, preserving every
 # existing caller's behaviour exactly) opt an overlay OUT of "Convert to points…"/"Show data
 # table…" for sources where those make no sense (e.g. mgd77tracks.jl's cruise tracks: thousands of
-# raw nav fixes). Routed through gmtvtk_add_overlay_ex3_h only when either flag is set, else the
-# original plain/ex_h calls -- ONE function, extended, not forked.
+# raw nav fixes). Routed through gmtvtk_add_overlay_ex4_h unconditionally — a strict superset of the
+# plain add (every extra field null/false by default) — never a per-feature fork.
 # :points / :lines for a dropped or opened vector table — the ONE classifier every in-window overlay
 # add goes through.
 #
@@ -1184,8 +1216,13 @@ end
 #  - unknown geometry (what `gmtread` leaves on a plain table, ASCII or LAS/LAZ) with a THIRD
 #    column and a single segment is a 3-D POINT CLOUD -> :points. A .laz is millions of x,y,z rows
 #    with no geometry code; wiring them into one polyline produced a black scribble that also froze
-#    the window. The front door (`iview(file)` -> `_ds_kind` -> `view_points`) always read that same
-#    data as a cloud — one operation, one answer, whichever door it came through (SACRED_LAW.md).
+#    the window. A scattered "x y z name" catalog (station list, event catalog) is the SAME shape --
+#    unordered rows, a third numeric column, one segment -- and reads as :points too, exactly like a
+#    .laz; a text column does NOT change this (still no ordering/connectivity implied, so still no
+#    business being drawn as a connected line). The front door (`iview(file)` -> `_ds_kind` ->
+#    `view_points`) always read that same data as a cloud — one operation, one answer, whichever
+#    door it came through (SACRED_LAW.md). Its per-row text still rides along as hover info /
+#    "Show point labels" — that mechanism is orthogonal to line-vs-points, not a reason to force one.
 #  - everything else (2-column x,y table, or several segments = real polylines) stays :lines, which
 #    is the drop default a3158a2 deliberately established; the overlay's "Convert to points…" menu
 #    item still flips it.
@@ -1227,24 +1264,43 @@ function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractSt
 	# reads back (_euler_header_poles). '\x1e'-packed, the same convention magneticisochrons.jl uses.
 	hdrs = _ds_segment_headers(D)
 	packed = isempty(hdrs) ? "" : join(hdrs, '\x1e')
-	ok = if noConvertToPoints || noDataTable
-		ccall(_fn(:gmtvtk_add_overlay_ex3_h), Cint,
-		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
-		   Cstring, Cstring, Cstring, Cint, Cint, Cint),
-		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm, String(groupName), packed,
-		  Cint(noConvertToPoints), Cint(0), Cint(noDataTable))
-	elseif isempty(groupName) && isempty(packed)
-		ccall(_fn(:gmtvtk_add_overlay_h), Cint,
-		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
-		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm)
-	else
-		ccall(_fn(:gmtvtk_add_overlay_ex_h), Cint,
-		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
-		   Cstring, Cstring, Cstring),
-		  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm, String(groupName), packed)
-	end
+	# A plain "x y text" table's own gmtread .text column (one string per ROW, e.g. a waypoint name)
+	# becomes each point's hover info AND the source for the line's "Show point labels" property
+	# (55_lineprops.cpp) — the per-VERTEX twin of the segment headers above, never a second overlay
+	# kind. '\x1e'-packed the same way.
+	vtexts = _ds_vertex_texts(D)
+	vpacked = isempty(vtexts) ? "" : join(vtexts, '\x1e')
+	# ex4_h is a strict superset of the plain add (groupName/info/vertexInfo/flags all default to
+	# null/false) — one call handles every case, never a per-feature fork (SACRED_LAW.md).
+	ok = ccall(_fn(:gmtvtk_add_overlay_ex4_h), Cint,
+	  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
+	   Cstring, Cstring, Cstring, Cint, Cint, Cint, Cstring),
+	  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm, String(groupName), packed,
+	  Cint(noConvertToPoints), Cint(0), Cint(noDataTable), vpacked)
 	ok == 0 && @warn "drop: window is closed; dataset not added"
 	return ok != 0
+end
+
+# Per-ROW trailing text (GMT.gmtread's own `.text` field, e.g. a "x y placename" table) — the
+# per-VERTEX twin of `_ds_segment_headers` above. Aligned 1:1 with `_pack_dataset_flat`'s own
+# iteration order (segments in order, each segment's rows in order), so Overlay::vertexInfo
+# (10_geometry.cpp) can index straight off the point index pickOverlayAt already resolves. Empty
+# (no vertex info at all) unless at least one row actually carries text — so a plain numeric table
+# pays nothing extra.
+function _ds_vertex_texts(D)::Vector{String}
+	segs = D isa AbstractVector ? D : [D]
+	out = String[]
+	any_txt = false
+	for s in segs
+		txt = try s.text catch; nothing end
+		n = size(s.data, 1)
+		for k in 1:n
+			t = (txt !== nothing && k <= length(txt)) ? String(txt[k]) : ""
+			isempty(strip(t)) || (any_txt = true)
+			push!(out, t)
+		end
+	end
+	return any_txt ? out : String[]
 end
 
 # Pack a GMTdataset (single or multi-segment) into the C overlay layout, taking z from column 3

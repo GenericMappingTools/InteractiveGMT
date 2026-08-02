@@ -1059,6 +1059,43 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 				ovp->interiorAdded = true;
 			});
 		}
+		// A dropped "x y text" table's per-ROW text (drop.jl's `_ds_vertex_texts`, gmtread's own
+		// trailing text column) rides along as Overlay::vertexInfo -- already used for hover
+		// (pickOverlayInfoAt). This offers plotting that SAME text as billboard labels, one per
+		// vertex, exactly the mechanism Geography's city names use (_add_city_labels!,
+		// gmtvtk_add_texts_h) -- never a second label kind. Opt-in (checkable): unchecking removes
+		// just the labels group, the line itself is untouched.
+		if (ovp && !ovp->vertexInfo.empty()) {
+			QAction *lab = m.addAction("Show point labels", [s, ovp]() {
+				if (ovp->labelsShown) {
+					if (!ovp->labelsGroup.empty())
+						overlayDeleteGroup(s, ovp->labelsGroup);
+					ovp->labelsShown = false;
+					return;
+				}
+				vtkPoints *pts = ovp->baseLine ? ovp->baseLine->GetPoints() : nullptr;
+				if (!pts) return;
+				const int n = (int)pts->GetNumberOfPoints();
+				if (n != (int)ovp->vertexInfo.size()) return;
+				std::vector<double> xy(2 * n);
+				for (int i = 0; i < n; ++i) {
+					double p[3]; pts->GetPoint(i, p);
+					xy[2*i] = p[0]; xy[2*i + 1] = p[1];
+				}
+				std::string blob;
+				for (int i = 0; i < n; ++i) {
+					blob += ovp->vertexInfo[i];
+					if (i + 1 < n) blob += '\x1e';
+				}
+				if (ovp->labelsGroup.empty())
+					ovp->labelsGroup = ovp->name + " (labels)";
+				addTextsBatch(s, xy.data(), blob.c_str(), n, 0.0, 0.0, 0.0, 9, nullptr, 0, 0,
+				              ovp->labelsGroup.c_str(), nullptr, 0, nullptr, nullptr, 0);
+				ovp->labelsShown = true;
+			});
+			lab->setCheckable(true);
+			lab->setChecked(ovp->labelsShown);
+		}
 		// The points overlay "Plot interior points" itself created (its OWN row, not the OUT polygon):
 		// "Quick grid" (gridding a scattered point cloud into a regular grid -- Auto estimates the
 		// increment from the data spacing, Set increments… asks for it explicitly; NEITHER actually
