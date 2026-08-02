@@ -24,7 +24,7 @@ function _resize_fix_georef!(J::GMTimage, I::GMTimage, w::Int, h::Int)
 end
 
 # THE resize. Separate from the callback so a script (or a test) can resize without a dialog.
-function _image_resize(I::GMTimage, w::Int, h::Int, method::AbstractString)
+function _image_resize(I::GMTimage, w::Int, h::Int, method::String)
 	(w < 1 || h < 1) && error("Resize: target size must be at least 1x1 (got $(w)x$(h))")
 	J = GMT.gdalwarp(I, ["-ts", string(w), string(h), "-r", String(method)])
 	return _resize_fix_georef!(J, I, w, h)

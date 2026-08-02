@@ -1030,7 +1030,8 @@ function _stretch_to_u8(I::GMTimage)
 	@inbounds @simd for k in eachindex(m)
 		out[k] = round(UInt8, (Float32(Float64(m[k]) - lo) / rng) * 255.0f0)
 	end
-	return GMT.mat2img(out, I)
+	# Grey VALUES, not palette indices: drop any colormap mat2img copied over with the georef.
+	return _img_drop_palette!(GMT.mat2img(out, I))
 end
 
 # Add a dropped image as a flat textured plane in the window (promote = reuse the empty launcher).
@@ -1068,6 +1069,10 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name))
 	ok == 0 && @warn "drop: window is closed; image not added"
 	ok != 0 && _remember_object!(scene, :image, name, I)  # Scene Objects "Save…" / File>Save can write it
+	# An INDEXED image's colormap IS its legend: hand the used entries over so the image's group gets a
+	# discrete Color Bar row (one block per pixel value). The pixels stay indices — only the texture
+	# was expanded, inside `_pixaccess_img` above.
+	(ok != 0) && _push_image_palette(scene, I, String(name))
 	# Save Session: known file path -> file ref (:file); no path -> serialize the image (:generated).
 	# `record=false` suppresses this when a higher-level tool logs its own (menu) recipe (e.g. basemap).
 	(ok != 0 && record) && _session_record!(scene, promote ? :image : :dropimage,

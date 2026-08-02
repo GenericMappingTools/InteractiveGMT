@@ -219,7 +219,11 @@ function _bin_setmask!(st::_BinState, m::GMTimage)
 end
 
 # Bool matrix -> the 0/255 UInt8 mask image, with the working image's georef (mat2img(mat, I)).
-_bin_mask(Ig::GMTimage, t::AbstractMatrix{Bool}) = GMT.mat2img(map(v -> v ? 0xff : 0x00, t), Ig)
+# 0/255 are grey VALUES, not palette indices, so an indexed source's colormap — which mat2img copies
+# with the georef — is dropped (_img_drop_palette!, drape.jl); left on, the display would look them
+# up in the palette.
+_bin_mask(Ig::GMTimage, t::AbstractMatrix{Bool}) =
+	_img_drop_palette!(GMT.mat2img(map(v -> v ? 0xff : 0x00, t), Ig))
 _bin_mask_img(st::_BinState, t::AbstractMatrix{Bool}) = _bin_mask(st.Ig, t)
 
 # --- the four mask rules thresholdit.m uses, each kept exactly as it is written there ------------

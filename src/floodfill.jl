@@ -22,18 +22,37 @@
 _ff_rowmajor(I::GMTimage) = length(I.layout) >= 2 && I.layout[2] == 'R'
 
 function _ff_pixels(I::GMTimage)::Array{UInt8,3}
+	# An INDEXED image is expanded to its palette colours for the working array only — the image
+	# itself stays indexed. floodfill.m does exactly this before the wand runs ("the floodfill here
+	# works bad with indexed", so `img_fun('ind2rgb'...)`): every algorithm below compares COLOURS,
+	# and an index number is not a colour. The palette is read by the shared `_img_palette`.
+	if _img_is_indexed(I)
+		S  = I.image
+		L  = _img_palette(I)
+		nL, nc = size(L, 1), min(size(L, 2), 3)
+		rowmajor = _ff_rowmajor(I)
+		ny, nx = rowmajor ? (size(S, 2), size(S, 1)) : (size(S, 1), size(S, 2))
+		out = Array{UInt8,3}(undef, ny, nx, 3)
+		@inbounds for c = 1:nx, r = 1:ny
+			v = clamp(Int(rowmajor ? S[c, r] : S[r, c]) + 1, 1, nL)
+			for b = 1:3  out[r, c, b] = L[v, b <= nc ? b : nc]  end
+		end
+		return out
+	end
 	A = I.image
 	B = ndims(A) == 3 ? A : reshape(A, size(A, 1), size(A, 2), 1)
 	return _ff_rowmajor(I) ? permutedims(B, (2, 1, 3)) : Array{UInt8,3}(B)
 end
 
 # The inverse: a normalised (ny, nx, nb) array back into an image that carries `I`'s georef+layout.
+# The result holds real pixel VALUES (a mask, a segmentation), never indices, so the parent's palette
+# — which `mat2img(mat, I)` copies along with the georef — is dropped.
 function _ff_image(P::Array{UInt8,3}, I::GMTimage)::GMTimage
 	B = _ff_rowmajor(I) ? permutedims(P, (2, 1, 3)) : P
 	mat = size(B, 3) == 1 ? B[:, :, 1] : B
 	J = GMT.mat2img(mat, I)
 	J.layout = I.layout
-	return J
+	return _img_drop_palette!(J)
 end
 
 # ---------------------------------------------------------------------------------------------
@@ -115,12 +134,12 @@ end
 # pixel whose Mahalanobis distance to that class mean is <= Tolerance joins the mask. RGB only,
 # which is why Mirone disables "Pick multiple shapes" while it is ticked.
 # ---------------------------------------------------------------------------------------------
-function _ff_mahal_mask(P::Array{UInt8,3}, r0::Int, c0::Int, T::Float64)::BitMatrix
+function _ff_mahal_mask(P::Array{UInt8,3}, r0::Int, c0::Int, T::Float32)::BitMatrix
 	ny, nx, nb = size(P)
 	nb == 3 || error("Mahalanobis segmentation needs an RGB image")
 	r1, r2 = max(r0 - 3, 1), min(r0 + 3, ny)
 	c1, c2 = max(c0 - 3, 1), min(c0 + 3, nx)
-	X = Float64.(reshape(P[r1:r2, c1:c2, :], (r2 - r1 + 1) * (c2 - c1 + 1), 3))   # covmatrix's rows
+	X = Float32.(reshape(P[r1:r2, c1:c2, :], (r2 - r1 + 1) * (c2 - c1 + 1), 3))   # covmatrix's rows
 	K = size(X, 1)
 	m = vec(sum(X, dims = 1) ./ K)
 	Xc = X .- m'
@@ -139,7 +158,7 @@ function _ff_mahal_mask(P::Array{UInt8,3}, r0::Int, c0::Int, T::Float64)::BitMat
 	all(isfinite, Ci) ||
 		error("Mahalanobis: the colours around that point are too uniform to estimate a covariance " *
 		      "(a flat patch). Untick Mahalanobis and use the tolerance instead.")
-	F = Float64.(reshape(P, ny * nx, 3)) .- m'    # mahalanobis: subtract the mean from every vector
+	F = Float32.(reshape(P, ny * nx, 3)) .- m'    # mahalanobis: subtract the mean from every vector
 	d = vec(sum((F * Ci) .* F, dims = 2))         # real(sum(Yc / Cx .* conj(Yc), 2))
 	return BitMatrix(reshape(d .<= T, ny, nx))
 end
@@ -223,7 +242,7 @@ function _ff_multi_masks(P::Array{UInt8,3}, seeds::Vector{Tuple{Int,Int}}, tol::
 		any(m0) || continue
 		lo = zeros(Int, nb);  hi = fill(255, nb)
 		for k = 1:nb
-			s, n = 0.0, 0
+			s, n = 0f0, 0
 			@inbounds for cc = 1:nx, rr = 1:ny
 				m0[rr, cc] && (s += P[rr, cc, k]; n += 1)
 			end
@@ -250,7 +269,7 @@ end
 # Aquamoto's Run-in drive it — no new drawing mechanism for this tool. Packed here rather than
 # through `_pack_dataset`, which samples a GRID for the missing z: this window may hold nothing but
 # the image, and the shapes are outlines OF that image, so they lie in its plane, z = 0.
-function _ff_draw_shapes(scene::Ptr{Cvoid}, D, name::AbstractString, group::AbstractString)
+function _ff_draw_shapes(scene::Ptr{Cvoid}, D, name::String, group::String)
 	xyz, segoff = Float64[], Cint[0]
 	for seg in (D isa GMTdataset ? (D,) : collect(D))
 		m = seg isa GMTdataset ? seg.data : seg
@@ -345,7 +364,7 @@ function _on_floodfill(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 
 		r, c = seeds[1]
-		mask = domah ? _ff_mahal_mask(P, r, c, Float64(tol)) : _ff_flood_mask(P, r, c, tol, conn)
+		mask = domah ? _ff_mahal_mask(P, r, c, Float32(tol)) : _ff_flood_mask(P, r, c, tol, conn)
 		dodil && (mask = _ff_dilate(mask))
 		any(mask) || (_viewer_log_error(scene, "Shape detector: nothing selected at that point"); return Cint(0))
 		if mode == 0                                     # radio_digitize

@@ -34,6 +34,15 @@ static void sceneSetGridLayer(Scene *s, const float *z, int nx, int ny,
 	s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
 	s->gdx = (dx > 0.0) ? dx : ((nx > 1) ? (x1 - x0) / (nx - 1) : 0.0);
 	s->gdy = (dy > 0.0) ? dy : ((ny > 1) ? (y1 - y0) / (ny - 1) : 0.0);
+	// The hover readout's ROUTING must follow the layer it reads — the two are one fact, so they are
+	// set in one place. refreshGridColorbar does it for a GRID window; it deliberately does nothing on
+	// an imageOnly one, so a bare image PROMOTED over an empty launcher kept the launcher placeholder's
+	// footprint in actX0..actY1 while gridZ underneath had been replaced. Every hover then tested
+	// against a box the image does not live in, found nothing, and the coordinate line stayed "ready" —
+	// no coordinates on ANY re-opened image. A grid window overwrites these a moment later with the
+	// active grid's own values (refreshGridColorbar), which is the same answer.
+	s->actZ = &s->gridZ; s->actNx = nx; s->actNy = ny;
+	s->actX0 = x0; s->actX1 = x1; s->actY0 = y0; s->actY1 = y1;
 }
 
 // Append one execution-error line to a window's read-only "Errors" tab and raise it (so a failure in
@@ -106,8 +115,14 @@ static void layoutColorbar(Scene *s) {
 // Build the colorbar actors and add them to the renderer, for the colour map `lut` over [lo,hi]
 // (the active grid's range — may differ from the base relief's zmin/zmax). Stores the range in
 // barLo/barHi so layoutColorbar places ticks against it.
-static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double hi) {
-	if (!s || s->imageOnly) return;          // bare image -> no colorbar
+//
+// `discreteN > 0` = an INDEXED image's palette legend (PaletteLegend): [lo,hi] is [0,n], one block
+// per class, and the labels are the class VALUES centred in their block instead of nice-number ticks
+// along a continuous ramp. Same actors, same layout, same drag — ONE colour bar in this viewer, with
+// the discrete case as an argument rather than a second bar that could drift from it.
+static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double hi, int discreteN = 0) {
+	if (!s) return;
+	if (s->imageOnly && discreteN <= 0) return;   // bare image -> no z colorbar (a palette legend is not one)
 	if (!(hi > lo)) hi = lo + 1.0;           // guard a degenerate (flat) grid
 	s->barLo = lo; s->barHi = hi;
 	s->bar = vtkSmartPointer<vtkScalarBarActor>::New();
@@ -124,6 +139,41 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 	s->bar->SetUnconstrainedFontSize(true);
 	s->ren->AddActor2D(s->bar);
 
+	// A palette legend annotates the CLASSES, one label per block, centred: value k sits at k+0.5 in
+	// the [0,n] range the blocks span. Nice-number ticks would be meaningless here — the pixel values
+	// are names, not a measured quantity.
+	if (discreteN > 0) {
+		s->barValues.clear(); s->barLabels.clear();
+		s->barTickPts = vtkSmartPointer<vtkPoints>::New();
+		vtkNew<vtkCellArray> dlines;
+		// Too many classes to label one by one: annotate every mth so the strip stays readable.
+		const int lstep = (discreteN <= 24) ? 1 : (discreteN + 23) / 24;
+		for (int k = 0; k < discreteN; k += lstep) {
+			s->barValues.push_back(k + 0.5);
+			vtkIdType a = s->barTickPts->InsertNextPoint(0, 0, 0);
+			vtkIdType b = s->barTickPts->InsertNextPoint(0, 0, 0);
+			dlines->InsertNextCell(2); dlines->InsertCellPoint(a); dlines->InsertCellPoint(b);
+			vtkSmartPointer<vtkTextActor> ta = vtkSmartPointer<vtkTextActor>::New();
+			ta->SetInput(std::to_string(k).c_str());
+			ta->GetTextProperty()->SetColor(0.9, 0.9, 0.9);
+			ta->GetTextProperty()->SetFontSize(10);
+			ta->GetTextProperty()->SetJustificationToRight();
+			ta->GetTextProperty()->SetVerticalJustificationToCentered();
+			ta->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
+			s->ren->AddActor2D(ta);
+			s->barLabels.push_back(ta);
+		}
+		vtkNew<vtkPolyData> dpd; dpd->SetPoints(s->barTickPts); dpd->SetLines(dlines);
+		vtkNew<vtkCoordinate> dnc; dnc->SetCoordinateSystemToNormalizedViewport();
+		vtkNew<vtkPolyDataMapper2D> dmap; dmap->SetInputData(dpd); dmap->SetTransformCoordinate(dnc);
+		s->barTicks = vtkSmartPointer<vtkActor2D>::New();
+		s->barTicks->SetMapper(dmap);
+		s->barTicks->GetProperty()->SetColor(0.9, 0.9, 0.9);
+		s->barTicks->GetProperty()->SetLineWidth(1.5);
+		s->ren->AddActor2D(s->barTicks);
+		layoutColorbar(s);
+		return;
+	}
 	// Nice round tick values (800, 900, ...) at a constant 1/2/5 x10^n step.
 	const double step = niceNum(niceNum(hi - lo, false) / 5.0, true);
 	// Decimal places to print: driven by the tick STEP, not hard-coded. A relief grid (step 100/1000)
@@ -710,20 +760,19 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aDrape = m.addAction(draped ? "Undrape (flat)" : "Drape on grid");
 	aDrape->setEnabled(draped || canDrape);
 	m.addSeparator();
-	// Percentile histogram stretch -> new 8-bit image row. Meaningful for a wide-range (e.g. 16-bit
-	// satellite) image shown as a fast min-max preview; Julia reports if there is no wider source.
-	QAction *aStretch = m.addAction("Auto histogram stretch (new image)");
-	// Binarize: opens the dialog, or brings back the one that was closed (it only HIDES, keeping its
-	// mask + undo) — this handle is where a "minimized" Binarize dialog lives, like Aquamoto's.
-	QAction *aBinarize = g_binarizeReopen ? m.addAction("Binarize Image…") : nullptr;
-	// Adjust Contrast, same deal: its X only hides the dialog, so this handle is where it is
-	// "minimized" to and where it comes back from, per-band contrast windows intact.
-	QAction *aEnhance = g_enhanceReopen ? m.addAction("Image Enhance…") : nullptr;
+	// Percentile histogram stretch -> new 8-bit image row. It re-derives from the FULL-PRECISION
+	// (UInt16) source the host stashed when the image was loaded, so it is offered ONLY for an image
+	// that has one (s->imgHasOrig, set from Julia). On a plain 8-bit image there is nothing wider to
+	// stretch from and the entry would have nothing to do.
+	QAction *aStretch = s->imgHasOrig.count(s->extras[idx].name)
+	                    ? m.addAction("Auto histogram stretch (new image)") : nullptr;
+	// Binarize, Image Enhance, Shape detector and K-means classification are NOT here: they live in
+	// the Image menu, which opens them — or brings back a parked/hidden one — for the displayed
+	// image. A handle menu carries what belongs to THIS object.
 	// Same "Image > Show Histogram" the menu bar opens, on THIS handle's image (the menu-bar entry
 	// has to guess which image is displayed; here the handle already says which one).
 	QAction *aHisto = g_showImageHisto ? m.addAction("Show Histogram") : nullptr;
 	QAction *aResize = g_showImageResize ? m.addAction("Image resize…") : nullptr;
-	QAction *aShape = g_showFloodFill ? m.addAction("Shape detector…") : nullptr;
 	QAction *aSave = m.addAction("Save image…");
 	// Same move a grid row offers (gridObjectMenu): re-open this image in a fresh iGMT window, then
 	// drop it from here. ONE function does the move for both kinds — moveObjectToNewWindow.
@@ -731,11 +780,8 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aDel = m.addAction("Remove");
 	QAction *c = m.exec(g);
 	if (!c) return;
-	if (aBinarize && c == aBinarize) { g_binarizeReopen(s, s->extras[idx].name.c_str()); return; }
-	if (aEnhance && c == aEnhance) { g_enhanceReopen(s, s->extras[idx].name.c_str()); return; }
 	if (aHisto && c == aHisto) { g_showImageHisto(s, s->extras[idx].name.c_str()); return; }
 	if (aResize && c == aResize) { g_showImageResize(s, s->extras[idx].name.c_str()); return; }
-	if (aShape && c == aShape) { g_showFloodFill(s, s->extras[idx].name.c_str()); return; }
 	if (c == aMove) {
 		const QString nm = QString::fromStdString(s->extras[idx].name);
 		if (!moveObjectToNewWindow(s, "image", nm)) return;   // a failed move leaves the image put
@@ -743,7 +789,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 		return;
 	}
 	if (c == aSave) { saveObjectDialog(s, "image", QString::fromStdString(s->extras[idx].name)); return; }
-	if (c == aStretch) { stretchImageObject(s, QString::fromStdString(s->extras[idx].name)); return; }
+	if (aStretch && c == aStretch) { stretchImageObject(s, QString::fromStdString(s->extras[idx].name)); return; }
 	ExtraObj &ex = s->extras[idx];            // vector unchanged during exec -> index still valid
 	const double step = imageStackStep(s);
 	if (c == aDel) { sceneRemoveExtraAt(s, (size_t)idx); return; }
@@ -947,18 +993,53 @@ static std::string activeGridName(Scene *s) {
 	return ag.valid ? ag.name : std::string();
 }
 
+// The palette legend the window should be showing: the TOPMOST VISIBLE indexed image (highest in the
+// image pile = greatest zpos; later extras win a tie), or the primary image's own when that is the
+// indexed one. Mirrors resolveActiveGrid's rule for grids — one resolver per kind, never a guess at
+// the call site. Returns nullptr when no visible image carries a palette.
+static PaletteLegend *resolveActivePalette(Scene *s) {
+	if (!s) return nullptr;
+	PaletteLegend *best = nullptr;
+	double bestZ = 0;
+	bool   have = false;
+	for (auto &ex : s->extras) {
+		if (!ex.isImage || ex.palette.n <= 0 || !ex.palette.lut) continue;
+		if (!ex.actor || !ex.actor->GetVisibility()) continue;
+		if (!have || ex.zpos >= bestZ) { bestZ = ex.zpos; best = &ex.palette; have = true; }
+	}
+	if (have) return best;
+	if (s->palette.n > 0 && s->palette.lut && s->drape && s->drape->GetVisibility()) return &s->palette;
+	return nullptr;
+}
+
+// Draw the active palette legend, if any wants to be drawn. The ONE place the discrete bar is built,
+// reached from both branches of refreshGridColorbar below.
+static bool buildPaletteColorbar(Scene *s) {
+	PaletteLegend *pl = resolveActivePalette(s);
+	if (!pl || !pl->show) return false;
+	buildColorbar(s, pl->lut, 0.0, (double)pl->n, pl->n);
+	return true;
+}
+
 // Retarget the single rendered colorbar + the hover/coordinate readout to the active (topmost-visible)
 // grid. Called on every grid add / visibility toggle / restack / delete. No grid visible -> bar hidden.
 // For an Aquamoto layer (customLayerTexture): `bar` (built here as usual) is the WATER bar, shown
 // only while aquaShowWater is true; the separate, persistent aquaLandBar is shown only while it's
 // false -- the two are mutually exclusive, matching the dialog's Shade Water/Land radio.
 static void refreshGridColorbar(Scene *s) {
-	if (!s || s->imageOnly) return;            // bare-image windows never carry a z colorbar
+	if (!s) return;
+	if (s->imageOnly) {                        // bare-image windows never carry a z colorbar — but an
+		destroyColorbar(s);                    // INDEXED image's palette legend is not a z bar, and it
+		buildPaletteColorbar(s);               // is exactly what such a window has to show
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return;
+	}
 	ActiveGrid ag = resolveActiveGrid(s);
 	destroyColorbar(s);
 	const bool isAqua = s->customLayerTexture;
 	if (!ag.valid || !ag.lut) {                // nothing visible to colour -> no bar, readout falls back
 		s->actZ = nullptr;
+		buildPaletteColorbar(s);               // no grid claims the bar: an indexed image may still legend
 		if (isAqua) setAquaLandColorbarVisible(s, false);
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return;
@@ -1694,6 +1775,14 @@ static void rebuildSceneObjects(Scene *s) {
 		        },
 		        "Show / hide this grid's colorbar · left-click the label to choose a colormap");
 	};
+	// An INDEXED image's palette legend row. The same Color Bar row a grid group gets — same flag
+	// semantics, same refreshGridColorbar — minus the colormap chooser: this palette IS the image's
+	// data (its class colours), not a ramp to be swapped for another.
+	auto paletteRow = [&](PaletteLegend *pl, bool grpVisible) {
+		makeRow("Color Bar", IC_ColorBar, pl->show && grpVisible,
+		        [s, pl](bool on) { pl->show = on; refreshGridColorbar(s); }, nullptr,
+		        "Show / hide this indexed image's class legend");
+	};
 	// Aquamoto's two colorbar rows. Unlike the generic colorbarRow above (checkbox = a separate
 	// "want this shown" intent flag, meaningful because there's only ever ONE active grid to be
 	// wrong about), these checkboxes reflect the bar's ACTUAL on-screen visibility directly --
@@ -1789,18 +1878,16 @@ static void rebuildSceneObjects(Scene *s) {
 		vtkProp3D *dp = s->drape;
 		std::function<void(const QPoint&)> imgMenu = [s, nm](const QPoint &g) {   // primary image props: Save + Remove
 			QMenu m(s->widget);
-			// Percentile histogram stretch -> new 8-bit image row (meaningful for a wide-range e.g.
-			// 16-bit satellite band shown as a fast min-max preview; Julia reports if no wider source).
-			QAction *aStretch = m.addAction("Auto histogram stretch (new image)");
-			// The PRIMARY image handle must offer the same two dialogs the dropped-image handle does
-			// (imageObjectMenu, above): both of them close by HIDING, and this row is where they are
-			// "minimized" to. Without these entries a closed Binarize / Adjust Contrast on a
-			// view_image window had no way back at all — the dialog just vanished.
-			QAction *aBinarize = g_binarizeReopen ? m.addAction("Binarize Image…") : nullptr;
-			QAction *aEnhance  = g_enhanceReopen  ? m.addAction("Image Enhance…")  : nullptr;
+			// Percentile histogram stretch -> new 8-bit image row. Re-derives from the FULL-PRECISION
+			// (UInt16) source stashed host-side, so it is offered ONLY when there is one ("" = this
+			// window's primary image) — see imageObjectMenu above, same rule, same set.
+			QAction *aStretch = s->imgHasOrig.count(std::string())
+			                    ? m.addAction("Auto histogram stretch (new image)") : nullptr;
+			// Binarize / Image Enhance / Shape detector / K-means classification are NOT here — they
+			// belong to the Image menu, which opens them (and reopens a parked one) just as well. Same
+			// rule as imageObjectMenu above: a handle menu carries what belongs to THIS object.
 			QAction *aHisto    = g_showImageHisto ? m.addAction("Show Histogram")  : nullptr;
 			QAction *aResize   = g_showImageResize ? m.addAction("Image resize…")  : nullptr;
-			QAction *aShape    = g_showFloodFill   ? m.addAction("Shape detector…") : nullptr;
 			QAction *aSave = m.addAction("Save image…");
 			// Same move a grid row offers, for the window's own image: re-open it in a fresh iGMT
 			// window, then drop it from here (moveObjectToNewWindow — the one function for both kinds).
@@ -1809,12 +1896,9 @@ static void rebuildSceneObjects(Scene *s) {
 			QAction *aRem  = m.addAction("Remove"); // removes image + axes; window stays open
 			QAction *c = m.exec(g);
 			if (!c) return;
-			if (c == aStretch) stretchImageObject(s, nm);
-			else if (aBinarize && c == aBinarize) g_binarizeReopen(s, "");   // "" = the window's primary image
-			else if (aEnhance && c == aEnhance) g_enhanceReopen(s, "");
+			if (aStretch && c == aStretch) stretchImageObject(s, nm);
 			else if (aHisto && c == aHisto) g_showImageHisto(s, "");
 			else if (aResize && c == aResize) g_showImageResize(s, "");
-			else if (aShape && c == aShape) g_showFloodFill(s, "");
 			else if (c == aSave) saveObjectDialog(s, "image", nm);
 			else if (c == aMove) { if (moveObjectToNewWindow(s, "image", "")) sceneRemoveSurface(s); }
 			else if (c == aRem) sceneRemoveSurface(s);
@@ -1825,6 +1909,7 @@ static void rebuildSceneObjects(Scene *s) {
 		makeRow("Image", IC_Image, dp->GetVisibility() != 0,        // Image leaf handle kept as a child
 		        [dp](bool on) { dp->SetVisibility(on ? 1 : 0); }, nullptr,
 		        "Right-click for properties (save / remove)", imgMenu);
+		if (s->palette.n > 0) paletteRow(&s->palette, dp->GetVisibility() != 0);
 		axesRow(dp->GetVisibility() != 0);   // group-uncheck law: Axes mirrors the container (see grid case above)
 		endGroup();
 	}
@@ -1843,7 +1928,9 @@ static void rebuildSceneObjects(Scene *s) {
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        "Left- or right-click for image properties (incl. Save)",
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); });
-			axesRow(a && a->GetVisibility() != 0);   // group-uncheck law: Axes mirrors the container
+			const bool ivis = a && a->GetVisibility() != 0;
+			if (ex.palette.n > 0) paletteRow(&ex.palette, ivis);
+			axesRow(ivis);                           // group-uncheck law: Axes mirrors the container
 		} else {                                           // dropped grid group — header mirrors the surface handle
 			vtkProp3D *a = ex.actor.Get();
 			beginGroupHandle(nm, IC_Surface, a && a->GetVisibility() != 0,

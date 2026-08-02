@@ -472,6 +472,16 @@ static JuliaImageResizeFn g_juliaImageResize = nullptr;
 typedef int (*JuliaFloodFillFn)(void *scene, const char *params);
 static JuliaFloodFillFn g_juliaFloodFill = nullptr;
 
+// "Image > K-means classification" (port of Mirone src_figs/classificationfig.m). params = "op;args":
+//   "compute;<name>;<supervised>;<nClasses>;<nNeighbors>;x1,y1[;x2,y2…]"
+//        supervised = 1: the seeds ARE the initial centres (click-define); their colour is the mean
+//        over an nNeighbors-wide window. supervised = 0: nClasses random centres. Julia answers with
+//        gmtvtk_classify_set_classes(dlg, k) so the listbox can offer the classes it found.
+//   "isolate;<name>;<asMask>;<r>,<g>,<b>;<c1>[,<c2>…]"      push_getClass_CB
+// `dlg` is the ClassificationDialog* for that answer. Returns 1/0. nullptr to detach.
+typedef int (*JuliaClassifyFn)(void *scene, void *dlg, const char *params);
+static JuliaClassifyFn g_juliaClassify = nullptr;
+
 // The Adjust Contrast dialog's ScaterPlot (push_scaterPlot_CB). It plots the bands the user is
 // LOOKING AT — after a Decorrelation Stretch that is the decorrelated image — so the pixels come
 // from sceneDisplayedRGB, the SAME "what is on screen" reader "Image -> Show Histogram" uses, and
@@ -714,6 +724,8 @@ static void (*g_showImageHisto)(Scene *scene, const char *name) = nullptr;
 static void (*g_showImageResize)(Scene *scene, const char *name) = nullptr;
 // Same, for "Image > Shape detector".
 static void (*g_showFloodFill)(Scene *scene, const char *name) = nullptr;
+// Same, for "Image > K-means classification".
+static void (*g_showClassification)(Scene *scene, const char *name) = nullptr;
 
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a

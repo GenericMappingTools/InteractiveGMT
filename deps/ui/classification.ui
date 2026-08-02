@@ -1,0 +1,282 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ClassificationDialog</class>
+ <widget class="QDialog" name="ClassificationDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>290</width>
+    <height>282</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>kmeans classification</string>
+  </property>
+  <widget class="QRadioButton" name="radio_supervised">
+   <property name="geometry">
+    <rect>
+     <x>14</x>
+     <y>10</y>
+     <width>112</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Do supervised image classification</string>
+   </property>
+   <property name="text">
+    <string>Supervised</string>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="radio_unsupervised">
+   <property name="geometry">
+    <rect>
+     <x>156</x>
+     <y>10</y>
+     <width>124</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Do unsupervised image classification</string>
+   </property>
+   <property name="text">
+    <string>Unsupervised</string>
+   </property>
+  </widget>
+  <widget class="Line" name="frame1">
+   <property name="geometry">
+    <rect>
+     <x>142</x>
+     <y>10</y>
+     <width>3</width>
+     <height>98</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Orientation::Vertical</enum>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="toggle_clickDefine">
+   <property name="geometry">
+    <rect>
+     <x>14</x>
+     <y>42</y>
+     <width>116</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Left click on the target colors/gray levels. Stop with a right click or a double-click</string>
+   </property>
+   <property name="text">
+    <string>click-define</string>
+   </property>
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QLabel" name="text_nNeighbors">
+   <property name="geometry">
+    <rect>
+     <x>14</x>
+     <y>82</y>
+     <width>82</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Neighbours</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="edit_nNeighbors">
+   <property name="geometry">
+    <rect>
+     <x>98</x>
+     <y>80</y>
+     <width>36</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>3</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="text_nClasses">
+   <property name="geometry">
+    <rect>
+     <x>158</x>
+     <y>44</y>
+     <width>72</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>N classes</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="edit_nClasses">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>236</x>
+     <y>42</y>
+     <width>40</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Number of classes to identify</string>
+   </property>
+   <property name="text">
+    <string>3</string>
+   </property>
+  </widget>
+  <widget class="Line" name="frame2">
+   <property name="geometry">
+    <rect>
+     <x>156</x>
+     <y>72</y>
+     <width>120</width>
+     <height>3</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Orientation::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="push_compute">
+   <property name="geometry">
+    <rect>
+     <x>158</x>
+     <y>80</y>
+     <width>118</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Compute</string>
+   </property>
+  </widget>
+  <widget class="QGroupBox" name="group_isolate">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>120</y>
+     <width>270</width>
+     <height>152</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Isolate classes (if wished)</string>
+   </property>
+   <widget class="QListWidget" name="listbox_classes">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>26</y>
+      <width>62</width>
+      <height>86</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Select one or more classes to isolate</string>
+    </property>
+    <property name="selectionMode">
+     <enum>QAbstractItemView::SelectionMode::ExtendedSelection</enum>
+    </property>
+   </widget>
+   <widget class="QLabel" name="text_classes">
+    <property name="geometry">
+     <rect>
+      <x>86</x>
+      <y>26</y>
+      <width>70</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Classes</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="push_bgColor">
+    <property name="geometry">
+     <rect>
+      <x>186</x>
+      <y>24</y>
+      <width>72</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Background color used in color isolation. Push to select a different color.</string>
+    </property>
+    <property name="text">
+     <string>BG color</string>
+    </property>
+   </widget>
+   <widget class="QRadioButton" name="radio_asColor">
+    <property name="geometry">
+     <rect>
+      <x>86</x>
+      <y>58</y>
+      <width>172</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Extract the original colors corresponding to the selected class(es)</string>
+    </property>
+    <property name="text">
+     <string>Isolate as color</string>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QRadioButton" name="radio_asMask">
+    <property name="geometry">
+     <rect>
+      <x>86</x>
+      <y>84</y>
+      <width>172</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Extract the selected class(es) as binary image(s)</string>
+    </property>
+    <property name="text">
+     <string>Isolate as mask</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="push_getClass">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>84</x>
+      <y>114</y>
+      <width>174</width>
+      <height>28</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Do it.</string>
+    </property>
+    <property name="text">
+     <string>Isolate selected class</string>
+    </property>
+   </widget>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

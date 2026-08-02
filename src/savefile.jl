@@ -283,8 +283,14 @@ end
 # than a full-range min-max map. Only populated for images that actually needed conversion.
 const _IMG_ORIG = Dict{Ptr{Cvoid}, Dict{String, GMTimage}}()
 
-_remember_img_orig!(scene::Ptr{Cvoid}, name::String, I::GMTimage) =
-	(scene != C_NULL && (get!(() -> Dict{String,GMTimage}(), _IMG_ORIG, scene)[name] = I); I)
+# Stashing one also TELLS the viewer, because "Auto histogram stretch (new image)" is offered only by
+# an image that has a wider source to re-derive from — the handle menu asks the scene, not Julia.
+function _remember_img_orig!(scene::Ptr{Cvoid}, name::String, I::GMTimage)
+	scene == C_NULL && return I
+	get!(() -> Dict{String,GMTimage}(), _IMG_ORIG, scene)[name] = I
+	ccall(_fn(:gmtvtk_image_set_has_orig_h), Cvoid, (Ptr{Cvoid}, Cstring, Cint), scene, name, Cint(1))
+	return I
+end
 
 # C callback: req = "image;<name>". Look up the stashed full-precision source (fall back to the live
 # scene image if none), histogram-stretch it to 8-bit, and add the result as a NEW image row in the
@@ -320,7 +326,7 @@ end
 # histogram stretch, …) in the window it came from, obeying SACRED_LAW.md's derived-variable display
 # law in ONE place: a new row under a descriptive name, CHECKED, every other image UNCHECKED, Scene
 # Objects unfolded. Re-running under the same name replaces the earlier result instead of piling up.
-function _commit_derived_image!(scene::Ptr{Cvoid}, Iout::GMTimage, name::AbstractString)
+function _commit_derived_image!(scene::Ptr{Cvoid}, Iout::GMTimage, name::String)
 	ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), scene, name)
 	_forget_object!(scene, :image, name)
 	_add_image_to_scene(scene, Iout, name; promote=false)

@@ -20,6 +20,112 @@ function _pixaccess(S, lay, d3::Bool, nb::Int, rowmajor::Bool, nlon::Int, nlat::
 				(rowmajor ? ((lat, lon, b) -> @inbounds S[lon, lat]) : ((lat, lon, b) -> @inbounds S[lat, lon]))
 end
 
+# --- INDEXED (palette) images -----------------------------------------------------------------
+# An indexed image is ONE band of palette indices plus a colormap. It stays indexed everywhere it is
+# stored, saved and re-read — only the VTK TEXTURE is expanded, because a texture has to be RGB(A).
+# That expansion happens in exactly one place, `_pixaccess_img` below, so no caller has to know.
+#
+# GMT.jl's convention (utils_types.jl `cpt2cmap` / `ind2rgb`): `I.colormap` is a flat Vector{Int32}
+# written COLUMN-wise — entry (index i, component c) is `colormap[i + (c-1)*n_colors + 1]` — with
+# values 0..255 and `ncomp` 3 (RGB) or 4 (RGBA). `n_colors` is multiplied by 1000 as the "the
+# palette carries real alpha" flag, so the true colour count has to be recovered from it.
+_img_is_indexed(I::GMTimage) =
+	ndims(I.image) == 2 && I.n_colors >= 2 && length(I.colormap) >= 6
+
+# The palette as an (ncolors x ncomp) UInt8 table: row = pixel value + 1, columns R,G,B[,A].
+function _img_palette(I::GMTimage)::Matrix{UInt8}
+	n = I.n_colors >= 1000 ? div(I.n_colors, 1000) : I.n_colors   # undo cpt2cmap's alpha flag
+	(n >= 2 && length(I.colormap) >= 3n) || error("this image's colormap is not a palette")
+	ncomp = min(div(length(I.colormap), n), 4)
+	L = Matrix{UInt8}(undef, n, ncomp)
+	@inbounds for c = 1:ncomp, i = 1:n
+		L[i, c] = UInt8(clamp(Int(I.colormap[i + (c - 1) * n]), 0, 255))
+	end
+	return L
+end
+
+# Build the palette of a NEW indexed image from an (ncolors x 3|4) UInt8 table. The inverse of
+# `_img_palette`, and the ONE place a palette is written — every tool that produces an indexed
+# result (K-means classification today) goes through it, never by hand.
+#
+# The stored form is GDAL's, the one GMT.jl both writes and reads: ALWAYS 256 entries, ALWAYS 4
+# components, column-wise, `n_colors` = 256. Not an implementation detail — `gmt2gd` (GMT/src/
+# gdal_utils.jl) reads every entry's alpha at `colormap[k + 3*n_colors]` with no length check, so a
+# compact or 3-component palette is not a smaller palette, it is an out-of-bounds read the moment the
+# image is saved ("BoundsError: attempt to access 12-element Vector{Int32} at index [13]").
+# Unused entries stay black with alpha 255; `cpt2cmap` pads exactly the same way.
+#
+# Alpha lives in the 4th block, never behind `cpt2cmap`'s `n_colors *= 1000` flag: that flag would
+# make `n_colors` the wrong stride for `gmt2gd`, which uses it as one.
+function _img_set_palette!(I::GMTimage, L::Matrix{UInt8})
+	n = size(L, 1)
+	(1 <= n <= 256) || error("a palette holds 1..256 colours (got $n)")
+	ncomp = size(L, 2)
+	(ncomp == 3 || ncomp == 4) || error("a palette needs 3 (RGB) or 4 (RGBA) components")
+	cm = zeros(Int32, 256 * 4)
+	@inbounds for c = 1:3, i = 1:n
+		cm[i + (c - 1) * 256] = Int32(clamp(Int(L[i, c]), 0, 255))
+	end
+	@inbounds for i = 1:256
+		cm[i + 3 * 256] = (ncomp == 4 && i <= n) ? Int32(clamp(Int(L[i, 4]), 0, 255)) : Int32(255)
+	end
+	I.colormap = cm
+	I.n_colors = 256
+	I.color_interp = "Palette"
+	return I
+end
+
+# `mat2img(mat, I)` copies the parent's colormap along with its georef. That is right when the new
+# matrix is a new set of INDICES into the same palette and wrong whenever it is grey or RGB data (a
+# mask, a segmentation, a stretched band) — those pixels are values, not indices, and a leftover
+# palette would repaint them. Derived-image builders call this to say "no palette".
+function _img_drop_palette!(I::GMTimage)
+	I.colormap = zeros(Int32, 3)
+	I.n_colors = 0
+	(ndims(I.image) == 2) && (I.color_interp = "Gray")
+	return I
+end
+
+# Hand an indexed image's palette to the viewer, which turns it into that image's DISCRETE colour bar
+# (one labelled block per pixel value) plus a Color Bar row in its Scene Objects group. Only the
+# entries the image actually uses are sent: a stored palette is padded to 256, and a legend of 256
+# blocks for a 4-class image would say nothing. Not indexed -> the legend is cleared, so an image row
+# that stops being indexed never keeps a stale bar.
+function _push_image_palette(scene::Ptr{Cvoid}, I::GMTimage, name::String)
+	n, rgb = 0, UInt8[]
+	if _img_is_indexed(I)
+		L = _img_palette(I)
+		n = clamp(Int(maximum(I.image)) + 1, 1, size(L, 1))     # highest value in use decides the count
+		nc = min(size(L, 2), 3)
+		rgb = Vector{UInt8}(undef, 3n)
+		@inbounds for k = 1:n, b = 1:3
+			rgb[3(k - 1) + b] = L[k, b <= nc ? b : nc]
+		end
+	end
+	ccall(_fn(:gmtvtk_image_set_palette_h), Cvoid, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint),
+	      scene, String(name), isempty(rgb) ? C_NULL : rgb, Cint(n))
+	return
+end
+
+# The `pix(lat, lon, b)` accessor plus the band count to read it with, for a whole GMTimage — the
+# palette-aware wrapper around `_pixaccess`. For an indexed image the accessor answers the PALETTE
+# COLOUR of the index, so every consumer (both drape paths) draws the picture the image describes
+# instead of the raw index numbers.
+function _pixaccess_img(I::GMTimage)
+	S   = I.image
+	d3  = ndims(S) == 3
+	nb  = d3 ? size(S, 3) : 1
+	lay = I.layout
+	rowmajor = length(lay) >= 2 && lay[2] == 'R'
+	nlon, nlat = rowmajor ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
+	pix = _pixaccess(S, lay, d3, nb, rowmajor, nlon, nlat)
+	_img_is_indexed(I) || return pix, nb, nlon, nlat, rowmajor
+	L  = _img_palette(I)
+	nL, nc = size(L, 1), size(L, 2)
+	lut = (lat, lon, b) -> @inbounds L[clamp(Int(pix(lat, lon, 1)) + 1, 1, nL), b <= nc ? b : nc]
+	return lut, nc, nlon, nlat, rowmajor
+end
+
 # Does the array's first lat index hold the NORTH row? The layout 1st char (T/B) is the nominal
 # answer ('T' -> north-first), BUT gmtread's disk image reader hands back the raw GDAL buffer
 # UN-flipped — i.e. actually TOP-first (row 1 = north) — yet tags it 'B' (bottom-first). Verified:
@@ -82,16 +188,11 @@ end
 # VTK texture origin is bottom-left, so output row 0 = south, west->east. Grey/2-band expand to
 # RGB. Returns (buf, nlon, nlat, comps).
 function _drape_buf(I)
-	S   = I.image
-	d3  = ndims(S) == 3
-	nb  = d3 ? size(S, 3) : 1
+	# _pixaccess_img, not _pixaccess: an INDEXED image answers with its palette colours here (see
+	# there), so `nb` is the palette's component count and everything below is unchanged.
+	pix, nb, nlon, nlat, rowmajor = _pixaccess_img(I)
 	comps = nb >= 4 ? 4 : 3
-	lay = I.layout
-	rowmajor    = length(lay) >= 2 && lay[2] == 'R'   # 'R' -> array is [lon, lat]
-	pixinter    = d3 && length(lay) >= 3 && lay[3] == 'P'
-	north_first = _north_first(lay, rowmajor)
-	nlon, nlat  = rowmajor ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
-	pix = _pixaccess(S, lay, d3, nb, rowmajor, nlon, nlat)
+	north_first = _north_first(I.layout, rowmajor)
 	buf = Vector{UInt8}(undef, nlat * nlon * comps)
 	_db_fill!(buf, pix, nlon, nlat, comps, nb, north_first)
 	return buf, nlon, nlat, comps
@@ -122,15 +223,9 @@ end
 # picture, the rest stays transparent so the CPT-coloured base surface shows through. Output is
 # C-ready: row 0 = SOUTH, west->east, comps = 4.
 function _drape_to_bbox(I, gx0, gx1, gy0, gy1; outside::Symbol=:shademesh, fill=(200,200,200))
-	S  = I.image
-	d3 = ndims(S) == 3
-	nb = d3 ? size(S, 3) : 1
-	lay = I.layout
-	rowmajor    = length(lay) >= 2 && lay[2] == 'R'   # 'R' -> array is [lon, lat]
-	pixinter    = d3 && length(lay) >= 3 && lay[3] == 'P'
-	north_first = _north_first(lay, rowmajor)
-	nlon_i, nlat_i = rowmajor ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
-	pix = _pixaccess(S, lay, d3, nb, rowmajor, nlon_i, nlat_i)
+	# Palette-aware accessor (see `_pixaccess_img`): an indexed image draws its colours, not indices.
+	pix, nb, nlon_i, nlat_i, rowmajor = _pixaccess_img(I)
+	north_first = _north_first(I.layout, rowmajor)
 	ir = I.range
 	ix0, ix1, iy0, iy1 = ir[1], ir[2], ir[3], ir[4]
 	dxi = (ix1 - ix0) / nlon_i                         # image increment

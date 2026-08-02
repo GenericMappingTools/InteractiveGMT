@@ -6850,6 +6850,256 @@ static void showFloodFill(QWidget *parent, Scene *s, const char *name) {
 	d->show();
 }
 
+// ============================================================================================
+// Image > K-means classification — port of Mirone's src_figs/classificationfig.m. Two halves, as
+// there: CLASSIFY the image (supervised, where the user clicks one seed per class, or unsupervised
+// with k random centres) and then ISOLATE one or more of the classes it found, as colour or as mask.
+//
+// deps/ui/classification.ui carries classificationfig_LayoutFcn's geometry. Like every other tool
+// here the dialog holds only settings and the picking; every pixel — the k-means itself (David
+// Corney's dcKMeans, embedded in the .m) and the two isolations — is Julia's (src/classification.jl).
+//
+// The seeds come through the SAME point pick the Shape detector uses (Scene::vectorPickMode 3 +
+// seedPickCB/seedPickEndCB, 85_polygon.cpp), so "click on the image to mark points" behaves
+// identically in both tools — Mirone's getline_j, ended by a right-click or a double-click.
+// ============================================================================================
+class ClassificationDialog;
+static std::map<Scene *, ClassificationDialog *> g_classifyDlgs;
+
+class ClassificationDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene   *scn = nullptr;
+	QRadioButton *rSup = nullptr, *rUnsup = nullptr, *rColor = nullptr, *rMask = nullptr;
+	QPushButton *bDefine = nullptr, *bCompute = nullptr, *bGetClass = nullptr, *bBgColor = nullptr;
+	QLineEdit *eClasses = nullptr, *eNeighbors = nullptr;
+	QListWidget *lstClasses = nullptr;
+	QString srcName;
+	std::vector<std::pair<double, double>> seeds;    // world x,y, one per class (click-define)
+	QColor bg = Qt::white;                           // handles.bg_color
+	bool reallyClose = false;
+
+	bool supervised() const { return !rSup || rSup->isChecked(); }
+	int  nClasses() const {
+		bool ok = false;  int v = eClasses ? eClasses->text().toInt(&ok) : 3;
+		return (ok && v >= 2) ? v : 3;               // edit_nClasses_CB: minimum allowed is 2
+	}
+	int  nNeighbors() const {
+		bool ok = false;  int v = eNeighbors ? eNeighbors->text().toInt(&ok) : 3;
+		return (ok && v >= 1) ? v : 3;
+	}
+
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();  dlg->raise();  dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel = m.addAction("Delete");
+			QAction *pick = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { reallyClose = true; unparkTool(scn, dlg); dlg->deleteLater(); }
+		};
+	}
+	~ClassificationDialog() {
+		disarm();
+		for (auto it = g_classifyDlgs.begin(); it != g_classifyDlgs.end(); )
+			it = (it->second == this) ? g_classifyDlgs.erase(it) : std::next(it);
+	}
+
+	void disarm() {
+		if (!sceneAlive(scn)) return;
+		if (scn->vectorPickMode == 3) scn->vectorPickMode = 0;
+		scn->seedPickCB = nullptr;
+		scn->seedPickEndCB = nullptr;
+		if (scn->widget) scn->widget->unsetCursor();
+	}
+
+	// toggle_clickDefine_CB: collect one point per class until a right-click or a double-click ends
+	// it (getline_j). Pressing the button again ends it too, so the three routes agree.
+	void arm(bool on) {
+		if (!sceneAlive(scn)) return;
+		if (!on) { disarm(); report(); return; }
+		seeds.clear();
+		QPointer<QDialog> guard(dlg);
+		scn->seedPickCB = [this, guard](double x, double y) {
+			if (!guard) return;
+			seeds.emplace_back(x, y);
+			if (scn && scn->win)
+				scn->win->statusBar()->showMessage(
+				    QString("%1 class seed(s) — right-click or double-click when done")
+				        .arg(seeds.size()), 4000);
+		};
+		scn->seedPickEndCB = [this, guard]() { if (guard) finish(); };
+		scn->vectorPickMode = 3;
+		scn->vectorPickDbl = false;
+		if (scn->widget) scn->widget->setCursor(Qt::CrossCursor);
+		if (scn->win) scn->win->statusBar()->showMessage(
+			"Click ONE point on each colour/grey level you want as a class — then right-click "
+			"or double-click to finish", 6000);
+	}
+	void finish() {
+		disarm();
+		if (bDefine) { QSignalBlocker blk(bDefine); bDefine->setChecked(false); }
+		report();
+	}
+	void report() {
+		if (bDefine)
+			bDefine->setText(seeds.empty() ? QString("click-define")
+			                               : QString("click-define (%1)").arg(seeds.size()));
+	}
+
+	// push_compute_CB. The seeds go over in WORLD coordinates; Julia turns them into pixels with the
+	// same converter the Shape detector uses.
+	void compute() {
+		if (!g_juliaClassify) return;
+		if (supervised() && seeds.size() < 2) {
+			QMessageBox::warning(dlg, "K-means classification",
+			                     "Supervised classification needs at least two seed points.\n"
+			                     "Press \"click-define\" and click one point on each class.");
+			return;
+		}
+		QString req = QString("compute;%1;%2;%3;%4")
+		                  .arg(srcName).arg(supervised() ? 1 : 0).arg(nClasses()).arg(nNeighbors());
+		for (const auto &s : seeds)
+			req += QString(";%1,%2").arg(s.first, 0, 'g', 17).arg(s.second, 0, 'g', 17);
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		g_juliaClassify(scn, this, req.toUtf8().constData());
+		QApplication::restoreOverrideCursor();
+	}
+
+	// The answer to "compute": fill the listbox with the classes that came out (0 … k-1, as the .m
+	// labels them) and let "Isolate selected class" run.
+	void setClasses(int k) {
+		if (!lstClasses) return;
+		lstClasses->clear();
+		for (int i = 0; i < k; ++i) lstClasses->addItem(QString::number(i));
+		tightenListRows(lstClasses);          // one text line per row, never Qt's default spacing
+		if (k > 0) lstClasses->setCurrentRow(0);
+		if (bGetClass) bGetClass->setEnabled(k > 0);
+	}
+
+	// push_getClass_CB
+	void isolate() {
+		if (!g_juliaClassify || !lstClasses) return;
+		QList<QListWidgetItem *> sel = lstClasses->selectedItems();
+		if (sel.isEmpty()) {
+			QMessageBox::warning(dlg, "K-means classification", "Select one or more classes first.");
+			return;
+		}
+		QStringList cls;
+		for (QListWidgetItem *it : sel) cls << it->text();
+		QString req = QString("isolate;%1;%2;%3,%4,%5;%6")
+		                  .arg(srcName).arg(rMask && rMask->isChecked() ? 1 : 0)
+		                  .arg(bg.red()).arg(bg.green()).arg(bg.blue()).arg(cls.join(','));
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		g_juliaClassify(scn, this, req.toUtf8().constData());
+		QApplication::restoreOverrideCursor();
+	}
+
+	void paintBgButton() {
+		if (!bBgColor) return;
+		bBgColor->setStyleSheet(QString("background-color: %1; color: %2;")
+		                            .arg(bg.name())
+		                            .arg(bg.lightness() > 127 ? "black" : "white"));
+	}
+};
+
+static void showClassification(QWidget *parent, Scene *s, const char *name) {
+	if (!g_juliaClassify) {
+		QMessageBox::warning(parent, "K-means classification",
+		                     "K-means classification: callback not registered (rebuild/restart needed?).");
+		return;
+	}
+	auto open = g_classifyDlgs.find(s);
+	if (open != g_classifyDlgs.end() && open->second->dlg) { open->second->unpark(); return; }
+	QUiLoader loader;
+	QFile f(gmtvtkUiDir() + "/classification.ui");
+	if (!f.open(QFile::ReadOnly)) {
+		qWarning("showClassification: cannot open %s", qUtf8Printable(f.fileName()));
+		return;
+	}
+	QDialog *d = qobject_cast<QDialog *>(loader.load(&f, parent));
+	f.close();
+	if (!d) return;
+
+	auto *cd = new ClassificationDialog;
+	cd->dlg = d;  cd->scn = s;
+	cd->srcName    = QString::fromUtf8(name ? name : "");
+	cd->rSup       = d->findChild<QRadioButton *>("radio_supervised");
+	cd->rUnsup     = d->findChild<QRadioButton *>("radio_unsupervised");
+	cd->rColor     = d->findChild<QRadioButton *>("radio_asColor");
+	cd->rMask      = d->findChild<QRadioButton *>("radio_asMask");
+	cd->bDefine    = d->findChild<QPushButton *>("toggle_clickDefine");
+	cd->bCompute   = d->findChild<QPushButton *>("push_compute");
+	cd->bGetClass  = d->findChild<QPushButton *>("push_getClass");
+	cd->bBgColor   = d->findChild<QPushButton *>("push_bgColor");
+	cd->eClasses   = d->findChild<QLineEdit *>("edit_nClasses");
+	cd->eNeighbors = d->findChild<QLineEdit *>("edit_nNeighbors");
+	cd->lstClasses = d->findChild<QListWidget *>("listbox_classes");
+	if (!cd->rSup || !cd->bDefine || !cd->bCompute || !cd->lstClasses) { delete cd; delete d; return; }
+	QObject::connect(d, &QObject::destroyed, d, [cd]() { delete cd; });
+	g_classifyDlgs[s] = cd;
+
+	struct CloseParks : QObject {
+		ClassificationDialog *cd;
+		CloseParks(QObject *parent, ClassificationDialog *c) : QObject(parent), cd(c) {}
+		bool eventFilter(QObject *o, QEvent *e) override {
+			if (e->type() == QEvent::Close && cd && !cd->reallyClose && sceneAlive(cd->scn)) {
+				e->ignore();
+				cd->disarm();                    // a parked tool must not keep the view in pick mode
+				cd->dlg->hide();
+				ClassificationDialog *h = cd;
+				parkTool(h->scn, h->dlg, "K-means classification", IC_Image,
+				         "Closed K-means classification — double-click to bring it back, "
+				         "click for Show / Delete",
+				         [h]() { h->unpark(); }, h->parkedMenu());
+				unfoldSceneObjects(cd->scn);
+				return true;
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	d->installEventFilter(new CloseParks(d, cd));
+
+	// radio_supervised_CB / radio_unsupervised_CB: N classes is the unsupervised knob, click-define
+	// the supervised one — each greys out with its mode, as in the .m.
+	auto modeSync = [cd]() {
+		const bool sup = cd->supervised();
+		if (cd->eClasses) cd->eClasses->setEnabled(!sup);
+		if (cd->bDefine) cd->bDefine->setEnabled(sup);
+		if (!sup && cd->bDefine && cd->bDefine->isChecked()) cd->bDefine->setChecked(false);
+	};
+	for (QRadioButton *r : { cd->rSup, cd->rUnsup })
+		if (r) QObject::connect(r, &QRadioButton::toggled, d, [modeSync](bool) { modeSync(); });
+	modeSync();
+
+	QObject::connect(cd->bDefine, &QPushButton::toggled, d, [cd](bool on) {
+		if (on) cd->arm(true);
+		else cd->finish();                        // pressed again = "done picking", as a right-click
+	});
+	QObject::connect(cd->bCompute, &QPushButton::clicked, d, [cd]() { cd->compute(); });
+	if (cd->bGetClass)
+		QObject::connect(cd->bGetClass, &QPushButton::clicked, d, [cd]() { cd->isolate(); });
+	if (cd->bBgColor)
+		QObject::connect(cd->bBgColor, &QPushButton::clicked, d, [cd, d]() {   // push_bgColor_CB
+			QColor c = QColorDialog::getColor(cd->bg, d, "Background color");
+			if (!c.isValid()) return;
+			cd->bg = c;
+			cd->paintBgButton();
+		});
+	cd->paintBgButton();
+
+	d->setWindowTitle(cd->srcName.isEmpty() ? QString("kmeans classification")
+	                                        : QString("kmeans classification — %1").arg(cd->srcName));
+	d->show();
+}
+
 static const struct BinarizeHookInstaller {
 	BinarizeHookInstaller() {
 		g_binarizeHasDialog = &binarizeHasDialog;
@@ -6863,6 +7113,9 @@ static const struct BinarizeHookInstaller {
 		};
 		g_showFloodFill     = [](Scene *s, const char *name) {
 			showFloodFill(s && s->widget ? s->widget->window() : nullptr, s, name);
+		};
+		g_showClassification = [](Scene *s, const char *name) {
+			showClassification(s && s->widget ? s->widget->window() : nullptr, s, name);
 		};
 	}
 } g_binarizeHookInstaller;
@@ -13789,6 +14042,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QAction *aShape = mImage->addAction("&Shape detector…", [win, s]() {
 		showFloodFill(win, s, displayedImageName(s).toUtf8().constData());
 	});
+	// K-means classification (classificationfig.m), the entry mirone_uis.m puts right after it.
+	QAction *aClassify = mImage->addAction("&K-means classification…", [win, s]() {
+		showClassification(win, s, displayedImageName(s).toUtf8().constData());
+	});
 	// Image Enhance submenu, kept exactly as mirone_uis.m builds it (the numbering included). Only
 	// entry 1 (image_enhance.m) is ported so far; 2 (image_adjust.m) and 3 (ice_m.m) are placeholders.
 	mImage->addSeparator();
@@ -13808,11 +14065,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	aEnh2->setEnabled(false);  aEnh3->setEnabled(false);     // not ported yet
 	// Binarize needs an image to threshold — greyed out (refreshed on every open) when the window
 	// holds none. Show Histogram works off the DISPLAY, so a grid window qualifies too.
-	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto, aResize, aShape, aEnh1]() {
+	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto, aResize, aShape, aClassify,
+	                                              aEnh1]() {
 		aBinarize->setEnabled(sceneHasImage(s));
 		aHisto->setEnabled(sceneHasImage(s) || sceneHasGrid(s));
 		aResize->setEnabled(sceneHasImage(s));  // resamples the image itself, so it needs a real one
 		aShape->setEnabled(sceneHasImage(s));   // grows a region over the image's own pixels
+		aClassify->setEnabled(sceneHasImage(s));// clusters the image's own pixel colours
 		aEnh1->setEnabled(sceneHasImage(s));   // it rewrites an image's pixels, so it needs a real one
 	});
 

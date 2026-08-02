@@ -103,6 +103,8 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_image_enhance_callback, :gmtvtk_enhance_set_band, :gmtvtk_enhance_set_window,
 	:gmtvtk_set_rgb_scatter_callback, :gmtvtk_set_forget_callback,
 	:gmtvtk_set_image_resize_callback, :gmtvtk_resize_set_size, :gmtvtk_set_floodfill_callback,
+	:gmtvtk_set_classify_callback, :gmtvtk_classify_set_classes,
+	:gmtvtk_image_set_palette_h, :gmtvtk_image_set_has_orig_h,
 	:gmtvtk_set_clipgrid_callback, :gmtvtk_set_empilhador_callback, :gmtvtk_set_gridcalc_callback, :gmtvtk_set_grdtrend_callback, :gmtvtk_set_grdlandmask_callback, :gmtvtk_set_grdfilter_callback, :gmtvtk_set_interpolate_callback, :gmtvtk_set_ui_dir,
 	:gmtvtk_set_seismicity_callback,
 	:gmtvtk_set_faultgeom_callback,

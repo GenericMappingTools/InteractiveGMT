@@ -200,6 +200,17 @@ struct Curtain {
 	std::string name;                        // label shown in the Scene Objects panel
 };
 
+// An INDEXED image's palette, as a colour bar. The palette IS the legend — one labelled block per
+// class (K-means classification's classes, or any indexed raster's colour table), which is why the
+// bar is DISCRETE and its labels are the pixel VALUES, not interpolated tick numbers. Carried by
+// whichever object holds the image: `Scene::palette` for a window's primary image, `ExtraObj::palette`
+// for a dropped/derived one. `n == 0` = this object is not an indexed image and has no legend.
+struct PaletteLegend {
+	vtkSmartPointer<vtkLookupTable> lut;
+	int  n = 0;
+	bool show = true;                        // the Color Bar row's per-object "want it shown" intent
+};
+
 // An extra dataset dropped into an existing window (a second grid/image surface). Listed in
 // the Scene Objects panel with its own show/hide checkbox. `drape` is its optional image actor.
 struct ExtraObj {
@@ -234,6 +245,7 @@ struct ExtraObj {
 	bool   showBar = true;                   // user wants this grid's colorbar shown (when it is active)
 	int    cubeLayers = 0;                   // >1 iff this grid is a 3-D-cube variable (its menu offers
 	                                         // "Cube layers…", opening the slider bound to THIS cube)
+	PaletteLegend palette;                   // images only: an indexed image's class legend (see above)
 	int    geog = 0;                         // this grid's OWN x,y kind: !=0 -> lon/lat, 0 -> cartesian X/Y.
 	                                         // Mirrors the base surface's Scene-level baseGeog. The axis
 	                                         // NAME titles follow the ACTIVE grid's flag, so a cartesian
@@ -570,6 +582,13 @@ struct Scene {
 	// The 3D camera + VE are saved here and restored on toggle back.
 	bool   flat2d = false;
 	bool   imageOnly = false;   // loaded as a bare image (no elevation): readout shows pixel colour, not z
+	PaletteLegend palette;      // the PRIMARY image's class legend, when that image is indexed (see
+	                            // PaletteLegend); an extra/derived image carries its own on its ExtraObj
+	// Images whose FULL-PRECISION (UInt16) source the host still holds (_IMG_ORIG, savefile.jl), by
+	// Scene Objects name ("" = the primary image). "Auto histogram stretch (new image)" re-derives an
+	// 8-bit image from that source, so the entry only appears for an image that HAS one — on a plain
+	// 8-bit image there is nothing wider to stretch from. Set from Julia (gmtvtk_image_set_has_orig_h).
+	std::set<std::string> imgHasOrig;
 	bool   emptyStart = false;  // full-chrome launcher with no data yet (hidden placeholder); drop -> promote
 	bool   gridAdopted = false; // a real grid was dropped onto an imageOnly canvas (Background region /
 	                            // bare image) and adopted as the hover heightfield -> readout shows z,

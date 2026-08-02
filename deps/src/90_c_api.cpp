@@ -992,6 +992,9 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 		kvi("n_polys",    (long)s->polys.size());
 		kvi("n_texts",    (long)s->texts.size());
 		kvi("drape",      s->drape ? 1 : 0);
+		// Colour bar: is one drawn, and (an INDEXED image's palette legend) how many class blocks.
+		kvi("bar",  (s->bar && s->bar->GetVisibility() != 0) ? 1 : 0);
+		{ PaletteLegend *pl = resolveActivePalette(s); kvi("palN", pl ? (long)pl->n : 0L); }
 		kvi("n_table",    s->dataTable ? (long)s->dataTable->rowCount() : -1);
 		o += "surf_name="; o += s->surfName; o += ';';
 		for (size_t i = 0; i < s->extras.size(); ++i) {
@@ -1646,6 +1649,64 @@ GMTVTK_API void gmtvtk_resize_set_size(void *dlg, int w, int h) {
 // nullptr to detach.
 GMTVTK_API void gmtvtk_set_floodfill_callback(JuliaFloodFillFn fn) {
 	g_juliaFloodFill = fn;
+}
+
+// Register the "Image > K-means classification" callback (port of src_figs/classificationfig.m).
+// fn(scene, dlg, params) with params = "op;args" (see JuliaClassifyFn, 30_app.cpp). Returns 1/0.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_classify_callback(JuliaClassifyFn fn) {
+	g_juliaClassify = fn;
+}
+
+// Give an image its PALETTE, i.e. declare it INDEXED: `rgb` is n*3 bytes, entry k = the colour of
+// pixel value k. The palette becomes that image's colour bar — a discrete legend, one labelled block
+// per value (buildColorbar's discreteN path) — and a "Color Bar" row under the image's group in Scene
+// Objects. `name` picks the image ("" = the window's primary one). n <= 0 clears it.
+//
+// The image's PIXELS are not touched: the viewer's texture is expanded from the palette host-side
+// (src/drape.jl `_pixaccess_img`), the stored image stays indexed, and this is only the legend.
+GMTVTK_API void gmtvtk_image_set_palette_h(void *handle, const char *name, const unsigned char *rgb,
+                                           int n) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	const std::string nm = name ? name : "";
+	PaletteLegend *pl = nullptr;
+	for (auto &ex : s->extras) if (ex.isImage && ex.name == nm) { pl = &ex.palette; break; }
+	// No extra by that name -> the PRIMARY image. It answers to "" (how every other host call names
+	// it) AND to its own Scene Objects name, because a file dropped on an empty launcher is PROMOTED
+	// to primary while the host still calls it by its file name — that mismatch is what left a
+	// re-opened indexed image with no legend at all.
+	if (!pl && s->drape && (nm.empty() || nm == s->surfName)) pl = &s->palette;
+	if (!pl) return;
+	if (n <= 0 || !rgb) { pl->lut = nullptr; pl->n = 0; refreshGridColorbar(s); rebuildSceneObjects(s); return; }
+	if (n > 256) n = 256;
+	vtkSmartPointer<vtkLookupTable> lut = vtkSmartPointer<vtkLookupTable>::New();
+	lut->SetNumberOfTableValues(n);
+	lut->SetTableRange(0.0, (double)n);       // block k spans [k, k+1] — see buildColorbar's labels
+	for (int k = 0; k < n; ++k)
+		lut->SetTableValue(k, rgb[3*k] / 255.0, rgb[3*k+1] / 255.0, rgb[3*k+2] / 255.0, 1.0);
+	lut->Build();
+	pl->lut = lut;  pl->n = n;
+	refreshGridColorbar(s);
+	rebuildSceneObjects(s);
+}
+
+// Does this image have a FULL-PRECISION (UInt16) source stashed host-side (_IMG_ORIG, savefile.jl)?
+// Only such an image offers "Auto histogram stretch (new image)", which re-derives from it.
+// `name` = the image's Scene Objects name ("" = the window's primary image).
+GMTVTK_API void gmtvtk_image_set_has_orig_h(void *handle, const char *name, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	const std::string nm = name ? name : "";
+	if (on) s->imgHasOrig.insert(nm);
+	else    s->imgHasOrig.erase(nm);
+}
+
+// Answer to the K-means dialog's "compute": how many classes came out, so listbox_classes can offer
+// them (0 … k-1) and "Isolate selected class" can run. k <= 0 empties the list again.
+GMTVTK_API void gmtvtk_classify_set_classes(void *dlg, int k) {
+	if (!dlg) return;
+	reinterpret_cast<ClassificationDialog *>(dlg)->setClasses(k);
 }
 
 // Register the Adjust Contrast ScaterPlot callback. fn(scene, px, npix, nb, label) plots the three
@@ -2951,6 +3012,49 @@ GMTVTK_API int gmtvtk_symbol_get_pos_test(void *scene, int idx, double *out3) {
 	out3[1] = p[1];
 	out3[2] = p[2];
 	return 1;
+}
+
+// test hook: hover the cursor over world (x,y) with a GENUINE QMouseEvent (the same dispatch a live
+// mouse takes, so the whole readout path runs) and hand back what the status bar then reads.
+GMTVTK_API int gmtvtk_hover_readout_test(void *scene, double x, double y, char *out, int cap) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->widget || !s->ren || !s->widget->renderWindow() || !s->win) return 0;
+	const double dpr = s->widget->devicePixelRatioF();
+	const int Hpx = s->widget->renderWindow()->GetSize()[1];
+	s->ren->SetWorldPoint(x * s->xfac, y, 0.0, 1.0);
+	s->ren->WorldToDisplay();
+	double d[3]; s->ren->GetDisplayPoint(d);
+	const QPointF p(d[0] / dpr, (Hpx - d[1]) / dpr);
+	s->win->statusBar()->clearMessage();       // else a leftover message reads as a successful hover
+	QMouseEvent ev(QEvent::MouseMove, p, s->widget->mapToGlobal(p.toPoint()),
+	               Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+	QApplication::sendEvent(s->widget, &ev);
+	QApplication::processEvents();
+	QString m = s->win->statusBar()->currentMessage();
+	// Nothing to read means the readout never fired — say WHERE the hover landed, so a test can tell
+	// "the readout is broken" from "the synthetic point missed the widget".
+	if (m.isEmpty() || m == "ready") {
+		double nr[4], fr[4];
+		s->ren->SetDisplayPoint(d[0], d[1], 0.0); s->ren->DisplayToWorld();
+		for (int i = 0; i < 4; ++i) nr[i] = s->ren->GetWorldPoint()[i];
+		s->ren->SetDisplayPoint(d[0], d[1], 1.0); s->ren->DisplayToWorld();
+		for (int i = 0; i < 4; ++i) fr[i] = s->ren->GetWorldPoint()[i];
+		if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
+		if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
+		m = QString("<no readout:%1> p=(%2,%3) gridZ=%4 actZ=%5 imageOnly=%6 nrz=%7 frz=%8 "
+		            "gbox=%9/%10/%11/%12 xfac=%13")
+		        .arg(m.isEmpty() ? "blank" : "ready")
+		        .arg(p.x(), 0, 'f', 1).arg(p.y(), 0, 'f', 1)
+		        .arg((int)s->gridZ.size()).arg(s->actZ ? (int)s->actZ->size() : -1)
+		        .arg(s->imageOnly ? 1 : 0)
+		        .arg(nr[2], 0, 'g', 6).arg(fr[2], 0, 'g', 6)
+		        .arg(s->gx0, 0, 'g', 6).arg(s->gx1, 0, 'g', 6)
+		        .arg(s->gy0, 0, 'g', 6).arg(s->gy1, 0, 'g', 6)
+		        .arg(s->xfac, 0, 'g', 6);
+	}
+	const QByteArray msg = m.toUtf8();
+	if (out && cap > 0) { qstrncpy(out, msg.constData(), cap); }
+	return (int)msg.size();
 }
 
 // test hook: simulate a REAL double-click-then-drag gesture at world (x1,y1,z1), dragging to world
