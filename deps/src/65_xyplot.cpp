@@ -327,6 +327,21 @@ static void xySaveSeries(XYPlot *s, int idx) {
 	xyLog(s, QString("Saved series #%1 to %2").arg(idx).arg(fn));
 }
 
+// Ctrl+V / File > Paste in an X,Y window: the clipboard's numeric text becomes new series on the
+// CURRENT page. The text goes over as the "paste" action of the SAME File callback File > Open uses
+// (xyplot.jl `_on_xy`), and Julia parses it with the SAME table parser the 3-D viewer's paste uses
+// — one clipboard-table reader for the whole app, never a second one here (SACRED_LAW.md).
+static void xyPasteClipboard(XYPlot *s) {
+	if (!xyAlive(s) || !s->win) return;
+	const QString t = QApplication::clipboard()->text();
+	if (t.trimmed().isEmpty()) {
+		s->win->statusBar()->showMessage("Clipboard has no text to plot", 3000);
+		return;
+	}
+	if (!g_juliaXY) { xyLog(s, "Paste: not wired (rebuild the DLL)", true); return; }
+	g_juliaXY(s, "paste", -1, t.toUtf8().constData());
+}
+
 // "Show in Data Table" — every series (line handle) carries this property in its right-click menu
 // (xyObjMgrMenu). Replaces the old permanently-docked Data Viewer spreadsheet. Calls the SAME
 // buildDataTableDialog (55_lineprops.cpp) the 3-D viewer's per-line "Show data table…" uses, Save
@@ -1689,6 +1704,10 @@ static XYPlot *buildXYPlot(const char *title) {
 	QAction *aNew  = mFile->addAction("New");
 	QAction *aOpen = mFile->addAction("Open…");
 	QAction *aSave = mFile->addAction("Save…");
+	mFile->addSeparator();
+	// Ctrl+V: the clipboard's numeric text becomes new series here. Shared paste action
+	// (makePasteAction, 30_app.cpp) — same key, same text-entry hand-back, as the 3-D viewer's.
+	mFile->addAction(makePasteAction(s->win, [s]() { xyPasteClipboard(s); }));
 	mFile->addSeparator();
 	QAction *aClose = mFile->addAction("Close");
 	QObject::connect(aNew, &QAction::triggered, s->win, [s]{

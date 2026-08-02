@@ -324,6 +324,16 @@ function _on_xy(plot::Ptr{Cvoid}, caction::Cstring, sel::Cint, cpath::Cstring)::
 		elseif action == "save"
 			p = get(_FIGREG, plot, nothing)
 			(p isa QtXYPlot) && _xy_save(p, Int(sel), path)
+		elseif action == "paste"
+			# Ctrl+V in an X,Y window: `path` carries the clipboard TEXT (not a file name). Parsed by
+			# the SAME clipboard-table reader the 3-D viewer's paste uses (paste.jl) and added through
+			# the SAME `_xy_add_dataset` File > Open uses.
+			p = get(_FIGREG, plot, nothing)
+			if p isa QtXYPlot
+				D = _paste_dataset(path)
+				D === nothing && (_xy_log(plot, "Paste: the clipboard text is not a numeric table"; err=true); return)
+				_xy_add_dataset(p, D)
+			end
 		end
 	catch e
 		_dbg("xy", action, "ERR", sprint(showerror, e))
@@ -345,8 +355,13 @@ function _xy_open_blank()
 end
 
 # File > Open: read a data file (anything GMT.gmtread understands) and add its columns as series.
-function _xy_open_file(p::QtXYPlot, path)
-	D = GMT.gmtread(path)
+_xy_open_file(p::QtXYPlot, path) = _xy_add_dataset(p, GMT.gmtread(path))
+
+# Add every plottable (>= 2 column) segment of a dataset/matrix as series on the CURRENT page:
+# column 1 is X, columns 2…n one series each, named by the REAL column names. THE ONE
+# table -> series function — File > Open (above) and Ctrl+V (paste.jl) both come through here,
+# never a second column-splitting loop (SACRED_LAW.md).
+function _xy_add_dataset(p::QtXYPlot, D)
 	segs = (D isa GMTdataset || D isa AbstractMatrix) ? (D,) : collect(D)
 	nseg = length(segs)
 	for (i, seg) in enumerate(segs)
