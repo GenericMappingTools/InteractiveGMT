@@ -727,6 +727,25 @@ static void (*g_showFloodFill)(Scene *scene, const char *name) = nullptr;
 // Same, for "Image > K-means classification".
 static void (*g_showClassification)(Scene *scene, const char *name) = nullptr;
 
+// "Image > Flip > Up-Down / Left-Right" (Mirone mirone.m `Transfer_CB` 'flipUD'/'flipLR'). Calls
+// fn(scene, "ud;<name>" | "lr;<name>") — name = the Scene Objects name of the image to flip ("" =
+// the window's primary image). Julia flips THE PIXELS of that image (its stored GMTimage as well as
+// the texture the viewer shows) and leaves the georeference alone: a flip re-orders pixels inside
+// the same ground extent, so a referenced image keeps its coordinates exactly. Set via
+// gmtvtk_set_image_flip_callback; nullptr -> a status-bar notice.
+typedef void (*JuliaImageFlipFn)(void *scene, const char *req);
+static JuliaImageFlipFn g_juliaImageFlip = nullptr;
+
+// "Image > Explore RGB" (Mirone mirone.m `Transfer_CB` 'RGBexp' + utils/montage.m). fn(scene, dlg,
+// params) with params = "op;args":
+//   "init;<name>"      -> Julia answers with gmtvtk_rgbexp_set_thumbs(dlg, rgba, w, h, 13): the 13
+//                         colour components of the image, as thumbnails, in Mirone's order
+//   "pick;<name>;<k>"  -> component k (1..13) at FULL resolution, added to this window's image list
+// `name` = the Scene Objects name of the image ("" = the window's primary one). Returns 1/0. Set via
+// gmtvtk_set_rgbexplore_callback; nullptr -> the menu entry says so and opens nothing.
+typedef int (*JuliaRgbExploreFn)(void *scene, void *dlg, const char *params);
+static JuliaRgbExploreFn g_juliaRgbExplore = nullptr;
+
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a
 // short format code (nc/surfer/gtiff/jp2/erdas/envi for grids; those + jpg/png/tif/bmp for images);
@@ -925,6 +944,18 @@ static void stretchImageObject(Scene *s, const QString &name) {
 	}
 	const QString req = QString("image;%1").arg(name);
 	g_juliaImgStretch(s, req.toUtf8().constData());
+}
+
+// Ask Julia to flip the named image up-down / left-right IN PLACE (g_juliaImageFlip, req =
+// "ud;<name>" | "lr;<name>"). ONE function for both directions and for every caller (menu bar
+// today) — the direction is data, never a second code path. A nullptr callback posts a notice.
+static void flipImageObject(Scene *s, const QString &name, bool updown) {
+	if (!g_juliaImageFlip) {
+		if (s && s->win) s->win->statusBar()->showMessage("Flip image: callback not registered", 3000);
+		return;
+	}
+	const QString req = QString("%1;%2").arg(updown ? "ud" : "lr").arg(name);
+	g_juliaImageFlip(s, req.toUtf8().constData());
 }
 
 // Does the window hold a saveable grid / image? Used to enable/disable the File>Save entries and to

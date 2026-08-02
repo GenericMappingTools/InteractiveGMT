@@ -589,6 +589,12 @@ struct Scene {
 	// 8-bit image from that source, so the entry only appears for an image that HAS one — on a plain
 	// 8-bit image there is nothing wider to stretch from. Set from Julia (gmtvtk_image_set_has_orig_h).
 	std::set<std::string> imgHasOrig;
+	// Images that are genuine 3-band RGB, by the same naming. "Explore RGB" splits an image into its
+	// colour components, so it is offered ONLY for one that HAS them — Mirone hides the entry for any
+	// non-RGB image (mirone.m: `if (ndims(img) < 3), return, end`). Set from Julia
+	// (gmtvtk_image_set_rgb_h), which is the only side that knows how many bands an image really has:
+	// every image reaches the viewer as an RGBA texture, indexed and grey ones included.
+	std::set<std::string> imgRGB;
 	bool   emptyStart = false;  // full-chrome launcher with no data yet (hidden placeholder); drop -> promote
 	bool   gridAdopted = false; // a real grid was dropped onto an imageOnly canvas (Background region /
 	                            // bare image) and adopted as the hover heightfield -> readout shows z,

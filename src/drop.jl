@@ -1073,6 +1073,11 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 	# discrete Color Bar row (one block per pixel value). The pixels stay indices — only the texture
 	# was expanded, inside `_pixaccess_img` above.
 	(ok != 0) && _push_image_palette(scene, I, String(name))
+	# "Explore RGB" splits an image into its colour components, so it is offered only for one that HAS
+	# them. The viewer sees every image as an RGBA texture (grey and indexed ones expanded on the way),
+	# so only this side can tell — say it here, once, for every image that enters a window.
+	(ok != 0) && ccall(_fn(:gmtvtk_image_set_rgb_h), Cvoid, (Ptr{Cvoid}, Cstring, Cint),
+	                   scene, String(name), Cint(_rgbx_is_rgb(I)))
 	# Save Session: known file path -> file ref (:file); no path -> serialize the image (:generated).
 	# `record=false` suppresses this when a higher-level tool logs its own (menu) recipe (e.g. basemap).
 	(ok != 0 && record) && _session_record!(scene, promote ? :image : :dropimage,

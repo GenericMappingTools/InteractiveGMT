@@ -86,6 +86,8 @@ include("imageenhance.jl") # Image > Image Enhance > 1 - Indexed and RGB (port o
 include("imageresize.jl")  # Image > Image resize (port of Mirone imageresize.m; resampling via gdalwarp)
 include("floodfill.jl")    # Image > Shape detector, the magic wand (port of Mirone floodfill.m)
 include("classification.jl") # Image > K-means classification (port of Mirone classificationfig.m)
+include("imageflip.jl")    # Image > Flip: up-down / left-right pixel flip, georef untouched (Mirone mirone.m)
+include("rgbexplore.jl")   # Image > Explore RGB: the 13 colour components montage (Mirone mirone.m 'RGBexp')
 include("empilhador.jl") # Tools > Empilhador: stack grids/L2 scenes into a 3-D file (port of Mirone empilhador.m)
 include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-geometry grids (port of Mirone grid_calculator.m)
 include("contours.jl")   # Grid Tools > Contours: GDAL-traced contour lines (port of Mirone contouring.m)

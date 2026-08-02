@@ -75,6 +75,19 @@ function _img_set_palette!(I::GMTimage, L::Matrix{UInt8})
 	return I
 end
 
+# The 256-level GREY palette, i.e. "this one-band image is INDEXED and its indices are shown as
+# grey". Every single-band derived image that is a QUANTITY (a colour component, a channel) gets one:
+# an indexed image carries a palette, and a palette IS that image's colour bar (`_push_image_palette`
+# -> a discrete legend + a Color Bar row in its Scene Objects group). Without it the image lands with
+# no bar at all and nothing says what its pixel values mean.
+function _img_gray_palette!(I::GMTimage)
+	L = Matrix{UInt8}(undef, 256, 3)
+	@inbounds for c = 1:3, i = 1:256
+		L[i, c] = UInt8(i - 1)
+	end
+	return _img_set_palette!(I, L)
+end
+
 # `mat2img(mat, I)` copies the parent's colormap along with its georef. That is right when the new
 # matrix is a new set of INDICES into the same palette and wrong whenever it is grey or RGB data (a
 # mask, a segmentation, a stretched band) — those pixels are values, not indices, and a leftover

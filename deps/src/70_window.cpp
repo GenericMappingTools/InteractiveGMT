@@ -7100,6 +7100,138 @@ static void showClassification(QWidget *parent, Scene *s, const char *name) {
 	d->show();
 }
 
+// ============================================================================================
+// Image > Explore RGB — port of Mirone's mirone.m `Transfer_CB` 'RGBexp' plus the montage window
+// utils/montage.m draws for it. THIRTEEN one-band components of the RGB image (Gray, R, G, B, H, S,
+// V, Luminance, Red/Blue Chrominance, L*, a*, b*), as a grid of thumbnails, each labelled in the
+// colour mirone.m gives it; clicking one takes THAT component at full resolution.
+//
+// Mirone's click opens a new Mirone figure. Here it lands as a NEW IMAGE IN THIS WINDOW's Scene
+// Objects list, which is what iGMT does with every derived image (Julia's `_commit_derived_image!`).
+//
+// No .ui: this window is nothing but a montage of images, built from what Julia sends, so there is
+// no fixed widget geometry to design. Every pixel is Julia's (src/rgbexplore.jl).
+// ============================================================================================
+static const char *const kRgbExpLabels[13] = {
+	"Gray", "Red", "Green", "Blue", "Hue", "Saturation", "Value",
+	"Luminance", "Red Chrominance", "Blue Chrominance",
+	"L*a*b* => L*", "L*a*b* => a*", "L*a*b* => b*"
+};
+// mirone.m's `cores`: k, [0.7 0 0], [0 0.7 0], b, magenta*0.6 x3, cyan*0.6 x3, yellow*0.6 x3.
+static QColor rgbExpLabelColor(int k) {
+	switch (k) {
+		case 0:  return QColor(0, 0, 0);
+		case 1:  return QColor(178, 0, 0);
+		case 2:  return QColor(0, 178, 0);
+		case 3:  return QColor(0, 0, 255);
+		case 4: case 5: case 6:  return QColor(153, 0, 153);
+		case 7: case 8: case 9:  return QColor(0, 153, 153);
+		default: return QColor(153, 153, 0);
+	}
+}
+
+// One montage cell: the component thumbnail with its label burnt on top, and a click that asks for
+// the full-resolution component. A plain QLabel override — no signals, so no moc involved.
+struct RgbExpCell : QLabel {
+	std::function<void()> onClick;
+	explicit RgbExpCell(QWidget *parent = nullptr) : QLabel(parent) {}
+	void mousePressEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::LeftButton && onClick) onClick();
+		else QLabel::mousePressEvent(e);
+	}
+};
+
+struct RgbExploreDialog {
+	QDialog *dlg = nullptr;
+	Scene   *scn = nullptr;
+	QString  srcName;
+	QGridLayout *grid = nullptr;
+	bool     ready = false;
+
+	// Julia's answer to "init": n thumbnails, w x h RGBA each, packed back to back, row 0 = SOUTH
+	// (the viewer's own buffer convention — mirrored here for screen, exactly what montage.m's
+	// 'flipud' does for a referenced Mirone image).
+	void setThumbs(const unsigned char *rgba, int w, int h, int n) {
+		if (!grid || !rgba || w < 1 || h < 1 || n < 1) return;
+		if (n > 13) n = 13;
+		// Cell shape follows the image's, so pick the layout whose overall shape is closest to a 4:3
+		// window while wasting as few cells as possible — montage.m's `choose_layout` in spirit
+		// (it reads the actual screen shape; the intent, a montage that is neither a strip nor a tower).
+		int cols = 1;
+		double best = 1e30;
+		for (int c = 1; c <= n; ++c) {
+			const int r = (n + c - 1) / c;
+			const double aspect = (double)(c * w) / (double)(r * h);
+			const double score = std::abs(std::log(aspect / (4.0 / 3.0))) + 0.05 * (r * c - n);
+			if (score < best) { best = score; cols = c; }
+		}
+		for (int k = 0; k < n; ++k) {
+			QImage im(w, h, QImage::Format_RGBA8888);
+			memcpy(im.bits(), rgba + (size_t)k * w * h * 4, (size_t)w * h * 4);
+			im = im.mirrored(false, true);                  // buffer row 0 is south; screen row 0 is north
+			QPainter p(&im);                                // mirone.m: text(10, 50, label, 'FontSize',16, bold)
+			QFont f = p.font(); f.setBold(true); f.setPointSize(11); p.setFont(f);
+			p.setPen(rgbExpLabelColor(k));
+			p.drawText(6, 6, w - 12, h - 12, Qt::AlignLeft | Qt::AlignTop, kRgbExpLabels[k]);
+			p.end();
+			auto *cell = new RgbExpCell(dlg);
+			cell->setPixmap(QPixmap::fromImage(im));
+			cell->setFixedSize(w, h);
+			cell->setCursor(Qt::PointingHandCursor);
+			cell->setToolTip(QString("%1 — click to add this component as a new image")
+			                 .arg(kRgbExpLabels[k]));
+			RgbExploreDialog *self = this;
+			const int kk = k;
+			cell->onClick = [self, kk]() { self->pick(kk); };
+			grid->addWidget(cell, k / cols, k % cols);
+		}
+		ready = true;
+	}
+
+	// Click: the FULL-RESOLUTION component (never the thumbnail — that is only a preview of it) is
+	// computed and added to this window's image list by Julia.
+	void pick(int k) {
+		if (!g_juliaRgbExplore || !sceneAlive(scn)) return;
+		const QString req = QString("pick;%1;%2").arg(srcName).arg(k + 1);   // Julia counts 1..13
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		g_juliaRgbExplore(scn, this, req.toUtf8().constData());
+		QApplication::restoreOverrideCursor();
+	}
+};
+
+static void showRgbExplore(QWidget *parent, Scene *s, const char *name) {
+	if (!g_juliaRgbExplore) {
+		QMessageBox::warning(parent, "Explore RGB",
+		                     "Explore RGB: callback not registered (rebuild/restart needed?).");
+		return;
+	}
+	QDialog *d = new QDialog(parent);
+	d->setAttribute(Qt::WA_DeleteOnClose);
+	auto *lay = new QVBoxLayout(d);
+	lay->setContentsMargins(4, 4, 4, 4);
+	auto *grid = new QGridLayout;
+	grid->setSpacing(2);
+	lay->addLayout(grid);
+
+	auto *rx = new RgbExploreDialog;
+	rx->dlg = d;  rx->scn = s;  rx->srcName = QString::fromUtf8(name ? name : "");  rx->grid = grid;
+	QObject::connect(d, &QObject::destroyed, d, [rx]() { delete rx; });
+
+	// Julia builds the 13 component thumbnails and answers through gmtvtk_rgbexp_set_thumbs.
+	QApplication::setOverrideCursor(Qt::WaitCursor);
+	const int ok = g_juliaRgbExplore(s, rx, QString("init;%1").arg(rx->srcName).toUtf8().constData());
+	QApplication::restoreOverrideCursor();
+	if (!ok || !rx->ready) {
+		QMessageBox::warning(parent, "Explore RGB",
+		                     "Explore RGB needs an RGB image (see the Errors console for details).");
+		delete d;
+		return;
+	}
+	d->setWindowTitle(rx->srcName.isEmpty() ? QString("Explore RGB")
+	                                        : QString("Explore RGB — %1").arg(rx->srcName));
+	d->show();
+}
+
 static const struct BinarizeHookInstaller {
 	BinarizeHookInstaller() {
 		g_binarizeHasDialog = &binarizeHasDialog;
@@ -14031,6 +14163,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg && w->ready) w->dlg->show();
 		else delete w;
 	});
+	// Flip (mirone_uis.m: a "Flip" submenu with "Flip Up-Down" / "Flip Left-Right", both landing on
+	// mirone.m's `Transfer_CB` 'flipUD'/'flipLR'). Re-orders the pixels of the displayed image inside
+	// its own ground extent, so a REFERENCED image keeps its coordinates: the georeference is not
+	// touched at all, only the pixel order. Applying the same flip twice restores the image.
+	QMenu *mFlip = mImage->addMenu("&Flip");
+	QAction *aFlipUD = mFlip->addAction("Flip &Up-Down", [s]() {
+		flipImageObject(s, displayedImageName(s), true);
+	});
+	QAction *aFlipLR = mFlip->addAction("Flip &Left-Right", [s]() {
+		flipImageObject(s, displayedImageName(s), false);
+	});
 	// Show Histogram (image_histo.m): the histogram of what the window DISPLAYS — for a grid that is
 	// its rendered colour image, never its z values.
 	QAction *aHisto = mImage->addAction("Show &Histogram", [win, s]() { showImageHistogram(win, s, ""); });
@@ -14063,12 +14206,22 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QAction *aEnh2 = mEnhance->addAction("2 - Indexed only");
 	QAction *aEnh3 = mEnhance->addAction("Image Color Editor (Indexed and RGB)");
 	aEnh2->setEnabled(false);  aEnh3->setEnabled(false);     // not ported yet
+	// Explore RGB (mirone.m 'RGBexp'), where mirone_uis.m puts it: right after Image Enhance.
+	QAction *aRgbExp = mImage->addAction("&Explore RGB", [win, s]() {
+		showRgbExplore(win, s, displayedImageName(s).toUtf8().constData());
+	});
 	// Binarize needs an image to threshold — greyed out (refreshed on every open) when the window
 	// holds none. Show Histogram works off the DISPLAY, so a grid window qualifies too.
 	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto, aResize, aShape, aClassify,
-	                                              aEnh1]() {
+	                                              aEnh1, aFlipUD, aFlipLR, aRgbExp]() {
+		// Explore RGB splits an image into colour components, so it needs a genuine RGB one — Mirone
+		// hides the entry otherwise (`if (ndims(img) < 3), return, end`). Julia flags which images
+		// qualify (s->imgRGB), because the viewer sees every image as an RGBA texture.
+		aRgbExp->setEnabled(s->imgRGB.count(displayedImageName(s).toStdString()) != 0);
 		aBinarize->setEnabled(sceneHasImage(s));
 		aHisto->setEnabled(sceneHasImage(s) || sceneHasGrid(s));
+		aFlipUD->setEnabled(sceneHasImage(s));  // flips an image's own pixels, so it needs a real one
+		aFlipLR->setEnabled(sceneHasImage(s));
 		aResize->setEnabled(sceneHasImage(s));  // resamples the image itself, so it needs a real one
 		aShape->setEnabled(sceneHasImage(s));   // grows a region over the image's own pixels
 		aClassify->setEnabled(sceneHasImage(s));// clusters the image's own pixel colours

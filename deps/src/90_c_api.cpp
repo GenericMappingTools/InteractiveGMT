@@ -1665,18 +1665,29 @@ GMTVTK_API void gmtvtk_set_classify_callback(JuliaClassifyFn fn) {
 //
 // The image's PIXELS are not touched: the viewer's texture is expanded from the palette host-side
 // (src/drape.jl `_pixaccess_img`), the stored image stays indexed, and this is only the legend.
+// "Which image does the host mean by this name?" — ONE resolver for every per-image host call
+// (palette, pixels, …), because they must never disagree about which image a name points at.
+// An image EXTRA of that name wins; otherwise it is the window's PRIMARY image, which answers both
+// to "" (how most host calls name it) AND to its own Scene Objects name, because a file dropped on
+// an empty launcher is PROMOTED to primary while the host still calls it by its file name — that
+// mismatch is what once left a re-opened indexed image with no legend at all. Returns the extra (or
+// nullptr = "the primary"); `isPrimary` says whether a primary was matched at all.
+static ExtraObj *imageExtraByName(Scene *s, const std::string &nm, bool &isPrimary) {
+	isPrimary = false;
+	if (!s) return nullptr;
+	for (auto &ex : s->extras) if (ex.isImage && ex.name == nm) return &ex;
+	isPrimary = (s->drape && (nm.empty() || nm == s->surfName));
+	return nullptr;
+}
+
 GMTVTK_API void gmtvtk_image_set_palette_h(void *handle, const char *name, const unsigned char *rgb,
                                            int n) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	const std::string nm = name ? name : "";
-	PaletteLegend *pl = nullptr;
-	for (auto &ex : s->extras) if (ex.isImage && ex.name == nm) { pl = &ex.palette; break; }
-	// No extra by that name -> the PRIMARY image. It answers to "" (how every other host call names
-	// it) AND to its own Scene Objects name, because a file dropped on an empty launcher is PROMOTED
-	// to primary while the host still calls it by its file name — that mismatch is what left a
-	// re-opened indexed image with no legend at all.
-	if (!pl && s->drape && (nm.empty() || nm == s->surfName)) pl = &s->palette;
+	bool isPrimary = false;
+	ExtraObj *ex = imageExtraByName(s, nm, isPrimary);
+	PaletteLegend *pl = ex ? &ex->palette : (isPrimary ? &s->palette : nullptr);
 	if (!pl) return;
 	if (n <= 0 || !rgb) { pl->lut = nullptr; pl->n = 0; refreshGridColorbar(s); rebuildSceneObjects(s); return; }
 	if (n > 256) n = 256;
@@ -1691,15 +1702,79 @@ GMTVTK_API void gmtvtk_image_set_palette_h(void *handle, const char *name, const
 	rebuildSceneObjects(s);
 }
 
+// Set/clear a per-image flag under EVERY name that image answers to. ONE function for every such
+// flag, because they are all looked up by menus that name the image differently: the PRIMARY image
+// is "" to most host calls but carries its own Scene Objects name once a dropped file has been
+// PROMOTED to primary — the same mismatch that once left a re-opened indexed image with no legend.
+// Flagging it under both names is what makes either lookup find it.
+static void imageFlagSet(Scene *s, std::set<std::string> &flags, const std::string &nm, bool on) {
+	auto touch = [&](const std::string &k) { if (on) flags.insert(k); else flags.erase(k); };
+	touch(nm);
+	bool isPrimary = false;
+	if (!imageExtraByName(s, nm, isPrimary) && isPrimary)
+		touch(nm.empty() ? s->surfName : std::string());
+}
+
 // Does this image have a FULL-PRECISION (UInt16) source stashed host-side (_IMG_ORIG, savefile.jl)?
 // Only such an image offers "Auto histogram stretch (new image)", which re-derives from it.
 // `name` = the image's Scene Objects name ("" = the window's primary image).
 GMTVTK_API void gmtvtk_image_set_has_orig_h(void *handle, const char *name, int on) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
-	const std::string nm = name ? name : "";
-	if (on) s->imgHasOrig.insert(nm);
-	else    s->imgHasOrig.erase(nm);
+	imageFlagSet(s, s->imgHasOrig, name ? name : "", on != 0);
+}
+
+// Is this image genuine 3-band RGB? Only such an image offers "Explore RGB", which splits it into
+// its colour components (Mirone hides the entry for anything else). The viewer cannot tell — every
+// image arrives as an RGBA texture, grey and indexed ones expanded on the way — so Julia says.
+// `name` = the image's Scene Objects name ("" = the window's primary image).
+GMTVTK_API void gmtvtk_image_set_rgb_h(void *handle, const char *name, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	imageFlagSet(s, s->imgRGB, name ? name : "", on != 0);
+}
+
+// Replace the PIXELS of an existing image IN PLACE, keeping everything else about it: the same
+// actor, the same plane, the same z position in the stack, the same Scene Objects row, the same
+// georeference. `img` is the packed RGB(A) texture buffer the host already builds for every image
+// (src/drape.jl `_drape_to_bbox`), `name` picks the image ("" = the window's primary one).
+//
+// Used by Image > Flip: a flip re-orders pixels inside the SAME ground extent, so nothing about the
+// image's placement may move. Handing the whole buffer back (instead of flipping the texture here)
+// keeps ONE implementation of the flip — the host's, on the stored GMTimage — with this call only
+// uploading what the stored image now says. Returns 1 if an image was found and re-uploaded.
+GMTVTK_API int gmtvtk_image_set_pixels_h(void *handle, const char *name, const unsigned char *img,
+                                         int iw, int ih, int ibands) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !img || iw < 1 || ih < 1 || ibands < 1) return 0;
+	bool isPrimary = false;
+	ExtraObj *ex = imageExtraByName(s, name ? name : "", isPrimary);
+	vtkTexture *tx = ex ? ex->tex.Get() : (isPrimary ? s->drape->GetTexture() : nullptr);
+	if (!tx) return 0;
+	vtkNew<vtkImageData> tex_img;
+	tex_img->SetDimensions(iw, ih, 1);
+	tex_img->AllocateScalars(VTK_UNSIGNED_CHAR, ibands);
+	memcpy(tex_img->GetScalarPointer(), img, (size_t)iw * ih * ibands);
+	tx->SetInputData(tex_img); tx->InterpolateOn(); tx->Modified();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// Image > Flip > Up-Down / Left-Right -> Julia (see JuliaImageFlipFn, 30_app.cpp). nullptr detaches.
+GMTVTK_API void gmtvtk_set_image_flip_callback(JuliaImageFlipFn fn) {
+	g_juliaImageFlip = fn;
+}
+
+// Image > Explore RGB -> Julia (see JuliaRgbExploreFn, 30_app.cpp). nullptr detaches.
+GMTVTK_API void gmtvtk_set_rgbexplore_callback(JuliaRgbExploreFn fn) {
+	g_juliaRgbExplore = fn;
+}
+
+// Answer to Explore RGB's "init": the montage thumbnails. `rgba` holds `n` images of w*h RGBA
+// pixels back to back, row 0 = SOUTH (the same buffer convention every image reaches the viewer in).
+GMTVTK_API void gmtvtk_rgbexp_set_thumbs(void *dlg, const unsigned char *rgba, int w, int h, int n) {
+	if (!dlg) return;
+	reinterpret_cast<RgbExploreDialog *>(dlg)->setThumbs(rgba, w, h, n);
 }
 
 // Answer to the K-means dialog's "compute": how many classes came out, so listbox_classes can offer
