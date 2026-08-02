@@ -465,6 +465,13 @@ static JuliaImageEnhanceFn g_juliaImageEnhance = nullptr;
 typedef int (*JuliaImageResizeFn)(void *scene, void *dlg, const char *params);
 static JuliaImageResizeFn g_juliaImageResize = nullptr;
 
+// "Image > Shape detector" (port of Mirone src_figs/floodfill.m — the magic wand). params =
+//   "<op>;<name>;<tol>;<conn>;<dilate>;<mahal>;<mode>;<minpts>;<bg>;x1,y1[;x2,y2…]"
+// op = "seed" (one point) | "multi"; mode = 0 digitize / 1 colour segmentation / 2 mask. The seeds
+// are WORLD coordinates: the viewer picks the point, Julia (src/floodfill.jl) owns every pixel.
+typedef int (*JuliaFloodFillFn)(void *scene, const char *params);
+static JuliaFloodFillFn g_juliaFloodFill = nullptr;
+
 // The Adjust Contrast dialog's ScaterPlot (push_scaterPlot_CB). It plots the bands the user is
 // LOOKING AT — after a Decorrelation Stretch that is the decorrelated image — so the pixels come
 // from sceneDisplayedRGB, the SAME "what is on screen" reader "Image -> Show Histogram" uses, and
@@ -705,6 +712,8 @@ static void (*g_enhanceReopen)(Scene *scene, const char *name) = nullptr;
 static void (*g_showImageHisto)(Scene *scene, const char *name) = nullptr;
 // Same, for "Image > Image resize": the image's own handle opens it on THAT image.
 static void (*g_showImageResize)(Scene *scene, const char *name) = nullptr;
+// Same, for "Image > Shape detector".
+static void (*g_showFloodFill)(Scene *scene, const char *name) = nullptr;
 
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a

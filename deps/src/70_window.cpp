@@ -6637,6 +6637,219 @@ static void showImageResize(QWidget *parent, Scene *s, const char *name) {
 	d->show();
 }
 
+// ============================================================================================
+// Image > Shape detector — port of the "Digit / Segment" half of Mirone's src_figs/floodfill.m
+// ("color segmentation or painting like the magick wand"). deps/ui/floodfill.ui carries
+// floodfill_LayoutFcn's geometry for the controls that came across; the "Paint" half (pencil,
+// paintbrush, colour palette, shapes) is not ported — it paints on the displayed image in place.
+//
+// This class holds only the settings and the seed picking. Every pixel — the fixed-range flood
+// growth, the dilation, the Mahalanobis class, the polygons — is Julia's (src/floodfill.jl).
+// ============================================================================================
+class FloodFillDialog;
+static std::map<Scene *, FloodFillDialog *> g_floodDlgs;
+
+class FloodFillDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene   *scn = nullptr;
+	QSlider *slider = nullptr;
+	QLabel  *tolLab = nullptr;
+	QCheckBox *kDilate = nullptr, *kMahal = nullptr;
+	QRadioButton *rConn4 = nullptr, *rSeg = nullptr, *rMask = nullptr, *rDigit = nullptr;
+	QPushButton *bSingle = nullptr, *bMulti = nullptr;
+	QLineEdit *eMinPts = nullptr;
+	QLabel *lMinPts = nullptr;
+	QString srcName;
+	std::vector<std::pair<double, double>> seeds;    // world x,y collected while a pick is armed
+	bool reallyClose = false;
+
+	int  tol() const { return slider ? slider->value() : 20; }
+	int  conn() const { return (rConn4 && rConn4->isChecked()) ? 4 : 8; }
+	int  mode() const { return (rDigit && rDigit->isChecked()) ? 0 : (rMask && rMask->isChecked()) ? 2 : 1; }
+	int  minPts() const { bool ok = false; int v = eMinPts ? eMinPts->text().toInt(&ok) : 50; return ok ? v : 50; }
+
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();  dlg->raise();  dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel = m.addAction("Delete");
+			QAction *pick = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { reallyClose = true; unparkTool(scn, dlg); dlg->deleteLater(); }
+		};
+	}
+	~FloodFillDialog() {
+		disarm();
+		for (auto it = g_floodDlgs.begin(); it != g_floodDlgs.end(); )
+			it = (it->second == this) ? g_floodDlgs.erase(it) : std::next(it);
+	}
+
+	void disarm() {
+		if (!sceneAlive(scn)) return;
+		if (scn->vectorPickMode == 3) scn->vectorPickMode = 0;
+		scn->seedPickCB = nullptr;
+		scn->seedPickEndCB = nullptr;
+		if (scn->widget) scn->widget->unsetCursor();
+	}
+
+	// "That's all of them": a right-click or a double-click in the view, or the button pressed again.
+	// All three land HERE so the three can never behave differently — the button pops back up, the
+	// pick disarms, and whatever was collected is sent off.
+	void finishMulti() {
+		disarm();
+		setDown(bMulti, false);
+		send("multi");
+	}
+
+	// Both buttons arm the SAME point pick; they differ only in how many seeds they collect before
+	// the work is sent off — push_pickSingle fires on the first click, push_pickMultiple keeps
+	// collecting until its button is pressed again (Mirone's `while (but == 1)` loop).
+	void arm(bool multi, bool on) {
+		if (!sceneAlive(scn)) return;
+		if (!on) { disarm(); return; }
+		seeds.clear();
+		QPointer<QDialog> guard(dlg);
+		scn->seedPickCB = [this, guard, multi](double x, double y) {
+			if (!guard) return;
+			seeds.emplace_back(x, y);
+			if (!multi) { send("seed"); setDown(bSingle, false); }
+			else if (scn && scn->win)
+				scn->win->statusBar()->showMessage(
+					QString("%1 shape(s) picked — right-click or double-click when done")
+					    .arg(seeds.size()), 4000);
+		};
+		if (multi)
+			scn->seedPickEndCB = [this, guard]() { if (guard) finishMulti(); };
+		scn->vectorPickMode = 3;
+		scn->vectorPickDbl = false;
+		if (scn->widget) scn->widget->setCursor(Qt::CrossCursor);
+		if (scn->win) scn->win->statusBar()->showMessage(
+			multi ? "Click every shape whose colour you want — then RIGHT-CLICK or double-click to finish"
+			      : "Click the shape you want", 6000);
+	}
+
+	// Keeps a toggle button and the scene's armed state from ever disagreeing.
+	void setDown(QPushButton *b, bool on) {
+		if (!b) return;
+		QSignalBlocker blk(b);
+		b->setChecked(on);
+		if (!on) disarm();
+	}
+
+	void send(const char *op) {
+		if (!g_juliaFloodFill || seeds.empty()) return;
+		QString req = QString("%1;%2;%3;%4;%5;%6;%7;%8;%9")
+		                  .arg(QString::fromLatin1(op)).arg(srcName).arg(tol()).arg(conn())
+		                  .arg(kDilate && kDilate->isChecked() ? 1 : 0)
+		                  .arg(kMahal && kMahal->isChecked() ? 1 : 0)
+		                  .arg(mode()).arg(minPts()).arg(0);      // bg = floodfill.m's handles.bg_color
+		for (const auto &s : seeds)
+			req += QString(";%1,%2").arg(s.first, 0, 'g', 17).arg(s.second, 0, 'g', 17);
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		g_juliaFloodFill(scn, req.toUtf8().constData());
+		QApplication::restoreOverrideCursor();
+		seeds.clear();
+	}
+};
+
+static void showFloodFill(QWidget *parent, Scene *s, const char *name) {
+	if (!g_juliaFloodFill) {
+		QMessageBox::warning(parent, "Shape detector",
+		                     "Shape detector: callback not registered (rebuild/restart needed?).");
+		return;
+	}
+	auto open = g_floodDlgs.find(s);
+	if (open != g_floodDlgs.end() && open->second->dlg) { open->second->unpark(); return; }
+	QUiLoader loader;
+	QFile f(gmtvtkUiDir() + "/floodfill.ui");
+	if (!f.open(QFile::ReadOnly)) {
+		qWarning("showFloodFill: cannot open %s", qUtf8Printable(f.fileName()));
+		return;
+	}
+	QDialog *d = qobject_cast<QDialog *>(loader.load(&f, parent));
+	f.close();
+	if (!d) return;
+
+	auto *fd = new FloodFillDialog;
+	fd->dlg = d;  fd->scn = s;
+	fd->srcName = QString::fromUtf8(name ? name : "");
+	fd->slider  = d->findChild<QSlider *>("slider_tolerance");
+	fd->tolLab  = d->findChild<QLabel *>("text_tol");
+	fd->kDilate = d->findChild<QCheckBox *>("checkbox_useDilation");
+	fd->kMahal  = d->findChild<QCheckBox *>("check_mahal");
+	fd->rConn4  = d->findChild<QRadioButton *>("radio_fourConn");
+	fd->rSeg    = d->findChild<QRadioButton *>("radio_colorSegment");
+	fd->rMask   = d->findChild<QRadioButton *>("radio_mask");
+	fd->rDigit  = d->findChild<QRadioButton *>("radio_digitize");
+	fd->bSingle = d->findChild<QPushButton *>("push_pickSingle");
+	fd->bMulti  = d->findChild<QPushButton *>("push_pickMultiple");
+	fd->eMinPts = d->findChild<QLineEdit *>("edit_minPts");
+	fd->lMinPts = d->findChild<QLabel *>("text_minPts");
+	if (!fd->slider || !fd->rConn4 || !fd->bSingle || !fd->bMulti) { delete fd; delete d; return; }
+	QObject::connect(d, &QObject::destroyed, d, [fd]() { delete fd; });
+	g_floodDlgs[s] = fd;
+
+	struct CloseParks : QObject {
+		FloodFillDialog *fd;
+		CloseParks(QObject *parent, FloodFillDialog *f) : QObject(parent), fd(f) {}
+		bool eventFilter(QObject *o, QEvent *e) override {
+			if (e->type() == QEvent::Close && fd && !fd->reallyClose && sceneAlive(fd->scn)) {
+				e->ignore();
+				fd->disarm();                    // a parked tool must not keep the view in pick mode
+				fd->dlg->hide();
+				FloodFillDialog *h = fd;
+				parkTool(h->scn, h->dlg, "Shape detector", IC_Image,
+				         "Closed Shape detector — double-click to bring it back, click for Show / Delete",
+				         [h]() { h->unpark(); }, h->parkedMenu());
+				unfoldSceneObjects(fd->scn);
+				return true;
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	d->installEventFilter(new CloseParks(d, fd));
+
+	// slider_tolerance_CB: the label reads back the value, as in the .m
+	QObject::connect(fd->slider, &QSlider::valueChanged, d, [fd](int v) {
+		if (fd->tolLab) fd->tolLab->setText(QString("Tolerance = %1").arg(v));
+	});
+	// radio_digitize_CB / radio_colorSegment_CB / radio_mask_CB: Min pts shows only for Digitize.
+	auto minPtsVis = [fd]() {
+		const bool on = fd->rDigit && fd->rDigit->isChecked();
+		if (fd->eMinPts) fd->eMinPts->setVisible(on);
+		if (fd->lMinPts) fd->lMinPts->setVisible(on);
+	};
+	for (QRadioButton *r : { fd->rSeg, fd->rMask, fd->rDigit })
+		if (r) QObject::connect(r, &QRadioButton::toggled, d, [minPtsVis](bool) { minPtsVis(); });
+	minPtsVis();
+	// check_mahal_CB: Mahalanobis is a single-class estimator, so Mirone greys "Pick multiple" out.
+	if (fd->kMahal)
+		QObject::connect(fd->kMahal, &QCheckBox::toggled, d, [fd](bool on) {
+			if (fd->bMulti) fd->bMulti->setEnabled(!on);
+		});
+
+	QObject::connect(fd->bSingle, &QPushButton::toggled, d, [fd](bool on) {
+		if (on) fd->setDown(fd->bMulti, false);
+		fd->arm(false, on);
+	});
+	QObject::connect(fd->bMulti, &QPushButton::toggled, d, [fd](bool on) {
+		if (on) { fd->setDown(fd->bSingle, false); fd->arm(true, true); }
+		else fd->finishMulti();                       // pressed again = "done picking", same as a right-click
+	});
+
+	d->setWindowTitle(fd->srcName.isEmpty() ? QString("Shape detector")
+	                                        : QString("Shape detector — %1").arg(fd->srcName));
+	d->show();
+}
+
 static const struct BinarizeHookInstaller {
 	BinarizeHookInstaller() {
 		g_binarizeHasDialog = &binarizeHasDialog;
@@ -6647,6 +6860,9 @@ static const struct BinarizeHookInstaller {
 		};
 		g_showImageResize   = [](Scene *s, const char *name) {
 			showImageResize(s && s->widget ? s->widget->window() : nullptr, s, name);
+		};
+		g_showFloodFill     = [](Scene *s, const char *name) {
+			showFloodFill(s && s->widget ? s->widget->window() : nullptr, s, name);
 		};
 	}
 } g_binarizeHookInstaller;
@@ -13569,6 +13785,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QAction *aResize = mImage->addAction("Image &resize…", [win, s]() {
 		showImageResize(win, s, displayedImageName(s).toUtf8().constData());
 	});
+	// Shape detector (floodfill.m) — the label mirone_uis.m gives it, in the Image menu as there.
+	QAction *aShape = mImage->addAction("&Shape detector…", [win, s]() {
+		showFloodFill(win, s, displayedImageName(s).toUtf8().constData());
+	});
 	// Image Enhance submenu, kept exactly as mirone_uis.m builds it (the numbering included). Only
 	// entry 1 (image_enhance.m) is ported so far; 2 (image_adjust.m) and 3 (ice_m.m) are placeholders.
 	mImage->addSeparator();
@@ -13588,10 +13808,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	aEnh2->setEnabled(false);  aEnh3->setEnabled(false);     // not ported yet
 	// Binarize needs an image to threshold — greyed out (refreshed on every open) when the window
 	// holds none. Show Histogram works off the DISPLAY, so a grid window qualifies too.
-	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto, aResize, aEnh1]() {
+	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto, aResize, aShape, aEnh1]() {
 		aBinarize->setEnabled(sceneHasImage(s));
 		aHisto->setEnabled(sceneHasImage(s) || sceneHasGrid(s));
 		aResize->setEnabled(sceneHasImage(s));  // resamples the image itself, so it needs a real one
+		aShape->setEnabled(sceneHasImage(s));   // grows a region over the image's own pixels
 		aEnh1->setEnabled(sceneHasImage(s));   // it rewrites an image's pixels, so it needs a real one
 	});
 

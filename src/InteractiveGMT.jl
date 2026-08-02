@@ -84,6 +84,7 @@ include("binarize.jl")   # Image > Binarize Image: threshold an image into a B&W
 include("imagehisto.jl") # Image > Show Histogram: histogram of the DISPLAYED image (port of Mirone image_histo.m)
 include("imageenhance.jl") # Image > Image Enhance > 1 - Indexed and RGB (port of Mirone image_enhance.m)
 include("imageresize.jl")  # Image > Image resize (port of Mirone imageresize.m; resampling via gdalwarp)
+include("floodfill.jl")    # Image > Shape detector, the magic wand (port of Mirone floodfill.m)
 include("empilhador.jl") # Tools > Empilhador: stack grids/L2 scenes into a 3-D file (port of Mirone empilhador.m)
 include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-geometry grids (port of Mirone grid_calculator.m)
 include("contours.jl")   # Grid Tools > Contours: GDAL-traced contour lines (port of Mirone contouring.m)

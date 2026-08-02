@@ -841,6 +841,14 @@ struct Scene {
 	std::array<double,3> vectorPickAnchor{ 0, 0, 0 };  // RECT: that anchor, in TRUE world coords
 	int  vectorPickPrevShape = 0;                      // RECT: polyShape before the preview borrowed it
 	std::function<void(const std::string &)> vectorPickCB;
+	// vectorPickMode == 3: a POINT pick — the click answers with the world (x,y) it landed on rather
+	// than with whatever element sits there. The Shape detector (floodfill.m's magic wand) needs the
+	// seed point itself, not a line. Same arming/disarming and the same left-click consumption as the
+	// element picks above, so an armed seed pick can never leak into a camera rotate either.
+	std::function<void(double, double)> seedPickCB;
+	// …and how the user says "that's all of them": a right-click or a double-click, both routed here
+	// (the tool's own button works too). Only the multi-seed collector sets this.
+	std::function<void()> seedPickEndCB;
 	std::vector<MecaGroupProps> mecaGroups;            // one entry per focal-mechanism batch groupName
 	std::vector<MecaBall> mecaBalls;                   // one entry per plotted event (drag + anchor line state)
 	int    mecaDrag = -1;                               // index into mecaBalls being click-dragged (-1 = none)

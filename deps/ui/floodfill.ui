@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>FloodFillDialog</class>
+ <widget class="QDialog" name="FloodFillDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>240</width>
+    <height>288</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Shape detector</string>
+  </property>
+  <widget class="QRadioButton" name="radio_fourConn">
+   <property name="geometry">
+    <rect>
+     <x>14</x>
+     <y>12</y>
+     <width>90</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Floodfill with a connectivity of 4</string>
+   </property>
+   <property name="text">
+    <string>4 conn</string>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="radio_eightConn">
+   <property name="geometry">
+    <rect>
+     <x>112</x>
+     <y>12</y>
+     <width>118</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Floodfill with a connectivity of 8</string>
+   </property>
+   <property name="text">
+    <string>8 connectivity</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="text_tol">
+   <property name="geometry">
+    <rect>
+     <x>14</x>
+     <y>44</y>
+     <width>140</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Tolerance = 20</string>
+   </property>
+  </widget>
+  <widget class="QSlider" name="slider_tolerance">
+   <property name="geometry">
+    <rect>
+     <x>14</x>
+     <y>66</y>
+     <width>212</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Color detection equal pixel color +/- tolerance</string>
+   </property>
+   <property name="minimum">
+    <number>0</number>
+   </property>
+   <property name="maximum">
+    <number>255</number>
+   </property>
+   <property name="value">
+    <number>20</number>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Orientation::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="checkbox_useDilation">
+   <property name="geometry">
+    <rect>
+     <x>14</x>
+     <y>98</y>
+     <width>106</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Use dilation operation to find better limits between neighboring shapes</string>
+   </property>
+   <property name="text">
+    <string>Use Dilation</string>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="check_mahal">
+   <property name="geometry">
+    <rect>
+     <x>126</x>
+     <y>98</y>
+     <width>104</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Do color segmentation using Mahalanobis distance</string>
+   </property>
+   <property name="text">
+    <string>Mahalanobis</string>
+   </property>
+  </widget>
+  <widget class="QGroupBox" name="group_DS">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>128</y>
+     <width>220</width>
+     <height>150</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Digit / Segment</string>
+   </property>
+   <widget class="QPushButton" name="push_pickSingle">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>26</y>
+      <width>196</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Pick up the body's shape with the selected color</string>
+    </property>
+    <property name="text">
+     <string>Pick single shape</string>
+    </property>
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="push_pickMultiple">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>58</y>
+      <width>196</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Find out all bounding polygons that share the selected colors. Click every shape you want, then right-click or double-click in the figure to finish</string>
+    </property>
+    <property name="text">
+     <string>Pick multiple shapes</string>
+    </property>
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QRadioButton" name="radio_colorSegment">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>94</y>
+      <width>140</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Create a new image with shapes colored as you selected</string>
+    </property>
+    <property name="text">
+     <string>Color segmentation</string>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QRadioButton" name="radio_mask">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>94</y>
+      <width>64</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Create a new image with a mask of the selected shapes</string>
+    </property>
+    <property name="text">
+     <string>Mask</string>
+    </property>
+   </widget>
+   <widget class="QRadioButton" name="radio_digitize">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>120</y>
+      <width>80</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Detect bounding polygon to the colored selected body</string>
+    </property>
+    <property name="text">
+     <string>Digitize</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="text_minPts">
+    <property name="geometry">
+     <rect>
+      <x>106</x>
+      <y>121</y>
+      <width>28</width>
+      <height>18</height>
+     </rect>
+    </property>
+    <property name="visible">
+     <bool>false</bool>
+    </property>
+    <property name="text">
+     <string>Min</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="edit_minPts">
+    <property name="geometry">
+     <rect>
+      <x>140</x>
+      <y>118</y>
+      <width>56</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="visible">
+     <bool>false</bool>
+    </property>
+    <property name="toolTip">
+     <string>Shapes with less than this number of vertex won't be ploted</string>
+    </property>
+    <property name="text">
+     <string>50</string>
+    </property>
+   </widget>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

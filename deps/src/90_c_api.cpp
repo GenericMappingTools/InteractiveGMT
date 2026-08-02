@@ -1641,6 +1641,13 @@ GMTVTK_API void gmtvtk_resize_set_size(void *dlg, int w, int h) {
 	reinterpret_cast<ImageResizeDialog *>(dlg)->setSize(w, h);
 }
 
+// Register the "Image > Shape detector" callback (port of Mirone src_figs/floodfill.m).
+// fn(scene, params) with params = "op;args" (see JuliaFloodFillFn, 30_app.cpp). Returns 1/0.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_floodfill_callback(JuliaFloodFillFn fn) {
+	g_juliaFloodFill = fn;
+}
+
 // Register the Adjust Contrast ScaterPlot callback. fn(scene, px, npix, nb, label) plots the three
 // bands of the pixels the window is DISPLAYING. Returns 1/0. nullptr to detach.
 GMTVTK_API void gmtvtk_set_rgb_scatter_callback(JuliaRgbScatterFn fn) {

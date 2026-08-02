@@ -1741,6 +1741,24 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 		if (s->vectorPickDbl) return true;
 		return vectorPickFire(s, x, y);
 	}
+	// POINT pick (Shape detector's seed): answer with the world x,y under the cursor and stay armed —
+	// "Pick multiple shapes" collects as many as the user clicks. The click is consumed either way.
+	if (s->vectorPickMode == 3) {
+		// RIGHT-click ends the collection (so does a double-click, see polygonHandleDblClick, and so
+		// does pressing the tool's own button again) — the seeds gathered so far are handed over.
+		if (button == 1) {
+			auto endcb = s->seedPickEndCB;                        // copy: the tool disarms from inside
+			if (endcb) { endcb(); return true; }
+			return true;
+		}
+		if (button == 0) {
+			double w[3];
+			if (!polyPickWorld(s, x, y, w)) return true;          // off-surface click: ignore, stay armed
+			auto cb = s->seedPickCB;                              // copy: see vectorPickFire
+			if (cb) cb(w[0], w[1]);
+			return true;
+		}
+	}
 	if (button == 0 && s->vectorPickMode == 2) {
 		double w[3];
 		if (!polyPickWorld(s, x, y, w)) return true;             // off-surface click: ignore, stay armed
@@ -1969,6 +1987,13 @@ static void overlayPromoteSegmentToPolygon(Scene *s, Overlay &ov, int segIdx) {
 static bool polygonHandleDblClick(Scene *s, int x, int y) {
 	// A double-click-armed pick owns the double click before anything else can edit what it points at.
 	if (s->vectorPickMode == 1 && s->vectorPickDbl) return vectorPickFire(s, x, y);
+	// Seed collection (Shape detector): a double-click means "that's the last one". The press half of
+	// this double-click already added its seed, which is what the user expects from the last click.
+	if (s->vectorPickMode == 3) {
+		auto endcb = s->seedPickEndCB;
+		if (endcb) { endcb(); return true; }
+		return true;
+	}
 	if (s->polyMode && s->polyDrawing) {
 		if (s->polyShape == Scene::SH_Polygon && s->polyCur.size() >= 3) {   // >=3 vertices for an area
 			polyFinalize(s, s->polyCur, true, "polygon");
