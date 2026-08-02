@@ -443,6 +443,28 @@ static JuliaBinarizeFn g_juliaBinarize = nullptr;
 typedef int (*JuliaImageHistoFn)(void *scene, void *dlg, const unsigned char *px, int npix, int nb);
 static JuliaImageHistoFn g_juliaImageHisto = nullptr;
 
+// "Image -> Image Enhance -> 1 - Indexed and RGB" (port of Mirone src_figs/image_enhance.m). The
+// dialog (ImageEnhanceDialog, 70_window.cpp, deps/ui/image_enhance.ui) owns the contrast WINDOW (a
+// display state) and sends every PIXEL operation here as "op;args":
+//   init;<name>                     load the image, histogram each band, hand back its data range
+//   stretchlim;<band>;<pct>         the limits that clip <pct>% of outliers (localStretchlim)
+//   contrast;lo;hi;lo;hi;lo;hi      imadjust with each band's window -> a new stretched image
+//   decorr;<pct>                    decorrelation stretch -> a new image
+//   scatter                         the 3-band scatter plot (push_scaterPlot_CB)
+//   close                           the dialog went away; drop its state
+// `dlg` is the ImageEnhanceDialog* so Julia can push the histograms (gmtvtk_enhance_set_band) and
+// answered limits (gmtvtk_enhance_set_window) back into it. Returns 1/0. nullptr to detach.
+typedef int (*JuliaImageEnhanceFn)(void *scene, void *dlg, const char *params);
+static JuliaImageEnhanceFn g_juliaImageEnhance = nullptr;
+
+// The Adjust Contrast dialog's ScaterPlot (push_scaterPlot_CB). It plots the bands the user is
+// LOOKING AT — after a Decorrelation Stretch that is the decorrelated image — so the pixels come
+// from sceneDisplayedRGB, the SAME "what is on screen" reader "Image -> Show Histogram" uses, and
+// NOT from anything the dialog remembered. `px` is pixel-interleaved, `nb` components per pixel.
+typedef int (*JuliaRgbScatterFn)(void *scene, const unsigned char *px, int npix, int nb,
+                                 const char *label);
+static JuliaRgbScatterFn g_juliaRgbScatter = nullptr;
+
 // Empilhador (Tools), port of Mirone's src_figs/empilhador.m. The dialog (EmpilhadorDialog,
 // 70_window.cpp, loads deps/ui/empilhador.ui) hands a newline-separated "key=value" block to Julia
 // (_on_empilhador, src/empilhador.jl), which calls GMT.jl's `empilhador`:
@@ -665,6 +687,14 @@ static void (*g_aquamotoSetCmap)(Scene *scene, int side, const char *cmap) = nul
 // the dialog works on the image whose handle was clicked, never on "whichever image is first".
 static bool (*g_binarizeHasDialog)(Scene *scene) = nullptr;
 static void (*g_binarizeReopen)(Scene *scene, const char *name) = nullptr;
+// Same for the "Adjust Contrast" dialog (Image > Image Enhance > 1 - Indexed and RGB): closing it
+// only HIDES it, so the image's Scene Objects handle is where it lives while "minimized" and where
+// it comes back from, with its per-band contrast windows intact.
+static void (*g_enhanceReopen)(Scene *scene, const char *name) = nullptr;
+// "Image > Show Histogram", reachable from an image's own Scene Objects handle as well as from the
+// menu bar. ONE function draws it (70_window.cpp `showImageHistogram`); this hook is only how the
+// earlier fragment reaches it. `name` names the image whose handle was clicked ("" = the primary).
+static void (*g_showImageHisto)(Scene *scene, const char *name) = nullptr;
 
 // File > Save Grid / Save Image. The host File menu opens a QFileDialog (format picked via the
 // filter) and hands "<kind>;<fmt>;<path>" to Julia (g_juliaSave): kind = "grid" | "image"; fmt a
@@ -685,6 +715,14 @@ typedef void (*JuliaSaveGeoTiffFn)(void *scene, const unsigned char *rgb, int w,
                                     const char *path, double x0, double x1, double y0, double y1,
                                     const char *proj4, const char *wkt);
 static JuliaSaveGeoTiffFn g_juliaSaveGeoTiff = nullptr;
+
+// A Scene Objects row was REMOVED: drop the live GMTgrid/GMTimage Julia keeps behind it
+// (_SCENE_OBJS, savefile.jl). Called from sceneRemoveExtraAt / sceneRemoveSurface — the one pair of
+// removal points — so a deleted row can never leave its data alive and still resolvable by a tool
+// that looks an object up by kind. `kind` is "grid" / "image" / "mesh", `name` the row's label
+// ("" = the window's primary object). nullptr to detach.
+typedef void (*JuliaForgetFn)(void *scene, const char *kind, const char *name);
+static JuliaForgetFn g_juliaForget = nullptr;
 
 // Scene Objects > "Move to new window" (grid rows). The row menu calls fn(scene, "<kind>;<name>")
 // (kind = "grid"); Julia looks up the live GMTgrid and opens it in a NEW iGMT window via view_grid,

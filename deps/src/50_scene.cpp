@@ -675,6 +675,12 @@ static void sceneRemoveExtraAt(Scene *s, size_t idx) {
 	if (s->ren && ex.actor) s->ren->RemoveActor(ex.actor);
 	if (s->ren && ex.drape) s->ren->RemoveActor(ex.drape);
 	const bool wasGrid = !ex.isImage;
+	// Julia keeps the LIVE GMTgrid/GMTimage behind this row in its own registry (_SCENE_OBJS,
+	// savefile.jl). Deleting the actor here without saying so left that object alive and still
+	// resolvable: a tool that looks an object up by kind (Binarize, Adjust Contrast, Save…) would
+	// then hand back an image the user had already deleted. The row and the data die together.
+	if (g_juliaForget)
+		g_juliaForget(s, ex.isImage ? "image" : (ex.isMesh ? "mesh" : "grid"), ex.name.c_str());
 	s->extras.erase(s->extras.begin() + idx);
 	sceneAfterObjectRemoved(s);
 	if (wasGrid) applyGridStacking(s);      // renormalize ranks + retarget colorbar to the new topmost
@@ -710,11 +716,28 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	// Binarize: opens the dialog, or brings back the one that was closed (it only HIDES, keeping its
 	// mask + undo) — this handle is where a "minimized" Binarize dialog lives, like Aquamoto's.
 	QAction *aBinarize = g_binarizeReopen ? m.addAction("Binarize Image…") : nullptr;
+	// Adjust Contrast, same deal: its X only hides the dialog, so this handle is where it is
+	// "minimized" to and where it comes back from, per-band contrast windows intact.
+	QAction *aEnhance = g_enhanceReopen ? m.addAction("Image Enhance…") : nullptr;
+	// Same "Image > Show Histogram" the menu bar opens, on THIS handle's image (the menu-bar entry
+	// has to guess which image is displayed; here the handle already says which one).
+	QAction *aHisto = g_showImageHisto ? m.addAction("Show Histogram") : nullptr;
 	QAction *aSave = m.addAction("Save image…");
+	// Same move a grid row offers (gridObjectMenu): re-open this image in a fresh iGMT window, then
+	// drop it from here. ONE function does the move for both kinds — moveObjectToNewWindow.
+	QAction *aMove = m.addAction("Move to new window");
 	QAction *aDel = m.addAction("Remove");
 	QAction *c = m.exec(g);
 	if (!c) return;
 	if (aBinarize && c == aBinarize) { g_binarizeReopen(s, s->extras[idx].name.c_str()); return; }
+	if (aEnhance && c == aEnhance) { g_enhanceReopen(s, s->extras[idx].name.c_str()); return; }
+	if (aHisto && c == aHisto) { g_showImageHisto(s, s->extras[idx].name.c_str()); return; }
+	if (c == aMove) {
+		const QString nm = QString::fromStdString(s->extras[idx].name);
+		if (!moveObjectToNewWindow(s, "image", nm)) return;   // a failed move leaves the image put
+		sceneRemoveExtraAt(s, (size_t)idx);
+		return;
+	}
 	if (c == aSave) { saveObjectDialog(s, "image", QString::fromStdString(s->extras[idx].name)); return; }
 	if (c == aStretch) { stretchImageObject(s, QString::fromStdString(s->extras[idx].name)); return; }
 	ExtraObj &ex = s->extras[idx];            // vector unchanged during exec -> index still valid
@@ -1076,6 +1099,11 @@ static void sceneRemoveSurface(Scene *s) {
 	// The Aquamoto control window is lifetime-tied to its nc cube surface: removing the surface destroys
 	// the (otherwise un-killable) window too. Do it FIRST, before the surface actors go.
 	if (g_aquamotoDestroy && g_aquamotoHasWindow && g_aquamotoHasWindow(s)) g_aquamotoDestroy(s);
+	// Same as sceneRemoveExtraAt: the row and the live object behind it die together, or a later
+	// lookup by kind hands back data the user already deleted. The primary is registered under its
+	// own name (empty for an unnamed base surface).
+	if (g_juliaForget)
+		g_juliaForget(s, s->imageOnly ? "image" : "grid", s->surfName.c_str());
 	// LOD quad-tree observer + tile cache
 	if (s->lodCmd && s->ren->GetActiveCamera())
 		s->ren->GetActiveCamera()->RemoveObserver(s->lodCmd);
@@ -1760,13 +1788,27 @@ static void rebuildSceneObjects(Scene *s) {
 			// Percentile histogram stretch -> new 8-bit image row (meaningful for a wide-range e.g.
 			// 16-bit satellite band shown as a fast min-max preview; Julia reports if no wider source).
 			QAction *aStretch = m.addAction("Auto histogram stretch (new image)");
+			// The PRIMARY image handle must offer the same two dialogs the dropped-image handle does
+			// (imageObjectMenu, above): both of them close by HIDING, and this row is where they are
+			// "minimized" to. Without these entries a closed Binarize / Adjust Contrast on a
+			// view_image window had no way back at all — the dialog just vanished.
+			QAction *aBinarize = g_binarizeReopen ? m.addAction("Binarize Image…") : nullptr;
+			QAction *aEnhance  = g_enhanceReopen  ? m.addAction("Image Enhance…")  : nullptr;
+			QAction *aHisto    = g_showImageHisto ? m.addAction("Show Histogram")  : nullptr;
 			QAction *aSave = m.addAction("Save image…");
+			// Same move a grid row offers, for the window's own image: re-open it in a fresh iGMT
+			// window, then drop it from here (moveObjectToNewWindow — the one function for both kinds).
+			QAction *aMove = m.addAction("Move to new window");
 			m.addSeparator();
 			QAction *aRem  = m.addAction("Remove"); // removes image + axes; window stays open
 			QAction *c = m.exec(g);
 			if (!c) return;
 			if (c == aStretch) stretchImageObject(s, nm);
+			else if (aBinarize && c == aBinarize) g_binarizeReopen(s, "");   // "" = the window's primary image
+			else if (aEnhance && c == aEnhance) g_enhanceReopen(s, "");
+			else if (aHisto && c == aHisto) g_showImageHisto(s, "");
 			else if (c == aSave) saveObjectDialog(s, "image", nm);
+			else if (c == aMove) { if (moveObjectToNewWindow(s, "image", "")) sceneRemoveSurface(s); }
 			else if (c == aRem) sceneRemoveSurface(s);
 		};
 		beginGroupHandle(nm, IC_Image, dp->GetVisibility() != 0,
@@ -2104,18 +2146,28 @@ static void rebuildSceneObjects(Scene *s) {
 		// bottom strip while still building them with the panel's one and only row builder.
 		tree = bot;
 		curParent = nullptr;
+		// EVERY route out of a parked row is DEFERRED to the next event-loop turn. Un-parking calls
+		// unparkTool -> rebuildSceneObjects, which deletes this very strip and the row widget whose
+		// signal is running: doing that synchronously frees the emitter under its own handler, and
+		// the viewer dies or wedges. The context object is `objPanel`, not the row (which the rebuild
+		// destroys) and not the Scene (which is not a QObject), so a closing window cancels the call.
+		QWidget *ctx = s->objPanel;
+		auto defer = [ctx](std::function<void()> fn) {
+			if (fn) QTimer::singleShot(0, ctx, [fn]() { fn(); });
+		};
 		for (const auto &pt : s->parkedTools) {
 			if (!pt.win) continue;
 			// Copy the two actions BY VALUE: the row's lambdas outlive this loop, and parkedTools is a
 			// vector that a later park/unpark can reallocate under a captured reference.
 			auto unpark = pt.unpark;
 			auto menu   = pt.menu;
+			auto menuDeferred = [defer, menu](const QPoint &g) { defer([menu, g]() { menu(g); }); };
 			makeRow(pt.label, pt.icon, /*checked=*/false,
 			        // Checkbox: ticking is just another way of bringing the window back; unticking an
 			        // already-hidden tool means nothing.
-			        [unpark](bool on) { if (on && unpark) unpark(); },
-			        menu, pt.tip, menu,
-			        [unpark]() { if (unpark) unpark(); });      // double-click: straight back, no menu
+			        [defer, unpark](bool on) { if (on) defer(unpark); },
+			        menuDeferred, pt.tip, menuDeferred,
+			        [defer, unpark]() { defer(unpark); });      // double-click: straight back, no menu
 		}
 		int h = 4;                               // strip is exactly as tall as its rows: no dead space
 		for (int i = 0; i < bot->topLevelItemCount(); ++i)

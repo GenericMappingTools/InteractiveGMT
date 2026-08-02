@@ -205,9 +205,9 @@ function _register_save_geotiff()
 	return
 end
 
-# C callback: req = "<kind>;<name>" (kind = "grid"). Resolve the live scene grid (same lookup as Save)
-# and re-open it in a NEW iGMT window (view_grid). Return 1 on success so the C++ side then removes it
-# from the source window (= a MOVE); 0 on any failure leaves the source untouched. Grids only for now.
+# C callback: req = "<kind>;<name>" (kind = "grid" or "image"). Resolve the live scene object (same
+# lookup as Save) and re-open it in a NEW iGMT window. Return 1 on success so the C++ side then
+# removes it from the source window (= a MOVE); 0 on any failure leaves the source untouched.
 function _on_move(scene::Ptr{Cvoid}, req::Cstring)::Cint
 	kind = ""
 	try
@@ -224,6 +224,17 @@ function _on_move(scene::Ptr{Cvoid}, req::Cstring)::Cint
 			# name (base stays registered as "" — _on_nested_transplant's base/extra branch relies on that).
 			isempty(name) || ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid,
 								   (Ptr{Cvoid}, Cstring), _fig_handle(fig), name)
+		elseif kind == "image"
+			# Same move, for an image row: the live GMTimage opens in a fresh window (iview keeps its
+			# georeferencing), and its name rides along to the new window's image handle so every
+			# name-driven per-row option follows it — exactly as the grid branch above does.
+			I = _find_object(scene, :image, name)
+			I === nothing && error("No image to move in this window")
+			# iview_image_obj (NOT iview/view_image): it lands the image as a real ExtraObj with its
+			# own Scene Objects row and properties menu, over a framed scaffold — an imageOnly surface
+			# would arrive with no row at all. `name` IS the row label, so it rides along by itself.
+			iview_image_obj(I, isempty(name) ? "Image" : name;
+			                title = isempty(name) ? "i'GMT" : name)
 		else
 			error("Move: unknown kind '$kind'")
 		end
@@ -233,6 +244,27 @@ function _on_move(scene::Ptr{Cvoid}, req::Cstring)::Cint
 		@warn "move: could not open new window" exception=(e,)
 		return Cint(0)
 	end
+end
+
+# C callback: a Scene Objects row was REMOVED (sceneRemoveExtraAt / sceneRemoveSurface, 50_scene.cpp).
+# Drop the live GMTgrid/GMTimage held for it, so a deleted row can never be handed back by a later
+# lookup. Without this the registry kept every deleted object alive and `_find_object`'s
+# first-of-kind fallback happily returned one — e.g. the Adjust Contrast dialog histogramming the
+# ORIGINAL image after the user had deleted its handle.
+function _on_forget(scene::Ptr{Cvoid}, ckind::Cstring, cname::Cstring)::Cvoid
+	try
+		kind = Symbol(unsafe_string(ckind))
+		_forget_object!(scene, kind, unsafe_string(cname))
+	catch
+	end
+	return
+end
+
+function _register_forget()
+	fptr = @cfunction((s, k, n) -> Base.invokelatest(_on_forget, s, k, n), Cvoid,
+	                  (Ptr{Cvoid}, Cstring, Cstring))
+	ccall(_fn(:gmtvtk_set_forget_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
 end
 
 # Build the C-callable pointer + register it. Lazy (first window) via _ensure_callbacks — the
@@ -266,19 +298,35 @@ function _on_img_stretch(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
 		Isrc = (d === nothing) ? nothing : get(d, name, nothing)
 		(Isrc === nothing) && (Isrc = _find_object(scene, :image, name))   # fall back to the live image
 		(Isrc === nothing) && error("No source image named '$name' to stretch")
-		# mat2img only histogram-stretches a UInt16 image (it returns an 8-bit one unchanged). So the
-		# stretch is meaningful only when a full-precision source was stashed; on a plain 8-bit image
-		# there is nothing to re-stretch — say so instead of adding an identical duplicate row.
-		eltype(Isrc.image) != UInt16 &&
-			(_viewer_log_error(scene, "Stretch: '$name' is already 8-bit (no wider-range source to stretch)"); return)
-		Istr = GMT.mat2img(Isrc; stretch=true)           # percentile histogram stretch -> 8-bit
+		# TWO sources, ONE menu entry: `mat2img(; stretch=true)` is a UInt16-only path (it returns an
+		# 8-bit image untouched), so on a plain 8-bit image this entry used to do nothing at all but
+		# write a line in the Errors console. An 8-bit image gets the SAME auto contrast stretch the
+		# Adjust Contrast dialog's "Contrast Stretch" button applies — `_enh_auto_stretch`, i.e. the
+		# ported stretchlim + imadjust — never a second stretch of my own invention.
+		Istr = eltype(Isrc.image) == UInt16 ?
+		       GMT.mat2img(Isrc; stretch=true) :         # percentile histogram stretch -> 8-bit
+		       _enh_auto_stretch(Isrc)                   # 8-bit: Mirone's 1% stretchlim + imadjust
 		newname = isempty(name) ? "stretched" : "$name (stretched)"
-		_add_image_to_scene(scene, Istr, newname)        # new row in THIS window
+		_commit_derived_image!(scene, Istr, newname)     # new row in THIS window, source unchecked
 		_viewer_log_error(scene, "Histogram-stretched image -> '$newname'")
 	catch e
 		_viewer_log_error(scene, "Stretch image FAILED: $(sprint(showerror, e))")
 		@warn "img-stretch: could not build stretched image" exception=(e,)
 	end
+	return
+end
+
+# Land a DERIVED image (any "compute X from Y" image result — contrast/decorrelation stretch, auto
+# histogram stretch, …) in the window it came from, obeying SACRED_LAW.md's derived-variable display
+# law in ONE place: a new row under a descriptive name, CHECKED, every other image UNCHECKED, Scene
+# Objects unfolded. Re-running under the same name replaces the earlier result instead of piling up.
+function _commit_derived_image!(scene::Ptr{Cvoid}, Iout::GMTimage, name::AbstractString)
+	ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), scene, name)
+	_forget_object!(scene, :image, name)
+	_add_image_to_scene(scene, Iout, name; promote=false)
+	_show_object!(scene, name)
+	_hide_other_objects!(scene, :image, name)
+	ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
 	return
 end
 

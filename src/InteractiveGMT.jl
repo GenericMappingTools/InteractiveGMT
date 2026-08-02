@@ -82,6 +82,7 @@ include("mgd77tracks.jl") # Geophysics > Magnetics > Import *.gmt/*.nc file(s): 
 include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid clipping (port of Mirone ml_clip.m)
 include("binarize.jl")   # Image > Binarize Image: threshold an image into a B&W mask (port of Mirone thresholdit.m)
 include("imagehisto.jl") # Image > Show Histogram: histogram of the DISPLAYED image (port of Mirone image_histo.m)
+include("imageenhance.jl") # Image > Image Enhance > 1 - Indexed and RGB (port of Mirone image_enhance.m)
 include("empilhador.jl") # Tools > Empilhador: stack grids/L2 scenes into a 3-D file (port of Mirone empilhador.m)
 include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-geometry grids (port of Mirone grid_calculator.m)
 include("contours.jl")   # Grid Tools > Contours: GDAL-traced contour lines (port of Mirone contouring.m)

@@ -1605,6 +1605,40 @@ GMTVTK_API void gmtvtk_histo_set_counts(void *dlg, int band, const double *count
 	reinterpret_cast<ImageHistoDialog *>(dlg)->setCounts(band, counts, n);
 }
 
+// Register the row-removed callback. fn(scene, kind, name) drops the live grid/image Julia keeps
+// behind a Scene Objects row that was just deleted (see JuliaForgetFn, 30_app.cpp). nullptr to detach.
+GMTVTK_API void gmtvtk_set_forget_callback(JuliaForgetFn fn) {
+	g_juliaForget = fn;
+}
+
+// Register the "Image Enhance -> 1 - Indexed and RGB" callback (port of Mirone src_figs/image_enhance.m).
+// fn(scene, dlg, params) with params = "op;args" (see JuliaImageEnhanceFn, 30_app.cpp). Returns 1/0.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_image_enhance_callback(JuliaImageEnhanceFn fn) {
+	g_juliaImageEnhance = fn;
+}
+
+// Push one band into the open Adjust Contrast dialog `dlg` (an ImageEnhanceDialog*): its `n` (256)
+// histogram bins, as GMT.jl's histogray gives them, plus the band's own data range [lo,hi] (Mirone's
+// minCData/maxCData) and how many bands the image has (1 = the reshaped single-plot figure).
+GMTVTK_API void gmtvtk_enhance_set_band(void *dlg, int band, const double *counts, int n,
+                                        double lo, double hi, int nbands) {
+	if (!dlg || !counts || n < 1) return;
+	reinterpret_cast<ImageEnhanceDialog *>(dlg)->setBand(band, counts, n, lo, hi, nbands);
+}
+
+// Register the Adjust Contrast ScaterPlot callback. fn(scene, px, npix, nb, label) plots the three
+// bands of the pixels the window is DISPLAYING. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_rgb_scatter_callback(JuliaRgbScatterFn fn) {
+	g_juliaRgbScatter = fn;
+}
+
+// Push a contrast window into `dlg` — the answer to a "stretchlim" op (Eliminate outliers + Apply).
+GMTVTK_API void gmtvtk_enhance_set_window(void *dlg, int band, double lo, double hi) {
+	if (!dlg) return;
+	reinterpret_cast<ImageEnhanceDialog *>(dlg)->setWindow(band, lo, hi);
+}
+
 // Register the Empilhador Compute callback (Tools, port of Mirone src_figs/empilhador.m). fn(scene,
 // params) with params = the "list=/out=/fmt=/region=/l2=..." block described in 30_app.cpp stacks the
 // listed files into one 3-D file. Returns 1/0. nullptr to detach.

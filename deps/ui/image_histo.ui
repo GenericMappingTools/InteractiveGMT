@@ -13,36 +13,74 @@
   <property name="windowTitle">
    <string>Image histogram</string>
   </property>
-  <widget class="HistoAxesWidget" name="axes1" native="true">
-   <property name="geometry">
-    <rect>
-     <x>0</x>
-     <y>0</y>
-     <width>536</width>
-     <height>131</height>
-    </rect>
+  <layout class="QVBoxLayout" name="histoLayout">
+   <property name="leftMargin">
+    <number>0</number>
    </property>
-  </widget>
-  <widget class="HistoAxesWidget" name="axes2" native="true">
-   <property name="geometry">
-    <rect>
-     <x>0</x>
-     <y>123</y>
-     <width>536</width>
-     <height>126</height>
-    </rect>
+   <property name="topMargin">
+    <number>0</number>
    </property>
-  </widget>
-  <widget class="HistoAxesWidget" name="axes3" native="true">
-   <property name="geometry">
-    <rect>
-     <x>0</x>
-     <y>246</y>
-     <width>536</width>
-     <height>154</height>
-    </rect>
+   <property name="rightMargin">
+    <number>0</number>
    </property>
-  </widget>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <property name="spacing">
+    <number>0</number>
+   </property>
+   <property name="stretch">
+    <string>131,126,154</string>
+   </property>
+   <item>
+    <widget class="HistoAxesWidget" name="axes1" native="true">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>50</height>
+      </size>
+     </property>
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="HistoAxesWidget" name="axes2" native="true">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>50</height>
+      </size>
+     </property>
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="HistoAxesWidget" name="axes3" native="true">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>60</height>
+      </size>
+     </property>
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+  </layout>
  </widget>
  <customwidgets>
   <customwidget>

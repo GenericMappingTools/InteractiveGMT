@@ -5299,13 +5299,30 @@ public:
 // is its rendered colour image — the LUT/shaded colours VTK sends to the GPU — not its z values.
 // ============================================================================================
 
-// image_histo.m's plot_result: the patch first (it is the axes background), then the black stems.
-// `plot` is the axes box in widget coords; y grows down, so a count maps to plot.bottom() - h.
-static void paintMironeHisto(QPainter &g, const QRectF &plot, const double *counts, const QColor &patch) {
+// image_histo.m's plot_result: the axes colour, the patch over it, then the black stems. `plot` is
+// the axes box in widget coords; y grows down, so a count maps to plot.bottom() - h.
+//
+// The patch spans grey levels [pLo,pHi]. image_histo leaves it over the whole range (it is just the
+// axes tint); image_enhance shrinks it to the contrast WINDOW — same patch, same painter, one
+// parameter apart (SACRED_LAW: the histogram is drawn by one function, never re-drawn per tool).
+static void paintMironeHisto(QPainter &g, const QRectF &plot, const double *counts, const QColor &patch,
+                             double pLo = 0.0, double pHi = 255.0,
+                             const QColor &bg = QColor(230, 255, 255)) {   // axes 'Color',[0.9 1 1]
 	double ymax = 0.0;
 	for (int k = 0; k < 256; ++k) ymax = std::max(ymax, counts[k]);
-	g.fillRect(plot, patch);                         // patch([0 0 x_max x_max],[0 y_max y_max 0],cor)
+	g.fillRect(plot, bg);
+	const double xl = plot.left() + (std::clamp(pLo, 0.0, 255.0) / 255.0) * plot.width();
+	const double xr = plot.left() + (std::clamp(pHi, 0.0, 255.0) / 255.0) * plot.width();
+	g.fillRect(QRectF(xl, plot.top(), std::max(1.0, xr - xl), plot.height()), patch);
 	if (ymax <= 0.0) return;
+	// ANTIALIASED, and only here. 256 stems share a box ~450 px wide, so consecutive grey levels are
+	// ~1.8 px apart: with the aliased rasteriser each stem snaps to whichever pixel COLUMN its
+	// fractional x falls in, so some pairs land on neighbouring columns and read as one 2-px bar
+	// while the next pair leaves a gap — the stems looked randomly thick and thin. Antialiasing keeps
+	// every stem exactly one pen-width wide at its true sub-pixel position, at any window size (the
+	// axes now stretch with the dialog). The patch and the axes box stay aliased = crisp.
+	const bool wasAA = g.testRenderHint(QPainter::Antialiasing);
+	g.setRenderHint(QPainter::Antialiasing, true);
 	g.setPen(QPen(Qt::black, 1));                    // localStem: line(...,'color','k')
 	for (int k = 0; k < 256; ++k) {
 		if (counts[k] <= 0.0) continue;
@@ -5313,16 +5330,24 @@ static void paintMironeHisto(QPainter &g, const QRectF &plot, const double *coun
 		const double h = (counts[k] / ymax) * plot.height();
 		g.drawLine(QPointF(x, plot.bottom()), QPointF(x, plot.bottom() - h));
 	}
+	g.setRenderHint(QPainter::Antialiasing, wasAA);
 }
 
 // One of image_histo's three MATLAB axes: the plot box plus the room its tick labels need. The box
 // keeps image_histo_LayoutFcn's 481x120 geometry (left margin 50 for the Y labels, 24 below for the
 // X labels when this is the bottom axes — R and G get no XTick there either, same reason).
-class HistoAxesWidget : public QWidget {   // no Q_OBJECT (paint only, like BinHistoWidget)
+class HistoAxesWidget : public QWidget {   // no Q_OBJECT (paint/mouse only, like BinHistoWidget)
 public:
 	double counts[256];
 	QColor patch = QColor(120, 255, 114);   // image_histo's default (grey image); RGB uses the band tint
 	bool   showXAxis = true;                // Mirone strips XTick on the R and G axes
+	// image_enhance's contrast WINDOW: the patch shrinks to [winLo,winHi] and the three red lines
+	// (left, dashed centre, right) become draggable. Off for image_histo, which only shows counts.
+	bool   interactive = false;
+	double winLo = 0.0, winHi = 255.0;
+	std::function<void()> onMoved;          // dragging (live: edit boxes + the N statistic)
+	std::function<void()> onReleased;       // drag finished
+	std::function<void()> onPressed;        // this axes became the current band (wbd_strayClick)
 
 	explicit HistoAxesWidget(QWidget *p) : QWidget(p) {
 		for (double &c : counts) c = 0.0;
@@ -5331,18 +5356,49 @@ public:
 		for (int k = 0; k < 256; ++k) counts[k] = c ? c[k] : 0.0;
 		update();
 	}
+	void setWindow(double lo, double hi) {
+		winLo = std::clamp(lo, 0.0, 255.0);
+		winHi = std::clamp(hi, winLo, 255.0);
+		update();
+	}
+	// Pixels inside the window, and their share of the whole band — image_enhance's text_stat.
+	void windowStat(double &nIn, double &nTot) const {
+		nIn = 0.0; nTot = 0.0;
+		for (int k = 0; k < 256; ++k) {
+			nTot += counts[k];
+			if (k >= winLo && k <= winHi) nIn += counts[k];
+		}
+	}
 	QRectF plotRect() const {
 		const double bottomRoom = showXAxis ? 24.0 : 6.0;
 		return QRectF(50.0, 5.0, std::max(10.0, width() - 55.0),
 		              std::max(10.0, height() - 5.0 - bottomRoom));
 	}
+	double v2x(double v) const {
+		const QRectF b = plotRect();
+		return b.left() + (std::clamp(v, 0.0, 255.0) / 255.0) * b.width();
+	}
+	double x2v(double x) const {
+		const QRectF b = plotRect();
+		return std::clamp((x - b.left()) / std::max(1.0, b.width()) * 255.0, 0.0, 255.0);
+	}
 
 protected:
+	int drag = 0;                           // 0 none, 1 left line, 2 the centre (slides both), 3 right
+
 	void paintEvent(QPaintEvent *) override {
 		QPainter g(this);
 		g.fillRect(rect(), palette().window());
 		const QRectF box = plotRect();
-		paintMironeHisto(g, box, counts, patch);
+		paintMironeHisto(g, box, counts, patch, interactive ? winLo : 0.0, interactive ? winHi : 255.0);
+		if (interactive) {                  // the three red lines of plot_result
+			const double xl = v2x(winLo), xr = v2x(winHi), xc = v2x(0.5 * (winLo + winHi));
+			g.setPen(QPen(QColor(255, 0, 0), 1));
+			g.drawLine(QPointF(xl, box.top()), QPointF(xl, box.bottom()));
+			g.drawLine(QPointF(xr, box.top()), QPointF(xr, box.bottom()));
+			g.setPen(QPen(QColor(255, 0, 0), 2, Qt::DashLine));
+			g.drawLine(QPointF(xc, box.top()), QPointF(xc, box.bottom()));
+		}
 		double ymax = 0.0;
 		for (double c : counts) ymax = std::max(ymax, c);
 		g.setPen(QPen(Qt::black, 1));
@@ -5363,6 +5419,41 @@ protected:
 			g.drawText(QRectF(x - 25.0, box.bottom() + 5.0, 50.0, 14.0), Qt::AlignCenter,
 			           QString::number(v));
 		}
+	}
+
+	// image_enhance's wbm_vertLine/wbd_vertLine/drag_vertLine/wbu_vertLine: grab whichever of the
+	// three lines is within a few pixels, drag it, and let the dialog follow. Clicking anywhere in
+	// the axes also makes this band the current one, exactly like wbd_strayClick.
+	void mousePressEvent(QMouseEvent *e) override {
+		if (onPressed) onPressed();
+		if (!interactive) return;
+		const double x = e->position().x();
+		const double dl = std::abs(x - v2x(winLo)), dr = std::abs(x - v2x(winHi));
+		const double dc = std::abs(x - v2x(0.5 * (winLo + winHi)));
+		const double d  = std::min(dc, std::min(dl, dr));
+		if (d > 8.0) return;
+		drag = (d == dl) ? 1 : (d == dc) ? 2 : 3;
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (!drag) return;
+		const double v = x2v(e->position().x());
+		if (drag == 1) winLo = std::min(v, winHi - 1.0);
+		else if (drag == 3) winHi = std::max(v, winLo + 1.0);
+		else {                                        // the centre line slides the whole window
+			const double half = 0.5 * (winHi - winLo);
+			winLo = std::clamp(v - half, 0.0, 255.0 - 2.0 * half);
+			winHi = winLo + 2.0 * half;
+		}
+		update();
+		if (onMoved) onMoved();
+	}
+	void mouseReleaseEvent(QMouseEvent *) override {
+		if (!drag) return;
+		drag = 0;
+		if (onReleased) onReleased();
+	}
+	void enterEvent(QEnterEvent *) override {
+		if (interactive) setCursor(Qt::SizeAllCursor);   // every drag in iGMT uses SizeAll
 	}
 };
 
@@ -5410,20 +5501,50 @@ static bool sceneDisplayedRGB(Scene *s, const char *name, std::vector<unsigned c
 			return actorDisplayedRGB(ex.actor, out, nb);
 		}
 	}
+	// Image EXTRAS come FIRST, newest last-added first. Every derived image in iGMT — a contrast or
+	// decorrelation stretch, a crop, a mask — is added as an extra ON TOP of the source, so the most
+	// recently added visible one is what the user is looking at. Reading s->drape (the window's
+	// ORIGINAL image) before them meant a derived result was ignored whenever the original had not
+	// been hidden, which is exactly how a ScaterPlot taken after a Decorrelation Stretch kept coming
+	// back as the original.
+	for (size_t k = s->extras.size(); k-- > 0; ) {
+		auto &ex = s->extras[k];
+		if (!ex.isImage) continue;
+		vtkActor *a = ex.drape ? ex.drape.Get() : ex.actor.Get();
+		if (!a || !a->GetVisibility()) continue;
+		if (actorDisplayedRGB(a, out, nb)) { label = QString::fromStdString(ex.name); return true; }
+	}
 	if (s->drape && s->drape->GetVisibility() && actorDisplayedRGB(s->drape, out, nb)) {
-		label = s->imageOnly ? "image" : "surface";
+		label = s->imageOnly ? (s->surfName.empty() ? QString("image") : QString::fromStdString(s->surfName))
+		                     : QString("surface");
 		return true;
 	}
 	if (s->surf && s->surf->GetVisibility() && actorDisplayedRGB(s->surf, out, nb)) {
 		label = "surface";
 		return true;
 	}
-	for (auto &ex : s->extras) {
+	for (size_t k = s->extras.size(); k-- > 0; ) {     // anything else still visible (grid / mesh)
+		auto &ex = s->extras[k];
 		vtkActor *a = ex.drape ? ex.drape.Get() : ex.actor.Get();
 		if (!a || !a->GetVisibility()) continue;
 		if (actorDisplayedRGB(a, out, nb)) { label = QString::fromStdString(ex.name); return true; }
 	}
 	return false;
+}
+
+// The Scene Objects NAME of the image the window is DISPLAYING — the newest visible image extra,
+// or "" for the window's own primary image. Every Image-menu tool opens on this instead of letting
+// Julia fall back to "the first image of that kind", which is a guess: after a stretch there are
+// several images in the window, and after deleting one there may be none where the guess points.
+static QString displayedImageName(Scene *s) {
+	if (!s) return QString();
+	for (size_t k = s->extras.size(); k-- > 0; ) {
+		auto &ex = s->extras[k];
+		if (!ex.isImage) continue;
+		vtkActor *a = ex.drape ? ex.drape.Get() : ex.actor.Get();
+		if (a && a->GetVisibility()) return QString::fromStdString(ex.name);
+	}
+	return QString();
 }
 
 class HistoUiLoader : public QUiLoader {
@@ -5502,8 +5623,9 @@ static void showImageHistogram(QWidget *parent, Scene *s, const char *name) {
 		}
 	}
 	else {
+		// The three axes sit in the dialog's QVBoxLayout, so hiding two makes the third take the whole
+		// height on its own — no setGeometry (which the layout would overrule on the next resize).
 		ih->ax[1]->hide(); ih->ax[2]->hide();
-		ih->ax[0]->setGeometry(0, 0, d->width(), 165);
 		ih->ax[0]->showXAxis = true;
 		d->resize(d->width(), 165);
 	}
@@ -5511,6 +5633,316 @@ static void showImageHistogram(QWidget *parent, Scene *s, const char *name) {
 	g_juliaImageHisto(s, ih, px.data(), static_cast<int>(npix), nb);
 	d->show();
 }
+
+// ============================================================================================
+// Image Enhance -> 1 - Indexed and RGB ("Adjust Contrast") — port of Mirone's
+// src_figs/image_enhance.m. deps/ui/image_enhance.ui carries image_enhance_LayoutFcn's absolute
+// geometry (536x540, MATLAB's bottom-up y converted to Qt's top-down).
+//
+// Per band: the histogram (the SAME HistoAxesWidget "Image -> Show Histogram" draws, here with its
+// contrast WINDOW switched on) plus the Minimum/Maximum/Width/Center boxes, all four kept in step
+// with the three draggable red lines. The window is display state and lives here; every pixel
+// operation — the outlier limits, the contrast stretch, the decorrelation stretch — is Julia's
+// (src/imageenhance.jl), so nothing is computed twice.
+// ============================================================================================
+class ImageEnhanceDialog;
+static std::map<Scene *, ImageEnhanceDialog *> g_enhanceDlgs;
+
+class ImageEnhanceDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	HistoAxesWidget *ax[3] = { nullptr, nullptr, nullptr };
+	QLineEdit *eMinRange = nullptr, *eMaxRange = nullptr;
+	QLineEdit *eMin = nullptr, *eMax = nullptr, *eWidth = nullptr, *eCenter = nullptr;
+	QLineEdit *ePct[3] = { nullptr, nullptr, nullptr };
+	QRadioButton *rDelOutliers = nullptr, *rBand[3] = { nullptr, nullptr, nullptr };
+	QLabel *stat = nullptr;
+	QString srcName;
+	int  nbands = 1;                        // 1 (indexed/grey) or 3 (RGB)
+	int  cur = 0;                           // handles.currAxes - 1
+	double dmin[3] = { 0, 0, 0 }, dmax[3] = { 255, 255, 255 };   // handles.minCData / maxCData
+	bool ready = false, filling = false;
+	bool reallyClose = false;               // set by the parked row's "Delete": let the next close through
+
+	// Closing PARKS this dialog as a row in the window's Scene Objects dock — the SAME
+	// Scene::parkedTools list, parkTool/unparkTool pair and row builder a closed X,Y plot,
+	// Contours or Illumination dialog uses (SACRED_LAW: one operation, one function). `unpark` is
+	// the one way back in, whatever asked for it (double-click, the row's checkbox, its "Show").
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();          // destroyed -> the row and this object go with it
+			}
+		};
+	}
+	// By VALUE, not by `scn`: when the viewer window is torn down the Scene may already be gone.
+	~ImageEnhanceDialog() {
+		for (auto it = g_enhanceDlgs.begin(); it != g_enhanceDlgs.end(); )
+			it = (it->second == this) ? g_enhanceDlgs.erase(it) : std::next(it);
+	}
+
+	bool send(const QString &params) {
+		if (!g_juliaImageEnhance) {
+			QMessageBox::warning(dlg, "Image Enhance",
+			                     "Image Enhance: callback not registered (rebuild/restart needed?).");
+			return false;
+		}
+		return g_juliaImageEnhance(scn, this, params.toUtf8().constData()) != 0;
+	}
+	// Julia hands one band back at "init": its 256 counts and its own data range.
+	void setBand(int band, const double *counts, int n, double lo, double hi, int nb) {
+		if (band < 0 || band > 2 || n < 256) return;
+		nbands = nb;
+		dmin[band] = lo;  dmax[band] = hi;
+		if (ax[band]) { ax[band]->setCounts(counts); ax[band]->setWindow(lo, hi); }
+		if (band == cur) syncBoxes();
+	}
+	// Julia answers a "stretchlim" with the limits it found for that band.
+	void setWindow(int band, double lo, double hi) {
+		if (band < 0 || band > 2 || !ax[band]) return;
+		ax[band]->setWindow(lo, hi);
+		if (band == cur) syncBoxes();
+	}
+	// The four Window boxes + the N statistic, from whatever the current axes' window now is
+	// (plot_result's edit-box fill and updateAll's text_stat, one place for both).
+	void syncBoxes() {
+		HistoAxesWidget *a = ax[cur];
+		if (!a) return;
+		filling = true;
+		if (eMinRange) eMinRange->setText(QString::number(dmin[cur], 'g', 6));
+		if (eMaxRange) eMaxRange->setText(QString::number(dmax[cur], 'g', 6));
+		if (eMin)    eMin->setText(QString::number(a->winLo, 'f', 0));
+		if (eMax)    eMax->setText(QString::number(a->winHi, 'f', 0));
+		if (eWidth)  eWidth->setText(QString::number(a->winHi - a->winLo, 'f', 0));
+		if (eCenter) eCenter->setText(QString::number(0.5 * (a->winLo + a->winHi), 'f', 0));
+		filling = false;
+		double nIn = 0.0, nTot = 0.0;
+		a->windowStat(nIn, nTot);
+		if (stat)
+			stat->setText(QString("N = %1\t(%2%)").arg(qRound(nIn))
+			              .arg(nTot > 0.0 ? nIn / nTot * 100.0 : 0.0, 0, 'f', 2));
+	}
+	// Window <- the boxes. `what` is which box was edited, so Width/Center keep their own meaning
+	// (edit_widthWindow_CB / edit_centerWindow_CB grow the window about its centre, or move it).
+	void windowFromBoxes(int what) {
+		if (filling || !ax[cur]) return;
+		HistoAxesWidget *a = ax[cur];
+		double lo = a->winLo, hi = a->winHi;
+		if (what == 0)      lo = eMin->text().toDouble();
+		else if (what == 1) hi = eMax->text().toDouble();
+		else if (what == 2) {                                     // width, about the current centre
+			const double c = 0.5 * (lo + hi), w = eWidth->text().toDouble();
+			lo = c - w / 2.0;  hi = c + w / 2.0;
+		}
+		else {                                                    // centre, keeping the width
+			const double w = hi - lo, c = eCenter->text().toDouble();
+			lo = c - w / 2.0;  hi = c + w / 2.0;
+		}
+		if (hi <= lo) return;
+		a->setWindow(lo, hi);
+		syncBoxes();
+	}
+	double pct(int band) const {
+		const double v = ePct[band] ? ePct[band]->text().toDouble() : 2.0;
+		return (v < 0.0 || v > 100.0) ? 2.0 : v;
+	}
+
+	explicit ImageEnhanceDialog(QWidget *parent, Scene *scene, const QString &imgName = QString())
+	    : scn(scene), srcName(imgName) {
+		HistoUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/image_enhance.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("ImageEnhanceDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) return;
+		QDialog *d = dlg;
+
+		ax[0] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes1"));
+		ax[1] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes2"));
+		ax[2] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes3"));
+		if (!ax[0] || !ax[1] || !ax[2]) { delete d; dlg = nullptr; return; }
+
+		// The X button PARKS instead of closing. WA_DeleteOnClose is deliberately NOT set, and the
+		// close event is swallowed outright — only the parked row's "Delete" (which sets reallyClose)
+		// ever lets one through, so the dialog and its per-band windows survive being closed.
+		struct CloseParks : QObject {
+			ImageEnhanceDialog *ed;
+			CloseParks(QObject *parent, ImageEnhanceDialog *e) : QObject(parent), ed(e) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && ed && !ed->reallyClose && sceneAlive(ed->scn)) {
+					e->ignore();
+					ed->dlg->hide();
+					ImageEnhanceDialog *h = ed;   // a lambda cannot capture a member of the enclosing class
+					parkTool(h->scn, h->dlg, "Adjust Contrast", IC_Image,
+					         "Closed Adjust Contrast dialog — double-click to bring it back, click for Show / Delete",
+					         [h]() { h->unpark(); }, h->parkedMenu());
+					unfoldSceneObjects(ed->scn);   // a handle nobody can see is no handle at all
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
+
+		eMinRange = d->findChild<QLineEdit *>("edit_minRange");
+		eMaxRange = d->findChild<QLineEdit *>("edit_maxRange");
+		eMin      = d->findChild<QLineEdit *>("edit_minWindow");
+		eMax      = d->findChild<QLineEdit *>("edit_maxWindow");
+		eWidth    = d->findChild<QLineEdit *>("edit_widthWindow");
+		eCenter   = d->findChild<QLineEdit *>("edit_centerWindow");
+		ePct[0]   = d->findChild<QLineEdit *>("edit_percentOutliersR");
+		ePct[1]   = d->findChild<QLineEdit *>("edit_percentOutliersG");
+		ePct[2]   = d->findChild<QLineEdit *>("edit_percentOutliersB");
+		rDelOutliers = d->findChild<QRadioButton *>("radio_delOutliers");
+		rBand[0]  = d->findChild<QRadioButton *>("radio_R");
+		rBand[1]  = d->findChild<QRadioButton *>("radio_G");
+		rBand[2]  = d->findChild<QRadioButton *>("radio_B");
+		stat      = d->findChild<QLabel *>("text_stat");
+		// The pressed button MUST stay marked so the user can see what was pushed. A focus ring is NOT
+		// enough: the Windows style barely paints one, and any op that adds a scene element pulls the
+		// activation away and takes the ring with it. So the four action buttons are CHECKABLE and
+		// mutually exclusive — the last one pressed stays visibly down, whatever the focus does.
+		// (Same device as the Binarize dialog's five method buttons.)
+		auto *actionGroup = new QButtonGroup(d);
+		actionGroup->setExclusive(true);
+		for (QPushButton *b : d->findChildren<QPushButton *>()) {
+			b->setAutoDefault(false);  b->setDefault(false);  b->setFocusPolicy(Qt::StrongFocus);
+			b->setCheckable(true);
+			actionGroup->addButton(b);
+		}
+
+		const QColor tint[3] = { QColor(255, 124, 117), QColor(120, 255, 114), QColor(119, 119, 255) };
+		for (int k = 0; k < 3; ++k) {
+			ax[k]->interactive = true;
+			ax[k]->patch = tint[k];
+			ax[k]->showXAxis = (k == 2);
+			ax[k]->onPressed  = [this, k]() { setBandCurrent(k); };
+			ax[k]->onMoved    = [this]()    { syncBoxes(); };
+			ax[k]->onReleased = [this]()    { syncBoxes(); };
+		}
+		// R/G/B radios and a click in an axes are the same act: pick the current band (swap_radios).
+		for (int k = 0; k < 3; ++k)
+			if (rBand[k]) QObject::connect(rBand[k], &QRadioButton::clicked, d, [this, k]() { setBandCurrent(k); });
+
+		QObject::connect(eMin, &QLineEdit::editingFinished, d, [this]() { windowFromBoxes(0); });
+		QObject::connect(eMax, &QLineEdit::editingFinished, d, [this]() { windowFromBoxes(1); });
+		QObject::connect(eWidth, &QLineEdit::editingFinished, d, [this]() { windowFromBoxes(2); });
+		QObject::connect(eCenter, &QLineEdit::editingFinished, d, [this]() { windowFromBoxes(3); });
+
+		// Apply (push_applyRange_CB): either the band's own data range, or the limits that clip the
+		// requested percentage of outliers — the latter is Julia's localStretchlim, on the real pixels.
+		if (auto *b = d->findChild<QPushButton *>("push_applyRange"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() {
+				if (rDelOutliers && rDelOutliers->isChecked())
+					send(QString("stretchlim;%1;%2").arg(cur).arg(pct(cur)));
+				else {
+					ax[cur]->setWindow(dmin[cur], dmax[cur]);
+					syncBoxes();
+				}
+			});
+		// Contrast Stretch (push_contStrectch_CB): imadjust with each band's window, [0 1] out.
+		if (auto *b = d->findChild<QPushButton *>("push_contStrectch"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() {
+				QString p = "contrast";
+				for (int k = 0; k < 3; ++k) {
+					const int j = (k < nbands) ? k : 0;
+					p += QString(";%1;%2").arg(ax[j]->winLo).arg(ax[j]->winHi);
+				}
+				send(p);
+			});
+		if (auto *b = d->findChild<QPushButton *>("push_decorrStrectch"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() {
+				send(QString("decorr;%1").arg(pct(0)));   // the R box is the tolerance, as in Mirone
+			});
+		// ScaterPlot reads the pixels that are ON SCREEN RIGHT NOW (sceneDisplayedRGB — the same
+		// reader Show Histogram uses), never anything this dialog remembered: after a Decorrelation
+		// Stretch the displayed image IS the decorrelated one, so that is what gets plotted, with no
+		// second copy of "which image is current" to fall out of step.
+		if (auto *b = d->findChild<QPushButton *>("push_scaterPlot"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() {
+				if (!g_juliaRgbScatter) {
+					QMessageBox::warning(dlg, "ScaterPlot",
+					                     "ScaterPlot: callback not registered (rebuild/restart needed?).");
+					return;
+				}
+				std::vector<unsigned char> px;
+				int nb = 0;
+				QString label;
+				if (!sceneDisplayedRGB(scn, "", px, nb, label) || nb < 3) {
+					QMessageBox::warning(dlg, "ScaterPlot", "ScaterPlot needs an RGB image on display.");
+					return;
+				}
+				g_juliaRgbScatter(scn, px.data(), static_cast<int>(px.size() / nb), nb,
+				                  label.toUtf8().constData());
+			});
+
+		// Connected LAST on purpose: Qt runs slots in connection order, so this fires AFTER the op
+		// above has run (and after any scene rebuild it triggered stole the activation) and puts the
+		// mark back on the button that was actually pressed.
+		for (QPushButton *b : d->findChildren<QPushButton *>())
+			QObject::connect(b, &QPushButton::clicked, d, [this, b]() {
+				if (dlg) dlg->activateWindow();
+				b->setFocus(Qt::TabFocusReason);
+			});
+
+		if (!send("init;" + srcName)) {
+			QMessageBox::warning(parent, "Image Enhance",
+			                     "Image Enhance failed — see this window's Errors console for details.");
+			delete d; dlg = nullptr; return;
+		}
+		// A single-band display is image_enhance's reshaped figure: no G/B anything, and the window
+		// shrinks to the one remaining plot (new_height = 540 - 291 + 40 = 289).
+		if (nbands < 3) {
+			for (const char *n : { "axes2", "axes3", "radio_R", "radio_G", "radio_B",
+			                       "edit_percentOutliersG", "edit_percentOutliersB",
+			                       "push_scaterPlot", "push_decorrStrectch" })
+				if (auto *w = d->findChild<QWidget *>(n)) w->hide();
+			ax[0]->showXAxis = true;
+			ax[0]->setGeometry(0, 129, 486, 160);
+			if (auto *w = d->findChild<QWidget *>("frame_axes")) w->setGeometry(5, 115, 526, 157);
+			if (auto *w = d->findChild<QWidget *>("text_tip"))   w->setGeometry(6, 267, 250, 15);
+			if (auto *w = d->findChild<QWidget *>("text_stat"))  w->setGeometry(380, 267, 150, 15);
+			d->resize(d->width(), 289);
+		}
+		syncBoxes();
+		ready = true;
+		g_enhanceDlgs[scn] = this;
+		// Only a REAL destruction gets here (the parked row's "Delete", or the viewer window dying) —
+		// the X is swallowed by CloseParks above. The destructor drops the registry entry.
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			if (g_juliaImageEnhance) g_juliaImageEnhance(scn, this, "close");   // drop Julia's state
+			delete this;
+		});
+	}
+
+	// swap_radios: the current band drives the boxes, the statistic and every Apply/stretch.
+	void setBandCurrent(int k) {
+		if (k < 0 || k >= nbands) return;
+		cur = k;
+		if (rBand[k]) rBand[k]->setChecked(true);
+		syncBoxes();
+	}
+};
 
 // ============================================================================================
 // Binarize Image (Image menu) — port of Mirone's src_figs/thresholdit.m. Turn this window's image
@@ -5667,6 +6099,33 @@ public:
 	QImage mask;                                          // what Julia last pushed back (grey 0/255)
 	QString srcName;                                      // image to threshold ("" = window primary)
 	bool ready = false;                                   // init succeeded -> the caller may show it
+	bool reallyClose = false;                             // the parked row's "Delete" lets a close through
+
+	// The one way back from the parked row (double-click, its checkbox, its "Show"), and the row's
+	// own menu — both the SAME pair every other parked tool uses.
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();
+			}
+		};
+	}
 
 	// Julia pushes the grey-level histogram here once, when the dialog opens (op "init").
 	void setHistogram(const double *c, int n) {
@@ -5712,14 +6171,33 @@ public:
 		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
 		f.close();
 		if (!dlg) { qWarning("BinarizeDialog: QUiLoader failed to load the .ui"); return; }
-		// NO WA_DeleteOnClose: closing the dialog only HIDES it (QWidget::close on a widget without
-		// that attribute is a hide), so the mask, its undo copy and the histogram handles survive —
-		// re-opening from the Image menu brings back the SAME dialog, work intact (same rule as
-		// Aquamoto's window). It is destroyed only with its parent window, and THAT is when Julia's
-		// per-dialog state is dropped (the "close" op below).
+		// NO WA_DeleteOnClose, and the X does not even close: it PARKS the dialog as a row in the
+		// window's Scene Objects dock — the SAME Scene::parkedTools list, parkTool/unparkTool pair and
+		// row builder a closed X,Y plot / Contours / Illumination dialog uses (SACRED_LAW: one
+		// operation, one function). The mask, its undo copy and the histogram handles survive; only
+		// the parked row's "Delete" destroys the dialog, and THAT is when Julia's state is dropped.
 		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		QDialog *d = dlg;
+
+		struct CloseParks : QObject {
+			BinarizeDialog *bd;
+			CloseParks(QObject *parent, BinarizeDialog *b) : QObject(parent), bd(b) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && bd && !bd->reallyClose && sceneAlive(bd->scn)) {
+					e->ignore();
+					bd->dlg->hide();
+					BinarizeDialog *h = bd;
+					parkTool(h->scn, h->dlg, "Binarize Image", IC_Image,
+					         "Closed Binarize dialog — double-click to bring it back, click for Show / Delete",
+					         [h]() { h->unpark(); }, h->parkedMenu());
+					unfoldSceneObjects(bd->scn);
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
 
 		// BinHistoWidget has no Q_OBJECT -> static_cast (BinarizeUiLoader is the only thing that
 		// ever builds one), same as IgrfDialog does with IgrfMapArea.
@@ -5866,10 +6344,21 @@ static bool binarizeHasDialog(Scene *scene) { return g_binarizeDlgs.count(scene)
 static void binarizeReopen(Scene *scene, const char *name) {
 	auto it = g_binarizeDlgs.find(scene);
 	if (it != g_binarizeDlgs.end() && it->second->dlg) {
-		it->second->dlg->show();  it->second->dlg->raise();  it->second->dlg->activateWindow();
+		it->second->unpark();   // parked? the row goes away and the SAME dialog comes back
 		return;
 	}
 	auto *w = new BinarizeDialog(scene ? scene->win : nullptr, scene, QString::fromUtf8(name ? name : ""));
+	if (w->dlg && w->ready) w->dlg->show();
+	else delete w;
+}
+// Same for "Adjust Contrast" — its X button hides it, and this is how it comes back.
+static void enhanceReopen(Scene *scene, const char *name) {
+	auto it = g_enhanceDlgs.find(scene);
+	if (it != g_enhanceDlgs.end() && it->second->dlg) {
+		it->second->unpark();   // parked? the row goes away and the SAME dialog comes back
+		return;
+	}
+	auto *w = new ImageEnhanceDialog(scene ? scene->win : nullptr, scene, QString::fromUtf8(name ? name : ""));
 	if (w->dlg && w->ready) w->dlg->show();
 	else delete w;
 }
@@ -5877,6 +6366,10 @@ static const struct BinarizeHookInstaller {
 	BinarizeHookInstaller() {
 		g_binarizeHasDialog = &binarizeHasDialog;
 		g_binarizeReopen    = &binarizeReopen;
+		g_enhanceReopen     = &enhanceReopen;
+		g_showImageHisto    = [](Scene *s, const char *name) {
+			showImageHistogram(s && s->widget ? s->widget->window() : nullptr, s, name);
+		};
 	}
 } g_binarizeHookInstaller;
 
@@ -12784,21 +13277,39 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QAction *aBinarize = mImage->addAction("&Binarize Image…", [win, s]() {
 		auto it = g_binarizeDlgs.find(s);                    // hidden earlier? bring back the SAME one
 		if (it != g_binarizeDlgs.end() && it->second->dlg) {
-			it->second->dlg->show();  it->second->dlg->raise();  it->second->dlg->activateWindow();
+			it->second->unpark();   // parked? the row goes away and the SAME dialog comes back
 			return;
 		}
-		auto *w = new BinarizeDialog(win, s);                // self-deletes with its QDialog
+		auto *w = new BinarizeDialog(win, s, displayedImageName(s));   // self-deletes with its QDialog
 		if (w->dlg && w->ready) w->dlg->show();
 		else delete w;
 	});
 	// Show Histogram (image_histo.m): the histogram of what the window DISPLAYS — for a grid that is
 	// its rendered colour image, never its z values.
 	QAction *aHisto = mImage->addAction("Show &Histogram", [win, s]() { showImageHistogram(win, s, ""); });
+	// Image Enhance submenu, kept exactly as mirone_uis.m builds it (the numbering included). Only
+	// entry 1 (image_enhance.m) is ported so far; 2 (image_adjust.m) and 3 (ice_m.m) are placeholders.
+	mImage->addSeparator();
+	QMenu *mEnhance = mImage->addMenu("Image Enhance");
+	QAction *aEnh1 = mEnhance->addAction("1 - Indexed and RGB", [win, s]() {
+		auto it = g_enhanceDlgs.find(s);                     // already open? just bring it forward
+		if (it != g_enhanceDlgs.end() && it->second->dlg) {
+			it->second->unpark();   // parked? the row goes away and the SAME dialog comes back
+			return;
+		}
+		auto *w = new ImageEnhanceDialog(win, s, displayedImageName(s));
+		if (w->dlg && w->ready) w->dlg->show();
+		else delete w;
+	});
+	QAction *aEnh2 = mEnhance->addAction("2 - Indexed only");
+	QAction *aEnh3 = mEnhance->addAction("Image Color Editor (Indexed and RGB)");
+	aEnh2->setEnabled(false);  aEnh3->setEnabled(false);     // not ported yet
 	// Binarize needs an image to threshold — greyed out (refreshed on every open) when the window
 	// holds none. Show Histogram works off the DISPLAY, so a grid window qualifies too.
-	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto]() {
+	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto, aEnh1]() {
 		aBinarize->setEnabled(sceneHasImage(s));
 		aHisto->setEnabled(sceneHasImage(s) || sceneHasGrid(s));
+		aEnh1->setEnabled(sceneHasImage(s));   // it rewrites an image's pixels, so it needs a real one
 	});
 
 	QMenu *mView = win->menuBar()->addMenu("&View");
