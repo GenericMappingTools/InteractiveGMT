@@ -18,7 +18,10 @@
 	st = split(unsafe_string(pointer(buf)), '\n')
 	@test length(st) == 4
 	@test st[1] == "1"				# the NEWER tile is the one Extract starts on
-	@test st[2] == "1/1/1"			# the .ui's own defaults: Aqua-MODIS / SST / Daily
+	# Instrument and Product open on the .ui's own defaults (Aqua-MODIS / SST). The PERIOD does NOT: it
+	# is remembered across openings and sessions (prefs key oceancolor/period), so at this point it is
+	# whatever was last picked on this machine — pinned down below, after a known pick.
+	@test startswith(st[2], "1/1/")
 
 	# Setting the combos runs the SAME handler a click runs.
 	@test ccall(_test_fn(:gmtvtk_oc_select_test), Cint, (Cint, Cint, Cint),
@@ -28,6 +31,13 @@
 
 	ccall(_test_fn(:gmtvtk_oc_delete_dialog_test), Cvoid, ())
 	@test ccall(_test_fn(:gmtvtk_oc_parked_test), Cint, (Ptr{Cvoid},), f.h) == -1
+
+	# A FRESH dialog comes back on the period just picked (2 = 8-day), while Instrument and Product
+	# come back at the .ui defaults — the "remember the last Period" behaviour, end to end.
+	@test ccall(_test_fn(:gmtvtk_oc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+	ccall(_test_fn(:gmtvtk_oc_state_test), Cint, (Ptr{UInt8}, Cint), buf, Cint(1024))
+	@test split(unsafe_string(pointer(buf)), '\n')[2] == "1/1/2"
+	ccall(_test_fn(:gmtvtk_oc_delete_dialog_test), Cvoid, ())
 end
 
 @testitem "Ocean Color browser: the X parks it, it does not kill it" tags=[:gui] setup=[GmtvtkTest] begin

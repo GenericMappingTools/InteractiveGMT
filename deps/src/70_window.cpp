@@ -1355,7 +1355,8 @@ static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPo
 	double px;
 	if (parallel) {
 		px = (parScale > 0.0) ? sp * vpH / (2.0 * parScale) : 1e9;
-	} else {
+	}
+	else {
 		const double dvx = pc[0]-camPos[0], dvy = pc[1]-camPos[1], dvz = pc[2]-camPos[2];
 		double dist = std::sqrt(dvx*dvx + dvy*dvy + dvz*dvz); if (dist < 1e-6) dist = 1e-6;
 		px = sp * vpH / (2.0 * dist * tanHalfFov);
@@ -7769,10 +7770,19 @@ public:
 		// Picking an instrument / product / period is a question about the archive, so it asks it —
 		// that IS this dialog's job (nothing is computed and nothing is added to the scene until
 		// Extract, which stays the only action button).
+		// The Period the user last picked is REMEMBERED across openings and sessions (~/.gmt/iGMT.ini,
+		// never the registry — igmtSettings), instead of snapping back to Daily every time. Restored
+		// BEFORE the connections below, so putting it back does not fire an archive scan of its own:
+		// the dialog's first scan then runs with the remembered period already in place.
+		if (cbPeriod) {
+			const int p = igmtSettings().value("oceancolor/period", -1).toInt();
+			if (p >= 0 && p < cbPeriod->count()) cbPeriod->setCurrentIndex(p);
+		}
 		auto refresh = [this]() { requestLatest(); };
 		if (cbInst)   QObject::connect(cbInst,   QOverload<int>::of(&QComboBox::currentIndexChanged), d, refresh);
 		if (cbProd)   QObject::connect(cbProd,   QOverload<int>::of(&QComboBox::currentIndexChanged), d, refresh);
-		if (cbPeriod) QObject::connect(cbPeriod, QOverload<int>::of(&QComboBox::currentIndexChanged), d, refresh);
+		if (cbPeriod) QObject::connect(cbPeriod, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                               [this](int i) { igmtSettings().setValue("oceancolor/period", i); requestLatest(); });
 
 		// < and > step the PAIR one composite at a time, each from the end it moves: < from the older
 		// tile, > from the newer one, so repeated clicks walk the archive without ever re-showing the
@@ -16477,6 +16487,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			s->objFoldBar->updateGeometry();       // sizeHint flips to the thin vertical strip
 		}
 	}
+
+	// The bar this window opens with is decided HERE, by the ONE decider, once the initial visibility is
+	// settled — never by buildSceneContent's unconditional buildColorbar() further up, which paints a bar
+	// for content that may be about to be hidden and cannot know an image window's palette legend from a
+	// grid's z bar. An empty launcher is exactly that case: it builds a 2x2 placeholder plane, hides it
+	// three lines above, and was left with the placeholder's bar (default ramp -> a RED strip) painted
+	// over a window with nothing in it. refreshGridColorbar resolves "no visible grid" and clears it.
+	refreshGridColorbar(s);
 
 	// Start the "Panels" dock minimized to its tab strip BEFORE the first paint, so it never
 	// flashes full-height then collapses (setBottomCollapsed clamps maxHeight from the tab-bar

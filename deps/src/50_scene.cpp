@@ -797,7 +797,12 @@ static void sceneRemoveExtraAt(Scene *s, size_t idx) {
 		g_juliaForget(s, ex.isImage ? "image" : (ex.isMesh ? "mesh" : "grid"), ex.name.c_str());
 	s->extras.erase(s->extras.begin() + idx);
 	sceneAfterObjectRemoved(s);
-	if (wasGrid) applyGridStacking(s);      // renormalize ranks + retarget colorbar to the new topmost
+	if (wasGrid) applyGridStacking(s);      // renormalize ranks
+	// …and retarget the bar for EITHER kind. An image's palette legend is that image's bar, so deleting
+	// the image must take it with it ("removal undoes what add did"): with this gated on wasGrid, the
+	// legend of a removed indexed image (an Ocean Color browse picture) stayed painted on an empty
+	// window with no row left that could ever clear it.
+	refreshGridColorbar(s);
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }

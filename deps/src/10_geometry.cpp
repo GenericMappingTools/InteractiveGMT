@@ -485,6 +485,7 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 static void applyVectorStacking(Scene *s);                      // shared vector-pile draw-order (50_scene.cpp)
 static void restackVector(Scene *s, int *stackPtr, int op);    // move one vector element through the pile
 static void applyGridStacking(Scene *s);                        // grid-pile draw-order: base relief + grids (50_scene.cpp)
+static void refreshGridColorbar(Scene *s);                      // THE decider of which bar is on screen (50_scene.cpp)
 static void restackGrid(Scene *s, int *stackPtr, int op);      // move one grid through the grid pile
 static void lineApplyStyle(Scene *s, const LineRef &lr, int style);
 static int  lineCurrentStyle(Scene *s, const LineRef &lr);

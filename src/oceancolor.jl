@@ -928,21 +928,50 @@ function _oc_pick_var(vars)::String
 	return ""
 end
 
-# The raw `palette` array, tried both ways in: GDAL's netCDF subdataset syntax first (which is how
-# every other variable of this file is enumerated), then GMT's own "file?var". Two readers because a
-# byte array of shape (3,256) is not a raster and either one may decline it; `nothing` if both do.
+# The file's OWN colour table, in the byte order the FILE stores it. `palette` is declared
+# `(3, 256)`: THREE 256-byte rows whose concatenation, in netCDF (row-major) order, is the 256 RGB
+# TRIPLETS r,g,b, r,g,b, … Read through GMT and NEVER through GDAL: GDAL's netCDF driver hands those
+# three rows over as an IMAGE, and an image is bottom-up, so `gdalread` returns them REVERSED — the
+# same 768 bytes rotated by 512, and 512 % 3 == 2, so the rotation is not even triplet-aligned and
+# every entry came out built from three unrelated channels of three unrelated entries. That is what a
+# "de-interleaved" read of the gdalread array still produced. Verified byte-for-byte against the
+# browse PNG's own embedded colormap (the palette NASA renders the picture with) for a CHL and an SST
+# file: identical, 0 difference, over all 256 entries.
+# Returns the entries as n x 3 in 0..1, or `nothing`.
 function _oc_read_palette(file::AbstractString)
-	for rd in (() -> GMT.gdalread("NETCDF:\"$(file)\":palette"), () -> GMT.gmtread(string(file, "?palette")))
-		A = try
-			P = rd()
-			M = P isa GMTimage ? P.image : (P isa GMTgrid ? P.z : P)
-			M isa AbstractArray ? Array(M) : nothing
-		catch
-			nothing
-		end
-		A !== nothing && ndims(A) == 2 && length(A) >= 6 && return A
+	M = try
+		P = GMT.gmtread(string(file, "?palette"))
+		A = P isa GMTgrid ? P.z : (P isa GMTimage ? P.image : P)
+		A isa AbstractArray ? Array(A) : nothing
+	catch
+		nothing
 	end
-	return nothing
+	(M === nothing || ndims(M) != 2 || size(M, 1) != 3 || size(M, 2) < 2) && return nothing
+	S = vec(permutedims(M))                  # row-major = netCDF order = the interleaved triplet stream
+	n = div(length(S), 3)
+	n < 2 && return nothing
+	rgb = Float64.(permutedims(reshape(S[1:3n], 3, n))) ./ 255
+	# The LAST entry is not part of the ramp: every L3m palette reserves it (black) for land/masked
+	# pixels. Keeping it would end the colour ramp on black.
+	(n > 2 && all(iszero, rgb[end, :]) && !all(iszero, rgb[end-1, :])) && (rgb = rgb[1:end-1, :])
+	return rgb
+end
+
+# The scaling NASA renders this product with, carried by the file itself as the global attributes
+# `suggested_image_scaling_{type,minimum,maximum}` — LOG between 0.01 and 20 mg/m3 for chlorophyll,
+# LINEAR between -2 and 45 degC for SST. Spreading the palette EVENLY over the data's raw extrema
+# instead is the other half of "the colours are wrong": chlor_a runs to ~100 mg/m3, so on an even
+# ramp the entire ocean lives in the first two or three entries. Read off the tiny `palette`
+# subdataset, so no raster is touched. Returns (lo, hi, islog), or `nothing` when the file says
+# nothing usable.
+function _oc_scaling(file::AbstractString)
+	txt = try GMT.gdalinfo("NETCDF:\"$(file)\":palette") catch; "" end
+	isempty(txt) && return nothing
+	att(k) = (m = match(Regex("suggested_image_scaling_$(k)=(.*)"), txt); m === nothing ? "" : String(strip(m.captures[1])))
+	lo = tryparse(Float64, att("minimum"))
+	hi = tryparse(Float64, att("maximum"))
+	(lo === nothing || hi === nothing || !(hi > lo)) && return nothing
+	return (lo, hi, uppercase(att("type")) == "LOG")
 end
 
 """
@@ -952,27 +981,55 @@ The file's OWN colour table as a CPT spanning [zmn, zmx]. L3m files carry it as 
 of 3x256 bytes — 256 RGB TRIPLETS, r,g,b, r,g,b, … — which is the palette NASA renders the browse
 images with, so a grid opened here looks like the tile it was picked from. `nothing` when the file
 has no palette, which leaves the caller on the viewer's ordinary default colormap.
+
+The CPT always SPANS [zmn, zmx] — the grid's own range — so the colour bar stays linear in z and its
+numbers keep meaning what they say. The file's `suggested_image_scaling_*` only decides WHERE inside
+that span the entries fall: log-bunched near the bottom for chlorophyll, evenly for SST, with the
+ends clamped to the first/last colour, which is exactly what the browse image does.
 """
 function _oc_palette_cpt(file::AbstractString, zmn::Real, zmx::Real)
-	A = _oc_read_palette(file)
-	if (A === nothing || ndims(A) != 2)
+	rgb = _oc_read_palette(file)
+	if (rgb === nothing)
 		@warn "Ocean Color: no readable `palette` variable in $(basename(file)) — falling back to the viewer's default colormap"
 		return nothing
 	end
-	# The bytes come back TRIPLET-INTERLEAVED — r0,g0,b0, r1,g1,b1, … — whatever shape the reader
-	# reports. Slicing that as three 256-byte planes (which is what a plain 256x3 view of it is) builds
-	# every entry out of three DIFFERENT colours, and a grid drawn through it is pure per-pixel noise.
-	# So de-interleave from the byte order itself: (3, n) then transpose = (n, rgb).
-	n = div(length(A), 3)
-	n < 2 && return nothing
-	rgb = Float64.(permutedims(reshape(vec(A)[1:3n], 3, n))) ./ 255
-	n   = size(rgb, 1)
-	z   = collect(range(Float64(zmn), Float64(zmx), length = n + 1))
-	# A GMTcpt is n slices: colour i runs from z[i] to z[i+1], and the slice's far end takes the next
-	# colour so the ramp is continuous rather than n flat steps.
-	far = vcat(rgb[2:end, :], rgb[end:end, :])
-	return GMTcpt(rgb, zeros(n), hcat(z[1:n], z[2:n+1]), [Float64(zmn), Float64(zmx)],
-	              [1.0 1.0 1.0; 0.0 0.0 0.0; 0.5 0.5 0.5], Cint(24), NaN, hcat(rgb, far),
+	zmn, zmx = Float64(zmn), Float64(zmx)
+	!(zmx > zmn) && return nothing
+	n  = size(rgb, 1)
+	sc = _oc_scaling(file)
+	z  = collect(range(zmn, zmx, length = n))             # no recipe in the file -> the even spread
+	if (sc !== nothing)
+		lo, hi, islog = sc
+		islog && (lo <= 0) && (islog = false)             # a log ramp needs a positive bottom
+		t  = range(0.0, 1.0, length = n)
+		# The file's mapping is ABSOLUTE — SST is -2..45 degC whether or not today's grid reaches
+		# either end — so it is never re-stretched onto the data's extrema: a grid that spans a third
+		# of the scale must use a third of the palette, or it would not look like the browse picture
+		# it was picked from. The nodes outside the grid's own range are dropped and the two boundary
+		# nodes take the entry the file's own scale puts there, which is the same clamping the browse
+		# image does.
+		zz   = collect(islog ? exp10.(log10(lo) .+ t .* (log10(hi) - log10(lo))) : lo .+ t .* (hi - lo))
+		keep = findall(v -> zmn < v < zmx, zz)
+		if (!isempty(keep))
+			lo_i = max(1, first(keep) - 1)                 # entry the scale puts at/below the grid's floor
+			hi_i = min(n, last(keep) + 1)                  # …and at/above its ceiling
+			z   = vcat(zmn, zz[keep], zmx)
+			rgb = vcat(rgb[lo_i:lo_i, :], rgb[keep, :], rgb[hi_i:hi_i, :])
+			n   = size(rgb, 1)
+		end
+	end
+	z = accumulate(max, z)                                # strictly increasing, whatever the rounding did
+	for i in 2:n
+		z[i] <= z[i-1] && (z[i] = nextfloat(z[i-1]))
+	end
+	# A GMTcpt is n-1 slices: colour i runs from z[i] to z[i+1], and the slice's far end takes the next
+	# colour so the ramp is continuous rather than n flat steps. `_cpt_nodes_of` (cpt.jl) reads these z
+	# back — the log bunching only survives because it does.
+	m   = n - 1
+	col = rgb[1:m, :]
+	far = rgb[2:n, :]
+	return GMTcpt(col, zeros(m), hcat(z[1:m], z[2:n]), [zmn, zmx],
+	              [1.0 1.0 1.0; 0.0 0.0 0.0; 0.5 0.5 0.5], Cint(24), NaN, hcat(col, far),
 	              0, String[], String[], "rgb", String[])
 end
 

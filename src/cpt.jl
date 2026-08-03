@@ -63,8 +63,21 @@ function _cpt_nodes_of(C::GMTcpt, zmn, zmx)
 	cm = Float64.(C.colormap)
 	(isempty(cm) || size(cm, 2) < 3 || size(cm, 1) < 2) && return (Float64[], Float64[], 0)
 	maximum(cm) > 1.0 && (cm = cm ./ 255)
-	n = size(cm, 1)
-	return (collect(range(Float64(zmn), Float64(zmx), length = n)), vec(permutedims(cm[:, 1:3])), n)
+	cm = cm[:, 1:3]
+	n  = size(cm, 1)
+	# The CPT's OWN slice boundaries, when it carries usable ones. A palette that came out of a data
+	# file is not necessarily spread EVENLY in z — an OB.DAAC chlorophyll table is log-bunched, the way
+	# NASA renders it — and re-spreading it evenly here would throw that away and hand back a ramp the
+	# file never meant. Only when the CPT has no strictly increasing z of its own does the even spread
+	# over [zmn,zmx] apply.
+	rg = Float64.(C.range)
+	if (size(rg, 1) == n && size(rg, 2) >= 2)
+		cz = vcat(rg[:, 1], rg[end, 2])
+		if (all(diff(cz) .> 0))
+			return (cz, vec(permutedims(vcat(cm, cm[end:end, :]))), n + 1)
+		end
+	end
+	return (collect(range(Float64(zmn), Float64(zmx), length = n)), vec(permutedims(cm)), n)
 end
 
 # Recolour a live grid window with a named GMT colormap (called from the viewer's colorbar chooser

@@ -454,7 +454,12 @@ GMTVTK_API int gmtvtk_set_object_visible(void *handle, const char *name, int vis
 		if (ex.name != name) continue;
 		if (ex.actor) ex.actor->SetVisibility(vis ? 1 : 0);
 		if (ex.drape) ex.drape->SetVisibility(vis ? 1 : 0);
-		if (!ex.isImage) refreshGridColorbar(s);   // grid hidden/shown -> retarget the colorbar + readout
+		// ANY raster's visibility change retargets the bar — grid OR image. An indexed image owns a bar
+		// too (its palette legend), and refreshGridColorbar is the ONE function that decides which bar,
+		// if any, is on screen. Gating it on !isImage made this shared operation do nothing for one
+		// element type (SACRED_LAW.md): hiding the Ocean Color browse picture left its legend standing
+		// in a window with nothing else in it.
+		refreshGridColorbar(s);
 		rebuildSceneObjects(s);
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return 1;
