@@ -1135,6 +1135,12 @@ GMTVTK_API void gmtvtk_set_cpt(void *handle, const double *cz, const double *crg
 	ctf->RemoveAllPoints();
 	for (int i = 0; i < n; ++i)
 		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+	// The STORED nodes are now these. Every rebuild-from-stored (the "Shaded image (2-D)" flip, a cube
+	// layer switch) builds its colours from them, so leaving them at what the layer was BORN with makes
+	// the next rebuild silently throw the user's chosen colormap away and put the original back. The
+	// colour a layer has is whatever was last set on it — one place records that, and it is here.
+	s->baseCz.assign(cz, cz + n);
+	s->baseCrgb.assign(crgb, crgb + (size_t)3 * n);
 	s->surfCtfRange = true;
 	if (s->bar) s->bar->SetLookupTable(s->surfLut);   // refresh the legend strip
 	// In "flat image" relief look the surface is a PRE-BAKED RGBA texture, not scalar+LUT mapped --
@@ -1154,14 +1160,23 @@ GMTVTK_API void gmtvtk_set_cpt_grid(void *handle, int gridSel, const double *cz,
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !cz || !crgb || n < 2) return;
 	vtkScalarsToColors *lut = nullptr;          // gridSel is the grid's UNIQUE TAG (-1 = base relief)
+	ExtraObj *tgt = nullptr;
 	if (gridSel < 0) lut = s->surfLut;
-	else for (auto &ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
+	else for (auto &ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; tgt = &ex; break; }
 	vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(lut);
 	if (!ctf) return;                         // only the CTF path supports live recolour
 	ctf->RemoveAllPoints();
 	for (int i = 0; i < n; ++i)
 		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+	// Record the new nodes ON THE LAYER THAT WAS RECOLOURED — same reason as gmtvtk_set_cpt above: a
+	// rebuild-from-stored ("Shaded image (2-D)") reads these, and stale ones put the old palette back.
+	if (tgt) {
+		tgt->cz.assign(cz, cz + n);
+		tgt->crgb.assign(crgb, crgb + (size_t)3 * n);
+	}
 	if (gridSel < 0) {
+		s->baseCz.assign(cz, cz + n);
+		s->baseCrgb.assign(crgb, crgb + (size_t)3 * n);
 		s->surfCtfRange = true;
 		// Base relief in "flat image" look is a PRE-BAKED RGBA texture, not scalar+LUT mapped --
 		// re-bake it from the just-updated CTF (extras are always live LUT-mapped, no bake needed).
@@ -1389,18 +1404,21 @@ GMTVTK_API void gmtvtk_oc_attach_grid_button_h(void *handle, const char *name, c
 // It goes back through the Ocean Color callback (`req=place`) rather than the generic file-drop one
 // because an OB.DAAC L3m file is NOT an anonymous netCDF: which variable to load and which palette
 // to colour it with are both known from the product, so the picker dialog must never appear.
-GMTVTK_API void gmtvtk_oc_queue_place(void *handle, const char *path) {
+// `region` is "w/e/s/n" to read ONLY that box out of the file (the draw-a-rectangle path), or "" for
+// the whole grid.
+GMTVTK_API void gmtvtk_oc_queue_place(void *handle, const char *path, const char *region) {
 	Scene *s = static_cast<Scene *>(handle);
 	if (!sceneAlive(s) || !path || !*path) return;
 	const QString p = QString::fromUtf8(path);
-	QTimer::singleShot(0, s->win, [s, p]() {
+	const QString rg = QString::fromUtf8(region ? region : "");
+	QTimer::singleShot(0, s->win, [s, p, rg]() {
 		if (!sceneAlive(s) || !g_juliaOceanColor) return;
 		// Hand the browser back to itself when this window has one open, so the open reports on its
 		// status line and refreshes its cache line. The pinned Download-grid button has no dialog and
 		// passes nullptr, which every push-back export already tolerates.
 		auto it = g_oceanColorDlgs.find(s);
 		void *dlg = (it != g_oceanColorDlgs.end()) ? static_cast<void *>(it->second) : nullptr;
-		const QByteArray q = QString("req=place\nfile=%1\n").arg(p).toUtf8();
+		const QByteArray q = QString("req=place\nfile=%1\nregion=%2\n").arg(p).arg(rg).toUtf8();
 		g_juliaOceanColor(s, dlg, q.constData());		// Julia puts up (and takes down) its own dialog
 	});
 }
@@ -4998,6 +5016,12 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		ex.gnx = nx; ex.gny = ny;
 		ex.gx0 = x0; ex.gx1 = x1; ex.gy0 = y0; ex.gy1 = y1;
 		ex.zmin = zmin; ex.zmax = zmax; ex.lut = lut; ex.geog = geographic ? 1 : 0;
+		// Keep the CPT NODES too, not just the built lut: flipping this layer to the flat image look and
+		// back rebuilds its colours, and a lut cannot be rebuilt from. Mirrors Scene::baseCz/baseCrgb.
+		if (cz && crgb && ncolor > 0) {
+			ex.cz.assign(cz, cz + ncolor);
+			ex.crgb.assign(crgb, crgb + (size_t)3 * ncolor);
+		}
 		if (hasImg) {                                // grid + drape image on top
 			vtkNew<vtkImageData> tex_img;
 			tex_img->SetDimensions(iw, ih, 1);

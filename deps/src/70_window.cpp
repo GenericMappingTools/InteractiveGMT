@@ -1420,11 +1420,45 @@ extern "C" __declspec(dllexport) int gmtvtk_show_layer_image_h(void*, const floa
                                                     double, double, int, const double*, const double*, int, const char*);
 extern "C" __declspec(dllexport) int gmtvtk_replace_base_grid_h(void*, const float*, int, int, double, double,
                                                      double, double, int, const double*, const double*, int, const char*);
+extern "C" __declspec(dllexport) int gmtvtk_remove_grid_h(void*, const char*);   // the ONE layer-removal path
 // fwd (defined in 90_c_api.cpp; same TU) -- the SHARED flat-image/composite builder.
 static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int txH,
                               const float *z, int nx, int ny,
                               double x0, double x1, double y0, double y1, int geographic,
                               const double *cz, const double *crgb, int ncolor, const char *name, bool isCustom);
+
+static void rebuildBaseFromStored(Scene *s, bool asImage);   // the base's half, defined just below
+
+// Flip ONE grid layer between the flat 2-D image and the 3-D surface. `ex == nullptr` = the base.
+//
+// NO new flat-map builder and NO new surface builder here. An extra's stored state is handed to the
+// SAME `gmtvtk_show_layer_image_h` / `gmtvtk_replace_base_grid_h` the base flip already goes through
+// (rebuildBaseFromStored, just below), after the SAME `gmtvtk_remove_grid_h` every layer removal
+// already goes through. Those two builders make the layer they are handed the window's surface —
+// which IS what "show this layer as the 2-D map / as the 3-D surface" means. ExtraObj::cz/crgb exist
+// for exactly one reason: to be able to hand the layer's own CPT over at this point.
+static void rebuildLayerFromStored(Scene *s, ExtraObj *ex, bool asImage) {
+	if (!s) return;
+	if (!ex) { rebuildBaseFromStored(s, asImage); return; }
+	if (ex->gridZ.empty() || ex->gnx < 2 || ex->gny < 2 || ex->cz.size() < 2) return;
+	const std::vector<float>  z    = ex->gridZ;       // COPIES: the removal below frees the originals
+	const std::vector<double> cz   = ex->cz;
+	const std::vector<double> crgb = ex->crgb;
+	const int    nx = ex->gnx, ny = ex->gny, geog = ex->geog, nc = (int)cz.size();
+	const double x0 = ex->gx0, x1 = ex->gx1, y0 = ex->gy0, y1 = ex->gy1;
+	const std::string nm = ex->name;
+	const bool showBar = ex->showBar;                 // THIS layer's own colour-bar intent, carried across
+	gmtvtk_remove_grid_h(s, nm.c_str());              // the ONE removal path (actor, axes, rows, colorbar)
+	if (asImage) gmtvtk_show_layer_image_h (s, z.data(), nx, ny, x0, x1, y0, y1, geog, cz.data(), crgb.data(), nc, nm.c_str());
+	else         gmtvtk_replace_base_grid_h(s, z.data(), nx, ny, x0, x1, y0, y1, geog, cz.data(), crgb.data(), nc, nm.c_str());
+	// The layer that owned the colour bar was just removed and rebuilt as the window's surface, so the
+	// bar has to be re-derived for whatever is active NOW — through the same refreshGridColorbar every
+	// other add / hide / restack ends in. The bar belongs to the LAYER, so the layer's own intent moves
+	// with it; the flip changes how the layer is drawn, never whether it wants a bar.
+	s->surfShowBar = showBar;
+	refreshGridColorbar(s);
+	rebuildSceneObjects(s);
+}
 
 static void rebuildBaseFromStored(Scene *s, bool asImage) {
 	if (!s || s->gridZ.empty() || s->gnx < 2 || s->gny < 2 || s->baseCz.size() < 2) return;
@@ -16162,14 +16196,24 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QCheckBox *cbShadow = new QCheckBox(panel); cbShadow->setChecked(s->useShadows);                  // GRAPHICAL ELEMENT: "Cast shadows" checkbox
 	QCheckBox *cbHillL  = new QCheckBox(panel); cbHillL->setChecked(s->useHillshade && !s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (Lambert)" checkbox
 	QCheckBox *cbHillG  = new QCheckBox(panel); cbHillG->setChecked(s->useHillshade &&  s->hillGrd);  // GRAPHICAL ELEMENT: "Hillshade (grdimage)" checkbox
-	cbFlat->setChecked(s->layerImgMode);
-	cbFlat->setEnabled(s->gnx > 1 && !s->gridZ.empty());     // enabled whenever there is a grid to flip
 	s->cbFlat = cbFlat; s->cbShadow = cbShadow; s->cbHillL = cbHillL; s->cbHillG = cbHillG; s->cbPBR = cbPBR;
 
-	// Geometry toggle: rebuild the base as flat image / surface (rebuildBaseFromStored re-shades + syncs).
+	// The box describes THE LAYER THE WINDOW IS SHOWING — checked state and enabled state both — asked
+	// through the same activeGridLayer/resolveActiveGrid every other per-layer question goes through.
+	// It used to be set once, at window build, off the BASE's own gridZ: a window whose displayed grid
+	// was an extra (a grid dropped on an image, an Ocean Color subregion) got a permanently dead box.
+	s->syncFlatBox = [s, cbFlat]() {
+		QSignalBlocker b(cbFlat);
+		cbFlat->setChecked(s->layerImgMode);       // the window's own flat/3-D state, whichever layer set it
+		cbFlat->setEnabled(resolveActiveGrid(s).valid);
+	};
+	s->syncFlatBox();
+
+	// Geometry toggle: rebuild THAT layer as flat image / surface (one function, base or extra).
 	QObject::connect(cbFlat, &QCheckBox::toggled, [s](bool b){
-		s->cubeFlatImg = b;                                  // cube layer switches follow this too
-		rebuildBaseFromStored(s, b);
+		ExtraObj *lay = activeGridLayer(s);
+		if (!lay) s->cubeFlatImg = b;                        // cube layer switches follow the base's flag
+		rebuildLayerFromStored(s, lay, b);
 		if (s->syncFlatEnable) s->syncFlatEnable();          // grey/un-grey the flat-dead controls
 	});
 	form->addRow("Shaded image (2-D)", cbFlat);

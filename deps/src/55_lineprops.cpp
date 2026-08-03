@@ -858,6 +858,35 @@ static void rectRoiCrop(Scene *s, const LineRef &lr, const char *kind) {
 	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));         // Julia threw -> Errors tab
 }
 
+// "Ocean Color: load only this region" on a rectangle drawn over a browse image. Same rectangle
+// bounding box as rectRoiCrop above — ONE rectangle convention — handed to the host, which fetches the
+// L3 netCDF behind the picture and reads only that box out of it (grdcut). The address of that file
+// is the one pinned under the image when it was placed (`ocBtnUrl`), so nothing is re-derived here.
+static void rectOceanColorRegion(Scene *s, const LineRef &lr) {
+	if (!g_juliaEval) {
+		QMessageBox::warning(s->win, "Ocean Color", "This download needs the Julia/GMT host.");
+		return;
+	}
+	std::vector<std::vector<std::array<double,3>>> polylines;
+	lineGatherPolylines(s, lr, polylines);
+	if (polylines.empty()) return;
+	double w = 1e300, e = -1e300, so = 1e300, no = -1e300;
+	for (const auto &pl : polylines)
+		for (const auto &p : pl) {
+			w  = std::min(w,  p[0]);  e  = std::max(e,  p[0]);
+			so = std::min(so, p[1]);  no = std::max(no, p[1]);
+		}
+	if (!(e > w && no > so)) return;
+	const QString rect = QString("%1/%2/%3/%4").arg(w, 0, 'g', 16).arg(e, 0, 'g', 16)
+	                                           .arg(so, 0, 'g', 16).arg(no, 0, 'g', 16);
+	const QString cmd = QString("InteractiveGMT._oc_region(Ptr{Cvoid}(UInt(%1)),\"%2\",\"%3\")")
+	                        .arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(rect)
+	                        .arg(QString::fromStdString(s->ocBtnUrl));
+	std::vector<char> buf(1 << 12);
+	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+}
+
 // Open the Vertical elastic deformation dialog for a fault line (defined in 70_window.cpp, after the
 // ElasticDialog class — this fragment is #included before it, so forward-declare it here).
 static void faultRunDialog(Scene *s, vtkActor *seedPatch = nullptr);
@@ -971,6 +1000,13 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 						roi->addAction("Crop Image", [s, lr]() { rectRoiCrop(s, lr, "image"); });
 						roi->addAction("Crop Image (with coords)", [s, lr]() { rectRoiCrop(s, lr, "image_coords"); });
 					}
+					// This window is showing an Ocean Color BROWSE image (the L4 picture) and knows the
+					// address of the L3 data behind it — so a rectangle drawn on the picture can fetch the
+					// real grid and load ONLY that box out of it. Offered only when that address exists;
+					// `ocBtnUrl` is set when the browse image was placed.
+					if (!s->ocBtnUrl.empty())
+						roi->addAction("Ocean Color: load only this region",
+						               [s, lr]() { rectOceanColorRegion(s, lr); });
 				}
 			}
 		} else {

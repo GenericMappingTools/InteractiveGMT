@@ -86,15 +86,23 @@ _recolor(fig, cmap) = "recolor: only grid windows have a colormap"
 # THAT grid's own [zmin,zmax] so the CPT spans the right grid — fixing the old behaviour where the
 # colormap chooser on any group's Color Bar row always recoloured the first grid. Called from the
 # viewer's colorbar chooser (applyColormap -> _console_eval, so `fig` is bound to this window).
-function _recolor_grid(fig::QtFigure, cmap, zmin, zmax, gridSel)
+# Takes the WINDOW HANDLE, so EVERY grid layer's colormap can be changed — no window kind, no
+# registration state, nothing else can make the chooser inert. It used to take the console's `fig` and
+# be typed on QtFigure, with a stub for everything else; `fig` is bound only for a window a grid
+# PROMOTED, so on a window whose grid arrived as an extra (a grid dropped onto an image, an Ocean
+# Color subregion over its browse picture) there was no `fig` to bind and no method to reach —
+# picking a colormap did nothing at all. Nothing here ever needed the figure: the target layer is
+# `gridSel` and its scale is the [zmin,zmax] the C side resolved from the Color Bar row clicked.
+function _recolor_grid(h::Ptr{Cvoid}, cmap, zmin, zmax, gridSel)
 	cz, crgb, n = _cpt_nodes_range(zmin, zmax, cmap)
 	n < 2 && return "colormap '$cmap' failed (makecpt)"
 	ccall(_fn(:gmtvtk_set_cpt_grid), Cvoid,
 	      (Ptr{Cvoid}, Cint, Ptr{Float64}, Ptr{Float64}, Cint),
-	      fig.h, Cint(gridSel), cz, crgb, Cint(n))
+	      h, Cint(gridSel), cz, crgb, Cint(n))
 	return "colormap: $cmap"
 end
-_recolor_grid(fig, cmap, zmin, zmax, gridSel) = "recolor: only grid windows have a colormap"
+# A window handle is what the viewer passes; keep the figure form working for anyone calling by hand.
+_recolor_grid(fig, cmap, zmin, zmax, gridSel) = _recolor_grid(fig.h, cmap, zmin, zmax, gridSel)
 
 # TEST PROBE: the RGB (each 0..1) that ONE grid's own lut maps `z` to. gridSel: -1 = base relief,
 # 0..N-1 = the Nth extra grid. Returns nothing if the window/grid/lut is missing. Used by the suite to

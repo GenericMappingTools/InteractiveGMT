@@ -292,6 +292,12 @@ struct ExtraObj {
 	double gx0 = 0, gx1 = 1, gy0 = 0, gy1 = 1;
 	double zmin = 0, zmax = 0;               // this grid's own z range (drives its colorbar)
 	vtkSmartPointer<vtkScalarsToColors> lut; // this grid's colour map (for the retargeted colorbar)
+	// The CPT CONTROL NODES this layer's lut was built from — the same pair the base keeps in
+	// Scene::baseCz / baseCrgb, and kept for the same reason: a lut can be USED but not REBUILT from,
+	// and flipping a layer between the flat image and the 3-D surface has to rebuild it. Without these
+	// on the extra, "Shaded image (2-D)" could only ever act on the base, which is why it sat greyed
+	// out on any window whose displayed grid was not the base one.
+	std::vector<double> cz, crgb;
 	bool   showBar = true;                   // user wants this grid's colorbar shown (when it is active)
 	int    cubeLayers = 0;                   // >1 iff this grid is a 3-D-cube variable (its menu offers
 	                                         // "Cube layers…", opening the slider bound to THIS cube)
@@ -702,6 +708,10 @@ struct Scene {
 	int    cubeUseGlobal = 0;
 	QCheckBox *cbFlat = nullptr, *cbShadow = nullptr, *cbHillL = nullptr, *cbHillG = nullptr, *cbPBR = nullptr;   // Shading dock checkboxes
 	std::function<void()> syncFlatEnable;   // grey out the Shading controls that do nothing on a flat baked image
+	std::function<void()> syncFlatBox;      // point "Shaded image (2-D)" at the layer the window is SHOWING
+	                                        // (checked + enabled state). Re-run wherever the active grid can
+	                                        // change — refreshGridColorbar — so the box never describes a
+	                                        // layer that is no longer on screen.
 	// Base grid's CPT (control nodes) + geographic flag, kept so the Shading dock can rebuild the base as
 	// a flat IMAGE or a real SURFACE on demand (rebuildBaseFromStored) from s->gridZ without the host.
 	std::vector<double> baseCz, baseCrgb;

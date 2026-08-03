@@ -70,9 +70,16 @@ static void applyColormap(Scene *s, const QString &name, int gridSel) {
 	if (gridSel >= 0)
 		for (auto &ex : s->extras)
 			if (!ex.isImage && ex.tag == gridSel) { zmn = ex.zmin; zmx = ex.zmax; break; }
-	char rng[80];
+	// Address the WINDOW, not the console's `fig`. `fig` is bound from the host's figure registry, and a
+	// window only lands in it when a grid PROMOTED it — so on a window whose grid arrived as an extra
+	// (a grid dropped on an image, an Ocean Color subregion) there was no `fig` to bind and every
+	// colormap pick died as an unbound name. The handle is what identifies a window everywhere else in
+	// this file; gridSel already says which layer inside it.
+	char rng[96];
 	snprintf(rng, sizeof rng, "%.17g, %.17g, %d", zmn, zmx, gridSel);
-	std::string cmd = "InteractiveGMT._recolor_grid(fig, \"" + name.toStdString() + "\", " + rng + ")";
+	std::string cmd = "InteractiveGMT._recolor_grid(Ptr{Cvoid}(UInt(" +
+	                  std::to_string((unsigned long long)reinterpret_cast<uintptr_t>(s)) + ")), \"" +
+	                  name.toStdString() + "\", " + rng + ")";
 	std::vector<char> buf(1 << 12);
 	int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
 	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
@@ -122,7 +129,11 @@ static void layoutColorbar(Scene *s) {
 // the discrete case as an argument rather than a second bar that could drift from it.
 static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double hi, int discreteN = 0) {
 	if (!s) return;
-	if (s->imageOnly && discreteN <= 0) return;   // bare image -> no z colorbar (a palette legend is not one)
+	// NO imageOnly test here. Whether a z bar is wanted is decided ONCE, by refreshGridColorbar, which
+	// resolves the active grid and only reaches this function when one is displayed and wants a bar. A
+	// second opinion at this depth could only ever contradict the first — and did: on a window built
+	// from a bare image (an Ocean Color browse picture), refreshGridColorbar correctly resolved the grid
+	// laid over it and called in, and this line silently dropped the bar on the floor.
 	if (!(hi > lo)) hi = lo + 1.0;           // guard a degenerate (flat) grid
 	s->barLo = lo; s->barHi = hi;
 	s->bar = vtkSmartPointer<vtkScalarBarActor>::New();
@@ -1030,6 +1041,20 @@ static bool activeGridZRange(Scene *s, double &zlo, double &zhi) {
 // dialog's "Geographic" unchecked: the body coordinates are metres, so the anomaly's x,y are metres)
 // must read "X"/"Y", never "lon"/"lat" inherited from whatever grid the window was built around.
 // Falls back to the base surface's own flag when no grid layer resolves (cloud, solid, bare image).
+// The grid layer the window is CURRENTLY SHOWING, as something a caller can ACT on: the ExtraObj when
+// the active grid is an extra, nullptr when it is the base surface (or when no grid is visible at all —
+// callers pair this with resolveActiveGrid(s).valid, which answers that). Same rule, same resolver as
+// resolveActiveGrid, so "which layer does this control operate on?" has the SAME answer as "which layer
+// does the colour bar / Z axis / readout describe?" — one question, one answer (SACRED_LAW.md).
+static ExtraObj *activeGridLayer(Scene *s) {
+	if (!s) return nullptr;
+	ActiveGrid ag = resolveActiveGrid(s);
+	if (!ag.valid) return nullptr;
+	for (auto &ex : s->extras)
+		if (!ex.isImage && !ex.gridZ.empty() && ex.name == ag.name) return &ex;
+	return nullptr;                            // the base surface owns it
+}
+
 static int activeGridGeog(Scene *s) {
 	if (!s) return 0;
 	ActiveGrid ag = resolveActiveGrid(s);
@@ -1129,13 +1154,19 @@ static bool buildPaletteColorbar(Scene *s) {
 // false -- the two are mutually exclusive, matching the dialog's Shade Water/Land radio.
 static void refreshGridColorbar(Scene *s) {
 	if (!s) return;
-	if (s->imageOnly) {                        // bare-image windows never carry a z colorbar — but an
-		destroyColorbar(s);                    // INDEXED image's palette legend is not a z bar, and it
+	ActiveGrid ag = resolveActiveGrid(s);
+	// A window BUILT from a bare image is a bare image only while no grid is displayed IN it. The moment
+	// one is — a dropped grid, an Ocean Color subregion cut from the L3 file behind the browse picture —
+	// the z bar and the z readout belong to THAT grid. Asked through the same resolveActiveGrid the Z
+	// axis, the hover readout and the Illumination tool go through, never off the build-time imageOnly
+	// flag: that flag says how the window STARTED, not what it is showing (SACRED_LAW.md — one question,
+	// one answer). Gating on it here is why a subregion grid came up with no colour bar at all.
+	if (s->imageOnly && !ag.valid) {           // genuinely nothing but the picture — but an INDEXED
+		destroyColorbar(s);                    // image's palette legend is not a z bar, and it
 		buildPaletteColorbar(s);               // is exactly what such a window has to show
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return;
 	}
-	ActiveGrid ag = resolveActiveGrid(s);
 	destroyColorbar(s);
 	const bool isAqua = s->customLayerTexture;
 	if (!ag.valid || !ag.lut) {                // nothing visible to colour -> no bar, readout falls back
@@ -1620,7 +1651,14 @@ static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoin
 }
 
 static void rebuildSceneObjects(Scene *s) {
-	if (!s || !s->objPanel)
+	if (!s)
+		return;
+	// The Shading dock's "Shaded image (2-D)" box describes the layer the window is SHOWING, so it is
+	// re-derived HERE — the one function every scene change ends in (add, show/hide, restack, delete,
+	// gmtvtk_show_new_element_h). Doing it in refreshGridColorbar was too early on the add path: a new
+	// grid is created HIDDEN and only becomes visible later, so the box was still being told "no grid".
+	if (s->syncFlatBox) s->syncFlatBox();
+	if (!s->objPanel)
 		return;
 	// Wipe the previous layout + its checkboxes before rebuilding. deleteLater() (not delete) is
 	// deliberate -- this can run reentrantly from inside a row's own signal (a checkbox toggle that

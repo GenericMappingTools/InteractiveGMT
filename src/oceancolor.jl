@@ -706,7 +706,7 @@ function _on_oceancolor(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::C
 		# it: browsing caches PNGs, extracting caches a grid — both change what the line reports.
 		rc = if     req == "open"  ; _oc_open(scene, dlg, get(p, "url", ""))
 		     elseif req == "grid"  ; _oc_grid(scene, dlg, get(p, "url", ""))
-		     elseif req == "place" ; _oc_place(scene, dlg, get(p, "file", ""))
+		     elseif req == "place" ; _oc_place(scene, dlg, get(p, "file", ""), get(p, "region", ""))
 		     else                   ; _oc_browse(dlg, inst, prod, period, req, p)
 		     end
 		_oc_push_cache(dlg)
@@ -810,8 +810,29 @@ end
 # something on screen. That fallback only makes sense from a browse address; the pinned button is
 # already standing on the image it would place.
 function _oc_grid(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, url::AbstractString)
-	isempty(url) && (_oc_status(dlg, "No grid address for this image."); return Cint(0))
-	scene == C_NULL && (_oc_status(dlg, "No window to put the grid in."); return Cint(0))
+	f = _oc_fetch_grid(scene, dlg, url)
+	isempty(f) && return Cint(0)
+	println("Ocean Color: opening ", f)
+	# NOT opened from here. This function runs inside the button's clicked() handler, so the Qt loop is
+	# mid-event; an open path's own async progress dialog would go up inside that blocked turn and never
+	# get the idle turn it needs to close again. Queue it instead — C++ fires `req=place` back at us from
+	# a clean turn.
+	ccall(_fn(:gmtvtk_oc_queue_place), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), scene, f, "")
+	_oc_status(dlg, "Opening " * basename(f))
+	return Cint(1)
+end
+
+"""
+    _oc_fetch_grid(scene, dlg, url) -> String
+
+The L3 netCDF on disk, downloading it if it is not cached yet. `""` when it could not be had (no
+login, cancelled, or the server did not return a netCDF) — the reason is reported here, so a caller
+only has to check for the empty string. Shared by the Extract button and the draw-a-rectangle path,
+which differ only in how much of the file they then READ.
+"""
+function _oc_fetch_grid(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, url::AbstractString)::String
+	isempty(url) && (_oc_status(dlg, "No grid address for this image."); return "")
+	scene == C_NULL && (_oc_status(dlg, "No window to put the grid in."); return "")
 	ispng = endswith(lowercase(String(url)), ".png")
 	url   = ispng ? oc_data_url_of_png(url) : String(url)
 	nm    = basename(url)
@@ -820,7 +841,7 @@ function _oc_grid(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, url::AbstractString)
 	# declined to log in, which is an answer, not a failure.
 	if !_oc_ensure_login(scene)
 		_oc_status(dlg, "Not downloaded — an Earthdata login is needed for the data files.")
-		return Cint(0)
+		return ""
 	end
 	println("Ocean Color: downloading ", nm)
 	# The bar goes up BEFORE the first byte: a request that is still resolving/authenticating must not
@@ -841,15 +862,38 @@ function _oc_grid(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, url::AbstractString)
 		          Earthdata answers with its login page instead of the file. Correct (or delete) the
 		          `machine $(_OC_URS_HOST)` line there and try again."""
 		_oc_status(dlg, "Download failed — check the Earthdata login in " * _oc_netrc())
-		return Cint(0)
+		return ""
 	end
-	println("Ocean Color: opening ", f)
-	# NOT opened from here. This function runs inside the button's clicked() handler, so the Qt loop is
-	# mid-event; an open path's own async progress dialog would go up inside that blocked turn and never
-	# get the idle turn it needs to close again. Queue it instead — C++ fires `req=place` back at us from
-	# a clean turn.
-	ccall(_fn(:gmtvtk_oc_queue_place), Cvoid, (Ptr{Cvoid}, Cstring), scene, f)
-	_oc_status(dlg, "Opening " * basename(f))
+	return f
+end
+
+"""
+    _oc_region(scene, rect, url) -> Cint
+
+"Load only this region" on a rectangle drawn over an Ocean Color browse image: fetch the L3 file and
+read ONLY the drawn box out of it.
+
+`rect` is "w/e/s/n" in data coordinates — the same string, from the same rectangle bounding box, that
+Roi Crop Tools already builds (rectRoiCrop, 55_lineprops.cpp). One rectangle convention, not a
+second.
+
+Note what is and is not saved. The FILE still comes down whole: OB.DAAC's server refuses HTTP range
+requests (`416 Requested Range Not Satisfiable`, verified 2026-08-03 against a live 8.7 MB browse
+image that advertises no `Accept-Ranges`), so no partial fetch is possible against it from any
+client. What this avoids is READING and holding the whole global grid: `grdcut` pulls the box
+straight off disk — measured 0.03 s / 240x240 against 0.63 s / 4320x8640 for the same file. If a
+ranged endpoint ever appears (the Earthdata Cloud S3 mirror does serve ranges), only
+`_oc_fetch_grid` has to change; this function is already asking for exactly one box.
+"""
+function _oc_region(scene::Ptr{Cvoid}, rect::AbstractString, url::AbstractString)::Cint
+	parts = split(String(rect), '/')
+	length(parts) == 4 || (_viewer_log_error(scene, "Ocean Color: malformed rectangle '$rect'"); return Cint(0))
+	w, e, s, n = parse.(Float64, parts)
+	(e > w && n > s) || (_viewer_log_error(scene, "Ocean Color: empty rectangle"); return Cint(0))
+	f = _oc_fetch_grid(scene, C_NULL, url)
+	isempty(f) && return Cint(0)
+	ccall(_fn(:gmtvtk_oc_queue_place), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), scene, f,
+	      string(w, '/', e, '/', s, '/', n))
 	return Cint(1)
 end
 
@@ -861,6 +905,15 @@ end
 # table (`palette`). Which one the user wants is therefore KNOWN, so the multi-variable picker that a
 # plain dropped netCDF gets must never appear here — and the colours are the file's own, not this
 # viewer's default ramp.
+
+# "w/e/s/n" -> (w,e,s,n), or `nothing` for "" (the whole grid) and for anything malformed/empty.
+function _oc_parse_region(r::AbstractString)
+	isempty(r) && return nothing
+	p = split(String(r), '/')
+	length(p) == 4 || return nothing
+	v = try parse.(Float64, p) catch; return nothing end
+	return (v[2] > v[1] && v[4] > v[3]) ? (v[1], v[2], v[3], v[4]) : nothing
+end
 
 # The variable to display: the FIRST real one — never a `qual_*` mask, never the palette itself, and
 # never a 1-D coordinate vector. Empty when the file has no subdataset list at all (a plain
@@ -896,9 +949,9 @@ end
     _oc_palette_cpt(file, zmn, zmx) -> GMTcpt or nothing
 
 The file's OWN colour table as a CPT spanning [zmn, zmx]. L3m files carry it as a `palette` variable
-of 3x256 bytes (r,g,b down the first dimension), which is the palette NASA renders the browse images
-with — so a grid opened here looks like the tile it was picked from. `nothing` when the file has no
-palette, which leaves the caller on the viewer's ordinary default colormap.
+of 3x256 bytes — 256 RGB TRIPLETS, r,g,b, r,g,b, … — which is the palette NASA renders the browse
+images with, so a grid opened here looks like the tile it was picked from. `nothing` when the file
+has no palette, which leaves the caller on the viewer's ordinary default colormap.
 """
 function _oc_palette_cpt(file::AbstractString, zmn::Real, zmx::Real)
 	A = _oc_read_palette(file)
@@ -906,9 +959,13 @@ function _oc_palette_cpt(file::AbstractString, zmn::Real, zmx::Real)
 		@warn "Ocean Color: no readable `palette` variable in $(basename(file)) — falling back to the viewer's default colormap"
 		return nothing
 	end
-	size(A, 1) == 3 && (A = permutedims(A))		# (rgb, colour) as netCDF stores it -> (colour, rgb)
-	(size(A, 2) != 3 || size(A, 1) < 2) && return nothing
-	rgb = Float64.(A) ./ 255
+	# The bytes come back TRIPLET-INTERLEAVED — r0,g0,b0, r1,g1,b1, … — whatever shape the reader
+	# reports. Slicing that as three 256-byte planes (which is what a plain 256x3 view of it is) builds
+	# every entry out of three DIFFERENT colours, and a grid drawn through it is pure per-pixel noise.
+	# So de-interleave from the byte order itself: (3, n) then transpose = (n, rgb).
+	n = div(length(A), 3)
+	n < 2 && return nothing
+	rgb = Float64.(permutedims(reshape(vec(A)[1:3n], 3, n))) ./ 255
 	n   = size(rgb, 1)
 	z   = collect(range(Float64(zmn), Float64(zmx), length = n + 1))
 	# A GMTcpt is n slices: colour i runs from z[i] to z[i+1], and the slice's far end takes the next
@@ -923,24 +980,39 @@ end
 # palette. Goes in through `_add_grid_to_scene` (the ONE grid builder every other load path uses) and
 # is adopted by `_adopt_new_element` (the ONE new-file transition), so a downloaded grid behaves
 # exactly like a dropped one — its own axes, its own frame (SACRED_LAW.md).
-function _oc_place(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, file::AbstractString)
+function _oc_place(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, file::AbstractString, region::AbstractString = "")
 	(isempty(file) || !isfile(file)) && (_oc_status(dlg, "Nothing to open."); return Cint(0))
 	scene == C_NULL && (_oc_status(dlg, "No window to put the grid in."); return Cint(0))
-	# The download is cached, so pressing Extract twice arrives here twice with the same file. It is
-	# plotted ONCE. Same rule as a re-dropped file, and the same one the browse image above follows.
-	dup  = _oc_already_shown(scene, dlg, file, :grid, replace(basename(file), r"\.nc$" => ""))
-	dup === nothing || return dup
+	reg = _oc_parse_region(region)
 	v    = _oc_pick_var(_netcdf_subdatasets(file))
 	spec = isempty(v) ? String(file) : string(file, '?', v)
 	name = replace(basename(file), r"\.nc$" => "")
-	G    = GMT.gmtread(spec)
+	if reg === nothing
+		# The download is cached, so pressing Extract twice arrives here twice with the same file. It is
+		# plotted ONCE. Same rule as a re-dropped file, and the same one the browse image above follows.
+		dup = _oc_already_shown(scene, dlg, file, :grid, name)
+		dup === nothing || return dup
+	else
+		# A REGION is a different variable from the whole grid — its own name, its own axes — so the
+		# whole-file duplicate rule does not apply to it. Each box drawn is a result of its own, so they
+		# are numbered: the next free number, never a name that would replace a box already on screen.
+		base = name * " - subregion "
+		k = 1
+		while _find_object_exact(scene, :grid, base * string(k)) !== nothing; k += 1; end
+		name = base * string(k)
+	end
+	# Only the drawn box is READ: `grdcut` pulls it straight off disk instead of materialising the whole
+	# global grid and throwing most of it away.
+	G    = reg === nothing ? GMT.gmtread(spec) : GMT.grdcut(spec, region = reg)
 	fin  = filter(isfinite, G.z)
 	cmap = isempty(fin) ? :auto : something(_oc_palette_cpt(file, extrema(fin)...), :auto)
 	empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
 	_add_grid_to_scene(scene, G, name; cmap = cmap, promote = empty, source = spec) || return Cint(0)
 	_record_recent(String(file), G)
 	_adopt_new_element(scene, name, G)
-	_mark_file_open(String(file), scene)		# a second Extract now finds it, never plots it twice
+	# Only the WHOLE file claims the path: a region is one box out of it, and claiming the file for a box
+	# would make the next Extract (or the next box) think the file was already fully displayed.
+	reg === nothing && _mark_file_open(String(file), scene)
 	empty && ccall(_fn(:gmtvtk_set_title_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, "i'GMT -- " * basename(file))
 	_oc_status(dlg, "Opened " * name * (isempty(v) ? "" : "  ·  " * v))
 	return Cint(1)
