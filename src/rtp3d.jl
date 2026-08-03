@@ -261,15 +261,12 @@ function _on_rtp3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			return Cint(0)
 		end
 		_remember_object!(scene, :grid, title, G2)
-		# SACRED_LAW.md derived-variable display law: RTP/component is a NEW derived variable ->
-		# starts CHECKED (grid.jl `_show_object!`; `gmtvtk_add_surface_h` itself always adds a new
-		# extra HIDDEN, see its own comment) and every OTHER grid already in the window is UNCHECKED
-		# (`_hide_other_objects!` — hides all of them rather than guessing which one was "the"
-		# source, since a window can hold more than one grid). No-op on a freshly `promote`d empty
-		# launcher (nothing else was there to hide).
-		_show_object!(scene, title)
-		_hide_other_objects!(scene, :grid, title)
-		ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+		# SACRED_LAW.md derived-variable display + axes laws: RTP/component is a NEW derived variable, so
+		# it goes through the ONE shared transition (`_adopt_derived!`, grid.jl) — CHECKED
+		# (`gmtvtk_add_surface_h` itself always adds a new extra HIDDEN, see its own comment), every
+		# OTHER layer UNCHECKED whatever its kind (never guessing which one was "the" source), axes+camera
+		# on its own limits. No-op on a freshly `promote`d empty launcher (nothing else was there).
+		_adopt_derived!(scene, title, G2)
 		return Cint(1)
 	catch e
 		_viewer_log_error(scene, "RTP3D FAILED: $(sprint(showerror, e))")

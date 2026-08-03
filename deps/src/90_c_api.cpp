@@ -1344,6 +1344,123 @@ GMTVTK_API void gmtvtk_tiles_log(void *dlg, const char *msg) {
 	reinterpret_cast<TilesPicker*>(dlg)->logDownload(QString::fromUtf8(msg));
 }
 
+// Register the Ocean Color Data Browser callback. `fn` (Julia @cfunction, signature JuliaOceanColorFn)
+// gets the dialog's "key=value" request block (see 30_app.cpp) and answers by calling the two
+// push-back exports below on the same `dlg`. nullptr to detach.
+GMTVTK_API void gmtvtk_set_oceancolor_callback(JuliaOceanColorFn fn) {
+	g_juliaOceanColor = fn;
+}
+
+// Fill one of the Ocean Color browser's two preview tiles. `i` is 0 (the older image) or 1 (the
+// newer one); `png` is a local file the host has already downloaded ("" leaves the slot blank);
+// `caption` is the date line under the tile; `url` the browse-image address the Extract button will
+// hand back; `ymd` that composite's START day (yyyymmdd), which is what < and > step from.
+// Called SYNCHRONOUSLY from Julia while its request is on the stack, so `dlg` is the live dialog.
+GMTVTK_API void gmtvtk_oc_set_tile(void *dlg, int i, const char *png, const char *caption,
+                                   const char *url, const char *ymd) {
+	if (!dlg) return;
+	reinterpret_cast<OceanColorDialog *>(dlg)->setTile(i, QString::fromUtf8(png ? png : ""),
+	                                                   QString::fromUtf8(caption ? caption : ""),
+	                                                   QString::fromUtf8(url ? url : ""),
+	                                                   QString::fromUtf8(ymd ? ymd : ""));
+}
+
+// Pin the "Download grid" button under the Ocean Color browse image named `name` in `handle`. The
+// browse image is the L4 product; `url` is the L3 netCDF of the same name, which the button asks
+// Julia to fetch (req=grid). Called right after Julia places the image. One button per window — a
+// second image re-points it rather than stacking buttons.
+GMTVTK_API void gmtvtk_oc_attach_grid_button_h(void *handle, const char *name, const char *url,
+                                               const char *tip) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return;
+	ocAttachGridButton(s, QString::fromUtf8(name ? name : ""), QString::fromUtf8(url ? url : ""),
+	                   QString::fromUtf8(tip ? tip : ""));
+}
+
+// Open the downloaded L3 file `path` in `handle` on the NEXT event-loop turn, not now.
+//
+// Why deferred: the Extract / Download-grid button calls Julia synchronously from its clicked()
+// handler, so while the download runs the Qt loop is already inside an event. Opening the file from
+// in there puts the open path's OWN async progress dialog up inside that blocked turn, where it
+// spins but never gets the clean turn it needs to come down again — the "endless Working window".
+// Handing the path to a singleShot instead lets the click handler finish first, so the open then
+// runs from an idle loop.
+//
+// It goes back through the Ocean Color callback (`req=place`) rather than the generic file-drop one
+// because an OB.DAAC L3m file is NOT an anonymous netCDF: which variable to load and which palette
+// to colour it with are both known from the product, so the picker dialog must never appear.
+GMTVTK_API void gmtvtk_oc_queue_place(void *handle, const char *path) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s) || !path || !*path) return;
+	const QString p = QString::fromUtf8(path);
+	QTimer::singleShot(0, s->win, [s, p]() {
+		if (!sceneAlive(s) || !g_juliaOceanColor) return;
+		// Hand the browser back to itself when this window has one open, so the open reports on its
+		// status line and refreshes its cache line. The pinned Download-grid button has no dialog and
+		// passes nullptr, which every push-back export already tolerates.
+		auto it = g_oceanColorDlgs.find(s);
+		void *dlg = (it != g_oceanColorDlgs.end()) ? static_cast<void *>(it->second) : nullptr;
+		const QByteArray q = QString("req=place\nfile=%1\n").arg(p).toUtf8();
+		g_juliaOceanColor(s, dlg, q.constData());		// Julia puts up (and takes down) its own dialog
+	});
+}
+
+// --- grid-download progress -------------------------------------------------------------------
+// An L3 file is tens of MB: the user gets the real numbers, not a spinner. Julia calls _begin once,
+// _set on every libcurl progress tick, _end when the transfer stops (success, failure or cancel).
+// _set returns 1 when the user hit Cancel, which Julia turns into an aborted download.
+GMTVTK_API void gmtvtk_oc_progress_begin(void *handle, const char *what) {
+	Scene *s = static_cast<Scene *>(handle);
+	ocProgressBegin(sceneAlive(s) ? s->win : nullptr, QString::fromUtf8(what ? what : ""));
+}
+GMTVTK_API int gmtvtk_oc_progress_set(const char *what, double done, double total) {
+	return ocProgressSet(QString::fromUtf8(what ? what : ""), done, total);
+}
+GMTVTK_API void gmtvtk_oc_progress_end() {
+	ocProgressEnd();
+}
+
+// The Ocean Color browser's status line (bottom left). Same synchronous contract as the tile setter.
+GMTVTK_API void gmtvtk_oc_status(void *dlg, const char *msg) {
+	if (!dlg) return;
+	reinterpret_cast<OceanColorDialog *>(dlg)->setStatus(QString::fromUtf8(msg ? msg : ""));
+}
+
+// Ask for the NASA Earthdata username/password (a modal dialog on `handle`'s window) and copy them
+// into the caller's buffers. Returns 1 when both were given, 0 on Cancel or an empty field — which
+// the host must treat as "do not download", never as a reason to try anonymously. The busy overlay
+// comes down first: it paints over modal dialogs, and a question the user cannot see is a hang.
+GMTVTK_API int gmtvtk_oc_ask_login(void *handle, const char *msg, char *user, int ucap,
+                                   char *pass, int pcap) {
+	Scene *s = static_cast<Scene *>(handle);
+	closeBusyDialog();
+	return ocAskLogin(sceneAlive(s) ? s : nullptr, msg, user, ucap, pass, pcap);
+}
+
+// A plain information box on `handle`'s window — how the host tells the user what it just did with
+// their login (which file it went into, and what that file is).
+GMTVTK_API void gmtvtk_oc_message(void *handle, const char *title, const char *text) {
+	Scene *s = static_cast<Scene *>(handle);
+	closeBusyDialog();
+	QMessageBox::information(sceneAlive(s) && s->win ? static_cast<QWidget *>(s->win) : nullptr,
+	                         QString::fromUtf8(title ? title : ""), QString::fromUtf8(text ? text : ""));
+}
+
+// Which Product rows the browser's current instrument really has: bit i of `mask` set = row i+1 is
+// available, `cur` (1-based) is the row now in force. The dialog greys the rest out — the catalogue
+// lives on the host side, so this is pushed, exactly like the tiles and the status line.
+GMTVTK_API void gmtvtk_oc_set_products(void *dlg, int mask, int cur) {
+	if (!dlg) return;
+	reinterpret_cast<OceanColorDialog *>(dlg)->setProducts(mask, cur);
+}
+
+// The browser's cache line: the full directory the downloads live in and how much is in it. The host
+// owns that path (it is under GMTuserdir), so it is pushed, never derived here. Same contract again.
+GMTVTK_API void gmtvtk_oc_cache_info(void *dlg, const char *msg) {
+	if (!dlg) return;
+	reinterpret_cast<OceanColorDialog *>(dlg)->setCacheInfo(QString::fromUtf8(msg ? msg : ""));
+}
+
 // Register the LIDAR2011-PT callback (Mirone cartas_militares.m 'nikles' mode). `fn` (Julia
 // @cfunction, signature JuliaLidarFn) gets "op;..." from the picker: "init" (asks for the tile table,
 // pushed back via gmtvtk_lidar_set_tiles) and "go;rMin/rMax/cMin/cMax;res;dir" (build the mosaic).
@@ -1571,6 +1688,19 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 	s->useHillshade = true;
 	s->hillGrd      = true;
 	s->useShadows   = false;                          // cast-shadows is the alternative look, not an add-on
+	// DIRECT GRID ILLUMINATION MEANS DIRECT. GMT already computed one intensity per grid node; the
+	// only honest way to consume it is ONE bake -- CPT(z) x intensity -> the drape texture
+	// (rebakeLayerImage), which is what `layerImgMode` is. On the BASE surface the same reflectance is
+	// otherwise re-derived per VERTEX, per TILE, per LOD level by hillshadeMapper, so every zoom
+	// re-illuminates the grid: the mesh, not the data, decides how often the light is computed.
+	//
+	// ONLY when the base IS the grid the window is showing. A dropped grid extra is a single mesh with
+	// no LOD pyramid — hillshadeMapper bakes it once, which is already direct — and rebuilding the base
+	// underneath it would re-make a layer the user is not even looking at. Asked through the SAME
+	// resolveActiveGrid every other "which layer?" question uses (activeGridName).
+	if (activeGridName(s) == s->surfName && !s->layerImgMode && !s->customLayerTexture &&
+	    !s->gridZ.empty() && s->gnx > 1 && s->gny > 1)
+		rebuildBaseFromStored(s, /*asImage=*/true);
 	applyShading(s);
 }
 
@@ -3310,6 +3440,97 @@ GMTVTK_API void gmtvtk_euler_delete_dialog_test() {
 	g_eulerTestDlg = nullptr;
 	QApplication::processEvents();
 }
+// ---- Ocean Color Data Browser (OceanColorDialog) ----------------------------------------------
+// Same three-part shape as the Euler rotations hooks above: open the REAL dialog on a REAL window,
+// close it (which PARKS it), destroy it. A QUiLoader failure or a widget name that drifted out of
+// oceancolor_browser.ui shows up here instead of on the user's first click.
+static OceanColorDialog *g_ocTestDlg = nullptr;
+static void *g_ocTestWin = nullptr;
+GMTVTK_API int gmtvtk_oc_open_dialog_test(void *handle) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s) {
+		if (!g_ocTestWin) g_ocTestWin = gmtvtk_open_empty("ocean color test");
+		s = static_cast<Scene *>(g_ocTestWin);
+	}
+	g_scenes.insert(s);				// the dialog asks sceneAlive() before touching the scene
+	if (!s || !s->win) return 0;
+	// Exactly what the menu entry does: a dialog already open (or PARKED) for this window comes back,
+	// it is never doubled.
+	auto it = g_oceanColorDlgs.find(s);
+	if (it != g_oceanColorDlgs.end() && it->second && it->second->dlg) {
+		g_ocTestDlg = it->second;
+		g_ocTestDlg->unpark();
+		QApplication::processEvents();
+		return 1;
+	}
+	g_ocTestDlg = new OceanColorDialog(s->win, s);
+	if (!g_ocTestDlg->dlg) return 0;
+	QApplication::processEvents();
+	return 1;
+}
+// The X: PARKS the dialog (hidden, still alive, a row in Scene Objects) — so the pointer is kept and
+// gmtvtk_oc_state_test still answers, which is how a test checks the tiles survived the close.
+GMTVTK_API void gmtvtk_oc_close_dialog_test() {
+	if (g_ocTestDlg && g_ocTestDlg->dlg) g_ocTestDlg->dlg->close();
+	QApplication::processEvents();
+}
+// Really destroy it (the parked row's "Delete"), for a test that wants a clean window afterwards.
+GMTVTK_API void gmtvtk_oc_delete_dialog_test() {
+	if (g_ocTestDlg && g_ocTestDlg->dlg) {
+		g_ocTestDlg->reallyClose = true;
+		g_ocTestDlg->dlg->close();
+	}
+	g_ocTestDlg = nullptr;
+	QApplication::processEvents();
+}
+// 1 when the dialog is currently PARKED (hidden but alive, with its Scene Objects row), 0 when it is
+// on screen, -1 when there is none.
+GMTVTK_API int gmtvtk_oc_parked_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!g_ocTestDlg || !g_ocTestDlg->dlg) return -1;
+	const bool hidden = !g_ocTestDlg->dlg->isVisible();
+	bool row = false;
+	if (s) for (auto &pt : s->parkedTools) if (pt.win == g_ocTestDlg->dlg) row = true;
+	return (hidden && row) ? 1 : 0;
+}
+// What the browser is currently showing, as four '\n'-separated fields:
+//   <selected tile index>, <combo indices "inst/prod/period">, <tile 0 "ymd\turl">, <tile 1 "ymd\turl">
+// Returns how many tiles carry an image (0..2) — enough to check that a park/unpark kept them,
+// without a screenshot.
+GMTVTK_API int gmtvtk_oc_state_test(char *buf, int cap) {
+	if (!g_ocTestDlg || !g_ocTestDlg->dlg) return -1;
+	OceanColorDialog *o = g_ocTestDlg;
+	QStringList f;
+	f << QString::number(o->sel)
+	  << QString("%1/%2/%3").arg(o->cbInst ? o->cbInst->currentIndex() + 1 : 0)
+	                        .arg(o->cbProd ? o->cbProd->currentIndex() + 1 : 0)
+	                        .arg(o->cbPeriod ? o->cbPeriod->currentIndex() + 1 : 0);
+	int filled = 0;
+	for (int i = 0; i < 2; ++i) {
+		f << (o->startYmd[i] + "\t" + o->url[i]);
+		if (!o->url[i].isEmpty()) ++filled;
+	}
+	const QByteArray cur = f.join('\n').toUtf8();
+	if (buf && cap > 0) {
+		const int c = (cur.size() < cap - 1) ? cur.size() : cap - 1;
+		memcpy(buf, cur.constData(), c);
+		buf[c] = '\0';
+	}
+	return filled;
+}
+// Drive the browser the way the user does: set the three combos (1-based, 0 = leave alone). Each
+// change fires the SAME handler a click fires, so this exercises the real request path.
+GMTVTK_API int gmtvtk_oc_select_test(int inst, int prod, int period) {
+	if (!g_ocTestDlg || !g_ocTestDlg->dlg) return 0;
+	OceanColorDialog *o = g_ocTestDlg;
+	if (inst   > 0 && o->cbInst)   o->cbInst->setCurrentIndex(inst - 1);
+	if (prod   > 0 && o->cbProd)   o->cbProd->setCurrentIndex(prod - 1);
+	if (period > 0 && o->cbPeriod) o->cbPeriod->setCurrentIndex(period - 1);
+	QApplication::processEvents();
+	return 1;
+}
+
 // ---- Compute Euler pole (ComputeEulerDialog) --------------------------------------------------
 // Same three-part shape as the Euler rotations hooks above: open the REAL dialog on a REAL window,
 // drive its widgets by name, read the boxes back. A .ui rename or a QUiLoader failure surfaces here.
@@ -4547,6 +4768,15 @@ GMTVTK_API void gmtvtk_show_new_element_h(void *handle, const char *name,
 		surfSetVisibility(s, 0);
 		if (s->drape) s->drape->SetVisibility(0);
 	}
+	else if (surfProp(s)) {
+		// ... and when the base IS the element being adopted, it is CHECKED BACK ON. Without this the
+		// transition could only ever hide the base, so aiming it at the base (putting the ORIGINAL back
+		// after a derive -- illumination's "Remove", any future undo) showed nothing at all. An extra
+		// keep-target is already switched on by the loop above; the base has to be too, or the one
+		// shared transition is only half a transition for one layer out of all of them.
+		surfSetVisibility(s, 1);
+		if (s->drape) s->drape->SetVisibility(1);
+	}
 	// A MESH is a 3-D body: seen through the flat-2D top-down orthographic camera a cube is just a
 	// square. Switch the window to the 3-D view it would have opened in on its own, through the ONE
 	// 2D<->3D function (sceneSetFlat2D) — never inlined camera maths. Done BEFORE the re-frame, whose
@@ -4587,9 +4817,7 @@ GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const 
 
 	vtkSmartPointer<vtkScalarsToColors> lut;
 	if (cz && crgb && ncolor > 0) {
-		vtkNew<vtkColorTransferFunction> ctf;
-		for (int i = 0; i < ncolor; ++i) ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
-		lut = ctf;
+		lut = makeGridCTF(s, cz, crgb, ncolor);		// NaN fill colour applied by construction
 	}
 	else {
 		vtkNew<vtkLookupTable> t;
@@ -4705,6 +4933,11 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
 	double zmin = 0.0, zmax = 1.0;
+	// ONE mesh, built ONCE, shaded ONCE. Do not put per-view re-meshing here: an attempt at it
+	// (an LOD that swapped the mapper's polydata on every camera event and re-ran applySurfStyle ->
+	// hillshadeMapper's per-point bake on every swap) turned a grid's illumination into work that
+	// repeated for the whole time the user was zooming. Grid illumination is computed from the GRID,
+	// once; the mesh is not allowed to make it happen again.
 	auto pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, false);
 
 	vtkNew<vtkPolyDataNormals> norms;
@@ -4733,9 +4966,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		vtkSmartPointer<vtkScalarsToColors> lut;
 		bool ctfRange = false;
 		if (cz && crgb && ncolor > 0) {
-			vtkNew<vtkColorTransferFunction> ctf;
-			for (int i = 0; i < ncolor; ++i) ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
-			lut = ctf; ctfRange = true;
+			lut = makeGridCTF(s, cz, crgb, ncolor); ctfRange = true;
 		}
 		else {
 			vtkNew<vtkLookupTable> t;
@@ -4745,9 +4976,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		applyNanColorToLut(lut, s->nanColor);   // paint this grid's NaN cells with the NaN fill colour
 		vtkNew<vtkPolyDataMapper> map;
 		map->SetInputConnection(norms->GetOutputPort());
-		map->SetLookupTable(lut); map->SetScalarRange(zmin, zmax);
-		if (ctfRange) map->UseLookupTableScalarRangeOn();
-		map->ScalarVisibilityOn(); map->InterpolateScalarsBeforeMappingOn();
+		configureGridMapper(map, lut, zmin, zmax, ctfRange);
 		ex.actor = vtkSmartPointer<vtkActor>::New();
 		ex.actor->SetMapper(map);
 		ex.actor->GetProperty()->SetInterpolationToPBR();
@@ -5173,9 +5402,7 @@ GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, i
 		return 0;
 
 	// CPT for baking (a vtkColorTransferFunction over the exact GMT control nodes).
-	vtkNew<vtkColorTransferFunction> ctf;
-	for (int i = 0; i < ncolor; ++i)
-		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+	auto ctf = makeGridCTF(s, cz, crgb, ncolor);		// NaN fill colour applied by construction
 
 	// A cube opens as an illuminated relief map: default a FRESH cube window to the grdimage hillshade
 	// (done before the bake so the very first texture is already shaded). The Shading dock then switches
@@ -5237,8 +5464,7 @@ GMTVTK_API int gmtvtk_aqua_set_land_cpt_h(void *handle, const double *cz, const 
                                           double lo, double hi) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !cz || !crgb || ncolor < 2) return 0;
-	vtkNew<vtkColorTransferFunction> ctf;
-	for (int i = 0; i < ncolor; ++i) ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+	auto ctf = makeGridCTF(s, cz, crgb, ncolor);		// NaN fill colour applied by construction
 	s->aquaLandLut = ctf;
 	buildAquaLandColorbar(s, s->aquaLandLut, lo, hi);
 	setAquaLandColorbarVisible(s, s->aquaLandShowBar && !s->aquaShowWater);

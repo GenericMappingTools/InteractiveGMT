@@ -520,6 +520,12 @@ struct Scene {
 	vtkSmartPointer<vtkAssembly>          surfGroup;
 	std::vector<vtkSmartPointer<vtkActor>> tiles;
 	vtkSmartPointer<vtkActor>             drape;   // optional image overlay (CPT base shows under transparent texels)
+	// The NaN backdrop. A NaN is a DATA HOLE: the mesh builders emit no cell there, so the surface has
+	// a real gap and nothing is left for the light to illuminate. This flat, UNLIT quad sits just under
+	// the grid floor in the Preferences NaN fill colour, so a hole reads as that colour instead of as
+	// the window background — and, being real geometry, it is what a click in a hole lands on.
+	vtkSmartPointer<vtkActor>             nanPlane;
+	double nanPlaneBox[6] = { 0, 0, 0, 0, 0, 0 };  // bounds it was last built for (skip idle rebuilds)
 	// The BASE surface's OWN axes (SACRED_LAW.md Raster-own-axes law -- see AxesSet above). This is
 	// the PRIMARY raster's set, not "the window's axes": it is owned by the base surface's own master
 	// handle exactly as every ExtraObj owns `ex.ax`, and nothing else in the window may frame, hide or
@@ -628,6 +634,17 @@ struct Scene {
 	size_t   lodResidentBytes = 0;                    // approx resident tile geometry bytes
 	size_t   lodBudgetBytes = (size_t)1 << 30;        // ~1 GiB cap; LRU-evict offscreen tiles past it
 	vtkSmartPointer<vtkCallbackCommand> lodCmd;       // camera-modified observer (drives refine)
+	// MESHING BUDGET PER CAMERA EVENT. Refinement runs inside the camera callback, i.e. before the
+	// frame is allowed to finish, so a zoom that crosses a level threshold used to mesh that ENTIRE
+	// level -- hundreds of makeGridTile calls -- with the UI frozen until the last one. The budget
+	// caps how much may be meshed in one pass; whatever is left over is covered by its COARSER parent
+	// tile (already built, so free) and finished on a short timer. Blur-then-sharpen, never a freeze.
+	// Bumped by applyShading, i.e. whenever ANY shading input changes (mode, sun, sliders, the
+	// Hillshade tool's reflectance). A tile's colours are valid exactly while its own stamp matches.
+	long styleGen      = 1;
+	long lodCellsLeft  = 0;                           // sampled cells still meshable in THIS pass
+	bool lodPending    = false;                       // a pass ran short -> more detail still owed
+	bool lodTimerArmed = false;                       // one catch-up timer in flight, never a storm
 
 	// --- flat-2D (top-down ortho map) toggle --------------------------------
 	// One-button switch to a true planimetric map: VE collapsed to 0 (relief flat,
@@ -797,6 +814,14 @@ struct Scene {
 	                                     // that touches swipeAct's enabled state must ALSO touch this.
 	QWidget *swipeBar = nullptr;      // the draggable divider overlay, parented on `widget`
 	std::vector<std::pair<vtkProp3D*, int>> swipeSavedVis;
+
+	// "Download grid" button pinned to the bottom-centre of an Ocean Color browse image (the L4 PNG a
+	// double-click in the browser placed here). It is a real QPushButton parented on `widget`, like
+	// swipeBar above, repositioned from the image actor's own bounds before every render — so it
+	// tracks pan/zoom/rotate and disappears with the image. `ocBtnOwner` is the ExtraObj name it
+	// belongs to and `ocBtnUrl` the L3 netCDF address it downloads (see src/oceancolor.jl).
+	QPushButton *ocBtn = nullptr;
+	std::string  ocBtnOwner, ocBtnUrl;
 
 	// Link shows ONE of a pair at a time instead of splitting them across a divider: a right-click
 	// swaps which one you are looking at, at whatever zoom you are already at. Two flavours, picked
@@ -1122,7 +1147,15 @@ struct QuadNode {
 	double cx = 0, cy = 0;            // region centre (true coords)
 	double worldSpacing = 0;          // true-coord node gap at this node's step
 	QuadNode *child[4] = { nullptr, nullptr, nullptr, nullptr };
-	vtkSmartPointer<vtkActor> actor;  // null = not resident
+	vtkSmartPointer<vtkActor> actor;  // built geometry; null = not resident (nothing cached)
+	// Is this node's actor currently PART OF THE SCENE? Distinct from `actor != null`, which only
+	// says the geometry exists. Coarsening takes a tile OUT of the assembly but KEEPS it built, so
+	// zooming back in re-adds it instead of re-meshing it (see dropNodeActor / ensureNodeActor).
+	bool     inScene = false;
+	// Shading state this tile's colours were baked under (Scene::styleGen). Re-baking is expensive —
+	// hillshadeMapper maps every point through the CPT and shades it — so it must happen when the
+	// shading actually CHANGED, not every time a cached tile comes back on screen.
+	long     styleGen = 0;
 	uint64_t lastUsed = 0;
 	size_t   bytes = 0;
 };
@@ -1221,6 +1254,49 @@ static void applyNanColorToLut(vtkScalarsToColors *lut, const double nanRGB[3]) 
 	}
 }
 
+// THE one place a grid's colour transfer function is built from a CPT (cz/crgb node arrays, the
+// shape every Julia colour path already hands over).
+//
+// SACRED_LAW.md, "same operation, ALWAYS same function" — and its own lesson that when a value has
+// more than one consumer you fix the SHARED SOURCE, not each call site. Building the CTF and
+// applying the Preferences NaN fill colour were separate steps, so of the six grid-LUT builders in
+// this code base only three remembered the second step: the primary surface, an added surface and
+// the Preferences re-apply had the NaN colour; the cube-layer, Aquamoto-land and mesh builders
+// silently dropped it. Same control, different behaviour per element type = the violation.
+//
+// Applying it HERE makes that impossible to get wrong: a grid LUT that exists has the NaN colour on
+// it by construction, and a new builder cannot forget a step it never has to take.
+// THE one place a grid mapper's scalar->colour mapping is configured.
+//
+// `InterpolateScalarsBeforeMapping` is deliberately OFF, and that is the whole point of this
+// function. With it ON, VTK stops asking the LUT for a colour per fragment: it bakes the LUT into a
+// 1-D colour TEXTURE and turns every scalar into a texture COORDINATE. A NaN scalar becomes a NaN
+// coordinate, which samples the clamped edge of that texture — the vtkColorTransferFunction's
+// NanColor is never consulted at all. So NaN cells came out in the ramp's end colour on every grid
+// mapper that had it on, no matter how correctly the Preferences NaN fill colour had been applied
+// to the LUT. Setting the colour and being able to SEE it are two different things, and the fix for
+// the second one lives here.
+//
+// It costs a slightly less smooth gradient across a cell. Correct NaN wins.
+static void configureGridMapper(vtkMapper *m, vtkScalarsToColors *lut,
+                                double zmin, double zmax, bool ctfRange) {
+	if (!m) return;
+	m->SetLookupTable(lut);
+	m->SetScalarRange(zmin, zmax);
+	if (ctfRange) m->UseLookupTableScalarRangeOn();		// colours keyed to the CPT's own z nodes
+	m->ScalarVisibilityOn();
+	m->InterpolateScalarsBeforeMappingOff();
+}
+
+static vtkSmartPointer<vtkColorTransferFunction>
+makeGridCTF(const Scene *s, const double *cz, const double *crgb, int ncolor) {
+	vtkSmartPointer<vtkColorTransferFunction> ctf = vtkSmartPointer<vtkColorTransferFunction>::New();
+	for (int i = 0; i < ncolor; ++i)
+		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+	if (s) applyNanColorToLut(ctf, s->nanColor);
+	return ctf;
+}
+
 // Build a surface from a caller-supplied grid (GMT.jl layout): z is column-major,
 // ny rows x nx cols, element (iy,ix) at offset ix*ny+iy, mapping to (x[ix], y[iy])
 // with y ascending. NaN cells are PAINTED (not dropped): every quad is emitted; a NaN node keeps its
@@ -1283,8 +1359,15 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 			vtkIdType b =  j      * nx + i + 1;
 			vtkIdType c = (j + 1) * nx + i + 1;
 			vtkIdType d = (j + 1) * nx + i;
-			// NaN corners are no longer skipped — the quad is emitted and its NaN nodes render in the
-			// NaN fill colour (z scalar NaN -> CTF NanColor), so the hole is painted instead of void.
+			// A NaN IS A DATA HOLE. No cell is emitted where any corner is NaN, so the hole is a real
+			// gap in the mesh: no geometry, no normal, and above all NOTHING FOR THE LIGHT TO HIT.
+			// Emitting the quad and relying on the NaN scalar -> CTF NanColor (what this did before)
+			// paints the right colour and then lets the PBR light multiply it — white NaN came out
+			// beige. A hole cannot be illuminated. The NaN fill colour is shown by the flat unlit
+			// backdrop behind the surface (nanPlaneUpdate), which is also what a click lands on.
+			if (std::isnan(z[(vtkIdType) i     *ny + j    ]) || std::isnan(z[(vtkIdType)(i+1)*ny + j    ]) ||
+			    std::isnan(z[(vtkIdType)(i+1)*ny + j + 1]) || std::isnan(z[(vtkIdType) i     *ny + j + 1]))
+				continue;
 			if (triangulate) {
 				vtkIdType t1[3] = { a, b, c };   // lower-right tri
 				vtkIdType t2[3] = { a, c, d };   // upper-left  tri
@@ -1364,7 +1447,6 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 
 	for (int jj = 0; jj < th; ++jj) {
 		const int j = ys[jj]; const double y = y0 + j * dy;
-		const int jd = ys[jj > 0 ? jj-1 : jj], ju = ys[jj < th-1 ? jj+1 : jj];  // sampled neighbours
 		for (int ii = 0; ii < tw; ++ii) {
 			const int i = xs[ii]; const double x = x0 + i * dx;
 			const float zz = z[(vtkIdType)i * ny + j];
@@ -1372,15 +1454,24 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 			// the CTF paints it with the NaN fill colour.
 			pts->InsertNextPoint(x, y, std::isnan(zz) ? fillZ : zz);
 			zval->InsertNextValue(zz);
-			// normal from the DISPLAYED (sampled) neighbours -> matches this tile's surface, and
-			// neighbour tiles sharing the edge sample the same nodes -> no lighting seam.
-			const int il = xs[ii > 0 ? ii-1 : ii], ir = xs[ii < tw-1 ? ii+1 : ii];
+			// ILLUMINATION COMES FROM THE GRID, NOT FROM THE MESH. The normal is computed from this
+			// node's TRUE FULL-RESOLUTION neighbours (i±1, j±1), never from the LOD-sampled ones, so
+			// one node has ONE normal at every zoom level -- which is the only way the hillshade can
+			// be the same illumination at every zoom step.
+			//
+			// It used to read the SAMPLED neighbours (step nodes away), so a node's normal changed
+			// with the LOD: fine detail at step 1, progressively smoothed as the view pulled back, and
+			// re-baked by hillshadeMapper on every refinement. That is the shifting, re-generating
+			// illumination the user saw while zooming -- and it also disagreed with makeGridFromArray,
+			// the non-tiled builder, which has always used the full-resolution neighbours.
+			const int il = i > 0 ? i-1 : i, ir = i < nx-1 ? i+1 : i;
+			const int jdF = j > 0 ? j-1 : j, juF = j < ny-1 ? j+1 : j;
 			float nxv = 0.f, nyv = 0.f, nzv = 1.f;
 			if (!std::isnan(zz)) {
-				const float zl = z[(vtkIdType)il*ny + j],  zr = z[(vtkIdType)ir*ny + j];
-				const float zb = z[(vtkIdType)i*ny + jd],  zt = z[(vtkIdType)i*ny + ju];
+				const float zl = z[(vtkIdType)il*ny + j],   zr = z[(vtkIdType)ir*ny + j];
+				const float zb = z[(vtkIdType)i*ny + jdF],  zt = z[(vtkIdType)i*ny + juF];
 				if (!std::isnan(zl) && !std::isnan(zr) && !std::isnan(zb) && !std::isnan(zt)) {
-					const double ddx = (ir - il) * dx, ddy = (ju - jd) * dy;
+					const double ddx = (ir - il) * dx, ddy = (juF - jdF) * dy;   // full-res spans too
 					const double gx = ddx != 0.0 ? (zr - zl) / ddx : 0.0;
 					const double gy = ddy != 0.0 ? (zt - zb) / ddy : 0.0;
 					double vx = -gx, vy = -gy, vz = 1.0;
@@ -1403,7 +1494,12 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 			const vtkIdType b = (vtkIdType)jj    * tw + ii + 1;
 			const vtkIdType c = (vtkIdType)(jj+1)* tw + ii + 1;
 			const vtkIdType d = (vtkIdType)(jj+1)* tw + ii;
-			// NaN corners no longer skip the quad — the hole is painted (NaN scalar -> CTF NanColor).
+			// A NaN IS A DATA HOLE — same rule as makeGridFromArray above, same reason (a hole has
+			// no geometry, so no light can reach it). The sampled corner nodes are the ones actually
+			// meshed at this LOD step, so a coarse tile's hole follows what it draws.
+			if (std::isnan(z[(vtkIdType)xs[ii  ]*ny + ys[jj  ]]) || std::isnan(z[(vtkIdType)xs[ii+1]*ny + ys[jj  ]]) ||
+			    std::isnan(z[(vtkIdType)xs[ii+1]*ny + ys[jj+1]]) || std::isnan(z[(vtkIdType)xs[ii  ]*ny + ys[jj+1]]))
+				continue;
 			const vtkIdType quad[4] = { a, b, c, d };
 			cells->InsertNextCell(4, quad);
 		}
@@ -2149,6 +2245,47 @@ static inline bool extraVisible(const ExtraObj &ex) {
 	return false;
 }
 
+// Keep the NaN backdrop under whatever raster is on display. Built lazily, refreshed only when the
+// drawn bounds actually move (VE, a re-frame, a new active layer), so the per-render caller costs a
+// bounds compare. Unlit and unscaled: it is built directly in the same scaled world the surface
+// actors are drawn in, and it must show the NaN fill colour EXACTLY as the user set it -- a lit plane
+// would tint it the same way the lit NaN quads used to.
+static void nanPlaneUpdate(Scene *s) {
+	if (!s || !s->ren) return;
+	// Only a GRID can have NaNs. No grid layer on display -> nothing to back.
+	double zlo, zhi;
+	const bool haveGrid = activeGridZRange(s, zlo, zhi);
+	if (!haveGrid) { if (s->nanPlane) s->nanPlane->SetVisibility(0); return; }
+	double b[6]; surfGetBounds(s, b);
+	const double diag = std::sqrt((b[1]-b[0])*(b[1]-b[0]) + (b[3]-b[2])*(b[3]-b[2]));
+	const double zplane = b[4] - 1e-3 * ((b[5] > b[4]) ? (b[5]-b[4]) : (diag > 0 ? diag : 1.0));
+	if (!s->nanPlane) {
+		vtkNew<vtkPlaneSource> ps;
+		vtkNew<vtkPolyDataMapper> m; m->SetInputConnection(ps->GetOutputPort());
+		m->ScalarVisibilityOff();
+		s->nanPlane = vtkSmartPointer<vtkActor>::New();
+		s->nanPlane->SetMapper(m);
+		s->nanPlane->GetProperty()->LightingOff();     // a hole is not illuminated. That is the point.
+		s->ren->AddActor(s->nanPlane);
+		s->nanPlaneBox[0] = s->nanPlaneBox[1] = 1e300;  // force the first build below
+	}
+	s->nanPlane->SetVisibility(1);
+	s->nanPlane->GetProperty()->SetColor(s->nanColor[0], s->nanColor[1], s->nanColor[2]);
+	const double want[6] = { b[0], b[1], b[2], b[3], zplane, zplane };
+	bool same = true;
+	for (int i = 0; i < 6; ++i)
+		if (std::abs(want[i] - s->nanPlaneBox[i]) > 1e-9 * (1.0 + std::abs(want[i]))) { same = false; break; }
+	if (same) return;
+	for (int i = 0; i < 6; ++i) s->nanPlaneBox[i] = want[i];
+	vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(s->nanPlane->GetMapper());
+	if (vtkPlaneSource *ps = m ? vtkPlaneSource::SafeDownCast(m->GetInputAlgorithm()) : nullptr) {
+		ps->SetOrigin(b[0], b[2], zplane);
+		ps->SetPoint1(b[1], b[2], zplane);
+		ps->SetPoint2(b[0], b[3], zplane);
+		ps->Update();
+	}
+}
+
 // Every raster's axes, redrawn from ITS OWN frame. This is the whole of the window's axis work: a
 // loop over independent sets, with NO window-level box, NO shared frame and NO "active layer" — two
 // visible rasters draw two sets of axes, each fitted to and numbered in its own limits and units.
@@ -2162,6 +2299,7 @@ static void rebuildAxisLabels(Scene *s) {
 	rebuildAxesFor(s, s->baseAxes, s->baseAxes.shown && baseVis, true);
 	for (auto &ex : s->extras)
 		rebuildAxesFor(s, ex.ax, ex.ax.shown && extraVisible(ex), false);
+	nanPlaneUpdate(s);       // the data holes' backdrop follows the same bounds the axes just did
 }
 
 // Renderer StartEvent -> keep the axis labels on the camera-near edges as the view rotates.

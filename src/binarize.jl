@@ -383,9 +383,7 @@ function _bin_label!(st::_BinState, n::Int)
 		Ilab = GMT.mat2img(rgb, st.Ig)
 		name = _bin_name(st, "labels")
 		_add_image_to_scene(st.scene, Ilab, name; promote=false)
-		_show_object!(st.scene, name)
-		_hide_other_objects!(st.scene, :image, name)
-		ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), st.scene)
+		_adopt_derived!(st.scene, name, Ilab)     # the ONE derived-variable transition (grid.jl)
 		_viewer_log_error(st.scene, "Binarize: $ncomp connected components added as \"$name\"")
 	else
 		_bin_setmask!(st, _bin_mask_img(st, st.labels .== Int32(n)))
@@ -415,9 +413,7 @@ function _bin_commit!(st::_BinState, applyOrig::Bool, useAlpha::Bool)
 	ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), st.scene, name)
 	_forget_object!(st.scene, :image, name)
 	_add_image_to_scene(st.scene, Iout, name; promote=false)
-	_show_object!(st.scene, name)
-	_hide_other_objects!(st.scene, :image, name)
-	ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), st.scene)
+	_adopt_derived!(st.scene, name, Iout)         # the ONE derived-variable transition (grid.jl)
 	return
 end
 

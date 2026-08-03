@@ -32,6 +32,11 @@ end
 # on failure -> viewer falls back to its built-in ramp.
 function _cpt_nodes_range(zmn, zmx, cmap)
 	(cmap === nothing || !(zmx > zmn)) && return (Float64[], Float64[], 0)
+	# A CPT handed over as an OBJECT already carries the colours it means (a file's own embedded
+	# palette, e.g. the `palette` variable of an OB.DAAC L3m grid). Its nodes are simply re-spread over
+	# [zmn,zmx] — a round trip through `makecpt` could only resample, and would silently substitute the
+	# viewer's ramp if it failed, i.e. throw the user's palette away.
+	cmap isa GMTcpt && return _cpt_nodes_of(cmap, zmn, zmx)
 	try
 		# Resample to 256 discrete nodes so the viewer gets a full-resolution ramp (the master
 		# CPT carries only ~dozens of control points; F3D uses 256).
@@ -49,6 +54,17 @@ function _cpt_nodes_range(zmn, zmx, cmap)
 		@warn "makecpt failed; using the viewer's built-in ramp" exception=e
 		return (Float64[], Float64[], 0)
 	end
+end
+
+# The control nodes of an EXPLICIT CPT, spread evenly over [zmn,zmx]. Colours are taken exactly as
+# the CPT carries them (0-1 or 0-255, detected, never assumed), so a palette that came out of a data
+# file reaches the screen unchanged. Same (cz, crgb, n) contract as `_cpt_nodes_range`.
+function _cpt_nodes_of(C::GMTcpt, zmn, zmx)
+	cm = Float64.(C.colormap)
+	(isempty(cm) || size(cm, 2) < 3 || size(cm, 1) < 2) && return (Float64[], Float64[], 0)
+	maximum(cm) > 1.0 && (cm = cm ./ 255)
+	n = size(cm, 1)
+	return (collect(range(Float64(zmn), Float64(zmx), length = n)), vec(permutedims(cm[:, 1:3])), n)
 end
 
 # Recolour a live grid window with a named GMT colormap (called from the viewer's colorbar chooser

@@ -724,6 +724,10 @@ static void applySurfStyle(Scene *s, vtkActor *a) {
 // (Re)assemble the post-process pass chain from the Scene's toggles, then apply
 // the live material/light values. Called at setup and from the Shading dock.
 static void applyShading(Scene *s) {
+	// ANY shading input just changed (mode, sun, sliders, the Hillshade tool's reflectance). Bumping
+	// this invalidates every cached LOD tile's colours exactly once — a tile compares its own stamp on
+	// its way back into the scene, so it re-bakes when the look really changed and never otherwise.
+	++s->styleGen;
 	// material — PBR on the RELIEF SURFACE ONLY. The drape is a textured picture and MUST
 	// stay Phong: VTK's PBR shader samples only SetBaseColorTexture, so a PBR drape ignores
 	// its SetTexture and renders flat grey. Do NOT touch s->drape's material here.

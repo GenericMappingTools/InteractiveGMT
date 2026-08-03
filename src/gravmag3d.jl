@@ -65,17 +65,11 @@ function _gm3d_deliver(scene::Ptr{Cvoid}, R, title::String, outfile::AbstractStr
 		_viewer_log_error(scene, "$title: window closed, grid not added")
 		return Cint(0)
 	end
-	# SACRED_LAW.md derived-variable display law: the anomaly starts CHECKED, every other grid in the
-	# window is UNCHECKED, and Scene Objects unfolds to reveal it.
-	_show_object!(scene, title)
-	_hide_other_objects!(scene, :grid, title)
-	ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
-	# ...and the derived-variable AXES law: the anomaly's region is the one the user asked for, not the
-	# parent grid's, so the axes cube + camera must re-fit to it (keepMargin=0: grids fill edge-to-edge,
-	# the existing grid convention).
-	r = G.range
-	ccall(_fn(:gmtvtk_reframe_h), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Cint),
-	      scene, r[1], r[2], r[3], r[4], Cint(0))
+	# SACRED_LAW.md derived-variable display AND axes laws, in the ONE shared transition (`_adopt_derived!`,
+	# grid.jl): the anomaly starts CHECKED, every other layer is UNCHECKED whatever its kind, the axes cube
+	# + camera re-fit to the anomaly's OWN region and units (mGal over a bathymetry parent in metres —
+	# `G.range` carries X, Y and Z), and Scene Objects unfolds to reveal it.
+	_adopt_derived!(scene, title, G)
 	return Cint(1)
 end
 

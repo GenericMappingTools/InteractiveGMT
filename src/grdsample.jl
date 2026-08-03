@@ -49,13 +49,12 @@ function _on_grdsample(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			if isempty(output)
 				newname = base * " resampled"
 				_add_grid_to_scene(scene, G_out, newname)
-				# SACRED_LAW.md derived-variable display law: show the new resample, hide every OTHER
-				# grid in the window (`_hide_other_objects!` — hides all of them rather than trying to
-				# translate the dialog's DISPLAY label, e.g. "Surface"/"Image" for an unnamed base —
-				# GrdsampleDialog, 70_window.cpp:1148 — back into a Scene Objects internal name).
-				_show_object!(scene, newname)
-				_hide_other_objects!(scene, :grid, newname)
-				ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+				# SACRED_LAW.md derived-variable display law, through the ONE shared transition
+				# (`_adopt_derived!`, grid.jl): the resample is checked, EVERY other layer is unchecked
+				# whatever its kind, the axes+camera re-frame to the resample's own limits, panel unfolds.
+				# No name translation needed either — the dialog's DISPLAY label ("Surface"/"Image" for an
+				# unnamed base, GrdsampleDialog 70_window.cpp:1148) never has to be mapped back.
+				_adopt_derived!(scene, newname, G_out)
 			else
 				GMT.gmtwrite(output, G_out); view_grid(G_out)
 			end
@@ -65,9 +64,7 @@ function _on_grdsample(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			if isempty(output)
 				newname = base * " resampled"
 				_add_image_to_scene(scene, I_out, newname)
-				_show_object!(scene, newname)              # same law as the grid branch above
-				_hide_other_objects!(scene, :image, newname)
-				ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+				_adopt_derived!(scene, newname, I_out)     # same one transition as the grid branch above
 			else
 				GMT.gdalwrite(output, I_out); iview_image_obj(I_out, base * " resampled")
 			end

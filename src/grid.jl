@@ -311,9 +311,32 @@ function _capture_rect_image(scene::Ptr{Cvoid}, w, e, s, n; coords::Bool=true)
 	end
 end
 
-# Hide EVERY known `kind` object in `scene` except `keepname` — the SACRED_LAW.md "uncheck the
-# source" half of the derived-variable display law.
+# SACRED_LAW.md, "same operation = same function". A DERIVED variable becoming what the window shows
+# is the SAME transition a newly opened FILE performs, so it is the SAME function: the new row
+# CHECKED, EVERY other data layer UNCHECKED (grid, image, mesh, base surface — the KIND is
+# irrelevant), the axes + camera re-framed to the new thing's OWN X/Y/Z, Scene Objects unfolded.
+# `gmtvtk_show_new_element_h`, reached through `_adopt_new_element` (drop.jl), is that one function.
 #
+# Every derive tool (crop, RTP, IGRF, Okada, clip, grdsample, illumination, binarize, tides, the
+# derived-image commit) used to hand-roll the same three steps instead —
+# `_show_object!` + `_hide_other_objects!(kind)` + unfold — a parallel implementation that drifted in
+# exactly the two ways the law predicts:
+#   * it hid only the SAME KIND, so anything of the other kind stayed on screen WITH ITS OWN AXES
+#     (raster-own-axes law: every raster owns a set now). The user's repro: crop a rectangle out of an
+#     Ocean Color grid and the global browse IMAGE's axes were still standing around it — the crop
+#     looked like it had "kept the parent's axes".
+#   * most of those sites never re-framed at all, so the derived grid genuinely wore the parent's frame.
+# Do NOT reintroduce the trio, and do NOT add a per-kind hide helper back. A tool that needs "my
+# result is now what this window shows" calls THIS, with the object it just produced.
+_adopt_derived!(scene::Ptr{Cvoid}, name::AbstractString, data) = _adopt_new_element(scene, name, data)
+
+# DELETED, do not bring back: `_hide_other_objects!(scene, kind, keepname)`, `_hide_all_grids!` and
+# `_show_object!`. Together they WERE the parallel implementation `_adopt_derived!` above replaces —
+# per-kind hiding is precisely the drift that left an image's axes standing around a cropped grid.
+# Their C exports (`gmtvtk_hide_other_grids` / `_images`) stay: `gmtvtk_show_new_element_h` is built
+# on the same ground-truth walk of the live actors, which is the half of them that was right.
+#
+# (kept for the record, since it is the reasoning that produced them)
 # Earlier version hid a single guessed "srcname" (`_find_object_named`'s first-match-of-kind). That
 # guess is only right when the window holds exactly one grid/image; the moment it holds more than
 # one (e.g. a base grid PLUS a named extra like "layer0.grd" — the user's own live repro, confirmed
@@ -333,32 +356,9 @@ end
 # straight off the actual actors/names removes that class of gap entirely: whatever the Scene
 # Objects panel shows a checkbox for is exactly what the C++ loop can see and hide.
 #
-# :image goes through `gmtvtk_hide_other_images`, the same ground-truth C export as :grid.
-function _hide_other_objects!(scene::Ptr{Cvoid}, kind::Symbol, keepname::AbstractString)
-	if kind === :grid
-		ccall(_fn(:gmtvtk_hide_other_grids), Cvoid, (Ptr{Cvoid}, Cstring, Cint), scene, keepname, Cint(0))
-	elseif kind === :image
-		ccall(_fn(:gmtvtk_hide_other_images), Cvoid, (Ptr{Cvoid}, Cstring), scene, keepname)
-	end
-	return
-end
-
-# Hide EVERY grid in `scene`, no exceptions — used when a NEW derived variable is a different kind
-# than the grid it was derived from (e.g. "Crop Image" capturing a picture FROM a grid: there is no
-# grid NAME to "keep", the whole point is that none of them are the new result).
-function _hide_all_grids!(scene::Ptr{Cvoid})
-	ccall(_fn(:gmtvtk_hide_other_grids), Cvoid, (Ptr{Cvoid}, Cstring, Cint), scene, C_NULL, Cint(1))
-end
-
-# Show `name` (the SACRED_LAW.md "new derived variable starts checked" half). Needed because the
-# shared `gmtvtk_add_surface_h` (90_c_api.cpp:2809, EVERY caller: RTP3D, IGRF, nested transplant,
-# drops) deliberately starts a newly-added grid/image HIDDEN — that default predates this law and is
-# shared app-wide, so it is overridden HERE at the call site (`gmtvtk_set_object_visible`, the same
-# existing toggle every other visibility change already uses) rather than changed for every caller.
-function _show_object!(scene::Ptr{Cvoid}, name::AbstractString)
-	ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, name, Cint(1))
-	return
-end
+# :image went through `gmtvtk_hide_other_images`, the same ground-truth C export as :grid. Both are
+# now reached only through `gmtvtk_show_new_element_h`, which does the whole transition instead of
+# just the hide half.
 
 # "Roi Crop Tools" rectangle context-menu entries (55_lineprops.cpp rectRoiCrop) — port of Mirone's
 # draw_funs.m rectangle item_tools submenu / mirone.m ImageCrop_CB. Crops the window's PRIMARY grid
@@ -368,8 +368,9 @@ end
 # SACRED_LAW.md derived-variable display law, NO EXCEPTIONS: the crop is a NEW derived variable, so
 # it ALWAYS goes into the SAME window as a new named Scene Objects row
 # (`_add_grid_to_scene`/`_add_image_to_scene` — the SAME shared add-to-scene functions every other
-# drop/derive path uses, never a raw ccall or a new window), starts CHECKED, the source it was
-# cropped from is UNCHECKED (`_hide_other_objects!`), and Scene Objects UNFOLDS to reveal it.
+# drop/derive path uses, never a raw ccall or a new window), starts CHECKED, everything it was
+# derived from is UNCHECKED, and Scene Objects UNFOLDS to reveal it — all of that through the ONE
+# shared transition `_adopt_derived!`.
 #
 # `kind`: "grid" | "image" | "image_coords" — an earlier version of this function opened "image"
 # (Mirone's PLAIN, un-georeferenced crop) in a NEW standalone window instead, reasoning that a
@@ -393,13 +394,9 @@ function _on_roi_crop(scene::Ptr{Cvoid}, kind::String, rectstr::String)::Cvoid
 			Gc = _roi_crop_grid(G, w, e, s, n)
 			newname = isempty(srcname) ? "Cropped grid" : "$srcname (cropped)"
 			_add_grid_to_scene(scene, Gc, newname; promote=false)
-			_show_object!(scene, newname)
-			_hide_other_objects!(scene, :grid, newname)
-			ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
-			# SACRED_LAW.md group-uncheck/derived-variable laws: the new result's axes must fit ITS
-			# OWN limits, not the parent's — the axes cube otherwise always tracks the PRIMARY
-			# surface only (applyVE, 10_geometry.cpp), regardless of which extra is now active.
-			ccall(_fn(:gmtvtk_reframe_h), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Cint), scene, w, e, s, n, Cint(0))
+			# ONE transition (`_adopt_derived!`): checked, everything else unchecked WHATEVER ITS KIND,
+			# axes+camera re-framed to the crop's OWN X/Y/Z (`Gc.range`), Scene Objects unfolded.
+			_adopt_derived!(scene, newname, Gc)
 		elseif k == "image" || k == "image_coords"
 			srcname, I = _find_object_named(scene, :image)
 			wantCoords = (k == "image_coords")
@@ -411,15 +408,11 @@ function _on_roi_crop(scene::Ptr{Cvoid}, kind::String, rectstr::String)::Cvoid
 			                        _strip_crs(_roi_crop_image(I, w, e, s, n))   # plain: no georeferencing
 			newname = (capturedFromGrid || isempty(srcname)) ? "Cropped image" : "$srcname (cropped)"
 			_add_image_to_scene(scene, Ic, newname; promote=false)
-			_show_object!(scene, newname)
-			_hide_other_objects!(scene, :image, newname)
-			# The captured picture's real SOURCE was a grid (a different kind), not another image —
-			# the law's "uncheck the source" still applies, just against the other kind (SACRED_LAW.md).
-			capturedFromGrid && _hide_all_grids!(scene)
-			ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
-			# keepMargin=1: images keep a margin so their axis tick labels stay on screen (matching
-			# gmtvtk_view_grid's own referenced-image path) — unlike grids, which fill edge-to-edge.
-			ccall(_fn(:gmtvtk_reframe_h), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Cint), scene, w, e, s, n, Cint(1))
+			# Same ONE transition as the grid branch. It hides every other layer of EVERY kind, so the
+			# old `capturedFromGrid && _hide_all_grids!` special case (the picture's real source was a
+			# grid) is not a case at all any more — which is the point of there being one function.
+			# The margin images keep so their tick labels stay on screen comes from the data type too.
+			_adopt_derived!(scene, newname, Ic)
 		else
 			error("Roi Crop: unknown kind '$k'")
 		end

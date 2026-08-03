@@ -606,9 +606,7 @@ function _earthtide_grid(scene, start, comp, inc=0.5)
 		return
 	end
 	_remember_object!(scene, :grid, title, G)
-	_show_object!(scene, title)
-	_hide_other_objects!(scene, :grid, title)
-	ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+	_adopt_derived!(scene, title, G)      # the ONE derived-variable transition (grid.jl)
 	return
 end
 

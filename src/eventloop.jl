@@ -99,6 +99,7 @@ function _ensure_callbacks()
 	                    ("imageflip",   _register_image_flip),
 	                    ("rgbexplore",  _register_rgbexplore),
 	                    ("empilhador",  _register_empilhador),
+	                    ("oceancolor",  _register_oceancolor),
 	                    ("gridcalc",    _register_gridcalc),
 	                    ("grdtrend",    _register_grdtrend),
 	                    ("grdlandmask", _register_grdlandmask),

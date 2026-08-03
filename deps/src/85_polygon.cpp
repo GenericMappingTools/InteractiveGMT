@@ -325,10 +325,15 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 	const double gx  = (s->xfac != 0.0) ? s->xfac : 1.0;
 
 	if (!s->gridZ.empty()) {
+		// A NaN is a DATA HOLE, and a hole still has a surface to click on: the flat NaN backdrop the
+		// renderer draws just under the grid floor (nanPlaneUpdate). Sampling NaN used to ABORT the
+		// ray-march ("no surface here"), so the surface the user could plainly see in the NaN fill
+		// colour refused every vertex -- the renderer and the picker disagreeing about what a hole is.
+		// They agree now: a hole is the floor.
 		auto eval = [&](double t, double &fval) -> bool {
 			const double X = nr[0] + t*dirx, Y = nr[1] + t*diry, Z = nr[2] + t*dirz;
-			const double h = sampleZ(s, X / gx, Y);
-			if (std::isnan(h)) return false;
+			double h = sampleZ(s, X / gx, Y);
+			if (std::isnan(h)) h = s->zmin;         // the hole's backdrop sits at the grid floor
 			fval = Z - h * zsc; return true;
 		};
 		const int NS = 512;
@@ -348,7 +353,9 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 				const double wx = nr[0] + t0*dirx, wy = nr[1] + t0*diry;
 				outTrue[0] = wx / gx; outTrue[1] = wy;
 				outTrue[2] = sampleZ(s, wx / gx, wy);
-				if (std::isnan(outTrue[2])) outTrue[2] = 0.0;
+				// In a hole the vertex sits ON the hole's backdrop (the grid floor), not at z=0 --
+				// same surface the ray was just intersected against, so the point lands where clicked.
+				if (std::isnan(outTrue[2])) outTrue[2] = s->zmin;
 				return true;
 			}
 			pt = t; pf = fv; have = true;

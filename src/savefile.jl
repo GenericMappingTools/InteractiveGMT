@@ -330,9 +330,7 @@ function _commit_derived_image!(scene::Ptr{Cvoid}, Iout::GMTimage, name::String)
 	ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), scene, name)
 	_forget_object!(scene, :image, name)
 	_add_image_to_scene(scene, Iout, name; promote=false)
-	_show_object!(scene, name)
-	_hide_other_objects!(scene, :image, name)
-	ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+	_adopt_derived!(scene, name, Iout)     # the ONE derived-variable transition (grid.jl)
 	return
 end
 

@@ -183,7 +183,7 @@ const _HS_PPDRC      = "Dynamic range compressed"
 # displayed — the screen does not change, so the ✕ "does nothing". So Remove also puts the source
 # back: this tool's derived products are unchecked, the original grid is re-checked, and the axes are
 # re-framed to IT (derived-variable axes law, run in reverse).
-function _hs_restore_original(scene::Ptr{Cvoid})
+function _hs_restore_original(scene::Ptr{Cvoid}, srcname::AbstractString = "")
 	had = false
 	for nm in (_HS_FALSECOLOR, _HS_PPDRC)      # returns 0 when that product was never made
 		had |= ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint),
@@ -194,14 +194,20 @@ function _hs_restore_original(scene::Ptr{Cvoid})
 	# re-fits the view, and doing that on a plain "remove the shade" would yank the 3-D camera to a
 	# top-down snap for no reason.
 	had || return
-	name, G = _find_object_named(scene, :grid)   # the window's primary/base grid ("" = the base surface)
-	_show_object!(scene, name)
-	if G isa GMTgrid
-		r = G.range                              # keepMargin=0: grids fill edge-to-edge (grid convention)
-		ccall(_fn(:gmtvtk_reframe_h), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Cint),
-		      scene, Float64(r[1]), Float64(r[2]), Float64(r[3]), Float64(r[4]), Cint(0))
+	# The grid to put back is the one the tool was aimed at — the DISPLAYED layer the caller resolved
+	# (`srcname`), not "the window's first grid", which in a multi-grid window is a different layer.
+	# Only when that name is not on record does it fall back to the primary ("" = the base surface).
+	name, G = "", nothing
+	if !isempty(srcname)
+		G = _find_object_exact(scene, :grid, srcname)
+		G !== nothing && (name = String(srcname))
 	end
-	ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+	G === nothing && ((name, G) = _find_object_named(scene, :grid))
+	# Putting the ORIGINAL back on display is the SAME operation as putting a derived result on it —
+	# same one function (`_adopt_derived!`, grid.jl), just aimed at the source: it is re-checked, the
+	# products are unchecked, and the axes+camera go back to ITS own limits (derived-variable axes law,
+	# run in reverse). `G` non-grid (nothing on record) -> show/hide only, no re-frame.
+	_adopt_derived!(scene, name, G isa GMTgrid ? G : nothing)
 	return
 end
 
@@ -215,13 +221,24 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		model = parse(Int, _get(d, "model"))
 		num(key, dflt) = (v = _get(d, key); isempty(v) ? dflt : parse(Float64, v))
 
+		# WHICH GRID: the one the window is CURRENTLY SHOWING. The dialog resolves it C++-side through
+		# the same `resolveActiveGrid` the colour bar, the Z axis and the hover readout use, and sends
+		# its Scene Objects name — so illumination lands on the layer the user is looking at, never on
+		# "the first grid this window ever had" (which is what an empty name resolves to, and which was
+		# a different layer the moment a second grid was dropped/downloaded into the window).
+		gname = _get(d, "grid")
+		# ... unless what is on screen is one of THIS TOOL's own derived products from a previous run.
+		# Those are not a source to illuminate: the models are alternatives, never a pipeline, so the
+		# name is dropped and the source grid resolves normally below.
+		(gname == _HS_FALSECOLOR || gname == _HS_PPDRC) && (gname = "")
+
 		# "Remove illumination" (Mirone's ImageResetOrigImg_CB): EVERY light off, not just this tool's
 		# reflectance — model -1 is the viewer's code for that, and it leaves the grid in plain CPT
 		# colour. (model 0, used below, is the quieter clear: the model painted its own picture, so the
 		# reflectance goes but the Shading dock keeps its look.)
 		if model == 7
 			_hs_push(scene, Matrix{Float32}(undef, 0, 0), 0.0, 0.0, 0.0, 0.0, -1)
-			_hs_restore_original(scene)
+			_hs_restore_original(scene, gname)
 			return Cint(1)
 		end
 
@@ -230,10 +247,10 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# unchecked; without this, picking 1 next computed its reflectance from the source (below) while
 		# the ppdrc field was still the thing on screen, so 6 "contaminated" 1. Same restore function the
 		# ✕ uses, so there is ONE way to put the original back. No-op when no product is showing.
-		_hs_restore_original(scene)
+		_hs_restore_original(scene, gname)
 
-		G = _find_object(scene, :grid, "")
-		(G isa GMTgrid) || error("Illumination works on the grid loaded in this window, and this window has none")
+		G = _find_object(scene, :grid, gname)
+		(G isa GMTgrid) || error("Illumination works on the grid this window is showing, and this window is showing none")
 
 		azim = mod(num("azim", 0.0), 360.0)        # mirone.m: luz.azim = rem(luz.azim, 360)
 		elev = num("elev", 30.0)
@@ -246,12 +263,11 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			name = _HS_FALSECOLOR
 			_add_image_to_scene(scene, I, name; promote=false) ||
 				error("could not add the false-colour image to the window")
-			# SACRED_LAW.md derived-variable display law: the new variable is CHECKED, everything it was
-			# derived from is UNCHECKED, and Scene Objects unfolds to reveal it.
-			_show_object!(scene, name)
-			_hide_all_grids!(scene)
-			_hide_other_objects!(scene, :image, name)
-			ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+			# SACRED_LAW.md derived-variable display law, in the ONE shared transition (`_adopt_derived!`,
+			# grid.jl): the new variable is CHECKED, everything it was derived from is UNCHECKED — the
+			# source GRID included, which is why this no longer needs a separate cross-kind hide call —
+			# and Scene Objects unfolds to reveal it.
+			_adopt_derived!(scene, name, I)
 			return Cint(1)
 		end
 

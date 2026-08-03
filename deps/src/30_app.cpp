@@ -210,6 +210,21 @@ typedef void (*JuliaTilesFn)(void *scene, void *dlg, const char *params);
 static JuliaTilesFn g_juliaTiles = nullptr;
 static QString      g_tilesWorld;
 
+// Ocean Color Data Browser (Geophysics menu). The dialog (OceanColorDialog, 70_window.cpp, loads
+// deps/ui/oceancolor_browser.ui) hands a newline-separated "key=value" block to Julia
+// (_on_oceancolor, src/oceancolor.jl), which knows the OB.DAAC catalogue and talks to the server:
+//   req=latest   -- the two newest browse images that exist for inst/prod/period
+//   req=step     -- the pair one composite EARLIER (dir=-1) or LATER (dir=1) than start=yyyymmdd
+//   req=at       -- the pair ending at date=yyyymmdd
+//   req=open     -- download the browse image url=<png url> and put it into `scene` georeferenced
+//                   (the Extract button, and a double-click on a tile)
+//   inst=1..4  prod=1..2  period=1..4      (1-based combo indices, order fixed by the .ui)
+// The reply is not a return value: Julia pushes it back into the dialog with gmtvtk_oc_set_tile /
+// gmtvtk_oc_status while the call is still on the stack, so `dlg` is always the live dialog that
+// asked. Returns 1 when the request was served, 0 on failure. nullptr to detach.
+typedef int (*JuliaOceanColorFn)(void *scene, void *dlg, const char *params);
+static JuliaOceanColorFn g_juliaOceanColor = nullptr;
+
 // LIDAR2011 PT (Tools menu, port of Mirone's cartas_militares.m in its "nikles" = LIDAR mosaic mode).
 // The picker paints data/PTimg_lidar.jpg (mainland Portugal in the ETRS89/PT-TM06-ish metric frame the
 // survey uses) under the survey's 1600x1000 m tile matrix, and hands "op;..." requests to Julia

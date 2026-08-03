@@ -81,14 +81,11 @@ function _on_igrf_grid(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		ok == 0 && @warn "IGRF grid: window closed, grid not added"
 		if ok != 0
 			_remember_object!(scene, :grid, title, G)
-			# SACRED_LAW.md derived-variable display law (same convention rtp3d.jl uses): starts
-			# CHECKED (`gmtvtk_add_surface_h` itself always adds a new extra HIDDEN); every OTHER
-			# grid already in the window is UNCHECKED (`_hide_other_objects!` — hides all of them
-			# rather than guessing which one was "the" source). No-op on a freshly `promote`d empty
-			# launcher (nothing else was there to hide).
-			_show_object!(scene, title)
-			_hide_other_objects!(scene, :grid, title)
-			ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+			# SACRED_LAW.md derived-variable display + axes laws, in the ONE shared transition
+			# (`_adopt_derived!`, grid.jl): starts CHECKED (`gmtvtk_add_surface_h` itself always adds a
+			# new extra HIDDEN), every OTHER layer unchecked whatever its kind, axes+camera on the new
+			# grid's own limits. No-op on a freshly `promote`d empty launcher (nothing else was there).
+			_adopt_derived!(scene, title, G)
 		end
 	catch e
 		_viewer_log_error(scene, "IGRF grid FAILED: $(sprint(showerror, e))")

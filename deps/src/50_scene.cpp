@@ -1042,14 +1042,22 @@ static int activeGridGeog(Scene *s) {
 //
 // By NAME: the Scene Objects label the host already uses to address a layer (the same key
 // gmtvtk_show_new_element_h, the colorbar retarget and every host-side compute use), so a load path
-// frames the axes of the thing it just loaded and nothing else. No match / empty -> the base
-// surface's own set, which IS how the host names the primary layer.
+// frames the axes of the thing it just loaded and nothing else.
+//
+// NO MATCH -> nullptr, and the caller MUST then leave every set alone. This used to fall back to
+// `&s->baseAxes`, which is a LICENCE TO STEAL another raster's axes and was exactly that in
+// practice: a derived variable (a crop) whose own name did not resolve had its re-frame land on the
+// PARENT's set, so the crop appeared inside the parent's box — the parent's axes moved, the crop
+// never got any of its own. A raster only ever addresses ITS OWN set; the base surface is addressed
+// by ITS OWN name (`s->surfName`, "" being how the host names an unnamed primary), never as a
+// catch-all for names nobody claimed (SACRED_LAW.md raster-own-axes law: "IT NEVER NEVER NEVER
+// REUSES SOMEONE ELSE'S AXIS").
 static AxesSet *axesForName(Scene *s, const char *name) {
 	if (!s) return nullptr;
 	const std::string k = name ? name : "";
-	if (!k.empty())
-		for (auto &ex : s->extras) if (ex.name == k) return &ex.ax;
-	return &s->baseAxes;
+	for (auto &ex : s->extras) if (ex.name == k) return &ex.ax;
+	if (surfProp(s) && s->surfName == k) return &s->baseAxes;   // the base, addressed BY ITS OWN name
+	return nullptr;                                             // nobody's -> touch nothing
 }
 
 // By DISPLAY: the set owned by the raster the window is currently showing. Routed through the SAME
@@ -1062,13 +1070,18 @@ static AxesSet *axesForActive(Scene *s) {
 	if (ag.valid && !ag.name.empty())
 		for (auto &ex : s->extras) if (ex.name == ag.name) return &ex.ax;
 	// No grid layer resolved (bare image, cloud, solid): the topmost VISIBLE image extra owns the
-	// display, else the base surface does.
+	// display, else the base surface — but only when the BASE IS ITSELF VISIBLE. A hidden base does
+	// not own the display, and handing its set out as a fallback is the same steal `axesForName`
+	// above documents: the caller would move the axes of a raster that is not even on screen.
 	ExtraObj *top = nullptr;
 	for (auto &ex : s->extras) {
 		if (!ex.isImage || !extraVisible(ex)) continue;
 		if (!top || ex.zpos >= top->zpos) top = &ex;
 	}
-	return top ? &top->ax : &s->baseAxes;
+	if (top) return &top->ax;
+	vtkProp3D *sp = surfProp(s);
+	const bool baseVis = (sp && sp->GetVisibility() != 0) || (s->drape && s->drape->GetVisibility() != 0);
+	return baseVis ? &s->baseAxes : nullptr;
 }
 
 // Scene Objects label of the grid the window is CURRENTLY DISPLAYING (topmost visible). Empty when

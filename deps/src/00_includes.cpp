@@ -99,6 +99,7 @@
 #include <QFileInfo>
 #include <QDateTime>
 #include <QDateTimeEdit>
+#include <QCalendarWidget>       // the Ocean Color date box's popup — its clicked/activated IS the commit
 #include <QStackedWidget>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -187,6 +188,7 @@
 #include <vtkCylinderSource.h>
 #include <vtkSphereSource.h>
 #include <vtkCubeSource.h>
+#include <vtkPlaneSource.h>       // the flat unlit NaN-hole backdrop (nanPlaneUpdate)
 #include <vtkLineSource.h>
 #include <vtkBillboardTextActor3D.h>
 #include <vtkTextActor3D.h>

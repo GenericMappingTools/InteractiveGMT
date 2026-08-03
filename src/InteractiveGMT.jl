@@ -89,6 +89,7 @@ include("classification.jl") # Image > K-means classification (port of Mirone cl
 include("imageflip.jl")    # Image > Flip: up-down / left-right pixel flip, georef untouched (Mirone mirone.m)
 include("rgbexplore.jl")   # Image > Explore RGB: the 13 colour components montage (Mirone mirone.m 'RGBexp')
 include("empilhador.jl") # Tools > Empilhador: stack grids/L2 scenes into a 3-D file (port of Mirone empilhador.m)
+include("oceancolor.jl") # Tools > Ocean Color Data Browser: OB.DAAC L3 catalogue + browse images
 include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-geometry grids (port of Mirone grid_calculator.m)
 include("contours.jl")   # Grid Tools > Contours: GDAL-traced contour lines (port of Mirone contouring.m)
 include("sdg.jl")        # Grid Tools > SDG: 2nd derivative along the gradient (port of Mirone GridToolsSDG_CB)

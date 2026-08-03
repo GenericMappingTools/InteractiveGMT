@@ -204,11 +204,10 @@ function _on_clipgrid(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			return Cint(0)
 		end
 		_remember_object!(scene, :grid, title, G2)
-		# SACRED_LAW.md derived-variable display law (same tail as _on_rtp3d): the clipped grid starts
-		# CHECKED, every OTHER grid in the window is UNCHECKED, and Scene Objects unfolds to reveal it.
-		_show_object!(scene, title)
-		_hide_other_objects!(scene, :grid, title)
-		ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+		# SACRED_LAW.md derived-variable display + axes laws (same tail as _on_rtp3d), in the ONE shared
+		# transition: clipped grid CHECKED, every other layer UNCHECKED whatever its kind, axes+camera
+		# re-framed to the clip's own limits, Scene Objects unfolded.
+		_adopt_derived!(scene, title, G2)
 		return Cint(1)
 	catch e
 		_viewer_log_error(scene, "Clip Grid FAILED: $(sprint(showerror, e))")

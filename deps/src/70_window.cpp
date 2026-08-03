@@ -1253,34 +1253,73 @@ static QuadNode *buildQuadNode(int i0, int i1, int j0, int j1, int level,
 	return n;
 }
 
+// Put a node's tile on screen. Two separate steps, because they cost wildly different amounts:
+// BUILDING the geometry (makeGridTile: meshes up to ~513x513 quads out of s->gridZ, on the calling
+// thread, inside the camera callback) versus merely ADDING an already-built actor to the assembly.
+// A node that was coarsened away still owns its geometry, so coming back to that zoom level is the
+// cheap step alone. Idempotent in both halves.
 static void ensureNodeActor(Scene *s, QuadNode *n) {
-	if (n->actor) return;
+	if (n->actor) {                       // already meshed -- re-adding is all that can be needed
+		if (!n->inScene) {
+			s->surfGroup->AddPart(n->actor); s->tiles.push_back(n->actor); n->inScene = true;
+			// Re-style ONLY if the shading changed while this tile sat in the cache. applyShading
+			// reaches `s->tiles`, i.e. tiles IN the scene, so a cached tile never hears about a mode
+			// switch — that is how PBR tiles reappeared beside grid-illuminated ones after a zoom out
+			// and back in. But re-baking unconditionally is just as wrong the other way: every re-add
+			// re-ran the CPT mapping and the whole per-point shade for an already correctly coloured
+			// mesh, which is why illumination felt heavier the more the view moved.
+			if (n->styleGen != s->styleGen) { applySurfStyle(s, n->actor); n->styleGen = s->styleGen; }
+		}
+		return;
+	}
+	// Charge the meshing budget for THIS pass. Only a real build costs — a cached tile being re-added
+	// above is free and must not consume the allowance that keeps the frame responsive.
+	s->lodCellsLeft -= (long)(((n->i1 - n->i0) / n->step + 2) * (long)((n->j1 - n->j0) / n->step + 2));
 	auto tpd = makeGridTile(s->gridZ.data(), s->gnx, s->gny,
 							n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, s->zmin, n->step);
 	vtkNew<vtkPolyDataMapper> m; m->SetInputData(tpd);
-	m->SetLookupTable(s->surfLut); m->SetScalarRange(s->zmin, s->zmax);
-	if (s->surfCtfRange) m->UseLookupTableScalarRangeOn();
-	m->ScalarVisibilityOn(); m->InterpolateScalarsBeforeMappingOn();
+	configureGridMapper(m, s->surfLut, s->zmin, s->zmax, s->surfCtfRange);
 	auto a = vtkSmartPointer<vtkActor>::New(); a->SetMapper(m);
-	a->GetProperty()->SetInterpolationToPBR();
-	a->GetProperty()->SetMetallic(0.0); a->GetProperty()->SetRoughness(0.45);
 	a->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12); a->GetProperty()->SetLineWidth(1.0);
 	a->GetProperty()->SetEdgeVisibility(s->surfEdges);
-	if (s->useHillshade) applySurfStyle(s, a);   // hillshade on: bake CPT*shade + unlit, like the resident tiles
+	// The tile takes the window's CURRENT surface style, whatever it is -- applySurfStyle is the ONE
+	// function that decides material + colouring (noShade / hillshade-unlit / matte / PBR) and it is
+	// what every other surface actor goes through. This used to hard-set PBR here and only call
+	// applySurfStyle when useHillshade was on, so a tile born mid-zoom in any other mode arrived
+	// PBR-lit while its neighbours were not: pure grid illumination on the old tiles, PBR on the new
+	// ones, in the same picture. A tile is not a special kind of surface.
+	applySurfStyle(s, a);
+	n->styleGen = s->styleGen;                   // freshly baked under the current shading state
 	const vtkIdType npts = tpd->GetPoints()->GetNumberOfPoints();
 	const vtkIdType ncel = tpd->GetPolys()->GetNumberOfCells();
 	n->bytes = (size_t)npts * (12 + 4 + 12) + (size_t)ncel * 20;   // pts + z + normal + quad ids
 	n->actor = a;
+	n->inScene = true;
 	s->surfGroup->AddPart(a);
 	s->tiles.push_back(a);
 	s->lodResidentBytes += n->bytes;
 }
 
+// Take a tile OFF SCREEN but KEEP its geometry. This is what coarsening does, and keeping the mesh
+// is the whole point: zoom out one notch and back in and the finer level is re-added instantly
+// instead of re-meshed. It used to free the actor outright, so the commonest interaction there is —
+// zoom in, out, in — re-ran makeGridTile over the whole visible extent every single time, which is
+// exactly the "some zoom levels are very slow / lots of under-hood regeneration" the user hit on a
+// global 8640x4320 Ocean Color grid. The memory this keeps resident is NOT unbounded: it still
+// counts towards lodResidentBytes, so evictLRU reclaims it against the same budget as before.
 static void dropNodeActor(Scene *s, QuadNode *n) {
-	if (!n->actor) return;
+	if (!n->actor || !n->inScene) return;
 	s->surfGroup->RemovePart(n->actor);
 	for (size_t k = 0; k < s->tiles.size(); ++k)
 		if (s->tiles[k] == n->actor) { s->tiles.erase(s->tiles.begin() + k); break; }
+	n->inScene = false;
+}
+
+// Actually RELEASE a node's geometry. Only the LRU evictor calls this — refinement never does, or
+// the cache above could not survive a zoom.
+static void freeNodeActor(Scene *s, QuadNode *n) {
+	if (!n->actor) return;
+	dropNodeActor(s, n);
 	s->lodResidentBytes = (s->lodResidentBytes >= n->bytes) ? s->lodResidentBytes - n->bytes : 0;
 	n->actor = nullptr; n->bytes = 0;
 }
@@ -1303,7 +1342,7 @@ static void evictLRU(Scene *s) {
 	for (QuadNode *n : res) {
 		if (s->lodResidentBytes <= s->lodBudgetBytes) break;
 		if (n->lastUsed == s->lodFrame) continue;   // never evict a tile drawn this frame
-		dropNodeActor(s, n);
+		freeNodeActor(s, n);                        // the ONE place geometry is really released
 	}
 }
 
@@ -1324,7 +1363,18 @@ static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPo
 	if (n->leaf || px <= tau) {
 		ensureNodeActor(s, n); n->lastUsed = s->lodFrame;   // draw at this LOD
 		for (int k = 0; k < 4; ++k) dropSubtree(s, n->child[k]);   // shed finer detail
-	} else {
+	}
+	else if (s->lodCellsLeft <= 0) {
+		// Out of meshing budget for this pass. Draw THIS (coarser) node instead of descending: the
+		// area stays covered — usually for free, since a coarse ancestor is normally already built —
+		// and the detail is owed to the catch-up pass. This is the whole anti-freeze mechanism: the
+		// recursion stops at the budget instead of meshing a level's worth of tiles inside one
+		// camera event.
+		ensureNodeActor(s, n); n->lastUsed = s->lodFrame;
+		for (int k = 0; k < 4; ++k) dropSubtree(s, n->child[k]);
+		s->lodPending = true;
+	}
+	else {
 		dropNodeActor(s, n);                                 // too coarse -> recurse
 		for (int k = 0; k < 4; ++k) refineNode(s, n->child[k], cam, camPos, vpH, tanHalfFov, parScale, parallel, tau);
 	}
@@ -1338,12 +1388,28 @@ static void refineQuadtree(Scene *s) {
 	const bool parallel = cam->GetParallelProjection() != 0;
 	const double tanHalf = std::tan(vtkMath::RadiansFromDegrees(cam->GetViewAngle() * 0.5));
 	s->lodFrame++;
-	refineNode(s, s->quadRoot, cam, camPos, vpH, tanHalf, cam->GetParallelScale(), parallel, /*tau=*/2.0);
+	// ~600 k sampled cells per pass: enough that an ordinary zoom finishes in one go, small enough
+	// that a level-crossing zoom cannot stall the frame. Raise for fewer catch-up passes, lower for a
+	// snappier worst case.
+	s->lodCellsLeft = 600000;
+	s->lodPending   = false;
+	refineNode(s, s->quadRoot, cam, camPos, vpH, tanHalf, cam->GetParallelScale(), parallel, /*tau=*/4.0);
 	if (s->lodResidentBytes > s->lodBudgetBytes) evictLRU(s);
+	// Detail still owed -> finish it after the frame is on screen. Single-shot and latched, so a
+	// continuous drag (many camera events, each leaving work owed) can never queue a storm of passes.
+	if (s->lodPending && !s->lodTimerArmed) {
+		s->lodTimerArmed = true;
+		QTimer::singleShot(30, s->win, [s]() {
+			if (!sceneAlive(s)) return;
+			s->lodTimerArmed = false;
+			refineQuadtree(s);                     // one more budgeted pass; re-arms if still owed
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		});
+	}
 }
 
 static void onLodCamera(vtkObject*, unsigned long, void *cd, void*) {
-	refineQuadtree(static_cast<Scene*>(cd));
+	refineQuadtree(static_cast<Scene*>(cd));               // the BASE surface's tile pyramid
 }
 
 // Rebuild the window's BASE grid as a flat shaded IMAGE (asImage=true) or a real 3-D SURFACE
@@ -4313,7 +4379,9 @@ public:
 	// dialog itself is left exactly as it was, so the light you had aimed is still there to re-apply.
 	void applyRemove() {
 		if (!g_juliaHillshade || !sceneAlive(scn)) return;
-		g_juliaHillshade(scn, "model=7\nazim=0\nelev=0");
+		const QByteArray p = QString("model=7\nazim=0\nelev=0\ngrid=%1\n")
+		                     .arg(QString::fromStdString(activeGridName(scn))).toUtf8();
+		g_juliaHillshade(scn, p.constData());
 	}
 
 	// STANDING RULE: only this action button runs anything — no edit box ever triggers a compute.
@@ -4323,9 +4391,16 @@ public:
 			                                   "(rebuild/restart needed?).");
 			return;
 		}
-		if (!(scn && scn->surf && !scn->emptyStart && !scn->imageOnly)) {
-			QMessageBox::warning(dlg, "Error", "Illumination works on the grid loaded in this "
-			                                   "window, and this window has none.");
+		// The tool illuminates THE GRID THE WINDOW IS CURRENTLY SHOWING, so that — and only that — is
+		// what decides whether it can run. Asked through the SAME resolveActiveGrid the colorbar, the Z
+		// axis and the hover readout go through (activeGridName), never off scn->surf/imageOnly: those
+		// describe how the window was FIRST built, so a window opened on an image with a grid dropped on
+		// top of it (an Ocean Color browse image, then its L3 grid) is still `imageOnly` and was refused
+		// even though a grid was plainly on screen.
+		const std::string gname = sceneAlive(scn) ? activeGridName(scn) : std::string();
+		if (gname.empty()) {
+			QMessageBox::warning(dlg, "Error", "Illumination works on a grid, and this window is not "
+			                                   "showing one.");
 			return;
 		}
 		HillshadeState st;
@@ -4344,6 +4419,7 @@ public:
 
 		QStringList kv;
 		kv << QString("model=%1").arg(model);
+		kv << "grid=" + QString::fromStdString(gname);   // illuminate the DISPLAYED layer, not the base
 		kv << QString("azim=%1").arg(st.azim);
 		kv << QString("elev=%1").arg(st.elev);
 		if (model == 3) {
@@ -7533,6 +7609,587 @@ public:
 		if (r == QMessageBox::Yes) juliaOpenFile(scn, out.toUtf8().constData());
 	}
 };
+
+// ============================================================================================
+// Ocean Color Data Browser (Geophysics menu). Loaded at RUNTIME via QUiLoader from
+// deps/ui/oceancolor_browser.ui (plain Qt widget classes only, same technique as the dialogs above).
+//
+// Browse the NASA OB.DAAC L3 archive: pick Instrument / Product / Period and the two preview tiles
+// fill with the newest images that ACTUALLY exist on the server — the end of an instrument's record
+// is never assumed here, it is asked (src/oceancolor.jl knows the catalogue and does the asking).
+// < and > walk the pair one composite at a time; the date box jumps to a given day.
+//
+// The dialog holds no catalogue of its own: every question is one g_juliaOceanColor round-trip and
+// the answer comes back through gmtvtk_oc_set_tile / gmtvtk_oc_status while that call is still on
+// the stack. So there is exactly ONE place that knows what a file is called, and it is not here.
+//
+// The tiles are clickable — the selected one (blue frame) is what "Extract / Download" acts on, and
+// a DOUBLE-click on a tile extracts that one directly. Extract downloads the image and puts it into
+// the window georeferenced: the L3 browse PNG is the bare global grid, plate carrée, not a decorated
+// figure, so its limits are known ([-180 180 -90 90], pixel-registered) and it IS a map.
+//
+// The X does NOT destroy the dialog: it hides and PARKS as a handle in the bottom strip of this
+// window's Scene Objects dock, exactly like a closed X,Y plot / Contours / Binarize dialog — same
+// Scene::parkedTools list, same parkTool/unparkTool pair, same row builder (50_scene.cpp), so the
+// tiles the user browsed to survive and a double-click brings them straight back. Only the parked
+// row's own "Delete" really closes it. Re-picking the menu entry re-opens the SAME dialog
+// (g_oceanColorDlgs), never a second one.
+// ============================================================================================
+class OceanColorDialog;
+static std::map<Scene *, OceanColorDialog *> g_oceanColorDlgs;   // one browser per window, alive while parked
+
+// The two preview tiles are plain QLabels, which have no clicked() signal. One filter per tile turns
+// a press into a selection; a filter on the dialog itself rescales both pixmaps when it is resized.
+struct OCEventFilter : QObject {
+	OceanColorDialog *owner;
+	int idx;					// 0/1 = that tile was clicked; -1 = the dialog was resized
+	OCEventFilter(OceanColorDialog *o, int i, QObject *parent) : QObject(parent), owner(o), idx(i) {}
+	bool eventFilter(QObject *ob, QEvent *e) override;
+};
+
+class OceanColorDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QComboBox *cbInst = nullptr, *cbProd = nullptr, *cbPeriod = nullptr;
+	QDateTimeEdit *dtEdit = nullptr;
+	QLabel *tile[2] = { nullptr, nullptr }, *cap[2] = { nullptr, nullptr }, *status = nullptr;
+	QLabel *cacheLbl = nullptr;	// the cache directory + how many MB of browse images/grids sit in it
+	QPushButton *dlBtn = nullptr;
+	QTimer *dateTimer = nullptr;	// lets the calendar popup finish closing before a scan starts
+	QDate askedDate;				// the day already asked about — re-asking it is a no-op, not a second scan
+	QPixmap full[2];			// the browse images at full size; the labels show scaled copies
+	QString url[2];				// the address behind each tile ("" = the slot is empty)
+	QString startYmd[2];		// each composite's START day (yyyyMMdd) — what < and > step from
+	int sel = 1;				// the tile Extract acts on; the NEWER one to begin with
+	bool reallyClose = false;	// set only by the parked row's "Delete"; otherwise the X parks
+
+	explicit OceanColorDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/oceancolor_browser.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("OceanColorDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("OceanColorDialog: QUiLoader failed to load the .ui"); return; }
+		// WA_DeleteOnClose is deliberately NOT set: the dialog (and the images browsed into its tiles)
+		// has to survive being closed, because closing PARKS it. Only the parked row's "Delete" sets
+		// reallyClose and lets a close event through.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+		g_oceanColorDlgs[scn] = this;
+
+		struct CloseParks : QObject {
+			OceanColorDialog *oc;
+			CloseParks(QObject *parent, OceanColorDialog *o) : QObject(parent), oc(o) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && oc && !oc->reallyClose && sceneAlive(oc->scn)) {
+					e->ignore();
+					oc->dlg->hide();
+					OceanColorDialog *h = oc;	// a lambda cannot capture a member of the enclosing class
+					parkTool(h->scn, h->dlg, "Ocean Color", IC_Image,
+					         "Closed Ocean Color browser — double-click to bring it back, click for Show / Delete",
+					         [h]() { h->unpark(); }, h->parkedMenu());
+					// A handle the user cannot see is the same as no handle at all: reveal + unfold.
+					unfoldSceneObjects(oc->scn);
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		dlg->installEventFilter(new CloseParks(dlg, this));
+		// This wrapper outlives the constructor and is owned by the QDialog: when the dialog really is
+		// destroyed (the parked row's Delete, or the parent window going away), the wrapper goes too.
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+
+		cbInst   = d->findChild<QComboBox *>("comboInstrument");
+		cbProd   = d->findChild<QComboBox *>("comboProduct");
+		cbPeriod = d->findChild<QComboBox *>("comboPeriod");
+		dtEdit   = d->findChild<QDateTimeEdit *>("editDateTime");
+		tile[0]  = d->findChild<QLabel *>("labelTileFirst");
+		tile[1]  = d->findChild<QLabel *>("labelTileLast");
+		cap[0]   = d->findChild<QLabel *>("labelTileFirstCaption");
+		cap[1]   = d->findChild<QLabel *>("labelTileLastCaption");
+		status   = d->findChild<QLabel *>("labelStatus");
+		cacheLbl = d->findChild<QLabel *>("labelCache");
+		dlBtn    = d->findChild<QPushButton *>("btnDownload");
+		auto *prevBtn  = d->findChild<QToolButton *>("btnPrev");
+		auto *nextBtn  = d->findChild<QToolButton *>("btnNext");
+		auto *clearBtn = d->findChild<QToolButton *>("btnClearDateTime");
+
+		// The tiles carry the two NEWEST images, not the ends of the record: the .ui's placeholder
+		// captions would lie about that, so they are replaced before anything is fetched.
+		for (int i = 0; i < 2; ++i) {
+			if (tile[i]) {
+				tile[i]->setText("");
+				tile[i]->installEventFilter(new OCEventFilter(this, i, d));
+			}
+			if (cap[i]) cap[i]->setText("—");
+		}
+		d->installEventFilter(new OCEventFilter(this, -1, d));
+		if (dtEdit) dtEdit->setDateTime(QDateTime::currentDateTimeUtc());
+
+		// Picking an instrument / product / period is a question about the archive, so it asks it —
+		// that IS this dialog's job (nothing is computed and nothing is added to the scene until
+		// Extract, which stays the only action button).
+		auto refresh = [this]() { requestLatest(); };
+		if (cbInst)   QObject::connect(cbInst,   QOverload<int>::of(&QComboBox::currentIndexChanged), d, refresh);
+		if (cbProd)   QObject::connect(cbProd,   QOverload<int>::of(&QComboBox::currentIndexChanged), d, refresh);
+		if (cbPeriod) QObject::connect(cbPeriod, QOverload<int>::of(&QComboBox::currentIndexChanged), d, refresh);
+
+		// < and > step the PAIR one composite at a time, each from the end it moves: < from the older
+		// tile, > from the newer one, so repeated clicks walk the archive without ever re-showing the
+		// same image twice.
+		if (prevBtn) QObject::connect(prevBtn, &QToolButton::clicked, d, [this]() { step(0, -1); });
+		if (nextBtn) QObject::connect(nextBtn, &QToolButton::clicked, d, [this]() { step(1, +1); });
+
+		// The date box is navigation, not compute: it re-centres the pair on the day it holds.
+		//
+		// It fires on a date the user COMMITTED, never on one merely passed over. NOT on dateChanged:
+		// the calendar popup writes each date it lands on straight into the editor as you move through
+		// it, so dateChanged fires while you are still walking the months — and each fire raised the
+		// busy dialog, which took the focus away from the popup, which moved the date again. That is
+		// the blinking loop. `clicked`/`activated` on the calendar itself is the commit; typing or
+		// spinning is committed by Enter / leaving the field (editingFinished).
+		//
+		// The single-shot timer is what keeps the busy dialog OUT of the popup's teardown: it lets the
+		// click finish closing the calendar before a scan (and its dialog) starts.
+		dateTimer = new QTimer(d);
+		dateTimer->setSingleShot(true);
+		dateTimer->setInterval(60);
+		QObject::connect(dateTimer, &QTimer::timeout, d, [this]() { requestAt(); });
+		// NOT editingFinished either: opening the calendar popup moves the focus off the line edit, and
+		// losing focus IS "editing finished" to Qt — so merely CLICKING the calendar button fired a
+		// scan, and its busy dialog came up on top of the calendar the user had only just opened.
+		// A typed or spun date is committed by Enter, and nothing else.
+		if (dtEdit) {
+			dtEdit->installEventFilter(new OCEventFilter(this, -2, d));
+			if (QCalendarWidget *cal = dtEdit->calendarWidget()) {
+				QObject::connect(cal, &QCalendarWidget::clicked,   d, [this](const QDate &) { dateTimer->start(); });
+				QObject::connect(cal, &QCalendarWidget::activated, d, [this](const QDate &) { dateTimer->start(); });
+			}
+			askedDate = dtEdit->date();		// what is on screen now was NOT asked for by the user
+		}
+		if (clearBtn) QObject::connect(clearBtn, &QToolButton::clicked, d, [this]() {
+			if (dtEdit) {
+				QSignalBlocker b(dtEdit);
+				dtEdit->setDateTime(QDateTime::currentDateTimeUtc());
+			}
+			requestLatest();
+		});
+
+		if (dlBtn) QObject::connect(dlBtn, &QPushButton::clicked, d, [this]() { extract(sel); });
+
+		selectTile(1);
+		d->show();
+		requestLatest();			// fill the tiles with the newest of the .ui's default selection
+	}
+
+	// --- what the dialog asks -----------------------------------------------------------------
+	QString base() const {
+		return QString("inst=%1\nprod=%2\nperiod=%3\n")
+		       .arg(cbInst   ? cbInst->currentIndex()   + 1 : 1)
+		       .arg(cbProd   ? cbProd->currentIndex()   + 1 : 1)
+		       .arg(cbPeriod ? cbPeriod->currentIndex() + 1 : 1);
+	}
+
+	// `clear` distinguishes the two kinds of request: a BROWSE one replaces both tiles, so they are
+	// emptied first (a stale preview under a new selection would be a lie); Extract answers about a
+	// tile that is already on screen and must leave the previews exactly where they are.
+	void request(const QString &extra, const char *busy, bool clear = true) {
+		if (!g_juliaOceanColor) {
+			setStatus("Ocean Color: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		if (clear) clearTiles();
+		const QByteArray p = (base() + extra).toUtf8();
+		showBusyDialog(busy);
+		const int ok = g_juliaOceanColor(scn, this, p.constData());
+		closeBusyDialog();
+		// A BROWSE ends by naming what is now selected — the status line belongs to the selection, not to
+		// the last thing that happened. An ACTION (clear == false) keeps whatever the host reported about
+		// it, which is the only case where the line says something the file name cannot.
+		if (clear && !url[sel].isEmpty()) setStatus(fileOf(sel));
+		if (!ok && clear && url[0].isEmpty() && url[1].isEmpty())
+			setStatus("Nothing found for this selection — see this window's Errors console.");
+	}
+
+	void requestLatest() {
+		askedDate = QDate();			// the tiles no longer show what the date box says
+		request("req=latest\n", "Asking the OB.DAAC archive…");
+	}
+
+	// Re-centre on the day the box holds. A day already asked about is NOT asked again: the commit
+	// signals can arrive more than once for one user action (a calendar click that also moves the
+	// focus emits editingFinished too), and each extra scan would raise the busy dialog again.
+	// Enter in the date box: commit whatever is typed/spun in it. Routed through the same timer as the
+	// calendar's click, so there is one path from "the user chose a day" to the scan.
+	void commitDate() { if (dateTimer) dateTimer->start(); }
+
+	void requestAt() {
+		if (!dtEdit) return;
+		// Never while the calendar is still on screen: the scan's busy dialog would take the focus off
+		// it. Wait for it to close instead — the commit is not lost, only deferred.
+		if (QCalendarWidget *cal = dtEdit->calendarWidget())
+			if (cal->isVisible()) { dateTimer->start(); return; }
+		const QDate d = dtEdit->date();
+		if (!d.isValid() || d == askedDate) return;
+		askedDate = d;
+		request(QString("req=at\ndate=%1\n").arg(d.toString("yyyyMMdd")),
+		        "Asking the OB.DAAC archive…");
+	}
+
+	// Step from the tile at `from` (0 = older, 1 = newer) by one composite in direction `dir`.
+	// With that end empty there is nothing to step from, so fall back to "what is newest".
+	void step(int from, int dir) {
+		askedDate = QDate();			// walked away from the box's day: it can be re-picked
+		if (startYmd[from].isEmpty()) { requestLatest(); return; }
+		request(QString("req=step\nstart=%1\ndir=%2\n").arg(startYmd[from]).arg(dir),
+		        dir < 0 ? "Stepping back…" : "Stepping forward…");
+	}
+
+	// Extract: fetch the DATA behind tile `i` — the L3 netCDF, not the browse picture — and open it in
+	// this window. `req=grid` is the SAME request the "Download grid" button pinned under a placed image
+	// sends, so there is one downloader and one opener; the host turns a browse-image address into its
+	// netCDF one itself (the two differ only by the trailing ".png"). It falls back to placing the browse
+	// image when the data file cannot be had (it lives behind Earthdata URS and needs credentials).
+	// The button acts on the selected tile and a double-click on the tile it was aimed at — ONE path,
+	// not two, so a double-click can never do something the button would not.
+	void extract(int i) {
+		if (i < 0 || i > 1) return;
+		if (url[i].isEmpty()) { setStatus("Nothing to extract — that tile is empty."); return; }
+		selectTile(i);
+		request(QString("req=grid\nurl=%1\n").arg(url[i]), "Downloading the grid…", false);
+	}
+
+	// Place tile `i`'s BROWSE IMAGE — the free, already-cached picture — in the window as a
+	// georeferenced map. This is the double-click action; the button next to it fetches the data.
+	void placeImage(int i) {
+		if (i < 0 || i > 1) return;
+		if (url[i].isEmpty()) { setStatus("Nothing to place — that tile is empty."); return; }
+		selectTile(i);
+		request(QString("req=open\nurl=%1\n").arg(url[i]), "Placing the browse image…", false);
+	}
+
+	// --- what the host pushes back ------------------------------------------------------------
+	void setStatus(const QString &m) { if (status) status->setText(m); }
+
+	// The cache line: which directory the browse images and downloaded grids go to, and how much is in
+	// it. Pushed by the host (it owns the path — GMTuserdir), never guessed here.
+	void setCacheInfo(const QString &m) { if (cacheLbl) cacheLbl->setText(m); }
+
+	// Which Product rows the CURRENT instrument actually flies (bit i set = row i+1 is real), and which
+	// one is in force. The host owns that fact — it is the one holding the catalogue — so this only
+	// obeys: greys the rest, and moves the combo WITHOUT emitting, because the host has already
+	// answered for the product it is passing. Emitting would fire a second, identical request.
+	void setProducts(int mask, int cur) {
+		if (!cbProd) return;
+		auto *model = qobject_cast<QStandardItemModel *>(cbProd->model());
+		for (int i = 0; i < cbProd->count(); ++i) {
+			const bool on = (mask & (1 << i)) != 0;
+			if (model && model->item(i)) model->item(i)->setEnabled(on);
+			cbProd->setItemData(i, on ? QVariant() : QVariant("Not carried by this instrument"),
+			                    Qt::ToolTipRole);
+		}
+		if (cur >= 1 && cur <= cbProd->count() && cbProd->currentIndex() != cur - 1) {
+			QSignalBlocker b(cbProd);
+			cbProd->setCurrentIndex(cur - 1);
+		}
+	}
+
+	void clearTiles() {
+		for (int i = 0; i < 2; ++i) {
+			full[i] = QPixmap();
+			url[i].clear();
+			startYmd[i].clear();
+			if (tile[i]) { tile[i]->setPixmap(QPixmap()); tile[i]->setText(""); }
+			if (cap[i])  cap[i]->setText("—");
+		}
+	}
+
+	void setTile(int i, const QString &pngPath, const QString &caption, const QString &u, const QString &ymd) {
+		if (i < 0 || i > 1) return;
+		url[i]      = u;
+		startYmd[i] = ymd;
+		if (cap[i]) cap[i]->setText(caption.isEmpty() ? "—" : caption);
+		full[i] = pngPath.isEmpty() ? QPixmap() : QPixmap(pngPath);
+		if (tile[i] && full[i].isNull()) tile[i]->setText(u.isEmpty() ? "" : "(no preview)");
+		rescale(i);
+	}
+
+	void rescale(int i) {
+		if (!tile[i] || full[i].isNull()) return;
+		const QSize sz = tile[i]->contentsRect().size() - QSize(4, 4);
+		if (sz.width() < 8 || sz.height() < 8) return;
+		tile[i]->setPixmap(full[i].scaled(sz, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+	}
+
+	void selectTile(int i) {
+		if (i < 0 || i > 1) return;
+		sel = i;
+		for (int k = 0; k < 2; ++k)
+			if (tile[k])
+				tile[k]->setStyleSheet(k == sel ? "border: 2px solid #2d7ff9;" : "border: 1px solid #888;");
+		if (dlBtn) dlBtn->setToolTip(url[sel].isEmpty() ? "Nothing selected" : url[sel]);
+		// The status line names WHAT IS SELECTED, so it follows the selection instead of freezing on
+		// whatever the last action reported. The file is the netCDF the Extract button will fetch, which
+		// is the browse-image name minus its ".png".
+		setStatus(fileOf(sel));
+	}
+
+	// The data file behind tile `i`: the browse-image basename with the ".png" taken off (the L3 netCDF
+	// carries exactly that name). Empty tile -> a plain word, never a stale name from the other tile.
+	QString fileOf(int i) const {
+		if (i < 0 || i > 1 || url[i].isEmpty()) return QStringLiteral("—");
+		QString b = url[i].section('/', -1);
+		if (b.endsWith(".png", Qt::CaseInsensitive)) b.chop(4);
+		return b;
+	}
+
+	// --- parking (Scene Objects bottom strip) -------------------------------------------------
+	// Bring a parked browser back exactly as it was — the tiles it was showing are still in it, so
+	// nothing is re-fetched. Same shape as every other parkable dialog's unpark().
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();			// destroyed -> the row and this object go with it
+			}
+		};
+	}
+
+	~OceanColorDialog() {
+		for (auto it = g_oceanColorDlgs.begin(); it != g_oceanColorDlgs.end(); )
+			it = (it->second == this) ? g_oceanColorDlgs.erase(it) : std::next(it);
+	}
+};
+
+// --- the NASA Earthdata login ------------------------------------------------------------------
+// OB.DAAC gives the browse IMAGES away but keeps the DATA files behind Earthdata URS, so a grid
+// download needs an account. The host asks for it HERE (once), then writes it to ~/.netrc itself —
+// the standard file curl, wget and GDAL already read — and reports back what it wrote. Nothing is
+// kept on this side: the two strings are copied straight into the caller's buffers and the widgets
+// die with the dialog.
+static int ocAskLogin(Scene *s, const char *msg, char *userBuf, int uCap, char *passBuf, int pCap) {
+	if (!userBuf || uCap < 2 || !passBuf || pCap < 2) return 0;
+	QWidget *parent = (s && s->win) ? static_cast<QWidget *>(s->win) : nullptr;
+	QDialog d(parent);
+	d.setWindowTitle("NASA Earthdata login");
+	auto *v = new QVBoxLayout(&d);
+	auto *lbl = new QLabel(QString::fromUtf8(msg ? msg : ""), &d);
+	lbl->setWordWrap(true);
+	lbl->setTextInteractionFlags(Qt::TextBrowserInteraction);
+	lbl->setOpenExternalLinks(true);
+	lbl->setMinimumWidth(420);
+	v->addWidget(lbl);
+	auto *form = new QFormLayout;
+	auto *eu = new QLineEdit(&d);
+	auto *ep = new QLineEdit(&d);
+	ep->setEchoMode(QLineEdit::Password);
+	form->addRow("Username", eu);
+	form->addRow("Password", ep);
+	v->addLayout(form);
+	auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
+	v->addWidget(bb);
+	QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
+	eu->setFocus();
+	if (d.exec() != QDialog::Accepted) return 0;
+	const QByteArray u = eu->text().trimmed().toUtf8();
+	const QByteArray p = ep->text().toUtf8();
+	if (u.isEmpty() || p.isEmpty() || u.size() >= uCap || p.size() >= pCap) return 0;
+	memcpy(userBuf, u.constData(), u.size()); userBuf[u.size()] = '\0';
+	memcpy(passBuf, p.constData(), p.size()); passBuf[p.size()] = '\0';
+	return 1;
+}
+
+// --- the "Download grid" button pinned under an Ocean Color image ------------------------------
+// The browse image the browser places is the L4 product (a PNG). The real DATA is the L3 netCDF of
+// the very same name, so the button needs no catalogue of its own — Julia hands it the address when
+// it places the image. Placement is redone before every render (a vtkCommand::StartEvent observer,
+// the same hook the Z axis billboards use) so the button follows the image through pan/zoom/rotate
+// instead of floating at a fixed corner.
+static void ocPlaceGridButton(Scene *s) {
+	if (!s || !s->ocBtn) return;
+	const ExtraObj *own = nullptr;
+	for (const auto &ex : s->extras)
+		if (ex.name == s->ocBtnOwner) { own = &ex; break; }
+	// Image gone, hidden, or no renderer to project through: no button either.
+	if (!own || !own->actor || own->actor->GetVisibility() == 0 || !s->ren || !s->widget) {
+		s->ocBtn->hide();
+		return;
+	}
+	double b[6];
+	own->actor->GetBounds(b);			// already in SCALED world coords, so no VE maths here
+	const double wx = 0.5 * (b[0] + b[1]), wy = b[2], wz = 0.5 * (b[4] + b[5]);
+	s->ren->SetWorldPoint(wx, wy, wz, 1.0);
+	s->ren->WorldToDisplay();
+	double *dd = s->ren->GetDisplayPoint();
+	// VTK display coords are bottom-up in RENDERER pixels; Qt widget coords are top-down in LOGICAL
+	// pixels. Convert through the widget's device-pixel ratio or the button lands off-screen on a
+	// HiDPI display.
+	const double dpr = s->widget->devicePixelRatioF() > 0 ? s->widget->devicePixelRatioF() : 1.0;
+	const int px = int(dd[0] / dpr);
+	const int py = int(s->widget->height() - dd[1] / dpr);
+	const QSize sz = s->ocBtn->sizeHint();
+	// A little BELOW the image edge, centred on it, and clamped so it never leaves the view.
+	int x = px - sz.width() / 2;
+	int y = py + 6;
+	x = std::max(0, std::min(x, s->widget->width()  - sz.width()));
+	y = std::max(0, std::min(y, s->widget->height() - sz.height()));
+	s->ocBtn->setGeometry(x, y, sz.width(), sz.height());
+	s->ocBtn->show();
+	s->ocBtn->raise();
+}
+
+static void OcButtonCB(vtkObject *, unsigned long, void *cd, void *) {
+	ocPlaceGridButton(static_cast<Scene *>(cd));
+}
+
+// --- the grid-download progress dialog ---------------------------------------------------------
+// An L3 file is tens of MB, so the indeterminate busy spinner every other tool uses is wrong here:
+// it says "working" and nothing else, which on a slow link is indistinguishable from a hang. This
+// one shows the real numbers — how much has arrived out of how much there is.
+//
+// The download runs on the UI thread (Julia is called synchronously from the button), so the bar
+// can only repaint if we pump the loop ourselves: ocProgressSet does that on every update. Cancel
+// is reported back through its return value, which Julia turns into an aborted transfer.
+static QProgressDialog *g_ocProgress = nullptr;
+static bool             g_ocCancelled = false;
+
+static QString ocHumanBytes(double n) {
+	if (n >= 1024.0 * 1024.0 * 1024.0) return QString::number(n / (1024.0 * 1024.0 * 1024.0), 'f', 2) + " GB";
+	if (n >= 1024.0 * 1024.0)          return QString::number(n / (1024.0 * 1024.0), 'f', 1) + " MB";
+	if (n >= 1024.0)                   return QString::number(n / 1024.0, 'f', 0) + " kB";
+	return QString::number(n, 'f', 0) + " B";
+}
+
+static void ocProgressBegin(QWidget *parent, const QString &what) {
+	if (g_ocProgress) { g_ocProgress->close(); delete g_ocProgress; g_ocProgress = nullptr; }
+	g_ocCancelled = false;
+	g_ocProgress = new QProgressDialog(what, "Cancel", 0, 100, parent);
+	g_ocProgress->setWindowTitle("Ocean Color — downloading");
+	g_ocProgress->setWindowModality(Qt::ApplicationModal);
+	g_ocProgress->setMinimumWidth(420);
+	g_ocProgress->setAutoClose(false);
+	g_ocProgress->setAutoReset(false);
+	g_ocProgress->setMinimumDuration(0);		// show at once: the wait IS the reason it exists
+	g_ocProgress->setValue(0);
+	g_ocProgress->show();
+	QApplication::processEvents();
+}
+
+// `total <= 0` means the server never said how big the file is: fall back to a busy (indeterminate)
+// bar, but still show the byte count so the user can see it climbing.
+static int ocProgressSet(const QString &what, double done, double total) {
+	if (!g_ocProgress) return g_ocCancelled ? 1 : 0;
+	if (total > 0) {
+		g_ocProgress->setRange(0, 1000);
+		g_ocProgress->setValue(int(1000.0 * (done / total)));
+		g_ocProgress->setLabelText(QString("%1\n%2 of %3  (%4%)")
+			.arg(what, ocHumanBytes(done), ocHumanBytes(total))
+			.arg(100.0 * done / total, 0, 'f', 1));
+	}
+	else {
+		g_ocProgress->setRange(0, 0);			// size unknown -> busy bar, real byte count below it
+		g_ocProgress->setLabelText(QString("%1\n%2 so far (total size unknown)")
+			.arg(what, ocHumanBytes(done)));
+	}
+	QApplication::processEvents();
+	if (g_ocProgress->wasCanceled()) g_ocCancelled = true;
+	return g_ocCancelled ? 1 : 0;
+}
+
+static void ocProgressEnd() {
+	if (!g_ocProgress) return;
+	g_ocProgress->close();
+	delete g_ocProgress;
+	g_ocProgress = nullptr;
+	QApplication::processEvents();
+}
+
+// Attach (or re-point) the button to the image named `owner`, which downloads `url`. Called by Julia
+// right after it places an Ocean Color browse image. One button per window: a second image re-points
+// the existing one rather than stacking buttons on top of each other.
+static void ocAttachGridButton(Scene *s, const QString &owner, const QString &url, const QString &tip) {
+	if (!s || !s->widget) return;
+	s->ocBtnOwner = owner.toStdString();
+	s->ocBtnUrl   = url.toStdString();
+	if (!s->ocBtn) {
+		s->ocBtn = new QPushButton("⭳ Download grid", s->widget);
+		s->ocBtn->setCursor(Qt::PointingHandCursor);
+		s->ocBtn->setStyleSheet("QPushButton { background: rgba(20,20,20,190); color: white; "
+		                        "border: 1px solid #6aa9ff; border-radius: 4px; padding: 3px 10px; } "
+		                        "QPushButton:hover { background: rgba(45,127,249,220); }");
+		QObject::connect(s->ocBtn, &QPushButton::clicked, s->ocBtn, [s]() {
+			if (!g_juliaOceanColor) {
+				if (s->win) s->win->statusBar()->showMessage("Ocean Color: callback not registered", 3000);
+				return;
+			}
+			const QByteArray p = QString("req=grid\nurl=%1\n").arg(QString::fromStdString(s->ocBtnUrl)).toUtf8();
+			// No busy spinner here: Julia opens the REAL progress dialog (gmtvtk_oc_progress_*) as soon
+			// as the first bytes are counted, so the user sees size and rate instead of a spinner.
+			const int ok = g_juliaOceanColor(s, nullptr, p.constData());
+			ocProgressEnd();			// belt and braces: never leave the bar up if Julia threw
+			if (!ok && s->win)
+				s->win->statusBar()->showMessage("Grid download failed — see this window's Errors console.", 6000);
+		});
+		// Reposition before every render, so the button rides the image instead of the window.
+		vtkNew<vtkCallbackCommand> cb;
+		cb->SetCallback(OcButtonCB);
+		cb->SetClientData(s);
+		s->ren->AddObserver(vtkCommand::StartEvent, cb);
+	}
+	s->ocBtn->setToolTip(tip.isEmpty() ? url : tip);
+	ocPlaceGridButton(s);
+}
+
+bool OCEventFilter::eventFilter(QObject *ob, QEvent *e) {
+	if (idx >= 0 && e->type() == QEvent::MouseButtonPress) {
+		owner->selectTile(idx);
+		return false;			// selection only — the label keeps whatever else it does with the click
+	}
+	// Double-click a tile = put THAT PICTURE in the window. Deliberately not what the button does: the
+	// button fetches the DATA behind the tile, which needs a NASA Earthdata login, while the browse
+	// image is free and instant. Two products, two actions — a user with no Earthdata account can still
+	// get the map on screen (and the "Download grid" button pinned under it asks for the login later,
+	// if they want the numbers after all). Qt delivers Press before DblClick, so the tile is already
+	// selected here; placeImage() selects it again anyway, for callers that are not this one.
+	if (idx >= 0 && e->type() == QEvent::MouseButtonDblClick) {
+		owner->placeImage(idx);
+		return true;
+	}
+	// idx == -2: the date box. ONLY Enter commits a typed or spun date — never focus loss, which is what
+	// Qt calls "editing finished" and which merely opening the calendar popup causes.
+	if (idx == -2 && e->type() == QEvent::KeyPress) {
+		const int k = static_cast<QKeyEvent *>(e)->key();
+		if (k == Qt::Key_Return || k == Qt::Key_Enter) owner->commitDate();
+	}
+	if (idx == -1 && e->type() == QEvent::Resize) {
+		owner->rescale(0);
+		owner->rescale(1);
+	}
+	return QObject::eventFilter(ob, e);
+}
 
 // ============================================================================================
 // Contours (Grid Tools) — port of Mirone's src_figs/contouring.m. Build a list of elevations (round
@@ -13208,10 +13865,7 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	vtkSmartPointer<vtkScalarsToColors> lut;
 	bool ctfRange = false;
 	if (cz && crgb && ncolor > 0) {
-		vtkNew<vtkColorTransferFunction> ctf;
-		for (int i = 0; i < ncolor; ++i)
-			ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
-		lut = ctf;
+		lut = makeGridCTF(s, cz, crgb, ncolor);		// NaN fill colour applied by construction
 		ctfRange = true;        // the CTF maps absolute z; let the mapper defer to it
 	}
 	else {
@@ -13227,8 +13881,10 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 		ctfRange = true;
 	}
 	s->surfLut = lut; s->surfCtfRange = ctfRange;   // shared by surface, LOD tiles AND the colorbar
-	prefNanColorRGB(s->nanColor[0], s->nanColor[1], s->nanColor[2]);   // Preferences NaN fill colour
-	applyNanColorToLut(s->surfLut, s->nanColor);    // CTF paints NaN-scalar cells with it
+	// s->nanColor was seeded from Preferences when the Scene was created, so it is already right here
+	// however this window was reached. The fallback ramp above is built by hand (HSV, no CPT nodes),
+	// so it is the one LUT makeGridCTF cannot produce -- it gets the colour applied explicitly.
+	applyNanColorToLut(s->surfLut, s->nanColor);
 	// Remember the base CPT + geographic flag so the Shading dock can rebuild this grid as a flat image
 	// or a surface on demand (rebuildBaseFromStored) without the host re-sending the data.
 	if (cz && crgb && ncolor > 0) { s->baseCz.assign(cz, cz + ncolor); s->baseCrgb.assign(crgb, crgb + 3 * ncolor); }
@@ -13273,11 +13929,7 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	// Cloud or already-normalled grid -> direct; bare surface -> through the normals filter.
 	if (pointCloud || hasNormals) map->SetInputData(pd);
 	else                          map->SetInputConnection(norms->GetOutputPort());
-	map->SetLookupTable(lut);
-	map->SetScalarRange(s->zmin, s->zmax);
-	if (ctfRange) map->UseLookupTableScalarRangeOn();  // colours keyed to the CPT's own z nodes
-	map->ScalarVisibilityOn();
-	map->InterpolateScalarsBeforeMappingOn();   // per-fragment colour -> crisp gradient
+	configureGridMapper(map, lut, s->zmin, s->zmax, ctfRange);
 
 	// A point cloud uses a vtkLODActor: while the camera moves it draws a decimated subset
 	// (NumberOfCloudPoints), full resolution when still -> interaction stays smooth on huge
@@ -13717,6 +14369,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	Scene *s = new Scene();
 	g_scenes.insert(s);                     // register as a live figure handle
+	// Preferences "NaN fill colour", read HERE — at scene birth, before ANY grid can be built in this
+	// window. It used to be read inside the primary-surface builder, so a window that never took that
+	// path (an empty launcher, or one whose first content is an image) left s->nanColor at the struct
+	// default and every grid added to it afterwards ignored the preference. SACRED_LAW.md: one source,
+	// loaded once, for every element type — not a value that only exists if you entered by one door.
+	prefNanColorRGB(s->nanColor[0], s->nanColor[1], s->nanColor[2]);
 	s->imageOnly = imageOnly;               // set BEFORE the Scene Objects panel is built (rebuildSceneObjects)
 	if (imageOnly) {                        // bare image: unlit picture, nothing PBR/lit to tone-map or occlude.
 		// Tone mapping + SSAO are screen-space passes applied to the WHOLE framebuffer, so even though
@@ -13961,8 +14619,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			for (Scene *sc : g_scenes) {
 				if (!sceneAlive(sc)) continue;
 				prefNanColorRGB(sc->nanColor[0], sc->nanColor[1], sc->nanColor[2]);
+				// EVERY LUT this window owns, not just the two that were remembered here before:
+				// the Aquamoto land CTF is a grid LUT like any other and was silently skipped.
 				applyNanColorToLut(sc->surfLut, sc->nanColor);
 				for (auto &ex : sc->extras) applyNanColorToLut(ex.lut, sc->nanColor);
+				applyNanColorToLut(sc->aquaLandLut, sc->nanColor);
 				applyShading(sc);
 			}
 		}
@@ -14416,13 +15077,23 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 	};
 
-	*fGroup = [mGphy, fTsu, fSeis, fMag, fPlates]() {
+	*fGroup = [mGphy, win, s, fTsu, fSeis, fMag, fPlates]() {
 		mGphy->clear();
 		mGphy->setTitle("Geophysics ▾");
 		mGphy->addAction("Tsunamis",   [fTsu]()    { (*fTsu)(); });
 		mGphy->addAction("Seismology", [fSeis]()   { (*fSeis)(); });
 		mGphy->addAction("Magnetics",  [fMag]()    { (*fMag)(); });
 		mGphy->addAction("Plates",     [fPlates]() { (*fPlates)(); });
+		mGphy->addSeparator();
+		// Ocean Color: a single tool, not a discipline — it opens its dialog instead of rotating the
+		// menu, so it sits below the separator rather than in the discipline list above it.
+		mGphy->addAction("Oceancolor…", [win, s]() {
+			// Already open or parked in this window? Bring THAT one back — never a second browser.
+			auto it = g_oceanColorDlgs.find(s);
+			if (it != g_oceanColorDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+			warmupTool("oceancolor");
+			new OceanColorDialog(win, s);
+		});
 	};
 	// Clicking the "Geophysics ›" row ITSELF (not one of the disciplines in its flyout) goes back to
 	// the neutral chooser — menubar title "Geophysics ▾", all disciplines listed. Qt never emits

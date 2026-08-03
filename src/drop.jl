@@ -54,6 +54,11 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 			rows = join(("$(v.name)\t$(_dims_str(v.dims))\t$(v.typ)" for v in vars), '\n')
 			sel  = Vector{Cint}(undef, length(vars))           # picker fills 0-based indices of ticked vars
 			pre  = Ref{Cint}(0)                                 # "compute per-layer min/max" checkbox state
+			# The busy spinner must NOT be up while a modal dialog waits for an answer: it paints over
+			# the picker, so the open looks like it hung forever when it is really waiting for a click
+			# on a window the user cannot see. Down before the question — the read that follows is fast
+			# (0.6 s for a 4 km global L3m grid), so it does not need a spinner of its own.
+			_load_dialog_end()
 			nsel = ccall(_fn(:gmtvtk_pick_netcdf_var), Cint,
 			             (Ptr{Cvoid}, Cstring, Cstring, Ptr{Cint}, Cint, Ptr{Cint}),
 			             scene, basename(path), rows, sel, Cint(length(vars)), pre)
@@ -145,12 +150,10 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 		data = GMT.gmtread(String(spec))
 		isempty(recent) || _record_recent(recent, data)
 		ok = _drop_into(scene, data, name; promote=empty, source=String(spec))
-		# _adopt_new_element reframes the axes to THIS thing's own extent and hides everything else
-		# in the window -- correct for a new grid/image FILE (it becomes the window's new primary
-		# content), WRONG for a table/vector overlay (it must sit ON TOP of what's already displayed,
-		# never spawn its own axes or hide the raster it was dropped onto). Never called for a
-		# GMTdataset/Vector{GMTdataset} -- `_drop_into`/`_promote_dataset` already handle a table's own
-		# framing (blank-scaffold promote case) or leave the display alone entirely (add-as-extra case).
+		# SACRED_LAW.md raster-own-axes law: EACH raster creates ITS OWN axes, UNCONDITIONALLY --
+		# primary or extra, no exceptions. It NEVER reuses/inherits whatever axes are already showing.
+		# Never called for a GMTdataset/Vector{GMTdataset} (a vector overlay never touches axes at all
+		# — the separate Vector-import-onto-existing-display law).
 		is_table = data isa GMTdataset || data isa AbstractVector{<:GMTdataset}
 		(ok === false || is_table) || _adopt_new_element(scene, name, data)   # not all _drop_into methods return Bool
 	end
@@ -1173,14 +1176,11 @@ function _place_image_in_window(scene::Ptr{Cvoid}, I::GMTimage, name; geographic
 		      scene, zblank, Cint(2), Cint(2), Float64(ir[1]), Float64(ir[2]), Float64(ir[3]), Float64(ir[4]),
 		      Cint(geographic ? 1 : 0), C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
 		ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), scene)   # scaffold only
-	else
-		# Already framed (grid or earlier image): extend the frame + axes + hover domain to include the
-		# image (no-op if it already fits); keeps xfac fixed so existing actors stay aligned.
-		ccall(_fn(:gmtvtk_grow_frame_h), Cint,
-		      (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble),
-		      scene, Float64(ir[1]), Float64(ir[2]), Float64(ir[3]), Float64(ir[4]))
 	end
 	_add_image_to_scene(scene, I, name; promote=false)             # ExtraObj image -> properties menu
+	# SACRED_LAW.md raster-own-axes law: EACH raster creates ITS OWN axes, UNCONDITIONALLY -- primary
+	# or extra, no exceptions, never reuses/inherits axes already showing.
+	_adopt_new_element(scene, name, I)
 	crs = crs_from(I; geographic=geographic)
 	hascrs(crs) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
 	                     scene, crs.proj4, crs.wkt, Cint(crs.epsg))   # referenced -> reveals Geography menu
