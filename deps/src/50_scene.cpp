@@ -2340,6 +2340,46 @@ static void rebuildSceneObjects(Scene *s) {
 		}
 		endGroup();
 	}
+	// BATCH-IMPORTED text (File > Open xy(z) > Import text, and any future batch that tags its labels
+	// with a groupName of its own): ONE master group handle named for the source file, holding a row
+	// per label, starting collapsed — SACRED_LAW.md's Scene Objects registration law. Without it a
+	// whole imported text file was on screen with NO handle at all. Labels owned by ANOTHER batch
+	// element (a focal mechanism's event date, mecaEvent >= 0) are excluded: they are already
+	// represented by their own batch's row and must not get a second one.
+	std::set<std::string> textGroupsShown;
+	for (auto &tl : s->texts) {
+		if (!tl.actor || tl.ruler || tl.groupName.empty() || tl.mecaEvent >= 0) continue;
+		if (!textGroupsShown.insert(tl.groupName).second) continue;
+		const std::string gn = tl.groupName;
+		const QString gname = QString::fromStdString(gn);
+		bool anyVis = false;
+		for (auto &t : s->texts)
+			if (t.groupName == gn && t.mecaEvent < 0 && t.actor && t.actor->GetVisibility()) anyVis = true;
+		auto groupMenu = [s, gn](const QPoint &g) {
+			QMenu m(s->widget);
+			QAction *del = m.addAction("Remove");
+			if (m.exec(g) != del) return;
+			for (size_t i = s->texts.size(); i-- > 0; ) {      // the whole batch goes, by tag
+				if (s->texts[i].groupName != gn || s->texts[i].mecaEvent >= 0) continue;
+				if (s->texts[i].actor) {
+					if (s->axesRen) s->axesRen->RemoveActor(s->texts[i].actor);
+					if (s->ren)     s->ren->RemoveActor(s->texts[i].actor);
+				}
+				s->texts.erase(s->texts.begin() + i);
+			}
+			s->textDrag = -1;
+			rebuildSceneObjects(s);
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		};
+		// The master handle is the ONLY row: an imported text file is one element, not one element
+		// per line — a thousand-line table would otherwise put a thousand rows in the panel. Its
+		// checkbox reaches every label through beginGroupHandle's own by-groupName sweep (it toggles
+		// the tagged TextLabels directly, not just child rows), so a childless group still shows and
+		// hides the whole import, and its Remove deletes the whole batch.
+		beginGroupHandle(gname, IC_Text, anyVis, groupMenu, groupMenu,
+		                 "Imported text labels", /*startFolded=*/true);
+		endGroup();
+	}
 	for (auto &tl : s->texts) {                          // user-placed text labels (toggle + right-click menu)
 		if (!tl.actor || tl.ruler) continue;             // ruler annotations have their own group, above
 		// Batch-owned labels (Focal mechanisms' per-event date, gmtvtk_add_texts_h groupName tag) get

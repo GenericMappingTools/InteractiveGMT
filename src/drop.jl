@@ -16,6 +16,20 @@
 # which opens an empty launcher and routes the file here) — never a second build path.
 _on_drop(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid = _on_drop(scene, unsafe_string(cpath))
 function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
+	# File > Open xy(z) enters through this SAME file-open callback. The tagged envelope is
+	# "igmtxy:<mode>|<W/E/S/N>|<path>": the requested rendering, the region ON SCREEN (the C++ side
+	# guarantees a raster is there, loading the global base map first if the launcher was empty),
+	# and the file. The region is what _on_import_xy clips the table to.
+	if startswith(path, "igmtxy:")
+		f = split(path[8:end], '|')
+		length(f) >= 3 || return
+		mode = Symbol(f[1])
+		reg  = tryparse.(Float64, split(String(f[2]), '/'))
+		file = String(join(f[3:end], '|'))                  # a path may legitimately contain '|'
+		(length(reg) == 4 && !any(isnothing, reg)) || return
+		_on_import_xy(scene, file, mode, (reg[1], reg[2], reg[3], reg[4]))
+		return
+	end
 	# A dropped file is the other way a first grid arrives, and it pays the same compile + read wait,
 	# so it puts up the same dialog. Re-entrant with view_grid's own pair, and a no-op once the first
 	# open of the session has been paid for.
@@ -1250,8 +1264,10 @@ function _ds_segment_headers(D)::Vector{String}
 end
 
 function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractString="",
-                                color=nothing, noConvertToPoints::Bool=false, noDataTable::Bool=false)
-	mode = _drop_overlay_kind(D)
+                                color=nothing, noConvertToPoints::Bool=false, noDataTable::Bool=false,
+                                forceMode::Union{Nothing,Symbol}=nothing)
+	mode = forceMode === nothing ? _drop_overlay_kind(D) : forceMode
+	mode in (:points, :lines) || error("invalid overlay mode: $mode")
 	xyz, segoff, nseg, npts = _pack_dataset_flat(D)
 	modei = mode === :lines ? Cint(1) : Cint(0)
 	cr, cg, cb = _ovl_color(color, mode)

@@ -47,6 +47,7 @@ include("xyplot.jl")     # standalone X,Y plot tool (vtkChartXY); evolution of t
 include("xyanalysis.jl") # X,Y Analysis menu (remove mean/trend, derivatives, FFT, autocorr)
 include("xystick.jl")    # stick (vector) diagrams for the X,Y tool (ecran 'stick')
 include("drop.jl")
+include("importxy.jl")  # File > Open xy(z): Mirone point/arrow/scaled-symbol/text table imports
 include("paste.jl")      # Ctrl+V: clipboard image / numeric table -> the SAME builders drop.jl uses
 include("basemap.jl")    # World Topo Tiles picker (ported from Mirone bg_map.m)
 include("tilestool.jl")  # Tools > Tiles Tool (ported from Mirone tiles_tool.m; mosaic via GMT.mosaic)

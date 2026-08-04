@@ -13786,6 +13786,30 @@ static QIcon makePolyhedronIcon();
 static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only view-toggle button
 static QIcon makeInfoIcon();                // stylised 'i' glyph for the grdinfo/gdalinfo flyout
 static QIcon makeRulerIcon();               // graduated ruler glyph (85_polygon.cpp)
+
+// SACRED LAW, single source of truth: EVERYTHING that PLOTS onto the window needs something to land
+// on. On an EMPTY launcher, load the whole-world Base Map IN PLACE (the SAME "global" request the
+// Base Maps picker sends -> _on_basemap promotes the launcher + adds the etopo4 image) instead of
+// refusing / silently no-op'ing. Runs synchronously, so on return s->x0..y1 already frame the world,
+// and sceneVisibleRegion has a raster to report. false only if the basemap callback is missing.
+// ONE function — every Geography/Seismology leaf that plots (coastline/borders/rivers, volcanoes/
+// meteorites/hydrothermal/tides, plate boundaries, seismicity), File > Open xy(z)'s imports, and
+// every FUTURE one that does the same (hotspots, isochrons, cities, DSDP/ODP/IODP, …) must call
+// this FIRST, never re-derive/duplicate the empty-launcher check or skip it for one kind. Exception:
+// callers that only COMPUTE off W/E/S/N and plot nothing (Earth Tides) don't need a base — gate on
+// that distinction, not on which caller it happens to be.
+static bool sceneEnsureBase(Scene *s) {
+	if (!s->emptyStart) return true;
+	if (!g_juliaBaseMap) {
+		if (s->win) s->win->statusBar()->showMessage("Base Map callback not registered", 3000);
+		return false;
+	}
+	if (s->win) s->win->statusBar()->showMessage("Loading base map…");
+	showBusyDialog("Base Map");                  // indeterminate busy bar (first-run GMT compile)
+	g_juliaBaseMap(s, "-180/180/-90/90/0/global");
+	closeBusyDialog();
+	return true;
+}
 static QIcon makeSwipeIcon();               // split-tile glyph for the Swipe toggle (85_polygon.cpp)
 static QIcon makeLinkIcon();                // two-windows-and-a-chain glyph for the Link toggle (85_polygon.cpp)
 static int  polyHitText(Scene *s, int x, int y, double tol);   // text label under the cursor (85_polygon.cpp)
@@ -14720,6 +14744,40 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		aBgRegion->setVisible(!hasContent);
 	});
 	mFile->addSeparator();
+	// Mirone's File > Open xy(z), minus "Import line": ordinary File > Open already imports a
+	// plain x/y table as a line. Each entry hands mode + the REGION ON SCREEN + path to Julia,
+	// which reads the table with GMT.gmtselect over that region (one call = read + clip) and builds
+	// the vectors with the existing scene builders.
+	//
+	// The region is the raster on display, and there is ALWAYS one: an empty launcher gets the
+	// whole-world Base Map first, through the SAME sceneEnsureBase every Geography leaf that plots
+	// something calls (SACRED_LAW.md: one operation, one function — never a second empty-launcher
+	// check), and sceneVisibleRegion is the ONE reader of what is on screen.
+	QMenu *mOpenXYZ = mFile->addMenu("Open xy(z)");
+	auto addXYImport = [win, s, mOpenXYZ](const QString &label, const char *mode) {
+		mOpenXYZ->addAction(label, [win, s, mode, label]() {
+			if (!g_juliaDrop) {
+				if (s->win) s->win->statusBar()->showMessage("Open xy(z): callback not registered", 3000);
+				return;
+			}
+			QString f = QFileDialog::getOpenFileName(win, label, prefStartDir(),
+			                                             "Data files (*.dat *.txt *.csv *.gmt);;All Files (*)");
+			if (f.isEmpty()) return;
+			rememberStartDir(f);
+			if (!sceneEnsureBase(s)) return;              // nothing on screen -> global base map first
+			double W = s->x0, E = s->x1, S = s->y0, N = s->y1;
+			sceneVisibleRegion(s, W, E, S, N);
+			const QByteArray p = QString("igmtxy:%1|%2/%3/%4/%5|%6")
+			                     .arg(mode).arg(W, 0, 'f', 8).arg(E, 0, 'f', 8)
+			                     .arg(S, 0, 'f', 8).arg(N, 0, 'f', 8).arg(f).toUtf8();
+			juliaOpenFile(s, p.constData());
+		});
+	};
+	addXYImport("Import points",         "points");
+	addXYImport("Import Arrow field",    "arrows");
+	addXYImport("Import scaled symbols", "scaled");
+	addXYImport("Import text",           "text");
+	mFile->addSeparator();
 	// Open known file types: file picker that uses same auto-detect logic as drag-and-drop.
 	// Opens into THIS window (or promotes empty launcher) via g_juliaDrop.
 	mFile->addAction("Open &known file types…", [win, s]() {
@@ -14887,29 +14945,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto visibleRegion = [s](double &W, double &E, double &S, double &N) -> bool {
 		return sceneVisibleRegion(s, W, E, S, N);
 	};
-	// SACRED LAW, single source of truth: EVERY Geography/Seismology leaf that plots onto the
-	// window needs something to land on. On an EMPTY launcher, load the whole-world Base Map IN
-	// PLACE (the SAME "global" request the Base Maps picker sends -> _on_basemap promotes the
-	// launcher + adds the etopo4 image) instead of refusing / silently no-op'ing. Runs
-	// synchronously, so on return s->x0..y1 already frame the world. false only if the basemap
-	// callback is missing. ONE function — every current leaf that PLOTS something onto the window
-	// (coastline/borders/rivers, volcanoes/meteorites/hydrothermal/tides, plate boundaries,
-	// seismicity) and every FUTURE Geography leaf that does the same (hotspots, isochrons, cities,
-	// DSDP/ODP/IODP, …) must call this FIRST, never re-derive/duplicate the empty-launcher check or
-	// skip it for one kind. Exception: leaves that only COMPUTE off W/E/S/N and plot nothing (Earth
-	// Tides) don't need a base — gate on that distinction, not on which leaf it happens to be.
-	auto ensureGeoBase = [s]() -> bool {
-		if (!s->emptyStart) return true;
-		if (!g_juliaBaseMap) {
-			if (s->win) s->win->statusBar()->showMessage("Geography: Base Map callback not registered", 3000);
-			return false;
-		}
-		if (s->win) s->win->statusBar()->showMessage("Geography: loading base map…");
-		showBusyDialog("Base Map");              // indeterminate busy bar (first-run GMT compile)
-		g_juliaBaseMap(s, "-180/180/-90/90/0/global");
-		closeBusyDialog();
-		return true;
-	};
+	// The window-wide guarantee, now a real function (sceneEnsureBase, above) so the File > Open
+	// xy(z) imports reach the SAME one instead of a second empty-launcher check. This wrapper keeps
+	// every capture-list/call-site below unchanged.
+	auto ensureGeoBase = [s]() -> bool { return sceneEnsureBase(s); };
 	// Hand a seismicity request to Julia: make sure there is a base map, append the visible map
 	// region (the in-map event crop + the USGS query bbox, like Mirone's in_map_region), send.
 	auto sendSeismicity = [s, visibleRegion, ensureGeoBase](const QString &params) {
