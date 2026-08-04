@@ -467,9 +467,37 @@ struct TextLabel {
 	                                          // label (textApplyProps otherwise bottom-justifies those, so
 	                                          // a focal-mechanism date grows upward off its ball). A contour
 	                                          // annotation has to straddle its line, not sit above it.
+	bool ruler = false;                       // ruler-owned annotation; draggable, with its own font
+	                                          // properties and Scene Objects row, exactly like any other
+	                                          // text label — which is why rulerSetLabel UPDATES these in
+	                                          // place instead of dropping and recreating them
+	int  rulerId  = -1;                       // WHICH measurement it belongs to (Ruler::id) — a window
+	                                          // holds as many rulers as the user drew, each with its own
+	                                          // Scene Objects group
+	int  rulerLeg = -1;                       // which leg of that ruler it annotates (valid iff ruler)
+	bool rulerCum = false;                    // false = this leg's length, true = cumulative at its end
+	std::array<double,3> rulerAnchor{};       // where the geometry puts it; `pos` may sit off it after a
+	                                          // user drag, and that offset is carried across rebuilds
 	int mecaEvent = -1;                      // valid iff groupName non-empty: the 0-based event index
 	                                          // (evid/3) this label belongs to — gmtvtk_add_meca_h uses it
 	                                          // to wire MecaBall::dateLabel so a drag carries the label along
+};
+
+// ONE ruler measurement: the vertices the user clicked, the measured length of each leg, and the
+// track actor drawn through them. A window keeps as many of these as were drawn — starting a new
+// measurement, or picking up any other draw tool, NEVER touches the ones already made; only the
+// measurement's own "Remove" in Scene Objects (rulerRemove) takes one away. Its distance labels are
+// ordinary TextLabels tagged with `id` (TextLabel::rulerId), so they are draggable and carry their
+// own font properties like any other label.
+struct Ruler {
+	int id = 0;                                        // stable, never reused: names the group "Ruler <id>"
+	std::vector<std::array<double,3>> verts;           // clicked vertices, data coords
+	std::vector<double> legValues;                     // measured length of leg i (verts[i] -> verts[i+1])
+	QString unit;                                      // the unit legValues are in (Preferences)
+	QString prefSig;                                   // "distAzimType|measureUnits" they were measured
+	                                                    // under; a change re-measures instead of relabelling
+	vtkSmartPointer<vtkActor>    line;
+	vtkSmartPointer<vtkPolyData> pd;
 };
 
 // A handle to one line-like scene object for the shared Line Properties tool (55_lineprops.cpp).
@@ -932,7 +960,7 @@ struct Scene {
 	// rectangle and circle all finalize into a `Polygon` (a vertex ring; polyline is the only open
 	// one) and so share preview / edit / delete / Scene-Objects / Line-Properties code. Text places
 	// a billboard label instead. polyShape selects which tool the active (checked) button drives.
-	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text, SH_RectN, SH_Fault,
+	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text, SH_RectN, SH_Fault, SH_Ruler,
 	                 SH_SymCircle, SH_SymSquare, SH_SymStar };   // Symbols flyout: one-click regular shapes
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
@@ -1020,6 +1048,21 @@ struct Scene {
 	vtkSmartPointer<vtkCallbackCommand> polyCmd;       // mouse observers (priority above the gizmo)
 	QAction *polyAct = nullptr;                         // active draw toggle action — set on the checked tool
 	std::vector<QAction*> shapeActs;                    // all five draw-tool buttons (for mutual untoggle)
+	// Ruler measurements. Each one is a PERSISTENT element in its own right, exactly like a drawn
+	// polygon: a double-click (or switching tools) ends the one being drawn, the next one starts
+	// ALONGSIDE it, and NOTHING removes a measurement except its own group's Remove in Scene Objects.
+	std::vector<Ruler> rulers;
+	int rulerActive = -1;                              // index in `rulers` of the one being drawn, -1 = none
+	int rulerNextId = 1;                               // ids are never reused, so "Ruler 3" stays "Ruler 3"
+	// The rubber-band radius circle belongs to the draw GESTURE, not to a measurement, so there is
+	// one of it for the window and it is hidden the moment a ruler is finished.
+	vtkSmartPointer<vtkActor> rulerCircle;
+	vtkSmartPointer<vtkPolyData> rulerCirclePD;
+	std::array<double,3> rulerLiveEnd{};               // live (rubber-band) leg cache — see rulerLiveLeg:
+	double  rulerLiveVal = 0.0;                        // the SAME measuring function serves the moving
+	QString rulerLiveUnit;                             // label, it is just asked less often than the
+	qint64  rulerLiveMs = 0;                           // mouse moves
+	QAction *rulerAct = nullptr;
 
 	// Vertical elastic deformation dialog state — persisted here so reopening the dialog (it is
 	// rebuilt from scratch each time) restores the user's last-typed Fault/Dislocation values. The
@@ -2359,6 +2402,9 @@ static void applyVE(Scene *s) {
 		if (sl.actor) sl.actor->SetScale(1.0, 1.0, s->zfac * s->ve);      // x already baked into the points
 	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview
 	if (s->polyHandles) s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // edit-mode vertex handles
+	for (auto &rr : s->rulers)                                                     // every ruler track and the
+		if (rr.line) rr.line->SetScale(s->xfac, 1.0, s->zfac * s->ve);            // draw gesture's radius
+	if (s->rulerCircle) s->rulerCircle->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // circle ride VE like the rest
 	// EVERY raster's axes ride VE, each from its OWN frame — there is no window box to resize. The
 	// per-set work (box + degenerate-Z guard + gridline/Z-axis toggles + the billboards) is exactly
 	// what rebuildAxisLabels already does for all of them, so VE only has to re-point the cameras and

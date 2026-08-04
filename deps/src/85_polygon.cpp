@@ -1212,6 +1212,243 @@ static void deleteMecaGroup(Scene *s, const QString &groupName) {
 	s->mecaDrag = -1;
 }
 
+// A compact graduated ruler icon, painted at high DPI like the other toolbar glyphs.
+static QIcon makeRulerIcon() {
+	QPixmap pm = iconCanvas(); QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.translate(12, 12); p.rotate(-38); p.translate(-12, -12);
+	p.setPen(QPen(QColor(35, 45, 55), 1.2)); p.setBrush(QColor(245, 205, 75));
+	p.drawRoundedRect(QRectF(3, 8, 18, 8), 1.2, 1.2);
+	for (int k = 0; k < 6; ++k) p.drawLine(QPointF(5 + 2.7*k, 8), QPointF(5 + 2.7*k, k%2 ? 11 : 12.5));
+	p.end(); return QIcon(pm);
+}
+
+// Erase ruler `id`'s annotations whose leg index is >= `keep` (keep = 0 takes all of that ruler's).
+// Used when a vertex is taken back, when the rubber-band leg ends, and when a whole measurement is
+// removed. Only ever touches the ruler NAMED: another measurement's labels are never in scope.
+// Erasing from s->texts shifts indices, so an in-flight label drag (Scene::textDrag is such an
+// index) is cancelled. Returns true if anything went, i.e. whether Scene Objects needs rebuilding.
+static bool rulerDropTexts(Scene *s, int id, int keep = 0) {
+	bool erased = false;
+	for (int i = (int)s->texts.size() - 1; i >= 0; --i) {
+		if (!s->texts[i].ruler || s->texts[i].rulerId != id || s->texts[i].rulerLeg < keep) continue;
+		if (s->texts[i].actor) {
+			if (s->axesRen) s->axesRen->RemoveActor(s->texts[i].actor);
+			if (s->ren)     s->ren->RemoveActor(s->texts[i].actor);
+		}
+		s->texts.erase(s->texts.begin() + i);
+		erased = true;
+	}
+	if (erased) s->textDrag = -1;
+	return erased;
+}
+
+// Remove ONE measurement, whole: its track, its labels, its row group. The ONLY thing that deletes a
+// ruler — reached from that ruler's own "Remove" in Scene Objects. Starting another measurement,
+// switching to another draw tool, or drawing anything else does NOT come through here.
+static void rulerRemove(Scene *s, int idx) {
+	if (idx < 0 || idx >= (int)s->rulers.size()) return;
+	Ruler &r = s->rulers[idx];
+	if (r.line && s->ren) s->ren->RemoveActor(r.line);
+	rulerDropTexts(s, r.id);
+	if (s->rulerActive == idx) {                       // it was the one being drawn
+		s->rulerActive = -1;
+		if (s->rulerCircle) s->rulerCircle->SetVisibility(0);
+	}
+	else if (s->rulerActive > idx) --s->rulerActive;   // indices after it shift down
+	s->rulers.erase(s->rulers.begin() + idx);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+
+static bool rulerIsGeog(Scene *s, const std::array<double,3> &a, const std::array<double,3> &b) {
+	if (s->crsProj4.find("longlat") != std::string::npos || s->crsProj4.find("latlong") != std::string::npos) return true;
+	return s->crsProj4.empty() && a[0]>=-180 && a[0]<=360 && b[0]>=-180 && b[0]<=360 &&
+	       a[1]>=-90 && a[1]<=90 && b[1]>=-90 && b[1]<=90;
+}
+
+// FALLBACK ONLY: a local spherical/flat approximation, used when the Julia/GMT host bridge is
+// unavailable (no g_juliaEval, or the eval failed) — exactly the role geoLineLenAz plays for the
+// fault dialog's seed. It is NOT a second measuring engine for the normal path: every number the
+// ruler shows, live or committed, comes from rulerExactLeg -> _ruler_length -> _seg_dist_azim, the
+// same function "Line length…" uses (SACRED_LAW.md: one quantity, one function — never a separate
+// implementation for a preview). Notice what it CANNOT do, which is why it must never be on the
+// normal path: it answers "Ellipsoidal" and "Spherical" with the same haversine sphere.
+static double rulerFallbackLeg(Scene *s, const std::array<double,3> &a, const std::array<double,3> &b,
+                               QString &unit) {
+	const bool geog=rulerIsGeog(s,a,b), terrain=!s->flat2d && sceneHasRealGrid(s);
+	std::vector<std::array<double,3>> path;
+	if (terrain) polyDrapeCorners(s, {a,b}, path); else path={a,b};
+	double total=0.0;
+	for (size_t i=1; i<path.size(); ++i) {
+		double h;
+		if (geog) {
+			if (prefDistAzimType()=="Flat Earth") {
+				const double ym=(path[i][1]+path[i-1][1])*0.5*vtkMath::Pi()/180.0;
+				h=111.195*std::hypot((path[i][0]-path[i-1][0])*std::cos(ym),path[i][1]-path[i-1][1]);
+			} else { double az; geoLineLenAz(path[i-1][0],path[i-1][1],path[i][0],path[i][1],h,az); }
+			if (terrain) h=std::hypot(h,(path[i][2]-path[i-1][2])/1000.0);
+		} else {
+			h=std::hypot(path[i][0]-path[i-1][0],path[i][1]-path[i-1][1]);
+			if (terrain) h=std::hypot(h,path[i][2]-path[i-1][2]);
+		}
+		total+=h;
+	}
+	if (!geog) { unit="units"; return total; }
+	const QString u=prefMeasureUnits();
+	if (u=="meters") { unit="m"; return total*1000.0; }
+	if (u=="nautical miles") { unit="NM"; return total/1.852; }
+	if (u=="miles") { unit="mi"; return total/1.609344; }
+	unit="km"; return total;
+}
+
+// THE ruler's measuring function. One leg, through the same GMT engine (and therefore the same
+// Preferences "Dist/Azim type" + "Measure units") that Line length / Azimuth / Extract profile use.
+// Every ruler number goes through here.
+static double rulerExactLeg(Scene *s, const std::array<double,3> &a, const std::array<double,3> &b, QString &unit) {
+	if (!g_juliaEval) return rulerFallbackLeg(s,a,b,unit);
+	const QString tmp=QDir::tempPath()+"/igmt_ruler_"+QString::number(QDateTime::currentMSecsSinceEpoch())+".txt";
+	std::vector<std::vector<std::array<double,3>>> leg{{a,b}};
+	const bool terrain=!s->flat2d && sceneHasRealGrid(s);
+	if (!lineWriteTable(s,leg,terrain,tmp)) return rulerFallbackLeg(s,a,b,unit);
+	const QString cmd=QString("InteractiveGMT._ruler_length(raw\"%1\",raw\"%2\",raw\"%3\",raw\"%4\",%5)")
+		.arg(tmp).arg(QString::fromStdString(s->crsProj4)).arg(prefDistAzimType()).arg(prefMeasureUnits()).arg(terrain?"true":"false");
+	std::vector<char> buf(4096); const int n=g_juliaEval(s,cmd.toStdString().c_str(),buf.data(),(int)buf.size()); QFile::remove(tmp);
+	if (n<0) { sceneLogError(s,QString::fromUtf8(buf.data(),-n)); return rulerFallbackLeg(s,a,b,unit); }
+	const QStringList q=QString::fromUtf8(buf.data(),n).split('|'); bool ok=false;
+	if (q.size()==2) { const double v=q[1].toDouble(&ok); if(ok){unit=q[0]; return v;} }
+	return rulerFallbackLeg(s,a,b,unit);
+}
+
+// The LIVE (rubber-band) leg. SAME function as a committed one — the only difference is how often
+// it is ASKED: a mouse-move fires far faster than a GMT round trip, so the answer is cached for
+// ~80 ms and re-used in between. That is a refresh rate, not a second formula: the number under the
+// cursor is exactly the number that lands when the click commits the vertex.
+static double rulerLiveLeg(Scene *s, const std::array<double,3> &a, const std::array<double,3> &b, QString &unit) {
+	const qint64 now = QDateTime::currentMSecsSinceEpoch();
+	if ((b != s->rulerLiveEnd || s->rulerLiveMs == 0) && now - s->rulerLiveMs >= 80) {
+		s->rulerLiveVal = rulerExactLeg(s, a, b, s->rulerLiveUnit);
+		s->rulerLiveEnd = b;
+		s->rulerLiveMs  = now;
+	}
+	unit = s->rulerLiveUnit;
+	return s->rulerLiveVal;
+}
+
+// The Preferences the cached leg values were measured under. Changing either one mid-ruler must
+// re-measure every leg, never relabel an old number with the new unit.
+static QString rulerPrefSig() { return prefDistAzimType() + "|" + prefMeasureUnits(); }
+
+static QString rulerFmt(double v,const QString &u) {
+	const int d=std::abs(v)<10?2:(std::abs(v)<100?1:0); return QString::number(v,'f',d)+" "+u;
+}
+// Place or UPDATE the annotation of ruler leg `leg` (`cum` picks the per-leg or the running-total
+// one). A ruler label is an ordinary TextLabel: draggable, its own "Text Properties…" (font, size,
+// colour), its own Scene Objects row with Remove. So it is created ONCE and then updated in
+// place — a label dropped and recreated on every mouse move could be none of those things, since
+// every pointer and index anything else held to it (a Scene Objects row's actor, Scene::textDrag)
+// would be freed under it mid-gesture. Only the STRING and the anchor are refreshed here; the
+// user's font/colour edits and their drag offset survive, the offset by being carried relative to
+// the anchor the geometry puts the label on. Returns true if a new label was made (the caller then
+// refreshes Scene Objects; a value-only update leaves the row's name alone, so it need not).
+static bool rulerSetLabel(Scene *s, int id, int leg, bool cum, const QString &txt,
+                          const std::array<double,3> &anchor, int size) {
+	for (auto &tl : s->texts) {                        // already there: refresh it, keep everything else
+		if (!tl.ruler || tl.rulerId != id || tl.rulerLeg != leg || tl.rulerCum != cum) continue;
+		for (int k = 0; k < 3; ++k) tl.pos[k] += anchor[k] - tl.rulerAnchor[k];   // carry the user's drag
+		tl.rulerAnchor = anchor;
+		tl.text = txt.toStdString();
+		textApplyProps(s, tl);
+		return false;
+	}
+	TextLabel tl;
+	tl.ruler = true; tl.rulerId = id; tl.rulerLeg = leg; tl.rulerCum = cum;
+	tl.pos = anchor; tl.rulerAnchor = anchor;
+	tl.text = txt.toStdString();
+	tl.name = (cum ? "Total " : "Leg ") + std::to_string(leg + 1);   // shown under its ruler's own group
+	tl.size = size; tl.bold = true; tl.color[0] = tl.color[1] = tl.color[2] = 1.0;
+	auto ba = vtkSmartPointer<vtkBillboardTextActor3D>::New();
+	tl.actor = ba;
+	textApplyProps(s, tl);
+	ba->GetTextProperty()->SetShadow(true); ba->GetTextProperty()->SetShadowOffset(1, -1);
+	s->axesRen->AddActor(ba);
+	s->texts.push_back(tl);
+	return true;
+}
+// Rebuild the ACTIVE measurement (the one being drawn) plus an optional live cursor endpoint. Only
+// ever touches s->rulers[s->rulerActive]: every measurement already finished is left exactly as it
+// is, geometry, labels and rows alike.
+static void rulerRebuild(Scene *s,const double *cursor=nullptr) {
+	if (s->rulerActive<0 || s->rulerActive>=(int)s->rulers.size()) return;
+	Ruler &r=s->rulers[s->rulerActive];
+	std::vector<std::array<double,3>> v=r.verts;
+	if (cursor) v.push_back({cursor[0],cursor[1],cursor[2]});
+	if (!r.pd) r.pd=vtkSmartPointer<vtkPolyData>::New();
+	std::vector<std::array<double,3>> draped; polyDrapeCorners(s,v,draped); polyFillLine(r.pd,draped,false);
+	if (!r.line) { r.line=polyMakeLineActor(s,r.pd,0,0.9,1); r.line->GetProperty()->SetLineWidth(3); s->ren->AddActor(r.line); }
+
+	// Preferences changed since the cached legs were measured? Throw them away and re-measure under
+	// the new setting — a leg is a number AND the unit it was measured in, never one relabelled with
+	// the other's unit.
+	const QString sig=rulerPrefSig();
+	if (sig!=r.prefSig) { r.prefSig=sig; r.legValues.clear(); s->rulerLiveMs=0; }
+
+	const int committed=std::max(0,(int)r.verts.size()-1);
+	while ((int)r.legValues.size()<committed) {
+		QString u; r.legValues.push_back(rulerExactLeg(s,r.verts[r.legValues.size()],r.verts[r.legValues.size()+1],u)); r.unit=u;
+	}
+	// Annotations are addressed BY (ruler, leg) and updated in place (rulerSetLabel); only legs that no
+	// longer exist are erased. Scene Objects is refreshed only when the SET of labels changed — not on
+	// every mouse move, and never for a value-only update, whose row name does not change anyway.
+	bool setChanged=false;
+	double cum=0;
+	for(int i=0;i<committed;++i){
+		cum+=r.legValues[i]; const auto &a=r.verts[i],&b=r.verts[i+1];
+		std::array<double,3> m{(a[0]+b[0])/2,(a[1]+b[1])/2,(a[2]+b[2])/2}; if(!s->flat2d&&!s->gridZ.empty()){double z=sampleZ(s,m[0],m[1]);if(!std::isnan(z))m[2]=z;}
+		setChanged|=rulerSetLabel(s,r.id,i,false,rulerFmt(r.legValues[i],r.unit),m,10);
+		setChanged|=rulerSetLabel(s,r.id,i,true, rulerFmt(cum,r.unit),b,12);
+	}
+	std::array<double,3> center{}; double rawRadius=0;
+	if(cursor&&!r.verts.empty()){
+		center={cursor[0],cursor[1],cursor[2]}; QString u; const double live=rulerLiveLeg(s,r.verts.back(),center,u);
+		const auto &a=r.verts.back(); std::array<double,3> m{(a[0]+center[0])/2,(a[1]+center[1])/2,(a[2]+center[2])/2};
+		setChanged|=rulerSetLabel(s,r.id,committed,false,rulerFmt(live,u),m,10);
+		setChanged|=rulerSetLabel(s,r.id,committed,true, rulerFmt(cum+live,u),center,12);
+		rawRadius=std::hypot((center[0]-a[0])*s->xfac,center[1]-a[1]);
+	}else if(r.verts.size()>=2){center=r.verts.back();const auto&a=r.verts[r.verts.size()-2];rawRadius=std::hypot((center[0]-a[0])*s->xfac,center[1]-a[1]);}
+	setChanged|=rulerDropTexts(s,r.id,committed+(cursor?1:0));     // legs that no longer exist
+	if(setChanged) rebuildSceneObjects(s);
+	if(!s->rulerCirclePD)s->rulerCirclePD=vtkSmartPointer<vtkPolyData>::New(); std::vector<std::array<double,3>> ring;
+	if(rawRadius>0){for(int k=0;k<=96;++k){double th=2*vtkMath::Pi()*k/96.0,x=center[0]+rawRadius*std::cos(th)/std::max(std::abs(s->xfac),1e-12),y=center[1]+rawRadius*std::sin(th),z=center[2];if(!s->gridZ.empty()){double h=sampleZ(s,x,y);if(!std::isnan(h))z=h;}ring.push_back({x,y,z});}}
+	polyFillLine(s->rulerCirclePD,ring,false); if(!s->rulerCircle){s->rulerCircle=polyMakeLineActor(s,s->rulerCirclePD,0,0.9,1);s->rulerCircle->GetProperty()->SetLineWidth(2.5);s->ren->AddActor(s->rulerCircle);} s->rulerCircle->SetVisibility(ring.empty()?0:1);
+}
+
+// Freeze the ruler: rebuild the committed legs with NO cursor endpoint (so the live label and the
+// radius circle go away) and leave the measured legs standing. ONE function for it — the finishing
+// double-click, switching to another draw tool and unchecking the button all call THIS, so a
+// half-drawn ruler can never be left behind with a rubber-band leg hanging off the cursor.
+static void rulerFinish(Scene *s) {
+	if (s->rulerActive < 0 || s->rulerActive >= (int)s->rulers.size()) return;   // nothing being drawn
+	const int idx = s->rulerActive;
+	if (s->rulers[idx].verts.size() < 2) { rulerRemove(s, idx); return; }        // a stray single click
+	rulerRebuild(s);                                          // no cursor: drops the rubber-band leg
+	s->rulerActive = -1;                                      // finished: it is now an ordinary element
+	if (s->rulerCircle) s->rulerCircle->SetVisibility(0);
+	s->rulerLiveMs = 0;
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Begin a NEW measurement, alongside every one already on screen. Nothing existing is touched — a
+// ruler only ever goes away through its own group's Remove (rulerRemove).
+static void rulerBegin(Scene *s) {
+	rulerFinish(s);                                           // close any half-drawn one first
+	Ruler r;
+	r.id = s->rulerNextId++;
+	s->rulers.push_back(r);
+	s->rulerActive = (int)s->rulers.size() - 1;
+	s->rulerLiveMs = 0;
+}
+
 // Toolbar toggle: enter/leave draw mode. Switching cancels any in-progress draw and edit.
 static void polygonSetMode(Scene *s, bool on) {
 	s->polyMode = on;
@@ -1236,12 +1473,18 @@ static void polygonToolToggled(Scene *s, QAction *act, Scene::ShapeKind shape, b
 				s->win->statusBar()->showMessage("Load a file first — the draw and text tools need data to draw on.", 4000);
 			return;
 		}
+		// Leaving a half-drawn ruler behind (for another tool, or to start another measurement) ends
+		// it through the SAME rulerFinish the closing double-click runs — it STAYS on screen, as does
+		// every earlier measurement. Nothing here deletes a ruler; only its own Remove does.
+		if (s->polyShape == Scene::SH_Ruler) rulerFinish(s);
 		s->polyShape = shape;
 		s->polyAct   = act;
 		for (QAction *a : s->shapeActs)                 // exclusive: drop any other checked tool
 			if (a != act && a->isChecked()) a->setChecked(false);
 		polygonSetMode(s, true);
-	} else if (s->polyAct == act) {                     // the active tool was switched off
+	}
+	else if (s->polyAct == act) {                       // the active tool was switched off
+		if (s->polyShape == Scene::SH_Ruler) rulerFinish(s);
 		s->polyAct = nullptr;
 		polygonSetMode(s, false);
 	}
@@ -1736,7 +1979,8 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 		return true;
 	}
 	const bool vertexTool = (s->polyShape == Scene::SH_Polygon || s->polyShape == Scene::SH_Polyline ||
-	                         s->polyShape == Scene::SH_Line || s->polyShape == Scene::SH_Fault);
+	                         s->polyShape == Scene::SH_Line || s->polyShape == Scene::SH_Fault ||
+	                         s->polyShape == Scene::SH_Ruler);
 	// A tool armed a "point at a line" pick (Scene::vectorPickMode — Plates > Euler rotations'
 	// "Pick in view" / "Rect select"). CLICK mode resolves the line under the cursor with the SAME
 	// two hit tests, in the same order, the double-click edit path uses: a drawn Polygon first, then
@@ -1818,11 +2062,23 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 		s->widget->renderWindow()->Render();
 		return true;
 	}
-	if (button == 1) {                                   // right-click: undo last vertex (polygon/polyline)
+	if (button == 1) {                                   // right-click: undo the last vertex
 		if (s->polyMode && s->polyDrawing && vertexTool) {
 			if (!s->polyCur.empty()) s->polyCur.pop_back();
 			if (s->polyCur.empty()) s->polyDrawing = false;
-			polyRebuildPreview(s, nullptr);
+			// The ruler is a vertex tool like any other: right-click takes its last vertex back too
+			// (its leg value goes with it), redrawn through its own rebuild instead of the shape
+			// preview. Same gesture, same meaning, no per-tool special case.
+			if (s->polyShape == Scene::SH_Ruler && s->rulerActive >= 0) {
+				Ruler &r = s->rulers[s->rulerActive];
+				if (!r.verts.empty())     r.verts.pop_back();
+				if (!r.legValues.empty()) r.legValues.pop_back();
+				s->rulerLiveMs = 0;                      // the live leg now hangs off a different anchor
+				if (r.verts.empty()) rulerRemove(s, s->rulerActive);   // undone back to nothing
+				else                 rulerRebuild(s);
+			}
+			else
+				polyRebuildPreview(s, nullptr);
 			s->widget->renderWindow()->Render();
 			return true;
 		}
@@ -1847,6 +2103,13 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 		if (!polyPickWorld(s, x, y, w))
 			return true;                                 // consume even on a miss (no rotate while drawing)
 		switch (s->polyShape) {
+		case Scene::SH_Ruler:                            // every left-click commits a vertex
+			if (!s->polyDrawing) { s->polyDrawing = true; s->polyCur.clear(); rulerBegin(s); }
+			s->polyCur.push_back({ w[0], w[1], w[2] });
+			if (s->rulerActive >= 0) s->rulers[s->rulerActive].verts.push_back({ w[0], w[1], w[2] });
+			s->rulerLiveMs = 0;                          // next live leg hangs off the NEW anchor
+			rulerRebuild(s);
+			break;
 		case Scene::SH_Polygon:
 		case Scene::SH_Polyline:                         // every left-click adds a vertex
 			if (!s->polyDrawing) { s->polyDrawing = true; s->polyCur.clear(); }
@@ -2003,6 +2266,15 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 		return true;
 	}
 	if (s->polyMode && s->polyDrawing) {
+		if (s->polyShape == Scene::SH_Ruler) {           // double-click ends the ruler, like every other
+			rulerFinish(s);                              // vertex tool, and disarms the button
+			if (s->rulerAct)
+				s->rulerAct->setChecked(false);          // its toggle handler runs rulerFinish again: a no-op
+			else
+				polygonSetMode(s, false);
+			s->widget->renderWindow()->Render();
+			return true;
+		}
 		if (s->polyShape == Scene::SH_Polygon && s->polyCur.size() >= 3) {   // >=3 vertices for an area
 			polyFinalize(s, s->polyCur, true, "polygon");
 			s->widget->renderWindow()->Render();
@@ -2152,6 +2424,11 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 	}
 	if (s->polyMode && s->polyDrawing) {
 		double w[3];
+		if (s->polyShape == Scene::SH_Ruler) {
+			rulerRebuild(s, polyPickWorld(s, x, y, w) ? w : nullptr);
+		s->widget->renderWindow()->Render();
+			return true;
+		}
 		polyRebuildPreview(s, polyPickWorld(s, x, y, w) ? w : nullptr);
 		s->widget->renderWindow()->Render();
 		return true;

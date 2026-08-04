@@ -13785,6 +13785,7 @@ static QIcon makeCylinderIcon();
 static QIcon makePolyhedronIcon();
 static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only view-toggle button
 static QIcon makeInfoIcon();                // stylised 'i' glyph for the grdinfo/gdalinfo flyout
+static QIcon makeRulerIcon();               // graduated ruler glyph (85_polygon.cpp)
 static QIcon makeSwipeIcon();               // split-tile glyph for the Swipe toggle (85_polygon.cpp)
 static QIcon makeLinkIcon();                // two-windows-and-a-chain glyph for the Link toggle (85_polygon.cpp)
 static int  polyHitText(Scene *s, int x, int y, double tol);   // text label under the cursor (85_polygon.cpp)
@@ -15816,6 +15817,16 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			g_juliaBaseMap(s, dlg.region.toUtf8().constData());
 	});
 
+	// Ruler: left click appends terrain-picked vertices, right click takes the last one back, a
+	// double-click ends it — the same three gestures every other vertex tool uses.
+	QAction *actRuler = tb->addAction(makeRulerIcon(), "");
+	actRuler->setCheckable(true);
+	actRuler->setToolTip("Ruler: left-click adds vertices, right-click undoes the last, double-click finishes. "
+	                     "2D measures between vertices; 3D follows the terrain. Distance type and units come from Preferences.");
+	QObject::connect(actRuler, &QAction::toggled, [s, actRuler](bool on){ polygonToolToggled(s, actRuler, Scene::SH_Ruler, on); });
+	s->rulerAct = actRuler;
+	s->shapeActs.push_back(actRuler);
+	tb->addSeparator();
 	// --- draw tools: an Illustrator-style flyout (shapes) + a standalone Text button -----------
 	// The four shape tools share ONE toolbar slot (a plain QToolButton in MenuButtonPopup mode): the
 	// slot shows the active tool; its native dropdown arrow opens the family flyout. Each tool is

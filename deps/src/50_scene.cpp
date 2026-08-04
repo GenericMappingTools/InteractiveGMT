@@ -14,6 +14,7 @@ static void swipeRefreshAvailability(Scene *s);     // 57_swipe.cpp: the Swipe b
 static void textApplyProps(Scene *s, TextLabel &tl); // 85_polygon.cpp: re-apply font fields to the actor
 static void deleteSlipGroup(Scene *s, const QString &groupName); // 85_polygon.cpp: delete all patches in a slip model
 static void deleteMecaGroup(Scene *s, const QString &groupName); // 85_polygon.cpp: delete a focal-mechanism batch
+static void rulerRemove(Scene *s, int idx);          // 85_polygon.cpp: delete ONE ruler (track + its labels)
 static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoint &gp); // defined below
 static void showInfoText(QWidget *parent, const QString &title, const QString &text); // 70_window.cpp: read-only text popup
 
@@ -2296,8 +2297,51 @@ static void rebuildSceneObjects(Scene *s) {
 		if (faultGroup) endGroup();
 	}
 	if (!slipGroupOpen.isEmpty()) endGroup();            // close a slip-model group still open at the list's end
+	// RULERS: ONE collapsible group handle PER MEASUREMENT, holding that ruler's track and every one of
+	// its leg/total annotations — so a measurement with a dozen legs costs ONE row in the panel until
+	// the user opens it (startFolded; their choice is remembered from then on, like every other group).
+	// A window keeps every measurement ever drawn: only the group's own Remove deletes one, and it
+	// deletes ALL of that group's sub-handles with it. Nothing else — a new ruler, another draw tool —
+	// may take one away.
+	for (size_t ri = 0; ri < s->rulers.size(); ++ri) {
+		Ruler &r = s->rulers[ri];
+		const int rid = r.id;
+		const QString gname = QString("Ruler %1").arg(rid);
+		const bool trackVis = r.line && r.line->GetVisibility();
+		bool anyVis = trackVis;
+		for (auto &tl : s->texts)
+			if (tl.ruler && tl.rulerId == rid && tl.actor && tl.actor->GetVisibility()) anyVis = true;
+		auto rulerMenu = [s, rid](const QPoint &g) {
+			QMenu m(s->widget);
+			QAction *del = m.addAction("Remove");
+			if (m.exec(g) != del) return;
+			for (size_t k = 0; k < s->rulers.size(); ++k)      // by id: the row's index can have shifted
+				if (s->rulers[k].id == rid) { rulerRemove(s, (int)k); return; }
+		};
+		beginGroupHandle(gname, IC_Polyline, anyVis, rulerMenu, rulerMenu,
+		                 "Measured track and its distance labels", /*startFolded=*/true);
+		if (r.line) {
+			vtkActor *rl = r.line.Get(), *rc = s->rulerCircle.Get();
+			makeRow("Track", IC_Polyline, trackVis,
+			        [s, rl, rc](bool on) {
+			        	rl->SetVisibility(on ? 1 : 0);
+			        	if (rc) rc->SetVisibility(0);    // the radius circle belongs to the live draw only
+			        	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			        },
+			        rulerMenu, "The measured line — left-click to remove this ruler");
+		}
+		for (auto &tl : s->texts) {
+			if (!tl.ruler || tl.rulerId != rid || !tl.actor) continue;
+			vtkProp3D *act = tl.actor.Get();
+			makeRow(QString::fromStdString(tl.name), IC_Text, act->GetVisibility() != 0,
+			        [act](bool on) { act->SetVisibility(on ? 1 : 0); },
+			        [s, act](const QPoint &g) { textLabelMenu(s, act, g); },
+			        "Left-click for properties");
+		}
+		endGroup();
+	}
 	for (auto &tl : s->texts) {                          // user-placed text labels (toggle + right-click menu)
-		if (!tl.actor) continue;
+		if (!tl.actor || tl.ruler) continue;             // ruler annotations have their own group, above
 		// Batch-owned labels (Focal mechanisms' per-event date, gmtvtk_add_texts_h groupName tag) get
 		// NO row of their own — a catalog can carry 100s, which would flood this panel exactly like the
 		// meca fill patches would without their own ONE-row-per-batch folding above. They're controlled

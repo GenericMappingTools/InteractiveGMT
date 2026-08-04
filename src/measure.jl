@@ -110,6 +110,28 @@ function _line_length(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bo
 	return nothing
 end
 
+# ONE leg of the interactive ruler (85_polygon.cpp's rulerExactLeg). The C++ side writes either the
+# two 2-D end points or a grid-spacing densified 3-D terrain track, using the same lineWriteTable
+# subdivision as the 3-D line export. Same engine as "Line length…" — _measure_load to read the
+# table, _seg_dist_azim for the CRS-aware Preferences distance, _length_scale for the Preferences
+# unit — so a ruler leg and a measured line length of the same two points are the same number.
+# `terrain` adds the vertical rise between consecutive samples (grid z is metres when geographic).
+# Prints "unit|value" for the caller to parse; `dir` has no meaning for a length.
+function _ruler_length(path::String, proj4::String, datype::AbstractString="Ellipsoidal",
+                       units::AbstractString="kilometers", terrain::Bool=false)
+	segs, geog, _ = _measure_load(path, proj4)
+	x = Float64.(segs[1].data[:, 1]);  y = Float64.(segs[1].data[:, 2])
+	length(x) < 2 && (print("units|0"); return nothing)
+	inc, _ = _seg_dist_azim(x, y, geog; datype=datype)
+	if (terrain && size(segs[1].data, 2) >= 3)
+		z = Float64.(segs[1].data[:, 3])
+		inc = geog ? hypot.(inc, [0.0; diff(z)] ./ 1000.0) : hypot.(inc, [0.0; diff(z)])
+	end
+	scale, ulab = _length_scale(units, geog)
+	print(ulab, '|', sum(inc) * scale)
+	return nothing
+end
+
 # "Azimuth(s)…": for a single straight line the one forward azimuth; for a polyline a per-vertex
 # #/X/Y/azimuth table (forward bearing to the next vertex; last vertex repeats the prior).
 function _line_azimuth(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool,
