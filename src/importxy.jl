@@ -1,12 +1,14 @@
-# File > Open xy(z) — Mirone-compatible specialised table imports.
+# File > Open xy(z) - Mirone-compatible specialised table imports.
 #
-# Reading is centralized on `_import_xy_read`: ONE GMT.gmtselect call that reads the table AND clips
-# it to the region ON SCREEN. 
+# Reading is centralized on `_import_xy_read`: GMT.gmtread reads the table, then the existing
+# `_clip_to_display` function clips it to what is on display — one reader, one clipper, and the
+# region is read inside that clipper (from the display bounds), never shipped alongside it.
 #
-# The region always exists: the C++ side (70_window.cpp's Open xy(z) actions) calls sceneEnsureBase
-# first, which loads the whole-world Base Map into an empty launcher, then hands over
-# sceneVisibleRegion's W/E/S/N in the request envelope. So an import is always clipped to the raster
-# on display, never to the file's own extent.
+# A window that is still a bare launcher has nothing to clip to, so it is PROMOTED first, by
+# `_promote_for_vector` (drop.jl) — the same promotion an ordinary dropped table goes through —
+# framed on the imported data's own extent with a Base Map under it. Whether the window is bare is
+# decided ONCE, C++-side by sceneNeedsBase (the predicate sceneEnsureBase asks), and carried in the
+# request envelope.
 #
 # Rendering delegates to existing overlay, symbol and text builders; these vector imports never
 # create or reframe axes (SACRED_LAW.md), and every element they add carries a name so it gets its
@@ -38,22 +40,27 @@ function _import_xy_arrows(scene::Ptr{Cvoid}, D::Vector{GMTdataset}, name::Strin
 	any(good) || error("Import Arrow field contains no finite x y u v rows")
 	x = @view m[good, 1]; y = @view m[good, 2]
 	u = @view m[good, 3]; v = @view m[good, 4]
-	mag = hypot.(u, v); mm = maximum(mag)
-	mm > 0 || error("Import Arrow field contains only zero-length vectors")
-	span = max(maximum(x)-minimum(x), maximum(y)-minimum(y))
-	span > 0 || (span = 1.0)
-	scale = 0.08 * span / mm
+	# Mirone draw_funs.m:loc_quiver autoscaling, exactly. Estimate an effective square grid,
+	# then make the largest vector 0.9 of that grid spacing. U and V receive the SAME scale.
+	nside = sqrt(length(x))
+	delx = (maximum(x) - minimum(x)) / nside
+	dely = (maximum(y) - minimum(y)) / nside
+	del2 = delx * delx + dely * dely
+	maxlen = del2 > 0 ? sqrt(maximum((u .* u .+ v .* v) ./ del2)) : 0.0
+	scale = maxlen > 0 ? 0.9 / maxlen : 0.9
+	alpha = 0.33
+	beta = 0.33
 	segs = Matrix{Float64}[]
 	for k in eachindex(x)
 		dx = u[k] * scale; dy = v[k] * scale
 		tx = x[k] + dx; ty = y[k] + dy
 		push!(segs, [x[k] y[k]; tx ty])
-		len = hypot(dx, dy); len == 0 && continue
-		ux = dx / len; uy = dy / len; h = 0.28len; w = 0.13len
-		push!(segs, [tx ty; tx-h*ux+w*uy ty-h*uy-w*ux])
-		push!(segs, [tx ty; tx-h*ux-w*uy ty-h*uy+w*ux])
+		# Mirone's two head arms (hu/hv), kept as two ordinary line segments.
+		push!(segs, [tx-alpha*(dx+beta*dy) ty-alpha*(dy-beta*dx); tx ty])
+		push!(segs, [tx ty; tx-alpha*(dx-beta*dy) ty-alpha*(dy+beta*dx)])
 	end
-	_add_dataset_to_scene(scene, segs, name; forceMode=:lines, noConvertToPoints=true)
+	Dsegs = GMTdataset[GMT.mat2ds(seg) for seg in segs]
+	_add_dataset_to_scene(scene, Dsegs, name; forceMode=:lines, noConvertToPoints=true)
 	return nothing
 end
 
@@ -79,7 +86,7 @@ function _import_xy_scaled(scene::Ptr{Cvoid}, D::Vector{GMTdataset}, name::Strin
 	sizes = size(m, 2) >= 4 ? max.(1.0, Float64.(m[:, 4])) : fill(7.0, size(m, 1))
 	# ONE layer for the whole table: per-point size and colour travel INSIDE it (add_symbols! passes
 	# them to gmtvtk_add_symbols_ex_h). One call, one actor, ONE Scene Objects handle named for the
-	# file — a call per row gave a row per point, which is the same flooding the text import had.
+	# file. A call per row gave a row per point, which is the same flooding the text import had.
 	add_symbols!(scene, Float64.(m[:, 1]), Float64.(m[:, 2]); z=Float64.(m[:, 3]),
 	             symbol=:circle, size=sizes, sizeunit=:pt, fill=colors, edge=:black, name=name)
 	return nothing
@@ -111,33 +118,34 @@ function _import_xy_text(scene::Ptr{Cvoid}, D::Vector{GMTdataset}, name::String)
 	return nothing
 end
 
-# Read `path` clipped to the displayed region. `f=:g` only when that region is geographic (the same
-# crude lon/lat range test used elsewhere), so a cartesian table is not pushed through a geographic
-# region test. Returns nothing when the file has no row inside the view.
-function _import_xy_read(path::String, region::NTuple{4,Float64})
-	W, E, S, N = region
-	geog = (W >= -360.0 && E <= 360.0 && S >= -90.0 && N <= 90.0)
-	D = geog ? GMT.gmtselect(path, R=(W, E, S, N), f=:g) : GMT.gmtselect(path, R=(W, E, S, N))
-	D === nothing && return nothing
-	segs = D isa AbstractVector ? D : [D]
-	any(s -> s.data !== nothing && !isempty(s.data), segs) || return nothing
-	return D
+# Read through the ONE file reader, then use the SAME display clipping path as every other imported
+# vector. Never ask gmtselect to read the file and never duplicate its result-shape assumptions.
+function _import_xy_read(scene::Ptr{Cvoid}, path::String, empty::Bool)
+	D = GMT.gmtread(path; table=true)
+	return empty ? D : _clip_to_display(scene, D)
 end
 
-function _on_import_xy(scene::Ptr{Cvoid}, path::String, mode::Symbol, region::NTuple{4,Float64})::Cvoid
+# `empty` is the C++ side's own sceneNeedsBase answer, carried in the request envelope — never a
+# second "is this window empty" test here (SACRED_LAW.md: one operation, one function).
+function _on_import_xy(scene::Ptr{Cvoid}, path::String, mode::Symbol, empty::Bool)::Cvoid
 	try
-		D = _import_xy_read(path, region)
+		D = _import_xy_read(scene, path, empty)
 		D === nothing &&
-			(_viewer_log_error(scene, "Open xy(z): no data inside the displayed region " *
-			                          "$(region[1])/$(region[2])/$(region[3])/$(region[4])"); return)
+			(_viewer_log_error(scene, "Open xy(z): no data inside the displayed region"); return)
 		name = splitext(basename(path))[1]
+		# A bare launcher is promoted by THE vector promotion (drop.jl), the same one an ordinary
+		# dropped table goes through; `backdrop` asks it for a Base Map under the vectors instead of
+		# a blank scaffold. The bbox is derived there, once, for both callers.
+		empty && _promote_for_vector(scene, D; backdrop=true)
 		mode === :points ? _import_xy_points(scene, D, name) :
 		mode === :arrows ? _import_xy_arrows(scene, D, name) :
 		mode === :scaled ? _import_xy_scaled(scene, D, name) :
 		mode === :text ? _import_xy_text(scene, D, name) :
 		error("unknown Open xy(z) mode: $mode")
 	catch e
-		_viewer_log_error(scene, "Open xy(z) FAILED: $(sprint(showerror, e))")
+		bt = catch_backtrace()
+		detail = sprint(showerror, e, bt)
+		_viewer_log_error(scene, "Open xy(z) FAILED:\n$(first(detail, min(length(detail), 3000)))")
 	end
 	return
 end

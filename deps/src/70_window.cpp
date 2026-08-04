@@ -13798,8 +13798,16 @@ static QIcon makeRulerIcon();               // graduated ruler glyph (85_polygon
 // this FIRST, never re-derive/duplicate the empty-launcher check or skip it for one kind. Exception:
 // callers that only COMPUTE off W/E/S/N and plot nothing (Earth Tides) don't need a base — gate on
 // that distinction, not on which caller it happens to be.
+// THE question "does this window still need something to land on?". One predicate, so a caller that
+// cannot use sceneEnsureBase itself (File > Open xy(z), which frames the base map on the imported
+// DATA's own extent and therefore has to promote from the Julia side, after reading) still decides
+// it the same way, instead of asking a look-alike question like gmtvtk_has_surface — that one is
+// `surf && !emptyStart`, which also answers "empty" for a populated window whose raster arrived as
+// an ExtraObj image, and would drop a second base map on top of it.
+static bool sceneNeedsBase(Scene *s) { return s && s->emptyStart; }
+
 static bool sceneEnsureBase(Scene *s) {
-	if (!s->emptyStart) return true;
+	if (!sceneNeedsBase(s)) return true;
 	if (!g_juliaBaseMap) {
 		if (s->win) s->win->statusBar()->showMessage("Base Map callback not registered", 3000);
 		return false;
@@ -14744,15 +14752,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		aBgRegion->setVisible(!hasContent);
 	});
 	mFile->addSeparator();
-	// Mirone's File > Open xy(z), minus "Import line": ordinary File > Open already imports a
-	// plain x/y table as a line. Each entry hands mode + the REGION ON SCREEN + path to Julia,
-	// which reads the table with GMT.gmtselect over that region (one call = read + clip) and builds
-	// the vectors with the existing scene builders.
+	// Mirone's File > Open xy(z), minus "Import line": ordinary File > Open already imports a plain
+	// x/y table as a line. Each entry hands mode, whether this window still NEEDS a base map, and
+	// the path. Julia reads with GMT.gmtread and clips through _clip_to_display, the same clipper
+	// every other imported vector uses — so the region is read once, there, from the display bounds;
+	// nothing here ships a second copy of it for the clip to ignore.
 	//
-	// The region is the raster on display, and there is ALWAYS one: an empty launcher gets the
-	// whole-world Base Map first, through the SAME sceneEnsureBase every Geography leaf that plots
-	// something calls (SACRED_LAW.md: one operation, one function — never a second empty-launcher
-	// check), and sceneVisibleRegion is the ONE reader of what is on screen.
+	// The empty-window answer comes from sceneNeedsBase, the SAME predicate sceneEnsureBase asks
+	// (SACRED_LAW.md: one operation, one function; never a second empty-launcher check). It is sent
+	// rather than acted on here because an import frames the base map on the imported DATA's extent,
+	// which is only known after the file is read — the promotion itself is _promote_for_vector
+	// (drop.jl), the one an ordinary dropped table already goes through.
 	QMenu *mOpenXYZ = mFile->addMenu("Open xy(z)");
 	auto addXYImport = [win, s, mOpenXYZ](const QString &label, const char *mode) {
 		mOpenXYZ->addAction(label, [win, s, mode, label]() {
@@ -14764,12 +14774,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			                                             "Data files (*.dat *.txt *.csv *.gmt);;All Files (*)");
 			if (f.isEmpty()) return;
 			rememberStartDir(f);
-			if (!sceneEnsureBase(s)) return;              // nothing on screen -> global base map first
-			double W = s->x0, E = s->x1, S = s->y0, N = s->y1;
-			sceneVisibleRegion(s, W, E, S, N);
-			const QByteArray p = QString("igmtxy:%1|%2/%3/%4/%5|%6")
-			                     .arg(mode).arg(W, 0, 'f', 8).arg(E, 0, 'f', 8)
-			                     .arg(S, 0, 'f', 8).arg(N, 0, 'f', 8).arg(f).toUtf8();
+			const QByteArray p = QString("igmtxy:%1|%2|%3")
+			                     .arg(mode).arg(sceneNeedsBase(s) ? 1 : 0).arg(f).toUtf8();
 			juliaOpenFile(s, p.constData());
 		});
 	};

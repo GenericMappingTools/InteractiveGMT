@@ -17,17 +17,17 @@
 _on_drop(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid = _on_drop(scene, unsafe_string(cpath))
 function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 	# File > Open xy(z) enters through this SAME file-open callback. The tagged envelope is
-	# "igmtxy:<mode>|<W/E/S/N>|<path>": the requested rendering, the region ON SCREEN (the C++ side
-	# guarantees a raster is there, loading the global base map first if the launcher was empty),
-	# and the file. The region is what _on_import_xy clips the table to.
+	# "igmtxy:<mode>|<needsBase 0/1>|<path>": the requested rendering, whether the window is still a
+	# bare launcher (sceneNeedsBase, the one predicate sceneEnsureBase also asks), and the file.
+	# No region travels here: _on_import_xy clips through _clip_to_display, which reads the display
+	# bounds itself — one reader, not a copy shipped alongside it.
 	if startswith(path, "igmtxy:")
 		f = split(path[8:end], '|')
 		length(f) >= 3 || return
-		mode = Symbol(f[1])
-		reg  = tryparse.(Float64, split(String(f[2]), '/'))
-		file = String(join(f[3:end], '|'))                  # a path may legitimately contain '|'
-		(length(reg) == 4 && !any(isnothing, reg)) || return
-		_on_import_xy(scene, file, mode, (reg[1], reg[2], reg[3], reg[4]))
+		mode  = Symbol(f[1])
+		empty = strip(String(f[2])) == "1"                  # sceneNeedsBase, asked C-side (70_window.cpp)
+		file  = String(join(f[3:end], '|'))                 # a path may legitimately contain '|'
+		_on_import_xy(scene, file, mode, empty)
 		return
 	end
 	# A dropped file is the other way a first grid arrives, and it pays the same compile + read wait,
@@ -925,11 +925,46 @@ function _promote_dataset(scene::Ptr{Cvoid}, D, name)
 	# configurePointCloud), in place, instead of opening a second window (SACRED_LAW.md: one
 	# operation, one function; and an empty launcher is always reused, never replaced).
 	_promote_point_cloud(scene, D, name) && return true
-	W, E, S, N = _padded_bbox(_dataset_bbox(D)...)
-	d1   = D isa AbstractVector ? D[1] : D
-	geog = _isgeog(d1) == 1
-	_promote_blank_scaffold(scene, W, E, S, N, geog; crsobj=d1)
+	_promote_for_vector(scene, D)
 	_add_dataset_to_scene(scene, D, name)                          # overlay -> stays in this window
+	return true
+end
+
+# THE empty-launcher promotion for VECTOR data: frame the window on the data's own padded bbox.
+# Every vector that lands in a bare launcher goes through here — a dropped table (_promote_dataset,
+# above) and File > Open xy(z)'s imports alike — so the extent is derived ONCE, by one function
+# (SACRED_LAW.md). `backdrop` picks only what FILLS that frame: a blank scaffold for a plain drop,
+# or the Base Map operation itself cropped to the SAME bbox for an import that wants a map under its
+# vectors. Cropping matters: the whole-world frame a global base map brings would collapse a
+# regional arrow field into subpixel strokes.
+function _promote_for_vector(scene::Ptr{Cvoid}, D; backdrop::Bool=false)
+	W, E, S, N = _padded_bbox(_dataset_bbox(D)...)
+	d1 = D isa AbstractVector ? D[1] : D
+	# "Is this geographic?" for a TABLE has ONE answer in this codebase: its own CRS when it has one,
+	# else GMT.guessgeog's range test — `_measure_isgeog` (measure.jl), the same rule the measure menu
+	# and the grids use. NOT `_isgeog`/GMT.isgeog: that reads CRS METADATA only, and a plain ASCII x,y
+	# file has none, so it answers "cartesian" for a world city list and the map vanishes from under it.
+	geog = _measure_isgeog(d1, (try String(d1.proj4) catch; "" end))
+	# The 5% pad is measured in the data's own units, so on a whole-world table it walks straight off
+	# the ends of the Earth (a global city list pads to about -198..198). A base map cannot be built
+	# for a region that does not exist: clamp to the domain, in the longitude convention the data
+	# itself uses. Latitude has only one convention.
+	if geog
+		if (W >= 0.0 && E > 180.0)     # data in 0..360
+			W = clamp(W, 0.0, 360.0);      E = clamp(E, 0.0, 360.0)
+		else
+			W = clamp(W, -180.0, 180.0);   E = clamp(E, -180.0, 180.0)
+		end
+		S = clamp(S, -90.0, 90.0);         N = clamp(N, -90.0, 90.0)
+	end
+	# A backdrop only means anything under GEOGRAPHIC data: the Base Map is the Earth, so putting one
+	# under a cartesian table (an arrow field over x -2..2) would drop it in the Gulf of Guinea and
+	# claim those numbers are degrees. Cartesian data keeps the blank scaffold.
+	if (backdrop && geog)
+		_on_basemap(scene, "$(W)/$(E)/$(S)/$(N)/0/region")
+	else
+		_promote_blank_scaffold(scene, W, E, S, N, geog; crsobj=d1)
+	end
 	return true
 end
 
@@ -1303,11 +1338,21 @@ end
 # (10_geometry.cpp) can index straight off the point index pickOverlayAt already resolves. Empty
 # (no vertex info at all) unless at least one row actually carries text — so a plain numeric table
 # pays nothing extra.
-function _ds_vertex_texts(D)::Vector{String}
-	segs = D isa AbstractVector ? D : [D]
+function _ds_vertex_texts(D::GMTdataset)::Vector{String}
+	return _ds_vertex_texts(GMTdataset[D])
+end
+
+# `_add_dataset_to_scene` accepts raw matrices too — `_pack_dataset_flat` handles `AbstractMatrix`
+# and vectors of them, and `_ds_segment_headers` takes anything — so this must as well or that
+# contract breaks on one of the three helpers of a single call. A matrix carries no text column:
+# nothing to report, which is exactly what the no-text case returns anyway.
+_ds_vertex_texts(::AbstractMatrix)::Vector{String} = String[]
+_ds_vertex_texts(::AbstractVector{<:AbstractMatrix})::Vector{String} = String[]
+
+function _ds_vertex_texts(D::Vector{GMTdataset})::Vector{String}
 	out = String[]
 	any_txt = false
-	for s in segs
+	for s in D
 		txt = try s.text catch; nothing end
 		n = size(s.data, 1)
 		for k in 1:n

@@ -21,18 +21,31 @@ _basemap_icon() = joinpath(_basemap_dir(), "basemap_icon.png")
 # Geographic region (W/E/S/N in the etopo4 [-180 180]/[-90 90] domain) -> gdal -srcwin pixel window
 # (xoff yoff xsize ysize), clamped to the image. Mirrors bg_map.m's pixel arithmetic (origin = the
 # image's UPPER-left, so the y offset counts down from the north edge).
+# The pixel window AND the geographic extent those pixels REALLY cover. Both come out of the same
+# rounding and clamping, so a tile can never be labelled with an extent it does not have. Returning
+# only the srcwin was the bug behind "imported points land in the wrong place": the window is clamped
+# to the image (a request reaching past ±180 — a 5% pad around whole-world data does exactly that —
+# silently became the whole world) while the caller georeferenced the result with its OWN unclamped
+# request. The map then claimed to span, say, −198…198 while showing −180…180, so every feature under
+# it sat degrees away from its true longitude, worst at the edges. One quantity, one computation
+# (SACRED_LAW.md): the extent belongs to whoever picks the pixels.
 function _etopo4_srcwin(W, E, S, N)
 	xoff = clamp(round(Int, (W + 180) / 360 * _ETOPO4_NX), 0, _ETOPO4_NX - 1)
 	yoff = clamp(round(Int, (90 - N)  / 180 * _ETOPO4_NY), 0, _ETOPO4_NY - 1)
 	xs   = clamp(round(Int, (E - W)   / 360 * _ETOPO4_NX), 1, _ETOPO4_NX - xoff)
 	ys   = clamp(round(Int, (N - S)   / 180 * _ETOPO4_NY), 1, _ETOPO4_NY - yoff)
-	return xoff, yoff, xs, ys
+	Wr   = -180.0 + xoff / _ETOPO4_NX * 360.0
+	Er   = -180.0 + (xoff + xs) / _ETOPO4_NX * 360.0
+	Nr   =   90.0 - yoff / _ETOPO4_NY * 180.0
+	Sr   =   90.0 - (yoff + ys) / _ETOPO4_NY * 180.0
+	return xoff, yoff, xs, ys, Wr, Er, Sr, Nr
 end
 
-# Crop the big etopo4.jpg to a geographic region, returning a GMTimage.
+# Crop the big etopo4.jpg to a geographic region. Returns the GMTimage AND the extent it actually
+# covers — always use the returned extent to georeference it, never the requested one.
 function _crop_etopo4(W, E, S, N)
-	xoff, yoff, xs, ys = _etopo4_srcwin(W, E, S, N)
-	return GMT.gdaltranslate(_etopo4_path(), "-srcwin $xoff $yoff $xs $ys")
+	xoff, yoff, xs, ys, Wr, Er, Sr, Nr = _etopo4_srcwin(W, E, S, N)
+	return GMT.gdaltranslate(_etopo4_path(), "-srcwin $xoff $yoff $xs $ys"), Wr, Er, Sr, Nr
 end
 
 # [0 360] whole-world view: chop the image at lon=0, swap the two halves so the western hemisphere
@@ -75,15 +88,18 @@ function _on_basemap(scene::Ptr{Cvoid}, copt::AbstractString)::Cvoid
 			"Base image ($tag)"
 		loaded = get!(() -> Set{String}(), _BASEMAP_LOADED, scene)
 		name in loaded && return                                 # already on this window -> ignore
+		# The extent below is the tile's OWN (what _crop_etopo4 actually cut), never the requested one:
+		# a request outside the image is clamped there, and georeferencing it with the raw request
+		# would stretch the picture over an extent it does not cover.
 		if wrap && tag == "global"
 			# Whole world in [0 360]: swap hemispheres at lon=0 -> Pacific-centred Earth, lon 0..360.
-			I = _crop_etopo4(-180.0, 180.0, S, N)
+			I, _, _, S, N = _crop_etopo4(-180.0, 180.0, S, N)
 			_roll_lon_to_360!(I)
 			dW, dE = 0.0, 360.0
 		else
 			# A tile/region: same pixels, only relabel a western piece into [180 360] for the wrap view.
-			I = _crop_etopo4(W, E, S, N)
-			dW, dE = (wrap && W < 0) ? (W + 360.0, E + 360.0) : (Float64(W), Float64(E))
+			I, cW, cE, S, N = _crop_etopo4(W, E, S, N)
+			dW, dE = (wrap && cW < 0) ? (cW + 360.0, cE + 360.0) : (cW, cE)
 		end
 		# The tile comes out of gdaltranslate in PIXEL coordinates (etopo4.jpg carries no georef), so it
 		# needs the FULL georeference — range AND x/y/inc/registration (see `_georef_image!`, drape.jl):
