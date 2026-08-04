@@ -3414,6 +3414,32 @@ GMTVTK_API int gmtvtk_igrf_screenshot_test(const char *path) {
 // widget-then-look pattern as the IGRF hooks above — never trust "didn't throw" for a paint bug).
 GMTVTK_API void *gmtvtk_open_empty(const char *title);   // defined below; forward-declared for the test hook
 
+// A test hook that BORROWS a window built by the other dll has to give the pointer back when the
+// window goes. Two things outlive it otherwise, and both are dangling:
+//
+//   * the static `g_*TestDlg` pointer — the dialog is parented to `s->win`, so closing the window
+//     destroys it, but nothing here hears about that;
+//   * the borrowed `Scene *` in THIS dll's `g_scenes` — it is inserted so `sceneAlive()` lets the
+//     dialog touch the scene, and it is only ever ERASED by the dll that owns the window, in its own
+//     copy of `g_scenes`. This dll therefore reports a freed Scene as alive, for ever.
+//
+// The next call through any hook then walks a freed QWidget or writes into a freed Scene:
+// EXCEPTION_ACCESS_VIOLATION inside QObject::blockSignals (`QSignalBlocker` in
+// ComputeEulerDialog::setPickDown), reproduced 2026-08-03 by opening the dialog on a window, closing
+// the window, then calling gmtvtk_ceuler_set_test. It aborts the whole suite, taking every test after
+// it with it, which is how it stayed invisible.
+//
+// ONE function does the borrowing, for every hook, so no site can forget the giving-back half. A
+// repeat open on the same dialog just connects again — the handler is idempotent.
+template <class T>
+static void testBorrowWindow(Scene *s, T **slot) {
+	if (!s) return;
+	g_scenes.insert(s);
+	QDialog *d = (*slot) ? (*slot)->dlg : nullptr;
+	if (!d) return;
+	QObject::connect(d, &QObject::destroyed, [s, slot]() { *slot = nullptr; g_scenes.erase(s); });
+}
+
 // test hooks: open/close the REAL Euler rotations dialog on a REAL window (`handle`, or a throwaway
 // empty one when null). Same purpose as the IGRF/bar-code pair: a QUiLoader failure or a widget name
 // that drifted out of the .ui shows up here instead of on the user's first click.
@@ -3438,12 +3464,14 @@ GMTVTK_API int gmtvtk_euler_open_dialog_test(void *handle) {
 	auto it = g_eulerDlgs.find(s);
 	if (it != g_eulerDlgs.end() && it->second && it->second->dlg) {
 		g_eulerTestDlg = it->second;
+		testBorrowWindow(s, &g_eulerTestDlg);
 		g_eulerTestDlg->unpark();
 		QApplication::processEvents();
 		return 1;
 	}
 	g_eulerTestDlg = new EulerDialog(s->win, s);
 	if (!g_eulerTestDlg->dlg) return 0;
+	testBorrowWindow(s, &g_eulerTestDlg);
 	g_eulerTestDlg->dlg->show();
 	QApplication::processEvents();
 	return 1;
@@ -3483,12 +3511,14 @@ GMTVTK_API int gmtvtk_oc_open_dialog_test(void *handle) {
 	auto it = g_oceanColorDlgs.find(s);
 	if (it != g_oceanColorDlgs.end() && it->second && it->second->dlg) {
 		g_ocTestDlg = it->second;
+		testBorrowWindow(s, &g_ocTestDlg);
 		g_ocTestDlg->unpark();
 		QApplication::processEvents();
 		return 1;
 	}
 	g_ocTestDlg = new OceanColorDialog(s->win, s);
 	if (!g_ocTestDlg->dlg) return 0;
+	testBorrowWindow(s, &g_ocTestDlg);
 	QApplication::processEvents();
 	return 1;
 }
@@ -3572,12 +3602,14 @@ GMTVTK_API int gmtvtk_ceuler_open_dialog_test(void *handle) {
 	auto it = g_ceulerDlgs.find(s);
 	if (it != g_ceulerDlgs.end() && it->second && it->second->dlg) {
 		g_ceulerTestDlg = it->second;
+		testBorrowWindow(s, &g_ceulerTestDlg);
 		g_ceulerTestDlg->unpark();
 		QApplication::processEvents();
 		return 1;
 	}
 	g_ceulerTestDlg = new ComputeEulerDialog(s->win, s);
 	if (!g_ceulerTestDlg->dlg) return 0;
+	testBorrowWindow(s, &g_ceulerTestDlg);
 	g_ceulerTestDlg->dlg->show();
 	QApplication::processEvents();
 	return 1;
@@ -3816,12 +3848,14 @@ GMTVTK_API int gmtvtk_platecalc_open_dialog_test(void *handle) {
 	auto it = g_plateDlgs.find(s);
 	if (it != g_plateDlgs.end() && it->second && it->second->dlg) {
 		g_plateTestDlg = it->second;
+		testBorrowWindow(s, &g_plateTestDlg);
 		g_plateTestDlg->unpark();
 		QApplication::processEvents();
 		return 1;
 	}
 	g_plateTestDlg = new PlateCalcDialog(s->win, s);
 	if (!g_plateTestDlg->dlg) return 0;
+	testBorrowWindow(s, &g_plateTestDlg);
 	g_plateTestDlg->dlg->show();
 	QApplication::processEvents();
 	return 1;
