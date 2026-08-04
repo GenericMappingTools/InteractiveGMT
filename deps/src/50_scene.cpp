@@ -16,6 +16,11 @@ static void deleteSlipGroup(Scene *s, const QString &groupName); // 85_polygon.c
 static void deleteMecaGroup(Scene *s, const QString &groupName); // 85_polygon.cpp: delete a focal-mechanism batch
 static void rulerRemove(Scene *s, int idx);          // 85_polygon.cpp: delete ONE ruler (track + its labels)
 static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoint &gp); // defined below
+static int  addSymbols(Scene *s, const double *xyz, int npts, const std::string &sym,   // defined below:
+                       double sizePx, int filled, double fr, double fg, double fb,      // THE symbol-layer
+                       double er, double eg, double eb, double edgeWidth,               // builder
+                       const std::string &name, const char *info, bool oneShot,
+                       const double *sizeScale, const double *ptRGB);
 static void showInfoText(QWidget *parent, const QString &title, const QString &text); // 70_window.cpp: read-only text popup
 
 // Install the window's full-res DATA LAYER (the z buffer everything non-visual reads: hover readout,
@@ -1656,6 +1661,159 @@ static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoin
 	dlg->show();   // non-modal: the 3-D view stays interactive while values are picked live
 }
 
+// ================================================================================================
+//  THE group deletion — sceneDeleteGroup
+//
+//  A group in Scene Objects is a top row plus its children, and deleting the top row deletes EVERY
+//  child with it. There is exactly ONE function that does that, for every group that exists today
+//  and every group added later. A caller says only WHAT its children ARE — a list, case by case,
+//  since only the caller knows what it built. Unmaking each KIND of child lives here, once, and
+//  nowhere else (SACRED_LAW.md: same operation, same function).
+//
+//  Before this there was a delete function per kind — overlayDeleteGroup, deleteMecaGroup,
+//  deleteSlipGroup, a private one for text batches — and they drifted exactly as the law predicts:
+//  each knew about the children IT remembered. "Show point labels" called the OVERLAY group deleter
+//  on a batch of TEXT; deleting an overlay left the labels it owned standing with a handle of their
+//  own; removing a label batch left behind the symbol layer its own menu had made. Every one of
+//  those was a child some other deleter did not know about.
+//
+//  Adding a new group later means listing its children at the call site, never writing a new
+//  deleter. Adding a new KIND of child means one case here, and every existing group can hold one.
+// ================================================================================================
+struct GroupChild {
+	enum Kind {
+		Overlays,      // every overlay tagged `tag` (or the single one at `actor`)
+		TextBatch,     // every TextLabel tagged `tag` (gmtvtk_add_texts_h groupName)
+		SymbolLayer,   // the symbol layer named `tag`
+		Polygons       // every Polygon tagged `tag` (slip patches, focal-mechanism batches)
+	};
+	Kind         kind;
+	std::string  tag;
+	vtkActor    *actor = nullptr;
+	GroupChild(Kind k, const std::string &t) : kind(k), tag(t) {}
+	GroupChild(Kind k, vtkActor *a)          : kind(k), actor(a) {}
+};
+
+static void sceneDeleteGroup(Scene *s, const std::vector<GroupChild> &children) {
+	if (!s || children.empty()) return;
+	for (const GroupChild &c : children) {
+		if (c.tag.empty() && !c.actor) continue;
+		switch (c.kind) {
+		case GroupChild::Overlays:
+			for (int i = (int)s->overlays.size(); i-- > 0; ) {
+				const bool hit = c.actor ? (s->overlays[i].actor.Get() == c.actor)
+				                         : (s->overlays[i].groupName == c.tag);
+				if (!hit) continue;
+				if (s->ren     && s->overlays[i].actor) s->ren->RemoveActor(s->overlays[i].actor);
+				if (s->axesRen && s->overlays[i].actor) s->axesRen->RemoveActor(s->overlays[i].actor);
+				s->overlays.erase(s->overlays.begin() + i);
+				// Scene::ovEdit is an INDEX into this vector: drop it if its target just died, shift
+				// it if the erase moved it, or vertex handles land on some other line.
+				if (s->ovEdit == i)     { s->ovEdit = -1; s->ovEditSeg = -1;
+				                          if (s->polyHandles) s->polyHandles->SetVisibility(0); }
+				else if (s->ovEdit > i)   --s->ovEdit;
+			}
+			break;
+		case GroupChild::TextBatch:
+			for (size_t i = s->texts.size(); i-- > 0; ) {
+				if (s->texts[i].groupName != c.tag) continue;
+				if (s->texts[i].actor) {
+					if (s->axesRen) s->axesRen->RemoveActor(s->texts[i].actor);
+					if (s->ren)     s->ren->RemoveActor(s->texts[i].actor);
+				}
+				s->texts.erase(s->texts.begin() + i);
+			}
+			s->textDrag = -1;                       // that index just moved under us
+			// An overlay that PLOTTED this batch ("Show point labels") keeps a checkable entry
+			// pointing at it; leave it ticked and it would try to delete a batch that is gone.
+			for (auto &ov : s->overlays)
+				if (ov.labelsGroup == c.tag) { ov.labelsShown = false; ov.labelsGroup.clear(); }
+			break;
+		case GroupChild::SymbolLayer:
+			for (size_t i = s->symbols.size(); i-- > 0; ) {
+				const bool hit = c.actor ? (s->symbols[i].actor.Get() == c.actor)
+				                         : (s->symbols[i].name == c.tag);
+				if (!hit) continue;
+				if (s->symbols[i].actor && s->ren) s->ren->RemoveActor(s->symbols[i].actor);
+				if (s->symArmed == (int)i) s->symArmed = -1;
+				s->symbols.erase(s->symbols.begin() + i);
+			}
+			break;
+		case GroupChild::Polygons:
+			deleteSlipGroup(s, QString::fromStdString(c.tag));   // erases every Polygon with this tag
+			break;
+		}
+	}
+	applyVectorStacking(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// A batch of text labels and what it owns, expressed as its child list. Not a second deleter: it
+// only NAMES the children (the labels, plus the "(points)" symbol layer its menu may have made) and
+// hands them to the one above.
+static void textBatchDelete(Scene *s, const std::string &gn) {
+	if (!s || gn.empty()) return;
+	sceneDeleteGroup(s, { GroupChild(GroupChild::TextBatch,   gn),
+	                      GroupChild(GroupChild::SymbolLayer, gn + " (points)") });
+}
+
+// THE properties menu of a batch of text labels, wherever its row happens to sit: standalone (File >
+// Open xy(z) > Import text, its own top-level group) or nested as the "Labels" sub-handle of the
+// overlay that plotted it ("Show point labels"). ONE menu for one kind of thing — the row's position
+// in the tree is not a reason for a second, look-alike implementation (SACRED_LAW.md).
+//   * Plot locations as points — a 7 pt symbol where each label sits, through addSymbols, the same
+//     builder every symbol layer uses. Checkable: unchecking removes just that layer.
+//   * Remove — the whole batch, by tag.
+static std::function<void(const QPoint&)> textBatchMenu(Scene *s, const std::string &gn) {
+	const std::string ptsName = gn + " (points)";
+	bool ptsShown = false;
+	for (auto &sl : s->symbols) if (sl.name == ptsName) ptsShown = true;
+	return [s, gn, ptsName, ptsShown](const QPoint &g) {
+		QMenu m(s->widget);
+		QAction *pts = m.addAction("Plot locations as points");
+		pts->setCheckable(true);
+		pts->setChecked(ptsShown);
+		QAction *del = m.addAction("Remove");
+		QAction *chosen = m.exec(g);
+		if (!chosen) return;
+		// EVERYTHING below runs on the next event-loop turn, never inline. rebuildSceneObjects
+		// destroys every row widget — including the ClickableLabel whose mousePressEvent is calling
+		// us and the std::function holding THIS lambda, captured strings and all. Mutating inline
+		// therefore returns into freed memory: that is the crash that took the whole window down
+		// when a Labels row was removed. Same hazard vectorPickFire documents (85_polygon.cpp) and
+		// solves the same way — get out of the dying object's call stack first.
+		QTimer::singleShot(0, s->widget, [s, gn, ptsName, ptsShown, remove = (chosen == del)]() {
+		if (!sceneAlive(s)) return;
+		if (!remove) {
+			if (ptsShown) {                                // toggle off: drop just that layer
+				for (size_t i = s->symbols.size(); i-- > 0; ) {
+					if (s->symbols[i].name != ptsName) continue;
+					if (s->symbols[i].actor && s->ren) s->ren->RemoveActor(s->symbols[i].actor);
+					s->symbols.erase(s->symbols.begin() + i);
+				}
+			}
+			else {
+				std::vector<double> xyz;
+				for (auto &t : s->texts) {                 // TRUE coords: addSymbols bakes xfac itself
+					if (t.groupName != gn || t.mecaEvent >= 0 || !t.actor) continue;
+					xyz.push_back(t.pos[0]); xyz.push_back(t.pos[1]); xyz.push_back(t.pos[2]);
+				}
+				if (!xyz.empty())
+					addSymbols(s, xyz.data(), (int)(xyz.size() / 3), "c",
+					           7.0 * 96.0 / 72.0,           // 7 pt, the default asked for
+					           /*filled=*/1, 1.0, 0.85, 0.0, 0.0, 0.0, 0.0, 1.0,
+					           ptsName, nullptr, false, nullptr, nullptr);
+			}
+			rebuildSceneObjects(s);
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			return;
+		}
+		textBatchDelete(s, gn);                            // the whole batch + what it owns
+		});
+	};
+}
+
 static void rebuildSceneObjects(Scene *s) {
 	if (!s)
 		return;
@@ -2149,8 +2307,38 @@ static void rebuildSceneObjects(Scene *s) {
 		// at all: no properties, no Delete, not even the "Left-click for properties" tooltip. Every
 		// Scene Objects element needs a working properties/Remove menu (SACRED_LAW.md); this was the
 		// one row builder that silently dropped it for one sub-kind of the SAME element type.
+		// An overlay that owns a label batch ("Show point labels") becomes the PARENT of it: the row
+		// stays the element's own handle (beginGroupHandle's header IS a full handle, same checkbox,
+		// same properties menu addRow would have given it) and the labels hang UNDER it as "Labels".
+		// Never a sibling "<name> (labels)" row next to it — a thing that belongs to an element is a
+		// sub-handle of that element (SACRED_LAW.md, Scene Objects registration law).
+		const std::string lgn = ov.labelsGroup;
+		bool hasLabels = false;
+		if (!lgn.empty())
+			for (auto &t : s->texts)
+				if (t.groupName == lgn && t.mecaEvent < 0 && t.actor) { hasLabels = true; break; }
 		LineRef lr{ LK_Overlay, ov.actor };
-		addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, &lr);
+		if (!hasLabels) {
+			addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, &lr);
+			continue;
+		}
+		const QString onm = QString::fromStdString(ov.name);
+		LineRef ref = lr;
+		auto ovMenu = [s, ref, onm](const QPoint &g) { popupLineObjectMenu(s, ref, onm, g); };
+		beginGroupHandle(onm, ov.mode == 1 ? IC_Line : IC_Points,
+		                 ov.actor && ov.actor->GetVisibility() != 0, ovMenu, ovMenu,
+		                 "Left-click for properties", /*startFolded=*/true);
+		bool labVis = false;
+		for (auto &t : s->texts)
+			if (t.groupName == lgn && t.mecaEvent < 0 && t.actor && t.actor->GetVisibility()) labVis = true;
+		makeRow("Labels", IC_Text, labVis,
+		        [s, lgn](bool on) {
+		        	for (auto &t : s->texts)
+		        		if (t.groupName == lgn && t.mecaEvent < 0 && t.actor)
+		        			t.actor->SetVisibility(on ? 1 : 0);
+		        },
+		        textBatchMenu(s, lgn), "Left-click for label properties");
+		endGroup();
 	}
 	if (!ovlGroupOpen.isEmpty()) endGroup();
 	for (auto &sl : s->symbols) {                        // screen-constant symbol layers (props menu)
@@ -2351,26 +2539,16 @@ static void rebuildSceneObjects(Scene *s) {
 		if (!tl.actor || tl.ruler || tl.groupName.empty() || tl.mecaEvent >= 0) continue;
 		if (!textGroupsShown.insert(tl.groupName).second) continue;
 		const std::string gn = tl.groupName;
+		// A batch that BELONGS to an overlay ("Show point labels") already has its row, nested as that
+		// overlay's "Labels" sub-handle — it must not also appear here as a top-level sibling.
+		bool ownedByOverlay = false;
+		for (auto &ov : s->overlays) if (ov.labelsGroup == gn) ownedByOverlay = true;
+		if (ownedByOverlay) continue;
 		const QString gname = QString::fromStdString(gn);
 		bool anyVis = false;
 		for (auto &t : s->texts)
 			if (t.groupName == gn && t.mecaEvent < 0 && t.actor && t.actor->GetVisibility()) anyVis = true;
-		auto groupMenu = [s, gn](const QPoint &g) {
-			QMenu m(s->widget);
-			QAction *del = m.addAction("Remove");
-			if (m.exec(g) != del) return;
-			for (size_t i = s->texts.size(); i-- > 0; ) {      // the whole batch goes, by tag
-				if (s->texts[i].groupName != gn || s->texts[i].mecaEvent >= 0) continue;
-				if (s->texts[i].actor) {
-					if (s->axesRen) s->axesRen->RemoveActor(s->texts[i].actor);
-					if (s->ren)     s->ren->RemoveActor(s->texts[i].actor);
-				}
-				s->texts.erase(s->texts.begin() + i);
-			}
-			s->textDrag = -1;
-			rebuildSceneObjects(s);
-			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
-		};
+		auto groupMenu = textBatchMenu(s, gn);          // the SAME menu the nested "Labels" row carries
 		// The master handle is the ONLY row: an imported text file is one element, not one element
 		// per line — a thousand-line table would otherwise put a thousand rows in the panel. Its
 		// checkbox reaches every label through beginGroupHandle's own by-groupName sweep (it toggles
@@ -3041,11 +3219,18 @@ static void restackVector(Scene *s, int *stackPtr, int op) { restackStack(s, sta
 // Stamp N glyphs of one GMT symbol code at N (x,y,z) points (TRUE coords). Screen-constant size:
 // x is pre-baked with xfac so the glyph is NOT x-stretched; the actor carries only the z scale so
 // symbols ride VE. The per-frame observer (installed once) keeps `sizePx` literal at any zoom.
+// `sizeScale` (or null) = per-point size FACTOR relative to sizePx, and `ptRGB` (or null) = per-point
+// fill colour, 3 doubles 0..1 per point. They are what makes a "scaled symbols" import ONE layer with
+// ONE Scene Objects handle instead of one layer per row: the size rides vtkGlyph3D's scale-by-scalar
+// (the per-frame observer keeps driving ScaleFactor, so the layer is still screen-constant, each glyph
+// just carries its own factor) and the colour rides a point-data array the glyph copies to its output,
+// which the mapper reads by name — a separate array, so the two never fight over the active scalars.
 static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &sym,
                       double sizePx, int filled,
                       double fr, double fg, double fb,
                       double er, double eg, double eb, double edgeWidth,
-                      const std::string &name, const char *info = nullptr, bool oneShot = false) {
+                      const std::string &name, const char *info = nullptr, bool oneShot = false,
+                      const double *sizeScale = nullptr, const double *ptRGB = nullptr) {
 	if (!s || !xyz || npts <= 0) return 0;
 
 	vtkNew<vtkPoints> pts; pts->SetDataTypeToDouble(); pts->Allocate(npts);
@@ -3053,6 +3238,22 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
 		pts->InsertNextPoint(xyz[3*i] * s->xfac, xyz[3*i+1], xyz[3*i+2]);   // x baked, z raw
 	vtkSmartPointer<vtkPolyData> in = vtkSmartPointer<vtkPolyData>::New();
 	in->SetPoints(pts);
+	if (sizeScale) {                                   // ACTIVE scalars: vtkGlyph3D scales by these
+		vtkNew<vtkFloatArray> sc; sc->SetName("symScale"); sc->SetNumberOfComponents(1);
+		sc->SetNumberOfTuples(npts);
+		for (int i = 0; i < npts; ++i) sc->SetValue(i, (float)(sizeScale[i] > 0.0 ? sizeScale[i] : 1.0));
+		in->GetPointData()->SetScalars(sc);
+	}
+	if (ptRGB) {                                       // NAMED array: the mapper colours by this one
+		vtkNew<vtkUnsignedCharArray> cc; cc->SetName("symRGB"); cc->SetNumberOfComponents(3);
+		cc->SetNumberOfTuples(npts);
+		auto to255 = [](double c) { return (unsigned char)(c < 0 ? 0 : c > 1 ? 255 : c * 255.0 + 0.5); };
+		for (int i = 0; i < npts; ++i) {
+			unsigned char t[3] = { to255(ptRGB[3*i]), to255(ptRGB[3*i+1]), to255(ptRGB[3*i+2]) };
+			cc->SetTypedTuple(i, t);
+		}
+		in->GetPointData()->AddArray(cc);
+	}
 
 	const bool solid3D = (sym == "o" || sym == "u");      // sphere / cube: true volume, not flat-XY
 	bool glyphFilled = true;
@@ -3112,15 +3313,25 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
 		vtkSmartPointer<vtkGlyph3D> gg = vtkSmartPointer<vtkGlyph3D>::New();
 		gg->SetSourceData(src);
 		gg->SetInputData(in);
-		gg->SetScaleModeToDataScalingOff();    // uniform size; ScaleFactor driven by the observer
+		// Uniform size unless the caller supplied per-point factors; ScaleFactor is the screen-size
+		// driver either way (symbolRescaleCB), so scale-by-scalar multiplies the two and the layer
+		// stays screen-constant with each glyph at its own relative size.
+		if (sizeScale) gg->SetScaleModeToScaleByScalar();
+		else           gg->SetScaleModeToDataScalingOff();
 		gg->OrientOff();
 		gg->SetScaleFactor(sizePx > 0.0 ? sizePx : 8.0);   // placeholder; primed below + per frame
 		g = gg;
 
 		vtkNew<vtkPolyDataMapper> map;
 		map->SetInputConnection(g->GetOutputPort());
-		if (cellColoured) { map->ScalarVisibilityOn(); map->SetScalarModeToUseCellData(); map->SetColorModeToDirectScalars(); }
-		else              { map->ScalarVisibilityOff(); }
+		if (ptRGB) {                          // per-point fill: colour by the named array, not the
+			map->ScalarVisibilityOn();        // active (scale) scalars — vtkGlyph3D copies input point
+			map->SetScalarModeToUsePointFieldData();   // data onto every generated glyph point
+			map->SelectColorArray("symRGB");
+			map->SetColorModeToDirectScalars();
+		}
+		else if (cellColoured) { map->ScalarVisibilityOn(); map->SetScalarModeToUseCellData(); map->SetColorModeToDirectScalars(); }
+		else                   { map->ScalarVisibilityOff(); }
 		// The huge negative bias below forces a flat glyph to WIN the depth test against the coincident
 		// surface it sits directly on (z=0, e.g. a volcano marker) — it has no real depth of its own.
 		// A solid3D glyph (sphere/cube) DOES carry real depth (e.g. a buried earthquake hypocentre) and
@@ -3954,53 +4165,30 @@ static void popupOverlayMenu(Scene *s, vtkActor *a, int mode, const QPoint &glob
 // Delete an overlay line/point element (coastlines, boundaries, rivers, imported xy) by its actor:
 // drop the actor, erase the record, restack and rebuild the Scene Objects list. The TWIN of
 // polygonDelete — overlays hide via the Scene Objects checkbox and DELETE via the unified line menu.
+// An overlay is a group whenever it owns a "Labels" sub-handle, so it is deleted the same way every
+// other group is: name the children, hand them over. Its labels (and the symbol layer that batch's
+// own menu may have made) are PART of it, not neighbours — leaving them behind left labels floating
+// over a deleted line with a handle of their own.
 static void overlayDelete(Scene *s, vtkActor *a) {
-	for (int i = 0; i < (int)s->overlays.size(); ++i) {
-		if (s->overlays[i].actor.Get() != a) continue;
-		if (s->ren && s->overlays[i].actor)     s->ren->RemoveActor(s->overlays[i].actor);
-		if (s->axesRen && s->overlays[i].actor) s->axesRen->RemoveActor(s->overlays[i].actor);  // overlay layer
-		s->overlays.erase(s->overlays.begin() + i);
-		// In-place overlay edit (Scene::ovEdit) is an INDEX into this vector: drop it if its target
-		// just died, shift it if the erase moved it. A stale index would put vertex handles on some
-		// other line — or read past the end.
-		if (s->ovEdit == i)     { s->ovEdit = -1; s->ovEditSeg = -1; if (s->polyHandles) s->polyHandles->SetVisibility(0); }
-		else if (s->ovEdit > i)   --s->ovEdit;
-		break;
+	if (!s || !a) return;
+	std::vector<GroupChild> kids{ GroupChild(GroupChild::Overlays, a) };
+	for (auto &ov : s->overlays) {
+		if (ov.actor.Get() != a || ov.labelsGroup.empty()) continue;
+		kids.push_back(GroupChild(GroupChild::TextBatch,   ov.labelsGroup));
+		kids.push_back(GroupChild(GroupChild::SymbolLayer, ov.labelsGroup + " (points)"));
 	}
-	applyVectorStacking(s);
-	rebuildSceneObjects(s);
-	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	sceneDeleteGroup(s, kids);
 }
 
-// Delete EVERY overlay tagged with `groupName` (the grouped-overlay row's own "Remove" property,
-// e.g. Geography > Plate boundaries' "Plate boundaries PB" handle deleting all 7 boundary-type
-// layers in one go) -- same actor/record removal overlayDelete does per-item, batched into ONE
-// restack + rebuild + render instead of one per member.
+// The grouped-overlay row's "Remove" (e.g. Geography > Plate boundaries' one handle over 7 boundary
+// -type layers, a contour set over 20+ levels): its children are every overlay carrying the tag,
+// every text label carrying it (a contour set's elevation numbers, which have no row of their own),
+// and the symbol layer a label batch's menu may have made. Named here, deleted by sceneDeleteGroup.
 static void overlayDeleteGroup(Scene *s, const std::string &groupName) {
 	if (!s || groupName.empty()) return;
-	// The batch's TEXT LABELS carry the same group tag and have no Scene Objects row of their own
-	// (they are controlled entirely by this group's row), so they must die with it — otherwise
-	// removing a contour set left its elevation numbers floating over the terrain. Same rule
-	// deleteMecaGroup follows for a focal-mechanism batch's date labels.
-	for (size_t i = s->texts.size(); i-- > 0; ) {
-		if (s->texts[i].groupName != groupName) continue;
-		if (s->texts[i].actor) {
-			if (s->axesRen) s->axesRen->RemoveActor(s->texts[i].actor);
-			if (s->ren)     s->ren->RemoveActor(s->texts[i].actor);
-		}
-		s->texts.erase(s->texts.begin() + i);
-	}
-	for (int i = (int)s->overlays.size() - 1; i >= 0; --i) {
-		if (s->overlays[i].groupName != groupName) continue;
-		if (s->ren && s->overlays[i].actor)     s->ren->RemoveActor(s->overlays[i].actor);
-		if (s->axesRen && s->overlays[i].actor) s->axesRen->RemoveActor(s->overlays[i].actor);
-		s->overlays.erase(s->overlays.begin() + i);
-		if (s->ovEdit == i)     { s->ovEdit = -1; s->ovEditSeg = -1; if (s->polyHandles) s->polyHandles->SetVisibility(0); }
-		else if (s->ovEdit > i)   --s->ovEdit;      // see overlayDelete: ovEdit is an index into this vector
-	}
-	applyVectorStacking(s);
-	rebuildSceneObjects(s);
-	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	sceneDeleteGroup(s, { GroupChild(GroupChild::Overlays,    groupName),
+	                      GroupChild(GroupChild::TextBatch,   groupName),
+	                      GroupChild(GroupChild::SymbolLayer, groupName + " (points)") });
 }
 
 // Right-click menu for the profile track line. The property entries now live in the shared Line

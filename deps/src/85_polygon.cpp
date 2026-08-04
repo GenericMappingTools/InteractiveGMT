@@ -1182,18 +1182,14 @@ static void deleteSlipGroup(Scene *s, const QString &groupName) {
 // field on the surviving entry anyway, so nothing here goes stale except a harmless leftover cache
 // row if the batch is removed for good and never re-plotted under the same name.
 static void deleteMecaGroup(Scene *s, const QString &groupName) {
-	deleteSlipGroup(s, groupName);
 	std::string gname = groupName.toStdString();
-	// Drop this batch's date labels too (gmtvtk_add_texts_h groupName tag) — otherwise a recolour/
-	// re-plot round-trip (remove then re-add) would leave the OLD labels behind alongside fresh ones.
-	for (size_t i = s->texts.size(); i-- > 0; ) {
-		if (s->texts[i].groupName != gname) continue;
-		if (s->texts[i].actor) {
-			if (s->axesRen) s->axesRen->RemoveActor(s->texts[i].actor);
-			if (s->ren)     s->ren->RemoveActor(s->texts[i].actor);
-		}
-		s->texts.erase(s->texts.begin() + i);
-	}
+	// Its children: the beachball patches and this batch's date labels (gmtvtk_add_texts_h groupName
+	// tag) — otherwise a recolour/re-plot round-trip (remove then re-add) leaves the OLD labels
+	// behind alongside fresh ones. Listed, then deleted by THE group deleter (50_scene.cpp), never
+	// unmade by hand here. What stays below is only what is peculiar to a meca batch: its per-event
+	// drag state, which no other group has.
+	sceneDeleteGroup(s, { GroupChild(GroupChild::Polygons,  gname),
+	                      GroupChild(GroupChild::TextBatch, gname) });
 	// Drop this batch's per-event drag state + any anchor lines a user drag left behind — the
 	// fill/line actors they pointed at are already gone (deleteSlipGroup, above).
 	for (auto it = s->mecaBalls.begin(); it != s->mecaBalls.end(); ) {

@@ -716,6 +716,24 @@ GMTVTK_API int gmtvtk_add_symbols_h(void *handle, const double *xyz, int npts, c
 	                  fr, fg, fb, er, eg, eb, edgeWidth, std::string(name ? name : ""), info);
 }
 
+// Same as gmtvtk_add_symbols_h, plus PER-POINT size and fill colour: `sizeScale` = npts factors
+// relative to `sizePx` (null = all 1), `ptRGB` = npts RGB triplets 0..1 (null = the flat fill colour).
+// ONE layer, ONE Scene Objects handle, ONE call — the point of it: a "scaled symbols" table used to
+// be plotted one add-symbols call per ROW, which meant one actor and one panel row per point.
+GMTVTK_API int gmtvtk_add_symbols_ex_h(void *handle, const double *xyz, int npts, const char *sym,
+                                       double sizePx, int filled,
+                                       double fr, double fg, double fb,
+                                       double er, double eg, double eb, double edgeWidth,
+                                       const char *name, const char *info,
+                                       const double *sizeScale, const double *ptRGB) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s))
+		return 0;
+	return addSymbols(s, xyz, npts, std::string(sym ? sym : "c"), sizePx, filled,
+	                  fr, fg, fb, er, eg, eb, edgeWidth, std::string(name ? name : ""), info,
+	                  /*oneShot=*/false, sizeScale, ptRGB);
+}
+
 // Add a vertical image "curtain" to a window by its handle (from gmtvtk_view_grid). The
 // wall follows the XY track (px,py); `u` = per-column horizontal texture coord (0..1);
 // `topz` (or null) clips each column top to a surface (else flat top at zmax). img is

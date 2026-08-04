@@ -520,6 +520,7 @@ static int  lineCurrentStyle(Scene *s, const LineRef &lr);
 static void polygonDelete(Scene *s, vtkActor *lineActor);                    // remove a finished polygon
 static void overlayDelete(Scene *s, vtkActor *a);                            // remove an overlay line/point (50)
 static void overlayDeleteGroup(Scene *s, const std::string &groupName);      // remove every overlay tagged with groupName (50)
+static void textBatchDelete(Scene *s, const std::string &groupName);         // remove a text batch + what it owns (50)
 static int addTextsBatch(Scene *s, const double *xy, const char *texts, int n,
                           double r, double g, double b, int size, const char *font,
                           int bold, int italic, const char *groupName, const int *eventIdx,

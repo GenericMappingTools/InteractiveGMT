@@ -62,7 +62,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_add_overlay, :gmtvtk_add_overlay_h, :gmtvtk_add_overlay_ex_h, :gmtvtk_add_overlay_ex2_h, :gmtvtk_add_overlay_ex3_h, :gmtvtk_add_overlay_ex4_h, :gmtvtk_add_overlay_bounded_h, :gmtvtk_get_display_bounds_h,
 	:gmtvtk_overlay_points_h, :gmtvtk_remove_overlay_group_h, :gmtvtk_label_width_world_h,
 	:gmtvtk_add_overlay_gapped_h, :gmtvtk_world_per_pixel_h, :gmtvtk_dblclick_test,
-	:gmtvtk_add_symbols_h, :gmtvtk_is_alive,
+	:gmtvtk_add_symbols_h, :gmtvtk_add_symbols_ex_h, :gmtvtk_is_alive,
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
 	:gmtvtk_view_points, :gmtvtk_promote_points_h, :gmtvtk_selection_count, :gmtvtk_get_selection,
 	:gmtvtk_set_object_visible,

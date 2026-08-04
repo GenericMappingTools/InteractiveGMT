@@ -61,7 +61,10 @@ function add_symbols!(handle, x, y;
 		xyz[3i-2] = xv[i]; xyz[3i-1] = yv[i]; xyz[3i] = zv[i]
 	end
 	code = _symbol_code(symbol)
-	spx  = sizeunit === :pt ? Float64(size) * 96 / 72 : Float64(size)   # points -> pixels @96dpi
+	# points -> pixels @96dpi. A VECTOR `size` (per-point, see below) has no single value here; its
+	# base is picked from the vector further down, so stand in with a placeholder until then.
+	spx  = size isa AbstractVector ? 0.0 :
+	       (sizeunit === :pt ? Float64(size) * 96 / 72 : Float64(size))
 	fr, fg, fb = _ovl_color(fill, :points)
 	er, eg, eb = _ovl_color(edge, :lines)
 	# Optional per-point hover text -> one packed string: n records joined by RS ('\x1e'), each a
@@ -73,10 +76,49 @@ function add_symbols!(handle, x, y;
 		length(iv) == n || error("add_symbols!: info length ($(length(iv))) must match x/y ($n)")
 		packed = join(iv, '\x1e')
 	end
-	ok = ccall(_fn(:gmtvtk_add_symbols_h), Cint,
+	# Per-point size / fill (a "scaled symbols" table): ONE layer carrying its own factors, never one
+	# layer per row — that would be one actor and one Scene Objects row per point. `size` may be a
+	# vector (the biggest becomes the layer's base size, the rest ride as factors of it) and `fill` a
+	# matrix/vector of per-point colours.
+	sizev = size isa AbstractVector ? collect(Float64, size) : nothing
+	fillm = _sym_point_rgb(fill, n)
+	if (sizev === nothing && fillm === nothing)
+		ok = ccall(_fn(:gmtvtk_add_symbols_h), Cint,
+		      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cstring, Cdouble, Cint,
+		       Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring),
+		      p, xyz, Cint(n), code, spx, Cint(filled ? 1 : 0),
+		      fr, fg, fb, er, eg, eb, Float64(edgewidth), name, packed)
+		return ok != 0
+	end
+	if (sizev !== nothing)
+		length(sizev) == n || error("add_symbols!: size vector ($(length(sizev))) must match x/y ($n)")
+		base = maximum(sizev)
+		base > 0 || error("add_symbols!: size vector must hold a positive value")
+		spx   = sizeunit === :pt ? base * 96 / 72 : base
+		scale = sizev ./ base
+	else
+		scale = C_NULL
+	end
+	ok = ccall(_fn(:gmtvtk_add_symbols_ex_h), Cint,
 	      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cstring, Cdouble, Cint,
-	       Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring),
+	       Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring,
+	       Ptr{Cdouble}, Ptr{Cdouble}),
 	      p, xyz, Cint(n), code, spx, Cint(filled ? 1 : 0),
-	      fr, fg, fb, er, eg, eb, Float64(edgewidth), name, packed)
+	      fr, fg, fb, er, eg, eb, Float64(edgewidth), name, packed,
+	      scale, fillm === nothing ? C_NULL : fillm)
 	return ok != 0
+end
+
+# Per-point fill colours -> a flat 3n vector of 0..1 RGB, or nothing when `fill` is one colour for the
+# whole layer (the ordinary case, handled by the plain export). Accepts an n x 3 matrix or a vector of
+# n colours; 0..255 input is detected and normalised, like every other colour path here.
+function _sym_point_rgb(fill, n::Int)
+	M = fill isa AbstractMatrix ? Float64.(fill) :
+	    (fill isa AbstractVector && length(fill) == n && n != 3 && eltype(fill) <: Union{Tuple,AbstractVector}) ?
+	        reduce(vcat, (reshape(Float64.(collect(c))[1:3], 1, 3) for c in fill)) : nothing
+	M === nothing && return nothing
+	size(M, 1) == n && size(M, 2) >= 3 || error("add_symbols!: fill matrix must be $(n)x3")
+	M = M[:, 1:3]
+	maximum(M) > 1 && (M = M ./ 255)
+	return vec(permutedims(clamp.(M, 0, 1)))
 end

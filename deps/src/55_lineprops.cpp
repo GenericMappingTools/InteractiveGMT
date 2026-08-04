@@ -1104,8 +1104,10 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 		if (ovp && !ovp->vertexInfo.empty()) {
 			QAction *lab = m.addAction("Show point labels", [s, ovp]() {
 				if (ovp->labelsShown) {
-					if (!ovp->labelsGroup.empty())
-						overlayDeleteGroup(s, ovp->labelsGroup);
+					// THE label-batch deletion (50_scene.cpp), the same one the batch's own row Remove
+					// and the parent overlay's delete run — it also clears labelsShown/labelsGroup here,
+					// and takes the "(points)" layer that batch's menu may have made.
+					if (!ovp->labelsGroup.empty()) textBatchDelete(s, ovp->labelsGroup);
 					ovp->labelsShown = false;
 					return;
 				}
