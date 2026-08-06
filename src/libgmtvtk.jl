@@ -185,6 +185,31 @@ end
 	return p
 end
 
+# Turn the two Linux dlopen failures that are NOT our bug into instructions. Both report a library
+# by name and nothing else, which sends people looking inside the bundle where the answer never is:
+#
+#  * "version `CXXABI_1.3.15' not found (required by .../libvtkCommonCore-9.6.so.1)" -- Julia's own
+#    private libstdc++ (lib/julia) is older than the viewer's Qt/VTK need, and it is already loaded
+#    under the SONAME libstdc++.so.6 before we get here, so the newer copy beside libgmtvtk.so can
+#    never win. deps/build.jl installs the newer one into Julia's lib dir; that has either not run
+#    yet or was undone by a Julia upgrade (juliaup installs a fresh, unpatched lib/julia).
+#  * "libEGL.so.1: cannot open shared object file" -- a GLVND library, deliberately NOT bundled
+#    (it is the entry point to the host GPU driver, see deps/cmake/linux_bundle.cmake.in). The
+#    .host_requires manifest shipped with the bundle lists them and the package to install.
+function _linux_load_hint(bin::String, msg::String)::String
+	if occursin(r"CXXABI_|GLIBCXX_", msg)
+		return "\n  Julia's private libstdc++ ($(joinpath(Sys.BINDIR, Base.PRIVATE_LIBDIR))) is older" *
+		       " than the viewer needs.\n  Fix with:  using Pkg; Pkg.build(\"InteractiveGMT\")   then restart Julia."
+	end
+	man = joinpath(bin, ".host_requires")
+	isfile(man) || return ""
+	want = [strip(l) for l in eachline(man) if !isempty(strip(l)) && !startswith(strip(l), '#')]
+	miss = filter(n -> occursin(n, msg), want)
+	isempty(miss) && return ""
+	return "\n  Missing from the HOST system (not shipped on purpose -- they load your GPU driver): " *
+	       join(miss, ", ") * "\n  Fix with:  sudo apt install libgl1 libglx0 libegl1 libopengl0"
+end
+
 # One candidate: put ITS OWN toolchain dirs on PATH, dlopen it, resolve EVERY symbol. Returns the
 # failure reason, or nothing on success. A partial success is treated as failure and unloaded: a
 # stale dll that opens fine but lacks one newer export would otherwise leave _LIB_FNS half-filled,
@@ -209,8 +234,10 @@ function _try_load(lib::String)::Union{Nothing,String}
 	catch e
 		# dlopen names only gmtvtk.dll, never the dependency Windows could not find, so say it.
 		miss = _missing_runtime_modules(bin)
-		return isempty(miss) ? "$lib: could not be loaded ($(sprint(showerror, e)))" :
-		       "$lib: missing VTK/Qt modules beside it -- $(join(miss, ", "))"
+		isempty(miss) || return "$lib: missing VTK/Qt modules beside it -- $(join(miss, ", "))"
+		msg = sprint(showerror, e)
+		return "$lib: could not be loaded ($msg)" *
+		       (Sys.iswindows() ? "" : _linux_load_hint(bin, msg))
 	end
 	for s in _LIB_SYMBOLS
 		p = Libdl.dlsym(h, s; throw_error=false)

@@ -212,15 +212,108 @@ function _ensure_runtime_complete()
     end
 end
 
+# "libstdc++.so.6.0.34" -> v"6.0.34". Anything that isn't a fully versioned real file (the bare
+# SONAME symlink, a stray .igmt-backup) returns nothing, so callers can't compare junk.
+function _libstdcxx_version(path::String)
+    m = match(r"^libstdc\+\+\.so\.(\d+)\.(\d+)\.(\d+)$", basename(path))
+    m === nothing ? nothing : VersionNumber(parse(Int, m[1]), parse(Int, m[2]), parse(Int, m[3]))
+end
+
+# The newest fully versioned libstdc++ real file in `dir`, or nothing when the directory has none.
+function _newest_libstdcxx(dir::String)
+    isdir(dir) || return nothing
+    best, bestv = nothing, nothing
+    for f in readdir(dir)
+        v = _libstdcxx_version(f)
+        v === nothing && continue
+        if bestv === nothing || v > bestv
+            best, bestv = joinpath(dir, f), v
+        end
+    end
+    return best
+end
+
+_ld_preload_hint(bundled::String) =
+    "Workaround without touching Julia:  LD_PRELOAD=$bundled julia"
+
+# Conda's Qt 6.11 / VTK 9.6 / icu need GLIBCXX_3.4.34 + CXXABI_1.3.15 (GCC 14). Julia ships its OWN
+# libstdc++ in lib/julia and its loader dlopens that copy at startup -- so by the time __init__
+# reaches dlopen(libgmtvtk.so), the SONAME libstdc++.so.6 is already taken by Julia's older one, and
+# the newer copy sitting right beside libgmtvtk.so (RUNPATH $ORIGIN) is never even looked at: the
+# dynamic linker resolves a SONAME once per process. NOTHING done at runtime can undo that -- not
+# dlopen order, not RTLD_GLOBAL, not LD_LIBRARY_PATH set from inside Julia; all three were measured
+# to still fail with "version `CXXABI_1.3.15' not found".
+#
+# So fix it at build time, in the one place that can: install the bundle's libstdc++ INTO Julia's
+# private lib dir. The direction is the safe one -- libstdc++ is backward compatible, so Julia's own
+# LLVM (built against GLIBCXX_3.4.30) runs unchanged against 6.0.34, while the viewer gets the
+# symbols it needs. The displaced original is kept as *.igmt-backup, never deleted. Idempotent: a
+# private lib dir that is already >= the bundle's is left completely alone, which is also what makes
+# a re-run after a juliaup upgrade (fresh Julia, old libstdc++ again) do the right thing.
+function _fix_julia_libstdcxx()
+    bundled = _newest_libstdcxx(joinpath(SHARED_ROOT, "deps", "build"))
+    bundled === nothing && return nothing            # nothing to install from
+    jdir = joinpath(Sys.BINDIR, Base.PRIVATE_LIBDIR)
+    have = _newest_libstdcxx(jdir)
+    if have === nothing
+        # A distro/system Julia with no private copy: it uses the system libstdc++, which we must
+        # not touch. Say what to do instead of silently leaving a viewer that cannot load.
+        @info """InteractiveGMT: this Julia has no private libstdc++ -- the system one must provide
+                 GLIBCXX_3.4.34. If `using InteractiveGMT` reports a missing CXXABI/GLIBCXX version,
+                 $(_ld_preload_hint(bundled))"""
+        return nothing
+    end
+    _libstdcxx_version(have) >= _libstdcxx_version(bundled) && return nothing   # already good
+    dst = joinpath(jdir, basename(bundled))
+    try
+        backup = have * ".igmt-backup"
+        isfile(backup) ? rm(have; force=true) : mv(have, backup)
+        cp(bundled, dst; force=true, follow_symlinks=true)
+        chmod(dst, 0o755)
+        for link in ("libstdc++.so.6", "libstdc++.so")   # SONAME + linker name, both repointed
+            p = joinpath(jdir, link)
+            (islink(p) || isfile(p)) && rm(p; force=true)
+            symlink(basename(dst), p)
+        end
+        @info """InteractiveGMT: replaced Julia's private libstdc++ ($(basename(have))) with the
+                 viewer's newer $(basename(dst)); the original is kept beside it as
+                 $(basename(have)).igmt-backup.""" jdir
+    catch e
+        @error """InteractiveGMT: could not install $(basename(bundled)) into $jdir -- the viewer
+                  will fail to load with "version `CXXABI_1.3.15' not found".
+                  $(_ld_preload_hint(bundled))""" exception=e
+    end
+    return nothing
+end
+
 function main_linux()
-    want = runtime_tag()
-    lib = joinpath(SHARED_ROOT, "deps", "build", "libgmtvtk.so")
+    want  = runtime_tag()
+    asset = "iGMT-linux-x86_64-full.tar.gz"
+    lib   = joinpath(SHARED_ROOT, "deps", "build", "libgmtvtk.so")
+    sigf  = joinpath(SHARED_ROOT, "deps", "build", ".linux_release_sig")
     installed = isfile(MARKER) ? String(strip(read(MARKER, String))) : ""
-    if !isfile(lib) || installed != want
-        fetch_and_extract(release_url(want, "iGMT-linux-x86_64-full.tar.gz"), SHARED_ROOT)
+    # There is ONE Linux asset and it is re-uploaded in place under the same tag (the tarball is the
+    # whole runtime -- there is no separate rolling .so zip as on Windows). So the tag alone cannot
+    # tell a machine that the bundle changed: matching MARKER used to mean "skip", and a re-upload
+    # then reached nobody who already had it. Compare the release asset's updated_at as well, the
+    # same freshness signal main() uses for the Windows dll zip.
+    sig = _dll_asset_signature(want, asset)
+    stale = !isfile(lib) || installed != want ||
+            (sig !== nothing && (!isfile(sigf) || read(sigf, String) != sig))
+    if stale
+        # Extraction MERGES into whatever is already there, so a library the bundle policy dropped
+        # (the GLVND set, a retired Qt plugin) would survive forever and keep being loaded in
+        # preference to the host's -- the exact bug the policy exists to prevent. Clear the tree
+        # first, guarded on the path so a wrong SHARED_ROOT can never delete anything else.
+        # Unlinking a mapped .so is safe on Linux; a running viewer keeps the file it already has.
+        dir = joinpath(SHARED_ROOT, "deps", "build")
+        endswith(dir, joinpath("gmtvtk_runtime", "deps", "build")) && rm(dir; recursive=true, force=true)
+        fetch_and_extract(release_url(want, asset), SHARED_ROOT)
         mkpath(dirname(MARKER))
         write(MARKER, want)
+        sig !== nothing && write(sigf, sig)
     end
+    _fix_julia_libstdcxx()
     @info "InteractiveGMT: Linux gmtvtk runtime installed" SHARED_ROOT
     return nothing
 end

@@ -4,7 +4,16 @@ set -euo pipefail
 # WSL compiles directly from the Windows checkout. The cache is private; build_linux is the
 # distributable Linux runtime and never overlaps deps/build used by build.bat.
 here=$(cd -- $(dirname -- ${BASH_SOURCE[0]}) && pwd)
-conda_prefix=${CONDA_PREFIX:-/home/j/anaconda3}
+# Dependency root, most explicit first: IGMT_CONDA_PREFIX (a fixed build environment that must not
+# change when a shell happens to have another env activated), then the activated env, then this
+# machine's base Conda. Never guess further than that -- a wrong prefix produces a bundle that
+# links half of one environment and half of another.
+conda_prefix=${IGMT_CONDA_PREFIX:-${CONDA_PREFIX:-/home/j/anaconda3}}
+if [[ ! -d $conda_prefix/lib ]]; then
+    printf '%s\n' Conda_prefix_has_no_lib_dir:$conda_prefix >&2
+    printf '%s\n' 'Set IGMT_CONDA_PREFIX=/path/to/env (needs qt6-main, vtk, tbb, cmake>=3.27, patchelf).' >&2
+    exit 1
+fi
 cmake_dir=$here/.cmake_linux
 bundle_dir=$here/build_linux
 cxx=
@@ -104,10 +113,30 @@ patchelf_exe=$conda_prefix/bin/patchelf
 find $bundle_dir -maxdepth 1 -type f -name '*.so*' -exec $patchelf_exe --set-rpath '$ORIGIN' {} +
 find $bundle_dir/plugins -type f -name '*.so*' -exec $patchelf_exe --set-rpath '$ORIGIN/../..' {} +
 
-missing=$(env -u LD_LIBRARY_PATH ldd $bundle_dir/libgmtvtk.so | grep 'not found' || true)
-if [[ -n $missing ]]; then
-    printf '%s\n' $missing >&2
+# Two different failures wear the same "not found" text, so separate them. A SONAME listed in
+# .host_requires (the GLVND set, deliberately not bundled) missing here says the BUILD MACHINE lacks
+# a runtime package -- the archive is still correct, so say what to install and carry on. Anything
+# else missing is a real hole in the bundle and must stop the build.
+host_owned=$(grep -v '^#' $bundle_dir/.host_requires | grep . || true)
+missing=$(env -u LD_LIBRARY_PATH ldd $bundle_dir/libgmtvtk.so $bundle_dir/plugins/*/*.so 2>/dev/null |
+          sed -n 's/^\s*\([^ ]*\) => not found$/\1/p' | sort -u || true)
+host_missing=
+bundle_missing=
+for lib in $missing; do
+    if printf '%s\n' $host_owned | grep -qx $lib; then
+        host_missing="$host_missing $lib"
+    else
+        bundle_missing="$bundle_missing $lib"
+    fi
+done
+if [[ -n $bundle_missing ]]; then
+    printf '%s\n' Missing_from_bundle:$bundle_missing >&2
     exit 1
+fi
+if [[ -n $host_missing ]]; then
+    printf '%s\n' "WARNING: this machine lacks host GL libraries:$host_missing" >&2
+    printf '%s\n' 'The archive is fine, but the viewer will not run here until you install them:' >&2
+    printf '%s\n' '  sudo apt install libgl1 libglx0 libegl1 libopengl0' >&2
 fi
 printf '%s\n' Linux_bundle_verified:$bundle_dir/libgmtvtk.so
 

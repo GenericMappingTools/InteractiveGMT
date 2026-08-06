@@ -25,13 +25,23 @@ foreach(_root IN LISTS _plugin_roots)
   endif()
 endforeach()
 
+# GLVND belongs to the HOST, never to Conda. libGL/libGLX/libEGL/libOpenGL/libGLdispatch are the
+# vendor-neutral entry points into the machine's GPU driver: they find the real driver through
+# /usr/share/glvnd/*_vendor.d and the X/DRI stack, and a Conda copy is compiled to look inside the
+# Conda prefix instead. Shipping them worked only on the box that built the bundle -- on any host
+# with a real (NVIDIA/Mesa/WSLg) driver they either load the wrong vendor library or silently fall
+# back to software rendering. Same reasoning as excluding /usr/lib below: the copy is a copy of a
+# system library, and where it was copied FROM does not change that.
+set(_host_owned
+  "/libGL\\.so" "/libGLX\\.so" "/libEGL\\.so" "/libOpenGL\\.so" "/libGLdispatch\\.so")
+
 file(GET_RUNTIME_DEPENDENCIES
   LIBRARIES ${CMAKE_INSTALL_PREFIX}/libgmtvtk.so ${_plugins}
   RESOLVED_DEPENDENCIES_VAR _resolved
   UNRESOLVED_DEPENDENCIES_VAR _unresolved
   CONFLICTING_DEPENDENCIES_PREFIX _conflict
   DIRECTORIES ${_conda}/lib ${_conda}/lib64
-  POST_EXCLUDE_REGEXES ^/lib/ ^/lib64/ ^/usr/lib/ ^/usr/lib64/)
+  POST_EXCLUDE_REGEXES ^/lib/ ^/lib64/ ^/usr/lib/ ^/usr/lib64/ ${_host_owned})
 
 foreach(_dep IN LISTS _resolved)
   file(INSTALL ${_dep} DESTINATION ${CMAKE_INSTALL_PREFIX} FOLLOW_SYMLINK_CHAIN)
@@ -49,3 +59,38 @@ if(_unresolved)
 endif()
 set(_bundle ${CMAKE_INSTALL_PREFIX})
 set(_main ${_bundle}/libgmtvtk.so)
+
+# The C++ runtime is NOT optional and must not depend on it happening to fall out of the scan.
+# Conda's Qt/VTK/icu need GLIBCXX_3.4.34 + CXXABI_1.3.15 (GCC 14), which no Julia up to 1.11 and no
+# Ubuntu before 24.04 provides -- deps/build.jl installs this exact file over Julia's older private
+# copy, so a bundle without it cannot be made to load at all. libgcc_s rides along for the same
+# reason (the unwinder must match).
+foreach(_runtime libstdc++.so.6 libgcc_s.so.1)
+  file(GLOB _rt LIST_DIRECTORIES false ${_conda}/lib/${_runtime}*)
+  if(NOT _rt)
+    message(FATAL_ERROR Conda_prefix_has_no_${_runtime}:${_conda}/lib)
+  endif()
+  file(INSTALL ${_conda}/lib/${_runtime} DESTINATION ${_bundle} FOLLOW_SYMLINK_CHAIN)
+endforeach()
+
+# What the bundle now expects the HOST to provide. Written beside the libraries so build.sh can
+# check the build machine and src/libgmtvtk.jl can name the missing package instead of letting
+# dlopen report a bare "cannot open shared object file".
+file(WRITE ${_bundle}/.host_requires
+"# SONAMEs deliberately NOT bundled -- the host's GPU/display stack owns them.\n\
+# Debian/Ubuntu:  sudo apt install libgl1 libglx0 libegl1 libopengl0   (libGLdispatch rides along)\n\
+# Fedora/RHEL:    sudo dnf install libglvnd-glx libglvnd-egl libglvnd-opengl\n\
+libGL.so.1\n\
+libGLX.so.0\n\
+libEGL.so.1\n\
+libOpenGL.so.0\n\
+libGLdispatch.so.0\n")
+
+# A GLVND library still sitting in the staging tree means an exclude regex stopped matching (the
+# patterns above are path-based and silently match nothing if Conda's layout moves).
+file(GLOB _leaked LIST_DIRECTORIES false
+     ${_bundle}/libGL.so* ${_bundle}/libGLX.so* ${_bundle}/libEGL.so*
+     ${_bundle}/libOpenGL.so* ${_bundle}/libGLdispatch.so*)
+if(_leaked)
+  message(FATAL_ERROR Host-owned_GLVND_libraries_were_staged:${_leaked})
+endif()
