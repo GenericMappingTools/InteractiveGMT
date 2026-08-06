@@ -48,6 +48,19 @@
 #include <string>
 #include <cstring>
 #include <cmath>
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#define __declspec(x)
+#define __stdcall
+#endif
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#define __declspec(x)
+#define __stdcall
+#endif
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#endif
 #include <QSlider>
 #include <QScrollBar>
 #include <QStyleFactory>

@@ -1,4 +1,4 @@
-# libgmtvtk.jl — load the self-contained Qt6 + VTK viewer DLL and resolve its C API.
+# libgmtvtk.jl -- load the self-contained Qt6 + VTK viewer DLL and resolve its C API.
 #
 # The viewer is a shared library (deps/build/gmtvtk.dll, built by deps/build.bat) with a tiny
 # C API. Loading happens in the module `__init__` (NOT at top level / precompile time): the
@@ -31,11 +31,13 @@ const Libdl = Base.Libc.Libdl
 # VTK/Qt DLLs sit beside it -- used to end the story: Pkg.build refreshed the SHARED cache that
 # the loader then never looked at, so no amount of re-publishing could fix that machine. Both
 # candidates are now tried in order and the first one that fully loads wins.
-const _LOCAL_LIB  = joinpath(_PKGROOT, "deps", "build", "gmtvtk.dll")
-const _SHARED_LIB = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime", "deps", "build", "gmtvtk.dll")
+const _LIB_SUBDIR = "build"
+const _LIB_NAME = Sys.iswindows() ? "gmtvtk.dll" : "libgmtvtk.so"
+const _LOCAL_LIB  = joinpath(_PKGROOT, "deps", _LIB_SUBDIR, _LIB_NAME)
+const _SHARED_LIB = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime", "deps", _LIB_SUBDIR, _LIB_NAME)
 const _LIB_CANDIDATES = filter(isfile, unique([_LOCAL_LIB, _SHARED_LIB]))
 const _LIB      = isempty(_LIB_CANDIDATES) ? _SHARED_LIB : first(_LIB_CANDIDATES)
-# Which one actually loaded — set by _load_library, since that is only known at runtime.
+# Which one actually loaded -- set by _load_library, since that is only known at runtime.
 const _LIB_USED = Ref{String}("")
 const _BIN_DIR  = dirname(_LIB)
 
@@ -44,11 +46,11 @@ const _BIN_DIR  = dirname(_LIB)
 #
 # A GMTVTK_PACKAGE=ON build (see deps/CMakeLists.txt) drops every VTK/Qt/TBB runtime DLL plus the
 # Qt platform plugins (platforms/qwindows.dll, via windeployqt) into deps/build/ next to
-# gmtvtk.dll itself — that's the NSIS-installed / shared-runtime-cache layout, with no VTK/Qt
+# gmtvtk.dll itself -- that's the NSIS-installed / shared-runtime-cache layout, with no VTK/Qt
 # toolchain on the destination machine at all. Detect that bundle and point straight at it;
 # otherwise fall back to this dev machine's hard-coded toolchain paths (ENV overrides always
 # win either way).
-const _BUNDLED  = isdir(joinpath(_BIN_DIR, "platforms"))
+const _BUNDLED  = isdir(joinpath(_BIN_DIR, Sys.iswindows() ? "platforms" : joinpath("plugins", "platforms")))
 const _VTK_BIN = get(ENV, "INTERACTIVEGMT_VTK_BIN", _BUNDLED ? _BIN_DIR : raw"C:\programs\compa_libs\VTK-9.6.2\compileds\bin")
 const _QT_BIN  = get(ENV, "INTERACTIVEGMT_QT_BIN",  _BUNDLED ? _BIN_DIR : raw"C:\programs\Qt6\6.11.1\msvc2022_64\bin")
 const _QT_PLAT = get(ENV, "INTERACTIVEGMT_QT_PLAT", _BUNDLED ? joinpath(_BIN_DIR, "platforms") : raw"C:\programs\Qt6\6.11.1\msvc2022_64\plugins\platforms")
@@ -189,12 +191,18 @@ end
 # and the first viewer call blames a random symbol for a problem that is really "wrong file".
 function _try_load(lib::String)::Union{Nothing,String}
 	bin  = dirname(lib)
+	if !Sys.iswindows()
+		ENV["QT_PLUGIN_PATH"] = joinpath(bin, "plugins")
+		ENV["QT_QPA_PLATFORM_PLUGIN_PATH"] = joinpath(bin, "plugins", "platforms")
+	end
 	bund = isdir(joinpath(bin, "platforms"))
 	vtk  = get(ENV, "INTERACTIVEGMT_VTK_BIN", bund ? bin : raw"C:\programs\compa_libs\VTK-9.6.2\compileds\bin")
 	qt   = get(ENV, "INTERACTIVEGMT_QT_BIN",  bund ? bin : raw"C:\programs\Qt6\6.11.1\msvc2022_64\bin")
 	plat = get(ENV, "INTERACTIVEGMT_QT_PLAT", bund ? joinpath(bin, "platforms") : raw"C:\programs\Qt6\6.11.1\msvc2022_64\plugins\platforms")
-	ENV["PATH"] = vtk * ";" * qt * ";" * get(ENV, "PATH", "")
-	ENV["QT_QPA_PLATFORM_PLUGIN_PATH"] = plat
+	if Sys.iswindows()
+		ENV["PATH"] = vtk * ";" * qt * ";" * get(ENV, "PATH", "")
+		ENV["QT_QPA_PLATFORM_PLUGIN_PATH"] = plat
+	end
 	h = C_NULL
 	try
 		h = Libdl.dlopen(lib)
@@ -202,14 +210,14 @@ function _try_load(lib::String)::Union{Nothing,String}
 		# dlopen names only gmtvtk.dll, never the dependency Windows could not find, so say it.
 		miss = _missing_runtime_modules(bin)
 		return isempty(miss) ? "$lib: could not be loaded ($(sprint(showerror, e)))" :
-		       "$lib: missing VTK/Qt modules beside it — $(join(miss, ", "))"
+		       "$lib: missing VTK/Qt modules beside it -- $(join(miss, ", "))"
 	end
 	for s in _LIB_SYMBOLS
 		p = Libdl.dlsym(h, s; throw_error=false)
 		if p === nothing
 			Libdl.dlclose(h)
 			empty!(_LIB_FNS)
-			return "$lib: stale build — export :$s is missing"
+			return "$lib: stale build -- export :$s is missing"
 		end
 		_LIB_FNS[s] = p
 	end
@@ -222,7 +230,7 @@ end
 # Idempotent.
 function _load_library()
 	_DLL[] == C_NULL || return                       # already loaded
-	isempty(_LIB_CANDIDATES) && error("gmtvtk.dll not found (looked in $(dirname(_LOCAL_LIB)) and $(dirname(_SHARED_LIB))) — build it with deps/build.bat")
+	isempty(_LIB_CANDIDATES) && error("gmtvtk.dll not found (looked in $(dirname(_LOCAL_LIB)) and $(dirname(_SHARED_LIB))) -- build it with deps/build.bat")
 	why = String[]
 	for lib in _LIB_CANDIDATES
 		r = _try_load(lib)
@@ -239,7 +247,7 @@ function _load_library()
 	# Tell the viewer where OUR .ui files are. It cannot work this out on its own: it derives the
 	# path from where the DLL itself sits, and for a non-dev install that is the depot runtime cache
 	# (~/.julia/gmtvtk_runtime/deps/build), whose sibling deps/ui may not exist or may hold an older
-	# set than this package — every dialog whose .ui is missing there then silently fails to open.
+	# set than this package -- every dialog whose .ui is missing there then silently fails to open.
 	# The .ui ship with the package (they are in git), so _PKGROOT/deps/ui is always the right answer.
 	let uidir = joinpath(_PKGROOT, "deps", "ui")
 		isdir(uidir) && ccall(_fn(:gmtvtk_set_ui_dir), Cvoid, (Cstring,), uidir)

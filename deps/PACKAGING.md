@@ -44,11 +44,11 @@ An NSIS installer (`iGMT-<version>-win64.exe`) also gets built alongside — it'
 
 ## 2. Upload to GitHub Releases
 
-**Runtime release** — tag = whatever's in `deps/RUNTIME_VERSION` (currently `runtime-0.1`).
+**Runtime release** — tag = whatever's in `deps/RUNTIME_VERSION` (currently `runtime-0.2`).
 Bump the tag + that file ONLY when the VTK/Qt/TBB module set changes (rare).
 
 ```
-gh release create runtime-0.1 deps/build/iGMT-win64-full.zip --repo GenericMappingTools/InteractiveGMT --title "gmtvtk runtime 0.1" --notes "VTK/Qt/TBB runtime bundle"
+gh release create runtime-0.2 deps/build/iGMT-win64-full.zip deps/iGMT-linux-x86_64-full.tar.gz --repo GenericMappingTools/InteractiveGMT --title "gmtvtk runtime 0.2" --notes "Windows and Linux x86_64 VTK/Qt/TBB runtime bundles"
 ```
 
 **DLL release** — fixed tag `dll-latest` (hardcoded as `DLL_TAG` in `deps/build.jl`, never

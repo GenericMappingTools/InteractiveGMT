@@ -1,0 +1,51 @@
+# Bundle dependencies from linked ELF files; do not duplicate VTK or Qt module lists here.
+set(_conda @GMTVTK_LINUX_CONDA_PREFIX@)
+set(_plugin_roots ${_conda}/lib/qt6/plugins ${_conda}/plugins)
+set(_plugins)
+foreach(_root IN LISTS _plugin_roots)
+  if(IS_DIRECTORY ${_root})
+    set(_plugin_patterns
+      platforms/libqxcb.so
+      xcbglintegrations/*.so
+      imageformats/libqgif.so
+      imageformats/libqico.so
+      imageformats/libqjpeg.so
+      imageformats/libqsvg.so)
+    foreach(_pattern IN LISTS _plugin_patterns)
+      file(GLOB _found LIST_DIRECTORIES false ${_root}/${_pattern})
+      foreach(_plugin IN LISTS _found)
+        file(RELATIVE_PATH _relative ${_root} ${_plugin})
+        get_filename_component(_subdir ${_relative} DIRECTORY)
+        file(INSTALL ${_plugin} DESTINATION ${CMAKE_INSTALL_PREFIX}/plugins/${_subdir}
+             FOLLOW_SYMLINK_CHAIN)
+        list(APPEND _plugins ${_plugin})
+      endforeach()
+    endforeach()
+    break()
+  endif()
+endforeach()
+
+file(GET_RUNTIME_DEPENDENCIES
+  LIBRARIES ${CMAKE_INSTALL_PREFIX}/libgmtvtk.so ${_plugins}
+  RESOLVED_DEPENDENCIES_VAR _resolved
+  UNRESOLVED_DEPENDENCIES_VAR _unresolved
+  CONFLICTING_DEPENDENCIES_PREFIX _conflict
+  DIRECTORIES ${_conda}/lib ${_conda}/lib64
+  POST_EXCLUDE_REGEXES ^/lib/ ^/lib64/ ^/usr/lib/ ^/usr/lib64/)
+
+foreach(_dep IN LISTS _resolved)
+  file(INSTALL ${_dep} DESTINATION ${CMAKE_INSTALL_PREFIX} FOLLOW_SYMLINK_CHAIN)
+endforeach()
+
+foreach(_name IN LISTS _conflict_FILENAMES)
+  set(_choices ${_conflict_${_name}})
+  list(GET _choices 0 _dep)
+  file(INSTALL ${_dep} DESTINATION ${CMAKE_INSTALL_PREFIX} FOLLOW_SYMLINK_CHAIN)
+endforeach()
+
+if(_unresolved)
+  list(REMOVE_DUPLICATES _unresolved)
+  message(WARNING Unresolved_Linux_runtime_dependencies:${_unresolved})
+endif()
+set(_bundle ${CMAKE_INSTALL_PREFIX})
+set(_main ${_bundle}/libgmtvtk.so)

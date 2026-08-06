@@ -8,16 +8,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # this file for what it turns on.
 option(GMTVTK_PACKAGE "Bundle all runtime DLLs and enable CPack packaging" OFF)
 
+option(GMTVTK_LINUX_BUNDLE Stage_a_self-contained_Linux_Conda_runtime OFF)
+
 # Toolchain locations (this machine, verified 2026-06-11). Override on the cmake command line
 # (-DVTK_DIR=... etc.) for a different box.
-if(NOT VTK_DIR)
+if(WIN32 AND NOT VTK_DIR)
   set(VTK_DIR "C:/programs/compa_libs/VTK-9.6.2/compileds/lib/cmake/vtk")
 endif()
-if(NOT Qt6_DIR)
+if(WIN32 AND NOT Qt6_DIR)
   set(Qt6_DIR "C:/programs/Qt6/6.11.1/msvc2022_64/lib/cmake/Qt6")
 endif()
-if(NOT TBB_DIR)
+if(WIN32 AND NOT TBB_DIR)
   set(TBB_DIR "C:/programs/compa_libs/oneTBB/compileds/VC14_64/lib/cmake/TBB")
+endif()
+
+# WSL/Linux dependency root. Prefer the activated environment, with this machine's base Conda as
+# the fallback. An explicit -DCMAKE_PREFIX_PATH always wins.
+if(UNIX AND NOT APPLE AND NOT CMAKE_PREFIX_PATH)
+  if(DEFINED ENV{CONDA_PREFIX})
+    list(PREPEND CMAKE_PREFIX_PATH $ENV{CONDA_PREFIX})
+  elseif(EXISTS /home/j/anaconda3)
+    list(PREPEND CMAKE_PREFIX_PATH /home/j/anaconda3)
+  endif()
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets UiTools)
@@ -61,15 +73,19 @@ endif()
 
 # Shared library — the Julia/host bridge (C API: gmtvtk_view_grid / gmtvtk_view_demo / ...).
 add_library(gmtvtk SHARED ${GMTVTK_SRC})
-target_link_libraries(gmtvtk PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES})
+target_link_libraries(gmtvtk PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS})
 vtk_module_autoinit(TARGETS gmtvtk MODULES ${VTK_LIBRARIES})
 
 # Standalone demo executable (shows the synthetic peaks surface via the demo main()) — a dev
 # smoke-test binary only (deps/run.bat), no Julia involved. Skipped entirely for a package build:
 # the redistributable installs the real Julia-driven app (iview_app.jl), not this demo.
 if(NOT GMTVTK_PACKAGE)
-  add_executable(gmtvtk_demo WIN32 ${GMTVTK_SRC})
-  target_link_libraries(gmtvtk_demo PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES})
+  if(WIN32)
+    add_executable(gmtvtk_demo WIN32 ${GMTVTK_SRC})
+  else()
+    add_executable(gmtvtk_demo ${GMTVTK_SRC})
+  endif()
+  target_link_libraries(gmtvtk_demo PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS})
   vtk_module_autoinit(TARGETS gmtvtk_demo MODULES ${VTK_LIBRARIES})
 endif()
 
@@ -82,8 +98,23 @@ endif()
 # default target is "all") — no build.bat edit needed.
 add_library(gmtvtk_test SHARED ${GMTVTK_SRC})
 target_compile_definitions(gmtvtk_test PRIVATE GMTVTK_TEST_API)
-target_link_libraries(gmtvtk_test PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES})
+target_link_libraries(gmtvtk_test PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS})
 vtk_module_autoinit(TARGETS gmtvtk_test MODULES ${VTK_LIBRARIES})
+
+# Linux runtime staging is independent of the Windows packaging block below.
+if(GMTVTK_LINUX_BUNDLE)
+  if(NOT UNIX OR APPLE)
+    message(FATAL_ERROR GMTVTK_LINUX_BUNDLE_is_Linux-only)
+  endif()
+  if(NOT CMAKE_PREFIX_PATH)
+    message(FATAL_ERROR GMTVTK_LINUX_BUNDLE_needs_CMAKE_PREFIX_PATH)
+  endif()
+  set_target_properties(gmtvtk PROPERTIES INSTALL_RPATH $ORIGIN)
+  install(TARGETS gmtvtk LIBRARY DESTINATION .)
+  list(GET CMAKE_PREFIX_PATH 0 GMTVTK_LINUX_CONDA_PREFIX)
+  configure_file(cmake/linux_bundle.cmake.in linux_bundle.cmake @ONLY)
+  install(SCRIPT ${CMAKE_CURRENT_BINARY_DIR}/linux_bundle.cmake)
+endif()
 
 # ============================================================================
 # Optional redistributable package — gmtvtk.dll + EVERY runtime DLL it needs
@@ -115,7 +146,11 @@ vtk_module_autoinit(TARGETS gmtvtk_test MODULES ${VTK_LIBRARIES})
 # bootstrap Julia itself.
 # ============================================================================
 
-if(GMTVTK_PACKAGE)
+if(GMTVTK_PACKAGE AND NOT WIN32)
+  message(FATAL_ERROR GMTVTK_PACKAGE_is_currently_Windows-only)
+endif()
+
+if(GMTVTK_PACKAGE AND WIN32)
   # Derive the toolchain runtime-DLL dirs from the *_DIR cmake-config locations
   # (each is <root>/lib/cmake/<pkg>, so the bin dir is three levels up + /bin).
   get_filename_component(_VTK_ROOT "${VTK_DIR}/../../.." ABSOLUTE)

@@ -1037,6 +1037,7 @@ extern "C" {
 // a fabricated dummy (see ensureApp) and the real process exe is julia.exe, nowhere near this
 // DLL. Returns empty string if the lookup fails (should not happen for a loaded DLL).
 static QString gmtvtkModuleDir() {
+#if defined(_WIN32)
 	const unsigned long GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS = 0x4;
 	const unsigned long GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT = 0x2;
 	void *hm = nullptr;
@@ -1046,6 +1047,12 @@ static QString gmtvtkModuleDir() {
 	unsigned long n = hm ? GetModuleFileNameA(hm, buf, sizeof(buf)) : 0;
 	if (n == 0) return QString();
 	return QFileInfo(QString::fromLocal8Bit(buf, (int)n)).absolutePath();
+#else
+	Dl_info info{};
+	if (dladdr(reinterpret_cast<const void *>(&gmtvtkModuleDir), &info) == 0 || !info.dli_fname)
+		return QString();
+	return QFileInfo(QString::fromLocal8Bit(info.dli_fname)).absolutePath();
+#endif
 }
 
 // Where the runtime-loaded .ui files are. THE HOST DECIDES, because only it knows: the .ui ship
