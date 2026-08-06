@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# WSL compiles directly from the Windows checkout. The cache is private; build_linux is the
-# distributable Linux runtime and never overlaps deps/build used by build.bat.
+# WSL compiles directly from the Windows checkout, but writes NOTHING back into it -- the cmake
+# cache, the staged runtime and the archive all live under the WSL cache (see linux_paths.sh for
+# why). The staged tree never overlaps deps/build, which build.bat owns on the Windows side.
 here=$(cd -- $(dirname -- ${BASH_SOURCE[0]}) && pwd)
+. $here/linux_paths.sh
+igmt_drop_in_tree_build
 # Dependency root, most explicit first: IGMT_CONDA_PREFIX (a fixed build environment that must not
 # change when a shell happens to have another env activated), then the activated env, then this
 # machine's base Conda. Never guess further than that -- a wrong prefix produces a bundle that
@@ -14,8 +17,9 @@ if [[ ! -d $conda_prefix/lib ]]; then
     printf '%s\n' 'Set IGMT_CONDA_PREFIX=/path/to/env (needs qt6-main, vtk, tbb, cmake>=3.27, patchelf).' >&2
     exit 1
 fi
-cmake_dir=$here/.cmake_linux
-bundle_dir=$here/build_linux
+cmake_dir=$igmt_cmake_dir
+bundle_dir=$igmt_bundle_dir
+mkdir -p $igmt_stage_root
 cxx=
 cxx_link=
 probe=$(mktemp /tmp/igmt-cxx-XXXXXX)
@@ -97,7 +101,7 @@ $cmake_exe --build $cmake_dir --target gmtvtk
 
 # Recreate the staging tree after a successful compile. Otherwise libraries belonging to plugins
 # removed from the bundle policy (WebEngine, QML, SQL, Wayland, etc.) survive forever.
-if [[ $bundle_dir != $here/build_linux ]]; then
+if [[ $bundle_dir != $igmt_stage_root/build_linux ]]; then
     printf '%s\n' Refusing_to_clean_unexpected_bundle_path:$bundle_dir >&2
     exit 1
 fi
@@ -140,6 +144,12 @@ if [[ -n $host_missing ]]; then
 fi
 printf '%s\n' Linux_bundle_verified:$bundle_dir/libgmtvtk.so
 
-archive=$here/iGMT-linux-x86_64-full.tar.gz
-tar -C $here/.. --transform='s,^deps/build_linux,deps/build,' -czf $archive deps/build_linux
+# Members must come out as deps/build/... -- that is what deps/build.jl extracts relative to
+# SHARED_ROOT. The staged tree is no longer under deps/, so the transform renames the single
+# top-level component instead of rewriting a path prefix.
+archive=$igmt_archive
+tar -C $igmt_stage_root --transform='s,^build_linux,deps/build,' -czf $archive build_linux
 printf '%s\n' Linux_archive_created:$archive
+
+# A tarball left by the older scripts sits in the package tree, where nothing Linux belongs.
+rm -f -- $here/iGMT-linux-x86_64-full.tar.gz

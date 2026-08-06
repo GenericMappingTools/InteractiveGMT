@@ -48,8 +48,14 @@ An NSIS installer (`iGMT-<version>-win64.exe`) also gets built alongside — it'
 Bump the tag + that file ONLY when the VTK/Qt/TBB module set changes (rare).
 
 ```
-gh release create runtime-0.2 deps/build/iGMT-win64-full.zip deps/iGMT-linux-x86_64-full.tar.gz --repo GenericMappingTools/InteractiveGMT --title "gmtvtk runtime 0.2" --notes "Windows and Linux x86_64 VTK/Qt/TBB runtime bundles"
+gh release create runtime-0.2 deps/build/iGMT-win64-full.zip --repo GenericMappingTools/InteractiveGMT --title "gmtvtk runtime 0.2" --notes "Windows and Linux x86_64 VTK/Qt/TBB runtime bundles"
 ```
+
+The Linux asset is built and uploaded from WSL by `bash deps/publish_linux.sh`, which runs
+`deps/build.sh` if needed and re-uploads to the same tag with `--clobber`. Nothing it produces
+lives in the checkout: the cmake dir, the staged runtime and the tarball are all under
+`~/.cache/igmt` (see `deps/linux_paths.sh`), because a WSL symlink inside the package tree makes
+every Windows `Pkg.test` run die on `stat(): permission denied` before a single test starts.
 
 **DLL release** — fixed tag `dll-latest` (hardcoded as `DLL_TAG` in `deps/build.jl`, never
 retagged). First time:
