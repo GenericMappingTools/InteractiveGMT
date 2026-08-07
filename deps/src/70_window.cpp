@@ -11049,6 +11049,182 @@ public:
 };
 
 // ============================================================================================
+// Project (Tools menu) — port of Mirone's "Projections > GDAL project" (src_figs/gdal_project.m),
+// with the GDAL dropped from the name. It is an interface to gdalwarp: reproject the window's
+// raster (grid OR image) from a source referencing system into a target one, optionally forcing the
+// output size (Rows/Columns) or resolution (x inc / y inc). Layout is the .m's own LayoutFcn,
+// loaded at RUNTIME via QUiLoader from deps/ui/project_dialog.ui.
+//
+// The Projections combo is Mirone's own list (name -> PROJ4), and picking one only FILLS the
+// Destination box — exactly as the .m does — so the string stays editable by hand.
+//
+// The Source box starts filled from the window's OWN CRS store (Scene::crsProj4/crsWkt, the same
+// one the status-corner EPSG chip and the Geography-menu gate read), never from a second copy: the
+// .m reads Mirone's 'Proj4'/'ProjWKT' appdata for the same reason.
+// ============================================================================================
+class ProjectDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QComboBox *projCb = nullptr;
+	QPlainTextEdit *srcEdit = nullptr, *dstEdit = nullptr;
+	QLineEdit *rowsEdit = nullptr, *colsEdit = nullptr, *xincEdit = nullptr, *yincEdit = nullptr;
+	QRadioButton *rbNear = nullptr, *rbBilinear = nullptr, *rbCubic = nullptr, *rbSpline = nullptr;
+
+	explicit ProjectDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/project_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("ProjectDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("ProjectDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("Project");
+		QDialog *d = dlg;
+
+		projCb   = d->findChild<QComboBox *>("combo_proj");
+		srcEdit  = d->findChild<QPlainTextEdit *>("edit_source");
+		dstEdit  = d->findChild<QPlainTextEdit *>("edit_target");
+		rowsEdit = d->findChild<QLineEdit *>("edit_nRows");
+		colsEdit = d->findChild<QLineEdit *>("edit_nCols");
+		xincEdit = d->findChild<QLineEdit *>("edit_xInc");
+		yincEdit = d->findChild<QLineEdit *>("edit_yInc");
+		rbNear     = d->findChild<QRadioButton *>("rb_near");
+		rbBilinear = d->findChild<QRadioButton *>("rb_bilinear");
+		rbCubic    = d->findChild<QRadioButton *>("rb_cubic");
+		rbSpline   = d->findChild<QRadioButton *>("rb_cubicspline");
+
+		if (rowsEdit) rowsEdit->setValidator(new QIntValidator(1, 1000000, rowsEdit));
+		if (colsEdit) colsEdit->setValidator(new QIntValidator(1, 1000000, colsEdit));
+		if (xincEdit) xincEdit->setValidator(new QDoubleValidator(xincEdit));
+		if (yincEdit) yincEdit->setValidator(new QDoubleValidator(yincEdit));
+
+		// Mirone's projGDAL_name / projGDAL_pars pair, verbatim (item data = the PROJ4 string). Two
+		// entries really are both called "Lambert Equal Area" there, on two different projections —
+		// kept as they are, with the PROJ4 in each tooltip so they can be told apart.
+		// `epsg` is the code the entry IS, when the entry is a real registered system — a PROJ4 string
+		// alone cannot be turned back into one (GDAL's AutoIdentifyEPSG needs authority nodes, and
+		// GMT.jl's proj2epsg/wkt2epsg both answer "Failed to identify EPSG code" for these). So the
+		// code travels WITH the choice, and Project warps to "EPSG:<code>" when there is one — which
+		// also makes the result carry authority WKT, so the window's EPSG chip reads it back properly.
+		// 0 = the entry is a bare projection with no registered code (Mollweide, Robinson, …).
+		if (projCb) {
+			struct { const char *name, *proj4; int epsg; } P[] = {
+				{ "",                          "",                                          0 },
+				{ "Geog",                      "+proj=latlong +datum=WGS84",             4326 },
+				{ "Mercator",                  "+proj=merc",                             3395 },
+				{ "Transverse Mercator",       "+proj=tmerc +lat_0=0 +lon_0=-9",            0 },
+				{ "UTM",                       "+proj=utm +zone=29 +datum=WGS84",       32629 },
+				{ "Miller",                    "+proj=mill",                                0 },
+				{ "Lambert Equal Area",        "+proj=cea",                                 0 },
+				{ "Gall (Stereographic)",      "+proj=gall",                                0 },
+				{ "Equidistant Cylindrical",   "+proj=eqc",                              4087 },
+				{ "Cassini",                   "+proj=cass +lon_0=0",                       0 },
+				{ "Sinusoidal",                "+proj=sinu",                                0 },
+				{ "Mollweide",                 "+proj=moll +lon_0=0",                       0 },
+				{ "Robinson",                  "+proj=robin +lon_0=0",                      0 },
+				{ "Eckert IV",                 "+proj=eck4",                                0 },
+				{ "Eckert VI",                 "+proj=eck6",                                0 },
+				{ "Goode Homolosine",          "+proj=goode",                               0 },
+				{ "Lambert Conformal Conic",   "+proj=lcc +lat_1=20n +lat_2=60n",           0 },
+				{ "Equidistant Conic",         "+proj=eqdc +lat_1=15n +lat_2=75n",          0 },
+				{ "Albers Equal Area",         "+proj=aea +lat_1=20n +lat_2=60n",           0 },
+				{ "Lambert Equal Area",        "+proj=laea +lat_1=20n +lat_2=60n",          0 },
+				{ "Polyconic",                 "+proj=poly",                                0 },
+				{ "Bonne",                     "+proj=bonne",                               0 },
+				{ "Polar Stereographic",       "+proj=stere +lat_ts=71 +lat_0=90 +lon_0=0", 0 },
+				{ "Gnomonic",                  "+proj=gnom",                                0 },
+				{ "Orthographic",              "+proj=ortho",                               0 },
+				{ "Van der Grinten",           "+proj=vandg",                               0 },
+			};
+			for (const auto &p : P) {
+				projCb->addItem(p.name, QString(p.proj4));
+				const int idx = projCb->count() - 1;
+				projCb->setItemData(idx, p.epsg, Qt::UserRole + 1);
+				if (p.proj4[0])
+					projCb->setItemData(idx, p.epsg > 0 ? QString("%1   (EPSG:%2)").arg(p.proj4).arg(p.epsg)
+					                                    : QString(p.proj4), Qt::ToolTipRole);
+			}
+			QObject::connect(projCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d, [this]() {
+				if (dstEdit) dstEdit->setPlainText(projCb->currentData().toString());
+			});
+		}
+
+		// The Source box from the window's OWN CRS store. A bare "+proj=latlong" with no datum is
+		// useless to gdalwarp, so it gets WGS84 appended — Mirone's own fix-up, same place.
+		QString src;
+		if (scn) {
+			if (!scn->crsProj4.empty())     src = QString::fromStdString(scn->crsProj4);
+			else if (!scn->crsWkt.empty())  src = QString::fromStdString(scn->crsWkt);
+			else if (scn->baseGeog)         src = "+proj=latlong +datum=WGS84";
+			if (src.contains("latlong") && !src.contains("+datum=")) src += " +datum=WGS84";
+		}
+		if (srcEdit) srcEdit->setPlainText(src);
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_ok"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runProject(d); });
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	// gdalwarp's -r name for the checked radio (Mirone's own four).
+	QString resample() const {
+		if (rbNear && rbNear->isChecked())     return "near";
+		if (rbCubic && rbCubic->isChecked())   return "cubic";
+		if (rbSpline && rbSpline->isChecked()) return "cubicspline";
+		return "bilinear";
+	}
+
+	void runProject(QDialog *d) {
+		if (!g_juliaProject) {
+			QMessageBox::warning(d, "Project", "Project: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		const QString dst = dstEdit ? dstEdit->toPlainText().trimmed() : QString();
+		if (dst.isEmpty()) {
+			QMessageBox::warning(d, "Project",
+				"OK to what? You obviously need to specify the destination referencing system.");
+			return;
+		}
+		QStringList kv;
+		kv << "t_srs=" + dst.simplified();
+		if (srcEdit) {
+			const QString src = srcEdit->toPlainText().trimmed().simplified();
+			if (!src.isEmpty()) kv << "s_srs=" + src;
+		}
+		kv << "resample=" + resample();
+		// Resolution takes precedence over a row/column count, and a row count alone means nothing —
+		// both of those are the .m's rules (push_OK_CB), not new behaviour.
+		if (xincEdit && !xincEdit->text().trimmed().isEmpty()) kv << "xinc=" + xincEdit->text().trimmed();
+		if (yincEdit && !yincEdit->text().trimmed().isEmpty()) kv << "yinc=" + yincEdit->text().trimmed();
+		if (rowsEdit && !rowsEdit->text().trimmed().isEmpty()) kv << "rows=" + rowsEdit->text().trimmed();
+		if (colsEdit && !colsEdit->text().trimmed().isEmpty()) kv << "cols=" + colsEdit->text().trimmed();
+		if (projCb) {
+			kv << "projname=" + projCb->currentText();
+			// The EPSG code of the picked entry — but ONLY while the Destination box still holds that
+			// entry's own string. Edit it and we no longer know what it is, so we say nothing rather
+			// than label the result with a code it isn't.
+			const int    ep = projCb->currentData(Qt::UserRole + 1).toInt();
+			const QString p4 = projCb->currentData().toString();
+			if (ep > 0 && !p4.isEmpty() && dst.simplified() == p4.simplified())
+				kv << "t_epsg=" + QString::number(ep);
+		}
+		kv << "grid=" + QString::fromStdString(activeGridName(scn));   // project the DISPLAYED layer
+		showBusyDialog("Projecting…");
+		const int ok = g_juliaProject(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "Project",
+		                              "Project failed — see this window's Messages dock for details.");
+	}
+};
+
+// ============================================================================================
 // Interpolation / griding (GMT menu) — grid an x,y,z table. Layout is Mirone's Surface window
 // (src_figs/griding_mir.m): Input Data File (+ header count), the shared "Griding Line Geometry"
 // block (adopted from the .ui's verbatim copy of grid_line_geometry.ui, so it behaves exactly as
@@ -13786,6 +13962,88 @@ static QIcon makePolyhedronIcon();
 static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only view-toggle button
 static QIcon makeInfoIcon();                // stylised 'i' glyph for the grdinfo/gdalinfo flyout
 static QIcon makeRulerIcon();               // graduated ruler glyph (85_polygon.cpp)
+static QIcon makeGlobeIcon();               // graticule globe for the status-corner CRS chip (85_polygon.cpp)
+static QIcon makeMessagesIcon(bool unread); // speech bubble for the status-corner Messages button (ditto)
+
+// ============================================================================
+//  Bottom-RIGHT status corner (QGIS-style): the CRS chip + the Messages button.
+//
+//  They are PERMANENT status-bar widgets, which is what keeps them on screen:
+//  Qt hides ordinary (non-permanent) status-bar widgets while a temporary
+//  showMessage() is up and paints that message over them — and this window keeps
+//  a temporary message up nearly all the time (the hover coordinate readout).
+//  Permanent widgets are never hidden and the message text stops at their left
+//  edge, so the readout and the corner coexist with no custom painting at all.
+// ============================================================================
+
+// THE one place the CRS chip's text + tooltip are derived from the window's stored CRS
+// (Scene::crsProj4/crsWkt/crsEpsg — the same store gmtvtk_set_crs fills and the Geography menu
+// gates on), so the chip can never drift from what the rest of the window believes. Called at
+// window birth and from gmtvtk_set_crs itself.
+static void sceneUpdateCrsChip(Scene *s) {
+	if (!s || !s->crsChip) return;
+	s->crsChip->setText(s->crsEpsg > 0 ? QString("EPSG:%1").arg(s->crsEpsg) : QString("EPSG:000"));
+	QString tip;
+	if (!s->crsProj4.empty())    tip = QString::fromStdString(s->crsProj4);
+	else if (!s->crsWkt.empty()) tip = QString::fromStdString(s->crsWkt).left(400);
+	else                         tip = "Unreferenced data — no CRS";
+	s->crsChip->setToolTip(tip + "\n(click to manage the CRS)");
+}
+
+// The Messages button wears a red dot while the log grew since the dock was last opened.
+static void sceneMessagesUnread(Scene *s, bool on) {
+	if (!s || !s->msgBtn || s->msgUnread == on) return;
+	s->msgUnread = on;
+	s->msgBtn->setIcon(makeMessagesIcon(on));
+}
+
+// Show / hide the Messages dock (this window's execution-error log). ONE entry point: the status
+// corner's bubble, the View menu item and sceneLogError all come through here.
+static void sceneShowMessages(Scene *s, bool show) {
+	if (!s || !s->msgDock) return;
+	s->msgDock->setVisible(show);
+	if (show) {
+		s->msgDock->raise();
+		sceneMessagesUnread(s, false);
+	}
+}
+
+// Build the status bar's right-hand corner: [globe EPSG:xxxx] [bubble], pinned there as ONE
+// permanent widget so the temporary-message readout keeps the rest of the bar to itself. The CRS
+// chip's dialog is not written yet — it reports so.
+static void buildIGStatusBar(Scene *s, QMainWindow *win) {
+	QStatusBar *sb = win->statusBar();
+
+	QWidget     *corner = new QWidget(sb);
+	QHBoxLayout *cl     = new QHBoxLayout(corner);
+	cl->setContentsMargins(2, 0, 8, 0);
+	cl->setSpacing(4);
+
+	QToolButton *crs = new QToolButton(corner);
+	crs->setAutoRaise(true);
+	crs->setIcon(makeGlobeIcon());
+	crs->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+	crs->setCursor(Qt::PointingHandCursor);
+	cl->addWidget(crs);
+	s->crsChip = crs;
+
+	QToolButton *msg = new QToolButton(corner);
+	msg->setIcon(makeMessagesIcon(false));
+	msg->setToolTip("Messages");
+	msg->setCursor(Qt::PointingHandCursor);
+	cl->addWidget(msg);
+	s->msgBtn = msg;
+
+	sb->addPermanentWidget(corner, 0);    // RIGHT corner, never hidden by a temporary message
+
+	QObject::connect(crs, &QToolButton::clicked, [s]() {
+		if (s->win) s->win->statusBar()->showMessage("CRS manager — not written yet", 3000);
+	});
+	QObject::connect(msg, &QToolButton::clicked, [s]() {
+		sceneShowMessages(s, !(s->msgDock && s->msgDock->isVisible()));
+	});
+	sceneUpdateCrsChip(s);                // "EPSG:000" until Julia pushes the real one
+}
 
 // SACRED LAW, single source of truth: EVERYTHING that PLOTS onto the window needs something to land
 // on. On an EMPTY launcher, load the whole-world Base Map IN PLACE (the SAME "global" request the
@@ -13912,6 +14170,12 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
                               const unsigned char *img, int iw, int ih, int ibands,
                               int edges, bool pointCloud, int geographic,
                               const float *gz, int gnx, int gny, bool blankStart) {
+	// The vertical normaliser, BEFORE anything is built: every actor below is given
+	// SetScale(xfac, 1, zfac*ve), and `zfac` is derived from the drawn geometry (sceneZRef,
+	// 10_geometry.cpp) rather than from any assumption about z's unit. The caller's contract has
+	// already set x0..y1 / zmin..zmax / xfac / ve, which is all it needs. (applyVE re-derives it on
+	// every later change; this is the one point that comes before the first applyVE.)
+	s->zfac = sceneZRef(s);
 	// Drop any previous content first (promotion rebuilds into an existing scene; a fresh scene has
 	// none of these so every removal is a no-op). RemoveActor on an actor not in the renderer is safe.
 	if (s->lodCmd && s->ren->GetActiveCamera()) s->ren->GetActiveCamera()->RemoveObserver(s->lodCmd);
@@ -14523,6 +14787,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	win->setWindowIcon(appIcon());          // per-window titlebar icon (matches the app-wide icon)
 	win->resize(1100, 800);
 	win->setCentralWidget(widget);
+	buildIGStatusBar(s, win);               // status corner: CRS chip + Messages button (QGIS-style)
 	win->statusBar()->showMessage("ready");
 	enableFileDrops(win, widget, s);        // drop a grid/image/table file onto any window to add it
 	s->win = win;
@@ -14532,6 +14797,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (g_lastScene == s) g_lastScene = nullptr;   // don't let add_overlay touch a freed scene
 		if (g_lastRW == rwp) g_lastRW = nullptr;       // don't let gmtvtk_save_png capture a freed window (crash)
 		linkUnlinkWindows(s);                          // drop a Link partner's pointer to this scene
+		// Tell the host the WHOLE window is gone, through the same channel a single removed row uses
+		// (kind "window", no name). The host keys its per-window registries on this pointer, and the
+		// allocator hands the SAME address to the next window opened — so without this purge a new
+		// window inherits the dead one's registered grids/images (a lookup for "this window's grid"
+		// could answer with a ghost from a window the user closed long ago).
+		if (g_juliaForget) g_juliaForget(s, "window", "");
 		g_scenes.erase(s);                             // invalidate any host-held handle to s
 		delete s->giz; delete s;
 		for (Scene *o : g_scenes) swipeRefreshAvailability(o);   // one fewer window to link with
@@ -15511,6 +15782,16 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		EmpilhadorDialog *e = new EmpilhadorDialog(win, s);
 		if (e->dlg) e->dlg->show();
 	});
+	// "Project" (port of Mirone's Projections > GDAL project): reproject the window's raster with
+	// gdalwarp. Needs something to warp, so it is offered only with a raster on screen.
+	mTools->addAction("Project…", [win, s]() {
+		if (!s->surf || s->emptyStart) {
+			QMessageBox::warning(win, "Project", "Load a grid or an image into this window first.");
+			return;
+		}
+		auto *w = new ProjectDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
 
 	// --- GMT menu: helper windows to drive GMT modules (TODO: populate with module tools) ----
 	QMenu *mGMT = win->menuBar()->addMenu("&GMT");
@@ -16469,16 +16750,23 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			conOut->appendPlainText(QString::fromUtf8(buf.data(), len));
 	});
 
-	// Tab 2 — Errors: a READ-ONLY sink for execution errors from background callbacks (drop, coastlines,
-	// basemap, tides, recolour, …). Those used to vanish into the REPL's stderr; Julia now also ccalls
-	// gmtvtk_log_error -> here, raising this tab so a failure can't pass unseen. Typed-command errors stay
-	// inline in the Julia Console tab; THIS tab is the program-side error log.
-	QPlainTextEdit *errOut = new QPlainTextEdit(tabs);
+	// The MESSAGE LOG: a READ-ONLY sink for execution errors from background callbacks (drop, coastlines,
+	// basemap, tides, recolour, …). Those used to vanish into the REPL's stderr; Julia ccalls
+	// gmtvtk_log_error -> here, so a failure can't pass unseen. Typed-command errors stay inline in the
+	// Julia Console tab; THIS is the program-side error log. It is NOT a Panels tab any more: it has its
+	// own "Messages" dock, opened by the speech-bubble button in the bottom-left status corner (QGIS's
+	// Log Messages panel), and starts HIDDEN — a new line lights that button's red dot.
+	QPlainTextEdit *errOut = new QPlainTextEdit(win);
 	errOut->setReadOnly(true);
 	errOut->setMaximumBlockCount(2000);
 	errOut->setFont(QFont("Consolas", 10));
 	errOut->setPlaceholderText("Execution errors from menu actions / background callbacks appear here.");
-	tabs->addTab(errOut, "Errors");
+	QDockWidget *msgDock = new QDockWidget("Messages", win);
+	msgDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
+	msgDock->setWidget(errOut);
+	win->addDockWidget(Qt::BottomDockWidgetArea, msgDock);
+	msgDock->hide();
+	s->msgDock    = msgDock;
 	s->errConsole = errOut;
 
 	// (No "Data Viewer" tab: a table of numbers is shown by THE ONE shared table dialog —
@@ -16523,6 +16811,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	mView->addAction("&Profile Panel",       [showTab, s]()        { showTab(s->prof); });
 	mView->addAction("Julia &Console Panel", [showTab, conPanel]() { showTab(conPanel); });
+	// The message log is not a tab here any more — same dock the status corner's bubble opens.
+	mView->addAction("&Messages Panel",      [s]()                 { sceneShowMessages(s, true); });
 	// No "Data Viewer Panel" entry: there is no such tab any more. A table of numbers pops up in THE
 	// shared table dialog when a result produces one (gmtvtk_set_table / show_table).
 

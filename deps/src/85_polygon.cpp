@@ -173,6 +173,49 @@ static QIcon makeInfoIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// Status-corner CRS chip glyph: a wire globe (outline + equator + central meridian + two parallels),
+// the universal "coordinate reference system" mark — QGIS wears the same one beside its EPSG code.
+static QIcon makeGlobeIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	const QPointF c(12, 12);
+	const double  r = 8.5;
+	p.setBrush(Qt::NoBrush);
+	p.setPen(QPen(QColor(60, 60, 65), 1.5));
+	p.drawEllipse(c, r, r);
+	p.setPen(QPen(QColor(60, 60, 65), 1.0));
+	p.drawLine(QPointF(c.x() - r, c.y()), QPointF(c.x() + r, c.y()));   // equator
+	p.drawEllipse(c, r * 0.45, r);                                       // central meridian
+	for (double f : { 0.55, -0.55 }) {                                   // two parallels, on the sphere
+		const double dy = r * f, w = r * std::sqrt(1.0 - f * f);
+		p.drawLine(QPointF(c.x() - w, c.y() + dy), QPointF(c.x() + w, c.y() + dy));
+	}
+	p.end(); return QIcon(pm);
+}
+
+// Status-corner Messages button glyph: a filled speech bubble; `unread` adds the red dot that says
+// the log grew since the Messages dock was last opened.
+static QIcon makeMessagesIcon(bool unread) {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	QPainterPath bub;
+	bub.addRoundedRect(QRectF(2.5, 4.0, 17.0, 12.5), 4.0, 4.0);
+	QPolygonF tail;
+	tail << QPointF(7.0, 15.0) << QPointF(6.5, 20.5) << QPointF(12.5, 15.0);
+	bub.addPolygon(tail);
+	p.setPen(Qt::NoPen);
+	p.setBrush(QColor(70, 70, 75));
+	p.drawPath(bub.simplified());
+	if (unread) {
+		p.setBrush(QColor(210, 45, 45));
+		p.setPen(QPen(QColor(255, 255, 255), 1.0));
+		p.drawEllipse(QPointF(19.0, 5.5), 4.0, 4.0);
+	}
+	p.end(); return QIcon(pm);
+}
+
 // Swipe-tool icon: a framed tile split down the middle — dark raster left, light raster right —
 // with the divider line and its round grab handle drawn exactly as the live overlay draws them, so
 // the button reads as a miniature of what the tool puts on the scene.

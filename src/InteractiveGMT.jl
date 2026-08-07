@@ -99,6 +99,7 @@ include("grdtrend.jl")   # GMT menu > grdtrend: polynomial trend surface / resid
 include("grdlandmask.jl")# GMT menu > grdlandmask: wet/dry mask grid from the shoreline database
 include("grdfilter.jl")  # GMT menu > grdfilter: space-domain filtering of the window's grid
 include("interpolate.jl")# GMT menu > Interpolate: grid an x,y,z table (surface, nearneighbor, block*, …)
+include("project.jl")    # Tools > Project: reproject the window's raster with gdalwarp (Mirone gdal_project.m)
 include("plates.jl")     # Plates > Euler rotations (port of Mirone euler_stuff.m; GMT spotter modules)
 include("computeeuler.jl") # Plates > Compute Euler pole (port of Mirone compute_euler.m + mex/distmin.c)
 include("shapenc.jl")    # write a SHAPENC netCDF file (port of Mirone utils/shapenc.m; GDAL MDArray API, no MEX)

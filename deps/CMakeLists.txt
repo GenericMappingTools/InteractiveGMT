@@ -301,6 +301,7 @@ if(GMTVTK_PACKAGE AND WIN32)
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdtrend_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdlandmask_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdfilter_dialog.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/project_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/euler_stuff.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/plate_calculator.ui"
     DESTINATION deps/ui COMPONENT full)

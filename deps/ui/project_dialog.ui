@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Project (Mirone's "Projections > GDAL project", the GDAL dropped from the name). Geometry is
+     Mirone's own, converted from src_figs/gdal_project.m's gdal_project_LayoutFcn (figure 540x241,
+     MATLAB bottom-left origin -> Qt top-left: y_qt = 241 - y_m - h). Absolute positions on purpose:
+     the window is fixed-size exactly as Mirone's ('Resize','off'), so every control keeps the size
+     it has there: the Rows/Columns boxes are 49x21 and the inc boxes 71x21, not stretched.
+     Widened only where the real Qt font clips: the two SRS labels and the interpolation group box
+     (a MATLAB 'frame' + floating text, here the group box's own title). -->
+<ui version="4.0">
+ <class>ProjectDialog</class>
+ <widget class="QDialog" name="ProjectDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>540</width><height>241</height></rect>
+  </property>
+  <property name="minimumSize"><size><width>540</width><height>241</height></size></property>
+  <property name="maximumSize"><size><width>540</width><height>241</height></size></property>
+  <property name="windowTitle"><string>Project</string></property>
+
+  <widget class="QLabel" name="lb_proj">
+   <property name="geometry"><rect><x>300</x><y>8</y><width>76</width><height>15</height></rect></property>
+   <property name="alignment"><set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignVCenter</set></property>
+   <property name="text"><string>Projections</string></property>
+  </widget>
+  <widget class="QComboBox" name="combo_proj">
+   <property name="geometry"><rect><x>380</x><y>5</y><width>151</width><height>22</height></rect></property>
+   <property name="toolTip"><string>Pick a projection to fill the Destination box with its PROJ4 string. Edit it freely afterwards.</string></property>
+  </widget>
+
+  <widget class="QLabel" name="lb_source">
+   <property name="geometry"><rect><x>15</x><y>15</y><width>170</width><height>16</height></rect></property>
+   <property name="text"><string>Source Referencing System</string></property>
+  </widget>
+  <widget class="QPlainTextEdit" name="edit_source">
+   <property name="geometry"><rect><x>10</x><y>32</y><width>521</width><height>41</height></rect></property>
+   <property name="toolTip"><string>PROJ4 (or WKT / EPSG:nnnn) describing the source coordinate system. Blank defaults to geogs.</string></property>
+  </widget>
+
+  <widget class="QLabel" name="lb_target">
+   <property name="geometry"><rect><x>10</x><y>85</y><width>200</width><height>18</height></rect></property>
+   <property name="text"><string>Destination Referencing System</string></property>
+  </widget>
+  <widget class="QPlainTextEdit" name="edit_target">
+   <property name="geometry"><rect><x>10</x><y>101</y><width>521</width><height>41</height></rect></property>
+   <property name="toolTip"><string>PROJ4 (or WKT / EPSG:nnnn) with the target coordinate system. Blank defaults to geogs.</string></property>
+  </widget>
+
+  <widget class="QGroupBox" name="gb_interp">
+   <property name="geometry"><rect><x>10</x><y>144</y><width>345</width><height>44</height></rect></property>
+   <property name="title"><string>Interpolation method</string></property>
+   <widget class="QRadioButton" name="rb_near">
+    <property name="geometry"><rect><x>8</x><y>17</y><width>125</width><height>18</height></rect></property>
+    <property name="toolTip"><string>nearest neighbour resampling (fastest algorithm, worst interpolation quality)</string></property>
+    <property name="text"><string>nearest neighbour</string></property>
+    <attribute name="buttonGroup"><string>bg_interp</string></attribute>
+   </widget>
+   <widget class="QRadioButton" name="rb_bilinear">
+    <property name="geometry"><rect><x>136</x><y>17</y><width>62</width><height>18</height></rect></property>
+    <property name="toolTip"><string>bilinear resampling</string></property>
+    <property name="text"><string>bilinear</string></property>
+    <property name="checked"><bool>true</bool></property>
+    <attribute name="buttonGroup"><string>bg_interp</string></attribute>
+   </widget>
+   <widget class="QRadioButton" name="rb_cubic">
+    <property name="geometry"><rect><x>200</x><y>17</y><width>52</width><height>18</height></rect></property>
+    <property name="toolTip"><string>cubic resampling</string></property>
+    <property name="text"><string>cubic</string></property>
+    <attribute name="buttonGroup"><string>bg_interp</string></attribute>
+   </widget>
+   <widget class="QRadioButton" name="rb_cubicspline">
+    <property name="geometry"><rect><x>254</x><y>17</y><width>85</width><height>18</height></rect></property>
+    <property name="toolTip"><string>cubic spline resampling</string></property>
+    <property name="text"><string>cubicspline</string></property>
+    <attribute name="buttonGroup"><string>bg_interp</string></attribute>
+   </widget>
+  </widget>
+
+  <widget class="QLabel" name="lb_rows">
+   <property name="geometry"><rect><x>17</x><y>196</y><width>40</width><height>15</height></rect></property>
+   <property name="text"><string>Rows</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_nRows">
+   <property name="geometry"><rect><x>10</x><y>211</y><width>49</width><height>21</height></rect></property>
+   <property name="toolTip"><string>Number of rows of the output. Leave blank for automatic guess.</string></property>
+  </widget>
+  <widget class="QLabel" name="lb_cols">
+   <property name="geometry"><rect><x>62</x><y>196</y><width>52</width><height>15</height></rect></property>
+   <property name="text"><string>Columns</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_nCols">
+   <property name="geometry"><rect><x>60</x><y>211</y><width>49</width><height>21</height></rect></property>
+   <property name="toolTip"><string>Number of columns of the output. Leave blank for automatic guess.</string></property>
+  </widget>
+  <widget class="QLabel" name="lb_or">
+   <property name="geometry"><rect><x>109</x><y>198</y><width>89</width><height>34</height></rect></property>
+   <property name="alignment"><set>Qt::AlignmentFlag::AlignHCenter|Qt::AlignmentFlag::AlignVCenter</set></property>
+   <property name="text"><string>OR Resolution
+(blank -&gt; auto)</string></property>
+  </widget>
+  <widget class="QLabel" name="lb_xinc">
+   <property name="geometry"><rect><x>217</x><y>196</y><width>35</width><height>15</height></rect></property>
+   <property name="text"><string>x inc</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_xInc">
+   <property name="geometry"><rect><x>197</x><y>211</y><width>71</width><height>21</height></rect></property>
+   <property name="toolTip"><string>X resolution of the output, in TARGET units. Leave blank for automatic guess.</string></property>
+  </widget>
+  <widget class="QLabel" name="lb_yinc">
+   <property name="geometry"><rect><x>289</x><y>196</y><width>35</width><height>15</height></rect></property>
+   <property name="text"><string>y inc</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_yInc">
+   <property name="geometry"><rect><x>269</x><y>211</y><width>71</width><height>21</height></rect></property>
+   <property name="toolTip"><string>Y resolution of the output, in TARGET units. Leave blank for automatic guess.</string></property>
+  </widget>
+
+  <widget class="QPushButton" name="push_ok">
+   <property name="geometry"><rect><x>470</x><y>210</y><width>60</width><height>22</height></rect></property>
+   <property name="text"><string>OK</string></property>
+  </widget>
+ </widget>
+ <buttongroups>
+  <buttongroup name="bg_interp"/>
+ </buttongroups>
+ <resources/>
+ <connections/>
+</ui>

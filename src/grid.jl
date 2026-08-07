@@ -106,6 +106,12 @@ function view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside::Symbol=:shade
 				   vcurtain=nothing, title::AbstractString="i'GMT",
 				   geographic::Union{Bool,Nothing}=nothing)
 	_load_dialog_begin("Opening the grid…")             # closed by _load_dialog_end just before we return
+	# The viewer's grid ccall takes GMT's own memory layout ("BCB": column-major, z sized (ny,nx),
+	# row 1 = south). A GDAL-produced grid (gdalwarp, gdaltranslate, gdaldem) is "TRB" — row-major,
+	# north first, z sized (nx,ny) — and reading one as the other renders the transpose. This is the
+	# SECOND door into the viewer (the other is `_add_grid_to_scene`); both normalise, so no caller
+	# has to know which layout its grid happens to carry.
+	G = _grid_to_bcb(G)
 	cmap === :auto && (cmap = _default_cmap(G))         # geo only for topo/bathymetry grids, else turbo
 	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z)   # column-major; viewer reads z[ix*ny + iy]. Float32 = no copy (C stores float anyway)
 	ny, nx = size(z)                  # GMT layout: dim1 = ny (y), dim2 = nx (x)

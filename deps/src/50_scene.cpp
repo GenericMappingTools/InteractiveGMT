@@ -51,17 +51,19 @@ static void sceneSetGridLayer(Scene *s, const float *z, int nx, int ny,
 	s->actX0 = x0; s->actX1 = x1; s->actY0 = y0; s->actY1 = y1;
 }
 
-// Append one execution-error line to a window's read-only "Errors" tab and raise it (so a failure in
-// a background op is VISIBLE in the window, not just on the REPL's stderr). Shared by the
-// gmtvtk_log_error export and the fire-and-forget g_juliaEval callers below. Best-effort / no-throw.
+static void sceneMessagesUnread(Scene *s, bool on);   // 70_window.cpp — status-corner bubble's red dot
+
+// Append one execution-error line to a window's read-only message log (so a failure in a background
+// op is VISIBLE in the window, not just on the REPL's stderr). Shared by the gmtvtk_log_error export
+// and the fire-and-forget g_juliaEval callers below. Best-effort / no-throw.
 static void sceneLogError(Scene *s, const QString &msg) {
 	if (!s || !sceneAlive(s) || !s->errConsole) return;
 	s->errConsole->appendPlainText(QString("[%1]  %2")
 		.arg(QTime::currentTime().toString("HH:mm:ss")).arg(msg));
-	if (s->bottomTabs) {
-		int idx = s->bottomTabs->indexOf(s->errConsole);
-		if (idx >= 0) s->bottomTabs->setCurrentIndex(idx);   // pop the Errors tab to the front
-	}
+	// The log lives in its own "Messages" dock (was the Panels > Errors tab): raise it if the user
+	// already has it open, else flag the status corner's bubble so the new line isn't lost.
+	if (s->msgDock && s->msgDock->isVisible()) s->msgDock->raise();
+	else                                       sceneMessagesUnread(s, true);
 }
 
 // Hand a colormap NAME back to the Julia host, which recomputes CPT nodes over the surface's data

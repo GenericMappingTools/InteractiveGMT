@@ -396,7 +396,11 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 		if (c->grab == Grab::VScale) {
 			const double dy = static_cast<double>(y - c->startY);
 			double sz = std::max(1e-6, c->startSz * std::exp(c->sensitivity * dy));
-			sz = std::clamp(sz, 0.01, 1.0e4);   // geographic grids start at large auto-VE
+			// VE is DIMENSIONLESS (Scene::ve): the fraction of the map's own horizontal size the
+			// relief spans, whatever z's unit is. Every window opens at 0.1, so the useful range is
+			// the same for every dataset — the old ceiling of 1e4 existed only because a "VE 1 =
+			// true 1:1" rule sent grids whose z was not metres into the thousands.
+			sz = std::clamp(sz, 1.0e-4, 1.0e2);
 			c->curSz = sz; updateVCone(*c); updateLabel(*c);
 			c->s->ve = sz; applyVE(c->s);   // drives Scene::ve + cube-axes sync + render
 			handled = true;

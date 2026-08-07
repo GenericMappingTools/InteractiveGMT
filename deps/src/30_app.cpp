@@ -553,6 +553,21 @@ static JuliaGrdLandmaskFn g_juliaGrdLandmask = nullptr;
 typedef int (*JuliaGrdFilterFn)(void *scene, const char *params);
 static JuliaGrdFilterFn g_juliaGrdFilter = nullptr;
 
+// Project (Tools menu), port of Mirone's "Projections > GDAL project" (src_figs/gdal_project.m) —
+// the GDAL dropped from the name, but it IS an interface to gdalwarp. ProjectDialog (70_window.cpp,
+// loads deps/ui/project_dialog.ui) hands a newline-separated "key=value" block to Julia
+// (_on_project, src/project.jl):
+//   s_srs=<source PROJ4/WKT/EPSG, empty = let GDAL read it off the data>
+//   t_srs=<target, REQUIRED>          resample=near|bilinear|cubic|cubicspline
+//   rows= cols=                       (gdalwarp -ts, used only when BOTH are given)
+//   xinc= yinc=                       (gdalwarp -tr; resolution takes precedence over rows/cols)
+//   projname=<the combo's label, for the Scene Objects name>
+//   grid=<the DISPLAYED layer's label; empty for the base surface / an image-only window>
+// The warped raster is added to `scene` as a NEW derived grid (or image), and the window's CRS is
+// re-stamped to the target. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaProjectFn)(void *scene, const char *params);
+static JuliaProjectFn g_juliaProject = nullptr;
+
 // Interpolation / griding (GMT menu), dialog laid out after Mirone's Surface window
 // (src_figs/griding_mir.m). InterpolationDialog (70_window.cpp, loads deps/ui/interpolation_dialog.ui)
 // hands a newline-separated "key=value" block to Julia (_on_interpolate, src/interpolate.jl):

@@ -593,12 +593,30 @@ struct Scene {
 	                                                      // genuinely different picker, not a special case).
 	QVTKOpenGLNativeWidget *widget = nullptr;
 	QMainWindow *win    = nullptr;
-	double ve = 1.0;            // vertical exaggeration (gizmo factor, 1 = true scale)
+	// VERTICAL EXAGGERATION — DIMENSIONLESS, AND IT STAYS THAT WAY.
+	// `ve` is measured against WHAT YOU SEE, not against z's unit: ve = 1 is the reference look, the
+	// relief spanning a tenth of the map's own horizontal size; ve = 2 is twice as tall, ve = 0.5
+	// half. That is the whole definition. It says nothing about z's unit, because z's unit is NOT
+	// KNOWN — metres, mGal, nT, mm/yr, seconds and counts are all grids this app displays. Any rule
+	// of the form "VE 1 = true 1:1" needs a metres assumption, and when that assumption is wrong the
+	// number explodes (a 200 mGal anomaly over 700 km needed VE ~3500 before anything was visible).
+	double ve = 1.0;            // see above: 1 = the reference look, whatever the data and its unit
 	double zmin = 0, zmax = 0;  // true (unscaled) z range
 	double x0 = 0, x1 = 1;      // true x range (for cube-axis labels / readout)
 	double y0 = 0, y1 = 1;      // true y range
 	double xfac = 1.0;          // base X actor scale (cos(midlat) for geographic)
-	double zfac = 1.0;          // base Z actor scale (true-scale unit conversion)
+	int    scaleGeog = -1;      // the `geographic` flag xfac/zfac/ve were derived with. -1 = "as the
+	                            // window was built", i.e. baseGeog. Only a change of COORDINATE KIND
+	                            // (Tools > Project: degrees in, metres out) makes them wrong, and
+	                            // gmtvtk_show_new_element_h re-derives them when this says so.
+	// Z NORMALISER — **NOT A UNIT CONVERSION**. Cached value of `sceneZRef()`: the number that turns
+	// the ACTIVE layer's own z span into the map's horizontal span, so that `zfac * ve` (the drawn z
+	// scale every actor is given) means exactly what `ve` says above. It is DERIVED FROM THE DRAWN
+	// GEOMETRY and re-derived whenever anything about it changes; it never encodes a physical unit.
+	// It used to be 1/111111 ("metres -> degrees of latitude") for geographic data and an arbitrary
+	// auto-fit factor for everything else — one quantity, two formulas, chosen by a flag about the
+	// HORIZONTAL units. Do not put a unit back in here.
+	double zfac = 1.0;          // = sceneZRef(): horizontal span / active layer's z span
 	// SACRED_LAW.md "derived-variable axes law": once a crop/derive reframes the window onto a
 	// SUBREGION (gmtvtk_reframe_h), surfGetBounds() must report THAT subregion instead of the
 	// primary surface's own full bounds — every bounds-driven function (applyVE's axes-cube resize,
@@ -900,9 +918,18 @@ struct Scene {
 	std::string surfName;            // Scene Objects label for s->surf ("" -> "Surface"; named solids set it)
 	bool transplantUndoAvail = false; // a transplant is applied + not yet undone -> offer "Undo transplant" (Julia toggles this via gmtvtk_set_transplant_undo)
 	QPlainTextEdit *console = nullptr;   // Julia console dock output (commands eval'd in Main via g_juliaEval)
-	QPlainTextEdit *errConsole = nullptr; // read-only Errors tab: execution errors from background callbacks (gmtvtk_log_error)
+	QPlainTextEdit *errConsole = nullptr; // read-only message log: execution errors from background callbacks (gmtvtk_log_error)
 
-	// --- bottom tabbed panel (Profile / Julia Console / Errors) -------------
+	// --- bottom-RIGHT status corner (QGIS-style) + the Messages dock --------
+	// The message log used to be an "Errors" tab inside the Panels dock; it now lives in its own
+	// "Messages" dock, opened by the speech-bubble button of the status corner (buildIGStatusBar,
+	// 70_window.cpp) and hidden until then. `crsChip` shows the window's EPSG (000 = unreferenced).
+	QDockWidget *msgDock   = nullptr;   // the "Messages" dock holding errConsole (starts hidden)
+	QToolButton *msgBtn    = nullptr;   // status-corner speech bubble opening it (red dot = unread)
+	bool         msgUnread = false;     // log grew since the dock was last opened
+	QToolButton *crsChip   = nullptr;   // status-corner CRS chip ("EPSG:4326" / "EPSG:000")
+
+	// --- bottom tabbed panel (Profile / Julia Console) ----------------------
 	QDockWidget *bottomDock    = nullptr;   // the single bottom dock holding the tab widget
 	QTabWidget *bottomTabs    = nullptr;   // its QTabWidget; the corner "Hide" collapses the body
 	QTableWidget *dataTable     = nullptr;   // LAST floating table popped for this window by
@@ -2369,7 +2396,39 @@ static void AxisLabelCB(vtkObject*, unsigned long, void *cd, void*) {
 // Apply vertical exaggeration. The actor carries the base scale (xfac aspect +
 // zfac unit conversion); the gizmo factor `ve` multiplies the Z. Cube-axis labels
 // stay TRUE because their ranges are pinned to the data ranges, not the bounds.
+// THE vertical normaliser. `ve` is dimensionless and measured against the picture (Scene::ve:
+// ve = 1 = the relief spans a tenth of the map's width), so the number that turns a z VALUE into
+// drawn height is simply
+//
+//     zfac = kVEReference * horizontal span drawn / z span of the layer being looked at
+//
+// and the drawn z scale is `zfac * ve`. Nothing here knows or asks what z's unit is: a bathymetry
+// grid in metres, a gravity anomaly in mGal and a subsidence rate in mm/yr all open looking the
+// same and all keep VE in the same handful-around-1 range. THE ONE PLACE this is decided.
+//
+// Both spans come from the ACTIVE layer, through the same resolvers the axes box, the colour bar
+// and the hover readout already share (activeGridZRange / axesForActive), so a change of layer
+// cannot leave the exaggeration describing a different layer than the numbers around it.
+static AxesSet *axesForActive(Scene *s);               // 50_scene.cpp — the active raster's own frame
+
+// The reference look VE = 1 means: the relief spans a TENTH of the map's own horizontal size. The
+// only magic number in the whole scheme, and it is a picture-composition choice, not a unit.
+static const double kVEReference = 0.1;
+
+static double sceneZRef(Scene *s) {
+	if (!s) return 1.0;
+	double zlo = s->zmin, zhi = s->zmax;
+	activeGridZRange(s, zlo, zhi);                     // active layer's own z span, else the window's
+	const double zspan = zhi - zlo;
+	double x0 = s->x0, x1 = s->x1, y0 = s->y0, y1 = s->y1;
+	if (AxesSet *A = axesForActive(s)) { x0 = A->x0; x1 = A->x1; y0 = A->y0; y1 = A->y1; }
+	const double H = std::max(std::fabs(x1 - x0) * s->xfac, std::fabs(y1 - y0));
+	if (!(zspan > 0.0) || !(H > 0.0) || !std::isfinite(zspan) || !std::isfinite(H)) return 1.0;
+	return kVEReference * H / zspan;                   // ve = 1 -> the reference look
+}
+
 static void applyVE(Scene *s) {
+	s->zfac = sceneZRef(s);        // re-derived from the drawn geometry, never from a unit assumption
 	surfSetScale(s, s->xfac, 1.0, s->zfac * s->ve);
 	if (s->drape) s->drape->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // overlay tracks the base
 	for (auto &ov : s->overlays)                                       // line/point overlays track the base too

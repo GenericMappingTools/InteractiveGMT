@@ -10,6 +10,12 @@
 // Earth metrics for geographic grids.
 static const double kMetersPerDegLat = 111111.0;
 
+// The exaggeration every window opens at. VE is dimensionless and measured against the picture
+// (Scene::ve / sceneZRef, 10_geometry.cpp): 1 = the reference look, the relief spanning a tenth of
+// the map's own horizontal size. Same starting look for a bathymetry grid in metres, a gravity
+// anomaly in mGal and a subsidence rate in mm/yr — and the same useful range for all of them.
+static const double kVEDefault = 1.0;
+
 // Work out the base actor scales + an initial vertical exaggeration from the data
 // extents. The displayed VE factor is relative to TRUE scale (VE 1 = 1:1), but if
 // the true relief is < 10% of the horizontal size we start exaggerated so the
@@ -23,41 +29,19 @@ static const double kMetersPerDegLat = 111111.0;
 static void computeScales(int geographic, double x0, double x1, double y0, double y1,
 						  double zmin, double zmax,
 						  double &xfac, double &zfac, double &ve0) {
-	double widthM, heightM;
-	if (geographic) {
-		const double midlat  = 0.5 * (y0 + y1);
-		const double mDegLon = kMetersPerDegLat * std::cos(midlat * vtkMath::Pi() / 180.0);
-		xfac = std::max(1e-6, mDegLon / kMetersPerDegLat);   // = cos(midlat)
-		zfac = 1.0 / kMetersPerDegLat;
-		widthM  = std::abs(x1 - x0) * mDegLon;
-		heightM = std::abs(y1 - y0) * kMetersPerDegLat;
-	}
-	else {
-		xfac = 1.0; zfac = 1.0;
-		widthM  = std::abs(x1 - x0);
-		heightM = std::abs(y1 - y0);
-	}
-	const double Hm = std::max(widthM, heightM);
-	const double zspanM = zmax - zmin;
-	// Auto aspect fit: keep the relief between 10% and 100% of the footprint so the
-	// surface is neither a flat sheet nor a vertical needle.
-	double fit = 1.0;
-	if (zspanM > 0.0 && Hm > 0.0) {
-		if (zspanM < 0.10 * Hm)      fit = 0.10 * Hm / zspanM;   // too flat -> raise
-		else if (zspanM > Hm)        fit = Hm / zspanM;          // too tall -> shrink
-	}
-	if (geographic) {
-		// Geographic z is physical metres: VE 1 must mean true 1:1, so the fit is the
-		// DISPLAYED starting exaggeration (the gizmo factor), zfac stays the unit conversion.
-		ve0 = fit;
-	}
-	else {
-		// Cartesian z is an arbitrary unit: "true scale" is meaningless. Fold the fit into
-		// the base zfac and start the displayed VE at 1, so the gizmo / VE dialog operate
-		// in their comfortable 0.01..1e4 range around 1 instead of around a tiny ve0 that
-		// the 0.01 VE floor would snap back up into a needle.
-		zfac = fit; ve0 = 1.0;
-	}
+	(void)x0; (void)x1; (void)zmin; (void)zmax;
+	// HORIZONTAL basis only. xfac makes the x axis physically right against y.
+	xfac = geographic ? std::max(1e-6, std::cos(0.5 * (y0 + y1) * vtkMath::Pi() / 180.0)) : 1.0;
+	// Z: nothing to compute here, and nothing to assume. The drawn z scale is `zfac * ve`, where
+	// `ve` is a DIMENSIONLESS fraction of the map's horizontal size (Scene::ve) and `zfac` is derived
+	// from the drawn geometry by sceneZRef() (10_geometry.cpp) — the ONE place that decides it. So
+	// every window, whatever its z unit, opens at the same look: relief a tenth of the map's width.
+	zfac = 1.0;                      // placeholder; sceneZRef() fills it before anything is drawn
+	ve0  = kVEDefault;
+	// GONE, do not bring back: the old two-branch fit — a "VE 1 = true 1:1" rule that needed z in
+	// METRES, plus a Cartesian branch that folded an arbitrary auto-fit factor INTO zfac and reset
+	// ve to 1. One quantity, two formulas, picked by a flag about the HORIZONTAL units; and for any
+	// grid whose z was not metres (mGal, nT, mm/yr) the exaggeration ran into the thousands.
 }
 
 // View a GMT.jl grid (non-blocking; pump gmtvtk_process_events to run the loop).
@@ -1139,6 +1123,17 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 			s->ren->ResetCameraClippingRange();
 		}
 	}
+	// Relief look, scriptable: the Shading dock's own state, so a host (or a test) can put the window
+	// into a known look instead of clicking. Same fields the dock writes; applyShading is the ONE
+	// path that acts on them, exactly as when the dock changes them.
+	{
+		int i = 0; bool touched = false;
+		if (geti("noshade",   i)) { s->noShade      = (i != 0); touched = true; }
+		if (geti("hillshade", i)) { s->useHillshade = (i != 0); touched = true; }
+		if (geti("hillgrd",   i)) { s->hillGrd      = (i != 0); touched = true; }
+		if (geti("litbake",   i)) { s->litBake      = (i != 0); touched = true; }
+		if (touched) applyShading(s);
+	}
 	bool okbar = false; double bx, by;
 	if (getd("barX0", bx)) { s->barX0 = bx; okbar = true; }
 	if (getd("barY0", by)) { s->barY0 = by; okbar = true; }
@@ -1236,6 +1231,7 @@ GMTVTK_API void gmtvtk_set_crs(void *handle, const char *proj4, const char *wkt,
 	s->crsWkt   = wkt   ? wkt   : "";
 	s->crsEpsg  = epsg;
 	if (s->geoMenu) s->geoMenu->menuAction()->setEnabled(s->hasCRS());
+	sceneUpdateCrsChip(s);      // the status corner reads the SAME store (never its own copy)
 }
 
 // Read the window's CRS back (the counterpart to gmtvtk_set_crs — nothing previously exposed the
@@ -2053,6 +2049,13 @@ GMTVTK_API void gmtvtk_set_grdlandmask_callback(JuliaGrdLandmaskFn fn) {
 // nullptr to detach.
 GMTVTK_API void gmtvtk_set_grdfilter_callback(JuliaGrdFilterFn fn) {
 	g_juliaGrdFilter = fn;
+}
+
+// Register the Project (gdalwarp) OK callback (Tools menu). fn(scene, params) with the "key=value"
+// block described in 30_app.cpp warps the window's raster into the target CRS and adds the result to
+// `scene`. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_project_callback(JuliaProjectFn fn) {
+	g_juliaProject = fn;
 }
 
 // Register the interpolation (griding) Compute callback (GMT menu). fn(scene, params) with the
@@ -3042,6 +3045,137 @@ GMTVTK_API int gmtvtk_remove_overlay_group_h(void *handle, const char *groupName
 	QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);   // see gmtvtk_add_meca_h
 	return 1;
 }
+
+// =================================================================================================
+//  Reprojection of the window's VECTOR content (Tools > Project, src/project.jl).
+//
+//  Mirone's gdal_project.m warps the raster and then re-projects the figure's lines, patches and
+//  text into the result; the same must happen here, except the result lands in THIS window (the
+//  derived-variable display law), so the elements are moved IN PLACE rather than copied.
+//
+//  The host owns the projection maths (GMT.jl/PROJ), so the split is: read every vector point out,
+//  let the host transform them, write them back. Read and write walk the SAME list in the SAME
+//  order through ONE visitor below — the write is only correct because of that, so never grow a
+//  second walk for either half.
+//
+//  Symbol layers are the one special case: their points are stored with the window's x aspect scale
+//  already baked in (addSymbols: x*xfac), so they are un-baked on the way out and re-baked on the
+//  way in — always against the xfac in force AT THAT MOMENT, which a reprojection changes (see
+//  sceneRederiveScales). That is why the host reads BEFORE adopting the warped raster and writes
+//  AFTER: each half then uses the factor that was true for it.
+// =================================================================================================
+
+// Visit the stored (x,y) of every vector element whose geometry is a plain point set. `fn(x, y)` may
+// modify its arguments; the new values are stored only when `write`. Returns the number of points
+// visited. NOT visited, because their geometry is not a point map that survives a warp: focal
+// beachballs (a fixed-radius glyph), rulers (their labels are measured lengths) and image curtains
+// (a texture hung on a track) — gmtvtk_vector_unmapped_h counts those so the host can say so.
+template <class F>
+static int sceneVisitVectorXY(Scene *s, bool write, F fn) {
+	if (!s) return 0;
+	int n = 0;
+	const double xf = (s->xfac != 0.0) ? s->xfac : 1.0;
+	for (auto &ov : s->overlays) {                       // GMTdataset line / point overlays
+		vtkPoints *p = ov.baseLine ? ov.baseLine->GetPoints() : nullptr;
+		if (!p) continue;
+		for (vtkIdType i = 0, np = p->GetNumberOfPoints(); i < np; ++i, ++n) {
+			double q[3]; p->GetPoint(i, q);
+			fn(q[0], q[1]);
+			if (write) p->SetPoint(i, q[0], q[1], q[2]);
+		}
+	}
+	for (auto &sl : s->symbols) {                        // glyph layers — x is baked with xfac
+		vtkPolyData *pd = symInputPD(sl);
+		vtkPoints *p = pd ? pd->GetPoints() : nullptr;
+		if (!p) continue;
+		for (vtkIdType i = 0, np = p->GetNumberOfPoints(); i < np; ++i, ++n) {
+			double q[3]; p->GetPoint(i, q);
+			double x = q[0] / xf, y = q[1];
+			fn(x, y);
+			if (write) p->SetPoint(i, x * xf, y, q[2]);
+		}
+	}
+	for (auto &pg : s->polys) {                          // drawn polygons / polylines / rects / faults
+		if (pg.isMeca) continue;                         // a beachball patch is a glyph, not a shape
+		for (auto &v : pg.v) { ++n; fn(v[0], v[1]); }
+	}
+	for (auto &tl : s->texts) { ++n; fn(tl.pos[0], tl.pos[1]); }   // label anchors
+	return n;
+}
+
+// How many vector points gmtvtk_vector_points_get_h/_set_h will move.
+GMTVTK_API int gmtvtk_vector_points_count_h(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	return sceneVisitVectorXY(s, false, [](double &, double &) {});
+}
+
+// Read them out as x0,y0,x1,y1,… (`cap` = capacity of `xy` in DOUBLES). Returns the point count
+// written, or 0 if the buffer is too small.
+GMTVTK_API int gmtvtk_vector_points_get_h(void *handle, double *xy, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xy) return 0;
+	const int n = sceneVisitVectorXY(s, false, [](double &, double &) {});
+	if (n <= 0 || cap < 2 * n) return 0;
+	int k = 0;
+	sceneVisitVectorXY(s, false, [xy, &k](double &x, double &y) { xy[k++] = x; xy[k++] = y; });
+	return n;
+}
+
+// Write them back (same order, same count) and rebuild whatever is derived from them. `n` MUST be
+// the count the matching _get_h returned; anything else is refused outright rather than scrambling
+// half the scene.
+GMTVTK_API int gmtvtk_vector_points_set_h(void *handle, const double *xy, int n) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xy || n <= 0) return 0;
+	if (sceneVisitVectorXY(s, false, [](double &, double &) {}) != n) return 0;
+	int k = 0;
+	sceneVisitVectorXY(s, true, [xy, &k](double &x, double &y) { x = xy[k++]; y = xy[k++]; });
+	for (auto &ov : s->overlays) {
+		if (!ov.baseLine || !ov.baseLine->GetPoints()) continue;
+		ov.baseLine->GetPoints()->Modified();
+		ov.baseLine->Modified();
+	}
+	for (auto &sl : s->symbols) {
+		vtkPolyData *pd = symInputPD(sl);
+		if (!pd || !pd->GetPoints()) continue;
+		pd->GetPoints()->Modified();
+		pd->Modified();
+	}
+	// A polygon's drawn geometry (outline, filled face) is DERIVED from pg.v, so it is rebuilt
+	// through the same polyRebuildLine every vertex edit uses — never by poking its polydata here.
+	for (auto &pg : s->polys) {
+		if (pg.isMeca) continue;
+		polyRebuildLine(s, pg);
+	}
+	gmtvtk_refresh_fault_planes(handle);   // fault traces moved -> their dipping planes re-derive
+	applyVE(s);                            // text anchors re-positioned + axes/labels + one Render
+	return n;
+}
+
+// What this window holds that a reprojection CANNOT simply move, as "kind=count;…" (see the visitor
+// above for why). Returns the total, so a caller can skip the message when there is nothing to say.
+GMTVTK_API int gmtvtk_vector_unmapped_h(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	const int nm = (int)s->mecaBalls.size(), nr = (int)s->rulers.size(), nc = (int)s->curtains.size();
+	if (buf && cap > 0) {
+		const std::string t = "beachballs=" + std::to_string(nm) + ";rulers=" + std::to_string(nr) +
+		                      ";curtains=" + std::to_string(nc);
+		const int k = std::min((int)t.size(), cap - 1);
+		std::memcpy(buf, t.c_str(), k);
+		buf[k] = '\0';
+	}
+	return nm + nr + nc;
+}
+
+// DO NOT RE-ADD a `gmtvtk_rescale_scene_h` export here. There was one, called by src/project.jl
+// AFTER the warped raster had been adopted — a second, half implementation of "put a new raster on
+// screen in its own frame", running after the re-frame had already pinned `viewBounds` and fitted
+// the camera in the OLD scaled space. On screen: the surface shrank to a speck and the near/far
+// planes sliced a depth slab out of it. The work now lives inside the ONE adopt transition
+// (`sceneRederiveScales`, called by gmtvtk_show_new_element_h BEFORE it re-frames), so no caller
+// has to know the window's drawing scales exist, and no caller can get the order wrong.
 
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
@@ -4828,6 +4962,51 @@ static void sceneReframeToContent(Scene *s) {
 // `hasBbox` == 0 skips only the re-frame (caller has no meaningful extent, e.g. a bare table).
 // `keepMargin` follows gmtvtk_reframe_h's convention: 1 for images (keeps tick labels on screen),
 // 0 for grids (edge-to-edge, the existing grid convention).
+// A change of the HORIZONTAL coordinate kind (Tools > Project: degrees in, metres out) re-derives
+// the window's horizontal drawing basis. X AND Y ONLY — **Z IS NEVER TOUCHED HERE**.
+//
+// The scene is drawn in the scaled space (xfac, 1, zfac*ve):
+//   xfac  makes the x axis physically right against y — cos(midlat) for degrees, 1 for metres
+//   zfac  is sceneZRef(): horizontal span / active layer's z span — DERIVED, never a unit
+//   ve    is the user's exaggeration (a dimensionless fraction) and is THEIRS: never reset here
+// So this touches xfac and nothing else. `zfac` follows on its own, because reprojecting changes
+// the horizontal span it is measured against and applyVE re-derives it; `ve` means the same thing
+// before and after (the relief still spans the same fraction of the map), which is the whole point
+// of it being dimensionless.
+//
+// It MUST run BEFORE the re-frame, never after: sceneReframeSet pins `viewBounds` in SCALED units
+// and fits the camera to them, so scales changed afterwards leave the camera and the axes box
+// describing a box the geometry no longer occupies — which renders as a speck with the near/far
+// planes slicing a depth slab out of the surface.
+//
+// Symbol layers carry x*xfac in their own points (addSymbols), so they are re-baked by the ratio;
+// every other actor takes the new scale from applyVE.
+static void sceneRederiveScales(Scene *s, int geographic,
+                                double x0, double x1, double y0, double y1) {
+	if (!sceneAlive(s)) return;
+	(void)x0; (void)x1;                       // the horizontal basis needs the latitude band only
+	const double xfac = geographic
+	                  ? std::max(1e-6, std::cos(0.5 * (y0 + y1) * vtkMath::Pi() / 180.0)) : 1.0;
+	const double old = (s->xfac != 0.0) ? s->xfac : 1.0;
+	s->xfac = xfac;                           // zfac follows via applyVE; ve is untouched — see above
+	s->scaleGeog = geographic ? 1 : 0;
+	const double k = xfac / old;
+	if (k != 1.0) {
+		for (auto &sl : s->symbols) {
+			vtkPolyData *pd = symInputPD(sl);
+			vtkPoints *p = pd ? pd->GetPoints() : nullptr;
+			if (!p) continue;
+			for (vtkIdType i = 0, np = p->GetNumberOfPoints(); i < np; ++i) {
+				double q[3]; p->GetPoint(i, q);
+				p->SetPoint(i, q[0] * k, q[1], q[2]);
+			}
+			p->Modified(); pd->Modified();
+		}
+	}
+	applyVE(s);                            // every actor re-scaled; axes redrawn from their own frames
+	s->ren->ResetCameraClippingRange();    // the scene's depth extent just changed by orders of magnitude
+}
+
 GMTVTK_API void gmtvtk_show_new_element_h(void *handle, const char *name,
                                           double x0, double x1, double y0, double y1,
                                           double z0, double z1, int hasBbox, int keepMargin) {
@@ -4868,6 +5047,11 @@ GMTVTK_API void gmtvtk_show_new_element_h(void *handle, const char *name,
 		AxesSet *A = axesForName(s, name);
 		int geog = s->baseGeog;
 		for (auto &ex : s->extras) if (ex.name == keep) geog = ex.geog;
+		// A change of COORDINATE KIND (degrees <-> projected) invalidates the window's drawing
+		// scales. Re-derive them from THIS element FIRST, so the re-frame below pins its scaled
+		// view bounds and fits the camera in the space the geometry actually ends up in.
+		const int basis = (s->scaleGeog >= 0) ? s->scaleGeog : s->baseGeog;
+		if (geog != basis) sceneRederiveScales(s, geog, x0, x1, y0, y1);
 		sceneReframeSet(s, A, x0, x1, y0, y1, z0, z1, geog, keepMargin);
 	}
 	refreshGridColorbar(s);          // bar + hover readout follow whatever is now the visible layer
@@ -5050,7 +5234,13 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		}
 		applyNanColorToLut(lut, s->nanColor);   // paint this grid's NaN cells with the NaN fill colour
 		vtkNew<vtkPolyDataMapper> map;
-		map->SetInputConnection(norms->GetOutputPort());
+		// CONCRETE polydata with its normals already computed, exactly like the primary surface's
+		// mapper carries — not a live pipeline connection. The relief-shade bake (hillshadeMapper)
+		// reads the mapper's input directly; handing it an unexecuted filter output means no normals,
+		// which is how an added layer ended up unshaded and blown out by PBR while the base beside it
+		// was shaded correctly. One shape of mapper input for every grid, base or extra.
+		norms->Update();
+		map->SetInputData(norms->GetOutput());
 		configureGridMapper(map, lut, zmin, zmax, ctfRange);
 		ex.actor = vtkSmartPointer<vtkActor>::New();
 		ex.actor->SetMapper(map);

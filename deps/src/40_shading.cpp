@@ -101,7 +101,7 @@ static inline double externShadeAt(const Scene *s, double x, double y) {
 struct ReliefLight {
 	double Lx, Ly, Lz;          // sun dir, lit convention (Lambert / PBR key light)
 	double LxG, LyG, LzG;       // sun dir, grdimage (inverted elevation)
-	double fx, fz;              // Lambert VE-correction factors (1/xfac, 1/(zfac·ve))
+	double fx, fz, fzRef;       // normal-correction factors: 1/xfac, 1/(zfac·ve), 1/zfac (ve = 1)
 	double amb, gain, twoOverPi;
 	bool   grd;
 	double rough, keyI, fillI;  // PBR bake: roughness, key + fill light intensity (metallic assumed 0)
@@ -113,12 +113,29 @@ static ReliefLight makeReliefLight(Scene *s) {
 	L.Lx = std::sin(az) * std::cos(el);  L.Ly = std::cos(az) * std::cos(el);  L.Lz = std::sin(el);
 	const double elG = (90.0 - s->lightEl) * vtkMath::Pi() / 180.0;   // grdimage inverts elevation
 	L.LxG = std::sin(az) * std::cos(elG); L.LyG = std::cos(az) * std::cos(elG); L.LzG = std::sin(elG);
-	L.fx = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
-	L.fz = (s->zfac * s->ve != 0.0) ? 1.0 / (s->zfac * s->ve) : 1.0;
+	L.fx    = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
+	L.fz    = (s->zfac * s->ve != 0.0) ? 1.0 / (s->zfac * s->ve) : 1.0;
+	L.fzRef = (s->zfac != 0.0) ? 1.0 / s->zfac : 1.0;      // same, at the reference VE (ve = 1)
 	L.amb = s->hillAmbient;  L.gain = s->hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = s->hillGrd;
 	L.rough = s->roughness < 0.05 ? 0.05 : s->roughness;   // clamp so the GGX lobe stays finite
 	L.keyI = s->lightIntensity;  L.fillI = s->fillIntensity;
 	return L;
+}
+
+// A data-space normal turned into the normal of the relief AS DRAWN. THE one place that conversion
+// happens, and every look goes through it — because a relief shade computed from the raw data-space
+// normal is UNIT-DEPENDENT: the same terrain in degrees and in metres has wildly different dz/dx, so
+// it shaded completely differently (a reprojected grid's land saturated to flat white while the very
+// same data in degrees beside it shaded correctly). What the user sees is the drawn surface, so that
+// is what gets shaded — and the drawn surface is unit-free by construction (Scene::ve / sceneZRef).
+// `withVE` = follow the user's exaggeration slider (Lambert does, by design); false = the reference
+// exaggeration, so the look stays VE-independent as documented, without being unit-dependent.
+static inline void reliefDrawnNormal(const ReliefLight &L, const double nv[3], bool withVE, double o[3]) {
+	o[0] = nv[0] * L.fx;
+	o[1] = nv[1];
+	o[2] = nv[2] * (withVE ? L.fz : L.fzRef);
+	const double len = std::sqrt(o[0]*o[0] + o[1]*o[1] + o[2]*o[2]);
+	if (len > 0.0) { o[0] /= len; o[1] /= len; o[2] /= len; }
 }
 
 // CPU approximation of the GPU PBR SURFACE look, baked per flat-image pixel so "Shaded image" alone
@@ -129,7 +146,11 @@ static ReliefLight makeReliefLight(Scene *s) {
 // fill and a small ambient floor so the shadow side matches the lit surface (which the fill + scene
 // light also lift). Not pixel-identical to the GPU pass — the live Light/Fill/Roughness sliders tune
 // it. rgb (0..1, in albedo / out shaded).
-static inline void applyPBRShade(const ReliefLight &L, const double nv[3], double rgb[3]) {
+static inline void applyPBRShade(const ReliefLight &L, const double nvRaw[3], double rgb[3]) {
+	// Same rule as applyReliefShade: shade the relief AS DRAWN, never the raw data-space normal —
+	// otherwise the look depends on whether x,y happen to be degrees or metres.
+	double nv[3];
+	reliefDrawnNormal(L, nvRaw, /*withVE=*/false, nv);
 	const double Lk[3] = { L.Lx, L.Ly, L.Lz };
 	double NdotL = nv[0]*Lk[0] + nv[1]*Lk[1] + nv[2]*Lk[2]; if (NdotL < 0.0) NdotL = 0.0;
 	double NdotV = nv[2] < 0.0 ? 0.0 : nv[2];                             // V = +Z
@@ -162,17 +183,17 @@ static inline void applyPBRShade(const ReliefLight &L, const double nv[3], doubl
 static inline void applyReliefShade(const ReliefLight &L, const double nv[3], double rgb[3],
                                     const double *externI = nullptr) {
 	if (externI) { gmtIlluminate(*externI, rgb); return; }
+	double c[3];
 	if (!L.grd) {                                             // (A) Lambert, VE-corrected, darken-only
-		double cx = nv[0]*L.fx, cy = nv[1], cz = nv[2]*L.fz;
-		const double len = std::sqrt(cx*cx + cy*cy + cz*cz);
-		if (len > 0.0) { cx /= len; cy /= len; cz /= len; }
-		double sh = cx*L.Lx + cy*L.Ly + cz*L.Lz;
+		reliefDrawnNormal(L, nv, /*withVE=*/true, c);
+		double sh = c[0]*L.Lx + c[1]*L.Ly + c[2]*L.Lz;
 		if (sh < 0.0) sh = 0.0;
 		const double I = L.amb + (1.0 - L.amb) * sh;
 		rgb[0] = std::min(1.0, rgb[0]*I); rgb[1] = std::min(1.0, rgb[1]*I); rgb[2] = std::min(1.0, rgb[2]*I);
 		return;
 	}
-	const double raw   = nv[0]*L.LxG + nv[1]*L.LyG + nv[2]*L.LzG - L.LzG;   // slope-toward-sun; 0 on flat
+	reliefDrawnNormal(L, nv, /*withVE=*/false, c);             // (B) grdimage -I, VE-independent
+	const double raw   = c[0]*L.LxG + c[1]*L.LyG + c[2]*L.LzG - L.LzG;   // slope-toward-sun; 0 on flat
 	const double inten = L.twoOverPi * std::atan(L.gain * raw);
 	gmtIlluminate(inten, rgb);
 }
@@ -372,8 +393,9 @@ static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a) {
 	L.Lx = std::sin(az) * std::cos(el);  L.Ly = std::cos(az) * std::cos(el);  L.Lz = std::sin(el);
 	const double elG = (90.0 - a.lightEl) * vtkMath::Pi() / 180.0;
 	L.LxG = std::sin(az) * std::cos(elG); L.LyG = std::cos(az) * std::cos(elG); L.LzG = std::sin(elG);
-	L.fx = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
-	L.fz = (s->zfac * s->ve != 0.0) ? 1.0 / (s->zfac * s->ve) : 1.0;
+	L.fx    = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
+	L.fz    = (s->zfac * s->ve != 0.0) ? 1.0 / (s->zfac * s->ve) : 1.0;
+	L.fzRef = (s->zfac != 0.0) ? 1.0 / s->zfac : 1.0;      // same, at the reference VE (ve = 1)
 	L.amb = a.hillAmbient;  L.gain = a.hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = a.hillGrd;
 	L.rough = a.roughness < 0.05 ? 0.05 : a.roughness;
 	L.keyI = a.lightIntensity;  L.fillI = a.fillIntensity;
@@ -631,6 +653,14 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 		return;
 	}
 
+	// PULL THE PIPELINE FIRST. A mapper wired with SetInputConnection (a grid added as an EXTRA goes
+	// through a vtkPolyDataNormals filter) has no computed output until something asks for it — so
+	// `GetInput()` hands back an empty polydata with no normals, and the `return` below then skipped
+	// the bake ENTIRELY for that layer. It stayed lit by raw PBR + the sky IBL instead, which blows
+	// steep ground out to flat grey-white while the base surface beside it is correctly shaded: the
+	// same operation producing a different result for one kind of layer, i.e. the violation. Never
+	// let this function no-op its way out of shading something.
+	if (m->GetNumberOfInputConnections(0) > 0) m->Update();
 	vtkPolyData *pd = vtkPolyData::SafeDownCast(m->GetInput());
 	if (!pd) return;
 	vtkDataArray *nrm = pd->GetPointData()->GetNormals();

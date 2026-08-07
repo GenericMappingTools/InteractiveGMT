@@ -21,9 +21,8 @@
 # lazily on first window open via eventloop.jl `_ensure_callbacks`), never at module top level.
 
 # Per-window store of saveable objects: scene (Scene*) -> [(kind, name, data), …] in add order
-# (primary first). `data` is the live GMTgrid / GMTimage. Keyed by the opaque handle, so it leaks a
-# tiny entry when a window closes (same minor pattern as basemap's _BASEMAP_LOADED) — pruning a
-# closed Scene* is a follow-up.
+# (primary first). `data` is the live GMTgrid / GMTimage. Keyed by the opaque handle, and purged
+# when the window is destroyed — see `_forget_window!` below for why that is not optional.
 const _SCENE_OBJS = Dict{Ptr{Cvoid}, Vector{Tuple{Symbol,String,Any}}}()
 
 # Remember a grid/image just added to `scene` so File>Save / the Scene Objects "Save…" can write it.
@@ -254,8 +253,31 @@ end
 function _on_forget(scene::Ptr{Cvoid}, ckind::Cstring, cname::Cstring)::Cvoid
 	try
 		kind = Symbol(unsafe_string(ckind))
-		_forget_object!(scene, kind, unsafe_string(cname))
+		kind === :window ? _forget_window!(scene) : _forget_object!(scene, kind, unsafe_string(cname))
 	catch
+	end
+	return
+end
+
+# The window itself is gone (kind "window" on the same callback, fired from the QMainWindow's
+# `destroyed` handler in 70_window.cpp): drop EVERY per-window registry entry keyed on that Scene*.
+#
+# This is not housekeeping, it is correctness. The allocator hands the SAME address to the next
+# window opened, so a stale entry is not a leak — it is a GHOST the new window inherits: with the
+# old rows still in `_SCENE_OBJS`, `_find_object`'s first-of-kind fallback answered "this window's
+# grid" with a grid from a window the user closed long ago (seen live: a reprojection warped the
+# ghost instead of the grid on screen).
+#
+# ONLY dictionaries keyed by the Scene* belong here. A dictionary keyed by a DIALOG pointer
+# (_BINSTATE, _ENHSTATE) or by a gmtedit window (_GE_REG/_GE_HDR/_GE_VARS/_GE_PARENT) must never be
+# added: pointer reuse cuts both ways, and a scene address can equal a live dialog's address —
+# purging those here would delete the state of a dialog that is still open.
+function _forget_window!(scene::Ptr{Cvoid})
+	scene == C_NULL && return
+	for d in (_SCENE_OBJS, _IMG_ORIG, _FIGREG, _SESSION_LOG, _CURTAIN_IMG, _BASEMAP_LOADED,
+	          _AQUA, _CONTOUR_DRAWN, _KM_STATE, _FOCAL_LAST, _TRANSPLANT_ORIG,
+	          _CUBE_INFO, _CUBE_LOADED, _CUBE_CUR, _CUBE_RAM, _CUBE_LAYER_MINMAX, _CUBES, _CUBE_ACTIVE)
+		delete!(d, scene)
 	end
 	return
 end

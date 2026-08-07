@@ -1049,9 +1049,33 @@ function _dataset_bbox(D)
 	return Float64(W), Float64(E), Float64(S), Float64(N)
 end
 
+# A grid in GMT's OWN memory layout: "BCB" — column-major, `z` sized (ny, nx), row 1 = y_min = SOUTH.
+# Every grid path in this package (and the whole C side: makeGridFromArray reads `z[ix*ny + iy]`)
+# assumes it, because it is what GMT's modules return. GDAL does NOT: anything coming back through
+# GDAL — `gdalwarp` (Tools > Project), gdaltranslate, gdaldem — is "TRB", ROW-major with row 1 =
+# NORTH, i.e. `z` sized (nx, ny) and upside down. Handing one of those over unconverted makes the
+# viewer read an (nx, ny) array as (ny, nx): the picture comes out transposed and mirrored, with
+# incoherent value bands (reported as "the result is all fucked up ... only a certain depth range
+# of grid survived").
+#
+# So it is converted ONCE, at the single door every displayed grid goes through
+# (`_add_grid_to_scene` below) — not in the tool that happened to produce it. The x/y coordinate
+# vectors are ascending in both layouts, so only `z` moves.
+function _grid_to_bcb(G::GMTgrid)
+	lay = G.layout
+	(length(lay) < 2 || (lay[1] == 'B' && lay[2] == 'C')) && return G
+	z = lay[2] == 'R' ? permutedims(G.z) : G.z      # rows must index y, not x
+	lay[1] == 'T' && (z = reverse(z, dims = 1))     # ... and run south -> north
+	G2 = deepcopy(G)
+	G2.z = z
+	G2.layout = "BCB" * (length(lay) > 3 ? lay[4:end] : "")
+	return G2
+end
+
 # Add a dropped grid as a CPT-coloured surface in the window. On the empty launcher `promote`
 # reconfigures THAT window in place (gmtvtk_promote_surface_h); otherwise it is added as an extra.
 function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false, source="", record=true, zrange=nothing, geographic=nothing)
+	G = _grid_to_bcb(G)      # GDAL-produced grids are row-major/north-first; the whole path below is not
 	# `ny, nx = size(z)` on a 3-D array does NOT error in Julia -- it silently drops the third
 	# dimension and proceeds with truncated data, no error anywhere. A cube must never reach here
 	# (the cube-detection probe in _on_drop is supposed to intercept it first); fail loudly if it
