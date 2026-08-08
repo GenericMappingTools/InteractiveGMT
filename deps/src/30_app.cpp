@@ -1033,7 +1033,11 @@ static JuliaEarthTideFn g_juliaEarthTide = nullptr;
 // A handle is valid only while its window is open; the window-destroyed lambda erases
 // it here so a stale handle from a closed figure is rejected instead of dereferenced.
 static std::unordered_set<Scene*> g_scenes;
-static bool sceneAlive(Scene *s) { return s && g_scenes.count(s) != 0; }
+// "Alive" means SAFE TO TOUCH, not merely "still in the registry": a window that has begun its
+// destruction is already unusable (its widgets are gone before Qt even emits destroyed()), so it
+// answers false here — the one place every caller asks, rather than a teardown check bolted onto
+// each of them (SACRED_LAW.md: fix the shared source).
+static bool sceneAlive(Scene *s) { return s && !s->tearingDown && g_scenes.count(s) != 0; }
 
 // Two kernel32 calls, hand-declared instead of #include <windows.h>: that header unconditionally
 // drags in wingdi.h (WIN32_LEAN_AND_MEAN does NOT gate it — tried, reverted), whose GDI
@@ -1045,6 +1049,7 @@ extern "C" {
 	__declspec(dllimport) int __stdcall GetModuleHandleExA(unsigned long dwFlags, const char *lpModuleName, void **phModule);
 	__declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void *hModule, char *lpFilename, unsigned long nSize);
 }
+
 
 // Absolute path to the directory gmtvtk.dll itself was loaded from (deps/build for both a dev
 // build and an NSIS-installed tree — see deps/CMakeLists.txt). Resolved via the module handle of

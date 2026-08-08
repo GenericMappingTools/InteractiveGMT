@@ -6,18 +6,31 @@
 	sw = InteractiveGMT._etopo4_srcwin
 	NX = InteractiveGMT._ETOPO4_NX
 	NY = InteractiveGMT._ETOPO4_NY
+	# The window AND the extent those pixels really cover come out together — one quantity, one
+	# computation. Every case below checks BOTH: an extent that disagrees with the pixels is the
+	# "imported points land in the wrong place" bug this second half of the return exists to stop.
 	# whole world [-180,180]x[-90,90] -> the whole image, origin at the upper-left.
-	@test sw(-180.0, 180.0, -90.0, 90.0) == (0, 0, NX, NY)
+	@test sw(-180.0, 180.0, -90.0, 90.0) == (0, 0, NX, NY, -180.0, 180.0, -90.0, 90.0)
 	# west half [-180,0], full latitude -> left half, full height.
-	xoff, yoff, xs, ys = sw(-180.0, 0.0, -90.0, 90.0)
+	xoff, yoff, xs, ys, W, E, S, N = sw(-180.0, 0.0, -90.0, 90.0)
 	@test xoff == 0 && yoff == 0 && xs == NX ÷ 2 && ys == NY
+	@test (W, E, S, N) == (-180.0, 0.0, -90.0, 90.0)
 	# NE quadrant [0,180]x[0,90] -> right half, TOP half (y counts down from the north edge).
-	xoff, yoff, xs, ys = sw(0.0, 180.0, 0.0, 90.0)
+	xoff, yoff, xs, ys, W, E, S, N = sw(0.0, 180.0, 0.0, 90.0)
 	@test xoff == NX ÷ 2 && yoff == 0 && xs == NX ÷ 2 && ys == NY ÷ 2
-	# out-of-range input still clamps to a valid in-image window.
-	xoff, yoff, xs, ys = sw(-200.0, 200.0, -100.0, 100.0)
+	@test (W, E, S, N) == (0.0, 180.0, 0.0, 90.0)
+	# out-of-range input still clamps to a valid in-image window — and the extent reports the CLAMPED
+	# world, never the ±200/±100 that was asked for.
+	xoff, yoff, xs, ys, W, E, S, N = sw(-200.0, 200.0, -100.0, 100.0)
 	@test 0 <= xoff && xoff + xs <= NX
 	@test 0 <= yoff && yoff + ys <= NY
+	@test (W, E, S, N) == (-180.0, 180.0, -90.0, 90.0)
+	# The extent is exactly the pixel window read back through the same grid spacing, always.
+	for r in ((-33.0, 12.5, -8.0, 44.0), (100.0, 140.0, -40.0, -10.0), (-7.0, -6.0, 36.0, 37.0))
+		xoff, yoff, xs, ys, W, E, S, N = sw(r...)
+		@test (W, E) == (-180.0 + xoff / NX * 360.0, -180.0 + (xoff + xs) / NX * 360.0)
+		@test (N, S) == (90.0 - yoff / NY * 180.0,   90.0 - (yoff + ys) / NY * 180.0)
+	end
 end
 
 @testitem "scene-state parser" tags=[:unit, :fast] begin

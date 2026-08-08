@@ -910,6 +910,12 @@ struct Scene {
 	std::vector<std::pair<vtkProp3D*, int>> linkSavedVis;
 
 	QAction *act2D = nullptr;        // shared checkable "Flat 2D (map)" action (toolbar + View menu)
+	// Set the instant this window starts being destroyed, and checked by sceneAlive(). Registration
+	// in g_scenes says the STRUCT is still there; it says nothing about the WIDGETS, and ~QWidget has
+	// already destroyed every child by the time Qt emits destroyed(). Anything that reacts to a
+	// window dying — an X,Y plot's own destroyed handler rebuilding this window's Scene Objects dock
+	// is the case that caught it — would then paint a dock whose contents are freed memory.
+	bool tearingDown = false;
 	QWidget *objPanel = nullptr;     // Scene Objects dock content (rebuilt when overlays change)
 	QDockWidget *objDock = nullptr;  // the Scene Objects dock itself (re-shown when the first nested rect lands)
 	FoldTitleBar *objFoldBar = nullptr;  // Scene Objects dock fold toggle (call ->onClick() to fold/unfold programmatically)

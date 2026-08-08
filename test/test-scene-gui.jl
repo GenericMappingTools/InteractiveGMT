@@ -288,8 +288,10 @@ end
 		@test_skip "data/etopo4.jpg not present"
 	else
 		G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[-10.0, 10.0], y=[-10.0, 10.0])
-		I = IG._crop_etopo4(-10.0, 10.0, -10.0, 10.0)
-		I.range = [-10.0, 10.0, -10.0, 10.0, 0.0, 255.0]   # tag the crop with the grid's geographic bbox
+		# _crop_etopo4 hands back the crop AND the extent its pixels really cover (the request is
+		# rounded and clamped to the image): georeference it with THAT, never with what was asked for.
+		I, W, E, S, N = IG._crop_etopo4(-10.0, 10.0, -10.0, 10.0)
+		I.range = [W, E, S, N, 0.0, 255.0]
 		f = view_grid(G; drape=I)
 		try
 			IG._pump_once()
@@ -297,7 +299,11 @@ end
 			@test st["has_surface"] == 1
 			@test st["drape"] == 1
 		finally
+			# gmtvtk_close is async: pump so this window is really gone before the next test item runs,
+			# instead of leaving its destruction (and the host callbacks it fires) to land in the middle
+			# of an unrelated one — the same ordering hazard the X,Y items below guard against.
 			ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+			IG._pump_once()
 		end
 	end
 end

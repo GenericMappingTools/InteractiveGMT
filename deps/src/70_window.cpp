@@ -14792,6 +14792,21 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	enableFileDrops(win, widget, s);        // drop a grid/image/table file onto any window to add it
 	s->win = win;
 	++g_openWindows;
+	// Mark the scene un-touchable the moment Qt decides to delete this window. destroyed() is too
+	// late for that: it is emitted from ~QObject, i.e. AFTER ~QWidget has already freed every child
+	// widget, and anything that reacts to a window dying (an X,Y plot's own destroyed handler
+	// rebuilding this window's Scene Objects dock) would run in that gap and paint freed memory —
+	// an intermittent access violation inside QWidget::setStyleSheet, with no stack to read.
+	// DeferredDelete arrives first, before any of that, which is why the flag is set here.
+	struct MarkTearingDown : QObject {
+		Scene *sc;
+		MarkTearingDown(QObject *parent, Scene *s) : QObject(parent), sc(s) {}
+		bool eventFilter(QObject *o, QEvent *e) override {
+			if (e->type() == QEvent::DeferredDelete && sc) sc->tearingDown = true;
+			return QObject::eventFilter(o, e);
+		}
+	};
+	win->installEventFilter(new MarkTearingDown(win, s));
 	QObject::connect(win, &QObject::destroyed, [s, rwp = rw.Get()]() {
 		--g_openWindows;
 		if (g_lastScene == s) g_lastScene = nullptr;   // don't let add_overlay touch a freed scene
@@ -14801,7 +14816,18 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// (kind "window", no name). The host keys its per-window registries on this pointer, and the
 		// allocator hands the SAME address to the next window opened — so without this purge a new
 		// window inherits the dead one's registered grids/images (a lookup for "this window's grid"
-		// could answer with a ghost from a window the user closed long ago).
+		// could answer with a ghost from a window the user closed long ago). What the host may and
+		// may not drop on this signal is spelled out at `_forget_window!` (savefile.jl): anything a
+		// ccall has taken a pointer into is NOT the host's to free here.
+		//
+		// Called STRAIGHT FROM HERE, never posted. This pointer identifies the window only until the
+		// allocator hands the same address to something else, so the purge has to happen while it is
+		// still unambiguously this window's. Deferring it (QMetaObject::invokeMethod, tried
+		// 2026-08-08) let ten closed windows' purges pile up and all land during a later, unrelated
+		// operation — by which time an address had been reused by an X,Y plot window, which is not in
+		// g_scenes and so passed every "is it still dead?" guard: the purge then deleted the LIVE
+		// plot's host-side mirror and the process died with an EXCEPTION_ACCESS_VIOLATION. Immediate
+		// and unambiguous beats late and guessed.
 		if (g_juliaForget) g_juliaForget(s, "window", "");
 		g_scenes.erase(s);                             // invalidate any host-held handle to s
 		delete s->giz; delete s;

@@ -69,6 +69,11 @@ add_compile_definitions(GMTVTK_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../data")
 # same TU, so all three need the flag.
 if(MSVC)
   add_compile_options(/bigobj)
+  # Ship a PDB even for the optimised build. Costs nothing at run time (the file sits beside the DLL
+  # and is never loaded unless something asks), and without it a crash address is unreadable: an
+  # intermittent access violation could only be chased through raw disassembly.
+  add_compile_options(/Zi)
+  add_link_options(/DEBUG /OPT:REF /OPT:ICF)
 endif()
 
 # Shared library — the Julia/host bridge (C API: gmtvtk_view_grid / gmtvtk_view_demo / ...).

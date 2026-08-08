@@ -10,17 +10,37 @@
 	end
 	# Order is load-bearing: the dialog sends a combo INDEX, never a label.
 	@test [i.label for i in IG._OC_INSTRUMENTS] ==
-	      ["Aqua-MODIS", "Terra-MODIS", "SNPP-VIIRS", "NOAA20-VIIRS"]
+	      ["Aqua-MODIS", "Terra-MODIS", "SNPP-VIIRS", "NOAA20-VIIRS", "S3A-OLCI", "S3B-OLCI"]
 	@test [p[2] for p in IG._OC_PERIODS] == ["DAY", "8D", "MO", "YR"]
 	@test length(IG._OC_PRODUCTS) == 2
 
 	# Mission start days, and the annual-file ranges produced so far. NOAA-20 has no annual product
-	# at all, which the Period combo needs in order to grey "Annual" out.
+	# at all, which the Period combo needs in order to grey "Annual" out. S3B starts on its OWN first
+	# L3 day (2018-05-15), not with S3A's.
 	D = IG.Dates.Date
 	@test [i.first for i in IG._OC_INSTRUMENTS] ==
-	      [D(2002, 7, 4), D(2000, 2, 24), D(2012, 1, 2), D(2017, 12, 13)]
+	      [D(2002, 7, 4), D(2000, 2, 24), D(2012, 1, 2), D(2017, 12, 13), D(2016, 4, 6), D(2018, 5, 15)]
 	@test [(i.yr_first, i.yr_last) for i in IG._OC_INSTRUMENTS] ==
-	      [(2002, 2025), (2000, 2024), (2012, 2024), (0, 0)]
+	      [(2002, 2025), (2000, 2024), (2012, 2024), (0, 0), (2016, 2024), (2018, 2024)]
+	# OLCI has no thermal bands: the two Sentinel-3 rows carry chlorophyll only, which is what makes
+	# the Product combo grey SST out for them.
+	@test [i.products for i in IG._OC_INSTRUMENTS] ==
+	      [[1, 2], [1, 2], [1, 2], [1, 2], [2], [2]]
+
+	# …and the .ui is the other half of "order is load-bearing": the dialog sends the combo INDEX, so
+	# a row added to the catalogue but not to comboInstrument (or the reverse) silently maps every
+	# later choice to the wrong mission. Read the combo out of the .ui rather than restating it here,
+	# which is what let this test go stale when the two OLCI rows arrived.
+	ui = read(joinpath(dirname(dirname(pathof(IG))), "deps", "ui", "oceancolor_browser.ui"), String)
+	function combo_items(name)
+		i = findfirst("name=\"$name\"", ui)
+		i === nothing && return String[]
+		blk = ui[last(i):last(i) + something(findfirst("</widget>", ui[last(i):end]))[end] - 1]
+		return [m.captures[1] for m in eachmatch(r"<string>(.*?)</string>"s, blk)]
+	end
+	@test combo_items("comboInstrument") == [i.label for i in IG._OC_INSTRUMENTS]
+	@test combo_items("comboProduct")    == [p.label for p in IG._OC_PRODUCTS]
+	@test combo_items("comboPeriod")     == [p[1] for p in IG._OC_PERIODS]
 end
 
 @testitem "oceancolor: composite calendar" tags=[:unit, :fast] begin

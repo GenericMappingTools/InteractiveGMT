@@ -1832,18 +1832,28 @@ static void rebuildSceneObjects(Scene *s) {
 	// outlive the current call stack. But a caller that fires several rebuilds back-to-back with no
 	// real event-loop turn between them (session replay: one rebuild per recipe, all inside one
 	// synchronous Julia call) would otherwise have the OLD tree widget still alive and painting
-	// UNDER the new one, overlapping row text until the deferred delete eventually lands. Flushing
-	// DeferredDelete events immediately (safe -- it only runs queued destructors, it doesn't reenter
-	// arbitrary widget code) guarantees the old tree is actually gone before the new one is built.
+	// UNDER the new one, overlapping row text until the deferred delete eventually lands -- so the
+	// deletes are flushed here instead of waiting for the loop.
+	//
+	// PER WIDGET, never `sendPostedEvents(nullptr, DeferredDelete)`. A null receiver flushes the
+	// deletes of the WHOLE APPLICATION: any window with a deleteLater pending -- a just-closed X,Y
+	// plot, a closed viewer -- is destroyed right here, inside this function, and its destroyed()
+	// handler runs re-entrantly (an X,Y plot's calls straight back into rebuildSceneObjects, and
+	// frees its XYPlot struct). This invocation then carried on using pointers those handlers had
+	// just invalidated and died on a virtual call into a freed QTreeWidget: an EXCEPTION_ACCESS
+	// VIOLATION that landed in whatever ran next, roughly one GUI run in three. Addressing each
+	// dying widget individually destroys exactly what this rebuild is discarding and nothing else.
 	if (QLayout *old = s->objPanel->layout()) {
 		QLayoutItem *it;
+		std::vector<QWidget *> dying;
 		while ((it = old->takeAt(0)) != nullptr) {
 			if (it->widget())
-				it->widget()->deleteLater();
+				dying.push_back(it->widget());
 			delete it;
 		}
 		delete old;
-		QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+		for (QWidget *w : dying) w->deleteLater();
+		for (QWidget *w : dying) QCoreApplication::sendPostedEvents(w, QEvent::DeferredDelete);
 	}
 	// Small checkboxes: the indicator is the ONLY hit target for show/hide. The type icon + the
 	// descriptive label sit to its right; right-clicking the icon/label opens the row's properties

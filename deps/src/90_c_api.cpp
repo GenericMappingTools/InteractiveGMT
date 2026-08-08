@@ -3592,6 +3592,33 @@ static void testBorrowWindow(Scene *s, T **slot) {
 	QObject::connect(d, &QObject::destroyed, [s, slot]() { *slot = nullptr; g_scenes.erase(s); });
 }
 
+// The parked row's "Delete", verbatim — the branch every parkedMenu() carries (70_window.cpp):
+// unpark the row, then DESTROY the dialog. `reallyClose = true; dlg->close()` is NOT that operation:
+// these dialogs deliberately leave WA_DeleteOnClose unset, because a close PARKS them, so all a
+// close does is HIDE the widget. The wrapper, its per-window registry entry (g_oceanColorDlgs and
+// the like) and everything it holds stay alive, and the next open hands the SAME dialog back with
+// the same widget state — which is what made "a fresh dialog comes back on the .ui defaults" fail
+// while the browser looked fine to a user. Every *_delete_dialog_test hook goes through here, so a
+// test destroys a dialog the way the menu item destroys it (SACRED_LAW.md: one operation, one shape).
+template <class T>
+static void testDeleteParkedDialog(T **slot) {
+	T *w = *slot;
+	QDialog *d = (w && w->dlg) ? w->dlg : nullptr;
+	if (d) {
+		w->reallyClose = true;
+		unparkTool(w->scn, d);
+		d->deleteLater();
+	}
+	*slot = nullptr;
+	// deleteLater alone only POSTS the destruction; the wrapper's destructor (which drops the
+	// registry entry) has to have run before this returns, or the next open still finds the old one.
+	// Addressed to THIS dialog: a null receiver would flush every pending deleteLater in the
+	// application and destroy unrelated windows inside this call (see rebuildSceneObjects,
+	// 50_scene.cpp, where exactly that produced an intermittent access violation).
+	if (d) QApplication::sendPostedEvents(d, QEvent::DeferredDelete);
+	QApplication::processEvents();
+}
+
 // test hooks: open/close the REAL Euler rotations dialog on a REAL window (`handle`, or a throwaway
 // empty one when null). Same purpose as the IGRF/bar-code pair: a QUiLoader failure or a widget name
 // that drifted out of the .ui shows up here instead of on the user's first click.
@@ -3635,14 +3662,7 @@ GMTVTK_API void gmtvtk_euler_close_dialog_test() {
 	QApplication::processEvents();
 }
 // Really destroy it (the parked row's "Delete"), for a test that wants a clean window afterwards.
-GMTVTK_API void gmtvtk_euler_delete_dialog_test() {
-	if (g_eulerTestDlg && g_eulerTestDlg->dlg) {
-		g_eulerTestDlg->reallyClose = true;
-		g_eulerTestDlg->dlg->close();
-	}
-	g_eulerTestDlg = nullptr;
-	QApplication::processEvents();
-}
+GMTVTK_API void gmtvtk_euler_delete_dialog_test() { testDeleteParkedDialog(&g_eulerTestDlg); }
 // ---- Ocean Color Data Browser (OceanColorDialog) ----------------------------------------------
 // Same three-part shape as the Euler rotations hooks above: open the REAL dialog on a REAL window,
 // close it (which PARKS it), destroy it. A QUiLoader failure or a widget name that drifted out of
@@ -3681,14 +3701,7 @@ GMTVTK_API void gmtvtk_oc_close_dialog_test() {
 	QApplication::processEvents();
 }
 // Really destroy it (the parked row's "Delete"), for a test that wants a clean window afterwards.
-GMTVTK_API void gmtvtk_oc_delete_dialog_test() {
-	if (g_ocTestDlg && g_ocTestDlg->dlg) {
-		g_ocTestDlg->reallyClose = true;
-		g_ocTestDlg->dlg->close();
-	}
-	g_ocTestDlg = nullptr;
-	QApplication::processEvents();
-}
+GMTVTK_API void gmtvtk_oc_delete_dialog_test() { testDeleteParkedDialog(&g_ocTestDlg); }
 // 1 when the dialog is currently PARKED (hidden but alive, with its Scene Objects row), 0 when it is
 // on screen, -1 when there is none.
 GMTVTK_API int gmtvtk_oc_parked_test(void *handle) {
@@ -3921,14 +3934,7 @@ GMTVTK_API int gmtvtk_ceuler_adopt_test(void *handle) {
 	return 1;
 }
 
-GMTVTK_API void gmtvtk_ceuler_delete_dialog_test() {
-	if (g_ceulerTestDlg && g_ceulerTestDlg->dlg) {
-		g_ceulerTestDlg->reallyClose = true;
-		g_ceulerTestDlg->dlg->close();
-	}
-	g_ceulerTestDlg = nullptr;
-	QApplication::processEvents();
-}
+GMTVTK_API void gmtvtk_ceuler_delete_dialog_test() { testDeleteParkedDialog(&g_ceulerTestDlg); }
 
 // 1 when the dialog is currently PARKED (hidden but alive, with its Scene Objects row), 0 when it is
 // on screen, -1 when there is none.
@@ -4017,14 +4023,7 @@ GMTVTK_API void gmtvtk_platecalc_close_dialog_test() {
 	if (g_plateTestDlg && g_plateTestDlg->dlg) g_plateTestDlg->dlg->close();
 	QApplication::processEvents();
 }
-GMTVTK_API void gmtvtk_platecalc_delete_dialog_test() {
-	if (g_plateTestDlg && g_plateTestDlg->dlg) {
-		g_plateTestDlg->reallyClose = true;
-		g_plateTestDlg->dlg->close();
-	}
-	g_plateTestDlg = nullptr;
-	QApplication::processEvents();
-}
+GMTVTK_API void gmtvtk_platecalc_delete_dialog_test() { testDeleteParkedDialog(&g_plateTestDlg); }
 // 1 = parked (hidden + a Scene Objects row), 0 = on screen, -1 = no dialog.
 GMTVTK_API int gmtvtk_platecalc_parked_test(void *handle) {
 	Scene *s = static_cast<Scene *>(handle);

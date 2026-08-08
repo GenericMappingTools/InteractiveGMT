@@ -22,6 +22,19 @@ const _RUN_NET = ("net" in ARGS) ||
 # tool from costing a full-suite run on every iteration.
 const _ONLY = strip(get(ENV, "INTERACTIVEGMT_TEST_NAME", ""), [' ', '"', '\''])
 
+# Same convenience, one level up: run only the testitems whose FILE matches
+# (INTERACTIVEGMT_TEST_FILE="scene-gui"). A name filter cannot express "this whole file", and the
+# GUI tier is where that hurts — chasing one failure in test-scene-gui.jl through the full suite
+# costs minutes of unrelated windows opening and closing, and some GUI faults only show up with the
+# rest of THAT file's items ahead of them, so they cannot be narrowed by name either.
+const _ONLYFILE = strip(get(ENV, "INTERACTIVEGMT_TEST_FILE", ""), [' ', '"', '\''])
+
+# …and by TAG (INTERACTIVEGMT_TEST_TAG="xyplot"), the third axis: a fault that only shows up in one
+# subsystem is reproduced by that subsystem's items, not by its file's other four dozen.
+const _ONLYTAG = strip(get(ENV, "INTERACTIVEGMT_TEST_TAG", ""), [' ', '"', '\''])
+
 @run_package_tests verbose=true filter = ti ->
 	(_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags)) &&
-	(isempty(_ONLY) || occursin(_ONLY, ti.name))
+	(isempty(_ONLY) || occursin(_ONLY, ti.name)) &&
+	(isempty(_ONLYFILE) || occursin(_ONLYFILE, ti.filename)) &&
+	(isempty(_ONLYTAG) || Symbol(_ONLYTAG) in ti.tags)

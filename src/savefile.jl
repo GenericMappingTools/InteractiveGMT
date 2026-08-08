@@ -272,11 +272,28 @@ end
 # (_BINSTATE, _ENHSTATE) or by a gmtedit window (_GE_REG/_GE_HDR/_GE_VARS/_GE_PARENT) must never be
 # added: pointer reuse cuts both ways, and a scene address can equal a live dialog's address —
 # purging those here would delete the state of a dialog that is still open.
+#
+# …and only dictionaries whose values are PURE JULIA DATA — which is why this list is FOUR entries
+# and not every per-window registry in the package. A window's death is not a licence to free
+# everything keyed on it: several of these registries hold buffers that were handed to VTK/Qt
+# WITHOUT a copy (`_CURTAIN_IMG`'s curtain-texture bytes are the clearest case), and dropping
+# Julia's last reference lets the GC reclaim memory the C++ side still points at. That does not
+# fault where it happens — it faults later, somewhere unrelated: bisected 2026-08-08 to an
+# EXCEPTION_ACCESS_VIOLATION several GUI test items after the window closed. Those buffers belong to
+# the actor that took them and are released with it, never on a blanket purge.
+#
+# The KEYSPACE has to be exclusively Scene*, too. `_FIGREG` is the counter-example: it is keyed by
+# WINDOW HANDLE and an X,Y plot window is in there under its own XYPlot*, so purging it by a dead
+# viewer's address deletes whatever now lives at that address — seen live as an X,Y plot losing its
+# host-side mirror mid-test, which then re-registered empty and lost its series.
+#
+# So: before adding a dictionary here, ask what its VALUES are and what its KEYS are. Anything a
+# ccall has taken a pointer into stays out; anything keyed by something other than a Scene* stays
+# out. The three below are the ones that actually caused ghosts — `_SCENE_OBJS` above all, where a
+# reprojection warped a closed window's grid — and they hold nothing C++ can reach.
 function _forget_window!(scene::Ptr{Cvoid})
 	scene == C_NULL && return
-	for d in (_SCENE_OBJS, _IMG_ORIG, _FIGREG, _SESSION_LOG, _CURTAIN_IMG, _BASEMAP_LOADED,
-	          _AQUA, _CONTOUR_DRAWN, _KM_STATE, _FOCAL_LAST, _TRANSPLANT_ORIG,
-	          _CUBE_INFO, _CUBE_LOADED, _CUBE_CUR, _CUBE_RAM, _CUBE_LAYER_MINMAX, _CUBES, _CUBE_ACTIVE)
+	for d in (_SCENE_OBJS, _IMG_ORIG, _SESSION_LOG)
 		delete!(d, scene)
 	end
 	return
