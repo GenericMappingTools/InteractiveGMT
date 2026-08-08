@@ -96,7 +96,7 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 							_load_cube_element(scene, spec, dn, prescan)                 # extra; slider via its menu
 						end
 					else                                        # a plain 2-D grid
-						_drop_into(scene, GMT.gmtread(spec), dn; promote=isbase, source=spec)
+						_drop_into(scene, _gmtread_trb(spec), dn; promote=isbase, source=spec)
 					end
 					# Only the FIRST loaded variable stays active/visible (whether or not it promoted the
 					# launcher -- a drop into an already-populated window never promotes, but i==1 is
@@ -161,7 +161,7 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 	if n_layers > 1
 		_on_3d_cube_dropped(scene, String(spec), name, empty, n_layers, zmin, zmax; prescan=prescan)
 	else
-		data = GMT.gmtread(String(spec))
+		data = _gmtread_trb(String(spec))
 		isempty(recent) || _record_recent(recent, data)
 		ok = _drop_into(scene, data, name; promote=empty, source=String(spec))
 		# SACRED_LAW.md raster-own-axes law: EACH raster creates ITS OWN axes, UNCONDITIONALLY --
@@ -262,9 +262,9 @@ function _add_shapenc_bounded(scene::Ptr{Cvoid}, path::String, name::AbstractStr
 		zblank = zeros(Float32, 2, 2)
 		ccall(_fn(:gmtvtk_promote_surface_h), Cint,
 		      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
 		      scene, zblank, Cint(2), Cint(2), W, E, S, N, Cint(geog ? 1 : 0),
-		      C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
+		      C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "", Cint(0))
 		ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), scene)
 		if geog
 			crs = crs_from(d1; geographic=true)
@@ -513,8 +513,13 @@ end
 # `layer=` kwarg (GDAL cube reader). A SUBDATASET spec ("file.nc?var") must instead use GMT's own
 # native COARDS layer syntax "file.nc?var[i]" (0-based) -- the GDAL `layer=` path errors on a "?"
 # spec ("does not contain cube data").
+# Read in "TRB" like every other grid (both spellings honour it); the layer grid then carries its own
+# layout code to the viewer through `_grid_zbuf` / `_show_cube_layer_image!`. NOTE the whole-cube read
+# below is different: it asks for NO layout, so GMT hands the 3-D cube back column-major and that path
+# stays "BCB", its slab views inheriting `C.layout`. Do not "tidy" it into a TRB read without also
+# teaching `_cube_layer_view` to slice row-major memory — the label is what every consumer reads.
 _read_cube_layer(path::String, k::Int)::Union{GMTgrid,Nothing} =
-	occursin('?', path) ? GMT.gmtread("$(path)[$(k-1)]") : GMT.gmtread(path, layer=k)
+	occursin('?', path) ? _gmtread_trb("$(path)[$(k-1)]") : GMT.gmtread(path, layer=k, layout="TRB")
 
 # Read a whole cube into a 3-D GMTgrid for the "Load all in RAM" cache. A plain single-var cube uses
 # GMT's layers=:all; a SUBDATASET spec stacks its native "?var[i]" slices into a (ny,nx,nlayers)
@@ -524,16 +529,30 @@ function _read_whole_cube(path::String, n::Int)::Union{GMTgrid,Nothing}
 		C = GMT.gmtread(path, layers=:all)
 		return (C isa GMTgrid && ndims(C.z) == 3) ? C : nothing
 	end
+	# Same reader as `_read_cube_layer` above — one operation, one function. The stack then carries the
+	# layout those slabs really have (`_cube_from_slabs`), because `_cube_layer_view` copies that label
+	# onto every layer view it hands out.
 	slabs = GMTgrid[]
 	for i in 0:n-1
-		g = GMT.gmtread("$(path)[$(i)]")
+		g = _gmtread_trb("$(path)[$(i)]")
 		g === nothing && return nothing
 		push!(slabs, g)
 	end
 	isempty(slabs) && return nothing
 	z3 = cat((eltype(s.z) === Float32 ? s.z : Float32.(s.z) for s in slabs)...; dims=3)
-	g1 = slabs[1]
-	return GMT.mat2grid(z3; x=g1.x, y=g1.y)
+	return _cube_from_slabs(z3, slabs[1])
+end
+
+# THE builder for an in-RAM cube stacked out of per-layer reads. `mat2grid` cannot know how the slabs
+# were read, so it labels its result column-major — and a stack of ROW-major slabs wearing that label
+# is read transposed by every consumer downstream (`_cube_layer_view` copies the label onto each layer
+# view), which is vertical striping with no error anywhere. The layout a buffer really has travels
+# with it: it comes from the layer that was actually read. Both cube stackers go through here
+# (`_read_whole_cube` above, `_cube_prescan` below) so neither can forget it.
+function _cube_from_slabs(z3::Array{Float32,3}, g1::GMTgrid)::GMTgrid
+	C = GMT.mat2grid(z3; x = g1.x, y = g1.y)
+	isempty(g1.layout) || (C.layout = g1.layout)
+	return C
 end
 
 # Handle a dropped cube file: remember (path, n_layers, global z-range), show the non-modal
@@ -667,7 +686,7 @@ function _cube_prescan(scene::Ptr{Cvoid})
 		end
 		if keepram && g1 !== nothing
 			z3 = cat(slabs...; dims=3)
-			C  = GMT.mat2grid(z3; x=g1.x, y=g1.y)
+			C  = _cube_from_slabs(z3, g1)     # carries the layout the slabs were REALLY read in
 			_CUBE_RAM[scene] = C
 			Threads.@threads for k in 1:n
 				mins[k], maxs[k] = _finite_extrema(@view C.z[:, :, k])
@@ -788,14 +807,14 @@ _mark_cube(scene::Ptr{Cvoid}, layer_index::Cint, use_global::Cint) =
 function _show_cube_layer_image!(scene::Ptr{Cvoid}, G::GMTgrid, name::String, nodes;
                                  first::Bool=false, source::String="")
 	cz, crgb, ncolor = nodes
-	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z)
-	ny, nx = size(z); r = G.range
+	z, nx, ny, zlay = _grid_zbuf(G)   # buffer as it lies + layout code -- NO transposition
+	r = G.range
 	geog = _isgeographic(G)
 	ok = ccall(_fn(:gmtvtk_show_layer_image_h), Cint,
 		(Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		 Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring),
-		scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
-		cz, crgb, Cint(ncolor), name)
+		 Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring, Cint),
+		scene, z, nx, ny, r[1], r[2], r[3], r[4], Cint(geog),
+		cz, crgb, Cint(ncolor), name, zlay)
 	ok == 0 && (@warn "cube layer image: the viewer rejected the update (window closed?)"; return false)
 	if first
 		_remember_object!(scene, :grid, name, G)                       # File>Save / Scene Objects "Save…"
@@ -1015,9 +1034,9 @@ function _promote_blank_scaffold(scene::Ptr{Cvoid}, W::Float64, E::Float64, S::F
 	zblank = zeros(Float32, 2, 2)
 	ccall(_fn(:gmtvtk_promote_surface_h), Cint,
 	      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-	       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+	       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
 	      scene, zblank, Cint(2), Cint(2), W, E, S, N, Cint(geog ? 1 : 0),
-	      C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
+	      C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "", Cint(0))
 	ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), scene)   # scaffold plane only
 	if geog
 		crs = crs_from(crsobj; geographic=true)
@@ -1049,40 +1068,101 @@ function _dataset_bbox(D)
 	return Float64(W), Float64(E), Float64(S), Float64(N)
 end
 
-# A grid in GMT's OWN memory layout: "BCB" — column-major, `z` sized (ny, nx), row 1 = y_min = SOUTH.
-# Every grid path in this package (and the whole C side: makeGridFromArray reads `z[ix*ny + iy]`)
-# assumes it, because it is what GMT's modules return. GDAL does NOT: anything coming back through
-# GDAL — `gdalwarp` (Tools > Project), gdaltranslate, gdaldem — is "TRB", ROW-major with row 1 =
-# NORTH, i.e. `z` sized (nx, ny) and upside down. Handing one of those over unconverted makes the
-# viewer read an (nx, ny) array as (ny, nx): the picture comes out transposed and mirrored, with
-# incoherent value bands (reported as "the result is all fucked up ... only a certain depth range
-# of grid survived").
+# THE file reader. GRIDS ARE READ IN "TRB" — row-major, north first — which is the layout the viewer
+# consumes with no transposition at all (see `_grid_zbuf` below and GridLay, 10_geometry.cpp), and
+# the layout everything GDAL-produced already arrives in, so a projected/warped grid needs no
+# conversion either.
 #
-# So it is converted ONCE, at the single door every displayed grid goes through
-# (`_add_grid_to_scene` below) — not in the tool that happened to produce it. The x/y coordinate
-# vectors are ascending in both layouts, so only `z` moves.
-function _grid_to_bcb(G::GMTgrid)
+# GRIDS ONLY. `layout=` is honoured by GMT.jl for images too (gmtreadwrite.jl's -Ti branch), and there
+# it changes the INTERLEAVE as well: the same .tif comes back "BRPa" (pixel-interleaved) from the
+# normal reader and "TRBa" (band-planar) when TRB is forced. drape.jl's texture packing — `_north_first`
+# and the de-interleave — is written around what the normal reader hands over, quirks and all, so an
+# image must keep coming from that reader. The layout law is about grids; images are not part of it.
+# `guess_T_from_ext` is GMT's own type probe (extension, plus a header-only gdalinfo for an ambiguous
+# .tif/.jp2) — no data is read to decide. A "file?var" subdataset spec is a grid to it, which is what
+# the cube / Aquamoto readers need.
+function _gmtread_trb(spec::AbstractString)
+	s = String(spec)
+	isgrid = try strip(GMT.guess_T_from_ext(s)) == "-Tg" catch; false end
+	isgrid || return GMT.gmtread(s)
+	o = GMT.gmtread(s; layout = "TRB")
+	# The probe goes by extension: a netCDF that actually holds an IMAGE would land here anyway. Put it
+	# back on the normal reader rather than leaving it wearing a layout its packing does not expect.
+	return o isa GMTimage ? GMT.gmtread(s) : o
+end
+
+# NO TRANSPOSITIONS. A grid is handed to the viewer EXACTLY as it lies in memory, together with the
+# code that says how to read it — never permutedims'd, never reversed, never copied into a second
+# matrix. Grids are READ in "TRB" (`gmtread(..., layout="TRB")`, `_gridread`) and that is also what
+# everything GDAL-produced (gdalwarp/gdaltranslate/gdaldem) already gives; GMT's own modules return
+# "BCB". Both go straight through.
+#
+# `_grid_layout_code` is the 2-bit code the C side's GridLay (10_geometry.cpp) resolves — the same
+# meaning as the GMT layout string's first two characters:
+#   bit 0 — set: ROW-major ('?R?'), clear: COLUMN-major ('?C?')
+#   bit 1 — set: row 0 = NORTH ('T??'), clear: row 0 = SOUTH ('B??')
+# so "BCB" -> 0, "TRB" -> 3. An absent/short layout means GMT's own "BCB".
+function _grid_layout_code(G::GMTgrid)::Cint
 	lay = G.layout
-	(length(lay) < 2 || (lay[1] == 'B' && lay[2] == 'C')) && return G
-	z = lay[2] == 'R' ? permutedims(G.z) : G.z      # rows must index y, not x
-	lay[1] == 'T' && (z = reverse(z, dims = 1))     # ... and run south -> north
-	G2 = deepcopy(G)
-	G2.z = z
-	G2.layout = "BCB" * (length(lay) > 3 ? lay[4:end] : "")
-	return G2
+	length(lay) < 2 && return Cint(0)
+	return Cint((lay[2] == 'R' ? 1 : 0) | (lay[1] == 'T' ? 2 : 0))
+end
+
+# THE viewer boundary for a grid's z: the buffer as it lies + its dims + its layout code.
+# `nx`/`ny` come from the COORDINATE VECTORS, not from `size(z)`: a row-major grid keeps GMT.jl's
+# (ny,nx) Julia dims while its memory runs x-fastest, so `size` describes it only by accident (it is
+# right only for a square grid). Column-major grids keep using `size(z)`, which is exact for them.
+function _grid_zbuf(G::GMTgrid)
+	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z)   # no copy when it is already Float32
+	nx, ny = _grid_dims(G)
+	code = _grid_layout_code(G)
+	# SAFETY NET, and the only place a grid is ever re-ordered. A viewer library that predates the
+	# layout code (ABI generation 1) has no argument to be told what it is being handed: it assumes
+	# column-major, so a row-major buffer comes out sheared into vertical stripes with no error
+	# anywhere. When such a library is what loaded, hand it the layout it can actually read.
+	# Generation 2+ (the normal case) takes the buffer as it lies and this branch never runs.
+	if code != 0 && _lib_abi() != 0 && _lib_abi() < 2
+		zc = Matrix{Float32}(_zmat(G))
+		return zc, Cint(size(zc, 2)), Cint(size(zc, 1)), Cint(0)
+	end
+	return z, Cint(nx), Cint(ny), code
+end
+
+# A grid's z as a Julia (ny, nx) matrix, row 1 = SOUTH — for Julia-side maths that indexes z[iy,ix].
+# For a row-major grid this is a LAZY VIEW (reshape + PermutedDimsArray + a reversed row index): index
+# arithmetic only, no matrix copy, same law as above.
+function _zmat(G::GMTgrid)
+	code = _grid_layout_code(G)
+	code == 0 && return G.z                    # "BCB" already IS (ny,nx) south-first
+	nx, ny = _grid_dims(G)
+	M = (code & 1) != 0 ? PermutedDimsArray(reshape(vec(G.z), nx, ny), (2, 1)) :
+	                      reshape(vec(G.z), ny, nx)
+	return (code & 2) != 0 ? view(M, ny:-1:1, :) : view(M, :, :)
+end
+
+# (nx, ny) for a grid, from the coordinate vectors, falling back to `size(z)` when they disagree
+# (see `_grid_zbuf`). Shared by `_grid_zbuf` and `_zmat` so the two can never disagree.
+function _grid_dims(G::GMTgrid)
+	n = length(G.z)
+	if (_grid_layout_code(G) & 1) != 0                   # row-major: `size(z)` describes the memory
+		nx, ny = length(G.x), length(G.y)                # only by accident, so ask x/y first
+		nx * ny == n && return (nx, ny)
+	end
+	ny, nx = size(G.z)
+	nx * ny == n ||
+		error("grid dims $(nx)x$(ny) do not match its z buffer ($n elements, layout $(G.layout))")
+	return (nx, ny)
 end
 
 # Add a dropped grid as a CPT-coloured surface in the window. On the empty launcher `promote`
 # reconfigures THAT window in place (gmtvtk_promote_surface_h); otherwise it is added as an extra.
 function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false, source="", record=true, zrange=nothing, geographic=nothing)
-	G = _grid_to_bcb(G)      # GDAL-produced grids are row-major/north-first; the whole path below is not
-	# `ny, nx = size(z)` on a 3-D array does NOT error in Julia -- it silently drops the third
-	# dimension and proceeds with truncated data, no error anywhere. A cube must never reach here
-	# (the cube-detection probe in _on_drop is supposed to intercept it first); fail loudly if it
-	# ever does, instead of silently rendering wrong/truncated data with no visible error.
+	# A cube must never reach here (the cube-detection probe in _on_drop is supposed to intercept it
+	# first); fail loudly if it ever does, instead of silently rendering wrong/truncated data.
 	ndims(G.z) == 3 && error("_add_grid_to_scene got a 3-D cube grid ($(size(G.z))) -- cube detection missed it upstream")
 	cmap === :auto && (cmap = _default_cmap(G))   # geo only for topo/bathymetry grids, else turbo
-	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z); ny, nx = size(z); r = G.range
+	z, nx, ny, zlay = _grid_zbuf(G)   # buffer as it lies + its layout code -- NO transposition
+	r = G.range
 	# `color` (r,g,b in 0..1) forces a SOLID-colour 2-node CPT (used by the flat zero nested grids, whose
 	# all-equal z would otherwise collapse _cpt_nodes to the viewer's blue ramp). `zrange` (zmn,zmx)
 	# overrides the CPT's own autoscale (used by the cube layer slider's "global min/max" checkbox
@@ -1100,14 +1180,14 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 	ok = promote ?
 		ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
-		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
-		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name)) :
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
+		  scene, z, nx, ny, r[1], r[2], r[3], r[4], Cint(geog),
+		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name), zlay) :
 		ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
-		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
-		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name))
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
+		  scene, z, nx, ny, r[1], r[2], r[3], r[4], Cint(geog),
+		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name), zlay)
 	ok == 0 && @warn "drop: window is closed; grid not added"
 	ok != 0 && _remember_object!(scene, :grid, name, G)   # Scene Objects "Save…" / File>Save can write it
 	# Save Session: known file path -> store a file ref (:file); no path -> serialize the grid (:generated).
@@ -1167,14 +1247,14 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 	ok = promote ?
 		ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
 		  scene, z, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4], Cint(geog),
-		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name)) :
+		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name), Cint(0)) :
 		ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
 		  scene, z, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4], Cint(geog),
-		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name))
+		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name), Cint(0))
 	ok == 0 && @warn "drop: window is closed; image not added"
 	ok != 0 && _remember_object!(scene, :image, name, I)  # Scene Objects "Save…" / File>Save can write it
 	# An INDEXED image's colormap IS its legend: hand the used entries over so the image's group gets a
@@ -1218,9 +1298,9 @@ function iview_image_obj(I::GMTimage, name::AbstractString; title::String="i'GMT
 	# Hidden scaffold: image_only=1 (last Cint) so rebuildSceneObjects skips a row for it; img=NULL.
 	ccall(_fn(:gmtvtk_promote_surface_h), Cint,
 	      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-	       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+	       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
 	      h, zblank, Cint(2), Cint(2), ir[1], ir[2], ir[3], ir[4], Cint(geog),
-	      C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
+	      C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "", Cint(0))
 	ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), h)   # plane is scaffold only
 	_add_image_to_scene(h, I, name; promote=false)              # ExtraObj image -> has properties menu
 	# Referenced image -> store the CRS (reveals the Geography menu + geographic axes).
@@ -1245,9 +1325,9 @@ function _place_image_in_window(scene::Ptr{Cvoid}, I::GMTimage, name; geographic
 		zblank = zeros(Float32, 2, 2)
 		ccall(_fn(:gmtvtk_promote_surface_h), Cint,
 		      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
 		      scene, zblank, Cint(2), Cint(2), Float64(ir[1]), Float64(ir[2]), Float64(ir[3]), Float64(ir[4]),
-		      Cint(geographic ? 1 : 0), C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
+		      Cint(geographic ? 1 : 0), C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "", Cint(0))
 		ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), scene)   # scaffold only
 	end
 	_add_image_to_scene(scene, I, name; promote=false)             # ExtraObj image -> properties menu
