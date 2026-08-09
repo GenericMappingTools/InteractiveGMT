@@ -290,7 +290,10 @@ function _on_xy_new(plot::Ptr{Cvoid})::Cvoid
 	try
 		_XY_CURRENT[] = plot   # Tools > X,Y plot is an explicit "open a window" gesture; it still
 		                       # becomes the target for whatever xyplot() call comes next
-		get(_FIGREG, plot, nothing) isa QtXYPlot && return
+		# ALWAYS a fresh mirror. This callback fires only when C++ has just BUILT a window, so any
+		# `_FIGREG` entry already sitting at this address belongs to a destroyed window whose pointer
+		# the allocator recycled — keeping it (what an `already registered -> return` check did) gave
+		# the new blank window the dead one's series list.
 		_register_fig!(QtXYPlot(plot))
 		_start_pump()
 	catch e

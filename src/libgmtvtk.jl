@@ -58,6 +58,17 @@ const _QT_PLAT = get(ENV, "INTERACTIVEGMT_QT_PLAT", _BUNDLED ? joinpath(_BIN_DIR
 const _DLL     = Ref{Ptr{Cvoid}}(C_NULL)
 const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 
+# ABI generation this source requires from the library (see gmtvtk_abi_version, 90_c_api.cpp).
+# BUMP BOTH TOGETHER whenever a host-facing export's signature changes. Generation 2 = every grid
+# buffer is handed over with its layout code; a generation-1 library reads such a buffer transposed
+# and shows vertical stripes, with no error anywhere — hence the check.
+const _ABI_REQUIRED = 3
+# What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
+# layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
+# never handed a row-major one.
+const _LIB_ABI = Ref{Int}(0)
+_lib_abi() = _LIB_ABI[]
+
 # Every exported C-API symbol resolved at load time.
 const _LIB_SYMBOLS = (
 	:gmtvtk_view_grid, :gmtvtk_view_demo, :gmtvtk_process_events,
@@ -249,6 +260,21 @@ function _try_load(lib::String)::Union{Nothing,String}
 			return "$lib: stale build -- export :$s is missing"
 		end
 		_LIB_FNS[s] = p
+	end
+	# ABI GENERATION. A missing export is caught above; a CHANGED SIGNATURE is not — the call still
+	# links and still returns, it just reads the data wrong. That is how a library built before the
+	# grid layout code (`zlayout`) existed painted vertical stripes: it took a row-major "TRB" buffer
+	# and read it column-major, silently. So the generation is checked here, and a library older than
+	# this source expects is REFUSED like any other stale build (the loader then falls through to the
+	# next candidate, which is what makes a dev build win over an outdated shared runtime).
+	abi = let p = Libdl.dlsym(h, :gmtvtk_abi_version; throw_error=false)
+		p === nothing ? 1 : ccall(p, Cint, ())
+	end
+	_LIB_ABI[] = Int(abi)
+	if abi < _ABI_REQUIRED
+		Libdl.dlclose(h); empty!(_LIB_FNS)
+		return "$lib: stale build -- ABI generation $abi, this version needs $(_ABI_REQUIRED) " *
+		       "(grid buffers carry a layout code; an older library reads them transposed)"
 	end
 	_DLL[] = h
 	_LIB_USED[] = lib

@@ -436,7 +436,7 @@ function _nswing_resolve_grid(scene::Ptr{Cvoid}, ref::AbstractString)
 	isempty(ref) && return nothing
 	g = _nswing_grid_ref(scene, String(ref))          # scene name -> GMTgrid, else String(path)
 	g isa GMTgrid && return g
-	return try GMT.gmtread(String(g)) catch; nothing end
+	return try _gmtread_trb(String(g)) catch; nothing end      # grids are READ in "TRB"
 end
 
 # Fired the INSTANT a nest-grid file name is loaded/typed in the dialog (C++ NswingDialog, gated on a
@@ -503,7 +503,7 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 	# files: that was the bug — a bad nest file used to sail through unchecked.
 	loaded_nests = Tuple{Int,GMTgrid}[]
 	for (n, G) in nests
-		push!(loaded_nests, (n, G isa GMTgrid ? G : GMT.gmtread(String(G))))
+		push!(loaded_nests, (n, G isa GMTgrid ? G : _gmtread_trb(String(G))))
 	end
 
 	# Each SCENE "layerN" starts as a literal all-zero placeholder (_nested_blank_grid, nested.jl)
@@ -745,14 +745,14 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		if base isa GMTgrid
 			# ── object run (the normal case): every grid is a live GMTgrid, passed as a trailing arg ──
 			grids = GMTgrid[base]                        # primary #1: base bathymetry (layer0)
-			push!(grids, src isa GMTgrid ? src : GMT.gmtread(String(src)))   # typed path -> load (no temp file)
+			push!(grids, src isa GMTgrid ? src : _gmtread_trb(String(src)))   # typed path -> load (no temp file)
 			cmd = "nswing"
 			for (n, _) in nests                          # bare nesting flags: layerN -> -N
 				cmd *= " -$(n)"
 			end
 			isempty(opts) || (cmd *= " " * join(opts, " "))
 			cmd *= " -v"
-			append!(grids, GMTgrid[(G isa GMTgrid ? G : GMT.gmtread(String(G))) for (_, G) in nests])   # nest objects, in -1,-2,… order (typed path -> load, same as src above)
+			append!(grids, GMTgrid[(G isa GMTgrid ? G : _gmtread_trb(String(G))) for (_, G) in nests])   # nest objects, in -1,-2,… order (typed path -> load, same as src above)
 
 			_viewer_log_error(scene, "NSWING command: $cmd   [+ $(length(grids)) grid objects]")
 			_NSWING_RUNNING[] = true

@@ -1316,7 +1316,7 @@ function _ge_interp_grid(edit::Ptr{Cvoid}, slot::Int, gridfile::String, addIGRF:
 	tr = get(_GE_REG, edit, nothing)
 	tr === nothing && return
 	isfile(gridfile) || (_ge_log(edit, "Grid not found: $gridfile"; err=true); return)
-	G  = GMT.gmtread(gridfile)
+	G  = _gmtread_trb(gridfile)      # grids are READ in "TRB" — THE reader
 	D  = GMT.grdtrack(G, hcat(tr.lon, tr.lat))
 	zz = Vector{Float64}(@view (D isa AbstractVector ? first(D) : D).data[:, end])
 	if addIGRF

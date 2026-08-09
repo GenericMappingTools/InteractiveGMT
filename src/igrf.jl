@@ -64,7 +64,8 @@ function _on_igrf_grid(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		G = GMT.magref(; kw...)
 		_grid_command!(G, "GMT.magref(; " * join(["$k=$v" for (k, v) in kw], ", ") * ")")
 		# Add to the existing scene (dialog's parent window), named after the field selection.
-		z = eltype(G.z) === Float32 ? G.z : Float32.(G.z); ny, nx = size(z); r = G.range
+		z, nx, ny, zlay = _grid_zbuf(G)   # buffer as it lies + layout code -- NO transposition
+		r = G.range
 		geog = _isgeog(G)
 		cmap = :turbo
 		cz, crgb, ncolor = _cpt_nodes(G, cmap)
@@ -75,9 +76,9 @@ function _on_igrf_grid(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
 		ok = ccall(_fn(fn), Cint,
 			  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-			   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
-			  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
-			  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(title))
+			   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
+			  scene, z, nx, ny, r[1], r[2], r[3], r[4], Cint(geog),
+			  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(title), zlay)
 		ok == 0 && @warn "IGRF grid: window closed, grid not added"
 		if ok != 0
 			_remember_object!(scene, :grid, title, G)

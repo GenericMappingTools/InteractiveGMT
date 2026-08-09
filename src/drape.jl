@@ -302,7 +302,8 @@ end
 # surface. G.z is ny x nx (dim1 = y row, dim2 = x col), y ascending; node spacing from the data
 # range. Out-of-range (x,y) clamps to the nearest edge cell.
 function _sample_grid(G::GMTgrid, x::Real, y::Real)
-	ny, nx = size(G.z)
+	Z = _zmat(G)            # (ny,nx), row 1 = south, for ANY layout the grid was read in
+	ny, nx = size(Z)
 	r = G.range
 	#dx = nx > 1 ? (r[2] - r[1]) / (nx - 1) : 1.0
 	dx = (r[2] - r[1]) / (nx - 1)
@@ -311,7 +312,7 @@ function _sample_grid(G::GMTgrid, x::Real, y::Real)
 	fx = (x - r[1]) / dx;  fy = (y - r[3]) / dy
 	i = clamp(floor(Int, fx), 0, nx - 2);  tx = clamp(fx - i, 0.0, 1.0)
 	j = clamp(floor(Int, fy), 0, ny - 2);  ty = clamp(fy - j, 0.0, 1.0)
-	z00 = G.z[j+1, i+1]; z10 = G.z[j+1, i+2]
-	z01 = G.z[j+2, i+1]; z11 = G.z[j+2, i+2]
+	z00 = Z[j+1, i+1]; z10 = Z[j+1, i+2]
+	z01 = Z[j+2, i+1]; z11 = Z[j+2, i+2]
 	return (1-tx)*(1-ty)*z00 + tx*(1-ty)*z10 + (1-tx)*ty*z01 + tx*ty*z11
 end

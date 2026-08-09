@@ -134,7 +134,7 @@ function _gridcalc_eval(objs::Vector{Tuple{String,GMTgrid}}, files::Dict{String,
 				badname = "unknown grid: " * nm
 				return "nothing"
 			end
-			G = GMT.gmtread(path)
+			G = _gmtread_trb(path)      # grids are READ in "TRB" — THE reader
 			if !isa(G, GMTgrid)
 				badname = nm * " is not a grid"
 				return "nothing"
@@ -144,15 +144,14 @@ function _gridcalc_eval(objs::Vector{Tuple{String,GMTgrid}}, files::Dict{String,
 			badname = nm * ": limits/increments differ from " * objs[1][1]
 			return "nothing"
 		end
-		# Same maths for every grid: one layout, one element order. Grids that store their rows the
-		# other way round would silently compute a vertically mirrored result.
-		if length(G.layout) >= 2 && length(ref.layout) >= 2 && G.layout[1:2] != ref.layout[1:2]
-			badname = nm * ": different memory layout"
-			return "nothing"
-		end
 		v = Symbol("_gc", length(vars) + 1)
 		vars[nm] = v
-		push!(arrays, v => G.z)
+		# One element order for the whole expression — `ref`'s. A grid that already lies that way
+		# (the normal case) is taken as it is; one that does not is re-ordered by `_z_as`, because
+		# broadcasting buffers that run different ways would pair up points that are not the same
+		# point and quietly return a vertically mirrored result. The result therefore comes out in
+		# `ref`'s own order, which is the layout `mat2grid(z, ref)` then labels it with.
+		push!(arrays, v => _z_as(G, ref))
 		return string(v)
 	end
 

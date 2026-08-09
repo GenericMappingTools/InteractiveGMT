@@ -487,12 +487,12 @@ function _session_load_object(r::ElementRecipe, entries::Dict{String,Vector{UInt
 	end
 	if r.origin === :file
 		isfile(r.source) || (@warn "session: source file missing, layer skipped" file=r.source; return nothing)
-		return GMT.gmtread(r.source)
+		return _gmtread_trb(r.source)      # grids are READ in "TRB" — THE reader (non-grids pass through)
 	elseif r.origin === :generated
 		key = "data/" * r.source
 		haskey(entries, key) || (@warn "session: sidecar missing, layer skipped" key=key; return nothing)
 		tmp = tempname() * splitext(r.source)[2]; write(tmp, entries[key])
-		data = GMT.gmtread(tmp); rm(tmp; force=true)
+		data = _gmtread_trb(tmp); rm(tmp; force=true)
 		return data
 	end
 	return nothing

@@ -30,7 +30,7 @@ function _on_grdsample(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 				error("No grid or image loaded in this window")
 		else
 			isempty(input) && error("No input grid given")
-			gmtread(input)
+			_gmtread_trb(input)      # grids are READ in "TRB" — THE reader (images go to the plain one)
 		end
 
 		base = isempty(srcname) ? "grid" : srcname
@@ -171,7 +171,7 @@ function _on_gridmeta(cpath::Cstring)::Cstring
 	s = ""
 	try
 		path = unsafe_string(cpath)
-		!isempty(path) && (s = _gridmeta_string(gmtread(path)))
+		!isempty(path) && (s = _gridmeta_string(_gmtread_trb(path)))
 	catch e
 		@warn "Ref grid metadata read FAILED" exception=(e,)
 	end

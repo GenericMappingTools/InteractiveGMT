@@ -44,10 +44,15 @@ static QString aquaScenePtr(Scene *scene) {
 	return QString("Ptr{Cvoid}(UInt(%1))").arg((quintptr)scene);
 }
 
-// The Aquamoto window is never DESTROYED by its X -- clicking the title-bar X HIDES it (state kept),
-// and its "Aquamoto viewer" handle in Scene Objects unticks to reflect that; re-ticking the handle
-// brings it back. The QCloseEvent is swallowed (no WA_DeleteOnClose), the window hidden, and the
-// scene's object panel refreshed so the handle checkbox mirrors the new hidden state.
+// The Aquamoto window is never DESTROYED by its X -- clicking the title-bar X HIDES it (state kept)
+// and PARKS it, exactly like every other tool window: the X,Y plot, Contours and Illumination all go
+// through parkTool into the Scene Objects bottom strip, and so does this one. It used to hide itself
+// and rely on a hand-built "Aquamoto viewer" row planted at the TOP of the tree instead — one
+// operation (a tool window hidden by its X, kept as a handle that brings it back) with two
+// implementations, and the bespoke one put a TOOL among the DATA elements (SACRED_LAW.md).
+static void aquamotoUnpark(Scene *scene);                       // defined with the other hooks below
+static std::function<void(const QPoint &)> aquamotoParkedMenu(Scene *scene);
+
 class AquamotoHideOnClose : public QObject {
 public:
 	Scene *scene_;
@@ -55,8 +60,17 @@ public:
 	bool eventFilter(QObject *obj, QEvent *ev) override {
 		if (ev->type() == QEvent::Close) {
 			ev->ignore();
-			if (auto *w = qobject_cast<QWidget *>(obj)) w->hide();   // hidden, NOT destroyed
-			if (scene_) rebuildSceneObjects(scene_);                // untick the handle checkbox
+			QWidget *w = qobject_cast<QWidget *>(obj);
+			if (w) w->hide();                                   // hidden, NOT destroyed
+			if (scene_ && w) {
+				Scene *sc = scene_;
+				parkTool(sc, w, "Aquamoto viewer", IC_Image,
+				         "Closed Aquamoto viewer — double-click to bring it back, click for its menu",
+				         [sc]() { aquamotoUnpark(sc); }, aquamotoParkedMenu(sc));
+				// A handle the user cannot see is the same as no handle at all — same reveal the
+				// X,Y plot does when it parks.
+				unfoldSceneObjects(sc);
+			}
 			return true;
 		}
 		return QObject::eventFilter(obj, ev);
@@ -517,8 +531,27 @@ static bool aquamotoIsVisible(Scene *scene) {
 static void aquamotoSetVisible(Scene *scene, int on) {
 	AquamotoWindow *w = AquamotoWindow::registry().value(scene, nullptr);
 	if (!w || !w->win) { if (on) AquamotoWindow::openFor(nullptr, scene); return; }
-	if (on) { w->win->show(); w->win->raise(); w->win->activateWindow(); }
-	else    { w->win->hide(); }
+	if (on) {
+		unparkTool(scene, w->win);          // back on screen -> it is no longer a parked handle
+		w->win->show(); w->win->raise(); w->win->activateWindow();
+	}
+	else { w->win->hide(); }
+}
+
+// Bring the parked window back — what a double-click (or ticking its parked row) runs.
+static void aquamotoUnpark(Scene *scene) { aquamotoSetVisible(scene, 1); }
+
+// The parked row's menu, serving BOTH its properties button and its context menu (parkTool takes one
+// menu for both, so a tool cannot end up with two). "Show" is the same route as the double-click;
+// Remove is deliberately absent — this window's lifetime is tied to its cube surface, whose own
+// Remove destroys it (g_aquamotoDestroy, sceneRemoveSurface).
+static std::function<void(const QPoint &)> aquamotoParkedMenu(Scene *scene) {
+	return [scene](const QPoint &g) {
+		if (!sceneAlive(scene)) return;
+		QMenu m(scene->widget);
+		QAction *aShow = m.addAction("Show");
+		if (m.exec(g) == aShow) aquamotoUnpark(scene);
+	};
 }
 // Destroy the window for good -- called when its nc cube surface is removed (the window is otherwise
 // un-killable). Deleting `win` bypasses the close filter (which only swallows QCloseEvent); its

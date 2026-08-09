@@ -102,20 +102,33 @@ function _aqua_colorize(Z::Matrix{Float32}, zlo::Float64, zhi::Float64, cmap::Sy
 	return rgb
 end
 
-# Pack an (ny,nx,3) RGB array (GMT's native column-major layout, row 1 = y_min = SOUTH, row ny =
-# NORTH, column 1 = x_min = WEST — see grid.jl/drape.jl's own "y ascending" convention) into the
-# row-major, row-0-=-south, west->east, opaque RGBA byte buffer `gmtvtk_show_layer_rgba_h` expects
-# (the SAME convention bakeLayerRGBA's own output uses, 40_shading.cpp) — no vertical flip needed
-# since GMT's row-ascending-with-y already puts the south row first in memory.
-function _aqua_pack_rgba(rgb::Array{UInt8,3})::Vector{UInt8}
-	ny, nx, _ = size(rgb)
-	buf = Vector{UInt8}(undef, ny * nx * 4)
+# Pack the composited RGB planes into the row-major, row-0-=-south, west->east, opaque RGBA byte
+# buffer `gmtvtk_show_layer_rgba_h` expects (the SAME convention bakeLayerRGBA's own output uses,
+# 40_shading.cpp).
+#
+# The colouring above is ELEMENT-WISE, so `rgb` sits in the grid's OWN element order, whatever layout
+# the slice was read in — this is the one step that has to know which. `zlayout` is the grid's layout
+# code (`_grid_layout_code`, drop.jl); `nx`/`ny` are its true dimensions (`_grid_dims`), which for a
+# row-major grid are NOT `size(rgb)[1:2]`. Both branches are a plain gather, no transposition, no
+# intermediate matrix:
+#   "BCB" (0) — plane element (ix,iy) at ix*ny+iy   -> walk rows south->north, striding by ny
+#   "TRB" (3) — plane element (ix,iy) at (ny-1-iy)*nx+ix -> the source rows ARE output rows, read
+#               back to front (row 0 of the source is the NORTH one)
+function _aqua_pack_rgba(rgb::Array{UInt8,3}, zlayout::Integer, nx::Int, ny::Int)::Vector{UInt8}
+	npix = nx * ny
+	length(rgb) == 3 * npix ||
+		error("Aquamoto: RGB planes ($(length(rgb)) bytes) do not match the grid ($(nx)x$(ny))")
+	buf = Vector{UInt8}(undef, npix * 4)
+	rowmajor = (zlayout & 1) != 0
+	northfirst = (zlayout & 2) != 0
 	k = 1
-	@inbounds for i in 1:ny
-		for j in 1:nx
-			buf[k]   = rgb[i, j, 1]
-			buf[k+1] = rgb[i, j, 2]
-			buf[k+2] = rgb[i, j, 3]
+	@inbounds for iy in 0:ny-1
+		for ix in 0:nx-1
+			m = rowmajor ? (northfirst ? (ny - 1 - iy) * nx + ix : iy * nx + ix) :
+			               (northfirst ? ix * ny + (ny - 1 - iy) : ix * ny + iy)
+			buf[k]   = rgb[m + 1]
+			buf[k+1] = rgb[m + 1 + npix]
+			buf[k+2] = rgb[m + 1 + 2npix]
 			buf[k+3] = 0xff
 			k += 4
 		end
@@ -180,7 +193,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	                          "(expected alongside a 'bathymetry' variable — NSWING's own single 3-D netCDF output)")
 	varname = varnames[1]   # no name-based preference -- whichever time-varying quantity var was found first
 	bat = try
-		GMT.gmtread("$(path)?bathymetry")
+		_gmtread_trb("$(path)?bathymetry")
 	catch e
 		error("Aquamoto: could not read 'bathymetry' from $path ($(sprint(showerror, e)))")
 	end
@@ -208,13 +221,14 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 			_AquaVarScan(fill(NaN, nsteps), fill(NaN, nsteps), falses(nsteps), fill(NaN, nsteps), fill(NaN, nsteps))
 		end
 		for k in 0:nsteps-1
-			Gk = GMT.gmtread("$(path)?$(vn)[$(k)]")
+			Gk = _gmtread_trb("$(path)?$(vn)[$(k)]")   # same reader as the bathymetry -> same element order
 			Z = Gk.z
 			sc.alllo[k+1], sc.allhi[k+1] = Gk.range[5], Gk.range[6]
 			lo_w, hi_w = Inf, -Inf
+			dry = _aqua_isdry.(batz, Z)              # THE dry/wet test (_aqua_indland's own element rule)
 			@inbounds for i in eachindex(Z)
+				dry[i] && continue                    # dry cell -> excluded from the wet-only range
 				z = Z[i]
-				abs(batz[i] - z) < 1e-2 && continue   # dry cell -> excluded from the wet-only range
 				z < lo_w && (lo_w = z); z > hi_w && (hi_w = z)
 			end
 			sc.wetany[k+1] = lo_w <= hi_w
@@ -228,13 +242,13 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	# re-pushed later only if the user picks a different land colormap (_aquamoto_set_cmap).
 	_aqua_push_land_cpt!(scene, bat, :geo)
 
-	# Hand the viewer the static bathymetry = the LAND surface for hillshading. Column-major Float32,
-	# the SAME layout as the per-slice stage (zhover) the viewer already receives. The viewer then
-	# shades LAND from this and WATER from the live stage through the ONE shared applyReliefShade
-	# (bakeAquaShade) -- so the Shading dock's Hillshade drives the tsunami like any other layer.
-	bz = eltype(batz) === Float32 ? batz : Float32.(batz)
-	bny, bnx = size(bz)
-	ccall(_fn(:gmtvtk_aqua_set_bathy_h), Cint, (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint), scene, bz, Cint(bnx), Cint(bny))
+	# Hand the viewer the static bathymetry = the LAND surface for hillshading. The buffer goes over as
+	# it lies with its layout code (the viewer stores it column-major itself, gridCopyToCM) -- the SAME
+	# handoff as the per-slice stage (zhover). The viewer then shades LAND from this and WATER from the
+	# live stage through the ONE shared applyReliefShade (bakeAquaShade) -- so the Shading dock's
+	# Hillshade drives the tsunami like any other layer.
+	bz, bnx, bny, blay = _grid_zbuf(bat)
+	ccall(_fn(:gmtvtk_aqua_set_bathy_h), Cint, (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cint), scene, bz, bnx, bny, blay)
 
 	# Label the composited water/land surface's OWN Scene Objects group with the active variable's
 	# real name (whatever the file itself calls it -- no assumed naming).
@@ -254,7 +268,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	for v in _netcdf_subdatasets(path)
 		lowercase(v.name) in skipvars && continue
 		try
-			G = GMT.gmtread("$(path)?$(v.name)")
+			G = _gmtread_trb("$(path)?$(v.name)")
 			_add_grid_to_scene(scene, G, v.name; promote = false, source = "$(path)?$(v.name)")
 			ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, v.name, Cint(0))
 		catch e
@@ -335,6 +349,38 @@ end
 # LAND-ONLY colour-scale top (max land elevation) -- the CALLER already knows this from the
 # bathymetry grid's own `.range` (see _aquamoto_open/_aquamoto_slice), so this pure helper is not
 # asked to rediscover it by filtering + scanning `bat` on every first call.
+# THE dry/wet test. A cell is DRY LAND when the water level sits ON the sea floor — the stage equals
+# the bathymetry there. Every consumer of that fact goes through this ONE function: the composite
+# below, the run-in scan, the per-layer wet-range scan, and — via the mask pushed with the texture —
+# the viewer's own per-side relight. It used to be spelled out separately in each of those places,
+# including once in C++ (`bakeAquaShade`), and the moment two of those spellings disagreed the
+# composite painted a cell as land while the relight lit it as water: the dry/wet split vanished on
+# screen with nothing to show for it. SACRED_LAW.md: same operation, same function.
+_aqua_isdry(b::Real, z::Real)::Bool = abs(b - z) < 1f-2          # the rule, per cell
+_aqua_indland(bat::AbstractMatrix, Z::AbstractMatrix) = _aqua_isdry.(bat, Z)   # …and over a whole slice
+
+# The same mask as the viewer must read it: one byte per node, row-major with row 0 = SOUTH, i.e. the
+# exact convention `_aqua_pack_rgba` uses for the composite it accompanies (and the same `zlayout`
+# code, since the mask is built from the grids in THEIR order).
+function _aqua_pack_landmask(indland::AbstractMatrix{Bool}, zlayout::Integer, nx::Int, ny::Int)::Vector{UInt8}
+	npix = nx * ny
+	length(indland) == npix ||
+		error("Aquamoto: land mask ($(length(indland))) does not match the grid ($(nx)x$(ny))")
+	buf = Vector{UInt8}(undef, npix)
+	rowmajor = (zlayout & 1) != 0
+	northfirst = (zlayout & 2) != 0
+	k = 1
+	@inbounds for iy in 0:ny-1
+		for ix in 0:nx-1
+			m = rowmajor ? (northfirst ? (ny - 1 - iy) * nx + ix : iy * nx + ix) :
+			               (northfirst ? ix * ny + (ny - 1 - iy) : ix * ny + iy)
+			buf[k] = indland[m + 1] ? 0x01 : 0x00
+			k += 1
+		end
+	end
+	return buf
+end
+
 function _aqua_composite_rgb(bat::Matrix{Float32}, Z::Matrix{Float32}, splitDryWet::Bool,
                              waterlo::Float64, waterhi::Float64, transparency::Float64,
                              imgbat::Array{UInt8,3}, landhi::Float64,
@@ -344,7 +390,7 @@ function _aqua_composite_rgb(bat::Matrix{Float32}, Z::Matrix{Float32}, splitDryW
 	if !splitDryWet
 		return _aqua_colorize(Z, waterlo, waterhi, watercmap), imgbat
 	end
-	indland = abs.(bat .- Z) .< 1e-2
+	indland = _aqua_indland(bat, Z)
 	Zc = copy(Z)
 	Zc[indland] .= 0.0
 	if isempty(imgbat)                                     # cache: only depends on the (static) bathymetry
@@ -391,12 +437,16 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && error("Aquamoto: no file open in this window")
 	(0 <= k < st.nsteps) || error("Aquamoto: slice $k out of range (0..$(st.nsteps - 1))")
-	G = GMT.gmtread("$(st.path)?$(st.varname)[$(k)]")
-	#Z = eltype(G.z) === Float64 ? G.z : Float64.(G.z)		# WTF is that Float64 doing here?
+	G = _gmtread_trb("$(st.path)?$(st.varname)[$(k)]")
+	# Read in "TRB" like every other grid, and composited WHERE IT LIES: the colouring below is
+	# element-wise, and the stage and the bathymetry come from the SAME file through the SAME reader,
+	# so they share an element order. Only the RGBA pack (and the viewer's zhover) needs the layout.
 	Z = G.z
 	bat = st.bat.z
-	ny, nx = size(Z)
+	nx, ny = _grid_dims(G)
 	(size(bat) == size(Z)) || error("Aquamoto: '$(st.varname)' ($(size(Z))) and bathymetry ($(size(bat))) sizes differ")
+	(_grid_layout_code(G) == _grid_layout_code(st.bat)) ||
+		error("Aquamoto: '$(st.varname)' ($(G.layout)) and bathymetry ($(st.bat.layout)) have different memory layouts")
 
 	# Colourbar min/max = the real min/max of the WATER being displayed, i.e. the actual data range of
 	# exactly the cells this slice colours as water. In Split Dry/Wet that is the WET cells only (the dry
@@ -418,19 +468,38 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 		waterlo, waterhi = sc.alllo[k+1], sc.allhi[k+1]
 	end
 	(waterhi > waterlo) || (waterhi = waterlo + 1.0)     # guard an exactly-flat layer (div-by-zero only)
+	# The water quantity is a DEVIATION from the rest state and its palette is DIVERGING (:polar =
+	# trough / calm / crest). A range that never crosses zero — which is what a slice whose water is
+	# entirely above (or below) the rest level gives, e.g. [0.006, 0.397] as the wave arrives — puts
+	# every wet cell on ONE side of the ramp: the map goes flat white and the land overwrite vanishes
+	# with it. Centre the scale on zero and let the amplitude set its half-width, so calm water is the
+	# palette's middle at every slice and the two sides mean what they say. The "global min/max"
+	# checkbox lands here too — one rule for both, no per-branch special case.
+	amp = max(abs(waterlo), abs(waterhi))
+	amp > 0 || (amp = 1.0)
+	waterlo, waterhi = -amp, amp
 	landhi = st.bat.range[6]                           # max land elevation, straight from the grid's OWN known range
 	rgb, st.imgbat = _aqua_composite_rgb(bat, Z, splitDryWet, waterlo, waterhi, transparency, st.imgbat, landhi,
 	                                     shadeWater, shadeLand, st.watercmap, st.landcmap)
 
-	rgba = _aqua_pack_rgba(rgb)
-	zhover = G.z                         # native GMT column-major layout -- passed as-is
+	zhover, znx, zny, zlay = _grid_zbuf(G)   # stage buffer + the layout code the VIEWER will read it with
+	# The composite was coloured element-wise off `G` itself, so the pack must follow THE GRID's own
+	# layout, not the one `_grid_zbuf` hands the viewer -- those differ only in the degraded case
+	# (a library too old to be told a layout, see `_grid_zbuf`), and mixing them up would shear the
+	# texture exactly the way that case exists to prevent.
+	rgba = _aqua_pack_rgba(rgb, _grid_layout_code(G), Int(nx), Int(ny))
+	# THE dry/wet mask goes over WITH the composite it belongs to: the viewer relights water and land
+	# from different sources with different lights, and it must split them exactly where this composite
+	# painted them (`_aqua_indland`), never by a test of its own. A non-split slice is all water.
+	lmask = splitDryWet ? _aqua_pack_landmask(_aqua_indland(bat, Z), _grid_layout_code(G), Int(nx), Int(ny)) :
+	                      zeros(UInt8, Int(nx) * Int(ny))
 	cz, crgb, n = _cpt_nodes_range(waterlo, waterhi, st.watercmap)   # colourbar legend = the water scale
 	r = st.bat.range
 	name = basename(st.path)                                   # handle named after the file, like every other layer
 	ok = ccall(_fn(:gmtvtk_show_layer_rgba_h), Cint,
 		(Ptr{Cvoid}, Ptr{Cuchar}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		 Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cfloat}, Cstring),
-		scene, rgba, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(st.geog), cz, crgb, Cint(n), zhover, name)
+		 Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cfloat}, Cstring, Cint, Ptr{Cuchar}),
+		scene, rgba, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(st.geog), cz, crgb, Cint(n), zhover, name, zlay, lmask)
 	(ok == 0) && error("Aquamoto: the viewer rejected the update (window closed?)")
 	if st.first
 		_remember_object!(scene, :grid, name, st.bat)
@@ -448,13 +517,16 @@ end
 function _aquamoto_runin(scene::Ptr{Cvoid})
 	st = get(_AQUA, scene, nothing)
 	st === nothing && error("Aquamoto: no file open in this window")
-	bat = st.bat.z
+	# The mask this builds becomes a GRID (mat2grid below, column-major south-first by construction),
+	# so this scan works on `_zmat` views -- (ny,nx) with row 1 = south for any layout the file was
+	# read in. Index arithmetic only, no matrix copies.
+	bat = _zmat(st.bat)
 	everwet = falses(size(bat))
 	_progress_show_async(st.nsteps, "Aquamoto — computing inundation…")
 	for k in 0:st.nsteps-1
-		Z = GMT.gmtread("$(st.path)?$(st.varname)[$(k)]").z
+		Z = _zmat(_gmtread_trb("$(st.path)?$(st.varname)[$(k)]"))
 		@inbounds for i in eachindex(Z)
-			everwet[i] |= abs(bat[i] - Z[i]) >= 1e-2
+			everwet[i] |= !_aqua_isdry(bat[i], Z[i])   # wet == not dry, by THE dry/wet test
 		end
 		_progress_status(k + 1, "Aquamoto — computing inundation… ($(k + 1)/$(st.nsteps))")   # raw count, see _aquamoto_open
 	end

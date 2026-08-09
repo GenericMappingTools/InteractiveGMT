@@ -31,11 +31,14 @@ static void showInfoText(QWidget *parent, const QString &title, const QString &t
 // Tools' "Crop Image") bail to a low-res fallback on exactly the ordinary grid window.
 // `dx`/`dy` <= 0 (the usual case) derive the spacing from the extent; a caller that already knows the
 // grid's own increment (gmtvtk_set_layer_image) passes it verbatim.
+// `zlayout`!=0 says the CALLER's buffer is "TRB" (row-major, north first — what
+// `gmtread(..., layout="TRB")` returns); gridCopyToCM stores it in the canonical column-major order
+// every Scene-side consumer below reads, WITHOUT the host ever transposing a matrix.
 static void sceneSetGridLayer(Scene *s, const float *z, int nx, int ny,
                               double x0, double x1, double y0, double y1,
-                              double dx = 0.0, double dy = 0.0) {
+                              double dx = 0.0, double dy = 0.0, int zlayout = 0) {
 	if (!s || !z || nx < 1 || ny < 1) return;
-	s->gridZ.assign(z, z + (size_t)nx * ny);       // column-major z[i*ny+j], the view_grid layout
+	gridCopyToCM(s->gridZ, z, nx, ny, zlayout);   // column-major z[i*ny+j], the view_grid layout
 	s->gnx = nx; s->gny = ny;
 	s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
 	s->gdx = (dx > 0.0) ? dx : ((nx > 1) ? (x1 - x0) / (nx - 1) : 0.0);
@@ -2589,17 +2592,12 @@ static void rebuildSceneObjects(Scene *s) {
 		LineRef lr{ LK_Profile, s->profLine };
 		addRow("Profile", s->profLine, IC_Profile, &lr);
 	}
-	// The Aquamoto CONTROL window's own STANDALONE handle (its own top-level row, NOT nested inside the
-	// nc cube's group). It is only ASSOCIATED with the cube by LIFETIME: destroying the cube surface
-	// (its Remove) also destroys this window -- see g_aquamotoDestroy in sceneRemoveSurface. The window
-	// is otherwise un-killable by its own X (75_aquamoto.cpp); this handle's checkbox shows/hides it.
-	if (g_aquamotoHasWindow && g_aquamotoHasWindow(s)) {
-		makeRow("Aquamoto viewer", IC_Image,
-		        g_aquamotoIsVisible && g_aquamotoIsVisible(s),
-		        [s](bool on) { if (g_aquamotoSetVisible) g_aquamotoSetVisible(s, on ? 1 : 0); },
-		        [s](const QPoint&) { if (g_aquamotoReopen) g_aquamotoReopen(s); },
-		        "Show / hide the Aquamoto control window · left-click to raise it");
-	}
+	// (The Aquamoto CONTROL window has NO row here. A tool window closed with its X is a PARKED TOOL,
+	// and every tool kind — X,Y plot, Contours, Illumination, Aquamoto — goes into the one shared
+	// bottom strip below via parkTool. It used to get a hand-built top-level row right here, which put
+	// a tool among the DATA elements and made this the second implementation of a shared operation.
+	// Its lifetime is still tied to its cube surface: that Remove destroys it, see g_aquamotoDestroy
+	// in sceneRemoveSurface.)
 	// Remember which groups the user opens / closes by hand (keyed by the label stamped on the item in
 	// beginGroupHandle), so the next rebuild restores that instead of re-folding what they just opened.
 	QObject::connect(tree, &QTreeWidget::itemExpanded, tree, [s](QTreeWidgetItem *it) {

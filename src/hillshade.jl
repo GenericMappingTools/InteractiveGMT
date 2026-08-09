@@ -58,7 +58,7 @@ end
 # The mex runs on a GMT-padded copy with GMT_boundcond_set filling the pad; here the 3x3 window is
 # edge-REPLICATED instead, which differs from the mex only on the outermost row/column.
 function _hs_esri(G::GMTgrid, azim::Float64, elev::Float64)
-	z = G.z
+	z = _zmat(G)            # (ny,nx), row 1 = south, for ANY layout the grid was read in
 	ny, nx = size(z)
 	el = (90.0 - elev) * pi / 180
 	az = 90.0 - azim
@@ -154,11 +154,12 @@ end
 # to 0 — for the old algorithm that clamp never bites, its output is already in [0,1].
 function _hs_false_color(G::GMTgrid, azR::Float64, azG::Float64, azB::Float64;
                          oldalgo::Bool=false, elev::Float64=30.0, amp::Float64=125.0)
-	ny, nx = size(G.z)
+	Z = _zmat(G)            # (ny,nx), row 1 = south, for ANY layout the grid was read in
+	ny, nx = size(Z)
 	rgb = Array{UInt8,3}(undef, ny, nx, 3)
 	for (b, az) in enumerate((azR, azG, azB))
 		# mirone.m calls it as shade_manip_raster((azim-90)*D2R, elev*D2R, Z, size_amp)
-		R = oldalgo ? _hs_manip_raster(G.z, az - 90.0, elev, amp) : _hs_f32(_hs_classic(G, az))
+		R = oldalgo ? _hs_manip_raster(Z, az - 90.0, elev, amp) : _hs_f32(_hs_classic(G, az))
 		@inbounds for k in eachindex(R)
 			v = 254.0f0 * R[k] + 1.0f0
 			rgb[k + (b-1)*ny*nx] = isnan(v) ? UInt8(0) : (v <= 0.0f0 ? UInt8(0) : (v >= 255.0f0 ? UInt8(255) : round(UInt8, v)))

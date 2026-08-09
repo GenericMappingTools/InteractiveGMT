@@ -25,7 +25,7 @@ function _on_grdredpol(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			(fig isa QtFigure) ? fig.G : error("no grid loaded in this window")
 		else
 			isfile(spec) || error("grid file not found: $spec")
-			GMT.gmtread(String(spec))
+			_gmtread_trb(String(spec))      # grids are READ in "TRB" — THE reader
 		end
 
 		# -G with no name = give the result back instead of writing it (the dialog's own Save-as box is

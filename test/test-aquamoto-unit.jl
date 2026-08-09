@@ -55,7 +55,7 @@ end
 	for j in 1:3, i in 1:2
 		rgb[i, j, 1] = UInt8(10i); rgb[i, j, 2] = UInt8(20j); rgb[i, j, 3] = UInt8(i + j)
 	end
-	buf = IG._aqua_pack_rgba(rgb)
+	buf = IG._aqua_pack_rgba(rgb, 0, 3, 2)      # zlayout 0 = "BCB", nx=3, ny=2
 	@test length(buf) == 2 * 3 * 4
 	# Output row 0 (bytes 1..12) must be GMT row 1 (south), west->east; row 1 (bytes 13..24) = GMT row 2.
 	for j in 1:3
@@ -66,6 +66,19 @@ end
 		b = 12 + (j - 1) * 4
 		@test buf[b+1] == UInt8(10 * 2) && buf[b+2] == UInt8(20j) && buf[b+3] == UInt8(2 + j) && buf[b+4] == 0xff
 	end
+
+	# SAME field, composited off a grid read in "TRB" (row-major, north row first): the planes then sit
+	# in THAT element order — plane index of node (ix,iy) is (ny-1-iy)*nx + ix — and the packer must
+	# produce the byte-identical output. This is the whole point of carrying a layout code instead of
+	# transposing (SACRED_LAW.md, grid memory-layout law).
+	rgbT = Array{UInt8}(undef, 2, 3, 3)   # dims are nominal; only the element order matters here
+	for j in 1:3, i in 1:2                # i = 1 -> south (iy=0), j = 1 -> west (ix=0)
+		m = (2 - i) * 3 + (j - 1)         # (ny-1-iy)*nx + ix, 0-based
+		rgbT[m + 1]     = UInt8(10i)
+		rgbT[m + 1 + 6] = UInt8(20j)
+		rgbT[m + 1 + 12] = UInt8(i + j)
+	end
+	@test IG._aqua_pack_rgba(rgbT, 3, 3, 2) == buf     # zlayout 3 = "TRB"
 end
 
 @testitem "aqua_composite_rgb: dry/wet split, hard land overwrite beats transparency" tags=[:unit, :fast] begin

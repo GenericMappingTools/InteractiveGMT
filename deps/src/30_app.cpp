@@ -1037,7 +1037,12 @@ static std::unordered_set<Scene*> g_scenes;
 // destruction is already unusable (its widgets are gone before Qt even emits destroyed()), so it
 // answers false here — the one place every caller asks, rather than a teardown check bolted onto
 // each of them (SACRED_LAW.md: fix the shared source).
-static bool sceneAlive(Scene *s) { return s && !s->tearingDown && g_scenes.count(s) != 0; }
+// MEMBERSHIP FIRST, THEN THE STRUCT. The whole point of this guard is that the handle may be
+// garbage (a stale pointer from a closed window, or — in the host's unit tests — an invented one),
+// so the registry lookup, which only compares pointer VALUES, has to come before any dereference.
+// Reading `s->tearingDown` first made every call with a bogus handle an access violation instead of
+// a clean `false` (`gmtvtk_log_error` on a fake scene: EXCEPTION_ACCESS_VIOLATION, test-gmtmodules).
+static bool sceneAlive(Scene *s) { return s && g_scenes.count(s) != 0 && !s->tearingDown; }
 
 // Two kernel32 calls, hand-declared instead of #include <windows.h>: that header unconditionally
 // drags in wingdi.h (WIN32_LEAN_AND_MEAN does NOT gate it — tried, reverted), whose GDI

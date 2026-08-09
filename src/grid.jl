@@ -106,15 +106,12 @@ function view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside::Symbol=:shade
 				   vcurtain=nothing, title::AbstractString="i'GMT",
 				   geographic::Union{Bool,Nothing}=nothing)
 	_load_dialog_begin("Opening the grid…")             # closed by _load_dialog_end just before we return
-	# The viewer's grid ccall takes GMT's own memory layout ("BCB": column-major, z sized (ny,nx),
-	# row 1 = south). A GDAL-produced grid (gdalwarp, gdaltranslate, gdaldem) is "TRB" — row-major,
-	# north first, z sized (nx,ny) — and reading one as the other renders the transpose. This is the
-	# SECOND door into the viewer (the other is `_add_grid_to_scene`); both normalise, so no caller
-	# has to know which layout its grid happens to carry.
-	G = _grid_to_bcb(G)
 	cmap === :auto && (cmap = _default_cmap(G))         # geo only for topo/bathymetry grids, else turbo
-	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z)   # column-major; viewer reads z[ix*ny + iy]. Float32 = no copy (C stores float anyway)
-	ny, nx = size(z)                  # GMT layout: dim1 = ny (y), dim2 = nx (x)
+	# The z buffer goes to the viewer EXACTLY as it lies, with the layout code that says how to read
+	# it (GridLay, 10_geometry.cpp) — "TRB" (how grids are read) and "BCB" (what GMT's modules
+	# return) both pass through untouched. NO transposition, here or anywhere else. This is the
+	# SECOND door into the viewer; the other is `_add_grid_to_scene`, which uses the same helper.
+	z, nx, ny, zlay = _grid_zbuf(G)
 	r = G.range                       # [xmin xmax ymin ymax zmin zmax ...]
 	geog = geographic === nothing ? _isgeographic(G) : geographic
 	cz, crgb, ncolor = _cpt_nodes(G, cmap)   # linear CPT control nodes (z + rgb)
@@ -138,9 +135,9 @@ function view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside::Symbol=:shade
 	# mesh (wire edges) hidden by default; the 'e' hotkey toggles it live in the viewer.
 	h = ccall(_fn(:gmtvtk_view_grid), Ptr{Cvoid},
 		  (Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cint, Cint, Cstring),
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cint, Cint, Cstring, Cint),
 		  z, nx, ny, r[1], r[2], r[3], r[4], Cint(geog), cz, crgb, Cint(ncolor),
-		  img, Cint(iw), Cint(ih), Cint(ibands), Cint(edges), Cint(triangulate), Cint(0), title)
+		  img, Cint(iw), Cint(ih), Cint(ibands), Cint(edges), Cint(triangulate), Cint(0), title, zlay)
 	fig = _register_fig!(QtFigure(h, G))
 	_remember_object!(h, :grid, "", G)                # File>Save / Scene Objects "Save…" can write it
 	_session_record!(h, :basegrid, :generated)        # Save Session: no source path here -> serialize the grid
@@ -195,10 +192,10 @@ function view_image(I::GMTimage; title::String="i'GMT",
 	imode = referenced ? Cint(1) : Cint(2)             # 1 = axes + margin, 2 = no axes + edge-to-edge
 	h = ccall(_fn(:gmtvtk_view_grid), Ptr{Cvoid},
 		  (Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cint, Cint, Cstring),
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cint, Cint, Cstring, Cint),
 		  z, Cint(nx), Cint(ny), ir[1], ir[2], ir[3], ir[4], Cint(geog),
 		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands),
-		  Cint(0), Cint(1), imode, title)               # edges=0, triangulate=1, image_only=imode
+		  Cint(0), Cint(1), imode, title, Cint(0))      # edges=0, triangulate=1, image_only=imode; z = own 2x2 plane ("BCB")
 	h == C_NULL && error("view_image: the viewer could not open the window")
 	fig = _register_fig!(QtImage(h, I))
 	_remember_object!(h, :image, "", I)               # File>Save / Scene Objects "Save…" can write it

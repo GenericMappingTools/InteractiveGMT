@@ -211,9 +211,11 @@ function _csaps_setup(G::GMTgrid, p, who::String)
 		Gw = deepcopy(G);  Gw.hasnans = 2	# fillgaps must not warn about a grid we already checked
 		Gw, mask = GMT.fillgaps(Gw)
 	end
-	# GMT.jl grid layout: z is [ny, nx], row 1 = southernmost. Dimension 1 is Y, dimension 2 is X —
-	# the same {Y,X} order csaps is called with in the .m.
-	Z = Float64.(Gw.z)
+	# The maths below wants z as [ny, nx] with row 1 = southernmost — dimension 1 is Y, dimension 2 is
+	# X, the same {Y,X} order csaps is called with in the .m. `_zmat` gives exactly that for EVERY
+	# layout a grid can be read in (index arithmetic only; `Float64.` then materialises it once here,
+	# which this function was doing anyway).
+	Z = Float64.(_zmat(Gw))
 	y = Float64.(collect(Gw.y));  x = Float64.(collect(Gw.x))
 	(length(y) == size(Z, 1) && length(x) == size(Z, 2)) ||
 		error("$who: grid axes ($(length(y))×$(length(x))) do not match z ($(size(Z, 1))×$(size(Z, 2)))")

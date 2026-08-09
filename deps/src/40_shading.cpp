@@ -251,7 +251,8 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
                           double dx, double dy, vtkColorTransferFunction *ctf, double lo, double hi,
                           double wx0, double wx1, double wy0, double wy1,
                           int txW, int txH, std::vector<unsigned char> &out,
-                          const unsigned char *baseRGBA = nullptr) {
+                          const unsigned char *baseRGBA = nullptr,
+                          int zlayout = 0) {   // z layout: 0 = "BCB" (s->gridZ), !=0 = a caller's "TRB" buffer
 	out.assign((size_t)txW * txH * 4, 0);
 	if ((!ctf && !baseRGBA) || dx == 0.0 || dy == 0.0) return;
 	// discretize the CPT once (skipped when a host composite supplies the albedo)
@@ -272,7 +273,8 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 	const bool   ext   = haveExternShade(s);               // Hillshade tool: GMT-computed reflectance
 	const bool   shade = s->useHillshade || pbr;           // any per-pixel shade (hillshade or PBR)
 	const ReliefLight L = makeReliefLight(s);      // SAME light/style the 3-D surface uses (one source of truth)
-	auto Zc = [&](int ix, int iy) -> double { return z[(size_t)ix * ny + iy]; };   // column-major z[ix*ny+iy]
+	const GridLay zlay = gridLay(nx, ny, zlayout);                               // THE layout resolver (10_geometry.cpp)
+	auto Zc = [&](int ix, int iy) -> double { return zlay.at(z, ix, iy); };
 	auto clampi = [](int v, int hi2) { return v < 0 ? 0 : (v > hi2 ? hi2 : v); };
 	// Per-row parallel: every output row is a disjoint slice of `out`, and every read (z, tbl LUT,
 	// light L) is shared read-only, so no locks. vtkSMPTools runs on VTK's SMP backend (TBB here).
@@ -441,6 +443,8 @@ static void bakeAquaShade(Scene *s) {
 	}
 	const float *stage = haveStage ? s->gridZ.data() : nullptr;
 	const float *bathy = haveBathy ? s->aquaBathyZ.data() : nullptr;
+	const bool haveMask = ((int)s->aquaLandMask.size() == nx * ny);
+	const unsigned char *mask = haveMask ? s->aquaLandMask.data() : nullptr;
 	const double dx = s->gdx != 0.0 ? s->gdx : 1.0, dy = s->gdy != 0.0 ? s->gdy : 1.0;
 	auto at = [](const float *z, int ix, int iy, int gny) -> double { return z[(size_t)ix * gny + iy]; };
 	// Per-row parallel: texel (row r = south..north, col) <-> grid (ix=col, iy=r); z is column-major
@@ -453,9 +457,12 @@ static void bakeAquaShade(Scene *s) {
 			const int ix = col;
 			const size_t t = ((size_t)r * nx + col) * 4;
 			const double sz = stage ? at(stage, ix, iy, ny) : std::numeric_limits<double>::quiet_NaN();
-			// dry LAND where the water level sits on the sea floor (or no water / no stage) -> the LAND
-			// image (bathymetry + land light); else WATER (stage + water light). Same test as _aqua_indland.
-			const bool land = bathy && (!stage || std::isnan(sz) || std::fabs(at(bathy, ix, iy, ny) - sz) < 1e-2);
+			// LAND or WATER: read off the host's mask, the SAME one that decided how this very pixel was
+			// coloured (`_aqua_indland`, pushed with the composite). Never re-derived here — that was the
+			// second implementation of one operation, and a disagreement between the two lit land pixels
+			// with the water light and wiped out the dry/wet split. `bathy` is still required, since the
+			// land side shades FROM it.
+			const bool land = bathy && haveMask && mask[(size_t)r * nx + col] != 0;
 			const bool shadeThis = land ? lShade : wShade;
 			if (!shadeThis) {                            // this side's light is off -> its colour verbatim
 				out[t] = base[t]; out[t+1] = base[t+1]; out[t+2] = base[t+2]; out[t+3] = base[t+3];

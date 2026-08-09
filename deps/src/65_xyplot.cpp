@@ -77,6 +77,9 @@ struct XYPlot {
 	Scene                              *owner = nullptr;
 	bool                                parked = false;   // closed with the X: hidden, row in the dock
 	bool                                reallyClose = false;  // set by the row's "Delete" — let the X through
+	bool                                tearingDown = false;  // programmatic close requested: dead to
+	                                                          // xyAlive from that instant, not only once
+	                                                          // the event loop has destroyed the window
 	QLabel                             *infoLabel = nullptr;      // optional header strip above the chart
 	                                                                // (e.g. Tide tool's Next High/Now/Next Low)
 	double                              infoFontPt = 8.0;          // user-adjustable via the Object Manager
@@ -107,7 +110,9 @@ struct XYPlot {
 // Live X,Y windows, keyed by the XYPlot *handed back to the host. A handle is
 // valid only while its window is open (the destroyed-lambda erases it).
 static std::unordered_set<XYPlot*> g_xyplots;
-static bool xyAlive(XYPlot *p) { return p && g_xyplots.count(p) != 0; }
+// Registry membership FIRST (it only compares pointer values, so a garbage handle is safe), and the
+// struct only after — same rule, same reason, as sceneAlive (30_app.cpp).
+static bool xyAlive(XYPlot *p) { return p && g_xyplots.count(p) != 0 && !p->tearingDown; }
 
 // The current page of a window (always valid once the window is built: there is
 // always at least one page).

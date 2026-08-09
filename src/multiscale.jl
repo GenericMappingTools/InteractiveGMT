@@ -230,7 +230,7 @@ function mirblock(G::GMTgrid; method::Int=0, win::Int=3, geog=nothing)
 		error("Terrain Modeling: unknown method $method (0…$(length(MIRBLOCK_METHODS) - 1))")
 	(win >= 3 && isodd(win)) || error("Terrain Modeling: window size must be an odd number >= 3 (got $win)")
 	h = win ÷ 2
-	z = Matrix{Float32}(G.z)
+	z = Matrix{Float32}(_zmat(G))   # (ny,nx), row 1 = south, for ANY layout the grid was read in
 	ny, nx = size(z)
 	P = _mb_pad(z, h)
 	isgeog = geog === nothing ? (_isgeog(G) != 0) : Bool(geog)

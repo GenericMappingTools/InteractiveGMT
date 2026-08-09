@@ -188,7 +188,9 @@ function _on_clipgrid(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		_grid_command!(G2, "InteractiveGMT clip below=$below above=$above belowVal=$(below_val) " *
 		                   "aboveVal=$(above_val) inBetween=$in_between stretch=$stretch")
 		r = G2.range
-		nx = size(z, 2);  ny = size(z, 1)
+		# The clip is element-wise, so G2 keeps G's memory layout: hand the buffer over as it lies
+		# with its layout code (NO transposition), whatever layout the source grid was read in.
+		zbuf, nx, ny, zlay = _grid_zbuf(G2)
 		geog = _isgeog(G2)
 		cz, crgb, ncolor = _cpt_nodes(G2, :turbo)
 		has_surface = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene)
@@ -196,9 +198,9 @@ function _on_clipgrid(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
 		ok = ccall(_fn(fn), Cint,
 			  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-			   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
-			  scene, G2.z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
-			  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(title))
+			   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
+			  scene, zbuf, nx, ny, r[1], r[2], r[3], r[4], Cint(geog),
+			  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(title), zlay)
 		if ok == 0
 			_viewer_log_error(scene, "Clip Grid: window closed, grid not added")
 			return Cint(0)

@@ -588,7 +588,8 @@ function _earthtide_grid(scene, start, comp, inc=0.5)
 	(G === nothing) && error("earthtide: grid not produced")
 	_grid_command!(G, "GMT.earthtide(R=(-180.0,180.0,-90.0,90.0), I=$inc, T=\"$start\", C=\"$letter\")")
 	title = "earth tide $short"
-	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z); ny, nx = size(z); r = G.range
+	z, nx, ny, zlay = _grid_zbuf(G)   # buffer as it lies + layout code -- NO transposition
+	r = G.range
 	geog = _isgeog(G)
 	cz, crgb, ncolor = _cpt_nodes(G, :turbo)
 	ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, title)
@@ -598,9 +599,9 @@ function _earthtide_grid(scene, start, comp, inc=0.5)
 	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
 	ok = ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
-		  scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog),
-		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(title))
+		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
+		  scene, z, nx, ny, r[1], r[2], r[3], r[4], Cint(geog),
+		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(title), zlay)
 	if ok == 0
 		_viewer_log_error(scene, "Earth Tides: window closed, grid not added")
 		return

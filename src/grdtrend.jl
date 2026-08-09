@@ -52,7 +52,7 @@ function _on_grdtrend(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			isempty(wpath) || cp(wpath, wtmp; force = true)   # user weights in, robust weights out
 			GMT.grdtrend(G; trend = true, weights = wtmp, kw...)
 			isfile(wtmp) || error("grdtrend wrote no weight grid")
-			R = GMT.gmtread(wtmp)
+			R = _gmtread_trb(wtmp)      # grids are READ in "TRB" — THE reader
 		else
 			want == "diff" ? (kw[:diff] = true) : (kw[:trend] = true)
 			isempty(wfile) || (kw[:weights] = wfile)

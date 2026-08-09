@@ -40,9 +40,9 @@ function _on_bgregion(scene::Ptr{Cvoid}, copt::Cstring)::Cvoid
 		crgb = Float64[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # white, white (row-major RGB, 0..1)
 		ccall(_fn(:gmtvtk_promote_surface_h), Cint,
 		      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+		       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
 		      h, zblank, Cint(2), Cint(2), W, E, S, N, Cint(geog ? 1 : 0),
-		      cz, crgb, Cint(2), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "Background region")
+		      cz, crgb, Cint(2), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "Background region", Cint(0))
 
 		if geog
 			ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),

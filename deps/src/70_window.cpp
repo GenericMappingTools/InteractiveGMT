@@ -1418,15 +1418,16 @@ static void onLodCamera(vtkObject*, unsigned long, void *cd, void*) {
 // Drives the Shading dock's "Shaded image (2-D)" geometry toggle, for BOTH a 3-D-cube layer and a
 // plain single grid. The two callees re-shade + sync the dock internally.
 extern "C" __declspec(dllexport) int gmtvtk_show_layer_image_h(void*, const float*, int, int, double, double,
-                                                    double, double, int, const double*, const double*, int, const char*);
+                                                    double, double, int, const double*, const double*, int, const char*, int);
 extern "C" __declspec(dllexport) int gmtvtk_replace_base_grid_h(void*, const float*, int, int, double, double,
-                                                     double, double, int, const double*, const double*, int, const char*);
+                                                     double, double, int, const double*, const double*, int, const char*, int);
 extern "C" __declspec(dllexport) int gmtvtk_remove_grid_h(void*, const char*);   // the ONE layer-removal path
 // fwd (defined in 90_c_api.cpp; same TU) -- the SHARED flat-image/composite builder.
 static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int txH,
                               const float *z, int nx, int ny,
                               double x0, double x1, double y0, double y1, int geographic,
-                              const double *cz, const double *crgb, int ncolor, const char *name, bool isCustom);
+                              const double *cz, const double *crgb, int ncolor, const char *name, bool isCustom,
+                              int zlayout = 0);
 
 static void rebuildBaseFromStored(Scene *s, bool asImage);   // the base's half, defined just below
 
@@ -1450,8 +1451,8 @@ static void rebuildLayerFromStored(Scene *s, ExtraObj *ex, bool asImage) {
 	const std::string nm = ex->name;
 	const bool showBar = ex->showBar;                 // THIS layer's own colour-bar intent, carried across
 	gmtvtk_remove_grid_h(s, nm.c_str());              // the ONE removal path (actor, axes, rows, colorbar)
-	if (asImage) gmtvtk_show_layer_image_h (s, z.data(), nx, ny, x0, x1, y0, y1, geog, cz.data(), crgb.data(), nc, nm.c_str());
-	else         gmtvtk_replace_base_grid_h(s, z.data(), nx, ny, x0, x1, y0, y1, geog, cz.data(), crgb.data(), nc, nm.c_str());
+	if (asImage) gmtvtk_show_layer_image_h (s, z.data(), nx, ny, x0, x1, y0, y1, geog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/0);
+	else         gmtvtk_replace_base_grid_h(s, z.data(), nx, ny, x0, x1, y0, y1, geog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/0);
 	// The layer that owned the colour bar was just removed and rebuilt as the window's surface, so the
 	// bar has to be re-derived for whatever is active NOW — through the same refreshGridColorbar every
 	// other add / hide / restack ends in. The bar belongs to the LAYER, so the layer's own intent moves
@@ -1477,14 +1478,14 @@ static void rebuildBaseFromStored(Scene *s, bool asImage) {
 			                   s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str(), true);
 			return;
 		}
-		gmtvtk_show_layer_image_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str());
+		gmtvtk_show_layer_image_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/0);
 	} else {
 		// 3-D SURFACE. SACRED LAW: the same operation uses the same function -- a tsunami warps + hillshades
 		// through the EXACT builder every grid uses (gmtvtk_replace_base_grid_h -> hillshadeMapper), no
 		// special case. Drop the custom-texture flag so it shades as a plain grid; the stored composite
 		// (aquaBaseRGBA) survives, so re-checking "Shaded image (2-D)" restores the flat blend above.
 		s->customLayerTexture = false;
-		gmtvtk_replace_base_grid_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str());
+		gmtvtk_replace_base_grid_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/0);
 	}
 }
 
@@ -14169,7 +14170,8 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
                               const double *cz, const double *crgb, int ncolor,
                               const unsigned char *img, int iw, int ih, int ibands,
                               int edges, bool pointCloud, int geographic,
-                              const float *gz, int gnx, int gny, bool blankStart) {
+                              const float *gz, int gnx, int gny, bool blankStart,
+                              int gzLayout = 0) {   // gz layout: 0 = GMT "BCB", !=0 = "TRB" (GridLay)
 	// The vertical normaliser, BEFORE anything is built: every actor below is given
 	// SetScale(xfac, 1, zfac*ve), and `zfac` is derived from the drawn geometry (sceneZRef,
 	// 10_geometry.cpp) rather than from any assumption about z's unit. The caller's contract has
@@ -14243,7 +14245,7 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 		s->surfLut = lut; s->surfCtfRange = ctfRange; s->surfEdges = edges;
 		// Data layer MUST exist before refineQuadtree (tiles sample s->gridZ). Populate it here from
 		// gz (the caller fills it only AFTER buildAndShow returns, which would be too late).
-		sceneSetGridLayer(s, gz, gnx, gny, x0, x1, y0, y1);
+		sceneSetGridLayer(s, gz, gnx, gny, x0, x1, y0, y1, 0.0, 0.0, gzLayout);
 		s->quadRoot = buildQuadNode(0, gnx - 1, 0, gny - 1, 0, x0, s->gdx, y0, s->gdy);
 		s->surf = vtkSmartPointer<vtkActor>::New();   // placeholder handle; real geometry = tiles
 		s->surfGroup->SetScale(s->xfac, 1.0, s->zfac * s->ve);
@@ -14705,7 +14707,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 const float *gz = nullptr,         // non-null -> TILED plain-grid render (pd ignored)
 						 int gnx = 0, int gny = 0,          // grid dims for the tiled path
 						 bool blankStart = false,           // empty launcher: open as a clean dark canvas (no axes flash)
-						 bool openFlat2D = false) {         // open in flat-2D from the FIRST frame (grids) — no 3-D flash
+						 bool openFlat2D = false,           // open in flat-2D from the FIRST frame (grids) — no 3-D flash
+						 int gzLayout = 0) {              // gz layout: 0 = GMT "BCB", !=0 = "TRB" (see GridLay)
 	ensureApp();
 
 	Scene *s = new Scene();
@@ -14776,7 +14779,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	s->envTex = makeSkyEnv();
 
 	buildSceneContent(s, pd, x0, x1, y0, y1, cz, crgb, ncolor, img, iw, ih, ibands,
-	                  edges, pointCloud, geographic, gz, gnx, gny, blankStart);
+	                  edges, pointCloud, geographic, gz, gnx, gny, blankStart, gzLayout);
 
 	// --- main window + native menubar ---------------------------------------
 	// Heap-allocated + delete-on-close: the function returns immediately (the host

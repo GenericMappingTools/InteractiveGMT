@@ -151,13 +151,13 @@ end
 function _apply_host_grid!(scene::Ptr{Cvoid}, G::GMTgrid, name::String; zrange=nothing)
 	cmap             = _default_cmap(G)
 	cz, crgb, ncolor = zrange !== nothing ? _cpt_nodes_range(zrange[1], zrange[2], cmap) : _cpt_nodes(G, cmap)
-	z    = eltype(G.z) === Float32 ? G.z : Float32.(G.z)
-	ny, nx = size(z);  r = G.range
+	z, nx, ny, zlay = _grid_zbuf(G)   # buffer as it lies + layout code -- NO transposition
+	r    = G.range
 	geog = _isgeographic(G)
 	ok = ccall(_fn(:gmtvtk_replace_base_grid_h), Cint,
 		(Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		 Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring),
-		scene, z, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(geog), cz, crgb, Cint(ncolor), name)
+		 Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring, Cint),
+		scene, z, nx, ny, r[1], r[2], r[3], r[4], Cint(geog), cz, crgb, Cint(ncolor), name, zlay)
 	ok == 0 && error("the viewer rejected the base-grid replace (window closed?)")
 	_sync_host_grid!(scene, name, G)
 	return ok
@@ -173,7 +173,7 @@ function _on_transplant(scene::Ptr{Cvoid}, implant_path::String, res::Int=1, rec
 		H = _find_object(scene, :grid, "")
 		(H === nothing) && error("No host grid in this window to transplant into.")
 
-		I = GMT.gmtread(implant_path)
+		I = _gmtread_trb(implant_path)      # grids are READ in "TRB" — THE reader
 		I isa GMTgrid || error("The chosen file is not a grid: $(basename(String(implant_path)))")
 
 		# Optional rectangle clip (the rectangle-handle connection). Intersect the rect with the
@@ -258,7 +258,7 @@ function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant
 		G = _find_object(scene, :grid, name)
 		(G isa GMTgrid) || error("Nested blank grid '$name' not found in this window.")
 
-		I = GMT.gmtread(implant_path)
+		I = _gmtread_trb(implant_path)      # grids are READ in "TRB" — THE reader
 		I isa GMTgrid || error("The chosen file is not a grid: $(basename(implant_path))")
 
 		_nested_fill!(G, I)      # fill the blank grid IN PLACE from the implant

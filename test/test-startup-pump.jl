@@ -33,14 +33,18 @@
 	#    would leave this at 0 or 1, which is the bug verbatim.
 	@test nreg >= 40
 
-	# 2. No unpumped stretch long enough to freeze the window. Measured worst single gap ~0.11 s
-	#    (the first registration pays extra compilation); the failure mode being guarded against is
-	#    the WHOLE block unpumped, which measured ~0.9 s. 0.35 s sits well clear of both.
-	@test IG._CB_MAXGAP[] < 0.35
+	# 2. No unpumped stretch long enough to freeze the window. The gap that matters is the FIRST
+	#    registration's, which pays this session's compilation of the registration path — a machine-
+	#    and load-dependent number (measured 0.11 s when this was written, 0.36-0.65 s on a busier
+	#    box), NOT something the loop controls. The failure mode being guarded against is the WHOLE
+	#    block unpumped, which measured ~0.86 s, so the bound sits below that and above the compile
+	#    cost. The structural guard is assertion 1 (one pump per registration); this one only has to
+	#    catch "nothing was pumped at all".
+	@test IG._CB_MAXGAP[] < 0.8
 
 	# The instrumentation must reset per run, or a second call would report a stale maximum.
 	IG._CB_DONE[] = false
 	IG._ensure_callbacks()
 	@test IG._CB_PUMPS[] == nreg             # same set of registrations, freshly counted
-	@test IG._CB_MAXGAP[] < 0.35
+	@test IG._CB_MAXGAP[] < 0.8
 end

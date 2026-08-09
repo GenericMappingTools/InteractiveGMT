@@ -116,9 +116,9 @@ function _on_basemap(scene::Ptr{Cvoid}, copt::AbstractString)::Cvoid
 			zblank = zeros(Float32, 2, 2)
 			ccall(_fn(:gmtvtk_promote_surface_h), Cint,
 			      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-			       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring),
+			       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
 			      scene, zblank, Cint(2), Cint(2), Float64(dW), Float64(dE), Float64(S), Float64(N),
-			      Cint(1), C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "")
+			      Cint(1), C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "", Cint(0))
 			ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), scene)   # plane is scaffold only
 		end
 		# record=false: the cropped tile is REPRODUCIBLE from `copt` (crop etopo4), so Save Session stores a

@@ -1060,7 +1060,7 @@ function _oc_place(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, file::AbstractString, reg
 	end
 	# Only the drawn box is READ: `grdcut` pulls it straight off disk instead of materialising the whole
 	# global grid and throwing most of it away.
-	G    = reg === nothing ? GMT.gmtread(spec) : GMT.grdcut(spec, region = reg)
+	G    = reg === nothing ? _gmtread_trb(spec) : GMT.grdcut(spec, region = reg)
 	fin  = filter(isfinite, G.z)
 	cmap = isempty(fin) ? :auto : something(_oc_palette_cpt(file, extrema(fin)...), :auto)
 	empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0

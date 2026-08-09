@@ -740,6 +740,13 @@ struct Scene {
 	// per-slice stage = the WATER surface. Empty -> not an Aquamoto layer, bakeAquaShade is a no-op.
 	std::vector<unsigned char> aquaBaseRGBA;
 	std::vector<float>         aquaBathyZ;
+	// WHICH pixels are dry land, decided ONCE by the host that composited them (`_aqua_indland`,
+	// aquamoto.jl) and pushed WITH the composite. Same layout as aquaBaseRGBA: one byte per node,
+	// row-major, row 0 = south, 1 = land. The shading below splits the two sides BY THIS MASK and
+	// never by a test of its own — re-deriving it here was one operation with two implementations
+	// (SACRED_LAW.md), and the moment they disagreed the relight lit a land pixel with the water
+	// light and the dry/wet split vanished on screen.
+	std::vector<unsigned char> aquaLandMask;
 	AquaSideShade aquaWaterShade;   // WATER image's OWN light (updated only when Water is the selected side)
 	AquaSideShade aquaLandShade;    // LAND  image's OWN light (updated only when Land  is the selected side)
 	bool aquaShadeSelWater = true;  // which side the Shading dock edits (Shade Water/Land radio). PURE
@@ -1385,9 +1392,49 @@ makeGridCTF(const Scene *s, const double *cz, const double *crgb, int ncolor) {
 	return ctf;
 }
 
-// Build a surface from a caller-supplied grid (GMT.jl layout): z is column-major,
-// ny rows x nx cols, element (iy,ix) at offset ix*ny+iy, mapping to (x[ix], y[iy])
-// with y ascending. NaN cells are PAINTED (not dropped): every quad is emitted; a NaN node keeps its
+// THE grid-buffer accessor. A caller-supplied z buffer arrives in one of GMT's memory layouts and is
+// read WHERE IT LIES — the host NEVER transposes a grid into a second matrix first. `zlayout` is the
+// layout as a 2-bit code, exactly the GMT layout string's first two characters:
+//   bit 0 — set: ROW-major ('?R?', x fastest);  clear: COLUMN-major ('?C?', y fastest)
+//   bit 1 — set: row 0 = NORTH ('T??');         clear: row 0 = SOUTH ('B??')
+// So 0 = "BCB" (what GMT's own modules return), 3 = "TRB" (what `gmtread(..., layout="TRB")` and
+// everything GDAL produces return), 1 = "BRB", 2 = "TCB". All four collapse to one offset + two
+// element strides, so every consumer indexes by (ix, iy) with iy counted from the SOUTH and no
+// layout costs a copy. This is the ONE place a layout is resolved (SACRED_LAW.md): a builder that
+// needs a z value calls GridLay::at, never raw index maths.
+struct GridLay {
+	size_t     off;      // element offset of (ix=0, iy=0) = the SW corner
+	ptrdiff_t  sx, sy;   // element stride per +1 in x / +1 in y (northwards)
+	inline float at(const float *z, int ix, int iy) const {
+		return z[(ptrdiff_t)off + (ptrdiff_t)ix * sx + (ptrdiff_t)iy * sy];
+	}
+};
+static inline GridLay gridLay(int nx, int ny, int zlayout) {
+	const bool rowmajor = (zlayout & 1) != 0, northFirst = (zlayout & 2) != 0;
+	if (rowmajor)
+		return northFirst ? GridLay{ (size_t)(ny - 1) * (size_t)nx,  1, -(ptrdiff_t)nx }
+		                  : GridLay{ 0,                              1,  (ptrdiff_t)nx };
+	return northFirst ? GridLay{ (size_t)(ny - 1), (ptrdiff_t)ny, -1 }
+	                  : GridLay{ 0,                (ptrdiff_t)ny,  1 };
+}
+
+// Fill `dst` with the grid in the CANONICAL column-major z[ix*ny+iy] order every Scene-side consumer
+// (hover readout, profile, tiles, the flat-image / crop bakes) reads. This is NOT an added copy: the
+// data layer was always copied into its own vector (Scene::gridZ / ExtraObj::gridZ) — the copy just
+// stopped assuming the source order. A BCB source is still one flat memcpy-shaped run.
+static void gridCopyToCM(std::vector<float> &dst, const float *z, int nx, int ny, int zlayout) {
+	dst.resize((size_t)nx * (size_t)ny);
+	if (!zlayout) { std::copy(z, z + (size_t)nx * (size_t)ny, dst.begin()); return; }
+	const GridLay lay = gridLay(nx, ny, zlayout);
+	for (int ix = 0; ix < nx; ++ix) {
+		float *col = dst.data() + (size_t)ix * (size_t)ny;
+		for (int iy = 0; iy < ny; ++iy) col[iy] = lay.at(z, ix, iy);
+	}
+}
+
+// Build a surface from a caller-supplied grid, read in place through GridLay (see above): `zlayout`
+// picks the source layout, (ix,iy) maps to (x[ix], y[iy]) with y ascending.
+// NaN cells are PAINTED (not dropped): every quad is emitted; a NaN node keeps its
 // z SCALAR = NaN (so the CTF paints it with its NanColor = the Preferences NaN fill colour) but its
 // geometry z is pinned to the grid floor (zmin) so the mesh stays valid (flat filled hole).
 static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, int ny,
@@ -1395,7 +1442,8 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 													  double y0, double y1,
 													  double &zmin, double &zmax,
 													  bool triangulate = true,
-													  bool wantTC = true) {   // texture coords only needed for image drape
+													  bool wantTC = true,     // texture coords only needed for image drape
+													  int zlayout = 0) {
 	vtkNew<vtkPoints>     pts;   pts->SetDataTypeToFloat();
 	vtkNew<vtkFloatArray> zval;  zval->SetName("z");
 	vtkNew<vtkFloatArray> tcoord; tcoord->SetNumberOfComponents(2); tcoord->SetName("tc");
@@ -1403,6 +1451,7 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 	zval->Allocate(nx * ny);
 	if (wantTC) tcoord->Allocate(2 * nx * ny);
 
+	const GridLay lay = gridLay(nx, ny, zlayout);
 	const double dx = (nx > 1) ? (x1 - x0) / (nx - 1) : 0.0;
 	const double dy = (ny > 1) ? (y1 - y0) / (ny - 1) : 0.0;
 	const double xspan = (x1 != x0) ? (x1 - x0) : 1.0;
@@ -1412,7 +1461,7 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 		double y = y0 + j * dy;
 		for (int i = 0; i < nx; ++i) {        // i = x col
 			double x = x0 + i * dx;
-			double zz = z[(vtkIdType)i * ny + j];   // column-major
+			double zz = lay.at(z, i, j);
 			pts->InsertNextPoint(x, y, zz);
 			zval->InsertNextValue(zz);
 			if (wantTC) {
@@ -1432,7 +1481,7 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 	// loop above (id = j*nx + i). A NaN coordinate would otherwise corrupt any quad referencing it.
 	for (int j = 0; j < ny; ++j) {
 		for (int i = 0; i < nx; ++i) {
-			if (std::isnan(z[(vtkIdType)i * ny + j]))
+			if (std::isnan(lay.at(z, i, j)))
 				pts->SetPoint((vtkIdType)j * nx + i, x0 + i * dx, y0 + j * dy, zmin);
 		}
 	}
@@ -1453,8 +1502,8 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 			// paints the right colour and then lets the PBR light multiply it — white NaN came out
 			// beige. A hole cannot be illuminated. The NaN fill colour is shown by the flat unlit
 			// backdrop behind the surface (nanPlaneUpdate), which is also what a click lands on.
-			if (std::isnan(z[(vtkIdType) i     *ny + j    ]) || std::isnan(z[(vtkIdType)(i+1)*ny + j    ]) ||
-			    std::isnan(z[(vtkIdType)(i+1)*ny + j + 1]) || std::isnan(z[(vtkIdType) i     *ny + j + 1]))
+			if (std::isnan(lay.at(z, i, j    )) || std::isnan(lay.at(z, i + 1, j    )) ||
+			    std::isnan(lay.at(z, i + 1, j + 1)) || std::isnan(lay.at(z, i,     j + 1)))
 				continue;
 			if (triangulate) {
 				vtkIdType t1[3] = { a, b, c };   // lower-right tri
@@ -1478,12 +1527,12 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 	for (int j = 0; j < ny; ++j) {
 		for (int i = 0; i < nx; ++i) {
 			float nxv = 0.f, nyv = 0.f, nzv = 1.f;
-			const float zc = z[(vtkIdType)i * ny + j];
+			const float zc = lay.at(z, i, j);
 			if (!std::isnan(zc)) {
 				const int il = i > 0 ? i-1 : i,  ir = i < nx-1 ? i+1 : i;
 				const int jd = j > 0 ? j-1 : j,  ju = j < ny-1 ? j+1 : j;
-				const float zl = z[(vtkIdType)il*ny + j],  zr = z[(vtkIdType)ir*ny + j];
-				const float zb = z[(vtkIdType)i*ny + jd],  zt = z[(vtkIdType)i*ny + ju];
+				const float zl = lay.at(z, il, j),  zr = lay.at(z, ir, j);
+				const float zb = lay.at(z, i, jd),  zt = lay.at(z, i, ju);
 				if (!std::isnan(zl) && !std::isnan(zr) && !std::isnan(zb) && !std::isnan(zt)) {
 					const double ddx = (ir - il) * dx, ddy = (ju - jd) * dy;
 					const double gx = ddx != 0.0 ? (zr - zl) / ddx : 0.0;

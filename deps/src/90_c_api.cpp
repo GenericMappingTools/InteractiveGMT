@@ -45,14 +45,17 @@ static void computeScales(int geographic, double x0, double x1, double y0, doubl
 }
 
 // View a GMT.jl grid (non-blocking; pump gmtvtk_process_events to run the loop).
-// `z` is the grid's column-major matrix (ny rows x nx cols, element (iy,ix) at
-// z[ix*ny + iy]); (x0,x1,y0,y1) is its data range (y ascending). `geographic`!=0
+// `z` is the grid's z buffer, read WHERE IT LIES (never transposed by the host): `zlayout`=0 for
+// GMT's own "BCB" (column-major, (iy,ix) at z[ix*ny+iy], row 0 = south), !=0 for "TRB" (row-major,
+// row 0 = north) — see GridLay (10_geometry.cpp), which is the ONE place the two are resolved.
+// (x0,x1,y0,y1) is its data range (y ascending). `geographic`!=0
 // treats x,y as degrees (z assumed metres). NaN nodes are skipped.
 // Returns an opaque figure handle (the Scene*); pass it to gmtvtk_add_overlay_h to add
 // elements to THIS window later. The handle is valid until the window is closed.
 GMTVTK_API void *gmtvtk_view_grid(const float *z, int nx, int ny, double x0, double x1, double y0, double y1, int geographic,
 								 const double *cz, const double *crgb, int ncolor, const unsigned char *img,
-								 int iw, int ih, int ibands, int edges, int triangulate, int image_only, const char *title) {
+								 int iw, int ih, int ibands, int edges, int triangulate, int image_only, const char *title,
+								 int zlayout) {
 	double zmin = 0.0, zmax = 1.0;
 	// Plain CPT grid (no drape, not a bare image) -> TILED render: no giant single polydata; the
 	// tile actors are built in buildAndShow from z. Drape / image_only keep the single-polydata
@@ -67,16 +70,17 @@ GMTVTK_API void *gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 		}
 		if (zmin > zmax) { zmin = 0.0; zmax = 1.0; }
 	} else {
-		pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, triangulate != 0, /*wantTC=*/img != nullptr);
+		pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, triangulate != 0, /*wantTC=*/img != nullptr, zlayout);
 	}
 	double xfac, zfac, ve0;
 	computeScales(geographic, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
 	Scene *s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, cz, crgb, ncolor, img, iw, ih, ibands, edges, false, geographic, title,
 	                        /*objname=*/nullptr, /*imageOnly=*/image_only != 0,
 	                        /*gz=*/tiled ? z : nullptr, /*gnx=*/nx, /*gny=*/ny,
-	                        /*blankStart=*/false, /*openFlat2D=*/image_only == 0);   // grids open in 2D from frame 1
+	                        /*blankStart=*/false, /*openFlat2D=*/image_only == 0,   // grids open in 2D from frame 1
+	                        /*gzLayout=*/zlayout);
 	if (s && !image_only && !tiled)                    // drape path: keep full-res z for hover/profile
-		sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1);   // (tiled path already populated it in buildAndShow)
+		sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1, 0.0, 0.0, zlayout);   // (tiled path already populated it in buildAndShow)
 	// (grids already opened in flat-2D from frame 1 via buildAndShow's openFlat2D — no post-hoc switch,
 	// no 3-D flash.)
 	if (s && image_only) {
@@ -1000,6 +1004,20 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 // whether the cube axes are actually IN the renderer (an empty launcher carries the axes object but
 // does NOT add it), so it doubles as the "coordinate grid present" invariant. Each extra object is
 // emitted as extraN=kind:name (kind = image | grid). No-op (returns 0) on a dead handle.
+// ABI GENERATION of this library. BUMP IT whenever a host-facing export's SIGNATURE changes in a way
+// a mismatched host cannot detect by itself — an added trailing argument above all, since the call
+// still links and still returns, it just reads the data wrong.
+//
+// Why this exists: the grid layout code (`zlayout`, GridLay) was added as a trailing argument to
+// gmtvtk_view_grid / _add_surface_h / _promote_surface_h / _replace_base_grid_h / _show_layer_image_h
+// / _show_layer_rgba_h / _aqua_set_bathy_h. A host that passes it to a library built before it exists
+// gets NO error: the older library reads a row-major ("TRB") buffer as column-major and paints
+// vertical stripes. The host now refuses such a library at load time instead (libgmtvtk.jl).
+//   1 = pre-zlayout (implicit: the export is absent in those builds)
+//   2 = grid buffers carry a layout code
+//   3 = the Aquamoto composite carries its dry/wet mask (gmtvtk_show_layer_rgba_h)
+GMTVTK_API int gmtvtk_abi_version(void) { return 3; }
+
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
 	std::string o;
@@ -5186,7 +5204,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 									double x0, double x1, double y0, double y1, int geographic,
 									const double *cz, const double *crgb, int ncolor,
 									const unsigned char *img, int iw, int ih, int ibands,
-									int image_only, const char *name) {
+									int image_only, const char *name, int zlayout) {   // zlayout: 0 = "BCB", !=0 = "TRB" (GridLay)
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
@@ -5196,7 +5214,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	// hillshadeMapper's per-point bake on every swap) turned a grid's illumination into work that
 	// repeated for the whole time the user was zooming. Grid illumination is computed from the GRID,
 	// once; the mesh is not allowed to make it happen again.
-	auto pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, false);
+	auto pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, false, /*wantTC=*/true, zlayout);
 
 	vtkNew<vtkPolyDataNormals> norms;
 	norms->SetInputData(pd);
@@ -5258,7 +5276,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		// Make this dropped grid a FULL layer: keep its full-res z (readout source when it is the active
 		// grid) and its own LUT + z range (so the colorbar can be retargeted to it). applyGridStacking()
 		// below puts it on top -> refreshGridColorbar() makes it the active grid + shows its colorbar.
-		ex.gridZ.assign(z, z + (size_t)nx * ny);
+		gridCopyToCM(ex.gridZ, z, nx, ny, zlayout);
 		ex.gnx = nx; ex.gny = ny;
 		ex.gx0 = x0; ex.gx1 = x1; ex.gy0 = y0; ex.gy1 = y1;
 		ex.zmin = zmin; ex.zmax = zmax; ex.lut = lut; ex.geog = geographic ? 1 : 0;
@@ -5294,7 +5312,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	// The existing AXES extent (x0..y1), CRS and base scales are LEFT UNTOUCHED — the grid is added
 	// INTO the existing frame, not promoted over it. Images carry no elevation, so they are skipped.
 	if (!ex.isImage && s->imageOnly && !s->gridAdopted) {
-		sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1);
+		sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1, 0.0, 0.0, zlayout);
 		s->gridAdopted = true;                         // readout switches from pixel-colour to z
 		surfSetVisibility(s, 0);                       // HIDE the opaque blank canvas so the grid shows through
 		if (s->shadeDock) s->shadeDock->setVisible(true);   // canvas now has a shaded body -> reveal Shading dock
@@ -5335,13 +5353,13 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 										double x0, double x1, double y0, double y1, int geographic,
 										const double *cz, const double *crgb, int ncolor,
 										const unsigned char *img, int iw, int ih, int ibands,
-										int image_only, const char *name) {
+										int image_only, const char *name, int zlayout) {   // zlayout: 0 = "BCB", !=0 = "TRB" (GridLay)
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
 	if (!s->emptyStart)   // already a real window -> ordinary "add into existing window"
 		return gmtvtk_add_surface_h(handle, z, nx, ny, x0, x1, y0, y1, geographic,
-									cz, crgb, ncolor, img, iw, ih, ibands, image_only, name);
+									cz, crgb, ncolor, img, iw, ih, ibands, image_only, name, zlayout);
 
 	const bool hasImg    = (img && iw > 0 && ih > 0 && ibands > 0);
 	const bool imageOnly = (image_only != 0);
@@ -5368,17 +5386,17 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 	const float *gz = nullptr; int gnx = 0, gny = 0;
 	if (hasImg) {
 		double zlo = zmin, zhi = zmax;
-		pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zlo, zhi, /*triangulate=*/true, /*wantTC=*/true);
+		pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zlo, zhi, /*triangulate=*/true, /*wantTC=*/true, zlayout);
 	} else {
 		gz = z; gnx = nx; gny = ny;
 	}
 	buildSceneContent(s, pd, x0, x1, y0, y1, cz, crgb, ncolor, img, iw, ih, ibands,
-					  /*edges=*/0, /*pointCloud=*/false, geographic, gz, gnx, gny, /*blankStart=*/false);
+					  /*edges=*/0, /*pointCloud=*/false, geographic, gz, gnx, gny, /*blankStart=*/false, zlayout);
 
 	// The single-actor (drape) path needs full-res z for hover/profile/pick; the tiled path already
 	// populated s->gridZ inside buildSceneContent.
 	if (!gz)
-		sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1);
+		sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1, 0.0, 0.0, zlayout);
 
 	s->emptyStart = false;
 
@@ -5448,7 +5466,7 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, int ny,
                                           double x0, double x1, double y0, double y1, int geographic,
                                           const double *cz, const double *crgb, int ncolor,
-                                          const char *name) {
+                                          const char *name, int zlayout) {   // zlayout: 0 = "BCB", !=0 = "TRB" (GridLay)
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
@@ -5473,7 +5491,7 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 
 	// Rebuild ONLY the base surface (tiled gz path). gz fills s->gridZ/gnx/gny/gx*/gd *internally.
 	buildSceneContent(s, nullptr, x0, x1, y0, y1, cz, crgb, ncolor, nullptr, 0, 0, 0,
-	                  /*edges=*/0, /*pointCloud=*/false, geographic, z, nx, ny, /*blankStart=*/false);
+	                  /*edges=*/0, /*pointCloud=*/false, geographic, z, nx, ny, /*blankStart=*/false, zlayout);
 
 	// Rebuild the gizmo against the new surface (as promote does), then restore the camera so the
 	// user's zoom / orientation / 2D-or-3D view is untouched by the data edit.
@@ -5510,7 +5528,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
                               const float *z, int nx, int ny,
                               double x0, double x1, double y0, double y1, int geographic,
                               const double *cz, const double *crgb, int ncolor, const char *name,
-                              bool isCustom) {
+                              bool isCustom, int zlayout) {   // z layout code: 0 = "BCB", 3 = "TRB" (GridLay); default in the fwd decl
 	const double dx = (nx > 1) ? (x1 - x0) / (nx - 1) : 0.0;
 	const double dy = (ny > 1) ? (y1 - y0) / (ny - 1) : 0.0;
 
@@ -5524,7 +5542,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 		if (id && dims[0] == txW && dims[1] == txH) {
 			memcpy(id->GetScalarPointer(), rgba, (size_t)txW * txH * 4);
 			id->Modified(); tx->Modified();
-			s->gridZ.assign(z, z + (size_t)nx * ny);     // hover now reads the NEW layer's z
+			gridCopyToCM(s->gridZ, z, nx, ny, zlayout);   // hover now reads the NEW layer's z
 			s->zmin = cz[0]; s->zmax = cz[ncolor - 1];
 			if (name && name[0]) s->surfName = name;
 			s->customLayerTexture = isCustom;
@@ -5596,7 +5614,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 
 	// Full-res data layer for the hover/coordinate readout (the single-actor drape path does NOT
 	// populate gridZ; only the tiled path does — so set it here, and re-point the active-grid routing).
-	sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1, dx, dy);
+	sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1, dx, dy, zlayout);
 	s->actZ = &s->gridZ; s->actNx = nx; s->actNy = ny;
 	s->actX0 = x0; s->actX1 = x1; s->actY0 = y0; s->actY1 = y1;
 	s->layerImgMode = true;
@@ -5612,7 +5630,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 		if (!s->aquaWaterShade.valid) s->aquaWaterShade = snapshotShade(s);
 		if (!s->aquaLandShade.valid)  s->aquaLandShade  = snapshotShade(s);
 	}
-	else          { s->aquaBaseRGBA.clear(); s->aquaBathyZ.clear(); }
+	else          { s->aquaBaseRGBA.clear(); s->aquaBathyZ.clear(); s->aquaLandMask.clear(); }   // the mask belongs to the composite: they go together
 	s->emptyStart = false;
 	// (2-D map: every set hides its own Z from its own flat/degenerate rule in rebuildAxesFor.)
 
@@ -5666,7 +5684,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, int ny,
                                          double x0, double x1, double y0, double y1, int geographic,
                                          const double *cz, const double *crgb, int ncolor,
-                                         const char *name) {
+                                         const char *name, int zlayout) {   // zlayout: 0 = "BCB", !=0 = "TRB" (GridLay)
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2 || !cz || !crgb || ncolor < 2)
 		return 0;
@@ -5684,10 +5702,10 @@ GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, i
 	int txW, txH; layerTexSize(nx, ny, txW, txH);      // capped texture size (subsample a heavy cube)
 	std::vector<unsigned char> rgba;
 	bakeLayerRGBA(s, z, nx, ny, x0, y0, dx, dy, ctf, cz[0], cz[ncolor - 1],
-	              x0, x1, y0, y1, txW, txH, rgba);     // base texture = the whole extent
+	              x0, x1, y0, y1, txW, txH, rgba, /*baseRGBA=*/nullptr, zlayout);   // base texture = the whole extent
 
 	return showLayerImageTail(s, rgba.data(), txW, txH, z, nx, ny, x0, x1, y0, y1, geographic,
-	                          cz, crgb, ncolor, name, /*isCustom=*/false);
+	                          cz, crgb, ncolor, name, /*isCustom=*/false, zlayout);
 }
 
 // Aquamoto-style variant: the caller (Julia) hands over an ALREADY-COMPOSITED RGBA texture (e.g.
@@ -5701,10 +5719,17 @@ GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, i
 GMTVTK_API int gmtvtk_show_layer_rgba_h(void *handle, const unsigned char *rgba, int nx, int ny,
                                         double x0, double x1, double y0, double y1, int geographic,
                                         const double *cz, const double *crgb, int ncolor,
-                                        const float *zhover, const char *name) {
+                                        const float *zhover, const char *name, int zlayout,
+                                        const unsigned char *landmask) {   // zlayout: `zhover`'s layout code (GridLay); `rgba` and `landmask` are always row-major row0=south
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !rgba || nx < 2 || ny < 2 || !cz || !crgb || ncolor < 2 || !zhover)
 		return 0;
+	// The dry/wet mask arrives WITH the composite it belongs to and replaces whatever the previous
+	// slice left behind — the two are one push, so they can never describe different slices. A caller
+	// with no mask (nothing else pushes a custom composite today) leaves the layer unsplit rather than
+	// letting the shading invent a split of its own.
+	if (landmask) s->aquaLandMask.assign(landmask, landmask + (size_t)nx * ny);
+	else          s->aquaLandMask.clear();
 	// A FRESH tsunami (no base composite pushed yet): WATER opens FLAT (the host-composited 256-colour
 	// :polar image, Mirone-style) -- hillshade relighting saturates the water's steep-gradient normals
 	// and washes the palette toward white/dark, a 2-colour collapse of an image that is really 256.
@@ -5723,7 +5748,7 @@ GMTVTK_API int gmtvtk_show_layer_rgba_h(void *handle, const unsigned char *rgba,
 		s->useHillshade = live.useHillshade; s->hillGrd = live.hillGrd; s->litBake = live.litBake;
 	}
 	return showLayerImageTail(s, rgba, nx, ny, zhover, nx, ny, x0, x1, y0, y1, geographic,
-	                          cz, crgb, ncolor, name, /*isCustom=*/true);
+	                          cz, crgb, ncolor, name, /*isCustom=*/true, zlayout);
 }
 
 // Build/replace Aquamoto's persistent LAND colorbar (the bathymetry range + :geo ramp) once, at
@@ -5743,14 +5768,15 @@ GMTVTK_API int gmtvtk_aqua_set_land_cpt_h(void *handle, const double *cz, const 
 	return 1;
 }
 
-// Hand the Aquamoto layer its static BATHYMETRY (the LAND surface for hillshading), column-major
-// z[ix*ny+iy] exactly like gridZ (the per-slice stage = WATER surface). Stored once at file-open;
+// Hand the Aquamoto layer its static BATHYMETRY (the LAND surface for hillshading). `zlayout` is the
+// caller's layout code (GridLay) — the buffer is read where it lies and STORED column-major
+// z[ix*ny+iy], exactly like gridZ (the per-slice stage = WATER surface). Stored once at file-open;
 // bakeAquaShade then shades LAND pixels from this and WATER pixels from the live stage, both through
 // the SAME applyReliefShade the rest of the app uses. Relights immediately. Returns 1 on success.
-GMTVTK_API int gmtvtk_aqua_set_bathy_h(void *handle, const float *z, int nx, int ny) {
+GMTVTK_API int gmtvtk_aqua_set_bathy_h(void *handle, const float *z, int nx, int ny, int zlayout) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2) return 0;
-	s->aquaBathyZ.assign(z, z + (size_t)nx * ny);
+	gridCopyToCM(s->aquaBathyZ, z, nx, ny, zlayout);
 	bakeAquaShade(s);   // land surface now available -> relight through the shared engine
 	return 1;
 }
@@ -5811,9 +5837,9 @@ GMTVTK_API int gmtvtk_open_vtk_h(void *handle, const char *path, const char *nam
 	if (L.kind == VtkIoLoad::Grid) {
 		const int ok = promote
 			? gmtvtk_promote_surface_h(handle, L.z.data(), L.nx, L.ny, L.x0, L.x1, L.y0, L.y1, 0,
-			                           nullptr, nullptr, 0, nullptr, 0, 0, 0, 0, nm)
+			                           nullptr, nullptr, 0, nullptr, 0, 0, 0, 0, nm, /*zlayout=*/0)
 			: gmtvtk_add_surface_h(handle, L.z.data(), L.nx, L.ny, L.x0, L.x1, L.y0, L.y1, 0,
-			                       nullptr, nullptr, 0, nullptr, 0, 0, 0, 0, nm);
+			                       nullptr, nullptr, 0, nullptr, 0, 0, 0, 0, nm, /*zlayout=*/0);
 		if (!ok) return fail("the grid could not be added to the window");
 		// SACRED_LAW.md raster-own-axes law: EACH raster creates ITS OWN axes, UNCONDITIONALLY --
 		// primary or extra, no exceptions, never reuses/inherits axes already showing.
@@ -5848,7 +5874,7 @@ GMTVTK_API int gmtvtk_open_vtk_h(void *handle, const char *path, const char *nam
 		const float blank[4] = { 0.f, 0.f, 0.f, 0.f };
 		const double px = (L.x1 - L.x0) * 0.05, py = (L.y1 - L.y0) * 0.05;
 		gmtvtk_promote_surface_h(handle, blank, 2, 2, L.x0 - px, L.x1 + px, L.y0 - py, L.y1 + py, 0,
-		                         nullptr, nullptr, 0, nullptr, 0, 0, 0, 1, "");
+		                         nullptr, nullptr, 0, nullptr, 0, 0, 0, 1, "", /*zlayout=*/0);
 		gmtvtk_hide_surface(handle);
 	}
 	const int npts = (int)(L.xyz.size() / 3);
@@ -6003,9 +6029,17 @@ GMTVTK_API int gmtvtk_xyplot_is_alive(void *handle) {
 }
 
 // Close an X,Y plot window programmatically.
+// The window is destroyed by the EVENT LOOP, some time after this returns. For a plot with no owner
+// dock to park in, that close is final, so the handle is marked dead HERE — otherwise it keeps
+// reporting alive in the gap, and the "one window, new page" reuse (`_XY_CURRENT`, xyplot.jl) hands
+// the next `xyplot()` a dying window plus its stale series (test-scene-gui's X,Y items saw series
+// counts of 3 and 5 where 0 and 2 were due). An OWNED plot PARKS instead of dying — it is meant to
+// stay alive and restorable, so it is left alone.
 GMTVTK_API void gmtvtk_xyplot_close(void *handle) {
 	XYPlot *p = static_cast<XYPlot*>(handle);
-	if (xyAlive(p) && p->win) p->win->close();
+	if (!xyAlive(p) || !p->win) return;
+	if (!p->owner) p->tearingDown = true;
+	p->win->close();
 }
 
 // Tell an X,Y plot window which 3-D viewer it belongs to. That viewer's Scene Objects dock is where

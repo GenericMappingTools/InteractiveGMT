@@ -1140,6 +1140,31 @@ function _zmat(G::GMTgrid)
 	return (code & 2) != 0 ? view(M, ny:-1:1, :) : view(M, :, :)
 end
 
+# A grid's z laid out the way ANOTHER grid's is, so the two can be combined ELEMENT-WISE. Returns
+# `G.z` itself when they already agree — the normal case, since everything read through
+# `_gmtread_trb` lies the same way. When they genuinely do not (a disk grid read "TRB" against a
+# window grid a GMT module produced in "BCB"), broadcasting the raw buffers would pair up points
+# that are not the same point, so this is where the odd one out is re-ordered — the ONE such place
+# on the Julia side, and never on a path where both operands already agree. The result carries
+# GMT.jl's usual (ny,nx) dims over `ref`'s OWN memory order, so a grid built from it inherits
+# `ref.layout` truthfully.
+function _z_as(G::GMTgrid, ref::GMTgrid)
+	code = _grid_layout_code(ref)
+	_grid_layout_code(G) == code && return G.z
+	nx, ny = _grid_dims(ref)
+	(nx, ny) == _grid_dims(G) || error("grids of different sizes cannot be combined element-wise")
+	src = _zmat(G)                             # (ny,nx) south-first view of G, whatever it is
+	d = Vector{eltype(G.z)}(undef, nx * ny)
+	rowmaj, north = (code & 1) != 0, (code & 2) != 0
+	@inbounds for iy = 1:ny
+		j = north ? ny + 1 - iy : iy           # the row index `ref` itself would store this row at
+		for ix = 1:nx
+			d[rowmaj ? (j - 1) * nx + ix : (ix - 1) * ny + j] = src[iy, ix]
+		end
+	end
+	return reshape(d, ny, nx)
+end
+
 # (nx, ny) for a grid, from the coordinate vectors, falling back to `size(z)` when they disagree
 # (see `_grid_zbuf`). Shared by `_grid_zbuf` and `_zmat` so the two can never disagree.
 function _grid_dims(G::GMTgrid)

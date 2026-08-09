@@ -15,7 +15,7 @@ function _grdgm3d_grid(scene::Ptr{Cvoid}, spec::AbstractString)::GMTgrid
 		return fig.G
 	end
 	isfile(spec) || error("grid file not found: $spec")
-	return GMT.gmtread(String(spec))
+	return _gmtread_trb(String(spec))      # grids are READ in "TRB" — THE reader
 end
 
 # Assemble the -H value(s). GMT accepts SEVERAL -H at once and GMT.jl appends " -H" + the string it is
