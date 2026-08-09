@@ -684,6 +684,37 @@ GMTVTK_API int gmtvtk_set_overlay_style_h(void *handle, const char *name,
 	return 0;
 }
 
+// Show/hide ONE vector element by the label Scene Objects shows, whatever family it belongs to — a
+// line/point overlay, a symbol layer, a drawn polygon or a text label. ONE setter for the lot, so a
+// caller that has a name and a checkbox state never has to know which container the element lives in
+// (SACRED_LAW: same operation, same function — the counterpart of gmtvtk_serialize_vector_h, which
+// answers "the vertices of the element called X" across the same families).
+//
+// Used by Load Session to restore an UNCHECKED row: the add exports always come back visible, so a
+// hidden element would otherwise return switched on. Returns 1 if something answered to that name.
+GMTVTK_API int gmtvtk_set_vector_visible_h(void *handle, const char *name, int vis) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !name[0]) return 0;
+	const std::string want = name;
+	int hit = 0;
+	for (auto &ov : s->overlays)
+		if (ov.name == want && ov.actor) { ov.actor->SetVisibility(vis ? 1 : 0); hit = 1; }
+	for (auto &sl : s->symbols)
+		if (sl.name == want && sl.actor) { sl.actor->SetVisibility(vis ? 1 : 0); hit = 1; }
+	for (auto &pg : s->polys) {
+		if (pg.name != want) continue;
+		if (pg.line) pg.line->SetVisibility(vis ? 1 : 0);
+		if (pg.fill) pg.fill->SetVisibility(vis ? 1 : 0);
+		hit = 1;
+	}
+	for (auto &tl : s->texts)
+		if (tl.name == want && tl.actor) { tl.actor->SetVisibility(vis ? 1 : 0); hit = 1; }
+	if (!hit) return 0;
+	rebuildSceneObjects(s);                     // the row's own checkbox follows the actor, never a default
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
 // Add a screen-constant SYMBOL layer to a window by its handle: `npts` (x,y,z) triples in TRUE
 // coords, one GMT symbol code (sym: "c" circle "s" square "t" triangle "i" inv-triangle "d" diamond
 // "h" hexagon "n" pentagon "g" octagon "a" star "x" cross "+" plus "-" dash), `sizePx` = on-screen
@@ -1016,7 +1047,7 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //   1 = pre-zlayout (implicit: the export is absent in those builds)
 //   2 = grid buffers carry a layout code
 //   3 = the Aquamoto composite carries its dry/wet mask (gmtvtk_show_layer_rgba_h)
-GMTVTK_API int gmtvtk_abi_version(void) { return 3; }
+GMTVTK_API int gmtvtk_abi_version(void) { return 5; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -1086,6 +1117,28 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 	if (sceneAlive(s)) {
 		kvi("alive", 1);
 		kvd("ve", s->ve);
+		// The geometry scale factors applyVE actually uses — (xfac, 1, zfac*ve). `zfac` is re-derived
+		// from the drawn geometry (sceneZRef), so these two are the only honest description of how far
+		// z is stretched relative to x. Anything that has to reproduce this window's vertical
+		// proportions somewhere else (the GMT.jl script export's -JZ height, gmtscript.jl) reads them
+		// here instead of re-deriving a unit convention of its own — a second copy of that scaling is
+		// exactly the fork SACRED_LAW.md forbids. gmtvtk_apply_scene_state ignores them on the way
+		// back: they are DERIVED state, recomputed by applyVE, not something to push in.
+		kvd("zfac", s->zfac); kvd("xfac", s->xfac);
+		// Render-window pixel size. Symbol sizes and line widths in this viewer are SCREEN PIXELS; any
+		// consumer that has to express them on PAPER (the GMT.jl script export, where GMT wants POINTS)
+		// needs the pixel extent the plot occupies to convert. Without it px would be emitted as if they
+		// were points, which is simply a different size.
+		if (s->widget && s->widget->renderWindow()) {
+			const int *wsz = s->widget->renderWindow()->GetSize();
+			kvi("winw", wsz[0]); kvi("winh", wsz[1]);
+			// The DPI that converts a LINE WIDTH between the user's POINTS and the actor's pixels.
+			// `gmtvtk_add_overlay_ex_h` and the Line Properties dialog both take points and store
+			// `pt * dpi/72` using THIS number, so anything reading a width back off an actor must
+			// divide by THIS number or the thickness the user set is not the thickness it reports.
+			const double dpi = s->widget->renderWindow()->GetDPI();
+			kvd("dpi", dpi > 0 ? dpi : 72.0);
+		}
 		kvi("flat2d", s->flat2d ? 1 : 0);
 		kvd("barX0", s->barX0); kvd("barY0", s->barY0);
 		if (s->ren) {
@@ -2429,22 +2482,33 @@ GMTVTK_API int gmtvtk_add_text_h(void *handle, double x, double y, const char *t
 	return 1;
 }
 
-// Serialize the window's USER-placed text labels (Save Session) as "x;y;r;g;b;size;text\n" lines, one
-// per label. Batch/group labels (groupName non-empty, e.g. focal-mechanism date labels) are SKIPPED —
-// they are rebuilt by their owning recipe, not the session's text blob. The text string comes last so
-// it may contain ';' (the reader splits on the first 6 separators); newlines are flattened to spaces.
-// Two-pass like the other serializers (buf=nullptr sizes, second call fills). Session rebuilds each
-// line via gmtvtk_add_text_h.
-GMTVTK_API int gmtvtk_serialize_texts(void *handle, char *buf, int cap) {
+// Serialize the window's text labels as "x;y;r;g;b;size;group;text\n" lines, one per label. `group`
+// is the batch tag (empty for a single user-placed label); the text string comes last so it may
+// contain ';' (readers split on the first 7 separators); newlines are flattened to spaces.
+// Two-pass like the other serializers (buf=nullptr sizes, second call fills).
+//
+// `includeGroups` is why ONE function serves two callers instead of two forks: Save Session wants
+// only the USER-placed labels (0) because a batch's labels are rebuilt by its owning recipe, while
+// the GMT.jl script export wants EVERY label on screen (1) — no recipe redraws them there, and since
+// gmtvtk_capture_rect_rgb stopped baking text into the captured pixels, a label this blob omits is a
+// label the exported figure loses. Session rebuilds each line via gmtvtk_add_text_h.
+GMTVTK_API int gmtvtk_serialize_texts(void *handle, char *buf, int cap, int includeGroups) {
 	Scene *s = static_cast<Scene*>(handle);
 	std::string o;
 	char t[128];
 	if (sceneAlive(s)) {
 		for (auto &tl : s->texts) {
-			if (!tl.groupName.empty()) continue;
+			// A RULER's distance annotations are never written here, in either mode: they belong to the
+			// measurement, and gmtvtk_add_ruler_h re-measures and re-labels it on rebuild. Writing them
+			// too would restore each label twice — once as the ruler's, once as a loose "Text N".
+			if (tl.ruler) continue;
+			if (!includeGroups && !tl.groupName.empty()) continue;
 			snprintf(t, sizeof(t), "%.12g;%.12g;%.6g;%.6g;%.6g;%d;",
 			         tl.pos[0], tl.pos[1], tl.color[0], tl.color[1], tl.color[2], tl.size);
 			o += t;
+			std::string grp = tl.groupName;
+			for (char &c : grp) if (c == ';' || c == '\n' || c == '\r') c = ' ';
+			o += grp; o += ';';
 			std::string txt = tl.text;
 			for (char &c : txt) if (c == '\n' || c == '\r') c = ' ';
 			o += txt; o += '\n';
@@ -2572,6 +2636,215 @@ GMTVTK_API int gmtvtk_serialize_polys(void *handle, char *buf, int cap) {
 	return n;
 }
 
+// Can GMT REDRAW this raster layer from its data + CPT alone, or is what the user sees the product of
+// something GMT has no equivalent for? Answers as "k=v;" for one layer (`name` empty = the base
+// surface):
+//   repro=0|1;why=<short reason>;x0=..;x1=..;y0=..;y1=..;
+//
+// This exists because the alternative is worse than useless: without it the GMT.jl script export
+// emitted a PLAIN, unshaded grdimage for a shaded/draped/host-composited surface and put a "shading
+// not exported" line in the script header — i.e. it quietly produced a figure that does not look like
+// the window, which is the degrade-instead-of-do this project's SACRED_LAW.md opens by forbidding.
+// With this, the exporter knows to hand GMT the PIXELS THAT ARE ON SCREEN instead (as a GMTimage,
+// draped over the grid for a 3-D view), so the figure is right whether or not GMT can express the
+// look. `why` is for the script's own header, so the reader knows which layers are pictures.
+//
+// The bbox comes back in the same call because the exporter needs the LAYER'S OWN footprint to capture
+// it (the base's scene extent, an extra grid's gx0..gy1, an extra image's bx0..by1) and there was no
+// other way to ask for it.
+GMTVTK_API int gmtvtk_layer_display(void *handle, const char *name, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	char t[128];
+	auto kvd = [&](const char *k, double v) { snprintf(t, sizeof(t), "%s=%.12g;", k, v); o += t; };
+	if (sceneAlive(s)) {
+		const std::string want = (name && name[0]) ? name : std::string();
+		const ExtraObj *ex = nullptr;
+		if (!want.empty())
+			for (const auto &e : s->extras) if (e.name == want) { ex = &e; break; }
+		const char *why = nullptr;
+		const bool isImageLayer = ex ? ex->isImage : s->imageOnly;
+		if (isImageLayer) {
+			// An IMAGE actor is rendered LightingOff — flat albedo, the pixels as they are. GMT drawing
+			// the same image gives the same picture, so an image is reproducible unless the window is
+			// compositing it into something else.
+			if      (ex && ex->draped)             why = "draped image texture";
+			else if (!s->aquaBaseRGBA.empty())     why = "host-composited Aquamoto image";
+		}
+		else {
+			// A GRID SURFACE. This is the case that matters and the one that was wrong: by DEFAULT the
+			// viewer LIGHTS this surface — PBR key + fill light, SSAO, tone mapping — and GMT draws flat
+			// CPT colours. Those are not the same picture, so the ordinary, untouched grid window is
+			// NOT reproducible and its pixels must be captured. Only `noShade` (View > Illumination's
+			// "Remove illumination": no light at all, plain CPT) is what GMT actually draws.
+			if      (!s->aquaBaseRGBA.empty())     why = "host-composited Aquamoto image";
+			else if (s->drape)                     why = "draped image texture";
+			else if (s->useShadows)                why = "cast shadows";
+			else if (s->useHillshade)              why = s->hillGrd ? "baked grdimage hillshade" : "baked Lambert hillshade";
+			else if (!s->shadeInten.empty())       why = "external illumination grid";
+			else if (s->layerTexW > 0 && s->litBake) why = "baked PBR shaded image";
+			else if (!s->noShade)                  why = "lit 3-D surface (PBR key+fill light)";
+		}
+		o += "repro="; o += (why ? '0' : '1'); o += ';';
+		o += "why="; o += (why ? why : ""); o += ';';
+		if (ex) {
+			// An extra grid carries gx0..gy1; an image its footprint bx0..by1.
+			if (ex->isImage) { kvd("x0", ex->bx0); kvd("x1", ex->bx1); kvd("y0", ex->by0); kvd("y1", ex->by1); }
+			else             { kvd("x0", ex->gx0); kvd("x1", ex->gx1); kvd("y0", ex->gy0); kvd("y1", ex->gy1); }
+		}
+		else { kvd("x0", s->x0); kvd("x1", s->x1); kvd("y0", s->y0); kvd("y1", s->y1); }
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
+// Serialize the window's line/point OVERLAYS (dropped tables, coastlines, imported vectors) as one
+// line each:
+//   mode;r;g;b;lw;ps;lstyle;stack;visible;group;name;x,y,z|x,y,z>x,y,z|x,y,z\n
+// ';' separates fields, '>' separates SEGMENTS, '|' separates vertices, ',' separates coordinates —
+// the same nesting GMT's own multisegment tables use. Geometry comes off `baseLine` in RAW DATA
+// coordinates (the VE/x scaling lives on the actor, not in the points), split by the overlay's own
+// `segoff`, so what comes out is exactly what went in. Colour/width/point size are read off the
+// actor, where the context menu writes them; `stack` is the shared vector pile's draw-order rank, so
+// a consumer can reproduce the painter order instead of guessing it, and `visible` lets an unchecked
+// row be skipped. `group` is the Scene Objects group tag ("" = a top-level row), so a multi-layer
+// import comes back folded under ONE master row instead of as loose rows. `group` and `name` are
+// sanitized of the delimiters. Two-pass buffer, like every serializer here.
+//
+// Written for the GMT.jl script export (gmtscript.jl), which had no way to see a vector layer at all;
+// Save Session reads THE SAME blob (`drawn/overlays.txt`) and rebuilds through
+// gmtvtk_add_overlay_ex_h — one snapshot of what a window's overlays are, two consumers.
+GMTVTK_API int gmtvtk_serialize_overlays(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	char t[160];
+	if (sceneAlive(s)) {
+		for (auto &ov : s->overlays) {
+			if (!ov.baseLine) continue;
+			vtkPoints *pts = ov.baseLine->GetPoints();
+			if (!pts || pts->GetNumberOfPoints() <= 0) continue;
+			double c[3] = { 0, 0, 0 }; double lw = 1.0, ps = 1.0; int vis = 1;
+			if (ov.actor) {
+				ov.actor->GetProperty()->GetColor(c);
+				lw = ov.actor->GetProperty()->GetLineWidth();
+				ps = ov.actor->GetProperty()->GetPointSize();
+				vis = ov.actor->GetVisibility() ? 1 : 0;
+			}
+			snprintf(t, sizeof(t), "%d;%.6g;%.6g;%.6g;%.6g;%.6g;%d;%d;%d;",
+			         ov.mode, c[0], c[1], c[2], lw, ps, ov.lineStyle, ov.stack, vis);
+			o += t;
+			auto clean = [](std::string v) {
+				for (char &ch : v) if (ch == ';' || ch == '\n' || ch == '\r' || ch == '|' || ch == '>') ch = '_';
+				return v;
+			};
+			o += clean(ov.groupName); o += ';';
+			o += clean(ov.name);      o += ';';
+			// Segments come from `segoff` (nseg+1 offsets). An overlay that never recorded any is one
+			// segment spanning every point — the same fallback the line/points toggle uses.
+			const vtkIdType np = pts->GetNumberOfPoints();
+			std::vector<int> off = ov.segoff;
+			if ((int)off.size() < 2) { off.clear(); off.push_back(0); off.push_back((int)np); }
+			for (size_t sgi = 0; sgi + 1 < off.size(); ++sgi) {
+				if (sgi) o += '>';
+				for (int i = off[sgi]; i < off[sgi + 1] && i < (int)np; ++i) {
+					double p[3];
+					pts->GetPoint(i, p);
+					snprintf(t, sizeof(t), "%.10g,%.10g,%.10g", p[0], p[1], p[2]);
+					o += t;
+					if (i + 1 < off[sgi + 1] && i + 1 < (int)np) o += '|';
+				}
+			}
+			o += '\n';
+		}
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
+// Serialize the window's SYMBOL layers (volcanoes, seismicity, cities, tide stations, the Symbols
+// draw tool) as one line each:
+//   sym;sizePx;filled;r;g;b;er;eg;eb;ew;evis;stack;visible;oneShot;hasScale;hasRGB;name;<points>\n
+// `sym` is the GMT symbol code the layer was built with, so a consumer can ask GMT for the same
+// glyph instead of inventing one. Points come from the glyph pipeline's input polydata via
+// symInputPD — the accessor that already covers BOTH pipelines (flat vtkGlyph3D and solid3D
+// vtkGlyph3DMapper), never `sl.glyph` directly, which would silently skip every sphere/cube layer.
+// Same field/vertex delimiters and two-pass buffer as the serializers above.
+//
+// A point is "x,y,z", and carries its PER-POINT size scale and/or colour when the layer has them —
+// "x,y,z,scale", "x,y,z,r,g,b" or "x,y,z,scale,r,g,b", said once per layer by the `hasScale`/`hasRGB`
+// flags so the reader knows the token width without guessing. Those two arrays ("symScale" active
+// scalars, "symRGB" named array — addSymbols, 50_scene.cpp) are what makes a seismicity layer scale
+// with magnitude and colour with depth; a snapshot without them restores the catalog as uniform dots,
+// which is why they are here and not "metadata". `oneShot` marks a Symbols-draw-tool point (whole-
+// layer drag) so a rebuilt layer keeps that behaviour instead of becoming a batch layer.
+GMTVTK_API int gmtvtk_serialize_symbols(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	char t[160];
+	if (sceneAlive(s)) {
+		for (auto &sl : s->symbols) {
+			vtkPolyData *pd = symInputPD(sl);
+			if (!pd || !pd->GetPoints() || pd->GetPoints()->GetNumberOfPoints() <= 0) continue;
+			// FILL is the actor colour, EDGE is its EdgeColor/EdgeVisibility/LineWidth — the pair
+			// symLayerBuild writes (50_scene.cpp). Reading the fill twice and calling it an outline
+			// would export every black-edged yellow triangle with a yellow edge.
+			double c[3] = { 0, 0, 0 }, e[3] = { 0, 0, 0 }; double ew = 1.0; int vis = 1, evis = 0;
+			if (sl.actor) {
+				sl.actor->GetProperty()->GetColor(c);
+				sl.actor->GetProperty()->GetEdgeColor(e);
+				ew   = sl.actor->GetProperty()->GetLineWidth();
+				evis = sl.actor->GetProperty()->GetEdgeVisibility() ? 1 : 0;
+				vis  = sl.actor->GetVisibility() ? 1 : 0;
+			}
+			// Per-point size scale / colour, if this layer was built with them (addSymbols' sizeScale /
+			// ptRGB). "symScale" is the ACTIVE scalars, "symRGB" a named array — same names, read back.
+			vtkDataArray *scArr = pd->GetPointData() ? pd->GetPointData()->GetScalars() : nullptr;
+			if (scArr && scArr->GetNumberOfComponents() != 1) scArr = nullptr;
+			vtkUnsignedCharArray *rgbArr = pd->GetPointData()
+				? vtkUnsignedCharArray::SafeDownCast(pd->GetPointData()->GetArray("symRGB")) : nullptr;
+			if (rgbArr && rgbArr->GetNumberOfComponents() != 3) rgbArr = nullptr;
+			snprintf(t, sizeof(t), "%s;%.6g;%d;%.6g;%.6g;%.6g;%.6g;%.6g;%.6g;%.6g;%d;%d;%d;%d;%d;%d;",
+			         sl.sym.c_str(), sl.sizePx, sl.filled ? 1 : 0, c[0], c[1], c[2],
+			         e[0], e[1], e[2], ew, evis, sl.stack, vis, sl.oneShot ? 1 : 0,
+			         scArr ? 1 : 0, rgbArr ? 1 : 0);
+			o += t;
+			std::string nm = sl.name;
+			for (char &ch : nm) if (ch == ';' || ch == '\n' || ch == '\r' || ch == '|' || ch == '>') ch = '_';
+			o += nm; o += ';';
+			// NOTE the coordinates leave here EXACTLY as the polydata holds them, which for a symbol
+			// layer means x is BAKED (`addSymbols`: `xyz[3i] * s->xfac`, because the actor scales only
+			// z — see applyVE's "x already baked into the points"). Un-baking is done by the CONSUMER
+			// (`_symbol_layer`, gmtscript.jl) through `gmtvtk_get_xfac`, so it happens in exactly one
+			// place; correcting it here as well would divide x twice.
+			vtkPoints *pts = pd->GetPoints();
+			const vtkIdType np = pts->GetNumberOfPoints();
+			for (vtkIdType i = 0; i < np; ++i) {
+				double p[3];
+				pts->GetPoint(i, p);
+				snprintf(t, sizeof(t), "%.10g,%.10g,%.10g", p[0], p[1], p[2]);
+				o += t;
+				if (scArr && i < scArr->GetNumberOfTuples()) {
+					snprintf(t, sizeof(t), ",%.6g", scArr->GetComponent(i, 0));
+					o += t;
+				}
+				if (rgbArr && i < rgbArr->GetNumberOfTuples()) {
+					unsigned char rgb[3] = { 0, 0, 0 };
+					rgbArr->GetTypedTuple(i, rgb);
+					snprintf(t, sizeof(t), ",%d,%d,%d", (int)rgb[0], (int)rgb[1], (int)rgb[2]);
+					o += t;
+				}
+				if (i + 1 < np) o += '|';
+			}
+			o += '\n';
+		}
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
 // Rebuild one polygon from a saved session (the inverse of gmtvtk_serialize_polys). `xyz` = npts
 // (x,y,z) triples (the stored ring, closing duplicate included for closed shapes). Builds the line +
 // fill exactly as the draw tool would (polyRebuildLine reads fillColor/fillOpacity from the struct),
@@ -2640,7 +2913,34 @@ GMTVTK_API int gmtvtk_serialize_faults(void *handle, char *buf, int cap) {
 				}
 				o += '\n';
 			}
-			else if (pg.nestKind == 1) {   // "Nested grids" (tsunami) rectangle — its own quantization params
+			// The fault's 3-D DIPPING PLANE, as the geometry that is actually on screen:
+			//   P;name;x,y,z|x,y,z|...
+			// A consumer that needs the plane (the GMT.jl script export, gmtscript.jl) must not
+			// re-walk strike/dip/width down-dip in its own language — that walk is geodesic, lives in
+			// updateFaultPlane, and a second copy of it is the fork SACRED_LAW.md forbids. So the
+			// quad is READ OFF the actor that already holds it. A new tag: the session's reader
+			// dispatches on F/S/N and ignores anything else, so this is additive.
+			if (pg.isFault) {
+				vtkActor *pl = pg.faultPlane3D ? pg.faultPlane3D.Get() : pg.faultPlane.Get();
+				vtkPolyData *ppd = pl ? vtkPolyData::SafeDownCast(pl->GetMapper() ? pl->GetMapper()->GetInput() : nullptr) : nullptr;
+				if (ppd && ppd->GetPoints() && ppd->GetPoints()->GetNumberOfPoints() >= 3) {
+					std::string nm = pg.name;
+					for (char &c : nm) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
+					o += "P;"; o += nm; o += ';';
+					vtkPoints *pp = ppd->GetPoints();
+					const vtkIdType np = pp->GetNumberOfPoints();
+					for (vtkIdType i = 0; i < np; ++i) {
+						double q[3];
+						pp->GetPoint(i, q);
+						snprintf(t, sizeof(t), "%.10g,%.10g,%.10g", q[0], q[1], q[2]);
+						o += t; if (i + 1 < np) o += '|';
+					}
+					o += '\n';
+				}
+			}
+			// (was the `else` tail of the F/S chain above; the P block broke the chain, so the
+			// mutual exclusion is spelled out to keep the emitted set byte-identical)
+			if (!pg.isFault && !pg.isSlip && pg.nestKind == 1) {   // "Nested grids" (tsunami) rectangle — its own quantization params
 				std::string nm = pg.name;
 				for (char &c : nm) if (c == ';' || c == '\n' || c == '\r' || c == '|') c = '_';
 				snprintf(t, sizeof(t), "N;%.12g;%.12g;%d;", pg.nestXi, pg.nestYi, pg.nestReg);
@@ -2656,6 +2956,55 @@ GMTVTK_API int gmtvtk_serialize_faults(void *handle, char *buf, int cap) {
 	const int n = (int)o.size();
 	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
 	return n;
+}
+
+// Serialize the window's RULER measurements (Save Session) as one line each:
+//   id;x,y,z|x,y,z|…\n
+// Only the clicked vertices travel. The leg lengths, their unit and the annotation text are NOT
+// stored on purpose: they are a MEASUREMENT under the Preferences in force (Ruler::prefSig), and
+// rulerRebuild re-measures whenever that signature differs — so a session reopened with a different
+// Dist/Azim type or distance unit shows correct numbers instead of stale ones relabelled. Two-pass
+// buffer like every serializer here; session rebuilds each line via gmtvtk_add_ruler_h.
+GMTVTK_API int gmtvtk_serialize_rulers(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	char t[96];
+	if (sceneAlive(s)) {
+		for (auto &r : s->rulers) {
+			if (r.verts.size() < 2) continue;               // a half-drawn one is not a measurement yet
+			snprintf(t, sizeof(t), "%d;", r.id);
+			o += t;
+			for (size_t i = 0; i < r.verts.size(); ++i) {
+				snprintf(t, sizeof(t), "%.10g,%.10g,%.10g", r.verts[i][0], r.verts[i][1], r.verts[i][2]);
+				o += t; if (i + 1 < r.verts.size()) o += '|';
+			}
+			o += '\n';
+		}
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
+// Rebuild ONE ruler measurement from a saved session (the inverse of gmtvtk_serialize_rulers). `xyz`
+// = npts (x,y,z) triples, the clicked vertices.
+//
+// It goes through the SAME rulerBegin / rulerRebuild / rulerFinish the draw tool uses, so a restored
+// measurement is the same kind of object as a drawn one — its own Scene Objects group, its own track
+// actor, its own draggable per-leg labels, its own Remove (SACRED_LAW: one operation, one function).
+// The legs are measured HERE, now, under the current Preferences; nothing about the numbers is
+// restored from the file. Returns 1 on success, 0 if the handle is dead or fewer than 2 vertices.
+GMTVTK_API int gmtvtk_add_ruler_h(void *handle, const double *xyz, int npts) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xyz || npts < 2) return 0;
+	rulerBegin(s);                                        // closes any half-drawn one, opens a new id
+	if (s->rulerActive < 0) return 0;
+	Ruler &r = s->rulers[s->rulerActive];
+	for (int i = 0; i < npts; ++i)
+		r.verts.push_back({ xyz[3*i], xyz[3*i+1], xyz[3*i+2] });
+	rulerFinish(s);                                       // measures every leg, labels it, freezes it
+	rebuildSceneObjects(s);
+	return 1;
 }
 
 // Rebuild a "Nested grids" (tsunami) rectangle from a saved session (inverse of the N record in
@@ -4760,6 +5109,19 @@ GMTVTK_API int gmtvtk_capture_rect_rgb(void *handle, double w, double e, double 
 	std::vector<vtkActor*> hiddenSymbol;
 	for (auto &sl : s->symbols)
 		if (sl.actor && sl.actor->GetVisibility()) { sl.actor->SetVisibility(0); hiddenSymbol.push_back(sl.actor.Get()); }
+	// EVERY OTHER vector prop has to go too, for the same reason and one more: a consumer that draws
+	// these elements itself gets them TWICE if they are also baked into the picture. That is exactly
+	// what the GMT.jl script export showed — a text label rendered once by the capture at screen size
+	// and once by GMT at its own, the same "BlaBla" printed over itself at two sizes. Text labels,
+	// focal beachballs, curtains and a fault's plane/arrow actors were all still in the shot.
+	std::vector<vtkProp*> hiddenProp;
+	auto hideProp = [&](vtkProp *p) {
+		if (p && p->GetVisibility()) { p->SetVisibility(0); hiddenProp.push_back(p); }
+	};
+	for (auto &tl : s->texts)     hideProp(tl.actor);
+	for (auto &mb : s->mecaBalls) { for (auto *a : mb.actors) hideProp(a); hideProp(mb.anchor); hideProp(mb.anchorDot); }
+	for (auto &cu : s->curtains)  hideProp(cu.actor);
+	for (auto &pg : s->polys) { hideProp(pg.faultPlane); hideProp(pg.faultPlane3D); hideProp(pg.faultArrows); }
 	s->widget->renderWindow()->Render();
 
 	vtkNew<vtkWindowToImageFilter> w2i;
@@ -4806,6 +5168,7 @@ GMTVTK_API int gmtvtk_capture_rect_rgb(void *handle, double w, double e, double 
 	for (auto *a : hiddenPolyFill) a->SetVisibility(1);
 	for (auto *a : hiddenOverlay)  a->SetVisibility(1);
 	for (auto *a : hiddenSymbol)   a->SetVisibility(1);
+	for (auto *p : hiddenProp)     p->SetVisibility(1);
 	s->widget->renderWindow()->Render();
 	return ok ? 1 : 0;
 }

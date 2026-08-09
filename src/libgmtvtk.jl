@@ -62,7 +62,12 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # BUMP BOTH TOGETHER whenever a host-facing export's signature changes. Generation 2 = every grid
 # buffer is handed over with its layout code; a generation-1 library reads such a buffer transposed
 # and shows vertical stripes, with no error anywhere — hence the check.
-const _ABI_REQUIRED = 3
+# Generation 4 = gmtvtk_serialize_texts takes an `includeGroups` flag and emits the group tag as its
+# own field; a generation-3 library reads the flag as garbage and its lines are one field short.
+# Generation 5 = the vector snapshots Save Session grew onto: overlays carry their group tag, symbols
+# their oneShot/hasScale/hasRGB flags + per-point size/colour, and rulers have a serializer of their
+# own. Field counts changed, so a generation-4 library's lines parse as garbage here.
+const _ABI_REQUIRED = 5
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.
@@ -105,9 +110,11 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_solid_callback, :gmtvtk_set_grdsample_callback, :gmtvtk_set_gridmeta_callback,
 	:gmtvtk_set_dimfun_callback, :gmtvtk_set_nswing_callback,
 	:gmtvtk_set_save_session_callback, :gmtvtk_set_load_session_callback, :gmtvtk_load_session_h,
+	:gmtvtk_serialize_overlays, :gmtvtk_serialize_symbols, :gmtvtk_layer_display,
 	:gmtvtk_window_screenshot,
 	:gmtvtk_scene_state_full, :gmtvtk_apply_scene_state, :gmtvtk_serialize_texts,
 	:gmtvtk_serialize_polys, :gmtvtk_add_poly_full, :gmtvtk_serialize_faults, :gmtvtk_add_nested_rect,
+	:gmtvtk_serialize_rulers, :gmtvtk_add_ruler_h, :gmtvtk_set_vector_visible_h,
 	:gmtvtk_serialize_vector_h, :gmtvtk_vector_info_h, :gmtvtk_set_euler_callback, :gmtvtk_euler_result,
 	:gmtvtk_compute_euler_progress,
 	:gmtvtk_refresh_fault_planes, :gmtvtk_overlay_style_h, :gmtvtk_set_overlay_style_h,

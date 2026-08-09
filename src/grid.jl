@@ -140,7 +140,10 @@ function view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside::Symbol=:shade
 		  img, Cint(iw), Cint(ih), Cint(ibands), Cint(edges), Cint(triangulate), Cint(0), title, zlay)
 	fig = _register_fig!(QtFigure(h, G))
 	_remember_object!(h, :grid, "", G)                # File>Save / Scene Objects "Save…" can write it
-	_session_record!(h, :basegrid, :generated)        # Save Session: no source path here -> serialize the grid
+	# Save Session: no source path here -> serialize the grid. The colormap NAME rides along in the
+	# params: it is the only record of which CPT this layer wears (the C side keeps resolved LUT nodes
+	# only), and both Save Session's replay and the GMT.jl script export need it.
+	_session_record!(h, :basegrid, :generated; params=Dict{String,Any}("cmap" => _cmap_tag(cmap)))
 	_apply_crs!(fig, crs_from(G; geographic=geog))    # store the CRS + reveal the Geography menu if referenced
 	# Optional GMTdataset overlay (lines or points), added to the window just created.
 	data !== nothing && _add_overlay!(fig, data, mode, data_color, data_size)
@@ -284,20 +287,31 @@ end
 # window's own CRS (`_window_crs`), so the result round-trips through File>Save Image as a genuine
 # GeoTIFF; `coords=false` leaves it a bare picture with no proj4/wkt, matching Mirone's un-referenced
 # plain crop.
-function _capture_rect_image(scene::Ptr{Cvoid}, w, e, s, n; coords::Bool=true)
+# `baked_only`: take ONLY the data-space bake and return `nothing` when there isn't one, instead of
+# falling back to the screen grab. A caller that needs a GEOREFERENCED TEXTURE (the GMT.jl script
+# export, which drapes the captured colours over the grid with `grdview drape=`) cannot use a
+# perspective screen grab for that — a picture of a tilted camera is not a map. Roi Crop keeps the
+# default and the fallback.
+# `prefer_screen`: take the SCREEN-SPACE grab first — the pixels the user is actually looking at,
+# lighting and all, exactly what File > Save Screenshot GeoTIFF writes. The data-space bake is a
+# RE-BAKE of the CPT: right for Roi Crop (native resolution, camera-independent) but it is NOT the
+# displayed picture — it comes back flat, without the lit surface. Anything whose job is "use the
+# displayed image" passes this.
+function _capture_rect_image(scene::Ptr{Cvoid}, w, e, s, n; coords::Bool=true, baked_only::Bool=false,
+                             prefer_screen::Bool=false)
 	pRgb = Ref{Ptr{UInt8}}(C_NULL)
 	pW = Ref{Cint}(0); pH = Ref{Cint}(0)
-	# Prefer the data-space bake (gmtvtk_capture_rect_databaked): native grid resolution, independent
-	# of the current render-window size / zoom -- the screen-space grab below is only a fallback for
-	# when there's no baked grid to read from (see the export's own doc, 90_c_api.cpp).
-	ok = ccall(_fn(:gmtvtk_capture_rect_databaked), Cint,
+	_grab(sym) = ccall(_fn(sym), Cint,
 		(Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
 		scene, Float64(w), Float64(e), Float64(s), Float64(n), pRgb, pW, pH)
-	if ok == 0
-		ok = ccall(_fn(:gmtvtk_capture_rect_rgb), Cint,
-			(Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
-			scene, Float64(w), Float64(e), Float64(s), Float64(n), pRgb, pW, pH)
-	end
+	# Default order: the data-space bake (gmtvtk_capture_rect_databaked) first — native grid
+	# resolution, independent of the current render-window size / zoom — with the screen grab as the
+	# fallback (see the export's own doc, 90_c_api.cpp). `prefer_screen` reverses it.
+	first_sym, second_sym = prefer_screen ? (:gmtvtk_capture_rect_rgb, :gmtvtk_capture_rect_databaked) :
+	                                        (:gmtvtk_capture_rect_databaked, :gmtvtk_capture_rect_rgb)
+	ok = _grab(first_sym)
+	(ok == 0 && baked_only) && return nothing
+	ok == 0 && (ok = _grab(second_sym))
 	ok == 0 && error("Roi Crop: rectangle isn't visible on screen, nothing to capture")
 	try
 		view = unsafe_wrap(Array, pRgb[], (3, Int(pW[]), Int(pH[])))   # (band, col, row), C memory, borrowed

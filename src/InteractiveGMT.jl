@@ -57,6 +57,7 @@ include("grdsample.jl")  # GMT > Resample (grdsample)
 include("bgregion.jl")   # File > Background region -> blank white 2-D map framed to W/E/S/N
 include("savefile.jl")   # File > Save Grid / Save Image -> gmtwrite (netCDF/Surfer) / gdalwrite
 include("session.jl")    # File > Save/Load Session (.igmtz): provenance registry + manifest + store-only zip
+include("gmtscript.jl")  # reproduce a window as GMT.jl calls (live) or a standalone script
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
 include("plateboundaries.jl") # Geography > Plate boundaries -> 7 grouped boundary-type overlays
 include("magneticisochrons.jl") # Geography > Magnetic isochrons > GPlates -> Sutton_isocs.sqlite
@@ -106,7 +107,8 @@ include("shapenc.jl")    # write a SHAPENC netCDF file (port of Mirone utils/sha
 include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track editor (port of Mirone src_figs/gmtedit.m)
 include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> write via shapenc
 
-export view_grid, view_image, view_points, view_fv, view_demo, iview,
+export gmtscript, gmtreplay,
+       view_grid, view_image, view_points, view_fv, view_demo, iview,
        add!, add_curtain!, add_symbols!, show_table, selection, isalive,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,

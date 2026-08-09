@@ -131,7 +131,11 @@ function _on_basemap(scene::Ptr{Cvoid}, copt::AbstractString)::Cvoid
 		_adopt_new_element(scene, name, I)
 		push!(loaded, name)
 		# Save Session: the request string reproduces this tile exactly -> :menu recipe, no data bytes.
-		_session_record!(scene, :basemap, :menu; params=Dict{String,Any}("copt" => String(copt)))
+		# `name` is the Scene Objects row this tile landed on, so anything that needs the tile ITSELF
+		# later (the GMT.jl script export, which draws the pixels with grdimage) can resolve it by
+		# name through the ordinary object lookup instead of guessing.
+		_session_record!(scene, :basemap, :menu; name=name,
+		                 params=Dict{String,Any}("copt" => String(copt)))
 	catch e
 		_viewer_log_error(scene, "Base Map FAILED: $(sprint(showerror, e))")
 		@warn "basemap: could not crop/add the tile" exception=(e,)

@@ -16,6 +16,15 @@ _isgeographic(G::GMTgrid)::Bool = GMT.guessgeog(G)
 # passing cmap=:auto (the viewer's default); an explicit cmap always wins.
 _default_cmap(G::GMTgrid) = (G.cpt == "geo") ? :geo : :turbo
 
+# The colormap's NAME, for anything that has to say later which CPT a layer was coloured with —
+# Save Session's recipe params and, through them, the GMT.jl script export (a script needs `cmap=`,
+# and the C side keeps only the resolved LUT nodes: there is no cptName in the Scene, deliberately,
+# because `makeGridCTF` is the one constructor and it takes nodes). A Symbol/String colormap has a
+# name GMT can look up again; a GMTcpt OBJECT does not (it may be a palette read out of a data file),
+# so it reports "" and the caller falls back to serializing the palette itself. `nothing` (the
+# viewer's built-in ramp) is also "".
+_cmap_tag(cmap)::String = (cmap isa Symbol || cmap isa AbstractString) ? String(cmap) : ""
+
 # Build a CPT (plain `makecpt`, LINEAR over the data range) and return its control nodes: z
 # values `cz` and matching RGB `crgb` (0..1, row-major), for a faithful vtkColorTransferFunction
 # on the C side. Returns (Float64[], Float64[], 0) on failure -> viewer falls back to its ramp.

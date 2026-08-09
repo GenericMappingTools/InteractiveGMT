@@ -1217,8 +1217,11 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 	ok != 0 && _remember_object!(scene, :grid, name, G)   # Scene Objects "Save…" / File>Save can write it
 	# Save Session: known file path -> store a file ref (:file); no path -> serialize the grid (:generated).
 	# `record=false` suppresses this when a higher-level tool logs its own (menu) recipe (e.g. basemap).
+	# The colormap NAME rides in the params: the C side keeps only resolved LUT nodes, so this is the
+	# one record of which CPT the layer wears (needed by the GMT.jl script export's `cmap=`).
 	(ok != 0 && record) && _session_record!(scene, promote ? :basegrid : :dropgrid,
-	                            isempty(source) ? :generated : :file, source; name=String(name))
+	                            isempty(source) ? :generated : :file, source; name=String(name),
+	                            params=Dict{String,Any}("cmap" => _cmap_tag(cmap)))
 	# Store the CRS + reveal the Geography menu if referenced (incl. guessed lon/lat -> WGS84).
 	if ok != 0
 		crs = crs_from(G; geographic=geog)

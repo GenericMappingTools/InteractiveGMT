@@ -293,7 +293,9 @@ end
 # reprojection warped a closed window's grid — and they hold nothing C++ can reach.
 function _forget_window!(scene::Ptr{Cvoid})
 	scene == C_NULL && return
-	for d in (_SCENE_OBJS, _IMG_ORIG, _SESSION_LOG)
+	# _MECA_TABLE: pure Julia matrices built by _focal_plot, never handed to a ccall — safe to purge
+	# by the rule stated above (Scene*-keyed, no buffer C++ still points at).
+	for d in (_SCENE_OBJS, _IMG_ORIG, _SESSION_LOG, _MECA_TABLE)
 		delete!(d, scene)
 	end
 	return

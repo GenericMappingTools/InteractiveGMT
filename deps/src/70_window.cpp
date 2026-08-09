@@ -14002,11 +14002,30 @@ static void sceneMessagesUnread(Scene *s, bool on) {
 // corner's bubble, the View menu item and sceneLogError all come through here.
 static void sceneShowMessages(Scene *s, bool show) {
 	if (!s || !s->msgDock) return;
-	s->msgDock->setVisible(show);
-	if (show) {
-		s->msgDock->raise();
-		sceneMessagesUnread(s, false);
+	if (!show) { s->msgDock->setVisible(false); return; }
+	// Opens as a real, readable FLOATING text window. Docked, this log gets whatever sliver of height
+	// the dock area has left, which for a message you are trying to read is useless.
+	//
+	// …and it DOCKS AGAIN WHEN CLOSED: closing the floating window puts it back into the dock area
+	// (hidden), so the next open is a clean floating window again and the docked layout is never left
+	// holding a torn-off panel. Wired once, guarded by a property on the dock itself.
+	if (!s->msgDock->property("igmtReDockWired").toBool()) {
+		s->msgDock->setProperty("igmtReDockWired", true);
+		QDockWidget *d = s->msgDock;
+		QObject::connect(d, &QDockWidget::visibilityChanged, d, [d](bool vis) {
+			if (!vis && d->isFloating()) d->setFloating(false);
+		});
 	}
+	s->msgDock->setFloating(true);
+	if (s->win) {                       // a usable size, centred on the viewer window
+		const QRect g = s->win->geometry();
+		const int w = qMax(760, g.width() * 3 / 5), h = qMax(380, g.height() / 3);
+		s->msgDock->resize(w, h);
+		s->msgDock->move(g.center().x() - w / 2, g.center().y() - h / 2);
+	}
+	s->msgDock->setVisible(true);
+	s->msgDock->raise();
+	sceneMessagesUnread(s, false);
 }
 
 // Build the status bar's right-hand corner: [globe EPSG:xxxx] [bubble], pinned there as ONE
@@ -14667,6 +14686,190 @@ static void sceneSetFlat2D(Scene *s, bool on) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
+// File > Export GMT.jl script… — the window's display as GMT.jl code, in an EDITABLE box with Save
+// and Run.
+//
+// Why it is backed by a real file instead of holding the text in memory: a script whose layers came
+// out of the window (rather than off disk) reads them back through
+// `joinpath(@__DIR__, "script_data", …)`, and `@__DIR__` only means anything for a file that
+// `include` is reading. So Julia generates the script into a per-window working directory
+// (`_script_prepare_for_editor`, gmtscript.jl), we show THAT file's text, and Run writes the box's
+// current text back over it and `include`s it — which is what makes Run run what the user EDITED,
+// not what was generated. Save copies the same edited file plus its `script_data/` to the chosen
+// destination (`_script_save_bundle`), so what gets kept actually runs.
+//
+// All of it goes through the console eval bridge (`g_juliaEval`) — the same one the ruler and the
+// focal dialog use. No dedicated C callback: one bridge, one eval path (SACRED_LAW.md).
+// One script editor per window, so closing it can PARK it as a Scene Objects handle (like the X,Y
+// plot, the Contours dialog, the Aquamoto viewer) instead of throwing the user's edits away. Keyed by
+// Scene*, cleared when the dialog is really destroyed.
+static QHash<Scene *, QDialog *> &scriptEditorRegistry() {
+	static QHash<Scene *, QDialog *> reg;
+	return reg;
+}
+
+// Bring a parked script editor back — the one route for the double-click, the row's checkbox and its
+// "Show" item (same shape as ContourDialog::unpark / aquamotoUnpark).
+static void scriptEditorUnpark(Scene *s) {
+	QDialog *d = scriptEditorRegistry().value(s, nullptr);
+	if (!d) return;
+	unparkTool(s, d);
+	d->setWindowState(d->windowState() & ~Qt::WindowMinimized);
+	d->showNormal();
+	d->raise();
+	d->activateWindow();
+}
+
+// The parked row's menu — one menu for both the properties button and the context menu, as parkTool
+// requires. "Delete" is the only way to really destroy the editor (and its unsaved edits).
+static std::function<void(const QPoint &)> scriptEditorParkedMenu(Scene *s) {
+	return [s](const QPoint &gp) {
+		QDialog *d = scriptEditorRegistry().value(s, nullptr);
+		if (!d) return;
+		QMenu m;
+		m.addAction("Show", [s]() { scriptEditorUnpark(s); });
+		m.addSeparator();
+		m.addAction("Delete", [s, d]() {
+			unparkTool(s, d);
+			scriptEditorRegistry().remove(s);
+			d->setProperty("igmtReallyClose", true);
+			d->close();
+		});
+		m.exec(gp);
+	};
+}
+
+// The X does not destroy the editor: it hides and parks as a handle in Scene Objects, so an edited
+// script survives. Only the parked row's "Delete" lets a close through.
+class ScriptEditorParkOnClose : public QObject {
+public:
+	Scene *scene_;
+	ScriptEditorParkOnClose(QObject *parent, Scene *scene) : QObject(parent), scene_(scene) {}
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		if (ev->type() == QEvent::Close) {
+			QWidget *w = qobject_cast<QWidget *>(obj);
+			if (w && w->property("igmtReallyClose").toBool()) return QObject::eventFilter(obj, ev);
+			ev->ignore();
+			if (w) w->hide();                                   // hidden, NOT destroyed
+			if (scene_ && w) {
+				Scene *sc = scene_;
+				parkTool(sc, w, "GMT.jl script", IC_Text,
+				         "Closed GMT.jl script editor — double-click to bring it back, click for its menu",
+				         [sc]() { scriptEditorUnpark(sc); }, scriptEditorParkedMenu(sc));
+				unfoldSceneObjects(sc);                          // a handle nobody can see is no handle
+			}
+			return true;
+		}
+		return QObject::eventFilter(obj, ev);
+	}
+};
+
+static void showScriptEditor(Scene *s, QMainWindow *win) {
+	if (!g_juliaEval) {
+		if (s->win) s->win->statusBar()->showMessage("Export GMT.jl script: the Julia bridge is not registered", 3000);
+		return;
+	}
+	// Already open (or parked): bring THAT one back rather than opening a second and losing the edits.
+	if (scriptEditorRegistry().value(s, nullptr) != nullptr) { scriptEditorUnpark(s); return; }
+	// Ask Julia to build the script; it prints the path of the file it wrote. The scene is passed as
+	// an explicit pointer literal rather than leaning on the console's `fig` binding, which belongs to
+	// whichever window was last eval'd in and is not necessarily this one.
+	const QString gen = QString("print(InteractiveGMT._script_prepare_for_editor(Ptr{Nothing}(UInt(%1))))")
+	                    .arg((qulonglong)(quintptr)s);
+	std::vector<char> pbuf(4096);
+	int n = g_juliaEval(s, gen.toStdString().c_str(), pbuf.data(), (int)pbuf.size());
+	if (n <= 0) {
+		const QString err = QString::fromUtf8(pbuf.data(), n < 0 ? -n : 0);
+		sceneLogError(s, err.isEmpty() ? QString("Export GMT.jl script: could not build the script") : err);
+		if (s->win) s->win->statusBar()->showMessage("Export GMT.jl script failed — see the Errors tab", 4000);
+		return;
+	}
+	const QString path = QString::fromUtf8(pbuf.data(), n).trimmed();
+	QFile f(path);
+	if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+		sceneLogError(s, QString("Export GMT.jl script: cannot read %1").arg(path));
+		return;
+	}
+	const QString text = QString::fromUtf8(f.readAll());
+	f.close();
+
+	QDialog *dlg = new QDialog(win);
+	dlg->setWindowTitle("GMT.jl script — " + QFileInfo(path).fileName());
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	scriptEditorRegistry().insert(s, dlg);
+	dlg->installEventFilter(new ScriptEditorParkOnClose(dlg, s));   // X -> park, never destroy
+	QObject::connect(dlg, &QObject::destroyed, [s]() { scriptEditorRegistry().remove(s); });
+	QVBoxLayout *lay = new QVBoxLayout(dlg);
+	QPlainTextEdit *ed = new QPlainTextEdit(text, dlg);
+	ed->setLineWrapMode(QPlainTextEdit::NoWrap);
+	ed->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));   // code reads as code
+	ed->setTabStopDistance(4 * ed->fontMetrics().horizontalAdvance(' '));
+	lay->addWidget(ed, 1);
+	// Run + Save… in the LOWER-RIGHT corner; no Close button (the window's own X closes it).
+	QHBoxLayout *row = new QHBoxLayout();
+	QPushButton *bRun = new QPushButton("&Run", dlg);
+	QPushButton *bSave = new QPushButton("&Save…", dlg);
+	// Enter must not fire a button while the user is typing in the editor.
+	for (QPushButton *b : { bRun, bSave }) b->setAutoDefault(false);
+	row->addStretch(1);
+	row->addWidget(bRun);
+	row->addWidget(bSave);
+	lay->addLayout(row);
+	dlg->resize(820, 600);
+
+	// Write the box's current text back over the working file — every button starts here, so Save and
+	// Run always act on what is on screen, never on the originally generated text.
+	auto flush = [ed, path]() -> bool {
+		QFile w(path);
+		if (!w.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) return false;
+		w.write(ed->toPlainText().toUtf8());
+		w.close();
+		return true;
+	};
+
+	QObject::connect(bRun, &QPushButton::clicked, [s, dlg, path, flush]() {
+		if (!flush()) { sceneLogError(s, "Run: could not write the script to disk"); return; }
+		if (s->win) s->win->statusBar()->showMessage("Running the script…", 2000);
+		// `include` (not eval of the text): it gives the script a real __DIR__, so its script_data/
+		// reads resolve exactly as they will for the saved copy.
+		const QString cmd = QString("include(raw\"%1\")").arg(path);
+		std::vector<char> buf(1 << 16);
+		const int rn = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		if (rn < 0) {
+			sceneLogError(s, QString::fromUtf8(buf.data(), -rn));
+			if (s->win) s->win->statusBar()->showMessage("Script FAILED — see the Errors tab", 5000);
+		}
+		else {
+			if (rn > 0) sceneLogError(s, QString::fromUtf8(buf.data(), rn));
+			if (s->win) s->win->statusBar()->showMessage("Script ran", 3000);
+		}
+		(void)dlg;
+	});
+
+	QObject::connect(bSave, &QPushButton::clicked, [s, dlg, path, flush]() {
+		if (!flush()) { sceneLogError(s, "Save: could not write the script to disk"); return; }
+		QString dest = QFileDialog::getSaveFileName(dlg, "Save GMT.jl script", prefStartDir("igmt_script.jl"),
+		                                            "Julia script (*.jl)");
+		if (dest.isEmpty()) return;
+		if (!dest.endsWith(".jl", Qt::CaseInsensitive)) dest += ".jl";
+		rememberStartDir(dest);
+		const QString cmd = QString("print(InteractiveGMT._script_save_bundle(raw\"%1\", raw\"%2\"))")
+		                    .arg(path).arg(dest);
+		std::vector<char> buf(4096);
+		const int sn = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		if (sn < 0) {
+			sceneLogError(s, QString::fromUtf8(buf.data(), -sn));
+			if (s->win) s->win->statusBar()->showMessage("Save FAILED — see the Errors tab", 5000);
+		}
+		else {
+			sceneLogError(s, QString("Saved GMT.jl script -> %1").arg(dest));
+			if (s->win) s->win->statusBar()->showMessage("Saved " + dest, 4000);
+		}
+	});
+
+	dlg->show();                        // non-modal: the window stays usable while the script is edited
+}
+
 // Load a .igmtz session INTO `s`/`win`. The ONE path for this: the File > Load Session menu action
 // and a dropped/opened .igmtz file (drop.jl's _on_drop, via gmtvtk_load_session_h below) both call
 // THIS function -- never two independent re-derivations (SACRED_LAW.md). The priming progress
@@ -15132,6 +15335,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			rememberStartDir(f);
 			loadSessionIntoWindow(s, win, f);
 		});
+		// Export the window as GMT.jl code — an EDITABLE script in a dialog with Save and Run, not a
+		// bare file dialog (showScriptEditor, below). Built from the same provenance the session save
+		// reads (gmtscript.jl), so the two can never disagree about what this window is made of.
+		mFile->addAction("&Export GMT.jl script…", [win, s]() { showScriptEditor(s, win); });
 		mFile->addSeparator();
 		// Ctrl+V: paste the clipboard INTO this window — an image becomes a new image object, a
 		// numeric table a line/polygon overlay (or X,Y series), a copied FILE opens as if dropped.

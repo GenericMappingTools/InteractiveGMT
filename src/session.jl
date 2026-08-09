@@ -51,6 +51,22 @@ _curtain_img_store!(scene::Ptr{Cvoid}, id::String, bytes::Vector{UInt8}) =
 _curtain_img_next_id(scene::Ptr{Cvoid})::String =
 	"curtain_" * string(length(get(_CURTAIN_IMG, scene, Dict{String,Vector{UInt8}}())) + 1) * ".png"
 
+# Focal-mechanism catalogs, per window: group name -> the KEPT events in GMT's Aki & Richards column
+# order (lon lat depth strike dip rake mag), one row per beachball actually drawn.
+#
+# Same reason `_CURTAIN_IMG` exists: the scene keeps a beachball as PATCH GEOMETRY (MecaBall holds
+# actors, not angles), so the numbers that produced it cannot be read back off the display. They are
+# stashed here at plot time by `_focal_plot`, which is the only place that has them. A freshly built
+# matrix — never a view of anything handed to a ccall — so `_forget_window!` may purge it.
+const _MECA_TABLE = Dict{Ptr{Cvoid}, Vector{Tuple{String,Matrix{Float64}}}}()
+function _meca_table_store!(scene::Ptr{Cvoid}, name::String, M::Matrix{Float64})
+	(scene == C_NULL || isempty(M)) && return M
+	v = get!(() -> Tuple{String,Matrix{Float64}}[], _MECA_TABLE, scene)
+	filter!(t -> t[1] != name, v)                  # re-plotting a group replaces it, never piles up
+	push!(v, (name, M))
+	return M
+end
+
 # Stamp a computed grid with the GMT.jl command that produced it. GMTgrid carries a `command` string
 # that GMT persists into the netCDF header (grdinfo shows it), so every grid iGMT generates from a
 # GMT.jl call records how it was made. Returns G for inline use.
@@ -239,10 +255,19 @@ function _session_pack_generated(scene::Ptr{Cvoid}, r::ElementRecipe, used::Set{
 	ext = objkind === :grid ? ".nc" : ".tif"
 	id = _session_sidecar_id(r.name, ext, used)
 	tmp = tempname() * ext
-	objkind === :grid ? GMT.gmtwrite(tmp, obj) : GMT.gdalwrite(tmp, obj)
+	_serialize_object(obj, tmp)
 	bytes = read(tmp); rm(tmp; force=true)
 	return (id, bytes)
 end
+
+# THE writer for "put this live scene object on disk as a sidecar": grids -> netCDF (GMT.gmtwrite),
+# everything else (images) -> GDAL, driver by extension. One function, because there are now two
+# callers that must agree on the format choice — Save Session's zip member above, and the GMT.jl
+# script export's `script_data/` directory (gmtscript.jl), which is the same operation aimed at a
+# different destination.
+_serialize_object(obj, path::String) =
+	(obj isa GMTgrid || obj isa GMTdataset || obj isa Vector{<:GMTdataset}) ?
+		GMT.gmtwrite(path, obj) : GMT.gdalwrite(path, obj)
 
 # Fetch the window's RESTORABLE display state (camera/VE/flat2d/colorbar) as the raw "k=v;" string the
 # C serializer emits — stored verbatim under the manifest [window] `state=` key and fed back to
@@ -263,14 +288,20 @@ function _session_display(scene::Ptr{Cvoid})
 	return isempty(raw) ? Dict{String,String}() : Dict("state" => raw)
 end
 
-# Serialize the window's user-placed text labels to the C serializer's raw "x;y;r;g;b;size;text\n"
-# blob (empty if none). C++-drawn elements have no add-time recipe, so they are SNAPSHOTTED at save
-# time and rebuilt on load (P3). Two-pass buffer.
-function _serialize_texts_raw(h::Ptr{Cvoid})::String
-	n = ccall(_fn(:gmtvtk_serialize_texts), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, C_NULL, Cint(0))
+# Serialize the window's text labels to the C serializer's raw "x;y;r;g;b;size;group;text\n" blob
+# (empty if none). C++-drawn elements have no add-time recipe, so they are SNAPSHOTTED at save time
+# and rebuilt on load (P3). Two-pass buffer.
+#
+# `groups` picks WHICH labels: Save Session takes the default (false = user-placed only, a batch's
+# labels come back with its recipe), the GMT.jl script export passes true because nothing else redraws
+# them there and the capture no longer bakes them into the pixels. ONE function, one flag — see the
+# export's own comment in 90_c_api.cpp.
+function _serialize_texts_raw(h::Ptr{Cvoid}; groups::Bool=false)::String
+	g = Cint(groups)
+	n = ccall(_fn(:gmtvtk_serialize_texts), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint, Cint), h, C_NULL, Cint(0), g)
 	n <= 0 && return ""
 	buf = Vector{UInt8}(undef, n + 1)
-	ccall(_fn(:gmtvtk_serialize_texts), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, buf, Cint(n + 1))
+	ccall(_fn(:gmtvtk_serialize_texts), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint, Cint), h, buf, Cint(n + 1), g)
 	return unsafe_string(pointer(buf))
 end
 
@@ -413,18 +444,259 @@ end
 
 # Rebuild the text labels from a saved blob into `fig`'s window via gmtvtk_add_text_h (one per line).
 # Lines are "x;y;r;g;b;size;text" (text last, may contain ';'). Malformed lines are skipped.
-function _session_rebuild_texts!(fig, blob::String)
-	(fig === nothing || isempty(blob)) && return
-	h = getfield(fig, :h)
+"One parsed label out of the text serializer's blob."
+const TextRow = @NamedTuple{x::Float64, y::Float64, r::Float64, g::Float64, b::Float64,
+                            size::Int, group::String, text::String}
+
+# THE parser for `gmtvtk_serialize_texts`' blob — session rebuild and the GMT.jl script export read
+# labels through this one function, so a field added on the C side can never be understood two ways
+# (SACRED_LAW: one operation, one function). Lines are "x;y;r;g;b;size;group;text"; a 7-field line is
+# a blob written before the group field existed (an older session zip) and reads as group="".
+function _parse_texts_blob(blob::String)::Vector{TextRow}
+	out = TextRow[]
+	isempty(blob) && return out
 	for line in split(blob, '\n'; keepempty=false)
-		p = split(line, ';'; limit=7)
+		p = split(line, ';'; limit=8)
 		length(p) < 7 && continue
 		x = tryparse(Float64, p[1]); y = tryparse(Float64, p[2])
 		r = tryparse(Float64, p[3]); g = tryparse(Float64, p[4]); b = tryparse(Float64, p[5])
 		sz = tryparse(Int, p[6])
 		(x === nothing || y === nothing || r === nothing || g === nothing || b === nothing || sz === nothing) && continue
+		grp, txt = length(p) >= 8 ? (String(p[7]), String(p[8])) : ("", String(p[7]))
+		push!(out, (x=x, y=y, r=r, g=g, b=b, size=sz, group=grp, text=txt))
+	end
+	return out
+end
+
+# ── the vector snapshots: overlays, symbol layers, rulers ────────────────────────────────────
+# THE parsers for the three remaining `gmtvtk_serialize_*` blobs, same rule as `_parse_texts_blob`
+# above: Save Session and the GMT.jl script export are two CONSUMERS of one snapshot, never two
+# snapshots (SACRED_LAW). Vertex strings go through `_script_verts` — the one "x,y,z|…" reader.
+
+"One parsed line/point overlay out of `gmtvtk_serialize_overlays`' blob."
+const OverlayRow = @NamedTuple{mode::Int, r::Float64, g::Float64, b::Float64, lw::Float64,
+                               ps::Float64, lstyle::Int, stack::Int, visible::Bool,
+                               group::String, name::String, segs::Vector{Matrix{Float64}}}
+
+function _parse_overlays_blob(blob::String)::Vector{OverlayRow}
+	out = OverlayRow[]
+	isempty(blob) && return out
+	for line in split(blob, '\n'; keepempty=false)
+		f = split(line, ';'; limit=12)
+		length(f) < 12 && continue
+		nums = map(i -> tryparse(Float64, f[i]), 1:9)
+		any(isnothing, nums) && continue
+		segs = filter(!isempty, [_script_verts(String(sg)) for sg in split(f[12], '>'; keepempty=false)])
+		isempty(segs) && continue
+		push!(out, (mode=Int(nums[1]), r=nums[2], g=nums[3], b=nums[4], lw=nums[5], ps=nums[6],
+		            lstyle=Int(nums[7]), stack=Int(nums[8]), visible=nums[9] != 0,
+		            group=String(f[10]), name=String(f[11]), segs=segs))
+	end
+	return out
+end
+
+"""
+One parsed symbol layer out of `gmtvtk_serialize_symbols`' blob. `xyz` holds the points AS STORED —
+x is still multiplied by `xfac` (`addSymbols` bakes it in); `_symbol_layer` un-bakes it for GMT, and
+the session rebuild hands them back to a C side that bakes it again, so neither may do it here.
+`scale` / `rgb` are empty when the layer has no per-point size / colour.
+"""
+const SymbolRow = @NamedTuple{sym::String, sizePx::Float64, filled::Bool,
+                              r::Float64, g::Float64, b::Float64,
+                              er::Float64, eg::Float64, eb::Float64, ew::Float64, evis::Bool,
+                              stack::Int, visible::Bool, oneShot::Bool, name::String,
+                              xyz::Matrix{Float64}, scale::Vector{Float64}, rgb::Matrix{Float64}}
+
+function _parse_symbols_blob(blob::String)::Vector{SymbolRow}
+	out = SymbolRow[]
+	isempty(blob) && return out
+	for line in split(blob, '\n'; keepempty=false)
+		f = split(line, ';'; limit=18)
+		length(f) < 18 && continue
+		nums = map(i -> tryparse(Float64, f[i]), 2:16)
+		any(isnothing, nums) && continue
+		hasScale = nums[14] != 0; hasRGB = nums[15] != 0
+		pts = split(f[18], '|'; keepempty=false)
+		isempty(pts) && continue
+		xyz = Matrix{Float64}(undef, length(pts), 3)
+		scale = hasScale ? Vector{Float64}(undef, length(pts)) : Float64[]
+		rgb = hasRGB ? Matrix{Float64}(undef, length(pts), 3) : Matrix{Float64}(undef, 0, 3)
+		bad = false
+		for (i, p) in enumerate(pts)
+			c = split(p, ',')
+			# 3 coords, then the optional per-point size scale, then the optional r,g,b (0-255).
+			length(c) < 3 + (hasScale ? 1 : 0) + (hasRGB ? 3 : 0) && (bad = true; break)
+			for k in 1:3
+				v = tryparse(Float64, c[k]); v === nothing && (bad = true; break)
+				xyz[i, k] = v
+			end
+			bad && break
+			j = 4
+			if hasScale
+				v = tryparse(Float64, c[j]); v === nothing && (bad = true; break)
+				scale[i] = v; j += 1
+			end
+			if hasRGB
+				for k in 1:3
+					v = tryparse(Float64, c[j]); v === nothing && (bad = true; break)
+					rgb[i, k] = v / 255; j += 1
+				end
+				bad && break
+			end
+		end
+		bad && continue
+		push!(out, (sym=String(f[1]), sizePx=nums[1], filled=nums[2] != 0,
+		            r=nums[3], g=nums[4], b=nums[5], er=nums[6], eg=nums[7], eb=nums[8],
+		            ew=nums[9], evis=nums[10] != 0, stack=Int(nums[11]), visible=nums[12] != 0,
+		            oneShot=nums[13] != 0, name=String(f[17]), xyz=xyz, scale=scale, rgb=rgb))
+	end
+	return out
+end
+
+"One parsed ruler measurement out of `gmtvtk_serialize_rulers`' blob (its clicked vertices)."
+const RulerRow = @NamedTuple{id::Int, verts::Matrix{Float64}}
+
+function _parse_rulers_blob(blob::String)::Vector{RulerRow}
+	out = RulerRow[]
+	isempty(blob) && return out
+	for line in split(blob, '\n'; keepempty=false)
+		f = split(line, ';'; limit=2)
+		length(f) < 2 && continue
+		id = tryparse(Int, f[1]); id === nothing && continue
+		V = _script_verts(String(f[2]))
+		size(V, 1) < 2 && continue
+		push!(out, (id=id, verts=V))
+	end
+	return out
+end
+
+for (fname, sym) in ((:_serialize_overlays_raw, :gmtvtk_serialize_overlays),
+                     (:_serialize_symbols_raw,  :gmtvtk_serialize_symbols),
+                     (:_serialize_rulers_raw,   :gmtvtk_serialize_rulers))
+	@eval function $fname(h::Ptr{Cvoid})::String
+		n = ccall(_fn($(QuoteNode(sym))), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, C_NULL, Cint(0))
+		n <= 0 && return ""
+		buf = Vector{UInt8}(undef, n + 1)
+		ccall(_fn($(QuoteNode(sym))), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, buf, Cint(n + 1))
+		return unsafe_string(pointer(buf))
+	end
+end
+
+# Show/hide one vector element by its Scene Objects name, whatever family it belongs to (overlay,
+# symbol layer, polygon, text) — the one C setter, so nothing here needs to know the container.
+_set_vector_visible(h::Ptr{Cvoid}, name::String, vis::Bool) =
+	ccall(_fn(:gmtvtk_set_vector_visible_h), Cint, (Ptr{Cvoid}, Cstring, Cint), h, name, Cint(vis))
+
+# Rebuild the line/point overlays from a saved blob via gmtvtk_add_overlay_ex_h — the SAME export every
+# live import uses — then stamp back the style bits the add call has no argument for (line style, and
+# an unchecked row's hidden state) through gmtvtk_set_overlay_style_h. `skip` holds names that some
+# RECIPE already put back (coastlines, plate boundaries, city layers …): those elements are rebuilt by
+# their own recipe, so re-adding them here would double every one of them.
+function _session_rebuild_overlays!(fig, blob::String, skip::Set{String})
+	(fig === nothing || isempty(blob)) && return
+	h = getfield(fig, :h)
+	# The blob's `lw` is the actor's width in PIXELS; gmtvtk_add_overlay_ex_h takes POINTS and converts
+	# with the render window's own DPI (162 on a HiDPI display, not 72) — hand it pixels and every pen
+	# comes back 2.25x heavier. Converted here, with the DPI the window itself reports, so a session
+	# reopened on a different display restores the same POINT width rather than the same pixel count.
+	dpi = Float64(get(_parse_scene_state(_scene_state_full_raw(h)), "dpi", 72))
+	dpi > 0 || (dpi = 72.0)
+	for ov in _parse_overlays_blob(blob)
+		ov.name in skip && continue
+		try
+			npts = sum(M -> size(M, 1), ov.segs)
+			xyz = Vector{Float64}(undef, 3npts)
+			segoff = Cint[0]; k = 0
+			for M in ov.segs
+				for i in 1:size(M, 1)
+					xyz[3k+1] = M[i, 1]; xyz[3k+2] = M[i, 2]; xyz[3k+3] = M[i, 3]; k += 1
+				end
+				push!(segoff, Cint(k))
+			end
+			GC.@preserve xyz segoff ccall(_fn(:gmtvtk_add_overlay_ex_h), Cint,
+				(Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble,
+				 Cdouble, Cdouble, Cstring, Cstring, Cstring),
+				h, xyz, Cint(npts), segoff, Cint(length(segoff) - 1), Cint(ov.mode),
+				ov.r, ov.g, ov.b, ov.lw * 72 / dpi, ov.ps, ov.name, ov.group, "")
+			# dashed/dotted is not an argument of the add call — it is applied afterwards, by the same
+			# setter the Line Properties dialog uses (opacity 1.0: the blob carries no transparency).
+			ov.lstyle != 0 && ccall(_fn(:gmtvtk_set_overlay_style_h), Cint,
+			                        (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble),
+			                        h, ov.name, ov.r, ov.g, ov.b, ov.lw, Cint(ov.lstyle), 1.0)
+			ov.visible || _set_vector_visible(h, ov.name, false)
+		catch e
+			@warn "session: skipped a malformed overlay line" name=ov.name exception=(e,)
+		end
+	end
+	return
+end
+
+# Rebuild the symbol layers from a saved blob via gmtvtk_add_symbols_ex_h — the same export the live
+# plotters use, per-point size scale and colour included, so a seismicity catalog comes back scaled by
+# magnitude and coloured by depth instead of as uniform dots. `skip` as above (a :focal or :geography
+# recipe has already replayed its own layers).
+function _session_rebuild_symbols!(fig, blob::String, skip::Set{String})
+	(fig === nothing || isempty(blob)) && return
+	h = getfield(fig, :h)
+	xf = ccall(_fn(:gmtvtk_get_xfac), Cdouble, (Ptr{Cvoid},), h)
+	isfinite(xf) && xf != 0.0 || (xf = 1.0)
+	for sl in _parse_symbols_blob(blob)
+		sl.name in skip && continue
+		try
+			n = size(sl.xyz, 1)
+			xyz = Vector{Float64}(undef, 3n)
+			for i in 1:n
+				# x comes out of the blob still baked; addSymbols bakes it again -> un-bake it once here,
+				# exactly as `_symbol_layer` does for the script (SACRED_LAW: the same correction, in the
+				# consumer, never a second copy of the factor inside C).
+				xyz[3i-2] = sl.xyz[i, 1] / xf; xyz[3i-1] = sl.xyz[i, 2]; xyz[3i] = sl.xyz[i, 3]
+			end
+			scale = isempty(sl.scale) ? C_NULL : pointer(sl.scale)
+			rgbv = Float64[]
+			if !isempty(sl.rgb)
+				rgbv = Vector{Float64}(undef, 3n)
+				for i in 1:n, k in 1:3; rgbv[3(i-1)+k] = sl.rgb[i, k]; end
+			end
+			GC.@preserve xyz sl rgbv ccall(_fn(:gmtvtk_add_symbols_ex_h), Cint,
+				(Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cstring, Cdouble, Cint,
+				 Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
+				 Cstring, Cstring, Ptr{Cdouble}, Ptr{Cdouble}),
+				h, xyz, Cint(n), sl.sym, sl.sizePx, Cint(sl.filled),
+				sl.r, sl.g, sl.b, sl.er, sl.eg, sl.eb, sl.ew,
+				sl.name, "", scale, isempty(rgbv) ? C_NULL : pointer(rgbv))
+			sl.visible || _set_vector_visible(h, sl.name, false)
+		catch e
+			@warn "session: skipped a malformed symbol layer" name=sl.name exception=(e,)
+		end
+	end
+	return
+end
+
+# Rebuild the ruler measurements: vertices only, re-measured on the spot by the ruler machinery itself
+# (gmtvtk_add_ruler_h). Nothing to skip — no recipe ever draws a ruler.
+function _session_rebuild_rulers!(fig, blob::String)
+	(fig === nothing || isempty(blob)) && return
+	h = getfield(fig, :h)
+	for r in _parse_rulers_blob(blob)
+		try
+			n = size(r.verts, 1)
+			xyz = Vector{Float64}(undef, 3n)
+			for i in 1:n, k in 1:3; xyz[3(i-1)+k] = r.verts[i, k]; end
+			GC.@preserve xyz ccall(_fn(:gmtvtk_add_ruler_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint),
+			                       h, xyz, Cint(n))
+		catch e
+			@warn "session: skipped a malformed ruler line" id=r.id exception=(e,)
+		end
+	end
+	return
+end
+
+function _session_rebuild_texts!(fig, blob::String)
+	(fig === nothing || isempty(blob)) && return
+	h = getfield(fig, :h)
+	for t in _parse_texts_blob(blob)
 		ccall(_fn(:gmtvtk_add_text_h), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cstring, Cdouble, Cdouble, Cdouble, Cint),
-		      h, x, y, String(p[7]), r, g, b, Cint(sz))
+		      h, t.x, t.y, t.text, t.r, t.g, t.b, Cint(t.size))
 	end
 	return
 end
@@ -462,14 +734,18 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 	meta = Dict("schema" => "1", "saved" => Libc.strftime("%Y-%m-%dT%H:%M:%S", time()))
 	manifest = _session_write_manifest(meta, _session_display(scene), out)
 	push!(files, ("session.manifest", Vector{UInt8}(codeunits(manifest))))
-	# C++-drawn elements (no add-time recipe) are snapshotted here and rebuilt on load. P3: polygons,
-	# faults/slip models, text.
-	polys = _serialize_polys_raw(scene)
-	isempty(polys) || push!(files, ("drawn/polys.txt", Vector{UInt8}(codeunits(polys))))
-	faults = _serialize_faults_raw(scene)
-	isempty(faults) || push!(files, ("drawn/faults.txt", Vector{UInt8}(codeunits(faults))))
-	texts = _serialize_texts_raw(scene)
-	isempty(texts) || push!(files, ("drawn/texts.txt", Vector{UInt8}(codeunits(texts))))
+	# C++-drawn elements (no add-time recipe) are snapshotted here and rebuilt on load: polygons,
+	# faults/slip models + nested rects, text, line/point overlays, symbol layers, rulers. EVERY vector
+	# family the Scene holds is in this list — an element with no recipe and no snapshot is an element
+	# the session loses, which is what "several graphics elements missing" was.
+	for (entry, blob) in (("drawn/polys.txt",    _serialize_polys_raw(scene)),
+	                      ("drawn/faults.txt",   _serialize_faults_raw(scene)),
+	                      ("drawn/texts.txt",    _serialize_texts_raw(scene)),
+	                      ("drawn/overlays.txt", _serialize_overlays_raw(scene)),
+	                      ("drawn/symbols.txt",  _serialize_symbols_raw(scene)),
+	                      ("drawn/rulers.txt",   _serialize_rulers_raw(scene)))
+		isempty(blob) || push!(files, (entry, Vector{UInt8}(codeunits(blob))))
+	end
 	_zip_write(path, files)
 	return path
 end
@@ -689,10 +965,28 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 			end
 		end
 		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 85)
-		# C++-drawn elements rebuilt after the layers exist (P3: polygons, faults/slip, text labels).
+		# C++-drawn elements rebuilt after the layers exist: polygons, faults/slip + nested rects, text
+		# labels, line/point overlays, symbol layers, rulers.
+		#
+		# Overlays and symbol layers are the two families a RECIPE can also produce (coastlines, plate
+		# boundaries, isochrons, cities, focal-mechanism anchors …). Those recipes have just replayed, so
+		# whatever they already put back is asked of the SCENE ITSELF — the same serializers, read again
+		# now — and skipped, instead of guessing from recipe kinds which names they own. A name that is
+		# already standing is never added twice.
 		haskey(entries, "drawn/polys.txt")  && _session_rebuild_polys!(fig, String(entries["drawn/polys.txt"]))
 		haskey(entries, "drawn/faults.txt") && _session_rebuild_faults!(fig, String(entries["drawn/faults.txt"]))
 		haskey(entries, "drawn/texts.txt")  && _session_rebuild_texts!(fig, String(entries["drawn/texts.txt"]))
+		if fig !== nothing
+			hf = getfield(fig, :h)
+			have_ov = Set{String}(ov.name for ov in _parse_overlays_blob(_serialize_overlays_raw(hf)))
+			have_sl = Set{String}(sl.name for sl in _parse_symbols_blob(_serialize_symbols_raw(hf)))
+			haskey(entries, "drawn/overlays.txt") &&
+				_session_rebuild_overlays!(fig, String(entries["drawn/overlays.txt"]), have_ov)
+			haskey(entries, "drawn/symbols.txt") &&
+				_session_rebuild_symbols!(fig, String(entries["drawn/symbols.txt"]), have_sl)
+			haskey(entries, "drawn/rulers.txt") &&
+				_session_rebuild_rulers!(fig, String(entries["drawn/rulers.txt"]))
+		end
 		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 95)
 		fig !== nothing && _session_apply_display!(fig, display)
 		# Same "new content appeared" convention every promote/drop/derive path uses (grid.jl,

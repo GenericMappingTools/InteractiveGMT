@@ -581,6 +581,11 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 	# Objects rebuild + window render, which is what made "Plot event date" take ~90 s for a
 	# 133-event catalog while the beachballs themselves took 0.5 s (2026-07-04).
 	axyz = Float64[];  asegoff = Cint[]
+	# The KEPT events' own numbers, in GMT's Aki & Richards column order (lon lat depth strike dip
+	# rake mag), accumulated for `_meca_table_store!`. A beachball reaches the scene as patch
+	# geometry, so this is the only point at which the angles that made it still exist — anything
+	# that has to describe these events later (the GMT.jl script export's `meca!`) reads them there.
+	mtab = Float64[]
 	txy = Float64[];  txts = String[];  tevid = Cint[]   # tevid[k] = the ei owning txts[k] (drag-follow link)
 	infos = String[]        # per-kept-event hover text (date/mag/depth), index == ei (0-based ei+1)
 	for i in order
@@ -610,6 +615,7 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 			push!(loops, curve);  push!(cols, rimcolor0);  push!(roles, 2)
 		end
 		ei += 1
+		append!(mtab, (lon[i], lat[i], dep[i], str1[i], dip1[i], rake1[i], mag[i]))
 		# Hover metadata for this ball (tooltip via gmtvtk_set_meca_infos_h below). Same order as
 		# ei, so infos[ei+1] is event ei. Date line only for catalogs that carry one (CMT/ISF).
 		push!(infos, string(isempty(date[i]) ? "" : "Date: $(date[i])\n",
@@ -681,6 +687,11 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 			(Ptr{Cvoid}, Cstring, Ptr{Cstring}, Cint),
 			scene, "Focal mechanisms", infos, Cint(length(infos)))
 	end
+	# Keep the plotted events' own Aki & Richards numbers with the window (see _meca_table_store!):
+	# the scene holds only patch geometry, so this is what lets the GMT.jl script export ask GMT for
+	# real beachballs (`meca!`) instead of freezing these ones into anonymous polygons.
+	(n > 0 && !isempty(mtab)) &&
+		_meca_table_store!(scene, "Focal mechanisms", permutedims(reshape(mtab, 7, :)))
 	return Int(n)
 end
 
