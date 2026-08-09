@@ -965,6 +965,15 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 			end
 		end
 		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 85)
+		# No raster in the session (or none of them could be replayed) but there ARE drawn elements: they
+		# still need a window to land in, or every one of them is silently lost — the rebuilds below all
+		# take `fig`. Reuse the invoking window when it is an empty launcher (the same "promote in place"
+		# rule every drop/menu path follows), else open one.
+		if fig === nothing && any(k -> startswith(k, "drawn/"), keys(entries))
+			hv = (scene != C_NULL && ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0) ?
+			     scene : ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "i'GMT  —  session")
+			hv == C_NULL || (fig = get(() -> _register_fig!(QtEmpty(hv)), _FIGREG, hv))
+		end
 		# C++-drawn elements rebuilt after the layers exist: polygons, faults/slip + nested rects, text
 		# labels, line/point overlays, symbol layers, rulers.
 		#

@@ -2734,8 +2734,11 @@ GMTVTK_API int gmtvtk_serialize_overlays(void *handle, char *buf, int cap) {
 			snprintf(t, sizeof(t), "%d;%.6g;%.6g;%.6g;%.6g;%.6g;%d;%d;%d;",
 			         ov.mode, c[0], c[1], c[2], lw, ps, ov.lineStyle, ov.stack, vis);
 			o += t;
+			// Only the FIELD separator and newlines are removed from a name. '|' and '>' are delimiters
+			// INSIDE the vertex field, which comes after both names, so a layer called "Quakes M>5" keeps
+			// its own name instead of reloading as "Quakes M_5".
 			auto clean = [](std::string v) {
-				for (char &ch : v) if (ch == ';' || ch == '\n' || ch == '\r' || ch == '|' || ch == '>') ch = '_';
+				for (char &ch : v) if (ch == ';' || ch == '\n' || ch == '\r') ch = '_';
 				return v;
 			};
 			o += clean(ov.groupName); o += ';';
@@ -2810,8 +2813,8 @@ GMTVTK_API int gmtvtk_serialize_symbols(void *handle, char *buf, int cap) {
 			         e[0], e[1], e[2], ew, evis, sl.stack, vis, sl.oneShot ? 1 : 0,
 			         scArr ? 1 : 0, rgbArr ? 1 : 0);
 			o += t;
-			std::string nm = sl.name;
-			for (char &ch : nm) if (ch == ';' || ch == '\n' || ch == '\r' || ch == '|' || ch == '>') ch = '_';
+			std::string nm = sl.name;      // ';' only — see the overlay serializer's `clean` above
+			for (char &ch : nm) if (ch == ';' || ch == '\n' || ch == '\r') ch = '_';
 			o += nm; o += ';';
 			// NOTE the coordinates leave here EXACTLY as the polydata holds them, which for a symbol
 			// layer means x is BAKED (`addSymbols`: `xyz[3i] * s->xfac`, because the actor scales only
