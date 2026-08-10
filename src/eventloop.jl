@@ -112,6 +112,7 @@ function _ensure_callbacks()
 	                    ("elastic",     _register_elastic),
 	                    ("importfault", _register_importfault),
 	                    ("modelslip",   _register_modelslip),
+	                    ("palette",     _register_palette),
 	                    ("focal",       _register_focal),
 	                    ("meca-props",  _register_meca_props))
 		try

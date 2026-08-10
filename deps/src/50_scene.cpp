@@ -396,7 +396,15 @@ static bool colorbarRelease(Scene *s) {
 // callers below); Aquamoto's water/land rows (aquaWaterColorbarRow/aquaLandColorbarRow) pass a
 // different `apply` since their colour comes from a host-composited texture, not a scalar+LUT
 // surface, and needs its own Julia entry point + a slice re-render (g_aquamotoSetCmap).
-static void chooseColormap(Scene *s, const QPoint &gp, std::function<void(const QString&)> apply) {
+// Defined in 70_window.cpp (needs the dialog class); declared here so a Color Bar row can offer it.
+static void showColorPalettes(Scene *s, int gridSel, double zmin, double zmax);
+
+// `more` (optional) adds the "Color Palettes…" entry below the quick list — the full editor
+// (ColorPalettesWindow, 70_window.cpp, port of Mirone's color_palettes.m). Only the rows that can
+// take an ARBITRARY palette pass it: a grid's Color Bar row can, Aquamoto's water/land rows cannot
+// (their colour comes from a host-composited texture built from a named cmap, see g_aquamotoSetCmap).
+static void chooseColormap(Scene *s, const QPoint &gp, std::function<void(const QString&)> apply,
+                           std::function<void()> more = nullptr) {
 	if (!s || !apply) return;
 	static const char *kMaps[] = {
 		"viridis", "turbo", "jet", "hot", "haxby", "geo", "relief", "rainbow",
@@ -414,6 +422,10 @@ static void chooseColormap(Scene *s, const QPoint &gp, std::function<void(const 
 		                                         QLineEdit::Normal, "", &ok);
 		if (ok) apply(nm.trimmed());
 	});
+	if (more) {
+		m.addSeparator();
+		m.addAction("Color Palettes…", [more]() { more(); });
+	}
 	m.exec(gp);
 }
 
@@ -985,6 +997,9 @@ struct ActiveGrid {
 	double x0 = 0, x1 = 1, y0 = 0, y1 = 1, zmin = 0, zmax = 1;
 	int    geog = 0;           // this layer's OWN x,y kind (lon/lat vs cartesian) — drives the axis NAMES
 	vtkScalarsToColors *lut = nullptr;
+	int    tag = -1;           // the layer's UNIQUE GROUP TAG (-1 = base relief), i.e. exactly the
+	                           // `gridSel` gmtvtk_set_cpt_grid/applyColormap take — so a tool that
+	                           // resolved the active layer can recolour THAT layer, never "the first"
 	bool   showBar = true;     // active grid's per-grid "show colorbar" intent
 	std::string name;          // its Scene Objects label — the key any host-side (Julia) lookup needs,
 	                           // so a grdtrack/compute runs on the DISPLAYED grid, not the base one
@@ -1032,6 +1047,7 @@ static ActiveGrid resolveActiveGrid(Scene *s) {
 			ag.zmin = ex.zmin; ag.zmax = ex.zmax; ag.lut = ex.lut; ag.showBar = ex.showBar;
 			ag.geog = ex.geog;
 			ag.name = ex.name;
+			ag.tag  = ex.tag;
 		}
 	}
 	return ag;
@@ -2079,7 +2095,15 @@ static void rebuildSceneObjects(Scene *s) {
 		makeRow("Color Bar", IC_ColorBar, *flag && grpVisible,
 		        [s, flag](bool on) { *flag = on; refreshGridColorbar(s); },
 		        [s, gridSel](const QPoint &g) {
-		            chooseColormap(s, g, [s, gridSel](const QString &nm) { applyColormap(s, nm, gridSel); });
+		            // The quick list recolours by NAME; "Color Palettes…" opens the full editor on THIS
+		            // grid (its tag + its own z range, so the palette lands on the layer whose row was
+		            // clicked — same by-tag targeting applyColormap uses).
+		            double zmn = s->zmin, zmx = s->zmax;
+		            if (gridSel >= 0)
+		                for (auto &ex : s->extras)
+		                    if (!ex.isImage && ex.tag == gridSel) { zmn = ex.zmin; zmx = ex.zmax; break; }
+		            chooseColormap(s, g, [s, gridSel](const QString &nm) { applyColormap(s, nm, gridSel); },
+		                           [s, gridSel, zmn, zmx]() { showColorPalettes(s, gridSel, zmn, zmx); });
 		        },
 		        "Show / hide this grid's colorbar · left-click the label to choose a colormap");
 	};

@@ -14442,6 +14442,702 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	}
 }
 
+// ============================================================================================
+// Color Palettes (Image > Color Palettes > Change Palette) — port of Mirone's
+// src_figs/color_palettes.m. The layout is deps/ui/color_palettes.ui, an absolute-positioned
+// transcription of color_palettes_LayoutFcn, loaded at runtime with QUiLoader (same technique as
+// IgrfDialog/AquamotoWindow); the palette SOURCES — the six families, .cpt read/write and the
+// CIE76 curve — come from Julia through g_juliaPalette (src/palettes.jl).
+//
+// The split is deliberate: everything that RESHAPES palette rows or decides which z each row sits
+// at is the GUI's own live operation and exists ONLY here — the two stretch sliders
+// (slider_Bottom_CB / slider_Top_CB), the draggable colour markers (bdn_pal / wbm_pico),
+// Discretize, Logaritmize, Min/Max Z and makeCmapBat's bathymetry hinge. Julia is handed a
+// reshaped palette only when it has to WRITE one to a .cpt file.
+//
+// Applying goes through gmtvtk_set_cpt_grid — the SAME per-layer recolour the Scene Objects
+// colormap chooser (applyColormap) and Julia's _recolor_grid use. There is one path into a grid's
+// colour transfer function and this dialog does not add a second.
+// ============================================================================================
+extern "C" __declspec(dllexport) void gmtvtk_set_cpt_grid(void*, int, const double*, const double*, int);
+
+typedef std::array<double, 3> PalRGB;
+
+// Linear resample of rows [i0,i1] (0-based, inclusive) to `nout` rows. This is the single
+// `interp1(linspace(0,1,n), rows, linspace(0,1,nout))` that every operation below is written with
+// — sliders, markers, Discretize and the hinge all call THIS, never their own loop.
+static std::vector<PalRGB> palResample(const std::vector<PalRGB> &src, int i0, int i1, int nout) {
+	std::vector<PalRGB> out;
+	const int n = i1 - i0 + 1;
+	if (n <= 0 || nout <= 0 || src.empty()) return out;
+	out.resize(nout);
+	if (n == 1) { for (int i = 0; i < nout; ++i) out[i] = src[i0]; return out; }
+	for (int i = 0; i < nout; ++i) {
+		const double t = (nout == 1) ? 0.0 : double(i) * (n - 1) / double(nout - 1);
+		const int k = std::clamp(int(std::floor(t)), 0, n - 2);
+		const double f = t - k;
+		for (int c = 0; c < 3; ++c)
+			out[i][c] = src[i0 + k][c] * (1.0 - f) + src[i0 + k + 1][c] * f;
+	}
+	return out;
+}
+static std::vector<PalRGB> palResample(const std::vector<PalRGB> &src, int nout) {
+	return palResample(src, 0, (int)src.size() - 1, nout);
+}
+
+// makeCmapBat (color_palettes.m:929): put the palette's own discontinuity — its `hinge` row, the
+// coastline — at z = 0 of the DATA range, by squeezing the below-hinge part into the rows that
+// z < 0 occupies and stretching the rest over what is left. Used by the two thematic palettes that
+// carry a hinge (SeaLand, Topography).
+static std::vector<PalRGB> palMakeCmapBat(double zmin, double zmax, int hinge,
+                                          const std::vector<PalRGB> &cmap) {
+	const int nc = (int)cmap.size();
+	if (nc < 2 || hinge < 1 || hinge >= nc || !(zmax > zmin)) return cmap;
+	const double zinc = (zmax - zmin) / (nc - 1);
+	int ind_c = (int)std::lround(std::fabs(0.0 - zmin) / zinc + 1.0);       // 1-based row of z = 0
+	ind_c = std::clamp(ind_c, 1, nc - 1);
+	std::vector<PalRGB> lower;
+	if (hinge < 3) lower.assign(ind_c, cmap[0]);      // interp1 can't do a 1-2 row source (Mirone's note)
+	else           lower = palResample(cmap, 0, hinge - 1, ind_c);
+	std::vector<PalRGB> upper = palResample(cmap, hinge, nc - 1, nc - ind_c);
+	lower.insert(lower.end(), upper.begin(), upper.end());
+	return lower;
+}
+
+// The colours a grid layer is CURRENTLY drawn with, sampled from its own colour transfer function
+// over [zmin,zmax] — the dialog's "Current" entry (Mirone's `get(hCallingFig,'Colormap')`).
+static std::vector<PalRGB> palFromLayer(Scene *s, int gridSel, double zmin, double zmax, int n = 256) {
+	std::vector<PalRGB> out;
+	if (!s || n < 2) return out;
+	vtkScalarsToColors *lut = nullptr;
+	if (gridSel < 0) lut = s->surfLut;
+	else for (auto &ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
+	if (!lut) return out;
+	if (!(zmax > zmin)) { zmin = 0; zmax = 1; }
+	out.resize(n);
+	for (int i = 0; i < n; ++i) {
+		const double z = zmin + (zmax - zmin) * i / double(n - 1);
+		double rgb[3] = { 0, 0, 0 };
+		lut->GetColor(z, rgb);
+		out[i] = { rgb[0], rgb[1], rgb[2] };
+	}
+	return out;
+}
+
+// The palette strip + its colour markers (color_palettes.m's axes1 with bdn_pal/bdn_pico/wbm_pico).
+// Double-click inserts a marker, double-clicking one removes it, dragging one reshapes the palette
+// between its neighbours. No Q_OBJECT (paint/mouse overrides only) — like BaseMapArea/IgrfMapArea.
+class PaletteBarArea : public QWidget {
+public:
+	std::vector<PalRGB> pal;              // what is displayed (and what Apply pushes)
+	std::vector<PalRGB> base;             // handles.cmap: the palette a drag interpolates FROM
+	std::vector<int>    markers;          // marker rows, 1-based, sorted, never 1 or n
+	std::function<void()>    onChanged;   // palette reshaped (drag step / marker removed)
+	std::function<void(int)> onMarkerRow; // row under the marker (0 = hide the Z readout)
+	explicit PaletteBarArea(QWidget *p) : QWidget(p) { setMouseTracking(false); }
+
+	int    nrows() const { return (int)pal.size(); }
+	int    rowAt(double x) const {                    // widget x -> 1-based palette row
+		if (pal.empty() || width() < 2) return 1;
+		const double f = std::clamp(x / double(width()), 0.0, 1.0);
+		return std::clamp(int(std::lround(f * (nrows() - 1))) + 1, 1, nrows());
+	}
+	double rowX(int row) const {
+		if (nrows() < 2) return 0.0;
+		return (row - 1) / double(nrows() - 1) * width();
+	}
+	void setPalette(const std::vector<PalRGB> &p) { pal = p; base = p; markers.clear(); update(); }
+
+protected:
+	int dragMarker = -1;        // index into `markers`
+	int indOld = 0, indB = 1, indA = 1;
+
+	// The little downward tab Mirone paints at the top of the bar (its `pico` polygon).
+	QPolygonF picoAt(double x) const {
+		const double yh = height() / 4.0, yv = yh / 3.0, xw = 4.0;
+		QPolygonF p;
+		p << QPointF(x, 0) << QPointF(x - xw, yv) << QPointF(x - xw, yh)
+		  << QPointF(x + xw, yh) << QPointF(x + xw, yv) << QPointF(x, 0);
+		return p;
+	}
+	int markerHit(double x) const {
+		for (int i = 0; i < (int)markers.size(); ++i)
+			if (std::fabs(rowX(markers[i]) - x) <= 5.0) return i;
+		return -1;
+	}
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		if (pal.empty()) { g.fillRect(rect(), Qt::black); return; }
+		for (int px = 0; px < width(); ++px) {
+			const int row = std::clamp(int(double(px) / std::max(1, width() - 1) * (nrows() - 1)), 0, nrows() - 1);
+			g.fillRect(QRectF(px, 0, 1, height()),
+			           QColor::fromRgbF(std::clamp(pal[row][0], 0.0, 1.0),
+			                            std::clamp(pal[row][1], 0.0, 1.0),
+			                            std::clamp(pal[row][2], 0.0, 1.0)));
+		}
+		g.setPen(QPen(Qt::black, 1));  g.setBrush(Qt::black);
+		for (int m : markers) g.drawPolygon(picoAt(rowX(m)));
+		g.setPen(QPen(Qt::gray, 1));  g.setBrush(Qt::NoBrush);
+		g.drawRect(rect().adjusted(0, 0, -1, -1));
+	}
+	void mouseDoubleClickEvent(QMouseEvent *e) override {
+		if (pal.empty()) return;
+		const int hit = markerHit(e->position().x());
+		if (hit >= 0) {                                        // second double click deletes it
+			markers.erase(markers.begin() + hit);
+			if (onMarkerRow) onMarkerRow(0);
+		} else {
+			const int row = rowAt(e->position().x());
+			if (row <= 1 || row >= nrows()) return;            // the two ends are not draggable
+			markers.push_back(row);
+			std::sort(markers.begin(), markers.end());
+			if (onMarkerRow) onMarkerRow(row);
+		}
+		update();
+	}
+	void mousePressEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton) return;
+		dragMarker = markerHit(e->position().x());
+		if (dragMarker < 0) return;
+		indOld = markers[dragMarker];
+		indB = (dragMarker > 0) ? markers[dragMarker - 1] : 1;
+		indA = (dragMarker + 1 < (int)markers.size()) ? markers[dragMarker + 1] : nrows();
+		setCursor(Qt::SizeAllCursor);
+	}
+	// wbm_pico (color_palettes.m:1292): the rows between the previous marker and the dragged one are
+	// resampled into the new, shorter/longer span, and so are the rows between it and the next one —
+	// always from `base` (Mirone's handles.cmap, which a drag does NOT update until the button is
+	// released), so dragging back and forth is lossless.
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (dragMarker < 0 || base.empty()) return;
+		const int nc = (int)base.size();
+		const int ind_c = rowAt(e->position().x());
+		if (ind_c <= indB || ind_c >= indA) return;            // markers may not cross each other
+		if (indA - indOld < 1 || indA - ind_c < 1) return;
+		std::vector<PalRGB> out(base.begin(), base.begin() + (indB - 1));
+		const std::vector<PalRGB> lo = palResample(base, indB - 1, indOld - 1, ind_c - indB + 1);
+		const std::vector<PalRGB> hi = palResample(base, indOld, indA - 1, indA - ind_c);
+		out.insert(out.end(), lo.begin(), lo.end());
+		out.insert(out.end(), hi.begin(), hi.end());
+		out.insert(out.end(), base.begin() + indA, base.end());
+		if ((int)out.size() == nc) pal = out;
+		markers[dragMarker] = ind_c;
+		if (onMarkerRow) onMarkerRow(ind_c);
+		update();
+		if (onChanged) onChanged();
+	}
+	void mouseReleaseEvent(QMouseEvent *) override {
+		if (dragMarker < 0) return;
+		dragMarker = -1;
+		base = pal;                                            // wbu_pico: this is the palette now
+		unsetCursor();
+	}
+};
+
+// QUiLoader that knows the one promoted widget color_palettes.ui references.
+class PaletteUiLoader : public QUiLoader {
+public:
+	QWidget *createWidget(const QString &className, QWidget *parent = nullptr,
+	                      const QString &name = QString()) override {
+		if (className == "PaletteBarWidget") {
+			auto *w = new PaletteBarArea(parent);
+			w->setObjectName(name);
+			return w;
+		}
+		return QUiLoader::createWidget(className, parent, name);
+	}
+};
+
+class ColorPalettesWindow {
+public:
+	QMainWindow    *win = nullptr;
+	Scene          *scene_ = nullptr;
+	int             gridSel_ = -1;             // the layer being recoloured (-1 = base relief)
+	double          zmin_ = 0, zmax_ = 1;      // its own data range (Mirone's z_min_orig/z_max_orig)
+	bool            haveGrid_ = false;
+	PaletteBarArea *bar = nullptr;
+	QListWidget    *list = nullptr;
+	QSlider        *sldBot = nullptr, *sldTop = nullptr;
+	QLineEdit      *edZmin = nullptr, *edZmax = nullptr;
+	QCheckBox      *chkLog = nullptr;
+	QLabel         *txtCurZ = nullptr;
+	QAction        *actAutoApply = nullptr;
+	QString         fam = "ML";
+	std::vector<PalRGB> palTop, palBot;        // handles.pal_top / handles.pal_bot
+	std::vector<PalRGB> palOriginal, palImported, palPrevLog;
+	bool   noSlider = true;                    // handles.no_slider
+	bool   palIsLog = false;                   // the palette itself is logarithmic (Chlor 0-10)
+	bool   loading  = false;                   // suppress re-entrant list/radio handlers
+	int    hinge_ = 0;
+
+	static QHash<Scene *, ColorPalettesWindow *> &registry() {
+		static QHash<Scene *, ColorPalettesWindow *> m;
+		return m;
+	}
+
+	// MINIMIZE parks the dialog as a Scene Objects handle instead of dropping it on the taskbar —
+	// the same parkTool/unparkTool pair Illumination, Adjust Contrast and the X,Y plots use, so a
+	// parked tool is one kind of row with one way back, never a per-dialog invention. (Close still
+	// closes: WA_DeleteOnClose is left on, and the row's Delete just closes the window.)
+	void unpark() {
+		if (!win) return;
+		unparkTool(scene_, win);
+		win->setWindowState(win->windowState() & ~Qt::WindowMinimized);
+		win->showNormal();
+		win->raise();
+		win->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { unparkTool(scene_, win); win->close(); }
+		};
+	}
+	void parkNow() {
+		if (!win || !sceneAlive(scene_)) return;
+		win->setWindowState(win->windowState() & ~Qt::WindowMinimized);   // undo the WM's minimise
+		win->hide();
+		parkTool(scene_, win, "Color Palettes", IC_ColorBar,
+		         "Minimised Color Palettes dialog — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scene_);      // a handle nobody can see is no handle at all
+	}
+	// One dialog per viewer window; a second request raises the one already open.
+	static void openFor(Scene *s, int gridSel, double zmin, double zmax) {
+		auto it = registry().find(s);
+		if (it != registry().end() && it.value()->win) {
+			it.value()->retarget(gridSel, zmin, zmax);
+			it.value()->win->show();  it.value()->win->raise();  it.value()->win->activateWindow();
+			return;
+		}
+		auto *w = new ColorPalettesWindow(s, gridSel, zmin, zmax);
+		if (!w->win) { delete w; return; }
+		registry().insert(s, w);
+		w->win->show();
+	}
+
+	void retarget(int gridSel, double zmin, double zmax) {
+		gridSel_ = gridSel;  zmin_ = zmin;  zmax_ = zmax;
+		haveGrid_ = scene_ && (zmax > zmin);
+		seedZBoxes();
+	}
+
+	// ---- the Julia bridge ------------------------------------------------------------------
+	// `rows` is filled for a producing request and SENT for a consuming one. Returns false (and
+	// reports to the window's Messages dock) on any failure.
+	bool palCall(const QString &req, std::vector<PalRGB> &rows, bool consuming, QString *txtOut = nullptr) {
+		if (!g_juliaPalette) { report("Color Palettes: callback not registered"); return false; }
+		const int cap = consuming ? (int)rows.size() : 256;
+		if (cap < 1) return false;
+		std::vector<double> buf((size_t)3 * cap, 0.0);
+		if (consuming)
+			for (int i = 0; i < cap; ++i)
+				for (int c = 0; c < 3; ++c) buf[3 * i + c] = rows[i][c];
+		std::vector<char> txt(1 << 15, 0);
+		const int r = g_juliaPalette(scene_, req.toUtf8().constData(), buf.data(), cap,
+		                             txt.data(), (int)txt.size());
+		const QString msg = QString::fromUtf8(txt.data());
+		if (txtOut) *txtOut = msg;
+		if (r < 0) { report(msg.isEmpty() ? QString("Color Palettes: request failed") : msg); return false; }
+		if (!consuming) {
+			rows.assign((size_t)r, PalRGB{ 0, 0, 0 });
+			for (int i = 0; i < r; ++i)
+				for (int c = 0; c < 3; ++c) rows[i][c] = std::clamp(buf[3 * i + c], 0.0, 1.0);
+		}
+		return true;
+	}
+	void report(const QString &msg) {
+		if (scene_) sceneLogError(scene_, msg);
+		else        QMessageBox::warning(win, "Color Palettes", msg);
+	}
+
+	// ---- applying --------------------------------------------------------------------------
+	// The palette rows + the z each row sits at, handed to the one per-layer recolour. Linear over
+	// [Min Z, Max Z] (the boxes, else the grid's own range), or GEOMETRIC when Logaritmize is on:
+	// that spacing is color_palettes.m's `logit` (line 865) — shift the range up when the minimum is
+	// <= 0 so no log of a negative number is taken, spread, then shift back.
+	void applyNow() {
+		if (!scene_ || !haveGrid_ || !bar || bar->pal.size() < 2) return;
+		const int n = (int)bar->pal.size();
+		double zlo = zmin_, zhi = zmax_;
+		bool ok1 = false, ok2 = false;
+		const double v1 = edZmin->text().toDouble(&ok1), v2 = edZmax->text().toDouble(&ok2);
+		if (ok1 && ok2 && v2 > v1) { zlo = v1; zhi = v2; }
+		if (!(zhi > zlo)) { zlo = 0; zhi = 1; }
+		std::vector<double> cz(n), crgb((size_t)3 * n);
+		if (chkLog->isChecked() || palIsLog) {
+			const double shift = (zlo <= 0) ? -2.0 * zlo : 0.0;
+			double a = zlo + shift, b = zhi + shift;
+			if (a == 0) a = 10 * std::numeric_limits<double>::epsilon();
+			const double k = std::log(b / a) / n;
+			for (int i = 0; i < n; ++i) cz[i] = a * std::exp((i + 1) * k) - shift;
+		} else {
+			for (int i = 0; i < n; ++i) cz[i] = zlo + (zhi - zlo) * i / double(n - 1);
+		}
+		for (int i = 0; i < n; ++i)
+			for (int c = 0; c < 3; ++c) crgb[3 * i + c] = std::clamp(bar->pal[i][c], 0.0, 1.0);
+		gmtvtk_set_cpt_grid(scene_, gridSel_, cz.data(), crgb.data(), n);
+	}
+	void autoApply() { if (actAutoApply && actAutoApply->isChecked()) applyNow(); }
+
+	// ---- palette loading -------------------------------------------------------------------
+	// Min Z / Max Z always start at THE GRID'S OWN min/max — the same numbers the colour bar is
+	// annotated with, resolved through the same activeGridZRange/tag lookup, so the two can never
+	// disagree. Six significant digits: a grid's range printed at full double precision is noise
+	// nobody reads (Mirone prints MATLAB's short form for the same reason).
+	void seedZBoxes() {
+		if (!edZmin) return;
+		if (!(zmax_ > zmin_) && scene_) {                 // caller had no range: ask the scene itself
+			double zlo = 0, zhi = 0;
+			if (activeGridZRange(scene_, zlo, zhi)) { zmin_ = zlo; zmax_ = zhi; }
+		}
+		haveGrid_ = scene_ && (zmax_ > zmin_);
+		const bool on = haveGrid_;
+		edZmin->setEnabled(on);  edZmax->setEnabled(on);
+		edZmin->setText(on ? QString::number(zmin_, 'g', 6) : QString());
+		edZmax->setText(on ? QString::number(zmax_, 'g', 6) : QString());
+	}
+	// Take `p` as the palette now shown: reset the sliders/markers exactly as a new colormap does in
+	// Mirone (`no_slider = 1` there), apply the hinge when the palette carries one, and auto-apply.
+	void setPalette(const std::vector<PalRGB> &p, double zlo, double zhi, int hinge, bool islog) {
+		if (p.size() < 2) return;
+		std::vector<PalRGB> use = p;
+		hinge_ = hinge;
+		palIsLog = islog;
+		if (hinge > 0 && haveGrid_) use = palMakeCmapBat(zmin_, zmax_, hinge, use);
+		bar->setPalette(use);
+		palTop.clear();  palBot.clear();  noSlider = true;
+		sldBot->blockSignals(true);  sldTop->blockSignals(true);
+		sldBot->setRange(1, (int)use.size());  sldBot->setValue(1);
+		sldTop->setRange(1, (int)use.size());  sldTop->setValue((int)use.size());
+		sldBot->blockSignals(false); sldTop->blockSignals(false);
+		if (txtCurZ) { txtCurZ->setText(""); txtCurZ->setVisible(false); }
+		// A palette defined over its own z window (thematic tables, a CPT read WITH its Z levels)
+		// drives the Min/Max Z boxes — that IS what "the grid is mapped into the palette's levels"
+		// means once the colours reach a transfer function that carries z.
+		if (haveGrid_ && std::isfinite(zlo) && std::isfinite(zhi) && zhi > zlo) {
+			edZmin->setText(QString::number(zlo, 'g', 6));
+			edZmax->setText(QString::number(zhi, 'g', 6));
+		}
+		autoApply();
+	}
+	void loadSelected() {
+		if (loading || !list || list->currentRow() < 0) return;
+		const QString name = list->currentItem()->text();
+		if (list->currentRow() == 0) {                            // "Current" / "Imported (file)"
+			const std::vector<PalRGB> &p = name.startsWith("Imported") ? palImported : palOriginal;
+			if (p.size() >= 2) setPalette(p, NAN, NAN, 0, false);
+			return;
+		}
+		std::vector<PalRGB> rows;  QString info;
+		if (!palCall(QString("pal;%1;%2").arg(fam, name), rows, false, &info)) return;
+		double zlo = NAN, zhi = NAN;  int hinge = 0, islog = 0;
+		const QStringList t = info.split(' ', Qt::SkipEmptyParts);
+		if (t.size() >= 4) {
+			zlo = t[0].toDouble();  zhi = t[1].toDouble();
+			hinge = t[2].toInt();   islog = t[3].toInt();
+		}
+		setPalette(rows, zlo, zhi, hinge, islog != 0);
+	}
+	// Refill the list for a family, keeping row 0 (the "Current"/"Imported" entry) — radio_*_CB.
+	void fillList(const QString &family) {
+		fam = family;
+		QString names;
+		std::vector<PalRGB> dummy;
+		if (!palCall("list;" + family, dummy, false, &names)) return;
+		loading = true;
+		const QString first = (list->count() > 0) ? list->item(0)->text() : QString("Current");
+		list->clear();
+		list->addItem(first);
+		for (const QString &n : names.split('\n', Qt::SkipEmptyParts)) list->addItem(n);
+		tightenListRows(list);              // one text line per row, never Qt's default padding
+		list->setCurrentRow(0);
+		loading = false;
+	}
+
+	// ---- the two stretch sliders (slider_Bottom_CB / slider_Top_CB, verbatim) ---------------
+	void sliderBottom(int val) {
+		if (!bar || bar->base.size() < 2) return;
+		const std::vector<PalRGB> &src = bar->base;
+		const int nc = (int)src.size();
+		std::vector<PalRGB> cmap;
+		int val_t;
+		if (!palTop.empty()) { cmap = palTop;  val_t = sldTop->value(); }
+		else                 { cmap = src;     val_t = nc; }
+		for (int i = 0; i < val && i < nc; ++i) cmap[i] = src[0];
+		if (val < val_t) {
+			const std::vector<PalRGB> yi = palResample(src, val_t - val + 1);
+			for (int i = 0; i < (int)yi.size() && (val - 1 + i) < nc; ++i) cmap[val - 1 + i] = yi[i];
+		} else if (val > val_t) {
+			std::vector<PalRGB> yi = palResample(src, val - val_t + 1);
+			std::reverse(yi.begin(), yi.end());
+			for (int i = 0; i < (int)yi.size() && (val_t - 1 + i) < nc; ++i) cmap[val_t - 1 + i] = yi[i];
+			for (int i = val - 1; i < nc; ++i) cmap[i] = src[0];
+			for (int i = 0; i < val_t && i < nc; ++i) cmap[i] = src[nc - 1];
+		}
+		palBot = cmap;  noSlider = false;
+		bar->pal = cmap;  bar->update();
+		autoApply();
+	}
+	void sliderTop(int val) {
+		if (!bar || bar->base.size() < 2) return;
+		const std::vector<PalRGB> &src = bar->base;
+		const int nc = (int)src.size();
+		std::vector<PalRGB> cmap;
+		int val_b;
+		if (!palBot.empty()) { cmap = palBot;  val_b = sldBot->value(); }
+		else                 { cmap = src;     val_b = nc; }
+		for (int i = val - 1; i < nc; ++i) cmap[i] = src[nc - 1];
+		if (val > val_b) {
+			const std::vector<PalRGB> yi = palResample(src, val - val_b + 1);
+			for (int i = 0; i < (int)yi.size() && (val_b - 1 + i) < nc; ++i) cmap[val_b - 1 + i] = yi[i];
+		} else if (val < val_b) {
+			std::vector<PalRGB> yi = palResample(src, val_b - val + 1);
+			std::reverse(yi.begin(), yi.end());
+			for (int i = 0; i < (int)yi.size() && (val - 1 + i) < nc; ++i) cmap[val - 1 + i] = yi[i];
+			for (int i = val_b - 1; i < nc; ++i) cmap[i] = src[0];
+			for (int i = 0; i < val && i < nc; ++i) cmap[i] = src[nc - 1];
+		}
+		palTop = cmap;  noSlider = false;
+		bar->pal = cmap;  bar->update();
+		autoApply();
+	}
+
+	// ---- Options > Discretize Palette (OptionsDiscretizePalette_CB) -------------------------
+	// n_color colours, each repeated 256/n_color times so the result is still a 256-row palette.
+	void discretize(int ncolor) {
+		if (!bar || bar->pal.size() < 2 || ncolor < 2) return;
+		const std::vector<PalRGB> few = palResample(bar->pal, ncolor);
+		const int nrep = std::max(1, 256 / ncolor);
+		std::vector<PalRGB> out;
+		out.reserve((size_t)ncolor * nrep);
+		for (const PalRGB &c : few) for (int k = 0; k < nrep; ++k) out.push_back(c);
+		bar->setPalette(out);
+		noSlider = true;  palTop.clear();  palBot.clear();
+		sldBot->blockSignals(true);  sldTop->blockSignals(true);
+		sldBot->setRange(1, (int)out.size());  sldBot->setValue(1);
+		sldTop->setRange(1, (int)out.size());  sldTop->setValue((int)out.size());
+		sldBot->blockSignals(false); sldTop->blockSignals(false);
+		loading = true;  list->setCurrentRow(0);  loading = false;   // it is the "Current" cmap now
+		autoApply();
+	}
+
+	// ---- File > Read / Save GMT palette ----------------------------------------------------
+	void readCpt(bool useZ) {
+		const QString f = QFileDialog::getOpenFileName(win, "Select CPT file", QString(),
+		                                               "CPT files (*.cpt *.CPT);;All files (*)");
+		if (f.isEmpty()) return;
+		std::vector<PalRGB> rows;  QString info;
+		if (!palCall(QString("readcpt;%1;%2").arg(useZ ? "zlevels" : "master", f), rows, false, &info)) return;
+		palImported = rows;
+		double zlo = NAN, zhi = NAN;
+		const QStringList t = info.split(' ', Qt::SkipEmptyParts);
+		if (t.size() >= 2) { zlo = t[0].toDouble();  zhi = t[1].toDouble(); }
+		loading = true;
+		list->item(0)->setText(QString("Imported (%1)").arg(QFileInfo(f).fileName()));
+		list->setCurrentRow(0);
+		loading = false;
+		setPalette(rows, zlo, zhi, 0, false);
+	}
+	void saveCpt(const char *mode) {
+		if (!bar || bar->pal.size() < 2) return;
+		const QString f = QFileDialog::getSaveFileName(win, "Select CPT File name", QString(),
+		                                               "GMT color palette (*.cpt)");
+		if (f.isEmpty()) return;
+		double zlo = zmin_, zhi = zmax_;
+		bool ok1 = false, ok2 = false;
+		const double v1 = edZmin->text().toDouble(&ok1), v2 = edZmax->text().toDouble(&ok2);
+		if (ok1 && ok2 && v2 > v1) { zlo = v1; zhi = v2; }
+		std::vector<PalRGB> rows = bar->pal;
+		palCall(QString("savecpt;%1;%2;%3;%4").arg(mode, f).arg(zlo, 0, 'g', 12).arg(zhi, 0, 'g', 12),
+		        rows, true);
+	}
+	void cie76(const char *w) {
+		if (!bar || bar->pal.size() < 3) return;
+		std::vector<PalRGB> rows = bar->pal;
+		palCall(QString("cie76;%1").arg(w), rows, true);
+	}
+
+	// ---- construction ----------------------------------------------------------------------
+	ColorPalettesWindow(Scene *s, int gridSel, double zmin, double zmax) {
+		scene_ = s;  gridSel_ = gridSel;  zmin_ = zmin;  zmax_ = zmax;
+		haveGrid_ = s && (zmax > zmin);
+		PaletteUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/color_palettes.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("ColorPalettesWindow: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		const QByteArray uiBytes = f.readAll();
+		f.close();
+		QBuffer buf(const_cast<QByteArray *>(&uiBytes));
+		buf.open(QIODevice::ReadOnly);
+		win = qobject_cast<QMainWindow *>(loader.load(&buf));       // parentless: its own top-level window
+		if (!win) { qWarning("ColorPalettesWindow: QUiLoader failed to load the .ui"); return; }
+		win->setAttribute(Qt::WA_DeleteOnClose);
+		QMainWindow *W = win;
+		Scene *sc = scene_;
+		// The Qt window frees itself (WA_DeleteOnClose); this wrapper goes with it, and its registry
+		// slot is cleared so the next Change Palette builds a fresh one (AquamotoWindow's idiom).
+		// unparkTool too: a window that dies while parked would otherwise leave a row pointing at it.
+		QObject::connect(W, &QObject::destroyed, [this, sc, W]() {
+			if (sceneAlive(sc)) unparkTool(sc, W);
+			registry().remove(sc);
+			delete this;
+		});
+
+		// The minimise button -> a Scene Objects handle. Qt reports it as a WindowStateChange after
+		// the WM already minimised the window, so the restore+hide+park is deferred to the next
+		// event-loop turn — doing it inside the state-change handler fights the window manager.
+		struct MinimiseParks : QObject {
+			ColorPalettesWindow *cp;
+			MinimiseParks(QObject *parent, ColorPalettesWindow *c) : QObject(parent), cp(c) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::WindowStateChange && cp && cp->win &&
+				    cp->win->windowState().testFlag(Qt::WindowMinimized)) {
+					ColorPalettesWindow *c = cp;
+					QTimer::singleShot(0, c->win, [c]() { c->parkNow(); });
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		W->installEventFilter(new MinimiseParks(W, this));
+
+		bar     = static_cast<PaletteBarArea *>(W->findChild<QWidget *>("axes1"));
+		list    = W->findChild<QListWidget *>("listbox1");
+		sldBot  = W->findChild<QSlider *>("slider_Bottom");
+		sldTop  = W->findChild<QSlider *>("slider_Top");
+		edZmin  = W->findChild<QLineEdit *>("edit_Zmin");
+		edZmax  = W->findChild<QLineEdit *>("edit_Zmax");
+		chkLog  = W->findChild<QCheckBox *>("check_logIt");
+		txtCurZ = W->findChild<QLabel *>("h_txt_cZ");
+		if (!bar || !list || !sldBot || !sldTop || !edZmin || !edZmax || !chkLog) {
+			qWarning("ColorPalettesWindow: .ui is missing a widget");
+			return;
+		}
+		if (txtCurZ) txtCurZ->setVisible(false);
+		// The .ui carries MATLAB's pixel geometry, and MATLAB's radio/checkbox/label text is NARROWER
+		// than Qt's at the same nominal size — so the transcribed widths clip the caption ("Logaritmize"
+		// losing its tail, "Stretch Top" cut) and, once one grows, neighbours overlap. Keep every x/y
+		// from the .ui (that IS the port) and give each single-line control the width its OWN font
+		// actually needs. Doing it here rather than by hand-fattening numbers keeps it right at any DPI
+		// scaling or font substitution, where hand-picked pixels would clip again.
+		for (const char *nm : { "radio_ML", "radio_GMT", "radio_CET", "radio_CAR", "radio_GIMP",
+		                        "radio_T", "check_logIt", "text_StretchBottom", "text_StretchTop",
+		                        "text_MinZ", "text_MaxZ" }) {
+			if (QWidget *w = W->findChild<QWidget *>(nm)) {
+				const QSize sh = w->sizeHint();
+				w->resize(std::max(w->width(), sh.width()), std::max(w->height(), sh.height()));
+			}
+		}
+		W->setFixedSize(W->sizeHint());
+
+		// ---- menus (color_palettes_LayoutFcn's uimenus, same labels/order) ----
+		QMenu *mFile = W->menuBar()->addMenu("File");
+		QMenu *mRead = mFile->addMenu("Read GMT palette");
+		mRead->addAction("As master",   [this]() { readCpt(false); });
+		mRead->addAction("Use Z levels", [this]() { readCpt(true); });
+		QMenu *mSave = mFile->addMenu("Save as GMT palette");
+		mSave->addAction("Grid limits with 256 colors",    [this]() { saveCpt("grid256"); });
+		mSave->addAction("descrete master cpt (16 colors)", [this]() { saveCpt("master_disc"); });
+		mSave->addAction("continuous master cpt (16 colors)", [this]() { saveCpt("master_cont"); });
+		mFile->addSeparator();
+		mFile->addAction("Exit", [W]() { W->close(); });
+
+		QMenu *mOpt = W->menuBar()->addMenu("Options");
+		QAction *aApply = mOpt->addAction("Apply", [this]() { applyNow(); });
+		actAutoApply = mOpt->addAction("Auto Apply");
+		actAutoApply->setCheckable(true);
+		actAutoApply->setChecked(haveGrid_);
+		actAutoApply->setEnabled(haveGrid_);
+		aApply->setEnabled(haveGrid_);
+		QMenu *mDisc = mOpt->addMenu("Discretize Palette");
+		mOpt->insertSeparator(mDisc->menuAction());
+		for (int n : { 8, 16, 32, 64 })
+			mDisc->addAction(QString("%1 colors").arg(n), [this, n]() { discretize(n); });
+		mOpt->addSeparator();
+		mOpt->addAction("Show CIE76 Delta E*",             [this]() { cie76("111"); });
+		mOpt->addAction("Show CIE76 lightness difference", [this]() { cie76("100"); });
+
+		W->menuBar()->addAction("Help", [W]() {
+			QMessageBox::information(W, "Help",
+				"All visible features are so obvious that they don't need any help.\n"
+				"There are, however, hidden and very powerful ones:\n\n"
+				"Double clicking over the colorbar inserts colour markers. Drag these\n"
+				"markers to modify the colour map. A second double click deletes the marker.\n\n"
+				"The Min Z and Max Z fields may be used to impose a fixed colormap between\n"
+				"those values. Alternatively, import a GMT palette with the \"Use Z levels\".\n"
+				"In that case, the grid values will be mapped into the palette defined Z levels.");
+		});
+
+		// ---- wiring ----
+		QRadioButton *rML   = W->findChild<QRadioButton *>("radio_ML");
+		QRadioButton *rGMT  = W->findChild<QRadioButton *>("radio_GMT");
+		QRadioButton *rCET  = W->findChild<QRadioButton *>("radio_CET");
+		QRadioButton *rCAR  = W->findChild<QRadioButton *>("radio_CAR");
+		QRadioButton *rGIMP = W->findChild<QRadioButton *>("radio_GIMP");
+		QRadioButton *rT    = W->findChild<QRadioButton *>("radio_T");
+		auto famBtn = [this](QRadioButton *b, const char *code) {
+			if (!b) return;
+			QObject::connect(b, &QRadioButton::toggled, [this, code](bool on) { if (on) fillList(code); });
+		};
+		famBtn(rML, "ML");   famBtn(rGMT, "GMT");  famBtn(rCET, "CET");
+		famBtn(rCAR, "CAR"); famBtn(rGIMP, "GIMP"); famBtn(rT, "T");
+
+		QObject::connect(list, &QListWidget::currentRowChanged, [this](int) { loadSelected(); });
+		QObject::connect(sldBot, &QSlider::valueChanged, [this](int v) { sliderBottom(v); });
+		QObject::connect(sldTop, &QSlider::valueChanged, [this](int v) { sliderTop(v); });
+		QObject::connect(edZmin, &QLineEdit::editingFinished, [this]() { autoApply(); });
+		QObject::connect(edZmax, &QLineEdit::editingFinished, [this]() { autoApply(); });
+		// check_logIt_CB: switching it on re-maps the CURRENT palette logarithmically; switching it
+		// off puts back what was showing before (Mirone keeps handles.cmap_prev for exactly this).
+		QObject::connect(chkLog, &QCheckBox::toggled, [this](bool on) {
+			if (on) palPrevLog = bar->pal;
+			else if (!palPrevLog.empty()) { bar->setPalette(palPrevLog); }
+			bar->update();
+			autoApply();
+		});
+		bar->onChanged   = [this]() { autoApply(); };
+		bar->onMarkerRow = [this](int row) {                    // the "Z = …" readout under a marker
+			if (!txtCurZ) return;
+			if (row <= 0 || !haveGrid_ || bar->nrows() < 2) { txtCurZ->setVisible(false); return; }
+			const double z = zmin_ + (row - 1) * (zmax_ - zmin_) / (bar->nrows() - 1);
+			txtCurZ->setText(QString("Z = %1").arg(z, 0, 'f', 3));
+			txtCurZ->setVisible(true);
+		};
+
+		seedZBoxes();
+		// "Current" = the colours the target layer is drawn with right now; with no grid to read,
+		// jet(256) — exactly what color_palettes.m falls back to.
+		palOriginal = palFromLayer(scene_, gridSel_, zmin_, zmax_);
+		if (palOriginal.size() < 2) {
+			std::vector<PalRGB> rows;
+			if (palCall("pal;ML;jet", rows, false)) palOriginal = rows;
+		}
+		list->addItem("Current");
+		tightenListRows(list);
+		fillList("ML");
+		if (palOriginal.size() >= 2) setPalette(palOriginal, NAN, NAN, 0, false);
+	}
+};
+
+// Open the Color Palettes dialog on a scene's ACTIVE grid layer (Image menu), or on the grid a
+// Scene Objects Color Bar row belongs to (the row's own context menu). Both resolve the target the
+// same way every other per-layer operation does — by TAG, never "the first grid".
+static void showColorPalettes(Scene *s, int gridSel, double zmin, double zmax) {
+	ColorPalettesWindow::openFor(s, gridSel, zmin, zmax);
+}
+static void showColorPalettes(Scene *s) {
+	ActiveGrid ag = resolveActiveGrid(s);
+	if (ag.valid) showColorPalettes(s, ag.tag, ag.zmin, ag.zmax);
+	else          showColorPalettes(s, -1, 0.0, 0.0);      // no grid: the dialog opens read-only
+}
+
 // ============================================================================
 // Earth Tides dialog (Geography > Earth Tides) — port of Mirone's earth_tides.
 // ============================================================================
@@ -15353,6 +16049,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// --- Image menu (mirrors Mirone's Image menu, mirone_uis.m) --------------------------------
 	// Operations on the window's IMAGE (not its grid). First entry: Binarize (thresholdit.m).
 	QMenu *mImage = win->menuBar()->addMenu("&Image");
+	// Color Palettes (color_palettes.m), first in the Image menu as mirone_uis.m:303 has it. Mirone
+	// wraps it in a submenu because show_palette.m adds three colour-bar PLACEMENT entries there
+	// (At side / Inside / Floating); this viewer places the bar from its Scene Objects Color Bar row
+	// instead, so those have nothing to do here and a one-item submenu would be pure indirection.
+	mImage->addAction("Color &Palettes…", [s]() { showColorPalettes(s); });
 	QAction *aBinarize = mImage->addAction("&Binarize Image…", [win, s]() {
 		auto it = g_binarizeDlgs.find(s);                    // hidden earlier? bring back the SAME one
 		if (it != g_binarizeDlgs.end() && it->second->dlg) {

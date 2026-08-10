@@ -1678,6 +1678,13 @@ GMTVTK_API int gmtvtk_window_screenshot(void *scene, const char *path) {
 	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
 }
 
+// Register the Color Palettes dialog's one callback (Image > Color Palettes). fn(scene, req, rgb,
+// nrows, txt, txtCap) sources palette rows, reads/writes .cpt files and draws the CIE76 curve --
+// see JuliaPaletteFn (30_app.cpp) for the request grammar. nullptr to detach.
+GMTVTK_API void gmtvtk_set_palette_callback(JuliaPaletteFn fn) {
+	g_juliaPalette = fn;
+}
+
 // Register the IGRF Calculator's single-point callback (Geophysics > Magnetics > IGRF). fn(state)
 // with state = "lon/lat/elev_m/date_dec" returns "F/H/X/Y/Z/D/I" (or "" on failure). Same
 // Julia-owned-buffer convention as gmtvtk_set_dimfun_callback. nullptr to detach.

@@ -287,6 +287,20 @@ typedef void (*JuliaLoadSessionFn)(void *scene, const char *path);
 static JuliaSaveSessionFn g_juliaSaveSession = nullptr;
 static JuliaLoadSessionFn g_juliaLoadSession = nullptr;
 
+// Color Palettes (Image > Color Palettes, port of Mirone's color_palettes.m). ONE callback serves
+// the whole dialog; `req` says what is wanted and the two buffers carry the payload both ways:
+//   "list;<ML|GMT|CET|CAR|GIMP|T>"        -> txt = the family's palette names, one per line
+//   "pal;<fam>;<name>"                    -> rgb = the palette rows (0..1), txt = "zlo zhi hinge log"
+//   "readcpt;<master|zlevels>;<path>"     -> same as "pal", from a .cpt file on disk
+//   "savecpt;<mode>;<path>;<zmin>;<zmax>" -> CONSUMES the rgb rows handed in, writes the file
+//   "cie76;<w1w2w3>"                      -> CONSUMES the rgb rows, opens the ΔE* X,Y plot
+// `nrows` is the rgb buffer's CAPACITY for the producing requests and the ROW COUNT present for the
+// consuming ones. Returns the number of rows written (>=0), or a NEGATIVE count of error bytes left
+// in `txt`. Julia side: src/palettes.jl `_on_palette`.
+typedef int (*JuliaPaletteFn)(void *scene, const char *req, double *rgb, int nrows,
+                              char *txt, int txtCap);
+static JuliaPaletteFn g_juliaPalette = nullptr;
+
 // IGRF Calculator (Geophysics > Magnetics). Port of Mirone's igrf_options.m, using GMT.jl's magref
 // (mgd77magref) instead of the igrf_m MEX. Two callbacks:
 //   g_juliaIgrfPoint(state): state = "lon/lat/elev_m/date_dec" -> "F/H/X/Y/Z/D/I" (nT x5, deg x2),

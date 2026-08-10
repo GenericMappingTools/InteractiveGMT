@@ -539,26 +539,41 @@ function _ge_parse_optv(optV::String)::Tuple{Vector{String},Vector{Tuple{String,
 	return (vars, overlays, xISdist)
 end
 
-# The `[gmtedit] V=` line of ~/.gmt/iGMT.ini ("" when the file/key is absent). Plain INI text
-# parse — the C++ side owns the file through QSettings, Julia only ever reads it here.
-function _ge_ini_optv()::String
+# EVERY key=value of `[<section>]`, in file order (empty when the file or the section is absent).
+# THE Julia-side reader of ~/.gmt/iGMT.ini — the C++ side owns the file through QSettings, Julia only
+# ever reads it. It lives here because gmtedit was the first caller, but it is section/key agnostic:
+# callers wanting one key pick it out (`_ini_get`, `_ge_ini_optv`), callers wanting a whole section
+# (palettes.jl's `[ColorPalettes]` custom CPT list) take it whole. Never a second hand-rolled parser.
+function _ini_section(section::String)::Vector{Pair{String,String}}
+	out = Pair{String,String}[]
 	f = joinpath(homedir(), ".gmt", "iGMT.ini")
-	isfile(f) || return ""
-	section = ""
+	isfile(f) || return out
+	sec, cur = lowercase(section), ""
 	for line in eachline(f)
 		t = strip(line)
 		(isempty(t) || startswith(t, ';') || startswith(t, '#')) && continue
 		if startswith(t, '[') && endswith(t, ']')
-			section = lowercase(t[2:prevind(t, lastindex(t))]); continue
+			cur = lowercase(t[2:prevind(t, lastindex(t))]); continue
 		end
-		section == "gmtedit" || continue
+		cur == sec || continue
 		ie = findfirst('=', t)
 		ie === nothing && continue
-		lowercase(strip(String(t[1:prevind(t, ie)]))) == "v" || continue
-		return String(strip(String(t[nextind(t, ie):end])))
+		push!(out, String(strip(String(t[1:prevind(t, ie)]))) => String(strip(String(t[nextind(t, ie):end]))))
+	end
+	return out
+end
+
+# The value of `<key>=` under `[<section>]`, "" when the file, the section or the key is absent.
+function _ini_get(section::String, key::String)::String
+	want = lowercase(key)
+	for (k, v) in _ini_section(section)
+		lowercase(k) == want && return v
 	end
 	return ""
 end
+
+# The `[gmtedit] V=` line of ~/.gmt/iGMT.ini ("" when the file/key is absent).
+_ge_ini_optv()::String = _ini_get("gmtedit", "V")
 
 # ---------------------------------------------------------------------------------------------
 #  reading a cruise
