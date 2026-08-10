@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Load Bands — absolute-positioned port of bands_list_LayoutFcn (Mirone
+     src_figs/bands_list.m:651). MATLAB's figure is 371x443 with a bottom-left origin, so every
+     widget's y here is y_qt = 443 - y_matlab - h and the grouping IS that layout. Do NOT replace
+     this with a layout manager. The three QFrames are Mirone's `frame_movel` + its two companions
+     (new_frame3D) and are declared FIRST so they stay behind their contents. Captions are widened
+     to their own sizeHint at load (Qt's text is wider than MATLAB's) — see BandsListDialog. -->
+<ui version="4.0">
+ <class>BandsListWindow</class>
+ <widget class="QDialog" name="BandsListWindow">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>371</width><height>443</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>Bands List</string>
+  </property>
+  <widget class="QFrame" name="frame_top">
+   <property name="geometry">
+    <rect><x>5</x><y>233</y><width>360</width><height>33</height></rect>
+   </property>
+   <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+   <property name="frameShadow"><enum>QFrame::Raised</enum></property>
+  </widget>
+  <widget class="QFrame" name="frame_movel">
+   <property name="geometry">
+    <rect><x>5</x><y>273</y><width>360</width><height>102</height></rect>
+   </property>
+   <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+   <property name="frameShadow"><enum>QFrame::Raised</enum></property>
+  </widget>
+  <widget class="QFrame" name="frame_dims">
+   <property name="geometry">
+    <rect><x>5</x><y>379</y><width>360</width><height>32</height></rect>
+   </property>
+   <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+   <property name="frameShadow"><enum>QFrame::Raised</enum></property>
+  </widget>
+  <widget class="QListWidget" name="listbox1">
+   <property name="geometry">
+    <rect><x>5</x><y>3</y><width>360</width><height>221</height></rect>
+   </property>
+   <property name="toolTip"><string>Click a band to put it in the channel selected on the right</string></property>
+  </widget>
+  <widget class="QRadioButton" name="radio_gray">
+   <property name="geometry">
+    <rect><x>12</x><y>243</y><width>95</width><height>17</height></rect>
+   </property>
+   <property name="text"><string>Gray Scale</string></property>
+  </widget>
+  <widget class="QRadioButton" name="radio_RGB">
+   <property name="geometry">
+    <rect><x>152</x><y>243</y><width>95</width><height>17</height></rect>
+   </property>
+   <property name="text"><string>RGB Color</string></property>
+   <property name="checked"><bool>true</bool></property>
+  </widget>
+  <widget class="QPushButton" name="push_pca">
+   <property name="geometry">
+    <rect><x>272</x><y>239</y><width>89</width><height>23</height></rect>
+   </property>
+   <property name="text"><string>Compute PCA</string></property>
+   <property name="toolTip"><string>Compute Principal Components</string></property>
+  </widget>
+  <widget class="QRadioButton" name="radio_R">
+   <property name="geometry">
+    <rect><x>10</x><y>286</y><width>35</width><height>17</height></rect>
+   </property>
+   <property name="text"><string>R</string></property>
+   <property name="checked"><bool>true</bool></property>
+  </widget>
+  <widget class="QRadioButton" name="radio_G">
+   <property name="geometry">
+    <rect><x>10</x><y>316</y><width>35</width><height>17</height></rect>
+   </property>
+   <property name="text"><string>G</string></property>
+  </widget>
+  <widget class="QRadioButton" name="radio_B">
+   <property name="geometry">
+    <rect><x>10</x><y>346</y><width>35</width><height>17</height></rect>
+   </property>
+   <property name="text"><string>B</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_Rband">
+   <property name="geometry">
+    <rect><x>45</x><y>283</y><width>314</width><height>21</height></rect>
+   </property>
+   <property name="readOnly"><bool>true</bool></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_Gband">
+   <property name="geometry">
+    <rect><x>45</x><y>313</y><width>314</width><height>21</height></rect>
+   </property>
+   <property name="readOnly"><bool>true</bool></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_Bband">
+   <property name="geometry">
+    <rect><x>45</x><y>343</y><width>314</width><height>21</height></rect>
+   </property>
+   <property name="readOnly"><bool>true</bool></property>
+  </widget>
+  <widget class="QLabel" name="text_toGray">
+   <property name="geometry">
+    <rect><x>99</x><y>279</y><width>95</width><height>17</height></rect>
+   </property>
+   <property name="text"><string>Selected Band</string></property>
+   <property name="visible"><bool>false</bool></property>
+  </widget>
+  <widget class="QLabel" name="text_dims">
+   <property name="geometry">
+    <rect><x>14</x><y>388</y><width>32</width><height>17</height></rect>
+   </property>
+   <property name="text"><string>Dims</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_dimsDesc">
+   <property name="geometry">
+    <rect><x>50</x><y>384</y><width>309</width><height>21</height></rect>
+   </property>
+   <property name="readOnly"><bool>true</bool></property>
+  </widget>
+  <widget class="QPushButton" name="push_Load">
+   <property name="geometry">
+    <rect><x>140</x><y>415</y><width>100</width><height>23</height></rect>
+   </property>
+   <property name="text"><string>Load</string></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

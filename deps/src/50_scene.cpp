@@ -36,8 +36,10 @@ static void showInfoText(QWidget *parent, const QString &title, const QString &t
 // every Scene-side consumer below reads, WITHOUT the host ever transposing a matrix.
 static void sceneSetGridLayer(Scene *s, const float *z, int nx, int ny,
                               double x0, double x1, double y0, double y1,
-                              double dx = 0.0, double dy = 0.0, int zlayout = 0) {
+                              double dx = 0.0, double dy = 0.0, int zlayout = 0,
+                              bool placeholder = false) {   // true = an image plane's flat z, not data
 	if (!s || !z || nx < 1 || ny < 1) return;
+	s->gridPlaceholder = placeholder;
 	gridCopyToCM(s->gridZ, z, nx, ny, zlayout);   // column-major z[i*ny+j], the view_grid layout
 	s->gnx = nx; s->gny = ny;
 	s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
@@ -1027,7 +1029,7 @@ static ActiveGrid resolveActiveGrid(Scene *s) {
 			bestStack = s->surfStack; have = true;
 		}
 	}
-	if (!s->gridZ.empty()) {                                   // base relief, if it carries a data layer
+	if (!s->gridZ.empty() && !s->gridPlaceholder) {             // base relief, if it carries a data layer
 		vtkProp3D *sp = surfProp(s);
 		if (sp && sp->GetVisibility()) {
 			ag.valid = true; ag.z = &s->gridZ; ag.nx = s->gnx; ag.ny = s->gny;

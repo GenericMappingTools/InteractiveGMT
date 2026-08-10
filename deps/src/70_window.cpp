@@ -14113,14 +14113,20 @@ static std::vector<RecentItem> g_recent;
 static bool g_recentLoaded = false;
 static const int kRecentMax = 21;
 
+static void saveRecent();                    // defined just below; loadRecent writes back what it prunes
+
 static void loadRecent() {
 	if (g_recentLoaded) return;
 	g_recentLoaded = true;
 	QSettings st = igmtSettings();
 	const QStringList paths = st.value("recent/paths").toStringList();
 	const QVariantList cats  = st.value("recent/cats").toList();
-	for (int i = 0; i < paths.size(); ++i)
+	bool pruned = false;
+	for (int i = 0; i < paths.size(); ++i) {
+		if (isTransientPath(paths[i])) { pruned = true; continue; }   // clean out temp files already stored
 		g_recent.push_back({ paths[i], (i < cats.size()) ? cats[i].toInt() : 2 });
+	}
+	if (pruned) saveRecent();
 }
 
 static void saveRecent() {
@@ -14136,6 +14142,7 @@ static void addRecentFile(const char *cpath, int cat) {
 	if (!cpath || !*cpath) return;
 	loadRecent();
 	const QString p = QString::fromUtf8(cpath);
+	if (isTransientPath(p)) return;              // temp/scratch files never enter the list
 	for (int i = (int)g_recent.size() - 1; i >= 0; --i)            // drop any prior entry for this path
 		if (QString::compare(g_recent[i].path, p, Qt::CaseInsensitive) == 0)
 			g_recent.erase(g_recent.begin() + i);
@@ -15138,6 +15145,307 @@ static void showColorPalettes(Scene *s) {
 	else          showColorPalettes(s, -1, 0.0, 0.0);      // no grid: the dialog opens read-only
 }
 
+// ============================================================================================
+// Load Bands (Image > Load Bands) — port of Mirone's src_figs/bands_list.m. Layout is
+// deps/ui/bands_list.ui, an absolute-positioned transcription of bands_list_LayoutFcn loaded with
+// QUiLoader; everything it knows about the file comes from Julia through g_juliaBands
+// (src/bandslist.jl), which registered the multiband raster when the window was opened.
+//
+// The band list is a flat list of band NAMES rather than Mirone's fake "+"-tree: the tree existed
+// there to fold several in-memory arrays under one root, and with one file per window it is a row
+// of indirection with nothing behind it. Everything else is Mirone's: click a band to put it in
+// whichever channel radio (R/G/B) is active, Gray Scale hides G/B and slides the single box up the
+// frame, Compute PCA replaces the list with the principal components, Load swaps what the window
+// shows.
+// ============================================================================================
+class BandsListDialog {
+public:
+	QDialog     *dlg = nullptr;
+	Scene       *scn = nullptr;
+	QListWidget *list = nullptr;
+	QLineEdit   *edR = nullptr, *edG = nullptr, *edB = nullptr, *edDims = nullptr;
+	QRadioButton *rGray = nullptr, *rRGB = nullptr, *rR = nullptr, *rG = nullptr, *rB = nullptr;
+	QLabel      *txtGray = nullptr;
+	QRect        rBandGeom;                  // edit_Rband's RGB-mode place, to restore on RGB
+	QRect        movelGeom;                  // frame_movel, whose upper half gray mode uses
+	int          bandR = 0, bandG = 0, bandB = 0;    // 1-based; 0 = unset
+
+	static QHash<Scene *, BandsListDialog *> &registry() {
+		static QHash<Scene *, BandsListDialog *> m;
+		return m;
+	}
+
+	// One Julia round trip. Returns the callback's own return value; `out` gets its text.
+	//
+	// Julia runs ON THIS THREAD, so the window is genuinely frozen for as long as the request takes,
+	// and these requests are not cheap: reading a whole satellite band stack, a PCA over 200 M pixels,
+	// building a texture. Frozen with a normal cursor reads as CRASHED (Windows even paints "Not
+	// Responding" over it), so the wait cursor goes up first and a paint is forced out before the call
+	// — user input stays excluded so nothing can re-enter the dialog while Julia holds the thread.
+	static int call(Scene *s, const QString &req, QString *out = nullptr) {
+		if (!g_juliaBands) { if (out) *out = "Load Bands: callback not registered"; return -1; }
+		const bool slow = !req.startsWith("probe");
+		if (slow) {
+			QApplication::setOverrideCursor(Qt::WaitCursor);
+			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+		}
+		std::vector<char> buf(1 << 15, 0);
+		const int r = g_juliaBands(s, req.toUtf8().constData(), buf.data(), (int)buf.size());
+		if (slow) QApplication::restoreOverrideCursor();
+		if (out) *out = QString::fromUtf8(buf.data());
+		return r;
+	}
+	// How many bands this window's file has (0 = none, so the menu entry can grey itself out).
+	static int bandCount(Scene *s) {
+		QString t;
+		const int r = call(s, "probe", &t);
+		return r > 0 ? r : 0;
+	}
+	static void openFor(Scene *s) {
+		auto it = registry().find(s);
+		if (it != registry().end() && it.value()->dlg) {
+			it.value()->unpark();
+			return;
+		}
+		auto *w = new BandsListDialog(s);
+		if (!w->dlg) { delete w; return; }
+		registry().insert(s, w);
+		w->dlg->show();
+		// Compile Compute PCA / Load while the user reads the band list (warmup.jl): those buttons
+		// reach GMT.pca and the grid-add path for the first time otherwise, and that first press paid
+		// seconds of Julia compiler time on top of the actual work.
+		warmupTool("bandslist");
+	}
+
+	// MINIMISE parks the dialog as a Scene Objects handle, exactly as Color Palettes does — the same
+	// shared parkTool/unparkTool pair every parkable tool uses, so a parked Load Bands is the same
+	// kind of row with the same ways back (double-click, its checkbox, or "Show" in its menu).
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { unparkTool(scn, dlg); dlg->close(); }
+		};
+	}
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);   // undo the WM's minimise
+		dlg->hide();
+		parkTool(scn, dlg, "Load Bands", IC_Image,
+		         "Minimised Load Bands dialog — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);      // a handle nobody can see is no handle at all
+	}
+
+	void report(const QString &msg) {
+		if (scn) sceneLogError(scn, msg);
+		else     QMessageBox::warning(dlg, "Load Bands", msg);
+	}
+
+	// Fill the list from a "probe"/"pca" answer: "<n> <rgb_ok>\n<name1>\n<name2>…". `rgb_ok` is 0 when
+	// the bands are float: three different physical quantities share no colour scale, so Mirone
+	// forces Gray Scale and disables RGB for them (bands_list.m:72-76) — and so does this.
+	void fillFrom(const QString &answer) {
+		const QStringList lines = answer.split('\n');
+		list->clear();
+		for (int i = 1; i < lines.size(); ++i)
+			if (!lines[i].isEmpty()) list->addItem(lines[i]);
+		tightenListRows(list);
+		if (edDims && list->count() > 0)
+			edDims->setText(QString("%1 bands").arg(list->count()));
+		const bool rgbOk = lines.value(0).section(' ', 1, 1).toInt() != 0;
+		rRGB->setEnabled(rgbOk);
+		if (!rgbOk) { rGray->setChecked(true); setGray(true); }
+	}
+
+	// Gray Scale: one band, so G/B go away and the single box moves into the upper half of the
+	// frame — radio_gray_CB's own geometry, kept because it IS the ported layout.
+	void setGray(bool gray) {
+		rR->setVisible(!gray);  rG->setVisible(!gray);  rB->setVisible(!gray);
+		edG->setVisible(!gray); edB->setVisible(!gray);
+		txtGray->setVisible(gray);
+		if (gray) {
+			const QRect half(movelGeom.x(), movelGeom.y() + movelGeom.height() / 2,
+			                 movelGeom.width(), movelGeom.height() / 2);
+			edR->setGeometry(half.adjusted(10, 5, -20, -28));
+		} else {
+			edR->setGeometry(rBandGeom);
+		}
+	}
+
+	// A band picked in the list goes into the active channel (Mirone's listbox1_CB tail), and in RGB
+	// mode the active channel then MOVES ON to the next one still empty — R, G, B filled by three
+	// clicks without touching the radios in between. It stops advancing once all three are set, so a
+	// deliberate correction of one channel stays on that channel.
+	void assignPicked() {
+		if (!list->currentItem()) return;
+		const QString nm = list->currentItem()->text();
+		const int k = list->currentRow() + 1;
+		int filled = -1;                                    // 0 = R, 1 = G, 2 = B
+		if (rGray->isChecked() || rR->isChecked()) { bandR = k; edR->setText(nm); filled = 0; }
+		else if (rG->isChecked())                  { bandG = k; edG->setText(nm); filled = 1; }
+		else if (rB->isChecked())                  { bandB = k; edB->setText(nm); filled = 2; }
+		if (!rRGB->isChecked() || filled < 0) return;
+		const int bands[3] = { bandR, bandG, bandB };
+		QRadioButton *chan[3] = { rR, rG, rB };
+		for (int step = 1; step <= 2; ++step) {             // next empty channel, wrapping round
+			const int i = (filled + step) % 3;
+			if (bands[i] < 1) { chan[i]->setChecked(true); return; }
+		}
+	}
+
+	void doLoad() {
+		if (rRGB->isChecked() && (bandR < 1 || bandG < 1 || bandB < 1)) {
+			QMessageBox::critical(dlg, "ERROR", "Error: you must select three bands");
+			return;
+		}
+		if (rGray->isChecked() && bandR < 1) return;
+		QString msg;
+		const QString req = rRGB->isChecked()
+			? QString("rgb;%1;%2;%3").arg(bandR).arg(bandG).arg(bandB)
+			: QString("gray;%1").arg(bandR);
+		if (call(scn, req, &msg) < 0) report(msg);
+	}
+
+	// Compute PCA, then SHOW THE COMPOSITE: R/G/B are loaded with PC1/PC2/PC3 and the false-colour
+	// picture is put on screen straight away — that composite is what a PCA of a band stack is FOR.
+	// Every other combination stays one click away: the list and the R/G/B radios work exactly as for
+	// file bands (PC2/PC1/PC3, or a single component in Gray Scale with its own colour bar).
+	void doPCA() {
+		QString answer;
+		// A PCA reads the WHOLE stack and factorises it — tens of seconds on a satellite scene, all of
+		// it with this thread held (see `call`). Say so where the band count lives, so the wait has a
+		// name; `fillFrom` writes the count back over it.
+		if (edDims) { edDims->setText("computing PCA…");  edDims->repaint(); }
+		const int nc = call(scn, "pca", &answer);
+		if (edDims) edDims->setText(QString("%1 bands").arg(list->count()));
+		if (nc <= 0) { report(answer); return; }
+		fillFrom(answer);
+		bandR = bandG = bandB = 0;
+		edR->clear();  edG->clear();  edB->clear();
+		if (list->count() >= 3 && rRGB->isEnabled()) {
+			rRGB->setChecked(true);  setGray(false);
+			bandR = 1;  edR->setText(list->item(0)->text());
+			bandG = 2;  edG->setText(list->item(1)->text());
+			bandB = 3;  edB->setText(list->item(2)->text());
+			rR->setChecked(true);                      // next pick corrects R, as one would expect
+			doLoad();                                  // the composite, on screen
+		} else if (list->count() > 0) {
+			rGray->setChecked(true);  setGray(true);
+			list->setCurrentRow(0);
+			bandR = 1;  edR->setText(list->item(0)->text());
+			doLoad();
+		}
+	}
+
+	explicit BandsListDialog(Scene *s) : scn(s) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/bands_list.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("BandsListDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, s ? (QWidget *)s->win : nullptr));
+		f.close();
+		if (!dlg) { qWarning("BandsListDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		// The MINIMISE button has to be there for minimising to mean anything — it is what parks the
+		// dialog (parkNow below), the same gesture Color Palettes uses.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+		Scene *sc = scn;
+		QObject::connect(d, &QObject::destroyed, [this, sc, d]() {
+			if (sceneAlive(sc)) unparkTool(sc, d);      // a parked row must not outlive its window
+			registry().remove(sc);
+			delete this;
+		});
+		// Qt reports the minimise AFTER the window manager has done it, so the restore+hide+park is
+		// deferred one event-loop turn — doing it inside the state-change handler fights the WM.
+		struct MinimiseParks : QObject {
+			BandsListDialog *bd;
+			MinimiseParks(QObject *parent, BandsListDialog *b) : QObject(parent), bd(b) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::WindowStateChange && bd && bd->dlg &&
+				    bd->dlg->windowState().testFlag(Qt::WindowMinimized)) {
+					BandsListDialog *b = bd;
+					QTimer::singleShot(0, b->dlg, [b]() { b->parkNow(); });
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new MinimiseParks(d, this));
+
+		list    = d->findChild<QListWidget *>("listbox1");
+		edR     = d->findChild<QLineEdit *>("edit_Rband");
+		edG     = d->findChild<QLineEdit *>("edit_Gband");
+		edB     = d->findChild<QLineEdit *>("edit_Bband");
+		edDims  = d->findChild<QLineEdit *>("edit_dimsDesc");
+		rGray   = d->findChild<QRadioButton *>("radio_gray");
+		rRGB    = d->findChild<QRadioButton *>("radio_RGB");
+		rR      = d->findChild<QRadioButton *>("radio_R");
+		rG      = d->findChild<QRadioButton *>("radio_G");
+		rB      = d->findChild<QRadioButton *>("radio_B");
+		txtGray = d->findChild<QLabel *>("text_toGray");
+		QPushButton *bLoad = d->findChild<QPushButton *>("push_Load");
+		QPushButton *bPCA  = d->findChild<QPushButton *>("push_pca");
+		QWidget *movel     = d->findChild<QWidget *>("frame_movel");
+		if (!list || !edR || !edG || !edB || !rGray || !rRGB || !rR || !rG || !rB || !bLoad || !bPCA || !movel) {
+			qWarning("BandsListDialog: .ui is missing a widget");
+			return;
+		}
+		rBandGeom = edR->geometry();
+		movelGeom = movel->geometry();
+		// Same reason as the Color Palettes dialog: MATLAB's captions are narrower than Qt's, so let
+		// each one take the width its own font needs while keeping the ported x/y.
+		for (const char *nm : { "radio_gray", "radio_RGB", "radio_R", "radio_G", "radio_B",
+		                        "text_toGray", "text_dims" })
+			if (QWidget *w = d->findChild<QWidget *>(nm)) {
+				const QSize sh = w->sizeHint();
+				w->resize(std::max(w->width(), sh.width()), std::max(w->height(), sh.height()));
+			}
+		d->setFixedSize(d->size());
+
+		// The R/G/B channel radios are a group of their own: picking one must not clear Gray/RGB.
+		auto *chans = new QButtonGroup(d);
+		chans->addButton(rR);  chans->addButton(rG);  chans->addButton(rB);
+		auto *modes = new QButtonGroup(d);
+		modes->addButton(rGray);  modes->addButton(rRGB);
+
+		QObject::connect(rGray, &QRadioButton::toggled, [this](bool on) { if (on) setGray(true); });
+		QObject::connect(rRGB,  &QRadioButton::toggled, [this](bool on) { if (on) setGray(false); });
+		QObject::connect(list, &QListWidget::currentRowChanged, [this](int) { assignPicked(); });
+		QObject::connect(list, &QListWidget::itemDoubleClicked, [this](QListWidgetItem *) { assignPicked(); });
+		QObject::connect(bLoad, &QPushButton::clicked, [this]() { doLoad(); });
+		QObject::connect(bPCA,  &QPushButton::clicked, [this]() { doPCA(); });
+
+		QString answer;
+		const int n = call(scn, "probe", &answer);
+		if (n <= 0) {
+			report(answer.isEmpty() ? QString("this window has no multiband file") : answer);
+			bPCA->setEnabled(false);  bLoad->setEnabled(false);
+		} else {
+			// fillFrom already forces Gray when the bands cannot be composed (float source).
+			if (n >= 3) { rRGB->setChecked(true); setGray(false); }
+			else        { rGray->setChecked(true); setGray(true); }
+			fillFrom(answer);
+			list->setCurrentRow(0);
+		}
+	}
+};
+
 // ============================================================================
 // Earth Tides dialog (Geography > Earth Tides) — port of Mirone's earth_tides.
 // ============================================================================
@@ -16054,6 +16362,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// (At side / Inside / Floating); this viewer places the bar from its Scene Objects Color Bar row
 	// instead, so those have nothing to do here and a one-item submenu would be pure indirection.
 	mImage->addAction("Color &Palettes…", [s]() { showColorPalettes(s); });
+	// Load Bands (bands_list.m), where mirone_uis.m:389 puts it: in the Image menu, after a
+	// separator. Enabled only when the window really came from a multiband raster — Mirone hides the
+	// entry in that case (mirone.m:2631); the count comes from the same probe the dialog opens with.
+	mImage->addSeparator();
+	QAction *aBands = mImage->addAction("&Load Bands", [s]() { BandsListDialog::openFor(s); });
 	QAction *aBinarize = mImage->addAction("&Binarize Image…", [win, s]() {
 		auto it = g_binarizeDlgs.find(s);                    // hidden earlier? bring back the SAME one
 		if (it != g_binarizeDlgs.end() && it->second->dlg) {
@@ -16114,7 +16427,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Binarize needs an image to threshold — greyed out (refreshed on every open) when the window
 	// holds none. Show Histogram works off the DISPLAY, so a grid window qualifies too.
 	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto, aResize, aShape, aClassify,
-	                                              aEnh1, aFlipUD, aFlipLR, aRgbExp]() {
+	                                              aEnh1, aFlipUD, aFlipLR, aRgbExp, aBands]() {
+		// Load Bands only means something for a window opened from a multiband raster — the same
+		// probe the dialog itself opens with answers that (0 = no such file).
+		aBands->setEnabled(BandsListDialog::bandCount(s) > 1);
 		// Explore RGB splits an image into colour components, so it needs a genuine RGB one — Mirone
 		// hides the entry otherwise (`if (ndims(img) < 3), return, end`). Julia flags which images
 		// qualify (s->imgRGB), because the viewer sees every image as an RGBA texture.

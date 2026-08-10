@@ -24,6 +24,25 @@ static QSettings igmtSettings() {
 // Preferences combo. prefStartDir() seeds a dialog's start path; rememberStartDir() pushes the
 // directory of a just-chosen file to the front of the MRU after a successful pick.
 // ============================================================================================
+// A path in a temp/scratch directory has no business being REMEMBERED — not in Recent Files, not as
+// the default directory. It is gone (or meaningless) by the next session, and it evicts real entries
+// from the MRU it lands in. Anything under the OS temp dir, %TMP%/%TEMP%, or a path segment named
+// tmp / temp / scratchpad (C:\TMP\…, /tmp/…, a session scratchpad) counts. ONE test, used by every
+// place that persists a path — `prefPushDir` here and `addRecentFile`/`loadRecent` (70_window.cpp).
+static bool isTransientPath(const QString &p) {
+	const QString n = QDir::fromNativeSeparators(QFileInfo(p).absoluteFilePath()).toLower();
+	auto under = [&n](QString dir) {
+		if (dir.isEmpty()) return false;
+		dir = QDir::fromNativeSeparators(QDir::cleanPath(dir)).toLower();
+		return !dir.isEmpty() && n.startsWith(dir + '/');
+	};
+	if (under(QDir::tempPath()) || under(qEnvironmentVariable("TMP")) || under(qEnvironmentVariable("TEMP")))
+		return true;
+	for (const QString &seg : n.split('/'))
+		if (seg == "tmp" || seg == "temp" || seg == "scratchpad") return true;
+	return false;
+}
+
 static QStringList prefDirMRU() {
 	QSettings st = igmtSettings();
 	QStringList l = st.value("prefs/dirMRU").toStringList();
@@ -36,7 +55,7 @@ static QStringList prefDirMRU() {
 // Push `dir` to the front of the directory MRU (dedup, capped). Keep prefs/defaultDir in sync with
 // the head so the two views of "the default directory" never diverge.
 static void prefPushDir(const QString &dir) {
-	if (dir.isEmpty()) return;
+	if (dir.isEmpty() || isTransientPath(dir)) return;   // a scratch dir must never become the default
 	QSettings st = igmtSettings();
 	QStringList l = st.value("prefs/dirMRU").toStringList();
 	l.removeAll(dir);
@@ -300,6 +319,18 @@ static JuliaLoadSessionFn g_juliaLoadSession = nullptr;
 typedef int (*JuliaPaletteFn)(void *scene, const char *req, double *rgb, int nrows,
                               char *txt, int txtCap);
 static JuliaPaletteFn g_juliaPalette = nullptr;
+
+// Load Bands (Image > Load Bands, port of Mirone's bands_list.m). One callback, `req` says what:
+//   "probe"           -> txt = "<n>\n<name1>\n<name2>…" for the multiband file this window came
+//                        from; returns n, or 0 when the window has no such file (the menu entry
+//                        greys itself out on that answer)
+//   "gray;<k>"        -> load band k into the window (a Byte band as a picture, anything else as a
+//                        grid — Mirone's own rule)
+//   "rgb;<r>;<g>;<b>" -> load the three bands as one RGB picture
+//   "pca"             -> compute the principal components and make THEM the band list
+// Negative return = error, |ret| bytes of message in txt. Julia side: src/bandslist.jl `_on_bands`.
+typedef int (*JuliaBandsFn)(void *scene, const char *req, char *txt, int txtCap);
+static JuliaBandsFn g_juliaBands = nullptr;
 
 // IGRF Calculator (Geophysics > Magnetics). Port of Mirone's igrf_options.m, using GMT.jl's magref
 // (mgd77magref) instead of the igrf_m MEX. Two callbacks:

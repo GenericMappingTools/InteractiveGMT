@@ -157,6 +157,14 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 		_open_vtk_into(scene, String(spec), name, empty)
 		return
 	end
+	# A MULTIBAND raster (.vrt and friends) is a stack, not one raster, and GMT's own reader cannot
+	# even TYPE a .vrt ("Must select the input data type") — so it has to be recognised BEFORE the
+	# plain read, or the file simply fails to open. `_bands_open_first!` registers it for
+	# Image > Load Bands and puts its FIRST band on screen, which is Mirone's multiband open. Returns
+	# false for everything else (an RGB photo included), and then the ordinary path below runs.
+	if _bands_open_first!(scene, String(spec), String(name), empty, String(recent))
+		return
+	end
 	n_layers, zmin, zmax = _cube_probe(spec)
 	if n_layers > 1
 		_on_3d_cube_dropped(scene, String(spec), name, empty, n_layers, zmin, zmax; prescan=prescan)
@@ -170,6 +178,11 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 		# — the separate Vector-import-onto-existing-display law).
 		is_table = data isa GMTdataset || data isa AbstractVector{<:GMTdataset}
 		(ok === false || is_table) || _adopt_new_element(scene, name, data)   # not all _drop_into methods return Bool
+		# A MULTIBAND raster (a .vrt, an n1/n14-17, any GDAL file with more than one band) is
+		# registered so Image > Load Bands can pull its other bands into this window later — Mirone's
+		# `toBandsList` (aux_funs.m), same moment, same purpose. Best-effort: a probe that fails just
+		# leaves the tool saying the window has no bands.
+		is_table || try; _bands_register!(scene, String(spec)); catch; end
 	end
 	return
 end
@@ -1242,12 +1255,17 @@ function _stretch_to_u8(I::GMTimage)
 	m = I.image
 	lo, hi = I.range[5], I.range[6]            # data min/max already carried on the image
 	rng = hi > lo ? Float32(hi - lo) : 1.0f0
-	out = Matrix{UInt8}(undef, size(m))
+	out = Array{UInt8}(undef, size(m))         # Array, not Matrix: a multi-band image is 3-D
 	@inbounds @simd for k in eachindex(m)
 		out[k] = round(UInt8, (Float32(Float64(m[k]) - lo) / rng) * 255.0f0)
 	end
-	# Grey VALUES, not palette indices: drop any colormap mat2img copied over with the georef.
-	return _img_drop_palette!(GMT.mat2img(out, I))
+	J = GMT.mat2img(out, I)
+	# A ONE-BAND result is a grey QUANTITY (a 16-bit satellite band, a thermal channel), and a quantity
+	# must say what its shades mean: give it the 256-level GREY palette, which `_push_image_palette`
+	# turns into a GREYSCALE colour bar — the same treatment every other single-band derived image gets
+	# (`_img_gray_palette!`, drape.jl). Multi-band output is RGB pixels, which no palette describes:
+	# drop whatever colormap `mat2img` copied over with the georef.
+	return ndims(out) == 2 ? _img_gray_palette!(J) : _img_drop_palette!(J)
 end
 
 # Add a dropped image as a flat textured plane in the window (promote = reuse the empty launcher).

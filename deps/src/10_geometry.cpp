@@ -648,6 +648,12 @@ struct Scene {
 	// them so ticks place correctly when the bar is retargeted to a dropped grid.
 	double barLo = 0, barHi = 1;
 	bool   surfShowBar = true;              // base relief: user wants its colorbar shown (when active)
+	// gridZ holds the FLAT 2x2 PLACEHOLDER an image plane rides on, not a data layer. A bare image is
+	// promoted with a 2x2 all-zero z (there is no elevation), and that z is still copied into gridZ so
+	// the hover readout has a footprint to test against — but it is NOT a quantity, so it must never
+	// resolve as the active grid: that made a bare image window paint a colour bar for a degenerate
+	// z range [0,0], which VTK renders as ONE FLAT COLOUR (the LUT's top end — a pure red bar).
+	bool   gridPlaceholder = false;
 	bool   surfCloud = false;               // the PRIMARY surface is a point cloud (view_points /
 	                                         // "Point cloud view" / a dropped .laz), NOT a heightfield:
 	                                         // it colours by z through surfLut and owns a colorbar +
@@ -1437,6 +1443,16 @@ static void gridCopyToCM(std::vector<float> &dst, const float *z, int nx, int ny
 // NaN cells are PAINTED (not dropped): every quad is emitted; a NaN node keeps its
 // z SCALAR = NaN (so the CTF paints it with its NanColor = the Preferences NaN fill colour) but its
 // geometry z is pinned to the grid floor (zmin) so the mesh stays valid (flat filled hole).
+// Display-mesh node budget. A satellite-sized grid (6000 x 6000 = 36 M nodes) meshed one node per
+// grid cell is 36 M points + 36 M quads + normals + a per-point colour bake: minutes of work and
+// gigabytes, which is a HANG, not a slow draw. The primary surface never hits this because it is
+// tiled by the LOD quadtree; a grid ADDED to a window (a dropped grid, an RTP, a PCA component)
+// goes through this function as ONE mesh, so the cap has to live here — in the one builder every
+// such grid passes through, never in the tool that happened to produce a big grid.
+// 1.5 M nodes ~ 1225 x 1225, i.e. about one mesh node per screen pixel on a maximised window — past
+// that the extra triangles are invisible and cost only time (4 M measured ~0.7 s more per grid add).
+static const long long kMeshNodeBudget = 1500000;
+
 static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, int ny,
 													  double x0, double x1,
 													  double y0, double y1,
@@ -1444,6 +1460,34 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 													  bool triangulate = true,
 													  bool wantTC = true,     // texture coords only needed for image drape
 													  int zlayout = 0) {
+	// Over budget: mesh a SUBSAMPLE of the nodes. Only the geometry is thinned — the caller keeps the
+	// full-resolution z (Scene::gridZ / ExtraObj::gridZ), which is what the hover readout, the colour
+	// bar, the flat-2D bake and every computation read, so nothing but the triangle count changes.
+	// The sample keeps the FIRST and LAST node of each axis, so x0/x1/y0/y1 still describe the mesh
+	// exactly and the georeferencing is untouched.
+	if ((long long)nx * (long long)ny > kMeshNodeBudget && nx > 1 && ny > 1) {
+		const int step = (int)std::ceil(std::sqrt((double)nx * (double)ny / (double)kMeshNodeBudget));
+		int mx = (nx - 1) / step + 1,  my = (ny - 1) / step + 1;
+		if ((long long)(mx - 1) * step < nx - 1) ++mx;      // ... and land exactly on the last node
+		if ((long long)(my - 1) * step < ny - 1) ++my;
+		const GridLay lay = gridLay(nx, ny, zlayout);
+		std::vector<float> zd((size_t)mx * my);
+		for (int j = 0; j < my; ++j) {                      // BCB (column-major, south-first) output
+			const int sj = std::min(j * step, ny - 1);
+			for (int i = 0; i < mx; ++i)
+				zd[(size_t)i * my + j] = lay.at(z, std::min(i * step, nx - 1), sj);
+		}
+		auto pd = makeGridFromArray(zd.data(), mx, my, x0, x1, y0, y1, zmin, zmax, triangulate, wantTC, 0);
+		// z range is the DATA's, not the subsample's: it drives the Z axis and the colour bar, and
+		// those must describe the grid, not the triangles (SACRED_LAW.md, derived-variable axes law).
+		double lo = 1e30, hi = -1e30;
+		for (long long k = 0; k < (long long)nx * ny; ++k) {
+			const float v = z[k];
+			if (!std::isnan(v)) { if (v < lo) lo = v;  if (v > hi) hi = v; }
+		}
+		if (lo <= hi) { zmin = lo; zmax = hi; }
+		return pd;
+	}
 	vtkNew<vtkPoints>     pts;   pts->SetDataTypeToFloat();
 	vtkNew<vtkFloatArray> zval;  zval->SetName("z");
 	vtkNew<vtkFloatArray> tcoord; tcoord->SetNumberOfComponents(2); tcoord->SetName("tc");

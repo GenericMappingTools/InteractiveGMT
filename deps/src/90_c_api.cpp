@@ -1685,6 +1685,13 @@ GMTVTK_API void gmtvtk_set_palette_callback(JuliaPaletteFn fn) {
 	g_juliaPalette = fn;
 }
 
+// Register the Load Bands dialog's callback (Image > Load Bands). fn(scene, req, txt, txtCap)
+// probes the window's multiband file and loads bands out of it -- see JuliaBandsFn (30_app.cpp)
+// for the request grammar. nullptr to detach.
+GMTVTK_API void gmtvtk_set_bands_callback(JuliaBandsFn fn) {
+	g_juliaBands = fn;
+}
+
 // Register the IGRF Calculator's single-point callback (Geophysics > Magnetics > IGRF). fn(state)
 // with state = "lon/lat/elev_m/date_dec" returns "F/H/X/Y/Z/D/I" (or "" on failure). Same
 // Julia-owned-buffer convention as gmtvtk_set_dimfun_callback. nullptr to detach.
@@ -5767,9 +5774,12 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 					  /*edges=*/0, /*pointCloud=*/false, geographic, gz, gnx, gny, /*blankStart=*/false, zlayout);
 
 	// The single-actor (drape) path needs full-res z for hover/profile/pick; the tiled path already
-	// populated s->gridZ inside buildSceneContent.
+	// populated s->gridZ inside buildSceneContent. For a bare IMAGE that z is the flat 2x2 plane the
+	// texture rides on — a footprint, not data — so it is flagged as a placeholder: it must feed the
+	// hover readout and NOTHING else. Unflagged, it resolved as the window's active grid and painted
+	// a colour bar for the range [0,0], which VTK draws as one flat colour (a pure red bar).
 	if (!gz)
-		sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1, 0.0, 0.0, zlayout);
+		sceneSetGridLayer(s, z, nx, ny, x0, x1, y0, y1, 0.0, 0.0, zlayout, /*placeholder=*/imageOnly);
 
 	s->emptyStart = false;
 

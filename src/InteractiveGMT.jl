@@ -107,6 +107,7 @@ include("shapenc.jl")    # write a SHAPENC netCDF file (port of Mirone utils/sha
 include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track editor (port of Mirone src_figs/gmtedit.m)
 include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> write via shapenc
 include("palettes.jl")   # Image > Color Palettes: the six palette families + CPT I/O (port of Mirone color_palettes.m)
+include("bandslist.jl")  # Image > Load Bands: multiband/.vrt band picker (port of Mirone bands_list.m)
 
 export gmtscript, gmtreplay,
        view_grid, view_image, view_points, view_fv, view_demo, iview,
@@ -148,6 +149,16 @@ end
 # of non-Windows) so `using InteractiveGMT` still succeeds; viewer calls then error on first use.
 function __init__()
 	_dbg("startup", "__init__ enter")
+	# GDAL reads on ALL CORES. A tiled/compressed raster (every Landsat/Sentinel scene, every VRT over
+	# them) is decompressed single-threaded by default; this is the one process-wide switch that fixes
+	# it for every read in the package. Measured on a 4-band 60-Mpx Landsat VRT: 5.9 s -> 3.9 s.
+	# Set here because it is a process setting, not a per-call one — never re-set at a call site.
+	try
+		GMT.Gdal.CPLSetConfigOption("GDAL_NUM_THREADS", "ALL_CPUS")
+		GMT.Gdal.CPLSetConfigOption("GDAL_CACHEMAX", "1024")
+	catch e
+		@debug "InteractiveGMT: could not set the GDAL threading options (harmless)" exception=(e,)
+	end
 	# ONLY load the DLL here. The dlopen handle + dlsym pointers are runtime values that can't be
 	# baked into a precompiled image, so they must resolve at load. Everything else (the 11 callback
 	# registrations) is deferred to the first window open via `_ensure_callbacks` (eventloop.jl) — it

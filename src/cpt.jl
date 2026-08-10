@@ -30,10 +30,17 @@ _cmap_tag(cmap)::String = (cmap isa Symbol || cmap isa AbstractString) ? String(
 # on the C side. Returns (Float64[], Float64[], 0) on failure -> viewer falls back to its ramp.
 function _cpt_nodes(G::GMTgrid, cmap)
 	cmap === nothing && return (Float64[], Float64[], 0)
-	fin = filter(isfinite, G.z)
-	isempty(fin) && return (Float64[], Float64[], 0)
-	zmn, zmx = extrema(fin)
-	zmx <= zmn && return (Float64[], Float64[], 0)
+	# ONE pass, NO allocation. `filter(isfinite, G.z)` materialised a second copy of the whole grid
+	# just to take its extrema — a quarter of a gigabyte, and half a second, on a 60-Mpx satellite
+	# band, on a path every single grid goes through.
+	zmn, zmx = Inf, -Inf
+	@inbounds for k in eachindex(G.z)
+		v = Float64(G.z[k])
+		isfinite(v) || continue
+		(v < zmn) && (zmn = v)
+		(v > zmx) && (zmx = v)
+	end
+	(isfinite(zmn) && zmx > zmn) || return (Float64[], Float64[], 0)
 	return _cpt_nodes_range(zmn, zmx, cmap)
 end
 
