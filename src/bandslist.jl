@@ -178,7 +178,7 @@ function _bands_pca(scene::Ptr{Cvoid}, q::Int = 3)
 	nd   = _bands_nodata(info.path)
 	X    = _bands_cube_matrix(cube)                    # nothing to mask -> plain `pca(cube)` below
 	(X === nothing || isnan(nd)) && (P0 = GMT.pca(cube; npc = info.n); return (P0, String.(P0.names)))
-	keep = _bands_valid_rows(X, Float32(nd))
+	keep = _bands_valid_rows(X, Float32(nd), _bands_nan_possible(cube))
 	nk = count(keep)
 	(nk == length(keep) || nk <= size(X, 2)) &&
 		(P0 = GMT.pca(cube; npc = info.n); return (P0, String.(P0.names)))
@@ -207,20 +207,48 @@ function _bands_cube_matrix(cube)::Union{Matrix{Float32},Nothing}
 	return Float32.(reshape(buf, size(buf, 1) * size(buf, 2), size(buf, 3)))
 end
 
+# Can a NaN even occur in this cube? An IMAGE cannot hold one (integer pixels), and a GRID says so
+# itself — GMT sets `hasnans` to 1 when there are none and 2 when there are (0 = not yet known). The
+# question is asked ONCE, here, instead of once per element: on a 4-band Landsat scene that is 240 M
+# `isnan` tests that already knew their answer.
+_bands_nan_possible(cube) = (cube isa GMTgrid) && cube.hasnans != 1
+
 # A pixel counts only when EVERY band has a value there: a component combines all of them, so one
 # missing band makes the whole pixel meaningless.
-function _bands_valid_rows(X::Matrix{Float32}, nodata::Float32)
-	keep = trues(size(X, 1))
-	@inbounds for j in 1:size(X, 2), i in 1:size(X, 1)
-		v = X[i, j]
-		(isnan(v) || v == nodata) && (keep[i] = false)
-	end
+#
+# The masking runs in one of two kernels, picked before the loop starts, so nothing is branched on
+# inside it — and `keep` is a Vector{Bool}, not a BitVector, so the test is an AND into a byte the
+# compiler can vectorize rather than a read-modify-write of a bit.
+function _bands_valid_rows(X::Matrix{Float32}, nodata::Float32, nan_possible::Bool)
+	keep = fill(true, size(X, 1))
+	nan_possible ? _bands_mask_nodata_nan!(keep, X, nodata) : _bands_mask_nodata!(keep, X, nodata)
 	return keep
+end
+
+# The usual case: a declared no-data value and no NaNs to worry about.
+function _bands_mask_nodata!(keep::Vector{Bool}, X::Matrix{Float32}, nodata::Float32)
+	@inbounds for j in axes(X, 2)
+		@simd for i in axes(X, 1)
+			keep[i] &= (X[i, j] != nodata)
+		end
+	end
+	return nothing
+end
+
+# ... and the case where the grid admits it may hold NaNs.
+function _bands_mask_nodata_nan!(keep::Vector{Bool}, X::Matrix{Float32}, nodata::Float32)
+	@inbounds for j in axes(X, 2)
+		@simd for i in axes(X, 1)
+			v = X[i, j]
+			keep[i] &= (v != nodata) & (v == v)      # v == v is false only for NaN
+		end
+	end
+	return nothing
 end
 
 # Scores back into their pixels; the fill keeps no score at all (NaN -> the Preferences NaN colour on
 # a component, and this file's own fill value in a composite).
-function _bands_scatter!(Z::Matrix{Float32}, score::AbstractMatrix, keep::BitVector)
+function _bands_scatter!(Z::Matrix{Float32}, score::AbstractMatrix, keep::Vector{Bool})
 	@inbounds for k in 1:size(Z, 2)
 		j = 0
 		for i in 1:size(Z, 1)
