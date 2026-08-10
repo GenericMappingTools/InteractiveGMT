@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FFT tool — port of Mirone's src_figs/fft_stuff.m (fft_stuff_LayoutFcn).
+
+  The ARRANGEMENT is Mirone's, widget for widget and row for row: two framed boxes on top (the two
+  grid pickers + Remove trend on the left, the padding size + its two good-FFT-number lists on the
+  right), then CONFIRM, then the operations in columns — the three edit+Go rows on the left, the
+  single-grid buttons, the two-grid buttons, and Analytic Signal.
+
+  The NUMBERS are not Mirone's, and cannot be: MATLAB draws those captions in a narrower font, so
+  the .m file's own widths ("Radial power average" in 121 px, "Up/Down Continuation" in 130) clip
+  under Qt. Each widget is given the width its text really needs and the columns are spaced from
+  those widths, so nothing overlaps and nothing is resized behind the user's back at runtime.
+-->
+<ui version="4.0">
+ <class>FFTStuff</class>
+ <widget class="QDialog" name="FFTStuff">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>725</width><height>248</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>FFT stuff</string>
+  </property>
+
+  <!-- ===================== frames (decoration, as in the .m) ===================== -->
+  <widget class="QFrame" name="frame_grids">
+   <property name="geometry"><rect><x>8</x><y>4</y><width>364</width><height>96</height></rect></property>
+   <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+   <property name="frameShadow"><enum>QFrame::Sunken</enum></property>
+  </widget>
+  <widget class="QFrame" name="frame_size">
+   <property name="geometry"><rect><x>380</x><y>4</y><width>268</width><height>96</height></rect></property>
+   <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+   <property name="frameShadow"><enum>QFrame::Sunken</enum></property>
+  </widget>
+
+  <!-- ============================ Grid 1 / Grid 2 =============================== -->
+  <widget class="QLabel" name="text_Grid1">
+   <property name="geometry"><rect><x>18</x><y>16</y><width>40</width><height>20</height></rect></property>
+   <property name="text"><string>Grid1</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_Grid1">
+   <property name="geometry"><rect><x>60</x><y>14</y><width>268</width><height>24</height></rect></property>
+   <property name="toolTip"><string>Enter grid 1 (double-click to browse)</string></property>
+  </widget>
+  <widget class="QToolButton" name="push_Grid1">
+   <property name="geometry"><rect><x>334</x><y>14</y><width>28</width><height>24</height></rect></property>
+   <property name="text"><string>...</string></property>
+   <property name="toolTip"><string>Pick the grid to transform</string></property>
+  </widget>
+
+  <widget class="QLabel" name="text_Grid2">
+   <property name="geometry"><rect><x>18</x><y>46</y><width>40</width><height>20</height></rect></property>
+   <property name="text"><string>Grid2</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_Grid2">
+   <property name="geometry"><rect><x>60</x><y>44</y><width>268</width><height>24</height></rect></property>
+   <property name="toolTip"><string>Enter grid 2 (ONLY USED IN &quot;CROSS&quot; OPERATIONS)</string></property>
+  </widget>
+  <widget class="QToolButton" name="push_Grid2">
+   <property name="geometry"><rect><x>334</x><y>44</y><width>28</width><height>24</height></rect></property>
+   <property name="text"><string>...</string></property>
+   <property name="toolTip"><string>Pick the second grid (cross operations only)</string></property>
+  </widget>
+
+  <widget class="QCheckBox" name="checkbox_leaveTrend">
+   <property name="geometry"><rect><x>60</x><y>72</y><width>160</width><height>22</height></rect></property>
+   <property name="text"><string>Remove trend</string></property>
+   <property name="toolTip"><string>If checked remove a plane before transformations</string></property>
+  </widget>
+
+  <!-- ===================== padding size (# rows / # cols) ======================= -->
+  <widget class="QLabel" name="text_Nrows">
+   <property name="geometry"><rect><x>392</x><y>12</y><width>56</width><height>18</height></rect></property>
+   <property name="text"><string># Rows</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_Nrows">
+   <property name="geometry"><rect><x>390</x><y>34</y><width>58</width><height>24</height></rect></property>
+   <property name="toolTip"><string>The default value is the number of rows in the grid.
+For reducing border effects pick a larger value from the list beside it:
+the extra points are obtained by data extension and tapered to zero.</string></property>
+  </widget>
+  <widget class="QListWidget" name="listbox_nny">
+   <property name="geometry"><rect><x>452</x><y>12</y><width>62</width><height>80</height></rect></property>
+   <property name="toolTip"><string>Good FFT numbers for padding the grid</string></property>
+  </widget>
+
+  <widget class="QLabel" name="text_Ncols">
+   <property name="geometry"><rect><x>522</x><y>12</y><width>56</width><height>18</height></rect></property>
+   <property name="text"><string># Cols</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_Ncols">
+   <property name="geometry"><rect><x>520</x><y>34</y><width>58</width><height>24</height></rect></property>
+   <property name="toolTip"><string>The default value is the number of columns in the grid.
+For reducing border effects pick a larger value from the list beside it:
+the extra points are obtained by data extension and tapered to zero.</string></property>
+  </widget>
+  <widget class="QListWidget" name="listbox_nnx">
+   <property name="geometry"><rect><x>582</x><y>12</y><width>62</width><height>80</height></rect></property>
+   <property name="toolTip"><string>Good FFT numbers for padding the grid</string></property>
+  </widget>
+
+  <!-- ======================= grid coordinates (CONFIRM) ========================= -->
+  <widget class="QLabel" name="text_confirm">
+   <property name="geometry"><rect><x>18</x><y>114</y><width>80</width><height>20</height></rect></property>
+   <property name="text"><string>CONFIRM</string></property>
+   <property name="styleSheet"><string notr="true">color: rgb(200,0,0); font-weight: bold;</string></property>
+  </widget>
+  <widget class="QComboBox" name="popup_GridCoords">
+   <property name="geometry"><rect><x>104</x><y>110</y><width>120</width><height>26</height></rect></property>
+   <property name="toolTip"><string>GRID COORDINATES: IT IS YOUR RESPONSABILITY THAT THIS IS CORRECT</string></property>
+   <item><property name="text"><string>Geogs</string></property></item>
+   <item><property name="text"><string>Meters</string></property></item>
+   <item><property name="text"><string>Kilometers</string></property></item>
+  </widget>
+
+  <!-- ============= left column: continuation / derivatives (+ Go) =============== -->
+  <widget class="QLabel" name="text_UDcont">
+   <property name="geometry"><rect><x>2</x><y>146</y><width>152</width><height>22</height></rect></property>
+   <property name="text"><string>Up/Down Continuation</string></property>
+   <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_UDcont">
+   <property name="geometry"><rect><x>160</x><y>145</y><width>52</width><height>24</height></rect></property>
+   <property name="toolTip"><string>Height of continuation (in meters)</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_goUDcont">
+   <property name="geometry"><rect><x>218</x><y>145</y><width>38</width><height>24</height></rect></property>
+   <property name="text"><string>Go</string></property>
+  </widget>
+
+  <widget class="QLabel" name="text_derivative">
+   <property name="geometry"><rect><x>2</x><y>180</y><width>152</width><height>22</height></rect></property>
+   <property name="text"><string>Derivative (N-order)</string></property>
+   <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_derivative">
+   <property name="geometry"><rect><x>160</x><y>179</y><width>52</width><height>24</height></rect></property>
+   <property name="text"><string>1</string></property>
+   <property name="toolTip"><string>Order of vertical differentiation</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_goDerivative">
+   <property name="geometry"><rect><x>218</x><y>179</y><width>38</width><height>24</height></rect></property>
+   <property name="text"><string>Go</string></property>
+  </widget>
+
+  <widget class="QLabel" name="text_dirDerivative">
+   <property name="geometry"><rect><x>2</x><y>214</y><width>152</width><height>22</height></rect></property>
+   <property name="text"><string>Directional derivative</string></property>
+   <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_dirDerivative">
+   <property name="geometry"><rect><x>160</x><y>213</y><width>52</width><height>24</height></rect></property>
+   <property name="text"><string>0</string></property>
+   <property name="toolTip"><string>Angle of directional derivative</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_goDirDerivative">
+   <property name="geometry"><rect><x>218</x><y>213</y><width>38</width><height>24</height></rect></property>
+   <property name="text"><string>Go</string></property>
+   <property name="toolTip"><string>Azimuth of directional derivative CCW from north</string></property>
+  </widget>
+
+  <!-- ==================== middle column: single-grid ops ======================== -->
+  <widget class="QPushButton" name="push_powerSpectrum">
+   <property name="geometry"><rect><x>270</x><y>110</y><width>140</width><height>26</height></rect></property>
+   <property name="text"><string>Power Spectrum</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_autoCorr">
+   <property name="geometry"><rect><x>270</x><y>145</y><width>140</width><height>26</height></rect></property>
+   <property name="text"><string>Auto Correlation</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_integrate">
+   <property name="geometry"><rect><x>270</x><y>179</y><width>140</width><height>26</height></rect></property>
+   <property name="text"><string>Integrate</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_faa2geoid">
+   <property name="geometry"><rect><x>270</x><y>213</y><width>140</width><height>26</height></rect></property>
+   <property name="text"><string>FAA2Geoid</string></property>
+  </widget>
+
+  <!-- ===================== right column: two-grid ops =========================== -->
+  <widget class="QPushButton" name="push_crossSpectra">
+   <property name="geometry"><rect><x>422</x><y>110</y><width>166</width><height>26</height></rect></property>
+   <property name="text"><string>Cross Spectra</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_crossCorr">
+   <property name="geometry"><rect><x>422</x><y>145</y><width>166</width><height>26</height></rect></property>
+   <property name="text"><string>Cross Correlation</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_radialPowerAverage">
+   <property name="geometry"><rect><x>422</x><y>179</y><width>166</width><height>26</height></rect></property>
+   <property name="text"><string>Radial power average</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_geoid2faa">
+   <property name="geometry"><rect><x>422</x><y>213</y><width>166</width><height>26</height></rect></property>
+   <property name="text"><string>Geoid2FAA</string></property>
+  </widget>
+
+  <widget class="QPushButton" name="push_AnalyticSig">
+   <property name="geometry"><rect><x>600</x><y>110</y><width>112</width><height>26</height></rect></property>
+   <property name="text"><string>Analytic Signal</string></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

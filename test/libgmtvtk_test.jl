@@ -27,6 +27,8 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_fault_add_test, :gmtvtk_fault_apply_test, :gmtvtk_fault_plane_test, :gmtvtk_poly_edit_add_test,
 	:gmtvtk_settings_format_test,
 	:gmtvtk_set_flat2d_test, :gmtvtk_objrows_test,
+	:gmtvtk_fft_dialog_test, :gmtvtk_fft_sizes_test, :gmtvtk_fft_park_test, :gmtvtk_scene_adopt_test,
+	:gmtvtk_set_fftstuff_callback,
 	:gmtvtk_fault_open_dialog_test, :gmtvtk_fault_close_dialog_test, :gmtvtk_trace_zbounds_test,
 	:gmtvtk_meca_drag_test,
 	:gmtvtk_symbol_add_test, :gmtvtk_symbol_drag_test,
@@ -74,6 +76,44 @@ function _test_fn(sym::Symbol)::Ptr{Cvoid}
 	return p
 end
 
+# The FFT tool (Mag/Grav > FFT tool, Image > FFT Spectrum) asks Julia for everything it does, so a
+# dialog built inside gmtvtk_test.dll needs THIS dll's own g_juliaFFTStuff set.
+function register_fftstuff_test()
+	fptr = @cfunction((s, c, t, n) -> Base.invokelatest(InteractiveGMT._on_fftstuff, s, c, t, n)::Cint,
+	                  Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint))
+	ccall(_test_fn(:gmtvtk_set_fftstuff_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
+# Open the FFT dialog on `scene` (1 = it is up). `png` non-empty also grabs it, for a layout check.
+fft_open(scene::Ptr{Cvoid}, png::AbstractString = "") =
+	ccall(_test_fn(:gmtvtk_fft_dialog_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, "", String(png))
+
+# CLICK one of its buttons by objectName — the real handler runs, exactly as a user click would.
+fft_click(scene::Ptr{Cvoid}, button::AbstractString) =
+	ccall(_test_fn(:gmtvtk_fft_dialog_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, String(button), "")
+
+# What the two padding boxes ended up holding: (rows, cols).
+function fft_sizes(scene::Ptr{Cvoid})
+	out = zeros(Cint, 2)
+	ccall(_test_fn(:gmtvtk_fft_sizes_test), Cint, (Ptr{Cvoid}, Ptr{Cint}), scene, out)
+	return (Int(out[1]), Int(out[2]))
+end
+
+# Let THIS dll consider `scene` alive — `sceneAlive`'s set is a file-static per dll, so anything
+# gated on it (parkTool, and every other refuse-to-touch-a-dead-scene path) would otherwise no-op
+# on a window the production dll opened. Same mirroring the callback registrations above do.
+scene_adopt(scene::Ptr{Cvoid}) =
+	ccall(_test_fn(:gmtvtk_scene_adopt_test), Cint, (Ptr{Cvoid},), scene)
+
+# Minimise the FFT dialog (parking it in Scene Objects) or bring it back: 1 = parked, 0 = showing.
+fft_park(scene::Ptr{Cvoid}, park::Bool) =
+	ccall(_test_fn(:gmtvtk_fft_park_test), Cint, (Ptr{Cvoid}, Cint), scene, park ? Cint(1) : Cint(0))
+
+# The Scene Objects panel as text — the only proof a result was really PUT IN THE WINDOW.
+objrows(scene::Ptr{Cvoid}) =
+	unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), scene))
+
 function _register_faultgeom_test()
 	fptr = @cfunction((a, b, c, d) -> Base.invokelatest(InteractiveGMT._on_faultgeom, a, b, c, d),
 	                  Cstring, (Cdouble, Cdouble, Cdouble, Cdouble))
@@ -109,6 +149,7 @@ function _register_ceuler_test()
 	return
 end
 
-export _test_fn, _register_faultgeom_test, _register_euler_test, _register_ceuler_test
+export _test_fn, register_fftstuff_test, fft_open, fft_click, fft_sizes, fft_park, scene_adopt, objrows,
+	_register_faultgeom_test, _register_euler_test, _register_ceuler_test
 
 end

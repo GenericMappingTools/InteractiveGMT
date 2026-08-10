@@ -15146,6 +15146,273 @@ static void showColorPalettes(Scene *s) {
 }
 
 // ============================================================================================
+// The FFT tool — port of Mirone's src_figs/fft_stuff.m. Layout is deps/ui/fft_stuff.ui, an
+// absolute-positioned transcription of fft_stuff_LayoutFcn loaded with QUiLoader.
+//
+// ONE dialog, TWO menu entries: "Mag/Grav > FFT tool" and "Image > FFT Spectrum" are the same
+// window in Mirone (both call GridToolsSectrum_CB with 'Allopts'), the second one over an image
+// which Julia converts to grey. "Grid Tools > Spectrum" needs NO dialog at all — it is Mirone's
+// quick mode, and `runQuick` below sends the same request string with the grid's own size.
+//
+// Every button ends in `run()`: one request string, one Julia call, one place a failure is
+// reported. The maths is entirely in src/fftstuff.jl — this class only fills in the settings.
+// ============================================================================================
+class FFTStuffDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QLineEdit *edGrid1 = nullptr, *edGrid2 = nullptr, *edRows = nullptr, *edCols = nullptr;
+	QLineEdit *edUD = nullptr, *edDeriv = nullptr, *edDirDeriv = nullptr;
+	QListWidget *listRows = nullptr, *listCols = nullptr;
+	QCheckBox *chkTrend = nullptr;
+	QComboBox *cbCoords = nullptr;
+	int nativeNx = 0, nativeNy = 0;
+
+	static QHash<Scene *, FFTStuffDialog *> &registry() {
+		static QHash<Scene *, FFTStuffDialog *> m;
+		return m;
+	}
+	static const QString &inMemoryTag() {
+		static const QString t = QStringLiteral(" In Memory array");
+		return t;
+	}
+
+	// The one call. `g2` is empty for every operation but the two "cross" ones, and `value` carries
+	// whatever single number the operation needs (height, order, azimuth).
+	static int call(Scene *s, const QString &op, const QString &g1, const QString &g2,
+	                int rows, int cols, int coords, bool detrend, double value,
+	                QString *out = nullptr) {
+		if (!g_juliaFFTStuff) return -1;
+		const QString params = QString("%1;%2;%3;%4;%5;%6;%7;%8")
+			.arg(op).arg(g1).arg(g2).arg(rows).arg(cols).arg(coords)
+			.arg(detrend ? "1" : "0").arg(value, 0, 'g', 12);
+		// Julia runs on this thread, and a 2-D FFT over a big grid is not instant — the wait cursor
+		// goes up first (same reason as BandsListDialog::call). "size" is cheap, so it skips that.
+		const bool slow = (op != "size");
+		if (slow) {
+			QApplication::setOverrideCursor(Qt::WaitCursor);
+			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+		}
+		std::vector<char> buf(256, 0);
+		const int r = g_juliaFFTStuff(s, params.toUtf8().constData(), buf.data(), (int)buf.size());
+		if (slow) QApplication::restoreOverrideCursor();
+		if (out) *out = QString::fromUtf8(buf.data());
+		return r;
+	}
+
+	// How big is the raster this window shows? ASKED, never guessed: `Scene::gnx/gny` is the flat
+	// 2x2 placeholder an image's texture rides on, so seeding the padding boxes from it wrote 2 (or
+	// 1) into them and every transform then ran at that size instead of the picture's own.
+	static bool askSize(Scene *s, int &nx, int &ny) {
+		QString ans;
+		if (call(s, "size", "selected", "", 0, 0, 1, false, 0.0, &ans) <= 0) return false;
+		const QStringList t = ans.trimmed().split(' ', Qt::SkipEmptyParts);
+		if (t.size() < 2) return false;
+		ny = t[0].toInt();  nx = t[1].toInt();
+		return (nx > 1 && ny > 1);
+	}
+
+	// Grid Tools > Spectrum: the quick entries, no dialog — the grid's own size, no trend removal.
+	static void runQuick(Scene *s, const char *op) {
+		if (!g_juliaFFTStuff) {
+			sceneLogError(s, "FFT: callback not registered (rebuild/restart needed?)");
+			return;
+		}
+		const int r = call(s, op, "selected", "", 0, 0, (sceneAlive(s) && s->baseGeog) ? 0 : 1,
+		                   false, 0.0);
+		if (r <= 0) sceneLogError(s, QString("FFT: %1 failed").arg(op));
+	}
+
+	void report(const QString &op, int r) {
+		if (r > 0) return;
+		QMessageBox::warning(dlg, "FFT tool", r < 0
+			? QString("FFT: callback not registered (rebuild/restart needed?).")
+			: QString("%1 failed — see the Errors console for the reason.").arg(op));
+	}
+
+	void run(const QString &op, double value = 0.0, bool needsGrid2 = false) {
+		const QString t1 = edGrid1 ? edGrid1->text().trimmed() : QString();
+		const QString g1 = (t1.isEmpty() || edGrid1->text() == inMemoryTag()) ? QString("selected") : t1;
+		QString g2;
+		if (needsGrid2) {
+			g2 = edGrid2 ? edGrid2->text().trimmed() : QString();
+			if (g2.isEmpty()) {
+				QMessageBox::warning(dlg, "FFT tool", "This operation needs a second grid (Grid2).");
+				return;
+			}
+		}
+		const int rows = edRows ? edRows->text().toInt() : 0;
+		const int cols = edCols ? edCols->text().toInt() : 0;
+		report(op, call(scn, op, g1, g2, rows, cols,
+		                cbCoords ? cbCoords->currentIndex() : 1,
+		                chkTrend && chkTrend->isChecked(), value));
+	}
+
+	static void openFor(QWidget *parent, Scene *s) {
+		auto it = registry().find(s);
+		if (it != registry().end() && it.value()->dlg) {
+			it.value()->unpark();               // it may be parked in Scene Objects, not just hidden
+			return;
+		}
+		auto *w = new FFTStuffDialog(parent, s);
+		if (!w->dlg) { delete w; return; }
+		registry().insert(s, w);
+		w->dlg->show();
+	}
+
+	// MINIMISE parks the dialog as a Scene Objects handle — the same shared parkTool/unparkTool pair
+	// Color Palettes and Load Bands use, so a parked FFT tool is the same kind of row with the same
+	// ways back (double-click, its checkbox, or "Show" in its menu).
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { unparkTool(scn, dlg); dlg->close(); }
+		};
+	}
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);   // undo the WM's minimise
+		dlg->hide();
+		parkTool(scn, dlg, "FFT tool", IC_Surface,
+		         "Minimised FFT tool — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);      // a handle nobody can see is no handle at all
+	}
+
+	explicit FFTStuffDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/fft_stuff.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("FFTStuffDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("FFTStuffDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		// The MINIMISE button has to be there for minimising to mean anything — it is what parks the
+		// dialog (parkNow above), the same gesture Color Palettes and Load Bands use.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("FFT stuff");
+		QDialog *d = dlg;
+		Scene *sc = scn;
+		// A dialog destroyed while parked must take its row with it, or Scene Objects keeps a handle
+		// pointing at nothing.
+		QObject::connect(d, &QObject::destroyed, d, [sc, d]() {
+			if (sceneAlive(sc)) unparkTool(sc, d);
+			registry().remove(sc);
+		});
+		// Qt reports the minimise AFTER the window manager has done it, so the restore+hide+park is
+		// deferred one event-loop turn — doing it inside the state-change handler fights the WM.
+		struct MinimiseParks : QObject {
+			FFTStuffDialog *fft;
+			MinimiseParks(QObject *parent, FFTStuffDialog *f) : QObject(parent), fft(f) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::WindowStateChange && fft && fft->dlg &&
+				    fft->dlg->windowState().testFlag(Qt::WindowMinimized)) {
+					FFTStuffDialog *f = fft;
+					QTimer::singleShot(0, f->dlg, [f]() { f->parkNow(); });
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new MinimiseParks(d, this));
+
+		edGrid1 = d->findChild<QLineEdit *>("edit_Grid1");
+		edGrid2 = d->findChild<QLineEdit *>("edit_Grid2");
+		edRows  = d->findChild<QLineEdit *>("edit_Nrows");
+		edCols  = d->findChild<QLineEdit *>("edit_Ncols");
+		edUD    = d->findChild<QLineEdit *>("edit_UDcont");
+		edDeriv = d->findChild<QLineEdit *>("edit_derivative");
+		edDirDeriv = d->findChild<QLineEdit *>("edit_dirDerivative");
+		listRows = d->findChild<QListWidget *>("listbox_nny");
+		listCols = d->findChild<QListWidget *>("listbox_nnx");
+		chkTrend = d->findChild<QCheckBox *>("checkbox_leaveTrend");
+		cbCoords = d->findChild<QComboBox *>("popup_GridCoords");
+
+		// The window's own grid is Grid1 — Mirone writes " In Memory array" in that box when it was
+		// handed one. The padding boxes then start at the grid's real size, with every larger good
+		// FFT number offered beside them (Rtp3DDialog::goodSizes — the ONE such table in this file).
+		if (!askSize(scn, nativeNx, nativeNy) && sceneAlive(scn)) {
+			nativeNx = scn->gnx;  nativeNy = scn->gny;      // no host answer: the scene's own grid
+		}
+		if (edGrid1 && nativeNx > 1) edGrid1->setText(inMemoryTag());
+		// The padding DEFAULT is the next good FFT number above the raster's own size, not the size
+		// itself — Mirone's `mboard([],nx,ny,0,0)` picks the first 5-smooth number past round(n*1.2)
+		// (utils/mboard.m), which is what `Rtp3DDialog::suggestedSize` computes. The grid's own size
+		// stays first in the list, so "no padding at all" is one click away.
+		const int padRows = (nativeNy > 1) ? Rtp3DDialog::suggestedSize(nativeNy) : 0;
+		const int padCols = (nativeNx > 1) ? Rtp3DDialog::suggestedSize(nativeNx) : 0;
+		if (edRows && padRows > 1) edRows->setText(QString::number(padRows));
+		if (edCols && padCols > 1) edCols->setText(QString::number(padCols));
+		Rtp3DDialog::fillSizeList(listRows, nativeNy, padRows);
+		Rtp3DDialog::fillSizeList(listCols, nativeNx, padCols);
+		tightenListRows(listRows);      // ONE text line per row (30_app.cpp) — never spacing/stylesheet
+		tightenListRows(listCols);
+		// Picking a size in a listbox fills the matching edit box, which is the only thing `run`
+		// reads — the list is a convenience, the number is the setting (Mirone's listbox_nnx_CB).
+		if (listRows && edRows)
+			QObject::connect(listRows, &QListWidget::currentTextChanged,
+			                 [this](const QString &t) { if (!t.isEmpty()) edRows->setText(t); });
+		if (listCols && edCols)
+			QObject::connect(listCols, &QListWidget::currentTextChanged,
+			                 [this](const QString &t) { if (!t.isEmpty()) edCols->setText(t); });
+		// CONFIRM: Mirone shouts because nothing downstream can tell degrees from metres apart.
+		// Seeded from what the window knows; the user overrides it.
+		if (cbCoords) cbCoords->setCurrentIndex((sceneAlive(scn) && scn->baseGeog) ? 0 : 1);
+
+		auto browse = [d](QLineEdit *le) {
+			const QString fn = QFileDialog::getOpenFileName(d, "Select grid", prefStartDir(),
+				"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*.*)");
+			if (fn.isEmpty() || !le) return;
+			rememberStartDir(fn);
+			le->setText(fn);
+		};
+		if (QToolButton *b = d->findChild<QToolButton *>("push_Grid1"))
+			QObject::connect(b, &QToolButton::clicked, [browse, this]() { browse(edGrid1); });
+		if (QToolButton *b = d->findChild<QToolButton *>("push_Grid2"))
+			QObject::connect(b, &QToolButton::clicked, [browse, this]() { browse(edGrid2); });
+
+		auto hook = [d](const char *name, std::function<void()> fn) {
+			if (QPushButton *b = d->findChild<QPushButton *>(name))
+				QObject::connect(b, &QPushButton::clicked, fn);
+		};
+		hook("push_powerSpectrum",      [this]() { run("power"); });
+		hook("push_autoCorr",           [this]() { run("autocorr"); });
+		hook("push_integrate",          [this]() { run("integrate"); });
+		hook("push_faa2geoid",          [this]() { run("faa2geoid"); });
+		hook("push_crossSpectra",       [this]() { run("crosspower", 0.0, true); });
+		hook("push_crossCorr",          [this]() { run("crosscorrel", 0.0, true); });
+		hook("push_radialPowerAverage", [this]() { run("radial"); });
+		hook("push_geoid2faa",          [this]() { run("geoid2faa"); });
+		hook("push_AnalyticSig",        [this]() { run("analytic"); });
+		hook("push_goUDcont",     [this]() { run("udcont", edUD ? edUD->text().toDouble() : 0.0); });
+		hook("push_goDerivative", [this]() { run("derivative", edDeriv ? edDeriv->text().toDouble() : 1.0); });
+		hook("push_goDirDerivative", [this]() { run("dirderivative", edDirDeriv ? edDirDeriv->text().toDouble() : 0.0); });
+
+		// NO widening pass here. Growing widgets in place keeps their x and pushes their right edge
+		// into the next column — which is exactly how "Go" ended up sitting on top of "Auto
+		// Correlation". The .ui already carries widths that fit Qt's text (see its header comment);
+		// the dialog is simply fixed at the size it was designed for.
+		d->setFixedSize(d->size());
+	}
+};
+
+// ============================================================================================
 // Load Bands (Image > Load Bands) — port of Mirone's src_figs/bands_list.m. Layout is
 // deps/ui/bands_list.ui, an absolute-positioned transcription of bands_list_LayoutFcn loaded with
 // QUiLoader; everything it knows about the file comes from Julia through g_juliaBands
@@ -16366,6 +16633,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// separator. Enabled only when the window really came from a multiband raster — Mirone hides the
 	// entry in that case (mirone.m:2631); the count comes from the same probe the dialog opens with.
 	mImage->addSeparator();
+	// FFT Spectrum, where mirone_uis.m:374 puts it — the SAME window as Mag/Grav > FFT tool (both
+	// are 'Allopts'); an image input is converted to grey on the Julia side, as Mirone does.
+	mImage->addAction("FFT Spectrum", [win, s]() { FFTStuffDialog::openFor(win, s); });
 	QAction *aBands = mImage->addAction("&Load Bands", [s]() { BandsListDialog::openFor(s); });
 	QAction *aBinarize = mImage->addAction("&Binarize Image…", [win, s]() {
 		auto it = g_binarizeDlgs.find(s);                    // hidden earlier? bring back the SAME one
@@ -16789,6 +17059,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// Reduction to the Pole / Total field to Components — port of Mirone's parker_stuff.m
 		// ('redPole'/'component' cases). Same dialog class (Rtp3DDialog), gated by mode: 0=RTP
 		// (component forced 0, radio group hidden), 1=Components (radio group picks North/East/Vert).
+		// The FFT tool — Mirone's Mag/Grav > FFT tool (mirone_uis.m:604). Same window as Image >
+		// FFT Spectrum below; both are 'Allopts' there.
+		mGphy->addAction("FFT tool", [win, s]() { FFTStuffDialog::openFor(win, s); });
 		mGphy->addAction("Reduction to the Pole", [win, s]() {
 			auto *w = new Rtp3DDialog(win, s, 0);
 			if (w->dlg) w->dlg->show();
@@ -17131,6 +17404,18 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// SAME operation behind both — "Automatic" is the tool with its dialog skipped: it asks for the
 	// grid's range and hands contourNiceLevels' guess straight to contourDrawLevels, which is exactly
 	// what the Contour Tool's "Add Common Charting Intervals" + Compute do by hand.
+	// Grid Tools > Spectrum — Mirone's three QUICK entries (mirone_uis.m:704-706): the same maths the
+	// FFT tool's buttons run, straight on the window's grid at its own size, with no dialog in
+	// between (GridToolsSectrum_CB's non-'Allopts' path, which never builds the window).
+	QMenu *mSpectrum = mGridTools->addMenu("Spectrum");
+	mSpectrum->addAction("Amplitude spectrum", [s]() { FFTStuffDialog::runQuick(s, "amplitude"); });
+	mSpectrum->addAction("Power spectrum",     [s]() { FFTStuffDialog::runQuick(s, "power"); });
+	mSpectrum->addAction("Autocorrelation",    [s]() { FFTStuffDialog::runQuick(s, "autocorr"); });
+	// The radial average belongs here too: it is the same engine on the same grid, and it is what
+	// one usually wants a spectrum FOR. Its answer is a curve, so it lands in the X,Y tool rather
+	// than as a new raster — same as the FFT tool's own button.
+	mSpectrum->addAction("Radial power average", [s]() { FFTStuffDialog::runQuick(s, "radial"); });
+
 	QMenu *mContours = mGridTools->addMenu("Contours");
 	auto needGrid = [win, s]() {
 		if (!s->surf || s->emptyStart || s->imageOnly) {

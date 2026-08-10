@@ -79,6 +79,7 @@ function _ensure_callbacks()
 	                    ("igrf-grid",   _register_igrf_grid),
 	                    ("igrf-file",   _register_igrf_file),
 	                    ("rtp3d",       _register_rtp3d),
+	                    ("fftstuff",    _register_fftstuff),
 	                    ("gravmag3d",   _register_gravmag3d),
 	                    ("grdgravmag3d",_register_grdgravmag3d),
 	                    ("grdredpol",   _register_grdredpol),

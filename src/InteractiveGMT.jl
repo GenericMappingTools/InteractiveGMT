@@ -73,6 +73,7 @@ include("transplant.jl") # Grid Tools > Transplant 2nd grid (port of Mirone util
 include("measure.jl")    # line length/azimuth + polygon area for the vector context menu (CRS-aware)
 include("info.jl")       # toolbar "i" button: grdinfo / gdalinfo report on the active grid/image
 include("rtp3d.jl")      # Geophysics > Magnetics: reduce-to-pole via 2-D FFT (port of Mirone utils/rtp3d.m)
+include("fftstuff.jl")   # Mag/Grav > FFT tool, Grid Tools > Spectrum, Image > FFT Spectrum (fft_stuff.m)
 include("gravmag3d.jl")  # Geophysics > Magnetics > gmtgravmag3d: anomaly of a 3-D body (Okabe)
 include("grdgravmag3d.jl") # Geophysics > Magnetics > grdgravmag3d: same anomaly from one or two grids
 include("grdredpol.jl")  # Geophysics > Magnetics > grdredpol: continuous (differential) RTP

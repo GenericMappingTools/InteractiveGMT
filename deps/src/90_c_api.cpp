@@ -1720,6 +1720,13 @@ GMTVTK_API void gmtvtk_set_rtp3d_callback(JuliaRtp3DFn fn) {
 	g_juliaRtp3D = fn;
 }
 
+// Register the FFT tool callback (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum).
+// fn(scene, params) with params = "op;grid1;grid2;newRows;newCols;coords;detrend;value" runs the
+// spectrum/correlation/field-transform asked for and adds its result to `scene`. nullptr to detach.
+GMTVTK_API void gmtvtk_set_fftstuff_callback(JuliaFFTStuffFn fn) {
+	g_juliaFFTStuff = fn;
+}
+
 // Register the gravmag3d Compute callback (Geophysics > Magnetics). fn(scene, params) with
 // params a newline-separated "key=value" block (see JuliaGravMag3DFn in 30_app.cpp) runs GMT.jl's
 // gravmag3d() and adds the anomaly grid to `scene`. nullptr to detach.
@@ -3575,6 +3582,71 @@ GMTVTK_API int gmtvtk_xyplot_screenshot_test(void *handle, const char *path) {
 	if (!p || !p->win || !path) return 0;
 	QPixmap pm = p->win->grab();
 	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
+}
+
+// test hook: open the FFT tool on `scene`, optionally CLICK one of its buttons by objectName (the
+// real handler runs, exactly as a user click would), and grab the dialog as a PNG so a test can see
+// the live layout instead of trusting the .ui. Returns 1 when the dialog opened and, if a button was
+// asked for, that button existed. `button`/`path` may be empty/null.
+GMTVTK_API int gmtvtk_fft_dialog_test(void *handle, const char *button, const char *path) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s) return 0;
+	FFTStuffDialog::openFor(nullptr, s);
+	auto it = FFTStuffDialog::registry().find(s);
+	if (it == FFTStuffDialog::registry().end() || !it.value()->dlg) return 0;
+	QDialog *d = it.value()->dlg;
+	d->show();
+	QApplication::processEvents();
+	int ok = 1;
+	if (button && *button) {
+		QPushButton *b = d->findChild<QPushButton *>(QString::fromUtf8(button));
+		if (!b) ok = 0;
+		else { b->click();  QApplication::processEvents(); }
+	}
+	if (path && *path) {
+		QApplication::processEvents();
+		if (!d->grab().save(QString::fromUtf8(path), "PNG")) ok = 0;
+	}
+	return ok;
+}
+
+// test hook: tell THIS dll that `scene` is alive. `g_scenes` — the set `sceneAlive` answers from —
+// is a file-static, so a window opened by the production gmtvtk.dll is invisible to this one, and
+// every alive-gated path (parkTool and everything else that refuses to touch a dead scene) bails
+// out here for a scene that is perfectly alive. The Scene struct is byte-identical between the two
+// dlls (same source, same compiler), so adopting the pointer is the same mirroring the callback
+// registrations already do.
+GMTVTK_API int gmtvtk_scene_adopt_test(void *scene) {
+	Scene *s = static_cast<Scene *>(scene);
+	if (!s) return 0;
+	g_scenes.insert(s);
+	return 1;
+}
+
+// test hook: minimise the FFT tool (which parks it in Scene Objects) or bring it back. `park` != 0
+// runs the same parkNow() the minimise button reaches; 0 runs unpark(). Returns 1 when the dialog is
+// hidden (parked) afterwards, 0 when it is visible — so a test can assert both directions.
+GMTVTK_API int gmtvtk_fft_park_test(void *handle, int park) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s) return -1;
+	auto it = FFTStuffDialog::registry().find(s);
+	if (it == FFTStuffDialog::registry().end() || !it.value()->dlg) return -1;
+	if (park) it.value()->parkNow();
+	else      it.value()->unpark();
+	QApplication::processEvents();
+	return it.value()->dlg->isVisible() ? 0 : 1;
+}
+
+// test hook: what the FFT tool's size boxes ended up holding (rows, cols) — the numbers every
+// transform is then run at. out[0] = rows, out[1] = cols.
+GMTVTK_API int gmtvtk_fft_sizes_test(void *handle, int *out2) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !out2) return 0;
+	auto it = FFTStuffDialog::registry().find(s);
+	if (it == FFTStuffDialog::registry().end() || !it.value()->dlg) return 0;
+	out2[0] = it.value()->edRows ? it.value()->edRows->text().toInt() : -1;
+	out2[1] = it.value()->edCols ? it.value()->edCols->text().toInt() : -1;
+	return 1;
 }
 
 // test hook: fire the Object Manager's "Show in Data Table" action for series `idx` (same call

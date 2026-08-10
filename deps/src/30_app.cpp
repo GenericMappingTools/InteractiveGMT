@@ -369,6 +369,15 @@ static JuliaIgrfFileFn g_juliaIgrfFile = nullptr;
 typedef int (*JuliaRtp3DFn)(void *scene, const char *params);
 static JuliaRtp3DFn g_juliaRtp3D = nullptr;
 
+// The FFT tool (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum). One request
+// string does every operation: "op;grid1;grid2;newRows;newCols;coords;detrend;value" -- see
+// _on_fftstuff (src/fftstuff.jl) for what each field means. Returns 1 on success, 0 on failure.
+// `out`/`cap` carry a text answer back: the "size" request replies "<rows> <cols>" — the size of
+// the raster the window is REALLY showing, which the host cannot know for an image (its scene
+// grid layer is the flat placeholder the texture rides on, not the picture's pixel count).
+typedef int (*JuliaFFTStuffFn)(void *scene, const char *params, char *out, int cap);
+static JuliaFFTStuffFn g_juliaFFTStuff = nullptr;
+
 // Gravity/Magnetic anomaly of a 3-D body (Geophysics > Magnetics > gmtgravmag3d) — GMT's gmtgravmag3d
 // (Okabe 1979) through GMT.jl's `gravmag3d` (src/gravmag3d.jl). The dialog (GravMag3DDialog,
 // 70_window.cpp, loads deps/ui/gravmag3d_dialog.ui) hands a NEWLINE-separated "key=value" block:
