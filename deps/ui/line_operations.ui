@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>LineOperations</class>
+ <widget class="QDialog" name="LineOperations">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>500</width>
+    <height>320</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Vector Operations</string>
+  </property>
+  <layout class="QVBoxLayout" name="vlay">
+   <property name="leftMargin"><number>8</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>8</number></property>
+   <property name="bottomMargin"><number>8</number></property>
+   <property name="spacing"><number>6</number></property>
+   <item>
+    <widget class="QLabel" name="lb_listTitle">
+     <property name="text">
+      <string>Lines in this window</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QListWidget" name="list_targets">
+     <property name="selectionMode">
+      <enum>QAbstractItemView::ExtendedSelection</enum>
+     </property>
+     <property name="toolTip">
+      <string>Every line / polyline / polygon of this window. Pick the one(s) to work on.</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="hlay_pick">
+     <item>
+      <widget class="QPushButton" name="push_pick">
+       <property name="text">
+        <string>Pick in view</string>
+       </property>
+       <property name="checkable">
+        <bool>true</bool>
+       </property>
+       <property name="toolTip">
+        <string>Click each line in the 3-D window to add it to the selection. The button stays down until you press it again.</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_rect">
+       <property name="text">
+        <string>Rect select</string>
+       </property>
+       <property name="checkable">
+        <bool>true</bool>
+       </property>
+       <property name="toolTip">
+        <string>Click one corner of a selection rectangle, then the opposite one.</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="sp_pick">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="lb_active">
+       <property name="text">
+        <string>NO ACTIVE LINE</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="hlay_cmd">
+     <item>
+      <widget class="QComboBox" name="popup_cmds">
+       <property name="minimumWidth"><number>210</number></property>
+       <property name="toolTip">
+        <string>Select one operation from this list</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="sp_cmd">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_apply">
+       <property name="text">
+        <string>Apply</string>
+       </property>
+       <property name="minimumWidth"><number>91</number></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLineEdit" name="edit_cmd">
+     <property name="toolTip">
+      <string>The command that Apply runs. Choosing an operation above fills in its template; edit the arguments here.</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="lb_result">
+     <property name="text">
+      <string/>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+     <property name="textInteractionFlags">
+      <set>Qt::TextSelectableByMouse</set>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="hlay_bottom">
+     <item>
+      <spacer name="sp_bottom">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_close">
+       <property name="text">
+        <string>Close</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -753,6 +753,19 @@ static void lineRunMeasure(Scene *s, const LineRef &lr, const char *fn, bool box
 	});
 }
 
+// The Scene Objects label of the element a LineRef points at, or "" when it has none (the Ctrl-drag
+// profile track). ONE resolver for both families, so a caller that has a LineRef and needs a NAME
+// never has to know which container the element lives in.
+static std::string lineElementName(Scene *s, const LineRef &lr) {
+	if (!s || !lr.actor) return std::string();
+	if (lr.kind == LK_Polygon) {
+		for (auto &pg : s->polys) if (pg.line.Get() == lr.actor) return pg.name;
+	} else if (lr.kind == LK_Overlay) {
+		for (auto &ov : s->overlays) if (ov.actor.Get() == lr.actor) return ov.name;
+	}
+	return std::string();
+}
+
 // "Extract profile…": sample the ACTIVE grid along this drawn line/polyline via GMT.grdtrack (the
 // host owns GMT) and show the (distance, elevation) graph in the bottom-dock Profile panel — the
 // grdtrack twin of the Ctrl+left-drag profiler. The line is densified in Julia by grid spacing, so
@@ -772,13 +785,19 @@ static void lineExtractProfile(Scene *s, const LineRef &lr) {
 	if (!lineWriteTable(s, polylines, /*threeD=*/false, tmp)) return;   // 2-D x y, '>' multisegment
 	// The grid to sample is the one ON DISPLAY (topmost visible), never the base one hidden under it —
 	// same answer the readout and the colorbar use (activeGridName -> resolveActiveGrid).
-	const QString cmd = QString("InteractiveGMT._extract_profile(Ptr{Cvoid}(UInt(%1)),raw\"%2\",raw\"%3\",raw\"%4\",raw\"%5\",raw\"%6\")")
+	//
+	// The line's OWN Scene Objects label goes across too: a line that Vector Operations' `thicken`
+	// has widened carries N+1 parallel tracks host-side, and the profile of a thickened line is the
+	// STACK of them (Mirone's StackTrack). Julia looks the name up and finds nothing for an ordinary
+	// line, so both cases go down this one function — no second "stacked profile" entry point.
+	const QString cmd = QString("InteractiveGMT._extract_profile(Ptr{Cvoid}(UInt(%1)),raw\"%2\",raw\"%3\",raw\"%4\",raw\"%5\",raw\"%6\",raw\"%7\")")
 							.arg((qulonglong)reinterpret_cast<uintptr_t>(s))
 							.arg(tmp)
 							.arg(QString::fromStdString(s->crsProj4))
 							.arg(prefDistAzimType())
 							.arg(prefMeasureUnits())
-							.arg(QString::fromStdString(activeGridName(s)));
+							.arg(QString::fromStdString(activeGridName(s)))
+							.arg(QString::fromStdString(lineElementName(s, lr)));
 	QTimer::singleShot(0, s->win, [s, cmd]() {
 		std::vector<char> buf(1 << 12);
 		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());

@@ -235,7 +235,7 @@ end
 # Preferences use — so distances match "Line length…". `dir` has no meaning for a profile.
 function _extract_profile(scene::Ptr{Cvoid}, path::String, proj4::String,
                           datype::AbstractString="Ellipsoidal", units::AbstractString="kilometers",
-                          gridname::AbstractString="")
+                          gridname::AbstractString="", elemname::AbstractString="")
 	# `gridname` is the Scene Objects label of the grid ON DISPLAY (the C++ side's activeGridName): with
 	# two grids loaded, grdtrack must sample the VISIBLE one, not the base grid buried under it. Empty
 	# label = the base surface is the visible one, which is also _find_object's first-of-kind fallback.
@@ -262,6 +262,25 @@ function _extract_profile(scene::Ptr{Cvoid}, path::String, proj4::String,
 	push!(xd, x[end]);  push!(yd, y[end])
 
 	z    = Float64.(GMT.grdtrack(G, hcat(xd, yd)).data[:, end])   # bilinear on the full-res grid
+	# A line that Vector Operations' `thicken` widened carries N+1 parallel tracks; its profile is
+	# their STACK (Mirone's StackTrack). The tracks are offsets of THIS line, so each is sampled at
+	# the same densified positions, shifted — one grdtrack per track, averaged ignoring the samples
+	# that fell off the grid. An ordinary line finds nothing here and the value above stands.
+	tracks = get(_LOP_THICK, (scene, String(elemname)), nothing)
+	if tracks !== nothing && length(tracks) > 1
+		acc = zeros(Float64, length(xd));  cnt = zeros(Int, length(xd))
+		for T in tracks
+			# Each track is the line shifted by a constant, so its offset is read off vertex 1.
+			ox = T[1, 1] - x[1]
+			oy = T[1, 2] - y[1]
+			zt = Float64.(GMT.grdtrack(G, hcat(xd .+ ox, yd .+ oy)).data[:, end])
+			for i in eachindex(zt)
+				isnan(zt[i]) && continue
+				acc[i] += zt[i];  cnt[i] += 1
+			end
+		end
+		z = [cnt[i] > 0 ? acc[i] / cnt[i] : NaN for i in eachindex(acc)]
+	end
 	geog = _measure_isgeog(seg, proj4)
 	inc, _        = _seg_dist_azim(xd, yd, geog; datype=datype)   # CRS-aware incremental distance
 	scale, ulab   = _length_scale(units, geog)
@@ -275,6 +294,7 @@ function _extract_profile(scene::Ptr{Cvoid}, path::String, proj4::String,
 	# Window title = "Profile <grid name>" and nothing longer (same wording the bottom-dock Profile
 	# panel's own "Open in X,Y plot tool" uses, ProfilePanel::setProfile).
 	ttl = isempty(gridname) ? "Profile" : "Profile " * String(gridname)
+	(tracks !== nothing && length(tracks) > 1) && (ttl *= " (stacked, $(length(tracks)) tracks)")
 	xyplot(dist, z; name=ttl, title=ttl, xlabel=xlab, ylabel="Elevation")
 	return nothing
 end

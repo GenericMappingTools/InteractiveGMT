@@ -673,6 +673,21 @@ static JuliaInterpolateFn g_juliaInterpolate = nullptr;
 // Returns 1 on success, 0 on failure. nullptr to detach.
 typedef int (*JuliaEulerFn)(void *scene, const char *params);
 static JuliaEulerFn g_juliaEuler = nullptr;
+
+// Vector Operations (Tools menu). Port of Mirone's src_figs/line_operations.m — a command line over
+// the window's line elements, with Mirone's own command language kept verbatim. LineOpsDialog
+// (70_window.cpp, loads deps/ui/line_operations.ui) hands a newline-separated "key=value" block to
+// Julia (_on_lineops, src/lineops.jl):
+//   cmd=<the whole command, e.g. "buffer 10K NPTS=24 SIDE=left">
+//   target<i>=<Scene Objects label>, one per selected line (absent for the ops that need no pick:
+//             pline, scale, GMT_DB, self-crossings, delete)
+// Results land in `scene` as new named elements (the additive ops) and/or replace what they consumed
+// (delete, group, line2patch, stitch) — Mirone's own placement, op by op. The tool's report comes
+// back through gmtvtk_lineops_result while the callback is still running (synchronous, UI thread).
+// Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaLineOpsFn)(void *scene, const char *params);
+static JuliaLineOpsFn g_juliaLineOps = nullptr;
+static std::string g_lineOpsResult;
 // Julia's answer for the tabs that have one (the summed pole, the interpolated pole table, the GMT
 // command "Show GMT command" asked for). Written from Julia through gmtvtk_euler_result while the
 // callback is still running — the call is synchronous on the UI thread, so the dialog simply clears

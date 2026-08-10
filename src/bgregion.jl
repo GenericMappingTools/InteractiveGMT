@@ -17,39 +17,55 @@
 
 # C callback: copt = "W/E/S/N/geographic" (geographic = "1"/"0"). Frame a blank white 2-D map over
 # those limits — in the calling window if it is empty, else in a fresh one; tag WGS84 when geographic.
+"""
+    _blank_canvas(scene, W, E, S, N, geog, title) -> Ptr{Cvoid}
+
+Frame a blank WHITE 2-D map over `[W,E]×[S,N]` and return the window that holds it: `scene` itself
+when it is an EMPTY launcher, a fresh window otherwise (pass `C_NULL` to always open a new one).
+
+THE one blank-canvas builder — File > Background region and Vector Operations' `scale` (which needs
+a [-0.5 0.5] figure for a GMT custom symbol) both come through here, never through a second copy of
+the promote call (SACRED_LAW.md: same operation, same function).
+"""
+function _blank_canvas(scene::Ptr{Cvoid}, W::Float64, E::Float64, S::Float64, N::Float64,
+                       geog::Bool, title::AbstractString)::Ptr{Cvoid}
+	E > W || error("need E > W (got W=$W E=$E)")
+	N > S || error("need N > S (got S=$S N=$N)")
+
+	# Reuse the calling window when it's an empty launcher (no surface yet); otherwise open a new
+	# one. promote_surface_h only repurposes an emptyStart scene — on a populated one it would add
+	# the white plane as an extra object, so gate explicitly on has_surface.
+	reuse = scene != C_NULL &&
+	        ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
+	h = reuse ? scene :
+	    ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "i'GMT  —  " * lowercase(String(title)))
+	h == C_NULL && error("could not open a window")
+
+	# Flat z=0 plane over the region, coloured white by a 2-node CPT (white at both ends).
+	zblank = zeros(Float32, 2, 2)
+	cz   = Float64[0.0, 1.0]
+	crgb = Float64[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # white, white (row-major RGB, 0..1)
+	ccall(_fn(:gmtvtk_promote_surface_h), Cint,
+	      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+	       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
+	      h, zblank, Cint(2), Cint(2), W, E, S, N, Cint(geog ? 1 : 0),
+	      cz, crgb, Cint(2), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), String(title), Cint(0))
+
+	if geog
+		ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
+		      h, "+proj=longlat +datum=WGS84 +no_defs", "", Cint(4326))   # reveals Geography menu
+	end
+	reuse || _register_fig!(QtEmpty(h))   # a reused window is already in the registry
+	_start_pump()
+	return h
+end
+
 function _on_bgregion(scene::Ptr{Cvoid}, copt::Cstring)::Cvoid
 	try
 		p = split(unsafe_string(copt), '/')
 		W, E, S, N = parse.(Float64, p[1:4])
 		geog = length(p) >= 5 && strip(p[5]) == "1"
-		E > W || error("Background region: need E > W (got W=$W E=$E)")
-		N > S || error("Background region: need N > S (got S=$S N=$N)")
-
-		# Reuse the calling window when it's an empty launcher (no surface yet); otherwise open a new
-		# one. promote_surface_h only repurposes an emptyStart scene — on a populated one it would add
-		# the white plane as an extra object, so gate explicitly on has_surface.
-		reuse = scene != C_NULL &&
-		        ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
-		h = reuse ? scene :
-		    ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "i'GMT  —  background region")
-		h == C_NULL && error("Background region: could not open a window")
-
-		# Flat z=0 plane over the region, coloured white by a 2-node CPT (white at both ends).
-		zblank = zeros(Float32, 2, 2)
-		cz   = Float64[0.0, 1.0]
-		crgb = Float64[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # white, white (row-major RGB, 0..1)
-		ccall(_fn(:gmtvtk_promote_surface_h), Cint,
-		      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
-		      h, zblank, Cint(2), Cint(2), W, E, S, N, Cint(geog ? 1 : 0),
-		      cz, crgb, Cint(2), C_NULL, Cint(0), Cint(0), Cint(0), Cint(1), "Background region", Cint(0))
-
-		if geog
-			ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
-			      h, "+proj=longlat +datum=WGS84 +no_defs", "", Cint(4326))   # reveals Geography menu
-		end
-		reuse || _register_fig!(QtEmpty(h))   # a reused window is already in the registry
-		_start_pump()
+		_blank_canvas(scene, W, E, S, N, geog, "Background region")
 	catch e
 		_viewer_log_error(scene, "Background region FAILED: $(sprint(showerror, e))")
 		@warn "bgregion: could not open the region" exception=(e,)

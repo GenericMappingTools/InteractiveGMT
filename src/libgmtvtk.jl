@@ -117,6 +117,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_serialize_polys, :gmtvtk_add_poly_full, :gmtvtk_serialize_faults, :gmtvtk_add_nested_rect,
 	:gmtvtk_serialize_rulers, :gmtvtk_add_ruler_h, :gmtvtk_set_vector_visible_h,
 	:gmtvtk_serialize_vector_h, :gmtvtk_vector_info_h, :gmtvtk_set_euler_callback, :gmtvtk_euler_result,
+	:gmtvtk_set_lineops_callback, :gmtvtk_lineops_result, :gmtvtk_vector_names_h, :gmtvtk_remove_vector_h,
 	:gmtvtk_compute_euler_progress,
 	:gmtvtk_refresh_fault_planes, :gmtvtk_overlay_style_h, :gmtvtk_set_overlay_style_h,
 	:gmtvtk_set_igrf_point_callback, :gmtvtk_set_igrf_grid_callback, :gmtvtk_set_igrf_file_callback,

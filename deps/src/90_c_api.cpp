@@ -2120,6 +2120,86 @@ GMTVTK_API void gmtvtk_euler_result(const char *txt) {
 	g_eulerResult = (txt && txt[0]) ? txt : "";
 }
 
+// Register the Vector Operations Apply callback (Tools menu, port of Mirone's line_operations.m).
+// fn(scene, params) with the "key=value" block described in 30_app.cpp. Returns 1/0. nullptr detaches.
+GMTVTK_API void gmtvtk_set_lineops_callback(JuliaLineOpsFn fn) {
+	g_juliaLineOps = fn;
+}
+
+// Julia hands the Vector Operations dialog its report ("buffer: 3 zone(s) added", or the failure).
+// Written from inside the callback; the dialog clears this before calling and reads it right after —
+// the same synchronous channel gmtvtk_euler_result is.
+GMTVTK_API void gmtvtk_lineops_result(const char *txt) {
+	g_lineOpsResult = (txt && txt[0]) ? txt : "";
+}
+
+// Every LINE element of the window, one per output line, as
+//     name \t kind \t closed \t npts \t r \t g \t b \t width \t style
+// with kind 0 = imported/plotted line overlay, 1 = drawn polygon/polyline. The SAME set the Vector
+// Operations dialog lists (LineOpsDialog::refillTargets) and the same one gmtvtk_serialize_vector_h
+// can answer for — a host-side op that works on "all the lines" (delete DUP, scale, GMT_DB) needs
+// the list without having a dialog in front of it. Faults, slip patches and nested-grid rectangles
+// are NOT lines to operate on, exactly as the dialog's own filter has it. Two-pass buffer.
+GMTVTK_API int gmtvtk_vector_names_h(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	if (sceneAlive(s)) {
+		// NOT called `emit`: Qt #defines that to nothing, so `auto emit = …` loses its name.
+		auto addRow = [&o](const std::string &name, int kind, int closed, int npts,
+		                   vtkActor *a, int style) {
+			double c[3] = { 0, 0, 0 }; double lw = 1.0;
+			if (a) { a->GetProperty()->GetColor(c); lw = a->GetProperty()->GetLineWidth(); }
+			std::string nm = name;
+			for (char &ch : nm) if (ch == '\t' || ch == '\n' || ch == '\r') ch = ' ';
+			o += nm;
+			char t[192];
+			snprintf(t, sizeof(t), "\t%d\t%d\t%d\t%.6g\t%.6g\t%.6g\t%.6g\t%d\n",
+			         kind, closed, npts, c[0], c[1], c[2], lw, style);
+			o += t;
+		};
+		for (auto &pg : s->polys) {
+			if (pg.isFault || pg.isSlip || pg.isMeca || pg.nestKind != 0) continue;
+			addRow(pg.name, 1, pg.closed ? 1 : 0, (int)pg.v.size(), pg.line.Get(), 0);
+		}
+		for (auto &ov : s->overlays) {
+			if (ov.mode != 1) continue;                       // point layers are not lines
+			int npts = 0;
+			if (vtkPolyData *pd = ov.baseLine) {
+				if (vtkPoints *p = pd->GetPoints()) npts = (int)p->GetNumberOfPoints();
+			}
+			addRow(ov.name, 0, 0, npts, ov.actor.Get(), (int)ov.lineStyle);
+		}
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
+// Remove ONE named vector element, whichever family it lives in — the removal its OWN Scene Objects
+// row performs, never a second one (polygonDelete for a drawn shape, overlayDelete for a line/point
+// overlay: the two functions the unified line menu's "Delete" already calls). Returns how many
+// elements answered to that name.
+GMTVTK_API int gmtvtk_remove_vector_h(void *handle, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !name[0]) return 0;
+	const std::string want = name;
+	int n = 0;
+	// Collect first, delete after: both deleters mutate the very vectors being walked.
+	std::vector<vtkActor *> polyKill, ovlKill;
+	for (auto &pg : s->polys)
+		if (pg.name == want && pg.line) polyKill.push_back(pg.line.Get());
+	for (auto &ov : s->overlays)
+		if (ov.name == want && ov.actor) ovlKill.push_back(ov.actor.Get());
+	for (vtkActor *a : polyKill) { polygonDelete(s, a); ++n; }
+	for (vtkActor *a : ovlKill)  { overlayDelete(s, a);  ++n; }
+	if (n) {
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);   // see gmtvtk_add_meca_h
+	}
+	return n;
+}
+
 // Compute Euler pole: the brute-force search runs on a Julia task, so its progress cannot come back
 // as the return value of a callback. It is pushed here instead — `cur` of the `nmax` longitudes
 // done (a negative `cur` means the run has ended) and `txt`, the tab-separated pole lon, lat,

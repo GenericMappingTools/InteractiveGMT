@@ -108,6 +108,7 @@ function _ensure_callbacks()
 	                    ("interpolate", _register_interpolate),
 	                    ("project",     _register_project),
 	                    ("euler",       _register_euler),
+	                    ("lineops",     _register_lineops),
 	                    ("seismicity",  _register_seismicity),
 	                    ("faultgeom",   _register_faultgeom),
 	                    ("elastic",     _register_elastic),

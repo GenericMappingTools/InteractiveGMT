@@ -10335,6 +10335,314 @@ public:
 };
 
 // ============================================================================================
+// Vector Operations (Tools menu) — port of Mirone's src_figs/line_operations.m.
+//
+// Mirone's tool is a COMMAND LINE over the figure's line objects: a popup of ~20 operations fills a
+// free-text box with the operation's template, the user edits its arguments and hits Apply. That
+// language is kept verbatim (same names, same argument spellings, same tooltips), because it IS the
+// tool's interface. What is added on this side is the line PICKER every other iGMT vector dialog
+// already has — the multi-select list plus "Pick in view"/"Rect select" — so choosing what to work
+// on is done the one way this app does it (SACRED_LAW: same operation, same function; the picking
+// code here is EulerDialog's, verbatim).
+//
+// Everything the operations actually DO lives in Julia (src/lineops.jl) behind
+// gmtvtk_set_lineops_callback; this is only the dialog, loaded at RUNTIME via QUiLoader from
+// deps/ui/line_operations.ui.
+class LineOpsDialog;
+// One dialog per window — re-picking the menu entry brings THAT one back (unpark), never a second.
+static std::map<Scene *, LineOpsDialog *> g_lineOpsDlgs;
+
+class LineOpsDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	bool reallyClose = false;
+	QListWidget *targetList = nullptr;
+	QPushButton *pickBtn = nullptr, *rectBtn = nullptr;
+	QLabel *activeLbl = nullptr, *resultLbl = nullptr;
+	QComboBox *cmdBox = nullptr;
+	QLineEdit *cmdEdit = nullptr;
+
+	// The popup's entries and the tooltip each one carries — Mirone's `popup_cmds` and `handles.ttips`,
+	// word for word (the wording is the documentation of the command language).
+	static const QStringList &cmdTemplates() {
+		static const QStringList v = {
+			"Choose command", "bezier N", "buffer DIST", "bspline", "closing DIST", "cspline N RES",
+			"delete DUP|SMALL N|SPUR", "group lines", "line2patch", "polysimplify TOL", "polyunion",
+			"polyintersect", "polyxor", "polyminus", "pline [x1 ..xn; y1 .. yn]", "scale to [-0.5 0.5]",
+			"stitch TOL", "thicken N", "toRidge 5", "self-crossings", "hand2Workspace", "GMT_DB"
+		};
+		return v;
+	}
+	static const QStringList &cmdTips() {
+		static const QStringList v = {
+			"Select one operation from this list",
+			"Fit a Bezier curve to a polyline.\nReplace N by the number of nodes of the Bezier curve [default 100].",
+			"Compute buffer zones around polylines.\nReplace DIST by the width of the buffer zone.\n"
+			"Optionally, if the map is in geogs, append M, K or N to DIST\nto indicate Meters, Kilometers or NMiles (e.g. 10M)\n\n"
+			"Optionally you can append NPTS, DIR or GEOD options. Where:\n"
+			"NPTS -> Number of points used to construct the circles\naround each polygon vertex. If omitted, default is 13.\n\n"
+			"DIR -> 'in', 'out' or 'both' selects whether to plot\ninside, outside or both delineations of the buffer zone.\n\n"
+			"GEOD -> 'geod' uses an ellipsoidal model (WGS-84).\n"
+			"Use SIDE=left to pick only the left one-sided buffer. Similar for\nSIDE=right. These options only apply to non-closed lines and geogs.\n"
+			"Use BASE=0 or TOP=0 to have flat (non-curved) extremities.",
+			"Smooth the line with a cubic SMOOTHING spline (csaps).\nThe smoothing parameter defaults to csaps's own estimate;\n"
+			"append a number in [0,1] to try another (e.g. bspline 0.001).",
+			"Compute the equivalent of the image processing 'Closing' operation,\nwhich consists in buffer out followed by buffer in by the same amount.\n"
+			"Replace DIST by the width of the buffer zone.\nFor further options to provide finer control, see the help of the buffer operation.",
+			"Smooth the line with a cardinal spline.\nReplace N by the downsampling rate. For example an N of 10\n"
+			"will take one every other 10 vertices of the polyline.\nThe optional RES argument is the number of subdivisions\n"
+			"between consecutive data points [default 10].",
+			"Delete duplicate lines OR delete lines with less than N\nvertices, OR remove spurs from lines. For the first case use\n"
+			"delete DUP\nFor the second case (N is the line's minimum number of vertices)\ndelete SMALL 10\n"
+			"For the third case (here you can also select the line to work on)\ndelete SPUR",
+			"Group lines that have exactly the same pen into ONE multi-segment\nline. Visually identical, but the window then carries one\n"
+			"element instead of hundreds.",
+			"Convert line objects into patches. Patches, for example, accept a fill colour.",
+			"Approximate the polygonal curve with the desired precision\nusing the Douglas-Peucker algorithm (gmtsimplify).\n"
+			"Replace TOL by the desired approximation accuracy.\nWhen data is in geogs, TOL is the tolerance in km.",
+			"Performs the boolean operation of Union on the selected polygons.",
+			"Performs the boolean operation of Intersection on the selected polygons.",
+			"Performs the boolean operation of exclusive OR on the selected polygons.",
+			"Performs the boolean operation of subtraction on the selected polygons.",
+			"Draw a polyline with vertices defined by coords [x1 xn; y1 yn].\nNote: you must use the brackets and semi-colon notation as above.\n"
+			"Example vector: [1 1.5 3.1; 2 4 8.4]",
+			"Scale every line of this window to the [-0.5 0.5] interval,\nin a new window — the frame a GMT custom symbol lives in.",
+			"Stitch in cascade the lines that are closer than TOL to the selected line.\n"
+			"Replace TOL by the maximum distance for lines to still be stitched.\n"
+			"If removed or left as the string \"TOL\" it defaults to Inf.\n"
+			"Optionally, if the map is in geogs, append M, K or N to TOL to indicate\nMeters, Kilometers or NMiles (e.g. 10M)\n\n"
+			"Append ALL to the command to stitch all lines without needing to select one.\n"
+			"Use SORT to instead re-order one line's vertices by proximity.",
+			"Thicken the line object to a thickness corresponding to N grid cells.\n"
+			"The interest of this comes when used through the \"Extract profile\"\noption: the thickened line stores N + 1 parallel lines, roughly one\n"
+			"grid cell apart, and the profile is interpolated on all of them and\nstacked (averaged) in the end.",
+			"Calculate a new line with vertices sitting on top of nearby ridges.\n"
+			"The parameter N searches for ridges only inside a sub-region\n2Nx2N centred on the current vertex. Default is 5.",
+			"Detect self-crossings of all plotted lines/patches OR of the selected line.",
+			"Send the picked line(s) to the Julia session as Main.lineHandles.",
+			"Update the GMT coastlines / rivers / boundaries on display with the\nordinary polylines also in this window. Just load the updating\nlines and hit Apply."
+		};
+		return v;
+	}
+
+	explicit LineOpsDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/line_operations.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("LineOpsDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("LineOpsDialog: QUiLoader failed to load the .ui"); return; }
+		// WA_DeleteOnClose deliberately NOT set: the X PARKS this dialog (the picked lines and the
+		// typed command have to survive being closed), same contract as EulerDialog.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+		g_lineOpsDlgs[scn] = this;
+
+		struct CloseParks : QObject {
+			LineOpsDialog *ed;
+			CloseParks(QObject *parent, LineOpsDialog *e) : QObject(parent), ed(e) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && ed && !ed->reallyClose && sceneAlive(ed->scn)) {
+					e->ignore();
+					vectorPickDisarm(ed->scn);
+					if (ed->pickBtn) { QSignalBlocker b(ed->pickBtn); ed->pickBtn->setChecked(false); }
+					if (ed->rectBtn) { QSignalBlocker b(ed->rectBtn); ed->rectBtn->setChecked(false); }
+					ed->dlg->hide();
+					LineOpsDialog *p = ed;
+					parkTool(p->scn, p->dlg, "Vector Operations", IC_Line,
+					         "Closed Vector Operations dialog — double-click to bring it back, click for Show / Delete",
+					         [p]() { p->unpark(); }, p->parkedMenu());
+					unfoldSceneObjects(ed->scn);
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		dlg->installEventFilter(new CloseParks(dlg, this));
+
+		targetList = d->findChild<QListWidget *>("list_targets");
+		pickBtn    = d->findChild<QPushButton *>("push_pick");
+		rectBtn    = d->findChild<QPushButton *>("push_rect");
+		activeLbl  = d->findChild<QLabel *>("lb_active");
+		resultLbl  = d->findChild<QLabel *>("lb_result");
+		cmdBox     = d->findChild<QComboBox *>("popup_cmds");
+		cmdEdit    = d->findChild<QLineEdit *>("edit_cmd");
+		tightenListRows(targetList);
+		refillTargets();
+
+		if (cmdBox) {
+			cmdBox->addItems(cmdTemplates());
+			cmdBox->setToolTip(cmdTips().value(0));
+			QObject::connect(cmdBox, QOverload<int>::of(&QComboBox::currentIndexChanged), d, [this](int i) {
+				const QString tip = cmdTips().value(i);
+				if (cmdBox) cmdBox->setToolTip(tip);
+				if (!cmdEdit) return;
+				cmdEdit->setText(i == 0 ? QString() : cmdTemplates().value(i));
+				cmdEdit->setToolTip(i == 0 ? QString() : tip);
+			});
+		}
+
+		if (pickBtn) QObject::connect(pickBtn, &QPushButton::toggled, d,
+			[this, d](bool on) { armPick(d, on ? 1 : 0); });
+		if (rectBtn) QObject::connect(rectBtn, &QPushButton::toggled, d,
+			[this, d](bool on) { armPick(d, on ? 2 : 0); });
+		if (targetList) QObject::connect(targetList, &QListWidget::itemSelectionChanged, d,
+			[this]() { setActiveLabel(); });
+		setActiveLabel();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_apply"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))
+			QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			if (scn && sceneAlive(scn)) {
+				vectorPickDisarm(scn);
+				scn->vectorPickCB = nullptr;
+			}
+			delete this;
+		});
+	}
+
+	// Drop the registry entry BY VALUE: when the viewer window dies the Scene may already be gone.
+	~LineOpsDialog() {
+		for (auto it = g_lineOpsDlgs.begin(); it != g_lineOpsDlgs.end(); )
+			it = (it->second == this) ? g_lineOpsDlgs.erase(it) : std::next(it);
+	}
+
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+		refillTargets();
+		setActiveLabel();
+	}
+
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();
+			}
+		};
+	}
+
+	// mode: 0 = off, 1 = click-to-add, 2 = rubber-band rectangle. EulerDialog::armPick verbatim —
+	// one picking behaviour for every dialog that picks lines.
+	void armPick(QDialog *d, int mode) {
+		if (!scn || !sceneAlive(scn)) return;
+		if (mode == 0) { vectorPickDisarm(scn); return; }
+		if (pickBtn && mode != 1 && pickBtn->isChecked()) { QSignalBlocker b(pickBtn); pickBtn->setChecked(false); }
+		if (rectBtn && mode != 2 && rectBtn->isChecked()) { QSignalBlocker b(rectBtn); rectBtn->setChecked(false); }
+		QPointer<QDialog> guard(d);
+		scn->vectorPickCB = [this, guard, mode](const std::string &names) {
+			if (!guard) return;
+			if (mode == 2 && rectBtn) { QSignalBlocker b(rectBtn); rectBtn->setChecked(false); }
+			if (names.empty()) { setActiveLabel(); return; }
+			refillTargets();
+			if (targetList) {
+				for (const QString &nm : QString::fromStdString(names).split('\n', Qt::SkipEmptyParts))
+					for (QListWidgetItem *it : targetList->findItems(nm, Qt::MatchExactly))
+						it->setSelected(true);
+			}
+			setActiveLabel();
+		};
+		scn->vectorPickPrevShape = (int)scn->polyShape;
+		scn->vectorPickMode = mode;
+		scn->vectorPickDrawing = false;
+		if (scn->widget) scn->widget->setCursor(Qt::CrossCursor);
+		if (scn->win) scn->win->statusBar()->showMessage(
+			mode == 1 ? "Click each line to work on (the button stays down until you press it again)"
+			          : "Click one corner of the selection rectangle, then the opposite one", 5000);
+	}
+
+	// Every LINE element of the window, whichever door it came in through. Same filter (and same
+	// order) as the host's gmtvtk_vector_names_h, so the list and the "all lines" ops agree.
+	void refillTargets() {
+		if (!targetList || !scn || !sceneAlive(scn)) return;
+		QStringList keep;
+		for (QListWidgetItem *it : targetList->selectedItems()) keep << it->text();
+		QSignalBlocker block(targetList);
+		targetList->clear();
+		for (auto &pg : scn->polys) {
+			if (pg.isFault || pg.isSlip || pg.isMeca || pg.nestKind != 0) continue;
+			targetList->addItem(QString::fromStdString(pg.name));
+		}
+		for (auto &ov : scn->overlays) {
+			if (ov.mode != 1) continue;
+			targetList->addItem(QString::fromStdString(ov.name));
+		}
+		tightenListRows(targetList);
+		for (const QString &nm : keep)
+			for (QListWidgetItem *it : targetList->findItems(nm, Qt::MatchExactly))
+				it->setSelected(true);
+	}
+
+	QStringList selectedTargets() const {
+		QStringList v;
+		if (targetList) for (QListWidgetItem *it : targetList->selectedItems()) v << it->text();
+		return v;
+	}
+
+	void setActiveLabel() {
+		if (!activeLbl) return;
+		const QStringList t = selectedTargets();
+		if (t.isEmpty()) {
+			activeLbl->setText("NO ACTIVE LINE");
+			activeLbl->setStyleSheet("color: rgb(200, 0, 0); font-weight: bold;");
+		} else {
+			activeLbl->setText(t.size() == 1 ? "GOT A LINE TO WORK WITH: " + t.first()
+			                                 : QString("GOT %1 LINES TO WORK WITH").arg(t.size()));
+			activeLbl->setStyleSheet("color: rgb(0, 140, 0); font-weight: bold;");
+		}
+	}
+
+	void run(QDialog *d) {
+		if (!g_juliaLineOps) {
+			QMessageBox::warning(d, "Vector Operations",
+			                     "Vector Operations: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		const QString cmd = cmdEdit ? cmdEdit->text().trimmed() : QString();
+		if (cmd.isEmpty()) {
+			QMessageBox::warning(d, "Vector Operations", "Apply WHAT????");
+			return;
+		}
+		QStringList kv;
+		kv << "cmd=" + cmd;
+		const QStringList targets = selectedTargets();
+		for (int i = 0; i < targets.size(); ++i) kv << QString("target%1=").arg(i + 1) + targets[i];
+		g_lineOpsResult.clear();
+		const bool ok = g_juliaLineOps(scn, kv.join("\n").toUtf8().constData()) != 0;
+		// The window's element list has almost certainly changed — every op adds and/or removes.
+		refillTargets();
+		setActiveLabel();
+		const QString rep = QString::fromStdString(g_lineOpsResult);
+		if (resultLbl) {
+			resultLbl->setText(rep);
+			resultLbl->setStyleSheet(ok ? "color: rgb(0, 110, 0);" : "color: rgb(190, 0, 0);");
+		}
+		if (!ok && !rep.isEmpty()) QMessageBox::warning(d, "Vector Operations", rep);
+	}
+};
+
+// ============================================================================================
 // Compute Euler pole (Plates menu) — port of Mirone's src_figs/compute_euler.m. Fits the pole that
 // takes one isochron onto its conjugate, either by the brute-force search over a box of poles or by
 // the Hellinger method. The maths lives in Julia (src/computeeuler.jl + GMT.jl's hellinger_auto);
@@ -17307,6 +17615,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		warmupTool("empilhador");
 		EmpilhadorDialog *e = new EmpilhadorDialog(win, s);
 		if (e->dlg) e->dlg->show();
+	});
+	// "Vector Operations" (port of Mirone's Tools > Vector Operations, src_figs/line_operations.m):
+	// a command line over the window's line elements — buffers, splines, boolean polygon ops,
+	// simplify, stitch, ridge snapping … Reuses THE dialog of this window when there already is one
+	// (parked or open), never a second copy, like every other per-window tool.
+	mTools->addAction("Vector Operations", [win, s]() {
+		auto it = g_lineOpsDlgs.find(s);
+		if (it != g_lineOpsDlgs.end()) { it->second->unpark(); return; }
+		warmupTool("lineops");
+		auto *w = new LineOpsDialog(win, s);
+		if (w->dlg) w->dlg->show();
 	});
 	// "Project" (port of Mirone's Projections > GDAL project): reproject the window's raster with
 	// gdalwarp. Needs something to warp, so it is offered only with a raster on screen.
