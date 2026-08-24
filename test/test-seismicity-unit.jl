@@ -45,6 +45,55 @@ end
 	@test IG._seis_bound(IG._nswing_parse(""), "e", false) ==  Inf
 end
 
+@testitem "seismicity: camera region -> legal query box" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	# A fitted world view is WIDER than the map; a full turn (or more) collapses to the whole world.
+	@test IG._seis_norm_region(-180.5, 180.5, -90.5, 90.5) == (-180.0, 180.0, -90.0, 90.0)
+	@test IG._seis_norm_region(-400.0, 400.0, -10.0, 10.0) == (-180.0, 180.0, -10.0, 10.0)
+	# A Pacific window past +180 shifts WHOLE into the negative half (never folded to the Atlantic).
+	@test IG._seis_norm_region(150.0, 210.0, -60.0, 60.0) == (-210.0, -150.0, -60.0, 60.0)
+	@test IG._seis_norm_region(-12.0, -6.0, 35.0, 39.0)   == (-12.0, -6.0, 35.0, 39.0)   # untouched
+	# …and the filter then matches the catalog's own -180…180 longitudes against that shifted box.
+	@test IG._seis_inlon(175.0, -210.0, -150.0)            # 175E  == -185, inside
+	@test IG._seis_inlon(-170.0, -210.0, -150.0)
+	@test !IG._seis_inlon(0.0, -210.0, -150.0)
+	@test !IG._seis_inlon(NaN, -180.0, 180.0)
+	@test IG._seis_region(IG._nswing_parse("region=150.0/210.0/-60.0/60.0")) == (-210.0, -150.0, -60.0, 60.0)
+end
+
+@testitem "seismicity: USGS query URL" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	u = IG._seis_usgs_url(IG._nswing_parse(""), -180.0, 180.0, -90.0, 90.0)
+	@test occursin("orderby=time&", u) && !occursin("time-asc", u)   # newest FIRST: the cap drops old
+	@test occursin("limit=$(IG._SEIS_USGS_LIMIT)", u)                # explicit, or a big query 400s
+	@test occursin("minmagnitude=3.0", u)                            # "Current seismicity" default
+	@test !occursin("starttime", u) && !occursin("endtime", u)       # no bounds -> service's last 30 days
+	d = IG._nswing_parse("syear=2024\nsmonth=1\nsday=1\neyear=2024\nemonth=1\neday=15\nmagmin=4\nmagmax=8\ndepmin=10\ndepmax=700")
+	u2 = IG._seis_usgs_url(d, -12.0, -6.0, 35.0, 39.0)
+	@test occursin("starttime=2024-01-01", u2)
+	@test occursin("endtime=2024-01-15T23:59:59", u2)                # the WHOLE end day, not midnight
+	@test occursin("minmagnitude=4.0", u2) && occursin("maxmagnitude=8.0", u2)
+	@test occursin("mindepth=10.0", u2) && occursin("maxdepth=700.0", u2)
+	@test occursin("minlongitude=-12.0", u2) && occursin("maxlatitude=39.0", u2)
+end
+
+@testitem "seismicity: USGS csv field parsing (no file, no CSV reader)" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	@test IG._seis_isotime("2026-08-24T00:00:48.085Z") ==
+	      GMT.Dates.datetime2unix(GMT.Dates.DateTime(2026, 8, 24, 0, 0, 48, 85))
+	@test IG._seis_isotime("2026-08-24T00:00:48") ==
+	      GMT.Dates.datetime2unix(GMT.Dates.DateTime(2026, 8, 24, 0, 0, 48))
+	@test isnan(IG._seis_isotime(""))            # a row that carries no time never kills the catalog
+	@test isnan(IG._seis_isotime("not a date"))
+	@test IG._seis_num(" 4.5 ") == 4.5 && IG._seis_num("-2.84") == -2.84
+	@test isnan(IG._seis_num("")) && isnan(IG._seis_num("null"))
+	# The five wanted columns all come BEFORE the service's one quoted field, so a plain split is exact.
+	rec = "2026-08-23T23:20:35.049Z,52.0776,176.4797,7.956,5,mb,62,109,1.298,0.97,us,us6000tn19," *
+	      "2026-08-24T00:00:48.085Z,\"239 km ESE of Attu Station, Alaska\",earthquake"
+	f = split(rec, ','; limit=6)
+	@test IG._seis_num(f[3]) == 176.4797 && IG._seis_num(f[4]) == 7.956 && IG._seis_num(f[5]) == 5.0
+end
+
 @testitem "seismicity: plain-column readers" tags=[:unit, :fast] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	mktempdir() do dir

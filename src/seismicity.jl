@@ -1,8 +1,8 @@
 # seismicity.jl — Geophysics > Seismology > Seismicity (port of Mirone's earthquakes.m).
 #
 # The C++ dialog (PlotSeismicityDialog, 70_window.cpp) hands a newline-separated "key=value"
-# block to `_on_seismicity`. The catalog is read by format — the USGS web query goes through
-# GMT.seismicity (the one query builder, no hand-rolled URL), ISF through GMT.gmtisf, the two
+# block to `_on_seismicity`. The catalog is read by format — the USGS web query is built, downloaded
+# and read here (`_seis_usgs`, and see the reasons written there), ISF through GMT.gmtisf, the two
 # plain-column layouts and Posit through GMT.gmtread — then filtered by date / magnitude /
 # depth / visible map region and stamped as screen-constant symbol layers (add_symbols!, the
 # same primitive the Geography point datasets use): one layer per used magnitude-interval ×
@@ -31,20 +31,94 @@ _seis_bucket(edges, v) = 1 + count(e -> v >= e, edges)
 # column copies); t = Unix time in seconds (NaN = unknown). Read errors propagate to the one
 # try/catch in _on_seismicity, which reports them in the viewer console.
 
-# USGS web query for the visible region. Only user-given bounds are passed on; GMT.seismicity's
-# own defaults (last 30 days, minmagnitude=3) then apply — that IS "Current seismicity".
+# The USGS FDSN event service. The query is built and downloaded HERE instead of through
+# GMT.seismicity, because the bounds that arrive here come straight off the CAMERA and that is the
+# one caller GMT.seismicity's region handling cannot serve. Measured, all three fatal:
+#   * a fitted world view is a little WIDER than the map (-180.5/180.5/-90.5/90.5). GMT.seismicity's
+#     ">180" wrap branch rewrites that to minlongitude=-360.5 / minlatitude=-90.5, which the service
+#     rejects outright — HTTP 400, no catalog at all;
+#   * the same branch turns a legitimate Pacific window (150/210) into -30/30 — the ATLANTIC. The
+#     answer then fails this file's own region filter: "no events match" over a map full of quakes;
+#   * `orderby=time-asc` with no `limit` is the "doesn't download the most recent data" itself: the
+#     service caps an answer at 20000 records and the cap keeps the FRONT of the ordering, so an
+#     overrunning query drops the RECENT end (and, with no explicit limit, 400s instead of answering).
+#     Newest-first + an explicit limit drops the OLD end, which is the harmless one.
+# The answer is downloaded INTO MEMORY and parsed there. No file is written anywhere — not a temp
+# file, and not GMT.seismicity's "_query.csv" in whatever directory the app happened to start in.
+# It needs no CSV reader either: the five columns wanted (time, latitude, longitude, depth, mag) are
+# the FIRST five of the service's fixed csv layout and all of them come BEFORE its one quoted field
+# (`place`, column 14), so a plain comma split is exact.
+const _SEIS_USGS_URL    = "https://earthquake.usgs.gov/fdsnws/event/1/query.csv"
+const _SEIS_USGS_LIMIT  = 20000       # the service's own ceiling on one answer
+const _SEIS_USGS_MAGMIN = 3.0         # "Current seismicity" default when the dialog names none
+
+# The query. Only the bounds the dialog actually carries are sent; the service's own defaults (the
+# last 30 days) then apply, which is what makes the menu entry "recent" seismicity. An `endtime`
+# given as a bare date means MIDNIGHT that morning and would throw away the whole of the end day —
+# the dialog's end date means "up to the end of that day", so it is sent as one.
+function _seis_usgs_url(d, W, E, S, N)::String
+	io = IOBuffer()
+	print(io, _SEIS_USGS_URL, "?format=csv&orderby=time&limit=", _SEIS_USGS_LIMIT)
+	print(io, "&minlongitude=", W, "&maxlongitude=", E, "&minlatitude=", S, "&maxlatitude=", N)
+	print(io, "&minmagnitude=", something(tryparse(Float64, _get(d, "magmin")), _SEIS_USGS_MAGMIN))
+	m1 = tryparse(Float64, _get(d, "magmax"));  m1 === nothing || print(io, "&maxmagnitude=", m1)
+	t0 = _seis_datestr(d, "s");  isempty(t0) || print(io, "&starttime=", t0)
+	t1 = _seis_datestr(d, "e");  isempty(t1) || print(io, "&endtime=", t1, "T23:59:59")
+	z0 = tryparse(Float64, _get(d, "depmin")); (z0 !== nothing && z0 > 0) && print(io, "&mindepth=", z0)
+	z1 = tryparse(Float64, _get(d, "depmax")); (z1 !== nothing && z1 > 0) && print(io, "&maxdepth=", z1)
+	return String(take!(io))
+end
+
+# Fetch `url` into memory and hand back the whole answer as one String. `Downloads` first
+# (in-process, no child process to stall the GUI), `curl` only as the fallback for a transient
+# failure of the service — and it reads curl's stdout, so that path writes nothing either.
+function _seis_fetch(url::String)::String
+	io = IOBuffer()
+	txt = try
+		GMT.Downloads.download(url, io)
+		String(take!(io))
+	catch e
+		@warn "seismicity: Downloads failed, retrying with curl" exception=e url
+		read(`curl -s --show-error --fail --max-time 180 $url`, String)
+	end
+	isempty(txt) && error("the USGS query returned nothing")
+	return txt
+end
+
+# One field of a comma-split record as a Float64; an absent or empty field is NaN (the service
+# leaves depth/mag blank on an event that carries none).
+_seis_num(f) = (s = strip(f); isempty(s) ? NaN : something(tryparse(Float64, s), NaN))
+
+# The record's ISO-8601 instant ("2026-08-24T00:00:48.085Z") as Unix seconds; NaN if unparsable, so
+# one malformed row never kills the catalog. Uses Dates — never hand-rolled calendar math.
+function _seis_isotime(f)::Float64
+	s = strip(f)
+	(isempty(s) || length(s) < 19) && return NaN
+	endswith(s, "Z") && (s = s[1:end-1])
+	dt = tryparse(GMT.Dates.DateTime, s)
+	return dt === nothing ? NaN : GMT.Dates.datetime2unix(dt)
+end
+
 function _seis_usgs(d, W, E, S, N)
-	kw = Dict{Symbol,Any}(:data => true, :region => (W, E, S, N))
-	t0 = _seis_datestr(d, "s"); t1 = _seis_datestr(d, "e")
-	isempty(t0) || (kw[:starttime] = t0)
-	isempty(t1) || (kw[:endtime]   = t1)
-	mm = tryparse(Float64, _get(d, "magmin"));  mm !== nothing && (kw[:minmagnitude] = mm)
-	z0 = tryparse(Float64, _get(d, "depmin")); (z0 !== nothing && z0 > 0) && (kw[:mindepth] = z0)
-	z1 = tryparse(Float64, _get(d, "depmax")); (z1 !== nothing && z1 > 0) && (kw[:maxdepth] = z1)
-	D = GMT.seismicity(; kw...)                    # columns: lon, lat, depth, mag, time
-	(D === nothing || size(D, 1) == 0) && return _seis_none()
-	m = D.data
-	return view(m,:,1), view(m,:,2), view(m,:,3), view(m,:,4), view(m,:,5)
+	url = _seis_usgs_url(d, W, E, S, N)
+	txt = _seis_fetch(url)
+	lon = Float64[]; lat = Float64[]; dep = Float64[]; mag = Float64[]; t = Float64[]
+	hdr = true
+	for line in eachsplit(txt, '\n')
+		s = strip(line)
+		isempty(s) && continue
+		if hdr;  hdr = false;  continue;  end         # the one header line
+		f = split(s, ','; limit=6)                    # time,latitude,longitude,depth,mag,<rest>
+		length(f) < 5 && continue
+		push!(t,   _seis_isotime(f[1]))
+		push!(lat, _seis_num(f[2]))
+		push!(lon, _seis_num(f[3]))
+		push!(dep, _seis_num(f[4]))
+		push!(mag, _seis_num(f[5]))
+	end
+	length(lon) >= _SEIS_USGS_LIMIT &&
+		@warn "seismicity: the USGS answer hit the $(_SEIS_USGS_LIMIT)-event ceiling; older events were dropped, not recent ones"
+	return lon, lat, dep, mag, t
 end
 
 # ISF catalog, cropped to the visible region by gmtisf itself; `abstime=2` appends the event
@@ -142,13 +216,40 @@ function _seis_bound(d, pre, isstart::Bool)
 end
 
 # The visible map region "W/E/S/N" appended by the menu action (in-map crop + USGS query bbox,
-# like Mirone's in_map_region). Falls back to the whole world.
+# like Mirone's in_map_region). Falls back to the whole world. ONE box for the query AND the
+# filter, so what is asked for and what is kept can never disagree.
 function _seis_region(d)
 	p = split(_get(d, "region"), '/')
 	(length(p) == 4) || return (-180.0, 180.0, -90.0, 90.0)
 	v = tryparse.(Float64, p)
 	any(isnothing, v) && return (-180.0, 180.0, -90.0, 90.0)
-	return (v[1], v[2], v[3], v[4])
+	return _seis_norm_region(v[1], v[2], v[3], v[4])
+end
+
+# The visible region as the CAMERA sees it is not a legal geographic query box: `sceneVisibleRegion`
+# hands over whatever the viewport covers, which is routinely a little WIDER than the map itself
+# (-180.5/180.5/-90.5/90.5 for a fitted world), and a Pacific view legitimately runs past +180. The
+# service rejects a latitude past ±90 outright (HTTP 400, whole fetch dead), and a longitude past
+# +180 is what GMT.seismicity rewrote wrongly. So: latitudes clamped, a full turn (or more) collapsed
+# to the whole world, and a dateline-crossing window shifted WHOLE into the negative half — legal for
+# the service (it takes longitudes down to -360) and it keeps `maxlongitude` at or below +180.
+function _seis_norm_region(W, E, S, N)
+	S, N = min(S, N), max(S, N)
+	S = clamp(S, -90.0, 90.0);  N = clamp(N, -90.0, 90.0)
+	W, E = min(W, E), max(W, E)
+	(E - W >= 360.0) && return (-180.0, 180.0, S, N)
+	if (E > 180.0)
+		k = ceil((E - 180.0) / 360.0);  W -= 360.0 * k;  E -= 360.0 * k
+	end
+	(W < -360.0) && return (-180.0, 180.0, S, N)      # nothing sane left to ask for
+	return (W, E, S, N)
+end
+
+# Is longitude `l` inside [W,E]? The window may live outside -180…180 (the dateline shift above)
+# while the catalog's own longitudes never do, so bring `l` to the first turn at or after W.
+function _seis_inlon(l, W, E)
+	isnan(l) && return false
+	return l + 360.0 * ceil((W - l) / 360.0) <= E
 end
 
 # ── filter + plot ───────────────────────────────────────────────────────────────────────────
@@ -168,7 +269,7 @@ function _seis_filter(d, lon, lat, dep, mag, t)
 	n = length(lon)
 	keep = BitVector(undef, n)
 	@inbounds for i in 1:n
-		keep[i] = (W <= lon[i] <= E) && (S <= lat[i] <= N) &&
+		keep[i] = _seis_inlon(lon[i], W, E) && (S <= lat[i] <= N) &&
 		          (isnan(t[i]) || (t0 <= t[i] <= t1)) &&
 		          ((m0 <= mag[i] <= m1) || (allm && isnan(mag[i]))) &&
 		          ((z0 <= dep[i] <= z1) || (alld && isnan(dep[i])))
@@ -253,7 +354,12 @@ function _on_seismicity(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			return
 		end
 		_seis_plot(scene, d, lon, lat, dep, mag, t, keep)
-		_viewer_log_error(scene, "Seismicity: plotted $nk of $(length(lon)) events")
+		# Say WHEN the newest plotted event is. "Recent seismicity" that is quietly stale is the one
+		# failure this tool cannot show on its own, so it is reported rather than assumed.
+		tk = [t[i] for i in eachindex(t) if keep[i] && !isnan(t[i])]
+		last = isempty(tk) ? "" :
+		       ", most recent " * GMT.Dates.format(GMT.Dates.unix2datetime(maximum(tk)), "yyyy-mm-dd HH:MM") * " UTC"
+		_viewer_log_error(scene, "Seismicity: plotted $nk of $(length(lon)) events$last")
 	catch e
 		_viewer_log_error(scene, "Seismicity FAILED: $(sprint(showerror, e))")
 		@warn "seismicity: failed" exception=(e, catch_backtrace())
