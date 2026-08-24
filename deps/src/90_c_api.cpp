@@ -735,6 +735,45 @@ GMTVTK_API int gmtvtk_add_symbols_h(void *handle, const double *xyz, int npts, c
 	                  fr, fg, fb, er, eg, eb, edgeWidth, std::string(name ? name : ""), info);
 }
 
+// Attach the layer's OWN DATA to the symbol layer named `name` (the most recently added one with
+// that name; empty name = the most recent layer). This is what "Show data table" shows — a catalog's
+// lon/lat/depth/magnitude/date, whatever the plotter actually has — never a graphical property.
+// `hdr` = column names joined by US ('\x1f'); `rows` = npts records joined by RS ('\x1e'), each
+// record its fields joined by US. Text, because the plotter has already formatted them (a date is a
+// date, not a float) and the table only displays. Adopted only when it aligns 1:1 with the points.
+GMTVTK_API int gmtvtk_symbol_set_table_h(void *handle, const char *name, const char *hdr, const char *rows) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || s->symbols.empty() || !hdr || !rows) return 0;
+	SymbolLayer *sl = nullptr;
+	if (name && name[0]) {
+		for (size_t i = s->symbols.size(); i-- > 0; )
+			if (s->symbols[i].name == name) { sl = &s->symbols[i]; break; }
+	}
+	else sl = &s->symbols.back();
+	if (!sl) return 0;
+	auto split = [](const std::string &str, char sep) {
+		std::vector<std::string> out;
+		size_t a = 0;
+		while (a <= str.size()) {
+			const size_t b = str.find(sep, a);
+			if (b == std::string::npos) { out.push_back(str.substr(a));  break; }
+			out.push_back(str.substr(a, b - a));
+			a = b + 1;
+		}
+		return out;
+	};
+	const std::vector<std::string> H = split(std::string(hdr), '\x1f');
+	const std::vector<std::string> R = split(std::string(rows), '\x1e');
+	vtkPolyData *pd = symInputPD(*sl);
+	const size_t npts = (pd && pd->GetPoints()) ? (size_t)pd->GetPoints()->GetNumberOfPoints() : 0;
+	if (H.empty() || R.size() != npts) return 0;              // never a table that doesn't match the points
+	sl->dataHdr = H;
+	sl->dataRows.clear();
+	sl->dataRows.reserve(npts);
+	for (const auto &r : R) sl->dataRows.push_back(split(r, '\x1f'));
+	return 1;
+}
+
 // Same as gmtvtk_add_symbols_h, plus PER-POINT size and fill colour: `sizeScale` = npts factors
 // relative to `sizePx` (null = all 1), `ptRGB` = npts RGB triplets 0..1 (null = the flat fill colour).
 // ONE layer, ONE Scene Objects handle, ONE call — the point of it: a "scaled symbols" table used to
@@ -842,7 +881,7 @@ GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *da
 		f.close();
 	};
 	QTableWidget *tbl = buildDataTableDialog(title, nrows, hdr,
-		[vals, nrows](int row, int col) { return vals[(size_t)col * nrows + row]; },
+		[vals, nrows](int row, int col) { return QString::number(vals[(size_t)col * nrows + row], 'g', 10); },
 		/*editable=*/false, onSave);
 	// Remember the last table popped for this window, ONLY so gmtvtk_scene_state can report its row
 	// count (n_table). It is parentless and self-deleting, so drop the pointer when it goes.
@@ -3892,6 +3931,22 @@ GMTVTK_API int gmtvtk_seismicity_send_test(void *scene, const char *params) {
 	if (!s || !s->sendSeismicityFn) return 0;
 	s->sendSeismicityFn(params ? params : "");
 	return 1;
+}
+
+// test hook: the DATA TABLE symbol layer `idx` carries — "<ncols>;<nrows>;<hdr,…>;<row0,…>", the
+// same strings "Show data table" puts in its cells. Empty when the layer carries no data.
+GMTVTK_API int gmtvtk_symbol_table_test(void *scene, int idx, char *buf, int cap) {
+	Scene *s = (Scene*)scene;
+	if (!s || !buf || cap <= 0 || idx < 0 || (size_t)idx >= s->symbols.size()) return 0;
+	SymbolLayer &sl = s->symbols[(size_t)idx];
+	std::string o = std::to_string((int)sl.dataHdr.size()) + ';' + std::to_string((int)sl.dataRows.size()) + ';';
+	for (size_t i = 0; i < sl.dataHdr.size(); ++i) { if (i) o += ','; o += sl.dataHdr[i]; }
+	o += ';';
+	if (!sl.dataRows.empty())
+		for (size_t i = 0; i < sl.dataRows[0].size(); ++i) { if (i) o += ','; o += sl.dataRows[0][i]; }
+	const int n = (int)std::min<size_t>(o.size(), (size_t)cap - 1);
+	memcpy(buf, o.data(), (size_t)n);  buf[n] = 0;
+	return n;
 }
 
 // test hook: remove symbol layer `idx` through the SAME function the properties menu's Remove uses

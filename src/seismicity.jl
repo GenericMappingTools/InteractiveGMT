@@ -432,8 +432,25 @@ function _seis_layer(scene::Ptr{Cvoid}, name, sel, lon, lat, dep, mag, t,
 	zv = [(isnan(dep[i]) ? 0.0 : -dep[i] * 1000.0) for i in sel]
 	# :sphere is a true lit 3-D glyph (symbols.jl) so an event stays visible from any oblique 3-D
 	# angle at its real depth; squashed by applyVE in flat-2D it reads as a plain dot on the map.
+	# …and the layer carries THE CATALOG ITSELF, one row per event, for "Show data table": the event's
+	# own lon / lat / depth / magnitude / date. That is what the data IS. How big its circle is drawn
+	# is a property of the picture, not of the earthquake, and has no business in a data table.
 	add_symbols!(scene, view(lon, sel), view(lat, sel); z=zv, symbol=:sphere,
-	             size=sizepx, fill=color, edge=:black, edgewidth=1.0, name=name, info=infos)
+	             size=sizepx, fill=color, edge=:black, edgewidth=1.0, name=name, info=infos,
+	             datanames=_SEIS_TABLE_COLS,
+	             datarows=[_seis_row(lon[i], lat[i], dep[i], mag[i], t[i]) for i in sel])
+end
+
+# The catalog's own columns, as shown by "Show data table". Formatted HERE because only this file
+# knows what they mean — a date is a date, a magnitude carries one decimal, an unknown value is
+# blank rather than "NaN".
+const _SEIS_TABLE_COLS = ["Lon", "Lat", "Depth (km)", "Mag", "Time (UTC)"]
+
+_seis_cell(v::Float64, nd::Int)::String = isnan(v) ? "" : string(round(v; digits=nd))
+
+function _seis_row(lo::Float64, la::Float64, dp::Float64, m::Float64, ti::Float64)::Vector{String}
+	tstr = isnan(ti) ? "" : GMT.Dates.format(GMT.Dates.unix2datetime(ti), "yyyy-mm-dd HH:MM:SS")
+	return [_seis_cell(lo, 4), _seis_cell(la, 4), _seis_cell(dp, 1), _seis_cell(m, 1), tstr]
 end
 
 # Hover tooltip: magnitude, depth and date — whichever the event actually carries.

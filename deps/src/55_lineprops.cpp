@@ -377,13 +377,14 @@ static int polyIndexOfActor(Scene *s, vtkActor *a) {
 // per-line "Show data table…" (below) AND the X,Y plot tool's per-series "Show in Data Table"
 // (65_xyplot.cpp xyShowDataTable) both call this SAME function; neither owns its own dialog/table
 // construction (SACRED_LAW: same operation, same function, never a second reimplementation per
-// window type). `hdr` is "#" plus one entry per coordinate column; `val(row,col)` returns column
-// `col`'s (0-based, matching hdr[col+1]) numeric value for `row`. `editable` leaves the "#" column
-// non-editable but opens the coordinate cells for editing -- the caller wires its own cellChanged
-// handler on the returned QTableWidget (write-back rules are caller-specific, e.g. polygon vertices
-// vs. read-only series data). `onSave`, if set, adds a "Save…" button.
+// window type). `hdr` is "#" plus one entry per data column; `cell(row,col)` returns column `col`'s
+// (0-based, matching hdr[col+1]) TEXT for `row` — text, not a number, because some columns are not
+// numbers (a catalog's date) and the caller is the only one that knows how its own values read.
+// `editable` leaves the "#" column non-editable but opens the data cells for editing -- the caller
+// wires its own cellChanged handler on the returned QTableWidget (write-back rules are caller-
+// specific, e.g. polygon vertices vs. a read-only catalog). `onSave`, if set, adds a "Save…" button.
 static QTableWidget *buildDataTableDialog(const QString &title, int nrows, const QStringList &hdr,
-                                           const std::function<double(int,int)> &val,
+                                           const std::function<QString(int,int)> &cell,
                                            bool editable, std::function<void()> onSave) {
 	QDialog *dlg = new QDialog(nullptr);                  // top-level, parentless -> truly floating
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
@@ -403,7 +404,7 @@ static QTableWidget *buildDataTableDialog(const QString &title, int nrows, const
 		idx->setFlags(idx->flags() & ~Qt::ItemIsEditable);   // the "#" column is never editable
 		tbl->setItem(k, 0, idx);
 		for (int c = 0; c < ncoord; ++c) {
-			QTableWidgetItem *it = new QTableWidgetItem(QString::number(val(k, c), 'g', 10));
+			QTableWidgetItem *it = new QTableWidgetItem(cell(k, c));
 			if (!editable) it->setFlags(it->flags() & ~Qt::ItemIsEditable);
 			tbl->setItem(k, c + 1, it);
 		}
@@ -455,7 +456,7 @@ static void showLineDataTable(Scene *s, const LineRef &lr, const QString &name) 
 
 	QTableWidget *tbl = buildDataTableDialog(
 		name.isEmpty() ? QString("Line data") : (name + " — data"), nrows, hdr,
-		[&pl](int row, int col) { return pl[row][col]; },
+		[&pl](int row, int col) { return QString::number(pl[row][col], 'g', 10); },
 		editable, [s, lr]() { lineSavePoints(s, lr); });
 
 	// Live write-back: a committed X/Y/Z cell updates pg.v and rebuilds the outline. Connected only

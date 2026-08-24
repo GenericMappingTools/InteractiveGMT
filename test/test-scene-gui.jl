@@ -211,6 +211,43 @@ end
 	end
 end
 
+# "Show data table" shows THE DATA — a catalog's own lon/lat/depth/magnitude/date, handed over by
+# whoever plotted it. Never a graphical property: how big a circle is drawn is a fact about the
+# picture, not about the earthquake, and has no business in a data table.
+@testitem "symbol layer data table carries the catalog, not graphics" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
+	f = view_grid(G)
+	buf = Vector{UInt8}(undef, 4096)
+	table(h, i) = (n = ccall(_test_fn(:gmtvtk_symbol_table_test), Cint,
+	                         (Ptr{Cvoid}, Cint, Ptr{UInt8}, Cint), h, i, buf, length(buf));
+	               n <= 0 ? "" : String(buf[1:n]))
+	try
+		IG._pump_once()
+		IG.add_symbols!(f.h, [2.0, 4.0], [3.0, 5.0]; symbol=:sphere, size=[6.0, 12.0], name="Cat",
+		                datanames=["Lon", "Lat", "Mag"],
+		                datarows=[["2.0", "3.0", "5.1"], ["4.0", "5.0", "6.2"]])
+		IG._pump_once()
+		t = split(table(f.h, 0), ';')
+		@test t[1] == "3" && t[2] == "2"          # 3 columns, one row per point
+		@test t[3] == "Lon,Lat,Mag"               # the catalog's own columns …
+		@test t[4] == "2.0,3.0,5.1"
+		@test !occursin("Size", t[3])             # … and nothing about how it is drawn
+
+		# A layer with no data of its own carries no table (the viewer then shows its coordinates).
+		IG.add_symbols!(f.h, [1.0], [1.0]; symbol=:circle, size=6.0, name="Plain")
+		IG._pump_once()
+		@test startswith(table(f.h, 1), "0;0;")
+		# A table that does not align 1:1 with the points is refused, never shown half-filled.
+		IG.add_symbols!(f.h, [1.0, 2.0], [1.0, 2.0]; symbol=:circle, size=6.0, name="Bad",
+		                datanames=["A"], datarows=[["1"]])
+		IG._pump_once()
+		@test startswith(table(f.h, 2), "0;0;")
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 # A depth-bearing overlay (a seismicity catalog) may grow the Z FRAME of a GRID — that is what puts
 # its hypocentres inside the axes cube. It may NOT grow the frame of an IMAGE window: an image has no
 # Z, and the blank scaffold plane such a window carries has a synthetic 0..1 Z that is not data.

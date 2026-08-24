@@ -48,7 +48,9 @@ size at any zoom. Returns `true` if the layer was added.
 function add_symbols!(handle, x, y;
                       z=0.0, symbol=:c, size=8, sizeunit::Symbol=:px,
                       fill=:yellow, edge=:black, edgewidth=1.0, filled::Bool=true,
-                      name::AbstractString="", info=nothing)
+                      name::AbstractString="", info=nothing,
+                      datanames::Vector{String}=String[],
+                      datarows::Vector{Vector{String}}=Vector{Vector{String}}())
 	p = _sym_ptr(handle)
 	xv = collect(Float64, x); yv = collect(Float64, y)
 	n = length(xv)
@@ -88,6 +90,7 @@ function add_symbols!(handle, x, y;
 		       Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring),
 		      p, xyz, Cint(n), code, spx, Cint(filled ? 1 : 0),
 		      fr, fg, fb, er, eg, eb, Float64(edgewidth), name, packed)
+		ok != 0 && _sym_attach_table(p, String(name), datanames, datarows, n)
 		return ok != 0
 	end
 	if (sizev !== nothing)
@@ -106,6 +109,21 @@ function add_symbols!(handle, x, y;
 	      p, xyz, Cint(n), code, spx, Cint(filled ? 1 : 0),
 	      fr, fg, fb, er, eg, eb, Float64(edgewidth), name, packed,
 	      scale, fillm === nothing ? C_NULL : fillm)
+	ok != 0 && _sym_attach_table(p, String(name), datanames, datarows, n)
+	return ok != 0
+end
+
+# The layer's OWN DATA (a catalog's lon/lat/depth/magnitude/date) -> the "Show data table" window.
+# Already FORMATTED by the caller, because only the caller knows what its columns mean: a date is a
+# date, a magnitude carries one decimal. Graphical properties (the on-screen symbol size) are NOT
+# data and never go in here. Silently skipped unless the rows align 1:1 with the points.
+function _sym_attach_table(p::Ptr{Cvoid}, name::String, names::Vector{String},
+                           rows::Vector{Vector{String}}, n::Int)
+	(isempty(names) || length(rows) != n) && return false
+	hdr  = join(names, '\x1f')
+	body = join((join(r, '\x1f') for r in rows), '\x1e')
+	ok = ccall(_fn(:gmtvtk_symbol_set_table_h), Cint,
+	           (Ptr{Cvoid}, Cstring, Cstring, Cstring), p, name, hdr, body)
 	return ok != 0
 end
 

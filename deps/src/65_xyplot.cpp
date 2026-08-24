@@ -362,7 +362,7 @@ static void xyShowDataTable(XYPlot *s, int idx) {
 
 	QStringList hdr;  hdr << "#" << "X" << QString::fromStdString(se.name);
 	buildDataTableDialog(QString::fromStdString(se.name) + " — data", nrows, hdr,
-		[t](int row, int col) { return t->GetValue(row, col).ToDouble(); },
+		[t](int row, int col) { return QString::number(t->GetValue(row, col).ToDouble(), 'g', 10); },
 		/*editable=*/false, [s, idx]() { xySaveSeries(s, idx); });
 }
 

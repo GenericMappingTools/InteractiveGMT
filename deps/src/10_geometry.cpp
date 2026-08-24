@@ -194,6 +194,11 @@ struct SymbolLayer {
 	bool   oneShot = false;                   // placed by the Symbols draw tool: exactly ONE point, whole-
 	                                           // layer double-click-then-drag moves that single point
 	                                           // (see symLayerDrag) — false for batch layers (volcanoes etc)
+	// The layer's OWN DATA, one row per point: what the thing IS (a catalog's lon/lat/depth/mag/date),
+	// supplied by whoever plotted it (gmtvtk_symbol_set_table_h). "Show data table" shows THIS —
+	// never a graphical property like the on-screen symbol size, which is not data.
+	std::vector<std::string> dataHdr;         // column names; empty = the layer carries no data table
+	std::vector<std::vector<std::string>> dataRows;   // npts rows, each dataHdr.size() fields
 	std::vector<double> zOrig;                // the z each point was PLOTTED at (a seismicity hypocentre).
 	                                           // Flat 2-D writes 0 into the points and 3-D writes these
 	                                           // back (symbolApplyZ) — the depth is never lost, and the

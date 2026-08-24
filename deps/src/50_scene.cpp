@@ -16,6 +16,11 @@ static void deleteSlipGroup(Scene *s, const QString &groupName); // 85_polygon.c
 static void deleteMecaGroup(Scene *s, const QString &groupName); // 85_polygon.cpp: delete a focal-mechanism batch
 static void rulerRemove(Scene *s, int idx);          // 85_polygon.cpp: delete ONE ruler (track + its labels)
 static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoint &gp); // defined below
+// THE shared "pop a floating table of this object's data" dialog (55_lineprops.cpp) — Save button
+// included. Every table in the app is this one function; a second one is the violation.
+static QTableWidget *buildDataTableDialog(const QString &title, int nrows, const QStringList &hdr,
+                                          const std::function<QString(int,int)> &cell,
+                                          bool editable, std::function<void()> onSave);
 static int  addSymbols(Scene *s, const double *xyz, int npts, const std::string &sym,   // defined below:
                        double sizePx, int filled, double fr, double fg, double fb,      // THE symbol-layer
                        double er, double eg, double eb, double edgeWidth,               // builder
@@ -3523,6 +3528,51 @@ static int symbolLayerIndexOfActor(Scene *s, vtkActor *a) {
 	return -1;
 }
 
+// THE save of a symbol layer, the twin of lineSavePoints (55_lineprops.cpp) for point datasets:
+// its DATA table when it carries one (a catalog's lon/lat/depth/mag/date, header line included),
+// else the plotted coordinates. One function, called by the data table's "Save…" button and by the
+// layer's own "Save data…" menu entry — never two paths that could write different files.
+static void symbolSaveData(Scene *s, SymbolLayer &sl) {
+	if (!s) return;
+	vtkPolyData *pd = symInputPD(sl);
+	if (!pd || !pd->GetPoints()) return;
+	const int n = (int)pd->GetPoints()->GetNumberOfPoints();
+	if (n == 0) return;
+	const bool haveData = (!sl.dataHdr.empty() && (int)sl.dataRows.size() == n);
+	QString defName = QString::fromStdString(sl.name.empty() ? "symbols" : sl.name).simplified();
+	defName.replace(QRegularExpression("[^A-Za-z0-9._-]+"), "_");
+	QString fn = QFileDialog::getSaveFileName(s->win, "Save data", prefStartDir(defName + ".dat"),
+	                                          "Data files (*.dat *.txt);;All files (*)");
+	if (fn.isEmpty()) return;
+	rememberStartDir(fn);
+	QFile f(fn);
+	if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+		QMessageBox::warning(s->win, "Save", "Could not write " + fn);
+		return;
+	}
+	QTextStream out(&f);
+	const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
+	if (haveData) {
+		out << '#';
+		for (size_t c = 0; c < sl.dataHdr.size(); ++c) out << (c ? "\t" : "") << QString::fromStdString(sl.dataHdr[c]);
+		out << '\n';
+		for (const auto &r : sl.dataRows) {
+			for (size_t c = 0; c < r.size(); ++c) out << (c ? "\t" : "") << QString::fromStdString(r[c]);
+			out << '\n';
+		}
+	}
+	else {
+		out << "#X\tY\tZ\n";
+		for (int k = 0; k < n; ++k) {
+			double p[3];  pd->GetPoints()->GetPoint(k, p);
+			out << QString::number(p[0] * xfacInv, 'g', 10) << '\t'
+			    << QString::number(p[1], 'g', 10) << '\t'
+			    << QString::number(sl.zOrig.size() == (size_t)n ? sl.zOrig[(size_t)k] : p[2], 'g', 10) << '\n';
+		}
+	}
+	f.close();
+}
+
 // Floating data viewer for a symbol layer: a non-modal window with a table of its point(s) in TRUE
 // coords (X un-baked out of xfac). Mirrors showLineDataTable's look/role (55_lineprops.cpp) — same
 // #/X/Y[/Z] columns, same floating/non-modal/WA_DeleteOnClose window. Editable for every layer (a
@@ -3540,45 +3590,42 @@ static void showSymbolDataTable(Scene *s, vtkActor *act, const QString &name) {
 	if (nrows == 0) return;
 	const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
 
-	QDialog *dlg = new QDialog(nullptr);                  // top-level, parentless -> truly floating
-	dlg->setAttribute(Qt::WA_DeleteOnClose);
-	dlg->setWindowTitle(name.isEmpty() ? QString("Symbol data") : (name + " — data"));
-	dlg->setWindowFlag(Qt::Window, true);
-	QVBoxLayout *lay = new QVBoxLayout(dlg);
-
+	// THE LAYER'S DATA when it carries some — a catalog's own lon/lat/depth/mag/date, exactly the
+	// columns whoever plotted it handed over (gmtvtk_symbol_set_table_h) — else the plotted point
+	// coordinates, which for a hand-placed symbol IS its data and stays editable. What never appears
+	// is a GRAPHICAL property (the on-screen symbol size): that is how the data is drawn, not data.
+	SymbolLayer &sl0 = s->symbols[si0];
+	const bool haveData = (!sl0.dataHdr.empty() && (int)sl0.dataRows.size() == nrows);
 	const int ncoord = s->flat2d ? 2 : 3;
-	// Each row also REPORTS ITS OWN on-screen size (symPointSizePx): on a scaled layer — a
-	// magnitude-sized seismicity catalog — the symbols genuinely differ, and the layer's base size
-	// describes only the biggest one. Read-only: it is a report of what is drawn, not an editor.
-	QStringList hdr; hdr << "#" << "X" << "Y"; if (!s->flat2d) hdr << "Z";
-	hdr << "Size (px)";
-	QTableWidget *tbl = new QTableWidget(nrows, ncoord + 2, dlg);
-	tbl->setHorizontalHeaderLabels(hdr);
-	tbl->verticalHeader()->setVisible(false);
-	tbl->setSelectionBehavior(QAbstractItemView::SelectRows);
-
-	for (int k = 0; k < nrows; ++k) {
-		double p[3]; pd0->GetPoints()->GetPoint(k, p);
-		const double row[3] = { p[0] * xfacInv, p[1], p[2] };
-		QTableWidgetItem *idx = new QTableWidgetItem(QString::number(k + 1));
-		idx->setFlags(idx->flags() & ~Qt::ItemIsEditable);   // the "#" column is never editable
-		tbl->setItem(k, 0, idx);
-		for (int c = 0; c < ncoord; ++c)
-			tbl->setItem(k, c + 1, new QTableWidgetItem(QString::number(row[c], 'g', 10)));
-		QTableWidgetItem *szi = new QTableWidgetItem(
-			QString::number(symPointSizePx(s->symbols[si0], k), 'f', 1));
-		szi->setFlags(szi->flags() & ~Qt::ItemIsEditable);
-		tbl->setItem(k, ncoord + 1, szi);
-	}
-	tbl->resizeColumnsToContents();
-	lay->addWidget(tbl);
-	dlg->resize(360, 420);
+	QStringList hdr; hdr << "#";
+	if (haveData) for (const auto &h : sl0.dataHdr) hdr << QString::fromStdString(h);
+	else        { hdr << "X" << "Y";  if (!s->flat2d) hdr << "Z"; }
+	// THE shared table dialog (buildDataTableDialog, 55_lineprops.cpp) — the same one the per-line
+	// "Show data table…", the X,Y tool's "Show in Data Table" and gmtvtk_set_table pop, Save button
+	// and all. A symbol layer had its own hand-built dialog here, which is exactly the second
+	// implementation SACRED_LAW forbids: it drifted feature-short (no Save at all).
+	QTableWidget *tbl = buildDataTableDialog(
+		name.isEmpty() ? QString("Symbol data") : (name + " — data"), nrows, hdr,
+		[s, si0, haveData, xfacInv](int row, int col) {
+			SymbolLayer &sl = s->symbols[(size_t)si0];
+			if (haveData) {
+				const auto &r = sl.dataRows[(size_t)row];
+				return col < (int)r.size() ? QString::fromStdString(r[(size_t)col]) : QString();
+			}
+			vtkPolyData *pd = symInputPD(sl);
+			double p[3];  pd->GetPoints()->GetPoint(row, p);
+			return QString::number(col == 0 ? p[0] * xfacInv : p[col], 'g', 10);
+		},
+		/*editable=*/!haveData,                   // a catalog is a record, not a form
+		[s, si0]() { symbolSaveData(s, s->symbols[(size_t)si0]); });
 
 	std::shared_ptr<bool> guard = std::make_shared<bool>(false);
-	QObject::connect(tbl, &QTableWidget::cellChanged, dlg, [s, tbl, act, guard](int row, int col) {
+	QObject::connect(tbl, &QTableWidget::cellChanged, tbl, [s, tbl, act, guard](int row, int col) {
 		if (*guard || col < 1 || col > 3) return;             // ignore the "#" column / our own edits
 		const int si = symbolLayerIndexOfActor(s, act);
 		if (si < 0) return;                                   // layer was deleted -> nothing to write
+		if (!s->symbols[si].dataHdr.empty()) return;          // showing the layer's DATA: the columns are
+		                                                       // its record, not the point's coordinates
 		vtkPolyData *pd = symInputPD(s->symbols[si]);
 		if (!pd || !pd->GetPoints() || row < 0 || row >= (int)pd->GetPoints()->GetNumberOfPoints()) return;
 		bool ok = false;
@@ -3599,7 +3646,6 @@ static void showSymbolDataTable(Scene *s, vtkActor *act, const QString &name) {
 		*guard = false;
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	});
-	dlg->show();                                          // non-modal: REPL + viewer stay live
 }
 
 // Font/colour/visibility properties for a grouped (billboard) text label, right-clicked directly.
@@ -3811,7 +3857,8 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 		plotTidesCalA = m.addAction("Plot tides (calendar)");
 		m.addSeparator();
 	}
-	QAction *tblA = m.addAction("Show data table…");      // floating point-table viewer (X/Y[/Z])
+	QAction *tblA  = m.addAction("Show data table…");     // THE shared table dialog (Save button included)
+	QAction *saveA = m.addAction("Save data…");           // …and the same save that button calls
 	// Any linked name labels (Cities' city names) get their OWN properties menu on a right-click of
 	// the LABEL itself (70_window.cpp's view dispatch -> batchTextLabelsDialog) — never nested in
 	// here. This menu stays symbol-only: shape/colour/size/stacking/remove.
@@ -3849,7 +3896,8 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 	QAction *ch = m.exec(gp);
 	if (!ch) return;
 
-	if (ch == tblA) { showSymbolDataTable(s, act, QString::fromStdString(sl->name)); return; }
+	if (ch == tblA)  { showSymbolDataTable(s, act, QString::fromStdString(sl->name)); return; }
+	if (ch == saveA) { symbolSaveData(s, *sl); return; }
 	if (ch == plotTidesNowA) { g_juliaTideModel(s, "now", tideStation.c_str()); return; }
 	if (ch == plotTidesCalA) {
 		const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
