@@ -2934,21 +2934,20 @@ static bool pickOverlayInfoAt(Scene *s, int dx, int dy, std::string &out) {
 
 static double sampleZ(const Scene *s, double x, double y);   // defined below (base relief height sampler)
 
-// True (a solid3D glyph carries genuine depth, e.g. a buried earthquake) when `trueZ` sits BELOW
-// the base relief's own height at (trueX,trueY) — i.e. the terrain that visually occludes it (see
-// applyStacking) also occludes it for picking. GetZbufferDataAtPoint can't be used here: it always
-// reads back 1.0 (far plane) through this app's QVTKOpenGLNativeWidget FBO (see the hover-readout
-// ray-march comment below) — sampleZ against the resident heightfield is the same workaround this
-// file already relies on for the coordinate readout. No base grid (NaN) -> never treat as buried.
-// `imageOnly` windows (bare basemap picture, e.g. Seismicity's empty-launcher flow) carry only a
-// HIDDEN FLAT z=0 placeholder plane, not real elevation — comparing against it made every event
-// with any real depth (trueZ < 0) read as "buried", killing 3-D hover for every non-zero-depth
-// event (only dep==0 events ever showed a tooltip). That placeholder is not terrain, skip it.
-static bool solid3DBuried(const Scene *s, double trueX, double trueY, double trueZ) {
-	if (s->imageOnly) return false;
-	const double h = sampleZ(s, trueX, trueY);
-	return !std::isnan(h) && trueZ < h;
-}
+// (`solid3DBuried` lived here: "is this hypocentre below the terrain's height at its x,y". It was the
+// WRONG QUESTION and is gone — see symGlyphVisibleAt below. Do not bring it back: burial is a fact
+// about the ground, visibility is a fact about the camera, and picking needs the second one.)
+
+// PICKING IS NOT RENDERING. A symbol under the cursor answers — its tooltip, its properties menu,
+// its drag — whether or not the terrain is drawn in front of it. Depth decides what is PAINTED (a
+// buried hypocentre is hidden by the surface above it, applyStacking + the real depth test); it does
+// not decide what the user can interrogate, and gating picking on it left a 3-D view where the only
+// events that ever answered were the ones shallow enough to stick out above the ground.
+//
+// Two gates lived here and both are gone: solid3DBuried ("is the point below the ground", a fact
+// about the terrain that ignores where the camera is) and its replacement, a camera->event
+// line-of-sight walk (correct as a visibility test, still the wrong question for picking). Do not
+// add a third: if a symbol projects near the cursor, it answers.
 
 // Nearest SYMBOL layer under the cursor (device px). Symbols sit ON TOP of overlays, so the click
 // dispatcher tests this first. Projects each glyph's anchor point (x already xfac-baked; the actor
@@ -2959,7 +2958,9 @@ static vtkActor *pickSymbolAt(Scene *s, int dx, int dy) {
 		return nullptr;
 	vtkRenderer *ren = s->ren;
 	vtkActor *bestA = nullptr;
+	SymbolLayer *bestSl = nullptr;
 	double best = 1e30;
+	double bestW[3] = { 0.0, 0.0, 0.0 };            // the winner's TRUE coords, for the visibility test
 	for (auto &sl : s->symbols) {
 		if (!sl.actor || !sl.actor->GetVisibility())
 			continue;
@@ -2976,15 +2977,17 @@ static vtkActor *pickSymbolAt(Scene *s, int dx, int dy) {
 			const double tol = std::max(12.0, symPointSizePx(sl, i) * 0.6);
 			const double tol2 = tol * tol;
 			double p[3]; pts->GetPoint(i, p);
-			if (sl.solid3D && !s->flat2d && solid3DBuried(s, p[0]*xfacInv, p[1], p[2]))
-				continue;                                    // hidden behind real terrain -> not pickable
 			ren->SetWorldPoint(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], 1.0);
 			ren->WorldToDisplay();
 			double d[3]; ren->GetDisplayPoint(d);
 			const double ex = d[0]-dx, ey = d[1]-dy, dd = ex*ex + ey*ey;
-			if (dd <= tol2 && dd < best) { best = dd; bestA = sl.actor; }
+			if (dd <= tol2 && dd < best) {
+				best = dd;  bestA = sl.actor;  bestSl = &sl;
+				bestW[0] = p[0]*xfacInv;  bestW[1] = p[1];  bestW[2] = p[2];
+			}
 		}
 	}
+	(void)bestSl;  (void)bestW;                 // nearest symbol wins, buried or not (see above)
 	return bestA;
 }
 
@@ -2996,7 +2999,10 @@ static bool pickSymbolInfoAt(Scene *s, int dx, int dy, std::string &out) {
 	if (!s || s->symbols.empty())
 		return false;
 	vtkRenderer *ren = s->ren;
-	double best = 1e30; const std::string *bestInfo = nullptr;
+	double best = 1e30;
+	double bestW[3] = { 0.0, 0.0, 0.0 };
+	const std::string *bestInfo = nullptr;
+	SymbolLayer *bestSl = nullptr;
 	for (auto &sl : s->symbols) {
 		if (sl.info.empty() || !sl.actor || !sl.actor->GetVisibility())
 			continue;
@@ -3012,15 +3018,17 @@ static bool pickSymbolInfoAt(Scene *s, int dx, int dy, std::string &out) {
 			const double tol  = std::max(12.0, symPointSizePx(sl, i) * 0.6);   // each at ITS OWN size
 			const double tol2 = tol * tol;
 			double p[3]; pts->GetPoint(i, p);
-			if (sl.solid3D && !s->flat2d && solid3DBuried(s, p[0]*xfacInv, p[1], p[2]))
-				continue;                                    // hidden behind real terrain -> no tooltip
 			ren->SetWorldPoint(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], 1.0);
 			ren->WorldToDisplay();
 			double d[3]; ren->GetDisplayPoint(d);
 			const double ex = d[0]-dx, ey = d[1]-dy, dd = ex*ex + ey*ey;
-			if (dd <= tol2 && dd < best) { best = dd; bestInfo = &sl.info[i]; }
+			if (dd <= tol2 && dd < best) {
+				best = dd;  bestInfo = &sl.info[i];  bestSl = &sl;
+				bestW[0] = p[0]*xfacInv;  bestW[1] = p[1];  bestW[2] = p[2];
+			}
 		}
 	}
+	(void)bestSl;  (void)bestW;                 // the tooltip is information, not paint (see above)
 	if (bestInfo) { out = *bestInfo; return true; }
 	return false;
 }
@@ -3030,14 +3038,22 @@ static bool pickSymbolInfoAt(Scene *s, int dx, int dy, std::string &out) {
 // standalone Draggable Symbol tool) are skipped here: they already have their own double-click-arm-
 // then-drag flow (symArmed/symLayerDrag) with exactly one point, no picking needed. Same projection
 // + tolerance convention as pickSymbolAt/pickSymbolInfoAt. Writes the layer + point index on a hit.
+//
+// A layer that carries its OWN DATA (dataHdr — a catalog: an earthquake's lon/lat/depth/magnitude
+// as recorded) is NOT DRAGGABLE and is skipped outright. Dragging an event to a different place
+// would silently rewrite a measurement; the symbol is a picture OF the datum, and the datum is not
+// the user's to move with the mouse. Same rule as its data table, which is read-only for exactly
+// this reason. Hand-placed symbols (no data of their own) stay draggable.
 static bool pickSymbolPointAt(Scene *s, int dx, int dy, int &outLayer, int &outPoint) {
 	if (!s || s->symbols.empty())
 		return false;
 	vtkRenderer *ren = s->ren;
-	double best = 1e30; int bestLayer = -1, bestPoint = -1;
+	double best = 1e30;
+	double bestW[3] = { 0.0, 0.0, 0.0 };
+	int bestLayer = -1, bestPoint = -1;
 	for (size_t li = 0; li < s->symbols.size(); ++li) {
 		SymbolLayer &sl = s->symbols[li];
-		if (sl.oneShot || !sl.actor || !sl.actor->GetVisibility())
+		if (sl.oneShot || !sl.dataHdr.empty() || !sl.actor || !sl.actor->GetVisibility())
 			continue;
 		vtkPolyData *pd = symInputPD(sl);
 		if (!pd || !pd->GetPoints())
@@ -3050,15 +3066,17 @@ static bool pickSymbolPointAt(Scene *s, int dx, int dy, int &outLayer, int &outP
 			const double tol  = std::max(12.0, symPointSizePx(sl, i) * 0.6);   // each at ITS OWN size
 			const double tol2 = tol * tol;
 			double p[3]; pts->GetPoint(i, p);
-			if (sl.solid3D && !s->flat2d && solid3DBuried(s, p[0]*xfacInv, p[1], p[2]))
-				continue;
 			ren->SetWorldPoint(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], 1.0);
 			ren->WorldToDisplay();
 			double d[3]; ren->GetDisplayPoint(d);
 			const double ex = d[0]-dx, ey = d[1]-dy, dd = ex*ex + ey*ey;
-			if (dd <= tol2 && dd < best) { best = dd; bestLayer = (int)li; bestPoint = (int)i; }
+			if (dd <= tol2 && dd < best) {
+				best = dd;  bestLayer = (int)li;  bestPoint = (int)i;
+				bestW[0] = p[0]*xfacInv;  bestW[1] = p[1];  bestW[2] = p[2];
+			}
 		}
 	}
+	(void)bestW;                                // same rule as the other two pickers: no depth gate
 	if (bestLayer < 0) return false;
 	outLayer = bestLayer; outPoint = bestPoint;
 	return true;

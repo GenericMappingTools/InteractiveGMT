@@ -221,6 +221,43 @@ end
 	end
 end
 
+# Hover asks "is the terrain BETWEEN the camera and this event", never "is this event below the
+# ground". The two differ the moment the camera is not looking straight down, and answering the
+# second one killed the tooltip for every event with a real depth: only depth-0 events (which sit
+# ABOVE the surface) ever answered. Depth by itself must never disable hover.
+@testitem "hover: the terrain hides a hypocentre, its depth alone does not" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[0.0 for iy in 0:20, ix in 0:20]; x=[0.0, 20.0], y=[0.0, 20.0])  # lid at z=0
+	f = view_grid(G)
+	buf = Vector{UInt8}(undef, 1024)
+	hover(x, y, z) = (n = ccall(_test_fn(:gmtvtk_symbol_hover_test), Cint,
+	                            (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Ptr{UInt8}, Cint),
+	                            f.h, x, y, z, buf, length(buf));
+	                  n <= 0 ? "" : String(buf[1:n]))
+	flat2d(on) = (ccall(_test_fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, on);
+	              IG._pump_once())
+	try
+		IG._pump_once()
+		# under the lid · above the lid · deep but OUTSIDE the grid, so nothing is in the way
+		IG.add_symbols!(f.h, [10.0, 5.0, 30.0], [5.0, 15.0, 10.0];
+		                z=[-100000.0, 100000.0, -100000.0], symbol=:sphere, size=40.0,
+		                fill=(1.0, 0.0, 1.0), name="evts", info=["BURIED", "ABOVE", "OUTSIDE"])
+		IG._pump_once()
+		@test hover(10.0, 5.0, -100000.0) == "BURIED"      # flat map: depth is not in play at all
+
+		flat2d(0)                                           # tilt into 3-D
+		@test hover(10.0, 5.0, -100000.0) == ""            # the lid is between camera and event
+		@test hover(5.0, 15.0, 100000.0)  == "ABOVE"       # nothing in the way
+		@test hover(30.0, 10.0, -100000.0) == "OUTSIDE"    # 100 km DEEP and still hoverable: no relief
+		                                                    # over it, so the camera can see it
+
+		flat2d(1)                                           # …and back on the map every one answers
+		@test hover(10.0, 5.0, -100000.0) == "BURIED"
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 # THE LAW, asserted on the RENDERED PIXELS, not on the scene graph: in 3-D, anything below a surface
 # is not visible through that surface. Every earlier test of this checked a proxy — which glyph the
 # layer drew, which renderer held it — and a proxy is exactly what let "events drawn through the
@@ -230,7 +267,13 @@ end
 # surface IS counted in the very same 3-D view (so "0" can never mean "symbols never render here").
 @testitem "3-D: a surface hides what is buried under it (pixels, not proxies)" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
-	G = GMT.mat2grid(Float32[0.0 for iy in 0:20, ix in 0:20]; x=[0.0, 20.0], y=[0.0, 20.0])  # flat lid at z=0
+	# REAL RELIEF, and depths of the same order as it. A flat z=0 grid has no Z span at all, so a
+	# symbol at ±100 km lands far outside the picture and counts 0 pixels for the wrong reason —
+	# "off-frame" would read exactly like "occluded". The buried one also sits well INSIDE the
+	# footprint (not near the front edge): a surface has no skirt, so from a low oblique angle you
+	# genuinely can see under its edge, and that is not a bug. The two symbols are at different
+	# (x,y) — on one spot the later-drawn covers the other and this would measure paint order.
+	G = GMT.mat2grid(Float32[500 + 300*sin(ix/3.0) for iy in 0:20, ix in 0:20]; x=[0.0, 20.0], y=[0.0, 20.0])
 	f = view_grid(G)
 	px(r, g, b) = ccall(_test_fn(:gmtvtk_pixel_count_test), Cint,
 	                    (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble), f.h, r, g, b, 0.25)
@@ -241,8 +284,8 @@ end
 		magenta0 = px(1.0, 0.0, 1.0)
 		yellow0  = px(1.0, 1.0, 0.0)              # baselines: whatever the grid itself paints
 
-		# A hypocentre 100 km DOWN, well inside the grid's footprint.
-		IG.add_symbols!(f.h, [10.0], [10.0]; z=[-100000.0], symbol=:sphere, size=40.0,
+		# A hypocentre UNDER the surface, well inside the grid's footprint.
+		IG.add_symbols!(f.h, [10.0], [14.0]; z=[-500.0], symbol=:sphere, size=30.0,
 		                fill=(1.0, 0.0, 1.0), name="Deep")
 		IG._pump_once()
 		@test px(1.0, 0.0, 1.0) > magenta0 + 100   # flat-2-D map: the marker shows
@@ -250,9 +293,9 @@ end
 		flat2d(0)                                  # tilt into 3-D
 		@test px(1.0, 0.0, 1.0) == magenta0        # …and the surface above it hides it completely
 
-		# Same view, same layer kind, a symbol ABOVE the lid: still drawn. Without this leg a
+		# Same view, same layer kind, a symbol ABOVE the surface: still drawn. Without this leg a
 		# regression that stopped drawing symbols in 3-D altogether would pass the test above.
-		IG.add_symbols!(f.h, [10.0], [10.0]; z=[100000.0], symbol=:sphere, size=40.0,
+		IG.add_symbols!(f.h, [6.0], [6.0]; z=[2500.0], symbol=:sphere, size=30.0,
 		                fill=(1.0, 1.0, 0.0), name="High")
 		IG._pump_once()
 		@test px(1.0, 1.0, 0.0) > yellow0 + 100

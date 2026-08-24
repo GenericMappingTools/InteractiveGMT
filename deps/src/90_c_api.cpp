@@ -3958,6 +3958,24 @@ GMTVTK_API int gmtvtk_pixel_count_test(void *scene, double r, double g, double b
 	return hits;
 }
 
+// test hook: the SYMBOL TOOLTIP the cursor would get over the symbol plotted at TRUE world (x,y,z) —
+// the point is projected to its pixel exactly as the live hover does, then pickSymbolInfoAt runs.
+// Empty (return 0) when no symbol there answers, which is also what "the terrain hides it" looks like.
+GMTVTK_API int gmtvtk_symbol_hover_test(void *scene, double x, double y, double z, char *out, int cap) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->ren || !out || cap <= 0) return 0;
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	const double zs = s->flat2d ? 0.0 : (z * s->zfac * s->ve);
+	s->ren->SetWorldPoint(x * s->xfac, y, zs, 1.0);
+	s->ren->WorldToDisplay();
+	double d[3];  s->ren->GetDisplayPoint(d);
+	std::string txt;
+	if (!pickSymbolInfoAt(s, (int)std::lround(d[0]), (int)std::lround(d[1]), txt)) return 0;
+	const int n = (int)std::min<size_t>(txt.size(), (size_t)cap - 1);
+	memcpy(out, txt.data(), (size_t)n);  out[n] = 0;
+	return n;
+}
+
 // test hook: is symbol layer `idx` parked on the DEPTH-CLEARED OVERLAY layer (drawn over everything,
 // the flat-2-D map-marker rule) or in the main renderer (real depth test, so terrain above a buried
 // hypocentre hides it)? 1 = overlay, 0 = main renderer, -1 = no such layer.
