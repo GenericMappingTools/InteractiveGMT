@@ -178,7 +178,15 @@ struct SymbolLayer {
 	vtkSmartPointer<vtkTransformPolyDataFilter> zfixFilter;  // solid3D only: applies `zfix` to the unit source
 	double sizePx = 8.0;                      // requested on-screen size in PIXELS
 	bool   filled = true;                     // filled polygon glyph (fill+edge) vs open line glyph (edge only)
-	bool   solid3D = false;                   // true for "o" sphere / "u" cube (needs the zfix counter-scale)
+	bool   solid3D = false;                   // the pipeline it is running RIGHT NOW: true = sphere/cube volume
+	bool   wantSolid = false;                 // what it was ASKED for ("o"/"u"): a volume in 3-D, and its FLAT
+	                                           // counterpart (circle/square) on a flat-2-D map — a sphere is a
+	                                           // 3-D thing and a top-down map has no third dimension to show it
+	                                           // in. symbolApplyKind flips solid3D between the two live.
+	int    wantFilled = 1;                    // the `filled` flag AS REQUESTED, before an open glyph overrides it
+	double fillRGB[3] = { 1.0, 1.0, 0.0 };    // the layer's colours / edge width, kept so the pipeline can be
+	double edgeRGB[3] = { 0.0, 0.0, 0.0 };    // rebuilt (2-D <-> 3-D, shape change) without losing them
+	double edgeWidth = 1.0;
 	std::string sym  = "c";                   // GMT symbol code (for the Scene Objects label / properties)
 	std::string name;                         // label shown in the Scene Objects panel
 	std::vector<std::string> info;            // per-point hover text (multi-line); empty = no hover info
@@ -1168,6 +1176,11 @@ struct Scene {
 // to toggle 3-D and back. The layer's POINTS always keep the true hypocentre depth; only this scale
 // changes, so tilting the view restores the cloud (SACRED_LAW.md: same operation, same function).
 static inline double symbolZScale(Scene *s) { return (s && s->flat2d) ? 0.0 : (s ? s->zfac * s->ve : 1.0); }
+
+// THE glyph KIND of a symbol layer, same rule and same shape as symbolZScale above: a layer that asked
+// for a sphere/cube is that volume in 3-D and its flat counterpart (circle/square) on a flat-2-D map.
+// Defined in 50_scene.cpp (it needs the glyph sources); declared here because applyVE drives it.
+static void symbolApplyKind(Scene *s, SymbolLayer &sl);
 
 // Put ONE layer at the right height for the current view mode. The actor's scale is NEVER used to
 // flatten: scaling a lit sphere to zero thickness zeroes its normals and the glyph renders black, and
@@ -2570,7 +2583,10 @@ static void applyVE(Scene *s) {
 	// following the 2D/3D toggle live. This is the VIEWER's job, done here for EVERY symbol layer, so
 	// an image window and a grid window behave identically in the identical view (SACRED_LAW.md: same
 	// operation, same function — no per-raster-kind fork, and no plotter deciding z once at plot time).
-	for (auto &sl : s->symbols) symbolApplyZ(s, sl);
+	// … and the glyph KIND follows the same mode switch: a sphere is a 3-D body, so on a flat-2-D map
+	// the layer draws its flat counterpart (a circle) instead — both halves of "what a symbol layer
+	// looks like in this view mode" applied here, for every layer, from the one place that decides it.
+	for (auto &sl : s->symbols) { symbolApplyKind(s, sl);  symbolApplyZ(s, sl); }
 	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview
 	if (s->polyHandles) s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // edit-mode vertex handles
 	for (auto &rr : s->rulers)                                                     // every ruler track and the

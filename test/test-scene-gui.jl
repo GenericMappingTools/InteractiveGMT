@@ -169,6 +169,48 @@ end
 	end
 end
 
+# A symbol layer that asked for spheres (a seismicity catalog) must draw CIRCLES on a flat-2-D map —
+# a sphere is a 3-D body and a top-down map has no third dimension to show it in — and must honour its
+# PER-POINT sizes in BOTH pipelines. Both halves were broken: the layer stayed a sphere in 2-D, and the
+# GPU-instanced sphere mapper ignored the size factors, drawing every event at the layer's base size.
+@testitem "symbol layer: sphere -> circle in flat-2D, per-point sizes in both" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
+	f = view_grid(G)                      # view_grid opens flat-2D
+	try
+		IG._pump_once()
+		IG.add_symbols!(f.h, [2.0, 4.0, 6.0], [2.0, 4.0, 6.0]; z=[-1.0, -2.0, -3.0],
+		                symbol=:sphere, size=[4.0, 8.0, 12.0], fill=:red, name="Seismicity")
+		IG._pump_once()
+		out = zeros(Cdouble, 5)
+		@test ccall(_test_fn(:gmtvtk_symbol_layer_test), Cint,
+		            (Ptr{Cvoid}, Cint, Ptr{Cdouble}), f.h, 0, out) == 1
+		@test out[2] == 1                 # wantSolid: it asked for spheres …
+		@test out[1] == 0                 # … but on a flat-2-D map it draws the flat counterpart
+		@test out[3] == 1                 # and it scales by the per-point factors
+		@test out[4] == 3                 # 3 points
+
+		ccall(_test_fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, 0)   # tilt to 3-D
+		IG._pump_once()
+		ccall(_test_fn(:gmtvtk_symbol_layer_test), Cint, (Ptr{Cvoid}, Cint, Ptr{Cdouble}), f.h, 0, out)
+		@test out[1] == 1                 # real spheres again …
+		@test out[3] == 1                 # … still scaled per point (the vtkGlyph3DMapper bug)
+
+		ccall(_test_fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, 1)   # and back
+		IG._pump_once()
+		ccall(_test_fn(:gmtvtk_symbol_layer_test), Cint, (Ptr{Cvoid}, Cint, Ptr{Cdouble}), f.h, 0, out)
+		@test out[1] == 0 && out[3] == 1
+
+		# A layer that asked for a FLAT glyph is left alone by the mode switch.
+		IG.add_symbols!(f.h, [1.0], [1.0]; symbol=:triangle, size=6.0, name="Flat")
+		IG._pump_once()
+		ccall(_test_fn(:gmtvtk_symbol_layer_test), Cint, (Ptr{Cvoid}, Cint, Ptr{Cdouble}), f.h, 1, out)
+		@test out[1] == 0 && out[2] == 0 && out[3] == 0
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 # Output correctness: a rendered window saves a real, non-empty PNG (valid 8-byte signature).
 @testitem "save_png writes a valid PNG" tags=[:gui, :output] begin
 	IG = InteractiveGMT; GMT = IG.GMT

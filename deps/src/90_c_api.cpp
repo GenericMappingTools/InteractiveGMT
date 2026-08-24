@@ -3846,6 +3846,26 @@ GMTVTK_API void gmtvtk_sym_debug_test(void *scene, double *out4) {
 	out4[3] = (s->symHandlePD && s->symHandlePD->GetPoints()) ? s->symHandlePD->GetPoints()->GetNumberOfPoints() : 0;
 }
 
+// test hook: what a symbol LAYER is DRAWING right now (not what it was asked for) —
+// out5 = [solid3D, wantSolid, scalingByPerPointSize, npts, sizePx]. `scalingByPerPointSize` reads the
+// live mapper/glyph scale mode, so a layer that carries per-point factors but ignores them (the
+// vtkGlyph3DMapper bug) reads 0 here. Returns 0 when idx is out of range.
+GMTVTK_API int gmtvtk_symbol_layer_test(void *scene, int idx, double *out5) {
+	Scene *s = (Scene*)scene;
+	if (!s || !out5 || idx < 0 || (size_t)idx >= s->symbols.size()) return 0;
+	SymbolLayer &sl = s->symbols[(size_t)idx];
+	bool byScalar = false;
+	if (sl.glyphMapper)  byScalar = (sl.glyphMapper->GetScaleMode() == vtkGlyph3DMapper::SCALE_BY_MAGNITUDE);
+	else if (sl.glyph)   byScalar = (sl.glyph->GetScaleMode() == VTK_SCALE_BY_SCALAR);
+	vtkPolyData *in = symInputPD(sl);
+	out5[0] = sl.solid3D ? 1 : 0;
+	out5[1] = sl.wantSolid ? 1 : 0;
+	out5[2] = byScalar ? 1 : 0;
+	out5[3] = (in && in->GetPoints()) ? (double)in->GetPoints()->GetNumberOfPoints() : 0.0;
+	out5[4] = sl.sizePx;
+	return 1;
+}
+
 // test hook: send a synthetic Ctrl+C key press to the GL widget (GLView::keyPressEvent) — same
 // dispatch mechanism as gmtvtk_symbol_ui_drag_test's mouse events, exercising the REAL copy-armed-
 // symbol-to-clipboard code path, not a bypass.

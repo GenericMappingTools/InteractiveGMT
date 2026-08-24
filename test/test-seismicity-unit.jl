@@ -29,6 +29,19 @@ end
 	@test IG._seis_bucket(IG._SEIS_DEP_EDGES, 350.0) == 5
 end
 
+@testitem "seismicity: magnitude -> symbol size (USGS scheme)" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	pt(m) = IG._seis_mag_size(m) * 72 / 96          # back to POINTS, the scheme's own unit
+	@test pt(5.0) ≈ 8.0                              # the anchor: M5 is 8 points
+	@test pt(6.0) / pt(5.0) ≈ IG._SEIS_MAG_BASE      # geometric in magnitude
+	@test pt(3.0) / pt(2.0) ≈ IG._SEIS_MAG_BASE
+	@test pt(7.0) / pt(0.0) ≈ 4.4 atol=0.1           # the legend's own M0 … M7 span
+	@test pt(IG._SEIS_MAG_HI + 2.5) == pt(IG._SEIS_MAG_HI)   # the top end saturates ("8+")
+	@test pt(IG._SEIS_MAG_LO - 1.0) == pt(IG._SEIS_MAG_LO)   # … and so does the small end
+	@test pt(NaN) == pt(IG._SEIS_MAG_LO)             # no magnitude -> smallest
+	@test issorted([pt(m) for m in 0:0.5:9])
+end
+
 @testitem "seismicity: dialog-field helpers (region, dates)" tags=[:unit, :fast] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	d = IG._nswing_parse("syear=2000\neyear=2025\nregion=-12.000000/-6.000000/35.000000/39.000000")

@@ -3253,6 +3253,163 @@ static void symbolRescaleCB(vtkObject*, unsigned long, void *clientData, void*) 
 static void applyVectorStacking(Scene *s) { applyStacking(s); }
 static void restackVector(Scene *s, int *stackPtr, int op) { restackStack(s, stackPtr, op); }
 
+// The FLAT counterpart of a solid glyph: a sphere seen straight down on a 2-D map IS a circle, and a
+// cube IS a square. Used by symbolApplyKind — never by the plotters, which keep asking for what they
+// mean ("o") and let the viewer decide how that reads in the current view mode.
+static inline std::string symFlatCode(const std::string &sym) { return (sym == "u") ? "s" : "c"; }
+
+// THE constructor of a symbol layer's render pipeline — the only place either pipeline is wired.
+// addSymbols calls it to build a new layer, symbolApplyKind when the 2-D/3-D mode flips a solid layer
+// to its flat counterpart and back, and the shape menu when the user picks another glyph. Everything
+// it needs beyond the points comes off the layer itself (sym, sizePx, colours, edge width) or off the
+// input polydata (the per-point size factors "symScale" as active scalars, the per-point colours
+// "symRGB" as a named array), so a rebuild can never silently drop them. SACRED_LAW.md: same
+// operation, same function — a second copy of this wiring is the violation, and the one that existed
+// (the shape menu's hand-rolled downgrade) is exactly how per-point sizes and colours got lost.
+static void symbolSetPipeline(Scene *s, SymbolLayer &sl, vtkPolyData *in, bool solid) {
+	if (!s || !in || !sl.actor) return;
+	const std::string code = solid ? sl.sym : (sl.wantSolid ? symFlatCode(sl.sym) : sl.sym);
+	bool glyphFilled = true;
+	vtkSmartPointer<vtkPolyData> src = solid ? makeSolidGlyph(code) : makeSymbolGlyph(code, glyphFilled);
+	const bool wantFill = glyphFilled && (sl.wantFilled != 0);
+	const double fr = sl.fillRGB[0], fg = sl.fillRGB[1], fb = sl.fillRGB[2];
+	const double er = sl.edgeRGB[0], eg = sl.edgeRGB[1], eb = sl.edgeRGB[2];
+	const double edgeWidth = sl.edgeWidth;
+	// Per-point size factors / colours, as they were handed in (see the array names above).
+	const bool hasScale = (in->GetPointData()->GetScalars() != nullptr);
+	const bool hasRGB   = (in->GetPointData()->GetArray("symRGB") != nullptr);
+	// A glyph that carries BOTH filled polys and outline lines (the concave star) is coloured PER
+	// CELL — fill triangles in the fill colour, the boundary polyline in the edge colour — so the
+	// outline is the star boundary only (no internal triangulation spokes that EdgeVisibility draws).
+	const bool cellColoured = (src->GetNumberOfLines() > 0 && src->GetNumberOfPolys() > 0);
+	if (cellColoured) {
+		auto to255 = [](double c) { return (unsigned char)(c < 0 ? 0 : c > 1 ? 255 : c * 255.0 + 0.5); };
+		unsigned char cf[3] = { to255(fr), to255(fg), to255(fb) };   // fill (triangles)
+		unsigned char ce[3] = { to255(er), to255(eg), to255(eb) };   // edge (boundary line)
+		const vtkIdType nL = src->GetNumberOfLines(), nP = src->GetNumberOfPolys();
+		vtkNew<vtkUnsignedCharArray> cc; cc->SetNumberOfComponents(3); cc->SetNumberOfTuples(nL + nP);
+		vtkIdType t = 0;                              // vtkPolyData cell order is Verts, Lines, Polys
+		for (vtkIdType i = 0; i < nL; ++i, ++t) cc->SetTypedTuple(t, wantFill ? ce : cf);
+		for (vtkIdType i = 0; i < nP; ++i, ++t) cc->SetTypedTuple(t, cf);
+		src->GetCellData()->SetScalars(cc);
+	}
+
+	// Solid 3-D glyphs ride the actor's (1,1,zfac*ve) Z scale for POSITION like every other symbol,
+	// but that would also squash their own volume flat (zfac converts metres to a tiny degree-
+	// equivalent unit). `zfix` pre-divides the unit source's Z by that same factor so it cancels
+	// out after the actor re-applies it — kept live (not baked once) because ve changes at runtime;
+	// symbolRescaleCB updates it every frame alongside the screen-size ScaleFactor.
+	vtkSmartPointer<vtkTransform> zfix;
+	vtkSmartPointer<vtkTransformPolyDataFilter> zfixFilter;
+	vtkSmartPointer<vtkGlyph3D>       g;
+	vtkSmartPointer<vtkGlyph3DMapper> gm;
+	vtkSmartPointer<vtkMapper> map3D;
+	if (solid) {
+		zfix = vtkSmartPointer<vtkTransform>::New();
+		zfixFilter = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
+		zfixFilter->SetInputData(src);
+		zfixFilter->SetTransform(zfix);
+		// solid (sphere/cube) uses vtkGlyph3DMapper — GPU instancing, the source mesh is uploaded ONCE
+		// and drawn N times, never duplicated into one combined CPU polydata. vtkGlyph3D would tessellate
+		// and copy the full sphere mesh (e.g. 16x16 res, ~480 tris) into ONE polydata PER point — for a
+		// 30k-event seismicity catalog that's ~15M triangles built on the CPU every time the source is
+		// touched, which is exactly what made "Global seismicity" slow to plot and to manipulate (point
+		// clouds never hit this path — they render as bare vtkPoints, no glyphing at all).
+		vtkNew<vtkGlyph3DMapper> m;
+		m->SetInputData(in);
+		m->SetSourceConnection(zfixFilter->GetOutputPort());
+		// Per-point size factors work HERE TOO, and by the same rule as the flat path: ScaleFactor is
+		// the screen-size driver (symbolRescaleCB) and the array multiplies it, so a magnitude-scaled
+		// catalog keeps its relative sizes while staying screen-constant. NoDataScaling (what this
+		// branch used to do unconditionally) threw the factors away and drew every event at the
+		// layer's base size — the whole point of a scaled-symbol layer, silently lost.
+		if (hasScale) { m->SetScaleArray("symScale");  m->SetScaleModeToScaleByMagnitude(); }
+		else          { m->SetScaleModeToNoDataScaling(); }
+		m->OrientOff();
+		m->SetScaleFactor(sl.sizePx > 0.0 ? sl.sizePx : 8.0);   // placeholder; primed + driven per frame
+		if (hasRGB) {
+			m->ScalarVisibilityOn();
+			m->SetScalarModeToUsePointFieldData();
+			m->SelectColorArray("symRGB");
+			m->SetColorModeToDirectScalars();
+		}
+		else { m->ScalarVisibilityOff(); }
+		gm = m;
+		map3D = m;
+	}
+	else {
+		vtkSmartPointer<vtkGlyph3D> gg = vtkSmartPointer<vtkGlyph3D>::New();
+		gg->SetSourceData(src);
+		gg->SetInputData(in);
+		// Uniform size unless the layer carries per-point factors; ScaleFactor is the screen-size
+		// driver either way (symbolRescaleCB), so scale-by-scalar multiplies the two and the layer
+		// stays screen-constant with each glyph at its own relative size.
+		if (hasScale) gg->SetScaleModeToScaleByScalar();
+		else          gg->SetScaleModeToDataScalingOff();
+		gg->OrientOff();
+		gg->SetScaleFactor(sl.sizePx > 0.0 ? sl.sizePx : 8.0);   // placeholder; primed + driven per frame
+		g = gg;
+
+		vtkNew<vtkPolyDataMapper> map;
+		map->SetInputConnection(gg->GetOutputPort());
+		if (hasRGB) {                         // per-point fill: colour by the named array, not the
+			map->ScalarVisibilityOn();        // active (scale) scalars — vtkGlyph3D copies input point
+			map->SetScalarModeToUsePointFieldData();   // data onto every generated glyph point
+			map->SelectColorArray("symRGB");
+			map->SetColorModeToDirectScalars();
+		}
+		else if (cellColoured) { map->ScalarVisibilityOn(); map->SetScalarModeToUseCellData(); map->SetColorModeToDirectScalars(); }
+		else                   { map->ScalarVisibilityOff(); }
+		// The huge negative bias below forces a flat glyph to WIN the depth test against the coincident
+		// surface it sits directly on (z=0, e.g. a volcano marker) — it has no real depth of its own.
+		// A solid glyph (sphere/cube) DOES carry real depth (e.g. a buried earthquake hypocentre) and
+		// must lose the depth test to genuinely shallower surface geometry above it (the solid branch
+		// above leaves its mapper at the default unbiased depth resolution).
+		vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();   // lift off the z=0 map plane
+		map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -8000.0);
+		map->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -8000.0);
+		map->SetRelativeCoincidentTopologyPointOffsetParameter(-8000.0);
+		map3D = map;
+	}
+
+	sl.actor->SetMapper(map3D);
+	// Flat glyphs are unlit (constant colour, like the gizmo). A sphere/cube needs real shading to
+	// read as a volume rather than a flat disc — that's the whole point of offering them — so turn
+	// lighting ON just for those two; a sphere's fine facet mesh also looks messy with edges drawn,
+	// so skip EdgeVisibility for it (a cube keeps its box outline, which reads fine).
+	sl.actor->GetProperty()->SetLighting(solid);
+	if (wantFill) {
+		sl.actor->GetProperty()->SetColor(fr, fg, fb);
+		sl.actor->GetProperty()->SetEdgeColor(er, eg, eb);
+		// Cell-coloured glyphs (star) draw their outline as a coloured boundary line, NOT actor edges
+		// (which would expose the fill triangulation as spokes); edgeWidth sets that line's width.
+		sl.actor->GetProperty()->SetEdgeVisibility((edgeWidth > 0.0 && !cellColoured && code != "o") ? 1 : 0);
+		sl.actor->GetProperty()->SetLineWidth(edgeWidth > 0.0 ? edgeWidth : 1.0);
+	}
+	else {                                 // open glyph: drawn in the edge colour, no fill
+		sl.actor->GetProperty()->SetColor(er, eg, eb);
+		sl.actor->GetProperty()->SetEdgeVisibility(0);
+		sl.actor->GetProperty()->SetLineWidth(edgeWidth > 0.0 ? edgeWidth : 1.5);
+	}
+	sl.glyph = g;  sl.glyphMapper = gm;  sl.zfix = zfix;  sl.zfixFilter = zfixFilter;
+	sl.solid3D = solid;  sl.filled = wantFill;
+}
+
+// Put ONE layer's glyph KIND right for the current view mode — the sibling of symbolApplyZ
+// (10_geometry.cpp), and driven from the same place (applyVE). A sphere is a 3-D body: looking
+// straight down at a flat-2-D map there is no third dimension for it to be a body IN, so the layer
+// draws its flat counterpart (circle / square) there and the real volume the moment the view tilts.
+// A layer that asked for a flat glyph in the first place is left alone.
+static void symbolApplyKind(Scene *s, SymbolLayer &sl) {
+	if (!sl.wantSolid || !sl.actor) return;
+	const bool solid = !(s && s->flat2d);
+	if (solid == sl.solid3D) return;                   // already running the right pipeline
+	vtkPolyData *in = symInputPD(sl);
+	if (!in) return;
+	symbolSetPipeline(s, sl, in, solid);
+	symbolRescaleCB(nullptr, 0, s, nullptr);           // prime ScaleFactor/zfix on the new pipeline
+}
+
 // Stamp N glyphs of one GMT symbol code at N (x,y,z) points (TRUE coords). Screen-constant size:
 // x is pre-baked with xfac so the glyph is NOT x-stretched; the actor carries only the z scale so
 // symbols ride VE. The per-frame observer (installed once) keeps `sizePx` literal at any zoom.
@@ -3292,120 +3449,22 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
 		in->GetPointData()->AddArray(cc);
 	}
 
-	const bool solid3D = (sym == "o" || sym == "u");      // sphere / cube: true volume, not flat-XY
-	bool glyphFilled = true;
-	vtkSmartPointer<vtkPolyData> src = solid3D ? makeSolidGlyph(sym) : makeSymbolGlyph(sym, glyphFilled);
-	const bool wantFill = glyphFilled && (filled != 0);
-	// A glyph that carries BOTH filled polys and outline lines (the concave star) is coloured PER
-	// CELL — fill triangles in the fill colour, the boundary polyline in the edge colour — so the
-	// outline is the star boundary only (no internal triangulation spokes that EdgeVisibility draws).
-	const bool cellColoured = (src->GetNumberOfLines() > 0 && src->GetNumberOfPolys() > 0);
-	if (cellColoured) {
-		auto to255 = [](double c) { return (unsigned char)(c < 0 ? 0 : c > 1 ? 255 : c * 255.0 + 0.5); };
-		unsigned char cf[3] = { to255(fr), to255(fg), to255(fb) };   // fill (triangles)
-		unsigned char ce[3] = { to255(er), to255(eg), to255(eb) };   // edge (boundary line)
-		const vtkIdType nL = src->GetNumberOfLines(), nP = src->GetNumberOfPolys();
-		vtkNew<vtkUnsignedCharArray> cc; cc->SetNumberOfComponents(3); cc->SetNumberOfTuples(nL + nP);
-		vtkIdType t = 0;                              // vtkPolyData cell order is Verts, Lines, Polys
-		for (vtkIdType i = 0; i < nL; ++i, ++t) cc->SetTypedTuple(t, wantFill ? ce : cf);
-		for (vtkIdType i = 0; i < nP; ++i, ++t) cc->SetTypedTuple(t, cf);
-		src->GetCellData()->SetScalars(cc);
-	}
-
-	// Solid 3-D glyphs ride the actor's (1,1,zfac*ve) Z scale for POSITION like every other symbol,
-	// but that would also squash their own volume flat (zfac converts metres to a tiny degree-
-	// equivalent unit). `zfix` pre-divides the unit source's Z by that same factor so it cancels
-	// out after the actor re-applies it — kept live (not baked once) because ve changes at runtime;
-	// symbolRescaleCB updates it every frame alongside the screen-size ScaleFactor.
-	vtkSmartPointer<vtkTransform> zfix;
-	vtkSmartPointer<vtkTransformPolyDataFilter> zfixFilter;
-	if (solid3D) {
-		zfix = vtkSmartPointer<vtkTransform>::New();
-		zfixFilter = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
-		zfixFilter->SetInputData(src);
-		zfixFilter->SetTransform(zfix);
-	}
-
-	// solid3D (sphere/cube) uses vtkGlyph3DMapper — GPU instancing, the source mesh is uploaded ONCE
-	// and drawn N times, never duplicated into one combined CPU polydata. vtkGlyph3D would tessellate
-	// and copy the full sphere mesh (e.g. 16x16 res, ~480 tris) into ONE polydata PER point — for a
-	// 30k-event seismicity catalog that's ~15M triangles built on the CPU every time the source is
-	// touched, which is exactly what made "Global seismicity" slow to plot and to manipulate (point
-	// clouds never hit this path — they render as bare vtkPoints, no glyphing at all).
-	vtkSmartPointer<vtkGlyph3D>       g;
-	vtkSmartPointer<vtkGlyph3DMapper> gm;
-	vtkSmartPointer<vtkMapper> map3D;
-	if (solid3D) {
-		vtkNew<vtkGlyph3DMapper> m;
-		m->SetInputData(in);
-		m->SetSourceConnection(zfixFilter->GetOutputPort());
-		m->SetScaleModeToNoDataScaling();     // uniform size; ScaleFactor driven by the observer
-		m->OrientOff();
-		m->SetScaleFactor(sizePx > 0.0 ? sizePx : 8.0);   // placeholder; primed below + per frame
-		m->ScalarVisibilityOff();
-		gm = m;
-		map3D = m;
-	}
-	else {
-		vtkSmartPointer<vtkGlyph3D> gg = vtkSmartPointer<vtkGlyph3D>::New();
-		gg->SetSourceData(src);
-		gg->SetInputData(in);
-		// Uniform size unless the caller supplied per-point factors; ScaleFactor is the screen-size
-		// driver either way (symbolRescaleCB), so scale-by-scalar multiplies the two and the layer
-		// stays screen-constant with each glyph at its own relative size.
-		if (sizeScale) gg->SetScaleModeToScaleByScalar();
-		else           gg->SetScaleModeToDataScalingOff();
-		gg->OrientOff();
-		gg->SetScaleFactor(sizePx > 0.0 ? sizePx : 8.0);   // placeholder; primed below + per frame
-		g = gg;
-
-		vtkNew<vtkPolyDataMapper> map;
-		map->SetInputConnection(g->GetOutputPort());
-		if (ptRGB) {                          // per-point fill: colour by the named array, not the
-			map->ScalarVisibilityOn();        // active (scale) scalars — vtkGlyph3D copies input point
-			map->SetScalarModeToUsePointFieldData();   // data onto every generated glyph point
-			map->SelectColorArray("symRGB");
-			map->SetColorModeToDirectScalars();
-		}
-		else if (cellColoured) { map->ScalarVisibilityOn(); map->SetScalarModeToUseCellData(); map->SetColorModeToDirectScalars(); }
-		else                   { map->ScalarVisibilityOff(); }
-		// The huge negative bias below forces a flat glyph to WIN the depth test against the coincident
-		// surface it sits directly on (z=0, e.g. a volcano marker) — it has no real depth of its own.
-		// A solid3D glyph (sphere/cube) DOES carry real depth (e.g. a buried earthquake hypocentre) and
-		// must lose the depth test to genuinely shallower surface geometry above it (handled in the
-		// solid3D branch above, which leaves its mapper at the default unbiased depth resolution).
-		vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();   // lift off the z=0 map plane
-		map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -8000.0);
-		map->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -8000.0);
-		map->SetRelativeCoincidentTopologyPointOffsetParameter(-8000.0);
-		map3D = map;
-	}
-
 	vtkSmartPointer<vtkActor> a = vtkSmartPointer<vtkActor>::New();
-	a->SetMapper(map3D);
-	// Flat glyphs are unlit (constant colour, like the gizmo). A sphere/cube needs real shading to
-	// read as a volume rather than a flat disc — that's the whole point of offering them — so turn
-	// lighting ON just for those two; a sphere's fine facet mesh also looks messy with edges drawn,
-	// so skip EdgeVisibility for it (a cube keeps its box outline, which reads fine).
-	a->GetProperty()->SetLighting(solid3D);
-	if (wantFill) {
-		a->GetProperty()->SetColor(fr, fg, fb);
-		a->GetProperty()->SetEdgeColor(er, eg, eb);
-		// Cell-coloured glyphs (star) draw their outline as a coloured boundary line, NOT actor edges
-		// (which would expose the fill triangulation as spokes); edgeWidth sets that line's width.
-		a->GetProperty()->SetEdgeVisibility((edgeWidth > 0.0 && !cellColoured && sym != "o") ? 1 : 0);
-		a->GetProperty()->SetLineWidth(edgeWidth > 0.0 ? edgeWidth : 1.0);
-	} else {                               // open glyph: drawn in the edge colour, no fill
-		a->GetProperty()->SetColor(er, eg, eb);
-		a->GetProperty()->SetLineWidth(edgeWidth > 0.0 ? edgeWidth : 1.5);
-	}
-	a->SetScale(1.0, 1.0, symbolZScale(s));            // ride VE, flat in 2-D; x already baked
-
 	s->ren->AddActor(a);
 	SymbolLayer sl;
-	sl.actor = a; sl.glyph = g; sl.glyphMapper = gm; sl.zfix = zfix; sl.zfixFilter = zfixFilter;
+	sl.actor = a;
 	sl.sizePx = (sizePx > 0.0 ? sizePx : 8.0);
-	sl.filled = wantFill; sl.sym = sym; sl.solid3D = solid3D;
+	sl.sym = sym;
+	sl.wantSolid = (sym == "o" || sym == "u");        // sphere / cube: a true volume — in 3-D
+	sl.wantFilled = filled;
+	sl.fillRGB[0] = fr; sl.fillRGB[1] = fg; sl.fillRGB[2] = fb;
+	sl.edgeRGB[0] = er; sl.edgeRGB[1] = eg; sl.edgeRGB[2] = eb;
+	sl.edgeWidth = edgeWidth;
+	// Build the render pipeline from the ONE builder. `solid` is decided by the VIEW MODE, not by the
+	// caller: a window already in flat 2-D (every base map) must get the flat counterpart right away,
+	// exactly as symbolApplyZ lands the layer flattened rather than waiting for a toggle.
+	symbolSetPipeline(s, sl, in, sl.wantSolid && !(s && s->flat2d));
+	a->SetScale(1.0, 1.0, symbolZScale(s));            // ride VE, flat in 2-D; x already baked
 	sl.oneShot = oneShot;                // Symbols draw tool: exactly one point, whole-layer drag applies
 	// Remember the z each point was PLOTTED at, so flat-2D can write 0 into the points and 3-D can put
 	// the real depth back (symbolApplyZ) without ever touching the glyph's colour, lighting or size.
@@ -3818,52 +3877,39 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 	}
 
 	for (size_t i = 0; i < kindActs.size(); ++i) if (ch == kindActs[i]) {     // change shape (any -> flat glyph)
-		bool filled = true;
+		// An explicit pick: from here on this layer IS that flat glyph, in every view mode (so a
+		// sphere layer the user turned into a triangle stays a triangle when the view tilts).
+		// Rebuilt by symbolSetPipeline — the same builder addSymbols uses, so a layer carrying
+		// per-point sizes or colours keeps them (the hand-rolled downgrade this replaced dropped
+		// both, silently redrawing a scaled catalog at one uniform size).
 		sl->sym = KINDS[i].second;
-		if (sl->solid3D) {
-			// Downgrading a sphere/cube to a flat glyph: it currently rides the GPU-instanced
-			// vtkGlyph3DMapper (see addSymbols) with no vtkGlyph3D at all, so rebuild the CPU
-			// glyph pipeline flat symbols use, fed by the SAME points dataset (symInputPD).
-			vtkPolyData *pd = symInputPD(*sl);
-			vtkSmartPointer<vtkGlyph3D> gg = vtkSmartPointer<vtkGlyph3D>::New();
-			gg->SetSourceData(makeSymbolGlyph(sl->sym, filled));
-			gg->SetInputData(pd);
-			gg->SetScaleModeToDataScalingOff();
-			gg->OrientOff();
-			gg->SetScaleFactor(sl->sizePx);
-			vtkNew<vtkPolyDataMapper> map;
-			map->SetInputConnection(gg->GetOutputPort());
-			map->ScalarVisibilityOff();
-			vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
-			map->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, -8000.0);
-			map->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -8000.0);
-			map->SetRelativeCoincidentTopologyPointOffsetParameter(-8000.0);
-			sl->actor->SetMapper(map);
-			sl->glyph = gg;
-			sl->glyphMapper = nullptr;
-			sl->zfix = nullptr;
-			sl->zfixFilter = nullptr;
-			sl->solid3D = false;
-			sl->actor->GetProperty()->SetLighting(false);
-		}
-		else {
-			sl->glyph->SetSourceData(makeSymbolGlyph(sl->sym, filled));
-			sl->glyph->Modified();
-		}
-		sl->filled = filled;
-		applyCellColours();                          // star -> per-cell outline; others -> actor edges
+		sl->wantSolid = false;
+		vtkPolyData *pd = symInputPD(*sl);
+		if (pd) symbolSetPipeline(s, *sl, pd, false);
+		symbolRescaleCB(nullptr, 0, s, nullptr);     // prime ScaleFactor on the rebuilt pipeline
 		reRender(); return;
 	}
 	if (ch == fillA) {
 		double *c = sl->actor->GetProperty()->GetColor();
 		QColor q = QColorDialog::getColor(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)), s->widget, "Fill colour");
-		if (q.isValid()) { sl->actor->GetProperty()->SetColor(q.redF(), q.greenF(), q.blueF()); applyCellColours(); reRender(); }
+		if (q.isValid()) {
+			sl->actor->GetProperty()->SetColor(q.redF(), q.greenF(), q.blueF());
+			// Remember it on the LAYER too: the actor property is not the only reader any more — a
+			// pipeline rebuild (2-D <-> 3-D glyph kind, shape change) paints from these.
+			sl->fillRGB[0] = q.redF(); sl->fillRGB[1] = q.greenF(); sl->fillRGB[2] = q.blueF();
+			if (!sl->filled) { sl->edgeRGB[0] = q.redF(); sl->edgeRGB[1] = q.greenF(); sl->edgeRGB[2] = q.blueF(); }
+			applyCellColours(); reRender();
+		}
 		return;
 	}
 	if (ch == edgeA) {
 		double *c = sl->actor->GetProperty()->GetEdgeColor();
 		QColor q = QColorDialog::getColor(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)), s->widget, "Edge colour");
-		if (q.isValid()) { sl->actor->GetProperty()->SetEdgeColor(q.redF(), q.greenF(), q.blueF()); applyCellColours(); reRender(); }
+		if (q.isValid()) {
+			sl->actor->GetProperty()->SetEdgeColor(q.redF(), q.greenF(), q.blueF());
+			sl->edgeRGB[0] = q.redF(); sl->edgeRGB[1] = q.greenF(); sl->edgeRGB[2] = q.blueF();
+			applyCellColours(); reRender();
+		}
 		return;
 	}
 	// Size dialogs: a live QDoubleSpinBox so the glyph resizes AS the value changes (not on OK).

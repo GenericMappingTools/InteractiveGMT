@@ -21,6 +21,23 @@ const _SEIS_DEP_LABEL = ("0-33 km", "33-70 km", "70-150 km", "150-300 km", ">300
 const _SEIS_DEF_SIZE  = (4.0, 6.0, 8.0, 10.0, 12.0, 15.0)
 const _SEIS_DEF_COLOR = ("red", "green", "blue", "cyan", "yellow")
 
+# USGS's own map convention: the circle DIAMETER grows GEOMETRICALLY with magnitude — their legend
+# runs M0 … M8+ over a ~4.4x span, i.e. ~1.24x per magnitude unit — and M5 is 8 POINTS. Both ends
+# saturate exactly like that legend ("8+" is one single size), so a M9 cannot blot out the map and a
+# M0 stays a visible dot. An event carrying NO magnitude gets the smallest size.
+const _SEIS_MAG_REF    = 5.0        # magnitude the scale is anchored on
+const _SEIS_MAG_REF_PT = 8.0        # … and its diameter, in points
+const _SEIS_MAG_BASE   = 1.24       # diameter ratio per magnitude unit
+const _SEIS_MAG_LO     = 0.0        # magnitudes clamp here …
+const _SEIS_MAG_HI     = 8.0        # … and at the legend's "8+"
+
+# Symbol diameter for one magnitude, in PIXELS (add_symbols!'s default unit; the scheme above is
+# stated in points, so convert here @96 dpi rather than threading a `sizeunit` through the layer).
+function _seis_mag_size(m::Float64)::Float64
+	mm = isnan(m) ? _SEIS_MAG_LO : clamp(m, _SEIS_MAG_LO, _SEIS_MAG_HI)
+	return _SEIS_MAG_REF_PT * _SEIS_MAG_BASE^(mm - _SEIS_MAG_REF) * 96 / 72
+end
+
 # Bucket of `v` in the sorted `edges` (1 = below the first edge … length+1 = ≥ the last edge).
 # NaN compares false against every edge, so it lands in bucket 1 — exactly the "include unknown
 # magnitudes with the smallest events" behaviour the "All magnitudes" box asks for.
@@ -317,9 +334,11 @@ function _seis_filter(d, lon, lat, dep, mag, t, frame=nothing)
 	return keep
 end
 
-# Stamp the kept events as symbol layers. Simple case = one red size-4 layer (Mirone's marker);
-# "different sizes" splits by magnitude bucket, "different colors" by depth bucket, both = the
-# used (mag, depth) combinations. Depth-colours-only uses Mirone's size 5.
+# Stamp the kept events as symbol layers. Simple case = ONE red layer whose symbols are sized by
+# MAGNITUDE (_seis_mag_size, the USGS scheme) — one actor carrying per-point size factors, never a
+# layer per event. "different sizes" splits by magnitude bucket and honours the dialog's OWN six
+# sizes (an explicit user setting, never overridden here); "different colors" splits by depth
+# bucket, both = the used (mag, depth) combinations. Colours-only keeps the magnitude sizing.
 function _seis_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, t, keep)
 	bysize  = _on(d, "magsizes")
 	bycolor = _on(d, "depcolors")
@@ -327,7 +346,8 @@ function _seis_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, t, keep)
 	colors = ntuple(k -> (c = _get(d, "c$k"); isempty(c) ? _SEIS_DEF_COLOR[k] : c), 5)
 	idx = findall(keep)
 	if !bysize && !bycolor
-		_seis_layer(scene, "Seismicity", idx, lon, lat, dep, mag, t, 4.0, "red")
+		_seis_layer(scene, "Seismicity", idx, lon, lat, dep, mag, t,
+		            [_seis_mag_size(Float64(mag[i])) for i in idx], "red")
 		return
 	end
 	mb = [bysize  ? _seis_bucket(_SEIS_MAG_EDGES, mag[i]) : 1 for i in idx]
@@ -336,7 +356,9 @@ function _seis_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, t, keep)
 		sel = [idx[q] for q in eachindex(idx) if mb[q] == kb && db[q] == jb]
 		isempty(sel) && continue
 		name = "Seismicity" * (bysize ? " " * _SEIS_MAG_LABEL[kb] : "") * (bycolor ? " " * _SEIS_DEP_LABEL[jb] : "")
-		_seis_layer(scene, name, sel, lon, lat, dep, mag, t, bysize ? sizes[kb] : 5.0, bycolor ? colors[jb] : "red")
+		_seis_layer(scene, name, sel, lon, lat, dep, mag, t,
+		            bysize ? sizes[kb] : [_seis_mag_size(Float64(mag[i])) for i in sel],
+		            bycolor ? colors[jb] : "red")
 	end
 	return
 end
@@ -359,7 +381,8 @@ function _seis_flat_view(scene::Ptr{Cvoid})::Bool
 	return get(st, "flat2d", 0) == 1
 end
 
-function _seis_layer(scene::Ptr{Cvoid}, name, sel, lon, lat, dep, mag, t, sizepx, color)
+function _seis_layer(scene::Ptr{Cvoid}, name, sel, lon, lat, dep, mag, t,
+                     sizepx::Union{Float64,Vector{Float64}}, color)
 	infos = [_seis_info(mag[i], dep[i], t[i]) for i in sel]
 	# EVERY event sits at its own HYPOCENTRE: z = -depth, in metres, down negative. A seismicity
 	# cloud IS its depth distribution — a subduction zone has to dip — so the depth is never thrown
