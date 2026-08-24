@@ -33,7 +33,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_meca_drag_test,
 	:gmtvtk_symbol_add_test, :gmtvtk_symbol_drag_test,
 	:gmtvtk_symbol_get_pos_test, :gmtvtk_symbol_ui_drag_test, :gmtvtk_sym_debug_test,
-	:gmtvtk_symbol_click_jitter_test, :gmtvtk_symbol_layer_test, :gmtvtk_symbol_remove_test, :gmtvtk_seismicity_send_test, :gmtvtk_active_axes_test, :gmtvtk_symbol_table_test, :gmtvtk_symbol_toplayer_test,
+	:gmtvtk_symbol_click_jitter_test, :gmtvtk_symbol_layer_test, :gmtvtk_symbol_remove_test, :gmtvtk_seismicity_send_test, :gmtvtk_active_axes_test, :gmtvtk_symbol_table_test, :gmtvtk_symbol_toplayer_test, :gmtvtk_pixel_count_test,
 	:gmtvtk_send_ctrlc_test, :gmtvtk_clipboard_get_test, :gmtvtk_camera_get_test,
 	:gmtvtk_nswing_enter_test,
 	:gmtvtk_visible_region_test,

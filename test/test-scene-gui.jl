@@ -221,6 +221,49 @@ end
 	end
 end
 
+# THE LAW, asserted on the RENDERED PIXELS, not on the scene graph: in 3-D, anything below a surface
+# is not visible through that surface. Every earlier test of this checked a proxy — which glyph the
+# layer drew, which renderer held it — and a proxy is exactly what let "events drawn through the
+# grid" ship twice. This one reads the framebuffer: a magenta sphere 100 km under an opaque grid must
+# contribute ZERO pixels. The two other legs stop it passing for the wrong reason: the same sphere
+# IS counted in the flat-2-D map view (a marker shows whatever its depth), and a symbol ABOVE the
+# surface IS counted in the very same 3-D view (so "0" can never mean "symbols never render here").
+@testitem "3-D: a surface hides what is buried under it (pixels, not proxies)" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[0.0 for iy in 0:20, ix in 0:20]; x=[0.0, 20.0], y=[0.0, 20.0])  # flat lid at z=0
+	f = view_grid(G)
+	px(r, g, b) = ccall(_test_fn(:gmtvtk_pixel_count_test), Cint,
+	                    (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble), f.h, r, g, b, 0.25)
+	flat2d(on) = (ccall(_test_fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, on);
+	              IG._pump_once())
+	try
+		IG._pump_once()
+		magenta0 = px(1.0, 0.0, 1.0)
+		yellow0  = px(1.0, 1.0, 0.0)              # baselines: whatever the grid itself paints
+
+		# A hypocentre 100 km DOWN, well inside the grid's footprint.
+		IG.add_symbols!(f.h, [10.0], [10.0]; z=[-100000.0], symbol=:sphere, size=40.0,
+		                fill=(1.0, 0.0, 1.0), name="Deep")
+		IG._pump_once()
+		@test px(1.0, 0.0, 1.0) > magenta0 + 100   # flat-2-D map: the marker shows
+
+		flat2d(0)                                  # tilt into 3-D
+		@test px(1.0, 0.0, 1.0) == magenta0        # …and the surface above it hides it completely
+
+		# Same view, same layer kind, a symbol ABOVE the lid: still drawn. Without this leg a
+		# regression that stopped drawing symbols in 3-D altogether would pass the test above.
+		IG.add_symbols!(f.h, [10.0], [10.0]; z=[100000.0], symbol=:sphere, size=40.0,
+		                fill=(1.0, 1.0, 0.0), name="High")
+		IG._pump_once()
+		@test px(1.0, 1.0, 0.0) > yellow0 + 100
+
+		flat2d(1)                                  # back to the map: depth stops mattering again
+		@test px(1.0, 0.0, 1.0) > magenta0 + 100
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 # "Show data table" shows THE DATA — a catalog's own lon/lat/depth/magnitude/date, handed over by
 # whoever plotted it. Never a graphical property: how big a circle is drawn is a fact about the
 # picture, not about the earthquake, and has no business in a data table.

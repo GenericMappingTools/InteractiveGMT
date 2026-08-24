@@ -3933,6 +3933,31 @@ GMTVTK_API int gmtvtk_seismicity_send_test(void *scene, const char *params) {
 	return 1;
 }
 
+// test hook: how many pixels of the RENDERED IMAGE are within `tol` of colour (r,g,b), 0..1 each.
+// Reads the framebuffer in memory (no file), so a test can assert what is ACTUALLY ON SCREEN rather
+// than what the scene graph says should be — the difference between "the layer is in the right
+// renderer" and "the surface really does hide what is buried under it".
+GMTVTK_API int gmtvtk_pixel_count_test(void *scene, double r, double g, double b, double tol) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->widget || !s->widget->renderWindow()) return -1;
+	vtkRenderWindow *rw = s->widget->renderWindow();
+	rw->Render();
+	const int *sz = rw->GetSize();
+	if (!sz || sz[0] <= 0 || sz[1] <= 0) return -1;
+	vtkNew<vtkUnsignedCharArray> px;
+	if (!rw->GetPixelData(0, 0, sz[0] - 1, sz[1] - 1, /*front=*/1, px.GetPointer())) return -1;
+	const vtkIdType n = px->GetNumberOfTuples();
+	const int nc = px->GetNumberOfComponents();
+	if (nc < 3) return -1;
+	const double tr = r * 255.0, tg = g * 255.0, tb = b * 255.0, t = tol * 255.0;
+	int hits = 0;
+	for (vtkIdType i = 0; i < n; ++i) {
+		const unsigned char *p = px->GetPointer(i * nc);
+		if (std::fabs(p[0] - tr) <= t && std::fabs(p[1] - tg) <= t && std::fabs(p[2] - tb) <= t) ++hits;
+	}
+	return hits;
+}
+
 // test hook: is symbol layer `idx` parked on the DEPTH-CLEARED OVERLAY layer (drawn over everything,
 // the flat-2-D map-marker rule) or in the main renderer (real depth test, so terrain above a buried
 // hypocentre hides it)? 1 = overlay, 0 = main renderer, -1 = no such layer.

@@ -22,11 +22,11 @@ const _SEIS_DEF_SIZE  = (4.0, 6.0, 8.0, 10.0, 12.0, 15.0)
 const _SEIS_DEF_COLOR = ("red", "green", "blue", "cyan", "yellow")
 
 # USGS's own map convention: the circle DIAMETER grows GEOMETRICALLY with magnitude — their legend
-# runs M0 … M8+ over a ~4.4x span, i.e. ~1.24x per magnitude unit — and M5 is 8 POINTS. Both ends
+# runs M0 … M8+ over a ~4.4x span, i.e. ~1.24x per magnitude unit — and M5 is 6 POINTS. Both ends
 # saturate exactly like that legend ("8+" is one single size), so a M9 cannot blot out the map and a
 # M0 stays a visible dot. An event carrying NO magnitude gets the smallest size.
 const _SEIS_MAG_REF    = 5.0        # magnitude the scale is anchored on
-const _SEIS_MAG_REF_PT = 8.0        # … and its diameter, in points
+const _SEIS_MAG_REF_PT = 6.0        # … and its diameter, in points
 const _SEIS_MAG_BASE   = 1.24       # diameter ratio per magnitude unit
 const _SEIS_MAG_LO     = 0.0        # magnitudes clamp here …
 const _SEIS_MAG_HI     = 8.0        # … and at the legend's "8+"
@@ -36,6 +36,51 @@ const _SEIS_MAG_HI     = 8.0        # … and at the legend's "8+"
 function _seis_mag_size(m::Float64)::Float64
 	mm = isnan(m) ? _SEIS_MAG_LO : clamp(m, _SEIS_MAG_LO, _SEIS_MAG_HI)
 	return _SEIS_MAG_REF_PT * _SEIS_MAG_BASE^(mm - _SEIS_MAG_REF) * 96 / 72
+end
+
+# …and the colour is the USGS "Age (past)" scheme: red = last hour, orange = last day, yellow = last
+# week, WHITE = anything older — a month old, a year old, all white, which is what their own map
+# shows (it is full of white circles over a 30-day feed). Ages run from NOW, like the site's legend,
+# so the same catalog re-plotted tomorrow re-colours itself; that is the point of the scheme.
+# Grey is not an age at all: it is reserved for an event that carries NO DATE, the one case where
+# the scheme has nothing to say.
+const _SEIS_AGE_EDGES  = (3600.0, 86400.0, 604800.0)               # hour, day, week
+const _SEIS_AGE_LABEL  = ("Hour", "Day", "Week", "Older", "Undated")
+const _SEIS_AGE_COLORS = ((1.0, 0.0, 0.0), (1.0, 0.65, 0.0), (1.0, 1.0, 0.0),
+                          (1.0, 1.0, 1.0), (0.75, 0.75, 0.75))
+const _SEIS_AGE_UNDATED = _SEIS_AGE_COLORS[5]
+
+function _seis_age_rgb(t::Float64, now::Float64)::NTuple{3,Float64}
+	isnan(t) && return _SEIS_AGE_UNDATED
+	age = now - t
+	for k in eachindex(_SEIS_AGE_EDGES)
+		(age <= _SEIS_AGE_EDGES[k]) && return _SEIS_AGE_COLORS[k]
+	end
+	return _SEIS_AGE_COLORS[4]                                     # older than a week -> white
+end
+
+# THE DRAW ORDER: oldest FIRST, newest LAST, so a fresh event ends up ON TOP of the old ones it
+# overlaps, exactly as the USGS map does. LAST DRAWN WINS — measured, not assumed: two symbols at the
+# same spot, same z, the second one painted keeps the pixel (6075 px vs 0 for the first). The catalog
+# arrives newest-first (orderby=time, which the 20000-event cap needs), so plotting it as it comes
+# buried every red/orange/yellow symbol under the month-old white ones drawn after them: a map whose
+# colours were computed correctly and then painted over. In 3-D the events carry real hypocentre
+# depths and the depth test resolves them on its own, so this order changes nothing there. Undated
+# events (no time at all) go first, i.e. at the bottom.
+function _seis_draw_order(idx::Vector{Int}, t)::Vector{Int}
+	key(i::Int) = (v = Float64(t[i]);  isnan(v) ? -Inf : v)
+	return sort(idx; by=key)
+end
+
+# The per-point fill of one layer, as the n x 3 matrix add_symbols! takes. A MATRIX, never a vector
+# of triples: a 3-event layer would be indistinguishable from one single RGB colour.
+function _seis_age_fill(t, sel::Vector{Int}, now::Float64)::Matrix{Float64}
+	M = Matrix{Float64}(undef, length(sel), 3)
+	for (r, i) in enumerate(sel)
+		c = _seis_age_rgb(Float64(t[i]), now)
+		M[r,1] = c[1];  M[r,2] = c[2];  M[r,3] = c[3]
+	end
+	return M
 end
 
 # Bucket of `v` in the sorted `edges` (1 = below the first edge … length+1 = ≥ the last edge).
@@ -67,7 +112,6 @@ _seis_bucket(edges, v) = 1 + count(e -> v >= e, edges)
 # (`place`, column 14), so a plain comma split is exact.
 const _SEIS_USGS_URL    = "https://earthquake.usgs.gov/fdsnws/event/1/query.csv"
 const _SEIS_USGS_LIMIT  = 20000       # the service's own ceiling on one answer
-const _SEIS_USGS_MAGMIN = 3.0         # "Current seismicity" default when the dialog names none
 
 # The query. Only the bounds the dialog actually carries are sent; the service's own defaults (the
 # last 30 days) then apply, which is what makes the menu entry "recent" seismicity. An `endtime`
@@ -77,7 +121,12 @@ function _seis_usgs_url(d::Dict{String,String}, W::Float64, E::Float64, S::Float
 	io = IOBuffer()
 	print(io, _SEIS_USGS_URL, "?format=csv&orderby=time&limit=", _SEIS_USGS_LIMIT)
 	print(io, "&minlongitude=", W, "&maxlongitude=", E, "&minlatitude=", S, "&maxlatitude=", N)
-	print(io, "&minmagnitude=", something(tryparse(Float64, _get(d, "magmin")), _SEIS_USGS_MAGMIN))
+	# NO magnitude floor of our own. The USGS map this reproduces shows EVERY event it has, and that
+	# is not cosmetic — the colour scheme is by AGE, and the recent (red/orange/yellow) end of a
+	# 30-day window is almost entirely SMALL events. A default floor of M3 cut exactly those out and
+	# left a map that was white nearly everywhere, which is what the scheme looks like when it is fed
+	# the wrong catalog. The dialog's own "Mag min" still applies whenever the user sets one.
+	m0 = tryparse(Float64, _get(d, "magmin"));  m0 === nothing || print(io, "&minmagnitude=", m0)
 	m1 = tryparse(Float64, _get(d, "magmax"));  m1 === nothing || print(io, "&maxmagnitude=", m1)
 	t0 = _seis_datestr(d, "s");  isempty(t0) || print(io, "&starttime=", t0)
 	t1 = _seis_datestr(d, "e");  isempty(t1) || print(io, "&endtime=", t1, "T23:59:59")
@@ -366,20 +415,22 @@ function _seis_filter(d, lon, lat, dep, mag, t, frame=nothing,
 	return keep
 end
 
-# Stamp the kept events as symbol layers. Simple case = ONE red layer whose symbols are sized by
-# MAGNITUDE (_seis_mag_size, the USGS scheme) — one actor carrying per-point size factors, never a
-# layer per event. "different sizes" splits by magnitude bucket and honours the dialog's OWN six
-# sizes (an explicit user setting, never overridden here); "different colors" splits by depth
-# bucket, both = the used (mag, depth) combinations. Colours-only keeps the magnitude sizing.
+# Stamp the kept events as symbol layers. Simple case = ONE layer, sized by MAGNITUDE and coloured by
+# AGE (_seis_mag_size / _seis_age_fill, the USGS map's own two schemes) — one actor carrying per-point
+# sizes and per-point colours, never a layer per event. "different sizes" splits by magnitude bucket
+# and honours the dialog's OWN six sizes, "different colors" its OWN five depth colours (explicit user
+# settings, never overridden here); both = the used (mag, depth) combinations. Whichever of the two the
+# user did NOT ask for keeps the USGS scheme for that property.
 function _seis_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, t, keep)
 	bysize  = _on(d, "magsizes")
 	bycolor = _on(d, "depcolors")
 	sizes  = ntuple(k -> something(tryparse(Float64, _get(d, "s$k")), _SEIS_DEF_SIZE[k]), 6)
 	colors = ntuple(k -> (c = _get(d, "c$k"); isempty(c) ? _SEIS_DEF_COLOR[k] : c), 5)
-	idx = findall(keep)
+	now = time()                                # ONE instant for the whole plot — every layer's ages
+	idx = _seis_draw_order(findall(keep), t)     # are measured from the same "now", never drifting
 	if !bysize && !bycolor
 		_seis_layer(scene, "Seismicity", idx, lon, lat, dep, mag, t,
-		            [_seis_mag_size(Float64(mag[i])) for i in idx], "red")
+		            [_seis_mag_size(Float64(mag[i])) for i in idx], _seis_age_fill(t, idx, now))
 		return
 	end
 	mb = [bysize  ? _seis_bucket(_SEIS_MAG_EDGES, mag[i]) : 1 for i in idx]
@@ -390,7 +441,7 @@ function _seis_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, t, keep)
 		name = "Seismicity" * (bysize ? " " * _SEIS_MAG_LABEL[kb] : "") * (bycolor ? " " * _SEIS_DEP_LABEL[jb] : "")
 		_seis_layer(scene, name, sel, lon, lat, dep, mag, t,
 		            bysize ? sizes[kb] : [_seis_mag_size(Float64(mag[i])) for i in sel],
-		            bycolor ? colors[jb] : "red")
+		            bycolor ? colors[jb] : _seis_age_fill(t, sel, now))
 	end
 	return
 end
@@ -414,7 +465,8 @@ function _seis_flat_view(scene::Ptr{Cvoid})::Bool
 end
 
 function _seis_layer(scene::Ptr{Cvoid}, name, sel, lon, lat, dep, mag, t,
-                     sizepx::Union{Float64,Vector{Float64}}, color)
+                     sizepx::Union{Float64,Vector{Float64}},
+                     color::Union{String,Matrix{Float64}})
 	infos = [_seis_info(mag[i], dep[i], t[i]) for i in sel]
 	# EVERY event sits at its own HYPOCENTRE: z = -depth, in metres, down negative. A seismicity
 	# cloud IS its depth distribution — a subduction zone has to dip — so the depth is never thrown

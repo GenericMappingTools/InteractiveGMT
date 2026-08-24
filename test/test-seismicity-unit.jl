@@ -32,7 +32,8 @@ end
 @testitem "seismicity: magnitude -> symbol size (USGS scheme)" tags=[:unit, :fast] begin
 	IG = InteractiveGMT
 	pt(m) = IG._seis_mag_size(m) * 72 / 96          # back to POINTS, the scheme's own unit
-	@test pt(5.0) ≈ 8.0                              # the anchor: M5 is 8 points
+	# The anchor: the reference magnitude is exactly its stated diameter, whatever the two are set to.
+	@test pt(IG._SEIS_MAG_REF) ≈ IG._SEIS_MAG_REF_PT
 	@test pt(6.0) / pt(5.0) ≈ IG._SEIS_MAG_BASE      # geometric in magnitude
 	@test pt(3.0) / pt(2.0) ≈ IG._SEIS_MAG_BASE
 	@test pt(IG._SEIS_MAG_HI) / pt(IG._SEIS_MAG_LO) ≈    # the legend's own smallest … biggest span
@@ -41,6 +42,46 @@ end
 	@test pt(IG._SEIS_MAG_LO - 1.0) == pt(IG._SEIS_MAG_LO)   # … and so does the small end
 	@test pt(NaN) == pt(IG._SEIS_MAG_LO)             # no magnitude -> smallest
 	@test issorted([pt(m) for m in 0:0.5:9])
+end
+
+@testitem "seismicity: magnitude -> colour by AGE (USGS scheme)" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	now = 1.7e9
+	red, orange, yellow, white, grey = IG._SEIS_AGE_COLORS
+	@test IG._seis_age_rgb(now,            now) == red      # this instant
+	@test IG._seis_age_rgb(now - 3599.0,   now) == red      # within the hour
+	@test IG._seis_age_rgb(now - 3600.0,   now) == red      # …the edge belongs to the younger bucket
+	@test IG._seis_age_rgb(now - 3601.0,   now) == orange
+	@test IG._seis_age_rgb(now - 86400.0,  now) == orange   # a day
+	@test IG._seis_age_rgb(now - 86401.0,  now) == yellow
+	@test IG._seis_age_rgb(now - 604800.0, now) == yellow   # a week
+	# Older than a week is WHITE, and stays white however old it gets — a month, a year, 1990.
+	@test IG._seis_age_rgb(now - 604801.0,  now) == white
+	@test IG._seis_age_rgb(now - 2592000.0, now) == white   # 30 days
+	@test IG._seis_age_rgb(now - 2592001.0, now) == white   # older than a month
+	@test IG._seis_age_rgb(now - 3.0e9,     now) == white
+	# Grey is not an age: it is the ONE case the scheme cannot speak for, an event with no date.
+	@test IG._seis_age_rgb(NaN,            now) == grey
+	# The per-layer fill is an n x 3 MATRIX (a vector of triples would be ambiguous at n == 3).
+	t = [now, now - 90000.0, now - 1.0e8, NaN]
+	M = IG._seis_age_fill(t, [1, 2, 3, 4], now)
+	@test size(M) == (4, 3)
+	@test M[1,:] == collect(red) && M[2,:] == collect(yellow)
+	@test M[3,:] == collect(white) && M[4,:] == collect(grey)
+	@test IG._seis_age_fill(t, [4], now) == reshape(collect(grey), 1, 3)   # honours the selection
+end
+
+@testitem "seismicity: the newest event is drawn LAST (it wins the pixel)" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	# Overlapping symbols at the same z: LAST DRAWN WINS (measured with two symbols on one spot).
+	# So oldest first, newest last = newest on top, the USGS map's own rule. Plotting the catalog in
+	# the order it arrives (newest-first) buried the fresh red/orange/yellow events under the
+	# month-old white ones.
+	t = [500.0, 100.0, 300.0, NaN, 200.0]
+	@test IG._seis_draw_order([1, 2, 3, 4, 5], t) == [4, 2, 5, 3, 1]   # undated, 100, 200, 300, 500
+	@test IG._seis_draw_order([1, 3], t) == [3, 1]                      # honours the selection
+	@test IG._seis_draw_order([2, 4], t) == [4, 2]                      # …undated under a dated event
+	@test IG._seis_draw_order(Int[], t) == Int[]
 end
 
 @testitem "seismicity: a collapsed region is repaired, never queried" tags=[:unit, :fast] begin
@@ -96,7 +137,8 @@ end
 	u = IG._seis_usgs_url(IG._nswing_parse(""), -180.0, 180.0, -90.0, 90.0)
 	@test occursin("orderby=time&", u) && !occursin("time-asc", u)   # newest FIRST: the cap drops old
 	@test occursin("limit=$(IG._SEIS_USGS_LIMIT)", u)                # explicit, or a big query 400s
-	@test occursin("minmagnitude=3.0", u)                            # "Current seismicity" default
+	@test !occursin("minmagnitude", u)   # NO floor of our own: the age colours live on the small,
+	                                     # recent events a default M3 cut out (see _seis_usgs_url)
 	@test !occursin("starttime", u) && !occursin("endtime", u)       # no bounds -> service's last 30 days
 	d = IG._nswing_parse("syear=2024\nsmonth=1\nsday=1\neyear=2024\nemonth=1\neday=15\nmagmin=4\nmagmax=8\ndepmin=10\ndepmax=700")
 	u2 = IG._seis_usgs_url(d, -12.0, -6.0, 35.0, 39.0)
