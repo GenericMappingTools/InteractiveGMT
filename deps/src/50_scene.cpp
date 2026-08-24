@@ -3405,14 +3405,20 @@ static void symbolSetPipeline(Scene *s, SymbolLayer &sl, vtkPolyData *in, bool s
 // straight down at a flat-2-D map there is no third dimension for it to be a body IN, so the layer
 // draws its flat counterpart (circle / square) there and the real volume the moment the view tilts.
 // A layer that asked for a flat glyph in the first place is left alone.
-static void symbolApplyKind(Scene *s, SymbolLayer &sl) {
-	if (!sl.wantSolid || !sl.actor) return;
+// Returns true when the pipeline actually changed — the caller must then re-run the vector stacking,
+// because WHO OCCLUDES WHOM is decided from `solid3D` (applyStacking: a flat glyph goes to the
+// depth-cleared overlay layer and draws over everything; a real 3-D body stays in the main renderer
+// and loses the depth test to terrain above it). Switching the pipeline without restacking left a
+// tilted view drawing buried hypocentres straight THROUGH the surface.
+static bool symbolApplyKind(Scene *s, SymbolLayer &sl) {
+	if (!sl.wantSolid || !sl.actor) return false;
 	const bool solid = !(s && s->flat2d);
-	if (solid == sl.solid3D) return;                   // already running the right pipeline
+	if (solid == sl.solid3D) return false;             // already running the right pipeline
 	vtkPolyData *in = symInputPD(sl);
-	if (!in) return;
+	if (!in) return false;
 	symbolSetPipeline(s, sl, in, solid);
 	symbolRescaleCB(nullptr, 0, s, nullptr);           // prime ScaleFactor/zfix on the new pipeline
+	return true;
 }
 
 // Stamp N glyphs of one GMT symbol code at N (x,y,z) points (TRUE coords). Screen-constant size:

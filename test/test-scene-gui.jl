@@ -190,16 +190,26 @@ end
 		@test out[3] == 1                 # and it scales by the per-point factors
 		@test out[4] == 3                 # 3 points
 
+		# … and on a flat map it draws OVER the raster: a marker seen straight down must show
+		# whatever its depth (the depth-cleared overlay layer).
+		toplayer(i) = ccall(_test_fn(:gmtvtk_symbol_toplayer_test), Cint, (Ptr{Cvoid}, Cint), f.h, i)
+		@test toplayer(0) == 1
+
 		ccall(_test_fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, 0)   # tilt to 3-D
 		IG._pump_once()
 		ccall(_test_fn(:gmtvtk_symbol_layer_test), Cint, (Ptr{Cvoid}, Cint, Ptr{Cdouble}), f.h, 0, out)
 		@test out[1] == 1                 # real spheres again …
 		@test out[3] == 1                 # … still scaled per point (the vtkGlyph3DMapper bug)
+		# THE 3-D rule: a buried hypocentre is a real body — it goes back to the MAIN renderer and
+		# loses the depth test to the surface above it. Left on the overlay layer (the kind switch
+		# used not to restack) the events were drawn straight THROUGH the grid.
+		@test toplayer(0) == 0
 
 		ccall(_test_fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, 1)   # and back
 		IG._pump_once()
 		ccall(_test_fn(:gmtvtk_symbol_layer_test), Cint, (Ptr{Cvoid}, Cint, Ptr{Cdouble}), f.h, 0, out)
 		@test out[1] == 0 && out[3] == 1
+		@test toplayer(0) == 1
 
 		# A layer that asked for a FLAT glyph is left alone by the mode switch.
 		IG.add_symbols!(f.h, [1.0], [1.0]; symbol=:triangle, size=6.0, name="Flat")

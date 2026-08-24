@@ -1202,7 +1202,10 @@ static inline double symbolZScale(Scene *s) { return (s && s->flat2d) ? 0.0 : (s
 // THE glyph KIND of a symbol layer, same rule and same shape as symbolZScale above: a layer that asked
 // for a sphere/cube is that volume in 3-D and its flat counterpart (circle/square) on a flat-2-D map.
 // Defined in 50_scene.cpp (it needs the glyph sources); declared here because applyVE drives it.
-static void symbolApplyKind(Scene *s, SymbolLayer &sl);
+// True when the pipeline changed -> the vector stacking must be re-applied (that is where the
+// occlusion rule lives: flat glyph = depth-cleared overlay layer, 3-D body = real depth test).
+static bool symbolApplyKind(Scene *s, SymbolLayer &sl);
+static void applyVectorStacking(Scene *s);             // 50_scene.cpp: re-rank the shared vector pile
 
 // Put ONE layer at the right height for the current view mode. The actor's scale is NEVER used to
 // flatten: scaling a lit sphere to zero thickness zeroes its normals and the glyph renders black, and
@@ -2608,7 +2611,13 @@ static void applyVE(Scene *s) {
 	// … and the glyph KIND follows the same mode switch: a sphere is a 3-D body, so on a flat-2-D map
 	// the layer draws its flat counterpart (a circle) instead — both halves of "what a symbol layer
 	// looks like in this view mode" applied here, for every layer, from the one place that decides it.
-	for (auto &sl : s->symbols) { symbolApplyKind(s, sl);  symbolApplyZ(s, sl); }
+	bool kindChanged = false;
+	for (auto &sl : s->symbols) { kindChanged |= symbolApplyKind(s, sl);  symbolApplyZ(s, sl); }
+	// A layer that just swapped between its flat and its solid form has swapped occlusion rules with
+	// it: in 3-D a buried hypocentre is a real body that terrain above it must HIDE, in flat 2-D it is
+	// a map marker that must show regardless. That decision lives in applyStacking, so re-run it —
+	// once, after the whole loop — or the tilted view keeps drawing events through the surface.
+	if (kindChanged) applyVectorStacking(s);
 	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview
 	if (s->polyHandles) s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // edit-mode vertex handles
 	for (auto &rr : s->rulers)                                                     // every ruler track and the

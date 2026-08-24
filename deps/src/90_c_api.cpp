@@ -3933,6 +3933,17 @@ GMTVTK_API int gmtvtk_seismicity_send_test(void *scene, const char *params) {
 	return 1;
 }
 
+// test hook: is symbol layer `idx` parked on the DEPTH-CLEARED OVERLAY layer (drawn over everything,
+// the flat-2-D map-marker rule) or in the main renderer (real depth test, so terrain above a buried
+// hypocentre hides it)? 1 = overlay, 0 = main renderer, -1 = no such layer.
+GMTVTK_API int gmtvtk_symbol_toplayer_test(void *scene, int idx) {
+	Scene *s = (Scene*)scene;
+	if (!s || idx < 0 || (size_t)idx >= s->symbols.size()) return -1;
+	vtkActor *a = s->symbols[(size_t)idx].actor.Get();
+	if (!a) return -1;
+	return (s->axesRen && s->axesRen->HasViewProp(a)) ? 1 : 0;
+}
+
 // test hook: the DATA TABLE symbol layer `idx` carries — "<ncols>;<nrows>;<hdr,…>;<row0,…>", the
 // same strings "Show data table" puts in its cells. Empty when the layer carries no data.
 GMTVTK_API int gmtvtk_symbol_table_test(void *scene, int idx, char *buf, int cap) {
