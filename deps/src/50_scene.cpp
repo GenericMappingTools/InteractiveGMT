@@ -3547,8 +3547,12 @@ static void showSymbolDataTable(Scene *s, vtkActor *act, const QString &name) {
 	QVBoxLayout *lay = new QVBoxLayout(dlg);
 
 	const int ncoord = s->flat2d ? 2 : 3;
+	// Each row also REPORTS ITS OWN on-screen size (symPointSizePx): on a scaled layer — a
+	// magnitude-sized seismicity catalog — the symbols genuinely differ, and the layer's base size
+	// describes only the biggest one. Read-only: it is a report of what is drawn, not an editor.
 	QStringList hdr; hdr << "#" << "X" << "Y"; if (!s->flat2d) hdr << "Z";
-	QTableWidget *tbl = new QTableWidget(nrows, ncoord + 1, dlg);
+	hdr << "Size (px)";
+	QTableWidget *tbl = new QTableWidget(nrows, ncoord + 2, dlg);
 	tbl->setHorizontalHeaderLabels(hdr);
 	tbl->verticalHeader()->setVisible(false);
 	tbl->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -3561,6 +3565,10 @@ static void showSymbolDataTable(Scene *s, vtkActor *act, const QString &name) {
 		tbl->setItem(k, 0, idx);
 		for (int c = 0; c < ncoord; ++c)
 			tbl->setItem(k, c + 1, new QTableWidgetItem(QString::number(row[c], 'g', 10)));
+		QTableWidgetItem *szi = new QTableWidgetItem(
+			QString::number(symPointSizePx(s->symbols[si0], k), 'f', 1));
+		szi->setFlags(szi->flags() & ~Qt::ItemIsEditable);
+		tbl->setItem(k, ncoord + 1, szi);
 	}
 	tbl->resizeColumnsToContents();
 	lay->addWidget(tbl);
@@ -3706,6 +3714,20 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 	for (auto &x : s->symbols) if (x.actor.Get() == act) { sl = &x; break; }
 	if (!sl) return;
 	auto reRender = [&] { if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render(); };
+
+	// WHICH symbol of the layer was clicked, or -1 when the menu came from the Scene Objects row (no
+	// symbol under a cursor there). A scaled layer's symbols have DIFFERENT sizes, so anything that
+	// reports or edits "the size" has to mean the one the user actually clicked.
+	int clickedPt = -1;
+	if (s->widget && s->widget->renderWindow()) {
+		const QPoint lp = s->widget->mapFromGlobal(gp);
+		const double r  = s->widget->devicePixelRatioF();
+		const int    H  = s->widget->renderWindow()->GetSize()[1];
+		int li = -1, pi = -1;
+		if (pickSymbolPointAt(s, int(lp.x() * r), int(H - lp.y() * r), li, pi) &&
+		    li >= 0 && li < (int)s->symbols.size() && s->symbols[li].actor.Get() == act)
+			clickedPt = pi;
+	}
 
 	// Keep a cell-coloured glyph (a star: filled polys + outline lines) in sync with the layer's
 	// current fill (actor Color) and edge (actor EdgeColor) colours, by repainting its per-cell
@@ -3914,19 +3936,27 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 	}
 	// Size dialogs: a live QDoubleSpinBox so the glyph resizes AS the value changes (not on OK).
 	// px and points share one helper; pxPerUnit converts the spinbox unit to sl->sizePx (1 pt = 96/72 px).
+	// It opens on the CLICKED symbol's OWN size (symPointSizePx), not the layer's base — on a scaled
+	// layer the base is the biggest symbol's size, and reporting it for a small one is simply wrong.
+	// Editing keeps the layer's relative scheme (a magnitude scaling is not the user's to lose here):
+	// the whole layer is scaled by the ratio that makes THAT symbol the requested size.
 	auto liveSizeDialog = [&](const char *unitLabel, double pxPerUnit, double lo, double hi) {
+		const double base0 = sl->sizePx;
+		const double cur0  = (clickedPt >= 0) ? symPointSizePx(*sl, clickedPt) : sl->sizePx;
+		const bool   scaled = (cur0 != base0);
 		QDialog dlg(s->widget);
 		dlg.setWindowTitle("Symbol size");
 		QFormLayout *form = new QFormLayout(&dlg);
 		QDoubleSpinBox *box = new QDoubleSpinBox(&dlg);
 		box->setRange(lo, hi); box->setSingleStep(1.0); box->setDecimals(1);
-		box->setValue(sl->sizePx / pxPerUnit);
-		QObject::connect(box, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, sl, pxPerUnit](double v) {
-			sl->sizePx = v * pxPerUnit;
+		box->setValue(cur0 / pxPerUnit);
+		QObject::connect(box, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+		                 [s, sl, pxPerUnit, base0, cur0](double v) {
+			sl->sizePx = (cur0 > 0.0) ? base0 * (v * pxPerUnit / cur0) : v * pxPerUnit;
 			symbolRescaleCB(nullptr, 0, s, nullptr);     // re-stamp glyph scale, then redraw
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		});
-		form->addRow(QString("Size (%1)").arg(unitLabel), box);
+		form->addRow(QString(scaled ? "This symbol (%1)" : "Size (%1)").arg(unitLabel), box);
 		QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
 		QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
 		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);

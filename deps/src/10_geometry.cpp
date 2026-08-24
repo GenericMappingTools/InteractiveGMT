@@ -219,6 +219,19 @@ static void symTouchSource(SymbolLayer &sl) {         // mark the glyph pipeline
 	if (sl.glyph)       sl.glyph->Modified();
 }
 
+// THE size of ONE symbol, on screen, in px: the layer's base size times THAT point's own factor (the
+// "symScale" array a scaled layer carries — see symbolSetPipeline). `sl.sizePx` alone is the base,
+// which on a scaled layer is the size of the BIGGEST symbol only; reading it per point is what makes
+// a magnitude-scaled catalog report and behave as what it actually draws. Every reader of "how big
+// is this symbol" goes through here — the pick tolerances, the properties dialog, the data table.
+static double symPointSizePx(SymbolLayer &sl, vtkIdType i) {
+	vtkPolyData *pd = symInputPD(sl);
+	vtkDataArray *sc = pd ? pd->GetPointData()->GetArray("symScale") : nullptr;
+	if (!sc || i < 0 || i >= sc->GetNumberOfTuples()) return sl.sizePx;   // unscaled layer: one size
+	const double f = sc->GetComponent(i, 0);
+	return (f > 0.0) ? sl.sizePx * f : sl.sizePx;
+}
+
 // A Fledermaus-style vertical "curtain": a textured wall hung along an XY track.
 struct Curtain {
 	vtkSmartPointer<vtkActor> actor;
@@ -2936,11 +2949,14 @@ static vtkActor *pickSymbolAt(Scene *s, int dx, int dy) {
 		if (!pd || !pd->GetPoints())
 			continue;
 		double sc[3]; sl.actor->GetScale(sc);
-		const double tol2 = std::max(12.0, sl.sizePx * 0.6) * std::max(12.0, sl.sizePx * 0.6);
 		vtkPoints *pts = pd->GetPoints();
 		const vtkIdType np = pts->GetNumberOfPoints();
 		const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
 		for (vtkIdType i = 0; i < np; ++i) {
+			// EACH symbol is picked at ITS OWN size (symPointSizePx) — on a scaled layer the layer's
+			// base size is the biggest symbol's, so using it for all would let a tiny one grab clicks.
+			const double tol = std::max(12.0, symPointSizePx(sl, i) * 0.6);
+			const double tol2 = tol * tol;
 			double p[3]; pts->GetPoint(i, p);
 			if (sl.solid3D && !s->flat2d && solid3DBuried(s, p[0]*xfacInv, p[1], p[2]))
 				continue;                                    // hidden behind real terrain -> not pickable
@@ -2970,13 +2986,13 @@ static bool pickSymbolInfoAt(Scene *s, int dx, int dy, std::string &out) {
 		if (!pd || !pd->GetPoints())
 			continue;
 		double sc[3]; sl.actor->GetScale(sc);
-		const double tol = std::max(12.0, sl.sizePx * 0.6);
-		const double tol2 = tol * tol;
 		vtkPoints *pts = pd->GetPoints();
 		const vtkIdType np = pts->GetNumberOfPoints();
 		const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
 		for (vtkIdType i = 0; i < np; ++i) {
 			if ((size_t)i >= sl.info.size()) break;        // info must align 1:1 with points
+			const double tol  = std::max(12.0, symPointSizePx(sl, i) * 0.6);   // each at ITS OWN size
+			const double tol2 = tol * tol;
 			double p[3]; pts->GetPoint(i, p);
 			if (sl.solid3D && !s->flat2d && solid3DBuried(s, p[0]*xfacInv, p[1], p[2]))
 				continue;                                    // hidden behind real terrain -> no tooltip
@@ -3009,12 +3025,12 @@ static bool pickSymbolPointAt(Scene *s, int dx, int dy, int &outLayer, int &outP
 		if (!pd || !pd->GetPoints())
 			continue;
 		double sc[3]; sl.actor->GetScale(sc);
-		const double tol = std::max(12.0, sl.sizePx * 0.6);
-		const double tol2 = tol * tol;
 		vtkPoints *pts = pd->GetPoints();
 		const vtkIdType np = pts->GetNumberOfPoints();
 		const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
 		for (vtkIdType i = 0; i < np; ++i) {
+			const double tol  = std::max(12.0, symPointSizePx(sl, i) * 0.6);   // each at ITS OWN size
+			const double tol2 = tol * tol;
 			double p[3]; pts->GetPoint(i, p);
 			if (sl.solid3D && !s->flat2d && solid3DBuried(s, p[0]*xfacInv, p[1], p[2]))
 				continue;
