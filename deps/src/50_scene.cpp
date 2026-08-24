@@ -1070,6 +1070,7 @@ static bool activeGridZRange(Scene *s, double &zlo, double &zhi) {
 	return true;
 }
 
+
 // x,y kind of the layer the window is CURRENTLY SHOWING: !=0 -> lon/lat, 0 -> cartesian. Same law and
 // same resolver as activeGridZRange above — a grid we KNOW is cartesian (gravmag3d run with the
 // dialog's "Geographic" unchecked: the body coordinates are metres, so the anomaly's x,y are metres)
@@ -3398,7 +3399,7 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
 		a->GetProperty()->SetColor(er, eg, eb);
 		a->GetProperty()->SetLineWidth(edgeWidth > 0.0 ? edgeWidth : 1.5);
 	}
-	a->SetScale(1.0, 1.0, s->zfac * s->ve);            // ride VE; x already baked
+	a->SetScale(1.0, 1.0, symbolZScale(s));            // ride VE, flat in 2-D; x already baked
 
 	s->ren->AddActor(a);
 	SymbolLayer sl;
@@ -3406,6 +3407,10 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
 	sl.sizePx = (sizePx > 0.0 ? sizePx : 8.0);
 	sl.filled = wantFill; sl.sym = sym; sl.solid3D = solid3D;
 	sl.oneShot = oneShot;                // Symbols draw tool: exactly one point, whole-layer drag applies
+	// Remember the z each point was PLOTTED at, so flat-2D can write 0 into the points and 3-D can put
+	// the real depth back (symbolApplyZ) without ever touching the glyph's colour, lighting or size.
+	sl.zOrig.resize(npts);
+	for (int i = 0; i < npts; ++i) sl.zOrig[(size_t)i] = xyz[3*i+2];
 	sl.stack = s->vecSeq++;              // new layer lands on top of the whole vector pile
 	sl.name = name.empty() ? ("Symbols " + std::to_string((int)s->symbols.size() + 1) + " (" + sym + ")")
 	                       : name;
@@ -3425,6 +3430,11 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
 			sl.info = std::move(recs);
 	}
 	s->symbols.push_back(sl);
+	// Z scale + the shading that goes with it, from the ONE place that decides both (symbolApplyZ,
+	// 10_geometry.cpp). Done here as well as in applyVE because a layer created while the window is
+	// ALREADY flat-2D (every base map) must land flattened and unlit right away — otherwise its
+	// hypocentres hang off the picture, and a squashed lit sphere draws black.
+	symbolApplyZ(s, s->symbols.back());
 	applyVectorStacking(s);                // normalize ranks + set this layer's draw-order offset
 
 	if (!s->symSizeCmd) {                  // install the per-frame rescaler once per scene

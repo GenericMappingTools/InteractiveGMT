@@ -16261,6 +16261,12 @@ static void sceneSetFlat2D(Scene *s, bool on) {
 	// 3-D but must always show as flat map pins in 2-D (see applyStacking) — re-derive their overlay-
 	// layer placement for the mode we just entered.
 	applyVectorStacking(s);
+	// Re-apply the scene's scales for the mode we just entered — the ONE place that decides them
+	// (applyVE, 10_geometry.cpp). A symbol layer's Z is squashed to the map plane in flat-2D and
+	// restored to its real (VE-scaled) depth in 3-D, so a seismicity catalog keeps its hypocentres
+	// and simply reads flat when seen straight down. Without this the toggle changed the camera but
+	// left every layer scaled for the mode it just left.
+	applyVE(s);
 	if (s->act2D) s->act2D->setChecked(s->flat2d);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
@@ -17075,12 +17081,18 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		showBusyDialog("Seismicity");             // indeterminate busy bar for the blocking fetch
 		g_juliaSeismicity(s, p.toUtf8().constData());
 		closeBusyDialog();
-		// The freshly-plotted solid3D event spheres are meant to show unconditionally in flat-2D (map
-		// pins, see applyStacking), but the FIRST time they land in a 2D scene most render invisible;
-		// a manual 2D->3D->2D round-trip through sceneSetFlat2D reliably fixes it (confirmed). Rather
-		// than chase the exact VTK state that trip resets, just DO that round-trip here automatically
-		// so seismicity always comes up fully visible in 2D without the user having to know the trick.
-		if (s->flat2d) { sceneSetFlat2D(s, false); sceneSetFlat2D(s, true); }
+		// NO 2D->3D->2D round-trip here. It used to be done to make the old solid3D event spheres
+		// (placed at z = -depth) show up in flat-2D, but sceneSetFlat2D's 2-D entry ends in
+		// fitSnapView(topMode=true) — "maximize: fill the viewport edge-to-edge" — which SNAPS THE
+		// VIEW BACK ONTO THE RASTER. The catalog was just fetched for the region the user was
+		// LOOKING AT (sceneVisibleRegion, deliberately wider than the grid), so that snap cropped
+		// every event outside the grid straight off the screen: on a local grid the map filled the
+		// window and the events vanished, while on a global one the raster IS the world and nothing
+		// was lost — exactly the "works globally, shows nothing on my grid" report. Events now sit
+		// on the map plane (see _seis_layer, seismicity.jl) and render in 2-D with no trick at all.
+		// A plot must never move the camera the user framed: the fetch follows the view, not the
+		// other way round.
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	};
 	// Open the Plot seismicity dialog (Seismology > "Seismicity…" and, with builtin=true,
 	// "Global seismicity (1990-2009)" = the shipped data/quakes.dat — same dialog, same Julia

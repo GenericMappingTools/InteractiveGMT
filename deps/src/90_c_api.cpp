@@ -5399,8 +5399,13 @@ GMTVTK_API void gmtvtk_free_rgb(unsigned char *buf) { delete[] buf; }
 // function is that PLUS the per-raster frame bookkeeping; the Link tool's cross-window sync
 // (57_swipe.cpp) calls the camera-only half directly, since it must never touch the PARTNER
 // window's own axes.
+// `moveCamera` = 0 re-frames the AXES only and leaves the camera exactly where the user put it.
+// One implementation with a flag, never a second reframe path: a depth-bearing OVERLAY (a seismicity
+// catalog, whose hypocentres hang below the map) needs the Z box grown so the cloud is inside the
+// frame, but moving the view it lands on would re-zoom the map out from under the user — the same
+// fault as the old post-plot fitSnapView snap. A raster taking over the window still passes 1.
 static void sceneReframeSet(Scene *s, AxesSet *A, double x0, double x1, double y0, double y1,
-                            double z0, double z1, int geog, int keepMargin) {
+                            double z0, double z1, int geog, int keepMargin, int moveCamera = 1) {
 	if (!sceneAlive(s) || !s->ren || !s->widget || !A) return;
 	// The raster's own frame, in TRUE data coordinates. Everything downstream (the cube box, the
 	// tick billboards, the axis names) reads it from HERE, so there is exactly one place a raster's
@@ -5418,9 +5423,30 @@ static void sceneReframeSet(Scene *s, AxesSet *A, double x0, double x1, double y
 	// are touched, only what the single camera happens to be looking at.
 	s->viewBoundsOverride = true;              // camera/gizmo bounds follow the framed raster
 	for (int i = 0; i < 6; ++i) s->viewBounds[i] = b[i];
-	cameraFitToScaledBBox(s, b, keepMargin != 0);
+	if (moveCamera) cameraFitToScaledBBox(s, b, keepMargin != 0);
 	rebuildAxisLabels(s);                      // every set redrawn from its OWN frame
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Grow the DISPLAYED raster's Z frame so it contains [z0,z1], leaving X/Y and THE CAMERA untouched.
+// For a depth-bearing overlay: a seismicity catalog's hypocentres hang tens of km below a regional
+// grid whose own box is a few km tall, so without this the cloud is drawn correctly and sits outside
+// the axes cube where nothing can see it. Only grows, never shrinks — an overlay may not take frame
+// away from the raster — and never touches X/Y (SACRED_LAW.md vector-import law: an overlay does not
+// re-frame the map it lands on; its DEPTH, however, has to be inside the box to exist on screen).
+GMTVTK_API void gmtvtk_grow_z_frame_h(void *handle, double z0, double z1) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	AxesSet *A = axesForActive(s);
+	if (!A) return;
+	// A raster with NO Z range of its own — an image, whose zmin==zmax — has no vertical frame to
+	// extend: stretching its degenerate box down to a hypocentre depth blows the whole scene up (the
+	// picture vanishes and the axes run to hundreds of km). An overlay may only GROW a real Z frame,
+	// never invent one.
+	if (!(A->z1 > A->z0)) return;
+	const double nz0 = std::min(A->z0, z0), nz1 = std::max(A->z1, z1);
+	if (nz0 == A->z0 && nz1 == A->z1) return;               // already contains it
+	sceneReframeSet(s, A, A->x0, A->x1, A->y0, A->y1, nz0, nz1, A->geog, 0, /*moveCamera=*/0);
 }
 
 // Z-EXPLICIT form, addressed BY NAME. A MESH layer (a VTK .vtp surface, a GMTfv solid) has no grid
@@ -5464,6 +5490,18 @@ GMTVTK_API void gmtvtk_reframe_z_h(void *handle, double x0, double x1, double y0
 GMTVTK_API int gmtvtk_get_display_bounds_h(void *handle, double *out4, int *outGeog) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !out4) return 0;
+	// NOTHING REAL ON DISPLAY -> no bounds, exactly as the doc above promises ("Returns 0 if the
+	// window has no bounds yet"). An emptyStart launcher carries a HIDDEN 0..1 PLACEHOLDER surface,
+	// and surfGetBounds happily reports that unit square: callers that CLIP to these bounds (a
+	// dropped table, a seismicity catalog) then cut their whole dataset against a 1x1 degree box at
+	// the origin and put nothing on screen. `has_surface` (scene state) and gmtvtk_has_surface_h
+	// already judge a window by this same `surf && !emptyStart` rule — this hook was the one place
+	// that did not, and answered for scenery that is not there.
+	const bool realBase  = (s->surf && !s->emptyStart) || (s->drape && s->drape->GetVisibility());
+	bool realExtra = false;
+	for (auto &ex : s->extras)
+		if ((ex.actor && ex.actor->GetVisibility()) || (ex.drape && ex.drape->GetVisibility())) { realExtra = true; break; }
+	if (!realBase && !realExtra) return 0;
 	double b[6]; surfGetBounds(s, b);
 	const double xf = (s->xfac != 0.0) ? s->xfac : 1.0;
 	out4[0] = b[0] / xf; out4[1] = b[1] / xf; out4[2] = b[2]; out4[3] = b[3];

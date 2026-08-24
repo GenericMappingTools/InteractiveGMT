@@ -92,6 +92,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_aqua_set_land_cpt_h, :gmtvtk_aqua_set_bathy_h, :gmtvtk_aqua_set_var_label_h,
 	:gmtvtk_remove_grid_h, :gmtvtk_remove_image_h, :gmtvtk_set_transplant_undo, :gmtvtk_unfold_scene_objects_h,
 	:gmtvtk_open_vtk_h, :gmtvtk_add_mesh_h, :gmtvtk_show_new_element_h, :gmtvtk_reframe_z_h,
+	:gmtvtk_grow_z_frame_h,
 	:gmtvtk_reframe_named_h,
 	:gmtvtk_swipe_select_mode_h,
 	:gmtvtk_has_surface, :gmtvtk_close, :gmtvtk_add_recent,

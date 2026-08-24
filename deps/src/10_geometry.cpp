@@ -186,6 +186,11 @@ struct SymbolLayer {
 	bool   oneShot = false;                   // placed by the Symbols draw tool: exactly ONE point, whole-
 	                                           // layer double-click-then-drag moves that single point
 	                                           // (see symLayerDrag) — false for batch layers (volcanoes etc)
+	std::vector<double> zOrig;                // the z each point was PLOTTED at (a seismicity hypocentre).
+	                                           // Flat 2-D writes 0 into the points and 3-D writes these
+	                                           // back (symbolApplyZ) — the depth is never lost, and the
+	                                           // glyph's colour/lighting/size are never touched to fake it.
+	bool   zFlattened = false;                // which of the two states the points are in right now
 };
 
 // SymbolLayer carries exactly ONE of glyph (flat shapes) / glyphMapper (solid3D sphere/cube) — every
@@ -560,8 +565,6 @@ struct Scene {
 	// a real gap and nothing is left for the light to illuminate. This flat, UNLIT quad sits just under
 	// the grid floor in the Preferences NaN fill colour, so a hole reads as that colour instead of as
 	// the window background — and, being real geometry, it is what a click in a hole lands on.
-	vtkSmartPointer<vtkActor>             nanPlane;
-	double nanPlaneBox[6] = { 0, 0, 0, 0, 0, 0 };  // bounds it was last built for (skip idle rebuilds)
 	// The BASE surface's OWN axes (SACRED_LAW.md Raster-own-axes law -- see AxesSet above). This is
 	// the PRIMARY raster's set, not "the window's axes": it is owned by the base surface's own master
 	// handle exactly as every ExtraObj owns `ex.ax`, and nothing else in the window may frame, hide or
@@ -1157,6 +1160,41 @@ struct Scene {
 	                                                     // annotations were last sized/cut for
 	                                                     // (followZoomAnnotations, 50_scene.cpp)
 };
+
+// THE Z scale of a symbol layer's actor: squashed onto the map plane in flat 2-D, its real VE-scaled
+// depth in 3-D. Every place that scales a symbol layer reads it from HERE — applyVE on a VE / mode
+// change AND addSymbols when a layer is first created, because a catalog plotted into a window that
+// is ALREADY in flat-2D (every base map) must land flat immediately, not only after the user happens
+// to toggle 3-D and back. The layer's POINTS always keep the true hypocentre depth; only this scale
+// changes, so tilting the view restores the cloud (SACRED_LAW.md: same operation, same function).
+static inline double symbolZScale(Scene *s) { return (s && s->flat2d) ? 0.0 : (s ? s->zfac * s->ve : 1.0); }
+
+// Put ONE layer at the right height for the current view mode. The actor's scale is NEVER used to
+// flatten: scaling a lit sphere to zero thickness zeroes its normals and the glyph renders black, and
+// switching lighting off to hide that changes how the symbol LOOKS (an unlit flat colour instead of
+// the shaded one) — neither is acceptable, the symbol's appearance is not this function's to change.
+// So the POSITIONS move instead: in flat 2-D every point's z is set to 0, in 3-D each is put back to
+// the depth it was plotted at (kept per layer in `zOrig`). Colour, lighting, glyph and size are
+// untouched in both modes; only where the point sits changes. Both call sites (applyVE, addSymbols)
+// go through here, so a layer created in 2-D and a layer that lived through a toggle end up identical.
+static inline void symbolApplyZ(Scene *s, SymbolLayer &sl) {
+	if (!sl.actor) return;
+	sl.actor->SetScale(1.0, 1.0, (s ? s->zfac * s->ve : 1.0));    // unchanged: x already baked in
+	vtkPolyData *pd = symInputPD(sl);
+	if (!pd || !pd->GetPoints() || sl.zOrig.empty()) return;
+	vtkPoints *pts = pd->GetPoints();
+	const vtkIdType n = pts->GetNumberOfPoints();
+	if ((size_t)n != sl.zOrig.size()) return;                     // never guess against a stale cache
+	const bool flat = (s && s->flat2d);
+	if (flat == sl.zFlattened) return;                            // already in the right state
+	for (vtkIdType i = 0; i < n; ++i) {
+		double p[3];  pts->GetPoint(i, p);
+		p[2] = flat ? 0.0 : sl.zOrig[(size_t)i];
+		pts->SetPoint(i, p);
+	}
+	pts->Modified();  pd->Modified();  symTouchSource(sl);
+	sl.zFlattened = flat;
+}
 
 // --- surface accessors: one actor (cloud/FV/drape/image) or a tiled grid -----------------
 // When the grid is tiled, the transform/bounds/visibility live on the vtkAssembly `surfGroup`
@@ -2187,13 +2225,18 @@ static bool sceneVisibleRegion(Scene *s, double &W, double &E, double &S, double
 		else { W = std::min(W, tx); E = std::max(E, tx); S = std::min(S, ty); N = std::max(N, ty); }
 	}
 	if (!any) return false;
-	// Never exceed the data frame — of the raster ACTUALLY ON DISPLAY, which is the one the caller
-	// means by "what's on screen right now". s->x0..y1 is the BASE raster's own frame and would clamp
-	// a crop/derived layer back to its parent's extent (SACRED_LAW.md Raster-own-axes law: no reading
-	// another raster's limits). surfGetBounds carries the same answer in scaled space.
-	double fb[6]; surfGetBounds(s, fb);
-	W = std::max(W, fb[0] / gx); E = std::min(E, fb[1] / gx);
-	S = std::max(S, fb[2]);      N = std::min(N, fb[3]);
+	// WHAT IS ON SCREEN — the viewport, NOT the data frame. This used to be clamped to the displayed
+	// raster's own bounds (surfGetBounds), which made "the visible region" a lie the moment the user
+	// zoomed OUT: the map is a small rectangle in the middle of a much larger view, and every caller
+	// that asks a web service for "the region I am looking at" (Seismicity, the Geography datasets,
+	// Earth Tides) got the grid's extent back instead. Events / coastlines / tide points in the area
+	// actually on screen but outside the grid were then never even requested — they cannot show,
+	// and no amount of zooming out brings them in. A vector overlay landing outside the raster is
+	// fine and needs no framing decision (SACRED_LAW.md vector-import law: overlays never reframe).
+	// The only clamp left is to what a GEOGRAPHIC region can legally be: a viewport can extend past
+	// the poles or wrap several turns of longitude, and no query box may.
+	S = std::max(S, -90.0);  N = std::min(N, 90.0);
+	W = std::max(W, -360.0); E = std::min(E, 360.0);
 	return (E > W && N > S);
 }
 
@@ -2426,46 +2469,10 @@ static inline bool extraVisible(const ExtraObj &ex) {
 	return false;
 }
 
-// Keep the NaN backdrop under whatever raster is on display. Built lazily, refreshed only when the
-// drawn bounds actually move (VE, a re-frame, a new active layer), so the per-render caller costs a
-// bounds compare. Unlit and unscaled: it is built directly in the same scaled world the surface
-// actors are drawn in, and it must show the NaN fill colour EXACTLY as the user set it -- a lit plane
-// would tint it the same way the lit NaN quads used to.
-static void nanPlaneUpdate(Scene *s) {
-	if (!s || !s->ren) return;
-	// Only a GRID can have NaNs. No grid layer on display -> nothing to back.
-	double zlo, zhi;
-	const bool haveGrid = activeGridZRange(s, zlo, zhi);
-	if (!haveGrid) { if (s->nanPlane) s->nanPlane->SetVisibility(0); return; }
-	double b[6]; surfGetBounds(s, b);
-	const double diag = std::sqrt((b[1]-b[0])*(b[1]-b[0]) + (b[3]-b[2])*(b[3]-b[2]));
-	const double zplane = b[4] - 1e-3 * ((b[5] > b[4]) ? (b[5]-b[4]) : (diag > 0 ? diag : 1.0));
-	if (!s->nanPlane) {
-		vtkNew<vtkPlaneSource> ps;
-		vtkNew<vtkPolyDataMapper> m; m->SetInputConnection(ps->GetOutputPort());
-		m->ScalarVisibilityOff();
-		s->nanPlane = vtkSmartPointer<vtkActor>::New();
-		s->nanPlane->SetMapper(m);
-		s->nanPlane->GetProperty()->LightingOff();     // a hole is not illuminated. That is the point.
-		s->ren->AddActor(s->nanPlane);
-		s->nanPlaneBox[0] = s->nanPlaneBox[1] = 1e300;  // force the first build below
-	}
-	s->nanPlane->SetVisibility(1);
-	s->nanPlane->GetProperty()->SetColor(s->nanColor[0], s->nanColor[1], s->nanColor[2]);
-	const double want[6] = { b[0], b[1], b[2], b[3], zplane, zplane };
-	bool same = true;
-	for (int i = 0; i < 6; ++i)
-		if (std::abs(want[i] - s->nanPlaneBox[i]) > 1e-9 * (1.0 + std::abs(want[i]))) { same = false; break; }
-	if (same) return;
-	for (int i = 0; i < 6; ++i) s->nanPlaneBox[i] = want[i];
-	vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(s->nanPlane->GetMapper());
-	if (vtkPlaneSource *ps = m ? vtkPlaneSource::SafeDownCast(m->GetInputAlgorithm()) : nullptr) {
-		ps->SetOrigin(b[0], b[2], zplane);
-		ps->SetPoint1(b[1], b[2], zplane);
-		ps->SetPoint2(b[0], b[3], zplane);
-		ps->Update();
-	}
-}
+// (The NaN-hole backdrop plane that used to live here is GONE, by explicit request: a grid with no
+// NaNs got a white sheet under it in 3-D for nothing. NaN cells are already painted by the colour
+// transfer function's NaN colour on the surface itself (makeGridCTF), which is where a hole's colour
+// belongs — there is no second actor to keep in step with the frame any more.)
 
 // Every raster's axes, redrawn from ITS OWN frame. This is the whole of the window's axis work: a
 // loop over independent sets, with NO window-level box, NO shared frame and NO "active layer" — two
@@ -2480,7 +2487,6 @@ static void rebuildAxisLabels(Scene *s) {
 	rebuildAxesFor(s, s->baseAxes, s->baseAxes.shown && baseVis, true);
 	for (auto &ex : s->extras)
 		rebuildAxesFor(s, ex.ax, ex.ax.shown && extraVisible(ex), false);
-	nanPlaneUpdate(s);       // the data holes' backdrop follows the same bounds the axes just did
 }
 
 // Renderer StartEvent -> keep the axis labels on the camera-near edges as the view rotates.
@@ -2557,8 +2563,14 @@ static void applyVE(Scene *s) {
 	for (auto &tl : s->texts)
 		if (tl.actor) tl.actor->SetPosition(tl.pos[0] * s->xfac - tl.offX, tl.pos[1] - tl.offY,
 		                                    tl.pos[2] * s->zfac * s->ve);
-	for (auto &sl : s->symbols)                                            // symbol depth (z) rides VE too
-		if (sl.actor) sl.actor->SetScale(1.0, 1.0, s->zfac * s->ve);      // x already baked into the points
+	// Symbol depth (z) rides VE too — EXCEPT in flat 2-D, where the layer is squashed onto the map
+	// plane (Z scale 0) and springs back to its real depth the moment the view tilts. The DEPTH IS
+	// NEVER LOST: it lives in the layer's points, and only the actor's Z scale changes, so a
+	// seismicity catalog is a plain map dot looking straight down and a hypocentre cloud in 3-D,
+	// following the 2D/3D toggle live. This is the VIEWER's job, done here for EVERY symbol layer, so
+	// an image window and a grid window behave identically in the identical view (SACRED_LAW.md: same
+	// operation, same function — no per-raster-kind fork, and no plotter deciding z once at plot time).
+	for (auto &sl : s->symbols) symbolApplyZ(s, sl);
 	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview
 	if (s->polyHandles) s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // edit-mode vertex handles
 	for (auto &rr : s->rulers)                                                     // every ruler track and the

@@ -56,7 +56,7 @@ const _SEIS_USGS_MAGMIN = 3.0         # "Current seismicity" default when the di
 # last 30 days) then apply, which is what makes the menu entry "recent" seismicity. An `endtime`
 # given as a bare date means MIDNIGHT that morning and would throw away the whole of the end day —
 # the dialog's end date means "up to the end of that day", so it is sent as one.
-function _seis_usgs_url(d, W, E, S, N)::String
+function _seis_usgs_url(d::Dict{String,String}, W::Float64, E::Float64, S::Float64, N::Float64)::String
 	io = IOBuffer()
 	print(io, _SEIS_USGS_URL, "?format=csv&orderby=time&limit=", _SEIS_USGS_LIMIT)
 	print(io, "&minlongitude=", W, "&maxlongitude=", E, "&minlatitude=", S, "&maxlatitude=", N)
@@ -69,29 +69,36 @@ function _seis_usgs_url(d, W, E, S, N)::String
 	return String(take!(io))
 end
 
-# Fetch `url` into memory and hand back the whole answer as one String. `Downloads` first
-# (in-process, no child process to stall the GUI), `curl` only as the fallback for a transient
-# failure of the service — and it reads curl's stdout, so that path writes nothing either.
+# Fetch `url` into memory and hand back the whole answer as one String. `Downloads` first (in-process,
+# no child process to stall the GUI), then `curl`, which reads curl's stdout so that path writes
+# nothing either. THREE attempts because the service really does reset the connection mid-answer,
+# curl included — measured here repeatedly, with the second attempt getting through.
 function _seis_fetch(url::String)::String
-	io = IOBuffer()
-	txt = try
-		GMT.Downloads.download(url, io)
-		String(take!(io))
-	catch e
-		@warn "seismicity: Downloads failed, retrying with curl" exception=e url
-		read(`curl -s --show-error --fail --max-time 180 $url`, String)
+	for k in 1:3
+		try
+			txt::String = ""
+			if k == 1
+				io = IOBuffer();  GMT.Downloads.download(url, io);  txt = String(take!(io))
+			else
+				txt = read(`curl -s --show-error --fail --max-time 180 $url`, String)
+			end
+			isempty(txt) || return txt
+		catch e
+			k == 3 && rethrow(e)
+			@warn "seismicity: fetch attempt $k failed, retrying with curl" exception=e url
+		end
 	end
-	isempty(txt) && error("the USGS query returned nothing")
-	return txt
+	error("the USGS query returned nothing")
 end
 
 # One field of a comma-split record as a Float64; an absent or empty field is NaN (the service
 # leaves depth/mag blank on an event that carries none).
-_seis_num(f) = (s = strip(f); isempty(s) ? NaN : something(tryparse(Float64, s), NaN))
+_seis_num(f::Union{String,SubString{String}})::Float64 =
+	(s = strip(f); isempty(s) ? NaN : something(tryparse(Float64, s), NaN))
 
 # The record's ISO-8601 instant ("2026-08-24T00:00:48.085Z") as Unix seconds; NaN if unparsable, so
 # one malformed row never kills the catalog. Uses Dates — never hand-rolled calendar math.
-function _seis_isotime(f)::Float64
+function _seis_isotime(f::Union{String,SubString{String}})::Float64
 	s = strip(f)
 	(isempty(s) || length(s) < 19) && return NaN
 	endswith(s, "Z") && (s = s[1:end-1])
@@ -99,9 +106,9 @@ function _seis_isotime(f)::Float64
 	return dt === nothing ? NaN : GMT.Dates.datetime2unix(dt)
 end
 
-function _seis_usgs(d, W, E, S, N)
-	url = _seis_usgs_url(d, W, E, S, N)
-	txt = _seis_fetch(url)
+function _seis_usgs(d::Dict{String,String}, W::Float64, E::Float64, S::Float64, N::Float64)
+	url::String = _seis_usgs_url(d, W, E, S, N)
+	txt::String = _seis_fetch(url)
 	lon = Float64[]; lat = Float64[]; dep = Float64[]; mag = Float64[]; t = Float64[]
 	hdr = true
 	for line in eachsplit(txt, '\n')
@@ -218,7 +225,7 @@ end
 # The visible map region "W/E/S/N" appended by the menu action (in-map crop + USGS query bbox,
 # like Mirone's in_map_region). Falls back to the whole world. ONE box for the query AND the
 # filter, so what is asked for and what is kept can never disagree.
-function _seis_region(d)
+function _seis_region(d::Dict{String,String})::NTuple{4, Float64}
 	p = split(_get(d, "region"), '/')
 	(length(p) == 4) || return (-180.0, 180.0, -90.0, 90.0)
 	v = tryparse.(Float64, p)
@@ -233,7 +240,7 @@ end
 # +180 is what GMT.seismicity rewrote wrongly. So: latitudes clamped, a full turn (or more) collapsed
 # to the whole world, and a dateline-crossing window shifted WHOLE into the negative half — legal for
 # the service (it takes longitudes down to -360) and it keeps `maxlongitude` at or below +180.
-function _seis_norm_region(W, E, S, N)
+function _seis_norm_region(W::Float64, E::Float64, S::Float64, N::Float64)::NTuple{4, Float64}
 	S, N = min(S, N), max(S, N)
 	S = clamp(S, -90.0, 90.0);  N = clamp(N, -90.0, 90.0)
 	W, E = min(W, E), max(W, E)
@@ -247,18 +254,51 @@ end
 
 # Is longitude `l` inside [W,E]? The window may live outside -180…180 (the dateline shift above)
 # while the catalog's own longitudes never do, so bring `l` to the first turn at or after W.
-function _seis_inlon(l, W, E)
+function _seis_inlon(l::Float64, W::Float64, E::Float64)::Bool
 	isnan(l) && return false
 	return l + 360.0 * ceil((W - l) / 360.0) <= E
 end
 
 # ── filter + plot ───────────────────────────────────────────────────────────────────────────
 
-# One BitVector pass: visible region ∩ date range ∩ magnitude ∩ depth. NaN magnitudes/depths
+# The footprint of the raster ACTUALLY ON DISPLAY, or nothing when the window has none yet. This is
+# the SAME question `_clip_to_display` (drop.jl) asks of a dropped table — "on top of the image"
+# means bounded BY it — so it goes through the SAME C entry point, `gmtvtk_get_display_bounds_h`,
+# never a second reading of the scene state (SACRED_LAW.md: same operation, same function).
+function _seis_display_frame(scene::Ptr{Cvoid})
+	b = Vector{Cdouble}(undef, 4)
+	geog = Ref{Cint}(0)
+	ok = ccall(_fn(:gmtvtk_get_display_bounds_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cint}), scene, b, geog)
+	return ok == 0 ? nothing : (b[1], b[2], b[3], b[4])
+end
+
+# Grow the window's Z frame DOWN to the deepest plotted event, so the axes cube, its Z numbers and
+# the camera actually contain the hypocentres. Without this the cloud is drawn correctly and lands
+# outside the box — invisible on any grid whose own Z span is smaller than the catalog's depth
+# range, which is every regional grid (verified: 6-39 km of events against layer0.grd's 8 km box).
+# The X/Y frame is NOT touched — it stays the raster's own (SACRED_LAW.md vector-import law: an
+# overlay never re-frames the map it lands on); only Z is extended, and only downwards.
+function _seis_reframe_z(scene::Ptr{Cvoid}, deepest_km::Float64)
+	ccall(_fn(:gmtvtk_grow_z_frame_h), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble),
+	      scene, -deepest_km * 1000.0, 0.0)
+	return
+end
+
+# One BitVector pass: plot box ∩ date range ∩ magnitude ∩ depth. NaN magnitudes/depths
 # fail their comparison (excluded); "All magnitudes"/"All depths" re-admits them. Undated
 # events (t = NaN) pass the date filter — the file simply carried no time.
-function _seis_filter(d, lon, lat, dep, mag, t)
+#
+# The PLOT BOX is the requested region ∩ the RASTER's own extent: an event is drawn only where
+# there is a map under it. The two boxes are deliberately different things — the request follows
+# the CAMERA (sceneVisibleRegion, so zooming out asks for more), while the drawing is cropped to
+# the DATA, because a symbol floating in the empty background outside the grid is not a plot.
+# `frame` = nothing (no raster in the window) leaves the request box as the only crop.
+function _seis_filter(d, lon, lat, dep, mag, t, frame=nothing)
 	W, E, S, N = _seis_region(d)
+	if frame !== nothing
+		W = max(W, frame[1]);  E = min(E, frame[2])
+		S = max(S, frame[3]);  N = min(N, frame[4])
+	end
 	t0 = _seis_bound(d, "s", true)
 	t1 = _seis_bound(d, "e", false)
 	m0 = something(tryparse(Float64, _get(d, "magmin")), -Inf)
@@ -307,14 +347,38 @@ end
 # (sceneSetFlat2D, 70_window.cpp), whose projection is along Z, so a nonzero Z never shifts the
 # on-screen lon/lat — events stay exactly projected to the surface there for free. NaN depth (a
 # catalog entry that carries none) falls back to z=0 (surface).
+# Is the window showing a FLAT 2-D MAP right now? THE VIEW MODE decides this, never the raster kind:
+# a flat-2D image and a flat-2D grid are the same display — a map seen straight down — and a catalog
+# must be drawn the same way on both. Gating on `imageOnly` instead (an earlier cut of this) made an
+# image behave differently from a grid in the identical view, which is exactly the fork SACRED_LAW.md
+# forbids. In flat 2-D there is no depth to read, so events lie ON the map (z = 0, disc glyph); in
+# 3-D they carry their hypocentre and the Z frame grows to hold them, image or grid alike.
+function _seis_flat_view(scene::Ptr{Cvoid})::Bool
+	st = try _scene_state(scene) catch; nothing end
+	st === nothing && return false
+	return get(st, "flat2d", 0) == 1
+end
+
 function _seis_layer(scene::Ptr{Cvoid}, name, sel, lon, lat, dep, mag, t, sizepx, color)
 	infos = [_seis_info(mag[i], dep[i], t[i]) for i in sel]
+	# EVERY event sits at its own HYPOCENTRE: z = -depth, in metres, down negative. A seismicity
+	# cloud IS its depth distribution — a subduction zone has to dip — so the depth is never thrown
+	# away here. What used to make the layer invisible was not this z, it was the FRAME: a catalog
+	# 6-40 km deep hangs far below a bathymetry grid whose own box is ~8 km tall, so the events fell
+	# outside the axes cube and the camera. `_seis_reframe_z` (called after plotting) grows the
+	# window's Z frame to cover them, which is the actual fix. NaN depth (an entry that carries
+	# none) sits on the surface.
+	# The depth is ALWAYS stored, on every window kind. Flattening it for a 2-D map is the VIEWER's
+	# job — applyVE (10_geometry.cpp) scales a symbol layer's Z by 0 in flat-2D and by zfac*ve in 3-D,
+	# so the SAME layer reads as a plain map dot looking straight down and as a hypocentre when the
+	# view tilts, and it follows the 2D/3D toggle live. Deciding it here (an earlier cut) threw the
+	# third dimension away permanently: plot in 2-D, tilt to 3-D, and the cloud had no depth left to
+	# restore. NaN depth (an entry that carries none) sits on the surface.
 	zv = [(isnan(dep[i]) ? 0.0 : -dep[i] * 1000.0) for i in sel]
 	# :sphere is a true lit 3-D glyph (symbols.jl) so an event stays visible from any oblique 3-D
-	# angle at its real depth; a flat :circle glyph goes edge-on invisible there (it only reads well
-	# top-down). In flat-2D it still projects to a plain-looking dot like before (ortho top-down cam).
-	add_symbols!(scene, view(lon, sel), view(lat, sel); z=zv, symbol=:sphere, size=sizepx,
-	             fill=color, edge=:black, edgewidth=1.0, name=name, info=infos)
+	# angle at its real depth; squashed by applyVE in flat-2D it reads as a plain dot on the map.
+	add_symbols!(scene, view(lon, sel), view(lat, sel); z=zv, symbol=:sphere,
+	             size=sizepx, fill=color, edge=:black, edgewidth=1.0, name=name, info=infos)
 end
 
 # Hover tooltip: magnitude, depth and date — whichever the event actually carries.
@@ -347,13 +411,23 @@ function _on_seismicity(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			_viewer_log_error(scene, "Seismicity: the catalog returned no events")
 			return
 		end
-		keep = _seis_filter(d, lon, lat, dep, mag, t)
+		frame = _seis_display_frame(scene)
+		keep  = _seis_filter(d, lon, lat, dep, mag, t, frame)
 		nk = count(keep)
 		if nk == 0
-			_viewer_log_error(scene, "Seismicity: no events match the selected filters")
+			# Say WHY nothing is drawn: an empty catalog and a catalog whose every event fell outside
+			# the map are different situations and the user cannot tell them apart from a blank map.
+			nout = frame === nothing ? 0 : count(_seis_filter(d, lon, lat, dep, mag, t)) - nk
+			_viewer_log_error(scene, nout > 0 ?
+				"Seismicity: $nout event(s) found, but all of them lie OUTSIDE this map's area — nothing to draw over. Load a wider grid or a Base Map to see them." :
+				"Seismicity: no events match the selected filters")
 			return
 		end
 		_seis_plot(scene, d, lon, lat, dep, mag, t, keep)
+		# …then make the window's Z frame contain what was just plotted, or the deep half of the
+		# catalog hangs below the axes cube where nothing can see it.
+		dk = [dep[i] for i in eachindex(dep) if keep[i] && !isnan(dep[i])]
+		isempty(dk) || _seis_reframe_z(scene, maximum(dk))
 		# Say WHEN the newest plotted event is. "Recent seismicity" that is quietly stale is the one
 		# failure this tool cannot show on its own, so it is reported rather than assumed.
 		tk = [t[i] for i in eachindex(t) if keep[i] && !isnan(t[i])]
