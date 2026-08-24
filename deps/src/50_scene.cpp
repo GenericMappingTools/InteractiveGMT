@@ -3706,6 +3706,26 @@ static void batchTextLabelsDialog(Scene *s, const std::string &groupName, int cl
 	dlg->show();
 }
 
+// THE removal of a symbol layer: drop its actor from both renderers (it may be parked on the
+// depth-cleared overlay layer, see applyStacking), erase the layer, renormalize the vector pile and
+// rebuild the Scene Objects panel. One function, so the properties menu's Remove and any other
+// caller (a test, a future "clear all overlays") take exactly the same steps.
+static bool symbolRemoveLayer(Scene *s, vtkActor *act) {
+	if (!s || !act) return false;
+	bool hit = false;
+	for (size_t i = 0; i < s->symbols.size(); ++i) if (s->symbols[i].actor.Get() == act) {
+		if (s->ren)     s->ren->RemoveActor(act);
+		if (s->axesRen) s->axesRen->RemoveActor(act);   // may have been parked on the overlay layer
+		s->symbols.erase(s->symbols.begin() + i);
+		hit = true;
+		break;
+	}
+	if (!hit) return false;
+	applyVectorStacking(s);            // renormalize ranks after the removed slot
+	rebuildSceneObjects(s);
+	return true;
+}
+
 // Right-click / left-click properties for a symbol layer row: change shape, fill + edge colour,
 // on-screen size and edge width, or delete the layer. Edits the SymbolLayer + its actor/glyph in
 // place (no re-upload of points); size goes through the per-frame rescaler so it stays literal px.
@@ -3980,17 +4000,7 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 		restackVector(s, &sl->stack, ch == topA ? 0 : ch == botA ? 1 : ch == upA ? 2 : 3);
 		reRender(); return;
 	}
-	if (ch == delA) {
-		for (size_t i = 0; i < s->symbols.size(); ++i) if (s->symbols[i].actor.Get() == act) {
-			if (s->ren)     s->ren->RemoveActor(act);
-			if (s->axesRen) s->axesRen->RemoveActor(act);   // may have been parked on the overlay layer
-			s->symbols.erase(s->symbols.begin() + i);
-			break;
-		}
-		applyVectorStacking(s);        // renormalize ranks after the removed slot
-		rebuildSceneObjects(s); reRender();
-		return;
-	}
+	if (ch == delA) { symbolRemoveLayer(s, act); reRender(); return; }
 }
 
 // Add a Fledermaus-style vertical "curtain": an image hung on a vertical wall that

@@ -35,11 +35,28 @@ end
 	@test pt(5.0) ≈ 8.0                              # the anchor: M5 is 8 points
 	@test pt(6.0) / pt(5.0) ≈ IG._SEIS_MAG_BASE      # geometric in magnitude
 	@test pt(3.0) / pt(2.0) ≈ IG._SEIS_MAG_BASE
-	@test pt(7.0) / pt(0.0) ≈ 4.4 atol=0.1           # the legend's own M0 … M7 span
+	@test pt(IG._SEIS_MAG_HI) / pt(IG._SEIS_MAG_LO) ≈    # the legend's own smallest … biggest span
+	      IG._SEIS_MAG_BASE^(IG._SEIS_MAG_HI - IG._SEIS_MAG_LO)
 	@test pt(IG._SEIS_MAG_HI + 2.5) == pt(IG._SEIS_MAG_HI)   # the top end saturates ("8+")
 	@test pt(IG._SEIS_MAG_LO - 1.0) == pt(IG._SEIS_MAG_LO)   # … and so does the small end
 	@test pt(NaN) == pt(IG._SEIS_MAG_LO)             # no magnitude -> smallest
 	@test issorted([pt(m) for m in 0:0.5:9])
+end
+
+@testitem "seismicity: a collapsed region is repaired, never queried" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	@test  IG._seis_box_ok(-12.0, -6.0, 35.0, 39.0)
+	@test !IG._seis_box_ok(0.0, 0.0, 0.0, 0.0)          # camera gave nothing
+	@test !IG._seis_box_ok(-12.0, -12.0, 35.0, 39.0)    # zero width
+	@test !IG._seis_box_ok(-12.0, -6.0, 35.0, 35.0)     # zero height
+	@test !IG._seis_box_ok(NaN, 1.0, 0.0, 1.0)
+	# A usable box passes through untouched …
+	@test IG._seis_usable_region(-12.0, -6.0, 35.0, 39.0, nothing) == (-12.0, -6.0, 35.0, 39.0)
+	# … a collapsed one falls back to the raster ON DISPLAY …
+	@test IG._seis_usable_region(0.0, 0.0, 0.0, 0.0, (-40.0, 0.0, 25.0, 50.0)) == (-40.0, 0.0, 25.0, 50.0)
+	# … and to the whole world when there is no raster (or its frame is degenerate too).
+	@test IG._seis_usable_region(0.0, 0.0, 0.0, 0.0, nothing) == (-180.0, 180.0, -90.0, 90.0)
+	@test IG._seis_usable_region(0.0, 0.0, 0.0, 0.0, (1.0, 1.0, 2.0, 2.0)) == (-180.0, 180.0, -90.0, 90.0)
 end
 
 @testitem "seismicity: dialog-field helpers (region, dates)" tags=[:unit, :fast] begin

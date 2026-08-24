@@ -211,6 +211,51 @@ end
 	end
 end
 
+# A depth-bearing overlay (a seismicity catalog) may grow the Z FRAME of a GRID — that is what puts
+# its hypocentres inside the axes cube. It may NOT grow the frame of an IMAGE window: an image has no
+# Z, and the blank scaffold plane such a window carries has a synthetic 0..1 Z that is not data.
+# Stretching that to -600 km rebuilt the window's bounds hundreds of km tall and everything in the
+# main renderer fell outside the camera's clipping range — a blank canvas with the axes still drawn
+# and every row still checked in Scene Objects ("the second plot deletes the basemap and shows no
+# circles"). One rule: no grid on display -> nothing to grow.
+@testitem "Z frame grows for a grid, never for an image window" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	ax = zeros(Cdouble, 7)
+	frame(h) = (ccall(_test_fn(:gmtvtk_active_axes_test), Cint, (Ptr{Cvoid}, Ptr{Cdouble}), h, ax); copy(ax))
+	G = GMT.mat2grid(Float32[100*sin(ix/3) for iy in 0:20, ix in 0:20]; x=[-10.0, 10.0], y=[-10.0, 10.0])
+	f = view_grid(G)
+	try
+		IG._pump_once()
+		before = frame(f.h)
+		@test before[1] == 1                           # the grid's own set owns the display
+		ccall(IG._fn(:gmtvtk_grow_z_frame_h), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble), f.h, -600000.0, 0.0)
+		IG._pump_once()
+		after = frame(f.h)
+		@test after[6] < before[6]                     # a grid's Z frame DOES follow the catalog down
+		@test after[2] == before[2] && after[3] == before[3]   # …and X/Y are never touched by an overlay
+		@test after[4] == before[4] && after[5] == before[5]
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+	if !isfile(IG._etopo4_path())
+		@test_skip "data/etopo4.jpg not present"
+	else
+		e = iview()
+		try
+			s = "-110/-55/-5/33/0/region"
+			GC.@preserve s IG._on_basemap(e.h, Base.unsafe_convert(Cstring, s))
+			IG._pump_once()
+			before = frame(e.h)
+			ccall(IG._fn(:gmtvtk_grow_z_frame_h), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble), e.h, -600000.0, 0.0)
+			IG._pump_once()
+			@test frame(e.h) == before                  # an image window's frame is untouched, Z included
+			@test IG._scene_state(e.h)["extravis0"] == 1   # …and the picture is still on screen
+		finally
+			ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), e.h)
+		end
+	end
+end
+
 # Output correctness: a rendered window saves a real, non-empty PNG (valid 8-byte signature).
 @testitem "save_png writes a valid PNG" tags=[:gui, :output] begin
 	IG = InteractiveGMT; GMT = IG.GMT

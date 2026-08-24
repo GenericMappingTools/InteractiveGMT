@@ -1062,6 +1062,10 @@ struct Scene {
 	// …and how the user says "that's all of them": a right-click or a double-click, both routed here
 	// (the tool's own button works too). Only the multi-seed collector sets this.
 	std::function<void()> seedPickEndCB;
+	// The window's own "plot a seismicity catalog" step (sendSeismicity, 70_window.cpp): ensure a base
+	// map, append the VISIBLE region, hand the block to Julia. Held here so the whole path — not just
+	// the Julia half — can be driven without the modal dialog (gmtvtk_seismicity_send_test).
+	std::function<void(const std::string &)> sendSeismicityFn;
 	std::vector<MecaGroupProps> mecaGroups;            // one entry per focal-mechanism batch groupName
 	std::vector<MecaBall> mecaBalls;                   // one entry per plotted event (drag + anchor line state)
 	int    mecaDrag = -1;                               // index into mecaBalls being click-dragged (-1 = none)

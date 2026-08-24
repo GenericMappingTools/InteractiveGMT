@@ -1087,6 +1087,10 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 			o += "extra" + std::to_string((int)i) + '=';
 			o += (s->extras[i].isImage ? "image:" : s->extras[i].isMesh ? "mesh:" : "grid:");
 			o += s->extras[i].name; o += ';';
+			// …and whether it is actually ON SCREEN. "the window still lists it" and "the user can see
+			// it" are different questions, and only the second one matches a bug report.
+			kvi(("extravis" + std::to_string((int)i)).c_str(),
+			    (s->extras[i].actor && s->extras[i].actor->GetVisibility() != 0) ? 1 : 0);
 		}
 		// Per-polygon introspection (drives the fault-trace icon/menu regression tests): the icon kind a
 		// row would get + the flags it derives from. "poly<i>=<isFault>,<closed>,<nestKind>:<name>;"
@@ -3835,6 +3839,20 @@ GMTVTK_API int gmtvtk_meca_drag_test(void *scene, int idx, double dx, double dy,
 	return 1;
 }
 
+// test hook: the frame of the axes set the window currently answers for (axesForActive) —
+// out7 = [hasSet, x0, x1, y0, y1, z0, z1]. This is what a reframe/Z-grow actually moves, so it is
+// what a reframe test must read (the scene's own zmin/zmax describe the base GRID's data, not the
+// frame). Returns 1 when a set owns the display, 0 when none does.
+GMTVTK_API int gmtvtk_active_axes_test(void *scene, double *out7) {
+	Scene *s = (Scene*)scene;
+	if (!s || !out7) return 0;
+	AxesSet *A = axesForActive(s);
+	out7[0] = A ? 1.0 : 0.0;
+	if (!A) { for (int i = 1; i < 7; ++i) out7[i] = 0.0;  return 0; }
+	out7[1] = A->x0; out7[2] = A->x1; out7[3] = A->y0; out7[4] = A->y1; out7[5] = A->z0; out7[6] = A->z1;
+	return 1;
+}
+
 // test hook: diagnostic — s->symArmed, whether the yellow handle actor exists/is visible, and its
 // current point count. out4 = [symArmed, handleExists, handleVisible, handleNumPoints].
 GMTVTK_API void gmtvtk_sym_debug_test(void *scene, double *out4) {
@@ -3864,6 +3882,27 @@ GMTVTK_API int gmtvtk_symbol_layer_test(void *scene, int idx, double *out5) {
 	out5[3] = (in && in->GetPoints()) ? (double)in->GetPoints()->GetNumberOfPoints() : 0.0;
 	out5[4] = sl.sizePx;
 	return 1;
+}
+
+// test hook: run the window's OWN seismicity step (sendSeismicity, 70_window.cpp) with `params`,
+// skipping only the modal dialog that would normally produce them — the base-map check and the
+// visible-region append are exercised for real. Returns 0 if the window has no such step.
+GMTVTK_API int gmtvtk_seismicity_send_test(void *scene, const char *params) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->sendSeismicityFn) return 0;
+	s->sendSeismicityFn(params ? params : "");
+	return 1;
+}
+
+// test hook: remove symbol layer `idx` through the SAME function the properties menu's Remove uses
+// (symbolRemoveLayer, 50_scene.cpp) — not a bypass. Returns 1 when a layer was removed.
+GMTVTK_API int gmtvtk_symbol_remove_test(void *scene, int idx) {
+	Scene *s = (Scene*)scene;
+	if (!s || idx < 0 || (size_t)idx >= s->symbols.size()) return 0;
+	vtkActor *a = s->symbols[(size_t)idx].actor.Get();
+	const int ok = symbolRemoveLayer(s, a) ? 1 : 0;
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return ok;
 }
 
 // test hook: send a synthetic Ctrl+C key press to the GL widget (GLView::keyPressEvent) — same
@@ -5444,6 +5483,11 @@ static void sceneReframeSet(Scene *s, AxesSet *A, double x0, double x1, double y
 	s->viewBoundsOverride = true;              // camera/gizmo bounds follow the framed raster
 	for (int i = 0; i < 6; ++i) s->viewBounds[i] = b[i];
 	if (moveCamera) cameraFitToScaledBBox(s, b, keepMargin != 0);
+	// The scene's depth extent just changed. Without re-deriving the near/far planes, a camera left
+	// where it was (moveCamera=0, the Z-grow path) keeps a clipping range cut for the OLD bounds and
+	// silently culls geometry that is still visible, still in the renderer and still checked in the
+	// panel. cameraFitToScaledBBox does this itself; the no-move path never did.
+	else if (s->ren) s->ren->ResetCameraClippingRange();
 	rebuildAxisLabels(s);                      // every set redrawn from its OWN frame
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
@@ -5457,6 +5501,18 @@ static void sceneReframeSet(Scene *s, AxesSet *A, double x0, double x1, double y
 GMTVTK_API void gmtvtk_grow_z_frame_h(void *handle, double z0, double z1) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
+	// ONLY A GRID HAS A Z FRAME. Asked through the SAME resolver the Z axis, the colour bar and the
+	// hover readout use (resolveActiveGrid), never off whatever axes set happens to be active: on an
+	// IMAGE window (a Base Map) the active set can resolve to the BASE — the blank scaffold plane an
+	// image window carries — whose synthetic 0..1 Z passes the "has a Z range" test below and is not
+	// data at all. Growing that fake frame down to a hypocentre depth (-600 km) rebuilt the window's
+	// bounds hundreds of km tall, and everything in the main renderer fell outside the camera's
+	// clipping range: a blank canvas with the axes billboards (overlay renderer) still drawn, and
+	// Scene Objects still showing image + symbols checked. Reported as "the second plot deletes the
+	// basemap image and shows no circles" — second, because the first plot resolved to the image's
+	// own set and was stopped by the degenerate-Z guard.
+	ActiveGrid ag = resolveActiveGrid(s);
+	if (!ag.valid) return;                     // no grid on display -> no Z frame to grow, full stop
 	AxesSet *A = axesForActive(s);
 	if (!A) return;
 	// A raster with NO Z range of its own — an image, whose zmin==zmax — has no vertical frame to

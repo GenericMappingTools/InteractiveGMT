@@ -17094,6 +17094,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// other way round.
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	};
+	s->sendSeismicityFn = [sendSeismicity](const std::string &p) { sendSeismicity(QString::fromStdString(p)); };
 	// Open the Plot seismicity dialog (Seismology > "Seismicity…" and, with builtin=true,
 	// "Global seismicity (1990-2009)" = the shipped data/quakes.dat — same dialog, same Julia
 	// pipeline).

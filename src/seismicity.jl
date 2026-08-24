@@ -90,22 +90,31 @@ end
 # no child process to stall the GUI), then `curl`, which reads curl's stdout so that path writes
 # nothing either. THREE attempts because the service really does reset the connection mid-answer,
 # curl included — measured here repeatedly, with the second attempt getting through.
+#
+# An EMPTY answer is not a failure: the FDSN service answers "no events in that box/time" with HTTP
+# 204 and no body, which is a legitimate result the caller reports as "no events" — never an
+# exception. Throwing on it (what this did) turned an ordinary empty query into "Seismicity FAILED:
+# the USGS query returned nothing", which reads like a broken tool and hides the real answer. Only a
+# genuine TRANSPORT failure (reset, refused, HTTP 400/5xx) still throws, after the three attempts.
 function _seis_fetch(url::String)::String
+	err = nothing
 	for k in 1:3
 		try
-			txt::String = ""
 			if k == 1
-				io = IOBuffer();  GMT.Downloads.download(url, io);  txt = String(take!(io))
+				io = IOBuffer();  GMT.Downloads.download(url, io);  return String(take!(io))
 			else
-				txt = read(`curl -s --show-error --fail --max-time 180 $url`, String)
+				return read(`curl -s --show-error --fail --max-time 180 $url`, String)
 			end
-			isempty(txt) || return txt
 		catch e
-			k == 3 && rethrow(e)
+			err = e
 			@warn "seismicity: fetch attempt $k failed, retrying with curl" exception=e url
+			# Back off before retrying. The service resets the connection on rapid repeat queries —
+			# hammering it again immediately (what this did) is what turns "plot the same catalog twice
+			# in a row" into a hard failure; a short pause gets the second call through.
+			k < 3 && sleep(k == 1 ? 0.5 : 2.0)
 		end
 	end
-	error("the USGS query returned nothing")
+	error("the USGS service could not be reached after 3 attempts ($(sprint(showerror, err)))")
 end
 
 # One field of a comma-split record as a Float64; an absent or empty field is NaN (the service
@@ -289,6 +298,25 @@ function _seis_display_frame(scene::Ptr{Cvoid})
 	return ok == 0 ? nothing : (b[1], b[2], b[3], b[4])
 end
 
+# Does this box enclose any ground at all? A camera can hand over a COLLAPSED region — zero width or
+# height — and every downstream step then does something wrong and unexplainable: the query asks the
+# service for a box with no area (answered with an empty body, i.e. "no events" for a map full of
+# them), and the in-map crop rejects every event that does come back. So it is caught HERE, once, at
+# the boundary where the camera's answer enters the tool, instead of being diagnosed three steps later.
+_seis_box_ok(W::Float64, E::Float64, S::Float64, N::Float64)::Bool =
+	isfinite(W) && isfinite(E) && isfinite(S) && isfinite(N) && (E - W > 1e-9) && (N - S > 1e-9)
+
+# The box to work with: what the caller asked for, or — when that has collapsed — the footprint of
+# the raster on display, or the whole world. Never a degenerate box.
+function _seis_usable_region(W::Float64, E::Float64, S::Float64, N::Float64, frame)::NTuple{4,Float64}
+	_seis_box_ok(W, E, S, N) && return (W, E, S, N)
+	if frame !== nothing
+		f = _seis_norm_region(Float64(frame[1]), Float64(frame[2]), Float64(frame[3]), Float64(frame[4]))
+		_seis_box_ok(f...) && return f
+	end
+	return (-180.0, 180.0, -90.0, 90.0)
+end
+
 # Grow the window's Z frame DOWN to the deepest plotted event, so the axes cube, its Z numbers and
 # the camera actually contain the hypocentres. Without this the cloud is drawn correctly and lands
 # outside the box — invisible on any grid whose own Z span is smaller than the catalog's depth
@@ -310,8 +338,12 @@ end
 # the CAMERA (sceneVisibleRegion, so zooming out asks for more), while the drawing is cropped to
 # the DATA, because a symbol floating in the empty background outside the grid is not a plot.
 # `frame` = nothing (no raster in the window) leaves the request box as the only crop.
-function _seis_filter(d, lon, lat, dep, mag, t, frame=nothing)
-	W, E, S, N = _seis_region(d)
+function _seis_filter(d, lon, lat, dep, mag, t, frame=nothing,
+                     box::Union{Nothing,NTuple{4,Float64}}=nothing)
+	# `box` = the region the CATALOG WAS ASKED FOR, handed in so the query and the crop can never be
+	# two different boxes (a collapsed camera region is repaired once, at the door — _seis_usable_region
+	# — and both halves must see the repaired one). Absent = derive it, for callers that only filter.
+	W, E, S, N = box === nothing ? _seis_region(d) : box
 	if frame !== nothing
 		W = max(W, frame[1]);  E = min(E, frame[2])
 		S = max(S, frame[3]);  N = min(N, frame[4])
@@ -419,7 +451,11 @@ end
 function _on_seismicity(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 	try
 		d = _nswing_parse(unsafe_string(cparams))
-		W, E, S, N = _seis_region(d)
+		# The raster's footprint FIRST: it is both the in-map crop and the fallback box when the region
+		# that arrived is unusable (see _seis_usable_region — a collapsed camera region asked the service
+		# for a zero-area box and cropped every answer away, with nothing on screen to explain it).
+		frame = _seis_display_frame(scene)
+		W, E, S, N = _seis_usable_region(_seis_region(d)..., frame)
 		fmt  = something(tryparse(Int, _get(d, "format", "1")), 1)
 		file = _get(d, "file")
 		(fmt in 2:5 && isempty(file)) && error("catalog format $fmt needs a file")
@@ -431,16 +467,17 @@ function _on_seismicity(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			fmt == 5 ? _seis_posit(file) :
 			fmt == 6 ? _seis_default() : error("unknown catalog format $fmt")
 		if isempty(lon)
-			_viewer_log_error(scene, "Seismicity: the catalog returned no events")
+			_viewer_log_error(scene, "Seismicity: the catalog returned no events for " *
+				"$(round(W;digits=2))/$(round(E;digits=2))/$(round(S;digits=2))/$(round(N;digits=2))")
 			return
 		end
-		frame = _seis_display_frame(scene)
-		keep  = _seis_filter(d, lon, lat, dep, mag, t, frame)
+		box   = (W, E, S, N)                       # the box the catalog was ASKED for — crop with THAT
+		keep  = _seis_filter(d, lon, lat, dep, mag, t, frame, box)
 		nk = count(keep)
 		if nk == 0
 			# Say WHY nothing is drawn: an empty catalog and a catalog whose every event fell outside
 			# the map are different situations and the user cannot tell them apart from a blank map.
-			nout = frame === nothing ? 0 : count(_seis_filter(d, lon, lat, dep, mag, t)) - nk
+			nout = frame === nothing ? 0 : count(_seis_filter(d, lon, lat, dep, mag, t, nothing, box)) - nk
 			_viewer_log_error(scene, nout > 0 ?
 				"Seismicity: $nout event(s) found, but all of them lie OUTSIDE this map's area — nothing to draw over. Load a wider grid or a Base Map to see them." :
 				"Seismicity: no events match the selected filters")
@@ -458,8 +495,19 @@ function _on_seismicity(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		       ", most recent " * GMT.Dates.format(GMT.Dates.unix2datetime(maximum(tk)), "yyyy-mm-dd HH:MM") * " UTC"
 		_viewer_log_error(scene, "Seismicity: plotted $nk of $(length(lon)) events$last")
 	catch e
-		_viewer_log_error(scene, "Seismicity FAILED: $(sprint(showerror, e))")
-		@warn "seismicity: failed" exception=(e, catch_backtrace())
+		# Name the exception TYPE and the line it came from, in the window itself. "Seismicity FAILED:"
+		# followed by a bare message is unreportable — every failure looks the same to whoever sees it,
+		# and the only copy of the useful half (the backtrace) goes to a stderr no GUI user reads.
+		bt = catch_backtrace()
+		fr = ""
+		for f in Base.stacktrace(bt)
+			s = string(f.file)
+			if occursin("seismicity.jl", s) || occursin("symbols.jl", s)
+				fr = "  [$(basename(s)):$(f.line) in $(f.func)]";  break
+			end
+		end
+		_viewer_log_error(scene, "Seismicity FAILED: $(typeof(e)): $(sprint(showerror, e))$fr")
+		@warn "seismicity: failed" exception=(e, bt)
 	end
 	return
 end
