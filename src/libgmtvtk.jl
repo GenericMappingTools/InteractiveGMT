@@ -185,6 +185,12 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_gmtedit_message,
 	:gmtvtk_progress_show, :gmtvtk_progress_show_async, :gmtvtk_progress_update,
 	:gmtvtk_progress_status, :gmtvtk_progress_close,
+	# MBGRID (deps/src/mbgrid.c, a second C translation unit inside the SAME DLL — see
+	# GMTVTK_SRC in deps/CMakeLists.txt). Resolved here with everything else: there is ONE
+	# symbol resolver for this library, and a build too old to carry these is stale for the
+	# same reason it would be stale missing any other export.
+	:mbgrid_dims, :mbgrid_work_dims, :mbgrid_work_origin, :mbgrid_bin, :mbgrid_zgrid,
+	:mbgrid_nodes, :mbgrid_fill, :mbgrid_extract, :mbgrid_run, :mbgrid_strerror,
 )
 
 # Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is

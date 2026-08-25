@@ -4,8 +4,11 @@
 # The C++ dialog is InterpolationDialog (70_window.cpp, loads deps/ui/interpolation_dialog.ui), whose
 # layout is Mirone's Surface window (src_figs/griding_mir.m): the input table + header count, the
 # shared Griding Line Geometry block, the Near-Neighbor search radius, the Griding Method combo and
-# its per-method Options window. Mirone's "Minimum Curvature - mbgrid" is dropped (not a GMT module);
-# blockmode, greenspline and sphinterpolate are added because GMT grids with them too.
+# its per-method Options window. blockmode, greenspline and sphinterpolate are added because GMT
+# grids with them too. Mirone's "Minimum Curvature - mbgrid" is back: it is not a GMT module, so it
+# is not GMT.jl that runs it but `mbgrid` (src/mbgrid.jl, over deps/src/mbgrid.c) — which is a plain
+# Julia function taking `region`/`inc` keywords exactly like the GMT modules beside it, so it enters
+# the same _interp_module table and needs no fork of the callback.
 #
 # The dialog sends the method's own options as one "opt_<kwarg>=<value>" line each, and the KEYS ARE
 # GMT.jl KEYWORD NAMES — so the common case is a straight copy into `kw`. Only the handful that cannot
@@ -36,6 +39,7 @@ function _interp_module(method::AbstractString)
 	method == "blockmode"      && return GMT.blockmode
 	method == "greenspline"    && return GMT.greenspline
 	method == "sphinterpolate" && return GMT.sphinterpolate
+	method == "mbgrid"         && return mbgrid          # ours, not GMT's — see the header note
 	error("unknown gridding method '$method'")
 end
 
@@ -49,8 +53,9 @@ function _interp_kwargs(d::Dict{String,String}, method::AbstractString, geog::Bo
 	_on(d, "verbose") && (kw[:verbose] = true)
 	# -fg: the modules that measure DISTANCES (a search radius, a spherical spline) refuse a distance
 	# unit on a grid they think is Cartesian — same trap grdfilter's -D hit. An in-memory dataset does
-	# not carry its geographic-ness, so it is stated explicitly.
-	geog && (kw[:f] = :g)
+	# not carry its geographic-ness, so it is stated explicitly. mbgrid is not a GMT module and has no
+	# -f to state it to: it measures its Gaussian in CELLS, so there is no distance unit to resolve.
+	(geog && method != "mbgrid") && (kw[:f] = :g)
 	# Near Neighbor's -S is required and lives in the main dialog (Mirone's "For Nearneighbor only"
 	# group), not in the Options window, so it is not an opt_ line.
 	r = _get(d, "radius")

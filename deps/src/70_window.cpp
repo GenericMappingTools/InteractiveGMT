@@ -15354,8 +15354,11 @@ public:
 // its Options button, and Verbose / Plot pts / Compute. Loaded at RUNTIME via QUiLoader from
 // deps/ui/interpolation_dialog.ui.
 //
-// Mirone's method list is followed except for "Minimum Curvature - mbgrid", which is not a GMT
-// module; blockmode, greenspline and sphinterpolate are added because GMT grids with them too.
+// Mirone's method list is followed in full; blockmode, greenspline and sphinterpolate are added
+// because GMT grids with them too. "Minimum Curvature - mbgrid" is NOT a GMT module — it is C in
+// this very DLL (deps/src/mbgrid.c) behind the Julia function `mbgrid` — but nothing here has to
+// know that: it takes the same region/inc keywords, so it is one more row of the method combo and
+// one more branch of optionSpec(), with no second code path anywhere in this class.
 //
 // The per-method Options window (Mirone's "Surface op..." dialog) is NOT a second dialog class: the
 // rows differ per module, so ONE builder walks the option table `optionSpec(method)` and produces
@@ -15415,6 +15418,7 @@ public:
 
 		if (methodCb) {                                  // data = the GMT module that does the work
 			methodCb->addItem("Minimum Curvature - surface", "surface");
+			methodCb->addItem("Minimum Curvature - mbgrid", "mbgrid");
 			methodCb->addItem("Delaunay Triangulation", "triangulate");
 			methodCb->addItem("Near Neighbor", "nearneighbor");
 			methodCb->addItem("Median", "blockmedian");
@@ -15518,6 +15522,19 @@ public:
 			v.push_back({"breakline", "Breakline file", "-D", "file", "", "x,y,z line whose vertices constrain the nearest nodes directly", {}});
 			v.push_back({"preproc", "Pre-process", "", "combo", "", "Decimate the data per cell first, as the manual strongly advises",
 			             {"none|", "blockmean|blockmean", "blockmedian|blockmedian", "blockmode|blockmode"}});
+		}
+		else if (m == "mbgrid") {
+			// gmtmbgrid's own option letters, kept next to the boxes exactly as Mirone shows GMT's.
+			v.push_back({"scale", "Gaussian width (cells)", "-W", "text", "1", "Width of the binning Gaussian in grid cells. Larger averages more soundings into each node", {}});
+			v.push_back({"clipmode", "Fill gaps", "-C", "combo", "all", "Which empty nodes the spline may fill",
+			             {"everything the spline reached|all", "only within Clip cells of data|near",
+			              "only gaps with data on opposite sides|gap", "nothing (bin only)|none"}});
+			v.push_back({"clip", "Clip radius (cells)", "-C", "text", "0", "The search radius the 'near' and 'gap' modes use, in grid cells", {}});
+			v.push_back({"tension", "Tension", "-T", "text", "0", "Spline tension, 0 = minimum curvature. Only the zgrid solver uses it", {}});
+			v.push_back({"extend", "Extend (fraction)", "-E", "text", "0", "Widen the working grid by this fraction of nx/ny so data just outside the region still constrain the edge, then crop back", {}});
+			v.push_back({"solver", "Solver", "", "combo", "zgrid", "Which spline fills the gaps between the binned nodes",
+			             {"zgrid (IGPP/SIO, in C, fast)|zgrid", "GMT surface|surface"}});
+			v.push_back({"breakline", "Breakline file", "-D", "file", "", "x,y,z line whose nodes are pinned to its own z, undiluted by nearby soundings", {}});
 		}
 		else if (m == "nearneighbor") {
 			v.push_back({"sectors", "Sectors  n[/n_min]", "-N", "text", "", "Split the search circle in n sectors; a node needs data in at least n_min of them [4/4]", {}});

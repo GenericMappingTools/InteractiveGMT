@@ -1,8 +1,13 @@
 cmake_minimum_required(VERSION 3.21)  # 3.21+ for install(... RUNTIME_DEPENDENCIES ...)
-project(gmtvtk VERSION 0.1.0 LANGUAGES CXX)
+# C as well as CXX: src/mbgrid.c (the MBGRID gridder) is a real C translation unit, not one of the
+# NN_*.cpp fragments — see the GMTVTK_SRC comment below. Without C in this list CMake has no C
+# compiler configured and refuses the file outright.
+project(gmtvtk VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Declared up here (used below to gate gmtvtk_demo) — see the big comment near the bottom of
 # this file for what it turns on.
@@ -54,7 +59,12 @@ find_package(VTK REQUIRED COMPONENTS
 # (00_includes, 10_geometry, ... 90_c_api). Only gmtvtk.cpp is in this source list; the fragments
 # are #included textually (NOT compiled separately — do not add them here, or their file-static
 # helpers would multiply-define), keeping internal linkage just as in the old main.cpp.
-set(GMTVTK_SRC src/gmtvtk.cpp)
+# mbgrid.c is NOT one of those fragments and must NOT be #included into gmtvtk.cpp: it is plain
+# C99 + libm, shares no file-static helper with the viewer, includes none of its headers, and has
+# to stay compilable and testable on its own (the test_mbgrid target below). So it is a real second
+# translation unit in this list. Its gmtvtk-facing exports are listed in src/libgmtvtk.jl's
+# _LIB_SYMBOLS like every other export of this DLL.
+set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c)
 
 # deps/ui/*.ui are loaded at RUNTIME (QUiLoader, see FocalMechanismsDialog in 70_window.cpp) for
 # dialogs where the .ui must stay the single source of truth — no hand-ported C++ to fall out of
@@ -92,6 +102,13 @@ if(NOT GMTVTK_PACKAGE)
   endif()
   target_link_libraries(gmtvtk_demo PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS})
   vtk_module_autoinit(TARGETS gmtvtk_demo MODULES ${VTK_LIBRARIES})
+
+  # Numerics regression for mbgrid.c — pure C, links nothing but libm, runs in well under a second.
+  # Built by the default `all` target, same as gmtvtk_demo; run deps/build/test_mbgrid.
+  add_executable(test_mbgrid src/mbgrid.c src/test_mbgrid.c)
+  if(NOT MSVC)
+    target_link_libraries(test_mbgrid PRIVATE m)
+  endif()
 endif()
 
 # Test-only shared library — SAME source, built a second time with GMTVTK_TEST_API defined so

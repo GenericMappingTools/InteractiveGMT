@@ -25,7 +25,11 @@ end
 	@test IG._interp_module("blockmode")      === GMT.blockmode
 	@test IG._interp_module("greenspline")    === GMT.greenspline
 	@test IG._interp_module("sphinterpolate") === GMT.sphinterpolate
-	@test_throws Exception IG._interp_module("mbgrid")      # Mirone's, not a GMT module
+	# Mirone's mbgrid is NOT a GMT module — it is ours (src/mbgrid.jl over deps/src/mbgrid.c) — but
+	# it is in the same table all the same, because the dialog offers it and the callback runs it
+	# through the same call. A method the combo offers and this table refuses is the bug.
+	@test IG._interp_module("mbgrid") === IG.mbgrid
+	@test_throws Exception IG._interp_module("no_such_method")
 end
 
 @testitem "Interpolate: the shared options map onto GMT.jl keywords" tags=[:unit, :fast] begin
@@ -146,6 +150,9 @@ end
 	xy = [(x, y) for x in 0:0.5:10 for y in 0:0.5:10]
 	D = GMT.mat2ds([Float64[p[1] for p in xy] Float64[p[2] for p in xy] Float64[sin(p[1]) + cos(p[2]) for p in xy]])
 	d = Dict("region" => "0/10/0/10", "inc" => "1")
+	# mbgrid is deliberately NOT in this loop: it is the one method whose numerics live in the DLL,
+	# so it cannot run in a DLL-less checkout. Its own end-to-end grid is in test-mbgrid-unit.jl,
+	# gated on the library having loaded.
 	for m in ("surface", "triangulate", "blockmean", "blockmedian", "blockmode", "nearneighbor", "greenspline")
 		dd = copy(d)
 		(m == "nearneighbor") && (dd["radius"] = "2")

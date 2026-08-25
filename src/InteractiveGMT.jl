@@ -117,7 +117,8 @@ include("grdvolume.jl")  # GMT menu > grdvolume: area, volume and mean height ag
 include("gravprisms.jl") # GMT menu > gravprisms: the field of a body made of rectangular prisms
 include("grdvector.jl")  # GMT menu > grdvector: the vector field of two grids, drawn as an overlay
 include("earthregions.jl")# Tools > Earth regions: a named region's raster or boundaries (GMT.jl earthregions)
-include("interpolate.jl")# GMT menu > Interpolate: grid an x,y,z table (surface, nearneighbor, block*, …)
+include("mbgrid.jl")     # MBGRID: Gaussian binning + zgrid/surface gap fill, via deps/src/mbgrid.c
+include("interpolate.jl")# GMT menu > Interpolate: grid an x,y,z table (surface, nearneighbor, mbgrid, block*, …)
 include("project.jl")    # Tools > Project: reproject the window's raster with gdalwarp (Mirone gdal_project.m)
 include("lineops.jl")    # Tools > Vector Operations (port of Mirone src_figs/line_operations.m)
 include("plates.jl")     # Plates > Euler rotations (port of Mirone euler_stuff.m; GMT spotter modules)
@@ -134,7 +135,7 @@ export gmtscript, gmtreplay,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot, rtp3d, shapenc, isoc2shapenc, shapenc2isoc,
-       gmtedit
+       gmtedit, mbgrid
 
 # --- precompile (ALL of it lives HERE, via PrecompileTools — never hidden in other files) ---
 # Callbacks are thin invokelatest trampolines registered lazily on first window open
