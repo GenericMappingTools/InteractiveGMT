@@ -121,6 +121,7 @@ function _ensure_callbacks()
 	                    ("grdvolume",   _register_grdvolume),
 	                    ("gravprisms",  _register_gravprisms),
 	                    ("grdvector",   _register_grdvector),
+	                    ("earthregions", _register_earthregions),
 	                    ("interpolate", _register_interpolate),
 	                    ("project",     _register_project),
 	                    ("euler",       _register_euler),

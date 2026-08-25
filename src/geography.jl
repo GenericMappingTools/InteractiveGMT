@@ -207,8 +207,24 @@ end
 # (not _add_overlay!) because the callback only has the raw Scene*, not a QtFigure with a grid to
 # sample z from — coastlines sit at sea level anyway, and the C overlay polygon-offsets them toward
 # the camera so they don't z-fight the map.
-function _add_geo_overlay(scene::Ptr{Cvoid}, D; color=(0.0, 0.0, 0.0), linewidth=1.0, name::AbstractString="")
+# THE pen of every geographic boundary line — coastlines, political borders, rivers, and the DCW
+# outline the Earth regions dialog draws. In POINTS, the unit GMT states a pen in, so the same number
+# means the same thickness here and in a GMT script. One value, one place (SACRED_LAW: same quantity,
+# one source); a caller that wants a different line (grdfill's hole outlines, grdrotater's rotated
+# frame) is not a boundary and says its own width.
+const _GEO_LINE_PT = 0.75
+
+function _add_geo_overlay(scene::Ptr{Cvoid}, D; color=(0.0, 0.0, 0.0), linewidth=_GEO_LINE_PT,
+                          name::AbstractString="", noConvertToPoints::Bool=false)
 	segs = D isa GMTdataset ? (D,) : collect(D)
+	# CLAMPED TO THE GROUND. A boundary line laid at z = 0 is right on a flat map and wrong the moment
+	# the view is 3-D: it hangs at sea level while the relief rises through it. Every vertex therefore
+	# takes the z of the surface under it, sampled by `_sample_grid` (drape.jl) — THE sampler the
+	# drape and the hover readout already use, never a second interpolation. With no grid in the
+	# window there is no ground to clamp to and z stays 0, which is what a bare map wants anyway.
+	# Nothing extra is needed against z-fighting: addOverlay already pulls overlays toward the camera
+	# with a coincident-topology offset, which is the case this was for.
+	G = _find_object_named(scene, :grid)[2]
 	xyz = Float64[]
 	segoff = Cint[0]
 	off = 0
@@ -216,16 +232,30 @@ function _add_geo_overlay(scene::Ptr{Cvoid}, D; color=(0.0, 0.0, 0.0), linewidth
 		m = seg isa GMTdataset ? seg.data : seg
 		n = size(m, 1)
 		for k in 1:n
-			push!(xyz, Float64(m[k, 1]), Float64(m[k, 2]), 0.0)
+			x, y = Float64(m[k, 1]), Float64(m[k, 2])
+			z = 0.0
+			if G !== nothing
+				zs = _sample_grid(G, x, y)          # NaN outside the grid, or over a hole
+				isfinite(zs) && (z = Float64(zs))
+			end
+			push!(xyz, x, y, z)
 		end
 		off += n
 		push!(segoff, Cint(off))
 	end
 	off == 0 && return false
 	cr, cg, cb = color
-	ok = ccall(_fn(:gmtvtk_add_overlay_h), Cint,
-		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
-		  scene, xyz, Cint(off), segoff, Cint(length(segs)), Cint(1), cr, cg, cb, Float64(linewidth), 0.0, name)
+	# gmtvtk_add_overlay_ex4_h, not the plain add: it is the one that takes the width in POINTS and
+	# converts to pixels by the window's own DPI, which is what every other overlay in this app gets.
+	# The plain add takes PIXELS, so a boundary line drawn through it stayed one physical pixel wide
+	# on a high-DPI screen while everything beside it scaled — that is the "stupidly thin" line.
+	# It is also the add that carries `noConvertToPoints`: a coastline or a border is a LINE, and
+	# "Convert to points" on it is an offer to turn a boundary into a dot cloud.
+	ok = ccall(_fn(:gmtvtk_add_overlay_ex4_h), Cint,
+		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
+		   Cstring, Cstring, Cstring, Cint, Cint, Cint, Cstring),
+		  scene, xyz, Cint(off), segoff, Cint(length(segs)), Cint(1), cr, cg, cb, Float64(linewidth), 0.0,
+		  name, "", "", Cint(noConvertToPoints), Cint(0), Cint(0), "")
 	return ok != 0
 end
 

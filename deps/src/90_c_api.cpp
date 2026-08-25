@@ -2259,6 +2259,33 @@ GMTVTK_API void gmtvtk_set_grdvector_callback(JuliaGrdVectorFn fn) {
 	g_juliaGrdVector = fn;
 }
 
+// Julia hands the Earth regions dialog the collection listing it just asked for. `dlg` is the
+// pointer the callback was called with, so the listing goes back to the dialog that wanted it: it
+// opens in the shared text popup, where double-clicking a row fills that dialog's code box.
+GMTVTK_API void gmtvtk_earthregions_set_listing(void *dlg, const char *title, const char *text) {
+	auto *w = static_cast<EarthRegionsDialog *>(dlg);
+	if (!w || !w->dlg) return;
+	w->showListing(QString::fromUtf8(title ? title : "Regions"),
+	               QString::fromUtf8(text ? text : ""));
+}
+
+// Julia hands the Earth regions dialog the boundaries of the code it was just asked about, so the
+// Region boxes always SHOW where the chosen region is. Filled this way they are a readout, not an
+// override — the dialog remembers that and still sends the code, so the rounding and the
+// exact/rounded choice are applied once, by GMT, and not a second time on top of their own result.
+GMTVTK_API void gmtvtk_earthregions_set_region(void *dlg, double w, double e, double s, double n) {
+	auto *d = static_cast<EarthRegionsDialog *>(dlg);
+	if (!d || !d->dlg) return;
+	d->fillRegion(w, e, s, n);
+}
+
+// Register the Earth regions callback (Tools menu). fn(scene, dlg, params) with the "key=value" block
+// described in 30_app.cpp lists a region collection, or brings one region's raster or boundaries
+// into the window. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_earthregions_callback(JuliaEarthRegionsFn fn) {
+	g_juliaEarthRegions = fn;
+}
+
 // Register the Euler rotations Compute callback (Plates menu). fn(scene, params) with the "key=value"
 // block described in 30_app.cpp rotates the chosen line / adds two poles / interpolates a rotation
 // model, all through GMT's spotter modules. Returns 1/0. nullptr to detach.
@@ -4739,6 +4766,105 @@ GMTVTK_API int gmtvtk_window_menu_trigger_test(const char *title, const char *pa
 
 // Is a top-level window with this title on screen? The companion assertion of the two triggers
 // above: "the entry fired" is not "the dialog opened".
+// --- Earth regions test hooks ------------------------------------------------------------------
+// The listing is not a menu action and not a scene object, so none of the hooks above can reach it:
+// it is a dialog button that hands text back to that dialog, which then opens a popup you pick from.
+// These three drive exactly that chain — list, double-click a row, read the code box — because the
+// pick is the whole point of the listing and a test that only proved the window opened would miss it.
+
+// Find a top-level QDialog by title: an EXACT match over all of them first, then a contains pass.
+// The order matters here — the listing popup is titled "Earth regions — the IHO collection", so a
+// contains-only search for "Earth regions" finds IT rather than the dialog that owns it.
+static QDialog *findDialogByTitle(const char *needle) {
+	if (!needle) return nullptr;
+	const QString want = QString::fromUtf8(needle);
+	for (int pass = 0; pass < 2; ++pass)
+		for (QWidget *w : QApplication::topLevelWidgets()) {
+			auto *d = qobject_cast<QDialog *>(w);
+			if (!d || !d->isWindow()) continue;
+			const QString t = d->windowTitle();
+			if (pass == 0 ? (t.compare(want, Qt::CaseInsensitive) == 0)
+			              : t.contains(want, Qt::CaseInsensitive)) return d;
+		}
+	return nullptr;
+}
+
+// Pick `collection` in the Earth regions dialog and press "List its regions". Returns 1 if it fired.
+GMTVTK_API int gmtvtk_earthregions_list_test(const char *dlgTitle, const char *collection) {
+	QDialog *d = findDialogByTitle(dlgTitle);
+	if (!d) return 0;
+	if (auto *cb = d->findChild<QComboBox *>("cb_collection")) {
+		const int i = cb->findText(QString::fromUtf8(collection ? collection : ""), Qt::MatchFixedString);
+		if (i < 0) return 0;
+		cb->setCurrentIndex(i);
+	}
+	auto *b = d->findChild<QPushButton *>("push_list");
+	if (!b) return 0;
+	b->click();
+	QApplication::processEvents();
+	return 1;
+}
+
+// Double-click line `line` (0-based, 0 = the column header) of the listing popup whose title
+// contains `popupTitle` — a REAL mouse event on the text viewport, so it goes through the same
+// event filter a user's click does. Returns 1 if the event was delivered.
+GMTVTK_API int gmtvtk_earthregions_pick_test(const char *popupTitle, int line) {
+	QDialog *d = findDialogByTitle(popupTitle);
+	if (!d) return 0;
+	auto *te = d->findChild<QPlainTextEdit *>();
+	if (!te) return 0;
+	QTextBlock blk = te->document()->findBlockByNumber(line);
+	if (!blk.isValid()) return 0;
+	QTextCursor c(blk);
+	const QPointF p = te->cursorRect(c).center();
+	QMouseEvent ev(QEvent::MouseButtonDblClick, p, te->viewport()->mapToGlobal(p.toPoint()),
+	               Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+	QApplication::sendEvent(te->viewport(), &ev);
+	QApplication::processEvents();
+	return 1;
+}
+
+// What the Earth regions dialog's code box holds ("" when there is no such dialog).
+GMTVTK_API const char *gmtvtk_earthregions_code_test(const char *dlgTitle) {
+	static QByteArray out;
+	out.clear();
+	if (QDialog *d = findDialogByTitle(dlgTitle))
+		if (auto *e = d->findChild<QLineEdit *>("edit_code"))
+			out = e->text().trimmed().toUtf8();
+	out.append('\0');
+	return out.constData();
+}
+
+// The four Region boxes, as "W/E/S/N" ("" when any is empty or there is no such dialog) — the
+// readout a picked or typed code is supposed to leave behind.
+GMTVTK_API const char *gmtvtk_earthregions_region_test(const char *dlgTitle) {
+	static QByteArray out;
+	out.clear();
+	if (QDialog *d = findDialogByTitle(dlgTitle)) {
+		QStringList p;
+		for (const char *nm : { "edit_xmin", "edit_xmax", "edit_ymin", "edit_ymax" }) {
+			auto *e = d->findChild<QLineEdit *>(nm);
+			p << (e ? e->text().trimmed() : QString());
+		}
+		if (!p.contains(QString())) out = p.join('/').toUtf8();
+	}
+	out.append('\0');
+	return out.constData();
+}
+
+// Type `code` into the code box exactly as a user does and finish the edit, so the limits lookup
+// runs. Returns 1 if the box was there.
+GMTVTK_API int gmtvtk_earthregions_type_test(const char *dlgTitle, const char *code) {
+	QDialog *d = findDialogByTitle(dlgTitle);
+	if (!d) return 0;
+	auto *e = d->findChild<QLineEdit *>("edit_code");
+	if (!e) return 0;
+	e->setText(QString::fromUtf8(code ? code : ""));
+	emit e->editingFinished();
+	QApplication::processEvents();
+	return 1;
+}
+
 GMTVTK_API int gmtvtk_window_exists_test(const char *title) {
 	if (!title) return 0;
 	const QString want = QString::fromUtf8(title);

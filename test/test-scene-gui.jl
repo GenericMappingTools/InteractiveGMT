@@ -225,7 +225,7 @@ end
 # ground". The two differ the moment the camera is not looking straight down, and answering the
 # second one killed the tooltip for every event with a real depth: only depth-0 events (which sit
 # ABOVE the surface) ever answered. Depth by itself must never disable hover.
-@testitem "hover: the terrain hides a hypocentre, its depth alone does not" tags=[:gui] setup=[GmtvtkTest] begin
+@testitem "hover: a buried hypocentre still answers; the terrain only hides its pixels" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[0.0 for iy in 0:20, ix in 0:20]; x=[0.0, 20.0], y=[0.0, 20.0])  # lid at z=0
 	f = view_grid(G)
@@ -246,12 +246,24 @@ end
 		@test hover(10.0, 5.0, -100000.0) == "BURIED"      # flat map: depth is not in play at all
 
 		flat2d(0)                                           # tilt into 3-D
-		@test hover(10.0, 5.0, -100000.0) == ""            # the lid is between camera and event
-		@test hover(5.0, 15.0, 100000.0)  == "ABOVE"       # nothing in the way
-		@test hover(30.0, 10.0, -100000.0) == "OUTSIDE"    # 100 km DEEP and still hoverable: no relief
-		                                                    # over it, so the camera can see it
+		# PICKING IS NOT RENDERING (10_geometry.cpp, above pickSymbolAt). Every one of these still
+		# answers: burial is a fact about the ground, visibility a fact about the camera, and a
+		# tooltip is information, not paint. Two gates that made buried events go silent were
+		# deliberately removed — they left a 3-D view where only events shallow enough to stick out
+		# above the ground could be interrogated at all — and the source says in as many words not to
+		# add a third. What the terrain DOES hide is the pixels, and that law has its own test below
+		# ("a surface hides what is buried under it"), asserted on the framebuffer.
+		@test hover(10.0, 5.0, -100000.0) == "BURIED"      # under the lid, and still interrogable
+		@test hover(5.0, 15.0, 100000.0)  == "ABOVE"
+		@test hover(30.0, 10.0, -100000.0) == "OUTSIDE"
 
-		flat2d(1)                                           # …and back on the map every one answers
+		# What DOES change between the two views is where the layer is parked: in 3-D it sits in the
+		# main renderer so the real depth test can hide it, and in flat-2-D it is promoted to the
+		# depth-cleared overlay layer so a map marker shows whatever its depth.
+		toplayer() = ccall(_test_fn(:gmtvtk_symbol_toplayer_test), Cint, (Ptr{Cvoid}, Cint), f.h, Cint(0))
+		@test toplayer() == 0
+		flat2d(1)
+		@test toplayer() == 1
 		@test hover(10.0, 5.0, -100000.0) == "BURIED"
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)

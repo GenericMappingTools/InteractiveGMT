@@ -81,6 +81,15 @@ struct Overlay {
 	vtkSmartPointer<vtkTexture>  stripeTex;  // 1-D stipple texture (kept alive) for dashed/dotted
 	int lineStyle = 0;                       // 0 solid, 1 dashed, 2 dotted (so colour edits rebuild it)
 	std::string name;                        // label shown in the Scene Objects panel
+	bool   realZ = false;                    // the vertices carry a real elevation, not a flat z=0 map
+	                                          // annotation -- i.e. this line is CLAMPED TO THE SURFACE
+	                                          // (a coastline/border draped on the relief, a draped track,
+	                                          // a depth-bearing point cloud). Such a line is real 3-D
+	                                          // geometry and must be OCCLUDED by terrain in front of it,
+	                                          // exactly like a solid3D symbol: applyVectorStacking keeps it
+	                                          // out of the depth-cleared overlay layer in 3-D. Computed in
+	                                          // addOverlay from the z's themselves, so no caller can forget
+	                                          // to declare it and none has to be taught a new argument.
 	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
 	std::vector<int> segoff;                 // per-segment start offsets (nseg+1 entries) -> rebuild cells on line<->points toggle
 	int    nseg = 0;                         // segment count (segoff has nseg+1 entries)

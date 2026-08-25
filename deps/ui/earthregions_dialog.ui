@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>EarthRegionsDialog</class>
+ <widget class="QDialog" name="EarthRegionsDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>470</width>
+    <height>360</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Earth regions</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainVerticalLayout">
+   <property name="spacing">
+    <number>8</number>
+   </property>
+   <property name="margin" stdset="0">
+    <number>8</number>
+   </property>
+   <item>
+    <widget class="QGroupBox" name="gb_pick">
+     <property name="title">
+      <string>Which region</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_pick">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_collection"><property name="text"><string>Collection</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="cb_collection">
+        <property name="toolTip"><string>A collection is a list of named regions. Listing one writes its codes, names and boundaries to this window's message pane, so a code can be copied into the box below.</string></property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QPushButton" name="push_list">
+        <property name="minimumSize"><size><width>110</width><height>24</height></size></property>
+        <property name="text"><string>List its regions</string></property>
+        <property name="toolTip"><string>Print every region of the chosen collection: code, name and boundaries.</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_code"><property name="text"><string>Region code</string></property></widget>
+      </item>
+      <item row="1" column="1" colspan="2">
+       <widget class="QLineEdit" name="edit_code">
+        <property name="toolTip"><string>One region code (codes are unique across the collections), e.g. IHO31. For the DCW collection a comma-separated list of country codes works too, e.g. PT,ES,FR.</string></property>
+       </widget>
+      </item>
+      <item row="2" column="1" colspan="2">
+       <widget class="QCheckBox" name="chk_exact">
+        <property name="text"><string>Exact GMT limits (not the rounded ones)</string></property>
+        <property name="toolTip"><string>The collections carry boundaries rounded to friendlier numbers. Tick this to use GMT's own strict limits instead.</string></property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="lb_round"><property name="text"><string>Round to</string></property></widget>
+      </item>
+      <item row="3" column="1" colspan="2">
+       <widget class="QLineEdit" name="edit_round">
+        <property name="toolTip"><string>Optional: enlarge the boundaries to whole multiples of this step. A number, or inc/inc, or the four winc/einc/sinc/ninc; a string starting with +r, +R or +e is passed to GMT verbatim.</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_region">
+     <property name="title">
+      <string>OR a region of your own</string>
+     </property>
+     <property name="toolTip">
+      <string>Filled in, these four take the place of the region code above: the data are fetched over exactly this box. Leave them empty to use the code.</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_region">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_xmin"><property name="text"><string>West</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="edit_xmin"/>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="lb_xmax"><property name="text"><string>East</string></property></widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLineEdit" name="edit_xmax"/>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_ymin"><property name="text"><string>South</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_ymin"/>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lb_ymax"><property name="text"><string>North</string></property></widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QLineEdit" name="edit_ymax"/>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_what">
+     <property name="title">
+      <string>Dataset to bring back</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_what">
+      <item>
+       <widget class="QWidget" name="w_raster" native="true">
+        <!-- Only the two combo columns stretch (0,1,0,1): the label columns take just their own
+             width, so "Registration" sits against its box instead of being pushed away by the
+             Resolution combo growing into the gap. -->
+        <layout class="QGridLayout" name="gridLayout_raster" columnstretch="0,1,0,1">
+         <property name="margin" stdset="0"><number>0</number></property>
+         <item row="0" column="0">
+          <widget class="QLabel" name="lb_dataset"><property name="text"><string>Dataset</string></property></widget>
+         </item>
+         <item row="0" column="1" colspan="3">
+          <widget class="QComboBox" name="cb_dataset">
+           <property name="toolTip"><string>One of GMT's remote datasets. earth_day and earth_night are IMAGES and are not tiled on the server, so the first use downloads the whole file.</string></property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lb_res"><property name="text"><string>Resolution</string></property></widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QComboBox" name="cb_res">
+           <property name="toolTip"><string>Leave on "automatic" to let GMT pick a resolution that suits the region's extent. Not every dataset offers every resolution; the finest ones are refused where they do not exist.</string></property>
+          </widget>
+         </item>
+         <item row="1" column="2">
+          <widget class="QLabel" name="lb_registration">
+           <property name="text"><string>Registration</string></property>
+           <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+          </widget>
+         </item>
+         <item row="1" column="3">
+          <widget class="QComboBox" name="cb_registration">
+           <property name="toolTip"><string>Gridline or pixel registration. A registration can only be asked for together with a resolution.</string></property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+
+      <item>
+       <widget class="QCheckBox" name="chk_country">
+        <property name="text"><string>Draw the country / region border lines (DCW codes only)</string></property>
+        <property name="toolTip"><string>Draws the outline of the code above as a line overlay, on top of the grid or image just fetched. Only the DCW collection has border polygons, and only a code names one — four coordinates do not.</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_name">
+     <item>
+      <widget class="QLabel" name="lb_name"><property name="text"><string>Layer name</string></property></widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="edit_name">
+       <property name="toolTip"><string>Optional name for the new layer. Left empty, the region's code is used.</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <spacer name="verticalSpacer_bottom">
+     <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+     <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+     <property name="sizeHint" stdset="0"><size><width>20</width><height>6</height></size></property>
+    </spacer>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="buttonsSpacer">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="text"><string>Get</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

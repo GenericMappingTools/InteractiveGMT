@@ -1211,14 +1211,19 @@ private:
 };
 
 // ============================================================================================
-// Info text popup (toolbar 'i' button). A NON-modal read-only monospace window showing the
-// grdinfo / gdalinfo report for the active grid/image, so it can stay open beside the view.
-// Self-deletes on close (WA_DeleteOnClose). `title` distinguishes the two reporters.
+// THE read-only monospace text popup: a NON-modal window that can stay open beside the view, used
+// by the toolbar 'i' button (grdinfo / gdalinfo), the nesting report, NSWING's command preview and
+// the Earth regions listing. Self-deletes on close (WA_DeleteOnClose).
+//
+// `title` is the WHOLE window title, prefix and all — it used to be forced to "Info — …" here,
+// which is wrong for the callers that are not reporting info about anything. Every existing caller
+// passes its own prefix now, so the titles are unchanged.
 // ============================================================================================
-static void showInfoText(QWidget *parent, const QString &title, const QString &text) {
+static QDialog *showInfoText(QWidget *parent, const QString &title, const QString &text,
+                             std::function<void(const QString &)> onPickLine) {
 	QDialog *dlg = new QDialog(parent);
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
-	dlg->setWindowTitle("Info — " + title);
+	dlg->setWindowTitle(title);
 	dlg->resize(580, 440);
 	auto *v = new QVBoxLayout(dlg);
 	auto *te = new QPlainTextEdit(dlg);
@@ -1226,11 +1231,35 @@ static void showInfoText(QWidget *parent, const QString &title, const QString &t
 	te->setLineWrapMode(QPlainTextEdit::NoWrap);
 	QFont f("Consolas"); f.setStyleHint(QFont::Monospace); te->setFont(f);
 	te->setPlainText(text.isEmpty() ? "(no output)" : text);
+	// A listing you PICK from: double-clicking anywhere on a row hands the whole row back. The
+	// caller decides what to do with it (Earth regions takes the first column, the code). The line
+	// is read under the cursor rather than from the selection, because Qt's own double-click has
+	// already selected just the word beneath it.
+	if (onPickLine) {
+		te->setToolTip("Double-click a line to choose it");
+		struct PickLineOnDblClick : QObject {
+			QPlainTextEdit *edit;
+			std::function<void(const QString &)> cb;
+			PickLineOnDblClick(QPlainTextEdit *e, std::function<void(const QString &)> c)
+				: QObject(e), edit(e), cb(std::move(c)) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::MouseButtonDblClick) {
+					QTextCursor c = edit->cursorForPosition(
+						static_cast<QMouseEvent *>(e)->position().toPoint());
+					const QString line = c.block().text();
+					if (!line.trimmed().isEmpty()) cb(line);
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		te->viewport()->installEventFilter(new PickLineOnDblClick(te, std::move(onPickLine)));
+	}
 	v->addWidget(te);
 	auto *bb = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
 	QObject::connect(bb, &QDialogButtonBox::rejected, dlg, &QDialog::close);
 	v->addWidget(bb);
 	dlg->show();
+	return dlg;
 }
 
 static QuadNode *buildQuadNode(int i0, int i1, int j0, int j1, int level,
@@ -12399,6 +12428,299 @@ public:
 	}
 };
 // ============================================================================================
+// Earth regions (Tools menu) — pick a named geographic region out of GMT.jl's own collections and
+// bring back either its topography/imagery or just its boundaries. Loaded at RUNTIME via QUiLoader
+// from deps/ui/earthregions_dialog.ui.
+//
+// The dialog is a two-step tool and says so in its layout: LIST a collection (its codes and names go
+// to this window's message pane), then type the code you saw into the box. That is how
+// `earthregions` itself is used from a REPL, and there is no shorter honest path — the DCW
+// collection alone is far too big to sit in a combo box.
+//
+// What comes back is always the DATASET over that region, added to the window as a new layer; the
+// country tick puts its DCW outline on top of it, as vectors (`coast` with -M dumps the polygons —
+// it is only the default, plotting branch of it that makes PostScript).
+// ============================================================================================
+class EarthRegionsDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QComboBox *collCb = nullptr, *dsetCb = nullptr, *resCb = nullptr, *regCb = nullptr;
+	QLineEdit *codeEdit = nullptr, *roundEdit = nullptr, *nameEdit = nullptr;
+	QLineEdit *xmin = nullptr, *xmax = nullptr, *ymin = nullptr, *ymax = nullptr;
+	QCheckBox *exactChk = nullptr, *countryChk = nullptr;
+	QWidget *rasterBox = nullptr;
+
+	explicit EarthRegionsDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/earthregions_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("EarthRegionsDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("EarthRegionsDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		// The MINIMISE button has to be there for minimising to mean anything — it is what parks the
+		// dialog (parkNow above), the same gesture the FFT tool, Color Palettes and Load Bands use.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("Earth regions");
+		QDialog *d = dlg;
+		Scene *sc = scn;
+		// A dialog destroyed while parked must take its row with it, or Scene Objects keeps a handle
+		// pointing at nothing.
+		QObject::connect(d, &QObject::destroyed, d, [sc, d]() {
+			if (sceneAlive(sc)) unparkTool(sc, d);
+		});
+		// Qt reports the minimise AFTER the window manager has done it, so the restore+hide+park is
+		// deferred one event-loop turn — doing it inside the state-change handler fights the WM.
+		struct MinimiseParks : QObject {
+			EarthRegionsDialog *er;
+			MinimiseParks(QObject *parent, EarthRegionsDialog *e) : QObject(parent), er(e) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::WindowStateChange && er && er->dlg &&
+				    er->dlg->windowState().testFlag(Qt::WindowMinimized)) {
+					EarthRegionsDialog *self = er;
+					QTimer::singleShot(0, self->dlg, [self]() { self->parkNow(); });
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new MinimiseParks(d, this));
+
+		collCb    = d->findChild<QComboBox *>("cb_collection");
+		dsetCb    = d->findChild<QComboBox *>("cb_dataset");
+		resCb     = d->findChild<QComboBox *>("cb_res");
+		regCb     = d->findChild<QComboBox *>("cb_registration");
+		codeEdit  = d->findChild<QLineEdit *>("edit_code");
+		roundEdit = d->findChild<QLineEdit *>("edit_round");
+		nameEdit  = d->findChild<QLineEdit *>("edit_name");
+		xmin = d->findChild<QLineEdit *>("edit_xmin");  xmax = d->findChild<QLineEdit *>("edit_xmax");
+		ymin = d->findChild<QLineEdit *>("edit_ymin");  ymax = d->findChild<QLineEdit *>("edit_ymax");
+		exactChk   = d->findChild<QCheckBox *>("chk_exact");
+		countryChk = d->findChild<QCheckBox *>("chk_country");
+		rasterBox = d->findChild<QWidget *>("w_raster");
+
+		// The seven collection names `earthregions` prints when called with no argument.
+		if (collCb)
+			for (const char *c : { "DCW", "NatEarth", "UN", "Mainlands", "IHO", "Wiki", "Lakes" })
+				collCb->addItem(c);
+		// GMT's remote datasets. Which resolutions each one really offers is GMT.jl's rule, not a
+		// second table here: an impossible pair comes back as the module's own refusal.
+		if (dsetCb)
+			for (const char *c : { "earth_relief", "earth_synbath", "earth_gebco", "earth_mask",
+			                       "earth_day", "earth_night", "earth_geoid", "earth_faa",
+			                       "earth_dist", "earth_mss", "earth_vgg", "earth_wdmam",
+			                       "earth_age", "mars_relief", "moon_relief", "mercury_relief",
+			                       "venus_relief", "pluto_relief" })
+				dsetCb->addItem(c);
+		if (resCb) {
+			resCb->addItem("automatic", "");         // let the function size it to the region
+			for (const char *c : { "01d", "30m", "20m", "15m", "10m", "06m", "05m", "04m", "03m",
+			                       "02m", "01m", "30s", "15s", "03s", "01s" })
+				resCb->addItem(c, c);
+		}
+		if (regCb) {
+			regCb->addItem("automatic", "");
+			regCb->addItem("gridline", "grid");
+			regCb->addItem("pixel", "pixel");
+		}
+
+		// The standing Region block, with the "OR Ref grid" row underneath it — the same one every
+		// dialog that takes a region carries (no increments here: earthregions has no -I). Filled in,
+		// it TAKES THE PLACE of the region code: the four numbers become the region, which is exactly
+		// what `earthregions` does with a code it cannot find in a collection.
+		if (auto *rg = d->findChild<QGridLayout *>("gridLayout_region"))
+			addRefGridRow(d, rg, xmin, xmax, ymin, ymax);
+		// Seeded from the window's own grid when it has one — asking for another dataset over the
+		// area already on screen is the common case — but this dialog needs no grid at all.
+		if (scene && scene->gnx > 1 && scene->gny > 1) {
+			if (xmin) xmin->setText(QString::number(scene->gx0, 'g', 12));
+			if (xmax) xmax->setText(QString::number(scene->gx1, 'g', 12));
+			if (ymin) ymin->setText(QString::number(scene->gy0, 'g', 12));
+			if (ymax) ymax->setText(QString::number(scene->gy1, 'g', 12));
+		}
+
+		// A code typed by hand gets the same treatment a picked one does: its boundaries appear in
+		// the Region boxes. editingFinished, not textChanged — the lookup runs when the user has
+		// FINISHED typing (Enter or focus out), never once per keystroke, and it only reads: the
+		// Get button is still the only thing that fetches anything.
+		if (codeEdit) QObject::connect(codeEdit, &QLineEdit::editingFinished, d, [this]() { lookupLimits(); });
+
+		// A registration means nothing without a resolution — the function refuses that pair, so the
+		// box is simply dead until a resolution is chosen. This only ENABLES and DISABLES; nothing
+		// here runs anything (only-action-button-executes-dialog).
+		if (resCb) QObject::connect(resCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                            [this]() { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_list"))    QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runList(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		// No Close button: the title bar's X closes, and the minimise beside it parks. Get is the
+		// only button on that row, where Close used to sit.
+		addManualButton(d, "coast");               // the green ? disk: earthregions lives on coast's page
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString cbData(QComboBox *cb) const { return cb ? cb->currentData().toString() : QString(); }
+
+	void syncMode() {
+		if (regCb) regCb->setEnabled(resCb && !cbData(resCb).isEmpty());
+	}
+
+	// Listing a collection needs no code and no region: it is the step that TELLS you the codes.
+	void runList(QDialog *d) {
+		if (!g_juliaEarthRegions) {
+			QMessageBox::warning(d, "Earth regions", "Earth regions: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		QStringList kv;
+		kv << "mode=list";
+		kv << "collection=" + (collCb ? collCb->currentText() : QString("DCW"));
+		showBusyDialog("Reading the collection…");
+		const int ok = g_juliaEarthRegions(scn, this, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "Earth regions",
+		                              "Could not list that collection — see this window's Errors console.");
+	}
+
+	// The listing, handed back by Julia through gmtvtk_earthregions_set_listing. It opens in the
+	// shared read-only text popup, and DOUBLE-CLICKING a row puts that region's code in the box —
+	// the listing is there to choose from, so choosing from it is one click, not a copy and a paste.
+	void showListing(const QString &title, const QString &text) {
+		QPointer<QDialog> alive(dlg);
+		EarthRegionsDialog *self = this;
+		// The listing is a chooser: picking a region is the end of it, so it closes behind the pick.
+		// The popup is only known AFTER showInfoText returns, hence the shared handle the pick reads.
+		auto popup = std::make_shared<QPointer<QDialog>>();
+		*popup = showInfoText(dlg, title, text, [alive, self, popup](const QString &line) {
+			if (!alive) return;                          // the dialog outlived by its own listing
+			self->pickLine(line);
+			if (*popup) (*popup)->close();
+			alive->raise();
+			alive->activateWindow();
+		});
+	}
+
+	// MINIMISE parks the dialog as a Scene Objects handle — the same shared parkTool/unparkTool pair
+	// the FFT tool, Color Palettes and Load Bands use, so a parked Earth regions is the same kind of
+	// row with the same ways back (double-click, its checkbox, or "Show" in its menu).
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { unparkTool(scn, dlg); dlg->close(); }
+		};
+	}
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);   // undo the WM's minimise
+		dlg->hide();
+		parkTool(scn, dlg, "Earth regions", IC_Rect,
+		         "Minimised Earth regions — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);      // a handle nobody can see is no handle at all
+	}
+
+	// One row of the listing -> the code box AND the Region boxes. The row already carries the
+	// boundaries (it is what the listing is FOR), so they are read straight off it: the last four
+	// whitespace-separated fields are W, E, S, N, whatever the region's name did with the spaces
+	// before them. No second lookup for something already on screen.
+	void pickLine(const QString &line) {
+		const QStringList f = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+		if (f.size() < 5 || f[0] == "Code") return;      // the column header is not a region
+		if (codeEdit) codeEdit->setText(f[0]);
+		bool ok[4] = { false, false, false, false };
+		const double v[4] = { f[f.size()-4].toDouble(&ok[0]), f[f.size()-3].toDouble(&ok[1]),
+		                      f[f.size()-2].toDouble(&ok[2]), f[f.size()-1].toDouble(&ok[3]) };
+		if (ok[0] && ok[1] && ok[2] && ok[3]) fillRegion(v[0], v[1], v[2], v[3]);
+	}
+
+	// Show a region in the four boxes. THE REGION IS THE REQUEST — the collection, the code and the
+	// listing exist only to fill these four numbers, and it is these four that are sent.
+	void fillRegion(double w, double e, double s, double n) {
+		if (xmin) xmin->setText(QString::number(w, 'g', 10));
+		if (xmax) xmax->setText(QString::number(e, 'g', 10));
+		if (ymin) ymin->setText(QString::number(s, 'g', 10));
+		if (ymax) ymax->setText(QString::number(n, 'g', 10));
+	}
+
+	// Ask Julia where a hand-typed code is, and show it. Silent on failure: a half-typed or unknown
+	// code is an ordinary thing to have in the box while typing, and the Get button will say so
+	// properly if it is still wrong then.
+	void lookupLimits() {
+		if (!g_juliaEarthRegions || !codeEdit) return;
+		const QString code = codeEdit->text().trimmed();
+		if (code.isEmpty()) return;
+		QStringList kv;
+		kv << "mode=limits" << "code=" + code;
+		kv << QString("exact=%1").arg(exactChk && exactChk->isChecked() ? 1 : 0);
+		kv << QString("country=%1").arg(countryChk && countryChk->isChecked() ? 1 : 0);
+		if (roundEdit && !roundEdit->text().trimmed().isEmpty()) kv << "round=" + roundEdit->text().trimmed();
+		g_juliaEarthRegions(scn, this, kv.join("\n").toUtf8().constData());
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaEarthRegions) {
+			QMessageBox::warning(d, "Earth regions", "Earth regions: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		// The Region block, when filled, IS the region — the code box is then not consulted at all.
+		// All four or none: three numbers is not a box, and the one missing side would be guessed.
+		const int nReg = (!txt(xmin).isEmpty()) + (!txt(xmax).isEmpty()) +
+		                 (!txt(ymin).isEmpty()) + (!txt(ymax).isEmpty());
+		if (nReg != 0 && nReg != 4) {
+			QMessageBox::warning(d, "Earth regions", "Give all four Region boxes, or leave them all "
+			                                         "empty and use a region code.");
+			return;
+		}
+		const QString region = (nReg == 4)
+			? txt(xmin) + "/" + txt(xmax) + "/" + txt(ymin) + "/" + txt(ymax) : QString();
+		if (region.isEmpty() && txt(codeEdit).isEmpty()) {
+			QMessageBox::warning(d, "Earth regions",
+			                     "Give the code of the region, or fill the Region boxes. \"List its "
+			                     "regions\" writes the codes of the chosen collection to this window's "
+			                     "message pane.");
+			return;
+		}
+		QStringList kv;
+		kv << "mode=raster";
+		if (!region.isEmpty()) kv << "region=" + region;
+		kv << "code=" + txt(codeEdit);
+		if (!txt(roundEdit).isEmpty()) kv << "round=" + txt(roundEdit);
+		if (!txt(nameEdit).isEmpty())  kv << "name=" + txt(nameEdit);
+		kv << QString("exact=%1").arg(exactChk && exactChk->isChecked() ? 1 : 0);
+		kv << QString("country=%1").arg(countryChk && countryChk->isChecked() ? 1 : 0);
+		kv << "dataset=" + (dsetCb ? dsetCb->currentText() : QString("earth_relief"));
+		if (!cbData(resCb).isEmpty()) kv << "res=" + cbData(resCb);
+		if (regCb && regCb->isEnabled() && !cbData(regCb).isEmpty()) kv << "registration=" + cbData(regCb);
+
+		showBusyDialog("Fetching the data…");
+		const int ok = g_juliaEarthRegions(scn, this, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "Earth regions",
+		                              "Earth regions failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
 // grdlandmask (GMT menu) — build a wet/dry mask grid from the shoreline database. Layout is Mirone's
 // grdlandmask window: the shared "Griding Line Geometry" block, coastline resolution, Min area (-A),
 // registration, and the five Node values with the Boundary flag. The .ui carries a verbatim copy of
@@ -16820,7 +17142,7 @@ public:
 					juliaEvalCall(QString("InteractiveGMT._nswing_existing_files_report(Ptr{Cvoid}(UInt(%1)),raw\"%2\")")
 					                  .arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(p), report);
 					if (!report.trimmed().isEmpty())
-						showInfoText(this, "NSWING — why these differ", report.trimmed());
+						showInfoText(this, "Info — NSWING — why these differ", report.trimmed());
 					auto ans = QMessageBox::question(this, "NSWING",
 						"These files already exist and will be overwritten:\n\n" + existing,
 						QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
@@ -16843,7 +17165,7 @@ public:
 				QString out = proceed("_nswing_show_cli", ok);
 				if (!ok) return;
 				sub.accept();
-				showInfoText(this, "NSWING — GMT command", out.trimmed());   // dialog stays open: just a preview
+				showInfoText(this, "Info — NSWING — GMT command", out.trimmed());   // dialog stays open: just a preview
 			});
 			QObject::connect(bRun, &QPushButton::clicked, &sub, [this, &sub, proceed]() {
 				bool ok = false;
@@ -21194,6 +21516,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		auto *w = new ProjectDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
+	// "Earth regions" (GMT.jl's earthregions): a named region from its collections, brought back as
+	// a grid/image or as boundaries. It downloads its own data, so it needs nothing in the window.
+	mTools->addAction("Earth regions…", [win, s]() {
+		auto *w = new EarthRegionsDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
 
 	// --- GMT menu: helper windows to drive GMT modules (TODO: populate with module tools) ----
 	QMenu *mGMT = win->menuBar()->addMenu("&GMT");
@@ -21559,7 +21887,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		static std::vector<char> buf(1 << 16);
 		int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
 		QString txt = QString::fromUtf8(buf.data(), n < 0 ? -n : n);
-		showInfoText(win, QString::fromUtf8(mode), txt);
+		showInfoText(win, "Info — " + QString::fromUtf8(mode), txt);
 	};
 	QObject::connect(tbInfo, &QToolButton::clicked, runInfo);
 	QObject::connect(aGrdinfo,  &QAction::triggered, runInfo);   // picking a reporter also runs it

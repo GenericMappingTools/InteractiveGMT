@@ -775,6 +775,20 @@ static JuliaGravPrismsFn g_juliaGravPrisms = nullptr;
 typedef int (*JuliaGrdVectorFn)(void *scene, const char *params);
 static JuliaGrdVectorFn g_juliaGrdVector = nullptr;
 
+// Earth regions (Tools menu), GMT.jl's `earthregions`: a named geographic region out of its
+// collections, brought back as data or as boundaries. EarthRegionsDialog (70_window.cpp, loads
+// deps/ui/earthregions_dialog.ui) hands a newline-separated "key=value" block to Julia
+// (_on_earthregions, src/earthregions.jl): mode=list with collection (print that collection's
+// codes and names to the window's message pane), or mode=raster|region with code, exact, round,
+// country and name — plus, for a raster, dataset, res and registration. A raster is added to
+// `scene` as a new layer (grid or image); mode=region downloads nothing and reports the W/E/S/N,
+// drawing the DCW border lines when asked. Returns 1 on success, 0 on failure. nullptr to detach.
+// `dlg` is the EarthRegionsDialog that asked, so a listing can be handed straight back to IT (via
+// gmtvtk_earthregions_set_listing) instead of being shouted into the window at large — the same
+// dialog-pointer shape the image-histogram callback uses.
+typedef int (*JuliaEarthRegionsFn)(void *scene, void *dlg, const char *params);
+static JuliaEarthRegionsFn g_juliaEarthRegions = nullptr;
+
 // grdlandmask (GMT menu), dialog laid out after Mirone's grdlandmask window. GrdLandmaskDialog
 // (70_window.cpp, loads deps/ui/grdlandmask_dialog.ui) hands a newline-separated "key=value" block to
 // Julia (_on_grdlandmask, src/grdlandmask.jl): region, inc, res, area, maskvalues, border, pixel,
@@ -1795,16 +1809,46 @@ static void addManualButton(QDialog *dlg, QBoxLayout *row, const QString &module
 	addManualButton(dlg, row, [moduleName]() { return moduleName; });
 }
 
+// Reflow every tooltip in a dialog onto SHORT LINES. Qt lays a plain-text tooltip out on one line
+// however long it is, which on a sentence of explanation gives a ribbon stretching past the screen
+// edge and is unreadable. A tooltip that is RICH text wraps, so each one is turned into rich text
+// with explicit breaks at word boundaries. Tooltips that already carry markup are left alone, and
+// so are short ones (nothing to wrap). One function, applied where every .ui dialog finishes, so no
+// dialog has to remember to do it — and none of them carries <br> in its .ui.
+static void wrapTooltips(QWidget *root, int cols = 64) {
+	if (!root) return;
+	QList<QWidget *> all = root->findChildren<QWidget *>();
+	all.prepend(root);
+	for (QWidget *w : all) {
+		const QString t = w->toolTip();
+		if (t.isEmpty() || t.size() <= cols) continue;
+		if (t.startsWith("<") || t.contains("<br", Qt::CaseInsensitive)) continue;   // already rich
+		QString out;
+		int line = 0;
+		for (const QString &word : t.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts)) {
+			if (line > 0 && line + 1 + word.size() > cols) { out += "<br>"; line = 0; }
+			else if (line > 0)                             { out += ' ';    line += 1; }
+			out += word.toHtmlEscaped();
+			line += word.size();
+		}
+		w->setToolTip("<html>" + out + "</html>");
+	}
+}
+
 // Same thing for a dialog loaded from a .ui, where the bottom row is the one named
-// "horizontalLayout_buttons" by convention.
+// "horizontalLayout_buttons" by convention. This is also where a .ui dialog FINISHES being built —
+// every one of them calls it as its last construction step — so the tooltip reflow above rides
+// along here rather than being remembered separately in twenty constructors.
 static void addManualButton(QDialog *dlg, const QString &moduleName) {
 	if (!dlg) return;
 	addManualButton(dlg, dlg->findChild<QHBoxLayout *>("horizontalLayout_buttons"), moduleName);
+	wrapTooltips(dlg);
 }
 
 static void addManualButton(QDialog *dlg, std::function<QString()> moduleOf) {
 	if (!dlg) return;
 	addManualButton(dlg, dlg->findChild<QHBoxLayout *>("horizontalLayout_buttons"), std::move(moduleOf));
+	wrapTooltips(dlg);
 }
 
 // STANDING RULE: wherever a dialog shows a Region (xmin/xmax/ymin/ymax), an "OR Ref grid" row goes

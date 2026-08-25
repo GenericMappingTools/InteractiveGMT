@@ -110,6 +110,20 @@ If fso.FileExists(here & "\iview_splash.hta") Then
     sh.Run "mshta.exe " & Chr(34) & here & "\iview_splash.hta" & Chr(34), 1, False
 End If
 
+' Resolve julia.exe OURSELVES instead of trusting "julia" to be on PATH. sh.Run of a bare
+' "julia" dies with a raw Windows Script Host box ("The system cannot find the file specified",
+' 80070002) pointing at the Run line -- useless to a user -- the moment PATH loses its Julia
+' entry, which a Julia re-install or version shuffle does routinely.
+Dim juliaExe : juliaExe = FindJulia(fso, sh)
+If juliaExe = "" Then
+    MsgBox "Could not find julia.exe." & vbCrLf & vbCrLf & _
+           "Checked %JULIA_EXE%, every directory on PATH, the juliaup shim, and the usual " & _
+           "install roots (C:\, C:\programs, %LOCALAPPDATA%\Programs)." & vbCrLf & vbCrLf & _
+           "Install Julia, put its bin folder on PATH, or set JULIA_EXE to the full path of " & _
+           "julia.exe.", vbExclamation, "iGMT"
+    WScript.Quit 1
+End If
+
 Dim extra : extra = ""
 Dim i
 For i = 0 To WScript.Arguments.Count - 1
@@ -119,4 +133,88 @@ Next
 ' on a background thread when its dialog opens, so the action button is instant; with a single
 ' thread that work shares the UI thread and the dialog stutters while it compiles. Threads also
 ' serve the code that already asks for them (Threads.@threads, src/drop.jl).
-sh.Run "julia -t auto " & projectArg & Chr(34) & here & "\iview_app.jl" & Chr(34) & extra, 7, False
+sh.Run Chr(34) & juliaExe & Chr(34) & " -t auto " & projectArg & _
+       Chr(34) & here & "\iview_app.jl" & Chr(34) & extra, 7, False
+
+' ---------------------------------------------------------------------------------------------
+' julia.exe lookup, in order: explicit override, PATH (whatever a terminal `julia` would run),
+' juliaup's shim, then a scan of the usual install roots. In that last scan, a version that
+' ALREADY has InteractiveGMT precompiled in this depot beats a newer one that does not -- picking
+' the newest blindly can hand the launcher a Julia that must precompile the whole tree first.
+Function FindJulia(fso, sh)
+    Dim p, d, cand, roots, root, fldr, ver, best, bestVer, bestWarm, warm, depotRoot2
+    FindJulia = ""
+
+    p = sh.ExpandEnvironmentStrings("%JULIA_EXE%")
+    If p <> "%JULIA_EXE%" And Len(p) > 0 Then
+        If fso.FileExists(p) Then
+            FindJulia = p
+            Exit Function
+        End If
+    End If
+
+    For Each d In Split(sh.ExpandEnvironmentStrings("%PATH%"), ";")
+        If Len(Trim(d)) > 0 Then
+            cand = Trim(d)
+            If Right(cand, 1) <> "\" Then cand = cand & "\"
+            cand = cand & "julia.exe"
+            If fso.FileExists(cand) Then
+                FindJulia = cand
+                Exit Function
+            End If
+        End If
+    Next
+
+    depotRoot2 = sh.ExpandEnvironmentStrings("%USERPROFILE%") & "\.julia"
+    cand = depotRoot2 & "\juliaup\bin\julia.exe"
+    If fso.FileExists(cand) Then
+        FindJulia = cand
+        Exit Function
+    End If
+
+    roots = Array("C:\programs", "C:\", sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs")
+    best = "" : bestVer = -1 : bestWarm = -1
+    For Each root In roots
+        If fso.FolderExists(root) Then
+            For Each fldr In fso.GetFolder(root).SubFolders
+                If LCase(Left(fldr.Name, 6)) = "julia-" Then
+                    cand = fldr.Path & "\bin\julia.exe"
+                    If fso.FileExists(cand) Then
+                        ver = VersionKey(Mid(fldr.Name, 7))
+                        warm = 0
+                        If fso.FolderExists(depotRoot2 & "\compiled\v" & MajorMinor(Mid(fldr.Name, 7)) & "\InteractiveGMT") Then warm = 1
+                        If warm > bestWarm Or (warm = bestWarm And ver > bestVer) Then
+                            bestWarm = warm : bestVer = ver : best = cand
+                        End If
+                    End If
+                End If
+            Next
+        End If
+    Next
+    FindJulia = best
+End Function
+
+' "1.10.4" -> 1010004, so 1.10 sorts ABOVE 1.9 (a plain string compare gets that backwards).
+Function VersionKey(v)
+    Dim parts : parts = Split(v & ".0.0", ".")
+    VersionKey = CDbl(NumOnly(parts(0))) * 1000000 + CDbl(NumOnly(parts(1))) * 1000 + CDbl(NumOnly(parts(2)))
+End Function
+
+Function MajorMinor(v)
+    Dim parts : parts = Split(v & ".0", ".")
+    MajorMinor = NumOnly(parts(0)) & "." & NumOnly(parts(1))
+End Function
+
+Function NumOnly(s)
+    Dim k, c
+    NumOnly = ""
+    For k = 1 To Len(s)
+        c = Mid(s, k, 1)
+        If c >= "0" And c <= "9" Then
+            NumOnly = NumOnly & c
+        Else
+            Exit For
+        End If
+    Next
+    If NumOnly = "" Then NumOnly = "0"
+End Function

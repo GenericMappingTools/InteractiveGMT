@@ -92,6 +92,7 @@
 #include <QUiLoader>
 #include <QTextStream>
 #include <QPlainTextEdit>
+#include <QTextBlock>
 #include <QTextCursor>
 #include <QLineEdit>
 #include <QFont>

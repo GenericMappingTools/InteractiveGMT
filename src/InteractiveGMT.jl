@@ -116,6 +116,7 @@ include("grdflexure.jl") # GMT menu > grdflexure: flexure of a surface under a l
 include("grdvolume.jl")  # GMT menu > grdvolume: area, volume and mean height against contour levels
 include("gravprisms.jl") # GMT menu > gravprisms: the field of a body made of rectangular prisms
 include("grdvector.jl")  # GMT menu > grdvector: the vector field of two grids, drawn as an overlay
+include("earthregions.jl")# Tools > Earth regions: a named region's raster or boundaries (GMT.jl earthregions)
 include("interpolate.jl")# GMT menu > Interpolate: grid an x,y,z table (surface, nearneighbor, block*, …)
 include("project.jl")    # Tools > Project: reproject the window's raster with gdalwarp (Mirone gdal_project.m)
 include("lineops.jl")    # Tools > Vector Operations (port of Mirone src_figs/line_operations.m)

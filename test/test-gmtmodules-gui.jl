@@ -208,6 +208,32 @@ end
 			@test trig(entry) == 1
 			IG._pump_once()
 		end
+		# Tools > Earth regions is not a GMT-menu entry, but it is the same kind of runtime-.ui dialog
+		# and fails the same way when its .ui stops loading.
+		@test trig("Earth regions") == 1
+		IG._pump_once()
+		# Listing a collection opens ITS OWN read-only window — not the Errors console. 255 regions is
+		# a lot of text to lose behind a failure message, and vice versa. The listing goes back to the
+		# DIALOG that asked (that is what makes double-click-to-pick possible), so this drives the
+		# callback the way the dialog does: through the live EarthRegionsDialog the menu just opened.
+		@test ccall(_test_fn(:gmtvtk_earthregions_list_test), Cint, (Cstring, Cstring),
+		            "Earth regions", "IHO") == 1
+		IG._pump_once()
+		@test ccall(_test_fn(:gmtvtk_window_exists_test), Cint, (Cstring,), "the IHO collection") >= 1
+		# …and double-clicking a row puts that region's code in the dialog's box.
+		# Line 0 is the column header; line 1 is the first region, IHO1 (Baltic Sea).
+		@test ccall(_test_fn(:gmtvtk_earthregions_pick_test), Cint, (Cstring, Cint), "IHO collection", Cint(1)) == 1
+		IG._pump_once()
+		@test unsafe_string(ccall(_test_fn(:gmtvtk_earthregions_code_test), Cstring, (Cstring,),
+		                          "Earth regions")) == "IHO1"
+		# …and the row's own boundaries land in the Region boxes, read straight off the row.
+		reg(t) = unsafe_string(ccall(_test_fn(:gmtvtk_earthregions_region_test), Cstring, (Cstring,), t))
+		@test reg("Earth regions") == "9.8408/30.3471/53.6016/65.9071"
+		# A code TYPED by hand gets the same readout — resolved through GMT.jl, not off any listing.
+		@test ccall(_test_fn(:gmtvtk_earthregions_type_test), Cint, (Cstring, Cstring),
+		            "Earth regions", "IHO31") == 1
+		IG._pump_once()
+		@test reg("Earth regions") == "34.4654/39.3056/45.1026/47.2896"
 		# The GRAVITY tools are not in the GMT menu: they live in Geophysics > Gravity, which is one of
 		# the rotating discipline pages — so the path is two steps, exactly like "Plates/…".
 		for entry in ("gravfft", "talwani2d", "talwani3d", "gravprisms", "gmtflexure", "grdflexure")
@@ -219,7 +245,8 @@ end
 		# Each of the new ones too: a .ui that failed to load leaves `dlg` null and NOTHING on
 		# screen, which the trigger alone (it returns 1 for "the action fired") cannot tell apart.
 		for w in ("gravfft", "grdrotater", "talwani2d", "talwani3d", "greenspline",
-		          "gmtflexure", "grdflexure", "grdvolume", "gravprisms", "grdvector")
+		          "gmtflexure", "grdflexure", "grdvolume", "gravprisms", "grdvector",
+		          "Earth regions")
 			@test exists(w) >= 1
 		end
 		# (No "is it gone from the GMT menu" assertion: menuFindDeep searches the WHOLE menu bar, so

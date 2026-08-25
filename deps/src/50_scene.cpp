@@ -26,7 +26,11 @@ static int  addSymbols(Scene *s, const double *xyz, int npts, const std::string 
                        double er, double eg, double eb, double edgeWidth,               // builder
                        const std::string &name, const char *info, bool oneShot,
                        const double *sizeScale, const double *ptRGB);
-static void showInfoText(QWidget *parent, const QString &title, const QString &text); // 70_window.cpp: read-only text popup
+// 70_window.cpp: THE read-only text popup. `onPickLine`, when given, makes a DOUBLE-CLICK on a line
+// hand that whole line back — how the Earth regions listing lets a region be chosen by clicking it.
+// Returns the popup, so a caller that wants to close it after a pick can.
+static QDialog *showInfoText(QWidget *parent, const QString &title, const QString &text,
+                             std::function<void(const QString &)> onPickLine = nullptr);
 
 // Install the window's full-res DATA LAYER (the z buffer everything non-visual reads: hover readout,
 // profile sampling, the flat-image / crop bakes). ONE setter for all seven fields — SACRED_LAW.md's
@@ -944,7 +948,10 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 // `vec` marks line/point geometry: it gets an extra half-step lift on its LINE/POINT offsets so a
 // vector sitting at the same rank as the surface beneath it stays visible (resolves the z-fight
 // with that surface) without overtaking the next element a full rank up.
-struct StackItem { std::vector<vtkActor*> actors; int *stack; bool vec; bool solid3D = false; };
+// `realZ`: this vector's vertices carry a real elevation (a line CLAMPED to the surface), so terrain
+// in front of it must hide it — the same treatment solid3D gets, for the same reason.
+struct StackItem { std::vector<vtkActor*> actors; int *stack; bool vec; bool solid3D = false;
+                   bool realZ = false; };
 
 static std::vector<StackItem> gatherStackItems(Scene *s) {
 	std::vector<StackItem> v;
@@ -961,7 +968,7 @@ static std::vector<StackItem> gatherStackItems(Scene *s) {
 	// a private setActorTopLayer call of its own.
 	if (s->profLine && s->profLine->GetVisibility())
 		v.push_back({ { s->profLine.Get() }, &s->profStack, true, false });
-	for (auto &o  : s->overlays) if (o.actor) v.push_back({ { o.actor.Get()  }, &o.stack,  true, false });
+	for (auto &o  : s->overlays) if (o.actor) v.push_back({ { o.actor.Get()  }, &o.stack,  true, false, o.realZ });
 	for (auto &sl : s->symbols)  if (sl.actor) v.push_back({ { sl.actor.Get() }, &sl.stack, true, sl.solid3D });
 	for (auto &pg : s->polys)    if (pg.line && !pg.isMeca) v.push_back({ { pg.line.Get()  }, &pg.stack, true, false });
 	return v;
@@ -1277,13 +1284,27 @@ static void applyStacking(Scene *s) {
 		// So flat2d still promotes solid3D to the depth-cleared overlay layer, same as any other vector;
 		// only genuine 3-D perspective gets the real-occlusion treatment. sceneSetFlat2D re-runs this
 		// function on every 2D<->3D toggle so the promotion updates immediately.
-		const bool onTop = vec && (!solid3D || s->flat2d) && topRasterRank >= 0 && k > topRasterRank;
+		// A vector CLAMPED TO THE SURFACE (realZ: a coastline/border draped on the relief, a draped
+		// track) is in exactly solid3D's position and is treated exactly the same way. It is not a
+		// flat map annotation floating above the terrain — it lies ON it, so a mountain standing
+		// between it and the camera MUST hide it, which is the whole reason for drawing relief.
+		// Promoting it to the depth-cleared overlay layer is what made a border run over the peaks.
+		// flat2d is the same exception as solid3D's: a top-down MAP shows every line regardless.
+		const bool realZ   = it[ord[k]].realZ;
+		const bool byDepth = solid3D || realZ;              // let real geometry decide, no bias ramp
+		const bool onTop = vec && (!byDepth || s->flat2d) && topRasterRank >= 0 && k > topRasterRank;
 		for (vtkActor *a : it[ord[k]].actors) {
-			if (vec) setActorTopLayer(s, a, onTop);         // solid3D: onTop is always false here
+			if (vec) setActorTopLayer(s, a, onTop);         // solid3D / clamped: onTop only in flat2d
 			vtkPolyDataMapper *mp = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
 			if (!mp) continue;
 			if (solid3D) {
 				// leave depth resolution at the mapper's own default (no bias) -> real occlusion
+			} else if (realZ && !s->flat2d) {
+				// Lying ON the surface, so it still needs a nudge out of the coplanar z-fight — but a
+				// FEW depth increments, not the pile ramp: 20000 of them would put it back through the
+				// mountain the depth test just hid it behind.
+				mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -4.0);
+				mp->SetRelativeCoincidentTopologyPointOffsetParameter(-4.0);
 			} else if (vec) {
 				mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, u);
 				mp->SetRelativeCoincidentTopologyPointOffsetParameter(u);
@@ -1437,7 +1458,7 @@ static void runGridInfo(Scene *s, const QString &nm) {
 	std::vector<char> buf(1 << 16);
 	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
 	QString txt = QString::fromUtf8(buf.data(), n < 0 ? -n : n);
-	showInfoText(s->win, "grdinfo — " + nm, txt);
+	showInfoText(s->win, "Info — grdinfo — " + nm, txt);
 }
 
 // Properties menu for the BASE relief surface row: Save, grid-pile stacking, and Remove.
@@ -2861,6 +2882,15 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 		return;
 
 	vtkNew<vtkPoints> pts; pts->SetDataTypeToDouble(); pts->Allocate(npts);
+	// Does this line carry a real elevation, or is it a flat map annotation? Asked of the z's rather
+	// than of the caller: a coastline clamped to the relief and a contour drawn at z=0 arrive through
+	// the same door, and the difference that matters downstream (whether terrain may hide it) is
+	// exactly the difference the coordinates already state. `zIsPlaceholder` is the caller's own way
+	// of saying "the z I sent is not an elevation", so it vetoes the answer.
+	bool realZ = false;
+	for (int i = 0; i < npts && !realZ; ++i)
+		if (xyz[3*i+2] != 0.0) realZ = true;
+	if (zIsPlaceholder) realZ = false;
 	for (int i = 0; i < npts; ++i)
 		pts->InsertNextPoint(xyz[3*i], xyz[3*i+1], xyz[3*i+2]);
 
@@ -2898,7 +2928,9 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	vtkNew<vtkPolyDataMapper> map;
 	map->SetInputData(pd);
 	map->ScalarVisibilityOff();               // flat single colour, not the grid CPT
-	// Pull the overlay toward the camera so a track laid on the surface is not z-fought.
+	// Pull the overlay toward the camera so a track laid on the surface is not z-fought. This is only
+	// the value it is BORN with — applyVectorStacking re-stamps it from the pile rank on the next
+	// pass, and for a line that carries real z it stamps a small one (see there).
 	vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
 	map->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -8000.0);
 	map->SetRelativeCoincidentTopologyPointOffsetParameter(-8000.0);
@@ -2919,6 +2951,7 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 
 	s->ren->AddActor(a);
 	Overlay ov{ a, mode };
+	ov.realZ = realZ;                         // clamped to the surface -> terrain may hide it (see the field)
 	ov.baseLine = pd;                         // keep the geometry (both modes) for restyling + line<->points toggle
 	ov.segoff.assign(segoff, segoff + nseg + 1);   // remember segments so a Points overlay can rebuild polylines
 	ov.nseg = nseg;

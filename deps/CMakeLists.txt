@@ -320,6 +320,7 @@ if(GMTVTK_PACKAGE AND WIN32)
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdvolume_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/gravprisms_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdvector_dialog.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/earthregions_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/trend2d_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/cpt_build_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/project_dialog.ui"

@@ -19,7 +19,8 @@
 	          :_on_greenspline, :_register_greenspline,
 	          :_on_gmtflexure, :_register_gmtflexure, :_on_grdflexure, :_register_grdflexure,
 	          :_on_grdvolume, :_register_grdvolume, :_on_gravprisms, :_register_gravprisms,
-	          :_on_grdvector, :_register_grdvector)
+	          :_on_grdvector, :_register_grdvector,
+	          :_on_earthregions, :_register_earthregions)
 		@test isdefined(IG, s)
 	end
 	# Every registration must have its export in the DLL symbol list, or the feature silently stays
@@ -33,7 +34,8 @@
 	            :gmtvtk_set_talwani2d_callback, :gmtvtk_set_talwani3d_callback,
 	            :gmtvtk_set_greenspline_callback, :gmtvtk_set_gmtflexure_callback,
 	            :gmtvtk_set_grdflexure_callback, :gmtvtk_set_grdvolume_callback,
-	            :gmtvtk_set_gravprisms_callback, :gmtvtk_set_grdvector_callback)
+	            :gmtvtk_set_gravprisms_callback, :gmtvtk_set_grdvector_callback,
+	            :gmtvtk_set_earthregions_callback, :gmtvtk_earthregions_set_listing)
 		@test sym in IG._LIB_SYMBOLS
 	end
 end
@@ -946,6 +948,109 @@ end
 		# A region outside the grid, and a field of zero vectors, both leave nothing to draw.
 		@test call(vcat(base, ["xmin=100", "xmax=200", "ymin=100", "ymax=200"])) == 0
 		@test call(["usescene=0", "grid1=flat", "grid2=flat", "incmode=auto", "scalemode=auto", "heads=e"]) == 0
+	finally
+		delete!(IG._SCENE_OBJS, scene)
+	end
+end
+
+# Earth regions leans on GMT.jl for everything a region IS, so what is checkable without a window is
+# the rounding argument, the -R read-back, and the refusals that happen before any download.
+@testitem "earthregions: the pieces it checks itself" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	@test IG._er_round("") == 0
+	@test IG._er_round("  ") == 0
+	@test IG._er_round("2") == "2"
+	@test IG._er_round("2/1") == "2/1"
+	@test IG._er_round("1/1/1/1") == "1/1/1/1"
+	@test IG._er_round("+r2") == "+r2"               # GMT's own syntax travels whole
+	@test IG._er_round("+e") == "+e"
+	@test_throws ErrorException IG._er_round("coarse")
+	@test_throws ErrorException IG._er_round("2/wide")
+
+	# The Region block: all four numbers, and a box that is really a box.
+	@test IG._er_region("") == ""
+	@test IG._er_region("  ") == ""
+	@test IG._er_region("-10/-6/36/39") == "-10/-6/36/39"
+	@test_throws ErrorException IG._er_region("-10/-6/36")           # three is not a box
+	@test_throws ErrorException IG._er_region("-10/-6/36/north")
+	@test_throws ErrorException IG._er_region("-6/-10/36/39")        # West east of East
+	@test_throws ErrorException IG._er_region("-10/-6/39/36")        # South north of North
+	@test_throws ErrorException IG._er_region("-10/-6/-100/39")      # not a latitude
+
+	# The seven collections and the dataset list are the ones the function itself knows.
+	@test "DCW" in IG._ER_COLLECTIONS && "Lakes" in IG._ER_COLLECTIONS
+	@test length(IG._ER_COLLECTIONS) == 7
+	@test "earth_relief" in IG._ER_DATASETS && "earth_day" in IG._ER_DATASETS
+	@test IG._ER_RESOLUTIONS[1] == "01d" && IG._ER_RESOLUTIONS[end] == "01s"
+
+	# EVERY collection must list — including DCW and IHO, the two GMT.jl's own pretty-printer throws
+	# on ("header (7) must be equal to that of the table (5)"), which is why the rows are laid out
+	# here. A listing that only works for the small collections is no listing at all.
+	for coll in IG._ER_COLLECTIONS
+		txt = IG._er_listing(coll)
+		lines = split(strip(txt), '\n')
+		@test length(lines) > 4                       # a header plus real regions
+		@test startswith(lines[1], "Code")
+		@test all(l -> length(l) > 20, lines)         # every row carries a code, a name and 4 numbers
+	end
+	# Spot-check two rows whose values are fixed by the shipped tables.
+	@test occursin("AD        Andorra", IG._er_listing("DCW"))
+	@test occursin("IHO1      Baltic Sea", IG._er_listing("IHO"))
+	@test_throws ErrorException IG._er_listing("Atlantis")
+end
+
+@testitem "earthregions: refuses an unusable request" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	scene = Ptr{Cvoid}(UInt(0x9D71E770))
+	# The second argument is the DIALOG that asked (it is where a listing goes back to); every case
+	# here refuses before that pointer is ever used, so a null one is exactly right.
+	call(kv) = IG._on_earthregions(scene, C_NULL,
+	                               Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	# Every one of these returns before GMT.jl is asked for anything, so nothing is downloaded here.
+	@test call(["mode=list", "collection=Atlantis"]) == 0
+	@test call(["mode=raster", "code="]) == 0                       # no code and no region
+	@test call(["mode=raster", "code=IHO31", "dataset=earth_cheese"]) == 0
+	# A registration without a resolution is the function's own refusal, said here first.
+	@test call(["mode=raster", "code=IHO31", "dataset=earth_relief", "registration=pixel"]) == 0
+	@test call(["mode=raster", "code=IHO31", "round=coarse"]) == 0
+	@test call(["mode=sideways", "code=IHO31"]) == 0
+	# A malformed Region block is refused before anything is fetched — and it is checked even when a
+	# code is also present, because the region is what would actually be used.
+	@test call(["mode=raster", "code=IHO31", "region=-10/-6/36"]) == 0
+	@test call(["mode=raster", "code=IHO31", "region=-6/-10/36/39"]) == 0
+	@test call(["mode=raster", "region=-10/-6/39/36"]) == 0
+	# The border lines need a country CODE; four coordinates name no country.
+	@test call(["mode=raster", "region=-10/-6/36/39", "country=1",
+	            "dataset=earth_relief", "res=10m", "name=nowhere"]) == 0
+	@test_throws ErrorException IG._er_draw_border(scene, "", "x")
+	# Looking a code up has to have a code.
+	@test call(["mode=limits", "code="]) == 0
+end
+
+# Asking twice for the same thing must not fetch it twice. The check is on the LAYER NAME the request
+# makes — region name + dataset + resolution — so it fires before anything is downloaded.
+@testitem "earthregions: a dataset already in the window is not fetched again" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9];
+	                 x = collect(range(-10, -6, length = 10)), y = collect(range(36, 39, length = 10)))
+	scene = Ptr{Cvoid}(UInt(0x9D71E771))
+	# The layer the dialog would have made for this exact request.
+	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "PT (earth_relief 10m)", G)]
+	call(kv) = IG._on_earthregions(scene, C_NULL,
+	                               Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	try
+		# Same name, same dataset, same resolution: recognised, and NOTHING is downloaded (this test
+		# has no network and would hang or fail if it were).
+		@test call(["mode=raster", "region=-10/-6/36/39", "name=PT",
+		            "dataset=earth_relief", "res=10m"]) == 1
+		# A different resolution, or a different dataset, is a different layer — those are not caught
+		# here, so they would go to the network; only the option check is exercised.
+		@test IG._find_object_exact(scene, :grid, "PT (earth_relief 06m)") === nothing
+		@test IG._find_object_exact(scene, :grid, "PT (earth_geoid 10m)") === nothing
+		# An IMAGE layer of that name counts just as much as a grid.
+		IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:image, "Azov (earth_day 30s)", G)]
+		@test call(["mode=raster", "region=34/39/45/47", "name=Azov",
+		            "dataset=earth_day", "res=30s"]) == 1
 	finally
 		delete!(IG._SCENE_OBJS, scene)
 	end
