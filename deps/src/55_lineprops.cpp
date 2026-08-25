@@ -915,6 +915,135 @@ static void faultRunDialog(Scene *s, vtkActor *seedPatch = nullptr);
 // same forward-declare pattern as faultRunDialog above).
 static void copyMeStart(Scene *s, const Polygon &src);
 
+// ── Clamp to ground ───────────────────────────────────────────────────────────────────────────────
+// An x,y (lon,lat) vector element has no elevation of its own, so on a 3-D relief or on the globe it
+// either lies at z = 0 — cutting through every mountain and, on a sphere, sitting at sea level under
+// the terrain — or it DRAPES on the surface under it. Which one is a display choice, so it is a
+// toggle on the element's own handle rather than something decided once at import.
+//
+// ONE function for every vector kind (SACRED_LAW: same operation, same function). The height comes
+// from `sampleActiveZ`, the same sampler the coordinate readout, the profile and the ray-march use,
+// so a draped line sits exactly on the surface those report. The pre-clamp z is kept per element, so
+// unclamping restores the SOURCE data rather than guessing zero — a track that really did carry
+// depths gets them back.
+//
+// It needs no knowledge of the view mode: the vertices are TRUE coords in every mode, and what turns
+// a z into a height above the map (flat) or a radius (globe) is the one transform each actor already
+// wears.
+static bool lineIsClamped(Scene *s, const LineRef &lr) {
+	if (!s || !lr.actor) return false;
+	if (lr.kind == LK_Overlay) {
+		for (auto &o : s->overlays) if (o.actor.Get() == lr.actor) return o.clamped;
+	}
+	else if (lr.kind == LK_Polygon) {
+		const int pi = polyIndexOfActor(s, lr.actor);
+		if (pi >= 0) return s->polys[pi].clamped;
+	}
+	return false;
+}
+
+// Is there anything to clamp TO? No grid -> no ground, and the item has no meaning.
+static bool lineCanClamp(Scene *s, const LineRef &lr) {
+	return s && lr.actor && sceneHasRealGrid(s) &&
+	       (lr.kind == LK_Overlay || lr.kind == LK_Polygon);
+}
+
+// The GROUP half: clamp/unclamp every member of an overlay group at once — "Plate boundaries PB" is
+// seven layers, and clamping them one row at a time is not a thing anyone should have to do. Applied
+// BY TAG (groupName), never by index or by "the topmost one", per this project's standing rule for
+// per-group operations. The group counts as clamped when ANY member is, so one click releases them
+// all and the next click drapes them all.
+static void lineGroupSetClamped(Scene *s, const std::string &gname, bool on);
+static bool lineGroupIsClamped(Scene *s, const std::string &gname);
+
+static void lineSetClamped(Scene *s, const LineRef &lr, bool on) {
+	if (!lineCanClamp(s, lr)) return;
+	// The z each vertex should now have: the terrain under it when clamping, its SOURCE z when
+	// releasing. A vertex whose x,y falls off the grid (NaN sample) keeps what it had — an overlay can
+	// legitimately run past the raster's edge (SACRED_LAW's vector-import law) and must not be
+	// snapped to some invented height there.
+	// Releasing gives the element back its SOURCE z — recorded when it was built (addOverlay), so it
+	// survives even a first release of something its own importer clamped. An x,y dataset gets 0 back
+	// because 0 is what it came with; a depth-bearing track gets its depths back. Falling back to the
+	// CURRENT z (which is the terrain height once clamped) would make the first release a no-op, and
+	// falling back to 0 would silently destroy real elevations — both were wrong.
+	auto newZ = [&](double x, double y, double zNow, double zSaved, bool haveSaved) {
+		if (!on) return haveSaved ? zSaved : zNow;
+		const double h = sampleActiveZ(s, x, y);
+		return std::isnan(h) ? zNow : h;
+	};
+	if (lr.kind == LK_Overlay) {
+		for (auto &o : s->overlays) {
+			if (o.actor.Get() != lr.actor) continue;
+			if (o.clamped == on) return;
+			vtkPolyData *pd = o.baseLine;
+			if (!pd || !pd->GetPoints()) return;
+			vtkPoints *P = pd->GetPoints();
+			const vtkIdType n = P->GetNumberOfPoints();
+			const bool haveSaved = (o.zClampSave.size() == (size_t)n);   // recorded at build (addOverlay)
+			for (vtkIdType i = 0; i < n; ++i) {
+				double p[3]; P->GetPoint(i, p);
+				p[2] = newZ(p[0], p[1], p[2],
+				            (o.zClampSave.size() == (size_t)n) ? o.zClampSave[(size_t)i] : 0.0,
+				            o.zClampSave.size() == (size_t)n);
+				P->SetPoint(i, p);
+			}
+			P->Modified();  pd->Modified();
+			o.clamped = on;
+			// A draped line is real 3-D geometry that terrain in front of it must HIDE; a flat one is a
+			// map annotation drawn over everything. That rule lives in applyVectorStacking and reads
+			// Overlay::realZ, so the flag moves with the clamp and the stacking is re-derived.
+			o.realZ = on;
+			applyVectorStacking(s);
+			break;
+		}
+	}
+	else {
+		const int pi = polyIndexOfActor(s, lr.actor);
+		if (pi < 0) return;
+		Polygon &pg = s->polys[pi];
+		if (pg.clamped == on) return;
+		const size_t n = pg.v.size();
+		const bool haveSaved = (pg.zClampSave.size() == n);
+		if (on && !haveSaved) {
+			pg.zClampSave.resize(n);
+			for (size_t i = 0; i < n; ++i) pg.zClampSave[i] = pg.v[i][2];
+		}
+		for (size_t i = 0; i < n; ++i)
+			pg.v[i][2] = newZ(pg.v[i][0], pg.v[i][1], pg.v[i][2],
+			                  (pg.zClampSave.size() == n) ? pg.zClampSave[i] : 0.0,
+			                  pg.zClampSave.size() == n);
+		pg.clamped = on;
+		polyRebuildLine(s, pg);        // the one rebuild every vertex edit goes through
+	}
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+static bool lineGroupIsClamped(Scene *s, const std::string &gname) {
+	if (!s || gname.empty()) return false;
+	for (auto &o : s->overlays) if (o.groupName == gname && o.clamped) return true;
+	for (auto &p : s->polys)    if (p.groupName == gname && p.clamped) return true;
+	return false;
+}
+
+static void lineGroupSetClamped(Scene *s, const std::string &gname, bool on) {
+	if (!s || gname.empty()) return;
+	// One call per member, through the SAME lineSetClamped a single row uses — the group is a loop
+	// over the one function, never a second implementation of what clamping means.
+	for (auto &o : s->overlays)
+		if (o.groupName == gname && o.actor) { LineRef lr{ LK_Overlay, o.actor.Get() }; lineSetClamped(s, lr, on); }
+	for (auto &p : s->polys)
+		if (p.groupName == gname && p.line) { LineRef lr{ LK_Polygon, p.line.Get() }; lineSetClamped(s, lr, on); }
+}
+
+// Is there a ground under this group to clamp to, and any member that can take it?
+static bool lineGroupCanClamp(Scene *s, const std::string &gname) {
+	if (!s || gname.empty() || !sceneHasRealGrid(s)) return false;
+	for (auto &o : s->overlays) if (o.groupName == gname && o.actor) return true;
+	for (auto &p : s->polys)    if (p.groupName == gname && p.line)  return true;
+	return false;
+}
+
 // The unified right-click menu for a line object: "Line properties…" plus the kind's own actions
 // (profile: save / delete; overlay & polygon: hide; polygon: delete). Shared by the 3-D-view
 // right-click hit-test and the Scene Objects list rows, so both routes give the same menu.
@@ -960,6 +1089,15 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 	// properties, save, table, measurements, or delete. The GROUP carries the delete action.
 	if (!isSlip) {
 		m.addAction("Line properties…", [s, lr]() { showLineProperties(s, lr); });
+		// Drape this element on the terrain, or put it back on its own z. Offered only where there IS
+		// a ground to clamp to; checkable, because it is a state the user flips both ways.
+		if (lineCanClamp(s, lr)) {
+			QAction *cl = m.addAction("Clamp to ground");
+			cl->setCheckable(true);
+			cl->setChecked(lineIsClamped(s, lr));
+			cl->setToolTip("Drape the element on the surface below it (unchecked = its own z)");
+			QObject::connect(cl, &QAction::triggered, [s, lr](bool on) { lineSetClamped(s, lr, on); });
+		}
 		m.addAction(isNestRect ? "Save rectangle…"
 				  : isFault    ? "Save trace fault…"
 				  : (lr.kind == LK_Polygon && lineClosedRing(s, lr) ? "Save polygon…" : "Save line…"),

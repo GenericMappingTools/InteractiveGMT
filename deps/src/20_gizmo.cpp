@@ -25,6 +25,7 @@ struct Gizmo {
 	vtkSmartPointer<vtkCallbackCommand> placeCmd, dragCmd, keyCmd;
 	unsigned long placeTag = 0, dragTags[3] = {0,0,0}, keyTag = 0;
 	bool visible = true;
+	bool veOnly  = false;       // showing only the vertical-exaggeration half (the globe — see setGizmoVisible)
 
 	// dragging
 	double sensitivity = 0.01;  // vertical-scale exp factor per pixel
@@ -39,6 +40,11 @@ struct Gizmo {
 	double centre[3] = {0,0,0};
 	double scale = 1.0;
 	double right[3] = {1,0,0};  // camera screen-right (horizontal-axis direction)
+	// THE GIZMO'S OWN VERTICAL. World +Z on a flat map — and on the GLOBE the RADIAL direction at the
+	// point it stands on, because that is what "up" means there. Every offset that used to be written
+	// as `centre[2] + scale*k` goes through gizPoint() and this vector instead, so the handle stands
+	// on the planet instead of lying across it (and does not collapse to a dot over a pole).
+	double gup[3]   = {0,0,1};
 	double vup[3]   = {0,0,1};  // camera screen-up  (for a stable, camera-relative tilt ring)
 	double vdir[3]  = {0,0,1};  // unit view direction toward the camera (focal -> eye)
 	double haxisLen = 0.0;      // world half-extent of data; 0 = unknown
@@ -144,11 +150,16 @@ void litLook(vtkActor *a) {
 }
 void ringLook(vtkActor *a) { a->GetProperty()->SetColor(0.50,0.50,0.50); litLook(a); }
 
+// The vertical arrowhead's base radius. HALF AS WIDE AGAIN on the globe: there it is the only handle
+// on screen and it stands on a whole planet, so the flat map's slim head reads as a speck. One
+// function, so the drawn cone and its grab region (hitTest) can never be sized by different rules.
+inline double coneR(const Gizmo &c) { return kConeR * ((c.s && c.s->globe) ? 1.5 : 1.0); }
+
 void updateVCone(Gizmo &c) {
 	if (!c.vconeSrc) return;
 	double h = kConeH0 * std::clamp(c.curSz / c.veBase, 0.15, 8.0);  // relative to enable VE -> default size at startup
 	c.vconeSrc->SetHeight(h);
-	c.vconeSrc->SetRadius(kConeR);
+	c.vconeSrc->SetRadius(coneR(c));
 	c.vconeSrc->SetDirection(0.0, 0.0, 1.0);
 	c.vconeSrc->SetCenter(0.0, 0.0, kBodyZ + 0.5 * h); // base fixed at shaft top
 }
@@ -169,14 +180,37 @@ bool normalize3(double v[3]) {
 
 // Place the gizmo. Vertical parts are world-aligned (+Z up); the horizontal axis is
 // oriented along the camera screen-right vector so it stays left-right in the window.
+// A point at gizmo-LOCAL offset — `up` along the gizmo's own vertical (Gizmo::gup), `side` along
+// camera screen-right — in world coords. THE one place the local frame is turned into world
+// coordinates: placeAll and hitTest both go through it, so what is drawn and what answers the mouse
+// cannot end up in two different frames (which is exactly what a second "up" would cause).
+inline void gizPoint(const Gizmo &c, double up, double side, double out[3]) {
+	for (int i = 0; i < 3; ++i)
+		out[i] = c.centre[i] + c.scale * (up * c.gup[i] + side * c.right[i]);
+}
+
 void placeAll(Gizmo &c) {
 	const double *p = c.centre;
 	const double s = c.scale;
-	for (vtkActor *a : { c.shaft.Get(), c.vcone.Get(), c.ring.Get() }) {
-		if (a) { a->SetUserMatrix(nullptr); a->SetScale(s); a->SetPosition(p[0],p[1],p[2]); }
+	// The body actors (shaft, cone, compass ring) are all rotationally symmetric about their local
+	// +Z, so placing them is: put local +Z on the gizmo's vertical, scale, translate. On a flat map
+	// gup IS world +Z and this is the identity the code used to write directly.
+	{
+		double Zl[3] = { c.gup[0], c.gup[1], c.gup[2] };
+		normalize3(Zl);
+		double Xl[3];  cross3(c.vdir, Zl, Xl);
+		if (!normalize3(Xl)) { Xl[0]=c.right[0]; Xl[1]=c.right[1]; Xl[2]=c.right[2]; normalize3(Xl); }
+		double Yl[3];  cross3(Zl, Xl, Yl);  normalize3(Yl);
+		vtkNew<vtkMatrix4x4> B;  B->Identity();
+		for (int i = 0; i < 3; ++i) {
+			B->SetElement(i, 0, s*Xl[i]);  B->SetElement(i, 1, s*Yl[i]);
+			B->SetElement(i, 2, s*Zl[i]);  B->SetElement(i, 3, p[i]);
+		}
+		for (vtkActor *a : { c.shaft.Get(), c.vcone.Get(), c.ring.Get() })
+			if (a) { a->SetScale(1.0); a->SetPosition(0,0,0); a->SetUserMatrix(B); }
 	}
 	double X[3] = { c.right[0], c.right[1], c.right[2] };
-	double up[3] = { 0.0, 0.0, 1.0 }, Y[3], Z[3];
+	double up[3] = { c.gup[0], c.gup[1], c.gup[2] }, Y[3], Z[3];
 	cross3(up, X, Y);
 	if (!normalize3(Y)) { double alt[3]={0,1,0}; cross3(alt,X,Y); normalize3(Y); }
 	cross3(X, Y, Z); normalize3(Z);
@@ -215,15 +249,19 @@ void placeAll(Gizmo &c) {
 	const double zSide = kRingR * 0.8;
 	const double ringSide = kRingR + 0.096;   // gap scaled with the 20%-smaller ring
 	const double tipTop = kRingR + 0.112;     // gap scaled with the 20%-smaller ring
-	if (c.label)
-		c.label->SetPosition(p[0]+s*zSide*c.right[0], p[1]+s*zSide*c.right[1], p[2]+s*aboveRing);
+	if (c.label) {
+		double q[3];  gizPoint(c, aboveRing, zSide, q);
+		c.label->SetPosition(q);
+	}
 	if (c.azLabel) {
-		c.azLabel->SetPosition(p[0]-s*ringSide*c.right[0], p[1]-s*ringSide*c.right[1], p[2]+s*kBodyZ);
+		double q[3];  gizPoint(c, kBodyZ, -ringSide, q);
+		c.azLabel->SetPosition(q);
 		char buf[32]; std::snprintf(buf, sizeof(buf), "%.0f\xC2\xB0", c.azimuth);
 		c.azLabel->SetInput(buf);
 	}
 	if (c.inclLabel) {
-		c.inclLabel->SetPosition(tip[0], tip[1], tip[2]+s*tipTop);
+		c.inclLabel->SetPosition(tip[0] + s*tipTop*c.gup[0], tip[1] + s*tipTop*c.gup[1],
+		                         tip[2] + s*tipTop*c.gup[2]);
 		char buf[32]; std::snprintf(buf, sizeof(buf), "%.0f\xC2\xB0", c.incl);
 		c.inclLabel->SetInput(buf);
 	}
@@ -237,6 +275,19 @@ void PlaceCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 	vtkCamera *cam = ren->GetActiveCamera();
 	cam->GetFocalPoint(c->centre);
 	double d = cam->GetDistance();
+	// GLOBE: the focal point is the PLANET'S CENTRE, so anchoring there buries the whole handle
+	// inside the sphere. It stands instead on the sea-level point facing the camera — the middle of
+	// the visible disk, which is where the flat map's gizmo sits too (its focal point is the middle
+	// of the map) — and its vertical is the RADIAL direction there, which is what "up" means on a
+	// planet. Both are re-derived every frame, so the handle follows the globe as it is turned.
+	if (c->s && c->s->globe) {
+		double pos[3];  cam->GetPosition(pos);
+		double u[3] = { pos[0], pos[1], pos[2] };
+		if (normalize3(u)) {
+			for (int i = 0; i < 3; ++i) { c->gup[i] = u[i];  c->centre[i] = u[i] * c->s->globeR; }
+		}
+	}
+	else { c->gup[0] = 0.0; c->gup[1] = 0.0; c->gup[2] = 1.0; }
 	// FIXED SCREEN SIZE: size the gizmo from the world extent that spans the full viewport HEIGHT at
 	// the focal depth, not from camera distance alone. Distance-only (0.085*d) ignored the view
 	// angle, so zooming by changing the view angle (distance unchanged) left the gizmo at its old
@@ -312,10 +363,12 @@ Grab hitTest(Gizmo &c, vtkRenderer *ren, int x, int y) {
 	// Cone grab = the base->apex SEGMENT with the (thin) base radius. Measuring a
 	// radius from the cone CENTRE would balloon with a tall cone (big VE) and eat
 	// the surrounding compass ring; the segment test keeps the grab cone-shaped.
-	double baseC[2], apexC[2], baseE[2];
-	worldToDisplay(ren, p[0], p[1], p[2]+s*kBodyZ, baseC);
-	worldToDisplay(ren, p[0], p[1], p[2]+s*(kBodyZ+coneH), apexC);
-	worldToDisplay(ren, p[0]+s*kConeR, p[1], p[2]+s*kBodyZ, baseE);
+	// Same local frame the handles were DRAWN in (gizPoint) — never world +Z again, or on the globe
+	// the grab region would sit somewhere the cone is not.
+	double baseC[2], apexC[2], baseE[2], q[3];
+	gizPoint(c, kBodyZ, 0.0, q);           worldToDisplay(ren, q[0], q[1], q[2], baseC);
+	gizPoint(c, kBodyZ + coneH, 0.0, q);   worldToDisplay(ren, q[0], q[1], q[2], apexC);
+	gizPoint(c, kBodyZ, coneR(c), q);      worldToDisplay(ren, q[0], q[1], q[2], baseE);
 	double rBase = std::sqrt(dist2(baseC, baseE[0], baseE[1]));
 	double rGrab = std::max(rBase*1.6, 12.0);
 	if (distToSeg(x, y, baseC, apexC) <= rGrab) return Grab::VScale;
@@ -325,15 +378,15 @@ Grab hitTest(Gizmo &c, vtkRenderer *ren, int x, int y) {
 		double tx=p[0]+L*c.right[0], ty=p[1]+L*c.right[1], tz=p[2]+L*c.right[2];
 		double dA[2], dAedge[2];
 		worldToDisplay(ren, tx, ty, tz, dA);
-		worldToDisplay(ren, tx, ty, tz+s*kRingR, dAedge);
+		worldToDisplay(ren, tx + s*kRingR*c.gup[0], ty + s*kRingR*c.gup[1], tz + s*kRingR*c.gup[2], dAedge);
 		double rA = std::sqrt(dist2(dA, dAedge[0], dAedge[1]));
 		rA = std::max(rA*2.5, 16.0);
 		if (dist2(dA, x, y) <= rA*rA) return Grab::Tilt;
 	}
 
 	double dCtr[2], dRim[2];
-	worldToDisplay(ren, p[0], p[1], p[2]+s*kBodyZ, dCtr);
-	worldToDisplay(ren, p[0]+s*kRingR, p[1], p[2]+s*kBodyZ, dRim);
+	gizPoint(c, kBodyZ, 0.0,    q);  worldToDisplay(ren, q[0], q[1], q[2], dCtr);
+	gizPoint(c, kBodyZ, kRingR, q);  worldToDisplay(ren, q[0], q[1], q[2], dRim);
 	const double r = std::sqrt(dist2(dCtr, x, y));
 	const double rRim = std::sqrt(dist2(dCtr, dRim[0], dRim[1]));
 	if (r >= 0.45*rRim && r <= 1.25*rRim) return Grab::Azimuth;
@@ -369,7 +422,13 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 			c->grab = Grab::Profile; handled = true;
 		}
 		else {
-			c->grab = c->s->flat2d ? Grab::None : hitTest(*c, ren, x, y);   // 2D map: gizmo handles off
+			// 2D map: the gizmo handles are off (it is not on screen at all). On the GLOBE only the
+			// vertical-exaggeration handle is up (setGizmoVisible's veOnly), so only that one may be
+			// grabbed — a hidden ring that still answers the mouse is a click on a target the user
+			// cannot see. Rotation below stays FREE on the globe: turning it is how the projection
+			// centre is chosen.
+			c->grab = c->s->flat2d ? Grab::None : hitTest(*c, ren, x, y);
+			if (c->veOnly && c->grab != Grab::VScale && c->grab != Grab::Profile) c->grab = Grab::None;
 			if (c->grab == Grab::VScale) { c->startY = y; c->startSz = c->curSz; }
 			else if (c->grab == Grab::None) {     // gizmo miss: try an overlay, else rotate/tilt
 				vtkActor *sym = pickSymbolAt(c->s, x, y);   // symbols sit on top -> first
@@ -474,13 +533,28 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 	if (c->dragCmd) c->dragCmd->SetAbortFlagOnExecute(handled ? 1 : 0);
 }
 
-void setGizmoVisible(Gizmo &c, bool on) {
-	for (vtkProp *a : { (vtkProp*)c.shaft.Get(), (vtkProp*)c.shaftH.Get(),
-						(vtkProp*)c.vcone.Get(), (vtkProp*)c.harrow.Get(), (vtkProp*)c.ring.Get() })
-		if (a) a->SetVisibility(on ? 1 : 0);
-	for (vtkBillboardTextActor3D *a : { c.label.Get(), c.azLabel.Get(), c.inclLabel.Get() })
-		if (a) a->SetVisibility(on ? 1 : 0);
+// `veOnly` shows just the VERTICAL EXAGGERATION half of the gizmo — the amber shaft, its cone and
+// the "z×" readout — and leaves the tilt/azimuth rings down. That is the globe's shape: there the
+// camera is turned by the trackball (turning it IS how the projection centre is chosen), so a tilt
+// ring and a compass ring would be a second, redundant control for something the mouse already does,
+// while the VE has no other control at all. Same function, same actors, one flag — not a second
+// gizmo for one view mode.
+void setGizmoVisible(Gizmo &c, bool on, bool veOnly = false) {
+	const int v = on ? 1 : 0;
+	const int vRing = (on && !veOnly) ? 1 : 0;
+	for (vtkProp *a : { (vtkProp*)c.shaft.Get(), (vtkProp*)c.vcone.Get() })
+		if (a) a->SetVisibility(v);
+	for (vtkProp *a : { (vtkProp*)c.shaftH.Get(), (vtkProp*)c.harrow.Get(), (vtkProp*)c.ring.Get() })
+		if (a) a->SetVisibility(vRing);
+	if (c.label) c.label->SetVisibility(v);
+	for (vtkBillboardTextActor3D *a : { c.azLabel.Get(), c.inclLabel.Get() })
+		if (a) a->SetVisibility(vRing);
 	c.visible = on;
+	c.veOnly  = on && veOnly;
+	// The cone's width depends on the VIEW MODE (coneR), and this is the call every mode change makes
+	// — so re-derive it here rather than leaving the head at the previous mode's size until the next
+	// VE drag happens to rebuild it.
+	updateVCone(c);
 }
 
 // 'x' toggles the gizmo visibility (observe low priority, never abort).

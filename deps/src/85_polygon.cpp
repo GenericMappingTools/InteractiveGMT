@@ -375,6 +375,19 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 		// They agree now: a hole is the floor.
 		auto eval = [&](double t, double &fval) -> bool {
 			const double X = nr[0] + t*dirx, Y = nr[1] + t*diry, Z = nr[2] + t*dirz;
+			// GLOBE: the surface is a heightfield over the RADIUS, not over z — same march, same
+			// bisection, same sampler, only the "how far above the surface am I" term follows the
+			// view mode. lon/lat comes from the scene's ONE inverse (sceneWorldToGeo), never from a
+			// second formula written here.
+			if (s->globe) {
+				const double P[3] = { X, Y, Z };
+				double lon, lat, zz;
+				if (!sceneWorldToGeo(s, P, lon, lat, zz)) return false;
+				double h = sampleZ(s, lon, lat);
+				if (std::isnan(h)) h = s->zmin;
+				fval = std::sqrt(X*X + Y*Y + Z*Z) - (s->globeR + h * zsc);
+				return true;
+			}
 			double h = sampleZ(s, X / gx, Y);
 			if (std::isnan(h)) h = s->zmin;         // the hole's backdrop sits at the grid floor
 			fval = Z - h * zsc; return true;
@@ -393,9 +406,10 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 					else b = m;
 				}
 				const double t0 = 0.5*(a+b);
-				const double wx = nr[0] + t0*dirx, wy = nr[1] + t0*diry;
-				outTrue[0] = wx / gx; outTrue[1] = wy;
-				outTrue[2] = sampleZ(s, wx / gx, wy);
+				const double W[3] = { nr[0] + t0*dirx, nr[1] + t0*diry, nr[2] + t0*dirz };
+				double zz;
+				sceneWorldToGeo(s, W, outTrue[0], outTrue[1], zz);   // flat: w/xfac,w.y — globe: the sphere inverse
+				outTrue[2] = sampleZ(s, outTrue[0], outTrue[1]);
 				// In a hole the vertex sits ON the hole's backdrop (the grid floor), not at z=0 --
 				// same surface the ray was just intersected against, so the point lands where clicked.
 				if (std::isnan(outTrue[2])) outTrue[2] = s->zmin;
@@ -406,6 +420,23 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 		return false;
 	}
 	if (s->imageOnly) {
+		// The image plane is z=0 flat, but on the globe it has been wrapped onto the sphere, so the
+		// ray must be intersected with the SPHERE instead — the equatorial z=0 plane cuts straight
+		// through it and would answer with a point on the far side.
+		if (s->globe) {
+			const double d[3] = { dirx, diry, dirz };
+			const double a = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
+			const double b = 2.0 * (nr[0]*d[0] + nr[1]*d[1] + nr[2]*d[2]);
+			const double c = nr[0]*nr[0] + nr[1]*nr[1] + nr[2]*nr[2] - s->globeR * s->globeR;
+			const double disc = b*b - 4.0*a*c;
+			if (a <= 0.0 || disc < 0.0) return false;
+			const double t0 = (-b - std::sqrt(disc)) / (2.0*a);
+			const double W[3] = { nr[0] + t0*dirx, nr[1] + t0*diry, nr[2] + t0*dirz };
+			double zz;
+			if (!sceneWorldToGeo(s, W, outTrue[0], outTrue[1], zz)) return false;
+			outTrue[2] = 0.0;
+			return true;
+		}
 		if (dirz != 0.0) {
 			const double t0 = -nr[2] / dirz;
 			if (t0 >= 0.0 && t0 <= 1.0) {
@@ -418,7 +449,9 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 	if (s->picker) {
 		if (s->picker->Pick((double)mx, (double)my, 0.0, s->ren) && s->picker->GetCellId() >= 0) {
 			double w[3]; s->picker->GetPickPosition(w);
-			outTrue[0] = w[0] / gx; outTrue[1] = w[1]; outTrue[2] = (zsc != 0.0) ? w[2] / zsc : 0.0;
+			double zz;
+			sceneWorldToGeo(s, w, outTrue[0], outTrue[1], zz);
+			outTrue[2] = s->globe ? zz : ((zsc != 0.0) ? w[2] / zsc : 0.0);
 			return true;
 		}
 	}
@@ -428,7 +461,11 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 // TRUE-coord vertex -> display px (device, bottom-up; matches GetEventPosition), using the same
 // scaled space the actors live in. For hit-testing handles / polygon edges against a click.
 static void polyToDisplay(Scene *s, const std::array<double,3> &v, double d[2]) {
-	s->ren->SetWorldPoint(v[0]*s->xfac, v[1], v[2]*s->zfac*s->ve, 1.0);
+	// The vertex is in TRUE coords; where it DRAWS is whatever this view mode's mapping puts it —
+	// sceneGeoToWorld is that mapping in every mode (flat: x*xfac, y, z*zfac*ve; globe: the sphere),
+	// so a handle hit-test lands on the handle the user can see, on the globe as on the map.
+	double w[3];  sceneGeoToWorld(s, v[0], v[1], v[2], w);
+	s->ren->SetWorldPoint(w[0], w[1], w[2], 1.0);
 	s->ren->WorldToDisplay();
 	const double *dp = s->ren->GetDisplayPoint();
 	d[0] = dp[0]; d[1] = dp[1];
@@ -1540,6 +1577,24 @@ static bool pickPlaneXY(Scene *s, int mx, int my, double outTrue[3]) {
 	for (int i = 0; i < 4; ++i) fr[i] = s->ren->GetWorldPoint()[i];
 	if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
 	if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
+	// GLOBE: "the z=0 plane" is the equatorial slice through the sphere, so the label would be placed
+	// at a point on the FAR side. The sea-level SPHERE is the same surface in this mode — the one a
+	// flat label sits on — so the ray is intersected with that instead, and a ray that misses it
+	// (the cursor is on the sky beside the globe) genuinely has no place to put a label.
+	if (s->globe) {
+		const double d[3] = { fr[0]-nr[0], fr[1]-nr[1], fr[2]-nr[2] };
+		const double a = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
+		const double b = 2.0 * (nr[0]*d[0] + nr[1]*d[1] + nr[2]*d[2]);
+		const double c = nr[0]*nr[0] + nr[1]*nr[1] + nr[2]*nr[2] - s->globeR * s->globeR;
+		const double disc = b*b - 4.0*a*c;
+		if (a <= 0.0 || disc < 0.0) return false;
+		const double t0 = (-b - std::sqrt(disc)) / (2.0*a);
+		const double W[3] = { nr[0] + t0*d[0], nr[1] + t0*d[1], nr[2] + t0*d[2] };
+		double zz;
+		if (!sceneWorldToGeo(s, W, outTrue[0], outTrue[1], zz)) return false;
+		outTrue[2] = 0.0;
+		return true;
+	}
 	const double dirz = fr[2] - nr[2];
 	if (dirz == 0.0) return false;
 	const double t = -nr[2] / dirz;                 // intersect world z = 0 (scaled space)
@@ -1676,7 +1731,7 @@ static void mecaDragTo(Scene *s, int bi, double wx, double wy) {
 	if (mb.dateLabel) {
 		for (auto &tl : s->texts) {
 			if (tl.actor.Get() != mb.dateLabel) continue;
-			mb.dateLabel->SetPosition((tl.pos[0] + mb.offX) * s->xfac, tl.pos[1] + mb.offY, 0.0);
+			textApplyPos(s, tl, mb.offX, mb.offY);      // the ball's live drag offset, in TRUE coords
 			break;
 		}
 	}
@@ -1845,9 +1900,9 @@ static void textApplyProps(Scene *s, TextLabel &tl) {
 		(void)bh;
 	}
 	// z is 0 for every plane label; a contour label carries its contour's real height and so rides
-	// VE exactly like the line does (applyVE re-applies this same expression, offsets included).
-	tl.actor->SetPosition(tl.pos[0] * s->xfac - tl.offX, tl.pos[1] - tl.offY,
-	                      tl.pos[2] * s->zfac * s->ve);
+	// VE exactly like the line does. WHERE it lands is textApplyPos (10_geometry.cpp) — the one placer
+	// applyVE and every drag go through, so the label cannot be positioned by two different rules.
+	textApplyPos(s, tl);
 	tl.actor->PickableOff();
 }
 
@@ -2403,13 +2458,10 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 		double w[3];
 		if (polyPickWorld(s, x, y, w)) {      // terrain-draped, same pick as the original placement click
 			SymbolLayer &sl = s->symbols[s->symLayerDrag];
-			if (auto *pd = symInputPD(sl)) {
-				if (pd->GetPoints() && pd->GetPoints()->GetNumberOfPoints() > 0) {
-					pd->GetPoints()->SetPoint(0, w[0] * s->xfac, w[1], w[2]);   // x pre-baked, matches addSymbols
-					pd->GetPoints()->Modified();
-					pd->Modified();
-				}
-			}
+			// ONE writer for a symbol's position (symbolSetPointTrue, 10_geometry.cpp): it puts the
+			// point where THIS view mode draws that lon/lat AND updates the layer's remembered origin,
+			// so the symbol stays where it was dropped across a 2-D / 3-D / globe switch.
+			symbolSetPointTrue(s, sl, 0, w[0], w[1], w[2]);
 			symRebuildHandle(s);   // keep the yellow handle glued to the moving symbol
 			s->widget->renderWindow()->Render();
 		}
@@ -2421,14 +2473,12 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 			const double ddx = w[0] - s->symPtDragLastW[0], ddy = w[1] - s->symPtDragLastW[1];
 			s->symPtDragLastW[0] = w[0]; s->symPtDragLastW[1] = w[1];
 			SymbolLayer &sl = s->symbols[s->symPtDrag];
-			if (auto *pd = symInputPD(sl)) {
-				vtkPoints *pts = pd->GetPoints();
-				if (pts && s->symPtIdx >= 0 && s->symPtIdx < pts->GetNumberOfPoints()) {
-					double p[3]; pts->GetPoint(s->symPtIdx, p);
-					p[0] += ddx * s->xfac; p[1] += ddy;
-					pts->SetPoint(s->symPtIdx, p);
-					pts->Modified(); pd->Modified();
-				}
+			// The delta is in TRUE coords, so it is applied to the point's TRUE position and written
+			// back through the one writer — never added to the DRAWN point, whose space depends on the
+			// view mode (on the globe it is a world XYZ, where "+ddx*xfac" means nothing).
+			if (s->symPtIdx >= 0) {
+				double t[3];  symbolGetPointTrue(s, sl, s->symPtIdx, t);
+				symbolSetPointTrue(s, sl, s->symPtIdx, t[0] + ddx, t[1] + ddy, t[2]);
 			}
 			// Carry the linked name label along, SAME mechanism as mecaDragTo carrying a ball's date
 			// label — found by (groupName, mecaEvent) instead of a cached pointer since s->texts can
@@ -2436,7 +2486,7 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 			for (auto &tl : s->texts) {
 				if (tl.groupName != sl.name || tl.mecaEvent != s->symPtIdx) continue;
 				tl.pos[0] += ddx; tl.pos[1] += ddy;
-				if (tl.actor) tl.actor->SetPosition(tl.pos[0] * s->xfac, tl.pos[1], 0.0);
+				textApplyPos(s, tl);
 				break;
 			}
 			s->widget->renderWindow()->Render();
@@ -2456,7 +2506,7 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 		if (pickPlaneXY(s, x, y, w) && s->textDrag < (int)s->texts.size()) {
 			TextLabel &tl = s->texts[s->textDrag];
 			tl.pos = { w[0], w[1], 0.0 };
-			tl.actor->SetPosition(w[0] * s->xfac, w[1], 0.0);
+			textApplyPos(s, tl);
 			s->widget->renderWindow()->Render();
 		}
 		return true;

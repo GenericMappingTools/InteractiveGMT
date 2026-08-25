@@ -208,6 +208,11 @@
 #include <vtkTextActor3D.h>
 #include <vtkTransform.h>
 #include <vtkTransformPolyDataFilter.h>
+// Globe (geographic orthographic) view mode: lon/lat/z -> a real sphere, seen through the parallel
+// camera. vtkGeneralTransform is the only VTK transform that can concatenate a NON-LINEAR one, and
+// vtkSphericalTransform is the (r,phi,theta) -> (x,y,z) half. See sceneGlobeTransform (10_geometry).
+#include <vtkGeneralTransform.h>
+#include <vtkSphericalTransform.h>
 #include <vtkLight.h>
 #include <vtkMath.h>
 // vtkSMPTools pulls in TBB's profiling.h, whose `void emit()` method collides with Qt's `emit`
@@ -218,6 +223,7 @@
 #pragma pop_macro("emit")
 #include <vtkMatrix4x4.h>
 #include <vtkPolyDataAlgorithm.h>
+#include <vtkAlgorithmOutput.h>
 #include <vtkPolyDataNormals.h>
 #include <vtkTriangleFilter.h>
 #include <vtkContourTriangulator.h>

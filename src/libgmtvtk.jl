@@ -115,6 +115,12 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_serialize_overlays, :gmtvtk_serialize_symbols, :gmtvtk_layer_display,
 	:gmtvtk_window_screenshot,
 	:gmtvtk_scene_state_full, :gmtvtk_apply_scene_state, :gmtvtk_serialize_texts,
+	# View mode (0 = 3-D, 1 = flat 2-D map, 2 = globe / geographic orthographic). The globe is refused
+	# for non-geographic data, which is why the setter answers with the mode it actually landed in.
+	:gmtvtk_set_view_mode_h, :gmtvtk_get_view_mode_h,
+	# Clamp a vector element (or a whole tagged group) onto the surface below it. The importer of an
+	# x,y dataset calls this instead of draping the vertices itself — one clamp, and the source z survives.
+	:gmtvtk_line_clamp_h,
 	:gmtvtk_serialize_polys, :gmtvtk_add_poly_full, :gmtvtk_serialize_faults, :gmtvtk_add_nested_rect,
 	:gmtvtk_serialize_rulers, :gmtvtk_add_ruler_h, :gmtvtk_set_vector_visible_h,
 	:gmtvtk_serialize_vector_h, :gmtvtk_vector_info_h, :gmtvtk_set_euler_callback, :gmtvtk_euler_result,

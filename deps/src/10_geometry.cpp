@@ -90,6 +90,14 @@ struct Overlay {
 	                                          // out of the depth-cleared overlay layer in 3-D. Computed in
 	                                          // addOverlay from the z's themselves, so no caller can forget
 	                                          // to declare it and none has to be taught a new argument.
+	// CLAMPED TO THE GROUND, as a user choice rather than a property of the source: every vertex takes
+	// the height of the surface under its own x,y. An x,y (lon,lat) dataset has no elevation of its own
+	// — a coastline, an imported track, a plotted boundary — so on a 3-D relief or a globe it either
+	// lies flat at z = 0 and cuts through mountains, or it drapes. Both are wanted, so it is a toggle
+	// on the element's own handle. `zClampSave` is the z it had BEFORE the first clamp, so unclamping
+	// restores the source data exactly instead of guessing zero.
+	bool   clamped = false;
+	std::vector<double> zClampSave;
 	int    stack = 0;                        // draw-order rank in the shared vector pile (higher = on top)
 	std::vector<int> segoff;                 // per-segment start offsets (nseg+1 entries) -> rebuild cells on line<->points toggle
 	int    nseg = 0;                         // segment count (segoff has nseg+1 entries)
@@ -212,7 +220,15 @@ struct SymbolLayer {
 	                                           // Flat 2-D writes 0 into the points and 3-D writes these
 	                                           // back (symbolApplyZ) — the depth is never lost, and the
 	                                           // glyph's colour/lighting/size are never touched to fake it.
-	bool   zFlattened = false;                // which of the two states the points are in right now
+	std::vector<double> xyOrig;               // the TRUE lon/lat each point was plotted at, 2 per point.
+	                                           // The points themselves carry x already multiplied by xfac,
+	                                           // which is a FLAT-map quantity; the globe needs the real
+	                                           // lon/lat to put the point on the sphere (symbolApplyZ).
+	int    posMode = 0;                       // which state the points are in right now: 0 = 3-D (real
+	                                           // depth), 1 = flat 2-D (z zeroed), 2 = globe (on the sphere)
+	double posVE   = 0.0;                     // the drawn z scale (zfac*ve) the GLOBE positions were built
+	                                           // with — there the exaggeration is baked into the radius, so
+	                                           // a VE change has to move the points. -1 forces a rebuild.
 };
 
 // SymbolLayer carries exactly ONE of glyph (flat shapes) / glyphMapper (solid3D sphere/cube) — every
@@ -362,6 +378,8 @@ struct Polygon {
 	double fillColor[3] = { 1.0, 0.55, 0.0 };// fill colour (default orange, matches outline); editable in Line Properties
 	double fillOpacity  = 0.0;               // fill transparency (0 = no fill -> outline-only look preserved by default)
 	std::string name;                        // label shown in the Scene Objects panel ("polygon N")
+	bool   clamped = false;                  // draped on the terrain (see Overlay::clamped — same toggle,
+	std::vector<double> zClampSave;          // same one function, offered on every vector element's handle)
 	std::string groupName;                   // when non-empty, polys sharing it fold under ONE collapsible Scene Objects node (e.g. "Slip model" — Import Model Slip patches)
 	bool closed = true;                      // closed ring (polygon/rect/circle) vs open chain (polyline)
 	bool isRect = false;                     // drawn with a rectangle tool (SH_Rect/SH_RectN): vertex edits stay axis-aligned
@@ -550,6 +568,11 @@ struct LineRef {
 };
 static void showLineProperties(Scene *s, const LineRef &lr);                 // the properties dialog
 static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name, const QPoint &gp);
+// Clamp-to-ground, the GROUP half (55_lineprops.cpp, which this file is #included before): the Scene
+// Objects group row in 50_scene.cpp offers the toggle for every member of a tagged group at once.
+static bool lineGroupIsClamped(Scene *s, const std::string &gname);
+static bool lineGroupCanClamp(Scene *s, const std::string &gname);
+static void lineGroupSetClamped(Scene *s, const std::string &gname, bool on);
 static void applyVectorStacking(Scene *s);                      // shared vector-pile draw-order (50_scene.cpp)
 static void restackVector(Scene *s, int *stackPtr, int op);    // move one vector element through the pile
 static void applyGridStacking(Scene *s);                        // grid-pile draw-order: base relief + grids (50_scene.cpp)
@@ -749,6 +772,50 @@ struct Scene {
 	// z carried by colour only), orthographic top-down camera, rotation/tilt locked.
 	// The 3D camera + VE are saved here and restored on toggle back.
 	bool   flat2d = false;
+	// --- globe (geographic orthographic) view mode --------------------------
+	// The THIRD view mode of the 2D/3D toolbar button, offered only for geographic (lon/lat) data.
+	// lon/lat/z are mapped onto a real sphere and looked at through the PARALLEL camera, which is
+	// what a geographic orthographic projection IS — so there is no hand-written forward projection,
+	// no visible-hemisphere test (the depth buffer does it) and no fixed projection centre (dragging
+	// the trackball re-centres the hemisphere). The mapping lives in ONE object, `globeXf`, built by
+	// sceneGlobeTransform(); every geometry producer reaches it through sceneGeoToWorld /
+	// sceneWorldToGeo or through the per-actor filter globeAttachActor() installs.
+	//
+	// `flat2d` and `globe` are the two flags of ONE tri-state (3-D / flat-2-D map / globe). Their
+	// mutual exclusion is maintained by the SINGLE switch sceneSetViewMode() (70_window.cpp) and by
+	// nothing else — never set one of them next to the other by hand.
+	bool   globe = false;
+	// Sphere radius in world units. 180/pi makes one degree of equatorial arc exactly one world unit,
+	// i.e. the SAME horizontal unit the flat lon/lat map already uses — so zfac / ve / sceneZRef keep
+	// meaning exactly what they meant, and the relief rides the sphere radially at the same VE.
+	double globeR = 57.29577951308232;
+	vtkSmartPointer<vtkGeneralTransform>   globeXf;    // (lon,lat,z) -> world XYZ; THE mapping
+	vtkSmartPointer<vtkTransform>          globeLin;   // its linear half (degrees -> r,phi,theta)
+	// Per-actor render hook: the transform filter spliced between an actor's own polydata and its
+	// mapper while the globe is on, plus the mapper input connection it displaced (restored verbatim
+	// when the globe goes off). Keyed by the actor, so an actor deleted meanwhile simply drops out.
+	struct GlobeHook {
+		vtkSmartPointer<vtkTransformPolyDataFilter> filt;
+		vtkSmartPointer<vtkAlgorithmOutput>         savedIn;
+		// When the actor's geometry had to be REFINED before the transform (globeDensifyPD), the filter
+		// is fed a copy — so the copy goes stale the moment the source changes (a line edited, a ruler
+		// extended). `srcPD` + `srcMTime` are what the copy was made from and when, so the next sync can
+		// tell and re-make it. Null srcPD = no copy was needed, the filter reads the source directly.
+		vtkSmartPointer<vtkPolyData> srcPD;
+		vtkMTimeType                 srcMTime = 0;
+	};
+	std::map<vtkActor *, GlobeHook> globeHooks;
+	// THE FAR SIDE IS ALWAYS HIDDEN. The terrain sphere occludes itself, but only where there IS
+	// terrain: a coastline (or any vector) on the back of the planet has nothing in front of it over a
+	// regional grid, and even over a global one a line riding sea level can graze past the limb. So
+	// every globe-hooked mapper gets THIS plane — through the planet's centre, normal pointing at the
+	// camera, re-aimed every frame — which removes the far hemisphere exactly, geometrically, with no
+	// backdrop sphere to swallow a bathymetry grid's own sub-sea-level relief.
+	vtkSmartPointer<vtkPlane> globeClip;
+	// The globe's FRAME: a lon/lat graticule drawn just above the sphere, which is what a globe has
+	// instead of a rectangular axes box (the box is hidden while this is up — rebuildAxisLabels).
+	vtkSmartPointer<vtkActor> globeFrame;
+	double globeFrameR = -1.0;               // radius the graticule was last built for (rebuild when it moves)
 	bool   imageOnly = false;   // loaded as a bare image (no elevation): readout shows pixel colour, not z
 	PaletteLegend palette;      // the PRIMARY image's class legend, when that image is indexed (see
 	                            // PaletteLegend); an extra/derived image carries its own on its ExtraObj
@@ -961,6 +1028,11 @@ struct Scene {
 	std::vector<std::pair<vtkProp3D*, int>> linkSavedVis;
 
 	QAction *act2D = nullptr;        // shared checkable "Flat 2D (map)" action (toolbar + View menu)
+	// Refresh the 2D/3D/Globe toolbar button (its glyph + which mode is ticked) from the CURRENT mode.
+	// act2D's toggled() cannot carry this on its own: 3-D and the globe both leave it unchecked, so a
+	// 3-D -> globe switch emits nothing. sceneSetViewMode calls this instead — one notification, every
+	// transition, whichever direction.
+	std::function<void()> syncViewMode;
 	// Set the instant this window starts being destroyed, and checked by sceneAlive(). Registration
 	// in g_scenes says the STRUCT is still there; it says nothing about the WIDGETS, and ~QWidget has
 	// already destroyed every child by the time Qt emits destroyed(). Anything that reacts to a
@@ -1208,6 +1280,12 @@ struct Scene {
 // changes, so tilting the view restores the cloud (SACRED_LAW.md: same operation, same function).
 static inline double symbolZScale(Scene *s) { return (s && s->flat2d) ? 0.0 : (s ? s->zfac * s->ve : 1.0); }
 
+// The globe's ONE mapping (defined just below, next to the rest of the globe engine). Declared here
+// because symbolApplyZ — which is the same "put this element where THIS view mode says" rule applied
+// to a symbol layer — sits above it in this file.
+static inline void sceneGeoToWorld(Scene *s, double lon, double lat, double z, double out[3]);
+static inline bool sceneWorldToGeo(Scene *s, const double p[3], double &lon, double &lat, double &z);
+
 // THE glyph KIND of a symbol layer, same rule and same shape as symbolZScale above: a layer that asked
 // for a sphere/cube is that volume in 3-D and its flat counterpart (circle/square) on a flat-2-D map.
 // Defined in 50_scene.cpp (it needs the glyph sources); declared here because applyVE drives it.
@@ -1224,23 +1302,415 @@ static void applyVectorStacking(Scene *s);             // 50_scene.cpp: re-rank 
 // the depth it was plotted at (kept per layer in `zOrig`). Colour, lighting, glyph and size are
 // untouched in both modes; only where the point sits changes. Both call sites (applyVE, addSymbols)
 // go through here, so a layer created in 2-D and a layer that lived through a toggle end up identical.
+// … and the GLOBE is the third state of exactly the same rule: the point goes where its own lon/lat
+// lands on the sphere (sceneGeoToWorld — the scene's ONE mapping, never a second formula here), with
+// the actor's z scale dropped to 1 because the transform has already folded the VE into the radius.
+// The glyph is still the same glyph, still the same size and colour: only where the point sits moves.
 static inline void symbolApplyZ(Scene *s, SymbolLayer &sl) {
 	if (!sl.actor) return;
-	sl.actor->SetScale(1.0, 1.0, (s ? s->zfac * s->ve : 1.0));    // unchanged: x already baked in
+	const bool globe = (s && s->globe);
+	sl.actor->SetScale(1.0, 1.0, globe ? 1.0 : (s ? s->zfac * s->ve : 1.0));   // x already baked in
 	vtkPolyData *pd = symInputPD(sl);
 	if (!pd || !pd->GetPoints() || sl.zOrig.empty()) return;
 	vtkPoints *pts = pd->GetPoints();
 	const vtkIdType n = pts->GetNumberOfPoints();
 	if ((size_t)n != sl.zOrig.size()) return;                     // never guess against a stale cache
-	const bool flat = (s && s->flat2d);
-	if (flat == sl.zFlattened) return;                            // already in the right state
+	const int want = globe ? 2 : ((s && s->flat2d) ? 1 : 0);
+	// The globe's positions depend on VE (the radius carries the relief), so that state is stale when
+	// the exaggeration moved — but ONLY then. Re-writing every point of a catalog on every pass (this
+	// runs per frame now, via sceneGlobeSync) would be a per-frame rewrite of a million-point layer.
+	const double ve = (s ? s->zfac * s->ve : 1.0);
+	if (want == sl.posMode && (want != 2 || sl.posVE == ve)) return;
+	sl.posVE = ve;
+	const bool haveXY = (sl.xyOrig.size() == (size_t)n * 2);
+	const double gx = (s && s->xfac != 0.0) ? s->xfac : 1.0;
 	for (vtkIdType i = 0; i < n; ++i) {
 		double p[3];  pts->GetPoint(i, p);
-		p[2] = flat ? 0.0 : sl.zOrig[(size_t)i];
+		const double lon = haveXY ? sl.xyOrig[(size_t)i*2] : p[0] / gx;
+		const double lat = haveXY ? sl.xyOrig[(size_t)i*2+1] : p[1];
+		if (want == 2) sceneGeoToWorld(s, lon, lat, sl.zOrig[(size_t)i], p);
+		else { p[0] = lon * gx;  p[1] = lat;  p[2] = (want == 1) ? 0.0 : sl.zOrig[(size_t)i]; }
 		pts->SetPoint(i, p);
 	}
 	pts->Modified();  pd->Modified();  symTouchSource(sl);
-	sl.zFlattened = flat;
+	sl.posMode = want;
+}
+
+// Move ONE point of a symbol layer to a TRUE (lon, lat, z) position. THE writer — every drag goes
+// through it — so the layer's remembered origin (xyOrig / zOrig, which is what every view-mode
+// switch replays through symbolApplyZ above) and the point actually drawn can never disagree.
+// Writing only the drawn point, as the drag handlers used to, meant a symbol dragged to a new place
+// jumped back to its old one the next time the view mode changed.
+static inline void symbolSetPointTrue(Scene *s, SymbolLayer &sl, vtkIdType i,
+                                      double lon, double lat, double z) {
+	vtkPolyData *pd = symInputPD(sl);
+	if (!pd || !pd->GetPoints()) return;
+	vtkPoints *pts = pd->GetPoints();
+	if (i < 0 || i >= pts->GetNumberOfPoints()) return;
+	double w[3];
+	if (s && s->globe) sceneGeoToWorld(s, lon, lat, z, w);
+	else { w[0] = lon * (s && s->xfac != 0.0 ? s->xfac : 1.0);  w[1] = lat;
+	       w[2] = (sl.posMode == 1) ? 0.0 : z; }        // flat 2-D keeps the layer squashed on the map
+	pts->SetPoint(i, w);
+	pts->Modified();  pd->Modified();  symTouchSource(sl);
+	if ((size_t)i < sl.zOrig.size())          sl.zOrig[(size_t)i] = z;
+	if ((size_t)i * 2 + 1 < sl.xyOrig.size()) { sl.xyOrig[(size_t)i*2] = lon; sl.xyOrig[(size_t)i*2+1] = lat; }
+}
+
+// The TRUE (lon, lat, z) a symbol layer's point i is at — the read half of the pair above, and the
+// only correct way to ask, because the drawn point is in whatever space the current view mode uses.
+static inline void symbolGetPointTrue(Scene *s, const SymbolLayer &sl, vtkIdType i, double out[3]) {
+	out[0] = out[1] = out[2] = 0.0;
+	if ((size_t)i * 2 + 1 < sl.xyOrig.size()) {
+		out[0] = sl.xyOrig[(size_t)i*2];  out[1] = sl.xyOrig[(size_t)i*2+1];
+		out[2] = ((size_t)i < sl.zOrig.size()) ? sl.zOrig[(size_t)i] : 0.0;
+		return;
+	}
+	vtkPolyData *pd = symInputPD(const_cast<SymbolLayer &>(sl));
+	if (!pd || !pd->GetPoints() || i < 0 || i >= pd->GetPoints()->GetNumberOfPoints()) return;
+	double p[3];  pd->GetPoints()->GetPoint(i, p);
+	double zz;
+	sceneWorldToGeo(s, p, out[0], out[1], zz);
+	out[2] = (s && s->globe) ? zz : p[2];
+}
+
+// WHERE a text label's actor sits, derived from its TRUE position. THE placer: applyVE, every drag,
+// every property edit and the beachball date label all call this, so a label can never be put down
+// by one rule and re-placed by another (they disagreed the moment a third view mode existed).
+// `addX`/`addY` are an extra TRUE-coord offset the caller owns — the beachball's live drag offset.
+// The pixel nudges tl.offX/offY are FLAT-map quantities (world units along X/Y) and mean nothing on
+// a sphere, so they are not applied there.
+static inline void textApplyPos(Scene *s, TextLabel &tl, double addX = 0.0, double addY = 0.0) {
+	if (!tl.actor) return;
+	const double lon = tl.pos[0] + addX, lat = tl.pos[1] + addY;
+	if (s && s->globe) {
+		double w[3];  sceneGeoToWorld(s, lon, lat, tl.pos[2], w);
+		tl.actor->SetPosition(w);
+		return;
+	}
+	tl.actor->SetPosition(lon * (s ? s->xfac : 1.0) - tl.offX, lat - tl.offY,
+	                      tl.pos[2] * (s ? s->zfac * s->ve : 1.0));
+}
+
+// ============================================================================================
+// GLOBE (geographic orthographic) VIEW MODE — the one mapping, and the one way to wear it
+// ============================================================================================
+// WHAT THIS IS. A geographic orthographic projection is what you see when you look at a SPHERE
+// from infinitely far away. So the viewer does not compute a projection at all: it puts the data
+// on a sphere and switches the camera to parallel. The hidden hemisphere is hidden by the depth
+// buffer, the projection centre is wherever the camera happens to look (so the trackball rotates
+// the globe for free), and going back to the flat map is a filter detach — nothing is baked.
+//
+// WHERE THE MAPPING LIVES. In `Scene::globeXf`, ONE vtkGeneralTransform, and nowhere else. The
+// C++ maths (sceneGeoToWorld / sceneWorldToGeo) and the RENDER path (the transform filter that
+// globeAttachActor splices in front of an actor's mapper) read the SAME object, so they cannot
+// drift apart — the failure this file has been bitten by before (SACRED_LAW.md: same operation,
+// same function). Never write a second lon/lat -> XYZ formula anywhere in this project.
+//
+//   (lon, lat, z) --globeLin (linear)--> (r, phi, theta) --vtkSphericalTransform--> (X, Y, Z)
+//     r     = globeR + z * (zfac * ve)      radial relief, at the SAME vertical exaggeration
+//     phi   = (90 - lat) in radians         colatitude, so +Z is the north pole
+//     theta = lon in radians
+//
+// globeR = 180/pi, so one degree of equatorial arc is one world unit — the same horizontal unit
+// the flat lon/lat map already uses. That is what lets zfac / ve / sceneZRef keep their meanings.
+static void sceneGlobeUpdateTransform(Scene *s) {
+	if (!s) return;
+	if (!s->globeXf) {
+		s->globeXf  = vtkSmartPointer<vtkGeneralTransform>::New();
+		s->globeLin = vtkSmartPointer<vtkTransform>::New();
+		auto sph = vtkSmartPointer<vtkSphericalTransform>::New();
+		s->globeXf->PostMultiply();                 // applied in the order concatenated: linear, then sphere
+		s->globeXf->Concatenate(s->globeLin);
+		s->globeXf->Concatenate(sph);
+	}
+	const double d2r = vtkMath::Pi() / 180.0;
+	const double k   = s->zfac * s->ve;             // the SAME drawn z scale every flat actor gets
+	vtkNew<vtkMatrix4x4> M;
+	M->Zero();
+	M->SetElement(0, 2, k);                 M->SetElement(0, 3, s->globeR);        // r
+	M->SetElement(1, 1, -d2r);              M->SetElement(1, 3, vtkMath::Pi()/2);  // phi = colatitude
+	M->SetElement(2, 0, d2r);                                                      // theta = lon
+	M->SetElement(3, 3, 1.0);
+	s->globeLin->SetMatrix(M);
+	s->globeXf->Modified();                         // every attached filter re-executes
+}
+
+// (lon, lat, z) -> world XYZ through the transform above. The ONE forward call for C++ maths
+// (graticule, limb, any future projected annotation) — always the same object the render uses.
+static inline void sceneGeoToWorld(Scene *s, double lon, double lat, double z, double out[3]) {
+	if (!s || !s->globe) { out[0] = lon * (s ? s->xfac : 1.0); out[1] = lat;
+	                       out[2] = z * (s ? s->zfac * s->ve : 1.0); return; }
+	if (!s->globeXf) sceneGlobeUpdateTransform(s);
+	const double in[3] = { lon, lat, z };
+	s->globeXf->TransformPoint(in, out);
+}
+
+// World XYZ -> (lon, lat, z). The inverse of the same object, so a readout can never disagree with
+// what is drawn. Returns false only when the point is degenerate (dead centre of the sphere).
+static inline bool sceneWorldToGeo(Scene *s, const double p[3], double &lon, double &lat, double &z) {
+	if (!s || !s->globe) {
+		lon = p[0] / ((s && s->xfac != 0.0) ? s->xfac : 1.0);
+		lat = p[1];
+		const double zs = s ? s->zfac * s->ve : 1.0;
+		z = (zs != 0.0) ? p[2] / zs : 0.0;
+		return true;
+	}
+	if (!s->globeXf) sceneGlobeUpdateTransform(s);
+	const double rho = std::sqrt(p[0]*p[0] + p[1]*p[1] + p[2]*p[2]);
+	if (rho < 1e-9) return false;
+	double out[3];
+	s->globeXf->GetInverse()->TransformPoint(p, out);
+	lon = out[0]; lat = out[1]; z = out[2];
+	while (lon < -180.0) lon += 360.0;      // one canonical branch, [-180, 180)
+	while (lon >= 180.0) lon -= 360.0;
+	return true;
+}
+
+// A quad that spans 60 degrees of longitude is a CHORD once it is put on a sphere, not an arc: the
+// 2x2 polydata every flat image plane is built from (makeGridFromArray(z,2,2,...)) would come out
+// as a flat card floating over the globe. So coarse geometry is refined BEFORE the transform, here,
+// by splitting every triangle edge longer than `maxSegDeg` degrees until nothing is. Grids and
+// dense coastlines already have far finer cells than that and come back untouched (one cheap pass
+// that finds no long edge). Point attributes — the z scalar, the texture coordinates an image drape
+// rides on, the baked normals — are interpolated at each midpoint, so a refined image keeps its
+// texture exactly. Written here rather than pulled from FiltersModeling (vtkLinearSubdivisionFilter)
+// because that would add a VTK module, hence a new DLL to the shipped runtime bundle, for 60 lines.
+//
+// LINES need it for the same reason and are the commoner case: a plate boundary, a ruler leg or a
+// coarse imported track is a handful of vertices spanning tens of degrees, and a straight segment
+// between two points on a sphere is a chord THROUGH it — the line would disappear inside the planet
+// and re-emerge. They are refined by splitting each segment into equal steps, not by the triangle
+// subdivision below (a polyline has no edges to halve, and halving would move the vertices' spacing
+// rather than keep it).
+static vtkSmartPointer<vtkPolyData> globeDensifyPD(vtkPolyData *in, double maxSegDeg = 2.0) {
+	if (!in || !in->GetPoints()) return nullptr;
+	const bool haveLines = in->GetLines() && in->GetLines()->GetNumberOfCells() > 0;
+	if (in->GetNumberOfPolys() == 0 && !haveLines) return nullptr;
+	// (x,y are still lon/lat here — this runs BEFORE the transform, which is the only place a
+	// "how many degrees is this edge" question has an answer.)
+	auto tooLong = [&](vtkPoints *P, vtkIdType a, vtkIdType b) {
+		double pa[3], pb[3];  P->GetPoint(a, pa);  P->GetPoint(b, pb);
+		return std::abs(pa[0]-pb[0]) > maxSegDeg || std::abs(pa[1]-pb[1]) > maxSegDeg;
+	};
+	// --- LINES ------------------------------------------------------------------------------------
+	// Done first and on its own: a lines-only overlay (every coastline, boundary, track and ruler)
+	// never reaches the triangle code below.
+	if (haveLines) {
+		vtkPoints *P = in->GetPoints();
+		bool any = false;
+		{
+			auto it = vtk::TakeSmartPointer(in->GetLines()->NewIterator());
+			for (it->GoToFirstCell(); !it->IsDoneWithTraversal() && !any; it->GoToNextCell()) {
+				vtkIdList *ids = it->GetCurrentCell();
+				for (vtkIdType e = 0; e + 1 < ids->GetNumberOfIds() && !any; ++e)
+					any = tooLong(P, ids->GetId(e), ids->GetId(e+1));
+			}
+		}
+		if (any) {
+			vtkNew<vtkPoints> np;  np->DeepCopy(P);
+			vtkPointData *ipd = in->GetPointData();
+			vtkNew<vtkPointData> opd;
+			opd->InterpolateAllocate(ipd, P->GetNumberOfPoints());
+			for (vtkIdType i = 0; i < P->GetNumberOfPoints(); ++i) opd->CopyData(ipd, i, i);
+			vtkNew<vtkCellArray> nc;
+			auto it = vtk::TakeSmartPointer(in->GetLines()->NewIterator());
+			std::vector<vtkIdType> poly;
+			for (it->GoToFirstCell(); !it->IsDoneWithTraversal(); it->GoToNextCell()) {
+				vtkIdList *ids = it->GetCurrentCell();
+				const vtkIdType n = ids->GetNumberOfIds();
+				if (n < 2) continue;
+				poly.clear();
+				poly.push_back(ids->GetId(0));
+				for (vtkIdType e = 0; e + 1 < n; ++e) {
+					const vtkIdType a = ids->GetId(e), b = ids->GetId(e+1);
+					double pa[3], pb[3];  np->GetPoint(a, pa);  np->GetPoint(b, pb);
+					const double span = std::max(std::abs(pa[0]-pb[0]), std::abs(pa[1]-pb[1]));
+					const int k = (int)std::min(512.0, std::ceil(span / maxSegDeg));   // segments to cut it into
+					for (int j = 1; j < k; ++j) {
+						const double t = (double)j / k;
+						const vtkIdType id = np->InsertNextPoint(pa[0] + t*(pb[0]-pa[0]),
+						                                         pa[1] + t*(pb[1]-pa[1]),
+						                                         pa[2] + t*(pb[2]-pa[2]));
+						vtkNew<vtkIdList> src;  src->SetNumberOfIds(2);  src->SetId(0, a);  src->SetId(1, b);
+						double w[2] = { 1.0 - t, t };
+						opd->InterpolatePoint(ipd, id, src, w);   // per-vertex colour / scalars ride along
+						poly.push_back(id);
+					}
+					poly.push_back(b);
+				}
+				nc->InsertNextCell((vtkIdType)poly.size(), poly.data());
+			}
+			auto out = vtkSmartPointer<vtkPolyData>::New();
+			out->SetPoints(np);
+			out->SetLines(nc);
+			out->GetPointData()->ShallowCopy(opd);
+			out->SetVerts(in->GetVerts());
+			out->SetPolys(in->GetPolys());     // a lines+polys hybrid keeps its faces (none needs it today)
+			return out;
+		}
+		if (in->GetNumberOfPolys() == 0) return nullptr;   // lines already fine -> nothing to copy
+	}
+	// EARLY OUT, and it is the COMMON case: a grid tile's cells are already far finer than the limit.
+	// This is asked of the INPUT, whatever its cell shape, before anything is triangulated or copied —
+	// returning nothing means the caller feeds the actor's ORIGINAL polydata straight to the transform.
+	// The tile cache is budgeted in gigabytes; a DeepCopy of every tile that never needed refining
+	// would silently double it, which is not an option.
+	{
+		vtkPoints *P = in->GetPoints();
+		bool any = false;
+		auto it = vtk::TakeSmartPointer(in->GetPolys()->NewIterator());
+		for (it->GoToFirstCell(); !it->IsDoneWithTraversal() && !any; it->GoToNextCell()) {
+			vtkIdList *ids = it->GetCurrentCell();
+			const vtkIdType nId = ids->GetNumberOfIds();
+			for (vtkIdType e = 0; e < nId && !any; ++e)
+				any = tooLong(P, ids->GetId(e), ids->GetId((e+1) % nId));
+		}
+		if (!any) return nullptr;
+	}
+	// Something is too coarse -> refine, which is edge-based and therefore wants triangles.
+	vtkSmartPointer<vtkPolyData> tri = in;
+	{
+		vtkNew<vtkTriangleFilter> tf;  tf->SetInputData(in);  tf->PassLinesOn();  tf->Update();
+		if (tf->GetOutput() && tf->GetOutput()->GetNumberOfPolys() > 0) tri = tf->GetOutput();
+	}
+	vtkSmartPointer<vtkPolyData> cur = vtkSmartPointer<vtkPolyData>::New();
+	cur->DeepCopy(tri);
+	for (int pass = 0; pass < 8; ++pass) {          // 8 halvings = 256x; a 2x2 quad reaches 2 deg long before that
+		vtkPoints *P = cur->GetPoints();
+		vtkCellArray *C = cur->GetPolys();
+		if (!P || !C) break;
+		bool any = false;
+		{
+			auto it = vtk::TakeSmartPointer(C->NewIterator());
+			for (it->GoToFirstCell(); !it->IsDoneWithTraversal() && !any; it->GoToNextCell()) {
+				vtkIdList *ids = it->GetCurrentCell();
+				if (ids->GetNumberOfIds() != 3) continue;
+				for (int e = 0; e < 3 && !any; ++e)
+					any = tooLong(P, ids->GetId(e), ids->GetId((e+1)%3));
+			}
+		}
+		if (!any) break;
+		// One uniform 1->4 split of every triangle, with midpoints shared between neighbours (keyed by
+		// the vertex-id pair) so the mesh stays watertight and no crack opens along a shared edge.
+		vtkNew<vtkPoints> np;  np->DeepCopy(P);
+		vtkPointData *ipd = cur->GetPointData();
+		vtkNew<vtkPointData> opd;                    // grows alongside np, same ids
+		opd->InterpolateAllocate(ipd, P->GetNumberOfPoints());
+		for (vtkIdType i = 0; i < P->GetNumberOfPoints(); ++i) opd->CopyData(ipd, i, i);
+		std::map<std::pair<vtkIdType, vtkIdType>, vtkIdType> mid;
+		auto midpoint = [&](vtkIdType a, vtkIdType b) {
+			const std::pair<vtkIdType, vtkIdType> key(std::min(a, b), std::max(a, b));
+			auto f = mid.find(key);
+			if (f != mid.end()) return f->second;
+			double pa[3], pb[3];  np->GetPoint(a, pa);  np->GetPoint(b, pb);
+			const vtkIdType id = np->InsertNextPoint(0.5*(pa[0]+pb[0]), 0.5*(pa[1]+pb[1]), 0.5*(pa[2]+pb[2]));
+			vtkNew<vtkIdList> src;  src->SetNumberOfIds(2);  src->SetId(0, a);  src->SetId(1, b);
+			double w[2] = { 0.5, 0.5 };
+			opd->InterpolatePoint(ipd, id, src, w);   // z scalar, tcoords and normals ride along
+			mid[key] = id;
+			return id;
+		};
+		vtkNew<vtkCellArray> nc;
+		auto it = vtk::TakeSmartPointer(C->NewIterator());
+		for (it->GoToFirstCell(); !it->IsDoneWithTraversal(); it->GoToNextCell()) {
+			vtkIdList *ids = it->GetCurrentCell();
+			if (ids->GetNumberOfIds() != 3) continue;
+			const vtkIdType a = ids->GetId(0), b = ids->GetId(1), c = ids->GetId(2);
+			const vtkIdType ab = midpoint(a, b), bc = midpoint(b, c), ca = midpoint(c, a);
+			const vtkIdType t[4][3] = { {a, ab, ca}, {ab, b, bc}, {ca, bc, c}, {ab, bc, ca} };
+			for (auto &q : t) nc->InsertNextCell(3, q);
+		}
+		auto nxt = vtkSmartPointer<vtkPolyData>::New();
+		nxt->SetPoints(np);
+		nxt->SetPolys(nc);
+		nxt->GetPointData()->ShallowCopy(opd);
+		nxt->SetLines(cur->GetLines());
+		nxt->SetVerts(cur->GetVerts());
+		cur = nxt;
+	}
+	return cur;
+}
+
+// Put ONE actor on the globe (on=true) or take it back off (on=false). The actor's own polydata is
+// never touched: a vtkTransformPolyDataFilter carrying the scene's shared globeXf is spliced in
+// front of its mapper, and the mapper input connection it displaced is kept so the detach restores
+// the pipeline EXACTLY as it was (SACRED_LAW.md "removal undoes what add did"). Idempotent both ways.
+//
+// A globe-attached actor must sit at scale (1,1,1): its geometry has already been through the
+// transform, which folds in xfac and the VE. applyVE is the one place that decides that.
+static void globeAttachActor(Scene *s, vtkActor *a, bool on) {
+	if (!s || !a) return;
+	auto it = s->globeHooks.find(a);
+	if (on) {
+		if (it != s->globeHooks.end()) {
+			// Already wearing it — but if the refined COPY it is being fed was made from a source that
+			// has changed since (an edited line, an extended ruler), re-make it. Cheap: the check is one
+			// MTime compare, and for the overwhelmingly common case (nothing refined, or nothing changed)
+			// it stops right here.
+			Scene::GlobeHook &h = it->second;
+			if (h.srcPD && h.filt && h.srcPD->GetMTime() != h.srcMTime) {
+				vtkSmartPointer<vtkPolyData> dense = globeDensifyPD(h.srcPD);
+				if (dense) h.filt->SetInputData(dense);
+				else       h.filt->SetInputData(h.srcPD);
+				h.srcMTime = h.srcPD->GetMTime();
+			}
+			return;
+		}
+		vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
+		if (!m || m->GetNumberOfInputConnections(0) == 0) return;
+		vtkAlgorithmOutput *src = m->GetInputConnection(0, 0);
+		if (!src) return;
+		Scene::GlobeHook h;
+		h.savedIn = src;
+		h.filt = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
+		h.filt->SetTransform(s->globeXf);
+		// Densify coarse geometry here and feed the refined copy to the filter: an image plane is a 2x2
+		// quad and a coastline segment can span tens of degrees — both cut straight through the sphere
+		// as chords otherwise.
+		vtkPolyData *pd = vtkPolyData::SafeDownCast(m->GetInput());
+		vtkSmartPointer<vtkPolyData> dense = pd ? globeDensifyPD(pd) : nullptr;
+		if (dense) { h.filt->SetInputData(dense);  h.srcPD = pd;  h.srcMTime = pd->GetMTime(); }
+		else       h.filt->SetInputConnection(src);
+		m->SetInputConnection(h.filt->GetOutputPort());
+		// A globe actor sits at identity scale: the transform has already folded xfac and the VE into
+		// the geometry it produces. Set it HERE, with the hook, so the two halves of "this actor is on
+		// the globe" are one act — an actor BORN while the globe is up (a coastline plotted now, a grid
+		// dropped now) carries its creator's flat-map scale until something says otherwise, and that is
+		// exactly how a freshly plotted coastline ended up drawn in raw lon/lat, collapsed edge-on to a
+		// single black streak across the screen.
+		a->SetScale(1.0, 1.0, 1.0);
+		if (s->globeClip) m->AddClippingPlane(s->globeClip);   // the far hemisphere, gone
+		s->globeHooks[a] = h;
+	}
+	else {
+		if (it == s->globeHooks.end()) return;
+		if (vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(a->GetMapper())) {
+			if (it->second.savedIn) m->SetInputConnection(it->second.savedIn);
+			if (s->globeClip) m->RemoveClippingPlane(s->globeClip);
+		}
+		s->globeHooks.erase(it);
+	}
+}
+
+// Aim the far-side clip at the CURRENT camera: the plane sits at the planet's centre with its normal
+// pointing at the eye, so "kept" is exactly the hemisphere facing the viewer. Called once per frame
+// (rebuildAxisLabels), which is what makes the far side stay hidden while the globe is spun rather
+// than only at the moment the mode was entered.
+static void sceneGlobeAimClip(Scene *s) {
+	if (!s || !s->globe || !s->ren || !s->ren->GetActiveCamera()) return;
+	if (!s->globeClip) s->globeClip = vtkSmartPointer<vtkPlane>::New();
+	double pos[3], foc[3];
+	s->ren->GetActiveCamera()->GetPosition(pos);
+	s->ren->GetActiveCamera()->GetFocalPoint(foc);
+	double n[3] = { pos[0]-foc[0], pos[1]-foc[1], pos[2]-foc[2] };
+	const double L = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+	if (L < 1e-12) return;
+	for (int i = 0; i < 3; ++i) n[i] /= L;
+	// A hair BEHIND the centre, so geometry sitting exactly on the great circle (the limb) is not
+	// clipped away by rounding and made to flicker as the globe turns.
+	s->globeClip->SetOrigin(-1e-3 * s->globeR * n[0], -1e-3 * s->globeR * n[1], -1e-3 * s->globeR * n[2]);
+	s->globeClip->SetNormal(n);
 }
 
 // --- surface accessors: one actor (cloud/FV/drape/image) or a tiled grid -----------------
@@ -1264,6 +1734,15 @@ static bool activeGridZRange(Scene *s, double &zlo, double &zhi);
 static int  activeGridGeog(Scene *s);
 
 static inline void surfGetBounds(Scene *s, double b[6]) {
+	// GLOBE: the actor's own bounds are already the truth — its geometry has been through globeXf, so
+	// GetBounds() reports the real spherical cap in world XYZ. Both overrides below are lon/lat/z
+	// quantities and would describe a frame that exists in no mode but the flat one, so neither
+	// applies here: a bbox in degrees means nothing once the data is on a sphere.
+	if (s->globe) {
+		if (vtkProp3D *p = surfProp(s)) p->GetBounds(b);
+		else { b[0]=b[2]=b[4] = -s->globeR; b[1]=b[3]=b[5] = s->globeR; }
+		return;
+	}
 	if (s->viewBoundsOverride) { for (int i = 0; i < 6; ++i) b[i] = s->viewBounds[i]; }
 	else if (vtkProp3D *p = surfProp(s)) p->GetBounds(b);
 	// SACRED_LAW.md "derived-variable axes law", Z half: a NEW grid is a NEW quantity with its OWN Z
@@ -2253,6 +2732,53 @@ static bool sceneVisibleRegion(Scene *s, double &W, double &E, double &S, double
 	const int *sz = s->widget->renderWindow()->GetSize();
 	const double w = sz[0], h = sz[1];
 	const double gx = (s->xfac != 0.0) ? s->xfac : 1.0;
+	// GLOBE: "the flat map plane" does not exist — the ray has to be intersected with the SPHERE, and
+	// the answer read back through the scene's own inverse. Four corners are not enough there either:
+	// a hemisphere's extreme longitudes are reached at the LIMB, not at the viewport corners, and a
+	// corner that misses the globe altogether (zoomed out, sky in the corner) contributes nothing. So
+	// the viewport is sampled on a coarse grid and every ray that HITS is folded in. The longitudes
+	// are unwrapped against the first hit so a view straddling the date line reports (e.g.) 170..190
+	// rather than the whole world.
+	if (s->globe) {
+		const int NS = 12;
+		double lon0 = 0.0;  bool first = true;
+		for (int iy = 0; iy <= NS; ++iy) {
+			for (int ix = 0; ix <= NS; ++ix) {
+				double nr[4], fr[4];
+				const double dx = w * ix / NS, dy = h * iy / NS;
+				s->ren->SetDisplayPoint(dx, dy, 0.0); s->ren->DisplayToWorld();
+				for (int i = 0; i < 4; ++i) nr[i] = s->ren->GetWorldPoint()[i];
+				s->ren->SetDisplayPoint(dx, dy, 1.0); s->ren->DisplayToWorld();
+				for (int i = 0; i < 4; ++i) fr[i] = s->ren->GetWorldPoint()[i];
+				if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
+				if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
+				const double d[3] = { fr[0]-nr[0], fr[1]-nr[1], fr[2]-nr[2] };
+				// |nr + t d| = globeR, nearest root (the visible side of the sphere).
+				const double a = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
+				const double b = 2.0 * (nr[0]*d[0] + nr[1]*d[1] + nr[2]*d[2]);
+				const double c2 = nr[0]*nr[0] + nr[1]*nr[1] + nr[2]*nr[2] - s->globeR * s->globeR;
+				const double disc = b*b - 4.0*a*c2;
+				if (a <= 0.0 || disc < 0.0) continue;
+				const double t = (-b - std::sqrt(disc)) / (2.0*a);
+				const double P[3] = { nr[0] + t*d[0], nr[1] + t*d[1], nr[2] + t*d[2] };
+				double lon, lat, zz;
+				if (!sceneWorldToGeo(s, P, lon, lat, zz)) continue;
+				if (first) { lon0 = lon; W = E = lon; S = N = lat; first = false; continue; }
+				while (lon - lon0 >  180.0) lon -= 360.0;      // unwrap against the first hit
+				while (lon - lon0 < -180.0) lon += 360.0;
+				W = std::min(W, lon); E = std::max(E, lon);
+				S = std::min(S, lat); N = std::max(N, lat);
+			}
+		}
+		if (first) return false;                              // nothing on screen but sky
+		// The unwrap above can leave the pair anywhere on the real line (a view over the date line
+		// comes out as 279..438). Slide the whole window back so its CENTRE is a legal longitude —
+		// every caller of this feeds a query box to GMT or a web service, and 438 is not a longitude.
+		while (0.5 * (W + E) >=  180.0) { W -= 360.0; E -= 360.0; }
+		while (0.5 * (W + E) <  -180.0) { W += 360.0; E += 360.0; }
+		S = std::max(S, -90.0);  N = std::min(N, 90.0);
+		return (E > W && N > S);
+	}
 	const double corners[4][2] = { {0,0}, {w,0}, {0,h}, {w,h} };
 	bool any = false;
 	for (const auto &c : corners) {
@@ -2524,13 +3050,40 @@ static inline bool extraVisible(const ExtraObj &ex) {
 // Every raster's axes, redrawn from ITS OWN frame. This is the whole of the window's axis work: a
 // loop over independent sets, with NO window-level box, NO shared frame and NO "active layer" — two
 // visible rasters draw two sets of axes, each fitted to and numbered in its own limits and units.
+static void globeFrameUpdate(Scene *s, bool visible);   // 70_window.cpp: the graticule, the globe's frame
+static void sceneGlobeSync(Scene *s);                   // below: put the WHOLE scene on the sphere / take it off
+
 static void rebuildAxisLabels(Scene *s) {
 	if (!s || !s->ren || !s->ren->GetActiveCamera()) return;
+	// EVERY FRAME, while the globe is up: make sure everything in the scene is actually ON it. The
+	// alternative — each of the twenty-odd places that build an actor remembering to hook it — is the
+	// per-call-site fix this file's own SACRED_LAW notes warn about, and it had already failed once:
+	// a coastline plotted after the globe was raised got no hook and drew in raw lon/lat. The pass is
+	// a map lookup per actor that early-outs on everything already hooked, so it costs nothing per
+	// frame and cannot be forgotten by a future add path.
+	if (s->globe) sceneGlobeSync(s);
 	// The BASE raster is its surface OR, on a bare-image window, its drape — the picture IS the
 	// raster there. Same test shape as extraVisible, so base and extra are judged by one rule.
 	vtkProp3D *sp = surfProp(s);
 	const bool baseVis = (sp && sp->GetVisibility() != 0) ||
 	                     (s->drape && s->drape->GetVisibility() != 0);
+	// GLOBE: a rectangular lon/lat box is not a frame for a sphere — it is a wrong answer, not a
+	// missing feature. So every axes set goes down and the GRATICULE comes up in its place, and it
+	// happens HERE, in the one path every axes rebuild goes through, so no caller can find a way to
+	// put a cube around the globe. Nothing is destroyed: leaving the mode rebuilds the sets from their
+	// own (untouched) limits on the very next pass.
+	//
+	// It is the SAME "Axes" checkbox that drives it (`baseAxes.shown`, the row axesRow builds): the
+	// graticule IS this window's axes while the globe is up, so unchecking that row must put it away.
+	// Reading a different flag — or none, as this did — is the row doing nothing, which is what the
+	// user saw.
+	if (s->globe) {
+		axesHideAll(s->baseAxes);
+		for (auto &ex : s->extras) axesHideAll(ex.ax);
+		globeFrameUpdate(s, s->baseAxes.shown && baseVis);
+		return;
+	}
+	globeFrameUpdate(s, false);                 // off the globe the graticule is always down
 	rebuildAxesFor(s, s->baseAxes, s->baseAxes.shown && baseVis, true);
 	for (auto &ex : s->extras)
 		rebuildAxesFor(s, ex.ax, ex.ax.shown && extraVisible(ex), false);
@@ -2566,12 +3119,21 @@ static AxesSet *axesForActive(Scene *s);               // 50_scene.cpp — the a
 // The reference look VE = 1 means: the relief spans a TENTH of the map's own horizontal size. The
 // only magic number in the whole scheme, and it is a picture-composition choice, not a unit.
 static const double kVEReference = 0.1;
+// …and the globe's own reference, for the same reason the flat one exists: on a sphere the picture
+// is not "a map with relief on it", it is a PLANET, and the horizontal size that matters is the
+// RADIUS, not the longitude span. Feeding the flat rule a global grid gives H = 360 degrees of
+// longitude, so ve = 1 came out as relief 36 world units tall on a radius of 57 — two thirds of the
+// planet, which is what made a global grid render as a bed of spikes. 2% of the radius reads as
+// real, exaggerated topography (Earth's true relief is 0.14%) and leaves the gizmo room both ways.
+static const double kVEReferenceGlobe = 0.02;
 
 static double sceneZRef(Scene *s) {
 	if (!s) return 1.0;
 	double zlo = s->zmin, zhi = s->zmax;
 	activeGridZRange(s, zlo, zhi);                     // active layer's own z span, else the window's
 	const double zspan = zhi - zlo;
+	if (s->globe)
+		return (zspan > 0.0 && std::isfinite(zspan)) ? kVEReferenceGlobe * s->globeR / zspan : 1.0;
 	double x0 = s->x0, x1 = s->x1, y0 = s->y0, y1 = s->y1;
 	if (AxesSet *A = axesForActive(s)) { x0 = A->x0; x1 = A->x1; y0 = A->y0; y1 = A->y1; }
 	const double H = std::max(std::fabs(x1 - x0) * s->xfac, std::fabs(y1 - y0));
@@ -2579,37 +3141,87 @@ static double sceneZRef(Scene *s) {
 	return kVEReference * H / zspan;                   // ve = 1 -> the reference look
 }
 
+// Put the WHOLE scene on the globe, or take it all back off — the list is deliberately the SAME one
+// applyVE scales, and for the same reason: an actor that rides the vertical exaggeration is an actor
+// that lives in map coordinates, so it is exactly an actor that must ride the sphere too. Whenever a
+// new kind of actor is added to applyVE's list it must be added here in the same edit, or it will be
+// the one thing left floating flat beside a globe.
+//
+// Symbol layers are NOT here: their glyphs must not be warped by the transform (a volcano is a glyph,
+// not geography), so their POINTS are moved instead — symbolApplyZ, one line further down applyVE.
+static void sceneGlobeSync(Scene *s) {
+	if (!s) return;
+	const bool on = s->globe;
+	// Re-aim the far-side clip BEFORE anything is hooked, so a mapper joining this frame is given a
+	// plane that already points the right way (and so the plane exists at all on the first pass).
+	if (on) sceneGlobeAimClip(s);
+	for (vtkActor *a : surfActors(s)) globeAttachActor(s, a, on);
+	globeAttachActor(s, s->drape, on);
+	for (auto &ov : s->overlays)  globeAttachActor(s, ov.actor, on);
+	for (auto &cu : s->curtains)  globeAttachActor(s, cu.actor, on);
+	for (auto &ex : s->extras)  { globeAttachActor(s, ex.actor, on); globeAttachActor(s, ex.drape, on); }
+	globeAttachActor(s, s->profLine, on);
+	globeAttachActor(s, s->rbHL, on);
+	for (auto &pg : s->polys) {
+		globeAttachActor(s, pg.line, on);          globeAttachActor(s, pg.fill, on);
+		globeAttachActor(s, pg.faultPlane, on);    globeAttachActor(s, pg.faultPlane3D, on);
+		globeAttachActor(s, pg.faultArrows, on);
+	}
+	for (auto &mb : s->mecaBalls) { globeAttachActor(s, mb.anchor, on); globeAttachActor(s, mb.anchorDot, on); }
+	globeAttachActor(s, s->polyPreview, on);
+	globeAttachActor(s, s->polyHandles, on);
+	for (auto &rr : s->rulers) globeAttachActor(s, rr.line, on);
+	globeAttachActor(s, s->rulerCircle, on);
+	// Symbol layers move their POINTS instead of wearing the filter (a glyph must not be warped), so
+	// they are brought along here rather than by globeAttachActor — same pass, same guarantee for a
+	// layer plotted after the globe went up. symbolApplyZ is a no-op for a layer already in the right
+	// state, so this is free for everything that has not changed.
+	for (auto &sl : s->symbols) symbolApplyZ(s, sl);
+	// Hooks whose actor has since been deleted: drop them, so the map never grows without bound and a
+	// later detach cannot reach into freed memory.
+	if (!on) s->globeHooks.clear();
+}
+
 static void applyVE(Scene *s) {
 	s->zfac = sceneZRef(s);        // re-derived from the drawn geometry, never from a unit assumption
-	surfSetScale(s, s->xfac, 1.0, s->zfac * s->ve);
-	if (s->drape) s->drape->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // overlay tracks the base
+	// THE SCALE EVERY ACTOR GETS, decided once, here — including in the globe, where it is (1,1,1)
+	// because the sphere transform has already folded xfac and the VE into the geometry it produces
+	// (sceneGlobeUpdateTransform). Doing it any other way would mean the actor's own matrix stretching
+	// an already-spherical shape, which is not a vertical exaggeration but a squashed egg.
+	sceneGlobeUpdateTransform(s);                 // radius/VE first: the attached filters read it
+	const bool   G  = s->globe;
+	const double kx = G ? 1.0 : s->xfac;
+	const double kz = G ? 1.0 : s->zfac * s->ve;
+	surfSetScale(s, kx, 1.0, kz);
+	if (s->drape) s->drape->SetScale(kx, 1.0, kz);  // overlay tracks the base
 	for (auto &ov : s->overlays)                                       // line/point overlays track the base too
-		if (ov.actor) ov.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		if (ov.actor) ov.actor->SetScale(kx, 1.0, kz);
 	for (auto &cu : s->curtains)                                       // curtains hang in the same scaled space
-		if (cu.actor) cu.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		if (cu.actor) cu.actor->SetScale(kx, 1.0, kz);
 	for (auto &ex : s->extras) {                                       // dropped grids/images track the base scale + VE
-		if (ex.actor) ex.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // (flat image z=zpos is baked in geometry -> scale carries VE)
-		if (ex.drape) ex.drape->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		if (ex.actor) ex.actor->SetScale(kx, 1.0, kz);  // (flat image z=zpos is baked in geometry -> scale carries VE)
+		if (ex.drape) ex.drape->SetScale(kx, 1.0, kz);
 	}
-	if (s->profLine) s->profLine->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // profile drape tracks the base
-	if (s->rbHL)     s->rbHL->SetScale(s->xfac, 1.0, s->zfac * s->ve);      // selection highlight tracks the cloud
+	if (s->profLine) s->profLine->SetScale(kx, 1.0, kz);  // profile drape tracks the base
+	if (s->rbHL)     s->rbHL->SetScale(kx, 1.0, kz);      // selection highlight tracks the cloud
 	for (auto &pg : s->polys) {                                            // user polygons hang in the scaled space
-		if (pg.line)        pg.line->SetScale(s->xfac, 1.0, s->zfac * s->ve);
-		if (pg.fill)        pg.fill->SetScale(s->xfac, 1.0, s->zfac * s->ve);          // filled face rides VE with its outline
-		if (pg.faultPlane)  pg.faultPlane->SetScale(s->xfac, 1.0, s->zfac * s->ve);   // gray patch rides VE
-		if (pg.faultPlane3D) pg.faultPlane3D->SetScale(s->xfac, 1.0, s->zfac * s->ve);// buried plane rides VE too
-		if (pg.faultArrows) pg.faultArrows->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // slip arrows ride VE with the plane
+		if (pg.line)        pg.line->SetScale(kx, 1.0, kz);
+		if (pg.fill)        pg.fill->SetScale(kx, 1.0, kz);          // filled face rides VE with its outline
+		if (pg.faultPlane)  pg.faultPlane->SetScale(kx, 1.0, kz);   // gray patch rides VE
+		if (pg.faultPlane3D) pg.faultPlane3D->SetScale(kx, 1.0, kz);// buried plane rides VE too
+		if (pg.faultArrows) pg.faultArrows->SetScale(kx, 1.0, kz);  // slip arrows ride VE with the plane
 	}
 	for (auto &mb : s->mecaBalls) {                                        // drag-anchor line + dot ride VE too
-		if (mb.anchor)    mb.anchor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
-		if (mb.anchorDot) mb.anchorDot->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		if (mb.anchor)    mb.anchor->SetScale(kx, 1.0, kz);
+		if (mb.anchorDot) mb.anchorDot->SetScale(kx, 1.0, kz);
 	}
 	// Text labels sit on the XY plane (pos[2] = 0) unless they annotate something at a real height —
 	// a contour label rides at its own contour's z, so it must follow VE like every other z-bearing
 	// actor above (or it drifts away from the line it belongs to as soon as VE or the view changes).
-	for (auto &tl : s->texts)
-		if (tl.actor) tl.actor->SetPosition(tl.pos[0] * s->xfac - tl.offX, tl.pos[1] - tl.offY,
-		                                    tl.pos[2] * s->zfac * s->ve);
+	// On the globe the position comes from the scene's ONE mapping instead; the pixel nudges offX/offY
+	// are flat-map quantities (world units along X/Y) and have no meaning on a sphere, so they are not
+	// applied there.
+	for (auto &tl : s->texts) textApplyPos(s, tl);
 	// Symbol depth (z) rides VE too — EXCEPT in flat 2-D, where the layer is squashed onto the map
 	// plane (Z scale 0) and springs back to its real depth the moment the view tilts. The DEPTH IS
 	// NEVER LOST: it lives in the layer's points, and only the actor's Z scale changes, so a
@@ -2627,11 +3239,15 @@ static void applyVE(Scene *s) {
 	// a map marker that must show regardless. That decision lives in applyStacking, so re-run it —
 	// once, after the whole loop — or the tilted view keeps drawing events through the surface.
 	if (kindChanged) applyVectorStacking(s);
-	if (s->polyPreview) s->polyPreview->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // in-progress draw preview
-	if (s->polyHandles) s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // edit-mode vertex handles
-	for (auto &rr : s->rulers)                                                     // every ruler track and the
-		if (rr.line) rr.line->SetScale(s->xfac, 1.0, s->zfac * s->ve);            // draw gesture's radius
-	if (s->rulerCircle) s->rulerCircle->SetScale(s->xfac, 1.0, s->zfac * s->ve);  // circle ride VE like the rest
+	if (s->polyPreview) s->polyPreview->SetScale(kx, 1.0, kz);  // in-progress draw preview
+	if (s->polyHandles) s->polyHandles->SetScale(kx, 1.0, kz);  // edit-mode vertex handles
+	for (auto &rr : s->rulers)                                   // every ruler track and the
+		if (rr.line) rr.line->SetScale(kx, 1.0, kz);            // draw gesture's radius
+	if (s->rulerCircle) s->rulerCircle->SetScale(kx, 1.0, kz);  // circle ride VE like the rest
+	// Every actor that just got this mode's scale also gets (or loses) this mode's GEOMETRY — one
+	// walk, same list, so the two halves of "what this view mode does to an element" can never be
+	// applied to different sets of actors.
+	sceneGlobeSync(s);
 	// EVERY raster's axes ride VE, each from its OWN frame — there is no window box to resize. The
 	// per-set work (box + degenerate-Z guard + gridline/Z-axis toggles + the billboards) is exactly
 	// what rebuildAxisLabels already does for all of them, so VE only has to re-point the cameras and
@@ -3183,7 +3799,6 @@ static bool rayTri(const double o[3], const double d[3],
 // its ray parameter in tOut so the caller can compare depth against the surface hit.
 static bool pickFaultPlaneAt(Scene *s, const double o[3], const double d[3], double wOut[3], double &tOut) {
 	if (s->flat2d) return false;
-	const double zsc = s->zfac * s->ve, gx = (s->xfac != 0.0) ? s->xfac : 1.0;
 	bool got = false; double best = 1e300;
 	for (auto &pg : s->polys) {
 		if (!pg.isFault || !pg.faultPlane3D || !pg.faultPlane3D->GetVisibility()) continue;
@@ -3191,8 +3806,10 @@ static bool pickFaultPlaneAt(Scene *s, const double o[3], const double d[3], dou
 		if (!P || P->GetNumberOfPoints() < 4) continue;
 		double c[4][3];
 		for (int i = 0; i < 4; ++i) {
+			// The polydata is in TRUE coords; the ray is in world. Cross that gap with the scene's own
+			// mapping, so the quad the ray is tested against is the quad on screen in EVERY view mode.
 			double r[3]; P->GetPoint(i, r);
-			c[i][0] = r[0]*gx; c[i][1] = r[1]; c[i][2] = r[2]*zsc;
+			sceneGeoToWorld(s, r[0], r[1], r[2], c[i]);
 		}
 		double t;
 		if ((rayTri(o, d, c[0], c[1], c[2], t) || rayTri(o, d, c[0], c[2], c[3], t)) && t < best) {
@@ -3271,6 +3888,19 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 		// surface crossing, then bisect. NaN (off-grid) segments are skipped.
 		auto eval = [&](double t, double &fval) -> bool {
 			const double X = nr[0] + t*dirx, Y = nr[1] + t*diry, Z = nr[2] + t*dirz;
+			// GLOBE: the surface is not a heightfield over z, it is a heightfield over the RADIUS —
+			// at (lon,lat) it sits at globeR + h*zsc. Same march, same bisection, same sampler; only
+			// what "distance above the surface" means follows the mode. The lon/lat comes out of the
+			// scene's own mapping (sceneWorldToGeo), so the readout can never disagree with the render.
+			if (s->globe) {
+				const double P[3] = { X, Y, Z };
+				double lon, lat, zz;
+				if (!sceneWorldToGeo(s, P, lon, lat, zz)) return false;
+				const double h = sampleActiveZ(s, lon, lat);
+				if (std::isnan(h)) return false;
+				fval = std::sqrt(X*X + Y*Y + Z*Z) - (s->globeR + h * zsc);
+				return true;
+			}
 			const double h = sampleActiveZ(s, X / gx, Y);
 			if (std::isnan(h)) return false;
 			fval = Z - h * zsc; return true;
@@ -3319,7 +3949,10 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 	// Coordinates must NEVER go blank: intersect the ray with the base map plane (z=0) to recover x,y
 	// (z is then sampled as NaN below and printed literally). Accept only inside the grid footprint so
 	// pointing at empty sky still reads "ready".
-	if (!hit && haveActive && dirz != 0.0) {
+	// (Not on the globe: "the base map plane" is z=0, which on a sphere is the equatorial plane cutting
+	// straight through it — recovering x,y from it would report a point on the far side. A miss there
+	// stays a miss; the march above is what answers, or nothing does.)
+	if (!hit && haveActive && !s->globe && dirz != 0.0) {
 		const double t0 = -nr[2] / dirz;
 		if (t0 >= 0.0) {
 			const double X = nr[0] + t0 * dirx, Y = nr[1] + t0 * diry;
@@ -3351,13 +3984,18 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 			w[0] = wp[0]; w[1] = wp[1]; w[2] = wp[2]; hit = true; onPlane = true;
 		}
 	}
+	// World XYZ -> the TRUE coordinates the user is told about, through the scene's own inverse: in
+	// every flat mode that is the historical `w[0]/xfac, w[1]`, and on the globe it is the sphere
+	// inverse. One call, so no readout below has to know which view mode it is printing for.
+	double rdX = 0.0, rdY = 0.0, rdZ = 0.0;
+	sceneWorldToGeo(s, w, rdX, rdY, rdZ);
 	if (onPlane) {
 		// Plane hit: z is the plane's OWN depth (undo the actor's z scale), not the surface elevation.
 		const double zsc = s->zfac * s->ve;
 		s->win->statusBar()->showMessage(
 			QString("fault plane:  x = %1    y = %2    z = %3   (VE ×%4)")
-				.arg(w[0] / s->xfac, 0, 'f', 3).arg(w[1], 0, 'f', 3)
-				.arg((zsc != 0.0) ? w[2] / zsc : 0.0, 0, 'f', 3).arg(s->ve, 0, 'f', 2));
+				.arg(rdX, 0, 'f', 3).arg(rdY, 0, 'f', 3)
+				.arg(s->globe ? rdZ : ((zsc != 0.0) ? w[2] / zsc : 0.0), 0, 'f', 3).arg(s->ve, 0, 'f', 2));
 	} else if (hit) {
 		if (s->imageOnly && !s->gridAdopted) {
 			// Bare image: no elevation -> show the pixel COLOUR under the cursor instead of z.
@@ -3371,10 +4009,10 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 			}
 			s->win->statusBar()->showMessage(
 				QString("x = %1    y = %2    rgb = %3 %4 %5")
-					.arg(w[0] / s->xfac, 0, 'f', 3).arg(w[1], 0, 'f', 3)
+					.arg(rdX, 0, 'f', 3).arg(rdY, 0, 'f', 3)
 					.arg(r).arg(g).arg(b));
 		} else {
-			const double truex = w[0] / s->xfac, truey = w[1];
+			const double truex = rdX, truey = rdY;
 			// z from the full-res DATA layer (render-LOD independent). Fall back to the unprojected
 			// depth z (undo base/VE actor scale zfac*ve) for surfaces with no data layer (FV mesh /
 			// point cloud), and where the sample misses (off-grid / NaN). flat-2D: zsc=0 -> z 0.

@@ -217,14 +217,18 @@ const _GEO_LINE_PT = 0.75
 function _add_geo_overlay(scene::Ptr{Cvoid}, D; color=(0.0, 0.0, 0.0), linewidth=_GEO_LINE_PT,
                           name::AbstractString="", noConvertToPoints::Bool=false)
 	segs = D isa GMTdataset ? (D,) : collect(D)
-	# CLAMPED TO THE GROUND. A boundary line laid at z = 0 is right on a flat map and wrong the moment
-	# the view is 3-D: it hangs at sea level while the relief rises through it. Every vertex therefore
-	# takes the z of the surface under it, sampled by `_sample_grid` (drape.jl) — THE sampler the
-	# drape and the hover readout already use, never a second interpolation. With no grid in the
-	# window there is no ground to clamp to and z stays 0, which is what a bare map wants anyway.
+	# CLAMPED TO THE GROUND — but NOT here. A boundary line laid at z = 0 is right on a flat map and
+	# wrong the moment the view is 3-D: it hangs at sea level while the relief rises through it. So it
+	# gets draped — through `gmtvtk_line_clamp_h` after the add, which is the SAME one clamp the
+	# element's own "Clamp to ground" handle drives (SACRED_LAW: same operation, same function).
+	#
+	# This used to sample the grid right here and hand over draped vertices. Two costs, both real:
+	# a second implementation of the drape (`_sample_grid` beside the viewer's `sampleActiveZ`), and —
+	# worse — it destroyed the line's SOURCE z on the way in. z = 0 IS a coastline's source z, and
+	# releasing the clamp has to give exactly that back; a viewer handed pre-draped vertices has no
+	# way to know they were ever anything else. Hand over the raw x,y and let the clamp be a clamp.
 	# Nothing extra is needed against z-fighting: addOverlay already pulls overlays toward the camera
 	# with a coincident-topology offset, which is the case this was for.
-	G = _find_object_named(scene, :grid)[2]
 	xyz = Float64[]
 	segoff = Cint[0]
 	off = 0
@@ -232,13 +236,7 @@ function _add_geo_overlay(scene::Ptr{Cvoid}, D; color=(0.0, 0.0, 0.0), linewidth
 		m = seg isa GMTdataset ? seg.data : seg
 		n = size(m, 1)
 		for k in 1:n
-			x, y = Float64(m[k, 1]), Float64(m[k, 2])
-			z = 0.0
-			if G !== nothing
-				zs = _sample_grid(G, x, y)          # NaN outside the grid, or over a hole
-				isfinite(zs) && (z = Float64(zs))
-			end
-			push!(xyz, x, y, z)
+			push!(xyz, Float64(m[k, 1]), Float64(m[k, 2]), 0.0)
 		end
 		off += n
 		push!(segoff, Cint(off))
@@ -256,7 +254,11 @@ function _add_geo_overlay(scene::Ptr{Cvoid}, D; color=(0.0, 0.0, 0.0), linewidth
 		   Cstring, Cstring, Cstring, Cint, Cint, Cint, Cstring),
 		  scene, xyz, Cint(off), segoff, Cint(length(segs)), Cint(1), cr, cg, cb, Float64(linewidth), 0.0,
 		  name, "", "", Cint(noConvertToPoints), Cint(0), Cint(0), "")
-	return ok != 0
+	ok == 0 && return false
+	# …and NOW drape it, through the one clamp. A window with no grid has no ground to clamp to and
+	# the call is a no-op there, which leaves the line flat — exactly what a bare map wants.
+	ccall(_fn(:gmtvtk_line_clamp_h), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, name, Cint(1))
+	return true
 end
 
 # C callback: creq = "<kind>/<res>/W/E/S/N". Fetch the feature for the visible region + add it.

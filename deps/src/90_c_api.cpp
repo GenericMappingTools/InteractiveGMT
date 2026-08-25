@@ -1183,6 +1183,10 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 			kvd("dpi", dpi > 0 ? dpi : 72.0);
 		}
 		kvi("flat2d", s->flat2d ? 1 : 0);
+		// The view mode is a TRI-state (3-D / flat 2-D / globe) and `flat2d` above can only carry two
+		// of them, so the whole answer travels in its own key. It is written alongside, not instead:
+		// a session file read by an older library still finds the flat2d it knows.
+		kvi("viewmode", s->globe ? 2 : (s->flat2d ? 1 : 0));
 		kvd("barX0", s->barX0); kvd("barY0", s->barY0);
 		if (s->ren) {
 			if (vtkCamera *cam = s->ren->GetActiveCamera()) {
@@ -1221,7 +1225,11 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 
 	double d; int i;
 	if (getd("ve", d) && d > 0.0) { s->ve = d; applyVE(s); }         // VE first: rescales all actors
-	if (geti("flat2d", i)) {                                          // then the 2-D/3-D mode switch
+	// … then the view mode. `viewmode` is the whole tri-state and wins when the session has one; a
+	// file written before it existed still restores through `flat2d`, which is the same switch with
+	// the globe left out. One entry point either way (sceneSetViewMode), never two mode paths.
+	if (geti("viewmode", i))      sceneSetViewMode(s, (i == 2) ? IGVIEW_GLOBE : (i == 1 ? IGVIEW_FLAT2D : IGVIEW_3D));
+	else if (geti("flat2d", i)) {
 		if (i && !s->flat2d)      sceneSetFlat2D(s, true);
 		else if (!i && s->flat2d) sceneSetFlat2D(s, false);
 	}
@@ -3828,6 +3836,55 @@ GMTVTK_API int gmtvtk_vector_unmapped_h(void *handle, char *buf, int cap) {
 // (`sceneRederiveScales`, called by gmtvtk_show_new_element_h BEFORE it re-frames), so no caller
 // has to know the window's drawing scales exist, and no caller can get the order wrong.
 
+// Set the window's VIEW MODE: 0 = 3-D perspective, 1 = flat 2-D map, 2 = globe (the geographic
+// orthographic projection). The SAME switch the toolbar's 2D/3D/Globe flyout drives, exported so the
+// host can drive it too (session restore, scripts, the GUI tests). The globe is refused for data that
+// is not geographic — there is no lon/lat to put on a sphere — and the refusal is reported, not
+// silently swallowed: returns 1 when the window is in the requested mode afterwards, else 0.
+GMTVTK_API int gmtvtk_set_view_mode_h(void *scene, int mode) {
+	Scene *s = (Scene*)scene;
+	if (!s || !sceneAlive(s)) return 0;
+	if (mode == IGVIEW_GLOBE && activeGridGeog(s) == 0) return 0;
+	sceneSetViewMode(s, mode);
+	return ((s->globe ? IGVIEW_GLOBE : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D)) == mode) ? 1 : 0;
+}
+
+// … and read it back (same encoding). Lets the host ask what the window is showing without
+// duplicating the tri-state rule on its side.
+GMTVTK_API int gmtvtk_get_view_mode_h(void *scene) {
+	Scene *s = (Scene*)scene;
+	if (!s || !sceneAlive(s)) return 0;
+	return s->globe ? IGVIEW_GLOBE : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D);
+}
+
+// Clamp / unclamp a vector element to the ground BY NAME, through the SAME lineSetClamped the
+// handle's "Clamp to ground" item runs. Exported because the IMPORTER is what knows whether a
+// dataset has a z of its own: an x,y feature (a coastline, a plate boundary) hands over its raw
+// vertices — z = 0, which is its true source z and what a release must give back — and then asks for
+// the clamp here. It never drapes the points itself; there is ONE clamp implementation and this is
+// the door to it. `name` matches an overlay's name or a group tag; returns the number of elements
+// switched (0 = nothing matched, or no grid to clamp to).
+GMTVTK_API int gmtvtk_line_clamp_h(void *scene, const char *name, int on) {
+	Scene *s = (Scene*)scene;
+	if (!s || !sceneAlive(s) || !name || !name[0]) return 0;
+	int n = 0;
+	for (auto &o : s->overlays) {
+		if (!o.actor || (o.name != name && o.groupName != name)) continue;
+		LineRef lr{ LK_Overlay, o.actor.Get() };
+		const bool was = lineIsClamped(s, lr);
+		lineSetClamped(s, lr, on != 0);
+		if (lineIsClamped(s, lr) != was) ++n;
+	}
+	for (auto &p : s->polys) {
+		if (!p.line || (p.name != name && p.groupName != name)) continue;
+		LineRef lr{ LK_Polygon, p.line.Get() };
+		const bool was = lineIsClamped(s, lr);
+		lineSetClamped(s, lr, on != 0);
+		if (lineIsClamped(s, lr) != was) ++n;
+	}
+	return n;
+}
+
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
@@ -4102,8 +4159,9 @@ GMTVTK_API int gmtvtk_symbol_hover_test(void *scene, double x, double y, double 
 	Scene *s = (Scene*)scene;
 	if (!s || !s->ren || !out || cap <= 0) return 0;
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
-	const double zs = s->flat2d ? 0.0 : (z * s->zfac * s->ve);
-	s->ren->SetWorldPoint(x * s->xfac, y, zs, 1.0);
+	double wp[3];
+	sceneGeoToWorld(s, x, y, s->flat2d ? 0.0 : z, wp);      // flat-2D squashes the layer onto the map
+	s->ren->SetWorldPoint(wp[0], wp[1], wp[2], 1.0);
 	s->ren->WorldToDisplay();
 	double d[3];  s->ren->GetDisplayPoint(d);
 	std::string txt;
@@ -4203,9 +4261,7 @@ GMTVTK_API int gmtvtk_symbol_drag_test(void *scene, int idx, double x, double y,
 	SymbolLayer &sl = s->symbols[idx];
 	auto *pd = symInputPD(sl);
 	if (!pd || !pd->GetPoints() || pd->GetPoints()->GetNumberOfPoints() == 0) return 0;
-	pd->GetPoints()->SetPoint(0, x * s->xfac, y, z);
-	pd->GetPoints()->Modified();
-	pd->Modified();
+	symbolSetPointTrue(s, sl, 0, x, y, z);          // the SAME single writer the live drag uses
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return 1;
 }
@@ -4218,10 +4274,7 @@ GMTVTK_API int gmtvtk_symbol_get_pos_test(void *scene, int idx, double *out3) {
 	SymbolLayer &sl = s->symbols[idx];
 	auto *pd = symInputPD(sl);
 	if (!pd || !pd->GetPoints() || pd->GetPoints()->GetNumberOfPoints() == 0) return 0;
-	double p[3]; pd->GetPoints()->GetPoint(0, p);
-	out3[0] = (s->xfac != 0.0) ? p[0] / s->xfac : p[0];
-	out3[1] = p[1];
-	out3[2] = p[2];
+	symbolGetPointTrue(s, sl, 0, out3);             // the read half of the same pair
 	return 1;
 }
 
@@ -4232,7 +4285,8 @@ GMTVTK_API int gmtvtk_hover_readout_test(void *scene, double x, double y, char *
 	if (!s || !s->widget || !s->ren || !s->widget->renderWindow() || !s->win) return 0;
 	const double dpr = s->widget->devicePixelRatioF();
 	const int Hpx = s->widget->renderWindow()->GetSize()[1];
-	s->ren->SetWorldPoint(x * s->xfac, y, 0.0, 1.0);
+	double wp[3];  sceneGeoToWorld(s, x, y, 0.0, wp);
+	s->ren->SetWorldPoint(wp[0], wp[1], wp[2], 1.0);
 	s->ren->WorldToDisplay();
 	double d[3]; s->ren->GetDisplayPoint(d);
 	const QPointF p(d[0] / dpr, (Hpx - d[1]) / dpr);
@@ -4283,7 +4337,8 @@ GMTVTK_API int gmtvtk_symbol_ui_drag_test(void *scene, double x1, double y1, dou
 	const double dpr = s->widget->devicePixelRatioF();
 	const int Hpx = s->widget->renderWindow()->GetSize()[1];
 	auto toLogical = [&](double wx, double wy, double wz) -> QPointF {
-		ren->SetWorldPoint(wx * s->xfac, wy, wz * zc, 1.0);
+		double wp[3];  sceneGeoToWorld(s, wx, wy, wz, wp);
+		ren->SetWorldPoint(wp[0], wp[1], wp[2], 1.0);
 		ren->WorldToDisplay();
 		double d[3]; ren->GetDisplayPoint(d);
 		return QPointF(d[0] / dpr, (Hpx - d[1]) / dpr);
@@ -4319,7 +4374,8 @@ GMTVTK_API int gmtvtk_symbol_click_jitter_test(void *scene, double x, double y, 
 	const double zc = s->zfac * s->ve;
 	const double dpr = s->widget->devicePixelRatioF();
 	const int Hpx = s->widget->renderWindow()->GetSize()[1];
-	ren->SetWorldPoint(x * s->xfac, y, z * zc, 1.0);
+	double wp[3];  sceneGeoToWorld(s, x, y, z, wp);
+	ren->SetWorldPoint(wp[0], wp[1], wp[2], 1.0);
 	ren->WorldToDisplay();
 	double d[3]; ren->GetDisplayPoint(d);
 	const QPointF p1(d[0] / dpr, (Hpx - d[1]) / dpr);
@@ -4341,6 +4397,7 @@ GMTVTK_API void gmtvtk_set_flat2d_test(void *scene, int on) {
 	Scene *s = (Scene*)scene; if (!s) return;
 	sceneSetFlat2D(s, on != 0);
 }
+
 
 // test hooks: open / close the REAL Vertical-elastic-deformation dialog (drives the actual lifecycle,
 // so the test sees whether the plane + handle SURVIVE the dialog closing). open returns 1 if a dialog
@@ -6528,7 +6585,7 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 	disableGizmo(s);  s->giz = enableGizmo(s, 0.01);
 	cam->SetPosition(cpos);  cam->SetFocalPoint(cfoc);  cam->SetViewUp(cvup);
 	cam->SetParallelProjection(cpar);  if (cpar) cam->SetParallelScale(cpscale);
-	if (s->giz) setGizmoVisible(*s->giz, !s->flat2d);   // flat-2D hides the gizmo, 3-D shows it
+	gizmoApplyForMode(s);           // the ONE rule for what the handle is in this view mode
 
 	applyVE(s);              // re-scale surface + extras + cube axes to the current VE and new bounds
 	applyStacking(s);        // re-offset extras/vectors against the rebuilt base + refresh colorbar
@@ -6687,7 +6744,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 		cam->SetPosition(cpos); cam->SetFocalPoint(cfoc); cam->SetViewUp(cvup);
 		cam->SetParallelProjection(cpar); if (cpar) cam->SetParallelScale(cpscale);
 	}
-	if (s->giz) setGizmoVisible(*s->giz, !s->flat2d);
+	gizmoApplyForMode(s);
 
 	// Hi-res zoom detail: a settle-debounced timer re-bakes a sharp tile of the visible region, driven
 	// by a camera-modified observer (see refineLayerDetail / onLayerCamera, 40_shading.cpp).

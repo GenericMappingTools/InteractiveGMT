@@ -1326,6 +1326,10 @@ static void ensureNodeActor(Scene *s, QuadNode *n) {
 	n->inScene = true;
 	s->surfGroup->AddPart(a);
 	s->tiles.push_back(a);
+	// A tile born while the globe is up is born ON the globe. The LOD keeps meshing and evicting for
+	// as long as the window lives, so the mode has to be applied HERE too — the same one call the
+	// whole-scene pass (sceneGlobeSync) makes, never a second way of putting an actor on the sphere.
+	if (s->globe) { globeAttachActor(s, a, true); a->SetScale(1.0, 1.0, 1.0); }
 	s->lodResidentBytes += n->bytes;
 }
 
@@ -1349,6 +1353,10 @@ static void dropNodeActor(Scene *s, QuadNode *n) {
 static void freeNodeActor(Scene *s, QuadNode *n) {
 	if (!n->actor) return;
 	dropNodeActor(s, n);
+	// The globe hook is keyed by the actor pointer, so it has to go WITH the actor: leaving it behind
+	// would keep the tile's transform filter alive and, worse, let a future actor allocated at the same
+	// address inherit a hook that was never installed on it.
+	s->globeHooks.erase(n->actor.Get());
 	s->lodResidentBytes = (s->lodResidentBytes >= n->bytes) ? s->lodResidentBytes - n->bytes : 0;
 	n->actor = nullptr; n->bytes = 0;
 }
@@ -20036,27 +20044,152 @@ static void showEarthTidesDialog(Scene *s, double cW, double cE, double cS, doub
 	dlg->show();
 }
 
-// SINGLE source of truth for the flat-2D <-> 3D view switch. The toolbar flyout, the View menu, the
-// context menu AND the grid/image init in 90_c_api ALL go through here — never re-implement the
-// camera math. 2D = top-down orthographic over the surface bounds, rotation/tilt locked (gated via
-// s->flat2d), gizmo hidden; the 3-D camera is saved on ENTER so leaving 2D restores it. Idempotent:
-// a no-op (bar the act2D checkmark) when already in the requested mode — so a caller that needs to
-// FORCE the 2D camera after rebuilding the scene must reset s->flat2d=false first (the rebuilt scene
-// left the 3-D camera, but the flag may still read 2D from the launcher).
-static void sceneSetFlat2D(Scene *s, bool on) {
+// The globe's FRAME: the lon/lat graticule that stands in for the rectangular axes box while the
+// globe is up (a box is not a wrong-looking frame for a sphere, it is a wrong one). Built from the
+// scene's OWN mapping — sceneGeoToWorld, never a second lon/lat -> XYZ formula — so the lines land
+// exactly on the same sphere the data does. It floats just clear of the highest relief, and is
+// rebuilt only when that height actually moves (a VE change), never per frame.
+//
+// Called from rebuildAxisLabels, i.e. the ONE axes path, in both directions: it raises the graticule
+// on the globe and hides it everywhere else, so no mode can end up wearing both frames or neither.
+static void globeFrameUpdate(Scene *s, bool visible) {
 	if (!s || !s->ren) return;
-	if (on == s->flat2d) { if (s->act2D) s->act2D->setChecked(on); return; }
+	if (!s->globe || !visible) { if (s->globeFrame) s->globeFrame->SetVisibility(0); return; }
+	// THE GRATICULE LIES ON THE ZERO LEVEL — the sea-level sphere itself, r = globeR, exactly where
+	// z = 0 maps. It used to be lifted clear of the tallest relief, which made it a cage hanging in
+	// space around the planet instead of a set of lines drawn ON it. Terrain standing above sea level
+	// now correctly stands in front of the lines, which is what tells you it is above sea level.
+	const double R = s->globeR;
+	if (s->globeFrame && std::fabs(R - s->globeFrameR) < 1e-6 * std::max(1.0, R)) {
+		s->globeFrame->SetVisibility(1);
+		return;                                  // unchanged: keep the geometry we already have
+	}
+	// Meridians every 30 deg (pole to pole) and parallels every 30 deg, both sampled every 2 deg so
+	// the arcs read as arcs.
+	const double zLift = 0.0;
+	vtkNew<vtkPoints> pts;  pts->SetDataTypeToDouble();
+	vtkNew<vtkCellArray> lines;
+	auto strip = [&](bool meridian, double fixed) {
+		std::vector<vtkIdType> ids;
+		const double a0 = meridian ? -90.0 : -180.0, a1 = meridian ? 90.0 : 180.0;
+		for (double a = a0; a <= a1 + 1e-9; a += 2.0) {
+			double w[3];
+			if (meridian) sceneGeoToWorld(s, fixed, a, zLift, w);
+			else          sceneGeoToWorld(s, a, fixed, zLift, w);
+			ids.push_back(pts->InsertNextPoint(w));
+		}
+		if (ids.size() > 1) lines->InsertNextCell((vtkIdType)ids.size(), ids.data());
+	};
+	for (double lon = -180.0; lon < 180.0 - 1e-9; lon += 30.0) strip(true,  lon);
+	for (double lat = -60.0;  lat <=  60.0 + 1e-9; lat += 30.0) strip(false, lat);
+	vtkNew<vtkPolyData> pd;  pd->SetPoints(pts);  pd->SetLines(lines);
+	if (!s->globeFrame) {
+		vtkNew<vtkPolyDataMapper> m;
+		s->globeFrame = vtkSmartPointer<vtkActor>::New();
+		s->globeFrame->SetMapper(m);
+		s->globeFrame->GetProperty()->SetColor(0.75, 0.78, 0.82);
+		s->globeFrame->GetProperty()->SetLineWidth(1.0);
+		s->globeFrame->GetProperty()->SetOpacity(0.55);
+		s->globeFrame->GetProperty()->LightingOff();
+		s->globeFrame->PickableOff();
+		// The graticule is a sea-level line set like any other, so it obeys the same far-side rule —
+		// it is not in the globe hook list (its points are built in world coords already), so the clip
+		// has to be handed to it here rather than by globeAttachActor.
+		if (!s->globeClip) s->globeClip = vtkSmartPointer<vtkPlane>::New();
+		m->AddClippingPlane(s->globeClip);
+		s->ren->AddActor(s->globeFrame);
+	}
+	// The graticule's points are ALREADY world XYZ (they came out of the mapping), so its actor keeps
+	// the identity scale — it must never be handed the flat map's xfac/VE matrix.
+	s->globeFrame->SetScale(1.0, 1.0, 1.0);
+	vtkPolyDataMapper::SafeDownCast(s->globeFrame->GetMapper())->SetInputData(pd);
+	s->globeFrame->SetVisibility(1);
+	s->globeFrameR = R;
+}
+
+// SINGLE source of truth for the view-mode switch, all THREE modes of it: 3-D perspective, the flat
+// 2-D map, and the globe (geographic orthographic). The toolbar flyout, the View menu, the context
+// menu AND the grid/image init in 90_c_api ALL go through here — never re-implement the camera math,
+// and never set s->flat2d / s->globe next to each other by hand: their mutual exclusion is this
+// function's job and nothing else's.
+//
+//   2D    = top-down orthographic over the surface bounds, rotation/tilt locked (gated via
+//           s->flat2d), gizmo hidden.
+//   GLOBE = the data on a sphere seen through the PARALLEL camera, which is exactly what an
+//           orthographic projection of the globe is. Free rotation (that is how the projection
+//           centre is chosen), gizmo hidden, rectangular axes replaced by the graticule. Offered
+//           only for geographic data — the gate is on the menu entry (buildAndShow), because for
+//           projected metres there is no lon/lat to put on a sphere in the first place.
+//
+// The 3-D camera is saved when LEAVING 3-D and restored when returning to it, so a 2D -> globe -> 3D
+// round trip comes back to the view the user actually had. Idempotent: a no-op (bar the act2D
+// checkmark) when already in the requested mode — so a caller that needs to FORCE the 2D camera
+// after rebuilding the scene must reset s->flat2d=false first (the rebuilt scene left the 3-D
+// camera, but the flag may still read 2D from the launcher).
+enum { IGVIEW_3D = 0, IGVIEW_FLAT2D = 1, IGVIEW_GLOBE = 2 };
+
+// WHAT THE GIZMO IS in the CURRENT view mode. ONE rule, called by the mode switch AND by every path
+// that rebuilds a scene and has to restore the handle (gmtvtk_show_new_element_h, the reframes) —
+// those used to spell out `!s->flat2d`, which on a globe window put the full tilt/azimuth handle
+// back over a planet the trackball already turns.
+//   3-D    : the whole handle.
+//   2-D map: nothing (the camera is already top-down).
+//   GLOBE  : the vertical-exaggeration half only, and only where there is a real grid to exaggerate
+//            — an image has no z, so it gets no handle.
+static void gizmoApplyForMode(Scene *s) {
+	if (!s || !s->giz) return;
+	if (s->globe) setGizmoVisible(*s->giz, sceneHasRealGrid(s), /*veOnly=*/true);
+	else          setGizmoVisible(*s->giz, !s->flat2d);
+}
+
+static void sceneSetViewMode(Scene *s, int mode) {
+	if (!s || !s->ren) return;
+	const int cur = s->globe ? IGVIEW_GLOBE : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D);
+	if (mode == cur) { if (s->act2D) s->act2D->setChecked(mode == IGVIEW_FLAT2D); return; }
 	vtkCamera *cam = s->ren->GetActiveCamera();
-	s->flat2d = on;
-	if (s->flat2d) {
-		cam->GetPosition(s->sav_pos);          // save the 3D view to restore later
+	if (cur == IGVIEW_3D) {                    // leaving 3-D: keep the view to come back to
+		cam->GetPosition(s->sav_pos);
 		cam->GetFocalPoint(s->sav_foc);
 		cam->GetViewUp(s->sav_vup);
 		s->sav_parallel = cam->GetParallelProjection();
+	}
+	s->flat2d = (mode == IGVIEW_FLAT2D);
+	s->globe  = (mode == IGVIEW_GLOBE);
+	if (mode == IGVIEW_GLOBE) {
+		// THE VE HANDLE STAYS — it is the only control for vertical exaggeration, and on a globe the
+		// relief rides the radius, so it is the control that decides whether the planet reads as a
+		// planet or as a bed of spikes. Only its half of the gizmo (veOnly): tilt and azimuth would
+		// duplicate the trackball, which is what turns the globe. And only for a window that has a
+		// real GRID — an image has no z to exaggerate, so it gets no handle (sceneHasRealGrid is the
+		// shared "is there a heightfield here" gate, the same one the profile/transplant menus use).
+		gizmoApplyForMode(s);
+		// Geometry first: applyVE is what splices the sphere transform onto every actor (and, on the
+		// way out, what takes it off again), so the bounds the camera fit reads below are already the
+		// sphere's. It also raises the graticule and puts the rectangular axes down.
+		applyVE(s);
+		// Look at the middle of the data, so the hemisphere facing the user is the one with the data
+		// on it. From there the trackball is the projection-centre control.
+		const double d2r = vtkMath::Pi() / 180.0;
+		const double lonc = 0.5 * (s->x0 + s->x1), latc = 0.5 * (s->y0 + s->y1);
+		const double dir[3] = { std::cos(latc*d2r) * std::cos(lonc*d2r),
+		                        std::cos(latc*d2r) * std::sin(lonc*d2r),
+		                        std::sin(latc*d2r) };
+		const double dist = 4.0 * s->globeR;
+		cam->SetFocalPoint(0.0, 0.0, 0.0);
+		cam->SetPosition(dir[0]*dist, dir[1]*dist, dir[2]*dist);
+		cam->SetViewUp(0.0, 0.0, 1.0);                       // north pole up (unless we ARE over a pole)
+		if (std::fabs(latc) > 89.0) cam->SetViewUp(0.0, 1.0, 0.0);
+		cam->ParallelProjectionOn();
+		s->ren->ResetCameraClippingRange();
+		double b[6];  surfGetBounds(s, b);
+		cameraFitToScaledBBox(s, b, /*keepMargin=*/true);
+	}
+	else if (mode == IGVIEW_FLAT2D) {
 		// 2D = TOP-DOWN ORTHO ONLY. Keep the relief and its PBR lighting exactly as in 3D
 		// (illumination must NOT change) — viewed straight down in parallel projection it reads
 		// as a shaded-relief map. We do NOT flatten (ve) or touch lighting.
-		if (s->giz) setGizmoVisible(*s->giz, false);
+		gizmoApplyForMode(s);
+		if (cur == IGVIEW_GLOBE) applyVE(s);   // come off the sphere BEFORE reading the bounds
 		double b[6]; surfGetBounds(s, b);      // north (+Y) up
 		const double fp[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
 		cam->SetFocalPoint(fp[0], fp[1], fp[2]);
@@ -20067,11 +20200,12 @@ static void sceneSetFlat2D(Scene *s, bool on) {
 		fitSnapView(s, /*topMode=*/true);      // maximize: fill the viewport edge-to-edge
 	}
 	else {
+		if (cur == IGVIEW_GLOBE) applyVE(s);   // back to flat geometry before the saved camera means anything
 		cam->SetParallelProjection(s->sav_parallel);
 		cam->SetPosition(s->sav_pos);
 		cam->SetFocalPoint(s->sav_foc);
 		cam->SetViewUp(s->sav_vup);
-		if (s->giz) setGizmoVisible(*s->giz, true);
+		gizmoApplyForMode(s);
 		s->ren->ResetCameraClippingRange();
 	}
 	// The buried 3-D fault plane is meaningless top-down — show it only off flat-2D AND when the user
@@ -20091,7 +20225,17 @@ static void sceneSetFlat2D(Scene *s, bool on) {
 	// left every layer scaled for the mode it just left.
 	applyVE(s);
 	if (s->act2D) s->act2D->setChecked(s->flat2d);
+	if (s->syncViewMode && !s->tearingDown) s->syncViewMode();   // toolbar glyph + ticked entry, every transition
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// The 2-D/3-D half of the switch above, kept as its own name because ~20 call sites already speak it
+// (the View menu, the context menu, the session restore, the grid/image init in 90_c_api, the test
+// hook). It is a FORWARDER, not a second implementation: "not flat" means 3-D, which is what those
+// callers have always meant by it, and a window sitting on the globe therefore leaves the globe when
+// one of them asks for either flat mode — exactly what "switch to 2D/3D" should do.
+static void sceneSetFlat2D(Scene *s, bool on) {
+	sceneSetViewMode(s, on ? IGVIEW_FLAT2D : IGVIEW_3D);
 }
 
 // File > Export GMT.jl script… — the window's display as GMT.jl code, in an EDITABLE box with Save
@@ -20943,7 +21087,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			}
 			if (!ensureGeoBase()) return;
 			double W = -180, E = 180, S = -90, N = 90;          // whole-earth fallback if no view region
-			visibleRegion(W, E, S, N);
+			// On the GLOBE the "visible region" is one hemisphere and the user is going to TURN it —
+			// clipping the dataset to what happens to face the camera at the moment of the click would
+			// leave bare terrain the instant it spins. A globe asks for the WHOLE EARTH, once; the far
+			// side is hidden by the view (globeClipPlane), not by never having been fetched.
+			if (!s->globe) visibleRegion(W, E, S, N);
 			// Trailing field = Preferences "Coastlines color" (Black|White) for the line features
 			// (coast/borders/rivers); point datasets ignore it and keep their own symbol colours.
 			const QString req = QString("%1/%2/%3/%4/%5/%6/%7").arg(kind).arg(res)
@@ -21902,26 +22050,46 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QToolButton *tb2D = new QToolButton(tb);
 	tb2D->setPopupMode(QToolButton::MenuButtonPopup);   // click icon = re-apply current mode; click 'v' = pick mode
 	tb2D->setToolButtonStyle(Qt::ToolButtonIconOnly);
-	QMenu *viewModeMenu = new QMenu(tb2D);              // the dropdown list: 2D / 3D (text only — no glyph,
-	QAction *actMode2D = viewModeMenu->addAction("2D"); // the slot below carries the glyph icon)
+	QMenu *viewModeMenu = new QMenu(tb2D);              // the dropdown list: 2D / 3D / Globe (text only —
+	QAction *actMode2D = viewModeMenu->addAction("2D"); // no glyph, the slot below carries the icon)
 	QAction *actMode3D = viewModeMenu->addAction("3D");
-	actMode2D->setCheckable(true); actMode3D->setCheckable(true);
+	// The THIRD mode: the data on a sphere under the parallel camera = a geographic orthographic
+	// projection. Only meaningful for lon/lat data, so the entry is enabled per the window's OWN
+	// coordinate kind (activeGridGeog — the same resolver the axes, the colour bar and the readout
+	// go through, so "is this window geographic" has one answer everywhere), re-derived every time
+	// the menu is opened because the answer changes when a different layer becomes the active one.
+	QAction *actModeGlobe = viewModeMenu->addAction("Globe (orthographic)");
+	actMode2D->setCheckable(true); actMode3D->setCheckable(true); actModeGlobe->setCheckable(true);
 	actMode2D->setToolTip("Flat 2D map (top-down shaded relief)");
 	actMode3D->setToolTip("3D perspective view");
+	actModeGlobe->setToolTip("Globe: geographic orthographic projection (geographic data only) — drag to turn it");
 	QObject::connect(actMode2D, &QAction::triggered, [setFlat2D]() { setFlat2D(true);  });
 	QObject::connect(actMode3D, &QAction::triggered, [setFlat2D]() { setFlat2D(false); });
+	QObject::connect(actModeGlobe, &QAction::triggered, [s]() { sceneSetViewMode(s, IGVIEW_GLOBE); });
+	QObject::connect(viewModeMenu, &QMenu::aboutToShow, viewModeMenu, [s, actModeGlobe]() {
+		const bool geog = activeGridGeog(s) != 0;
+		actModeGlobe->setEnabled(geog);
+		actModeGlobe->setToolTip(geog ? "Globe: geographic orthographic projection — drag to turn it"
+		                              : "Globe: needs geographic (longitude/latitude) data");
+	});
 	tb2D->setMenu(viewModeMenu);
-	tb2D->setToolTip("View mode: flat 2D map / 3D perspective");
+	tb2D->setToolTip("View mode: flat 2D map / 3D perspective / globe");
 	// Slot click toggles 2D<->3D; the 'v' dropdown picks a mode. NOT setDefaultAction (that would tie
 	// the button's sunken/checked look to the always-checked menu entry — leaving it permanently
 	// highlighted). Drive the glyph icon ourselves; the checked entry just marks the active mode.
 	QObject::connect(tb2D, &QToolButton::clicked, actToggle2D);
-	auto syncViewMode = [tb2D, actMode2D, actMode3D](bool on) {
-		actMode2D->setChecked(on); actMode3D->setChecked(!on);   // dropdown checkmark on the active mode
-		tb2D->setIcon(makeViewModeIcon(on));                     // glyph shows the CURRENT mode
+	// ONE refresher for the button, reading the mode off the scene rather than off a signal argument:
+	// three modes cannot be described by act2D's bool (3-D and the globe both leave it unchecked), so
+	// sceneSetViewMode calls this through s->syncViewMode on every transition.
+	auto syncViewMode = [s, tb2D, actMode2D, actMode3D, actModeGlobe]() {
+		actMode2D->setChecked(s->flat2d && !s->globe);
+		actMode3D->setChecked(!s->flat2d && !s->globe);
+		actModeGlobe->setChecked(s->globe);
+		tb2D->setIcon(s->globe ? makeGlobeIcon() : makeViewModeIcon(s->flat2d));
 	};
-	QObject::connect(s->act2D, &QAction::toggled, tb2D, [syncViewMode](bool on){ syncViewMode(on); });
-	syncViewMode(s->flat2d);
+	s->syncViewMode = syncViewMode;
+	QObject::connect(s->act2D, &QAction::toggled, tb2D, [syncViewMode](bool){ syncViewMode(); });
+	syncViewMode();
 	tb->addWidget(tb2D);
 
 	tb->addSeparator();

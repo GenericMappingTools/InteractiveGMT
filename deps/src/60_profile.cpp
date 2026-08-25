@@ -184,8 +184,10 @@ static bool pickSurfaceXY(Scene *s, int dx, int dy, double &tx, double &ty) {
 	if (!pk->Pick((double)dx, (double)dy, 0.0, s->ren))
 		return false;
 	double pp[3]; pk->GetPickPosition(pp);
-	tx = (s->xfac != 0.0) ? pp[0] / s->xfac : pp[0];   // -> true coords
-	ty = pp[1];
+	// -> true coords through the scene's ONE inverse: `pp[0]/xfac, pp[1]` on any flat map, the sphere
+	// inverse on the globe (where the pick position is a point in world XYZ, not a scaled lon/lat).
+	double zz;
+	sceneWorldToGeo(s, pp, tx, ty, zz);
 	return true;
 }
 

@@ -2349,9 +2349,22 @@ static void rebuildSceneObjects(Scene *s) {
 					aBlack = m.addAction("Single color (black)");
 					m.addSeparator();
 				}
+				// Clamp/unclamp the WHOLE group in one click — "Plate boundaries PB" is seven layers,
+				// and draping them one row at a time is not a thing anyone should have to do. Applied
+				// by TAG through lineGroupSetClamped, which loops over the same lineSetClamped a single
+				// row uses (per-group ops apply by tag, and never a second implementation).
+				QAction *aClamp = nullptr;
+				if (lineGroupCanClamp(s, gn)) {
+					aClamp = m.addAction("Clamp to ground");
+					aClamp->setCheckable(true);
+					aClamp->setChecked(lineGroupIsClamped(s, gn));
+					aClamp->setToolTip("Drape every line of this group on the surface below it");
+					m.addSeparator();
+				}
 				QAction *aRem = m.addAction("Remove");
 				QAction *pick = m.exec(g);
 				if (pick == aRem) { overlayDeleteGroup(s, gn); return; }
+				if (aClamp && pick == aClamp) { lineGroupSetClamped(s, gn, aClamp->isChecked()); return; }
 				if (!pick || !g_juliaEval) return;
 				if (pick == aCpt || pick == aBlack) {
 					const QString cmd = QString("InteractiveGMT._contour_color_by_cpt(Ptr{Cvoid}(UInt(%1)),%2)")
@@ -2952,6 +2965,13 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	s->ren->AddActor(a);
 	Overlay ov{ a, mode };
 	ov.realZ = realZ;                         // clamped to the surface -> terrain may hide it (see the field)
+	// THE SOURCE Z, kept the moment it arrives — before anything can drape it. That is the whole
+	// contract of "Clamp to ground": clamping borrows the terrain's height, releasing gives the
+	// element back the z IT CAME WITH. Recording it here rather than at the first clamp is what makes
+	// that true for a line that was clamped by its importer (a Geography boundary) as well as for one
+	// the user clamps by hand; inferring it later cannot work, because by then the source z is gone.
+	ov.zClampSave.resize((size_t)npts);
+	for (int i = 0; i < npts; ++i) ov.zClampSave[(size_t)i] = xyz[3*i+2];
 	ov.baseLine = pd;                         // keep the geometry (both modes) for restyling + line<->points toggle
 	ov.segoff.assign(segoff, segoff + nseg + 1);   // remember segments so a Points overlay can rebuild polylines
 	ov.nseg = nseg;
@@ -3510,10 +3530,17 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
 	symbolSetPipeline(s, sl, in, sl.wantSolid && !(s && s->flat2d));
 	a->SetScale(1.0, 1.0, symbolZScale(s));            // ride VE, flat in 2-D; x already baked
 	sl.oneShot = oneShot;                // Symbols draw tool: exactly one point, whole-layer drag applies
-	// Remember the z each point was PLOTTED at, so flat-2D can write 0 into the points and 3-D can put
-	// the real depth back (symbolApplyZ) without ever touching the glyph's colour, lighting or size.
+	// Remember WHERE each point was PLOTTED, so any view mode can put it back without ever touching the
+	// glyph's colour, lighting or size (symbolApplyZ). zOrig is the plotted depth (flat-2D writes 0 and
+	// 3-D writes this back); xyOrig is the plotted lon/lat, which the GLOBE mode needs because there the
+	// position is not the flat one at all — it is that lon/lat mapped onto the sphere.
 	sl.zOrig.resize(npts);
-	for (int i = 0; i < npts; ++i) sl.zOrig[(size_t)i] = xyz[3*i+2];
+	sl.xyOrig.resize((size_t)npts * 2);
+	for (int i = 0; i < npts; ++i) {
+		sl.zOrig[(size_t)i] = xyz[3*i+2];
+		sl.xyOrig[(size_t)i*2    ] = xyz[3*i];        // TRUE lon (x is baked with xfac in the points)
+		sl.xyOrig[(size_t)i*2 + 1] = xyz[3*i+1];
+	}
 	sl.stack = s->vecSeq++;              // new layer lands on top of the whole vector pile
 	sl.name = name.empty() ? ("Symbols " + std::to_string((int)s->symbols.size() + 1) + " (" + sym + ")")
 	                       : name;
