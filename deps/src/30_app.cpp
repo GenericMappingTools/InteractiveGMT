@@ -591,6 +591,74 @@ static JuliaGridCalcFn g_juliaGridCalc = nullptr;
 typedef int (*JuliaGrdTrendFn)(void *scene, const char *params);
 static JuliaGrdTrendFn g_juliaGrdTrend = nullptr;
 
+// grdfft (GMT menu), the 2-D FFT of the window's grid. GrdFFTDialog (70_window.cpp, loads
+// deps/ui/grdfft_dialog.ui) hands a newline-separated "key=value" block to Julia (_on_grdfft,
+// src/grdfft.jl). `mode` is the outcome the dialog's two radios pick:
+//   grid      azim (-A), upward (-C), dfdz + dfdz_val (-D), integrate + integrate_val (-I),
+//             noop (-Q), scale (-S) and filter (the whole -F string, shape + wavelengths)
+//   spectrum  espec (the whole -E string) and an optional grid2 -> the 17-column cross-spectrum
+// plus the shared -N block (fftdim, detrend, extend, taper, fftverbose), mgal45 (-M), geog (-fg),
+// outfile and grid (the DISPLAYED layer's label). A grid result is added to `scene` as a NEW derived
+// grid; a spectrum goes to the Data Viewer and the X,Y plot tool. Returns 1 on success, 0 on
+// failure. nullptr to detach.
+typedef int (*JuliaGrdFFTFn)(void *scene, const char *params);
+static JuliaGrdFFTFn g_juliaGrdFFT = nullptr;
+
+// trend2d (GMT menu), the TABLE twin of grdtrend: fit a [weighted] [robust] polynomial z = f(x,y)
+// to scattered x,y,z points. Trend2DDialog (70_window.cpp, loads deps/ui/trend2d_dialog.ui) hands a
+// newline-separated "key=value" block to Julia (_on_trend2d, src/trend2d.jl): infile, headers and
+// toggle (the file's own reading, as in Interpolate), model + robust (-N n[+r]), iterate +
+// confidence (-I), condition (-C), weights (-W, "plain"|"+s"|"+w"), then either params=1 (-Fp, the
+// model parameters) or one col_<letter>=1 per ticked output column (-Fxyzmrw) with plotpts, plus
+// outfile. The result goes to the window's Data Viewer (and optionally onto the map as points).
+// Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaTrend2DFn)(void *scene, const char *params);
+static JuliaTrend2DFn g_juliaTrend2D = nullptr;
+
+// Make CPT (GMT menu), ONE dialog over makecpt AND grd2cpt. CptBuildDialog (70_window.cpp, loads
+// deps/ui/cpt_build_dialog.ui) hands a newline-separated "key=value" block to Julia (_on_cptbuild,
+// src/cptbuild.jl): mode=make|grd (where the z range comes from — the boxes, or the window's grid),
+// master (a GMT master name or a .cpt path), then either tmin/tmax/tinc/tmod (-T) or
+// nlevels/cdf/lmin/lmax/symmetric (-E, -L, -S), plus the options both modules share — continuous
+// (-Z), log (-Q), invert (-I), colormodel (-F), glo/ghi (-G), alpha + alphaall (-A), bfn (-D/-M/-N),
+// categorical + wrap (-W) — and finally what to DO with the palette: apply (recolour the layer named
+// by grid, addressed by gridsel over zmin..zmax) and/or outfile. Returns 1 on success, 0 on failure.
+// nullptr to detach.
+typedef int (*JuliaCptBuildFn)(void *scene, const char *params);
+static JuliaCptBuildFn g_juliaCptBuild = nullptr;
+
+// grdhisteq (GMT menu), histogram equalization of the window's grid. GrdHistEqDialog
+// (70_window.cpp, loads deps/ui/grdhisteq_dialog.ui) hands a newline-separated "key=value" block to
+// Julia (_on_grdhisteq, src/grdhisteq.jl): mode=grid|table (the module's own two outputs, one of
+// which it requires), flavour=cells|gaussian (equal-area cell indices with ncells + quadratic, or
+// normal scores with an optional norm — which GMT refuses to mix with the other two), region, and
+// grid (the DISPLAYED layer's label), plus outfile. A grid result is added to `scene` as a NEW
+// derived grid; the level table goes to the Data Viewer. Returns 1 on success, 0 on failure.
+// nullptr to detach.
+typedef int (*JuliaGrdHistEqFn)(void *scene, const char *params);
+static JuliaGrdHistEqFn g_juliaGrdHistEq = nullptr;
+
+// xyz2grd (GMT menu), a TABLE whose points already sit on the nodes -> a grid. Xyz2GrdDialog
+// (70_window.cpp, loads deps/ui/xyz2grd_dialog.ui) hands a newline-separated "key=value" block to
+// Julia (_on_xyz2grd, src/xyz2grd.jl): infile plus how to READ it (headers, incols, toggle, and the
+// one-column zflags = the module's -Z), the geometry it is sampled on (region, inc, pixel, geog),
+// amode (-A: what to do when several records land on one node) and the grid header fields
+// (dxname/dyname/dzname/dtitle/dremark -> -D), plus outfile. The new grid is added to `scene` as a
+// derived grid. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaXyz2GrdFn)(void *scene, const char *params);
+static JuliaXyz2GrdFn g_juliaXyz2Grd = nullptr;
+
+// grdfill (GMT menu), filling the holes in the window's grid. GrdFillDialog (70_window.cpp, loads
+// deps/ui/grdfill_dialog.ui) hands a newline-separated "key=value" block to Julia (_on_grdfill,
+// src/grdfill.jl): mode=fill|list (the module's own two outcomes), and for a fill the algorithm
+// (algo=c|n|s|g with its own value/radius/tension/gridfile -> -A), or for a list polygons + draw
+// (-L / -Lp, the polygons optionally drawn on the map as their own line layer), plus nodata (-N:
+// what counts as a hole, NaN by default), region, outfile and grid (the DISPLAYED layer's label).
+// A filled grid is added to `scene` as a NEW derived grid; a hole list goes to the Data Viewer.
+// Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGrdFillFn)(void *scene, const char *params);
+static JuliaGrdFillFn g_juliaGrdFill = nullptr;
+
 // grdlandmask (GMT menu), dialog laid out after Mirone's grdlandmask window. GrdLandmaskDialog
 // (70_window.cpp, loads deps/ui/grdlandmask_dialog.ui) hands a newline-separated "key=value" block to
 // Julia (_on_grdlandmask, src/grdlandmask.jl): region, inc, res, area, maskvalues, border, pixel,

@@ -2149,6 +2149,48 @@ GMTVTK_API void gmtvtk_set_grdtrend_callback(JuliaGrdTrendFn fn) {
 	g_juliaGrdTrend = fn;
 }
 
+// Register the grdfft Compute callback (GMT menu). fn(scene, params) with the "key=value" block
+// described in 30_app.cpp transforms the window's grid in the frequency domain, or estimates its
+// power spectrum, and delivers the result. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdfft_callback(JuliaGrdFFTFn fn) {
+	g_juliaGrdFFT = fn;
+}
+
+// Register the trend2d Compute callback (GMT menu). fn(scene, params) with the "key=value" block
+// described in 30_app.cpp fits the polynomial to the given x,y,z table and shows the result in the
+// window's Data Viewer. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_trend2d_callback(JuliaTrend2DFn fn) {
+	g_juliaTrend2D = fn;
+}
+
+// Register the Make CPT callback (GMT menu, makecpt + grd2cpt). fn(scene, params) with the
+// "key=value" block described in 30_app.cpp builds the palette and applies it to the named layer
+// and/or writes it to a .cpt file. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_cptbuild_callback(JuliaCptBuildFn fn) {
+	g_juliaCptBuild = fn;
+}
+
+// Register the grdhisteq Compute callback (GMT menu). fn(scene, params) with the "key=value" block
+// described in 30_app.cpp equalizes the window's grid, or reports its equal-area levels. Returns
+// 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdhisteq_callback(JuliaGrdHistEqFn fn) {
+	g_juliaGrdHistEq = fn;
+}
+
+// Register the xyz2grd callback (GMT menu). fn(scene, params) with the "key=value" block described
+// in 30_app.cpp turns the given table into a grid and adds it to `scene`. Returns 1/0. nullptr to
+// detach.
+GMTVTK_API void gmtvtk_set_xyz2grd_callback(JuliaXyz2GrdFn fn) {
+	g_juliaXyz2Grd = fn;
+}
+
+// Register the grdfill Compute callback (GMT menu). fn(scene, params) with the "key=value" block
+// described in 30_app.cpp fills the window's grid's holes, or reports where they are. Returns 1/0.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdfill_callback(JuliaGrdFillFn fn) {
+	g_juliaGrdFill = fn;
+}
+
 // Register the Euler rotations Compute callback (Plates menu). fn(scene, params) with the "key=value"
 // block described in 30_app.cpp rotates the chosen line / adds two poles / interpolates a rotation
 // model, all through GMT's spotter modules. Returns 1/0. nullptr to detach.
@@ -4599,6 +4641,42 @@ GMTVTK_API int gmtvtk_menu_trigger_test(void *handle, const char *path) {
 		QApplication::processEvents();
 		++n;
 	}
+	return n;
+}
+
+// The same pick, aimed at the menu bar of a TOOL window instead of the viewer's — Color Palettes
+// owns one, with the Make CPT entry on it, and gmtvtk_menu_trigger_test can only ever see the main
+// window's. `title` matches the window title loosely; steps are '|'-separated because a menu label
+// may itself contain '/' ("Make CPT (makecpt / grd2cpt)"). Returns how many steps fired.
+GMTVTK_API int gmtvtk_window_menu_trigger_test(const char *title, const char *path) {
+	if (!title || !path) return 0;
+	QMainWindow *target = nullptr;
+	const QString want = QString::fromUtf8(title);
+	for (QWidget *w : QApplication::topLevelWidgets()) {
+		auto *mw = qobject_cast<QMainWindow *>(w);
+		if (mw && mw->windowTitle().contains(want, Qt::CaseInsensitive)) { target = mw; break; }
+	}
+	if (!target) return 0;
+	int n = 0;
+	for (const QString &step : QString::fromUtf8(path).split('|', Qt::SkipEmptyParts)) {
+		QAction *a = menuFindDeep(target->menuBar(), step.trimmed(), true);
+		if (!a) a = menuFindDeep(target->menuBar(), step.trimmed(), false);
+		if (!a) return n;
+		a->trigger();
+		QApplication::processEvents();
+		++n;
+	}
+	return n;
+}
+
+// Is a top-level window with this title on screen? The companion assertion of the two triggers
+// above: "the entry fired" is not "the dialog opened".
+GMTVTK_API int gmtvtk_window_exists_test(const char *title) {
+	if (!title) return 0;
+	const QString want = QString::fromUtf8(title);
+	int n = 0;
+	for (QWidget *w : QApplication::topLevelWidgets())
+		if (w->isWindow() && w->windowTitle().contains(want, Qt::CaseInsensitive)) ++n;
 	return n;
 }
 

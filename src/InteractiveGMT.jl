@@ -100,6 +100,12 @@ include("multiscale.jl") # Grid Tools > Terrain Modeling: moving-window terrain 
 include("grdtrend.jl")   # GMT menu > grdtrend: polynomial trend surface / residuals / robust weights
 include("grdlandmask.jl")# GMT menu > grdlandmask: wet/dry mask grid from the shoreline database
 include("grdfilter.jl")  # GMT menu > grdfilter: space-domain filtering of the window's grid
+include("grdfft.jl")     # GMT menu > grdfft: frequency-domain operations / power spectrum of the grid
+include("grdhisteq.jl")  # GMT menu > grdhisteq: histogram equalization / equal-area levels
+include("xyz2grd.jl")    # GMT menu > xyz2grd: an x,y,z table whose points sit on the nodes -> a grid
+include("grdfill.jl")    # GMT menu > grdfill: fill the holes in the window's grid, or just find them
+include("trend2d.jl")    # GMT menu > trend2d: polynomial z = f(x,y) fitted to an x,y,z table
+include("cptbuild.jl")   # GMT menu > Make CPT: one dialog over makecpt and grd2cpt
 include("interpolate.jl")# GMT menu > Interpolate: grid an x,y,z table (surface, nearneighbor, block*, …)
 include("project.jl")    # Tools > Project: reproject the window's raster with gdalwarp (Mirone gdal_project.m)
 include("lineops.jl")    # Tools > Vector Operations (port of Mirone src_figs/line_operations.m)

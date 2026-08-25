@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Trend2DDialog</class>
+ <widget class="QDialog" name="Trend2DDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>450</width>
+    <height>480</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>trend2d</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainVerticalLayout">
+   <property name="spacing">
+    <number>8</number>
+   </property>
+   <property name="margin" stdset="0">
+    <number>8</number>
+   </property>
+   <item>
+    <widget class="QGroupBox" name="gb_input">
+     <property name="title">
+      <string>Input table (x, y, z [, w])</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_input">
+      <item row="0" column="0" colspan="3">
+       <widget class="QLineEdit" name="edit_infile">
+        <property name="toolTip"><string>Table with x, y, z (and a fourth column of weights or sigmas when Weights is used). Double-click to browse.</string></property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QToolButton" name="btn_infile">
+        <property name="text"><string>...</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_headers"><property name="text"><string>Header lines</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_headers">
+        <property name="toolTip"><string>Number of header lines to skip [0]</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2" colspan="2">
+       <widget class="QCheckBox" name="chk_toggle">
+        <property name="toolTip"><string>The file's first two columns are y,x instead of x,y</string></property>
+        <property name="text"><string>File is y,x,z</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_model">
+     <property name="title">
+      <string>Model</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_model">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_model"><property name="text"><string>Number of terms</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="cb_model">
+        <property name="minimumSize"><size><width>70</width><height>0</height></size></property>
+        <property name="toolTip"><string>Terms of z(x,y) = m1 + m2*x + m3*y + m4*xy + m5*x^2 + m6*y^2 + ... : 4 = bilinear, 6 = quadratic</string></property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QCheckBox" name="chk_robust">
+        <property name="toolTip"><string>Iteratively reweight the data so outliers do not drag the fit (+r)</string></property>
+        <property name="text"><string>Robust fit</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0" colspan="2">
+       <widget class="QCheckBox" name="chk_iterate">
+        <property name="toolTip"><string>Add terms one at a time, stopping when the variance reduction stops being significant (I)</string></property>
+        <property name="text"><string>Iterate to significance</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lb_confidence"><property name="text"><string>Confidence</string></property></widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QLineEdit" name="edit_confidence">
+        <property name="toolTip"><string>Confidence level between 0 and 1 [0.51]</string></property>
+       </widget>
+      </item>
+      <item row="2" column="0" colspan="2">
+       <widget class="QLabel" name="lb_condition"><property name="text"><string>Max condition number (C)</string></property></widget>
+      </item>
+      <item row="2" column="2" colspan="2">
+       <widget class="QLineEdit" name="edit_condition">
+        <property name="toolTip"><string>Largest allowed ratio of largest to smallest eigenvalue in the damped least-squares solution [1e6]</string></property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="lb_weights"><property name="text"><string>Weights (W)</string></property></widget>
+      </item>
+      <item row="3" column="1" colspan="3">
+       <widget class="QComboBox" name="cb_weights">
+        <property name="toolTip"><string>What the input's fourth column holds, if anything</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_output">
+     <property name="title">
+      <string>Output (F)</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_output">
+      <item row="0" column="0" colspan="6">
+       <widget class="QRadioButton" name="rb_cols">
+        <property name="toolTip"><string>One row per data point, with the columns ticked below</string></property>
+        <property name="text"><string>Columns, one row per point</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QCheckBox" name="chk_ox">
+        <property name="text"><string>x</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QCheckBox" name="chk_oy">
+        <property name="text"><string>y</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QCheckBox" name="chk_oz">
+        <property name="text"><string>z</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QCheckBox" name="chk_om">
+        <property name="toolTip"><string>The model f(x,y) at each point</string></property>
+        <property name="text"><string>model</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item row="1" column="4">
+       <widget class="QCheckBox" name="chk_or">
+        <property name="toolTip"><string>The residual z - model</string></property>
+        <property name="text"><string>residual</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item row="1" column="5">
+       <widget class="QCheckBox" name="chk_ow">
+        <property name="toolTip"><string>The weight actually used in the fit</string></property>
+        <property name="text"><string>weight</string></property>
+       </widget>
+      </item>
+      <item row="2" column="0" colspan="6">
+       <widget class="QRadioButton" name="rb_params">
+        <property name="toolTip"><string>Report the model parameters instead of the points (Fp)</string></property>
+        <property name="text"><string>Model parameters only</string></property>
+       </widget>
+      </item>
+      <item row="3" column="0" colspan="6">
+       <widget class="QCheckBox" name="chk_plotpts">
+        <property name="toolTip"><string>Also drop the fitted points on the map, each carrying its fitted row as a tooltip</string></property>
+        <property name="text"><string>Plot the points on the map</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_out">
+     <item>
+      <widget class="QLabel" name="lb_out"><property name="text"><string>Save result to</string></property></widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="edit_outfile">
+       <property name="toolTip"><string>Optional table to write the result to. Leave empty to keep it only in this window's Data Viewer.</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="btn_outfile">
+       <property name="text"><string>...</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <spacer name="verticalSpacer_bottom">
+     <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+     <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+     <property name="sizeHint" stdset="0"><size><width>20</width><height>6</height></size></property>
+    </spacer>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="buttonsSpacer">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="text"><string>Compute</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_close">
+       <property name="minimumSize"><size><width>70</width><height>24</height></size></property>
+       <property name="text"><string>Close</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

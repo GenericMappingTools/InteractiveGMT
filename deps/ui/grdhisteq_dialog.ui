@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>GrdHistEqDialog</class>
+ <widget class="QDialog" name="GrdHistEqDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>430</width>
+    <height>430</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>grdhisteq</string>
+  </property>
+  <!--
+    The "Griding Line Geometry" group below is the verbatim copy of deps/ui/grid_line_geometry.ui
+    (object names xMin/xMax/xInc/xN/yMin/yMax/yInc/yN/refEdit/refBtn/helpBtn kept EXACTLY), which is
+    the canonical source to copy from. The C++ side does NOT re-wire it by hand: GeoGridGeometry
+    ::adopt(dlg) takes these very widgets over, so the dim-fun cross-recompute and the Ref-grid
+    picker are the same single implementation grdsample's code-built block uses.
+  -->
+  <layout class="QVBoxLayout" name="mainVerticalLayout">
+   <property name="spacing">
+    <number>8</number>
+   </property>
+   <property name="margin" stdset="0">
+    <number>8</number>
+   </property>
+   <item>
+    <widget class="QGroupBox" name="gb_mode">
+     <property name="title">
+      <string>What to produce</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_mode">
+      <item>
+       <widget class="QRadioButton" name="rb_grid">
+        <property name="toolTip"><string>A new grid whose values follow the chosen distribution</string></property>
+        <property name="text"><string>An equalized grid</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="rb_table">
+        <property name="toolTip"><string>The data values that divide the grid into cells of equal area (D)</string></property>
+        <property name="text"><string>The equal-area level table</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_how">
+     <property name="title">
+      <string>How</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_how">
+      <item row="0" column="0" colspan="2">
+       <widget class="QRadioButton" name="rb_cells">
+        <property name="toolTip"><string>Equal-area cells: every value is replaced by the index of the cell it falls in</string></property>
+        <property name="text"><string>Equal-area cells</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="lb_ncells"><property name="text"><string>Cells</string></property></widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLineEdit" name="edit_ncells">
+        <property name="toolTip"><string>How many divisions of the data range to make (C) [16]</string></property>
+        <property name="text"><string>16</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0" colspan="2">
+       <widget class="QCheckBox" name="chk_quadratic">
+        <property name="toolTip"><string>Quadratic histogram equalization instead of linear (Q)</string></property>
+        <property name="text"><string>Quadratic distribution</string></property>
+       </widget>
+      </item>
+      <item row="2" column="0" colspan="2">
+       <widget class="QRadioButton" name="rb_gaussian">
+        <property name="toolTip"><string>Standard normal scores (N): the values become Gaussian with zero mean and unit variance, keeping their places. The module forbids combining this with the cells or the quadratic option.</string></property>
+        <property name="text"><string>Normal scores</string></property>
+       </widget>
+      </item>
+      <item row="2" column="2">
+       <widget class="QLabel" name="lb_norm"><property name="text"><string>Limit to +/-</string></property></widget>
+      </item>
+      <item row="2" column="3">
+       <widget class="QLineEdit" name="edit_norm">
+        <property name="toolTip"><string>Optional: force the scores into this +/- range. Empty = standard normal scores.</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="geoGroup">
+     <property name="title"><string>Griding Line Geometry (R)</string></property>
+     <layout class="QGridLayout" name="geoLayout">
+      <property name="horizontalSpacing"><number>8</number></property>
+      <property name="verticalSpacing"><number>4</number></property>
+      <item row="0" column="1"><widget class="QLabel" name="minLab"><property name="alignment"><set>Qt::AlignHCenter</set></property><property name="text"><string>Min</string></property></widget></item>
+      <item row="0" column="2"><widget class="QLabel" name="maxLab"><property name="alignment"><set>Qt::AlignHCenter</set></property><property name="text"><string>Max</string></property></widget></item>
+      <item row="0" column="3"><widget class="QLabel" name="spacingLab"><property name="alignment"><set>Qt::AlignHCenter</set></property><property name="text"><string>Spacing</string></property></widget></item>
+      <item row="0" column="4"><widget class="QLabel" name="nLinesLab"><property name="alignment"><set>Qt::AlignHCenter</set></property><property name="text"><string># of lines</string></property></widget></item>
+
+      <item row="1" column="0"><widget class="QLabel" name="xDirLab"><property name="text"><string>X Direction</string></property></widget></item>
+      <item row="1" column="1"><widget class="QLineEdit" name="xMin"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
+      <item row="1" column="2"><widget class="QLineEdit" name="xMax"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
+      <item row="1" column="3"><widget class="QLineEdit" name="xInc"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
+      <item row="1" column="4"><widget class="QLineEdit" name="xN"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
+
+      <item row="2" column="0"><widget class="QLabel" name="yDirLab"><property name="text"><string>Y Direction</string></property></widget></item>
+      <item row="2" column="1"><widget class="QLineEdit" name="yMin"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
+      <item row="2" column="2"><widget class="QLineEdit" name="yMax"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
+      <item row="2" column="3"><widget class="QLineEdit" name="yInc"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
+      <item row="2" column="4"><widget class="QLineEdit" name="yN"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
+
+      <item row="1" column="5" rowspan="2">
+       <widget class="QToolButton" name="helpBtn">
+        <property name="text"><string>?</string></property>
+        <property name="toolTip"><string>Edit any two of Min/Max/Spacing/# and the rest are derived.</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="refRow">
+     <item><widget class="QLabel" name="refLab"><property name="text"><string>OR Ref grid</string></property></widget></item>
+     <item>
+      <widget class="QLineEdit" name="refEdit">
+       <property name="toolTip"><string>Pick a grid/image; its region, spacing and size fill the boxes above.</string></property>
+      </widget>
+     </item>
+     <item><widget class="QToolButton" name="refBtn"><property name="text"><string>...</string></property></widget></item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_out">
+     <item>
+      <widget class="QLabel" name="lb_out"><property name="text"><string>Save result to</string></property></widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="edit_outfile">
+       <property name="toolTip"><string>Optional output file: a grid, or a table for the level list. Leave empty to keep the result only in this window.</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="btn_outfile">
+       <property name="text"><string>...</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <spacer name="verticalSpacer_bottom">
+     <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+     <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+     <property name="sizeHint" stdset="0"><size><width>20</width><height>6</height></size></property>
+    </spacer>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="buttonsSpacer">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="text"><string>Compute</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_close">
+       <property name="minimumSize"><size><width>70</width><height>24</height></size></property>
+       <property name="text"><string>Close</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

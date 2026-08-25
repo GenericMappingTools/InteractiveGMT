@@ -28,8 +28,15 @@ function _on_image_histo(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, px::Ptr{UInt8}, npi
 	end
 end
 
+# The trampoline goes through `invokelatest`, like every other registration in _ensure_callbacks,
+# and that is not a style detail: a DIRECT `@cfunction(_on_image_histo, …)` makes the compiler infer
+# and emit the WHOLE handler body — GMT.histogray and all — at REGISTRATION time, which is the first
+# window open. Measured: 134 ms here against ~14 ms for the invokelatest form, the single most
+# expensive of the ~79 registrations. Behind invokelatest the body compiles on the first actual
+# histogram instead, where the user is already waiting for a computation.
 function _register_image_histo()
-	cb = @cfunction(_on_image_histo, Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{UInt8}, Cint, Cint))
+	cb = @cfunction((s, d, p, n, b) -> Base.invokelatest(_on_image_histo, s, d, p, n, b)::Cint,
+	                Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{UInt8}, Cint, Cint))
 	ccall(_fn(:gmtvtk_set_image_histo_callback), Cvoid, (Ptr{Cvoid},), cb)
 	return nothing
 end

@@ -8915,6 +8915,1106 @@ public:
 	}
 };
 
+
+// ============================================================================================
+// grdfft (GMT menu) — the 2-D FFT of the window's grid: operate in the frequency domain and come
+// back (a grid), or estimate the power spectrum (a table). Loaded at RUNTIME via QUiLoader from
+// deps/ui/grdfft_dialog.ui.
+//
+// The two radios at the top are the module's own two OUTCOMES, and each one owns the groups it
+// reads: a transformed grid takes the operators (-A -C -D -I -S -Q) and the filter (-F), a spectrum
+// takes -E and its optional second grid (the 17-column cross-spectrum). The FFT block (-N) belongs
+// to both. Groups the chosen outcome ignores are greyed out rather than silently dropped.
+//
+// The whole -F string is assembled HERE, the same division of labour as grdfilter's: the dialog is
+// the side that knows which box belongs to which filter shape, so the four cosine wavelengths, the
+// two Gaussian ones and the Butterworth order never reach Julia as separate knobs to re-guess.
+// ============================================================================================
+class GrdFFTDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QRadioButton *rbGrid = nullptr, *rbSpec = nullptr;
+	QComboBox *ftypeCb = nullptr, *fdirCb = nullptr, *edirCb = nullptr;
+	QComboBox *fftDimCb = nullptr, *detrendCb = nullptr, *extendCb = nullptr;
+	QLineEdit *azimEdit = nullptr, *upEdit = nullptr, *dfdzEdit = nullptr, *integEdit = nullptr;
+	QLineEdit *fEdit[4] = { nullptr, nullptr, nullptr, nullptr };
+	QLabel    *fLabel[4] = { nullptr, nullptr, nullptr, nullptr };
+	QLineEdit *grid2Edit = nullptr, *fftDimsEdit = nullptr, *taperEdit = nullptr;
+	QLineEdit *scaleEdit = nullptr, *mgalEdit = nullptr, *outEdit = nullptr;
+	QCheckBox *dfdzChk = nullptr, *integChk = nullptr, *noopChk = nullptr;
+	QCheckBox *eNormChk = nullptr, *eWaveChk = nullptr, *eKmChk = nullptr;
+	QCheckBox *fftVerbChk = nullptr, *geogChk = nullptr;
+	QGroupBox *opsGb = nullptr, *filterGb = nullptr, *specGb = nullptr;
+
+	explicit GrdFFTDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdfft_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdFFTDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdFFTDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("grdfft");
+		QDialog *d = dlg;
+
+		rbGrid    = d->findChild<QRadioButton *>("rb_grid");
+		rbSpec    = d->findChild<QRadioButton *>("rb_spectrum");
+		ftypeCb   = d->findChild<QComboBox *>("cb_ftype");
+		fdirCb    = d->findChild<QComboBox *>("cb_fdir");
+		edirCb    = d->findChild<QComboBox *>("cb_edir");
+		fftDimCb  = d->findChild<QComboBox *>("cb_fftdim");
+		detrendCb = d->findChild<QComboBox *>("cb_detrend");
+		extendCb  = d->findChild<QComboBox *>("cb_extend");
+		azimEdit  = d->findChild<QLineEdit *>("edit_azim");
+		upEdit    = d->findChild<QLineEdit *>("edit_upward");
+		dfdzEdit  = d->findChild<QLineEdit *>("edit_dfdz");
+		integEdit = d->findChild<QLineEdit *>("edit_integrate");
+		for (int i = 0; i < 4; ++i) {
+			fEdit[i]  = d->findChild<QLineEdit *>(QString("edit_f%1").arg(i + 1));
+			fLabel[i] = d->findChild<QLabel *>(QString("lb_f%1").arg(i + 1));
+		}
+		grid2Edit   = d->findChild<QLineEdit *>("edit_grid2");
+		fftDimsEdit = d->findChild<QLineEdit *>("edit_fftdims");
+		taperEdit   = d->findChild<QLineEdit *>("edit_taper");
+		scaleEdit   = d->findChild<QLineEdit *>("edit_scale");
+		mgalEdit    = d->findChild<QLineEdit *>("edit_mgal45");
+		outEdit     = d->findChild<QLineEdit *>("edit_outfile");
+		dfdzChk     = d->findChild<QCheckBox *>("chk_dfdz");
+		integChk    = d->findChild<QCheckBox *>("chk_integrate");
+		noopChk     = d->findChild<QCheckBox *>("chk_noop");
+		eNormChk    = d->findChild<QCheckBox *>("chk_enorm");
+		eWaveChk    = d->findChild<QCheckBox *>("chk_ewave");
+		eKmChk      = d->findChild<QCheckBox *>("chk_ekm");
+		fftVerbChk  = d->findChild<QCheckBox *>("chk_fftverbose");
+		geogChk     = d->findChild<QCheckBox *>("chk_geog");
+		opsGb       = d->findChild<QGroupBox *>("gb_ops");
+		filterGb    = d->findChild<QGroupBox *>("gb_filter");
+		specGb      = d->findChild<QGroupBox *>("gb_spec");
+
+		if (ftypeCb) {
+			ftypeCb->addItem("none", "");
+			ftypeCb->addItem("cosine taper", "cos");
+			ftypeCb->addItem("Gaussian", "gauss");
+			ftypeCb->addItem("Butterworth", "butter");
+		}
+		if (fdirCb) {                                    // "" = isotropic, the module's own default
+			fdirCb->addItem("isotropic", "");
+			fdirCb->addItem("x only", "x");
+			fdirCb->addItem("y only", "y");
+		}
+		if (edirCb) {
+			edirCb->addItem("radial", "r");
+			edirCb->addItem("x direction", "x");
+			edirCb->addItem("y direction", "y");
+		}
+		if (fftDimCb) {                                  // -N directive; "" = the module's own choice
+			fftDimCb->addItem("default (speed + accuracy)", "");
+			fftDimCb->addItem("most accurate (a)", "a");
+			fftDimCb->addItem("actual grid size (f)", "f");
+			fftDimCb->addItem("least memory (m)", "m");
+			fftDimCb->addItem("fastest (r)", "r");
+			fftDimCb->addItem("given below (nx/ny)", "nxny");
+		}
+		if (detrendCb) {
+			detrendCb->addItem("module default", "");
+			detrendCb->addItem("remove mid value (+h)", "+h");
+			detrendCb->addItem("remove mean (+a)", "+a");
+			detrendCb->addItem("remove linear trend (+d)", "+d");
+			detrendCb->addItem("leave data alone (+l)", "+l");
+		}
+		if (extendCb) {
+			extendCb->addItem("default (edge-point symmetry)", "");
+			extendCb->addItem("edge-point symmetry (+e)", "+e");
+			extendCb->addItem("mirror symmetry (+m)", "+m");
+			extendCb->addItem("no extension (+n)", "+n");
+		}
+		// The grid's own kind decides whether the coordinates need the Flat Earth conversion (the same
+		// baseGeog flag the axes and grdfilter's distance default already read).
+		if (geogChk) geogChk->setChecked(scene && scene->baseGeog);
+
+		if (auto *b = d->findChild<QToolButton *>("btn_grid2")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select the second grid", prefStartDir(),
+					"Grids (*.grd *.nc *.tif *.tiff);;All files (*)");
+				if (!p.isEmpty() && grid2Edit) { grid2Edit->setText(p); rememberStartDir(p); }
+			});
+			if (grid2Edit) fileBoxDoubleClick(grid2Edit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				const bool table = rbSpec && rbSpec->isChecked();
+				QString p = QFileDialog::getSaveFileName(d, "Save result", prefStartDir(),
+					table ? "Tables (*.dat *.txt);;All files (*)" : "Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+
+		for (QRadioButton *rb : { rbGrid, rbSpec })
+			if (rb) QObject::connect(rb, &QRadioButton::toggled, d, [this](bool) { syncMode(); });
+		if (ftypeCb) QObject::connect(ftypeCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                              [this]() { syncMode(); });
+		if (fftDimCb) QObject::connect(fftDimCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                               [this]() { syncMode(); });
+		for (QCheckBox *c : { noopChk, dfdzChk, integChk, eWaveChk })
+			if (c) QObject::connect(c, &QCheckBox::toggled, d, [this](bool) { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "grdfft");              // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString cbData(QComboBox *cb) const { return cb ? cb->currentData().toString() : QString(); }
+	bool spectrumMode() const { return rbSpec && rbSpec->isChecked(); }
+	// How many of the four filter boxes the chosen shape reads: cosine lc/lp/hp/hc, Gaussian lo/hi,
+	// Butterworth lo/hi/order.
+	int filterFields() const {
+		const QString t = cbData(ftypeCb);
+		return t == "cos" ? 4 : t == "gauss" ? 2 : t == "butter" ? 3 : 0;
+	}
+
+	// Only what the chosen outcome reads stays live. -Q means "do nothing in the frequency domain",
+	// so it owns the operator group while it is ticked; a filter shape lights up exactly the boxes
+	// it takes, under their own names; "in km" is a modifier of "Wavelength", not a switch of its own.
+	void syncMode() {
+		const bool spec = spectrumMode();
+		if (opsGb)    opsGb->setEnabled(!spec);
+		if (filterGb) filterGb->setEnabled(!spec);
+		if (specGb)   specGb->setEnabled(spec);
+		const bool noop = !spec && noopChk && noopChk->isChecked();
+		for (QWidget *w : { (QWidget *)azimEdit, (QWidget *)upEdit, (QWidget *)dfdzChk,
+		                    (QWidget *)integChk, (QWidget *)dfdzEdit, (QWidget *)integEdit })
+			if (w) w->setEnabled(!spec && !noop);
+		if (dfdzEdit)  dfdzEdit->setEnabled(!spec && !noop && dfdzChk && dfdzChk->isChecked());
+		if (integEdit) integEdit->setEnabled(!spec && !noop && integChk && integChk->isChecked());
+		if (filterGb)  filterGb->setEnabled(!spec && !noop);
+
+		static const char *labels[3][4] = { { "lc", "lp", "hp", "hc" },      // cosine taper
+		                                    { "lo", "hi", "", "" },          // Gaussian
+		                                    { "lo", "hi", "order", "" } };   // Butterworth
+		const QString t = cbData(ftypeCb);
+		const int row = t == "cos" ? 0 : t == "gauss" ? 1 : t == "butter" ? 2 : -1;
+		const int n = filterFields();
+		for (int i = 0; i < 4; ++i) {
+			if (fLabel[i]) fLabel[i]->setText(row < 0 ? "" : QString(labels[row][i]));
+			if (fEdit[i])  fEdit[i]->setEnabled(i < n);
+		}
+		if (eKmChk)      eKmChk->setEnabled(spec && eWaveChk && eWaveChk->isChecked());
+		if (fftDimsEdit) fftDimsEdit->setEnabled(cbData(fftDimCb) == "nxny");
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGrdFFT) {
+			QMessageBox::warning(d, "grdfft", "grdfft: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		QStringList kv;
+		kv << QString("mode=") + (spectrumMode() ? "spectrum" : "grid");
+		kv << QString("geog=%1").arg(geogChk && geogChk->isChecked() ? 1 : 0);
+		if (!txt(mgalEdit).isEmpty()) kv << "mgal45=" + txt(mgalEdit);
+		// -N: the dimension directive travels as written, "nx/ny" included.
+		QString dim = cbData(fftDimCb);
+		if (dim == "nxny") {
+			dim = txt(fftDimsEdit);
+			if (dim.isEmpty()) { QMessageBox::warning(d, "grdfft", "Give the FFT dimensions as nx/ny."); return; }
+		}
+		if (!dim.isEmpty()) kv << "fftdim=" + dim;
+		if (!cbData(detrendCb).isEmpty()) kv << "detrend=" + cbData(detrendCb);
+		if (!cbData(extendCb).isEmpty())  kv << "extend=" + cbData(extendCb);
+		if (!txt(taperEdit).isEmpty())    kv << "taper=" + txt(taperEdit);
+		if (fftVerbChk && fftVerbChk->isChecked()) kv << "fftverbose=1";
+
+		if (spectrumMode()) {
+			QString e = cbData(edirCb);
+			if (eWaveChk && eWaveChk->isChecked()) e += (eKmChk && eKmChk->isChecked()) ? "+wk" : "+w";
+			if (eNormChk && eNormChk->isChecked()) e += "+n";
+			kv << "espec=" + e;
+			if (!txt(grid2Edit).isEmpty()) kv << "grid2=" + txt(grid2Edit);
+		}
+		else {
+			if (!txt(azimEdit).isEmpty()) kv << "azim=" + txt(azimEdit);
+			if (!txt(upEdit).isEmpty())   kv << "upward=" + txt(upEdit);
+			kv << QString("dfdz=%1").arg(dfdzChk && dfdzChk->isChecked() ? 1 : 0);
+			if (!txt(dfdzEdit).isEmpty()) kv << "dfdz_val=" + txt(dfdzEdit);
+			kv << QString("integrate=%1").arg(integChk && integChk->isChecked() ? 1 : 0);
+			if (!txt(integEdit).isEmpty()) kv << "integrate_val=" + txt(integEdit);
+			kv << QString("noop=%1").arg(noopChk && noopChk->isChecked() ? 1 : 0);
+			if (!txt(scaleEdit).isEmpty()) kv << "scale=" + txt(scaleEdit);
+
+			// -F: <dir><p1>/<p2>[/<p3>[/<p4>]], a hyphen standing for a wavelength left out (that is
+			// how the module is told to make a high- or low-pass out of a band-pass).
+			const int n = filterFields();
+			if (n > 0) {
+				QStringList parts;
+				int given = 0;
+				for (int i = 0; i < n; ++i) {
+					const QString v = txt(fEdit[i]);
+					if (!v.isEmpty()) ++given;
+					parts << (v.isEmpty() ? "-" : v);
+				}
+				if (given == 0) {
+					QMessageBox::warning(d, "grdfft", "The filter needs at least one wavelength.");
+					return;
+				}
+				if (cbData(ftypeCb) == "butter" && parts[2] == "-") {
+					QMessageBox::warning(d, "grdfft", "A Butterworth filter needs its order.");
+					return;
+				}
+				kv << "filter=" + cbData(fdirCb) + parts.join("/");
+			}
+		}
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+		kv << "grid=" + QString::fromStdString(activeGridName(scn));   // transform the DISPLAYED layer
+
+		showBusyDialog(spectrumMode() ? "Estimating the spectrum…" : "Transforming…");
+		const int ok = g_juliaGrdFFT(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "grdfft",
+		                              "grdfft failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// trend2d (GMT menu) — fit a [weighted] [robust] polynomial z = f(x,y) to an x,y,z TABLE. The grid
+// twin of this is grdtrend (which fits the window's own grid); this one fits scattered points, so
+// its input is a file and its result is a table, not a surface. Loaded at RUNTIME via QUiLoader
+// from deps/ui/trend2d_dialog.ui.
+//
+// The input row (file + header lines + "file is y,x,z") is the Interpolate dialog's, because it is
+// the same question about the same kind of file. The output group is the module's -F: either one row
+// per point with the ticked columns, or the model parameters alone — GMT's own either/or, so it is
+// two radios and not six checkboxes plus a trap.
+// ============================================================================================
+class Trend2DDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QLineEdit *inEdit = nullptr, *headersEdit = nullptr, *confEdit = nullptr, *condEdit = nullptr;
+	QLineEdit *outEdit = nullptr;
+	QComboBox *modelCb = nullptr, *weightsCb = nullptr;
+	QCheckBox *toggleChk = nullptr, *robustChk = nullptr, *iterChk = nullptr, *plotChk = nullptr;
+	QCheckBox *colChk[6] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+	QRadioButton *rbCols = nullptr, *rbParams = nullptr;
+
+	explicit Trend2DDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/trend2d_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("Trend2DDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("Trend2DDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("trend2d");
+		QDialog *d = dlg;
+
+		inEdit      = d->findChild<QLineEdit *>("edit_infile");
+		headersEdit = d->findChild<QLineEdit *>("edit_headers");
+		confEdit    = d->findChild<QLineEdit *>("edit_confidence");
+		condEdit    = d->findChild<QLineEdit *>("edit_condition");
+		outEdit     = d->findChild<QLineEdit *>("edit_outfile");
+		modelCb     = d->findChild<QComboBox *>("cb_model");
+		weightsCb   = d->findChild<QComboBox *>("cb_weights");
+		toggleChk   = d->findChild<QCheckBox *>("chk_toggle");
+		robustChk   = d->findChild<QCheckBox *>("chk_robust");
+		iterChk     = d->findChild<QCheckBox *>("chk_iterate");
+		plotChk     = d->findChild<QCheckBox *>("chk_plotpts");
+		rbCols      = d->findChild<QRadioButton *>("rb_cols");
+		rbParams    = d->findChild<QRadioButton *>("rb_params");
+		static const char *colNames[6] = { "chk_ox", "chk_oy", "chk_oz", "chk_om", "chk_or", "chk_ow" };
+		for (int i = 0; i < 6; ++i) colChk[i] = d->findChild<QCheckBox *>(colNames[i]);
+
+		if (modelCb) {                                   // -N, 1 to 10 terms [4 = bilinear]
+			for (int k = 1; k <= 10; ++k) modelCb->addItem(QString::number(k));
+			modelCb->setCurrentIndex(3);
+		}
+		if (weightsCb) {                                 // data = what Julia sends as "weights"
+			weightsCb->addItem("none (3 columns)", "");
+			weightsCb->addItem("column 4 = weights", "plain");
+			weightsCb->addItem("column 4 = one-sigma uncertainties", "+s");
+			weightsCb->addItem("column 4 = weights, use as read", "+w");
+		}
+
+		if (auto *b = d->findChild<QToolButton *>("btn_infile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select x,y,z table", prefStartDir(),
+					"Tables (*.dat *.txt *.xyz *.csv);;All files (*)");
+				if (!p.isEmpty() && inEdit) { inEdit->setText(p); rememberStartDir(p); }
+			});
+			if (inEdit) fileBoxDoubleClick(inEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save result table", prefStartDir(),
+					"Tables (*.dat *.txt);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+
+		for (QRadioButton *rb : { rbCols, rbParams })
+			if (rb) QObject::connect(rb, &QRadioButton::toggled, d, [this](bool) { syncOutput(); });
+		if (iterChk) QObject::connect(iterChk, &QCheckBox::toggled, d, [this](bool) { syncOutput(); });
+		syncOutput();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "trend2d");             // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	// The parameters ARE the other output: with -Fp there is no per-point row, so neither the column
+	// ticks nor "plot the points" mean anything. The confidence level belongs to the iterative fit.
+	void syncOutput() {
+		const bool params = rbParams && rbParams->isChecked();
+		for (int i = 0; i < 6; ++i) if (colChk[i]) colChk[i]->setEnabled(!params);
+		if (plotChk) plotChk->setEnabled(!params);
+		if (confEdit) confEdit->setEnabled(iterChk && iterChk->isChecked());
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaTrend2D) {
+			QMessageBox::warning(d, "trend2d", "trend2d: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		if (txt(inEdit).isEmpty()) {
+			QMessageBox::warning(d, "trend2d", "Pick the x,y,z table to fit.");
+			return;
+		}
+		const bool params = rbParams && rbParams->isChecked();
+		QStringList kv;
+		kv << "infile=" + txt(inEdit);
+		if (!txt(headersEdit).isEmpty()) kv << "headers=" + txt(headersEdit);
+		kv << QString("toggle=%1").arg(toggleChk && toggleChk->isChecked() ? 1 : 0);
+		if (modelCb) kv << "model=" + modelCb->currentText();
+		kv << QString("robust=%1").arg(robustChk && robustChk->isChecked() ? 1 : 0);
+		kv << QString("iterate=%1").arg(iterChk && iterChk->isChecked() ? 1 : 0);
+		if (!txt(confEdit).isEmpty()) kv << "confidence=" + txt(confEdit);
+		if (!txt(condEdit).isEmpty()) kv << "condition=" + txt(condEdit);
+		if (weightsCb && !weightsCb->currentData().toString().isEmpty())
+			kv << "weights=" + weightsCb->currentData().toString();
+		kv << QString("params=%1").arg(params ? 1 : 0);
+		if (!params) {
+			static const char *letters[6] = { "x", "y", "z", "m", "r", "w" };
+			int ticked = 0;
+			for (int i = 0; i < 6; ++i)
+				if (colChk[i] && colChk[i]->isChecked()) { kv << QString("col_%1=1").arg(letters[i]); ++ticked; }
+			if (ticked == 0) {
+				QMessageBox::warning(d, "trend2d", "Tick at least one output column.");
+				return;
+			}
+			kv << QString("plotpts=%1").arg(plotChk && plotChk->isChecked() ? 1 : 0);
+		}
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+
+		showBusyDialog("Fitting the trend…");
+		const int ok = g_juliaTrend2D(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "trend2d",
+		                              "trend2d failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// Make CPT (GMT menu) — ONE dialog over makecpt AND grd2cpt, because they are one question asked
+// two ways: "which colours, over which z range?". The two radios pick where the range comes from —
+// the boxes (makecpt) or the DATA in this window's grid (grd2cpt, which can also equalize the
+// histogram) — and everything after that decision (continuity, reversal, log, truncation,
+// transparency, the background/foreground/NaN colours, the written colour model) is the same option
+// on both sides, so it lives in one shared group. Loaded at RUNTIME via QUiLoader from
+// deps/ui/cpt_build_dialog.ui.
+//
+// This is NOT a second Color Palettes tool (Image > Color Palettes): that one CHOOSES a palette out
+// of the six families, in RGB rows. This one DRIVES the two GMT modules and hands the result to the
+// same per-layer recolour road the colour-bar's own chooser uses, so the surface, its LOD tiles and
+// the colour bar all follow.
+//
+// The green ? disk uses the varying-module overload: it opens makecpt's page or grd2cpt's, whichever
+// radio is down at the moment it is clicked.
+// ============================================================================================
+class CptBuildDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QRadioButton *rbMake = nullptr, *rbGrd = nullptr;
+	QComboBox *masterCb = nullptr, *tmodCb = nullptr, *symCb = nullptr, *invertCb = nullptr;
+	QComboBox *bfnCb = nullptr, *modelCb = nullptr;
+	QLineEdit *tminEdit = nullptr, *tmaxEdit = nullptr, *tincEdit = nullptr;
+	QLineEdit *nlevEdit = nullptr, *lminEdit = nullptr, *lmaxEdit = nullptr;
+	QLineEdit *gloEdit = nullptr, *ghiEdit = nullptr, *alphaEdit = nullptr, *outEdit = nullptr;
+	QCheckBox *cdfChk = nullptr, *contChk = nullptr, *logChk = nullptr, *alphaAllChk = nullptr;
+	QCheckBox *catChk = nullptr, *wrapChk = nullptr, *applyChk = nullptr;
+	QGroupBox *rangeGb = nullptr, *grdGb = nullptr;
+	// Optional consumer of the palette this dialog has just built, set by whoever opened it — Image >
+	// Color Palettes uses it to pull the result straight into its own list. When it is set the build
+	// ALWAYS goes through a file (a temp one when the user named none), so the consumer takes the
+	// palette-reading road that already exists instead of a second one invented for it.
+	std::function<void(const QString &)> onBuilt;
+
+	explicit CptBuildDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/cpt_build_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("CptBuildDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("CptBuildDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("Make CPT");
+		QDialog *d = dlg;
+
+		rbMake   = d->findChild<QRadioButton *>("rb_make");
+		rbGrd    = d->findChild<QRadioButton *>("rb_grd");
+		masterCb = d->findChild<QComboBox *>("cb_master");
+		tmodCb   = d->findChild<QComboBox *>("cb_tmod");
+		symCb    = d->findChild<QComboBox *>("cb_symmetric");
+		invertCb = d->findChild<QComboBox *>("cb_invert");
+		bfnCb    = d->findChild<QComboBox *>("cb_bfn");
+		modelCb  = d->findChild<QComboBox *>("cb_colormodel");
+		tminEdit = d->findChild<QLineEdit *>("edit_tmin");
+		tmaxEdit = d->findChild<QLineEdit *>("edit_tmax");
+		tincEdit = d->findChild<QLineEdit *>("edit_tinc");
+		nlevEdit = d->findChild<QLineEdit *>("edit_nlevels");
+		lminEdit = d->findChild<QLineEdit *>("edit_lmin");
+		lmaxEdit = d->findChild<QLineEdit *>("edit_lmax");
+		gloEdit  = d->findChild<QLineEdit *>("edit_glo");
+		ghiEdit  = d->findChild<QLineEdit *>("edit_ghi");
+		alphaEdit = d->findChild<QLineEdit *>("edit_alpha");
+		outEdit  = d->findChild<QLineEdit *>("edit_outfile");
+		cdfChk   = d->findChild<QCheckBox *>("chk_cdf");
+		contChk  = d->findChild<QCheckBox *>("chk_continuous");
+		logChk   = d->findChild<QCheckBox *>("chk_log");
+		alphaAllChk = d->findChild<QCheckBox *>("chk_alphaall");
+		catChk   = d->findChild<QCheckBox *>("chk_categorical");
+		wrapChk  = d->findChild<QCheckBox *>("chk_wrap");
+		applyChk = d->findChild<QCheckBox *>("chk_apply");
+		rangeGb  = d->findChild<QGroupBox *>("gb_range");
+		grdGb    = d->findChild<QGroupBox *>("gb_grd");
+
+		// A useful spread of GMT's own masters, and the box is EDITABLE — any other master name, or
+		// the path of a .cpt file, is typed (or picked with the button) exactly as GMT would take it.
+		if (masterCb) {
+			for (const char *m : { "turbo", "viridis", "magma", "inferno", "plasma", "roma", "vik",
+			                       "batlow", "hot", "cool", "jet", "rainbow", "seis", "polar",
+			                       "gray", "haxby", "no_green", "panoply", "drywet", "categorical",
+			                       "geo", "globe", "etopo1", "relief", "topo", "terra", "bathy",
+			                       "abyss", "ocean", "sealand", "srtm", "dem1", "dem2", "world" })
+				masterCb->addItem(m);
+			masterCb->setCurrentText("turbo");
+		}
+		if (tmodCb) {                                    // what the interval box means (-T modifiers)
+			tmodCb->addItem("interval = slice width", "");
+			tmodCb->addItem("interval = number of boundaries", "+n");
+			tmodCb->addItem("log10-spaced slices", "+l");
+			tmodCb->addItem("interval is 1/interval", "+i");
+		}
+		if (symCb) {                                     // grd2cpt -S: symmetric about zero
+			symCb->addItem("no", "");
+			symCb->addItem("range = max(|zmin|,|zmax|)", "h");
+			symCb->addItem("range = |zmin|", "l");
+			symCb->addItem("range = min(|zmin|,|zmax|)", "m");
+			symCb->addItem("range = |zmax|", "u");
+		}
+		if (invertCb) {
+			invertCb->addItem("nothing", "");
+			invertCb->addItem("the colours", "c");
+			invertCb->addItem("the z values", "z");
+			invertCb->addItem("both", "cz");
+		}
+		if (bfnCb) {
+			bfnCb->addItem("as the master has them", "");
+			bfnCb->addItem("the CPT's own extreme colours (D)", "D");
+			bfnCb->addItem("the input's extreme colours (Di)", "Di");
+			bfnCb->addItem("the gmt.conf colours (M)", "M");
+			bfnCb->addItem("do not write them (N)", "N");
+		}
+		if (modelCb) {                                   // -F, the written colour model
+			modelCb->addItem("names / r/g/b (R)", "");
+			modelCb->addItem("r/g/b (r)", "r");
+			modelCb->addItem("h-s-v (h)", "h");
+			modelCb->addItem("c/m/y/k (c)", "c");
+			modelCb->addItem("gray (g)", "g");
+			modelCb->addItem("#rrggbb (x)", "x");
+		}
+
+		if (auto *b = d->findChild<QToolButton *>("btn_master")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select a master CPT", prefStartDir(),
+					"CPT files (*.cpt);;All files (*)");
+				if (!p.isEmpty() && masterCb) { masterCb->setCurrentText(p); rememberStartDir(p); }
+			});
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save CPT", prefStartDir(),
+					"CPT files (*.cpt);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+		// "Fill from the window's grid": the ACTIVE layer's own z range, the same resolver the colour
+		// bar and every host-side computation use — never the base grid when another one is on top.
+		if (auto *b = d->findChild<QPushButton *>("push_fromgrid")) {
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() {
+				ActiveGrid ag = resolveActiveGrid(scn);
+				if (!ag.valid) {
+					QMessageBox::warning(d, "Make CPT", "This window is showing no grid.");
+					return;
+				}
+				if (tminEdit) tminEdit->setText(QString::number(ag.zmin, 'g', 10));
+				if (tmaxEdit) tmaxEdit->setText(QString::number(ag.zmax, 'g', 10));
+			});
+		}
+
+		for (QRadioButton *rb : { rbMake, rbGrd })
+			if (rb) QObject::connect(rb, &QRadioButton::toggled, d, [this](bool) { syncMode(); });
+		if (catChk) QObject::connect(catChk, &QCheckBox::toggled, d, [this](bool) { syncMode(); });
+		if (alphaEdit) QObject::connect(alphaEdit, &QLineEdit::textChanged, d, [this](const QString &) { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		// The manual page follows the radio that is down — one dialog, two module pages.
+		addManualButton(d, [this]() { return grdMode() ? QString("grd2cpt") : QString("makecpt"); });
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	bool grdMode() const { return rbGrd && rbGrd->isChecked(); }
+	QString cbData(QComboBox *cb) const { return cb ? cb->currentData().toString() : QString(); }
+
+	// Each mode owns its own range group; "cyclic" is a modifier of "categorical", not a switch of
+	// its own; and "including B/F/NaN" only means something once a transparency is set.
+	void syncMode() {
+		const bool grd = grdMode();
+		if (rangeGb) rangeGb->setEnabled(!grd);
+		if (grdGb)   grdGb->setEnabled(grd);
+		if (wrapChk) wrapChk->setEnabled(catChk && catChk->isChecked());
+		if (alphaAllChk) alphaAllChk->setEnabled(alphaEdit && !alphaEdit->text().trimmed().isEmpty());
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaCptBuild) {
+			QMessageBox::warning(d, "Make CPT", "Make CPT: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		const bool apply = applyChk && applyChk->isChecked();
+		// An importer that wants the palette back needs it written somewhere; a temp file when the user
+		// named none. That also satisfies the "apply it, save it, or both" rule below on its own.
+		QString outPath = txt(outEdit);
+		if (onBuilt && outPath.isEmpty()) outPath = QDir::tempPath() + "/igmt_makecpt.cpt";
+		if (!apply && outPath.isEmpty()) {
+			QMessageBox::warning(d, "Make CPT", "Apply the palette to the window, save it to a file, or both.");
+			return;
+		}
+		QStringList kv;
+		kv << QString("mode=") + (grdMode() ? "grd" : "make");
+		if (masterCb && !masterCb->currentText().trimmed().isEmpty())
+			kv << "master=" + masterCb->currentText().trimmed();
+		if (grdMode()) {
+			if (!txt(nlevEdit).isEmpty()) kv << "nlevels=" + txt(nlevEdit);
+			kv << QString("cdf=%1").arg(cdfChk && cdfChk->isChecked() ? 1 : 0);
+			if (!txt(lminEdit).isEmpty()) kv << "lmin=" + txt(lminEdit);
+			if (!txt(lmaxEdit).isEmpty()) kv << "lmax=" + txt(lmaxEdit);
+			if (!cbData(symCb).isEmpty()) kv << "symmetric=" + cbData(symCb);
+		}
+		else {
+			if (!txt(tminEdit).isEmpty()) kv << "tmin=" + txt(tminEdit);
+			if (!txt(tmaxEdit).isEmpty()) kv << "tmax=" + txt(tmaxEdit);
+			if (!txt(tincEdit).isEmpty()) kv << "tinc=" + txt(tincEdit);
+			if (!cbData(tmodCb).isEmpty()) kv << "tmod=" + cbData(tmodCb);
+		}
+		kv << QString("continuous=%1").arg(contChk && contChk->isChecked() ? 1 : 0);
+		kv << QString("log=%1").arg(logChk && logChk->isChecked() ? 1 : 0);
+		if (!cbData(invertCb).isEmpty()) kv << "invert=" + cbData(invertCb);
+		if (!cbData(modelCb).isEmpty())  kv << "colormodel=" + cbData(modelCb);
+		if (!cbData(bfnCb).isEmpty())    kv << "bfn=" + cbData(bfnCb);
+		if (!txt(gloEdit).isEmpty())     kv << "glo=" + txt(gloEdit);
+		if (!txt(ghiEdit).isEmpty())     kv << "ghi=" + txt(ghiEdit);
+		if (!txt(alphaEdit).isEmpty()) {
+			kv << "alpha=" + txt(alphaEdit);
+			kv << QString("alphaall=%1").arg(alphaAllChk && alphaAllChk->isChecked() ? 1 : 0);
+		}
+		kv << QString("categorical=%1").arg(catChk && catChk->isChecked() ? 1 : 0);
+		kv << QString("wrap=%1").arg(wrapChk && wrapChk->isChecked() && catChk && catChk->isChecked() ? 1 : 0);
+		if (!outPath.isEmpty()) kv << "outfile=" + outPath;
+
+		// The layer the palette is FOR: its Scene Objects label (grd2cpt reads that grid host-side),
+		// its unique group tag (which layer to recolour) and its own z range — all from the one
+		// resolver, so this can never build from one grid and colour another.
+		kv << QString("apply=%1").arg(apply ? 1 : 0);
+		ActiveGrid ag = resolveActiveGrid(scn);
+		if (ag.valid) {
+			kv << "grid=" + QString::fromStdString(ag.name);
+			kv << QString("gridsel=%1").arg(ag.tag);
+			kv << QString("zmin=%1").arg(ag.zmin, 0, 'g', 17);
+			kv << QString("zmax=%1").arg(ag.zmax, 0, 'g', 17);
+		}
+		else if (grdMode() || apply) {
+			QMessageBox::warning(d, "Make CPT", "This window is showing no grid to build from or colour.");
+			return;
+		}
+
+		showBusyDialog("Building the palette…");
+		const int ok = g_juliaCptBuild(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "Make CPT",
+		                              "Make CPT failed — see this window's Errors console for details.");
+		else if (onBuilt && !outPath.isEmpty()) onBuilt(outPath);
+	}
+};
+
+// ============================================================================================
+// grdhisteq (GMT menu) — histogram equalization of the window's grid. Loaded at RUNTIME via
+// QUiLoader from deps/ui/grdhisteq_dialog.ui.
+//
+// The two radios at the top are the module's own two OUTPUTS — GMT itself insists on one of them
+// ("Either -D or -G is required for output"): a new grid, or the table of data values that divide
+// the grid into cells of equal area. The "How" group belongs to the grid: equal-area CELL INDICES
+// (-C, optionally quadratic -Q) or standard NORMAL SCORES (-N), which the module refuses to combine
+// with either of those two — so picking it greys them out instead of letting the run fail.
+//
+// The level table is built from the same -C cells, so that box stays live for it; the normal-scores
+// radio does not apply there at all.
+// ============================================================================================
+class GrdHistEqDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QRadioButton *rbGrid = nullptr, *rbTable = nullptr, *rbCells = nullptr, *rbGauss = nullptr;
+	QLineEdit *ncellsEdit = nullptr, *normEdit = nullptr, *outEdit = nullptr;
+	GeoGridGeometry *geo = nullptr;        // the adopted .ui block (region + spacing + Ref grid)
+	QCheckBox *quadChk = nullptr;
+
+	explicit GrdHistEqDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdhisteq_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdHistEqDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdHistEqDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("grdhisteq");
+		QDialog *d = dlg;
+
+		rbGrid     = d->findChild<QRadioButton *>("rb_grid");
+		rbTable    = d->findChild<QRadioButton *>("rb_table");
+		rbCells    = d->findChild<QRadioButton *>("rb_cells");
+		rbGauss    = d->findChild<QRadioButton *>("rb_gaussian");
+		ncellsEdit = d->findChild<QLineEdit *>("edit_ncells");
+		normEdit   = d->findChild<QLineEdit *>("edit_norm");
+		outEdit    = d->findChild<QLineEdit *>("edit_outfile");
+		quadChk    = d->findChild<QCheckBox *>("chk_quadratic");
+		geo = GeoGridGeometry::adopt(d);       // the SAME block grdsample uses, wiring and all
+
+		// Prefill the geometry from the window's own grid — the standing rule for every region spec.
+		if (geo && scene) {
+			if (scene->gnx > 1 && scene->gny > 1)
+				geo->fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8")
+					.arg(scene->gx0).arg(scene->gx1).arg(scene->gy0).arg(scene->gy1)
+					.arg(scene->gdx).arg(scene->gdy).arg(scene->gnx).arg(scene->gny));
+			else if (scene->x1 > scene->x0 && scene->y1 > scene->y0)
+				geo->fillGeometry(QString("%1/%2/%3/%4////").arg(scene->x0).arg(scene->x1)
+					.arg(scene->y0).arg(scene->y1));
+		}
+
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				const bool table = rbTable && rbTable->isChecked();
+				QString p = QFileDialog::getSaveFileName(d, "Save result", prefStartDir(),
+					table ? "Tables (*.dat *.txt);;All files (*)" : "Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+
+		for (QRadioButton *rb : { rbGrid, rbTable, rbCells, rbGauss })
+			if (rb) QObject::connect(rb, &QRadioButton::toggled, d, [this](bool) { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "grdhisteq");           // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	bool tableMode() const { return rbTable && rbTable->isChecked(); }
+	bool gaussian()  const { return !tableMode() && rbGauss && rbGauss->isChecked(); }
+
+	// Normal scores are a different transform, not a variant of the cells: the module rejects -N with
+	// -C or -Q outright, so those controls go dead while it is picked. The level table has no such
+	// flavour at all — it IS the cells — so the two flavour radios only live in grid mode.
+	void syncMode() {
+		const bool table = tableMode();
+		const bool gauss = gaussian();
+		if (rbCells) rbCells->setEnabled(!table);
+		if (rbGauss) rbGauss->setEnabled(!table);
+		if (ncellsEdit) ncellsEdit->setEnabled(!gauss);
+		if (quadChk)    quadChk->setEnabled(!gauss && !table);
+		if (normEdit)   normEdit->setEnabled(gauss);
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGrdHistEq) {
+			QMessageBox::warning(d, "grdhisteq", "grdhisteq: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		QStringList kv;
+		kv << QString("mode=") + (tableMode() ? "table" : "grid");
+		kv << QString("flavour=") + (gaussian() ? "gaussian" : "cells");
+		if (!txt(ncellsEdit).isEmpty()) kv << "ncells=" + txt(ncellsEdit);
+		kv << QString("quadratic=%1").arg(quadChk && quadChk->isChecked() && !gaussian() ? 1 : 0);
+		if (gaussian() && !txt(normEdit).isEmpty()) kv << "norm=" + txt(normEdit);
+		// -R only when all four boxes are filled: a half-typed region is not a request.
+		if (geo && !geo->region().contains("//")) kv << "region=" + geo->region();
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+		kv << "grid=" + QString::fromStdString(activeGridName(scn));   // equalize the DISPLAYED layer
+
+		showBusyDialog(tableMode() ? "Finding the levels…" : "Equalizing…");
+		const int ok = g_juliaGrdHistEq(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "grdhisteq",
+		                              "grdhisteq failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// xyz2grd (GMT menu) — turn an x,y,z TABLE into a grid. Loaded at RUNTIME via QUiLoader from
+// deps/ui/xyz2grd_dialog.ui.
+//
+// This is not gridding and the dialog says so at the top: xyz2grd assumes the points already SIT on
+// the nodes of the region/increment given, which is what makes it exact — and what makes it able to
+// read a bare one-column table in a stated node order (-Z). Scattered data belong in the
+// Interpolate dialog instead.
+//
+// The Region + increment group carries the standing "OR Ref grid" row, which here fills the
+// increments too: pointing at an existing grid is the fastest way to state the geometry a table was
+// sampled on. Needs no grid in the window — it MAKES one.
+// ============================================================================================
+class Xyz2GrdDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QLineEdit *inEdit = nullptr, *headersEdit = nullptr, *incolsEdit = nullptr, *zflagsEdit = nullptr;
+	GeoGridGeometry *geo = nullptr;        // the adopted .ui block (region + spacing + Ref grid)
+	QLineEdit *outEdit = nullptr;
+	QLineEdit *dxname = nullptr, *dyname = nullptr, *dzname = nullptr, *dtitle = nullptr, *dremark = nullptr;
+	QComboBox *amodeCb = nullptr;
+	QCheckBox *toggleChk = nullptr, *pixelChk = nullptr, *geogChk = nullptr;
+
+	explicit Xyz2GrdDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/xyz2grd_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("Xyz2GrdDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("Xyz2GrdDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("xyz2grd");
+		QDialog *d = dlg;
+
+		inEdit      = d->findChild<QLineEdit *>("edit_infile");
+		headersEdit = d->findChild<QLineEdit *>("edit_headers");
+		incolsEdit  = d->findChild<QLineEdit *>("edit_incols");
+		zflagsEdit  = d->findChild<QLineEdit *>("edit_zflags");
+		geo = GeoGridGeometry::adopt(d);       // the SAME block grdsample uses, wiring and all
+		outEdit = d->findChild<QLineEdit *>("edit_outfile");
+		dxname  = d->findChild<QLineEdit *>("edit_dxname");
+		dyname  = d->findChild<QLineEdit *>("edit_dyname");
+		dzname  = d->findChild<QLineEdit *>("edit_dzname");
+		dtitle  = d->findChild<QLineEdit *>("edit_dtitle");
+		dremark = d->findChild<QLineEdit *>("edit_dremark");
+		amodeCb   = d->findChild<QComboBox *>("cb_amode");
+		toggleChk = d->findChild<QCheckBox *>("chk_toggle");
+		pixelChk  = d->findChild<QCheckBox *>("chk_pixel");
+		geogChk   = d->findChild<QCheckBox *>("chk_geog");
+
+		if (amodeCb) {                                   // data = the -A directive letter
+			amodeCb->addItem("mean (default)", "");
+			amodeCb->addItem("first value", "f");
+			amodeCb->addItem("last value", "s");
+			amodeCb->addItem("lowest", "l");
+			amodeCb->addItem("highest", "u");
+			amodeCb->addItem("range (max - min)", "d");
+			amodeCb->addItem("number of points", "n");
+			amodeCb->addItem("sum", "z");
+			amodeCb->addItem("rms", "r");
+			amodeCb->addItem("standard deviation", "S");
+		}
+		// Prefill the geometry from the window's own grid — the standing rule for every region spec.
+		if (geo && scene) {
+			if (scene->gnx > 1 && scene->gny > 1)
+				geo->fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8")
+					.arg(scene->gx0).arg(scene->gx1).arg(scene->gy0).arg(scene->gy1)
+					.arg(scene->gdx).arg(scene->gdy).arg(scene->gnx).arg(scene->gny));
+			else if (scene->x1 > scene->x0 && scene->y1 > scene->y0)
+				geo->fillGeometry(QString("%1/%2/%3/%4////").arg(scene->x0).arg(scene->x1)
+					.arg(scene->y0).arg(scene->y1));
+		}
+		if (geogChk) geogChk->setChecked(scene && scene->baseGeog);
+
+		if (auto *b = d->findChild<QToolButton *>("btn_infile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select x,y,z table", prefStartDir(),
+					"Tables (*.dat *.txt *.xyz *.csv);;All files (*)");
+				if (!p.isEmpty() && inEdit) { inEdit->setText(p); rememberStartDir(p); }
+			});
+			if (inEdit) fileBoxDoubleClick(inEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save grid", prefStartDir(),
+					"Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "xyz2grd");             // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaXyz2Grd) {
+			QMessageBox::warning(d, "xyz2grd", "xyz2grd: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		if (txt(inEdit).isEmpty()) {
+			QMessageBox::warning(d, "xyz2grd", "Pick the table to convert.");
+			return;
+		}
+		if (!geo || geo->region().contains("//")) {
+			QMessageBox::warning(d, "xyz2grd", "Give the full region the table covers.");
+			return;
+		}
+		if (!geo || geo->inc().isEmpty()) {
+			QMessageBox::warning(d, "xyz2grd", "Give the grid increment.");
+			return;
+		}
+		QStringList kv;
+		kv << "infile=" + txt(inEdit);
+		if (!txt(headersEdit).isEmpty()) kv << "headers=" + txt(headersEdit);
+		if (!txt(incolsEdit).isEmpty())  kv << "incols=" + txt(incolsEdit);
+		if (!txt(zflagsEdit).isEmpty())  kv << "zflags=" + txt(zflagsEdit);
+		kv << QString("toggle=%1").arg(toggleChk && toggleChk->isChecked() ? 1 : 0);
+		kv << "region=" + geo->region();
+		// One increment or two: "dx/dy" only when y differs, which is the module's own spelling.
+		kv << "inc=" + geo->inc();
+		kv << QString("pixel=%1").arg(pixelChk && pixelChk->isChecked() ? 1 : 0);
+		kv << QString("geog=%1").arg(geogChk && geogChk->isChecked() ? 1 : 0);
+		if (amodeCb && !amodeCb->currentData().toString().isEmpty())
+			kv << "amode=" + amodeCb->currentData().toString();
+		for (auto pr : { std::make_pair(QString("dxname"), dxname), std::make_pair(QString("dyname"), dyname),
+		                 std::make_pair(QString("dzname"), dzname), std::make_pair(QString("dtitle"), dtitle),
+		                 std::make_pair(QString("dremark"), dremark) })
+			if (!txt(pr.second).isEmpty()) kv << pr.first + "=" + txt(pr.second);
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+
+		showBusyDialog("Building the grid…");
+		const int ok = g_juliaXyz2Grd(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "xyz2grd",
+		                              "xyz2grd failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// grdfill (GMT menu) — fill the holes in the window's grid, or just find them. Loaded at RUNTIME
+// via QUiLoader from deps/ui/grdfill_dialog.ui.
+//
+// The two radios are the module's own two outcomes: FILL (one of the four -A algorithms) or LIST
+// (-L, which fills nothing and ignores -G). Each algorithm's own argument box is the only one live,
+// because a search radius means nothing to a constant fill — and "as closed polygons" is what makes
+// the found holes drawable, so "draw them on the map" follows it rather than standing alone.
+//
+// A hole is a run of NaNs unless the -N box names another value; that box belongs to both outcomes,
+// so it sits outside the two groups.
+// ============================================================================================
+class GrdFillDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QRadioButton *rbFill = nullptr, *rbList = nullptr;
+	QComboBox *algoCb = nullptr;
+	QLineEdit *valueEdit = nullptr, *radiusEdit = nullptr, *tensionEdit = nullptr;
+	QLineEdit *gridfileEdit = nullptr, *nodataEdit = nullptr, *outEdit = nullptr;
+	GeoGridGeometry *geo = nullptr;        // the adopted .ui block (region + spacing + Ref grid)
+	QCheckBox *polyChk = nullptr, *drawChk = nullptr;
+	QGroupBox *fillGb = nullptr, *listGb = nullptr;
+
+	explicit GrdFillDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdfill_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdFillDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdFillDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("grdfill");
+		QDialog *d = dlg;
+
+		rbFill       = d->findChild<QRadioButton *>("rb_fill");
+		rbList       = d->findChild<QRadioButton *>("rb_list");
+		algoCb       = d->findChild<QComboBox *>("cb_algo");
+		valueEdit    = d->findChild<QLineEdit *>("edit_value");
+		radiusEdit   = d->findChild<QLineEdit *>("edit_radius");
+		tensionEdit  = d->findChild<QLineEdit *>("edit_tension");
+		gridfileEdit = d->findChild<QLineEdit *>("edit_gridfile");
+		nodataEdit   = d->findChild<QLineEdit *>("edit_nodata");
+		outEdit      = d->findChild<QLineEdit *>("edit_outfile");
+		geo = GeoGridGeometry::adopt(d);       // the SAME block grdsample uses, wiring and all
+		polyChk = d->findChild<QCheckBox *>("chk_polygons");
+		drawChk = d->findChild<QCheckBox *>("chk_draw");
+		fillGb  = d->findChild<QGroupBox *>("gb_fill");
+		listGb  = d->findChild<QGroupBox *>("gb_list");
+
+		if (algoCb) {                                    // data = the -A directive letter
+			algoCb->addItem("a constant value", "c");
+			algoCb->addItem("the nearest neighbour", "n");
+			algoCb->addItem("a bicubic spline", "s");
+			algoCb->addItem("another grid, sampled", "g");
+		}
+		// Prefill the geometry from the window's own grid — the standing rule for every region spec.
+		if (geo && scene) {
+			if (scene->gnx > 1 && scene->gny > 1)
+				geo->fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8")
+					.arg(scene->gx0).arg(scene->gx1).arg(scene->gy0).arg(scene->gy1)
+					.arg(scene->gdx).arg(scene->gdy).arg(scene->gnx).arg(scene->gny));
+			else if (scene->x1 > scene->x0 && scene->y1 > scene->y0)
+				geo->fillGeometry(QString("%1/%2/%3/%4////").arg(scene->x0).arg(scene->x1)
+					.arg(scene->y0).arg(scene->y1));
+		}
+
+		if (auto *b = d->findChild<QToolButton *>("btn_gridfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select the grid to sample", prefStartDir(),
+					"Grids (*.grd *.nc *.tif *.tiff);;All files (*)");
+				if (!p.isEmpty() && gridfileEdit) { gridfileEdit->setText(p); rememberStartDir(p); }
+			});
+			if (gridfileEdit) fileBoxDoubleClick(gridfileEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				const bool table = rbList && rbList->isChecked();
+				QString p = QFileDialog::getSaveFileName(d, "Save result", prefStartDir(),
+					table ? "Tables (*.dat *.txt);;All files (*)" : "Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+
+		for (QRadioButton *rb : { rbFill, rbList })
+			if (rb) QObject::connect(rb, &QRadioButton::toggled, d, [this](bool) { syncMode(); });
+		if (algoCb) QObject::connect(algoCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                             [this]() { syncMode(); });
+		if (polyChk) QObject::connect(polyChk, &QCheckBox::toggled, d, [this](bool) { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "grdfill");             // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	bool listMode() const { return rbList && rbList->isChecked(); }
+	QString algo() const { return algoCb ? algoCb->currentData().toString() : QString("c"); }
+
+	// Only the chosen algorithm's own argument stays live, and only closed polygons can be drawn —
+	// a list of bounding-box numbers is not a shape.
+	void syncMode() {
+		const bool list = listMode();
+		if (fillGb) fillGb->setEnabled(!list);
+		if (listGb) listGb->setEnabled(list);
+		const QString a = algo();
+		if (valueEdit)    valueEdit->setEnabled(!list && a == "c");
+		if (radiusEdit)   radiusEdit->setEnabled(!list && a == "n");
+		if (tensionEdit)  tensionEdit->setEnabled(!list && a == "s");
+		if (gridfileEdit) gridfileEdit->setEnabled(!list && a == "g");
+		if (auto *b = dlg->findChild<QToolButton *>("btn_gridfile")) b->setEnabled(!list && a == "g");
+		if (drawChk) drawChk->setEnabled(list && polyChk && polyChk->isChecked());
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGrdFill) {
+			QMessageBox::warning(d, "grdfill", "grdfill: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		QStringList kv;
+		kv << QString("mode=") + (listMode() ? "list" : "fill");
+		if (listMode()) {
+			kv << QString("polygons=%1").arg(polyChk && polyChk->isChecked() ? 1 : 0);
+			kv << QString("draw=%1").arg(drawChk && drawChk->isChecked() && polyChk && polyChk->isChecked() ? 1 : 0);
+		}
+		else {
+			kv << "algo=" + algo();
+			if (!txt(valueEdit).isEmpty())    kv << "value=" + txt(valueEdit);
+			if (!txt(radiusEdit).isEmpty())   kv << "radius=" + txt(radiusEdit);
+			if (!txt(tensionEdit).isEmpty())  kv << "tension=" + txt(tensionEdit);
+			if (!txt(gridfileEdit).isEmpty()) kv << "gridfile=" + txt(gridfileEdit);
+		}
+		if (!txt(nodataEdit).isEmpty()) kv << "nodata=" + txt(nodataEdit);
+		if (geo && !geo->region().contains("//")) kv << "region=" + geo->region();
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+		kv << "grid=" + QString::fromStdString(activeGridName(scn));   // fill the DISPLAYED layer
+
+		showBusyDialog(listMode() ? "Looking for holes…" : "Filling…");
+		const int ok = g_juliaGrdFill(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "grdfill",
+		                              "grdfill failed — see this window's Errors console for details.");
+	}
+};
+
 // ============================================================================================
 // grdlandmask (GMT menu) — build a wet/dry mask grid from the shoreline database. Layout is Mirone's
 // grdlandmask window: the shared "Griding Line Geometry" block, coastline resolution, Min area (-A),
@@ -15243,9 +16343,10 @@ public:
 	}
 
 	// ---- File > Read / Save GMT palette ----------------------------------------------------
-	void readCpt(bool useZ) {
-		const QString f = QFileDialog::getOpenFileName(win, "Select CPT file", QString(),
-		                                               "CPT files (*.cpt *.CPT);;All files (*)");
+	// THE palette-import road: a .cpt file on disk becomes this window's imported palette. Both the
+	// File > Read GMT palette menu and the Make CPT bridge below come through here — one function, one
+	// behaviour, whatever produced the file.
+	void importCptFile(const QString &f, bool useZ, const QString &what) {
 		if (f.isEmpty()) return;
 		std::vector<PalRGB> rows;  QString info;
 		if (!palCall(QString("readcpt;%1;%2").arg(useZ ? "zlevels" : "master", f), rows, false, &info)) return;
@@ -15254,10 +16355,15 @@ public:
 		const QStringList t = info.split(' ', Qt::SkipEmptyParts);
 		if (t.size() >= 2) { zlo = t[0].toDouble();  zhi = t[1].toDouble(); }
 		loading = true;
-		list->item(0)->setText(QString("Imported (%1)").arg(QFileInfo(f).fileName()));
+		list->item(0)->setText(QString("%1 (%2)").arg(what, QFileInfo(f).fileName()));
 		list->setCurrentRow(0);
 		loading = false;
 		setPalette(rows, zlo, zhi, 0, false);
+	}
+	void readCpt(bool useZ) {
+		importCptFile(QFileDialog::getOpenFileName(win, "Select CPT file", QString(),
+		                                           "CPT files (*.cpt *.CPT);;All files (*)"),
+		              useZ, "Imported");
 	}
 	void saveCpt(const char *mode) {
 		if (!bar || bar->pal.size() < 2) return;
@@ -15378,6 +16484,18 @@ public:
 		mOpt->addSeparator();
 		mOpt->addAction("Show CIE76 Delta E*",             [this]() { cie76("111"); });
 		mOpt->addAction("Show CIE76 lightness difference", [this]() { cie76("100"); });
+
+		// "Make CPT" — the GMT menu's own makecpt/grd2cpt dialog, opened from here and told to hand its
+		// result straight back into this window's list. This window LOADS palettes; that one CREATES
+		// them, so neither is a fork of the other: it is the SAME CptBuildDialog and the SAME
+		// importCptFile road File > Read GMT palette uses.
+		W->menuBar()->addAction("Make CPT", [this, W]() {
+			auto *b = new CptBuildDialog(W, scene_);
+			if (!b->dlg) { delete b; return; }
+			QPointer<QWidget> alive(W);           // the palette window may be closed before the build ends
+			b->onBuilt = [this, alive](const QString &f) { if (alive) importCptFile(f, false, "Made"); };
+			b->dlg->show();
+		});
 
 		W->menuBar()->addAction("Help", [W]() {
 			QMessageBox::information(W, "Help",
@@ -17689,6 +18807,46 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			return;
 		}
 		auto *w = new GrdTrendDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	mGMT->addAction("grdfft", [win, s]() {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "grdfft", "Load a grid into this window first.");
+			return;
+		}
+		auto *w = new GrdFFTDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	mGMT->addAction("grdhisteq", [win, s]() {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "grdhisteq", "Load a grid into this window first.");
+			return;
+		}
+		auto *w = new GrdHistEqDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	mGMT->addAction("grdfill", [win, s]() {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "grdfill", "Load a grid into this window first.");
+			return;
+		}
+		auto *w = new GrdFillDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	// xyz2grd MAKES a grid out of a table, so it needs none loaded either.
+	mGMT->addAction("xyz2grd", [win, s]() {
+		auto *w = new Xyz2GrdDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	// trend2d fits a TABLE, not the window's grid, so it needs no grid loaded — like Interpolate.
+	mGMT->addAction("trend2d", [win, s]() {
+		auto *w = new Trend2DDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	// Make CPT drives makecpt AND grd2cpt. makecpt needs no grid (a master + a typed range is a
+	// palette), so the dialog opens either way and says so when a grid is what is missing.
+	mGMT->addAction("Make CPT (makecpt / grd2cpt)", [win, s]() {
+		auto *w = new CptBuildDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
 
