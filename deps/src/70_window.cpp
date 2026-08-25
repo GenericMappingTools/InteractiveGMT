@@ -10016,6 +10016,2389 @@ public:
 };
 
 // ============================================================================================
+// gravfft (GMT menu) — the spectral (FFT) potential-field tool: the geopotential of the window's
+// surface, the isostatic response of an elastic plate under it, the admittance|coherence between
+// that surface and a second grid, and the theoretical admittance curve of a model alone.
+// Loaded at RUNTIME via QUiLoader from deps/ui/gravfft_dialog.ui.
+//
+// The module's own "three main modes" (plus the curve-only one) ARE the four tabs, so the tab in
+// front is the mode and no combination of switches can ask for two of them at once. What the tabs
+// SHARE stays outside them: the field/expansion row on top (-F, -E, -W, -fg), the elastic plate
+// model (-T, -Z) that Flexure, a theoretical admittance and the curve-only mode all read, and the
+// FFT block (-N). The plate group and the FFT block light up only for the tabs that use them, so
+// the dialog never offers a knob the chosen mode ignores.
+//
+// gravfft -C needs NO grid at all, so this dialog is offered even on a window that holds none —
+// there the three grid tabs are disabled and the curve tab is the one in front.
+// ============================================================================================
+class GravFFTDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	bool hasGrid = false;
+	QTabWidget *tabs = nullptr;
+	QComboBox *fieldCb = nullptr, *termsCb = nullptr, *theoModelCb = nullptr, *cModelCb = nullptr;
+	QComboBox *fftDimCb = nullptr, *detrendCb = nullptr, *extendCb = nullptr;
+	QLineEdit *levelEdit = nullptr, *densEdit = nullptr, *grid2Edit = nullptr;
+	QLineEdit *cnEdit = nullptr, *clambdaEdit = nullptr, *cdepthEdit = nullptr;
+	QLineEdit *teEdit = nullptr, *rholEdit = nullptr, *rhomEdit = nullptr, *rhowEdit = nullptr;
+	QLineEdit *rhoiEdit = nullptr, *zmEdit = nullptr, *zlEdit = nullptr;
+	QLineEdit *fftDimsEdit = nullptr, *taperEdit = nullptr, *outEdit = nullptr;
+	QCheckBox *levelKmChk = nullptr, *geogChk = nullptr, *mohoChk = nullptr, *flexTopoChk = nullptr;
+	QCheckBox *subplateChk = nullptr, *cohChk = nullptr, *waveChk = nullptr, *kmChk = nullptr;
+	QCheckBox *cWaveChk = nullptr, *fftVerbChk = nullptr;
+	QGroupBox *plateGb = nullptr, *fftGb = nullptr;
+
+	explicit GravFFTDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/gravfft_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GravFFTDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GravFFTDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("gravfft");
+		QDialog *d = dlg;
+		hasGrid = (scene && scene->surf && !scene->emptyStart && !scene->imageOnly);
+
+		tabs        = d->findChild<QTabWidget *>("tabs_mode");
+		fieldCb     = d->findChild<QComboBox *>("cb_field");
+		termsCb     = d->findChild<QComboBox *>("cb_terms");
+		theoModelCb = d->findChild<QComboBox *>("cb_theomodel");
+		cModelCb    = d->findChild<QComboBox *>("cb_cmodel");
+		fftDimCb    = d->findChild<QComboBox *>("cb_fftdim");
+		detrendCb   = d->findChild<QComboBox *>("cb_detrend");
+		extendCb    = d->findChild<QComboBox *>("cb_extend");
+		levelEdit   = d->findChild<QLineEdit *>("edit_level");
+		densEdit    = d->findChild<QLineEdit *>("edit_density");
+		grid2Edit   = d->findChild<QLineEdit *>("edit_grid2");
+		cnEdit      = d->findChild<QLineEdit *>("edit_cn");
+		clambdaEdit = d->findChild<QLineEdit *>("edit_clambda");
+		cdepthEdit  = d->findChild<QLineEdit *>("edit_cdepth");
+		teEdit      = d->findChild<QLineEdit *>("edit_te");
+		rholEdit    = d->findChild<QLineEdit *>("edit_rhol");
+		rhomEdit    = d->findChild<QLineEdit *>("edit_rhom");
+		rhowEdit    = d->findChild<QLineEdit *>("edit_rhow");
+		rhoiEdit    = d->findChild<QLineEdit *>("edit_rhoi");
+		zmEdit      = d->findChild<QLineEdit *>("edit_zm");
+		zlEdit      = d->findChild<QLineEdit *>("edit_zl");
+		fftDimsEdit = d->findChild<QLineEdit *>("edit_fftdims");
+		taperEdit   = d->findChild<QLineEdit *>("edit_taper");
+		outEdit     = d->findChild<QLineEdit *>("edit_outfile");
+		levelKmChk  = d->findChild<QCheckBox *>("chk_levelkm");
+		geogChk     = d->findChild<QCheckBox *>("chk_geog");
+		mohoChk     = d->findChild<QCheckBox *>("chk_moho");
+		flexTopoChk = d->findChild<QCheckBox *>("chk_flextopo");
+		subplateChk = d->findChild<QCheckBox *>("chk_subplate");
+		cohChk      = d->findChild<QCheckBox *>("chk_coherence");
+		waveChk     = d->findChild<QCheckBox *>("chk_wavelength");
+		kmChk       = d->findChild<QCheckBox *>("chk_km");
+		cWaveChk    = d->findChild<QCheckBox *>("chk_cwave");
+		fftVerbChk  = d->findChild<QCheckBox *>("chk_fftverbose");
+		plateGb     = d->findChild<QGroupBox *>("gb_plate");
+		fftGb       = d->findChild<QGroupBox *>("gb_fft");
+
+		if (fieldCb) {                                   // data = the -F argument, verbatim
+			fieldCb->addItem("Free-air anomaly", "f");
+			fieldCb->addItem("Free-air + slab correction", "f+s");
+			fieldCb->addItem("Free-air, zero far-field", "f+z");
+			fieldCb->addItem("Bouguer anomaly", "b");
+			fieldCb->addItem("Geoid", "g");
+			fieldCb->addItem("Vertical gravity gradient", "v");
+			fieldCb->addItem("East deflection of the vertical", "e");
+			fieldCb->addItem("North deflection of the vertical", "n");
+		}
+		if (termsCb) {                                   // -E, 1 to 10 [3]
+			for (int k = 1; k <= 10; ++k) termsCb->addItem(QString::number(k));
+			termsCb->setCurrentIndex(2);
+		}
+		if (theoModelCb) {
+			theoModelCb->addItem("none", "");
+			theoModelCb->addItem("loading from top", "t");
+			theoModelCb->addItem("loading from below", "b");
+		}
+		if (cModelCb) {
+			cModelCb->addItem("loading from top", "t");
+			cModelCb->addItem("loading from below", "b");
+		}
+		if (fftDimCb) {                                  // -N directive; "" = the module's own choice
+			fftDimCb->addItem("default (speed + accuracy)", "");
+			fftDimCb->addItem("most accurate (a)", "a");
+			fftDimCb->addItem("actual grid size (f)", "f");
+			fftDimCb->addItem("least memory (m)", "m");
+			fftDimCb->addItem("fastest (r)", "r");
+			fftDimCb->addItem("given below (nx/ny)", "nxny");
+		}
+		if (detrendCb) {                                 // gravfft's own default is +h (Parker)
+			detrendCb->addItem("module default (mid value)", "");
+			detrendCb->addItem("remove mid value (+h)", "+h");
+			detrendCb->addItem("remove mean (+a)", "+a");
+			detrendCb->addItem("remove linear trend (+d)", "+d");
+			detrendCb->addItem("leave data alone (+l)", "+l");
+		}
+		if (extendCb) {
+			extendCb->addItem("default (edge-point symmetry)", "");
+			extendCb->addItem("edge-point symmetry (+e)", "+e");
+			extendCb->addItem("mirror symmetry (+m)", "+m");
+			extendCb->addItem("no extension (+n)", "+n");
+		}
+		// The grid's own kind decides whether the coordinates need the Flat Earth conversion. baseGeog
+		// is the flag the host set when the grid was added (GMT.guessgeog), the same one the axes use.
+		if (geogChk) geogChk->setChecked(scene && scene->baseGeog);
+
+		auto browseGrid = [this, d](QLineEdit *edit, const char *what) {
+			QString p = QFileDialog::getOpenFileName(d, what, prefStartDir(),
+				"Grids (*.grd *.nc *.tif *.tiff);;All files (*)");
+			if (!p.isEmpty() && edit) { edit->setText(p); rememberStartDir(p); }
+		};
+		if (auto *b = d->findChild<QToolButton *>("btn_density")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, browseGrid]() {
+				browseGrid(densEdit, "Select variable density grid"); });
+			if (densEdit) fileBoxDoubleClick(densEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_grid2")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, browseGrid]() {
+				browseGrid(grid2Edit, "Select gravity or geoid grid"); });
+			if (grid2Edit) fileBoxDoubleClick(grid2Edit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				// The curve modes write a TABLE, everything else a grid — the filter follows the tab.
+				const bool table = (mode() == "admitt" || mode() == "theo");
+				QString p = QFileDialog::getSaveFileName(d, "Save result", prefStartDir(),
+					table ? "Tables (*.dat *.txt);;All files (*)" : "Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+
+		// A window with no grid can still draw a theoretical curve — and ONLY that.
+		if (tabs && !hasGrid) {
+			for (int i = 0; i < 3; ++i) tabs->setTabEnabled(i, false);
+			tabs->setCurrentIndex(3);
+		}
+		if (tabs) QObject::connect(tabs, &QTabWidget::currentChanged, d, [this](int) { syncMode(); });
+		for (QComboBox *cb : { theoModelCb, cModelCb, fftDimCb })
+			if (cb) QObject::connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+			                         [this]() { syncMode(); });
+		for (QCheckBox *c : { flexTopoChk, subplateChk })
+			if (c) QObject::connect(c, &QCheckBox::toggled, d, [this](bool) { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "gravfft");             // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	// The tab in front IS the mode.
+	QString mode() const {
+		switch (tabs ? tabs->currentIndex() : 0) {
+			case 1:  return "flexure";
+			case 2:  return "admitt";
+			case 3:  return "theo";
+			default: return "surface";
+		}
+	}
+	QString cbData(QComboBox *cb) const { return cb ? cb->currentData().toString() : QString(); }
+	// "Loading from below" is the model that also needs the sub-surface load depth (-Z zm/zl).
+	bool needsLoadDepth() const {
+		const QString m = mode();
+		return (m == "flexure" && subplateChk && subplateChk->isChecked()) ||
+		       (m == "admitt"  && cbData(theoModelCb) == "b") ||
+		       (m == "theo"    && cbData(cModelCb) == "b");
+	}
+
+	// Only what the mode in front actually reads stays live: the plate model belongs to Flexure, to a
+	// theoretical admittance column and to the curve-only mode; the FFT block to everything that
+	// transforms a grid (the curve-only mode transforms nothing); the load depth to the "from below"
+	// model; and -Q (flexural topography) and -S (subplate load) are two different results, never both.
+	void syncMode() {
+		const QString m = mode();
+		const bool plate = (m == "flexure") || (m == "theo") ||
+		                   (m == "admitt" && !cbData(theoModelCb).isEmpty());
+		if (plateGb) plateGb->setEnabled(plate);
+		if (zlEdit)  zlEdit->setEnabled(plate && needsLoadDepth());
+		if (fftGb)   fftGb->setEnabled(m != "theo");
+		if (fftDimsEdit) fftDimsEdit->setEnabled(m != "theo" && cbData(fftDimCb) == "nxny");
+		if (termsCb) termsCb->setEnabled(m != "theo");             // -E is a Parker expansion of a grid
+		if (levelEdit)  levelEdit->setEnabled(m != "theo");        // -W shifts a grid's own level
+		if (levelKmChk) levelKmChk->setEnabled(m != "theo");
+		if (geogChk)    geogChk->setEnabled(m != "theo");
+		if (flexTopoChk && subplateChk) {
+			flexTopoChk->setEnabled(!subplateChk->isChecked());
+			subplateChk->setEnabled(!flexTopoChk->isChecked());
+		}
+	}
+
+	// The theoretical admittance is only defined for the free-air anomaly and the geoid — gravfft
+	// itself refuses any other -F together with a "from top"/"from below" model, so say it here where
+	// the answer is instant instead of letting the run fail.
+	bool fieldIsFaaOrGeoid() const {
+		const QString fld = cbData(fieldCb);
+		return fld.isEmpty() || fld.startsWith("f") || fld == "g";
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGravFFT) {
+			QMessageBox::warning(d, "gravfft", "gravfft: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		const QString m = mode();
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		QStringList kv;
+		kv << "mode=" + m;
+		kv << "field=" + cbData(fieldCb);
+
+		if (m != "theo") {
+			if (termsCb) kv << "terms=" + termsCb->currentText();
+			const QString w = txt(levelEdit);
+			if (!w.isEmpty()) kv << "level=" + w + ((levelKmChk && levelKmChk->isChecked()) ? "k" : "");
+			kv << QString("geog=%1").arg(geogChk && geogChk->isChecked() ? 1 : 0);
+			// -N: the dimension directive travels as it is written, "nx/ny" included.
+			QString dim = cbData(fftDimCb);
+			if (dim == "nxny") {
+				dim = txt(fftDimsEdit);
+				if (dim.isEmpty()) { QMessageBox::warning(d, "gravfft", "Give the FFT dimensions as nx/ny."); return; }
+			}
+			if (!dim.isEmpty()) kv << "fftdim=" + dim;
+			if (!cbData(detrendCb).isEmpty()) kv << "detrend=" + cbData(detrendCb);
+			if (!cbData(extendCb).isEmpty())  kv << "extend=" + cbData(extendCb);
+			if (!txt(taperEdit).isEmpty())    kv << "taper=" + txt(taperEdit);
+			if (fftVerbChk && fftVerbChk->isChecked()) kv << "fftverbose=1";
+		}
+
+		if (m == "surface") {
+			if (txt(densEdit).isEmpty()) {
+				QMessageBox::warning(d, "gravfft", "Give the density contrast across the surface.");
+				return;
+			}
+			kv << "density=" + txt(densEdit);
+		}
+		else if (m == "admitt") {
+			if (txt(grid2Edit).isEmpty()) {
+				QMessageBox::warning(d, "gravfft", "Pick the gravity or geoid grid to correlate with.");
+				return;
+			}
+			kv << "grid2=" + txt(grid2Edit);
+			// -I takes its flags glued together, in any order: w(avelength) k(m) c(oherence) and the
+			// theoretical model t|b.
+			QString flags;
+			if (waveChk && waveChk->isChecked()) flags += "w";
+			if (kmChk   && kmChk->isChecked())   flags += "k";
+			if (cohChk  && cohChk->isChecked())  flags += "c";
+			flags += cbData(theoModelCb);
+			kv << "iflags=" + flags;
+			if (!cbData(theoModelCb).isEmpty() && !fieldIsFaaOrGeoid()) {
+				QMessageBox::warning(d, "gravfft",
+					"A theoretical admittance is only defined for the free-air anomaly or the geoid.");
+				return;
+			}
+		}
+		else if (m == "theo") {
+			if (txt(cnEdit).isEmpty() || txt(clambdaEdit).isEmpty() || txt(cdepthEdit).isEmpty()) {
+				QMessageBox::warning(d, "gravfft",
+					"The theoretical curve needs the number of points, the wavelength and the mean depth.");
+				return;
+			}
+			if (!fieldIsFaaOrGeoid()) {
+				QMessageBox::warning(d, "gravfft",
+					"A theoretical admittance is only defined for the free-air anomaly or the geoid.");
+				return;
+			}
+			kv << "cn=" + txt(cnEdit) << "clambda=" + txt(clambdaEdit) << "cdepth=" + txt(cdepthEdit);
+			kv << "cmodel=" + cbData(cModelCb);
+			if (cWaveChk && cWaveChk->isChecked()) kv << "cwave=1";
+		}
+		else {                                   // flexure
+			kv << QString("moho=%1").arg(mohoChk && mohoChk->isChecked() ? 1 : 0);
+			kv << QString("flextopo=%1").arg(flexTopoChk && flexTopoChk->isChecked() ? 1 : 0);
+			kv << QString("subplate=%1").arg(subplateChk && subplateChk->isChecked() ? 1 : 0);
+		}
+
+		// The plate model travels whenever its group is live — the Julia side is the one that knows
+		// which of its values each model REQUIRES, and says so in the window's Errors console.
+		if (plateGb && plateGb->isEnabled()) {
+			kv << "te=" + txt(teEdit) << "rhol=" + txt(rholEdit) << "rhom=" + txt(rhomEdit)
+			   << "rhow=" + txt(rhowEdit) << "rhoi=" + txt(rhoiEdit)
+			   << "zm=" + txt(zmEdit) << "zl=" + txt(zlEdit);
+		}
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+		if (m != "theo") kv << "grid=" + QString::fromStdString(activeGridName(scn));   // the DISPLAYED layer
+
+		showBusyDialog((m == "surface" || m == "flexure") ? "Computing the field…" : "Computing spectra…");
+		const int ok = g_juliaGravFFT(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "gravfft",
+		                              "gravfft failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// grdrotater (GMT menu) — reconstruct the window's GEOGRAPHIC grid by an Euler rotation (the
+// spotter supplement). Loaded at RUNTIME via QUiLoader from deps/ui/grdrotater_dialog.ui.
+//
+// The rotation combo is the module's -E in its three real forms — a pole and angle, a rotation
+// file, or a GPlates plate pair like PAC-MBL — with only the boxes of the form in front live, and
+// one "Invert" tick (+i) that applies to all three.
+//
+// A run makes TWO things: the rotated grid and the rotated OUTLINE of what was rotated. The outline
+// is what says where the grid went, so it is on by default and, when asked, drawn on the map as its
+// own line layer (replaced on every re-run). "Outline only" (-S) skips the grid entirely, and since
+// the outline is then the whole answer, it forces the outline on.
+// ============================================================================================
+class GrdRotaterDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QComboBox *emodeCb = nullptr;
+	QLineEdit *elonEdit = nullptr, *elatEdit = nullptr, *eangleEdit = nullptr;
+	QLineEdit *efileEdit = nullptr, *eplatesEdit = nullptr, *polyEdit = nullptr, *timeEdit = nullptr;
+	QLineEdit *xmin = nullptr, *xmax = nullptr, *ymin = nullptr, *ymax = nullptr;
+	QLineEdit *outEdit = nullptr, *outlineEdit = nullptr;
+	QCheckBox *invertChk = nullptr, *onlyChk = nullptr, *outlineChk = nullptr, *drawChk = nullptr;
+
+	explicit GrdRotaterDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdrotater_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdRotaterDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdRotaterDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("grdrotater");
+		QDialog *d = dlg;
+
+		emodeCb     = d->findChild<QComboBox *>("cb_emode");
+		elonEdit    = d->findChild<QLineEdit *>("edit_elon");
+		elatEdit    = d->findChild<QLineEdit *>("edit_elat");
+		eangleEdit  = d->findChild<QLineEdit *>("edit_eangle");
+		efileEdit   = d->findChild<QLineEdit *>("edit_efile");
+		eplatesEdit = d->findChild<QLineEdit *>("edit_eplates");
+		polyEdit    = d->findChild<QLineEdit *>("edit_polyfile");
+		timeEdit    = d->findChild<QLineEdit *>("edit_time");
+		xmin = d->findChild<QLineEdit *>("edit_xmin");  xmax = d->findChild<QLineEdit *>("edit_xmax");
+		ymin = d->findChild<QLineEdit *>("edit_ymin");  ymax = d->findChild<QLineEdit *>("edit_ymax");
+		outEdit     = d->findChild<QLineEdit *>("edit_outfile");
+		outlineEdit = d->findChild<QLineEdit *>("edit_outoutline");
+		invertChk  = d->findChild<QCheckBox *>("chk_invert");
+		onlyChk    = d->findChild<QCheckBox *>("chk_outlineonly");
+		outlineChk = d->findChild<QCheckBox *>("chk_outline");
+		drawChk    = d->findChild<QCheckBox *>("chk_drawoutline");
+
+		if (emodeCb) {                                   // data = what Julia sends as "emode"
+			emodeCb->addItem("a pole and an opening angle", "pole");
+			emodeCb->addItem("a rotation file", "file");
+			emodeCb->addItem("a GPlates plate pair", "plates");
+		}
+		auto browse = [this, d](QLineEdit *edit, const char *what, const char *filter) {
+			QString p = QFileDialog::getOpenFileName(d, what, prefStartDir(), filter);
+			if (!p.isEmpty() && edit) { edit->setText(p); rememberStartDir(p); }
+		};
+		if (auto *b = d->findChild<QToolButton *>("btn_efile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, browse]() {
+				browse(efileEdit, "Select the rotation file", "Tables (*.dat *.txt *.rot);;All files (*)"); });
+			if (efileEdit) fileBoxDoubleClick(efileEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_polyfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, browse]() {
+				browse(polyEdit, "Select the polygon file", "Tables (*.dat *.txt);;All files (*)"); });
+			if (polyEdit) fileBoxDoubleClick(polyEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save rotated grid", prefStartDir(),
+					"Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_outoutline")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save rotated outline", prefStartDir(),
+					"Tables (*.dat *.txt);;All files (*)");
+				if (!p.isEmpty() && outlineEdit) { outlineEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outlineEdit) fileBoxDoubleClick(outlineEdit, b);
+		}
+
+		if (emodeCb) QObject::connect(emodeCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                              [this]() { syncMode(); });
+		for (QCheckBox *c : { onlyChk, outlineChk })
+			if (c) QObject::connect(c, &QCheckBox::toggled, d, [this](bool) { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "grdrotater");          // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString emode() const { return emodeCb ? emodeCb->currentData().toString() : QString("pole"); }
+
+	// Only the boxes of the chosen -E form stay live. An outline-only run makes no grid, so the grid
+	// output box goes dead and the outline is forced on — it is the whole answer then; and the
+	// outline can only be drawn or saved if it is being made at all.
+	void syncMode() {
+		const QString m = emode();
+		if (elonEdit)    elonEdit->setEnabled(m == "pole");
+		if (elatEdit)    elatEdit->setEnabled(m == "pole");
+		if (eangleEdit)  eangleEdit->setEnabled(m == "pole");
+		if (efileEdit)   efileEdit->setEnabled(m == "file");
+		if (eplatesEdit) eplatesEdit->setEnabled(m == "plates");
+		if (auto *b = dlg->findChild<QToolButton *>("btn_efile")) b->setEnabled(m == "file");
+
+		const bool only = onlyChk && onlyChk->isChecked();
+		if (only && outlineChk && !outlineChk->isChecked()) outlineChk->setChecked(true);
+		if (outlineChk) outlineChk->setEnabled(!only);
+		const bool haveOutline = outlineChk && outlineChk->isChecked();
+		if (drawChk)     drawChk->setEnabled(haveOutline);
+		if (outlineEdit) outlineEdit->setEnabled(haveOutline);
+		if (outEdit)     outEdit->setEnabled(!only);
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGrdRotater) {
+			QMessageBox::warning(d, "grdrotater", "grdrotater: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		const QString m = emode();
+		QStringList kv;
+		kv << "emode=" + m;
+		if (m == "pole") {
+			if (txt(elonEdit).isEmpty() || txt(elatEdit).isEmpty() || txt(eangleEdit).isEmpty()) {
+				QMessageBox::warning(d, "grdrotater", "Give the pole longitude, latitude and opening angle.");
+				return;
+			}
+			kv << "elon=" + txt(elonEdit) << "elat=" + txt(elatEdit) << "eangle=" + txt(eangleEdit);
+		}
+		else if (m == "file") {
+			if (txt(efileEdit).isEmpty()) {
+				QMessageBox::warning(d, "grdrotater", "Pick the rotation file.");
+				return;
+			}
+			kv << "efile=" + txt(efileEdit);
+		}
+		else {
+			if (txt(eplatesEdit).isEmpty()) {
+				QMessageBox::warning(d, "grdrotater", "Give the plate pair, e.g. PAC-MBL.");
+				return;
+			}
+			kv << "eplates=" + txt(eplatesEdit);
+		}
+		kv << QString("invert=%1").arg(invertChk && invertChk->isChecked() ? 1 : 0);
+		if (!txt(polyEdit).isEmpty()) kv << "polyfile=" + txt(polyEdit);
+		if (!txt(timeEdit).isEmpty()) kv << "time=" + txt(timeEdit);
+		const bool only = onlyChk && onlyChk->isChecked();
+		kv << QString("outlineonly=%1").arg(only ? 1 : 0);
+		kv << QString("outline=%1").arg(only || (outlineChk && outlineChk->isChecked()) ? 1 : 0);
+		kv << QString("drawoutline=%1").arg(drawChk && drawChk->isChecked() && drawChk->isEnabled() ? 1 : 0);
+		if (!txt(xmin).isEmpty() && !txt(xmax).isEmpty() && !txt(ymin).isEmpty() && !txt(ymax).isEmpty())
+			kv << QString("region=%1/%2/%3/%4").arg(txt(xmin)).arg(txt(xmax)).arg(txt(ymin)).arg(txt(ymax));
+		if (!only && !txt(outEdit).isEmpty())     kv << "outfile=" + txt(outEdit);
+		if (!txt(outlineEdit).isEmpty())          kv << "outoutline=" + txt(outlineEdit);
+		kv << "grid=" + QString::fromStdString(activeGridName(scn));   // rotate the DISPLAYED layer
+
+		showBusyDialog("Rotating…");
+		const int ok = g_juliaGrdRotater(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "grdrotater",
+		                              "grdrotater failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// talwani2d (GMT menu) — free-air, geoid or vertical-gravity-gradient anomalies over 2-D (or
+// 2.5-D) bodies given as CROSS-SECTION polygons. Loaded at RUNTIME via QUiLoader from
+// deps/ui/talwani2d_dialog.ui.
+//
+// The model is a file of x,z polygons, one body per segment, each segment header carrying that
+// body's density — so this dialog needs no grid in the window, exactly like trend2d.
+//
+// "Where to compute" is the module's own exclusive pair: an equidistant profile (-T) or the
+// locations listed in a file (-N). Only the boxes of the choice in front stay live. The geoid's
+// reference latitude means nothing to the other two fields, and the finite extent along strike
+// (the 2.5-D correction) is defined for free-air anomalies only, so both follow the field combo.
+// ============================================================================================
+class Talwani2DDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QComboBox *fieldCb = nullptr;
+	QLineEdit *inEdit = nullptr, *latEdit = nullptr, *densEdit = nullptr;
+	QLineEdit *tminEdit = nullptr, *tmaxEdit = nullptr, *tincEdit = nullptr, *trackEdit = nullptr;
+	QLineEdit *levelEdit = nullptr, *y25minEdit = nullptr, *y25maxEdit = nullptr, *outEdit = nullptr;
+	QCheckBox *zupChk = nullptr, *hkmChk = nullptr, *vkmChk = nullptr, *tnumChk = nullptr, *plotChk = nullptr;
+	QRadioButton *rbLattice = nullptr, *rbTrack = nullptr;
+
+	explicit Talwani2DDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/talwani2d_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("Talwani2DDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("Talwani2DDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("talwani2d");
+		QDialog *d = dlg;
+
+		fieldCb    = d->findChild<QComboBox *>("cb_field");
+		inEdit     = d->findChild<QLineEdit *>("edit_infile");
+		latEdit    = d->findChild<QLineEdit *>("edit_lat");
+		densEdit   = d->findChild<QLineEdit *>("edit_density");
+		tminEdit   = d->findChild<QLineEdit *>("edit_tmin");
+		tmaxEdit   = d->findChild<QLineEdit *>("edit_tmax");
+		tincEdit   = d->findChild<QLineEdit *>("edit_tinc");
+		trackEdit  = d->findChild<QLineEdit *>("edit_trackfile");
+		levelEdit  = d->findChild<QLineEdit *>("edit_level");
+		y25minEdit = d->findChild<QLineEdit *>("edit_y25min");
+		y25maxEdit = d->findChild<QLineEdit *>("edit_y25max");
+		outEdit    = d->findChild<QLineEdit *>("edit_outfile");
+		zupChk  = d->findChild<QCheckBox *>("chk_zup");
+		hkmChk  = d->findChild<QCheckBox *>("chk_hkm");
+		vkmChk  = d->findChild<QCheckBox *>("chk_vkm");
+		tnumChk = d->findChild<QCheckBox *>("chk_tnum");
+		plotChk = d->findChild<QCheckBox *>("chk_plot");
+		rbLattice = d->findChild<QRadioButton *>("rb_lattice");
+		rbTrack   = d->findChild<QRadioButton *>("rb_track");
+
+		if (fieldCb) {                                   // data = the -F directive letter
+			fieldCb->addItem("free-air anomaly (mGal)", "f");
+			fieldCb->addItem("geoid (m)", "n");
+			fieldCb->addItem("vertical gravity gradient (Eotvos)", "v");
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_infile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select the 2-D model file", prefStartDir(),
+					"Tables (*.dat *.txt *.xy);;All files (*)");
+				if (!p.isEmpty() && inEdit) { inEdit->setText(p); rememberStartDir(p); }
+			});
+			if (inEdit) fileBoxDoubleClick(inEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_trackfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select the output locations", prefStartDir(),
+					"Tables (*.dat *.txt *.xy);;All files (*)");
+				if (!p.isEmpty() && trackEdit) { trackEdit->setText(p); rememberStartDir(p); }
+			});
+			if (trackEdit) fileBoxDoubleClick(trackEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save the modelled profile", prefStartDir(),
+					"Tables (*.dat *.txt);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+
+		if (fieldCb) QObject::connect(fieldCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                              [this]() { syncMode(); });
+		for (QRadioButton *r : { rbLattice, rbTrack })
+			if (r) QObject::connect(r, &QRadioButton::toggled, d, [this](bool) { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "talwani2d");           // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString field() const { return fieldCb ? fieldCb->currentData().toString() : QString("f"); }
+	bool onTrack() const { return rbTrack && rbTrack->isChecked(); }
+
+	void syncMode() {
+		const bool track = onTrack();
+		for (QLineEdit *e : { tminEdit, tmaxEdit, tincEdit }) if (e) e->setEnabled(!track);
+		if (tnumChk)   tnumChk->setEnabled(!track);
+		if (trackEdit) trackEdit->setEnabled(track);
+		if (auto *b = dlg->findChild<QToolButton *>("btn_trackfile")) b->setEnabled(track);
+		const QString fl = field();
+		if (latEdit) latEdit->setEnabled(fl == "n");     // normal gravity reference: geoid only
+		// A finite extent along strike is the 2.5-D correction, which the module defines for the
+		// free-air anomaly alone.
+		for (QLineEdit *e : { y25minEdit, y25maxEdit }) if (e) e->setEnabled(fl == "f");
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaTalwani2D) {
+			QMessageBox::warning(d, "talwani2d", "talwani2d: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		if (txt(inEdit).isEmpty()) {
+			QMessageBox::warning(d, "talwani2d", "Pick the model file with the body cross-sections.");
+			return;
+		}
+		const bool track = onTrack();
+		if (track && txt(trackEdit).isEmpty()) {
+			QMessageBox::warning(d, "talwani2d", "Pick the file with the output locations.");
+			return;
+		}
+		if (!track && (txt(tminEdit).isEmpty() || txt(tmaxEdit).isEmpty() || txt(tincEdit).isEmpty())) {
+			QMessageBox::warning(d, "talwani2d", "Give the profile: from x, to x, and the step.");
+			return;
+		}
+		QStringList kv;
+		kv << "infile=" + txt(inEdit);
+		kv << "field=" + field();
+		if (field() == "n" && !txt(latEdit).isEmpty()) kv << "lat=" + txt(latEdit);
+		if (!txt(densEdit).isEmpty()) kv << "density=" + txt(densEdit);
+		kv << QString("zup=%1").arg(zupChk && zupChk->isChecked() ? 1 : 0);
+		kv << QString("hkm=%1").arg(hkmChk && hkmChk->isChecked() ? 1 : 0);
+		kv << QString("vkm=%1").arg(vkmChk && vkmChk->isChecked() ? 1 : 0);
+		kv << QString("mode=%1").arg(track ? "track" : "lattice");
+		if (track) {
+			kv << "trackfile=" + txt(trackEdit);
+		}
+		else {
+			kv << "tmin=" + txt(tminEdit) << "tmax=" + txt(tmaxEdit) << "tinc=" + txt(tincEdit);
+			kv << QString("tnum=%1").arg(tnumChk && tnumChk->isChecked() ? 1 : 0);
+		}
+		if (!txt(levelEdit).isEmpty()) kv << "level=" + txt(levelEdit);
+		if (field() == "f") {
+			if (!txt(y25minEdit).isEmpty()) kv << "y25min=" + txt(y25minEdit);
+			if (!txt(y25maxEdit).isEmpty()) kv << "y25max=" + txt(y25maxEdit);
+		}
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+		kv << QString("plot=%1").arg(plotChk && plotChk->isChecked() ? 1 : 0);
+
+		showBusyDialog("Modelling…");
+		const int ok = g_juliaTalwani2D(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "talwani2d",
+		                              "talwani2d failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// talwani3d (GMT menu) — the same three fields over 3-D bodies given as stacked HORIZONTAL
+// CONTOURS, one slice per segment with its depth and density in the segment header. Loaded at
+// RUNTIME via QUiLoader from deps/ui/talwani3d_dialog.ui.
+//
+// The three radios are the module's own three exclusive answers to "where": a new grid (-R -I
+// [-r]), the locations in a file (-N), or the nodes of a grid OF OBSERVATION LEVELS (-Z<grid>),
+// which brings its own region and therefore rules the other two out. Only the group of the choice
+// in front stays live.
+//
+// The region block carries the standing "OR Ref grid" row — filling the increments too — and is
+// seeded from the window's own grid when there is one, because modelling onto the geometry already
+// on screen is the common case. It needs no grid to work.
+// ============================================================================================
+class Talwani3DDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QComboBox *fieldCb = nullptr;
+	QLineEdit *inEdit = nullptr, *latEdit = nullptr, *densEdit = nullptr;
+	QLineEdit *xmin = nullptr, *xmax = nullptr, *ymin = nullptr, *ymax = nullptr;
+	QLineEdit *xinc = nullptr, *yinc = nullptr;
+	QLineEdit *trackEdit = nullptr, *zgridEdit = nullptr, *levelEdit = nullptr, *outEdit = nullptr;
+	QCheckBox *zupChk = nullptr, *hkmChk = nullptr, *vkmChk = nullptr, *geogChk = nullptr;
+	QCheckBox *pixelChk = nullptr, *plotptsChk = nullptr;
+	QRadioButton *rbGrid = nullptr, *rbTrack = nullptr, *rbObs = nullptr;
+	QGroupBox *gridGb = nullptr, *trackGb = nullptr, *obsGb = nullptr;
+
+	explicit Talwani3DDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/talwani3d_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("Talwani3DDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("Talwani3DDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("talwani3d");
+		QDialog *d = dlg;
+
+		fieldCb   = d->findChild<QComboBox *>("cb_field");
+		inEdit    = d->findChild<QLineEdit *>("edit_infile");
+		latEdit   = d->findChild<QLineEdit *>("edit_lat");
+		densEdit  = d->findChild<QLineEdit *>("edit_density");
+		xmin = d->findChild<QLineEdit *>("edit_xmin");  xmax = d->findChild<QLineEdit *>("edit_xmax");
+		ymin = d->findChild<QLineEdit *>("edit_ymin");  ymax = d->findChild<QLineEdit *>("edit_ymax");
+		xinc = d->findChild<QLineEdit *>("edit_xinc");  yinc = d->findChild<QLineEdit *>("edit_yinc");
+		trackEdit = d->findChild<QLineEdit *>("edit_trackfile");
+		zgridEdit = d->findChild<QLineEdit *>("edit_zgrid");
+		levelEdit = d->findChild<QLineEdit *>("edit_level");
+		outEdit   = d->findChild<QLineEdit *>("edit_outfile");
+		zupChk     = d->findChild<QCheckBox *>("chk_zup");
+		hkmChk     = d->findChild<QCheckBox *>("chk_hkm");
+		vkmChk     = d->findChild<QCheckBox *>("chk_vkm");
+		geogChk    = d->findChild<QCheckBox *>("chk_geog");
+		pixelChk   = d->findChild<QCheckBox *>("chk_pixel");
+		plotptsChk = d->findChild<QCheckBox *>("chk_plotpts");
+		rbGrid  = d->findChild<QRadioButton *>("rb_grid");
+		rbTrack = d->findChild<QRadioButton *>("rb_track");
+		rbObs   = d->findChild<QRadioButton *>("rb_obsgrid");
+		gridGb  = d->findChild<QGroupBox *>("gb_grid");
+		trackGb = d->findChild<QGroupBox *>("gb_track");
+		obsGb   = d->findChild<QGroupBox *>("gb_obsgrid");
+
+		if (fieldCb) {                                   // data = the -F directive letter
+			fieldCb->addItem("free-air anomaly (mGal)", "f");
+			fieldCb->addItem("geoid (m)", "n");
+			fieldCb->addItem("vertical gravity gradient (Eotvos)", "v");
+		}
+		// Region + increment, with the standing "OR Ref grid" row — passed the increment boxes too,
+		// so one pick at an existing grid states the whole output geometry.
+		if (auto *rg = d->findChild<QGridLayout *>("gridLayout_region"))
+			addRefGridRow(d, rg, xmin, xmax, ymin, ymax, xinc, yinc);
+		// Seeded from the window's own grid when it has one — modelling onto the geometry already on
+		// screen is the common case — but this dialog needs no grid at all to work.
+		if (scene && scene->gnx > 1 && scene->gny > 1) {
+			if (xmin) xmin->setText(QString::number(scene->gx0, 'g', 12));
+			if (xmax) xmax->setText(QString::number(scene->gx1, 'g', 12));
+			if (ymin) ymin->setText(QString::number(scene->gy0, 'g', 12));
+			if (ymax) ymax->setText(QString::number(scene->gy1, 'g', 12));
+			if (xinc) xinc->setText(QString::number(scene->gdx, 'g', 12));
+			if (yinc) yinc->setText(QString::number(scene->gdy, 'g', 12));
+		}
+		if (geogChk) geogChk->setChecked(scene && scene->baseGeog);
+
+		if (auto *b = d->findChild<QToolButton *>("btn_infile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select the 3-D model file", prefStartDir(),
+					"Tables (*.dat *.txt *.xy);;All files (*)");
+				if (!p.isEmpty() && inEdit) { inEdit->setText(p); rememberStartDir(p); }
+			});
+			if (inEdit) fileBoxDoubleClick(inEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_trackfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select the output locations", prefStartDir(),
+					"Tables (*.dat *.txt *.xy);;All files (*)");
+				if (!p.isEmpty() && trackEdit) { trackEdit->setText(p); rememberStartDir(p); }
+			});
+			if (trackEdit) fileBoxDoubleClick(trackEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_zgrid")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Select the grid of observation levels",
+					prefStartDir(), "Grids (*.grd *.nc *.tif);;All files (*)");
+				if (!p.isEmpty() && zgridEdit) { zgridEdit->setText(p); rememberStartDir(p); }
+			});
+			if (zgridEdit) fileBoxDoubleClick(zgridEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save the result", prefStartDir(),
+					onTrack() ? "Tables (*.dat *.txt);;All files (*)" : "Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+
+		if (fieldCb) QObject::connect(fieldCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                              [this]() { syncMode(); });
+		for (QRadioButton *r : { rbGrid, rbTrack, rbObs })
+			if (r) QObject::connect(r, &QRadioButton::toggled, d, [this](bool) { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "talwani3d");           // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString field() const { return fieldCb ? fieldCb->currentData().toString() : QString("f"); }
+	bool onTrack() const { return rbTrack && rbTrack->isChecked(); }
+	bool onObsGrid() const { return rbObs && rbObs->isChecked(); }
+	QString mode() const { return onTrack() ? "track" : onObsGrid() ? "obsgrid" : "grid"; }
+
+	void syncMode() {
+		const bool track = onTrack(), obs = onObsGrid();
+		if (gridGb)  gridGb->setEnabled(!track && !obs);
+		if (trackGb) trackGb->setEnabled(track);
+		if (obsGb)   obsGb->setEnabled(obs);
+		// The observation grid IS the level, so a constant one would only contradict it.
+		if (levelEdit) levelEdit->setEnabled(!obs);
+		if (latEdit)   latEdit->setEnabled(field() == "n");   // normal gravity reference: geoid only
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaTalwani3D) {
+			QMessageBox::warning(d, "talwani3d", "talwani3d: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		if (txt(inEdit).isEmpty()) {
+			QMessageBox::warning(d, "talwani3d", "Pick the model file with the body contours.");
+			return;
+		}
+		const QString m = mode();
+		if (m == "track" && txt(trackEdit).isEmpty()) {
+			QMessageBox::warning(d, "talwani3d", "Pick the file with the output locations.");
+			return;
+		}
+		if (m == "obsgrid" && txt(zgridEdit).isEmpty()) {
+			QMessageBox::warning(d, "talwani3d", "Pick the grid of observation levels.");
+			return;
+		}
+		if (m == "grid") {
+			if (txt(xmin).isEmpty() || txt(xmax).isEmpty() || txt(ymin).isEmpty() || txt(ymax).isEmpty()) {
+				QMessageBox::warning(d, "talwani3d", "Give the full region to compute over.");
+				return;
+			}
+			if (txt(xinc).isEmpty()) {
+				QMessageBox::warning(d, "talwani3d", "Give the grid increment.");
+				return;
+			}
+		}
+		QStringList kv;
+		kv << "infile=" + txt(inEdit);
+		kv << "field=" + field();
+		if (field() == "n" && !txt(latEdit).isEmpty()) kv << "lat=" + txt(latEdit);
+		if (!txt(densEdit).isEmpty()) kv << "density=" + txt(densEdit);
+		kv << QString("zup=%1").arg(zupChk && zupChk->isChecked() ? 1 : 0);
+		kv << QString("hkm=%1").arg(hkmChk && hkmChk->isChecked() ? 1 : 0);
+		kv << QString("vkm=%1").arg(vkmChk && vkmChk->isChecked() ? 1 : 0);
+		kv << QString("geog=%1").arg(geogChk && geogChk->isChecked() ? 1 : 0);
+		kv << "mode=" + m;
+		if (m == "grid") {
+			kv << QString("region=%1/%2/%3/%4").arg(txt(xmin)).arg(txt(xmax)).arg(txt(ymin)).arg(txt(ymax));
+			// One increment or two: "dx/dy" only when y differs, which is the module's own spelling.
+			kv << "inc=" + (txt(yinc).isEmpty() ? txt(xinc) : txt(xinc) + "/" + txt(yinc));
+			kv << QString("pixel=%1").arg(pixelChk && pixelChk->isChecked() ? 1 : 0);
+		}
+		else if (m == "track") {
+			kv << "trackfile=" + txt(trackEdit);
+			kv << QString("plotpts=%1").arg(plotptsChk && plotptsChk->isChecked() ? 1 : 0);
+		}
+		else {
+			kv << "zgrid=" + txt(zgridEdit);
+		}
+		if (m != "obsgrid" && !txt(levelEdit).isEmpty()) kv << "level=" + txt(levelEdit);
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+
+		showBusyDialog("Modelling…");
+		const int ok = g_juliaTalwani3D(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "talwani3d",
+		                              "talwani3d failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// greenspline (GMT menu) — grid or evaluate scattered data with the Green's function of one of six
+// splines, in 1, 2 or 3 dimensions. Loaded at RUNTIME via QUiLoader from
+// deps/ui/greenspline_dialog.ui.
+//
+// The Interpolate dialog already offers greenspline as one of its gridding methods, and for "grid my
+// x,y,z with a spline in tension" that remains the shorter road. This dialog is the rest of the
+// module: the distance mode that decides whether the data are a line, a plane, a sphere or a volume;
+// the eigenvalue truncation that turns an exact interpolator into a smoother; gradient constraints;
+// evaluating at listed points; a mask grid's nodes; the directional derivative; the misfit report.
+//
+// The spline drives the mode, not the other way round: the two SPHERICAL splines only exist at -D5
+// and -D5 takes only them, so picking one sets the mode and locks it rather than letting the pair
+// disagree and fail at run time. `syncing` guards the recursion that costs.
+// ============================================================================================
+class GreensplineDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QLineEdit *inEdit = nullptr, *headersEdit = nullptr, *tensionEdit = nullptr;
+	QLineEdit *nodeEdit = nullptr, *maskEdit = nullptr;
+	QLineEdit *xminEdit = nullptr, *xmaxEdit = nullptr, *yminEdit = nullptr, *ymaxEdit = nullptr;
+	QLineEdit *xincEdit = nullptr, *yincEdit = nullptr;
+	QLineEdit *cvalueEdit = nullptr, *cfileEdit = nullptr;
+	QLineEdit *gradEdit = nullptr, *gradFmtEdit = nullptr, *derivEdit = nullptr;
+	QLineEdit *misfitEdit = nullptr, *reportEdit = nullptr, *outEdit = nullptr;
+	QComboBox *dmodeCb = nullptr, *splineCb = nullptr, *ckindCb = nullptr;
+	QRadioButton *rbGrid = nullptr, *rbNodes = nullptr;
+	QCheckBox *toggleChk = nullptr, *uncertChk = nullptr, *isWeightChk = nullptr;
+	QCheckBox *pixelChk = nullptr, *plotPtsChk = nullptr, *approxChk = nullptr;
+	QCheckBox *derivChk = nullptr, *misfitChk = nullptr;
+	QCheckBox *noTrendChk = nullptr, *noRestoreChk = nullptr, *verboseChk = nullptr;
+	QGroupBox *regionGb = nullptr;
+	QLabel *tensionLb = nullptr, *nodeLb = nullptr, *ckindLb = nullptr, *cvalueLb = nullptr;
+	QLabel *cfileLb = nullptr, *misfitFileLb = nullptr, *reportLb = nullptr;
+	QToolButton *nodeBtn = nullptr, *cfileBtn = nullptr, *misfitBtn = nullptr, *reportBtn = nullptr;
+	bool syncing = false;
+
+	explicit GreensplineDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/greenspline_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GreensplineDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GreensplineDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("greenspline");
+		QDialog *d = dlg;
+
+		inEdit       = d->findChild<QLineEdit *>("edit_infile");
+		headersEdit  = d->findChild<QLineEdit *>("edit_headers");
+		tensionEdit  = d->findChild<QLineEdit *>("edit_tension");
+		nodeEdit     = d->findChild<QLineEdit *>("edit_nodefile");
+		maskEdit     = d->findChild<QLineEdit *>("edit_maskgrid");
+		xminEdit     = d->findChild<QLineEdit *>("edit_xmin");
+		xmaxEdit     = d->findChild<QLineEdit *>("edit_xmax");
+		yminEdit     = d->findChild<QLineEdit *>("edit_ymin");
+		ymaxEdit     = d->findChild<QLineEdit *>("edit_ymax");
+		xincEdit     = d->findChild<QLineEdit *>("edit_xinc");
+		yincEdit     = d->findChild<QLineEdit *>("edit_yinc");
+		cvalueEdit   = d->findChild<QLineEdit *>("edit_cvalue");
+		cfileEdit    = d->findChild<QLineEdit *>("edit_cfile");
+		gradEdit     = d->findChild<QLineEdit *>("edit_gradfile");
+		gradFmtEdit  = d->findChild<QLineEdit *>("edit_gradformat");
+		derivEdit    = d->findChild<QLineEdit *>("edit_derivdir");
+		misfitEdit   = d->findChild<QLineEdit *>("edit_misfitfile");
+		reportEdit   = d->findChild<QLineEdit *>("edit_reportfile");
+		outEdit      = d->findChild<QLineEdit *>("edit_outfile");
+		dmodeCb      = d->findChild<QComboBox *>("cb_dmode");
+		splineCb     = d->findChild<QComboBox *>("cb_spline");
+		ckindCb      = d->findChild<QComboBox *>("cb_ckind");
+		rbGrid       = d->findChild<QRadioButton *>("rb_grid");
+		rbNodes      = d->findChild<QRadioButton *>("rb_nodes");
+		toggleChk    = d->findChild<QCheckBox *>("chk_toggle");
+		uncertChk    = d->findChild<QCheckBox *>("chk_uncert");
+		isWeightChk  = d->findChild<QCheckBox *>("chk_isweight");
+		pixelChk     = d->findChild<QCheckBox *>("chk_pixel");
+		plotPtsChk   = d->findChild<QCheckBox *>("chk_plotpts");
+		approxChk    = d->findChild<QCheckBox *>("chk_approx");
+		derivChk     = d->findChild<QCheckBox *>("chk_deriv");
+		misfitChk    = d->findChild<QCheckBox *>("chk_misfit");
+		noTrendChk   = d->findChild<QCheckBox *>("chk_notrend");
+		noRestoreChk = d->findChild<QCheckBox *>("chk_norestore");
+		verboseChk   = d->findChild<QCheckBox *>("chk_verbose");
+		regionGb     = d->findChild<QGroupBox *>("gb_region");
+		tensionLb    = d->findChild<QLabel *>("lb_tension");
+		nodeLb       = d->findChild<QLabel *>("lb_nodefile");
+		ckindLb      = d->findChild<QLabel *>("lb_ckind");
+		cvalueLb     = d->findChild<QLabel *>("lb_cvalue");
+		cfileLb      = d->findChild<QLabel *>("lb_cfile");
+		misfitFileLb = d->findChild<QLabel *>("lb_misfitfile");
+		reportLb     = d->findChild<QLabel *>("lb_reportfile");
+		nodeBtn      = d->findChild<QToolButton *>("btn_nodefile");
+		cfileBtn     = d->findChild<QToolButton *>("btn_cfile");
+		misfitBtn    = d->findChild<QToolButton *>("btn_misfitfile");
+		reportBtn    = d->findChild<QToolButton *>("btn_reportfile");
+
+		// -D. The number in the data is the module's own mode; the dimension it implies is what the
+		// rest of the dialog keys off (0 is a line, 4 is a volume, the rest are surfaces).
+		if (dmodeCb) {
+			dmodeCb->addItem("0 — a line: x in user units (1-D)", "0");
+			dmodeCb->addItem("1 — a plane: x,y in user units (2-D)", "1");
+			dmodeCb->addItem("2 — flat Earth: x,y in degrees (2-D)", "2");
+			dmodeCb->addItem("3 — sphere: x,y in degrees, great circles (2-D)", "3");
+			dmodeCb->addItem("4 — a volume: x,y,z in user units (3-D)", "4");
+			dmodeCb->addItem("5 — spherical surface: x,y in degrees (2-D)", "5");
+			dmodeCb->setCurrentIndex(1);
+		}
+		if (splineCb) {
+			splineCb->addItem("c — minimum curvature (Sandwell, 1987)", "c");
+			splineCb->addItem("t — continuous curvature in tension (Wessel & Bercovici, 1998)", "t");
+			splineCb->addItem("l — linear / bilinear / trilinear", "l");
+			splineCb->addItem("r — regularized in tension (Mitasova & Mitas, 1993)", "r");
+			splineCb->addItem("p — minimum curvature on a sphere (Parker, 1994)", "p");
+			splineCb->addItem("q — continuous curvature in tension on a sphere (Wessel & Becker, 2008)", "q");
+			splineCb->setCurrentIndex(1);          // the spline in tension: the one most runs want
+		}
+		if (ckindCb) {
+			ckindCb->addItem("eigenvalue ratio (0 to 1)", "r");
+			ckindCb->addItem("the n largest eigenvalues", "n");
+			ckindCb->addItem("fraction of the variance (0 to 1)", "v");
+		}
+
+		// Region + increment, with the standing "OR Ref grid" row — passed the increment boxes too,
+		// so a reference grid states the whole geometry in one pick.
+		if (auto *rg = d->findChild<QGridLayout *>("gridLayout_region"))
+			addRefGridRow(d, rg, xminEdit, xmaxEdit, yminEdit, ymaxEdit, xincEdit, yincEdit);
+		// Seeded from the window's own grid when it has one — scattered data are very often gridded
+		// onto the geometry already on screen — but this dialog needs no grid at all to work.
+		if (scene && scene->gnx > 1 && scene->gny > 1) {
+			if (xminEdit) xminEdit->setText(QString::number(scene->gx0, 'g', 12));
+			if (xmaxEdit) xmaxEdit->setText(QString::number(scene->gx1, 'g', 12));
+			if (yminEdit) yminEdit->setText(QString::number(scene->gy0, 'g', 12));
+			if (ymaxEdit) ymaxEdit->setText(QString::number(scene->gy1, 'g', 12));
+			if (xincEdit) xincEdit->setText(QString::number(scene->gdx, 'g', 12));
+			if (yincEdit) yincEdit->setText(QString::number(scene->gdy, 'g', 12));
+			// A geographic window means degrees, which is what the flat-Earth mode is for.
+			if (dmodeCb && scene->baseGeog) dmodeCb->setCurrentIndex(2);
+		}
+
+		auto hook = [d](const char *btnName, QLineEdit *e, bool save, const char *what, const char *filter) {
+			auto *b = d->findChild<QToolButton *>(btnName);
+			if (!b) return;
+			QObject::connect(b, &QToolButton::clicked, d, [d, e, save, what, filter]() {
+				QString p = save ? QFileDialog::getSaveFileName(d, what, prefStartDir(), filter)
+				                 : QFileDialog::getOpenFileName(d, what, prefStartDir(), filter);
+				if (!p.isEmpty() && e) { e->setText(p); rememberStartDir(p); }
+			});
+			if (e) fileBoxDoubleClick(e, b);
+		};
+		const char *tableFilter = "Tables (*.dat *.txt *.xyz);;All files (*)";
+		hook("btn_infile", inEdit, false, "Select the data table", tableFilter);
+		hook("btn_nodefile", nodeEdit, false, "Select the file of output locations", tableFilter);
+		hook("btn_gradfile", gradEdit, false, "Select the gradient constraints", tableFilter);
+		hook("btn_maskgrid", maskEdit, false, "Select the mask grid",
+		     "Grids (*.grd *.nc *.tif *.tiff);;All files (*)");
+		hook("btn_cfile", cfileEdit, true, "Save the eigenvalues", tableFilter);
+		hook("btn_misfitfile", misfitEdit, true, "Save the misfit table", tableFilter);
+		hook("btn_reportfile", reportEdit, true, "Save the misfit report", tableFilter);
+		hook("btn_outfile", outEdit, true, "Save the result",
+		     "Grids (*.grd *.nc);;Tables (*.dat *.txt);;All files (*)");
+
+		for (QRadioButton *rb : { rbGrid, rbNodes })
+			if (rb) QObject::connect(rb, &QRadioButton::toggled, d, [this](bool) { syncMode(); });
+		for (QCheckBox *c : { uncertChk, approxChk, derivChk, misfitChk })
+			if (c) QObject::connect(c, &QCheckBox::toggled, d, [this](bool) { syncMode(); });
+		for (QComboBox *cb : { dmodeCb, splineCb })
+			if (cb) QObject::connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+			                         [this]() { syncMode(); });
+		// A mask grid replaces the region and spacing, so typing one greys them out. This only
+		// ENABLES and DISABLES; nothing here runs the module (only-action-button-executes-dialog).
+		if (maskEdit) QObject::connect(maskEdit, &QLineEdit::textChanged, d, [this](const QString &) { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "greenspline");         // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString cbData(QComboBox *cb) const { return cb ? cb->currentData().toString() : QString(); }
+	QString spline() const { return cbData(splineCb); }
+	int dmode() const { const QString s = cbData(dmodeCb); return s.isEmpty() ? 1 : s.toInt(); }
+	// 0 is a line, 4 is a volume, everything else is a surface. This is greenspline's own arithmetic.
+	int dim() const { const int m = dmode(); return m == 0 ? 1 : (m == 4 ? 3 : 2); }
+
+	void syncMode() {
+		if (syncing) return;
+		syncing = true;
+
+		// The spline drives the mode. The two spherical splines exist only at -D5, and -D5 takes only
+		// them, so picking one settles the question instead of leaving a pair that cannot run.
+		const QString sp = spline();
+		const bool spherical = (sp == "p" || sp == "q");
+		if (dmodeCb) {
+			if (spherical) { dmodeCb->setCurrentIndex(5); dmodeCb->setEnabled(false); }
+			else {
+				dmodeCb->setEnabled(true);
+				if (dmodeCb->currentIndex() == 5) dmodeCb->setCurrentIndex(1);   // 2-D Cartesian
+			}
+		}
+
+		const bool tension = (sp == "t" || sp == "r" || sp == "q");
+		if (tensionEdit) tensionEdit->setEnabled(tension);
+		if (tensionLb)   tensionLb->setEnabled(tension);
+
+		// A grid is a SURFACE: only the two-dimensional modes can produce one, so a 1-D or 3-D
+		// problem leaves "values at listed points" as the only way to see the answer.
+		const bool canGrid = (dim() == 2);
+		if (rbGrid) {
+			rbGrid->setEnabled(canGrid);
+			if (!canGrid && rbGrid->isChecked() && rbNodes) rbNodes->setChecked(true);
+		}
+		const bool nodes = rbNodes && rbNodes->isChecked();
+		for (QWidget *w : { (QWidget *)nodeEdit, (QWidget *)nodeBtn, (QWidget *)nodeLb })
+			if (w) w->setEnabled(nodes);
+		if (regionGb) regionGb->setEnabled(!nodes);
+		// A mask grid states the output nodes itself, so the region and spacing step aside.
+		const bool haveMask = maskEdit && !maskEdit->text().trimmed().isEmpty();
+		for (QWidget *w : { (QWidget *)xminEdit, (QWidget *)xmaxEdit, (QWidget *)yminEdit,
+		                    (QWidget *)ymaxEdit, (QWidget *)xincEdit, (QWidget *)yincEdit,
+		                    (QWidget *)pixelChk })
+			if (w) w->setEnabled(!nodes && !haveMask);
+
+		if (isWeightChk) isWeightChk->setEnabled(uncertChk && uncertChk->isChecked());
+		const bool approx = approxChk && approxChk->isChecked();
+		for (QWidget *w : { (QWidget *)ckindCb, (QWidget *)cvalueEdit, (QWidget *)cfileEdit,
+		                    (QWidget *)cfileBtn, (QWidget *)ckindLb, (QWidget *)cvalueLb,
+		                    (QWidget *)cfileLb })
+			if (w) w->setEnabled(approx);
+		if (derivEdit) derivEdit->setEnabled(derivChk && derivChk->isChecked());
+		const bool misfit = misfitChk && misfitChk->isChecked();
+		for (QWidget *w : { (QWidget *)misfitEdit, (QWidget *)reportEdit, (QWidget *)misfitBtn,
+		                    (QWidget *)reportBtn, (QWidget *)misfitFileLb, (QWidget *)reportLb })
+			if (w) w->setEnabled(misfit);
+
+		syncing = false;
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGreenspline) {
+			QMessageBox::warning(d, "greenspline", "greenspline: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		if (txt(inEdit).isEmpty()) {
+			QMessageBox::warning(d, "greenspline", "Pick the data table.");
+			return;
+		}
+		const bool nodes = rbNodes && rbNodes->isChecked();
+		if (nodes && txt(nodeEdit).isEmpty()) {
+			QMessageBox::warning(d, "greenspline", "Pick the file of output locations.");
+			return;
+		}
+		const QString sp = spline();
+		if ((sp == "t" || sp == "r" || sp == "q") && txt(tensionEdit).isEmpty()) {
+			QMessageBox::warning(d, "greenspline", "The -S" + sp + " spline needs a tension.");
+			return;
+		}
+
+		QStringList kv;
+		kv << "infile=" + txt(inEdit);
+		if (!txt(headersEdit).isEmpty()) kv << "headers=" + txt(headersEdit);
+		kv << QString("toggle=%1").arg(toggleChk && toggleChk->isChecked() ? 1 : 0);
+		kv << QString("uncert=%1").arg(uncertChk && uncertChk->isChecked() ? 1 : 0);
+		kv << QString("isweight=%1").arg(isWeightChk && isWeightChk->isChecked() &&
+		                                 isWeightChk->isEnabled() ? 1 : 0);
+		kv << "dmode=" + cbData(dmodeCb);
+		kv << "spline=" + sp;
+		if (!txt(tensionEdit).isEmpty()) kv << "tension=" + txt(tensionEdit);
+		kv << QString("what=") + (nodes ? "nodes" : "grid");
+
+		if (nodes) {
+			kv << "nodefile=" + txt(nodeEdit);
+		}
+		else {
+			const QString mask = txt(maskEdit);
+			if (!mask.isEmpty()) kv << "maskgrid=" + mask;
+			else {
+				const QString xm = txt(xminEdit), xM = txt(xmaxEdit);
+				const QString ym = txt(yminEdit), yM = txt(ymaxEdit);
+				const int nReg = (!xm.isEmpty()) + (!xM.isEmpty()) + (!ym.isEmpty()) + (!yM.isEmpty());
+				if (nReg != 4) {
+					QMessageBox::warning(d, "greenspline", "Give all four Region boxes, or a mask grid "
+					                                       "whose nodes to use.");
+					return;
+				}
+				kv << "region=" + xm + "/" + xM + "/" + ym + "/" + yM;
+				const QString xi = txt(xincEdit), yi = txt(yincEdit);
+				if (xi.isEmpty()) {
+					QMessageBox::warning(d, "greenspline", "Give the grid spacing, or a mask grid.");
+					return;
+				}
+				kv << "inc=" + (yi.isEmpty() ? xi : xi + "/" + yi);
+				kv << QString("pixel=%1").arg(pixelChk && pixelChk->isChecked() ? 1 : 0);
+			}
+			kv << QString("plotpts=%1").arg(plotPtsChk && plotPtsChk->isChecked() ? 1 : 0);
+		}
+
+		kv << QString("approx=%1").arg(approxChk && approxChk->isChecked() ? 1 : 0);
+		kv << "ckind=" + cbData(ckindCb);
+		if (!txt(cvalueEdit).isEmpty()) kv << "cvalue=" + txt(cvalueEdit);
+		if (!txt(cfileEdit).isEmpty())  kv << "cfile=" + txt(cfileEdit);
+		if (!txt(gradEdit).isEmpty()) {
+			kv << "gradfile=" + txt(gradEdit);
+			if (!txt(gradFmtEdit).isEmpty()) kv << "gradformat=" + txt(gradFmtEdit);
+		}
+		kv << QString("deriv=%1").arg(derivChk && derivChk->isChecked() ? 1 : 0);
+		if (!txt(derivEdit).isEmpty()) kv << "derivdir=" + txt(derivEdit);
+		kv << QString("misfit=%1").arg(misfitChk && misfitChk->isChecked() ? 1 : 0);
+		if (!txt(misfitEdit).isEmpty()) kv << "misfitfile=" + txt(misfitEdit);
+		if (!txt(reportEdit).isEmpty()) kv << "reportfile=" + txt(reportEdit);
+		kv << QString("notrend=%1").arg(noTrendChk && noTrendChk->isChecked() ? 1 : 0);
+		kv << QString("norestore=%1").arg(noRestoreChk && noRestoreChk->isChecked() ? 1 : 0);
+		kv << QString("verbose=%1").arg(verboseChk && verboseChk->isChecked() ? 1 : 0);
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+
+		showBusyDialog("Solving the spline…");
+		const int ok = g_juliaGreenspline(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "greenspline",
+		                              "greenspline failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// gmtflexure (GMT menu) — the flexure of a 2-D (profile) plate under a load, by finite differences
+// [Bodine, 1980]. Loaded at RUNTIME via QUiLoader from deps/ui/gmtflexure_dialog.ui.
+//
+// The load radios are the module's own exclusive -Q trio: topography, loads in Pa, or NO load at
+// all — in which case the deformation comes from the boundary conditions alone, and the x range
+// boxes take over from the file because something has to say where the nodes are.
+//
+// Each end of the profile gets one of the four boundary conditions, and only two of them carry a
+// value (the clamped one a deflection, the free one a moment/force pair), so the argument box
+// follows the choice rather than standing open beside all four.
+//
+// Needs no grid in the window: it reads files and answers with a profile.
+// ============================================================================================
+class GmtFlexureDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QComboBox *lbcCb = nullptr, *rbcCb = nullptr;
+	QLineEdit *loadEdit = nullptr, *qminEdit = nullptr, *qmaxEdit = nullptr, *qincEdit = nullptr;
+	QLineEdit *teEdit = nullptr, *rhomEdit = nullptr, *rholEdit = nullptr, *rhoiEdit = nullptr, *rhowEdit = nullptr;
+	QLineEdit *largsEdit = nullptr, *rargsEdit = nullptr;
+	QLineEdit *forceEdit = nullptr, *waterEdit = nullptr, *zobsEdit = nullptr, *wfileEdit = nullptr;
+	QLineEdit *poissonEdit = nullptr, *youngEdit = nullptr, *outEdit = nullptr;
+	QCheckBox *hkmChk = nullptr, *vkmChk = nullptr, *varChk = nullptr, *curvChk = nullptr, *plotChk = nullptr;
+	QRadioButton *rbQt = nullptr, *rbQq = nullptr, *rbQn = nullptr;
+
+	explicit GmtFlexureDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/gmtflexure_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GmtFlexureDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GmtFlexureDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("gmtflexure");
+		QDialog *d = dlg;
+
+		lbcCb   = d->findChild<QComboBox *>("cb_lbc");
+		rbcCb   = d->findChild<QComboBox *>("cb_rbc");
+		loadEdit = d->findChild<QLineEdit *>("edit_loadfile");
+		qminEdit = d->findChild<QLineEdit *>("edit_qmin");
+		qmaxEdit = d->findChild<QLineEdit *>("edit_qmax");
+		qincEdit = d->findChild<QLineEdit *>("edit_qinc");
+		teEdit   = d->findChild<QLineEdit *>("edit_te");
+		rhomEdit = d->findChild<QLineEdit *>("edit_rhom");
+		rholEdit = d->findChild<QLineEdit *>("edit_rhol");
+		rhoiEdit = d->findChild<QLineEdit *>("edit_rhoi");
+		rhowEdit = d->findChild<QLineEdit *>("edit_rhow");
+		largsEdit = d->findChild<QLineEdit *>("edit_largs");
+		rargsEdit = d->findChild<QLineEdit *>("edit_rargs");
+		forceEdit = d->findChild<QLineEdit *>("edit_force");
+		waterEdit = d->findChild<QLineEdit *>("edit_water");
+		zobsEdit  = d->findChild<QLineEdit *>("edit_zobs");
+		wfileEdit = d->findChild<QLineEdit *>("edit_wfile");
+		poissonEdit = d->findChild<QLineEdit *>("edit_poisson");
+		youngEdit   = d->findChild<QLineEdit *>("edit_young");
+		outEdit     = d->findChild<QLineEdit *>("edit_outfile");
+		hkmChk  = d->findChild<QCheckBox *>("chk_hkm");
+		vkmChk  = d->findChild<QCheckBox *>("chk_vkm");
+		varChk  = d->findChild<QCheckBox *>("chk_varrestore");
+		curvChk = d->findChild<QCheckBox *>("chk_curvature");
+		plotChk = d->findChild<QCheckBox *>("chk_plot");
+		rbQt = d->findChild<QRadioButton *>("rb_qt");
+		rbQq = d->findChild<QRadioButton *>("rb_qq");
+		rbQn = d->findChild<QRadioButton *>("rb_qn");
+
+		for (QComboBox *c : { lbcCb, rbcCb }) {          // data = the module's own bc number
+			if (!c) continue;
+			c->addItem("infinity (0)", "0");
+			c->addItem("periodic (1)", "1");
+			c->addItem("clamped (2)", "2");
+			c->addItem("free (3)", "3");
+		}
+		auto hook = [d](const char *btnName, QLineEdit *e, bool save, const char *what, const char *filter) {
+			auto *b = d->findChild<QToolButton *>(btnName);
+			if (!b) return;
+			QObject::connect(b, &QToolButton::clicked, d, [d, e, save, what, filter]() {
+				QString p = save ? QFileDialog::getSaveFileName(d, what, prefStartDir(), filter)
+				                 : QFileDialog::getOpenFileName(d, what, prefStartDir(), filter);
+				if (!p.isEmpty() && e) { e->setText(p); rememberStartDir(p); }
+			});
+			if (e) fileBoxDoubleClick(e, b);
+		};
+		const char *TABLES = "Tables (*.dat *.txt *.xy);;All files (*)";
+		hook("btn_loadfile", loadEdit,  false, "Select the load profile", TABLES);
+		hook("btn_te",       teEdit,    false, "Select the variable-rigidity file", TABLES);
+		hook("btn_wfile",    wfileEdit, false, "Select the pre-existing deformation", TABLES);
+		hook("btn_outfile",  outEdit,   true,  "Save the flexure profile", TABLES);
+
+		for (QRadioButton *r : { rbQt, rbQq, rbQn })
+			if (r) QObject::connect(r, &QRadioButton::toggled, d, [this](bool) { syncMode(); });
+		for (QComboBox *c : { lbcCb, rbcCb })
+			if (c) QObject::connect(c, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+			                        [this]() { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "gmtflexure");          // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString qmode() const { return (rbQn && rbQn->isChecked()) ? "n" : (rbQq && rbQq->isChecked()) ? "q" : "t"; }
+	static QString bc(QComboBox *c) { return c ? c->currentData().toString() : QString("0"); }
+
+	void syncMode() {
+		const bool noload = (qmode() == "n");
+		if (loadEdit) loadEdit->setEnabled(!noload);
+		if (auto *b = dlg->findChild<QToolButton *>("btn_loadfile")) b->setEnabled(!noload);
+		// The x range only exists because -Qn has no file to take the node positions from.
+		for (QLineEdit *e : { qminEdit, qmaxEdit, qincEdit }) if (e) e->setEnabled(noload);
+		// Only the clamped and free conditions carry a value.
+		if (largsEdit) largsEdit->setEnabled(bc(lbcCb) == "2" || bc(lbcCb) == "3");
+		if (rargsEdit) rargsEdit->setEnabled(bc(rbcCb) == "2" || bc(rbcCb) == "3");
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGmtFlexure) {
+			QMessageBox::warning(d, "gmtflexure", "gmtflexure: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		const QString q = qmode();
+		if (q != "n" && txt(loadEdit).isEmpty()) {
+			QMessageBox::warning(d, "gmtflexure", "Pick the file with the load.");
+			return;
+		}
+		if (txt(teEdit).isEmpty()) {
+			QMessageBox::warning(d, "gmtflexure", "Give the elastic plate thickness (or a file of them).");
+			return;
+		}
+		if (txt(rhomEdit).isEmpty() || txt(rholEdit).isEmpty() || txt(rhowEdit).isEmpty()) {
+			QMessageBox::warning(d, "gmtflexure", "Give the mantle, load and water densities.");
+			return;
+		}
+		QStringList kv;
+		kv << "qmode=" + q;
+		if (q == "n") {
+			if (!txt(qminEdit).isEmpty()) kv << "qmin=" + txt(qminEdit);
+			if (!txt(qmaxEdit).isEmpty()) kv << "qmax=" + txt(qmaxEdit);
+			if (!txt(qincEdit).isEmpty()) kv << "qinc=" + txt(qincEdit);
+		}
+		else {
+			kv << "loadfile=" + txt(loadEdit);
+		}
+		kv << "te=" + txt(teEdit);
+		kv << "rhom=" + txt(rhomEdit) << "rhol=" + txt(rholEdit) << "rhow=" + txt(rhowEdit);
+		if (!txt(rhoiEdit).isEmpty()) kv << "rhoi=" + txt(rhoiEdit);
+		kv << "lbc=" + bc(lbcCb) << "rbc=" + bc(rbcCb);
+		if (largsEdit && largsEdit->isEnabled() && !txt(largsEdit).isEmpty()) kv << "largs=" + txt(largsEdit);
+		if (rargsEdit && rargsEdit->isEnabled() && !txt(rargsEdit).isEmpty()) kv << "rargs=" + txt(rargsEdit);
+		if (!txt(forceEdit).isEmpty())   kv << "force=" + txt(forceEdit);
+		if (!txt(waterEdit).isEmpty())   kv << "water=" + txt(waterEdit);
+		if (!txt(zobsEdit).isEmpty())    kv << "zobs=" + txt(zobsEdit);
+		if (!txt(wfileEdit).isEmpty())   kv << "wfile=" + txt(wfileEdit);
+		if (!txt(poissonEdit).isEmpty()) kv << "poisson=" + txt(poissonEdit);
+		if (!txt(youngEdit).isEmpty())   kv << "young=" + txt(youngEdit);
+		kv << QString("hkm=%1").arg(hkmChk && hkmChk->isChecked() ? 1 : 0);
+		kv << QString("vkm=%1").arg(vkmChk && vkmChk->isChecked() ? 1 : 0);
+		kv << QString("varrestore=%1").arg(varChk && varChk->isChecked() ? 1 : 0);
+		kv << QString("curvature=%1").arg(curvChk && curvChk->isChecked() ? 1 : 0);
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+		kv << QString("plot=%1").arg(plotChk && plotChk->isChecked() ? 1 : 0);
+
+		showBusyDialog("Flexing…");
+		const int ok = g_juliaGmtFlexure(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "gmtflexure",
+		                              "gmtflexure failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// grdflexure (GMT menu) — the 3-D twin: the flexure of a surface under a topographic load, in the
+// wavenumber domain, for the module's five rheologies. Loaded at RUNTIME via QUiLoader from
+// deps/ui/grdflexure_dialog.ui. Three tabs: the load and its densities, the rheology, and the
+// times with the output and FFT settings.
+//
+// Two of the module's rules shape the dialog rather than being reported after the fact:
+//
+//   - a load-density GRID (-H) replaces the fixed load density, and the module insists that box
+//     hold a dash, so it is greyed out and the dash is supplied for you;
+//   - a firmoviscous model (-F) and a viscoelastic one (-M) are alternatives, so filling either
+//     side greys out the other.
+//
+// "Transfer functions only" (-Q) computes no flexure at all, so it takes the load, the times and
+// the output name out of play — the module writes seven files under its own fixed names instead.
+// ============================================================================================
+class GrdFlexureDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QTabWidget *tabs = nullptr;
+	QLineEdit *loadEdit = nullptr, *rhogridEdit = nullptr;
+	QLineEdit *rhomEdit = nullptr, *rholEdit = nullptr, *rhoiEdit = nullptr, *rhowEdit = nullptr;
+	QLineEdit *rhorootEdit = nullptr, *betaEdit = nullptr, *waterEdit = nullptr, *zobsEdit = nullptr;
+	QLineEdit *teEdit = nullptr, *te2Edit = nullptr;
+	QLineEdit *nuaEdit = nullptr, *haEdit = nullptr, *numEdit = nullptr, *maxwellEdit = nullptr;
+	QLineEdit *nxEdit = nullptr, *nyEdit = nullptr, *nxyEdit = nullptr;
+	QLineEdit *poissonEdit = nullptr, *youngEdit = nullptr;
+	QLineEdit *t0Edit = nullptr, *t1Edit = nullptr, *dtEdit = nullptr, *tfileEdit = nullptr;
+	QLineEdit *outEdit = nullptr, *fftDimsEdit = nullptr, *taperEdit = nullptr;
+	QComboBox *fftDimCb = nullptr, *detrendCb = nullptr, *extendCb = nullptr;
+	QCheckBox *loadkmChk = nullptr, *geogChk = nullptr, *tlogChk = nullptr;
+	QCheckBox *transferChk = nullptr, *fftVerbChk = nullptr;
+	QGroupBox *timeGb = nullptr;
+
+	explicit GrdFlexureDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdflexure_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdFlexureDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdFlexureDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("grdflexure");
+		QDialog *d = dlg;
+
+		tabs        = d->findChild<QTabWidget *>("tabWidget");
+		loadEdit    = d->findChild<QLineEdit *>("edit_loadgrid");
+		rhogridEdit = d->findChild<QLineEdit *>("edit_rhogrid");
+		rhomEdit    = d->findChild<QLineEdit *>("edit_rhom");
+		rholEdit    = d->findChild<QLineEdit *>("edit_rhol");
+		rhoiEdit    = d->findChild<QLineEdit *>("edit_rhoi");
+		rhowEdit    = d->findChild<QLineEdit *>("edit_rhow");
+		rhorootEdit = d->findChild<QLineEdit *>("edit_rhoroot");
+		betaEdit    = d->findChild<QLineEdit *>("edit_beta");
+		waterEdit   = d->findChild<QLineEdit *>("edit_water");
+		zobsEdit    = d->findChild<QLineEdit *>("edit_zobs");
+		teEdit      = d->findChild<QLineEdit *>("edit_te");
+		te2Edit     = d->findChild<QLineEdit *>("edit_te2");
+		nuaEdit     = d->findChild<QLineEdit *>("edit_nua");
+		haEdit      = d->findChild<QLineEdit *>("edit_ha");
+		numEdit     = d->findChild<QLineEdit *>("edit_num");
+		maxwellEdit = d->findChild<QLineEdit *>("edit_maxwell");
+		nxEdit      = d->findChild<QLineEdit *>("edit_nx");
+		nyEdit      = d->findChild<QLineEdit *>("edit_ny");
+		nxyEdit     = d->findChild<QLineEdit *>("edit_nxy");
+		poissonEdit = d->findChild<QLineEdit *>("edit_poisson");
+		youngEdit   = d->findChild<QLineEdit *>("edit_young");
+		t0Edit      = d->findChild<QLineEdit *>("edit_t0");
+		t1Edit      = d->findChild<QLineEdit *>("edit_t1");
+		dtEdit      = d->findChild<QLineEdit *>("edit_dt");
+		tfileEdit   = d->findChild<QLineEdit *>("edit_tfile");
+		outEdit     = d->findChild<QLineEdit *>("edit_outfile");
+		fftDimsEdit = d->findChild<QLineEdit *>("edit_fftdims");
+		taperEdit   = d->findChild<QLineEdit *>("edit_taper");
+		fftDimCb    = d->findChild<QComboBox *>("cb_fftdim");
+		detrendCb   = d->findChild<QComboBox *>("cb_detrend");
+		extendCb    = d->findChild<QComboBox *>("cb_extend");
+		loadkmChk   = d->findChild<QCheckBox *>("chk_loadkm");
+		geogChk     = d->findChild<QCheckBox *>("chk_geog");
+		tlogChk     = d->findChild<QCheckBox *>("chk_tlog");
+		transferChk = d->findChild<QCheckBox *>("chk_transfer");
+		fftVerbChk  = d->findChild<QCheckBox *>("chk_fftverbose");
+		timeGb      = d->findChild<QGroupBox *>("gb_time");
+
+		// The same -N vocabulary the grdfft dialog offers, because it is the same option and the
+		// same Julia builder (_grdfft_N) reads these keys.
+		if (fftDimCb) {
+			fftDimCb->addItem("default (speed + accuracy)", "");
+			fftDimCb->addItem("most accurate (a)", "a");
+			fftDimCb->addItem("actual grid size (f)", "f");
+			fftDimCb->addItem("least memory (m)", "m");
+			fftDimCb->addItem("fastest (r)", "r");
+			fftDimCb->addItem("given below (nx/ny)", "nxny");
+		}
+		if (detrendCb) {
+			detrendCb->addItem("module default (remove a plane)", "");
+			detrendCb->addItem("remove mid value (+h)", "+h");
+			detrendCb->addItem("remove mean (+a)", "+a");
+			detrendCb->addItem("remove linear trend (+d)", "+d");
+			detrendCb->addItem("leave data alone (+l)", "+l");
+		}
+		if (extendCb) {
+			extendCb->addItem("default (edge-point symmetry)", "");
+			extendCb->addItem("edge-point symmetry (+e)", "+e");
+			extendCb->addItem("mirror symmetry (+m)", "+m");
+			extendCb->addItem("no extension (+n)", "+n");
+		}
+		if (geogChk) geogChk->setChecked(scene && scene->baseGeog);
+
+		auto hook = [d](const char *btnName, QLineEdit *e, bool save, const char *what, const char *filter) {
+			auto *b = d->findChild<QToolButton *>(btnName);
+			if (!b) return;
+			QObject::connect(b, &QToolButton::clicked, d, [d, e, save, what, filter]() {
+				QString p = save ? QFileDialog::getSaveFileName(d, what, prefStartDir(), filter)
+				                 : QFileDialog::getOpenFileName(d, what, prefStartDir(), filter);
+				if (!p.isEmpty() && e) { e->setText(p); rememberStartDir(p); }
+			});
+			if (e) fileBoxDoubleClick(e, b);
+		};
+		const char *GRIDS  = "Grids (*.grd *.nc *.tif);;All files (*)";
+		const char *TABLES = "Tables (*.dat *.txt);;All files (*)";
+		hook("btn_loadgrid", loadEdit,    false, "Select the load grid", GRIDS);
+		hook("btn_rhogrid",  rhogridEdit, false, "Select the load-density grid", GRIDS);
+		hook("btn_tfile",    tfileEdit,   false, "Select the file of times", TABLES);
+		hook("btn_outfile",  outEdit,     true,  "Save the flexure grid", GRIDS);
+
+		for (QLineEdit *e : { rhogridEdit, nuaEdit, maxwellEdit })
+			if (e) QObject::connect(e, &QLineEdit::textChanged, d, [this](const QString &) { syncMode(); });
+		if (transferChk) QObject::connect(transferChk, &QCheckBox::toggled, d, [this](bool) { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "grdflexure");          // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	bool transfer() const { return transferChk && transferChk->isChecked(); }
+
+	void syncMode() {
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		// A load-density grid replaces the fixed load density, and the module wants a dash in its
+		// place — supplied for you, so the box goes dead rather than lying.
+		const bool varRho = !txt(rhogridEdit).isEmpty();
+		if (rholEdit) rholEdit->setEnabled(!varRho);
+		// The two time-dependent rheologies are alternatives, never a pair.
+		const bool fv = !txt(nuaEdit).isEmpty(), ve = !txt(maxwellEdit).isEmpty();
+		if (maxwellEdit) maxwellEdit->setEnabled(!fv);
+		for (QLineEdit *e : { nuaEdit, haEdit, numEdit }) if (e) e->setEnabled(!ve);
+		// In-plane forces are not known to work with a firmoviscous model, so the module refuses
+		// the pair outright.
+		for (QLineEdit *e : { nxEdit, nyEdit, nxyEdit }) if (e) e->setEnabled(!fv);
+
+		// -Q computes no flexure: no load, no times, no output grid.
+		const bool q = transfer();
+		if (loadEdit)    loadEdit->setEnabled(!q);
+		if (rhogridEdit) rhogridEdit->setEnabled(!q);
+		if (loadkmChk)   loadkmChk->setEnabled(!q);
+		if (timeGb)      timeGb->setEnabled(!q);
+		if (outEdit)     outEdit->setEnabled(!q);
+		if (auto *b = dlg->findChild<QToolButton *>("btn_loadgrid")) b->setEnabled(!q);
+		if (auto *b = dlg->findChild<QToolButton *>("btn_rhogrid"))  b->setEnabled(!q);
+		if (auto *b = dlg->findChild<QToolButton *>("btn_outfile"))  b->setEnabled(!q);
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGrdFlexure) {
+			QMessageBox::warning(d, "grdflexure", "grdflexure: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		auto cbData = [](QComboBox *c) { return c ? c->currentData().toString() : QString(); };
+		const bool q = transfer();
+		if (!q && txt(loadEdit).isEmpty()) {
+			QMessageBox::warning(d, "grdflexure", "Pick the grid with the topographic load.");
+			return;
+		}
+		if (txt(rhomEdit).isEmpty() || txt(rhowEdit).isEmpty()) {
+			QMessageBox::warning(d, "grdflexure", "Give the mantle and water densities.");
+			return;
+		}
+		if (rholEdit && rholEdit->isEnabled() && txt(rholEdit).isEmpty()) {
+			QMessageBox::warning(d, "grdflexure", "Give the load density, or a grid of load densities.");
+			return;
+		}
+		if (txt(teEdit).isEmpty() && txt(nuaEdit).isEmpty()) {
+			QMessageBox::warning(d, "grdflexure",
+			                     "Give the elastic plate thickness — or, for a purely viscous response, leave it empty and give a viscosity.");
+			return;
+		}
+		// With a time the module writes one grid per time, to a name it fills in, so it needs a
+		// template rather than a plain file name. Said here, before anything runs.
+		const bool timed = !q && (!txt(t0Edit).isEmpty() || !txt(tfileEdit).isEmpty());
+		if (timed && (txt(outEdit).isEmpty() || !txt(outEdit).contains('%'))) {
+			QMessageBox::warning(d, "grdflexure",
+			                     "With evaluation times the output name is a template the module fills in — give one containing %, e.g. flex_%s.nc");
+			return;
+		}
+		QStringList kv;
+		kv << QString("transfer=%1").arg(q ? 1 : 0);
+		if (!q) {
+			kv << "loadgrid=" + txt(loadEdit);
+			kv << QString("loadkm=%1").arg(loadkmChk && loadkmChk->isChecked() ? 1 : 0);
+			if (!txt(rhogridEdit).isEmpty()) kv << "rhogrid=" + txt(rhogridEdit);
+			if (!txt(t0Edit).isEmpty())    kv << "t0=" + txt(t0Edit);
+			if (!txt(t1Edit).isEmpty())    kv << "t1=" + txt(t1Edit);
+			if (!txt(dtEdit).isEmpty())    kv << "dt=" + txt(dtEdit);
+			if (!txt(tfileEdit).isEmpty()) kv << "tfile=" + txt(tfileEdit);
+			kv << QString("tlog=%1").arg(tlogChk && tlogChk->isChecked() ? 1 : 0);
+			if (!txt(outEdit).isEmpty())   kv << "outfile=" + txt(outEdit);
+		}
+		kv << "rhom=" + txt(rhomEdit) << "rhow=" + txt(rhowEdit);
+		if (rholEdit && rholEdit->isEnabled() && !txt(rholEdit).isEmpty()) kv << "rhol=" + txt(rholEdit);
+		if (!txt(rhoiEdit).isEmpty())    kv << "rhoi=" + txt(rhoiEdit);
+		if (!txt(rhorootEdit).isEmpty()) kv << "rhoroot=" + txt(rhorootEdit);
+		if (!txt(betaEdit).isEmpty())    kv << "beta=" + txt(betaEdit);
+		if (!txt(waterEdit).isEmpty())   kv << "water=" + txt(waterEdit);
+		if (!txt(zobsEdit).isEmpty())    kv << "zobs=" + txt(zobsEdit);
+		if (!txt(teEdit).isEmpty())      kv << "te=" + txt(teEdit);
+		if (!txt(te2Edit).isEmpty())     kv << "te2=" + txt(te2Edit);
+		if (nuaEdit && nuaEdit->isEnabled() && !txt(nuaEdit).isEmpty()) {
+			kv << "nua=" + txt(nuaEdit);
+			if (!txt(haEdit).isEmpty())  kv << "ha=" + txt(haEdit);
+			if (!txt(numEdit).isEmpty()) kv << "num=" + txt(numEdit);
+		}
+		if (maxwellEdit && maxwellEdit->isEnabled() && !txt(maxwellEdit).isEmpty())
+			kv << "maxwell=" + txt(maxwellEdit);
+		if (nxEdit && nxEdit->isEnabled()) {
+			if (!txt(nxEdit).isEmpty())  kv << "nx=" + txt(nxEdit);
+			if (!txt(nyEdit).isEmpty())  kv << "ny=" + txt(nyEdit);
+			if (!txt(nxyEdit).isEmpty()) kv << "nxy=" + txt(nxyEdit);
+		}
+		if (!txt(poissonEdit).isEmpty()) kv << "poisson=" + txt(poissonEdit);
+		if (!txt(youngEdit).isEmpty())   kv << "young=" + txt(youngEdit);
+		// -N: the dimension directive travels as written, "nx/ny" included (same as grdfft).
+		QString dim = cbData(fftDimCb);
+		if (dim == "nxny") {
+			dim = txt(fftDimsEdit);
+			if (dim.isEmpty()) { QMessageBox::warning(d, "grdflexure", "Give the FFT dimensions as nx/ny."); return; }
+		}
+		if (!dim.isEmpty())               kv << "fftdim=" + dim;
+		if (!cbData(detrendCb).isEmpty()) kv << "detrend=" + cbData(detrendCb);
+		if (!cbData(extendCb).isEmpty())  kv << "extend=" + cbData(extendCb);
+		if (!txt(taperEdit).isEmpty())    kv << "taper=" + txt(taperEdit);
+		if (fftVerbChk && fftVerbChk->isChecked()) kv << "fftverbose=1";
+		kv << QString("geog=%1").arg(geogChk && geogChk->isChecked() ? 1 : 0);
+
+		showBusyDialog(q ? "Writing transfer functions…" : "Flexing…");
+		const int ok = g_juliaGrdFlexure(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "grdflexure",
+		                              "grdflexure failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// grdvolume (GMT menu) — the area, volume and mean height of the window's grid above (or below, or
+// between) contour levels. Loaded at RUNTIME via QUiLoader from deps/ui/grdvolume_dialog.ui.
+//
+// The combo at the top is the module's -C in the five shapes it really has — the whole grid, above
+// one contour, above each contour of a range, below one contour (an OUTSIDE volume), or between two
+// — and the boxes belonging to the shape in front are the only live ones, because "from/to/step"
+// means nothing to a single contour. "Slice by slice" (-D) needs a range, so it follows it.
+//
+// The result is a table, one row per contour tried, so it lands in the Data Viewer; with a range it
+// also goes to the X,Y plot tool, where the mean-height-versus-contour curve is what the scan was
+// for in the first place.
+// ============================================================================================
+class GrdVolumeDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QComboBox *cmodeCb = nullptr, *unitCb = nullptr, *tmaxCb = nullptr;
+	QLineEdit *cvalEdit = nullptr, *clowEdit = nullptr, *chighEdit = nullptr, *cdeltaEdit = nullptr;
+	QLineEdit *baseEdit = nullptr, *zfactEdit = nullptr, *zshiftEdit = nullptr, *outEdit = nullptr;
+	QLineEdit *xmin = nullptr, *xmax = nullptr, *ymin = nullptr, *ymax = nullptr;
+	QCheckBox *slicesChk = nullptr, *plotChk = nullptr;
+
+	explicit GrdVolumeDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdvolume_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdVolumeDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdVolumeDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("grdvolume");
+		QDialog *d = dlg;
+
+		cmodeCb    = d->findChild<QComboBox *>("cb_cmode");
+		unitCb     = d->findChild<QComboBox *>("cb_unit");
+		tmaxCb     = d->findChild<QComboBox *>("cb_tmax");
+		cvalEdit   = d->findChild<QLineEdit *>("edit_cval");
+		clowEdit   = d->findChild<QLineEdit *>("edit_clow");
+		chighEdit  = d->findChild<QLineEdit *>("edit_chigh");
+		cdeltaEdit = d->findChild<QLineEdit *>("edit_cdelta");
+		baseEdit   = d->findChild<QLineEdit *>("edit_base");
+		zfactEdit  = d->findChild<QLineEdit *>("edit_zfact");
+		zshiftEdit = d->findChild<QLineEdit *>("edit_zshift");
+		outEdit    = d->findChild<QLineEdit *>("edit_outfile");
+		xmin = d->findChild<QLineEdit *>("edit_xmin");  xmax = d->findChild<QLineEdit *>("edit_xmax");
+		ymin = d->findChild<QLineEdit *>("edit_ymin");  ymax = d->findChild<QLineEdit *>("edit_ymax");
+		slicesChk = d->findChild<QCheckBox *>("chk_slices");
+		plotChk   = d->findChild<QCheckBox *>("chk_plot");
+
+		if (cmodeCb) {                                   // data = what Julia sends as "cmode"
+			cmodeCb->addItem("the whole grid", "all");
+			cmodeCb->addItem("above one contour", "above");
+			cmodeCb->addItem("above each contour of a range", "range");
+			cmodeCb->addItem("below one contour (outside volume)", "below");
+			cmodeCb->addItem("between two contours", "between");
+		}
+		if (unitCb) {                                    // -S, geographic grids only
+			unitCb->addItem("meter (default)", "");
+			unitCb->addItem("foot", "f");
+			unitCb->addItem("km", "k");
+			unitCb->addItem("statute mile", "M");
+			unitCb->addItem("nautical mile", "n");
+			unitCb->addItem("US survey foot", "u");
+		}
+		if (tmaxCb) {
+			tmaxCb->addItem("do not look for one", "");
+			tmaxCb->addItem("the maximum mean height", "h");
+			tmaxCb->addItem("the maximum curvature of height vs contour", "c");
+		}
+		// Region + the "OR Ref grid" row, prefilled from the window's own grid — the standing rule.
+		if (auto *rg = d->findChild<QGridLayout *>("gridLayout_region"))
+			addRefGridRow(d, rg, xmin, xmax, ymin, ymax);
+		if (scene && scene->gnx > 1 && scene->gny > 1) {
+			if (xmin) xmin->setText(QString::number(scene->gx0, 'g', 12));
+			if (xmax) xmax->setText(QString::number(scene->gx1, 'g', 12));
+			if (ymin) ymin->setText(QString::number(scene->gy0, 'g', 12));
+			if (ymax) ymax->setText(QString::number(scene->gy1, 'g', 12));
+		}
+
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save result table", prefStartDir(),
+					"Tables (*.dat *.txt);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+
+		if (cmodeCb) QObject::connect(cmodeCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                              [this]() { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "grdvolume");           // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString cmode() const { return cmodeCb ? cmodeCb->currentData().toString() : QString("all"); }
+
+	// Only the boxes the chosen shape of -C reads stay live; slices and the curve plot belong to a
+	// RANGE alone, which is the only shape that produces more than one row.
+	void syncMode() {
+		const QString m = cmode();
+		const bool one   = (m == "above" || m == "below");
+		const bool range = (m == "range");
+		const bool two   = (m == "between") || range;
+		if (cvalEdit)   cvalEdit->setEnabled(one);
+		if (clowEdit)   clowEdit->setEnabled(two);
+		if (chighEdit)  chighEdit->setEnabled(two);
+		if (cdeltaEdit) cdeltaEdit->setEnabled(range);
+		if (slicesChk)  slicesChk->setEnabled(range);
+		if (plotChk)    plotChk->setEnabled(range);
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGrdVolume) {
+			QMessageBox::warning(d, "grdvolume", "grdvolume: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		const QString m = cmode();
+		QStringList kv;
+		kv << "cmode=" + m;
+		if (!txt(cvalEdit).isEmpty())   kv << "cval=" + txt(cvalEdit);
+		if (!txt(clowEdit).isEmpty())   kv << "clow=" + txt(clowEdit);
+		if (!txt(chighEdit).isEmpty())  kv << "chigh=" + txt(chighEdit);
+		if (!txt(cdeltaEdit).isEmpty()) kv << "cdelta=" + txt(cdeltaEdit);
+		kv << QString("slices=%1").arg(slicesChk && slicesChk->isChecked() && m == "range" ? 1 : 0);
+		kv << QString("plot=%1").arg(plotChk && plotChk->isChecked() && m == "range" ? 1 : 0);
+		if (!txt(baseEdit).isEmpty())   kv << "base=" + txt(baseEdit);
+		if (!txt(zfactEdit).isEmpty())  kv << "zfact=" + txt(zfactEdit);
+		if (!txt(zshiftEdit).isEmpty()) kv << "zshift=" + txt(zshiftEdit);
+		if (unitCb && !unitCb->currentData().toString().isEmpty())
+			kv << "unit=" + unitCb->currentData().toString();
+		if (tmaxCb && !tmaxCb->currentData().toString().isEmpty())
+			kv << "tmax=" + tmaxCb->currentData().toString();
+		if (!txt(xmin).isEmpty() && !txt(xmax).isEmpty() && !txt(ymin).isEmpty() && !txt(ymax).isEmpty())
+			kv << QString("region=%1/%2/%3/%4").arg(txt(xmin)).arg(txt(xmax)).arg(txt(ymin)).arg(txt(ymax));
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+		kv << "grid=" + QString::fromStdString(activeGridName(scn));   // measure the DISPLAYED layer
+
+		showBusyDialog("Measuring…");
+		const int ok = g_juliaGrdVolume(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "grdvolume",
+		                              "grdvolume failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// gravprisms (GMT menu) — the geopotential field of vertically oriented rectangular prisms.
+// Loaded at RUNTIME via QUiLoader from deps/ui/gravprisms_dialog.ui. Three tabs, like its sibling
+// grdseamount, because the module really is three questions:
+//
+//   Prisms          where the prisms come from: a table (with -E if they all share one size), or
+//                   built here (-C) from a seamount's heights (-S) or the layer between two
+//                   surfaces (-L base, -T top).
+//   Density         one density for every prism (-D, a constant or a grid), or the ad-hoc radial
+//                   model of grdseamount (-H), which splits each prism into a stack of sub-prisms
+//                   and can hand back the vertically-averaged densities it used (-W).
+//   Field & output  which field (-F), and where to evaluate it — a new grid (-R -I), the locations
+//                   in a file (-N), or the nodes of an observation-level grid (-Z<grid>).
+//
+// The module's own incompatibilities are enforced by greying out, not by a message after the fact:
+// the sub-prism height and the mean-density grid belong to the radial model alone, "subtract rather
+// than replace" is the only legal way to combine a fixed density with that model, and "stop after
+// saving the prisms" computes nothing — so it takes the whole Field & output tab away.
+//
+// Needs no grid in the window: it reads files and makes its own output.
+// ============================================================================================
+class GravPrismsDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QTabWidget *tabs = nullptr;
+	QComboBox *fieldCb = nullptr;
+	QLineEdit *inEdit = nullptr, *dxdyEdit = nullptr;
+	QLineEdit *shapeEdit = nullptr, *baseEdit = nullptr, *topEdit = nullptr, *dzEdit = nullptr;
+	QLineEdit *savePrEdit = nullptr, *densEdit = nullptr, *avedensEdit = nullptr;
+	QLineEdit *hrefEdit = nullptr, *rholoEdit = nullptr, *rhohiEdit = nullptr;
+	QLineEdit *boostEdit = nullptr, *densifyEdit = nullptr, *powerEdit = nullptr;
+	QLineEdit *latEdit = nullptr, *levelEdit = nullptr, *outEdit = nullptr;
+	QLineEdit *xmin = nullptr, *xmax = nullptr, *ymin = nullptr, *ymax = nullptr;
+	QLineEdit *xinc = nullptr, *yinc = nullptr, *trackEdit = nullptr, *zgridEdit = nullptr;
+	QCheckBox *quitChk = nullptr, *contrastChk = nullptr, *radialChk = nullptr;
+	QCheckBox *zupChk = nullptr, *hkmChk = nullptr, *vkmChk = nullptr, *geogChk = nullptr;
+	QCheckBox *pixelChk = nullptr, *plotptsChk = nullptr;
+	QRadioButton *rbTable = nullptr, *rbCreate = nullptr;
+	QRadioButton *rbGrid = nullptr, *rbTrack = nullptr, *rbObs = nullptr;
+	QGroupBox *tableGb = nullptr, *createGb = nullptr, *radialGb = nullptr;
+	QGroupBox *gridGb = nullptr, *trackGb = nullptr, *obsGb = nullptr;
+
+	explicit GravPrismsDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/gravprisms_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GravPrismsDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GravPrismsDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("gravprisms");
+		QDialog *d = dlg;
+
+		tabs        = d->findChild<QTabWidget *>("tabWidget");
+		fieldCb     = d->findChild<QComboBox *>("cb_field");
+		inEdit      = d->findChild<QLineEdit *>("edit_infile");
+		dxdyEdit    = d->findChild<QLineEdit *>("edit_dxdy");
+		shapeEdit   = d->findChild<QLineEdit *>("edit_shape");
+		baseEdit    = d->findChild<QLineEdit *>("edit_base");
+		topEdit     = d->findChild<QLineEdit *>("edit_top");
+		dzEdit      = d->findChild<QLineEdit *>("edit_dz");
+		savePrEdit  = d->findChild<QLineEdit *>("edit_saveprisms");
+		densEdit    = d->findChild<QLineEdit *>("edit_density");
+		avedensEdit = d->findChild<QLineEdit *>("edit_avedens");
+		hrefEdit    = d->findChild<QLineEdit *>("edit_href");
+		rholoEdit   = d->findChild<QLineEdit *>("edit_rholo");
+		rhohiEdit   = d->findChild<QLineEdit *>("edit_rhohi");
+		boostEdit   = d->findChild<QLineEdit *>("edit_boost");
+		densifyEdit = d->findChild<QLineEdit *>("edit_densify");
+		powerEdit   = d->findChild<QLineEdit *>("edit_power");
+		latEdit     = d->findChild<QLineEdit *>("edit_lat");
+		levelEdit   = d->findChild<QLineEdit *>("edit_level");
+		outEdit     = d->findChild<QLineEdit *>("edit_outfile");
+		xmin = d->findChild<QLineEdit *>("edit_xmin");  xmax = d->findChild<QLineEdit *>("edit_xmax");
+		ymin = d->findChild<QLineEdit *>("edit_ymin");  ymax = d->findChild<QLineEdit *>("edit_ymax");
+		xinc = d->findChild<QLineEdit *>("edit_xinc");  yinc = d->findChild<QLineEdit *>("edit_yinc");
+		trackEdit = d->findChild<QLineEdit *>("edit_trackfile");
+		zgridEdit = d->findChild<QLineEdit *>("edit_zgrid");
+		quitChk     = d->findChild<QCheckBox *>("chk_quit");
+		contrastChk = d->findChild<QCheckBox *>("chk_contrast");
+		radialChk   = d->findChild<QCheckBox *>("chk_radial");
+		zupChk      = d->findChild<QCheckBox *>("chk_zup");
+		hkmChk      = d->findChild<QCheckBox *>("chk_hkm");
+		vkmChk      = d->findChild<QCheckBox *>("chk_vkm");
+		geogChk     = d->findChild<QCheckBox *>("chk_geog");
+		pixelChk    = d->findChild<QCheckBox *>("chk_pixel");
+		plotptsChk  = d->findChild<QCheckBox *>("chk_plotpts");
+		rbTable  = d->findChild<QRadioButton *>("rb_table");
+		rbCreate = d->findChild<QRadioButton *>("rb_create");
+		rbGrid   = d->findChild<QRadioButton *>("rb_grid");
+		rbTrack  = d->findChild<QRadioButton *>("rb_track");
+		rbObs    = d->findChild<QRadioButton *>("rb_obsgrid");
+		tableGb  = d->findChild<QGroupBox *>("gb_table");
+		createGb = d->findChild<QGroupBox *>("gb_create");
+		radialGb = d->findChild<QGroupBox *>("gb_radial");
+		gridGb   = d->findChild<QGroupBox *>("gb_grid");
+		trackGb  = d->findChild<QGroupBox *>("gb_track");
+		obsGb    = d->findChild<QGroupBox *>("gb_obsgrid");
+
+		if (fieldCb) {                                   // data = the -F directive letter
+			fieldCb->addItem("free-air anomaly (mGal)", "f");
+			fieldCb->addItem("geoid (m)", "n");
+			fieldCb->addItem("vertical gravity gradient (Eotvos)", "v");
+		}
+		// Region + increment, with the standing "OR Ref grid" row — the increments included, so one
+		// pick at an existing grid states the whole output geometry.
+		if (auto *rg = d->findChild<QGridLayout *>("gridLayout_region"))
+			addRefGridRow(d, rg, xmin, xmax, ymin, ymax, xinc, yinc);
+		if (scene && scene->gnx > 1 && scene->gny > 1) {
+			if (xmin) xmin->setText(QString::number(scene->gx0, 'g', 12));
+			if (xmax) xmax->setText(QString::number(scene->gx1, 'g', 12));
+			if (ymin) ymin->setText(QString::number(scene->gy0, 'g', 12));
+			if (ymax) ymax->setText(QString::number(scene->gy1, 'g', 12));
+			if (xinc) xinc->setText(QString::number(scene->gdx, 'g', 12));
+			if (yinc) yinc->setText(QString::number(scene->gdy, 'g', 12));
+		}
+		if (geogChk) geogChk->setChecked(scene && scene->baseGeog);
+
+		// One place that knows how a browse button behaves: find it, wire it to an open- or
+		// save-dialog with the right filter, and let a double-click in its box click it.
+		const char *TABLES = "Tables (*.dat *.txt *.xy);;All files (*)";
+		const char *GRIDS  = "Grids (*.grd *.nc *.tif);;All files (*)";
+		auto hook = [d](const char *btnName, QLineEdit *e, bool save, const char *what, const char *filter) {
+			auto *b = d->findChild<QToolButton *>(btnName);
+			if (!b) return;
+			QObject::connect(b, &QToolButton::clicked, d, [d, e, save, what, filter]() {
+				QString p = save ? QFileDialog::getSaveFileName(d, what, prefStartDir(), filter)
+				                 : QFileDialog::getOpenFileName(d, what, prefStartDir(), filter);
+				if (!p.isEmpty() && e) { e->setText(p); rememberStartDir(p); }
+			});
+			if (e) fileBoxDoubleClick(e, b);
+		};
+		hook("btn_infile",     inEdit,      false, "Select the prism table", TABLES);
+		hook("btn_shape",      shapeEdit,   false, "Select the grid of heights", GRIDS);
+		hook("btn_base",       baseEdit,    false, "Select the base surface grid", GRIDS);
+		hook("btn_top",        topEdit,     false, "Select the top surface grid", GRIDS);
+		hook("btn_density",    densEdit,    false, "Select the density grid", GRIDS);
+		hook("btn_trackfile",  trackEdit,   false, "Select the output locations", TABLES);
+		hook("btn_zgrid",      zgridEdit,   false, "Select the grid of observation levels", GRIDS);
+		hook("btn_saveprisms", savePrEdit,  true,  "Save the prisms to", TABLES);
+		hook("btn_avedens",    avedensEdit, true,  "Save the mean-density grid to", GRIDS);
+		// The result's own name follows the where-choice: a grid, or a table at listed locations.
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save the result", prefStartDir(),
+					onTrack() ? "Tables (*.dat *.txt);;All files (*)" : "Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+
+		if (fieldCb) QObject::connect(fieldCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                              [this]() { syncMode(); });
+		for (QRadioButton *r : { rbTable, rbCreate, rbGrid, rbTrack, rbObs })
+			if (r) QObject::connect(r, &QRadioButton::toggled, d, [this](bool) { syncMode(); });
+		for (QCheckBox *c : { radialChk, quitChk })
+			if (c) QObject::connect(c, &QCheckBox::toggled, d, [this](bool) { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "gravprisms");          // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString field() const { return fieldCb ? fieldCb->currentData().toString() : QString("f"); }
+	bool creating() const { return rbCreate && rbCreate->isChecked(); }
+	bool radial() const { return radialChk && radialChk->isChecked(); }
+	bool quitting() const { return creating() && quitChk && quitChk->isChecked(); }
+	bool onTrack() const { return rbTrack && rbTrack->isChecked(); }
+	bool onObsGrid() const { return rbObs && rbObs->isChecked(); }
+	QString mode() const { return onTrack() ? "track" : onObsGrid() ? "obsgrid" : "grid"; }
+
+	void syncMode() {
+		const bool make = creating(), rad = radial();
+		if (tableGb)  tableGb->setEnabled(!make);
+		if (createGb) createGb->setEnabled(make);
+		// +z and -W belong to the radial model alone; the module refuses both without it.
+		if (dzEdit)      dzEdit->setEnabled(make && rad);
+		if (avedensEdit) avedensEdit->setEnabled(make && rad);
+		if (auto *b = dlg->findChild<QToolButton *>("btn_avedens")) b->setEnabled(make && rad);
+		if (radialGb) radialGb->setEnabled(rad);
+		// A fixed density can only ever be SUBTRACTED from the radial model's own, never substituted
+		// for it — so the tick is forced and taken out of play rather than refused afterwards.
+		if (contrastChk) {
+			if (rad && !contrastChk->isChecked()) contrastChk->setChecked(true);
+			contrastChk->setEnabled(!rad);
+		}
+		// A density GRID is what -H cannot live with, so its browse button goes with the model.
+		if (auto *b = dlg->findChild<QToolButton *>("btn_density")) b->setEnabled(!rad);
+
+		// "Stop after saving the prisms" computes nothing at all — the whole Field & output tab is
+		// then a promise this run will not keep.
+		const bool stop = quitting();
+		if (tabs && tabs->count() > 2) tabs->setTabEnabled(2, !stop);
+
+		const bool track = onTrack(), obs = onObsGrid();
+		if (gridGb)  gridGb->setEnabled(!track && !obs);
+		if (trackGb) trackGb->setEnabled(track);
+		if (obsGb)   obsGb->setEnabled(obs);
+		if (levelEdit) levelEdit->setEnabled(!obs);      // the observation grid IS the level
+		if (latEdit)   latEdit->setEnabled(field() == "n");
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGravPrisms) {
+			QMessageBox::warning(d, "gravprisms", "gravprisms: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		const bool make = creating(), rad = radial(), stop = quitting();
+		if (!make && txt(inEdit).isEmpty()) {
+			QMessageBox::warning(d, "gravprisms", "Pick the table of prisms.");
+			return;
+		}
+		if (make && txt(densEdit).isEmpty() && !rad) {
+			QMessageBox::warning(d, "gravprisms",
+			                     "Creating prisms needs a density: a fixed one, a density grid, or the radial model.");
+			return;
+		}
+		if (make && txt(shapeEdit).isEmpty() && txt(topEdit).isEmpty()) {
+			QMessageBox::warning(d, "gravprisms",
+			                     "Give the grid of heights, or the top of the layer to approximate.");
+			return;
+		}
+		if (stop && txt(savePrEdit).isEmpty()) {
+			QMessageBox::warning(d, "gravprisms", "Stopping after saving the prisms needs a file to save them to.");
+			return;
+		}
+		const QString m = mode();
+		if (!stop) {
+			if (m == "track" && txt(trackEdit).isEmpty()) {
+				QMessageBox::warning(d, "gravprisms", "Pick the file with the output locations.");
+				return;
+			}
+			if (m == "obsgrid" && txt(zgridEdit).isEmpty()) {
+				QMessageBox::warning(d, "gravprisms", "Pick the grid of observation levels.");
+				return;
+			}
+			if (m == "grid") {
+				if (txt(xmin).isEmpty() || txt(xmax).isEmpty() || txt(ymin).isEmpty() || txt(ymax).isEmpty()) {
+					QMessageBox::warning(d, "gravprisms", "Give the full region to compute over.");
+					return;
+				}
+				if (txt(xinc).isEmpty()) {
+					QMessageBox::warning(d, "gravprisms", "Give the grid increment.");
+					return;
+				}
+			}
+		}
+		QStringList kv;
+		kv << QString("source=%1").arg(make ? "create" : "table");
+		if (make) {
+			if (!txt(shapeEdit).isEmpty())  kv << "shape=" + txt(shapeEdit);
+			if (!txt(baseEdit).isEmpty())   kv << "base=" + txt(baseEdit);
+			if (!txt(topEdit).isEmpty())    kv << "top=" + txt(topEdit);
+			if (rad && !txt(dzEdit).isEmpty()) kv << "dz=" + txt(dzEdit);
+			if (!txt(savePrEdit).isEmpty()) kv << "saveprisms=" + txt(savePrEdit);
+			kv << QString("quit=%1").arg(stop ? 1 : 0);
+		}
+		else {
+			kv << "infile=" + txt(inEdit);
+			if (!txt(dxdyEdit).isEmpty()) kv << "dxdy=" + txt(dxdyEdit);
+		}
+		if (!txt(densEdit).isEmpty()) kv << "density=" + txt(densEdit);
+		kv << QString("contrast=%1").arg(contrastChk && contrastChk->isChecked() ? 1 : 0);
+		kv << QString("radial=%1").arg(rad ? 1 : 0);
+		if (rad) {
+			kv << "href=" + txt(hrefEdit) << "rholo=" + txt(rholoEdit) << "rhohi=" + txt(rhohiEdit);
+			if (!txt(boostEdit).isEmpty())   kv << "boost=" + txt(boostEdit);
+			if (!txt(densifyEdit).isEmpty()) kv << "densify=" + txt(densifyEdit);
+			if (!txt(powerEdit).isEmpty())   kv << "power=" + txt(powerEdit);
+			if (make && !txt(avedensEdit).isEmpty()) kv << "avedens=" + txt(avedensEdit);
+		}
+		kv << "field=" + field();
+		if (field() == "n" && !txt(latEdit).isEmpty()) kv << "lat=" + txt(latEdit);
+		kv << QString("zup=%1").arg(zupChk && zupChk->isChecked() ? 1 : 0);
+		kv << QString("hkm=%1").arg(hkmChk && hkmChk->isChecked() ? 1 : 0);
+		kv << QString("vkm=%1").arg(vkmChk && vkmChk->isChecked() ? 1 : 0);
+		kv << QString("geog=%1").arg(geogChk && geogChk->isChecked() ? 1 : 0);
+		kv << "mode=" + m;
+		if (m == "grid") {
+			kv << QString("region=%1/%2/%3/%4").arg(txt(xmin)).arg(txt(xmax)).arg(txt(ymin)).arg(txt(ymax));
+			// One increment or two: "dx/dy" only when y differs, which is the module's own spelling.
+			kv << "inc=" + (txt(yinc).isEmpty() ? txt(xinc) : txt(xinc) + "/" + txt(yinc));
+			kv << QString("pixel=%1").arg(pixelChk && pixelChk->isChecked() ? 1 : 0);
+		}
+		else if (m == "track") {
+			kv << "trackfile=" + txt(trackEdit);
+			kv << QString("plotpts=%1").arg(plotptsChk && plotptsChk->isChecked() ? 1 : 0);
+		}
+		else {
+			kv << "zgrid=" + txt(zgridEdit);
+		}
+		if (m != "obsgrid" && !txt(levelEdit).isEmpty()) kv << "level=" + txt(levelEdit);
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+
+		showBusyDialog(stop ? "Building the prisms…" : "Modelling…");
+		const int ok = g_juliaGravPrisms(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "gravprisms",
+		                              "gravprisms failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
+// grdvector (GMT menu) — the vector field of two grids, drawn over this window's map. Loaded at
+// RUNTIME via QUiLoader from deps/ui/grdvector_dialog.ui.
+//
+// grdvector is a PLOTTING module: its whole output is PostScript, with no dump switch and nothing an
+// API can hand back as geometry. So this dialog collects the module's OPTIONS and Julia
+// (_on_grdvector, src/grdvector.jl) builds the arrows and adds them through the same overlay path
+// every drawn line takes — the same arrow shape File > Open xy(z) > "Arrow field" already draws.
+//
+// Two of the module's switches are deliberately absent rather than dead: -N (no clip), because an
+// overlay is never clipped at a border here, and -T (sign scale), because this window's axes always
+// increase. The line WIDTH is absent too — every overlay in this app takes it from the right-click
+// Line Properties menu, and a second place to set it would be a second answer.
+// ============================================================================================
+class GrdVectorDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QLineEdit *grid1Edit = nullptr, *grid2Edit = nullptr;
+	QLineEdit *incxEdit = nullptr, *incyEdit = nullptr, *scaleEdit = nullptr;
+	QLineEdit *headlenEdit = nullptr, *headangEdit = nullptr, *normEdit = nullptr;
+	QLineEdit *nclassEdit = nullptr, *nameEdit = nullptr, *outEdit = nullptr;
+	QLineEdit *xminEdit = nullptr, *xmaxEdit = nullptr, *yminEdit = nullptr, *ymaxEdit = nullptr;
+	QComboBox *incModeCb = nullptr, *scaleModeCb = nullptr, *headsCb = nullptr, *colorCb = nullptr;
+	QCheckBox *useSceneChk = nullptr, *polarChk = nullptr, *azimChk = nullptr, *geogChk = nullptr;
+	QCheckBox *byMagChk = nullptr, *drapeChk = nullptr, *tableChk = nullptr;
+	QLabel *incxLb = nullptr, *incyLb = nullptr, *scaleLb = nullptr, *grid1Lb = nullptr;
+	QLabel *headlenLb = nullptr, *headangLb = nullptr, *normLb = nullptr;
+	QLabel *nclassLb = nullptr, *colorLb = nullptr;
+	QToolButton *grid1Btn = nullptr;
+
+	explicit GrdVectorDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdvector_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdVectorDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdVectorDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("grdvector");
+		QDialog *d = dlg;
+
+		grid1Edit   = d->findChild<QLineEdit *>("edit_grid1");
+		grid2Edit   = d->findChild<QLineEdit *>("edit_grid2");
+		incxEdit    = d->findChild<QLineEdit *>("edit_incx");
+		incyEdit    = d->findChild<QLineEdit *>("edit_incy");
+		scaleEdit   = d->findChild<QLineEdit *>("edit_scale");
+		headlenEdit = d->findChild<QLineEdit *>("edit_headlen");
+		headangEdit = d->findChild<QLineEdit *>("edit_headang");
+		normEdit    = d->findChild<QLineEdit *>("edit_norm");
+		nclassEdit  = d->findChild<QLineEdit *>("edit_nclass");
+		nameEdit    = d->findChild<QLineEdit *>("edit_name");
+		outEdit     = d->findChild<QLineEdit *>("edit_outfile");
+		xminEdit    = d->findChild<QLineEdit *>("edit_xmin");
+		xmaxEdit    = d->findChild<QLineEdit *>("edit_xmax");
+		yminEdit    = d->findChild<QLineEdit *>("edit_ymin");
+		ymaxEdit    = d->findChild<QLineEdit *>("edit_ymax");
+		incModeCb   = d->findChild<QComboBox *>("cb_incmode");
+		scaleModeCb = d->findChild<QComboBox *>("cb_scalemode");
+		headsCb     = d->findChild<QComboBox *>("cb_heads");
+		colorCb     = d->findChild<QComboBox *>("cb_color");
+		useSceneChk = d->findChild<QCheckBox *>("chk_usescene");
+		polarChk    = d->findChild<QCheckBox *>("chk_polar");
+		azimChk     = d->findChild<QCheckBox *>("chk_azimuth");
+		geogChk     = d->findChild<QCheckBox *>("chk_geog");
+		byMagChk    = d->findChild<QCheckBox *>("chk_bymag");
+		drapeChk    = d->findChild<QCheckBox *>("chk_drape");
+		tableChk    = d->findChild<QCheckBox *>("chk_table");
+		incxLb      = d->findChild<QLabel *>("lb_incx");
+		incyLb      = d->findChild<QLabel *>("lb_incy");
+		scaleLb     = d->findChild<QLabel *>("lb_scale");
+		grid1Lb     = d->findChild<QLabel *>("lb_grid1");
+		headlenLb   = d->findChild<QLabel *>("lb_headlen");
+		headangLb   = d->findChild<QLabel *>("lb_headang");
+		normLb      = d->findChild<QLabel *>("lb_norm");
+		nclassLb    = d->findChild<QLabel *>("lb_nclass");
+		colorLb     = d->findChild<QLabel *>("lb_color");
+		grid1Btn    = d->findChild<QToolButton *>("btn_grid1");
+
+		if (incModeCb) {
+			incModeCb->addItem("automatic (about 20 arrows across)", "auto");
+			incModeCb->addItem("every n-th node (Ix)", "x");
+			incModeCb->addItem("one every dx/dy of data (I)", "inc");
+		}
+		if (scaleModeCb) {
+			scaleModeCb->addItem("automatic (longest arrow = 0.9 of the node spacing)", "auto");
+			scaleModeCb->addItem("map length per unit of magnitude (Si)", "direct");
+			scaleModeCb->addItem("magnitude per unit of map length (S)", "inverse");
+			scaleModeCb->addItem("every arrow the same length (Sl)", "fixed");
+		}
+		if (headsCb) {
+			headsCb->addItem("the tip (+e)", "e");
+			headsCb->addItem("the tail (+b)", "b");
+			headsCb->addItem("both ends (+b+e)", "be");
+			headsCb->addItem("no head — sticks", "");
+		}
+		if (colorCb) {
+			static const char *cols[] = { "black", "red", "blue", "green", "magenta", "cyan",
+			                              "orange", "purple", "brown", "yellow", "white", "grey" };
+			for (const char *c : cols) colorCb->addItem(c, c);
+		}
+		// The grid's own kind decides whether the east component wants the cos(latitude) correction —
+		// the same baseGeog flag the axes and grdfft's Flat Earth tick already read.
+		if (geogChk) geogChk->setChecked(scene && scene->baseGeog);
+
+		auto hook = [d](const char *btnName, QLineEdit *e, bool save, const char *what, const char *filter) {
+			auto *b = d->findChild<QToolButton *>(btnName);
+			if (!b) return;
+			QObject::connect(b, &QToolButton::clicked, d, [d, e, save, what, filter]() {
+				QString p = save ? QFileDialog::getSaveFileName(d, what, prefStartDir(), filter)
+				                 : QFileDialog::getOpenFileName(d, what, prefStartDir(), filter);
+				if (!p.isEmpty() && e) { e->setText(p); rememberStartDir(p); }
+			});
+			if (e) fileBoxDoubleClick(e, b);
+		};
+		const char *gridFilter = "Grids (*.grd *.nc *.tif *.tiff);;All files (*)";
+		hook("btn_grid1", grid1Edit, false, "Select the first component grid", gridFilter);
+		hook("btn_grid2", grid2Edit, false, "Select the second component grid", gridFilter);
+		hook("btn_outfile", outEdit, true, "Save the field", "Tables (*.dat *.txt);;All files (*)");
+
+		// STANDING RULE: an "OR Ref grid" row under every Region.
+		addRefGridRow(d, d->findChild<QGridLayout *>("gridLayout_region"),
+		              xminEdit, xmaxEdit, yminEdit, ymaxEdit);
+
+		for (QCheckBox *c : { useSceneChk, azimChk, byMagChk })
+			if (c) QObject::connect(c, &QCheckBox::toggled, d, [this](bool) { syncMode(); });
+		for (QComboBox *cb : { incModeCb, scaleModeCb, headsCb })
+			if (cb) QObject::connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+			                         [this]() { syncMode(); });
+		syncMode();
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "grdvector");           // the green ? disk, lower-left as everywhere else
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	QString cbData(QComboBox *cb) const { return cb ? cb->currentData().toString() : QString(); }
+
+	// Only what the choice above it reads stays live. -Z implies -A, so ticking the azimuth box ticks
+	// polar and takes it out of the user's hands rather than letting the two disagree; and a field
+	// coloured by magnitude has no single colour to pick.
+	void syncMode() {
+		const bool scene = useSceneChk && useSceneChk->isChecked();
+		if (grid1Edit) grid1Edit->setEnabled(!scene);
+		if (grid1Btn)  grid1Btn->setEnabled(!scene);
+		if (grid1Lb)   grid1Lb->setEnabled(!scene);
+
+		if (azimChk && azimChk->isChecked() && polarChk) { polarChk->setChecked(true); polarChk->setEnabled(false); }
+		else if (polarChk) polarChk->setEnabled(true);
+
+		const bool manualInc = cbData(incModeCb) != "auto";
+		for (QWidget *w : { (QWidget *)incxEdit, (QWidget *)incyEdit, (QWidget *)incxLb, (QWidget *)incyLb })
+			if (w) w->setEnabled(manualInc);
+
+		const bool manualScale = cbData(scaleModeCb) != "auto";
+		if (scaleEdit) scaleEdit->setEnabled(manualScale);
+		if (scaleLb)   scaleLb->setEnabled(manualScale);
+
+		const bool head = !cbData(headsCb).isEmpty();
+		for (QWidget *w : { (QWidget *)headlenEdit, (QWidget *)headangEdit, (QWidget *)normEdit,
+		                    (QWidget *)headlenLb, (QWidget *)headangLb, (QWidget *)normLb })
+			if (w) w->setEnabled(head);
+
+		const bool bymag = byMagChk && byMagChk->isChecked();
+		if (colorCb)    colorCb->setEnabled(!bymag);
+		if (colorLb)    colorLb->setEnabled(!bymag);
+		if (nclassEdit) nclassEdit->setEnabled(bymag);
+		if (nclassLb)   nclassLb->setEnabled(bymag);
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGrdVector) {
+			QMessageBox::warning(d, "grdvector", "grdvector: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		const bool scene = useSceneChk && useSceneChk->isChecked();
+		if (!scene && txt(grid1Edit).isEmpty()) {
+			QMessageBox::warning(d, "grdvector", "Pick the first component grid, or take it from the display.");
+			return;
+		}
+		if (txt(grid2Edit).isEmpty()) {
+			QMessageBox::warning(d, "grdvector", "A vector field is two grids: pick the second component.");
+			return;
+		}
+		if (cbData(incModeCb) != "auto" && txt(incxEdit).isEmpty()) {
+			QMessageBox::warning(d, "grdvector", "Give the node spacing, or leave it on automatic.");
+			return;
+		}
+		if (cbData(scaleModeCb) != "auto" && txt(scaleEdit).isEmpty()) {
+			QMessageBox::warning(d, "grdvector", "Give the scale, or leave it on automatic.");
+			return;
+		}
+		// A region is all four corners or none — two of them say nothing and would be dropped silently.
+		const int nR = (txt(xminEdit).isEmpty() ? 0 : 1) + (txt(xmaxEdit).isEmpty() ? 0 : 1) +
+		               (txt(yminEdit).isEmpty() ? 0 : 1) + (txt(ymaxEdit).isEmpty() ? 0 : 1);
+		if (nR != 0 && nR != 4) {
+			QMessageBox::warning(d, "grdvector", "Fill all four region boxes, or leave all four empty.");
+			return;
+		}
+
+		QStringList kv;
+		kv << QString("usescene=%1").arg(scene ? 1 : 0);
+		if (!scene) kv << "grid1=" + txt(grid1Edit);
+		kv << "grid2=" + txt(grid2Edit);
+		kv << QString("polar=%1").arg(polarChk && polarChk->isChecked() ? 1 : 0);
+		kv << QString("azimuth=%1").arg(azimChk && azimChk->isChecked() ? 1 : 0);
+		kv << QString("geog=%1").arg(geogChk && geogChk->isChecked() ? 1 : 0);
+		kv << "incmode=" + cbData(incModeCb);
+		if (!txt(incxEdit).isEmpty()) kv << "incx=" + txt(incxEdit);
+		if (!txt(incyEdit).isEmpty()) kv << "incy=" + txt(incyEdit);
+		kv << "scalemode=" + cbData(scaleModeCb);
+		if (!txt(scaleEdit).isEmpty()) kv << "scale=" + txt(scaleEdit);
+		kv << "heads=" + cbData(headsCb);
+		if (!txt(headlenEdit).isEmpty()) kv << "headlen=" + txt(headlenEdit);
+		if (!txt(headangEdit).isEmpty()) kv << "headang=" + txt(headangEdit);
+		if (!txt(normEdit).isEmpty())    kv << "norm=" + txt(normEdit);
+		kv << "color=" + cbData(colorCb);
+		kv << QString("bymag=%1").arg(byMagChk && byMagChk->isChecked() ? 1 : 0);
+		if (!txt(nclassEdit).isEmpty()) kv << "nclass=" + txt(nclassEdit);
+		kv << QString("drape=%1").arg(drapeChk && drapeChk->isChecked() ? 1 : 0);
+		kv << QString("table=%1").arg(tableChk && tableChk->isChecked() ? 1 : 0);
+		if (!txt(nameEdit).isEmpty()) kv << "name=" + txt(nameEdit);
+		if (!txt(outEdit).isEmpty())  kv << "outfile=" + txt(outEdit);
+		if (nR == 4) {
+			kv << "xmin=" + txt(xminEdit) << "xmax=" + txt(xmaxEdit);
+			kv << "ymin=" + txt(yminEdit) << "ymax=" + txt(ymaxEdit);
+		}
+		kv << "grid=" + QString::fromStdString(activeGridName(scn));   // the DISPLAYED layer
+
+		showBusyDialog("Drawing the vectors…");
+		const int ok = g_juliaGrdVector(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "grdvector",
+		                              "grdvector failed — see this window's Errors console for details.");
+	}
+};
+// ============================================================================================
 // grdlandmask (GMT menu) — build a wet/dry mask grid from the shoreline database. Layout is Mirone's
 // grdlandmask window: the shared "Griding Line Geometry" block, coastline resolution, Min area (-A),
 // registration, and the five Node values with the Boundary flag. The .ui carries a verbatim copy of
@@ -18389,6 +20772,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto *fTsu    = new std::function<void()>();    // show Tsunamis
 	auto *fSeis   = new std::function<void()>();    // show Seismology
 	auto *fMag    = new std::function<void()>();    // show Magnetics
+	auto *fGrav   = new std::function<void()>();    // show Gravity
 	auto *fPlates = new std::function<void()>();    // show Plates
 
 	// Re-open the menu at its menubar slot after a rotate (deferred so it runs once the triggering
@@ -18400,12 +20784,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 	};
 
-	*fGroup = [mGphy, win, s, fTsu, fSeis, fMag, fPlates]() {
+	*fGroup = [mGphy, win, s, fTsu, fSeis, fMag, fGrav, fPlates]() {
 		mGphy->clear();
 		mGphy->setTitle("Geophysics ▾");
 		mGphy->addAction("Tsunamis",   [fTsu]()    { (*fTsu)(); });
 		mGphy->addAction("Seismology", [fSeis]()   { (*fSeis)(); });
 		mGphy->addAction("Magnetics",  [fMag]()    { (*fMag)(); });
+		mGphy->addAction("Gravity",    [fGrav]()   { (*fGrav)(); });
 		mGphy->addAction("Plates",     [fPlates]() { (*fPlates)(); });
 		mGphy->addSeparator();
 		// Ocean Color: a single tool, not a discipline — it opens its dialog instead of rotating the
@@ -18443,13 +20828,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	mGphy->installEventFilter(new GphyHomeOnParentClick(mGphy, fGroup, reopen));
 
-	auto backItem = [mGphy, fTsu, fSeis, fMag, fPlates](const QString &current) {
+	auto backItem = [mGphy, fTsu, fSeis, fMag, fGrav, fPlates](const QString &current) {
 		// Single entry — itself a submenu, direct access to any OTHER discipline (skips the
 		// chooser page entirely). Each fXxx already reopens the menu itself at its end.
 		QMenu *mBack = mGphy->addMenu("Geophysics ›");
 		if (current != "Tsunamis")   mBack->addAction("Tsunamis",   [fTsu]()    { (*fTsu)();    });
 		if (current != "Seismology") mBack->addAction("Seismology", [fSeis]()   { (*fSeis)();   });
 		if (current != "Magnetics")  mBack->addAction("Magnetics",  [fMag]()    { (*fMag)();    });
+		if (current != "Gravity")    mBack->addAction("Gravity",    [fGrav]()   { (*fGrav)();   });
 		if (current != "Plates")     mBack->addAction("Plates",     [fPlates]() { (*fPlates)(); });
 		mGphy->addSeparator();
 	};
@@ -18479,6 +20865,46 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			AquamotoWindow::openFor(win, s);
 		});
 		mGphy->addAction(actNestedGridsTsu);
+		reopen();
+	};
+
+	// Gravity discipline — the potential-field tools that model or transform a GRAVITY field. They are
+	// GMT modules like any other, but a user looking for them thinks "gravity", not "which GMT module
+	// was that": gravfft (the spectral geopotential / isostasy / admittance tool), the two Talwani
+	// modellers, gravprisms, and the flexure pair. They sit here and NOT in the GMT menu — one entry
+	// per tool, in one place.
+	*fGrav = [mGphy, win, s, backItem, reopen]() {
+		mGphy->clear();
+		mGphy->setTitle("Gravity ▾");
+		backItem("Gravity");
+		// gravfft's theoretical-curve mode (-C) reads no grid at all, so it is offered always: the
+		// dialog itself disables the three grid tabs when the window holds none.
+		mGphy->addAction("gravfft", [win, s]() {
+			auto *w = new GravFFTDialog(win, s);
+			if (w->dlg) w->dlg->show();
+		});
+		// Both talwani modules read their body model from a FILE and make their own output, so
+		// neither needs a grid in the window.
+		mGphy->addAction("talwani2d", [win, s]() {
+			auto *w = new Talwani2DDialog(win, s);
+			if (w->dlg) w->dlg->show();
+		});
+		mGphy->addAction("talwani3d", [win, s]() {
+			auto *w = new Talwani3DDialog(win, s);
+			if (w->dlg) w->dlg->show();
+		});
+		mGphy->addAction("gravprisms", [win, s]() {
+			auto *w = new GravPrismsDialog(win, s);
+			if (w->dlg) w->dlg->show();
+		});
+		mGphy->addAction("gmtflexure", [win, s]() {
+			auto *w = new GmtFlexureDialog(win, s);
+			if (w->dlg) w->dlg->show();
+		});
+		mGphy->addAction("grdflexure", [win, s]() {
+			auto *w = new GrdFlexureDialog(win, s);
+			if (w->dlg) w->dlg->show();
+		});
 		reopen();
 	};
 
@@ -18847,6 +21273,36 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// palette), so the dialog opens either way and says so when a grid is what is missing.
 	mGMT->addAction("Make CPT (makecpt / grd2cpt)", [win, s]() {
 		auto *w = new CptBuildDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	// gravfft, talwani2d, talwani3d, gravprisms, gmtflexure and grdflexure are NOT here: they live in
+	// Geophysics > Gravity (below), with the rest of the potential-field tools.
+	mGMT->addAction("grdrotater", [win, s]() {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "grdrotater", "Load a grid into this window first.");
+			return;
+		}
+		auto *w = new GrdRotaterDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	// greenspline grids (or evaluates) a TABLE, so it needs no grid in the window either — the region
+	// boxes are merely SEEDED from one when there is one.
+	mGMT->addAction("greenspline", [win, s]() {
+		auto *w = new GreensplineDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	mGMT->addAction("grdvolume", [win, s]() {
+		if (!s->surf || s->emptyStart || s->imageOnly) {
+			QMessageBox::warning(win, "grdvolume", "Load a grid into this window first.");
+			return;
+		}
+		auto *w = new GrdVolumeDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+	// grdvector draws the field of TWO grids; both can come from files, so a window with nothing in
+	// it is still a place to put them (only the "Drape on the surface" tick wants a surface).
+	mGMT->addAction("grdvector", [win, s]() {
+		auto *w = new GrdVectorDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
 

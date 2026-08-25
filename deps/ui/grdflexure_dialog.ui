@@ -1,0 +1,428 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  grdflexure_dialog.ui — GMT menu > "grdflexure": flexural deformation of a 3-D surface under a
+  topographic load, in the wavenumber domain, for five rheologies. Loaded at RUNTIME by
+  GrdFlexureDialog (deps/src/70_window.cpp) via QUiLoader. Option letters are in the labels:
+  D densities, E plate, H load density grid, F firmoviscous, M viscoelastic, A in-plane forces,
+  C constants, S starved moat, W water, Z level, T times, L list, N FFT, Q transfer functions.
+-->
+<ui version="4.0">
+ <class>GrdFlexureDialog</class>
+ <widget class="QDialog" name="GrdFlexureDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>530</width>
+    <height>500</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>grdflexure</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <property name="spacing"><number>4</number></property>
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex"><number>0</number></property>
+
+     <!-- ==================== TAB: Load & densities ==================== -->
+     <widget class="QWidget" name="tab_load">
+      <attribute name="title"><string>Load &amp; densities</string></attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_load">
+       <property name="spacing"><number>4</number></property>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_loadfiles">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lb_loadgrid"><property name="text"><string>Load grid</string></property></widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="edit_loadgrid">
+           <property name="toolTip"><string>The topography of the load, in metres. Double-click to browse.</string></property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QToolButton" name="btn_loadgrid"><property name="text"><string>...</string></property></widget>
+         </item>
+         <item row="1" column="1" colspan="2">
+          <widget class="QCheckBox" name="chk_loadkm">
+           <property name="toolTip"><string>The grid's x,y are in km, not metres (+uk on the file name). Geographic grids use the tick below instead.</string></property>
+           <property name="text"><string>its x,y are in km (+uk)</string></property>
+          </widget>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="lb_rhogrid"><property name="text"><string>Load density grid (H)</string></property></widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QLineEdit" name="edit_rhogrid">
+           <property name="toolTip"><string>Optional grid of load densities, node by node. Giving one replaces the fixed load density below. Double-click to browse.</string></property>
+          </widget>
+         </item>
+         <item row="2" column="2">
+          <widget class="QToolButton" name="btn_rhogrid"><property name="text"><string>...</string></property></widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_densities">
+         <property name="title"><string>Densities (D)</string></property>
+         <layout class="QGridLayout" name="gridLayout_densities">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_rhom"><property name="text"><string>Mantle</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_rhom"/>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lb_rhol"><property name="text"><string>Load</string></property></widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="edit_rhol">
+            <property name="toolTip"><string>Fixed load density. Greyed out when a load-density grid is given — the module then wants a dash here, and gets one.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_rhoi"><property name="text"><string>Infill</string></property></widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="edit_rhoi">
+            <property name="toolTip"><string>Empty = the same as the load density</string></property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="lb_rhow"><property name="text"><string>Water</string></property></widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QLineEdit" name="edit_rhow"/>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lb_rhoroot"><property name="text"><string>Root (+r)</string></property></widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QLineEdit" name="edit_rhoroot">
+            <property name="toolTip"><string>Fixed density of the infill just beneath the load. The load topography is rescaled by load/root and the load density reset to it.</string></property>
+           </widget>
+          </item>
+          <item row="2" column="2">
+           <widget class="QLabel" name="lb_beta"><property name="text"><string>Starved moat (S)</string></property></widget>
+          </item>
+          <item row="2" column="3">
+           <widget class="QLineEdit" name="edit_beta">
+            <property name="toolTip"><string>Fraction between 0 and 1: 1 fills the moat with infill, 0 leaves it as water [1]</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_levels">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lb_water"><property name="text"><string>Water depth (W)</string></property></widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="edit_water">
+           <property name="toolTip"><string>In metres, or with k for km. Topography above it is rescaled for the air contrast.</string></property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QLabel" name="lb_zobs"><property name="text"><string>Level offset (Z)</string></property></widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QLineEdit" name="edit_zobs">
+           <property name="toolTip"><string>Distance from the observation level down to the undeformed surface, in metres or with k for km. Subtracted before output.</string></property>
+          </widget>
+         </item>
+         <item row="1" column="0" colspan="4">
+          <widget class="QCheckBox" name="chk_geog">
+           <property name="toolTip"><string>The grids are in lon/lat (fg): distances are converted to metres by a flat-Earth approximation</string></property>
+           <property name="text"><string>Grids are geographic (lon, lat)</string></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_load">
+         <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ==================== TAB: Rheology ==================== -->
+     <widget class="QWidget" name="tab_rheology">
+      <attribute name="title"><string>Rheology</string></attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_rheology">
+       <property name="spacing"><number>4</number></property>
+       <item>
+        <widget class="QGroupBox" name="gb_plate">
+         <property name="title"><string>Elastic plate (E)</string></property>
+         <layout class="QGridLayout" name="gridLayout_plate">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_te"><property name="text"><string>Thickness</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_te">
+            <property name="toolTip"><string>Elastic thickness in metres, or with k for km (e.g. 10k). Above 1e10 it is read as a flexural rigidity. EMPTY means no plate at all — a purely viscous response, which needs the firmoviscous model below.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lb_te2"><property name="text"><string>final (Te2)</string></property></widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="edit_te2">
+            <property name="toolTip"><string>A second, final thickness selects the general linear viscoelastic model — which also needs a Maxwell time.</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_visco">
+         <property name="title"><string>Time-dependent response — one of the two</string></property>
+         <layout class="QGridLayout" name="gridLayout_visco">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_nua"><property name="text"><string>Viscosity (F)</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_nua">
+            <property name="toolTip"><string>Firmoviscous: viscosity of the half-space, or of the asthenosphere when the two boxes beside it are filled. In Pa s.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lb_ha"><property name="text"><string>asth. thickness</string></property></widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="edit_ha">
+            <property name="toolTip"><string>Thickness of the asthenosphere, in metres or with k for km</string></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_num"><property name="text"><string>lower mantle</string></property></widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="edit_num">
+            <property name="toolTip"><string>Viscosity of the lower mantle, in Pa s. Give it together with the asthenosphere thickness, or neither.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="lb_maxwell"><property name="text"><string>Maxwell time (M)</string></property></widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QLineEdit" name="edit_maxwell">
+            <property name="toolTip"><string>Viscoelastic: the Maxwell time in years, or with k for kyr and M for Myr. Cannot be mixed with the firmoviscous viscosities.</string></property>
+           </widget>
+          </item>
+          <item row="2" column="0" colspan="4">
+           <widget class="QLabel" name="lb_viscohint">
+            <property name="text"><string>Both need times on the next tab — and both write one grid per time.</string></property>
+            <property name="wordWrap"><bool>true</bool></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_forces">
+         <property name="title"><string>In-plane forces (A) and constants (C)</string></property>
+         <layout class="QGridLayout" name="gridLayout_forces">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_nx"><property name="text"><string>Nx</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_nx">
+            <property name="toolTip"><string>In Pa m; negative is compression. All three or none.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lb_ny"><property name="text"><string>Ny</string></property></widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="edit_ny"/>
+          </item>
+          <item row="0" column="4">
+           <widget class="QLabel" name="lb_nxy"><property name="text"><string>Nxy</string></property></widget>
+          </item>
+          <item row="0" column="5">
+           <widget class="QLineEdit" name="edit_nxy"/>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_poisson"><property name="text"><string>Poisson</string></property></widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="edit_poisson">
+            <property name="toolTip"><string>Poisson's ratio [0.25]</string></property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="lb_young"><property name="text"><string>Young</string></property></widget>
+          </item>
+          <item row="1" column="3" colspan="3">
+           <widget class="QLineEdit" name="edit_young">
+            <property name="toolTip"><string>Young's modulus in N/m2 [7.0e10]</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QCheckBox" name="chk_transfer">
+         <property name="toolTip"><string>Compute no flexure at all (Q): write this rheology's transfer function for seven elastic thicknesses, and plot them. The files land in the working directory under the module's own fixed names.</string></property>
+         <property name="text"><string>Transfer functions only — no flexure (Q)</string></property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_rheology">
+         <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ==================== TAB: Time & output ==================== -->
+     <widget class="QWidget" name="tab_time">
+      <attribute name="title"><string>Time &amp; output</string></attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_time">
+       <property name="spacing"><number>4</number></property>
+       <item>
+        <widget class="QGroupBox" name="gb_time">
+         <property name="title"><string>Evaluation times (T)</string></property>
+         <layout class="QGridLayout" name="gridLayout_time">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_t0"><property name="text"><string>From</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_t0">
+            <property name="toolTip"><string>A time in years, or with k for kyr and M for Myr. On its own it is one time. Empty = one instantaneous (elastic) solution.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lb_t1"><property name="text"><string>to</string></property></widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="edit_t1"/>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_dt"><property name="text"><string>Step</string></property></widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="edit_dt"/>
+          </item>
+          <item row="1" column="2" colspan="2">
+           <widget class="QCheckBox" name="chk_tlog">
+            <property name="toolTip"><string>Logarithmic time scale (+l): the step box is then the NUMBER of steps</string></property>
+            <property name="text"><string>log scale (step = count)</string></property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lb_tfile"><property name="text"><string>or a file</string></property></widget>
+          </item>
+          <item row="2" column="1" colspan="2">
+           <widget class="QLineEdit" name="edit_tfile">
+            <property name="toolTip"><string>A file with the desired times in its first column. Double-click to browse.</string></property>
+           </widget>
+          </item>
+          <item row="2" column="3">
+           <widget class="QToolButton" name="btn_tfile"><property name="text"><string>...</string></property></widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_out">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lb_out"><property name="text"><string>Output grid</string></property></widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="edit_outfile">
+           <property name="toolTip"><string>Without times: optional — leave empty to keep the flexure in this window only. WITH times the module writes one grid per time and this must be a TEMPLATE containing %, e.g. flex_%s.nc</string></property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QToolButton" name="btn_outfile"><property name="text"><string>...</string></property></widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_fft">
+         <property name="title"><string>FFT settings (N)</string></property>
+         <layout class="QGridLayout" name="gridLayout_fft">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_fftdim"><property name="text"><string>Dimensions</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QComboBox" name="cb_fftdim"/>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLineEdit" name="edit_fftdims">
+            <property name="toolTip"><string>nx/ny, used when the box beside it says so</string></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_detrend"><property name="text"><string>Detrend</string></property></widget>
+          </item>
+          <item row="1" column="1" colspan="2">
+           <widget class="QComboBox" name="cb_detrend"/>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lb_extend"><property name="text"><string>Extend</string></property></widget>
+          </item>
+          <item row="2" column="1" colspan="2">
+           <widget class="QComboBox" name="cb_extend"/>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="lb_taper"><property name="text"><string>Taper (%)</string></property></widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QLineEdit" name="edit_taper">
+            <property name="toolTip"><string>Width of the taper as a percentage (+t)</string></property>
+           </widget>
+          </item>
+          <item row="3" column="2">
+           <widget class="QCheckBox" name="chk_fftverbose">
+            <property name="toolTip"><string>Report the FFT dimensions chosen (+v)</string></property>
+            <property name="text"><string>report dimensions</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_time">
+         <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="buttonsSpacer">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="text"><string>Compute</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_close">
+       <property name="minimumSize"><size><width>70</width><height>24</height></size></property>
+       <property name="text"><string>Close</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -659,6 +659,122 @@ static JuliaXyz2GrdFn g_juliaXyz2Grd = nullptr;
 typedef int (*JuliaGrdFillFn)(void *scene, const char *params);
 static JuliaGrdFillFn g_juliaGrdFill = nullptr;
 
+// gravfft (GMT menu), the spectral potential-field tool. GravFFTDialog (70_window.cpp, loads
+// deps/ui/gravfft_dialog.ui) hands a newline-separated "key=value" block to Julia (_on_gravfft,
+// src/gravfft.jl). The tab in front is `mode`:
+//   surface  density (a value or a grid) -> the geopotential of the window's surface
+//   flexure  te/rhol/rhom/rhow/rhoi + zm/zl -> the isostatic response; moho (+m), flextopo (Q) and
+//            subplate (S) pick WHICH result
+//   admitt   grid2 (the gravity|geoid grid) + iflags (the -I letters) -> the admittance|coherence
+//   theo     cn/clambda/cdepth/cmodel/cwave -> the theoretical curve alone, no grid read at all
+// plus the shared field (the -F argument), terms, level, geog, the -N block (fftdim, detrend,
+// extend, taper, fftverbose), outfile and grid (the DISPLAYED layer's label). A grid result is added
+// to `scene` as a NEW derived grid; a spectrum goes to the Data Viewer and the X,Y plot tool.
+// Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGravFFTFn)(void *scene, const char *params);
+static JuliaGravFFTFn g_juliaGravFFT = nullptr;
+
+// grdrotater (GMT menu), reconstructing the window's geographic grid by an Euler rotation (the
+// spotter supplement). GrdRotaterDialog (70_window.cpp, loads deps/ui/grdrotater_dialog.ui) hands a
+// newline-separated "key=value" block to Julia (_on_grdrotater, src/grdrotater.jl):
+// emode=pole|file|plates with elon/elat/eangle, efile or eplates (the three forms of -E) plus
+// invert (+i); polyfile (-F, rotate only what is inside it), time (-T, one reconstruction time),
+// outlineonly (-S), outline (-D) and drawoutline (put that outline on the map), region (-A),
+// outfile, outoutline and grid (the DISPLAYED layer's label). The rotated grid is added to `scene`
+// as a NEW derived grid. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGrdRotaterFn)(void *scene, const char *params);
+static JuliaGrdRotaterFn g_juliaGrdRotater = nullptr;
+
+// talwani2d (GMT menu), geopotential anomalies over 2-D bodies given as cross-section polygons.
+// Talwani2DDialog (70_window.cpp, loads deps/ui/talwani2d_dialog.ui) hands a newline-separated
+// "key=value" block to Julia (_on_talwani2d, src/talwani2d.jl): infile (the model), field=f|n|v with
+// lat (-F), density (-D), zup (-A), hkm/vkm (-M), mode=lattice|track with tmin/tmax/tinc/tnum (-T)
+// or trackfile (-N), level plus y25min/y25max (-Z, the last two being the 2.5-D strike extent),
+// outfile and plot. The modelled profile goes to the Data Viewer and, when asked, to the X,Y plot
+// tool. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaTalwani2DFn)(void *scene, const char *params);
+static JuliaTalwani2DFn g_juliaTalwani2D = nullptr;
+
+// talwani3d (GMT menu), geopotential anomalies over 3-D bodies given as stacked horizontal
+// contours. Talwani3DDialog (70_window.cpp, loads deps/ui/talwani3d_dialog.ui) hands a
+// newline-separated "key=value" block to Julia (_on_talwani3d, src/talwani3d.jl): infile (the
+// model), field=f|n|v with lat (-F), density (-D), zup (-A), hkm/vkm (-M), geog (-fg),
+// mode=grid|track|obsgrid with region/inc/pixel (-R -I -r), trackfile (-N) and plotpts, or zgrid
+// (-Z<grid>), level (-Z<constant>) and outfile. A grid run adds a NEW derived grid to `scene`; a
+// track run fills the Data Viewer. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaTalwani3DFn)(void *scene, const char *params);
+static JuliaTalwani3DFn g_juliaTalwani3D = nullptr;
+
+// greenspline (GMT menu), gridding (or evaluation) of scattered data with the Green's function of
+// one of six splines, in 1, 2 or 3 dimensions. GreensplineDialog (70_window.cpp, loads
+// deps/ui/greenspline_dialog.ui) hands a newline-separated "key=value" block to Julia
+// (_on_greenspline, src/greenspline.jl): infile with headers and toggle (the table row every dialog
+// of this family shares); dmode (-D), spline and tension (-S); what=grid|nodes with nodefile (-N),
+// or region/inc/pixel (-R -I -r) or maskgrid (-T); approx with ckind/cvalue/cfile (-C); gradfile and
+// gradformat (-A); deriv with derivdir (-Q); misfit with misfitfile and reportfile (-E); notrend and
+// norestore (-L); uncert and isweight (-W); verbose; plotpts and outfile. A grid run adds a NEW
+// derived grid to `scene`; a nodes run fills the Data Viewer. Returns 1 on success, 0 on failure.
+// nullptr to detach.
+typedef int (*JuliaGreensplineFn)(void *scene, const char *params);
+static JuliaGreensplineFn g_juliaGreenspline = nullptr;
+
+// gmtflexure (GMT menu), the flexure of a 2-D (profile) plate under a load. GmtFlexureDialog
+// (70_window.cpp, loads deps/ui/gmtflexure_dialog.ui) hands a newline-separated "key=value" block to
+// Julia (_on_gmtflexure, src/gmtflexure.jl): qmode=t|q|n with loadfile or qmin/qmax/qinc (-Q), te
+// (-E), rhom/rhol/rhoi/rhow (-D), lbc/largs and rbc/rargs (-A), poisson and young (-Cp, -Cy), force
+// (-F), water (-W), zobs (-Z), wfile (-T), varrestore (-L), curvature (-S), hkm/vkm (-M), outfile
+// and plot. The profile fills the Data Viewer and, when asked, the X,Y plot tool. Returns 1 on
+// success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGmtFlexureFn)(void *scene, const char *params);
+static JuliaGmtFlexureFn g_juliaGmtFlexure = nullptr;
+
+// grdflexure (GMT menu), the 3-D twin: flexure of a surface under a topographic load, in the
+// wavenumber domain. GrdFlexureDialog (70_window.cpp, loads deps/ui/grdflexure_dialog.ui) hands a
+// newline-separated "key=value" block to Julia (_on_grdflexure, src/grdflexure.jl): loadgrid with
+// loadkm (+uk) and rhogrid (-H); rhom/rhol/rhoi/rhow/rhoroot (-D), beta (-S), water (-W), zobs (-Z),
+// geog (-fg); te and te2 (-E), nua/ha/num (-F), maxwell (-M), nx/ny/nxy (-A), poisson and young
+// (-Cp, -Cy); t0/t1/dt/tlog or tfile (-T), outfile (-G), the fftdim/detrend/extend/taper/fftverbose
+// set (-N, the same keys grdfft sends), and transfer (-Q). Without times the flexure grid is added
+// to `scene` as a NEW derived grid; with times the module writes one grid per time and the last one
+// is loaded. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGrdFlexureFn)(void *scene, const char *params);
+static JuliaGrdFlexureFn g_juliaGrdFlexure = nullptr;
+
+// grdvolume (GMT menu), the area/volume/mean height of the window's grid against contour levels.
+// GrdVolumeDialog (70_window.cpp, loads deps/ui/grdvolume_dialog.ui) hands a newline-separated
+// "key=value" block to Julia (_on_grdvolume, src/grdvolume.jl): cmode=all|above|range|below|between
+// (the five shapes of -C) with cval or clow/chigh/cdelta, slices (-D, a range only), base (-L),
+// unit (-S), tmax (-T h|c), zfact/zshift (-Z), region, plot (draw the curves when a range produced
+// several rows), outfile and grid (the DISPLAYED layer's label). The result table goes to the Data
+// Viewer, and to the X,Y plot tool when asked. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGrdVolumeFn)(void *scene, const char *params);
+static JuliaGrdVolumeFn g_juliaGrdVolume = nullptr;
+
+// gravprisms (GMT menu), the geopotential field of vertically oriented rectangular prisms — read
+// from a table or created here to approximate a seamount or a layer. GravPrismsDialog (70_window.cpp,
+// loads deps/ui/gravprisms_dialog.ui) hands a newline-separated "key=value" block to Julia
+// (_on_gravprisms, src/gravprisms.jl): source=table|create with infile and dxdy (-E), or shape (-S),
+// base (-L), top (-T), dz (+z), saveprisms (+w) and quit (+q); density and contrast (-D[+c]),
+// radial with href/rholo/rhohi/boost/densify/power (-H) and avedens (-W); field=f|n|v with lat (-F),
+// zup (-A), hkm/vkm (-M), geog (-fg); mode=grid|track|obsgrid with region/inc/pixel (-R -I -r),
+// trackfile (-N) and plotpts, or zgrid (-Z<grid>); level (-Z<constant>) and outfile. A grid run adds
+// a NEW derived grid to `scene`; a track run — and a +q run, whose answer IS the prisms — fills the
+// Data Viewer. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGravPrismsFn)(void *scene, const char *params);
+static JuliaGravPrismsFn g_juliaGravPrisms = nullptr;
+
+// grdvector (GMT menu), the vector field of two grids drawn over the window's map. GrdVectorDialog
+// (70_window.cpp, loads deps/ui/grdvector_dialog.ui) hands a newline-separated "key=value" block to
+// Julia (_on_grdvector, src/grdvector.jl): usescene with grid1, and grid2 (the two component grids,
+// each a file or the name of a layer in this window); polar (-A), azimuth (-Z) and geog; incmode
+// with incx/incy (-I); scalemode with scale (-S); heads with headlen/headang/norm (-Q); color, bymag
+// with nclass (-C), drape, table, name; xmin/xmax/ymin/ymax (-R); outfile; and grid, the DISPLAYED
+// layer's label. The arrows are added to `scene` as a line overlay (the module itself only makes
+// PostScript, so the geometry is built Julia-side). Returns 1 on success, 0 on failure. nullptr to
+// detach.
+typedef int (*JuliaGrdVectorFn)(void *scene, const char *params);
+static JuliaGrdVectorFn g_juliaGrdVector = nullptr;
+
 // grdlandmask (GMT menu), dialog laid out after Mirone's grdlandmask window. GrdLandmaskDialog
 // (70_window.cpp, loads deps/ui/grdlandmask_dialog.ui) hands a newline-separated "key=value" block to
 // Julia (_on_grdlandmask, src/grdlandmask.jl): region, inc, res, area, maskvalues, border, pixel,

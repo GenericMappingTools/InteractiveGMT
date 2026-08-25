@@ -1,0 +1,321 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>GrdVectorDialog</class>
+ <widget class="QDialog" name="GrdVectorDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>640</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>grdvector</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainVerticalLayout">
+   <property name="spacing">
+    <number>8</number>
+   </property>
+   <property name="margin" stdset="0">
+    <number>8</number>
+   </property>
+   <item>
+    <widget class="QGroupBox" name="gb_input">
+     <property name="title">
+      <string>The two grids</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_input">
+      <item row="0" column="0" colspan="3">
+       <widget class="QCheckBox" name="chk_usescene">
+        <property name="toolTip"><string>Take the first component from the layer this window is showing, instead of a file</string></property>
+        <property name="text"><string>First component = the layer on display</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_grid1"><property name="text"><string>x (or r)</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_grid1">
+        <property name="toolTip"><string>The x component grid — a file, or the name of another layer in this window</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QToolButton" name="btn_grid1">
+        <property name="text"><string>...</string></property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lb_grid2"><property name="text"><string>y (or theta)</string></property></widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLineEdit" name="edit_grid2">
+        <property name="toolTip"><string>The y component grid — a file, or the name of another layer in this window. It must sit on exactly the same nodes as the first.</string></property>
+       </widget>
+      </item>
+      <item row="2" column="2">
+       <widget class="QToolButton" name="btn_grid2">
+        <property name="text"><string>...</string></property>
+       </widget>
+      </item>
+      <item row="3" column="0" colspan="3">
+       <widget class="QCheckBox" name="chk_polar">
+        <property name="toolTip"><string>A: the grids hold magnitude r and direction theta (degrees counter-clockwise from +x) instead of the x and y components</string></property>
+        <property name="text"><string>Polar components: r and theta (A)</string></property>
+       </widget>
+      </item>
+      <item row="4" column="0" colspan="3">
+       <widget class="QCheckBox" name="chk_azimuth">
+        <property name="toolTip"><string>Z: theta is an AZIMUTH, clockwise from north, not a direction counter-clockwise from east. Implies polar components.</string></property>
+        <property name="text"><string>theta is an azimuth, clockwise from north (Z)</string></property>
+       </widget>
+      </item>
+      <item row="5" column="0" colspan="3">
+       <widget class="QCheckBox" name="chk_geog">
+        <property name="toolTip"><string>Geographic grid: divide the east component by cos(latitude), so a uniform field looks uniform on a lon/lat map instead of shrinking towards the poles</string></property>
+        <property name="text"><string>Geographic grid (correct the east component for cos latitude)</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_inc">
+     <property name="title">
+      <string>Which nodes carry an arrow (I)</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_inc">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_incmode"><property name="text"><string>Spacing</string></property></widget>
+      </item>
+      <item row="0" column="1" colspan="3">
+       <widget class="QComboBox" name="cb_incmode">
+        <property name="toolTip"><string>How the nodes are thinned before drawing</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_incx"><property name="text"><string>x</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_incx">
+        <property name="toolTip"><string>Every n-th node, or the spacing in data units — whichever the box above says</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lb_incy"><property name="text"><string>y</string></property></widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QLineEdit" name="edit_incy">
+        <property name="toolTip"><string>Leave empty to use the same value as x</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_scale">
+     <property name="title">
+      <string>How long an arrow is (S)</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_scale">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_scalemode"><property name="text"><string>Scale</string></property></widget>
+      </item>
+      <item row="0" column="1" colspan="3">
+       <widget class="QComboBox" name="cb_scalemode">
+        <property name="toolTip"><string>Automatic makes the longest arrow 0.9 of the node spacing it was thinned to</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_scale"><property name="text"><string>Value</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_scale">
+        <property name="toolTip"><string>In the map's own x/y units — this window has no paper size to measure inches against</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_head">
+     <property name="title">
+      <string>The arrow head (Q)</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_head">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_heads"><property name="text"><string>Head at</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="cb_heads">
+        <property name="toolTip"><string>Which end of the arrow carries a head. None gives the stick plot the module draws by default.</string></property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="lb_headlen"><property name="text"><string>Length</string></property></widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLineEdit" name="edit_headlen">
+        <property name="toolTip"><string>Head length as a FRACTION of the arrow (0 to 1). An absolute size means nothing in a window with no fixed size.</string></property>
+        <property name="text"><string>0.33</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_headang"><property name="text"><string>Half-angle</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_headang">
+        <property name="toolTip"><string>Half the opening angle of the head, in degrees</string></property>
+        <property name="text"><string>18</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lb_norm"><property name="text"><string>Shrink below</string></property></widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QLineEdit" name="edit_norm">
+        <property name="toolTip"><string>+n: arrows shorter than this length get a head shrunk in proportion. Empty = every head the same.</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_draw">
+     <property name="title">
+      <string>Drawing</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_draw">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_color"><property name="text"><string>Colour</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="cb_color">
+        <property name="toolTip"><string>The colour of the whole field. Line WIDTH is not here: right-click the row in Scene Objects for Line Properties, as with every other overlay.</string></property>
+       </widget>
+      </item>
+      <item row="0" column="2" colspan="2">
+       <widget class="QCheckBox" name="chk_bymag">
+        <property name="toolTip"><string>C: colour each arrow by its magnitude instead, in equal-width classes from blue to red</string></property>
+        <property name="text"><string>Colour by magnitude (C)</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_nclass"><property name="text"><string>Classes</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_nclass">
+        <property name="toolTip"><string>How many magnitude classes (2 to 24). One overlay carries one colour, so this is how many the field is split into.</string></property>
+        <property name="text"><string>7</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2" colspan="2">
+       <widget class="QCheckBox" name="chk_drape">
+        <property name="toolTip"><string>Lift every arrow onto the displayed surface so the field follows the relief. Unticked, the arrows lie flat at z = 0 like the coastlines.</string></property>
+        <property name="text"><string>Drape on the surface</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lb_name"><property name="text"><string>Name</string></property></widget>
+      </item>
+      <item row="2" column="1" colspan="3">
+       <widget class="QLineEdit" name="edit_name">
+        <property name="toolTip"><string>The name this field gets in Scene Objects</string></property>
+        <property name="text"><string>grdvector</string></property>
+       </widget>
+      </item>
+      <item row="3" column="0" colspan="4">
+       <widget class="QCheckBox" name="chk_table">
+        <property name="toolTip"><string>Also send x, y, u, v, magnitude and direction of every node that got an arrow to this window's Data Viewer</string></property>
+        <property name="text"><string>Send the field to the Data Viewer</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_region">
+     <property name="title">
+      <string>Region (R) — leave empty for the whole grid</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_region">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_xmin"><property name="text"><string>xmin</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="edit_xmin"/>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="lb_xmax"><property name="text"><string>xmax</string></property></widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLineEdit" name="edit_xmax"/>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_ymin"><property name="text"><string>ymin</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_ymin"/>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lb_ymax"><property name="text"><string>ymax</string></property></widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QLineEdit" name="edit_ymax"/>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_out">
+     <item>
+      <widget class="QLabel" name="lb_out"><property name="text"><string>Save the field to</string></property></widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="edit_outfile">
+       <property name="toolTip"><string>Optional table of x, y, u, v, magnitude and direction for the nodes that got an arrow. Leave empty to keep it in this window only.</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="btn_outfile">
+       <property name="text"><string>...</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <spacer name="verticalSpacer_bottom">
+     <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+     <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+     <property name="sizeHint" stdset="0"><size><width>20</width><height>6</height></size></property>
+    </spacer>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="buttonsSpacer">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="text"><string>Draw</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_close">
+       <property name="minimumSize"><size><width>70</width><height>24</height></size></property>
+       <property name="text"><string>Close</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

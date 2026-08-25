@@ -50,14 +50,13 @@ function _import_xy_arrows(scene::Ptr{Cvoid}, D::Vector{GMTdataset}, name::Strin
 	scale = maxlen > 0 ? 0.9 / maxlen : 0.9
 	alpha = 0.33
 	beta = 0.33
+	# THE arrow shape is `_gv_arrow!` (grdvector.jl) — the same one the grdvector dialog draws, with
+	# Mirone's head arms in it. Two callers, one function: this import used to spell the shaft and the
+	# two arms out again here, which is exactly the duplicated-geometry SACRED_LAW.md forbids. The
+	# head at the tip only ("e"), no +n taper (shrink = 1) is what loc_quiver does.
 	segs = Matrix{Float64}[]
 	for k in eachindex(x)
-		dx = u[k] * scale; dy = v[k] * scale
-		tx = x[k] + dx; ty = y[k] + dy
-		push!(segs, [x[k] y[k]; tx ty])
-		# Mirone's two head arms (hu/hv), kept as two ordinary line segments.
-		push!(segs, [tx-alpha*(dx+beta*dy) ty-alpha*(dy-beta*dx); tx ty])
-		push!(segs, [tx ty; tx-alpha*(dx-beta*dy) ty-alpha*(dy+beta*dx)])
+		_gv_arrow!(segs, x[k], y[k], u[k] * scale, v[k] * scale, "e", alpha, beta, 1.0)
 	end
 	Dsegs = GMTdataset[GMT.mat2ds(seg) for seg in segs]
 	_add_dataset_to_scene(scene, Dsegs, name; forceMode=:lines, noConvertToPoints=true)

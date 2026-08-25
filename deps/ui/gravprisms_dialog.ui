@@ -1,0 +1,510 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  gravprisms_dialog.ui — GMT menu > "gravprisms": the geopotential field of vertically oriented
+  rectangular prisms, either read from a table or CREATED (C) to approximate a seamount (S) or the
+  layer between two surfaces (L and T). Loaded at RUNTIME by GravPrismsDialog (deps/src/70_window.cpp)
+  via QUiLoader — plain Qt widgets. Option letters are in the labels: C create, D density, E dx/dy,
+  F component, H radial density, L base, M units, N track, S shape, T top, W mean density, Z level,
+  A z up, R region, I inc, G output.
+-->
+<ui version="4.0">
+ <class>GravPrismsDialog</class>
+ <widget class="QDialog" name="GravPrismsDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>590</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>gravprisms</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <property name="spacing">
+    <number>4</number>
+   </property>
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+
+     <!-- ==================== TAB: Prisms ==================== -->
+     <widget class="QWidget" name="tab_prisms">
+      <attribute name="title">
+       <string>Prisms</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_prisms">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <item>
+        <widget class="QRadioButton" name="rb_table">
+         <property name="toolTip"><string>The prisms are already listed in a table: x y z_low z_high [dx dy] [density]</string></property>
+         <property name="text"><string>Read the prisms from a table</string></property>
+         <property name="checked"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_table">
+         <property name="title"><string>Prism table</string></property>
+         <layout class="QGridLayout" name="gridLayout_table">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_infile"><property name="text"><string>Table</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_infile">
+            <property name="toolTip"><string>x y z_low z_high [dx dy] [density], one prism per record. Double-click to browse.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QToolButton" name="btn_infile"><property name="text"><string>...</string></property></widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_dxdy"><property name="text"><string>dx[/dy] (E)</string></property></widget>
+          </item>
+          <item row="1" column="1" colspan="2">
+           <widget class="QLineEdit" name="edit_dxdy">
+            <property name="toolTip"><string>One size for every prism, when the table holds only the centres and the z range. Empty = the table carries its own dx and dy columns.</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QRadioButton" name="rb_create">
+         <property name="toolTip"><string>Build the prisms here (C), from a seamount shape or from the layer between two surfaces</string></property>
+         <property name="text"><string>Create the prisms (C)</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_create">
+         <property name="title"><string>Create from surfaces</string></property>
+         <layout class="QGridLayout" name="gridLayout_create">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_shape"><property name="text"><string>Heights (S)</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_shape">
+            <property name="toolTip"><string>Grid of the full seamount heights. On its own it means the whole feature, from a base of 0 up to those heights. Double-click to browse.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QToolButton" name="btn_shape"><property name="text"><string>...</string></property></widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_base"><property name="text"><string>Base (L)</string></property></widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="edit_base">
+            <property name="toolTip"><string>Bottom of the layer: a grid, or a constant z-level [0]. Double-click to browse.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QToolButton" name="btn_base"><property name="text"><string>...</string></property></widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lb_top"><property name="text"><string>Top (T)</string></property></widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QLineEdit" name="edit_top">
+            <property name="toolTip"><string>Top of the layer: a grid, or a constant z-level. Double-click to browse.</string></property>
+           </widget>
+          </item>
+          <item row="2" column="2">
+           <widget class="QToolButton" name="btn_top"><property name="text"><string>...</string></property></widget>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="lb_dz"><property name="text"><string>Sub-prism dz</string></property></widget>
+          </item>
+          <item row="3" column="1" colspan="2">
+           <widget class="QLineEdit" name="edit_dz">
+            <property name="toolTip"><string>Height of the stacked sub-prisms (+z). Required by — and only allowed with — the radial density model on the Density tab.</string></property>
+           </widget>
+          </item>
+          <item row="4" column="0">
+           <widget class="QLabel" name="lb_saveprisms"><property name="text"><string>Save prisms</string></property></widget>
+          </item>
+          <item row="4" column="1">
+           <widget class="QLineEdit" name="edit_saveprisms">
+            <property name="toolTip"><string>Optional table to write the prisms that were built (+w)</string></property>
+           </widget>
+          </item>
+          <item row="4" column="2">
+           <widget class="QToolButton" name="btn_saveprisms"><property name="text"><string>...</string></property></widget>
+          </item>
+          <item row="5" column="0" colspan="3">
+           <widget class="QCheckBox" name="chk_quit">
+            <property name="toolTip"><string>Stop once the prisms are saved (+q): build them, show them, compute no anomaly. Needs a file to save them to.</string></property>
+            <property name="text"><string>Stop after saving the prisms — compute nothing</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_prisms">
+         <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ==================== TAB: Density ==================== -->
+     <widget class="QWidget" name="tab_density">
+      <attribute name="title">
+       <string>Density</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_density">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <item>
+        <widget class="QGroupBox" name="gb_density">
+         <property name="title"><string>One density for every prism (D)</string></property>
+         <layout class="QGridLayout" name="gridLayout_density">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_density"><property name="text"><string>Density</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_density">
+            <property name="toolTip"><string>A constant density contrast (below 10 is read as g/cm3, above as kg/m3), or the name of a grid of vertically-averaged densities. Double-click to browse for a grid.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QToolButton" name="btn_density"><property name="text"><string>...</string></property></widget>
+          </item>
+          <item row="1" column="0" colspan="3">
+           <widget class="QCheckBox" name="chk_contrast">
+            <property name="toolTip"><string>Subtract this density from each prism's own instead of replacing it (+c) — e.g. seawater under a seamount</string></property>
+            <property name="text"><string>Subtract it rather than replace (+c)</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QCheckBox" name="chk_radial">
+         <property name="toolTip"><string>Use the ad-hoc radial density model of grdseamount (H), which needs the prisms split into a stack of sub-prisms</string></property>
+         <property name="text"><string>Density varies with radius and depth (H)</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_radial">
+         <property name="title"><string>Radial density model</string></property>
+         <layout class="QGridLayout" name="gridLayout_radial">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_href"><property name="text"><string>Ref height H</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_href">
+            <property name="toolTip"><string>Fixed reference height of the seamount, in metres</string></property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lb_boost"><property name="text"><string>Boost (+b)</string></property></widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="edit_boost">
+            <property name="toolTip"><string>Multiply the seamount height by this to imitate the denser start of a truncated guyot [1]</string></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_rholo"><property name="text"><string>Low density</string></property></widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="edit_rholo">
+            <property name="toolTip"><string>Density at the top of the reference seamount</string></property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="lb_rhohi"><property name="text"><string>High density</string></property></widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QLineEdit" name="edit_rhohi">
+            <property name="toolTip"><string>Density at the base of the reference seamount</string></property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lb_densify"><property name="text"><string>Densify (+d)</string></property></widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QLineEdit" name="edit_densify">
+            <property name="toolTip"><string>Water-pressure-driven flank densify gradient over the full reference height [0]</string></property>
+           </widget>
+          </item>
+          <item row="2" column="2">
+           <widget class="QLabel" name="lb_power"><property name="text"><string>Power (+p)</string></property></widget>
+          </item>
+          <item row="2" column="3">
+           <widget class="QLineEdit" name="edit_power">
+            <property name="toolTip"><string>Exponent of the density profile [1, a linear change]</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_avedens">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lb_avedens"><property name="text"><string>Mean density grid (W)</string></property></widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="edit_avedens">
+           <property name="toolTip"><string>Optional output grid of the vertically-averaged prism densities. Only meaningful when the prisms are created with the radial density model.</string></property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QToolButton" name="btn_avedens"><property name="text"><string>...</string></property></widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_density">
+         <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ==================== TAB: Field & output ==================== -->
+     <widget class="QWidget" name="tab_field">
+      <attribute name="title">
+       <string>Field &amp; output</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_field">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <item>
+        <widget class="QGroupBox" name="gb_field">
+         <property name="title"><string>Field</string></property>
+         <layout class="QGridLayout" name="gridLayout_field">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_field"><property name="text"><string>Compute</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QComboBox" name="cb_field">
+            <property name="toolTip"><string>Which geopotential field to model (F)</string></property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lb_lat"><property name="text"><string>at lat</string></property></widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="edit_lat">
+            <property name="toolTip"><string>Latitude at which normal gravity is evaluated for the geoid [mid-grid, or mid-profile with a locations file]. Geoid only.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="0" colspan="2">
+           <widget class="QCheckBox" name="chk_zup">
+            <property name="toolTip"><string>The z-axis of the model points UP (A) [default is down]</string></property>
+            <property name="text"><string>z is positive up</string></property>
+           </widget>
+          </item>
+          <item row="1" column="2" colspan="2">
+           <widget class="QCheckBox" name="chk_geog">
+            <property name="toolTip"><string>The model is in lon/lat (fg): distances are converted to km by a flat-Earth approximation</string></property>
+            <property name="text"><string>Geographic (lon, lat)</string></property>
+           </widget>
+          </item>
+          <item row="2" column="0" colspan="2">
+           <widget class="QCheckBox" name="chk_hkm">
+            <property name="toolTip"><string>Horizontal distances are in km (Mh) [metres]</string></property>
+            <property name="text"><string>x,y distances in km</string></property>
+           </widget>
+          </item>
+          <item row="2" column="2" colspan="2">
+           <widget class="QCheckBox" name="chk_vkm">
+            <property name="toolTip"><string>Vertical distances are in km (Mv) [metres]</string></property>
+            <property name="text"><string>z distances in km</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_modes">
+         <item>
+          <widget class="QRadioButton" name="rb_grid">
+           <property name="toolTip"><string>Compute on a new equidistant grid (R and I)</string></property>
+           <property name="text"><string>On a new grid</string></property>
+           <property name="checked"><bool>true</bool></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QRadioButton" name="rb_track">
+           <property name="toolTip"><string>Compute at the locations listed in a file (N)</string></property>
+           <property name="text"><string>At listed locations</string></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QRadioButton" name="rb_obsgrid">
+           <property name="toolTip"><string>Compute on the nodes of a grid of observation levels, which also sets the region (Z)</string></property>
+           <property name="text"><string>On an observation grid</string></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_grid">
+         <property name="title"><string>New grid</string></property>
+         <layout class="QVBoxLayout" name="verticalLayout_grid">
+          <item>
+           <layout class="QGridLayout" name="gridLayout_region">
+            <item row="0" column="0">
+             <widget class="QLabel" name="lb_xmin"><property name="text"><string>xmin</string></property></widget>
+            </item>
+            <item row="0" column="1">
+             <widget class="QLineEdit" name="edit_xmin"/>
+            </item>
+            <item row="0" column="2">
+             <widget class="QLabel" name="lb_xmax"><property name="text"><string>xmax</string></property></widget>
+            </item>
+            <item row="0" column="3">
+             <widget class="QLineEdit" name="edit_xmax"/>
+            </item>
+            <item row="1" column="0">
+             <widget class="QLabel" name="lb_ymin"><property name="text"><string>ymin</string></property></widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QLineEdit" name="edit_ymin"/>
+            </item>
+            <item row="1" column="2">
+             <widget class="QLabel" name="lb_ymax"><property name="text"><string>ymax</string></property></widget>
+            </item>
+            <item row="1" column="3">
+             <widget class="QLineEdit" name="edit_ymax"/>
+            </item>
+            <item row="2" column="0">
+             <widget class="QLabel" name="lb_xinc"><property name="text"><string>x inc</string></property></widget>
+            </item>
+            <item row="2" column="1">
+             <widget class="QLineEdit" name="edit_xinc"/>
+            </item>
+            <item row="2" column="2">
+             <widget class="QLabel" name="lb_yinc"><property name="text"><string>y inc</string></property></widget>
+            </item>
+            <item row="2" column="3">
+             <widget class="QLineEdit" name="edit_yinc">
+              <property name="toolTip"><string>Empty = the same increment in y as in x</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="chk_pixel">
+            <property name="toolTip"><string>Pixel registration (r) [gridline]</string></property>
+            <property name="text"><string>Pixel registration</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_track">
+         <property name="title"><string>Listed locations</string></property>
+         <layout class="QGridLayout" name="gridLayout_track">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_trackfile"><property name="text"><string>Locations</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_trackfile">
+            <property name="toolTip"><string>A file of x, y [, z] positions. Without an observation level below it must have that third column. Double-click to browse.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QToolButton" name="btn_trackfile"><property name="text"><string>...</string></property></widget>
+          </item>
+          <item row="1" column="0" colspan="3">
+           <widget class="QCheckBox" name="chk_plotpts">
+            <property name="toolTip"><string>Also put the computed points on the map, each with its row as a tooltip</string></property>
+            <property name="text"><string>Put the points on the map</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_obsgrid">
+         <property name="title"><string>Observation grid</string></property>
+         <layout class="QGridLayout" name="gridLayout_obsgrid">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_zgrid"><property name="text"><string>Levels grid</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_zgrid">
+            <property name="toolTip"><string>A grid whose values are the observation levels. It also sets the region of the result. Double-click to browse.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QToolButton" name="btn_zgrid"><property name="text"><string>...</string></property></widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="gridLayout_out">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lb_level"><property name="text"><string>Observation level (Z)</string></property></widget>
+         </item>
+         <item row="0" column="1" colspan="2">
+          <widget class="QLineEdit" name="edit_level">
+           <property name="toolTip"><string>A constant observation level [0]. Positive z is up.</string></property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lb_out"><property name="text"><string>Save result to</string></property></widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="edit_outfile">
+           <property name="toolTip"><string>Optional output file — a grid, or a table when computing at listed locations. Leave empty to keep the result in this window only.</string></property>
+          </widget>
+         </item>
+         <item row="1" column="2">
+          <widget class="QToolButton" name="btn_outfile"><property name="text"><string>...</string></property></widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_field">
+         <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="buttonsSpacer">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="text"><string>Compute</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_close">
+       <property name="minimumSize"><size><width>70</width><height>24</height></size></property>
+       <property name="text"><string>Close</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

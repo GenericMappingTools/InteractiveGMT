@@ -2191,6 +2191,74 @@ GMTVTK_API void gmtvtk_set_grdfill_callback(JuliaGrdFillFn fn) {
 	g_juliaGrdFill = fn;
 }
 
+// Register the gravfft Compute callback (GMT menu). fn(scene, params) with the "key=value" block
+// described in 30_app.cpp computes the geopotential or the isostatic response of the window's grid,
+// or the admittance|coherence spectrum, and delivers it. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_gravfft_callback(JuliaGravFFTFn fn) {
+	g_juliaGravFFT = fn;
+}
+
+// Register the grdrotater callback (GMT menu). fn(scene, params) with the "key=value" block
+// described in 30_app.cpp reconstructs the window's grid by the given rotation. Returns 1/0.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdrotater_callback(JuliaGrdRotaterFn fn) {
+	g_juliaGrdRotater = fn;
+}
+
+// Register the talwani2d callback (GMT menu). fn(scene, params) with the "key=value" block described
+// in 30_app.cpp models a geopotential anomaly over 2-D bodies read from a cross-section file.
+// Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_talwani2d_callback(JuliaTalwani2DFn fn) {
+	g_juliaTalwani2D = fn;
+}
+
+// Register the talwani3d callback (GMT menu). fn(scene, params) with the "key=value" block described
+// in 30_app.cpp models a geopotential anomaly over 3-D bodies read from a contour file, onto a grid
+// or at listed locations. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_talwani3d_callback(JuliaTalwani3DFn fn) {
+	g_juliaTalwani3D = fn;
+}
+
+// Register the greenspline callback (GMT menu). fn(scene, params) with the "key=value" block
+// described in 30_app.cpp grids or evaluates scattered data with a Green's-function spline. Returns
+// 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_greenspline_callback(JuliaGreensplineFn fn) {
+	g_juliaGreenspline = fn;
+}
+
+// Register the gmtflexure callback (GMT menu). fn(scene, params) with the "key=value" block described
+// in 30_app.cpp solves the flexure of a 2-D plate along a profile. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_gmtflexure_callback(JuliaGmtFlexureFn fn) {
+	g_juliaGmtFlexure = fn;
+}
+
+// Register the grdflexure callback (GMT menu). fn(scene, params) with the "key=value" block described
+// in 30_app.cpp solves the flexure of a surface under a load for the chosen rheology. Returns 1/0.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdflexure_callback(JuliaGrdFlexureFn fn) {
+	g_juliaGrdFlexure = fn;
+}
+
+// Register the grdvolume Compute callback (GMT menu). fn(scene, params) with the "key=value" block
+// described in 30_app.cpp measures the window's grid against the chosen contour(s). Returns 1/0.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdvolume_callback(JuliaGrdVolumeFn fn) {
+	g_juliaGrdVolume = fn;
+}
+
+// Register the gravprisms callback (GMT menu). fn(scene, params) with the "key=value" block described
+// in 30_app.cpp models the geopotential field of a body made of rectangular prisms, read from a table
+// or created from surfaces. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_gravprisms_callback(JuliaGravPrismsFn fn) {
+	g_juliaGravPrisms = fn;
+}
+
+// Register the grdvector callback (GMT menu). fn(scene, params) with the "key=value" block described
+// in 30_app.cpp draws the vector field of two grids into the window. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_grdvector_callback(JuliaGrdVectorFn fn) {
+	g_juliaGrdVector = fn;
+}
+
 // Register the Euler rotations Compute callback (Plates menu). fn(scene, params) with the "key=value"
 // block described in 30_app.cpp rotates the chosen line / adds two poles / interpolates a rotation
 // model, all through GMT's spotter modules. Returns 1/0. nullptr to detach.

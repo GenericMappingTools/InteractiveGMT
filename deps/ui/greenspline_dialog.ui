@@ -1,0 +1,418 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  greenspline_dialog.ui — GMT menu > "greenspline": grid or evaluate scattered data with the Green's
+  function of one of six splines, in 1, 2 or 3 dimensions. Loaded at RUNTIME by GreensplineDialog
+  (deps/src/70_window.cpp) via QUiLoader. Option letters are in the labels: D distance mode,
+  S spline, C eigenvalue cut, A gradients, N output locations, T mask grid, Q derivative, E misfit,
+  L trend, W uncertainties, R/I region and spacing.
+-->
+<ui version="4.0">
+ <class>GreensplineDialog</class>
+ <widget class="QDialog" name="GreensplineDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>540</width>
+    <height>520</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>greenspline</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <property name="spacing"><number>4</number></property>
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex"><number>0</number></property>
+
+     <!-- ==================== TAB: Data & spline ==================== -->
+     <widget class="QWidget" name="tab_data">
+      <attribute name="title"><string>Data &amp; spline</string></attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_data">
+       <property name="spacing"><number>4</number></property>
+       <item>
+        <widget class="QGroupBox" name="gb_input">
+         <property name="title"><string>The data</string></property>
+         <layout class="QGridLayout" name="gridLayout_input">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_infile"><property name="text"><string>Table</string></property></widget>
+          </item>
+          <item row="0" column="1" colspan="2">
+           <widget class="QLineEdit" name="edit_infile">
+            <property name="toolTip"><string>The scattered data. Columns are x[,y[,z]] then the value, as the distance mode below decides. Double-click to browse.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QToolButton" name="btn_infile"><property name="text"><string>...</string></property></widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_headers"><property name="text"><string>Header lines</string></property></widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="edit_headers">
+            <property name="toolTip"><string>How many lines at the top to skip. Empty = none.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="2" colspan="2">
+           <widget class="QCheckBox" name="chk_toggle">
+            <property name="toolTip"><string>The file's first two columns are y,x rather than x,y</string></property>
+            <property name="text"><string>File is y,x,z</string></property>
+           </widget>
+          </item>
+          <item row="2" column="0" colspan="4">
+           <widget class="QCheckBox" name="chk_uncert">
+            <property name="toolTip"><string>W: the LAST column holds one-sigma uncertainties. Weights inversely proportional to their squares are computed from them.</string></property>
+            <property name="text"><string>Last column holds one-sigma uncertainties (W)</string></property>
+           </widget>
+          </item>
+          <item row="3" column="0" colspan="4">
+           <widget class="QCheckBox" name="chk_isweight">
+            <property name="toolTip"><string>Ww: that last column is already a WEIGHT, so use it as it stands</string></property>
+            <property name="text"><string>…they are weights already (Ww)</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_spline">
+         <property name="title"><string>The spline</string></property>
+         <layout class="QGridLayout" name="gridLayout_spline">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_dmode"><property name="text"><string>Distance mode (D)</string></property></widget>
+          </item>
+          <item row="0" column="1" colspan="3">
+           <widget class="QComboBox" name="cb_dmode">
+            <property name="toolTip"><string>What the coordinates mean, and with them how many dimensions the problem has. A grid can only come back from the two-dimensional modes.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_spline"><property name="text"><string>Spline (S)</string></property></widget>
+          </item>
+          <item row="1" column="1" colspan="3">
+           <widget class="QComboBox" name="cb_spline">
+            <property name="toolTip"><string>The Green's function. The last two live on a sphere and go with the -D5 mode; the others do not.</string></property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lb_tension"><property name="text"><string>Tension</string></property></widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QLineEdit" name="edit_tension">
+            <property name="toolTip"><string>0 to just under 1. A length scale may follow after a slash, e.g. 0.5/10.</string></property>
+           </widget>
+          </item>
+          <item row="2" column="2" colspan="2">
+           <widget class="QLabel" name="lb_tensionhint">
+            <property name="text"><string>0 = minimum curvature, towards 1 = stiffer</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_data">
+         <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ==================== TAB: Output ==================== -->
+     <widget class="QWidget" name="tab_output">
+      <attribute name="title"><string>Output</string></attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_output">
+       <property name="spacing"><number>4</number></property>
+       <item>
+        <widget class="QGroupBox" name="gb_what">
+         <property name="title"><string>What comes back</string></property>
+         <layout class="QGridLayout" name="gridLayout_what">
+          <item row="0" column="0" colspan="3">
+           <widget class="QRadioButton" name="rb_grid">
+            <property name="toolTip"><string>A grid, added to this window. Only the two-dimensional distance modes can make one.</string></property>
+            <property name="text"><string>A grid</string></property>
+            <property name="checked"><bool>true</bool></property>
+           </widget>
+          </item>
+          <item row="1" column="0" colspan="3">
+           <widget class="QRadioButton" name="rb_nodes">
+            <property name="toolTip"><string>N: evaluate the spline at the locations listed in a file. The answer is a table, and it is the only way a 1-D or 3-D problem can be seen here.</string></property>
+            <property name="text"><string>Values at the locations in a file (N)</string></property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lb_nodefile"><property name="text"><string>Locations</string></property></widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QLineEdit" name="edit_nodefile">
+            <property name="toolTip"><string>The file of output coordinates. Double-click to browse.</string></property>
+           </widget>
+          </item>
+          <item row="2" column="2">
+           <widget class="QToolButton" name="btn_nodefile"><property name="text"><string>...</string></property></widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_region">
+         <property name="title"><string>Where the grid goes (R, I)</string></property>
+         <layout class="QVBoxLayout" name="verticalLayout_grid">
+          <property name="spacing"><number>4</number></property>
+          <item>
+           <layout class="QGridLayout" name="gridLayout_region">
+            <item row="0" column="0">
+             <widget class="QLabel" name="lb_xmin"><property name="text"><string>xmin</string></property></widget>
+            </item>
+            <item row="0" column="1">
+             <widget class="QLineEdit" name="edit_xmin"/>
+            </item>
+            <item row="0" column="2">
+             <widget class="QLabel" name="lb_xmax"><property name="text"><string>xmax</string></property></widget>
+            </item>
+            <item row="0" column="3">
+             <widget class="QLineEdit" name="edit_xmax"/>
+            </item>
+            <item row="1" column="0">
+             <widget class="QLabel" name="lb_ymin"><property name="text"><string>ymin</string></property></widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QLineEdit" name="edit_ymin"/>
+            </item>
+            <item row="1" column="2">
+             <widget class="QLabel" name="lb_ymax"><property name="text"><string>ymax</string></property></widget>
+            </item>
+            <item row="1" column="3">
+             <widget class="QLineEdit" name="edit_ymax"/>
+            </item>
+            <item row="2" column="0">
+             <widget class="QLabel" name="lb_xinc"><property name="text"><string>x spacing</string></property></widget>
+            </item>
+            <item row="2" column="1">
+             <widget class="QLineEdit" name="edit_xinc"/>
+            </item>
+            <item row="2" column="2">
+             <widget class="QLabel" name="lb_yinc"><property name="text"><string>y spacing</string></property></widget>
+            </item>
+            <item row="2" column="3">
+             <widget class="QLineEdit" name="edit_yinc">
+              <property name="toolTip"><string>Empty = the same as the x spacing</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="chk_pixel">
+            <property name="toolTip"><string>Pixel registration (r) instead of gridline registration</string></property>
+            <property name="text"><string>Pixel registration</string></property>
+           </widget>
+          </item>
+          <item>
+           <layout class="QHBoxLayout" name="horizontalLayout_mask">
+            <item>
+             <widget class="QLabel" name="lb_maskgrid"><property name="text"><string>OR the nodes of a mask grid (T)</string></property></widget>
+            </item>
+            <item>
+             <widget class="QLineEdit" name="edit_maskgrid">
+              <property name="toolTip"><string>Evaluate only where this grid is not NaN, on its own nodes. Giving one replaces the region and spacing above. Double-click to browse.</string></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QToolButton" name="btn_maskgrid"><property name="text"><string>...</string></property></widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="chk_plotpts">
+            <property name="toolTip"><string>Also put the data points on top of the new grid, from the very table that was gridded</string></property>
+            <property name="text"><string>Plot the data points on the result</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ==================== TAB: Extras ==================== -->
+     <widget class="QWidget" name="tab_extras">
+      <attribute name="title"><string>Extras</string></attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_extras">
+       <property name="spacing"><number>4</number></property>
+       <item>
+        <widget class="QGroupBox" name="gb_approx">
+         <property name="title"><string>Approximate fit — throw away the small eigenvalues (C)</string></property>
+         <layout class="QGridLayout" name="gridLayout_approx">
+          <item row="0" column="0" colspan="4">
+           <widget class="QCheckBox" name="chk_approx">
+            <property name="toolTip"><string>Solve by SVD and drop the smallest eigenvalues, which turns the exact interpolator into a smoother</string></property>
+            <property name="text"><string>Solve by SVD and cut the eigenvalues</string></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_ckind"><property name="text"><string>Keep by</string></property></widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QComboBox" name="cb_ckind">
+            <property name="toolTip"><string>How the cut is stated</string></property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="lb_cvalue"><property name="text"><string>Value</string></property></widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QLineEdit" name="edit_cvalue"/>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lb_cfile"><property name="text"><string>Eigenvalues to</string></property></widget>
+          </item>
+          <item row="2" column="1" colspan="2">
+           <widget class="QLineEdit" name="edit_cfile">
+            <property name="toolTip"><string>Optional file to write the eigenvalues to (+f)</string></property>
+           </widget>
+          </item>
+          <item row="2" column="3">
+           <widget class="QToolButton" name="btn_cfile"><property name="text"><string>...</string></property></widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gb_more">
+         <property name="title"><string>More constraints and reports</string></property>
+         <layout class="QGridLayout" name="gridLayout_more">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lb_gradfile"><property name="text"><string>Gradients (A)</string></property></widget>
+          </item>
+          <item row="0" column="1" colspan="2">
+           <widget class="QLineEdit" name="edit_gradfile">
+            <property name="toolTip"><string>Optional file of surface-gradient constraints. Double-click to browse.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QToolButton" name="btn_gradfile"><property name="text"><string>...</string></property></widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lb_gradformat"><property name="text"><string>its record format</string></property></widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="edit_gradformat">
+            <property name="toolTip"><string>1 to 5, as the greenspline manual lists them (+f). The green ? button opens that page.</string></property>
+            <property name="text"><string>1</string></property>
+           </widget>
+          </item>
+          <item row="2" column="0" colspan="2">
+           <widget class="QCheckBox" name="chk_deriv">
+            <property name="toolTip"><string>Q: return the directional derivative of the surface instead of the surface</string></property>
+            <property name="text"><string>Directional derivative instead (Q)</string></property>
+           </widget>
+          </item>
+          <item row="2" column="2" colspan="2">
+           <widget class="QLineEdit" name="edit_derivdir">
+            <property name="toolTip"><string>One azimuth on a surface; the three direction cosines as x/y/z in a volume</string></property>
+           </widget>
+          </item>
+          <item row="3" column="0" colspan="4">
+           <widget class="QCheckBox" name="chk_misfit">
+            <property name="toolTip"><string>E: evaluate the spline at the data points and report how far it missed (mean, standard deviation, rms)</string></property>
+            <property name="text"><string>Report the misfit at the data points (E)</string></property>
+           </widget>
+          </item>
+          <item row="4" column="0">
+           <widget class="QLabel" name="lb_misfitfile"><property name="text"><string>Misfit table to</string></property></widget>
+          </item>
+          <item row="4" column="1" colspan="2">
+           <widget class="QLineEdit" name="edit_misfitfile">
+            <property name="toolTip"><string>Optional. Empty = the statistics go to GMT's own message stream only.</string></property>
+           </widget>
+          </item>
+          <item row="4" column="3">
+           <widget class="QToolButton" name="btn_misfitfile"><property name="text"><string>...</string></property></widget>
+          </item>
+          <item row="5" column="0">
+           <widget class="QLabel" name="lb_reportfile"><property name="text"><string>Report to</string></property></widget>
+          </item>
+          <item row="5" column="1" colspan="2">
+           <widget class="QLineEdit" name="edit_reportfile">
+            <property name="toolTip"><string>Optional file for the misfit report (+r)</string></property>
+           </widget>
+          </item>
+          <item row="5" column="3">
+           <widget class="QToolButton" name="btn_reportfile"><property name="text"><string>...</string></property></widget>
+          </item>
+          <item row="6" column="0" colspan="2">
+           <widget class="QCheckBox" name="chk_notrend">
+            <property name="toolTip"><string>Lt: leave the linear (1-D) or planar (2-D) trend in the data instead of removing it first</string></property>
+            <property name="text"><string>Do not remove the trend (Lt)</string></property>
+           </widget>
+          </item>
+          <item row="6" column="2" colspan="2">
+           <widget class="QCheckBox" name="chk_norestore">
+            <property name="toolTip"><string>Lr: do not add the removed trend back to the solution</string></property>
+            <property name="text"><string>Do not restore it (Lr)</string></property>
+           </widget>
+          </item>
+          <item row="7" column="0" colspan="4">
+           <widget class="QCheckBox" name="chk_verbose">
+            <property name="toolTip"><string>Let the module report its progress on the Julia console</string></property>
+            <property name="text"><string>Verbose</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_extras">
+         <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_out">
+     <item>
+      <widget class="QLabel" name="lb_out"><property name="text"><string>Save the result to</string></property></widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="edit_outfile">
+       <property name="toolTip"><string>Optional. A grid, or a table when the answer is one. Leave empty to keep it in this window only.</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="btn_outfile"><property name="text"><string>...</string></property></widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="buttonsSpacer">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="text"><string>Compute</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_close">
+       <property name="minimumSize"><size><width>70</width><height>24</height></size></property>
+       <property name="text"><string>Close</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

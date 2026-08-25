@@ -106,6 +106,16 @@ include("xyz2grd.jl")    # GMT menu > xyz2grd: an x,y,z table whose points sit o
 include("grdfill.jl")    # GMT menu > grdfill: fill the holes in the window's grid, or just find them
 include("trend2d.jl")    # GMT menu > trend2d: polynomial z = f(x,y) fitted to an x,y,z table
 include("cptbuild.jl")   # GMT menu > Make CPT: one dialog over makecpt and grd2cpt
+include("gravfft.jl")    # GMT menu > gravfft: spectral geopotential, isostasy, admittance & coherence
+include("grdrotater.jl") # GMT menu > grdrotater: reconstruct the window's grid by an Euler rotation
+include("talwani2d.jl")  # GMT menu > talwani2d: anomalies over 2-D bodies given as cross-sections
+include("talwani3d.jl")  # GMT menu > talwani3d: anomalies over 3-D bodies given as stacked contours
+include("greenspline.jl")# GMT menu > greenspline: Green's-function splines, the whole module
+include("gmtflexure.jl") # GMT menu > gmtflexure: flexure of a 2-D plate along a profile
+include("grdflexure.jl") # GMT menu > grdflexure: flexure of a surface under a load (5 rheologies)
+include("grdvolume.jl")  # GMT menu > grdvolume: area, volume and mean height against contour levels
+include("gravprisms.jl") # GMT menu > gravprisms: the field of a body made of rectangular prisms
+include("grdvector.jl")  # GMT menu > grdvector: the vector field of two grids, drawn as an overlay
 include("interpolate.jl")# GMT menu > Interpolate: grid an x,y,z table (surface, nearneighbor, block*, …)
 include("project.jl")    # Tools > Project: reproject the window's raster with gdalwarp (Mirone gdal_project.m)
 include("lineops.jl")    # Tools > Vector Operations (port of Mirone src_figs/line_operations.m)

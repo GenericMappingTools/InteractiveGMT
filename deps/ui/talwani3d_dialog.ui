@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Talwani3DDialog</class>
+ <widget class="QDialog" name="Talwani3DDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>500</width>
+    <height>620</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>talwani3d</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainVerticalLayout">
+   <property name="spacing">
+    <number>8</number>
+   </property>
+   <property name="margin" stdset="0">
+    <number>8</number>
+   </property>
+   <item>
+    <widget class="QLabel" name="lb_hint">
+     <property name="text"><string>Anomalies over 3-D bodies given as stacked horizontal contours, one slice per segment, with that slice's depth and density in the segment header.</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QGridLayout" name="gridLayout_model">
+     <item row="0" column="0">
+      <widget class="QLabel" name="lb_infile"><property name="text"><string>Model file</string></property></widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLineEdit" name="edit_infile">
+       <property name="toolTip"><string>The horizontal contours of the body, one contour per segment, each segment header holding "depth density". Double-click to browse.</string></property>
+      </widget>
+     </item>
+     <item row="0" column="2">
+      <widget class="QToolButton" name="btn_infile">
+       <property name="text"><string>...</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_field">
+     <property name="title">
+      <string>Field and model</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_field">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_field"><property name="text"><string>Compute</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="cb_field">
+        <property name="toolTip"><string>Which geopotential field to model (F)</string></property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="lb_lat"><property name="text"><string>at lat</string></property></widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLineEdit" name="edit_lat">
+        <property name="toolTip"><string>Latitude at which normal gravity is evaluated for the geoid [mid-grid, or mid-profile with a locations file]. Geoid only.</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_density"><property name="text"><string>Density (D)</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_density">
+        <property name="toolTip"><string>One density contrast for every slice, overriding the segment headers. Below 10 is read as g/cm3, above as kg/m3. Empty = take each slice's density from its own segment header.</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2" colspan="2">
+       <widget class="QCheckBox" name="chk_zup">
+        <property name="toolTip"><string>The z-axis of the model points UP (A) [default is down]</string></property>
+        <property name="text"><string>z is positive up</string></property>
+       </widget>
+      </item>
+      <item row="2" column="0" colspan="2">
+       <widget class="QCheckBox" name="chk_hkm">
+        <property name="toolTip"><string>Horizontal distances in the model are in km (Mh) [metres]</string></property>
+        <property name="text"><string>x,y distances in km</string></property>
+       </widget>
+      </item>
+      <item row="2" column="2" colspan="2">
+       <widget class="QCheckBox" name="chk_vkm">
+        <property name="toolTip"><string>Vertical distances in the model are in km (Mv) [metres]</string></property>
+        <property name="text"><string>z distances in km</string></property>
+       </widget>
+      </item>
+      <item row="3" column="0" colspan="4">
+       <widget class="QCheckBox" name="chk_geog">
+        <property name="toolTip"><string>The model is in lon/lat (fg): distances are converted to km by a flat-Earth approximation</string></property>
+        <property name="text"><string>Coordinates are geographic (lon, lat)</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_modes">
+     <item>
+      <widget class="QRadioButton" name="rb_grid">
+       <property name="toolTip"><string>Compute on a new equidistant grid (R and I)</string></property>
+       <property name="text"><string>On a new grid</string></property>
+       <property name="checked"><bool>true</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="rb_track">
+       <property name="toolTip"><string>Compute at the locations listed in a file (N)</string></property>
+       <property name="text"><string>At listed locations</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="rb_obsgrid">
+       <property name="toolTip"><string>Compute on the nodes of a grid of observation levels, which also sets the region (Z)</string></property>
+       <property name="text"><string>On an observation grid</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_grid">
+     <property name="title">
+      <string>New grid</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_grid">
+      <item>
+       <layout class="QGridLayout" name="gridLayout_region">
+        <item row="0" column="0">
+         <widget class="QLabel" name="lb_xmin"><property name="text"><string>xmin</string></property></widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QLineEdit" name="edit_xmin"/>
+        </item>
+        <item row="0" column="2">
+         <widget class="QLabel" name="lb_xmax"><property name="text"><string>xmax</string></property></widget>
+        </item>
+        <item row="0" column="3">
+         <widget class="QLineEdit" name="edit_xmax"/>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="lb_ymin"><property name="text"><string>ymin</string></property></widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QLineEdit" name="edit_ymin"/>
+        </item>
+        <item row="1" column="2">
+         <widget class="QLabel" name="lb_ymax"><property name="text"><string>ymax</string></property></widget>
+        </item>
+        <item row="1" column="3">
+         <widget class="QLineEdit" name="edit_ymax"/>
+        </item>
+        <item row="2" column="0">
+         <widget class="QLabel" name="lb_xinc"><property name="text"><string>x inc</string></property></widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QLineEdit" name="edit_xinc"/>
+        </item>
+        <item row="2" column="2">
+         <widget class="QLabel" name="lb_yinc"><property name="text"><string>y inc</string></property></widget>
+        </item>
+        <item row="2" column="3">
+         <widget class="QLineEdit" name="edit_yinc">
+          <property name="toolTip"><string>Empty = the same increment in y as in x</string></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="chk_pixel">
+        <property name="toolTip"><string>Pixel registration (r) [gridline]</string></property>
+        <property name="text"><string>Pixel registration</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_track">
+     <property name="title">
+      <string>Listed locations</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_track">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_trackfile"><property name="text"><string>Locations</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="edit_trackfile">
+        <property name="toolTip"><string>A file of x, y [, z] positions. A third column is taken as the observation level unless one is given below. Double-click to browse.</string></property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QToolButton" name="btn_trackfile">
+        <property name="text"><string>...</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0" colspan="3">
+       <widget class="QCheckBox" name="chk_plotpts">
+        <property name="toolTip"><string>Also put the computed points on the map, each with its row as a tooltip</string></property>
+        <property name="text"><string>Put the points on the map</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_obsgrid">
+     <property name="title">
+      <string>Observation grid</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_obsgrid">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_zgrid"><property name="text"><string>Levels grid</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="edit_zgrid">
+        <property name="toolTip"><string>A grid whose values are the observation levels. It also sets the region of the result, so no region or increment is needed. Double-click to browse.</string></property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QToolButton" name="btn_zgrid">
+        <property name="text"><string>...</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QGridLayout" name="gridLayout_level">
+     <item row="0" column="0">
+      <widget class="QLabel" name="lb_level"><property name="text"><string>Observation level (Z)</string></property></widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLineEdit" name="edit_level">
+       <property name="toolTip"><string>A constant observation level [0]. With a locations file it overrides a third column there.</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QGridLayout" name="gridLayout_out">
+     <item row="0" column="0">
+      <widget class="QLabel" name="lb_out"><property name="text"><string>Save result to</string></property></widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLineEdit" name="edit_outfile">
+       <property name="toolTip"><string>Optional output file — a grid, or a table when computing at listed locations. Leave empty to keep the result in this window only.</string></property>
+      </widget>
+     </item>
+     <item row="0" column="2">
+      <widget class="QToolButton" name="btn_outfile">
+       <property name="text"><string>...</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <spacer name="verticalSpacer_bottom">
+     <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+     <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+     <property name="sizeHint" stdset="0"><size><width>20</width><height>6</height></size></property>
+    </spacer>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="buttonsSpacer">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="text"><string>Compute</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_close">
+       <property name="minimumSize"><size><width>70</width><height>24</height></size></property>
+       <property name="text"><string>Close</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

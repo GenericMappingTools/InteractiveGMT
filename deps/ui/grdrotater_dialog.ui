@@ -1,0 +1,241 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>GrdRotaterDialog</class>
+ <widget class="QDialog" name="GrdRotaterDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>460</width>
+    <height>530</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>grdrotater</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainVerticalLayout">
+   <property name="spacing">
+    <number>8</number>
+   </property>
+   <property name="margin" stdset="0">
+    <number>8</number>
+   </property>
+   <item>
+    <widget class="QLabel" name="lb_hint">
+     <property name="text"><string>Reconstructs a GEOGRAPHIC grid by rotating it about an Euler pole on the sphere.</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_rot">
+     <property name="title">
+      <string>Rotation (E)</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_rot">
+      <item row="0" column="0" colspan="3">
+       <widget class="QComboBox" name="cb_emode">
+        <property name="toolTip"><string>How the rotation is given</string></property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QCheckBox" name="chk_invert">
+        <property name="toolTip"><string>Invert the rotation (+i): undo it instead of applying it</string></property>
+        <property name="text"><string>Invert</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_elon"><property name="text"><string>Pole lon</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_elon"/>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lb_elat"><property name="text"><string>lat</string></property></widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QLineEdit" name="edit_elat"/>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lb_eangle"><property name="text"><string>Angle (deg)</string></property></widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLineEdit" name="edit_eangle">
+        <property name="toolTip"><string>Opening angle of the total reconstruction rotation</string></property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="lb_efile"><property name="text"><string>Rotation file</string></property></widget>
+      </item>
+      <item row="3" column="1" colspan="2">
+       <widget class="QLineEdit" name="edit_efile">
+        <property name="toolTip"><string>A file of total reconstruction rotations (lon lat tstart [tstop] angle). Double-click to browse.</string></property>
+       </widget>
+      </item>
+      <item row="3" column="3">
+       <widget class="QToolButton" name="btn_efile">
+        <property name="text"><string>...</string></property>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="lb_eplates"><property name="text"><string>Plate pair</string></property></widget>
+      </item>
+      <item row="4" column="1" colspan="3">
+       <widget class="QLineEdit" name="edit_eplates">
+        <property name="toolTip"><string>Two GPlates plate IDs joined by a hyphen, e.g. PAC-MBL — the rotation is taken from the GPlates database</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_what">
+     <property name="title">
+      <string>What to rotate</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_what">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_polyfile"><property name="text"><string>Only inside (F)</string></property></widget>
+      </item>
+      <item row="0" column="1" colspan="2">
+       <widget class="QLineEdit" name="edit_polyfile">
+        <property name="toolTip"><string>A closed polygon file naming the part of the grid to rotate. Empty = the whole grid. Double-click to browse.</string></property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QToolButton" name="btn_polyfile">
+        <property name="text"><string>...</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_time"><property name="text"><string>Time (Ma)</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_time">
+        <property name="toolTip"><string>One reconstruction time (T). Empty = the time(s) the rotation itself carries.</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2" colspan="2">
+       <widget class="QCheckBox" name="chk_outlineonly">
+        <property name="toolTip"><string>Skip the grid and rotate only the outline (S)</string></property>
+        <property name="text"><string>Outline only, no grid</string></property>
+       </widget>
+      </item>
+      <item row="2" column="0" colspan="2">
+       <widget class="QCheckBox" name="chk_outline">
+        <property name="toolTip"><string>Also produce the rotated outline of the area that was rotated (D)</string></property>
+        <property name="text"><string>Also make the outline</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item row="2" column="2" colspan="2">
+       <widget class="QCheckBox" name="chk_drawoutline">
+        <property name="toolTip"><string>Draw that outline on the map, as its own line layer. Re-running replaces it.</string></property>
+        <property name="text"><string>Draw it on the map</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_region">
+     <property name="title">
+      <string>Region of the rotated grid (A) — optional</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_region">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_xmin"><property name="text"><string>xmin</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="edit_xmin"/>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="lb_xmax"><property name="text"><string>xmax</string></property></widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLineEdit" name="edit_xmax"/>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_ymin"><property name="text"><string>ymin</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_ymin"/>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lb_ymax"><property name="text"><string>ymax</string></property></widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QLineEdit" name="edit_ymax"/>
+      </item>
+      <item row="2" column="0" colspan="4">
+       <widget class="QLabel" name="lb_reghint">
+        <property name="text"><string>Empty = exactly the extent the rotated grid needs.</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QGridLayout" name="gridLayout_out">
+     <item row="0" column="0">
+      <widget class="QLabel" name="lb_out"><property name="text"><string>Save grid to</string></property></widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLineEdit" name="edit_outfile">
+       <property name="toolTip"><string>Optional output grid. Leave empty to keep the rotated grid only in this window.</string></property>
+      </widget>
+     </item>
+     <item row="0" column="2">
+      <widget class="QToolButton" name="btn_outfile">
+       <property name="text"><string>...</string></property>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="lb_outoutline"><property name="text"><string>Save outline to</string></property></widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QLineEdit" name="edit_outoutline">
+       <property name="toolTip"><string>Optional table for the rotated outline polygon.</string></property>
+      </widget>
+     </item>
+     <item row="1" column="2">
+      <widget class="QToolButton" name="btn_outoutline">
+       <property name="text"><string>...</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <spacer name="verticalSpacer_bottom">
+     <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+     <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+     <property name="sizeHint" stdset="0"><size><width>20</width><height>6</height></size></property>
+    </spacer>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="buttonsSpacer">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="text"><string>Rotate</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_close">
+       <property name="minimumSize"><size><width>70</width><height>24</height></size></property>
+       <property name="text"><string>Close</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

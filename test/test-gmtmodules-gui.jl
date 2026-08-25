@@ -203,12 +203,28 @@ end
 		# Firing the entry BUILDS its dialog, so this also proves each .ui still loads through QUiLoader
 		# — a renamed widget or a broken .ui shows up here, not on the user's screen. ("Make CPT" is
 		# passed without its "(makecpt / grd2cpt)" tail: that '/' is the hook's own path separator.)
-		for entry in ("grdfft", "grdhisteq", "grdfill", "xyz2grd", "trend2d", "Make CPT")
+		for entry in ("grdfft", "grdhisteq", "grdfill", "xyz2grd", "trend2d", "Make CPT",
+		              "grdrotater", "greenspline", "grdvolume", "grdvector")
 			@test trig(entry) == 1
+			IG._pump_once()
+		end
+		# The GRAVITY tools are not in the GMT menu: they live in Geophysics > Gravity, which is one of
+		# the rotating discipline pages — so the path is two steps, exactly like "Plates/…".
+		for entry in ("gravfft", "talwani2d", "talwani3d", "gravprisms", "gmtflexure", "grdflexure")
+			@test trig("Gravity/" * entry) == 2
 			IG._pump_once()
 		end
 		exists(t) = ccall(_test_fn(:gmtvtk_window_exists_test), Cint, (Cstring,), t)
 		@test exists("Make CPT") >= 1                  # …and the dialog really is on screen
+		# Each of the new ones too: a .ui that failed to load leaves `dlg` null and NOTHING on
+		# screen, which the trigger alone (it returns 1 for "the action fired") cannot tell apart.
+		for w in ("gravfft", "grdrotater", "talwani2d", "talwani3d", "greenspline",
+		          "gmtflexure", "grdflexure", "grdvolume", "gravprisms", "grdvector")
+			@test exists(w) >= 1
+		end
+		# (No "is it gone from the GMT menu" assertion: menuFindDeep searches the WHOLE menu bar, so
+		# with the Gravity page showing it would find those entries wherever they live. The removal is
+		# a source fact — one addAction per tool — not something this hook can tell apart.)
 
 		# The Color Palettes window gets that SAME dialog from its OWN menu bar, and hands the palette
 		# it builds back into its own list — the user's "Make CPT in Color Palettes" road.
@@ -267,6 +283,50 @@ end
 		U = GmtModules.grid_named(f.h, "grdfft (up 5000 m)")
 		@test U !== nothing
 		@test GmtModules.roughness(U.z) < GmtModules.roughness(f.G.z)
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+# grdvector's arrows are geometry this app builds, not PostScript it asks GMT for — so the proof it
+# works is that the overlay really lands in the window. One field per magnitude-class overlay, and
+# the same run's table in the Data Viewer.
+@testitem "grdvector draws its arrows into the window" tags=[:gui] setup=[GmtModules] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	# A rotational field on the window's own footprint: u = -(y-ym), v = (x-xm). Never zero except at
+	# the centre, so almost every node gets an arrow.
+	G = GmtModules.grid()
+	x = collect(range(-10.0, -6.0, length = 41));  y = collect(range(36.0, 39.0, length = 31))
+	xm = (x[1] + x[end]) / 2;  ym = (y[1] + y[end]) / 2
+	U = GMT.mat2grid(Float32[-(y[iy] - ym) for iy in 1:31, ix in 1:41]; x = x, y = y)
+	V = GMT.mat2grid(Float32[ (x[ix] - xm) for iy in 1:31, ix in 1:41]; x = x, y = y)
+	f = view_grid(G)
+	call(kv) = GmtModules.send(IG._on_grdvector, f.h, kv)
+	try
+		IG._SCENE_OBJS[f.h] = vcat(get(IG._SCENE_OBJS, f.h, Tuple{Symbol,String,Any}[]),
+		                           Tuple{Symbol,String,Any}[(:grid, "u", U), (:grid, "v", V)])
+		n0 = IG._scene_state(f.h)["n_overlays"]
+		@test call(["usescene=0", "grid1=u", "grid2=v", "incmode=x", "incx=5",
+		            "scalemode=auto", "heads=e", "color=black", "name=flow"]) == 1
+		IG._pump_once()
+		@test IG._scene_state(f.h)["n_overlays"] == n0 + 1        # ONE overlay for the whole field
+		# By magnitude: one overlay per class, all under the one group name.
+		n1 = IG._scene_state(f.h)["n_overlays"]
+		@test call(["usescene=0", "grid1=u", "grid2=v", "incmode=x", "incx=5", "scalemode=auto",
+		            "heads=be", "bymag=1", "nclass=4", "name=flow by |v|", "table=1"]) == 1
+		IG._pump_once()
+		@test IG._scene_state(f.h)["n_overlays"] > n1
+		@test IG._scene_state(f.h)["n_table"] >= 1                # x y u v magnitude direction
+		# Polar input describes the SAME field: r = hypot(u,v), theta = atand(v,u).
+		R = GMT.mat2grid(Float32[hypot(x[ix] - xm, y[iy] - ym) for iy in 1:31, ix in 1:41]; x = x, y = y)
+		T = GMT.mat2grid(Float32[atand(x[ix] - xm, -(y[iy] - ym)) for iy in 1:31, ix in 1:41]; x = x, y = y)
+		IG._SCENE_OBJS[f.h] = vcat(IG._SCENE_OBJS[f.h],
+		                           Tuple{Symbol,String,Any}[(:grid, "r", R), (:grid, "th", T)])
+		n2 = IG._scene_state(f.h)["n_overlays"]
+		@test call(["usescene=0", "grid1=r", "grid2=th", "polar=1", "incmode=x", "incx=5",
+		            "scalemode=auto", "heads=e", "name=flow polar"]) == 1
+		IG._pump_once()
+		@test IG._scene_state(f.h)["n_overlays"] == n2 + 1
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
