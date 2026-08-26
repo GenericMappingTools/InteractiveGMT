@@ -76,6 +76,19 @@ function _aqua_find_all_varnames(path::String, skip::String)
 	return found
 end
 
+# Does `vars` (drop.jl's `_netcdf_subdatasets` report for a netCDF file) describe NSWING's own
+# tsunami output -- a STATIC 2-D "bathymetry" grid alongside at least one time-varying (>=3-D)
+# quantity variable? Such a file is not a pile of unrelated variables to choose between: it is ONE
+# tsunami dataset whose two halves only mean anything TOGETHER (dry land coloured from the
+# bathymetry, water from the stage -- see this file's header), and the only thing in the app that
+# can display it is the Aquamoto viewer. So the file-open path routes it straight there instead of
+# popping the generic multi-variable picker (`_on_drop`, drop.jl). Same shape as the test
+# `_aqua_find_all_varnames` already applies, asked of a variable list the caller has in hand.
+function _is_aquamoto_file(vars::Vector{@NamedTuple{name::String, dims::Vector{Int}, typ::String}})::Bool
+	any(v -> lowercase(v.name) == "bathymetry" && length(v.dims) == 2, vars) &&
+		any(v -> lowercase(v.name) != "bathymetry" && length(v.dims) >= 3, vars)
+end
+
 # z -> RGB (UInt8, ny x nx x 3) via a LINEAR cpt built fresh over [zlo,zhi] with `cmap` (any GMT
 # colormap name, e.g. :geo, :polar). Nearest-bin lookup against the cpt's own discrete nodes (same
 # convention as cpt.jl's `_z_to_hex`, generalized to a whole array). No NaN handling -- this file

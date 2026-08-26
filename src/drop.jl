@@ -64,7 +64,21 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 		# pop the modal picker so the user chooses which variable to load (or all of them). A plain
 		# single-variable grid returns an empty list and loads straight through.
 		vars = _netcdf_subdatasets(path)
-		if length(vars) > 1
+		# NSWING's own tsunami netCDF (a static 2-D "bathymetry" grid + at least one time-varying 3-D
+		# quantity) is ONE dataset, not a pile of variables to choose between, and the only thing that
+		# can display it is the Aquamoto viewer -- so it lands there directly, never in the generic
+		# multi-variable picker. The viewer opens the file ITSELF, through the exact same
+		# AquamotoWindow::openFor + openPath the Geophysics > Tsunamis > Aquamoto viewer menu entry and
+		# its Browse button go through (SACRED_LAW.md -- one open path, not a second one wired from
+		# here); `gmtvtk_aqua_queue_open` only defers that to the next event-loop turn, so THIS callback
+		# (already running inside a Qt event) returns before the viewer calls back into Julia.
+		if _is_aquamoto_file(vars)
+			ccall(_fn(:gmtvtk_aqua_queue_open), Cvoid, (Ptr{Cvoid}, Cstring), scene, String(path))
+			try
+				ccall(_fn(:gmtvtk_add_recent), Cvoid, (Cstring, Cint), abspath(String(path)), Cint(0))
+			catch
+			end
+		elseif length(vars) > 1
 			rows = join(("$(v.name)\t$(_dims_str(v.dims))\t$(v.typ)" for v in vars), '\n')
 			sel  = Vector{Cint}(undef, length(vars))           # picker fills 0-based indices of ticked vars
 			pre  = Ref{Cint}(0)                                 # "compute per-layer min/max" checkbox state

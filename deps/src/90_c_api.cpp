@@ -6881,6 +6881,32 @@ GMTVTK_API int gmtvtk_aqua_set_var_label_h(void *handle, const char *label) {
 	return 1;
 }
 
+// Open `path` in `handle`'s Aquamoto viewer, on the NEXT event-loop turn.
+//
+// An NSWING tsunami netCDF (a static 2-D "bathymetry" grid + at least one time-varying 3-D quantity)
+// has exactly one thing in the app that can display it, so the file-open path recognises it and sends
+// it straight here instead of popping the generic multi-variable picker (src/drop.jl,
+// `_is_aquamoto_file`). The window and the open are the SAME AquamotoWindow::openFor +
+// setAndOpenPath the Geophysics > Tsunamis > Aquamoto viewer entry and its Browse button use
+// (75_aquamoto.cpp) -- never a second open path (SACRED_LAW.md).
+//
+// Deferred for the same reason gmtvtk_oc_queue_place is: the caller is Julia's own file-open callback,
+// already running inside a Qt event, and the open below calls BACK into Julia (the console-eval
+// bridge) and raises its own progress dialog. A singleShot lets that callback finish first, so the
+// open runs from an idle loop -- no nested Julia -> C++ -> Julia eval, and the progress dialog gets
+// the clean turns it needs to come down again.
+GMTVTK_API void gmtvtk_aqua_queue_open(void *handle, const char *path) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s) || !path || !*path) return;
+	const QString p = QString::fromUtf8(path);
+	QTimer::singleShot(0, s->win, [s, p]() {
+		if (!sceneAlive(s)) return;
+		AquamotoWindow::openFor(s->win, s);
+		AquamotoWindow *w = AquamotoWindow::registry().value(s, nullptr);
+		if (w) w->setAndOpenPath(p);
+	});
+}
+
 // Open a VTK-format file (.vtp/.vti/.vtr/.vts/.vtu/.vtm/.vtk/.vtkhdf and the .pvt* parallel forms)
 // INTO this window. Neither GMT nor GDAL can parse these, so Julia's `_open_spec_into` catches the
 // extension and routes it here instead of `gmtread` (src/drop.jl); the reading and the classification

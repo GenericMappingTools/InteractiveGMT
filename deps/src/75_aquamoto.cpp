@@ -267,13 +267,12 @@ public:
 			                                         "netCDF files (*.nc *.sww *.NC *.SWW);;All files (*)");
 			if (p.isEmpty()) return;
 			rememberStartDir(p);
-			if (pathEdit) pathEdit->setText(p);
-			openPath(p);
+			setAndOpenPath(p);
 		};
 		if (browseBtn) QObject::connect(browseBtn, &QToolButton::clicked, w, openFile);
 		if (pathEdit) {
 			QObject::connect(pathEdit, &QLineEdit::returnPressed, w, [this]() {
-				if (pathEdit && !pathEdit->text().trimmed().isEmpty()) openPath(pathEdit->text().trimmed());
+				if (pathEdit && !pathEdit->text().trimmed().isEmpty()) setAndOpenPath(pathEdit->text().trimmed());
 			});
 		}
 
@@ -391,6 +390,15 @@ public:
 		if (!*alive) { closedNow = true; return ok; }   // `this` was destroyed during the pump -- bail
 		busy_ = false;
 		return ok;
+	}
+
+	// "This file is now the session's file": show it in the path box, then open it. THE one entry for
+	// naming a file to this window -- the Browse button, the path box's Enter and the file-open route
+	// (gmtvtk_aqua_queue_open, 90_c_api.cpp) all come through here, so none of them can end up with a
+	// path box that disagrees with what is loaded.
+	void setAndOpenPath(const QString &path) {
+		if (pathEdit) pathEdit->setText(path);
+		openPath(path);
 	}
 
 	void openPath(const QString &path) {
