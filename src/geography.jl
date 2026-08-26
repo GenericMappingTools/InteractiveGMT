@@ -215,7 +215,8 @@ end
 const _GEO_LINE_PT = 0.75
 
 function _add_geo_overlay(scene::Ptr{Cvoid}, D; color=(0.0, 0.0, 0.0), linewidth=_GEO_LINE_PT,
-                          name::AbstractString="", noConvertToPoints::Bool=false)
+                          name::AbstractString="", noConvertToPoints::Bool=false,
+                          group::AbstractString="")
 	segs = D isa GMTdataset ? (D,) : collect(D)
 	# CLAMPED TO THE GROUND — but NOT here. A boundary line laid at z = 0 is right on a flat map and
 	# wrong the moment the view is 3-D: it hangs at sea level while the relief rises through it. So it
@@ -253,7 +254,7 @@ function _add_geo_overlay(scene::Ptr{Cvoid}, D; color=(0.0, 0.0, 0.0), linewidth
 		  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
 		   Cstring, Cstring, Cstring, Cint, Cint, Cint, Cstring),
 		  scene, xyz, Cint(off), segoff, Cint(length(segs)), Cint(1), cr, cg, cb, Float64(linewidth), 0.0,
-		  name, "", "", Cint(noConvertToPoints), Cint(0), Cint(0), "")
+		  name, group, "", Cint(noConvertToPoints), Cint(0), Cint(0), "")
 	ok == 0 && return false
 	# …and NOW drape it, through the one clamp. A window with no grid has no ground to clamp to and
 	# the call is a no-op there, which leaves the line flat — exactly what a bare map wants.

@@ -1296,6 +1296,31 @@ static JuliaTideModelFn g_juliaTideModel = nullptr;
 typedef void (*JuliaEarthTideFn)(void *scene, const char *req);
 static JuliaEarthTideFn g_juliaEarthTide = nullptr;
 
+// solar (Geography > "Sun and terminators"), GMT's own solar/pssolar. SolarDialog (70_window.cpp,
+// loads deps/ui/solar_dialog.ui) hands a newline-separated "key=value" block to Julia (_on_solar,
+// src/solar.jl):
+//   terms=<subset of dcna>   which terminators to draw (-T): day/night, civil, nautical, astronomical
+//   date=<ISO 8601>          absent = the module's own "now" (+d)
+//   tz=<offset from UTC>     e.g. -03:00 (+z)
+//   width=<line width>       for the drawn terminator lines, in POINTS
+//   fill=<subset of dcna>    which of those terminators also PAINT their night side (pssolar's -G)
+//   fillrgb=<r/g/b>          the paint colour, 0-255 each
+//   filltr=<0..100>          its transparency in percent, the same number pssolar's @<transp> takes
+//   sun=0|1                  report the sun's position (-I, read back through g_solarReport)
+//   marksun=0|1              put a star at the sub-solar point
+//   lon=, lat=               optional observer position: adds sunrise/noon/sunset/day length
+//   outfile=                 optional table to also write the drawn polygons to (-M dump)
+//   mapw=<western edge>      this window's longitude frame, so the small circle lands inside it
+// Each terminator becomes (or REPLACES) its own line-overlay layer in `scene`, and a painted one a
+// filled-polygon layer beside it. Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaSolarFn)(void *scene, const char *params);
+static JuliaSolarFn g_juliaSolar = nullptr;
+
+// What the sun report has to SAY, on its way back to the dialog's read-only box: Julia writes it
+// from inside the callback (gmtvtk_solar_report), the dialog reads it once the call returns. Same
+// write-only text channel as g_eulerResult — one pattern for "the module answered in words".
+static std::string g_solarReport;
+
 // Live scenes, keyed by the Scene *returned to the host as an opaque figure handle.
 // A handle is valid only while its window is open; the window-destroyed lambda erases
 // it here so a stale handle from a closed figure is rejected instead of dereferenced.

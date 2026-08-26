@@ -20061,6 +20061,235 @@ static void showEarthTidesDialog(Scene *s, double cW, double cE, double cS, doub
 	dlg->show();
 }
 
+// ============================================================================================
+// solar (Geography > "Sun and terminators") — the day/night terminator, the three twilights, the
+// NIGHT SIDE they enclose, and the sun's own position, through GMT's solar (pssolar). Loaded at
+// RUNTIME via QUiLoader from deps/ui/solar_dialog.ui.
+//
+// The module is always asked for DATA (-M), never for a picture, because a picture is not an object:
+// what pssolar's -W and -G would have drawn is drawn here as a line overlay and a filled polygon per
+// terminator, each a normal Scene Objects element with its own properties (colour, width; fill
+// colour, transparency, area). See src/solar.jl for the geometry — a ring and the region it bounds
+// are two different shapes, and the region has to be closed along the map edge and around whichever
+// pole is dark.
+//
+// Non-modal, like the Earth Tides dialog and for the same reason: "Click point on map" has to get
+// out of the way and let the next click on the map fill in the observer position (MapPickFilter,
+// above — the same one-shot picker, not a second copy).
+//
+// The sun report comes BACK from Julia through the g_solarReport text channel and is shown in the
+// dialog's own read-only box.
+// ============================================================================================
+class SolarDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QCheckBox *nowChk = nullptr, *reportChk = nullptr, *markChk = nullptr;
+	QDateTimeEdit *whenEdit = nullptr;
+	QLineEdit *tzEdit = nullptr, *lonEdit = nullptr, *latEdit = nullptr, *outEdit = nullptr;
+	QDoubleSpinBox *widthSpin = nullptr;
+	QPlainTextEdit *reportBox = nullptr;
+	// One row per terminator, in the module's own -T order: the letter, its "draw the line" box, its
+	// "paint the region" box, the paint colour button and the paint transparency. Kept as arrays so
+	// every row is wired by ONE loop — four hand-copied blocks is how three of them end up subtly
+	// different from the fourth.
+	static constexpr int NTERM = 4;
+	const char *termLetter[NTERM] = { "d", "c", "n", "a" };
+	QCheckBox *termChk[NTERM] = { nullptr, nullptr, nullptr, nullptr };
+	QCheckBox *fillChk[NTERM] = { nullptr, nullptr, nullptr, nullptr };
+	QPushButton *colorBtn[NTERM] = { nullptr, nullptr, nullptr, nullptr };
+	QSpinBox *trSpin[NTERM] = { nullptr, nullptr, nullptr, nullptr };
+	QColor fillColor[NTERM];
+	std::shared_ptr<QPointer<MapPickFilter>> pick = std::make_shared<QPointer<MapPickFilter>>();
+
+	// The paint colours a fresh dialog opens with: night, then three progressively lighter dusks.
+	// Julia holds the same four as its own fallback (_SOLAR_TERMS), for a run that names no colour.
+	static QColor defaultFill(int i) {
+		static const QColor c[NTERM] = { QColor(26, 33, 56), QColor(41, 51, 87),
+		                                 QColor(56, 66, 112), QColor(71, 84, 138) };
+		return c[i < 0 || i >= NTERM ? 0 : i];
+	}
+
+	void paintColorButton(int i) {
+		if (!colorBtn[i]) return;
+		colorBtn[i]->setStyleSheet(QString("background-color: %1; border: 1px solid #606060;")
+		                           .arg(fillColor[i].name()));
+	}
+
+	explicit SolarDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/solar_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("SolarDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("SolarDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("solar");
+		QDialog *d = dlg;
+
+		nowChk    = d->findChild<QCheckBox *>("chk_now");
+		reportChk = d->findChild<QCheckBox *>("chk_report");
+		markChk   = d->findChild<QCheckBox *>("chk_marksun");
+		whenEdit  = d->findChild<QDateTimeEdit *>("dt_when");
+		tzEdit    = d->findChild<QLineEdit *>("edit_tz");
+		lonEdit   = d->findChild<QLineEdit *>("edit_lon");
+		latEdit   = d->findChild<QLineEdit *>("edit_lat");
+		outEdit   = d->findChild<QLineEdit *>("edit_outfile");
+		widthSpin = d->findChild<QDoubleSpinBox *>("spin_width");
+		reportBox = d->findChild<QPlainTextEdit *>("txt_report");
+		auto *browseBtn = d->findChild<QToolButton *>("btn_outfile");
+
+		static const char *chkNames[NTERM]  = { "chk_daynight", "chk_civil", "chk_nautical", "chk_astro" };
+		for (int i = 0; i < NTERM; ++i) {
+			const QString L = QString::fromLatin1(termLetter[i]);
+			termChk[i]  = d->findChild<QCheckBox *>(chkNames[i]);
+			fillChk[i]  = d->findChild<QCheckBox *>("chk_fill_" + L);
+			colorBtn[i] = d->findChild<QPushButton *>("btn_color_" + L);
+			trSpin[i]   = d->findChild<QSpinBox *>("spin_tr_" + L);
+			fillColor[i] = defaultFill(i);
+			paintColorButton(i);
+			if (colorBtn[i]) {
+				QObject::connect(colorBtn[i], &QPushButton::clicked, d, [this, d, i]() {
+					QColor c = QColorDialog::getColor(fillColor[i], d, "Night-side paint colour");
+					if (c.isValid()) { fillColor[i] = c; paintColorButton(i); }
+				});
+			}
+			// The paint controls only mean anything for a terminator that is actually being computed,
+			// and only once its own paint box is ticked. They follow both, so the dialog never offers a
+			// colour for something it will not draw.
+			auto syncRow = [this, i]() {
+				const bool on   = termChk[i] && termChk[i]->isChecked();
+				const bool fill = on && fillChk[i] && fillChk[i]->isChecked();
+				if (fillChk[i])  fillChk[i]->setEnabled(on);
+				if (colorBtn[i]) colorBtn[i]->setEnabled(fill);
+				if (trSpin[i])   trSpin[i]->setEnabled(fill);
+			};
+			if (termChk[i]) QObject::connect(termChk[i], &QCheckBox::toggled, d, [syncRow](bool) { syncRow(); });
+			if (fillChk[i]) QObject::connect(fillChk[i], &QCheckBox::toggled, d, [syncRow](bool) { syncRow(); });
+			syncRow();
+		}
+
+		// The clock the whole dialog speaks is UTC — the same one the module's own "now" default and
+		// the +z offset are defined against.
+		if (whenEdit) {
+			whenEdit->setTimeSpec(Qt::UTC);
+			whenEdit->setDisplayFormat("dd-MMM-yyyy HH:mm:ss");
+			whenEdit->setDateTime(QDateTime::currentDateTimeUtc());
+		}
+		// "Now" IS the module's default, so ticking it freezes the date box rather than sending it.
+		auto syncNow = [this]() {
+			const bool now = nowChk && nowChk->isChecked();
+			if (whenEdit) whenEdit->setEnabled(!now);
+		};
+		if (nowChk) QObject::connect(nowChk, &QCheckBox::toggled, d, [syncNow](bool) { syncNow(); });
+		syncNow();
+
+		if (browseBtn) {
+			QObject::connect(browseBtn, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save terminators", prefStartDir(),
+					"Tables (*.dat *.txt);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, browseBtn);
+		}
+
+		// "Click point on map": step aside (showMinimized, NOT lower — see the same note in
+		// showEarthTidesDialog), arm the one-shot picker, fill Lon/Lat with what it returns. The pick
+		// only FILLS the boxes; Compute is still what runs the module (only-action-button-executes).
+		if (auto *b = d->findChild<QPushButton *>("push_pick")) {
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() {
+				if (!scn || !scn->widget) return;
+				d->showMinimized();
+				scn->widget->setCursor(Qt::CrossCursor);
+				if (scn->win) scn->win->statusBar()->showMessage("solar: click a point on the map…", 5000);
+				MapPickFilter *f = new MapPickFilter(scn, scn->widget, [this, d](double lon, double lat) {
+					if (lonEdit) lonEdit->setText(QString::number(lon, 'f', 4));
+					if (latEdit) latEdit->setText(QString::number(lat, 'f', 4));
+					if (scn && scn->widget) scn->widget->unsetCursor();
+					d->showNormal(); d->raise(); d->activateWindow();
+				});
+				*pick = f;
+				scn->widget->installEventFilter(f);
+			});
+		}
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		addManualButton(d, "solar");               // the green ? disk, lower-left as everywhere else
+
+		// Closing with a pick still armed must not leave the map wearing a crosshair and an event
+		// filter that outlives the boxes it was going to fill.
+		auto pk = pick;  Scene *sc = scn;
+		QObject::connect(d, &QObject::destroyed, d, [this, pk, sc]() {
+			if (*pk) {
+				if (sc && sc->widget) { sc->widget->removeEventFilter(*pk); sc->widget->unsetCursor(); }
+				pk->data()->deleteLater();
+			}
+			delete this;
+		});
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaSolar) {
+			QMessageBox::warning(d, "solar", "solar: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		QString terms, fills;                             // the -T letters, and which of them also paint
+		QStringList paint;                                // fillrgb_<letter> / filltr_<letter> for those
+		for (int i = 0; i < NTERM; ++i) {
+			if (!termChk[i] || !termChk[i]->isChecked()) continue;
+			const QString L = QString::fromLatin1(termLetter[i]);
+			terms += L;
+			if (!fillChk[i] || !fillChk[i]->isChecked()) continue;
+			fills += L;
+			paint << QString("fillrgb_%1=%2/%3/%4").arg(L).arg(fillColor[i].red())
+			         .arg(fillColor[i].green()).arg(fillColor[i].blue());
+			paint << QString("filltr_%1=%2").arg(L).arg(trSpin[i] ? trSpin[i]->value() : 65);
+		}
+		const bool wantReport = reportChk && reportChk->isChecked();
+		const bool wantMark   = markChk && markChk->isChecked();
+		if (terms.isEmpty() && !wantReport && !wantMark) {
+			QMessageBox::warning(d, "solar", "Tick a terminator, the sun report, or both.");
+			return;
+		}
+
+		QStringList kv;
+		kv << "terms=" + terms;
+		kv << "fill=" + fills;
+		kv += paint;
+		// "Now" sends no date at all: the module's own default IS now, and re-stating it here would
+		// freeze every later run at the instant this dialog happened to open.
+		if (nowChk && !nowChk->isChecked() && whenEdit)
+			kv << "date=" + whenEdit->dateTime().toString("yyyy-MM-ddTHH:mm:ss");
+		if (!txt(tzEdit).isEmpty()) kv << "tz=" + txt(tzEdit);
+		if (widthSpin) kv << QString("width=%1").arg(widthSpin->value(), 0, 'f', 2);
+		kv << QString("sun=%1").arg(wantReport ? 1 : 0);
+		kv << QString("marksun=%1").arg(wantMark ? 1 : 0);
+		if (!txt(lonEdit).isEmpty()) kv << "lon=" + txt(lonEdit);
+		if (!txt(latEdit).isEmpty()) kv << "lat=" + txt(latEdit);
+		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
+		// The map's own western edge: a terminator is a small circle in absolute longitude and this
+		// window may be drawn in any 360-wide frame, so Julia needs to know which one to land it in.
+		kv << QString("mapw=%1").arg((scn && scn->x1 > scn->x0) ? scn->x0 : -180.0, 0, 'f', 6);
+
+		g_solarReport.clear();                            // clear the answer channel before asking
+		showBusyDialog("Computing the terminator…");
+		const int ok = g_juliaSolar(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		const QString answer = QString::fromStdString(g_solarReport);
+		if (reportBox && !answer.isEmpty()) reportBox->setPlainText(answer);
+		if (!ok) QMessageBox::warning(d, "solar",
+		                              "solar failed — see this window's Errors console for details.");
+	}
+};
+
 // The globe's FRAME: the lon/lat graticule that stands in for the rectangular axes box while the
 // globe is up (a box is not a wrong-looking frame for a sphere, it is a wrong one). Built from the
 // scene's OWN mapping — sceneGeoToWorld, never a second lon/lat -> XYZ formula — so the lines land
@@ -21170,6 +21399,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		double W = -180, E = 180, S = -90, N = 90;          // whole-earth fallback if no view region
 		visibleRegion(W, E, S, N);
 		showEarthTidesDialog(s, W, E, S, N);
+	});
+	// Sun and terminators (GMT's solar): the terminators are DRAWN on the map, so this leaf takes the
+	// same base-map guarantee every plotting leaf takes — an empty launcher gets the world map first.
+	mGeo->addAction("Sun and terminators…", [win, s, ensureGeoBase]() {
+		if (!ensureGeoBase()) return;
+		auto *w = new SolarDialog(win, s);          // self-deletes when its QDialog closes
+		if (w->dlg) w->dlg->show();
 	});
 	mGeo->addAction("Fracture Zones",                geoTODO("Fracture Zones"));
 	mGeo->addAction("Plate boundaries",              geoPlot("plateboundaries", ""));

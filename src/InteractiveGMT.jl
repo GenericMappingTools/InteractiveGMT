@@ -59,6 +59,7 @@ include("savefile.jl")   # File > Save Grid / Save Image -> gmtwrite (netCDF/Sur
 include("session.jl")    # File > Save/Load Session (.igmtz): provenance registry + manifest + store-only zip
 include("gmtscript.jl")  # reproduce a window as GMT.jl calls (live) or a standalone script
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
+include("solar.jl")      # Geography > Sun and terminators: day/night + twilights + night paint + sun position
 include("plateboundaries.jl") # Geography > Plate boundaries -> 7 grouped boundary-type overlays
 include("magneticisochrons.jl") # Geography > Magnetic isochrons > GPlates -> Sutton_isocs.sqlite
 include("solids.jl")     # 3-D Bodies toolbar flyout -> GMT solids (cube/sphere/torus/cylinder/…) via view_fv

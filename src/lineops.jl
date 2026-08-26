@@ -1088,9 +1088,9 @@ function _lop_do_line2patch(scene, targets)
 			nm = length(rings) == 1 ? "$t (patch)" : "$t (patch $k)"
 			idx = ccall(_fn(:gmtvtk_add_poly_full), Cint,
 			            (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble,
-			             Cdouble, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
+			             Cdouble, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring),
 			            scene, xyz, Cint(size(R, 1)), Cint(1), Cint(0),
-			            0.0, 0.0, 0.0, 2.0, Cint(0), 0.8, 0.8, 0.8, 0.0, nm)
+			            0.0, 0.0, 0.0, 2.0, Cint(0), 0.8, 0.8, 0.8, 0.0, nm, "")
 			idx >= 0 && (n += 1)
 		end
 		n > 0 && _lop_remove(scene, t)              # Mirone deletes the line it converted

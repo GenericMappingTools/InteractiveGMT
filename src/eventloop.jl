@@ -71,6 +71,7 @@ function _ensure_callbacks()
 	                    ("tides",       _register_tides),
 	                    ("tidemodel",   _register_tidemodel),
 	                    ("earthtide",   _register_earthtide),
+	                    ("solar",       _register_solar),
 	                    ("grdsample",   _register_grdsample),
 	                    ("gridmeta",    _register_gridmeta),
 	                    ("dimfun",      _register_dimfun),

@@ -332,13 +332,15 @@ function _session_rebuild_polys!(fig, blob::String)
 			end
 			nv = length(verts) ÷ 3
 			nv == 0 && continue
+			# The saved blob carries no group tag (gmtvtk_serialize_polys never wrote one), so a rebuilt
+			# polygon comes back ungrouped — "" is exactly the pre-group behaviour, one loose row each.
 			ccall(_fn(:gmtvtk_add_poly_full), Cint,
 			      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-			       Cdouble, Cdouble, Cdouble, Cdouble, Cstring),
+			       Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring),
 			      h, verts, Cint(nv), Cint(parse(Int, p[1])), Cint(parse(Int, p[2])),
 			      parse(Float64, p[3]), parse(Float64, p[4]), parse(Float64, p[5]), parse(Float64, p[6]),
 			      Cint(parse(Int, p[7])), parse(Float64, p[8]), parse(Float64, p[9]), parse(Float64, p[10]),
-			      parse(Float64, p[11]), String(p[12]))
+			      parse(Float64, p[11]), String(p[12]), "")
 		catch e
 			@warn "session: skipped a malformed polygon line" exception=(e,)
 		end

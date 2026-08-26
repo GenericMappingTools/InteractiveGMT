@@ -67,7 +67,10 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # Generation 5 = the vector snapshots Save Session grew onto: overlays carry their group tag, symbols
 # their oneShot/hasScale/hasRGB flags + per-point size/colour, and rulers have a serializer of their
 # own. Field counts changed, so a generation-4 library's lines parse as garbage here.
-const _ABI_REQUIRED = 5
+# Generation 6 = gmtvtk_add_poly_full takes a trailing `groupName`, so a tool that paints several
+# polygons in one action (Geography > Sun and terminators) can fold them under one Scene Objects row.
+# A generation-5 library is handed one argument too many and reads the fill values shifted.
+const _ABI_REQUIRED = 6
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.
@@ -78,7 +81,8 @@ _lib_abi() = _LIB_ABI[]
 const _LIB_SYMBOLS = (
 	:gmtvtk_view_grid, :gmtvtk_view_demo, :gmtvtk_process_events,
 	:gmtvtk_add_overlay, :gmtvtk_add_overlay_h, :gmtvtk_add_overlay_ex_h, :gmtvtk_add_overlay_ex2_h, :gmtvtk_add_overlay_ex3_h, :gmtvtk_add_overlay_ex4_h, :gmtvtk_add_overlay_bounded_h, :gmtvtk_get_display_bounds_h,
-	:gmtvtk_overlay_points_h, :gmtvtk_remove_overlay_group_h, :gmtvtk_label_width_world_h,
+	:gmtvtk_overlay_points_h, :gmtvtk_remove_overlay_group_h, :gmtvtk_remove_symbols_h,
+	:gmtvtk_remove_polys_h, :gmtvtk_label_width_world_h,
 	:gmtvtk_add_overlay_gapped_h, :gmtvtk_world_per_pixel_h, :gmtvtk_dblclick_test,
 	:gmtvtk_add_symbols_h, :gmtvtk_add_symbols_ex_h, :gmtvtk_symbol_set_table_h, :gmtvtk_is_alive,
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
@@ -110,6 +114,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_bgregion_callback, :gmtvtk_set_newwindow_callback, :gmtvtk_set_save_callback,
 	:gmtvtk_set_save_geotiff_callback, :gmtvtk_set_move_callback, :gmtvtk_set_img_stretch_callback,
 	:gmtvtk_set_geography_callback, :gmtvtk_set_tides_callback, :gmtvtk_set_tidemodel_callback, :gmtvtk_set_earthtide_callback,
+	:gmtvtk_set_solar_callback, :gmtvtk_solar_report,
 	:gmtvtk_set_solid_callback, :gmtvtk_set_grdsample_callback, :gmtvtk_set_gridmeta_callback,
 	:gmtvtk_set_dimfun_callback, :gmtvtk_set_nswing_callback,
 	:gmtvtk_set_save_session_callback, :gmtvtk_set_load_session_callback, :gmtvtk_load_session_h,

@@ -1086,7 +1086,11 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //   1 = pre-zlayout (implicit: the export is absent in those builds)
 //   2 = grid buffers carry a layout code
 //   3 = the Aquamoto composite carries its dry/wet mask (gmtvtk_show_layer_rgba_h)
-GMTVTK_API int gmtvtk_abi_version(void) { return 5; }
+//   6 = gmtvtk_add_poly_full takes a trailing `groupName` (Scene Objects group tag). A generation-5
+//       library reads that pointer as nothing at all and the polygon lands ungrouped — or worse, a
+//       generation-6 HOST calling a generation-5 library pushes one argument too many. Exactly the
+//       silent-trailing-argument case this counter exists for.
+GMTVTK_API int gmtvtk_abi_version(void) { return 6; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -3142,14 +3146,22 @@ GMTVTK_API int gmtvtk_serialize_symbols(void *handle, char *buf, int cap) {
 // fill exactly as the draw tool would (polyRebuildLine reads fillColor/fillOpacity from the struct),
 // then stamps the saved outline colour/width onto the actor. lineStyle is stored but not re-applied
 // yet (rebuilt polys are solid). Returns the new polygon's index, or -1.
+// `groupName` (may be null/empty) tags the new polygon into a Scene Objects GROUP: every polygon
+// sharing it folds under ONE collapsible row whose checkbox cascades to all of them, and the whole
+// group is removable by tag through gmtvtk_remove_polys_h. That is what a tool producing SEVERAL
+// polygons in one action needs (Geography > Sun and terminators paints one night side per
+// terminator) — the same grouping the slip-model patches already ride on, not a second mechanism.
+// An empty group is the old behaviour exactly: one loose top-level row, as a drawn polygon gets.
 GMTVTK_API int gmtvtk_add_poly_full(void *handle, const double *xyz, int npts, int closed, int isRect,
                                     double lr, double lg, double lb, double lw, int lstyle,
-                                    double fr, double fg, double fb, double fop, const char *name) {
+                                    double fr, double fg, double fb, double fop, const char *name,
+                                    const char *groupName) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !xyz || npts <= 0) return -1;
 	Polygon pg;
 	pg.closed = closed != 0; pg.isRect = isRect != 0;
 	pg.name = (name && name[0]) ? name : "polygon";
+	pg.groupName = (groupName && groupName[0]) ? groupName : "";
 	(void)lstyle;                                   // reserved (Polygon has no dashed/dotted style)
 	pg.fillColor[0] = fr; pg.fillColor[1] = fg; pg.fillColor[2] = fb; pg.fillOpacity = fop;
 	for (int i = 0; i < npts; ++i) pg.v.push_back({ xyz[3*i], xyz[3*i+1], xyz[3*i+2] });
@@ -3161,6 +3173,19 @@ GMTVTK_API int gmtvtk_add_poly_full(void *handle, const double *xyz, int npts, i
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return (int)s->polys.size() - 1;
+}
+
+// Remove every polygon tagged `groupName` — the polygon twin of gmtvtk_remove_overlay_group_h and
+// gmtvtk_remove_symbols_h, and like both of them a thin call on the ONE shared group deleter
+// (sceneDeleteGroup, 50_scene.cpp), never a hand-rolled erase loop. A tool whose re-run must REPLACE
+// what it painted (the solar night sides) removes its group first and adds it again. Returns 1 if
+// the handle was alive; removing a group that is not there is a no-op.
+GMTVTK_API int gmtvtk_remove_polys_h(void *handle, const char *groupName) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !groupName || !*groupName) return 0;
+	sceneDeleteGroup(s, { GroupChild(GroupChild::Polygons, std::string(groupName)) });
+	QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);   // see gmtvtk_add_meca_h
+	return 1;
 }
 
 // Serialize the window's fault traces AND slip-model patches (Save Session) — the two Polygon kinds
@@ -3701,6 +3726,21 @@ GMTVTK_API int gmtvtk_remove_overlay_group_h(void *handle, const char *groupName
 	// overlayDeleteGroup drops the group's labels too, and does the restack + rebuild + render — so
 	// this export and the group row's own "Remove" cannot behave differently.
 	overlayDeleteGroup(s, std::string(groupName));
+	QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);   // see gmtvtk_add_meca_h
+	return 1;
+}
+
+// Remove the SYMBOL layer called `name` — the missing counterpart of gmtvtk_add_symbols_h, and the
+// symbol twin of gmtvtk_remove_overlay_group_h above. (That one only reaches a symbol layer an
+// overlay MADE, whose name it derives as "<group> (points)", so a layer added under its own name had
+// no way back out.) Needed by any tool whose re-run must REPLACE its marker instead of stacking a
+// second one on the first — Geography > Sun and terminators does exactly that with the sub-solar
+// point. Returns 1 if the handle was alive, 0 otherwise; removing a layer that is not there is a
+// no-op, so a first run needs no special case.
+GMTVTK_API int gmtvtk_remove_symbols_h(void *handle, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !*name) return 0;
+	sceneDeleteGroup(s, { GroupChild(GroupChild::SymbolLayer, std::string(name)) });
 	QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);   // see gmtvtk_add_meca_h
 	return 1;
 }
@@ -5522,6 +5562,20 @@ GMTVTK_API void gmtvtk_set_tidemodel_callback(JuliaTideModelFn fn) {
 // subset of "VEN"); Julia runs GMT.earthtide. nullptr to detach.
 GMTVTK_API void gmtvtk_set_earthtide_callback(JuliaEarthTideFn fn) {
 	g_juliaEarthTide = fn;
+}
+
+// Register the solar Compute callback (Geography > Sun and terminators). fn(scene, params) with the
+// "key=value" block described in 30_app.cpp draws the requested terminators as line overlays, paints
+// the night side of the ones asked for, and (optionally) reports the sun's position. Returns 1/0.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_solar_callback(JuliaSolarFn fn) {
+	g_juliaSolar = fn;
+}
+
+// Julia hands the solar dialog the sun report it just produced. Called from inside the callback; the
+// dialog reads it once the call returns and shows it in its own read-only box.
+GMTVTK_API void gmtvtk_solar_report(const char *txt) {
+	g_solarReport = (txt && txt[0]) ? txt : "";
 }
 
 // Register the 3D cube layer selector callback. Called when the user selects a layer from the

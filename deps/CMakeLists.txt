@@ -197,40 +197,25 @@ if(GMTVTK_PACKAGE AND WIN32)
   # component staging dir; no conflict with the COMPONENT full install above.
   install(FILES "$<TARGET_FILE:gmtvtk>" DESTINATION deps/build COMPONENT dll)
 
-  # ...plus any VTK/Qt module the PINNED full runtime bundle predates. The two
-  # zips move at different speeds (deps/build.jl): the full bundle is fetched
-  # ONCE EVER per machine, gated on .full_runtime_installed, so bumping
-  # deps/RUNTIME_VERSION does NOT reach an existing install — the dll-only zip
-  # is the only channel that does. The moment the C++ links a VTK module that
-  # is not inside the published iGMT-win64-full.zip, shipping gmtvtk.dll alone
-  # gives every existing install a DLL that cannot load at all (LoadLibrary
-  # fails -> the Julia side reports a missing gmtvtk_* symbol, with no hint
-  # that a dependency is what is actually absent). So the dll component carries
-  # those modules too.
+  # ...and NOTHING ELSE: the dll-only zip is gmtvtk.dll, alone.
   #
-  # Found 2026-07-29: reading VTK's own file formats (vtkHDFReader) pulled in
-  # vtkIOHDF + vtkhdf5 + vtkhdf5_hl + vtkFiltersTemporal, none of which exist in
-  # runtime-0.1, and the dll-only zip bricked every machine it reached.
+  # It used to carry a `_GMTVTK_DLL_EXTRA_MODULES` list as well — any VTK module the PINNED full
+  # bundle predated. That existed because the two zips move at different speeds (deps/build.jl):
+  # link one module the published iGMT-win64-full.zip does not contain and every existing install
+  # gets a DLL that LoadLibrary cannot load at all, reported by Julia as a missing gmtvtk_* symbol
+  # naming nothing useful. Found 2026-07-29 — vtkHDFReader pulled in vtkIOHDF + vtkhdf5 +
+  # vtkhdf5_hl + vtkFiltersTemporal, none of them in runtime-0.1.
   #
-  # To check this list after linking new VTK components: walk gmtvtk.dll's
-  # transitive imports (dumpbin /dependents) and subtract the file list of the
-  # published iGMT-win64-full.zip — whatever remains belongs here. When
-  # RUNTIME_VERSION is next bumped to a bundle that already contains them, the
-  # entries become harmless duplicates and can be dropped.
-  # NOTE: this list becomes unnecessary the moment deps/RUNTIME_VERSION is bumped to a bundle
-  # that already contains these — deps/build.jl now stores the installed TAG in
-  # .full_runtime_installed and re-fetches the bundle when the pin moves, so a bump finally
-  # reaches existing installs. Until that new bundle is published, the modules must keep riding
-  # along in the dll-only zip.
-  set(_GMTVTK_DLL_EXTRA_MODULES
-    vtkIOHDF vtkhdf5 vtkhdf5_hl vtkFiltersTemporal)
-  foreach(_m IN LISTS _GMTVTK_DLL_EXTRA_MODULES)
-    if(EXISTS "${_VTK_BIN}/${_m}.dll")
-      install(FILES "${_VTK_BIN}/${_m}.dll" DESTINATION deps/build COMPONENT dll)
-    else()
-      message(WARNING "dll-only zip: ${_m}.dll not found in ${_VTK_BIN} — the zip will ship an unloadable gmtvtk.dll if the pinned runtime bundle lacks it too")
-    endif()
-  endforeach()
+  # Dropped 2026-08-26: deps/RUNTIME_VERSION now pins runtime-0.2, whose bundle carries all four,
+  # and .full_runtime_installed stores the installed TAG so a pin bump actually re-fetches on
+  # machines that already have a runtime. The entries were duplicates of files the target machine
+  # already has, exactly the condition this block's own note said to remove it under. Verified by
+  # deps/check_dll_deps.ps1 against the published runtime-0.2 bundle with NO dll zip in the
+  # baseline: 81 modules walked, remainder empty.
+  #
+  # If the C++ ever links a module a published bundle lacks, the fix is a new full bundle + a
+  # RUNTIME_VERSION bump, not a module smuggled into this component. Run check_dll_deps.ps1 before
+  # every upload — that is what tells the two apart.
 
   # `.dll_requires` — the contract between the two zips. Lists every non-system DLL gmtvtk.dll
   # imports, transitively, computed at package time by the same resolver install(RUNTIME_DEPENDENCY_SET)
@@ -323,6 +308,7 @@ if(GMTVTK_PACKAGE AND WIN32)
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdtrend_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdlandmask_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdfilter_dialog.ui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/solar_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdfft_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdhisteq_dialog.ui"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui/xyz2grd_dialog.ui"
