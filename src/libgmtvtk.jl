@@ -90,7 +90,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_object_visible,
 	:gmtvtk_view_fv, :gmtvtk_promote_fv_h, :gmtvtk_set_julia_eval, :gmtvtk_set_table, :gmtvtk_log_error,
 	:gmtvtk_error_box, :gmtvtk_get_xfac,
-	:gmtvtk_save_png, :gmtvtk_orbit, :gmtvtk_set_stereo,
+	:gmtvtk_save_png, :gmtvtk_save_png_h, :gmtvtk_render_size_h, :gmtvtk_orbit, :gmtvtk_set_stereo,
 	:gmtvtk_open_empty, :gmtvtk_set_drop_callback, :gmtvtk_set_paste_callback, :gmtvtk_add_surface_h,
 	:gmtvtk_promote_surface_h, :gmtvtk_replace_base_grid_h, :gmtvtk_show_layer_image_h, :gmtvtk_show_layer_rgba_h,
 	:gmtvtk_aqua_set_land_cpt_h, :gmtvtk_aqua_set_bathy_h, :gmtvtk_aqua_set_var_label_h,

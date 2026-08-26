@@ -15,6 +15,7 @@ Windows-only (the viewer DLL is a Windows binary).
 module InteractiveGMT
 
 using GMT
+import GMT: movie
 using Distributed: addprocs, workers, rmprocs, remotecall, remotecall_eval
 using PrecompileTools: @setup_workload, @compile_workload
 
@@ -71,6 +72,7 @@ include("focal.jl")      # Geophysics > Seismology > Focal mechanisms (port of M
 include("deform.jl")     # Geophysics > Vertical elastic deformation: fault-trace endpoint (deform_mansinha.m)
 include("nested.jl")     # "Nested grids" rectangle tool: host-side blank-grid builder (nesting_sizes.m)
 include("transplant.jl") # Grid Tools > Transplant 2nd grid (port of Mirone utils/transplants.m)
+include("movie.jl")      # InteractiveGMT frame scheduler + FFmpeg encoder (extends GMT.movie by dispatch)
 include("measure.jl")    # line length/azimuth + polygon area for the vector context menu (CRS-aware)
 include("info.jl")       # toolbar "i" button: grdinfo / gdalinfo report on the active grid/image
 include("rtp3d.jl")      # Geophysics > Magnetics: reduce-to-pole via 2-D FFT (port of Mirone utils/rtp3d.m)
@@ -133,7 +135,7 @@ include("bandslist.jl")  # Image > Load Bands: multiband/.vrt band picker (port 
 export gmtscript, gmtreplay,
        view_grid, view_image, view_points, view_fv, view_demo, iview,
        add!, add_curtain!, add_symbols!, show_table, selection, isalive,
-       poly2fv, colorize_by_z!, save_png, wait_windows, stereo!,
+       poly2fv, colorize_by_z!, save_png, wait_windows, stereo!, movie, MovieFrame, orbit!, replace_grid!,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot, rtp3d, shapenc, isoc2shapenc, shapenc2isoc,
        gmtedit, mbgrid

@@ -185,6 +185,21 @@ function save_png(path::AbstractString)
 end
 
 """
+	save_png(fig, path; scale=1) -> Bool
+
+Save the VTK render surface belonging to `fig` to `path`. Unlike `save_png(path)`, this
+variant is figure-specific and therefore safe when several InteractiveGMT windows are open.
+`scale` is an integer VTK capture magnification (1 keeps the window's current pixel size).
+"""
+function save_png(fig::Union{QtFigure,QtPoints,QtFV,QtImage,QtEmpty}, path::AbstractString; scale::Integer=1)
+	scale >= 1 || throw(ArgumentError("save_png: `scale` must be >= 1"))
+	h = _fig_handle(fig)
+	ok = ccall(_fn(:gmtvtk_save_png_h), Cint,
+	           (Ptr{Cvoid}, Cstring, Cint), h, String(path), Cint(scale))
+	return ok != 0
+end
+
+"""
 	stereo!(fig, on=-1) -> Bool
 
 Toggle red/cyan **anaglyph** stereo on a viewer window (use cheap red/cyan 3-D glasses to see

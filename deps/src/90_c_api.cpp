@@ -7108,6 +7108,40 @@ GMTVTK_API int gmtvtk_process_events(void) {
 	return g_openWindows;
 }
 
+// Pixel size of one Scene's VTK render surface. Movie generation snapshots this once and refuses
+// a mid-run resize, because ffmpeg image sequences must have one stable geometry.
+GMTVTK_API int gmtvtk_render_size_h(void *handle, int *w, int *h) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->widget || !s->widget->renderWindow()) return 0;
+	const int *sz = s->widget->renderWindow()->GetSize();
+	if (w) *w = sz[0];
+	if (h) *h = sz[1];
+	return (sz[0] > 0 && sz[1] > 0) ? 1 : 0;
+}
+
+// Save a PNG of one SPECIFIC Scene render surface. Movie generation must never depend on
+// g_lastRW: another window can become "last" between frames while the Qt event loop is pumping.
+// `scale` uses vtkWindowToImageFilter's integer magnification and leaves the on-screen window size
+// untouched. We force exactly one render after the host has applied all frame mutations, then read
+// the back buffer so the captured image is the frame just rendered by this Scene.
+GMTVTK_API int gmtvtk_save_png_h(void *handle, const char *path, int scale) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->widget || !s->widget->renderWindow() || !path || !path[0]) return 0;
+	vtkRenderWindow *rw = s->widget->renderWindow();
+	rw->Render();
+	vtkNew<vtkWindowToImageFilter> w2i;
+	w2i->SetInput(rw);
+	w2i->SetScale(scale > 0 ? scale : 1);
+	w2i->ShouldRerenderOn();       // needed for SetScale > 1; rerenders the SAME Scene deterministically
+	w2i->ReadFrontBufferOff();
+	w2i->Update();
+	vtkNew<vtkPNGWriter> wr;
+	wr->SetFileName(path);
+	wr->SetInputConnection(w2i->GetOutputPort());
+	wr->Write();
+	return 1;
+}
+
 // Save a PNG of the most-recent window (for verification/offscreen capture).
 GMTVTK_API int gmtvtk_save_png(const char *path) {
 	if (!g_lastRW) return 0;
