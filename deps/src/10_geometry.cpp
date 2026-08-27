@@ -601,6 +601,18 @@ static void nestSetRect(Scene *s, Polygon &pg, double x0, double x1, double y0, 
 // with its OWN light: editing the selected side updates only ITS snapshot, and bakeAquaShade re-bakes
 // the OTHER side from its own (unchanged) snapshot -- so a water edit changes NOTHING of the land
 // (no colour, no light), and vice versa. Only geometry (xfac/zfac/ve) is shared (read live from Scene).
+// ONE external-reflectance store: a per-node intensity grid computed by GMT in Julia (the
+// "Illumination (Hillshade)" tool, src/hillshade.jl) over a true-coord box, sampled by WORLD
+// position. A window normally has one (Scene::shadeIn). An Aquamoto layer has TWO -- see
+// Scene::shadeInLand -- because water and land are two images standing on two different surfaces;
+// they are the SAME struct read through the SAME haveExternShade/externShadeAt, never a fork.
+struct ExternShade {
+	std::vector<float> inten;      // column-major inten[ix*ny + iy], the gridZ layout
+	int    nx = 0, ny = 0;
+	double x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0;
+	int    model = 0;              // the Mirone illum_model that produced it (0 = none loaded)
+};
+
 struct AquaSideShade {
 	bool   valid = false;
 	bool   useHillshade = true, hillGrd = true, litBake = false;
@@ -933,10 +945,13 @@ struct Scene {
 	// gmtIlluminate(), the one HSV modulator (SACRED_LAW: same operation, same function). Sampled by
 	// WORLD POSITION (sampleGrid), so it serves the surface, the LOD tiles, the flat-image bake and
 	// the Aquamoto composite alike, at any resolution and with no index bookkeeping.
-	std::vector<float> shadeInten;   // column-major inten[ix*shadeInY + iy], the gridZ layout
-	int    shadeInX = 0, shadeInY = 0;
-	double shadeInX0 = 0.0, shadeInX1 = 0.0, shadeInY0 = 0.0, shadeInY1 = 0.0;
-	int    shadeInModel = 0;         // the Mirone illum_model that produced it (0 = none loaded)
+	//
+	// TWO of them, for the same reason the Shading dock keeps two AquaSideShade snapshots: an Aquamoto
+	// tsunami layer is TWO images with TWO surfaces -- water stands on the live stage, land on the
+	// static bathymetry -- so ONE reflectance cannot describe both. The tool computes each side's
+	// reflectance from that side's OWN surface and pushes it here; every other window has water only.
+	ExternShade shadeIn;             // the window's reflectance (in Aquamoto: the WATER side's)
+	ExternShade shadeInLand;         // Aquamoto only: the LAND side's own reflectance
 	// "Remove illumination" (the tool's ✕, Mirone's ImageResetOrigImg_CB): NO light at all — the
 	// surface renders UNLIT with its plain CPT colours. Distinct from every look toggle, because
 	// "no hillshade" still leaves the PBR scene lights on and the grid still looks illuminated.

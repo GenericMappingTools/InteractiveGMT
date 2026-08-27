@@ -116,3 +116,33 @@ end
 	rgb_wet0, _ = IG._aqua_composite_rgb(bat, Z, true, 2.0, 4.0, 0.0, imgbat, landhi)
 	@test rgb_wet0[2, 1, :] != imgbat[2, 1, :]
 end
+
+@testitem "aquamoto: the Illumination tool lights water and land from their OWN surfaces" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	# The tsunami composite stands on TWO surfaces (water on the live stage, land on the static
+	# bathymetry), so the tool computes ONE reflectance PER SIDE and pushes each with its own `side`.
+	for s in (:_aqua_illuminate!, :_aqua_relight_water!, :_hs_reflectance, :_hs_push_grid)
+		@test isdefined(InteractiveGMT, s)
+	end
+	# The state carries what a per-slice relight needs: which slice is on screen, and the loaded model.
+	@test :cur in fieldnames(IG._AquaState)
+	@test :illum in fieldnames(IG._AquaState)
+	@test fieldtype(IG._AquaState, :illum) === Dict{String,String}
+
+	# ONE reflectance function for every surface: same call, different grid. Two DIFFERENT surfaces
+	# must give two DIFFERENT reflectances -- that difference IS the land/ocean split the old
+	# single-grid push threw away.
+	x = collect(range(0.0, 1.0; length=24))
+	bat = IG.GMT.mat2grid(Float32[Float32(-100 + 40 * sin(6xx) * cos(6yy)) for yy in x, xx in x]; x=x, y=x)
+	stg = IG.GMT.mat2grid(Float32[Float32(0.4 * sin(20xx + 3yy)) for yy in x, xx in x]; x=x, y=x)
+	d = Dict{String,String}("azim" => "315", "elev" => "30")
+	for model in (1, 2, 4)                       # 3 needs the +a/+d/+p/+s tail, covered by model 2's path
+		Rb = IG._hs_reflectance(bat, model, d)
+		Rs = IG._hs_reflectance(stg, model, d)
+		@test size(Rb) == size(Rs) == (length(x), length(x))
+		@test eltype(Rb) === Float32
+		@test any(isfinite, Rb) && any(isfinite, Rs)
+		@test Rb != Rs
+	end
+	@test_throws ErrorException IG._hs_reflectance(bat, 99, d)
+end

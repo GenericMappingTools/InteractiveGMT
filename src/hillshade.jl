@@ -46,6 +46,112 @@ function _hs_classic(G::GMTgrid, azim::Float64)
 end
 
 # ---------------------------------------------------------------------------------------------
+# GMT grdgradient's SIMPLE Lambertian (-Es), ported from GMT 6.5.0 src/grdgradient.c so that its own
+# final rescale can be left out. GMT's maths, verbatim:
+#
+#   p0 = cosd(90-azim) * tand(90-elev)        q0 = sind(90-azim) * tand(90-elev)
+#   p0q0_cte = sqrt(1 + p0^2 + q0^2)
+#   output   = (1 + p0*dzdx + q0*dzdy) / (sqrt(1 + dzdx^2 + dzdy^2) * p0q0_cte)
+#
+# `output` is ALREADY an intensity in [-1,1] (Cauchy-Schwarz) — it needs no scaling to be handed to
+# gmt_illuminate. What GMT does next is the problem:
+#
+#   if (Ctrl->E.active) {  /* data must be scaled to the [-1,1] interval, but we'll do it into
+#                             [-.95, .95] to not get too bright */
+#       scale = 1.0 / (r_max - r_min);
+#       Grid->data[ij] = (-1.0 + 2.0*((Grid->data[ij] - r_min) * scale)) * 0.95;
+#   }
+#
+# — an unconditional MIN/MAX stretch of the whole grid, with no option to disable it. It destroys the
+# one thing the sun's elevation controls: the AMPLITUDE. At elev 85 `tand(5) = 0.087` leaves a nearly
+# constant field, which the stretch then blows up to the full swing; at elev 5 the field is genuinely
+# wide and the stretch compresses its bulk. So the response ran BACKWARDS — measured on a tsunami
+# stage, method 2's spread GREW with elevation (sd 0.320 at 5 deg -> 0.616 at 85) when a rising sun
+# must flatten the relief, not sharpen it.
+#
+# Everything here is GMT's, except that the rescale block is not run. Edges are replicated (GMT pads
+# with its boundary conditions), which differs only on the outermost row/column, same as `_hs_esri`.
+function _hs_lambert_simple(G::GMTgrid, azim::Float64, elev::Float64)
+	# `_zmat` is a LAZY view (reshape + PermutedDimsArray + a reversed row index) for a row-major
+	# grid, which is right for a one-shot read and wrong for this: the loop below touches five nodes
+	# per pixel, so every access paid the wrapper's index arithmetic on a strided buffer. Materialise
+	# ONCE into a plain column-major matrix -- one pass over the data, then a tight loop.
+	z = Matrix{Float64}(_zmat(G))
+	ny, nx = size(z)
+	# THE SUN COMES FROM `azim`, AND THE LIT FACE IS THE ONE TURNED TOWARDS IT. GMT's expression pairs
+	# the light vector with `(1, dzdx, dzdy)`, but a surface's normal is `(-dzdx, -dzdy, 1)` — the two
+	# gradient terms carry the opposite sign, so the formula as written lights the face turned AWAY.
+	# Measured on a plane tilted 30 deg up toward the east (normal pointing west): a sun in the west
+	# gave -0.500 and a sun in the east +0.500, i.e. exactly reversed. Taking the light vector from
+	# `azim + 180` puts that sign back where it belongs; nothing else in the maths changes.
+	azl = azim + 180.0
+	p0 = cosd(90.0 - azl) * tand(90.0 - elev)
+	q0 = sind(90.0 - azl) * tand(90.0 - elev)
+	p0q0_cte = sqrt(1.0 + p0 * p0 + q0 * q0)
+	# TRUE-DISTANCE increments. `dzdx` is compared against the constant 1 in `1 + p0*dzdx`, so it has
+	# to be a real slope or the sun angle cannot matter: in DEGREES a 0.1 m step across 0.0033 deg
+	# reads as a slope of 15, which swamps that 1 at every elevation (measured: sd 0.335 at elev 5
+	# vs 0.339 at 85 — no response whatsoever). GMT does the same conversion for a geographic grid
+	# (grdgradient.c: `dx_grid = DIST_M_PR_DEG * x_inc * cosd(lat)`, rebuilt PER ROW because a degree
+	# of longitude shrinks with latitude).
+	m_pr_deg = 6371000.0 * pi / 180.0
+	geog = _isgeographic(G)
+	yv = length(G.y) == ny ? G.y : range(Float64(G.range[3]), Float64(G.range[4]); length = ny)
+	dy = 2.0 * Float64(G.inc[2]) * (geog ? m_pr_deg : 1.0)
+	dxv = Vector{Float64}(undef, ny)
+	@inbounds for j in 1:ny
+		c = geog ? cos(Float64(yv[j]) * pi / 180) : 1.0
+		abs(c) < 1e-9 && (c = 1e-9)
+		dxv[j] = 2.0 * Float64(G.inc[1]) * (geog ? m_pr_deg * c : 1.0)
+	end
+	# THE SCALE IS FIXED, AND THAT IS THE WHOLE POINT. GMT's own next step is a MIN/MAX stretch of the
+	# result to [-0.95, 0.95], which is what made the elevation run backwards: the flatter the field
+	# the harder it was stretched. Any scale derived from THIS sun's output has the same defect. So the
+	# reference is taken ONCE, at a fixed 45 deg sun, and every elevation is measured against it —
+	# a low sun then swings far past it (shadows) and a high sun barely moves off zero (uniform),
+	# which is what a sun does. `flat` is the value perfectly level ground returns, so the deviation
+	# is zero there and gmtIlluminate leaves level ground exactly as the CPT painted it.
+	p45 = cosd(90.0 - azl) * tand(45.0)
+	q45 = sind(90.0 - azl) * tand(45.0)
+	c45 = sqrt(1.0 + p45 * p45 + q45 * q45)
+	flat, flat45 = 1.0 / p0q0_cte, 1.0 / c45
+	R = Matrix{Float32}(undef, ny, nx)
+	sum45, n45 = 0.0, 0
+	# Everything that only depends on the column is hoisted out of the row loop, and the two constant
+	# divisions become multiplications.
+	inv_cte = 1.0 / p0q0_cte;  inv_c45 = 1.0 / c45
+	@inbounds for i in 1:nx
+		im1 = max(i - 1, 1);  ip1 = min(i + 1, nx)
+		xs = 1.0 / ((ip1 - im1) * 0.5)
+		zci = view(z, :, i);  zei = view(z, :, ip1);  zwi = view(z, :, im1)
+		for j in 1:ny
+			jm1 = max(j - 1, 1);  jp1 = min(j + 1, ny)
+			ze = zei[j];  zw = zwi[j]
+			zn = zci[jp1];  zs = zci[jm1]
+			if isnan(ze) || isnan(zw) || isnan(zn) || isnan(zs) || isnan(zci[j])
+				R[j, i] = NaN32
+				continue
+			end
+			dzdx = (ze - zw) * xs / dxv[j]
+			dzdy = (zn - zs) / ((jp1 - jm1) * 0.5 * dy)
+			inv_den = 1.0 / sqrt(1.0 + dzdx * dzdx + dzdy * dzdy)
+			R[j, i] = Float32((1.0 + p0 * dzdx + q0 * dzdy) * inv_den * inv_cte - flat)
+			d45 = (1.0 + p45 * dzdx + q45 * dzdy) * inv_den * inv_c45 - flat45
+			sum45 += d45 * d45;  n45 += 1
+		end
+	end
+	sigma = n45 > 0 ? sqrt(sum45 / n45) : 0.0
+	sigma > 0 || return fill(0.0f0, ny, nx)          # a perfectly level grid has nothing to light
+	# gmt_illuminate wants [-1,1] with 0 = untouched; the atan transform is GMT's own way of getting
+	# there from an unbounded deviation (grdgradient -Nt: `rpi * atan((data - ave) * denom)`).
+	twoOverPi = 2.0 / pi
+	@inbounds for k in eachindex(R)
+		isnan(R[k]) || (R[k] = Float32(twoOverPi * atan(Float64(R[k]) / sigma)))
+	end
+	return R
+end
+
+# ---------------------------------------------------------------------------------------------
 # ESRI's hillshade. GMT6's grdgradient has no -Eh, so this is a PORT of the algorithm Mirone calls —
 # `hillshade()` in mex/grdgradient_m.c — not a lookalike substitute:
 #
@@ -101,12 +207,55 @@ end
 # ---------------------------------------------------------------------------------------------
 # Push a per-node reflectance to the viewer. Layout is the grid's own: column-major R[ix*ny + iy],
 # the same the surface z uses (see view_grid), so no transposition happens anywhere.
+#
+# `side` names WHICH surface the reflectance was computed from, because an Aquamoto tsunami layer has
+# two of them: 0 = the window's only surface, and in Aquamoto the WATER (the live stage); 1 = the
+# Aquamoto LAND (the static bathymetry). A window that shows one grid only ever uses side 0.
 function _hs_push(scene::Ptr{Cvoid}, R::Matrix{Float32}, x0::Float64, x1::Float64,
-                  y0::Float64, y1::Float64, model::Int)
+                  y0::Float64, y1::Float64, model::Int, side::Int=0)
 	ny, nx = size(R)
 	ccall(_fn(:gmtvtk_set_shade_intensity_h), Cvoid,
-	      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint),
-	      scene, R, Cint(nx), Cint(ny), x0, x1, y0, y1, Cint(model))
+	      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cint),
+	      scene, R, Cint(nx), Cint(ny), x0, x1, y0, y1, Cint(model), Cint(side))
+	return nothing
+end
+
+# THE reflectance: one illumination model + its dialog parameters -> a per-node intensity for the
+# grid handed in. EVERY illuminated surface comes through here -- a plain grid, and EACH of an
+# Aquamoto layer's two surfaces (the live stage the water stands on, the static bathymetry the land
+# stands on). That is what keeps a tsunami's wet and dry halves lit by their own relief instead of
+# by one of them twice; see `_aqua_illuminate!` (aquamoto.jl). Models 5 (false colour) and 6 (ppdrc)
+# are NOT reflectances -- they build a new variable and are handled by the caller; 6 then arrives
+# here with its derived grid and is illuminated as model 1, exactly as Mirone does it.
+function _hs_reflectance(G::GMTgrid, model::Int, d::Dict{String,String})::Matrix{Float32}
+	num(key, dflt) = (v = _get(d, key); isempty(v) ? dflt : parse(Float64, v))
+	azim = mod(num("azim", 0.0), 360.0)        # mirone.m: luz.azim = rem(luz.azim, 360)
+	elev = num("elev", 30.0)
+	if model == 1 || model == 6
+		return _hs_f32(_hs_classic(G, azim))
+	elseif model == 2
+		return _hs_lambert_simple(G, azim, elev)
+	elseif model == 3
+		# GMT's FULL Lambertian takes the angle as a ZENITH, not an elevation: grdgradient.c does
+		# `if (Ctrl->E.mode == 3) Ctrl->E.elevation = 90 - Ctrl->E.elevation;` before building the
+		# light vector, so what reaches the sun is the complement of what is typed. Measured on a
+		# plane tilted 30 deg: the reflectance peaked at elev 30 when a real sun peaks at 90-30 = 60.
+		# Pre-complementing here cancels GMT's own flip and the dialog's number means elevation again.
+		return _hs_f32(GMT.grdgradient(G; E = "$(azim)/$(90.0 - elev)+a$(num("ambient", 0.55))" *
+		                                      "+d$(num("diffuse", 0.6))+p$(num("specular", 0.4))" *
+		                                      "+s$(num("shine", 10.0))"))
+	elseif model == 4
+		return _hs_esri(G, azim, elev)
+	end
+	error("unknown illumination model: $model")
+end
+
+# One grid, one side, pushed. The bbox is the grid's OWN range (the viewer samples the reflectance by
+# world position), so a caller never has to know how the two sides line up.
+function _hs_push_grid(scene::Ptr{Cvoid}, G::GMTgrid, model::Int, d::Dict{String,String}, side::Int)
+	R = _hs_reflectance(G, model, d)
+	_hs_push(scene, R, Float64(G.range[1]), Float64(G.range[2]),
+	         Float64(G.range[3]), Float64(G.range[4]), model, side)
 	return nothing
 end
 
@@ -218,7 +367,11 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# the two would otherwise be inside GMT at the same time. Returns at once in the normal case,
 		# where the user spent longer than the compile picking a model.
 		warm_wait("illumination")
-		d = _nswing_parse(unsafe_string(cparams))
+		raw = unsafe_string(cparams)
+		# What the DIALOG actually sent, on the console, verbatim. The only way to tell a wrong model
+		# number leaving the dialog apart from a wrong dispatch after it.
+		println("Illumination <- ", replace(raw, "\n" => " | "))
+		d = _nswing_parse(raw)
 		model = parse(Int, _get(d, "model"))
 		num(key, dflt) = (v = _get(d, key); isempty(v) ? dflt : parse(Float64, v))
 
@@ -239,6 +392,9 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# reflectance goes but the Shading dock keeps its look.)
 		if model == 7
 			_hs_push(scene, Matrix{Float32}(undef, 0, 0), 0.0, 0.0, 0.0, 0.0, -1)
+			# Removal undoes what the models did: an Aquamoto layer also stops re-lighting itself at
+			# every new timestep (the loaded model is what makes _aquamoto_slice do that).
+			haskey(_AQUA, scene) && empty!(_AQUA[scene].illum)
 			_hs_restore_original(scene, gname)
 			return Cint(1)
 		end
@@ -250,11 +406,23 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# ✕ uses, so there is ONE way to put the original back. No-op when no product is showing.
 		_hs_restore_original(scene, gname)
 
+		# AQUAMOTO. What this window shows is not one grid but a COMPOSITE of two: water standing on
+		# the live stage and land standing on the static bathymetry, each already lit by its own light
+		# (bakeAquaShade, 40_shading.cpp). One reflectance cannot describe both surfaces -- illuminating
+		# "the window's grid" resolved to the bathymetry and then smeared its relief over the sea too.
+		# So each side is illuminated FROM ITS OWN SURFACE, through the same _hs_reflectance, and the
+		# water is re-lit again at every timestep because its surface is a different one each time.
+		# Models 5/6 make a NEW variable rather than modulating, so they fall through to the plain path.
+		if haskey(_AQUA, scene) && model in (1, 2, 3, 4)
+			_aqua_illuminate!(scene, model, d)
+			return Cint(1)
+		end
+
 		G = _find_object(scene, :grid, gname)
 		(G isa GMTgrid) || error("Illumination works on the grid this window is showing, and this window is showing none")
 
-		azim = mod(num("azim", 0.0), 360.0)        # mirone.m: luz.azim = rem(luz.azim, 360)
-		elev = num("elev", 30.0)
+		elev = num("elev", 30.0)                   # the false colour's own input; the reflectance models
+		                                           # read azim/elev inside `_hs_reflectance`
 
 		if model == 5                              # false colour -> a NEW IMAGE, not a modulation
 			I = _hs_false_color(G, mod(num("azimR", 0.0), 360.0), mod(num("azimG", 120.0), 360.0),
@@ -282,22 +450,9 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			G = P                                  # illuminate the ppdrc field, as Mirone does
 		end
 
-		R = if model == 1 || model == 6
-			_hs_f32(_hs_classic(G, azim))
-		elseif model == 2
-			_hs_f32(GMT.grdgradient(G; E = "s$(azim)/$(elev)"))
-		elseif model == 3
-			_hs_f32(GMT.grdgradient(G; E = "$(azim)/$(elev)+a$(num("ambient", 0.55))" *
-			                            "+d$(num("diffuse", 0.6))+p$(num("specular", 0.4))" *
-			                            "+s$(num("shine", 10.0))"))
-		elseif model == 4
-			_hs_esri(G, azim, elev)
-		else
-			error("unknown illumination model: $model")
-		end
-
-		_hs_push(scene, R, Float64(G.range[1]), Float64(G.range[2]),
-		         Float64(G.range[3]), Float64(G.range[4]), model)
+		# ONE reflectance function for every surface this tool lights (see `_hs_reflectance`): the plain
+		# grid here, and each Aquamoto side above. `side = 0` is "the window's surface".
+		_hs_push_grid(scene, G, model, d, 0)
 		return Cint(1)
 	catch e
 		_viewer_log_error(scene, "Illumination FAILED: $(sprint(showerror, e))")
@@ -323,7 +478,7 @@ function _hs_warm()
 	G = GMT.mat2grid(rand(Float32, 32, 32))
 	_hs_f32(_hs_classic(G, 315.0))                        # model 1, and the false colour's 3 azimuths
 	yield()
-	_hs_f32(GMT.grdgradient(G; E = "s315.0/30.0"))        # model 2
+	_hs_lambert_simple(G, 315.0, 30.0)                    # model 2
 	yield()
 	_hs_f32(GMT.grdgradient(G; E = "315.0/30.0+a0.55+d0.6+p0.4+s10.0"))   # model 3
 	yield()
@@ -335,7 +490,10 @@ function _hs_warm()
 	GMT.kovesi(G; wavelength = 16.0)                      # model 6 (ppdrc: filtergrid + 4 FFTs)
 	yield()
 	precompile(_on_hillshade,       (Ptr{Cvoid}, Cstring))
-	precompile(_hs_push,            (Ptr{Cvoid}, Matrix{Float32}, Float64, Float64, Float64, Float64, Int))
+	precompile(_hs_push,            (Ptr{Cvoid}, Matrix{Float32}, Float64, Float64, Float64, Float64, Int, Int))
+	precompile(_hs_reflectance,     (GMTgrid{Float32,2}, Int, Dict{String,String}))
+	precompile(_hs_push_grid,       (Ptr{Cvoid}, GMTgrid{Float32,2}, Int, Dict{String,String}, Int))
+	precompile(_aqua_illuminate!,   (Ptr{Cvoid}, Int, Dict{String,String}))
 	precompile(_hs_restore_original,(Ptr{Cvoid},))
 	return nothing
 end

@@ -18093,6 +18093,8 @@ static QIcon makeSymCircleIcon();   // Symbols flyout glyphs (85_polygon.cpp)
 static QIcon makeSymSquareIcon();
 static QIcon makeSymStarIcon();
 static QIcon makeTextIcon();
+static QIcon makePaletteIcon();     // Color Palettes toolbar glyph (85_polygon.cpp)
+static QIcon makeHillshadeIcon();   // Illumination (Hillshade) toolbar glyph (ditto)
 static QIcon makeCubeIcon();        // 3-D Bodies flyout glyphs (85_polygon.cpp)
 static QIcon makeSphereIcon();
 static QIcon makeTorusIcon();
@@ -21151,11 +21153,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// --- Image menu (mirrors Mirone's Image menu, mirone_uis.m) --------------------------------
 	// Operations on the window's IMAGE (not its grid). First entry: Binarize (thresholdit.m).
 	QMenu *mImage = win->menuBar()->addMenu("&Image");
-	// Color Palettes (color_palettes.m), first in the Image menu as mirone_uis.m:303 has it. Mirone
-	// wraps it in a submenu because show_palette.m adds three colour-bar PLACEMENT entries there
-	// (At side / Inside / Floating); this viewer places the bar from its Scene Objects Color Bar row
-	// instead, so those have nothing to do here and a one-item submenu would be pure indirection.
-	mImage->addAction("Color &Palettes…", [s]() { showColorPalettes(s); });
+	// Color Palettes (color_palettes.m) is NOT in this menu any more: it is a TOOLBAR button, in the
+	// slot right after 3-D Bodies (see the toolbar build). Mirone puts it first in the Image menu
+	// (mirone_uis.m:303) and it sat here for that reason; moved by request, and MOVED rather than
+	// duplicated — one command, one door.
 	// Load Bands (bands_list.m), where mirone_uis.m:389 puts it: in the Image menu, after a
 	// separator. Enabled only when the window really came from a multiband raster — Mirone hides the
 	// entry in that case (mirone.m:2631); the count comes from the same probe the dialog opens with.
@@ -22517,6 +22518,26 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	tb->addSeparator();
 	tb->addWidget(bodyFlyout);
 
+	// Color Palettes and Illumination (Hillshade), RIGHT AFTER the 3-D Bodies slot. They used to live
+	// in the Image and View menus; they are toolbar buttons now and NOT menu entries as well — one
+	// place per command, so there is never a question of which one is the real door.
+	QAction *tbPalette = tb->addAction(makePaletteIcon(), "Color Palettes");
+	tbPalette->setToolTip("Color Palettes: choose / edit the palette of the layer this window shows");
+	QObject::connect(tbPalette, &QAction::triggered, [s]() { showColorPalettes(s); });
+	QAction *tbIllum = tb->addAction(makeHillshadeIcon(), "Illumination (Hillshade)");
+	tbIllum->setToolTip("Illumination (Hillshade): aim the light that shades the grid");
+	QObject::connect(tbIllum, &QAction::triggered, [win, s]() {
+		// Start compiling the illumination models NOW, while the user is still choosing one — see
+		// warmupTool (30_app.cpp). Fires on the re-open path too: the warm-up itself only ever runs
+		// once per session, so the second call costs nothing and we never have to reason about which
+		// of the two paths the user took.
+		warmupTool("illumination");
+		auto it = g_hillshadeDlgs.find(s);       // parked or already open -> the SAME dialog, never a 2nd
+		if (it != g_hillshadeDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+		auto *w = new HillshadeDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+
 	// Swipe / Link: ONE toolbar slot, two ways to compare two rasters (57_swipe.cpp), sitting
 	// immediately before the Info flyout. Shaped like the 2D/3D flyout (icon-only slot + a native
 	// dropdown arrow). Picking either entry from the dropdown SELECTS that mode AND TURNS IT ON
@@ -22862,19 +22883,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	const bool hasShadedBody = !imageOnly && !pointCloud;
 	s->shadeDock = dock;                                     // keep it so a promoted launcher can re-show + fold it
 	dock->setVisible(hasShadedBody);                         // GRAPHICAL ELEMENT: Shading dock initial fold state
-	// GRAPHICAL ELEMENT: View menu "Shading Panel" item — folds/un-folds the Shading dock
-	// Mirone's Image > Illuminate, next to the dock it shares its job with (port of shading_params.m).
-	mView->addAction("&Illumination (Hillshade)…", [win, s]() {
-		// Start compiling the illumination models NOW, while the user is still choosing one — see
-		// warmupTool (30_app.cpp). Fires on the re-open path too: the warm-up itself only ever runs
-		// once per session, so the second call costs nothing and we never have to reason about which
-		// of the two paths the user took.
-		warmupTool("illumination");
-		auto it = g_hillshadeDlgs.find(s);       // parked or already open -> the SAME dialog, never a 2nd
-		if (it != g_hillshadeDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
-		auto *w = new HillshadeDialog(win, s);
-		if (w->dlg) w->dlg->show();
-	});
+	// GRAPHICAL ELEMENT: View menu "Shading Panel" item — folds/un-folds the Shading dock.
+	// "Illumination (Hillshade)" is NOT in this menu any more: it is a TOOLBAR button, in the slot
+	// right after 3-D Bodies (see the toolbar build). Moved by request, and MOVED rather than
+	// duplicated — one command, one door.
 	QAction *aShade = mView->addAction("Shading &Panel", [dock](){ dock->setVisible(!dock->isVisible()); });
 	aShade->setCheckable(true); aShade->setChecked(hasShadedBody);   // menu checkmark tracks the dock's visibility
 

@@ -70,7 +70,10 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # Generation 6 = gmtvtk_add_poly_full takes a trailing `groupName`, so a tool that paints several
 # polygons in one action (Geography > Sun and terminators) can fold them under one Scene Objects row.
 # A generation-5 library is handed one argument too many and reads the fill values shifted.
-const _ABI_REQUIRED = 6
+# Generation 7 = gmtvtk_set_shade_intensity_h takes a trailing `side`, because an Aquamoto tsunami
+# layer has TWO surfaces (water on the live stage, land on the static bathymetry) and one reflectance
+# cannot describe both. A generation-6 library reads that argument as garbage.
+const _ABI_REQUIRED = 7
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.

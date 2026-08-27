@@ -76,9 +76,11 @@ static void gmtIlluminate(double intensity, double *rgb) {
 // Present only while an illumination model from View > "Illumination (Hillshade)…" is loaded.
 // Sampled by WORLD position so every consumer (surface, LOD tile, flat bake, Aquamoto) reads the
 // same grid through the same call, whatever its own resolution or point ordering.
+static inline bool haveExternShade(const ExternShade &e) {
+	return e.nx > 1 && e.ny > 1 && (int)e.inten.size() == e.nx * e.ny;
+}
 static inline bool haveExternShade(const Scene *s) {
-	return s && s->shadeInX > 1 && s->shadeInY > 1 &&
-	       (int)s->shadeInten.size() == s->shadeInX * s->shadeInY;
+	return s && haveExternShade(s->shadeIn);
 }
 // Forget the loaded model. Any Shading-dock control that AIMS or STYLES the light (sun azimuth /
 // elevation, the four relief looks) calls this first: asking the dock for a different light means
@@ -87,15 +89,16 @@ static inline bool haveExternShade(const Scene *s) {
 // re-runs applyShading itself.
 static inline void dropExternShade(Scene *s) {
 	if (!s) return;
-	s->shadeInten.clear();
-	s->shadeInX = s->shadeInY = 0;
-	s->shadeInModel = 0;
+	s->shadeIn     = ExternShade();
+	s->shadeInLand = ExternShade();   // both sides, or the dock would move one image and not the other
 	s->noShade = false;      // asking for a light ends "Remove illumination"
 }
 // Reflectance at TRUE-coord (x,y), or NaN outside the grid / on a NaN node.
+static inline double externShadeAt(const ExternShade &e, double x, double y) {
+	return sampleGrid(e.inten.data(), e.nx, e.ny, e.x0, e.x1, e.y0, e.y1, x, y);
+}
 static inline double externShadeAt(const Scene *s, double x, double y) {
-	return sampleGrid(s->shadeInten.data(), s->shadeInX, s->shadeInY,
-	                  s->shadeInX0, s->shadeInX1, s->shadeInY0, s->shadeInY1, x, y);
+	return externShadeAt(s->shadeIn, x, y);
 }
 
 struct ReliefLight {
@@ -432,9 +435,12 @@ static void bakeAquaShade(Scene *s) {
 	const AquaSideShade lS = s->aquaLandShade.valid  ? s->aquaLandShade  : snapshotShade(s);
 	const ReliefLight Lw = makeReliefLightSide(s, wS);
 	const ReliefLight Ll = makeReliefLightSide(s, lS);
-	const bool extShade = haveExternShade(s);            // Hillshade tool: GMT-computed reflectance
-	const bool wPbr = !wS.useHillshade && wS.litBake, wShade = (wS.useHillshade || wPbr) && haveStage;
-	const bool lPbr = !lS.useHillshade && lS.litBake, lShade = (lS.useHillshade || lPbr);
+	// Hillshade tool: a GMT-computed reflectance, ONE PER SIDE. Water's was computed from the live
+	// stage and land's from the static bathymetry, exactly the two surfaces this function shades from
+	// below -- so the tool splits dry from wet the same way the composite and the dock already do.
+	const bool wExt = haveExternShade(s->shadeIn), lExt = haveExternShade(s->shadeInLand);
+	const bool wPbr = !wS.useHillshade && wS.litBake, wShade = ((wS.useHillshade || wPbr) && haveStage) || wExt;
+	const bool lPbr = !lS.useHillshade && lS.litBake, lShade = (lS.useHillshade || lPbr) || lExt;
 	if (!wShade && !lShade) {                            // neither side shades -> the composite verbatim
 		memcpy(out, base, (size_t)nx * ny * 4);
 		id->Modified(); tx->Modified();
@@ -471,8 +477,11 @@ static void bakeAquaShade(Scene *s) {
 			const ReliefLight &L = land ? Ll : Lw;
 			// Hillshade tool: an externally computed reflectance covers EVERY element type, the
 			// tsunami composite included (SACRED_LAW: no element type opts out of a shared operation).
-			if (extShade) {
-				const double ei = externShadeAt(s, s->gx0 + ix * dx, s->gy0 + iy * dy);
+			// THIS SIDE's reflectance, never the other's: a single grid smeared over both lit the sea
+			// with the land's relief (and the reverse), which is the dry/wet split vanishing again.
+			if (land ? lExt : wExt) {
+				const double ei = externShadeAt(land ? s->shadeInLand : s->shadeIn,
+				                                s->gx0 + ix * dx, s->gy0 + iy * dy);
 				if (!std::isnan(ei)) {
 					double c[3] = { base[t] / 255.0, base[t+1] / 255.0, base[t+2] / 255.0 };
 					applyReliefShade(L, nullptr, c, &ei);

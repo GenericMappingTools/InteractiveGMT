@@ -1090,7 +1090,10 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //       library reads that pointer as nothing at all and the polygon lands ungrouped — or worse, a
 //       generation-6 HOST calling a generation-5 library pushes one argument too many. Exactly the
 //       silent-trailing-argument case this counter exists for.
-GMTVTK_API int gmtvtk_abi_version(void) { return 6; }
+//   7 = gmtvtk_set_shade_intensity_h takes a trailing `side` (0 = the window / Aquamoto WATER,
+//       1 = Aquamoto LAND). A generation-6 library reads it as garbage and can file the water
+//       reflectance under land; a generation-6 host pushes none and leaves land unlit.
+GMTVTK_API int gmtvtk_abi_version(void) { return 7; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -1841,14 +1844,21 @@ GMTVTK_API void gmtvtk_set_warmup_callback(JuliaWarmupFn fn) {
 // and selects the grdimage style, which is the honest label: the modulator this reflectance ends in
 // IS gmt_illuminate, exactly as in Mirone's mex_illuminate. Nothing else about the shade engine
 // changes — applyReliefShade simply takes the intensity from the grid instead of from the normal.
+// `side` names WHICH surface the reflectance describes, because an Aquamoto tsunami layer has two:
+// 0 = the window's only surface, and in Aquamoto the WATER (the live stage); 1 = the Aquamoto LAND
+// (the static bathymetry). Water and land are separate images standing on separate surfaces, so one
+// reflectance cannot describe both -- the tool computes each side's from that side's OWN grid and
+// pushes it with the matching `side`, and bakeAquaShade reads the one that belongs to each pixel.
+// A CLEAR (inten == nullptr / nx < 2 / ny < 2) always drops BOTH sides, whatever `side` says: the
+// tool's models are alternatives, never a pipeline, and "Remove illumination" means the whole layer.
 GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, int nx, int ny,
-                                             double x0, double x1, double y0, double y1, int model) {
+                                             double x0, double x1, double y0, double y1, int model,
+                                             int side) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	if (!inten || nx < 2 || ny < 2) {
-		s->shadeInten.clear();
-		s->shadeInX = s->shadeInY = 0;
-		s->shadeInModel = 0;
+		s->shadeIn     = ExternShade();
+		s->shadeInLand = ExternShade();
 		s->useHillshade = false;
 		// model < 0 is the tool's "Remove illumination" (Mirone's ImageResetOrigImg_CB): EVERY light
 		// goes off, not just this tool's reflectance, so the grid falls back to plain CPT colour. Just
@@ -1859,19 +1869,32 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 			s->useShadows = false;
 			s->litBake    = false;      // flat-image mode -> plain CPT, no PBR bake
 			s->noShade    = true;       // 3-D surface   -> unlit, plain CPT (applySurfStyle)
+			// Removal undoes exactly what the push did (and only that): loading a model switched each
+			// Aquamoto side's OWN snapshot to "hillshade", so the ✕ switches both back. Without this the
+			// tsunami stayed lit by a light the user never asked the dock for. `model == 0` (a model
+			// that paints its own picture) is the quiet clear and leaves the dock's look alone.
+			s->aquaWaterShade.useHillshade = s->aquaLandShade.useHillshade = false;
+			s->aquaWaterShade.litBake      = s->aquaLandShade.litBake      = false;
 		}
 		applyShading(s);
 		return;
 	}
-	s->shadeInten.assign(inten, inten + (size_t)nx * ny);
-	s->shadeInX = nx;   s->shadeInY = ny;
-	s->shadeInX0 = x0;  s->shadeInX1 = x1;
-	s->shadeInY0 = y0;  s->shadeInY1 = y1;
-	s->shadeInModel = model;
+	ExternShade &E = (side == 1) ? s->shadeInLand : s->shadeIn;
+	E.inten.assign(inten, inten + (size_t)nx * ny);
+	E.nx = nx;   E.ny = ny;
+	E.x0 = x0;   E.x1 = x1;
+	E.y0 = y0;   E.y1 = y1;
+	E.model = model;
 	s->noShade      = false;                          // a model IS a light: ends "Remove illumination"
 	s->useHillshade = true;
 	s->hillGrd      = true;
 	s->useShadows   = false;                          // cast-shadows is the alternative look, not an add-on
+	// The Aquamoto sides relight from their OWN snapshot (AquaSideShade), and a side whose snapshot
+	// still says "no light" would drop the reflectance we just handed it -- the shared control going
+	// inert for one element type. So the SAME three flags set on the Scene above are set on the side
+	// this push belongs to, and only on it: the other image keeps its light untouched.
+	AquaSideShade &A = (side == 1) ? s->aquaLandShade : s->aquaWaterShade;
+	A.valid = true;  A.useHillshade = true;  A.hillGrd = true;  A.litBake = false;
 	// DIRECT GRID ILLUMINATION MEANS DIRECT. GMT already computed one intensity per grid node; the
 	// only honest way to consume it is ONE bake -- CPT(z) x intensity -> the drape texture
 	// (rebakeLayerImage), which is what `layerImgMode` is. On the BASE surface the same reflectance is
@@ -2974,7 +2997,8 @@ GMTVTK_API int gmtvtk_layer_display(void *handle, const char *name, char *buf, i
 			else if (s->drape)                     why = "draped image texture";
 			else if (s->useShadows)                why = "cast shadows";
 			else if (s->useHillshade)              why = s->hillGrd ? "baked grdimage hillshade" : "baked Lambert hillshade";
-			else if (!s->shadeInten.empty())       why = "external illumination grid";
+			else if (!s->shadeIn.inten.empty() ||
+			         !s->shadeInLand.inten.empty()) why = "external illumination grid";
 			else if (s->layerTexW > 0 && s->litBake) why = "baked PBR shaded image";
 			else if (!s->noShade)                  why = "lit 3-D surface (PBR key+fill light)";
 		}
@@ -4828,6 +4852,20 @@ GMTVTK_API int gmtvtk_menu_trigger_test(void *handle, const char *path) {
 	for (const QString &step : QString::fromUtf8(path).split('/', Qt::SkipEmptyParts)) {
 		QAction *a = menuFindDeep(s->win->menuBar(), step.trimmed(), true);
 		if (!a) a = menuFindDeep(s->win->menuBar(), step.trimmed(), false);
+		// ...and the TOOLBAR, because a command lives in exactly one place and that place is not
+		// always a menu: Color Palettes and Illumination (Hillshade) are toolbar buttons. A hook that
+		// only knows about the menu bar cannot reach half the window's commands.
+		if (!a) {
+			const QString want = step.trimmed().remove('&');
+			for (QToolBar *bar : s->win->findChildren<QToolBar *>()) {
+				for (QAction *act : bar->actions()) {
+					const QString have = act->text().remove('&');
+					if (have.compare(want, Qt::CaseInsensitive) == 0 ||
+					    have.contains(want, Qt::CaseInsensitive)) { a = act; break; }
+				}
+				if (a) break;
+			}
+		}
 		if (!a) return n;
 		a->trigger();
 		QApplication::processEvents();

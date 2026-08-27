@@ -272,6 +272,40 @@ static QIcon makeLinkIcon() {
 // parametric generators (label disambiguates). Same supersampled iconCanvas trick as the others.
 
 // Cube: front face + top/right parallelograms (simple isometric box).
+// Colour Palettes: a stack of colour bands, the thing the tool actually picks.
+static QIcon makePaletteIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, false);
+	static const QColor band[] = { QColor(40, 60, 160), QColor(60, 150, 210), QColor(120, 200, 150),
+	                               QColor(240, 215, 100), QColor(225, 130, 60), QColor(180, 45, 45) };
+	for (int i = 0; i < 6; ++i)
+		p.fillRect(QRectF(5, 4.0 + i * 2.7, 14, 2.7), band[i]);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.2)); p.setBrush(Qt::NoBrush);
+	p.drawRect(QRectF(5, 4, 14, 16.2));
+	p.end(); return QIcon(pm);
+}
+
+// Illumination (Hillshade): a low sun over a lit/shadowed ridge — the thing the tool aims.
+static QIcon makeHillshadeIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(Qt::NoPen); p.setBrush(QColor(245, 200, 70));          // sun, upper left = the light
+	p.drawEllipse(QPointF(6.5, 6.5), 3.2, 3.2);
+	p.setPen(QPen(QColor(245, 200, 70), 1.0));
+	for (int k = 0; k < 4; ++k) {                                   // four short rays toward the ridge
+		const double a = (k * 25.0 + 10.0) * M_PI / 180.0;
+		p.drawLine(QPointF(6.5 + 4.6 * std::cos(a), 6.5 + 4.6 * std::sin(a)),
+		           QPointF(6.5 + 6.4 * std::cos(a), 6.5 + 6.4 * std::sin(a)));
+	}
+	QPolygonF lit;   lit   << QPointF(3, 21) << QPointF(12, 10) << QPointF(12, 21);   // sun-facing side
+	QPolygonF shade; shade << QPointF(12, 10) << QPointF(21, 21) << QPointF(12, 21);  // side in shadow
+	p.setPen(QPen(QColor(40, 40, 40), 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	p.setBrush(QColor(190, 190, 185)); p.drawPolygon(lit);
+	p.setBrush(QColor(95, 95, 100));   p.drawPolygon(shade);
+	p.end(); return QIcon(pm);
+}
+
 static QIcon makeCubeIcon() {
 	QPixmap pm = iconCanvas();
 	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
