@@ -810,6 +810,10 @@ struct Scene {
 	// meaning exactly what they meant, and the relief rides the sphere radially at the same VE.
 	double globeR = 57.29577951308232;
 	vtkSmartPointer<vtkGeneralTransform>   globeXf;    // (lon,lat,z) -> world XYZ; THE mapping
+	// The same mapping with the vector lift behind it (kGlobeVectorLift): what every LINE/POINT/POLYGON
+	// element wears, so it rides a hair over the skin instead of z-fighting it. Built from globeXf in
+	// sceneGlobeUpdateTransform, never independently.
+	vtkSmartPointer<vtkGeneralTransform>   globeVecXf;
 	vtkSmartPointer<vtkTransform>          globeLin;   // its linear half (degrees -> r,phi,theta)
 	// The cube body's transform, when `cube` is up. It lives INSIDE globeXf (which keeps its identity
 	// as the one mapping object every attached filter already holds); this pointer only exists so the
@@ -1715,6 +1719,18 @@ static bool sceneBodyRayHit(Scene *s, const double org[3], const double dir[3], 
 	return true;
 }
 
+// A VECTOR on a body rides a hair ABOVE the skin, and it does so GEOMETRICALLY. The body maps every
+// point to a radius, so scaling the mapped point about the origin by (1 + eps) IS a radial lift — one
+// number, no second body formula, and the same lift whatever the body (sphere or cube) or the VE.
+// Why not a depth-buffer bias, which is what the flat map uses: a bias moves the line in DEPTH only, so
+// a coastline on the near hemisphere's far shoulder gets drawn THROUGH the bulge standing in front of
+// it — the user's report verbatim, "located correctly viewed from above, floating out of place seen
+// sideways". A real lift cannot do that: the line is where it is, and whatever stands before it hides
+// it. 3e-3 of the radius is ~19 km of Earth — enough increments on this window's depth buffer (so no z-fight against an image
+// plane its z = 0 vectors are exactly coincident with) and under a pixel of parallax at any angle a
+// globe is actually looked at.
+static const double kGlobeVectorLift = 3e-3;
+
 static void sceneGlobeUpdateTransform(Scene *s) {
 	if (!s) return;
 	// ONE mapping object for the life of the scene — the attached filters hold a pointer to it, so a
@@ -1757,6 +1773,32 @@ static void sceneGlobeUpdateTransform(Scene *s) {
 		M->SetElement(3, 3, 1.0);
 		s->globeLin->SetMatrix(M);
 	}
+	// THE VECTOR MAPPING: the SAME body transform with the radial lift behind it (kGlobeVectorLift).
+	// It is built from globeXf, never beside it — a second body formula here is exactly what
+	// SACRED_LAW.md forbids — and it is rebuilt in this one place, so a body swap or a VE change
+	// reaches lines and surfaces together.
+	if (!s->globeVecXf) s->globeVecXf = vtkSmartPointer<vtkGeneralTransform>::New();
+	s->globeVecXf->Identity();
+	s->globeVecXf->PostMultiply();
+	s->globeVecXf->Concatenate(s->globeXf);
+	// …ABOVE THE TOPMOST RASTER, not above z = 0. An image is not laid on the skin: it rides a plane at
+	// its own `ex.zpos`, which is `zmax + imageStackStep` = deliberately ABOVE the relief (50_scene.cpp),
+	// and on a body that height becomes a bigger RADIUS. A vector lifted a fixed hair over globeR is then
+	// UNDER the map — vector data hidden by a raster, which is the one thing SACRED_LAW.md's stacking
+	// rule forbids outright (it is why a coastline vanished entirely on a cubified global basemap). So
+	// the lift is measured from whatever stands highest, in the same z scale the body transform uses,
+	// and the constant is only the hair on top of that.
+	// NO VECTOR UNDER ANY RASTER, EVER — grid or image, base or extra. So the ceiling is the highest
+	// thing any raster in this window reaches: an image's plane height (ex.zpos), a grid's own zmax,
+	// and the base surface's zmax. Taking only the images left a coastline inside the relief the
+	// moment the window had a grid in it, which is the same violation one raster kind further along.
+	double zTop = s->zmax;
+	for (const auto &ex : s->extras)
+		zTop = std::max(zTop, ex.isImage ? ex.zpos : ex.zmax);
+	if (zTop < 0.0) zTop = 0.0;                     // an all-below-sea-level window: the skin is the ceiling
+	const double lift = 1.0 + (s->globeR > 0.0 ? (zTop * k) / s->globeR : 0.0) + kGlobeVectorLift;
+	s->globeVecXf->Scale(lift, lift, lift);         // about the body's centre = along the radius
+	s->globeVecXf->Modified();
 	s->globeXf->Modified();                         // every attached filter re-executes
 }
 
@@ -1963,7 +2005,9 @@ static vtkSmartPointer<vtkPolyData> globeDensifyPD(vtkPolyData *in, double maxSe
 //
 // A globe-attached actor must sit at scale (1,1,1): its geometry has already been through the
 // transform, which folds in xfac and the VE. applyVE is the one place that decides that.
-static void globeAttachActor(Scene *s, vtkActor *a, bool on) {
+// `vec` = a line/points/polygon element: it wears globeVecXf, the same body mapping with the radial
+// lift behind it (see kGlobeVectorLift), so it rides just over the skin instead of fighting it.
+static void globeAttachActor(Scene *s, vtkActor *a, bool on, bool vec = false) {
 	if (!s || !a) return;
 	auto it = s->globeHooks.find(a);
 	if (on) {
@@ -1988,7 +2032,7 @@ static void globeAttachActor(Scene *s, vtkActor *a, bool on) {
 		Scene::GlobeHook h;
 		h.savedIn = src;
 		h.filt = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
-		h.filt->SetTransform(s->globeXf);
+		h.filt->SetTransform(vec && s->globeVecXf ? s->globeVecXf.Get() : s->globeXf.Get());
 		// Densify coarse geometry here and feed the refined copy to the filter: an image plane is a 2x2
 		// quad and a coastline segment can span tens of degrees — both cut straight through the sphere
 		// as chords otherwise.
@@ -3140,7 +3184,19 @@ static bool sceneVisibleRegion(Scene *s, double &W, double &E, double &S, double
 	// The only clamp left is to what a GEOGRAPHIC region can legally be: a viewport can extend past
 	// the poles or wrap several turns of longitude, and no query box may.
 	S = std::max(S, -90.0);  N = std::min(N, 90.0);
-	W = std::max(W, -360.0); E = std::min(E, 360.0);
+	// A LONGITUDE SPAN IS AT MOST ONE TURN. Zoomed out, the viewport corners map to lon far outside
+	// the world (the map is a small rectangle in the middle of it), and clamping each end separately
+	// to ±360 still hands out a box up to 720 degrees wide. Every consumer of this feeds it to GMT as
+	// a -R: `coast` answers "Map region exceeds 360 degrees" + "General map projection error" and the
+	// module fails outright (GMT error 74) — the user's "Geography FAILED … GMT error number = 74",
+	// i.e. no coastline at all, purely because the view was zoomed out. More than a turn on screen
+	// means the whole world is on screen, so that is what is asked for; a legal span is only slid
+	// back so its centre is a real longitude.
+	if (E - W >= 360.0) { W = -180.0;  E = 180.0; }
+	else {
+		while (0.5 * (W + E) >=  180.0) { W -= 360.0;  E -= 360.0; }
+		while (0.5 * (W + E) <  -180.0) { W += 360.0;  E += 360.0; }
+	}
 	return (E > W && N > S);
 }
 
@@ -3179,7 +3235,12 @@ static void cameraFitToScaledBBox(Scene *s, const double b[6], bool keepMargin) 
 					ny0 = std::min(ny0, ndcy); ny1 = std::max(ny1, ndcy);
 				}
 		const double wfrac = (nx1 - nx0) / 2.0, hfrac = (ny1 - ny0) / 2.0;
-		const double frac = s->flat2d ? std::max(wfrac, hfrac) : wfrac;
+		// WIDTH alone is the 3-D rule (a tilted relief block is wider than tall, and fitting its height
+		// would leave the map tiny). A BODY is the opposite case: a sphere seen through the parallel
+		// camera is a disc and a cube opened on its corner is a hexagon TALLER than it is wide, so
+		// fitting width alone let the planet start with its top and bottom off-screen. Fit both axes
+		// there, exactly as the flat map does.
+		const double frac = (s->flat2d || s->globe) ? std::max(wfrac, hfrac) : wfrac;
 		if (frac <= 1e-6) break;
 		cam->Zoom(targetFill / frac);
 	}
@@ -3488,21 +3549,21 @@ static void sceneGlobeSync(Scene *s) {
 	if (on) sceneGlobeAimClip(s);
 	for (vtkActor *a : surfActors(s)) globeAttachActor(s, a, on);
 	globeAttachActor(s, s->drape, on);
-	for (auto &ov : s->overlays)  globeAttachActor(s, ov.actor, on);
+	for (auto &ov : s->overlays)  globeAttachActor(s, ov.actor, on, true);
 	for (auto &cu : s->curtains)  globeAttachActor(s, cu.actor, on);
 	for (auto &ex : s->extras)  { globeAttachActor(s, ex.actor, on); globeAttachActor(s, ex.drape, on); }
-	globeAttachActor(s, s->profLine, on);
-	globeAttachActor(s, s->rbHL, on);
+	globeAttachActor(s, s->profLine, on, true);
+	globeAttachActor(s, s->rbHL, on, true);
 	for (auto &pg : s->polys) {
-		globeAttachActor(s, pg.line, on);          globeAttachActor(s, pg.fill, on);
-		globeAttachActor(s, pg.faultPlane, on);    globeAttachActor(s, pg.faultPlane3D, on);
-		globeAttachActor(s, pg.faultArrows, on);
+		globeAttachActor(s, pg.line, on, true);    globeAttachActor(s, pg.fill, on, true);
+		globeAttachActor(s, pg.faultPlane, on, true);  globeAttachActor(s, pg.faultPlane3D, on, true);
+		globeAttachActor(s, pg.faultArrows, on, true);
 	}
-	for (auto &mb : s->mecaBalls) { globeAttachActor(s, mb.anchor, on); globeAttachActor(s, mb.anchorDot, on); }
-	globeAttachActor(s, s->polyPreview, on);
-	globeAttachActor(s, s->polyHandles, on);
-	for (auto &rr : s->rulers) globeAttachActor(s, rr.line, on);
-	globeAttachActor(s, s->rulerCircle, on);
+	for (auto &mb : s->mecaBalls) { globeAttachActor(s, mb.anchor, on, true); globeAttachActor(s, mb.anchorDot, on, true); }
+	globeAttachActor(s, s->polyPreview, on, true);
+	globeAttachActor(s, s->polyHandles, on, true);
+	for (auto &rr : s->rulers) globeAttachActor(s, rr.line, on, true);
+	globeAttachActor(s, s->rulerCircle, on, true);
 	// Symbol layers move their POINTS instead of wearing the filter (a glyph must not be warped), so
 	// they are brought along here rather than by globeAttachActor — same pass, same guarantee for a
 	// layer plotted after the globe went up. symbolApplyZ is a no-op for a layer already in the right
