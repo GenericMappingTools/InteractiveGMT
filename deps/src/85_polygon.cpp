@@ -386,6 +386,32 @@ static QIcon makeViewModeIcon(bool twoD) {
 	p.end(); return QIcon(pm);
 }
 
+// …and the CUBE mode's glyph, the globe's sibling on the same button: a wireframe cube seen from a
+// corner (three visible faces), with a meridian and a parallel bent over the near vertical edge —
+// the mark of "the planet, on a cube" rather than a plain box.
+static QIcon makeCubeViewIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	// Isometric corner view: the near vertical edge at the centre, top face above, two side faces.
+	const QPointF T(12.0, 2.5), B(12.0, 15.0);            // near vertical edge (top / bottom)
+	const QPointF L(3.0, 7.5),  R(21.0, 7.5);             // left / right silhouette corners
+	const QPointF LB(3.0, 16.5), RB(21.0, 16.5);          // their bottoms
+	const QPointF Tb(12.0, 21.5);                          // far bottom corner
+	p.setBrush(Qt::NoBrush);
+	p.setPen(QPen(QColor(60, 60, 65), 1.5));
+	QPolygonF sil;  sil << T << R << RB << Tb << LB << L;  // outer silhouette
+	p.drawPolygon(sil);
+	p.setPen(QPen(QColor(60, 60, 65), 1.0));
+	p.drawLine(T, B);  p.drawLine(L, B);  p.drawLine(R, B); // the three edges meeting at the near corner
+	// One meridian and one parallel, drawn ON the two visible side faces so the cube reads as a map.
+	p.setPen(QPen(QColor(60, 60, 65), 0.8));
+	p.drawLine(QPointF(7.5, 11.6), QPointF(12.0, 9.2));   // parallel, left face
+	p.drawLine(QPointF(12.0, 9.2), QPointF(16.5, 11.6));  // parallel, right face
+	p.drawLine(QPointF(16.5, 5.6), QPointF(16.5, 13.9));  // meridian, right face
+	p.end(); return QIcon(pm);
+}
+
 // Cursor (mx,my device px) -> a point ON the scene, returned in TRUE coords. Mirrors the hover
 // ray-cast in onMouseMove: march the unprojected ray against the grid heightfield (sampleZ), the
 // flat image plane, or the FV/point cellpicker. Returns false if the ray misses the scene.

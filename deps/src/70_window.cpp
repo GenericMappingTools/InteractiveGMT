@@ -18104,6 +18104,7 @@ static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only
 static QIcon makeInfoIcon();                // stylised 'i' glyph for the grdinfo/gdalinfo flyout
 static QIcon makeRulerIcon();               // graduated ruler glyph (85_polygon.cpp)
 static QIcon makeGlobeIcon();               // graticule globe for the status-corner CRS chip (85_polygon.cpp)
+static QIcon makeCubeViewIcon();            // wireframe cube glyph for the CUBE view mode (85_polygon.cpp)
 static QIcon makeMessagesIcon(bool unread); // speech bubble for the status-corner Messages button (ditto)
 
 // ============================================================================
@@ -20308,7 +20309,11 @@ static void globeFrameUpdate(Scene *s, bool visible) {
 	// space around the planet instead of a set of lines drawn ON it. Terrain standing above sea level
 	// now correctly stands in front of the lines, which is what tells you it is above sea level.
 	const double R = s->globeR;
-	if (s->globeFrame && std::fabs(R - s->globeFrameR) < 1e-6 * std::max(1.0, R)) {
+	// The BODY is part of the cache key, not just the radius: a sphere and a cube of the same globeR
+	// need completely different graticules, and keying on R alone left the sphere's arcs floating
+	// inside the cube (they agree only at the face centres and the cube's own edges).
+	if (s->globeFrame && s->globeFrameCube == s->cube
+	    && std::fabs(R - s->globeFrameR) < 1e-6 * std::max(1.0, R)) {
 		s->globeFrame->SetVisibility(1);
 		return;                                  // unchanged: keep the geometry we already have
 	}
@@ -20353,6 +20358,7 @@ static void globeFrameUpdate(Scene *s, bool visible) {
 	vtkPolyDataMapper::SafeDownCast(s->globeFrame->GetMapper())->SetInputData(pd);
 	s->globeFrame->SetVisibility(1);
 	s->globeFrameR = R;
+	s->globeFrameCube = s->cube;
 }
 
 // SINGLE source of truth for the view-mode switch, all THREE modes of it: 3-D perspective, the flat
@@ -20374,7 +20380,16 @@ static void globeFrameUpdate(Scene *s, bool visible) {
 // checkmark) when already in the requested mode — so a caller that needs to FORCE the 2D camera
 // after rebuilding the scene must reset s->flat2d=false first (the rebuilt scene left the 3-D
 // camera, but the flag may still read 2D from the launcher).
-enum { IGVIEW_3D = 0, IGVIEW_FLAT2D = 1, IGVIEW_GLOBE = 2 };
+//   CUBE  = the FOURTH mode and the globe's twin: the same lon/lat/z, the same parallel camera, the
+//           same free rotation — put on a CUBE instead of a sphere, each face carrying PROJ's
+//           quadrilateralized spherical cube (+proj=qsc, equal-area). It is not a separate pipeline:
+//           only the transform inside the scene's ONE mapping object changes (Scene::cube,
+//           sceneGlobeUpdateTransform). Geographic data only, same gate as the globe.
+enum { IGVIEW_3D = 0, IGVIEW_FLAT2D = 1, IGVIEW_GLOBE = 2, IGVIEW_CUBE = 3 };
+
+// Is this mode one of the two 3-D BODIES (sphere / cube)? Both live behind Scene::globe, so every
+// site that used to ask "globe?" keeps working and only the body-kind questions consult Scene::cube.
+static inline bool igViewIsBody(int mode) { return mode == IGVIEW_GLOBE || mode == IGVIEW_CUBE; }
 
 // WHAT THE GIZMO IS in the CURRENT view mode. ONE rule, called by the mode switch AND by every path
 // that rebuilds a scene and has to restore the handle (gmtvtk_show_new_element_h, the reframes) —
@@ -20392,7 +20407,8 @@ static void gizmoApplyForMode(Scene *s) {
 
 static void sceneSetViewMode(Scene *s, int mode) {
 	if (!s || !s->ren) return;
-	const int cur = s->globe ? IGVIEW_GLOBE : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D);
+	const int cur = s->globe ? (s->cube ? IGVIEW_CUBE : IGVIEW_GLOBE)
+	                        : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D);
 	if (mode == cur) { if (s->act2D) s->act2D->setChecked(mode == IGVIEW_FLAT2D); return; }
 	vtkCamera *cam = s->ren->GetActiveCamera();
 	if (cur == IGVIEW_3D) {                    // leaving 3-D: keep the view to come back to
@@ -20402,8 +20418,9 @@ static void sceneSetViewMode(Scene *s, int mode) {
 		s->sav_parallel = cam->GetParallelProjection();
 	}
 	s->flat2d = (mode == IGVIEW_FLAT2D);
-	s->globe  = (mode == IGVIEW_GLOBE);
-	if (mode == IGVIEW_GLOBE) {
+	s->globe  = igViewIsBody(mode);
+	s->cube   = (mode == IGVIEW_CUBE);
+	if (igViewIsBody(mode)) {
 		// THE VE HANDLE STAYS — it is the only control for vertical exaggeration, and on a globe the
 		// relief rides the radius, so it is the control that decides whether the planet reads as a
 		// planet or as a bed of spikes. Only its half of the gizmo (veOnly): tilt and azimuth would
@@ -20419,9 +20436,19 @@ static void sceneSetViewMode(Scene *s, int mode) {
 		// on it. From there the trackball is the projection-centre control.
 		const double d2r = vtkMath::Pi() / 180.0;
 		const double lonc = 0.5 * (s->x0 + s->x1), latc = 0.5 * (s->y0 + s->y1);
-		const double dir[3] = { std::cos(latc*d2r) * std::cos(lonc*d2r),
-		                        std::cos(latc*d2r) * std::sin(lonc*d2r),
-		                        std::sin(latc*d2r) };
+		double dir[3] = { std::cos(latc*d2r) * std::cos(lonc*d2r),
+		                  std::cos(latc*d2r) * std::sin(lonc*d2r),
+		                  std::sin(latc*d2r) };
+		// A CUBE OPENS ON A CORNER, never square-on to a face. Face-on, three of its six faces are
+		// exactly edge-on and the fourth fills the viewport: it reads as a flat map and nothing on
+		// screen says it can be turned. Looking down the diagonal shows three faces at once, so the
+		// shape — and the fact that it is a body you spin — is the first thing the user sees. The
+		// corner chosen is the one NEAREST the data's own centre, so it is still the user's region
+		// facing them, on the same face it would have been on anyway.
+		if (mode == IGVIEW_CUBE) {
+			const double c = 1.0 / std::sqrt(3.0);
+			for (int i = 0; i < 3; ++i) dir[i] = (dir[i] >= 0.0 ? c : -c);
+		}
 		const double dist = 4.0 * s->globeR;
 		cam->SetFocalPoint(0.0, 0.0, 0.0);
 		cam->SetPosition(dir[0]*dist, dir[1]*dist, dir[2]*dist);
@@ -20437,7 +20464,7 @@ static void sceneSetViewMode(Scene *s, int mode) {
 		// (illumination must NOT change) — viewed straight down in parallel projection it reads
 		// as a shaded-relief map. We do NOT flatten (ve) or touch lighting.
 		gizmoApplyForMode(s);
-		if (cur == IGVIEW_GLOBE) applyVE(s);   // come off the sphere BEFORE reading the bounds
+		if (igViewIsBody(cur)) applyVE(s);   // come off the sphere BEFORE reading the bounds
 		double b[6]; surfGetBounds(s, b);      // north (+Y) up
 		const double fp[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
 		cam->SetFocalPoint(fp[0], fp[1], fp[2]);
@@ -20448,7 +20475,7 @@ static void sceneSetViewMode(Scene *s, int mode) {
 		fitSnapView(s, /*topMode=*/true);      // maximize: fill the viewport edge-to-edge
 	}
 	else {
-		if (cur == IGVIEW_GLOBE) applyVE(s);   // back to flat geometry before the saved camera means anything
+		if (igViewIsBody(cur)) applyVE(s);   // back to flat geometry before the saved camera means anything
 		cam->SetParallelProjection(s->sav_parallel);
 		cam->SetPosition(s->sav_pos);
 		cam->SetFocalPoint(s->sav_foc);
@@ -20472,6 +20499,11 @@ static void sceneSetViewMode(Scene *s, int mode) {
 	// and simply reads flat when seen straight down. Without this the toggle changed the camera but
 	// left every layer scaled for the mode it just left.
 	applyVE(s);
+	// The light rig depends on the mode (applyShading: a body reads the sun's az/el in the CAMERA's
+	// frame, the flat map in the world's), so the mode switch has to come back through it — otherwise
+	// the window that just became a globe or a cube keeps wearing the flat map's rig until something
+	// else happens to touch the Shading dock.
+	applyShading(s);
 	if (s->act2D) s->act2D->setChecked(s->flat2d);
 	if (s->syncViewMode && !s->tearingDown) s->syncViewMode();   // toolbar glyph + ticked entry, every transition
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
@@ -22313,21 +22345,31 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// go through, so "is this window geographic" has one answer everywhere), re-derived every time
 	// the menu is opened because the answer changes when a different layer becomes the active one.
 	QAction *actModeGlobe = viewModeMenu->addAction("Globe (orthographic)");
-	actMode2D->setCheckable(true); actMode3D->setCheckable(true); actModeGlobe->setCheckable(true);
+	// The FOURTH mode, the globe's twin: the same data on a CUBE, each face carrying PROJ's
+	// quadrilateralized spherical cube (+proj=qsc, equal-area). Same geographic gate, same free
+	// rotation — it is a body swap inside the one mapping, not a separate view pipeline.
+	QAction *actModeCube = viewModeMenu->addAction("Cube (QSC)");
+	actMode2D->setCheckable(true); actMode3D->setCheckable(true);
+	actModeGlobe->setCheckable(true); actModeCube->setCheckable(true);
 	actMode2D->setToolTip("Flat 2D map (top-down shaded relief)");
 	actMode3D->setToolTip("3D perspective view");
 	actModeGlobe->setToolTip("Globe: geographic orthographic projection (geographic data only) — drag to turn it");
+	actModeCube->setToolTip("Cube: quadrilateralized spherical cube, PROJ +proj=qsc (geographic data only) — drag to turn it");
 	QObject::connect(actMode2D, &QAction::triggered, [setFlat2D]() { setFlat2D(true);  });
 	QObject::connect(actMode3D, &QAction::triggered, [setFlat2D]() { setFlat2D(false); });
 	QObject::connect(actModeGlobe, &QAction::triggered, [s]() { sceneSetViewMode(s, IGVIEW_GLOBE); });
-	QObject::connect(viewModeMenu, &QMenu::aboutToShow, viewModeMenu, [s, actModeGlobe]() {
+	QObject::connect(actModeCube,  &QAction::triggered, [s]() { sceneSetViewMode(s, IGVIEW_CUBE);  });
+	QObject::connect(viewModeMenu, &QMenu::aboutToShow, viewModeMenu, [s, actModeGlobe, actModeCube]() {
 		const bool geog = activeGridGeog(s) != 0;
 		actModeGlobe->setEnabled(geog);
 		actModeGlobe->setToolTip(geog ? "Globe: geographic orthographic projection — drag to turn it"
 		                              : "Globe: needs geographic (longitude/latitude) data");
+		actModeCube->setEnabled(geog);
+		actModeCube->setToolTip(geog ? "Cube: PROJ +proj=qsc, equal-area cube — drag to turn it"
+		                             : "Cube: needs geographic (longitude/latitude) data");
 	});
 	tb2D->setMenu(viewModeMenu);
-	tb2D->setToolTip("View mode: flat 2D map / 3D perspective / globe");
+	tb2D->setToolTip("View mode: flat 2D map / 3D perspective / globe / cube (QSC)");
 	// Slot click toggles 2D<->3D; the 'v' dropdown picks a mode. NOT setDefaultAction (that would tie
 	// the button's sunken/checked look to the always-checked menu entry — leaving it permanently
 	// highlighted). Drive the glyph icon ourselves; the checked entry just marks the active mode.
@@ -22335,11 +22377,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// ONE refresher for the button, reading the mode off the scene rather than off a signal argument:
 	// three modes cannot be described by act2D's bool (3-D and the globe both leave it unchecked), so
 	// sceneSetViewMode calls this through s->syncViewMode on every transition.
-	auto syncViewMode = [s, tb2D, actMode2D, actMode3D, actModeGlobe]() {
+	auto syncViewMode = [s, tb2D, actMode2D, actMode3D, actModeGlobe, actModeCube]() {
 		actMode2D->setChecked(s->flat2d && !s->globe);
 		actMode3D->setChecked(!s->flat2d && !s->globe);
-		actModeGlobe->setChecked(s->globe);
-		tb2D->setIcon(s->globe ? makeGlobeIcon() : makeViewModeIcon(s->flat2d));
+		actModeGlobe->setChecked(s->globe && !s->cube);
+		actModeCube->setChecked(s->globe && s->cube);
+		tb2D->setIcon(s->globe ? (s->cube ? makeCubeViewIcon() : makeGlobeIcon())
+		                       : makeViewModeIcon(s->flat2d));
 	};
 	s->syncViewMode = syncViewMode;
 	QObject::connect(s->act2D, &QAction::toggled, tb2D, [syncViewMode](bool){ syncViewMode(); });

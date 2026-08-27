@@ -1093,7 +1093,7 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //   7 = gmtvtk_set_shade_intensity_h takes a trailing `side` (0 = the window / Aquamoto WATER,
 //       1 = Aquamoto LAND). A generation-6 library reads it as garbage and can file the water
 //       reflectance under land; a generation-6 host pushes none and leaves land unlit.
-GMTVTK_API int gmtvtk_abi_version(void) { return 7; }
+GMTVTK_API int gmtvtk_abi_version(void) { return 8; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -1190,10 +1190,10 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 			kvd("dpi", dpi > 0 ? dpi : 72.0);
 		}
 		kvi("flat2d", s->flat2d ? 1 : 0);
-		// The view mode is a TRI-state (3-D / flat 2-D / globe) and `flat2d` above can only carry two
-		// of them, so the whole answer travels in its own key. It is written alongside, not instead:
-		// a session file read by an older library still finds the flat2d it knows.
-		kvi("viewmode", s->globe ? 2 : (s->flat2d ? 1 : 0));
+		// The view mode is a FOUR-state (3-D / flat 2-D / globe / cube) and `flat2d` above can only
+		// carry two of them, so the whole answer travels in its own key. It is written alongside, not
+		// instead: a session file read by an older library still finds the flat2d it knows.
+		kvi("viewmode", s->globe ? (s->cube ? 3 : 2) : (s->flat2d ? 1 : 0));
 		kvd("barX0", s->barX0); kvd("barY0", s->barY0);
 		if (s->ren) {
 			if (vtkCamera *cam = s->ren->GetActiveCamera()) {
@@ -1232,10 +1232,12 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 
 	double d; int i;
 	if (getd("ve", d) && d > 0.0) { s->ve = d; applyVE(s); }         // VE first: rescales all actors
-	// … then the view mode. `viewmode` is the whole tri-state and wins when the session has one; a
+	// … then the view mode. `viewmode` is the whole four-state and wins when the session has one; a
 	// file written before it existed still restores through `flat2d`, which is the same switch with
-	// the globe left out. One entry point either way (sceneSetViewMode), never two mode paths.
-	if (geti("viewmode", i))      sceneSetViewMode(s, (i == 2) ? IGVIEW_GLOBE : (i == 1 ? IGVIEW_FLAT2D : IGVIEW_3D));
+	// the two body modes left out. One entry point either way (sceneSetViewMode), never two paths.
+	if (geti("viewmode", i))      sceneSetViewMode(s, (i == 3) ? IGVIEW_CUBE
+	                                                : (i == 2) ? IGVIEW_GLOBE
+	                                                : (i == 1) ? IGVIEW_FLAT2D : IGVIEW_3D);
 	else if (geti("flat2d", i)) {
 		if (i && !s->flat2d)      sceneSetFlat2D(s, true);
 		else if (!i && s->flat2d) sceneSetFlat2D(s, false);
@@ -3901,24 +3903,43 @@ GMTVTK_API int gmtvtk_vector_unmapped_h(void *handle, char *buf, int cap) {
 // has to know the window's drawing scales exist, and no caller can get the order wrong.
 
 // Set the window's VIEW MODE: 0 = 3-D perspective, 1 = flat 2-D map, 2 = globe (the geographic
-// orthographic projection). The SAME switch the toolbar's 2D/3D/Globe flyout drives, exported so the
-// host can drive it too (session restore, scripts, the GUI tests). The globe is refused for data that
-// is not geographic — there is no lon/lat to put on a sphere — and the refusal is reported, not
-// silently swallowed: returns 1 when the window is in the requested mode afterwards, else 0.
+// orthographic projection), 3 = cube (PROJ's quadrilateralized spherical cube, +proj=qsc). The SAME
+// switch the toolbar's view-mode flyout drives, exported so the host can drive it too (session
+// restore, scripts, the GUI tests). Both BODY modes are refused for data that is not geographic —
+// there is no lon/lat to put on a sphere or a cube — and the refusal is reported, not silently
+// swallowed: returns 1 when the window is in the requested mode afterwards, else 0.
 GMTVTK_API int gmtvtk_set_view_mode_h(void *scene, int mode) {
 	Scene *s = (Scene*)scene;
 	if (!s || !sceneAlive(s)) return 0;
-	if (mode == IGVIEW_GLOBE && activeGridGeog(s) == 0) return 0;
+	if (igViewIsBody(mode) && activeGridGeog(s) == 0) return 0;
 	sceneSetViewMode(s, mode);
-	return ((s->globe ? IGVIEW_GLOBE : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D)) == mode) ? 1 : 0;
+	const int now = s->globe ? (s->cube ? IGVIEW_CUBE : IGVIEW_GLOBE)
+	                        : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D);
+	return (now == mode) ? 1 : 0;
 }
 
 // … and read it back (same encoding). Lets the host ask what the window is showing without
-// duplicating the tri-state rule on its side.
+// duplicating the four-state rule on its side.
 GMTVTK_API int gmtvtk_get_view_mode_h(void *scene) {
 	Scene *s = (Scene*)scene;
 	if (!s || !sceneAlive(s)) return 0;
-	return s->globe ? IGVIEW_GLOBE : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D);
+	return s->globe ? (s->cube ? IGVIEW_CUBE : IGVIEW_GLOBE)
+	                : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D);
+}
+
+// THE QSC WARP, handed over from Julia — the projection this library never computes itself.
+// `n` is the side of the square sample grid, `fwd` its n*n*2 doubles mapping a regular (a,b) grid in
+// [-1,1]^2 (a cube face's gnomonic coordinates) to QSC's own face coordinates (u,v), and `inv` the
+// same grid the other way. One table serves all six faces and every window — the warp is a constant
+// of the projection, not a per-scene setting — so this is called once per session (src/cube.jl) and
+// simply overwrites what was there. n < 2 clears it, which leaves the cube mode drawing the plain
+// gnomonic cube rather than refusing to work.
+GMTVTK_API void gmtvtk_set_cube_warp(int n, const double *fwd, const double *inv) {
+	if (n < 2 || !fwd || !inv) { g_cubeWarpN = 0; g_cubeWarpFwd.clear(); g_cubeWarpInv.clear(); return; }
+	const size_t cnt = (size_t)n * (size_t)n * 2;
+	g_cubeWarpFwd.assign(fwd, fwd + cnt);
+	g_cubeWarpInv.assign(inv, inv + cnt);
+	g_cubeWarpN = n;
 }
 
 // Clamp / unclamp a vector element to the ground BY NAME, through the SAME lineSetClamped the
@@ -5531,6 +5552,53 @@ GMTVTK_API void gmtvtk_right_button_test(void *scene, int x, int y, int press) {
 
 // test hook: read back a window's CURRENT visible world region (sceneVisibleRegion, 10_geometry.cpp)
 // as (W,E,S,N) into `out4`. Returns 0 if there is no renderer yet (an unbuilt empty launcher).
+// test hook: what colour did the shade bake actually put on the surface at (lon, lat)?
+// out5 = { r, g, b, matchedLon, matchedLat } of the nearest SOURCE vertex (true coords, i.e. the
+// geometry as it is before any globe/cube transform). Returns 0 when nothing is baked (no
+// "hillshade" array = the surface is being lit live by the GPU instead), 1 when it read one.
+// Exists because a shading defect on a body has two possible homes — a wrong BAKE or a wrong LIGHT —
+// and they are indistinguishable by eye. This says which: if two points on opposite faces over
+// comparable terrain come back with very different brightness, the bake is face-dependent and the
+// lights are innocent.
+GMTVTK_API int gmtvtk_probe_shade_test(void *scene, double lon, double lat, double *out5) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !out5) return 0;
+	std::vector<vtkActor*> acts = surfActors(s);
+	double best = 1e300;  int got = 0;
+	for (vtkActor *a : acts) {
+		if (!a) continue;
+		vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
+		if (!m) continue;
+		vtkPolyData *pd = nullptr;
+		auto hk = s->globeHooks.find(a);
+		if (hk != s->globeHooks.end() && hk->second.filt) {
+			if (vtkAlgorithm *up = hk->second.filt->GetInputAlgorithm()) up->Update();
+			pd = vtkPolyData::SafeDownCast(hk->second.filt->GetInput());
+		}
+		if (!pd) { if (m->GetNumberOfInputConnections(0) > 0) m->Update();
+		           pd = vtkPolyData::SafeDownCast(m->GetInput()); }
+		if (!pd || !pd->GetPoints()) continue;
+		vtkDataArray *col = pd->GetPointData()->GetArray("hillshade");
+		if (!col) continue;
+		vtkPoints *P = pd->GetPoints();
+		const vtkIdType n = P->GetNumberOfPoints();
+		const double gx = (s->xfac != 0.0) ? s->xfac : 1.0;
+		for (vtkIdType i = 0; i < n; ++i) {
+			double p[3];  P->GetPoint(i, p);
+			const double dl = p[0] / gx - lon, dt = p[1] - lat;
+			const double d2 = dl*dl + dt*dt;
+			if (d2 < best) {
+				best = d2;
+				double c[3];  col->GetTuple(i, c);
+				out5[0] = c[0]; out5[1] = c[1]; out5[2] = c[2];
+				out5[3] = p[0] / gx; out5[4] = p[1];
+				got = 1;
+			}
+		}
+	}
+	return got;
+}
+
 GMTVTK_API int gmtvtk_visible_region_test(void *scene, double *out4) {
 	Scene *s = static_cast<Scene*>(scene);
 	if (!s || !out4) return 0;

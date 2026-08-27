@@ -94,6 +94,10 @@ static inline void dropExternShade(Scene *s) {
 	s->noShade = false;      // asking for a light ends "Remove illumination"
 }
 // Reflectance at TRUE-coord (x,y), or NaN outside the grid / on a NaN node.
+// Deliberately NOT longitude-aware: a reflectance arrives already in the frame of the grid it lights
+// (hillshade.jl rolls a GMT module's re-wrapped output back before pushing it), so a wrap-around
+// retry here would only be a second, sampler-side opinion about the same question — and one that
+// changes how EVERY model is sampled, including the ones that were never in the wrong frame.
 static inline double externShadeAt(const ExternShade &e, double x, double y) {
 	return sampleGrid(e.inten.data(), e.nx, e.ny, e.x0, e.x1, e.y0, e.y1, x, y);
 }
@@ -676,8 +680,28 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// steep ground out to flat grey-white while the base surface beside it is correctly shaded: the
 	// same operation producing a different result for one kind of layer, i.e. the violation. Never
 	// let this function no-op its way out of shading something.
-	if (m->GetNumberOfInputConnections(0) > 0) m->Update();
-	vtkPolyData *pd = vtkPolyData::SafeDownCast(m->GetInput());
+	// …AND PULL IT FROM THE RIGHT END OF THE PIPELINE. On a globe or a cube, globeAttachActor splices
+	// a vtkTransformPolyDataFilter BETWEEN the actor's polydata and its mapper, so `m->GetInput()`
+	// stops being lon/lat/z and becomes WORLD XYZ on the body. Everything below then went wrong at
+	// once, and BAKED the result into the vertex colours, which is why no change to the scene lights
+	// could move it: the normals handed to applyReliefShade were world normals being VE-corrected as
+	// if they were flat-map ones, so every cube face got a different, wrong illumination and any face
+	// whose world normal opposed the sun baked to solid BLACK; and the extern-shade sampler below
+	// read those world XYZ as if they were true x/y, landing in the wrong part of the reflectance
+	// grid and clamping off its edge — the straight-edged rectangle across a face.
+	// The bake belongs on the SOURCE geometry, in true coords, exactly as on the flat map: one bake,
+	// same inputs, whatever body the window is wearing (SACRED_LAW.md). The transform filter carries
+	// the colour array through to the mapper on its own, so nothing downstream needs to know.
+	vtkPolyData *pd = nullptr;
+	auto hk = s->globeHooks.find(act);
+	if (hk != s->globeHooks.end() && hk->second.filt) {
+		if (vtkAlgorithm *up = hk->second.filt->GetInputAlgorithm()) up->Update();
+		pd = vtkPolyData::SafeDownCast(hk->second.filt->GetInput());
+	}
+	if (!pd) {
+		if (m->GetNumberOfInputConnections(0) > 0) m->Update();
+		pd = vtkPolyData::SafeDownCast(m->GetInput());
+	}
 	if (!pd) return;
 	vtkDataArray *nrm = pd->GetPointData()->GetNormals();
 	vtkDataArray *zs  = pd->GetPointData()->GetScalars();
@@ -802,6 +826,32 @@ static void applyShading(Scene *s) {
 		s->keyLight->SetPosition(dx, dy, dz);
 		s->keyLight->SetIntensity(s->lightIntensity);
 		s->fillLight->SetIntensity(s->fillIntensity);
+		// ON A 3-D BODY ONLY, the same direction is read in the CAMERA's frame instead of the world's.
+		// Everything above is untouched for a flat map — this branch cannot be reached unless s->globe
+		// is up, so an ordinary grid's lighting is exactly what it always was.
+		// Why: azimuth/elevation is a MAP-frame direction. On the flat map every normal is +Z, so one
+		// fixed world direction lights the whole scene. A sphere or a cube has no single map frame, so
+		// that same fixed direction leaves whole faces (and the globe's trailing limb) on the ambient
+		// floor alone. A CAMERA light takes its position in camera coordinates (+x right, +y up, +z
+		// toward the viewer) and VTK re-derives it every frame, so az/el keeps meaning "from the left /
+		// above / in front of me" however the trackball has turned the planet, with no per-frame code.
+		// This is the LIT (PBR / VTK illumination) half of the problem only. The BAKED half — a
+		// hillshade computed from world normals because hillshadeMapper was reading the transformed
+		// end of the pipeline — is fixed at its own source, in hillshadeMapper below; a baked colour
+		// cannot be rescued by any light, which is exactly how the two were told apart.
+		// The gizmo's light is included because it is the one that decides the picture: enableGizmo
+		// (20_gizmo.cpp) adds a SECOND scene light at intensity 1.4, brighter than the key light, fixed
+		// at world (0.6, 0.4, 1.0). Aiming only the key light left that one still blacking out whatever
+		// face had turned away from it. Its direction is kept verbatim — this does not re-tune the
+		// gizmo's rig, only the frame that direction is expressed in. (20_gizmo.cpp is not edited;
+		// applyShading already reaches into s->giz->light for the cast-shadow toggle.)
+		const int lt = s->globe ? VTK_LIGHT_TYPE_CAMERA_LIGHT : VTK_LIGHT_TYPE_SCENE_LIGHT;
+		s->keyLight->SetLightType(lt);
+		if (s->giz && s->giz->light) {
+			s->giz->light->SetLightType(lt);
+			s->giz->light->SetPosition(0.6, 0.4, 1.0);
+			s->giz->light->SetFocalPoint(0.0, 0.0, 0.0);
+		}
 	}
 	// The gizmo adds its OWN bright (1.4) scene light to s->ren (20_gizmo enableGizmo). It is a
 	// shadow-caster (non-headlight, non-positional) brighter than the sun, shining from a fixed

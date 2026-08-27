@@ -722,3 +722,88 @@ end
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
 end
+
+# The FOURTH view mode: the QSC cube. It is the globe's twin — same flags, same engine, only the
+# transform inside the scene's one mapping differs — so what is asserted here is that the four-state
+# really is a four-state: every transition lands where it was told, including globe <-> cube, which
+# swaps the body INSIDE a mapping object that every already-attached transform filter is holding a
+# pointer to. (What the cube's geometry then IS gets checked against PROJ in the unit item below;
+# the visible-region hook that would show it end-to-end returns nothing under the test runner's
+# offscreen window — for the globe just as much as for the cube — so it is no use here.)
+@testitem "view modes: 3-D / flat-2D / globe / QSC cube all round-trip" tags=[:gui] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[100sind(2lat) + 50cosd(3lon) for lat in -60.0:2.0:60.0, lon in -180.0:2.0:178.0];
+	                 x=collect(-180.0:2.0:178.0), y=collect(-60.0:2.0:60.0))
+	G.proj4 = "+proj=longlat +datum=WGS84 +no_defs"
+	f = view_grid(G)
+	try
+		setmode(m) = ccall(IG._fn(:gmtvtk_set_view_mode_h), Cint, (Ptr{Cvoid}, Cint), f.h, Cint(m))
+		getmode()  = ccall(IG._fn(:gmtvtk_get_view_mode_h), Cint, (Ptr{Cvoid},), f.h)
+		@test IG._QSC_DONE[]                          # the +proj=qsc table reached the library
+		for m in (3, 2, 3, 1, 3, 0, 3)                # every transition, cube <-> each of the others
+			@test setmode(m) == 1
+			IG._pump_once()
+			@test getmode() == m
+		end
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+# The Cube mode's PROJECTION, checked against PROJ itself rather than against a stored expectation:
+# the viewer's cube is only as good as the table qsccube.jl samples out of `+proj=qsc`, so what has
+# to hold is that a fold-and-interpolate lookup of that table reproduces GDAL/PROJ over the whole
+# face. This is also the guard on the OCTANT FOLD: QSC is C0 but not C1 across the face diagonals,
+# and a table sampled on a plain (a,b) square instead of on (a, b/a) is ~80x worse right there —
+# well outside the tolerance below, so a regression to the naive layout fails this outright.
+@testitem "QSC cube: the sampled warp reproduces PROJ over a whole face" tags=[:unit] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	n = IG._QSC_N
+	fwd, back = IG._qsc_warp_tables()
+	# The same fold + bilinear lookup the viewer does (cubeWarpApply, 10_geometry.cpp).
+	function look(tab::Vector{Float64}, p::Float64, q::Float64)
+		sp = p < 0 ? -1.0 : 1.0;  sq = q < 0 ? -1.0 : 1.0
+		A = abs(p);  B = abs(q);  swapped = false
+		if B > A;  A, B = B, A;  swapped = true;  end
+		s  = A > 0 ? B / A : 0.0
+		gx = clamp(A, 0, 1) * (n - 1);  gy = clamp(s, 0, 1) * (n - 1)
+		i0 = min(floor(Int, gx), n - 2);  j0 = min(floor(Int, gy), n - 2)
+		fx = gx - i0;  fy = gy - j0
+		at(i, j, c) = tab[(j * n + i) * 2 + c]
+		o = ntuple(2) do c
+			(1-fx)*(1-fy)*at(i0,j0,c) + fx*(1-fy)*at(i0+1,j0,c) +
+			(1-fx)*fy*at(i0,j0+1,c)   + fx*fy*at(i0+1,j0+1,c)
+		end
+		u, v = swapped ? (o[2], o[1]) : (o[1], o[2])
+		return (sp * u, sq * v)
+	end
+	# A deterministic sweep of the whole front face, deliberately OFF the table's own nodes (the
+	# irrational offsets) so every sample is interpolated, and dense enough that plenty of them land
+	# in the cells the two face diagonals cut through — which is the only place this can go wrong.
+	m  = 41
+	ab = reduce(vcat, [[(-1 + 2*(i - 0.5 + 0.113)/m)  (-1 + 2*(j - 0.5 + 0.371)/m)]
+	                   for j in 1:m for i in 1:m])
+	np = size(ab, 1)
+	ll = reduce(vcat, [begin a = ab[k,1]; b = ab[k,2]
+	                         [atand(a, 1.0)  asind(b / sqrt(1 + a*a + b*b))]
+	                   end for k in 1:np])
+	ref = GMT.lonlat2xy(ll, t_srs=IG._QSC_SRS) ./ IG._QSC_R
+	ef  = maximum(abs(look(fwd, ab[k,1], ab[k,2])[c] - ref[k,c]) for k in 1:np, c in 1:2)
+	@test ef < 1e-5                                   # measured 2.8e-6 = 1.6e-4 deg of arc, ~18 m
+	# …and the inverse table lands back on the point the forward one came from.
+	rt = maximum(begin u, v = look(fwd, ab[k,1], ab[k,2])
+	                   a2, b2 = look(back, u, v)
+	                   max(abs(a2 - ab[k,1]), abs(b2 - ab[k,2]))
+	             end for k in 1:np)
+	@test rt < 1e-4
+	# The three symmetries the fold rests on, straight from PROJ: they are what lets ONE octant of one
+	# face carry the whole cube. Broken here = the fold above silently projects to the wrong place.
+	W(a, b) = vec(GMT.lonlat2xy([atand(a, 1.0)  asind(b / sqrt(1 + a*a + b*b))],
+	                            t_srs=IG._QSC_SRS) ./ IG._QSC_R)
+	for (a, b) in ((0.4, 0.7), (0.9, 0.15), (0.25, 0.25))
+		u, v = W(a, b)
+		@test isapprox(W(-a,  b), [-u,  v]; atol=1e-12)
+		@test isapprox(W( a, -b), [ u, -v]; atol=1e-12)
+		@test isapprox(W( b,  a), [ v,  u]; atol=1e-12)
+	end
+end

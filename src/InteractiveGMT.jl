@@ -26,6 +26,7 @@ include("selfupdate.jl") # update!() -- pull + rebuild in place, for a `] dev`-i
 include("types.jl")
 include("introspect.jl") # read-only scene-state snapshot for the test suite
 include("crs.jl")        # centralized coordinate-reference-system store (proj4/wkt/epsg)
+include("qsccube.jl")    # Cube view mode: PROJ's +proj=qsc face warp, sampled once and pushed to the viewer
 include("eventloop.jl")
 include("warmup.jl")     # JIT warm-up: compile a tool's code while its dialog is being filled in
 include("console.jl")
