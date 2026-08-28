@@ -136,7 +136,10 @@ end
 	bat = IG.GMT.mat2grid(Float32[Float32(-100 + 40 * sin(6xx) * cos(6yy)) for yy in x, xx in x]; x=x, y=x)
 	stg = IG.GMT.mat2grid(Float32[Float32(0.4 * sin(20xx + 3yy)) for yy in x, xx in x]; x=x, y=x)
 	d = Dict{String,String}("azim" => "315", "elev" => "30")
-	for model in (1, 2, 4)                       # 3 needs the +a/+d/+p/+s tail, covered by model 2's path
+	# The reflectance models, in the CURRENT numbering: 2 grdgradient classic, 3 grdgradient
+	# Lambertian, 4 Lambertian with lighting (its +a/+d/+p/+s tail comes from `num`'s defaults).
+	# 1, 5, 6 and 7 are C++ looks and never reach this function — asking it for one is an error.
+	for model in (2, 3, 4)
 		Rb = IG._hs_reflectance(bat, model, d)
 		Rs = IG._hs_reflectance(stg, model, d)
 		@test size(Rb) == size(Rs) == (length(x), length(x))
