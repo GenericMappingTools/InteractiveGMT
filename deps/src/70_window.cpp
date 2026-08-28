@@ -21610,9 +21610,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	aBar->setCheckable(true); aBar->setChecked(true);
 	QAction *aGiz = mView->addAction("Show &Gizmo", actToggleGizmo);  // 'x' also toggles (VTK)
 	aGiz->setCheckable(true); aGiz->setChecked(true);
-	// Shared checkable "Flat 2D (map)" action — lives in the View menu AND the toolbar below, so
-	// both reflect the same state. actToggle2D authors the checkmark (via setFlat2D).
-	s->act2D = mView->addAction("Flat &2D (map)", actToggle2D);
+	// The shared checkable "Flat 2D (map)" action. It is NOT a View-menu row any more (removed by
+	// request) — but the ACTION stays, because it is where the flat/3-D state lives: the toolbar's
+	// view-mode button tracks `act2D::toggled`, and every other switch source (the context menu, the
+	// 2-D bare-image / grid init in 90_c_api, sceneSetViewMode) writes its checked state. It is now
+	// owned by the window and shown by nothing; the toolbar's 2D/3D flyout is the visible control.
+	s->act2D = new QAction("Flat &2D (map)", win);
+	QObject::connect(s->act2D, &QAction::triggered, win, actToggle2D);
 	s->act2D->setCheckable(true); s->act2D->setChecked(false);
 	mView->addSeparator();
 	mView->addAction("Vertical &Exaggeration…", actVE);
@@ -23249,17 +23253,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	dock->setWidget(panel);                                  // mount the controls panel into the Shading dock
 	win->addDockWidget(Qt::RightDockWidgetArea, dock);       // dock the Shading panel to the RIGHT edge by default
 	// Shading only bites on a shaded surface / 3-D body. A bare image (imageOnly) or a
-	// Verts-only point cloud has nothing to light, so FOLD the dock by default there; the
-	// View menu action still un-folds it on demand.
+	// Verts-only point cloud has nothing to light, so FOLD the dock by default there.
 	const bool hasShadedBody = !imageOnly && !pointCloud;
 	s->shadeDock = dock;                                     // keep it so a promoted launcher can re-show + fold it
 	dock->setVisible(hasShadedBody);                         // GRAPHICAL ELEMENT: Shading dock initial fold state
-	// GRAPHICAL ELEMENT: View menu "Shading Panel" item — folds/un-folds the Shading dock.
-	// "Illumination (Hillshade)" is NOT in this menu any more: it is a TOOLBAR button, in the slot
-	// right after 3-D Bodies (see the toolbar build). Moved by request, and MOVED rather than
-	// duplicated — one command, one door.
-	QAction *aShade = mView->addAction("Shading &Panel", [dock](){ dock->setVisible(!dock->isVisible()); });
-	aShade->setCheckable(true); aShade->setChecked(hasShadedBody);   // menu checkmark tracks the dock's visibility
+	// No View-menu "Shading Panel" row (removed by request). The dock is its own control: its fold
+	// title bar collapses it and its close button hides it.
 
 	// --- Scene Objects dock: Fledermaus-style show/hide checkbox per element -
 	// One checkbox for the surface, the image drape (if any), and every line/point
@@ -23274,9 +23273,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	if (objname && objname[0])
 		s->surfName = objname;                // named solid -> checkbox shows the solid name
 	rebuildSceneObjects(s);                                  // populate the per-object show/hide checkboxes now
-	// GRAPHICAL ELEMENT: View menu "Scene Objects Panel" item — folds/un-folds the Scene Objects dock
-	QAction *aObjs = mView->addAction("Scene &Objects Panel", [objDock](){ objDock->setVisible(!objDock->isVisible()); });
-	aObjs->setCheckable(true); aObjs->setChecked(true);      // menu checkmark tracks the dock's visibility
+	// No View-menu "Scene Objects Panel" row (removed by request) — the dock carries its own fold
+	// title bar and close button.
 
 	// --- FOLD button on the side docks --------------------------------------
 	// Qt has no built-in "collapse" affordance, so REPLACE each side dock's default title bar
@@ -23427,8 +23425,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	mView->addAction("&Profile Panel",       [showTab, s]()        { showTab(s->prof); });
 	mView->addAction("Julia &Console Panel", [showTab, conPanel]() { showTab(conPanel); });
-	// The message log is not a tab here any more — same dock the status corner's bubble opens.
-	mView->addAction("&Messages Panel",      [s]()                 { sceneShowMessages(s, true); });
+	// No "Messages Panel" row (removed by request). The log is still reachable: the status corner's
+	// message bubble opens the same dock through the same sceneShowMessages.
 	// No "Data Viewer Panel" entry: there is no such tab any more. A table of numbers pops up in THE
 	// shared table dialog when a result produces one (gmtvtk_set_table / show_table).
 
