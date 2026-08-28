@@ -111,7 +111,7 @@ struct ReliefLight {
 	double fx, fz, fzRef;       // normal-correction factors: 1/xfac, 1/(zfac·ve), 1/zfac (ve = 1)
 	double amb, gain, twoOverPi;
 	bool   grd;
-	double rough, keyI, fillI;  // PBR bake: roughness, key + fill light intensity (metallic assumed 0)
+	double rough, metal, keyI, fillI;   // PBR bake: roughness, metalness, key + fill light intensity
 };
 static ReliefLight makeReliefLight(Scene *s) {
 	ReliefLight L;
@@ -125,6 +125,7 @@ static ReliefLight makeReliefLight(Scene *s) {
 	L.fzRef = (s->zfac != 0.0) ? 1.0 / s->zfac : 1.0;      // same, at the reference VE (ve = 1)
 	L.amb = s->hillAmbient;  L.gain = s->hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = s->hillGrd;
 	L.rough = s->roughness < 0.05 ? 0.05 : s->roughness;   // clamp so the GGX lobe stays finite
+	L.metal = s->metallic < 0.0 ? 0.0 : (s->metallic > 1.0 ? 1.0 : s->metallic);
 	L.keyI = s->lightIntensity;  L.fillI = s->fillIntensity;
 	return L;
 }
@@ -148,11 +149,20 @@ static inline void reliefDrawnNormal(const ReliefLight &L, const double nv[3], b
 // CPU approximation of the GPU PBR SURFACE look, baked per flat-image pixel so "Shaded image" alone
 // reproduces the shaded relief a freshly loaded 3-D grid shows — WITHOUT triangulating the grid
 // (the GPU shader rasterises triangles; this shades straight from the data-space normal nv). A 2-D
-// map is viewed straight down, so the view vector is +Z. Metallic-0 dielectric Cook-Torrance:
-// GGX distribution + Smith geometry + Schlick Fresnel for the key light, plus a soft hemispherical
-// fill and a small ambient floor so the shadow side matches the lit surface (which the fill + scene
-// light also lift). Not pixel-identical to the GPU pass — the live Light/Fill/Roughness sliders tune
-// it. rgb (0..1, in albedo / out shaded).
+// map is viewed straight down, so the view vector is +Z. Cook-Torrance: GGX distribution + Smith
+// geometry + Schlick Fresnel for the key light, plus a soft hemispherical fill and a small ambient
+// floor so the shadow side matches the lit surface (which the fill + scene light also lift). Not
+// pixel-identical to the GPU pass — the live Light/Fill/Roughness/Metallic sliders tune it.
+// rgb (0..1, in albedo / out shaded).
+//
+// METALNESS IS REAL HERE, and follows VTK's own PBR shader rather than a lookalike: F0 is the
+// dielectric 4% lerped toward the ALBEDO (so a metal's highlight wears the surface's colour), and
+// the diffuse lobe is scaled by (1 - metallic), because a metal has no subsurface scatter. It was
+// hard-wired to the dielectric case, which is why the dock's Metallic slider moved nothing on a
+// flat image while it visibly changed the 3-D surface (SetMetallic on the real PBR material).
+// The fill + ambient stand in for the environment this bake has no map of, so they are tinted by F0
+// for a metal instead of dropped: killing them outright would take a fully metallic map to black,
+// where the GPU path reflects the IBL sky.
 static inline void applyPBRShade(const ReliefLight &L, const double nvRaw[3], double rgb[3]) {
 	// Same rule as applyReliefShade: shade the relief AS DRAWN, never the raw data-space normal —
 	// otherwise the look depends on whether x,y happen to be degrees or metres.
@@ -171,13 +181,17 @@ static inline void applyPBRShade(const ReliefLight &L, const double nvRaw[3], do
 	const double D  = a2 / (vtkMath::Pi()*dn*dn + 1e-9);
 	const double k  = L.rough*L.rough*0.5;
 	const double G  = (NdotV/(NdotV*(1.0-k)+k+1e-9)) * (NdotL/(NdotL*(1.0-k)+k+1e-9));
-	const double F  = 0.04 + 0.96*std::pow(1.0 - VdotH, 5.0);
-	const double spec = (D*G*F) / (4.0*NdotV*NdotL + 1e-4);
-	const double kd = 1.0 - F;
+	const double fres = std::pow(1.0 - VdotH, 5.0);                      // Schlick's (1 - V·H)^5
+	const double DG   = (D*G) / (4.0*NdotV*NdotL + 1e-4);                // the colour-free half of spec
+	const double met  = L.metal;
 	for (int i = 0; i < 3; ++i) {
-		const double lit  = (kd*rgb[i] + spec) * L.keyI * NdotL;         // key light (diffuse + specular)
-		const double fill = rgb[i] * L.fillI * (0.5 + 0.5*nv[2]);        // hemispherical fill from above
-		const double amb  = rgb[i] * 0.12;                              // scene-light floor (no black valleys)
+		const double F0 = 0.04 + (rgb[i] - 0.04) * met;   // dielectric 4% -> the albedo itself, for a metal
+		const double F  = F0 + (1.0 - F0) * fres;
+		const double kd = (1.0 - F) * (1.0 - met);        // a metal has no diffuse lobe
+		const double env = (1.0 - met) + met * F0;        // 1 for a dielectric, the metal's own tint
+		const double lit  = (kd*rgb[i] + DG*F) * L.keyI * NdotL;         // key light (diffuse + specular)
+		const double fill = rgb[i] * L.fillI * (0.5 + 0.5*nv[2]) * env;  // hemispherical fill from above
+		const double amb  = rgb[i] * 0.12 * env;                         // scene-light floor (no black valleys)
 		const double v = lit + fill + amb;
 		rgb[i] = v > 1.0 ? 1.0 : v;
 	}
@@ -390,7 +404,8 @@ static AquaSideShade snapshotShade(Scene *s) {
 	AquaSideShade a; a.valid = true;
 	a.useHillshade = s->useHillshade; a.hillGrd = s->hillGrd; a.litBake = s->litBake;
 	a.lightAz = s->lightAz; a.lightEl = s->lightEl; a.hillAmbient = s->hillAmbient; a.hillGain = s->hillGain;
-	a.roughness = s->roughness; a.lightIntensity = s->lightIntensity; a.fillIntensity = s->fillIntensity;
+	a.roughness = s->roughness; a.metallic = s->metallic;
+	a.lightIntensity = s->lightIntensity; a.fillIntensity = s->fillIntensity;
 	return a;
 }
 // makeReliefLight, but with the light/style taken from a per-side snapshot (geometry xfac/zfac/ve still
@@ -407,6 +422,7 @@ static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a) {
 	L.fzRef = (s->zfac != 0.0) ? 1.0 / s->zfac : 1.0;      // same, at the reference VE (ve = 1)
 	L.amb = a.hillAmbient;  L.gain = a.hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = a.hillGrd;
 	L.rough = a.roughness < 0.05 ? 0.05 : a.roughness;
+	L.metal = a.metallic < 0.0 ? 0.0 : (a.metallic > 1.0 ? 1.0 : a.metallic);
 	L.keyI = a.lightIntensity;  L.fillI = a.fillIntensity;
 	return L;
 }
@@ -945,6 +961,33 @@ static void applyShading(Scene *s) {
 	rebakeLayerImage(s);   // flat-image mode: relight the drape texture to match the new state (shared shade)
 	syncShadeChecks(s);    // keep the Shading-dock checkboxes in sync with the live state
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// WHICH RELIEF LOOK THE WINDOW WEARS — the one place that decides it, for every caller.
+//
+// The four looks are alternatives, so choosing one is a single act: drop whatever external
+// reflectance was loaded (a look computed here REPLACES a loaded Illumination model), set the flags
+// that `applyShading` / `applyReliefShade` read, and re-shade. The Shading dock's checkboxes used to
+// write those flags themselves, inside a lambda captured over the boxes — which meant the maths was
+// reachable ONLY by clicking that dock. The Illumination dialog's methods 4 (grdimage) and 5
+// (Lambert) ARE these two looks, so they come through here rather than growing a second copy of a
+// reflectance this file already owns (SACRED_LAW.md: same operation, always the same function).
+//
+// It deliberately does NOT touch a checkbox: `applyShading` ends in `syncShadeChecks`, which derives
+// the dock from the live flags. So the dock follows whoever set the look, and the day the dock's two
+// hillshade boxes are removed this function and its callers are unaffected — nothing here knows a
+// checkbox exists.
+enum ReliefLook { RL_None = 0, RL_PBR, RL_Shadows, RL_HillLambert, RL_HillGrdimage };
+
+static void sceneSetReliefLook(Scene *s, int look) {
+	if (!s) return;
+	dropExternShade(s);                 // a look picked here replaces a loaded Illumination model
+	s->useShadows   = (look == RL_Shadows);
+	s->useHillshade = (look == RL_HillLambert || look == RL_HillGrdimage);
+	s->hillGrd      = (look == RL_HillGrdimage);
+	s->litBake      = (look == RL_PBR);
+	applyShading(s);                     // …which re-syncs the dock and re-bakes a flat image
+	if (s->syncFlatEnable) s->syncFlatEnable();   // which sliders are live depends on the chosen look
 }
 
 // Add a GMTdataset overlay (lines or points) to an existing scene. `xyz` is npts

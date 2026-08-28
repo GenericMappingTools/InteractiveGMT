@@ -617,7 +617,7 @@ struct AquaSideShade {
 	bool   valid = false;
 	bool   useHillshade = true, hillGrd = true, litBake = false;
 	double lightAz = 315.0, lightEl = 45.0, hillAmbient = 0.3, hillGain = 2.0;
-	double roughness = 0.45, lightIntensity = 1.0, fillIntensity = 0.4;
+	double roughness = 0.45, metallic = 0.0, lightIntensity = 1.0, fillIntensity = 0.4;
 };
 
 // ---- scene we hang onto for the callbacks / menu actions --------------------

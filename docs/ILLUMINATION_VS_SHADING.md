@@ -12,23 +12,33 @@ is really violated, and what is only a naming problem.
 `View > Illumination (Hillshade)…` — port of Mirone `src_figs/shading_params.m`.
 C++ dialog `HillshadeDialog` (70_window.cpp) + one Julia callback `_on_hillshade` (src/hillshade.jl).
 
-Mirone's 3 (Peucker) and 5 (Manip Raster) were dropped by request; the survivors are RENUMBERED
-1..7 continuously (Mirone's own number in brackets):
+Mirone's 3 (Peucker), 5 (Manip Raster) and 6 (ESRI hillshade) were dropped by request; the survivors
+are RENUMBERED 1..9 continuously (Mirone's own number in brackets; this program's own looks have none):
 
 | # | Method | Computed by | Result |
 |---|---|---|---|
 | 1 | GMT grdgradient classic | `grdgradient -A<az> -Nt` (+`-M` when geographic) | intensity |
 | 2 | GMT grdgradient Lambertian | `grdgradient -Es<az>/<el>` | intensity |
 | 3 | Lambertian with lighting (4) | `grdgradient -E<az>/<el>+a<amb>+d<dif>+p<spec>+s<shine>` | intensity |
-| 4 | Hillshade, ESRI (6) | ported from Mirone `mex/grdgradient_m.c` (GMT6 has no `-Eh`) | intensity |
-| 5 | False colour (7) | three azimuths → R,G,B | **new IMAGE** |
-| 6 | Dynamic Range Compression (8) | `GMT.kovesi` (ppdrc), then illuminated as model 1 | **new GRID** |
-| 7 | Remove illumination (9) | — | restore original |
+| 4 | Hillshade (grdimage) | the Shading dock's look, in C++ (`applyReliefShade`) — never reaches Julia | C++ look |
+| 5 | Hillshade (Lambert) | the Shading dock's look, in C++ (`applyReliefShade`) — never reaches Julia | C++ look |
+| 6 | Shade (PBR) | the Shading dock's look, in C++ — VTK's PBR material on a 3-D surface, `applyPBRShade`'s CPU Cook-Torrance bake under "Shaded image (2-D)" | C++ look |
+| 7 | False colour (7) | three azimuths → R,G,B | **new IMAGE** |
+| 8 | Dynamic Range Compression (8) | `GMT.kovesi` (ppdrc), then illuminated as model 1 | **new GRID** |
+| 9 | Remove illumination (9) | — | restore original |
 
-Plus the "Old algorithm" sub-option of model 5 (a port of `shade_manip_raster`, mirone.m) with its
+Plus the "Old algorithm" sub-option of model 7 (a port of `shade_manip_raster`, mirone.m) with its
 Amp factor — restored after it was wrongly dropped with Manip Raster.
 
-**Where the intensity goes.** Models 1/2/3/4/6 produce a per-node REFLECTANCE grid, exactly what
+Model 6's own four sliders are the dock's **Light**, **Fill**, **Roughness** and **Metallic** — the
+Scene fields `applyPBRShade` reads besides the sun, which comes from the dialog's existing azimuth
+compass and elevation quarter-circle. Metalness was hard-wired to the dielectric case in the bake
+(so the dock's Metallic slider moved nothing on a flat image while it plainly changed the 3-D
+surface); it now follows VTK's own PBR shader — F0 lerped from 4% toward the albedo, diffuse scaled
+by `(1 - metallic)`, and the fill/ambient stand-in for the missing environment tinted by F0 rather
+than dropped, so a fully metallic map does not go black.
+
+**Where the intensity goes.** Models 1/2/3/8 produce a per-node REFLECTANCE grid, exactly what
 Mirone hands to `mex_illuminate`. `mex_illuminate` IS `gmt_illuminate`, which this program already
 owns as `gmtIlluminate` (40_shading.cpp) — the one HSV modulator every shade ends in. So the grid
 is pushed down (`gmtvtk_set_shade_intensity_h`) into `Scene::shadeInten` and the shade engine takes
@@ -111,13 +121,14 @@ the problem is that the UI gives two of them the same word and the third a word 
 
 ### 3.3 The word "Hillshade"
 
-Currently means three different things: the dock's two branches, the tool's own name
-("Illumination (Hillshade)"), and model 4 which is specifically the ESRI hillshade algorithm.
+Means two different things: the dock's two branches (which the tool now offers as its own models 4
+and 5, calling the very same `sceneSetReliefLook`) and the tool's own name, "Illumination
+(Hillshade)". The third meaning is gone with the ESRI model.
 
 ### 3.4 The dock's checkboxes LIE after a model is loaded
 
 `gmtvtk_set_shade_intensity_h` sets `useHillshade = true; hillGrd = true` for any loaded model, and
-`syncShadeChecks` derives the boxes from those flags. So after running model 4 (ESRI) or model 2
+`syncShadeChecks` derives the boxes from those flags. So after running model 1 or model 2
 (`-Es`), the dock shows **"Hillshade (grdimage)" checked** — a look that is NOT what is on screen
 (`applyReliefShade` short-circuits to the external grid before it ever reaches branch B).
 

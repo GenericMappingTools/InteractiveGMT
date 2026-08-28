@@ -433,11 +433,12 @@ static JuliaGrdGradientFn g_juliaGrdGradient = nullptr;
 // Illumination / Hillshade (View menu) — the port of Mirone's shading_params.m: pick a GMT
 // illumination model and its light vector, get back a per-node REFLECTANCE which Julia pushes down
 // with gmtvtk_set_shade_intensity_h (src/hillshade.jl). The dialog (HillshadeDialog, 70_window.cpp)
-// hands a NEWLINE-separated "key=value" block: model=1..7 (1 grdgradient classic, 2 grdgradient
-// Lambertian, 3 Lambertian with lighting, 4 ESRI hillshade, 5 false colour, 6 dynamic range
-// compression, 7 remove), azim=, elev=, ambient=/diffuse=/specular=/shine= (model 3),
-// azimR=/azimG=/azimB= + oldalgo=0|1 + amp= (model 5), wavelength= (model 6). Returns 1 on success,
-// 0 on failure. nullptr to detach.
+// hands a NEWLINE-separated "key=value" block: model=1..9 (1 grdgradient classic, 2 grdgradient
+// Lambertian, 3 Lambertian with lighting, 4 Hillshade grdimage, 5 Hillshade Lambert, 6 Shade (PBR),
+// 7 false colour, 8 dynamic range compression, 9 remove), azim=, elev=,
+// ambient=/diffuse=/specular=/shine= (model 3), azimR=/azimG=/azimB= + oldalgo=0|1 + amp= (model 7),
+// wavelength= (model 8). Models 4, 5 and 6 are the Shading dock's looks, applied in C++, so they
+// never come through here. Returns 1 on success, 0 on failure. nullptr to detach.
 typedef int (*JuliaHillshadeFn)(void *scene, const char *params);
 static JuliaHillshadeFn g_juliaHillshade = nullptr;
 
