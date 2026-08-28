@@ -1526,6 +1526,27 @@ static void rebuildBaseFromStored(Scene *s, bool asImage) {
 	}
 }
 
+// "SHADED IMAGE (2-D)" — the geometry toggle, as ONE function for every caller.
+//
+// It is the Shading dock's checkbox, but it is NOT the dock's to own: the Illumination dialog's two
+// PBR methods are the same look on either side of this switch (the GPU material on a real surface,
+// the CPU bake on a flat image), so each has to be able to put the window in the mode its name
+// promises. The dock's handler was four lines inside a lambda captured over its checkbox — reachable
+// only by clicking that box — which is the fork this file keeps having to undo (see sceneSetReliefLook).
+//
+// The whole body: a cube layer switch follows the base's flag (`cubeFlatImg`), the layer is rebuilt
+// through the SAME rebuildLayerFromStored either way, and the dock is re-synced — the checkbox itself
+// (syncFlatBox) and the greying of the controls a mode cannot use (syncFlatEnable). Callers other
+// than the box need that sync too, or the dock ends up describing a mode the window has left.
+static void sceneSetShadedImage2D(Scene *s, bool on) {
+	if (!s || s->layerImgMode == on) return;         // already there: never rebuild for nothing
+	ExtraObj *lay = activeGridLayer(s);
+	if (!lay) s->cubeFlatImg = on;                   // cube layer switches follow the base's flag
+	rebuildLayerFromStored(s, lay, on);
+	if (s->syncFlatBox)    s->syncFlatBox();
+	if (s->syncFlatEnable) s->syncFlatEnable();
+}
+
 // ============================================================================================
 // GeoGridGeometry — reusable "Griding Line Geometry" widget (Mirone-style region/spacing table).
 // Two rows (X / Y Direction) × four columns (Min, Max, Spacing, # of lines) inside a group box,
@@ -3987,12 +4008,16 @@ static GrdGradientState g_grdgradState;
 // (gmtvtk_set_shade_intensity_h -> gmtIlluminate, the same modulator Mirone's mex_illuminate is).
 //
 // Mirone's 3 (Peucker), 5 (Manip Raster) and 6 (ESRI hillshade) are dropped by request; what remains
-// is renumbered 1..9 CONTINUOUSLY (Mirone's own number in brackets): 1 grdgradient classic,
-// 2 grdgradient Lambertian, 3 Lambertian with lighting [4], 4 Hillshade grdimage, 5 Hillshade
-// Lambert, 6 Shade (PBR), 7 false colour [7], 8 dynamic range compression [8], 9 remove
-// illumination [9]. 4, 5 and 6 are the Shading dock's own three looks, computed in C++; they never
-// reach Julia. 6 is the dock's PBR: VTK's material on a 3-D surface, and with "Shaded image (2-D)"
-// on, the CPU Cook-Torrance bake that imitates it (applyPBRShade) — one flag, `litBake`, for both.
+// is renumbered 1..10 CONTINUOUSLY (Mirone's own number in brackets, where one exists):
+// 1 VTK (PBR), 2 grdgradient classic [1], 3 grdgradient Lambertian [2], 4 Lambertian with lighting
+// [4], 5 Hillshade grdimage, 6 Hillshade Lambert, 7 Shade (PBR), 8 false colour [7], 9 dynamic range
+// compression [8], 10 remove illumination [9].
+//
+// 1, 5, 6 and 7 are the Shading dock's own looks, computed in C++; they never reach Julia. 1 and 7
+// are the dock's SINGLE "Shade (PBR)" box split into the two things it is: VTK's own PBR render path
+// on a 3-D surface (1), and the CPU Cook-Torrance bake that imitates it per flat-image pixel (7,
+// applyPBRShade). Both set the one flag `litBake`; what separates them is the GEOMETRY, so each
+// method also sets that through `sceneSetShadedImage2D`.
 // The false colour keeps BOTH of Mirone's algorithms — its two radio buttons — so the "Old
 // algorithm" (shade_manip_raster) is here with its elevation and Amp factor, even though the
 // stand-alone Manip Raster entry is gone.
@@ -4127,7 +4152,7 @@ protected:
 // time, but the light you just aimed is the light you want to nudge next).
 struct HillshadeState {
 	bool    valid = false;
-	int     model = 1;
+	int     model = 1;          // VTK (PBR) — what the dialog opens on, by request
 	double  azim = 0.0, elev = 30.0;
 	double  azR = 0.0, azG = 120.0, azB = 240.0;
 	bool    oldAlgo = true;                  // false colour: Mirone's radio_oldAlgo starts checked
@@ -4142,6 +4167,22 @@ static HillshadeState g_hillshadeState;
 // menu entry brings the SAME dialog back, never a second one.
 class HillshadeDialog;
 static std::map<Scene *, HillshadeDialog *> g_hillshadeDlgs;
+
+// Invalidate a layout and EVERY layout nested under it, widgets' own layouts included.
+// `QLayout::invalidate()` resets ONLY the layout it is called on: every nested box/grid/form keeps
+// the size hint it had already cached, so a panel that changed three levels down never reached the
+// window's own hint. Invalidating the top layout alone therefore does nothing for a dialog whose
+// content is swapped inside a nested cell.
+static void invalidateLayoutsDeep(QLayout *lay) {
+	if (!lay) return;
+	for (int i = 0; i < lay->count(); ++i) {
+		QLayoutItem *it = lay->itemAt(i);
+		if (!it) continue;
+		if (QLayout *sub = it->layout())    invalidateLayoutsDeep(sub);
+		else if (QWidget *w = it->widget()) invalidateLayoutsDeep(w->layout());
+	}
+	lay->invalidate();
+}
 
 class HillshadeDialog {
 public:
@@ -4175,17 +4216,29 @@ public:
 	};
 	// Method 3's four Lambertian-with-lighting terms, method 5's shadow floor, and method 6's two.
 	ParamSlider sAmbient, sDiffuse, sSpecular, sShine, sShadeAmb;
-	// Method 6 (Shade PBR) reads the sun — lightAz/lightEl, which this dialog already aims with its
-	// two dials, never a second pair of controls — plus the four Scene values the dock's PBR sliders
-	// write. All four are here.
+	// THE PBR MATERIAL, shared by methods 1 and 7 — they are the SAME look on either side of the
+	// "Shaded image (2-D)" switch (VTK's GPU material on a real surface; the CPU bake on a flat
+	// image), so they read the SAME four Scene fields and therefore share ONE set of widgets. Two
+	// panels with a Roughness slider each would be two controls writing one value, which is how they
+	// come to disagree. The sun is the dialog's own compass + quarter-circle, reused by both.
 	ParamSlider sKeyI, sFillI, sRough, sMetal;
+	// Method 1 only: the render-path knobs a baked texture has no use for (a flat image is a picture
+	// — IBL, occlusion and the screen passes need real 3-D geometry). Rows hidden for method 7.
+	ParamSlider sEnvI, sSSAO;
+	double ssaoSeed = 0.5;                             // the dock's rule: the slider is 0..200% of this
+	QCheckBox *cbIBLx = nullptr, *cbSSAOx = nullptr, *cbTonex = nullptr, *cbFXAAx = nullptr;
+	// The four boxes sit TWO PER ROW (IBL | Tone mapping, Occlusion | FXAA): four rows of one box
+	// each made method 1 taller than the compass beside it for no gain, when a checkbox needs a
+	// fraction of the width its row has. These are the row containers, hidden as a unit.
+	QWidget *pbrRowIBL = nullptr, *pbrRowSSAO = nullptr;
+	QWidget *optSlot = nullptr;                        // the shared per-model panel cell (see setModel)
 	QLabel *lAzim, *lElev;
 	QWidget *elevWrap = nullptr;                                       // "Elevation" caption + its dial
 	QWidget *reflBox = nullptr, *waveBox = nullptr, *fcBox = nullptr, *lookBox = nullptr;  // per-model panels
-	QWidget *pbrBox = nullptr;                                         // method 6's own two sliders
+	QWidget *pbrBox = nullptr;                                         // methods 1/7: the PBR panel
 	QRadioButton *rbOldAlgo = nullptr, *rbGrdGrad = nullptr;
 	QButtonGroup *models = nullptr, *algos = nullptr;
-	int model = 1;
+	int model = 1;              // VTK (PBR) — see HillshadeState::model
 	bool reallyClose = false;   // set by the parked row's "Delete": let the next close through
 
 	// Bring the dialog back from the dock (double-click, the row's checkbox, its "Show" item). ONE
@@ -4211,17 +4264,23 @@ public:
 			else if (pick == aDel) {
 				reallyClose = true;
 				unparkTool(scn, dlg);
-				dlg->deleteLater();          // destroyed -> the row and this object go with it
+				// Stop answering for this Scene THIS INSTANT. `deleteLater` only POSTS the delete, so
+				// between here and the event loop running it the registry would still hand this
+				// dialog to the toolbar button — a dialog on its way out.
+				forget();
+				dlg->deleteLater();          // destroyed -> the ctor's connect deletes this object too
 			}
 		};
 	}
 
-	// Drop the registry entry by VALUE, not by `scn`: when the owning viewer window is torn down the
-	// dialog dies with it and the Scene may already be gone, so the key cannot be trusted.
-	~HillshadeDialog() {
+	// Drop every registry entry pointing at this instance. BY VALUE, not by `scn`: when the owning
+	// viewer window is torn down the dialog dies with it and the Scene may already be gone, so the key
+	// cannot be trusted. ONE function, called by the destructor and by the row's "Delete".
+	void forget() {
 		for (auto it = g_hillshadeDlgs.begin(); it != g_hillshadeDlgs.end(); )
 			it = (it->second == this) ? g_hillshadeDlgs.erase(it) : std::next(it);
 	}
+	~HillshadeDialog() { forget(); }
 
 	explicit HillshadeDialog(QWidget *parent, Scene *scene) : scn(scene) {
 		dlg = new QDialog(parent);
@@ -4232,6 +4291,14 @@ public:
 		dlg->setWindowModality(Qt::NonModal);
 		QDialog *d = dlg;
 		g_hillshadeDlgs[scene] = this;
+		// THE OBJECT'S LIFETIME IS THE QDIALOG'S — the same one line every other parked tool in this
+		// file has (X,Y, Contours, Ruler, …). It was missing here, and that was a hard crash, not a
+		// leak: `HillshadeDialog` is a plain C++ object, so the row's "Delete" -> `dlg->deleteLater()`
+		// freed the QDialog and left this object alive in `g_hillshadeDlgs` holding a dangling `dlg`.
+		// The toolbar button then found that entry, saw a non-null `dlg`, and called `unpark()` on
+		// freed memory — taking the whole application down. Repro: open, minimise, Delete from the
+		// parked row, press the toolbar button.
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
 
 		struct CloseParks : QObject {
 			HillshadeDialog *hd;
@@ -4253,25 +4320,37 @@ public:
 		dlg->installEventFilter(new CloseParks(dlg, this));
 
 		auto *outer = new QVBoxLayout(d);
+		// EVERY METHOD GETS ITS OWN SIZE. The dialog swaps one of five option panels into a shared
+		// cell, and they differ wildly in height (method 1 carries the whole PBR rig; methods 2 and 3
+		// carry nothing at all). SetFixedSize makes the window track its layout's hint in BOTH
+		// directions on every activation, which is the only thing that shrinks a top-level window —
+		// so a small method can never be left wearing the tall one's geometry. See setModel's tail.
+		outer->setSizeConstraint(QLayout::SetFixedSize);
 
 		// --- the numbered model toolbar (Mirone's uitoggletools, same order, same tooltips) -------
 		auto *bar = new QHBoxLayout();
 		models = new QButtonGroup(d);
 		models->setExclusive(true);
 		struct Btn { int id; const char *label; const char *tip; };
-		// 4, 5 and 6 are the three looks the Shading dock also offers. They are NOT ports of it: picking
+		// 1, 5, 6 and 7 are the looks the Shading dock also offers. They are NOT ports of it: picking
 		// one here calls the very function the dock's checkbox calls (sceneSetReliefLook), so there is
 		// one implementation of each reflectance, and the dock may lose its boxes without taking the
 		// method with them. Everything else is a GMT-computed reflectance grid handed to Julia.
+		//
+		// 1 and 7 are the dock's ONE "Shade (PBR)" box split into the two things it actually is: on a
+		// 3-D surface it is VTK's own PBR render path, on a flat image a CPU bake that imitates it.
+		// Each puts the window in the mode its name promises (sceneSetShadedImage2D) — otherwise the
+		// two would be the same button twice over, each doing whatever the window happened to be in.
 		static const Btn btns[] = {
-			{ 1, "1", "GMT grdgradient classic" },
-			{ 2, "2", "GMT grdgradient Lambertian" },
-			{ 3, "3", "Lambertian with lighting" },
-			{ 4, "4", "Hillshade (grdimage)" },
-			{ 5, "5", "Hillshade (Lambert)" },
-			{ 6, "6", "Shade (PBR) — Cook-Torrance, imitates the VTK surface shading" },
-			{ 7, "7", "False color" },
-			{ 8, "8", "Dynamic Range Compression" },
+			{ 1, "1", "VTK (PBR) — VTK's own PBR render path on the 3-D surface" },
+			{ 2, "2", "GMT grdgradient classic" },
+			{ 3, "3", "GMT grdgradient Lambertian" },
+			{ 4, "4", "Lambertian with lighting" },
+			{ 5, "5", "Hillshade (grdimage)" },
+			{ 6, "6", "Hillshade (Lambert)" },
+			{ 7, "7", "Shade (PBR) — Cook-Torrance, imitates the VTK shading on a flat image" },
+			{ 8, "8", "False color" },
+			{ 9, "9", "Dynamic Range Compression" },
 		};
 		for (const auto &b : btns) {
 			auto *tb = new QToolButton(d);
@@ -4326,7 +4405,7 @@ public:
 		// selected. Only one panel is ever visible, and a hidden widget takes no space in a layout,
 		// so sharing the slot costs nothing. The slot takes the leftover width (stretch 1) instead of
 		// leaving a dead strip down the right edge.
-		auto *optSlot = new QWidget(d);
+		optSlot = new QWidget(d);
 		auto *optLay  = new QGridLayout(optSlot);
 		optLay->setContentsMargins(0, 0, 0, 0);
 		auto mkPanel = [&](QWidget *&box, QFormLayout *&fl) {
@@ -4340,7 +4419,7 @@ public:
 		QFormLayout *flPBR = nullptr;
 		mkPanel(reflBox, flRefl);  mkPanel(waveBox, flWave);  mkPanel(fcBox, flFC);
 		mkPanel(lookBox, flLook);   // methods 4/5: the dock looks' own two parameters
-		mkPanel(pbrBox, flPBR);     // method 6: the PBR bake's key + fill intensities
+		mkPanel(pbrBox, flPBR);     // methods 1/7: the PBR material (+ method 1's render-path knobs)
 
 		// A reflectance term is a SLIDER here, exactly as in the Shading dock — including the dock's
 		// live tooltip, which is what makes a slider readable at all: it names the parameter, its
@@ -4391,11 +4470,10 @@ public:
 		flLook->addRow("Ambient",
 		               mkSlider(sShadeAmb, 0.0, 1.0, scn ? scn->hillAmbient : 0.25, 2, "Ambient", "",
 		                        "Lambert shadow floor: 0 = black valleys, 1 = no shade."));
-		// Method 6, "Shade (PBR)". The bake (applyPBRShade, 40_shading.cpp) reads the sun — this
-		// dialog's own Azimuth compass and Elevation quarter-circle, reused, not a second pair of
-		// controls — plus these four, which are the dock's "Light", "Fill", "Roughness" and "Metallic"
-		// sliders and the SAME four Scene fields they write. Same ranges as the dock's, so a value
-		// means one thing wherever it is dragged.
+		// Methods 1 and 7, the PBR material. The sun is this dialog's own Azimuth compass and Elevation
+		// quarter-circle, reused, never a second pair of controls. These four are the dock's "Light",
+		// "Fill", "Roughness" and "Metallic" sliders and the SAME four Scene fields they write — same
+		// ranges too, so a value means one thing wherever it is dragged.
 		flPBR->addRow("Light",
 		              mkSlider(sKeyI, 0.0, 3.0, scn ? scn->lightIntensity : 1.0, 2, "Light", "",
 		                       "Key (sun) light intensity — the PBR bake's diffuse + specular term."));
@@ -4410,6 +4488,58 @@ public:
 		              mkSlider(sMetal, 0.0, 1.0, scn ? scn->metallic : 0.0, 2, "Metallic", "",
 		                       "0 = dielectric (4% white highlight, full diffuse); 1 = metal (the "
 		                       "highlight takes the surface's own colour and the diffuse lobe goes)."));
+		// METHOD 1 ONLY, from here down. These are render-path controls — an image-based light, the
+		// ambient-occlusion pass and the two screen passes — and a baked flat texture has no use for
+		// any of them, which is exactly why the dock greys them out in flat mode (syncFlatEnable).
+		// The rows exist once and are hidden for method 7 rather than living in a second panel.
+		flPBR->addRow("Env (IBL)",
+		              mkSlider(sEnvI, 0.0, 3.0, scn ? scn->envIntensity : 1.0, 2, "Env (IBL)", "",
+		                       "Image-based-light intensity: the sky environment's contribution."));
+		// The dock's own rule for this one: the slider is 0..200% of the radius the scene was seeded
+		// with, because a useful SSAO radius is a fraction of the model's size, not an absolute number.
+		ssaoSeed = (scn && scn->ssaoRadius > 0.0) ? scn->ssaoRadius : 0.5;
+		flPBR->addRow("SSAO radius",
+		              mkSlider(sSSAO, 0.0, 200.0, 100.0, 0, "SSAO radius", "%",
+		                       "Ambient-occlusion sampling radius, as a percentage of the scene's own "
+		                       "seed radius."));
+		// TWO BOXES PER ROW. A checkbox is a few pixels wide and the form gives it a whole row, so
+		// four of them stacked made this the tallest panel in the dialog for no reason. The second
+		// pair rides in the same field cell, behind its own label, with a gap after the first box.
+		auto mkBox = [d](QCheckBox *&cb, bool on, const QString &tip) {
+			cb = new QCheckBox(d);
+			cb->setChecked(on);
+			cb->setToolTip(tip);
+			return cb;
+		};
+		auto mkCheckPair = [&](QWidget *&row, const QString &labL, QCheckBox *boxL,
+		                       const QString &labR, QCheckBox *boxR, const QString &tipR) {
+			row = new QWidget(optSlot);
+			auto *h = new QHBoxLayout(row);
+			h->setContentsMargins(0, 0, 0, 0);
+			h->setSpacing(6);
+			h->addWidget(boxL);
+			h->addSpacing(18);                       // the gap the right-hand label needs to read as its own
+			auto *lr = new QLabel(labR, row);
+			lr->setToolTip(tipR);
+			h->addWidget(lr);
+			h->addWidget(boxR);
+			h->addStretch(1);
+			flPBR->addRow(labL, row);
+		};
+		mkCheckPair(pbrRowIBL, "Image-based light",
+		            mkBox(cbIBLx, scn ? scn->useIBL : false,
+		                  "Light the surface with a sky environment as well as the sun."),
+		            "Tone mapping",
+		            mkBox(cbTonex, scn ? scn->useTone : false,
+		                  "Neutral PBR tone-mapping pass — tames blown-out highlights."),
+		            "Neutral PBR tone-mapping pass — tames blown-out highlights.");
+		mkCheckPair(pbrRowSSAO, "Ambient occlusion",
+		            mkBox(cbSSAOx, scn ? scn->useSSAO : false,
+		                  "Screen-space ambient occlusion: darkens creases and valley floors."),
+		            "FXAA",
+		            mkBox(cbFXAAx, scn ? scn->useFXAA : false,
+		                  "Fast approximate anti-aliasing on the finished frame."),
+		            "Fast approximate anti-aliasing on the finished frame.");
 		eWave     = mkEdit("");      flWave->addRow("Wavelength (px)", eWave);
 		eWave->setToolTip("Cut-in wavelength of the highpass filter, in pixels. Empty = half the "
 		                  "longer grid side, the ppdrc default.");
@@ -4456,7 +4586,7 @@ public:
 		if (st.valid) {
 			model = st.model;
 			dial->az[0] = st.azR;  dial->az[1] = st.azG;  dial->az[2] = st.azB;
-			if (st.model != 7) dial->az[0] = st.azim;   // 7 = false colour, the only 3-hand model
+			if (st.model != 8) dial->az[0] = st.azim;   // 8 = false colour, the only 3-hand model
 			elevDial->elev = st.elev;
 			eAzim->setText(QString::number(st.azim, 'f', 0));
 			eAzR->setText(QString::number(st.azR, 'f', 0));
@@ -4472,7 +4602,7 @@ public:
 		// Dial -> boxes. The single azimuth and the red false-colour azimuth are THE SAME hand
 		// (Mirone's h_line(1), tagged 'red', feeds edit_azim or edit_azimR depending on the model).
 		dial->onChange = [this](int hand, double a) {
-			QLineEdit *e = (model == 7) ? (hand == 0 ? eAzR : (hand == 1 ? eAzG : eAzB)) : eAzim;
+			QLineEdit *e = (model == 8) ? (hand == 0 ? eAzR : (hand == 1 ? eAzG : eAzB)) : eAzim;
 			e->setText(QString::number(a, 'f', 0));
 		};
 		elevDial->onChange = [this](double v) { eElev->setText(QString::number(v, 'f', 0)); };
@@ -4502,26 +4632,26 @@ public:
 		QObject::connect(okBtn, &QPushButton::clicked, d, [this]() { apply(); });
 
 		if (auto *b = models->button(model)) b->setChecked(true);
-		setModel(model);
-		d->adjustSize();
-		d->resize(d->minimumSizeHint());
+		setModel(model);   // sizes the window too — SetFixedSize, see `outer` above
 	}
 
 	// shading_params.m's show_needed + toggle_uis: only the controls the picked model actually reads
 	// are shown, and the window title says which model that is.
 	void setModel(int m) {
 		model = m;
-		const bool merc  = (m == 7);                       // false colour (three azimuths)
-		const bool look  = (m == 4 || m == 5);             // the two hillshade Shading-dock looks
-		const bool pbr   = (m == 6);                       // the dock's third look, Shade (PBR)
-		const bool takesAzim = (m == 1 || m == 2 || m == 3 || m == 4 || m == 5 || m == 6 || m == 8);
+		const bool merc  = (m == 8);                       // false colour (three azimuths)
+		const bool look  = (m == 5 || m == 6);             // the two hillshade Shading-dock looks
+		const bool vtk   = (m == 1);                       // VTK (PBR): VTK's own render path, 3-D
+		const bool bake  = (m == 7);                       // Shade (PBR): the flat-image CPU imitation
+		const bool pbr   = (vtk || bake);                  // both wear the same material panel
+		const bool takesAzim = (m >= 1 && m <= 7) || m == 9;
 		// The false colour's OLD algorithm reads the elevation and the Amp factor; its grdgradient
 		// flavour reads neither — Mirone's radio_grdgrad_CB disables edit_elev for exactly that reason.
 		const bool oldAlgo   = merc && rbOldAlgo->isChecked();
 		// The dock looks take a real sun (azimuth AND elevation), like the -E models.
-		const bool takesElev = (m == 2 || m == 3) || look || pbr || oldAlgo;
-		const bool takesRefl = (m == 3);
-		const bool takesWave = (m == 8);
+		const bool takesElev = (m == 3 || m == 4) || look || pbr || oldAlgo;
+		const bool takesRefl = (m == 4);
+		const bool takesWave = (m == 9);
 		lAzim->setVisible(takesAzim || merc);
 		eAzim->setVisible(takesAzim);
 		eAzR->setVisible(merc);  eAzG->setVisible(merc);  eAzB->setVisible(merc);
@@ -4531,11 +4661,23 @@ public:
 		fcBox->setVisible(merc);
 		lookBox->setVisible(look);
 		pbrBox->setVisible(pbr);
-		if (eGain)        eGain->setVisible(m == 4);          // gain is the grdimage look's own knob…
-		if (sShadeAmb.sl) sShadeAmb.sl->setVisible(m == 5);   // …ambient is Lambert's
+		if (eGain)        eGain->setVisible(m == 5);          // gain is the grdimage look's own knob…
+		if (sShadeAmb.sl) sShadeAmb.sl->setVisible(m == 6);   // …ambient is Lambert's
 		if (auto *fl = qobject_cast<QFormLayout *>(lookBox->layout())) {
-			if (QWidget *w = fl->labelForField(eGain))        w->setVisible(m == 4);
-			if (QWidget *w = fl->labelForField(sShadeAmb.sl)) w->setVisible(m == 5);
+			if (QWidget *w = fl->labelForField(eGain))        w->setVisible(m == 5);
+			if (QWidget *w = fl->labelForField(sShadeAmb.sl)) w->setVisible(m == 6);
+		}
+		// The material rows serve both PBR methods; the render-path rows belong to method 1 alone —
+		// a baked flat texture has no environment light, no occlusion pass and no screen passes.
+		if (auto *fl = qobject_cast<QFormLayout *>(pbrBox->layout())) {
+			// The two checkbox ROWS, not the four boxes: each row carries a pair, and hiding a box
+			// inside a row that is still there would leave its label standing alone.
+			QWidget *vtkOnly[] = { sEnvI.sl, sSSAO.sl, pbrRowIBL, pbrRowSSAO };
+			for (QWidget *w : vtkOnly) {
+				if (!w) continue;
+				w->setVisible(vtk);
+				if (QWidget *lab = fl->labelForField(w)) lab->setVisible(vtk);
+			}
 		}
 		eAmp->setVisible(oldAlgo);        // the Amp factor belongs to the old algorithm alone
 		if (auto *lbl = fcBox->layout() ? qobject_cast<QFormLayout *>(fcBox->layout()) : nullptr)
@@ -4554,29 +4696,38 @@ public:
 		}
 		dial->update();
 		static const struct { int m; const char *title; } names[] = {
-			{ 1, "GMT grdgradient" },      { 2, "GMT grdgradient - Lambertian" },
-			{ 3, "Lambertian lighting" },  { 4, "Hillshade - grdimage" },
-			{ 5, "Hillshade - Lambert" },  { 6, "Shade (PBR)" },
-			{ 7, "False color" },          { 8, "Dynamic Range Compression" },
+			{ 1, "VTK (PBR)" },            { 2, "GMT grdgradient" },
+			{ 3, "GMT grdgradient - Lambertian" },
+			{ 4, "Lambertian lighting" },  { 5, "Hillshade - grdimage" },
+			{ 6, "Hillshade - Lambert" },  { 7, "Shade (PBR)" },
+			{ 8, "False color" },          { 9, "Dynamic Range Compression" },
 		};
 		for (const auto &n : names)
 			if (n.m == m) dlg->setWindowTitle(n.title);
-		dlg->adjustSize();
-		dlg->resize(dlg->minimumSizeHint());   // shrink back when a bigger panel is swapped out
+		// THE WINDOW IS EXACTLY THE PICKED METHOD'S SIZE — method 1 is the only tall one, and nothing
+		// else may inherit its height. The outer layout carries QLayout::SetFixedSize (set in the
+		// constructor), so ACTIVATING it sets the window to the freshly computed hint, up or down;
+		// hand-rolled adjustSize()/resize() could not do that, because a top-level window does not
+		// shrink on its own and `minimumSizeHint` had already latched the tallest method's minimum
+		// as a floor. The deep invalidate is what makes the recomputed hint honest: the swap happens
+		// in a grid cell three layouts down, and only the layout `invalidate()` is called on forgets
+		// what it cached.
+		invalidateLayoutsDeep(dlg->layout());
+		if (dlg->layout()) dlg->layout()->activate();
 	}
 
-	// The ✕ button: strip the illumination off the grid NOW. Model 9 is the host's "remove" code; the
+	// The ✕ button: strip the illumination off the grid NOW. Model 10 is the host's "remove" code; the
 	// dialog itself is left exactly as it was, so the light you had aimed is still there to re-apply.
 	void applyRemove() {
 		if (!g_juliaHillshade || !sceneAlive(scn)) return;
-		const QByteArray p = QString("model=9\nazim=0\nelev=0\ngrid=%1\n")
+		const QByteArray p = QString("model=10\nazim=0\nelev=0\ngrid=%1\n")
 		                     .arg(QString::fromStdString(activeGridName(scn))).toUtf8();
 		g_juliaHillshade(scn, p.constData());
 	}
 
 	// STANDING RULE: only this action button runs anything — no edit box ever triggers a compute.
 	void apply() {
-		if (!g_juliaHillshade && model != 4 && model != 5 && model != 6) {   // 4/5/6 run in C++
+		if (!g_juliaHillshade && model != 1 && model != 5 && model != 6 && model != 7) {   // C++ looks
 			QMessageBox::warning(dlg, "Error", "Illumination: callback not registered "
 			                                   "(rebuild/restart needed?).");
 			return;
@@ -4593,33 +4744,47 @@ public:
 			                                   "showing one.");
 			return;
 		}
-		// METHODS 4, 5 AND 6 ARE THE SHADING DOCK'S THREE LOOKS. They are computed in C++ from the
-		// surface itself (applyReliefShade / applyPBRShade), not as a GMT reflectance grid, so they
-		// never go to Julia: the dialog aims the sun and the knobs, then calls the SAME
-		// sceneSetReliefLook the dock's checkboxes call. One implementation of each look, reachable
-		// from both places — and from only this one when the dock's boxes eventually go.
+		// METHODS 1, 5, 6 AND 7 ARE THE SHADING DOCK'S LOOKS. They are computed in C++ from the surface
+		// itself (applyReliefShade / applyPBRShade) or by VTK's own render path, not as a GMT
+		// reflectance grid, so they never go to Julia: the dialog aims the sun and the knobs, then
+		// calls the SAME sceneSetReliefLook the dock's checkboxes call. One implementation of each
+		// look, reachable from both places — and from only this one when the dock's boxes eventually go.
 		//
-		// Method 6 is "Shade (PBR)". On a 3-D surface that is VTK's own PBR material; with "Shaded
-		// image (2-D)" on it is the CPU Cook-Torrance bake that imitates it per flat-image pixel
-		// (applyPBRShade). Both are the ONE flag `litBake`, so the dialog sets the look and lets the
-		// window decide which half of it applies — never a second entry point for either.
-		if (model == 4 || model == 5 || model == 6) {
+		// 1 AND 7 ARE THE DOCK'S ONE "Shade (PBR)" BOX, SPLIT INTO THE TWO THINGS IT ACTUALLY IS.
+		// `litBake` alone cannot tell them apart — which of the two you get depends on the GEOMETRY the
+		// window is in — so each method also puts the window in its own mode through the one geometry
+		// switch, `sceneSetShadedImage2D` (the same call the dock's "Shaded image (2-D)" box makes).
+		// Without that, picking 1 on a flat-image window would silently hand back 7, and picking 7 on
+		// a surface would hand back 1: two buttons that do whatever the window happens to already be.
+		if (model == 1 || model == 5 || model == 6 || model == 7) {
 			scn->lightAz = eAzim->text().trimmed().toDouble();
 			scn->lightEl = eElev->text().trimmed().toDouble();
-			if (model == 4) {
+			if (model == 5) {
 				bool ok = false;
 				const double g = eGain->text().trimmed().toDouble(&ok);
 				if (ok) scn->hillGain = g;
 			}
-			else if (model == 5)
+			else if (model == 6)
 				scn->hillAmbient = std::clamp(sShadeAmb.value(), 0.0, 1.0);
 			else {
-				// The very four Scene fields the dock's PBR sliders write — one set of values, two
-				// places to drag them from.
+				// The very Scene fields the dock's PBR sliders write — one set of values, two places
+				// to drag them from. The material four are read by BOTH PBR methods…
 				scn->lightIntensity = sKeyI.value();
 				scn->fillIntensity  = sFillI.value();
 				scn->roughness      = sRough.value();
 				scn->metallic       = sMetal.value();
+				if (model == 1) {
+					// …the render path's own knobs by method 1 alone, because a baked flat texture has
+					// no environment light, no occlusion pass and no screen passes to run.
+					scn->envIntensity = sEnvI.value();
+					scn->ssaoRadius   = ssaoSeed * sSSAO.value() / 100.0;
+					scn->useIBL  = cbIBLx->isChecked();
+					scn->useSSAO = cbSSAOx->isChecked();
+					scn->useTone = cbTonex->isChecked();
+					scn->useFXAA = cbFXAAx->isChecked();
+				}
+				// Put the window in the mode this method IS. Rebuilds nothing when it is already there.
+				sceneSetShadedImage2D(scn, model == 7);
 			}
 			HillshadeState ls;                       // remember the aim like every other method does
 			ls.valid = true;  ls.model = model;
@@ -4632,8 +4797,8 @@ public:
 			ls.wavelength = eWave->text().trimmed();  ls.amp = eAmp->text().trimmed();
 			ls.oldAlgo = rbOldAlgo->isChecked();
 			g_hillshadeState = ls;
-			sceneSetReliefLook(scn, model == 4 ? RL_HillGrdimage
-			                      : model == 5 ? RL_HillLambert
+			sceneSetReliefLook(scn, model == 5 ? RL_HillGrdimage
+			                      : model == 6 ? RL_HillLambert
 			                                   : RL_PBR);
 			return;
 		}
@@ -4657,20 +4822,20 @@ public:
 		kv << "grid=" + QString::fromStdString(gname);   // illuminate the DISPLAYED layer, not the base
 		kv << QString("azim=%1").arg(st.azim);
 		kv << QString("elev=%1").arg(st.elev);
-		if (model == 3) {
+		if (model == 4) {
 			kv << "ambient="  + st.ambient.trimmed();
 			kv << "diffuse="  + st.diffuse.trimmed();
 			kv << "specular=" + st.specular.trimmed();
 			kv << "shine="    + st.shine.trimmed();
 		}
-		if (model == 7) {
+		if (model == 8) {
 			kv << QString("azimR=%1").arg(st.azR);
 			kv << QString("azimG=%1").arg(st.azG);
 			kv << QString("azimB=%1").arg(st.azB);
 			kv << QString("oldalgo=%1").arg(st.oldAlgo ? 1 : 0);
 			if (st.oldAlgo && !st.amp.isEmpty()) kv << "amp=" + st.amp;
 		}
-		if (model == 8 && !st.wavelength.isEmpty()) kv << "wavelength=" + st.wavelength;
+		if (model == 9 && !st.wavelength.isEmpty()) kv << "wavelength=" + st.wavelength;
 
 		const QByteArray p = kv.join('\n').toUtf8();
 		QApplication::setOverrideCursor(Qt::WaitCursor);
@@ -23016,13 +23181,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	s->syncFlatBox();
 
-	// Geometry toggle: rebuild THAT layer as flat image / surface (one function, base or extra).
-	QObject::connect(cbFlat, &QCheckBox::toggled, [s](bool b){
-		ExtraObj *lay = activeGridLayer(s);
-		if (!lay) s->cubeFlatImg = b;                        // cube layer switches follow the base's flag
-		rebuildLayerFromStored(s, lay, b);
-		if (s->syncFlatEnable) s->syncFlatEnable();          // grey/un-grey the flat-dead controls
-	});
+	// Geometry toggle: rebuild THAT layer as flat image / surface. The box only SAYS which mode is
+	// wanted; sceneSetShadedImage2D is what applies it, and it is the same call the Illumination
+	// dialog's two PBR methods make — one implementation, reachable from both doors.
+	QObject::connect(cbFlat, &QCheckBox::toggled, [s](bool b){ sceneSetShadedImage2D(s, b); });
 	form->addRow("Shaded image (2-D)", cbFlat);
 
 	// The four relief looks: mutually exclusive, illumination only (applyShading, in place). syncShade

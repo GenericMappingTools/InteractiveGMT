@@ -13,32 +13,48 @@ is really violated, and what is only a naming problem.
 C++ dialog `HillshadeDialog` (70_window.cpp) + one Julia callback `_on_hillshade` (src/hillshade.jl).
 
 Mirone's 3 (Peucker), 5 (Manip Raster) and 6 (ESRI hillshade) were dropped by request; the survivors
-are RENUMBERED 1..9 continuously (Mirone's own number in brackets; this program's own looks have none):
+are RENUMBERED 1..10 continuously (Mirone's own number in brackets; this program's own looks have none):
 
 | # | Method | Computed by | Result |
 |---|---|---|---|
-| 1 | GMT grdgradient classic | `grdgradient -A<az> -Nt` (+`-M` when geographic) | intensity |
-| 2 | GMT grdgradient Lambertian | `grdgradient -Es<az>/<el>` | intensity |
-| 3 | Lambertian with lighting (4) | `grdgradient -E<az>/<el>+a<amb>+d<dif>+p<spec>+s<shine>` | intensity |
-| 4 | Hillshade (grdimage) | the Shading dock's look, in C++ (`applyReliefShade`) — never reaches Julia | C++ look |
-| 5 | Hillshade (Lambert) | the Shading dock's look, in C++ (`applyReliefShade`) — never reaches Julia | C++ look |
-| 6 | Shade (PBR) | the Shading dock's look, in C++ — VTK's PBR material on a 3-D surface, `applyPBRShade`'s CPU Cook-Torrance bake under "Shaded image (2-D)" | C++ look |
-| 7 | False colour (7) | three azimuths → R,G,B | **new IMAGE** |
-| 8 | Dynamic Range Compression (8) | `GMT.kovesi` (ppdrc), then illuminated as model 1 | **new GRID** |
-| 9 | Remove illumination (9) | — | restore original |
+| 1 | VTK (PBR) | the Shading dock's look — VTK's own PBR render path on the 3-D surface | C++ look |
+| 2 | GMT grdgradient classic (1) | `grdgradient -A<az> -Nt` (+`-M` when geographic) | intensity |
+| 3 | GMT grdgradient Lambertian (2) | `grdgradient -Es<az>/<el>` | intensity |
+| 4 | Lambertian with lighting (4) | `grdgradient -E<az>/<el>+a<amb>+d<dif>+p<spec>+s<shine>` | intensity |
+| 5 | Hillshade (grdimage) | the Shading dock's look, in C++ (`applyReliefShade`) — never reaches Julia | C++ look |
+| 6 | Hillshade (Lambert) | the Shading dock's look, in C++ (`applyReliefShade`) — never reaches Julia | C++ look |
+| 7 | Shade (PBR) | the Shading dock's look, in C++ — `applyPBRShade`'s CPU Cook-Torrance bake on a flat image | C++ look |
+| 8 | False colour (7) | three azimuths → R,G,B | **new IMAGE** |
+| 9 | Dynamic Range Compression (8) | `GMT.kovesi` (ppdrc), then illuminated as model 2 | **new GRID** |
+| 10 | Remove illumination (9) | — | restore original |
 
-Plus the "Old algorithm" sub-option of model 7 (a port of `shade_manip_raster`, mirone.m) with its
+Plus the "Old algorithm" sub-option of model 8 (a port of `shade_manip_raster`, mirone.m) with its
 Amp factor — restored after it was wrongly dropped with Manip Raster.
 
-Model 6's own four sliders are the dock's **Light**, **Fill**, **Roughness** and **Metallic** — the
-Scene fields `applyPBRShade` reads besides the sun, which comes from the dialog's existing azimuth
-compass and elevation quarter-circle. Metalness was hard-wired to the dielectric case in the bake
-(so the dock's Metallic slider moved nothing on a flat image while it plainly changed the 3-D
-surface); it now follows VTK's own PBR shader — F0 lerped from 4% toward the albedo, diffuse scaled
-by `(1 - metallic)`, and the fill/ambient stand-in for the missing environment tinted by F0 rather
-than dropped, so a fully metallic map does not go black.
+### Models 1 and 7 are the dock's ONE "Shade (PBR)" box, split
 
-**Where the intensity goes.** Models 1/2/3/8 produce a per-node REFLECTANCE grid, exactly what
+The dock's box is two different renderings depending on the geometry: on a 3-D surface it is VTK's
+own PBR render path, under "Shaded image (2-D)" it is `applyPBRShade`'s CPU bake imitating it. Both
+set the single flag `litBake`, so the flag cannot tell them apart — the GEOMETRY does. Each method
+therefore also puts the window in its own mode, through the one geometry switch
+`sceneSetShadedImage2D` (extracted from the dock's checkbox handler so both doors call it). Without
+that, method 1 on a flat-image window would silently hand back method 7, and vice versa.
+
+They share ONE set of material widgets, because they read the same four Scene fields: the dock's
+**Light**, **Fill**, **Roughness** and **Metallic**. Method 1 adds the render-path controls a baked
+texture has no use for — **Env (IBL)**, **SSAO radius**, and the **Image-based light** / **Ambient
+occlusion** / **Tone mapping** / **FXAA** checkboxes — the same set `syncFlatEnable` greys out in
+flat mode. **Cast shadows** is deliberately absent: it is `RL_Shadows`, an *alternative* look to
+`RL_PBR`, so offering it inside a PBR method would switch the method off. The sun for both comes from
+the dialog's existing azimuth compass and elevation quarter-circle.
+
+Metalness was hard-wired to the dielectric case in the bake (so the dock's Metallic slider moved
+nothing on a flat image while it plainly changed the 3-D surface); it now follows VTK's own PBR
+shader — F0 lerped from 4% toward the albedo, diffuse scaled by `(1 - metallic)`, and the
+fill/ambient stand-in for the missing environment tinted by F0 rather than dropped, so a fully
+metallic map does not go black.
+
+**Where the intensity goes.** Models 2/3/4/9 produce a per-node REFLECTANCE grid, exactly what
 Mirone hands to `mex_illuminate`. `mex_illuminate` IS `gmt_illuminate`, which this program already
 owns as `gmtIlluminate` (40_shading.cpp) — the one HSV modulator every shade ends in. So the grid
 is pushed down (`gmtvtk_set_shade_intensity_h`) into `Scene::shadeInten` and the shade engine takes
@@ -51,13 +67,13 @@ so the 3-D surface, every LOD tile, the flat 2-D bake and Aquamoto all read it t
   plain include, the FFTW stub is gone, and the broken duplicate `ext/GMTKovesiExt` was deleted.
   kovesi's private `bwdist` was shadowing GMT's real one — removed, infill uses `bwdist_idx`.
 - ✕ ("Remove illumination") = Mirone's `ImageResetOrigImg_CB` = **restore the original**, not just
-  drop the reflectance. Models 5/6 display a derived product and uncheck the source, so light-off
+  drop the reflectance. Models 8/9 display a derived product and uncheck the source, so light-off
   alone changed nothing on screen. `_hs_restore_original` un-displays the product, re-checks the
   base grid, re-frames axes + Z to it.
 - `gmtvtk_set_object_visible` could not act on the BASE surface (extras-only loop), so nothing could
   re-check a base that the derived-variable display law had unchecked. Base branch added there.
 - Models are ALTERNATIVES, not a pipeline: every model calls `_hs_restore_original` before computing,
-  so 6 (ppdrc) then 1 no longer paints the source's reflectance onto the ppdrc field.
+  so 9 (ppdrc) then 2 no longer paints the source's reflectance onto the ppdrc field.
 
 ---
 
@@ -68,7 +84,7 @@ independent geometry toggle "Shaded image (2-D)":
 
 | Dock entry | Scene flags | What it computes |
 |---|---|---|
-| Shade (PBR) | `!useHillshade && !useShadows`, `litBake` | 3-D: the GPU PBR material. Flat image: `applyPBRShade`, a CPU Cook-Torrance (GGX + Smith + Schlick, metallic 0) |
+| Shade (PBR) | `!useHillshade && !useShadows`, `litBake` | 3-D: the GPU PBR material. Flat image: `applyPBRShade`, a CPU Cook-Torrance (GGX + Smith + Schlick, metalness honoured) |
 | Cast shadows | `useShadows` | VTK shadow-map pass, sun self-shadowing. 3-D only |
 | Hillshade (Lambert) | `useHillshade && !hillGrd` | `applyReliefShade` branch (A) |
 | Hillshade (grdimage) | `useHillshade && hillGrd` | `applyReliefShade` branch (B) |
@@ -94,7 +110,7 @@ The two hillshade branches (40_shading.cpp, `applyReliefShade`):
 
 ## 3. Overlap — where the two really collide
 
-### 3.1 "Hillshade (grdimage)" (dock) vs model 1 "GMT grdgradient classic"
+### 3.1 "Hillshade (grdimage)" (dock) vs model 2 "GMT grdgradient classic"
 
 **Same operation, two implementations.** `grdgradient -Nt` IS an `atan` normalisation of the
 directional derivative; dock branch (B) is `(2/π)·atan(gain·raw)` of a directional derivative taken
@@ -121,14 +137,14 @@ the problem is that the UI gives two of them the same word and the third a word 
 
 ### 3.3 The word "Hillshade"
 
-Means two different things: the dock's two branches (which the tool now offers as its own models 4
+Means two different things: the dock's two branches (which the tool now offers as its own models 5
 and 5, calling the very same `sceneSetReliefLook`) and the tool's own name, "Illumination
 (Hillshade)". The third meaning is gone with the ESRI model.
 
 ### 3.4 The dock's checkboxes LIE after a model is loaded
 
 `gmtvtk_set_shade_intensity_h` sets `useHillshade = true; hillGrd = true` for any loaded model, and
-`syncShadeChecks` derives the boxes from those flags. So after running model 1 or model 2
+`syncShadeChecks` derives the boxes from those flags. So after running model 2 or model 3
 (`-Es`), the dock shows **"Hillshade (grdimage)" checked** — a look that is NOT what is on screen
 (`applyReliefShade` short-circuits to the external grid before it ever reaches branch B).
 
@@ -169,7 +185,7 @@ the Illumination dialog still shows that model selected. Two defensible designs:
    `haveExternShade(s)`, with the four look boxes unchecked while it is up. Kills 3.4.
 3. **Sun sliders re-run the loaded model** (option (b) of 3.5) — the dock asks the Illumination
    callback for a new reflectance at the new az/el instead of discarding it.
-4. **Collapse 3.1 if it ever needs to change.** Branch (B) and model 1 must never be "fixed"
+4. **Collapse 3.1 if it ever needs to change.** Branch (B) and model 2 must never be "fixed"
    independently; if the grdimage look is ever tuned, the tuning belongs in one place. Today the
    shared piece is only `gmtIlluminate`; the slope→intensity step is duplicated.
 5. **Model 3 is not Lambertian** — label it "Phong (ambient/diffuse/specular)" in the dialog.

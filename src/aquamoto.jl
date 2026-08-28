@@ -453,7 +453,7 @@ end
 # goes through (SACRED_LAW: same operation, same function), and pushes each with its own `side`.
 # Illuminating "the grid this window shows" instead resolved to the bathymetry and then lit the SEA
 # with the sea FLOOR's relief -- the dry/wet split gone, which is precisely what the dock exists to
-# keep. Models 7/8 build a new variable rather than modulating and never come here (hillshade.jl).
+# keep. Models 8/9 build a new variable rather than modulating and never come here (hillshade.jl).
 function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String})
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && error("Aquamoto: no file open in this window")

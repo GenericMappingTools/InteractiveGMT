@@ -9,36 +9,41 @@
 #
 # Mirone's 3 (Peucker), 5 (Manip Raster) and 6 (ESRI hillshade) are DROPPED by request. The models
 # that remain are RENUMBERED CONTINUOUSLY — Mirone's numbering had holes once those entries went, and
-# a toolbar that reads 1 2 4 7 8 is nonsense. Two of this program's own looks (4, 5) and a third added
-# 2026-08-28 (6, the PBR shade) are numbered into the same sequence. Mirone's own number is noted only
-# where one exists, so the two programs can still be compared:
+# a toolbar that reads 1 2 4 7 8 is nonsense. This program's OWN looks (1, 5, 6, 7) are numbered into
+# the same sequence. Mirone's own number is noted only where one exists, so the two programs can still
+# be compared:
 #
-#   1  GMT grdgradient classic     -A<azim> -Nt  (+ -M when the grid is geographic)   -> intensity
-#   2  GMT grdgradient Lambertian  -Es<azim>/<elev>  (GMT's own module, not a port)   -> intensity
-#   3  Lambertian with lighting    -E<azim>/<elev>+a<amb>+d<diff>+p<spec>+s<shine>    -> intensity  (Mirone 4)
-#   4  Hillshade (grdimage)        the Shading dock's look — NEVER REACHES JULIA      -> C++ look
-#   5  Hillshade (Lambert)         the Shading dock's look — NEVER REACHES JULIA      -> C++ look
-#   6  Shade (PBR)                 the Shading dock's look — NEVER REACHES JULIA      -> C++ look
-#   7  False colour                three azimuths -> R,G,B                            -> new IMAGE  (Mirone 7)
-#   8  Dynamic Range Compression   GMT.kovesi (ppdrc) -> new GRID, then illuminated as 1 (Mirone 8)
-#   9  Remove illumination                                                            -> clear      (Mirone 9)
+#   1  VTK (PBR)                   the Shading dock's look — NEVER REACHES JULIA      -> C++ look
+#   2  GMT grdgradient classic     -A<azim> -Nt  (+ -M when the grid is geographic)   -> intensity  (Mirone 1)
+#   3  GMT grdgradient Lambertian  -Es<azim>/<elev>  (GMT's own module, not a port)   -> intensity  (Mirone 2)
+#   4  Lambertian with lighting    -E<azim>/<elev>+a<amb>+d<diff>+p<spec>+s<shine>    -> intensity  (Mirone 4)
+#   5  Hillshade (grdimage)        the Shading dock's look — NEVER REACHES JULIA      -> C++ look
+#   6  Hillshade (Lambert)         the Shading dock's look — NEVER REACHES JULIA      -> C++ look
+#   7  Shade (PBR)                 the Shading dock's look — NEVER REACHES JULIA      -> C++ look
+#   8  False colour                three azimuths -> R,G,B                            -> new IMAGE  (Mirone 7)
+#   9  Dynamic Range Compression   GMT.kovesi (ppdrc) -> new GRID, then illuminated as 2 (Mirone 8)
+#  10  Remove illumination                                                            -> clear      (Mirone 9)
 #
-# 4, 5 AND 6 ARE NOT PORTS. They are the three looks the Shading dock offers, whose reflectance is
-# computed in C++ from the surface itself (`applyReliefShade` / `applyPBRShade`, 40_shading.cpp)
-# rather than as a GMT grid. The dialog applies them by calling `sceneSetReliefLook` — the very
-# function the dock's checkboxes call — so each look has ONE implementation reachable from both
-# (SACRED_LAW.md), and the dock may lose its boxes later without the methods going with them. Nothing
-# for those three arrives here. Method 6 is the dock's PBR: VTK's own material on a 3-D surface, and
-# with "Shaded image (2-D)" on, the CPU Cook-Torrance bake that imitates it per flat-image pixel.
+# 1, 5, 6 AND 7 ARE NOT PORTS. They are the looks the Shading dock offers, whose reflectance is
+# computed in C++ from the surface itself (`applyReliefShade` / `applyPBRShade`, 40_shading.cpp) or by
+# VTK's own render path, rather than as a GMT grid. The dialog applies them by calling
+# `sceneSetReliefLook` — the very function the dock's checkboxes call — so each look has ONE
+# implementation reachable from both (SACRED_LAW.md), and the dock may lose its boxes later without
+# the methods going with them. Nothing for those four arrives here.
 #
-# WHERE THE INTENSITY GOES. Models 1/2/3/8 produce a per-node REFLECTANCE grid, exactly what
+# 1 and 7 are the dock's SINGLE "Shade (PBR)" box split into the two things it actually is: VTK's own
+# PBR render path on a 3-D surface (1), and the CPU Cook-Torrance bake that imitates it per flat-image
+# pixel (7). They share the flag `litBake`; the GEOMETRY is what tells them apart, so each method sets
+# that too, through the one `sceneSetShadedImage2D` the dock's "Shaded image (2-D)" box calls.
+#
+# WHERE THE INTENSITY GOES. Models 2/3/4/9 produce a per-node REFLECTANCE grid, exactly what
 # Mirone hands to mex_illuminate. mex_illuminate IS GMT_illuminate, which iGMT already owns as
 # `gmtIlluminate` (40_shading.cpp) — the one HSV modulator every shade in this program ends in. So
 # the grid is pushed down (gmtvtk_set_shade_intensity_h) and the shade engine uses it INSTEAD of the
 # intensity it would derive from the surface normal; the modulation itself is untouched, shared, one
 # function (SACRED_LAW: same operation, same function).
 #
-# Models 7 and 8 do not modulate — they make a new variable, so they follow the derived-variable
+# Models 8 and 9 do not modulate — they make a new variable, so they follow the derived-variable
 # display law: a new, descriptively named handle in the SAME window, checked, source unchecked.
 #
 # The false colour keeps BOTH of Mirone's algorithms (its two radio buttons): the grdgradient one and
@@ -49,7 +54,7 @@
 # ---------------------------------------------------------------------------------------------
 # GMT grdgradient classic: the directional derivative, atan-normalized (-Nt), which is the intensity
 # grdimage's -I wants. Mirone adds -M whenever the grid is geographic (mirone.m ImageIllum), which is
-# GMT6's f=:g. Shared by model 1, by each of the false colour's three azimuths, and by model 8 (DRC).
+# GMT6's f=:g. Shared by model 2, by each of the false colour's three azimuths, and by model 9 (DRC).
 function _hs_classic(G::GMTgrid, azim::Float64)
 	kw = Dict{Symbol,Any}(:A => azim, :N => "t")
 	_isgeographic(G) && (kw[:f] = :g)
@@ -60,9 +65,9 @@ end
 # `GMT.grdgradient(G)` writes back into G.z: the buffer comes out REORDERED while `G.layout` still
 # says what it said before, so the grid silently stops matching its own label. Measured on
 # @earth_relief_30m read "TRB": after one grdgradient the same `_zmat(G)` differs from itself by
-# 10370.5, and model 2 — which reads through `_zmat`, correctly — then computes a reflectance that is
-# off by 1.89 on a quantity that lives in (-1, 1). So running model 1 CORRUPTED THE GRID and model 2
-# (and 4, and the false-colour path, and anything else reading the grid afterwards) was the victim.
+# 10370.5, and model 3 — which reads through `_zmat`, correctly — then computes a reflectance that is
+# off by 1.89 on a quantity that lives in (-1, 1). So running model 2 CORRUPTED THE GRID and model 3
+# (and the false-colour path, and anything else reading the grid afterwards) was the victim.
 # It is the grid memory-layout law's own failure mode — a buffer and its layout code parting company —
 # arriving from outside, so it is caught at the one door every module call in this file goes through.
 _hs_lend(G::GMTgrid) = deepcopy(G)
@@ -87,9 +92,9 @@ end
 # grid handed in. EVERY illuminated surface comes through here -- a plain grid, and EACH of an
 # Aquamoto layer's two surfaces (the live stage the water stands on, the static bathymetry the land
 # stands on). That is what keeps a tsunami's wet and dry halves lit by their own relief instead of
-# by one of them twice; see `_aqua_illuminate!` (aquamoto.jl). Models 7 (false colour) and 8 (ppdrc)
-# are NOT reflectances -- they build a new variable and are handled by the caller; 8 then arrives
-# here with its derived grid and is illuminated as model 1, exactly as Mirone does it.
+# by one of them twice; see `_aqua_illuminate!` (aquamoto.jl). Models 8 (false colour) and 9 (ppdrc)
+# are NOT reflectances -- they build a new variable and are handled by the caller; 9 then arrives
+# here with its derived grid and is illuminated as model 2, exactly as Mirone does it.
 _hs_reflectance(G::GMTgrid, model::Int, d::Dict{String,String})::Matrix{Float32} =
 	_hs_reflectance_rng(G, model, d)[1]
 
@@ -100,10 +105,10 @@ function _hs_reflectance_rng(G::GMTgrid, model::Int,
 	num(key, dflt) = (v = _get(d, key); isempty(v) ? dflt : parse(Float64, v))
 	azim = mod(num("azim", 0.0), 360.0)        # mirone.m: luz.azim = rem(luz.azim, 360)
 	elev = num("elev", 30.0)
-	if model == 1 || model == 8
+	if model == 2 || model == 9
 		g = _hs_classic(G, azim)
 		return _hs_reframe(G, _hs_f32(g), g), (G.range[1], G.range[2], G.range[3], G.range[4])
-	elseif model == 2
+	elseif model == 3
 		# GMT's OWN simple Lambertian, `-Es<azim>/<elev>` — what the model is advertised to be, and
 		# what it now runs. It was a hand-written port that skipped GMT's final [-0.95, 0.95] rescale;
 		# without that rescale the raw cosine deviation is tiny (std 0.027 against method 1's 0.33), so
@@ -112,7 +117,7 @@ function _hs_reflectance_rng(G::GMTgrid, model::Int,
 		# GMT owns this algorithm; call it.
 		g = GMT.grdgradient(_hs_lend(G); E = "s$(azim)/$(elev)")
 		return _hs_reframe(G, _hs_f32(g), g), (G.range[1], G.range[2], G.range[3], G.range[4])
-	elseif model == 3
+	elseif model == 4
 		# GMT's FULL Lambertian takes the angle as a ZENITH, not an elevation: grdgradient.c does
 		# `if (Ctrl->E.mode == 3) Ctrl->E.elevation = 90 - Ctrl->E.elevation;` before building the
 		# light vector, so what reaches the sun is the complement of what is typed. Measured on a
@@ -139,7 +144,7 @@ _hs_f32(R::GMTgrid) = eltype(R.z) === Float32 ? R.z : Float32.(R.z)
 # A GMT MODULE CAN HAND THE REFLECTANCE BACK IN A DIFFERENT LONGITUDE WINDOW, and it does:
 # `grdgradient` RE-WRAPS a global geographic grid — give it @earth_relief_30m at -180..180 and the
 # result comes back at 0..360, same size, columns rolled by half the world. Pushed under the source's
-# range, that lands every model going through a GMT module (1, 2, 3, 8 and the false colour's three
+# range, that lands every model going through a GMT module (2, 3, 4, 9 and the false colour's three
 # azimuths) exactly 180 degrees out of register with the image it is lighting: a -180/180 picture
 # wearing a 0/360 illumination.
 #
@@ -231,8 +236,8 @@ end
 const _HS_FALSECOLOR = "False colour illumination"
 const _HS_PPDRC      = "Dynamic range compressed"
 
-# Model 9 (Mirone's 9) IS `ImageResetOrigImg_CB` — RESTORE THE ORIGINAL IMAGE, not merely "drop the
-# reflectance". That distinction is the whole bug: models 7 and 8 do not modulate anything, they put
+# Model 10 (Mirone's 9) IS `ImageResetOrigImg_CB` — RESTORE THE ORIGINAL IMAGE, not merely "drop the
+# reflectance". That distinction is the whole bug: models 8 and 9 do not modulate anything, they put
 # a NEW picture (false colour) or a NEW grid (ppdrc) on screen and UNCHECK the source, per the
 # derived-variable display law. Killing the light on those leaves the derived variable still
 # displayed — the screen does not change, so the ✕ "does nothing". So Remove also puts the source
@@ -244,7 +249,7 @@ function _hs_restore_original(scene::Ptr{Cvoid}, srcname::AbstractString = "")
 		had |= ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint),
 		             scene, nm, Cint(0)) != 0
 	end
-	# Models 1-6 only modulate: the light is already off by here and NOTHING was ever swapped on
+	# Models 1-7 only modulate: the light is already off by here and NOTHING was ever swapped on
 	# screen, so leave the camera and the axes exactly where the user put them. Re-framing (below)
 	# re-fits the view, and doing that on a plain "remove the shade" would yank the 3-D camera to a
 	# top-down snap for no reason.
@@ -295,7 +300,7 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# reflectance — model -1 is the viewer's code for that, and it leaves the grid in plain CPT
 		# colour. (model 0, used below, is the quieter clear: the model painted its own picture, so the
 		# reflectance goes but the Shading dock keeps its look.)
-		if model == 9
+		if model == 10
 			_hs_push(scene, Matrix{Float32}(undef, 0, 0), 0.0, 0.0, 0.0, 0.0, -1)
 			# Removal undoes what the models did: an Aquamoto layer also stops re-lighting itself at
 			# every new timestep (the loaded model is what makes _aquamoto_slice do that).
@@ -305,9 +310,9 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 
 		# EVERY model starts from the window's SOURCE grid and from a clean screen — the models are
-		# alternatives, never a pipeline. Models 7/8 leave a derived product displayed with the source
+		# alternatives, never a pipeline. Models 8/9 leave a derived product displayed with the source
 		# unchecked; without this, picking 1 next computed its reflectance from the source (below) while
-		# the ppdrc field was still the thing on screen, so 8 "contaminated" 1. Same restore function the
+		# the ppdrc field was still the thing on screen, so 9 "contaminated" 2. Same restore function the
 		# ✕ uses, so there is ONE way to put the original back. No-op when no product is showing.
 		_hs_restore_original(scene, gname)
 
@@ -317,8 +322,8 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# "the window's grid" resolved to the bathymetry and then smeared its relief over the sea too.
 		# So each side is illuminated FROM ITS OWN SURFACE, through the same _hs_reflectance, and the
 		# water is re-lit again at every timestep because its surface is a different one each time.
-		# Models 7/8 make a NEW variable rather than modulating, so they fall through to the plain path.
-		if haskey(_AQUA, scene) && model in (1, 2, 3)
+		# Models 8/9 make a NEW variable rather than modulating, so they fall through to the plain path.
+		if haskey(_AQUA, scene) && model in (2, 3, 4)
 			_aqua_illuminate!(scene, model, d)
 			return Cint(1)
 		end
@@ -329,7 +334,7 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		elev = num("elev", 30.0)                   # the false colour's own input; the reflectance models
 		                                           # read azim/elev inside `_hs_reflectance`
 
-		if model == 7                              # false colour -> a NEW IMAGE, not a modulation
+		if model == 8                              # false colour -> a NEW IMAGE, not a modulation
 			I = _hs_false_color(G, mod(num("azimR", 0.0), 360.0), mod(num("azimG", 120.0), 360.0),
 			                    mod(num("azimB", 240.0), 360.0);
 			                    oldalgo = _get(d, "oldalgo") == "1", elev = elev, amp = num("amp", 125.0))
@@ -345,7 +350,7 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			return Cint(1)
 		end
 
-		if model == 8                              # PPDRC: a new derived GRID, then illuminated as 1
+		if model == 9                              # PPDRC: a new derived GRID, then illuminated as 1
 			# GMT.kovesi is a plain GMT.jl function (src/kovesi.jl): its FFTs go through GMT's own
 			# fft2d (GMT_FFT_2D), so there is no FFTW dependency to load and no stub to guard against.
 			wl = _get(d, "wavelength")
@@ -381,16 +386,16 @@ end
 # is on another thread and the yields cost nothing.
 function _hs_warm()
 	G = GMT.mat2grid(rand(Float32, 32, 32))
-	_hs_f32(_hs_classic(G, 315.0))                        # model 1, and the false colour's 3 azimuths
+	_hs_f32(_hs_classic(G, 315.0))                        # model 2, and the false colour's 3 azimuths
 	yield()
-	GMT.grdgradient(G; E = "s315.0/30.0")                 # model 2
+	GMT.grdgradient(G; E = "s315.0/30.0")                 # model 3
 	yield()
-	_hs_f32(GMT.grdgradient(G; E = "315.0/30.0+a0.55+d0.6+p0.4+s10.0"))   # model 3
+	_hs_f32(GMT.grdgradient(G; E = "315.0/30.0+a0.55+d0.6+p0.4+s10.0"))   # model 4
 	yield()
-	_hs_manip_raster(G.z, 225.0, 30.0, 125.0)             # model 7, "Old algorithm" branch
-	_hs_false_color(G, 0.0, 120.0, 240.0)                 # model 7, grdgradient branch (-> mat2img)
+	_hs_manip_raster(G.z, 225.0, 30.0, 125.0)             # model 8, "Old algorithm" branch
+	_hs_false_color(G, 0.0, 120.0, 240.0)                 # model 8, grdgradient branch (-> mat2img)
 	yield()
-	GMT.kovesi(G; wavelength = 16.0)                      # model 8 (ppdrc: filtergrid + 4 FFTs)
+	GMT.kovesi(G; wavelength = 16.0)                      # model 9 (ppdrc: filtergrid + 4 FFTs)
 	yield()
 	precompile(_on_hillshade,       (Ptr{Cvoid}, Cstring))
 	precompile(_hs_push,            (Ptr{Cvoid}, Matrix{Float32}, Float64, Float64, Float64, Float64, Int, Int))
