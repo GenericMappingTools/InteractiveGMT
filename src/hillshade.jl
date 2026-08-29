@@ -13,13 +13,13 @@
 # the same sequence. Mirone's own number is noted only where one exists, so the two programs can still
 # be compared:
 #
-#   1  VTK (PBR)                   the Shading dock's look — NEVER REACHES JULIA      -> C++ look
+#   1  VTK (PBR)                   a C++ look (VTK render path) — NEVER REACHES JULIA  -> C++ look
 #   2  GMT grdgradient classic     -A<azim> -Nt  (+ -M when the grid is geographic)   -> intensity  (Mirone 1)
 #   3  GMT grdgradient Lambertian  -Es<azim>/<elev>  (GMT's own module, not a port)   -> intensity  (Mirone 2)
 #   4  Lambertian with lighting    -E<azim>/<elev>+a<amb>+d<diff>+p<spec>+s<shine>    -> intensity  (Mirone 4)
-#   5  Hillshade (grdimage)        the Shading dock's look — NEVER REACHES JULIA      -> C++ look
-#   6  Hillshade (Lambert)         the Shading dock's look — NEVER REACHES JULIA      -> C++ look
-#   7  Shade (PBR)                 the Shading dock's look — NEVER REACHES JULIA      -> C++ look
+#   5  Hillshade (grdimage)        a C++ look — NEVER REACHES JULIA                   -> C++ look
+#   6  Hillshade (Lambert)         a C++ look — NEVER REACHES JULIA                   -> C++ look
+#   7  Shade (PBR)                 a C++ look — NEVER REACHES JULIA                   -> C++ look
 #   8  False colour                three azimuths -> R,G,B                            -> new IMAGE  (Mirone 7)
 #   9  Dynamic Range Compression   GMT.kovesi (ppdrc) -> new GRID, then illuminated as 2 (Mirone 8)
 #  10  Remove illumination                                                            -> clear      (Mirone 9)

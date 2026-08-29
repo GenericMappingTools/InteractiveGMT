@@ -1,9 +1,10 @@
-# Illumination (Hillshade) tool vs the Shading dock
+# Illumination (Hillshade): the one relief-shading control surface
 
-Status 2026-07-28. Written after porting Mirone's `shading_params.m`. Two control surfaces now
-produce relief shading in the same window, and some of their entries carry the same NAME while
-running different code. This is the audit of what each one actually computes, where the SACRED LAW
-is really violated, and what is only a naming problem.
+Status 2026-08-28. Written 2026-07-28, after porting Mirone's `shading_params.m`, when TWO control
+surfaces produced relief shading in the same window and some of their entries carried the same NAME
+over different code. The Shading dock has since been removed and this dialog is the only one left,
+so the naming collision is gone; what remains below is the audit of what each look actually computes
+and where the SACRED LAW is genuinely exposed.
 
 ---
 
@@ -17,13 +18,13 @@ are RENUMBERED 1..10 continuously (Mirone's own number in brackets; this program
 
 | # | Method | Computed by | Result |
 |---|---|---|---|
-| 1 | VTK (PBR) | the Shading dock's look — VTK's own PBR render path on the 3-D surface | C++ look |
+| 1 | VTK (PBR) | VTK's own PBR render path on the 3-D surface | C++ look |
 | 2 | GMT grdgradient classic (1) | `grdgradient -A<az> -Nt` (+`-M` when geographic) | intensity |
 | 3 | GMT grdgradient Lambertian (2) | `grdgradient -Es<az>/<el>` | intensity |
 | 4 | Lambertian with lighting (4) | `grdgradient -E<az>/<el>+a<amb>+d<dif>+p<spec>+s<shine>` | intensity |
-| 5 | Hillshade (grdimage) | the Shading dock's look, in C++ (`applyReliefShade`) — never reaches Julia | C++ look |
-| 6 | Hillshade (Lambert) | the Shading dock's look, in C++ (`applyReliefShade`) — never reaches Julia | C++ look |
-| 7 | Shade (PBR) | the Shading dock's look, in C++ — `applyPBRShade`'s CPU Cook-Torrance bake on a flat image | C++ look |
+| 5 | Hillshade (grdimage) | in C++ (`applyReliefShade`) — never reaches Julia | C++ look |
+| 6 | Hillshade (Lambert) | in C++ (`applyReliefShade`) — never reaches Julia | C++ look |
+| 7 | Shade (PBR) | in C++ — `applyPBRShade`'s CPU Cook-Torrance bake on a flat image | C++ look |
 | 8 | False colour (7) | three azimuths → R,G,B | **new IMAGE** |
 | 9 | Dynamic Range Compression (8) | `GMT.kovesi` (ppdrc), then illuminated as model 2 | **new GRID** |
 | 10 | Remove illumination (9) | — | restore original |
@@ -44,8 +45,9 @@ They share ONE set of material widgets, because they read the same four Scene fi
 **Light**, **Fill**, **Roughness** and **Metallic**. Method 1 adds the render-path controls a baked
 texture has no use for — **Env (IBL)**, **SSAO radius**, and the **Image-based light** / **Ambient
 occlusion** / **Tone mapping** / **FXAA** checkboxes — the same set `syncFlatEnable` greys out in
-flat mode. **Cast shadows** is deliberately absent: it is `RL_Shadows`, an *alternative* look to
-`RL_PBR`, so offering it inside a PBR method would switch the method off. The sun for both comes from
+flat mode — plus **Cast shadows**, which is one of these and not a look at all: a VTK shadow-map
+PASS, sibling to SSAO and the screen passes. `RL_Shadows` is gone from the ReliefLook enum and
+`Scene::useShadows` is an independent flag this checkbox owns. The sun for both methods comes from
 the dialog's existing azimuth compass and elevation quarter-circle.
 
 Metalness was hard-wired to the dielectric case in the bake (so the dock's Metallic slider moved
@@ -77,20 +79,39 @@ so the 3-D surface, every LOD tile, the flat 2-D bake and Aquamoto all read it t
 
 ---
 
-## 2. The Shading dock
+## 2. The relief looks (was: the Shading dock)
 
-`View > Shading Panel`. Four MUTUALLY EXCLUSIVE relief "looks" (all four may be off), plus the
-independent geometry toggle "Shaded image (2-D)":
+**The Shading dock is GONE** (removed 2026-08-28). Everything it carried is in the Illumination
+dialog, and nothing had to be re-implemented to get it there — its looks already went through
+the one shared `sceneSetReliefLook` and its geometry toggle through the one shared
+`sceneSetShadedImage2D`. The dock was the checkboxes, never the maths. Where each control went:
 
-| Dock entry | Scene flags | What it computes |
+| Dock control | Now |
+|---|---|
+| Shade (PBR) | methods 1 (3-D) and 7 (flat image) |
+| Cast shadows | a CHECKBOX in method 1's panel — it is a render pass, not a look |
+| Hillshade Lambert / grdimage | methods 6 / 5, with Gain and Ambient |
+| Roughness, Metallic, Light, Fill, Env (IBL), SSAO radius, IBL / AO / Tone / FXAA / Cast shadows | method 1's panel |
+| Sun azimuth / elevation | the dialog's azimuth compass + elevation quarter-circle |
+| Shaded image (2-D) | no checkbox — methods 1 and 7 ARE that switch, and set it themselves |
+| Drape blend | the dialog's common strip, still only when the window has a drape |
+
+`Scene::shadeDock` / `shadeFoldBar` / `cbFlat` / `cbShadow` / `cbHillL` / `cbHillG` / `cbPBR` stay
+null for good. Every reader is null-guarded: `syncShadeChecks` returns early and is now a no-op, and
+`toggleShadingFold` does nothing. `Scene::syncFlatBox` is installed by the dialog and cleared in its
+destructor.
+
+The MUTUALLY EXCLUSIVE relief looks (all may be off) and what each computes. Cast shadows is NOT among
+them — it was in the dock's exclusive group, which is the only reason it ever looked like a look:
+
+| Look | Scene flags | What it computes |
 |---|---|---|
-| Shade (PBR) | `!useHillshade && !useShadows`, `litBake` | 3-D: the GPU PBR material. Flat image: `applyPBRShade`, a CPU Cook-Torrance (GGX + Smith + Schlick, metalness honoured) |
-| Cast shadows | `useShadows` | VTK shadow-map pass, sun self-shadowing. 3-D only |
+| Shade (PBR) | `!useHillshade`, `litBake` | 3-D: the GPU PBR material. Flat image: `applyPBRShade`, a CPU Cook-Torrance (GGX + Smith + Schlick, metalness honoured) |
 | Hillshade (Lambert) | `useHillshade && !hillGrd` | `applyReliefShade` branch (A) |
 | Hillshade (grdimage) | `useHillshade && hillGrd` | `applyReliefShade` branch (B) |
 
-Sliders: sun Azimuth / Elevation, gain (`hillGain`), ambient (`hillAmbient`), roughness, metallic,
-key + fill intensity, IBL, SSAO, tone, FXAA.
+Their parameters: sun Azimuth / Elevation, gain (`hillGain`), ambient (`hillAmbient`), roughness,
+metallic, key + fill intensity, IBL, SSAO, tone, FXAA — all of them now in the Illumination dialog.
 
 The two hillshade branches (40_shading.cpp, `applyReliefShade`):
 

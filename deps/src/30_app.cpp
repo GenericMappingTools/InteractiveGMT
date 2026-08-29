@@ -437,8 +437,8 @@ static JuliaGrdGradientFn g_juliaGrdGradient = nullptr;
 // 3 grdgradient Lambertian, 4 Lambertian with lighting, 5 Hillshade grdimage, 6 Hillshade Lambert,
 // 7 Shade (PBR), 8 false colour, 9 dynamic range compression, 10 remove), azim=, elev=,
 // ambient=/diffuse=/specular=/shine= (model 4), azimR=/azimG=/azimB= + oldalgo=0|1 + amp= (model 8),
-// wavelength= (model 9). Models 1, 5, 6 and 7 are the Shading dock's looks, applied in C++, so they
-// never come through here. Returns 1 on success, 0 on failure. nullptr to detach.
+// wavelength= (model 9). Models 1 and 5-7 are the relief looks, applied in C++, so they never come
+// through here. Returns 1 on success, 0 on failure. nullptr to detach.
 typedef int (*JuliaHillshadeFn)(void *scene, const char *params);
 static JuliaHillshadeFn g_juliaHillshade = nullptr;
 

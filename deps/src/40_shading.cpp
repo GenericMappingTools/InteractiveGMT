@@ -977,12 +977,15 @@ static void applyShading(Scene *s) {
 // the dock from the live flags. So the dock follows whoever set the look, and the day the dock's two
 // hillshade boxes are removed this function and its callers are unaffected — nothing here knows a
 // checkbox exists.
-enum ReliefLook { RL_None = 0, RL_PBR, RL_Shadows, RL_HillLambert, RL_HillGrdimage };
+// CAST SHADOWS IS NOT A LOOK. It is a render PASS on the VTK path — the sun's own self-shadowing,
+// a sibling of SSAO, tone mapping and FXAA, not a way of deriving a reflectance. The Shading dock
+// used to put it in the exclusive group with the three real looks, which is why it was mistaken for
+// one; `Scene::useShadows` is an independent flag, owned by the VTK (PBR) method's own checkbox.
+enum ReliefLook { RL_None = 0, RL_PBR, RL_HillLambert, RL_HillGrdimage };
 
 static void sceneSetReliefLook(Scene *s, int look) {
 	if (!s) return;
 	dropExternShade(s);                 // a look picked here replaces a loaded Illumination model
-	s->useShadows   = (look == RL_Shadows);
 	s->useHillshade = (look == RL_HillLambert || look == RL_HillGrdimage);
 	s->hillGrd      = (look == RL_HillGrdimage);
 	s->litBake      = (look == RL_PBR);
