@@ -56,6 +56,11 @@ mutable struct _AquaState
 	first::Bool                             # true until the first slice has been shown (Save/Session bookkeeping)
 	watercmap::Symbol                       # user-selectable via "Color Bar water" (default :polar)
 	landcmap::Symbol                        # user-selectable via "Color Bar Land" (default :geo)
+	cur::Int                                # 0-based index of the slice on screen (the time slider)
+	illum::Dict{String,String}              # View > "Illumination (Hillshade)" params, EMPTY = none
+	                                        # loaded. Kept because the WATER side stands on a surface
+	                                        # that changes at every timestep, so its reflectance has to
+	                                        # be recomputed per slice (_aqua_relight_water!).
 end
 
 const _AQUA = Dict{Ptr{Cvoid}, _AquaState}()
@@ -289,7 +294,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 		end
 	end
 
-	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, :polar, :geo)
+	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, :polar, :geo, 0, Dict{String,String}())
 	print(nsteps, "|", varname, "|", join(varnames, ","))
 	return nothing
 end
@@ -440,6 +445,80 @@ function _aqua_composite_rgb(bat::Matrix{Float32}, Z::Matrix{Float32}, splitDryW
 	return rgb, imgbat
 end
 
+# ---------------------------------------------------------------------------------------------
+# View > "Illumination (Hillshade)…" ON A TSUNAMI LAYER. What this window shows is a COMPOSITE of two
+# images standing on two DIFFERENT surfaces -- water on the live stage, land on the static bathymetry
+# -- and the shading engine already lights the two separately (bakeAquaShade, 40_shading.cpp). So the
+# tool illuminates EACH SIDE FROM ITS OWN SURFACE, through the same `_hs_reflectance` a plain grid
+# goes through (SACRED_LAW: same operation, same function), and pushes each with its own `side`.
+# Illuminating "the grid this window shows" instead resolved to the bathymetry and then lit the SEA
+# with the sea FLOOR's relief -- the dry/wet split gone, which is precisely what the dock exists to
+# keep. Models 8/9 build a new variable rather than modulating and never come here (hillshade.jl).
+function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String})
+	st = get(_AQUA, scene, nothing)
+	(st === nothing) && error("Aquamoto: no file open in this window")
+	st.illum = copy(d)                        # remembered: the water side is re-lit at every timestep
+	st.illum["model"] = string(model)
+	_hs_push_grid(scene, st.bat, model, st.illum, 1)    # LAND  <- the static bathymetry
+	_aqua_relight_water!(scene, st)                     # WATER <- the CURRENT slice's own stage
+	return nothing
+end
+
+# The WATER side's reflectance, computed from the stage it actually stands on. Called by the tool and
+# AGAIN by every slice change: the stage is a DIFFERENT surface at every timestep, so a reflectance
+# computed once would light slice 40's wave with slice 3's relief. `G` is the slice the caller has
+# already read (never re-read it); without one, the slice on screen is read here.
+function _aqua_relight_water!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,Nothing}=nothing)
+	isempty(st.illum) && return nothing
+	model = parse(Int, st.illum["model"])
+	Gw = G === nothing ? _gmtread_trb("$(st.path)?$(st.varname)[$(st.cur)]") : G
+	R = _aqua_water_reflectance(st, Gw, model)
+	R === nothing && return nothing            # an entirely dry step has no water to light
+	_hs_push(scene, R, Float64(Gw.range[1]), Float64(Gw.range[2]),
+	         Float64(Gw.range[3]), Float64(Gw.range[4]), model, 0)
+	return nothing
+end
+
+# THE WATER SIDE's reflectance. Two things, and both matter:
+#
+# 1. THE FIELD IS THE WET STAGE. A tsunami stage stores the LAND ELEVATION on its dry cells (365 m in
+#    aiai.nc — see this file's header and `_aquamoto_slice`'s colourbar note), so the raw array is not
+#    a water surface: it is a water surface with the coastline welded into it. Every model scales its
+#    intensity from the data's OWN range — model 1 on the grid's mean/sigma (-Nt), the -E models by
+#    stretching the reflectance to the full [-0.95, 0.95] (grdgradient_m.c: "data must be scaled to
+#    the [-1,1] interval") — so those cliffs, not the sea, decided the light. Measured on layer 66:
+#      * the sea's intensity collapsed to two piles, 8.7% pinned at the -0.95 floor and ~70% inside
+#        +0.24..+0.27, with nothing in between (the two tones on screen);
+#      * the ELEVATION ran BACKWARDS on the water — method 2's spread GREW with sun elevation
+#        (sd 0.451 at 5 deg -> 0.587 at 85) while on the bathymetry it correctly fell (0.639 -> 0.166).
+#    The dry cells are dropped with `_aqua_indland`, THE dry/wet test the composite itself paints
+#    with, so the stretch sees the wave field and nothing else.
+#
+# 2. WHAT GOES DOWN IS NEVER NaN — the dropped cells are pushed as intensity ZERO. `gmtIlluminate`
+#    returns immediately on 0, so those texels keep the composite's colour byte for byte. A NaN there
+#    instead makes `externShadeAt` return NaN, which sends the pixel down bakeAquaShade's OTHER branch
+#    (normal-derived shading) — a different code path, and therefore a different colour, on pixels
+#    this tool was never asked to touch. That is what wrecked the colours the first time.
+function _aqua_water_reflectance(st::_AquaState, G::GMTgrid, model::Int)
+	(size(st.bat.z) == size(G.z)) ||
+		error("Aquamoto: '$(st.varname)' ($(size(G.z))) and bathymetry ($(size(st.bat.z))) sizes differ")
+	(_grid_layout_code(G) == _grid_layout_code(st.bat)) ||
+		error("Aquamoto: '$(st.varname)' ($(G.layout)) and bathymetry ($(st.bat.layout)) have different memory layouts")
+	dry = _aqua_indland(st.bat.z, G.z)         # element-wise, both buffers as they lie -- no layout
+	all(dry) && return nothing
+	W = deepcopy(G)
+	W.z[dry] .= NaN32                          # out of the FIELD, so they are out of the STRETCH
+	wet = view(W.z, .!dry)
+	W.range[5], W.range[6] = Float64(minimum(wet)), Float64(maximum(wet))
+	R = _hs_reflectance(W, model, st.illum)
+	# ...and back in as NEUTRAL. Covers the dropped cells and the one-cell NaN fringe GMT leaves
+	# around them: every node the light has nothing to say about says exactly nothing.
+	@inbounds for k in eachindex(R)
+		isfinite(R[k]) || (R[k] = 0.0f0)
+	end
+	return R
+end
+
 # Compute + display slice `k` (0-based). `splitDryWet` toggles the dry/wet composite; `globalMM`
 # picks the whole-cube min/max over the slice's own; `transparency` (0..1) is the Water-
 # transparency slider (mixe_images' cross-blend fraction — land pixels are always hard-overwritten
@@ -450,6 +529,7 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && error("Aquamoto: no file open in this window")
 	(0 <= k < st.nsteps) || error("Aquamoto: slice $k out of range (0..$(st.nsteps - 1))")
+	st.cur = k                                         # the slice on screen, for _aqua_relight_water!
 	G = _gmtread_trb("$(st.path)?$(st.varname)[$(k)]")
 	# Read in "TRB" like every other grid, and composited WHERE IT LIES: the colouring below is
 	# element-wise, and the stage and the bathymetry come from the SAME file through the SAME reader,
@@ -514,6 +594,10 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 		 Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cfloat}, Cstring, Cint, Ptr{Cuchar}),
 		scene, rgba, Cint(nx), Cint(ny), r[1], r[2], r[3], r[4], Cint(st.geog), cz, crgb, Cint(n), zhover, name, zlay, lmask)
 	(ok == 0) && error("Aquamoto: the viewer rejected the update (window closed?)")
+	# The water now stands on a NEW surface, so its reflectance is recomputed from THIS slice's stage.
+	# No-op unless the Illumination tool has a model loaded; the LAND side needs nothing here, its
+	# surface (the bathymetry) is the same one at every timestep.
+	_aqua_relight_water!(scene, st, G)
 	if st.first
 		_remember_object!(scene, :grid, name, st.bat)
 		_session_record!(scene, :basegrid, :file, st.path; name = name)

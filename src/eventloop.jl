@@ -47,7 +47,8 @@ function _ensure_callbacks()
 	_CB_DONE[] = true                                # set first: a failing reg must not retry forever
 	_CB_PUMPS[] = 0;  _CB_MAXGAP[] = 0.0
 	_cb_last = time()
-	for (name, fn) in (("warmup",      _register_warmup),
+	for (name, fn) in (("qsc-warp",    _push_qsc_warp),   # Cube view mode's +proj=qsc table (qsccube.jl)
+	                    ("warmup",      _register_warmup),
 	                    ("console",     _register_console_eval),
 	                    ("drop",        _register_drop_callback),
 	                    ("paste",       _register_paste_callback),

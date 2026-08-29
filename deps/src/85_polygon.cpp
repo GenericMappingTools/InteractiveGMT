@@ -272,6 +272,40 @@ static QIcon makeLinkIcon() {
 // parametric generators (label disambiguates). Same supersampled iconCanvas trick as the others.
 
 // Cube: front face + top/right parallelograms (simple isometric box).
+// Colour Palettes: a stack of colour bands, the thing the tool actually picks.
+static QIcon makePaletteIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, false);
+	static const QColor band[] = { QColor(40, 60, 160), QColor(60, 150, 210), QColor(120, 200, 150),
+	                               QColor(240, 215, 100), QColor(225, 130, 60), QColor(180, 45, 45) };
+	for (int i = 0; i < 6; ++i)
+		p.fillRect(QRectF(5, 4.0 + i * 2.7, 14, 2.7), band[i]);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.2)); p.setBrush(Qt::NoBrush);
+	p.drawRect(QRectF(5, 4, 14, 16.2));
+	p.end(); return QIcon(pm);
+}
+
+// Illumination (Hillshade): a low sun over a lit/shadowed ridge — the thing the tool aims.
+static QIcon makeHillshadeIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(Qt::NoPen); p.setBrush(QColor(245, 200, 70));          // sun, upper left = the light
+	p.drawEllipse(QPointF(6.5, 6.5), 3.2, 3.2);
+	p.setPen(QPen(QColor(245, 200, 70), 1.0));
+	for (int k = 0; k < 4; ++k) {                                   // four short rays toward the ridge
+		const double a = (k * 25.0 + 10.0) * M_PI / 180.0;
+		p.drawLine(QPointF(6.5 + 4.6 * std::cos(a), 6.5 + 4.6 * std::sin(a)),
+		           QPointF(6.5 + 6.4 * std::cos(a), 6.5 + 6.4 * std::sin(a)));
+	}
+	QPolygonF lit;   lit   << QPointF(3, 21) << QPointF(12, 10) << QPointF(12, 21);   // sun-facing side
+	QPolygonF shade; shade << QPointF(12, 10) << QPointF(21, 21) << QPointF(12, 21);  // side in shadow
+	p.setPen(QPen(QColor(40, 40, 40), 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	p.setBrush(QColor(190, 190, 185)); p.drawPolygon(lit);
+	p.setBrush(QColor(95, 95, 100));   p.drawPolygon(shade);
+	p.end(); return QIcon(pm);
+}
+
 static QIcon makeCubeIcon() {
 	QPixmap pm = iconCanvas();
 	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
@@ -349,6 +383,32 @@ static QIcon makeViewModeIcon(bool twoD) {
 	QFont f = p.font(); f.setBold(true); f.setPointSizeF(9.5); p.setFont(f);
 	p.setPen(QColor(35, 35, 40));
 	p.drawText(QRectF(0, 0, 24, 24), Qt::AlignCenter, twoD ? "2D" : "3D");
+	p.end(); return QIcon(pm);
+}
+
+// …and the CUBE mode's glyph, the globe's sibling on the same button: a wireframe cube seen from a
+// corner (three visible faces), with a meridian and a parallel bent over the near vertical edge —
+// the mark of "the planet, on a cube" rather than a plain box.
+static QIcon makeCubeViewIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	// Isometric corner view: the near vertical edge at the centre, top face above, two side faces.
+	const QPointF T(12.0, 2.5), B(12.0, 15.0);            // near vertical edge (top / bottom)
+	const QPointF L(3.0, 7.5),  R(21.0, 7.5);             // left / right silhouette corners
+	const QPointF LB(3.0, 16.5), RB(21.0, 16.5);          // their bottoms
+	const QPointF Tb(12.0, 21.5);                          // far bottom corner
+	p.setBrush(Qt::NoBrush);
+	p.setPen(QPen(QColor(60, 60, 65), 1.5));
+	QPolygonF sil;  sil << T << R << RB << Tb << LB << L;  // outer silhouette
+	p.drawPolygon(sil);
+	p.setPen(QPen(QColor(60, 60, 65), 1.0));
+	p.drawLine(T, B);  p.drawLine(L, B);  p.drawLine(R, B); // the three edges meeting at the near corner
+	// One meridian and one parallel, drawn ON the two visible side faces so the cube reads as a map.
+	p.setPen(QPen(QColor(60, 60, 65), 0.8));
+	p.drawLine(QPointF(7.5, 11.6), QPointF(12.0, 9.2));   // parallel, left face
+	p.drawLine(QPointF(12.0, 9.2), QPointF(16.5, 11.6));  // parallel, right face
+	p.drawLine(QPointF(16.5, 5.6), QPointF(16.5, 13.9));  // meridian, right face
 	p.end(); return QIcon(pm);
 }
 

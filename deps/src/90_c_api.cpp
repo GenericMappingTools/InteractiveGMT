@@ -1090,7 +1090,10 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //       library reads that pointer as nothing at all and the polygon lands ungrouped — or worse, a
 //       generation-6 HOST calling a generation-5 library pushes one argument too many. Exactly the
 //       silent-trailing-argument case this counter exists for.
-GMTVTK_API int gmtvtk_abi_version(void) { return 6; }
+//   7 = gmtvtk_set_shade_intensity_h takes a trailing `side` (0 = the window / Aquamoto WATER,
+//       1 = Aquamoto LAND). A generation-6 library reads it as garbage and can file the water
+//       reflectance under land; a generation-6 host pushes none and leaves land unlit.
+GMTVTK_API int gmtvtk_abi_version(void) { return 8; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -1187,10 +1190,10 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 			kvd("dpi", dpi > 0 ? dpi : 72.0);
 		}
 		kvi("flat2d", s->flat2d ? 1 : 0);
-		// The view mode is a TRI-state (3-D / flat 2-D / globe) and `flat2d` above can only carry two
-		// of them, so the whole answer travels in its own key. It is written alongside, not instead:
-		// a session file read by an older library still finds the flat2d it knows.
-		kvi("viewmode", s->globe ? 2 : (s->flat2d ? 1 : 0));
+		// The view mode is a FOUR-state (3-D / flat 2-D / globe / cube) and `flat2d` above can only
+		// carry two of them, so the whole answer travels in its own key. It is written alongside, not
+		// instead: a session file read by an older library still finds the flat2d it knows.
+		kvi("viewmode", s->globe ? (s->cube ? 3 : 2) : (s->flat2d ? 1 : 0));
 		kvd("barX0", s->barX0); kvd("barY0", s->barY0);
 		if (s->ren) {
 			if (vtkCamera *cam = s->ren->GetActiveCamera()) {
@@ -1229,10 +1232,12 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 
 	double d; int i;
 	if (getd("ve", d) && d > 0.0) { s->ve = d; applyVE(s); }         // VE first: rescales all actors
-	// … then the view mode. `viewmode` is the whole tri-state and wins when the session has one; a
+	// … then the view mode. `viewmode` is the whole four-state and wins when the session has one; a
 	// file written before it existed still restores through `flat2d`, which is the same switch with
-	// the globe left out. One entry point either way (sceneSetViewMode), never two mode paths.
-	if (geti("viewmode", i))      sceneSetViewMode(s, (i == 2) ? IGVIEW_GLOBE : (i == 1 ? IGVIEW_FLAT2D : IGVIEW_3D));
+	// the two body modes left out. One entry point either way (sceneSetViewMode), never two paths.
+	if (geti("viewmode", i))      sceneSetViewMode(s, (i == 3) ? IGVIEW_CUBE
+	                                                : (i == 2) ? IGVIEW_GLOBE
+	                                                : (i == 1) ? IGVIEW_FLAT2D : IGVIEW_3D);
 	else if (geti("flat2d", i)) {
 		if (i && !s->flat2d)      sceneSetFlat2D(s, true);
 		else if (!i && s->flat2d) sceneSetFlat2D(s, false);
@@ -1841,14 +1846,21 @@ GMTVTK_API void gmtvtk_set_warmup_callback(JuliaWarmupFn fn) {
 // and selects the grdimage style, which is the honest label: the modulator this reflectance ends in
 // IS gmt_illuminate, exactly as in Mirone's mex_illuminate. Nothing else about the shade engine
 // changes — applyReliefShade simply takes the intensity from the grid instead of from the normal.
+// `side` names WHICH surface the reflectance describes, because an Aquamoto tsunami layer has two:
+// 0 = the window's only surface, and in Aquamoto the WATER (the live stage); 1 = the Aquamoto LAND
+// (the static bathymetry). Water and land are separate images standing on separate surfaces, so one
+// reflectance cannot describe both -- the tool computes each side's from that side's OWN grid and
+// pushes it with the matching `side`, and bakeAquaShade reads the one that belongs to each pixel.
+// A CLEAR (inten == nullptr / nx < 2 / ny < 2) always drops BOTH sides, whatever `side` says: the
+// tool's models are alternatives, never a pipeline, and "Remove illumination" means the whole layer.
 GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, int nx, int ny,
-                                             double x0, double x1, double y0, double y1, int model) {
+                                             double x0, double x1, double y0, double y1, int model,
+                                             int side) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	if (!inten || nx < 2 || ny < 2) {
-		s->shadeInten.clear();
-		s->shadeInX = s->shadeInY = 0;
-		s->shadeInModel = 0;
+		s->shadeIn     = ExternShade();
+		s->shadeInLand = ExternShade();
 		s->useHillshade = false;
 		// model < 0 is the tool's "Remove illumination" (Mirone's ImageResetOrigImg_CB): EVERY light
 		// goes off, not just this tool's reflectance, so the grid falls back to plain CPT colour. Just
@@ -1859,19 +1871,32 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 			s->useShadows = false;
 			s->litBake    = false;      // flat-image mode -> plain CPT, no PBR bake
 			s->noShade    = true;       // 3-D surface   -> unlit, plain CPT (applySurfStyle)
+			// Removal undoes exactly what the push did (and only that): loading a model switched each
+			// Aquamoto side's OWN snapshot to "hillshade", so the ✕ switches both back. Without this the
+			// tsunami stayed lit by a light the user never asked the dock for. `model == 0` (a model
+			// that paints its own picture) is the quiet clear and leaves the dock's look alone.
+			s->aquaWaterShade.useHillshade = s->aquaLandShade.useHillshade = false;
+			s->aquaWaterShade.litBake      = s->aquaLandShade.litBake      = false;
 		}
 		applyShading(s);
 		return;
 	}
-	s->shadeInten.assign(inten, inten + (size_t)nx * ny);
-	s->shadeInX = nx;   s->shadeInY = ny;
-	s->shadeInX0 = x0;  s->shadeInX1 = x1;
-	s->shadeInY0 = y0;  s->shadeInY1 = y1;
-	s->shadeInModel = model;
+	ExternShade &E = (side == 1) ? s->shadeInLand : s->shadeIn;
+	E.inten.assign(inten, inten + (size_t)nx * ny);
+	E.nx = nx;   E.ny = ny;
+	E.x0 = x0;   E.x1 = x1;
+	E.y0 = y0;   E.y1 = y1;
+	E.model = model;
 	s->noShade      = false;                          // a model IS a light: ends "Remove illumination"
 	s->useHillshade = true;
 	s->hillGrd      = true;
 	s->useShadows   = false;                          // cast-shadows is the alternative look, not an add-on
+	// The Aquamoto sides relight from their OWN snapshot (AquaSideShade), and a side whose snapshot
+	// still says "no light" would drop the reflectance we just handed it -- the shared control going
+	// inert for one element type. So the SAME three flags set on the Scene above are set on the side
+	// this push belongs to, and only on it: the other image keeps its light untouched.
+	AquaSideShade &A = (side == 1) ? s->aquaLandShade : s->aquaWaterShade;
+	A.valid = true;  A.useHillshade = true;  A.hillGrd = true;  A.litBake = false;
 	// DIRECT GRID ILLUMINATION MEANS DIRECT. GMT already computed one intensity per grid node; the
 	// only honest way to consume it is ONE bake -- CPT(z) x intensity -> the drape texture
 	// (rebakeLayerImage), which is what `layerImgMode` is. On the BASE surface the same reflectance is
@@ -2974,7 +2999,8 @@ GMTVTK_API int gmtvtk_layer_display(void *handle, const char *name, char *buf, i
 			else if (s->drape)                     why = "draped image texture";
 			else if (s->useShadows)                why = "cast shadows";
 			else if (s->useHillshade)              why = s->hillGrd ? "baked grdimage hillshade" : "baked Lambert hillshade";
-			else if (!s->shadeInten.empty())       why = "external illumination grid";
+			else if (!s->shadeIn.inten.empty() ||
+			         !s->shadeInLand.inten.empty()) why = "external illumination grid";
 			else if (s->layerTexW > 0 && s->litBake) why = "baked PBR shaded image";
 			else if (!s->noShade)                  why = "lit 3-D surface (PBR key+fill light)";
 		}
@@ -3877,24 +3903,43 @@ GMTVTK_API int gmtvtk_vector_unmapped_h(void *handle, char *buf, int cap) {
 // has to know the window's drawing scales exist, and no caller can get the order wrong.
 
 // Set the window's VIEW MODE: 0 = 3-D perspective, 1 = flat 2-D map, 2 = globe (the geographic
-// orthographic projection). The SAME switch the toolbar's 2D/3D/Globe flyout drives, exported so the
-// host can drive it too (session restore, scripts, the GUI tests). The globe is refused for data that
-// is not geographic — there is no lon/lat to put on a sphere — and the refusal is reported, not
-// silently swallowed: returns 1 when the window is in the requested mode afterwards, else 0.
+// orthographic projection), 3 = cube (PROJ's quadrilateralized spherical cube, +proj=qsc). The SAME
+// switch the toolbar's view-mode flyout drives, exported so the host can drive it too (session
+// restore, scripts, the GUI tests). Both BODY modes are refused for data that is not geographic —
+// there is no lon/lat to put on a sphere or a cube — and the refusal is reported, not silently
+// swallowed: returns 1 when the window is in the requested mode afterwards, else 0.
 GMTVTK_API int gmtvtk_set_view_mode_h(void *scene, int mode) {
 	Scene *s = (Scene*)scene;
 	if (!s || !sceneAlive(s)) return 0;
-	if (mode == IGVIEW_GLOBE && activeGridGeog(s) == 0) return 0;
+	if (igViewIsBody(mode) && activeGridGeog(s) == 0) return 0;
 	sceneSetViewMode(s, mode);
-	return ((s->globe ? IGVIEW_GLOBE : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D)) == mode) ? 1 : 0;
+	const int now = s->globe ? (s->cube ? IGVIEW_CUBE : IGVIEW_GLOBE)
+	                        : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D);
+	return (now == mode) ? 1 : 0;
 }
 
 // … and read it back (same encoding). Lets the host ask what the window is showing without
-// duplicating the tri-state rule on its side.
+// duplicating the four-state rule on its side.
 GMTVTK_API int gmtvtk_get_view_mode_h(void *scene) {
 	Scene *s = (Scene*)scene;
 	if (!s || !sceneAlive(s)) return 0;
-	return s->globe ? IGVIEW_GLOBE : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D);
+	return s->globe ? (s->cube ? IGVIEW_CUBE : IGVIEW_GLOBE)
+	                : (s->flat2d ? IGVIEW_FLAT2D : IGVIEW_3D);
+}
+
+// THE QSC WARP, handed over from Julia — the projection this library never computes itself.
+// `n` is the side of the square sample grid, `fwd` its n*n*2 doubles mapping a regular (a,b) grid in
+// [-1,1]^2 (a cube face's gnomonic coordinates) to QSC's own face coordinates (u,v), and `inv` the
+// same grid the other way. One table serves all six faces and every window — the warp is a constant
+// of the projection, not a per-scene setting — so this is called once per session (src/cube.jl) and
+// simply overwrites what was there. n < 2 clears it, which leaves the cube mode drawing the plain
+// gnomonic cube rather than refusing to work.
+GMTVTK_API void gmtvtk_set_cube_warp(int n, const double *fwd, const double *inv) {
+	if (n < 2 || !fwd || !inv) { g_cubeWarpN = 0; g_cubeWarpFwd.clear(); g_cubeWarpInv.clear(); return; }
+	const size_t cnt = (size_t)n * (size_t)n * 2;
+	g_cubeWarpFwd.assign(fwd, fwd + cnt);
+	g_cubeWarpInv.assign(inv, inv + cnt);
+	g_cubeWarpN = n;
 }
 
 // Clamp / unclamp a vector element to the ground BY NAME, through the SAME lineSetClamped the
@@ -4828,6 +4873,20 @@ GMTVTK_API int gmtvtk_menu_trigger_test(void *handle, const char *path) {
 	for (const QString &step : QString::fromUtf8(path).split('/', Qt::SkipEmptyParts)) {
 		QAction *a = menuFindDeep(s->win->menuBar(), step.trimmed(), true);
 		if (!a) a = menuFindDeep(s->win->menuBar(), step.trimmed(), false);
+		// ...and the TOOLBAR, because a command lives in exactly one place and that place is not
+		// always a menu: Color Palettes and Illumination (Hillshade) are toolbar buttons. A hook that
+		// only knows about the menu bar cannot reach half the window's commands.
+		if (!a) {
+			const QString want = step.trimmed().remove('&');
+			for (QToolBar *bar : s->win->findChildren<QToolBar *>()) {
+				for (QAction *act : bar->actions()) {
+					const QString have = act->text().remove('&');
+					if (have.compare(want, Qt::CaseInsensitive) == 0 ||
+					    have.contains(want, Qt::CaseInsensitive)) { a = act; break; }
+				}
+				if (a) break;
+			}
+		}
 		if (!a) return n;
 		a->trigger();
 		QApplication::processEvents();
@@ -5493,6 +5552,53 @@ GMTVTK_API void gmtvtk_right_button_test(void *scene, int x, int y, int press) {
 
 // test hook: read back a window's CURRENT visible world region (sceneVisibleRegion, 10_geometry.cpp)
 // as (W,E,S,N) into `out4`. Returns 0 if there is no renderer yet (an unbuilt empty launcher).
+// test hook: what colour did the shade bake actually put on the surface at (lon, lat)?
+// out5 = { r, g, b, matchedLon, matchedLat } of the nearest SOURCE vertex (true coords, i.e. the
+// geometry as it is before any globe/cube transform). Returns 0 when nothing is baked (no
+// "hillshade" array = the surface is being lit live by the GPU instead), 1 when it read one.
+// Exists because a shading defect on a body has two possible homes — a wrong BAKE or a wrong LIGHT —
+// and they are indistinguishable by eye. This says which: if two points on opposite faces over
+// comparable terrain come back with very different brightness, the bake is face-dependent and the
+// lights are innocent.
+GMTVTK_API int gmtvtk_probe_shade_test(void *scene, double lon, double lat, double *out5) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !out5) return 0;
+	std::vector<vtkActor*> acts = surfActors(s);
+	double best = 1e300;  int got = 0;
+	for (vtkActor *a : acts) {
+		if (!a) continue;
+		vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
+		if (!m) continue;
+		vtkPolyData *pd = nullptr;
+		auto hk = s->globeHooks.find(a);
+		if (hk != s->globeHooks.end() && hk->second.filt) {
+			if (vtkAlgorithm *up = hk->second.filt->GetInputAlgorithm()) up->Update();
+			pd = vtkPolyData::SafeDownCast(hk->second.filt->GetInput());
+		}
+		if (!pd) { if (m->GetNumberOfInputConnections(0) > 0) m->Update();
+		           pd = vtkPolyData::SafeDownCast(m->GetInput()); }
+		if (!pd || !pd->GetPoints()) continue;
+		vtkDataArray *col = pd->GetPointData()->GetArray("hillshade");
+		if (!col) continue;
+		vtkPoints *P = pd->GetPoints();
+		const vtkIdType n = P->GetNumberOfPoints();
+		const double gx = (s->xfac != 0.0) ? s->xfac : 1.0;
+		for (vtkIdType i = 0; i < n; ++i) {
+			double p[3];  P->GetPoint(i, p);
+			const double dl = p[0] / gx - lon, dt = p[1] - lat;
+			const double d2 = dl*dl + dt*dt;
+			if (d2 < best) {
+				best = d2;
+				double c[3];  col->GetTuple(i, c);
+				out5[0] = c[0]; out5[1] = c[1]; out5[2] = c[2];
+				out5[3] = p[0] / gx; out5[4] = p[1];
+				got = 1;
+			}
+		}
+	}
+	return got;
+}
+
 GMTVTK_API int gmtvtk_visible_region_test(void *scene, double *out4) {
 	Scene *s = static_cast<Scene*>(scene);
 	if (!s || !out4) return 0;

@@ -213,6 +213,10 @@
 // vtkSphericalTransform is the (r,phi,theta) -> (x,y,z) half. See sceneGlobeTransform (10_geometry).
 #include <vtkGeneralTransform.h>
 #include <vtkSphericalTransform.h>
+// …and the CUBE body of that same mode (PROJ's +proj=qsc). vtkWarpTransform is VTK's base for a
+// non-linear transform written in C++ — it supplies the point/normal/vector plumbing every
+// vtkTransformPolyDataFilter needs, leaving only the forward/inverse point maps to fill in.
+#include <vtkWarpTransform.h>
 #include <vtkLight.h>
 #include <vtkMath.h>
 // vtkSMPTools pulls in TBB's profiling.h, whose `void emit()` method collides with Qt's `emit`

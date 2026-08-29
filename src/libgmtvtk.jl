@@ -70,7 +70,13 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # Generation 6 = gmtvtk_add_poly_full takes a trailing `groupName`, so a tool that paints several
 # polygons in one action (Geography > Sun and terminators) can fold them under one Scene Objects row.
 # A generation-5 library is handed one argument too many and reads the fill values shifted.
-const _ABI_REQUIRED = 6
+# Generation 7 = gmtvtk_set_shade_intensity_h takes a trailing `side`, because an Aquamoto tsunami
+# layer has TWO surfaces (water on the live stage, land on the static bathymetry) and one reflectance
+# cannot describe both. A generation-6 library reads that argument as garbage.
+# Generation 8 = gmtvtk_set_cube_warp exists and gmtvtk_set_view_mode_h accepts mode 3 (the QSC cube
+# body). A generation-7 library has no cube: the warp push finds no symbol and mode 3 falls through
+# its view-mode switch, leaving the window in whatever mode it was already in.
+const _ABI_REQUIRED = 8
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.
@@ -123,7 +129,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_scene_state_full, :gmtvtk_apply_scene_state, :gmtvtk_serialize_texts,
 	# View mode (0 = 3-D, 1 = flat 2-D map, 2 = globe / geographic orthographic). The globe is refused
 	# for non-geographic data, which is why the setter answers with the mode it actually landed in.
-	:gmtvtk_set_view_mode_h, :gmtvtk_get_view_mode_h,
+	:gmtvtk_set_view_mode_h, :gmtvtk_get_view_mode_h, :gmtvtk_set_cube_warp,
 	# Clamp a vector element (or a whole tagged group) onto the surface below it. The importer of an
 	# x,y dataset calls this instead of draping the vertices itself — one clamp, and the source z survives.
 	:gmtvtk_line_clamp_h,

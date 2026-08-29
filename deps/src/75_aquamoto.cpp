@@ -57,21 +57,36 @@ class AquamotoHideOnClose : public QObject {
 public:
 	Scene *scene_;
 	AquamotoHideOnClose(QObject *parent, Scene *scene) : QObject(parent), scene_(scene) {}
+	// PARKING IS ONE OPERATION, so the X and the minimise button share it verbatim -- the window is
+	// hidden (never destroyed) and a handle appears in Scene Objects that brings it back.
+	void park(QWidget *w) {
+		if (!w) return;
+		w->hide();                                              // hidden, NOT destroyed
+		if (!scene_) return;
+		Scene *sc = scene_;
+		parkTool(sc, w, "Aquamoto viewer", IC_Image,
+		         "Parked Aquamoto viewer — double-click to bring it back, click for its menu",
+		         [sc]() { aquamotoUnpark(sc); }, aquamotoParkedMenu(sc));
+		// A handle the user cannot see is the same as no handle at all — same reveal the
+		// X,Y plot does when it parks.
+		unfoldSceneObjects(sc);
+	}
 	bool eventFilter(QObject *obj, QEvent *ev) override {
 		if (ev->type() == QEvent::Close) {
 			ev->ignore();
-			QWidget *w = qobject_cast<QWidget *>(obj);
-			if (w) w->hide();                                   // hidden, NOT destroyed
-			if (scene_ && w) {
-				Scene *sc = scene_;
-				parkTool(sc, w, "Aquamoto viewer", IC_Image,
-				         "Closed Aquamoto viewer — double-click to bring it back, click for its menu",
-				         [sc]() { aquamotoUnpark(sc); }, aquamotoParkedMenu(sc));
-				// A handle the user cannot see is the same as no handle at all — same reveal the
-				// X,Y plot does when it parks.
-				unfoldSceneObjects(sc);
-			}
+			park(qobject_cast<QWidget *>(obj));
 			return true;
+		}
+		// MINIMISE PARKS IT, exactly as the X does. Qt has already applied the minimised state by the
+		// time this event arrives, so the bit is cleared first -- otherwise the window would come back
+		// out of Scene Objects still minimised, i.e. not come back at all.
+		if (ev->type() == QEvent::WindowStateChange) {
+			QWidget *w = qobject_cast<QWidget *>(obj);
+			if (w && w->isMinimized()) {
+				w->setWindowState(w->windowState() & ~Qt::WindowMinimized);
+				park(w);
+				return true;
+			}
 		}
 		return QObject::eventFilter(obj, ev);
 	}
@@ -136,6 +151,13 @@ public:
 		win = qobject_cast<QMainWindow *>(loader.load(&buf));
 		f.close();
 		if (!win) { qWarning("AquamotoWindow: QUiLoader failed to load the .ui"); return; }
+
+		// NO MAXIMIZE BUTTON. Nobody asked for one -- it comes free with Qt's default top-level frame
+		// (see the note further down), and a window sized to its layout's true minimum has nothing to
+		// gain from being blown up to the screen. Set HERE, straight after load(): the native window
+		// does not exist yet (winId() below is what creates it), so this cannot trigger the recreate
+		// the warning further down is about.
+		win->setWindowFlags(win->windowFlags() & ~Qt::WindowMaximizeButtonHint);
 
 		// Deliberately do NOT apply the .ui's own declared <property name="geometry"> size here (that
 		// number just drifts every time the window gets resized in Designer, see git history of this

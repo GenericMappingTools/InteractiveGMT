@@ -1266,6 +1266,9 @@ static void applyStacking(Scene *s) {
 	for (int k = 0; k < n; ++k) if (it[ord[k]].stack == &s->surfStack) { surfRank = k; break; }
 	int topRasterRank = -1;
 	for (int k = 0; k < n; ++k) if (!it[ord[k]].vec) topRasterRank = k;   // ranks == position (sorted), so last raster
+	// The offset the TOPMOST raster wears — the depth a vector lying on the map has to clear on a 3-D
+	// body, where "on top of the raster" is decided by the depth buffer and not by a separate layer.
+	const double uTop = (topRasterRank >= 0) ? -(topRasterRank - surfRank) * step : 0.0;
 	for (int k = 0; k < n; ++k) {
 		*it[ord[k]].stack = k;                              // 0..n-1 (survives deletes)
 		const bool   vec     = it[ord[k]].vec;
@@ -1291,7 +1294,17 @@ static void applyStacking(Scene *s) {
 		// Promoting it to the depth-cleared overlay layer is what made a border run over the peaks.
 		// flat2d is the same exception as solid3D's: a top-down MAP shows every line regardless.
 		const bool realZ   = it[ord[k]].realZ;
-		const bool byDepth = solid3D || realZ;              // let real geometry decide, no bias ramp
+		// A 3-D BODY (globe or cube) is the third member of this exemption, and for the same reason the
+		// other two are in it: the planet is real 3-D geometry, so what is on ITS FAR SIDE must be hidden
+		// BY IT. Promoting a vector to the depth-cleared layer there draws the whole back of the world
+		// over the front — a coastline set on a QSC cube came out as South America printed across Africa,
+		// which reads as "the vectors are not projected" and is really "the vectors are not occluded".
+		// The sphere only ever escaped it because globeClip removes the far hemisphere geometrically; the
+		// cube has no such plane (a cube's near surface is not a half-space, see sceneGlobeAimClip) and so
+		// showed the defect bare. The coplanar z-fight against the surface the line LIES on is broken by
+		// the offset ramp below exactly as it is for every other vector — the layer was never what did that.
+		const bool onBody  = (s && s->globe);
+		const bool byDepth = solid3D || realZ || onBody;     // let real geometry decide, no bias ramp
 		const bool onTop = vec && (!byDepth || s->flat2d) && topRasterRank >= 0 && k > topRasterRank;
 		for (vtkActor *a : it[ord[k]].actors) {
 			if (vec) setActorTopLayer(s, a, onTop);         // solid3D / clamped: onTop only in flat2d
@@ -1299,12 +1312,23 @@ static void applyStacking(Scene *s) {
 			if (!mp) continue;
 			if (solid3D) {
 				// leave depth resolution at the mapper's own default (no bias) -> real occlusion
-			} else if (realZ && !s->flat2d) {
+			} else if ((realZ || onBody) && !s->flat2d) {
 				// Lying ON the surface, so it still needs a nudge out of the coplanar z-fight — but a
 				// FEW depth increments, not the pile ramp: 20000 of them would put it back through the
 				// mountain the depth test just hid it behind.
-				mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, -4.0);
-				mp->SetRelativeCoincidentTopologyPointOffsetParameter(-4.0);
+				// A 3-D BODY puts EVERY vector in that position, clamped or not: a coastline on the globe
+				// or the QSC cube lies on the planet's own skin, and the planet is barely a thousand depth
+				// increments thick on screen — the pile ramp reaches straight through it and prints the
+				// far side over the near one (the "coastlines all screwed on the cube" report). The pile
+				// ORDER still holds among vectors; only the depth BIAS is capped to what a coplanar fight
+				// actually needs.
+				// Four increments, and no more. On a BODY the vector is already held off the skin
+				// GEOMETRICALLY (globeVecXf's radial lift, 10_geometry.cpp), so the only thing left here is
+				// an exact tie to break. A bigger bias is what drew a line THROUGH the planet's near bulge
+				// and made it read as floating out of place seen sideways.
+				const double nudge = -4.0;
+				mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, nudge);
+				mp->SetRelativeCoincidentTopologyPointOffsetParameter(nudge);
 			} else if (vec) {
 				mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, u);
 				mp->SetRelativeCoincidentTopologyPointOffsetParameter(u);

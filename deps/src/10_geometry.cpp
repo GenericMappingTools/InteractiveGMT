@@ -601,11 +601,23 @@ static void nestSetRect(Scene *s, Polygon &pg, double x0, double x1, double y0, 
 // with its OWN light: editing the selected side updates only ITS snapshot, and bakeAquaShade re-bakes
 // the OTHER side from its own (unchanged) snapshot -- so a water edit changes NOTHING of the land
 // (no colour, no light), and vice versa. Only geometry (xfac/zfac/ve) is shared (read live from Scene).
+// ONE external-reflectance store: a per-node intensity grid computed by GMT in Julia (the
+// "Illumination (Hillshade)" tool, src/hillshade.jl) over a true-coord box, sampled by WORLD
+// position. A window normally has one (Scene::shadeIn). An Aquamoto layer has TWO -- see
+// Scene::shadeInLand -- because water and land are two images standing on two different surfaces;
+// they are the SAME struct read through the SAME haveExternShade/externShadeAt, never a fork.
+struct ExternShade {
+	std::vector<float> inten;      // column-major inten[ix*ny + iy], the gridZ layout
+	int    nx = 0, ny = 0;
+	double x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0;
+	int    model = 0;              // the Mirone illum_model that produced it (0 = none loaded)
+};
+
 struct AquaSideShade {
 	bool   valid = false;
 	bool   useHillshade = true, hillGrd = true, litBake = false;
 	double lightAz = 315.0, lightEl = 45.0, hillAmbient = 0.3, hillGain = 2.0;
-	double roughness = 0.45, lightIntensity = 1.0, fillIntensity = 0.4;
+	double roughness = 0.45, metallic = 0.0, lightIntensity = 1.0, fillIntensity = 0.4;
 };
 
 // ---- scene we hang onto for the callbacks / menu actions --------------------
@@ -785,12 +797,30 @@ struct Scene {
 	// mutual exclusion is maintained by the SINGLE switch sceneSetViewMode() (70_window.cpp) and by
 	// nothing else — never set one of them next to the other by hand.
 	bool   globe = false;
+	// WHICH BODY the data is wrapped onto while `globe` is up. false = the sphere (the globe proper),
+	// true = the QSC CUBE (PROJ's +proj=qsc, the fourth view mode). It is deliberately NOT a second,
+	// parallel "cube mode": a cube is the same operation as a globe — lon/lat/z onto a 3-D body, seen
+	// through the parallel camera — so it reuses this whole engine (globeXf, globeAttachActor,
+	// globeDensifyPD, globeClip, the graticule, applyVE's scaling) and changes only the ONE transform
+	// that sits in globeXf. SACRED_LAW.md, "same operation, ALWAYS same function": forking a second
+	// body pipeline beside this one is exactly what that forbids.
+	bool   cube = false;
 	// Sphere radius in world units. 180/pi makes one degree of equatorial arc exactly one world unit,
 	// i.e. the SAME horizontal unit the flat lon/lat map already uses — so zfac / ve / sceneZRef keep
 	// meaning exactly what they meant, and the relief rides the sphere radially at the same VE.
 	double globeR = 57.29577951308232;
 	vtkSmartPointer<vtkGeneralTransform>   globeXf;    // (lon,lat,z) -> world XYZ; THE mapping
+	// The same mapping with the vector lift behind it (kGlobeVectorLift): what every LINE/POINT/POLYGON
+	// element wears, so it rides a hair over the skin instead of z-fighting it. Built from globeXf in
+	// sceneGlobeUpdateTransform, never independently.
+	vtkSmartPointer<vtkGeneralTransform>   globeVecXf;
 	vtkSmartPointer<vtkTransform>          globeLin;   // its linear half (degrees -> r,phi,theta)
+	// The cube body's transform, when `cube` is up. It lives INSIDE globeXf (which keeps its identity
+	// as the one mapping object every attached filter already holds); this pointer only exists so the
+	// radius / z-scale can be pushed into it on a VE change. -1 = globeXf carries nothing yet, 0 = it
+	// is wearing the sphere, 1 = the cube. See sceneGlobeUpdateTransform.
+	vtkSmartPointer<vtkAbstractTransform>  cubeXf;
+	int    globeXfKind = -1;
 	// Per-actor render hook: the transform filter spliced between an actor's own polydata and its
 	// mapper while the globe is on, plus the mapper input connection it displaced (restored verbatim
 	// when the globe goes off). Keyed by the actor, so an actor deleted meanwhile simply drops out.
@@ -816,6 +846,7 @@ struct Scene {
 	// instead of a rectangular axes box (the box is hidden while this is up — rebuildAxisLabels).
 	vtkSmartPointer<vtkActor> globeFrame;
 	double globeFrameR = -1.0;               // radius the graticule was last built for (rebuild when it moves)
+	bool   globeFrameCube = false;           // …and which BODY it was built on (sphere and cube share a radius)
 	bool   imageOnly = false;   // loaded as a bare image (no elevation): readout shows pixel colour, not z
 	PaletteLegend palette;      // the PRIMARY image's class legend, when that image is indexed (see
 	                            // PaletteLegend); an extra/derived image carries its own on its ExtraObj
@@ -933,10 +964,13 @@ struct Scene {
 	// gmtIlluminate(), the one HSV modulator (SACRED_LAW: same operation, same function). Sampled by
 	// WORLD POSITION (sampleGrid), so it serves the surface, the LOD tiles, the flat-image bake and
 	// the Aquamoto composite alike, at any resolution and with no index bookkeeping.
-	std::vector<float> shadeInten;   // column-major inten[ix*shadeInY + iy], the gridZ layout
-	int    shadeInX = 0, shadeInY = 0;
-	double shadeInX0 = 0.0, shadeInX1 = 0.0, shadeInY0 = 0.0, shadeInY1 = 0.0;
-	int    shadeInModel = 0;         // the Mirone illum_model that produced it (0 = none loaded)
+	//
+	// TWO of them, for the same reason the Shading dock keeps two AquaSideShade snapshots: an Aquamoto
+	// tsunami layer is TWO images with TWO surfaces -- water stands on the live stage, land on the
+	// static bathymetry -- so ONE reflectance cannot describe both. The tool computes each side's
+	// reflectance from that side's OWN surface and pushes it here; every other window has water only.
+	ExternShade shadeIn;             // the window's reflectance (in Aquamoto: the WATER side's)
+	ExternShade shadeInLand;         // Aquamoto only: the LAND side's own reflectance
 	// "Remove illumination" (the tool's ✕, Mirone's ImageResetOrigImg_CB): NO light at all — the
 	// surface renders UNLIT with its plain CPT colours. Distinct from every look toggle, because
 	// "no hillshade" still leaves the PBR scene lights on and the grid still looks illuminated.
@@ -1414,25 +1448,357 @@ static inline void textApplyPos(Scene *s, TextLabel &tl, double addX = 0.0, doub
 //
 // globeR = 180/pi, so one degree of equatorial arc is one world unit — the same horizontal unit
 // the flat lon/lat map already uses. That is what lets zfac / ve / sceneZRef keep their meanings.
+// --- THE CUBE BODY: PROJ's quadrilateralized spherical cube (+proj=qsc) ----------------------
+// The same mode, a different body. Where the globe wraps lon/lat/z onto a sphere, this wraps it onto
+// a CUBE of half-side globeR, with each of the six faces carrying PROJ's QSC projection of the
+// spherical square that faces it. QSC and not s2: QSC is EQUAL-AREA (constant area scale, 6/pi, over
+// the whole planet), so a square kilometre of ocean draws as the same number of pixels wherever it
+// sits on the cube; s2's default UVtoST warp is Google's cell-size heuristic, neither equal-area nor
+// conformal, and it emits [0,1] texture coordinates rather than metres.
+//
+// WHERE THE PROJECTION COMES FROM: PROJ, through GDAL, on the Julia side — never re-derived here.
+// The QSC forward/inverse is SAMPLED once per session by src/cube.jl (GMT.lonlat2xy / xy2lonlat with
+// `+proj=qsc`) and pushed in through gmtvtk_set_cube_warp. That keeps the rule this file has been
+// bitten by before (SACRED_LAW.md, and the standing "use GMT's own maths, never a hand-rolled
+// lookalike"): the numbers below ARE PROJ's numbers, tabulated, not a second implementation of them.
+//
+// WHAT IS TABULATED is the smallest invariant piece: the face-local warp
+//     W : (a, b) -> (u, v),  both in [-1, 1]^2
+// where (a, b) are the face's GNOMONIC coordinates (where the ray from the planet's centre pierces
+// the flat face) and (u, v) are QSC's own face coordinates (its metres / globeR). One table serves
+// all six faces — PROJ treats every cube side alike, verified exact to 1e-15 against all six
+// lat_0/lon_0 settings — so the only per-face data is an integer frame, below.
+//
+// AND IT IS TABULATED IN ONE OCTANT, not over the whole square, because W is C0 but NOT C1: PROJ's
+// QSC picks a quadrant inside each face, and the derivative jumps across the face DIAGONALS (du/db
+// measured at a=0.6 goes 0.135 -> -0.304 as b crosses 0.6). A regular (a,b) grid cuts that kink at an
+// angle, so every cell straddling a diagonal interpolates across a corner and the error stops falling
+// like h^2 — it is 23x worse than it should be, and BICUBIC is worse still, overshooting the kink.
+// Folding by W's own symmetries — W(-a,b) = (-u,v), W(a,-b) = (u,-v), W(b,a) = (v,u), all exact —
+// reduces every point to 0 <= b <= a, and tabulating THAT on (a, b/a) puts the kink exactly on the
+// b/a = 1 edge of the table. Smooth interior, error back to h^2, and a quarter of the memory.
+static int                 g_cubeWarpN = 0;
+static std::vector<double> g_cubeWarpFwd;      // n*n*2 over (a, b/a) in [0,1]^2 -> (u, v)
+static std::vector<double> g_cubeWarpInv;      // n*n*2 over (u, v/u) in [0,1]^2 -> (a, b)
+
+// Look (p, q) up in one of the two tables above, folding into the first octant on the way in and
+// unfolding the answer on the way out. Both tables have the same shape, so this serves either
+// direction. Returns false only when no table has been pushed yet, in which case the caller falls
+// back to the identity warp = the plain gnomonic cube (still a cube, still every point on the face
+// the ray says it is on, just without QSC's equal-area redistribution).
+static bool cubeWarpApply(const std::vector<double> &tab, double p, double q, double &ox, double &oy) {
+	const int n = g_cubeWarpN;
+	if (n < 2 || tab.size() < (size_t)n * (size_t)n * 2) return false;
+	const double sp = (p < 0.0) ? -1.0 : 1.0, sq = (q < 0.0) ? -1.0 : 1.0;
+	double A = std::fabs(p), B = std::fabs(q);
+	bool swapped = false;
+	if (B > A) { std::swap(A, B);  swapped = true; }        // …now 0 <= B <= A: the first octant
+	const double s = (A > 0.0) ? B / A : 0.0;
+	const double gx = std::min(std::max(A, 0.0), 1.0) * (n - 1);
+	const double gy = std::min(std::max(s, 0.0), 1.0) * (n - 1);
+	int i0 = (int)gx, j0 = (int)gy;
+	if (i0 > n - 2) i0 = n - 2;
+	if (j0 > n - 2) j0 = n - 2;
+	const double fx = gx - i0, fy = gy - j0;
+	auto at = [&](int i, int j, int c) { return tab[((size_t)j * n + i) * 2 + c]; };
+	double out[2];
+	for (int c = 0; c < 2; ++c)
+		out[c] = (1-fx)*(1-fy)*at(i0,j0,c)   + fx*(1-fy)*at(i0+1,j0,c)
+		       + (1-fx)*fy    *at(i0,j0+1,c) + fx*fy    *at(i0+1,j0+1,c);
+	if (swapped) std::swap(out[0], out[1]);                 // the swap symmetry exchanges the outputs too
+	ox = sp * out[0];  oy = sq * out[1];
+	return true;
+}
+
+// The six faces, each as the integer frame (n, e1, e2) that reproduces PROJ's own axis convention
+// for that face's lat_0/lon_0 — n is the outward face normal, e1 the axis QSC's +u runs along and e2
+// the axis its +v runs along. Verified against `+proj=qsc` for all six settings (front lon_0=0,
+// right lon_0=90, back lon_0=180, left lon_0=-90, top lat_0=90, bottom lat_0=-90) to 1e-15, which is
+// what makes ONE warp table enough for the whole cube.
+struct CubeFace { double n[3], e1[3], e2[3]; };
+static const CubeFace kCubeFaces[6] = {
+	{ { 1, 0, 0}, { 0, 1, 0}, { 0, 0, 1} },     // 0 front   lat_0=0   lon_0=0
+	{ { 0, 1, 0}, {-1, 0, 0}, { 0, 0, 1} },     // 1 right   lat_0=0   lon_0=90
+	{ {-1, 0, 0}, { 0,-1, 0}, { 0, 0, 1} },     // 2 back    lat_0=0   lon_0=180
+	{ { 0,-1, 0}, { 1, 0, 0}, { 0, 0, 1} },     // 3 left    lat_0=0   lon_0=-90
+	{ { 0, 0, 1}, { 0, 1, 0}, {-1, 0, 0} },     // 4 top     lat_0=90
+	{ { 0, 0,-1}, { 0, 1, 0}, { 1, 0, 0} },     // 5 bottom  lat_0=-90
+};
+
+// Which face a direction belongs to: the one whose normal the direction leans on hardest. This is
+// pure geometry (the ray/cube intersection), not projection — it is the same answer for the inverse,
+// where the largest component of a point on the cube is its own face's normal.
+static inline int cubeFaceOf(const double d[3]) {
+	const double ax = std::fabs(d[0]), ay = std::fabs(d[1]), az = std::fabs(d[2]);
+	if (ax >= ay && ax >= az) return d[0] >= 0.0 ? 0 : 2;
+	if (ay >= az)             return d[1] >= 0.0 ? 1 : 3;
+	return d[2] >= 0.0 ? 4 : 5;
+}
+
+static inline double cubeDot(const double a[3], const double b[3]) {
+	return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+
+// (lon, lat, z) -> world XYZ on the cube, and back. Written as a vtkWarpTransform so it can sit
+// inside the SAME globeXf every attached filter and every C++ maths call already reads — the cube is
+// a body swap, not a second pipeline.
+//
+//   forward:  d      = the unit direction of (lon, lat)
+//             face   = cubeFaceOf(d);  (a,b) = its gnomonic coords on that face
+//             (u,v)  = W(a,b)                                   <- PROJ's QSC, tabulated
+//             P0     = globeR * (n + u*e1 + v*e2)               <- the face point, z = 0
+//             P      = P0 * (1 + z*zscale / |P0|)               <- relief along the RADIUS
+//
+// THE RELIEF RIDES THE RADIUS, not the face normal, and that is not a detail — it is the difference
+// between a cube and a cube covered in shards. The face point P0 is continuous across a cube edge
+// (both faces agree there: |u| or |v| = 1, and QSC agrees on the seam), but a face NORMAL jumps 90
+// degrees across it. Displacing along the normal therefore pushed one corner of an edge-straddling
+// cell along nA and the next along nB, shearing it into a blade that grew with VE — at VE 11 the
+// cube's edges were fringed with them. The radius is continuous everywhere, so the seam stays shut.
+// It is also the same rule the SPHERE already obeys ("r = globeR + z * (zfac * ve)", radial relief):
+// one body, one meaning for a metre of topography, which is what SACRED_LAW.md asks for anyway.
+class vtkQSCCubeTransform : public vtkWarpTransform
+{
+public:
+	static vtkQSCCubeTransform *New();
+	vtkTypeMacro(vtkQSCCubeTransform, vtkWarpTransform);
+
+	void SetRadius(double r) { if (r != this->Radius) { this->Radius = r; this->Modified(); } }
+	void SetZScale(double k) { if (k != this->ZScale) { this->ZScale = k; this->Modified(); } }
+
+	vtkAbstractTransform *MakeTransform() override { return vtkQSCCubeTransform::New(); }
+
+protected:
+	vtkQSCCubeTransform() = default;
+	~vtkQSCCubeTransform() override = default;
+
+	void InternalDeepCopy(vtkAbstractTransform *t) override {
+		this->Superclass::InternalDeepCopy(t);
+		if (auto *o = vtkQSCCubeTransform::SafeDownCast(t)) { this->Radius = o->Radius; this->ZScale = o->ZScale; }
+	}
+
+	void ForwardTransformPoint(const double in[3], double out[3]) override {
+		const double d2r = vtkMath::Pi() / 180.0;
+		const double cl = std::cos(in[1]*d2r);
+		const double d[3] = { cl * std::cos(in[0]*d2r), cl * std::sin(in[0]*d2r), std::sin(in[1]*d2r) };
+		const CubeFace &F = kCubeFaces[cubeFaceOf(d)];
+		const double dn = cubeDot(d, F.n);
+		const double a  = (dn != 0.0) ? cubeDot(d, F.e1) / dn : 0.0;
+		const double b  = (dn != 0.0) ? cubeDot(d, F.e2) / dn : 0.0;
+		double u = a, v = b;
+		cubeWarpApply(g_cubeWarpFwd, a, b, u, v);
+		const double R = this->Radius;
+		const double P0[3] = { R*(F.n[0] + u*F.e1[0] + v*F.e2[0]),
+		                       R*(F.n[1] + u*F.e1[1] + v*F.e2[1]),
+		                       R*(F.n[2] + u*F.e1[2] + v*F.e2[2]) };
+		const double L = std::sqrt(cubeDot(P0, P0));          // R at a face centre, R*sqrt(3) at a corner
+		const double k = (L > 0.0) ? (1.0 + in[2] * this->ZScale / L) : 1.0;
+		for (int i = 0; i < 3; ++i) out[i] = P0[i] * k;       // radial relief: seam-safe at every edge
+	}
+	void ForwardTransformPoint(const float in[3], float out[3]) override {
+		const double di[3] = { in[0], in[1], in[2] };  double dout[3];
+		this->ForwardTransformPoint(di, dout);
+		for (int i = 0; i < 3; ++i) out[i] = (float)dout[i];
+	}
+
+	void InverseTransformPoint(const double in[3], double out[3]) override {
+		// The forward map only SCALES the face point along its own radius, so the input's largest
+		// component still names its face, and dividing by that component's value puts it back on the
+		// cube — no search, no iteration for the geometric half.
+		const CubeFace &F = kCubeFaces[cubeFaceOf(in)];
+		const double R = (this->Radius != 0.0) ? this->Radius : 1.0;
+		const double m = cubeDot(in, F.n);                    // = R * (1 + z*zscale/L)
+		const double u = (m != 0.0) ? cubeDot(in, F.e1) / m : 0.0;
+		const double v = (m != 0.0) ? cubeDot(in, F.e2) / m : 0.0;
+		const double L = R * std::sqrt(1.0 + u*u + v*v);      // |P0| for this (u,v)
+		double a = u, b = v;
+		cubeWarpApply(g_cubeWarpInv, u, v, a, b);
+		// The inverse table is only the SEED. What the readout must invert is what was DRAWN, i.e.
+		// the forward table — so two Newton steps against that same forward table pin (a,b) to the
+		// pair the render would have produced, and the hover readout can no longer disagree with the
+		// picture by the two tables' independent interpolation error (~1e-5, tens of metres). Costs a
+		// handful of lookups on a path that runs once per hovered pixel.
+		for (int it = 0; it < 2 && g_cubeWarpN >= 2; ++it) {
+			double u0 = a, v0 = b;
+			cubeWarpApply(g_cubeWarpFwd, a, b, u0, v0);
+			const double du = u - u0, dv = v - v0;
+			if (std::fabs(du) < 1e-12 && std::fabs(dv) < 1e-12) break;
+			const double h = 1e-4;
+			double up, vp, um, vm;
+			cubeWarpApply(g_cubeWarpFwd, a + h, b, up, vp);
+			cubeWarpApply(g_cubeWarpFwd, a - h, b, um, vm);
+			const double J00 = (up - um) / (2*h), J10 = (vp - vm) / (2*h);
+			cubeWarpApply(g_cubeWarpFwd, a, b + h, up, vp);
+			cubeWarpApply(g_cubeWarpFwd, a, b - h, um, vm);
+			const double J01 = (up - um) / (2*h), J11 = (vp - vm) / (2*h);
+			const double det = J00*J11 - J01*J10;
+			if (std::fabs(det) < 1e-12) break;
+			a += ( J11*du - J01*dv) / det;
+			b += (-J10*du + J00*dv) / det;
+		}
+		const double d[3] = { F.n[0] + a*F.e1[0] + b*F.e2[0],
+		                      F.n[1] + a*F.e1[1] + b*F.e2[1],
+		                      F.n[2] + a*F.e1[2] + b*F.e2[2] };
+		const double dl = std::sqrt(cubeDot(d, d));
+		const double r2d = 180.0 / vtkMath::Pi();
+		out[0] = std::atan2(d[1], d[0]) * r2d;
+		out[1] = (dl > 0.0) ? std::asin(std::min(1.0, std::max(-1.0, d[2] / dl))) * r2d : 0.0;
+		out[2] = (this->ZScale != 0.0) ? (std::sqrt(cubeDot(in, in)) - L) / this->ZScale : 0.0;
+	}
+	void InverseTransformPoint(const float in[3], float out[3]) override {
+		const double di[3] = { in[0], in[1], in[2] };  double dout[3];
+		this->InverseTransformPoint(di, dout);
+		for (int i = 0; i < 3; ++i) out[i] = (float)dout[i];
+	}
+
+	// Both derivatives by central difference on the map above — the warp is a table, so there is no
+	// analytic Jacobian to be had, and this is only ever asked for when normals/vectors ride along.
+	void ForwardTransformDerivative(const double in[3], double out[3], double der[3][3]) override {
+		this->NumericDerivative(true, in, out, der);
+	}
+	void ForwardTransformDerivative(const float in[3], float out[3], float der[3][3]) override {
+		double di[3] = { in[0], in[1], in[2] }, dout[3], dd[3][3];
+		this->NumericDerivative(true, di, dout, dd);
+		for (int i = 0; i < 3; ++i) { out[i] = (float)dout[i];
+			for (int j = 0; j < 3; ++j) der[i][j] = (float)dd[i][j]; }
+	}
+	void InverseTransformDerivative(const double in[3], double out[3], double der[3][3]) override {
+		this->NumericDerivative(false, in, out, der);
+	}
+	void InverseTransformDerivative(const float in[3], float out[3], float der[3][3]) override {
+		double di[3] = { in[0], in[1], in[2] }, dout[3], dd[3][3];
+		this->NumericDerivative(false, di, dout, dd);
+		for (int i = 0; i < 3; ++i) { out[i] = (float)dout[i];
+			for (int j = 0; j < 3; ++j) der[i][j] = (float)dd[i][j]; }
+	}
+
+private:
+	vtkQSCCubeTransform(const vtkQSCCubeTransform &) = delete;
+	void operator=(const vtkQSCCubeTransform &) = delete;
+
+	void NumericDerivative(bool fwd, const double in[3], double out[3], double der[3][3]) {
+		if (fwd) this->ForwardTransformPoint(in, out);
+		else     this->InverseTransformPoint(in, out);
+		const double h = fwd ? 1e-4 : (1e-6 * std::max(1.0, this->Radius));
+		for (int j = 0; j < 3; ++j) {
+			double p[3] = { in[0], in[1], in[2] }, m[3] = { in[0], in[1], in[2] }, fp[3], fm[3];
+			p[j] += h;  m[j] -= h;
+			if (fwd) { this->ForwardTransformPoint(p, fp);  this->ForwardTransformPoint(m, fm); }
+			else     { this->InverseTransformPoint(p, fp);  this->InverseTransformPoint(m, fm); }
+			for (int i = 0; i < 3; ++i) der[i][j] = (fp[i] - fm[i]) / (2.0 * h);
+		}
+	}
+
+	double Radius = 57.29577951308232;
+	double ZScale = 1.0;
+};
+vtkStandardNewMacro(vtkQSCCubeTransform);
+
+// Nearest hit of the ray org + t*dir with the BODY's zero-level surface (sphere or cube of radius
+// globeR). false = the ray misses it entirely (sky). Same job for both bodies, one function.
+static bool sceneBodyRayHit(Scene *s, const double org[3], const double dir[3], double &t) {
+	const double R = s ? s->globeR : 1.0;
+	if (s && s->cube) {                       // slab method against the box [-R, R]^3
+		double tmin = -1e300, tmax = 1e300;
+		for (int i = 0; i < 3; ++i) {
+			if (std::fabs(dir[i]) < 1e-300) { if (org[i] < -R || org[i] > R) return false;  continue; }
+			double t1 = (-R - org[i]) / dir[i], t2 = (R - org[i]) / dir[i];
+			if (t1 > t2) std::swap(t1, t2);
+			tmin = std::max(tmin, t1);  tmax = std::min(tmax, t2);
+			if (tmin > tmax) return false;
+		}
+		t = tmin;
+		return true;
+	}
+	const double a = dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2];
+	const double b = 2.0 * (org[0]*dir[0] + org[1]*dir[1] + org[2]*dir[2]);
+	const double c = org[0]*org[0] + org[1]*org[1] + org[2]*org[2] - R*R;
+	const double disc = b*b - 4.0*a*c;
+	if (a <= 0.0 || disc < 0.0) return false;
+	t = (-b - std::sqrt(disc)) / (2.0*a);
+	return true;
+}
+
+// A VECTOR on a body rides a hair ABOVE the skin, and it does so GEOMETRICALLY. The body maps every
+// point to a radius, so scaling the mapped point about the origin by (1 + eps) IS a radial lift — one
+// number, no second body formula, and the same lift whatever the body (sphere or cube) or the VE.
+// Why not a depth-buffer bias, which is what the flat map uses: a bias moves the line in DEPTH only, so
+// a coastline on the near hemisphere's far shoulder gets drawn THROUGH the bulge standing in front of
+// it — the user's report verbatim, "located correctly viewed from above, floating out of place seen
+// sideways". A real lift cannot do that: the line is where it is, and whatever stands before it hides
+// it. 3e-3 of the radius is ~19 km of Earth — enough increments on this window's depth buffer (so no z-fight against an image
+// plane its z = 0 vectors are exactly coincident with) and under a pixel of parallax at any angle a
+// globe is actually looked at.
+static const double kGlobeVectorLift = 3e-3;
+
 static void sceneGlobeUpdateTransform(Scene *s) {
 	if (!s) return;
+	// ONE mapping object for the life of the scene — the attached filters hold a pointer to it, so a
+	// BODY change (globe <-> cube) swaps what is concatenated INSIDE it rather than replacing it.
+	const int kind = s->cube ? 1 : 0;
 	if (!s->globeXf) {
-		s->globeXf  = vtkSmartPointer<vtkGeneralTransform>::New();
-		s->globeLin = vtkSmartPointer<vtkTransform>::New();
-		auto sph = vtkSmartPointer<vtkSphericalTransform>::New();
-		s->globeXf->PostMultiply();                 // applied in the order concatenated: linear, then sphere
-		s->globeXf->Concatenate(s->globeLin);
-		s->globeXf->Concatenate(sph);
+		s->globeXf = vtkSmartPointer<vtkGeneralTransform>::New();
+		s->globeXfKind = -1;
 	}
-	const double d2r = vtkMath::Pi() / 180.0;
-	const double k   = s->zfac * s->ve;             // the SAME drawn z scale every flat actor gets
-	vtkNew<vtkMatrix4x4> M;
-	M->Zero();
-	M->SetElement(0, 2, k);                 M->SetElement(0, 3, s->globeR);        // r
-	M->SetElement(1, 1, -d2r);              M->SetElement(1, 3, vtkMath::Pi()/2);  // phi = colatitude
-	M->SetElement(2, 0, d2r);                                                      // theta = lon
-	M->SetElement(3, 3, 1.0);
-	s->globeLin->SetMatrix(M);
+	if (s->globeXfKind != kind) {
+		s->globeXf->Identity();                     // drop the previous body, keep the object
+		s->globeXf->PostMultiply();                 // applied in the order concatenated
+		if (kind == 1) {
+			s->cubeXf  = vtkSmartPointer<vtkQSCCubeTransform>::New();
+			s->globeLin = nullptr;
+			s->globeXf->Concatenate(s->cubeXf);
+		}
+		else {
+			s->globeLin = vtkSmartPointer<vtkTransform>::New();
+			auto sph = vtkSmartPointer<vtkSphericalTransform>::New();
+			s->cubeXf = nullptr;
+			s->globeXf->Concatenate(s->globeLin);
+			s->globeXf->Concatenate(sph);
+		}
+		s->globeXfKind = kind;
+	}
+	const double k = s->zfac * s->ve;                // the SAME drawn z scale every flat actor gets
+	if (kind == 1) {
+		auto *cx = static_cast<vtkQSCCubeTransform *>(s->cubeXf.Get());
+		cx->SetRadius(s->globeR);
+		cx->SetZScale(k);
+	}
+	else {
+		const double d2r = vtkMath::Pi() / 180.0;
+		vtkNew<vtkMatrix4x4> M;
+		M->Zero();
+		M->SetElement(0, 2, k);                 M->SetElement(0, 3, s->globeR);        // r
+		M->SetElement(1, 1, -d2r);              M->SetElement(1, 3, vtkMath::Pi()/2);  // phi = colatitude
+		M->SetElement(2, 0, d2r);                                                      // theta = lon
+		M->SetElement(3, 3, 1.0);
+		s->globeLin->SetMatrix(M);
+	}
+	// THE VECTOR MAPPING: the SAME body transform with the radial lift behind it (kGlobeVectorLift).
+	// It is built from globeXf, never beside it — a second body formula here is exactly what
+	// SACRED_LAW.md forbids — and it is rebuilt in this one place, so a body swap or a VE change
+	// reaches lines and surfaces together.
+	if (!s->globeVecXf) s->globeVecXf = vtkSmartPointer<vtkGeneralTransform>::New();
+	s->globeVecXf->Identity();
+	s->globeVecXf->PostMultiply();
+	s->globeVecXf->Concatenate(s->globeXf);
+	// …ABOVE THE TOPMOST RASTER, not above z = 0. An image is not laid on the skin: it rides a plane at
+	// its own `ex.zpos`, which is `zmax + imageStackStep` = deliberately ABOVE the relief (50_scene.cpp),
+	// and on a body that height becomes a bigger RADIUS. A vector lifted a fixed hair over globeR is then
+	// UNDER the map — vector data hidden by a raster, which is the one thing SACRED_LAW.md's stacking
+	// rule forbids outright (it is why a coastline vanished entirely on a cubified global basemap). So
+	// the lift is measured from whatever stands highest, in the same z scale the body transform uses,
+	// and the constant is only the hair on top of that.
+	// NO VECTOR UNDER ANY RASTER, EVER — grid or image, base or extra. So the ceiling is the highest
+	// thing any raster in this window reaches: an image's plane height (ex.zpos), a grid's own zmax,
+	// and the base surface's zmax. Taking only the images left a coastline inside the relief the
+	// moment the window had a grid in it, which is the same violation one raster kind further along.
+	double zTop = s->zmax;
+	for (const auto &ex : s->extras)
+		zTop = std::max(zTop, ex.isImage ? ex.zpos : ex.zmax);
+	if (zTop < 0.0) zTop = 0.0;                     // an all-below-sea-level window: the skin is the ceiling
+	const double lift = 1.0 + (s->globeR > 0.0 ? (zTop * k) / s->globeR : 0.0) + kGlobeVectorLift;
+	s->globeVecXf->Scale(lift, lift, lift);         // about the body's centre = along the radius
+	s->globeVecXf->Modified();
 	s->globeXf->Modified();                         // every attached filter re-executes
 }
 
@@ -1639,7 +2005,9 @@ static vtkSmartPointer<vtkPolyData> globeDensifyPD(vtkPolyData *in, double maxSe
 //
 // A globe-attached actor must sit at scale (1,1,1): its geometry has already been through the
 // transform, which folds in xfac and the VE. applyVE is the one place that decides that.
-static void globeAttachActor(Scene *s, vtkActor *a, bool on) {
+// `vec` = a line/points/polygon element: it wears globeVecXf, the same body mapping with the radial
+// lift behind it (see kGlobeVectorLift), so it rides just over the skin instead of fighting it.
+static void globeAttachActor(Scene *s, vtkActor *a, bool on, bool vec = false) {
 	if (!s || !a) return;
 	auto it = s->globeHooks.find(a);
 	if (on) {
@@ -1664,7 +2032,7 @@ static void globeAttachActor(Scene *s, vtkActor *a, bool on) {
 		Scene::GlobeHook h;
 		h.savedIn = src;
 		h.filt = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
-		h.filt->SetTransform(s->globeXf);
+		h.filt->SetTransform(vec && s->globeVecXf ? s->globeVecXf.Get() : s->globeXf.Get());
 		// Densify coarse geometry here and feed the refined copy to the filter: an image plane is a 2x2
 		// quad and a coastline segment can span tens of degrees — both cut straight through the sphere
 		// as chords otherwise.
@@ -1707,9 +2075,19 @@ static void sceneGlobeAimClip(Scene *s) {
 	const double L = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
 	if (L < 1e-12) return;
 	for (int i = 0; i < 3; ++i) n[i] /= L;
-	// A hair BEHIND the centre, so geometry sitting exactly on the great circle (the limb) is not
-	// clipped away by rounding and made to flicker as the globe turns.
-	s->globeClip->SetOrigin(-1e-3 * s->globeR * n[0], -1e-3 * s->globeR * n[1], -1e-3 * s->globeR * n[2]);
+	// THE CUBE HAS NO SEPARATING PLANE, and pretending it does is what chopped its faces in half.
+	// On a sphere the plane through the centre IS the limb: near hemisphere = { P . v > 0 }, exactly.
+	// On a cube the near surface is the union of the faces with n . v > 0, which is not a half-space —
+	// look at a corner and a point on the plainly visible +X face has P.v = (R + y + z)/sqrt(3), which
+	// goes NEGATIVE in that face's far corner, so the clip ate a wedge out of a face being looked at
+	// straight on. A convex body's own depth buffer already hides its far side (a cube view is a
+	// global dataset, i.e. a closed body), so here the plane is pushed out past the farthest corner
+	// (R*sqrt(3)) and clips nothing at all — the SAME plane object, still owned by the same mappers,
+	// simply positioned where this body's far side actually begins.
+	const double back = s->cube ? (2.0 * std::sqrt(3.0) * s->globeR) : (1e-3 * s->globeR);
+	// (Sphere: a hair BEHIND the centre, so geometry sitting exactly on the great circle — the limb —
+	// is not clipped away by rounding and made to flicker as the globe turns.)
+	s->globeClip->SetOrigin(-back * n[0], -back * n[1], -back * n[2]);
 	s->globeClip->SetNormal(n);
 }
 
@@ -2753,13 +3131,10 @@ static bool sceneVisibleRegion(Scene *s, double &W, double &E, double &S, double
 				if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
 				if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
 				const double d[3] = { fr[0]-nr[0], fr[1]-nr[1], fr[2]-nr[2] };
-				// |nr + t d| = globeR, nearest root (the visible side of the sphere).
-				const double a = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
-				const double b = 2.0 * (nr[0]*d[0] + nr[1]*d[1] + nr[2]*d[2]);
-				const double c2 = nr[0]*nr[0] + nr[1]*nr[1] + nr[2]*nr[2] - s->globeR * s->globeR;
-				const double disc = b*b - 4.0*a*c2;
-				if (a <= 0.0 || disc < 0.0) continue;
-				const double t = (-b - std::sqrt(disc)) / (2.0*a);
+				// Nearest hit with the body's zero level — the sphere, or the cube's box. One
+				// function for both (sceneBodyRayHit), so the mode cannot grow a second ray test.
+				double t = 0.0;
+				if (!sceneBodyRayHit(s, nr, d, t)) continue;
 				const double P[3] = { nr[0] + t*d[0], nr[1] + t*d[1], nr[2] + t*d[2] };
 				double lon, lat, zz;
 				if (!sceneWorldToGeo(s, P, lon, lat, zz)) continue;
@@ -2809,7 +3184,19 @@ static bool sceneVisibleRegion(Scene *s, double &W, double &E, double &S, double
 	// The only clamp left is to what a GEOGRAPHIC region can legally be: a viewport can extend past
 	// the poles or wrap several turns of longitude, and no query box may.
 	S = std::max(S, -90.0);  N = std::min(N, 90.0);
-	W = std::max(W, -360.0); E = std::min(E, 360.0);
+	// A LONGITUDE SPAN IS AT MOST ONE TURN. Zoomed out, the viewport corners map to lon far outside
+	// the world (the map is a small rectangle in the middle of it), and clamping each end separately
+	// to ±360 still hands out a box up to 720 degrees wide. Every consumer of this feeds it to GMT as
+	// a -R: `coast` answers "Map region exceeds 360 degrees" + "General map projection error" and the
+	// module fails outright (GMT error 74) — the user's "Geography FAILED … GMT error number = 74",
+	// i.e. no coastline at all, purely because the view was zoomed out. More than a turn on screen
+	// means the whole world is on screen, so that is what is asked for; a legal span is only slid
+	// back so its centre is a real longitude.
+	if (E - W >= 360.0) { W = -180.0;  E = 180.0; }
+	else {
+		while (0.5 * (W + E) >=  180.0) { W -= 360.0;  E -= 360.0; }
+		while (0.5 * (W + E) <  -180.0) { W += 360.0;  E += 360.0; }
+	}
 	return (E > W && N > S);
 }
 
@@ -2848,7 +3235,12 @@ static void cameraFitToScaledBBox(Scene *s, const double b[6], bool keepMargin) 
 					ny0 = std::min(ny0, ndcy); ny1 = std::max(ny1, ndcy);
 				}
 		const double wfrac = (nx1 - nx0) / 2.0, hfrac = (ny1 - ny0) / 2.0;
-		const double frac = s->flat2d ? std::max(wfrac, hfrac) : wfrac;
+		// WIDTH alone is the 3-D rule (a tilted relief block is wider than tall, and fitting its height
+		// would leave the map tiny). A BODY is the opposite case: a sphere seen through the parallel
+		// camera is a disc and a cube opened on its corner is a hexagon TALLER than it is wide, so
+		// fitting width alone let the planet start with its top and bottom off-screen. Fit both axes
+		// there, exactly as the flat map does.
+		const double frac = (s->flat2d || s->globe) ? std::max(wfrac, hfrac) : wfrac;
 		if (frac <= 1e-6) break;
 		cam->Zoom(targetFill / frac);
 	}
@@ -3157,21 +3549,21 @@ static void sceneGlobeSync(Scene *s) {
 	if (on) sceneGlobeAimClip(s);
 	for (vtkActor *a : surfActors(s)) globeAttachActor(s, a, on);
 	globeAttachActor(s, s->drape, on);
-	for (auto &ov : s->overlays)  globeAttachActor(s, ov.actor, on);
+	for (auto &ov : s->overlays)  globeAttachActor(s, ov.actor, on, true);
 	for (auto &cu : s->curtains)  globeAttachActor(s, cu.actor, on);
 	for (auto &ex : s->extras)  { globeAttachActor(s, ex.actor, on); globeAttachActor(s, ex.drape, on); }
-	globeAttachActor(s, s->profLine, on);
-	globeAttachActor(s, s->rbHL, on);
+	globeAttachActor(s, s->profLine, on, true);
+	globeAttachActor(s, s->rbHL, on, true);
 	for (auto &pg : s->polys) {
-		globeAttachActor(s, pg.line, on);          globeAttachActor(s, pg.fill, on);
-		globeAttachActor(s, pg.faultPlane, on);    globeAttachActor(s, pg.faultPlane3D, on);
-		globeAttachActor(s, pg.faultArrows, on);
+		globeAttachActor(s, pg.line, on, true);    globeAttachActor(s, pg.fill, on, true);
+		globeAttachActor(s, pg.faultPlane, on, true);  globeAttachActor(s, pg.faultPlane3D, on, true);
+		globeAttachActor(s, pg.faultArrows, on, true);
 	}
-	for (auto &mb : s->mecaBalls) { globeAttachActor(s, mb.anchor, on); globeAttachActor(s, mb.anchorDot, on); }
-	globeAttachActor(s, s->polyPreview, on);
-	globeAttachActor(s, s->polyHandles, on);
-	for (auto &rr : s->rulers) globeAttachActor(s, rr.line, on);
-	globeAttachActor(s, s->rulerCircle, on);
+	for (auto &mb : s->mecaBalls) { globeAttachActor(s, mb.anchor, on, true); globeAttachActor(s, mb.anchorDot, on, true); }
+	globeAttachActor(s, s->polyPreview, on, true);
+	globeAttachActor(s, s->polyHandles, on, true);
+	for (auto &rr : s->rulers) globeAttachActor(s, rr.line, on, true);
+	globeAttachActor(s, s->rulerCircle, on, true);
 	// Symbol layers move their POINTS instead of wearing the filter (a glyph must not be warped), so
 	// they are brought along here rather than by globeAttachActor — same pass, same guarantee for a
 	// layer plotted after the globe went up. symbolApplyZ is a no-op for a layer already in the right
@@ -3888,17 +4280,20 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 		// surface crossing, then bisect. NaN (off-grid) segments are skipped.
 		auto eval = [&](double t, double &fval) -> bool {
 			const double X = nr[0] + t*dirx, Y = nr[1] + t*diry, Z = nr[2] + t*dirz;
-			// GLOBE: the surface is not a heightfield over z, it is a heightfield over the RADIUS —
-			// at (lon,lat) it sits at globeR + h*zsc. Same march, same bisection, same sampler; only
-			// what "distance above the surface" means follows the mode. The lon/lat comes out of the
-			// scene's own mapping (sceneWorldToGeo), so the readout can never disagree with the render.
+			// GLOBE / CUBE: the surface is not a heightfield over world Z, it is a heightfield over
+			// the body's own radius. The scene's ONE inverse mapping already answers exactly that —
+			// sceneWorldToGeo hands back the z the ray point stands at — so "how far above the
+			// surface am I" is the same subtraction in every mode and needs no per-body radius
+			// formula of its own (any such formula is a second copy of the mapping, and the one
+			// written here went wrong for the cube the moment its relief started riding the radius).
+			// Reading it off the inverse also means the readout cannot disagree with the render.
 			if (s->globe) {
 				const double P[3] = { X, Y, Z };
 				double lon, lat, zz;
 				if (!sceneWorldToGeo(s, P, lon, lat, zz)) return false;
 				const double h = sampleActiveZ(s, lon, lat);
 				if (std::isnan(h)) return false;
-				fval = std::sqrt(X*X + Y*Y + Z*Z) - (s->globeR + h * zsc);
+				fval = (zz - h) * zsc;
 				return true;
 			}
 			const double h = sampleActiveZ(s, X / gx, Y);

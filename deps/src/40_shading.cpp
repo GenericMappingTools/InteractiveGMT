@@ -76,9 +76,11 @@ static void gmtIlluminate(double intensity, double *rgb) {
 // Present only while an illumination model from View > "Illumination (Hillshade)…" is loaded.
 // Sampled by WORLD position so every consumer (surface, LOD tile, flat bake, Aquamoto) reads the
 // same grid through the same call, whatever its own resolution or point ordering.
+static inline bool haveExternShade(const ExternShade &e) {
+	return e.nx > 1 && e.ny > 1 && (int)e.inten.size() == e.nx * e.ny;
+}
 static inline bool haveExternShade(const Scene *s) {
-	return s && s->shadeInX > 1 && s->shadeInY > 1 &&
-	       (int)s->shadeInten.size() == s->shadeInX * s->shadeInY;
+	return s && haveExternShade(s->shadeIn);
 }
 // Forget the loaded model. Any Shading-dock control that AIMS or STYLES the light (sun azimuth /
 // elevation, the four relief looks) calls this first: asking the dock for a different light means
@@ -87,15 +89,20 @@ static inline bool haveExternShade(const Scene *s) {
 // re-runs applyShading itself.
 static inline void dropExternShade(Scene *s) {
 	if (!s) return;
-	s->shadeInten.clear();
-	s->shadeInX = s->shadeInY = 0;
-	s->shadeInModel = 0;
+	s->shadeIn     = ExternShade();
+	s->shadeInLand = ExternShade();   // both sides, or the dock would move one image and not the other
 	s->noShade = false;      // asking for a light ends "Remove illumination"
 }
 // Reflectance at TRUE-coord (x,y), or NaN outside the grid / on a NaN node.
+// Deliberately NOT longitude-aware: a reflectance arrives already in the frame of the grid it lights
+// (hillshade.jl rolls a GMT module's re-wrapped output back before pushing it), so a wrap-around
+// retry here would only be a second, sampler-side opinion about the same question — and one that
+// changes how EVERY model is sampled, including the ones that were never in the wrong frame.
+static inline double externShadeAt(const ExternShade &e, double x, double y) {
+	return sampleGrid(e.inten.data(), e.nx, e.ny, e.x0, e.x1, e.y0, e.y1, x, y);
+}
 static inline double externShadeAt(const Scene *s, double x, double y) {
-	return sampleGrid(s->shadeInten.data(), s->shadeInX, s->shadeInY,
-	                  s->shadeInX0, s->shadeInX1, s->shadeInY0, s->shadeInY1, x, y);
+	return externShadeAt(s->shadeIn, x, y);
 }
 
 struct ReliefLight {
@@ -104,7 +111,7 @@ struct ReliefLight {
 	double fx, fz, fzRef;       // normal-correction factors: 1/xfac, 1/(zfac·ve), 1/zfac (ve = 1)
 	double amb, gain, twoOverPi;
 	bool   grd;
-	double rough, keyI, fillI;  // PBR bake: roughness, key + fill light intensity (metallic assumed 0)
+	double rough, metal, keyI, fillI;   // PBR bake: roughness, metalness, key + fill light intensity
 };
 static ReliefLight makeReliefLight(Scene *s) {
 	ReliefLight L;
@@ -118,6 +125,7 @@ static ReliefLight makeReliefLight(Scene *s) {
 	L.fzRef = (s->zfac != 0.0) ? 1.0 / s->zfac : 1.0;      // same, at the reference VE (ve = 1)
 	L.amb = s->hillAmbient;  L.gain = s->hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = s->hillGrd;
 	L.rough = s->roughness < 0.05 ? 0.05 : s->roughness;   // clamp so the GGX lobe stays finite
+	L.metal = s->metallic < 0.0 ? 0.0 : (s->metallic > 1.0 ? 1.0 : s->metallic);
 	L.keyI = s->lightIntensity;  L.fillI = s->fillIntensity;
 	return L;
 }
@@ -141,11 +149,20 @@ static inline void reliefDrawnNormal(const ReliefLight &L, const double nv[3], b
 // CPU approximation of the GPU PBR SURFACE look, baked per flat-image pixel so "Shaded image" alone
 // reproduces the shaded relief a freshly loaded 3-D grid shows — WITHOUT triangulating the grid
 // (the GPU shader rasterises triangles; this shades straight from the data-space normal nv). A 2-D
-// map is viewed straight down, so the view vector is +Z. Metallic-0 dielectric Cook-Torrance:
-// GGX distribution + Smith geometry + Schlick Fresnel for the key light, plus a soft hemispherical
-// fill and a small ambient floor so the shadow side matches the lit surface (which the fill + scene
-// light also lift). Not pixel-identical to the GPU pass — the live Light/Fill/Roughness sliders tune
-// it. rgb (0..1, in albedo / out shaded).
+// map is viewed straight down, so the view vector is +Z. Cook-Torrance: GGX distribution + Smith
+// geometry + Schlick Fresnel for the key light, plus a soft hemispherical fill and a small ambient
+// floor so the shadow side matches the lit surface (which the fill + scene light also lift). Not
+// pixel-identical to the GPU pass — the live Light/Fill/Roughness/Metallic sliders tune it.
+// rgb (0..1, in albedo / out shaded).
+//
+// METALNESS IS REAL HERE, and follows VTK's own PBR shader rather than a lookalike: F0 is the
+// dielectric 4% lerped toward the ALBEDO (so a metal's highlight wears the surface's colour), and
+// the diffuse lobe is scaled by (1 - metallic), because a metal has no subsurface scatter. It was
+// hard-wired to the dielectric case, which is why the dock's Metallic slider moved nothing on a
+// flat image while it visibly changed the 3-D surface (SetMetallic on the real PBR material).
+// The fill + ambient stand in for the environment this bake has no map of, so they are tinted by F0
+// for a metal instead of dropped: killing them outright would take a fully metallic map to black,
+// where the GPU path reflects the IBL sky.
 static inline void applyPBRShade(const ReliefLight &L, const double nvRaw[3], double rgb[3]) {
 	// Same rule as applyReliefShade: shade the relief AS DRAWN, never the raw data-space normal —
 	// otherwise the look depends on whether x,y happen to be degrees or metres.
@@ -164,13 +181,17 @@ static inline void applyPBRShade(const ReliefLight &L, const double nvRaw[3], do
 	const double D  = a2 / (vtkMath::Pi()*dn*dn + 1e-9);
 	const double k  = L.rough*L.rough*0.5;
 	const double G  = (NdotV/(NdotV*(1.0-k)+k+1e-9)) * (NdotL/(NdotL*(1.0-k)+k+1e-9));
-	const double F  = 0.04 + 0.96*std::pow(1.0 - VdotH, 5.0);
-	const double spec = (D*G*F) / (4.0*NdotV*NdotL + 1e-4);
-	const double kd = 1.0 - F;
+	const double fres = std::pow(1.0 - VdotH, 5.0);                      // Schlick's (1 - V·H)^5
+	const double DG   = (D*G) / (4.0*NdotV*NdotL + 1e-4);                // the colour-free half of spec
+	const double met  = L.metal;
 	for (int i = 0; i < 3; ++i) {
-		const double lit  = (kd*rgb[i] + spec) * L.keyI * NdotL;         // key light (diffuse + specular)
-		const double fill = rgb[i] * L.fillI * (0.5 + 0.5*nv[2]);        // hemispherical fill from above
-		const double amb  = rgb[i] * 0.12;                              // scene-light floor (no black valleys)
+		const double F0 = 0.04 + (rgb[i] - 0.04) * met;   // dielectric 4% -> the albedo itself, for a metal
+		const double F  = F0 + (1.0 - F0) * fres;
+		const double kd = (1.0 - F) * (1.0 - met);        // a metal has no diffuse lobe
+		const double env = (1.0 - met) + met * F0;        // 1 for a dielectric, the metal's own tint
+		const double lit  = (kd*rgb[i] + DG*F) * L.keyI * NdotL;         // key light (diffuse + specular)
+		const double fill = rgb[i] * L.fillI * (0.5 + 0.5*nv[2]) * env;  // hemispherical fill from above
+		const double amb  = rgb[i] * 0.12 * env;                         // scene-light floor (no black valleys)
 		const double v = lit + fill + amb;
 		rgb[i] = v > 1.0 ? 1.0 : v;
 	}
@@ -383,7 +404,8 @@ static AquaSideShade snapshotShade(Scene *s) {
 	AquaSideShade a; a.valid = true;
 	a.useHillshade = s->useHillshade; a.hillGrd = s->hillGrd; a.litBake = s->litBake;
 	a.lightAz = s->lightAz; a.lightEl = s->lightEl; a.hillAmbient = s->hillAmbient; a.hillGain = s->hillGain;
-	a.roughness = s->roughness; a.lightIntensity = s->lightIntensity; a.fillIntensity = s->fillIntensity;
+	a.roughness = s->roughness; a.metallic = s->metallic;
+	a.lightIntensity = s->lightIntensity; a.fillIntensity = s->fillIntensity;
 	return a;
 }
 // makeReliefLight, but with the light/style taken from a per-side snapshot (geometry xfac/zfac/ve still
@@ -400,6 +422,7 @@ static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a) {
 	L.fzRef = (s->zfac != 0.0) ? 1.0 / s->zfac : 1.0;      // same, at the reference VE (ve = 1)
 	L.amb = a.hillAmbient;  L.gain = a.hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = a.hillGrd;
 	L.rough = a.roughness < 0.05 ? 0.05 : a.roughness;
+	L.metal = a.metallic < 0.0 ? 0.0 : (a.metallic > 1.0 ? 1.0 : a.metallic);
 	L.keyI = a.lightIntensity;  L.fillI = a.fillIntensity;
 	return L;
 }
@@ -432,9 +455,12 @@ static void bakeAquaShade(Scene *s) {
 	const AquaSideShade lS = s->aquaLandShade.valid  ? s->aquaLandShade  : snapshotShade(s);
 	const ReliefLight Lw = makeReliefLightSide(s, wS);
 	const ReliefLight Ll = makeReliefLightSide(s, lS);
-	const bool extShade = haveExternShade(s);            // Hillshade tool: GMT-computed reflectance
-	const bool wPbr = !wS.useHillshade && wS.litBake, wShade = (wS.useHillshade || wPbr) && haveStage;
-	const bool lPbr = !lS.useHillshade && lS.litBake, lShade = (lS.useHillshade || lPbr);
+	// Hillshade tool: a GMT-computed reflectance, ONE PER SIDE. Water's was computed from the live
+	// stage and land's from the static bathymetry, exactly the two surfaces this function shades from
+	// below -- so the tool splits dry from wet the same way the composite and the dock already do.
+	const bool wExt = haveExternShade(s->shadeIn), lExt = haveExternShade(s->shadeInLand);
+	const bool wPbr = !wS.useHillshade && wS.litBake, wShade = ((wS.useHillshade || wPbr) && haveStage) || wExt;
+	const bool lPbr = !lS.useHillshade && lS.litBake, lShade = (lS.useHillshade || lPbr) || lExt;
 	if (!wShade && !lShade) {                            // neither side shades -> the composite verbatim
 		memcpy(out, base, (size_t)nx * ny * 4);
 		id->Modified(); tx->Modified();
@@ -471,8 +497,11 @@ static void bakeAquaShade(Scene *s) {
 			const ReliefLight &L = land ? Ll : Lw;
 			// Hillshade tool: an externally computed reflectance covers EVERY element type, the
 			// tsunami composite included (SACRED_LAW: no element type opts out of a shared operation).
-			if (extShade) {
-				const double ei = externShadeAt(s, s->gx0 + ix * dx, s->gy0 + iy * dy);
+			// THIS SIDE's reflectance, never the other's: a single grid smeared over both lit the sea
+			// with the land's relief (and the reverse), which is the dry/wet split vanishing again.
+			if (land ? lExt : wExt) {
+				const double ei = externShadeAt(land ? s->shadeInLand : s->shadeIn,
+				                                s->gx0 + ix * dx, s->gy0 + iy * dy);
 				if (!std::isnan(ei)) {
 					double c[3] = { base[t] / 255.0, base[t+1] / 255.0, base[t+2] / 255.0 };
 					applyReliefShade(L, nullptr, c, &ei);
@@ -667,8 +696,28 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// steep ground out to flat grey-white while the base surface beside it is correctly shaded: the
 	// same operation producing a different result for one kind of layer, i.e. the violation. Never
 	// let this function no-op its way out of shading something.
-	if (m->GetNumberOfInputConnections(0) > 0) m->Update();
-	vtkPolyData *pd = vtkPolyData::SafeDownCast(m->GetInput());
+	// …AND PULL IT FROM THE RIGHT END OF THE PIPELINE. On a globe or a cube, globeAttachActor splices
+	// a vtkTransformPolyDataFilter BETWEEN the actor's polydata and its mapper, so `m->GetInput()`
+	// stops being lon/lat/z and becomes WORLD XYZ on the body. Everything below then went wrong at
+	// once, and BAKED the result into the vertex colours, which is why no change to the scene lights
+	// could move it: the normals handed to applyReliefShade were world normals being VE-corrected as
+	// if they were flat-map ones, so every cube face got a different, wrong illumination and any face
+	// whose world normal opposed the sun baked to solid BLACK; and the extern-shade sampler below
+	// read those world XYZ as if they were true x/y, landing in the wrong part of the reflectance
+	// grid and clamping off its edge — the straight-edged rectangle across a face.
+	// The bake belongs on the SOURCE geometry, in true coords, exactly as on the flat map: one bake,
+	// same inputs, whatever body the window is wearing (SACRED_LAW.md). The transform filter carries
+	// the colour array through to the mapper on its own, so nothing downstream needs to know.
+	vtkPolyData *pd = nullptr;
+	auto hk = s->globeHooks.find(act);
+	if (hk != s->globeHooks.end() && hk->second.filt) {
+		if (vtkAlgorithm *up = hk->second.filt->GetInputAlgorithm()) up->Update();
+		pd = vtkPolyData::SafeDownCast(hk->second.filt->GetInput());
+	}
+	if (!pd) {
+		if (m->GetNumberOfInputConnections(0) > 0) m->Update();
+		pd = vtkPolyData::SafeDownCast(m->GetInput());
+	}
 	if (!pd) return;
 	vtkDataArray *nrm = pd->GetPointData()->GetNormals();
 	vtkDataArray *zs  = pd->GetPointData()->GetScalars();
@@ -793,6 +842,32 @@ static void applyShading(Scene *s) {
 		s->keyLight->SetPosition(dx, dy, dz);
 		s->keyLight->SetIntensity(s->lightIntensity);
 		s->fillLight->SetIntensity(s->fillIntensity);
+		// ON A 3-D BODY ONLY, the same direction is read in the CAMERA's frame instead of the world's.
+		// Everything above is untouched for a flat map — this branch cannot be reached unless s->globe
+		// is up, so an ordinary grid's lighting is exactly what it always was.
+		// Why: azimuth/elevation is a MAP-frame direction. On the flat map every normal is +Z, so one
+		// fixed world direction lights the whole scene. A sphere or a cube has no single map frame, so
+		// that same fixed direction leaves whole faces (and the globe's trailing limb) on the ambient
+		// floor alone. A CAMERA light takes its position in camera coordinates (+x right, +y up, +z
+		// toward the viewer) and VTK re-derives it every frame, so az/el keeps meaning "from the left /
+		// above / in front of me" however the trackball has turned the planet, with no per-frame code.
+		// This is the LIT (PBR / VTK illumination) half of the problem only. The BAKED half — a
+		// hillshade computed from world normals because hillshadeMapper was reading the transformed
+		// end of the pipeline — is fixed at its own source, in hillshadeMapper below; a baked colour
+		// cannot be rescued by any light, which is exactly how the two were told apart.
+		// The gizmo's light is included because it is the one that decides the picture: enableGizmo
+		// (20_gizmo.cpp) adds a SECOND scene light at intensity 1.4, brighter than the key light, fixed
+		// at world (0.6, 0.4, 1.0). Aiming only the key light left that one still blacking out whatever
+		// face had turned away from it. Its direction is kept verbatim — this does not re-tune the
+		// gizmo's rig, only the frame that direction is expressed in. (20_gizmo.cpp is not edited;
+		// applyShading already reaches into s->giz->light for the cast-shadow toggle.)
+		const int lt = s->globe ? VTK_LIGHT_TYPE_CAMERA_LIGHT : VTK_LIGHT_TYPE_SCENE_LIGHT;
+		s->keyLight->SetLightType(lt);
+		if (s->giz && s->giz->light) {
+			s->giz->light->SetLightType(lt);
+			s->giz->light->SetPosition(0.6, 0.4, 1.0);
+			s->giz->light->SetFocalPoint(0.0, 0.0, 0.0);
+		}
 	}
 	// The gizmo adds its OWN bright (1.4) scene light to s->ren (20_gizmo enableGizmo). It is a
 	// shadow-caster (non-headlight, non-positional) brighter than the sun, shining from a fixed
@@ -886,6 +961,36 @@ static void applyShading(Scene *s) {
 	rebakeLayerImage(s);   // flat-image mode: relight the drape texture to match the new state (shared shade)
 	syncShadeChecks(s);    // keep the Shading-dock checkboxes in sync with the live state
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// WHICH RELIEF LOOK THE WINDOW WEARS — the one place that decides it, for every caller.
+//
+// The four looks are alternatives, so choosing one is a single act: drop whatever external
+// reflectance was loaded (a look computed here REPLACES a loaded Illumination model), set the flags
+// that `applyShading` / `applyReliefShade` read, and re-shade. The Shading dock's checkboxes used to
+// write those flags themselves, inside a lambda captured over the boxes — which meant the maths was
+// reachable ONLY by clicking that dock. The Illumination dialog's methods 4 (grdimage) and 5
+// (Lambert) ARE these two looks, so they come through here rather than growing a second copy of a
+// reflectance this file already owns (SACRED_LAW.md: same operation, always the same function).
+//
+// It deliberately does NOT touch a checkbox: `applyShading` ends in `syncShadeChecks`, which derives
+// the dock from the live flags. So the dock follows whoever set the look, and the day the dock's two
+// hillshade boxes are removed this function and its callers are unaffected — nothing here knows a
+// checkbox exists.
+// CAST SHADOWS IS NOT A LOOK. It is a render PASS on the VTK path — the sun's own self-shadowing,
+// a sibling of SSAO, tone mapping and FXAA, not a way of deriving a reflectance. The Shading dock
+// used to put it in the exclusive group with the three real looks, which is why it was mistaken for
+// one; `Scene::useShadows` is an independent flag, owned by the VTK (PBR) method's own checkbox.
+enum ReliefLook { RL_None = 0, RL_PBR, RL_HillLambert, RL_HillGrdimage };
+
+static void sceneSetReliefLook(Scene *s, int look) {
+	if (!s) return;
+	dropExternShade(s);                 // a look picked here replaces a loaded Illumination model
+	s->useHillshade = (look == RL_HillLambert || look == RL_HillGrdimage);
+	s->hillGrd      = (look == RL_HillGrdimage);
+	s->litBake      = (look == RL_PBR);
+	applyShading(s);                     // …which re-syncs the dock and re-bakes a flat image
+	if (s->syncFlatEnable) s->syncFlatEnable();   // which sliders are live depends on the chosen look
 }
 
 // Add a GMTdataset overlay (lines or points) to an existing scene. `xyz` is npts
