@@ -1231,7 +1231,12 @@ static void refreshGridColorbar(Scene *s) {
 	}
 	destroyColorbar(s);
 	const bool isAqua = s->customLayerTexture;
-	if (!ag.valid || !ag.lut) {                // nothing visible to colour -> no bar, readout falls back
+	// A FLAT layer has no scale to show. zmax == zmin is not a colour ramp: the bar comes out as one
+	// solid block of the LUT's first colour (the red strip). THE DECIDER is where that is settled --
+	// buildColorbar deliberately never second-guesses this call (see its own note) -- so a degenerate
+	// range is resolved to "no bar" here, exactly like "no grid".
+	const bool flatRange = ag.valid && !(ag.zmax > ag.zmin);
+	if (!ag.valid || !ag.lut || flatRange) {   // nothing visible to colour -> no bar, readout falls back
 		s->actZ = nullptr;
 		buildPaletteColorbar(s);               // no grid claims the bar: an indexed image may still legend
 		if (isAqua) setAquaLandColorbarVisible(s, false);
@@ -2032,7 +2037,8 @@ static void rebuildSceneObjects(Scene *s) {
 	auto beginGroupHandle = [&](const QString &name, int iconKind, bool checked,
 	                            std::function<void(const QPoint&)> onProps,
 	                            std::function<void(const QPoint&)> onContext,
-	                            const QString &tip = QString(), bool startFolded = false) {
+	                            const QString &tip = QString(), bool startFolded = false)
+	                            -> QTreeWidgetItem* {
 		QTreeWidgetItem *grp = new QTreeWidgetItem();
 		if (curParent) curParent->addChild(grp); else tree->addTopLevelItem(grp);
 		grp->setData(0, Qt::UserRole, name);            // key for the expand/collapse memory below
@@ -2078,10 +2084,55 @@ static void rebuildSceneObjects(Scene *s) {
 		h->addWidget(icon, 0);
 		h->addWidget(text, 1);
 		tree->setItemWidget(grp, 0, row);
+		return grp;
 	};
 	auto endGroup = [&]() {
 		curParent = parentStack.empty() ? nullptr : parentStack.back();
 		if (!parentStack.empty()) parentStack.pop_back();
+	};
+
+	// ── ONE PLOT = ONE MASTER HANDLE ──────────────────────────────────────────────────────────────
+	// Scene::groupMaster says which child groups / symbol layers belong to which master row (see its
+	// note there). A member's row is not built differently -- it is built by the SAME builder as
+	// always and simply PARENTED to the master, so nothing here forks a second row implementation
+	// (SACRED_LAW.md). The master is created lazily, so one whose elements are all gone never shows,
+	// and it starts collapsed: a Compute that draws four terminators, four night polygons and a sun
+	// marker costs ONE row until the user opens it.
+	std::map<std::string, QTreeWidgetItem*> masterItems;
+	auto masterOf = [s](const std::string &nm) -> std::string {
+		auto it = s->groupMaster.find(nm);
+		return (it == s->groupMaster.end()) ? std::string() : it->second;
+	};
+	auto masterItemFor = [&](const std::string &member) -> QTreeWidgetItem* {
+		const std::string m = masterOf(member);
+		if (m.empty()) return nullptr;                    // not declared: an ordinary top-level row
+		auto it = masterItems.find(m);
+		if (it != masterItems.end()) return it->second;
+		// The master's Remove takes EVERY declared member with it, in ONE sceneDeleteGroup call --
+		// the same deleter each member's own row uses, never a second removal path.
+		auto menu = [s, m](const QPoint &g) {
+			QMenu mm(s->widget);
+			QAction *rem = mm.addAction("Remove");
+			if (mm.exec(g) != rem) return;
+			std::vector<GroupChild> kids;
+			for (const auto &kv : s->groupMaster) {
+				if (kv.second != m) continue;
+				kids.push_back(GroupChild(GroupChild::Overlays,    kv.first));
+				kids.push_back(GroupChild(GroupChild::Polygons,    kv.first));
+				kids.push_back(GroupChild(GroupChild::SymbolLayer, kv.first));
+				kids.push_back(GroupChild(GroupChild::TextBatch,   kv.first));
+			}
+			sceneDeleteGroup(s, kids);
+		};
+		QTreeWidgetItem *save = curParent;
+		curParent = nullptr;                              // a master is always a top-level row
+		QTreeWidgetItem *grp = beginGroupHandle(QString::fromStdString(m), IC_Line, true, menu, menu,
+		                                        "Everything this plot produced — click for Remove",
+		                                        /*startFolded=*/true);
+		endGroup();
+		curParent = save;
+		masterItems[m] = grp;
+		return grp;
 	};
 
 	// Slip-model group (Import Model Slip): a collapsible parent with a "Delete group" property.
@@ -2377,6 +2428,7 @@ static void rebuildSceneObjects(Scene *s) {
 	// ── OTHER OBJECTS ── lines / points / curtains / polygons / text / profile (top-level rows; a fault
 	// with planes becomes its own group, see below).
 	QString ovlGroupOpen;                                // name of the currently-open overlay-group node (empty = none)
+	QTreeWidgetItem *ovlMasterSave = nullptr;            // curParent to restore when a MASTERED group closes
 	for (auto &ov : s->overlays) {
 		// Overlays sharing a non-empty groupName (e.g. Geography > Plate boundaries' 7 boundary-type
 		// layers, added back-to-back in one batch) fold under ONE collapsible parent row instead of
@@ -2386,9 +2438,12 @@ static void rebuildSceneObjects(Scene *s) {
 		// uncheck cascades to every child, full stop).
 		if (!ovlGroupOpen.isEmpty() && QString::fromStdString(ov.groupName) != ovlGroupOpen) {
 			endGroup();  ovlGroupOpen.clear();
+			if (ovlMasterSave) { curParent = ovlMasterSave; ovlMasterSave = nullptr; }
 		}
 		if (!ov.groupName.empty() && ovlGroupOpen.isEmpty()) {
 			const std::string gn = ov.groupName;
+			// Declared as part of a bigger plot? Then this group is a CHILD of that plot's master row.
+			if (QTreeWidgetItem *mi = masterItemFor(gn)) { ovlMasterSave = curParent; curParent = mi; }
 			const bool cptable = ov.cptColorable;      // a group of per-level lines (contours)
 			// ONE menu on both buttons — left-click properties and right-click context are the same
 			// thing, so they are the same lambda (never two look-alikes).
@@ -2476,16 +2531,23 @@ static void rebuildSceneObjects(Scene *s) {
 		endGroup();
 	}
 	if (!ovlGroupOpen.isEmpty()) endGroup();
+	if (ovlMasterSave) { curParent = ovlMasterSave; ovlMasterSave = nullptr; }   // leave the master row
 	for (auto &sl : s->symbols) {                        // screen-constant symbol layers (props menu)
 		vtkActor *a = sl.actor.Get();
+		// A symbol layer declared as part of a bigger plot (the sub-solar marker of "Sun and
+		// terminators") is a CHILD of that plot's master row -- same row, different parent.
+		QTreeWidgetItem *save = curParent;
+		if (QTreeWidgetItem *mi = masterItemFor(sl.name)) curParent = mi;
 		makeRow(QString::fromStdString(sl.name), IC_Points, a && a->GetVisibility() != 0,
 		        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
 		        [s, a](const QPoint &g) { symbolLayerMenu(s, a, g); },
 		        "Left-click for symbol properties");
+		curParent = save;
 	}
 	for (auto &cu : s->curtains)
 		addRow(QString::fromStdString(cu.name), cu.actor, IC_Curtain);
 	QString slipGroupOpen;                               // name of the currently-open slip-patch group node (empty = none)
+	QTreeWidgetItem *polyMasterSave = nullptr;           // curParent to restore when a MASTERED group closes
 	std::set<std::string> mecaGroupsShown;               // focal-mechanism groupNames already given their ONE row
 	for (auto &pg : s->polys) {                          // user-drawn polygons / polylines / rects / circles
 		// Focal-mechanism beachball patches (comp/dilat/rim-ring, dozens to hundreds per catalog) get
@@ -2523,8 +2585,11 @@ static void rebuildSceneObjects(Scene *s) {
 		// list. Close the open group when the run ends or the name changes.
 		if (!slipGroupOpen.isEmpty() && QString::fromStdString(pg.groupName) != slipGroupOpen) {
 			endGroup();  slipGroupOpen.clear();
+			if (polyMasterSave) { curParent = polyMasterSave; polyMasterSave = nullptr; }
 		}
 		if (!pg.groupName.empty() && slipGroupOpen.isEmpty()) {
+			// Part of a bigger plot (the night polygons of "Sun and terminators")? -> under its master.
+			if (QTreeWidgetItem *mi = masterItemFor(pg.groupName)) { polyMasterSave = curParent; curParent = mi; }
 			beginSlipGroup(QString::fromStdString(pg.groupName), IC_Rect);
 			slipGroupOpen = QString::fromStdString(pg.groupName);
 		}
@@ -2620,6 +2685,7 @@ static void rebuildSceneObjects(Scene *s) {
 		if (faultGroup) endGroup();
 	}
 	if (!slipGroupOpen.isEmpty()) endGroup();            // close a slip-model group still open at the list's end
+	if (polyMasterSave) { curParent = polyMasterSave; polyMasterSave = nullptr; }   // leave the master row
 	// RULERS: ONE collapsible group handle PER MEASUREMENT, holding that ruler's track and every one of
 	// its leg/total annotations — so a measurement with a dozen legs costs ONE row in the panel until
 	// the user opens it (startFolded; their choice is remembered from then on, like every other group).

@@ -12,9 +12,12 @@
 #     `bash deps/publish_linux.sh --so`) -- no new tag per day. Re-downloaded on every
 #     `Pkg.build("InteractiveGMT")`.
 #
-# BOTH PLATFORMS HAVE BOTH STREAMS. Linux used to have only the full tarball, so every C++ change
-# cost every Linux user the whole ~200 MB runtime; it now carries gmtvtk-linux-x86_64.tar.gz at the
-# same rolling tag, with the same freshness signature and the same manifest contract below.
+# ALL THREE PLATFORMS HAVE BOTH STREAMS. Linux used to have only the full tarball, so every C++
+# change cost every Linux user the whole ~200 MB runtime; it now carries gmtvtk-linux-x86_64.tar.gz
+# at the same rolling tag, with the same freshness signature and the same manifest contract below.
+# macOS joined with both streams from the start, one pair of assets per architecture, built by
+# .github/workflows/MacBinaries.yml (there is no Mac to build them on by hand) and staged by
+# deps/build_mac.sh.
 #
 # THE CONTRACT BETWEEN THEM. The small zip's gmtvtk.dll must be loadable against the runtime the
 # big zip installed. Break that -- link one VTK module the pinned bundle predates -- and every
@@ -53,10 +56,23 @@ const DLL_TAG = "dll-latest"   # fixed tag; its per-platform asset is re-uploade
 # running on twice. LIB_ASSET is the rolling library-only archive at DLL_TAG; FULL_ASSET the pinned
 # runtime bundle at runtime_tag(); REQUIRES_MANIFEST the "what the library needs from the bundle"
 # list that travels inside both.
-const LIB_NAME         = Sys.iswindows() ? "gmtvtk.dll" : "libgmtvtk.so"
-const LIB_ASSET        = Sys.iswindows() ? "gmtvtk-win64.zip" : "gmtvtk-linux-x86_64.tar.gz"
-const FULL_ASSET       = Sys.iswindows() ? "iGMT-win64-full.zip" : "iGMT-linux-x86_64-full.tar.gz"
-const REQUIRES_MANIFEST = Sys.iswindows() ? ".dll_requires" : ".so_requires"
+#
+# macOS carries the ARCH in the asset name because both are real: Julia runs native on Apple
+# Silicon and on Intel, the Homebrew bottles a bundle is staged from are per-arch, and there is no
+# universal binary here -- so the two are separate assets built by separate CI jobs
+# (.github/workflows/MacBinaries.yml), never one file that could be handed to the wrong machine.
+const MAC_ARCH         = Sys.ARCH === :aarch64 ? "arm64" : "x86_64"
+const LIB_NAME         = Sys.iswindows() ? "gmtvtk.dll" : Sys.isapple() ? "libgmtvtk.dylib" : "libgmtvtk.so"
+const LIB_ASSET        = Sys.iswindows() ? "gmtvtk-win64.zip" :
+                         Sys.isapple()   ? "gmtvtk-macos-$MAC_ARCH.tar.gz" : "gmtvtk-linux-x86_64.tar.gz"
+const FULL_ASSET       = Sys.iswindows() ? "iGMT-win64-full.zip" :
+                         Sys.isapple()   ? "iGMT-macos-$MAC_ARCH-full.tar.gz" : "iGMT-linux-x86_64-full.tar.gz"
+const REQUIRES_MANIFEST = Sys.iswindows() ? ".dll_requires" : Sys.isapple() ? ".dylib_requires" : ".so_requires"
+# Freshness signature of the FULL bundle, stored beside it. Platform-specific file NAME on purpose:
+# renaming the existing Linux one would make every installed Linux machine think its bundle was of
+# unknown vintage and re-download ~200 MB for nothing.
+const FULL_SIG_NAME    = Sys.isapple() ? ".mac_release_sig" : ".linux_release_sig"
+const LIB_SIG_NAME     = Sys.isapple() ? ".dylib_release_sig" : ".so_release_sig"
 
 const DEPS_DIR     = @__DIR__
 const SHARED_ROOT  = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime")   # survives every Pkg.update; zip paths (deps/build/...) are relative to here
@@ -303,11 +319,16 @@ function _fix_julia_libstdcxx()
     return nothing
 end
 
-function main_linux()
+# BOTH UNIXES, ONE FUNCTION. Linux and macOS install the same way -- pinned full bundle, then the
+# rolling library on top, then the manifest check -- so they run the same code, and a fix to either
+# is a fix to both. The only genuinely OS-specific step is the libstdc++ transplant, which is a
+# Linux problem (Julia ships its own libstdc++; macOS uses the system libc++ and has no such
+# conflict), so THAT is what carries the OS test, not a second copy of the function.
+function main_unix()
     want  = runtime_tag()
     asset = FULL_ASSET
     lib   = joinpath(SHARED_ROOT, "deps", "build", LIB_NAME)
-    sigf  = joinpath(SHARED_ROOT, "deps", "build", ".linux_release_sig")
+    sigf  = joinpath(SHARED_ROOT, "deps", "build", FULL_SIG_NAME)
     installed = isfile(MARKER) ? String(strip(read(MARKER, String))) : ""
     # The full Linux tarball is re-uploaded in place under the same tag, so the tag alone cannot tell
     # a machine that the bundle changed: matching MARKER used to mean "skip", and a re-upload then
@@ -330,7 +351,7 @@ function main_linux()
         sig !== nothing && write(sigf, sig)
         # The bundle carries a libgmtvtk.so of its own, but the rolling one below is normally newer,
         # so force a re-sync rather than let a stale signature skip it (main() does the same).
-        rm(joinpath(SHARED_ROOT, "deps", "build", ".so_release_sig"); force=true)
+        rm(joinpath(SHARED_ROOT, "deps", "build", LIB_SIG_NAME); force=true)
     end
     # ...and then the ROLLING library, exactly as main() does on Windows: ~2 MB instead of the whole
     # runtime for a C++ change. Extraction MERGES here on purpose -- this archive is libgmtvtk.so +
@@ -338,7 +359,7 @@ function main_linux()
     # full tarball alone, whose policy can retire a library).
     let
         so   = joinpath(SHARED_ROOT, "deps", "build", LIB_NAME)
-        ssig = joinpath(SHARED_ROOT, "deps", "build", ".so_release_sig")
+        ssig = joinpath(SHARED_ROOT, "deps", "build", LIB_SIG_NAME)
         sg   = _dll_asset_signature(DLL_TAG, LIB_ASSET)
         # The signature short-circuit is a speed optimisation, never a reason to leave a broken
         # install broken: a missing library means re-fetch regardless of what the signature says,
@@ -356,8 +377,8 @@ function main_linux()
         end
     end
     _ensure_runtime_complete()
-    _fix_julia_libstdcxx()
-    @info "InteractiveGMT: Linux gmtvtk runtime installed" SHARED_ROOT
+    Sys.islinux() && _fix_julia_libstdcxx()
+    @info "InteractiveGMT: $(Sys.isapple() ? "macOS" : "Linux") gmtvtk runtime installed" SHARED_ROOT
     return nothing
 end
 
@@ -414,8 +435,8 @@ end
 
 if Sys.iswindows()
     main()
-elseif Sys.islinux() && Sys.ARCH === :x86_64
-    main_linux()
+elseif (Sys.islinux() && Sys.ARCH === :x86_64) || (Sys.isapple() && Sys.ARCH in (:aarch64, :x86_64))
+    main_unix()
 else
     @warn "InteractiveGMT binaries are not published for this platform" kernel=Sys.KERNEL arch=Sys.ARCH
 end

@@ -88,7 +88,8 @@ struct XYPlot {
 	QTreeWidget                        *objMgr = nullptr;      // Object Manager (series list)
 	QPlainTextEdit                     *console = nullptr;       // ERRORS tab: read-only execution-error log (xyLog)
 	QPlainTextEdit                     *cmdConsole = nullptr;    // JULIA tab: read-only output of typed commands
-	QLineEdit                          *consoleInput = nullptr;  // interactive julia> line (shares Main with the 3-D viewer)
+	ConsoleLineEdit                    *consoleInput = nullptr;  // interactive julia> line (shares Main with the 3-D viewer;
+	                                                             // Up/Down history, the same widget the viewer's console uses)
 	QWidget                            *consolePanel = nullptr;  // collapsible container under the chart
 	QTabWidget                         *xyErrTab = nullptr;      // console body tabs (Errors | Julia); xyLog raises Errors
 	QToolButton                        *consoleToggle = nullptr; // disclosure triangle (collapsed by default)
@@ -1577,13 +1578,14 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->cmdConsole->setFont(QFont("Consolas", 9));
 	s->cmdConsole->setPlaceholderText("Julia output. `fig` is this window — shared session with the 3-D viewer.");
 
-	s->consoleInput = new QLineEdit();                 // JULIA tab — interactive input
+	s->consoleInput = new ConsoleLineEdit();           // JULIA tab — interactive input (Up/Down history)
 	s->consoleInput->setFont(QFont("Consolas", 9));
-	s->consoleInput->setPlaceholderText("julia>  (Enter to run)");
+	s->consoleInput->setPlaceholderText("julia>  (Enter to run, Up/Down for history)");
 	QObject::connect(s->consoleInput, &QLineEdit::returnPressed, s->win, [s]() {
 		const std::string cmd = s->consoleInput->text().toStdString();
 		if (cmd.empty())
 			return;
+		s->consoleInput->pushHistory(s->consoleInput->text());   // what RAN goes into the Up/Down history
 		s->consoleInput->clear();
 		if (s->cmdConsole)
 			s->cmdConsole->appendPlainText(QString("julia> ") + QString::fromStdString(cmd));
@@ -1702,6 +1704,9 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->objMgr->setContextMenuPolicy(Qt::CustomContextMenu);
 	omDock->setWidget(s->objMgr);
 	s->win->addDockWidget(Qt::LeftDockWidgetArea, omDock);
+	// Never floats, but it can be dragged to the other edge: the shared memory (10_geometry.cpp)
+	// carries its width across that move, same as every dock in the 3-D viewer.
+	installDockGeometryMemory(s->win, omDock, "objectManagerDock");
 
 	// --- menubar ---
 	QMenuBar *mb = s->win->menuBar();
@@ -1880,6 +1885,7 @@ static XYPlot *buildXYPlot(const char *title) {
 
 	// --- toolbar ---
 	QToolBar *tb = s->win->addToolBar("Tools");
+	tb->setObjectName("xyToolBar");     // named for saveState/restoreState (see installDockGeometryMemory)
 	tb->setIconSize(QSize(18, 18));
 	QStyle *st = s->win->style();
 	QAction *tFit = tb->addAction(st->standardIcon(QStyle::SP_BrowserReload), "Zoom to fit");

@@ -219,8 +219,7 @@ GMTVTK_API int gmtvtk_promote_points_h(void *handle, const double *xyz, int npts
 	s->emptyStart = false;
 
 	// Rebuild the gizmo against the REAL data (the launcher's was sized for the 0..1 placeholder).
-	disableGizmo(s);
-	s->giz = enableGizmo(s, 0.01);
+	s->giz = enableGizmo(s, 0.01);   // teardown already done inside buildSceneContent (before its camera fit)
 
 	// applyShading FIRST, configurePointCloud AFTER it -- the same order a fresh window uses
 	// (buildAndShow runs applyShading internally, then gmtvtk_view_points configures the cloud).
@@ -264,9 +263,15 @@ GMTVTK_API void *gmtvtk_view_fv(const double *xyz, int nv, const int *sides, int
 	const double ve = (zscale > 0.0) ? zscale : 1.0; // GMTfv.zscale already resolves the exaggeration
 	// objname (named solid e.g. "Torus") labels the Scene Objects checkbox; buildAndShow sets it
 	// BEFORE the panel is built so the checkbox is created once with the right name (no overlap).
+	// trueScaleMesh: an FV mesh's z is the SAME unit as its x,y (a unit sphere is 2 wide and 2 tall),
+	// so it must NOT go through the grid relief normaliser -- that is what flattened solids into
+	// cookies. zscale (= ve) stays the one and only exaggeration. See Scene::fvTrueScale.
 	Scene *s = buildAndShow(pd, x0, x1, y0, y1, z0, z1, 1.0, 1.0, ve,
 							direct ? nullptr : cz, direct ? nullptr : crgb, nc,
-							nullptr, 0, 0, 0, edges, false, geographic, title, objname);
+							nullptr, 0, 0, 0, edges, false, geographic, title, objname,
+							/*imageOnly=*/false, /*gz=*/nullptr, /*gnx=*/0, /*gny=*/0,
+							/*blankStart=*/false, /*openFlat2D=*/false, /*gzLayout=*/0,
+							/*trueScaleMesh=*/true);
 	if (!s)
 		return nullptr;
 	if (direct || cellz) {
@@ -349,7 +354,8 @@ GMTVTK_API int gmtvtk_promote_fv_h(void *handle,
 	s->surfName  = (objname && objname[0]) ? objname : "";
 
 	buildSceneContent(s, pd, x0, x1, y0, y1, direct ? nullptr : cz, direct ? nullptr : crgb, nc,
-					  nullptr, 0, 0, 0, edges, false, geographic, nullptr, 0, 0, /*blankStart=*/false);
+					  nullptr, 0, 0, 0, edges, false, geographic, nullptr, 0, 0, /*blankStart=*/false,
+					  /*gzLayout=*/0, /*trueScaleMesh=*/true);   // true coords: no relief normalising (see gmtvtk_view_fv)
 
 	// Faceted colouring (sharp edges + per-face colours that match the colorbar) — SAME post-step as
 	// gmtvtk_view_fv, replacing buildSceneContent's smooth-normal surface for the direct/cell-z modes.
@@ -383,8 +389,7 @@ GMTVTK_API int gmtvtk_promote_fv_h(void *handle,
 
 	// Rebuild the gizmo from scratch against the REAL surface (the launcher's was sized for the 0..1
 	// placeholder), exactly as gmtvtk_promote_surface_h does for a promoted grid.
-	disableGizmo(s);
-	s->giz = enableGizmo(s, 0.01);
+	s->giz = enableGizmo(s, 0.01);   // teardown already done inside buildSceneContent (before its camera fit)
 
 	// A solid is 3-D: leave flat2d OFF, refresh the 2D/3D toolbar icon, force perspective (the launcher
 	// opened in flat-2D ortho), and re-show the Shading dock folded (the launcher hid it with no body).
@@ -1153,6 +1158,9 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 		kvi("n_polys",    (long)s->polys.size());
 		kvi("n_texts",    (long)s->texts.size());
 		kvi("drape",      s->drape ? 1 : 0);
+		// Is a colour bar actually on screen? An RGB image never has one (it has no z), so this is
+		// what a test asserts on after a Base Map / image open, instead of eyeballing the window.
+		kvi("colorbar",   s->bar ? 1 : 0);
 		// Colour bar: is one drawn, and (an INDEXED image's palette legend) how many class blocks.
 		kvi("bar",  (s->bar && s->bar->GetVisibility() != 0) ? 1 : 0);
 		{ PaletteLegend *pl = resolveActivePalette(s); kvi("palN", pl ? (long)pl->n : 0L); }
@@ -1185,7 +1193,8 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 
 // Serialize the window's RESTORABLE display state (Save Session) as a ";"-terminated "k=v;" string:
 // vertical exaggeration, flat-2D mode, the full active camera (position/focal/up + parallel scale +
-// view angle + projection flag) and the colorbar frame position. Two-pass like gmtvtk_scene_state
+// view angle + projection flag), the colorbar frame position and the whole SHADING state (relief
+// look, its geometry, sun, material knobs and the VTK path's render passes). Two-pass like gmtvtk_scene_state
 // (call with buf=nullptr to size, then again to fill). gmtvtk_apply_scene_state consumes this verbatim.
 GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -1223,6 +1232,26 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 		// carry two of them, so the whole answer travels in its own key. It is written alongside, not
 		// instead: a session file read by an older library still finds the flat2d it knows.
 		kvi("viewmode", s->globe ? (s->cube ? 3 : 2) : (s->flat2d ? 1 : 0));
+		// THE SHADING STATE. Everything the Illumination dialog writes into the Scene, so a window
+		// reloaded from a session (or restored after a movie run) wears the look the user left it
+		// in instead of the struct defaults. `look` is the four-state relief look derived from the
+		// three flags it is set through -- emitted as the LOOK, not as the flags, because
+		// sceneSetReliefLook is what puts it back and the flags are its implementation. The legacy
+		// per-flag keys are still ACCEPTED by gmtvtk_apply_scene_state (a session written before
+		// this, or a host driving the window by hand); they are just no longer what is written.
+		kvi("look", s->useHillshade ? (s->hillGrd ? 3 : 2) : (s->litBake ? 1 : 0));
+		kvi("noshade", s->noShade ? 1 : 0);       // "Remove illumination": no light at all
+		kvi("imgmode", s->layerImgMode ? 1 : 0);  // flat baked image vs 3-D surface (the look's geometry)
+		kvd("sunaz", s->lightAz); kvd("sunel", s->lightEl);
+		kvd("hillgain", s->hillGain); kvd("hillamb", s->hillAmbient);
+		kvd("rough", s->roughness); kvd("metal", s->metallic);
+		kvd("keyi", s->lightIntensity); kvd("filli", s->fillIntensity); kvd("envi", s->envIntensity);
+		kvd("ssaorad", s->ssaoRadius);
+		// The render PASSES of the VTK (PBR) path -- not looks, but the user turned them on and off
+		// and expects to find them as they were left.
+		kvi("ibl", s->useIBL ? 1 : 0);   kvi("ssao", s->useSSAO ? 1 : 0);
+		kvi("tone", s->useTone ? 1 : 0); kvi("fxaa", s->useFXAA ? 1 : 0);
+		kvi("shadows", s->useShadows ? 1 : 0); kvi("shadowres", s->shadowRes);
 		kvd("barX0", s->barX0); kvd("barY0", s->barY0);
 		if (s->ren) {
 			if (vtkCamera *cam = s->ren->GetActiveCamera()) {
@@ -1283,15 +1312,37 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 			s->ren->ResetCameraClippingRange();
 		}
 	}
-	// Relief look, scriptable: the Shading dock's own state, so a host (or a test) can put the window
-	// into a known look instead of clicking. Same fields the dock writes; applyShading is the ONE
-	// path that acts on them, exactly as when the dock changes them.
+	// THE SHADING STATE, put back through the same doors the Illumination dialog uses: the knobs are
+	// plain Scene values, the LOOK goes through sceneSetReliefLook and the flat-image geometry through
+	// sceneSetShadedImage2D -- never a second copy of what those two decide. Knobs first, because both
+	// of them re-bake from the values they find.
 	{
-		int i = 0; bool touched = false;
-		if (geti("noshade",   i)) { s->noShade      = (i != 0); touched = true; }
-		if (geti("hillshade", i)) { s->useHillshade = (i != 0); touched = true; }
-		if (geti("hillgrd",   i)) { s->hillGrd      = (i != 0); touched = true; }
-		if (geti("litbake",   i)) { s->litBake      = (i != 0); touched = true; }
+		int i = 0; double d2 = 0.0; bool touched = false;
+		auto kd = [&](const char *k, double &f) { if (getd(k, d2)) { f = d2; touched = true; } };
+		auto kb = [&](const char *k, bool &f)   { if (geti(k, i))  { f = (i != 0); touched = true; } };
+		kd("sunaz", s->lightAz);        kd("sunel", s->lightEl);
+		kd("hillgain", s->hillGain);    kd("hillamb", s->hillAmbient);
+		kd("rough", s->roughness);      kd("metal", s->metallic);
+		kd("keyi", s->lightIntensity);  kd("filli", s->fillIntensity);
+		kd("envi", s->envIntensity);    kd("ssaorad", s->ssaoRadius);
+		kb("ibl", s->useIBL);           kb("ssao", s->useSSAO);
+		kb("tone", s->useTone);         kb("fxaa", s->useFXAA);
+		kb("shadows", s->useShadows);
+		if (geti("shadowres", i) && i > 0) { s->shadowRes = i; touched = true; }
+		// The geometry the look is drawn on (3-D surface vs flat baked image), through its ONE switch.
+		if (geti("imgmode", i) && (i != 0) != s->layerImgMode) { sceneSetShadedImage2D(s, i != 0); touched = false; }
+		// The look itself. `keepExternShade`: an Illumination model this session also restored (its
+		// own :illum recipe) must survive the look being put back -- restoring a snapshot is not the
+		// user picking a new look.
+		if (geti("look", i)) { sceneSetReliefLook(s, i, /*keepExternShade=*/true); touched = false; }
+		else {
+			// A session written before `look` existed (or a host driving the window by hand) still
+			// speaks the three flags sceneSetReliefLook sets. Same state, older spelling.
+			if (geti("hillshade", i)) { s->useHillshade = (i != 0); touched = true; }
+			if (geti("hillgrd",   i)) { s->hillGrd      = (i != 0); touched = true; }
+			if (geti("litbake",   i)) { s->litBake      = (i != 0); touched = true; }
+		}
+		if (geti("noshade", i) && (i != 0) != s->noShade) { s->noShade = (i != 0); touched = true; }
 		if (touched) applyShading(s);
 	}
 	bool okbar = false; double bx, by;
@@ -3235,6 +3286,22 @@ GMTVTK_API int gmtvtk_add_poly_full(void *handle, const double *xyz, int npts, i
 // (sceneDeleteGroup, 50_scene.cpp), never a hand-rolled erase loop. A tool whose re-run must REPLACE
 // what it painted (the solar night sides) removes its group first and adds it again. Returns 1 if
 // the handle was alive; removing a group that is not there is a no-op.
+// Declare that `child` -- an overlay/polygon GROUP name, or a SYMBOL LAYER name -- belongs to the
+// plot called `master`: its Scene Objects row is then parented to ONE collapsed master handle
+// instead of standing loose beside its siblings (SACRED_LAW.md, Scene Objects registration law:
+// one import/plot producing more than one element hangs under ONE master group named for its
+// source). A tool calls this once per child before it plots. `master` empty -> drop the declaration.
+// The master row is created only while at least one of its members is on screen, and its own Remove
+// deletes every declared member.
+GMTVTK_API int gmtvtk_set_group_master_h(void *handle, const char *child, const char *master) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !child || !child[0]) return 0;
+	if (master && master[0]) s->groupMaster[std::string(child)] = std::string(master);
+	else                     s->groupMaster.erase(std::string(child));
+	rebuildSceneObjects(s);
+	return 1;
+}
+
 GMTVTK_API int gmtvtk_remove_polys_h(void *handle, const char *groupName) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !groupName || !*groupName) return 0;
@@ -4089,6 +4156,105 @@ GMTVTK_API int gmtvtk_anno_count_h(void *handle) {
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
 #ifdef GMTVTK_TEST_API
+// test hook: drive and read back one dock's undock / re-dock, so the dock geometry memory
+// (installDockGeometryMemory, 10_geometry.cpp) is PROVED rather than eyeballed. `name` is the dock's
+// objectName ("panelsDock", "sceneObjectsDock", "messagesDock", "cubeLayerDock").
+//   action 0 = report only
+//          1 = undock (float)      -- through dockToggleFloat, the title-bar buttons' own path
+//          2 = re-dock             -- likewise
+// Writes "x,y,w,h,floating,area" into `buf` (area = Qt::DockWidgetArea, 0 while floating).
+// Returns 1 when the dock was found.
+GMTVTK_API int gmtvtk_dock_probe_test(void *handle, const char *name, int action, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!s || !s->win || !name || !name[0]) return 0;
+	QDockWidget *d = s->win->findChild<QDockWidget*>(QString::fromUtf8(name));
+	if (!d) return 0;
+	if (action == 1 || action == 2) {
+		dockToggleFloat(s->win, d);
+		QCoreApplication::processEvents();      // let the deferred restore (singleShot 0) run
+		QCoreApplication::processEvents();
+	}
+	else if (action == 3 && d->isFloating()) {  // user-resizes the torn-off window, then re-docks
+		d->resize(d->width() * 2 / 3, d->height() * 2);
+		QCoreApplication::processEvents();
+	}
+	const QRect g = d->geometry();
+	if (buf && cap > 0) {
+		char t[160];
+		snprintf(t, sizeof(t), "%d,%d,%d,%d,%d,%d", g.x(), g.y(), g.width(), g.height(),
+		         d->isFloating() ? 1 : 0, d->isFloating() ? 0 : (int)s->win->dockWidgetArea(d));
+		const int n = (int)strlen(t), c = (n < cap - 1) ? n : cap - 1;
+		memcpy(buf, t, c); buf[c] = '\0';
+	}
+	return 1;
+}
+
+// test hook: inspect and drive the "Sun and terminators" (solar) dialog -- which buttons it carries,
+// and that MINIMISING it parks a handle in Scene Objects that brings it back.
+//   action 0 = report only
+//          1 = minimise it (the park trigger)
+//          2 = un-park through the parked row's own action
+// Writes "close=<0|1>,update=<0|1>,minbox=<0|1>,visible=<0|1>,parked=<n>".
+GMTVTK_API int gmtvtk_solar_test(void *handle, int action, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!s || !s->win) return 0;
+	QDialog *d = nullptr;
+	for (QDialog *c : s->win->findChildren<QDialog*>())
+		if (c->windowTitle() == "solar") { d = c; break; }
+	if (!d) return 0;
+	if (action == 1) {
+		d->setWindowState(d->windowState() | Qt::WindowMinimized);
+		QCoreApplication::processEvents();
+		QCoreApplication::processEvents();
+	}
+	else if (action == 2) {
+		for (const auto &pt : s->parkedTools)
+			if (pt.win == d && pt.unpark) { pt.unpark(); break; }
+		QCoreApplication::processEvents();
+	}
+	int parked = 0;
+	for (const auto &pt : s->parkedTools) if (pt.win == d) ++parked;
+	if (buf && cap > 0) {
+		char t[192];
+		snprintf(t, sizeof(t), "close=%d,update=%d,minbox=%d,visible=%d,parked=%d",
+		         d->findChild<QPushButton*>("push_close")  ? 1 : 0,
+		         d->findChild<QPushButton*>("push_update") ? 1 : 0,
+		         (d->windowFlags() & Qt::WindowMinimizeButtonHint) ? 1 : 0,
+		         d->isVisible() ? 1 : 0, parked);
+		const int n = (int)strlen(t), c = (n < cap - 1) ? n : cap - 1;
+		memcpy(buf, t, c); buf[c] = '\0';
+	}
+	return 1;
+}
+
+// test hook: drive the Julia console's command history. Types `cmd` and presses Enter (when given),
+// then sends `ups` Up presses and `downs` Down presses, and reports the line's resulting text -- so
+// REPL-style recall is proved by the widget's own key handling, not by reading the code.
+GMTVTK_API int gmtvtk_console_history_test(void *handle, const char *cmd, int ups, int downs,
+                                           char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!s || !s->win) return 0;
+	// findChild<ConsoleLineEdit*> is not available (no Q_OBJECT -- this TU has no moc), so walk the
+	// QLineEdits and dynamic_cast: the console line is the only one of this type in the window.
+	ConsoleLineEdit *le = nullptr;
+	for (QLineEdit *e : s->win->findChildren<QLineEdit*>())
+		if ((le = dynamic_cast<ConsoleLineEdit*>(e))) break;
+	if (!le) return 0;
+	auto key = [&](int k) {
+		QKeyEvent press(QEvent::KeyPress, k, Qt::NoModifier);
+		QCoreApplication::sendEvent(le, &press);
+	};
+	if (cmd && cmd[0]) { le->setText(QString::fromUtf8(cmd)); key(Qt::Key_Return); }
+	for (int i = 0; i < ups;   ++i) key(Qt::Key_Up);
+	for (int i = 0; i < downs; ++i) key(Qt::Key_Down);
+	if (buf && cap > 0) {
+		const QByteArray t = le->text().toUtf8();
+		const int c = (t.size() < cap - 1) ? t.size() : cap - 1;
+		memcpy(buf, t.constData(), c); buf[c] = '\0';
+	}
+	return 1;
+}
+
 // test hook: grab an X,Y plot window (titlebar-to-statusbar) as a PNG, so a failing test/manual
 // probe can SEE the live axis/tick state instead of guessing from data alone. Deliberately skips
 // xyAlive's g_xyplots lookup: that registry is a file-static in gmtvtk.dll, invisible from this
@@ -4243,6 +4409,31 @@ GMTVTK_API const char *gmtvtk_objrows_test(void *scene) {
 		const std::string t = l->text().toStdString();
 		if (!t.empty()) { buf += t; buf += '\n'; }
 	}
+	return buf.c_str();
+}
+
+// test hook: the Scene Objects panel as a TREE -- one line per row, indented two spaces per level --
+// so a test can assert PARENTING (a plot's elements hanging under their one master handle), which the
+// flat gmtvtk_objrows_test above cannot show.
+GMTVTK_API const char *gmtvtk_objtree_test(void *scene) {
+	static std::string buf; buf.clear();
+	Scene *s = (Scene*)scene;
+	if (!s || !s->objPanel) return "";
+	QTreeWidget *tree = s->objPanel->findChild<QTreeWidget*>();
+	if (!tree) return "";
+	std::function<void(QTreeWidgetItem*, int)> walk = [&](QTreeWidgetItem *it, int depth) {
+		QString label;
+		if (QWidget *w = tree->itemWidget(it, 0)) {
+			for (QLabel *l : w->findChildren<QLabel*>())
+				if (!l->text().isEmpty()) { label = l->text(); break; }
+		}
+		if (label.isEmpty()) label = it->text(0);
+		buf += std::string((size_t)depth * 2, ' ');
+		buf += label.toStdString();
+		buf += '\n';
+		for (int i = 0; i < it->childCount(); ++i) walk(it->child(i), depth + 1);
+	};
+	for (int i = 0; i < tree->topLevelItemCount(); ++i) walk(tree->topLevelItem(i), 0);
 	return buf.c_str();
 }
 
@@ -6824,8 +7015,7 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 	// haxisLen is measured from the visible surface bounds inside enableGizmo). The launcher's gizmo
 	// was calibrated for the 0..1 placeholder, and hand re-keying it kept yielding a giant horizontal
 	// axis — tearing it down and recreating gives exactly the normal-grid gizmo, no special-casing.
-	disableGizmo(s);
-	s->giz = enableGizmo(s, 0.01);
+	s->giz = enableGizmo(s, 0.01);   // teardown already done inside buildSceneContent (before its camera fit)
 
 	// Both a grid and a bare image open in top-down flat-2D (matching gmtvtk_view_grid): grids as a
 	// shaded-relief map, images as the textured plane. The grid branch saves the 3-D view first.
@@ -6915,7 +7105,7 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 
 	// Rebuild the gizmo against the new surface (as promote does), then restore the camera so the
 	// user's zoom / orientation / 2D-or-3D view is untouched by the data edit.
-	disableGizmo(s);  s->giz = enableGizmo(s, 0.01);
+	s->giz = enableGizmo(s, 0.01);   // teardown already done inside buildSceneContent
 	cam->SetPosition(cpos);  cam->SetFocalPoint(cfoc);  cam->SetViewUp(cvup);
 	cam->SetParallelProjection(cpar);  if (cpar) cam->SetParallelScale(cpscale);
 	gizmoApplyForMode(s);           // the ONE rule for what the handle is in this view mode
@@ -7056,7 +7246,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 
 	// Rebuild the gizmo against the new bounds, then either open flat-2D top-down (launcher promote,
 	// the way a normal grid opens) or restore the previous view (in-place rebuild).
-	disableGizmo(s); s->giz = enableGizmo(s, 0.01);
+	s->giz = enableGizmo(s, 0.01);   // teardown already done inside buildSceneContent
 	if (fromEmpty) {
 		s->flat2d = false; sceneSetFlat2D(s, true);
 		// The empty launcher created the Shading dock HIDDEN (no body to light back then). There is a

@@ -18167,6 +18167,11 @@ public:
 		if (obj == dock && ev->type() == QEvent::Close) {
 			ev->ignore();
 			dock->setFloating(false);   // re-dock into its home (bottom) area
+			// ...and land in the area + size it was last docked at, like every other panel:
+			// the same restore the float buttons use, never a second re-dock rule. (setFloating(false)
+			// above already fired topLevelChanged, which schedules it; this is the explicit call for
+			// the case where the dock was not floating and nothing was scheduled.)
+			dockRestoreLayout(qobject_cast<QMainWindow*>(dock->parentWidget()), dock);
 			dock->show();
 			return true;                // swallow the close -> never destroyed
 		}
@@ -18266,6 +18271,7 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 	dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
 	dock->setWidget(content);
 	mw->addDockWidget(Qt::BottomDockWidgetArea, dock);
+	installDockGeometryMemory(mw, dock, "cubeLayerDock");   // undock -> re-dock puts it back exactly
 	dock->installEventFilter(new CubeDockCloseFilter(dock));
 
 	// Start FLOATING, centered inside the viewer window. Use the .ui's OWN size verbatim — no
@@ -19032,7 +19038,12 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
                               const unsigned char *img, int iw, int ih, int ibands,
                               int edges, bool pointCloud, int geographic,
                               const float *gz, int gnx, int gny, bool blankStart,
-                              int gzLayout = 0) {   // gz layout: 0 = GMT "BCB", !=0 = "TRB" (GridLay)
+                              int gzLayout = 0,      // gz layout: 0 = GMT "BCB", !=0 = "TRB" (GridLay)
+                              bool trueScaleMesh = false) {  // FV mesh: true coords, no relief normalising
+	// TRUE-SCALE (Scene::fvTrueScale) is part of the same caller contract as xfac/ve, and is set HERE,
+	// BEFORE sceneZRef reads it -- so a grid or image built into this window afterwards clears it by
+	// construction, instead of every one of those callers having to remember to.
+	s->fvTrueScale = trueScaleMesh;
 	// The vertical normaliser, BEFORE anything is built: every actor below is given
 	// SetScale(xfac, 1, zfac*ve), and `zfac` is derived from the drawn geometry (sceneZRef,
 	// 10_geometry.cpp) rather than from any assumption about z's unit. The caller's contract has
@@ -19041,6 +19052,14 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	s->zfac = sceneZRef(s);
 	// Drop any previous content first (promotion rebuilds into an existing scene; a fresh scene has
 	// none of these so every removal is a no-op). RemoveActor on an actor not in the renderer is safe.
+	// THE GIZMO IS PREVIOUS CONTENT TOO, and it goes here — before anything is rebuilt — not in the
+	// callers. The default-view block below fits the camera with ResetCamera(), which measures EVERY
+	// VISIBLE PROP: with the old handle still standing (every caller used to tear it down only AFTER
+	// this function returned) the fit was pulled toward the body that is being replaced, and since the
+	// handle is anchored at the camera's FOCAL POINT (PlaceCB, 20_gizmo.cpp) the new gizmo was then
+	// planted at the old body's place. Callers only call enableGizmo afterwards; the teardown is here,
+	// once, for every element type (SACRED_LAW.md: same operation, same function).
+	disableGizmo(s);
 	if (s->lodCmd && s->ren->GetActiveCamera()) s->ren->GetActiveCamera()->RemoveObserver(s->lodCmd);
 	s->lodCmd = nullptr; s->quadRoot = nullptr; s->tiles.clear();
 	if (s->surfGroup) s->ren->RemoveActor(s->surfGroup);
@@ -19106,7 +19125,13 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 		s->surfLut = lut; s->surfCtfRange = ctfRange; s->surfEdges = edges;
 		// Data layer MUST exist before refineQuadtree (tiles sample s->gridZ). Populate it here from
 		// gz (the caller fills it only AFTER buildAndShow returns, which would be too late).
-		sceneSetGridLayer(s, gz, gnx, gny, x0, x1, y0, y1, 0.0, 0.0, gzLayout);
+		// `placeholder = s->imageOnly`: on an IMAGE window this z is the flat plane the picture rides
+		// on -- a footprint that feeds the hover readout and NOTHING else. An RGB image has no z and
+		// no colour bar; leaving it unflagged made it resolve as the window's active grid and paint a
+		// bar for the range [0,0], which VTK draws as one flat colour -- the red strip a Base Map came
+		// up with. The single-actor (drape) path already flagged it; this is the SAME fact, stated at
+		// the one place the base layer is populated, so both paths cannot disagree.
+		sceneSetGridLayer(s, gz, gnx, gny, x0, x1, y0, y1, 0.0, 0.0, gzLayout, /*placeholder=*/s->imageOnly);
 		s->quadRoot = buildQuadNode(0, gnx - 1, 0, gny - 1, 0, x0, s->gdx, y0, s->gdy);
 		s->surf = vtkSmartPointer<vtkActor>::New();   // placeholder handle; real geometry = tiles
 		s->surfGroup->SetScale(s->xfac, 1.0, s->zfac * s->ve);
@@ -20798,6 +20823,37 @@ public:
 	QSpinBox *trSpin[NTERM] = { nullptr, nullptr, nullptr, nullptr };
 	QColor fillColor[NTERM];
 	std::shared_ptr<QPointer<MapPickFilter>> pick = std::make_shared<QPointer<MapPickFilter>>();
+	// "Click point on map" ALSO minimises the dialog (to get out of the way of the click), and that
+	// must not be read as the user parking it. True for the length of that pick only.
+	bool picking = false;
+
+	// Bring the dialog back from the dock (double-click, the row's checkbox, its "Show"). ONE function
+	// for every way back in, exactly as HillshadeDialog::unpark / xyUnpark.
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	// The parked row's menu -- properties button and context menu are the same lambda, never two.
+	// "Delete" really closes it (WA_DeleteOnClose), which is what the missing Close button used to do.
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				unparkTool(scn, dlg);
+				dlg->close();          // WA_DeleteOnClose -> destroyed -> this object goes with it
+			}
+		};
+	}
 
 	// The paint colours a fresh dialog opens with: night, then three progressively lighter dusks.
 	// Julia holds the same four as its own fallback (_SOLAR_TERMS), for a run that names no colour.
@@ -20824,7 +20880,10 @@ public:
 		f.close();
 		if (!dlg) { qWarning("SolarDialog: QUiLoader failed to load the .ui"); return; }
 		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		// The MINIMISE box is part of the contract here: it is what parks the dialog in Scene Objects
+		// (see MinimizeParks below), so the flag has to be asked for -- a QDialog gets no minimise box
+		// by default.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowMinimizeButtonHint | Qt::WindowCloseButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		dlg->setWindowTitle("solar");
 		QDialog *d = dlg;
@@ -20901,6 +20960,7 @@ public:
 		if (auto *b = d->findChild<QPushButton *>("push_pick")) {
 			QObject::connect(b, &QPushButton::clicked, d, [this, d]() {
 				if (!scn || !scn->widget) return;
+				picking = true;              // this minimise is the picker stepping aside, not a park
 				d->showMinimized();
 				scn->widget->setCursor(Qt::CrossCursor);
 				if (scn->win) scn->win->statusBar()->showMessage("solar: click a point on the map…", 5000);
@@ -20908,6 +20968,7 @@ public:
 					if (lonEdit) lonEdit->setText(QString::number(lon, 'f', 4));
 					if (latEdit) latEdit->setText(QString::number(lat, 'f', 4));
 					if (scn && scn->widget) scn->widget->unsetCursor();
+					picking = false;
 					d->showNormal(); d->raise(); d->activateWindow();
 				});
 				*pick = f;
@@ -20916,18 +20977,59 @@ public:
 		}
 
 		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		// NO "Close" button: Compute is the only button in that row (the X closes, the minimise box
+		// parks). Only the action button executes, and it is now the one the row ends in.
 		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
-		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		// "Update", in the Date and time row: move the instant to NOW and redraw the terminators for
+		// it -- the one thing a terminator display needs that a re-typed date does not (the sun has
+		// moved since the dialog opened). It runs the SAME runCompute the Compute button runs, so
+		// there is one path from these fields to the module, never a second short one.
+		if (auto *b = d->findChild<QPushButton *>("push_update")) {
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() {
+				if (whenEdit) whenEdit->setDateTime(QDateTime::currentDateTimeUtc());
+				runCompute(d);
+			});
+		}
 		addManualButton(d, "solar");               // the green ? disk, lower-left as everywhere else
+
+		// MINIMISE PARKS IT. The title bar's minimise box (top right) hides the dialog and leaves a
+		// handle in this window's Scene Objects dock -- the SAME Scene::parkedTools list, parkTool /
+		// unparkTool pair and row builder every other parkable tool uses (X,Y plots, Illumination,
+		// Contours), never a second parking mechanism. A double-click on the row, its checkbox or its
+		// "Show" brings the dialog back with every field as it was left.
+		//
+		// Parked on the WindowStateChange, not on close: this dialog's X still means close (it is
+		// WA_DeleteOnClose), and the user asked for the minimise control to be the one that parks.
+		struct MinimizeParks : QObject {
+			SolarDialog *sd;
+			MinimizeParks(QObject *parent, SolarDialog *s) : QObject(parent), sd(s) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::WindowStateChange && sd && sd->dlg
+				    && sd->dlg->isMinimized() && !sd->picking && sceneAlive(sd->scn)) {
+					SolarDialog *p = sd;              // a lambda cannot capture a member of the enclosing class
+					p->dlg->hide();                   // out of the taskbar too: it lives in Scene Objects now
+					parkTool(p->scn, p->dlg, "Sun and terminators", IC_Surface,
+					         "Minimised solar dialog -- double-click to bring it back, click for Show / Delete",
+					         [p]() { p->unpark(); }, p->parkedMenu());
+					unfoldSceneObjects(p->scn);       // a handle nobody can see is no handle at all
+					return false;                     // the state change itself is not swallowed
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new MinimizeParks(d, this));
 
 		// Closing with a pick still armed must not leave the map wearing a crosshair and an event
 		// filter that outlives the boxes it was going to fill.
-		auto pk = pick;  Scene *sc = scn;
-		QObject::connect(d, &QObject::destroyed, d, [this, pk, sc]() {
+		auto pk = pick;  Scene *sc = scn;  QWidget *self = d;
+		QObject::connect(d, &QObject::destroyed, d, [this, pk, sc, self]() {
 			if (*pk) {
 				if (sc && sc->widget) { sc->widget->removeEventFilter(*pk); sc->widget->unsetCursor(); }
 				pk->data()->deleteLater();
 			}
+			// A dialog that dies while parked must take its Scene Objects row with it, or the row is
+			// left pointing at freed memory (the row's Show would then reopen nothing).
+			if (sceneAlive(sc)) unparkTool(sc, self);
 			delete this;
 		});
 	}
@@ -21437,7 +21539,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 						 int gnx = 0, int gny = 0,          // grid dims for the tiled path
 						 bool blankStart = false,           // empty launcher: open as a clean dark canvas (no axes flash)
 						 bool openFlat2D = false,           // open in flat-2D from the FIRST frame (grids) — no 3-D flash
-						 int gzLayout = 0) {              // gz layout: 0 = GMT "BCB", !=0 = "TRB" (see GridLay)
+						 int gzLayout = 0,                // gz layout: 0 = GMT "BCB", !=0 = "TRB" (see GridLay)
+						 bool trueScaleMesh = false) {    // FV mesh: z is the same unit as x,y (see Scene::fvTrueScale)
 	ensureApp();
 
 	Scene *s = new Scene();
@@ -21508,7 +21611,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	s->envTex = makeSkyEnv();
 
 	buildSceneContent(s, pd, x0, x1, y0, y1, cz, crgb, ncolor, img, iw, ih, ibands,
-	                  edges, pointCloud, geographic, gz, gnx, gny, blankStart, gzLayout);
+	                  edges, pointCloud, geographic, gz, gnx, gny, blankStart, gzLayout, trueScaleMesh);
 
 	// --- main window + native menubar ---------------------------------------
 	// Heap-allocated + delete-on-close: the function returns immediately (the host
@@ -22993,6 +23096,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// opens INTO this window (or promotes an empty launcher), NOT iview() which would spawn a new
 	// window and auto-send a 2-col table to the X,Y tool. 2D/3D -> the shared act2D toggle.
 	QToolBar *tb = win->addToolBar("Main");
+	// QMainWindow::saveState/restoreState (the dock undock/re-dock memory, 10_geometry.cpp) matches
+	// every toolbar and dock BY objectName and skips anything unnamed -- an unnamed toolbar would be
+	// dropped out of the layout the moment a panel is put back.
+	tb->setObjectName("mainToolBar");
 	tb->setMovable(false);
 	tb->setToolButtonStyle(Qt::ToolButtonIconOnly);   // icon-only toolbar — no text labels on any button
 	QAction *actOpen = tb->addAction(win->style()->standardIcon(QStyle::SP_DirOpenIcon), "");  // icon only, no text
@@ -23461,6 +23568,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	s->objDock  = objDock;                                   // keep a handle so the first nested rect can re-show it
 	objDock->setWidget(s->objPanel);                         // mount that container into the Scene Objects dock
 	win->addDockWidget(Qt::LeftDockWidgetArea, objDock);     // dock the Scene Objects panel to the LEFT edge by default
+	installDockGeometryMemory(win, objDock, "sceneObjectsDock");  // undock -> re-dock puts it back exactly
 	if (objname && objname[0])
 		s->surfName = objname;                // named solid -> checkbox shows the solid name
 	rebuildSceneObjects(s);                                  // populate the per-object show/hide checkboxes now
@@ -23478,18 +23586,30 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		d->setTitleBarWidget(bar);                        // swap Qt's default title bar for our fold strip
 		bar->onClick = [win, d, body, bar]() {
 			const bool fold = body->isVisible();          // visible now -> fold it away
-			if (fold) bar->openWidth = d->width();        // remember the open width to restore later
+			// Remember the open width only from a DOCKED dock: a floating one is a free-resized
+			// top-level window, and storing its width here would hand that size to the dock area
+			// the panel is put back into.
+			if (fold && !d->isFloating()) bar->openWidth = d->width();
 			body->setVisible(!fold);                      // hide body -> dock can shrink to the strip
 			bar->folded = fold;
 			bar->updateGeometry();                        // sizeHint flips orientation
 			bar->update();
 			const int w = fold ? bar->sizeHint().width()
 							   : (bar->openWidth > 0 ? bar->openWidth : 220);
-			win->resizeDocks({d}, {w}, Qt::Horizontal);   // collapse to / expand from the strip width
+			// resizeDocks only moves docks INSIDE the main window; a floating dock is a top-level
+			// window and must be resized as one, or folding it leaves a thin strip rattling around
+			// inside a full-width window that never shrank.
+			if (d->isFloating()) d->resize(w, d->height());
+			else                 win->resizeDocks({d}, {w}, Qt::Horizontal);  // collapse to / expand from the strip width
 		};
 		return bar;
 	};
 	s->objFoldBar = makeFoldable(objDock, s->objPanel, "Scene Objects");  // keep the bar so an empty launcher can start folded
+	// Undock / re-dock button on the fold bar. A custom title bar widget swallows the press Qt turns
+	// into a drag, so this glyph is the dock's ONLY tear-off affordance -- and it goes through the
+	// same dockToggleFloat every other panel's float button uses, so it comes home the same way.
+	s->objFoldBar->onFloat = [win, objDock]() { dockToggleFloat(win, objDock); };
+	s->objFoldBar->updateGeometry();                         // sizeHint now reserves the glyph's width
 
 	// --- Bottom tabbed panel: Profile / Julia Console / Errors ---------------
 	// ONE dock holds a QTabWidget. A "Hide" button in the tab-bar corner collapses the panel
@@ -23500,6 +23620,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	tabs->setDocumentMode(true);
 	bottomDock->setWidget(tabs);
 	win->addDockWidget(Qt::BottomDockWidgetArea, bottomDock);
+	installDockGeometryMemory(win, bottomDock, "panelsDock");   // undock -> re-dock puts it back exactly
 	s->bottomDock = bottomDock;
 	s->bottomTabs = tabs;
 
@@ -23518,9 +23639,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	conOut->setReadOnly(true);
 	conOut->setFont(QFont("Consolas", 10));
 	conOut->setPlaceholderText("Julia output appears here. `fig` is this window. e.g.  add!(fig, [x y z]; mode=:points)");
-	QLineEdit *conIn = new QLineEdit(conPanel);
+	// ConsoleLineEdit, not a plain QLineEdit: Up / Down recall this window's previous commands, the
+	// same way the Julia REPL does (10_geometry.cpp; the X,Y plot tool's console uses the same one).
+	ConsoleLineEdit *conIn = new ConsoleLineEdit(conPanel);
 	conIn->setFont(QFont("Consolas", 10));
-	conIn->setPlaceholderText("julia>  (Enter to run)");
+	conIn->setPlaceholderText("julia>  (Enter to run, Up/Down for history)");
 	conLay->addWidget(conOut, 1);
 	conLay->addWidget(conIn, 0);
 	conPanel->setLayout(conLay);
@@ -23530,6 +23653,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		const std::string cmd = conIn->text().toStdString();
 		if (cmd.empty())
 			return;
+		conIn->pushHistory(conIn->text());     // what RAN goes into the Up/Down history
 		conIn->clear();
 		conOut->appendPlainText(QString("julia> ") + QString::fromStdString(cmd));
 		if (!g_juliaEval) {
@@ -23559,6 +23683,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	msgDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
 	msgDock->setWidget(errOut);
 	win->addDockWidget(Qt::BottomDockWidgetArea, msgDock);
+	installDockGeometryMemory(win, msgDock, "messagesDock");    // same undock/re-dock memory as every other dock
 	msgDock->hide();
 	s->msgDock    = msgDock;
 	s->errConsole = errOut;
@@ -23595,7 +23720,19 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	bottomDock->setTitleBarWidget(titleBar);
 	s->bottomHideBtn = hideBtn;
 	QObject::connect(hideBtn,  &QToolButton::clicked, [s]() { setBottomCollapsed(s, !s->bottomCollapsed); });
-	QObject::connect(floatBtn, &QToolButton::clicked, [bottomDock]() { bottomDock->setFloating(!bottomDock->isFloating()); });
+	QObject::connect(floatBtn, &QToolButton::clicked, [win, bottomDock]() { dockToggleFloat(win, bottomDock); });
+	// Collapsed + floating is a dead end: the collapse CLAMPS the tab widget's maximum height to the
+	// tab strip, so the torn-off window cannot be resized at all. Tearing off therefore expands the
+	// body (the clamp is lifted, the floating panel resizes freely) and putting it back restores the
+	// collapsed state it had, together with the docked height dockRestoreGeometry brings back.
+	QObject::connect(bottomDock, &QDockWidget::topLevelChanged, bottomDock, [s, bottomDock](bool floating) {
+		if (floating) {
+			bottomDock->setProperty("igWasCollapsed", s->bottomCollapsed);
+			if (s->bottomCollapsed) setBottomCollapsed(s, false);
+		}
+		else if (bottomDock->property("igWasCollapsed").toBool())
+			setBottomCollapsed(s, true);
+	});
 
 	// View-menu items: show the dock, un-collapse it, and bring the matching tab forward.
 	auto showTab = [s](QWidget *page) {

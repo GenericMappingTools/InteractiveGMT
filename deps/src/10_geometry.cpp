@@ -17,6 +17,12 @@ struct FoldTitleBar : QWidget {
 	bool    folded    = false;
 	int     openWidth = 0;            // dock width remembered at fold time, restored on un-fold
 	std::function<void()> onClick;
+	// Undock / re-dock button, painted at the right end of the OPEN bar (the same glyph and the same
+	// job as the "Panels" dock's own float button). A custom title bar widget swallows the press Qt
+	// would have turned into a drag, so without this the dock has no undock affordance at all; with
+	// it every dock in the window is torn off and put back through ONE function (dockToggleFloat).
+	std::function<void()> onFloat;
+	QRect   floatRect;                // hit area of that glyph while open (empty when folded)
 	explicit FoldTitleBar(const QString &t, QWidget *parent = nullptr)
 		: QWidget(parent), title(t) {
 		setCursor(Qt::PointingHandCursor);
@@ -25,11 +31,17 @@ struct FoldTitleBar : QWidget {
 	QSize sizeHint() const override {
 		QFontMetrics fm(font());
 		const int thick = fm.height() + 8;                       // strip thickness
-		const int along = fm.horizontalAdvance(title) + thick + 12;
+		const int along = fm.horizontalAdvance(title) + thick + 12
+		                + (onFloat ? fm.horizontalAdvance(QString::fromUtf8("\xE2\x9D\x90")) + 12 : 0);
 		return folded ? QSize(thick, along) : QSize(along, thick);
 	}
 	QSize minimumSizeHint() const override { return sizeHint(); }
-	void mousePressEvent(QMouseEvent*) override { if (onClick) onClick(); }
+	void mousePressEvent(QMouseEvent *e) override {
+		// The float glyph first (it sits inside the bar, so a plain "anywhere folds" test would
+		// swallow it), then the fold anywhere else on the bar.
+		if (onFloat && !folded && floatRect.contains(e->position().toPoint())) { onFloat(); return; }
+		if (onClick) onClick();
+	}
 	void paintEvent(QPaintEvent*) override {
 		QPainter p(this);
 		p.setPen(palette().color(QPalette::WindowText));
@@ -39,7 +51,16 @@ struct FoldTitleBar : QWidget {
 		if (!folded) {
 			const int y = (height() + fm.ascent() - fm.descent()) / 2;
 			p.drawText(6, y, glyph + " " + title);
+			if (onFloat) {                                  // undock / re-dock glyph, right end
+				const QString fg = QString::fromUtf8("\xE2\x9D\x90");
+				const int fw = fm.horizontalAdvance(fg) + 8;
+				floatRect = QRect(width() - fw - 4, 0, fw, height());
+				p.drawText(floatRect, Qt::AlignCenter, fg);
+			}
+			else
+				floatRect = QRect();
 		} else {
+			floatRect = QRect();                            // no float glyph on the folded strip
 			// arrow centred near the top of the vertical strip
 			p.drawText(QRect(0, 2, width(), fm.height()), Qt::AlignHCenter, glyph);
 			// title rotated to read bottom->top, filling the strip below the arrow
@@ -49,6 +70,52 @@ struct FoldTitleBar : QWidget {
 			p.drawText(QRect(4, 0, height() - fm.height() - 8, width()),
 					   Qt::AlignVCenter | Qt::AlignLeft, title);
 			p.restore();
+		}
+	}
+};
+
+// GRAPHICAL ELEMENT: the "julia>" console input line, with REPL-style command history on the Up /
+// Down arrows. Up walks back through what was run in THIS window, Down walks forward again and past
+// the newest entry returns the half-typed line that was stashed when the walk started -- the same
+// behaviour Julia's own REPL has, which is what makes a console usable at all.
+//
+// Defined here (shared, early fragment) because there are TWO consoles -- the 3-D viewer's Panels
+// tab (70_window.cpp) and the X,Y plot tool's Julia tab (65_xyplot.cpp) -- and they get the same
+// input widget, not a second implementation of the same recall (SACRED_LAW: same operation, same
+// function). (No Q_OBJECT: this TU has no moc; we override virtuals only.)
+struct ConsoleLineEdit : QLineEdit {
+	std::vector<QString> hist;      // oldest first, as typed
+	int     pos = -1;               // index being shown; -1 = editing a fresh line
+	QString draft;                  // the fresh line, stashed while walking the history
+	using QLineEdit::QLineEdit;
+
+	// Record a command that was just run. Called by the console's own returnPressed handler, so the
+	// history holds what actually executed -- never a line the user abandoned.
+	void pushHistory(const QString &cmd) {
+		const QString c = cmd.trimmed();
+		if (c.isEmpty()) return;
+		if (hist.empty() || hist.back() != c) hist.push_back(c);   // no run of identical repeats
+		if (hist.size() > 500) hist.erase(hist.begin());           // bounded, like HISTSIZE
+		pos = -1;
+		draft.clear();
+	}
+	void showEntry(const QString &t) { setText(t); setCursorPosition(t.size()); }
+
+	void keyPressEvent(QKeyEvent *e) override {
+		const int k = e->key();
+		if ((k != Qt::Key_Up && k != Qt::Key_Down) || hist.empty()) {
+			QLineEdit::keyPressEvent(e);
+			return;
+		}
+		if (k == Qt::Key_Up) {
+			if (pos == -1) { draft = text(); pos = (int)hist.size() - 1; }   // start the walk
+			else if (pos > 0) --pos;
+			showEntry(hist[(size_t)pos]);
+		}
+		else {
+			if (pos == -1) { QLineEdit::keyPressEvent(e); return; }          // not walking: plain Down
+			if (pos + 1 < (int)hist.size()) showEntry(hist[(size_t)++pos]);
+			else { pos = -1; showEntry(draft); }                             // past the newest: the draft
 		}
 	}
 };
@@ -986,6 +1053,14 @@ struct Scene {
 	vtkSmartPointer<vtkCallbackCommand> layerCamCmd;   // camera observer -> schedules a settle refine
 	QTimer *layerDetailTimer = nullptr;                // debounce (bake only after the camera stops)
 	double  layerDetailReg[4] = { 0, 0, 0, 0 };        // baked tile region (true W,E,S,N); skip if unchanged
+	// TRUE-SCALE geometry: the primary surface is an FV MESH (a GMT solid, a poly2fv mesh, a dropped
+	// .vtk mesh) whose vertices are real coordinates in one common unit -- a sphere of radius 1 is 2
+	// wide and 2 TALL. The grid relief normaliser (sceneZRef: z span -> a tenth of the horizontal span)
+	// is a GRID convention and squashes such a body flat (a unit sphere came out 10x flatter than wide:
+	// a cookie). So for a mesh zfac stays 1 and GMTfv.zscale is the ONLY exaggeration, exactly as
+	// view_fv documents it. Set through the build contract (buildSceneContent's trueScaleMesh), so any
+	// later grid/image build into the same window clears it by construction.
+	bool   fvTrueScale = false;
 	bool   fvSolid = false;     // window's content is a body-button GMT solid (cube/sphere/torus/…) built
 	                            // in place by gmtvtk_promote_fv_h -> a later body click REPLACES it here
 	double sav_pos[3] = {0, 0, 0};
@@ -1360,6 +1435,15 @@ struct Scene {
 		std::function<void(const QPoint &)> menu;         // properties AND context menu: ONE lambda, both buttons
 	};
 	std::vector<ParkedTool> parkedTools;
+
+	// ONE PLOT = ONE MASTER HANDLE (SACRED_LAW.md, Scene Objects registration law). A tool whose
+	// single action lands SEVERAL elements -- Geography > "Sun and terminators" makes terminator
+	// lines, the night polygons it paints and the sub-solar marker -- declares them here instead of
+	// leaving three loose rows side by side in the panel. Key = the child's own group name (or, for a
+	// symbol layer, its layer name); value = the label of the master row they all hang under.
+	// Filled from the host (gmtvtk_set_group_master_h); read only by rebuildSceneObjects, which
+	// re-parents each member's row and gives the master a Remove that takes every member with it.
+	std::map<std::string, std::string> groupMaster;
 
 	// IN-PLACE editing of an OVERLAY line (a contour, a coastline island, a dropped .xy track): the
 	// vertex handles hang off the overlay's own points, so nothing is converted, copied or added —
@@ -2284,12 +2368,124 @@ static void setBottomCollapsed(Scene *s, bool collapse) {
 											  : QWIDGETSIZE_MAX);
 	s->bottomCollapsed = collapse;
 	if (s->bottomHideBtn) {
-		// Triangle fold affordance, matching the Scene Objects dock: ▸ collapsed, ▾ open.
+		// Triangle fold affordance, matching the Scene Objects dock:▸ collapsed, ▾ open.
 		s->bottomHideBtn->setText(collapse ? QString::fromUtf8("\xE2\x96\xB8")   // ▸
 										   : QString::fromUtf8("\xE2\x96\xBE"));  // ▾
 		s->bottomHideBtn->setToolTip(collapse ? "Expand this panel"
 											  : "Collapse this panel to extend the 3-D view");
 	}
+}
+
+// ---- dock undock / re-dock geometry memory ---------------------------------
+// A QDockWidget torn off and put back comes home wherever Qt's own bookkeeping leaves it: on a
+// different edge, at a different size, and (for a dock whose title bar we replaced) sometimes
+// nowhere sensible at all. So every dock in this viewer remembers ITS OWN docked area and docked
+// size and restores them itself, through ONE function -- never a per-dock hand-rolled restore
+// (SACRED_LAW: same operation, same function).
+//
+// WHAT PUTS IT BACK is QMainWindow's own layout serializer -- saveState()/restoreState(), the only
+// thing in Qt that describes a dock area's SPLIT SIZES. addDockWidget + resizeDocks cannot: they
+// re-insert the dock and then argue with the relayout Qt runs as the dock un-floats, which is why a
+// re-docked panel landed somewhere else at some other size.
+//
+// So: the WHOLE window layout is snapshotted while the dock is still DOCKED -- at the mouse press
+// that starts a title-bar drag, and in the float button just before it tears the panel off -- and
+// that snapshot is restored the moment the dock comes back in. Area, split sizes, neighbours: all
+// of it, exactly as it stood.
+//
+// Kept on the dock itself as a dynamic property (igDockLayout, a QByteArray), so nothing outlives
+// the dock. Every dock in the window must have an objectName -- restoreState matches docks BY NAME
+// and silently skips any that has none.
+struct DockGeomFilter : QObject {
+	QMainWindow *mw;
+	DockGeomFilter(QMainWindow *m, QDockWidget *d) : QObject(d), mw(m) {}
+	bool eventFilter(QObject *o, QEvent *ev) override {
+		QDockWidget *d = qobject_cast<QDockWidget*>(o);
+		// A press on a docked panel is the start of a possible tear-off -- the last instant the
+		// layout still describes where this panel belongs. Cheap enough to take every time.
+		if (d && mw && !d->isFloating() && d->isVisible()
+		      && (ev->type() == QEvent::MouseButtonPress || ev->type() == QEvent::NonClientAreaMouseButtonPress))
+			d->setProperty("igDockLayout", mw->saveState());
+		return QObject::eventFilter(o, ev);
+	}
+};
+
+// Snapshot the window layout while `d` is docked. Called before any deliberate float.
+static void dockSnapshotLayout(QMainWindow *mw, QDockWidget *d) {
+	if (mw && d && !d->isFloating()) d->setProperty("igDockLayout", mw->saveState());
+}
+
+// WHERE A TORN-OFF PANEL LANDS. Qt floats a dock AT THE PLACE IT WAS SITTING, which for a BOTTOM
+// dock is the bottom edge of the window -- so the floating window's title bar is at, or under, the
+// bottom of the screen: dragged off-screen the instant it is undocked, and unreachable. So a
+// deliberate float (`force`) is placed centred on the viewer window, and any float is clamped
+// wholly inside the screen's available area if it would otherwise hang off it.
+static void dockPlaceFloating(QMainWindow *mw, QDockWidget *d, bool force) {
+	if (!d || !d->isFloating()) return;
+	QScreen *sc = (mw && mw->screen()) ? mw->screen() : QGuiApplication::primaryScreen();
+	if (!sc) return;
+	const QRect avail = sc->availableGeometry();
+	QRect g = d->frameGeometry();
+	if (!force && avail.contains(g)) return;               // dragged somewhere legible: leave it alone
+	QSize sz(qMin(g.width(),  avail.width()  - 40),
+	         qMin(g.height(), avail.height() - 80));
+	if (sz.width() < 200) sz.setWidth(qMin(600, avail.width() - 40));
+	if (sz.height() < 120) sz.setHeight(qMin(320, avail.height() - 80));
+	const QPoint c = mw ? mw->frameGeometry().center() : avail.center();
+	QRect want(QPoint(c.x() - sz.width() / 2, c.y() - sz.height() / 2), sz);
+	if (want.right()  > avail.right())  want.moveRight(avail.right());
+	if (want.bottom() > avail.bottom()) want.moveBottom(avail.bottom());
+	if (want.left()   < avail.left())   want.moveLeft(avail.left());
+	if (want.top()    < avail.top())    want.moveTop(avail.top());
+	d->resize(want.size());
+	d->move(want.topLeft());
+}
+
+// Put a just-re-docked dock back exactly where it was, from that snapshot. Deferred one event-loop
+// pass: Qt is still finishing the un-float relayout inside the signal that brings us here, and a
+// restoreState() run in the middle of it is undone by the rest of it.
+static void dockRestoreLayout(QMainWindow *mw, QDockWidget *d) {
+	if (!mw || !d) return;
+	const QByteArray st = d->property("igDockLayout").toByteArray();
+	if (st.isEmpty()) return;
+	QPointer<QDockWidget> pd(d);
+	QPointer<QMainWindow> pm(mw);
+	QTimer::singleShot(0, d, [pm, pd, st]() {
+		if (!pm || !pd) return;
+		pm->restoreState(st);
+		// restoreState puts the dock back the way the snapshot had it -- docked. If something (a
+		// drop mid-restore) left it floating anyway, put it down and let the next pass re-apply.
+		if (pd->isFloating()) { pd->setFloating(false); pm->restoreState(st); }
+	});
+}
+
+// Wire a dock into the memory above. Call once, right after addDockWidget. `name` is the objectName
+// restoreState matches on -- REQUIRED, and unique within the window.
+static void installDockGeometryMemory(QMainWindow *mw, QDockWidget *d, const char *name) {
+	if (!mw || !d || d->property("igDockWired").toBool()) return;
+	d->setProperty("igDockWired", true);
+	if (d->objectName().isEmpty() && name && name[0]) d->setObjectName(QString::fromUtf8(name));
+	d->installEventFilter(new DockGeomFilter(mw, d));
+	// Back in, by drag or by button: the panel returns to its own place and size, which is what
+	// "re-dock" has to mean. A move BETWEEN edges without floating never comes through here, so
+	// deliberately re-homing a docked panel still works.
+	QObject::connect(d, &QDockWidget::topLevelChanged, d, [mw, d](bool floating) {
+		if (floating) dockPlaceFloating(mw, d, /*force=*/false);   // never off the bottom of the screen
+		else          dockRestoreLayout(mw, d);
+	});
+}
+
+// THE undock / re-dock toggle: every title-bar float button runs this, so a panel always tears off
+// the same way and always comes back to its own place and size.
+static void dockToggleFloat(QMainWindow *mw, QDockWidget *d) {
+	if (!d) return;
+	if (!d->isFloating()) {
+		dockSnapshotLayout(mw, d);
+		d->setFloating(true);
+		dockPlaceFloating(mw, d, /*force=*/true);   // centred on the window, fully on screen
+		return;
+	}
+	d->setFloating(false);      // the topLevelChanged handler restores the snapshot
 }
 
 // Profile-track helpers (defined after ProfilePanel, below). DragCB drives these on Ctrl+drag.
@@ -3628,6 +3824,10 @@ static const double kVEReferenceGlobe = 0.02;
 
 static double sceneZRef(Scene *s) {
 	if (!s) return 1.0;
+	// An FV MESH is already in true coordinates (see Scene::fvTrueScale): its z is the SAME unit as its
+	// x and y, so there is nothing to normalise -- normalising it is what flattened a sphere into a
+	// cookie. GMTfv.zscale rides on top as Scene::ve, which is what view_fv promises.
+	if (s->fvTrueScale) return 1.0;
 	double zlo = s->zmin, zhi = s->zmax;
 	activeGridZRange(s, zlo, zhi);                     // active layer's own z span, else the window's
 	const double zspan = zhi - zlo;

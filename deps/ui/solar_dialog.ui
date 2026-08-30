@@ -45,6 +45,14 @@
       <item row="0" column="3">
        <widget class="QLineEdit" name="edit_tz">
         <property name="toolTip"><string>Offset from UTC (+z), e.g. -03:00, -03 or 02:00. Empty = UTC.</string></property>
+        <property name="maximumSize"><size><width>72</width><height>16777215</height></size></property>
+       </widget>
+      </item>
+      <item row="0" column="4">
+       <widget class="QPushButton" name="push_update">
+        <property name="toolTip"><string>Set the time to now and recompute the terminators</string></property>
+        <property name="maximumSize"><size><width>72</width><height>24</height></size></property>
+        <property name="text"><string>Update</string></property>
        </widget>
       </item>
      </layout>
@@ -276,12 +284,6 @@
       <widget class="QPushButton" name="push_compute">
        <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
        <property name="text"><string>Compute</string></property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="push_close">
-       <property name="minimumSize"><size><width>70</width><height>24</height></size></property>
-       <property name="text"><string>Close</string></property>
       </widget>
      </item>
     </layout>

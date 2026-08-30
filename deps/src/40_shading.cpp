@@ -983,9 +983,15 @@ static void applyShading(Scene *s) {
 // one; `Scene::useShadows` is an independent flag, owned by the VTK (PBR) method's own checkbox.
 enum ReliefLook { RL_None = 0, RL_PBR, RL_HillLambert, RL_HillGrdimage };
 
-static void sceneSetReliefLook(Scene *s, int look) {
+// `keepExternShade` exists for exactly one caller: RESTORING a saved snapshot (Load Session /
+// movie's restore_view, through gmtvtk_apply_scene_state). Picking a look is a user action that
+// replaces whatever Illumination model was loaded; putting a snapshot back is not -- the session
+// restores the model itself (its own :illum recipe) and this must not throw it away a moment later.
+// Same function, one parameter, never a second look setter for the restore path.
+static void sceneSetReliefLook(Scene *s, int look, bool keepExternShade = false) {
 	if (!s) return;
-	dropExternShade(s);                 // a look picked here replaces a loaded Illumination model
+	if (!keepExternShade)
+		dropExternShade(s);             // a look picked here replaces a loaded Illumination model
 	s->useHillshade = (look == RL_HillLambert || look == RL_HillGrdimage);
 	s->hillGrd      = (look == RL_HillGrdimage);
 	s->litBake      = (look == RL_PBR);
