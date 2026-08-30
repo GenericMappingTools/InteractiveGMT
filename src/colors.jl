@@ -6,7 +6,13 @@ const _NAMED_COLORS = Dict{Symbol,NTuple{3,Float64}}(
 	:black=>(0.0,0.0,0.0), :white=>(1.0,1.0,1.0), :yellow=>(1.0,1.0,0.0),
 	:cyan=>(0.0,1.0,1.0), :magenta=>(1.0,0.0,1.0), :orange=>(1.0,0.5,0.0),
 	:purple=>(0.6,0.0,0.8), :brown=>(0.55,0.27,0.07),
-	:gray=>(0.5,0.5,0.5), :grey=>(0.5,0.5,0.5))
+	:gray=>(0.5,0.5,0.5), :grey=>(0.5,0.5,0.5),
+	# The X11/GMT names movie's own -P defaults are written in (GMT: "static [lightgreen] and moving
+	# [lightred]", …), so a user restating one of those defaults by name resolves it here rather than
+	# silently falling back to grey.
+	:lightgreen=>(144/255,238/255,144/255), :lightred=>(1.0,111/255,111/255),
+	:lightblue=>(173/255,216/255,230/255), :darkred=>(139/255,0.0,0.0),
+	:lightgray=>(211/255,211/255,211/255), :lightgrey=>(211/255,211/255,211/255))
 
 # data_color -> (r,g,b) in 0..1. nothing -> per-mode default; a colour NAME (Symbol or
 # String); a 0-255 int / (r,g,b) of ints or 0-1 floats all accepted.

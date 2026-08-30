@@ -96,7 +96,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_object_visible,
 	:gmtvtk_view_fv, :gmtvtk_promote_fv_h, :gmtvtk_set_julia_eval, :gmtvtk_set_table, :gmtvtk_log_error,
 	:gmtvtk_error_box, :gmtvtk_get_xfac,
-	:gmtvtk_save_png, :gmtvtk_save_png_h, :gmtvtk_render_size_h, :gmtvtk_orbit, :gmtvtk_set_stereo,
+	:gmtvtk_save_png, :gmtvtk_orbit, :gmtvtk_set_stereo,
 	:gmtvtk_open_empty, :gmtvtk_set_drop_callback, :gmtvtk_set_paste_callback, :gmtvtk_add_surface_h,
 	:gmtvtk_promote_surface_h, :gmtvtk_replace_base_grid_h, :gmtvtk_show_layer_image_h, :gmtvtk_show_layer_rgba_h,
 	:gmtvtk_aqua_set_land_cpt_h, :gmtvtk_aqua_set_bathy_h, :gmtvtk_aqua_set_var_label_h,
@@ -205,6 +205,27 @@ const _LIB_SYMBOLS = (
 	:mbgrid_nodes, :mbgrid_fill, :mbgrid_extract, :mbgrid_run, :mbgrid_strerror,
 )
 
+# OPTIONAL exports: resolved when the library has them, SKIPPED without complaint when it does not.
+#
+# `_LIB_SYMBOLS` above is a hard contract — a library missing any of it is refused as stale, which is
+# right for the exports the app cannot run without. It is the WRONG rule for an export a feature
+# branch has just added: the DLL is a build artefact shared by every branch in the working tree, so
+# putting a brand-new symbol in the hard list means checking that branch out refuses to load the DLL
+# built from any other one, and every branch switch costs a full rebuild. That is the trade this
+# tier exists to avoid: the branch's own feature is unavailable until its DLL is built, and NOTHING
+# ELSE is affected.
+#
+# A symbol graduates from here into `_LIB_SYMBOLS` once its C side is on master — at that point every
+# build really does have it, and a library without it really is stale.
+const _LIB_OPTIONAL = (
+	:gmtvtk_save_png_h,        # movie tool: render ONE window to PNG (gmtvtk_save_png is the app-wide one)
+	:gmtvtk_render_size_h,     # movie tool: force the render size, so every frame comes out identical
+	:gmtvtk_anno_add_h,        # movie tool: create a frame label (-L) / progress indicator (-P)
+	:gmtvtk_anno_set_h,        # movie tool: push one frame's text + progress fraction
+	:gmtvtk_anno_remove_h,     # movie tool: drop one annotation and its actors
+	:gmtvtk_anno_count_h,      # movie tool: how many the window carries (-1 = window gone)
+)
+
 # Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is
 # deliberately tolerant (a missing DLL must not break `using`), so its @warn scrolls away long
 # before the user calls a viewer function -- and the error they then hit named a missing SYMBOL,
@@ -232,6 +253,14 @@ end
 @inline function _fn(sym::Symbol)::Ptr{Cvoid}
 	p = get(_LIB_FNS, sym, C_NULL)
 	if p == C_NULL
+		# An OPTIONAL export that this library does not carry is not a load failure — the library
+		# loaded fine, it is simply older than the feature asking for it. Say that, or the message
+		# sends the reader after a viewer that is plainly working.
+		if sym in _LIB_OPTIONAL && _DLL[] != C_NULL
+			error("InteractiveGMT: this feature needs the viewer export :$sym, which " *
+			      "$(_LIB_USED[]) does not have — it was built before the feature existed. " *
+			      "Rebuild with deps/build.bat and restart Julia. Everything else works meanwhile.")
+		end
 		why = _LOAD_ERROR[]
 		error("InteractiveGMT viewer library not loaded (symbol :$sym)." *
 		      (isempty(why) ? " Build deps/build.bat and restart Julia." : "\n" * why))
@@ -292,6 +321,10 @@ function _try_load(lib::String)::Union{Nothing,String}
 		msg = sprint(showerror, e)
 		return "$lib: could not be loaded ($msg)" *
 		       (Sys.iswindows() ? "" : _linux_load_hint(bin, msg))
+	end
+	for s in _LIB_OPTIONAL          # present -> usable; absent -> only that feature is, see _LIB_OPTIONAL
+		p = Libdl.dlsym(h, s; throw_error=false)
+		p === nothing || (_LIB_FNS[s] = p)
 	end
 	for s in _LIB_SYMBOLS
 		p = Libdl.dlsym(h, s; throw_error=false)

@@ -2678,6 +2678,56 @@ static void rebuildSceneObjects(Scene *s) {
 		        [s, act](const QPoint &g) { textLabelMenu(s, act, g); },
 		        "Left-click for properties");
 	}
+	// Movie annotations (frame labels -L, progress indicators -P). One import/plot producing more than
+	// one element hangs under ONE master group (SACRED_LAW.md, Scene Objects registration law), and a
+	// movie can carry up to 32 of each — so they fold into a single collapsed row until opened, and the
+	// group's own Remove takes every one of them with it.
+	if (!s->movieAnnos.empty()) {
+		bool anyVis = false;
+		for (auto &a : s->movieAnnos) if (a.visible) anyVis = true;
+		auto groupMenu = [s](const QPoint &g) {
+			QMenu m;
+			m.addAction(QString("%1 movie annotation(s)").arg((int)s->movieAnnos.size()))->setEnabled(false);
+			m.addSeparator();
+			QAction *rem = m.addAction("Remove all");
+			if (m.exec(g) == rem) {
+				while (!s->movieAnnos.empty()) movieAnnoRemove(s, s->movieAnnos.front().id);
+			}
+		};
+		beginGroupHandle("Movie annotations", IC_Text, anyVis, groupMenu, groupMenu,
+		                 "Frame labels and progress indicators drawn into movie frames",
+		                 /*startFolded=*/true);
+		for (auto &a : s->movieAnnos) {
+			const int id = a.id;
+			const QString nm = QString::fromStdString(a.name);
+			const int icon = !a.progress ? IC_Text : (a.style <= 2 ? IC_Circle : IC_Rect);
+			const QString tip = a.progress
+				? QString("Progress indicator '%1'").arg(QChar((char)('a' + a.style)))
+				: QString("Frame label — %1").arg(annoSourceName(a.source));
+			makeRow(nm, icon, a.visible,
+			        [s, id](bool on) {
+			        	MovieAnno *m = movieAnnoFind(s, id);
+			        	if (!m) return;
+			        	m->visible = on;
+			        	layoutMovieAnnos(s);
+			        },
+			        [s, id](const QPoint &g) {
+			        	MovieAnno *m = movieAnnoFind(s, id);
+			        	if (!m) return;
+			        	QMenu menu;
+			        	menu.addAction(m->progress
+			        	               ? QString("Progress indicator '%1'").arg(QChar((char)('a' + m->style)))
+			        	               : QString("Label — %1").arg(annoSourceName(m->source)))->setEnabled(false);
+			        	if (!m->text.empty())
+			        		menu.addAction(QString("Showing: %1").arg(QString::fromStdString(m->text)))->setEnabled(false);
+			        	menu.addSeparator();
+			        	QAction *rem = menu.addAction("Remove");
+			        	if (menu.exec(g) == rem) movieAnnoRemove(s, id);
+			        },
+			        tip);
+		}
+		endGroup();
+	}
 	if (s->profLine && s->profLine->GetVisibility()) {  // the profile track (when one exists)
 		LineRef lr{ LK_Profile, s->profLine };
 		addRow("Profile", s->profLine, IC_Profile, &lr);

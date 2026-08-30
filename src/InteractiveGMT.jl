@@ -74,6 +74,7 @@ include("deform.jl")     # Geophysics > Vertical elastic deformation: fault-trac
 include("nested.jl")     # "Nested grids" rectangle tool: host-side blank-grid builder (nesting_sizes.m)
 include("transplant.jl") # Grid Tools > Transplant 2nd grid (port of Mirone utils/transplants.m)
 include("movie.jl")      # InteractiveGMT frame scheduler + FFmpeg encoder (extends GMT.movie by dispatch)
+include("movieanno.jl")  # movie frame labels (GMT movie -L) + progress indicators (-P) as scene elements
 include("measure.jl")    # line length/azimuth + polygon area for the vector context menu (CRS-aware)
 include("info.jl")       # toolbar "i" button: grdinfo / gdalinfo report on the active grid/image
 include("rtp3d.jl")      # Geophysics > Magnetics: reduce-to-pole via 2-D FFT (port of Mirone utils/rtp3d.m)
@@ -137,6 +138,7 @@ export gmtscript, gmtreplay,
        view_grid, view_image, view_points, view_fv, view_demo, iview,
        add!, add_curtain!, add_symbols!, show_table, selection, isalive,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!, movie, MovieFrame, orbit!, replace_grid!,
+       set_layer!, nlayers, add_label!, add_progress!, remove_annotation!, movie_annotations,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot, rtp3d, shapenc, isoc2shapenc, shapenc2isoc,
        gmtedit, mbgrid

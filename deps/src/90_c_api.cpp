@@ -3970,6 +3970,71 @@ GMTVTK_API int gmtvtk_line_clamp_h(void *scene, const char *name, int on) {
 	return n;
 }
 
+// --- movie annotations: frame labels (GMT movie -L) and progress indicators (-P) ------------------
+//
+// The look/placement fields arrive here already resolved: the GMT-style spec (`-Lf+jTL+gwhite`, or
+// the keyword form) is parsed ONCE, in Julia (src/movie.jl), so the two option surfaces cannot drift
+// into two different readings of the same modifier. Every geometric argument is in PIXELS of the
+// render window; 0 means "GMT's default for this kind", resolved at layout time where the render size
+// is known. Colour arrays are 3 doubles in 0..1; pass NULL to leave a default in place.
+//
+// Returns the new annotation's id (> 0), or 0 if the window is gone. The id is stable for the life of
+// the element and never reused.
+GMTVTK_API int gmtvtk_anno_add_h(void *handle, const char *name, int isProgress, int source,
+                                 int style, int annot, int just,
+                                 double offx, double offy, double width,
+                                 double fontsize, const double *fontrgb,
+                                 int hasFill, const double *fillrgb,
+                                 int hasPen, const double *penrgb, double penwidth,
+                                 double clearance, int rounded,
+                                 int hasFg, const double *fgrgb, double fgwidth,
+                                 int hasBg, const double *bgrgb, double bgwidth) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return 0;
+	MovieAnno a;
+	a.name      = (name && *name) ? name : (isProgress ? "Progress" : "Label");
+	a.progress  = isProgress != 0;
+	a.source    = source;
+	a.style     = (style < 0) ? 0 : (style > 5 ? 5 : style);
+	a.annot     = annot != 0;
+	a.just      = (just < 0) ? 0 : (just > 8 ? 8 : just);
+	a.offx      = offx;      a.offy = offy;      a.width = width;
+	a.fontsize  = fontsize;  a.clearance = clearance;  a.rounded = rounded != 0;
+	a.hasFill   = hasFill != 0;
+	a.hasPen    = hasPen != 0;   a.penwidth = penwidth;
+	a.hasFg     = hasFg != 0;    a.fgwidth  = fgwidth;
+	a.hasBg     = hasBg != 0;    a.bgwidth  = bgwidth;
+	if (fontrgb) annoCopyRGB(a.fontrgb, fontrgb);
+	if (fillrgb) annoCopyRGB(a.fillrgb, fillrgb);
+	if (penrgb)  annoCopyRGB(a.penrgb,  penrgb);
+	if (fgrgb)   annoCopyRGB(a.fgrgb,   fgrgb);
+	if (bgrgb)   annoCopyRGB(a.bgrgb,   bgrgb);
+	return movieAnnoAdd(s, a);
+}
+
+// Push one frame's state into an annotation. `id <= 0` addresses EVERY annotation in the window,
+// which is what a movie frame does: one call updates the whole set. `text` may be NULL (leave the
+// string alone) and `haveFrac` = 0 leaves the progress fraction alone.
+GMTVTK_API int gmtvtk_anno_set_h(void *handle, int id, const char *text, double frac, int haveFrac) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return 0;
+	return movieAnnoSet(s, id, text, frac, text != nullptr, haveFrac != 0) ? 1 : 0;
+}
+
+GMTVTK_API int gmtvtk_anno_remove_h(void *handle, int id) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return 0;
+	return movieAnnoRemove(s, id) ? 1 : 0;
+}
+
+// How many annotations this window carries, so the host can tell "nothing to update" from "the window
+// is gone" (-1).
+GMTVTK_API int gmtvtk_anno_count_h(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return -1;
+	return (int)s->movieAnnos.size();
+}
+
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.

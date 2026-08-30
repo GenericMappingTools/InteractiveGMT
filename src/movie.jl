@@ -19,7 +19,12 @@ struct MovieFrame
 	progress::Float64           # 0..1 inclusive (1 for a one-frame movie)
 end
 
-const _MovieFigure = Union{QtFigure,QtPoints,QtFV,QtImage}
+# QtEmpty belongs here: a window that opened a tsunami cube (or any file dropped onto a launcher)
+# keeps the QtEmpty handle it was created with -- the cube is opened by the viewer itself, so nothing
+# on the Julia side re-types the registry entry. The scheduler only ever needs `isalive` and
+# `_fig_handle`, which QtEmpty has, and `save_png(fig, path)` already accepts it. `replace_grid!`
+# stays restricted to QtFigure on its own signature, because that one really does need a base grid.
+const _MovieFigure = Union{QtFigure,QtPoints,QtFV,QtImage,QtEmpty}
 
 _movie_atom(s::AbstractString) = something(tryparse(Float64, String(s)), String(s))
 
@@ -181,6 +186,48 @@ function replace_grid!(fig::QtFigure, G::GMTgrid; name::AbstractString="", zrang
 	return fig
 end
 
+# The Aquamoto state of a live figure, or `nothing` when the window has no tsunami cube open. One
+# lookup for every entry point below, so they all say the same thing about what a window is.
+function _movie_aqua_state(fig::_MovieFigure, who::String)
+	isalive(fig) || error("$who: the viewer window is closed")
+	st = get(_AQUA, _fig_handle(fig), nothing)
+	st === nothing && error("$who: this window has no tsunami cube open " *
+	                        "(Geophysics > Tsunamis > Aquamoto opens one)")
+	return st
+end
+
+"""
+	nlayers(fig) -> Int
+
+Number of time steps in the Aquamoto (NSWING tsunami) netCDF cube open in `fig`. Errors when the
+window has no cube open. This is the natural `frames` value for a cube animation:
+
+    movie(fig; frames=nlayers(fig), name="tsunami") do fig, f
+        set_layer!(fig, f.index)
+    end
+"""
+nlayers(fig::_MovieFigure) = _movie_aqua_state(fig, "nlayers").nsteps
+
+"""
+	set_layer!(fig, k) -> fig
+
+Show time step `k` of the Aquamoto tsunami cube open in `fig`, **1-based** like `MovieFrame.index`
+(the Aquamoto dialog's own slider is 1-based too; only the internal Julia/C call is 0-based).
+
+The slice is drawn by the SAME `_aquamoto_slice` the dialog drives, with the display options the
+dialog last rendered with — Split Dry/Wet, global colour scaling, water transparency, and the two
+shading toggles — so an animation looks exactly like the slice on screen, including the per-slice
+water relight the two-surface illumination law requires.
+"""
+function set_layer!(fig::_MovieFigure, k::Integer)
+	st = _movie_aqua_state(fig, "set_layer!")
+	(1 <= k <= st.nsteps) ||
+		throw(ArgumentError("set_layer!: layer $k out of range (1..$(st.nsteps))"))
+	_aquamoto_slice(_fig_handle(fig), Int(k) - 1, st.split, st.globalmm, st.transp,
+	                st.shadewater, st.shadeland)
+	return fig
+end
+
 function _movie_resolve_alias(primary, alias, default, longname, shortname)
 	alias === nothing && return primary
 	!isequal(primary, default) && !isequal(primary, alias) &&
@@ -241,6 +288,7 @@ function movie(frame!::Function, fig::_MovieFigure;
                clean::Bool=false, Z=nothing,
                scale::Integer=1, H=nothing,
                debug::Bool=false, Q=nothing,
+               label=nothing, L=nothing, progress=nothing, P=nothing,
                restore_view::Bool=true,
                ffmpeg=nothing, overwrite::Bool=true, verbose::Bool=false)
 	isalive(fig) || error("movie: the viewer window is closed")
@@ -253,6 +301,8 @@ function movie(frame!::Function, fig::_MovieFigure;
 	clean = Bool(_movie_resolve_alias(clean, Z, false, "clean", "Z"))
 	scale = Int(_movie_resolve_alias(scale, H, 1, "scale", "H"))
 	debug = Bool(_movie_resolve_alias(debug, Q, false, "debug", "Q"))
+	label = _movie_resolve_alias(label, L, nothing, "label", "L")
+	progress = _movie_resolve_alias(progress, P, nothing, "progress", "P")
 	frame_rate > 0 || throw(ArgumentError("movie: `frame_rate` must be > 0"))
 	scale >= 1 || throw(ArgumentError("movie: `scale` must be >= 1"))
 	debug && (clean = false; verbose = true)
@@ -283,10 +333,17 @@ function movie(frame!::Function, fig::_MovieFigure;
 	end
 	frame_size = _movie_render_size(fig)
 	created = String[]
+	# Annotations asked for by THIS call are created here and removed again in the finally; ones the
+	# user placed themselves (add_label! / add_progress!, or a Scene Objects row) are left alone and
+	# simply driven. Either way the per-frame update is the same call over the same registry, so a
+	# movie cannot end up with two ways of filling in a label.
+	owned = _movie_make_annos!(fig, label, progress)
+	_anno_sync!(h)
 	try
 		for f in seq
 			isalive(fig) || error("movie: viewer window was closed while rendering frame $(f.frame)")
 			frame!(fig, f)
+			_anno_frame!(h, f, frame_rate)       # this frame's label text + progress fraction
 			# Let queued Qt state changes settle before the explicit render+capture in save_png(fig,...).
 			ccall(_fn(:gmtvtk_process_events), Cint, ())
 			_movie_render_size(fig) == frame_size ||
@@ -306,6 +363,13 @@ function movie(frame!::Function, fig::_MovieFigure;
 			isfile(output) || error("movie: ffmpeg returned without creating '$output'")
 		end
 	finally
+		for id in owned                          # only what this call created; the user's own stay
+			try
+				remove_annotation!(fig, id)
+			catch e
+				@warn "movie: failed to remove an annotation this run created" exception=(e,)
+			end
+		end
 		if restore_view && !isempty(initial_state) && isalive(fig)
 			try
 				ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), h, initial_state)
@@ -328,3 +392,61 @@ end
 # Also support the explicit argument order used in the design discussion; do-block syntax naturally
 # targets the callback-first method above.
 movie(fig::_MovieFigure, frame!::Function; kwargs...) = movie(frame!, fig; kwargs...)
+
+# The layer a frame of the cube-sweep method stands for. `frames` there is always a sequence of
+# LAYER NUMBERS (see the method below), so the layer is the frame's `value` -- never its position in
+# the sequence, which would silently animate 1..N whatever sub-range the caller asked for.
+function _movie_layer_number(f::MovieFrame)
+	v = f.value
+	v isa Integer && return Int(v)
+	(v isa Real && isinteger(v)) && return Int(v)
+	throw(ArgumentError("movie: frame $(f.frame) supplies $(repr(v)) where a whole layer number was " *
+	                    "expected; give `frames` as layer numbers, or write the frame callback yourself"))
+end
+
+"""
+	movie(fig; kwargs...) -> String
+
+Animate the Aquamoto (NSWING tsunami) netCDF cube open in `fig` along its own time axis, with no
+callback to write: the frame mutation is `set_layer!` and `frames` defaults to every time step in the
+cube. Every keyword of the callback methods applies.
+
+    fig = ...                       # a window with a tsunami cube open
+    movie(fig; name="tsunami", frame_rate=15, clean=true)
+
+Here `frames` counts in LAYER NUMBERS, not in offsets: `frames=20:80` animates layers 20 through 80,
+`frames=1:2:nlayers(fig)` takes every second layer, and a bare `frames=n` means layers `1:n`. Write
+the callback out when a frame has to do more than change the time step:
+
+    movie(fig; frames=nlayers(fig)) do fig, f
+        set_layer!(fig, f.index); orbit!(fig, 0.5)
+    end
+"""
+function movie(fig::_MovieFigure; frames=nothing, T=nothing, restore_view::Bool=true, kwargs...)
+	st = _movie_aqua_state(fig, "movie")    # errors here, not mid-render, when there is no cube
+	frames = _movie_resolve_alias(frames, T, nothing, "frames", "T")
+	frames === nothing && (frames = 1:st.nsteps)
+	# A bare count means "the first n layers": `_movie_frames` would otherwise turn an integer into
+	# the 0-based GMT frame numbers 0..n-1, and layer 0 does not exist on a 1-based time axis.
+	if frames isa Integer
+		frames > 0 || throw(ArgumentError("movie: integer `frames` must be > 0"))
+		frames = 1:Int(frames)
+	end
+	# The slice showing when this started, so `restore_view` covers the time step too. The dialog's
+	# own slider never moved during the run, so putting the slice back is what RE-SYNCS the window
+	# with it -- leaving the last frame on screen is what desyncs. Skipped when no slice had been
+	# drawn yet (`first`), where there is nothing to put back and `cur` is only its initial 0.
+	k0 = st.first ? 0 : st.cur + 1
+	try
+		return movie((fg, f) -> set_layer!(fg, _movie_layer_number(f)), fig;
+		             frames=frames, restore_view=restore_view, kwargs...)
+	finally
+		if restore_view && k0 > 0 && isalive(fig) && haskey(_AQUA, _fig_handle(fig))
+			try
+				set_layer!(fig, k0)
+			catch e
+				@warn "movie: failed to restore the tsunami time step showing before the run" exception=(e,)
+			end
+		end
+	end
+end

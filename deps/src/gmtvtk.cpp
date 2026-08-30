@@ -33,6 +33,7 @@
 #include "50_scene.cpp"
 #include "55_lineprops.cpp"
 #include "57_swipe.cpp"
+#include "58_movieanno.cpp"
 #include "60_profile.cpp"
 #include "65_xyplot.cpp"
 #include "67_gmtedit.cpp"

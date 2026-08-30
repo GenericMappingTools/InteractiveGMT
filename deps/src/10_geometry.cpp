@@ -596,6 +596,11 @@ static int  polyHitPolygon(Scene *s, int x, int y, double tol);             // p
 static void nestReflow(Scene *s, bool snap = true);                         // re-quantize "Nested grids" chain (85); snap=false = don't move verts, only recompute indices (restore)
 static void nestNewChild(Scene *s);                                         // append a refined nested child (85)
 static void nestSetRect(Scene *s, Polygon &pg, double x0, double x1, double y0, double y1);  // force a rect's ring to these axis-aligned limits + rebuild (85)
+struct MovieAnno;                                                           // movie -L label / -P indicator (defined below)
+static bool movieAnnoRemove(Scene *s, int id);                              // drop one movie annotation + its actors (58)
+static MovieAnno *movieAnnoFind(Scene *s, int id);                          // look one up by id (58)
+static void layoutMovieAnnos(Scene *s);                                     // re-place every annotation for the current render size (58)
+static const char *annoSourceName(int source);                              // "frame number", "elapsed time", … (58)
 
 // Per-side illumination snapshot for an Aquamoto layer. WATER and LAND are two SEPARATE images, each
 // with its OWN light: editing the selected side updates only ITS snapshot, and bakeAquaShade re-bakes
@@ -618,6 +623,61 @@ struct AquaSideShade {
 	bool   useHillshade = true, hillGrd = true, litBake = false;
 	double lightAz = 315.0, lightEl = 45.0, hillAmbient = 0.3, hillGain = 2.0;
 	double roughness = 0.45, metallic = 0.0, lightIntensity = 1.0, fillIntensity = 0.4;
+};
+
+// One MOVIE ANNOTATION: a frame LABEL (GMT movie -L) or a PROGRESS INDICATOR (-P). Both are 2-D
+// overlay elements pinned to the frame perimeter, so they share one struct, one layout function and
+// one Scene Objects row builder rather than forking into two parallel systems.
+//
+// The DISPLAYED STRING is computed host-side and pushed in with gmtvtk_anno_set_h: only Julia knows
+// the frame table, the elapsed-time scale and the C-format the user asked for, and re-deriving any of
+// that here would be a second implementation of the same quantity. C++ owns placement and drawing.
+//
+// Every geometric field is in PIXELS of the render window (fontsize, offsets, widths, pen widths), so
+// the layout can be done in display coordinates -- normalized-viewport coordinates would turn every
+// circular indicator into an ellipse on a non-square window. 0 means "GMT's default for this kind",
+// resolved in layoutMovieAnnos where the render size is known.
+struct MovieAnno {
+	int  id = 0;                       // stable handle id (Scene::movieAnnoSeq); never reused
+	bool progress = false;             // false = a -L label, true = a -P indicator
+	std::string name;                  // Scene Objects row name
+	std::string text;                  // the string to draw right now (host-computed)
+
+	// -L: which quantity the host is feeding us. Carried only so the properties dialog can name it;
+	// the drawing code never branches on it.
+	int  source = 1;                   // 0 elapsed, 1 frame, 2 percent, 3 fixed string, 4 column, 5 word
+
+	// -P: which of GMT's six indicators (0..5 = a..f), and how far along it is.
+	int    style = 0;
+	double frac  = 0.0;                // 0..1
+	bool   annot = false;              // -P+a: this indicator carries a centred label too
+
+	// Placement, shared by both kinds: GMT's +j reference point and +o offset.
+	int    just = 0;                   // 0..8 = TL TC TR ML MC MR BL BC BR
+	double offx = 0.0, offy = 0.0;     // pixels, inward from the reference point (0 = 20% of font size)
+	double width = 0.0;                // -P+w indicator size in pixels (0 = GMT default per kind)
+
+	// -L text box (+f +g +p +c +r).
+	double fontsize   = 0.0;           // 0 = auto (3% of the smaller render dimension)
+	double fontrgb[3] = {0.0, 0.0, 0.0};
+	bool   hasFill    = false;  double fillrgb[3] = {1.0, 1.0, 1.0};
+	bool   hasPen     = false;  double penrgb[3]  = {0.0, 0.0, 0.0};  double penwidth = 1.0;
+	double clearance  = 0.0;           // pixels around the text inside the box (0 = 15% of font size)
+	bool   rounded    = false;
+
+	// -P moving (+g fill / +p pen) and static (+G fill / +P pen) looks. Which of the two each style
+	// uses is the style's business (GMT: a is fills, b..e are pens, f is a static pen + moving fill);
+	// the defaults below are overwritten per style in annoApplyStyleDefaults when the host passed none.
+	bool   hasFg = false;  double fgrgb[3] = {1.0, 0.0, 0.0};  double fgwidth = 0.0;
+	bool   hasBg = false;  double bgrgb[3] = {0.0, 0.0, 0.0};  double bgwidth = 0.0;
+
+	bool visible = true;
+
+	// Actors. A label is a text actor plus an optional box; an indicator is a static prop, a moving
+	// prop and (styles b..f under +a) a centred label of its own.
+	vtkSmartPointer<vtkTextActor>  label;
+	vtkSmartPointer<vtkActor2D>    boxActor, boxLine, staticActor, movingActor;
+	vtkSmartPointer<vtkPolyData>   boxPD, boxLinePD, staticPD, movingPD;
 };
 
 // ---- scene we hang onto for the callbacks / menu actions --------------------
@@ -1200,6 +1260,9 @@ struct Scene {
 	int    gridTagSeq = 0;                              // monotonic seed for UNIQUE grid GROUP tags (never reused;
 	                                                    // -1 is reserved for the base relief grid)
 	std::vector<TextLabel> texts;                      // user-placed text labels
+	std::vector<MovieAnno> movieAnnos;                 // movie frame labels (-L) + progress bars (-P)
+	int    movieAnnoSeq = 0;                           // monotonic id seed; ids are never reused
+	vtkSmartPointer<vtkCallbackCommand> movieAnnoCmd;  // per-render re-layout (installed with the first one)
 	bool   polyMode    = false;                        // draw-mode button toggled on
 	bool   polyDrawing = false;                        // mid-building the current polygon
 	std::vector<std::array<double,3>> polyCur;         // in-progress vertices (TRUE coords)

@@ -61,6 +61,15 @@ mutable struct _AquaState
 	                                        # loaded. Kept because the WATER side stands on a surface
 	                                        # that changes at every timestep, so its reflectance has to
 	                                        # be recomputed per slice (_aqua_relight_water!).
+	# The display options the DIALOG last drew a slice with, recorded by `_aquamoto_slice` itself.
+	# A programmatic slice change (`set_layer!`, movie.jl) reads them back and calls THE SAME slice
+	# function with them, so an animation looks exactly like the slice the user is looking at instead
+	# of inventing a second set of defaults. Same operation, same function -- see SACRED_LAW.md.
+	split::Bool                             # "Split Dry/Wet"
+	globalmm::Bool                          # "Scale colour to global min/max"
+	transp::Float64                         # water transparency, 0..1
+	shadewater::Bool                        # the two shading radio buttons
+	shadeland::Bool
 end
 
 const _AQUA = Dict{Ptr{Cvoid}, _AquaState}()
@@ -294,7 +303,12 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 		end
 	end
 
-	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, :polar, :geo, 0, Dict{String,String}())
+	# The trailing display options mirror the dialog's OWN startup state ("Split Dry/Wet" checked,
+	# global scaling off, no transparency, both sides shaded). They are overwritten by the first
+	# `_aquamoto_slice`, i.e. before anything is on screen, so they only ever matter to a caller that
+	# asks for a slice before the dialog has drawn one.
+	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, :polar, :geo, 0, Dict{String,String}(),
+	                          true, false, 0.0, true, true)
 	print(nsteps, "|", varname, "|", join(varnames, ","))
 	return nothing
 end
@@ -530,6 +544,10 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	(st === nothing) && error("Aquamoto: no file open in this window")
 	(0 <= k < st.nsteps) || error("Aquamoto: slice $k out of range (0..$(st.nsteps - 1))")
 	st.cur = k                                         # the slice on screen, for _aqua_relight_water!
+	# Record the look this slice is being drawn with, so a programmatic slice change reproduces it
+	# rather than picking its own options (see `_AquaState`, and `set_layer!` in movie.jl).
+	st.split, st.globalmm, st.transp = splitDryWet, globalMM, transparency
+	st.shadewater, st.shadeland = shadeWater, shadeLand
 	G = _gmtread_trb("$(st.path)?$(st.varname)[$(k)]")
 	# Read in "TRB" like every other grid, and composited WHERE IT LIES: the colouring below is
 	# element-wise, and the stage and the bathymetry come from the SAME file through the SAME reader,
