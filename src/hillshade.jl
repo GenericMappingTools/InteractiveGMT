@@ -271,13 +271,25 @@ function _hs_restore_original(scene::Ptr{Cvoid}, srcname::AbstractString = "")
 	return
 end
 
-function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
+_on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint = _on_hillshade(scene, unsafe_string(cparams))
+
+# Save Session: the dialog's request block, verbatim, as the window's ONE :illum recipe (a second run
+# replaces the first -- the models are alternatives, never a pipeline, so a window is lit by exactly
+# one of them). Newlines are escaped to RS because a manifest value is one line, the same way the
+# :focal recipe carries its catalog request.
+_session_record_illum!(scene::Ptr{Cvoid}, raw::String) =
+	_session_record_single!(scene, :illum, :menu;
+	                        params = Dict{String,Any}("cparams" => replace(raw, '\n' => '\x1e')))
+
+# The dialog's request block reproduces the illumination exactly, so Save Session stores it verbatim
+# as an :illum recipe (no data: a reflectance is derived, never a document) and Load re-dispatches
+# HERE -- the same door the dialog knocks on, never a session-only re-derivation of the light.
+function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 	try
 		# If the dialog's warm-up (see _hs_warm) is still compiling, let it finish before we start:
 		# the two would otherwise be inside GMT at the same time. Returns at once in the normal case,
 		# where the user spent longer than the compile picking a model.
 		warm_wait("illumination")
-		raw = unsafe_string(cparams)
 		# What the DIALOG actually sent, on the console, verbatim. The only way to tell a wrong model
 		# number leaving the dialog apart from a wrong dispatch after it.
 		println("Illumination <- ", replace(raw, "\n" => " | "))
@@ -305,6 +317,9 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			# Removal undoes what the models did: an Aquamoto layer also stops re-lighting itself at
 			# every new timestep (the loaded model is what makes _aquamoto_slice do that).
 			haskey(_AQUA, scene) && empty!(_AQUA[scene].illum)
+			# ...and the session forgets the light too: a saved window whose illumination was removed
+			# must reload unlit, not re-run the model the user just took off.
+			_session_forget!(scene, :illum)
 			_hs_restore_original(scene, gname)
 			return Cint(1)
 		end
@@ -325,6 +340,7 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# Models 8/9 make a NEW variable rather than modulating, so they fall through to the plain path.
 		if haskey(_AQUA, scene) && model in (2, 3, 4)
 			_aqua_illuminate!(scene, model, d)
+			_session_record_illum!(scene, raw)
 			return Cint(1)
 		end
 
@@ -363,6 +379,10 @@ function _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# ONE reflectance function for every surface this tool lights (see `_hs_reflectance`): the plain
 		# grid here, and each Aquamoto side above. `side = 0` is "the window's surface".
 		_hs_push_grid(scene, G, model, d, 0)
+		# Models 2/3/4 only MODULATE the grid already in the window, so the request block is the whole
+		# record of them (below). 9 is excluded on purpose: it also DELIVERS a derived grid, which has
+		# its own :generated recipe, and re-running the model on load would add that grid a second time.
+		model in (2, 3, 4) && _session_record_illum!(scene, raw)
 		return Cint(1)
 	catch e
 		_viewer_log_error(scene, "Illumination FAILED: $(sprint(showerror, e))")
@@ -398,6 +418,7 @@ function _hs_warm()
 	GMT.kovesi(G; wavelength = 16.0)                      # model 9 (ppdrc: filtergrid + 4 FFTs)
 	yield()
 	precompile(_on_hillshade,       (Ptr{Cvoid}, Cstring))
+	precompile(_on_hillshade,       (Ptr{Cvoid}, String))     # the session-replay door (:illum recipe)
 	precompile(_hs_push,            (Ptr{Cvoid}, Matrix{Float32}, Float64, Float64, Float64, Float64, Int, Int))
 	precompile(_hs_reflectance,     (GMTgrid{Float32,2}, Int, Dict{String,String}))
 	precompile(_hs_push_grid,       (Ptr{Cvoid}, GMTgrid{Float32,2}, Int, Dict{String,String}, Int))

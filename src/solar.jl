@@ -38,6 +38,16 @@ const _SOLAR_TERMS = (("d", "Day/night terminator",  (0.00, 0.00, 0.00), (0.10, 
 const _SOLAR_GROUP      = "Sun & terminators"
 const _SOLAR_FILL_GROUP = "Sun & terminators — night"
 const _SOLAR_SUN_LAYER  = "Sub-solar point"
+# …and the ONE master handle the three of them hang under in Scene Objects. One Compute is one plot,
+# so it is one row in the panel — never three loose siblings (SACRED_LAW.md, Scene Objects
+# registration law). Declared through `gmtvtk_set_group_master_h`, the generic child -> master map
+# the tree reads; nothing here builds a row of its own.
+const _SOLAR_MASTER     = "Sun and terminators"
+
+_solar_master!(scene::Ptr{Cvoid}) =
+	for child in (_SOLAR_GROUP, _SOLAR_FILL_GROUP, _SOLAR_SUN_LAYER)
+		ccall(_fn(:gmtvtk_set_group_master_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, child, _SOLAR_MASTER)
+	end
 
 # The +d<date>[+z<TZ>] tail shared by -T and -I. Empty date = "now", which is the module's own
 # default, so nothing is passed and the module stays in charge of what "now" means.
@@ -280,6 +290,13 @@ function _on_solar(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# at two instants, not two sets of layers. Both groups go before anything is added.
 		ccall(_fn(:gmtvtk_remove_overlay_group_h), Cint, (Ptr{Cvoid}, Cstring), scene, _SOLAR_GROUP)
 		ccall(_fn(:gmtvtk_remove_polys_h), Cint, (Ptr{Cvoid}, Cstring), scene, _SOLAR_FILL_GROUP)
+
+		# ONE PLOT = ONE MASTER HANDLE (SACRED_LAW.md, Scene Objects registration law). Everything this
+		# Compute draws — the terminator lines, the night polygons and the sub-solar marker — hangs
+		# under the SINGLE collapsed row `_SOLAR_MASTER`, whose own Remove takes all of it away. The
+		# three names below are the tree's own grouping keys; declaring them is all the panel needs
+		# (the rows themselves are built by the same builders as always — no second row code).
+		_solar_master!(scene)
 
 		dumped = GMTdataset[]
 		for (letter, name, linergb, fillrgb) in _SOLAR_TERMS

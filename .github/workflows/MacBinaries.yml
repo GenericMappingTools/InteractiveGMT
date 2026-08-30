@@ -4,14 +4,13 @@
 # the build machine.
 #
 # TWO ARCHITECTURES, TWO JOBS. Homebrew bottles are per-arch and Qt/VTK are not universal binaries,
-# so arm64 and x86_64 are separate builds producing separate assets. macos-13 is the last
-# Intel-hosted runner GitHub offers; when it goes, the x86_64 leg goes with it and the matrix entry
-# fails loudly rather than silently publishing an arm64 file under an Intel name.
+# so arm64 and x86_64 are separate builds producing separate assets. GitHub retired macos-13 in
+# December 2025; macos-15-intel is the standard Intel runner label that replaces it.
 #
 # BUILD ON THE OLDEST OS YOU SUPPORT. Homebrew bottles are poured per macOS release, so a bundle
-# staged on macOS 15 does not load on macOS 14. The runner labels below (14 for arm64, 13 for
-# Intel) are therefore the deployment floor, not an incidental choice -- do not "modernise" them to
-# macos-latest without meaning to raise that floor.
+# staged on a newer macOS may not load on an older one. The runner labels below are therefore an
+# explicit deployment choice, not incidental -- do not change them to macos-latest without meaning
+# to move that target as GitHub updates the alias.
 #
 # NOTHING IS PUBLISHED AUTOMATICALLY. A push builds and verifies, and leaves the archives as
 # workflow artifacts. Uploading to a release happens only on a manual run that explicitly asks for
@@ -59,10 +58,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14     # Apple Silicon
+          - os: macos-15     # Apple Silicon
             arch: arm64
             julia_arch: aarch64
-          - os: macos-13     # Intel (last such runner GitHub provides)
+          - os: macos-15-intel
             arch: x86_64
             julia_arch: x64
     env:

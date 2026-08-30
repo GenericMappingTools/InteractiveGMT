@@ -42,6 +42,23 @@ _session_record!(scene::Ptr{Cvoid}, kind, origin, source=""; name="", params=Dic
 "Forget a window's provenance log (call on window close / re-promote)."
 _session_reset!(scene::Ptr{Cvoid}) = (delete!(_SESSION_LOG, scene); nothing)
 
+# Drop every recipe of `kind` this window holds. For a STATE a window has one of at a time -- the
+# Illumination model lighting it, say -- where a second run REPLACES the first rather than adding a
+# second element: recording without this would replay three superseded lights before the one the
+# user actually left on.
+function _session_forget!(scene::Ptr{Cvoid}, kind::Symbol)
+	scene == C_NULL && return nothing
+	rs = get(_SESSION_LOG, scene, nothing)
+	rs === nothing || filter!(r -> r.kind !== kind, rs)
+	return nothing
+end
+
+"Record `r` as the ONLY recipe of its kind for `scene` (replaces any earlier one). See `_session_forget!`."
+function _session_record_single!(scene::Ptr{Cvoid}, kind, origin, source=""; name="", params=Dict{String,Any}())
+	_session_forget!(scene, Symbol(kind))
+	return _session_record!(scene, kind, origin, source; name=name, params=params)
+end
+
 # In-memory curtain textures pending sidecar serialization (per scene: sidecar id -> PNG bytes). A
 # curtain built from a GMTimage (not a file path) has no on-disk source, so its texture is stashed here
 # at add time (curtain.jl) and written into the zip at save; a file-path curtain stores only the path.
@@ -269,7 +286,7 @@ _serialize_object(obj, path::String) =
 	(obj isa GMTgrid || obj isa GMTdataset || obj isa Vector{<:GMTdataset}) ?
 		GMT.gmtwrite(path, obj) : GMT.gdalwrite(path, obj)
 
-# Fetch the window's RESTORABLE display state (camera/VE/flat2d/colorbar) as the raw "k=v;" string the
+# Fetch the window's RESTORABLE display state (camera/VE/flat2d/colorbar/shading) as the raw "k=v;" string the
 # C serializer emits — stored verbatim under the manifest [window] `state=` key and fed back to
 # gmtvtk_apply_scene_state on load (no Julia-side re-serialization, so it is lossless). Two-pass buffer.
 function _scene_state_full_raw(h::Ptr{Cvoid})::String
@@ -875,6 +892,14 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 	elseif r.kind === :focal                             # re-dispatch the catalog request (newlines unescaped)
 		_on_focal(h, replace(get(r.params, "cparams", ""), '\x1e' => '\n'))
 		return fig
+	elseif r.kind === :illum                             # re-dispatch the Illumination model onto the rebuilt grid
+		# The reflectance is DERIVED, never stored: the same request block, through the same door the
+		# dialog uses, recomputes it from the layer that is now on screen. Replayed with the vectors
+		# (after every raster), so the grid it lights is already there; the shading state that goes
+		# with it lands afterwards, in _session_apply_display! -- which keeps this reflectance
+		# (gmtvtk_apply_scene_state restores the look with keepExternShade).
+		_on_hillshade(h, replace(get(r.params, "cparams", ""), '\x1e' => '\n'))
+		return fig
 	end
 	obj === nothing && return fig                        # data-backed layers: skip on missing source
 	if r.kind in (:basegrid, :dropgrid)
@@ -887,7 +912,7 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 	return fig
 end
 
-# Apply the snapshotted display state (camera/VE/flat2d/colorbar) to the rebuilt window via
+# Apply the snapshotted display state (camera/VE/flat2d/colorbar/shading) to the rebuilt window via
 # gmtvtk_apply_scene_state. The raw "k=v;" string was stored verbatim under `state` (see
 # _session_display). No-op if absent (e.g. a session saved before this state existed).
 function _session_apply_display!(fig, display)

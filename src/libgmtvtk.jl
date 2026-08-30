@@ -32,7 +32,12 @@ const Libdl = Base.Libc.Libdl
 # the loader then never looked at, so no amount of re-publishing could fix that machine. Both
 # candidates are now tried in order and the first one that fully loads wins.
 const _LIB_SUBDIR = "build"
-const _LIB_NAME = Sys.iswindows() ? "gmtvtk.dll" : "libgmtvtk.so"
+const _LIB_NAME = Sys.iswindows() ? "gmtvtk.dll" : Sys.isapple() ? "libgmtvtk.dylib" : "libgmtvtk.so"
+# The "what this library needs from the bundle beside it" manifest. ONE name per platform, and it
+# must agree with deps/build.jl's REQUIRES_MANIFEST -- this file used to hardcode ".dll_requires",
+# so on Linux the check below silently found no manifest and reported nothing, which is precisely
+# the population the check exists for.
+const _REQUIRES_MANIFEST = Sys.iswindows() ? ".dll_requires" : Sys.isapple() ? ".dylib_requires" : ".so_requires"
 const _LOCAL_LIB  = joinpath(_PKGROOT, "deps", _LIB_SUBDIR, _LIB_NAME)
 const _SHARED_LIB = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime", "deps", _LIB_SUBDIR, _LIB_NAME)
 const _LIB_CANDIDATES = filter(isfile, unique([_LOCAL_LIB, _SHARED_LIB]))
@@ -92,7 +97,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_view_grid, :gmtvtk_view_demo, :gmtvtk_process_events,
 	:gmtvtk_add_overlay, :gmtvtk_add_overlay_h, :gmtvtk_add_overlay_ex_h, :gmtvtk_add_overlay_ex2_h, :gmtvtk_add_overlay_ex3_h, :gmtvtk_add_overlay_ex4_h, :gmtvtk_add_overlay_bounded_h, :gmtvtk_get_display_bounds_h,
 	:gmtvtk_overlay_points_h, :gmtvtk_remove_overlay_group_h, :gmtvtk_remove_symbols_h,
-	:gmtvtk_remove_polys_h, :gmtvtk_label_width_world_h,
+	:gmtvtk_remove_polys_h, :gmtvtk_label_width_world_h, :gmtvtk_set_group_master_h,
 	:gmtvtk_add_overlay_gapped_h, :gmtvtk_world_per_pixel_h, :gmtvtk_dblclick_test,
 	:gmtvtk_add_symbols_h, :gmtvtk_add_symbols_ex_h, :gmtvtk_symbol_set_table_h, :gmtvtk_is_alive,
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
@@ -244,7 +249,7 @@ const _LOAD_ERROR = Ref{String}("")
 # with the useless "The specified module could not be found" -- naming no module. Returns the
 # missing names, or empty when there is no manifest to check against (a dev build).
 function _missing_runtime_modules(bin::String = _BIN_DIR)::Vector{String}
-	man = joinpath(bin, ".dll_requires")
+	man = joinpath(bin, _REQUIRES_MANIFEST)
 	isfile(man) || return String[]
 	miss = String[]
 	for ln in eachline(man)
@@ -326,7 +331,7 @@ function _try_load(lib::String)::Union{Nothing,String}
 		isempty(miss) || return "$lib: missing VTK/Qt modules beside it -- $(join(miss, ", "))"
 		msg = sprint(showerror, e)
 		return "$lib: could not be loaded ($msg)" *
-		       (Sys.iswindows() ? "" : _linux_load_hint(bin, msg))
+		       (Sys.islinux() ? _linux_load_hint(bin, msg) : "")   # both hints are Linux-only conditions
 	end
 	for s in _LIB_OPTIONAL          # present -> usable; absent -> only that feature is, see _LIB_OPTIONAL
 		p = Libdl.dlsym(h, s; throw_error=false)
@@ -365,7 +370,8 @@ end
 # Idempotent.
 function _load_library()
 	_DLL[] == C_NULL || return                       # already loaded
-	isempty(_LIB_CANDIDATES) && error("gmtvtk.dll not found (looked in $(dirname(_LOCAL_LIB)) and $(dirname(_SHARED_LIB))) -- build it with deps/build.bat")
+	isempty(_LIB_CANDIDATES) && error("$_LIB_NAME not found (looked in $(dirname(_LOCAL_LIB)) and $(dirname(_SHARED_LIB))) -- build it with " *
+	                                  (Sys.iswindows() ? "deps/build.bat" : Sys.isapple() ? "cmake -S deps -B deps/build" : "deps/build.sh"))
 	why = String[]
 	for lib in _LIB_CANDIDATES
 		r = _try_load(lib)
