@@ -442,6 +442,21 @@ static JuliaGrdGradientFn g_juliaGrdGradient = nullptr;
 typedef int (*JuliaHillshadeFn)(void *scene, const char *params);
 static JuliaHillshadeFn g_juliaHillshade = nullptr;
 
+// Movie tool (Tools > Make movie; MovieDialog in 70_window.cpp loads deps/ui/movie_dialog.ui).
+// The dialog hands a NEWLINE-separated "key=value" block to src/moviedlg.jl, which turns it into the
+// one `movie(...)` call the scripted API uses -- the dialog never renders a frame or writes a file
+// itself, so a movie made from the menu and one made from the console go through the same scheduler.
+// Keys: source=orbit|layers|grids, then per source (orbit) frames=, az=, el=; (layers) from=, to=,
+// step=; (grids) grid=<path> repeated once per frame. Common: name=, format=, rate=, clean=,
+// label=<GMT -L spec>, progress=<GMT -P spec>. Returns 1 on success, 0 on failure.
+//
+// "op=nlayers" is the one QUERY it answers: the number of layers in whatever cube the window holds,
+// or 0 for none. The dialog asks through this SAME channel rather than being handed a copy to keep in
+// the Scene -- a second copy of a count that already exists on the host is a value with two sources,
+// and it goes stale the moment a cube is loaded or swapped behind the dialog's back.
+typedef int (*JuliaMovieFn)(void *scene, const char *params);
+static JuliaMovieFn g_juliaMovie = nullptr;
+
 // JIT WARM-UP (src/warmup.jl). Julia compiles a tool's code the first time it RUNS, so the first
 // press of a dialog's action button pays several seconds that have nothing to do with the maths.
 // The fix is to start that compilation when the DIALOG OPENS, in a background task: the seconds the

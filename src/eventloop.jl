@@ -87,6 +87,7 @@ function _ensure_callbacks()
 	                    ("grdredpol",   _register_grdredpol),
 	                    ("grdgradient", _register_grdgradient),
 	                    ("hillshade",   _register_hillshade),
+	                    ("movie",       _register_movie_dialog),
 	                    ("grdseamount", _register_grdseamount),
 	                    ("manual",      _register_manual),
 	                    ("import-gmt",  _register_import_gmt),

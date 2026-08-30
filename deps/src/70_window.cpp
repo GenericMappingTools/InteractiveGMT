@@ -4917,6 +4917,220 @@ public:
 	}
 };
 
+// Tools > Make movie. Loads deps/ui/movie_dialog.ui at runtime and hands src/moviedlg.jl a
+// "key=value" block (JuliaMovieFn, 30_app.cpp). It renders nothing and writes nothing itself: the
+// Julia side turns the block into the same `movie(...)` call the scripted API uses, so a movie made
+// from this menu and one made from the console go through ONE scheduler.
+//
+// Three frame sources, covering every window rather than one kind of data: a camera orbit (any
+// window at all), a cube-layer sweep (either kind of 3-D cube), and a grid sequence (any grid
+// window). The layer page asks Julia how many layers this window's cube has -- through the same
+// callback, never a copy cached in the Scene -- and disables itself when the answer is none.
+class MovieDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QRadioButton *rbOrbit = nullptr, *rbLayers = nullptr, *rbGrids = nullptr;
+	QStackedWidget *stk = nullptr;
+	QSpinBox *sbOrbitFrames = nullptr, *sbFrom = nullptr, *sbTo = nullptr, *sbStep = nullptr;
+	QDoubleSpinBox *dsbAz = nullptr, *dsbEl = nullptr, *dsbRate = nullptr;
+	QLabel *lblLayerCount = nullptr, *lblStatus = nullptr;
+	QListWidget *lstGrids = nullptr;
+	QLineEdit *edtName = nullptr;
+	QComboBox *cboFormat = nullptr, *cboLabelKind = nullptr, *cboLabelJust = nullptr,
+	          *cboProgStyle = nullptr, *cboProgJust = nullptr;
+	QCheckBox *chkLabel = nullptr, *chkProgress = nullptr, *chkClean = nullptr;
+	QPushButton *btnRun = nullptr;
+	int nLayers = 0;
+
+	// The nine GMT reference points, in the order both combos offer them.
+	static QStringList justCodes() {
+		return QStringList{"TL", "TC", "TR", "ML", "MC", "MR", "BL", "BC", "BR"};
+	}
+
+	explicit MovieDialog(QWidget *parent, Scene *scene) {
+		scn = scene;
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/movie_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("MovieDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("MovieDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+
+		rbOrbit  = d->findChild<QRadioButton *>("rbOrbit");
+		rbLayers = d->findChild<QRadioButton *>("rbLayers");
+		rbGrids  = d->findChild<QRadioButton *>("rbGrids");
+		stk      = d->findChild<QStackedWidget *>("stkSource");
+		sbOrbitFrames = d->findChild<QSpinBox *>("sbOrbitFrames");
+		sbFrom = d->findChild<QSpinBox *>("sbFrom");
+		sbTo   = d->findChild<QSpinBox *>("sbTo");
+		sbStep = d->findChild<QSpinBox *>("sbStep");
+		dsbAz  = d->findChild<QDoubleSpinBox *>("dsbAzStep");
+		dsbEl  = d->findChild<QDoubleSpinBox *>("dsbElStep");
+		dsbRate = d->findChild<QDoubleSpinBox *>("dsbRate");
+		lblLayerCount = d->findChild<QLabel *>("lblLayerCount");
+		lblStatus = d->findChild<QLabel *>("lblStatus");
+		lstGrids = d->findChild<QListWidget *>("lstGrids");
+		edtName  = d->findChild<QLineEdit *>("edtName");
+		cboFormat = d->findChild<QComboBox *>("cboFormat");
+		cboLabelKind = d->findChild<QComboBox *>("cboLabelKind");
+		cboLabelJust = d->findChild<QComboBox *>("cboLabelJust");
+		cboProgStyle = d->findChild<QComboBox *>("cboProgStyle");
+		cboProgJust  = d->findChild<QComboBox *>("cboProgJust");
+		chkLabel    = d->findChild<QCheckBox *>("chkLabel");
+		chkProgress = d->findChild<QCheckBox *>("chkProgress");
+		chkClean    = d->findChild<QCheckBox *>("chkClean");
+		btnRun = d->findChild<QPushButton *>("btnRun");
+		QPushButton *btnClose  = d->findChild<QPushButton *>("btnClose");
+		QPushButton *btnBrowse = d->findChild<QPushButton *>("btnBrowse");
+		QPushButton *btnAdd    = d->findChild<QPushButton *>("btnAddGrids");
+		QPushButton *btnRemove = d->findChild<QPushButton *>("btnRemoveGrid");
+		QPushButton *btnClear  = d->findChild<QPushButton *>("btnClearGrids");
+
+		if (cboFormat) cboFormat->addItems(QStringList{"mp4", "webm", "gif", "png"});
+		if (cboLabelKind)
+			cboLabelKind->addItems(QStringList{"Frame number", "Elapsed time", "Percent"});
+		if (cboProgStyle)
+			cboProgStyle->addItems(QStringList{"a  disc + wedge", "b  ring + arc", "c  circular arrow",
+			                                   "d  line + cross-mark", "e  plain axis", "f  axis + triangle"});
+		for (QComboBox *c : {cboLabelJust, cboProgJust})
+			if (c) c->addItems(justCodes());
+		if (cboLabelJust) cboLabelJust->setCurrentIndex(0);              // TL, GMT's own label default
+		if (cboProgJust)  cboProgJust->setCurrentIndex(2);               // TR, GMT's circular default
+
+		// Ask the host how many layers this window's cube has. 0 = no cube, so that source is offered
+		// but refuses to be chosen, which reads better than a radio that silently does nothing.
+		nLayers = (g_juliaMovie && sceneAlive(scn)) ? g_juliaMovie(scn, "op=nlayers") : 0;
+		if (nLayers > 0) {
+			if (lblLayerCount) lblLayerCount->setText(QString("This window's cube has %1 layers.").arg(nLayers));
+			if (sbFrom) { sbFrom->setMaximum(nLayers); sbFrom->setValue(1); }
+			if (sbTo)   { sbTo->setMaximum(nLayers);   sbTo->setValue(nLayers); }
+		}
+		else {
+			if (rbLayers) rbLayers->setEnabled(false);
+			if (lblLayerCount) lblLayerCount->setText("This window has no 3-D cube open.");
+		}
+
+		if (stk) {
+			auto page = [this](int i) { if (stk) stk->setCurrentIndex(i); syncRun(); };
+			if (rbOrbit)  QObject::connect(rbOrbit,  &QRadioButton::toggled, [page](bool on) { if (on) page(0); });
+			if (rbLayers) QObject::connect(rbLayers, &QRadioButton::toggled, [page](bool on) { if (on) page(1); });
+			if (rbGrids)  QObject::connect(rbGrids,  &QRadioButton::toggled, [page](bool on) { if (on) page(2); });
+		}
+		if (edtName && btnBrowse) fileBoxDoubleClick(edtName, btnBrowse);   // double-click opens the chooser
+		if (btnBrowse)
+			QObject::connect(btnBrowse, &QPushButton::clicked, [this] { pickOutput(); });
+		if (btnAdd)
+			QObject::connect(btnAdd, &QPushButton::clicked, [this] { addGrids(); });
+		if (btnRemove)
+			QObject::connect(btnRemove, &QPushButton::clicked, [this] {
+				if (!lstGrids) return;
+				qDeleteAll(lstGrids->selectedItems());
+				syncRun();
+			});
+		if (btnClear)
+			QObject::connect(btnClear, &QPushButton::clicked, [this] {
+				if (lstGrids) lstGrids->clear();
+				syncRun();
+			});
+		if (btnRun)   QObject::connect(btnRun,   &QPushButton::clicked, [this] { run(); });
+		if (btnClose) QObject::connect(btnClose, &QPushButton::clicked, [d] { d->close(); });
+		syncRun();
+	}
+
+	// The Run button is enabled only when the chosen source can actually produce frames -- a grid
+	// sequence with an empty list, or a layer sweep on a window with no cube, has nothing to render.
+	void syncRun() {
+		if (!btnRun) return;
+		bool ok = true;
+		if (rbGrids && rbGrids->isChecked())  ok = lstGrids && lstGrids->count() > 0;
+		if (rbLayers && rbLayers->isChecked()) ok = nLayers > 0;
+		btnRun->setEnabled(ok);
+	}
+
+	void pickOutput() {
+		if (!edtName) return;
+		const QString ext = cboFormat ? cboFormat->currentText() : QString("mp4");
+		const QString fn = QFileDialog::getSaveFileName(dlg, "Movie file", edtName->text(),
+		                                                QString("Movie (*.%1);;All files (*)").arg(ext));
+		if (!fn.isEmpty()) edtName->setText(fn);
+	}
+
+	void addGrids() {
+		if (!lstGrids) return;
+		const QStringList fns = QFileDialog::getOpenFileNames(dlg, "Grids, in the order they play", QString(),
+		                                                      "Grids (*.grd *.nc *.tif *.tiff);;All files (*)");
+		for (const QString &fn : fns) lstGrids->addItem(fn);
+		syncRun();
+	}
+
+	void run() {
+		if (!g_juliaMovie || !sceneAlive(scn)) return;
+		QStringList kv;
+		if (rbLayers && rbLayers->isChecked()) {
+			kv << "source=layers";
+			kv << QString("from=%1").arg(sbFrom ? sbFrom->value() : 1);
+			kv << QString("to=%1").arg(sbTo ? sbTo->value() : nLayers);
+			kv << QString("step=%1").arg(sbStep ? sbStep->value() : 1);
+		}
+		else if (rbGrids && rbGrids->isChecked()) {
+			// ONE `grids=` value, tab-separated: the block's parser (_nswing_parse) keeps a single
+			// value per key, so one `grid=` line per file would collapse to the last one. A tab
+			// cannot occur in a Windows path.
+			kv << "source=grids";
+			QStringList paths;
+			if (lstGrids)
+				for (int i = 0; i < lstGrids->count(); ++i) paths << lstGrids->item(i)->text();
+			kv << "grids=" + paths.join('\t');
+		}
+		else {
+			kv << "source=orbit";
+			kv << QString("frames=%1").arg(sbOrbitFrames ? sbOrbitFrames->value() : 120);
+			kv << QString("az=%1").arg(dsbAz ? dsbAz->value() : 3.0);
+			kv << QString("el=%1").arg(dsbEl ? dsbEl->value() : 0.0);
+		}
+		kv << "name=" + (edtName ? edtName->text().trimmed() : QString());
+		kv << "format=" + (cboFormat ? cboFormat->currentText() : QString("mp4"));
+		kv << QString("rate=%1").arg(dsbRate ? dsbRate->value() : 24.0);
+		kv << QString("clean=%1").arg((chkClean && chkClean->isChecked()) ? 1 : 0);
+		// The annotation combos are shorthand for a GMT -L / -P spec, which is what the host takes.
+		// Building the spec HERE keeps one option language between the dialog and the scripted API --
+		// the dialog offers a subset of it, never a second vocabulary of its own.
+		if (chkLabel && chkLabel->isChecked()) {
+			const char kinds[] = {'f', 'e', 'p'};
+			const int ki = cboLabelKind ? qBound(0, cboLabelKind->currentIndex(), 2) : 0;
+			kv << QString("label=%1+j%2+gwhite+p0.5p,black")
+			        .arg(QChar(kinds[ki]))
+			        .arg(cboLabelJust ? cboLabelJust->currentText() : QString("TL"));
+		}
+		if (chkProgress && chkProgress->isChecked()) {
+			const int si = cboProgStyle ? qBound(0, cboProgStyle->currentIndex(), 5) : 0;
+			kv << QString("progress=%1+j%2")
+			        .arg(QChar((char)('a' + si)))
+			        .arg(cboProgJust ? cboProgJust->currentText() : QString("TR"));
+		}
+
+		if (lblStatus) { lblStatus->setText("Rendering…"); QApplication::processEvents(); }
+		if (btnRun) btnRun->setEnabled(false);
+		const QByteArray p = kv.join('\n').toUtf8();
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		const int ok = g_juliaMovie(scn, p.constData());
+		QApplication::restoreOverrideCursor();
+		if (btnRun) btnRun->setEnabled(true);
+		if (lblStatus) lblStatus->setText(ok ? "Done." : "Failed — see the Julia console.");
+		if (!ok)
+			QMessageBox::warning(dlg, "Make movie",
+			                     "The movie could not be made. See the Julia console for the reason.");
+	}
+};
+
 class GrdGradientDialog {
 public:
 	QDialog *dlg = nullptr;
@@ -22297,6 +22511,19 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QMenu *mTools = win->menuBar()->addMenu("&Tools");
 	// Opened FROM this viewer, so this viewer's Scene Objects dock is where it parks when closed.
 	mTools->addAction("X,Y plot", [s] { if (XYPlot *p = xyOpenBlankFromHost()) p->owner = s; });
+	// Make movie: render this window frame by frame and encode it (MovieDialog, above). Non-modal;
+	// WA_DeleteOnClose frees it when closed. Warmed up on open like every other tool dialog, because
+	// the first movie would otherwise pay the scheduler's JIT in front of the user.
+	mTools->addAction("Make movie", [win, s]() {
+		warmupTool("movie");
+		MovieDialog *m = new MovieDialog(win, s);
+		if (!m->dlg) { delete m; return; }
+		// The wrapper's lifetime is TIED to its QDialog: the dialog deletes itself on close
+		// (WA_DeleteOnClose), and this takes the non-QObject wrapper with it instead of leaking one
+		// per open.
+		QObject::connect(m->dlg, &QObject::destroyed, [m] { delete m; });
+		m->dlg->show();
+	});
 	// Tiles Tool (port of Mirone's tiles_tool.m): an interactive world map + refinable web-tile mesh.
 	// Pick two diagonal tiles, hit GO -> Julia builds the mosaic (GMT.mosaic) in a new viewer. Non-modal
 	// (stays open for repeated picks); WA_DeleteOnClose frees it (and its world pixmap) when closed.

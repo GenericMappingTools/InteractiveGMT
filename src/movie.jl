@@ -186,45 +186,62 @@ function replace_grid!(fig::QtFigure, G::GMTgrid; name::AbstractString="", zrang
 	return fig
 end
 
-# The Aquamoto state of a live figure, or `nothing` when the window has no tsunami cube open. One
-# lookup for every entry point below, so they all say the same thing about what a window is.
-function _movie_aqua_state(fig::_MovieFigure, who::String)
+# WHICH KIND of layered dataset this window carries, and how many layers it has.
+#
+# The viewer has two, loaded by two unrelated paths: a plain 3-D netCDF cube (drop.jl's `_CUBE_INFO`,
+# driven by the cube-layer slider) and an Aquamoto NSWING tsunami cube (`_AQUA`, driven by the
+# Aquamoto dialog). "Show layer k" is ONE operation, so it is ONE function here that routes to
+# whichever of those two the window actually has — never a second implementation of either, and never
+# a per-caller flag. A window carrying both (a plain cube dropped into an Aquamoto window) is served
+# by Aquamoto, because that is the composited display standing on screen.
+function _movie_layer_source(fig::_MovieFigure, who::String)
 	isalive(fig) || error("$who: the viewer window is closed")
-	st = get(_AQUA, _fig_handle(fig), nothing)
-	st === nothing && error("$who: this window has no tsunami cube open " *
-	                        "(Geophysics > Tsunamis > Aquamoto opens one)")
-	return st
+	h = _fig_handle(fig)
+	st = get(_AQUA, h, nothing)
+	st === nothing || return (:aqua, h, st.nsteps)
+	info = get(_CUBE_INFO, h, nothing)
+	info === nothing && error("$who: this window has no layered dataset — open a 3-D netCDF cube, " *
+	                          "or a NSWING tsunami cube (Geophysics > Tsunamis > Aquamoto)")
+	return (:cube, h, info.n_layers)
 end
 
 """
 	nlayers(fig) -> Int
 
-Number of time steps in the Aquamoto (NSWING tsunami) netCDF cube open in `fig`. Errors when the
-window has no cube open. This is the natural `frames` value for a cube animation:
+Number of layers in the 3-D dataset `fig` is showing — a plain netCDF cube's third dimension, or an
+Aquamoto (NSWING tsunami) cube's time steps. Errors when the window has neither. This is the natural
+`frames` value for a layer animation:
 
-    movie(fig; frames=nlayers(fig), name="tsunami") do fig, f
+    movie(fig; frames=nlayers(fig), name="cube") do fig, f
         set_layer!(fig, f.index)
     end
 """
-nlayers(fig::_MovieFigure) = _movie_aqua_state(fig, "nlayers").nsteps
+nlayers(fig::_MovieFigure) = _movie_layer_source(fig, "nlayers")[3]
 
 """
 	set_layer!(fig, k) -> fig
 
-Show time step `k` of the Aquamoto tsunami cube open in `fig`, **1-based** like `MovieFrame.index`
-(the Aquamoto dialog's own slider is 1-based too; only the internal Julia/C call is 0-based).
+Show layer `k` of the 3-D dataset `fig` is displaying, **1-based** like `MovieFrame.index` and like
+both layer sliders in the UI (only the internal calls are 0-based).
 
-The slice is drawn by the SAME `_aquamoto_slice` the dialog drives, with the display options the
-dialog last rendered with — Split Dry/Wet, global colour scaling, water transparency, and the two
-shading toggles — so an animation looks exactly like the slice on screen, including the per-slice
-water relight the two-surface illumination law requires.
+Works on either kind of layered dataset the viewer has, through that kind's OWN existing switcher —
+`_on_load_cube_layer` for a plain netCDF cube, `_aquamoto_slice` for an NSWING tsunami cube. Neither
+is reimplemented here, and each is driven with the display options its own dialog last rendered with:
+the cube's "global min/max" choice, and the tsunami's Split Dry/Wet, colour scaling, transparency and
+shading toggles. So an animation looks exactly like the layer on screen — including, for a tsunami,
+the per-slice water relight the two-surface illumination law requires.
 """
 function set_layer!(fig::_MovieFigure, k::Integer)
-	st = _movie_aqua_state(fig, "set_layer!")
-	(1 <= k <= st.nsteps) ||
-		throw(ArgumentError("set_layer!: layer $k out of range (1..$(st.nsteps))"))
-	_aquamoto_slice(_fig_handle(fig), Int(k) - 1, st.split, st.globalmm, st.transp,
-	                st.shadewater, st.shadeland)
+	kind, h, n = _movie_layer_source(fig, "set_layer!")
+	(1 <= k <= n) || throw(ArgumentError("set_layer!: layer $k out of range (1..$n)"))
+	if kind === :aqua
+		st = _AQUA[h]
+		_aquamoto_slice(h, Int(k) - 1, st.split, st.globalmm, st.transp, st.shadewater, st.shadeland)
+	else
+		cur = get(_CUBE_CUR, h, nothing)
+		useglob = cur === nothing ? false : get(cur, :useglob, false)
+		_on_load_cube_layer(h, Cint(Int(k) - 1), Cint(useglob))
+	end
 	return fig
 end
 
@@ -407,45 +424,51 @@ end
 """
 	movie(fig; kwargs...) -> String
 
-Animate the Aquamoto (NSWING tsunami) netCDF cube open in `fig` along its own time axis, with no
-callback to write: the frame mutation is `set_layer!` and `frames` defaults to every time step in the
-cube. Every keyword of the callback methods applies.
+Animate the 3-D dataset `fig` is showing along its layer axis, with no callback to write: the frame
+mutation is `set_layer!` and `frames` defaults to every layer. Works on either kind of layered dataset
+the viewer has — a plain netCDF cube or an Aquamoto (NSWING tsunami) cube. Every keyword of the
+callback methods applies.
 
-    fig = ...                       # a window with a tsunami cube open
-    movie(fig; name="tsunami", frame_rate=15, clean=true)
+    fig = ...                       # a window with a cube open
+    movie(fig; name="cube", frame_rate=15, clean=true)
 
 Here `frames` counts in LAYER NUMBERS, not in offsets: `frames=20:80` animates layers 20 through 80,
 `frames=1:2:nlayers(fig)` takes every second layer, and a bare `frames=n` means layers `1:n`. Write
-the callback out when a frame has to do more than change the time step:
+the callback out when a frame has to do more than change the layer:
 
     movie(fig; frames=nlayers(fig)) do fig, f
         set_layer!(fig, f.index); orbit!(fig, 0.5)
     end
 """
 function movie(fig::_MovieFigure; frames=nothing, T=nothing, restore_view::Bool=true, kwargs...)
-	st = _movie_aqua_state(fig, "movie")    # errors here, not mid-render, when there is no cube
+	kind, h, n = _movie_layer_source(fig, "movie")   # errors here, not mid-render, when there is none
 	frames = _movie_resolve_alias(frames, T, nothing, "frames", "T")
-	frames === nothing && (frames = 1:st.nsteps)
+	frames === nothing && (frames = 1:n)
 	# A bare count means "the first n layers": `_movie_frames` would otherwise turn an integer into
-	# the 0-based GMT frame numbers 0..n-1, and layer 0 does not exist on a 1-based time axis.
+	# the 0-based GMT frame numbers 0..n-1, and layer 0 does not exist on a 1-based layer axis.
 	if frames isa Integer
 		frames > 0 || throw(ArgumentError("movie: integer `frames` must be > 0"))
 		frames = 1:Int(frames)
 	end
-	# The slice showing when this started, so `restore_view` covers the time step too. The dialog's
-	# own slider never moved during the run, so putting the slice back is what RE-SYNCS the window
-	# with it -- leaving the last frame on screen is what desyncs. Skipped when no slice had been
-	# drawn yet (`first`), where there is nothing to put back and `cur` is only its initial 0.
-	k0 = st.first ? 0 : st.cur + 1
+	# The layer showing when this started, so `restore_view` covers it too. Neither dialog's slider
+	# moves during a run, so putting the layer back is what RE-SYNCS the window with it -- leaving the
+	# last frame up is what desyncs. 0 means "nothing had been drawn yet", where there is nothing to
+	# put back.
+	k0 = if kind === :aqua
+		st = _AQUA[h];  st.first ? 0 : st.cur + 1
+	else
+		cur = get(_CUBE_CUR, h, nothing);  cur === nothing ? 0 : cur.layer
+	end
 	try
 		return movie((fg, f) -> set_layer!(fg, _movie_layer_number(f)), fig;
 		             frames=frames, restore_view=restore_view, kwargs...)
 	finally
-		if restore_view && k0 > 0 && isalive(fig) && haskey(_AQUA, _fig_handle(fig))
+		if restore_view && k0 > 0 && isalive(fig) &&
+		   (haskey(_AQUA, _fig_handle(fig)) || haskey(_CUBE_INFO, _fig_handle(fig)))
 			try
 				set_layer!(fig, k0)
 			catch e
-				@warn "movie: failed to restore the tsunami time step showing before the run" exception=(e,)
+				@warn "movie: failed to restore the layer showing before the run" exception=(e,)
 			end
 		end
 	end

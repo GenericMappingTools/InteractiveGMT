@@ -106,6 +106,27 @@ end
     @test_throws ArgumentError IG._anno_text(mk(4; col=9), T[1], 10.0)
 end
 
+# Tools > Make movie: the block the dialog sends is translated here and nowhere else. No window is
+# needed for the translation itself.
+@testitem "movie dialog: block translation helpers" tags=[:unit, :fast, :movie, :moviedlg] begin
+    IG = InteractiveGMT
+    @test isdefined(IG, :_on_movie) && isdefined(IG, :_register_movie_dialog)
+
+    # The grid list travels as ONE tab-separated value: `_nswing_parse` keeps a single value per key,
+    # so one `grid=` line per file would collapse to the last one.
+    d = IG._nswing_parse("source=grids\ngrids=a.grd\tb.grd\tc.grd\nrate=6")
+    @test IG._moviedlg_paths(d["grids"]) == ["a.grd", "b.grd", "c.grd"]
+    @test IG._moviedlg_paths("") == String[]
+    @test IG._moviedlg_paths("only.grd") == ["only.grd"]
+
+    # A save dialog hands back a full path WITH the format's extension; `movie` wants a stem and
+    # appends the extension itself, so a matching one is stripped and anything else is left alone.
+    @test IG._moviedlg_stem("C:/tmp/film.mp4", "mp4") == "C:/tmp/film"
+    @test IG._moviedlg_stem("C:/tmp/film.MP4", "mp4") == "C:/tmp/film"
+    @test IG._moviedlg_stem("C:/tmp/film", "mp4") == "C:/tmp/film"
+    @test IG._moviedlg_stem("C:/tmp/film.webm", "mp4") == "C:/tmp/film.webm"
+end
+
 @testitem "movie: annotation lengths, justifications and colours" tags=[:unit, :fast, :movie, :movieanno] begin
     IG = InteractiveGMT
     @test IG._anno_len("20")  == 20.0

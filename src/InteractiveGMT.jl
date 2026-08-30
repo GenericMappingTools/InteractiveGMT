@@ -75,6 +75,7 @@ include("nested.jl")     # "Nested grids" rectangle tool: host-side blank-grid b
 include("transplant.jl") # Grid Tools > Transplant 2nd grid (port of Mirone utils/transplants.m)
 include("movie.jl")      # InteractiveGMT frame scheduler + FFmpeg encoder (extends GMT.movie by dispatch)
 include("movieanno.jl")  # movie frame labels (GMT movie -L) + progress indicators (-P) as scene elements
+include("moviedlg.jl")   # Tools > Make movie: the dialog's block -> the ONE movie() call
 include("measure.jl")    # line length/azimuth + polygon area for the vector context menu (CRS-aware)
 include("info.jl")       # toolbar "i" button: grdinfo / gdalinfo report on the active grid/image
 include("rtp3d.jl")      # Geophysics > Magnetics: reduce-to-pole via 2-D FFT (port of Mirone utils/rtp3d.m)

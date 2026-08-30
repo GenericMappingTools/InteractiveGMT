@@ -3970,6 +3970,25 @@ GMTVTK_API int gmtvtk_line_clamp_h(void *scene, const char *name, int on) {
 	return n;
 }
 
+// Register the Julia side of the movie tool (Tools > Make movie). See JuliaMovieFn in 30_app.cpp for
+// the "key=value" block the dialog sends. nullptr detaches.
+GMTVTK_API void gmtvtk_set_movie_callback(JuliaMovieFn fn) {
+	g_juliaMovie = fn;
+}
+
+// Open Tools > Make movie on this window, the same dialog the menu entry opens (one constructor, so
+// the menu and this cannot drift). Returns 1 when it is up, 0 when the window is gone or the .ui
+// could not be loaded. Its counterpart for the cube slider is gmtvtk_show_cube_layer_dialog.
+GMTVTK_API int gmtvtk_open_movie_dialog_h(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return 0;
+	MovieDialog *m = new MovieDialog(s->widget ? s->widget->window() : nullptr, s);
+	if (!m->dlg) { delete m; return 0; }
+	QObject::connect(m->dlg, &QObject::destroyed, [m] { delete m; });
+	m->dlg->show();
+	return 1;
+}
+
 // --- movie annotations: frame labels (GMT movie -L) and progress indicators (-P) ------------------
 //
 // The look/placement fields arrive here already resolved: the GMT-style spec (`-Lf+jTL+gwhite`, or

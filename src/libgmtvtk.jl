@@ -224,6 +224,8 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_anno_set_h,        # movie tool: push one frame's text + progress fraction
 	:gmtvtk_anno_remove_h,     # movie tool: drop one annotation and its actors
 	:gmtvtk_anno_count_h,      # movie tool: how many the window carries (-1 = window gone)
+	:gmtvtk_set_movie_callback,# movie tool: Tools > Make movie -> _on_movie
+	:gmtvtk_open_movie_dialog_h,# movie tool: open that dialog on one window
 )
 
 # Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is

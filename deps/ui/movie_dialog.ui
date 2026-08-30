@@ -1,0 +1,416 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MovieDialog</class>
+ <widget class="QDialog" name="MovieDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>430</width>
+    <height>508</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Make movie</string>
+  </property>
+  <layout class="QVBoxLayout" name="rootLayout">
+   <item>
+    <widget class="QGroupBox" name="grpSource">
+     <property name="title">
+      <string>Frames come from</string>
+     </property>
+     <layout class="QVBoxLayout" name="srcLayout">
+      <item>
+       <layout class="QHBoxLayout" name="srcRadioLayout">
+        <item>
+         <widget class="QRadioButton" name="rbOrbit">
+          <property name="text">
+           <string>Camera orbit</string>
+          </property>
+          <property name="toolTip">
+           <string>Spin the camera by a fixed step each frame. Works on any window.</string>
+          </property>
+          <property name="checked">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QRadioButton" name="rbLayers">
+          <property name="text">
+           <string>Cube layers</string>
+          </property>
+          <property name="toolTip">
+           <string>Step through the layers of the 3-D cube this window is showing.</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QRadioButton" name="rbGrids">
+          <property name="text">
+           <string>Grid sequence</string>
+          </property>
+          <property name="toolTip">
+           <string>Step through a list of grids that share this window's grid geometry.</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QStackedWidget" name="stkSource">
+        <property name="currentIndex">
+         <number>0</number>
+        </property>
+        <widget class="QWidget" name="pageOrbit">
+         <layout class="QGridLayout" name="orbitLayout">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lblOrbitFrames">
+            <property name="text">
+             <string>Frames</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QSpinBox" name="sbOrbitFrames">
+            <property name="minimum">
+             <number>2</number>
+            </property>
+            <property name="maximum">
+             <number>100000</number>
+            </property>
+            <property name="value">
+             <number>120</number>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lblAzStep">
+            <property name="text">
+             <string>Azimuth per frame (deg)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QDoubleSpinBox" name="dsbAzStep">
+            <property name="decimals">
+             <number>2</number>
+            </property>
+            <property name="minimum">
+             <double>-90.000000000000000</double>
+            </property>
+            <property name="maximum">
+             <double>90.000000000000000</double>
+            </property>
+            <property name="value">
+             <double>3.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lblElStep">
+            <property name="text">
+             <string>Elevation per frame (deg)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QDoubleSpinBox" name="dsbElStep">
+            <property name="decimals">
+             <number>2</number>
+            </property>
+            <property name="minimum">
+             <double>-90.000000000000000</double>
+            </property>
+            <property name="maximum">
+             <double>90.000000000000000</double>
+            </property>
+            <property name="value">
+             <double>0.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="pageLayers">
+         <layout class="QGridLayout" name="layerLayout">
+          <item row="0" column="0" colspan="4">
+           <widget class="QLabel" name="lblLayerCount">
+            <property name="text">
+             <string>This window has no cube open.</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lblFrom">
+            <property name="text">
+             <string>From</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QSpinBox" name="sbFrom">
+            <property name="minimum">
+             <number>1</number>
+            </property>
+            <property name="maximum">
+             <number>1000000</number>
+            </property>
+            <property name="value">
+             <number>1</number>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="lblTo">
+            <property name="text">
+             <string>to</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QSpinBox" name="sbTo">
+            <property name="minimum">
+             <number>1</number>
+            </property>
+            <property name="maximum">
+             <number>1000000</number>
+            </property>
+            <property name="value">
+             <number>1</number>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lblStep">
+            <property name="text">
+             <string>Step</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QSpinBox" name="sbStep">
+            <property name="minimum">
+             <number>1</number>
+            </property>
+            <property name="maximum">
+             <number>10000</number>
+            </property>
+            <property name="value">
+             <number>1</number>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="pageGrids">
+         <layout class="QVBoxLayout" name="gridsLayout">
+          <item>
+           <widget class="QListWidget" name="lstGrids">
+            <property name="toolTip">
+             <string>Grids are shown in this order, one per frame. Each must have the same size, registration, range and increment as the window's current grid.</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <layout class="QHBoxLayout" name="gridBtnLayout">
+            <item>
+             <widget class="QPushButton" name="btnAddGrids">
+              <property name="text">
+               <string>Add…</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btnRemoveGrid">
+              <property name="text">
+               <string>Remove</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btnClearGrids">
+              <property name="text">
+               <string>Clear</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="grpAnno">
+     <property name="title">
+      <string>Annotations</string>
+     </property>
+     <layout class="QGridLayout" name="annoLayout">
+      <item row="0" column="0">
+       <widget class="QCheckBox" name="chkLabel">
+        <property name="text">
+         <string>Label</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="cboLabelKind">
+        <property name="toolTip">
+         <string>What the label shows (GMT movie -L).</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QComboBox" name="cboLabelJust">
+        <property name="toolTip">
+         <string>Where the label sits (GMT +j).</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QCheckBox" name="chkProgress">
+        <property name="text">
+         <string>Progress</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QComboBox" name="cboProgStyle">
+        <property name="toolTip">
+         <string>Which of GMT's six indicators (movie -P).</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QComboBox" name="cboProgJust">
+        <property name="toolTip">
+         <string>Where the indicator sits (GMT +j).</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="grpOut">
+     <property name="title">
+      <string>Output</string>
+     </property>
+     <layout class="QGridLayout" name="outLayout">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lblName">
+        <property name="text">
+         <string>Movie file</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1" colspan="2">
+       <widget class="QLineEdit" name="edtName">
+        <property name="toolTip">
+         <string>Output file. Double-click to browse.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QPushButton" name="btnBrowse">
+        <property name="text">
+         <string>…</string>
+        </property>
+        <property name="maximumWidth">
+         <number>32</number>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lblFormat">
+        <property name="text">
+         <string>Format</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QComboBox" name="cboFormat"/>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lblRate">
+        <property name="text">
+         <string>Frames / s</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QDoubleSpinBox" name="dsbRate">
+        <property name="decimals">
+         <number>2</number>
+        </property>
+        <property name="minimum">
+         <double>0.100000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>240.000000000000000</double>
+        </property>
+        <property name="value">
+         <double>24.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0" colspan="2">
+       <widget class="QCheckBox" name="chkClean">
+        <property name="text">
+         <string>Delete the PNG frames afterwards</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="btnLayout">
+     <item>
+      <widget class="QLabel" name="lblStatus">
+       <property name="text">
+        <string/>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="btnSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnRun">
+       <property name="text">
+        <string>Make movie</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnClose">
+       <property name="text">
+        <string>Close</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

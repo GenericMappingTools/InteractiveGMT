@@ -248,7 +248,12 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 			_AquaVarScan(fill(NaN, nsteps), fill(NaN, nsteps), falses(nsteps), fill(NaN, nsteps), fill(NaN, nsteps))
 		end
 		for k in 0:nsteps-1
-			Gk = _gmtread_trb("$(path)?$(vn)[$(k)]")   # same reader as the bathymetry -> same element order
+			# `_read_cube_layer` (drop.jl) is THE read of one layer out of a cube; it takes a 1-based
+			# index and applies the same "TRB" reader the bathymetry above went through, so the two
+			# share an element order. Spelling the subdataset index out here instead would be the same
+			# operation written twice — with the two spellings disagreeing on the index base, which is
+			# exactly how that drifts.
+			Gk = _read_cube_layer("$(path)?$(vn)", k + 1)
 			Z = Gk.z
 			sc.alllo[k+1], sc.allhi[k+1] = Gk.range[5], Gk.range[6]
 			lo_w, hi_w = Inf, -Inf
@@ -485,7 +490,8 @@ end
 function _aqua_relight_water!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,Nothing}=nothing)
 	isempty(st.illum) && return nothing
 	model = parse(Int, st.illum["model"])
-	Gw = G === nothing ? _gmtread_trb("$(st.path)?$(st.varname)[$(st.cur)]") : G
+	Gw = G === nothing ? _read_cube_layer("$(st.path)?$(st.varname)", st.cur + 1) : G   # st.cur is 0-based
+	Gw === nothing && error("Aquamoto: could not read layer $(st.cur + 1) of '$(st.varname)' from $(st.path)")
 	R = _aqua_water_reflectance(st, Gw, model)
 	R === nothing && return nothing            # an entirely dry step has no water to light
 	_hs_push(scene, R, Float64(Gw.range[1]), Float64(Gw.range[2]),
@@ -548,7 +554,10 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	# rather than picking its own options (see `_AquaState`, and `set_layer!` in movie.jl).
 	st.split, st.globalmm, st.transp = splitDryWet, globalMM, transparency
 	st.shadewater, st.shadeland = shadeWater, shadeLand
-	G = _gmtread_trb("$(st.path)?$(st.varname)[$(k)]")
+	G = _read_cube_layer("$(st.path)?$(st.varname)", k + 1)   # THE cube-layer read; k is 0-based here
+	# `_read_cube_layer` is declared to be able to return nothing, so say what happened here rather
+	# than letting the union reach `G.z` below (and so the code after this line sees a concrete grid).
+	G === nothing && error("Aquamoto: could not read layer $(k + 1) of '$(st.varname)' from $(st.path)")
 	# Read in "TRB" like every other grid, and composited WHERE IT LIES: the colouring below is
 	# element-wise, and the stage and the bathymetry come from the SAME file through the SAME reader,
 	# so they share an element order. Only the RGBA pack (and the viewer's zhover) needs the layout.
@@ -639,7 +648,9 @@ function _aquamoto_runin(scene::Ptr{Cvoid})
 	everwet = falses(size(bat))
 	_progress_show_async(st.nsteps, "Aquamoto — computing inundation…")
 	for k in 0:st.nsteps-1
-		Z = _zmat(_gmtread_trb("$(st.path)?$(st.varname)[$(k)]"))
+		Gk = _read_cube_layer("$(st.path)?$(st.varname)", k + 1)
+		Gk === nothing && error("Aquamoto: could not read layer $(k + 1) of '$(st.varname)' from $(st.path)")
+		Z = _zmat(Gk)
 		@inbounds for i in eachindex(Z)
 			everwet[i] |= !_aqua_isdry(bat[i], Z[i])   # wet == not dry, by THE dry/wet test
 		end

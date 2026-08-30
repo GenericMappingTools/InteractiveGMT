@@ -778,7 +778,8 @@ function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::C
 			chosen = use_global != 0 ? cur.glob : cur.loc
 			zr     = use_global != 0 ? (info.zmin, info.zmax) : nothing
 			_cube_write_surface!(scene, info, layer_name, cur.G, chosen, zr, flat, false)
-			_CUBE_CUR[scene] = (layer=layer_i, G=cur.G, cmap=cur.cmap, loc=cur.loc, glob=cur.glob, flat=flat)
+			_CUBE_CUR[scene] = (layer=layer_i, G=cur.G, cmap=cur.cmap, loc=cur.loc, glob=cur.glob, flat=flat,
+			                    useglob=(use_global != 0))
 			_cube_push_cpt(scene, chosen)
 			_mark_cube(scene, layer_index, use_global)
 			_snapshot_cube!(scene)
@@ -811,7 +812,12 @@ function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::C
 			_CUBE_LOADED[scene] = true
 			ram === nothing && info.isbase && _record_recent(info.path, Gk)
 		end
-		_CUBE_CUR[scene] = (layer=layer_i, G=Gk, cmap=cmap, loc=loc, glob=glob, flat=flat)
+		# `useglob` records WHICH of the two CPTs this render used -- the dialog's "global min/max"
+		# checkbox. It is remembered for the same reason `_AquaState` remembers its display options: a
+		# programmatic layer change (movie.jl's `set_layer!`) has to reproduce the look that is on
+		# screen, and the checkbox state otherwise exists only inside the C++ dialog.
+		_CUBE_CUR[scene] = (layer=layer_i, G=Gk, cmap=cmap, loc=loc, glob=glob, flat=flat,
+		                    useglob=(use_global != 0))
 		_cube_push_cpt(scene, chosen)
 		_mark_cube(scene, layer_index, use_global)
 		_snapshot_cube!(scene)
