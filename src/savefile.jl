@@ -253,7 +253,15 @@ end
 function _on_forget(scene::Ptr{Cvoid}, ckind::Cstring, cname::Cstring)::Cvoid
 	try
 		kind = Symbol(unsafe_string(ckind))
-		kind === :window ? _forget_window!(scene) : _forget_object!(scene, kind, unsafe_string(cname))
+		if kind === :window
+			_forget_window!(scene)
+		else
+			name = unsafe_string(cname)
+			_forget_object!(scene, kind, name)
+			# ... and the open-once filter: with this row gone the file it came from may no longer be
+			# displayed at all, and a file that is not displayed must be re-openable (dispatch.jl).
+			_forget_file_element!(scene, name)
+		end
 	catch
 	end
 	return

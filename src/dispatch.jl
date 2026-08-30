@@ -93,16 +93,26 @@ function iview(name::AbstractString; kwargs...)
 		fig = try iview(data; kw...) finally _load_dialog_end() end
 		# The open-once dedup is keyed on the 3-D Scene* alive/raise C API; an X,Y plot window uses a
 		# different handle type, so don't register it there (a repeat open just makes a 2nd window).
-		fig isa QtXYPlot || _mark_file_open(name, _fig_handle(fig))
+		# The element name is "" here: iview's view_grid/view_image build the window's PRIMARY surface,
+		# which carries no Scene Objects label of its own (`_remember_object!(h, :grid, "", G)`, grid.jl)
+		# — and "" is exactly what the forget callback reports when that row is removed.
+		fig isa QtXYPlot || _mark_file_open(name, _fig_handle(fig), "")
 		return fig
 	end
 	return view_fv(name; kwargs...)        # named solid -> the SOLIDS dispatch above
 end
 
-# Files currently shown in a live viewer window: abspath => the window's C handle. Used to refuse
-# opening the same file twice (raise the existing window instead). Entries are pruned when their
-# window dies, so a file can be reopened after its window is closed.
-const _OPEN_FILES = Dict{String,Ptr{Cvoid}}()
+# Files currently shown in a live viewer window: abspath => (the window's C handle, the Scene Objects
+# element names that open created). Used to refuse opening the same file twice (raise the existing
+# window instead).
+#
+# An entry stands only while the window is alive AND at least one of its elements is still there. The
+# names are what makes the second half possible: removing a row fires the forget callback
+# (`_on_forget` -> `_forget_file_element!`), which strikes that name off and drops the entry when the
+# last one goes. Without them the filter asked only "is the window alive?", so deleting a grid through
+# its own handle and re-opening its file was SILENTLY IGNORED — the window was still there, the check
+# passed, and the user got nothing back.
+const _OPEN_FILES = Dict{String,Tuple{Ptr{Cvoid},Set{String}}}()
 
 _filekey(path::AbstractString) = try abspath(String(path)) catch; String(path) end
 
@@ -110,25 +120,55 @@ _filekey(path::AbstractString) = try abspath(String(path)) catch; String(path) e
 # (pruning a stale entry whose window has since closed).
 function _open_window_for(path::AbstractString)::Ptr{Cvoid}
 	key = _filekey(path)
-	h = get(_OPEN_FILES, key, C_NULL)
-	h === C_NULL && return C_NULL
-	if ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), h) != 0
-		ccall(_fn(:gmtvtk_raise), Cvoid, (Ptr{Cvoid},), h)
-		return h
+	e = get(_OPEN_FILES, key, nothing)
+	e === nothing && return C_NULL
+	if ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), e[1]) != 0
+		# The window is alive — but that is only half the question. What must be true to refuse a
+		# re-open is that the FILE IS STILL DISPLAYED, so ask the viewer whether any element this open
+		# created is still there (ground truth off the live scene, not a Julia-side registry that only
+		# knows what it remembers being added). Deleting a grid through its own handle and loading its
+		# file again used to be silently ignored for exactly this reason.
+		if any(n -> ccall(_fn(:gmtvtk_has_element_h), Cint, (Ptr{Cvoid}, Cstring), e[1], n) != 0, e[2])
+			ccall(_fn(:gmtvtk_raise), Cvoid, (Ptr{Cvoid},), e[1])
+			return e[1]
+		end
 	end
 	delete!(_OPEN_FILES, key)
 	return C_NULL
 end
 
-# Remember that `path` is now shown in window `handle` (so a repeat open is ignored).
-_mark_file_open(path::AbstractString, handle::Ptr{Cvoid}) = (_OPEN_FILES[_filekey(path)] = handle; nothing)
+# Remember that `path` is now shown in window `handle` as the Scene Objects element(s) `names` (so a
+# repeat open is ignored for as long as they are on screen).
+_mark_file_open(path::AbstractString, handle::Ptr{Cvoid}, name::String) =
+	_mark_file_open(path, handle, [name])
+function _mark_file_open(path::AbstractString, handle::Ptr{Cvoid}, names::Vector{String})
+	# No names offered means nothing could ever strike the entry off — the old window-alive-only filter,
+	# back again for that one file. Fall back to the name every open path gives an element it did not
+	# name otherwise: the file's own basename.
+	nm = isempty(names) ? [basename(String(path))] : names
+	_OPEN_FILES[_filekey(path)] = (handle, Set{String}(nm))
+	return nothing
+end
+
+# A Scene Objects row was removed (the forget callback, savefile.jl): strike it off every open-file
+# entry belonging to that window, and drop the entry once its last element is gone — the file is no
+# longer displayed, so opening it again must WORK, not be swallowed by the duplicate filter.
+function _forget_file_element!(handle::Ptr{Cvoid}, name::String)
+	for k in collect(keys(_OPEN_FILES))          # copy: the loop deletes
+		e = _OPEN_FILES[k]
+		e[1] === handle || continue
+		delete!(e[2], name)
+		isempty(e[2]) && delete!(_OPEN_FILES, k)
+	end
+	return nothing
+end
 
 # Reverse lookup: the source file path a live window was opened from (empty if it wasn't opened
 # from a file, e.g. a computed/Okada grid, or a demo). Used by NSWING to default its output Name
 # stem beside the bathymetry grid's own file.
 function _path_for_handle(h::Ptr{Cvoid})::String
 	for (k, v) in _OPEN_FILES
-		v == h && return k
+		v[1] === h && return k
 	end
 	return ""
 end

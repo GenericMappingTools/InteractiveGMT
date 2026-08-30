@@ -1426,7 +1426,7 @@ function _ge_open_dropped(scene::Ptr{Cvoid}, path::String)
 			end
 			_add_dataset_to_scene(scene, D, splitext(basename(path))[1];
 			                       color=(rand(), rand(), rand()), noConvertToPoints=true, noDataTable=true)
-			_mark_file_open(path, scene)
+			_mark_file_open(path, scene, splitext(basename(path))[1])   # the name _add_dataset_to_scene gave the track
 			parent = scene
 		end
 	catch e

@@ -1021,10 +1021,17 @@ struct ActiveGrid {
 
 // The active grid is the TOPMOST VISIBLE grid (highest pile rank). The base relief participates via
 // s->surfStack / s->surfLut / s->zmin-zmax; each dropped grid via its own ExtraObj fields.
-static ActiveGrid resolveActiveGrid(Scene *s) {
+//
+// `requireVisible` = false answers the SAME question with the surface-visibility test lifted: which
+// grid layer OWNS the colour bar. The Color Bar is its own child row with its own checkbox, so
+// unchecking "Surface" must not take it away (SACRED_LAW.md — one control, one job); with every
+// surface switched off there is no visible grid, and the bar still belongs to the grid whose row is
+// ticked. ONE resolver with one argument, never a second rule for "which grid is this about".
+static ActiveGrid resolveActiveGrid(Scene *s, bool requireVisible = true) {
 	ActiveGrid ag;
 	int  bestStack = 0;
 	bool have = false;
+	auto vis = [requireVisible](vtkProp3D *p) { return p && (!requireVisible || p->GetVisibility()); };
 	// A POINT CLOUD is the window's data layer just as much as a grid is: it colours by z through
 	// s->surfLut, so it owns the colour bar, the Z axis annotation and the hover z the same way.
 	// It simply has no gridZ heightfield (ag.z stays null -- the readout then falls back to its
@@ -1032,7 +1039,7 @@ static ActiveGrid resolveActiveGrid(Scene *s) {
 	// (rebuildSceneObjects, applyStacking, any visibility toggle) destroyed its bar.
 	if (s->surfCloud && s->gridZ.empty()) {
 		vtkProp3D *sp = surfProp(s);
-		if (sp && sp->GetVisibility() && s->surfLut) {
+		if (vis(sp) && s->surfLut) {
 			ag.valid = true; ag.z = nullptr; ag.nx = 0; ag.ny = 0;
 			ag.x0 = s->x0; ag.x1 = s->x1; ag.y0 = s->y0; ag.y1 = s->y1;
 			ag.zmin = s->zmin; ag.zmax = s->zmax; ag.lut = s->surfLut; ag.showBar = s->surfShowBar;
@@ -1043,7 +1050,7 @@ static ActiveGrid resolveActiveGrid(Scene *s) {
 	}
 	if (!s->gridZ.empty() && !s->gridPlaceholder) {             // base relief, if it carries a data layer
 		vtkProp3D *sp = surfProp(s);
-		if (sp && sp->GetVisibility()) {
+		if (vis(sp)) {
 			ag.valid = true; ag.z = &s->gridZ; ag.nx = s->gnx; ag.ny = s->gny;
 			ag.x0 = s->gx0; ag.x1 = s->gx1; ag.y0 = s->gy0; ag.y1 = s->gy1;
 			ag.zmin = s->zmin; ag.zmax = s->zmax; ag.lut = s->surfLut; ag.showBar = s->surfShowBar;
@@ -1053,7 +1060,7 @@ static ActiveGrid resolveActiveGrid(Scene *s) {
 		}
 	}
 	for (auto &ex : s->extras) {
-		if (ex.isImage || ex.gridZ.empty() || !ex.actor || !ex.actor->GetVisibility()) continue;
+		if (ex.isImage || ex.gridZ.empty() || !vis(ex.actor.Get())) continue;
 		if (!have || ex.gstack >= bestStack) {                 // ties impossible (ranks normalized unique)
 			bestStack = ex.gstack; have = true; ag.valid = true;
 			ag.z = &ex.gridZ; ag.nx = ex.gnx; ag.ny = ex.gny;
@@ -1201,7 +1208,15 @@ static bool buildPaletteColorbar(Scene *s) {
 // false -- the two are mutually exclusive, matching the dialog's Shade Water/Land radio.
 static void refreshGridColorbar(Scene *s) {
 	if (!s) return;
-	ActiveGrid ag = resolveActiveGrid(s);
+	// TWO questions, ONE resolver (resolveActiveGrid, argument = whether the layer has to be on screen):
+	//   `vis` — which layer the hover READOUT and the Z axis follow: the topmost VISIBLE grid, always.
+	//   `ag`  — which layer OWNS the colour bar. With every surface switched off, the bar still belongs
+	//           to the grid whose own "Color Bar" row is ticked: that row is a separate handle with its
+	//           own checkbox, and unchecking "Surface" hides the surface and NOTHING ELSE
+	//           (SACRED_LAW.md). The bar used to vanish with the surface purely because this asked the
+	//           visible-only question and got "no grid".
+	ActiveGrid vis = resolveActiveGrid(s);
+	ActiveGrid ag  = vis.valid ? vis : resolveActiveGrid(s, /*requireVisible=*/false);
 	// A window BUILT from a bare image is a bare image only while no grid is displayed IN it. The moment
 	// one is — a dropped grid, an Ocean Color subregion cut from the L3 file behind the browse picture —
 	// the z bar and the z readout belong to THAT grid. Asked through the same resolveActiveGrid the Z
@@ -1223,9 +1238,13 @@ static void refreshGridColorbar(Scene *s) {
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return;
 	}
-	// Route the hover/coordinate readout to the active grid ALWAYS; only DRAW the bar if this grid wants it.
-	s->actZ = ag.z; s->actNx = ag.nx; s->actNy = ag.ny;
-	s->actX0 = ag.x0; s->actX1 = ag.x1; s->actY0 = ag.y0; s->actY1 = ag.y1;
+	// Route the hover/coordinate readout to the VISIBLE active grid (nothing on screen -> nothing to
+	// read); only DRAW the bar if the grid that owns it wants it.
+	if (vis.valid) {
+		s->actZ = vis.z; s->actNx = vis.nx; s->actNy = vis.ny;
+		s->actX0 = vis.x0; s->actX1 = vis.x1; s->actY0 = vis.y0; s->actY1 = vis.y1;
+	}
+	else s->actZ = nullptr;
 	const bool showWaterBar = ag.showBar && (!isAqua || s->aquaShowWater);
 	if (showWaterBar) buildColorbar(s, ag.lut, ag.zmin, ag.zmax);
 	if (isAqua) setAquaLandColorbarVisible(s, s->aquaLandShowBar && !s->aquaShowWater);
@@ -2141,11 +2160,13 @@ static void rebuildSceneObjects(Scene *s) {
 
 	// This grid's COLORBAR row: per-grid show/hide intent (*flag = &s->surfShowBar or &ex.showBar,
 	// honoured by refreshGridColorbar when the grid is active) + colormap chooser on the label.
-	// grpVisible gates the row's INITIAL checkbox so a hidden grid group's children start UNCHECKED,
-	// matching its unchecked container (the sacred law: children mirror the container). A hidden
-	// nested grid must not show a ticked Color Bar. Default true keeps every visible grid unchanged.
-	auto colorbarRow = [&](bool *flag, int gridSel, bool grpVisible = true) {
-		makeRow("Color Bar", IC_ColorBar, *flag && grpVisible,
+	// The checkbox shows THIS ROW'S OWN intent flag and nothing else. It used to be ANDed with the
+	// container's visibility, so hiding the surface silently unchecked a Color Bar the user had left
+	// on — a control reporting another control's state (SACRED_LAW.md). The group-uncheck law is
+	// served where it belongs: the container's checkbox CASCADES into this row's own handler
+	// (beginGroupHandle), which flips the flag for real instead of merely drawing it unticked.
+	auto colorbarRow = [&](bool *flag, int gridSel) {
+		makeRow("Color Bar", IC_ColorBar, *flag,
 		        [s, flag](bool on) { *flag = on; refreshGridColorbar(s); },
 		        [s, gridSel](const QPoint &g) {
 		            // The quick list recolours by NAME; "Color Palettes…" opens the full editor on THIS
@@ -2163,8 +2184,8 @@ static void rebuildSceneObjects(Scene *s) {
 	// An INDEXED image's palette legend row. The same Color Bar row a grid group gets — same flag
 	// semantics, same refreshGridColorbar — minus the colormap chooser: this palette IS the image's
 	// data (its class colours), not a ramp to be swapped for another.
-	auto paletteRow = [&](PaletteLegend *pl, bool grpVisible) {
-		makeRow("Color Bar", IC_ColorBar, pl->show && grpVisible,
+	auto paletteRow = [&](PaletteLegend *pl) {
+		makeRow("Color Bar", IC_ColorBar, pl->show,
 		        [s, pl](bool on) { pl->show = on; refreshGridColorbar(s); }, nullptr,
 		        "Show / hide this indexed image's class legend");
 	};
@@ -2206,10 +2227,10 @@ static void rebuildSceneObjects(Scene *s) {
 	// its own cube, ticks, numbers and frame. SACRED_LAW.md Raster-own-axes law: this checkbox may
 	// touch THAT set and nothing else. It used to drive the single window-level `s->axes`, so
 	// unchecking one grid's Axes row blanked every other raster's axes as well — the violation this
-	// whole per-raster split exists to make structurally impossible. grpVisible gates the initial
-	// checkbox so a hidden group's Axes row starts unchecked (group-uncheck law, see colorbarRow).
-	auto axesRow = [&](AxesSet *A, bool grpVisible = true) {
-		const bool av = grpVisible && A && A->shown;
+	// whole per-raster split exists to make structurally impossible. The checkbox shows the set's OWN
+	// intent, never the owning raster's visibility — see colorbarRow for why that AND had to go.
+	auto axesRow = [&](AxesSet *A) {
+		const bool av = A && A->shown;
 		makeRow("Axes", IC_Axes, av,
 		        [s, A](bool on) { if (A) { A->shown = on; if (!on) axesHideAll(*A); rebuildAxisLabels(s); } },
 		        [s](const QPoint&) { if (s->win) s->win->statusBar()->showMessage("Axes properties — coming soon", 2500); },
@@ -2233,32 +2254,38 @@ static void rebuildSceneObjects(Scene *s) {
 		if (vtkProp3D *sp = surfProp(s)) {                  // base relief grid group — header IS the surface handle
 			const QString nm = (s->customLayerTexture && !s->aquaVarLabel.empty()) ? QString::fromStdString(s->aquaVarLabel)
 			                  : s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
-			beginGroupHandle(nm, IC_Surface, sp->GetVisibility() != 0,
+			// The CONTAINER's box says whether ANY part of the group is on — surface, drape, colour bar
+			// or axes. Reading only the surface actor made it lie the moment the Surface child row was
+			// unchecked on its own (bar + axes still up, container drawn empty), and the next rebuild
+			// then dragged every child's box down with it. Its toggle still cascades to every child.
+			const bool baseVis = sp->GetVisibility() != 0;
+			const bool baseGrpOn = baseVis || s->baseAxes.shown ||
+			                       (s->drape && s->drape->GetVisibility() != 0) ||
+			                       (s->customLayerTexture ? (s->surfShowBar || s->aquaLandShowBar) : s->surfShowBar);
+			beginGroupHandle(nm, IC_Surface, baseGrpOn,
 			        nullptr,                                              // container does NOT fold the Shading dock (the Surface leaf does)
 			        [s](const QPoint &g) { surfaceObjectMenu(s, g); },
 			        "Checkbox toggles the whole group · right-click for save / stacking",
 			        /*startFolded=*/true);                                // just the grid row until opened
-			makeRow("Surface", IC_Surface, sp->GetVisibility() != 0,     // Surface leaf handle kept as a child
+			makeRow("Surface", IC_Surface, baseVis,                      // Surface leaf handle kept as a child
 			        [s, sp](bool on) { sp->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking",
 			        [s](const QPoint &g) { surfaceObjectMenu(s, g); });
 			if (s->drape) addRow(QString("Image drape"), s->drape, IC_Image);   // grid's drape texture
-			// Base-surface children must mirror the container's hidden state exactly like an extra
-			// grid's children do (colorbarRow/axesRow below, in the s->extras loop) — WITHOUT this,
-			// hiding the base surface (e.g. SACRED_LAW.md's "uncheck the source" when a derived
-			// result replaces it) left its Color Bar / Axes rows still shown checked, because both
-			// calls here used to omit the `grpVisible` argument entirely (defaults to true).
-			const bool baseVis = sp->GetVisibility() != 0;
+			// Each child row draws ITS OWN state. Hiding the base surface as part of a LAYER transition
+			// (SACRED_LAW.md's "uncheck the source" when a derived result replaces it) switches these
+			// flags off for real, at the transition (baseLayerSetVisible), so the rows come up unchecked
+			// without this builder having to second-guess them from the surface actor.
 			if (s->customLayerTexture) {         // Aquamoto: same file group, but each variable's row is
 				                                  // its OWN independent handle -- never merged into one
 				                                  // combined label/row (that would mix variables together).
 				aquaWaterColorbarRow();
 				aquaLandColorbarRow();
 			} else {
-				colorbarRow(&s->surfShowBar, -1, baseVis);    // base relief grid
+				colorbarRow(&s->surfShowBar, -1);    // base relief grid
 			}
-			axesRow(&s->baseAxes, baseVis);      // the BASE raster's OWN set
+			axesRow(&s->baseAxes);               // the BASE raster's OWN set
 			endGroup();
 		}
 	} else if (s->drape) {                                  // bare image (view_image) group — header IS the image handle
@@ -2291,14 +2318,16 @@ static void rebuildSceneObjects(Scene *s) {
 			else if (c == aMove) { if (moveObjectToNewWindow(s, "image", "")) sceneRemoveSurface(s); }
 			else if (c == aRem) sceneRemoveSurface(s);
 		};
-		beginGroupHandle(nm, IC_Image, dp->GetVisibility() != 0,
+		const bool imgVis   = dp->GetVisibility() != 0;
+		const bool imgGrpOn = imgVis || s->baseAxes.shown || (s->palette.n > 0 && s->palette.show);
+		beginGroupHandle(nm, IC_Image, imgGrpOn,
 		        imgMenu, imgMenu,
 		        "Left- or right-click for properties (save / remove)");
-		makeRow("Image", IC_Image, dp->GetVisibility() != 0,        // Image leaf handle kept as a child
+		makeRow("Image", IC_Image, imgVis,                          // Image leaf handle kept as a child
 		        [dp](bool on) { dp->SetVisibility(on ? 1 : 0); }, nullptr,
 		        "Right-click for properties (save / remove)", imgMenu);
-		if (s->palette.n > 0) paletteRow(&s->palette, dp->GetVisibility() != 0);
-		axesRow(&s->baseAxes, dp->GetVisibility() != 0);   // the primary IMAGE's OWN set; group-uncheck law: mirrors the container
+		if (s->palette.n > 0) paletteRow(&s->palette);
+		axesRow(&s->baseAxes);                             // the primary IMAGE's OWN set
 		endGroup();
 	}
 
@@ -2307,7 +2336,8 @@ static void rebuildSceneObjects(Scene *s) {
 		const QString nm = QString::fromStdString(ex.name);
 		if (ex.isImage) {                                  // dropped image group — header IS the image handle
 			vtkProp3D *a = ex.actor.Get();
-			beginGroupHandle(nm, IC_Image, a && a->GetVisibility() != 0,
+			const bool ivis0 = a && a->GetVisibility() != 0;
+			beginGroupHandle(nm, IC_Image, ivis0 || ex.ax.shown || (ex.palette.n > 0 && ex.palette.show),
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        "Left- or right-click for image properties (incl. Save)");
@@ -2316,28 +2346,28 @@ static void rebuildSceneObjects(Scene *s) {
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        "Left- or right-click for image properties (incl. Save)",
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); });
-			const bool ivis = a && a->GetVisibility() != 0;
-			if (ex.palette.n > 0) paletteRow(&ex.palette, ivis);
-			axesRow(&ex.ax, ivis);                   // THIS image's OWN set; group-uncheck law: mirrors the container
+			if (ex.palette.n > 0) paletteRow(&ex.palette);
+			axesRow(&ex.ax);                         // THIS image's OWN set
 		} else {                                           // dropped grid group — header mirrors the surface handle
 			vtkProp3D *a = ex.actor.Get();
-			beginGroupHandle(nm, IC_Surface, a && a->GetVisibility() != 0,
+			const bool gvis = a && a->GetVisibility() != 0;
+			beginGroupHandle(nm, IC_Surface, gvis || ex.ax.shown || (!ex.isMesh && ex.showBar) ||
+			                                 (ex.drape && ex.drape->GetVisibility() != 0),
 			        nullptr,                                               // container does NOT fold the Shading dock (the Surface leaf does)
 			        [s, a](const QPoint &g) { gridObjectMenu(s, a, g); },  // right-click: save / delete
 			        "Checkbox toggles the whole group · right-click to save / delete",
 			        /*startFolded=*/true);                                 // just the grid row until opened
-			makeRow("Surface", IC_Surface, a && a->GetVisibility() != 0,   // Surface leaf handle kept as a child
+			makeRow("Surface", IC_Surface, gvis,                          // Surface leaf handle kept as a child
 			        [s, a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click for Shading · right-click to save / delete",
 			        [s, a](const QPoint &g) { gridObjectMenu(s, a, g); });
 			if (ex.drape) addRow("Image drape", ex.drape, IC_Image);
-			const bool gvis = a && a->GetVisibility() != 0;   // hidden grid -> children start unchecked (mirror the container)
 			// A MESH layer (VTK .vtp/.vtu surface, GMTfv solid) carries no z data layer and no LUT, so
 			// it never resolves as the active grid -- a Color Bar row would be permanently inert. Every
 			// other row is identical to a grid's.
-			if (!ex.isMesh) colorbarRow(&ex.showBar, ex.tag, gvis);   // resolve by the grid's UNIQUE tag, not its (shifting) index
-			axesRow(&ex.ax, gvis);                   // THIS grid/mesh's OWN set
+			if (!ex.isMesh) colorbarRow(&ex.showBar, ex.tag);   // resolve by the grid's UNIQUE tag, not its (shifting) index
+			axesRow(&ex.ax);                         // THIS grid/mesh's OWN set
 		}
 		endGroup();
 	}

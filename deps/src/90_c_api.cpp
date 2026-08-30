@@ -440,8 +440,8 @@ GMTVTK_API int gmtvtk_set_object_visible(void *handle, const char *name, int vis
 		return 0;
 	for (auto &ex : s->extras) {
 		if (ex.name != name) continue;
-		if (ex.actor) ex.actor->SetVisibility(vis ? 1 : 0);
-		if (ex.drape) ex.drape->SetVisibility(vis ? 1 : 0);
+		rasterLayerSetVisible(s, ex, vis != 0);   // WHOLE layer: actor + drape + its own axes intent
+		rebuildAxisLabels(s);
 		// ANY raster's visibility change retargets the bar — grid OR image. An indexed image owns a bar
 		// too (its palette legend), and refreshGridColorbar is the ONE function that decides which bar,
 		// if any, is on screen. Gating it on !isImage made this shared operation do nothing for one
@@ -457,8 +457,8 @@ GMTVTK_API int gmtvtk_set_object_visible(void *handle, const char *name, int vis
 	// that unchecked the base (the derived-variable display law: "the source is UNCHECKED") had no way
 	// to check it back. "" means the window's primary, the same convention _find_object_named uses.
 	if (s->surf && (!*name || s->surfName == name)) {
-		surfSetVisibility(s, vis ? 1 : 0);
-		if (s->drape) s->drape->SetVisibility(vis ? 1 : 0);
+		baseLayerSetVisible(s, vis != 0);
+		rebuildAxisLabels(s);
 		refreshGridColorbar(s);
 		rebuildSceneObjects(s);
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
@@ -1051,6 +1051,30 @@ GMTVTK_API void gmtvtk_progress_close() {
 
 // Does this window have a primary surface? 0 for a bare empty() launcher (no data yet); used by
 // the drop handler to decide between PROMOTING an empty window vs adding into a populated one.
+// Is an element called `name` still ON SCREEN in this window? Ground truth, read straight off the
+// live scene — every container a Scene Objects row can come from, raster and vector alike, so a kind
+// this does not know about cannot silently answer "gone". "" means the window's PRIMARY surface (the
+// unnamed base an `iview`/`view_grid` open builds), which counts only while the window really has
+// content: an empty launcher's hidden placeholder is not an element.
+//
+// The host's open-once filter asks THIS before refusing to re-open a file (`_open_window_for`,
+// dispatch.jl). It used to ask only whether the WINDOW was alive, so deleting a grid through its own
+// handle and then loading its file again did nothing at all — the window was still there, the check
+// passed, and the open was swallowed. A Julia-side registry cannot answer it either: it only knows
+// what it remembers being added, never what the user has since removed.
+GMTVTK_API int gmtvtk_has_element_h(void *handle, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	const std::string k = name ? name : "";
+	if (s->surfName == k && ((s->surf && !s->emptyStart) || s->drape)) return 1;
+	for (auto &ex : s->extras)  if (ex.name == k) return 1;
+	for (auto &ov : s->overlays) if (ov.name == k || ov.groupName == k) return 1;
+	for (auto &sl : s->symbols)  if (sl.name == k) return 1;
+	for (auto &pg : s->polys)    if (pg.name == k || pg.groupName == k) return 1;
+	for (auto &tl : s->texts)    if (tl.name == k || tl.groupName == k) return 1;
+	return 0;
+}
+
 GMTVTK_API int gmtvtk_has_surface(void *handle) {
 	Scene *s = static_cast<Scene*>(handle);
 	// emptyStart launcher carries a HIDDEN placeholder surf only -> report "no surface" so a dropped
@@ -1093,7 +1117,10 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //   7 = gmtvtk_set_shade_intensity_h takes a trailing `side` (0 = the window / Aquamoto WATER,
 //       1 = Aquamoto LAND). A generation-6 library reads it as garbage and can file the water
 //       reflectance under land; a generation-6 host pushes none and leaves land unlit.
-GMTVTK_API int gmtvtk_abi_version(void) { return 8; }
+//   9 = gmtvtk_set_cube_axes_zrange takes the cube element's NAME as its second argument — the Z pin
+//       moved onto the axes set that cube's layers own (AxesSet::zLock). A generation-8 library reads
+//       the name pointer as zmin.
+GMTVTK_API int gmtvtk_abi_version(void) { return 9; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -1113,7 +1140,9 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 		kvi("crs",         s->hasCRS() ? 1 : 0);
 		kvd("x0", s->x0); kvd("x1", s->x1); kvd("y0", s->y0); kvd("y1", s->y1);
 		kvd("zmin", s->zmin); kvd("zmax", s->zmax);
-		kvi("cubeZLock", s->cubeZLock ? 1 : 0);
+		// The pin is per-axes-set now: report the set of the raster ON DISPLAY, the same one axZ0/axZ1
+		// below are read from, so the two always describe the same layer.
+		{ AxesSet *A = axesForActive(s); kvi("cubeZLock", (A && A->zLock) ? 1 : 0); }
 		// Axis box Z extent of the raster ON DISPLAY — a cube must report the SAME value on every
 		// layer (regression guard). Reads the set that raster OWNS, like everything else now does.
 		if (AxesSet *A = axesForActive(s))
@@ -5862,15 +5891,26 @@ GMTVTK_API void gmtvtk_mark_cube(void *handle, int layer_index, int use_global) 
 	syncShadeChecks(s);
 }
 
-// Pin the vertical axis box + Z tick labels to the whole cube's z-range so the axes do NOT shift as
-// the user switches layers (each layer's own min/max differs slightly). Call once when a cube is
-// dropped, BEFORE the first layer builds; pass zmax <= zmin to clear the lock. No render here — the
-// next surface build / applyVE picks it up.
-GMTVTK_API void gmtvtk_set_cube_axes_zrange(void *handle, double zmin, double zmax) {
+// Pin the vertical axis box + Z tick labels of the raster called `name` to the whole cube's z-range,
+// so the axes do NOT shift as the user switches layers (each layer's own min/max differs slightly).
+// `name` is the cube element's Scene Objects name ("" = the window's primary), resolved through the
+// SAME axesForName every other by-name axes op uses — so it can only ever touch the set that raster
+// OWNS, and does nothing at all when nothing answers to the name (never a fallback onto the base:
+// SACRED_LAW.md, no-fallback-to-someone-else's-set).
+//
+// It is per-SET, not per-window: a cube mounted as an EXTRA layer is the same thing as one mounted as
+// the base and gets the same pin. As a window-wide flag honoured for the base only, this did nothing
+// for an extra cube (its box jumped on every layer) while pinning the base — some unrelated grid — to
+// the cube's range. Call it after each layer is mounted: an extra cube's layer is re-added on every
+// switch, taking its axes set (and its pin) with it. zmax <= zmin clears the pin. No render here —
+// the next rebuildAxesFor picks it up.
+GMTVTK_API void gmtvtk_set_cube_axes_zrange(void *handle, const char *name, double zmin, double zmax) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
-	if (zmax > zmin) { s->cubeZLock = true; s->cubeZMin = zmin; s->cubeZMax = zmax; }
-	else             { s->cubeZLock = false; }
+	AxesSet *A = axesForName(s, name ? name : "");
+	if (!A) return;
+	if (zmax > zmin) { A->zLock = true; A->zLo = zmin; A->zHi = zmax; }
+	else             { A->zLock = false; }
 }
 
 // Show the non-modal 3D cube layer selector dialog. `scene` is the target window, `name` is the
@@ -5974,8 +6014,8 @@ GMTVTK_API void gmtvtk_swipe_select_mode_h(void *handle, int linkMode) {
 GMTVTK_API void gmtvtk_hide_surface(void *handle) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
-	surfSetVisibility(s, 0);
-	if (s->drape) s->drape->SetVisibility(0);
+	baseLayerSetVisible(s, false);   // WHOLE base layer: surface + drape + its own axes intent
+	rebuildAxisLabels(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
@@ -5997,13 +6037,11 @@ GMTVTK_API void gmtvtk_hide_other_grids(void *handle, const char *keepname, int 
 	const std::string keep = keepname ? keepname : "";
 	for (auto &ex : s->extras) {
 		if (ex.isImage || (!keep_none && ex.name == keep)) continue;
-		if (ex.actor) ex.actor->SetVisibility(0);
-		if (ex.drape) ex.drape->SetVisibility(0);
+		rasterLayerSetVisible(s, ex, false);       // WHOLE layer: actor + drape + its own axes intent
 	}
-	if (surfProp(s) && (keep_none || s->surfName != keep)) {
-		surfSetVisibility(s, 0);
-		if (s->drape) s->drape->SetVisibility(0);
-	}
+	if (surfProp(s) && (keep_none || s->surfName != keep))
+		baseLayerSetVisible(s, false);
+	rebuildAxisLabels(s);
 	refreshGridColorbar(s);
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
@@ -6019,13 +6057,11 @@ GMTVTK_API void gmtvtk_hide_other_images(void *handle, const char *keepname) {
 	const std::string keep = keepname ? keepname : "";
 	for (auto &ex : s->extras) {
 		if (!ex.isImage || ex.name == keep) continue;
-		if (ex.actor) ex.actor->SetVisibility(0);
-		if (ex.drape) ex.drape->SetVisibility(0);
+		rasterLayerSetVisible(s, ex, false);       // WHOLE layer: actor + drape + its own axes intent
 	}
-	if (s->imageOnly && s->drape && s->surfName != keep) {
-		surfSetVisibility(s, 0);
-		s->drape->SetVisibility(0);
-	}
+	if (s->imageOnly && s->drape && s->surfName != keep)
+		baseLayerSetVisible(s, false);
+	rebuildAxisLabels(s);
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
@@ -6406,23 +6442,21 @@ GMTVTK_API void gmtvtk_show_new_element_h(void *handle, const char *name,
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	const std::string keep = name ? name : "";
-	for (auto &ex : s->extras) {
-		const bool isKeep = (ex.name == keep);
-		if (ex.actor) ex.actor->SetVisibility(isKeep ? 1 : 0);
-		if (ex.drape) ex.drape->SetVisibility(isKeep ? 1 : 0);
-	}
-	if (surfProp(s) && s->surfName != keep) {         // the window's own base layer is a layer too
-		surfSetVisibility(s, 0);
-		if (s->drape) s->drape->SetVisibility(0);
-	}
+	// A LAYER transition, so it moves whole layers: actor + drape + that layer's own axes intent, through
+	// the one function every programmatic layer hide uses. The axes have to be switched off EXPLICITLY
+	// here — they are no longer suppressed as a side effect of the surface being invisible, because the
+	// "Surface" child row must hide the surface and nothing else (SACRED_LAW.md).
+	for (auto &ex : s->extras)
+		rasterLayerSetVisible(s, ex, ex.name == keep);
+	if (surfProp(s) && s->surfName != keep)           // the window's own base layer is a layer too
+		baseLayerSetVisible(s, false);
 	else if (surfProp(s)) {
 		// ... and when the base IS the element being adopted, it is CHECKED BACK ON. Without this the
 		// transition could only ever hide the base, so aiming it at the base (putting the ORIGINAL back
 		// after a derive -- illumination's "Remove", any future undo) showed nothing at all. An extra
 		// keep-target is already switched on by the loop above; the base has to be too, or the one
 		// shared transition is only half a transition for one layer out of all of them.
-		surfSetVisibility(s, 1);
-		if (s->drape) s->drape->SetVisibility(1);
+		baseLayerSetVisible(s, true);
 	}
 	// A MESH is a 3-D body: seen through the flat-2D top-down orthographic camera a cube is just a
 	// square. Switch the window to the 3-D view it would have opened in on its own, through the ONE
@@ -6497,6 +6531,10 @@ GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const 
 	ex.name = (name && name[0]) ? name : ("Mesh " + std::to_string((int)s->extras.size() + 1));
 	ex.gstack = s->vecSeq++;                       // unified pile: newest layer lands on top
 	ex.tag    = ++s->gridTagSeq;
+	// A layer added HIDDEN starts with its axes intent OFF, matching it. The axes are drawn from that
+	// intent alone now (rebuildAxisLabels), so a default-true `shown` would box an empty frame around a
+	// layer that is not on screen yet; the caller's gmtvtk_show_new_element_h turns both on together.
+	ex.ax.shown = (ex.actor && ex.actor->GetVisibility() != 0);
 	s->extras.push_back(ex);
 	{
 		// A mesh is a raster layer in this respect too: it gets ITS OWN axes, framed to its own XY
@@ -6698,6 +6736,9 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	const bool addedGrid = !ex.isImage;
 	if (addedGrid) ex.gstack = s->vecSeq++;  // unified pile: newest grid lands on top of EVERYTHING
 	if (addedGrid) ex.tag    = ++s->gridTagSeq;  // UNIQUE, STABLE group tag (the Color Bar resolves by this)
+	// Added HIDDEN (a grid) or visible (an image): its axes intent starts the same way — see the note in
+	// gmtvtk_add_mesh_h. gmtvtk_show_new_element_h switches layer + axes on together when it is adopted.
+	ex.ax.shown = (ex.actor && ex.actor->GetVisibility() != 0);
 	s->extras.push_back(ex);
 	{
 		// This raster's OWN axes, born WITH it (SACRED_LAW.md Raster-own-axes law). Framed to ITS OWN

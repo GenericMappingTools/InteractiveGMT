@@ -304,6 +304,15 @@ struct AxesSet {
 	// over a metre bathymetry keeps mGal), which is the whole point of the Z half of the law.
 	double x0 = 0, x1 = 1, y0 = 0, y1 = 1, z0 = 0, z1 = 1;
 	int    geog  = 0;        // THIS raster's own x,y kind: != 0 -> lon/lat titles, 0 -> X/Y
+	// Z PIN. A 3-D cube's layers are one quantity sampled at many levels, so every layer must be boxed
+	// and numbered alike — the pin holds this set's Z box + Z tick labels at the WHOLE cube's range
+	// instead of the layer's own. It lives HERE, on the set the cube's layers own, because that is what
+	// it describes: as a window-level flag applied only to the BASE set (Scene::cubeZLock, gone) it
+	// pinned whatever raster happened to be the base and did nothing at all for a cube mounted as an
+	// EXTRA — the same operation behaving differently per element type. Values are UNSCALED data
+	// (scaled by zfac*ve on use); set through gmtvtk_set_cube_axes_zrange, by name.
+	bool   zLock = false;
+	double zLo = 0, zHi = 0;
 	bool   shown = true;     // the owning handle's "Axes" checkbox (its OWN intent)
 	bool   built = false;    // actors created + added to the renderers
 };
@@ -700,11 +709,8 @@ struct Scene {
 	// handle exactly as every ExtraObj owns `ex.ax`, and nothing else in the window may frame, hide or
 	// re-label it. There is deliberately NO window-level axes state left here for a handle to reach.
 	AxesSet baseAxes;
-	// 3-D cube: pin the vertical axis box + Z tick labels to the WHOLE cube's z-range so the axes do
-	// not shift as the user switches layers (each layer's own min/max differs). Set once per cube via
-	// gmtvtk_set_cube_axes_zrange; cubeZMin/Max are UNSCALED data values (scaled by zfac*ve on use).
-	bool   cubeZLock = false;
-	double cubeZMin = 0.0, cubeZMax = 0.0;
+	// (The 3-D cube Z pin used to live here, window-wide, and was honoured for the BASE set only —
+	// see AxesSet::zLock, which is where it belongs: on the axes the cube's own layers wear.)
 	vtkSmartPointer<vtkRenderer>          axesRen;  // overlay layer (1) shared by ALL text/vector billboards (every raster's tick labels, the polygon handles, meca anchors): own headlight (even, view-independent text brightness) + own depth (never occluded by the surface); shares the main camera. A RENDER LAYER, not axis state.
 	vtkSmartPointer<vtkScalarBarActor>    bar;       // coloured strip only
 	vtkSmartPointer<vtkActor2D>           barTicks;  // our own tick-mark lines (strip has none in VTK 9.6)
@@ -2967,14 +2973,16 @@ static void placeAxisTitle(Scene *s, vtkBillboardTextActor3D *t, int axis,
 // Z tick labels are horizontal screen-facing billboards (perpendicular to Z) on the camera-nearest
 // vertical edge; X/Y tick numbers are billboards on the nearer floor edges. Axis NAME titles are
 // also billboards (placeAxisTitle). All recomputed every render as the near edges change with view.
-// 3-D cube: overwrite the (VE-scaled) Z bounds with the whole cube's pinned z-range so the axis
-// box is identical on every layer. No-op unless the scene has a cube z-lock. Scales the stored
-// (unscaled) data range by the current zfac*ve, matching surfGetBounds' scaled space.
-static inline void pinCubeAxisZ(Scene *s, double b[6]) {
-	if (!s->cubeZLock) return;
+// 3-D cube: overwrite the (VE-scaled) Z bounds with the whole cube's pinned z-range so the axis box
+// is identical on every layer. No-op unless THIS SET carries the pin — every axes set is asked, base
+// or extra alike, because a cube mounted as an extra layer is the same thing as one mounted as the
+// base and gets the same treatment. Scales the stored (unscaled) data range by the current zfac*ve,
+// matching surfGetBounds' scaled space.
+static inline void pinAxesZ(Scene *s, const AxesSet &A, double b[6]) {
+	if (!A.zLock) return;
 	const double zs = s->zfac * s->ve;
-	b[4] = s->cubeZMin * zs;
-	b[5] = s->cubeZMax * zs;
+	b[4] = A.zLo * zs;
+	b[5] = A.zHi * zs;
 }
 
 // Put the axes CUBE's box on `bIn`. ONE function for it: applyVE calls it when the geometry/VE
@@ -3333,7 +3341,7 @@ static inline void syncAxisNames(Scene *s, AxesSet &A) {
 // the "active" grid, or any other handle's state — the entire geometry comes from `A` (SACRED_LAW.md
 // Raster-own-axes law: axes cannot be shared between rasters). `visible` is the owning handle's
 // verdict: its container checkbox AND the set's own Axes row.
-static void rebuildAxesFor(Scene *s, AxesSet &A, bool visible, bool isBase) {
+static void rebuildAxesFor(Scene *s, AxesSet &A, bool visible) {
 	if (!s->ren || !s->ren->GetActiveCamera() || !A.cube) return;
 	// Hidden owner (or its own Axes row unchecked): the WHOLE set goes dark. This callback fires
 	// every render and would otherwise re-show the billboards, so honour the verdict here.
@@ -3341,8 +3349,8 @@ static void rebuildAxesFor(Scene *s, AxesSet &A, bool visible, bool isBase) {
 	A.cube->SetVisibility(1);
 	if (A.ticks) A.ticks->SetVisibility(1);
 	double b[6]; axesScaledBox(s, A, b);         // THIS raster's own drawn (VE-scaled) bounds
-	if (isBase) pinCubeAxisZ(s, b);              // 3-D cube: hold the BASE set's Z box to the whole
-	                                             // cube's range (the cube variable IS the base surface)
+	pinAxesZ(s, A, b);                           // 3-D cube: hold THIS set's Z box to the whole cube's
+	                                             // range, whether its layers ride the base or an extra
 	axesSetBounds(s, A, b);                      // re-box if VE / the raster's own frame moved
 	const double ctr[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
 	double cam[3]; s->ren->GetActiveCamera()->GetPosition(cam);
@@ -3430,10 +3438,10 @@ static void rebuildAxesFor(Scene *s, AxesSet &A, bool visible, bool isBase) {
 		// The Z NUMBERS come from THIS raster's OWN z range, in ITS OWN UNITS — the third layer of
 		// the derived-variable axes law, now structural: a mGal anomaly can no longer be numbered in
 		// its parent's metres because it does not share, and cannot reach, the parent's axes. The
-		// only override is the 3-D cube's z-lock, which belongs to the BASE surface's own set (the
-		// cube variable IS the base) so every layer of one cube is boxed alike.
+		// only override is the 3-D cube's z-pin, carried by THIS set (AxesSet::zLock) so every layer
+		// of one cube is numbered alike — base-mounted or extra-mounted, no difference.
 		double zlo = A.z0, zhi = A.z1;
-		if (isBase && s->cubeZLock) { zlo = s->cubeZMin; zhi = s->cubeZMax; }
+		if (A.zLock) { zlo = A.zLo; zhi = A.zHi; }
 		placeTickBillboards(s, A.zlab, zlo, zhi, b[4], b[5], 2, zx, zy, ctr, tp, tl, tickLen);
 	}
 	if (s->flat2d) {
@@ -3497,6 +3505,41 @@ static inline bool extraVisible(const ExtraObj &ex) {
 	return false;
 }
 
+// HIDE A WHOLE RASTER LAYER — its surface actor, its drape AND its own axes intent. This is what a
+// group's top checkbox does, and it is the ONE function every programmatic layer hide goes through
+// (adopt-a-derived-variable, hide-other-grids, hide-other-images, hide-surface).
+//
+// SACRED_LAW.md, group-uncheck law read the OTHER way round: the "Surface" CHILD row hides the
+// surface and NOTHING ELSE — not the Color Bar, not the Axes. Those are separate child rows with
+// their own checkboxes and their own intent flags, so nothing may derive their on-screen state from
+// the surface actor's visibility (that gate is what made unchecking "Surface" blank a still-checked
+// Axes row). A layer-level hide therefore has to say so EXPLICITLY, here, by switching the layer's
+// own axes intent off — which is also what leaves the panel's checkbox telling the truth.
+static inline void rasterLayerSetVisible(Scene *s, ExtraObj &ex, bool on) {
+	if (ex.actor) ex.actor->SetVisibility(on ? 1 : 0);
+	if (ex.drape) ex.drape->SetVisibility(on ? 1 : 0);
+	ex.ax.shown = on;
+	if (!on) axesHideAll(ex.ax);
+	(void)s;
+}
+static inline void baseLayerSetVisible(Scene *s, bool on) {
+	if (!s) return;
+	surfSetVisibility(s, on ? 1 : 0);
+	if (s->drape) s->drape->SetVisibility(on ? 1 : 0);
+	s->baseAxes.shown = on;
+	if (!on) axesHideAll(s->baseAxes);
+}
+// The BY-PROP door onto the same two setters — Swipe/Link switch layers by actor pointer, and a
+// layer switch there is a layer switch like any other: its axes travel with it. A prop that is not
+// a raster layer keeps the plain actor behaviour.
+static inline void sceneLayerSetVisibleByProp(Scene *s, vtkProp3D *p, bool on) {
+	if (!s || !p) return;
+	if (p == surfProp(s) || (s->drape && p == s->drape.Get())) { baseLayerSetVisible(s, on); return; }
+	for (auto &ex : s->extras)
+		if (ex.actor.Get() == p || (ex.drape && ex.drape.Get() == p)) { rasterLayerSetVisible(s, ex, on); return; }
+	p->SetVisibility(on ? 1 : 0);
+}
+
 // (The NaN-hole backdrop plane that used to live here is GONE, by explicit request: a grid with no
 // NaNs got a white sheet under it in 3-D for nothing. NaN cells are already painted by the colour
 // transfer function's NaN colour on the surface itself (makeGridCTF), which is where a hole's colour
@@ -3517,11 +3560,12 @@ static void rebuildAxisLabels(Scene *s) {
 	// a map lookup per actor that early-outs on everything already hooked, so it costs nothing per
 	// frame and cannot be forgotten by a future add path.
 	if (s->globe) sceneGlobeSync(s);
-	// The BASE raster is its surface OR, on a bare-image window, its drape — the picture IS the
-	// raster there. Same test shape as extraVisible, so base and extra are judged by one rule.
-	vtkProp3D *sp = surfProp(s);
-	const bool baseVis = (sp && sp->GetVisibility() != 0) ||
-	                     (s->drape && s->drape->GetVisibility() != 0);
+	// An axes set is drawn from ITS OWN `shown` intent — the state of the "Axes" child row — and from
+	// NOTHING ELSE. It used to be ANDed with the owning raster's actor visibility, which made the
+	// "Surface" child row hide the axes as a side effect while their own checkbox stayed ticked: one
+	// control doing another control's job, i.e. exactly what SACRED_LAW.md forbids. A LAYER-level hide
+	// (a group's checkbox, adopting a derived variable, hide-other-grids) switches the intent off
+	// itself, through rasterLayerSetVisible/baseLayerSetVisible above — explicitly, not by inference.
 	// GLOBE: a rectangular lon/lat box is not a frame for a sphere — it is a wrong answer, not a
 	// missing feature. So every axes set goes down and the GRATICULE comes up in its place, and it
 	// happens HERE, in the one path every axes rebuild goes through, so no caller can find a way to
@@ -3535,13 +3579,13 @@ static void rebuildAxisLabels(Scene *s) {
 	if (s->globe) {
 		axesHideAll(s->baseAxes);
 		for (auto &ex : s->extras) axesHideAll(ex.ax);
-		globeFrameUpdate(s, s->baseAxes.shown && baseVis);
+		globeFrameUpdate(s, s->baseAxes.shown);
 		return;
 	}
 	globeFrameUpdate(s, false);                 // off the globe the graticule is always down
-	rebuildAxesFor(s, s->baseAxes, s->baseAxes.shown && baseVis, true);
+	rebuildAxesFor(s, s->baseAxes, s->baseAxes.shown);
 	for (auto &ex : s->extras)
-		rebuildAxesFor(s, ex.ax, ex.ax.shown && extraVisible(ex), false);
+		rebuildAxesFor(s, ex.ax, ex.ax.shown);
 }
 
 // Renderer StartEvent -> keep the axis labels on the camera-near edges as the view rotates.
@@ -3766,12 +3810,11 @@ static void sceneAfterObjectRemoved(Scene *s) {
 		bool restored = false;
 		for (size_t i = s->extras.size(); i-- > 0; ) {
 			if (!s->extras[i].actor) continue;
-			s->extras[i].actor->SetVisibility(1);
-			if (s->extras[i].drape) s->extras[i].drape->SetVisibility(1);
+			rasterLayerSetVisible(s, s->extras[i], true);   // the WHOLE layer comes back, axes included
 			restored = true;
 			break;
 		}
-		if (!restored && !s->imageOnly) surfSetVisibility(s, 1);
+		if (!restored && !s->imageOnly) baseLayerSetVisible(s, true);
 	}
 	sceneClearViewOverride(s);
 }

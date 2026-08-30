@@ -279,7 +279,7 @@ static void swipeSetActive(Scene *s, bool on, vtkProp3D *a, vtkProp3D *b) {
 	if (s->swipeOn) {                                  // restore what the previous pair had hidden
 		std::vector<SwipeLayer> L = swipeLayers(s);
 		for (auto &kv : s->swipeSavedVis)
-			if (swipeIndexOf(L, kv.first) >= 0) kv.first->SetVisibility(kv.second);
+			if (swipeIndexOf(L, kv.first) >= 0) sceneLayerSetVisibleByProp(s, kv.first, kv.second != 0);
 	}
 	s->swipeSavedVis.clear();
 	s->swipeOn = false;
@@ -291,7 +291,7 @@ static void swipeSetActive(Scene *s, bool on, vtkProp3D *a, vtkProp3D *b) {
 		if (swipeIndexOf(L, a) >= 0 && swipeIndexOf(L, b) >= 0) {
 			for (SwipeLayer &lay : L) {                // pair visible, EVERY other raster hidden
 				s->swipeSavedVis.push_back({ lay.prop, lay.prop->GetVisibility() });
-				lay.prop->SetVisibility((lay.prop == a || lay.prop == b) ? 1 : 0);
+				sceneLayerSetVisibleByProp(s, lay.prop, lay.prop == a || lay.prop == b);
 			}
 			s->swipeAProp = a; s->swipeBProp = b;
 			s->swipePlaneA = vtkSmartPointer<vtkPlane>::New();
@@ -545,7 +545,7 @@ static void linkToggled(Scene *s, QAction *act, bool on) {
 		if (s->linkOn) {
 			std::vector<SwipeLayer> L = swipeLayers(s);
 			for (auto &kv : s->linkSavedVis)
-				if (swipeIndexOf(L, kv.first) >= 0) kv.first->SetVisibility(kv.second);
+				if (swipeIndexOf(L, kv.first) >= 0) sceneLayerSetVisibleByProp(s, kv.first, kv.second != 0);
 		}
 		linkUnlinkWindows(s);
 		linkSetPeekFilter(s, false);
@@ -577,7 +577,7 @@ static void linkToggled(Scene *s, QAction *act, bool on) {
 		s->linkSavedVis.clear();
 		for (const SwipeLayer &lay : L) {
 			s->linkSavedVis.push_back({ lay.prop, lay.prop->GetVisibility() });
-			lay.prop->SetVisibility(lay.prop == A.prop ? 1 : 0);   // start on the CURRENTLY displayed one
+			sceneLayerSetVisibleByProp(s, lay.prop, lay.prop == A.prop);   // start on the CURRENTLY displayed one
 		}
 		s->linkAProp = A.prop; s->linkBProp = B.prop;
 		s->linkOn = true;
@@ -665,8 +665,8 @@ static void linkPeek(Scene *s, bool on) {
 		return;
 	}
 	s->linkPeeking = on;
-	L[ia].prop->SetVisibility(on ? 0 : 1);              // A is home, B is the one you peek at
-	L[ib].prop->SetVisibility(on ? 1 : 0);
+	sceneLayerSetVisibleByProp(s, L[ia].prop, !on);              // A is home, B is the one you peek at
+	sceneLayerSetVisibleByProp(s, L[ib].prop, on);
 	refreshGridColorbar(s);
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();

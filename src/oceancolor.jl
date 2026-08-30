@@ -767,7 +767,7 @@ function _oc_open(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, url::AbstractString)
 	# the L3 data, and it carries the address with it so nothing has to re-derive it later.
 	ccall(_fn(:gmtvtk_oc_attach_grid_button_h), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cstring),
 	      scene, name, oc_data_url(nc), "Download the L3 grid behind this image:\n" * nc)
-	_mark_file_open(f, scene)					# a second Extract of this tile now finds it, never re-plots it
+	_mark_file_open(f, scene, name)			# a second Extract of this tile now finds it, never re-plots it
 	_oc_status(dlg, "Placed " * name)
 	return Cint(1)
 end
@@ -1069,7 +1069,7 @@ function _oc_place(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, file::AbstractString, reg
 	_adopt_new_element(scene, name, G)
 	# Only the WHOLE file claims the path: a region is one box out of it, and claiming the file for a box
 	# would make the next Extract (or the next box) think the file was already fully displayed.
-	reg === nothing && _mark_file_open(String(file), scene)
+	reg === nothing && _mark_file_open(String(file), scene, name)
 	empty && ccall(_fn(:gmtvtk_set_title_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, "i'GMT -- " * basename(file))
 	_oc_status(dlg, "Opened " * name * (isempty(v) ? "" : "  ·  " * v))
 	return Cint(1)

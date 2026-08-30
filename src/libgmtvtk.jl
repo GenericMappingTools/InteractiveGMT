@@ -76,7 +76,11 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # Generation 8 = gmtvtk_set_cube_warp exists and gmtvtk_set_view_mode_h accepts mode 3 (the QSC cube
 # body). A generation-7 library has no cube: the warp push finds no symbol and mode 3 falls through
 # its view-mode switch, leaving the window in whatever mode it was already in.
-const _ABI_REQUIRED = 8
+# Generation 9 = gmtvtk_set_cube_axes_zrange takes the cube element's NAME as its second argument: the
+# Z pin belongs to the axes set that cube's layers own, not to the window (it used to be honoured for
+# the base surface only, so an extra-mounted cube's box jumped on every layer). A generation-8 library
+# reads the name pointer as zmin and pins garbage.
+const _ABI_REQUIRED = 9
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.
@@ -106,7 +110,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_grow_z_frame_h,
 	:gmtvtk_reframe_named_h,
 	:gmtvtk_swipe_select_mode_h,
-	:gmtvtk_has_surface, :gmtvtk_close, :gmtvtk_add_recent,
+	:gmtvtk_has_surface, :gmtvtk_has_element_h, :gmtvtk_close, :gmtvtk_add_recent,
 	:gmtvtk_set_cpt, :gmtvtk_set_cpt_grid, :gmtvtk_grid_rgb_at, :gmtvtk_raise, :gmtvtk_set_crs,
 	:gmtvtk_set_palette_callback, :gmtvtk_set_bands_callback,
 	:gmtvtk_set_title_h, :gmtvtk_set_surface_name_h,

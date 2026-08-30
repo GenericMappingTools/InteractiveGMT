@@ -64,6 +64,10 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 		# pop the modal picker so the user chooses which variable to load (or all of them). A plain
 		# single-variable grid returns an empty list and loads straight through.
 		vars = _netcdf_subdatasets(path)
+		# The Scene Objects element names this open creates. The open-once filter is keyed on them one
+		# by one: when the last of them is removed the file counts as closed and can be opened again
+		# (`_mark_file_open` / `_forget_file_element!`, dispatch.jl).
+		made = String[]
 		# NSWING's own tsunami netCDF (a static 2-D "bathymetry" grid + at least one time-varying 3-D
 		# quantity) is ONE dataset, not a pile of variables to choose between, and the only thing that
 		# can display it is the Aquamoto viewer -- so it lands there directly, never in the generic
@@ -74,6 +78,7 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 		# (already running inside a Qt event) returns before the viewer calls back into Julia.
 		if _is_aquamoto_file(vars)
 			ccall(_fn(:gmtvtk_aqua_queue_open), Cvoid, (Ptr{Cvoid}, Cstring), scene, String(path))
+			push!(made, basename(String(path)))   # Aquamoto names its layer after the file (aquamoto.jl)
 			try
 				ccall(_fn(:gmtvtk_add_recent), Cvoid, (Cstring, Cint), abspath(String(path)), Cint(0))
 			catch
@@ -98,9 +103,11 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 			if length(chosen) == 1                             # single variable -> full cube slider if 3-D
 				v = chosen[1]
 				_open_spec_into(scene, "$(path)?$(v.name)", _var_dispname(v), empty; recent=path, prescan=prescan)
+				push!(made, _var_dispname(v))
 			else                                               # a subset -> each variable its own surface
 				for (i, v) in enumerate(chosen)
 					spec = "$(path)?$(v.name)"; dn = _var_dispname(v)
+					push!(made, dn)
 					isbase = empty && i == 1                    # first var promotes the launcher (if empty)
 					if length(v.dims) >= 3                      # a CUBE: read it FULLY (all layers), not one slice
 						if isbase
@@ -128,11 +135,12 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 			# Cube files (3-D netCDF/grd) are NEVER read whole here -- a header-only probe decides the
 			# layer count, then the slider dialog pulls one slice at a time (see _on_3d_cube_dropped).
 			_open_spec_into(scene, path, basename(path), empty; recent=path)
+			push!(made, basename(String(path)))
 		end
 		# Promoting the empty launcher makes this file the window's primary content -> retitle it.
 		# A drop into an already-populated window just adds an extra layer, so its title is left alone.
 		empty && ccall(_fn(:gmtvtk_set_title_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, "i'GMT -- $(basename(path))")
-		_mark_file_open(path, scene)                           # remember it so a re-drop is ignored
+		_mark_file_open(path, scene, made)     # a re-drop is ignored while these elements are on screen
 	catch e
 		_viewer_log_error(scene, "Open '$(basename(path))' FAILED: $(sprint(showerror, e))")
 		@warn "drop: could not read/open file" path exception=e
@@ -587,10 +595,8 @@ end
 # its initial layer.
 function _on_3d_cube_dropped(scene::Ptr{Cvoid}, path::String, name::AbstractString, promote::Bool, n_layers::Int, zmin::Float64, zmax::Float64; prescan::Bool=false)
 	_cube_load_common!(scene, path, String(name), true, promote, n_layers, zmin, zmax, prescan)
-	info = _CUBE_INFO[scene]
-	# Pin the vertical axes to the WHOLE cube's z-range BEFORE the dialog builds layer 1, so the axis
-	# box + Z labels stay put as the user switches layers (each layer's own min/max differs).
-	ccall(_fn(:gmtvtk_set_cube_axes_zrange), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble), scene, info.zmin, info.zmax)
+	# (The axes Z pin is applied by `_cube_write_surface!`, after each layer is mounted — it belongs to
+	# the axes set that layer owns, and an extra cube's set is rebuilt on every switch.)
 	ccall(_fn(:gmtvtk_show_cube_layer_dialog), Cvoid,
 		(Ptr{Cvoid}, Cstring, Cint), scene, name, n_layers)   # fires layer 1 on the base surface + opens the dock
 	_finish_cube_element!(scene, String(name), n_layers)
@@ -649,7 +655,6 @@ function _on_cube_slider(scene::Ptr{Cvoid}, cname::Cstring)::Cvoid
 		_snapshot_cube!(scene)                 # remember where the previously-active cube was
 		_activate_cube!(scene, name)
 		info = _CUBE_INFO[scene]
-		ccall(_fn(:gmtvtk_set_cube_axes_zrange), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble), scene, info.zmin, info.zmax)
 		ccall(_fn(:gmtvtk_show_cube_layer_dialog), Cvoid,
 			(Ptr{Cvoid}, Cstring, Cint), scene, name, info.n_layers)
 	catch e
@@ -756,6 +761,12 @@ function _cube_write_surface!(scene::Ptr{Cvoid}, info, name::String, G::GMTgrid,
 		first || ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, name)
 		_add_grid_to_scene(scene, G, name; promote=false, source=info.source, zrange=zr, record=first)
 	end
+	# Pin THIS cube's axes to the WHOLE cube's z-range, so the box + Z labels stay put as the user
+	# switches layers (each layer's own min/max differs). Applied HERE, after every layer is mounted,
+	# because the pin lives on the axes set the layer owns and an extra cube's set is destroyed and
+	# rebuilt on each switch (remove_grid + add above). One call, base and extra alike.
+	ccall(_fn(:gmtvtk_set_cube_axes_zrange), Cvoid, (Ptr{Cvoid}, Cstring, Cdouble, Cdouble),
+	      scene, name, info.zmin, info.zmax)
 	return
 end
 
