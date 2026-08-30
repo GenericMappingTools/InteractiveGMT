@@ -15,6 +15,10 @@ igmt_stage_root=${IGMT_LINUX_STAGE:-${XDG_CACHE_HOME:-$HOME/.cache}/igmt}
 igmt_cmake_dir=$igmt_stage_root/cmake
 igmt_bundle_dir=$igmt_stage_root/build_linux
 igmt_archive=$igmt_stage_root/iGMT-linux-x86_64-full.tar.gz
+# The ROLLING .so-only archive -- the Linux counterpart of Windows' gmtvtk-win64.zip. Same split,
+# same reason: the C++ side changes daily, the ~200 MB VTK/Qt runtime almost never does, so an
+# update must not drag the whole bundle down the wire.
+igmt_so_archive=$igmt_stage_root/gmtvtk-linux-x86_64.tar.gz
 
 # One-time migration for a checkout built by the older scripts, which staged into deps/. These are
 # pure build output and are about to be regenerated at the new location, so removing them costs

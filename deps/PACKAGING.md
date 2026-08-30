@@ -51,14 +51,25 @@ Bump the tag + that file ONLY when the VTK/Qt/TBB module set changes (rare).
 gh release create runtime-0.2 deps/build/iGMT-win64-full.zip --repo GenericMappingTools/InteractiveGMT --title "gmtvtk runtime 0.2" --notes "Windows and Linux x86_64 VTK/Qt/TBB runtime bundles"
 ```
 
-The Linux asset is built and uploaded from WSL by `bash deps/publish_linux.sh`, which runs
-`deps/build.sh` if needed and re-uploads to the same tag with `--clobber`. Nothing it produces
-lives in the checkout: the cmake dir, the staged runtime and the tarball are all under
-`~/.cache/igmt` (see `deps/linux_paths.sh`), because a WSL symlink inside the package tree makes
-every Windows `Pkg.test` run die on `stat(): permission denied` before a single test starts.
+The Linux assets are built and uploaded from WSL by `bash deps/publish_linux.sh`, which runs
+`deps/build.sh` if needed and re-uploads with `--clobber`. Nothing it produces lives in the
+checkout: the cmake dir, the staged runtime and both tarballs are all under `~/.cache/igmt` (see
+`deps/linux_paths.sh`), because a WSL symlink inside the package tree makes every Windows
+`Pkg.test` run die on `stat(): permission denied` before a single test starts.
 
-**DLL release** — fixed tag `dll-latest` (hardcoded as `DLL_TAG` in `deps/build.jl`, never
-retagged). First time:
+One build produces BOTH Linux archives, and `publish_linux.sh` takes which to send:
+
+```
+bash deps/publish_linux.sh          # both
+bash deps/publish_linux.sh --so     # the rolling libgmtvtk.so only -- the usual case
+bash deps/publish_linux.sh --full   # the runtime bundle only
+```
+
+**Rolling library release** — fixed tag `dll-latest` (hardcoded as `DLL_TAG` in `deps/build.jl`,
+never retagged), one asset per platform: `gmtvtk-win64.zip` and `gmtvtk-linux-x86_64.tar.gz`. Both
+carry the library plus its requires-manifest (`.dll_requires` / `.so_requires`) and nothing else, so
+a C++ change costs a couple of MB instead of the whole runtime. Linux goes up through
+`publish_linux.sh --so`; Windows, by hand. First time:
 
 ```
 gh release create dll-latest deps/build/gmtvtk-win64.zip --repo GenericMappingTools/InteractiveGMT --title "gmtvtk.dll (rolling)" --notes "Always the latest DLL build"

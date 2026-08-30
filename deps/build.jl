@@ -6,10 +6,15 @@
 #     only when the VTK/Qt/TBB module set changes. Pinned by deps/RUNTIME_VERSION (a git
 #     tag, e.g. "runtime-0.1"). Fetched on first install, and again whenever that pin MOVES.
 #
-#   * DLL-ONLY zip (just gmtvtk.dll) -- can change daily as the C++ side is edited. Lives at
-#     a FIXED, reused release tag (DLL_TAG below); its one asset gets overwritten in place
-#     (`gh release upload dll-latest gmtvtk-win64.zip --clobber`) -- no new tag per day.
-#     Re-downloaded on every `Pkg.build("InteractiveGMT")`.
+#   * LIBRARY-ONLY archive (just gmtvtk.dll / libgmtvtk.so) -- can change daily as the C++ side is
+#     edited. Lives at a FIXED, reused release tag (DLL_TAG below); its one asset per platform gets
+#     overwritten in place (`gh release upload dll-latest gmtvtk-win64.zip --clobber`,
+#     `bash deps/publish_linux.sh --so`) -- no new tag per day. Re-downloaded on every
+#     `Pkg.build("InteractiveGMT")`.
+#
+# BOTH PLATFORMS HAVE BOTH STREAMS. Linux used to have only the full tarball, so every C++ change
+# cost every Linux user the whole ~200 MB runtime; it now carries gmtvtk-linux-x86_64.tar.gz at the
+# same rolling tag, with the same freshness signature and the same manifest contract below.
 #
 # THE CONTRACT BETWEEN THEM. The small zip's gmtvtk.dll must be loadable against the runtime the
 # big zip installed. Break that -- link one VTK module the pinned bundle predates -- and every
@@ -24,7 +29,9 @@
 #      unenforceable and forcing new modules to hitch a ride in the dll-only zip.
 #   3. .dll_requires -- the manifest generated at package time (deps/CMakeLists.txt), checked
 #      after extraction here and again by src/libgmtvtk.jl when dlopen fails, so a shortfall is
-#      reported as the missing MODULE names.
+#      reported as the missing MODULE names. Its Linux twin is `.so_requires`, written by
+#      deps/build.sh from the staged bundle's own ldd closure and checked through the same
+#      functions below (REQUIRES_MANIFEST) -- one mechanism, two file names.
 #
 # A regular `Pkg.add`-installed (non-dev) package lives in a content-hashed folder
 # (~/.julia/packages/InteractiveGMT/<hash>/) that gets a BRAND NEW <hash> on every single
@@ -40,7 +47,16 @@
 using Downloads
 
 const REPO    = "GenericMappingTools/InteractiveGMT"
-const DLL_TAG = "dll-latest"   # fixed tag; its one asset is re-uploaded in place, never retagged
+const DLL_TAG = "dll-latest"   # fixed tag; its per-platform asset is re-uploaded in place, never retagged
+
+# The four platform-dependent names, in ONE place so no code path below has to ask which OS it is
+# running on twice. LIB_ASSET is the rolling library-only archive at DLL_TAG; FULL_ASSET the pinned
+# runtime bundle at runtime_tag(); REQUIRES_MANIFEST the "what the library needs from the bundle"
+# list that travels inside both.
+const LIB_NAME         = Sys.iswindows() ? "gmtvtk.dll" : "libgmtvtk.so"
+const LIB_ASSET        = Sys.iswindows() ? "gmtvtk-win64.zip" : "gmtvtk-linux-x86_64.tar.gz"
+const FULL_ASSET       = Sys.iswindows() ? "iGMT-win64-full.zip" : "iGMT-linux-x86_64-full.tar.gz"
+const REQUIRES_MANIFEST = Sys.iswindows() ? ".dll_requires" : ".so_requires"
 
 const DEPS_DIR     = @__DIR__
 const SHARED_ROOT  = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime")   # survives every Pkg.update; zip paths (deps/build/...) are relative to here
@@ -167,22 +183,23 @@ end
 # thing that makes the icon for a dev install -- InteractiveGMT's __init__ (_ensure_desktop_shortcut)
 # owns that instead, firing on the first `using` for dev and add alike.
 
-# The dll-only zip carries `.dll_requires`: every non-system DLL gmtvtk.dll imports, transitively
-# (written at package time by deps/CMakeLists.txt). Returns the ones that are NOT on disk.
+# The library-only archive carries its manifest: every non-system module gmtvtk.dll imports,
+# transitively (written at package time by deps/CMakeLists.txt), or on Linux every bundle-provided
+# SONAME libgmtvtk.so needs (written by deps/build.sh). Returns the ones that are NOT on disk.
 function _missing_modules()
     dir = joinpath(SHARED_ROOT, "deps", "build")
-    man = joinpath(dir, ".dll_requires")
+    man = joinpath(dir, REQUIRES_MANIFEST)
     isfile(man) || return String[]
     return filter(n -> !isfile(joinpath(dir, n)),
                   String.(filter(n -> !isempty(n) && !startswith(n, "#"), strip.(readlines(man)))))
 end
 
 # An install with NO manifest cannot be checked, so it must never be treated as proven-good: it
-# predates .dll_requires, which is precisely the population that can be missing modules. Saying
+# predates the manifest, which is precisely the population that can be missing modules. Saying
 # "nothing missing" there is how a broken machine skips its own repair -- the manifest arrives WITH
-# the dll zip, so the cure is to fetch that zip, which is what returning false here triggers.
+# the library archive, so the cure is to fetch it, which is what returning false here triggers.
 function _runtime_verified()
-    isfile(joinpath(SHARED_ROOT, "deps", "build", ".dll_requires")) || return false
+    isfile(joinpath(SHARED_ROOT, "deps", "build", REQUIRES_MANIFEST)) || return false
     return isempty(_missing_modules())
 end
 
@@ -195,9 +212,9 @@ end
 function _ensure_runtime_complete()
     miss = _missing_modules()
     isempty(miss) && return
-    @warn "InteractiveGMT: the installed runtime is missing modules gmtvtk.dll needs -- repairing by re-fetching the full runtime bundle (~53 MB)." missing=join(miss, ", ")
+    @warn "InteractiveGMT: the installed runtime is missing modules $LIB_NAME needs -- repairing by re-fetching the full runtime bundle." missing=join(miss, ", ")
     try
-        fetch_and_extract(release_url(runtime_tag(), "iGMT-win64-full.zip"), SHARED_ROOT)
+        fetch_and_extract(release_url(runtime_tag(), FULL_ASSET), SHARED_ROOT)
         write(MARKER, runtime_tag())
     catch e
         @error "InteractiveGMT: could not fetch the runtime bundle -- the viewer will not load." exception=(e,)
@@ -208,7 +225,7 @@ function _ensure_runtime_complete()
         @info "InteractiveGMT: runtime repaired -- all modules present." SHARED_ROOT
     else
         @error """InteractiveGMT: still missing modules after re-fetching the runtime bundle: $(join(still, ", ")).
-                  The published $(runtime_tag()) bundle does not contain what this gmtvtk.dll needs -- please report it.""" SHARED_ROOT
+                  The published $(runtime_tag()) bundle does not contain what this $LIB_NAME needs -- please report it.""" SHARED_ROOT
     end
 end
 
@@ -288,15 +305,14 @@ end
 
 function main_linux()
     want  = runtime_tag()
-    asset = "iGMT-linux-x86_64-full.tar.gz"
-    lib   = joinpath(SHARED_ROOT, "deps", "build", "libgmtvtk.so")
+    asset = FULL_ASSET
+    lib   = joinpath(SHARED_ROOT, "deps", "build", LIB_NAME)
     sigf  = joinpath(SHARED_ROOT, "deps", "build", ".linux_release_sig")
     installed = isfile(MARKER) ? String(strip(read(MARKER, String))) : ""
-    # There is ONE Linux asset and it is re-uploaded in place under the same tag (the tarball is the
-    # whole runtime -- there is no separate rolling .so zip as on Windows). So the tag alone cannot
-    # tell a machine that the bundle changed: matching MARKER used to mean "skip", and a re-upload
-    # then reached nobody who already had it. Compare the release asset's updated_at as well, the
-    # same freshness signal main() uses for the Windows dll zip.
+    # The full Linux tarball is re-uploaded in place under the same tag, so the tag alone cannot tell
+    # a machine that the bundle changed: matching MARKER used to mean "skip", and a re-upload then
+    # reached nobody who already had it. Compare the release asset's updated_at as well, the same
+    # freshness signal main() uses for the Windows dll zip.
     sig = _dll_asset_signature(want, asset)
     stale = !isfile(lib) || installed != want ||
             (sig !== nothing && (!isfile(sigf) || read(sigf, String) != sig))
@@ -312,7 +328,34 @@ function main_linux()
         mkpath(dirname(MARKER))
         write(MARKER, want)
         sig !== nothing && write(sigf, sig)
+        # The bundle carries a libgmtvtk.so of its own, but the rolling one below is normally newer,
+        # so force a re-sync rather than let a stale signature skip it (main() does the same).
+        rm(joinpath(SHARED_ROOT, "deps", "build", ".so_release_sig"); force=true)
     end
+    # ...and then the ROLLING library, exactly as main() does on Windows: ~2 MB instead of the whole
+    # runtime for a C++ change. Extraction MERGES here on purpose -- this archive is libgmtvtk.so +
+    # .so_requires and must land ON TOP of the bundle, never wipe it (the wipe above belongs to the
+    # full tarball alone, whose policy can retire a library).
+    let
+        so   = joinpath(SHARED_ROOT, "deps", "build", LIB_NAME)
+        ssig = joinpath(SHARED_ROOT, "deps", "build", ".so_release_sig")
+        sg   = _dll_asset_signature(DLL_TAG, LIB_ASSET)
+        # The signature short-circuit is a speed optimisation, never a reason to leave a broken
+        # install broken: a missing library means re-fetch regardless of what the signature says,
+        # because this archive is what carries the manifest.
+        if !(sg !== nothing && isfile(so) && isfile(ssig) && read(ssig, String) == sg && _runtime_verified())
+            try
+                fetch_and_extract(release_url(DLL_TAG, LIB_ASSET), SHARED_ROOT)
+                sg !== nothing && write(ssig, sg)
+            catch e
+                # The bundle already installed above carries a working libgmtvtk.so, so a rolling
+                # asset that is absent (or a network hiccup) must not fail the whole build -- it
+                # only means this machine stays on the bundle's own, older library.
+                @warn "InteractiveGMT: could not fetch the rolling $LIB_ASSET -- staying on the runtime bundle's own $LIB_NAME." exception=(e,)
+            end
+        end
+    end
+    _ensure_runtime_complete()
     _fix_julia_libstdcxx()
     @info "InteractiveGMT: Linux gmtvtk runtime installed" SHARED_ROOT
     return nothing
@@ -324,14 +367,14 @@ function main()
     if !isfile(MARKER)
         # First install EVER on this machine: full runtime bundle, pinned to a coarse,
         # rarely-bumped tag.
-        fetch_and_extract(release_url(want, "iGMT-win64-full.zip"), SHARED_ROOT)
+        fetch_and_extract(release_url(want, FULL_ASSET), SHARED_ROOT)
         write(MARKER, want)
     elseif !isempty(installed) && installed != want
         # The pinned runtime moved (a new VTK/Qt module set). This is the ONLY path that can
         # refresh the bundled VTK/Qt on a machine that already has one, so it must not be skipped
         # -- a stale bundle means a gmtvtk.dll that cannot load at all.
         @warn "InteractiveGMT: bundled VTK/Qt runtime is out of date ($installed -> $want) -- downloading the new bundle (~53 MB)."
-        fetch_and_extract(release_url(want, "iGMT-win64-full.zip"), SHARED_ROOT)
+        fetch_and_extract(release_url(want, FULL_ASSET), SHARED_ROOT)
         write(MARKER, want)
         # Fall through: the full bundle carries a gmtvtk.dll, but the rolling dll-latest asset is
         # normally newer, so still sync it below.
@@ -344,15 +387,15 @@ function main()
         # broken however many times the dll-only zip was re-published. Unknown now counts as
         # stale: fetch the pinned bundle once, and the marker is honest from then on.
         @warn "InteractiveGMT: runtime bundle of unknown version -- fetching the pinned $want bundle once so it is known-complete."
-        fetch_and_extract(release_url(want, "iGMT-win64-full.zip"), SHARED_ROOT)
+        fetch_and_extract(release_url(want, FULL_ASSET), SHARED_ROOT)
         write(MARKER, want)
         rm(joinpath(SHARED_ROOT, "deps", "build", ".dll_release_sig"); force=true)
     end
     let
         # Every subsequent build: DLL only (~1 MB), always the same rolling tag/asset -- but only
         # actually re-downloaded when the release asset is newer than what we last synced.
-        asset  = "gmtvtk-win64.zip"
-        dll    = joinpath(SHARED_ROOT, "deps", "build", "gmtvtk.dll")
+        asset  = LIB_ASSET
+        dll    = joinpath(SHARED_ROOT, "deps", "build", LIB_NAME)
         sigf   = joinpath(SHARED_ROOT, "deps", "build", ".dll_release_sig")
         sig    = _dll_asset_signature(DLL_TAG, asset)
         # The signature short-circuit is a speed optimisation, never a reason to leave a broken
