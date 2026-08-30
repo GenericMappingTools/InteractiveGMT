@@ -64,10 +64,15 @@ jobs:
           - os: macos-15-intel
             arch: x86_64
             julia_arch: x64
-    env:
-      IGMT_MACOS_STAGE: ${{ runner.temp }}/igmt
     steps:
       - uses: actions/checkout@v6
+
+      # NOT a job-level `env:`. The job-level env context is evaluated before a runner is picked, so
+      # `runner.*` is unavailable there and GitHub rejects the whole file with "Unrecognized
+      # named-value: 'runner'" -- the workflow then never runs at all, and never reports why.
+      # $RUNNER_TEMP is the plain environment variable, always set on the runner itself.
+      - name: Stage directory
+        run: echo "IGMT_MACOS_STAGE=$RUNNER_TEMP/igmt" >> "$GITHUB_ENV"
 
       # `vtk` is already built with Qt6 (-DVTK_GROUP_ENABLE_Qt=YES) -- the `--with-qt` option that
       # older documentation mentions was removed from Homebrew in 2019 and is a hard error today.
