@@ -1,0 +1,93 @@
+# Bundle dependencies from the linked Mach-O files; do not duplicate VTK or Qt module lists here.
+# The macOS twin of linux_bundle.cmake.in, and deliberately the same shape: this script only COPIES
+# (the resolver decides WHAT), while deps/build_mac.sh does the install-name rewriting and the
+# ad-hoc codesign afterwards -- exactly the split build.sh/linux_bundle.cmake.in already use with
+# patchelf. One difference is unavoidable and is the whole reason this file is not a copy of the
+# Linux one: on macOS Qt is installed as FRAMEWORKS (Homebrew's qtbase symlinks lib/*.framework),
+# whose install names are @rpath/QtCore.framework/Versions/A/QtCore -- a path SUFFIX, not a bare
+# filename. Flattening those into the bundle root the way a .so is flattened produces a bundle that
+# dyld cannot resolve, so the framework-relative subpath is preserved below.
+set(_prefix @GMTVTK_MACOS_PREFIX@)
+
+# Qt plugins are loaded at runtime, so nothing links them and the dependency scan cannot see them
+# -- they have to be named. Homebrew puts them in share/qt/plugins (INSTALL_DATADIR=share/qt); the
+# other two roots cover a Conda/qt6-main or a hand-built Qt, so this file does not care which of
+# them provided the Qt that find_package found.
+set(_plugin_roots
+  ${_prefix}/share/qt/plugins
+  ${_prefix}/opt/qtbase/share/qt/plugins
+  ${_prefix}/lib/qt6/plugins)
+set(_plugins)
+foreach(_root IN LISTS _plugin_roots)
+  if(IS_DIRECTORY ${_root})
+    set(_plugin_patterns
+      platforms/libqcocoa.dylib
+      styles/libqmacstyle.dylib
+      imageformats/libqgif.dylib
+      imageformats/libqico.dylib
+      imageformats/libqjpeg.dylib
+      imageformats/libqsvg.dylib)
+    foreach(_pattern IN LISTS _plugin_patterns)
+      file(GLOB _found LIST_DIRECTORIES false ${_root}/${_pattern})
+      foreach(_plugin IN LISTS _found)
+        file(RELATIVE_PATH _relative ${_root} ${_plugin})
+        get_filename_component(_subdir ${_relative} DIRECTORY)
+        file(INSTALL ${_plugin} DESTINATION ${CMAKE_INSTALL_PREFIX}/plugins/${_subdir}
+             FOLLOW_SYMLINK_CHAIN)
+        list(APPEND _plugins ${_plugin})
+      endforeach()
+    endforeach()
+    break()
+  endif()
+endforeach()
+if(NOT _plugins)
+  message(FATAL_ERROR No_Qt_plugins_found_under:${_plugin_roots})
+endif()
+
+# /System and /usr/lib are the OS: libSystem, libc++, and every Apple framework (OpenGL, Cocoa,
+# Metal) live there, they are present on every Mac, and they are NOT redistributable. This is the
+# macOS counterpart of the Linux script's ^/lib/ ^/usr/lib/ excludes -- and it is also why there is
+# no .host_requires here: macOS has no GLVND split, the GPU entry points ARE system frameworks, so
+# there is nothing the user could be told to install.
+file(GET_RUNTIME_DEPENDENCIES
+  LIBRARIES ${CMAKE_INSTALL_PREFIX}/libgmtvtk.dylib ${_plugins}
+  RESOLVED_DEPENDENCIES_VAR _resolved
+  UNRESOLVED_DEPENDENCIES_VAR _unresolved
+  CONFLICTING_DEPENDENCIES_PREFIX _conflict
+  DIRECTORIES ${_prefix}/lib ${_prefix}/opt/vtk/lib ${_prefix}/opt/qtbase/lib ${_prefix}/opt/tbb/lib
+  POST_EXCLUDE_REGEXES ^/System/ ^/usr/lib/)
+
+# A framework dependency resolves to <root>/QtCore.framework/Versions/A/QtCore, and its install
+# name is @rpath/QtCore.framework/Versions/A/QtCore -- so the bundle must reproduce everything from
+# the .framework component onward, or dyld looks for a path that is not there. Info.plist rides
+# along because `codesign` (run by build_mac.sh, and mandatory on arm64) rejects a framework that
+# has no bundle identifier. Headers/, the .tbd stubs and the Current symlink are deliberately left
+# behind: nothing at run time reads them.
+function(_igmt_install_dep _dep)
+  string(REGEX MATCH "[^/]+\\.framework/.*$" _rel ${_dep})
+  if(_rel)
+    get_filename_component(_sub ${_rel} DIRECTORY)
+    file(INSTALL ${_dep} DESTINATION ${CMAKE_INSTALL_PREFIX}/${_sub})
+    get_filename_component(_verdir ${_dep} DIRECTORY)
+    if(EXISTS ${_verdir}/Resources/Info.plist)
+      file(INSTALL ${_verdir}/Resources/Info.plist DESTINATION ${CMAKE_INSTALL_PREFIX}/${_sub}/Resources)
+    endif()
+  else()
+    file(INSTALL ${_dep} DESTINATION ${CMAKE_INSTALL_PREFIX} FOLLOW_SYMLINK_CHAIN)
+  endif()
+endfunction()
+
+foreach(_dep IN LISTS _resolved)
+  _igmt_install_dep(${_dep})
+endforeach()
+
+foreach(_name IN LISTS _conflict_FILENAMES)
+  set(_choices ${_conflict_${_name}})
+  list(GET _choices 0 _dep)
+  _igmt_install_dep(${_dep})
+endforeach()
+
+if(_unresolved)
+  list(REMOVE_DUPLICATES _unresolved)
+  message(WARNING Unresolved_macOS_runtime_dependencies:${_unresolved})
+endif()

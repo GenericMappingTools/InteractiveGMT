@@ -1,0 +1,128 @@
+# Builds the macOS viewer library and its self-contained runtime bundle. This is the ONLY platform
+# whose binaries are produced by CI: the Windows and Linux ones are built by hand (deps/build.bat,
+# deps/build.sh under WSL) on a machine that exists. There is no Mac on that desk, so the runner is
+# the build machine.
+#
+# TWO ARCHITECTURES, TWO JOBS. Homebrew bottles are per-arch and Qt/VTK are not universal binaries,
+# so arm64 and x86_64 are separate builds producing separate assets. macos-13 is the last
+# Intel-hosted runner GitHub offers; when it goes, the x86_64 leg goes with it and the matrix entry
+# fails loudly rather than silently publishing an arm64 file under an Intel name.
+#
+# BUILD ON THE OLDEST OS YOU SUPPORT. Homebrew bottles are poured per macOS release, so a bundle
+# staged on macOS 15 does not load on macOS 14. The runner labels below (14 for arm64, 13 for
+# Intel) are therefore the deployment floor, not an incidental choice -- do not "modernise" them to
+# macos-latest without meaning to raise that floor.
+#
+# NOTHING IS PUBLISHED AUTOMATICALLY. A push builds and verifies, and leaves the archives as
+# workflow artifacts. Uploading to a release happens only on a manual run that explicitly asks for
+# it, because a release asset is user-facing: `rolling` re-uploads the small library archive to the
+# fixed dll-latest tag (the daily cadence), `full` also re-uploads the ~200 MB bundle to the tag
+# pinned in deps/RUNTIME_VERSION (the rare one -- see the two-cadence contract at the top of
+# deps/build.jl).
+name: MacBinaries
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'deps/src/**'
+      - 'deps/CMakeLists.txt'
+      - 'deps/cmake/**'
+      - 'deps/build_mac.sh'
+      - '.github/workflows/MacBinaries.yml'
+  pull_request:
+    paths:
+      - 'deps/src/**'
+      - 'deps/CMakeLists.txt'
+      - 'deps/cmake/**'
+      - 'deps/build_mac.sh'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'What to upload to GitHub Releases'
+        type: choice
+        default: 'none'
+        options: ['none', 'rolling', 'full']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: write        # needed only by the publish step; harmless otherwise
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14     # Apple Silicon
+            arch: arm64
+            julia_arch: aarch64
+          - os: macos-13     # Intel (last such runner GitHub provides)
+            arch: x86_64
+            julia_arch: x64
+    env:
+      IGMT_MACOS_STAGE: ${{ runner.temp }}/igmt
+    steps:
+      - uses: actions/checkout@v6
+
+      # `vtk` is already built with Qt6 (-DVTK_GROUP_ENABLE_Qt=YES) -- the `--with-qt` option that
+      # older documentation mentions was removed from Homebrew in 2019 and is a hard error today.
+      # It pulls qtbase+qtdeclarative only, so qttools (which provides Qt6::UiTools, used by every
+      # runtime-loaded .ui dialog) and tbb have to be named explicitly.
+      - name: Install dependencies
+        run: brew install vtk qttools tbb ninja
+
+      - name: Build + stage the bundle
+        run: bash deps/build_mac.sh
+
+      # The real test of a relocated bundle: does dyld actually load it somewhere other than where
+      # it was staged, with no Homebrew paths left to fall back on? A compile that succeeded proves
+      # nothing about install names or the ad-hoc signature (on arm64 a bad signature is a hard
+      # load failure, not a warning). No window is created here -- dlopen + dlsym only -- so this
+      # works on a runner with no display.
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.11'
+          arch: ${{ matrix.julia_arch }}
+      - name: Smoke-test the relocated library
+        run: |
+          set -euo pipefail
+          probe="${RUNNER_TEMP}/probe"
+          mkdir -p "$probe"
+          tar -xzf "${IGMT_MACOS_STAGE}/iGMT-macos-${{ matrix.arch }}-full.tar.gz" -C "$probe"
+          julia -e '
+            using Libdl
+            lib = joinpath(ENV["PROBE"], "deps", "build", "libgmtvtk.dylib")
+            h = Libdl.dlopen(lib)
+            p = Libdl.dlsym(h, :gmtvtk_abi_version)
+            println("ABI generation: ", ccall(p, Cint, ()))
+          '
+        env:
+          PROBE: ${{ runner.temp }}/probe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gmtvtk-macos-${{ matrix.arch }}
+          path: ${{ runner.temp }}/igmt/*.tar.gz
+          if-no-files-found: error
+
+      # Manual runs only, and only when the run explicitly asked for it. `--clobber` is the point of
+      # the rolling asset: one fixed tag whose file is replaced in place, never a new tag per build.
+      - name: Publish
+        if: github.event_name == 'workflow_dispatch' && inputs.publish != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCH: ${{ matrix.arch }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          gh release upload dll-latest "${IGMT_MACOS_STAGE}/gmtvtk-macos-${ARCH}.tar.gz" --clobber
+          if [[ $PUBLISH == full ]]; then
+            tag=$(tr -d '[:space:]' < deps/RUNTIME_VERSION)
+            gh release upload "$tag" "${IGMT_MACOS_STAGE}/iGMT-macos-${ARCH}-full.tar.gz" --clobber
+          fi

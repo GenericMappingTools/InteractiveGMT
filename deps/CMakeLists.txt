@@ -15,6 +15,8 @@ option(GMTVTK_PACKAGE "Bundle all runtime DLLs and enable CPack packaging" OFF)
 
 option(GMTVTK_LINUX_BUNDLE Stage_a_self-contained_Linux_Conda_runtime OFF)
 
+option(GMTVTK_MACOS_BUNDLE Stage_a_self-contained_macOS_Homebrew_runtime OFF)
+
 # Toolchain locations (this machine, verified 2026-06-11). Override on the cmake command line
 # (-DVTK_DIR=... etc.) for a different box.
 if(WIN32 AND NOT VTK_DIR)
@@ -34,6 +36,63 @@ if(UNIX AND NOT APPLE AND NOT CMAKE_PREFIX_PATH)
     list(PREPEND CMAKE_PREFIX_PATH $ENV{CONDA_PREFIX})
   elseif(EXISTS /home/j/anaconda3)
     list(PREPEND CMAKE_PREFIX_PATH /home/j/anaconda3)
+  endif()
+endif()
+
+# macOS: the dependencies are ASSUMED PRESENT, installed by Homebrew — nothing here builds,
+# fetches or vendors VTK/Qt/TBB. `brew --prefix` (not a hard-coded /opt/homebrew) is the only
+# honest way to find them: it is /opt/homebrew on Apple Silicon and /usr/local on Intel, and a
+# user may have relocated it. The per-formula opt/ paths are prepended as well because Homebrew
+# can keep a formula keg-only (unlinked from the top-level prefix), in which case only
+# <prefix>/opt/<formula> resolves. An explicit -DCMAKE_PREFIX_PATH still wins over all of it.
+if(APPLE AND NOT CMAKE_PREFIX_PATH)
+  find_program(GMTVTK_BREW_EXE brew)
+  if(GMTVTK_BREW_EXE)
+    execute_process(COMMAND "${GMTVTK_BREW_EXE}" --prefix
+      OUTPUT_VARIABLE _brew_prefix OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET RESULT_VARIABLE _brew_rc)
+    if(_brew_rc EQUAL 0 AND IS_DIRECTORY "${_brew_prefix}")
+      list(PREPEND CMAKE_PREFIX_PATH
+        "${_brew_prefix}"
+        "${_brew_prefix}/opt/vtk" "${_brew_prefix}/opt/qtbase"
+        "${_brew_prefix}/opt/qttools" "${_brew_prefix}/opt/tbb")
+    endif()
+  endif()
+endif()
+
+# ...and the test that errors if they are NOT installed. find_package(REQUIRED) below does abort
+# on its own, but its message names a CMake package ("Could not find a package configuration file
+# provided by Qt6"), which tells a macOS user nothing about what to type. QUIET probes first, then
+# one FATAL_ERROR naming the missing FORMULAE. The VTK probe asks for GUISupportQt specifically:
+# a VTK built WITHOUT Qt is found as a package but fails the component, so this also catches a
+# hand-built/conda VTK that cannot host a QVTK widget — the failure that would otherwise surface
+# as a wall of link errors.
+if(APPLE)
+  set(_igmt_missing "")
+  find_package(Qt6 QUIET COMPONENTS Widgets UiTools)
+  if(NOT Qt6_FOUND)
+    list(APPEND _igmt_missing qtbase qttools)
+  endif()
+  find_package(TBB QUIET CONFIG)
+  if(NOT TBB_FOUND)
+    list(APPEND _igmt_missing tbb)
+  endif()
+  find_package(VTK QUIET COMPONENTS GUISupportQt RenderingOpenGL2)
+  if(NOT VTK_FOUND)
+    list(APPEND _igmt_missing vtk)
+  endif()
+  if(_igmt_missing)
+    list(REMOVE_DUPLICATES _igmt_missing)
+    string(JOIN " " _igmt_brew_line ${_igmt_missing})
+    message(FATAL_ERROR
+      "iGMT needs VTK 9.6+ (built WITH Qt6), Qt6 Widgets + UiTools, and oneTBB. "
+      "Missing or unusable: ${_igmt_brew_line}\n"
+      "Install them with Homebrew:\n"
+      "    brew install ${_igmt_brew_line}\n"
+      "(`vtk` already enables Qt6 — the old `--with-qt` option no longer exists. `qttools` "
+      "provides Qt6::UiTools, which the vtk formula does not pull in.)\n"
+      "Searched: ${CMAKE_PREFIX_PATH}\n"
+      "Override with -DCMAKE_PREFIX_PATH=... or -DVTK_DIR=/-DQt6_DIR=/-DTBB_DIR=.")
   endif()
 endif()
 
@@ -136,6 +195,29 @@ if(GMTVTK_LINUX_BUNDLE)
   list(GET CMAKE_PREFIX_PATH 0 GMTVTK_LINUX_CONDA_PREFIX)
   configure_file(cmake/linux_bundle.cmake.in linux_bundle.cmake @ONLY)
   install(SCRIPT ${CMAKE_CURRENT_BINARY_DIR}/linux_bundle.cmake)
+endif()
+
+# macOS runtime staging -- same job as GMTVTK_LINUX_BUNDLE, same division of labour (this stages,
+# deps/build_mac.sh rewrites install names + codesigns), different loader vocabulary: @loader_path
+# where Linux says $ORIGIN. Turned on by deps/build_mac.sh and by .github/workflows/MacBinaries.yml;
+# a plain dev build on a Mac wants none of it (it links straight against Homebrew's own dylibs).
+if(GMTVTK_MACOS_BUNDLE)
+  if(NOT APPLE)
+    message(FATAL_ERROR GMTVTK_MACOS_BUNDLE_is_macOS-only)
+  endif()
+  if(NOT CMAKE_PREFIX_PATH)
+    message(FATAL_ERROR GMTVTK_MACOS_BUNDLE_needs_CMAKE_PREFIX_PATH)
+  endif()
+  # INSTALL_NAME_DIR, not INSTALL_RPATH: a dylib's own LC_ID_DYLIB is what every OTHER file in the
+  # bundle records as the path to it, so leaving it at the build-tree default would bake an absolute
+  # path into the plugins. @loader_path here means "beside whoever loaded me", which is exactly the
+  # flat bundle layout. build_mac.sh re-asserts it after its rewrite pass, since install_name_tool
+  # is what has the last word.
+  set_target_properties(gmtvtk PROPERTIES INSTALL_NAME_DIR "@loader_path" BUILD_WITH_INSTALL_NAME_DIR ON)
+  install(TARGETS gmtvtk LIBRARY DESTINATION .)
+  list(GET CMAKE_PREFIX_PATH 0 GMTVTK_MACOS_PREFIX)
+  configure_file(cmake/macos_bundle.cmake.in macos_bundle.cmake @ONLY)
+  install(SCRIPT ${CMAKE_CURRENT_BINARY_DIR}/macos_bundle.cmake)
 endif()
 
 # ============================================================================
