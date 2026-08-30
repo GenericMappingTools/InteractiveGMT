@@ -68,6 +68,24 @@ logscale!
 stickplot
 ```
 
+## Movies
+
+`movie` renders a live window frame by frame and encodes the result — the same call the
+**Tools → Make movie** dialog makes. `orbit!`, `set_layer!` and `replace_grid!` are the mutations a
+frame callback applies; `add_label!` / `add_progress!` are the GMT `-L` / `-P` annotations.
+
+```@docs
+movie
+orbit!
+set_layer!
+replace_grid!
+nlayers
+add_label!
+add_progress!
+remove_annotation!
+movie_annotations
+```
+
 ## Utilities
 
 ```@docs

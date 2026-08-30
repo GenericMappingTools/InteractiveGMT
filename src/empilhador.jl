@@ -47,7 +47,7 @@ Stack a collection of 2-D grids (or MODIS/VIIRS/SeaWiFS L2 scenes) into a single
   built with `gdalbuildvrt -resolution lowest -separate`).
 - `region`: Sub-region as `(west, east, south, north)`.
 - `sds`: Sub-dataset selector, either the number (`3` or `"sds3"`) or the name (`"-sst4"`, `"sst4"`).
-- `quality`: SST quality level in [-2 2] (OceanColor `qual_sst`). Values `> quality` are dropped;
+- `quality`: SST quality level in `[-2 2]` (OceanColor `qual_sst`). Values `> quality` are dropped;
   a NEGATIVE value instead turns the array into the 0/1 mask of pixels with `qual >= -quality`.
 - `bitflags`: `true` to mask with `l2_flags` instead of `qual_sst`, or a comma-separated list of
   flag names to use in place of the default one. Keys: $(join(sort(collect(keys(L2_FLAGBITS))), ", ")).
