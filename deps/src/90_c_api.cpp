@@ -3982,6 +3982,8 @@ GMTVTK_API void gmtvtk_set_movie_callback(JuliaMovieFn fn) {
 GMTVTK_API int gmtvtk_open_movie_dialog_h(void *handle) {
 	Scene *s = static_cast<Scene *>(handle);
 	if (!sceneAlive(s)) return 0;
+	auto it = g_movieDlgs.find(s);
+	if (it != g_movieDlgs.end()) { it->second->unpark(); return 1; }   // the SAME dialog the menu opens
 	MovieDialog *m = new MovieDialog(s->widget ? s->widget->window() : nullptr, s);
 	if (!m->dlg) { delete m; return 0; }
 	QObject::connect(m->dlg, &QObject::destroyed, [m] { delete m; });
@@ -5234,6 +5236,52 @@ GMTVTK_API int gmtvtk_platecalc_open_dialog_test(void *handle) {
 	QApplication::processEvents();
 	return 1;
 }
+// --- Make movie dialog: the X parks it, it does not die -------------------------------------------
+// Looked up in g_movieDlgs by scene rather than through a test-only global: that map is what the menu
+// and gmtvtk_open_movie_dialog_h already key the one-dialog-per-window rule on, so the test observes
+// the same state the app does.
+static MovieDialog *movieTestDlg(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	auto it = g_movieDlgs.find(s);
+	return (it == g_movieDlgs.end()) ? nullptr : it->second;
+}
+// Open it the way the menu does. A Scene* made by the PRODUCTION dll is unknown to this dll's own
+// live-scene set (file-static, one copy per DLL), so it is taken as given and inserted first —
+// exactly what gmtvtk_platecalc_open_dialog_test does. 1 = up (a second call unparks the same one).
+GMTVTK_API int gmtvtk_movie_open_dialog_test(void *handle) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->win) return 0;
+	g_scenes.insert(s);
+	return gmtvtk_open_movie_dialog_h(s);
+}
+// The X, driven the way a user drives it.
+GMTVTK_API void gmtvtk_movie_close_dialog_test(void *handle) {
+	MovieDialog *m = movieTestDlg(handle);
+	if (m && m->dlg) m->dlg->close();
+	QApplication::processEvents();
+}
+// 1 = parked (hidden + a Scene Objects row), 0 = on screen, -1 = no dialog.
+GMTVTK_API int gmtvtk_movie_parked_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	MovieDialog *m = movieTestDlg(handle);
+	if (!m || !m->dlg) return -1;
+	const bool hidden = !m->dlg->isVisible();
+	bool row = false;
+	if (s) for (auto &pt : s->parkedTools) if (pt.win == m->dlg) row = true;
+	return (hidden && row) ? 1 : 0;
+}
+// The parked row's own "Delete" — the ONLY thing that ends the dialog. 1 = it is gone. Uses the same
+// testDeleteParkedDialog every other parked dialog's Delete test uses: deleteLater alone only POSTS
+// the destruction, and the wrapper's destructor (which drops the g_movieDlgs entry) has to have run
+// before this returns.
+GMTVTK_API int gmtvtk_movie_delete_dialog_test(void *handle) {
+	MovieDialog *m = movieTestDlg(handle);
+	if (!m) return 0;
+	testDeleteParkedDialog(&m);
+	return movieTestDlg(handle) == nullptr ? 1 : 0;
+}
+
 // The X: PARKS it (kept alive), same contract as the Euler dialog's.
 GMTVTK_API void gmtvtk_platecalc_close_dialog_test() {
 	if (g_plateTestDlg && g_plateTestDlg->dlg) g_plateTestDlg->dlg->close();

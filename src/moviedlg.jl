@@ -84,29 +84,44 @@ function _on_movie(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		common = (name = name, format = Symbol(format), frame_rate = rate, clean = clean,
 		          label = label, progress = progress)
 
-		out = if src == "layers"
+		# What the frames ARE, decided before anything is rendered, so the progress bar below knows how
+		# many there will be and every source reaches the same one `movie(...)` call.
+		frames, mutate = if src == "layers"
 			from = (v = tryparse(Int, _get(d, "from")); v === nothing ? 1 : v)
 			to   = (v = tryparse(Int, _get(d, "to"));   v === nothing ? nlayers(fig) : v)
 			step = (v = tryparse(Int, _get(d, "step")); v === nothing ? 1 : max(1, v))
 			(from <= to) || error("Make movie: the layer range is empty ($from to $to)")
-			# The callback-less method: `frames` counts LAYER NUMBERS there, which is exactly what the
-			# dialog's From/To/Step mean.
-			movie(fig; frames = from:step:to, common...)
+			# `frames` counts LAYER NUMBERS here, which is exactly what From/To/Step mean, and
+			# `_movie_layer_number` reads the layer off each frame's value.
+			(from:step:to, (fg, f) -> set_layer!(fg, _movie_layer_number(f)))
 		elseif src == "grids"
 			paths = _moviedlg_paths(_get(d, "grids"))
 			isempty(paths) && error("Make movie: the grid list is empty")
 			grids = [_gmtread_trb(p) for p in paths]
-			movie(fig; frames = eachindex(grids), common...) do fg, f
-				replace_grid!(fg, grids[_movie_layer_number(f)])
-			end
+			(eachindex(grids), (fg, f) -> replace_grid!(fg, grids[_movie_layer_number(f)]))
 		else
 			n  = (v = tryparse(Int, _get(d, "frames")); v === nothing ? 120 : v)
 			az = (v = tryparse(Float64, _get(d, "az")); v === nothing ? 3.0 : v)
 			el = (v = tryparse(Float64, _get(d, "el")); v === nothing ? 0.0 : v)
 			n > 1 || error("Make movie: a camera orbit needs at least 2 frames")
-			movie(fig; frames = n, common...) do fg, _
-				orbit!(fg, az, el)
+			(n, (fg, _) -> orbit!(fg, az, el))
+		end
+
+		# The progress bar is THE shared one every long operation raises (gmtvtk_progress_*), not a
+		# second bar built into the movie dialog. It counts FRAMES; the encode that follows is one more
+		# step, announced by its own label rather than a second bar.
+		nf = length(_movie_frames(frames))
+		_progress_show_async(nf + 1, "Make movie — rendering…")
+		out = try
+			movie(fig; frames = frames, common...) do fg, f
+				mutate(fg, f)
+				# The encode runs INSIDE `movie`, after the last frame, so the only place to announce it
+				# from out here is the last frame's own callback.
+				_progress_status(f.index, f.index == nf ? "Make movie — encoding…" :
+				                                         "Make movie — frame $(f.index)/$nf")
 			end
+		finally
+			_progress_close()      # closed however this ends, so an error cannot leave a bar on screen
 		end
 		println("Make movie -> ", out)
 		return Cint(1)

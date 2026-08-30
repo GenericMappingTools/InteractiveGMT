@@ -4917,6 +4917,23 @@ public:
 	}
 };
 
+class MovieDialog;
+static std::map<Scene *, MovieDialog *> g_movieDlgs;   // one dialog per window, so re-opening unparks it
+
+// Closing a .ui-loaded dialog PARKS it. MovieDialog is a plain wrapper around the QDialog QUiLoader
+// built, not a QDialog subclass, so it cannot override closeEvent the way LidarPicker does -- this
+// filter is that override. The Escape key does NOT raise a close event (QDialog::reject hides through
+// done()), so the wrapper also connects `rejected`; both routes call ONE park function.
+class MovieCloseFilter : public QObject {
+public:
+	std::function<bool()> onClose;                      // true = swallow the close and park
+	explicit MovieCloseFilter(QObject *parent) : QObject(parent) {}
+	bool eventFilter(QObject *o, QEvent *e) override {
+		if (e->type() == QEvent::Close && onClose && onClose()) { e->ignore(); return true; }
+		return QObject::eventFilter(o, e);
+	}
+};
+
 // Tools > Make movie. Loads deps/ui/movie_dialog.ui at runtime and hands src/moviedlg.jl a
 // "key=value" block (JuliaMovieFn, 30_app.cpp). It renders nothing and writes nothing itself: the
 // Julia side turns the block into the same `movie(...)` call the scripted API uses, so a movie made
@@ -4926,6 +4943,9 @@ public:
 // window at all), a cube-layer sweep (either kind of 3-D cube), and a grid sequence (any grid
 // window). The layer page asks Julia how many layers this window's cube has -- through the same
 // callback, never a copy cached in the Scene -- and disables itself when the answer is none.
+//
+// The X PARKS it in this window's Scene Objects dock, like every other tool dialog: the frame source,
+// the grid list and the output settings survive, and only the parked row's own "Delete" destroys it.
 class MovieDialog {
 public:
 	QDialog *dlg = nullptr;
@@ -4942,10 +4962,60 @@ public:
 	QCheckBox *chkLabel = nullptr, *chkProgress = nullptr, *chkClean = nullptr;
 	QPushButton *btnRun = nullptr;
 	int nLayers = 0;
+	bool reallyClose = false;          // set by the parked row's "Delete": let the next close through
+	bool running = false;              // a render is in flight; the dialog must not be parked under it
 
 	// The nine GMT reference points, in the order both combos offer them.
 	static QStringList justCodes() {
 		return QStringList{"TL", "TC", "TR", "ML", "MC", "MR", "BL", "BC", "BR"};
+	}
+
+	~MovieDialog() {
+		// By VALUE, not by `scn`: when the owning viewer is torn down the Scene may already be gone,
+		// so the key cannot be trusted (same reason LidarPicker's destructor does this).
+		for (auto it = g_movieDlgs.begin(); it != g_movieDlgs.end(); )
+			it = (it->second == this) ? g_movieDlgs.erase(it) : std::next(it);
+	}
+
+	// Bring it back from the dock. ONE function for every way in — double-click, the row's checkbox,
+	// its "Show" item, and a second click of the menu entry.
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	// The parked row's menu — the properties button and the context menu are the same lambda.
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel = m.addAction("Delete");
+			QAction *pick = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				if (dlg) dlg->deleteLater();     // destroyed -> the row and this wrapper go with it
+			}
+		};
+	}
+
+	// Hide and leave a handle in Scene Objects. Returns true when the close was swallowed, which is
+	// what the filter and the `rejected` connection both need to know.
+	bool parkNow() {
+		if (reallyClose || !dlg || !sceneAlive(scn)) return false;
+		if (running) return true;            // a render is in flight: swallow, but do not park yet
+		dlg->hide();
+		parkTool(scn, dlg, "Make movie", IC_Image,
+		         "Closed movie tool — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);             // a handle nobody can see is no handle at all
+		return true;
 	}
 
 	explicit MovieDialog(QWidget *parent, Scene *scene) {
@@ -4959,10 +5029,18 @@ public:
 		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
 		f.close();
 		if (!dlg) { qWarning("MovieDialog: QUiLoader failed to load the .ui"); return; }
-		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		// NO WA_DeleteOnClose: the X parks this dialog instead of destroying it, so its frame source,
+		// grid list and output settings survive being put away. Only the parked row's "Delete" ends it.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		QDialog *d = dlg;
+		MovieCloseFilter *cf = new MovieCloseFilter(d);
+		cf->onClose = [this] { return parkNow(); };
+		d->installEventFilter(cf);
+		// Escape reaches QDialog::reject(), which hides through done() WITHOUT a close event — that
+		// would leave the dialog invisible and unparked. Same park, one implementation.
+		QObject::connect(d, &QDialog::rejected, [this] { parkNow(); });
+		g_movieDlgs[scene] = this;
 
 		rbOrbit  = d->findChild<QRadioButton *>("rbOrbit");
 		rbLayers = d->findChild<QRadioButton *>("rbLayers");
@@ -5117,12 +5195,17 @@ public:
 			        .arg(cboProgJust ? cboProgJust->currentText() : QString("TR"));
 		}
 
+		// The frame-by-frame progress bar is raised by the HOST (src/moviedlg.jl), through the same
+		// gmtvtk_progress_* dialog every other long operation uses -- one progress mechanism, not a
+		// second one built into this dialog. `running` only keeps the X from parking mid-render.
 		if (lblStatus) { lblStatus->setText("Rendering…"); QApplication::processEvents(); }
 		if (btnRun) btnRun->setEnabled(false);
+		running = true;
 		const QByteArray p = kv.join('\n').toUtf8();
 		QApplication::setOverrideCursor(Qt::WaitCursor);
 		const int ok = g_juliaMovie(scn, p.constData());
 		QApplication::restoreOverrideCursor();
+		running = false;
 		if (btnRun) btnRun->setEnabled(true);
 		if (lblStatus) lblStatus->setText(ok ? "Done." : "Failed — see the Julia console.");
 		if (!ok)
@@ -22515,12 +22598,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// WA_DeleteOnClose frees it when closed. Warmed up on open like every other tool dialog, because
 	// the first movie would otherwise pay the scheduler's JIT in front of the user.
 	mTools->addAction("Make movie", [win, s]() {
+		auto it = g_movieDlgs.find(s);
+		if (it != g_movieDlgs.end()) { it->second->unpark(); return; }   // the SAME dialog, settings intact
 		warmupTool("movie");
 		MovieDialog *m = new MovieDialog(win, s);
 		if (!m->dlg) { delete m; return; }
-		// The wrapper's lifetime is TIED to its QDialog: the dialog deletes itself on close
-		// (WA_DeleteOnClose), and this takes the non-QObject wrapper with it instead of leaking one
-		// per open.
+		// The wrapper's lifetime is TIED to its QDialog: the dialog is destroyed only by the parked
+		// row's "Delete" (it does not delete itself on close — it parks), and this takes the
+		// non-QObject wrapper with it instead of leaking one per open.
 		QObject::connect(m->dlg, &QObject::destroyed, [m] { delete m; });
 		m->dlg->show();
 	});
