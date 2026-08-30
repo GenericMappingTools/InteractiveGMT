@@ -505,9 +505,8 @@ back), so a movie's settings survive while you go and adjust the scene. It never
 Everything the dialog does is one `movie(...)` call, so the same movie can be made from the console
 — with a callback when a frame has to do more than the dialog offers. `movie` and the frame
 mutations (`orbit!`, `set_layer!`, `replace_grid!`) and annotations (`add_label!`, `add_progress!`)
-are documented under **[Movies](src/95-reference.md#Movies)** in the API reference
-([online](https://www.generic-mapping-tools.org/InteractiveGMT/95-reference/#Movies)), and in the
-REPL with `?movie`.
+are documented under **[Movies](95-reference.md#Movies)** in the API reference, and in the REPL with
+`?movie`.
 
 ```julia
 # Every layer of the cube this window has open

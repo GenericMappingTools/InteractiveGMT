@@ -17,6 +17,7 @@ const titles = Dict(
     "60-geography.md" => "Geography Tools",
     "70-tools.md" => "Tools",
     "75-mbgrid.md" => "mbgrid",
+    "90-user-manual.md" => "User Manual",
     "95-reference.md" => "API Reference",
     "hillshade.md" => "Hillshade",
 )

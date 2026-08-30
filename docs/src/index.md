@@ -46,6 +46,7 @@ fig = xyplot([t y])
 - [Utilities](50-utilities.md)
 - [Geography Tools](60-geography.md)
 - [Tools](70-tools.md)
+- [User Manual](90-user-manual.md)
 - [API Reference](95-reference.md)
 
 ## Public API
