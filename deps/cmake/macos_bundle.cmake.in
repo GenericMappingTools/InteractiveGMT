@@ -61,8 +61,15 @@ file(GET_RUNTIME_DEPENDENCIES
 # name is @rpath/QtCore.framework/Versions/A/QtCore -- so the bundle must reproduce everything from
 # the .framework component onward, or dyld looks for a path that is not there. Info.plist rides
 # along because `codesign` (run by build_mac.sh, and mandatory on arm64) rejects a framework that
-# has no bundle identifier. Headers/, the .tbd stubs and the Current symlink are deliberately left
-# behind: nothing at run time reads them.
+# has no bundle identifier. Headers/ and the .tbd stubs are left behind: nothing reads them.
+#
+# The Versions/Current symlink is NOT optional, and used to be skipped here on the grounds that
+# "nothing at run time reads them" -- true of dyld, which follows the install name straight to
+# Versions/A/QtGui, and false of `codesign`. codesign resolves a versioned framework THROUGH
+# Versions/Current, so without it the whole directory is not a bundle at all and signing dies with
+# "QtGui.framework: bundle format unrecognized, invalid, or unsuitable" -- which on arm64, where an
+# unsigned image will not load, stops the build (it did, 2026-08-30). A framework is built complete
+# HERE rather than repaired later, so build_mac.sh can sign what it is handed.
 function(_igmt_install_dep _dep)
   string(REGEX MATCH "[^/]+\\.framework/.*$" _rel ${_dep})
   if(_rel)
@@ -71,6 +78,19 @@ function(_igmt_install_dep _dep)
     get_filename_component(_verdir ${_dep} DIRECTORY)
     if(EXISTS ${_verdir}/Resources/Info.plist)
       file(INSTALL ${_verdir}/Resources/Info.plist DESTINATION ${CMAKE_INSTALL_PREFIX}/${_sub}/Resources)
+    endif()
+    # Only a VERSIONED framework (.framework/Versions/<ver>/<Name>) gets the three symlinks; a flat
+    # one is already a valid bundle and its _sub would be the .framework dir itself.
+    if(_rel MATCHES "^([^/]+)\\.framework/Versions/([^/]+)/")
+      set(_fwname ${CMAKE_MATCH_1})                                   # QtGui
+      set(_ver    ${CMAKE_MATCH_2})                                   # A
+      set(_fwroot ${CMAKE_INSTALL_PREFIX}/${_fwname}.framework)
+      file(REMOVE ${_fwroot}/Versions/Current ${_fwroot}/${_fwname} ${_fwroot}/Resources)
+      file(CREATE_LINK ${_ver} ${_fwroot}/Versions/Current SYMBOLIC)
+      file(CREATE_LINK Versions/Current/${_fwname} ${_fwroot}/${_fwname} SYMBOLIC)
+      if(EXISTS ${_fwroot}/Versions/${_ver}/Resources)
+        file(CREATE_LINK Versions/Current/Resources ${_fwroot}/Resources SYMBOLIC)
+      endif()
     endif()
   else()
     file(INSTALL ${_dep} DESTINATION ${CMAKE_INSTALL_PREFIX} FOLLOW_SYMLINK_CHAIN)

@@ -19069,9 +19069,9 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	                                    // own — every extra keeps the set IT owns, untouched)
 	// profLine is a pile vector -> it may live in the depth-cleared overlay renderer; clear both layers.
 	if (s->profLine) { s->ren->RemoveActor(s->profLine); if (s->axesRen) s->axesRen->RemoveActor(s->profLine); }
-	if (s->bar)      s->ren->RemoveActor2D(s->bar);
-	if (s->barTicks) s->ren->RemoveActor2D(s->barTicks);
-	for (auto &ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
+	if (s->bar)      s->ren->RemoveViewProp(s->bar);
+	if (s->barTicks) s->ren->RemoveViewProp(s->barTicks);
+	for (auto &ta : s->barLabels) if (ta) s->ren->RemoveViewProp(ta);
 	s->barLabels.clear(); s->barValues.clear();
 	s->surfGroup = nullptr; s->drape = nullptr; s->bar = nullptr; s->barTicks = nullptr;
 	s->layerImgMode = false;   // any real surface build exits the fast cube-layer image mode

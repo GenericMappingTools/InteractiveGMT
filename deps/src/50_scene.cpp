@@ -170,7 +170,7 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 	// stops short of the 0 tick our OWN layoutColorbar draws at the true edge). Forces the strip to
 	// fill the full declared height.
 	s->bar->SetUnconstrainedFontSize(true);
-	s->ren->AddActor2D(s->bar);
+	s->ren->AddViewProp(s->bar);
 
 	// A palette legend annotates the CLASSES, one label per block, centred: value k sits at k+0.5 in
 	// the [0,n] range the blocks span. Nice-number ticks would be meaningless here — the pixel values
@@ -193,7 +193,7 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 			ta->GetTextProperty()->SetJustificationToRight();
 			ta->GetTextProperty()->SetVerticalJustificationToCentered();
 			ta->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
-			s->ren->AddActor2D(ta);
+			s->ren->AddViewProp(ta);
 			s->barLabels.push_back(ta);
 		}
 		vtkNew<vtkPolyData> dpd; dpd->SetPoints(s->barTickPts); dpd->SetLines(dlines);
@@ -203,7 +203,7 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 		s->barTicks->SetMapper(dmap);
 		s->barTicks->GetProperty()->SetColor(0.9, 0.9, 0.9);
 		s->barTicks->GetProperty()->SetLineWidth(1.5);
-		s->ren->AddActor2D(s->barTicks);
+		s->ren->AddViewProp(s->barTicks);
 		layoutColorbar(s);
 		return;
 	}
@@ -236,7 +236,7 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 		ta->GetTextProperty()->SetJustificationToRight();
 		ta->GetTextProperty()->SetVerticalJustificationToCentered();
 		ta->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
-		s->ren->AddActor2D(ta);
+		s->ren->AddViewProp(ta);
 		s->barLabels.push_back(ta);
 	}
 	vtkNew<vtkPolyData> tpd; tpd->SetPoints(s->barTickPts); tpd->SetLines(tlines);
@@ -246,7 +246,7 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 	s->barTicks->SetMapper(tmap);
 	s->barTicks->GetProperty()->SetColor(0.9, 0.9, 0.9);
 	s->barTicks->GetProperty()->SetLineWidth(1.5);
-	s->ren->AddActor2D(s->barTicks);
+	s->ren->AddViewProp(s->barTicks);
 
 	layoutColorbar(s);
 }
@@ -283,9 +283,9 @@ static void layoutAquaLandColorbar(Scene *s) {
 // slice). Mirrors buildColorbar's tick generation exactly.
 static void buildAquaLandColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double hi) {
 	if (!s) return;
-	if (s->aquaLandBar)      { s->ren->RemoveActor2D(s->aquaLandBar); s->aquaLandBar = nullptr; }
-	if (s->aquaLandBarTicks) { s->ren->RemoveActor2D(s->aquaLandBarTicks); s->aquaLandBarTicks = nullptr; }
-	for (auto &ta : s->aquaLandBarLabels) if (ta) s->ren->RemoveActor2D(ta);
+	if (s->aquaLandBar)      { s->ren->RemoveViewProp(s->aquaLandBar); s->aquaLandBar = nullptr; }
+	if (s->aquaLandBarTicks) { s->ren->RemoveViewProp(s->aquaLandBarTicks); s->aquaLandBarTicks = nullptr; }
+	for (auto &ta : s->aquaLandBarLabels) if (ta) s->ren->RemoveViewProp(ta);
 	s->aquaLandBarLabels.clear(); s->aquaLandBarValues.clear(); s->aquaLandBarTickPts = nullptr;
 	if (!(hi > lo)) hi = lo + 1.0;
 	s->aquaLandBarLo = lo; s->aquaLandBarHi = hi;
@@ -298,7 +298,7 @@ static void buildAquaLandColorbar(Scene *s, vtkScalarsToColors *lut, double lo, 
 	s->aquaLandBar->SetUnconstrainedFontSize(true);   // see buildColorbar -- stops the painted strip
 	                                                   // shrinking inside its own Position/Height box
 	s->aquaLandBar->SetVisibility(0);   // hidden until refreshGridColorbar decides it should show
-	s->ren->AddActor2D(s->aquaLandBar);
+	s->ren->AddViewProp(s->aquaLandBar);
 
 	const double step = niceNum(niceNum(hi - lo, false) / 5.0, true);
 	int decimals = 0;
@@ -332,7 +332,7 @@ static void buildAquaLandColorbar(Scene *s, vtkScalarsToColors *lut, double lo, 
 		ta->GetTextProperty()->SetJustificationToRight();
 		ta->GetTextProperty()->SetVerticalJustificationToCentered();
 		ta->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
-		s->ren->AddActor2D(ta);
+		s->ren->AddViewProp(ta);
 		s->aquaLandBarLabels.push_back(ta);
 	}
 	vtkNew<vtkPolyData> tpd; tpd->SetPoints(s->aquaLandBarTickPts); tpd->SetLines(tlines);
@@ -343,7 +343,7 @@ static void buildAquaLandColorbar(Scene *s, vtkScalarsToColors *lut, double lo, 
 	s->aquaLandBarTicks->GetProperty()->SetColor(0.9, 0.9, 0.9);
 	s->aquaLandBarTicks->GetProperty()->SetLineWidth(1.5);
 	s->aquaLandBarTicks->SetVisibility(0);
-	s->ren->AddActor2D(s->aquaLandBarTicks);
+	s->ren->AddViewProp(s->aquaLandBarTicks);
 
 	layoutAquaLandColorbar(s);
 }
@@ -994,9 +994,9 @@ static void setActorTopLayer(Scene *s, vtkActor *a, bool top) {
 // Leaves s->barX0/barY0 (drag position) intact so the bar stays put across retargets.
 static void destroyColorbar(Scene *s) {
 	if (!s) return;
-	if (s->bar)      { s->ren->RemoveActor2D(s->bar);      s->bar = nullptr; }
-	if (s->barTicks) { s->ren->RemoveActor2D(s->barTicks); s->barTicks = nullptr; }
-	for (auto &ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
+	if (s->bar)      { s->ren->RemoveViewProp(s->bar);      s->bar = nullptr; }
+	if (s->barTicks) { s->ren->RemoveViewProp(s->barTicks); s->barTicks = nullptr; }
+	for (auto &ta : s->barLabels) if (ta) s->ren->RemoveViewProp(ta);
 	s->barLabels.clear();
 	s->barValues.clear();
 	s->barTickPts = nullptr;
@@ -1442,9 +1442,9 @@ static void sceneRemoveSurface(Scene *s) {
 	// The base raster's OWN axes go with it — box, ticks, numbers, titles, as one owned unit.
 	axesDestroy(s, s->baseAxes);
 	// Colorbar strip + tick lines + numeric labels
-	if (s->bar)      s->ren->RemoveActor2D(s->bar);
-	if (s->barTicks) s->ren->RemoveActor2D(s->barTicks);
-	for (auto &ta : s->barLabels) if (ta) s->ren->RemoveActor2D(ta);
+	if (s->bar)      s->ren->RemoveViewProp(s->bar);
+	if (s->barTicks) s->ren->RemoveViewProp(s->barTicks);
+	for (auto &ta : s->barLabels) if (ta) s->ren->RemoveViewProp(ta);
 	s->bar = nullptr; s->barTicks = nullptr;
 	s->barLabels.clear(); s->barValues.clear();
 	// Profile line anchored to the old surface. It is a pile vector now, so it may be parked in the

@@ -524,7 +524,7 @@ static int movieAnnoAdd(Scene *s, MovieAnno proto)
 
 	proto.label = vtkSmartPointer<vtkTextActor>::New();
 	proto.label->GetTextProperty()->SetFontFamilyToArial();
-	s->ren->AddActor2D(proto.label);
+	s->ren->AddViewProp(proto.label);
 
 	if (!proto.progress) {
 		proto.boxPD     = vtkSmartPointer<vtkPolyData>::New();
@@ -533,20 +533,20 @@ static int movieAnnoAdd(Scene *s, MovieAnno proto)
 		proto.boxLine   = annoMakeActor2D(proto.boxLinePD, proto.penrgb, proto.penwidth);
 		// The box goes UNDER its text: 2-D props draw in the order they were added, and a fill added
 		// after the label would paint over the very string it is meant to back.
-		s->ren->RemoveActor2D(proto.label);
-		s->ren->AddActor2D(proto.boxActor);
-		s->ren->AddActor2D(proto.boxLine);
-		s->ren->AddActor2D(proto.label);
+		s->ren->RemoveViewProp(proto.label);
+		s->ren->AddViewProp(proto.boxActor);
+		s->ren->AddViewProp(proto.boxLine);
+		s->ren->AddViewProp(proto.label);
 	}
 	else {
 		proto.staticPD    = vtkSmartPointer<vtkPolyData>::New();
 		proto.movingPD    = vtkSmartPointer<vtkPolyData>::New();
 		proto.staticActor = annoMakeActor2D(proto.staticPD, proto.bgrgb, proto.bgwidth);
 		proto.movingActor = annoMakeActor2D(proto.movingPD, proto.fgrgb, proto.fgwidth);
-		s->ren->RemoveActor2D(proto.label);
-		s->ren->AddActor2D(proto.staticActor);          // static first: the moving part rides on top
-		s->ren->AddActor2D(proto.movingActor);
-		s->ren->AddActor2D(proto.label);
+		s->ren->RemoveViewProp(proto.label);
+		s->ren->AddViewProp(proto.staticActor);          // static first: the moving part rides on top
+		s->ren->AddViewProp(proto.movingActor);
+		s->ren->AddViewProp(proto.label);
 	}
 
 	s->movieAnnos.push_back(proto);
@@ -572,11 +572,11 @@ static bool movieAnnoRemove(Scene *s, int id)
 	for (size_t i = 0; i < s->movieAnnos.size(); ++i) {
 		if (s->movieAnnos[i].id != id) continue;
 		MovieAnno &a = s->movieAnnos[i];
-		if (a.label)       s->ren->RemoveActor2D(a.label);
-		if (a.boxActor)    s->ren->RemoveActor2D(a.boxActor);
-		if (a.boxLine)     s->ren->RemoveActor2D(a.boxLine);
-		if (a.staticActor) s->ren->RemoveActor2D(a.staticActor);
-		if (a.movingActor) s->ren->RemoveActor2D(a.movingActor);
+		if (a.label)       s->ren->RemoveViewProp(a.label);
+		if (a.boxActor)    s->ren->RemoveViewProp(a.boxActor);
+		if (a.boxLine)     s->ren->RemoveViewProp(a.boxLine);
+		if (a.staticActor) s->ren->RemoveViewProp(a.staticActor);
+		if (a.movingActor) s->ren->RemoveViewProp(a.movingActor);
 		s->movieAnnos.erase(s->movieAnnos.begin() + i);
 		rebuildSceneObjects(s);
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
