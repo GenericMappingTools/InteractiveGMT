@@ -127,15 +127,34 @@ struct ClickableLabel : QLabel {
 	std::function<void(const QPoint&)> onRightClick;   // RIGHT click -> context menu (e.g. Save…)
 	std::function<void()>              onDoubleClick;  // LEFT double click -> reopen / raise (parked X,Y plots)
 	using QLabel::QLabel;
+	// A label that answers BOTH gestures cannot act on the first press: opening the properties menu
+	// there (a modal exec) eats the second click, so the double-click never arrives — which is exactly
+	// why double-clicking a master handle appeared to do nothing. So when both are wired, the single
+	// click waits out the double-click interval and is cancelled if the second click lands.
 	void mousePressEvent(QMouseEvent *e) override {
-		if (e->button() == Qt::LeftButton && onClick) onClick(e->globalPosition().toPoint());
-		else if (e->button() == Qt::RightButton && onRightClick) onRightClick(e->globalPosition().toPoint());
+		if (e->button() == Qt::LeftButton && onClick) {
+			const QPoint gp = e->globalPosition().toPoint();
+			if (!onDoubleClick) { onClick(gp); return; }
+			pendingClick = true;
+			QTimer::singleShot(QApplication::doubleClickInterval(), this, [this, gp]() {
+				if (!pendingClick) return;                  // a double-click took it
+				pendingClick = false;
+				if (onClick) onClick(gp);
+			});
+			return;
+		}
+		if (e->button() == Qt::RightButton && onRightClick) onRightClick(e->globalPosition().toPoint());
 		else QLabel::mousePressEvent(e);
 	}
 	void mouseDoubleClickEvent(QMouseEvent *e) override {
-		if (e->button() == Qt::LeftButton && onDoubleClick) onDoubleClick();
-		else QLabel::mouseDoubleClickEvent(e);
+		if (e->button() == Qt::LeftButton && onDoubleClick) {
+			pendingClick = false;                           // cancel the waiting single click
+			onDoubleClick();
+			return;
+		}
+		QLabel::mouseDoubleClickEvent(e);
 	}
+	bool pendingClick = false;
 };
 
 // A caller-supplied GMTdataset drawn over the surface as lines or points. Each carries
@@ -184,6 +203,12 @@ struct Overlay {
 	bool labelsShown = false;                 // "Show point labels" toggle (55_lineprops.cpp): billboard text
 	                                          // labels built from vertexInfo, same mechanism city names use
 	                                          // (gmtvtk_add_texts_h). Tracks whether they are currently added.
+	bool namesShown = false;                  // "Show names" toggle: ONE billboard label per SEGMENT, at that
+	                                           // segment's centroid, carrying its own `info` text (a GADM
+	                                           // province, a plate-boundary name). Same billboard mechanism
+	                                           // as the per-vertex labels above — a different anchor, not a
+	                                           // different kind of label.
+	std::string namesGroup;                   // text group tag for those ("<name> (names)").
 	std::string labelsGroup;                  // text group tag for the toggled labels (lazily set to
 	                                          // "<name> (labels)"), so gmtvtk_remove_overlay_group_h can erase
 	                                          // just them without touching this overlay itself.
@@ -227,6 +252,13 @@ struct Overlay {
 	                                          // GPlates export). Default false preserves existing overlays'
 	                                          // "always show Z" behaviour (coastlines/plate boundaries/...)
 	                                          // until each is confirmed to genuinely have no z of its own.
+	// The overlay's OWN DATA, one row per vertex, exactly as the source table had it -- every column,
+	// under its own name (gmtvtk_overlay_set_table_h). A dropped table can be far wider than the three
+	// coordinates that get plotted (x y z mag date …), and "Show data table" must show WHAT THE DATA
+	// IS, not the three numbers the renderer happened to need. Empty = no table was supplied, and the
+	// dialog falls back to the plotted coordinates. Same pair, same meaning, as SymbolLayer's.
+	std::vector<std::string> dataHdr;
+	std::vector<std::vector<std::string>> dataRows;
 	bool noDataTable = false;                // suppresses "Show data table…" entirely -- for overlays whose
 	                                          // per-vertex table is meaningless to the user (e.g. Geophysics >
 	                                          // Magnetics > Import *.gmt/*.nc cruise tracks: thousands of raw
@@ -649,6 +681,12 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 static bool lineGroupIsClamped(Scene *s, const std::string &gname);
 static bool lineGroupCanClamp(Scene *s, const std::string &gname);
 static void lineGroupSetClamped(Scene *s, const std::string &gname, bool on);
+static bool lineGroupHasNames(Scene *s, const std::string &gname);      // per-segment names available?
+static bool lineGroupNamesShown(Scene *s, const std::string &gname);    // ...and plotted right now?
+static void lineGroupSetNames(Scene *s, const std::string &gname, bool on);
+static void lineGroupRename(Scene *s, const std::string &oldName, const std::string &newName);
+static void lineGroupRenamePrompt(Scene *s, const std::string &gname);   // ask, then rename (menu + dbl-click)
+static void lineRenamePrompt(Scene *s, const LineRef &lr);               // ...the same for ONE element's label
 static void applyVectorStacking(Scene *s);                      // shared vector-pile draw-order (50_scene.cpp)
 static void restackVector(Scene *s, int *stackPtr, int op);    // move one vector element through the pile
 static void applyGridStacking(Scene *s);                        // grid-pile draw-order: base relief + grids (50_scene.cpp)

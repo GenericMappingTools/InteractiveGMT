@@ -69,6 +69,7 @@ function _ensure_callbacks()
 	                    ("move",        _register_move),
 	                    ("img-stretch", _register_img_stretch),
 	                    ("geography",   _register_geography),
+	                    ("gadm",        _register_gadm),
 	                    ("solid",       _register_solid),
 	                    ("tides",       _register_tides),
 	                    ("tidemodel",   _register_tidemodel),

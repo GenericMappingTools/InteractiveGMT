@@ -1504,13 +1504,70 @@ function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractSt
 	vpacked = isempty(vtexts) ? "" : join(vtexts, '\x1e')
 	# ex4_h is a strict superset of the plain add (groupName/info/vertexInfo/flags all default to
 	# null/false) — one call handles every case, never a per-feature fork (SACRED_LAW.md).
+	# NEVER INVENT A Z. `_pack_dataset_flat` writes z=0 for a 2-column table because the renderer needs
+	# three numbers per point — that zero is geometry, not data, and the flag says so, so "Show data
+	# table…" shows #/X/Y and no Z column (Overlay::zIsPlaceholder).
+	zfill = Cint(_ds_ncols(D) < 3 ? 1 : 0)
 	ok = ccall(_fn(:gmtvtk_add_overlay_ex4_h), Cint,
 	  (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
 	   Cstring, Cstring, Cstring, Cint, Cint, Cint, Cstring),
 	  scene, xyz, Cint(npts), segoff, Cint(nseg), modei, cr, cg, cb, lw, ps, nm, String(groupName), packed,
-	  Cint(noConvertToPoints), Cint(0), Cint(noDataTable), vpacked)
+	  Cint(noConvertToPoints), zfill, Cint(noDataTable), vpacked)
 	ok == 0 && @warn "drop: window is closed; dataset not added"
+	# ...and never HIDE one either: the table this overlay was built from goes with it, so its data
+	# table shows every column the source really has, under its own names — the three plotted
+	# coordinates are what the renderer needed, not what the data is.
+	ok != 0 && _attach_source_table(scene, nm, D, npts)
 	return ok != 0
+end
+
+# How many numeric columns the source table has (the widest segment; a ragged multisegment table is
+# described by its widest row set, never by its narrowest).
+function _ds_ncols(D)::Int
+	segs = D isa AbstractVector ? D : [D]
+	n = 0
+	for s in segs
+		n = max(n, size(s.data, 2))
+	end
+	return n
+end
+
+# Hand the overlay its OWN source table (gmtvtk_overlay_set_table_h): every numeric column plus the
+# per-row text one, under the dataset's own column names, one record per plotted vertex and in the
+# SAME order `_pack_dataset_flat` wrote the points. Skipped when there is nothing to add beyond the
+# plotted x/y/z, and for tables too big to be worth a string per cell (a .laz cloud is millions of
+# rows; nobody reads that in a table widget, and the coordinates fall back in).
+function _attach_source_table(scene::Ptr{Cvoid}, name::AbstractString, D, npts::Int)::Bool
+	segs = D isa AbstractVector ? D : [D]
+	isempty(segs) && return false
+	nc = _ds_ncols(D)
+	hastxt = any(s -> isdefined(s, :text) && !isempty(s.text), segs)
+	(nc > 3 || hastxt) || return false            # x,y,z alone is what the fallback already shows
+	(npts > 0 && npts <= 200_000) || return false
+	cols = String[]
+	cn = try String.(segs[1].colnames) catch; String[] end
+	for k in 1:nc
+		push!(cols, k <= length(cn) && !isempty(cn[k]) ? cn[k] : "col$k")
+	end
+	hastxt && push!(cols, (length(cn) > nc && !isempty(cn[nc+1])) ? cn[nc+1] : "text")
+	rows = Vector{String}(undef, 0)
+	sizehint!(rows, npts)
+	fmt(v) = isnan(v) ? "NaN" : string(round(v; sigdigits = 10))
+	for s in segs
+		m = s.data
+		txt = (isdefined(s, :text) && !isempty(s.text)) ? s.text : String[]
+		for i in 1:size(m, 1)
+			f = String[fmt(Float64(m[i, k])) for k in 1:min(nc, size(m, 2))]
+			while length(f) < nc                   # a narrower segment of a ragged table
+				push!(f, "")
+			end
+			hastxt && push!(f, i <= length(txt) ? String(txt[i]) : "")
+			push!(rows, join(f, '\x1f'))
+		end
+	end
+	length(rows) == npts || return false           # not aligned with the points -> show nothing invented
+	return ccall(_fn(:gmtvtk_overlay_set_table_h), Cint, (Ptr{Cvoid}, Cstring, Cstring, Cstring),
+	             scene, String(name), join(cols, '\x1f'), join(rows, '\x1e')) != 0
 end
 
 # Per-ROW trailing text (GMT.gmtread's own `.text` field, e.g. a "x y placename" table) — the

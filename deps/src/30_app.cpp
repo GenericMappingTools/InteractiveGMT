@@ -805,6 +805,14 @@ static JuliaGrdVectorFn g_juliaGrdVector = nullptr;
 typedef int (*JuliaEarthRegionsFn)(void *scene, void *dlg, const char *params);
 static JuliaEarthRegionsFn g_juliaEarthRegions = nullptr;
 
+// GADM (Geography menu), GMT.jl's `gadm`: the administrative units of a country, from the gadm.org
+// database. GadmDialog (70_window.cpp, loads deps/ui/gadm_dialog.ui) hands a newline-separated
+// "key=value" block to Julia (_on_gadm, src/gadm.jl): mode=names (print the children of what is
+// asked for, back into the dialog through gmtvtk_gadm_set_listing) or mode=plot (add the boundaries
+// to `scene` as a line overlay). Returns 1 on success, 0 on failure. nullptr to detach.
+typedef int (*JuliaGadmFn)(void *scene, void *dlg, const char *params);
+static JuliaGadmFn g_juliaGadm = nullptr;
+
 // DGT LIDAR (Tools menu), GMT.jl's `dgt_lidar` / `dgt_mosaic`: Portugal's national LIDAR survey,
 // downloaded from the DGT CDD portal and optionally mosaicked. DgtLidarDialog (70_window.cpp, loads
 // deps/ui/dgt_lidar_dialog.ui) hands a newline-separated "key=value" block to Julia (_on_dgt,

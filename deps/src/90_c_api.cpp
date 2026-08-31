@@ -779,6 +779,48 @@ GMTVTK_API int gmtvtk_symbol_set_table_h(void *handle, const char *name, const c
 	return 1;
 }
 
+// The SAME thing for a line/point OVERLAY: attach the source table the overlay was built from, so
+// "Show data table…" shows every column the data really has (x y z mag date …) under its own name,
+// instead of the three coordinates the renderer needed. `name` picks the most recently added overlay
+// with that name (empty = the most recent one); packing is identical to gmtvtk_symbol_set_table_h
+// (hdr = names joined by US '\x1f'; rows = records joined by RS '\x1e', fields by US), and the table
+// is adopted only when it has one row per VERTEX — a table that does not line up is not shown at all.
+GMTVTK_API int gmtvtk_overlay_set_table_h(void *handle, const char *name, const char *hdr, const char *rows) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || s->overlays.empty() || !hdr || !rows) return 0;
+	Overlay *ov = nullptr;
+	if (name && name[0]) {
+		for (size_t i = s->overlays.size(); i-- > 0; )
+			if (s->overlays[i].name == name) { ov = &s->overlays[i]; break; }
+	}
+	else ov = &s->overlays.back();
+	if (!ov) return 0;
+	auto split = [](const std::string &str, char sep) {
+		std::vector<std::string> out;
+		size_t a = 0;
+		while (a <= str.size()) {
+			const size_t b = str.find(sep, a);
+			if (b == std::string::npos) { out.push_back(str.substr(a));  break; }
+			out.push_back(str.substr(a, b - a));
+			a = b + 1;
+		}
+		return out;
+	};
+	const std::vector<std::string> H = split(std::string(hdr), '\x1f');
+	const std::vector<std::string> R = split(std::string(rows), '\x1e');
+	size_t npts = 0;
+	if (ov->actor && ov->actor->GetMapper()) {
+		if (vtkPolyData *pd = vtkPolyData::SafeDownCast(ov->actor->GetMapper()->GetInput()))
+			if (pd->GetPoints()) npts = (size_t)pd->GetPoints()->GetNumberOfPoints();
+	}
+	if (H.empty() || npts == 0 || R.size() != npts) return 0;
+	ov->dataHdr = H;
+	ov->dataRows.clear();
+	ov->dataRows.reserve(npts);
+	for (const auto &r : R) ov->dataRows.push_back(split(r, '\x1f'));
+	return 1;
+}
+
 // Same as gmtvtk_add_symbols_h, plus PER-POINT size and fill colour: `sizeScale` = npts factors
 // relative to `sizePx` (null = all 1), `ptRGB` = npts RGB triplets 0..1 (null = the flat fill colour).
 // ONE layer, ONE Scene Objects handle, ONE call — the point of it: a "scaled symbols" table used to
@@ -2413,6 +2455,29 @@ GMTVTK_API void gmtvtk_earthregions_set_region(void *dlg, double w, double e, do
 // into the window. Returns 1/0. nullptr to detach.
 GMTVTK_API void gmtvtk_set_earthregions_callback(JuliaEarthRegionsFn fn) {
 	g_juliaEarthRegions = fn;
+}
+
+// Julia hands the GADM dialog the list of administrative names it just asked for. It opens in the
+// shared read-only text popup, where a double-click appends that name to the dialog's Subregions box.
+GMTVTK_API void gmtvtk_gadm_set_listing(void *dlg, const char *title, const char *text) {
+	auto *w = static_cast<GadmDialog *>(dlg);
+	if (!w || !w->dlg) return;
+	w->showListing(QString::fromUtf8(title ? title : "GADM"), QString::fromUtf8(text ? text : ""));
+}
+
+// Julia fills the GADM dialog's country list: `rows` is one "Name (ISO3)" per line, already sorted.
+// Pushed synchronously from the dialog's own "mode=countries" request as it opens.
+GMTVTK_API void gmtvtk_gadm_set_countries(void *dlg, const char *rows) {
+	auto *w = static_cast<GadmDialog *>(dlg);
+	if (!w || !w->dlg || !rows) return;
+	w->setCountries(QString::fromUtf8(rows).split('\n', Qt::SkipEmptyParts));
+}
+
+// Register the GADM callback (Geography menu). fn(scene, dlg, params) with the "key=value" block
+// described in 30_app.cpp lists a unit's children or adds its boundaries to the window as vectors.
+// Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_gadm_callback(JuliaGadmFn fn) {
+	g_juliaGadm = fn;
 }
 
 // Append one line to the open DGT LIDAR dialog's log pane. `dlg` is the DgtLidarDialog the callback
@@ -4294,6 +4359,34 @@ GMTVTK_API int gmtvtk_xyplot_screenshot_test(void *handle, const char *path) {
 	if (!p || !p->win || !path) return 0;
 	QPixmap pm = p->win->grab();
 	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
+}
+
+// test hook: does the Scene Objects row whose label is `label` answer a DOUBLE-CLICK (i.e. is its
+// rename gesture wired)? Returns 1 when the row exists and carries an onDoubleClick, 0 when it
+// exists without one, -1 when there is no such row. Checking the handler rather than firing it: the
+// rename itself opens a modal prompt, which a test cannot answer.
+GMTVTK_API int gmtvtk_objrow_hasdbl_test(void *handle, const char *label) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->objPanel || !label) return -1;
+	QTreeWidget *tree = s->objPanel->findChild<QTreeWidget *>();
+	if (!tree) return -1;
+	const QString want = QString::fromUtf8(label);
+	QList<QTreeWidgetItem *> stack;
+	for (int i = 0; i < tree->topLevelItemCount(); ++i) stack << tree->topLevelItem(i);
+	while (!stack.isEmpty()) {
+		QTreeWidgetItem *it = stack.takeFirst();
+		for (int i = 0; i < it->childCount(); ++i) stack << it->child(i);
+		QWidget *w = tree->itemWidget(it, 0);
+		if (!w) continue;
+		// ClickableLabel has no Q_OBJECT (it needs none), so findChildren cannot ask for it by type —
+		// walk the QLabels and cast.
+		for (QLabel *lb : w->findChildren<QLabel *>()) {
+			if (lb->text() != want) continue;
+			ClickableLabel *cl = dynamic_cast<ClickableLabel *>(lb);
+			return (cl && cl->onDoubleClick) ? 1 : 0;
+		}
+	}
+	return -1;
 }
 
 // test hook: grab a PT picker (Cartas Militares / LIDAR2011) by its window title, so a test -- or a

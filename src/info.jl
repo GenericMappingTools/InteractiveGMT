@@ -13,6 +13,42 @@ _info_object(fig::QtFigure) = fig.G
 _info_object(fig::QtImage)  = fig.I
 _info_object(::Any)         = nothing
 
+# THE REPORT IS ABOUT THE DATA FILE, when there is one — and about nothing else. What sits in memory
+# is not what the file holds: GMT.jl reads every integer raster into a Float32 grid, so reporting the
+# in-memory object says "Float32" about an Int16 GeoTIFF, which is the one thing an Info button must
+# not get wrong. The file is what is described; what it was turned into on the way in is not part of
+# the answer. A grid with no file behind it — a crop, an anomaly, anything derived — has nothing else
+# to describe and is reported as it is.
+#
+# `name`, when given, is a Scene Objects element: the file is only its own if that element came out
+# of it (_OPEN_FILES tracks which rows each open file produced), so a derived grid living in a
+# window opened from a file is NOT described by that file.
+function _info_source_file(handle::Ptr{Cvoid}, name::AbstractString = "")::String
+	handle == C_NULL && return ""
+	for (spec, v) in _OPEN_FILES
+		v[1] === handle || continue
+		(isempty(name) || name in v[2]) || continue
+		p = String(first(split(spec, '?')))      # "file?var" (a netCDF subdataset) -> the file itself
+		isfile(p) && return p
+	end
+	return ""
+end
+
+# One report, whichever reporter and whichever source — the ONE place that decides file-or-object, so
+# the toolbar button and a Scene Objects row can never answer differently.
+function _info_report(obj, path::AbstractString, mode::AbstractString)::Nothing
+	src = isempty(path) ? obj : path
+	local r
+	try
+		r = (mode == "gdalinfo") ? GMT.gdalinfo(src) : GMT.grdinfo(src)
+	catch e
+		print("$mode failed: ", sprint(showerror, e))
+		return nothing
+	end
+	print(r === nothing ? "($mode returned nothing)" : _info_to_string(r))
+	return nothing
+end
+
 # Normalize a reporter's return value to plain text. grdinfo's default report is a GMTdataset whose
 # `.text` holds the lines; gdalinfo returns a String. Fall back to the value's pretty repr.
 _info_to_string(s::AbstractString) = String(s)
@@ -30,15 +66,8 @@ function _info_text(fig, mode::AbstractString)::Nothing
 		print("No grid or image in this window.")
 		return nothing
 	end
-	local r
-	try
-		r = (mode == "gdalinfo") ? GMT.gdalinfo(obj) : GMT.grdinfo(obj)
-	catch e
-		print("$mode failed: ", sprint(showerror, e))
-		return nothing
-	end
-	print(r === nothing ? "($mode returned nothing)" : _info_to_string(r))
-	return nothing
+	h = try _fig_handle(fig) catch; C_NULL end
+	return _info_report(obj, _info_source_file(h), mode)
 end
 
 # Same report, but for a NAMED Scene Objects grid handle (base surface or an extra/nested grid) rather
@@ -51,13 +80,7 @@ function _info_text_named(scene::Ptr{Cvoid}, name::AbstractString, mode::Abstrac
 		print("No grid named \"$name\" found.")
 		return nothing
 	end
-	local r
-	try
-		r = (mode == "gdalinfo") ? GMT.gdalinfo(G) : GMT.grdinfo(G)
-	catch e
-		print("$mode failed: ", sprint(showerror, e))
-		return nothing
-	end
-	print(r === nothing ? "($mode returned nothing)" : _info_to_string(r))
-	return nothing
+	# The file only when THIS element came out of it — a derived grid sharing the window with a
+	# file-opened one is described by itself, not by that file.
+	return _info_report(G, _info_source_file(scene, name), mode)
 end

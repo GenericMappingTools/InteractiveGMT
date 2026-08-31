@@ -2034,10 +2034,13 @@ static void rebuildSceneObjects(Scene *s) {
 	// Surface / Color Bar / Axes rows stay out of the way). The choice is the user's from then on:
 	// s->objExpanded remembers every group they opened by hand, so the next rebuild — and this
 	// function rebuilds the whole tree on every change — reopens it instead of snapping it shut.
+	// `onDbl`, when given, is what a DOUBLE-CLICK on the group's label does — for a master handle that
+	// is renaming it, the gesture a label is renamed by everywhere else.
 	auto beginGroupHandle = [&](const QString &name, int iconKind, bool checked,
 	                            std::function<void(const QPoint&)> onProps,
 	                            std::function<void(const QPoint&)> onContext,
-	                            const QString &tip = QString(), bool startFolded = false)
+	                            const QString &tip = QString(), bool startFolded = false,
+	                            std::function<void()> onDbl = nullptr)
 	                            -> QTreeWidgetItem* {
 		QTreeWidgetItem *grp = new QTreeWidgetItem();
 		if (curParent) curParent->addChild(grp); else tree->addTopLevelItem(grp);
@@ -2079,6 +2082,7 @@ static void rebuildSceneObjects(Scene *s) {
 		if (!tip.isEmpty()) { icon->setToolTip(tip); text->setToolTip(tip); }
 		if (onProps)   { text->setCursor(Qt::PointingHandCursor); text->onClick = onProps; }
 		if (onContext) text->onRightClick = onContext;
+		if (onDbl)     text->onDoubleClick = onDbl;
 
 		h->addWidget(cb, 0);
 		h->addWidget(icon, 0);
@@ -2191,11 +2195,15 @@ static void rebuildSceneObjects(Scene *s) {
 		if (!a)
 			return;
 		std::function<void(const QPoint&)> ctx = nullptr;
+		std::function<void()> dbl = nullptr;
 		if (lr) { LineRef ref = *lr; QString nm = label;
-			ctx = [s, ref, nm](const QPoint &g) { popupLineObjectMenu(s, ref, nm, g); }; }
+			ctx = [s, ref, nm](const QPoint &g) { popupLineObjectMenu(s, ref, nm, g); };
+			// DOUBLE-CLICK RENAMES the row — every vector element's label, not just a group header.
+			dbl = [s, ref]() { lineRenamePrompt(s, ref); }; }
 		makeRow(label, iconKind, a->GetVisibility() != 0,
 		        [a](bool on) { a->SetVisibility(on ? 1 : 0); }, ctx,
-		        lr ? QString("Left-click for properties") : QString());
+		        lr ? QString("Left-click for properties, double-click to rename") : QString(),
+		        nullptr, dbl);
 	};
 
 	// Right-click handler factory for a saveable grid/image row: pops a one-item "Save…" menu that
@@ -2470,10 +2478,25 @@ static void rebuildSceneObjects(Scene *s) {
 					aClamp->setToolTip("Drape every line of this group on the surface below it");
 					m.addSeparator();
 				}
+				// Plot every member's own name (GADM's provinces, a plate-boundary set) in one click —
+				// by TAG, through the same overlayToggleNames a single row uses.
+				QAction *aNames = nullptr;
+				if (lineGroupHasNames(s, gn)) {
+					aNames = m.addAction("Show names");
+					aNames->setCheckable(true);
+					aNames->setChecked(lineGroupNamesShown(s, gn));
+					aNames->setToolTip("Plot the name of every element of this group at its centre");
+					m.addSeparator();
+				}
+				// The master handle's own name. Renaming re-tags every member in one go
+				// (lineGroupRename), which is what keeps them ONE group.
+				QAction *aRen = m.addAction("Rename…");
 				QAction *aRem = m.addAction("Remove");
 				QAction *pick = m.exec(g);
+				if (pick == aRen) { lineGroupRenamePrompt(s, gn); return; }
 				if (pick == aRem) { overlayDeleteGroup(s, gn); return; }
 				if (aClamp && pick == aClamp) { lineGroupSetClamped(s, gn, aClamp->isChecked()); return; }
+				if (aNames && pick == aNames) { lineGroupSetNames(s, gn, aNames->isChecked()); return; }
 				if (!pick || !g_juliaEval) return;
 				if (pick == aCpt || pick == aBlack) {
 					const QString cmd = QString("InteractiveGMT._contour_color_by_cpt(Ptr{Cvoid}(UInt(%1)),%2)")
@@ -2486,9 +2509,12 @@ static void rebuildSceneObjects(Scene *s) {
 			// Start FOLDED, like a grid's group: a contour set is 20+ levels, and a group that unfurls
 			// on every rebuild buries everything else in the panel. s->objExpanded still remembers any
 			// group the user opens by hand.
+			// DOUBLE-CLICK RENAMES the master handle — the same prompt its "Rename…" item opens, so the
+			// gesture and the menu are one function, never two look-alikes.
 			beginGroupHandle(QString::fromStdString(ov.groupName), IC_Line,
 			                 ov.actor && ov.actor->GetVisibility() != 0, grpMenu, grpMenu,
-			                 "Click for group properties (colors, Remove)", /*startFolded=*/true);
+			                 "Click for group properties (colors, Remove); double-click to rename",
+			                 /*startFolded=*/true, [s, gn = ov.groupName]() { lineGroupRenamePrompt(s, gn); });
 			ovlGroupOpen = QString::fromStdString(ov.groupName);
 		}
 		// popupLineObjectMenu handles LK_Overlay for EITHER mode already (Convert to points/line +
@@ -2517,7 +2543,8 @@ static void rebuildSceneObjects(Scene *s) {
 		auto ovMenu = [s, ref, onm](const QPoint &g) { popupLineObjectMenu(s, ref, onm, g); };
 		beginGroupHandle(onm, ov.mode == 1 ? IC_Line : IC_Points,
 		                 ov.actor && ov.actor->GetVisibility() != 0, ovMenu, ovMenu,
-		                 "Left-click for properties", /*startFolded=*/true);
+		                 "Left-click for properties, double-click to rename", /*startFolded=*/true,
+		                 [s, ref]() { lineRenamePrompt(s, ref); });
 		bool labVis = false;
 		for (auto &t : s->texts)
 			if (t.groupName == lgn && t.mecaEvent < 0 && t.actor && t.actor->GetVisibility()) labVis = true;

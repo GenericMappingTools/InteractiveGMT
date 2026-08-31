@@ -454,10 +454,30 @@ static void showLineDataTable(Scene *s, const LineRef &lr, const QString &name) 
 	const bool showZ  = (!s->flat2d || lr.kind == LK_Overlay) && !(ovp && ovp->zIsPlaceholder);
 	QStringList hdr;   hdr << "#" << "X" << "Y";   if (showZ) hdr << "Z";
 
+	// THE SOURCE TABLE WINS. When the overlay carries the data it was built from (Overlay::dataHdr /
+	// dataRows, set by whoever imported it), that is what the table shows -- ALL of its columns, under
+	// their own names. The plotted x/y/z are only the three the renderer needed; a table with more
+	// columns than that is not "an x,y,z line" and must not be reported as one. The fallback below is
+	// for overlays that never carried a table (drawn shapes, contours, coastlines).
+	const bool haveSrc = ovp && !ovp->dataRows.empty() && (int)ovp->dataRows.size() == nrows &&
+	                     !ovp->dataHdr.empty();
+	if (haveSrc) {
+		hdr.clear();
+		hdr << "#";
+		for (const std::string &h : ovp->dataHdr) hdr << QString::fromStdString(h);
+	}
+	const std::vector<std::vector<std::string>> *rows = haveSrc ? &ovp->dataRows : nullptr;
+
 	QTableWidget *tbl = buildDataTableDialog(
 		name.isEmpty() ? QString("Line data") : (name + " — data"), nrows, hdr,
-		[&pl](int row, int col) { return QString::number(pl[row][col], 'g', 10); },
-		editable, [s, lr]() { lineSavePoints(s, lr); });
+		[&pl, rows](int row, int col) {
+			if (rows) {
+				const std::vector<std::string> &r = (*rows)[row];
+				return (col >= 0 && col < (int)r.size()) ? QString::fromStdString(r[col]) : QString();
+			}
+			return QString::number(pl[row][col], 'g', 10);
+		},
+		editable && !haveSrc, [s, lr]() { lineSavePoints(s, lr); });
 
 	// Live write-back: a committed X/Y/Z cell updates pg.v and rebuilds the outline. Connected only
 	// for editable (LK_Polygon) tables. cellChanged also fires when we programmatically fix a cell,
@@ -1019,6 +1039,121 @@ static void lineSetClamped(Scene *s, const LineRef &lr, bool on) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
+// ONE segment, ONE name: put the overlay's per-segment text (Overlay::info — a GADM province, a
+// plate-boundary name) on screen as a billboard label at each segment's own centroid. The SAME batch
+// mechanism the per-vertex "Show point labels" and Geography's city names use (addTextsBatch), so the
+// labels are draggable, have their own properties and their own Scene Objects row; only the anchor
+// differs. Toggling off deletes just that batch — the line is untouched.
+static void overlayToggleNames(Scene *s, Overlay *ov) {
+	if (!s || !ov) return;
+	if (ov->namesShown) {
+		if (!ov->namesGroup.empty()) textBatchDelete(s, ov->namesGroup);
+		ov->namesShown = false;
+		return;
+	}
+	vtkPoints *pts = ov->baseLine ? ov->baseLine->GetPoints() : nullptr;
+	if (!pts || ov->info.empty() || (int)ov->segoff.size() < 2) return;
+	const int nseg = std::min((int)ov->info.size(), (int)ov->segoff.size() - 1);
+	// ONE LABEL PER NAME. A single administrative unit is very often many polygons — a mainland plus
+	// its islands, a multipart border — and every one of them carries the same name, so labelling per
+	// SEGMENT stamps the same word a dozen times. The name goes on its BIGGEST piece (most vertices),
+	// which is the one a reader would point at.
+	struct Best { double cx, cy; int npt; };
+	std::map<std::string, Best> best;
+	std::vector<std::string> order;                        // first-seen order, so the map stays stable
+	for (int k = 0; k < nseg; ++k) {
+		const std::string &txt = ov->info[k];
+		if (txt.empty()) continue;                         // a segment with no name gets no label
+		const int a = ov->segoff[k], b = ov->segoff[k + 1];
+		if (b <= a || b > pts->GetNumberOfPoints()) continue;
+		// The centroid of the segment's own vertices — inside the ring for a country/province outline,
+		// and on the line for an open boundary, which is where a name belongs either way.
+		double cx = 0.0, cy = 0.0;
+		for (int i = a; i < b; ++i) { double p[3]; pts->GetPoint(i, p); cx += p[0]; cy += p[1]; }
+		cx /= (b - a);  cy /= (b - a);
+		auto it = best.find(txt);
+		if (it == best.end()) { best.emplace(txt, Best{ cx, cy, b - a });  order.push_back(txt); }
+		else if (b - a > it->second.npt) it->second = Best{ cx, cy, b - a };
+	}
+	std::vector<double> xy;
+	std::string blob;
+	int nlab = 0;
+	for (const std::string &txt : order) {
+		const Best &bt = best[txt];
+		xy.push_back(bt.cx);  xy.push_back(bt.cy);
+		if (nlab++) blob += '\x1e';
+		blob += txt;
+	}
+	if (!nlab) return;
+	if (ov->namesGroup.empty()) ov->namesGroup = ov->name + " (names)";
+	addTextsBatch(s, xy.data(), blob.c_str(), nlab, 0.0, 0.0, 0.0, 10, nullptr, 0, 0,
+	              ov->namesGroup.c_str(), nullptr, 0, nullptr, nullptr, 0);
+	ov->namesShown = true;
+}
+
+// Does any member of this group carry per-segment names, and are they on right now? Per-group ops
+// apply BY TAG, through the same one-overlay function above — never a second implementation.
+static bool lineGroupHasNames(Scene *s, const std::string &gname) {
+	if (!s || gname.empty()) return false;
+	for (auto &o : s->overlays) if (o.groupName == gname && !o.info.empty()) return true;
+	return false;
+}
+static bool lineGroupNamesShown(Scene *s, const std::string &gname) {
+	if (!s || gname.empty()) return false;
+	for (auto &o : s->overlays) if (o.groupName == gname && o.namesShown) return true;
+	return false;
+}
+static void lineGroupSetNames(Scene *s, const std::string &gname, bool on) {
+	if (!s || gname.empty()) return;
+	for (auto &o : s->overlays)
+		if (o.groupName == gname && !o.info.empty() && o.namesShown != on) overlayToggleNames(s, &o);
+}
+
+// Rename a GROUP (a master handle) — every member's tag at once, by TAG, so the group stays one
+// group. The tag IS the handle's name in Scene Objects and the key every per-group op resolves
+// through, so all three carriers of it move together; nothing else in the app compares a group tag
+// to a fixed string, which is what makes this safe.
+static void lineGroupRename(Scene *s, const std::string &oldName, const std::string &newName) {
+	if (!s || oldName.empty() || newName.empty() || oldName == newName) return;
+	for (auto &o : s->overlays) if (o.groupName == oldName) o.groupName = newName;
+	for (auto &p : s->polys)    if (p.groupName == oldName) p.groupName = newName;
+	for (auto &t : s->texts)    if (t.groupName == oldName) t.groupName = newName;
+}
+
+// Rename ONE element (an overlay line/point layer, a drawn polygon) — its own row label, which for
+// an element that owns children (its labels, its names) is also the header of its little group. The
+// element-level twin of lineGroupRenamePrompt below; both are reached by DOUBLE-CLICKING the label.
+static void lineRenamePrompt(Scene *s, const LineRef &lr) {
+	if (!s || !lr.actor) return;
+	std::string *slot = nullptr;
+	if (lr.kind == LK_Overlay) {
+		for (auto &o : s->overlays) if (o.actor.Get() == lr.actor) { slot = &o.name; break; }
+	}
+	else if (lr.kind == LK_Polygon) {
+		const int pi = polyIndexOfActor(s, lr.actor);
+		if (pi >= 0) slot = &s->polys[pi].name;
+	}
+	if (!slot) return;
+	bool ok = false;
+	const QString nn = QInputDialog::getText(s->widget, "Rename", "Name:", QLineEdit::Normal,
+	                                         QString::fromStdString(*slot), &ok).trimmed();
+	if (!ok || nn.isEmpty() || nn == QString::fromStdString(*slot)) return;
+	*slot = nn.toStdString();
+	rebuildSceneObjects(s);
+}
+
+// Ask for the new name and apply it. THE rename gesture: the group menu's "Rename…" and a
+// double-click on the master handle's label are the same call, never two look-alikes.
+static void lineGroupRenamePrompt(Scene *s, const std::string &gname) {
+	if (!s || gname.empty()) return;
+	bool ok = false;
+	const QString nn = QInputDialog::getText(s->widget, "Rename", "Name:", QLineEdit::Normal,
+	                                         QString::fromStdString(gname), &ok).trimmed();
+	if (!ok || nn.isEmpty() || nn == QString::fromStdString(gname)) return;
+	lineGroupRename(s, gname, nn.toStdString());
+	rebuildSceneObjects(s);
+}
+
 static bool lineGroupIsClamped(Scene *s, const std::string &gname) {
 	if (!s || gname.empty()) return false;
 	for (auto &o : s->overlays) if (o.groupName == gname && o.clamped) return true;
@@ -1291,6 +1426,14 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 			});
 			lab->setCheckable(true);
 			lab->setChecked(ovp->labelsShown);
+		}
+		// The per-SEGMENT twin: a line whose segments are named things (GADM provinces, plate
+		// boundaries) can put those names on the map, one per segment at its centroid.
+		if (ovp && !ovp->info.empty()) {
+			QAction *nm = m.addAction("Show names", [s, ovp]() { overlayToggleNames(s, ovp); });
+			nm->setCheckable(true);
+			nm->setChecked(ovp->namesShown);
+			nm->setToolTip("Plot each segment's own name at its centre");
 		}
 		// The points overlay "Plot interior points" itself created (its OWN row, not the OUT polygon):
 		// "Quick grid" (gridding a scattered point cloud into a regular grid -- Auto estimates the

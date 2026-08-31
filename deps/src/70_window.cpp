@@ -13666,6 +13666,194 @@ public:
 };
 
 // ============================================================================================
+// GADM (Geography menu) — the administrative units of a country (gadm.org), through GMT.jl's `gadm`.
+// Loaded at RUNTIME via QUiLoader from deps/ui/gadm_dialog.ui.
+//
+// Two steps, like `gadm` itself is used: LIST the children of what you have (the country, or the
+// subregion typed so far) and pick one from that listing, then Plot. The names cannot live in a combo
+// box — they are per country, and only the download knows them — so the listing is the same shared
+// text popup Earth regions uses, and a double-click on a row appends it to the Subregions box.
+//
+// What comes back is VECTOR data: it lands as a line overlay on whatever the window already shows,
+// with no axes of its own and no re-framing (SACRED_LAW.md, vector-import-onto-existing-display).
+// ============================================================================================
+class GadmDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QComboBox *country = nullptr;              // "Name (XXX)" -- the list comes from Julia (op "countries")
+	QLineEdit *subs = nullptr;
+	QCheckBox *childrenChk = nullptr, *grandChk = nullptr, *allChk = nullptr;
+
+	// The country list, pushed by Julia (gmtvtk_gadm_set_countries): one "Name (ISO3)" per line,
+	// already sorted. Nothing about which countries exist is decided here.
+	void setCountries(const QStringList &rows) {
+		if (!country) return;
+		const QString had = country->currentText();
+		country->clear();
+		country->addItems(rows);
+		const int k = country->findText(had);
+		country->setCurrentIndex(k >= 0 ? k : 0);
+	}
+	// The ISO 3166 alpha-3 code out of the chosen row: the three letters in its trailing (XXX).
+	QString countryCode() const {
+		if (!country) return QString();
+		const QString t = country->currentText().trimmed();
+		const int i = t.lastIndexOf('('), j = t.lastIndexOf(')');
+		return (i >= 0 && j > i + 1) ? t.mid(i + 1, j - i - 1).trimmed() : t;
+	}
+
+	explicit GadmDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/gadm_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GadmDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GadmDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		// The minimise button beside the X is what PARKS the dialog in Scene Objects — the same
+		// gesture Earth regions, the FFT tool and DGT LIDAR use, so a listing you fought to get is
+		// not lost when the dialog is in the way.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("GADM administrative units");
+		QDialog *d = dlg;
+		Scene *sc = scn;
+		// A dialog destroyed while parked must take its row with it.
+		QObject::connect(d, &QObject::destroyed, d, [sc, d]() {
+			if (sceneAlive(sc)) unparkTool(sc, d);
+		});
+		// Qt reports the minimise AFTER the window manager did it, so the restore+hide+park is
+		// deferred one event-loop turn.
+		struct MinimiseParks : QObject {
+			GadmDialog *gd;
+			MinimiseParks(QObject *parent, GadmDialog *g) : QObject(parent), gd(g) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::WindowStateChange && gd && gd->dlg &&
+				    gd->dlg->windowState().testFlag(Qt::WindowMinimized)) {
+					GadmDialog *self = gd;
+					QTimer::singleShot(0, self->dlg, [self]() { self->parkNow(); });
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new MinimiseParks(d, this));
+
+		country     = d->findChild<QComboBox *>("cb_country");
+		subs        = d->findChild<QLineEdit *>("edit_subs");
+		childrenChk = d->findChild<QCheckBox *>("chk_children");
+		grandChk    = d->findChild<QCheckBox *>("chk_grand");
+		allChk      = d->findChild<QCheckBox *>("chk_all");
+		// "Every level" already contains the two above it, so it takes them over while it is on.
+		if (allChk)
+			QObject::connect(allChk, &QCheckBox::toggled, d, [this](bool on) {
+				if (childrenChk) childrenChk->setEnabled(!on);
+				if (grandChk)    grandChk->setEnabled(!on && childrenChk && childrenChk->isChecked());
+			});
+		// The second level down is the level below the children, so it only means anything with them:
+		// ticking it ticks the one above, and unticking that unticks this. Enable/disable only.
+		if (childrenChk && grandChk) {
+			grandChk->setEnabled(childrenChk->isChecked());
+			QObject::connect(childrenChk, &QCheckBox::toggled, d, [this](bool on) {
+				grandChk->setEnabled(on);
+				if (!on) grandChk->setChecked(false);
+			});
+		}
+		// A country picked from the list is a different country: what was typed under the old one is
+		// not its subregion. Clearing is the honest thing, and it costs a re-list, which is one click.
+		if (country) QObject::connect(country, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+		                              [this](int) { if (subs) subs->clear(); });
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_list")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, "names"); });
+		if (auto *b = d->findChild<QPushButton *>("push_plot")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, "plot"); });
+		addManualButton(d, "utilities/gadm");     // `gadm` is a GMT.jl utility, not a GMT module
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+		// Fill the country list: the names and codes are GMT.jl's tables, so they are asked for, not
+		// written down here (gmtvtk_gadm_set_countries pushes them straight back into the combo).
+		if (g_juliaGadm) g_juliaGadm(scn, this, "mode=countries");
+	}
+
+	// MINIMISE parks the dialog as a Scene Objects handle — the shared parkTool/unparkTool pair, so a
+	// parked GADM is the same kind of row with the same ways back (double-click, its checkbox, Show).
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { unparkTool(scn, dlg); dlg->close(); }
+		};
+	}
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);   // undo the WM's minimise
+		dlg->hide();
+		parkTool(scn, dlg, "GADM", IC_Rect,
+		         "Minimised GADM — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);      // a handle nobody can see is no handle at all
+	}
+
+	// The listing, handed back by Julia (gmtvtk_gadm_set_listing). Double-clicking a name APPENDS it
+	// to the Subregions box — the listing exists to be chosen from, so choosing is one click.
+	void showListing(const QString &title, const QString &text) {
+		QPointer<QDialog> alive(dlg);
+		GadmDialog *self = this;
+		auto popup = std::make_shared<QPointer<QDialog>>();
+		*popup = showInfoText(dlg, title, text, [alive, self, popup](const QString &line) {
+			if (!alive) return;
+			const QString nm = line.trimmed();
+			if (!nm.isEmpty() && self->subs) {
+				const QString cur = self->subs->text().trimmed();
+				self->subs->setText(cur.isEmpty() ? nm : cur + ", " + nm);
+			}
+			if (*popup) (*popup)->close();
+			alive->raise();
+			alive->activateWindow();
+		});
+	}
+
+	void run(QDialog *d, const char *mode) {
+		if (!g_juliaGadm) {
+			QMessageBox::warning(d, "GADM", "GADM: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
+		if (countryCode().isEmpty()) {
+			QMessageBox::warning(d, "GADM", "Pick a country from the list.");
+			return;
+		}
+		QStringList kv;
+		kv << QString("mode=") + mode;
+		kv << "country=" + countryCode();
+		kv << "subs=" + txt(subs);
+		kv << QString("children=%1").arg(childrenChk && childrenChk->isChecked() ? 1 : 0);
+		kv << QString("grand=%1").arg(grandChk && grandChk->isEnabled() && grandChk->isChecked() ? 1 : 0);
+		kv << QString("all=%1").arg(allChk && allChk->isChecked() ? 1 : 0);
+		showBusyDialog(QString(mode) == "names" ? "Reading the administrative units…"
+		                                        : "Fetching the boundaries…");
+		const int ok = g_juliaGadm(scn, this, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "GADM",
+		                              "GADM failed — see this window's Errors console for details.");
+	}
+};
+
+// ============================================================================================
 // DGT LIDAR (Tools menu) — Portugal's national LIDAR survey, from the DGT CDD portal. Loaded at
 // RUNTIME via QUiLoader from deps/ui/dgt_lidar_dialog.ui, and driven entirely by GMT.jl's
 // `dgt_lidar` / `dgt_mosaic` (src/dgtlidar.jl on the Julia side).
@@ -22722,6 +22910,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	addResMenu(mRiv, "All permanent rivers");
 	addResMenu(mRiv, "All intermittent rivers");
 
+	// GADM (GMT.jl's `gadm`): a country's administrative units, from gadm.org — the same kind of
+	// geographic vector overlay as the GSHHG features above, but named rather than clipped to the
+	// view, so it gets its own little dialog. NO ensureGeoBase here: a country's boundaries are worth
+	// looking at on their own, so an empty window gets the vectors themselves, not a world basemap
+	// fetched behind them.
+	mGeo->addSeparator();
+	mGeo->addAction("Administrative units (GADM)…", [win, s]() {
+		auto *w = new GadmDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+
 	mGeo->addSeparator();
 	mGeo->addAction("Global seismicity (1990-2009)", [openSeismicity]() { openSeismicity(true); });
 	QMenu *mIsoc = mGeo->addMenu("Magnetic isochrons");
@@ -23261,6 +23460,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 
+	// "PT Tools", everything that only concerns Portugal, together: the two pickers of Mirone's
+	// cartas_militares.m (its 1:25000 map-sheet branch and its LIDAR2011 mosaic branch, the SAME dialog
+	// class in two modes, sharing the background image and the tile map) and the DGT LIDAR downloader.
+	QMenu *mPT = mTools->addMenu("PT Tools");
 	// LIDAR2011: a picker over the survey's 1600x1000 m tile matrix; select cells, "Do Mosaic" ->
 	// Julia reads the tiles and opens the mosaic grid. The tile table is fetched from Julia (op "init")
 	// right after construction, so the mesh is painted from data/lidarPT.dat.
@@ -23283,11 +23486,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		auto *w = new DgtLidarDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
-	// "PT Tools", everything that only concerns Portugal, together: the two
-	// pickers of Mirone's cartas_militares.m (its 1:25000 map-sheet branch and its LIDAR2011 mosaic
-	// branch, the SAME dialog class in two modes, sharing the background image and the tile map) and
-	// the DGT LIDAR downloader.
-	QMenu *mPT = mTools->addMenu("PT Tools");
 	mPT->addAction("Cartas Militares", [win, s]() {
 		auto it = g_cartasDlgs.find(s);
 		if (it != g_cartasDlgs.end()) { it->second->unpark(); return; }  // the SAME picker, selection intact
