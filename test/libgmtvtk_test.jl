@@ -48,7 +48,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_ceuler_open_dialog_test, :gmtvtk_ceuler_set_test, :gmtvtk_ceuler_read_test,
 	:gmtvtk_ceuler_compute_test, :gmtvtk_ceuler_stop_test, :gmtvtk_ceuler_delete_dialog_test,
 	:gmtvtk_ceuler_adopt_test, :gmtvtk_menu_trigger_test, :gmtvtk_menu_dump_test,
-	:gmtvtk_window_menu_trigger_test, :gmtvtk_window_exists_test,
+	:gmtvtk_window_menu_trigger_test, :gmtvtk_window_exists_test, :gmtvtk_pt_picker_shot_test,
 	:gmtvtk_earthregions_list_test, :gmtvtk_earthregions_pick_test, :gmtvtk_earthregions_code_test,
 	:gmtvtk_earthregions_region_test, :gmtvtk_earthregions_type_test,
 	:gmtvtk_compute_euler_progress,

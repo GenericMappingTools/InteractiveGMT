@@ -54,6 +54,8 @@ include("paste.jl")      # Ctrl+V: clipboard image / numeric table -> the SAME b
 include("basemap.jl")    # World Topo Tiles picker (ported from Mirone bg_map.m)
 include("tilestool.jl")  # Tools > Tiles Tool (ported from Mirone tiles_tool.m; mosaic via GMT.mosaic)
 include("lidarpt.jl")    # Tools > LIDAR2011 PT (ported from Mirone cartas_militares.m 'nikles' mode)
+include("cartasmil.jl") # Tools > PT tools > Cartas Militares (Mirone cartas_militares.m, 1:25000 sheets)
+include("dgtlidar.jl")   # Tools > DGT LIDAR (Portugal): GMT.jl dgt_lidar download + dgt_mosaic
 include("dimfun.jl")     # grdsample Region box recompute (port of Mirone dim_funs.m)
 include("grdsample.jl")  # GMT > Resample (grdsample)
 include("bgregion.jl")   # File > Background region -> blank white 2-D map framed to W/E/S/N

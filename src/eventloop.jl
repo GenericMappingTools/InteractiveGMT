@@ -60,6 +60,7 @@ function _ensure_callbacks()
 	                    ("basemap",     _register_basemap),
 	                    ("tiles",       _register_tiles),
 	                    ("lidarpt",     _register_lidar),
+	                    ("dgt",         _register_dgt),
 	                    ("bgregion",    _register_bgregion),
 	                    ("new-window",  _register_new_window),
 	                    ("save",        _register_save),

@@ -8,15 +8,20 @@
 # ported and therefore has no binding — yet its manual page exists all the same. The URL is built
 # here directly, from the module name, so a page opens for EVERY module a dialog can front, ported or
 # not. `display_file` (GMT.jl) is still the opener, so the browser handling stays identical to `@?`.
-const _MANUAL_BASE = "https://www.generic-mapping-tools.org/GMTjl_doc/documentation/modules/"
+const _MANUAL_BASE = "https://www.generic-mapping-tools.org/GMTjl_doc/documentation/"
 
-# C callback: `name` is the GMT module name (e.g. "grdredpol"). Returns Cint 1 if the page was
-# handed to the browser, 0 on failure — the dialog reports a failure on itself.
+# C callback: `name` is the GMT module name (e.g. "grdredpol"), which is the manual's `modules/`
+# section — that is where all but a handful of the dialogs point. A name that already carries its
+# section ("utilities/dgt_mosaic") names the page wherever the manual keeps it: GMT.jl's own
+# functions (dgt_lidar, dgt_mosaic, …) are documented under `utilities/`, not `modules/`, and a
+# button that could only ever say "modules" would have no page to open for them. Returns Cint 1 if
+# the page was handed to the browser, 0 on failure — the dialog reports a failure on itself.
 function _on_open_manual(cname::Cstring)::Cint
 	try
 		name = unsafe_string(cname)
 		isempty(name) && return Cint(0)
-		GMT.display_file(_MANUAL_BASE * name * ".html")
+		page = occursin('/', name) ? name : "modules/" * name
+		GMT.display_file(_MANUAL_BASE * page * ".html")
 		return Cint(1)
 	catch e
 		@warn "Open manual page FAILED" exception=(e,)

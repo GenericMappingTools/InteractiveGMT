@@ -1735,6 +1735,18 @@ GMTVTK_API void gmtvtk_lidar_set_tiles(void *dlg, const double *rects, const cha
 	p->map->update();
 }
 
+// Where the background image (the SAME data/PTimg_lidar.jpg) sits in THIS picker's coordinates. The
+// LIDAR2011 frame is the extent lidarPT() hard-codes and needs no call; the Cartas Militares grid is
+// in another CRS (Datum Lisboa "coordenadas militares"), so Julia converts those four corners into it
+// and pushes them here before the tiles. Call it BEFORE gmtvtk_lidar_set_tiles: that one re-frames
+// the view, and the margins it leaves are meant to show the image.
+GMTVTK_API void gmtvtk_lidar_set_bg(void *dlg, double x0, double x1, double y0, double y1) {
+	if (!dlg || !(x1 > x0) || !(y1 > y0)) return;
+	LidarPicker *p = reinterpret_cast<LidarPicker*>(dlg);
+	p->map->BGX0 = x0; p->map->BGX1 = x1; p->map->BGY0 = y0; p->map->BGY1 = y1;
+	p->map->update();
+}
+
 // One-line progress text in the open LIDAR2011 picker (replaces Mirone's aguentabar while the tiles
 // are being read). Empty string hides it. `dlg` = the live LidarPicker* that issued the request.
 GMTVTK_API void gmtvtk_lidar_status(void *dlg, const char *msg) {
@@ -2401,6 +2413,23 @@ GMTVTK_API void gmtvtk_earthregions_set_region(void *dlg, double w, double e, do
 // into the window. Returns 1/0. nullptr to detach.
 GMTVTK_API void gmtvtk_set_earthregions_callback(JuliaEarthRegionsFn fn) {
 	g_juliaEarthRegions = fn;
+}
+
+// Append one line to the open DGT LIDAR dialog's log pane. `dlg` is the DgtLidarDialog the callback
+// was called with, so the progress of a download goes back to the dialog that started it (same shape
+// as gmtvtk_tiles_log). The pane repaints on the spot: the run that writes these never returns to the
+// event loop until it is over.
+GMTVTK_API void gmtvtk_dgt_log(void *dlg, const char *msg) {
+	auto *d = static_cast<DgtLidarDialog *>(dlg);
+	if (!d || !d->dlg) return;
+	d->log(QString::fromUtf8(msg ? msg : ""));
+}
+
+// Register the DGT LIDAR callback (Tools menu). fn(scene, dlg, params) with the "key=value" block
+// described in 30_app.cpp downloads the survey tiles over a region (dgt_lidar) and/or mosaics them
+// (dgt_mosaic), adding a mosaic grid to the window. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_dgt_callback(JuliaDgtFn fn) {
+	g_juliaDgt = fn;
 }
 
 // Register the Euler rotations Compute callback (Plates menu). fn(scene, params) with the "key=value"
@@ -4265,6 +4294,21 @@ GMTVTK_API int gmtvtk_xyplot_screenshot_test(void *handle, const char *path) {
 	if (!p || !p->win || !path) return 0;
 	QPixmap pm = p->win->grab();
 	return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
+}
+
+// test hook: grab a PT picker (Cartas Militares / LIDAR2011) by its window title, so a test -- or a
+// pair of eyes -- can SEE what the tile mesh actually paints (the sheet numbers, the selection, the
+// background placement) instead of trusting the paint code. Returns 1 when a window with that title
+// was found and the PNG written.
+GMTVTK_API int gmtvtk_pt_picker_shot_test(const char *title, const char *path) {
+	if (!title || !path) return 0;
+	const QString want = QString::fromUtf8(title);
+	for (QWidget *w : QApplication::topLevelWidgets()) {
+		if (w->windowTitle() != want) continue;
+		QPixmap pm = w->grab();
+		return pm.save(QString::fromUtf8(path), "PNG") ? 1 : 0;
+	}
+	return 0;
 }
 
 // test hook: open the FFT tool on `scene`, optionally CLICK one of its buttons by objectName (the

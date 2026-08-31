@@ -1,0 +1,253 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DgtLidarDialog</class>
+ <widget class="QDialog" name="DgtLidarDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>620</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>DGT LIDAR (Portugal)</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainVerticalLayout">
+   <property name="spacing">
+    <number>8</number>
+   </property>
+   <property name="margin" stdset="0">
+    <number>8</number>
+   </property>
+   <item>
+    <widget class="QGroupBox" name="gb_region">
+     <property name="title">
+      <string>Region (WGS84 degrees)</string>
+     </property>
+     <property name="toolTip">
+      <string>The area to download. Only Portugal is covered by this survey (-9.6/-6.1/36.9/42.2).</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_region">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_xmin"><property name="text"><string>West</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="edit_xmin"/>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="lb_xmax"><property name="text"><string>East</string></property></widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLineEdit" name="edit_xmax"/>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_ymin"><property name="text"><string>South</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_ymin"/>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lb_ymax"><property name="text"><string>North</string></property></widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QLineEdit" name="edit_ymax"/>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_tiles">
+     <property name="title">
+      <string>Tiles to download</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_tiles" columnstretch="0,1,0,0">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_collection"><property name="text"><string>Collection</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="cb_collection">
+        <property name="toolTip"><string>Which product to download: MDT = terrain model, MDS = surface model, at 2 m or 50 cm; LAZ = the raw point cloud.</string></property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="lb_compress">
+        <property name="text"><string>Store as</string></property>
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QComboBox" name="cb_compress">
+        <property name="toolTip"><string>DGT ships uncompressed GeoTIFFs. "GeoTIFF (DEFLATE)" and "netCDF4" recompress each tile as it lands, which saves a lot of disk. Not applied to LAZ.</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_outdir"><property name="text"><string>Save in</string></property></widget>
+      </item>
+      <item row="1" column="1" colspan="2">
+       <widget class="QLineEdit" name="edit_outdir">
+        <property name="toolTip"><string>Root directory for the downloaded tiles (they go in a per-collection subdirectory). Empty = ~/.gmt/DGT. A name starting with "_" is taken under ~/.gmt/DGT (e.g. _algarve -> ~/.gmt/DGT/algarve).</string></property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QPushButton" name="push_outdir">
+        <property name="maximumSize"><size><width>30</width><height>24</height></size></property>
+        <property name="text"><string>...</string></property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lb_delay"><property name="text"><string>Delay (s)</string></property></widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLineEdit" name="edit_delay">
+        <property name="toolTip"><string>Seconds between requests. Raise it if the server starts throttling.</string></property>
+       </widget>
+      </item>
+      <item row="2" column="2" colspan="2">
+       <widget class="QCheckBox" name="chk_latest">
+        <property name="text"><string>Latest version only</string></property>
+        <property name="toolTip"><string>DGT keeps older versions of a tile (_v01, _v02 ...). Ticked, only the most recent one of each is downloaded.</string></property>
+       </widget>
+      </item>
+      <item row="3" column="0" colspan="4">
+       <widget class="QCheckBox" name="chk_dry">
+        <property name="text"><string>Dry run — list the tiles that would be downloaded, download nothing</string></property>
+        <property name="toolTip"><string>Queries the DGT catalogue and writes the tile names it found to the log below, without downloading anything.</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_login">
+     <property name="title">
+      <string>DGT account (leave empty to use ~/.dgt)</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_login" columnstretch="0,1,0,1">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_user"><property name="text"><string>E-mail</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="edit_user">
+        <property name="toolTip"><string>The e-mail of your account at https://cdd.dgterritorio.gov.pt. Left empty, it is read from ~/.dgt.</string></property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="lb_pass">
+        <property name="text"><string>Password</string></property>
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLineEdit" name="edit_pass">
+        <property name="echoMode"><enum>QLineEdit::Password</enum></property>
+       </widget>
+      </item>
+      <item row="1" column="0" colspan="4">
+       <widget class="QCheckBox" name="chk_savecred">
+        <property name="text"><string>Remember them in ~/.dgt</string></property>
+        <property name="toolTip"><string>Writes the two above to ~/.dgt (plain text) so they need not be typed again.</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_mosaic">
+     <property name="title">
+      <string>Mosaic the tiles into one grid</string>
+     </property>
+     <property name="checkable"><bool>true</bool></property>
+     <property name="checked"><bool>true</bool></property>
+     <property name="toolTip">
+      <string>Unticked, the tiles are only downloaded. Ticked, they are also assembled into a single grid over the region above.</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_mosaic" columnstretch="0,1,0,1">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lb_dest"><property name="text"><string>Result</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="cb_dest">
+        <property name="toolTip"><string>Where the mosaic goes: straight into this window (nothing written to disk), or to a file (which is then also displayed).</string></property>
+       </widget>
+      </item>
+      <item row="0" column="2" colspan="2">
+       <layout class="QHBoxLayout" name="horizontalLayout_outfile">
+        <item>
+         <widget class="QLineEdit" name="edit_outfile">
+          <property name="toolTip"><string>Output file. The extension picks the format: .tif/.tiff = compressed GeoTIFF, .nc = netCDF4.</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="push_outfile">
+          <property name="maximumSize"><size><width>30</width><height>24</height></size></property>
+          <property name="text"><string>...</string></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lb_inc"><property name="text"><string>Resample to</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_inc">
+        <property name="toolTip"><string>Optional cell size, in the tiles' own CRS units (metres). Empty = keep the tiles' resolution.</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lb_method">
+        <property name="text"><string>by</string></property>
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QComboBox" name="cb_method">
+        <property name="toolTip"><string>Resampling algorithm, used only when a cell size or a CRS is given.</string></property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lb_proj"><property name="text"><string>Reproject to</string></property></widget>
+      </item>
+      <item row="2" column="1" colspan="3">
+       <widget class="QLineEdit" name="edit_proj">
+        <property name="toolTip"><string>Optional target CRS: an EPSG number (32629), an authority string (EPSG:32629), a proj string, or "geog" for lon/lat. Empty = keep the tiles' CRS (PT-TM06 / ETRS89, metres).</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPlainTextEdit" name="txt_log">
+     <property name="readOnly"><bool>true</bool></property>
+     <property name="maximumSize"><size><width>16777215</width><height>110</height></size></property>
+     <property name="toolTip"><string>What the download and the mosaic did.</string></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="buttonsSpacer">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_mosaic">
+       <property name="minimumSize"><size><width>120</width><height>24</height></size></property>
+       <property name="text"><string>Mosaic what I have</string></property>
+       <property name="toolTip"><string>Skip the download and mosaic the tiles already on disk for this region and collection.</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_download">
+       <property name="minimumSize"><size><width>100</width><height>24</height></size></property>
+       <property name="text"><string>Download</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

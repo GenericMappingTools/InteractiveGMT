@@ -196,7 +196,11 @@ end
 # viewer the tool was opened from (used for its Errors tab).
 function _on_lidar(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 	try
-		parts = split(unsafe_string(cparams), ';'; limit = 4)   # a directory may contain '/' but not ';'
+		raw = unsafe_string(cparams)
+		# The Cartas Militares picker is the SAME dialog class in its other mode, so it arrives through
+		# this same callback; its ops are the "cm" ones and cartasmil.jl answers them.
+		startswith(raw, "cm") && return _on_cartas(scene, dlg, raw)
+		parts = split(raw, ';'; limit = 4)                      # a directory may contain '/' but not ';'
 		op = parts[1]
 		if op == "init"
 			t = _lidar_table()
@@ -235,6 +239,7 @@ function _register_lidar()
 	                  Cvoid, (Ptr{Cvoid}, Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_lidar_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	warm_register("lidarpt", _lidar_warm)   # C++ fires this when the dialog opens (70_window.cpp)
+	warm_register("cartasmil", _cm_warm)    # its twin, the Cartas Militares mode of the same picker
 	return
 end
 

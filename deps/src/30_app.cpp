@@ -805,6 +805,18 @@ static JuliaGrdVectorFn g_juliaGrdVector = nullptr;
 typedef int (*JuliaEarthRegionsFn)(void *scene, void *dlg, const char *params);
 static JuliaEarthRegionsFn g_juliaEarthRegions = nullptr;
 
+// DGT LIDAR (Tools menu), GMT.jl's `dgt_lidar` / `dgt_mosaic`: Portugal's national LIDAR survey,
+// downloaded from the DGT CDD portal and optionally mosaicked. DgtLidarDialog (70_window.cpp, loads
+// deps/ui/dgt_lidar_dialog.ui) hands a newline-separated "key=value" block to Julia (_on_dgt,
+// src/dgtlidar.jl): mode=download (the region, collection, output_dir, compress, delay, latest, dry
+// and the account, plus the mosaic keys when the Mosaic box is ticked) or mode=mosaic (the same
+// region/collection over tiles ALREADY on disk â€” no download, no account). A mosaic that comes back
+// as a grid is added to `scene` as a new layer. Returns 1 on success, 0 on failure. nullptr detaches.
+// `dlg` is the DgtLidarDialog that asked, so progress lines go back into ITS log pane
+// (gmtvtk_dgt_log) instead of the window at large â€” the same dialog-pointer shape the Tiles Tool uses.
+typedef int (*JuliaDgtFn)(void *scene, void *dlg, const char *params);
+static JuliaDgtFn g_juliaDgt = nullptr;
+
 // grdlandmask (GMT menu), dialog laid out after Mirone's grdlandmask window. GrdLandmaskDialog
 // (70_window.cpp, loads deps/ui/grdlandmask_dialog.ui) hands a newline-separated "key=value" block to
 // Julia (_on_grdlandmask, src/grdlandmask.jl): region, inc, res, area, maskvalues, border, pixel,

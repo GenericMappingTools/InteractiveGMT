@@ -65,6 +65,25 @@ bash deps/publish_linux.sh --so     # the rolling libgmtvtk.so only -- the usual
 bash deps/publish_linux.sh --full   # the runtime bundle only
 ```
 
+The macOS assets are built by CI (`.github/workflows/MacBinaries.yml`, one job per architecture —
+there is no Mac on this desk) and left as workflow ARTIFACTS, whose URL changes with every run and
+expires. Moving them to the two release tags is `julia deps/publish_mac.jl`, which looks up the
+newest successful run itself, downloads both architectures' artifacts, checks inside each archive
+and uploads:
+
+```
+julia deps/publish_mac.jl                    # rolling libgmtvtk.dylib, both arches -- the usual case
+julia deps/publish_mac.jl --full             # the runtime bundles too (the rare one)
+julia deps/publish_mac.jl --arch arm64       # one architecture
+julia deps/publish_mac.jl --run 33347252202  # a specific run instead of the newest green one
+julia deps/publish_mac.jl --dry              # download + verify, upload nothing
+```
+
+The workflow can also publish on its own, but only on a manual run that says so up front
+(`gh workflow run MacBinaries.yml -f publish=rolling|full`, or the "Run workflow" button in the
+Actions tab). `publish_mac.jl` needs no such run — it publishes the artifacts of the ordinary push
+build that already happened.
+
 **Rolling library release** — fixed tag `dll-latest` (hardcoded as `DLL_TAG` in `deps/build.jl`,
 never retagged), one asset per platform: `gmtvtk-win64.zip` and `gmtvtk-linux-x86_64.tar.gz`. Both
 carry the library plus its requires-manifest (`.dll_requires` / `.so_requires`) and nothing else, so
