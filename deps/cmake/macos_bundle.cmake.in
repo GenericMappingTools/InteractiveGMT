@@ -71,7 +71,16 @@ file(GET_RUNTIME_DEPENDENCIES
 # unsigned image will not load, stops the build (it did, 2026-08-30). A framework is built complete
 # HERE rather than repaired later, so build_mac.sh can sign what it is handed.
 function(_igmt_install_dep _dep)
-  string(REGEX MATCH "[^/]+\\.framework/.*$" _rel ${_dep})
+  # Homebrew's Qt frameworks reference each other RELATIVELY, so GET_RUNTIME_DEPENDENCIES hands
+  # back chains like
+  #   .../QtOpenGLWidgets.framework/Versions/A/../../../QtDBus.framework/Versions/A/QtDBus
+  # where the FIRST .framework names whoever did the referencing and the LAST names the library
+  # actually being installed. Anchoring at $ with slash-free components matches only that last one
+  # (build_mac.sh's bundle_rel does the same thing with a greedy .*/ in sed). Matching the first
+  # instead gave QtDBus a copy of QtOpenGLWidgets's symlinks and no Versions/Current of its own,
+  # so codesign rejected it -- "bundle format unrecognized, invalid, or unsuitable", 2026-08-31.
+  # The optional Versions/<ver>/ group keeps a flat (unversioned) framework matching too.
+  string(REGEX MATCH "[^/]+\\.framework/(Versions/[^/]+/)?[^/]+$" _rel ${_dep})
   if(_rel)
     get_filename_component(_sub ${_rel} DIRECTORY)
     file(INSTALL ${_dep} DESTINATION ${CMAKE_INSTALL_PREFIX}/${_sub})
