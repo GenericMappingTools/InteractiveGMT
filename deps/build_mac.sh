@@ -162,7 +162,12 @@ printf '%s\n' macOS_bundle_verified:"$bundle_dir/libgmtvtk.dylib"
     otool -L "$bundle_dir/libgmtvtk.dylib" | tail -n +2 | awk '{print $1}' | while IFS= read -r dep; do
         rel=${dep#@loader_path/}
         rel=${rel#@rpath/}
-        [[ -e $bundle_dir/$rel ]] && printf '%s\n' "$rel"
+        # `if`, NOT `[[ ... ]] && printf`: this is the LAST command of the loop body, so with a bare
+        # && a false test makes the whole `while` exit 1, pipefail carries that through `| sort -u`
+        # and set -e kills the script. The list always ends on a dep that is NOT in the bundle --
+        # /usr/lib/libc++, libSystem -- so it failed every single time (2026-08-31). bundle_rel()
+        # above dodges the same shape with an explicit `return 0`.
+        if [[ -e $bundle_dir/$rel ]]; then printf '%s\n' "$rel"; fi
     done | sort -u
 } >"$bundle_dir/.dylib_requires"
 
