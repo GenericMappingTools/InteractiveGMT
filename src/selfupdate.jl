@@ -10,7 +10,8 @@
 # — using Julia's BUNDLED LibGit2, not a system `git.exe`, so end users never need git installed.
 
 using LibGit2
-import Pkg
+# (no `import Pkg`: the binary sync runs deps/build.jl directly, see below. Pkg appears in this
+# file only as advice in the error text for a non-dev install.)
 
 """
     InteractiveGMT.update!()
@@ -51,10 +52,34 @@ function update!()
 
 	# gmtvtk.dll is a separately-rolling release asset (dll-latest, re-uploaded in place on its own
 	# cadence) -- it can be newer than the last source commit, so its refresh is NOT gated behind
-	# a source-diff check above. Pkg.build (deps/build.jl) always re-fetches it unconditionally;
-	# call it every time update! runs, source-changed or not.
+	# a source-diff check above. deps/build.jl always re-fetches it unconditionally; run it every
+	# time update! runs, source-changed or not.
+	#
+	# RUN THE SCRIPT DIRECTLY, not through Pkg.build. Measured 2026-09-01: deps/build.jl does its
+	# whole job (two GitHub API calls, and a ~1.3 MB download only when the asset actually changed)
+	# in 1.4 s, while Pkg.build("InteractiveGMT") took 258 s for the same result -- it resolves the
+	# environment and then AUTO-PRECOMPILES every package in it. That precompile is not work saved:
+	# Julia invalidates the caches the git pull above just touched and rebuilds them at the next
+	# `using` regardless, which is what the "restart Julia" line below already asks for -- and only
+	# for what changed, instead of the whole environment.
+	#
+	# A subprocess rather than include(): build.jl is a script full of top-level consts (SHARED_ROOT,
+	# LIB_NAME, main, ...) and include() evaluates at MODULE scope, so pulling it in here would
+	# scatter those names through InteractiveGMT. It needs no environment resolution -- Downloads and
+	# tar only -- so a bare julia is enough.
 	println("InteractiveGMT: syncing gmtvtk binaries...")
-	Pkg.build("InteractiveGMT")
+	let script = joinpath(_PKGROOT, "deps", "build.jl")
+		if isfile(script)
+			try
+				run(`$(Base.julia_cmd()) --startup-file=no --color=no $script`)
+			catch e
+				@warn "InteractiveGMT: the binary sync failed -- the source is updated, the \
+				       binaries are unchanged." exception=(e,)
+			end
+		else
+			@warn "InteractiveGMT: deps/build.jl not found at $script -- binaries not synced."
+		end
+	end
 	println("InteractiveGMT: update complete. Restart Julia to use the new version.")
 	return nothing
 end
