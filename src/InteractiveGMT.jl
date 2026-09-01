@@ -236,7 +236,13 @@ end
 # iview_splash.hta are still on disk — no longer on this path.)
 function _ensure_desktop_shortcut()
 	pkgroot = normpath(joinpath(@__DIR__, ".."))
-	exe = joinpath(pkgroot, "deps", "build", Sys.iswindows() ? "igmt.exe" : "igmt")
+	# _BIN_DIR (libgmtvtk.jl) is THE answer to "where did the binaries actually land" -- the
+	# package's own deps/build on a dev checkout, SHARED_ROOT (<depot>/gmtvtk_runtime/deps/build)
+	# on a plain install, where deps/build.jl extracts the release. igmt ships beside the library
+	# in both layouts, so it is found by the same resolver rather than a second guess: deriving the
+	# path from @__DIR__ found nothing on every non-dev machine and this function silently did
+	# nothing there -- no desktop icon, no error.
+	exe = joinpath(_BIN_DIR, Sys.iswindows() ? "igmt.exe" : "igmt")
 	isfile(exe) || return
 	julia = joinpath(Sys.BINDIR, Sys.iswindows() ? "julia.exe" : "julia")
 	run(`$exe --install-shortcut --root=$pkgroot --julia=$julia`)
