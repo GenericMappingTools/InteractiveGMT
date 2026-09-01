@@ -17,12 +17,13 @@
  *       bundle on macOS. Run by _ensure_desktop_shortcut() (src/InteractiveGMT.jl) at
  *       precompile time, which knows both paths for certain and passes them as hints.
  *
- * WHY THE BINARY COPIES ITSELF to <home>/.gmt: a `] add` install lives in a CONTENT-HASHED
- * folder that gets a brand-new name on every Pkg.update, so any shortcut pointing straight into
- * the package tree is dead after the first update. The desktop entry therefore points at the
- * stable <home>/.gmt copy, which reads <home>/.gmt/igmt_launcher.ini for the current root. The
- * ini is rewritten by every --install-shortcut run (i.e. every precompile), and if it ever goes
- * stale anyway the resolver falls back to a live search — same search the old .vbs did.
+ * WHERE THE BINARY LIVES: the PACKAGE ROOT, beside iview_app.jl and igmt.ico — that is what the
+ * desktop entry points at. A release zip unpacks it into <depot>/gmtvtk_runtime/deps/build, so
+ * --install-shortcut copies it up into the package root from there. <home>/.gmt is for SETTINGS
+ * (iGMT.ini) and receives nothing but igmt_launcher.ini: never a binary, never an icon copy.
+ * The ini records root + julia so a launch needs no searching; it is rewritten by every
+ * --install-shortcut run (i.e. every precompile), and if it ever goes stale the resolver falls
+ * back to a live search — the same search the old .vbs did.
  *
  * Pure C, no Qt, no VTK, no dependency on gmtvtk.dll: this must run BEFORE Julia exists in the
  * process, and must still put a readable error on screen on a machine where nothing works.
@@ -1229,48 +1230,54 @@ static int spawn_julia(const char *julia, const char *root, int nfiles, char **f
 
 /* -------------------------------------------------------------------- desktop entry creation */
 
-/* The stable copy every desktop entry points at — see the header comment on why the entry must
- * NOT point into the package tree. Returns its path. */
+/* Where the desktop entry points. The launcher LIVES IN THE PACKAGE ROOT, beside iview_app.jl and
+ * igmt.ico — so this copies itself there from wherever it was built or unpacked (a release zip
+ * extracts into <depot>/gmtvtk_runtime/deps/build) and returns that path.
+ *
+ * NOTHING is written to <home>/.gmt except the ini: that directory is for settings (iGMT.ini), not
+ * for binaries or icon copies.
+ *
+ * If the copy cannot be made — an installed package tree may be read-only — the entry points at the
+ * binary where it already is. Both locations are stable across a Pkg.update: gmtvtk_runtime is a
+ * fixed path, and a dev checkout does not move. */
 static const char *install_stable_copy(const char *root)
 {
 	static char dst[MAXP];
 	char self[MAXP];
 	self_path(self, sizeof(self));
-	joinp(dst, sizeof(dst), gmt_dir(), "igmt" EXESUF);
+	joinp(dst, sizeof(dst), root, "igmt" EXESUF);
+	if (strcmp(self, dst) == 0) return dst;
 #ifdef _WIN32
 	{
-		/* A previous copy may be running (the user's own splash). Move it aside first so the
-		 * refresh never fails on a share violation; Windows deletes it on next boot. */
+		/* A previous copy may be running (the user's own splash), which would fail the overwrite
+		 * with a share violation. Move it aside first; Windows drops it on the next boot. */
 		char old[MAXP];
-		joinp(old, sizeof(old), gmt_dir(), "igmt.old.exe");
-		if (file_exists(dst) && _stricmp(self, dst) != 0) {
+		joinp(old, sizeof(old), root, "igmt.old.exe");
+		if (file_exists(dst)) {
 			wchar_t *wd = wide(dst), *wo = wide(old);
 			DeleteFileW(wo);
-			MoveFileExW(wd, wo, MOVEFILE_REPLACE_EXISTING);
+			if (MoveFileExW(wd, wo, MOVEFILE_REPLACE_EXISTING))
+				MoveFileExW(wo, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
 			free(wd); free(wo);
 		}
 	}
 #endif
-	if (strcmp(self, dst) != 0) copy_file(self, dst, 1);
-	(void)root;
+	if (copy_file(self, dst, 1) != 0) {
+		snprintf(dst, sizeof(dst), "%s", self);   /* read-only tree: run it where it lies */
+	}
 	return dst;
 }
 
+/* The icon, used STRAIGHT FROM THE PACKAGE — never copied anywhere. igmt.ico already sits in the
+ * package root, and deps/assets carries the .icns and the PNG. */
 static int install_icon(const char *root, const char *leaf, char *out, size_t n)
 {
-	const char *cands[3];
-	char c0[MAXP], c1[MAXP], c2[MAXP];
-	int i;
-	joinp(c0, sizeof(c0), root, leaf);
-	snprintf(c1, sizeof(c1), "%s%cdeps%cassets%c%s", root, PATHSEP, PATHSEP, PATHSEP, leaf);
-	snprintf(c2, sizeof(c2), "%s%cdeps%cassets%capp_icon.png", root, PATHSEP, PATHSEP, PATHSEP);
-	cands[0] = c0; cands[1] = c1; cands[2] = c2;
-	for (i = 0; i < 3; i++) {
-		if (!file_exists(cands[i])) continue;
-		joinp(out, n, gmt_dir(), (i == 2) ? "igmt.png" : leaf);
-		if (copy_file(cands[i], out, 0) == 0) return 1;
-	}
-	return 0;
+	joinp(out, n, root, leaf);
+	if (file_exists(out)) return 1;
+	snprintf(out, n, "%s%cdeps%cassets%c%s", root, PATHSEP, PATHSEP, PATHSEP, leaf);
+	if (file_exists(out)) return 1;
+	snprintf(out, n, "%s%cdeps%cassets%capp_icon.png", root, PATHSEP, PATHSEP, PATHSEP);
+	return file_exists(out);
 }
 
 #ifdef _WIN32
