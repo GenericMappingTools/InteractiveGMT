@@ -170,6 +170,30 @@ if(NOT GMTVTK_PACKAGE)
   endif()
 endif()
 
+# The desktop launcher — deps/src/launcher.c, a tiny standalone executable that has NOTHING to do
+# with gmtvtk.dll: it starts julia + iview_app.jl, shows the splash, and creates the desktop icon.
+# It must run on a machine where Qt/VTK are missing or broken (that is exactly when the user needs
+# a readable error), so it links only OS libraries — never Qt, VTK, TBB or gmtvtk itself.
+#
+# One binary per OS, replacing the Windows-only iview_app.vbs + make_desktop_shortcut.vbs +
+# iview_splash.hta, which had no equivalent on Linux/macOS (so those platforms had no icon at all).
+# On macOS it compiles as Objective-C: the splash is Cocoa, and ObjC is a superset of C, so the one
+# source file serves all three platforms without a second implementation.
+add_executable(igmt src/launcher.c)
+if(WIN32)
+  set_target_properties(igmt PROPERTIES WIN32_EXECUTABLE TRUE)  # no console flash on double-click
+  # shell32/ole32/uuid: IShellLink (the .lnk) + SHGetKnownFolderPath. oleaut32: OleLoadPicture,
+  # which is what decodes the splash JPEG without pulling in an image library.
+  target_link_libraries(igmt PRIVATE shell32 ole32 oleaut32 uuid shlwapi user32 gdi32)
+elseif(APPLE)
+  set_source_files_properties(src/launcher.c PROPERTIES LANGUAGE OBJC)
+  target_link_libraries(igmt PRIVATE "-framework Cocoa" "-framework QuartzCore")
+else()
+  find_package(X11 REQUIRED)
+  target_include_directories(igmt PRIVATE ${X11_INCLUDE_DIR})
+  target_link_libraries(igmt PRIVATE ${X11_LIBRARIES})
+endif()
+
 # Test-only shared library — SAME source, built a second time with GMTVTK_TEST_API defined so
 # the gmtvtk_*_test hooks in 90_c_api.cpp (guarded by #ifdef GMTVTK_TEST_API) compile in. The
 # production `gmtvtk` target above gets no such define, so those symbols never enter its export
@@ -192,6 +216,7 @@ if(GMTVTK_LINUX_BUNDLE)
   endif()
   set_target_properties(gmtvtk PROPERTIES INSTALL_RPATH $ORIGIN)
   install(TARGETS gmtvtk LIBRARY DESTINATION .)
+  install(TARGETS igmt RUNTIME DESTINATION .)   # the desktop launcher — see add_executable(igmt)
   list(GET CMAKE_PREFIX_PATH 0 GMTVTK_LINUX_CONDA_PREFIX)
   configure_file(cmake/linux_bundle.cmake.in linux_bundle.cmake @ONLY)
   install(SCRIPT ${CMAKE_CURRENT_BINARY_DIR}/linux_bundle.cmake)
@@ -215,6 +240,7 @@ if(GMTVTK_MACOS_BUNDLE)
   # is what has the last word.
   set_target_properties(gmtvtk PROPERTIES INSTALL_NAME_DIR "@loader_path" BUILD_WITH_INSTALL_NAME_DIR ON)
   install(TARGETS gmtvtk LIBRARY DESTINATION .)
+  install(TARGETS igmt RUNTIME DESTINATION .)   # the desktop launcher — see add_executable(igmt)
   list(GET CMAKE_PREFIX_PATH 0 GMTVTK_MACOS_PREFIX)
   configure_file(cmake/macos_bundle.cmake.in macos_bundle.cmake @ONLY)
   install(SCRIPT ${CMAKE_CURRENT_BINARY_DIR}/macos_bundle.cmake)
@@ -244,8 +270,8 @@ endif()
 # runtime DLLs beside it, deps/ui/*.ui, src/, Project.toml, data/) so
 # src/libgmtvtk.jl's _PKGROOT-relative paths and gmtvtk.dll's own runtime
 # self-location (gmtvtkUiDir(), 30_app.cpp) resolve unchanged on the
-# destination machine. The installed launcher (deps/installer/iview_launch.vbs)
-# assumes Julia + this package's deps (GMT.jl, ...) are already
+# destination machine. The installed launcher (deps/build/igmt.exe, given the
+# install root as --root) assumes Julia + this package's deps (GMT.jl, ...) are already
 # installed/instantiated on the destination machine — this does not bundle or
 # bootstrap Julia itself.
 # ============================================================================
@@ -278,6 +304,13 @@ if(GMTVTK_PACKAGE AND WIN32)
   # this is what makes the small "dll-only" zip below. Same file, different
   # component staging dir; no conflict with the COMPONENT full install above.
   install(FILES "$<TARGET_FILE:gmtvtk>" DESTINATION deps/build COMPONENT dll)
+
+  # The launcher rides in the small zip TOO. It is not a VTK module (see the note below about
+  # never smuggling those in here) — it links no bundled library at all, so it cannot desync from
+  # the pinned runtime. It has to be here because a machine that already has the full runtime only
+  # ever fetches this zip: leaving igmt.exe out of it would mean no desktop icon until the next
+  # RUNTIME_VERSION bump.
+  install(FILES "$<TARGET_FILE:igmt>" DESTINATION deps/build COMPONENT dll)
 
   # ...and NOTHING ELSE: the dll-only zip is gmtvtk.dll, alone.
   #
@@ -415,10 +448,19 @@ if(GMTVTK_PACKAGE AND WIN32)
   install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../data/" DESTINATION data COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../Project.toml"        DESTINATION . COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../iview_app.jl"        DESTINATION . COMPONENT full)
+  # Splash background, both encodings: the .jpg is what Win32/Cocoa decode, the .bmp is what the
+  # X11 splash reads (Xlib decodes no image format). Shipped together so one installed tree serves
+  # whichever platform's launcher is looking, and so a git checkout and an installed tree behave
+  # the same — splash_image_path() looks here first, then in deps/assets.
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/crystalball.jpg" DESTINATION . COMPONENT full)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/crystalball.bmp" DESTINATION . COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../iview_splash.hta"    DESTINATION . COMPONENT full)
-  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/crystalball.jpg" DESTINATION . COMPONENT full)  # splash background
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/installer/iview_launch.vbs" DESTINATION . COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/igmt.ico"        DESTINATION . COMPONENT full)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.png"    DESTINATION . COMPONENT full)  # Linux .desktop icon
+  # The launcher itself, beside gmtvtk.dll. `igmt --install-shortcut` then makes the desktop icon
+  # on whatever OS this tree was installed on; the NSIS shortcuts below point straight at it.
+  install(TARGETS igmt RUNTIME DESTINATION deps/build COMPONENT full)
 
   # CPack — TWO zips (full runtime bundle + dll-only) plus an NSIS installer
   # (Desktop + Start Menu icon, always the full bundle — see below).
@@ -455,10 +497,9 @@ if(GMTVTK_PACKAGE AND WIN32)
 
   # NSIS: Desktop + Start Menu shortcuts to the installed launcher, using the
   # iGMT icon (deps/assets/igmt.ico, same PNG source as the in-app QIcon, see
-  # deps/src/_app_icon.h). The launcher is a .vbs (not an .exe), so this uses
-  # raw NSIS script (CPACK_NSIS_EXTRA_*_COMMANDS) instead of the
-  # CPACK_PACKAGE_EXECUTABLES/CPACK_NSIS_MENU_LINKS machinery, which assumes an
-  # installed .exe.
+  # deps/src/_app_icon.h). Raw NSIS script (CPACK_NSIS_EXTRA_*_COMMANDS) rather
+  # than CPACK_PACKAGE_EXECUTABLES/CPACK_NSIS_MENU_LINKS so the shortcut can name
+  # the icon file explicitly.
   #
   # include(CPack) DUMPS every CPACK_* variable verbatim into a GENERATED
   # CPackConfig.cmake as set(VAR "..."), which `cpack.exe` then RE-PARSES as
@@ -476,9 +517,9 @@ if(GMTVTK_PACKAGE AND WIN32)
   set(CPACK_NSIS_DISPLAY_NAME "iGMT")
   set(CPACK_NSIS_PACKAGE_NAME "iGMT")
   set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "
-    CreateShortCut \\\"$DESKTOP/iGMT.lnk\\\" \\\"$SYSDIR/wscript.exe\\\" '\\\"$INSTDIR/iview_launch.vbs\\\"' \\\"$INSTDIR/igmt.ico\\\"
+    CreateShortCut \\\"$DESKTOP/iGMT.lnk\\\" \\\"$INSTDIR/deps/build/igmt.exe\\\" '--root=\\\"$INSTDIR\\\"' \\\"$INSTDIR/igmt.ico\\\"
     CreateDirectory \\\"$SMPROGRAMS/iGMT\\\"
-    CreateShortCut \\\"$SMPROGRAMS/iGMT/iGMT.lnk\\\" \\\"$SYSDIR/wscript.exe\\\" '\\\"$INSTDIR/iview_launch.vbs\\\"' \\\"$INSTDIR/igmt.ico\\\"
+    CreateShortCut \\\"$SMPROGRAMS/iGMT/iGMT.lnk\\\" \\\"$INSTDIR/deps/build/igmt.exe\\\" '--root=\\\"$INSTDIR\\\"' \\\"$INSTDIR/igmt.ico\\\"
   ")
   set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "
     Delete \\\"$DESKTOP/iGMT.lnk\\\"

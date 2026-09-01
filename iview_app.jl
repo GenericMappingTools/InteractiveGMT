@@ -1,5 +1,6 @@
 # Desktop-launcher script: open an empty InteractiveGMT viewer (drag-and-drop launcher) and keep
-# the process alive while the window is open. Run by iview_app.vbs / the desktop shortcut.
+# the process alive while the window is open. Run by deps/build/igmt (deps/src/launcher.c), the
+# desktop launcher behind the icon on all three systems.
 #
 #   julia --project=<this package dir> iview_app.jl
 #
@@ -38,7 +39,7 @@ try
             end
         end
     end
-    # Signal the desktop-icon splash (iview_splash.hta, polling this same path) that the window
+    # Signal the desktop-icon splash (the igmt launcher, polling this same path) that the window
     # is up, so it can close itself now instead of on a fixed timer.
     try
         open(io -> print(io, getpid()), SPLASH_FLAG, "w")

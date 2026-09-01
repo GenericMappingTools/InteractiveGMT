@@ -222,16 +222,24 @@ function __init__()
 	_dbg("startup", "__init__ exit")
 end
 
-# make_desktop_shortcut.vbs writes the .lnk to the user's REAL desktop (whatever folder Windows
-# resolves it to on this machine, via SpecialFolders) -- we don't try to guess that folder from
-# Julia. Idempotent: overwrites the one iGMT.lnk, so re-running just refreshes it.
+# The desktop icon, on ALL THREE systems, made by the ONE launcher binary (deps/src/launcher.c ->
+# deps/build/igmt[.exe]): a .lnk on Windows, a .desktop on Linux, an .app bundle on macOS. It also
+# copies itself to ~/.gmt and records these two paths there, so the icon survives a `] add`
+# reinstall into a differently-hashed package folder.
+#
+# Julia hands over both paths because it is the one place that knows them for certain -- the exact
+# julia that is precompiling right now, and this package's own root. The launcher validates them
+# and falls back to its own search if they ever go stale, so a stale hint costs nothing.
+#
+# (Until 2026-09-01 this ran cscript on deps/installer/make_desktop_shortcut.vbs, which is why
+# Linux and macOS had no desktop icon at all. That script, iview_app.vbs, iview_launch.vbs and
+# iview_splash.hta are still on disk — no longer on this path.)
 function _ensure_desktop_shortcut()
-	Sys.iswindows() || return
 	pkgroot = normpath(joinpath(@__DIR__, ".."))
-	vbs = joinpath(pkgroot, "deps", "installer", "make_desktop_shortcut.vbs")
-	isfile(vbs) || return
-	cscript = joinpath(get(ENV, "SystemRoot", "C:\\Windows"), "System32", "cscript.exe")
-	run(`$cscript //nologo $vbs $pkgroot`)
+	exe = joinpath(pkgroot, "deps", "build", Sys.iswindows() ? "igmt.exe" : "igmt")
+	isfile(exe) || return
+	julia = joinpath(Sys.BINDIR, Sys.iswindows() ? "julia.exe" : "julia")
+	run(`$exe --install-shortcut --root=$pkgroot --julia=$julia`)
 end
 
 # Create the Desktop shortcut as part of COMPILING/installing the package, NOT lazily on first
