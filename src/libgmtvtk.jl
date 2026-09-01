@@ -121,6 +121,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_title_h, :gmtvtk_set_surface_name_h,
 	:gmtvtk_set_basemap_callback, :gmtvtk_set_basemap_logo, :gmtvtk_set_basemap_icon,
 	:gmtvtk_set_tiles_callback, :gmtvtk_set_tiles_world, :gmtvtk_tiles_set_bg, :gmtvtk_tiles_log,
+	:gmtvtk_tiles_set_footprints,
 	:gmtvtk_set_lidar_callback, :gmtvtk_set_lidar_image, :gmtvtk_lidar_set_tiles, :gmtvtk_lidar_status,
 	:gmtvtk_set_oceancolor_callback, :gmtvtk_oc_set_tile, :gmtvtk_oc_status, :gmtvtk_oc_cache_info,
 	:gmtvtk_oc_ask_login, :gmtvtk_oc_message, :gmtvtk_oc_set_products,

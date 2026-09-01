@@ -125,6 +125,30 @@ function _on_dgt(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cint
 	try
 		d    = _nswing_parse(unsafe_string(cparams))
 		mode = _get(d, "mode", "download")
+
+		# ---- Is this machine able to download at all? Asked ONCE, before the tool is of any use, so
+		# the answer arrives while the user can still act on it instead of after they have picked an
+		# area. Thorough on purpose: the file existing proves nothing, and a wrong password looks
+		# exactly like a working one until the first download fails.
+		if mode == "checkcreds"
+			return _dgt_check_credentials(dlg)
+		end
+
+		# ---- Write ~/.dgt from the two boxes and immediately prove it works. `dgt_lidar` writes that
+		# file too (its `save` keyword), but only as a side effect of a download — which is no use to
+		# somebody who cannot download yet because the file is what is missing.
+		if mode == "savecreds"
+			u, p = _get(d, "user"), _get(d, "password")
+			(isempty(u) || isempty(p)) && error("type both the e-mail and the password first")
+			f = joinpath(homedir(), ".dgt")
+			open(f, "w") do io                          # the exact format GMT._read_dgt_credentials reads
+				println(io, "# Login data for the DGT LIDAR downloads")
+				println(io, "login $u")
+				println(io, "password $p")
+			end
+			_dgt_log(dlg, "wrote $f")
+			return _dgt_check_credentials(dlg)
+		end
 		bbox = _dgt_bbox(_get(d, "region"))
 		coll = _get(d, "collection", "MDS-2m")
 		(coll in _DGT_COLLECTIONS) || error("unknown collection '$coll'")
@@ -192,9 +216,86 @@ function _on_dgt(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cint
 	end
 end
 
+"""
+    _dgt_check_credentials(dlg) -> Cint
+
+Can this machine actually download from the DGT portal? Three questions, in the order that tells the
+user something useful about which one failed:
+
+1. does `~/.dgt` exist and carry BOTH a `login` and a `password` line (`GMT._read_dgt_credentials`
+   answers this, and its own error text is the instructions for writing the file);
+2. does the portal ACCEPT them (`GMT._authenticate` — the real login, not a guess);
+3. does the session it hands back actually work (`GMT._test_session` against the STAC endpoint).
+
+Returns 1 when all three pass, 0 otherwise, and says which one failed in the dialog's log.
+"""
+function _dgt_check_credentials(dlg::Ptr{Cvoid})::Cint
+	user, password = try
+		GMT._read_dgt_credentials()
+	catch e
+		_dgt_log(dlg, "NO ACCOUNT: $(sprint(showerror, e))")
+		return Cint(0)
+	end
+	_dgt_log(dlg, "~/.dgt found (login $user) — checking it with the DGT portal…")
+	ok = try
+		GMT._authenticate(user, password, 0)
+	catch e
+		_dgt_log(dlg, "LOGIN FAILED: $(sprint(showerror, e))")
+		return Cint(0)
+	end
+	if ok !== true
+		_dgt_log(dlg, "LOGIN REJECTED: the DGT portal did not accept the e-mail/password in ~/.dgt")
+		return Cint(0)
+	end
+	if !GMT._test_session()
+		_dgt_log(dlg, "SESSION FAILED: logged in, but the portal's search endpoint refused the session")
+		return Cint(0)
+	end
+	_dgt_log(dlg, "DGT account OK — downloads are available")
+	return Cint(1)
+end
+
 function _register_dgt()
 	fptr = @cfunction((s, w, c) -> Base.invokelatest(_on_dgt, s, w, c)::Cint,
 	                  Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_dgt_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	_fp_register("dgt", _dgt_footprints)   # the region picker asks this "how is this ground tiled?"
 	return
+end
+
+# The survey's own tiling under a region: the footprints the map draws beneath the picked rectangle
+# (tilestool.jl's provider registry, name "dgt"; `arg` is the collection the dialog has selected).
+#
+# It is the SAME question `dgt_lidar(bbox; dry=true)` answers — which tiles cover this box — asked of
+# the SAME STAC endpoint. What differs is only what is kept: the dry run keeps the URLs and throws the
+# geometry away (`_collect_urls`), while a picture needs the geometry, so the response is read here
+# for the `bbox` of each feature. No account and no download: the search endpoint is open, exactly as
+# a dry run is.
+function _dgt_footprints(W::Float64, E::Float64, S::Float64, N::Float64,
+                         arg::String)::Tuple{Vector{Float64}, Vector{String}}
+	coll = isempty(strip(arg)) ? "MDS-2m" : String(strip(arg))
+	rects, names = Float64[], String[]
+	try
+		resp  = GMT._search_stac((W, E, S, N); collections=coll, delay=0.0)
+		feats = get(resp, "features", [])
+		seen  = Set{String}()
+		for item in feats
+			bb = get(item, "bbox", nothing)
+			(bb === nothing || length(bb) < 4) && continue
+			# STAC bbox order is [min_lon, min_lat, max_lon, max_lat]; ours is W,E,S,N.
+			w, s, e, n = Float64(bb[1]), Float64(bb[2]), Float64(bb[3]), Float64(bb[4])
+			id = string(get(item, "id", ""))
+			# One rectangle per GROUND tile: a tile re-flown in several years is several STAC items
+			# over the very same box, and drawing it four times just thickens the line.
+			key = "$w/$e/$s/$n"
+			(key in seen) && continue
+			push!(seen, key)
+			append!(rects, (w, e, s, n))
+			push!(names, id)
+		end
+	catch e
+		@warn "dgt footprints failed" exception=(e,)
+		return Float64[], String[]
+	end
+	return rects, names
 end

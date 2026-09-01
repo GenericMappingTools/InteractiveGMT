@@ -1613,22 +1613,44 @@ GMTVTK_API void gmtvtk_set_tiles_world(const char *path) {
 	g_tilesWorld = QString::fromUtf8(path ? path : "");
 }
 
-// Phase 2: push a coarser-mosaic background (a PNG written by Julia) into the open Tiles-Tool picker
-// `dlg` (a TilesPicker*), covering [W..E]/[S..N]; painted over the etopo base, under the refined mesh.
-// Called SYNCHRONOUSLY from Julia's op "bg" (so `dlg` is the live picker that issued the request). A
-// bad path / null pixmap is ignored inside setBg.
+// Phase 2: push a coarser-mosaic background (a PNG written by Julia) into the open picker `dlg` (a
+// TilesBgHost* — the Tiles Tool AND the "pick on map" region picker both are one), covering
+// [W..E]/[S..N]; painted over the etopo base, under the refined mesh. Called SYNCHRONOUSLY from
+// Julia's op "bg" (so `dlg` is the live picker that issued the request). A bad path / null pixmap is
+// ignored inside setBg.
 GMTVTK_API void gmtvtk_tiles_set_bg(void *dlg, const char *pngpath, double W, double E, double S, double N) {
-	if (!dlg) return;
-	reinterpret_cast<TilesPicker*>(dlg)->map->setBg(QString::fromUtf8(pngpath ? pngpath : ""), W, E, S, N);
+	if (!TilesBgHost::alive(dlg)) return;     // the picker that asked may be closed by now
+	reinterpret_cast<TilesBgHost*>(dlg)->setBgFromJulia(QString::fromUtf8(pngpath ? pngpath : ""), W, E, S, N);
 }
 
 // Append one line to the open Tiles-Tool picker's collapsible "Downloads info" console. Called from
 // Julia (GMT.mosaic's per-tile fetch messages via TILE_LOGGER, plus the download/ready bracket), so the
 // user sees tile activity in the picker itself rather than the iGMT viewer's Errors tab. `dlg` = the
-// live TilesPicker *that issued the request.
+// live TilesBgHost *that issued the request (a picker with no console of its own just drops it).
 GMTVTK_API void gmtvtk_tiles_log(void *dlg, const char *msg) {
-	if (!dlg || !msg) return;
-	reinterpret_cast<TilesPicker*>(dlg)->logDownload(QString::fromUtf8(msg));
+	// The BACKGROUND prefill logs through here for minutes; if its window was closed in the meantime
+	// this pointer is dead memory, so the host must be looked up, never merely null-checked.
+	if (!msg || !TilesBgHost::alive(dlg)) return;
+	reinterpret_cast<TilesBgHost*>(dlg)->logDownload(QString::fromUtf8(msg));
+}
+
+// Answer to op "footprints": how the data under the picked region is tiled. `rects` is 4*n doubles
+// (W,E,S,N per tile) and `names` the matching newline-joined tile names (may be empty). They are
+// drawn UNDER the picked rectangle. `dlg` is the TilesBgHost* that asked. n = 0 clears them, which is
+// the honest answer when a region covers no data at all.
+GMTVTK_API void gmtvtk_tiles_set_footprints(void *dlg, const double *rects, const char *names, int n) {
+	if (!TilesBgHost::alive(dlg)) return;     // the picker that asked may be closed by now
+	auto *host = reinterpret_cast<TilesBgHost*>(dlg);
+	if (!host->map) return;
+	const QStringList nm = QString::fromUtf8(names ? names : "").split('\n');
+	std::vector<TilesArea::Footprint> out;
+	if (rects && n > 0) {
+		out.reserve(n);
+		for (int k = 0; k < n; ++k)
+			out.push_back({ rects[4 * k], rects[4 * k + 1], rects[4 * k + 2], rects[4 * k + 3],
+			                k < nm.size() ? nm[k] : QString() });
+	}
+	host->map->setFootprints(std::move(out));
 }
 
 // Register the Ocean Color Data Browser callback. `fn` (Julia @cfunction, signature JuliaOceanColorFn)
@@ -7709,8 +7731,22 @@ GMTVTK_API void gmtvtk_set_transplant_undo(void *handle, int on) {
 
 // Pump the Qt event loop once. Returns the number of viewer windows still open
 // (0 = all closed; the host can stop pumping).
+// NON-REENTRANT, and this is not a nicety. The Julia pump Timer calls this ~50 Hz. A Qt handler run
+// from here can call BACK into Julia (every tool that hands work to the host does), and that Julia
+// code yields to its own scheduler the moment it waits on anything — a download, a sleep. The
+// scheduler is then free to fire the pump Timer AGAIN, which re-enters this function while the first
+// call is still on the stack: two Qt event loops nested inside each other, delivering events to
+// widgets that the outer frame is in the middle of using, and destroying objects it will touch when
+// it resumes. That is a random crash whose cause is whatever was on screen at the time.
+//
+// One flag makes the second tick a no-op instead. The window count is still returned truthfully, so
+// the pump keeps ticking and never mistakes this for "all windows closed".
 GMTVTK_API int gmtvtk_process_events(void) {
+	static bool inPump = false;
+	if (inPump) return g_openWindows;              // a nested tick: let the outer one finish
+	inPump = true;
 	if (g_app) g_app->processEvents();
+	inPump = false;
 	return g_openWindows;
 }
 

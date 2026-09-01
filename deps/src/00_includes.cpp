@@ -110,6 +110,7 @@
 #include <QPolygonF>
 #include <QElapsedTimer>
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QDateTime>
 #include <QDateTimeEdit>

@@ -160,13 +160,65 @@ public:
 	// Phase 2: a sharper coarser-mosaic background fetched (by Julia) for the current view at high zoom,
 	// painted over the etopo base and under the mesh. Covers its own geo-extent [bgW..bgE]/[bgS..bgN].
 	QPixmap bg;  bool hasBg = false;  double bgW = 0, bgE = 0, bgS = 0, bgN = 0;
-	explicit TilesArea(QWidget *p) : QWidget(p) { setMinimumSize(600, 320); }
+	// REGION mode: the same map, used to drag a free rectangle instead of clicking tiles (the region
+	// picker behind every "pick on map" button — a bbox is not tile-quantised, so `showMesh` turns the
+	// mesh off there). Everything else — the base map, the fetched background, zoom, pan — is the SAME
+	// code both tools run; this is a display/interaction mode of ONE widget, not a second widget.
+	bool   showMesh   = true;
+	bool   regionMode = false;
+	bool   hasRegion  = false;                       // a region has been dragged in (or seeded from outside)
+	double rW = 0, rE = 0, rS = 0, rN = 0;           // that region, in degrees
+	bool   dragRegion = false;  QPointF dragFrom;    // rubber-band in progress
+	double bW = 0, bE = 0, bS = 0, bN = 0;           // ...and the band it has swept so far
+	// A drawn region is not finished: grab one of its corners to resize it. The corner being dragged
+	// moves, the one diagonally opposite stays put and anchors the box — the same thing a fresh sweep
+	// does from its press point, which is why both end in the same two lines.
+	int    dragCorner = -1;                          // 0=SW 1=SE 2=NE 3=NW, -1 = not resizing
+	double anchLon = 0, anchLat = 0;                 // the corner held still while the other moves
+	static constexpr double CORNER_PX = 9.0;         // grab radius, and the handle's own size
+	// What a swept rectangle DOES. The gesture, the rubber band and the maths are one and the same —
+	// only what happens on release differs, which is why this is a mode and not a second drag.
+	enum RectAction { RectSelect, RectZoom };
+	RectAction rectAction = RectSelect;
+	// Whether a NEW rectangle may be started. A finished selection disarms this: the gesture is done,
+	// and dragging across the map again would silently throw away the region just picked. Editing the
+	// rectangle that exists (its corners) is NOT affected — that is what the handles are for. Re-armed
+	// only by pressing the mode button again.
+	bool rectArmed = true;
+	std::function<void()> onRegionChanged;           // notify the picker (its W/E/S/N readout)
+	std::function<void()> onRegionDone;              // ...and that the region is FINISHED (button up)
+	std::function<void()> onZoomRectDone;            // a swept rectangle has just zoomed the view
+	// Footprints: rectangles drawn UNDER the picked region, showing how the data being asked for is
+	// actually tiled. The widget knows nothing about where they come from — a DGT LIDAR sheet, a
+	// survey block, anything a future tool wants to show — only how to draw them.
+	struct Footprint { double W, E, S, N;  QString name; };
+	std::vector<Footprint> fps;
+	void setFootprints(std::vector<Footprint> f) { fps = std::move(f); update(); }
+	void clearFootprints() { if (!fps.empty()) { fps.clear(); update(); } }
+	// The ground this map is ALLOWED to show. A tool that serves one country gets a map OF that
+	// country: you cannot pan off it and you cannot zoom out past it. Unset = the whole world, which
+	// is the Tiles Tool (it really does serve the world) and leaves its behaviour untouched.
+	bool   hasLimit = false;
+	double lW = -180, lE = 180, lS = -85, lN = 85;
+	QPointF lastMouse;                               // where the cursor is: +/- zoom about THAT point
+	explicit TilesArea(QWidget *p) : QWidget(p) {
+		setMinimumSize(600, 320);
+		setFocusPolicy(Qt::StrongFocus);             // arrows pan / +- zoom: the map must hold the keys
+		setMouseTracking(true);                      // ...and know where the cursor is without a button down
+	}
 
 	void setBg(const QString &path, double W, double E, double S, double N) {
 		QPixmap pm(path);
 		if (pm.isNull()) return;                     // bad path / unreadable -> keep whatever we had
-		bg = pm; bgW = W; bgE = E; bgS = S; bgN = N; hasBg = true; update();
+		setBgPixmap(pm, W, E, S, N);
 	}
+	void setBgPixmap(const QPixmap &pm, double W, double E, double S, double N) {
+		bg = pm; bgW = W; bgE = E; bgS = S; bgN = N; hasBg = true; waitMsg.clear(); update();
+	}
+	// What to say on an empty canvas. There is no basemap here, so until the first tiles arrive the
+	// map is a blank rectangle, and a blank rectangle explains nothing about why it is being looked at.
+	QString waitMsg;
+	void setWaitMessage(const QString &m) { waitMsg = m; update(); }
 	void clearBg() { if (hasBg) { hasBg = false; bg = QPixmap(); update(); } }
 
 	// Web-Mercator slippy-tile math (matches GMT.mosaic's quadtree): n = 2^zoom tiles per axis.
@@ -181,36 +233,139 @@ public:
 	double px2lon(double x)   const { return vW + x / width()  * (vE - vW); }
 	double px2lat(double y)   const { return vN - y / height() * (vN - vS); }
 
-	// Re-frame the view for a new tile zoom: keep ~targetTiles across, centred on the anchor (else the
-	// current view centre), latitude span following the widget aspect so the map isn't distorted. The
-	// view window is shifted (not squashed) when it would overrun the world edges.
+	// The allowed extent — the limit box when there is one, the world otherwise. EVERY clamp (reframe,
+	// panTo, the pan scrollbars) reads these four and nothing else, so a bounded map is bounded
+	// everywhere by construction instead of at each place that happens to move the view.
+	double limW() const { return hasLimit ? lW : -180.0; }
+	double limE() const { return hasLimit ? lE :  180.0; }
+	double limS() const { return hasLimit ? lS :  -85.0; }
+	double limN() const { return hasLimit ? lN :   85.0; }
+	void setLimits(double W, double E, double S, double N) {
+		lW = std::max(-180.0, std::min(W, E)); lE = std::min(180.0, std::max(W, E));
+		lS = std::max( -85.0, std::min(S, N)); lN = std::min( 85.0, std::max(S, N));
+		hasLimit = true;
+	}
+	// Set the view to EXACTLY this box — not to whatever a tile-zoom level happens to span. The only
+	// adjustment is the widget aspect: the shorter axis is GROWN (never the box cropped) until the
+	// rectangle matches the window's shape. `zoom` follows the resulting span, because it only says
+	// how fine the OSM mosaic fetched for this view should be.
+	void setView(double W, double E, double S, double N) {
+		double w0 = std::min(W, E), e0 = std::max(W, E);
+		double s0 = std::min(S, N), n0 = std::max(S, N);
+		double L = std::max(1e-9, e0 - w0), A = std::max(1e-9, n0 - s0);
+		double aspect = double(std::max(1, height())) / double(std::max(1, width()));
+		if (A / L < aspect) { double g = (L * aspect - A) / 2; s0 -= g; n0 += g; }   // grow latitude
+		else                { double g = (A / aspect - L) / 2; w0 -= g; e0 += g; }   // grow longitude
+		// the tile zoom whose ~10-tile-wide view is closest to this span (the bg fetch reads it)
+		double z = std::log2(10.0 * 360.0 / std::max(1e-9, e0 - w0));
+		zoom = std::clamp(int(std::lround(z)), 1, 19);
+		placeView(w0, s0, e0 - w0, n0 - s0);             // through the ONE clamp, like every other setter
+	}
+	// The tile zoom whose view just holds `W/E/S/N` with a small margin. reframe() shows targetTiles
+	// (=10) tiles across and takes the LATITUDE span from the widget aspect, so the box's taller side
+	// counts too — sized on width alone, a tall country has its top and bottom off screen.
+	int zoomForBox(double W, double E, double S, double N) const {
+		double aspect = double(std::max(1, height())) / double(std::max(1, width()));
+		double need = std::max(std::max(1e-9, E - W),
+		                       std::max(1e-9, N - S) / std::max(1e-6, aspect)) * 1.15;   // 15% margin
+		int z = 1;
+		while (z < 19 && 10.0 * 360.0 / double(1u << (z + 1)) >= need) ++z;
+		return z;
+	}
+	// How far out this map may zoom: on a bounded map, the level that shows the whole limit box —
+	// there is nothing beyond it to go and look at.
+	int minZoom() const { return hasLimit ? zoomForBox(lW, lE, lS, lN) : 1; }
+
+	// THE view setter: put a window of this size with this top-left corner, shoved inside the allowed
+	// extent. reframe / panTo / zoomAt / setView all end here, so the clamp exists once.
+	//
+	// The background is NOT thrown away. It carries its own geographic extent and is painted through
+	// it, so a stale one simply re-scales into the new view and stands there — a slightly soft picture
+	// for the moment the sharper one takes to arrive. Dropping it (what this used to do) is what made
+	// the canvas flash the empty blue backdrop between every single zoom and pan step.
+	void placeView(double w0, double s0, double lonSpan, double latSpan) {
+		// A view wider (or taller) than the allowed extent cannot be moved anywhere: centre it on the
+		// box and leave it there. The viewport is a rectangle and a country is not, so a bounded map
+		// still SHOWS what is around it — it just cannot be taken there.
+		if (lonSpan >= limE() - limW()) w0 = (limW() + limE()) / 2 - lonSpan / 2;
+		else                            w0 = std::clamp(w0, limW(), limE() - lonSpan);
+		if (latSpan >= limN() - limS()) s0 = (limS() + limN()) / 2 - latSpan / 2;
+		else                            s0 = std::clamp(s0, limS(), limN() - latSpan);
+		vW = w0; vE = w0 + lonSpan; vS = s0; vN = s0 + latSpan;
+		sel.clear();                                     // a re-zoom invalidates the old tile-index selection
+		update(); if (onViewChanged) onViewChanged();
+	}
+	// The view span of a tile zoom level: ~targetTiles across, latitude following the widget aspect so
+	// the map is not distorted.
+	double lonSpanAt(int z) const { return std::min(360.0, 10.0 * 360.0 / double(1u << std::clamp(z, 1, 19))); }
+	double latSpanFor(double lonSpan) const {
+		return std::min(170.0, lonSpan * double(height()) / double(std::max(1, width())));
+	}
+	// Re-frame for a new tile zoom, centred on the anchor (else on the current view centre).
 	void reframe(int z) {
-		zoom = std::clamp(z, 1, 19);
+		zoom = std::clamp(z, minZoom(), 19);
 		double cLon = hasAnchor ? anchorLon : (vW + vE) / 2.0;
 		double cLat = hasAnchor ? anchorLat : (vS + vN) / 2.0;
-		const double targetTiles = 10.0;
-		double lonSpan = std::min(360.0, targetTiles * 360.0 / double(1u << zoom));
-		double latSpan = std::min(170.0, lonSpan * double(height()) / double(std::max(1, width())));
-		vW = cLon - lonSpan / 2; vE = cLon + lonSpan / 2;
-		if (vW < -180) { vE += -180 - vW; vW = -180; }   if (vE > 180) { vW -= vE - 180; vE = 180; }
-		vW = std::max(vW, -180.0); vE = std::min(vE, 180.0);
-		vS = cLat - latSpan / 2; vN = cLat + latSpan / 2;
-		if (vS < -85)  { vN += -85 - vS;  vS = -85; }    if (vN > 85)  { vS -= vN - 85;  vN = 85; }
-		vS = std::max(vS, -85.0);  vN = std::min(vN, 85.0);
-		sel.clear();                                     // a re-zoom invalidates the old tile-index selection
-		hasBg = false; bg = QPixmap();                   // and the old background (the picker refetches on release)
-		update(); if (onViewChanged) onViewChanged();
+		double lonSpan = lonSpanAt(zoom), latSpan = latSpanFor(lonSpan);
+		placeView(cLon - lonSpan / 2, cLat - latSpan / 2, lonSpan, latSpan);
 	}
-	// Pan the view (keeping the current span) so it is centred on (cLon,cLat), clamped inside the world.
-	// The scrollbars drive this; the stale background is dropped and the picker refetches it.
+	// Zoom to level `z` keeping the ground under `p` (a widget point — the cursor) under `p`. This is
+	// what every map does with the wheel and with +/-, and it is NOT "centre on the cursor": the point
+	// you are pointing at must not move at all.
+	void zoomAt(int z, QPointF p) {
+		int nz = std::clamp(z, minZoom(), 19);
+		if (nz == zoom) return;
+		double lon = px2lon(p.x()), lat = px2lat(p.y());
+		double fx = std::clamp(p.x() / double(std::max(1, width())),  0.0, 1.0);
+		double fy = std::clamp(p.y() / double(std::max(1, height())), 0.0, 1.0);
+		zoom = nz;
+		double lonSpan = lonSpanAt(zoom), latSpan = latSpanFor(lonSpan);
+		placeView(lon - fx * lonSpan, (lat + (1.0 - fy) * latSpan) - latSpan, lonSpan, latSpan);
+	}
+	// Pan the view (keeping the current span) so it is centred on (cLon,cLat). The scrollbars and the
+	// arrow keys drive this.
 	void panTo(double cLon, double cLat) {
 		double lonSpan = vE - vW, latSpan = vN - vS;
-		double w0 = std::clamp(cLon - lonSpan / 2, -180.0, 180.0 - lonSpan);
-		double s0 = std::clamp(cLat - latSpan / 2,  -85.0,  85.0 - latSpan);
-		vW = w0; vE = w0 + lonSpan; vS = s0; vN = s0 + latSpan;
-		hasBg = false; bg = QPixmap();
-		update(); if (onViewChanged) onViewChanged();
+		placeView(cLon - lonSpan / 2, cLat - latSpan / 2, lonSpan, latSpan);
 	}
+	// The picked region, set from OUTSIDE (the dialog's W/E/S/N boxes seed it). It is geographic, so it
+	// survives every zoom and pan — reframe() drops only the tile-index selection, which is not.
+	void setRegion(double W, double E, double S, double N) {
+		rW = std::min(W, E); rE = std::max(W, E);
+		rS = std::min(S, N); rN = std::max(S, N);
+		hasRegion = true; update(); if (onRegionChanged) onRegionChanged();
+	}
+	void clearRegion() { hasRegion = false; update(); if (onRegionChanged) onRegionChanged(); }
+	// The zoom WITHOUT touching the view. `zoom` only says how fine the background fetched for the
+	// current window should be, so a coarser one is a cheaper first picture of the same ground.
+	void setZoomOnly(int z) { zoom = std::clamp(z, minZoom(), 19); }
+	// Corner `c` of the picked region in widget pixels: 0=SW 1=SE 2=NE 3=NW.
+	QPointF cornerPx(int c) const {
+		double lon = (c == 1 || c == 2) ? rE : rW;
+		double lat = (c >= 2)           ? rN : rS;
+		return QPointF(lon2px(lon), lat2py(lat));
+	}
+	// Which corner is under `p`, or -1. Only when there IS a region to edit.
+	int cornerAt(QPointF p) const {
+		if (!hasRegion) return -1;
+		for (int c = 0; c < 4; ++c) {
+			QPointF q = cornerPx(c);
+			if (std::hypot(p.x() - q.x(), p.y() - q.y()) <= CORNER_PX) return c;
+		}
+		return -1;
+	}
+	// Frame the view on an arbitrary bbox: the deepest tile zoom whose ~10-tile-wide view still holds
+	// it, centred on it. Goes through reframe() (the anchor is just its "centre here" vehicle) so the
+	// slider, the scrollbars, the picked region and a tool's home area share ONE camera.
+	void zoomToBox(double W, double E, double S, double N) {
+		int z = zoomForBox(W, E, S, N);
+		bool oldHas = hasAnchor;  double oldLon = anchorLon, oldLat = anchorLat;
+		hasAnchor = true; anchorLon = (W + E) / 2; anchorLat = (S + N) / 2;
+		reframe(z);
+		hasAnchor = oldHas; anchorLon = oldLon; anchorLat = oldLat;
+		update();
+	}
+	void zoomToRegion() { if (hasRegion) zoomToBox(rW, rE, rS, rN); }
 protected:
 	void paintEvent(QPaintEvent *) override {
 		QPainter g(this);
@@ -227,18 +382,63 @@ protected:
 			QRectF tgt(lon2px(bgW), lat2py(bgN), lon2px(bgE) - lon2px(bgW), lat2py(bgS) - lat2py(bgN));
 			g.drawPixmap(tgt, bg, QRectF(bg.rect()));
 		}
-		// the refinable tile mesh: every web-tile boundary intersecting the view at `zoom`
-		g.setPen(QPen(QColor(0, 0, 0, 160), 1));
-		int x0 = lon2tileX(vW, zoom), x1 = lon2tileX(vE, zoom);
-		int y0 = lat2tileY(vN, zoom), y1 = lat2tileY(vS, zoom);     // vN (top) -> smaller tile Y
-		for (int tx = x0; tx <= x1 + 1; ++tx) { double X = lon2px(tileX2lon(tx, zoom)); g.drawLine(QPointF(X, 0), QPointF(X, height())); }
-		for (int ty = y0; ty <= y1 + 1; ++ty) { double Y = lat2py(tileY2lat(ty, zoom)); g.drawLine(QPointF(0, Y), QPointF(width(), Y)); }
-		// selected tiles (a click toggles one): each highlighted yellow. GO uses their union bbox.
-		g.setPen(QPen(QColor(255, 210, 0), 2)); g.setBrush(QColor(255, 230, 0, 90));
-		for (const QPoint &t : sel) {
-			double L = lon2px(tileX2lon(t.x(), zoom)), R = lon2px(tileX2lon(t.x() + 1, zoom));
-			double T = lat2py(tileY2lat(t.y(), zoom)), B = lat2py(tileY2lat(t.y() + 1, zoom));
-			g.drawRect(QRectF(QPointF(L, T), QPointF(R, B)));
+		else if (!waitMsg.isEmpty()) {                   // nothing to show yet: say why, in the middle
+			QFont f = g.font();  f.setPointSize(11);  g.setFont(f);
+			g.setPen(QColor(215, 225, 240));
+			g.drawText(rect().adjusted(40, 40, -40, -40), Qt::AlignCenter | Qt::TextWordWrap, waitMsg);
+		}
+		if (showMesh) {
+			// the refinable tile mesh: every web-tile boundary intersecting the view at `zoom`
+			g.setPen(QPen(QColor(0, 0, 0, 160), 1));
+			int x0 = lon2tileX(vW, zoom), x1 = lon2tileX(vE, zoom);
+			int y0 = lat2tileY(vN, zoom), y1 = lat2tileY(vS, zoom);     // vN (top) -> smaller tile Y
+			for (int tx = x0; tx <= x1 + 1; ++tx) { double X = lon2px(tileX2lon(tx, zoom)); g.drawLine(QPointF(X, 0), QPointF(X, height())); }
+			for (int ty = y0; ty <= y1 + 1; ++ty) { double Y = lat2py(tileY2lat(ty, zoom)); g.drawLine(QPointF(0, Y), QPointF(width(), Y)); }
+			// selected tiles (a click toggles one): each highlighted yellow. GO uses their union bbox.
+			g.setPen(QPen(QColor(255, 210, 0), 2)); g.setBrush(QColor(255, 230, 0, 90));
+			for (const QPoint &t : sel) {
+				double L = lon2px(tileX2lon(t.x(), zoom)), R = lon2px(tileX2lon(t.x() + 1, zoom));
+				double T = lat2py(tileY2lat(t.y(), zoom)), B = lat2py(tileY2lat(t.y() + 1, zoom));
+				g.drawRect(QRectF(QPointF(L, T), QPointF(R, B)));
+			}
+		}
+		// The data's own tiling, UNDER the region: drawn first so the picked rectangle stays on top of
+		// it. Outline only — these are there to be seen through.
+		if (!fps.empty()) {
+			g.setBrush(QColor(60, 200, 255, 30));
+			g.setPen(QPen(QColor(60, 200, 255), 1));
+			QFont f = g.font();  f.setPointSize(7);  g.setFont(f);
+			for (const Footprint &t : fps) {
+				QRectF r(QPointF(lon2px(t.W), lat2py(t.N)), QPointF(lon2px(t.E), lat2py(t.S)));
+				g.drawRect(r);
+				// The name only where the box is big enough to hold it — at a whole-country view these
+				// are a few pixels each and the labels would be a solid smear.
+				if (!t.name.isEmpty() && r.width() > 60 && r.height() > 18) {
+					g.setPen(QColor(230, 250, 255));
+					g.drawText(r, Qt::AlignCenter, t.name);
+					g.setPen(QPen(QColor(60, 200, 255), 1));
+				}
+			}
+		}
+		if (hasRegion) {                                 // the picked region, with its grab handles
+			QRectF r(QPointF(lon2px(rW), lat2py(rN)), QPointF(lon2px(rE), lat2py(rS)));
+			g.setPen(QPen(QColor(255, 60, 60), 2)); g.setBrush(QColor(255, 60, 60, 55));
+			g.drawRect(r);
+			if (regionMode) {                            // the corners are draggable — show that they are
+				const double h = CORNER_PX * 0.5;
+				g.setPen(QPen(Qt::white, 1.5)); g.setBrush(QColor(255, 60, 60));
+				for (int c = 0; c < 4; ++c) {
+					QPointF p = cornerPx(c);
+					g.drawRect(QRectF(p.x() - h, p.y() - h, CORNER_PX, CORNER_PX));
+				}
+			}
+		}
+		if (dragRegion) {                                // the band being swept, whatever it will do
+			QRectF b(QPointF(lon2px(bW), lat2py(bN)), QPointF(lon2px(bE), lat2py(bS)));
+			QPen pen(rectAction == RectZoom ? QColor(80, 200, 255) : QColor(255, 60, 60), 2);
+			pen.setStyle(Qt::DashLine);
+			g.setPen(pen); g.setBrush(Qt::NoBrush);
+			g.drawRect(b);
 		}
 		if (hasAnchor) {                                 // the zoom-anchor marker — same simple anchor as the button
 			QPointF p(lon2px(anchorLon), lat2py(anchorLat));
@@ -248,7 +448,53 @@ protected:
 			paintAnchor(g, p, 4.7, ink);
 		}
 	}
+	// Wheel = one zoom step about the cursor (zoomAt), like every other map. Deep zoom by the slider
+	// alone is 19 steps of a 200 px groove, which is what makes a small region hard to reach.
+	void wheelEvent(QWheelEvent *e) override {
+		int step = e->angleDelta().y() > 0 ? 1 : (e->angleDelta().y() < 0 ? -1 : 0);
+		if (step == 0) { e->ignore(); return; }
+		lastMouse = e->position();
+		zoomAt(zoom + step, lastMouse);
+		e->accept();
+	}
+	// Arrows PAN, +/- zoom about the cursor. The map holds the keyboard focus for exactly this reason:
+	// with the focus on a combo box the arrows walk its list instead, which is not a zoom system at all.
+	void keyPressEvent(QKeyEvent *e) override {
+		const double lonSpan = vE - vW, latSpan = vN - vS;
+		const double cLon = (vW + vE) / 2, cLat = (vS + vN) / 2;
+		const double stp = 0.15;                       // one key press = 15% of the visible span
+		QPointF at = lastMouse.isNull() ? QPointF(width() / 2.0, height() / 2.0) : lastMouse;
+		switch (e->key()) {
+			case Qt::Key_Left:     panTo(cLon - lonSpan * stp, cLat); break;
+			case Qt::Key_Right:    panTo(cLon + lonSpan * stp, cLat); break;
+			case Qt::Key_Up:       panTo(cLon, cLat + latSpan * stp); break;
+			case Qt::Key_Down:     panTo(cLon, cLat - latSpan * stp); break;
+			case Qt::Key_Plus:  case Qt::Key_Equal:  zoomAt(zoom + 1, at); break;
+			case Qt::Key_Minus: case Qt::Key_Underscore: zoomAt(zoom - 1, at); break;
+			default: QWidget::keyPressEvent(e); return;
+		}
+		e->accept();
+	}
 	void mousePressEvent(QMouseEvent *e) override {
+		if (regionMode) {
+			if (e->button() != Qt::LeftButton) { e->ignore(); return; }
+			// A corner of the existing region takes precedence over starting a new one: that is what
+			// makes a drawn rectangle editable instead of something you must re-sweep from scratch.
+			int c = cornerAt(e->position());
+			if (c >= 0) {
+				dragCorner = c;
+				anchLon = (c == 1 || c == 2) ? rW : rE;    // hold the DIAGONALLY OPPOSITE corner
+				anchLat = (c >= 2)           ? rS : rN;
+				setCursor(Qt::SizeAllCursor);              // every drag in iGMT uses SizeAll
+				return;
+			}
+			if (!rectArmed) { e->ignore(); return; }       // the gesture is spent; the corners still work
+			dragRegion = true; dragFrom = e->position();
+			bW = bE = px2lon(dragFrom.x()); bS = bN = px2lat(dragFrom.y());
+			setCursor(Qt::SizeAllCursor);              // every drag in iGMT uses SizeAll
+			update();
+			return;
+		}
 		double lon = px2lon(e->position().x()), lat = px2lat(e->position().y());
 		if (anchorMode) { hasAnchor = true; anchorLon = lon; anchorLat = lat; anchorMode = false;
 		                  setCursor(Qt::ArrowCursor); if (onAnchorPlaced) onAnchorPlaced(); update(); return; }
@@ -265,30 +511,251 @@ protected:
 		update();
 	}
 	void mouseMoveEvent(QMouseEvent *e) override {
+		lastMouse = e->position();                     // +/- zoom about wherever the cursor is
+		if (dragCorner >= 0) {                         // resize: the held corner against the moving one
+			double lon = std::clamp(px2lon(e->position().x()), vW, vE);
+			double lat = std::clamp(px2lat(e->position().y()), vS, vN);
+			rW = std::min(anchLon, lon); rE = std::max(anchLon, lon);
+			rS = std::min(anchLat, lat); rN = std::max(anchLat, lat);
+			update(); if (onRegionChanged) onRegionChanged();
+			return;
+		}
+		// What the cursor promises: a corner can always be grabbed; the open map only sweeps a new
+		// rectangle while the gesture is armed, so once it is spent it goes back to a plain arrow.
+		if (regionMode && !dragRegion)
+			setCursor(cornerAt(e->position()) >= 0 ? Qt::SizeAllCursor
+			        : rectArmed                    ? Qt::CrossCursor : Qt::ArrowCursor);
+		if (dragRegion) {                              // grow the rubber band with the cursor
+			double lon = std::clamp(px2lon(e->position().x()), vW, vE);
+			double lat = std::clamp(px2lat(e->position().y()), vS, vN);
+			double lon0 = px2lon(dragFrom.x()), lat0 = px2lat(dragFrom.y());
+			bW = std::min(lon0, lon); bE = std::max(lon0, lon);
+			bS = std::min(lat0, lat); bN = std::max(lat0, lat);
+			// Selecting shows the numbers as they are swept; zooming leaves the picked region alone —
+			// a zoom gesture must never touch what has been selected.
+			if (rectAction == RectSelect) { rW = bW; rE = bE; rS = bS; rN = bN; hasRegion = true;
+			                                if (onRegionChanged) onRegionChanged(); }
+			update();
+			return;
+		}
 		if (!draggingAnchor) return;                   // drag the grabbed anchor to follow the cursor
 		anchorLon = std::clamp(px2lon(e->position().x()), vW, vE);
 		anchorLat = std::clamp(px2lat(e->position().y()), vS, vN);
 		update();
 	}
 	void mouseReleaseEvent(QMouseEvent *) override {
+		if (dragCorner >= 0) {                         // done resizing; the region keeps what it got
+			dragCorner = -1;
+			setCursor(regionMode && rectArmed ? Qt::CrossCursor : Qt::ArrowCursor);
+			if (rE - rW < 1e-9 || rN - rS < 1e-9) hasRegion = false;   // collapsed onto its anchor
+			update();
+			if (onRegionChanged) onRegionChanged();
+			if (onRegionDone) onRegionDone();
+			return;
+		}
+		if (dragRegion) {
+			dragRegion = false;
+			const bool degenerate = (bE - bW < 1e-9 || bN - bS < 1e-9);   // a plain click, not a sweep
+			if (rectAction == RectZoom) {
+				setCursor(Qt::CrossCursor);
+				if (!degenerate) {
+					setView(bW, bE, bS, bN);                              // the band IS the new view
+					if (onZoomRectDone) onZoomRectDone();
+				}
+			}
+			else {
+				if (degenerate) hasRegion = false;                        // a click clears the selection
+				else            rectArmed = false;   // one sweep, one region: spent until re-armed
+				setCursor(rectArmed ? Qt::CrossCursor : Qt::ArrowCursor);
+				if (onRegionChanged) onRegionChanged();
+				if (onRegionDone) onRegionDone();
+			}
+			update();
+			return;
+		}
 		if (draggingAnchor) { draggingAnchor = false; setCursor(Qt::ArrowCursor); }
 	}
 };
 
-class TilesPicker : public QDialog {
+// ============================================================================================
+// The half of a tile-map dialog that is NOT its own tool: the pan-scrollbar sync and the background
+// fetch. The Tiles Tool and the "pick a region on the map" popup show the SAME TilesArea over the
+// same web tiles, so they run the SAME code for it — what differs between them (which provider,
+// which cache, Mercator or not) is the three accessors below, never a second implementation.
+//
+// The pointer handed to Julia (and handed back to gmtvtk_tiles_set_bg / gmtvtk_tiles_log) is ALWAYS
+// the TilesBgHost*, never the QDialog*: with two bases the two addresses differ, so a cast written
+// against one class would be wrong for the other.
+// ============================================================================================
+struct TilesBgHost {
+	Scene      *scene = nullptr;
+	TilesArea  *map   = nullptr;
+	QScrollBar *hbar  = nullptr, *vbar = nullptr;
+	int bgZoomMin = 9;       // fetch a sharper background only past this tile zoom (Mirone: >8)
+	int bgZoomOff = 3;       // ...built that many zoom levels coarser than the view (Mirone: zoom-3)
+
+	// Every host that currently EXISTS. Julia is handed a raw pointer and calls back through it, and
+	// the prefill does so from a BACKGROUND task that runs for minutes — long after the user may have
+	// closed the window. A pointer alone cannot be checked, so the C API looks the host up here first
+	// and drops any answer meant for one that is gone.
+	static std::set<TilesBgHost *> &live() { static std::set<TilesBgHost *> s;  return s; }
+	static bool alive(void *p) { return p && live().count(reinterpret_cast<TilesBgHost *>(p)) > 0; }
+	TilesBgHost() { live().insert(this); }
+	virtual ~TilesBgHost() { live().erase(this); }
+	virtual QString bgProvider() const = 0;
+	virtual QString bgCache()    const = 0;
+	virtual bool    bgMerc()     const { return false; }
+	virtual void    logDownload(const QString &) {}
+	// Bracket a fetch that really goes out to Julia (a cache hit never calls these), so a dialog can
+	// put up a progress indicator. The call between them BLOCKS the UI thread, so whatever they show
+	// only animates through the per-tile logDownload notes, which pump the event loop.
+	virtual void    bgFetchBegin() {}
+	virtual void    bgFetchEnd()   {}
+
+	// Keep the pan scrollbars in step with the current view (called from onViewChanged). A bar is
+	// disabled when the map's whole ALLOWED extent is visible on its axis — the same limE()/limS()…
+	// the view clamps read, so a bounded map's bars bound with it. blockSignals avoids a pan<->sync loop.
+	void syncBars() {
+		if (!map || !hbar || !vbar) return;
+		const double allLon = map->limE() - map->limW(), allLat = map->limN() - map->limS();
+		double lonSpan = map->vE - map->vW, latSpan = map->vN - map->vS;
+		hbar->blockSignals(true);
+		bool hp = lonSpan < allLon - 1e-6;
+		hbar->setEnabled(hp); hbar->setRange(0, hp ? 1000 : 0);
+		hbar->setPageStep(hp ? int(1000.0 * lonSpan / allLon) : 1000);
+		if (hp) { double cLon = (map->vW + map->vE) / 2;
+			hbar->setValue(int(std::clamp((cLon - (map->limW() + lonSpan / 2)) / (allLon - lonSpan) * 1000.0, 0.0, 1000.0))); }
+		hbar->blockSignals(false);
+		vbar->blockSignals(true);
+		bool vp = latSpan < allLat - 1e-6;
+		vbar->setEnabled(vp); vbar->setRange(0, vp ? 1000 : 0);
+		vbar->setPageStep(vp ? int(1000.0 * latSpan / allLat) : 1000);
+		if (vp) { double cLat = (map->vS + map->vN) / 2;   // value 0 = north (top of the bar)
+			vbar->setValue(int(std::clamp(((map->limN() - latSpan / 2) - cLat) / (allLat - latSpan) * 1000.0, 0.0, 1000.0))); }
+		vbar->blockSignals(false);
+	}
+	void onHBar(int val) {
+		const double allLon = map->limE() - map->limW();
+		double lonSpan = map->vE - map->vW; if (lonSpan >= allLon) return;
+		map->panTo((map->limW() + lonSpan / 2) + val / 1000.0 * (allLon - lonSpan), (map->vS + map->vN) / 2);
+	}
+	void onVBar(int val) {
+		const double allLat = map->limN() - map->limS();
+		double latSpan = map->vN - map->vS; if (latSpan >= allLat) return;
+		map->panTo((map->vW + map->vE) / 2, (map->limN() - latSpan / 2) - val / 1000.0 * (allLat - latSpan));
+	}
+	// One fetched background, kept so the same view never costs a second round trip.
+	struct BgEntry { QPixmap pm;  double W, E, S, N; };
+	std::map<QString, BgEntry> bgMem;
+	QString pendingKey;                                  // the request Julia is answering right now
+	// A fetch is in flight. It BLOCKS this thread inside a Julia call, and while it is there the
+	// per-tile notes pump the event loop (logDownload) so the window keeps painting — which also lets
+	// a queued timer fire and ask for ANOTHER fetch, re-entering Julia from inside a Julia call. That
+	// is a hang, and on a long prefill it is a certainty rather than a risk. Nothing starts a second
+	// fetch while this is set.
+	bool inFetch = false;
+
+	// EVERY request to Julia goes through here. The C API casts the pointer it is given back to
+	// TilesBgHost*, and a dialog with two bases (QMainWindow + this) has a DIFFERENT address as
+	// itself than as a host — so a call site passing its own `this` hands over a pointer that is
+	// wrong by a fixed offset, and the answer writes through it. One function, one cast, no site
+	// that can get it wrong.
+	void juliaRequest(const QString &params) {
+		if (g_juliaTiles) g_juliaTiles(scene, this, params.toUtf8().constData());
+	}
+
+	// Ask Julia (op "bg") for a mosaic covering the current view; it writes a PNG and pushes it back
+	// via gmtvtk_tiles_set_bg. Synchronous: Julia fetches + calls back before returning, so `this`
+	// stays valid throughout.
+	//
+	// The request is SNAPPED OUT to the tile boundaries of the zoom it will be built at, and then
+	// remembered under those tile indices. That is what makes moving about instant: pan by a few
+	// pixels, or zoom in and back out, and the view lands on a bbox that has already been fetched, so
+	// it is served from memory with no Julia call, no GDAL, no PNG round trip — the tiles under it
+	// were on disk all along, and it was this bbox-per-pixel request that was throwing that away.
+	// The snapped bbox + its key for the CURRENT view. One place, so the cache lookup and the request
+	// can never disagree about what is being asked for.
+	QString bgRequest(double &W, double &E, double &S, double &N) const {
+		const int bz = std::max(1, map->zoom - bgZoomOff);
+		// Ask only for ground this map is ALLOWED to show. The view is grown to the window's aspect and
+		// then snapped out to whole tiles, so on a bounded map both steps reach past the boundary — for
+		// the DGT picker that is Spain and the Atlantic, downloaded and stored for nothing.
+		const double qW = std::max(map->vW, map->limW()), qE = std::min(map->vE, map->limE());
+		const double qS = std::max(map->vS, map->limS()), qN = std::min(map->vN, map->limN());
+		const int x0 = TilesArea::lon2tileX(qW, bz), x1 = TilesArea::lon2tileX(qE, bz);
+		const int y0 = TilesArea::lat2tileY(qN, bz), y1 = TilesArea::lat2tileY(qS, bz);
+		W = TilesArea::tileX2lon(x0, bz);  E = TilesArea::tileX2lon(x1 + 1, bz);
+		N = TilesArea::tileY2lat(y0, bz);  S = TilesArea::tileY2lat(y1 + 1, bz);
+		// ...and the snapped box itself is trimmed back to the boundary, so the request never covers a
+		// tile column that lies wholly outside it.
+		W = std::max(W, map->limW());  E = std::min(E, map->limE());
+		S = std::max(S, map->limS());  N = std::min(N, map->limN());
+		return QString("%1|%2|%3|%4|%5|%6|%7")
+			.arg(bgProvider()).arg(bgMerc() ? 1 : 0).arg(bz).arg(x0).arg(x1).arg(y0).arg(y1);
+	}
+	// Serve the current view from memory if it has been fetched before. Called on EVERY view change,
+	// unthrottled — a debounce is for the network, and this never touches it.
+	bool serveCachedBg() {
+		if (!map) return false;
+		double W, E, S, N;
+		auto it = bgMem.find(bgRequest(W, E, S, N));
+		if (it == bgMem.end()) return false;
+		map->setBgPixmap(it->second.pm, it->second.W, it->second.E, it->second.S, it->second.N);
+		return true;
+	}
+	void requestBg() {
+		if (!map || inFetch || serveCachedBg()) return;
+		if (!g_juliaTiles) return;
+		if (map->zoom < bgZoomMin) { map->clearBg(); return; }
+		double W, E, S, N;
+		pendingKey = bgRequest(W, E, S, N);
+		QString params = QString("bg;%1/%2/%3/%4;%5;%6;%7;%8;%9")
+			.arg(W, 0, 'f', 8).arg(E, 0, 'f', 8).arg(S, 0, 'f', 8).arg(N, 0, 'f', 8)
+			.arg(map->zoom).arg(bgProvider()).arg(bgCache()).arg(bgMerc() ? 1 : 0).arg(bgZoomOff);
+		inFetch = true;
+		bgFetchBegin();
+		// EXCLUDE USER INPUT while pumping. A plain processEvents here (and in logDownload, on every
+		// per-tile note) delivers clicks and the window's own Close during the blocking call: the
+		// dialog is WA_DeleteOnClose, so it gets destroyed underneath us and everything after the call
+		// — bgFetchEnd(), prog, map — touches freed memory. That is the crash that took iGMT with it.
+		QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+		QPointer<QObject> alive = dynamic_cast<QObject *>(this);
+		juliaRequest(params);
+		if (!alive) return;                              // destroyed while we were inside Julia
+		bgFetchEnd();
+		inFetch = false;
+		pendingKey.clear();
+	}
+	// Julia's answer (gmtvtk_tiles_set_bg) comes through HERE, not straight into the map, so what it
+	// brings is kept under the key that asked for it. Julia hands back the extent it ACTUALLY built
+	// (loose tile bounds can widen the ask), so that is what gets stored and painted.
+	void setBgFromJulia(const QString &path, double W, double E, double S, double N) {
+		if (!map) return;
+		QPixmap pm(path);
+		if (pm.isNull()) return;                         // bad path / unreadable -> keep whatever we had
+		if (!pendingKey.isEmpty()) {
+			if (bgMem.size() > 300) bgMem.clear();       // a session-long pan should not grow without end
+			bgMem[pendingKey] = BgEntry{pm, W, E, S, N};
+		}
+		map->setBgPixmap(pm, W, E, S, N);
+	}
+};
+
+class TilesPicker : public QDialog, public TilesBgHost {
 public:
-	Scene        *scene;
-	TilesArea    *map;
 	QComboBox    *cboProvider;
 	QComboBox    *cboCache;                           // editable cache-dir box + remembered MRU
 	QRadioButton *rMerc;
 	QSlider      *slZoom;
 	QLabel       *lblZoom;
 	QTimer       *bgTimer;                            // debounces the high-zoom background refetch
-	QScrollBar   *hbar, *vbar;                        // pan the view once the mesh is zoomed in
 	QPlainTextEdit *dlLog;                            // collapsible per-tile download/cache console
+	// The three tool-specific halves of the shared background fetch (TilesBgHost).
+	QString bgProvider() const override { return cboProvider->currentText(); }
+	QString bgCache()    const override { return cacheSendValue(); }
+	bool    bgMerc()     const override { return rMerc->isChecked(); }
 	// Append one line to the Downloads-info console (called from Julia via gmtvtk_tiles_log).
-	void logDownload(const QString &line) { if (dlLog) dlLog->appendPlainText(line); }
+	void logDownload(const QString &line) override { if (dlLog) dlLog->appendPlainText(line); }
 	// Cache box: the default entry shows ~/.gmt but is sent to GMT as cache="gmt" (-> ~/.gmt/cache_tileserver).
 	QString gmtCacheLabel() const { return QDir::homePath() + "/.gmt"; }
 	QString cacheSendValue() const {
@@ -309,7 +776,8 @@ public:
 		cboCache->setCurrentText(dir);
 		saveCacheList();
 	}
-	TilesPicker(QWidget *parent, Scene *s, const QPixmap &world) : QDialog(parent), scene(s) {
+	TilesPicker(QWidget *parent, Scene *s, const QPixmap &world) : QDialog(parent) {
+		scene = s;                                       // TilesBgHost's, shared with the region picker
 		setWindowTitle("Tiles Tool");
 		auto *v = new QVBoxLayout(this);
 		// --- top toolbar: provider drop-down, anchor, GO, help ---
@@ -439,51 +907,6 @@ public:
 		resize(820, 520);
 	}
 private:
-	static constexpr int BG_ZOOM_MIN = 9;   // fetch a sharper background only past this tile zoom (Mirone: >8)
-
-	// Keep the pan scrollbars in step with the current view (called from onViewChanged). A bar is
-	// disabled when the whole world is visible on its axis. blockSignals avoids a pan<->sync loop.
-	void syncBars() {
-		double lonSpan = map->vE - map->vW, latSpan = map->vN - map->vS;
-		hbar->blockSignals(true);
-		bool hp = lonSpan < 359.999;
-		hbar->setEnabled(hp); hbar->setRange(0, hp ? 1000 : 0);
-		hbar->setPageStep(hp ? int(1000.0 * lonSpan / 360.0) : 1000);
-		if (hp) { double cLon = (map->vW + map->vE) / 2;
-			hbar->setValue(int(std::clamp((cLon - (-180 + lonSpan / 2)) / (360 - lonSpan) * 1000.0, 0.0, 1000.0))); }
-		hbar->blockSignals(false);
-		vbar->blockSignals(true);
-		const double worldLat = 170.0;                  // the picker spans latitude -85..85
-		bool vp = latSpan < worldLat - 0.001;
-		vbar->setEnabled(vp); vbar->setRange(0, vp ? 1000 : 0);
-		vbar->setPageStep(vp ? int(1000.0 * latSpan / worldLat) : 1000);
-		if (vp) { double cLat = (map->vS + map->vN) / 2;   // value 0 = north (top of the bar)
-			vbar->setValue(int(std::clamp(((85 - latSpan / 2) - cLat) / (worldLat - latSpan) * 1000.0, 0.0, 1000.0))); }
-		vbar->blockSignals(false);
-	}
-	void onHBar(int val) {
-		double lonSpan = map->vE - map->vW; if (lonSpan >= 360) return;
-		map->panTo((-180 + lonSpan / 2) + val / 1000.0 * (360 - lonSpan), (map->vS + map->vN) / 2);
-	}
-	void onVBar(int val) {
-		double latSpan = map->vN - map->vS; const double worldLat = 170.0; if (latSpan >= worldLat) return;
-		map->panTo((map->vW + map->vE) / 2, (85 - latSpan / 2) - val / 1000.0 * (worldLat - latSpan));
-	}
-
-	// At high zoom the etopo base is too coarse, so ask Julia (op "bg") for a coarser mosaic (two-to-three
-	// zoom levels down) covering the current view; it writes a PNG and pushes it back via gmtvtk_tiles_set_bg.
-	// Below the threshold the etopo base suffices, so just drop any stale background. Synchronous: Julia
-	// fetches + calls back before returning, so `this` stays valid throughout.
-	void requestBg() {
-		if (!g_juliaTiles) return;
-		if (map->zoom < BG_ZOOM_MIN) { map->clearBg(); return; }
-		QString params = QString("bg;%1/%2/%3/%4;%5;%6;%7;%8")
-			.arg(map->vW, 0, 'f', 8).arg(map->vE, 0, 'f', 8).arg(map->vS, 0, 'f', 8).arg(map->vN, 0, 'f', 8)
-			.arg(map->zoom).arg(cboProvider->currentText())
-			.arg(cacheSendValue()).arg(rMerc->isChecked() ? 1 : 0);
-		QApplication::processEvents();                   // paint before the blocking call (progress -> Downloads console)
-		g_juliaTiles(scene, this, params.toUtf8().constData());
-	}
 	void doGo() {
 		if (map->sel.empty()) {
 			QMessageBox::warning(this, "Tiles Tool",
@@ -504,9 +927,723 @@ private:
 		// (the first run also compiles), so a watcher sees it isn't hung.
 		logDownload("Building mosaic — downloading tiles…  (the first run also compiles; please wait)");
 		QApplication::processEvents();
-		if (g_juliaTiles) g_juliaTiles(scene, this, params.toUtf8().constData());
+		// The TilesBgHost*, never `this` (a QDialog*) — see the note on TilesBgHost.
+		juliaRequest(params);
 	}
 };
+
+// ============================================================================================
+// "Pick on map" — the region picker behind the small map button next to a dialog's W/E/S/N boxes.
+// The DGT CDD portal (cdd.dgterritorio.gov.pt) picks its LIDAR area on an OpenStreetMap canvas, and
+// typing four degrees to three decimals is no way to bracket a 500 m survey block, so the boxes get
+// the same thing: drag a rectangle over a real map.
+//
+// It IS the Tiles Tool's map — the SAME TilesArea widget over the SAME web tiles fetched by the SAME
+// TilesBgHost::requestBg (GMT.mosaic, op "bg"). What differs is the interaction, which is the widget's
+// own `regionMode`: a free rubber-band rectangle instead of clicking tile squares, so the mesh is off
+// (a bbox is not tile-quantised) and the background is fetched from zoom 3 up, not 9 — at DGT scales
+// the etopo base is useless, streets are the whole point.
+//
+// NON-modal: it carries the caller's four QLineEdits and writes into them itself when "Use this
+// region" is pressed. Modal is what it was, and a modal dialog cannot be PARKED — the minimise button
+// would freeze the application behind a window nobody can see.
+// ============================================================================================
+static QIcon makeMessagesIcon(bool unread);   // 85_polygon.cpp — the status-corner speech bubble
+
+class MapRegionPicker : public QMainWindow, public TilesBgHost {
+public:
+	QComboBox   *cboProvider;
+	QSlider     *slZoom;
+	QLabel      *lblZoom;
+	QProgressBar *prog;                                  // only up while tiles are actually downloading
+	QTimer      *bgTimer;
+	// Messages, built the way the main iGMT window builds it (70_window.cpp's msgDock / buildIGStatusBar):
+	// a read-only log in its own "Messages" dock, hidden, opened by a speech-bubble button in the status
+	// bar's right corner, whose icon grows a red dot while there are lines you have not seen.
+	QPlainTextEdit *msgLog = nullptr;
+	QDockWidget    *msgDock = nullptr;
+	QToolButton    *msgBtn = nullptr;
+	bool            msgUnread = false;
+
+	void messagesUnread(bool on) {
+		if (!msgBtn || msgUnread == on) return;
+		msgUnread = on;
+		msgBtn->setIcon(makeMessagesIcon(on));
+	}
+	// ONE entry point, as sceneShowMessages is for the viewer: opens as a real readable FLOATING
+	// window centred on this one, and re-docks itself (hidden) when closed.
+	void showMessages(bool show) {
+		if (!msgDock) return;
+		if (!show) { msgDock->setVisible(false); return; }
+		if (!msgDock->property("igmtReDockWired").toBool()) {
+			msgDock->setProperty("igmtReDockWired", true);
+			QDockWidget *d = msgDock;
+			QObject::connect(d, &QDockWidget::visibilityChanged, d, [d](bool vis) {
+				if (!vis && d->isFloating()) d->setFloating(false);
+			});
+		}
+		msgDock->setFloating(true);
+		const QRect g = geometry();
+		const int w = qMax(700, g.width() * 3 / 5), h = qMax(340, g.height() / 3);
+		msgDock->resize(w, h);
+		msgDock->move(g.center().x() - w / 2, g.center().y() - h / 2);
+		msgDock->setVisible(true);
+		msgDock->raise();
+		messagesUnread(false);
+	}
+	QToolButton *btnZoomRect = nullptr, *btnSelRect = nullptr;
+	QPushButton *btnUse = nullptr;
+	QButtonGroup *gRect = nullptr;
+
+	// Leave BOTH mode buttons up. The group is exclusive, which by itself forbids "none checked", so
+	// exclusivity is lifted for the two calls and restored — the alternative is a second, non-exclusive
+	// state to keep in step with the first, which is how these pairs drift apart.
+	// The rectangle is drawn: the next thing to do is take it, so that button says so — it takes the
+	// keyboard focus and is drawn as the accented one, and Return presses it. Re-arming a drawing mode
+	// puts it back to normal and hands the keys back to the map, whose arrows pan.
+	void highlightUse(bool on) {
+		if (!btnUse) return;
+		btnUse->setFocusPolicy(on ? Qt::StrongFocus : Qt::NoFocus);
+		btnUse->setStyleSheet(on ? "QPushButton { font-weight: bold; border: 2px solid palette(highlight);"
+		                           " border-radius: 3px; padding: 2px 8px; }"
+		                         : QString());
+		if (on) { btnUse->setFocus(Qt::OtherFocusReason); }
+		else if (map)    map->setFocus(Qt::OtherFocusReason);
+	}
+	void uncheckRectModes() {
+		if (!gRect) return;
+		gRect->setExclusive(false);
+		{ QSignalBlocker a(btnZoomRect), b(btnSelRect);
+		  btnZoomRect->setChecked(false); btnSelRect->setChecked(false); }
+		gRect->setExclusive(true);
+	}
+	QLineEdit   *tgtXmin = nullptr, *tgtXmax = nullptr, *tgtYmin = nullptr, *tgtYmax = nullptr;
+	bool         reallyClose = false;                    // set by the parked row's "Delete"
+	// What tiling to show under a picked region, asked of the caller each time because it can change
+	// while the dialog is open (the DGT collection is a combo in the dialog behind this one). Empty
+	// string, or no function at all, means this tool has no tiling to show — the map stays generic.
+	std::function<QString()> fpKind;
+	// The region has been handed over ("Use this region") and this window is closing. The tool that
+	// opened the map is what the user goes back to, so it says so itself rather than leaving them
+	// looking at whatever was underneath.
+	std::function<void()> onRegionUsed;
+
+	// Back from the dock — double-click, the row's checkbox, its "Show". ONE function for every way
+	// in, like LidarPicker::unpark.
+	void unpark() {
+		unparkTool(scene, this);
+		setWindowState(windowState() & ~Qt::WindowMinimized);
+		showNormal(); raise(); activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { reallyClose = true; unparkTool(scene, this); deleteLater(); }
+		};
+	}
+	void parkNow() {
+		if (!sceneAlive(scene)) return;
+		setWindowState(windowState() & ~Qt::WindowMinimized);   // undo the WM's minimise
+		hide();
+		parkTool(scene, this, "Pick region", IC_Rect,
+		         "Minimised region picker — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scene);    // a handle nobody can see is no handle at all
+	}
+
+	QString bgProvider() const override { return cboProvider->currentText(); }
+	QString bgCache()    const override { return QStringLiteral("gmt"); }   // GMT's own ~/.gmt/cache_tileserver
+
+	// A fetch that goes out to the network: say so, and keep saying it. The Julia call blocks the UI
+	// thread, so the bar can only move on the per-tile notes coming back through logDownload — which
+	// is exactly when there is something new to report.
+	// A fetch is starting, and it BLOCKS the UI thread: Julia compiles GMT.mosaic on the first call of
+	// a session (seconds), then mosaics, warps and writes a PNG even when every tile is already on
+	// disk. So the bar goes up for EVERY fetch — waiting with nothing on screen is what this looked
+	// like. What it must not do is claim a download that is not happening, so it says "preparing" and
+	// only logDownload's real per-tile notes turn it into "downloading".
+	// A fetch with this provider is about to run, so the cache report may now speak about it.
+	void bgFetchBegin() override {
+		total = done = 0;
+		prog->setRange(0, 0);
+		prog->setFormat("preparing the map…");
+		prog->setVisible(true);
+		// On the canvas itself, where the user is looking. The first one of a session is the long one
+		// (Julia compiles GMT.mosaic and its GDAL warp — several seconds), so it says so rather than
+		// leaving a blank rectangle to be read as a hang.
+		if (map && !map->hasBg)
+			map->setWaitMessage(firstFetchDone
+				? QStringLiteral("Fetching map tiles…")
+				: QStringLiteral("Preparing the map…\n\nThe first use in this session compiles the "
+				                 "tile machinery and fetches the tiles for this area.\n"
+				                 "This takes a few seconds. Later views are immediate."));
+		markProviderUsed();
+	}
+	void bgFetchEnd() override {
+		prog->setVisible(false); prog->setRange(0, 1); total = done = 0;
+		firstFetchDone = true;
+		if (map && !map->hasBg)                          // nothing came back: do not leave "preparing…"
+			map->setWaitMessage(QStringLiteral("No map tiles for this view."));
+	}
+	void logDownload(const QString &line) override {
+		// ERRORS ONLY. This is the viewer's Messages log, which exists so a failure cannot pass unseen —
+		// burying it under hundreds of per-tile fetch notes is the same as not having it. The fetch
+		// notes have their own place: they drive the progress bar below.
+		const bool isError = line.startsWith(QStringLiteral("ERROR")) ||
+		                     line.contains(QStringLiteral("FAILED")) ||
+		                     line.contains(QStringLiteral("failed"));
+		if (msgLog && isError) {
+			msgLog->appendPlainText(QString("[%1]  %2")
+				.arg(QTime::currentTime().toString("HH:mm:ss")).arg(line));
+			if (msgDock && msgDock->isVisible()) msgDock->raise();
+			else                                 messagesUnread(true);
+		}
+		// The background prefill announces its own end (nothing returns to take the bar down).
+		if (line.contains(QStringLiteral("prefill done"))) {
+			prog->setVisible(false); prog->setRange(0, 1); total = done = 0;
+			return;
+		}
+		// "needs N tile(s) at zoom Z …" — pure quadtree arithmetic, so it says how many tiles the view
+		// is made of, NOT how many will be downloaded. It sets the bar's range and nothing else.
+		static const QRegularExpression reNeed(QStringLiteral("needs (\\d+) tile"));
+		QRegularExpressionMatch m = reNeed.match(line);
+		if (m.hasMatch()) { total = m.captured(1).toInt(); done = 0; prog->setRange(0, std::max(1, total)); }
+		// GMT's own per-tile note. THIS is bytes crossing the network, and the only thing that puts
+		// the bar on screen.
+		else if (line.contains(QStringLiteral("Downloading"))) {
+			prog->setVisible(true);
+			if (total > 0) prog->setValue(std::min(++done, total));
+			prog->setFormat(total > 0 ? QString("downloading tiles… %1/%2").arg(done).arg(total)
+			                          : QStringLiteral("downloading tiles…"));
+		}
+		// Pump ONLY while a blocking call is in flight — that is the case where nothing else can paint,
+		// and even then without user input (a click or a Close delivered here destroys this object
+		// mid-call). A note from the BACKGROUND prefill must not pump: it arrives from the Julia
+		// scheduler, and re-entering the Qt loop from there nests the two event loops inside each other.
+		if (inFetch) QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+	}
+
+	// No `world` pixmap: this map has NO basemap of its own. The only thing under the picked rectangle
+	// is the OSM mosaic fetched for the view — an etopo backdrop is scenery a survey picker has no use
+	// for, and it is not shown for a moment either (showEvent fetches before the first paint).
+	MapRegionPicker(QWidget *parent, Scene *s, QLineEdit *xmin, QLineEdit *xmax,
+	                QLineEdit *ymin, QLineEdit *ymax) : QMainWindow(parent) {
+		scene = s;
+		tgtXmin = xmin; tgtXmax = xmax; tgtYmin = ymin; tgtYmax = ymax;
+		bgZoomMin = 3;                                   // street-level base from the start, not from zoom 9
+		bgZoomOff = 1;                                   // ...and only ONE level coarser than the view
+		setWindowTitle("Pick region on map");
+		// The minimise button is what PARKS it: a download worth waiting for is worth getting out of
+		// the way, and the view and the picked rectangle come back with it.
+		setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		setWindowModality(Qt::NonModal);
+		struct MinimiseParks : QObject {
+			MapRegionPicker *dg;
+			MinimiseParks(QObject *p, MapRegionPicker *g) : QObject(p), dg(g) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::WindowStateChange && dg &&
+				    dg->windowState().testFlag(Qt::WindowMinimized))
+					QTimer::singleShot(0, dg, [g = dg]() { g->parkNow(); });
+				return QObject::eventFilter(o, e);
+			}
+		};
+		installEventFilter(new MinimiseParks(this, this));
+		QObject::connect(this, &QObject::destroyed, this, [s, this]() {
+			if (sceneAlive(s)) unparkTool(s, this);
+		});
+		// A QMainWindow (for the Messages dock and the status bar, like the viewer): everything this
+		// window shows lives in its CENTRAL widget, never in a layout set on the window itself.
+		auto *central = new QWidget(this);
+		setCentralWidget(central);
+		auto *v = new QVBoxLayout(central);
+		auto *top = new QHBoxLayout();
+		cboProvider = new QComboBox(this);
+		// OSM first — the DGT CDD portal's own background, and what this picker is for.
+		cboProvider->addItems({"OSM", "Esri", "Bing", "Google"});
+		cboProvider->setToolTip("Web tile provider for the map background");
+		// Nothing around the map takes the keyboard: the arrows belong to the map (pan), and a combo
+		// or a slider holding the focus would eat them to walk its own list instead. All of these stay
+		// fully usable with the mouse.
+		cboProvider->setFocusPolicy(Qt::NoFocus);
+		top->addWidget(cboProvider);                     // the names in it say what it is; no label needed
+		// What a swept rectangle does. An exclusive pair (a QButtonGroup, never two booleans kept in
+		// step by hand), and the labels ARE the behaviour: zoom the view to the box, or select it.
+		btnZoomRect = new QToolButton(this); btnZoomRect->setText("Draw rectangle to zoom");
+		btnSelRect  = new QToolButton(this); btnSelRect->setText("Draw rectangle to select");
+		for (QToolButton *b : { btnZoomRect, btnSelRect }) {
+			b->setCheckable(true); b->setFocusPolicy(Qt::NoFocus);   // the arrows stay the map's
+			top->addWidget(b);
+		}
+		// Opens in ZOOM: the map arrives showing the whole country and the first thing anyone does is
+		// get closer to the ground they want. The FIRST zoom rectangle hands over to select (below),
+		// which is the next thing they do — and only the first, so a deliberate second zoom stays zoom.
+		btnZoomRect->setChecked(true);
+		btnZoomRect->setToolTip("Drag a rectangle: the view zooms to it. The selection is left alone.");
+		btnSelRect->setToolTip("Drag a rectangle: it becomes the picked region.");
+		// The one button that finishes the job, beside the two that do the drawing: the sequence is
+		// draw, then take it, and the hand should not have to cross the window between them.
+		btnUse = new QPushButton("Use this region", this);
+		btnUse->setAutoDefault(false); btnUse->setDefault(false);
+		btnUse->setFocusPolicy(Qt::NoFocus);             // until a region exists — see highlightUse
+		top->addWidget(btnUse);
+		// Return takes the region too, but only once there is one: with the button focused that is what
+		// the hand expects, and QMainWindow has no default-button machinery to do it for us.
+		auto *acEnter = new QShortcut(QKeySequence(Qt::Key_Return), this);
+		QObject::connect(acEnter, &QShortcut::activated, this, [this]() {
+			if (map && map->hasRegion) btnUse->click();
+		});
+		gRect = new QButtonGroup(this); gRect->setExclusive(true);
+		gRect->addButton(btnZoomRect); gRect->addButton(btnSelRect);
+		// Checking either mode ARMS a new sweep. That is the only way back after a selection, which
+		// disarms itself (see uncheckRectModes) so the picked rectangle cannot be wiped by a stray drag.
+		QObject::connect(btnZoomRect, &QToolButton::toggled, this, [this](bool on) {
+			if (!map) return;
+			if (on) { map->rectAction = TilesArea::RectZoom; map->rectArmed = true;
+			          map->setCursor(Qt::CrossCursor); highlightUse(false); }
+		});
+		QObject::connect(btnSelRect, &QToolButton::toggled, this, [this](bool on) {
+			if (!map) return;
+			if (on) { map->rectAction = TilesArea::RectSelect; map->rectArmed = true;
+			          map->setCursor(Qt::CrossCursor); highlightUse(false); }
+		});
+		top->addStretch();
+		auto *btnCache = new QToolButton(this); btnCache->setText("Show cache usage");
+		btnCache->setFocusPolicy(Qt::NoFocus);
+		btnCache->setToolTip("How much disk the downloaded tiles take, and a way to delete them");
+		top->addWidget(btnCache);
+		v->addLayout(top);
+		QObject::connect(btnCache, &QToolButton::clicked, this, [this]() { showCacheUsage(); });
+		prog = new QProgressBar(this);
+		prog->setTextVisible(true); prog->setFixedHeight(14); prog->setVisible(false);
+		v->addWidget(prog);
+		// --- Messages: the viewer's own arrangement (msgDock + the status corner's bubble), so this
+		//     window reports the way iGMT reports. Hidden dock, nothing taking room in the layout.
+		msgLog = new QPlainTextEdit(this);
+		msgLog->setReadOnly(true);
+		msgLog->setMaximumBlockCount(2000);
+		msgLog->setFont(QFont("Consolas", 10));
+		msgLog->setPlaceholderText("Errors from this tool appear here. (Tile fetches do not — they are "
+		                           "reported by the progress bar.)");
+		msgDock = new QDockWidget("Messages", this);
+		msgDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
+		msgDock->setWidget(msgLog);
+		addDockWidget(Qt::BottomDockWidgetArea, msgDock);
+		installDockGeometryMemory(this, msgDock, "pickerMessagesDock");
+		msgDock->hide();
+		{
+			QWidget *corner = new QWidget(statusBar());
+			auto *cl = new QHBoxLayout(corner);
+			cl->setContentsMargins(2, 0, 8, 0); cl->setSpacing(4);
+			msgBtn = new QToolButton(corner);
+			msgBtn->setIcon(makeMessagesIcon(false));
+			msgBtn->setToolTip("Messages");
+			msgBtn->setCursor(Qt::PointingHandCursor);
+			msgBtn->setFocusPolicy(Qt::NoFocus);          // the arrows stay the map's
+			cl->addWidget(msgBtn);
+			statusBar()->addPermanentWidget(corner, 0);
+			QObject::connect(msgBtn, &QToolButton::clicked, this, [this]() {
+				showMessages(!(msgDock && msgDock->isVisible()));
+			});
+		}
+
+		map = new TilesArea(this);                       // world stays null — no basemap here
+		map->showMesh = false; map->regionMode = true;   // free rectangle, no tile mesh
+		map->setCursor(Qt::CrossCursor);
+		map->setToolTip("Drag to pick a region.  Arrow keys pan, +/- and the wheel zoom about the cursor.");
+		hbar = new QScrollBar(Qt::Horizontal, this);
+		vbar = new QScrollBar(Qt::Vertical, this);
+		auto *mg = new QGridLayout(); mg->setSpacing(0); mg->setContentsMargins(0, 0, 0, 0);
+		mg->addWidget(map, 0, 0); mg->addWidget(vbar, 0, 1); mg->addWidget(hbar, 1, 0);
+		v->addLayout(mg, 1);
+
+		auto *bot = new QHBoxLayout();
+		bot->addWidget(new QLabel("Zoom", this));
+		auto *btnZmDn = new QToolButton(this); btnZmDn->setArrowType(Qt::LeftArrow);  btnZmDn->setAutoRepeat(true);
+		auto *btnZmUp = new QToolButton(this); btnZmUp->setArrowType(Qt::RightArrow); btnZmUp->setAutoRepeat(true);
+		btnZmDn->setFixedWidth(18); btnZmUp->setFixedWidth(18);
+		slZoom = new QSlider(Qt::Horizontal, this); slZoom->setRange(1, 19); slZoom->setValue(1);
+		slZoom->setFixedWidth(200);
+		slZoom->setFocusPolicy(Qt::NoFocus);             // see cboProvider: the arrows are the map's
+		btnZmDn->setFocusPolicy(Qt::NoFocus); btnZmUp->setFocusPolicy(Qt::NoFocus);
+		lblZoom = new QLabel("1", this); lblZoom->setFixedWidth(24);
+		auto *zl = new QHBoxLayout(); zl->setSpacing(0); zl->setContentsMargins(0, 0, 0, 0);
+		zl->addWidget(btnZmDn); zl->addWidget(slZoom); zl->addWidget(btnZmUp);
+		bot->addLayout(zl); bot->addWidget(lblZoom);
+		bot->addStretch();
+		v->addLayout(bot);
+
+		bgTimer = new QTimer(this); bgTimer->setSingleShot(true);
+		QObject::connect(bgTimer, &QTimer::timeout, this, [this]() { requestBg(); });
+		map->onViewChanged = [this]() {
+			lblZoom->setText(QString::number(map->zoom));
+			if (slZoom->value() != map->zoom) { QSignalBlocker b(slZoom); slZoom->setValue(map->zoom); }
+			syncBars();
+			// Already-seen view: paint it NOW from memory. Only a view we have never fetched waits on
+			// the debounce, which is there to spare the network while a slider is being dragged.
+			// 350 ms was most of the lag on a view whose tiles were already on disk. The debounce only
+			// has to outlast the gap between two steps of a slider drag or a wheel spin.
+			if (serveCachedBg()) bgTimer->stop();
+			else                 bgTimer->start(120);
+		};
+		// A finished region (swept, or resized by a corner) is when the tiling under it is worth
+		// asking for — never while the mouse is still moving, which would be one network query per
+		// pixel of drag.
+		map->onRegionDone = [this]() {
+			// A finished selection ends the drawing gesture: BOTH mode buttons go up, so the map is in
+			// no drawing mode at all until one is pressed again. The rectangle itself stays, and stays
+			// editable by its corners.
+			if (!map->rectArmed) { uncheckRectModes(); highlightUse(true); }
+			requestFootprints();
+		};
+		// The toggle was set before the map existed, so state the map's own mode here rather than
+		// leaning on a signal that had nothing to talk to.
+		map->rectAction = btnZoomRect->isChecked() ? TilesArea::RectZoom : TilesArea::RectSelect;
+		// First zoom rectangle only: hand over to select. After that the toggle is the user's.
+		map->onZoomRectDone = [this]() {
+			if (handedOver) return;
+			handedOver = true;
+			btnSelRect->setChecked(true);                // its toggled handler sets map->rectAction
+		};
+		QObject::connect(slZoom, &QSlider::valueChanged, this, [this](int z) { map->reframe(z); });
+		QObject::connect(btnZmDn, &QToolButton::clicked, this, [this]() { slZoom->setValue(slZoom->value() - 1); });
+		QObject::connect(btnZmUp, &QToolButton::clicked, this, [this]() { slZoom->setValue(slZoom->value() + 1); });
+		QObject::connect(hbar, &QScrollBar::valueChanged, this, [this](int val) { onHBar(val); });
+		QObject::connect(vbar, &QScrollBar::valueChanged, this, [this](int val) { onVBar(val); });
+		// The picker writes into the caller's boxes itself — it is not modal any more, so there is no
+		// exec() for the caller to read a result from.
+		QObject::connect(btnUse, &QPushButton::clicked, this, [this]() {
+			if (!map->hasRegion) {
+				QMessageBox::warning(this, "Pick region on map",
+				                     "Drag a rectangle over the map first (\"Draw rectangle to select\").");
+				return;
+			}
+			if (tgtXmin) tgtXmin->setText(QString::number(map->rW, 'f', 6));
+			if (tgtXmax) tgtXmax->setText(QString::number(map->rE, 'f', 6));
+			if (tgtYmin) tgtYmin->setText(QString::number(map->rS, 'f', 6));
+			if (tgtYmax) tgtYmax->setText(QString::number(map->rN, 'f', 6));
+			auto used = onRegionUsed;                    // copy: `close()` can destroy this object
+			close();
+			if (used) used();
+		});
+		resize(860, 600);                                // replaced by shapeTo() once the home box is known
+	}
+	// Shape the window like the ground it shows. Portugal mainland is TALL and NARROW; in a 860x600
+	// landscape window setView would have to grow the longitude span to nearly three times the country
+	// to fill it, which is how a "map of Portugal" ends up being a map of Iberia and the Atlantic.
+	void shapeTo(double W, double E, double S, double N) {
+		double L = std::max(1e-9, E - W), A = std::max(1e-9, N - S);
+		QScreen *sc = QApplication::primaryScreen();
+		const int availH = sc ? sc->availableGeometry().height() : 900;
+		const int availW = sc ? sc->availableGeometry().width()  : 1400;
+		const int chrome = 150;                          // toolbar + zoom/button rows + the status bar
+		int mapH = std::min(availH - chrome - 60, 820);
+		// HALF AS WIDE AGAIN as the ground's own aspect. Portugal's box is 3.55 x 5.30 degrees, so the
+		// aspect alone gives a canvas barely wider than it is tall — a slot. Zoomed in, the view is
+		// whatever shape this window is, and a region is picked ACROSS, so the canvas is made wide
+		// outright: never narrower than 1.5x its own height, and never wider than the screen holds.
+		int mapW = int(std::lround(mapH * L / A * 1.5));
+		mapW = std::max(mapW, int(std::lround(mapH * 1.5)));
+		if (mapW > availW - 80) { mapW = availW - 80; }   // the height is NOT cut back to match: a short
+		                                                 // wide canvas is the point of this
+		// Never larger than the screen it opens on, on EITHER axis — a window taller or wider than the
+		// desktop cannot be moved back into view, and the map widget's own minimum must not push it
+		// there either.
+		const int w = std::min(mapW, availW - 40);
+		const int h = std::min(mapH + chrome, availH - 40);
+		map->setMinimumSize(std::min(600, w - 40), std::min(320, h - chrome));
+		resize(w, h);
+		// CENTRED on the screen. A window this size dropped at the desktop's top-left is half off the
+		// eye's way and looks like it opened by accident.
+		const QRect a = sc ? sc->availableGeometry() : QRect(0, 0, availW, availH);
+		move(a.x() + (a.width() - w) / 2, a.y() + (a.height() - h) / 2);
+	}
+	// Open framed on `W/E/S/N` when the caller's boxes already hold a region, else on the tool's HOME
+	// area — the ground it actually covers. A world view is worthless to a tool that only serves one
+	// country: the DGT survey is Portugal mainland, so that is what its picker opens on.
+	// `home` is BOTH where the map opens and how far it goes: the DGT survey is Portugal mainland, so
+	// its picker is a map OF Portugal mainland — you cannot pan off it and cannot zoom out past it.
+	void seed(double W, double E, double S, double N,
+	          double homeW, double homeE, double homeS, double homeN) {
+		sW = homeW; sE = homeE; sS = homeS; sN = homeN;
+		sHome = !(E > W && N > S);
+		if (!sHome) map->setRegion(W, E, S, N);          // the caller's boxes already hold a region
+		if (sE > sW && sN > sS) shapeTo(sW, sE, sS, sN); // window shaped like the ground, BEFORE it is shown
+		seedPending = true;                              // the framing itself waits for showEvent — see there
+	}
+	bool  picked() const { return map->hasRegion; }
+	double W() const { return map->rW; }   double E() const { return map->rE; }
+	double S() const { return map->rS; }   double N() const { return map->rN; }
+protected:
+	// The seed is applied HERE, not in seed(): zoomForBox picks its zoom from the map widget's aspect,
+	// and until the dialog is shown the layout has not sized the widget, so a frame computed earlier
+	// is computed against the wrong shape.
+	void showEvent(QShowEvent *e) override {
+		QMainWindow::showEvent(e);
+		if (!seedPending) return;
+		seedPending = false;
+		if (sE > sW && sN > sS) {                        // the tool's ground: the map IS it, and is bounded to it
+			map->setLimits(sW, sE, sS, sN);
+			map->setView(sW, sE, sS, sN);                // the bbox itself, not a tile level that spans it
+			// The zoom the view's own span implies — tile level 8 for the whole mainland. Opening
+			// coarser (zoom 7 = level 6, 2 tiles instead of 18) was tried and MEASURED: it saved
+			// nothing, because the wait on a first open is 4.2 s of Julia compiling GMT.mosaic, which
+			// the tile count does not touch. It only made the first picture blurrier.
+			slZoom->setRange(map->minZoom(), 19);        // zooming out past the whole area is meaningless
+			{ QSignalBlocker b(slZoom); slZoom->setValue(map->zoom); }
+			lblZoom->setText(QString::number(map->zoom));
+		}
+		if (!sHome) map->zoomToRegion();                 // the caller's boxes win over the home view
+		bgTimer->stop();
+		map->setFocus(Qt::OtherFocusReason);             // arrows pan, +/- zoom — from the moment it opens
+		// The opening fetch is DEFERRED to the next turn of the event loop, with the bar already up.
+		// It blocks this thread for as long as Julia takes (on the first call of a session that
+		// includes compiling GMT.mosaic, seconds), so running it inside showEvent means the window
+		// does not finish appearing until it is over — the tool looking hung before it is even drawn.
+		prog->setRange(0, 0);
+		prog->setFormat("preparing the map…");
+		prog->setVisible(true);
+		QPointer<MapRegionPicker> alive(this);
+		QTimer::singleShot(0, this, [this, alive]() {
+			if (!alive) return;                          // closed before the first fetch even started
+			maybePrefill();                              // once per provider: fill the cache for this ground
+			if (!alive) return;                          // ...or during it (prefill takes minutes)
+			// Re-opened on a region that is already picked (seeded from the caller's boxes): the tiles
+			// under it are part of that picture, so they are fetched FIRST — before the background —
+			// because they decide what the view has to cover. Drawing a region asks for them on release
+			// (onRegionDone); arriving with one asked nothing at all.
+			if (map->hasRegion) {
+				requestFootprints();
+				if (!alive) return;
+				frameRegionAndFootprints();
+				if (!alive) return;
+			}
+			requestBg();                                 // ...now, for the view we are actually keeping
+			if (!alive) return;
+			prog->setVisible(false); prog->setRange(0, 1);
+		});
+	}
+	// Frame the view on the region TOGETHER WITH the tiles drawn under it. A DGT sheet that merely
+	// overlaps the picked box extends well outside it, so a view framed on the region alone cuts those
+	// rectangles off at the edges — and they are the reason the map was re-opened.
+	void frameRegionAndFootprints() {
+		if (!map->hasRegion) return;
+		double W = map->rW, E = map->rE, S = map->rS, N = map->rN;
+		for (const TilesArea::Footprint &t : map->fps) {
+			W = std::min(W, t.W);  E = std::max(E, t.E);
+			S = std::min(S, t.S);  N = std::max(N, t.N);
+		}
+		const double mx = (E - W) * 0.08, my = (N - S) * 0.08;   // a little air around the outermost tile
+		map->setView(W - mx, E + mx, S - my, N + my);
+	}
+	// Ask Julia (op "footprints") how the data under the picked region is tiled, and draw what comes
+	// back beneath it. `kind` is opaque here — the map does not know what a DGT sheet is; Julia's
+	// provider registry (tilestool.jl) does. Nothing to show, or no region: the old ones just go.
+	void requestFootprints() {
+		if (inFetch) return;                             // never re-enter Julia from inside a Julia call
+		if (!map->hasRegion) { map->clearFootprints(); return; }
+		const QString kind = fpKind ? fpKind() : QString();
+		if (kind.isEmpty() || !g_juliaTiles) { map->clearFootprints(); return; }
+		prog->setRange(0, 0);
+		prog->setFormat("looking up the tiles under this region…");
+		prog->setVisible(true);
+		QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);   // see requestBg
+		QString params = QString("footprints;%1/%2/%3/%4;%5;;0")
+			.arg(map->rW, 0, 'f', 8).arg(map->rE, 0, 'f', 8).arg(map->rS, 0, 'f', 8).arg(map->rN, 0, 'f', 8)
+			.arg(kind);
+		inFetch = true;
+		QPointer<MapRegionPicker> alive(this);
+		// The TilesBgHost*, NEVER `this`: this class has two bases, so a MapRegionPicker* and its
+		// TilesBgHost* are DIFFERENT addresses, and the C API reinterpret_casts whatever it is given
+		// back to TilesBgHost*. Handing it the wrong one makes ->map garbage and the answer writes
+		// through it. That is what killed iGMT on every drawn rectangle.
+		juliaRequest(params);
+		if (!alive) return;                              // destroyed while we were inside Julia
+		inFetch = false;
+		prog->setVisible(false); prog->setRange(0, 1);
+	}
+	// FIRST use of this map with this provider: download the tiles covering the whole area once, so
+	// that panning and zooming afterwards reads from disk instead of the network. Announced before it
+	// starts — a minute of downloading with no explanation is indistinguishable from a hang.
+	void maybePrefill() {
+		if (!(sE > sW && sN > sS) || !g_juliaTiles) return;
+		QSettings st = igmtSettings();
+		const QString key = QString("tiles/prefilled_%1").arg(bgProvider());
+		if (st.value(key, false).toBool()) return;
+		QMessageBox::information(this, "Pick region on map",
+			QString("First use of this map with %1.\n\n"
+			        "The tiles covering the whole area are now going to be fetched ONCE, for zoom "
+			        "levels 9 and 10 (tile levels 8, 9 and 10), and kept in\n\n    %2\n\n"
+			        "From then on, moving and zooming over this ground is read from disk for these "
+			        "zoom levels. Higher zoom levels will be downloaded and kep in cache as needed. "
+					"This takes a moment; the bar below reports it.")
+			    .arg(bgProvider(), QDir::toNativeSeparators(tileCacheDir())));
+		prog->setRange(0, 0);
+		prog->setFormat("filling the tile cache — zoom levels 8, 9, 10…");
+		prog->setVisible(true);
+		// The zoom levels the picker actually READS: a view at map zoom N fetches its tiles at N-1
+		// (bgZoomOff), so zoom 9 and 10 are tile levels 8 and 9 — 18 + 66 tiles over the mainland.
+		// Level 10 is another 220 tiles and is only wanted at map zoom 11, so it is not prefetched.
+		QString params = QString("prefill;%1/%2/%3/%4;8,9;%5;%6;%7")
+			.arg(sW, 0, 'f', 8).arg(sE, 0, 'f', 8).arg(sS, 0, 'f', 8).arg(sN, 0, 'f', 8)
+			.arg(bgProvider()).arg(bgCache()).arg(bgMerc() ? 1 : 0);
+		// Returns IMMEDIATELY: the prefill runs as a background Julia task, so the viewer stays alive
+		// while it downloads. `inFetch` is deliberately NOT set — nothing is blocking, and the bar is
+		// taken down by the "prefill done" note rather than by this line.
+		// The TilesBgHost*, never `this` — see requestFootprints.
+		juliaRequest(params);
+		st.setValue(key, true);
+	}
+private:
+	bool   seedPending = false, sHome = false;
+	double sW = 0, sE = 0, sS = 0, sN = 0;               // the home box, when that is what we open on
+	int    total = 0, done = 0;                          // tiles this fetch expects / has had word of
+	bool   handedOver = false;                           // the one automatic zoom -> select switch
+	bool   firstFetchDone = false;                       // the long one (it compiles) is over
+
+	// GMT's own tile cache, which is where every tile this picker shows already lives (cache="gmt" ->
+	// ~/.gmt/cache_tileserver, one subdirectory per provider).
+	static QString tileCacheDir() { return QDir::homePath() + "/.gmt/cache_tileserver"; }
+	static QString humanSize(qint64 b) {
+		return b >= 1024LL * 1024 * 1024 ? QString::number(b / 1073741824.0, 'f', 2) + " GB"
+		     : b >= 1024LL * 1024        ? QString::number(b / 1048576.0,    'f', 1) + " MB"
+		     : QString::number(b / 1024.0, 'f', 1) + " kB";
+	}
+	static qint64 dirSize(const QString &dir, int *files = nullptr) {
+		qint64 tot = 0;  int n = 0;
+		QDirIterator it(dir, QDir::Files, QDirIterator::Subdirectories);
+		while (it.hasNext()) { it.next(); tot += it.fileInfo().size(); ++n; }
+		if (files) *files = n;
+		return tot;
+	}
+	// Has THIS tool ever fetched with that provider? Set on a real fetch (requestBg), so the report can
+	// list the providers this picker has used and stay silent about the rest of GMT's cache.
+	static QString usedKey(const QString &prov) { return QString("tiles/used_%1").arg(prov); }
+	void markProviderUsed() { igmtSettings().setValue(usedKey(bgProvider()), true); }
+
+	// What the cache holds FOR THIS TOOL, and a way to throw it away. Only the providers this picker
+	// offers, and of those only the ones it has actually used: the cache directory is GMT's own and is
+	// full of other work (nimbo, NASA GIBS, whatever a script called mosaic() with), which is none of
+	// this dialog's business to report and less of its business to delete.
+	void showCacheUsage() {
+		const QString root = tileCacheDir();
+		QString body;
+		qint64 grand = 0;  int grandN = 0;
+		QStringList listed;                              // the provider names actually reported on
+		QSettings st = igmtSettings();
+		for (int i = 0; i < cboProvider->count(); ++i) {
+			const QString prov = cboProvider->itemText(i);
+			if (!st.value(usedKey(prov), false).toBool()) continue;      // never used here: not ours to show
+			const QString sub = root + "/" + providerCacheSub(prov);
+			if (!QDir(sub).exists()) continue;
+			int n = 0;  qint64 sz = dirSize(sub, &n);
+			grand += sz;  grandN += n;  listed << prov;
+			body += QString("    %1 — %2 tiles, %3\n").arg(prov, -10).arg(n, 7).arg(humanSize(sz));
+		}
+		const QString prov = bgProvider();
+		QMessageBox box(this);
+		box.setWindowTitle("Tile cache");
+		if (listed.isEmpty()) {
+			box.setText(QString("This tool has not downloaded any tiles yet.\n\nWhen it does, they go to\n%1")
+			                .arg(QDir::toNativeSeparators(root)));
+			box.addButton(QMessageBox::Close);
+			box.exec();
+			return;
+		}
+		box.setText(QString("Tiles downloaded by this tool, kept in\n%1\n\n%2\n    TOTAL: %3 tiles, %4\n\n"
+		                    "This is GMT's shared tile cache: mosaic() reads and writes the same files, so "
+		                    "deleting frees the disk but also costs any other GMT work the same downloads.")
+		                .arg(QDir::toNativeSeparators(root), body).arg(grandN).arg(humanSize(grand)));
+		QPushButton *bThis = nullptr, *bAll = nullptr;
+		if (listed.contains(prov))
+			bThis = box.addButton(QString("Delete %1 tiles").arg(prov), QMessageBox::DestructiveRole);
+		if (listed.size() > 1)
+			bAll = box.addButton("Delete the tiles listed above", QMessageBox::DestructiveRole);
+		box.addButton(QMessageBox::Close);
+		box.exec();
+		QStringList killProv;
+		if (bThis && box.clickedButton() == bThis)     killProv << prov;
+		else if (bAll && box.clickedButton() == bAll)  killProv = listed;
+		else return;
+		// Only the listed providers' OWN directories — never the cache root, which holds everyone else's
+		// (nimbo, NASA GIBS, and whatever else GMT has fetched).
+		QStringList kills;
+		for (const QString &p : killProv) kills << root + "/" + providerCacheSub(p);
+		deleteCacheDirs(kills);
+	}
+	void deleteCacheDirs(const QStringList &dirs) {
+		int n = 0;  qint64 sz = 0;
+		QString what;
+		for (const QString &d : dirs) {
+			int dn = 0;  sz += dirSize(d, &dn);  n += dn;
+			what += "\n    " + QDir::toNativeSeparators(d);
+		}
+		if (n == 0) { QMessageBox::information(this, "Tile cache", "Nothing to delete there."); return; }
+		if (QMessageBox::question(this, "Tile cache",
+		        QString("Delete %1 tiles (%2) from%3\n\nThey will be downloaded again when needed — "
+		                "by this tool and by any other GMT call over the same ground.")
+		            .arg(n).arg(humanSize(sz), what),
+		        QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+		for (const QString &d : dirs) QDir(d).removeRecursively();
+		bgMem.clear();                                   // in-memory backgrounds came from those tiles
+		QMessageBox::information(this, "Tile cache",
+		                         QString("Deleted %1 tiles (%2).").arg(n).arg(humanSize(sz)));
+	}
+	// GMT names the cache subdirectory after the provider CODE, which is the lowercased name for the
+	// ones this picker offers ("OSM" -> osm, "Esri" -> esri, "Bing" -> bing); Google's is "gs".
+	static QString providerCacheSub(const QString &prov) {
+		QString p = prov.toLower();
+		return p.startsWith("goo") ? QStringLiteral("gs") : p;
+	}
+};
+
+// Portugal mainland, the ground the DGT CDD survey covers. The picker of a tool that serves ONE area
+// opens on that area, never on the world — see addPickOnMapButton's `home` argument.
+static constexpr double PT_HOME_W = -9.65, PT_HOME_E = -6.10, PT_HOME_S = 36.90, PT_HOME_N = 42.20;
+
+// STANDING RULE companion to addRefGridRow (30_app.cpp): where a dialog's Region is in DEGREES, the
+// row also gets a map button — the four boxes are filled by dragging a rectangle over a real OSM map
+// (MapRegionPicker above), which is the only workable way to bracket a small area. Same helper for
+// every such dialog so the button always looks and behaves the same. Like the "..." of the Ref grid
+// row it is an ACTION button: nothing runs off an edit box's own signal.
+//
+// `home*` is the HOME area of the tool being served — where it opens when the boxes are still empty.
+// It is a required argument, not a defaulted one: a picker that opens on the whole world is useless
+// to a tool that covers one country, and the caller is the only one that knows which country.
+// `fpKind` (optional) is what the picker asks Julia for when a region is drawn: "<provider>:<arg>",
+// e.g. "dgt:MDS-50cm", whose tiling is then drawn under the picked rectangle. It is a FUNCTION, not a
+// string, because the argument can change while the picker is open (the DGT collection is a combo in
+// the dialog behind it). Leave it out and the map shows no tiling at all — which is what every tool
+// that has no answer to that question should do.
+// Open the region picker on `scene`, writing into the caller's four boxes. THE way a map is opened:
+// there is no "Pick on map…" button any more — for a tool whose region is a place on the ground, the
+// map IS the tool, so its dialog opens straight into one. Returns the picker (already shown).
+//
+// `home*` is the ground the tool serves; `fpKind` (optional) the tiling to draw under a picked
+// region ("<provider>:<arg>", see MapRegionPicker::fpKind).
+static MapRegionPicker *openRegionPicker(QWidget *parent, Scene *scene,
+                                         QLineEdit *xmin, QLineEdit *xmax, QLineEdit *ymin, QLineEdit *ymax,
+                                         double homeW, double homeE, double homeS, double homeN,
+                                         std::function<QString()> fpKind = nullptr) {
+	if (!xmin || !xmax || !ymin || !ymax) return nullptr;
+	// Compile GMT.mosaic + its GDAL warp + gmtwrite while the map is opening, instead of on the first
+	// background fetch where it reads as an unexplained freeze (warmup.jl, "tiles").
+	warmupTool("tiles");
+	auto *pick = new MapRegionPicker(parent, scene, xmin, xmax, ymin, ymax);
+	pick->fpKind = fpKind;
+	pick->setAttribute(Qt::WA_DeleteOnClose);
+	bool ok = false;
+	double W = xmin->text().trimmed().toDouble(&ok);   double E = ok ? xmax->text().trimmed().toDouble(&ok) : 0;
+	double S = ok ? ymin->text().trimmed().toDouble(&ok) : 0;
+	double N = ok ? ymax->text().trimmed().toDouble(&ok) : 0;
+	pick->seed(ok ? W : 0, ok ? E : 0, ok ? S : 0, ok ? N : 0, homeW, homeE, homeS, homeN);
+	pick->show();
+	return pick;
+}
 
 // ============================================================================================
 // LIDAR2011 — port of Mirone's cartas_militares.m in its second mode (menu entry
@@ -13880,6 +15017,103 @@ public:
 	QGroupBox *mosaicBox = nullptr;
 	QPushButton *btnMosaic = nullptr, *btnFile = nullptr;
 	QPlainTextEdit *logTxt = nullptr;
+	QTabWidget *tabs = nullptr;
+	int acctTab = 1;                       // index of the "DGT account" tab
+	QPointer<MapRegionPicker> picker;      // the map this dialog opens into
+
+	// How the tool STARTS, and the whole of it: check the account once, then hand the user the map and
+	// get this dialog out of the way. Called by the menu action right after construction.
+	void begin(QWidget *parent) {
+		if (!dlg) return;
+		// FIRST THING, before the account check and before the map exists. The first background fetch
+		// costs ~4.2 s of Julia compiling GMT.mosaic and its GDAL warp — measured — and that is the
+		// whole of the wait on a first open; the number of tiles is noise beside it. Started here, it
+		// compiles while the credentials are being checked over the network and while the map window
+		// is being built, instead of at the picker's own construction a few milliseconds before the
+		// fetch needs it, which is what it did before and absorbed nothing.
+		warmupTool("tiles");
+		QSettings st = igmtSettings();
+		if (!st.value("dgt/credsOK", false).toBool()) {
+			// FIRST use: nothing here works without an account, so that is settled before anything else.
+			dlg->show();
+			if (tabs) tabs->setCurrentIndex(acctTab);
+			log("checking the DGT account in ~/.dgt …");
+			QApplication::setOverrideCursor(Qt::WaitCursor);
+			int ok = g_juliaDgt ? g_juliaDgt(scn, this, "mode=checkcreds\n") : 0;
+			QApplication::restoreOverrideCursor();
+			if (ok != 1) {
+				QMessageBox::critical(dlg, "DGT LIDAR — NO ACCOUNT", QString(
+					"<b>THIS MUST BE RESOLVED IMMEDIATELY.</b><br><br>"
+					"This tool downloads from Portugal's DGT CDD portal, which serves nobody without an "
+					"account. The one in <tt>~/.dgt</tt> is missing, incomplete, or was refused.<br><br>"
+					"<b>What to do — three steps:</b>"
+					"<ol>"
+					"<li><b>Get an account.</b> Open <a href=\"%1\">%1</a> and register there (the "
+					"portal's own Login / Register). It is free; the account is an e-mail and a "
+					"password.</li>"
+					"<li><b>Type them in this dialog</b>, on the <b>DGT account</b> tab now in front of "
+					"you: <i>E-mail</i> and <i>Password</i>.</li>"
+					"<li><b>Press \"Save to ~/.dgt and test\"</b> on that tab. It writes<br>"
+					"<pre># Login data for the DGT LIDAR downloads\n"
+					"login your@email.pt\npassword your_password</pre>"
+					"to <tt>%2</tt> and logs in at once to prove it works. You need not type them "
+					"again.</li>"
+					"</ol>"
+					"The log at the bottom of this dialog says which of the three checks failed — the "
+					"file, the login, or the session.")
+					.arg("https://cdd.dgterritorio.gov.pt",
+					     QDir::toNativeSeparators(QDir::homePath() + "/.dgt")));
+				if (tabs) tabs->setCurrentIndex(acctTab);
+				dlg->raise();  dlg->activateWindow();
+				return;                                   // no map: there is nothing to download with
+			}
+			st.setValue("dgt/credsOK", true);
+		}
+		// Normal use: the map IS the tool. Open it, and park this dialog behind it — its settings are
+		// still one click away in Scene Objects, but they are not what the user came here to look at.
+		openPicker(parent);
+		parkNow();
+	}
+	// The account tab's own repair: write ~/.dgt from the boxes, log in with it, and — when it works —
+	// carry straight on into the map, which is where the user was going before this stopped them.
+	void saveAndTestAccount(QWidget *parent) {
+		if (!userEdit || !passEdit) return;
+		if (userEdit->text().trimmed().isEmpty() || passEdit->text().isEmpty()) {
+			QMessageBox::warning(dlg, "DGT account", "Type both the e-mail and the password first.");
+			return;
+		}
+		QString req = QString("mode=savecreds\nuser=%1\npassword=%2\n")
+			.arg(userEdit->text().trimmed(), passEdit->text());
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		int ok = g_juliaDgt ? g_juliaDgt(scn, this, req.toUtf8().constData()) : 0;
+		QApplication::restoreOverrideCursor();
+		if (ok != 1) {
+			QMessageBox::critical(dlg, "DGT account",
+				"Still not usable — see the log at the bottom for which check failed.");
+			return;
+		}
+		igmtSettings().setValue("dgt/credsOK", true);
+		QMessageBox::information(dlg, "DGT account",
+			"Account saved to ~/.dgt and accepted by the portal. Opening the map.");
+		openPicker(parent);
+		parkNow();
+	}
+	void openPicker(QWidget *parent) {
+		if (!picker.isNull()) { picker->unpark(); return; }
+		picker = openRegionPicker(parent ? parent : dlg, scn, xmin, xmax, ymin, ymax,
+		                          PT_HOME_W, PT_HOME_E, PT_HOME_S, PT_HOME_N,
+		                          // the survey's own tiles, for the collection selected HERE — read at
+		                          // the moment of asking, since the combo can change while the map is up
+		                          [this]() { return collCb ? QString("dgt:%1").arg(collCb->currentText())
+		                                                   : QString(); });
+		// Region picked -> this dialog comes straight back (from the dock if it was parked), showing
+		// Main: the region is settled, and what is left to decide is what to do with it.
+		if (!picker.isNull())
+			picker->onRegionUsed = [this]() {
+				unpark();
+				if (tabs) tabs->setCurrentIndex(0);
+			};
+	}
 
 	explicit DgtLidarDialog(QWidget *parent, Scene *scene) : scn(scene) {
 		QUiLoader loader;
@@ -13962,11 +15196,69 @@ public:
 		// it has one — the common case is "the area I am looking at".
 		if (auto *rg = d->findChild<QGridLayout *>("gridLayout_region"))
 			addRefGridRow(d, rg, xmin, xmax, ymin, ymax);
+
+		// The two blocks that are not "what to download" go into TABS: the Region (which is picked on
+		// the map, not typed here) and the account (which is set up once and then forgotten). What
+		// stays in plain view is the tiles/mosaic settings and the buttons that act.
+		if (auto *mainLay = d->findChild<QVBoxLayout *>("mainVerticalLayout")) {
+			tabs = new QTabWidget(d);
+			auto addTab = [d, mainLay](QTabWidget *tw, const char *objName, const QString &title) -> QWidget * {
+				QGroupBox *g = d->findChild<QGroupBox *>(objName);
+				if (!g) return nullptr;
+				mainLay->removeWidget(g);                 // out of the column...
+				auto *page = new QWidget(tw);
+				auto *pl = new QVBoxLayout(page);
+				pl->setContentsMargins(6, 6, 6, 6);
+				pl->addWidget(g);                         // ...and into the page (which reparents it)
+				pl->addStretch(1);
+				tw->addTab(page, title);
+				return page;
+			};
+			// "Main" holds what the tool actually DOES — the tiles and the mosaic — so that selecting
+			// Region or DGT account hides it, instead of the three stacking down one long column.
+			{
+				auto *page = new QWidget(tabs);
+				auto *pl = new QVBoxLayout(page);
+				pl->setContentsMargins(6, 6, 6, 6);
+				for (const char *g : { "gb_tiles", "gb_mosaic" })
+					if (QGroupBox *gb = d->findChild<QGroupBox *>(g)) {
+						mainLay->removeWidget(gb);
+						pl->addWidget(gb);
+					}
+				pl->addStretch(1);
+				tabs->addTab(page, "Main");
+			}
+			addTab(tabs, "gb_region", "Region");
+			acctTab = tabs->count();                      // the index the credentials warning jumps to
+			addTab(tabs, "gb_login", "DGT account");
+			mainLay->insertWidget(0, tabs);
+			// The log and the action buttons stay OUT of the tabs: they belong to whatever tab is
+			// showing, and a button you have to go looking for in a tab is a button that gets missed.
+			// The account tab must be able to FIX the thing it reports: write ~/.dgt from the two boxes
+			// and prove it against the portal, without needing a download to do it as a side effect.
+			if (auto *lg = d->findChild<QGridLayout *>("gridLayout_login")) {
+				auto *bSave = new QPushButton("Save to ~/.dgt and test", d);
+				bSave->setAutoDefault(false); bSave->setDefault(false);
+				bSave->setToolTip("Writes the e-mail and password above to ~/.dgt, then logs in to check them.");
+				lg->addWidget(bSave, lg->rowCount(), 0, 1, 4);
+				QObject::connect(bSave, &QPushButton::clicked, d, [this, d]() { saveAndTestAccount(d); });
+			}
+		}
 		if (scene && scene->gnx > 1 && scene->gny > 1) {
 			if (xmin) xmin->setText(QString::number(scene->gx0, 'g', 12));
 			if (xmax) xmax->setText(QString::number(scene->gx1, 'g', 12));
 			if (ymin) ymin->setText(QString::number(scene->gy0, 'g', 12));
 			if (ymax) ymax->setText(QString::number(scene->gy1, 'g', 12));
+		}
+
+		// Back to the map. The picker is where the region comes from, and it closes when it hands one
+		// over, so there must be a way to open it again without re-opening the whole tool.
+		if (auto *bl = d->findChild<QHBoxLayout *>("horizontalLayout_buttons")) {
+			auto *bMap = new QPushButton("Map picker…", d);
+			bMap->setAutoDefault(false); bMap->setDefault(false);
+			bMap->setToolTip("Open the map again to pick (or re-pick) the region");
+			bl->insertWidget(0, bMap);
+			QObject::connect(bMap, &QPushButton::clicked, d, [this, d]() { openPicker(d); });
 		}
 
 		btnFile   = d->findChild<QPushButton *>("push_outfile");
@@ -14003,6 +15295,12 @@ public:
 		// keeps them under `utilities/`, not under `modules/` like a GMT module (manual.jl takes the
 		// section from the name).
 		addManualButton(d, "utilities/dgt_mosaic");
+
+		// The .ui's 520x620 was the size of ONE COLUMN holding all four groups. They are in tabs now,
+		// so that height is empty space kept by a number that no longer describes the dialog: the tab
+		// stack is only as tall as its tallest page. adjustSize() takes the layout's own sizeHint —
+		// the point of the tabs was to make this smaller, and a stale geometry undoes it.
+		d->adjustSize();
 
 		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
 	}
@@ -23464,6 +24762,15 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// cartas_militares.m (its 1:25000 map-sheet branch and its LIDAR2011 mosaic branch, the SAME dialog
 	// class in two modes, sharing the background image and the tile map) and the DGT LIDAR downloader.
 	QMenu *mPT = mTools->addMenu("PT Tools");
+	// DGT LIDAR (GMT.jl's dgt_lidar + dgt_mosaic): download the national LIDAR survey over a region and
+	// mosaic the tiles into one grid. FIRST in this submenu — it is the current national survey, and
+	// the one a user of "PT Tools" wants.
+	// Opens INTO THE MAP: begin() checks the account once, then shows the region picker and parks this
+	// dialog. Only a failed account check leaves the dialog on screen, on its "DGT account" tab.
+	mPT->addAction("DGT LIDAR", [win, s]() {
+		auto *w = new DgtLidarDialog(win, s);
+		if (w->dlg) w->begin(win);
+	});
 	// LIDAR2011: a picker over the survey's 1600x1000 m tile matrix; select cells, "Do Mosaic" ->
 	// Julia reads the tiles and opens the mosaic grid. The tile table is fetched from Julia (op "init")
 	// right after construction, so the mesh is painted from data/lidarPT.dat.
@@ -23478,13 +24785,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// parked handle has to be able to bring this same dialog back.
 		if (g_juliaLidar) g_juliaLidar(s, dlg, "init");    // Julia gmtreads data/lidarPT.dat -> setTiles
 		dlg->show();
-	});
-	// DGT LIDAR (GMT.jl's dgt_lidar + dgt_mosaic): download the national LIDAR survey over a region and
-	// mosaic the tiles into one grid. Non-modal (a download is long and the dialog is worth keeping);
-	// minimising it parks it in Scene Objects, closing it frees it.
-	mPT->addAction("DGT LIDAR", [win, s]() {
-		auto *w = new DgtLidarDialog(win, s);
-		if (w->dlg) w->dlg->show();
 	});
 	mPT->addAction("Cartas Militares", [win, s]() {
 		auto it = g_cartasDlgs.find(s);
