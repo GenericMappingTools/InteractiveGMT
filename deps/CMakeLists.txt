@@ -186,6 +186,11 @@ if(WIN32)
   # which is what decodes the splash JPEG without pulling in an image library.
   target_link_libraries(igmt PRIVATE shell32 ole32 oleaut32 uuid shlwapi user32 gdi32)
 elseif(APPLE)
+  # OBJC is NOT in project(... LANGUAGES C CXX) — only this one file needs it, and asking for it
+  # unconditionally would demand an Objective-C compiler on Windows and Linux, which have none.
+  # Without this, setting LANGUAGE OBJC below fails the GENERATE step outright: "The language OBJC
+  # was requested for compilation but was not enabled" (broke MacBinaries.yml on 8fcd733).
+  enable_language(OBJC)
   set_source_files_properties(src/launcher.c PROPERTIES LANGUAGE OBJC)
   target_link_libraries(igmt PRIVATE "-framework Cocoa" "-framework QuartzCore")
 else()

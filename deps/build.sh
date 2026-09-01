@@ -97,7 +97,10 @@ $cmake_exe -S $here -B $cmake_dir -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_COMPILER=$cxx -DCMAKE_PREFIX_PATH=$conda_prefix \
     -DQt6_DIR=$qt6_dir -DVTK_DIR=$vtk_dir \
     $cxx_link -DGMTVTK_LINUX_BUNDLE=ON $@
-$cmake_exe --build $cmake_dir --target gmtvtk
+# Both targets by name, not `all`: `all` would drag in gmtvtk_demo and gmtvtk_test, which this
+# bundle does not ship. igmt is the desktop launcher (deps/src/launcher.c) — the install step below
+# stages it beside the .so, so it must exist by then.
+$cmake_exe --build $cmake_dir --target gmtvtk igmt
 
 # Recreate the staging tree after a successful compile. Otherwise libraries belonging to plugins
 # removed from the bundle policy (WebEngine, QML, SQL, Wayland, etc.) survive forever.
@@ -167,10 +170,15 @@ archive=$igmt_archive
 tar -C $igmt_stage_root --transform='s,^build_linux,deps/build,' -czf $archive build_linux
 printf '%s\n' Linux_archive_created:$archive
 
-# ...and the rolling one: the .so plus its manifest, nothing else. Same member paths, so it extracts
-# over an installed bundle exactly the way the Windows dll zip does.
+# ...and the rolling one: the .so plus its manifest, and the desktop launcher. Same member paths, so
+# it extracts over an installed bundle exactly the way the Windows dll zip does.
+#
+# igmt rides in the ROLLING archive, exactly as igmt.exe does in gmtvtk-win64.zip: a machine that
+# already has the pinned runtime only ever fetches this one, so leaving the launcher out of it would
+# mean no desktop icon until the next RUNTIME_VERSION bump. It links nothing from the bundle (X11 and
+# libc only), so it cannot desync from the runtime it travels with.
 tar -C $igmt_stage_root --transform='s,^build_linux,deps/build,' -czf $igmt_so_archive \
-    build_linux/libgmtvtk.so build_linux/.so_requires
+    build_linux/libgmtvtk.so build_linux/.so_requires build_linux/igmt
 printf '%s\n' Linux_so_archive_created:$igmt_so_archive
 
 # A tarball left by the older scripts sits in the package tree, where nothing Linux belongs.

@@ -49,7 +49,10 @@ fi
 cmake -S "$here" -B "$cmake_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$prefix;$prefix/opt/vtk;$prefix/opt/qtbase;$prefix/opt/qttools;$prefix/opt/tbb" \
     -DGMTVTK_MACOS_BUNDLE=ON "$@"
-cmake --build "$cmake_dir" --target gmtvtk
+# Both targets by name, not `all`: `all` would drag in gmtvtk_demo and gmtvtk_test, which this
+# bundle does not ship. igmt is the desktop launcher (deps/src/launcher.c) — the install step below
+# stages it beside the dylib, so it must exist by then.
+cmake --build "$cmake_dir" --target gmtvtk igmt
 
 # Recreate the staging tree after a successful compile, so a library that the bundle policy dropped
 # (a retired Qt plugin, a VTK module no longer linked) cannot survive forever and keep being loaded
@@ -174,7 +177,13 @@ printf '%s\n' macOS_bundle_verified:"$bundle_dir/libgmtvtk.dylib"
 tar -C "$pkg_dir" -czf "$archive" deps/build
 printf '%s\n' macOS_archive_created:"$archive"
 
-# ...and the rolling one: the dylib plus its manifest, nothing else. Same member paths, so it
-# extracts over an installed bundle exactly the way the Windows dll zip does.
-tar -C "$pkg_dir" -czf "$lib_archive" deps/build/libgmtvtk.dylib deps/build/.dylib_requires
+# ...and the rolling one: the dylib plus its manifest, and the desktop launcher. Same member paths,
+# so it extracts over an installed bundle exactly the way the Windows dll zip does.
+#
+# igmt rides in the ROLLING archive, exactly as igmt.exe does in gmtvtk-win64.zip: a machine that
+# already has the pinned runtime only ever fetches this one, so leaving the launcher out of it would
+# mean no desktop icon until the next RUNTIME_VERSION bump. It links nothing from the bundle (Cocoa
+# and libSystem only), so it cannot desync from the runtime it travels with.
+tar -C "$pkg_dir" -czf "$lib_archive" deps/build/libgmtvtk.dylib deps/build/.dylib_requires \
+    deps/build/igmt
 printf '%s\n' macOS_lib_archive_created:"$lib_archive"
