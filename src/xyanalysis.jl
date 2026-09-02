@@ -14,7 +14,7 @@
 # two. Once the GMT release with `fft1d` is the minimum, the fallback below can be deleted.
 const _GMT_FFT_FWD     = Cint(0)
 const _GMT_FFT_INV     = Cint(1)
-const _GMT_FFT_COMPLEX = Cuint(0)
+const _GMT_FFT_COMPLEX = Cuint(1)   # gmt_resources.h: GMT_FFT_REAL = 0U, GMT_FFT_COMPLEX = 1U
 
 function _gmt_fft_1d!(buf::Vector{Float32}, N::Integer, direction::Cint)
 	return ccall((:GMT_FFT_1D, GMT.libgmt), Cint,

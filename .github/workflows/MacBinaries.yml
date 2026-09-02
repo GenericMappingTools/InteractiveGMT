@@ -1,7 +1,7 @@
-# Builds the macOS viewer library and its self-contained runtime bundle. This is the ONLY platform
-# whose binaries are produced by CI: the Windows and Linux ones are built by hand (deps/build.bat,
-# deps/build.sh under WSL) on a machine that exists. There is no Mac on that desk, so the runner is
-# the build machine.
+# Builds the macOS viewer library and its self-contained runtime bundle. There is no Mac on this
+# desk, so the runner is the build machine -- there is no hand-built fallback for this platform.
+# Windows is still built by hand (deps/build.bat). Linux has both: LinuxBinaries.yml is the CI
+# route, and deps/build.sh under WSL stays as the backup, producing the same two archives.
 #
 # TWO ARCHITECTURES, TWO JOBS. Homebrew bottles are per-arch and Qt/VTK are not universal binaries,
 # so arm64 and x86_64 are separate builds producing separate assets. GitHub retired macos-13 in

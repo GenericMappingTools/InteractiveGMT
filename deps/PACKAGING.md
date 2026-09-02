@@ -51,6 +51,17 @@ Bump the tag + that file ONLY when the VTK/Qt/TBB module set changes (rare).
 gh release create runtime-0.2 deps/build/iGMT-win64-full.zip --repo GenericMappingTools/InteractiveGMT --title "gmtvtk runtime 0.2" --notes "Windows and Linux x86_64 VTK/Qt/TBB runtime bundles"
 ```
 
+The Linux assets have TWO routes, both running the same `deps/build.sh` and producing the same two
+archives. CI is the normal one: `.github/workflows/LinuxBinaries.yml` builds on every push that
+touches the C++ side, leaves both tarballs as workflow artifacts, and uploads to the two release
+tags only on a manual run that asks for it (`gh workflow run LinuxBinaries.yml -f
+publish=rolling|full`, or the "Run workflow" button). It builds on ubuntu-22.04 against a
+conda-forge Miniforge environment -- the same package set the WSL machine uses -- because the
+runner's glibc is the floor for every machine that installs the result.
+
+The WSL route below stays as the backup, and is what to reach for when CI is down or a bundle has
+to be tested on a real display.
+
 The Linux assets are built and uploaded from WSL by `bash deps/publish_linux.sh`, which runs
 `deps/build.sh` if needed and re-uploads with `--clobber`. Nothing it produces lives in the
 checkout: the cmake dir, the staged runtime and both tarballs are all under `~/.cache/igmt` (see
@@ -88,7 +99,8 @@ build that already happened.
 never retagged), one asset per platform: `gmtvtk-win64.zip` and `gmtvtk-linux-x86_64.tar.gz`. Both
 carry the library plus its requires-manifest (`.dll_requires` / `.so_requires`) and nothing else, so
 a C++ change costs a couple of MB instead of the whole runtime. Linux goes up through
-`publish_linux.sh --so`; Windows, by hand. First time:
+`LinuxBinaries.yml -f publish=rolling` or, from WSL, `publish_linux.sh --so`; Windows, by hand.
+First time:
 
 ```
 gh release create dll-latest deps/build/gmtvtk-win64.zip --repo GenericMappingTools/InteractiveGMT --title "gmtvtk.dll (rolling)" --notes "Always the latest DLL build"

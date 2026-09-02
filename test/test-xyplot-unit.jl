@@ -148,11 +148,49 @@ end
 	@test IG._median([1.0, 2.0, 3.0, 4.0]) == 2.5
 end
 
+# macOS/arm64 dies with `signal (6): Abort trap` inside the op-dispatch item below (CI run
+# 33657361347) â€” no message, a one-frame backtrace, so the log says neither WHICH op nor WHY. GMT's
+# C source has no `abort()` call at all and its asserts are compiled out of a Release build, which
+# leaves two candidates that this item separates BEFORE the loop runs:
+#   * the mode argument. GMT_FFT_1D/2D open with `assert (mode & GMT_FFT_COMPLEX)` and
+#     gmt_resources.h defines GMT_FFT_COMPLEX = 1U (GMT_FFT_REAL = 0U) â€” but GMT.jl's `fft1d`, and
+#     this package's own fallback constant, both pass 0, i.e. the value the assert rejects. Harmless
+#     under NDEBUG; SIGABRT the moment the library ships with asserts live.
+#   * the transform SIZE. The item above filters N=1024 (radix-2) and survives; the loop's series is
+#     N=201 = 3Â·67, which sends KissFFT down its generic-butterfly path.
+# Every line is flushed, so the last one printed names the call that died. macOS only: no other
+# platform has ever crashed here and none needs the noise.
+@testitem "macOS FFT probe (mode + size)" tags=[:unit, :fast] begin
+	if Sys.isapple()
+		IG = InteractiveGMT; G = IG.GMT
+		for n in (1024, 201), mode in (UInt32(1), UInt32(0))   # 1 = GMT_FFT_COMPLEX, 0 = GMT_FFT_REAL
+			println("FFTPROBE: GMT_FFT_1D n=$n mode=$mode"); flush(stdout)
+			b = Float32[Float32(sin(i)) for i = 1:2n]          # interleaved (re, im), n complex points
+			st = GC.@preserve b ccall((:GMT_FFT_1D, G.libgmt), Cint,
+			                          (Ptr{Cvoid}, Ptr{Cfloat}, UInt64, Cint, UInt32),
+			                          G.G_API[], pointer(b), UInt64(n), Cint(0), mode)
+			println("FFTPROBE:   -> status $st"); flush(stdout)
+			@test st == 0
+		end
+		x = collect(0.0:0.05:10.0)
+		println("FFTPROBE: GMT.jl fft1d, N=$(length(x))"); flush(stdout)
+		F = G.fft1d(sin.(x))
+		println("FFTPROBE:   -> forward ok"); flush(stdout)
+		G.fft1d(F; inverse=true)
+		println("FFTPROBE:   -> inverse ok"); flush(stdout)
+		println("FFTPROBE: spectrum1d (seg 128 over N=$(length(x)))"); flush(stdout)
+		IG._spectrum1d(x, sin.(x); want=:psd)
+		println("FFTPROBE: all probes survived"); flush(stdout)
+	end
+	@test true
+end
+
 @testitem "_xy_compute op-string dispatch" tags=[:unit, :fast] begin
 	IG = InteractiveGMT
 	x = collect(0.0:0.05:10.0); y = sin.(x)
 	for op in ("remove_mean", "remove_trend", "deriv1", "deriv2",
 	           "fitpoly:2", "savgol:5", "butter:low:1.0", "despike:2.0", "autocorr", "fft_amp", "fft_psd")
+		Sys.isapple() && (println("XYOP: $op"); flush(stdout))   # names the op that aborts (see probe above)
 		out = IG._xy_compute(op, x, y)
 		@test out !== nothing
 		@test length(out) == 3                       # (xout, yout, suffix)
