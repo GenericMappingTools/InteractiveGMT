@@ -45,6 +45,8 @@ const _LIB      = isempty(_LIB_CANDIDATES) ? _SHARED_LIB : first(_LIB_CANDIDATES
 # Which one actually loaded -- set by _load_library, since that is only known at runtime.
 const _LIB_USED = Ref{String}("")
 const _BIN_DIR  = dirname(_LIB)
+# The ordered-teardown atexit hook is registered once per session (see the end of _load_library).
+const _ATEXIT_DONE = Ref{Bool}(false)
 
 # Toolchain runtime DLL dirs (this machine). Dependent DLLs (Qt6*, vtk*) resolve from PATH at
 # load time. Override any of these via the matching ENV var BEFORE `using InteractiveGMT`.
@@ -105,6 +107,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_object_visible,
 	:gmtvtk_view_fv, :gmtvtk_promote_fv_h, :gmtvtk_set_julia_eval, :gmtvtk_set_table, :gmtvtk_log_error,
 	:gmtvtk_error_box, :gmtvtk_get_xfac,
+	:gmtvtk_take_messages, :gmtvtk_shutdown,   # Qt's own warnings -> the failure sink; ordered teardown
 	:gmtvtk_save_png, :gmtvtk_orbit, :gmtvtk_set_stereo,
 	:gmtvtk_open_empty, :gmtvtk_set_drop_callback, :gmtvtk_set_paste_callback, :gmtvtk_add_surface_h,
 	:gmtvtk_promote_surface_h, :gmtvtk_replace_base_grid_h, :gmtvtk_show_layer_image_h, :gmtvtk_show_layer_rgba_h,
@@ -396,6 +399,21 @@ function _load_library()
 	# The .ui ship with the package (they are in git), so _PKGROOT/deps/ui is always the right answer.
 	let uidir = joinpath(_PKGROOT, "deps", "ui")
 		isdir(uidir) && ccall(_fn(:gmtvtk_set_ui_dir), Cvoid, (Cstring,), uidir)
+	end
+	# Tear Qt down IN ORDER when this process ends. Without it the QApplication (deliberately never
+	# deleted while running) was still registered as owning the main thread when the C runtime ran
+	# Qt's static destructors, and every session ended with three
+	#     QThreadStorage: entry N destroyed before end of thread 0x...
+	# lines — Qt reporting a real teardown-order defect, on stderr, where nothing looked. Registered
+	# once, at load, and it no-ops if no window was ever opened.
+	if !_ATEXIT_DONE[]
+		_ATEXIT_DONE[] = true
+		atexit() do
+			try
+				ccall(_fn(:gmtvtk_shutdown), Cvoid, ())
+			catch
+			end
+		end
 	end
 	return
 end

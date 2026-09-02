@@ -123,6 +123,10 @@ const _INTERNAL_MARKS = (
 	"MethodError", "UndefVarError", "BoundsError", "KeyError", "DimensionMismatch",
 	"StackOverflowError", "InexactError", "no method matching", "UndefRefError",
 	"AssertionError", "SegmentationFault",
+	# Qt's own diagnostics, drained by _drain_qt_messages. Qt files the first level under "warning";
+	# it is an ERROR — this code did something wrong (a teardown out of order, a widget given two
+	# layouts, a connect to nothing) and merely did not die on the spot. Captured as "Qt ERROR".
+	"Qt ERROR",
 )
 
 _is_internal_failure(msg::AbstractString) = any(m -> occursin(m, msg), _INTERNAL_MARKS)

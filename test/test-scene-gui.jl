@@ -227,7 +227,13 @@ end
 # ABOVE the surface) ever answered. Depth by itself must never disable hover.
 @testitem "hover: a buried hypocentre still answers; the terrain only hides its pixels" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
-	G = GMT.mat2grid(Float32[0.0 for iy in 0:20, ix in 0:20]; x=[0.0, 20.0], y=[0.0, 20.0])  # lid at z=0
+	# REAL RELIEF, and depths of the same order as it — the same fixture rule the pixel test below
+	# spells out. A flat z=0 grid has NO Z span, so the camera that has to frame a symbol 100 km down
+	# zooms until the whole 20x20 footprint is a handful of pixels, and every event projects on top of
+	# every other: the picker (nearest symbol within its own size in px) then answers with whichever
+	# one is marginally closer. That is not the law failing, it is a fixture with no scale — it passed
+	# on a big desktop window and returned "OUTSIDE" for the buried event on CI's Xvfb screen.
+	G = GMT.mat2grid(Float32[500 + 300*sin(ix/3.0) for iy in 0:20, ix in 0:20]; x=[0.0, 20.0], y=[0.0, 20.0])
 	f = view_grid(G)
 	buf = Vector{UInt8}(undef, 1024)
 	hover(x, y, z) = (n = ccall(_test_fn(:gmtvtk_symbol_hover_test), Cint,
@@ -238,12 +244,12 @@ end
 	              IG._pump_once())
 	try
 		IG._pump_once()
-		# under the lid · above the lid · deep but OUTSIDE the grid, so nothing is in the way
+		# under the ground · above it · deep but OUTSIDE the grid, so nothing is in the way
 		IG.add_symbols!(f.h, [10.0, 5.0, 30.0], [5.0, 15.0, 10.0];
-		                z=[-100000.0, 100000.0, -100000.0], symbol=:sphere, size=40.0,
+		                z=[-500.0, 2000.0, -500.0], symbol=:sphere, size=40.0,
 		                fill=(1.0, 0.0, 1.0), name="evts", info=["BURIED", "ABOVE", "OUTSIDE"])
 		IG._pump_once()
-		@test hover(10.0, 5.0, -100000.0) == "BURIED"      # flat map: depth is not in play at all
+		@test hover(10.0, 5.0, -500.0) == "BURIED"         # flat map: depth is not in play at all
 
 		flat2d(0)                                           # tilt into 3-D
 		# PICKING IS NOT RENDERING (10_geometry.cpp, above pickSymbolAt). Every one of these still
@@ -253,9 +259,9 @@ end
 		# above the ground could be interrogated at all — and the source says in as many words not to
 		# add a third. What the terrain DOES hide is the pixels, and that law has its own test below
 		# ("a surface hides what is buried under it"), asserted on the framebuffer.
-		@test hover(10.0, 5.0, -100000.0) == "BURIED"      # under the lid, and still interrogable
-		@test hover(5.0, 15.0, 100000.0)  == "ABOVE"
-		@test hover(30.0, 10.0, -100000.0) == "OUTSIDE"
+		@test hover(10.0, 5.0, -500.0)  == "BURIED"        # under the ground, and still interrogable
+		@test hover(5.0, 15.0, 2000.0)  == "ABOVE"
+		@test hover(30.0, 10.0, -500.0) == "OUTSIDE"
 
 		# What DOES change between the two views is where the layer is parked: in 3-D it sits in the
 		# main renderer so the real depth test can hide it, and in flat-2-D it is promoted to the
@@ -264,7 +270,7 @@ end
 		@test toplayer() == 0
 		flat2d(1)
 		@test toplayer() == 1
-		@test hover(10.0, 5.0, -100000.0) == "BURIED"
+		@test hover(10.0, 5.0, -500.0) == "BURIED"
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
@@ -714,7 +720,7 @@ end
 			(Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint, Cstring, Cstring, Cstring, Cint),
 			f.h, x, y, length(x), "", "Distance", "Elevation", 0)
 		IG._pump_once()
-		q = profile_to_xyplot(f)
+		global q = profile_to_xyplot(f)   # `q` is the item's own global (the finally block reads it)
 		@test isalive(q)
 		@test length(q.series) == 1                   # seed callback populated the Julia mirror
 	finally

@@ -26,10 +26,13 @@
 	@test 0 <= yoff && yoff + ys <= NY
 	@test (W, E, S, N) == (-180.0, 180.0, -90.0, 90.0)
 	# The extent is exactly the pixel window read back through the same grid spacing, always.
+	# Own names inside the loop: reusing the ones assigned above would be an assignment to a global
+	# from soft scope, which Julia warns about on every iteration and which reads, correctly, as a
+	# bug waiting to happen.
 	for r in ((-33.0, 12.5, -8.0, 44.0), (100.0, 140.0, -40.0, -10.0), (-7.0, -6.0, 36.0, 37.0))
-		xoff, yoff, xs, ys, W, E, S, N = sw(r...)
-		@test (W, E) == (-180.0 + xoff / NX * 360.0, -180.0 + (xoff + xs) / NX * 360.0)
-		@test (N, S) == (90.0 - yoff / NY * 180.0,   90.0 - (yoff + ys) / NY * 180.0)
+		(xo, yo, xw, yh, w, e, s, n) = sw(r...)
+		@test (w, e) == (-180.0 + xo / NX * 360.0, -180.0 + (xo + xw) / NX * 360.0)
+		@test (n, s) == (90.0 - yo / NY * 180.0,   90.0 - (yo + yh) / NY * 180.0)
 	end
 end
 

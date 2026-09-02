@@ -1431,6 +1431,20 @@ static QString gmtvtkUiDir() {
 // Julia side's data/ — see hydrothermal_vents.dat, meteoritos.dat). NOT deps/assets: that was an
 // earlier, wrong copy of Cande_Kent_95.dat (stale M-sequence ages); the real one lives here.
 static QString gmtvtkDataDir() {
+	// SAME PROBLEM AS THE .ui FILES, SAME ANSWER. data/ ships with the Julia package; the DLL may be
+	// loaded from the depot runtime cache (~/.julia/gmtvtk_runtime/deps/build), whose ../../data does
+	// not exist — and then the Plate calculator's map came up EMPTY (data/plates/<model>_polyg.dat
+	// unreadable, "a missing file leaves a blank map"), on CI and on every ordinary Pkg.add install
+	// alike. The host already tells us where the package is, through gmtvtk_set_ui_dir
+	// (<pkgroot>/deps/ui), so the package's data/ is that path's grandparent + /data. One override,
+	// two directories: nothing new for the host to call, and no way for the two to disagree.
+	if (!g_uiDirOverride.isEmpty()) {
+		QDir ui(g_uiDirOverride);
+		ui.cdUp();                  // deps/ui -> deps
+		ui.cdUp();                  // deps    -> package root
+		const QString d = ui.filePath("data");
+		if (QDir(d).exists()) return d;
+	}
 	QString modDir = gmtvtkModuleDir();
 	if (modDir.isEmpty()) return QString(GMTVTK_DATA_DIR);
 	QDir dir(modDir);
@@ -1466,8 +1480,44 @@ public:
 	}
 };
 
+// ---------------------------------------------------------------------------------------------
+// QT'S OWN DIAGNOSTICS ARE ERRORS. Not warnings — errors.
+//
+// "QThreadStorage: entry 2 destroyed before end of thread", "QLayout: Attempting to add QLayout to X
+// which already has a layout", "QObject::connect: No such slot" — every one of them says something in
+// this code is WRONG. Qt's severity name for the first level is "warning", which is why they scrolled
+// past in green test runs for so long; the message content is a defect report every time. They went
+// to stderr, where nothing was looking.
+//
+// So they are CAPTURED here, in the one place Qt routes every message through, and the host drains
+// them (gmtvtk_take_messages) into the same failure sink `_viewer_log_error` feeds — which
+// runtests.jl asserts is empty at the end of the run. Qt's own default handler still runs, so the
+// text keeps appearing on stderr exactly as before; this only stops it being invisible to the tests.
+//
+// Debug/info are dropped: they are chatter (VTK/Qt trace), not defects. Warning, critical and fatal
+// are kept, bounded, oldest-first.
+static std::vector<std::string> g_qtMessages;
+static QtMessageHandler         g_prevMsgHandler = nullptr;
+static const size_t             GMTVTK_MAX_QT_MESSAGES = 200;
+
+static void gmtvtkMessageHandler(QtMsgType t, const QMessageLogContext &ctx, const QString &msg) {
+	if (t != QtDebugMsg && t != QtInfoMsg) {
+		// Qt calls the first level "warning". It is not one: every message that reaches here says
+		// this code did something wrong — a teardown in the wrong order, a widget given two layouts,
+		// a connect to a slot that does not exist. Nothing degrades gracefully afterwards; the defect
+		// is simply not fatal on the spot. Reported as what it is, so nobody reads "warning" and
+		// scrolls on.
+		std::string line = std::string("Qt ERROR: ") + msg.toStdString();
+		if (ctx.file && ctx.file[0]) line += std::string(" (") + ctx.file + ":" + std::to_string(ctx.line) + ")";
+		if (g_qtMessages.size() >= GMTVTK_MAX_QT_MESSAGES) g_qtMessages.erase(g_qtMessages.begin());
+		g_qtMessages.push_back(line);
+	}
+	if (g_prevMsgHandler) g_prevMsgHandler(t, ctx, msg);   // stderr keeps working, unchanged
+}
+
 static void ensureApp() {
 	if (g_app) return;
+	if (!g_prevMsgHandler) g_prevMsgHandler = qInstallMessageHandler(gmtvtkMessageHandler);
 	// QApplication needs argc/argv that outlive it; there is none when driven from
 	// a host, so fabricate a persistent dummy argv.
 	static int   s_argc = 1;
@@ -1484,6 +1534,36 @@ static void ensureApp() {
 	g_app = new QApplication(s_argc, s_argv);
 	g_app->setWindowIcon(appIcon());   // taskbar / app-wide default icon
 	g_app->installEventFilter(new EnterDefocusFilter(g_app));   // Enter defocuses any QLineEdit (app-wide)
+}
+
+// THE SHUTDOWN THE PROCESS NEVER HAD, and the reason every session ended with
+//
+//     QThreadStorage: entry 2 destroyed before end of thread 0x...
+//     QThreadStorage: entry 1 destroyed before end of thread 0x...
+//     QThreadStorage: entry 0 destroyed before end of thread 0x...
+//
+// The QApplication was deliberately leaked (`g_app` is never deleted), so nothing tore Qt down while
+// the process was still a going concern. At exit the C runtime then ran Qt's own STATIC destructors,
+// which free the per-thread storage of a thread — the main one — that Qt still has registered as
+// alive. Qt says so, in those three lines, and it is right: the order is wrong. Nothing "fails", and
+// that is exactly what made it easy to keep ignoring.
+//
+// Called from the host (gmtvtk_shutdown, via Julia's atexit) while the main thread is still the main
+// thread: close every window, let the DeferredDelete events that closing posts actually run, then
+// destroy the QApplication. After this Qt has no live thread data left to complain about, and the
+// static destructors have nothing to do.
+static void appShutdown() {
+	if (!g_app) return;
+	std::vector<Scene*> live(g_scenes.begin(), g_scenes.end());   // closing mutates g_scenes
+	for (Scene *s : live)
+		if (s && !s->tearingDown && s->win) s->win->close();      // WA_DeleteOnClose -> real destruction
+	QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+	g_app->processEvents(QEventLoop::ExcludeUserInputEvents);
+	QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+	delete g_app;
+	g_app = nullptr;
+	g_openWindows = 0;
+	if (g_prevMsgHandler) { qInstallMessageHandler(g_prevMsgHandler); g_prevMsgHandler = nullptr; }
 }
 
 // Middle button, done by hand (not the default trackball, which the gizmo's left-drag

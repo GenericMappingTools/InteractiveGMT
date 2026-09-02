@@ -254,6 +254,7 @@
 #include <vtkPlot.h>
 #include <vtkPlotPoints.h>
 #include <vtkPlotLine.h>
+#include <vtkPlotBar.h>
 #include <vtkContext2D.h>
 #include <vtkAxis.h>
 #include <vtkTable.h>

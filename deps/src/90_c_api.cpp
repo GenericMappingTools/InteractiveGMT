@@ -4268,6 +4268,31 @@ GMTVTK_API int gmtvtk_anno_count_h(void *handle) {
 	return (int)s->movieAnnos.size();
 }
 
+// Drain Qt's OWN diagnostics — everything above debug/info since the last call — into `buf` as one
+// line each, and clear them. Each is reported as "Qt ERROR: …", because that is what they are: a
+// defect in this code that did not stop the program. They went to stderr, nothing read them, and a
+// test run stayed green with "QThreadStorage: entry 2 destroyed before end of thread" in its output.
+// The host records them where its own failures go (the sink runtests.jl asserts on, so they FAIL the
+// run). Returns the number of BYTES written (0 = nothing pending);
+// the messages are dropped whether or not they fit, so a full buffer cannot wedge the queue.
+GMTVTK_API int gmtvtk_take_messages(char *buf, int cap) {
+	if (!buf || cap <= 0) { g_qtMessages.clear(); return 0; }
+	std::string all;
+	for (const std::string &m : g_qtMessages) { all += m; all += '\n'; }
+	g_qtMessages.clear();
+	const int n = (int)std::min<size_t>(all.size(), (size_t)cap - 1);
+	memcpy(buf, all.data(), (size_t)n);
+	buf[n] = '\0';
+	return n;
+}
+
+// Tear Qt down in the right order — see appShutdown (30_app.cpp) for WHY this exists. Called from
+// Julia's atexit, on the main thread, before the C runtime starts running static destructors.
+// Safe to call twice, and safe to call when no window was ever opened.
+GMTVTK_API void gmtvtk_shutdown(void) {
+	appShutdown();
+}
+
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
@@ -7849,6 +7874,17 @@ GMTVTK_API int gmtvtk_xyplot_add_series(void *handle, const double *x, const dou
                                         int lineType, int marker, double markerSize) {
 	return xyAddSeries(static_cast<XYPlot*>(handle), x, y, n, name, r, g, b, width,
 	                   lineType, marker, markerSize);
+}
+
+// Same series-add as above, drawn as BARS (histogram / bar graph) instead of a polyline. `barWidth`
+// is in X DATA units; pass <=0 to size the bars from the data (90% of the median x spacing).
+// `width` is the bars' OUTLINE pen, in px, as everywhere else. Same one xyAddSeries underneath, so
+// a bar series is a first-class series: Object Manager row, properties, save, page copy, delete.
+GMTVTK_API int gmtvtk_xyplot_add_bars(void *handle, const double *x, const double *y, int n,
+                                      const char *name, double r, double g, double b,
+                                      double width, double barWidth) {
+	return xyAddSeries(static_cast<XYPlot*>(handle), x, y, n, name, r, g, b, width,
+	                   -1, -1, -1.0, /*kind=*/1, barWidth);
 }
 
 // Add a screen-constant "+" cross at data point (x,y) -- e.g. the Tide tool's "Now" indicator.

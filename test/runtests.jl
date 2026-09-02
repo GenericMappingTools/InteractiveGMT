@@ -50,15 +50,38 @@ const _ONLYTAG = strip(get(ENV, "INTERACTIVEGMT_TEST_TAG", ""), [' ', '"', '\'']
 # the value did not take, say so LOUDLY here, where the line lands right above the crash it
 # explains, instead of leaving a bare `signal (11)` to be re-diagnosed from scratch. The FFT items
 # are NOT skipped on that account: a test that cannot run is a defect to fix, not one to hide.
+#
+# ...and that is exactly what it turned out to be: `gmtset`/`gmtget` run a MODULE, which reads and
+# writes the defaults FILE; the long-lived API session this process does its FFTs through
+# (GMT.G_API[]) was created by `using GMT` before any of it and keeps its own copy of the settings.
+# So the file said kissfft, `gmtget` said kissfft, and the session that actually called GMT_FFT_1D
+# still dispatched to vDSP and died (run 33583990097, GMT_FFT_1D <- libgmt.6.7.0.dylib). The fix is
+# to set the value ON THAT SESSION, through the API, which is what GMT_Set_Default does.
 if Sys.isapple()
 	try
+		try		# the LIVE session — the one whose GMT_FFT_1D crashes; a file cannot reach it
+			r = ccall((:GMT_Set_Default, InteractiveGMT.GMT.libgmt), Cint,
+			          (Ptr{Cvoid}, Cstring, Cstring), InteractiveGMT.GMT.G_API[], "GMT_FFT", "kissfft")
+			(r == 0) || @error "tests: GMT_Set_Default(GMT_FFT, kissfft) returned $r on the live session"
+		catch e
+			@warn "tests: could not set GMT_FFT on the live API session" exception=(e,)
+		end
 		InteractiveGMT.GMT.gmt("gmtset GMT_FFT kissfft")
+		# Read it back FROM THE LIVE SESSION (GMT_Get_Default), not from the file: the file was never
+		# the thing that was wrong. `gmtget` is only the fallback when that call is unavailable.
 		eff = try
-			d = InteractiveGMT.GMT.gmt("gmtget GMT_FFT")
-			t = d isa AbstractString ? d : (hasproperty(d, :text) && !isempty(d.text) ? d.text[1] : string(d))
-			strip(String(t))
+			b = Vector{UInt8}(undef, 256)
+			ok = ccall((:GMT_Get_Default, InteractiveGMT.GMT.libgmt), Cint,
+			           (Ptr{Cvoid}, Cstring, Ptr{UInt8}), InteractiveGMT.GMT.G_API[], "GMT_FFT", b)
+			(ok == 0) ? strip(unsafe_string(pointer(b))) : error("GMT_Get_Default returned $ok")
 		catch
-			"<unreadable>"
+			try
+				d = InteractiveGMT.GMT.gmt("gmtget GMT_FFT")
+				t = d isa AbstractString ? d : (hasproperty(d, :text) && !isempty(d.text) ? d.text[1] : string(d))
+				strip(String(t))
+			catch
+				"<unreadable>"
+			end
 		end
 		if occursin("kiss", lowercase(eff))
 			@info "tests: GMT_FFT=$eff (GMT's vDSP FFT segfaults on this platform)"
@@ -71,8 +94,27 @@ if Sys.isapple()
 	end
 end
 
+using Test
+
 @run_package_tests verbose=true filter = ti ->
 	(_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags)) &&
 	(isempty(_ONLY) || occursin(_ONLY, ti.name)) &&
 	(isempty(_ONLYFILE) || occursin(_ONLYFILE, ti.filename)) &&
 	(isempty(_ONLYTAG) || Symbol(_ONLYTAG) in ti.tags)
+
+# THE VERDICT ON THE WARNINGS. Every tool callback catches, logs "X FAILED: …" and returns 0, which
+# is right for the GUI and blind for a test: an item that asserts `call(kv) == 0` for a refusal it
+# WANTED cannot tell that refusal from the tool blowing up on something else entirely. That is how
+# `Earth regions FAILED: Something went wrong when calling the module. GMT error number = 72` and
+# `Interpolate FAILED: … error number = 72` rode along in green CI runs as ordinary warnings.
+#
+# InteractiveGMT._viewer_log_error is the ONE funnel every one of those messages passes through, so
+# it sorts them (src/console.jl): a sentence the user can act on is the tool WORKING; a GMT C-level
+# error or a raw Julia MethodError/BoundsError/… is a BUG. The second list is asserted here, over
+# the whole run, so a disguised error can never be green again.
+@testset "no internal tool failures (disguised errors)" begin
+	bad = InteractiveGMT._internal_tool_errors()
+	isempty(bad) || @error "Tools failed with internal errors, not with a refusal a user could " *
+	                       "act on. Each of these is a bug:\n  " * join(bad, "\n  ")
+	@test isempty(bad)
+end

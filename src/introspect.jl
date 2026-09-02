@@ -38,5 +38,29 @@ function _scene_state(h::Ptr{Cvoid})
 end
 _scene_state(fig) = _scene_state(getfield(fig, :h))
 
-# Pump the Qt event loop once (flush pending UI work before snapshotting), best-effort.
-_pump_once() = ccall(_fn(:gmtvtk_process_events), Cint, ())
+# Pump the Qt event loop once (flush pending UI work before snapshotting), best-effort. Qt's own
+# diagnostics are drained on the way out. They are ERRORS, whatever Qt's own severity name says:
+# "QThreadStorage: entry 2 destroyed before end of thread", "QLayout: … already has a layout" are
+# reports of a defect in this code that did not happen to be fatal. They used to go to stderr, where
+# nothing read them, and a test run stayed green with them in its log. They now go into the SAME sink
+# the tools' failures go into, which runtests.jl asserts is empty.
+function _pump_once()
+	r = ccall(_fn(:gmtvtk_process_events), Cint, ())
+	_drain_qt_messages()
+	return r
+end
+
+# Move whatever Qt has said since the last call into the failure sink. Never throws: it is called
+# from the pump, which runs on a Timer.
+function _drain_qt_messages()
+	try
+		buf = Vector{UInt8}(undef, 8192)
+		n = ccall(_fn(:gmtvtk_take_messages), Cint, (Ptr{UInt8}, Cint), buf, Cint(length(buf)))
+		n <= 0 && return
+		for line in eachsplit(unsafe_string(pointer(buf)), '\n')
+			isempty(strip(line)) || _record_tool_error(String(line))
+		end
+	catch
+	end
+	return
+end

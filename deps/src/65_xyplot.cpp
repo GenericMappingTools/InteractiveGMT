@@ -26,6 +26,13 @@ struct XYSeries {
 	int                       marker = 0;       // vtkPlotPoints: NONE=0 CROSS=1 PLUS=2 SQUARE=3 CIRCLE=4 DIAMOND=5
 	double                    markerSize = 7.0;
 	bool                      visible = true;
+	// Chart plot type: 0 = line (vtkChart::LINE, the default), 1 = BAR (histogram / bar graph).
+	// It is a property of the SERIES, not of the call that made it, so a rebuild (xyRebuildPlots,
+	// after a delete) re-creates the right plot item. `barWidth` is vtkPlotBar's bar width, which
+	// is expressed in X DATA units (not pixels) -- hence its own field: `width` stays the pen width
+	// in px for every kind, so the two never overwrite each other (see xyApplyStyle).
+	int                       kind = 0;
+	double                    barWidth = 1.0;
 	// Screen-constant "+" cross (e.g. Tide tool's "Now" indicator) -- NOT a vtkPlotPoints marker
 	// (VTK's marker glyph rendering literally overwrites the plot's pen width with MarkerSize, so a
 	// marker-only series has no independent thickness control at all; see xyRecomputeCross). Built
@@ -193,7 +200,16 @@ static void xyApplyStyle(XYPlot *s, XYSeries &se) {
 		return;
 	se.plot->SetColor((unsigned char)(se.r * 255), (unsigned char)(se.g * 255),
 	                  (unsigned char)(se.b * 255), 255);
-	se.plot->SetWidth((float)se.width);
+	// vtkPlotBar::SetWidth is the BAR WIDTH in x data units, not a pen thickness -- feeding it
+	// `se.width` (px) would blow a histogram's bars up to the whole axis. The outline pen keeps
+	// `se.width`, so both stay independently controllable.
+	if (vtkPlotBar *pb = vtkPlotBar::SafeDownCast(se.plot)) {
+		pb->SetWidth((float)se.barWidth);
+		if (pb->GetPen()) pb->GetPen()->SetWidth((float)se.width);
+	}
+	else {
+		se.plot->SetWidth((float)se.width);
+	}
 	if (se.plot->GetPen())
 		se.plot->GetPen()->SetLineType(se.lineType);
 	if (vtkPlotPoints *pp = vtkPlotPoints::SafeDownCast(se.plot)) {
@@ -256,7 +272,7 @@ static void xyRebuildPlots(XYPlot *s) {
 	XYPage &pg = xyCur(s);
 	pg.chart->ClearPlots();
 	for (auto &se : pg.series) {
-		vtkPlot *pl = pg.chart->AddPlot(vtkChart::LINE);
+		vtkPlot *pl = pg.chart->AddPlot(se.kind == 1 ? vtkChart::BAR : vtkChart::LINE);
 		pl->SetInputData(se.table, 0, 1);
 		pl->SetLabel(se.name);
 		pl->SetTooltipLabelFormat("%x, %y");   // hover shows ONLY x,y (not the series name)
@@ -294,8 +310,10 @@ static void xyRebuildObjMgr(XYPlot *s) {
 	}
 	// "Legend" row (UserRole -2, never a real series index): the chart legend's own handle, replacing
 	// the old "Show legend" toolbar/menu toggle. Checkbox shows/hides it; right-click gives Font size…
-	// (same live-apply pattern as the Info row's Font size…).
-	{
+	// (same live-apply pattern as the Info row's Font size…). Only shown once the page HAS a series:
+	// a legend of nothing is not a handle to anything, so an empty page's Object Manager is empty --
+	// same rule as the Info row above, which only appears once something set it.
+	if (!series.empty()) {
 		QTreeWidgetItem *it = new QTreeWidgetItem(s->objMgr);
 		it->setText(0, "Legend");
 		QFont f = it->font(0); f.setItalic(true); it->setFont(0, f);
@@ -370,9 +388,14 @@ static void xyShowDataTable(XYPlot *s, int idx) {
 // Append one (x,y) series to the CURRENT page. Returns its index (or -1 on bad input). Renders.
 // `lineType` (vtkPen), `marker` (vtkPlotPoints) and `markerSize` set the presentation; pass
 // lineType<0 / marker<0 / markerSize<=0 for the defaults (solid line, no marker, size 7).
+// `kind` picks the chart plot type (0 = line, 1 = BAR — histogram / bar graph); `barWidth` is the
+// bar width in X DATA units (<=0 => 90% of the median x spacing, which is what a histogram wants).
+// THE one series-add: every caller (both C exports, the Profile seed) comes through here, so a bar
+// series is built, styled, copied between pages and rebuilt by exactly the same code as a line.
 static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
                        const char *name, double r, double g, double b, double width,
-                       int lineType, int marker, double markerSize) {
+                       int lineType, int marker, double markerSize,
+                       int kind = 0, double barWidth = 0.0) {
 	if (!xyAlive(s) || !x || !y || n < 1)
 		return -1;
 	XYPage &pg = xyCur(s);
@@ -389,6 +412,27 @@ static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
 	if (lineType >= 0)    se.lineType = lineType;
 	if (marker >= 0)      se.marker = marker;
 	if (markerSize > 0.0) se.markerSize = markerSize;
+	se.kind = (kind == 1) ? 1 : 0;
+	if (se.kind == 1) {
+		// No caller-supplied bar width: derive it from the data itself. The MEDIAN |dx| (not the mean,
+		// and not the full span / n) survives a duplicate or a gap in the abscissa; 0.9 of it leaves a
+		// hairline between neighbouring bars. A single point has no spacing at all -> keep the 1.0.
+		if (barWidth > 0.0) {
+			se.barWidth = barWidth;
+		}
+		else if (n > 1) {
+			std::vector<double> dx;
+			dx.reserve((size_t)n - 1);
+			for (int i = 1; i < n; ++i) {
+				const double d = std::abs(x[i] - x[i - 1]);
+				if (d > 0.0) dx.push_back(d);
+			}
+			if (!dx.empty()) {
+				std::nth_element(dx.begin(), dx.begin() + dx.size() / 2, dx.end());
+				se.barWidth = 0.9 * dx[dx.size() / 2];
+			}
+		}
+	}
 
 	se.table = vtkSmartPointer<vtkTable>::New();
 	// X is DOUBLE: epoch-seconds time values (~1.6e9) lose ~128 s of resolution in float32, which
@@ -401,7 +445,7 @@ static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
 		se.table->SetValue(i, 1, (float)y[i]);
 	}
 
-	vtkPlot *pl = pg.chart->AddPlot(vtkChart::LINE);
+	vtkPlot *pl = pg.chart->AddPlot(se.kind == 1 ? vtkChart::BAR : vtkChart::LINE);
 	pl->SetInputData(se.table, 0, 1);
 	pl->SetLabel(se.name);
 	pl->SetTooltipLabelFormat("%x, %y");   // hover shows ONLY x,y (not the series name)
@@ -557,7 +601,8 @@ static void xyLineProperties(XYPlot *s, int idx) {
 	XYSeries &se = series[idx];
 
 	QDialog dlg(s->win);
-	dlg.setWindowTitle(QString("Line properties — %1").arg(QString::fromStdString(se.name)));
+	dlg.setWindowTitle(QString("%1 properties — %2")
+		.arg(se.kind == 1 ? "Bar" : "Line", QString::fromStdString(se.name)));
 	QFormLayout *form = new QFormLayout(&dlg);
 	auto rr = [s] { if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render(); };
 
@@ -591,9 +636,22 @@ static void xyLineProperties(XYPlot *s, int idx) {
 			[&, rr](double v) { se.width = v * PX_PER_PT; xyApplyStyle(s, se); rr(); });
 	} else {
 		wsp->setRange(0.5, 12.0); wsp->setSingleStep(0.5); wsp->setValue(se.width);
-		form->addRow("Width (px)", wsp);
+		form->addRow(se.kind == 1 ? "Outline (px)" : "Width (px)", wsp);
 		QObject::connect(wsp, qOverload<double>(&QDoubleSpinBox::valueChanged), &dlg,
 			[&, rr](double v) { se.width = v; xyApplyStyle(s, se); rr(); });
+	}
+
+	// A BAR series' own width, in X DATA units (a histogram's bin span) -- a different quantity from
+	// the pen thickness above, so it gets its own row rather than overloading that one. Wide range +
+	// generous decimals: the abscissa can be anything from 1e-6 (a wavenumber) to 1e9 (epoch seconds).
+	if (se.kind == 1) {
+		QDoubleSpinBox *bsp = new QDoubleSpinBox(&dlg);
+		bsp->setDecimals(6); bsp->setRange(1e-9, 1e12);
+		bsp->setSingleStep(std::max(1e-9, se.barWidth / 10.0));
+		bsp->setValue(se.barWidth);
+		form->addRow("Bar width (x units)", bsp);
+		QObject::connect(bsp, qOverload<double>(&QDoubleSpinBox::valueChanged), &dlg,
+			[&, rr](double v) { se.barWidth = v; xyApplyStyle(s, se); rr(); });
 	}
 
 	// combo index -> vtkPen line type
@@ -610,7 +668,9 @@ static void xyLineProperties(XYPlot *s, int idx) {
 	QComboBox *mkc = new QComboBox(&dlg);
 	mkc->addItems(QStringList() << "None" << "Cross" << "Plus" << "Square" << "Circle" << "Diamond");
 	mkc->setCurrentIndex(se.marker);
-	mkc->setEnabled(!se.nowCross);
+	// A bar series is a vtkPlotBar, not a vtkPlotPoints: it has no marker glyph at all (same reason
+	// the row is off for a "now cross"), so the control is shown-but-dead rather than lying.
+	mkc->setEnabled(!se.nowCross && se.kind != 1);
 	form->addRow("Marker", mkc);
 	QObject::connect(mkc, qOverload<int>(&QComboBox::currentIndexChanged), &dlg,
 		[&, rr](int i) { se.marker = i; xyApplyStyle(s, se); rr(); });
@@ -633,6 +693,7 @@ static void xyLineProperties(XYPlot *s, int idx) {
 	} else {
 		msp->setRange(1.0, 200.0);
 		msp->setValue(se.markerSize);
+		msp->setEnabled(se.kind != 1);
 		form->addRow("Marker size", msp);
 		QObject::connect(msp, qOverload<double>(&QDoubleSpinBox::valueChanged), &dlg,
 			[&, rr](double v) { se.markerSize = v; xyApplyStyle(s, se); rr(); });
@@ -1328,7 +1389,7 @@ static void xyDuplicatePage(XYPlot *s, int idx) {
 		XYSeries se = so;                                // copies style/name; deep-copy the table next
 		se.table = vtkSmartPointer<vtkTable>::New();
 		se.table->DeepCopy(so.table);
-		vtkPlot *pl = dst.chart->AddPlot(vtkChart::LINE);
+		vtkPlot *pl = dst.chart->AddPlot(se.kind == 1 ? vtkChart::BAR : vtkChart::LINE);
 		pl->SetInputData(se.table, 0, 1);
 		pl->SetLabel(se.name);
 		pl->SetTooltipLabelFormat("%x, %y");
@@ -1426,7 +1487,7 @@ static void xyCopyToPage(XYPlot *s, int srcIdx, int dstIdx) {
 		XYSeries se = so;                                // copies style/name; deep-copy the table next
 		se.table = vtkSmartPointer<vtkTable>::New();
 		se.table->DeepCopy(so.table);
-		vtkPlot *pl = dst.chart->AddPlot(vtkChart::LINE);
+		vtkPlot *pl = dst.chart->AddPlot(se.kind == 1 ? vtkChart::BAR : vtkChart::LINE);
 		pl->SetInputData(se.table, 0, 1);
 		pl->SetLabel(se.name);
 		pl->SetTooltipLabelFormat("%x, %y");
@@ -1810,6 +1871,21 @@ static XYPlot *buildXYPlot(const char *title) {
 			g_juliaXYAna(s, QString("despike:%1").arg(k, 0, 'g', 6).toUtf8().constData(), sel);
 		});
 	}
+	mAna->addSeparator();
+	{
+		// Histogram of the series' Y VALUES (x = bin centre, y = count) -- ecran's "Show histogram".
+		// Own page, drawn with bars. 0 bins => let Julia pick (Freedman-Diaconis).
+		QAction *a = mAna->addAction("Histogram…");
+		QObject::connect(a, &QAction::triggered, s->win, [s, gate] {
+			const int sel = gate(); if (sel < 0) return;
+			bool ok = false;
+			const int nb = QInputDialog::getInt(s->win, "Histogram",
+				"Number of bins (0 = automatic):", 0, 0, 10000, 1, &ok);
+			if (!ok) return;
+			g_juliaXYAna(s, QString("hist:%1").arg(nb).toUtf8().constData(), sel);
+		});
+	}
+	addAna("Bar graph", "bargraph");
 	{
 		// Spector & Grant (interactive): on a (wavenumber, power) spectrum, LEFT-DRAG a band and the
 		// slope of ln(power) gives the depth to the magnetic source ensemble — live fit line + readout.

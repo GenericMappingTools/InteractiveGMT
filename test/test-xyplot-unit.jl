@@ -160,3 +160,32 @@ end
 	end
 	@test IG._xy_compute("nonsense", x, y) === nothing
 end
+
+@testitem "histogram binning" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	# Explicit bin count: 100 values evenly spread over [0,1) -> 10 bins of 10 counts each.
+	v = collect(0.0:0.01:0.99)
+	c, k, w = IG._histogram(v, 10)
+	@test length(c) == 10 && length(k) == 10
+	@test sum(k) == length(v)                       # every value binned exactly once
+	@test all(k .== 10.0)
+	@test isapprox(w, 0.099; atol=1e-12)            # (max-min)/nbins, max = 0.99
+	@test isapprox(c[1], v[1] + w / 2; atol=1e-12)  # centres, not edges
+	# The maximum lands in the LAST bin, not one past it.
+	c2, k2, _ = IG._histogram([0.0, 1.0], 2)
+	@test sum(k2) == 2 && k2[end] == 1.0
+	# Automatic bin count (Freedman-Diaconis) and NaN rejection.
+	c3, k3, w3 = IG._histogram([v; NaN; NaN], 0)
+	@test sum(k3) == length(v)
+	@test length(c3) == length(k3) && w3 > 0
+	# Degenerate cases.
+	c4, k4, w4 = IG._histogram(fill(3.0, 5), 0)     # constant series -> one bin
+	@test c4 == [3.0] && k4 == [5.0] && w4 == 1.0
+	@test_throws ErrorException IG._histogram([1.0], 0)
+	# Quantiles of a sorted vector (the IQR that sizes an automatic bin).
+	s = [1.0, 2.0, 3.0, 4.0, 5.0]
+	@test IG._quantile_sorted(s, 0.0) == 1.0
+	@test IG._quantile_sorted(s, 0.5) == 3.0
+	@test IG._quantile_sorted(s, 1.0) == 5.0
+	@test isapprox(IG._quantile_sorted(s, 0.25), 2.0; atol=1e-12)
+end
