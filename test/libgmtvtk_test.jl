@@ -23,7 +23,15 @@ using InteractiveGMT
 # test-API item on Linux and macOS die as "not found" even when the library was right there beside it.
 const _TEST_LIB_NAME = Sys.iswindows() ? "gmtvtk_test.dll" :
                        Sys.isapple()   ? "libgmtvtk_test.dylib" : "libgmtvtk_test.so"
-const _TEST_LIB = joinpath(InteractiveGMT._PKGROOT, "deps", "build", _TEST_LIB_NAME)
+# ...and it is looked for in BOTH places its production twin is (libgmtvtk.jl's _LOCAL_LIB /
+# _SHARED_LIB): the package's own deps/build on a machine that built the repo, and the depot's
+# gmtvtk_runtime where a downloaded rolling archive extracts. Looking only in the package is why
+# this failed on every CI runner — nothing builds the library there, it is fetched, and a fetched
+# one never lands in the checkout.
+const _TEST_LOCAL      = joinpath(InteractiveGMT._PKGROOT, "deps", "build", _TEST_LIB_NAME)
+const _TEST_SHARED     = joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime", "deps", "build", _TEST_LIB_NAME)
+const _TEST_CANDIDATES = filter(isfile, unique([_TEST_LOCAL, _TEST_SHARED]))
+const _TEST_LIB        = isempty(_TEST_CANDIDATES) ? _TEST_SHARED : first(_TEST_CANDIDATES)
 const _TEST_DLL = Ref{Ptr{Cvoid}}(C_NULL)
 const _TEST_FNS = Dict{Symbol,Ptr{Cvoid}}()
 
