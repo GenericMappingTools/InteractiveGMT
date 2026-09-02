@@ -211,6 +211,23 @@ target_compile_definitions(gmtvtk_test PRIVATE GMTVTK_TEST_API)
 target_link_libraries(gmtvtk_test PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS})
 vtk_module_autoinit(TARGETS gmtvtk_test MODULES ${VTK_LIBRARIES})
 
+# ELF ONLY, and it is what makes this library usable at all on Linux.
+#
+# The twin is the SAME source compiled twice, so both libraries define the same global symbols. On
+# Windows that is harmless — a DLL is self-contained and each keeps its own copy. On ELF, global
+# symbols are INTERPOSABLE: a call inside libgmtvtk_test.so to any non-static function they share
+# binds to whichever library the loader saw FIRST, which is libgmtvtk.so (Julia dlopens it before
+# the tests ask for the twin). The test hooks then run against the production library's state
+# instead of their own, and read back nonsense — "\b" for a combo's text, unparseable bytes for a
+# number, 0 for a hook that plainly succeeded.
+#
+# -Bsymbolic binds this library's own references to its own definitions at link time, restoring the
+# per-library isolation the Windows build gets for free. macOS needs nothing: Mach-O's two-level
+# namespace already records which library each symbol came from.
+if(UNIX AND NOT APPLE)
+  target_link_options(gmtvtk_test PRIVATE "-Wl,-Bsymbolic")
+endif()
+
 # Linux runtime staging is independent of the Windows packaging block below.
 if(GMTVTK_LINUX_BUNDLE)
   if(NOT UNIX OR APPLE)
