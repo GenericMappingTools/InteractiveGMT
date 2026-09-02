@@ -4,6 +4,14 @@
 # (converted from NCEI's CSV: `lon lat` first, then 18 numeric columns, then the country as trailing
 # text). One screen-constant circle per event.
 #
+# `deaths` / `housesDestroyed` are the TSUNAMI's own toll, not NCEI's `*Total` columns — those count
+# the WHOLE source event, earthquake and wave together, which is a different quantity and a wildly
+# different number: Haiti 2010 is 7 tsunami deaths against a 316000 event total, and the 1920 Gansu
+# and 2008 Sichuan earthquakes carry six-figure totals with no tsunami deaths at all. Established
+# from the data (the totals are >= the tsunami figure in all 289 rows carrying both, and the runups
+# file's per-location deaths — tsunami deaths by definition — sum to the tsunami figure, not the
+# total); NCEI documents neither field.
+#
 # It is a POINT DATASET OVER THE VIEW, exactly like Geography's volcanoes / meteorites / vents, so it
 # is reached through the SAME door they are: the C++ menu leaf calls `geoPlot("noaa_tsunami", "")`,
 # `_on_geography` (geography.jl) dispatches, and the read + region clip is `_geo_select` — the one
@@ -66,8 +74,8 @@ const _NOAA_TSU_COLS = ((  3, "Year",                    0),
                         ( 13, "Max water height",        2),
                         ( 14, "Eq magnitude",            1),
                         ( 15, "Eq depth",                1),
-                        ( 16, "Deaths total",            0),
-                        ( 17, "Houses destroyed total",  0),
+                        ( 16, "Deaths",                  0),
+                        ( 17, "Houses destroyed",        0),
                         ( 18, "Oceanic tsunami",        -1))
 
 # Columns used by name, so a change of file layout is caught here instead of silently mis-read.
