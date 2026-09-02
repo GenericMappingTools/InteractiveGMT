@@ -404,7 +404,12 @@ function _on_roi_crop(scene::Ptr{Cvoid}, kind::String, rectstr::String)::Cvoid
 		k = kind
 		parts = split(rectstr, '/')
 		length(parts) == 4 || error("Roi Crop: malformed rect '$rectstr'")
-		w, e, s, n = parse.(Float64, parts)
+		# Say WHICH corner is not a number. `parse.` throws ArgumentError("cannot parse \"not\" as
+		# Float64") -- a Julia type name in a viewer window, for a bad rectangle.
+		nums = tryparse.(Float64, parts)
+		any(x -> x === nothing, nums) &&
+			error("Roi Crop: the rectangle takes four numbers, West/East/South/North — got '$rectstr'")
+		w, e, s, n = nums
 		if k == "grid"
 			srcname, G = _find_object_named(scene, :grid)
 			G === nothing && error("No grid to crop in this window")

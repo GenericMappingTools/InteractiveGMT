@@ -193,6 +193,14 @@ function _on_earthregions(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring):
 				error("give the four Region boxes, or a code to fill them — press \"List its regions\" to see the codes")
 			region = _er_limits(code, country, rnd, exact)
 		end
+		# The border lines are drawn FROM A CODE (_er_draw_border refuses an empty one), so a request
+		# that ticks them with only four coordinates cannot be honoured. Refused HERE, before the
+		# fetch: the old order downloaded the whole raster first and only then discovered the border
+		# it was asked for was impossible -- and on a machine with no network that came back as
+		# "Something went wrong when calling the module. GMT error number = 72", a download failure
+		# wearing the clothes of a validation refusal.
+		(country && isempty(code)) &&
+			error("the border lines need a country code — four coordinates name no country")
 		# The layer's name: the code when there is one, since "-10/-6/36/39" names nothing.
 		name = strip(_get(d, "name"))
 		isempty(name) && (name = isempty(code) ? "Region" : String(code))

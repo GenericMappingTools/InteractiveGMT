@@ -145,14 +145,19 @@ function xyplot(D::AbstractVector{<:GMTdataset}; xlabel=nothing, name=nothing, k
 end
 
 """
-    add!(p::QtXYPlot, x, y; name="", color=nothing, linewidth=0) -> QtXYPlot
+    add!(p::QtXYPlot, x, y; name="", color=nothing, linewidth=0, kind=:line, barwidth=0) -> QtXYPlot
 
-Add another `(x, y)` line to an open X,Y plot window. Same keyword semantics as xyplot.
+Add another `(x, y)` series to an open X,Y plot window. Same keyword semantics as xyplot.
+
+`kind=:bar` draws it as a BAR graph (what the Analysis menu's Histogram / Bar graph items use)
+instead of a polyline; `barwidth` is then the bar width in **x data units** (0 = derive it from the
+data: 90% of the median x spacing), and `linewidth` becomes the bars' outline thickness in px.
 """
 function add!(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="",
-              color=nothing, linewidth::Real=0, linestyle=nothing, marker=nothing, markersize::Real=0)
+              color=nothing, linewidth::Real=0, linestyle=nothing, marker=nothing, markersize::Real=0,
+              kind::Symbol=:line, barwidth::Real=0)
 	isalive(p) || error("add!: the X,Y plot window is closed")
-	_xy_add(p, x, y; name, color, linewidth, linestyle, marker, markersize)
+	_xy_add(p, x, y; name, color, linewidth, linestyle, marker, markersize, kind, barwidth)
 	return p
 end
 
@@ -214,7 +219,9 @@ end
 
 # Push one (vector) or several (matrix-column) series to the window + the Julia-side copy.
 function _xy_add(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat;
-                 name, color, linewidth, linestyle=nothing, marker=nothing, markersize::Real=0)
+                 name, color, linewidth, linestyle=nothing, marker=nothing, markersize::Real=0,
+                 kind::Symbol=:line, barwidth::Real=0)
+	kind in (:line, :bar) || error("add!: kind must be :line or :bar (got :$kind)")
 	xv = collect(Float64, x)
 	(r, g, b) = color === nothing ? (-1.0, 0.0, 0.0) : _ovl_color(color, :lines)
 	lt = _style_code(_LINESTYLE, linestyle, "linestyle")
@@ -226,11 +233,19 @@ function _xy_add(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat;
 		length(yv) == length(xv) ||
 			error("xyplot: x and y must have equal length (got $(length(xv)) and $(length(yv)))")
 		nm = ncol == 1 ? String(name) : (isempty(name) ? "Line $(length(p.series)+1)" : "$(name) $c")
-		ccall(_fn(:gmtvtk_xyplot_add_series), Cint,
-		      (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint, Cstring,
-		       Float64, Float64, Float64, Float64, Cint, Cint, Float64),
-		      p.h, xv, yv, length(xv), nm, Float64(r), Float64(g), Float64(b), Float64(linewidth),
-		      Cint(lt), Cint(mk), Float64(markersize))
+		if kind === :bar
+			ccall(_fn(:gmtvtk_xyplot_add_bars), Cint,
+			      (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint, Cstring,
+			       Float64, Float64, Float64, Float64, Float64),
+			      p.h, xv, yv, length(xv), nm, Float64(r), Float64(g), Float64(b),
+			      Float64(linewidth), Float64(barwidth))
+		else
+			ccall(_fn(:gmtvtk_xyplot_add_series), Cint,
+			      (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint, Cstring,
+			       Float64, Float64, Float64, Float64, Cint, Cint, Float64),
+			      p.h, xv, yv, length(xv), nm, Float64(r), Float64(g), Float64(b), Float64(linewidth),
+			      Cint(lt), Cint(mk), Float64(markersize))
+		end
 		push!(p.series, (xv, yv, nm))
 	end
 	return p

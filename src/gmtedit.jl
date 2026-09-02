@@ -1249,8 +1249,10 @@ function _ge_pull_channel(edit::Ptr{Cvoid}, slot::Int, n::Int)::Tuple{Vector{Boo
 	return (collect(flags), gy == n ? yv : fill(NaN, n))
 end
 
-_ge_log(edit::Ptr{Cvoid}, msg::AbstractString; err::Bool=false) =
+function _ge_log(edit::Ptr{Cvoid}, msg::AbstractString; err::Bool=false)
+	err && _record_tool_error(msg)      # same failure sink _viewer_log_error feeds
 	ccall(_fn(:gmtvtk_gmtedit_log), Cvoid, (Ptr{Cvoid}, Cstring, Cint), edit, String(msg), Cint(err))
+end
 
 _ge_message(edit::Ptr{Cvoid}, title::AbstractString, text::AbstractString) =
 	ccall(_fn(:gmtvtk_gmtedit_message), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), edit, String(title), String(text))

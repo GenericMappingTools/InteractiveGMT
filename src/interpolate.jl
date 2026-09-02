@@ -21,6 +21,11 @@
 # the two knobs the dialog offers.
 function _interp_read(infile::AbstractString, nheaders::AbstractString, toggle::Bool)
 	kw = Dict{Symbol,Any}()
+	# A path that is not there is OURS to refuse, before GMT is called at all. Handing it to
+	# gmtconvert gets "Something went wrong when calling the module. GMT error number = 72" -- a
+	# number, in a window, for a typo -- and a test asserting "the tool refuses" cannot tell that
+	# apart from the refusal it meant to check. Same sentence every other tool here uses.
+	isfile(String(infile)) || error("input table not found: $infile")
 	isempty(nheaders) || (kw[:h] = parse(Int, nheaders))
 	toggle && (kw[:yx] = true)
 	D = GMT.gmtconvert(String(infile); kw...)

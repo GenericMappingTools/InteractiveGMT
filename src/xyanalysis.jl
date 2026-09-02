@@ -230,6 +230,48 @@ function _median(v)
 	return isodd(n) ? s[(n + 1) ÷ 2] : 0.5 * (s[n ÷ 2] + s[n ÷ 2 + 1])
 end
 
+# Linear-interpolated quantile of an ALREADY SORTED vector (no Statistics dep) — the IQR that sizes
+# an automatic histogram bin.
+function _quantile_sorted(s::Vector{Float64}, q::Float64)
+	n = length(s)
+	n == 0 && return NaN
+	n == 1 && return s[1]
+	pos = 1 + q * (n - 1)
+	lo  = clamp(floor(Int, pos), 1, n)
+	hi  = clamp(lo + 1, 1, n)
+	return s[lo] + (pos - lo) * (s[hi] - s[lo])
+end
+
+# Histogram of `v`: equal-width bins spanning [min, max]. Returns (centres, counts, binwidth) —
+# an (x, y) pair the plotter draws as bars, exactly like any other series.
+# `nbins <= 0` picks the count itself by Freedman-Diaconis (bin = 2·IQR·n^(-1/3), the rule that
+# adapts to the spread instead of the sample size alone), falling back to the √n rule when the IQR
+# degenerates (heavily tied data). A constant series has no width to bin: it becomes one bin.
+function _histogram(v, nbins::Int=0)
+	y = Float64[t for t in v if isfinite(t)]
+	n = length(y)
+	n < 2 && error("histogram: need at least 2 finite values")
+	s = sort(y)
+	lo, hi = s[1], s[end]
+	if hi <= lo                                        # constant series -> a single unit-wide bin
+		return [lo], [Float64(n)], 1.0
+	end
+	if nbins <= 0
+		iqr = _quantile_sorted(s, 0.75) - _quantile_sorted(s, 0.25)
+		h   = 2 * iqr * n^(-1 / 3)
+		nbins = h > 0 ? ceil(Int, (hi - lo) / h) : ceil(Int, sqrt(n))
+		nbins = clamp(nbins, 1, 1000)
+	end
+	w = (hi - lo) / nbins
+	counts = zeros(Float64, nbins)
+	@inbounds for t in y
+		k = floor(Int, (t - lo) / w) + 1
+		counts[clamp(k, 1, nbins)] += 1              # the max lands in the last bin, not past it
+	end
+	centres = Float64[lo + (k - 0.5) * w for k in 1:nbins]
+	return centres, counts, w
+end
+
 # Replace the y values flagged `bad` by linear interpolation between the nearest good neighbours
 # (flat-extrapolate at the ends). In place on `out`.
 function _interp_fill!(x, out, bad)
@@ -320,6 +362,7 @@ end
 # Push a line into the X,Y window's foldable Console dock (and status bar). The window shows errors
 # IN the window — silent stderr @warn is invisible to the user (see this op's history). Best-effort.
 function _xy_log(plot::Ptr{Cvoid}, msg::AbstractString; err::Bool=false)
+	err && _record_tool_error(msg)      # same failure sink the 3-D viewer's _viewer_log_error feeds
 	try
 		ccall(_fn(:gmtvtk_xyplot_log), Cvoid, (Ptr{Cvoid}, Cstring, Cint), plot, String(msg), Cint(err))
 	catch
@@ -331,10 +374,11 @@ end
 # (x,y) curve on it. The add_page ccall switches the current page so the following add! lands on the
 # new tab. Shared by the GMT-module front-ends whose output lives on a different scale than the source.
 function _xy_addpage!(plot::Ptr{Cvoid}, p::QtXYPlot, pagename::AbstractString, x, y, name::AbstractString;
-                      xlabel::AbstractString, ylabel::AbstractString)
+                      xlabel::AbstractString, ylabel::AbstractString,
+                      kind::Symbol=:line, barwidth::Real=0)
 	ccall(_fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), plot, String(pagename))
 	ccall(_fn(:gmtvtk_xyplot_set_labels), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), plot, String(xlabel), String(ylabel))
-	add!(p, x, y; name=String(name))
+	add!(p, x, y; name=String(name), kind, barwidth)
 	return
 end
 
@@ -490,6 +534,25 @@ function _on_xy_analysis(plot::Ptr{Cvoid}, cop::Cstring, sel::Cint)::Cvoid
 		end
 		x, y = xy
 		nm = _xy_series_name(plot, s); isempty(nm) && (nm = "series $s")
+		# Bar-drawn ops (ecran's "Show histogram" / "Show Bar graph"): their result is not a curve on
+		# the parent's axes, so — like every other different-domain op here — it lands on its OWN page.
+		if startswith(op, "hist:")
+			c, k, w = _histogram(y, parse(Int, op[6:end]))
+			_xy_addpage!(plot, p, "$nm histogram", c, k, "$nm histogram";
+			             xlabel=nm, ylabel="count", kind=:bar, barwidth=0.9w)
+			_xy_log(plot, "Analysis: histogram of '$nm' → new page ($(length(c)) bins, width $(round(w; sigdigits=4)))")
+			return
+		end
+		if op == "bargraph"
+			# Same x as the parent — so if that was a time axis, the bars' page must read x as dates too
+			# (same reasoning as the derivative pages below).
+			pfmt = ccall(_fn(:gmtvtk_xyplot_get_xtime), Cint, (Ptr{Cvoid},), plot)
+			_xy_addpage!(plot, p, "$nm bars", x, y, "$nm bars";
+			             xlabel=(pfmt != 0 ? "time" : "x"), ylabel=nm, kind=:bar)
+			pfmt != 0 && ccall(_fn(:gmtvtk_xyplot_set_xtime), Cvoid, (Ptr{Cvoid}, Cint), plot, pfmt)
+			_xy_log(plot, "Analysis: bar graph of '$nm' → new page ($(length(x)) bars)")
+			return
+		end
 		out = _xy_compute(op, x, y)
 		if out === nothing
 			_xy_log(plot, "Analysis: unknown op '$op'"; err=true)
