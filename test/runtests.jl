@@ -42,10 +42,30 @@ const _ONLYTAG = strip(get(ENV, "INTERACTIVEGMT_TEST_TAG", ""), [' ', '"', '\'']
 # compatible", and a refused file changes nothing). `gmtset` writes gmt.conf into the CURRENT
 # directory, which is where GMT looks first — so this holds for the test process wherever it runs,
 # with no dependence on a CI step. Remove once GMT's vDSP path is fixed upstream.
+#
+# The setting is then READ BACK and reported, because asking is not the same as it having taken: a
+# ~/.gmt/gmt.conf carrying GMT_FFT = kissfft was NOT honoured (CI job 100087642537 printed the file
+# and the run segfaulted in vDSP regardless), and WHY it was not honoured is still unknown. Only
+# `gmtget` answers that, and it answers it from inside the very process that is about to crash. If
+# the value did not take, say so LOUDLY here, where the line lands right above the crash it
+# explains, instead of leaving a bare `signal (11)` to be re-diagnosed from scratch. The FFT items
+# are NOT skipped on that account: a test that cannot run is a defect to fix, not one to hide.
 if Sys.isapple()
 	try
 		InteractiveGMT.GMT.gmt("gmtset GMT_FFT kissfft")
-		@info "tests: GMT_FFT=kissfft (GMT's vDSP FFT segfaults on this platform)"
+		eff = try
+			d = InteractiveGMT.GMT.gmt("gmtget GMT_FFT")
+			t = d isa AbstractString ? d : (hasproperty(d, :text) && !isempty(d.text) ? d.text[1] : string(d))
+			strip(String(t))
+		catch
+			"<unreadable>"
+		end
+		if occursin("kiss", lowercase(eff))
+			@info "tests: GMT_FFT=$eff (GMT's vDSP FFT segfaults on this platform)"
+		else
+			@error "tests: GMT_FFT is '$eff', NOT kissfft — GMT's vDSP path will SEGFAULT the whole " *
+			       "test process (vDSP_fft2d_zop <- gmtfft_2d_vDSP <- GMT_FFT_2D). cwd=$(pwd())"
+		end
 	catch e
 		@warn "tests: could not select GMT's KissFFT backend; FFT items may crash" exception=(e,)
 	end
