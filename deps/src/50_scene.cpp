@@ -1469,6 +1469,10 @@ static void sceneRemoveSurface(Scene *s) {
 		for (const auto &ex : s->extras) if (!ex.isImage) { hasOtherGrid = true; break; }
 		if (!hasOtherGrid && s->shadeDock) s->shadeDock->setVisible(false);
 	}
+	// The window's LAST raster may have just left: back to the ground state of a fresh empty launcher —
+	// off any body, VE 1, no pinned frame, no gizmo (70_window.cpp, the same function every other
+	// removal site calls). A no-op while any raster survives.
+	sceneResetToGroundState(s);
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }

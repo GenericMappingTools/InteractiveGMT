@@ -1805,6 +1805,7 @@ protected:
 		// cube — no search, no iteration for the geometric half.
 		const CubeFace &F = kCubeFaces[cubeFaceOf(in)];
 		const double R = (this->Radius != 0.0) ? this->Radius : 1.0;
+		const double rin = std::sqrt(cubeDot(in, in));        // read BEFORE any write: `in` may alias `out`
 		const double m = cubeDot(in, F.n);                    // = R * (1 + z*zscale/L)
 		const double u = (m != 0.0) ? cubeDot(in, F.e1) / m : 0.0;
 		const double v = (m != 0.0) ? cubeDot(in, F.e2) / m : 0.0;
@@ -1841,7 +1842,7 @@ protected:
 		const double r2d = 180.0 / vtkMath::Pi();
 		out[0] = std::atan2(d[1], d[0]) * r2d;
 		out[1] = (dl > 0.0) ? std::asin(std::min(1.0, std::max(-1.0, d[2] / dl))) * r2d : 0.0;
-		out[2] = (this->ZScale != 0.0) ? (std::sqrt(cubeDot(in, in)) - L) / this->ZScale : 0.0;
+		out[2] = (this->ZScale != 0.0) ? (rin - L) / this->ZScale : 0.0;
 	}
 	void InverseTransformPoint(const float in[3], float out[3]) override {
 		const double di[3] = { in[0], in[1], in[2] };  double dout[3];
@@ -1874,12 +1875,23 @@ private:
 	vtkQSCCubeTransform(const vtkQSCCubeTransform &) = delete;
 	void operator=(const vtkQSCCubeTransform &) = delete;
 
+	// `in` AND `out` ARE THE SAME ARRAY at every call VTK makes — vtkAbstractTransform asks for the
+	// derivative IN PLACE (`InternalTransformDerivative(point, point, matrix)`, TransformPointsNormals-
+	// Vectors), and so does vtkGeneralTransform when it chains a concatenation. Taking a copy FIRST is
+	// therefore not defensive tidiness: transforming into `out` clobbers the input, and every finite
+	// difference below then perturbed the WORLD XYZ as if it were (lon, lat, z) — a Jacobian evaluated
+	// at a garbage point. That Jacobian is what VTK inverts and transposes to carry the surface NORMALS
+	// onto the body, so the cube came out lit by nonsense: normals that were neither the face's nor the
+	// radius', whole regions baked to black (the "hole through the north pole"), and the picture changed
+	// with nothing but the light. The sphere never showed it because vtkSphericalTransform is VTK's own
+	// and handles the aliasing.
 	void NumericDerivative(bool fwd, const double in[3], double out[3], double der[3][3]) {
-		if (fwd) this->ForwardTransformPoint(in, out);
-		else     this->InverseTransformPoint(in, out);
+		const double at[3] = { in[0], in[1], in[2] };          // `in` may alias `out` — copy before writing
+		if (fwd) this->ForwardTransformPoint(at, out);
+		else     this->InverseTransformPoint(at, out);
 		const double h = fwd ? 1e-4 : (1e-6 * std::max(1.0, this->Radius));
 		for (int j = 0; j < 3; ++j) {
-			double p[3] = { in[0], in[1], in[2] }, m[3] = { in[0], in[1], in[2] }, fp[3], fm[3];
+			double p[3] = { at[0], at[1], at[2] }, m[3] = { at[0], at[1], at[2] }, fp[3], fm[3];
 			p[j] += h;  m[j] -= h;
 			if (fwd) { this->ForwardTransformPoint(p, fp);  this->ForwardTransformPoint(m, fm); }
 			else     { this->InverseTransformPoint(p, fp);  this->InverseTransformPoint(m, fm); }
@@ -3889,7 +3901,17 @@ static void rebuildAxisLabels(Scene *s) {
 	if (s->globe) {
 		axesHideAll(s->baseAxes);
 		for (auto &ex : s->extras) axesHideAll(ex.ax);
-		globeFrameUpdate(s, s->baseAxes.shown);
+		// …AND THE GRATICULE IS READ FROM THE RASTERS THAT ACTUALLY EXIST, never from a flag alone.
+		// It is this window's axes while a body is up, so it is owned by the rasters it frames and dies
+		// with them (SACRED_LAW.md "removal undoes what add did", raster-own-axes law). `baseAxes.shown`
+		// is only an INTENT flag: axesDestroy tears the rectangular set down but cannot clear it, and no
+		// removal path touches globeFrame, so deleting a cubified grid left the graticule standing over
+		// an empty window with no row left that could ever put it away. Asking each EXISTING raster for
+		// its own intent is the same question the flat branch below asks, one set at a time.
+		bool frame = (surfProp(s) != nullptr) && s->baseAxes.shown;
+		for (auto &ex : s->extras)
+			if ((ex.actor || ex.drape) && ex.ax.shown) { frame = true; break; }
+		globeFrameUpdate(s, frame);
 		return;
 	}
 	globeFrameUpdate(s, false);                 // off the globe the graticule is always down
@@ -4087,6 +4109,9 @@ static void applyVE(Scene *s) {
 // Re-frame axes + camera onto whatever the scene actually holds now (defined in 90_c_api.cpp, next to
 // the gmtvtk_reframe_* exports it is built from — this fragment is #included long before them).
 static void sceneReframeToContent(Scene *s);
+// Put a window that has just lost its LAST raster back into its ground state (defined in 70_window.cpp,
+// next to the view-mode switch it goes through). Called from EVERY removal site.
+static void sceneResetToGroundState(Scene *s);
 
 static void sceneClearViewOverride(Scene *s) {
 	if (!s || !s->viewBoundsOverride) return;
@@ -4132,6 +4157,9 @@ static void sceneAfterObjectRemoved(Scene *s) {
 		if (!restored && !s->imageOnly) baseLayerSetVisible(s, true);
 	}
 	sceneClearViewOverride(s);
+	// (3) GROUND STATE. Nothing left to show -> the window is a fresh empty launcher again, body mode
+	//     and vertical exaggeration included (no-ops while any raster survives).
+	sceneResetToGroundState(s);
 }
 
 // Build + exec the per-element context menu for an overlay (defined after addOverlay,

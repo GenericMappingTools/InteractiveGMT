@@ -23422,10 +23422,24 @@ static void sceneSetViewMode(Scene *s, int mode) {
 	}
 	else {
 		if (igViewIsBody(cur)) applyVE(s);   // back to flat geometry before the saved camera means anything
-		cam->SetParallelProjection(s->sav_parallel);
-		cam->SetPosition(s->sav_pos);
-		cam->SetFocalPoint(s->sav_foc);
-		cam->SetViewUp(s->sav_vup);
+		// THERE MAY BE NO SAVED CAMERA. `sav_*` is only written when 3-D is LEFT, so a window that went
+		// 2-D -> cube -> 3-D (or an empty one being put back into its ground state) would restore the
+		// struct defaults: position == focal point == the origin, i.e. a camera with no direction and no
+		// distance — the view collapses and the next interaction sends it anywhere. Fit the scene instead,
+		// which is what "3-D, no remembered view" means.
+		const double d[3] = { s->sav_pos[0] - s->sav_foc[0], s->sav_pos[1] - s->sav_foc[1],
+		                      s->sav_pos[2] - s->sav_foc[2] };
+		if (d[0]*d[0] + d[1]*d[1] + d[2]*d[2] < 1e-12) {
+			cam->SetParallelProjection(0);
+			cam->SetViewUp(0.0, 0.0, 1.0);
+			s->ren->ResetCamera();
+		}
+		else {
+			cam->SetParallelProjection(s->sav_parallel);
+			cam->SetPosition(s->sav_pos);
+			cam->SetFocalPoint(s->sav_foc);
+			cam->SetViewUp(s->sav_vup);
+		}
 		gizmoApplyForMode(s);
 		s->ren->ResetCameraClippingRange();
 	}
@@ -23462,6 +23476,36 @@ static void sceneSetViewMode(Scene *s, int mode) {
 // one of them asks for either flat mode — exactly what "switch to 2D/3D" should do.
 static void sceneSetFlat2D(Scene *s, bool on) {
 	sceneSetViewMode(s, on ? IGVIEW_FLAT2D : IGVIEW_3D);
+}
+
+// THE GROUND STATE. A window that has just lost its LAST raster must be exactly what a freshly opened
+// empty launcher is — not a launcher still wearing whatever the deleted raster made of the window.
+//
+// SACRED_LAW.md "removal undoes what add did", carried to its end. A BODY mode exists only because a
+// geographic raster was there: gmtvtk_set_view_mode_h REFUSES globe/cube when nothing geographic is
+// loaded, so a window with no raster cannot legitimately be on one. Leaving `globe`/`cube` standing
+// after the delete is a state the user could never have asked for, and it is what made a re-loaded
+// grid flip between a hugely exaggerated sphere and the flat map: buildSceneContent builds, scales and
+// camera-fits a FLAT surface, and the very next render's `sceneGlobeSync` (rebuildAxisLabels) threw
+// that same actor onto the body the window still claimed to be wearing — two owners of the geometry's
+// scale, alternating per frame.
+//
+// The vertical exaggeration goes back to 1 for the same reason: it is a property of the relief that was
+// being looked at, and there is no relief any more.
+//
+// It leaves the body through THE mode switch (sceneSetViewMode), never by writing the flags here — the
+// mutual exclusion of the four modes has one owner (see its header comment).
+static void sceneResetToGroundState(Scene *s) {
+	if (!s || !s->ren) return;
+	if (surfProp(s)) return;                                   // base raster still there
+	for (auto &ex : s->extras) if (ex.actor || ex.drape) return;   // a dropped raster still there
+	if (s->globe) sceneSetViewMode(s, IGVIEW_3D);              // off the body, the one way there is
+	s->ve = 1.0;
+	s->viewBoundsOverride = false;                             // nothing left to pin a frame to
+	axesHideAll(s->baseAxes);
+	globeFrameUpdate(s, false);
+	disableGizmo(s);
+	applyVE(s);
 }
 
 // File > Export GMT.jl script… — the window's display as GMT.jl code, in an EDITABLE box with Save
