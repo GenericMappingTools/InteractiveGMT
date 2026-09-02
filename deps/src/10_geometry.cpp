@@ -950,6 +950,13 @@ struct Scene {
 	bool lodPending    = false;                       // a pass ran short -> more detail still owed
 	bool lodTimerArmed = false;                       // one catch-up timer in flight, never a storm
 
+	// --- title-bar zoom readout ---------------------------------------------
+	// `titleBase` is whatever the host set (the "i'GMT -- <file>" part); the zoom percentage is
+	// appended for display, never stored into it, so re-setting the title cannot accumulate
+	// suffixes. sceneSetTitleBase() is the ONE setter.
+	std::string titleBase;
+	QString     titleShown;                           // last string pushed to setWindowTitle (change gate)
+
 	// --- flat-2D (top-down ortho map) toggle --------------------------------
 	// One-button switch to a true planimetric map: VE collapsed to 0 (relief flat,
 	// z carried by colour only), orthographic top-down camera, rotation/tilt locked.
@@ -2327,6 +2334,58 @@ static inline void surfGetBounds(Scene *s, double b[6]) {
 		b[4] = zlo * zs; b[5] = zhi * zs;
 	}
 }
+// HOW FAR IN THE VIEW IS, as a number that means something without a remembered starting point:
+// the data's own width divided by the width of world the viewport currently shows. 1x = the whole
+// dataset spans the window, 4x = a quarter of it does. Deliberately NOT "camera distance vs the
+// distance at load": that needs an anchor captured at fit time, and it silently lies the moment a
+// reframe (a crop, a new file, a derived variable) changes what "all of it" means. This definition
+// re-derives itself from surfGetBounds, which is already THE bounds source every frame-driven
+// function reads, so it follows the active layer for free. 0 = nothing to measure against.
+static double sceneZoomFactor(Scene *s) {
+	if (!s || !s->ren) return 0.0;
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	if (!cam) return 0.0;
+	double b[6];
+	surfGetBounds(s, b);
+	const double dataW = b[1] - b[0];
+	if (!(dataW > 0.0)) return 0.0;
+	int *sz = s->ren->GetSize();
+	const double aspect = (sz && sz[1] > 0) ? (double)sz[0] / (double)sz[1] : 1.0;
+	double visH;
+	if (cam->GetParallelProjection())
+		visH = 2.0 * cam->GetParallelScale();
+	else {
+		double p[3], fp[3];
+		cam->GetPosition(p); cam->GetFocalPoint(fp);
+		const double d = std::sqrt(vtkMath::Distance2BetweenPoints(p, fp));
+		visH = 2.0 * d * std::tan(vtkMath::RadiansFromDegrees(cam->GetViewAngle() * 0.5));
+	}
+	const double visW = visH * aspect;
+	return (visW > 0.0) ? dataW / visW : 0.0;
+}
+
+// Compose and push the titlebar. THE only place setWindowTitle is called for a viewer window, so the
+// file name and the readout can never drift apart or double up. Gated on the composed string really
+// changing: this runs inside the render StartEvent, and handing Qt an identical title every frame is
+// pointless work.
+static void updateTitleZoom(Scene *s) {
+	if (!s || !s->win) return;
+	QString t = QString::fromStdString(s->titleBase);
+	const double z = sceneZoomFactor(s);
+	if (z > 0.0) t += QString("   —   %1%").arg(qRound(z * 100.0));
+	if (t != s->titleShown) { s->titleShown = t; s->win->setWindowTitle(t); }
+}
+
+// THE setter for a viewer window's title. Stores the host's text as the BASE and re-composes; never
+// let a caller reach setWindowTitle directly, or the zoom suffix gets baked into the base and the
+// next update appends a second one.
+static void sceneSetTitleBase(Scene *s, const QString &base) {
+	if (!s) return;
+	s->titleBase = base.toStdString();
+	s->titleShown.clear();                 // force the push even if the composed text is unchanged
+	updateTitleZoom(s);
+}
+
 static inline void surfSetVisibility(Scene *s, int v) {
 	if (vtkProp3D *p = surfProp(s)) p->SetVisibility(v);
 }
@@ -2634,11 +2693,28 @@ static void configureGridMapper(vtkMapper *m, vtkScalarsToColors *lut,
 	m->InterpolateScalarsBeforeMappingOff();
 }
 
+// WHY THE DISCRETIZABLE SUBCLASS. A plain vtkColorTransferFunction maps a scalar array by
+// EVALUATING the piecewise function once per point — a node search plus an interpolation, measured
+// at ~400 ns/point. The tiled-LOD render path hands it 800 k points at a stroke whenever a zoom
+// crosses a level, and the mapper defers that work into the first Render, so the whole cost landed
+// inside one frame: 30 ms of meshing followed by ~330 ms of colour mapping, i.e. ~90% of the "one
+// or two zoom levels that go very slow". vtkDiscretizableColorTransferFunction is the SAME function
+// (same nodes, same GetColor, same NanColor — every existing consumer, colour bar included, still
+// sees a vtkColorTransferFunction) that maps ARRAYS through an internal 1024-entry table instead:
+// one index, no search. Discretizing the ramp is invisible at 1024 steps.
+//
+// Note what this deliberately does NOT do: turn InterpolateScalarsBeforeMapping back on in
+// configureGridMapper. That would be faster still and is exactly the bug fixed there — a NaN scalar
+// becomes a NaN texture coordinate and never consults NanColor. The speed comes from the LUT, the
+// NaN correctness stays where it was won.
 static vtkSmartPointer<vtkColorTransferFunction>
 makeGridCTF(const Scene *s, const double *cz, const double *crgb, int ncolor) {
-	vtkSmartPointer<vtkColorTransferFunction> ctf = vtkSmartPointer<vtkColorTransferFunction>::New();
+	vtkSmartPointer<vtkDiscretizableColorTransferFunction> ctf =
+		vtkSmartPointer<vtkDiscretizableColorTransferFunction>::New();
 	for (int i = 0; i < ncolor; ++i)
 		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+	ctf->SetNumberOfValues(1024);
+	ctf->DiscretizeOn();
 	if (s) applyNanColorToLut(ctf, s->nanColor);
 	return ctf;
 }
@@ -3829,6 +3905,7 @@ static void AxisLabelCB(vtkObject*, unsigned long, void *cd, void*) {
 	Scene *s = static_cast<Scene*>(cd);
 	rebuildAxisLabels(s);
 	followZoomAnnotations(s);                  // cheap: gated on a real change in world-per-pixel
+	updateTitleZoom(s);                        // cheap: gated on the composed title really changing
 }
 
 // Apply vertical exaggeration. The actor carries the base scale (xfac aspect +

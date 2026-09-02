@@ -2692,8 +2692,34 @@ static QuadNode *buildQuadNode(int i0, int i1, int j0, int j1, int level,
 // thread, inside the camera callback) versus merely ADDING an already-built actor to the assembly.
 // A node that was coarsened away still owns its geometry, so coming back to that zoom level is the
 // cheap step alone. Idempotent in both halves.
+// ---- LOD instrumentation (IGMT_LOD_TRACE=1) --------------------------------
+// Per-refine-pass counters, so the cost of a zoom can be attributed instead of guessed at: how many
+// tiles were really MESHED (makeGridTile) versus merely re-added from cache, how many sampled cells
+// that was, how many subtrees the frustum test skipped, and the wall time split between meshing and
+// applySurfStyle (which maps every point through the CPT and shades it). Off unless the env var is
+// set; the counters are plain statics, only ever touched on the render thread inside a pass.
+// NOT getenv(): on Windows the CRT keeps its OWN copy of the environment, snapshotted when the CRT
+// started, and a host that sets a variable through the Win32 API afterwards (Julia's ENV[...] does
+// exactly that, via SetEnvironmentVariableW) never shows up in it. getenv here silently returned
+// null for a variable that WAS set, which is how an A/B measurement of the culling ran with the
+// flag ignored on both sides. Read the live process block instead. Declared rather than pulled in
+// with <windows.h>, which nothing else in this TU includes.
+extern "C" __declspec(dllimport) unsigned long __stdcall
+GetEnvironmentVariableA(const char *name, char *buf, unsigned long size);
+static bool envFlag(const char *key) { char b[8]; return GetEnvironmentVariableA(key, b, sizeof b) > 0; }
+
+static bool     g_lodTrace = false;               // resolved lazily on the first refine pass (below):
+                                                  // the host sets ENV after the DLL is already loaded
+static long     g_lodBuilt = 0, g_lodReadd = 0, g_lodCells = 0;
+static double   g_lodMeshMs = 0, g_lodStyleMs = 0, g_lodMapMs = 0;
+static inline double lodNowMs() {
+	return std::chrono::duration<double, std::milli>(
+	           std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 static void ensureNodeActor(Scene *s, QuadNode *n) {
 	if (n->actor) {                       // already meshed -- re-adding is all that can be needed
+		if (!n->inScene) g_lodReadd++;
 		if (!n->inScene) {
 			s->surfGroup->AddPart(n->actor); s->tiles.push_back(n->actor); n->inScene = true;
 			// Re-style ONLY if the shading changed while this tile sat in the cache. applyShading
@@ -2708,7 +2734,10 @@ static void ensureNodeActor(Scene *s, QuadNode *n) {
 	}
 	// Charge the meshing budget for THIS pass. Only a real build costs — a cached tile being re-added
 	// above is free and must not consume the allowance that keeps the frame responsive.
-	s->lodCellsLeft -= (long)(((n->i1 - n->i0) / n->step + 2) * (long)((n->j1 - n->j0) / n->step + 2));
+	const long cells = (long)(((n->i1 - n->i0) / n->step + 2) * (long)((n->j1 - n->j0) / n->step + 2));
+	s->lodCellsLeft -= cells;
+	g_lodBuilt++; g_lodCells += cells;
+	const double t0 = g_lodTrace ? lodNowMs() : 0.0;
 	auto tpd = makeGridTile(s->gridZ.data(), s->gnx, s->gny,
 							n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, s->zmin, n->step);
 	vtkNew<vtkPolyDataMapper> m; m->SetInputData(tpd);
@@ -2722,7 +2751,14 @@ static void ensureNodeActor(Scene *s, QuadNode *n) {
 	// applySurfStyle when useHillshade was on, so a tile born mid-zoom in any other mode arrived
 	// PBR-lit while its neighbours were not: pure grid illumination on the old tiles, PBR on the new
 	// ones, in the same picture. A tile is not a special kind of surface.
+	const double t1 = g_lodTrace ? lodNowMs() : 0.0;
 	applySurfStyle(s, a);
+	if (g_lodTrace) {
+		g_lodMeshMs += t1 - t0; g_lodStyleMs += lodNowMs() - t1;
+		const double t2 = lodNowMs();
+		m->MapScalars(1.0);                 // probe: the per-point CPT mapping the first Render pays
+		g_lodMapMs += lodNowMs() - t2;
+	}
 	n->styleGen = s->styleGen;                   // freshly baked under the current shading state
 	const vtkIdType npts = tpd->GetPoints()->GetNumberOfPoints();
 	const vtkIdType ncel = tpd->GetPolys()->GetNumberOfCells();
@@ -2788,6 +2824,14 @@ static void evictLRU(Scene *s) {
 	}
 }
 
+// NO FRUSTUM CULL HERE, and that is a measured decision, not an oversight. Skipping the subtrees
+// whose box is off screen looks like the obvious win -- the screen-space-error test below is a
+// function of DISTANCE alone, so a tile just outside the viewport scores as "too coarse" exactly
+// like the one being looked at. It was built, A/B'd on earth_relief_06m_g over ten zoom steps, and
+// came out inside the noise (73/87 ms culled vs 100/66 ms not): the SSE test already bounds the
+// working set, both runs converged on the same resident geometry, and culling only added a way for
+// a viewport change that does not touch the camera to leave a hole. The zoom stall was never here
+// -- see makeGridCTF (10_geometry.cpp) for where the time actually went.
 static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPos[3],
 					   double vpH, double tanHalfFov, double parScale, bool parallel, double tau) {
 	// node centre in SCALED world (the assembly applies xfac on X, zfac*ve on Z)
@@ -2830,14 +2874,24 @@ static void refineQuadtree(Scene *s) {
 	int *sz = s->ren->GetSize(); const double vpH = (sz && sz[1] > 0) ? sz[1] : 600.0;
 	const bool parallel = cam->GetParallelProjection() != 0;
 	const double tanHalf = std::tan(vtkMath::RadiansFromDegrees(cam->GetViewAngle() * 0.5));
+	static const bool traceOnce = (g_lodTrace = envFlag("IGMT_LOD_TRACE"));  (void)traceOnce;
 	s->lodFrame++;
 	// ~600 k sampled cells per pass: enough that an ordinary zoom finishes in one go, small enough
 	// that a level-crossing zoom cannot stall the frame. Raise for fewer catch-up passes, lower for a
 	// snappier worst case.
 	s->lodCellsLeft = 600000;
 	s->lodPending   = false;
+	const double tPass = g_lodTrace ? lodNowMs() : 0.0;
+	if (g_lodTrace) { g_lodBuilt = g_lodReadd = g_lodCells = 0; g_lodMeshMs = g_lodStyleMs = g_lodMapMs = 0; }
 	refineNode(s, s->quadRoot, cam, camPos, vpH, tanHalf, cam->GetParallelScale(), parallel, /*tau=*/4.0);
 	if (s->lodResidentBytes > s->lodBudgetBytes) evictLRU(s);
+	if (g_lodTrace) {
+		fprintf(stdout, "[lod] pass %6.1f ms | built %3ld (%7ld cells: mesh %6.1f + style %6.1f + map %6.1f ms)"
+		                " | readd %3ld | resident %5.1f MB | pending %d\n",
+		        lodNowMs() - tPass, g_lodBuilt, g_lodCells, g_lodMeshMs, g_lodStyleMs, g_lodMapMs,
+		        g_lodReadd, s->lodResidentBytes / 1048576.0, (int)s->lodPending);
+		fflush(stdout);
+	}
 	// Detail still owed -> finish it after the frame is on screen. Single-shot and latched, so a
 	// continuous drag (many camera events, each leaving work owed) can never queue a storm of passes.
 	if (s->lodPending && !s->lodTimerArmed) {
@@ -23715,6 +23769,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QMainWindow *win = new QMainWindow();
 	win->setAttribute(Qt::WA_DeleteOnClose);
 	win->setWindowTitle(title ? title : "i'GMT");
+	// Seed the titlebar BASE directly rather than through sceneSetTitleBase: s->win is not wired up
+	// yet at this point. The first render's AxisLabelCB composes the zoom readout onto it.
+	s->titleBase = (title ? title : "i'GMT");
 	win->setWindowIcon(appIcon());          // per-window titlebar icon (matches the app-wide icon)
 	win->resize(1100, 800);
 	win->setCentralWidget(widget);

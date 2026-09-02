@@ -1003,7 +1003,7 @@ GMTVTK_API void gmtvtk_raise(void *handle) {
 GMTVTK_API void gmtvtk_set_title_h(void *handle, const char *title) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !s->win || !title) return;
-	s->win->setWindowTitle(QString::fromUtf8(title));
+	sceneSetTitleBase(s, QString::fromUtf8(title));   // stores the base; the zoom readout is re-appended
 }
 
 // Set the Scene Objects label of the window's BASE surface. gmtvtk_view_grid always opens the base as
@@ -7838,12 +7838,20 @@ GMTVTK_API void gmtvtk_orbit(void *handle, double az, double el, double zoom) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	vtkCamera *cam = s->ren->GetActiveCamera();
+	const double tA = lodNowMs();
 	cam->Azimuth(az);
 	cam->Elevation(el);
 	cam->OrthogonalizeViewUp();
-	if (zoom > 0.0) cam->Zoom(zoom);
+	if (zoom > 0.0) cam->Zoom(zoom);                 // camera Modified -> the LOD refine runs in here
+	const double tB = lodNowMs();
 	s->ren->ResetCameraClippingRange();
+	const double tC = lodNowMs();
 	s->widget->renderWindow()->Render();
+	if (g_lodTrace) {
+		fprintf(stdout, "[orbit] cam+lod %6.1f | clip %5.1f | render %6.1f ms\n",
+		        tB - tA, tC - tB, lodNowMs() - tC);
+		fflush(stdout);
+	}
 }
 
 // Toggle red/cyan ANAGLYPH stereo on the window. on=1 enable, on=0 disable, on<0 flip.

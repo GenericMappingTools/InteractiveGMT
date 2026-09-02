@@ -235,6 +235,7 @@
 #include <vtkContourTriangulator.h>
 #include <vtkAppendPolyData.h>
 #include <vtkColorTransferFunction.h>
+#include <vtkDiscretizableColorTransferFunction.h>
 #include <vtkScalarsToColors.h>
 #include <vtkImageData.h>
 #include <vtkAssembly.h>
