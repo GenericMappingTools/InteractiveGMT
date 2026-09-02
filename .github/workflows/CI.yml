@@ -36,8 +36,31 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v2
+      # A runner has no display, and the viewer is a Qt application: any test that reaches a
+      # QApplication dies with `qFatal: could not connect to display` -> SIGABRT, taking the whole
+      # suite with it. Xvfb is a real (virtual) X server, so Qt gets a display and VTK gets GL
+      # through Mesa's software rasteriser.
+      #
+      # libxcb-cursor0 is NOT optional: since Qt 6.5 the xcb platform plugin refuses to load without
+      # it, and it is a SYSTEM library — the runtime bundle ships the rest of libxcb but not that one,
+      # which is why the plugin was "found" and still failed.
+      - name: Virtual display + the Qt/GL system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libxcb-cursor0 libxkbcommon-x11-0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libgl1 libglx0 libegl1 libopengl0 libglu1-mesa
       - uses: julia-actions/julia-buildpkg@v1
+      # `prefix` runs the test process under Xvfb; INTERACTIVEGMT_TEST_GUI turns on the :gui tier
+      # (test/runtests.jl), which is ~69 testitems that open REAL windows and were skipped here
+      # until now — the reason the GUI half of the package had no coverage at all.
       - uses: julia-actions/julia-runtest@v1
+        with:
+          prefix: xvfb-run -a
+        env:
+          INTERACTIVEGMT_TEST_GUI: '1'
       - uses: julia-actions/julia-processcoverage@v1
       - uses: codecov/codecov-action@v6
         with:
