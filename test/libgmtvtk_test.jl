@@ -1,17 +1,17 @@
-# libgmtvtk_test.jl â€” loads deps/build/gmtvtk_test.dll, the test-only twin of gmtvtk.dll (built
+# libgmtvtk_test.jl -- loads deps/build/gmtvtk_test.dll, the test-only twin of gmtvtk.dll (built
 # from the SAME source with GMTVTK_TEST_API defined, see deps/CMakeLists.txt's gmtvtk_test
 # target). Holds the gmtvtk_*_test hooks (headless fault/meca/symbol GUI-test harness) that
 # production code and the shipped gmtvtk.dll never see or export.
 #
 # A TestItemRunner @testsetup so every @testitem that needs these hooks opts in with
-# `setup=[GmtvtkTest]` â€” isolated from InteractiveGMT itself, per "tests are a separate
+# `setup=[GmtvtkTest]` -- isolated from InteractiveGMT itself, per "tests are a separate
 # department".
 #
 # Scene* handles created by the PRODUCTION gmtvtk.dll (windows opened the normal way, through
 # IG._fn) are safe to pass into gmtvtk_test.dll's functions: both DLLs compile the identical
 # source with the identical compiler, so the Scene struct layout matches byte-for-byte and a
 # Scene* is just an address. The one thing that does NOT cross the DLL boundary is file-static
-# globals â€” each DLL holds its OWN copy of e.g. `g_juliaFaultGeom` â€” so a callback registered via
+# globals -- each DLL holds its OWN copy of e.g. `g_juliaFaultGeom` -- so a callback registered via
 # IG._register_faultgeom() (which calls into gmtvtk.dll) is invisible to code running inside
 # gmtvtk_test.dll. _register_faultgeom_test() below mirrors that one registration into the test
 # dll's own global, since gmtvtk_fault_apply_test's geog=1 path depends on it.
@@ -72,7 +72,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_movie_open_dialog_test, :gmtvtk_movie_close_dialog_test,
 	:gmtvtk_movie_parked_test, :gmtvtk_movie_delete_dialog_test,
 	:gmtvtk_platecalc_read_test, :gmtvtk_platecalc_map_click_test, :gmtvtk_platecalc_map_test,
-	:gmtvtk_set_faultgeom_callback,   # NOT test-only â€” dlsym'd here too so we can mirror the
+	:gmtvtk_set_faultgeom_callback,   # NOT test-only -- dlsym'd here too so we can mirror the
 	                                  # callback registration into this dll's own global.
 	:gmtvtk_set_euler_callback, :gmtvtk_euler_result,   # same, for the Plates dialogs.
 	:gmtvtk_set_ui_dir,               # ditto: the .ui directory is a file-static override per dll.
@@ -118,7 +118,7 @@ end
 fft_open(scene::Ptr{Cvoid}, png::AbstractString = "") =
 	ccall(_test_fn(:gmtvtk_fft_dialog_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, "", String(png))
 
-# CLICK one of its buttons by objectName â€” the real handler runs, exactly as a user click would.
+# CLICK one of its buttons by objectName -- the real handler runs, exactly as a user click would.
 fft_click(scene::Ptr{Cvoid}, button::AbstractString) =
 	ccall(_test_fn(:gmtvtk_fft_dialog_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, String(button), "")
 
@@ -129,7 +129,7 @@ function fft_sizes(scene::Ptr{Cvoid})
 	return (Int(out[1]), Int(out[2]))
 end
 
-# Let THIS dll consider `scene` alive â€” `sceneAlive`'s set is a file-static per dll, so anything
+# Let THIS dll consider `scene` alive -- `sceneAlive`'s set is a file-static per dll, so anything
 # gated on it (parkTool, and every other refuse-to-touch-a-dead-scene path) would otherwise no-op
 # on a window the production dll opened. Same mirroring the callback registrations above do.
 scene_adopt(scene::Ptr{Cvoid}) =
@@ -139,7 +139,7 @@ scene_adopt(scene::Ptr{Cvoid}) =
 fft_park(scene::Ptr{Cvoid}, park::Bool) =
 	ccall(_test_fn(:gmtvtk_fft_park_test), Cint, (Ptr{Cvoid}, Cint), scene, park ? Cint(1) : Cint(0))
 
-# The Scene Objects panel as text â€” the only proof a result was really PUT IN THE WINDOW.
+# The Scene Objects panel as text -- the only proof a result was really PUT IN THE WINDOW.
 objrows(scene::Ptr{Cvoid}) =
 	unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), scene))
 
@@ -153,7 +153,7 @@ end
 # The Plates dialogs (Euler rotations, Plate calculator) ASK Julia for their content, so a dialog
 # built inside gmtvtk_test.dll needs that dll's own g_juliaEuler set. Julia's answer travels the
 # other way through gmtvtk.dll's gmtvtk_euler_result (IG._fn resolves in the production dll), which
-# this dll cannot see â€” so the wrapper mirrors Julia's own record of the answer
+# this dll cannot see -- so the wrapper mirrors Julia's own record of the answer
 # (InteractiveGMT._euler_last_result) into THIS dll's copy right after the call returns.
 function _euler_test_cb(scene::Ptr{Cvoid}, params::Cstring)::Cint
 	r = Base.invokelatest(InteractiveGMT._on_euler, scene, params)
@@ -168,7 +168,7 @@ function _register_euler_test()
 end
 
 # Compute Euler pole: same story as above, plus the run's PROGRESS. Its search reports back through
-# gmtvtk_compute_euler_progress on a Julia Timer, and again that lands in the production dll â€” so the
+# gmtvtk_compute_euler_progress on a Julia Timer, and again that lands in the production dll -- so the
 # extra sink InteractiveGMT keeps for exactly this is pointed at this dll's copy of the export.
 function _register_ceuler_test()
 	_register_euler_test()

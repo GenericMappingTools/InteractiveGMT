@@ -23,7 +23,7 @@
 	@test ccall(_test_fn(:gmtvtk_movie_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
 	@test ccall(_test_fn(:gmtvtk_movie_parked_test), Cint, (Ptr{Cvoid},), f.h) == 0
 
-	# Only the parked row's own "Delete" ends it â€” and then the row goes with it.
+	# Only the parked row's own "Delete" ends it -- and then the row goes with it.
 	@test ccall(_test_fn(:gmtvtk_movie_delete_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
 	@test ccall(_test_fn(:gmtvtk_movie_parked_test), Cint, (Ptr{Cvoid},), f.h) == -1
 	rows2 = unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), f.h))

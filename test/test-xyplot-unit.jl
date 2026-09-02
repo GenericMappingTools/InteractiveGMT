@@ -149,20 +149,35 @@ end
 end
 
 # macOS/arm64 dies with `signal (6): Abort trap` inside the op-dispatch item below (CI run
-# 33657361347) â€” no message, a one-frame backtrace, so the log says neither WHICH op nor WHY. GMT's
+# 33657361347) -- no message, a one-frame backtrace, so the log says neither WHICH op nor WHY. GMT's
 # C source has no `abort()` call at all and its asserts are compiled out of a Release build, which
-# leaves two candidates that this item separates BEFORE the loop runs:
+# left two candidates, and this item was written to separate them BEFORE the loop runs:
 #   * the mode argument. GMT_FFT_1D/2D open with `assert (mode & GMT_FFT_COMPLEX)` and
-#     gmt_resources.h defines GMT_FFT_COMPLEX = 1U (GMT_FFT_REAL = 0U) â€” but GMT.jl's `fft1d`, and
+#     gmt_resources.h defines GMT_FFT_COMPLEX = 1U (GMT_FFT_REAL = 0U) -- but GMT.jl's `fft1d`, and
 #     this package's own fallback constant, both pass 0, i.e. the value the assert rejects. Harmless
 #     under NDEBUG; SIGABRT the moment the library ships with asserts live.
-#   * the transform SIZE. The item above filters N=1024 (radix-2) and survives; the loop's series is
-#     N=201 = 3Â·67, which sends KissFFT down its generic-butterfly path.
+#   * the transform SIZE: N=201 = 3*67 sends the backend down its generic-butterfly path, where
+#     N=1024 is plain radix-2.
+#
+# BOTH ARE RULED OUT, by this item's own output in run 33679278640 (macOS arm64, GMT_FFT=fftw set
+# by CI): every GMT_FFT_1D returned status 0 for BOTH modes at BOTH sizes, fft1d round-tripped, and
+# `_spectrum1d` -- the exact call `fft_amp` makes, same series, same segment -- printed "all probes
+# survived". FORTY-SEVEN MILLISECONDS later the op-dispatch item aborted on `fft_amp` -- that same
+# call, same arguments. So the crash is not a function of the mode, the size, or the op: the same
+# call succeeds and then dies later in the SAME process, which makes it cumulative state, not a bad
+# argument -- and the GUI tier had been opening real windows in that process for 43 minutes before
+# it. Switching the backend does not move it either (vDSP segfaulted, KissFFT and FFTW3f abort), so
+# the next thing to establish is whether GMT is even the caller of that abort().
 # Every line is flushed, so the last one printed names the call that died. macOS only: no other
 # platform has ever crashed here and none needs the noise.
 @testitem "macOS FFT probe (mode + size)" tags=[:unit, :fast] begin
+	# Bound UNCONDITIONALLY, outside the platform guard. On Julia 1.13 this item errored on LINUX
+	# with `UndefVarError: G not defined` (run 33679278640) even though Sys.isapple() is false
+	# there: the whole `if` block is one top-level thunk, and a binding that exists in no branch is
+	# not safe to reference from inside it. A name that is always defined cannot raise that error
+	# on any version, whatever made the reference reachable.
+	IG = InteractiveGMT; G = IG.GMT
 	if Sys.isapple()
-		IG = InteractiveGMT; G = IG.GMT
 		for n in (1024, 201), mode in (UInt32(1), UInt32(0))   # 1 = GMT_FFT_COMPLEX, 0 = GMT_FFT_REAL
 			println("FFTPROBE: GMT_FFT_1D n=$n mode=$mode"); flush(stdout)
 			b = Float32[Float32(sin(i)) for i = 1:2n]          # interleaved (re, im), n complex points
