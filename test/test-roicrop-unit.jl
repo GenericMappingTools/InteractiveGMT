@@ -60,6 +60,15 @@ end
 	IG = InteractiveGMT
 	# scene = C_NULL: _viewer_log_error swallows the ccall (no DLL loaded in CI), so a bad
 	# request must return normally instead of throwing all the way out to the caller.
+	# This callback returns `nothing`, so it cannot go through `_errored` like the ones that answer
+	# 0/1 — the errors it raises are CLAIMED here by hand instead, and the messages asserted. Left
+	# unclaimed they sit in the sink to the end of the run and fail "no unclaimed errors", which is
+	# exactly what they did on CI.
+	IG._clear_tool_errors!()
 	@test IG._on_roi_crop(C_NULL, "grid", "not/a/valid/rect") === nothing
 	@test IG._on_roi_crop(C_NULL, "bogus_kind", "-1.0/1.0/-1.0/1.0") === nothing
+	claimed = IG._take_tool_errors!()
+	@test length(claimed) == 2
+	@test occursin("four numbers, West/East/South/North", claimed[1])
+	@test occursin("unknown kind 'bogus_kind'", claimed[2])
 end

@@ -218,7 +218,7 @@ end
 @testitem "Euler: refuses what it cannot rotate" tags=[:unit, :fast] begin
 	IG = InteractiveGMT
 	call(kv) = IG._on_euler(Ptr{Cvoid}(UInt(0xDEADDEAD)),
-	                        Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "FAILED"))
+	                        Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "Euler rotations|Plate calculator|Compute Euler pole"))
 	@test call(["op=rotate", "target=nothing here", "usepole=1", "polelon=0", "polelat=0", "poleang=1"]) == 0
 	@test call(["op=add", "p1lon=30", "p1lat=50", "p1ang=10", "p2lon=", "p2lat=", "p2ang="]) == 0
 	@test call(["op=interp", "polesfile=no_such_poles.dat", "poles=", "ages=10"]) == 0

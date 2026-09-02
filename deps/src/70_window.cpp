@@ -407,17 +407,42 @@ protected:
 		if (!fps.empty()) {
 			g.setBrush(QColor(60, 200, 255, 30));
 			g.setPen(QPen(QColor(60, 200, 255), 1));
-			QFont f = g.font();  f.setPointSize(7);  g.setFont(f);
+			const QFont fBase = g.font();
 			for (const Footprint &t : fps) {
 				QRectF r(QPointF(lon2px(t.W), lat2py(t.N)), QPointF(lon2px(t.E), lat2py(t.S)));
 				g.drawRect(r);
-				// The name only where the box is big enough to hold it — at a whole-country view these
-				// are a few pixels each and the labels would be a solid smear.
-				if (!t.name.isEmpty() && r.width() > 60 && r.height() > 18) {
-					g.setPen(QColor(230, 250, 255));
-					g.drawText(r, Qt::AlignCenter, t.name);
-					g.setPen(QPen(QColor(60, 200, 255), 1));
+				if (t.name.isEmpty()) continue;
+				// A footprint the user cannot NAME is a blue box they have to take on trust — and these
+				// names are the whole point here (a DGT orthophoto is `…-431-3`, carta 431 quadrant 3),
+				// so the label is fitted to the box instead of being dropped whenever the box is small.
+				// Largest size from 9 pt down that still fits the width; below 6 pt it is unreadable
+				// anyway and at a whole-country view the labels would be one smear, so it is skipped.
+				QFont f = fBase;
+				int pt = 0;
+				for (int cand = 9; cand >= 6; --cand) {
+					f.setPointSize(cand);
+					if (QFontMetricsF(f).horizontalAdvance(t.name) <= r.width() - 3.0 &&
+					    QFontMetricsF(f).height() <= r.height() - 1.0) { pt = cand; break; }
 				}
+				if (pt == 0) continue;
+				f.setPointSize(pt);
+				g.setFont(f);
+				// A dark backing under the text: the blue fill, the basemap and the red region all pass
+				// under these boxes, and white-on-anything is only legible against something of its own.
+				// Built from the CENTRE outwards, the same anchor drawText(r, AlignCenter) uses, so the
+				// patch cannot drift off the text it is backing.
+				const QFontMetricsF fm(f);
+				const double tw = fm.horizontalAdvance(t.name), th = fm.height();
+				const QRectF br(r.center().x() - tw / 2.0 - 2.0, r.center().y() - th / 2.0 - 1.0,
+				                tw + 4.0, th + 2.0);
+				g.setPen(Qt::NoPen);
+				g.setBrush(QColor(0, 0, 0, 130));
+				g.drawRect(br);
+				g.setBrush(QColor(60, 200, 255, 30));
+				g.setPen(QColor(235, 250, 255));
+				g.drawText(r, Qt::AlignCenter, t.name);
+				g.setPen(QPen(QColor(60, 200, 255), 1));
+				g.setFont(fBase);
 			}
 		}
 		if (hasRegion) {                                 // the picked region, with its grab handles
@@ -15009,6 +15034,14 @@ class DgtLidarDialog {
 public:
 	QDialog *dlg = nullptr;
 	Scene *scn = nullptr;
+	// ORTOFOTOS mode. The portal serves the orthophotos through the SAME catalogue, the same account
+	// and the same download endpoint as the LIDAR, and `dgt_lidar` downloads them with the same call —
+	// so this is the same tool with a different collection family, NOT a second dialog. What the flag
+	// changes is only what differs: which collections the combo offers, which tiling the map draws
+	// under the region (the 1:25000 sheet quadrants the ORTOS filenames are numbered by, rather than
+	// the LIDAR survey's own tiles), the names on screen, and the mosaic-size warning.
+	bool ortos = false;
+	const char *toolName() const { return ortos ? "DGT ORTOFOTOS" : "DGT LIDAR"; }
 	QComboBox *collCb = nullptr, *compCb = nullptr, *destCb = nullptr, *methCb = nullptr;
 	QLineEdit *xmin = nullptr, *xmax = nullptr, *ymin = nullptr, *ymax = nullptr;
 	QLineEdit *outDir = nullptr, *delayEdit = nullptr, *userEdit = nullptr, *passEdit = nullptr;
@@ -15042,7 +15075,7 @@ public:
 			int ok = g_juliaDgt ? g_juliaDgt(scn, this, "mode=checkcreds\n") : 0;
 			QApplication::restoreOverrideCursor();
 			if (ok != 1) {
-				QMessageBox::critical(dlg, "DGT LIDAR — NO ACCOUNT", QString(
+				QMessageBox::critical(dlg, QString("%1 — NO ACCOUNT").arg(toolName()), QString(
 					"<b>THIS MUST BE RESOLVED IMMEDIATELY.</b><br><br>"
 					"This tool downloads from Portugal's DGT CDD portal, which serves nobody without an "
 					"account. The one in <tt>~/.dgt</tt> is missing, incomplete, or was refused.<br><br>"
@@ -15102,10 +15135,16 @@ public:
 		if (!picker.isNull()) { picker->unpark(); return; }
 		picker = openRegionPicker(parent ? parent : dlg, scn, xmin, xmax, ymin, ymax,
 		                          PT_HOME_W, PT_HOME_E, PT_HOME_S, PT_HOME_N,
-		                          // the survey's own tiles, for the collection selected HERE — read at
-		                          // the moment of asking, since the combo can change while the map is up
-		                          [this]() { return collCb ? QString("dgt:%1").arg(collCb->currentText())
-		                                                   : QString(); });
+		                          // LIDAR: the survey's own tiles, for the collection selected HERE —
+		                          // read at the moment of asking, since the combo can change while the
+		                          // map is up. ORTOFOTOS: the 1:25000 sheet quadrants the ORTOS files
+		                          // are numbered by, which are the same grid for every survey year and
+		                          // are computed offline, so no collection travels with the request.
+		                          [this]() {
+		                              if (ortos) return QString("cartas4:");
+		                              return collCb ? QString("dgt:%1").arg(collCb->currentText())
+		                                            : QString();
+		                          });
 		// Region picked -> this dialog comes straight back (from the dock if it was parked), showing
 		// Main: the region is settled, and what is left to decide is what to do with it.
 		if (!picker.isNull())
@@ -15115,7 +15154,8 @@ public:
 			};
 	}
 
-	explicit DgtLidarDialog(QWidget *parent, Scene *scene) : scn(scene) {
+	explicit DgtLidarDialog(QWidget *parent, Scene *scene, bool ortosMode = false)
+		: scn(scene), ortos(ortosMode) {
 		QUiLoader loader;
 		QFile f(gmtvtkUiDir() + "/dgt_lidar_dialog.ui");
 		if (!f.open(QFile::ReadOnly)) {
@@ -15130,7 +15170,7 @@ public:
 		// for is worth getting out of the way, and the settings come back with it.
 		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
-		dlg->setWindowTitle("DGT LIDAR (Portugal)");
+		dlg->setWindowTitle(ortos ? "DGT ORTOFOTOS (Portugal)" : "DGT LIDAR (Portugal)");
 		QDialog *d = dlg;
 		Scene *sc = scn;
 		QObject::connect(d, &QObject::destroyed, d, [sc, d]() {
@@ -15169,15 +15209,27 @@ public:
 		mosaicBox = d->findChild<QGroupBox *>("gb_mosaic");
 		logTxt    = d->findChild<QPlainTextEdit *>("txt_log");
 
-		// The five collections `dgt_lidar` accepts, surface models first (they are what a viewer
-		// wants); LAZ is the raw point cloud, which has no mosaic.
-		if (collCb)
-			for (const char *c : { "MDS-2m", "MDT-2m", "MDS-50cm", "MDT-50cm", "LAZ" })
-				collCb->addItem(c);
+		// The collections `dgt_lidar` accepts for THIS mode, newest/most wanted first. LIDAR: surface
+		// models first (what a viewer wants); LAZ is the raw point cloud, which has no mosaic.
+		// ORTOFOTOS: the survey years, latest first.
+		if (collCb) {
+			if (ortos)
+				for (const char *c : { "ORTOS-2025", "ORTOS-2021", "ORTOS-2018", "ORTOS-2015",
+				                       "ORTOS-2012", "ORTOS-2010", "ORTOS-2007", "ORTOS-2004",
+				                       "ORTOS-1995" })
+					collCb->addItem(c);
+			else
+				for (const char *c : { "MDS-2m", "MDT-2m", "MDS-50cm", "MDT-50cm", "LAZ" })
+					collCb->addItem(c);
+		}
 		if (compCb) {
 			compCb->addItem("GeoTIFF (DEFLATE)", "tif");
 			compCb->addItem("netCDF4", "nc");
 			compCb->addItem("as sent (uncompressed)", "");
+			// The orthophoto tiles are already CLOUD-OPTIMIZED GeoTIFFs — compressed, tiled, with
+			// overviews. Re-encoding them buys nothing and throws the overviews away, so this mode
+			// takes them as sent. (Still a free choice: the other two are right there.)
+			if (ortos) compCb->setCurrentIndex(compCb->findData(QString("")));
 		}
 		if (destCb) {
 			destCb->addItem("into this window", "grid");
@@ -15349,8 +15401,9 @@ public:
 		if (!dlg || !sceneAlive(scn)) return;
 		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
 		dlg->hide();
-		parkTool(scn, dlg, "DGT LIDAR", IC_Rect,
-		         "Minimised DGT LIDAR — double-click to bring it back, click for Show / Delete",
+		parkTool(scn, dlg, QString::fromLatin1(toolName()), IC_Rect,
+		         QString("Minimised %1 — double-click to bring it back, click for Show / Delete")
+		             .arg(toolName()),
 		         [this]() { unpark(); }, parkedMenu());
 		unfoldSceneObjects(scn);
 	}
@@ -15364,25 +15417,78 @@ public:
 		return txt(xmin) + "/" + txt(xmax) + "/" + txt(ymin) + "/" + txt(ymax);
 	}
 
+	// How big would the mosaic over the region in the boxes come out, in bytes? Only a ROUGH figure is
+	// wanted (the warning below is about orders of magnitude, not about being right to the megabyte),
+	// so the box is measured on the sphere at its mid-latitude and the count is
+	// pixels x bytes-per-pixel: 3 bytes at 25 cm for an ORTOS orthophoto (RGB), 4 bytes at the
+	// collection's own posting for a LIDAR grid (Float32). Returns 0 when the region is not readable.
+	double mosaicBytes() const {
+		auto num = [](QLineEdit *e, bool *ok) { return e ? e->text().trimmed().toDouble(ok) : 0.0; };
+		bool ok = false;
+		const double W = num(xmin, &ok);  if (!ok) return 0.0;
+		const double E = num(xmax, &ok);  if (!ok) return 0.0;
+		const double S = num(ymin, &ok);  if (!ok) return 0.0;
+		const double N = num(ymax, &ok);  if (!ok) return 0.0;
+		if (!(E > W) || !(N > S)) return 0.0;
+		// Not M_PI: it is not standard C++ (MSVC only defines it behind _USE_MATH_DEFINES) and reaching
+		// it here works only by accident of what some other header happened to pull in.
+		constexpr double kDeg2Rad = 3.14159265358979323846 / 180.0;
+		const double mPerDeg = 111320.0;
+		const double wm = (E - W) * mPerDeg * std::cos((S + N) * 0.5 * kDeg2Rad);
+		const double hm = (N - S) * mPerDeg;
+		double cell = 2.0, bpp = 4.0;                 // a LIDAR grid: Float32 at the collection's posting
+		if (ortos) { cell = 0.25;  bpp = 3.0; }       // an orthophoto: RGB at 25 cm
+		else if (collCb && collCb->currentText().contains("50cm")) cell = 0.5;
+		return (wm / cell) * (hm / cell) * bpp;
+	}
+	// A mosaic the machine cannot hold is the one mistake this dialog can make that costs real time
+	// (and, into the window, the session). Ask before it is made, with the actual number — and ask
+	// EARLIER for "into this window", where the whole thing has to fit in memory at once, than for a
+	// file, where it only has to fit on the disk. Returns false when the user backs out.
+	bool confirmMosaicSize(QDialog *d, bool toFile) {
+		const double bytes = mosaicBytes();
+		if (bytes <= 0.0) return true;                       // region unreadable — nothing to claim
+		const double GB = bytes / (1024.0 * 1024.0 * 1024.0);
+		const double limit = toFile ? 8.0 : 2.0;
+		if (GB < limit) return true;
+		return QMessageBox::warning(d, QString("%1 — big mosaic").arg(toolName()),
+			QString("The mosaic over this region works out at roughly <b>%1 GB</b>%2.<br><br>"
+			        "%3<br><br>Go ahead anyway?")
+				.arg(GB, 0, 'f', GB < 10 ? 1 : 0)
+				.arg(ortos ? " (RGB at 25 cm)" : "")
+				.arg(toFile ? "That is what will be written to the mosaic file; the downloaded tiles "
+				              "take about as much again on top of it."
+				            : "It has to fit in MEMORY, all at once, because the result is being sent "
+				              "\"into this window\". Writing it \"to a file\" instead, or picking a "
+				              "smaller region, is the way out."),
+			QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+	}
+
 	void run(QDialog *d, const char *mode) {
 		if (!g_juliaDgt) {
-			QMessageBox::warning(d, "DGT LIDAR", "DGT LIDAR: callback not registered (rebuild/restart needed?).");
+			QMessageBox::warning(d, toolName(),
+			                     QString("%1: callback not registered (rebuild/restart needed?).").arg(toolName()));
 			return;
 		}
 		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
 		const QString region = regionText();
 		if (region.isEmpty()) {
-			QMessageBox::warning(d, "DGT LIDAR", "Give all four Region boxes — the survey is downloaded "
-			                                     "by area, so West, East, South and North are needed.");
+			QMessageBox::warning(d, toolName(), "Give all four Region boxes — the survey is downloaded "
+			                                    "by area, so West, East, South and North are needed.");
 			return;
 		}
 		const bool doMosaic = !mosaicBox || mosaicBox->isChecked();
 		const bool toFile   = (cbData(destCb) == "file");
 		const bool mosaicOnly = (QString(mode) == "mosaic");
 		if ((doMosaic || mosaicOnly) && toFile && txt(outFile).isEmpty()) {
-			QMessageBox::warning(d, "DGT LIDAR", "Name the mosaic file, or send the mosaic \"into this window\".");
+			QMessageBox::warning(d, toolName(), "Name the mosaic file, or send the mosaic \"into this window\".");
 			return;
 		}
+		// Only when a mosaic is actually going to be built, and never for a dry run (which downloads
+		// and assembles nothing at all).
+		if ((doMosaic || mosaicOnly) && !(dryChk && dryChk->isChecked() && !mosaicOnly) &&
+		    !confirmMosaicSize(d, toFile))
+			return;
 		QStringList kv;
 		kv << QString("mode=") + mode;
 		kv << "region=" + region;
@@ -15407,8 +15513,8 @@ public:
 		showBusyDialog(mosaicOnly ? "Building the mosaic…" : "Talking to the DGT portal…");
 		const int ok = g_juliaDgt(scn, this, kv.join("\n").toUtf8().constData());
 		closeBusyDialog();
-		if (!ok) QMessageBox::warning(d, "DGT LIDAR",
-		                              "DGT LIDAR failed — see the log below and this window's Errors console.");
+		if (!ok) QMessageBox::warning(d, toolName(),
+			QString("%1 failed — see the log below and this window's Errors console.").arg(toolName()));
 	}
 };
 
@@ -24774,6 +24880,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// dialog. Only a failed account check leaves the dialog on screen, on its "DGT account" tab.
 	mPT->addAction("DGT LIDAR", [win, s]() {
 		auto *w = new DgtLidarDialog(win, s);
+		if (w->dlg) w->begin(win);
+	});
+	// DGT ORTOFOTOS: the SAME dialog, the same account and the same `dgt_lidar` call, aimed at the
+	// portal's ORTOS-<year> collections instead of the LIDAR ones. The map under the region shows the
+	// 1:25000 sheet quadrants, which is how the orthophoto tiles are named (ORTOS-2025-cog-25cm-431-3
+	// = carta 431, quadrant 3 = its bottom-left quarter).
+	mPT->addAction("ORTOFOTOS", [win, s]() {
+		auto *w = new DgtLidarDialog(win, s, /*ortosMode=*/true);
 		if (w->dlg) w->begin(win);
 	});
 	// LIDAR2011: a picker over the survey's 1600x1000 m tile matrix; select cells, "Do Mosaic" ->

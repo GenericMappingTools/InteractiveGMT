@@ -24,9 +24,12 @@
 # Like every C->Julia callback the @cfunction and its registration are RUNTIME values, created lazily
 # at the first window open (eventloop.jl `_ensure_callbacks`) — never at top level.
 
-# The five collections `dgt_lidar` accepts, in the dialog's order. Kept here only to catch a typo
-# before the download starts; every rule about what they hold stays in GMT.jl.
-const _DGT_COLLECTIONS = ("MDS-2m", "MDT-2m", "MDS-50cm", "MDT-50cm", "LAZ")
+# The collections `dgt_lidar` accepts, in the dialogs' order: the five LIDAR ones, then the ORTOS
+# orthophoto surveys (the ORTOFOTOS mode of the same dialog). Kept here only to catch a typo before
+# the download starts; every rule about what they hold stays in GMT.jl.
+const _DGT_COLLECTIONS = ("MDS-2m", "MDT-2m", "MDS-50cm", "MDT-50cm", "LAZ",
+                          "ORTOS-2025", "ORTOS-2021", "ORTOS-2018", "ORTOS-2015", "ORTOS-2012",
+                          "ORTOS-2010", "ORTOS-2007", "ORTOS-2004", "ORTOS-1995")
 
 # Append one line to the dialog's log pane (gmtvtk_dgt_log). Best-effort and NEVER throws, so it can
 # be called from a catch block.

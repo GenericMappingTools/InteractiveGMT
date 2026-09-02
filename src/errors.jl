@@ -76,11 +76,15 @@ function _errored(ret, tool::AbstractString = "")
 	# an error raised by an earlier item that no test ever accounted for -- and it goes straight back,
 	# so the end-of-run "no unclaimed errors" check still fails on it. Swallowing those here would be
 	# the sink hiding failures instead of catching them, which is the whole thing it exists to stop.
+	# `tool` may name several ("Euler rotations|Plate calculator"): one callback, several tools behind
+	# it. Never a substring so loose it matches everybody -- a claim of "FAILED" would take Roi Crop's
+	# errors off the sink from inside a Plates test, and that is the sink hiding failures again.
 	mine, foreign = if isempty(tool)
 		all, String[]
 	else
-		t = lowercase(tool)
-		(filter(m -> occursin(t, lowercase(m)), all), filter(m -> !occursin(t, lowercase(m)), all))
+		names = [lowercase(strip(t)) for t in split(tool, '|') if !isempty(strip(t))]
+		hit(m) = any(t -> occursin(t, lowercase(m)), names)
+		(filter(hit, all), filter(m -> !hit(m), all))
 	end
 	for m in foreign
 		_record_tool_error(m)

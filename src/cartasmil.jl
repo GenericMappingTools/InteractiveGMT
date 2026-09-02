@@ -134,6 +134,88 @@ function _cm_bg_extent()
 	end
 end
 
+# ============================================================================================
+# The 1:25000 sheet grid as MAP FOOTPRINTS — the rectangles the region picker draws under a picked
+# region for the ORTOFOTOS tool (tilestool.jl's provider registry, name "cartas4").
+#
+# DGT cuts its orthophotos on THIS grid, quartered: an ORTOS item is `ORTOS-<year>-cog-25cm-<carta>-<q>`
+# with q = 1 TL, 2 TR, 3 BL, 4 BR of the sheet (verified against the STAC bboxes of carta 431). So the
+# picture the picker needs is exactly this table, split in four, expressed in lon/lat.
+#
+# It is computed HERE, from the sheet table, instead of asked of the catalogue: the picker re-draws on
+# every drag of the region, and a STAC round trip per drag needs the network and a login before
+# anything can be shown at all. The cost is that these are the sheet quadrants in the military frame
+# (Datum Lisboa) while DGT's own bboxes come out of the survey's ETRS89 frame — the two agree in
+# latitude to ~3e-6 deg and differ by ~7e-4 deg (~60 m) in longitude, which is a datum residual and is
+# invisible at picking scale. Nothing is SELECTED from these boxes: the download still goes by bbox
+# through `dgt_lidar`, so which tiles arrive stays the server's answer, not this table's.
+const _CM_WGS84 = "+proj=longlat +datum=WGS84"
+# Above this many quadrants the drawing is a grey mush and every one of them costs a projected point,
+# so a region that wide simply gets no footprints (the picker draws none and says nothing).
+const _CM_FP_MAX = 600
+
+# q -> (which half in x, which half in y) of a sheet: 1 TL, 2 TR, 3 BL, 4 BR.
+_cm_quad(x0, x1, y0, y1, q) =
+	(q == 1) ? (x0, (x0 + x1) / 2, (y0 + y1) / 2, y1) :
+	(q == 2) ? ((x0 + x1) / 2, x1, (y0 + y1) / 2, y1) :
+	(q == 3) ? (x0, (x0 + x1) / 2, y0, (y0 + y1) / 2) :
+	           ((x0 + x1) / 2, x1, y0, (y0 + y1) / 2)
+
+function _cm_quad_footprints(W::Float64, E::Float64, S::Float64, N::Float64,
+                             arg::String)::Tuple{Vector{Float64}, Vector{String}}
+	try
+		t = _cm_table()
+		# The region, in the sheet grid's own metres. The box is projected by its four CORNERS and then
+		# padded: a lon/lat box is not a rectangle in a transverse Mercator, so its projected outline
+		# bulges, and one sheet width of slack is cheaper than missing an edge sheet.
+		reg = GMT.lonlat2xy([W S; E S; E N; W N]; s_srs = _CM_WGS84, t_srs = _CM_PROJ4)
+		mx0, mx1 = minimum(reg[:, 1]) - _CM_XINC, maximum(reg[:, 1]) + _CM_XINC
+		my0, my1 = minimum(reg[:, 2]) - _CM_YINC, maximum(reg[:, 2]) + _CM_YINC
+		hit = String[]
+		for nm in view(t.names, 2:length(t.names))      # row 1 is the grid's own bbox, not a sheet
+			r = get(t.bynames, nm, nothing)
+			r === nothing && continue
+			(r[2] < mx0 || r[1] > mx1 || r[4] < my0 || r[3] > my1) && continue
+			push!(hit, nm)
+		end
+		(isempty(hit) || 4 * length(hit) > _CM_FP_MAX) && return Float64[], String[]
+		# ONE projection call for every corner of every quadrant: 16 points per sheet, four per
+		# quadrant, in a fixed order so the answer can be sliced back apart without a lookup.
+		pts = Matrix{Float64}(undef, 16 * length(hit), 2)
+		k = 0
+		for nm in hit
+			x0, x1, y0, y1 = t.bynames[nm]
+			for q in 1:4
+				a, b, c, dd = _cm_quad(x0, x1, y0, y1, q)
+				for (px, py) in ((a, c), (b, c), (b, dd), (a, dd))
+					k += 1;  pts[k, 1] = px;  pts[k, 2] = py
+				end
+			end
+		end
+		ll = GMT.xy2lonlat(pts; s_srs = _CM_PROJ4, t_srs = _CM_WGS84)
+		rects, names = Float64[], String[]
+		k = 0
+		for nm in hit, q in 1:4
+			lo = k + 1;  k += 4
+			v  = view(ll, lo:k, :)
+			qw, qe = minimum(view(v, :, 1)), maximum(view(v, :, 1))
+			qs, qn = minimum(view(v, :, 2)), maximum(view(v, :, 2))
+			# THE filter, in the space the picture is drawn in. The metric prefilter above is deliberately
+			# padded by a whole sheet (a lon/lat box is not a rectangle in a transverse Mercator, so its
+			# projected outline bulges and an edge sheet would otherwise be missed) — which means it
+			# ALWAYS over-selects, by a ring of sheets all round. That ring is dropped here: a quadrant
+			# is drawn only if it really overlaps the region, tested on its own lon/lat box.
+			(qe < W || qw > E || qn < S || qs > N) && continue
+			append!(rects, (qw, qe, qs, qn))
+			push!(names, "$nm-$q")
+		end
+		return rects, names
+	catch e
+		@tool_error "carta-quadrant footprints failed" exception=(e,)
+		return Float64[], String[]
+	end
+end
+
 # The file holding a sheet, in the order bdnTile tries them: <name>.gif, then the Mr. Sid version.
 # Both cases of the extension are tried — a directory of sheets copied off a CD is as likely to shout
 # them in capitals.

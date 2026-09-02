@@ -239,6 +239,9 @@ function _register_lidar()
 	ccall(_fn(:gmtvtk_set_lidar_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	warm_register("lidarpt", _lidar_warm)   # C++ fires this when the dialog opens (70_window.cpp)
 	warm_register("cartasmil", _cm_warm)    # its twin, the Cartas Militares mode of the same picker
+	# The 1:25000 sheet grid quartered — the tiling DGT's orthophotos are cut on, drawn under the
+	# region by the ORTOFOTOS tool's picker (cartasmil.jl `_cm_quad_footprints`).
+	_fp_register("cartas4", _cm_quad_footprints)
 	return
 end
 
