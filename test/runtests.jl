@@ -57,16 +57,29 @@ const _ONLYTAG = strip(get(ENV, "INTERACTIVEGMT_TEST_TAG", ""), [' ', '"', '\'']
 # So the file said kissfft, `gmtget` said kissfft, and the session that actually called GMT_FFT_1D
 # still dispatched to vDSP and died (run 33583990097, GMT_FFT_1D <- libgmt.6.7.0.dylib). The fix is
 # to set the value ON THAT SESSION, through the API, which is what GMT_Set_Default does.
+# ...and the backend picked here is FFTW, not KissFFT, which is the correction to the above. Forcing
+# kissfft did stop the vDSP segfault and the run then died differently: `signal (6): Abort trap` in
+# the X,Y op-dispatch item (run 33657361347), no message, a one-frame backtrace. GMT's C source
+# contains no abort() at all and the GMT_jll aarch64 build log settles what is left:
+#     -- Using CFLAGS = '-std=gnu99 -fopenmp=libomp -O3 -DNDEBUG'
+#     *  OpenMP support             : enabled
+#     *  FFTW library               : .../libfftw3f.dylib
+# NDEBUG means GMT's asserts are compiled out, so no assert raised it either. What IS live is
+# OpenMP: kiss_fft.c's kf_work opens a `#pragma omp parallel for` region, so selecting kissfft --
+# and ONLY selecting kissfft, since GMT reaches for vDSP/FFTW otherwise -- runs GMT's libomp inside
+# a Julia process that already carries one. Two OpenMP runtimes in one process abort, which is the
+# signal 6 exactly. FFTW3f is linked into the same jll, handles any length (vDSP is radix-2 only,
+# which is why auto-selection fell into it for N=1024 and crashed), and stays out of OpenMP.
 if Sys.isapple()
 	try
 		try		# the LIVE session — the one whose GMT_FFT_1D crashes; a file cannot reach it
 			r = ccall((:GMT_Set_Default, InteractiveGMT.GMT.libgmt), Cint,
-			          (Ptr{Cvoid}, Cstring, Cstring), InteractiveGMT.GMT.G_API[], "GMT_FFT", "kissfft")
-			(r == 0) || @error "tests: GMT_Set_Default(GMT_FFT, kissfft) returned $r on the live session"
+			          (Ptr{Cvoid}, Cstring, Cstring), InteractiveGMT.GMT.G_API[], "GMT_FFT", "fftw")
+			(r == 0) || @error "tests: GMT_Set_Default(GMT_FFT, fftw) returned $r on the live session"
 		catch e
 			@warn "tests: could not set GMT_FFT on the live API session" exception=(e,)
 		end
-		InteractiveGMT.GMT.gmt("gmtset GMT_FFT kissfft")
+		InteractiveGMT.GMT.gmt("gmtset GMT_FFT fftw")
 		# Read it back FROM THE LIVE SESSION (GMT_Get_Default), not from the file: the file was never
 		# the thing that was wrong. `gmtget` is only the fallback when that call is unavailable.
 		eff = try
@@ -83,14 +96,14 @@ if Sys.isapple()
 				"<unreadable>"
 			end
 		end
-		if occursin("kiss", lowercase(eff))
-			@info "tests: GMT_FFT=$eff (GMT's vDSP FFT segfaults on this platform)"
+		if occursin("fftw", lowercase(eff))
+			@info "tests: GMT_FFT=$eff (vDSP segfaults here, KissFFT drags in a second OpenMP runtime)"
 		else
-			@error "tests: GMT_FFT is '$eff', NOT kissfft — GMT's vDSP path will SEGFAULT the whole " *
+			@error "tests: GMT_FFT is '$eff', NOT fftw— GMT's vDSP path will SEGFAULT the whole " *
 			       "test process (vDSP_fft2d_zop <- gmtfft_2d_vDSP <- GMT_FFT_2D). cwd=$(pwd())"
 		end
 	catch e
-		@warn "tests: could not select GMT's KissFFT backend; FFT items may crash" exception=(e,)
+		@warn "tests: could not select GMT's FFTW backend; FFT items may crash" exception=(e,)
 	end
 end
 

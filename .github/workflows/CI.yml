@@ -60,9 +60,14 @@ jobs:
       # GMT picks its FFT backend at runtime, and on Apple silicon it picks Accelerate's vDSP —
       # which SEGFAULTS (signal 11) inside vDSP_fft2d_zip, killing the whole test process:
       #     vDSP_fft2d_zip (libvDSP.dylib) <- gmtfft_2d_vDSP <- GMT_FFT_2D (libgmt.6.7.0.dylib)
-      # That is a bug in GMT's C library, not in anything here, and no test can survive it. KissFFT
-      # is GMT's own portable backend and gives the same answers, so the runner is told to use it.
-      # Remove this once GMT's vDSP path is fixed upstream.
+      # That is a bug in GMT's C library, not in anything here, and no test can survive it. FFTW3f
+      # is linked into the same GMT_jll, handles any transform length and gives the same answers, so
+      # the runner is told to use it. Remove this once GMT's vDSP path is fixed upstream.
+      #
+      # NOT KissFFT, which this step selected first: that swapped the segfault for `signal (6):
+      # Abort trap` (run 33657361347). The jll is built `-fopenmp=libomp`, kiss_fft.c's kf_work runs
+      # a `#pragma omp parallel for`, and kissfft is the only backend that reaches it -- so it put a
+      # second OpenMP runtime inside a Julia process that already has one. Details in test/runtests.jl.
       #
       # GMT must WRITE this file itself. A hand-written one is refused —
       #     GMT [WARNING]: Your gmt.conf file (~/.gmt/gmt.conf) may not be GMT 6 compatible
@@ -70,11 +75,11 @@ jobs:
       # what happened on the first attempt). `gmtset` writes gmt.conf into the current directory, so
       # it is run from ~/.gmt, which is where GMT looks for a user's defaults. It runs AFTER
       # buildpkg because `using GMT` needs the project's dependencies installed.
-      - name: Use GMT's portable FFT backend (its vDSP path crashes on arm64)
+      - name: Use GMT's FFTW backend (its vDSP path crashes on arm64)
         if: runner.os == 'macOS'
         run: |
           mkdir -p ~/.gmt
-          cd ~/.gmt && julia --project=${{ github.workspace }} -e 'using GMT; GMT.gmt("gmtset GMT_FFT kissfft")'
+          cd ~/.gmt && julia --project=${{ github.workspace }} -e 'using GMT; GMT.gmt("gmtset GMT_FFT fftw")'
           echo "--- ~/.gmt/gmt.conf ---"; grep GMT_FFT ~/.gmt/gmt.conf
       # `prefix` runs the test process under Xvfb; INTERACTIVEGMT_TEST_GUI turns on the :gui tier
       # (test/runtests.jl), which is ~69 testitems that open REAL windows and were skipped here
