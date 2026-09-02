@@ -127,6 +127,7 @@
 #include <QDropEvent>
 #include <QContextMenuEvent>
 #include <QUrl>
+#include <QDesktopServices>
 
 #include <QVTKOpenGLNativeWidget.h>
 

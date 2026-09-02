@@ -25215,6 +25215,19 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	});
 
 	QMenu *mHelp = win->menuBar()->addMenu("&Help");
+	// The project's own manual, in the user's browser. The address is NOT chosen here: it is the
+	// `canonical` Documenter is told to build the site under (docs/make.jl), i.e. where deploydocs
+	// actually publishes the GitHub Pages copy. Change it there, not here.
+	// This is deliberately NOT the g_juliaOpenManual route the dialogs' "?" disks use -- that one
+	// opens a GMT *module* page under GMT.jl's own doc tree, a different site with a per-module URL.
+	// A plain openUrl also keeps working when the Julia bridge is not up.
+	mHelp->addAction("InteractiveGMT &Manual (online)", [win]() {
+		const QUrl u("https://www.generic-mapping-tools.org/InteractiveGMT");
+		if (!QDesktopServices::openUrl(u))
+			QMessageBox::warning(win, "Manual",
+				QString("Could not open a browser for\n\n%1").arg(u.toString()));
+	});
+	mHelp->addSeparator();
 	mHelp->addAction("&About", actAbout);
 	// Check for Updates: `] dev`-installed checkout only (InteractiveGMT.update!(), selfupdate.jl) --
 	// git fetch+fast-forward-merge, then Pkg.build to relink the DLL. Blocking (network + a rebuild),
