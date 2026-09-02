@@ -31,23 +31,37 @@ end
 # the row's trailing text (Latin-1-fixed: the files have accented names / "±"); each caller turns
 # texts into its own tooltip.
 function _geo_points(datafile::AbstractString, W, E, S, N; latlon::Bool=false)
-	path = joinpath(_PKGROOT, "data", datafile)
-	isfile(path) || (@warn "geography: data file not found" path; return (Float64[], Float64[], String[]))
-	Sr = latlon ? GMT.gmtselect(path, R=(W, E, S, N), f=:g, yx="i") :
-	              GMT.gmtselect(path, R=(W, E, S, N), f=:g)         # read + region/lon-periodic clip in ONE call
-	(Sr === nothing || isempty(Sr)) && return (Float64[], Float64[], String[])
-	Sel = Sr isa AbstractVector ? Sr[1] : Sr
-	(Sel.data === nothing || isempty(Sel.data)) && return (Float64[], Float64[], String[])
+	Sel, xs = _geo_select(datafile, W, E, S, N; latlon=latlon)
+	Sel === nothing && return (Float64[], Float64[], String[])
 	txt = Sel.text
-	n = size(Sel.data, 1)
-	xs = Vector{Float64}(undef, n); texts = Vector{String}(undef, n)
-	for k in 1:n
-		xs[k] = mod(Sel.data[k, 1] - W, 360.0) + W            # lon -> normalize into the map's [W,E] frame
+	texts = Vector{String}(undef, length(xs))
+	for k in eachindex(xs)
 		rest = (txt !== nothing && k <= length(txt)) ? txt[k] : ""
 		isvalid(rest) || (rest = String(Char.(codeunits(rest))))   # Latin-1 bytes -> chars (valid UTF-8)
 		texts[k] = rest
 	end
 	return xs, Sel.data[:, 2], texts
+end
+
+# The READ + REGION CLIP the datasets above share, handing back the WHOLE dataset instead of just
+# lon/lat/text. `_geo_points` is this plus "the trailing text is all I need"; a catalog that carries
+# real numeric columns (the NOAA tsunami events, tsunamicatalog.jl) takes `Sel.data` itself. One
+# gmtselect call, one lon normalization, one not-found warning — never a second copy of them beside
+# this. Returns `(nothing, Float64[])` when the file is missing or nothing survives the clip.
+function _geo_select(datafile::AbstractString, W, E, S, N; latlon::Bool=false)
+	path = joinpath(_PKGROOT, "data", datafile)
+	isfile(path) || (@warn "geography: data file not found" path; return (nothing, Float64[]))
+	Sr = latlon ? GMT.gmtselect(path, R=(W, E, S, N), f=:g, yx="i") :
+	              GMT.gmtselect(path, R=(W, E, S, N), f=:g)         # read + region/lon-periodic clip in ONE call
+	(Sr === nothing || isempty(Sr)) && return (nothing, Float64[])
+	Sel = Sr isa AbstractVector ? Sr[1] : Sr
+	(Sel.data === nothing || isempty(Sel.data)) && return (nothing, Float64[])
+	n = size(Sel.data, 1)
+	xs = Vector{Float64}(undef, n)
+	for k in 1:n
+		xs[k] = mod(Sel.data[k, 1] - W, 360.0) + W            # lon -> normalize into the map's [W,E] frame
+	end
+	return Sel, xs
 end
 
 # Tooltip blocks for the "N positional fields" datasets: split each trailing text into
@@ -198,6 +212,7 @@ function _geo_layer_name(kind::AbstractString)::String
 	kind == "tides"     ? "Tide Stations"       :
 	kind == "tidestations" ? "Tide Prediction Stations" :
 	kind == "hydro"     ? "Hydrothermal Vents"  :
+	kind == "noaa_tsunami" ? "NOAA Historical Tsunamis" :
 	kind == "plateboundaries" ? _PB_GROUP       :
 	kind == "isochrons_gplates" ? _ISOC_GPLATES_NAME :
 	uppercasefirst(String(kind))
@@ -327,6 +342,12 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			isempty(xs) && return
 			add_symbols!(scene, xs, ys; symbol=:circle, size=9, fill=:orange, edge=:black, edgewidth=1.0,
 			             name="Hydrothermal Vents", info=infos)
+		elseif kind == "noaa_tsunami"
+			# NOAA/NCEI historical tsunami events (Geophysics > Tsunamis). A point dataset over the view
+			# like every branch above, so it comes through this same door; its own columns, tooltip and
+			# magnitude-scaled circle live in tsunamicatalog.jl. Bail (no session record) if the view
+			# holds none.
+			_plot_noaa_tsunami(scene, W, E, S, N) || return
 		elseif kind == "plateboundaries"
 			# Whole-earth static dataset (a few hundred segments total) -- no view-region clip, unlike
 			# coast/borders/rivers. Loads all 7 boundary-type files, grouped in Scene Objects (see

@@ -24399,7 +24399,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 
 	// Tsunamis discipline — currently just NSWING (port of Mirone's swan_options.m).
-	*fTsu = [mGphy, win, s, backItem, reopen, actNestedGridsTsu]() {
+	*fTsu = [mGphy, win, s, backItem, reopen, actNestedGridsTsu, geoPlot]() {
 		mGphy->clear();
 		mGphy->setTitle("Tsunamis ▾");
 		backItem("Tsunamis");
@@ -24422,6 +24422,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			// spawning a duplicate. Re-accessible afterwards from the layer's Scene Objects handle too.
 			AquamotoWindow::openFor(win, s);
 		});
+		// NOAA/NCEI historical tsunami event database (data/noaa_historical_tsunami_events.dat). It is a
+		// point dataset stamped over the current view, so it goes through `geoPlot` — the SAME leaf the
+		// Geography point datasets use (region + base-map guarantee + the one Julia geography callback),
+		// not a private copy of it. The catalog's own columns live in Julia (tsunamicatalog.jl).
+		mGphy->addAction("NOAA historical catalog", geoPlot("noaa_tsunami", ""));
 		mGphy->addAction(actNestedGridsTsu);
 		reopen();
 	};
