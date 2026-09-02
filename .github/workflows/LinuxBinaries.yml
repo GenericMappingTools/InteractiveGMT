@@ -1,0 +1,161 @@
+# Builds the Linux viewer library and its self-contained runtime bundle, the exact counterpart of
+# MacBinaries.yml. The LOCAL WSL route (`bash deps/build.sh` + `bash deps/publish_linux.sh`) stays
+# as it was and remains the backup -- nothing here changes it, and both produce the same two
+# archives with the same member paths, because both run deps/build.sh.
+#
+# DEPENDENCIES COME FROM CONDA-FORGE, not apt. deps/build.sh is written around a Conda prefix
+# (Qt6Config/vtk-config discovery, patchelf, the $ORIGIN rpath pass, the .so_requires manifest), and
+# Ubuntu's own libvtk is far older than the VTK 9.6 this project requires. Miniforge gives the same
+# package set the WSL machine builds against, so the CI bundle and the hand-built one are the same
+# thing. Only the compiler and the GLVND/X11 host libraries come from the runner.
+#
+# BUILD ON THE OLDEST OS YOU SUPPORT -- same rule as the Mac workflow, different mechanism: the
+# bundle ships its own libstdc++/libgcc but NEVER its own glibc, so the runner's glibc is the floor
+# for every machine that installs the result. ubuntu-22.04 (glibc 2.35) is therefore a deliberate
+# deployment choice, not incidental; do not move it to ubuntu-latest without meaning to raise that
+# floor.
+#
+# NOTHING IS PUBLISHED AUTOMATICALLY. A push builds and verifies and leaves the archives as workflow
+# artifacts. Uploading to a release happens only on a manual run that explicitly asks for it:
+# `rolling` re-uploads the small .so archive to the fixed dll-latest tag (the daily cadence), `full`
+# also re-uploads the ~200 MB bundle to the tag pinned in deps/RUNTIME_VERSION (the rare one -- see
+# the two-cadence contract at the top of deps/build.jl).
+name: LinuxBinaries
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'deps/src/**'
+      - 'deps/CMakeLists.txt'
+      - 'deps/cmake/**'
+      - 'deps/build.sh'
+      - 'deps/linux_paths.sh'
+      - '.github/workflows/LinuxBinaries.yml'
+  pull_request:
+    paths:
+      - 'deps/src/**'
+      - 'deps/CMakeLists.txt'
+      - 'deps/cmake/**'
+      - 'deps/build.sh'
+      - 'deps/linux_paths.sh'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'What to upload to GitHub Releases'
+        type: choice
+        default: 'none'
+        options: ['none', 'rolling', 'full']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  build:
+    name: Linux x86_64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    permissions:
+      contents: write        # needed only by the publish step; harmless otherwise
+    defaults:
+      run:
+        shell: bash -el {0}  # login+exported shell: this is what activates the Conda environment
+    steps:
+      - uses: actions/checkout@v6
+
+      # NOT a job-level `env:`. The job-level env context is evaluated before a runner is picked, so
+      # `runner.*` is unavailable there and GitHub rejects the whole file with "Unrecognized
+      # named-value: 'runner'". $RUNNER_TEMP is the plain environment variable, always set on the
+      # runner itself. IGMT_LINUX_STAGE is deps/linux_paths.sh's own override: everything the build
+      # writes (cmake cache, staged runtime, both tarballs) lands there, never in the checkout.
+      - name: Stage directory
+        run: echo "IGMT_LINUX_STAGE=$RUNNER_TEMP/igmt" >> "$GITHUB_ENV"
+
+      # The host's share of the dependency list, and only that: GLVND (libGL/libGLX/libEGL/libOpenGL)
+      # is deliberately never bundled -- see deps/cmake/linux_bundle.cmake.in -- so build.sh's ldd
+      # check needs it here to be meaningful, and libx11-dev is what find_package(X11 REQUIRED)
+      # resolves for the `igmt` desktop launcher, which links host X11 and nothing from the bundle.
+      - name: Install host libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libglx0 libegl1 libopengl0 libx11-dev
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          activate-environment: igmt
+          conda-remove-defaults: 'true'
+
+      # vtk-base rather than the `vtk` metapackage: the metapackage only adds the Python bindings and
+      # the ffmpeg IO module, neither of which this build links. It already depends on qt6-main, so
+      # the VTK found here is a Qt-enabled one (a VTK without Qt configures fine and then fails the
+      # GUISupportQt component with a wall of link errors). qt6-main carries qtbase AND qttools, i.e.
+      # Qt6::UiTools, which every runtime-loaded .ui dialog needs. cmake>=3.27 is VTK 9.6's floor
+      # (the COMPILE_ONLY generator expression); pugixml and patchelf are what deps/build.sh checks
+      # for before deciding it has to install anything itself -- with all of them present it never
+      # touches the environment.
+      - name: Install build dependencies
+        run: |
+          conda install -y -c conda-forge --override-channels \
+            vtk-base qt6-main tbb-devel pugixml patchelf 'cmake>=3.27' ninja
+
+      # IGMT_CONDA_PREFIX, not the ambient CONDA_PREFIX: deps/build.sh prefers the explicit one
+      # precisely so a shell that happens to have another environment activated cannot change which
+      # prefix the bundle is linked and staged from.
+      - name: Build + stage the bundle
+        run: |
+          echo "IGMT_CONDA_PREFIX=$CONDA_PREFIX" >> "$GITHUB_ENV"
+          IGMT_CONDA_PREFIX=$CONDA_PREFIX bash deps/build.sh
+
+      # The real test of a relocated bundle: does the loader actually load it somewhere other than
+      # where it was staged, with the Conda environment out of the picture? A compile that succeeded
+      # proves nothing about the $ORIGIN rpath pass. No window is created -- dlopen + dlsym only --
+      # so this works on a runner with no display.
+      #
+      # A C probe rather than Julia (which is what the Mac workflow uses): Julia ships its own
+      # private, older libstdc++ and loads it first, so a dlopen from inside Julia fails on a
+      # GLIBCXX version until deps/build.jl has overwritten that copy at install time. That is an
+      # installer concern, not a bundle defect, and it must not be what this step reports.
+      - name: Smoke-test the relocated library
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/probe"
+          mkdir -p "$probe"
+          tar -xzf "$IGMT_LINUX_STAGE/iGMT-linux-x86_64-full.tar.gz" -C "$probe"
+          printf '%s\n' \
+            '#include <dlfcn.h>' \
+            '#include <stdio.h>' \
+            'int main(int argc, char **argv) {' \
+            '    void *h = dlopen(argv[1], RTLD_NOW);' \
+            '    if (!h) { fprintf(stderr, "%s\n", dlerror()); return 1; }' \
+            '    int (*abi)(void) = (int (*)(void))dlsym(h, "gmtvtk_abi_version");' \
+            '    if (!abi) { fprintf(stderr, "%s\n", dlerror()); return 1; }' \
+            '    printf("ABI generation: %d\n", abi());' \
+            '    return 0; }' > "$RUNNER_TEMP/probe.c"
+          /usr/bin/gcc "$RUNNER_TEMP/probe.c" -o "$RUNNER_TEMP/probe.bin" -ldl
+          env -u LD_LIBRARY_PATH -u CONDA_PREFIX \
+            "$RUNNER_TEMP/probe.bin" "$probe/deps/build/libgmtvtk.so"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gmtvtk-linux-x86_64
+          path: ${{ runner.temp }}/igmt/*.tar.gz
+          if-no-files-found: error
+
+      # Manual runs only, and only when the run explicitly asked for it. `--clobber` is the point of
+      # the rolling asset: one fixed tag whose file is replaced in place, never a new tag per build.
+      # Same two tags, same two file names, as deps/publish_linux.sh sends from WSL.
+      - name: Publish
+        if: github.event_name == 'workflow_dispatch' && inputs.publish != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          gh release upload dll-latest "$IGMT_LINUX_STAGE/gmtvtk-linux-x86_64.tar.gz" --clobber
+          if [[ $PUBLISH == full ]]; then
+            tag=$(tr -d '[:space:]' < deps/RUNTIME_VERSION)
+            gh release upload "$tag" "$IGMT_LINUX_STAGE/iGMT-linux-x86_64-full.tar.gz" --clobber
+          fi
