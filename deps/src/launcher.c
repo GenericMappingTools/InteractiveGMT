@@ -582,7 +582,7 @@ static void splash_geometry(int screen_w, int screen_h, int *x, int *y, int *w, 
  *   - the caption, centred, with a dark halo because the nebula's middle is bright;
  *   - an indeterminate progress bar: a dark track with a lighter chunk sweeping across it.
  * Same three elements, same proportions, on Windows, Linux and macOS. */
-#define SPLASH_ICON_PX  88        /* the .hta asked for 120, which reads far too heavy at this size */
+#define SPLASH_ICON_PX  75        /* the .hta asked for 120, which reads far too heavy at this size */
 #define SPLASH_CYCLE_MS 1100      /* one sweep of the chunk — the .hta's `slide 1.1s linear` */
 
 /* Track geometry in window coordinates, y measured from the TOP on every platform (Cocoa's

@@ -19,6 +19,7 @@ jobs:
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
       contents: read
+      id-token: write   # codecov: mint the OIDC token it uploads with (no repo secret needed)
     strategy:
       fail-fast: false
       # Explicit combinations, not a cross-product: the two platforms need different arches
@@ -85,8 +86,20 @@ jobs:
         env:
           INTERACTIVEGMT_TEST_GUI: '1'
       - uses: julia-actions/julia-processcoverage@v1
+      # Coverage was being COLLECTED and then thrown away: this repo has no CODECOV_TOKEN secret, the
+      # action fell back to a tokenless upload, and Codecov answered
+      #     Upload queued for processing failed: {"message":"Token required - not valid tokenless upload"}
+      # while the job stayed green, because fail_ci_if_error was false. Nothing ever reached
+      # app.codecov.io/gh/GenericMappingTools/InteractiveGMT.
+      #
+      # `use_oidc` uploads with the GitHub OIDC token the runner already mints (the `id-token: write`
+      # permission above) instead of a shared secret — nothing to store, nothing to rotate, and it
+      # works on forks. `token:` stays as the fallback for the day someone does add the secret.
+      # fail_ci_if_error is TRUE now: an upload that is refused is a failure and must say so, not sit
+      # behind a green tick.
       - uses: codecov/codecov-action@v6
         with:
           files: lcov.info
+          use_oidc: true
           token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
+          fail_ci_if_error: true
