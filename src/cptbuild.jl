@@ -152,8 +152,7 @@ function _on_cptbuild(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "Make CPT FAILED: $(sprint(showerror, e))")
-		@warn "Make CPT FAILED" exception=(e,)
+		_tool_failed(scene, "Make CPT", e)
 		return Cint(0)
 	end
 end

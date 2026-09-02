@@ -20,7 +20,7 @@ end
 
 const LINE = [-9.5 36.5; -9.0 37.0; -8.5 37.5; -8.0 38.0]
 
-send(h, kv) = IG._on_euler(h, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+send(h, kv) = IG._on_euler(h, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "FAILED"))
 
 end # @testmodule
 

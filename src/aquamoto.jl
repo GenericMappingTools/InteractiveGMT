@@ -304,7 +304,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 			_add_grid_to_scene(scene, G, v.name; promote = false, source = "$(path)?$(v.name)")
 			ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, v.name, Cint(0))
 		catch e
-			@warn "Aquamoto: could not load variable '$(v.name)'" exception=e
+			@tool_error "Aquamoto: could not load variable '$(v.name)'" exception=e
 		end
 	end
 

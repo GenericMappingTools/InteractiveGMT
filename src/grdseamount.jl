@@ -92,7 +92,7 @@ function _on_grdseamount(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 				R === nothing && error("grdseamount returned no statistics")
 				show_table(scene, isa(R, Vector) ? R : [R]; name = "Seamount statistics")
 			else
-				_viewer_log_error(scene, "grdseamount: wrote the time-step grids to $out")
+				_viewer_log_info(scene, "grdseamount: wrote the time-step grids to $out")
 			end
 			return Cint(1)
 		end
@@ -101,8 +101,7 @@ function _on_grdseamount(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		return _gm3d_deliver(scene, R, "Seamounts", out, false,
 		                     "grdseamount " * join(("$k=$v" for (k, v) in kw), ' '))
 	catch e
-		_viewer_log_error(scene, "grdseamount FAILED: $(sprint(showerror, e))")
-		@warn "grdseamount FAILED" exception=(e,)
+		_tool_failed(scene, "grdseamount", e)
 		return Cint(0)
 	end
 end

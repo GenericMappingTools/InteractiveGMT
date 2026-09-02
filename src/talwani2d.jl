@@ -250,8 +250,7 @@ function _on_talwani2d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "talwani2d FAILED: $(sprint(showerror, e))")
-		@warn "talwani2d FAILED" exception=(e,)
+		_tool_failed(scene, "talwani2d", e)
 		return Cint(0)
 	end
 end

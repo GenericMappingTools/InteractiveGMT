@@ -67,8 +67,7 @@ function _on_bgregion(scene::Ptr{Cvoid}, copt::Cstring)::Cvoid
 		geog = length(p) >= 5 && strip(p[5]) == "1"
 		_blank_canvas(scene, W, E, S, N, geog, "Background region")
 	catch e
-		_viewer_log_error(scene, "Background region FAILED: $(sprint(showerror, e))")
-		@warn "bgregion: could not open the region" exception=(e,)
+		_tool_failed(scene, "Background region", e)
 	end
 	return
 end

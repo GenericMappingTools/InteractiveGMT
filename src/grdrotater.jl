@@ -113,8 +113,7 @@ function _on_grdrotater(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		                     "grdrotater " * join(("$k=$v" for (k, v) in kw), ' ');
 		                     geographic = true)        # the module only ever works in lon/lat
 	catch e
-		_viewer_log_error(scene, "grdrotater FAILED: $(sprint(showerror, e))")
-		@warn "grdrotater FAILED" exception=(e,)
+		_tool_failed(scene, "grdrotater", e)
 		return Cint(0)
 	end
 end

@@ -342,7 +342,7 @@ function _emp_expand_includes(lines::Vector{String})::Vector{String}
 					push!(out, il)
 				end
 			else
-				@warn "empilhador: include file not found: $inc"
+				@tool_error "empilhador: include file not found: $inc"
 			end
 		else
 			push!(out, ln)
@@ -933,7 +933,7 @@ function _emp_getZ(name::String, sds::String, L2::EmpL2, opts::EmpOpts, W, E, S,
 				F = _emp_raw(fl, srcwin)
 				(size(F) == size(Zf)) && (Zf[F .< opts.min_quality] .= NaN32)
 			catch err
-				@warn "empilhador: could not read the quality array '$fl': $err"
+				@tool_error "empilhador: could not read the quality array '$fl': $err"
 			end
 		end
 	end
@@ -1131,7 +1131,7 @@ function _emp_smart_grid(x::Vector{Float64}, y::Vector{Float64}, z::Vector{Float
 		    (L2.ncells > 0) ? surface([x y z], R=Rs, I=inc, mask="$(L2.ncells)c") :
 		                      surface([x y z], R=Rs, I=inc)
 	catch err
-		@warn "empilhador: the interpolation failed ($err). Returning an empty layer."
+		@tool_error "empilhador: the interpolation failed ($err). Returning an empty layer."
 		return fill(NaN32, n_rows, n_cols), true
 	end
 	(G === nothing || isempty(G.z)) && return fill(NaN32, n_rows, n_cols), true
@@ -1258,7 +1258,7 @@ function _emp_core(names::Vector{String}, times::Vector{String}, sds::Vector{Str
 		try
 			Z, att, was_empty = _emp_getZ(names[k], sds[k], L2, opts, W, E, S, N, got_R)
 		catch err
-			@warn "empilhador: error reading '$(names[k])'. Ignoring it.\n  $err"
+			@tool_error "empilhador: error reading '$(names[k])'. Ignoring it.\n  $err"
 			push!(empties, names[k])
 			continue
 		end
@@ -1348,7 +1348,7 @@ function _emp_append_cube(fname::String, cube::GMTgrid)
 	try
 		old = gdalread(fname)		# NOT gmtread: that one gives back band 1 only, and -A would lose layers
 	catch err
-		@warn "empilhador: -A was asked for but '$fname' could not be read back ($err). Overwriting it."
+		@tool_error "empilhador: -A was asked for but '$fname' could not be read back ($err). Overwriting it."
 		return cube
 	end
 	(size(old, 1) != size(cube, 1) || size(old, 2) != size(cube, 2)) &&

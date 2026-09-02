@@ -309,8 +309,7 @@ function _on_multiscale(scene::Ptr{Cvoid}, method::Int, win::Int)
 		_grid_command!(R, "InteractiveGMT mirblock -A$method -W$win")
 		_gm3d_deliver(scene, R, "$name ($(win)x$(win))", "", false, "mirblock")
 	catch e
-		_viewer_log_error(scene, "Terrain Modeling FAILED: $(sprint(showerror, e))")
-		@warn "Terrain Modeling FAILED" exception=(e,)
+		_tool_failed(scene, "Terrain Modeling", e)
 	end
 	return nothing
 end

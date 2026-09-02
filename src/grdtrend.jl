@@ -77,8 +77,7 @@ function _on_grdtrend(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		return _gm3d_deliver(scene, R, title, _get(d, "outfile"), false,
 		                     "grdtrend " * join(("$k=$v" for (k, v) in kw), ' '))
 	catch e
-		_viewer_log_error(scene, "grdtrend FAILED: $(sprint(showerror, e))")
-		@warn "grdtrend FAILED" exception=(e,)
+		_tool_failed(scene, "grdtrend", e)
 		return Cint(0)
 	finally
 		(!isempty(wtmp) && isfile(wtmp)) && rm(wtmp, force = true)

@@ -22,7 +22,7 @@ const _ISOC_GPLATES_NAME = "Magnetic isochrons"
 # Returns true if anything was added.
 function _load_magnetic_isochrons_gplates(scene::Ptr{Cvoid})::Bool
 	path = joinpath(_PKGROOT, "data", _ISOC_GPLATES_FILE)
-	isfile(path) || (@warn "magnetic isochrons: data file not found" path; return false)
+	isfile(path) || (@tool_error "magnetic isochrons: data file not found" path; return false)
 	D = GMT.gmtread(path)
 	segs = D isa AbstractVector ? D : (D,)
 	isempty(segs) && return false

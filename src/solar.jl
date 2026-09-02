@@ -343,8 +343,7 @@ function _on_solar(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "solar FAILED: $(sprint(showerror, e))")
-		@warn "solar FAILED" exception=(e,)
+		_tool_failed(scene, "solar", e)
 		return Cint(0)
 	end
 end

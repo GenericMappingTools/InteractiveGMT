@@ -4286,6 +4286,14 @@ GMTVTK_API int gmtvtk_take_messages(char *buf, int cap) {
 	return n;
 }
 
+// Headless mode: 1 = a test run, so no QMessageBox may block it or cover the screen. Every modal is
+// intercepted as it is shown, its title+text recorded like any other error (drained by
+// gmtvtk_take_messages, which makes the suite fail on it), and dismissed. 0 = normal interactive
+// behaviour, dialogs and all. See EnterDefocusFilter (30_app.cpp).
+GMTVTK_API void gmtvtk_set_headless(int on) {
+	g_headless = (on != 0);
+}
+
 // Tear Qt down in the right order — see appShutdown (30_app.cpp) for WHY this exists. Called from
 // Julia's atexit, on the main thread, before the C runtime starts running static destructors.
 // Safe to call twice, and safe to call when no window was ever opened.

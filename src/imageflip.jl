@@ -72,8 +72,7 @@ function _on_image_flip(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
 		           scene, name, img, Cint(iw), Cint(ih), Cint(ibands))
 		ok == 0 && error("Flip: the viewer has no image named '$name' to redraw")
 	catch e
-		_viewer_log_error(scene, "Flip image ($op) FAILED: $(sprint(showerror, e))")
-		@warn "Flip image FAILED" op exception=(e,)
+		_tool_failed(scene, "Flip image ($op)", e)
 	end
 	return
 end

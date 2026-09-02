@@ -186,7 +186,7 @@ function _fault_lenaz(path::String, proj4::String)
 		end
 		print(total, '/', az, '/', geog ? 1 : 0)
 	catch e
-		@warn "fault length/azimuth FAILED" exception=(e,)
+		@tool_error "fault length/azimuth FAILED" exception=(e,)
 	end
 	return nothing
 end

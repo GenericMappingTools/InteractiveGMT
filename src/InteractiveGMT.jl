@@ -20,6 +20,7 @@ using Distributed: addprocs, workers, rmprocs, remotecall, remotecall_eval
 using PrecompileTools: @setup_workload, @compile_workload
 
 # --- C-API DLL loader (resolved at runtime in __init__; see libgmtvtk.jl) ----------------
+include("errors.jl")   # THE failure sink + @tool_error: first, so every later file can report
 include("libgmtvtk.jl")
 include("selfupdate.jl") # update!() -- pull + rebuild in place, for a `] dev`-installed checkout
 
@@ -205,20 +206,20 @@ function __init__()
 		try
 			_install_basemap_assets()
 		catch e
-			@warn "InteractiveGMT: could not install basemap toolbar assets (rebuild deps/build.bat if the export is missing)." exception=(e,)
+			@tool_error "InteractiveGMT: could not install basemap toolbar assets (rebuild deps/build.bat if the export is missing)." exception=(e,)
 		end
 		try
 			_install_tiles_assets()
 		catch e
-			@warn "InteractiveGMT: could not install Tiles Tool world image (rebuild deps/build.bat if the export is missing)." exception=(e,)
+			@tool_error "InteractiveGMT: could not install Tiles Tool world image (rebuild deps/build.bat if the export is missing)." exception=(e,)
 		end
 		try
 			_install_lidar_assets()
 		catch e
-			@warn "InteractiveGMT: could not install the LIDAR2011 PT background image (rebuild deps/build.bat if the export is missing)." exception=(e,)
+			@tool_error "InteractiveGMT: could not install the LIDAR2011 PT background image (rebuild deps/build.bat if the export is missing)." exception=(e,)
 		end
 	catch e
-		@warn "InteractiveGMT: the Qt+VTK viewer DLL could not be loaded; build it with deps/build.bat (Windows only). Viewer calls will error until then." exception=(e,)
+		@tool_error "InteractiveGMT: the Qt+VTK viewer DLL could not be loaded; build it with deps/build.bat (Windows only). Viewer calls will error until then." exception=(e,)
 	end
 	_dbg("startup", "__init__ exit")
 end
@@ -258,7 +259,7 @@ if ccall(:jl_generating_output, Cint, ()) == 1
 	try
 		_ensure_desktop_shortcut()
 	catch e
-		@warn "InteractiveGMT: could not create the Desktop shortcut (non-fatal)." exception=(e,)
+		@tool_error "InteractiveGMT: could not create the Desktop shortcut (non-fatal)." exception=(e,)
 	end
 end
 

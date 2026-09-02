@@ -141,8 +141,7 @@ function _on_gravmag3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		                     "gravmag3d " * join(("$k=$v" for (k, v) in kw), ' ');
 		                     geographic = _on(d, "geog"))
 	catch e
-		_viewer_log_error(scene, "gravmag3d FAILED: $(sprint(showerror, e))")
-		@warn "gravmag3d FAILED" exception=(e,)
+		_tool_failed(scene, "gravmag3d", e)
 		return Cint(0)
 	end
 end

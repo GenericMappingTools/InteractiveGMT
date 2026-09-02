@@ -197,12 +197,11 @@ function _on_transplant(scene::Ptr{Cvoid}, implant_path::String, res::Int=1, rec
 		_apply_host_grid!(scene, Gout, name)
 		_set_transplant_undo(scene, true)     # an undo is now available (Ctrl+Z / rectangle menu)
 
-		_viewer_log_error(scene, "Transplant: host grid modified in place with " *
+		_viewer_log_info(scene, "Transplant: host grid modified in place with " *
 		                         "$(basename(String(implant_path))) ($(res != 0 ? "host" : "implant") " *
 		                         "resolution). Undo with Ctrl+Z or the rectangle menu.")
 	catch e
-		_viewer_log_error(scene, "Transplant FAILED: $(sprint(showerror, e))")
-		@warn "Transplant FAILED" exception=(e,)
+		_tool_failed(scene, "Transplant", e)
 	end
 	return nothing
 end
@@ -279,10 +278,9 @@ function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant
 			_apply_host_grid!(scene, G, "")   # base surface: replace data in place, keep its surfName
 		end
 
-		_viewer_log_error(scene, "Nested grid '$name' filled from $(basename(String(implant_path))).")
+		_viewer_log_info(scene, "Nested grid '$name' filled from $(basename(String(implant_path))).")
 	catch e
-		_viewer_log_error(scene, "Nested transplant FAILED: $(sprint(showerror, e))")
-		@warn "Nested transplant FAILED" exception=(e,)
+		_tool_failed(scene, "Nested transplant", e)
 	end
 	return nothing
 end
@@ -309,10 +307,9 @@ function _on_transplant_undo(scene::Ptr{Cvoid})
 		end
 		delete!(_TRANSPLANT_ORIG, scene)
 		_set_transplant_undo(scene, false)    # nothing left to undo -> hide the rectangle-menu entry
-		_viewer_log_error(scene, "Transplant: undone (original restored).")
+		_viewer_log_info(scene, "Transplant: undone (original restored).")
 	catch e
-		_viewer_log_error(scene, "Transplant undo FAILED: $(sprint(showerror, e))")
-		@warn "Transplant undo FAILED" exception=(e,)
+		_tool_failed(scene, "Transplant undo", e)
 	end
 	return nothing
 end

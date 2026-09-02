@@ -243,7 +243,7 @@ function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io=nothi
 			_progress_close()
 			_NSWING_RUNNING[] = false
 			total = _hms(time() - t0)                 # FINAL time estimate: total wall clock for the whole run
-			isempty(err) ? _viewer_log_error(scene, "NSWING: run finished in $total.") :
+			isempty(err) ? _viewer_log_info(scene, "NSWING: run finished in $total.") :
 			               _viewer_log_error(scene, "NSWING FAILED after $total: $err")
 		catch e
 			close(tm); _progress_close(); _NSWING_RUNNING[] = false
@@ -302,7 +302,7 @@ function _nswing_run_worker(scene::Ptr{Cvoid}, cmdstr::String, grids::Vector{GMT
 			_nswing_watch(scene, () -> isready(fut), () -> fetch(fut), logf)
 		catch e
 			_progress_close();  _NSWING_RUNNING[] = false
-			_viewer_log_error(scene, "NSWING worker setup FAILED: $(sprint(showerror, e))")
+			_tool_failed(scene, "NSWING worker setup", e)
 		end
 	end
 	return
@@ -719,7 +719,7 @@ function _on_nswing_save_run(scene::Ptr{Cvoid}, cparams::AbstractString)
 		error("NSWING: a run is already in progress.")
 	end
 	args, dir = _nswing_prepare_cli(scene, cparams)
-	_viewer_log_error(scene, "NSWING command: (cd $dir) gmt nswing " * join(args, " "))
+	_viewer_log_info(scene, "NSWING command: (cd $dir) gmt nswing " * join(args, " "))
 	_NSWING_RUNNING[] = true
 	_progress_show_async(100, "NSWING running…")
 	_nswing_run_external(scene, args; dir)
@@ -754,7 +754,7 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			cmd *= " -v"
 			append!(grids, GMTgrid[(G isa GMTgrid ? G : _gmtread_trb(String(G))) for (_, G) in nests])   # nest objects, in -1,-2,… order (typed path -> load, same as src above)
 
-			_viewer_log_error(scene, "NSWING command: $cmd   [+ $(length(grids)) grid objects]")
+			_viewer_log_info(scene, "NSWING command: $cmd   [+ $(length(grids)) grid objects]")
 			_NSWING_RUNNING[] = true
 			_progress_show_async(100, "NSWING — starting worker…")
 			_nswing_run_worker(scene, cmd, grids)
@@ -765,15 +765,14 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			args = String[srcpath]
 			(!isempty(nestpath) && level !== nothing && level >= 1) && push!(args, "-$(level)$(nestpath)")
 			append!(args, opts);  push!(args, "-v")
-			_viewer_log_error(scene, "NSWING command: gmt nswing " * join(args, " "))
+			_viewer_log_info(scene, "NSWING command: gmt nswing " * join(args, " "))
 			_NSWING_RUNNING[] = true
 			_progress_show_async(100, "NSWING running…")
 			_nswing_run_external(scene, args)
 		end
 	catch e
 		_progress_close();  _NSWING_RUNNING[] = false
-		_viewer_log_error(scene, "NSWING FAILED: $(sprint(showerror, e))")
-		@warn "nswing: run failed" exception = (e,)
+		_tool_failed(scene, "NSWING", e)
 	end
 	return
 end

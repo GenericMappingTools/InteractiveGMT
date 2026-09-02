@@ -17,7 +17,7 @@ function _on_faultgeom(lon1::Cdouble, lat1::Cdouble, strike::Cdouble, len_km::Cd
 		dest, = GMT.geod([Float64(lon1), Float64(lat1)], Float64(strike), Float64(len_km); unit=:km)
 		out = string(dest[1], '/', dest[2])
 	catch e
-		@warn "fault geodesic (geod) FAILED" exception=(e,)
+		@tool_error "fault geodesic (geod) FAILED" exception=(e,)
 	end
 	_FAULTGEOM_BUF[] = Vector{UInt8}(codeunits(out * "\0"))
 	return Cstring(pointer(_FAULTGEOM_BUF[]))
@@ -119,14 +119,14 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 				# whatever its kind (never guessing which one was "the" fault-trace host), axes+camera
 				# on the deformation's own limits and units.
 				_adopt_derived!(scene, "Okada z (model)", Gsum)
-				_viewer_log_error(scene, "Okada: summed $(valid_count) sub-faults → 'Okada z (model)' " *
+				_viewer_log_info(scene, "Okada: summed $(valid_count) sub-faults → 'Okada z (model)' " *
 					"(z ∈ [$(round(zmn, digits=4)), $(round(zmx, digits=4))])")
 				return
 			end
 		# Echo the exact okada call to the console so the user can check the parameters.
 		cmd = "GMT.okada(G; x_start=$x_start, y_start=$y_start, L=$L, W=$W, depth=$depTop, " *
 		      "strike=$strike, dip=$dip, rake=$rake, slip=$slip)"
-		_viewer_log_error(scene, "Okada: $cmd")
+		_viewer_log_info(scene, "Okada: $cmd")
 
 		Gdef = GMT.okada(G; x_start=x_start, y_start=y_start, L=L, W=W, depth=depTop,
 		                 strike=strike, dip=dip, rake=rake, slip=slip)
@@ -134,11 +134,10 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		_grid_command!(Gdef, cmd)                     # stamp the exact okada call into GMTgrid.command
 		_add_grid_to_scene(scene, Gdef, "Okada z")
 		_adopt_derived!(scene, "Okada z", Gdef)      # same ONE transition as the summed-model branch
-		_viewer_log_error(scene, "Okada: vertical deformation computed (z ∈ " *
+		_viewer_log_info(scene, "Okada: vertical deformation computed (z ∈ " *
 			"[$(round(minimum(Gdef.z), digits=4)), $(round(maximum(Gdef.z), digits=4))]) → 'Okada z'")
 	catch e
-		_viewer_log_error(scene, "Okada deformation FAILED: $(sprint(showerror, e))")
-		@warn "okada deformation FAILED" exception=(e,)
+		_tool_failed(scene, "Okada deformation", e)
 	end
 	return
 end
@@ -299,12 +298,11 @@ function _on_importfault(scene::Ptr{Cvoid}, path::Cstring)::Cvoid
 		           (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cint),
 		           scene, xy, ntr, slip_m, rake, strike, dip, width, depthTop, Cint(1))
 		ok == 1 || error("viewer rejected the fault trace (dead window handle?)")
-		_viewer_log_error(scene, "Import Trace Fault: $(basename(fname)) — trace + dipping plane " *
+		_viewer_log_info(scene, "Import Trace Fault: $(basename(fname)) — trace + dipping plane " *
 			"(strike=$(round(strike, digits=1))°, dip=$(round(dip, digits=1))°, W=$(round(width, digits=1)) km, " *
 			"slip=$(round(slip_m, digits=3)) m, rake=$(round(rake, digits=1))°)")
 	catch e
-		_viewer_log_error(scene, "Import Trace Fault FAILED: $(sprint(showerror, e))")
-		@warn "Import Trace Fault FAILED" exception=(e,)
+		_tool_failed(scene, "Import Trace Fault", e)
 	end
 	return
 end
@@ -427,11 +425,10 @@ function _on_modelslip(scene::Ptr{Cvoid}, path::Cstring)::Cvoid
 			scene, xy, vcounts, Cint(npatch), rgb, "Slip model",
 			slipA, rakeA, strikeA, dipA, depthA, Float64(Dx), Float64(Dy), segA)
 		(added == 0) && error("viewer )rejected the slip model (dead window handle?)")
-		_viewer_log_error(scene, "Import Model Slip: $(basename(fname)) — $added patches " *
+		_viewer_log_info(scene, "Import Model Slip: $(basename(fname)) — $added patches " *
 			"(nx=$nx, ny=$ny, slip ∈ [$(round(minSlip, digits=3)), $(round(maxSlip, digits=3))] m)")
 	catch e
-		_viewer_log_error(scene, "Import Model Slip FAILED: $(sprint(showerror, e))")
-		@warn "Import Model Slip FAILED" exception=(e,)
+		_tool_failed(scene, "Import Model Slip", e)
 	end
 	return
 end
@@ -485,6 +482,6 @@ function _save_subfault(scene, fname, x1, y1, L, W, strike, dip, depth, depTop, 
 		            _ffmt(slip * 100, 2) * "\t" * _ffmt(rake, 1) * "\t" * _ffmt(strike, 1) * "\t" *
 		            _ffmt(dip, 1))
 	end
-	_viewer_log_error(scene, "Fault saved (sub-fault format) → $fname")
+	_viewer_log_info(scene, "Fault saved (sub-fault format) → $fname")
 	return
 end

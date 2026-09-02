@@ -67,7 +67,7 @@ function _cpt_nodes_range(zmn, zmx, cmap)
 		length(cz) == size(cmn, 1) || (cz = collect(range(zmn, zmx, length=size(cmn, 1))))
 		return (cz, vec(permutedims(cmn)), size(cmn, 1))
 	catch e
-		@warn "makecpt failed; using the viewer's built-in ramp" exception=e
+		@tool_error "makecpt failed; using the viewer's built-in ramp" exception=e
 		return (Float64[], Float64[], 0)
 	end
 end

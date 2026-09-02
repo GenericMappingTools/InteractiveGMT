@@ -74,8 +74,7 @@ function _on_xyz2grd(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		                     "xyz2grd " * join(("$k=$v" for (k, v) in kw), ' ');
 		                     geographic = _on(d, "geog") ? true : nothing)
 	catch e
-		_viewer_log_error(scene, "xyz2grd FAILED: $(sprint(showerror, e))")
-		@warn "xyz2grd FAILED" exception=(e,)
+		_tool_failed(scene, "xyz2grd", e)
 		return Cint(0)
 	end
 end

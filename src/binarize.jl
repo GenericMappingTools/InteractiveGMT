@@ -281,9 +281,9 @@ function _bin_init(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, wanted::AbstractString=""
 	# against Mirone's thresholdit on the same image without clicking through the buttons one by one.
 	nlev = count(>(0), cnt)                              # distinct grey levels actually present
 	kind = ndims(I.image) == 3 ? "RGB->grey" : (I.n_colors > 0 ? "indexed($(I.n_colors))->grey" : "grey")
-	_viewer_log_error(scene, "Binarize: image \"$(isempty(srcname) ? "(primary)" : srcname)\", " *
+	_viewer_log_info(scene, "Binarize: image \"$(isempty(srcname) ? "(primary)" : srcname)\", " *
 		"$(size(Ig.image, 1))x$(size(Ig.image, 2)) px, $kind, $nlev distinct levels")
-	_viewer_log_error(scene, "Binarize levels — Otsu=$(round(Int, level)) " *
+	_viewer_log_info(scene, "Binarize levels — Otsu=$(round(Int, level)) " *
 		"MaxEnt=$(round(Int, _bin_maxentropy(cnt))) MinCE=$(round(Int, _bin_mince(cnt))) " *
 		"Isodata=$(GMT.isodata(Ig; band=1)) Triangle=$(round(Int, _bin_triangle(cnt)))")
 	ccall(_fn(:gmtvtk_binarize_set_histogram), Cvoid, (Ptr{Cvoid}, Ptr{Cdouble}, Cint), dlg, cnt, Cint(256))
@@ -384,7 +384,7 @@ function _bin_label!(st::_BinState, n::Int)
 		name = _bin_name(st, "labels")
 		_add_image_to_scene(st.scene, Ilab, name; promote=false)
 		_adopt_derived!(st.scene, name, Ilab)     # the ONE derived-variable transition (grid.jl)
-		_viewer_log_error(st.scene, "Binarize: $ncomp connected components added as \"$name\"")
+		_viewer_log_info(st.scene, "Binarize: $ncomp connected components added as \"$name\"")
 	else
 		_bin_setmask!(st, _bin_mask_img(st, st.labels .== Int32(n)))
 	end
@@ -510,8 +510,7 @@ function _on_binarize(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cin
 		_bin_push!(st, dlg; level=level, lo=lo, hi=hi)
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "Binarize ($op) FAILED: $(sprint(showerror, e))")
-		@warn "Binarize FAILED" op exception=(e,)
+		_tool_failed(scene, "Binarize ($op)", e)
 		return Cint(0)
 	end
 end

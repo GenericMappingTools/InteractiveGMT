@@ -324,8 +324,7 @@ function _on_spline_smooth(scene::Ptr{Cvoid}, p::Float64)
 		_grid_command!(S, "InteractiveGMT spline smooth csaps_p=$p")
 		_gm3d_deliver(scene, S, "Spline smoothed grid", "", false, "spline_smooth")
 	catch e
-		_viewer_log_error(scene, "Spline Smooth FAILED: $(sprint(showerror, e))")
-		@warn "Spline Smooth FAILED" exception=(e,)
+		_tool_failed(scene, "Spline Smooth", e)
 	end
 	return nothing
 end
@@ -344,8 +343,7 @@ function _on_sdg(scene::Ptr{Cvoid}, opt::String, p::Float64)
 		_grid_command!(R, "InteractiveGMT SDG sign=$opt csaps_p=$p")
 		_gm3d_deliver(scene, R, title, "", false, "sdg")
 	catch e
-		_viewer_log_error(scene, "SDG FAILED: $(sprint(showerror, e))")
-		@warn "SDG FAILED" exception=(e,)
+		_tool_failed(scene, "SDG", e)
 	end
 	return nothing
 end

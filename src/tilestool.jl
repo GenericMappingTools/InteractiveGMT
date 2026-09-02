@@ -249,7 +249,7 @@ function _on_tiles(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 	catch e
 		# The dialog that asked, and nowhere else: its Messages pane is where this tool's errors land.
 		_tiles_log(dlg, "ERROR: $(sprint(showerror, e))")
-		@warn "tilestool: request failed" exception=(e,)
+		@tool_error "tilestool: request failed" exception=(e,)
 	end
 	return
 end

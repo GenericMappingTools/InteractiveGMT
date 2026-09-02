@@ -111,7 +111,7 @@ function _fft_detrend(G::GMTgrid)
 	try
 		return GMT.grdtrend(G; model = 3, diff = true)
 	catch e
-		@warn "FFT tool: could not remove the trend (continuing with the raw grid)" exception = (e,)
+		@tool_error "FFT tool: could not remove the trend (continuing with the raw grid)" exception = (e,)
 		return G
 	end
 end
@@ -385,8 +385,7 @@ function _on_fftstuff(scene::Ptr{Cvoid}, cparams::Cstring, txt::Ptr{UInt8}, txtc
 		_adopt_derived!(scene, name, Gout)
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "FFT tool FAILED: $(sprint(showerror, e))")
-		@warn "FFT tool FAILED" exception = (e,)
+		_tool_failed(scene, "FFT tool", e)
 		return Cint(0)
 	end
 end

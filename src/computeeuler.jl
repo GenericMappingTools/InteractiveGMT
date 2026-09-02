@@ -706,7 +706,7 @@ function _ce_launch(scene::Ptr{Cvoid}, d::Dict{String,String}, iso1::Matrix{Floa
 		catch e
 			close(t);  _CE_RUNNING[] = false
 			_ce_push(-1, 1, _CE_BEST[], st.area0)
-			_viewer_log_error(scene, "Compute Euler pole FAILED: $(sprint(showerror, e))")
+			_tool_failed(scene, "Compute Euler pole", e)
 		end
 	end
 	return Cint(1)
@@ -721,7 +721,7 @@ function _ce_finish(scene::Ptr{Cvoid}, d::Dict{String,String}, st, iso1::Matrix{
 	if out isa Exception
 		_ce_push(-1, 1, (NaN, NaN, NaN, NaN), st.area0)
 		_euler_result("Compute Euler pole failed: $(sprint(showerror, out))")
-		_viewer_log_error(scene, "Compute Euler pole FAILED: $(sprint(showerror, out))")
+		_tool_failed(scene, "Compute Euler pole", out)
 		return
 	end
 	lon_bf, lat_bf, ang_bf, area, resid = out
@@ -768,7 +768,7 @@ function _ce_finish(scene::Ptr{Cvoid}, d::Dict{String,String}, st, iso1::Matrix{
 		try
 			_ce_start(scene, d2)
 		catch e
-			_viewer_log_error(scene, "Compute Euler pole (loop) FAILED: $(sprint(showerror, e))")
+			_tool_failed(scene, "Compute Euler pole (loop)", e)
 		end
 	end
 	return

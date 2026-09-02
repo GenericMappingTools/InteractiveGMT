@@ -48,7 +48,7 @@ end
 	                 x = collect(range(0, 9, length = 10)), y = collect(range(0, 9, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D712E4D))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "topo", G)]
-	call(kv) = IG._on_grdtrend(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_grdtrend(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdtrend"))
 	try
 		# The weights are a by-product of the ROBUST fit; asking for them without it is refused.
 		@test call(["what=weights", "model=3", "robust=0", "axis=", "grid=topo"]) == 0
@@ -59,8 +59,8 @@ end
 		# A weight grid that is not there.
 		@test call(["what=trend", "model=3", "robust=0", "axis=", "wfile=no_such_grid.nc", "grid=topo"]) == 0
 		# No grid in the window at all.
-		@test IG._on_grdtrend(Ptr{Cvoid}(UInt(0xDEADDEAD)),
-		                      Base.unsafe_convert(Cstring, Base.cconvert(Cstring, "what=trend\nmodel=3"))) == 0
+		@test IG._errored(IG._on_grdtrend(Ptr{Cvoid}(UInt(0xDEADDEAD)),
+		                      Base.unsafe_convert(Cstring, Base.cconvert(Cstring, "what=trend\nmodel=3"))), "grdtrend") == 0
 	finally
 		delete!(IG._SCENE_OBJS, scene)
 	end
@@ -72,15 +72,15 @@ end
 	                                       y = collect(range(36, 39, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D714A5C))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "topo", G)]
-	call(kv) = IG._on_grdlandmask(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_grdlandmask(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdlandmask"))
 	try
 		# A half-filled Griding Line Geometry leaves an empty field in the region string.
 		@test call(["clip=0", "region=-10//36/39", "inc=0.1", "res=l", "grid=topo"]) == 0
 		@test call(["clip=0", "region=", "inc=0.1", "res=l", "grid=topo"]) == 0
 		@test call(["clip=0", "region=-10/-6/36/39", "inc=", "res=l", "grid=topo"]) == 0
 		# Masking "this window's grid" needs one.
-		@test IG._on_grdlandmask(Ptr{Cvoid}(UInt(0xDEADBEE5)),
-		                         Base.unsafe_convert(Cstring, Base.cconvert(Cstring, "clip=1\nres=l"))) == 0
+		@test IG._errored(IG._on_grdlandmask(Ptr{Cvoid}(UInt(0xDEADBEE5)),
+		                         Base.unsafe_convert(Cstring, Base.cconvert(Cstring, "clip=1\nres=l"))), "grdlandmask") == 0
 	finally
 		delete!(IG._SCENE_OBJS, scene)
 	end
@@ -95,21 +95,21 @@ end
 	cs(kv) = Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))
 	try
 		# grdfill: the algorithm is the whole question, and a constant needs its constant.
-		@test IG._on_grdfill(scene, cs(["mode=fill", "algo=", "grid=topo"])) == 0
-		@test IG._on_grdfill(scene, cs(["mode=fill", "algo=c", "value=", "grid=topo"])) == 0
-		@test IG._on_grdfill(scene, cs(["mode=fill", "algo=c", "value=abc", "grid=topo"])) == 0
-		@test IG._on_grdfill(scene, cs(["mode=fill", "algo=s", "tension=1.5", "grid=topo"])) == 0
-		@test IG._on_grdfill(scene, cs(["mode=fill", "algo=g", "gridfile=no_such_grid.nc", "grid=topo"])) == 0
-		@test IG._on_grdfill(Ptr{Cvoid}(UInt(0xDEADF111)), cs(["mode=fill", "algo=n"])) == 0
+		@test IG._errored(IG._on_grdfill(scene, cs(["mode=fill", "algo=", "grid=topo"])), "grdfill") == 0
+		@test IG._errored(IG._on_grdfill(scene, cs(["mode=fill", "algo=c", "value=", "grid=topo"])), "grdfill") == 0
+		@test IG._errored(IG._on_grdfill(scene, cs(["mode=fill", "algo=c", "value=abc", "grid=topo"])), "grdfill") == 0
+		@test IG._errored(IG._on_grdfill(scene, cs(["mode=fill", "algo=s", "tension=1.5", "grid=topo"])), "grdfill") == 0
+		@test IG._errored(IG._on_grdfill(scene, cs(["mode=fill", "algo=g", "gridfile=no_such_grid.nc", "grid=topo"])), "grdfill") == 0
+		@test IG._errored(IG._on_grdfill(Ptr{Cvoid}(UInt(0xDEADF111)), cs(["mode=fill", "algo=n"])), "grdfill") == 0
 		# grdhisteq: normal scores are exclusive with the quadratic cell distribution.
-		@test IG._on_grdhisteq(scene, cs(["mode=grid", "flavour=gaussian", "quadratic=1", "grid=topo"])) == 0
-		@test IG._on_grdhisteq(scene, cs(["mode=grid", "flavour=gaussian", "norm=-1", "grid=topo"])) == 0
-		@test IG._on_grdhisteq(scene, cs(["mode=grid", "flavour=cells", "ncells=0", "grid=topo"])) == 0
-		@test IG._on_grdhisteq(scene, cs(["mode=nonsense", "grid=topo"])) == 0
+		@test IG._errored(IG._on_grdhisteq(scene, cs(["mode=grid", "flavour=gaussian", "quadratic=1", "grid=topo"])), "grdhisteq") == 0
+		@test IG._errored(IG._on_grdhisteq(scene, cs(["mode=grid", "flavour=gaussian", "norm=-1", "grid=topo"])), "grdhisteq") == 0
+		@test IG._errored(IG._on_grdhisteq(scene, cs(["mode=grid", "flavour=cells", "ncells=0", "grid=topo"])), "grdhisteq") == 0
+		@test IG._errored(IG._on_grdhisteq(scene, cs(["mode=nonsense", "grid=topo"])), "grdhisteq") == 0
 		# grdfft: -Q means "no operation", so it cannot carry one; and an empty dialog does nothing.
-		@test IG._on_grdfft(scene, cs(["mode=grid", "noop=1", "upward=1000", "grid=topo"])) == 0
-		@test IG._on_grdfft(scene, cs(["mode=grid", "grid=topo"])) == 0
-		@test IG._on_grdfft(scene, cs(["mode=grid", "upward=abc", "grid=topo"])) == 0
+		@test IG._errored(IG._on_grdfft(scene, cs(["mode=grid", "noop=1", "upward=1000", "grid=topo"])), "grdfft") == 0
+		@test IG._errored(IG._on_grdfft(scene, cs(["mode=grid", "grid=topo"])), "grdfft") == 0
+		@test IG._errored(IG._on_grdfft(scene, cs(["mode=grid", "upward=abc", "grid=topo"])), "grdfft") == 0
 	finally
 		delete!(IG._SCENE_OBJS, scene)
 	end
@@ -122,26 +122,26 @@ end
 	# xyz2grd / trend2d read their INPUT FILE first, so the callback refuses a missing table before it
 	# ever looks at the rest. The option checks themselves are therefore asked of the helpers that own
 	# them — the same functions the callback calls one line later.
-	@test IG._on_xyz2grd(scene, cs(["infile=", "region=0/9/0/9", "inc=1"])) == 0
-	@test IG._on_xyz2grd(scene, cs(["infile=no_such.xyz", "region=0/9/0/9", "inc=1"])) == 0
+	@test IG._errored(IG._on_xyz2grd(scene, cs(["infile=", "region=0/9/0/9", "inc=1"])), "xyz2grd") == 0
+	@test IG._errored(IG._on_xyz2grd(scene, cs(["infile=no_such.xyz", "region=0/9/0/9", "inc=1"])), "xyz2grd") == 0
 	@test_throws Exception IG._x2g_geometry(Dict("region" => "0//0/9", "inc" => "1"))
 	@test_throws Exception IG._x2g_geometry(Dict("region" => "0/9/0/9", "inc" => ""))
 	@test IG._x2g_geometry(Dict("region" => "0/9/0/9", "inc" => "1")) == ("0/9/0/9", "1")
 	# trend2d: 1..10 terms, and at least one output column.
-	@test IG._on_trend2d(scene, cs(["infile=no_such.xy", "model=3", "col_x=1"])) == 0
+	@test IG._errored(IG._on_trend2d(scene, cs(["infile=no_such.xy", "model=3", "col_x=1"])), "trend2d") == 0
 	@test_throws Exception IG._trend2d_N(Dict("model" => "0"))
 	@test_throws Exception IG._trend2d_N(Dict("model" => "11"))
 	@test IG._trend2d_N(Dict("model" => "3", "robust" => "1")) == "3+r"
 	@test_throws Exception IG._trend2d_F(Dict{String,String}())
 	@test IG._trend2d_F(Dict("col_x" => "1", "col_z" => "1", "col_m" => "1")) == "xzm"
 	# Make CPT: neither applied nor saved is nothing to do; and the option values are checked.
-	@test IG._on_cptbuild(scene, cs(["mode=make", "master=turbo", "apply=0", "outfile="])) == 0
-	@test IG._on_cptbuild(scene, cs(["mode=nonsense", "outfile=x.cpt"])) == 0
-	@test IG._on_cptbuild(scene, cs(["mode=make", "invert=q", "outfile=x.cpt"])) == 0
-	@test IG._on_cptbuild(scene, cs(["mode=make", "alpha=120", "outfile=x.cpt"])) == 0
-	@test IG._on_cptbuild(scene, cs(["mode=make", "tmin=0", "outfile=x.cpt"])) == 0
+	@test IG._errored(IG._on_cptbuild(scene, cs(["mode=make", "master=turbo", "apply=0", "outfile="])), "Make CPT") == 0
+	@test IG._errored(IG._on_cptbuild(scene, cs(["mode=nonsense", "outfile=x.cpt"])), "Make CPT") == 0
+	@test IG._errored(IG._on_cptbuild(scene, cs(["mode=make", "invert=q", "outfile=x.cpt"])), "Make CPT") == 0
+	@test IG._errored(IG._on_cptbuild(scene, cs(["mode=make", "alpha=120", "outfile=x.cpt"])), "Make CPT") == 0
+	@test IG._errored(IG._on_cptbuild(scene, cs(["mode=make", "tmin=0", "outfile=x.cpt"])), "Make CPT") == 0
 	# grd mode builds FROM the data, so it needs the window's grid.
-	@test IG._on_cptbuild(scene, cs(["mode=grd", "outfile=x.cpt"])) == 0
+	@test IG._errored(IG._on_cptbuild(scene, cs(["mode=grd", "outfile=x.cpt"])), "Make CPT") == 0
 	@test !isfile("x.cpt")
 end
 
@@ -153,7 +153,7 @@ end
 	                 x = collect(range(0, 9, length = 10)), y = collect(range(0, 9, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D71FF71))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "bat", G)]
-	call(kv) = IG._on_gravfft(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_gravfft(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "gravfft"))
 	plate = ["te=7000", "rhol=2700", "rhom=3300", "rhow=1035"]
 	try
 		# The geopotential of a surface needs the density contrast (-D).
@@ -184,9 +184,9 @@ end
 		                 "zm=9000"], plate)) == 0          # "from below" without the load depth
 		@test call(["mode=whatever", "field=f", "grid=bat"]) == 0
 		# No grid in the window at all (and this one is not the curve-only mode).
-		@test IG._on_gravfft(Ptr{Cvoid}(UInt(0xDEADFF71)),
+		@test IG._errored(IG._on_gravfft(Ptr{Cvoid}(UInt(0xDEADFF71)),
 		                     Base.unsafe_convert(Cstring, Base.cconvert(Cstring,
-		                         "mode=surface\nfield=f\ndensity=1665"))) == 0
+		                         "mode=surface\nfield=f\ndensity=1665"))), "gravfft") == 0
 	finally
 		delete!(IG._SCENE_OBJS, scene)
 	end
@@ -223,7 +223,7 @@ end
 	                 x = collect(range(-5, 5, length = 10)), y = collect(range(-5, 5, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D710807))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "topo", G)]
-	call(kv) = IG._on_grdrotater(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_grdrotater(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdrotater"))
 	pole = ["emode=pole", "elon=-40.8", "elat=32.8", "eangle=-12.9"]
 	try
 		@test call(["emode=pole", "elon=-40.8", "grid=topo"]) == 0            # half a pole
@@ -233,9 +233,9 @@ end
 		# One time per run: a range would make the module write one file per reconstruction time.
 		@test call(vcat(pole, ["time=0/50/10", "grid=topo"])) == 0
 		# No grid in the window at all.
-		@test IG._on_grdrotater(Ptr{Cvoid}(UInt(0xDEAD0807)),
+		@test IG._errored(IG._on_grdrotater(Ptr{Cvoid}(UInt(0xDEAD0807)),
 		                        Base.unsafe_convert(Cstring, Base.cconvert(Cstring,
-		                            "emode=pole\nelon=0\nelat=0\neangle=10"))) == 0
+		                            "emode=pole\nelon=0\nelat=0\neangle=10"))), "grdrotater") == 0
 	finally
 		delete!(IG._SCENE_OBJS, scene)
 	end
@@ -354,7 +354,7 @@ end
 	IG = InteractiveGMT
 	scene = Ptr{Cvoid}(UInt(0x9D712D00))
 	model = tempname() * ".txt";  write(model, "> 1700\n0 0\n1 0\n1 -1\n0 -1\n")
-	call(kv) = IG._on_talwani2d(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_talwani2d(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "talwani2d"))
 	base = ["infile=" * model, "field=f"]
 	try
 		@test call(["field=f", "tmin=-1", "tmax=1", "tinc=0.1"]) == 0          # no model at all
@@ -376,7 +376,7 @@ end
 	IG = InteractiveGMT
 	scene = Ptr{Cvoid}(UInt(0x9D713D00))
 	model = tempname() * ".txt";  write(model, "> -5 1700\n0 0\n1 0\n1 1\n0 1\n")
-	call(kv) = IG._on_talwani3d(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_talwani3d(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "talwani3d"))
 	base = ["infile=" * model, "field=f"]
 	try
 		@test call(["field=f", "mode=grid", "region=0/1/0/1", "inc=0.1"]) == 0   # no model at all
@@ -489,7 +489,7 @@ end
 	IG = InteractiveGMT
 	tbl = tempname() * ".txt";  write(tbl, "0 0 1\n1 0 2\n0 1 3\n1 1 4\n")
 	scene = Ptr{Cvoid}(UInt(0x9D71A500))
-	call(kv) = IG._on_greenspline(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_greenspline(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "greenspline"))
 	# Every case below is refused BEFORE the table is read, so no GMT module ever runs here.
 	base = ["infile=" * tbl, "dmode=1", "spline=t", "tension=0.5", "what=grid"]
 	geom = ["region=0/1/0/1", "inc=0.1"]
@@ -571,7 +571,7 @@ end
 	IG = InteractiveGMT
 	scene = Ptr{Cvoid}(UInt(0x9D71F200))
 	load = tempname() * ".txt";  write(load, "-100 0\n0 2000\n100 0\n")
-	call(kv) = IG._on_gmtflexure(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_gmtflexure(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "gmtflexure"))
 	base = ["te=10k", "rhom=3300", "rhol=2700", "rhow=1035", "qmode=t", "loadfile=" * load]
 	try
 		@test call(["rhom=3300", "rhol=2700", "rhow=1035", "qmode=t", "loadfile=" * load]) == 0  # no -E
@@ -649,7 +649,7 @@ end
 	IG = InteractiveGMT
 	scene = Ptr{Cvoid}(UInt(0x9D71F300))
 	grid = tempname() * ".grd";  write(grid, "not a grid, but it EXISTS")
-	call(kv) = IG._on_grdflexure(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_grdflexure(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdflexure"))
 	base = ["loadgrid=" * grid, "rhom=3300", "rhol=2700", "rhow=1035", "te=10k"]
 	try
 		@test call(["rhom=3300", "rhol=2700", "rhow=1035", "te=10k"]) == 0            # no load grid
@@ -703,7 +703,7 @@ end
 	                 x = collect(range(0, 9, length = 10)), y = collect(range(0, 9, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D710101))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "topo", G)]
-	call(kv) = IG._on_grdvolume(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_grdvolume(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdvolume"))
 	try
 		# Slices measure the gaps BETWEEN contours, so they need a range of them.
 		@test call(["cmode=above", "cval=0", "slices=1", "grid=topo"]) == 0
@@ -715,8 +715,8 @@ end
 		@test call(["cmode=all", "base=floor", "grid=topo"]) == 0
 		@test call(["cmode=all", "unit=parsec", "grid=topo"]) == 0
 		# No grid in the window at all.
-		@test IG._on_grdvolume(Ptr{Cvoid}(UInt(0xDEAD0101)),
-		                       Base.unsafe_convert(Cstring, Base.cconvert(Cstring, "cmode=all"))) == 0
+		@test IG._errored(IG._on_grdvolume(Ptr{Cvoid}(UInt(0xDEAD0101)),
+		                       Base.unsafe_convert(Cstring, Base.cconvert(Cstring, "cmode=all"))), "grdvolume") == 0
 	finally
 		delete!(IG._SCENE_OBJS, scene)
 	end
@@ -764,7 +764,7 @@ end
 	scene = Ptr{Cvoid}(UInt(0x9D719000))
 	table = tempname() * ".txt";  write(table, "0 0 0 1000 2000 2000 1700\n")
 	grid  = tempname() * ".grd";  write(grid, "not really a grid, but it EXISTS")
-	call(kv) = IG._on_gravprisms(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_gravprisms(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "gravprisms"))
 	where = ["mode=grid", "region=-1/1/-1/1", "inc=0.1"]
 	rad = ["radial=1", "href=6000", "rholo=2400", "rhohi=2700"]
 	try
@@ -928,7 +928,7 @@ end
 	scene = Ptr{Cvoid}(UInt(0x9D71C700))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "u", U), (:grid, "v", V),
 	                                                 (:grid, "small", W), (:grid, "flat", Z0)]
-	call(kv) = IG._on_grdvector(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_grdvector(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdvector"))
 	base = ["usescene=0", "grid1=u", "grid2=v", "incmode=auto", "scalemode=auto", "heads=e"]
 	try
 		@test call(["usescene=0", "grid1=u", "grid2="]) == 0                 # a field is TWO grids
@@ -1005,7 +1005,7 @@ end
 	# The second argument is the DIALOG that asked (it is where a listing goes back to); every case
 	# here refuses before that pointer is ever used, so a null one is exactly right.
 	call(kv) = IG._on_earthregions(scene, C_NULL,
-	                               Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	                               Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "Earth regions"))
 	# Every one of these returns before GMT.jl is asked for anything, so nothing is downloaded here.
 	@test call(["mode=list", "collection=Atlantis"]) == 0
 	@test call(["mode=raster", "code="]) == 0                       # no code and no region
@@ -1037,7 +1037,7 @@ end
 	# The layer the dialog would have made for this exact request.
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "PT (earth_relief 10m)", G)]
 	call(kv) = IG._on_earthregions(scene, C_NULL,
-	                               Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	                               Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "Earth regions"))
 	try
 		# Same name, same dataset, same resolution: recognised, and NOTHING is downloaded (this test
 		# has no network and would hang or fail if it were).
@@ -1062,12 +1062,12 @@ end
 	                 x = collect(range(0, 9, length = 10)), y = collect(range(0, 9, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D71F117))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "topo", G)]
-	call(kv) = IG._on_grdfilter(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_grdfilter(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdfilter"))
 	try
 		@test call(["filter=", "distance=0", "grid=topo"]) == 0
 		@test call(["filter=g0.4", "distance=", "grid=topo"]) == 0
-		@test IG._on_grdfilter(Ptr{Cvoid}(UInt(0xDEADF117)),
-		                       Base.unsafe_convert(Cstring, Base.cconvert(Cstring, "filter=g1\ndistance=0"))) == 0
+		@test IG._errored(IG._on_grdfilter(Ptr{Cvoid}(UInt(0xDEADF117)),
+		                       Base.unsafe_convert(Cstring, Base.cconvert(Cstring, "filter=g1\ndistance=0"))), "grdfilter") == 0
 	finally
 		delete!(IG._SCENE_OBJS, scene)
 	end

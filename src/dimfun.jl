@@ -180,7 +180,7 @@ function _on_dimfun(cwhich::Cstring, cstate::Cstring)::Cstring
 		end
 		out = join((st.xMin, st.xMax, st.yMin, st.yMax, st.xInc, st.yInc, st.nCols, st.nRows), '/')
 	catch e
-		@warn "dim_fun FAILED" exception=(e,)
+		@tool_error "dim_fun FAILED" exception=(e,)
 	end
 	_DIMFUN_BUF[] = Vector{UInt8}(codeunits(out * "\0"))
 	return Cstring(pointer(_DIMFUN_BUF[]))

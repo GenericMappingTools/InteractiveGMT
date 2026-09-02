@@ -149,8 +149,7 @@ function _on_project(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "Project FAILED: $(sprint(showerror, e))")
-		@warn "Project FAILED" exception=(e,)
+		_tool_failed(scene, "Project", e)
 		return Cint(0)
 	end
 end

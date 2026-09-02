@@ -116,8 +116,7 @@ function _on_grdvolume(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "grdvolume FAILED: $(sprint(showerror, e))")
-		@warn "grdvolume FAILED" exception=(e,)
+		_tool_failed(scene, "grdvolume", e)
 		return Cint(0)
 	end
 end

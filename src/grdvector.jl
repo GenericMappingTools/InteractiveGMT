@@ -327,13 +327,12 @@ function _on_grdvector(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 
 		g1name = _on(d, "usescene") ? (isempty(ref1) ? "u.grd" : ref1) : _get(d, "grid1")
-		_viewer_log_error(scene, string(length(px), " vectors drawn. The same field in a GMT script: ",
+		_viewer_log_info(scene, string(length(px), " vectors drawn. The same field in a GMT script: ",
 		                  _gv_command(d, g1name, _get(d, "grid2"), multx, multy, fac, maxlen,
 		                              heads, alpha, _get(d, "headang", "18"), norm)))
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "grdvector FAILED: $(sprint(showerror, e))")
-		@warn "grdvector FAILED" exception=(e,)
+		_tool_failed(scene, "grdvector", e)
 		return Cint(0)
 	end
 end

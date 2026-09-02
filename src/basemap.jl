@@ -137,8 +137,7 @@ function _on_basemap(scene::Ptr{Cvoid}, copt::AbstractString)::Cvoid
 		_session_record!(scene, :basemap, :menu; name=name,
 		                 params=Dict{String,Any}("copt" => String(copt)))
 	catch e
-		_viewer_log_error(scene, "Base Map FAILED: $(sprint(showerror, e))")
-		@warn "basemap: could not crop/add the tile" exception=(e,)
+		_tool_failed(scene, "Base Map", e)
 	end
 	return
 end

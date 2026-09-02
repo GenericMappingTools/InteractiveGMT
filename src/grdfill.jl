@@ -105,8 +105,7 @@ function _on_grdfill(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		return _gm3d_deliver(scene, R, "Filled ($how)", _get(d, "outfile"), false,
 		                     "grdfill " * join(("$k=$v" for (k, v) in kw), ' '))
 	catch e
-		_viewer_log_error(scene, "grdfill FAILED: $(sprint(showerror, e))")
-		@warn "grdfill FAILED" exception=(e,)
+		_tool_failed(scene, "grdfill", e)
 		return Cint(0)
 	end
 end

@@ -50,7 +50,11 @@ end
 # this. Returns `(nothing, Float64[])` when the file is missing or nothing survives the clip.
 function _geo_select(datafile::AbstractString, W, E, S, N; latlon::Bool=false)
 	path = joinpath(_PKGROOT, "data", datafile)
-	isfile(path) || (@warn "geography: data file not found" path; return (nothing, Float64[]))
+	# A missing data file is an ERROR, and it goes where every other error goes (the sink the tests
+	# assert on) instead of a @warn nobody reads. There is no window handle here — this helper is
+	# below the tools — so it records directly; the caller still gets (nothing, []) and reports its
+	# own failure to the user in its own window.
+	isfile(path) || (_record_tool_error("geography: data file not found: $path"); return (nothing, Float64[]))
 	Sr = latlon ? GMT.gmtselect(path, R=(W, E, S, N), f=:g, yx="i") :
 	              GMT.gmtselect(path, R=(W, E, S, N), f=:g)         # read + region/lon-periodic clip in ONE call
 	(Sr === nothing || isempty(Sr)) && return (nothing, Float64[])
@@ -166,7 +170,7 @@ end
 # dataset here (_geo_points), just hand-rolled since GMT.gmtselect can't read an HDF5 subdataset.
 function _tidestations_data(W, E, S, N)
 	path = joinpath(_PKGROOT, "data", "xtide.mat")
-	isfile(path) || (@warn "geography: tide-stations data file not found" path; return (Float64[], Float64[], String[]))
+	isfile(path) || (@tool_error "geography: tide-stations data file not found" path; return (Float64[], Float64[], String[]))
 	lon  = vec(GMT.gdalread("HDF5:\"$path\"://xharm/longitude"))
 	lat  = vec(GMT.gdalread("HDF5:\"$path\"://xharm/latitude"))
 	stat = GMT.gdalread("HDF5:\"$path\"://xharm/station")
@@ -371,8 +375,7 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 		_session_record!(scene, :geography, :menu; name=_geo_layer_name(kind),
 		                 params=Dict{String,Any}("req" => req))
 	catch e
-		_viewer_log_error(scene, "Geography FAILED: $(sprint(showerror, e))")
-		@warn "geography: could not fetch/add the feature" exception=(e,)
+		_tool_failed(scene, "Geography", e)
 	end
 	return
 end
@@ -401,8 +404,7 @@ end
 
 # Tide failures MUST be visible: sceneLogError (Errors tab) alone is silently dropped/missed on
 # fold — same trap that hit Focal mechanisms 3x (see _focal_fail, focal.jl) — so also pop a modal.
-_tides_fail(scene, msg) = (_viewer_log_error(scene, msg);
-	ccall(_fn(:gmtvtk_error_box), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), scene, "Tides download", String(msg)))
+_tides_fail(scene, msg) = _viewer_log_error(scene, msg)
 
 # C callback for the two "Download Mareg …" entries on a Tide Stations star's right-click menu.
 # `mode` is "2days" | "calendar"; `station` is the clicked star's "Name:/Code:/Country:" hover block,
@@ -457,7 +459,7 @@ function _on_tides_download(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring
 		xyplot(x, y; name=title, title=title, xlabel="Time (UTC)", ylabel=ylab, xtime=:date)
 	catch e
 		_tides_fail(scene, sprint(showerror, e))
-		@warn "tides: download callback failed" exception=(e,)
+		@tool_error "tides: download callback failed" exception=(e,)
 	end
 	return
 end
@@ -515,7 +517,7 @@ function _on_tidemodel(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring)::Cv
 		station = unsafe_string(cstation)
 		xtide, xharm = _xtide_data()
 		ista = findfirst(==(station), xharm.station)
-		ista === nothing && (@warn "tide model: station not found" station; return)
+		ista === nothing && (@tool_error "tide model: station not found" station; return)
 
 		nowutc = GMT.Dates.now(GMT.Dates.UTC)
 		local t0, t1, showNow
@@ -581,8 +583,7 @@ function _on_tidemodel(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring)::Cv
 			end
 		end
 	catch e
-		_viewer_log_error(scene, "Plot tides FAILED: $(sprint(showerror, e))")
-		@warn "tide model: callback failed" exception=(e,)
+		_tool_failed(scene, "Plot tides", e)
 	end
 	return
 end
@@ -681,8 +682,7 @@ function _on_earthtide(scene::Ptr{Cvoid}, creq::Cstring)::Cvoid
 			_earthtide_series(scene, start, stop, lon, lat, comp)
 		end
 	catch e
-		_viewer_log_error(scene, "Earth Tides FAILED: $(sprint(showerror, e))")
-		@warn "earthtide: callback failed" exception=(e,)
+		_tool_failed(scene, "Earth Tides", e)
 	end
 	return
 end

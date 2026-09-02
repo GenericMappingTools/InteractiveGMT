@@ -931,10 +931,9 @@ function _on_save_session_cb(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid
 	try
 		path = unsafe_string(cpath)
 		_on_save_session(scene, path)
-		_viewer_log_error(scene, "Saved session -> $path")
+		_viewer_log_info(scene, "Saved session -> $path")
 	catch e
-		_viewer_log_error(scene, "Save session FAILED: $(sprint(showerror, e))")
-		@warn "session: could not save" path exception=(e,)
+		_tool_failed(scene, "Save session", e)
 	end
 	return
 end
@@ -942,7 +941,7 @@ function _on_load_session_cb(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid
 	try
 		_on_load_session(scene, unsafe_string(cpath))
 	catch e
-		@warn "session: could not load" exception=(e,)
+		@tool_error "session: could not load" exception=(e,)
 	end
 	return
 end

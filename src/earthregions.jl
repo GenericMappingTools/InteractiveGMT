@@ -222,7 +222,7 @@ function _on_earthregions(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring):
 		   _find_object_exact(scene, :image, title) !== nothing
 			# Already here. Downloading it again would cost the transfer and then either pile up a
 			# duplicate layer or silently replace an identical one.
-			_viewer_log_error(scene, "Earth regions — \"$title\" is already in this window; " *
+			_viewer_log_info(scene, "Earth regions — \"$title\" is already in this window; " *
 			                  "nothing was downloaded.")
 			country && _er_draw_border(scene, code, name)   # the border was still asked for
 			return Cint(1)
@@ -250,8 +250,7 @@ function _on_earthregions(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring):
 		(ok == Cint(1) && country) && _er_draw_border(scene, code, name)
 		return ok
 	catch e
-		_viewer_log_error(scene, "Earth regions FAILED: $(sprint(showerror, e))")
-		@warn "Earth regions FAILED" exception=(e,)
+		_tool_failed(scene, "Earth regions", e)
 		return Cint(0)
 	end
 end

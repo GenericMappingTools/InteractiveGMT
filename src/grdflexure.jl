@@ -250,7 +250,7 @@ function _on_grdflexure(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 				end
 			end
 			isempty(made) && error("grdflexure wrote no transfer-function files")
-			_viewer_log_error(scene, "grdflexure -Q wrote " * string(length(made)) *
+			_viewer_log_info(scene, "grdflexure -Q wrote " * string(length(made)) *
 			                  " transfer-function file(s):\n" * join(made, "\n") *
 			                  "\n(a time-dependent response carries twelve columns after the " *
 			                  "wavenumber, for " * join(_GFLX_TRANSFER_T, ", ") * "; the plot shows the first.)")
@@ -282,7 +282,7 @@ function _on_grdflexure(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			isempty(made) && error("grdflexure wrote no grids for those times")
 			# Informational, through the same Errors console grdseamount's time-step runs report to:
 			# it is the one place a window has for saying what a run put on disk.
-			_viewer_log_error(scene, "grdflexure wrote " * string(length(made)) * " grid(s):\n" *
+			_viewer_log_info(scene, "grdflexure wrote " * string(length(made)) * " grid(s):\n" *
 			                  join(("  " * m[3] * "  " * m[2] for m in made), "\n"))
 			# The LAST evaluation time is the one that lands in the window; the others are on disk
 			# and named above. Its own time tag is in the title, so a second time is a second layer
@@ -309,8 +309,7 @@ function _on_grdflexure(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		                     "grdflexure " * join(opts, ' ');
 		                     geographic = _on(d, "geog") ? true : nothing)
 	catch e
-		_viewer_log_error(scene, "grdflexure FAILED: $(sprint(showerror, e))")
-		@warn "grdflexure FAILED" exception=(e,)
+		_tool_failed(scene, "grdflexure", e)
 		return Cint(0)
 	finally
 		for f in (tmpG, tmpL)

@@ -129,7 +129,7 @@ function _cm_bg_extent()
 		xy = GMT.lonlat2xy(corners; s_srs = _CM_BG_PROJ4, t_srs = _CM_PROJ4)
 		return (minimum(xy[:, 1]), maximum(xy[:, 1]), minimum(xy[:, 2]), maximum(xy[:, 2]))
 	catch e
-		@warn "Cartas Militares: could not place the background image" exception=(e,)
+		@tool_error "Cartas Militares: could not place the background image" exception=(e,)
 		return nothing
 	end
 end
@@ -260,8 +260,7 @@ function _on_cartas(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, raw::AbstractString)::Cv
 		_lidar_status(dlg, "")
 	catch e
 		_lidar_status(dlg, "")
-		_viewer_log_error(scene, "Cartas Militares FAILED: $(sprint(showerror, e))")
-		@warn "cartasmil: request failed" exception=(e,)
+		_tool_failed(scene, "Cartas Militares", e)
 	end
 	return
 end

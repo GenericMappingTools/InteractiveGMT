@@ -583,7 +583,7 @@ function _on_xy_analysis(plot::Ptr{Cvoid}, cop::Cstring, sel::Cint)::Cvoid
 	catch e
 		_dbg("xy-ana", op, "ERR", sprint(showerror, e))
 		_xy_log(plot, "Analysis '$op' FAILED: $(sprint(showerror, e))"; err=true)
-		@warn "xyplot analysis '$op' failed" exception=e
+		@tool_error "xyplot analysis '$op' failed" exception=e
 	end
 	return
 end

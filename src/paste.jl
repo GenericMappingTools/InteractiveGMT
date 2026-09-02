@@ -26,8 +26,7 @@ function _on_paste(scene::Ptr{Cvoid}, ctext::Cstring, rgb::Ptr{UInt8}, w::Cint, 
 			_paste_text(scene, unsafe_string(ctext))
 		end
 	catch e
-		_viewer_log_error(scene, "Paste FAILED: $(sprint(showerror, e))")
-		@warn "paste: could not paste the clipboard" exception=(e, catch_backtrace())
+		_tool_failed(scene, "Paste", e)
 	end
 	return
 end
@@ -46,7 +45,7 @@ function _paste_image(scene::Ptr{Cvoid}, rgb::Ptr{UInt8}, w::Int, h::Int, nb::In
 	empty && ccall(_fn(:gmtvtk_set_title_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, "i'GMT -- $name")
 	# A row the user cannot see is the same as no row at all (SACRED_LAW.md, derived-variable law).
 	ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
-	_viewer_log_error(scene, "Pasted a $(w)x$(h) image -> \"$name\"")
+	_viewer_log_info(scene, "Pasted a $(w)x$(h) image -> \"$name\"")
 	return
 end
 
@@ -72,20 +71,20 @@ function _paste_text(scene::Ptr{Cvoid}, txt::AbstractString)
 			_drop_into(scene, D, name; promote=true)          # bare launcher -> frame it over the data
 			ccall(_fn(:gmtvtk_set_title_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, "i'GMT -- $name")
 			ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
-			_viewer_log_error(scene, "Pasted $(sum(size.(segs, 1))) points -> \"$name\"")
+			_viewer_log_info(scene, "Pasted $(sum(size.(segs, 1))) points -> \"$name\"")
 			return
 		end
 		if _paste_fits_window(scene, D)
 			_add_dataset_to_scene(scene, D, name)             # line / polygon overlay in THIS window
 			ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
-			_viewer_log_error(scene, "Pasted $(sum(size.(segs, 1))) points -> \"$name\"")
+			_viewer_log_info(scene, "Pasted $(sum(size.(segs, 1))) points -> \"$name\"")
 			return
 		end
 	end
 	# Outside the displayed region (or a single column, which is no map object at all): the X,Y tool
 	# is where such numbers belong — if one is open.
 	if _paste_to_xyplot(_paste_to_dataset(segs, cn), name)
-		_viewer_log_error(scene, "Pasted \"$name\" into the X,Y plot window (new page)")
+		_viewer_log_info(scene, "Pasted \"$name\" into the X,Y plot window (new page)")
 		return
 	end
 	W, E, S, N = _dataset_bbox(_paste_to_dataset(segs, cn))

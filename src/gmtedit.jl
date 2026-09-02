@@ -645,7 +645,7 @@ function _ge_read(path::String, vars::Vector{String}, xISdist::Bool,
 		got  = try
 			_ge_mgd77list(path, cols)
 		catch e
-			@warn "gmtedit: mgd77list failed, falling back to the netCDF variables" path exception=(e,)
+			@tool_error "gmtedit: mgd77list failed, falling back to the netCDF variables" path exception=(e,)
 			nothing
 		end
 		if got !== nothing && length(got["lon"]) != nrec
@@ -1577,7 +1577,7 @@ function _on_gmtedit(edit::Ptr{Cvoid}, caction::Cstring, carg::Cstring)::Cvoid
 		end
 	catch e
 		_ge_log(edit, "$action FAILED: $(sprint(showerror, e))"; err=true)
-		@warn "gmtedit: $action failed" arg exception=(e,)
+		@tool_error "gmtedit: $action failed" arg exception=(e,)
 	end
 	return
 end

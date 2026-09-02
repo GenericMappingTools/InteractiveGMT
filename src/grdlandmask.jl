@@ -51,8 +51,7 @@ function _on_grdlandmask(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		return _gm3d_deliver(scene, R, title, outfile, false,
 		                     "grdlandmask " * join(("$k=$v" for (k, v) in kw), ' '))
 	catch e
-		_viewer_log_error(scene, "grdlandmask FAILED: $(sprint(showerror, e))")
-		@warn "grdlandmask FAILED" exception=(e,)
+		_tool_failed(scene, "grdlandmask", e)
 		return Cint(0)
 	end
 end

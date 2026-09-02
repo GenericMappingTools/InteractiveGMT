@@ -252,8 +252,7 @@ function _on_classify(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cin
 		end
 		error("K-means: unknown op '$op'")
 	catch e
-		_viewer_log_error(scene, "K-means classification ($op) FAILED: $(sprint(showerror, e))")
-		@warn "K-means classification FAILED" op exception=(e,)
+		_tool_failed(scene, "K-means classification ($op)", e)
 		return Cint(0)
 	end
 end

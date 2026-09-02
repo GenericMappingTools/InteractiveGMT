@@ -217,7 +217,7 @@ function _on_rgb_scatter(scene::Ptr{Cvoid}, px::Ptr{UInt8}, npix::Cint, nb::Cint
 		            title="RGB scatter — $label  (x = Red, y = Green, z = Blue)")
 		return Cint(1)
 	catch err
-		_viewer_log_error(scene, "ScaterPlot FAILED: $(sprint(showerror, err))")
+		_tool_failed(scene, "ScaterPlot", err)
 		return Cint(0)
 	end
 end
@@ -255,8 +255,7 @@ function _on_image_enhance(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)
 		end
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "Image Enhance ($op) FAILED: $(sprint(showerror, e))")
-		@warn "Image Enhance FAILED" op exception=(e,)
+		_tool_failed(scene, "Image Enhance ($op)", e)
 		return Cint(0)
 	end
 end

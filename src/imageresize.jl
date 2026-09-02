@@ -58,8 +58,7 @@ function _on_image_resize(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring):
 		end
 		error("Image resize: unknown op '$op'")
 	catch e
-		_viewer_log_error(scene, "Image resize ($op) FAILED: $(sprint(showerror, e))")
-		@warn "Image resize FAILED" op exception=(e,)
+		_tool_failed(scene, "Image resize ($op)", e)
 		return Cint(0)
 	end
 end

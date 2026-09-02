@@ -205,8 +205,7 @@ function _on_gmtflexure(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "gmtflexure FAILED: $(sprint(showerror, e))")
-		@warn "gmtflexure FAILED" exception=(e,)
+		_tool_failed(scene, "gmtflexure", e)
 		return Cint(0)
 	finally
 		if !isempty(tmpout)

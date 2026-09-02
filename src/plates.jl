@@ -654,9 +654,8 @@ function _on_euler(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		error("unknown Plates operation \"$op\"")
 	catch e
 		msg = sprint(showerror, e)
-		_viewer_log_error(scene, "$tool FAILED: $msg")
-		_euler_result("$tool failed: $msg")
-		@warn "$tool FAILED" exception=(e,)
+		_viewer_log_error(scene, "$tool FAILED: $msg")   # the ONE report: window console + failure sink
+		_euler_result("$tool failed: $msg")              # ...and back into the dialog that asked
 		return Cint(0)
 	end
 end

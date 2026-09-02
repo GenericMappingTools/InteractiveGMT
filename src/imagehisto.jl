@@ -23,7 +23,7 @@ function _on_image_histo(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, px::Ptr{UInt8}, npi
 		end
 		return Cint(1)
 	catch err
-		_viewer_log_error(scene, "Image histogram FAILED: $(sprint(showerror, err))")
+		_tool_failed(scene, "Image histogram", err)
 		return Cint(0)
 	end
 end

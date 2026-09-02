@@ -50,7 +50,21 @@ end
 # `scene` is the window's C handle. The X,Y tool has its own twin (_xy_log -> gmtvtk_xyplot_log).
 # Best-effort + NEVER throws, so a catch block can call it without masking the original error.
 function _viewer_log_error(scene::Ptr{Cvoid}, msg::AbstractString)
-	_record_tool_error(msg)
+	_record_tool_error(msg)        # so the test suite fails on anything no test claimed
+	# Loud the instant it happens for a user; under the test suite the verdict testsets print every
+	# unclaimed one at the end instead, so a run does not bury the terminal in expected refusals.
+	_TEST_MODE[] ? (@debug msg) : (@error msg)
+	_viewer_log_info(scene, msg)   # ...and so does the window that was asked to do the work
+	return
+end
+
+# The SAME line in the SAME window console, for a message that is NOT a failure: "Saved session ->
+# …", "Pasted 412 points", "grdseamount: wrote the time-step grids to …", "already in this window;
+# nothing was downloaded". They travelled through _viewer_log_error only because it was the only way
+# to put a line in that console — and the day the failures started being RECORDED, every one of these
+# notices became a phantom error in the sink (`earthregions` reporting success and "logging an error"
+# was the first one to trip `_errored`). Display is shared, intent is not: this one does not record.
+function _viewer_log_info(scene::Ptr{Cvoid}, msg::AbstractString)
 	try
 		ccall(_fn(:gmtvtk_log_error), Cvoid, (Ptr{Cvoid}, Cstring), scene, String(msg))
 	catch
@@ -58,89 +72,6 @@ function _viewer_log_error(scene::Ptr{Cvoid}, msg::AbstractString)
 	return
 end
 
-# ---------------------------------------------------------------------------------------------
-# The failure sink.
-#
-# EVERY tool in this package ends its catch block the same way: `_viewer_log_error(scene, "X
-# FAILED: …")` (+ a `@warn`), then returns 0. That is right for the GUI -- an exception must not
-# cross the C callback boundary -- but it made the test suite BLIND: an item that calls the
-# callback and does not check its return value passes while the tool did nothing at all, and the
-# only trace is a warning nobody reads. Disguised errors, in the user's words.
-#
-# So the funnel keeps a record. It lives HERE, in the one function every failure already passes
-# through (never a second copy per tool, per SACRED_LAW.md), and the test tier asserts on it:
-# `IG._clear_tool_errors!()` before the code under test, `@test isempty(IG._tool_errors())` after.
-# A test that EXPECTS a refusal (bad input, missing file -- most of the "FAILED" noise in CI is
-# exactly that) asserts the message instead, so an intended refusal and a real crash stop looking
-# identical.
-#
-# Bounded, and recording never throws: a catch block calls this, and it must not mask the error it
-# is reporting.
-const _TOOL_ERRORS = Vector{String}()
-const _TOOL_ERRORS_MAX = 500
-
-"""
-    _tool_errors() -> Vector{String}
-
-The failure messages logged into viewer windows since the last `_clear_tool_errors!()`, in order.
-"""
-_tool_errors() = copy(_TOOL_ERRORS)
-
-"""
-    _clear_tool_errors!()
-
-Empty the failure sink. Call it right before the code under test.
-"""
-_clear_tool_errors!() = (empty!(_TOOL_ERRORS); nothing)
-
-function _record_tool_error(msg::AbstractString)
-	try
-		length(_TOOL_ERRORS) >= _TOOL_ERRORS_MAX && popfirst!(_TOOL_ERRORS)
-		push!(_TOOL_ERRORS, String(msg))
-		if _is_internal_failure(msg)
-			length(_INTERNAL_ERRORS) >= _TOOL_ERRORS_MAX && popfirst!(_INTERNAL_ERRORS)
-			push!(_INTERNAL_ERRORS, String(msg))
-		end
-	catch
-	end
-	return
-end
-
-# The second sink, and the one the test suite fails on. A tool refusing bad input with a sentence a
-# user can read ("West must be smaller than East", "input table not found: …") is WORKING -- most of
-# the "FAILED" noise a test run prints is exactly that, from items that feed garbage on purpose. An
-# exception that got as far as GMT's own C error, or that is a plain Julia type/lookup fault, is a
-# BUG: either the tool skipped a check it owes the user, or it broke. Those two look identical in a
-# log and identical to a `@test call(...) == 0`, which is how "Earth regions FAILED: Something went
-# wrong when calling the module. GMT error number = 72" sat green in CI.
-#
-# So they are separated HERE, once, and `runtests.jl` asserts this list is empty at the end of the
-# run. Unlike _TOOL_ERRORS it is NOT cleared between items -- it is the run's verdict.
-const _INTERNAL_ERRORS = Vector{String}()
-
-const _INTERNAL_MARKS = (
-	"Something went wrong when calling the module",   # GMT's own C-level failure, whatever it was
-	"MethodError", "UndefVarError", "BoundsError", "KeyError", "DimensionMismatch",
-	"StackOverflowError", "InexactError", "no method matching", "UndefRefError",
-	"AssertionError", "SegmentationFault",
-	# Qt's own diagnostics, drained by _drain_qt_messages. Qt files the first level under "warning";
-	# it is an ERROR — this code did something wrong (a teardown out of order, a widget given two
-	# layouts, a connect to nothing) and merely did not die on the spot. Captured as "Qt ERROR".
-	"Qt ERROR",
-)
-
-_is_internal_failure(msg::AbstractString) = any(m -> occursin(m, msg), _INTERNAL_MARKS)
-
-"""
-    _internal_tool_errors() -> Vector{String}
-
-Failures recorded this session that are NOT a tool refusing bad input politely: a GMT C-level error,
-or a raw Julia type/lookup fault. Each one is a bug. `runtests.jl` asserts this is empty.
-"""
-_internal_tool_errors() = copy(_INTERNAL_ERRORS)
-
-"Forget the recorded internal failures (used by the tests that deliberately provoke one)."
-_clear_internal_tool_errors!() = (empty!(_INTERNAL_ERRORS); nothing)
 
 # Build the C-callable pointer and install it in the DLL. Called once from __init__, after the
 # library loads. One @cfunction for the whole session.

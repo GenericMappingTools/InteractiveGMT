@@ -45,7 +45,7 @@ function update!()
 			      "history) at $_PKGROOT -- keeping the current source and syncing the binaries anyway."
 		end
 	catch e
-		@warn "InteractiveGMT: source update failed -- syncing the binaries anyway." exception=(e,)
+		@tool_error "InteractiveGMT: source update failed -- syncing the binaries anyway." exception=(e,)
 	finally
 		close(repo)
 	end
@@ -73,11 +73,11 @@ function update!()
 			try
 				run(`$(Base.julia_cmd()) --startup-file=no --color=no $script`)
 			catch e
-				@warn "InteractiveGMT: the binary sync failed -- the source is updated, the \
+				@tool_error "InteractiveGMT: the binary sync failed -- the source is updated, the \
 				       binaries are unchanged." exception=(e,)
 			end
 		else
-			@warn "InteractiveGMT: deps/build.jl not found at $script -- binaries not synced."
+			@tool_error "InteractiveGMT: deps/build.jl not found at $script -- binaries not synced."
 		end
 	end
 	println("InteractiveGMT: update complete. Restart Julia to use the new version.")

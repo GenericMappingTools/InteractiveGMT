@@ -299,8 +299,7 @@ function _on_rtp3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		_adopt_derived!(scene, title, G2)
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "RTP3D FAILED: $(sprint(showerror, e))")
-		@warn "RTP3D FAILED" exception=(e,)
+		_tool_failed(scene, "RTP3D", e)
 		return Cint(0)
 	end
 end

@@ -131,7 +131,7 @@ function _on_interpolate(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# surface -Q does not grid anything — it only reports the dimensions with a highly composite
 		# factor, on GMT's own message stream. Say so instead of reporting a failure.
 		if !isa(R, GMTgrid) && haskey(kw, :suggest)
-			_viewer_log_error(scene, "surface -Q only REPORTS suggested dimensions (see the Julia console); nothing was gridded")
+			_viewer_log_info(scene, "surface -Q only REPORTS suggested dimensions (see the Julia console); nothing was gridded")
 			return Cint(1)
 		end
 		isa(R, GMTgrid) || error("got a $(typeof(R)), not a grid")
@@ -149,8 +149,7 @@ function _on_interpolate(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		return ok
 	catch e
-		_viewer_log_error(scene, "Interpolate FAILED: $(sprint(showerror, e))")
-		@warn "Interpolate FAILED" exception=(e,)
+		_tool_failed(scene, "Interpolate", e)
 		return Cint(0)
 	end
 end

@@ -1463,6 +1463,12 @@ static QIcon appIcon() {
 	return ic;
 }
 
+// Headless (test) mode: no modal dialog may stop a run or cover the screen — see the QMessageBox
+// branch in EnterDefocusFilter below. Set by the host through gmtvtk_set_headless.
+static bool g_headless = false;
+// Both live further down (the Qt message capture); declared here because the filter uses them.
+static void gmtvtkRecordMessage(const QString &line);
+
 // App-wide rule: pressing Enter/Return in ANY QLineEdit drops keyboard focus, which commits the edit
 // through the normal editingFinished path (so live-update callbacks fire). Installed once on the
 // QApplication so every box in every dialog behaves the same — no per-widget wiring. The event is not
@@ -1475,6 +1481,24 @@ public:
 			const int key = static_cast<QKeyEvent*>(ev)->key();
 			if (key == Qt::Key_Return || key == Qt::Key_Enter)
 				if (auto *le = qobject_cast<QLineEdit*>(obj)) le->clearFocus();
+		}
+		// HEADLESS: a test run must not be answered with dialogs. There are ~290 QMessageBox call
+		// sites; every one of them BLOCKS on exec() and puts a box on the screen, which during a
+		// suite run means a wall of modals a human has to click through — and a message the test
+		// itself never sees. Caught HERE, in the one app-wide filter, the instant the box is shown:
+		// its text is recorded like any other diagnostic (so the host drains it into the failure sink
+		// and the run FAILS on it) and the dialog is dismissed so the code under test carries on.
+		// Nothing is suppressed — it moves from a window nobody can assert on to the error stream
+		// everything else already goes through. Off by default: interactive users get their dialogs.
+		if (ev->type() == QEvent::Show) {
+			if (auto *mb = qobject_cast<QMessageBox*>(obj)) {
+				// A modal is a failure REPORT with legs: it stops the program until a human clicks it,
+				// and a test can neither see it nor answer it. It is recorded here, always, exactly
+				// like any other error — so the run FAILS on it and names the box — and it is left to
+				// behave normally: the fix belongs in whatever made the box necessary, not here.
+				gmtvtkRecordMessage("modal dialog \"" + mb->windowTitle() + "\": " + mb->text());
+				if (g_headless) QMetaObject::invokeMethod(mb, "reject", Qt::QueuedConnection);
+			}
 		}
 		return QObject::eventFilter(obj, ev);
 	}
@@ -1498,6 +1522,12 @@ public:
 // are kept, bounded, oldest-first.
 static std::vector<std::string> g_qtMessages;
 static QtMessageHandler         g_prevMsgHandler = nullptr;
+
+// One place anything joins that stream, whoever produced it (Qt itself, or a modal we intercepted).
+static void gmtvtkRecordMessage(const QString &line) {
+	if (g_qtMessages.size() >= 200) g_qtMessages.erase(g_qtMessages.begin());
+	g_qtMessages.push_back(("Qt ERROR: " + line).toStdString());
+}
 static const size_t             GMTVTK_MAX_QT_MESSAGES = 200;
 
 static void gmtvtkMessageHandler(QtMsgType t, const QMessageLogContext &ctx, const QString &msg) {

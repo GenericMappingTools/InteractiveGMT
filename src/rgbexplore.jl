@@ -136,8 +136,7 @@ function _on_rgbexplore(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::C
 		end
 		error("Explore RGB: unknown op '$op'")
 	catch e
-		_viewer_log_error(scene, "Explore RGB ($op) FAILED: $(sprint(showerror, e))")
-		@warn "Explore RGB FAILED" op exception=(e,)
+		_tool_failed(scene, "Explore RGB ($op)", e)
 		return Cint(0)
 	end
 end

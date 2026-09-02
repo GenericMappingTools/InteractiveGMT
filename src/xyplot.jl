@@ -287,7 +287,7 @@ function _on_xy_seed(plot::Ptr{Cvoid}, cx::Ptr{Float64}, cy::Ptr{Float64}, n::Ci
 		add!(p, x, y; name=nm)
 	catch e
 		_dbg("xy-seed", "ERR", sprint(showerror, e))
-		@warn "xyplot seed failed" exception=e
+		@tool_error "xyplot seed failed" exception=e
 	end
 	return
 end
@@ -313,7 +313,7 @@ function _on_xy_new(plot::Ptr{Cvoid})::Cvoid
 		_start_pump()
 	catch e
 		_dbg("xy-new", "ERR", sprint(showerror, e))
-		@warn "xyplot new-window registration failed" exception=e
+		@tool_error "xyplot new-window registration failed" exception=e
 	end
 	return
 end
@@ -356,7 +356,7 @@ function _on_xy(plot::Ptr{Cvoid}, caction::Cstring, sel::Cint, cpath::Cstring)::
 	catch e
 		_dbg("xy", action, "ERR", sprint(showerror, e))
 		_xy_log(plot, "File $action FAILED: $(sprint(showerror, e))"; err=true)   # show IN the window
-		@warn "xyplot $action failed" path exception=e
+		@tool_error "xyplot $action failed" path exception=e
 	end
 	return
 end

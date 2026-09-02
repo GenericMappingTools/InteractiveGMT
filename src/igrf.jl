@@ -38,7 +38,7 @@ function _on_igrf_point(cstate::Cstring)::Cstring
 		v = Dd.data[1, end-6:end]           # [F H X Y Z D I]
 		out = join(round.(v; digits=3), '/')
 	catch e
-		@warn "IGRF point FAILED" exception=(e,)
+		@tool_error "IGRF point FAILED" exception=(e,)
 	end
 	_IGRF_BUF[] = Vector{UInt8}(codeunits(out * "\0"))
 	return Cstring(pointer(_IGRF_BUF[]))
@@ -89,8 +89,7 @@ function _on_igrf_grid(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			_adopt_derived!(scene, title, G)
 		end
 	catch e
-		_viewer_log_error(scene, "IGRF grid FAILED: $(sprint(showerror, e))")
-		@warn "IGRF grid FAILED" exception=(e,)
+		_tool_failed(scene, "IGRF grid", e)
 	end
 	return
 end
@@ -133,8 +132,7 @@ function _on_igrf_file(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			end
 		end
 	catch e
-		_viewer_log_error(scene, "IGRF file compute FAILED: $(sprint(showerror, e))")
-		@warn "IGRF file compute FAILED" exception=(e,)
+		_tool_failed(scene, "IGRF file compute", e)
 	end
 	return
 end

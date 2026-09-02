@@ -201,8 +201,7 @@ function _on_gridcalc(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		title = length(expr) <= 60 ? String(expr) : String(expr)[1:60] * "…"
 		return _gm3d_deliver(scene, G, title, "", false, "gridcalc")
 	catch e
-		_viewer_log_error(scene, "Grid calculator FAILED: $(sprint(showerror, e))")
-		@warn "Grid calculator FAILED" exception=(e,)
+		_tool_failed(scene, "Grid calculator", e)
 		return Cint(0)
 	end
 end

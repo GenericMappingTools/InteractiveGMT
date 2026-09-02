@@ -291,7 +291,7 @@ end
 		cm = vcat(cm, cm[end:end, :])
 		return _pal_resample(cm[:, 1:3], m)
 	catch e
-		@warn "Color Palettes: GMT master CPT '$name' failed" exception = (e,)
+		@tool_error "Color Palettes: GMT master CPT '$name' failed" exception = (e,)
 		return zeros(0, 3)
 	end
 end

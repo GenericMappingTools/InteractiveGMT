@@ -142,8 +142,7 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 		empty && ccall(_fn(:gmtvtk_set_title_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, "i'GMT -- $(basename(path))")
 		_mark_file_open(path, scene, made)     # a re-drop is ignored while these elements are on screen
 	catch e
-		_viewer_log_error(scene, "Open '$(basename(path))' FAILED: $(sprint(showerror, e))")
-		@warn "drop: could not read/open file" path exception=e
+		_tool_failed(scene, "Open '$(basename(path))'", e)
 	finally
 		_load_dialog_end()             # comes down whether the open succeeded or blew up
 	end
@@ -368,7 +367,7 @@ function _on_pointcloud_view(scene::Ptr{Cvoid}, actor::Ptr{Cvoid}, n::Integer, g
 	ok = ccall(_fn(:gmtvtk_overlay_points_h), Cint,
 	           (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cdouble}, Cint), scene, actor, buf, Cint(n))
 	if ok == 0
-		@warn "Point cloud view: could not read the overlay's points"
+		@tool_error "Point cloud view: could not read the overlay's points"
 		return nothing
 	end
 	# `buf` is column-major (x-block, y-block, z-block -- gmtvtk_overlay_points_h fills it that way
@@ -696,7 +695,7 @@ function _cube_prescan(scene::Ptr{Cvoid})
 			keepram = need * 1.2 < Float64(Sys.free_memory())
 		end
 	catch e
-		@warn "cube prescan: first-layer read failed" exception=(e,)
+		@tool_error "cube prescan: first-layer read failed" exception=(e,)
 	end
 	# Determinate progress dialog over the n layers -- the read is the slow part (GMT gmtread is serial
 	# and NOT thread-safe). If the cube fits RAM, keep every slice so the per-layer extrema (the fast
@@ -800,7 +799,7 @@ function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::C
 		# Fetch the slice: a zero-copy RAM slab ("Load all in RAM") or a lazy one-layer disk read.
 		ram = get(_CUBE_RAM, scene, nothing)
 		Gk  = ram !== nothing ? _cube_layer_view(ram, layer_i) : _read_cube_layer(info.path, layer_i)
-		Gk === nothing && (@warn "Failed to read cube layer $layer_i from $(info.path)"; return)
+		Gk === nothing && (@tool_error "Failed to read cube layer $layer_i from $(info.path)"; return)
 		cmap = _default_cmap(Gk)
 		# Precompute BOTH CPTs for this slice (the only makecpt cost, paid once per layer read): its own
 		# [zmin,zmax] and the whole cube's global range. Toggling the checkbox then swaps between them.
@@ -1652,7 +1651,7 @@ function _on_new_window(::Ptr{Cvoid})::Cvoid
 	try
 		iview()
 	catch e
-		@warn "New Window: could not open a window" exception=(e,)
+		@tool_error "New Window: could not open a window" exception=(e,)
 	end
 	return
 end

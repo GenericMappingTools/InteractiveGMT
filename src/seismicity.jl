@@ -156,7 +156,7 @@ function _seis_fetch(url::String)::String
 			end
 		catch e
 			err = e
-			@warn "seismicity: fetch attempt $k failed, retrying with curl" exception=e url
+			@tool_error "seismicity: fetch attempt $k failed, retrying with curl" exception=e url
 			# Back off before retrying. The service resets the connection on rapid repeat queries —
 			# hammering it again immediately (what this did) is what turns "plot the same catalog twice
 			# in a row" into a hard failure; a short pause gets the second call through.
@@ -562,7 +562,7 @@ function _on_seismicity(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		tk = [t[i] for i in eachindex(t) if keep[i] && !isnan(t[i])]
 		last = isempty(tk) ? "" :
 		       ", most recent " * GMT.Dates.format(GMT.Dates.unix2datetime(maximum(tk)), "yyyy-mm-dd HH:MM") * " UTC"
-		_viewer_log_error(scene, "Seismicity: plotted $nk of $(length(lon)) events$last")
+		_viewer_log_info(scene, "Seismicity: plotted $nk of $(length(lon)) events$last")
 	catch e
 		# Name the exception TYPE and the line it came from, in the window itself. "Seismicity FAILED:"
 		# followed by a bare message is unreportable — every failure looks the same to whoever sees it,
@@ -576,7 +576,6 @@ function _on_seismicity(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			end
 		end
 		_viewer_log_error(scene, "Seismicity FAILED: $(typeof(e)): $(sprint(showerror, e))$fr")
-		@warn "seismicity: failed" exception=(e, bt)
 	end
 	return
 end

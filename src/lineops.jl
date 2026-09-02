@@ -1500,7 +1500,7 @@ function _on_lineops(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		msg = sprint(showerror, e)
 		_viewer_log_error(scene, "Vector Operations FAILED: $msg")
 		_lineops_result("Vector Operations failed: $msg")
-		@warn "Vector Operations FAILED" exception = (e,)
+		@tool_error "Vector Operations FAILED" exception = (e,)
 		return Cint(0)
 	end
 end

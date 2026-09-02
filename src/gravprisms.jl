@@ -260,8 +260,7 @@ function _on_gravprisms(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		                     "gravprisms " * join(("$k=$v" for (k, v) in kw), ' ');
 		                     geographic = geog ? true : nothing)
 	catch e
-		_viewer_log_error(scene, "gravprisms FAILED: $(sprint(showerror, e))")
-		@warn "gravprisms FAILED" exception=(e,)
+		_tool_failed(scene, "gravprisms", e)
 		return Cint(0)
 	finally
 		if !isempty(tmpG)

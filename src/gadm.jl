@@ -1,4 +1,4 @@
-﻿# gadm.jl — Geography > "Administrative units (GADM)…": a country's administrative boundaries from
+# gadm.jl — Geography > "Administrative units (GADM)…": a country's administrative boundaries from
 # the gadm.org database, through GMT.jl's `gadm`.
 #
 # The C++ dialog is GadmDialog (70_window.cpp, loads deps/ui/gadm_dialog.ui).
@@ -229,8 +229,7 @@ function _on_gadm(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cint
 			error("could not draw $name in this window")
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "GADM FAILED: $(sprint(showerror, e))")
-		@warn "GADM FAILED" exception=(e,)
+		_tool_failed(scene, "GADM", e)
 		return Cint(0)
 	end
 end

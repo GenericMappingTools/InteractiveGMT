@@ -212,8 +212,7 @@ function _on_clipgrid(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		_adopt_derived!(scene, title, G2)
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "Clip Grid FAILED: $(sprint(showerror, e))")
-		@warn "Clip Grid FAILED" exception=(e,)
+		_tool_failed(scene, "Clip Grid", e)
 		return Cint(0)
 	end
 end

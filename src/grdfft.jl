@@ -139,8 +139,7 @@ function _on_grdfft(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		return _gm3d_deliver(scene, R, "grdfft (" * join(what, ", ") * ")", _get(d, "outfile"), false,
 		                     "grdfft " * join(("$k=$v" for (k, v) in kw), ' '))
 	catch e
-		_viewer_log_error(scene, "grdfft FAILED: $(sprint(showerror, e))")
-		@warn "grdfft FAILED" exception=(e,)
+		_tool_failed(scene, "grdfft", e)
 		return Cint(0)
 	end
 end

@@ -438,10 +438,9 @@ function _on_roi_crop(scene::Ptr{Cvoid}, kind::String, rectstr::String)::Cvoid
 		else
 			error("Roi Crop: unknown kind '$k'")
 		end
-		_viewer_log_error(scene, "Cropped $k")
+		_viewer_log_info(scene, "Cropped $k")
 	catch e
-		_viewer_log_error(scene, "Roi Crop FAILED: $(sprint(showerror, e))")
-		@warn "roi_crop: could not crop" exception=(e,)
+		_tool_failed(scene, "Roi Crop", e)
 	end
 	return
 end

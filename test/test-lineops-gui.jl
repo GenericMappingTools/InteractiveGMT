@@ -23,7 +23,7 @@ const SQ2  = [-9.0 37.0; -8.0 37.0; -8.0 38.0; -9.0 38.0; -9.0 37.0]
 
 send(h, cmd, targets = String[]) = IG._on_lineops(h,
 	Base.unsafe_convert(Cstring, Base.cconvert(Cstring,
-		join(vcat(["cmd=" * cmd], ["target$(i)=" * t for (i, t) in enumerate(targets)]), "\n"))))
+		join(vcat(["cmd=" * cmd], ["target$(i)=" * t for (i, t) in enumerate(targets)]), "\n")))) |> (r -> IG._errored(r, "Vector Operations"))
 
 names(h) = [e.name for e in IG._lop_elements(h)]
 

@@ -382,8 +382,7 @@ function _on_floodfill(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "Shape detector ($op) FAILED: $(sprint(showerror, e))")
-		@warn "Shape detector FAILED" op exception=(e,)
+		_tool_failed(scene, "Shape detector ($op)", e)
 		return Cint(0)
 	end
 end

@@ -211,7 +211,6 @@ function _on_dgt(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cint
 		msg = sprint(showerror, e)
 		_dgt_log(dlg, "FAILED: $msg")
 		_viewer_log_error(scene, "DGT LIDAR FAILED: $msg")
-		@warn "DGT LIDAR FAILED" exception=(e,)
 		return Cint(0)
 	end
 end
@@ -294,7 +293,7 @@ function _dgt_footprints(W::Float64, E::Float64, S::Float64, N::Float64,
 			push!(names, id)
 		end
 	catch e
-		@warn "dgt footprints failed" exception=(e,)
+		@tool_error "dgt footprints failed" exception=(e,)
 		return Float64[], String[]
 	end
 	return rects, names

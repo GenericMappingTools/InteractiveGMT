@@ -385,8 +385,7 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		model in (2, 3, 4) && _session_record_illum!(scene, raw)
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "Illumination FAILED: $(sprint(showerror, e))")
-		@warn "Illumination FAILED" exception=(e,)
+		_tool_failed(scene, "Illumination", e)
 		return Cint(0)
 	end
 end

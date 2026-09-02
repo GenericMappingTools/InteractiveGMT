@@ -128,8 +128,7 @@ function _on_grdgradient(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		return _gm3d_deliver(scene, R, title, _get(d, "outfile"), false,
 		                     "grdgradient " * join(("$k=$v" for (k, v) in kw), ' '))
 	catch e
-		_viewer_log_error(scene, "grdgradient FAILED: $(sprint(showerror, e))")
-		@warn "grdgradient FAILED" exception=(e,)
+		_tool_failed(scene, "grdgradient", e)
 		return Cint(0)
 	end
 end

@@ -51,8 +51,7 @@ function _on_grdredpol(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		R = gmt(cmd, G)
 		return _gm3d_deliver(scene, R, "RTP continuous", _get(d, "outfile"), false, cmd)
 	catch e
-		_viewer_log_error(scene, "grdredpol FAILED: $(sprint(showerror, e))")
-		@warn "grdredpol FAILED" exception=(e,)
+		_tool_failed(scene, "grdredpol", e)
 		return Cint(0)
 	end
 end

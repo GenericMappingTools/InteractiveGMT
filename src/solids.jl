@@ -58,8 +58,7 @@ function _on_solid(scene::Ptr{Cvoid}, cname::Cstring)::Cvoid
 					 "GMT $lname  (Qt + VTK)", objname)
 		end
 	catch e
-		_viewer_log_error(scene, "3-D body '$name' FAILED: $(sprint(showerror, e))")
-		@warn "solids: could not build/show '$name'" exception=(e,)
+		_tool_failed(scene, "3-D body '$name'", e)
 	end
 	return
 end

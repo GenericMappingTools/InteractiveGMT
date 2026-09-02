@@ -24,7 +24,7 @@ function _on_open_manual(cname::Cstring)::Cint
 		GMT.display_file(_MANUAL_BASE * page * ".html")
 		return Cint(1)
 	catch e
-		@warn "Open manual page FAILED" exception=(e,)
+		@tool_error "Open manual page FAILED" exception=(e,)
 		return Cint(0)
 	end
 end

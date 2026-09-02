@@ -49,8 +49,7 @@ function _on_grdfilter(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		return _gm3d_deliver(scene, R, "Filtered ($F)", _get(d, "outfile"), false,
 		                     "grdfilter " * join(("$k=$v" for (k, v) in kw), ' '))
 	catch e
-		_viewer_log_error(scene, "grdfilter FAILED: $(sprint(showerror, e))")
-		@warn "grdfilter FAILED" exception=(e,)
+		_tool_failed(scene, "grdfilter", e)
 		return Cint(0)
 	end
 end

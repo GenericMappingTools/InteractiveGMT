@@ -156,10 +156,9 @@ function _on_save(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
 		else
 			error("Save: unknown kind '$kind'")
 		end
-		_viewer_log_error(scene, "Saved $kind -> $path")
+		_viewer_log_info(scene, "Saved $kind -> $path")
 	catch e
-		_viewer_log_error(scene, "Save $kind FAILED: $(sprint(showerror, e))")
-		@warn "save: could not write file" exception=(e,)
+		_tool_failed(scene, "Save $kind", e)
 	end
 	return
 end
@@ -187,10 +186,9 @@ function _on_save_geotiff(scene::Ptr{Cvoid}, rgb::Ptr{UInt8}, w::Cint, h::Cint, 
 		mat = permutedims(view, (3, 2, 1))                    # (row, col, band), owned copy
 		Iout = mat2img(mat; x=[x0, x1], y=[y0, y1], proj4=unsafe_string(proj4), wkt=unsafe_string(wkt))
 		GMT.gdalwrite(outpath, Iout)
-		_viewer_log_error(scene, "Saved geotiff -> $outpath")
+		_viewer_log_info(scene, "Saved geotiff -> $outpath")
 	catch e
-		_viewer_log_error(scene, "Save geotiff FAILED: $(sprint(showerror, e))")
-		@warn "save: could not write screenshot GeoTIFF" exception=(e,)
+		_tool_failed(scene, "Save geotiff", e)
 	end
 	return
 end
@@ -239,8 +237,7 @@ function _on_move(scene::Ptr{Cvoid}, req::Cstring)::Cint
 		end
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "Move to new window FAILED: $(sprint(showerror, e))")
-		@warn "move: could not open new window" exception=(e,)
+		_tool_failed(scene, "Move to new window", e)
 		return Cint(0)
 	end
 end
@@ -363,10 +360,9 @@ function _on_img_stretch(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
 		       _enh_auto_stretch(Isrc)                   # 8-bit: Mirone's 1% stretchlim + imadjust
 		newname = isempty(name) ? "stretched" : "$name (stretched)"
 		_commit_derived_image!(scene, Istr, newname)     # new row in THIS window, source unchecked
-		_viewer_log_error(scene, "Histogram-stretched image -> '$newname'")
+		_viewer_log_info(scene, "Histogram-stretched image -> '$newname'")
 	catch e
-		_viewer_log_error(scene, "Stretch image FAILED: $(sprint(showerror, e))")
-		@warn "img-stretch: could not build stretched image" exception=(e,)
+		_tool_failed(scene, "Stretch image", e)
 	end
 	return
 end

@@ -143,7 +143,7 @@ function _ensure_callbacks()
 		try
 			fn()
 		catch e
-			@warn "InteractiveGMT: registration '$name' failed; that feature will be \"not wired\" in the viewer. Rebuild the DLL (deps/build.bat) and restart Julia if the export is missing." exception=(e,)
+			@tool_error "InteractiveGMT: registration '$name' failed; that feature will be \"not wired\" in the viewer. Rebuild the DLL (deps/build.bat) and restart Julia if the export is missing." exception=(e,)
 		end
 		# PUMP BETWEEN REGISTRATIONS. This whole block runs AFTER the window is already on screen
 		# (every opener calls `_start_pump` once the window exists) and BEFORE the pump Timer's first
@@ -238,7 +238,7 @@ function _gmtwrite_line(tmp::AbstractString, out::AbstractString, ispoly::Bool)
 		end
 		GMT.gmtwrite(String(out), D)
 	catch err
-		@warn "gmtwrite failed to save the line/polygon" out exception=err
+		@tool_error "gmtwrite failed to save the line/polygon" out exception=err
 	finally
 		try; rm(String(tmp); force=true); catch; end
 	end

@@ -240,8 +240,7 @@ function _on_greenspline(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		return ok
 	catch e
-		_viewer_log_error(scene, "greenspline FAILED: $(sprint(showerror, e))")
-		@warn "greenspline FAILED" exception=(e,)
+		_tool_failed(scene, "greenspline", e)
 		return Cint(0)
 	end
 end

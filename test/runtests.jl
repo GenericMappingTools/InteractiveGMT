@@ -96,6 +96,12 @@ end
 
 using Test
 
+# For the length of this run, a failure is RECORDED but not printed as it happens: the negative items
+# provoke ~200 refusals on purpose, and each one screaming a block of @error + backtrace buries the
+# terminal. Nothing is lost — every error still lands in the sink, a test may only claim its own by
+# name, and the two verdict testsets at the bottom PRINT whatever nobody claimed and fail on it.
+InteractiveGMT._TEST_MODE[] = true
+
 @run_package_tests verbose=true filter = ti ->
 	(_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags)) &&
 	(isempty(_ONLY) || occursin(_ONLY, ti.name)) &&
@@ -117,4 +123,16 @@ using Test
 	isempty(bad) || @error "Tools failed with internal errors, not with a refusal a user could " *
 	                       "act on. Each of these is a bug:\n  " * join(bad, "\n  ")
 	@test isempty(bad)
+end
+
+# ...and the wider rule, which is the one that stops a failure hiding: EVERY message in the sink got
+# there because an exception was raised and a `catch` swallowed it. Each one is an ERROR. A test that
+# provokes one CLAIMS it (IG._errored, src/console.jl) — takes it out of the sink and asserts the
+# shape of the failure. What is left at the end of the run is an error nobody expected: it happened,
+# the suite would otherwise have gone green over it, and it fails here instead.
+@testset "no unclaimed errors" begin
+	left = InteractiveGMT._tool_errors()
+	isempty(left) || @error "Errors were raised, caught and never claimed by any test. Each of " *
+	                        "these is a failure that would have passed unnoticed:\n  " * join(left, "\n  ")
+	@test isempty(left)
 end

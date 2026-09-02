@@ -82,8 +82,7 @@ function _on_grdhisteq(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		return _gm3d_deliver(scene, R, title, _get(d, "outfile"), false,
 		                     "grdhisteq " * join(("$k=$v" for (k, v) in kw), ' '))
 	catch e
-		_viewer_log_error(scene, "grdhisteq FAILED: $(sprint(showerror, e))")
-		@warn "grdhisteq FAILED" exception=(e,)
+		_tool_failed(scene, "grdhisteq", e)
 		return Cint(0)
 	end
 end

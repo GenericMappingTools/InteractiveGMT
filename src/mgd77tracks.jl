@@ -146,8 +146,7 @@ function _on_import_gmt(scene::Ptr{Cvoid}, cpath::Cstring, isList::Cint)::Cvoid
 			                       noConvertToPoints=true, noDataTable=true)
 		end
 	catch e
-		_viewer_log_error(scene, "Import *.gmt/*.nc FAILED: $(sprint(showerror, e))")
-		@warn "import gmt/nc: request failed" exception=(e,)
+		_tool_failed(scene, "Import *.gmt/*.nc", e)
 	end
 	return
 end

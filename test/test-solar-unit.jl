@@ -130,7 +130,7 @@ end
 @testitem "solar: refuses what the module cannot do" tags=[:unit, :fast, :solar] begin
 	IG = InteractiveGMT
 	scene = Ptr{Cvoid}(UInt(0x50142201))
-	call(kv) = IG._on_solar(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_solar(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "solar"))
 	# Nothing ticked at all — no terminator, no report, no marker.
 	@test call(["terms=", "sun=0", "marksun=0"]) == 0
 	# A time zone that is not an offset from UTC.

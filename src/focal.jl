@@ -708,8 +708,7 @@ const _FOCAL_LAST = Dict{Ptr{Cvoid}, NamedTuple}()
 # Focal failures MUST be visible: the Errors-tab log (sceneLogError) is silently dropped on a
 # window without the console dock, and even with one the user may never look there — three
 # straight "plotted nothing" bug reports were failures whose reason went to an invisible log.
-_focal_fail(scene, msg) = (_viewer_log_error(scene, msg);
-	ccall(_fn(:gmtvtk_error_box), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), scene, "Focal mechanisms", String(msg)))
+_focal_fail(scene, msg) = _viewer_log_error(scene, msg)
 
 # cparams = "key=value\n…" (the same block format NSWING/Seismicity use -> same parser).
 #
@@ -776,10 +775,10 @@ function _on_focal(scene::Ptr{Cvoid}, cparams::String)::Cvoid
 		                      str2=str2, dip2=dip2, rake2=rake2, plon=plon, plat=plat, date=date, idx=idx)
 		# Save Session: remember the request (newlines escaped to keep it a single manifest value).
 		_session_record!(scene, :focal, :menu; params=Dict{String,Any}("cparams" => replace(cparams, '\n' => '\x1e')))
-		_viewer_log_error(scene, "Focal mechanisms: plotted $(length(idx)) of $(length(lon)) events ($n patches)")
+		_viewer_log_info(scene, "Focal mechanisms: plotted $(length(idx)) of $(length(lon)) events ($n patches)")
 	catch e
 		_focal_fail(scene, "Focal mechanisms FAILED: $(sprint(showerror, e))")
-		@warn "focal: failed" exception=(e, catch_backtrace())
+		@tool_error "focal: failed" exception=(e, catch_backtrace())
 	end
 	return
 end
@@ -803,10 +802,9 @@ function _on_meca_props(scene::Ptr{Cvoid}, groupname::Cstring, cparams::Cstring)
 		n = _focal_plot(scene, d2, orig.lon, orig.lat, orig.dep, orig.mag, orig.str1, orig.dip1, orig.rake1,
 		                 orig.str2, orig.dip2, orig.rake2, orig.plon, orig.plat, orig.date, orig.idx)
 		_FOCAL_LAST[scene] = merge(orig, (d=d2,))
-		_viewer_log_error(scene, "Focal mechanisms: re-plotted with new properties ($n patches)")
+		_viewer_log_info(scene, "Focal mechanisms: re-plotted with new properties ($n patches)")
 	catch e
-		_viewer_log_error(scene, "Focal mechanisms properties FAILED: $(sprint(showerror, e))")
-		@warn "focal props: failed" exception=(e, catch_backtrace())
+		_tool_failed(scene, "Focal mechanisms properties", e)
 	end
 	return
 end

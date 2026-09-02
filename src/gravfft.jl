@@ -198,8 +198,7 @@ function _on_gravfft(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		return _gm3d_deliver(scene, R, title, _get(d, "outfile"), false,
 		                     "gravfft " * join(("$k=$v" for (k, v) in kw), ' '))
 	catch e
-		_viewer_log_error(scene, "gravfft FAILED: $(sprint(showerror, e))")
-		@warn "gravfft FAILED" exception=(e,)
+		_tool_failed(scene, "gravfft", e)
 		return Cint(0)
 	end
 end

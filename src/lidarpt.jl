@@ -226,8 +226,7 @@ function _on_lidar(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		end
 	catch e
 		_lidar_status(dlg, "")
-		_viewer_log_error(scene, "LIDAR2011 PT FAILED: $(sprint(showerror, e))")
-		@warn "lidarpt: request failed" exception=(e,)
+		_tool_failed(scene, "LIDAR2011 PT", e)
 	end
 	return
 end

@@ -138,7 +138,7 @@ end
 @testitem "Interpolate: refuses what it cannot grid" tags=[:unit, :fast] begin
 	IG = InteractiveGMT
 	scene = Ptr{Cvoid}(UInt(0x9D71C0DE))
-	call(kv) = IG._on_interpolate(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n"))))
+	call(kv) = IG._on_interpolate(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "Interpolate"))
 	@test call(["method=surface", "region=0/10/0/10", "inc=1"]) == 0                  # no input file
 	@test call(["method=surface", "infile=no_such_file.xyz", "region=0/10/0/10", "inc=1"]) == 0
 end

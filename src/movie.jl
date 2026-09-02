@@ -384,14 +384,14 @@ function movie(frame!::Function, fig::_MovieFigure;
 			try
 				remove_annotation!(fig, id)
 			catch e
-				@warn "movie: failed to remove an annotation this run created" exception=(e,)
+				@tool_error "movie: failed to remove an annotation this run created" exception=(e,)
 			end
 		end
 		if restore_view && !isempty(initial_state) && isalive(fig)
 			try
 				ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), h, initial_state)
 			catch e
-				@warn "movie: failed to restore the original InteractiveGMT display state" exception=(e,)
+				@tool_error "movie: failed to restore the original InteractiveGMT display state" exception=(e,)
 			end
 		end
 	end
@@ -468,7 +468,7 @@ function movie(fig::_MovieFigure; frames=nothing, T=nothing, restore_view::Bool=
 			try
 				set_layer!(fig, k0)
 			catch e
-				@warn "movie: failed to restore the layer showing before the run" exception=(e,)
+				@tool_error "movie: failed to restore the layer showing before the run" exception=(e,)
 			end
 		end
 	end

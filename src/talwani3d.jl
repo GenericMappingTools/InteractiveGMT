@@ -160,8 +160,7 @@ function _on_talwani3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		return _gm3d_deliver(scene, G, "talwani3d (" * _tal_fieldname(field) * ")", "", false, recipe;
 		                     geographic = _on(d, "geog") ? true : nothing)
 	catch e
-		_viewer_log_error(scene, "talwani3d FAILED: $(sprint(showerror, e))")
-		@warn "talwani3d FAILED" exception=(e,)
+		_tool_failed(scene, "talwani3d", e)
 		return Cint(0)
 	finally
 		if !isempty(tmpout)

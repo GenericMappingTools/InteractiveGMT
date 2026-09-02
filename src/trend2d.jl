@@ -110,8 +110,7 @@ function _on_trend2d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		return Cint(1)
 	catch e
-		_viewer_log_error(scene, "trend2d FAILED: $(sprint(showerror, e))")
-		@warn "trend2d FAILED" exception=(e,)
+		_tool_failed(scene, "trend2d", e)
 		return Cint(0)
 	end
 end
