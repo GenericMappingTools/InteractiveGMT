@@ -97,10 +97,13 @@ $cmake_exe -S $here -B $cmake_dir -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_COMPILER=$cxx -DCMAKE_PREFIX_PATH=$conda_prefix \
     -DQt6_DIR=$qt6_dir -DVTK_DIR=$vtk_dir \
     $cxx_link -DGMTVTK_LINUX_BUNDLE=ON $@
-# Both targets by name, not `all`: `all` would drag in gmtvtk_demo and gmtvtk_test, which this
-# bundle does not ship. igmt is the desktop launcher (deps/src/launcher.c) — the install step below
-# stages it beside the .so, so it must exist by then.
-$cmake_exe --build $cmake_dir --target gmtvtk igmt
+# By name, not `all`: `all` would also drag in gmtvtk_demo, which nothing ships. igmt is the desktop
+# launcher (deps/src/launcher.c) — the install step below stages it beside the .so, so it must exist
+# by then. gmtvtk_test is the test-only twin (same source, GMTVTK_TEST_API defined): it is NOT part
+# of the runtime bundle, but it rides in the rolling .so archive, because without it every test that
+# asserts through the test API can only fail on a machine that did not build the library itself —
+# which is every CI runner.
+$cmake_exe --build $cmake_dir --target gmtvtk igmt gmtvtk_test
 
 # Recreate the staging tree after a successful compile. Otherwise libraries belonging to plugins
 # removed from the bundle policy (WebEngine, QML, SQL, Wayland, etc.) survive forever.
@@ -110,6 +113,11 @@ if [[ $bundle_dir != $igmt_stage_root/build_linux ]]; then
 fi
 rm -rf -- $bundle_dir
 $cmake_exe --install $cmake_dir --prefix $bundle_dir
+
+# The test twin has no install rule — it must never reach a user through the runtime bundle — so it
+# is staged by hand, and BEFORE the strip/patchelf pass below, so it ends up with the same $ORIGIN
+# rpath as its production twin and finds the bundled Qt/VTK sitting beside it.
+cp -f -- $cmake_dir/libgmtvtk_test.so $bundle_dir/
 
 # Conda's shared objects retain large symbol/debug tables. Strip only the staged copies; the
 # libraries in the Conda environment remain untouched.
@@ -167,7 +175,11 @@ needed=$(env -u LD_LIBRARY_PATH ldd $bundle_dir/libgmtvtk.so 2>/dev/null |
 # SHARED_ROOT. The staged tree is no longer under deps/, so the transform renames the single
 # top-level component instead of rewriting a path prefix.
 archive=$igmt_archive
-tar -C $igmt_stage_root --transform='s,^build_linux,deps/build,' -czf $archive build_linux
+# --exclude the test twin: it is staged in this tree only so the strip/patchelf pass reaches it and
+# the ROLLING archive can carry it. The runtime bundle is what a user installs, and the test API has
+# no business on a user's machine.
+tar -C $igmt_stage_root --transform='s,^build_linux,deps/build,' --exclude='libgmtvtk_test.so' \
+    -czf $archive build_linux
 printf '%s\n' Linux_archive_created:$archive
 
 # ...and the rolling one: the .so plus its manifest, and the desktop launcher. Same member paths, so
@@ -177,8 +189,10 @@ printf '%s\n' Linux_archive_created:$archive
 # already has the pinned runtime only ever fetches this one, so leaving the launcher out of it would
 # mean no desktop icon until the next RUNTIME_VERSION bump. It links nothing from the bundle (X11 and
 # libc only), so it cannot desync from the runtime it travels with.
+# libgmtvtk_test.so rides here too — see the target list above. It is the test API's only home, and
+# a runner cannot build it (that needs the Qt/VTK SDK, not the runtime bundle).
 tar -C $igmt_stage_root --transform='s,^build_linux,deps/build,' -czf $igmt_so_archive \
-    build_linux/libgmtvtk.so build_linux/.so_requires build_linux/igmt
+    build_linux/libgmtvtk.so build_linux/.so_requires build_linux/igmt build_linux/libgmtvtk_test.so
 printf '%s\n' Linux_so_archive_created:$igmt_so_archive
 
 # A tarball left by the older scripts sits in the package tree, where nothing Linux belongs.

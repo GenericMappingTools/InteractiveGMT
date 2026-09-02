@@ -21,14 +21,15 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # Explicit combinations, not a cross-product: the two platforms need different arches
+      # (macos-latest runners are Apple silicon), and `deps/build.jl` fetches the matching
+      # gmtvtk-macos-arm64 / gmtvtk-linux-x86_64 asset from the dll-latest release for each.
       matrix:
-        version:
-          - '1.10'
-          - 'pre'
-        os:
-          - ubuntu-latest
-        arch:
-          - x64
+        include:
+          - {version: '1.10', os: ubuntu-latest, arch: x64}
+          - {version: 'pre',  os: ubuntu-latest, arch: x64}
+          - {version: '1.10', os: macos-latest,  arch: aarch64}
+          - {version: 'pre',  os: macos-latest,  arch: aarch64}
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v3
@@ -44,7 +45,9 @@ jobs:
       # libxcb-cursor0 is NOT optional: since Qt 6.5 the xcb platform plugin refuses to load without
       # it, and it is a SYSTEM library — the runtime bundle ships the rest of libxcb but not that one,
       # which is why the plugin was "found" and still failed.
+      # Linux only: macOS has Cocoa, so Qt gets a platform plugin without any of this.
       - name: Virtual display + the Qt/GL system libraries
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -58,7 +61,8 @@ jobs:
       # until now — the reason the GUI half of the package had no coverage at all.
       - uses: julia-actions/julia-runtest@v1
         with:
-          prefix: xvfb-run -a
+          # Xvfb wraps the test process on Linux; on macOS there is nothing to wrap.
+          prefix: ${{ runner.os == 'Linux' && 'xvfb-run -a' || '' }}
         env:
           INTERACTIVEGMT_TEST_GUI: '1'
       - uses: julia-actions/julia-processcoverage@v1

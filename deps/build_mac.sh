@@ -49,10 +49,13 @@ fi
 cmake -S "$here" -B "$cmake_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$prefix;$prefix/opt/vtk;$prefix/opt/qtbase;$prefix/opt/qttools;$prefix/opt/tbb" \
     -DGMTVTK_MACOS_BUNDLE=ON "$@"
-# Both targets by name, not `all`: `all` would drag in gmtvtk_demo and gmtvtk_test, which this
-# bundle does not ship. igmt is the desktop launcher (deps/src/launcher.c) — the install step below
-# stages it beside the dylib, so it must exist by then.
-cmake --build "$cmake_dir" --target gmtvtk igmt
+# By name, not `all`: `all` would also drag in gmtvtk_demo, which nothing ships. igmt is the desktop
+# launcher (deps/src/launcher.c) — the install step below stages it beside the dylib, so it must
+# exist by then. gmtvtk_test is the test-only twin (same source, GMTVTK_TEST_API defined): it is NOT
+# part of the runtime bundle, but it rides in the rolling archive, because a machine that did not
+# build this repo cannot produce it, and without it every test asserting through the test API fails
+# as "not found" — which is every CI runner. Same arrangement as deps/build.sh.
+cmake --build "$cmake_dir" --target gmtvtk igmt gmtvtk_test
 
 # Recreate the staging tree after a successful compile, so a library that the bundle policy dropped
 # (a retired Qt plugin, a VTK module no longer linked) cannot survive forever and keep being loaded
@@ -64,6 +67,11 @@ esac
 rm -rf -- "$pkg_dir"
 mkdir -p "$bundle_dir"
 cmake --install "$cmake_dir" --prefix "$bundle_dir"
+
+# The test twin has no install rule — it must never reach a user through the runtime bundle — so it
+# is staged by hand, BEFORE the relocation pass below, so its own id and dependencies get pointed at
+# the bundle and re-signed exactly like its production twin's.
+cp -f -- "$cmake_dir/libgmtvtk_test.dylib" "$bundle_dir/"
 
 # ---------------------------------------------------------------------------
 # Make it relocatable. Every Mach-O in the bundle: point its own id and each of its dependencies at
@@ -174,7 +182,9 @@ printf '%s\n' macOS_bundle_verified:"$bundle_dir/libgmtvtk.dylib"
     done | sort -u
 } >"$bundle_dir/.dylib_requires"
 
-tar -C "$pkg_dir" -czf "$archive" deps/build
+# --exclude the test twin: it is staged in this tree only so the relocation pass reaches it and the
+# ROLLING archive can carry it. The runtime bundle is what a user installs.
+tar -C "$pkg_dir" --exclude='libgmtvtk_test.dylib' -czf "$archive" deps/build
 printf '%s\n' macOS_archive_created:"$archive"
 
 # ...and the rolling one: the dylib plus its manifest, and the desktop launcher. Same member paths,
@@ -184,6 +194,7 @@ printf '%s\n' macOS_archive_created:"$archive"
 # already has the pinned runtime only ever fetches this one, so leaving the launcher out of it would
 # mean no desktop icon until the next RUNTIME_VERSION bump. It links nothing from the bundle (Cocoa
 # and libSystem only), so it cannot desync from the runtime it travels with.
+# libgmtvtk_test.dylib rides here too — see the target list above; it is the test API's only home.
 tar -C "$pkg_dir" -czf "$lib_archive" deps/build/libgmtvtk.dylib deps/build/.dylib_requires \
-    deps/build/igmt
+    deps/build/igmt deps/build/libgmtvtk_test.dylib
 printf '%s\n' macOS_lib_archive_created:"$lib_archive"

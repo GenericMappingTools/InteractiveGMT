@@ -19,7 +19,11 @@
 
 using InteractiveGMT
 
-const _TEST_LIB = joinpath(InteractiveGMT._PKGROOT, "deps", "build", "gmtvtk_test.dll")
+# The test twin's file name is the platform's, not Windows'. Hardcoding "gmtvtk_test.dll" made every
+# test-API item on Linux and macOS die as "not found" even when the library was right there beside it.
+const _TEST_LIB_NAME = Sys.iswindows() ? "gmtvtk_test.dll" :
+                       Sys.isapple()   ? "libgmtvtk_test.dylib" : "libgmtvtk_test.so"
+const _TEST_LIB = joinpath(InteractiveGMT._PKGROOT, "deps", "build", _TEST_LIB_NAME)
 const _TEST_DLL = Ref{Ptr{Cvoid}}(C_NULL)
 const _TEST_FNS = Dict{Symbol,Ptr{Cvoid}}()
 
@@ -67,7 +71,8 @@ const _TEST_SYMBOLS = (
 
 function _load_test_library()
 	_TEST_DLL[] == C_NULL || return
-	isfile(_TEST_LIB) || error("gmtvtk_test.dll not found at $_TEST_LIB â€” build with deps/build.bat")
+	isfile(_TEST_LIB) || error("$_TEST_LIB_NAME not found at $_TEST_LIB - build it " *
+	                           "(Windows: deps/build.bat, Linux: deps/build.sh)")
 	InteractiveGMT._load_library()             # ensures VTK/Qt toolchain dirs are already on PATH
 	_TEST_DLL[] = Base.Libc.Libdl.dlopen(_TEST_LIB)
 	for s in _TEST_SYMBOLS
@@ -79,7 +84,7 @@ end
 function _test_fn(sym::Symbol)::Ptr{Cvoid}
 	_load_test_library()
 	p = get(_TEST_FNS, sym, C_NULL)
-	p == C_NULL && error("gmtvtk_test.dll missing symbol :$sym")
+	p == C_NULL && error("$_TEST_LIB_NAME missing symbol :$sym")
 	return p
 end
 

@@ -317,7 +317,15 @@ if(GMTVTK_PACKAGE AND WIN32)
   # RUNTIME_VERSION bump.
   install(FILES "$<TARGET_FILE:igmt>" DESTINATION deps/build COMPONENT dll)
 
-  # ...and NOTHING ELSE: the dll-only zip is gmtvtk.dll, alone.
+  # The TEST TWIN rides in the small zip as well, and ONLY in the small zip: it is the sole home of
+  # the gmtvtk_*_test API, and a machine that did not build this repo cannot produce it (that needs
+  # the Qt/VTK SDK, not the runtime bundle). Without it every test asserting through that API fails
+  # as "not found" on any CI runner, which is why the GUI tier could never be run there. Deliberately
+  # NOT in COMPONENT full — the runtime bundle is what a user installs, and the test API has no
+  # business on a user's machine.
+  install(FILES "$<TARGET_FILE:gmtvtk_test>" DESTINATION deps/build COMPONENT dll)
+
+  # ...and NOTHING ELSE: the dll-only zip is gmtvtk.dll, the launcher and the test twin.
   #
   # It used to carry a `_GMTVTK_DLL_EXTRA_MODULES` list as well — any VTK module the PINNED full
   # bundle predated. That existed because the two zips move at different speeds (deps/build.jl):
