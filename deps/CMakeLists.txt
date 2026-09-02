@@ -184,7 +184,9 @@ if(WIN32)
   set_target_properties(igmt PROPERTIES WIN32_EXECUTABLE TRUE)  # no console flash on double-click
   # shell32/ole32/uuid: IShellLink (the .lnk) + SHGetKnownFolderPath. oleaut32: OleLoadPicture,
   # which is what decodes the splash JPEG without pulling in an image library.
-  target_link_libraries(igmt PRIVATE shell32 ole32 oleaut32 uuid shlwapi user32 gdi32)
+  # msimg32: AlphaBlend, for compositing the splash's corner icon over the nebula with real alpha
+  # (the area-averaged bitmap icon_scaled_bitmap builds -- see launcher.c).
+  target_link_libraries(igmt PRIVATE shell32 ole32 oleaut32 uuid shlwapi user32 gdi32 msimg32)
 elseif(APPLE)
   # OBJC is NOT in project(... LANGUAGES C CXX) — only this one file needs it, and asking for it
   # unconditionally would demand an Objective-C compiler on Windows and Linux, which have none.

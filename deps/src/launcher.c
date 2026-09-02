@@ -619,6 +619,93 @@ static unsigned long now_ms(void)
 #ifdef _WIN32
 static IPicture *g_pic;
 static HICON g_icon;
+static HBITMAP g_iconBmp;      /* the icon, area-averaged down to SPLASH_ICON_PX, premultiplied */
+
+/* Shrink an icon to `dst` px square with a BOX FILTER (every source pixel in the block contributes),
+ * and hand back a 32-bit premultiplied DIB ready for AlphaBlend. GDI's own scaling of an icon is a
+ * nearest-neighbour stretch of one .ico frame, which at these sizes is plainly ugly; averaging the
+ * 256 px frame down is what makes the corner icon look like the artwork instead of like a resized
+ * thumbnail.
+ *
+ * Colour is averaged WEIGHTED BY ALPHA and alpha averaged on its own, so the transparent
+ * surroundings (whose RGB is arbitrary) cannot bleed a dark halo into the edge pixels. Returns NULL
+ * on any failure, which simply leaves the caller with no bitmap and the old DrawIconEx path. */
+static HBITMAP icon_scaled_bitmap(HICON ic, int src, int dst)
+{
+	ICONINFO ii;
+	BITMAPINFO bi;
+	HDC dc;
+	unsigned char *sp = NULL, *dp = NULL;
+	HBITMAP out = NULL;
+	int x, y;
+
+	if (!ic || src <= 0 || dst <= 0 || dst > src)
+		return NULL;
+	if (!GetIconInfo(ic, &ii))
+		return NULL;
+	dc = CreateCompatibleDC(NULL);
+	if (!dc) { DeleteObject(ii.hbmColor); DeleteObject(ii.hbmMask); return NULL; }
+
+	ZeroMemory(&bi, sizeof(bi));
+	bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+	bi.bmiHeader.biWidth = src;
+	bi.bmiHeader.biHeight = -src;                 /* top-down, so row 0 is the top */
+	bi.bmiHeader.biPlanes = 1;
+	bi.bmiHeader.biBitCount = 32;
+	bi.bmiHeader.biCompression = BI_RGB;
+	sp = (unsigned char *)malloc((size_t)src * src * 4);
+	if (sp && ii.hbmColor && GetDIBits(dc, ii.hbmColor, 0, src, sp, &bi, DIB_RGB_COLORS)) {
+		/* An old-style icon has no alpha channel: every byte is 0 and the image would vanish. The
+		 * AND mask is what carries transparency there, so fill alpha from it. */
+		int opaque = 0;
+		for (y = 0; y < src * src && !opaque; ++y)
+			if (sp[y * 4 + 3]) opaque = 1;
+		if (!opaque && ii.hbmMask) {
+			unsigned char *mk = (unsigned char *)malloc((size_t)src * src * 4);
+			if (mk && GetDIBits(dc, ii.hbmMask, 0, src, mk, &bi, DIB_RGB_COLORS))
+				for (y = 0; y < src * src; ++y)
+					sp[y * 4 + 3] = mk[y * 4] ? 0 : 255;     /* mask set = transparent */
+			free(mk);
+		}
+
+		bi.bmiHeader.biWidth = dst;
+		bi.bmiHeader.biHeight = -dst;
+		out = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void **)&dp, NULL, 0);
+		if (out && dp) {
+			for (y = 0; y < dst; ++y) {
+				int y0 = y * src / dst, y1 = (y + 1) * src / dst;
+				if (y1 <= y0) y1 = y0 + 1;
+				for (x = 0; x < dst; ++x) {
+					int x0 = x * src / dst, x1 = (x + 1) * src / dst, ix, iy;
+					unsigned long b = 0, g = 0, r = 0, a = 0, n = 0;
+					if (x1 <= x0) x1 = x0 + 1;
+					for (iy = y0; iy < y1; ++iy) {
+						const unsigned char *row = sp + (size_t)iy * src * 4;
+						for (ix = x0; ix < x1; ++ix) {
+							unsigned al = row[ix * 4 + 3];
+							b += row[ix * 4 + 0] * al;      /* colour weighted by alpha... */
+							g += row[ix * 4 + 1] * al;
+							r += row[ix * 4 + 2] * al;
+							a += al;                        /* ...alpha averaged on its own */
+							++n;
+						}
+					}
+					dp[(y * dst + x) * 4 + 3] = (unsigned char)(a / n);
+					/* b,g,r are already sum(colour*alpha); dividing by n gives the PREMULTIPLIED
+					 * value AlphaBlend wants, with no second multiply and no rounding drift. */
+					dp[(y * dst + x) * 4 + 0] = (unsigned char)(b / 255 / n);
+					dp[(y * dst + x) * 4 + 1] = (unsigned char)(g / 255 / n);
+					dp[(y * dst + x) * 4 + 2] = (unsigned char)(r / 255 / n);
+				}
+			}
+		}
+	}
+	free(sp);
+	DeleteDC(dc);
+	if (ii.hbmColor) DeleteObject(ii.hbmColor);
+	if (ii.hbmMask)  DeleteObject(ii.hbmMask);
+	return out;
+}
 
 static void splash_paint(HWND hw)
 {
@@ -647,9 +734,25 @@ static void splash_paint(HWND hw)
 		FillRect(dc, &rc, b);
 		DeleteObject(b);
 	}
-	/* The icon, upper-left corner — the .hta's `img { top:0; left:0; width:120px }`. */
-	if (g_icon)
+	/* The icon, upper-left corner — the .hta's `img { top:0; left:0; width:120px }`. The
+	 * area-averaged bitmap when we managed to build one (see icon_scaled_bitmap), else GDI's own
+	 * stretch of the icon, which is what this always used to do. */
+	if (g_iconBmp) {
+		HDC mdc = CreateCompatibleDC(dc);
+		if (mdc) {
+			BLENDFUNCTION bf;
+			HGDIOBJ ob = SelectObject(mdc, g_iconBmp);
+			bf.BlendOp = AC_SRC_OVER;  bf.BlendFlags = 0;
+			bf.SourceConstantAlpha = 255;  bf.AlphaFormat = AC_SRC_ALPHA;
+			AlphaBlend(dc, 0, 0, SPLASH_ICON_PX, SPLASH_ICON_PX,
+			           mdc, 0, 0, SPLASH_ICON_PX, SPLASH_ICON_PX, bf);
+			SelectObject(mdc, ob);
+			DeleteDC(mdc);
+		}
+	}
+	else if (g_icon) {
 		DrawIconEx(dc, 0, 0, g_icon, SPLASH_ICON_PX, SPLASH_ICON_PX, 0, NULL, DI_NORMAL);
+	}
 
 	{
 		/* \x2026 is the ellipsis, written as a code point on purpose: MSVC reads this file with
@@ -745,12 +848,16 @@ static void splash_load(const char *root)
 	}
 	free(w);
 
-	/* The iGMT icon for the corner. LoadImage picks the best frame in the .ico and scales it. */
+	/* The iGMT icon for the corner. NOT LoadImage at the display size: igmt.ico carries 256, 128,
+	 * 64, 48, 32 and 16 px frames, so asking for anything else (88 before, 75 now) makes GDI take
+	 * the nearest frame -- 64 -- and STRETCH it with no smoothing at all, which is why the corner
+	 * icon looked degraded. Ask for the 256 frame, which exists exactly, and shrink it here with a
+	 * proper area average. */
 	if (splash_image_path(root, "igmt.ico", img, sizeof(img))) {
 		w = wide(img);
-		g_icon = (HICON)LoadImageW(NULL, w, IMAGE_ICON, SPLASH_ICON_PX, SPLASH_ICON_PX,
-		                           LR_LOADFROMFILE);
+		g_icon = (HICON)LoadImageW(NULL, w, IMAGE_ICON, 256, 256, LR_LOADFROMFILE);
 		free(w);
+		g_iconBmp = icon_scaled_bitmap(g_icon, 256, SPLASH_ICON_PX);
 	}
 }
 
