@@ -33,6 +33,24 @@ const _ONLYFILE = strip(get(ENV, "INTERACTIVEGMT_TEST_FILE", ""), [' ', '"', '\'
 # subsystem is reproduced by that subsystem's items, not by its file's other four dozen.
 const _ONLYTAG = strip(get(ENV, "INTERACTIVEGMT_TEST_TAG", ""), [' ', '"', '\''])
 
+# macOS/arm64: GMT picks Accelerate's vDSP for its FFT and SEGFAULTS (signal 11) inside
+# vDSP_fft2d_zip — vDSP_fft2d_zip <- gmtfft_2d_vDSP <- GMT_FFT_2D, all inside libgmt — which kills
+# the whole test process, not just the item that asked. A bug in GMT's C library that no test can
+# survive, so the portable KissFFT backend is selected instead; it gives the same answers.
+#
+# GMT must WRITE the defaults file itself (a hand-written one is refused as "may not be GMT 6
+# compatible", and a refused file changes nothing). `gmtset` writes gmt.conf into the CURRENT
+# directory, which is where GMT looks first — so this holds for the test process wherever it runs,
+# with no dependence on a CI step. Remove once GMT's vDSP path is fixed upstream.
+if Sys.isapple()
+	try
+		InteractiveGMT.GMT.gmt("gmtset GMT_FFT kissfft")
+		@info "tests: GMT_FFT=kissfft (GMT's vDSP FFT segfaults on this platform)"
+	catch e
+		@warn "tests: could not select GMT's KissFFT backend; FFT items may crash" exception=(e,)
+	end
+end
+
 @run_package_tests verbose=true filter = ti ->
 	(_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags)) &&
 	(isempty(_ONLY) || occursin(_ONLY, ti.name)) &&

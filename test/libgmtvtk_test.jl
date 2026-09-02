@@ -75,6 +75,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_set_faultgeom_callback,   # NOT test-only â€” dlsym'd here too so we can mirror the
 	                                  # callback registration into this dll's own global.
 	:gmtvtk_set_euler_callback, :gmtvtk_euler_result,   # same, for the Plates dialogs.
+	:gmtvtk_set_ui_dir,               # ditto: the .ui directory is a file-static override per dll.
 )
 
 function _load_test_library()
@@ -85,6 +86,14 @@ function _load_test_library()
 	_TEST_DLL[] = Base.Libc.Libdl.dlopen(_TEST_LIB)
 	for s in _TEST_SYMBOLS
 		_TEST_FNS[s] = Base.Libc.Libdl.dlsym(_TEST_DLL[], s)
+	end
+	# Mirror the .ui directory into THIS dll, for the same reason the callbacks above are mirrored:
+	# the override is a file-static, so the one InteractiveGMT._load_library() pushed reached the
+	# production library only. Left unset, this dll falls back to the path compiled into it — the
+	# BUILD machine's deps/ui, which does not exist anywhere else — and every dialog it opens through
+	# QUiLoader silently fails to load, which reads as "the hook returned 0".
+	let uidir = joinpath(InteractiveGMT._PKGROOT, "deps", "ui")
+		isdir(uidir) && ccall(_TEST_FNS[:gmtvtk_set_ui_dir], Cvoid, (Cstring,), uidir)
 	end
 	return
 end
