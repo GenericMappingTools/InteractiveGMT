@@ -1,17 +1,24 @@
-// 87_vtkio.cpp — VTK's OWN file formats, read and written natively by VTK.
+// 87_vtkio.cpp — the file formats VTK reads and writes natively.
 //
-// Everything else in iGMT reaches disk through GMT.jl / GDAL on the Julia side; VTK datasets are the
-// one family neither can parse (`gmtread` on a .vtp just errors), so they are caught BEFORE the
-// Julia read path (`_open_spec_into`, src/drop.jl) and handled here instead. `.hdf` / `.h5` are NOT
-// ours — those stay with GDAL; only VTK's own `.vtkhdf` is claimed.
+// Everything else in iGMT reaches disk through GMT.jl / GDAL on the Julia side; these are the
+// families neither can parse (`gmtread` on a .vtp or a .glb just errors), so they are caught BEFORE
+// the Julia read path (`_open_spec_into`, src/drop.jl) and handled here instead. `.hdf` / `.h5` are
+// NOT ours — those stay with GDAL; only VTK's own `.vtkhdf` is claimed.
 //
-// Read covers every VTK dataset type. Two generic readers do the sniffing (one for the whole XML
-// family, one for the legacy family), so there is no per-extension reader table to keep in sync:
+// Read covers every VTK dataset type plus the common 3-D MESH-EXCHANGE formats. Generic readers do
+// the sniffing wherever one exists (the whole XML family, the whole legacy family), so the
+// per-extension table below is as short as the formats allow:
 //
 //   .vti .vtr .vts .vtp .vtu + .pvti/.pvtr/.pvts/.pvtp/.pvtu   vtkXMLGenericDataObjectReader
 //   .vtm .vtmb                                                  vtkXMLMultiBlockDataReader
 //   .vtk (legacy, any dataset type)                             vtkGenericDataObjectReader
 //   .vtkhdf                                                     vtkHDFReader
+//   .ply                                                        vtkPLYReader
+//   .obj                                                        vtkOBJReader
+//   .stl                                                        vtkSTLReader
+//   .off                                                        vtkOFFReader
+//   .byu                                                        vtkBYUReader
+//   .gltf .glb                                                  vtkGLTFReader
 //
 // What arrives is then mapped onto the display paths iGMT ALREADY has — never a new kind of scene
 // object (SACRED_LAW.md: same operation, same function):
@@ -25,6 +32,20 @@
 //
 // A volume, a curvilinear grid or an unstructured mesh is reduced to its bounding SURFACE first
 // (vtkDataSetSurfaceFilter) — the polydata every one of those paths speaks.
+//
+// The mesh-exchange formats need nothing else: every one of them hands back plain vtkPolyData (or,
+// for glTF, a multiblock of it), which is exactly what `vtkioFromPolyData` already consumes. They
+// are NOT a second import path — adding one would be the fork SACRED_LAW.md forbids; they are three
+// more lines in the reader table and nothing more.
+//
+// TWO things they brought that the VTK families never exercised, both handled at the read door:
+//   * a SCENE, not a dataset. A glTF file is a whole scene graph and comes back as a multiblock of
+//     many meshes; taking "the first block" (which is right for a .vtm, whose blocks are alternative
+//     representations of one thing) would display one chair out of a room. `vtkioResolveDataSet`
+//     MERGES the leaves instead — see there for when it does not.
+//   * a different UP AXIS. glTF is Y-up by specification; iGMT, like every VTK scene it builds, is
+//     Z-up, so a model read straight in lies on its side. The rotation belongs to the FORMAT, so it
+//     is applied here at the read door (`vtkioYUpToZUp`) and nowhere downstream.
 
 // What a VTK file turned into, ready to hand to an existing iGMT builder. Exactly one of the four
 // kinds is filled; `detail` is a short human description for the status bar.
@@ -42,24 +63,73 @@ struct VtkIoLoad {
 	std::string detail;
 };
 
-// Is this path one of VTK's own formats? Deliberately EXCLUDES .hdf / .h5 (plain HDF5 rasters keep
-// going to GDAL) while claiming VTK's own .vtkhdf.
+// Is this path one this file reads? VTK's own formats plus the mesh-exchange ones. Deliberately
+// EXCLUDES .hdf / .h5 (plain HDF5 rasters keep going to GDAL) while claiming VTK's own .vtkhdf.
+// Mirrors `_VTK_EXTS` (src/drop.jl), which is the list that actually routes a dropped file here;
+// both must gain an extension together or the C side reads one the Julia side never sends.
 static bool vtkioIsVtkPath(const std::string &path) {
 	const int dot = (int)path.find_last_of('.');
 	if (dot < 0) return false;
 	QString ext = QString::fromStdString(path.substr(dot + 1)).toLower();
 	static const char *kExts[] = { "vtk", "vti", "vtr", "vts", "vtp", "vtu", "vtm", "vtmb",
-	                               "pvti", "pvtr", "pvts", "pvtp", "pvtu", "vtkhdf" };
+	                               "pvti", "pvtr", "pvts", "pvtp", "pvtu", "vtkhdf",
+	                               // NOT ".g": BYU's own extension, but also BRL-CAD's, and claiming
+	                               // it would swallow files VTK cannot read. ".byu" is unambiguous.
+	                               "ply", "obj", "stl", "off", "byu", "gltf", "glb" };
 	for (const char *e : kExts) if (ext == QLatin1String(e)) return true;
 	return false;
 }
 
-// Read the file with the reader that matches its family. Returns null + `err` on failure.
-static vtkSmartPointer<vtkDataObject> vtkioReadFile(const std::string &path, std::string &err) {
+// Read the file with the reader that matches its family. Returns null + `err` on failure. `yUp` is
+// set when the FORMAT declares a Y-up scene (glTF), so the caller can put the model upright without
+// this function having to know what a scene is built from.
+static vtkSmartPointer<vtkDataObject> vtkioReadFile(const std::string &path, std::string &err,
+                                                    bool &yUp) {
 	const int dot = (int)path.find_last_of('.');
 	const QString ext = dot < 0 ? QString() : QString::fromStdString(path.substr(dot + 1)).toLower();
 	vtkSmartPointer<vtkDataObject> out;
-	if (ext == "vtkhdf") {
+	yUp = false;
+	if (ext == "ply") {
+		vtkNew<vtkPLYReader> r;
+		r->SetFileName(path.c_str());
+		r->Update();
+		out = r->GetOutput();
+	}
+	else if (ext == "obj") {
+		vtkNew<vtkOBJReader> r;                    // geometry only: an .mtl carries no geometry, and
+		r->SetFileName(path.c_str());              // colour/texture is not a thing a mesh layer wears yet
+		r->Update();
+		out = r->GetOutput();
+	}
+	else if (ext == "stl") {
+		vtkNew<vtkSTLReader> r;
+		r->SetFileName(path.c_str());
+		r->Update();
+		out = r->GetOutput();
+	}
+	else if (ext == "off") {
+		vtkNew<vtkOFFReader> r;
+		r->SetFileName(path.c_str());
+		r->Update();
+		out = r->GetOutput();
+	}
+	else if (ext == "byu") {
+		vtkNew<vtkBYUReader> r;
+		r->SetGeometryFileName(path.c_str());      // BYU splits geometry/displacement/scalar/texture
+		r->Update();
+		out = r->GetOutput();
+	}
+	else if (ext == "gltf" || ext == "glb") {
+		vtkNew<vtkGLTFReader> r;
+		r->SetFileName(path.c_str());
+		// Skin / morph-target transforms baked into the points: a rigged model's REST pose is not
+		// where its geometry sits, and iGMT has no notion of a node hierarchy to apply them later.
+		r->ApplyDeformationsToGeometryOn();
+		r->Update();
+		out = r->GetOutputDataObject(0);
+		yUp = true;                                // glTF §3.3: +Y up, +Z toward the viewer
+	}
+	else if (ext == "vtkhdf") {
 		vtkNew<vtkHDFReader> r;
 		if (!r->CanReadFile(path.c_str())) { err = "not a readable VTKHDF file"; return nullptr; }
 		r->SetFileName(path.c_str());
@@ -86,25 +156,6 @@ static vtkSmartPointer<vtkDataObject> vtkioReadFile(const std::string &path, std
 	}
 	if (!out) err = "VTK reader produced no dataset";
 	return out;
-}
-
-// The dataset to display. A multiblock file yields its first non-empty leaf (a whole composite tree
-// has no single sensible iGMT representation; the leaf count is reported so the user knows).
-static vtkSmartPointer<vtkDataSet> vtkioFirstDataSet(vtkDataObject *obj, int &nblocks) {
-	nblocks = 0;
-	if (!obj) return nullptr;
-	if (vtkDataSet *ds = vtkDataSet::SafeDownCast(obj)) { nblocks = 1; return ds; }
-	vtkMultiBlockDataSet *mb = vtkMultiBlockDataSet::SafeDownCast(obj);
-	if (!mb) return nullptr;
-	vtkSmartPointer<vtkDataSet> first;
-	vtkSmartPointer<vtkCompositeDataIterator> it = mb->NewIterator();
-	for (it->InitTraversal(); !it->IsDoneWithTraversal(); it->GoToNextItem()) {
-		vtkDataSet *ds = vtkDataSet::SafeDownCast(it->GetCurrentDataObject());
-		if (!ds || ds->GetNumberOfPoints() == 0) continue;
-		++nblocks;
-		if (!first) first = ds;
-	}
-	return first;
 }
 
 // Is `c` (n values along one axis) uniformly spaced? A rectilinear/structured axis that is not
@@ -200,6 +251,73 @@ static vtkSmartPointer<vtkPolyData> vtkioAsPolyData(vtkDataSet *ds) {
 	return pd;
 }
 
+// glTF's scene convention is Y-UP (+Y up, +Z toward the viewer); iGMT — and every VTK scene it
+// builds, the axes cube and the gizmo included — is Z-UP. A model read straight in therefore lies on
+// its side. +90 degrees about X is the whole conversion: (x, y, z) -> (x, -z, y).
+//
+// Applied ONCE, here, to the polydata the display paths receive — never inside a builder and never
+// as a camera trick. A rotation living at the read door is a property of the FORMAT; the same
+// rotation living further in would have to be remembered by every builder a mesh can reach, which is
+// the shape SACRED_LAW.md's preference-application law names as the violation.
+static vtkSmartPointer<vtkPolyData> vtkioYUpToZUp(vtkPolyData *pd) {
+	if (!pd) return nullptr;
+	vtkNew<vtkTransform> t;
+	t->RotateX(90.0);
+	vtkNew<vtkTransformPolyDataFilter> f;
+	f->SetTransform(t);
+	f->SetInputData(pd);
+	f->Update();
+	vtkSmartPointer<vtkPolyData> out = f->GetOutput();
+	return (out && out->GetNumberOfPoints() > 0) ? out : vtkSmartPointer<vtkPolyData>(pd);
+}
+
+// The dataset to display, out of whatever the reader produced.
+//
+// A plain dataset is itself. A COMPOSITE is where the two file families genuinely disagree, so this
+// is the one place that decides between them:
+//
+//   * a glTF file is a SCENE — many separate meshes that together ARE the model. Taking the first
+//     leaf would put one chair of a room on screen, so every leaf is reduced to polydata and
+//     APPENDED into one. `merged` says so, and the caller reports it.
+//   * a .vtm whose first leaf is a RASTER (vtkImageData / vtkRectilinearGrid) keeps the old answer,
+//     that first leaf: those blocks are a grid, and appending a grid into a polydata soup would
+//     throw away the very structure `vtkioAsGrid` exists to recognise.
+//
+// Either way `nblocks` is the number of non-empty leaves, so the detail line can say what was in
+// the file rather than what happened to be shown.
+static vtkSmartPointer<vtkDataSet> vtkioResolveDataSet(vtkDataObject *obj, int &nblocks, bool &merged) {
+	nblocks = 0;
+	merged = false;
+	if (!obj) return nullptr;
+	if (vtkDataSet *ds = vtkDataSet::SafeDownCast(obj)) { nblocks = 1; return ds; }
+	vtkCompositeDataSet *cds = vtkCompositeDataSet::SafeDownCast(obj);
+	if (!cds) return nullptr;
+	std::vector<vtkSmartPointer<vtkDataSet>> leaves;
+	auto it = vtk::TakeSmartPointer(cds->NewIterator());
+	for (it->InitTraversal(); !it->IsDoneWithTraversal(); it->GoToNextItem())
+		if (vtkDataSet *ds = vtkDataSet::SafeDownCast(it->GetCurrentDataObject()))
+			if (ds->GetNumberOfPoints() > 0) leaves.push_back(ds);
+	nblocks = (int)leaves.size();
+	if (leaves.empty()) return nullptr;
+	if (nblocks == 1) return leaves[0];
+	if (vtkImageData::SafeDownCast(leaves[0]) || vtkRectilinearGrid::SafeDownCast(leaves[0]))
+		return leaves[0];                        // a raster composite: the grid path owns this
+	vtkNew<vtkAppendPolyData> app;
+	int nin = 0;
+	for (auto &ds : leaves) {
+		vtkSmartPointer<vtkPolyData> pd = vtkioAsPolyData(ds);
+		if (!pd || pd->GetNumberOfPoints() == 0) continue;
+		app->AddInputData(pd);
+		++nin;
+	}
+	if (nin == 0) return leaves[0];
+	app->Update();
+	vtkSmartPointer<vtkPolyData> out = app->GetOutput();
+	if (!out || out->GetNumberOfPoints() == 0) return leaves[0];
+	merged = true;
+	return out;
+}
+
 // Fill `out` from a polydata: polygon cells -> Mesh, else line cells -> Lines, else -> Points.
 static bool vtkioFromPolyData(vtkPolyData *pd, VtkIoLoad &out, std::string &err) {
 	if (!pd || pd->GetNumberOfPoints() == 0) { err = "dataset has no points"; return false; }
@@ -272,18 +390,27 @@ static bool vtkioFromPolyData(vtkPolyData *pd, VtkIoLoad &out, std::string &err)
 
 // Read `path` and classify it. false + `err` on any failure.
 static bool vtkioLoad(const std::string &path, VtkIoLoad &out, std::string &err) {
-	vtkSmartPointer<vtkDataObject> obj = vtkioReadFile(path, err);
+	bool yUp = false;
+	vtkSmartPointer<vtkDataObject> obj = vtkioReadFile(path, err, yUp);
 	if (!obj) return false;
 	int nblocks = 0;
-	vtkSmartPointer<vtkDataSet> ds = vtkioFirstDataSet(obj, nblocks);
+	bool merged = false;
+	vtkSmartPointer<vtkDataSet> ds = vtkioResolveDataSet(obj, nblocks, merged);
 	if (!ds || ds->GetNumberOfPoints() == 0) { err = "VTK file holds no point data"; return false; }
-	if (vtkioAsGrid(ds, out)) {
-		if (nblocks > 1) out.detail += QString(" (block 1 of %1)").arg(nblocks).toStdString();
+	// What the composite turned into, said once so both branches below read the same: either every
+	// block IS on screen, or only the first one is.
+	const std::string blocks = nblocks <= 1 ? std::string()
+	                         : QString(merged ? " (%1 blocks merged)" : " (block 1 of %1)")
+	                           .arg(nblocks).toStdString();
+	if (!yUp && vtkioAsGrid(ds, out)) {           // a Y-up SCENE is never an iGMT grid
+		out.detail += blocks;
 		return true;
 	}
 	vtkSmartPointer<vtkPolyData> pd = vtkioAsPolyData(ds);
+	if (yUp) pd = vtkioYUpToZUp(pd);
 	if (!vtkioFromPolyData(pd, out, err)) return false;
-	if (nblocks > 1) out.detail += QString(" (block 1 of %1)").arg(nblocks).toStdString();
+	out.detail += blocks;
+	if (yUp) out.detail += " (glTF Y-up rotated to Z-up)";
 	return true;
 }
 

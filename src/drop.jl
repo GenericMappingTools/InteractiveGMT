@@ -167,8 +167,9 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 		_drop_into(scene, D, name; promote=empty, source=String(spec))
 		return
 	end
-	# VTK's OWN formats (.vtp/.vti/.vtr/.vts/.vtu/.vtm/.vtk/.vtkhdf + the .pvt* parallel forms) are the
-	# one family neither GMT nor GDAL can parse -- `gmtread` just errors on them. VTK reads them
+	# VTK's OWN formats (.vtp/.vti/.vtr/.vts/.vtu/.vtm/.vtk/.vtkhdf + the .pvt* parallel forms) and the
+	# 3-D mesh-exchange ones (.ply/.obj/.stl/.off/.g/.gltf/.glb) are what neither GMT nor GDAL can
+	# parse -- `gmtread` just errors on them. VTK reads them
 	# natively, so they are caught HERE and handed to the DLL (gmtvtk_open_vtk_h -> 87_vtkio.cpp),
 	# which classifies the dataset and feeds it to the SAME grid / mesh / overlay builders every other
 	# source uses. `.hdf` / `.h5` are deliberately NOT in this list: plain HDF5 rasters stay on GDAL.
@@ -244,8 +245,16 @@ end
 # ── VTK's own formats ─────────────────────────────────────────────────────────────────────────
 # The extensions VTK reads natively and neither GMT nor GDAL can. `.hdf` / `.h5` are deliberately
 # ABSENT: a plain HDF5 raster is GDAL's, and only VTK's own `.vtkhdf` belongs here.
+#
+# Second group: the 3-D MESH-EXCHANGE formats. Same door, same reason — VTK has a reader, GMT and
+# GDAL do not — and they need nothing new on either side of it: each one hands back polydata, which
+# is what `vtkioFromPolyData` already turns into a mesh / line / point-cloud layer. BYU's own `.g`
+# is deliberately absent — it is BRL-CAD's extension too, and claiming it would swallow files VTK
+# cannot read; `.byu` is unambiguous. Mirrored by `vtkioIsVtkPath` (87_vtkio.cpp); the two lists
+# gain an extension together or a file routes here that the C side will not read.
 const _VTK_EXTS = Set{String}([".vtk", ".vti", ".vtr", ".vts", ".vtp", ".vtu", ".vtm", ".vtmb",
-                               ".pvti", ".pvtr", ".pvts", ".pvtp", ".pvtu", ".vtkhdf"])
+                               ".pvti", ".pvtr", ".pvts", ".pvtp", ".pvtu", ".vtkhdf",
+                               ".ply", ".obj", ".stl", ".off", ".byu", ".gltf", ".glb"])
 
 # Is this path (or "file?var" spec) a VTK-format file? Splits on '?' first for the same reason
 # `_cube_probe` does: splitext of "…nc?var" yields ".nc?var", never ".nc".

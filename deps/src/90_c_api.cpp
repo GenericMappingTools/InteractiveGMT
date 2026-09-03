@@ -7727,7 +7727,8 @@ GMTVTK_API void gmtvtk_aqua_queue_open(void *handle, const char *path) {
 	});
 }
 
-// Open a VTK-format file (.vtp/.vti/.vtr/.vts/.vtu/.vtm/.vtk/.vtkhdf and the .pvt* parallel forms)
+// Open a VTK-readable file (.vtp/.vti/.vtr/.vts/.vtu/.vtm/.vtk/.vtkhdf and the .pvt* parallel forms,
+// plus the 3-D mesh-exchange formats .ply/.obj/.stl/.off/.byu/.gltf/.glb)
 // INTO this window. Neither GMT nor GDAL can parse these, so Julia's `_open_spec_into` catches the
 // extension and routes it here instead of `gmtread` (src/drop.jl); the reading and the classification
 // happen in 87_vtkio.cpp, and the result is handed to the EXACT builders every other data source

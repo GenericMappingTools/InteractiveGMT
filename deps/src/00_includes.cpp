@@ -183,6 +183,7 @@
 #include <vtkStructuredGrid.h>
 #include <vtkUnstructuredGrid.h>
 #include <vtkMultiBlockDataSet.h>
+#include <vtkCompositeDataSet.h>
 #include <vtkCompositeDataIterator.h>
 #include <vtkDataArray.h>
 #include <vtkDoubleArray.h>
@@ -190,6 +191,15 @@
 #include <vtkGenericDataObjectReader.h>
 #include <vtkXMLMultiBlockDataReader.h>
 #include <vtkHDFReader.h>
+// The 3-D mesh-exchange formats 87_vtkio.cpp also claims (.ply/.obj/.stl/.off/.byu/.gltf/.glb).
+// vtkPLYReader alone lives in VTK's IOPLY module; the rest are IOGeometry -- both added to the
+// find_package COMPONENTS in deps/CMakeLists.txt.
+#include <vtkPLYReader.h>
+#include <vtkOBJReader.h>
+#include <vtkSTLReader.h>
+#include <vtkOFFReader.h>
+#include <vtkBYUReader.h>
+#include <vtkGLTFReader.h>
 #include <vtkXMLImageDataWriter.h>
 #include <vtkXMLPolyDataWriter.h>
 #include <vtkXMLStructuredGridWriter.h>

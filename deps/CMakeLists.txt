@@ -101,12 +101,18 @@ find_package(TBB REQUIRED CONFIG)
 find_package(VTK REQUIRED COMPONENTS
   CommonCore CommonDataModel CommonColor CommonTransforms
   FiltersSources FiltersGeneral
-  # 87_vtkio.cpp reads/writes VTK's OWN formats natively — nothing else in the project links a VTK
-  # IO module (all grid/image I/O goes through GMT.jl + GDAL on the Julia side). IOXML covers the
+  # 87_vtkio.cpp reads/writes the formats VTK handles natively — nothing else in the project links a
+  # VTK IO module (all grid/image I/O goes through GMT.jl + GDAL on the Julia side). IOXML covers the
   # XML family (.vti/.vtr/.vts/.vtp/.vtu + the .pvt* parallel forms + .vtm), IOLegacy the old .vtk,
-  # IOHDF the modern .vtkhdf. FiltersGeometry gives vtkDataSetSurfaceFilter, which is how a
-  # structured/unstructured dataset becomes the polydata every iGMT display path already speaks.
-  IOXML IOXMLParser IOLegacy IOHDF
+  # IOHDF the modern .vtkhdf. IOGeometry adds the 3-D mesh-exchange readers (.obj/.stl/.off/.g and
+  # vtkGLTFReader for .gltf/.glb) and IOPLY the .ply one, which is a module of its own.
+  # FiltersGeometry gives vtkDataSetSurfaceFilter, which is how a structured/unstructured dataset
+  # becomes the polydata every iGMT display path already speaks.
+  #
+  # NOTE for packaging: IOGeometry + IOPLY put NEW DLLs in gmtvtk.dll's import closure. Diff that
+  # closure against the published full bundle (check_dll_deps.ps1) before uploading a dll-only zip —
+  # a module missing from the runtime the user already has is a load failure naming nothing useful.
+  IOXML IOXMLParser IOLegacy IOHDF IOGeometry IOPLY
   FiltersGeometry FiltersCore
   RenderingCore RenderingOpenGL2 RenderingAnnotation RenderingFreeType RenderingLOD
   RenderingContext2D RenderingContextOpenGL2
