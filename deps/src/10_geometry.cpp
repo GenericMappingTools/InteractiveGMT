@@ -992,6 +992,11 @@ struct Scene {
 	// element wears, so it rides a hair over the skin instead of z-fighting it. Built from globeXf in
 	// sceneGlobeUpdateTransform, never independently.
 	vtkSmartPointer<vtkGeneralTransform>   globeVecXf;
+	// …and the same mapping with ONLY the hair, for a vector that is CLAMPED TO THE GROUND. A draped
+	// element carries the terrain's own z per vertex, so it needs no ceiling to clear a raster — it IS
+	// on the raster. Both are built side by side in sceneGlobeUpdateTransform, from the same globeXf and
+	// the same formula, differing only in how much lift they ask for.
+	vtkSmartPointer<vtkGeneralTransform>   globeVecGndXf;
 	vtkSmartPointer<vtkTransform>          globeLin;   // its linear half (degrees -> r,phi,theta)
 	// The cube body's transform, when `cube` is up. It lives INSIDE globeXf (which keeps its identity
 	// as the one mapping object every attached filter already holds); this pointer only exists so the
@@ -2009,6 +2014,23 @@ static void sceneGlobeUpdateTransform(Scene *s) {
 	const double lift = 1.0 + (s->globeR > 0.0 ? (zTop * k) / s->globeR : 0.0) + kGlobeVectorLift;
 	s->globeVecXf->Scale(lift, lift, lift);         // about the body's centre = along the radius
 	s->globeVecXf->Modified();
+	// THE CEILING IS FOR A VECTOR THAT HAS NO GROUND OF ITS OWN — a lon/lat line lying at z = 0, which
+	// would otherwise be buried under an image plane or inside the relief. A vector CLAMPED TO THE
+	// GROUND already carries the terrain's z at every vertex (lineSetClamped -> sampleActiveZ, the same
+	// sampler the readout and the profile use), so raising it to the window's global ceiling does not
+	// protect it from anything — it TEARS IT OFF the surface it was just draped onto, by the whole
+	// (zTop - z) of the window: over deep water that is kilometres, and on a cube face, seen close, it
+	// is a coastline hanging in the sky above the sea floor. (Worse there than on the sphere: the lift
+	// is a scale about the centre, and a cube point's radius runs from globeR at a face centre to
+	// globeR*sqrt(3) at a corner, so the same factor lifts by up to sqrt(3) times as much.)
+	// So a grounded vector gets the HAIR ONLY, from the same construction, and nothing else changes.
+	if (!s->globeVecGndXf) s->globeVecGndXf = vtkSmartPointer<vtkGeneralTransform>::New();
+	s->globeVecGndXf->Identity();
+	s->globeVecGndXf->PostMultiply();
+	s->globeVecGndXf->Concatenate(s->globeXf);
+	const double hair = 1.0 + kGlobeVectorLift;
+	s->globeVecGndXf->Scale(hair, hair, hair);
+	s->globeVecGndXf->Modified();
 	s->globeXf->Modified();                         // every attached filter re-executes
 }
 
@@ -2215,13 +2237,30 @@ static vtkSmartPointer<vtkPolyData> globeDensifyPD(vtkPolyData *in, double maxSe
 //
 // A globe-attached actor must sit at scale (1,1,1): its geometry has already been through the
 // transform, which folds in xfac and the VE. applyVE is the one place that decides that.
-// `vec` = a line/points/polygon element: it wears globeVecXf, the same body mapping with the radial
-// lift behind it (see kGlobeVectorLift), so it rides just over the skin instead of fighting it.
-static void globeAttachActor(Scene *s, vtkActor *a, bool on, bool vec = false) {
+// `vec` says WHAT this actor is, and therefore how much lift it needs (sceneGlobeUpdateTransform
+// builds both amounts from the one body mapping):
+//   VEC_NONE (0) — a surface: the body mapping itself, no lift.
+//   VEC_FLAT (1) — a line/points/polygon lying at its own z with no ground under it: the mapping plus
+//                  the lift to the window's raster CEILING, so no raster can bury it.
+//   VEC_GND  (2) — the same, but CLAMPED to the ground: it already carries the terrain's z, so it gets
+//                  the hair only. Lifting it to the ceiling is what tore a draped coastline off the
+//                  surface and left it hanging over the sea floor.
+enum { VEC_NONE = 0, VEC_FLAT = 1, VEC_GND = 2 };
+static void globeAttachActor(Scene *s, vtkActor *a, bool on, int vec = VEC_NONE) {
 	if (!s || !a) return;
 	auto it = s->globeHooks.find(a);
+	// WHICH transform this actor should be wearing right now. Read here, once, so the attach and the
+	// re-check below can never disagree.
+	vtkAbstractTransform *want = s->globeXf.Get();
+	if (vec == VEC_GND  && s->globeVecGndXf) want = s->globeVecGndXf.Get();
+	else if (vec != VEC_NONE && s->globeVecXf) want = s->globeVecXf.Get();
 	if (on) {
 		if (it != s->globeHooks.end()) {
+			// …and if the element's own state has since changed what it should be wearing — "Clamp to
+			// ground" toggled on a line already on the body — re-point it. sceneGlobeSync runs this pass
+			// every frame, so the toggle needs no second code path to reach the transform.
+			if (it->second.filt && it->second.filt->GetTransform() != want)
+				it->second.filt->SetTransform(want);
 			// Already wearing it — but if the refined COPY it is being fed was made from a source that
 			// has changed since (an edited line, an extended ruler), re-make it. Cheap: the check is one
 			// MTime compare, and for the overwhelmingly common case (nothing refined, or nothing changed)
@@ -2242,7 +2281,7 @@ static void globeAttachActor(Scene *s, vtkActor *a, bool on, bool vec = false) {
 		Scene::GlobeHook h;
 		h.savedIn = src;
 		h.filt = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
-		h.filt->SetTransform(vec && s->globeVecXf ? s->globeVecXf.Get() : s->globeXf.Get());
+		h.filt->SetTransform(want);
 		// Densify coarse geometry here and feed the refined copy to the filter: an image plane is a 2x2
 		// quad and a coastline segment can span tens of degrees — both cut straight through the sphere
 		// as chords otherwise.
@@ -3993,15 +4032,18 @@ static void sceneGlobeSync(Scene *s) {
 	if (on) sceneGlobeAimClip(s);
 	for (vtkActor *a : surfActors(s)) globeAttachActor(s, a, on);
 	globeAttachActor(s, s->drape, on);
-	for (auto &ov : s->overlays)  globeAttachActor(s, ov.actor, on, true);
+	// A vector's lift depends on whether it is standing on the ground (clamped) or floating at its own
+	// z — its OWN state, asked per element, not one answer for the whole scene.
+	for (auto &ov : s->overlays)  globeAttachActor(s, ov.actor, on, ov.clamped ? VEC_GND : VEC_FLAT);
 	for (auto &cu : s->curtains)  globeAttachActor(s, cu.actor, on);
 	for (auto &ex : s->extras)  { globeAttachActor(s, ex.actor, on); globeAttachActor(s, ex.drape, on); }
 	globeAttachActor(s, s->profLine, on, true);
 	globeAttachActor(s, s->rbHL, on, true);
 	for (auto &pg : s->polys) {
-		globeAttachActor(s, pg.line, on, true);    globeAttachActor(s, pg.fill, on, true);
-		globeAttachActor(s, pg.faultPlane, on, true);  globeAttachActor(s, pg.faultPlane3D, on, true);
-		globeAttachActor(s, pg.faultArrows, on, true);
+		const int pv = pg.clamped ? VEC_GND : VEC_FLAT;         // same question, asked of the polygon
+		globeAttachActor(s, pg.line, on, pv);      globeAttachActor(s, pg.fill, on, pv);
+		globeAttachActor(s, pg.faultPlane, on, VEC_FLAT);  globeAttachActor(s, pg.faultPlane3D, on, VEC_FLAT);
+		globeAttachActor(s, pg.faultArrows, on, VEC_FLAT);
 	}
 	for (auto &mb : s->mecaBalls) { globeAttachActor(s, mb.anchor, on, true); globeAttachActor(s, mb.anchorDot, on, true); }
 	globeAttachActor(s, s->polyPreview, on, true);

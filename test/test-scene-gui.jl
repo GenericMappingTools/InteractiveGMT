@@ -756,6 +756,75 @@ end
 	end
 end
 
+# A VECTOR CLAMPED TO THE GROUND MUST STAY ON THE GROUND — on the globe and on the cube alike.
+#
+# The bug this exists to stop, verbatim: every vector element on a body wore ONE shared transform
+# whose radial lift raised it to the window's raster CEILING (base zmax / extra zmax / an image plane's
+# zpos). That ceiling is right for a bare lon/lat line lying at z = 0, which must not be buried by a
+# raster — and catastrophic for a line that has just been DRAPED onto the terrain, because it lifts it
+# by the whole (zTop - z) of the window: over deep water, kilometres of drawn height. On a cube it is
+# worse still (the lift is a scale about the centre, and a cube point's radius runs from globeR at a
+# face centre to globeR*sqrt(3) at a corner), which is how it was found: a coastline hanging in the sky
+# over the sea floor of a cubified grid.
+#
+# The measurement is radial and scale-free (gmtvtk_vector_ground_gap_test): for each vertex, the radius
+# the RENDERER draws it at versus the radius of the ground point under it, both through the scene's own
+# body mapping. A hair (kGlobeVectorLift = 0.003) is what a grounded vector may have; the ceiling is a
+# large fraction of the radius on any window with relief, so the two cannot be confused.
+#
+# BOTH halves are asserted, and that is the point: clamped rides the ground, released still clears the
+# rasters. A "fix" that deletes the ceiling passes the first half and fails the second.
+@testitem "body vectors: a clamped line rides the ground, a released one still clears the rasters" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	# Relief with a deep floor AND high ground, so the window's ceiling is far above the terrain the
+	# line is draped on — without that spread the bug has nothing to show.
+	lon = collect(-180.0:2.0:180.0);  lat = collect(-80.0:2.0:80.0)
+	Z = Float32[3000 * sind(2lo) * cosd(la) - 2000 for la in lat, lo in lon]
+	G = GMT.mat2grid(Z; x=lon, y=lat)
+	G.proj4 = "+proj=longlat +datum=WGS84 +no_defs"
+	f = IG.view_grid(G)
+	try
+		# VE 8, deliberately: the ceiling lift is proportional to the DRAWN relief, so at the default
+		# exaggeration on a synthetic grid it is itself only a hair and the two cases would be
+		# indistinguishable — an assertion that cannot separate them proves nothing. Exaggerated once
+		# here, "on the ground" and "at the ceiling" are an order of magnitude apart.
+		ccall(IG._fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), f.h, "ve=8")
+		# The importer's own path: an x,y dataset added and then draped through gmtvtk_line_clamp_h —
+		# the same two steps the Geography menu's coastline takes (geography.jl `_add_geo_overlay`).
+		D = GMT.mat2ds(hcat(collect(-150.0:5.0:150.0), fill(20.0, length(-150.0:5.0:150.0))))
+		@test IG._add_geo_overlay(f.h, D; name="gndline", group="gndline")
+		setclamp(on) = ccall(IG._fn(:gmtvtk_line_clamp_h), Cint,
+		                     (Ptr{Cvoid}, Cstring, Cint), f.h, "gndline", Cint(on))
+		function gap()                      # (nvertices, max gap fraction, mean, the hair constant)
+			out = zeros(Float64, 3)
+			n = ccall(_test_fn(:gmtvtk_vector_ground_gap_test), Cint,
+			          (Ptr{Cvoid}, Cstring, Ptr{Cdouble}), f.h, "gndline", out)
+			(Int(n), out[1], out[2], out[3])
+		end
+		settle() = (for _ in 1:6; IG._pump_once(); end)
+		for mode in (2, 3)                  # 2 = globe, 3 = cube: ONE rule, both bodies
+			@test ccall(IG._fn(:gmtvtk_set_view_mode_h), Cint,
+			            (Ptr{Cvoid}, Cint), f.h, Cint(mode)) == 1
+			settle()
+			n, worst, _, hair = gap()
+			@test n > 0                     # the element is on the body and was measured
+			@test worst <= 2 * hair         # …and it is standing ON the ground, not above it
+			# Released: no ground of its own any more, so the ceiling must take it clear of the rasters.
+			setclamp(0);  settle()
+			nr, worstRel, _, _ = gap()
+			@test nr > 0
+			@test worstRel > 4 * hair
+			# …and clamping it again puts it straight back down, with the body already up (the toggle has
+			# to reach the transform of an actor that is ALREADY hooked).
+			setclamp(1);  settle()
+			_, worstBack, _, _ = gap()
+			@test worstBack <= 2 * hair
+		end
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 # The Cube mode's PROJECTION, checked against PROJ itself rather than against a stored expectation:
 # the viewer's cube is only as good as the table qsccube.jl samples out of `+proj=qsc`, so what has
 # to hold is that a fold-and-interpolate lookup of that table reproduces GDAL/PROJ over the whole

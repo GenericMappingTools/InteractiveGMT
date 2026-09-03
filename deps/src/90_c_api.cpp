@@ -4305,6 +4305,65 @@ GMTVTK_API void gmtvtk_shutdown(void) {
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
 #ifdef GMTVTK_TEST_API
+// test hook: HOW FAR OFF THE GROUND is a vector element standing, ON THE BODY, as the renderer draws
+// it. This is the one measurement that catches the class of bug where a line that has been clamped to
+// the terrain is then lifted away from it by the body's vector transform (the coastline hanging in the
+// sky over the sea floor on a cubified grid).
+//
+// It compares the two radii that must agree, both taken from the SAME objects the render uses:
+//   r_vec  — the vertex as the mapper receives it, i.e. AFTER the transform filter globeAttachActor
+//            spliced in (globeVecXf / globeVecGndXf, whichever this element was given).
+//   r_gnd  — the same source vertex through the body mapping ALONE (Scene::globeXf, no lift). Because
+//            the element is clamped, that source z IS the terrain height there, so this is the point on
+//            the surface the vertex is supposed to be sitting on.
+// The gap is reported as a FRACTION of r_gnd, which is what makes the assertion scale-free: a hair
+// (kGlobeVectorLift) is 0.003, while a lift to the window's raster ceiling is a large fraction of the
+// radius on any window with real relief.
+//
+// `out3` gets { max gap fraction, mean gap fraction, kGlobeVectorLift }. Returns the number of
+// vertices measured, 0 when the name matched nothing, or a negative code: -1 not on a body,
+// -2 the element is not attached to the body, -3 no geometry.
+GMTVTK_API int gmtvtk_vector_ground_gap_test(void *scene, const char *name, double *out3) {
+	// (No sceneAlive() gate: the hooks live in a SECOND library, gmtvtk_test.dll, with its own copy of
+	// every file-static — including the alive-scene registry the host's window was never entered in.
+	// Asking it here answers "no" for a perfectly live window and the hook reports nothing.)
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !name || !out3) return 0;
+	out3[0] = out3[1] = 0.0;  out3[2] = kGlobeVectorLift;
+	if (!s->globe) return -1;
+	const std::string want = name;
+	Overlay *ov = nullptr;
+	for (auto &o : s->overlays)
+		if (o.actor && (o.name == want || o.groupName == want)) { ov = &o; break; }
+	if (!ov) return 0;
+	auto hk = s->globeHooks.find(ov->actor.Get());
+	if (hk == s->globeHooks.end() || !hk->second.filt) return -2;
+	hk->second.filt->Update();
+	vtkPolyData *out = hk->second.filt->GetOutput();
+	vtkPolyData *in  = vtkPolyData::SafeDownCast(hk->second.filt->GetInput());
+	if (!out || !in || !out->GetPoints() || !in->GetPoints()) return -3;
+	const vtkIdType n = std::min(in->GetNumberOfPoints(), out->GetNumberOfPoints());
+	if (n < 1) return -3;
+	if (!s->globeXf) return -3;
+	double sum = 0.0, worst = 0.0;
+	int cnt = 0;
+	const vtkIdType step = (n > 2000) ? (n / 2000) : 1;      // bounded cost on a dense coastline
+	for (vtkIdType i = 0; i < n; i += step) {
+		double src[3], w[3], gnd[3];
+		in->GetPoint(i, src);
+		out->GetPoint(i, w);
+		s->globeXf->TransformPoint(src, gnd);                // the body mapping alone: the ground point
+		const double rg = std::sqrt(gnd[0]*gnd[0] + gnd[1]*gnd[1] + gnd[2]*gnd[2]);
+		const double rv = std::sqrt(w[0]*w[0] + w[1]*w[1] + w[2]*w[2]);
+		if (rg <= 0.0) continue;
+		const double g = std::fabs(rv - rg) / rg;
+		sum += g;  if (g > worst) worst = g;  ++cnt;
+	}
+	if (cnt < 1) return -3;
+	out3[0] = worst;  out3[1] = sum / cnt;
+	return cnt;
+}
+
 // test hook: drive and read back one dock's undock / re-dock, so the dock geometry memory
 // (installDockGeometryMemory, 10_geometry.cpp) is PROVED rather than eyeballed. `name` is the dock's
 // objectName ("panelsDock", "sceneObjectsDock", "messagesDock", "cubeLayerDock").
