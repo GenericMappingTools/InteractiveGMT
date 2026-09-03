@@ -2859,16 +2859,6 @@ static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPo
 		ensureNodeActor(s, n); n->lastUsed = s->lodFrame;   // draw at this LOD
 		for (int k = 0; k < 4; ++k) dropSubtree(s, n->child[k]);   // shed finer detail
 	}
-	else if (s->lodCellsLeft <= 0) {
-		// Out of meshing budget for this pass. Draw THIS (coarser) node instead of descending: the
-		// area stays covered — usually for free, since a coarse ancestor is normally already built —
-		// and the detail is owed to the catch-up pass. This is the whole anti-freeze mechanism: the
-		// recursion stops at the budget instead of meshing a level's worth of tiles inside one
-		// camera event.
-		ensureNodeActor(s, n); n->lastUsed = s->lodFrame;
-		for (int k = 0; k < 4; ++k) dropSubtree(s, n->child[k]);
-		s->lodPending = true;
-	}
 	else {
 		dropNodeActor(s, n);                                 // too coarse -> recurse
 		for (int k = 0; k < 4; ++k) refineNode(s, n->child[k], cam, camPos, vpH, tanHalfFov, parScale, parallel, tau);
@@ -2884,10 +2874,22 @@ static void refineQuadtree(Scene *s) {
 	const double tanHalf = std::tan(vtkMath::RadiansFromDegrees(cam->GetViewAngle() * 0.5));
 	static const bool traceOnce = (g_lodTrace = envFlag("IGMT_LOD_TRACE"));  (void)traceOnce;
 	s->lodFrame++;
-	// ~600 k sampled cells per pass: enough that an ordinary zoom finishes in one go, small enough
-	// that a level-crossing zoom cannot stall the frame. Raise for fewer catch-up passes, lower for a
-	// snappier worst case.
-	s->lodCellsLeft = 600000;
+	// NO PER-PASS CELL CAP. There used to be one ("~600 k sampled cells per pass: enough that an
+	// ordinary zoom finishes in one go"), and that number was picked from timings taken on ONE
+	// machine. It only ever did anything on a machine SLOWER than that one, and what it did there was
+	// bad twice over: refineNode drew the coarse ancestor AND dropSubtree'd the finer tiles already
+	// built, so the catch-up pass had to redo work the budget had just thrown away, and could run out
+	// again -- leaving the surface sitting at a coarse level, visibly fuzzy, until a zoom drove fresh
+	// camera events. On the machine it was tuned on the first pass always fitted, the branch never
+	// ran, and it looked perfect. That is exactly the bug it hid.
+	//
+	// It was also guarding the wrong thing. 917e20a measured the zoom stalls it was meant to prevent
+	// and said so itself: "Zoom stalls on big grids were the per-point CPT mapping, not the LOD" --
+	// fixed by the discretized vtkDiscretizableColorTransferFunction, which stays. Refinement now
+	// always runs to the tau test, so every machine converges to the same picture.
+	//
+	// lodCellsLeft is still counted down (it feeds the IGMT_LOD_TRACE line) but nothing gates on it.
+	s->lodCellsLeft = 0;
 	s->lodPending   = false;
 	const double tPass = g_lodTrace ? lodNowMs() : 0.0;
 	if (g_lodTrace) { g_lodBuilt = g_lodReadd = g_lodCells = 0; g_lodMeshMs = g_lodStyleMs = g_lodMapMs = 0; }
