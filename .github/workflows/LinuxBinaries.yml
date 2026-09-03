@@ -96,10 +96,22 @@ jobs:
       # (the COMPILE_ONLY generator expression); pugixml and patchelf are what deps/build.sh checks
       # for before deciding it has to install anything itself -- with all of them present it never
       # touches the environment.
+      #
+      # PINNED TO 9.6. conda-forge's vtk-base 9.7.0 is broken for this use: it drops the ffmpeg IO
+      # module (as the note above says it should) but still ships a VTK-targets.cmake DECLARING
+      # VTK::IOFFMPEG and pointing it at lib/libvtkIOFFMPEG-9.7.so.9.7, which only the full `vtk`
+      # metapackage contains. find_package(VTK) then dies before a single source file is compiled:
+      #   CMake Error at .../cmake/vtk-9.7/VTK-targets.cmake:6647 (message):
+      #     The imported target "VTK::IOFFMPEG" references the file
+      #       ".../lib/libvtkIOFFMPEG-9.7.so.9.7" but this file does not exist.
+      # Every LinuxBinaries run since this workflow was added failed on exactly that (2026-09-03).
+      # 9.6 is what the project targets anyway -- Windows builds against VTK 9.6.2 and the macOS
+      # runner against Homebrew's 9.6.9.6 -- so the pin also stops the three platforms drifting
+      # apart. Revisit when conda-forge fixes the vtk-base targets file.
       - name: Install build dependencies
         run: |
           conda install -y -c conda-forge --override-channels \
-            vtk-base qt6-main tbb-devel pugixml patchelf 'cmake>=3.27' ninja
+            'vtk-base=9.6.*' qt6-main tbb-devel pugixml patchelf 'cmake>=3.27' ninja
 
       # IGMT_CONDA_PREFIX, not the ambient CONDA_PREFIX: deps/build.sh prefers the explicit one
       # precisely so a shell that happens to have another environment activated cannot change which
