@@ -102,20 +102,19 @@ jobs:
       # that lives in the separate vtk-io-ffmpeg package. vtk-config.cmake includes the targets file
       # wholesale, so find_package(VTK) dies before a single source file is compiled, whatever
       # COMPONENTS are asked for:
-      #   CMake Error at .../cmake/vtk-9.6/VTK-targets.cmake:6556 (message):
+      #   CMake Error at .../cmake/vtk-9.7/VTK-targets.cmake:6647 (message):
       #     The imported target "VTK::IOFFMPEG" references the file
-      #       ".../lib/libvtkIOFFMPEG-9.6.so.9.6" but this file does not exist.
-      # Every LinuxBinaries run since the workflow was added failed on exactly that. NOT a 9.7
-      # regression -- 9.6.2 does it too (verified 2026-09-03 by pinning and re-running); the module
-      # is simply never linked into libgmtvtk.so, it only has to EXIST for the config to parse.
+      #       ".../lib/libvtkIOFFMPEG-9.7.so.9.7" but this file does not exist.
+      # Every LinuxBinaries run since the workflow was added failed on exactly that. It is not
+      # version-specific: 9.6.2 fails identically (checked 2026-09-03). The module is never linked
+      # into libgmtvtk.so -- it only has to EXIST for the config to parse.
       #
-      # Pinned to 9.6 to match the other two platforms: Windows builds against VTK 9.6.2 and the
-      # macOS runner against Homebrew's 9.6.9.6. Both packages must carry the SAME pin or conda
-      # resolves them to different VTK versions and the targets file dangles again.
+      # NO VERSION PIN, deliberately. Take whatever conda-forge resolves; do not tie CI to the VTK
+      # that happens to sit on any one developer's machine.
       - name: Install build dependencies
         run: |
           conda install -y -c conda-forge --override-channels \
-            'vtk-base=9.6.*' 'vtk-io-ffmpeg=9.6.*' qt6-main tbb-devel pugixml patchelf 'cmake>=3.27' ninja
+            vtk-base vtk-io-ffmpeg qt6-main tbb-devel pugixml patchelf 'cmake>=3.27' ninja
 
       # IGMT_CONDA_PREFIX, not the ambient CONDA_PREFIX: deps/build.sh prefers the explicit one
       # precisely so a shell that happens to have another environment activated cannot change which
