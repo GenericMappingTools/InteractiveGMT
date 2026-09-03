@@ -766,6 +766,10 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 		isempty(blob) || push!(files, (entry, Vector{UInt8}(codeunits(blob))))
 	end
 	_zip_write(path, files)
+	# A saved session is a file the user opens again — it goes in Recent Files (cat 3 = Sessions),
+	# exactly like every successful open does. Saved AND loaded sessions both register, so a session
+	# is reachable from the menu straight after writing it, not only after loading it once.
+	ccall(_fn(:gmtvtk_add_recent), Cvoid, (Cstring, Cint), abspath(String(path)), Cint(3))
 	return path
 end
 
@@ -1034,6 +1038,10 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 		if fig !== nothing && haskey(entries, "drawn/faults.txt")
 			ccall(_fn(:gmtvtk_refresh_fault_planes), Cvoid, (Ptr{Cvoid},), getfield(fig, :h))
 		end
+		# Loaded session -> Recent Files (cat 3 = Sessions), the same registration a successful open
+		# of any other file does. Here, not in the callback wrapper, so EVERY route lands it: the File
+		# > Load Session menu, a dropped .igmtz, the Recent Files entry itself, and the console helper.
+		ccall(_fn(:gmtvtk_add_recent), Cvoid, (Cstring, Cint), abspath(String(path)), Cint(3))
 		return fig
 	finally
 		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())

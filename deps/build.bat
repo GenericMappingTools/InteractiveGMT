@@ -63,8 +63,17 @@ REM "ninja: no work to do." is SUCCESS, not a failure: every output is already n
 REM source. Only deps/src/gmtvtk.cpp and deps/src/mbgrid.c are compiled -- the numbered fragments
 REM (00_includes.cpp, 70_window.cpp, ...) are #included into gmtvtk.cpp -- so to force a rebuild,
 REM touch deps/src/gmtvtk.cpp.
-"%CMAKE%" --build "%~dp0build"
-if not errorlevel 1 goto :done
+REM DO NOT trust `cmake --build`'s exit code on its own. MEASURED on this toolchain (VS18's cmake +
+REM ninja): a link that dies with LNK1104 prints
+REM     FAILED: [code=4294967295] gmtvtk.dll gmtvtk.lib
+REM     ninja: build stopped: subcommand failed.
+REM and `cmake --build` STILL exits 0. That is how this script printed "[build] OK" over a build
+REM that produced no new library, the retry below never ran, and a STALE dll went on being run and
+REM tested as if it were the code just edited. So ninja's own words are the verdict, not the exit
+REM code: :dobuild sets BUILD_BAD from either.
+set "BUILDLOG=%TEMP%\igmt_build_%RANDOM%%RANDOM%.log"
+call :dobuild
+if not defined BUILD_BAD goto :done
 
 REM A link that fails with LNK1104 "cannot open file 'gmtvtk.dll'" means the library is mapped by a
 REM running process (an iGMT window, or a Julia session that has loaded it). Windows refuses to
@@ -75,10 +84,11 @@ set "STAMP=%RANDOM%%RANDOM%"
 for %%F in (gmtvtk.dll gmtvtk_test.dll) do (
     if exist "%~dp0build\%%F" ren "%~dp0build\%%F" "%%F.old-!STAMP!" 2>nul
 )
-"%CMAKE%" --build "%~dp0build"
-if errorlevel 1 (
+call :dobuild
+if defined BUILD_BAD (
     echo [build] ERROR: build failed. If it is still LNK1104, close any running iGMT window or
     echo [build]        Julia session that has gmtvtk.dll loaded, then run this again.
+    del /q "%BUILDLOG%" 2>nul
     exit /b 1
 )
 
@@ -86,6 +96,19 @@ if errorlevel 1 (
 REM Sweep the displaced copies from this run and any earlier one. A file still mapped by a live
 REM process cannot be unlinked; skip it silently, the next run gets it.
 del /q "%~dp0build\*.old-*" 2>nul
+del /q "%BUILDLOG%" 2>nul
 echo [build] OK
 endlocal
+exit /b 0
+
+REM ---------------------------------------------------------------- one build attempt
+REM Runs cmake --build, prints everything it printed, and sets BUILD_BAD if the attempt failed --
+REM by exit code OR by ninja saying so, because the exit code alone lies (see above). "ninja: no
+REM work to do." is untouched by this: it prints neither marker, so it stays a success.
+:dobuild
+set "BUILD_BAD="
+"%CMAKE%" --build "%~dp0build" > "%BUILDLOG%" 2>&1
+if errorlevel 1 set "BUILD_BAD=1"
+type "%BUILDLOG%"
+findstr /c:"ninja: build stopped" /c:"FAILED:" "%BUILDLOG%" >nul 2>&1 && set "BUILD_BAD=1"
 exit /b 0

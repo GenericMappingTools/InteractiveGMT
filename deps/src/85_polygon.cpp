@@ -1096,18 +1096,6 @@ static void nestNearest(double v0, double inc, int n, double pt, double &val, in
 	idx = i; val = v0 + i * inc;
 }
 
-// Snap pt to a parent node in one direction: dir<0 floors (node <= pt), dir>0 ceils (node >= pt),
-// clamped to [0, n-1]. Used so a nested rect rounds OUTWARD to enclose the drawn box — nearest-node
-// rounding on both edges can land them on the same node and collapse the rect to zero width.
-static void nestSnapDir(double v0, double inc, int n, double pt, int dir, double &val, int &idx) {
-	if (inc == 0.0 || n < 1) { val = v0; idx = 0; return; }
-	double r = (pt - v0) / inc;
-	int i = dir < 0 ? (int)std::floor(r) : (int)std::ceil(r);
-	if (i < 0) i = 0;
-	if (i > n - 1) i = n - 1;
-	idx = i; val = v0 + i * inc;
-}
-
 // Axis-aligned bbox of a polygon ring.
 static void nestBBox(const Polygon &pg, double &x0, double &x1, double &y0, double &y1) {
 	x0 = y0 = 1e300; x1 = y1 = -1e300;
@@ -1124,7 +1112,12 @@ static void nestSetRect(Scene *s, Polygon &pg, double x0, double x1, double y0, 
 }
 
 // Re-quantize the whole nested chain. parent_lims walk the chain (base grid -> rect 1 -> rect 2 ...).
-static void nestReflow(Scene *s, bool snap) {
+// Faithful port of Mirone's resize2nesting_size (nesting_sizes.m): every rect's edges go to the
+// NEAREST parent node (find_nearest) and are then pushed half a parent cell out / half a child cell
+// in. There is NO rounding in the rule, and no special cases: because nearest-node snapping is
+// idempotent, a rect that already obeys the rule re-derives to exactly itself, so walking the whole
+// chain on any edit leaves every OTHER rect — every ancestor above all — standing where it was.
+static void nestReflow(Scene *s) {
 	std::vector<Polygon*> chain;
 	for (auto &pg : s->polys) if (pg.nestKind == 1) chain.push_back(&pg);
 	if (chain.empty()) return;
@@ -1152,29 +1145,13 @@ static void nestReflow(Scene *s, bool snap) {
 		pg.nestXi = cxi; pg.nestYi = cyi;                 // make the resolved increments concrete
 
 		double rx0, rx1, ry0, ry1; nestBBox(pg, rx0, rx1, ry0, ry1);   // requested (drawn / edited) edges
-		if (!snap) {
-			// Restore: verts loaded from the session are ALREADY snapped. Re-snapping them would round
-			// the half-parent-cell-out edge outward again and grow the rect one parent cell each reflow.
-			// So leave the verts put; just reverse the tx0 = vxmin - parent.xi/2 + cxi/2 offset to recover
-			// the enclosed node indices, and pass this rect on as the next parent.
-			const double vxmin = rx0 + parent.xi / 2 - cxi / 2, vxmax = rx1 - parent.xi / 2 + cxi / 2;
-			const double vymin = ry0 + parent.yi / 2 - cyi / 2, vymax = ry1 - parent.yi / 2 + cyi / 2;
-			pg.nestIx0 = (int)std::lround((vxmin - parent.x0) / parent.xi);
-			pg.nestIx1 = (int)std::lround((vxmax - parent.x0) / parent.xi);
-			pg.nestIy0 = (int)std::lround((vymin - parent.y0) / parent.yi);
-			pg.nestIy1 = (int)std::lround((vymax - parent.y0) / parent.yi);
-			parent = { rx0, rx1, ry0, ry1, cxi, cyi };
-			continue;
-		}
 		const int pnx = (int)std::lround((parent.x1 - parent.x0) / parent.xi) + 1;
 		const int pny = (int)std::lround((parent.y1 - parent.y0) / parent.yi) + 1;
 		double vxmin, vxmax, vymin, vymax; int ixmin, ixmax, iymin, iymax;
-		nestSnapDir(parent.x0, parent.xi, pnx, rx0, -1, vxmin, ixmin);   // round outward so the rect
-		nestSnapDir(parent.x0, parent.xi, pnx, rx1, +1, vxmax, ixmax);   // always encloses the drawn box
-		nestSnapDir(parent.y0, parent.yi, pny, ry0, -1, vymin, iymin);   // and never collapses to zero
-		nestSnapDir(parent.y0, parent.yi, pny, ry1, +1, vymax, iymax);
-		if (ixmax <= ixmin) { if (ixmin > 0) { ixmin--; vxmin -= parent.xi; } else if (ixmax < pnx - 1) { ixmax++; vxmax += parent.xi; } }
-		if (iymax <= iymin) { if (iymin > 0) { iymin--; vymin -= parent.yi; } else if (iymax < pny - 1) { iymax++; vymax += parent.yi; } }
+		nestNearest(parent.x0, parent.xi, pnx, rx0, vxmin, ixmin);   // find_nearest on all four edges
+		nestNearest(parent.x0, parent.xi, pnx, rx1, vxmax, ixmax);   // (nesting_sizes.m). Two edges on
+		nestNearest(parent.y0, parent.yi, pny, ry0, vymin, iymin);   // the same node still give a rect
+		nestNearest(parent.y0, parent.yi, pny, ry1, vymax, iymax);   // one parent cell wide, below.
 		const double tx0 = vxmin - parent.xi / 2 + cxi / 2;   // half parent cell out, half child cell in
 		const double tx1 = vxmax + parent.xi / 2 - cxi / 2;
 		const double ty0 = vymin - parent.yi / 2 + cyi / 2;

@@ -21357,9 +21357,12 @@ static void addRecentFile(const char *cpath, int cat) {
 static void populateRecentMenu(QMenu *menu, Scene *s) {
 	loadRecent();
 	menu->clear();
-	static const char *kCatName[3] = { "Grids", "Images", "Datasets" };
+	// cat 3 = SESSIONS (.igmtz). A saved session is a file the user opens again like any other — it
+	// belongs in Recent Files, under its own heading. Re-opening one needs nothing special here: the
+	// action below routes through the drop path, and drop.jl sends a .igmtz to the session loader.
+	static const char *kCatName[4] = { "Grids", "Images", "Datasets", "Sessions" };
 	bool any = false;
-	for (int c = 0; c < 3; ++c) {
+	for (int c = 0; c < 4; ++c) {
 		bool header = false;
 		for (const RecentItem &r : g_recent) {
 			if (r.cat != c) continue;

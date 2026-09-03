@@ -707,7 +707,7 @@ static void polyRebuildFill(Scene *s, Polygon &pg);                         // r
 static int  polyIndexOfActor(Scene *s, vtkActor *a);                        // index of polygon whose line==a, or -1 (55)
 static bool lineClosedRing(Scene *s, const LineRef &lr);                    // closed polygon ring? (55)
 static int  polyHitPolygon(Scene *s, int x, int y, double tol);             // polygon under cursor? (85)
-static void nestReflow(Scene *s, bool snap = true);                         // re-quantize "Nested grids" chain (85); snap=false = don't move verts, only recompute indices (restore)
+static void nestReflow(Scene *s);                                            // re-quantize "Nested grids" chain (85); idempotent, so untouched rects (ancestors included) stay put
 static void nestNewChild(Scene *s);                                         // append a refined nested child (85)
 static void nestSetRect(Scene *s, Polygon &pg, double x0, double x1, double y0, double y1);  // force a rect's ring to these axis-aligned limits + rebuild (85)
 struct MovieAnno;                                                           // movie -L label / -P indicator (defined below)

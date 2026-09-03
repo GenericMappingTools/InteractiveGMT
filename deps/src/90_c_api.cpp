@@ -3551,8 +3551,9 @@ GMTVTK_API int gmtvtk_add_ruler_h(void *handle, const double *xyz, int npts) {
 // Rebuild a "Nested grids" (tsunami) rectangle from a saved session (inverse of the N record in
 // gmtvtk_serialize_faults). `xy` = npts (x,y) corner pairs; xi/yi = child cell sizes; reg = grid(0)/
 // pixel(1) registration. Recreates the nestKind==1 Polygon exactly as the draw tool would, then runs
-// nestReflow(snap=false) to recompute the chain indices WITHOUT moving the saved (already-snapped)
-// verts — re-snapping them would grow the rect one parent cell per reflow. Returns the polygon index.
+// nestReflow to recompute the chain indices. The saved verts already obey the nesting rule and the
+// snap is idempotent (nearest parent node), so they are re-derived to themselves and the restored
+// rect does not move. Returns the polygon index.
 GMTVTK_API int gmtvtk_add_nested_rect(void *handle, const double *xy, int npts,
                                       double xi, double yi, int reg, const char *name) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -3567,7 +3568,7 @@ GMTVTK_API int gmtvtk_add_nested_rect(void *handle, const double *xy, int npts,
 	pg.stack = s->vecSeq++;
 	s->polys.push_back(pg);
 	applyVectorStacking(s);
-	nestReflow(s, false);                          // restore: keep saved verts, only recompute chain indices
+	nestReflow(s);                                 // idempotent: saved verts already obey the rule, so this only recomputes the chain indices
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return (int)s->polys.size() - 1;
