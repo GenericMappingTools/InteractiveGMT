@@ -425,6 +425,85 @@ _script_capture_call(scene::Ptr{Cvoid}, x0, x1, y0, y1)::String =
 	"InteractiveGMT._display_image(Ptr{Nothing}(UInt(" * string(UInt(scene)) * ")), " *
 	"$(_lit(Float64(x0))), $(_lit(Float64(x1))), $(_lit(Float64(y0))), $(_lit(Float64(y1))))"
 
+# ── the 3-D BODY view modes: spherical (globe) and cubified (QSC cube) ───────────────────────
+# GMT has NO projection for either of these. They are not maps: the globe wraps lon/lat/z onto a
+# sphere and the cube onto PROJ's quadrilateralized spherical cube (`globeXf`, 10_geometry.cpp), and
+# what is on screen is that BODY seen through the window's camera. `grdview` draws a z(x,y) surface
+# under -p and has nothing to draw for a body — pointing it at one is what produced a figure that had
+# no relation to the window at all.
+#
+# So the rule this file already applies per layer to any look GMT cannot reproduce applies to the
+# WHOLE WINDOW here: the pixels on screen are captured and handed to GMT. Not a special case — the
+# same "hand GMT the displayed pixels" answer, at window scope because the thing GMT cannot draw is
+# the window's whole geometry rather than one layer's colours.
+#
+# `-JX` on a PIXEL region, with no frame: the capture is a picture and its axes are its own pixel
+# rows and columns; a lon/lat frame drawn around a globe would be a lie, and `figsize=(w, 0)` lets
+# GMT derive the height so the body is not stretched.
+
+"""
+	_view_image(scene) -> GMTimage
+
+The window's WHOLE rendered view as a GMTimage `grdimage` can plot, at the current camera. Used by
+the globe/cube export, where the per-layer `_display_image` cannot be used: its capture is cut out
+of the screen by projecting a WORLD bbox through the camera, and in these two modes the data
+coordinates are not the world coordinates (they are wrapped onto the body), so that rectangle lands
+nowhere near the picture.
+
+Georeferenced in PIXELS (0..nx, 0..ny), because a perspective view of a 3-D body has no honest map
+georeference — the same reason the script emits it with `-JX` and no frame. Layout is the plottable
+band-planar row-major "TRBa", the one `_display_image` documents.
+"""
+function _view_image(scene::Ptr{Cvoid})
+	haskey(_LIB_FNS, :gmtvtk_capture_view_rgb) ||
+		error("gmtscript: this viewer library has no gmtvtk_capture_view_rgb, so a globe/cube window " *
+		      "cannot be captured — rebuild deps/build/gmtvtk.dll")
+	pRgb = Ref{Ptr{UInt8}}(C_NULL); pW = Ref{Cint}(0); pH = Ref{Cint}(0)
+	ok = ccall(_fn(:gmtvtk_capture_view_rgb), Cint,
+	           (Ptr{Cvoid}, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}), scene, pRgb, pW, pH)
+	ok == 0 && error("gmtscript: could not capture this window's view")
+	nx, ny = Int(pW[]), Int(pH[])
+	try
+		v = unsafe_wrap(Array, pRgb[], (3, nx, ny))    # (band, col, row), C memory, borrowed
+		I = GMT.mat2img(permutedims(v, (2, 3, 1));     # -> (col, row, band), owned: what grdimage plots
+		                x=[0.0, Float64(nx)], y=[0.0, Float64(ny)])
+		I.layout = "TRBa"                              # band-planar, ROW-major, north-first
+		return _georef_image!(I, 0.0, Float64(nx), 0.0, Float64(ny))
+	finally
+		ccall(_fn(:gmtvtk_free_rgb), Cvoid, (Ptr{UInt8},), pRgb[])
+	end
+end
+
+# The call that fetches that picture in the generated script — the SAME function the live sink runs,
+# addressed by the window's own pointer, exactly like `_script_capture_call` above.
+_script_view_capture_call(scene::Ptr{Cvoid})::String =
+	"InteractiveGMT._view_image(Ptr{Nothing}(UInt(" * string(UInt(scene)) * ")))"
+
+# The whole export for a globe/cube window: one capture, one `grdimage`, no frame. The figure-wide
+# context is rewritten to match what is actually emitted (a pixel region on a linear projection, and
+# NO -p / -JZ: the camera is already inside the picture), so the hoisted REG/PROJ consts in the
+# script header describe the call below instead of a map that is not being drawn.
+function _script_body_view!(ctx::ScriptCtx, cube::Bool)
+	I = _view_image(ctx.scene)
+	nx, ny = size(I.image, 1), size(I.image, 2)        # "TRBa": (col, row, band)
+	ctx.region = (0.0, Float64(nx), 0.0, Float64(ny))
+	ctx.proj   = :X
+	ctx.view   = nothing
+	ctx.zsize  = nothing
+	body = cube ? "cubified (QSC cube)" : "spherical (globe)"
+	push!(ctx.notes, "the window is in the $body view mode, which GMT has no projection for: the " *
+	                 "WHOLE VIEW was captured and is drawn as one image — a picture of the window, " *
+	                 "so nothing in it is editable or re-projectable")
+	var = _script_var!(ctx, "I", I)
+	ctx.needs_base64 = true                            # the script asks the live window for the pixels
+	bind = DataBind(var, :capture, _script_view_capture_call(ctx.scene), "")
+	kw = Pair{Symbol,Any}[:region  => ScriptVar(:REG, ctx.region),
+	                      :proj    => ScriptVar(:PROJ, ctx.proj),
+	                      :figsize => (ScriptVar(:FIGSIZE, ctx.figsize), 0),
+	                      :frame   => :none]
+	return ScriptStep[ScriptStep("whole-view capture — $body", DataBind[bind], :grdimage, var, kw, false)]
+end
+
 # One raster layer -> one grdimage/grdview call. `first` carries the figure-wide settings (region,
 # projection, size, frame, and the view/zsize kwargs when the window is tilted); later layers append
 # with `!` and inherit them, exactly as a hand-written GMT.jl script would.
@@ -1074,6 +1153,14 @@ function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false,
 	ctx.dpi = _script_dpi(h, stf)
 	ctx.view  = _script_view(st, stf)
 	ctx.zsize = _script_zsize(ctx, st, stf)
+	# The globe and the cube are 3-D BODIES, not maps, and GMT has no projection for either — so the
+	# whole window is captured and drawn as one image (see `_script_body_view!`). Checked BEFORE the
+	# backdrop branch below because it IS the backdrop for these two modes, correctly framed: that
+	# branch would put a lon/lat frame around a picture of a globe. `viewmode` is the four-state
+	# (0 = 3-D, 1 = flat 2-D, 2 = globe, 3 = cube); a library that predates the key still answers
+	# through the `flat2d` it has always written.
+	vm = Int(get(stf, "viewmode", get(st, "flat2d", 0) == 1 ? 1 : 0))
+	vm >= 2 && return _script_body_view!(ctx, vm == 3), ctx
 	# The guaranteed floor: ONE capture of the whole window, placed under a real frame. Not a
 	# reproduction and never presented as one — but a window made entirely of things GMT cannot draw
 	# (a curtain-heavy 3-D scene) would otherwise export to nothing at all, and an honest picture beats
@@ -1130,6 +1217,11 @@ end
 # the text rendered, so the two sinks cannot drift (and nothing is eval'd).
 _script_resolve(v, cpts::Dict{Symbol,Any}) =
 	v isa ScriptVar ? (v.value === nothing ? get(cpts, v.name, nothing) : v.value) : v
+# A kwarg can be a TUPLE holding one — `figsize=(FIGSIZE, 0)`, the "-JX<w>/0" the globe/cube capture
+# is placed with. The text sink already renders that through `_lit(::Tuple)`; resolving elementwise
+# is the live sink's half of the same thing, so the two sinks stay one emitter. Plain tuples
+# (`view=(az, el)`) pass through unchanged.
+_script_resolve(v::Tuple, cpts::Dict{Symbol,Any}) = map(x -> _script_resolve(x, cpts), v)
 
 """
 	gmtreplay(fig; figsize=15, recompute=false) -> the GMT figure

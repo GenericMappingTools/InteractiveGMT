@@ -6652,7 +6652,46 @@ GMTVTK_API int gmtvtk_capture_rect_databaked(void *handle, double w, double e, d
 	return 1;
 }
 
-// Free a buffer returned by gmtvtk_capture_rect_rgb / gmtvtk_capture_rect_databaked.
+// The WHOLE rendered view as RGB pixels, at the current camera, exactly as it stands on screen.
+//
+// Why this is NOT gmtvtk_capture_rect_rgb with a big rectangle: that one takes a world bbox and
+// projects its corners through the camera to find the pixel rect to cut out, which assumes the data
+// coordinates ARE the world coordinates. In the GLOBE and CUBE view modes they are not -- lon/lat/z
+// is wrapped onto a sphere / a QSC cube by `globeXf` (10_geometry.cpp) -- so those corners land
+// nowhere near the body and the crop is meaningless. There is also nothing to crop TO: a 3-D body
+// seen through the camera is a PICTURE of the window, so the whole viewport is what is wanted.
+//
+// Nothing is hidden either, for the same reason: the caller (the GMT.jl script export's globe/cube
+// path, gmtscript.jl) emits this one image and NOTHING else, so every decoration -- graticule,
+// vectors, labels, colour bar -- has to be IN it, where gmtvtk_capture_rect_rgb must hide them
+// because its caller draws them a second time itself.
+//
+// Caller owns the returned buffer (gmtvtk_free_rgb frees it); the layout is the same (band, col,
+// row) top-row-first one both rect captures hand back. Returns 1 on success, 0 if there is no
+// render window to read.
+GMTVTK_API int gmtvtk_capture_view_rgb(void *handle, unsigned char **outRgb, int *outW, int *outH) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->ren || !s->widget || !s->widget->renderWindow()) return 0;
+	if (!outRgb || !outW || !outH) return 0;
+	s->widget->renderWindow()->Render();
+	vtkNew<vtkWindowToImageFilter> w2i;
+	w2i->SetInput(s->widget->renderWindow());
+	w2i->SetScale(2); w2i->Update();
+	vtkImageData *full = w2i->GetOutput();
+	int dims[3]; full->GetDimensions(dims);
+	if (dims[0] < 2 || dims[1] < 2) return 0;
+	const int cw = dims[0], ch = dims[1];
+	unsigned char *buf = new unsigned char[size_t(cw) * size_t(ch) * 3];
+	for (int row = 0; row < ch; ++row) {
+		auto *src = static_cast<unsigned char*>(full->GetScalarPointer(0, row, 0));
+		std::memcpy(buf + size_t(ch - 1 - row) * size_t(cw) * 3, src, size_t(cw) * 3);  // bottom-up -> top-first
+	}
+	*outRgb = buf; *outW = cw; *outH = ch;
+	return 1;
+}
+
+// Free a buffer returned by gmtvtk_capture_rect_rgb / gmtvtk_capture_rect_databaked /
+// gmtvtk_capture_view_rgb.
 GMTVTK_API void gmtvtk_free_rgb(unsigned char *buf) { delete[] buf; }
 
 // Re-frame ONE RASTER's OWN axes + the camera onto an arbitrary world bbox (x0,x1,y0,y1 -- plain
