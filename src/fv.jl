@@ -139,12 +139,14 @@ function _view_fv(fv::GMTfv, xyz::Vector{Float64}, sides::Vector{Cint}, indices:
 	czp = isempty(cz)      ? Ptr{Cdouble}(C_NULL) : pointer(cz)
 	cgp = isempty(crgb)    ? Ptr{Cdouble}(C_NULL) : pointer(crgb)
 	# gmtvtk_view_fv copies all arrays into VTK during the call -> no keep-alive needed afterwards.
+	# The per-VERTEX RGB slot after `facergb` is a mesh FILE's colouring (87_vtkio.cpp fills it); a
+	# GMTfv colours its FACES, so this door always passes NULL there.
 	h = GC.@preserve xyz sides indices facergb facez cz crgb ccall(_fn(:gmtvtk_view_fv), Ptr{Cvoid},
-		(Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Ptr{Cint}, Ptr{Cuchar}, Ptr{Cdouble},
+		(Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Ptr{Cint}, Ptr{Cuchar}, Ptr{Cuchar}, Ptr{Cdouble},
 		 Ptr{Cdouble}, Ptr{Cdouble}, Cint,
 		 Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
 		 Cint, Cdouble, Cint, Cstring, Cstring),
-		xyz, Cint(nv), sides, Cint(nfaces), indices, fc, fzp,
+		xyz, Cint(nv), sides, Cint(nfaces), indices, fc, Ptr{Cuchar}(C_NULL), fzp,
 		czp, cgp, Cint(ncolor),
 		x0, x1, y0, y1, z0, z1,
 		Cint(geographic), zscale, Cint(edges), title, objname)

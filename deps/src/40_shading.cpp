@@ -682,10 +682,13 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(act->GetMapper());
 	if (!m) return;
 
-	if (!s->useHillshade) {                       // revert to live CPT colouring
-		m->SetScalarModeToUsePointData();         // colour from the active scalars (z)
-		m->SetColorModeToMapScalars();            // through the LUT again
-		m->ScalarVisibilityOn();
+	if (!s->useHillshade) {                       // revert to whatever this geometry's colouring IS
+		// NOT hard-coded to "point data, through the LUT" any more. That is right for a grid and
+		// wrong for every MESH: a per-vertex RGB array pushed through a LUT is mapped by its
+		// MAGNITUDE, so a magenta model rendered as one flat red off the top of the ramp, and a
+		// solid's per-FACE colours were reverted onto point data they do not live on. The mesh doors
+		// set an explicit mode and this ran after them, so it silently won.
+		fvRestoreColorMode(m);                    // 10_geometry.cpp — one decision, every actor
 		return;
 	}
 

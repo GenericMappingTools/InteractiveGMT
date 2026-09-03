@@ -59,6 +59,12 @@ struct VtkIoLoad {
 	// Mesh / Lines / Points (xyz is shared; mesh adds the cell arrays, lines the segment offsets)
 	std::vector<double> xyz;
 	std::vector<int>    sides, indices, segoff;
+	// The mesh's OWN colours, when the file carries them: `vrgb` per vertex (nv*3, 0..255) — PLY's
+	// red/green/blue, glTF COLOR_0, an OBJ's `v x y z r g b` — or `frgb` per face (nfaces*3), which
+	// is what a .vtu/.vtp with cell colours has. At most one is filled (`vtkioColorArray` picks
+	// point data first) and both are empty for a file with no colour, which is then shaded by height
+	// exactly as before.
+	std::vector<unsigned char> vrgb, frgb;
 	double z0 = 0, z1 = 1;
 	std::string detail;
 };
@@ -169,6 +175,64 @@ static bool vtkioAxisUniform(const double *c, int n) {
 	for (int i = 2; i < n; ++i)
 		if (std::fabs((c[i] - c[i - 1]) - step) > tol) return false;
 	return true;
+}
+
+// Is `a` a COLOUR array, and if so what is it, as 0..255 RGB triples?
+//
+// Two spellings, and both have to be recognised or half the formats arrive grey:
+//   * unsigned char, 3 or 4 components -- PLY's red/green/blue(/alpha), a .vtp/.vtu with baked
+//     colours, glTF COLOR_0 when the file stores it as bytes. Taken as-is.
+//   * float/double, 3 or 4 components, NAMED as a colour and entirely inside [0, 1] -- glTF stores
+//     COLOR_0 as normalised floats, and an OBJ's `v x y z r g b` comes back the same way. The name
+//     test is what keeps a real 3-component SCALAR FIELD (a velocity, a displacement) out: those are
+//     not colours no matter what range they happen to fall in, and painting one as RGB would be a
+//     silent lie about the data. Scaled by 255.
+// Alpha is dropped: the mesh path has no per-vertex transparency, and a 4th component fed to a
+// 3-component direct-scalar mapper is not "nearly right", it is a different colour.
+// Empty result = not a colour array, and the caller then leaves the mesh height-shaded.
+static std::vector<unsigned char> vtkioColorArray(vtkDataArray *a, vtkIdType want) {
+	std::vector<unsigned char> out;
+	if (!a || a->GetNumberOfTuples() < want) return out;
+	const int nc = a->GetNumberOfComponents();
+	if (nc != 3 && nc != 4) return out;
+	double scale;
+	if (a->GetDataType() == VTK_UNSIGNED_CHAR) {
+		scale = 1.0;
+	}
+	else if (a->GetDataType() == VTK_FLOAT || a->GetDataType() == VTK_DOUBLE) {
+		const QString nm = QString::fromLatin1(a->GetName() ? a->GetName() : "").toLower();
+		if (!(nm.contains("color") || nm.contains("colour") || nm.contains("rgb"))) return out;
+		for (vtkIdType i = 0; i < want; ++i)
+			for (int c = 0; c < 3; ++c) {
+				const double v = a->GetComponent(i, c);
+				if (!(v >= 0.0 && v <= 1.0)) return out;    // not normalised -> not a colour
+			}
+		scale = 255.0;
+	}
+	else {
+		return out;
+	}
+	out.resize((size_t)want * 3);
+	for (vtkIdType i = 0; i < want; ++i)
+		for (int c = 0; c < 3; ++c) {
+			const double v = a->GetComponent(i, c) * scale;
+			out[(size_t)i * 3 + c] = (unsigned char)std::clamp((int)std::lround(v), 0, 255);
+		}
+	return out;
+}
+
+// The colour array on one attribute set: whatever it marks active first, then any array that passes
+// the test above. Same "active, else scan" rule `vtkioPointScalars` uses for the z scalar -- the two
+// answer different questions about the same data, so they read it the same way.
+static std::vector<unsigned char> vtkioColors(vtkDataSetAttributes *da, vtkIdType want) {
+	if (!da || want <= 0) return std::vector<unsigned char>();
+	std::vector<unsigned char> c = vtkioColorArray(da->GetScalars(), want);
+	if (!c.empty()) return c;
+	for (int i = 0; i < da->GetNumberOfArrays(); ++i) {
+		c = vtkioColorArray(da->GetArray(i), want);
+		if (!c.empty()) return c;
+	}
+	return std::vector<unsigned char>();
 }
 
 // Pull the scalar the file marks active, falling back to the first point array. Null when the
@@ -354,8 +418,22 @@ static bool vtkioFromPolyData(vtkPolyData *pd, VtkIoLoad &out, std::string &err)
 	}
 	if (!out.sides.empty()) {
 		out.kind = VtkIoLoad::Mesh;
-		out.detail = QString("polygon mesh: %1 vertices, %2 faces")
-		             .arg((long long)np).arg((long long)out.sides.size()).toStdString();
+		// The mesh's OWN colours. Per-VERTEX first: point ids are global and stable, so a colour
+		// array indexes the vertices this function just emitted, whatever else the polydata holds.
+		out.vrgb = vtkioColors(pd->GetPointData(), np);
+		if (out.vrgb.empty()) {
+			// Per-FACE only when a cell id IS a face id -- cell data is numbered over verts, then
+			// lines, then polys, then strips, and the loop above also drops any degenerate cell. If
+			// either is true the array does not line up with `sides`, and colouring faces by a
+			// shifted index paints the wrong triangles rather than failing, so it is not attempted.
+			const vtkIdType npoly = pd->GetNumberOfPolys();
+			if (pd->GetNumberOfCells() == npoly && (vtkIdType)out.sides.size() == npoly)
+				out.frgb = vtkioColors(pd->GetCellData(), npoly);
+		}
+		out.detail = QString("polygon mesh: %1 vertices, %2 faces%3")
+		             .arg((long long)np).arg((long long)out.sides.size())
+		             .arg(out.vrgb.empty() ? (out.frgb.empty() ? "" : ", per-face colours")
+		                                   : ", per-vertex colours").toStdString();
 		return true;
 	}
 	if (pd->GetNumberOfLines() > 0) {

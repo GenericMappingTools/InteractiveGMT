@@ -238,13 +238,15 @@ GMTVTK_API int gmtvtk_promote_points_h(void *handle, const double *xyz, int npts
 
 // View an arbitrary GMTfv mesh (solids / polygons; non-blocking). `xyz` = nv vertex triples
 // (true coords); `nfaces` polygon cells given by corner counts sides[nfaces] + flat 0-based
-// corner ids indices[sum(sides)]. `facergb` (nfaces*3, 0..255) gives flat per-face colours;
-// pass null + CPT nodes (cz[ncolor]/crgb[ncolor*3], 0 = built-in ramp) to colour per-vertex by
+// corner ids indices[sum(sides)]. `facergb` (nfaces*3, 0..255) gives flat per-face colours and
+// `vertrgb` (nv*3, 0..255) smooth per-vertex ones (a mesh file's own colours); pass both null +
+// CPT nodes (cz[ncolor]/crgb[ncolor*3], 0 = built-in ramp) to colour per-vertex by
 // z. (x0,x1,y0,y1,z0,z1) is the data bbox (z0,z1 label the Z axis). geographic!=0 -> lon/lat
 // axis titles. zscale = vertical exaggeration (GMTfv.zscale; <=0 -> 1). edges!=0 draws cell
 // wires (toggle live with 'e'). Returns the figure handle (Scene*), valid until the window closes.
 GMTVTK_API void *gmtvtk_view_fv(const double *xyz, int nv, const int *sides, int nfaces,
-								const int *indices, const unsigned char *facergb, const double *facez,
+								const int *indices, const unsigned char *facergb,
+								const unsigned char *vertrgb, const double *facez,
 								const double *cz, const double *crgb, int ncolor,
 								double x0, double x1, double y0, double y1, double z0, double z1,
 								int geographic, double zscale, int edges, const char *title,
@@ -252,14 +254,14 @@ GMTVTK_API void *gmtvtk_view_fv(const double *xyz, int nv, const int *sides, int
 	if (!xyz || nv <= 0 || !sides || !indices || nfaces <= 0)
 		return nullptr;
 	double zmin, zmax;
-	auto pd = makeFvMesh(xyz, nv, sides, nfaces, indices, facergb, facez, zmin, zmax);
-	// Three colouring modes:
-	//   direct : explicit per-face RGB (categorical) -> direct cell colours, NO colorbar.
-	//   cellz  : per-face z scalar through the CPT/CTF -> faceted colours that MATCH the colorbar.
-	//   else   : per-vertex z (smooth) through the CPT -> matches the colorbar (grid-like).
-	const bool   direct = (facergb != nullptr);
-	const bool   cellz  = (!direct && facez != nullptr);
-	const int    nc = direct ? 0 : ncolor;           // direct face colours override any CPT
+	auto pd = makeFvMesh(xyz, nv, sides, nfaces, indices, facergb, vertrgb, facez, zmin, zmax);
+	// Four colouring modes -- see fvApplyColorMode, which owns what each one does to the mapper.
+	// `vdirect` keeps the SMOOTH-normal surface buildAndShow made: per-vertex colours are an
+	// interpolated quantity, and splitting the normals at 30 degrees would facet a scanned model.
+	const bool   direct  = (facergb != nullptr);
+	const bool   vdirect = (!direct && vertrgb != nullptr);
+	const bool   cellz   = (!direct && !vdirect && facez != nullptr);
+	const int    nc = (direct || vdirect) ? 0 : ncolor;   // explicit colours override any CPT
 	const double ve = (zscale > 0.0) ? zscale : 1.0; // GMTfv.zscale already resolves the exaggeration
 	// objname (named solid e.g. "Torus") labels the Scene Objects checkbox; buildAndShow sets it
 	// BEFORE the panel is built so the checkbox is created once with the right name (no overlap).
@@ -267,50 +269,30 @@ GMTVTK_API void *gmtvtk_view_fv(const double *xyz, int nv, const int *sides, int
 	// so it must NOT go through the grid relief normaliser -- that is what flattened solids into
 	// cookies. zscale (= ve) stays the one and only exaggeration. See Scene::fvTrueScale.
 	Scene *s = buildAndShow(pd, x0, x1, y0, y1, z0, z1, 1.0, 1.0, ve,
-							direct ? nullptr : cz, direct ? nullptr : crgb, nc,
+							nc ? cz : nullptr, nc ? crgb : nullptr, nc,
 							nullptr, 0, 0, 0, edges, false, geographic, title, objname,
 							/*imageOnly=*/false, /*gz=*/nullptr, /*gnx=*/0, /*gny=*/0,
 							/*blankStart=*/false, /*openFlat2D=*/false, /*gzLayout=*/0,
 							/*trueScaleMesh=*/true);
 	if (!s)
 		return nullptr;
-	if (direct || cellz) {
-		// Faceted normals (sharp solid edges, split at >30deg), replacing buildAndShow's
-		// smooth-normal surface path. Kept alive by the mapper's input connection.
-		vtkNew<vtkPolyDataNormals> fn;
-		fn->SetInputData(pd);
-		fn->SplittingOn();
-		fn->SetFeatureAngle(30.0);
-		fn->ConsistencyOn();
-		if (auto *m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper())) {
-			m->SetInputConnection(fn->GetOutputPort());
-			m->SetScalarModeToUseCellData();          // colour per FACE (flat), not per vertex
-			// CRITICAL for CELL data: buildAndShow turned InterpolateScalarsBeforeMapping ON (a
-			// POINT-data optimisation — it bakes the LUT into a texture indexed by per-POINT
-			// tcoords). Cell scalars have NO per-point tcoord, so on some GPUs those cells sample
-			// the texture border and render GREY ("grey top row"). Per-cell flat colours MUST map
-			// directly through the LUT, not via the texture -> turn it OFF.
-			m->InterpolateScalarsBeforeMappingOff();
-			if (direct) {
-				m->SetColorModeToDirectScalars();     // RGB straight from the cell array
-				if (s->bar) setColorbarVisible(s, false);  // explicit colours have no z legend
-			}
-			else {
-				m->SetColorModeToMapScalars();        // face-z through the CTF = same as the bar
-				// THE GREY-TOP-ROW BUG: faces at the max z sit AT the colormap's upper limit.
-				// With clamping off (or via the ISBM texture border) a value at/above the top
-				// node maps to grey instead of the top colour -> a grey ring on the torus crest
-				// (the grid hid it: only one peak vertex hits the limit). Force the CTF to CLAMP
-				// so above-range == top colour, below-range == bottom colour, NEVER grey.
-				if (auto *ctf = vtkColorTransferFunction::SafeDownCast(m->GetLookupTable()))
-					ctf->SetClamping(1);
-				m->UseLookupTableScalarRangeOn();     // map through the CTF's own [zmin,zmax] node range
-			}
-			m->ScalarVisibilityOn();
-			m->Modified();
+	if (direct || vdirect || cellz) {
+		auto *m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper());
+		if (direct || cellz) {
+			// Faceted normals (sharp solid edges, split at >30deg), replacing buildAndShow's
+			// smooth-normal surface path. Kept alive by the mapper's input connection. NOT for
+			// per-vertex colours, which are smooth by definition.
+			vtkNew<vtkPolyDataNormals> fn;
+			fn->SetInputData(pd);
+			fn->SplittingOn();
+			fn->SetFeatureAngle(30.0);
+			fn->ConsistencyOn();
+			if (m) m->SetInputConnection(fn->GetOutputPort());
 		}
+		fvApplyColorMode(m, direct, vdirect, cellz);
+		if ((direct || vdirect) && s->bar) setColorbarVisible(s, false);  // explicit colours have no z legend
 		// Matte (no specular) so the data colour reads true, not a glossy sheen. (This was NOT the
-		// grey-cell cause — that was the cell-data texture path above — but a colormap mesh still
+		// grey-cell cause — that was the cell-data texture path — but a colormap mesh still
 		// reads better matte.) applyShading honours s->matteSurf on every re-apply.
 		s->matteSurf = true;
 		applyShading(s);
@@ -327,7 +309,8 @@ GMTVTK_API void *gmtvtk_view_fv(const double *xyz, int nv, const int *sides, int
 // the EXACT same build path gmtvtk_view_fv uses — so nothing drifts. Returns 1 (reused) / 0 (declined).
 GMTVTK_API int gmtvtk_promote_fv_h(void *handle,
 								   const double *xyz, int nv, const int *sides, int nfaces,
-								   const int *indices, const unsigned char *facergb, const double *facez,
+								   const int *indices, const unsigned char *facergb,
+								   const unsigned char *vertrgb, const double *facez,
 								   const double *cz, const double *crgb, int ncolor,
 								   double x0, double x1, double y0, double y1, double z0, double z1,
 								   int geographic, double zscale, int edges, const char *objname) {
@@ -340,10 +323,11 @@ GMTVTK_API int gmtvtk_promote_fv_h(void *handle,
 		return 0;
 
 	double zmin, zmax;
-	auto pd = makeFvMesh(xyz, nv, sides, nfaces, indices, facergb, facez, zmin, zmax);
-	const bool   direct = (facergb != nullptr);
-	const bool   cellz  = (!direct && facez != nullptr);
-	const int    nc = direct ? 0 : ncolor;
+	auto pd = makeFvMesh(xyz, nv, sides, nfaces, indices, facergb, vertrgb, facez, zmin, zmax);
+	const bool   direct  = (facergb != nullptr);
+	const bool   vdirect = (!direct && vertrgb != nullptr);
+	const bool   cellz   = (!direct && !vdirect && facez != nullptr);
+	const int    nc = (direct || vdirect) ? 0 : ncolor;
 	const double ve = (zscale > 0.0) ? zscale : 1.0;
 
 	// FV uses UNIT horizontal scale + zscale as VE (matches gmtvtk_view_fv: buildAndShow(...,1,1,ve,...)).
@@ -353,34 +337,24 @@ GMTVTK_API int gmtvtk_promote_fv_h(void *handle,
 	s->imageOnly = false;
 	s->surfName  = (objname && objname[0]) ? objname : "";
 
-	buildSceneContent(s, pd, x0, x1, y0, y1, direct ? nullptr : cz, direct ? nullptr : crgb, nc,
+	buildSceneContent(s, pd, x0, x1, y0, y1, nc ? cz : nullptr, nc ? crgb : nullptr, nc,
 					  nullptr, 0, 0, 0, edges, false, geographic, nullptr, 0, 0, /*blankStart=*/false,
 					  /*gzLayout=*/0, /*trueScaleMesh=*/true);   // true coords: no relief normalising (see gmtvtk_view_fv)
 
-	// Faceted colouring (sharp edges + per-face colours that match the colorbar) — SAME post-step as
-	// gmtvtk_view_fv, replacing buildSceneContent's smooth-normal surface for the direct/cell-z modes.
-	if (direct || cellz) {
-		vtkNew<vtkPolyDataNormals> fn;
-		fn->SetInputData(pd);
-		fn->SplittingOn();
-		fn->SetFeatureAngle(30.0);
-		fn->ConsistencyOn();
-		if (auto *m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper())) {
-			m->SetInputConnection(fn->GetOutputPort());
-			m->SetScalarModeToUseCellData();
-			m->InterpolateScalarsBeforeMappingOff();
-			if (direct) {
-				m->SetColorModeToDirectScalars();
-				if (s->bar) setColorbarVisible(s, false);
-			} else {
-				m->SetColorModeToMapScalars();
-				if (auto *ctf = vtkColorTransferFunction::SafeDownCast(m->GetLookupTable()))
-					ctf->SetClamping(1);
-				m->UseLookupTableScalarRangeOn();
-			}
-			m->ScalarVisibilityOn();
-			m->Modified();
+	// SAME post-step as gmtvtk_view_fv, replacing buildSceneContent's smooth-normal surface for the
+	// FACETED modes only, then the ONE colour-mode function both doors share.
+	if (direct || vdirect || cellz) {
+		auto *m = vtkPolyDataMapper::SafeDownCast(s->surf->GetMapper());
+		if (direct || cellz) {
+			vtkNew<vtkPolyDataNormals> fn;
+			fn->SetInputData(pd);
+			fn->SplittingOn();
+			fn->SetFeatureAngle(30.0);
+			fn->ConsistencyOn();
+			if (m) m->SetInputConnection(fn->GetOutputPort());
 		}
+		fvApplyColorMode(m, direct, vdirect, cellz);
+		if ((direct || vdirect) && s->bar) setColorbarVisible(s, false);
 		s->matteSurf = true;
 	}
 
@@ -1167,7 +1141,12 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //   9 = gmtvtk_set_cube_axes_zrange takes the cube element's NAME as its second argument — the Z pin
 //       moved onto the axes set that cube's layers own (AxesSet::zLock). A generation-8 library reads
 //       the name pointer as zmin.
-GMTVTK_API int gmtvtk_abi_version(void) { return 9; }
+//  10 = the mesh doors take a per-VERTEX RGB array: gmtvtk_view_fv and gmtvtk_promote_fv_h gained
+//       `vertrgb` right after `facergb`, and gmtvtk_add_mesh_h gained BOTH (it took no colours at
+//       all). A mesh file's own colours — PLY red/green/blue, glTF COLOR_0 — are per vertex, and
+//       there was nowhere to put them. Every argument after the insertion point shifts, so a
+//       generation-9 library reads `facez` as the vertex colours and the CPT nodes as `facez`.
+GMTVTK_API int gmtvtk_abi_version(void) { return 10; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -6982,12 +6961,20 @@ GMTVTK_API void gmtvtk_show_new_element_h(void *handle, const char *name,
 // dropped grid does; the caller's gmtvtk_show_new_element_h is what puts it on screen.
 // Returns 1 / 0.
 GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const int *sides, int nfaces,
-                                 const int *indices, const double *cz, const double *crgb, int ncolor,
+                                 const int *indices, const unsigned char *facergb,
+                                 const unsigned char *vertrgb,
+                                 const double *cz, const double *crgb, int ncolor,
                                  const char *name) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !xyz || nv <= 0 || !sides || !indices || nfaces <= 0) return 0;
 	double zmin, zmax;
-	auto pd = makeFvMesh(xyz, nv, sides, nfaces, indices, nullptr, nullptr, zmin, zmax);
+	auto pd = makeFvMesh(xyz, nv, sides, nfaces, indices, facergb, vertrgb, nullptr, zmin, zmax);
+	// The SAME colouring rule the promote door obeys -- this one used to take no colours at all, so
+	// the very same mesh arrived coloured when it promoted an empty launcher and height-shaded when
+	// it landed as an extra. That is a shared operation behaving differently by entry door
+	// (SACRED_LAW.md), and it is why `facergb`/`vertrgb` are here.
+	const bool direct  = (facergb != nullptr);
+	const bool vdirect = (!direct && vertrgb != nullptr);
 
 	vtkSmartPointer<vtkScalarsToColors> lut;
 	if (cz && crgb && ncolor > 0) {
@@ -7002,9 +6989,13 @@ GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const 
 	fn->SetInputData(pd);
 	fn->SplittingOn(); fn->SetFeatureAngle(30.0); fn->ConsistencyOn();
 	vtkNew<vtkPolyDataMapper> map;
-	map->SetInputConnection(fn->GetOutputPort());
+	// Per-VERTEX colours are smooth by definition, so they keep the mesh's own normals rather than
+	// the 30-degree split -- the same choice gmtvtk_view_fv makes for the same reason.
+	if (vdirect) map->SetInputData(pd);
+	else         map->SetInputConnection(fn->GetOutputPort());
 	map->SetLookupTable(lut); map->SetScalarRange(zmin, zmax);
 	map->ScalarVisibilityOn();
+	fvApplyColorMode(map, direct, vdirect, false);
 
 	ExtraObj ex;
 	ex.isMesh = true;
@@ -7789,12 +7780,17 @@ GMTVTK_API int gmtvtk_open_vtk_h(void *handle, const char *path, const char *nam
 		// A mesh loads IN PLACE like everything else -- as its own Scene Objects layer of THIS window,
 		// never a second window. An empty launcher is promoted (the mesh becomes the window's base
 		// surface); a window already holding data gets the mesh as an extra layer.
+		// The file's OWN colours, when it carries them (PLY red/green/blue, glTF COLOR_0, a .vtp's
+		// cell colours). Handed to BOTH doors, so a coloured model looks the same whether it
+		// promoted an empty launcher or landed as an extra.
+		const unsigned char *frgb = L.frgb.empty() ? nullptr : L.frgb.data();
+		const unsigned char *vrgb = L.vrgb.empty() ? nullptr : L.vrgb.data();
 		const int ok = promote
 			? gmtvtk_promote_fv_h(handle, L.xyz.data(), nv, L.sides.data(), nfaces, L.indices.data(),
-			                      nullptr, nullptr, nullptr, nullptr, 0,
+			                      frgb, vrgb, nullptr, nullptr, nullptr, 0,
 			                      L.x0, L.x1, L.y0, L.y1, L.z0, L.z1, 0, 1.0, 0, nm)
 			: gmtvtk_add_mesh_h(handle, L.xyz.data(), nv, L.sides.data(), nfaces, L.indices.data(),
-			                    nullptr, nullptr, 0, nm);
+			                    frgb, vrgb, nullptr, nullptr, 0, nm);
 		if (!ok) return fail("the mesh could not be displayed");
 		// SACRED_LAW.md raster-own-axes law: EACH raster/mesh creates ITS OWN axes, UNCONDITIONALLY.
 		gmtvtk_show_new_element_h(handle, nm, L.x0, L.x1, L.y0, L.y1, L.z0, L.z1, 1, 0);

@@ -3091,18 +3091,26 @@ static vtkSmartPointer<vtkPolyData> makePointCloud(const double *xyz, int npts,
 	return pd;
 }
 
-// Build an arbitrary FV mesh (GMTfv solids / polygons) as vtkPolyData: `nv` SHARED vertices
-// (xyz triples), `nfaces` polygon cells (corner counts in sides[], flat 0-based corner ids in
-// indices[] = sum(sides) entries). An optional per-face RGB array (facergb[nfaces*3], 0..255)
-// is attached as DIRECT cell-data colours (flat per-face shading, explicit/categorical). Else
-// when `facez` (nfaces) is given it is attached as a per-FACE z SCALAR -> faceted colouring
-// through the CPT/CTF that ALSO feeds the colorbar (so the two MATCH). Else a per-vertex z
-// scalar drives smooth CPT colouring. Fills zmin/zmax from the vertex z. Mirrors GMTF3D
+// Build an arbitrary FV mesh (GMTfv solids / polygons, a mesh read off disk) as vtkPolyData: `nv`
+// SHARED vertices (xyz triples), `nfaces` polygon cells (corner counts in sides[], flat 0-based
+// corner ids in indices[] = sum(sides) entries). Fills zmin/zmax from the vertex z. Mirrors GMTF3D
 // fv_to_mesh's shared-vertex packing (sides/indices), but lets VTK tessellate n-gons + compute
 // normals (no Julia-side normal pass).
+//
+// FOUR colourings, in this priority, exactly ONE array ending up active — `fvApplyColorMode`
+// (90_c_api.cpp) puts the matching mode on the mapper and is the only place that does:
+//   1. `facergb` (nfaces*3, 0..255) -> DIRECT cell-data colours: flat per-face, explicit/categorical
+//      (a GMTfv solid's face colours).
+//   2. `vertrgb` (nv*3, 0..255)     -> DIRECT point-data colours: smooth per-vertex, which is what a
+//      scanned or authored model carries (PLY red/green/blue, glTF COLOR_0, an OBJ's `v x y z r g b`).
+//      The z scalar is still ADDED (just not active), so anything reading "z" off the mesh still finds it.
+//   3. `facez` (nfaces)             -> per-FACE z SCALAR through the CPT/CTF that ALSO feeds the
+//      colorbar, so faceted colours and the bar MATCH.
+//   4. none                          -> the per-vertex z scalar, smooth CPT colouring.
 static vtkSmartPointer<vtkPolyData> makeFvMesh(const double *xyz, int nv,
 											   const int *sides, int nfaces, const int *indices,
-											   const unsigned char *facergb, const double *facez,
+											   const unsigned char *facergb, const unsigned char *vertrgb,
+											   const double *facez,
 											   double &zmin, double &zmax) {
 	vtkNew<vtkPoints>     pts;  pts->SetDataTypeToDouble(); pts->SetNumberOfPoints(nv);
 	vtkNew<vtkFloatArray> zval; zval->SetName("z"); zval->SetNumberOfComponents(1); zval->SetNumberOfTuples(nv);
@@ -3129,7 +3137,21 @@ static vtkSmartPointer<vtkPolyData> makeFvMesh(const double *xyz, int nv,
 	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
 	pd->SetPoints(pts);
 	pd->SetPolys(cells);
-	pd->GetPointData()->SetScalars(zval);
+	if (vertrgb && !facergb) {
+		// Per-VERTEX colours are the file's own, so they become the ACTIVE point scalars; z stays on
+		// the mesh as a plain array (AddArray, not SetScalars) so nothing that looks up "z" loses it.
+		vtkNew<vtkUnsignedCharArray> col;
+		col->SetName("vertexcolors");
+		col->SetNumberOfComponents(3);
+		col->SetNumberOfTuples(nv);
+		for (int i = 0; i < nv; ++i)
+			col->SetTuple3(i, vertrgb[3*i], vertrgb[3*i+1], vertrgb[3*i+2]);
+		pd->GetPointData()->AddArray(zval);
+		pd->GetPointData()->SetScalars(col);
+	}
+	else {
+		pd->GetPointData()->SetScalars(zval);
+	}
 
 	if (facergb) {
 		vtkNew<vtkUnsignedCharArray> col;
@@ -3150,6 +3172,84 @@ static vtkSmartPointer<vtkPolyData> makeFvMesh(const double *xyz, int nv,
 		pd->GetCellData()->SetScalars(fz);
 	}
 	return pd;
+}
+
+// THE mesh colour mode: `makeFvMesh` has already attached exactly one array, this puts the matching
+// mode on the mapper, and it is the ONLY place that does. gmtvtk_view_fv, gmtvtk_promote_fv_h,
+// gmtvtk_add_mesh_h and the shading revert (`fvRestoreColorMode`, below) all call it, so no door can
+// invent a second spelling of the same five lines (SACRED_LAW.md: same operation, ALWAYS same
+// function). It used to be written out twice in 90_c_api.cpp, which is exactly how the per-VERTEX
+// mode could have been added to one door and not the others.
+//
+//   faceRGB : direct per-FACE RGB   -> cell data, no LUT (categorical / a solid's face colours)
+//   vertRGB : direct per-VERTEX RGB -> point data, no LUT (a scanned or authored model's own colours)
+//   cellZ   : per-FACE z            -> cell data THROUGH the CTF, so the colour bar matches
+//   none    : per-VERTEX z          -> point data through the CTF (the grid-like default; untouched)
+//
+// InterpolateScalarsBeforeMapping is turned OFF for every one of the three: it is a POINT-data LUT
+// optimisation that bakes the table into a texture indexed by per-point tcoords, and both kinds of
+// direct RGB and cell data have no business going through it — cell scalars have no tcoord at all
+// (that was the "grey top row"), and a direct colour must reach the framebuffer as itself.
+static void fvApplyColorMode(vtkPolyDataMapper *m, bool faceRGB, bool vertRGB, bool cellZ) {
+	if (!m || !(faceRGB || vertRGB || cellZ)) return;
+	m->InterpolateScalarsBeforeMappingOff();
+	if (faceRGB || cellZ) m->SetScalarModeToUseCellData();
+	else                  m->SetScalarModeToUsePointData();
+	if (cellZ) {
+		m->SetColorModeToMapScalars();                // face-z through the CTF = same as the bar
+		// THE GREY-TOP-ROW BUG: faces at the max z sit AT the colormap's upper limit. With clamping
+		// off (or via the ISBM texture border) a value at/above the top node maps to grey instead of
+		// the top colour -- a grey ring on the torus crest (the grid hid it: only one peak vertex
+		// hits the limit). Force the CTF to CLAMP so above-range == top colour, below-range ==
+		// bottom colour, NEVER grey.
+		if (auto *ctf = vtkColorTransferFunction::SafeDownCast(m->GetLookupTable()))
+			ctf->SetClamping(1);
+		m->UseLookupTableScalarRangeOn();             // map through the CTF's own [zmin,zmax] range
+	}
+	else {
+		m->SetColorModeToDirectScalars();             // RGB straight from the array
+	}
+	m->ScalarVisibilityOn();
+	m->Modified();
+}
+
+// What colouring does this mapper's GEOMETRY carry? Read off the active scalars `makeFvMesh` set, so
+// there is no flag to keep in sync with the data — the polydata IS the record.
+//
+// A 3/4-component UNSIGNED CHAR array is a colour; a 1-component numeric CELL array is a per-face z.
+// A grid surface's active point scalars are 1-component float z, which matches nothing here and
+// leaves the caller on its ordinary CPT path — which is why this is safe to consult for every actor.
+// (A baked hillshade is NOT confused with a vertex colour: the bake is attached as a NAMED field
+// array selected with SelectColorArray, never as the active scalars.)
+static bool fvMeshColorMode(vtkPolyDataMapper *m, bool &faceRGB, bool &vertRGB, bool &cellZ) {
+	faceRGB = vertRGB = cellZ = false;
+	if (!m) return false;
+	vtkPolyData *pd = vtkPolyData::SafeDownCast(m->GetInput());
+	if (!pd) return false;
+	auto isRGB = [](vtkDataArray *a) {
+		return a && a->GetDataType() == VTK_UNSIGNED_CHAR &&
+		       (a->GetNumberOfComponents() == 3 || a->GetNumberOfComponents() == 4);
+	};
+	vtkDataArray *cs = pd->GetCellData()  ? pd->GetCellData()->GetScalars()  : nullptr;
+	vtkDataArray *ps = pd->GetPointData() ? pd->GetPointData()->GetScalars() : nullptr;
+	if (isRGB(cs))                                  faceRGB = true;
+	else if (isRGB(ps))                             vertRGB = true;
+	else if (cs && cs->GetNumberOfComponents() == 1) cellZ  = true;
+	return faceRGB || vertRGB || cellZ;
+}
+
+// Put back the colouring the geometry says it has. The mesh doors set an explicit mode on their
+// mapper and the shading revert used to overwrite it with "point data, through the LUT" — which is
+// right for a grid and silently wrong for every mesh: a per-vertex RGB array mapped through a LUT is
+// coloured by its MAGNITUDE, so a whole model came out one flat colour off the top of the ramp.
+// One function decides, for every actor, so the revert cannot disagree with the door again.
+static void fvRestoreColorMode(vtkPolyDataMapper *m) {
+	if (!m) return;
+	bool f = false, v = false, cz = false;
+	if (fvMeshColorMode(m, f, v, cz)) { fvApplyColorMode(m, f, v, cz); return; }
+	m->SetScalarModeToUsePointData();         // a grid surface: colour from the active scalars (z)
+	m->SetColorModeToMapScalars();            // through the LUT
+	m->ScalarVisibilityOn();
 }
 
 // "Nice" axis step (Heckbert) — round 1/2/5 ×10^n covering the range.

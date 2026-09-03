@@ -24,12 +24,14 @@ function _promote_fv(scene::Ptr{Cvoid}, xyz::Vector{Float64}, sides::Vector{Cint
 	fzp = isempty(facez)   ? Ptr{Cdouble}(C_NULL) : pointer(facez)
 	czp = isempty(cz)      ? Ptr{Cdouble}(C_NULL) : pointer(cz)
 	cgp = isempty(crgb)    ? Ptr{Cdouble}(C_NULL) : pointer(crgb)
+	# NULL in the per-VERTEX RGB slot after `facergb`: that one carries a mesh FILE's own colours
+	# (87_vtkio.cpp), and a GMT solid colours its FACES.
 	r = GC.@preserve xyz sides indices facergb facez cz crgb ccall(_fn(:gmtvtk_promote_fv_h), Cint,
-		(Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Ptr{Cint}, Ptr{Cuchar}, Ptr{Cdouble},
+		(Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Ptr{Cint}, Ptr{Cuchar}, Ptr{Cuchar}, Ptr{Cdouble},
 		 Ptr{Cdouble}, Ptr{Cdouble}, Cint,
 		 Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
 		 Cint, Cdouble, Cint, Cstring),
-		scene, xyz, Cint(nv), sides, Cint(nfaces), indices, fc, fzp,
+		scene, xyz, Cint(nv), sides, Cint(nfaces), indices, fc, Ptr{Cuchar}(C_NULL), fzp,
 		czp, cgp, Cint(ncolor),
 		bb[1], bb[2], bb[3], bb[4], bb[5], bb[6],
 		Cint(geographic), zscale, Cint(edges), objname)

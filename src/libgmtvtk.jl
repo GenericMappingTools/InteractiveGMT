@@ -87,7 +87,13 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # Z pin belongs to the axes set that cube's layers own, not to the window (it used to be honoured for
 # the base surface only, so an extra-mounted cube's box jumped on every layer). A generation-8 library
 # reads the name pointer as zmin and pins garbage.
-const _ABI_REQUIRED = 9
+# Generation 10 = the mesh doors take a per-VERTEX RGB array. `gmtvtk_view_fv` and
+# `gmtvtk_promote_fv_h` gained `vertrgb` right after `facergb`, and `gmtvtk_add_mesh_h` gained both
+# (it took no colours at all, so the same mesh arrived coloured when it promoted an empty launcher
+# and height-shaded when it landed as an extra). A mesh file's own colours are per VERTEX -- PLY
+# red/green/blue, glTF COLOR_0 -- and there was nowhere to put them. Every argument after the
+# insertion point shifts, so a generation-9 library reads `facez` as the vertex colours.
+const _ABI_REQUIRED = 10
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.

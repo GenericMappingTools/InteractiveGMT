@@ -774,9 +774,12 @@ add!(fig, G2; drape=true, opacity=0.5)
 - **3-D meshes:** .ply, .obj, .stl, .off, .byu, .gltf, .glb
 
 A glTF file is a whole scene, so **every** mesh in it is displayed, merged into one layer — and its
-Y-up geometry is rotated upright, because iGMT (like every VTK scene) is Z-up. Colours, materials
-and textures are not read: a mesh arrives as geometry and is shaded by height. BYU's other
+Y-up geometry is rotated upright, because iGMT (like every VTK scene) is Z-up. BYU's other
 extension `.g` is deliberately not claimed — it is BRL-CAD's too, which VTK cannot read.
+
+A mesh keeps **its own colours** when the file carries them, per vertex (PLY red/green/blue, glTF
+COLOR_0) or per face, and a file with none is shaded by height as before. Materials and UV textures
+(glTF PBR, an OBJ's `.mtl`) are not read.
 
 What the file holds decides how it is shown, using the same display paths as any other source:
 
