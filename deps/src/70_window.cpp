@@ -2704,9 +2704,17 @@ static QuadNode *buildQuadNode(int i0, int i1, int j0, int j1, int level,
 // null for a variable that WAS set, which is how an A/B measurement of the culling ran with the
 // flag ignored on both sides. Read the live process block instead. Declared rather than pulled in
 // with <windows.h>, which nothing else in this TU includes.
+// ...and Windows ONLY: GetEnvironmentVariableA and __declspec are Win32. On macOS/Linux the link
+// fails with "Undefined symbols: _GetEnvironmentVariableA" (arm64 + x86_64 CI, 2026-09-03). There
+// is no separate CRT snapshot on POSIX -- getenv() reads the live environment, so a host that calls
+// setenv() (Julia's ENV[...]) is visible at once and the dance above is not needed there.
+#ifdef _WIN32
 extern "C" __declspec(dllimport) unsigned long __stdcall
 GetEnvironmentVariableA(const char *name, char *buf, unsigned long size);
 static bool envFlag(const char *key) { char b[8]; return GetEnvironmentVariableA(key, b, sizeof b) > 0; }
+#else
+static bool envFlag(const char *key) { const char *v = std::getenv(key); return v != nullptr && *v != '\0'; }
+#endif
 
 static bool     g_lodTrace = false;               // resolved lazily on the first refine pass (below):
                                                   // the host sets ENV after the DLL is already loaded

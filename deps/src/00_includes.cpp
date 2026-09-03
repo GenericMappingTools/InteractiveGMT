@@ -48,6 +48,7 @@
 #include <string>
 #include <cstring>
 #include <cmath>
+#include <cstdlib>			// std::getenv -- the non-Windows envFlag() in 70_window.cpp
 #if !defined(_WIN32)
 #include <dlfcn.h>
 #define __declspec(x)

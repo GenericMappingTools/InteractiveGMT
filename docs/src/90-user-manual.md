@@ -768,9 +768,15 @@ add!(fig, G2; drape=true, opacity=0.5)
 
 **Via VTK (read natively, no GMT/GDAL involved):**
 - **VTK XML:** .vti, .vtr, .vts, .vtp, .vtu (+ the .pvti/.pvtr/.pvts/.pvtp/.pvtu parallel forms)
-- **VTK multiblock:** .vtm (first non-empty block is displayed)
+- **VTK multiblock:** .vtm (a raster composite shows its first non-empty block)
 - **VTK legacy:** .vtk (any dataset type)
 - **VTKHDF:** .vtkhdf
+- **3-D meshes:** .ply, .obj, .stl, .off, .byu, .gltf, .glb
+
+A glTF file is a whole scene, so **every** mesh in it is displayed, merged into one layer — and its
+Y-up geometry is rotated upright, because iGMT (like every VTK scene) is Z-up. Colours, materials
+and textures are not read: a mesh arrives as geometry and is shaded by height. BYU's other
+extension `.g` is deliberately not claimed — it is BRL-CAD's too, which VTK cannot read.
 
 What the file holds decides how it is shown, using the same display paths as any other source:
 
