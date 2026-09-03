@@ -369,6 +369,22 @@ static JuliaIgrfFileFn g_juliaIgrfFile = nullptr;
 typedef int (*JuliaRtp3DFn)(void *scene, const char *params);
 static JuliaRtp3DFn g_juliaRtp3D = nullptr;
 
+// Tsunami travel times (Geophysics > Tsunamis) — GMT.jl's own travel-time API through
+// src/tsunamittt.jl: `ttt` (Wessel's Huygens/Dijkstra wavefront) or `wave_travel_time` (the faster
+// Mirone expansion) for the GRID, and `tttimes` for the arrival times at stations. ONE dialog
+// (TttDialog, 70_window.cpp, loads deps/ui/ttt_dialog.ui) and ONE callback serve both, the way
+// Rtp3DDialog's single callback serves RTP and the components; `what` says which is being asked for.
+// NEWLINE-separated "key=value" block:
+//   what=grid|eta, grid=<Scene Objects label of the layer to read>, lon=, lat=, srcfile=,
+//   method=ttt|mirone, nodes=, search=0|1, radius=, srcdepth=, mindepth=, bias=0|1, fillvoids=0|1,
+//   stations=, origin=, utc=0|1, outfile=
+// (every key optional bar `what`; an absent key means "use the API's own default").
+// `what=grid` adds the travel-time grid to `scene` as a new derived variable; `what=eta` opens the
+// shared table window with the arrival times. Returns 1 on success, 0 on failure — the real yes/no
+// contract, since the dialog is what the user is looking at, not the parent's Errors console.
+typedef int (*JuliaTttFn)(void *scene, const char *params);
+static JuliaTttFn g_juliaTtt = nullptr;
+
 // The FFT tool (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum). One request
 // string does every operation: "op;grid1;grid2;newRows;newCols;coords;detrend;value" -- see
 // _on_fftstuff (src/fftstuff.jl) for what each field means. Returns 1 on success, 0 on failure.

@@ -1936,6 +1936,13 @@ GMTVTK_API void gmtvtk_set_rtp3d_callback(JuliaRtp3DFn fn) {
 	g_juliaRtp3D = fn;
 }
 
+// Register the Tsunami travel-times callback (Geophysics > Tsunamis > "Tsunami travel times…").
+// fn(scene, params) with the newline-separated "key=value" block documented at JuliaTttFn
+// (30_app.cpp) runs GMT.jl's ttt / wave_travel_time / tttimes. nullptr to detach.
+GMTVTK_API void gmtvtk_set_ttt_callback(JuliaTttFn fn) {
+	g_juliaTtt = fn;
+}
+
 // Register the FFT tool callback (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum).
 // fn(scene, params) with params = "op;grid1;grid2;newRows;newCols;coords;detrend;value" runs the
 // spectrum/correlation/field-transform asked for and adds its result to `scene`. nullptr to detach.

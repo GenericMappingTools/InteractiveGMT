@@ -11107,6 +11107,206 @@ public:
 
 
 // ============================================================================================
+// Tsunami travel times (Geophysics > Tsunamis) — GMT.jl's travel-time API: a grid of travel times
+// from a source over the bathymetry on display, and the arrival times at a set of stations read off
+// that grid. Loaded at RUNTIME via QUiLoader from deps/ui/ttt_dialog.ui.
+//
+// ONE dialog for both, because they are one workflow and the second reads what the first produced:
+// "Compute travel times" sends what=grid, "Arrival times" sends what=eta, through the SAME callback
+// (g_juliaTtt) — the division of labour Rtp3DDialog already uses for RTP and the components.
+//
+// The two methods are alternatives of the same computation, so they are radios, and the ttt-only
+// options are greyed out (never hidden, never silently ignored) when the Mirone method is picked —
+// same for "Fill voids", which only the Mirone expansion has.
+//
+// WHICH GRID: `activeGridName(scn)` — the layer the window is SHOWING, the same resolver the colour
+// bar, the Z axis and the hover readout go through. For the travel-time run that is the bathymetry;
+// for the arrival-times run the user first ticks the travel-time grid the run before produced, and
+// the label it carries goes over unchanged.
+// ============================================================================================
+class TttDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QRadioButton *rbTtt = nullptr, *rbMirone = nullptr;
+	QLineEdit *lonEdit = nullptr, *latEdit = nullptr, *srcEdit = nullptr;
+	QComboBox *nodesCb = nullptr;
+	QCheckBox *searchChk = nullptr, *biasChk = nullptr, *voidsChk = nullptr, *utcChk = nullptr;
+	QLineEdit *radiusEdit = nullptr, *srcDepthEdit = nullptr, *minDepthEdit = nullptr;
+	QLineEdit *outEdit = nullptr, *stationsEdit = nullptr, *originEdit = nullptr;
+	QGroupBox *tttBox = nullptr;
+
+	explicit TttDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/ttt_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("TttDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("TttDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+
+		rbTtt    = d->findChild<QRadioButton *>("rb_ttt");
+		rbMirone = d->findChild<QRadioButton *>("rb_mirone");
+		lonEdit  = d->findChild<QLineEdit *>("edit_lon");
+		latEdit  = d->findChild<QLineEdit *>("edit_lat");
+		srcEdit  = d->findChild<QLineEdit *>("edit_srcfile");
+		nodesCb  = d->findChild<QComboBox *>("cb_nodes");
+		searchChk = d->findChild<QCheckBox *>("chk_search");
+		biasChk   = d->findChild<QCheckBox *>("chk_bias");
+		voidsChk  = d->findChild<QCheckBox *>("chk_fillvoids");
+		utcChk    = d->findChild<QCheckBox *>("chk_utc");
+		radiusEdit   = d->findChild<QLineEdit *>("edit_radius");
+		srcDepthEdit = d->findChild<QLineEdit *>("edit_srcdepth");
+		minDepthEdit = d->findChild<QLineEdit *>("edit_mindepth");
+		outEdit      = d->findChild<QLineEdit *>("edit_outfile");
+		stationsEdit = d->findChild<QLineEdit *>("edit_stations");
+		originEdit   = d->findChild<QLineEdit *>("edit_origin");
+		tttBox       = d->findChild<QGroupBox *>("group_ttt");
+
+		if (nodesCb) {                       // the stencil sizes the ttt API accepts, coarse -> fine
+			for (const char *n : { "8", "16", "32", "48", "64", "120" }) nodesCb->addItem(n);
+			nodesCb->setCurrentIndex(nodesCb->count() - 1);            // 120 = the API's own default
+		}
+		if (radiusEdit)   radiusEdit->setText("0");
+		if (srcDepthEdit) srcDepthEdit->setText("0");
+		if (minDepthEdit) minDepthEdit->setText("0");
+
+		// The source starts at the CENTRE OF WHAT IS ON SCREEN — the region the user is looking at is
+		// the region they mean, and a pair of empty boxes on a window that already knows where it is
+		// is the tool asking for something it could have answered itself.
+		if (scene) {
+			double cx = 0, cy = 0;  bool have = false;
+			if (scene->gx1 > scene->gx0 && scene->gy1 > scene->gy0) {
+				cx = 0.5 * (scene->gx0 + scene->gx1);  cy = 0.5 * (scene->gy0 + scene->gy1);  have = true;
+			}
+			else if (scene->x1 > scene->x0 && scene->y1 > scene->y0) {
+				cx = 0.5 * (scene->x0 + scene->x1);  cy = 0.5 * (scene->y0 + scene->y1);  have = true;
+			}
+			if (have) {
+				if (lonEdit) lonEdit->setText(QString::number(cx, 'g', 10));
+				if (latEdit) latEdit->setText(QString::number(cy, 'g', 10));
+			}
+		}
+
+		// A method is a choice between two ways of computing ONE quantity, so what the other one owns
+		// is disabled, not removed: the user can see the knob exists and why it is not theirs to set.
+		auto syncMethod = [this]() {
+			const bool mirone = rbMirone && rbMirone->isChecked();
+			if (tttBox) {
+				for (QWidget *w : tttBox->findChildren<QWidget *>())
+					if (w != voidsChk) w->setEnabled(!mirone);
+			}
+			if (voidsChk) voidsChk->setEnabled(mirone);
+		};
+		for (QRadioButton *rb : { rbTtt, rbMirone })
+			if (rb) QObject::connect(rb, &QRadioButton::toggled, d, [syncMethod](bool) { syncMethod(); });
+		syncMethod();
+
+		auto browseIn = [d](QLineEdit *edit, QToolButton *btn, const char *title, const char *filter) {
+			if (!edit || !btn) return;
+			QObject::connect(btn, &QToolButton::clicked, d, [d, edit, title, filter]() {
+				QString p = QFileDialog::getOpenFileName(d, title, prefStartDir(), filter);
+				if (!p.isEmpty()) { edit->setText(p); rememberStartDir(p); }
+			});
+			fileBoxDoubleClick(edit, btn);        // double-click in the box opens the chooser
+		};
+		browseIn(srcEdit, d->findChild<QToolButton *>("btn_srcfile"),
+		         "Select a file of source points", "Tables (*.dat *.txt *.xy);;All files (*)");
+		browseIn(stationsEdit, d->findChild<QToolButton *>("btn_stations"),
+		         "Select a stations file", "Tables (*.dat *.txt *.xy);;All files (*)");
+		if (auto *ob = d->findChild<QToolButton *>("btn_outfile")) {
+			if (outEdit) {
+				QObject::connect(ob, &QToolButton::clicked, d, [this, d]() {
+					QString p = QFileDialog::getSaveFileName(d, "Save travel-time grid", prefStartDir(),
+						"Grids (*.grd *.nc);;All files (*)");
+					if (!p.isEmpty()) { outEdit->setText(p); rememberStartDir(p); }
+				});
+				fileBoxDoubleClick(outEdit, ob);
+			}
+		}
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, false); });
+		if (auto *b = d->findChild<QPushButton *>("push_eta"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, true); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))
+			QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	// BOTH buttons, one function: they differ by `what` and by which boxes they read, never by how
+	// the request is built or how its answer is reported.
+	void run(QDialog *d, bool eta) {
+		if (!g_juliaTtt) {
+			QMessageBox::warning(d, "Tsunami travel times",
+			                     "Travel times: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		QStringList kv;
+		kv << (eta ? "what=eta" : "what=grid");
+		kv << "grid=" + QString::fromStdString(activeGridName(scn));   // the layer on display
+		if (eta) {
+			if (!stationsEdit || stationsEdit->text().trimmed().isEmpty()) {
+				QMessageBox::warning(d, "Tsunami travel times",
+					"Give me a stations file (lon lat [name], one per line).");
+				return;
+			}
+			kv << "stations=" + stationsEdit->text().trimmed();
+			if (originEdit && !originEdit->text().trimmed().isEmpty())
+				kv << "origin=" + originEdit->text().trimmed();
+			kv << QString("utc=%1").arg(utcChk && utcChk->isChecked() ? 1 : 0);
+		}
+		else {
+			const bool mirone = rbMirone && rbMirone->isChecked();
+			kv << QString("method=%1").arg(mirone ? "mirone" : "ttt");
+			const QString sf = srcEdit ? srcEdit->text().trimmed() : QString();
+			if (!sf.isEmpty()) kv << "srcfile=" + sf;
+			else {
+				bool okLon = false, okLat = false;
+				const double lon = lonEdit ? lonEdit->text().toDouble(&okLon) : 0.0;
+				const double lat = latEdit ? latEdit->text().toDouble(&okLat) : 0.0;
+				if (!okLon || !okLat) {
+					QMessageBox::warning(d, "Tsunami travel times",
+						"Give me the source longitude and latitude (or a file of source points).");
+					return;
+				}
+				kv << QString("lon=%1").arg(lon, 0, 'g', 12) << QString("lat=%1").arg(lat, 0, 'g', 12);
+			}
+			if (mirone)
+				kv << QString("fillvoids=%1").arg(voidsChk && voidsChk->isChecked() ? 1 : 0);
+			else {
+				kv << "nodes=" + (nodesCb ? nodesCb->currentText() : QString("120"));
+				kv << QString("search=%1").arg(searchChk && searchChk->isChecked() ? 1 : 0);
+				kv << QString("bias=%1").arg(biasChk && biasChk->isChecked() ? 1 : 0);
+				if (radiusEdit)   kv << "radius="   + radiusEdit->text().trimmed();
+				if (srcDepthEdit) kv << "srcdepth=" + srcDepthEdit->text().trimmed();
+				if (minDepthEdit) kv << "mindepth=" + minDepthEdit->text().trimmed();
+			}
+			if (outEdit && !outEdit->text().trimmed().isEmpty()) kv << "outfile=" + outEdit->text().trimmed();
+		}
+		showBusyDialog(eta ? "Reading arrival times…" : "Computing travel times…");
+		const int ok = g_juliaTtt(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		// The dialog stays OPEN whatever happens — a second source, a finer stencil or another set of
+		// stations is the normal next step, not a reason to reopen it.
+		if (!ok)
+			QMessageBox::warning(d, "Tsunami travel times",
+				"Failed — see this window's Errors console for details.");
+		else if (!eta)
+			QMessageBox::information(d, "Tsunami travel times",
+				"Done — the travel-time grid (hours) is in Scene Objects as \"Travel time (h)\".");
+	}
+};
+
+// ============================================================================================
 // grdfft (GMT menu) — the 2-D FFT of the window's grid: operate in the frequency domain and come
 // back (a grid), or estimate the power spectrum (a table). Loaded at RUNTIME via QUiLoader from
 // deps/ui/grdfft_dialog.ui.
@@ -24621,6 +24821,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
 			dlg->setWindowModality(Qt::NonModal);
 			dlg->show();
+		});
+		// GMT.jl's travel-time API (ttt / wave_travel_time / tttimes) — see TttDialog above. Non-modal
+		// like every other tool dialog here: the 3-D view stays live while a source is picked, and the
+		// dialog survives any number of runs.
+		mGphy->addAction("Tsunami travel times…", [win, s]() {
+			auto *w = new TttDialog(win, s);
+			if (w->dlg) w->dlg->show();
 		});
 		mGphy->addAction("Aquamoto viewer…", [win, s]() {
 			// Non-modal, own top-level window (aquamoto.ui roots at QMainWindow, loaded verbatim --
