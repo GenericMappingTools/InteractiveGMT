@@ -4,6 +4,17 @@ cmake_minimum_required(VERSION 3.21)  # 3.21+ for install(... RUNTIME_DEPENDENCI
 # compiler configured and refuses the file outright.
 project(gmtvtk VERSION 0.1.0 LANGUAGES C CXX)
 
+# Silence the two "Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR)" lines. They are
+# STATUS messages, not errors -- Qt6Gui lists WrapVulkanHeaders as an OPTIONAL third-party dependency
+# (Qt6GuiDependencies.cmake) and links it through $<TARGET_NAME_IF_EXISTS:...>, which expands to
+# nothing when it is absent. Verified on the built library: dumpbin /dependents gmtvtk.dll shows no
+# vulkan-1.dll; rendering goes through OpenGL. They print twice because Qt6Gui's dependency block is
+# resolved twice, once for our find_package(Qt6) and once via VTK's GUISupportQt. Nothing is missing
+# and nothing needs installing -- but the wording reads like a failure and has repeatedly been taken
+# for one, so stop the probe instead of explaining it again. Remove this if the viewer ever wants a
+# Vulkan backend.
+set(CMAKE_DISABLE_FIND_PACKAGE_WrapVulkanHeaders TRUE)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 99)
