@@ -1,8 +1,8 @@
 # InteractiveGMT
 
 [![Documentation](https://img.shields.io/badge/docs-blue.svg)](https://www.generic-mapping-tools.org/InteractiveGMT/dev)
-[![Test workflow status](https://github.com/joa-quim/InteractiveGMT.jl/actions/workflows/Test.yml/badge.svg?branch=main)](https://github.com/joa-quim/InteractiveGMT.jl/actions/workflows/Test.yml?query=branch%3Amain)
-[![Coverage](https://codecov.io/gh/joa-quim/InteractiveGMT.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/joa-quim/InteractiveGMT.jl)
+[![Test workflow status](https://github.com/GenericMappingTools/InteractiveGMT.jl/actions/workflows/Test.yml/badge.svg?branch=main)](https://github.com/joa-quim/InteractiveGMT.jl/actions/workflows/Test.yml?query=branch%3Amain)
+[![Coverage](https://codecov.io/gh/GenericMappingTools/InteractiveGMT.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/joa-quim/InteractiveGMT.jl)
 [![Docs workflow Status](https://github.com/GenericMappingTools/InteractiveGMT/actions/workflows/documentation.yml/badge.svg?branch=master)](https://github.com/GenericMappingTools/InteractiveGMT/actions/workflows/documentation.yml?query=branch%3Amaster)
 
 
