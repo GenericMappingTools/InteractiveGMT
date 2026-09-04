@@ -1187,6 +1187,10 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 		{ PaletteLegend *pl = resolveActivePalette(s); kvi("palN", pl ? (long)pl->n : 0L); }
 		kvi("n_table",    s->dataTable ? (long)s->dataTable->rowCount() : -1);
 		o += "surf_name="; o += s->surfName; o += ';';
+		// …and whether the BASE layer is on screen, the same question `extravis<i>` answers for each
+		// extra. Without it a caller can read every extra's checked state and not the base's, which is
+		// exactly what a session has to store to put the panel back the way the user left it.
+		kvi("surfvis", (surfProp(s) && surfProp(s)->GetVisibility() != 0) ? 1 : 0);
 		for (size_t i = 0; i < s->extras.size(); ++i) {
 			o += "extra" + std::to_string((int)i) + '=';
 			o += (s->extras[i].isImage ? "image:" : s->extras[i].isMesh ? "mesh:" : "grid:");

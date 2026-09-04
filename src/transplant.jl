@@ -251,14 +251,25 @@ function _nested_fill!(G::GMTgrid, I::GMTgrid)
 	return (r0 = r0, r1 = r1, c0 = c0, c1 = c1)
 end
 
-function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant_path::String)
+function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant_src::String)
 	try
 		name = String(gname)
 		G = _find_object(scene, :grid, name)
 		(G isa GMTgrid) || error("Nested blank grid '$name' not found in this window.")
 
-		I = _gmtread_trb(implant_path)      # grids are READ in "TRB" — THE reader
-		I isa GMTgrid || error("The chosen file is not a grid: $(basename(implant_path))")
+		# `implant_src` is EITHER the name of a grid already in this window (the chooser's first
+		# option: layer0, or any loaded grid in the same coordinate kind whose region totally covers
+		# this one) OR a path to an external file. One entry point for both, so the fill below is the
+		# same operation whichever the user picked — the choice only decides where the grid comes from.
+		local I, srclabel
+		Iw = _find_object_exact(scene, :grid, String(implant_src))
+		if Iw isa GMTgrid
+			I = Iw;  srclabel = String(implant_src)
+		else
+			I = _gmtread_trb(String(implant_src))   # grids are READ in "TRB" — THE reader
+			srclabel = basename(String(implant_src))
+		end
+		I isa GMTgrid || error("The chosen source is not a grid: $srclabel")
 
 		_nested_fill!(G, I)      # fill the blank grid IN PLACE from the implant
 		G.title = name
@@ -277,8 +288,17 @@ function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant
 		else
 			_apply_host_grid!(scene, G, "")   # base surface: replace data in place, keep its surfName
 		end
+		# SACRED_LAW.md: a grid that has just appeared IS what the window shows — through the ONE
+		# transition, so it is checked and EVERY other layer is unchecked whatever its kind. Adding it
+		# and stopping there is what left the previous grids standing with their boxes still ticked.
+		#
+		# Passed WITHOUT an extent (the transition's own no-bbox half, `_NO_BBOX`): filling a nested
+		# layer is not a new quantity arriving, it is the level the user is already looking at getting
+		# its depths, so the view stays exactly where they put it instead of snapping to the little
+		# layer. Show/hide only — not a second transition, the same one asked for half its work.
+		_adopt_new_element(scene, name, nothing)
 
-		_viewer_log_info(scene, "Nested grid '$name' filled from $(basename(String(implant_path))).")
+		_viewer_log_info(scene, "Nested grid '$name' filled from $srclabel.")
 	catch e
 		_tool_failed(scene, "Nested transplant", e)
 	end

@@ -482,7 +482,7 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 	# Count max nested grid level (level 2+ means at least layer2 exists)
 	max_nest_level = length(nests) > 0 ? maximum(first(n) for (n, _) in nests) : 0
 
-	opts, msgs = _nswing_opts(d; nest_levels=max_nest_level)
+	opts, msgs = _nswing_opts(d; max_nest_level=max_nest_level)
 	for m in msgs
 		_viewer_log_error(scene, "NSWING: $m")
 	end

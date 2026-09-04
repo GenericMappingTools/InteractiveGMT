@@ -1487,14 +1487,104 @@ static bool gridIsNestedBlank(const QString &nm) { return QRegularExpression("^l
 // Run the "Transplant 2nd grid…" fill on the nested blank grid named `nm`: pick an implant file and hand
 // it to Julia (_on_nested_transplant), which samples it onto this grid's nodes. Works for the base
 // surface and for an extra grid alike — Julia detects which and replaces in place / re-adds.
+// A grid ALREADY IN THIS WINDOW can fill the nested layer — most often layer0, the bathymetry the
+// nesting chain was drawn on, which is the whole point of a nested grid. So offer those first and
+// keep the file picker for anything else. A candidate must be usable without asking the user to
+// think: SAME coordinate kind (both lon/lat or both cartesian — mixing them would sample degrees
+// onto metres) and a region that TOTALLY contains the nested grid, since a partial cover would
+// leave part of the layer blank. Everything else in the window is simply not offered.
+// A DEFORMATION grid is not bathymetry: "Okada z" (and "Okada z (model)") carry sea-floor
+// displacement, which is nswing's SOURCE input, never a nesting level's depths. Recognised by the
+// same name rule the NSWING dialog uses to FIND that source (populateFromScene, 70_window.cpp), so
+// the two agree on what an Okada layer is.
+static bool nestIsDeformation(const QString &n) { return n.startsWith("Okada z", Qt::CaseInsensitive); }
+
+// A NESTED LEVEL is not a source for another nested level: layer1, layer2 … are themselves filled
+// from a parent, at their own refined increment and covering only their own small window, so feeding
+// one into the next just resamples an already-resampled grid. layer0 is the exception and the whole
+// point — it is the parent bathymetry the chain was drawn on.
+static bool nestIsInnerLayer(const QString &n) {
+	static const QRegularExpression re("^layer([0-9]+)$");
+	const QRegularExpressionMatch m = re.match(n);
+	return m.hasMatch() && m.captured(1).toInt() > 0;
+}
+
+static bool nestGridExtent(Scene *s, const QString &nm, double &x0, double &x1, double &y0,
+                           double &y1, int &geog, int &nx, int &ny) {
+	for (auto &ex : s->extras) {
+		if (ex.isImage || ex.isMesh || ex.gridZ.empty() || QString::fromStdString(ex.name) != nm) continue;
+		x0 = ex.gx0; x1 = ex.gx1; y0 = ex.gy0; y1 = ex.gy1; geog = ex.geog; nx = ex.gnx; ny = ex.gny;
+		return true;
+	}
+	if (!s->gridZ.empty() && QString::fromStdString(s->surfName) == nm) {   // the base surface is a grid too
+		x0 = s->gx0; x1 = s->gx1; y0 = s->gy0; y1 = s->gy1; geog = s->baseGeog; nx = s->gnx; ny = s->gny;
+		return true;
+	}
+	return false;
+}
+
 static void runNestedTransplant(Scene *s, const QString &nm) {
 	if (!g_juliaEval) return;
-	const QString fn = QFileDialog::getOpenFileName(s->win, "Select grid to implant", prefStartDir(),
-		"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
-	if (fn.isEmpty()) return;
-	rememberStartDir(fn);
+
+	// The nested layer being filled, and every in-window grid that could legitimately fill it. Listed
+	// by its Scene Objects label and nothing else — that is the name the user already knows the layer
+	// by, and the panel is right there if they want its extent.
+	double tx0, tx1, ty0, ty1; int tgeog, tnx, tny;
+	QStringList cands;
+	if (nestGridExtent(s, nm, tx0, tx1, ty0, ty1, tgeog, tnx, tny)) {
+		auto covers = [&](double x0, double x1, double y0, double y1) {
+			const double eps = 1e-9;
+			return x0 <= tx0 + eps && x1 >= tx1 - eps && y0 <= ty0 + eps && y1 >= ty1 - eps;
+		};
+		const QString base = QString::fromStdString(s->surfName);
+		if (!s->gridZ.empty() && base != nm && !nestIsDeformation(base) && !nestIsInnerLayer(base) &&
+		    s->baseGeog == tgeog &&
+		    covers(s->gx0, s->gx1, s->gy0, s->gy1))
+			cands << base;
+		for (auto &ex : s->extras) {
+			const QString en = QString::fromStdString(ex.name);
+			if (ex.isImage || ex.isMesh || ex.gridZ.empty() || en == nm) continue;
+			if (nestIsDeformation(en) || nestIsInnerLayer(en)) continue;
+			if (ex.geog != tgeog || !covers(ex.gx0, ex.gx1, ex.gy0, ex.gy1)) continue;
+			cands << en;
+		}
+	}
+
+	// Ask only when there is something to ask about: with no usable grid in the window this is the
+	// file picker it has always been, with no extra click in the way. When there IS, both routes are
+	// in plain sight — the grids to pick from, and an "External file…" BUTTON beside OK, never an
+	// entry buried at the bottom of the list where it reads as one more grid.
+	QString src;
+	if (!cands.isEmpty()) {
+		QDialog dlg(s->win);
+		dlg.setWindowTitle("Transplant 2nd grid");
+		auto *v = new QVBoxLayout(&dlg);
+		v->addWidget(new QLabel(QString("Fill '%1' from a grid in this window:").arg(nm), &dlg));
+		auto *list = new QListWidget(&dlg);
+		list->addItems(cands);
+		list->setCurrentRow(0);
+		v->addWidget(list);
+		auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+		QPushButton *bExt = bb->addButton("External file…", QDialogButtonBox::ActionRole);
+		v->addWidget(bb);
+		bool wantFile = false;
+		QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+		QObject::connect(list, &QListWidget::itemDoubleClicked, &dlg, [&dlg]() { dlg.accept(); });
+		QObject::connect(bExt, &QPushButton::clicked, &dlg, [&dlg, &wantFile]() { wantFile = true; dlg.accept(); });
+		if (dlg.exec() != QDialog::Accepted) return;
+		if (!wantFile && list->currentItem()) src = list->currentItem()->text();
+	}
+	if (src.isEmpty()) {                                   // external file (picked, or the only option)
+		const QString fn = QFileDialog::getOpenFileName(s->win, "Select grid to implant", prefStartDir(),
+			"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
+		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
+		src = fn;
+	}
+	// ONE entry point either way: Julia resolves `src` as an in-window grid name first, else as a path.
 	const QString cmd = QString("InteractiveGMT._on_nested_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",raw\"%3\")")
-		.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(nm).arg(fn);
+		.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(nm).arg(src);
 	std::vector<char> buf(1 << 12);
 	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
 	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));

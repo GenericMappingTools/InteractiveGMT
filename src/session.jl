@@ -302,7 +302,46 @@ end
 # trips intact).
 function _session_display(scene::Ptr{Cvoid})
 	raw = try _scene_state_full_raw(scene) catch; "" end
-	return isempty(raw) ? Dict{String,String}() : Dict("state" => raw)
+	d = isempty(raw) ? Dict{String,String}() : Dict("state" => raw)
+	chk = try _session_checked(scene) catch; "" end
+	isempty(chk) || (d["checked"] = chk)
+	return d
+end
+
+# EXACTLY which Scene Objects rows are checked, base surface included, as
+# "<name>\x1e<0|1>" entries joined by \x1f (separators no object name can contain; the manifest
+# reader splits a line only on its FIRST '=', so the value round-trips whatever it holds).
+# Read from the LIVE actors (`gmtvtk_scene_state`: `surfvis` for the base, `extravis<i>` for each
+# extra) rather than from anything the recipes imply — what the user sees is the thing to store.
+function _session_checked(scene::Ptr{Cvoid})
+	st = _scene_state(scene)
+	parts = String[]
+	haskey(st, "surfvis") &&
+		push!(parts, string(String(get(st, "surf_name", "")), '\x1e', Int(st["surfvis"]) != 0 ? 1 : 0))
+	for (i, (_, nm)) in enumerate(get(st, "extras", Tuple{String,String}[]))
+		vis = get(st, "extravis$(i - 1)", 1)          # `extras` is 1-based here, the keys are 0-based
+		push!(parts, string(nm, '\x1e', Int(vis) != 0 ? 1 : 0))
+	end
+	return join(parts, '\x1f')
+end
+
+# Put the checkboxes back EXACTLY as they were saved. `gmtvtk_set_object_visible` is the ONE
+# visibility setter for both an extra (by name) and the base surface (by its own name, or ""), so
+# this is the same door the panel's own checkbox uses — not a parallel show/hide path. Runs LAST in
+# the load, after every replay and after the display state, so what the user saved is what wins.
+function _session_apply_checked!(fig, display)
+	fig === nothing && return
+	blob = get(display, "checked", "")
+	isempty(blob) && return
+	h = getfield(fig, :h)
+	for e in split(blob, '\x1f'; keepempty=false)
+		p = split(e, '\x1e')
+		length(p) < 2 && continue
+		v = tryparse(Int, String(p[2]))
+		v === nothing && continue
+		ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), h, String(p[1]), Cint(v))
+	end
+	return
 end
 
 # Serialize the window's text labels to the C serializer's raw "x;y;r;g;b;size;group;text\n" blob
@@ -978,12 +1017,30 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 		israster(r) = r.kind in (:basegrid, :image, :dropgrid, :dropimage, :basemap)
 		nraster = count(israster, recipes)
 		ri = 0
+		lastraster = nothing                  # (name, data) of the last raster that actually replayed
 		for r in recipes
 			if israster(r)
 				ri += 1
 				ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), round(Int, 10 + 50*ri/nraster))
-				fig = _session_replay!(fig, r, _session_load_object(r, entries), display, scene)
+				obj = _session_load_object(r, entries)
+				fig = _session_replay!(fig, r, obj, display, scene)
+				(obj === nothing) || (lastraster = (r.name, obj))
 			end
+		end
+		# SACRED_LAW.md, raster-own-axes law: EVERY raster add goes through the ONE transition
+		# `_adopt_new_element` — shown, everything else unchecked whatever its kind, axes reframed to
+		# its OWN extent — with no gate, no exception for any raster kind or any code path. Session
+		# replay was the exception nobody had closed: it added each raster with promote=false and
+		# NOTHING ELSE, so the last grid in the file came back with a Scene Objects row and nothing on
+		# screen (reported on C:/v/sess.igmtz: tejo10_geo.grd listed, never displayed). Adopting the
+		# LAST replayed raster is the same rule a drop of those same files in the same order gives.
+		# NO GATE. Not "if it has a name", not "if the window was empty", not "if it is an extra" —
+		# the law is explicit that writing such a condition around this call IS the recurring mistake,
+		# and it names the three earlier attempts that each added one. The base surface is not a
+		# special case either: replay names it (_session_set_name!), and the C side resolves the base
+		# by its own surfName and checks it back on when the base is what gets adopted.
+		if fig !== nothing && lastraster !== nothing
+			_adopt_new_element(getfield(fig, :h), lastraster[1], lastraster[2])
 		end
 		nvec = length(recipes) - nraster
 		vi = 0
@@ -1028,6 +1085,9 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 		end
 		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 95)
 		fig !== nothing && _session_apply_display!(fig, display)
+		# …and the checkboxes exactly as they were saved. LAST, so it overrides whatever the replay
+		# order left checked: a session restores the panel the user saved, not a re-derivation of it.
+		fig !== nothing && _session_apply_checked!(fig, display)
 		# Same "new content appeared" convention every promote/drop/derive path uses (grid.jl,
 		# clipgrid.jl, grdsample.jl, igrf.jl, rtp3d.jl, deform.jl) -- an empty launcher's Scene
 		# Objects dock starts FOLDED (gmtvtk_open_empty), so a session replayed straight into one

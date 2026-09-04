@@ -19962,10 +19962,59 @@ public:
 	bool nestReady_ = false;              // gate: don't run the load-time nest check during construction/seed
 	QString lastNestChecked_;             // dedup so the same path isn't re-checked on every keystroke/refresh
 
+	// Back from the dock — double-click, the row's checkbox, its "Show". ONE function for every way
+	// in, exactly like LidarPicker::unpark and the region picker's.
+	void unpark() {
+		if (scene_ && sceneAlive(scene_)) unparkTool(scene_, this);
+		setWindowState(windowState() & ~Qt::WindowMinimized);
+		showNormal(); raise(); activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { if (scene_ && sceneAlive(scene_)) unparkTool(scene_, this); deleteLater(); }
+		};
+	}
+protected:
+	// The SYSTEM minimise button is what parks this dialog — the same gesture FFT stuff, Color
+	// Palettes and Load Bands already use, never a button of its own invented inside the layout.
+	// Qt reports the minimise AFTER the window manager has done it, so the restore+hide+park is
+	// deferred one event-loop turn; doing it inside the handler fights the WM.
+	void changeEvent(QEvent *e) override {
+		QDialog::changeEvent(e);
+		if (e->type() == QEvent::WindowStateChange && windowState().testFlag(Qt::WindowMinimized))
+			QTimer::singleShot(0, this, [this]() { parkNow(); });
+	}
+
+public:
+	// Hide + park as a handle in the owning window's Scene Objects, the SAME bottom strip every other
+	// parkable tool uses (Scene::parkedTools). With no live scene to park into there is nothing to
+	// park to, so fall back to the window manager's own minimise rather than vanishing.
+	void parkNow() {
+		if (!scene_ || !sceneAlive(scene_)) { showMinimized(); return; }
+		setWindowState(windowState() & ~Qt::WindowMinimized);   // undo the WM's minimise
+		hide();
+		parkTool(scene_, this, "NSWING tsunami", IC_NestRect,
+		         "Minimised NSWING options — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scene_);    // a handle nobody can see is no handle at all
+	}
+
 	NswingDialog(QWidget *parent, Scene *scene = nullptr) : QDialog(parent), scene_(scene) {
 		setWindowTitle("NSWING tsunami options");
 		setMinimumWidth(420);
 		auto *v = new QVBoxLayout(this);
+
+		// A dialog destroyed while parked must take its row with it, or Scene Objects keeps a handle
+		// pointing at nothing (same connect FFT stuff makes for its own parked dialog).
+		QObject::connect(this, &QObject::destroyed, this, [this]() {
+			if (scene_ && sceneAlive(scene_)) unparkTool(scene_, this);
+		});
 
 		// a labelled file row: <label> [lineedit] [...]  (browse with the given filter)
 		auto fileRow = [this](const QString &label, QLineEdit *&edit, const QString &filter) -> QLayout* {
@@ -24831,7 +24880,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			// same combo as the other non-modal dialogs in this file (e.g. IgrfDialog).
 			auto *dlg = new NswingDialog(win, s);
 			dlg->setAttribute(Qt::WA_DeleteOnClose);
-			dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+			// The MINIMISE button has to be there for minimising to mean anything — it is what parks
+			// the dialog (NswingDialog::parkNow), the same gesture FFT stuff and Load Bands use.
+			dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 			dlg->setWindowModality(Qt::NonModal);
 			dlg->show();
 		});

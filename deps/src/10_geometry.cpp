@@ -3976,11 +3976,18 @@ static inline bool extraVisible(const ExtraObj &ex) {
 // the surface actor's visibility (that gate is what made unchecking "Surface" blank a still-checked
 // Axes row). A layer-level hide therefore has to say so EXPLICITLY, here, by switching the layer's
 // own axes intent off — which is also what leaves the panel's checkbox telling the truth.
+// The COLOUR BAR intent is the same story as the axes intent, and it was missed. The container row's
+// checkbox is an OR over the whole group -- surface || axes || colour bar || drape (rebuildSceneObjects,
+// 50_scene.cpp) -- so a layer hidden with its `showBar` still set comes back CHECKED with nothing on
+// screen. That is the group-uncheck law broken from the other end: a hidden group whose box is still
+// ticked. Reported on a loaded session, where the lower-stack grids kept their checkboxes after the
+// last raster was adopted. A layer-level hide therefore switches the bar intent off here too, in the
+// SAME one function, and never in a caller.
 static inline void rasterLayerSetVisible(Scene *s, ExtraObj &ex, bool on) {
 	if (ex.actor) ex.actor->SetVisibility(on ? 1 : 0);
 	if (ex.drape) ex.drape->SetVisibility(on ? 1 : 0);
 	ex.ax.shown = on;
-	if (!on) axesHideAll(ex.ax);
+	if (!on) { axesHideAll(ex.ax); ex.showBar = false; }
 	(void)s;
 }
 static inline void baseLayerSetVisible(Scene *s, bool on) {
@@ -3988,7 +3995,7 @@ static inline void baseLayerSetVisible(Scene *s, bool on) {
 	surfSetVisibility(s, on ? 1 : 0);
 	if (s->drape) s->drape->SetVisibility(on ? 1 : 0);
 	s->baseAxes.shown = on;
-	if (!on) axesHideAll(s->baseAxes);
+	if (!on) { axesHideAll(s->baseAxes); s->surfShowBar = false; s->aquaLandShowBar = false; }
 }
 // The BY-PROP door onto the same two setters — Swipe/Link switch layers by actor pointer, and a
 // layer switch there is a layer switch like any other: its axes travel with it. A prop that is not
