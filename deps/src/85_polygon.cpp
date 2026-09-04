@@ -1013,8 +1013,39 @@ static void polyFinalize(Scene *s, std::vector<std::array<double,3>> verts, bool
 	if (s->polyPreview) s->polyPreview->SetVisibility(0);
 	rebuildSceneObjects(s);                // add the new shape's row to the Scene Objects list
 	if (pg.nestKind == 1) {
-		nestReflow(s);                     // snap the new nested rectangle to its parent's grid
+		// THE ROOT RECTANGLE ASKS FOR ITS REFINEMENT FACTOR, exactly as Mirone does the moment one is
+		// drawn (draw_funs.m `set_recTsu_uicontext`):
+		//     resp  = inputdlg('Enter refinement factor', default '5')
+		//     x_inc = handles.head(8) / resp;   y_inc = handles.head(9) / resp;
+		// and, on cancel or 0, "OK, just make it a regular rectangle" — the nesting context menu is
+		// dropped and it becomes an ordinary line.
+		//
+		// A level may NEVER simply inherit its parent's increment, which is what this port used to do
+		// (`if (cxi <= 0) cxi = base.xi`). That is not a cosmetic difference: nswing's own rule wants
+		// each corner at parent_cell + dxP/2 ± dxD/2, and with a child increment EQUAL to the parent's
+		// that offset is a WHOLE parent cell while check_binning measures it with trunc(), which only
+		// ever returns [0, dxP). No corner value can satisfy it. Measured on real grids: a level-1 grid
+		// at the base increment is rejected on X_MIN and Y_MAX, while the refined levels below it pass
+		// all four corners. The refinement is what makes a nesting level legal at all.
 		int nnest = 0; for (auto &p : s->polys) if (p.nestKind == 1) ++nnest;
+		NestLims base;
+		if (nnest == 1 && nestBaseGrid(s, base)) {          // the ROOT rect, over a real grid
+			bool ok = false;
+			const int resp = QInputDialog::getInt(s->win, "Refinement factor", "Enter refinement factor:",
+			                                      5, 1, 100000, 1, &ok);
+			if (!ok || resp <= 0) {                          // "just make it a regular rectangle"
+				Polygon &np = s->polys.back();
+				np.nestKind = 0;                             // ordinary rect: no nesting menu, no chain
+				rebuildSceneObjects(s);
+				if (s->polyAct) s->polyAct->setChecked(false);
+				else            polygonSetMode(s, false);
+				return;
+			}
+			Polygon &np = s->polys.back();
+			np.nestXi = base.xi / resp;
+			np.nestYi = base.yi / resp;
+		}
+		nestReflow(s);                     // snap the new nested rectangle to its parent's grid
 		if (nnest == 1) unfoldSceneObjects(s);   // first one: reveal AND un-fold the dock so it's visible
 	}
 	// Finishing ends the draw session: untoggle the toolbar button (-> polygonSetMode(false),
@@ -1076,7 +1107,6 @@ static void copyMeStart(Scene *s, const Polygon &src) {
 //  first's parent is the base grid; each later one's parent is the rectangle before it. Editing
 //  any rectangle reflows it AND every descendant. Mirrors resize2nesting_size + find_nearest.
 // ===========================================================================================
-struct NestLims { double x0, x1, y0, y1, xi, yi; };
 
 // Base grid region + node spacing (grid registration assumed). false if no grid is loaded.
 static bool nestBaseGrid(Scene *s, NestLims &g) {

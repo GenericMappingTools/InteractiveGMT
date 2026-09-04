@@ -20035,6 +20035,30 @@ public:
 			return h;
 		};
 
+		// The same row for a file this run WRITES. Two differences that matter: the picker is a SAVE
+		// dialog (a name that does not exist yet is the normal case, and an open dialog refuses it),
+		// and what lands in the box is the FULL path — an output field holding a bare name says
+		// nothing about where the run will actually put the file.
+		auto saveRow = [this](const QString &label, QLineEdit *&edit, const QString &filter) -> QLayout* {
+			auto *h = new QHBoxLayout();
+			auto *lab = new QLabel(label, this); lab->setMinimumWidth(48);
+			h->addWidget(lab);
+			edit = new QLineEdit(this); edit->setMinimumWidth(240);
+			h->addWidget(edit);
+			auto *btn = new QToolButton(this); btn->setText("...");
+			h->addWidget(btn);
+			auto browse = [this, edit, filter]() {
+				const QString cur = edit->text().trimmed();
+				QString p = QFileDialog::getSaveFileName(this, "Select output file",
+				                                         cur.isEmpty() ? prefStartDir() : cur, filter);
+				if (!p.isEmpty()) { edit->setText(p); rememberStartDir(p); }
+			};
+			QObject::connect(btn, &QToolButton::clicked, this, browse);
+			edit->installEventFilter(this);      // double-click on the box itself also opens the picker
+			fileBrowsers[edit] = browse;
+			return h;
+		};
+
 		// --- Input grids: Source + Nest + nesting level -----------------------------------------
 		auto *gIn = new QGroupBox("Input grids", this);
 		auto *iv  = new QVBoxLayout(gIn);
@@ -20088,12 +20112,9 @@ public:
 		gOutMode->addButton(rGrids); gOutMode->addButton(rAnuga); gOutMode->addButton(rMost);
 		orow->addWidget(rGrids); orow->addWidget(rAnuga); orow->addWidget(rMost);
 		ov->addLayout(orow);
-		auto *nrow = new QHBoxLayout();
-		nrow->addWidget(new QLabel("Name", gOut));
-		nameEdit = new QLineEdit(gOut);
-		nameEdit->setToolTip("Output name stem / file name (grids are numbered using this stem)");
-		nrow->addWidget(nameEdit);
-		ov->addLayout(nrow);
+		// FULL file name, with its path — the run writes here, so the field says exactly where.
+		ov->addLayout(saveRow("Name", nameEdit, "Grids (*.grd *.nc);;netCDF (*.nc);;All files (*)"));
+		nameEdit->setToolTip("Output file — full path and name");
 		v->addWidget(gOut);
 
 		// --- Per-field outputs (active only for the "Output grids" target, as in Mirone) ---------
@@ -20132,7 +20153,7 @@ public:
 		crow->addWidget(cumintEdit);
 		mv->addLayout(crow);
 		mv->addLayout(fileRow("In file",  maregInEdit,  "Maregraph (*.dat *.xy);;All files (*)"));
-		mv->addLayout(fileRow("Out file", maregOutEdit, "Maregraph (*.dat *.xy);;All files (*)"));
+		mv->addLayout(saveRow("Out file", maregOutEdit, "Maregraph (*.dat *.xy);;All files (*)"));   // written by the run: full path
 		v->addWidget(gMar);
 
 		// --- Run parameters ---------------------------------------------------------------------
@@ -20170,13 +20191,15 @@ public:
 			if (dx > 0 && depth > 0)
 				dtEdit->setText(QString::number(dx / std::sqrt(depth * 9.8) / 2.0, 'f', 3));
 
+			// The default is a FULL path, like anything the user picks with the "..." button: a bare
+			// stem leaves "where does this actually get written?" unanswered until after the run.
+			QString stem = "tsu";
 			if (g_juliaEval) {
 				std::vector<char> buf(512);
 				int n = g_juliaEval(scene_, "InteractiveGMT._nswing_default_name(fig.h)", buf.data(), (int)buf.size());
-				nameEdit->setText(n > 0 ? QString::fromUtf8(buf.data(), n) : "tsu");
-			} else {
-				nameEdit->setText("tsu");
+				if (n > 0) stem = QString::fromUtf8(buf.data(), n);
 			}
+			nameEdit->setText(QDir(prefStartDir()).filePath(stem));
 		}
 
 		// Fields/Manning only make sense for the grids target (-G); grey them out otherwise.
@@ -24814,6 +24837,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	*fGroup = [mGphy, win, s, fTsu, fSeis, fMag, fGrav, fPlates]() {
 		mGphy->clear();
 		mGphy->setTitle("Geophysics ▾");
+		s->gphyPage = 0;                        // back at the discipline chooser
 		mGphy->addAction("Tsunamis",   [fTsu]()    { (*fTsu)(); });
 		mGphy->addAction("Seismology", [fSeis]()   { (*fSeis)(); });
 		mGphy->addAction("Magnetics",  [fMag]()    { (*fMag)(); });
@@ -24855,7 +24879,26 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	mGphy->installEventFilter(new GphyHomeOnParentClick(mGphy, fGroup, reopen));
 
-	auto backItem = [mGphy, fTsu, fSeis, fMag, fGrav, fPlates](const QString &current) {
+	// Page ids, the one mapping between a discipline's name and the number a session stores.
+	auto gphyPageId = [](const QString &n) {
+		return n == "Tsunamis" ? 1 : n == "Seismology" ? 2 : n == "Magnetics" ? 3 :
+		       n == "Gravity"  ? 4 : n == "Plates"     ? 5 : 0;
+	};
+	// Put the menu on a given page from OUTSIDE the menu code — what session restore calls. Same
+	// lambdas the menu items themselves run, so there is no second way to switch page.
+	s->gphySetPage = [fGroup, fTsu, fSeis, fMag, fGrav, fPlates](int p) {
+		switch (p) {
+			case 1: (*fTsu)();    break;
+			case 2: (*fSeis)();   break;
+			case 3: (*fMag)();    break;
+			case 4: (*fGrav)();   break;
+			case 5: (*fPlates)(); break;
+			default: (*fGroup)(); break;
+		}
+	};
+
+	auto backItem = [mGphy, s, gphyPageId, fTsu, fSeis, fMag, fGrav, fPlates](const QString &current) {
+		s->gphyPage = gphyPageId(current);      // every page announces itself here, once
 		// Single entry — itself a submenu, direct access to any OTHER discipline (skips the
 		// chooser page entirely). Each fXxx already reopens the menu itself at its end.
 		QMenu *mBack = mGphy->addMenu("Geophysics ›");

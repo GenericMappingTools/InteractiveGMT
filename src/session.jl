@@ -1084,10 +1084,14 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 				_session_rebuild_rulers!(fig, String(entries["drawn/rulers.txt"]))
 		end
 		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 95)
-		fig !== nothing && _session_apply_display!(fig, display)
-		# …and the checkboxes exactly as they were saved. LAST, so it overrides whatever the replay
-		# order left checked: a session restores the panel the user saved, not a re-derivation of it.
+		# The checkboxes exactly as they were saved, FIRST: they decide which raster is the active one,
+		# and the view mode below is refused for a non-geographic active grid (sceneSetViewMode ->
+		# igViewIsBody + activeGridGeog). Restoring the view while the wrong layer was still active is
+		# how a session saved in Globe or Cube came back flat.
 		fig !== nothing && _session_apply_checked!(fig, display)
+		# …then the display state — VE, view mode (2-D / 3-D / Globe / Cube), camera, shading. LAST, so
+		# what the user saved is what wins over anything the replay order left behind.
+		fig !== nothing && _session_apply_display!(fig, display)
 		# Same "new content appeared" convention every promote/drop/derive path uses (grid.jl,
 		# clipgrid.jl, grdsample.jl, igrf.jl, rtp3d.jl, deform.jl) -- an empty launcher's Scene
 		# Objects dock starts FOLDED (gmtvtk_open_empty), so a session replayed straight into one

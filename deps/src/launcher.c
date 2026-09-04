@@ -537,8 +537,7 @@ static int find_julia(char *out, size_t n, const char *hint)
 
 /* Must match iview_app.jl's joinpath(tempdir(), "igmt_ready.flag") — Julia's tempdir() is
  * %TEMP% on Windows and $TMPDIR (per-user, /var/folders/... on macOS) else /tmp on Unix. */
-static void ready_flag_path(char *out, size_t n)
-{
+static void ready_flag_path(char *out, size_t n) {
 #ifdef _WIN32
 	const char *t = getenv("TEMP");
 	joinp(out, n, (t && *t) ? t : ".", "igmt_ready.flag");
@@ -557,8 +556,7 @@ static char g_flag[MAXP];
 
 /* The picture, wherever this copy of the package keeps it: beside iview_app.jl in an installed
  * tree, under deps/assets in a git checkout. */
-static int splash_image_path(const char *root, const char *leaf, char *out, size_t n)
-{
+static int splash_image_path(const char *root, const char *leaf, char *out, size_t n) {
 	joinp(out, n, root, leaf);
 	if (file_exists(out)) return 1;
 	snprintf(out, n, "%s%cdeps%cassets%c%s", root, PATHSEP, PATHSEP, PATHSEP, leaf);
@@ -566,8 +564,7 @@ static int splash_image_path(const char *root, const char *leaf, char *out, size
 }
 
 /* Same geometry rule everywhere: 30% of screen width, 520 px floor, 0.68 aspect, centered. */
-static void splash_geometry(int screen_w, int screen_h, int *x, int *y, int *w, int *h)
-{
+static void splash_geometry(int screen_w, int screen_h, int *x, int *y, int *w, int *h) {
 	*w = (int)(screen_w * 0.30);
 	if (*w < 520) *w = 520;
 	*h = (int)(*w * 0.68);
@@ -587,8 +584,7 @@ static void splash_geometry(int screen_w, int screen_h, int *x, int *y, int *w, 
 
 /* Track geometry in window coordinates, y measured from the TOP on every platform (Cocoa's
  * bottom-left origin is flipped once, at the call site). #bar was 60% of the width, #chunk 18%. */
-static void splash_bar_rect(int w, int h, int *bx, int *by, int *bw, int *bh, int *cw)
-{
+static void splash_bar_rect(int w, int h, int *bx, int *by, int *bw, int *bh, int *cw) {
 	*bw = (int)(w * 0.60);
 	*bh = (int)(h * 0.030);
 	if (*bh < 5) *bh = 5;
@@ -599,14 +595,12 @@ static void splash_bar_rect(int w, int h, int *bx, int *by, int *bw, int *bh, in
 
 /* Left edge of the chunk at time t: from fully off the track's left to fully off its right,
  * which is what the .hta's `from left:-18vw to left:78vw` describes. */
-static int splash_chunk_x(int bx, int bw, int cw, unsigned long ms)
-{
+static int splash_chunk_x(int bx, int bw, int cw, unsigned long ms) {
 	double t = (double)(ms % SPLASH_CYCLE_MS) / (double)SPLASH_CYCLE_MS;
 	return bx - cw + (int)((bw + cw) * t);
 }
 
-static unsigned long now_ms(void)
-{
+static unsigned long now_ms(void) {
 #ifdef _WIN32
 	return (unsigned long)GetTickCount();
 #else
@@ -630,8 +624,7 @@ static HBITMAP g_iconBmp;      /* the icon, area-averaged down to SPLASH_ICON_PX
  * Colour is averaged WEIGHTED BY ALPHA and alpha averaged on its own, so the transparent
  * surroundings (whose RGB is arbitrary) cannot bleed a dark halo into the edge pixels. Returns NULL
  * on any failure, which simply leaves the caller with no bitmap and the old DrawIconEx path. */
-static HBITMAP icon_scaled_bitmap(HICON ic, int src, int dst)
-{
+static HBITMAP icon_scaled_bitmap(HICON ic, int src, int dst) {
 	ICONINFO ii;
 	BITMAPINFO bi;
 	HDC dc;
@@ -707,8 +700,8 @@ static HBITMAP icon_scaled_bitmap(HICON ic, int src, int dst)
 	return out;
 }
 
-static void splash_paint(HWND hw)
-{
+
+static void splash_paint(HWND hw) {
 	PAINTSTRUCT ps;
 	HDC dc = BeginPaint(hw, &ps);
 	RECT rc;
@@ -758,7 +751,7 @@ static void splash_paint(HWND hw)
 		/* \x2026 is the ellipsis, written as a code point on purpose: MSVC reads this file with
 		 * the system codepage unless told otherwise, so a literal UTF-8 "…" in a wide string
 		 * came out as mojibake ("startingâ€¦"). Escapes cannot be misread. */
-		static const wchar_t *cap = L"Starting iGMT\x2026";
+		static const wchar_t *cap = L"Starting i'GMT\x2026";
 		/* ANTIALIASED_QUALITY, not CLEARTYPE_QUALITY: ClearType needs an opaque background to
 		 * blend its subpixels against, and GDI silently drops to ALIASED glyphs when it is asked
 		 * to draw with a TRANSPARENT background over an image — which is what made the caption
@@ -805,8 +798,7 @@ static void splash_paint(HWND hw)
 	EndPaint(hw, &ps);
 }
 
-static LRESULT CALLBACK splash_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
-{
+static LRESULT CALLBACK splash_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
 	switch (msg) {
 	case WM_PAINT:
 		splash_paint(hw);
@@ -835,8 +827,7 @@ static LRESULT CALLBACK splash_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
 	return DefWindowProcW(hw, msg, wp, lp);
 }
 
-static void splash_load(const char *root)
-{
+static void splash_load(const char *root) {
 	char img[MAXP];
 	wchar_t *w;
 	IStream *st = NULL;

@@ -708,6 +708,9 @@ static int  polyIndexOfActor(Scene *s, vtkActor *a);                        // i
 static bool lineClosedRing(Scene *s, const LineRef &lr);                    // closed polygon ring? (55)
 static int  polyHitPolygon(Scene *s, int x, int y, double tol);             // polygon under cursor? (85)
 static void nestReflow(Scene *s);                                            // re-quantize "Nested grids" chain (85); idempotent, so untouched rects (ancestors included) stay put
+// Region + node spacing of a nesting PARENT — the base grid, or the rect one level out (85).
+struct NestLims { double x0, x1, y0, y1, xi, yi; };
+static bool nestBaseGrid(Scene *s, NestLims &g);                             // base grid's own limits + increment; false when no grid is loaded
 static void nestNewChild(Scene *s);                                         // append a refined nested child (85)
 static void nestSetRect(Scene *s, Polygon &pg, double x0, double x1, double y0, double y1);  // force a rect's ring to these axis-aligned limits + rebuild (85)
 struct MovieAnno;                                                           // movie -L label / -P indicator (defined below)
@@ -1187,6 +1190,12 @@ struct Scene {
 	int         crsEpsg = 0;
 	QMenu *geoMenu = nullptr;   // the Geography menu (built disabled; enabled once a CRS is set)
 	QMenu *elasticMenu = nullptr;   // Seismology > Elastic deformation (disabled until a CRS is set)
+	// The Geophysics menu is PAGED (a discipline chooser that rotates into Tsunamis / Seismology /
+	// Magnetics / Gravity / Plates and back). Which page it is showing is real window state — a
+	// session that puts the window back has to put the menu back too — so the page id is recorded
+	// here and `gphySetPage` is how anything outside the menu code puts it back. 0 = the chooser.
+	int gphyPage = 0;
+	std::function<void(int)> gphySetPage;
 	bool hasCRS() const { return !crsProj4.empty() || !crsWkt.empty() || crsEpsg != 0; }
 
 	// --- Swipe / Link tool (two ways to compare two rasters) -----------------

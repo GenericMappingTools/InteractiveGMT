@@ -1257,6 +1257,9 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 		// carry two of them, so the whole answer travels in its own key. It is written alongside, not
 		// instead: a session file read by an older library still finds the flat2d it knows.
 		kvi("viewmode", s->globe ? (s->cube ? 3 : 2) : (s->flat2d ? 1 : 0));
+		// Which page the PAGED Geophysics menu is showing (0 = the discipline chooser). Window state
+		// like any other: a session that restores the view restores the menu the user left open too.
+		kvi("gphypage", s->gphyPage);
 		// THE SHADING STATE. Everything the Illumination dialog writes into the Scene, so a window
 		// reloaded from a session (or restored after a movie run) wears the look the user left it
 		// in instead of the struct defaults. `look` is the four-state relief look derived from the
@@ -1325,6 +1328,9 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 		if (i && !s->flat2d)      sceneSetFlat2D(s, true);
 		else if (!i && s->flat2d) sceneSetFlat2D(s, false);
 	}
+	// …and the Geophysics menu back on the page it was left on, through the SAME switch its own
+	// items use (Scene::gphySetPage). Absent key (an older session) leaves the menu alone.
+	if (geti("gphypage", i) && s->gphySetPage) s->gphySetPage(i);
 	if (s->ren) {                                                    // finally the exact saved camera
 		if (vtkCamera *cam = s->ren->GetActiveCamera()) {
 			double px, py, pz, fx, fy, fz, ux, uy, uz, ps, va;
