@@ -236,7 +236,7 @@ end
 # ETA anchors on the FIRST percent seen (time, pct) and extrapolates: elapsed·(100−p)/(p−p0). The raw
 # last line is shown whenever no percent is available yet (setup phase), so the dialog is never blank.
 # On `isdone()` close the bar and log the outcome (`result()` returns the error string, "" on success).
-function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io=nothing; progf::String="")
+function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io=nothing; progf::String="", on_done=nothing)
 	t0       = time()                                 # run start: base for both the live ETA and the final total
 	pos      = Ref(0)
 	anchor   = Ref{Union{Nothing,Tuple{Float64,Int}}}(nothing)  # (time, pct) of the first percent seen
@@ -309,6 +309,11 @@ function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io=nothi
 			total = _hms(time() - t0)                 # FINAL time estimate: total wall clock for the whole run
 			isempty(err) ? _viewer_log_info(scene, "NSWING: run finished in $total.") :
 			               _viewer_log_error(scene, "NSWING FAILED after $total: $err")
+			# What the CALLER wanted this run for (a benchmark showing its own result). It runs after the
+			# outcome is logged and the bar is closed, so a tool never has to poll for the end itself.
+			if on_done !== nothing
+				try on_done(err) catch e; _viewer_log_error(scene, "NSWING post-run step failed: $(sprint(showerror, e))") end
+			end
 		catch e
 			close(tm); _progress_close(); _NSWING_RUNNING[] = false
 			_viewer_log_error(scene, "NSWING watcher error: $(sprint(showerror, e))")
@@ -341,7 +346,7 @@ end
 # maregraph out file, …) are relative-only with no directory override in the module itself, so without
 # this they land wherever the calling Julia process's cwd happens to be — never the save-files dir the
 # user picked, even though the bathymetry/Source grids we save there sit right next to them.
-function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Union{String,Nothing} = nothing)
+function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Union{String,Nothing} = nothing, on_done=nothing)
 	logf = tempname() * ".nswinglog"
 	io   = open(logf, "w")
 	progf = _nswing_progress_file()               # -W<file>: nswing rewrites it in place each tick
@@ -381,7 +386,7 @@ function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Unio
 		end
 		return msg
 	end
-	_nswing_watch(scene, () -> !process_running(proc), _nswing_external_result, logf, io; progf = progf)
+	_nswing_watch(scene, () -> !process_running(proc), _nswing_external_result, logf, io; progf = progf, on_done = on_done)
 	return
 end
 

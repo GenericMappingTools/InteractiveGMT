@@ -253,6 +253,32 @@ end
 # Prints "nsteps|activevar|var1,var2,…" (parsed by the C++ dialog to fill "Time steps = N" + the
 # slider range + the Stage/Xmoment/Ymoment/Or… quantity picker) on success; throws (shown as an
 # error dialog by the console-eval bridge) on anything it can't make sense of.
+# Drop the per-variable Scene Objects rows a PREVIOUS open of this window left behind — the ones
+# `_aquamoto_open` adds below, named after the variable. Called by the open itself, so no caller has
+# to remember to clean up, and so a second file opened into the same window replaces the first file's
+# rows instead of stacking beside them. Removing a name that is not there is a no-op.
+function _aqua_drop_var_rows(scene::Ptr{Cvoid}, path::String, varnames::Vector{String})
+	old = get(_AQUA, scene, nothing)
+	names = Set{String}(["bathymetry"])
+	# The variables of the file being opened AND of the one this window had before it: either set can
+	# carry a name the other does not.
+	for v in _netcdf_subdatasets(path);  push!(names, v.name);  end
+	if old !== nothing
+		push!(names, "bathymetry")
+		try
+			for v in _netcdf_subdatasets(old.path);  push!(names, v.name);  end
+		catch                                   # the previous file may be gone by now — its rows are not
+		end
+		union!(names, old.varnames)
+	end
+	union!(names, varnames)
+	for nm in names
+		ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, nm)
+		_forget_object!(scene, :grid, nm)
+	end
+	return nothing
+end
+
 function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	isfile(path) || error("Aquamoto: file not found: $path")
 	varnames = _aqua_find_all_varnames(path, "bathymetry")
@@ -334,6 +360,14 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	# variable ('z'/the composited water surface) starts visible -- every other loaded group
 	# (bathymetry, any extra static grid) starts UNCHECKED (gmtvtk_set_object_visible, the same
 	# "add hidden" call nested.jl's blank-grid path already uses).
+	# A RE-OPEN REPLACES THESE ROWS, it never stacks a second set. This window may already be showing
+	# another file of this class (open a tsunami, then open a second one into the same window — which is
+	# what a benchmark does when its run finishes), and the variable groups added below are named after
+	# the VARIABLE, not the file: adding again gave two "bathymetry" handles, of which only the first
+	# was hidden by the call below — so the second stood there CHECKED with nothing on screen, which is
+	# a checkbox lying about what it controls. Removing first is idempotent: a name that is not there
+	# removes nothing.
+	_aqua_drop_var_rows(scene, path, varnames)
 	_add_grid_to_scene(scene, bat, "bathymetry"; promote = false, source = "$(path)?bathymetry")
 	ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, "bathymetry", Cint(0))
 	skipvars = Set(lowercase.(varnames)); push!(skipvars, "bathymetry")

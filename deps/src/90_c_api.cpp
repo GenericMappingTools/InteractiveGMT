@@ -1019,6 +1019,7 @@ GMTVTK_API int gmtvtk_progress_show(int max, const char *title) {
 // interactive — used for a long asynchronous run (NSWING) whose advance is pushed from a Julia Timer via
 // gmtvtk_progress_update while the run proceeds on a separate task. Returns 1 on success, 0 on failure.
 GMTVTK_API int gmtvtk_progress_show_async(int max, const char *title) {
+	if (g_progressMirror) { g_progressMirror->setRange(0, max > 0 ? max : 0); g_progressMirror->setValue(0); }
 	// ensureApp, not a bail-out: the FIRST grid of a session is exactly the slow one worth reporting,
 	// and at that moment no window — and therefore no QApplication — exists yet. Returning 0 here left
 	// that one case, the one the dialog is for, with no dialog at all.
@@ -1046,6 +1047,7 @@ GMTVTK_API int gmtvtk_progress_show_async(int max, const char *title) {
 // Set the progress bar's value AND/OR its label text. value < 0 leaves the value untouched (so a caller
 // can update only the status text — e.g. the live nswing -V line + ETA). label == nullptr leaves the text.
 GMTVTK_API void gmtvtk_progress_status(int value, const char *label) {
+	if (g_progressMirror && value >= 0) g_progressMirror->setValue(value);
 	if (!g_progress) return;
 	if (value >= 0)  g_progress->setValue(value);
 	if (label)       g_progress->setLabelText(QString::fromUtf8(label));
@@ -1062,6 +1064,9 @@ GMTVTK_API void gmtvtk_progress_update(int value) {
 
 // Close and destroy the progress dialog. Safe to call when none exists.
 GMTVTK_API void gmtvtk_progress_close() {
+	// The mirror belongs to the run that registered it: fill it, then let it go, so the NEXT tool's
+	// progress does not move a bar in a tab that has nothing to do with it.
+	if (g_progressMirror) { g_progressMirror->setValue(g_progressMirror->maximum()); g_progressMirror = nullptr; }
 	if (g_progress) {
 		g_progress->close();
 		delete g_progress;

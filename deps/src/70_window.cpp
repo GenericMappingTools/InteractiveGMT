@@ -24240,6 +24240,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	win->installEventFilter(new MarkTearingDown(win, s));
 	QObject::connect(win, &QObject::destroyed, [s, rwp = rw.Get()]() {
+		// THE WINDOW'S TOOLS GO WITH THE WINDOW. An Aquamoto belongs to this Scene — it renders into
+		// it, reads it on a timer, and its X only HIDES it — so a viewer window closed while its
+		// Aquamoto was open used to leave that dialog standing, owning a Scene about to be freed.
+		// Same call the cube surface's own Remove makes (sceneRemoveSurface), so there is one way an
+		// Aquamoto dies, not two.
+		if (g_aquamotoDestroy && g_aquamotoHasWindow && g_aquamotoHasWindow(s)) g_aquamotoDestroy(s);
 		--g_openWindows;
 		if (g_lastScene == s) g_lastScene = nullptr;   // don't let add_overlay touch a freed scene
 		if (g_lastRW == rwp) g_lastRW = nullptr;       // don't let gmtvtk_save_png capture a freed window (crash)
@@ -25057,6 +25063,29 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			// reuses the SAME window for the scene, with its file/slice/state intact, rather than
 			// spawning a duplicate. Re-accessible afterwards from the layer's Scene Objects handle too.
 			AquamotoWindow::openFor(win, s);
+		});
+		// Catalina benchmark 1 — the demo/teaching tool. It opens the tank AT ITS BEGINNING (t = 0:
+		// bathymetry + the analytic solitary wave), in 3-D, in THIS window, and RUNS NOTHING: the model
+		// is two grids and a one-step cube, so it is on screen at once. No dialog — it takes no options.
+		// The tank is CLIPPED FOR DISPLAY to x = -200 … 20000 m; a run (its own explicit step) is never
+		// shortened. See benchmark1.jl.
+		mGphy->addAction("Catalina benchmark 1", [s]() {
+			if (!sceneAlive(s) || !g_juliaEval) return;
+			// THE DIALOG COMES UP FIRST, on its Benchs tab, before anything is built or opened — the
+			// user is looking at the controls while the tank is prepared, not at nothing.
+			if (g_aquamotoShowBenchs) g_aquamotoShowBenchs(s);
+			if (s->win) s->win->statusBar()->showMessage("Catalina benchmark 1: t = 0");
+			// …and the model is built on the NEXT turn of the loop, so this click returns at once.
+			QTimer::singleShot(0, s->win, [s]() {
+				if (!sceneAlive(s) || !g_juliaEval) return;
+				const std::string cmd = "InteractiveGMT._on_catalina_benchmark1(Ptr{Cvoid}(UInt(" +
+				                        std::to_string((unsigned long long)reinterpret_cast<uintptr_t>(s)) + ")))";
+				std::vector<char> buf(1 << 12);
+				const int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+				if (!sceneAlive(s)) return;              // the window went away meanwhile
+				if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+				else if (s->win) s->win->statusBar()->showMessage("Catalina benchmark 1 — t = 0", 5000);
+			});
 		});
 		// NOAA/NCEI historical tsunami event database (data/noaa_historical_tsunami_events.dat). It is a
 		// point dataset stamped over the current view, so it goes through `geoPlot` — the SAME leaf the

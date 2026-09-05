@@ -5,6 +5,11 @@ static int           g_openWindows = 0;
 static vtkRenderWindow *g_lastRW = nullptr;   // most-recent window, for gmtvtk_save_png
 static Scene *g_lastScene = nullptr;   // most-recent scene, for gmtvtk_add_overlay
 static QProgressDialog *g_progress = nullptr;  // progress dialog for long operations (Okada multi-patch)
+// A SECOND DISPLAY of that same progress, never a second source of it: a bar living inside a tool
+// (the Aquamoto Benchs tab) that wants the run's advance shown in place. Every gmtvtk_progress_*
+// entry point updates it alongside g_progress, so the two can never disagree; a tool registers its
+// bar for the length of its run and clears it afterwards. QPointer: the tool may be destroyed first.
+static QPointer<QProgressBar> g_progressMirror;
 
 // The ONE place that constructs this app's persistent settings store (prefs/dirMRU, Recent Files):
 // ~/.gmt/iGMT.ini — the SAME ~/.gmt directory GMT.jl already reads/writes. NEVER the Windows registry
@@ -1051,6 +1056,9 @@ static void (*g_aquamotoSetVisible)(Scene *scene, int on) = nullptr;   // Scene 
 static bool (*g_aquamotoIsVisible)(Scene *scene) = nullptr;            // current window visibility (checkbox initial state)
 static void (*g_aquamotoDestroy)(Scene *scene) = nullptr;             // destroy the window (lifetime-tied to its nc cube surface)
 static void (*g_aquamotoSetCmap)(Scene *scene, int side, const char *cmap) = nullptr;   // side 0=water,1=land; re-renders the current slice
+// Show the window with its "Benchs" tab in front, WITHOUT opening any file: what a benchmark's menu
+// entry calls first, so the dialog the user is about to work in is up before any model is built.
+static void (*g_aquamotoShowBenchs)(Scene *scene) = nullptr;
 
 // Same idea for the Binarize dialog (Image menu, 70_window.cpp): closing it only HIDES it, so the
 // image's Scene Objects handle offers "Binarize Image…" to bring it back with its mask and undo
@@ -1579,6 +1587,16 @@ static void ensureApp() {
 	QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
 	g_app = new QApplication(s_argc, s_argv);
 	g_app->setWindowIcon(appIcon());   // taskbar / app-wide default icon
+	// A PUSHED BUTTON MUST LOOK PUSHED. Windows' default style moves a button's face by a hair and
+	// nothing else, which on a dialog full of buttons reads as "did that click even land?". One
+	// app-wide rule (never per-dialog, so no button can be left out): pressed = a clearly darker
+	// face with a sunken border, and a checked toggle holds that same look for as long as it is on.
+	// Set on the QApplication, so it also covers buttons inside .ui files loaded at runtime.
+	g_app->setStyleSheet(
+		"QPushButton:pressed, QToolButton:pressed {"
+		"  background-color: #9fb6cd; border: 2px inset #4a6c8a; padding-top: 2px; padding-left: 2px; }"
+		"QPushButton:checked, QToolButton:checked {"
+		"  background-color: #b9cbe0; border: 2px inset #4a6c8a; }");
 	g_app->installEventFilter(new EnterDefocusFilter(g_app));   // Enter defocuses any QLineEdit (app-wide)
 }
 

@@ -980,6 +980,115 @@
         </item>
        </layout>
       </widget>
+      <widget class="QWidget" name="benchsTab">
+       <attribute name="title">
+        <string>Benchs</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="benchsTabLayout">
+        <property name="spacing">
+         <number>8</number>
+        </property>
+        <item>
+         <widget class="QGroupBox" name="bench1GroupBox">
+          <property name="title">
+           <string>10% slope beach, Benchmark 1</string>
+          </property>
+          <layout class="QVBoxLayout" name="bench1Layout">
+           <item>
+            <layout class="QHBoxLayout" name="bench1ButtonsLayout">
+             <item>
+              <widget class="QPushButton" name="benchRunButton">
+               <property name="text">
+                <string>Run simulation</string>
+               </property>
+               <property name="toolTip">
+                <string>Run NSWING over the full 50 km flume, then show the result here</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="benchLoadButton">
+               <property name="text">
+                <string>Load from disk…</string>
+               </property>
+               <property name="toolTip">
+                <string>Open a simulation that was run before</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="bench1SaveLayout">
+             <item>
+              <widget class="QLabel" name="benchSaveLabel">
+               <property name="text">
+                <string>Save to</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="benchSaveEdit">
+               <property name="toolTip">
+                <string>Where the simulation is written</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="benchSaveBrowseButton">
+               <property name="text">
+                <string>…</string>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>28</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="benchKeepRamCheck">
+             <property name="text">
+              <string>Keep whole cube in RAM</string>
+             </property>
+             <property name="toolTip">
+              <string>Read every timestep into memory, so slice changes stop hitting the disk</string>
+             </property>
+            </widget>
+
+           </item>
+
+           <item>
+            <widget class="QProgressBar" name="benchProgressBar">
+             <property name="value">
+              <number>0</number>
+             </property>
+             <property name="textVisible">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <spacer name="benchsTabSpacer">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>10</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
      </widget>
     </item>
     <item>

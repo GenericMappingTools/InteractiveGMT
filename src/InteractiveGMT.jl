@@ -136,6 +136,7 @@ include("lineops.jl")    # Tools > Vector Operations (port of Mirone src_figs/li
 include("plates.jl")     # Plates > Euler rotations (port of Mirone euler_stuff.m; GMT spotter modules)
 include("computeeuler.jl") # Plates > Compute Euler pole (port of Mirone compute_euler.m + mex/distmin.c)
 include("shapenc.jl")    # write a SHAPENC netCDF file (port of Mirone utils/shapenc.m; GDAL MDArray API, no MEX)
+include("benchmark1.jl") # Geophysics > Tsunamis > Catalina benchmark 1 (NSWING demo; needs shapenc's MDArray helpers)
 include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track editor (port of Mirone src_figs/gmtedit.m)
 include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> write via shapenc
 include("palettes.jl")   # Image > Color Palettes: the six palette families + CPT I/O (port of Mirone color_palettes.m)

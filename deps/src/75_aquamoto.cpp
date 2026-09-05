@@ -260,6 +260,12 @@ public:
 	                                      // see the constructor), not a spinner: user wants a simple box
 	QCheckBox *splitDryWetCheck = nullptr, *scaleGlobalCheck = nullptr;
 	QPushButton *loadRamBtn = nullptr, *runInBtn = nullptr;
+	// Benchs tab — "10% slope beach, Benchmark 1": run it, load a previous run, say where it is saved,
+	// and watch it advance.
+	QPushButton *benchRunBtn = nullptr, *benchLoadBtn = nullptr, *benchBrowseBtn = nullptr;
+	QLineEdit *benchSaveEdit = nullptr;
+	QProgressBar *benchProgress = nullptr;
+	QCheckBox *benchKeepRamCheck = nullptr;
 	QRadioButton *stageRadioButton = nullptr, *xmomentRadioButton = nullptr, *ymomentRadioButton = nullptr;
 	QComboBox *orComboBox = nullptr;
 	QString activeVar_;                   // the varname currently selected in the quantity picker
@@ -350,6 +356,12 @@ public:
 		scaleGlobalCheck        = w->findChild<QCheckBox *>("scaleColorGlobalCheckBox");
 		loadRamBtn            = w->findChild<QPushButton *>("loadRamButton");
 		runInBtn                = w->findChild<QPushButton *>("plotRunInButton");
+		benchRunBtn             = w->findChild<QPushButton *>("benchRunButton");
+		benchLoadBtn            = w->findChild<QPushButton *>("benchLoadButton");
+		benchBrowseBtn          = w->findChild<QPushButton *>("benchSaveBrowseButton");
+		benchSaveEdit           = w->findChild<QLineEdit *>("benchSaveEdit");
+		benchProgress           = w->findChild<QProgressBar *>("benchProgressBar");
+		benchKeepRamCheck       = w->findChild<QCheckBox *>("benchKeepRamCheck");
 		shadeWaterBtn           = w->findChild<QRadioButton *>("shadeWaterButton");
 		shadeLandBtn            = w->findChild<QRadioButton *>("shadeLandButton");
 		stageRadioButton        = w->findChild<QRadioButton *>("stageRadioButton");
@@ -517,6 +529,7 @@ public:
 		if (runInBtn) QObject::connect(runInBtn, &QPushButton::clicked, w, [this]() { fireRunIn(); });
 
 		wireCinemaTab(w);
+		wireBenchsTab(w);
 
 		// Restore a prior session on this SAME scene (the panel was closed and reopened, or opened a
 		// 2nd time on a window that already had a file loaded) instead of starting blank -- Julia
@@ -613,6 +626,13 @@ public:
 		// the user's back afterwards.
 		if (scene_ && sceneAlive(scene_) && scene_->flat2d) sceneSetViewMode(scene_, IGVIEW_3D);
 		fireSlice();
+		// …AND IT STANDS ON ITS SURFACE. A slice is always pushed as a flat draped image
+		// (showLayerImageTail sets layerImgMode on every push), so the mode switch above leaves a
+		// picture lying flat under an oblique camera. This is the window's OWN "Shaded image (2-D)"
+		// switch — the same one the Shading dock's box and the Cinema tab's "3-D surface" throw —
+		// applied once, where the tank is born, so a tank opened by hand and a tank opened by a
+		// benchmark come up alike.
+		if (scene_ && sceneAlive(scene_)) sceneSetShadedImage2D(scene_, false);
 		// THE VTK ILLUMINATION. A tsunami window comes up lit like every other window in this program:
 		// the VTK (PBR) look, set through the ONE switch the Shading dock's own box throws
 		// (sceneSetReliefLook). It used to open at RL_None — no relief light at all — so the composite
@@ -787,6 +807,140 @@ public:
 			cinePlayBtn->setChecked(cinemaPlaying());
 			cinePlayBtn->setText(cinemaPlaying() ? "Pause" : "Play");
 		}
+	}
+
+	// ==========================================================================================
+	//  BENCHS TAB — the benchmark runs. One group per benchmark; the first is "10% slope beach,
+	//  Benchmark 1" (the solitary wave up a sloping beach). Opening the tool never starts a run:
+	//  the model is put on screen at t = 0 by the menu entry, and THIS tab is where a run is asked
+	//  for, or a previous one loaded.
+	// ==========================================================================================
+
+	// Where a run is written, unless the user says otherwise: the OS temp directory, in a `claude`
+	// folder of its own. Only a DEFAULT — the box is editable and the "…" button browses.
+	static QString benchDefaultSavePath() {
+		return QDir(QDir::tempPath()).filePath("claude/benchmark1.nc");
+	}
+
+	void wireBenchsTab(QMainWindow *w) {
+		(void)w;
+		if (benchSaveEdit && benchSaveEdit->text().trimmed().isEmpty())
+			benchSaveEdit->setText(QDir::toNativeSeparators(benchDefaultSavePath()));
+		if (benchProgress) { benchProgress->setRange(0, 100); benchProgress->setValue(0); }
+
+		benchRefreshRam();
+
+		if (benchBrowseBtn) QObject::connect(benchBrowseBtn, &QPushButton::clicked, win, [this]() {
+			const QString f = QFileDialog::getSaveFileName(win, "Save the simulation as",
+			                       benchSaveEdit ? benchSaveEdit->text() : benchDefaultSavePath(),
+			                       "netCDF (*.nc);;All files (*)");
+			if (!f.isEmpty() && benchSaveEdit) benchSaveEdit->setText(QDir::toNativeSeparators(f));
+			benchRefreshRam();                       // a different file is a different size
+		});
+		// A different path may point at a run that already exists — the size follows it.
+		if (benchSaveEdit) QObject::connect(benchSaveEdit, &QLineEdit::editingFinished, win,
+		                                    [this]() { benchRefreshRam(); });
+
+		// Keeping the cube in memory is the netCDF tab's own "Load all in RAM" (`_aqua_load_all`),
+		// reached from here for the file this tab produced — never a second loader. Ticked before the
+		// file exists, it is applied when the run's cube is opened (see fireBenchRun).
+		if (benchKeepRamCheck) QObject::connect(benchKeepRamCheck, &QCheckBox::toggled, win, [this](bool on) {
+			if (!on || !scene_ || !sceneAlive(scene_) || !opened_) return;
+			QString reply; bool closedNow = false;
+			runBlocking(QString("InteractiveGMT._bm1_keep_in_ram(%1)").arg(aquaScenePtr(scene_)),
+			            reply, closedNow);
+			if (closedNow) return;
+			if (reply.trimmed() == "1")
+				QMessageBox::warning(win, "Benchmark 1",
+					"Not enough free RAM to hold the whole cube in memory.\nKeeping the per-layer disk reads.");
+			else
+				markCubeInRam();                     // the netCDF tab's button says so too: one state
+		});
+
+		// RUN. The Julia side launches NSWING the way every other run in this program is launched —
+		// off-process, watched by a timer that drives the progress bar (nswing.jl) — so this call
+		// RETURNS as soon as the run has started and the window stays live while it computes. The
+		// tab's own bar is registered as a mirror of that one progress source, never a second one.
+		if (benchRunBtn) QObject::connect(benchRunBtn, &QPushButton::clicked, win, [this]() {
+			if (!scene_ || !sceneAlive(scene_)) return;
+			const QString out = benchSaveEdit ? benchSaveEdit->text().trimmed() : QString();
+			if (out.isEmpty()) {
+				QMessageBox::warning(win, "Benchmark 1", "Say where the simulation is to be saved.");
+				return;
+			}
+			// THE RUN IS THE EXPENSIVE THING. If it has already been done into this very file, offer
+			// the result instead of spending the minutes again — the user asked to see the benchmark,
+			// not to recompute it.
+			if (QFileInfo::exists(out)) {
+				QMessageBox box(win);
+				box.setWindowTitle("Benchmark 1");
+				box.setIcon(QMessageBox::Question);
+				box.setText("A simulation already exists at\n" + out);
+				box.setInformativeText("Load it, or run the model again and overwrite it?");
+				QPushButton *bLoad = box.addButton("Load it", QMessageBox::AcceptRole);
+				QPushButton *bRun  = box.addButton("Run again", QMessageBox::DestructiveRole);
+				box.addButton(QMessageBox::Cancel);
+				box.setDefaultButton(bLoad);
+				box.exec();
+				if (box.clickedButton() == bLoad) { benchLoad(out); return; }
+				if (box.clickedButton() != bRun) return;
+			}
+			if (benchProgress) { benchProgress->setValue(0); g_progressMirror = benchProgress; }
+			QString reply;
+			bool closedNow = false;
+			const bool keepram = benchKeepRamCheck && benchKeepRamCheck->isChecked();
+			const bool ok = runBlocking(QString("InteractiveGMT._on_bench1_run(%1,raw\"%2\",%3)")
+			                            .arg(aquaScenePtr(scene_)).arg(QDir::toNativeSeparators(out))
+			                            .arg(keepram ? 1 : 0),
+			                            reply, closedNow);
+			if (closedNow) return;
+			if (!ok) QMessageBox::warning(win, "Benchmark 1",
+			                              reply.isEmpty() ? "could not start the run" : reply);
+		});
+
+		// LOAD a run made earlier — the same file any other NSWING cube arrives as, so it goes in
+		// through the viewer's drop door on the Julia side.
+		if (benchLoadBtn) QObject::connect(benchLoadBtn, &QPushButton::clicked, win, [this]() {
+			if (!scene_ || !sceneAlive(scene_)) return;
+			const QString f = QFileDialog::getOpenFileName(win, "Open a simulation",
+			                       benchSaveEdit ? benchSaveEdit->text() : benchDefaultSavePath(),
+			                       "netCDF (*.nc);;All files (*)");
+			if (!f.isEmpty()) benchLoad(f);
+		});
+	}
+
+	// Open a simulation that already exists — the Load button, and the "Load it" answer when a run
+	// would have overwritten one. ONE path for both, so they cannot drift.
+	void benchLoad(const QString &path) {
+		if (!scene_ || !sceneAlive(scene_)) return;
+		if (benchSaveEdit) benchSaveEdit->setText(QDir::toNativeSeparators(path));
+		benchRefreshRam();
+		QString reply;
+		bool closedNow = false;
+		const bool keepram = benchKeepRamCheck && benchKeepRamCheck->isChecked();
+		const bool ok = runBlocking(QString("InteractiveGMT._on_bench1_load(%1,raw\"%2\",%3)")
+		                            .arg(aquaScenePtr(scene_)).arg(QDir::toNativeSeparators(path))
+		                            .arg(keepram ? 1 : 0), reply, closedNow);
+		if (closedNow) return;
+		if (!ok) QMessageBox::warning(win, "Benchmark 1",
+		                              reply.isEmpty() ? "could not open that file" : reply);
+	}
+
+	// SAY WHAT IT COSTS. The RAM box carries the size the cube would take in memory — read off the
+	// file when it exists, and predicted from the model the run will produce when it does not, so the
+	// number is there before anything has been computed.
+	void benchRefreshRam() {
+		if (!benchKeepRamCheck || !scene_ || !sceneAlive(scene_)) return;
+		const QString path = benchSaveEdit ? benchSaveEdit->text().trimmed() : QString();
+		QString reply;
+		if (!aquaEval(scene_, QString("InteractiveGMT._on_bench1_ram_mb(raw\"%1\")").arg(path), reply))
+			return;
+		bool ok = false;
+		const double mb = reply.trimmed().toDouble(&ok);
+		if (!ok) return;
+		benchKeepRamCheck->setText(mb >= 1024.0
+			? QString("Keep whole cube in RAM (≈ %1 GB)").arg(mb / 1024.0, 0, 'f', 1)
+			: QString("Keep whole cube in RAM (≈ %1 MB)").arg(mb, 0, 'f', mb < 10 ? 1 : 0));
 	}
 
 	// "Load all in RAM" — the option every OTHER netCDF cube gets from the cube dock's button, which a
@@ -1066,7 +1220,18 @@ static std::function<void(const QPoint &)> aquamotoParkedMenu(Scene *scene) {
 // destroyed handler removes the registry entry and deletes the wrapper.
 static void aquamotoDestroy(Scene *scene) {
 	AquamotoWindow *w = AquamotoWindow::registry().value(scene, nullptr);
-	if (w && w->win) w->win->deleteLater();
+	if (!w || !w->win) return;
+	// OFF SCREEN AND SILENT *NOW*, deleted on the next turn of the loop. The delete has to stay
+	// deferred (this can be reached from inside a blocking Julia call made BY this window — the
+	// `alive_` guard exists for exactly that), but the caller may be the viewer window's own
+	// destroyed handler, which frees the Scene the moment it returns. Between those two instants
+	// this window's timers (the Cinema playback beat, the 200 ms view-box sync) would fire against a
+	// freed Scene. Stopping them and hiding here closes that gap, and it is also what the user sees:
+	// the viewer goes, its Aquamoto goes with it, in the same instant.
+	if (w->cineTimer)     w->cineTimer->stop();
+	if (w->viewSyncTimer) w->viewSyncTimer->stop();
+	w->win->hide();
+	w->win->deleteLater();
 }
 // "Color Bar water"/"Color Bar Land" colormap chooser (50_scene.cpp aquaWaterColorbarRow/
 // aquaLandColorbarRow) -- side 0=water, 1=land. Stores the new cmap in the Julia _AquaState
@@ -1083,8 +1248,23 @@ static void aquamotoSetCmap(Scene *scene, int side, const char *cmap) {
 	if (!ok) { if (w->win) w->win->statusBar()->showMessage("Aquamoto: " + out, 5000); return; }
 	w->fireSlice();
 }
+// Show this scene's Aquamoto window with the "Benchs" tab in front, opening NO file. A benchmark's
+// menu entry calls this FIRST: the dialog the user is about to work in must be there immediately,
+// not after a model has been built and a tank opened.
+static void aquamotoShowBenchs(Scene *scene) {
+	if (!sceneAlive(scene)) return;
+	AquamotoWindow::openFor(scene->win, scene);
+	AquamotoWindow *w = AquamotoWindow::registry().value(scene, nullptr);
+	if (!w || !w->win) return;
+	if (auto *tabs = w->win->findChild<QTabWidget *>("mainTabWidget"))
+		if (QWidget *page = w->win->findChild<QWidget *>("benchsTab"))
+			tabs->setCurrentWidget(page);
+	QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);   // paint it before the caller works
+}
+
 static const struct AquamotoHookInstaller {
 	AquamotoHookInstaller() {
+		g_aquamotoShowBenchs = &aquamotoShowBenchs;
 		g_aquamotoHasWindow = &aquamotoHasWindow;
 		g_aquamotoReopen    = &aquamotoReopen;
 		g_aquamotoIsVisible = &aquamotoIsVisible;
