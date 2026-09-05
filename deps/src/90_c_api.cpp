@@ -1368,10 +1368,15 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 		if (geti("look", i)) { sceneSetReliefLook(s, i, /*keepExternShade=*/true); touched = false; }
 		else {
 			// A session written before `look` existed (or a host driving the window by hand) still
-			// speaks the three flags sceneSetReliefLook sets. Same state, older spelling.
-			if (geti("hillshade", i)) { s->useHillshade = (i != 0); touched = true; }
-			if (geti("hillgrd",   i)) { s->hillGrd      = (i != 0); touched = true; }
-			if (geti("litbake",   i)) { s->litBake      = (i != 0); touched = true; }
+			// speaks the three flags sceneSetReliefLook sets. Same state, older spelling — so it is
+			// TRANSLATED into a look and set through the one setter, never written flag by flag here.
+			int hs = s->useHillshade, hg = s->hillGrd, lb = s->litBake, any = 0;
+			if (geti("hillshade", i)) { hs = (i != 0); any = 1; }
+			if (geti("hillgrd",   i)) { hg = (i != 0); any = 1; }
+			if (geti("litbake",   i)) { lb = (i != 0); any = 1; }
+			if (any)
+				sceneSetReliefLook(s, hs ? (hg ? RL_HillGrdimage : RL_HillLambert) : (lb ? RL_PBR : RL_None),
+				                   /*keepExternShade=*/true);
 		}
 		if (geti("noshade", i) && (i != 0) != s->noShade) { s->noShade = (i != 0); touched = true; }
 		if (touched) applyShading(s);
@@ -2013,7 +2018,6 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 	if (!inten || nx < 2 || ny < 2) {
 		s->shadeIn     = ExternShade();
 		s->shadeInLand = ExternShade();
-		s->useHillshade = false;
 		// model < 0 is the tool's "Remove illumination" (Mirone's ImageResetOrigImg_CB): EVERY light
 		// goes off, not just this tool's reflectance, so the grid falls back to plain CPT colour. Just
 		// dropping the reflectance would hand it to the Shading dock's own look — still an
@@ -2021,7 +2025,10 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 		// clear (a model that replaced the shade with its own picture) and leaves the dock alone.
 		if (model < 0) {
 			s->useShadows = false;
-			s->litBake    = false;      // flat-image mode -> plain CPT, no PBR bake
+			// THROUGH THE ONE SETTER. "Remove illumination" is an ACT that chooses a method (none), so
+			// it goes where every other method choice goes instead of writing the look flags here —
+			// otherwise this function has an exception to the rule that a data push never sets the look.
+			sceneSetReliefLook(s, RL_None, /*keepExternShade=*/true);
 			s->noShade    = true;       // 3-D surface   -> unlit, plain CPT (applySurfStyle)
 			// Removal undoes exactly what the push did (and only that): loading a model switched each
 			// Aquamoto side's OWN snapshot to "hillshade", so the ✕ switches both back. Without this the
@@ -2039,16 +2046,20 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 	E.x0 = x0;   E.x1 = x1;
 	E.y0 = y0;   E.y1 = y1;
 	E.model = model;
-	s->noShade      = false;                          // a model IS a light: ends "Remove illumination"
-	s->useHillshade = true;
-	s->hillGrd      = true;
-	s->useShadows   = false;                          // cast-shadows is the alternative look, not an add-on
-	// The Aquamoto sides relight from their OWN snapshot (AquaSideShade), and a side whose snapshot
-	// still says "no light" would drop the reflectance we just handed it -- the shared control going
-	// inert for one element type. So the SAME three flags set on the Scene above are set on the side
-	// this push belongs to, and only on it: the other image keeps its light untouched.
+	// THIS FUNCTION DELIVERS DATA. IT DOES NOT CHOOSE THE METHOD — no exception, ever.
+	//
+	// It used to force `noShade=false; useHillshade=true; hillGrd=true; useShadows=false` on the Scene
+	// (and the same three flags on this side's snapshot) at EVERY push. A reflectance is re-pushed
+	// whenever the surface under it changes — an Aquamoto slice re-lights the water at every timestep
+	// — so loading a new layer silently rewrote the illumination method the user had chosen. One fact,
+	// "what is lighting this window", owned in two places, with the frequent one winning.
+	//
+	// The method is now set in ONE place, by the act that chooses it: `sceneSetReliefLook`, called by
+	// the Illumination dialog / the Shading dock. A data push may not touch it. `A.valid` is set
+	// because it says this side HAS a reflectance to consume — that is data too, not a look; the side
+	// shades from it through `wExt`/`lExt` in bakeAquaShade regardless of the look flags.
 	AquaSideShade &A = (side == 1) ? s->aquaLandShade : s->aquaWaterShade;
-	A.valid = true;  A.useHillshade = true;  A.hillGrd = true;  A.litBake = false;
+	A.valid = true;
 	// DIRECT GRID ILLUMINATION MEANS DIRECT. GMT already computed one intensity per grid node; the
 	// only honest way to consume it is ONE bake -- CPT(z) x intensity -> the drape texture
 	// (rebakeLayerImage), which is what `layerImgMode` is. On the BASE surface the same reflectance is
@@ -5979,7 +5990,7 @@ GMTVTK_API int gmtvtk_aquamoto_open_test(void *scene, const char *pngPath) {
 		while (t.elapsed() < 500) { QApplication::processEvents(QEventLoop::AllEvents, 50); }
 	}
 	const bool allFound = w->pathEdit && w->sliceSlider && w->sliceSpin && w->splitDryWetCheck &&
-	                       w->scaleGlobalCheck && w->waterTransparencySlider && w->showSliceBtn && w->runInBtn;
+	                       w->scaleGlobalCheck && w->waterTransparencySlider && w->loadRamBtn && w->runInBtn;
 	if (pngPath && pngPath[0]) {
 		QPixmap pm = w->win->grab();
 		pm.save(QString::fromUtf8(pngPath));
@@ -7380,6 +7391,15 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
 
+	// SAME SURFACE, NEW HEIGHTS -> update it in place (70_window.cpp). This is what an animating
+	// layer does at every frame, and rebuilding the scene for it costs ~165 ms plus a blink of the
+	// gizmo and the Scene Objects tree. The full rebuild below is for a genuinely DIFFERENT grid
+	// (a crop, an RTP result, a first promotion), which is when rows, axes and name really change.
+	if (sceneUpdateBaseGridZ(s, z, nx, ny, x0, x1, y0, y1, cz, crgb, ncolor, name, zlayout)) {
+		if (envFlag("IGMT_TRACE_REPLACE")) { fprintf(stdout, "[replace] in-place z update\n"); fflush(stdout); }
+		return 1;
+	}
+
 	// Snapshot the camera (world coords stay valid because xfac/zfac/ve are unchanged below).
 	vtkCamera *cam = s->ren->GetActiveCamera();
 	double cpos[3], cfoc[3], cvup[3];
@@ -7399,8 +7419,11 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 	if (name && name[0]) s->surfName = name;
 
 	// Rebuild ONLY the base surface (tiled gz path). gz fills s->gridZ/gnx/gny/gx*/gd *internally.
+	const bool trace = envFlag("IGMT_TRACE_REPLACE");
+	const double tA = trace ? lodNowMs() : 0.0;
 	buildSceneContent(s, nullptr, x0, x1, y0, y1, cz, crgb, ncolor, nullptr, 0, 0, 0,
 	                  /*edges=*/0, /*pointCloud=*/false, geographic, z, nx, ny, /*blankStart=*/false, zlayout);
+	const double tB = trace ? lodNowMs() : 0.0;
 
 	// Rebuild the gizmo against the new surface (as promote does), then restore the camera so the
 	// user's zoom / orientation / 2D-or-3D view is untouched by the data edit.
@@ -7409,12 +7432,22 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 	cam->SetParallelProjection(cpar);  if (cpar) cam->SetParallelScale(cpscale);
 	gizmoApplyForMode(s);           // the ONE rule for what the handle is in this view mode
 
+	const double tC = trace ? lodNowMs() : 0.0;
 	applyVE(s);              // re-scale surface + extras + cube axes to the current VE and new bounds
+	const double tD = trace ? lodNowMs() : 0.0;
 	applyStacking(s);        // re-offset extras/vectors against the rebuilt base + refresh colorbar
+	const double tE = trace ? lodNowMs() : 0.0;
 	rebuildSceneObjects(s);
+	const double tF = trace ? lodNowMs() : 0.0;
 	applyShading(s);
+	const double tG = trace ? lodNowMs() : 0.0;
 	s->ren->ResetCameraClippingRange();
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	if (trace) {
+		fprintf(stdout, "[replace] build %6.1f | gizmo %5.1f | VE %5.1f | stack %5.1f | objs %5.1f | shade %5.1f | render %6.1f ms\n",
+		        tB - tA, tC - tB, tD - tC, tE - tD, tF - tE, tG - tF, lodNowMs() - tG);
+		fflush(stdout);
+	}
 	return 1;
 }
 
@@ -7965,6 +7998,94 @@ GMTVTK_API void gmtvtk_orbit(void *handle, double az, double el, double zoom) {
 		        tB - tA, tC - tB, lodNowMs() - tC);
 		fflush(stdout);
 	}
+}
+
+// Place the camera by AZIMUTH / ELEVATION / visible WIDTH, all in the data's own units — the same
+// placement the Aquamoto Cinema tab's view boxes make (sceneSetViewAzElSpan, 10_geometry.cpp), so a
+// script and the dialog put the camera in exactly the same spot for the same numbers.
+//
+// `az` is the bearing the camera looks FROM (0 = from the south/-y edge, 90 = from +x), `el` its
+// height angle, `width` the scene width the view spans (<= 0 keeps the current zoom), `ve` the
+// vertical exaggeration (<= 0 keeps it). `useFocus != 0` looks at (fx, fy, fz) in data units;
+// otherwise the drawn surface's own centre. `gmtvtk_orbit` stays what it is — a RELATIVE nudge,
+// the mouse's move; this is the absolute placement.
+GMTVTK_API int gmtvtk_set_view_azel_h(void *handle, double az, double el, double width, double ve,
+                                      int useFocus, double fx, double fy, double fz) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	const double f[3] = { fx, fy, fz };
+	sceneSetViewAzElSpan(s, az, el, width, useFocus ? f : nullptr, ve);
+	return 1;
+}
+
+// …and read the same three numbers back off the live camera (out3 = az, el, width), so a caller can
+// show where the mouse has just put the view instead of its own stale idea of it.
+GMTVTK_API int gmtvtk_get_view_azel_h(void *handle, double *out3) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !out3) return 0;
+	return sceneGetViewAzElSpan(s, out3[0], out3[1], out3[2]) ? 1 : 0;
+}
+
+// One ROW of the window's active data layer as (x, z) in data units — the η(x) profile of the slice
+// on screen, the same series the Cinema tab's floating figure draws (sceneGridRowSeries). `y` picks
+// the row (nearest node), `x0`/`x1` the range (x1 <= x0 = to the east edge). Fills at most `cap`
+// points into `xs`/`zs` and returns how many; pass xs = null to ask for the count only.
+GMTVTK_API int gmtvtk_grid_row_h(void *handle, double y, double x0, double x1,
+                                 double *xs, double *zs, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	std::vector<double> vx, vz;
+	if (!sceneGridRowSeries(s, y, x0, x1, vx, vz)) return 0;
+	const int n = (int)vx.size();
+	if (!xs || !zs || cap <= 0) return n;
+	const int m = std::min(n, cap);
+	std::copy(vx.begin(), vx.begin() + m, xs);
+	std::copy(vz.begin(), vz.begin() + m, zs);
+	return m;
+}
+
+// THE method setter, exported. `look`: 0 = none, 1 = VTK (PBR), 2 = Hillshade (Lambert),
+// 3 = Hillshade (grdimage) — the four relief looks. `keepModel != 0` keeps a loaded Illumination
+// model instead of dropping it, which is what the tool's own models (2/3/4/9) need: they push a
+// reflectance and then declare the method that consumes it.
+//
+// Choosing the method is an ACT, and this is the only place it happens. Nothing that merely refreshes
+// data — a new slice, a re-lit water surface — may reach it.
+GMTVTK_API void gmtvtk_set_relief_look_h(void *handle, int look, int keepModel) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	sceneSetReliefLook(s, look, keepModel != 0);
+}
+
+// Is an Illumination MODEL still loaded on this window (an externally computed reflectance)? 1 = yes.
+// The host asks before re-pushing one: picking a relief look (VTK PBR, grdimage, Lambert) DROPS the
+// loaded model — `sceneSetReliefLook` -> `dropExternShade` — because the looks and the models are
+// alternatives. Without this question the host kept re-pushing the old model at every slice change,
+// and each push force-sets useHillshade/hillGrd, silently putting the window back on a hillshade
+// method a moment after the user had chosen another one.
+GMTVTK_API int gmtvtk_has_extern_shade_h(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	return (haveExternShade(s->shadeIn) || haveExternShade(s->shadeInLand)) ? 1 : 0;
+}
+
+// Is the window drawing its layer as a FLAT DRAPED IMAGE (1) or as a 3-D SURFACE (0)? The host asks
+// so it can hand over what that mode actually consumes: a 3-D surface is coloured from the grid + its
+// CPT and never looks at a composited texture, so building one for it is pure waste — and the flat
+// push would knock the window out of 3-D on every frame. -1 = dead handle.
+GMTVTK_API int gmtvtk_layer_is_image_h(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return -1;
+	return s->layerImgMode ? 1 : 0;
+}
+
+// What the DATA on screen adds to the window title, after the zoom percentage — an Aquamoto slice's
+// model time ("t = 122.5 s"). Empty clears it. The title is composed in ONE place (updateTitleZoom),
+// so this never fights the zoom readout or the file name.
+GMTVTK_API void gmtvtk_set_title_extra_h(void *handle, const char *text) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	sceneSetTitleExtra(s, text ? QString::fromUtf8(text) : QString());
 }
 
 // Toggle red/cyan ANAGLYPH stereo on the window. on=1 enable, on=0 disable, on<0 flip.

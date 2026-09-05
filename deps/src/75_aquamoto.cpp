@@ -53,6 +53,133 @@ static QString aquaScenePtr(Scene *scene) {
 static void aquamotoUnpark(Scene *scene);                       // defined with the other hooks below
 static std::function<void(const QPoint &)> aquamotoParkedMenu(Scene *scene);
 
+// "Shaded image (2-D)" — the ONE geometry switch (70_window.cpp, included after this fragment).
+// The Cinema tab's "3-D surface" box throws exactly the switch the Shading dock's checkbox throws;
+// it never rebuilds a surface of its own (SACRED_LAW.md).
+static void sceneSetShadedImage2D(Scene *s, bool on);
+
+// ============================================================================================
+//  The little η(x) figure that floats over the 3-D view (Cinema tab, "Show η(x) profile").
+//
+//  It is a ProfilePanel (60_profile.cpp) — the SAME 2-D plotter the Ctrl-drag elevation profile
+//  paints into, with the same axes, the same right-click "Open in X,Y plot tool" and, when the
+//  analytic solution is added, its second curve. Nothing here draws a curve itself.
+//
+//  The frame around the panel is what makes it a FIGURE rather than a docked panel: a title strip
+//  to drag it by and a corner to resize it with, so it can be parked anywhere over the render area
+//  and sized to taste. It is a plain child widget of the render widget, so it floats above the 3-D
+//  view without a window of its own and the panel keeps its own mouse handling.
+// ============================================================================================
+class EtaFigure : public QFrame {
+public:
+	ProfilePanel *panel = nullptr;
+
+	EtaFigure(QWidget *parent, const QString &title) : QFrame(parent), title_(title) {
+		setFrameShape(QFrame::StyledPanel);
+		setFrameShadow(QFrame::Raised);
+		setAutoFillBackground(true);
+		auto *lay = new QVBoxLayout(this);
+		lay->setContentsMargins(kMargin, kTitleH, kMargin, kMargin);
+		panel = new ProfilePanel(this);
+		panel->setMinimumHeight(60);                 // the figure is small: override the panel's own 170
+		lay->addWidget(panel);
+		resize(380, 200);
+	}
+
+	// What the MINIMISE button runs. Set by the owner to the same parkTool call every other tool
+	// window's X and minimise go through, so the figure parks in Scene Objects like the rest.
+	std::function<void()> onMinimize;
+
+	void setCurve(const std::vector<double> &x, const std::vector<double> &y,
+	              const QString &title, const QString &xlabel, const QString &ylabel) {
+		panel->setSeries(x, y, title, xlabel, ylabel, /*isDate=*/false);
+	}
+
+	// The strip text. The slice's MODEL TIME goes here, from the one string the data already
+	// publishes for the viewer's own titlebar (Scene::titleExtra) — never a second time format.
+	void setTitle(const QString &t) {
+		if (t == title_) return;
+		title_ = t;
+		update();
+	}
+
+protected:
+	static const int kMargin = 5, kTitleH = 19, kGrip = 16, kBtn = 15;
+
+	// The minimise button, top-RIGHT of the title strip.
+	QRect minRect() const { return QRect(width() - kBtn - 3, 2, kBtn, kTitleH - 4); }
+	QString title_;
+	QPoint  press_;                 // cursor position when a drag started (global)
+	QRect   startGeom_;             // this figure's geometry when the drag started
+	bool    moving_ = false, resizing_ = false;
+
+	QRect gripRect() const { return QRect(width() - kGrip, height() - kGrip, kGrip, kGrip); }
+
+	void paintEvent(QPaintEvent *e) override {
+		QFrame::paintEvent(e);
+		QPainter p(this);
+		p.fillRect(QRect(1, 1, width() - 2, kTitleH - 2), QColor(232, 232, 238));
+		p.setPen(QColor(70, 70, 70));
+		p.drawText(QRect(7, 1, width() - 14 - kBtn, kTitleH - 2),
+		           Qt::AlignVCenter | Qt::AlignLeft, title_);
+		{	/* Minimise button, top-right: parks the figure in Scene Objects. */
+			const QRect mr = minRect();
+			p.setPen(QColor(160, 160, 168));
+			p.drawRect(mr.adjusted(0, 0, -1, -1));
+			p.setPen(QColor(70, 70, 70));
+			p.drawLine(mr.left() + 3, mr.bottom() - 3, mr.right() - 3, mr.bottom() - 3);
+		}
+		p.setPen(QColor(150, 150, 150));                       // the resize corner's three ticks
+		for (int k = 0; k < 3; ++k) {
+			const int o = 4 + 4 * k;
+			p.drawLine(width() - o, height() - 3, width() - 3, height() - o);
+		}
+	}
+
+	void mousePressEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton) { QFrame::mousePressEvent(e); return; }
+		if (minRect().contains(e->pos())) {          // minimise: park, never start a title-strip drag
+			if (onMinimize) onMinimize();
+			return;
+		}
+		press_ = e->globalPosition().toPoint();
+		startGeom_ = geometry();
+		resizing_ = gripRect().contains(e->pos());
+		moving_   = !resizing_ && e->pos().y() < kTitleH;
+		// Every DRAG in this program uses the move cursor; the resize corner keeps the diagonal one.
+		if (moving_)   setCursor(Qt::SizeAllCursor);
+		if (resizing_) setCursor(Qt::SizeFDiagCursor);
+		if (!moving_ && !resizing_) QFrame::mousePressEvent(e);
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (!moving_ && !resizing_) {
+			setCursor(minRect().contains(e->pos())  ? Qt::ArrowCursor
+			        : gripRect().contains(e->pos()) ? Qt::SizeFDiagCursor
+			                                        : (e->pos().y() < kTitleH ? Qt::SizeAllCursor : Qt::ArrowCursor));
+			QFrame::mouseMoveEvent(e);
+			return;
+		}
+		const QPoint d = e->globalPosition().toPoint() - press_;
+		if (moving_) {
+			QRect g = startGeom_.translated(d);
+			if (parentWidget()) {                              // keep it inside the render area
+				const QRect pr = parentWidget()->rect();
+				g.moveLeft(std::max(0, std::min(g.left(), pr.width()  - g.width())));
+				g.moveTop (std::max(0, std::min(g.top(),  pr.height() - g.height())));
+			}
+			setGeometry(g);
+		} else {
+			resize(std::max(180, startGeom_.width()  + d.x()),
+			       std::max(110, startGeom_.height() + d.y()));
+		}
+	}
+	void mouseReleaseEvent(QMouseEvent *e) override {
+		moving_ = resizing_ = false;
+		setCursor(Qt::ArrowCursor);
+		QFrame::mouseReleaseEvent(e);
+	}
+};
+
 class AquamotoHideOnClose : public QObject {
 public:
 	Scene *scene_;
@@ -119,6 +246,11 @@ public:
 		w->win->show();
 		w->win->raise();
 		w->win->activateWindow();
+		// Compile the slice path while the user is still choosing a file / reaching for the slider.
+		// Without it the FIRST slider move pays several seconds of Julia JIT (read + composite + RGBA
+		// pack + relight) and the slider looks dead — the same dead time every other tool spends this
+		// way (warmup.jl, _aqua_warm).
+		warmupTool("aquamoto");
 	}
 	QLineEdit *pathEdit = nullptr;
 	QLabel *timeStepsLabel = nullptr, *waterTransparencyLabel = nullptr;
@@ -127,13 +259,28 @@ public:
 	QLineEdit *sliceSpin = nullptr;       // a PLAIN edit box (replaces the .ui's QSpinBox at runtime --
 	                                      // see the constructor), not a spinner: user wants a simple box
 	QCheckBox *splitDryWetCheck = nullptr, *scaleGlobalCheck = nullptr;
-	QPushButton *showSliceBtn = nullptr, *runInBtn = nullptr;
+	QPushButton *loadRamBtn = nullptr, *runInBtn = nullptr;
 	QRadioButton *stageRadioButton = nullptr, *xmomentRadioButton = nullptr, *ymomentRadioButton = nullptr;
 	QComboBox *orComboBox = nullptr;
 	QString activeVar_;                   // the varname currently selected in the quantity picker
 	bool settingVar_ = false;              // guard: suppress fireSlice while WE are (un)checking radios
 	QRadioButton *shadeWaterBtn = nullptr, *shadeLandBtn = nullptr;   // split which side's colour scale is shown
 	bool opened_ = false;                 // a file has been successfully opened this session
+
+	// ---- Cinema tab: playback, the view boxes and the floating η(x) figure -------------------
+	// Playback drives the SLICE SLIDER, never _aquamoto_slice directly: the slider is the one place
+	// that says which slice is showing, and everything (the box, the Julia call, the figure) already
+	// hangs off it. A timer that called the Julia side itself would be a second player.
+	QTimer *cineTimer = nullptr;
+	QPushButton *cinePlayBtn = nullptr, *cineFirstBtn = nullptr, *cinePrevBtn = nullptr,
+	            *cineNextBtn = nullptr, *cineLastBtn = nullptr, *cineResetViewBtn = nullptr;
+	QLineEdit *cineRateEdit = nullptr, *cineFromEdit = nullptr, *cineToEdit = nullptr,
+	          *cineAzEdit = nullptr, *cineElEdit = nullptr, *cineZoomEdit = nullptr, *cineVeEdit = nullptr,
+	          *cineSpinEdit = nullptr, *cineProfX0Edit = nullptr, *cineProfLenEdit = nullptr;
+	QCheckBox *cineLoopCheck = nullptr, *cine3DCheck = nullptr, *cineSpinCheck = nullptr,
+	          *cineProfCheck = nullptr;
+	QPointer<EtaFigure> etaFig;           // lives in the RENDER widget, which can outlive/predecease us
+	QTimer *viewSyncTimer = nullptr;      // the boxes FOLLOW the mouse (see syncViewBoxes)
 
 	explicit AquamotoWindow(QWidget *parent, Scene *scene) : scene_(scene) {
 		QUiLoader loader;
@@ -201,7 +348,7 @@ public:
 		waterTransparencySlider = w->findChild<QSlider *>("waterTransparencySlider");
 		splitDryWetCheck        = w->findChild<QCheckBox *>("splitDryWetCheckBox");
 		scaleGlobalCheck        = w->findChild<QCheckBox *>("scaleColorGlobalCheckBox");
-		showSliceBtn            = w->findChild<QPushButton *>("showSliceButton");
+		loadRamBtn            = w->findChild<QPushButton *>("loadRamButton");
 		runInBtn                = w->findChild<QPushButton *>("plotRunInButton");
 		shadeWaterBtn           = w->findChild<QRadioButton *>("shadeWaterButton");
 		shadeLandBtn            = w->findChild<QRadioButton *>("shadeLandButton");
@@ -244,7 +391,7 @@ public:
 		}
 
 		if (!pathEdit || !sliceSlider || !sliceSpin || !splitDryWetCheck || !scaleGlobalCheck ||
-		    !waterTransparencySlider || !showSliceBtn || !runInBtn) {
+		    !waterTransparencySlider || !loadRamBtn || !runInBtn) {
 			qWarning("AquamotoWindow: could not find one or more expected controls in aquamoto.ui");
 		}
 
@@ -366,8 +513,10 @@ public:
 				fireSlice();
 			});
 		}
-		if (showSliceBtn) QObject::connect(showSliceBtn, &QPushButton::clicked, w, [this]() { fireSlice(); });
+		if (loadRamBtn) QObject::connect(loadRamBtn, &QPushButton::clicked, w, [this]() { fireLoadAllRam(); });
 		if (runInBtn) QObject::connect(runInBtn, &QPushButton::clicked, w, [this]() { fireRunIn(); });
+
+		wireCinemaTab(w);
 
 		// Restore a prior session on this SAME scene (the panel was closed and reopened, or opened a
 		// 2nd time on a window that already had a file loaded) instead of starting blank -- Julia
@@ -387,10 +536,12 @@ public:
 						sliceSpin->setValidator(new QIntValidator(1, n, sliceSpin));
 						sliceSpin->setEnabled(true);
 					}
-					if (showSliceBtn) showSliceBtn->setEnabled(true);
+					if (loadRamBtn) loadRamBtn->setEnabled(true);
 					if (runInBtn) runInBtn->setEnabled(true);
 					populateVarPicker(parts[2], parts[3].split(',', Qt::SkipEmptyParts));
 					opened_ = true;
+					refreshRamButton();   // this scene may already have its cube in memory
+					cinemaSetRange(n);
 				}
 			}
 		}
@@ -451,10 +602,29 @@ public:
 			sliceSpin->setText("1");
 			sliceSpin->setEnabled(true);
 		}
-		if (showSliceBtn) showSliceBtn->setEnabled(true);
+		markCubeOnDisk();               // a freshly opened file is on disk until the button says otherwise
 		if (runInBtn) runInBtn->setEnabled(true);
 		if (parts.size() == 3) populateVarPicker(parts[1], parts[2].split(',', Qt::SkipEmptyParts));
+		cinemaSetRange(n);                     // Cinema tab's From/To + its zoom/profile defaults
+		// A TANK STARTS IN 3-D. The window this opens into was promoted from the empty launcher, which
+		// is a flat 2-D map — and flat-2D locks drag-rotation and hides the gizmo, so a tsunami would
+		// arrive as a picture you cannot turn. The mode is set HERE, once, where the tank is born,
+		// through the same switch the toolbar's view-mode flyout uses; nothing else changes it behind
+		// the user's back afterwards.
+		if (scene_ && sceneAlive(scene_) && scene_->flat2d) sceneSetViewMode(scene_, IGVIEW_3D);
 		fireSlice();
+		// THE VTK ILLUMINATION. A tsunami window comes up lit like every other window in this program:
+		// the VTK (PBR) look, set through the ONE switch the Shading dock's own box throws
+		// (sceneSetReliefLook). It used to open at RL_None — no relief light at all — so the composite
+		// arrived flat.
+		if (scene_ && sceneAlive(scene_)) sceneSetReliefLook(scene_, RL_PBR, /*keepExternShade=*/true);
+		// THE LAYER'S GEOMETRY IS NOT TOUCHED HERE. A tsunami opens as the composited image it has
+		// always opened as — land coloured from the bathymetry, water from the stage. Switching it to
+		// the 3-D surface hands it to the plain-grid builder, which colours the stage with the WATER
+		// CPT and paints the land red; doing that automatically at open made every tank arrive that
+		// way. It is the user's switch to throw, not this function's.
+		// The first slice is what fills in the tank's extent, so the figure is put up after it.
+		if (cineProfCheck && cineProfCheck->isChecked()) showEtaFigure(true);
 	}
 
 	// Fill the Stage/Xmoment/Ymoment/Or… quantity picker from a just-opened (or restored) file's
@@ -508,7 +678,314 @@ public:
 			return;
 		}
 		activeVar_ = varname;
+		// RAM residency is PER VARIABLE (each is its own cube), so the button now describes the one
+		// just switched to — which may be on disk even though the previous variable is in memory.
+		refreshRamButton();
 		fireSlice();
+	}
+
+	// ==========================================================================================
+	//  CINEMA TAB — playback, the camera boxes and the floating η(x) figure.
+	// ==========================================================================================
+
+	static double editNum(QLineEdit *e, double dflt) {
+		if (!e) return dflt;
+		bool ok = false;
+		const double v = e->text().trimmed().toDouble(&ok);
+		return ok ? v : dflt;
+	}
+
+	void wireCinemaTab(QMainWindow *w) {
+		cinePlayBtn      = w->findChild<QPushButton *>("cinemaPlayButton");
+		cineFirstBtn     = w->findChild<QPushButton *>("cinemaFirstButton");
+		cinePrevBtn      = w->findChild<QPushButton *>("cinemaPrevButton");
+		cineNextBtn      = w->findChild<QPushButton *>("cinemaNextButton");
+		cineLastBtn      = w->findChild<QPushButton *>("cinemaLastButton");
+		cineResetViewBtn = w->findChild<QPushButton *>("cinemaResetViewButton");
+		cineRateEdit     = w->findChild<QLineEdit *>("cinemaRateEdit");
+		cineFromEdit     = w->findChild<QLineEdit *>("cinemaFromEdit");
+		cineToEdit       = w->findChild<QLineEdit *>("cinemaToEdit");
+		cineAzEdit       = w->findChild<QLineEdit *>("cinemaAzimuthEdit");
+		cineElEdit       = w->findChild<QLineEdit *>("cinemaElevationEdit");
+		cineZoomEdit     = w->findChild<QLineEdit *>("cinemaZoomEdit");
+		cineVeEdit       = w->findChild<QLineEdit *>("cinemaVeEdit");
+		cineSpinEdit     = w->findChild<QLineEdit *>("cinemaSpinEdit");
+		cineProfX0Edit   = w->findChild<QLineEdit *>("cinemaProfileX0Edit");
+		cineProfLenEdit  = w->findChild<QLineEdit *>("cinemaProfileLenEdit");
+		cineLoopCheck    = w->findChild<QCheckBox *>("cinemaLoopCheckBox");
+		cine3DCheck      = w->findChild<QCheckBox *>("cinema3DCheckBox");
+		cineSpinCheck    = w->findChild<QCheckBox *>("cinemaSpinCheckBox");
+		cineProfCheck    = w->findChild<QCheckBox *>("cinemaProfileCheckBox");
+
+		cineTimer = new QTimer(w);
+		QObject::connect(cineTimer, &QTimer::timeout, w, [this]() { cinemaTick(); });
+
+		if (cinePlayBtn)
+			QObject::connect(cinePlayBtn, &QPushButton::toggled, w, [this](bool on) { cinemaSetPlaying(on); });
+		if (cineFirstBtn) QObject::connect(cineFirstBtn, &QPushButton::clicked, w, [this]() { cinemaGoto(cinemaFrom()); });
+		if (cineLastBtn)  QObject::connect(cineLastBtn,  &QPushButton::clicked, w, [this]() { cinemaGoto(cinemaTo()); });
+		if (cinePrevBtn)  QObject::connect(cinePrevBtn,  &QPushButton::clicked, w, [this]() {
+			if (sliceSlider) cinemaGoto(sliceSlider->value() - 1); });
+		if (cineNextBtn)  QObject::connect(cineNextBtn,  &QPushButton::clicked, w, [this]() {
+			if (sliceSlider) cinemaGoto(sliceSlider->value() + 1); });
+		// A new frame rate applies to the run in progress, not only to the next one.
+		if (cineRateEdit) QObject::connect(cineRateEdit, &QLineEdit::editingFinished, w, [this]() {
+			if (cineTimer && cineTimer->isActive()) cineTimer->start(cinemaIntervalMs()); });
+		// The 3-D box is the Shading dock's own switch and nothing more: it chooses the GEOMETRY the
+		// layer is drawn on (a warped surface vs a flat draped image), never the window's view mode.
+		// The window is already in 3-D — a tank window is put there when it opens (openPath).
+		if (cine3DCheck) QObject::connect(cine3DCheck, &QCheckBox::toggled, w, [this](bool on) {
+			if (!scene_ || !sceneAlive(scene_)) return;
+			if (scene_->layerImgMode == on) sceneSetShadedImage2D(scene_, !on); });
+
+		auto applyView = [this]() { applyCameraFromBoxes(); };
+		for (QLineEdit *e : { cineAzEdit, cineElEdit, cineZoomEdit, cineVeEdit })
+			if (e) QObject::connect(e, &QLineEdit::editingFinished, w, applyView);
+		if (cineResetViewBtn) QObject::connect(cineResetViewBtn, &QPushButton::clicked, w, [this]() { cinemaResetView(); });
+
+		// THE BOXES FOLLOW THE MOUSE. Rotating or zooming with the mouse is the same operation the
+		// Azimuth/Elevation/Zoom boxes perform, so the window has ONE view and the boxes must report
+		// it — a box that still says -35 while the view is at 12 is simply lying. The camera is read
+		// back through sceneGetViewAzElSpan (the mirror of the setter the boxes use), never re-derived
+		// here. A box the user is typing in is left alone until focus leaves it.
+		viewSyncTimer = new QTimer(w);
+		viewSyncTimer->setInterval(200);
+		QObject::connect(viewSyncTimer, &QTimer::timeout, w, [this]() { syncViewBoxes(); });
+		viewSyncTimer->start();
+
+		if (cineProfCheck) QObject::connect(cineProfCheck, &QCheckBox::toggled, w, [this](bool on) {
+			showEtaFigure(on); });
+		for (QLineEdit *e : { cineProfX0Edit, cineProfLenEdit })
+			if (e) QObject::connect(e, &QLineEdit::editingFinished, w, [this]() { updateEtaFigure(); });
+	}
+
+	int  cinemaFrom() const { return sliceSlider ? std::max(sliceSlider->minimum(), (int)editNum(cineFromEdit, sliceSlider->minimum())) : 1; }
+	int  cinemaTo()   const { return sliceSlider ? std::min(sliceSlider->maximum(), (int)editNum(cineToEdit,   sliceSlider->maximum())) : 1; }
+	int  cinemaIntervalMs() const {
+		const double fps = editNum(cineRateEdit, 5.0);
+		return std::max(20, int(1000.0 / ((fps > 0.0) ? fps : 5.0)));
+	}
+	bool cinemaPlaying() const { return cineTimer && cineTimer->isActive(); }
+
+	// The slice range a freshly opened file offers, and the zoom box's starting value (the whole
+	// tank). Called from openPath/the session restore, where the step count becomes known.
+	void cinemaSetRange(int n) {
+		if (cineFromEdit) cineFromEdit->setText("1");
+		if (cineToEdit)   cineToEdit->setText(QString::number(std::max(1, n)));
+		if (cineZoomEdit && cineZoomEdit->text().trimmed().isEmpty() && scene_ && sceneAlive(scene_))
+			cineZoomEdit->setText(QString::number(scene_->gx1 - scene_->gx0, 'g', 6));
+		if (cineProfX0Edit && cineProfX0Edit->text().trimmed().isEmpty() && scene_ && sceneAlive(scene_))
+			cineProfX0Edit->setText(QString::number(scene_->gx0, 'g', 6));
+	}
+
+	void cinemaSetPlaying(bool on) {
+		if (!cineTimer) return;
+		if (on && opened_) { cineTimer->start(cinemaIntervalMs()); }
+		else               { cineTimer->stop(); }
+		if (cinePlayBtn) {
+			QSignalBlocker b(cinePlayBtn);              // setChecked here must not re-enter this slot
+			cinePlayBtn->setChecked(cinemaPlaying());
+			cinePlayBtn->setText(cinemaPlaying() ? "Pause" : "Play");
+		}
+	}
+
+	// "Load all in RAM" — the option every OTHER netCDF cube gets from the cube dock's button, which a
+	// tsunami file never reaches because it opens through this dialog. Same Julia side (_aqua_load_all
+	// -> the shared _read_whole_cube / _cube_fits_ram), same return codes and the same three answers
+	// the dock gives, so the two buttons behave identically. After it, slice changes slice memory.
+	void fireLoadAllRam() {
+		if (!opened_ || busy_ || !loadRamBtn) return;
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		QApplication::processEvents();                  // let the cursor paint before we block
+		QString out;
+		bool closedNow = false;
+		const bool ok = runBlocking(QString("InteractiveGMT._aqua_load_all(%1)").arg(aquaScenePtr(scene_)),
+		                            out, closedNow);
+		if (closedNow) return;                          // the window died during the call: touch nothing
+		QApplication::restoreOverrideCursor();
+		const int rc = ok ? out.trimmed().toInt() : 2;
+		if (rc == 0) {
+			markCubeInRam();
+			if (scene_ && sceneAlive(scene_) && scene_->win)
+				scene_->win->statusBar()->showMessage(
+					"Cube loaded into RAM — slice changes are now instant", 5000);
+		}
+		else if (rc == 1) {
+			QMessageBox::warning(win, "Load all in RAM",
+				"Not enough free RAM to hold the whole cube in memory.\n"
+				"Keeping the per-layer disk reads.");
+		}
+		else {
+			QMessageBox::warning(win, "Load all in RAM", "Failed to load the cube into memory.");
+		}
+	}
+
+	// The button's two states. Resident is a dead end (nothing left to load); anything else offers the
+	// load. Both are set from what JULIA actually holds, never from a flag kept on this side.
+	void markCubeInRam() {
+		if (!loadRamBtn) return;
+		loadRamBtn->setText("In RAM \xE2\x9C\x93");
+		loadRamBtn->setEnabled(false);
+	}
+	void markCubeOnDisk() {
+		if (!loadRamBtn) return;
+		loadRamBtn->setText("Load all in RAM");
+		loadRamBtn->setEnabled(opened_);
+	}
+	// Ask the Julia side whether the ACTIVE variable is resident and show that. Called wherever the
+	// answer can have changed: a file opened, the variable switched, the panel reopened on a scene
+	// that already had a cube loaded.
+	void refreshRamButton() {
+		if (!loadRamBtn || !opened_) return;
+		QString out;
+		if (aquaEval(scene_, QString("InteractiveGMT._aqua_in_ram(%1)").arg(aquaScenePtr(scene_)), out)
+		    && out.trimmed() == "1")
+			markCubeInRam();
+		else
+			markCubeOnDisk();
+	}
+
+	// Show slice `k` (1-based) by MOVING THE SLIDER -- the one control that says which slice is up.
+	void cinemaGoto(int k) {
+		if (!sliceSlider || !opened_) return;
+		const int v = std::max(sliceSlider->minimum(), std::min(sliceSlider->maximum(), k));
+		if (v == sliceSlider->value()) fireSlice();      // same slice: still redraw (e.g. after a toggle)
+		else                           sliceSlider->setValue(v);   // -> valueChanged -> fireSlice
+	}
+
+	void cinemaTick() {
+		if (!sliceSlider || !opened_) return;
+		if (busy_) return;                               // a slice is still being computed: skip this beat
+		const int from = cinemaFrom(), to = cinemaTo();
+		int next = sliceSlider->value() + 1;
+		if (next > to) {
+			if (cineLoopCheck && cineLoopCheck->isChecked()) next = from;
+			else { cinemaSetPlaying(false); return; }
+		}
+		if (next < from) next = from;
+		cinemaGoto(next);
+	}
+
+	// Everything the window owes a freshly drawn slice: put it back on the 3-D surface if that is what
+	// the user asked for, advance a spinning camera, and refresh the η(x) figure. Called at the END of
+	// fireSlice, so it covers the slider, the transport buttons, the timer and the display toggles
+	// alike -- there is no second path by which a slice reaches the screen.
+	void afterSliceShown() {
+		if (!scene_ || !sceneAlive(scene_)) return;
+		// An Aquamoto slice is always pushed as a flat draped image (showLayerImageTail sets
+		// layerImgMode), so 3-D has to be re-asserted after each one -- through the shared switch.
+		if (cine3DCheck && cine3DCheck->isChecked() && scene_->layerImgMode)
+			sceneSetShadedImage2D(scene_, false);
+		if (cinemaPlaying() && cineSpinCheck && cineSpinCheck->isChecked() && cineAzEdit) {
+			const double step = editNum(cineSpinEdit, 0.5);
+			if (step != 0.0) {
+				QSignalBlocker b(cineAzEdit);
+				cineAzEdit->setText(QString::number(std::fmod(editNum(cineAzEdit, 0.0) + step, 360.0), 'g', 5));
+				applyCameraFromBoxes();
+			}
+		}
+		updateEtaFigure();
+	}
+
+	// The camera, from the four boxes, through the ONE placement function (10_geometry.cpp) the host
+	// also reaches from Julia (gmtvtk_set_view_azel_h). No camera maths lives in this dialog.
+	void applyCameraFromBoxes() {
+		if (!scene_ || !sceneAlive(scene_)) return;
+		sceneSetViewAzElSpan(scene_, editNum(cineAzEdit, -35.0), editNum(cineElEdit, 20.0),
+		                     editNum(cineZoomEdit, 0.0), nullptr, editNum(cineVeEdit, 0.0));
+	}
+
+	// Write the LIVE camera into the three view boxes. Only boxes the user is not editing are touched
+	// (focus), and only when the number really moved, so a box never fights the cursor or steals a
+	// half-typed value. Also keeps the z× box in step with the gizmo's own VE handle.
+	void syncViewBoxes() {
+		if (!scene_ || !sceneAlive(scene_) || !win || !win->isVisible()) return;
+		double az = 0, el = 0, wd = 0;
+		if (!sceneGetViewAzElSpan(scene_, az, el, wd)) return;
+		auto put = [](QLineEdit *e, double v, int prec) {
+			if (!e || e->hasFocus()) return;
+			const QString t = QString::number(v, 'g', prec);
+			if (e->text() == t) return;
+			QSignalBlocker b(*e);          // this is a REPORT, not an edit: must not re-apply the view
+			e->setText(t);
+		};
+		put(cineAzEdit, az, 4);
+		put(cineElEdit, el, 3);
+		put(cineZoomEdit, wd, 6);
+		put(cineVeEdit, scene_->ve, 3);
+	}
+
+	void cinemaResetView() {
+		if (!scene_ || !sceneAlive(scene_)) return;
+		if (cineAzEdit)   cineAzEdit->setText("-35");
+		if (cineElEdit)   cineElEdit->setText("20");
+		if (cineVeEdit)   cineVeEdit->setText("1");
+		if (cineZoomEdit) cineZoomEdit->setText(QString::number(scene_->gx1 - scene_->gx0, 'g', 6));
+		applyCameraFromBoxes();
+	}
+
+	// ---- the floating η(x) figure ----------------------------------------------------------
+	void showEtaFigure(bool on) {
+		if (!scene_ || !sceneAlive(scene_) || !scene_->widget) return;
+		if (on && !etaFig) {
+			etaFig = new EtaFigure(scene_->widget, "\xCE\xB7 (x)");     // UTF-8 "η (x)"
+			etaFig->move(10, 10);
+			// The minimise button parks it in Scene Objects — the SAME parkTool/unparkTool pair the
+			// Aquamoto window, the X,Y plot, Contours and Illumination all park through, so the row,
+			// its double-click, its checkbox and its menu behave identically for every tool.
+			Scene *sc = scene_;
+			QPointer<EtaFigure> fig = etaFig;
+			auto unpark = [sc, fig]() {
+				if (!fig || !sceneAlive(sc)) return;
+				unparkTool(sc, fig);                       // drops the row + rebuilds the dock
+				fig->show();
+				fig->raise();
+			};
+			etaFig->onMinimize = [this, sc, fig, unpark]() {
+				if (!fig || !sceneAlive(sc)) return;
+				fig->hide();                               // hidden, NOT destroyed
+				parkTool(sc, fig, "\xCE\xB7 (x) profile", IC_Line,
+				         "Parked \xCE\xB7 (x) profile — double-click to bring it back, click for its menu",
+				         unpark,
+				         [this, sc, fig, unpark](const QPoint &g) {
+					QMenu m;
+					QAction *aShow = m.addAction("Show");
+					m.addSeparator();
+					QAction *aDel  = m.addAction("Remove");
+					QAction *pick  = m.exec(g);
+					if (pick == aShow) unpark();
+					else if (pick == aDel) {
+						if (sceneAlive(sc) && fig) unparkTool(sc, fig);
+						// Removing the figure is the same thing as clearing its Cinema-tab box, so
+						// the box follows — a checked box with no figure is a control that lies.
+						if (cineProfCheck) cineProfCheck->setChecked(false);
+					}
+				});
+				unfoldSceneObjects(sc);      // a handle the user cannot see is no handle at all
+			};
+		}
+		if (!etaFig) return;
+		etaFig->setVisible(on);
+		if (on) { etaFig->raise(); updateEtaFigure(); }
+	}
+
+	// The profile of the slice ON SCREEN: the row of the window's active data layer nearest mid-tank,
+	// over [x0, x0+length]. The layer is the one the hover readout reads, refreshed by every slice, so
+	// the curve can never describe a different slice than the surface does.
+	void updateEtaFigure() {
+		if (!etaFig || !etaFig->isVisible() || !scene_ || !sceneAlive(scene_)) return;
+		const double x0  = editNum(cineProfX0Edit, scene_->gx0);
+		const double len = editNum(cineProfLenEdit, 5000.0);
+		std::vector<double> xs, zs;
+		if (!sceneGridRowSeries(scene_, 0.5 * (scene_->gy0 + scene_->gy1), x0, x0 + len, xs, zs)) return;
+		const int k = sliceSlider ? sliceSlider->value() : 0;
+		etaFig->setCurve(xs, zs, QString("\xCE\xB7  slice %1").arg(k), "x (m)", "\xCE\xB7 (m)");
+		// The slice's MODEL TIME in the figure's own title strip. It is the very string the data
+		// already publishes for the viewer's titlebar (_aqua_title_time -> gmtvtk_set_title_extra_h
+		// -> Scene::titleExtra), read back here: one time value, one format, two places showing it.
+		const QString when = QString::fromStdString(scene_->titleExtra);
+		etaFig->setTitle(when.isEmpty() ? QString("\xCE\xB7 (x)")
+		                                : QString("\xCE\xB7 (x)   \xE2\x80\x94   %1").arg(when));
 	}
 
 	void fireSlice() {
@@ -536,6 +1013,7 @@ public:
 		                            .arg(shadeWater ? "true" : "false").arg(shadeLand ? "true" : "false"), out, closedNow);
 		if (closedNow) return;   // `this` may already be destroyed -- touch NOTHING below
 		if (!ok && win) win->statusBar()->showMessage("Aquamoto: " + out, 5000);
+		if (ok) afterSliceShown();          // 3-D geometry, a spinning camera, the η(x) figure
 	}
 
 	void fireRunIn() {

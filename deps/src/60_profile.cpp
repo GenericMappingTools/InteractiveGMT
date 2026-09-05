@@ -20,6 +20,7 @@ public:
 	ProfilePanel(QWidget *parent = nullptr) : QWidget(parent) {
 		setMinimumHeight(170);
 		setAutoFillBackground(true);
+		setMouseTracking(true);       // the hover coordinate readout needs moves with no button down
 	}
 	// `gridName` is the label of the grid that was sampled: it becomes the title, so a profile window is
 	// named "Profile <grid name>" and nothing longer.
@@ -39,6 +40,15 @@ public:
 		m_title = title; m_xlabel = xlabel; m_ylabel = ylabel; m_isDate = isDate;
 		update();
 	}
+	// A SECOND curve over the same axes -- a reference/analytic solution beside the modelled one.
+	// It belongs here, in the one panel that already draws a curve, rather than in a second plotting
+	// widget: the two curves are the same quantity on the same axes (SACRED_LAW.md). Empty vectors
+	// clear it. Only the FIRST curve is what "Open in X,Y plot tool" hands over -- see below.
+	void setSeries2(const std::vector<double> &x, const std::vector<double> &y, const QString &name) {
+		m_s2 = x; m_z2 = y; m_name2 = name;
+		update();
+	}
+	void clearSeries2() { m_s2.clear(); m_z2.clear(); m_name2.clear(); update(); }
 	// Read the currently shown series (for "Open in X,Y plot tool" + its C API).
 	const std::vector<double> &seriesX() const { return m_s; }
 	const std::vector<double> &seriesY() const { return m_z; }
@@ -47,9 +57,62 @@ public:
 	QString seriesYLabel() const { return m_ylabel; }
 protected:
 	std::vector<double> m_s, m_z;
+	std::vector<double> m_s2, m_z2;      // optional second curve (a reference/analytic solution)
+	QString m_name2;                     // its legend text
 	QString m_title;
 	QString m_xlabel = "Distance", m_ylabel = "Elevation";
 	bool    m_isDate = false;
+	QPoint  m_hover{-1, -1};             // last cursor position, widget coords (-1,-1 = outside)
+
+	// The plot frame and the data ranges drawn inside it. The painter and the hover readout MUST
+	// agree on this mapping or the numbers under the cursor would not be the numbers on the axes,
+	// so it is derived ONCE here and used by both — never re-derived beside the painter.
+	bool plotFrame(QRectF &plot, double &smin, double &smax, double &zmin, double &zmax) const {
+		const int L = 62, R = 16, T = 12, B = 36;
+		plot = QRectF(L, T, width() - L - R, height() - T - B);
+		if (plot.width() < 20 || plot.height() < 20 || m_s.size() < 2)
+			return false;
+		smin = m_s.front(); smax = m_s.back();
+		zmin = m_z[0];      zmax = m_z[0];
+		for (double v : m_z) { zmin = std::min(zmin, v); zmax = std::max(zmax, v); }
+		// A second curve shares these axes, so it has to be inside them or it would be drawn clipped
+		// (or off-panel) and the two would not be comparable -- which is the only reason it is there.
+		for (double v : m_s2) { smin = std::min(smin, v); smax = std::max(smax, v); }
+		for (double v : m_z2) { zmin = std::min(zmin, v); zmax = std::max(zmax, v); }
+		if (smax <= smin) smax = smin + 1.0;
+		if (zmax <= zmin) zmax = zmin + 1.0;
+		const double zpad = 0.06 * (zmax - zmin);
+		zmin -= zpad; zmax += zpad;
+		return true;
+	}
+
+	// Live coordinate readout, the same one the X,Y plot tool shows while the cursor is inside the
+	// frame (xyMouseMove, 65_xyplot.cpp): cursor -> data coords off the axes actually drawn, same
+	// "x,  y" text, same precision. A panel has no status bar, so it is painted at the LOWER LEFT.
+	void mouseMoveEvent(QMouseEvent *e) override {
+		m_hover = e->pos();
+		update();
+		QWidget::mouseMoveEvent(e);
+	}
+	void leaveEvent(QEvent *e) override {
+		m_hover = QPoint(-1, -1);
+		update();
+		QWidget::leaveEvent(e);
+	}
+
+	// The readout text for the current cursor, empty when it is outside the plot frame.
+	QString hoverText() const {
+		QRectF plot;
+		double smin, smax, zmin, zmax;
+		if (m_hover.x() < 0 || !plotFrame(plot, smin, smax, zmin, zmax) || !plot.contains(m_hover))
+			return QString();
+		const double dx = smin + (m_hover.x() - plot.left())   / plot.width()  * (smax - smin);
+		const double dy = zmax - (m_hover.y() - plot.top())    / plot.height() * (zmax - zmin);
+		const QString xs = m_isDate
+			? QDateTime::fromSecsSinceEpoch((qint64)dx, Qt::UTC).toString("yyyy-MM-dd hh:mm:ss")
+			: QString("%1").arg(dx, 0, 'g', 8);
+		return QString("%1,  %2").arg(xs).arg(dy, 0, 'g', 6);
+	}
 
 	void paintEvent(QPaintEvent*) override {
 		QPainter p(this);
@@ -67,13 +130,8 @@ protected:
 			return;
 		}
 
-		double smin = m_s.front(), smax = m_s.back();
-		double zmin = m_z[0], zmax = m_z[0];
-		for (double v : m_z) { zmin = std::min(zmin, v); zmax = std::max(zmax, v); }
-		if (smax <= smin) smax = smin + 1.0;
-		if (zmax <= zmin) zmax = zmin + 1.0;
-		double zpad = 0.06 * (zmax - zmin);
-		zmin -= zpad; zmax += zpad;
+		double smin, smax, zmin, zmax;
+		plotFrame(plot, smin, smax, zmin, zmax);
 
 		auto X = [&](double s) { return plot.left()   + (s - smin) / (smax - smin) * plot.width();  };
 		auto Y = [&](double z) { return plot.bottom() - (z - zmin) / (zmax - zmin) * plot.height(); };
@@ -123,6 +181,29 @@ protected:
 		p.setPen(QPen(QColor(235, 170, 0), 2));
 		p.drawPath(path);
 
+		// …and the reference curve, dashed, in a colour that reads against the first one.
+		if (m_s2.size() >= 2 && m_z2.size() == m_s2.size()) {
+			QPainterPath q;
+			q.moveTo(X(m_s2[0]), Y(m_z2[0]));
+			for (size_t i = 1; i < m_s2.size(); ++i)
+				q.lineTo(X(m_s2[i]), Y(m_z2[i]));
+			QPen pen2(QColor(200, 30, 30), 1.4);
+			pen2.setStyle(Qt::DashLine);
+			p.setPen(pen2);
+			p.drawPath(q);
+			if (!m_name2.isEmpty()) {                       // two curves -> say which is which
+				const double ly = plot.top() + 8;
+				p.setPen(QPen(QColor(235, 170, 0), 2));
+				p.drawLine(QPointF(plot.right() - 74, ly), QPointF(plot.right() - 56, ly));
+				p.setPen(QColor(60, 60, 60));
+				p.drawText(QRectF(plot.right() - 52, ly - 8, 50, 16), Qt::AlignLeft | Qt::AlignVCenter, "model");
+				p.setPen(pen2);
+				p.drawLine(QPointF(plot.right() - 74, ly + 13), QPointF(plot.right() - 56, ly + 13));
+				p.setPen(QColor(60, 60, 60));
+				p.drawText(QRectF(plot.right() - 52, ly + 5, 50, 16), Qt::AlignLeft | Qt::AlignVCenter, m_name2);
+			}
+		}
+
 		// axis captions
 		p.setPen(Qt::black);
 		p.setFont(QFont(font().family(), 8));
@@ -133,6 +214,15 @@ protected:
 		p.rotate(-90);
 		p.drawText(QRectF(-60, -10, 120, 14), Qt::AlignHCenter, m_ylabel);
 		p.restore();
+
+		// …and the live coordinate readout, lower left — the panel's stand-in for the X,Y plot
+		// tool's status bar.
+		const QString hv = hoverText();
+		if (!hv.isEmpty()) {
+			p.setPen(QColor(60, 60, 60));
+			p.drawText(QRectF(3, height() - 15, width() - 6, 14),
+			           Qt::AlignLeft | Qt::AlignVCenter, hv);
+		}
 	}
 
 	// Right-click -> push the currently shown profile/series into a standalone X,Y plot window

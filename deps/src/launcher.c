@@ -593,6 +593,25 @@ static void splash_bar_rect(int w, int h, int *bx, int *by, int *bw, int *bh, in
 	*cw = (int)(w * 0.18);
 }
 
+/* Close button, LOWER-RIGHT corner. The splash normally leaves on its own the instant the viewer
+ * window appears, so this is the manual way out for the case where that never happens — a Julia
+ * that dies before any window, a load that hangs. Without it the only exits are the 3-minute
+ * safety timeout and the task manager. Same box, same corner, on all three systems; y measured
+ * from the TOP everywhere, like splash_bar_rect. */
+static void splash_close_rect(int w, int h, int *cx, int *cy, int *cw, int *ch) {
+	int m = h / 22;                       /* margin off both edges */
+	*cw = w / 7;   if (*cw < 74) *cw = 74;
+	*ch = h / 11;  if (*ch < 26) *ch = 26;
+	*cx = w - *cw - m;
+	*cy = h - *ch - m;
+}
+
+static int splash_pt_in_close(int w, int h, int px, int py) {
+	int cx, cy, cw, ch;
+	splash_close_rect(w, h, &cx, &cy, &cw, &ch);
+	return px >= cx && px < cx + cw && py >= cy && py < cy + ch;
+}
+
 /* Left edge of the chunk at time t: from fully off the track's left to fully off its right,
  * which is what the .hta's `from left:-18vw to left:78vw` describes. */
 static int splash_chunk_x(int bx, int bw, int cw, unsigned long ms) {
@@ -790,6 +809,29 @@ static void splash_paint(HWND hw) {
 		DeleteObject(chunk);
 	}
 
+	{	/* Close button, lower-right — see splash_close_rect. */
+		int cx, cy, cbw, cbh;
+		RECT r;
+		HBRUSH bg = CreateSolidBrush(RGB(24, 28, 40));
+		HBRUSH fr = CreateSolidBrush(RGB(150, 156, 170));
+		HFONT f, old;
+		splash_close_rect(rc.right, rc.bottom, &cx, &cy, &cbw, &cbh);
+		SetRect(&r, cx, cy, cx + cbw, cy + cbh);
+		FillRect(dc, &r, bg);
+		FrameRect(dc, &r, fr);
+		f = CreateFontW(-(cbh * 45 / 100), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+		                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+		                DEFAULT_PITCH, L"Segoe UI");
+		old = (HFONT)SelectObject(dc, f);
+		SetBkMode(dc, TRANSPARENT);
+		SetTextColor(dc, RGB(235, 238, 245));
+		DrawTextW(dc, L"Close", -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		SelectObject(dc, old);
+		DeleteObject(f);
+		DeleteObject(bg);
+		DeleteObject(fr);
+	}
+
 	{	/* The .hta's 1px #444 frame. */
 		HBRUSH b = CreateSolidBrush(RGB(68, 68, 68));
 		FrameRect(dc, &rc, b);
@@ -820,6 +862,25 @@ static LRESULT CALLBACK splash_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
 			InvalidateRect(hw, &r, FALSE);
 		}
 		return 0;
+	case WM_LBUTTONUP:
+		{	/* The Close button: the manual way out when the viewer never comes up. */
+			RECT rc;
+			GetClientRect(hw, &rc);
+			if (splash_pt_in_close(rc.right, rc.bottom, (short)LOWORD(lp), (short)HIWORD(lp)))
+				DestroyWindow(hw);
+		}
+		return 0;
+	case WM_SETCURSOR:
+		{	/* Hand cursor over the button, arrow everywhere else. */
+			POINT p;
+			RECT rc;
+			GetCursorPos(&p);
+			ScreenToClient(hw, &p);
+			GetClientRect(hw, &rc);
+			SetCursor(LoadCursor(NULL, splash_pt_in_close(rc.right, rc.bottom, p.x, p.y)
+			                           ? IDC_HAND : IDC_ARROW));
+		}
+		return 1;
 	case WM_DESTROY:
 		PostQuitMessage(0);
 		return 0;
@@ -992,18 +1053,53 @@ static void splash_run(const char *root)
 			chunkw = cw;
 		}
 
+		/* Close button, lower-right. Drawn as a plain layer-backed view with a label rather than
+		 * an NSButton so it matches the Win32/X11 box exactly; the click is picked up in the
+		 * event loop below, which keeps the exit conditions all in one place. */
+		{
+			int cx, cy, cbw, cbh;
+			NSView *btn;
+			NSTextField *bl;
+			splash_close_rect(w, h, &cx, &cy, &cbw, &cbh);
+			btn = [[NSView alloc] initWithFrame:NSMakeRect(cx, h - cy - cbh, cbw, cbh)];
+			[btn setWantsLayer:YES];
+			btn.layer.backgroundColor =
+			    [[NSColor colorWithCalibratedRed:0.094 green:0.110 blue:0.157 alpha:1.0] CGColor];
+			btn.layer.borderWidth = 1.0;
+			btn.layer.borderColor =
+			    [[NSColor colorWithCalibratedRed:0.588 green:0.612 blue:0.667 alpha:1.0] CGColor];
+			bl = [[NSTextField alloc] initWithFrame:NSMakeRect(0, cbh / 2.0 - cbh * 0.32, cbw, cbh * 0.64)];
+			[bl setStringValue:@"Close"];
+			[bl setBezeled:NO];
+			[bl setDrawsBackground:NO];
+			[bl setEditable:NO];
+			[bl setSelectable:NO];
+			[bl setAlignment:NSTextAlignmentCenter];
+			[bl setTextColor:[NSColor colorWithCalibratedRed:0.92 green:0.933 blue:0.961 alpha:1.0]];
+			[bl setFont:[NSFont systemFontOfSize:cbh * 0.45 weight:NSFontWeightSemibold]];
+			[btn addSubview:bl];
+			[v addSubview:btn];
+		}
+
 		[win orderFrontRegardless];
 
 		t0 = time(NULL);
 		while (!file_exists(g_flag) && time(NULL) - t0 < 180) {
 			NSEvent *e;
+			int closed = 0;
 			/* Chunk position from the shared clock, in the track's own coordinates. */
 			[chunk setFrameOrigin:NSMakePoint(splash_chunk_x(0, barw, chunkw, now_ms()), 0)];
 			while ((e = [app nextEventMatchingMask:NSEventMaskAny
 			                             untilDate:[NSDate dateWithTimeIntervalSinceNow:0.04]
 			                                inMode:NSDefaultRunLoopMode
-			                               dequeue:YES]))
+			                               dequeue:YES])) {
+				if ([e type] == NSEventTypeLeftMouseUp && [e window] == win) {
+					NSPoint p = [e locationInWindow];   /* bottom-left origin: flip to top-down */
+					if (splash_pt_in_close(w, h, (int)p.x, (int)(h - p.y))) closed = 1;
+				}
 				[app sendEvent:e];
+			}
+			if (closed) break;
 		}
 		[win close];
 	}
@@ -1151,7 +1247,7 @@ static void splash_run(const char *root)
 	memset(&swa, 0, sizeof(swa));
 	swa.override_redirect = True;
 	swa.background_pixel = 0x0a0d18;
-	swa.event_mask = ExposureMask;
+	swa.event_mask = ExposureMask | ButtonPressMask;   /* ButtonPress: the Close button */
 	win = XCreateWindow(dpy, RootWindow(dpy, scr), x, y, (unsigned)w, (unsigned)h, 0,
 	                    CopyFromParent, InputOutput, CopyFromParent,
 	                    CWOverrideRedirect | CWBackPixel | CWEventMask, &swa);
@@ -1169,11 +1265,13 @@ static void splash_run(const char *root)
 
 	t0 = time(NULL);
 	for (;;) {
-		int redraw = 0;
+		int redraw = 0, closed = 0;
 		while (XPending(dpy)) {
 			XEvent ev;
 			XNextEvent(dpy, &ev);
 			if (ev.type == Expose) redraw = 1;
+			else if (ev.type == ButtonPress &&
+			         splash_pt_in_close(w, h, ev.xbutton.x, ev.xbutton.y)) closed = 1;
 		}
 		if (redraw) {
 			/* Background + icon in one blit (they share the buffer), then the caption with the
@@ -1205,9 +1303,24 @@ static void splash_run(const char *root)
 				XFillRectangle(dpy, win, gc, cl, by, (unsigned)(cr - cl), (unsigned)bh2);
 			}
 		}
+		{	/* Close button, lower-right — repainted every frame, like the bar, so it survives
+			 * a missed expose. */
+			int cx, cy, cbw, cbh;
+			splash_close_rect(w, h, &cx, &cy, &cbw, &cbh);
+			XSetForeground(dpy, gc, 0x181c28);
+			XFillRectangle(dpy, win, gc, cx, cy, (unsigned)cbw, (unsigned)cbh);
+			XSetForeground(dpy, gc, 0x969caa);
+			XDrawRectangle(dpy, win, gc, cx, cy, (unsigned)(cbw - 1), (unsigned)(cbh - 1));
+			if (font) {
+				int lw = XTextWidth(font, "Close", 5);
+				XSetForeground(dpy, gc, 0xebeef5);
+				XDrawString(dpy, win, gc, cx + (cbw - lw) / 2,
+				            cy + cbh / 2 + font->ascent / 2, "Close", 5);
+			}
+		}
 		XFlush(dpy);
 
-		if (file_exists(g_flag) || time(NULL) - t0 >= 180) break;
+		if (closed || file_exists(g_flag) || time(NULL) - t0 >= 180) break;
 		usleep(40000);
 	}
 

@@ -2865,6 +2865,68 @@ static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPo
 	}
 }
 
+// Release every cached tile in a subtree. The LOD cache is keyed to the GEOMETRY, so when the z it
+// was meshed from changes, every cached mesh is stale — including the ones sitting off-screen, which
+// would otherwise come back wrong on the next zoom.
+static void freeSubtreeActors(Scene *s, QuadNode *n) {
+	if (!n) return;
+	freeNodeActor(s, n);
+	for (int k = 0; k < 4; ++k) freeSubtreeActors(s, n->child[k]);
+}
+
+static void refineQuadtree(Scene *s);     // defined just below; the pass that re-meshes what is visible
+
+// A NEW Z FOR THE SAME SURFACE — the 3-D counterpart of the flat path's texture-repaint fast path
+// (showLayerImageTail), and for the same reason. Re-showing a layer through the full builder costs a
+// scene teardown: buildSceneContent 28 ms + a gizmo destroyed and rebuilt 27 ms + VE + stacking + a
+// full Scene Objects rebuild, ~165 ms and a visible blink of the gizmo and the object tree — every
+// frame of a playing tsunami. None of that is data: the surface, its axes, its colour bar, its rows
+// and its gizmo are the SAME objects, only the heights moved.
+//
+// So: overwrite the height field, drop the stale tile meshes, let the ordinary refine pass re-mesh
+// what is actually on screen, and re-shade. Nothing is created or destroyed above the tile level.
+// Refused (caller falls back to the full rebuild) unless this really is the same surface: same node
+// counts, same extent, same name, and a tiled 3-D surface rather than a flat draped image.
+//
+// The world scaling (xfac/zfac/ve) and the axes are deliberately LEFT ALONE. Re-deriving them per
+// frame would make the vertical exaggeration follow each slice's own z range, i.e. the wave would
+// breathe against a box that moves with it — the animation has to be measured against a fixed frame.
+static bool sceneUpdateBaseGridZ(Scene *s, const float *z, int nx, int ny,
+                                 double x0, double x1, double y0, double y1,
+                                 const double *cz, const double *crgb, int ncolor,
+                                 const char *name, int zlayout) {
+	if (!s || !z || !s->quadRoot || !s->surfGroup || s->gridZ.empty()) return false;
+	if (s->layerImgMode || s->imageOnly)                                return false;
+	if (nx != s->gnx || ny != s->gny)                                   return false;
+	if (s->gx0 != x0 || s->gx1 != x1 || s->gy0 != y0 || s->gy1 != y1)   return false;
+	if (!name || !name[0] || s->surfName != name)                       return false;   // different object -> real rebuild
+
+	gridCopyToCM(s->gridZ, z, nx, ny, zlayout);          // THE one copy (grid memory-layout law)
+	double zmin = 1e30, zmax = -1e30;
+	for (size_t k = 0, ntot = (size_t)nx * (size_t)ny; k < ntot; ++k) {
+		const float zz = s->gridZ[k];
+		if (!std::isnan(zz)) { if (zz < zmin) zmin = zz; if (zz > zmax) zmax = zz; }
+	}
+	if (zmin > zmax) { zmin = 0.0; zmax = 1.0; }
+	s->zmin = zmin; s->zmax = zmax;
+
+	// The colours, through the same in-place CTF mutation gmtvtk_set_cpt uses (the LUT is shared by
+	// the surface, every tile mapper and the colour bar, so one edit reaches all of them).
+	if (cz && crgb && ncolor > 1) {
+		if (vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(s->surfLut)) {
+			ctf->RemoveAllPoints();
+			for (int i = 0; i < ncolor; ++i) ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+		}
+		s->baseCz.assign(cz, cz + ncolor);
+		s->baseCrgb.assign(crgb, crgb + (size_t)3 * ncolor);
+	}
+	freeSubtreeActors(s, s->quadRoot);   // every cached mesh describes the OLD heights
+	refineQuadtree(s);                   // re-mesh exactly what the camera can see, no more
+	applyShading(s);                     // the relief moved -> so did its light
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return true;
+}
+
 static void refineQuadtree(Scene *s) {
 	if (!s->quadRoot || !s->ren) return;
 	vtkCamera *cam = s->ren->GetActiveCamera(); if (!cam) return;
@@ -6323,7 +6385,15 @@ public:
 				scn->roughness      = sRough.value();
 				scn->metallic       = sMetal.value();
 				// Put the window in the mode this method IS. Rebuilds nothing when it is already there.
-				sceneSetShadedImage2D(scn, model == 7);
+				//
+				// EXCEPT for a HOST-COMPOSITED layer (an Aquamoto tsunami). Its colours ARE the
+				// composite; the surface mode hands it to the plain-grid builder, which paints the
+				// stage with the WATER CPT and turns all land red. And it does not even survive: the
+				// next slice pushes a drape and the window is flat again, so the method the user
+				// picked silently became method 7 on the next layer. The LOOK still applies — the
+				// composite is re-lit through it — the geometry is simply not this method's to change
+				// for a layer that has no plain-grid form.
+				if (!scn->customLayerTexture) sceneSetShadedImage2D(scn, model == 7);
 			}
 			HillshadeState ls;                       // remember the aim like every other method does
 			ls.valid = true;  ls.model = model;
@@ -23617,7 +23687,8 @@ static void globeFrameUpdate(Scene *s, bool visible) {
 //           quadrilateralized spherical cube (+proj=qsc, equal-area). It is not a separate pipeline:
 //           only the transform inside the scene's ONE mapping object changes (Scene::cube,
 //           sceneGlobeUpdateTransform). Geographic data only, same gate as the globe.
-enum { IGVIEW_3D = 0, IGVIEW_FLAT2D = 1, IGVIEW_GLOBE = 2, IGVIEW_CUBE = 3 };
+// (the enumerators themselves are declared in 10_geometry.cpp, where sceneSetViewAzElSpan already
+//  needs them to say "a tilted camera means 3-D")
 
 // Is this mode one of the two 3-D BODIES (sphere / cube)? Both live behind Scene::globe, so every
 // site that used to ask "globe?" keeps working and only the body-kind questions consult Scene::cube.
@@ -24001,6 +24072,49 @@ static void loadSessionIntoWindow(Scene *s, QMainWindow *win, const QString &pat
 	for (int i = 0; i < 10; i++) QApplication::processEvents();
 	const QByteArray utf8 = path.toUtf8();
 	g_juliaLoadSession(s, utf8.constData());
+}
+
+// Desktop-launcher splash handshake. deps/src/launcher.c puts a splash up while Julia loads and
+// polls a flag file, closing the instant it appears. The flag is written HERE, at the exact
+// instant the window is shown, because that is the only place that instant exists: buildAndShow
+// keeps working for over a second after win->show() (dock sizing, first render, shading,
+// interactor, gizmo), so anything written on the Julia side — which only runs once the whole
+// call returns — leaves the splash sitting on top of a window the user is already looking at.
+// The path comes from the environment (iview_app.jl exports IGMT_SPLASH_FLAG, the same path
+// launcher.c's ready_flag_path() polls); no variable -> not launched from the icon -> no flag.
+//
+// Read on Windows with GetEnvironmentVariableW, NOT getenv/qgetenv: Julia's `ENV[...] = ...` sets
+// the WIN32 environment block (SetEnvironmentVariableW), while the MSVC CRT answers getenv() from
+// its own copy taken at process start and never updated — qgetenv returned empty here and the
+// splash stayed on screen forever. Hand-declared like 30_app.cpp's kernel32 calls: <windows.h>
+// drags in wingdi.h, whose GDI Polygon() collides with this codebase's own Polygon struct.
+#if defined(_WIN32)
+extern "C" __declspec(dllimport) unsigned long __stdcall
+GetEnvironmentVariableW(const wchar_t *lpName, wchar_t *lpBuffer, unsigned long nSize);
+#endif
+
+static void splashDropOnShow()
+{
+	static bool done = false;                    // first window only; later ones are not the launch
+	if (done) return;
+	done = true;
+	QString path;
+#if defined(_WIN32)
+	{
+		wchar_t buf[4096];
+		unsigned long n = GetEnvironmentVariableW(L"IGMT_SPLASH_FLAG", buf, 4096);
+		if (n > 0 && n < 4096) path = QString::fromWCharArray(buf, (int)n);
+	}
+#else
+	path = QString::fromLocal8Bit(qgetenv("IGMT_SPLASH_FLAG"));
+#endif
+	if (path.isEmpty()) return;
+	QFile f(path);
+	if (f.open(QIODevice::WriteOnly))
+	{
+		f.write(QByteArray::number(QCoreApplication::applicationPid()));
+		f.close();
+	}
 }
 
 static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
@@ -26363,6 +26477,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	if (openFlat2D) sceneSetFlat2D(s, true);
 
 	win->show();
+	splashDropOnShow();   // the window is on screen NOW: the launcher's splash goes with this frame
 
 	// Empty launcher: now that the layout has real geometry, shrink the pre-folded Scene Objects
 	// dock to its strip width (resizeDocks only bites after show()).

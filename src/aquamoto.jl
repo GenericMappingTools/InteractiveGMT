@@ -70,6 +70,12 @@ mutable struct _AquaState
 	transp::Float64                         # water transparency, 0..1
 	shadewater::Bool                        # the two shading radio buttons
 	shadeland::Bool
+	times::Vector{Float64}                  # the cube's own `time` coordinate, one per step (EMPTY when
+	                                        # the file has none) -- shown in the viewer window's title
+	ram::Dict{String,GMTgrid}               # varname -> the WHOLE cube in memory ("Load all in RAM").
+	                                        # Per VARIABLE, because the picker switches between them and
+	                                        # each is its own cube; absent = that variable is read off
+	                                        # disk one layer at a time, as before.
 end
 
 const _AQUA = Dict{Ptr{Cvoid}, _AquaState}()
@@ -80,7 +86,41 @@ const _AQUA = Dict{Ptr{Cvoid}, _AquaState}()
 # `_netcdf_subdatasets`, GDAL's Subdatasets report) -- no guessed/hard-coded variable names. A
 # tsunami netCDF of this file class always carries >1 variable (bathymetry + the time-varying
 # quantity, at minimum), so it always shows up in GDAL's Subdatasets report; there is no
-# single-variable case to fall back for. Empty if none found.
+# single-variable case to fall back for. Empty if none found.  (`_aqua_find_all_varnames`, below.)
+
+# The cube's own `time` coordinate — the model time of every step, for the window title. A 1-D
+# variable is not a grid, so GMT cannot read it ("Named variable is not 2-, 3-, 4- or 5-D"); it comes
+# out through the netCDF reader this package already owns for non-raster variables, shapenc.jl's
+# GDAL MDArray helpers. A file without a usable `time` simply has no times, and the title then shows
+# the slice number alone.
+function _aqua_read_times(path::String, nsteps::Int)::Vector{Float64}
+	out = Float64[]
+	try
+		ds = _shnc_open_multidim_read(path)
+		try
+			root = _shnc_root(ds)
+			arr = _shnc_group_open_array(root, "time")
+			arr == C_NULL && return out
+			n = min(_shnc_array_count(arr), nsteps)
+			if n > 0
+				edt = _shnc_edt_f64()
+				out = _shnc_array_read_f64(arr, edt, n)
+				_shnc_release_edt(edt)
+				# A `time` variable that was never written comes back as netCDF's own fill (~9.97e36),
+				# which is not a time — treat it as no time axis at all rather than putting 2.8e33
+				# hours in the title (and, before this check, throwing an InexactError mid-slice).
+				all(t -> isfinite(t) && abs(t) < 1e30, out) || (out = Float64[])
+			end
+			_shnc_release_array(arr)
+		finally
+			ccall((:GDALClose, GMT.libgdal), Cvoid, (Ptr{Cvoid},), ds)
+		end
+	catch
+		return Float64[]
+	end
+	return out
+end
+
 function _aqua_find_all_varnames(path::String, skip::String)
 	found = String[]
 	for v in _netcdf_subdatasets(path)
@@ -313,7 +353,8 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	# `_aquamoto_slice`, i.e. before anything is on screen, so they only ever matter to a caller that
 	# asks for a slice before the dialog has drawn one.
 	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, :polar, :geo, 0, Dict{String,String}(),
-	                          true, false, 0.0, true, true)
+	                          true, false, 0.0, true, true, _aqua_read_times(String(path), nsteps),
+	                          Dict{String,GMTgrid}())
 	print(nsteps, "|", varname, "|", join(varnames, ","))
 	return nothing
 end
@@ -480,6 +521,9 @@ function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String}
 	st.illum["model"] = string(model)
 	_hs_push_grid(scene, st.bat, model, st.illum, 1)    # LAND  <- the static bathymetry
 	_aqua_relight_water!(scene, st)                     # WATER <- the CURRENT slice's own stage
+	# The method is DECLARED here, by the act that chose it — never by the pushes above, which are
+	# data and run again at every slice. Both sides get it (sceneSetReliefLook copies the look to both).
+	_hs_declare_look(scene)
 	return nothing
 end
 
@@ -489,8 +533,17 @@ end
 # already read (never re-read it); without one, the slice on screen is read here.
 function _aqua_relight_water!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,Nothing}=nothing)
 	isempty(st.illum) && return nothing
+	# …AND ONLY WHILE THAT MODEL IS STILL THE WINDOW'S LIGHT. Picking a relief look (VTK PBR, grdimage,
+	# Lambert) REPLACES a loaded Illumination model — sceneSetReliefLook drops it — so re-pushing the
+	# remembered one here would put the window straight back on a hillshade method (every push force-
+	# sets useHillshade/hillGrd), i.e. the method the user just chose silently reverting at the next
+	# slice. Ask the viewer whether the model is still loaded; when it is not, forget it.
+	if ccall(_fn(:gmtvtk_has_extern_shade_h), Cint, (Ptr{Cvoid},), scene) == 0
+		empty!(st.illum)
+		return nothing
+	end
 	model = parse(Int, st.illum["model"])
-	Gw = G === nothing ? _read_cube_layer("$(st.path)?$(st.varname)", st.cur + 1) : G   # st.cur is 0-based
+	Gw = G === nothing ? _aqua_layer(st, st.cur) : G     # st.cur is 0-based; THE layer read (RAM or disk)
 	Gw === nothing && error("Aquamoto: could not read layer $(st.cur + 1) of '$(st.varname)' from $(st.path)")
 	R = _aqua_water_reflectance(st, Gw, model)
 	R === nothing && return nothing            # an entirely dry step has no water to light
@@ -539,6 +592,76 @@ function _aqua_water_reflectance(st::_AquaState, G::GMTgrid, model::Int)
 	return R
 end
 
+# THE read of one Aquamoto cube layer (`k` 0-based): out of memory when this variable's cube has been
+# pulled in by "Load all in RAM", off disk one layer at a time otherwise. Every slice path goes
+# through here — the display, the movie writer, the Cinema tab — so a RAM-resident cube cannot be
+# bypassed by one of them and end up reading the disk anyway (SACRED_LAW.md). The open-time per-
+# variable scan is the one caller that does NOT come here, and cannot: it runs before any cube can be
+# resident, and it is what decides the ranges the cache is later described by.
+function _aqua_layer(st::_AquaState, k::Int)::Union{GMTgrid,Nothing}
+	C = get(st.ram, st.varname, nothing)
+	if C !== nothing && 0 <= k < size(C.z, 3)
+		G = _cube_layer_view(C, k + 1)          # zero-copy view into the cube, same as the cube dock's
+		# A view cannot inherit a z-range nobody computed. Consumers read that range off the layer
+		# (the scan's `.range[5:6]`, the hillshade), so fill it here — a RAM layer and a disk layer
+		# must be the same object to everything downstream.
+		G.range[5], G.range[6] = _finite_extrema(G.z)
+		return G
+	end
+	return _read_cube_layer("$(st.path)?$(st.varname)", k + 1)
+end
+
+# "Load all in RAM" for the ACTIVE variable — the option the other netCDF cubes get from the cube
+# dock's own button (`_on_cube_load_all`, drop.jl), which an Aquamoto file never reaches because it
+# opens through this dialog instead. Same reader, same RAM test, same return codes:
+# 0 = loaded (or already resident), 1 = would not fit in free RAM, 2 = error.
+function _aqua_load_all(scene::Ptr{Cvoid})::Cint
+	try
+		st = get(_AQUA, scene, nothing)
+		st === nothing && return Cint(2)
+		haskey(st.ram, st.varname) && return Cint(0)         # already resident
+		g1 = _read_cube_layer("$(st.path)?$(st.varname)", 1)
+		g1 === nothing && return Cint(2)
+		_cube_fits_ram(length(g1.z) * sizeof(eltype(g1.z)), st.nsteps) || return Cint(1)
+		C = _read_whole_cube("$(st.path)?$(st.varname)", st.nsteps)
+		(C isa GMTgrid && ndims(C.z) == 3) || return Cint(2)
+		st.ram[st.varname] = C
+		return Cint(0)
+	catch e
+		@error "Aquamoto load-all failed" exception=(e, catch_backtrace())
+		return Cint(2)
+	end
+end
+
+# Is the ACTIVE variable's cube in memory? The dialog asks on re-open so its button shows the state
+# the data is actually in, rather than offering a load that already happened.
+function _aqua_in_ram(scene::Ptr{Cvoid})::Cint
+	st = get(_AQUA, scene, nothing)
+	return Cint((st !== nothing && haskey(st.ram, st.varname)) ? 1 : 0)
+end
+
+# The title suffix for slice `k` (0-based): the step's model time when the cube carries one, else the
+# step number. Seconds up to an hour, then h:mm:ss — a 4400-cycle benchmark run and a multi-hour ocean
+# crossing both have to read naturally.
+function _aqua_title_time(st::_AquaState, k::Int)::String
+	(0 <= k < st.nsteps) || return ""
+	if k + 1 > length(st.times)
+		return "step $(k + 1)/$(st.nsteps)"
+	end
+	t = st.times[k+1]
+	isfinite(t) || return "step $(k + 1)/$(st.nsteps)"
+	if abs(t) < 3600
+		return "t = " * (isinteger(t) ? string(Int(t)) : string(round(t, digits = 2))) * " s"
+	end
+	h = floor(Int, t / 3600);  m = floor(Int, (t - 3600h) / 60);  s = t - 3600h - 60m
+	return "t = $(h)h" * lpad(m, 2, '0') * "m" * lpad(string(round(Int, s)), 2, '0') * "s"
+end
+
+function _aqua_set_title_time(scene::Ptr{Cvoid}, st::_AquaState, k::Int)
+	ccall(_fn(:gmtvtk_set_title_extra_h), Cvoid, (Ptr{Cvoid}, Cstring), scene, _aqua_title_time(st, k))
+	return nothing
+end
+
 # Compute + display slice `k` (0-based). `splitDryWet` toggles the dry/wet composite; `globalMM`
 # picks the whole-cube min/max over the slice's own; `transparency` (0..1) is the Water-
 # transparency slider (mixe_images' cross-blend fraction — land pixels are always hard-overwritten
@@ -554,8 +677,8 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	# rather than picking its own options (see `_AquaState`, and `set_layer!` in movie.jl).
 	st.split, st.globalmm, st.transp = splitDryWet, globalMM, transparency
 	st.shadewater, st.shadeland = shadeWater, shadeLand
-	G = _read_cube_layer("$(st.path)?$(st.varname)", k + 1)   # THE cube-layer read; k is 0-based here
-	# `_read_cube_layer` is declared to be able to return nothing, so say what happened here rather
+	G = _aqua_layer(st, k)                                    # THE cube-layer read; k is 0-based here
+	# `_aqua_layer` is declared to be able to return nothing, so say what happened here rather
 	# than letting the union reach `G.z` below (and so the code after this line sees a concrete grid).
 	G === nothing && error("Aquamoto: could not read layer $(k + 1) of '$(st.varname)' from $(st.path)")
 	# Read in "TRB" like every other grid, and composited WHERE IT LIES: the colouring below is
@@ -599,10 +722,22 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	amp > 0 || (amp = 1.0)
 	waterlo, waterhi = -amp, amp
 	landhi = st.bat.range[6]                           # max land elevation, straight from the grid's OWN known range
+
+	# THE COMPOSITE IS THE TSUNAMI. Land is coloured from the bathymetry with the LAND colormap, water
+	# from the stage with the WATER one, and each side is lit from its own surface — that separation IS
+	# Aquamoto (SACRED_LAW.md's two-surface law), and it is not something a display mode may drop. A
+	# 3-D pass that pushed the bare stage grid with the water CPT painted the land on the water scale
+	# (all red at the top of :polar) and threw the per-side illumination away; it is gone.
+	#
+	# What the geometry question is still good for is the FAST PATH: the same-size push repaints the
+	# texture instead of rebuilding the scene (showLayerImageTail).
+	cz, crgb, n = _cpt_nodes_range(waterlo, waterhi, st.watercmap)   # the water scale = the colourbar
+	zhover, znx, zny, zlay = _grid_zbuf(G)             # stage buffer + the layout code the VIEWER reads it with
+	r = st.bat.range
+	name = basename(st.path)                           # handle named after the file, like every other layer
 	rgb, st.imgbat = _aqua_composite_rgb(bat, Z, splitDryWet, waterlo, waterhi, transparency, st.imgbat, landhi,
 	                                     shadeWater, shadeLand, st.watercmap, st.landcmap)
 
-	zhover, znx, zny, zlay = _grid_zbuf(G)   # stage buffer + the layout code the VIEWER will read it with
 	# The composite was coloured element-wise off `G` itself, so the pack must follow THE GRID's own
 	# layout, not the one `_grid_zbuf` hands the viewer -- those differ only in the degraded case
 	# (a library too old to be told a layout, see `_grid_zbuf`), and mixing them up would shear the
@@ -613,9 +748,6 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	# painted them (`_aqua_indland`), never by a test of its own. A non-split slice is all water.
 	lmask = splitDryWet ? _aqua_pack_landmask(_aqua_indland(bat, Z), _grid_layout_code(G), Int(nx), Int(ny)) :
 	                      zeros(UInt8, Int(nx) * Int(ny))
-	cz, crgb, n = _cpt_nodes_range(waterlo, waterhi, st.watercmap)   # colourbar legend = the water scale
-	r = st.bat.range
-	name = basename(st.path)                                   # handle named after the file, like every other layer
 	ok = ccall(_fn(:gmtvtk_show_layer_rgba_h), Cint,
 		(Ptr{Cvoid}, Ptr{Cuchar}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
 		 Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cfloat}, Cstring, Cint, Ptr{Cuchar}),
@@ -625,8 +757,20 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	# No-op unless the Illumination tool has a model loaded; the LAND side needs nothing here, its
 	# surface (the bathymetry) is the same one at every timestep.
 	_aqua_relight_water!(scene, st, G)
+	# THE GRID THIS WINDOW IS SHOWING is the stage of the slice just drawn — not the bathymetry.
+	# Everything that asks Julia for "the grid on display" by the window's Scene Objects name reaches
+	# this entry: `_find_object`, and through it `_extract_profile` (a drawn line's "Extract profile"),
+	# Save, and every grid tool. It used to hold `st.bat`, registered once on the first slice, so a
+	# profile taken along a drawn line came back as the SEA FLOOR while the Ctrl-drag profile — which
+	# ray-samples the surface actually on screen — correctly followed the water. One window, one
+	# answer to "what is displayed" (SACRED_LAW.md); the bathymetry is reachable as `st.bat` by the
+	# two-surface code that genuinely means the land side.
+	_forget_object!(scene, :grid, name)
+	_remember_object!(scene, :grid, name, G)
+	# WHEN this slice is, in the viewer window's title, right after the zoom percentage. The cube's own
+	# `time` coordinate; a file without one shows the step number alone.
+	_aqua_set_title_time(scene, st, k)
 	if st.first
-		_remember_object!(scene, :grid, name, st.bat)
 		_session_record!(scene, :basegrid, :file, st.path; name = name)
 		st.first = false
 	end
@@ -648,7 +792,7 @@ function _aquamoto_runin(scene::Ptr{Cvoid})
 	everwet = falses(size(bat))
 	_progress_show_async(st.nsteps, "Aquamoto — computing inundation…")
 	for k in 0:st.nsteps-1
-		Gk = _read_cube_layer("$(st.path)?$(st.varname)", k + 1)
+		Gk = _aqua_layer(st, k)
 		Gk === nothing && error("Aquamoto: could not read layer $(k + 1) of '$(st.varname)' from $(st.path)")
 		Z = _zmat(Gk)
 		@inbounds for i in eachindex(Z)
@@ -673,4 +817,50 @@ function _aquamoto_runin(scene::Ptr{Cvoid})
 		scene, xyz, Cint(npts), segoff, Cint(nseg), Cint(1), cr, cg, cb, 0.0, 0.0, "Run-in")
 	(ok == 0) && error("Aquamoto: could not draw the inundation boundary (window closed?)")
 	return nothing
+end
+
+# ---------------------------------------------------------------------------------------------
+# JIT WARM-UP. A slice is not a cheap call: it reads a layer, runs the dry/wet composite, packs an
+# RGBA texture and a land mask, and (when a light is loaded) computes a reflectance. All of that is
+# compiled the FIRST time the user moves the slider, which is exactly the "the slider does nothing
+# for a long time, then starts working" the tool was reported with. The window's own open is the dead
+# time to spend on it (warmupTool("aquamoto"), 75_aquamoto.cpp), so the first drag is already warm.
+#
+# Tiny throw-away data, never the live scene (warmup.jl's rule): the point is the CODE, not the grid.
+function _aqua_warm()
+	# NOTHING HERE MAY CALL GMT. warmup.jl runs this body as a TASK, and on a multi-threaded session
+	# (20 threads on this machine) that task runs on ANOTHER THREAD — while the window that just
+	# opened is still reading its cube through GMT. GMT is not thread-safe, and two threads inside it
+	# is an access violation that takes the whole application down: exactly the crash this warm-up
+	# caused on its first outing, through _aqua_composite_rgb -> _aqua_colorize -> _cpt_nodes_range
+	# -> makecpt. So every GMT-touching method is COMPILED, never RUN — `precompile` infers and
+	# generates code without executing a line of it, which is what warmup.jl prescribes for anything
+	# that must not actually happen. Only pure-Julia array work runs here.
+	ny, nx = 24, 32
+	bat = Float32.(repeat(range(-50, 20; length = nx)', ny, 1))       # a beach: deep -> dry land
+	Z   = copy(bat);  Z[:, 1:(nx ÷ 2)] .= 0.5f0                       # wet offshore half, dry ashore
+	dry = _aqua_indland(bat, Z)                                       # THE dry/wet test
+	yield()
+	rgb = Array{UInt8}(undef, ny, nx, 3);  fill!(rgb, 0x80)
+	_aqua_pack_rgba(rgb, 0, nx, ny)                                   # the texture pack…
+	_aqua_pack_landmask(dry, 0, nx, ny)                               # …and its dry/wet mask
+	yield()
+	precompile(_aqua_composite_rgb, (Matrix{Float32}, Matrix{Float32}, Bool, Float64, Float64, Float64,
+	                                 Array{UInt8,3}, Float64, Bool, Bool, Symbol, Symbol))
+	precompile(_aqua_colorize,   (Matrix{Float32}, Float64, Float64, Symbol))
+	precompile(_cpt_nodes_range, (Float64, Float64, Symbol))
+	precompile(_aquamoto_slice,  (Ptr{Cvoid}, Int, Bool, Bool, Float64, Bool, Bool))
+	precompile(_aqua_relight_water!, (Ptr{Cvoid}, _AquaState, Nothing))
+	precompile(_aqua_set_title_time, (Ptr{Cvoid}, _AquaState, Int))
+	precompile(_read_cube_layer, (String, Int))
+	precompile(_aqua_read_times, (String, Int))
+	return nothing
+end
+
+# The Aquamoto window has no callback of its own (every call arrives through the console-eval
+# bridge), so this registers only the warm-up body — fired by warmupTool("aquamoto") when the window
+# opens (75_aquamoto.cpp), exactly like every other tool's dialog.
+function _register_aquamoto()
+	warm_register("aquamoto", _aqua_warm)
+	return
 end

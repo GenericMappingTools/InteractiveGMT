@@ -22,6 +22,14 @@ let
     isempty(path) || open(io -> println(io, round(time(); digits=3), "  startup  iview_app.jl script start"), path, "a")
 end
 const SPLASH_FLAG = joinpath(tempdir(), "igmt_ready.flag")
+
+# The desktop-icon splash (the igmt launcher) polls this path and closes the instant it appears.
+# The flag is NOT written here: the window becomes visible inside the viewer's own `win->show()`,
+# more than a second before that call returns to Julia, so anything written on this side leaves
+# the splash covering a window the user can already see. Hand the path to the viewer instead —
+# `splashDropOnShow` (70_window.cpp) writes it in the same statement that shows the window.
+ENV["IGMT_SPLASH_FLAG"] = SPLASH_FLAG
+
 try
     using InteractiveGMT
     if isempty(ARGS)
@@ -38,12 +46,6 @@ try
                 @warn "could not open dropped file" file=f exception=e
             end
         end
-    end
-    # Signal the desktop-icon splash (the igmt launcher, polling this same path) that the window
-    # is up, so it can close itself now instead of on a fixed timer.
-    try
-        open(io -> print(io, getpid()), SPLASH_FLAG, "w")
-    catch
     end
     wait_windows()    # block (yielding, so the Qt pump runs) until the window(s) close
 catch e

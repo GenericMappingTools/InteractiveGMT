@@ -671,6 +671,13 @@ function _on_cube_slider(scene::Ptr{Cvoid}, cname::Cstring)::Cvoid
 	return
 end
 
+# Does a whole cube fit in free RAM? THE test, with the 20% headroom (transient read buffers +
+# working set) every RAM-load path uses: the cube dock's "Load all in RAM" button, the prescan's
+# keep-in-RAM decision and Aquamoto's own button all ask it here, so they can never end up with
+# three slightly different ideas of what fits (SACRED_LAW.md).
+_cube_fits_ram(nbytes_layer::Int, n::Int)::Bool =
+	Float64(nbytes_layer) * n * 1.2 < Float64(Sys.free_memory())
+
 # Min/max of a numeric array IGNORING NaN (GMT grids carry NaN for nodata). Returns (Inf, -Inf) for
 # an all-NaN slice so it contributes nothing to the global range.
 function _finite_extrema(A)::Tuple{Float64,Float64}
@@ -700,8 +707,7 @@ function _cube_prescan(scene::Ptr{Cvoid})
 	try
 		g1 = _read_cube_layer(info.path, 1)
 		if g1 !== nothing
-			need = Float64(length(g1.z) * sizeof(eltype(g1.z))) * n
-			keepram = need * 1.2 < Float64(Sys.free_memory())
+			keepram = _cube_fits_ram(length(g1.z) * sizeof(eltype(g1.z)), n)
 		end
 	catch e
 		@tool_error "cube prescan: first-layer read failed" exception=(e,)
@@ -924,9 +930,7 @@ function _on_cube_load_all(scene::Ptr{Cvoid})::Cint
 			g1 === nothing && return Cint(2)
 			length(g1.z) * sizeof(eltype(g1.z))
 		end
-		need = Float64(nbytes_layer) * info.n_layers
-		# Keep a 20% headroom over the raw cube size (transient read buffers + working set).
-		(need * 1.2 > Float64(Sys.free_memory())) && return Cint(1)
+		_cube_fits_ram(nbytes_layer, info.n_layers) || return Cint(1)
 
 		C = _read_whole_cube(info.path, info.n_layers)
 		(C isa GMTgrid && ndims(C.z) == 3) || return Cint(2)
