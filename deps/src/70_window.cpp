@@ -20092,7 +20092,8 @@ public:
 
 		// --- Bordering: pick an (experimental) boundary-condition file (-B) ----------------------
 		btnBorder = new QPushButton("Bordering", this);
-		btnBorder->setToolTip("Select a boundary-condition ASCII file (nswing -O, experimental)");
+		btnBorder->setEnabled(false);        // frozen: the -O boundary-condition path is not in service
+		btnBorder->setToolTip("Boundary-condition file (nswing -O) — disabled");
 		QObject::connect(btnBorder, &QPushButton::clicked, this, [this]() {
 			QString p = QFileDialog::getOpenFileName(this, "Select boundary-condition file", prefStartDir(),
 			                                         "BC files (*.dat *.txt);;All files (*)");
