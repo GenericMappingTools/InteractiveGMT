@@ -76,9 +76,78 @@ mutable struct _AquaState
 	                                        # Per VARIABLE, because the picker switches between them and
 	                                        # each is its own cube; absent = that variable is read off
 	                                        # disk one layer at a time, as before.
+	xwin::Tuple{Float64,Float64}            # the DISPLAY WINDOW in x (NaNs = the whole file) -- see below
 end
 
 const _AQUA = Dict{Ptr{Cvoid}, _AquaState}()
+
+# ── the DISPLAY WINDOW in x ────────────────────────────────────────────────────────────────────
+# A cube can be SHOWN over a sub-range of its own x extent: Catalina benchmark 1 simulates the whole
+# 50 km flume and is shown over the first 20 km of it. NOTHING IS WRITTEN FOR THAT. The window is
+# applied where a grid is READ, so no cropped copy of anybody's simulation is left on disk beside it
+# (it used to write a `…_display20km.nc` next to the run — 16.8 MB, silent, and rebuilt every time it
+# was deleted).
+#
+# Per scene, in the file's own x units, set BEFORE the open (the dialog calls `_aquamoto_open` with a
+# path and nothing else) and carried in the state from there on. Absent = the whole file, which is
+# every ordinary cube.
+const _AQUA_XWIN  = Dict{Ptr{Cvoid},Tuple{Float64,Float64}}()
+const _AQUA_NOWIN = (NaN, NaN)
+
+_aqua_xwin(scene::Ptr{Cvoid}) = get(_AQUA_XWIN, scene, _AQUA_NOWIN)
+
+"""
+    _aqua_clipx(G, win) -> GMTgrid
+
+THE display-window clip. EVERY grid this file class hands over goes through it — the bathymetry,
+each layer of the open-time scan, the slice on screen, a whole cube pulled into RAM, the file's extra
+static variables — so no read path can describe a different extent than another (SACRED_LAW.md). A
+grid whose window is absent (or which the window covers whole) comes back UNTOUCHED: same buffer,
+same layout, no copy.
+"""
+_aqua_clipx(::Nothing, ::Tuple{Float64,Float64}) = nothing    # a failed read stays a failed read
+
+function _aqua_clipx(G::GMTgrid, win::Tuple{Float64,Float64})::GMTgrid
+	(isfinite(win[1]) && isfinite(win[2])) || return G
+	x  = Float64.(G.x)
+	c0 = something(findfirst(>=(win[1]), x), 1)
+	c1 = something(findlast(<=(win[2]), x), length(x))
+	c1 > c0 || error("Aquamoto: the display window [$(win[1]), $(win[2])] holds no columns")
+	(c0 == 1 && c1 == length(x)) && return G
+	xs  = x[c0:c1]
+	# A pixel-registered grid's `range` is its outer EDGES, a gridline-registered one's is its end
+	# nodes — half a cell apart, and getting that wrong shifts the whole tank by half a column.
+	half = (G.registration == 1) ? Float64(G.inc[1]) / 2 : 0.0
+	rng  = copy(Float64.(G.range))
+	rng[1], rng[2] = xs[1] - half, xs[end] + half
+	local Z, lay
+	if ndims(G.z) == 3
+		# A CUBE IS CUT LAYER BY LAYER, THROUGH THE SAME ACCESSOR A SINGLE LAYER IS. `G.z[:, c0:c1, :]`
+		# looks like the obvious thing and is wrong: a whole-cube read comes back with the file's own
+		# memory order (GMT.jl honours "TRB" for cubes since 2026-08-08, so it is ROW-major), and the
+		# Julia dims of such an array do not line up with (row, column) at all — slicing dim 2 keeps a
+		# scrambled subset. Live proof of the bug it caused: a RAM-loaded cube's layer differed from the
+		# same layer read off disk by up to 31 m while both had identical extrema, i.e. the same values
+		# in the wrong places — on screen, a tank that no longer moved.
+		nt  = size(G.z, 3)
+		Z1  = _zmat(_cube_layer_view(G, 1))[:, c0:c1]
+		Z   = Array{eltype(G.z),3}(undef, size(Z1, 1), size(Z1, 2), nt)
+		Z[:, :, 1] = Z1
+		for k in 2:nt
+			Z[:, :, k] = _zmat(_cube_layer_view(G, k))[:, c0:c1]
+		end
+		lay = "BCB"                                # rebuilt column-major, row 1 = south (as `_zmat` gives)
+	else
+		# `_zmat` is THE accessor for z[iy,ix] with row 1 = south, whatever the source buffer's layout.
+		# What comes out of it here is a NEW column-major matrix, so the grid built from it says "BCB"
+		# — it is not the source's buffer any more (grid memory-layout law, SACRED_LAW.md).
+		Z, lay = Matrix(_zmat(G)[:, c0:c1]), "BCB"
+		rng[5], rng[6] = _finite_extrema(Z)
+	end
+	return GMT.GMTgrid(; proj4=G.proj4, wkt=G.wkt, epsg=G.epsg, geog=G.geog, range=rng,
+	                   inc=copy(G.inc), registration=G.registration, nodata=G.nodata,
+	                   x=xs, y=copy(G.y), z=Z, layout=lay, cpt=G.cpt)
+end
 
 # Every time-varying (>=3-D) quantity variable in `path`, skipping `skip` (the bathymetry
 # variable) — NOT just the first match: the caller must load and offer ALL of them, never silently
@@ -285,8 +354,11 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	isempty(varnames) && error("Aquamoto: could not find a time-varying quantity variable in $path " *
 	                          "(expected alongside a 'bathymetry' variable — NSWING's own single 3-D netCDF output)")
 	varname = varnames[1]   # no name-based preference -- whichever time-varying quantity var was found first
+	# The window this file is to be SHOWN over, if the caller asked for one before the open. From here
+	# on it travels in the state, and EVERY read below goes through `_aqua_clipx`.
+	xwin = _aqua_xwin(scene)
 	bat = try
-		_gmtread_trb("$(path)?bathymetry")
+		_aqua_clipx(_gmtread_trb("$(path)?bathymetry"), xwin)
 	catch e
 		error("Aquamoto: could not read 'bathymetry' from $path ($(sprint(showerror, e)))")
 	end
@@ -319,7 +391,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 			# share an element order. Spelling the subdataset index out here instead would be the same
 			# operation written twice — with the two spellings disagreeing on the index base, which is
 			# exactly how that drifts.
-			Gk = _read_cube_layer("$(path)?$(vn)", k + 1)
+			Gk = _aqua_clipx(_read_cube_layer("$(path)?$(vn)", k + 1), xwin)
 			Z = Gk.z
 			sc.alllo[k+1], sc.allhi[k+1] = Gk.range[5], Gk.range[6]
 			lo_w, hi_w = Inf, -Inf
@@ -374,7 +446,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	for v in _netcdf_subdatasets(path)
 		lowercase(v.name) in skipvars && continue
 		try
-			G = _gmtread_trb("$(path)?$(v.name)")
+			G = _aqua_clipx(_gmtread_trb("$(path)?$(v.name)"), xwin)
 			_add_grid_to_scene(scene, G, v.name; promote = false, source = "$(path)?$(v.name)")
 			ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, v.name, Cint(0))
 		catch e
@@ -388,7 +460,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	# asks for a slice before the dialog has drawn one.
 	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, :polar, :geo, 0, Dict{String,String}(),
 	                          true, false, 0.0, true, true, _aqua_read_times(String(path), nsteps),
-	                          Dict{String,GMTgrid}())
+	                          Dict{String,GMTgrid}(), xwin)
 	print(nsteps, "|", varname, "|", join(varnames, ","))
 	return nothing
 end
@@ -642,7 +714,10 @@ function _aqua_layer(st::_AquaState, k::Int)::Union{GMTgrid,Nothing}
 		G.range[5], G.range[6] = _finite_extrema(G.z)
 		return G
 	end
-	return _read_cube_layer("$(st.path)?$(st.varname)", k + 1)
+	# Off disk: the display window is applied HERE, at the read, so the slice on screen has exactly
+	# the extent the bathymetry and the scan were given (a RAM-resident cube was already clipped when
+	# it was loaded, so the view above needs nothing).
+	return _aqua_clipx(_read_cube_layer("$(st.path)?$(st.varname)", k + 1), st.xwin)
 end
 
 # "Load all in RAM" for the ACTIVE variable — the option the other netCDF cubes get from the cube
@@ -659,11 +734,14 @@ function _aqua_load_all(scene::Ptr{Cvoid})::Cint
 			_aqua_report_ram(scene, true)
 			return Cint(0)
 		end
-		g1 = _read_cube_layer("$(st.path)?$(st.varname)", 1)
+		# The probe is clipped too: what has to fit in RAM is what is DISPLAYED, and on a windowed cube
+		# (benchmark 1) that is a fraction of the file's own columns.
+		g1 = _aqua_clipx(_read_cube_layer("$(st.path)?$(st.varname)", 1), st.xwin)
 		g1 === nothing && return Cint(2)
 		_cube_fits_ram(length(g1.z) * sizeof(eltype(g1.z)), st.nsteps) || return Cint(1)
 		C = _read_whole_cube("$(st.path)?$(st.varname)", st.nsteps)
 		(C isa GMTgrid && ndims(C.z) == 3) || return Cint(2)
+		C = _aqua_clipx(C, st.xwin)          # clipped ONCE, here -- every layer view then comes out right
 		st.ram[st.varname] = C
 		# THE CONTROLS THAT DESCRIBE RESIDENCY LEARN IT HERE, at the one place that makes it true — so
 		# "Load all in RAM" freezes at "In RAM ✓" whichever route asked for the load: the button itself,

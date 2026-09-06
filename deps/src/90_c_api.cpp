@@ -1151,7 +1151,7 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //       all). A mesh file's own colours — PLY red/green/blue, glTF COLOR_0 — are per vertex, and
 //       there was nowhere to put them. Every argument after the insertion point shifts, so a
 //       generation-9 library reads `facez` as the vertex colours and the CPT nodes as `facez`.
-GMTVTK_API int gmtvtk_abi_version(void) { return 10; }
+GMTVTK_API int gmtvtk_abi_version(void) { return 12; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -7781,6 +7781,27 @@ GMTVTK_API void gmtvtk_aqua_set_ram_loaded_h(void *handle, int on) {
 	if (!w) return;
 	if (on) w->markCubeInRam();
 	else    w->markCubeOnDisk();
+}
+
+// WHAT THIS WINDOW'S η(x) FIGURE DRAWS, from the host. Asked for after every slice
+// (AquamotoWindow::askEtaCurves -> _aqua_eta_curves) and answered here:
+//   * (xm, ym) REPLACES the model curve the figure read off the displayed grid — for a window whose
+//     model is not one grid (Catalina benchmark 1 stitches its profile from three nesting levels).
+//     `nm < 2` leaves the scene's own curve alone, which is the ordinary case.
+//   * (xr, yr) is the REFERENCE curve drawn dashed over the same axes (a benchmark's analytic
+//     solution). `nr < 2` CLEARS it, so a window that stops having one cannot keep a stale curve.
+GMTVTK_API void gmtvtk_aqua_set_eta_curves_h(void *handle,
+                                             const double *xm, const double *ym, int nm,
+                                             const double *xr, const double *yr, int nr,
+                                             const char *name) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return;
+	AquamotoWindow *w = AquamotoWindow::registry().value(s, nullptr);
+	if (!w || !w->etaFig) return;
+	std::vector<double> XM, YM, XR, YR;
+	if (xm && ym && nm >= 2) { XM.assign(xm, xm + nm); YM.assign(ym, ym + nm); }
+	if (xr && yr && nr >= 2) { XR.assign(xr, xr + nr); YR.assign(yr, yr + nr); }
+	w->setEtaCurves(XM, YM, XR, YR, (name && *name) ? QString::fromUtf8(name) : QString());
 }
 
 GMTVTK_API void gmtvtk_aqua_queue_open(void *handle, const char *path) {

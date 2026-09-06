@@ -300,9 +300,10 @@ function _forget_window!(scene::Ptr{Cvoid})
 	scene == C_NULL && return
 	# _MECA_TABLE: pure Julia matrices built by _focal_plot, never handed to a ccall — safe to purge
 	# by the rule stated above (Scene*-keyed, no buffer C++ still points at).
-	for d in (_SCENE_OBJS, _IMG_ORIG, _SESSION_LOG, _MECA_TABLE)
+	for d in (_SCENE_OBJS, _IMG_ORIG, _SESSION_LOG, _MECA_TABLE, _AQUA_XWIN, _BM1_LEVELS)
 		delete!(d, scene)
 	end
+	delete!(_BM1_SCENES, scene)          # a Set, not a Dict -- same purge, its own call
 	return
 end
 

@@ -95,6 +95,14 @@ public:
 		panel->setSeries(x, y, title, xlabel, ylabel, /*isDate=*/false);
 	}
 
+	// A REFERENCE CURVE over the same axes — a benchmark's analytic solution beside the modelled
+	// slice. It is the panel's own second series (ProfilePanel::setSeries2), never a second figure:
+	// the two are the same quantity at the same instant, and comparing them is the whole point.
+	void setCurve2(const std::vector<double> &x, const std::vector<double> &y, const QString &name) {
+		panel->setSeries2(x, y, name);
+	}
+	void clearCurve2() { panel->clearSeries2(); }
+
 	// The strip text. The slice's MODEL TIME goes here, from the one string the data already
 	// publishes for the viewer's own titlebar (Scene::titleExtra) — never a second time format.
 	void setTitle(const QString &t) {
@@ -304,6 +312,12 @@ public:
 	bool wants3D_ = false;
 	bool sliceDirty_ = false;             // a slice was asked for while one was in flight (see fireSlice)
 	QPointer<EtaFigure> etaFig;           // lives in the RENDER widget, which can outlive/predecease us
+	// The η(x) figure's HOST curves are fetched on a debounce, never per slice — see scheduleEtaCurves.
+	QTimer *etaAskTimer = nullptr;
+	bool    etaHostCurves_ = false;       // the host draws this figure (benchmark 1) -> never paint over it
+	double  etaAskX0_ = 0.0, etaAskX1_ = 0.0;
+	int     etaAskN_  = 0;
+	static constexpr int kEtaAskDelayMs = 180;
 	QTimer *viewSyncTimer = nullptr;      // the boxes FOLLOW the mouse (see syncViewBoxes)
 
 	explicit AquamotoWindow(QWidget *parent, Scene *scene) : scene_(scene) {
@@ -1267,14 +1281,92 @@ public:
 		const double len = editNum(cineProfLenEdit, 5000.0);
 		std::vector<double> xs, zs;
 		if (!sceneGridRowSeries(scene_, 0.5 * (scene_->gy0 + scene_->gy1), x0, x0 + len, xs, zs)) return;
-		const int k = sliceSlider ? sliceSlider->value() : 0;
-		etaFig->setCurve(xs, zs, QString("\xCE\xB7  slice %1").arg(k), "x (m)", "\xCE\xB7 (m)");
+		// A WINDOW WHOSE CURVES THE HOST OWNS IS NEVER PAINTED FROM THE SCENE. Doing both is what made
+		// the figure flicker: the scene's own row went up at once, and ~200 ms later the host's stitched
+		// profile replaced it — a different curve for every slice, with the reference arriving in a
+		// second step of its own. Host-owned windows keep the previous pair on screen until the new
+		// pair arrives, and both curves are then set together, in one repaint.
+		if (!etaHostCurves_)
+			etaFig->setCurve(xs, zs, etaCurveTitle(), "x (m)", "\xCE\xB7 (m)");
 		// The slice's MODEL TIME in the figure's own title strip. It is the very string the data
 		// already publishes for the viewer's titlebar (_aqua_title_time -> gmtvtk_set_title_extra_h
 		// -> Scene::titleExtra), read back here: one time value, one format, two places showing it.
 		const QString when = QString::fromStdString(scene_->titleExtra);
 		etaFig->setTitle(when.isEmpty() ? QString("\xCE\xB7 (x)")
 		                                : QString("\xCE\xB7 (x)   \xE2\x80\x94   %1").arg(when));
+		scheduleEtaCurves(xs.front(), xs.back(), (int)xs.size());
+	}
+
+	// THE HOST IS ASKED ONCE THE SLICE HAS SETTLED, NEVER ON EVERY CLICK. `askEtaCurves` is a BLOCKING
+	// Julia round trip (it reads the run's finer cubes and evaluates an analytic solution), and doing
+	// that inside every slice change is what made holding `<` / `>` stall: each press paid the trip
+	// before the next redraw could start, and fireSlice's own coalescing (sliceDirty_) could not
+	// collapse presses that were already through it. The curve the figure shows in the meantime is the
+	// one read straight off the scene, which costs nothing.
+	void scheduleEtaCurves(double x0, double x1, int n) {
+		etaAskX0_ = x0;  etaAskX1_ = x1;  etaAskN_ = n;
+		if (!etaAskTimer) {
+			etaAskTimer = new QTimer(win);
+			etaAskTimer->setSingleShot(true);
+			QObject::connect(etaAskTimer, &QTimer::timeout, win, [this]() {
+				// Still catching up with the transport buttons? Let the last one schedule the ask.
+				if (busy_ || sliceDirty_) { etaAskTimer->start(kEtaAskDelayMs); return; }
+				askEtaCurves(etaAskX0_, etaAskX1_, etaAskN_);
+				// A PRESS THAT LANDED *DURING* THE ASK MUST STILL BE DRAWN. askEtaCurves is a blocking
+				// Julia call that pumps the event loop, so `<` / `>` clicks arrive inside it: fireSlice
+				// sees busy_, records sliceDirty_ and returns — and nothing else would ever act on that
+				// flag, because the catch-up redraw lives at the END of fireSlice, which is not running.
+				// The slider would sit at a slice the screen never got: a dead display.
+				if (sliceDirty_) {
+					sliceDirty_ = false;
+					QTimer::singleShot(0, win, [this]() { fireSlice(); });
+				}
+			});
+		}
+		etaAskTimer->start(kEtaAskDelayMs);          // restarted by each slice: only the last one pays
+	}
+
+	// WHAT THE FIGURE DRAWS, from the host, for the window it is drawing. Two curves come back
+	// (gmtvtk_aqua_set_eta_curves_h):
+	//   * a REFERENCE — a benchmark's analytic solution at this slice's model time;
+	//   * optionally a MODEL curve that REPLACES the one read off the scene above, for a window whose
+	//     model is not one grid: Catalina benchmark 1 runs three nesting levels and its profile is
+	//     stitched from all three (1 m near the beach, then 5 m, then 25 m), which no single displayed
+	//     grid holds.
+	// A window with neither answers with nothing and keeps the scene's own curve, so no per-benchmark
+	// knowledge lives in this dialog.
+	// The curve's own legend text, wherever it is set from — the scene row here, or the host's stitched
+	// profile below. One place, so the two cannot disagree about which slice they are showing.
+	QString etaCurveTitle() const {
+		return QString("\xCE\xB7  slice %1").arg(sliceSlider ? sliceSlider->value() : 0);
+	}
+
+	// What `gmtvtk_aqua_set_eta_curves_h` hands over. An empty model curve leaves the scene's own
+	// (the ordinary case); an empty reference clears the second curve rather than leaving a stale one.
+	void setEtaCurves(const std::vector<double> &xm, const std::vector<double> &ym,
+	                  const std::vector<double> &xr, const std::vector<double> &yr,
+	                  const QString &name2) {
+		if (!etaFig) return;
+		// Whether this window's figure is HOST-OWNED is decided by the answer itself: a model curve
+		// means the host draws this figure (and updateEtaFigure must stop painting the scene's row over
+		// it); an empty one hands the figure back to the scene, so a window that stops having one
+		// cannot be left frozen on the last curve the host sent.
+		etaHostCurves_ = (xm.size() >= 2 && ym.size() == xm.size());
+		if (etaHostCurves_)
+			etaFig->setCurve(xm, ym, etaCurveTitle(), "x (m)", "\xCE\xB7 (m)");
+		if (xr.size() >= 2 && yr.size() == xr.size())
+			etaFig->setCurve2(xr, yr, name2.isEmpty() ? QString("reference") : name2);
+		else
+			etaFig->clearCurve2();
+	}
+
+	void askEtaCurves(double x0, double x1, int n) {
+		if (busy_ || !scene_ || !sceneAlive(scene_)) return;
+		QString out;
+		bool closedNow = false;
+		runBlocking(QString("InteractiveGMT._aqua_eta_curves(%1,%2,%3,%4)")
+		            .arg(aquaScenePtr(scene_)).arg(x0, 0, 'g', 12).arg(x1, 0, 'g', 12).arg(n),
+		            out, closedNow);
 	}
 
 	void fireSlice() {
@@ -1380,6 +1472,7 @@ static void aquamotoDestroy(Scene *scene) {
 	// freed Scene. Stopping them and hiding here closes that gap, and it is also what the user sees:
 	// the viewer goes, its Aquamoto goes with it, in the same instant.
 	if (w->cineTimer)     w->cineTimer->stop();
+	if (w->etaAskTimer)   w->etaAskTimer->stop();     // it would fire a Julia call at a freed Scene
 	if (w->viewSyncTimer) w->viewSyncTimer->stop();
 	w->win->hide();
 	w->win->deleteLater();

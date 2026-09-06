@@ -93,7 +93,11 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # and height-shaded when it landed as an extra). A mesh file's own colours are per VERTEX -- PLY
 # red/green/blue, glTF COLOR_0 -- and there was nowhere to put them. Every argument after the
 # insertion point shifts, so a generation-9 library reads `facez` as the vertex colours.
-const _ABI_REQUIRED = 10
+# Generation 11/12 = gmtvtk_aqua_set_eta_curves_h exists: the Aquamoto η(x) figure takes its curves
+# from the HOST — a reference curve (a benchmark's analytic solution) and, for a model that is not one
+# grid (benchmark 1 stitches three nesting levels), the model curve itself. Earlier libraries have no
+# such export, so the push finds no symbol.
+const _ABI_REQUIRED = 12
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.
@@ -122,6 +126,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_aqua_set_land_cpt_h, :gmtvtk_aqua_set_bathy_h, :gmtvtk_aqua_set_var_label_h,
 	:gmtvtk_aqua_set_ram_loaded_h,
 	:gmtvtk_aqua_queue_open,
+	:gmtvtk_aqua_set_eta_curves_h,
 	:gmtvtk_remove_grid_h, :gmtvtk_remove_image_h, :gmtvtk_set_transplant_undo, :gmtvtk_unfold_scene_objects_h,
 	:gmtvtk_open_vtk_h, :gmtvtk_add_mesh_h, :gmtvtk_show_new_element_h, :gmtvtk_reframe_z_h,
 	:gmtvtk_grow_z_frame_h,

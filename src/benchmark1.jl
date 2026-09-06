@@ -16,9 +16,9 @@
 # solitary wave as the t = 0 free surface.
 #
 # THE RUN, WHEN IT HAPPENS, IS ALWAYS THE FULL 50 km FLUME. Only the DISPLAY is clipped, to
-# [-200, 20000] m (`_bm1_display_cube` for a result, `_bm1_initial_cube` for t = 0). The land side
-# ends at -200 m, which is where the model itself starts. Shortening the simulation itself
-# would be a different problem: at 20 km the water is ~2 km deep, so the outer domain reaches the
+# [-200, 20000] m — a DISPLAY WINDOW applied when the grids are read (`_AQUA_XWIN`/`_aqua_clipx`),
+# never a cropped copy on disk. The land side ends at -200 m, which is where the model itself starts.
+# Shortening the simulation itself would be a different problem: at 20 km the water is ~2 km deep, so the outer domain reaches the
 # shore well inside the 220 s the benchmark covers, and the analytic initial condition still carries
 # real amplitude out to ~29 km.
 #
@@ -31,7 +31,9 @@
 # process freezes the window even on a worker thread (a thread inside a long ccall never reaches a GC
 # safepoint), which is precisely why that runner exists. There is no second run path here.
 
-# The analytic solution table — byte-for-byte the literal of the .m `analytic()`. Columns come in
+# The .m `analytic()` table, byte-for-byte — the benchmark's DIGITISED reference profiles, kept for
+# cross-checks only. It is NOT what the run is started from any more (see `_bm1_source`): at t = 0 it
+# is ~10% low in the trough, and a run started from it drifts from the analytic solution.  Columns in
 # (x, eta, u) triples, one triple per benchmark time (t = 0 / 160 / 175 / 220 s).
 const _BM1_ANALYTIC = Float64[
 50328.0	0.00000	0.00000	50316.9	1.10722	0.04919	50317.9	1.00656	0.04919	50324.5	0.35230	0.02108
@@ -160,14 +162,79 @@ function _bm1_bathymetry(dx::Float64=25.0)::GMTgrid
 	return mat2grid(bat; hdr=[-200.0, 50000.0, 0.0, 50*dx*4, -5000.0, 20.0, 0.0, dx, 4*dx])
 end
 
-# The initial free surface: the analytic solitary wave at time `t`, cubic-spline sampled onto the
-# flume's x and repeated across all 51 rows (the .m `faz_fonte`). Only the four times the benchmark
-# tabulates exist.
+# THE NESTED LEVELS. The benchmark's inundation end is only as good as the cell it is resolved on:
+# 25 m on a 1:10 slope puts the whole run-up tip inside two columns, which is what made the last
+# timesteps disagree with the analytic solution. The .m source (and `examples/testa_barnabeu2.jl`,
+# its port) runs the flume with two nests — 5 m, then 1 m — and compares on the FINEST one.
+#
+# `faz_batL2`/`faz_batL3` of the .m, as further methods of THIS function: same operation (build the
+# flume's bathymetry at some level), same name. All of them reduce to the same y-invariant x-slope,
+# so the slope/header maths exists once, in `_bm1_slope_grid`.
+function _bm1_slope_grid(x0::Float64, x1::Float64, y0::Float64, y1::Float64, dx::Float64)::GMTgrid
+	x   = collect(x0:dx:x1)
+	nx  = length(x)
+	z   = collect(range(abs(x0)/10, -x1/10, length=nx))
+	n   = round(Int, (y1 - y0) / (4dx) + 1)
+	bat = repeat(reshape(z, 1, nx), n, 1)
+	return mat2grid(bat; hdr=[x0, x1, y0, y1, z[end], z[1], 0.0, dx, 4dx])
+end
+
+# level-1 nest: the window given as raw a/b/y0 bounds — there is no parent GMTgrid at this level, the
+# level-0 flume's own geometry is a literal in the .m too.
+function _bm1_bathymetry(a::Float64, b::Float64, y0::Float64, dxInner::Float64, dxOuter::Float64)::GMTgrid
+	x0  = a + dxOuter/2 + dxInner/2
+	x1  = b - dxOuter/2 - dxInner/2
+	y0b = y0 + dxOuter*4/2 + dxInner*4/2
+	return _bm1_slope_grid(x0, x1, y0b, y0b + 29*dxInner*4, dxInner)
+end
+
+# level-2 nest: the window offset off the parent grid `Gp`, .m-exact. `xSpan` is the raw x1 offset
+# from `Gp`'s west edge (160 parent cells), `rowA:rowB` the y-window in parent rows.
+function _bm1_bathymetry(Gp::GMTgrid, dxInner::Float64, dxOuter::Float64, xSpan::Float64,
+                         rowA::Int, rowB::Int)::GMTgrid
+	x0 = Gp.range[1] + dxOuter/2 + dxInner/2
+	x1 = Gp.range[1] + xSpan - dxOuter/2 - dxInner/2
+	y0 = Gp.range[3] + rowA*Gp.inc[2] + dxOuter*4/2 + dxInner*4/2
+	y1 = Gp.range[3] + rowB*Gp.inc[2] - dxOuter*4/2 - dxInner*4/2
+	return _bm1_slope_grid(x0, x1, y0, y1, dxInner)
+end
+
+# The chain a run is given, `levels` counted the .m's own way (its `QUANTAS`): 1 = the outer flume
+# alone, 2 = one nest (5 m), 3 = two nests (5 m then 1 m) — the .m's own default, and the only level
+# at which the run-up is resolved well enough to compare with the analytic solution.
+function _bm1_nests(; dxOuter::Float64=25.0, dxInner::Float64=5.0, levels::Int=3)::Vector{GMTgrid}
+	levels <= 1 && return GMTgrid[]
+	L1 = _bm1_bathymetry(-200.0, 1025.0, 1900.0, dxInner, dxOuter)
+	levels == 2 && return GMTgrid[L1]
+	L2 = _bm1_bathymetry(L1, 1.0, dxInner, 160 * Float64(L1.inc[1]), 16, 25)
+	return GMTgrid[L1, L2]
+end
+
+# The initial free surface: the analytic free surface at time `t`, on the flume's x and repeated
+# across all 51 rows (the .m `faz_fonte`) — but taken from THE SOLUTION ITSELF
+# (`benchmark1_analytic.jl`), not from the tabulated literal above.
+#
+# WHY IT IS NOT THE TABLE ANY MORE. The table is a digitised copy: at t = 0 its trough reads -7.95 m
+# where the benchmark's own closed-form condition (Carrier--Wu--Yeh's two Gaussians) gives -8.81 m —
+# ~10% low, rms 0.28 m over the profile. A model started from that solves a different problem, and
+# the error grows as the wave shoals: measured on the 1 m nest, a run from the TABLE sat 1.3 m rms
+# away from the analytic solution at t = 160/175/220 s, while the same run from THIS condition sits
+# 0.03 / 0.08 / 0.10 m rms from it. That is the whole disagreement the η(x) reference curve showed;
+# it was never an error in the analytic code (which reproduces its own closed form to 0.05 m rms and
+# whose evolution the model follows to within a tenth of a metre).
+#
+# AND IT IS `catalina1(t)` AT EVERY t, INCLUDING 0 — not the exact closed form (`initial_eta`), which
+# would look like the better start and measurably is not: a run from the closed form sits 0.28 / 0.46 /
+# 0.21 m rms from the analytic solution, a run from `catalina1(0)` 0.03 / 0.08 / 0.10 m. The reason is
+# the comparison itself. Carrier--Greenspan's condition is set in the TRANSFORM plane, and its physical
+# profile is displaced (x = sigma^2/16 - eta); the state the solution is actually at when t = 0 is what
+# `catalina1(0)` returns. Starting the model anywhere else means comparing it against a solution of a
+# slightly different problem. One function for "the analytic free surface at t", for the model's start
+# and for the reference curve alike (SACRED_LAW.md).
 function _bm1_source(dx::Float64=25.0, t::Float64=0.0)::GMTgrid
-	ind_z = t == 0 ? 2 : t == 160 ? 5 : t == 175 ? 8 : t == 220 ? 11 :
-	        error("Catalina benchmark 1: no analytic solution tabulated for t = $t s")
 	x = collect(-200.0:dx:50000.0)
-	z = _bm1_interp1(_BM1_ANALYTIC[:, ind_z-1], _BM1_ANALYTIC[:, ind_z], x; interp=:cubic, fillval=0.0)
+	R = CatalinaBenchmark1.catalina1(t; xmax=60000.0, npoints=3000)
+	z = _bm1_interp1(R.x, R.eta, x; interp=:linear, fillval=0.0)
 	fonte = repeat(reshape(z, 1, length(x)), 51, 1)
 	return mat2grid(fonte; hdr=[-200.0, 50000.0, 0.0, 50*dx*4, minimum(z), maximum(z), 0.0, dx, 4*dx])
 end
@@ -280,78 +347,32 @@ function _bm1_write_cube(dst::String, xs::Vector{Float64}, ys::Vector{Float64},
 	return dst
 end
 
-# The DISPLAY cube: a copy of the RESULT covering x ∈ [xmin, xmax] only. The simulation is untouched —
-# this crops what was computed, which is why the tank on screen is 20 km long while the run is the
-# full 50 km flume. `xmin` is the LAND side: -200 m is where the model itself starts, so the default
-# keeps the whole beach and cuts only deep water off the seaward end.
-function _bm1_display_cube(cube::String; xmin::Float64=-200.0, xmax::Float64=20000.0,
-                           out::String="")::String
-	var = _bm1_var(cube)
-	G1  = _read_cube_layer("$(cube)?$(var)", 1)
-	G1 === nothing && error("Catalina benchmark 1: cannot read '$var' from $cube")
-	nx, ny = _grid_dims(G1)
-	x0, x1 = Float64(G1.range[1]), Float64(G1.range[2])
-	y0, y1 = Float64(G1.range[3]), Float64(G1.range[4])
-	xall   = collect(range(x0, x1; length=Int(nx)))
-	c0 = something(findfirst(>=(xmin), xall), 1)
-	c1 = something(findlast(<=(xmax), xall), Int(nx))
-	c1 > c0 || error("Catalina benchmark 1: the display window [$xmin, $xmax] holds no columns")
-	(c0 == 1 && c1 == Int(nx)) && return cube            # nothing to crop
-	dst = isempty(out) ? joinpath(dirname(cube),
-	                              # NAMED FOR WHAT IT IS. This is not the run — it is the run cropped to
-	                              # the display window, written beside it. A bare "_20000" said nothing
-	                              # and left two file names on screen with no way to tell which was
-	                              # which.
-	                              splitext(basename(cube))[1] *
-	                              "_display$(Int(round((xmax - xmin) / 1000)))km.nc") : out
-	# Already cropped from THIS cube (not an older run's): re-use it. Re-writing 88 layers on every
-	# click of the menu entry would be seconds of nothing for the user to look at.
-	(isfile(dst) && mtime(dst) >= mtime(cube)) && return dst
-	isfile(dst) && rm(dst; force=true)
-
-	bat = _read_cube_layer("$(cube)?bathymetry", 1)
-	bat === nothing && error("Catalina benchmark 1: '$cube' has no bathymetry variable")
-	nt = _bm1_nsteps(cube, var)
-	times = _aqua_read_times(cube, nt)
-	isempty(times) && (times = collect(0.0:(nt - 1)))
-
-	xs = xall[c0:c1]
-	ys = collect(range(y0, y1; length=Int(ny)))
-	# `_zmat` is THE accessor for a grid's z as z[iy,ix] with row 1 = south (grid memory-layout law),
-	# which is the order netCDF wants with an ascending y — so nothing is transposed here either.
-	crop(G) = Float32.(_zmat(G)[:, c0:c1])
-
-	_bm1_write_cube(dst, xs, ys, times, crop(bat), var,
-	                k -> begin
-	                    Gk = _read_cube_layer("$(cube)?$(var)", k)
-	                    Gk === nothing && error("Catalina benchmark 1: cannot read layer $k")
-	                    crop(Gk)
-	                end)
-	return dst
-end
 
 
 # THE STARTING STATE, as a one-step Aquamoto cube: the flume's bathymetry and the analytic solitary
-# wave at t = 0, cut to the DISPLAY window. NOTHING IS SIMULATED HERE — this is the benchmark before
-# it runs, and it is what the menu entry opens with, at once. The two arrays come from the model
-# builders above (the same `faz_bat` / `faz_fonte` a run is given), sliced; they are not rebuilt.
-function _bm1_initial_cube(; xmin::Float64=-200.0, xmax::Float64=20000.0, dx::Float64=25.0,
+# wave at t = 0. NOTHING IS SIMULATED HERE — this is the benchmark before it runs, and it is what the
+# menu entry opens with, at once. The two arrays come from the model builders above (the same
+# `faz_bat` / `faz_fonte` a run is given); they are not rebuilt.
+#
+# IT IS THE WHOLE 50 km FLUME, like the run. The 20 km tank on screen is a DISPLAY WINDOW applied at
+# READ time (`_aqua_clipx`, aquamoto.jl) — one mechanism for the starting state and for a result, and
+# no cropped copy of anything on disk.
+function _bm1_initial_cube(; dx::Float64=25.0,
                              outdir::String=joinpath(tempdir(), "igmt_benchmark1"),
                              tag::String="", force::Bool=false)::String
 	mkpath(outdir)
-	dst = joinpath(outdir, "benchmark1_t0$(tag).nc")
-	(!force && isfile(dst)) && return dst
 	Gb, Gs = _bm1_bathymetry(dx), _bm1_source(dx, 0.0)
 	ny, nxa = size(Gb.z)
-	x  = collect(range(Float64(Gb.range[1]), Float64(Gb.range[2]); length=nxa))
-	c0 = something(findfirst(>=(xmin), x), 1)
-	c1 = something(findlast(<=(xmax), x), nxa)
-	c1 > c0 || error("Catalina benchmark 1: the display window [$xmin, $xmax] holds no columns")
-	xs  = x[c0:c1]
+	# THE MODEL'S OWN EXTENT IS IN THE NAME. A tank left by the version that wrote the display window
+	# into the file spans 20 km, not the flume's 50, and re-using it would put a clipped model back on
+	# screen under a mechanism that clips again. Naming the file after what is in it means the stale
+	# one is simply never asked for — it cannot be deleted anyway: a netCDF this process has read
+	# through GDAL stays locked (EBUSY) for the life of the session (see drop.jl).
+	dst = joinpath(outdir, "benchmark1_t0$(tag)_$(round(Int, (Gb.range[2] - Gb.range[1]) / 1000))km.nc")
+	(!force && isfile(dst)) && return dst
+	xs  = collect(range(Float64(Gb.range[1]), Float64(Gb.range[2]); length=nxa))
 	ys  = collect(range(Float64(Gb.range[3]), Float64(Gb.range[4]); length=ny))
-	bat = Float32.(Gb.z[:, c0:c1])
-	eta = Float32.(Gs.z[:, c0:c1])
-	_bm1_write_cube(dst, xs, ys, [0.0], bat, "stage", _ -> eta)
+	_bm1_write_cube(dst, xs, ys, [0.0], Float32.(Gb.z), "stage", _ -> Float32.(Gs.z))
 	return dst
 end
 
@@ -367,6 +388,8 @@ function catalina_benchmark1(scene::Ptr{Cvoid}; xmin::Float64=-200.0, xmax::Floa
                              azim::Float64=-35.0, elev::Float64=20.0, ve::Float64=0.15)::String
 	# ALREADY IN THIS WINDOW (the entry clicked twice): the drop door would ignore the file, so there is
 	# nothing to open — just put the window back in 3-D and be done.
+	push!(_BM1_SCENES, scene)                 # this window has an analytic solution (η(x) reference curve)
+	_AQUA_XWIN[scene] = (xmin, xmax)          # ...and shows [xmin, xmax] of the 50 km flume, clipped at READ
 	here = get(_AQUA, scene, nothing)
 	if here !== nothing && occursin("benchmark1_t0", here.path)
 		return here.path                          # already the tank: the entry was clicked twice
@@ -376,7 +399,7 @@ function catalina_benchmark1(scene::Ptr{Cvoid}; xmin::Float64=-200.0, xmax::Floa
 	# never coming. Give each window its own copy of the tank — it is 350 kB.
 	cube = ""
 	for i in 0:99
-		cand = _bm1_initial_cube(; xmin=xmin, xmax=xmax, tag=(i == 0 ? "" : "_$i"))
+		cand = _bm1_initial_cube(; tag=(i == 0 ? "" : "_$i"))
 		any(st -> abspath(st.path) == abspath(cand), values(_AQUA)) && continue
 		cube = cand
 		break
@@ -468,38 +491,103 @@ end
 # Off-process means the inputs must be FILES, so the two model grids are written beside the output.
 function _bm1_run_async(scene::Ptr{Cvoid}, outfile::String; ncycles::Int=5000, interval::Int=50,
                         dt::Float64=0.05, dx::Float64=25.0, xmin::Float64=-200.0,
-                        xmax::Float64=20000.0, keepram::Bool=false)
+                        xmax::Float64=20000.0, keepram::Bool=false, levels::Int=3)
 	_NSWING_RUNNING[] && error("a NSWING run is already going")
 	dir = dirname(abspath(outfile))
 	mkpath(dir)
 	stem = joinpath(dir, splitext(basename(outfile))[1])
 	bat  = stem * "_bat.grd"
 	src  = stem * "_src.grd"
-	gmtwrite(bat, _bm1_bathymetry(dx))
+	Gb   = _bm1_bathymetry(dx)
+	gmtwrite(bat, Gb)
 	gmtwrite(src, _bm1_source(dx, 0.0))
-	cube = stem * ".nc"
-	isfile(cube) && rm(cube; force=true)
-	_NSWING_RUNNING[] = true
-	_progress_show_async(100, "Benchmark 1: NSWING…")
-	_nswing_run_external(scene, String[bat, src, "-v", "-G$(stem),$(interval)",
-	                                  "-N$(ncycles)", "-t$(dt)"];
-	                     on_done = err -> begin
-	                         isempty(err) || return                     # the runner already logged it
-	                         isfile(cube) || return _viewer_log_error(scene,
-	                             "Benchmark 1: the run left no cube at '$cube'")
-	                         disp = _bm1_open_result(scene, cube; xmin=xmin, xmax=xmax)
-	                         # The box was ticked before this file existed: honour it now, on a task, so
-	                         # the watcher timer this runs in is not held while the cube is read.
-	                         keepram && @async _bm1_keep_in_ram(scene; wait_for = disp)
-	                     end)
+	# THE NESTED LEVELS, checked before they are written. `_nswing_check_nest_fits` is the run's own
+	# pre-flight (Mirone's check_binning port) — the same authority the NSWING dialog uses — so a bad
+	# chain is refused here with the real message instead of inside the model.
+	nests = _bm1_nests(; dxOuter=dx, levels=levels)
+	nestpaths = String[]
+	parent = Gb
+	for (i, G) in enumerate(nests)
+		_nswing_check_nest_fits(parent, G, i == 1 ? "bathymetry" : "nest level $(i-1)", "nest level $i")
+		p = stem * "_L$(i).grd"
+		gmtwrite(p, G)
+		push!(nestpaths, "-$(i)$(p)")            # nswing CLI: -1<grd> -2<grd> …, path ATTACHED
+		parent = G
+	end
+	# ONE RUN PER LEVEL. nswing writes its output on the FINEST grid it was given and on no other
+	# (verified: `-G` and `-G…+m` alike hand back a single 1 m cube for a 25/5/1 chain), so a profile
+	# that is to be 1 m at the beach, 5 m behind it and 25 m out to sea needs each level's own run:
+	#   stage 1  no nests        -> <stem>.nc       the 20 km tank ON SCREEN, and the outer chunk
+	#   stage 2  -1              -> <stem>_lev1.nc  the 5 m chunk
+	#   stage 3  -1 -2           -> <stem>_lev2.nc  the 1 m chunk
+	# Same bathymetry, same source, same -N/-t/interval, so the three carry the same 101 model times
+	# and a slice index means the same instant in all of them.
+	stages = [(0, stem * ".nc", String[])]
+	for i in eachindex(nestpaths)
+		push!(stages, (i, stem * "_lev$(i).nc", nestpaths[1:i]))
+	end
+	cube = stages[1][2]                                  # what the window will show
+	for (_, out, _) in stages
+		isfile(out) && rm(out; force=true)
+	end
+
+	# The stages run one after another, each launched from the previous one's completion (the runner
+	# clears `_NSWING_RUNNING` before it calls back), and the RESULT IS OPENED WHEN THE LAST ONE ENDS —
+	# the finer cubes must exist before the figure asks for their chunks.
+	function runstage(i::Int)
+		(lev, out, flags) = stages[i]
+		_NSWING_RUNNING[] = true
+		_progress_show_async(100, "Benchmark 1: NSWING $(i)/$(length(stages)) (level $lev)…")
+		_nswing_run_external(scene, String[bat, src, flags..., "-v",
+		                                   "-G$(splitext(out)[1]),$(interval)",
+		                                   "-N$(ncycles)", "-t$(dt)"];
+		                     on_done = err -> begin
+		                         isempty(err) || return                 # the runner already logged it
+		                         isfile(out) || return _viewer_log_error(scene,
+		                             "Benchmark 1: the level-$lev run left no cube at '$out'")
+		                         if i < length(stages)
+		                             return runstage(i + 1)
+		                         end
+		                         disp = _bm1_open_result(scene, cube; xmin=xmin, xmax=xmax)
+		                         # The box was ticked before this file existed: honour it now, on a task,
+		                         # so the watcher timer this runs in is not held while the cube is read.
+		                         keepram && @async _bm1_keep_in_ram(scene; wait_for = disp)
+		                     end)
+	end
+	runstage(1)
 	return cube
 end
 
-# Show a finished run: crop it to the display window and open it in `scene`, in 3-D. Used by both the
-# end of a run and the "Load from disk…" button, so a loaded simulation and a fresh one look alike.
+# The x extent a cube actually covers, off its first layer (its own header). One layer read: the file
+# may be the 50 km flume (a single-level run) or the 800 m fine window (a nested one), and everything
+# that frames the window — the display clip, the camera — has to be told which.
+function _bm1_cube_xrange(cube::String)::Tuple{Float64,Float64}
+	G = _read_cube_layer("$(cube)?$(_bm1_var(cube))", 1)
+	G === nothing && error("Catalina benchmark 1: cannot read '$cube'")
+	return (Float64(G.range[1]), Float64(G.range[2]))
+end
+
+# Show a finished run: open THE RUN ITSELF in `scene`, in 3-D, with the display window applied at read
+# time. Used by both the end of a run and the "Load from disk…" button, so a loaded simulation and a
+# fresh one look alike.
+#
+# NOTHING IS WRITTEN BESIDE THE USER'S RUN. This used to crop the cube into a `…_display20km.nc` next
+# to it — a silent 16.8 MB file that came back every time it was deleted. The window now travels in
+# `_AQUA_XWIN` and is applied where the grids are READ (`_aqua_clipx`, aquamoto.jl).
 function _bm1_open_result(scene::Ptr{Cvoid}, cube::String; xmin::Float64=-200.0,
                           xmax::Float64=20000.0)::String
-	disp = _bm1_display_cube(cube; xmin=xmin, xmax=xmax)
+	push!(_BM1_SCENES, scene)                 # a window has an analytic solution (η(x) reference curve)
+	_bm1_register_levels!(scene, cube)        # ...and, if the finer runs are there, a stitched profile
+	# WHAT IS ON SCREEN IS THE CUBE'S OWN EXTENT, INTERSECTED WITH THE DISPLAY WINDOW — never the
+	# window alone. A NESTED run's output is written by nswing on the FINEST level (verified live: a
+	# 5 m / 1 m chain gives a 795 x 40 cube over x = -182…612), so the 20 km window covers it whole and
+	# the tank is 800 m long. Framing the camera on the window instead would leave that tank a smear
+	# 25 times too far away.
+	x0, x1 = _bm1_cube_xrange(cube)
+	vx0, vx1 = max(x0, xmin), min(x1, xmax)
+	_AQUA_XWIN[scene] = (vx0, vx1)            # a no-op clip when the cube is already inside the window
+	xmin, xmax = vx0, vx1
+	disp = cube
 	if haskey(_AQUA, scene)
 		# THIS WINDOW ALREADY HAS AN AQUAMOTO SESSION (the t = 0 tank the tool opened with). Going in
 		# through `_on_drop` from here would reach `AquamotoWindow::openFor` -> `setAndOpenPath` ->
@@ -550,9 +638,17 @@ function _bm1_ram_mb(path::String; xmin::Float64=-200.0, xmax::Float64=20000.0, 
 		end
 	end
 	if nx == 0
-		x  = collect(-200.0:dx:50000.0)
-		nx = count(v -> xmin <= v <= xmax, x)
-		ny = 51
+		# No file yet: estimate from THE MODEL THE RUN WILL PRODUCE. With nesting that is the FINEST
+		# level, which is what nswing writes its output on — the outer flume's own columns would
+		# overstate it by an order of magnitude.
+		nests = _bm1_nests(; dxOuter=dx)
+		if isempty(nests)
+			x  = collect(-200.0:dx:50000.0)
+			nx = count(v -> xmin <= v <= xmax, x)
+			ny = 51
+		else
+			ny, nx = size(nests[end].z)
+		end
 		nt = ncycles ÷ interval + 1
 	end
 	return nx * ny * nt * sizeof(Float32) / (1024.0 * 1024.0)
@@ -579,3 +675,161 @@ end
 
 # Benchs tab: the RAM estimate for what the "Save to" box points at, as a plain MB number.
 _on_bench1_ram_mb(path::AbstractString)::Float64 = _bm1_ram_mb(String(path))
+
+# ── the analytic solution as the η(x) figure's reference curve ─────────────────────────────────
+# The Cinema tab's floating η(x) figure draws the row of the slice ON SCREEN. For a benchmark that
+# curve has something to be compared WITH — the Carrier–Greenspan analytic solution
+# (`benchmark1_analytic.jl`, the same file that can be run stand-alone) — and the comparison is only
+# worth anything if both are the same quantity on the same axes, which is why the reference is a
+# second curve in THAT panel and not a plot of its own (ProfilePanel::setSeries2, 60_profile.cpp).
+#
+# The window asks at every slice (`askEtaReference` -> here); a window that has no reference
+# solution answers by clearing it, so the C++ side carries no per-tool knowledge.
+
+# Windows showing benchmark 1 — the tank the menu entry opens and any run/loaded result adopted into
+# it. Membership is what says "this window has an analytic solution", never a guess from the file
+# name (a run is saved wherever the user pointed the Save box).
+const _BM1_SCENES = Set{Ptr{Cvoid}}()
+
+# THE PROFILE IS STITCHED FROM THE NESTING LEVELS, finest first: the run writes one cube per level
+# (see `_bm1_run_async`), and the η(x) curve takes each stretch of x from the finest grid that
+# resolves it — 1 m in over the beach, 5 m behind it, 25 m out to sea. A 25 m cell puts the whole
+# run-up tip inside two columns, which is what made the modelled curve disagree with the analytic
+# solution at the last timesteps.
+#
+# Per scene: the FINER cubes only (level 1, level 2, …). Level 0 is the file the window itself has
+# open, and it is read through the window's own state, never a second time from disk.
+const _BM1_LEVELS = Dict{Ptr{Cvoid},Vector{String}}()
+
+# Where one level hands over to the next, in metres: level 2 below 600, level 1 up to 1000, level 0
+# beyond. The numbers are the nests' own useful spans (level 2 ends at x = 612, level 1 at 1010), kept
+# clear of each grid's outer edge where the nesting boundary condition lives.
+const _BM1_LEVEL_EDGES = (600.0, 1000.0)
+
+# Note which of a run's per-level cubes are actually on disk. Called wherever a result is adopted, so
+# a run and a "Load from disk…" of the same file behave the same; a run made before this existed (or a
+# single-level one) simply registers nothing and the figure keeps the window's own curve.
+function _bm1_register_levels!(scene::Ptr{Cvoid}, cube::String)
+	stem = splitext(abspath(cube))[1]
+	levs = String[]
+	for i in 1:9
+		p = stem * "_lev$(i).nc"
+		isfile(p) || break
+		push!(levs, p)
+	end
+	isempty(levs) ? delete!(_BM1_LEVELS, scene) : (_BM1_LEVELS[scene] = levs)
+	return levs
+end
+
+# The row of a cube layer nearest mid-tank, as (x, z) — the same "middle row" the window's own η(x)
+# curve is read along (AquamotoWindow::updateEtaFigure asks for y = (gy0+gy1)/2). `k` is 0-based.
+const _BM1_LEVEL_VAR = Dict{String,String}()   # path -> its time-varying variable, found once
+
+function _bm1_level_row(path::String, k::Int)
+	var = get!(() -> _bm1_var(path), _BM1_LEVEL_VAR, path)   # netCDF introspection, not once per slice
+	G   = _read_cube_layer("$(path)?$(var)", k + 1)
+	G === nothing && return (Float64[], Float64[])
+	Z = _zmat(G)
+	return (Float64.(G.x), Float64.(Z[max(1, size(Z, 1) ÷ 2), :]))
+end
+
+# Analytic η at the model times/positions asked for, cached per (t, x0, x1, n): the figure is
+# refreshed at every slice and a replay would otherwise recompute the same curve for ever.
+const _BM1_ANALYTIC_CACHE = Dict{NTuple{4,Float64},Tuple{Vector{Float64},Vector{Float64}}}()
+
+# η(x) of the analytic solution at model time `t`, sampled on `n` points over [x0, x1] (metres, the
+# flume's own frame: x = 0 is the initial shoreline, positive offshore — the same frame the model
+# grid and the tabulated `_BM1_ANALYTIC` use). Points the solution does not reach (dry beach beyond
+# the run-up) come back dropped, not as NaN, so the panel never draws a break.
+function _bm1_analytic_curve(t::Float64, x0::Float64, x1::Float64, n::Int)
+	key = (t, x0, x1, Float64(n))
+	hit = get(_BM1_ANALYTIC_CACHE, key, nothing)
+	hit === nothing || return hit
+	xq = collect(range(x0, x1; length = max(n, 2)))
+	R  = CatalinaBenchmark1.catalina1(t; xmax = max(x1, 1000.0) * 1.05, npoints = clamp(n, 400, 2000))
+	# `_bm1_interp1` is this file's ONE 1-D sampler (GMT's own sample1d) — the analytic curve is put
+	# on the figure's x the same way the initial condition is put on the flume's.
+	eta  = _bm1_interp1(R.x, R.eta, xq; interp = :linear)
+	keep = .!isnan.(eta)
+	out  = (xq[keep], eta[keep])
+	length(_BM1_ANALYTIC_CACHE) > 512 && empty!(_BM1_ANALYTIC_CACHE)
+	_BM1_ANALYTIC_CACHE[key] = out
+	return out
+end
+
+# The MODEL profile over [x0, x1], STITCHED from the run's nesting levels: each stretch of x comes
+# from the finest cube that resolves it (level 2 below 600 m, level 1 to 1000 m, level 0 beyond), all
+# at the same slice `k` (0-based), all along the middle row. Empty when this window has no per-level
+# cubes — then the figure keeps the curve it read off the displayed grid.
+function _bm1_stitch_curve(levs::Vector{String}, k::Int, x0::Float64, x1::Float64,
+                           base::Tuple{Vector{Float64},Vector{Float64}})
+	isempty(levs) && return (Float64[], Float64[])
+	# Finest first: level N up to the first edge, … , level 0 from the last edge outwards. The edges
+	# list is one shorter than the number of grids, so a run with one nest uses just the first edge.
+	edges = collect(_BM1_LEVEL_EDGES)[1:min(length(levs), length(_BM1_LEVEL_EDGES))]
+	xs, ys = Float64[], Float64[]
+	lo = -Inf
+	for (i, path) in enumerate(Iterators.reverse(levs))          # levs is [lev1, lev2, …] -> finest first
+		hi = edges[i]                                            # finest ends at the first edge (600 m)
+		gx, gz = _bm1_level_row(path, k)
+		m = (gx .>= max(lo, x0)) .& (gx .< min(hi, x1))
+		append!(xs, gx[m]);  append!(ys, gz[m])
+		lo = hi
+	end
+	gx, gz = base                                                # the outermost stretch, level 0
+	m = (gx .>= max(lo, x0)) .& (gx .<= x1)
+	append!(xs, gx[m]);  append!(ys, gz[m])
+	o = sortperm(xs)
+	return (xs[o], ys[o])
+end
+
+# The same profile for a live window: level 0 comes from the window's OWN layer, read through the
+# state so a RAM-resident cube is not read off disk a second time (`_aqua_layer`).
+function _bm1_model_curve(scene::Ptr{Cvoid}, st::_AquaState, k::Int, x0::Float64, x1::Float64)
+	levs = get(_BM1_LEVELS, scene, String[])
+	isempty(levs) && return (Float64[], Float64[])
+	G = _aqua_layer(st, k)
+	base = if G === nothing
+		(Float64[], Float64[])
+	else
+		Z = _zmat(G)
+		(Float64.(G.x), Float64.(Z[max(1, size(Z, 1) ÷ 2), :]))
+	end
+	return _bm1_stitch_curve(levs, k, x0, x1, base)
+end
+
+# What the Aquamoto window calls after every slice: hand it the curves the η(x) figure is to draw over
+# the x window it is drawing — the stitched model profile (empty = keep the window's own) and the
+# analytic reference. `n` is the number of samples the figure asked for.
+# `x0`/`x1`/`n` arrive as literals from the dialog's own call string, so an integral value ("-200")
+# reaches this as an Int — the arguments are Reals, converted here, never a Float64-only signature
+# that a whole number misses.
+function _aqua_eta_curves(scene::Ptr{Cvoid}, x0::Real, x1::Real, n::Real)::Cvoid
+	push(xm, ym, xr, yr, name) =
+		GC.@preserve xm ym xr yr ccall(_fn(:gmtvtk_aqua_set_eta_curves_h), Cvoid,
+		      (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring),
+		      scene, isempty(xm) ? C_NULL : pointer(xm), isempty(ym) ? C_NULL : pointer(ym), Cint(length(xm)),
+		             isempty(xr) ? C_NULL : pointer(xr), isempty(yr) ? C_NULL : pointer(yr), Cint(length(xr)),
+		      name)
+	clear() = push(Float64[], Float64[], Float64[], Float64[], "")
+	try
+		(scene in _BM1_SCENES) || return clear()
+		st = get(_AQUA, scene, nothing)
+		st === nothing && return clear()
+		(0 <= st.cur < st.nsteps) || return clear()
+		# The MODEL TIME of the slice on screen — the cube's own time coordinate, the same value the
+		# titlebar shows. A cube with no time axis has nothing to evaluate an analytic solution at.
+		st.cur + 1 <= length(st.times) || return clear()
+		t = st.times[st.cur+1]
+		(isfinite(t) && t >= 0) || return clear()
+		xa, ya = _bm1_analytic_curve(Float64(t), Float64(x0), Float64(x1), round(Int, n))
+		xm, ym = _bm1_model_curve(scene, st, st.cur, Float64(x0), Float64(x1))
+		length(xa) < 2 && (xa = Float64[]; ya = Float64[])
+		length(xm) < 2 && (xm = Float64[]; ym = Float64[])
+		push(xm, ym, xa, ya, "analytic")
+	catch e
+		@tool_error "Catalina benchmark 1: the η(x) curves failed" exception=(e,)
+		clear()
+	end
+	return
+end
