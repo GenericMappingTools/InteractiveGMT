@@ -9,8 +9,13 @@
 #
 # Console hiding: we are launched with a VISIBLE console (so the GUI window is NOT force-hidden by
 # the launcher's SW_HIDE), then hide our own console window here. Hiding the console does NOT touch
-# the Qt GUI window. Windows-only.
-let
+# the Qt GUI window. WINDOWS-ONLY, AND THE GUARD IS LOAD-BEARING: this block sits above the try
+# below, so on a system with no kernel32 the ccall threw before anything was wrapped — nothing
+# reached iview_app.log, no window opened, and the ready-flag the desktop splash polls was never
+# written, so the splash sat there for its full 180 s timeout with the launcher's stderr going to
+# /dev/null. That was the macOS/Linux desktop icon "doing nothing": not the bundle, not Finder, not
+# the viewer — four lines of Windows API called unconditionally.
+if Sys.iswindows()
     hwnd = ccall((:GetConsoleWindow, "kernel32"), stdcall, Ptr{Cvoid}, ())
     hwnd != C_NULL && ccall((:ShowWindow, "user32"), stdcall, Cint, (Ptr{Cvoid}, Cint), hwnd, 0)  # SW_HIDE
 end
