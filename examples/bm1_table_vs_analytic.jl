@@ -11,8 +11,8 @@
 #
 # WHAT IS BEING COMPARED
 #   Table    `InteractiveGMT._BM1_ANALYTIC`, the literal of Mirone's testa_barnabeu.m `analytic()`:
-#            (x, eta, u) triples per time. It is a digitised copy — at t = 0 its trough is ~10% low
-#            (-7.95 m where the closed-form initial condition gives -8.81 m).
+#            (x, eta, u) triples per time. THE BENCHMARK'S PUBLISHED REFERENCE — where it and
+#            `catalina1` disagree, the burden is on `catalina1` (docs/src/80-benchmark1.md).
 #   Analytic `InteractiveGMT.CatalinaBenchmark1.catalina1(t)` (src/benchmark1_analytic.jl), the
 #            nonlinear Carrier–Greenspan solution evaluated at an arbitrary time.
 #

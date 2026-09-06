@@ -31,10 +31,17 @@
 # process freezes the window even on a worker thread (a thread inside a long ccall never reaches a GC
 # safepoint), which is precisely why that runner exists. There is no second run path here.
 
-# The .m `analytic()` table, byte-for-byte — the benchmark's DIGITISED reference profiles, kept for
-# cross-checks only. It is NOT what the run is started from any more (see `_bm1_source`): at t = 0 it
-# is ~10% low in the trough, and a run started from it drifts from the analytic solution.  Columns in
-# (x, eta, u) triples, one triple per benchmark time (t = 0 / 160 / 175 / 220 s).
+# The .m `analytic()` table, byte-for-byte — THE BENCHMARK'S PUBLISHED REFERENCE PROFILES, and the
+# thing this demo is ultimately judged against. Columns in (x, eta, u) triples, one triple per
+# benchmark time (t = 0 / 160 / 175 / 220 s).
+#
+# It is NOT what the run is started from (see `_bm1_source`), for the reason given there — a
+# resolution choice about what the demo's model-vs-analytic curve means, NOT a claim that the table
+# is wrong. Where `catalina1` and this table disagree (0.29 m rms at t = 0, trough -8.81 against the
+# table's -7.95) the burden is on `benchmark1_analytic.jl`: the published table is the reference, and
+# our Carrier--Greenspan implementation not reproducing it is an OPEN DEFECT of that file, recorded
+# in docs/src/80-benchmark1.md. The difference is smooth and structured, not scatter, so it is a
+# systematic error in the implementation of the equations, not table noise.
 const _BM1_ANALYTIC = Float64[
 50328.0	0.00000	0.00000	50316.9	1.10722	0.04919	50317.9	1.00656	0.04919	50324.5	0.35230	0.02108
 49326.5	0.00000	0.00000	49315.4	1.10722	0.04919	49316.9	0.95623	0.04919	49324.0	0.25164	0.01405
@@ -214,14 +221,18 @@ end
 # across all 51 rows (the .m `faz_fonte`) — but taken from THE SOLUTION ITSELF
 # (`benchmark1_analytic.jl`), not from the tabulated literal above.
 #
-# WHY IT IS NOT THE TABLE ANY MORE. The table is a digitised copy: at t = 0 its trough reads -7.95 m
-# where the benchmark's own closed-form condition (Carrier--Wu--Yeh's two Gaussians) gives -8.81 m —
-# ~10% low, rms 0.28 m over the profile. A model started from that solves a different problem, and
-# the error grows as the wave shoals: measured on the 1 m nest, a run from the TABLE sat 1.3 m rms
-# away from the analytic solution at t = 160/175/220 s, while the same run from THIS condition sits
-# 0.03 / 0.08 / 0.10 m rms from it. That is the whole disagreement the η(x) reference curve showed;
-# it was never an error in the analytic code (which reproduces its own closed form to 0.05 m rms and
-# whose evolution the model follows to within a tenth of a metre).
+# WHY IT IS NOT THE TABLE. What the demo's η(x) figure asks is "does NSWING reproduce the analytic
+# SOLUTION?", and that question is only answerable if the model integrates the same initial state the
+# analytic curve is a later snapshot of. Started from the table, the model and `catalina1` are solving
+# problems whose initial conditions differ by 0.29 m rms (trough -7.95 against -8.81), and the gap
+# grows as the wave shoals: measured on the 1 m nest, a run from the TABLE sat 1.3 m rms away from
+# `catalina1` at t = 160/175/220 s, a run from THIS condition sits 0.02 / 0.05 / 0.08 m from it. The
+# figure then shows what it claims to show, model error, instead of an initial-condition mismatch.
+#
+# THIS IS NOT A VERDICT ON THE TABLE. Where the two disagree the published table is the reference and
+# `benchmark1_analytic.jl` is the suspect — see the note above `_BM1_ANALYTIC` and the OPEN DEFECT
+# section of docs/src/80-benchmark1.md. When that implementation is corrected, this function keeps
+# working unchanged and the two starts converge; nothing here has to be revisited.
 #
 # AND IT IS `catalina1(t)` AT EVERY t, INCLUDING 0 — not the exact closed form (`initial_eta`), which
 # would look like the better start and measurably is not: a run from the closed form sits 0.28 / 0.46 /
@@ -757,29 +768,44 @@ function _bm1_analytic_curve(t::Float64, x0::Float64, x1::Float64, n::Int)
 	return out
 end
 
-# The MODEL profile over [x0, x1], STITCHED from the run's nesting levels: each stretch of x comes
-# from the finest cube that resolves it (level 2 below 600 m, level 1 to 1000 m, level 0 beyond), all
-# at the same slice `k` (0-based), all along the middle row. Empty when this window has no per-level
-# cubes — then the figure keeps the curve it read off the displayed grid.
-function _bm1_stitch_curve(levs::Vector{String}, k::Int, x0::Float64, x1::Float64,
+# The MODEL profile over [x0, x1], PER NESTING LEVEL: one entry `(level, x, z)` for every cube that
+# contributes, FINEST FIRST, each carrying only the stretch of x that level owns — level 2 below
+# 600 m, level 1 up to 1000 m, level 0 beyond — all at the same slice `k` (0-based), all along the
+# middle row. Empty when this window has no per-level cubes.
+#
+# THIS IS THE ONE PLACE THAT DECIDES WHICH LEVEL OWNS WHICH x. `_bm1_stitch_curve` is these chunks
+# concatenated, and the manual's nesting figure draws the very same chunks apart, so what the eye is
+# shown handing over at 600/1000 m and what the window plots can never disagree (SACRED_LAW.md).
+function _bm1_level_chunks(levs::Vector{String}, k::Int, x0::Float64, x1::Float64,
                            base::Tuple{Vector{Float64},Vector{Float64}})
-	isempty(levs) && return (Float64[], Float64[])
+	out = Tuple{Int,Vector{Float64},Vector{Float64}}[]
+	isempty(levs) && return out
 	# Finest first: level N up to the first edge, … , level 0 from the last edge outwards. The edges
 	# list is one shorter than the number of grids, so a run with one nest uses just the first edge.
 	edges = collect(_BM1_LEVEL_EDGES)[1:min(length(levs), length(_BM1_LEVEL_EDGES))]
-	xs, ys = Float64[], Float64[]
 	lo = -Inf
 	for (i, path) in enumerate(Iterators.reverse(levs))          # levs is [lev1, lev2, …] -> finest first
 		hi = edges[i]                                            # finest ends at the first edge (600 m)
 		gx, gz = _bm1_level_row(path, k)
 		m = (gx .>= max(lo, x0)) .& (gx .< min(hi, x1))
-		append!(xs, gx[m]);  append!(ys, gz[m])
+		push!(out, (length(levs) - i + 1, gx[m], gz[m]))
 		lo = hi
 	end
 	gx, gz = base                                                # the outermost stretch, level 0
 	m = (gx .>= max(lo, x0)) .& (gx .<= x1)
-	append!(xs, gx[m]);  append!(ys, gz[m])
-	o = sortperm(xs)
+	push!(out, (0, gx[m], gz[m]))
+	return out
+end
+
+# The same profile as ONE curve: the chunks above, concatenated and sorted in x. Empty when this
+# window has no per-level cubes — then the figure keeps the curve it read off the displayed grid.
+function _bm1_stitch_curve(levs::Vector{String}, k::Int, x0::Float64, x1::Float64,
+                           base::Tuple{Vector{Float64},Vector{Float64}})
+	chunks = _bm1_level_chunks(levs, k, x0, x1, base)
+	isempty(chunks) && return (Float64[], Float64[])
+	xs = reduce(vcat, (c[2] for c in chunks))
+	ys = reduce(vcat, (c[3] for c in chunks))
+	o  = sortperm(xs)
 	return (xs[o], ys[o])
 end
 

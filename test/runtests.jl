@@ -143,6 +143,31 @@ end
 # provokes one CLAIMS it (IG._errored, src/console.jl) — takes it out of the sink and asserts the
 # shape of the failure. What is left at the end of the run is an error nobody expected: it happened,
 # the suite would otherwise have gone green over it, and it fails here instead.
+# THE TIER ITSELF IS AN ASSERTION. A skipped tier is not a passing tier, and treating it as one is
+# how a broken guarantee goes green: the "Nested grids" items are :gui (nestReflow lives in the DLL
+# and needs a real Scene), so a plain `julia test/runtests.jl` ran ZERO of them and exited 0 — with
+# the quantization rule provably broken, verified by mutating nestNearest to the historical outward
+# rounding and watching the default run report `InteractiveGMT | None`.
+#
+# So: on a machine that CAN run the GUI tier — the library is built and present — skipping it fails
+# here. A DLL-less checkout (CI, a fresh clone) still passes, which is the case the opt-in existed
+# for; what is no longer possible is a developer with a working build getting a green suite that
+# never touched the DLL. `INTERACTIVEGMT_TEST_NO_GUI=1` is the deliberate override for the rare case
+# of wanting the unit tier alone on a build machine; it must be asked for, in writing.
+@testset "the GUI tier was not silently skipped" begin
+	waived = lowercase(strip(get(ENV, "INTERACTIVEGMT_TEST_NO_GUI", "0"), [' ', '"', '\''])) in
+	         ("1", "true", "yes", "on")
+	haslib = isfile(InteractiveGMT._LOCAL_LIB) || isfile(InteractiveGMT._SHARED_LIB)
+	if !_RUN_GUI && haslib && !waived
+		@error "The :gui tier was SKIPPED although gmtvtk is built and present. Those items are " *
+		       "the only cover for everything that lives in the DLL (the nested-grid quantization " *
+		       "rule among them), so this run proves nothing about it. Re-run with:\n" *
+		       "    julia test/runtests.jl gui\n" *
+		       "or set INTERACTIVEGMT_TEST_NO_GUI=1 to state that the unit tier alone was intended."
+	end
+	@test _RUN_GUI || !haslib || waived
+end
+
 @testset "no unclaimed errors" begin
 	left = InteractiveGMT._tool_errors()
 	isempty(left) || @error "Errors were raised, caught and never claimed by any test. Each of " *
