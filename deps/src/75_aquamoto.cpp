@@ -264,8 +264,18 @@ public:
 	// and watch it advance.
 	QPushButton *benchRunBtn = nullptr, *benchLoadBtn = nullptr, *benchBrowseBtn = nullptr;
 	QLineEdit *benchSaveEdit = nullptr;
+	QLabel *benchExistsLabel = nullptr;   // "that file is already there, and it can be loaded" (see benchAnnounceExisting)
 	QProgressBar *benchProgress = nullptr;
 	QCheckBox *benchKeepRamCheck = nullptr;
+	bool benchGotoNetcdf_ = false;        // a Benchs run/load is in flight: show netCDF when it lands
+
+	// Bring one of the dialog's tabs to the front, by its .ui object name.
+	void selectTab(const char *objName) {
+		if (!win) return;
+		if (auto *tabs = win->findChild<QTabWidget *>("mainTabWidget"))
+			if (QWidget *page = win->findChild<QWidget *>(objName))
+				tabs->setCurrentWidget(page);
+	}
 	QRadioButton *stageRadioButton = nullptr, *xmomentRadioButton = nullptr, *ymomentRadioButton = nullptr;
 	QComboBox *orComboBox = nullptr;
 	QString activeVar_;                   // the varname currently selected in the quantity picker
@@ -285,6 +295,14 @@ public:
 	          *cineSpinEdit = nullptr, *cineProfX0Edit = nullptr, *cineProfLenEdit = nullptr;
 	QCheckBox *cineLoopCheck = nullptr, *cine3DCheck = nullptr, *cineSpinCheck = nullptr,
 	          *cineProfCheck = nullptr;
+	// WHAT THE SLICE MUST STAND ON, read off the SCENE before each push overwrites it (fireSlice) and
+	// put back after it (afterSliceShown). Not the Cinema checkbox: that box is only ONE of the
+	// switches that can put this window on the 3-D surface (the Shading dock's "Shaded image (2-D)"
+	// and the tank's own 3-D birth are the others), so gating on it dropped every window back to a
+	// flat quad on the next slice — and a flat quad has no relief for the vertical exaggeration to
+	// act on, which is the water surface staying flat at every VE.
+	bool wants3D_ = false;
+	bool sliceDirty_ = false;             // a slice was asked for while one was in flight (see fireSlice)
 	QPointer<EtaFigure> etaFig;           // lives in the RENDER widget, which can outlive/predecease us
 	QTimer *viewSyncTimer = nullptr;      // the boxes FOLLOW the mouse (see syncViewBoxes)
 
@@ -530,6 +548,11 @@ public:
 
 		wireCinemaTab(w);
 		wireBenchsTab(w);
+		// The cube can become resident while another tab is in front (the Benchs box, or a run that was
+		// asked to keep it). Re-ask Julia whenever a tab comes forward, so "Load all in RAM" is never
+		// offering work that is already done — and never stays disabled for a file that was replaced.
+		if (auto *tabs = w->findChild<QTabWidget *>("mainTabWidget"))
+			QObject::connect(tabs, &QTabWidget::currentChanged, w, [this](int) { refreshRamButton(); });
 
 		// Restore a prior session on this SAME scene (the panel was closed and reopened, or opened a
 		// 2nd time on a window that already had a file loaded) instead of starting blank -- Julia
@@ -615,7 +638,22 @@ public:
 			sliceSpin->setText("1");
 			sliceSpin->setEnabled(true);
 		}
-		markCubeOnDisk();               // a freshly opened file is on disk until the button says otherwise
+		// A NEW FILE IS ON DISK UNTIL SOMETHING SAYS OTHERWISE. This resets "In RAM ✓" — the previous
+		// file's residency says nothing about this one.
+		markCubeOnDisk();
+		// A run or a load asked for from the Benchs tab ends HERE, with its cube on screen: the work
+		// is done and the controls the user now wants are the netCDF tab's, so go there.
+		if (benchGotoNetcdf_) {
+			benchGotoNetcdf_ = false;
+			// THE TWO TABS MUST NAME THE SAME FILE. What is displayed is the run CROPPED to the display
+			// window (…_display20km.nc), written beside the run itself — so the Benchs box, left showing
+			// the run's own name, disagreed with the netCDF tab about what was loaded. It now shows the
+			// file that is actually on screen; a Run strips the marker back off to get its target.
+			if (benchSaveEdit && pathEdit && !pathEdit->text().trimmed().isEmpty())
+				benchSaveEdit->setText(QDir::toNativeSeparators(pathEdit->text().trimmed()));
+			benchRefreshRam();
+			selectTab("netcdfTab");
+		}
 		if (runInBtn) runInBtn->setEnabled(true);
 		if (parts.size() == 3) populateVarPicker(parts[1], parts[2].split(',', Qt::SkipEmptyParts));
 		cinemaSetRange(n);                     // Cinema tab's From/To + its zoom/profile defaults
@@ -744,6 +782,11 @@ public:
 			QObject::connect(cinePlayBtn, &QPushButton::toggled, w, [this](bool on) { cinemaSetPlaying(on); });
 		if (cineFirstBtn) QObject::connect(cineFirstBtn, &QPushButton::clicked, w, [this]() { cinemaGoto(cinemaFrom()); });
 		if (cineLastBtn)  QObject::connect(cineLastBtn,  &QPushButton::clicked, w, [this]() { cinemaGoto(cinemaTo()); });
+		// ONE STEP PER PRESS. These four are single-shot buttons: no auto-repeat, and (see fireSlice)
+		// they are disabled while the slice they asked for is being drawn, so a held button cannot pile
+		// up presses that then replay as a burst of frames.
+		for (QPushButton *b : { cinePrevBtn, cineNextBtn, cineFirstBtn, cineLastBtn })
+			if (b) b->setAutoRepeat(false);
 		if (cinePrevBtn)  QObject::connect(cinePrevBtn,  &QPushButton::clicked, w, [this]() {
 			if (sliceSlider) cinemaGoto(sliceSlider->value() - 1); });
 		if (cineNextBtn)  QObject::connect(cineNextBtn,  &QPushButton::clicked, w, [this]() {
@@ -822,13 +865,59 @@ public:
 		return QDir(QDir::tempPath()).filePath("claude/benchmark1.nc");
 	}
 
+	// SAY IT — DO NOT ASK IT. A run of this benchmark already sitting at the proposed path is
+	// INFORMATION the user must have the moment the tool comes up: what the file is, how big it is,
+	// and that it can be loaded. It is NOT a question, and nothing is loaded here — the offer to load
+	// instead of recomputing belongs to the Run button alone (benchOfferExisting), never to the
+	// opening of the dialog.
+	void benchAnnounceExisting() {
+		if (!win || !benchSaveEdit) return;
+		const QString out = benchSaveEdit->text().trimmed();
+		const QFileInfo fi(out);
+		const bool there = !out.isEmpty() && fi.exists();
+		// THE NOTICE STANDS IN THE TAB, where it cannot be wiped. The status bar was not enough: the
+		// tank opening right behind this overwrites it within the same second, so the one place the
+		// user was told was gone before it could be read.
+		if (benchExistsLabel) {
+			benchExistsLabel->setVisible(there);
+			if (there)
+				benchExistsLabel->setText(
+					QString("%1 ALREADY EXISTS (%2 MB, %3) — press \"Load from disk…\" to open it "
+					        "instead of running the model again.")
+					    .arg(QDir::toNativeSeparators(out))
+					    .arg(fi.size() / (1024.0 * 1024.0), 0, 'f', 1)
+					    .arg(fi.lastModified().toString("yyyy-MM-dd hh:mm")));
+		}
+		if (!there) return;
+		win->statusBar()->showMessage(
+			QString("Benchmark 1: %1 already exists (%2 MB, %3) — \"Load from disk…\" opens it")
+			    .arg(QDir::toNativeSeparators(out))
+			    .arg(fi.size() / (1024.0 * 1024.0), 0, 'f', 1)
+			    .arg(fi.lastModified().toString("yyyy-MM-dd hh:mm")));
+	}
+
 	void wireBenchsTab(QMainWindow *w) {
 		(void)w;
 		if (benchSaveEdit && benchSaveEdit->text().trimmed().isEmpty())
 			benchSaveEdit->setText(QDir::toNativeSeparators(benchDefaultSavePath()));
 		if (benchProgress) { benchProgress->setRange(0, 100); benchProgress->setValue(0); }
+		// The notice's own row, created here and NOT in the .ui: it is data, shown only while the file
+		// it names is really on disk, and it sits where it belongs — under the save-path row, above the
+		// RAM box. Nothing else in the tab moves.
+		if (!benchExistsLabel && benchKeepRamCheck) {
+			if (auto *lay = w->findChild<QVBoxLayout *>("bench1Layout")) {
+				benchExistsLabel = new QLabel(w);
+				benchExistsLabel->setWordWrap(true);
+				benchExistsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+				const int idx = lay->indexOf(benchKeepRamCheck);
+				if (idx >= 0) lay->insertWidget(idx, benchExistsLabel);
+				else          lay->addWidget(benchExistsLabel);
+				benchExistsLabel->hide();
+			}
+		}
 
 		benchRefreshRam();
+		benchAnnounceExisting();
 
 		if (benchBrowseBtn) QObject::connect(benchBrowseBtn, &QPushButton::clicked, win, [this]() {
 			const QString f = QFileDialog::getSaveFileName(win, "Save the simulation as",
@@ -836,25 +925,25 @@ public:
 			                       "netCDF (*.nc);;All files (*)");
 			if (!f.isEmpty() && benchSaveEdit) benchSaveEdit->setText(QDir::toNativeSeparators(f));
 			benchRefreshRam();                       // a different file is a different size
+			benchAnnounceExisting();                 // …and may or may not already be on disk
 		});
-		// A different path may point at a run that already exists — the size follows it.
+		// A different path may point at a run that already exists — the size and the notice follow it.
 		if (benchSaveEdit) QObject::connect(benchSaveEdit, &QLineEdit::editingFinished, win,
-		                                    [this]() { benchRefreshRam(); });
+		                                    [this]() { benchRefreshRam(); benchAnnounceExisting(); });
 
 		// Keeping the cube in memory is the netCDF tab's own "Load all in RAM" (`_aqua_load_all`),
 		// reached from here for the file this tab produced — never a second loader. Ticked before the
 		// file exists, it is applied when the run's cube is opened (see fireBenchRun).
 		if (benchKeepRamCheck) QObject::connect(benchKeepRamCheck, &QCheckBox::toggled, win, [this](bool on) {
-			if (!on || !scene_ || !sceneAlive(scene_) || !opened_) return;
+			if (!on || !scene_ || !sceneAlive(scene_) || !opened_ || busy_) return;
+			// FIRE AND FORGET. Reading the whole cube takes seconds; doing it inside this click would
+			// freeze the dialog with nothing to look at (and a tick that appears to do nothing). The
+			// Julia side does it on a task and the netCDF tab's button reports the outcome.
 			QString reply; bool closedNow = false;
-			runBlocking(QString("InteractiveGMT._bm1_keep_in_ram(%1)").arg(aquaScenePtr(scene_)),
+			runBlocking(QString("(@async InteractiveGMT._bm1_keep_in_ram(%1); nothing)").arg(aquaScenePtr(scene_)),
 			            reply, closedNow);
 			if (closedNow) return;
-			if (reply.trimmed() == "1")
-				QMessageBox::warning(win, "Benchmark 1",
-					"Not enough free RAM to hold the whole cube in memory.\nKeeping the per-layer disk reads.");
-			else
-				markCubeInRam();                     // the netCDF tab's button says so too: one state
+			if (win) win->statusBar()->showMessage("Reading the whole cube into memory…", 4000);
 		});
 
 		// RUN. The Julia side launches NSWING the way every other run in this program is launched —
@@ -863,28 +952,22 @@ public:
 		// tab's own bar is registered as a mirror of that one progress source, never a second one.
 		if (benchRunBtn) QObject::connect(benchRunBtn, &QPushButton::clicked, win, [this]() {
 			if (!scene_ || !sceneAlive(scene_)) return;
+			// The box may be showing the DISPLAY crop of an earlier run (that is what the two tabs agree
+			// on once one is loaded). A run writes the RUN, so the marker comes back off first — and
+			// everything below, the overwrite check included, then talks about the same file.
+			if (benchSaveEdit) {
+				QString p = benchSaveEdit->text().trimmed();
+				const int cut = p.indexOf("_display");
+				if (cut > 0 && p.endsWith(".nc")) benchSaveEdit->setText(p.left(cut) + ".nc");
+			}
 			const QString out = benchSaveEdit ? benchSaveEdit->text().trimmed() : QString();
 			if (out.isEmpty()) {
 				QMessageBox::warning(win, "Benchmark 1", "Say where the simulation is to be saved.");
 				return;
 			}
-			// THE RUN IS THE EXPENSIVE THING. If it has already been done into this very file, offer
-			// the result instead of spending the minutes again — the user asked to see the benchmark,
-			// not to recompute it.
-			if (QFileInfo::exists(out)) {
-				QMessageBox box(win);
-				box.setWindowTitle("Benchmark 1");
-				box.setIcon(QMessageBox::Question);
-				box.setText("A simulation already exists at\n" + out);
-				box.setInformativeText("Load it, or run the model again and overwrite it?");
-				QPushButton *bLoad = box.addButton("Load it", QMessageBox::AcceptRole);
-				QPushButton *bRun  = box.addButton("Run again", QMessageBox::DestructiveRole);
-				box.addButton(QMessageBox::Cancel);
-				box.setDefaultButton(bLoad);
-				box.exec();
-				if (box.clickedButton() == bLoad) { benchLoad(out); return; }
-				if (box.clickedButton() != bRun) return;
-			}
+			// Already computed into this very file? Offer it rather than spend the minutes again.
+			if (benchOfferExisting()) return;
+			benchGotoNetcdf_ = true;      // when the run lands, the netCDF tab is what is wanted
 			if (benchProgress) { benchProgress->setValue(0); g_progressMirror = benchProgress; }
 			QString reply;
 			bool closedNow = false;
@@ -909,10 +992,34 @@ public:
 		});
 	}
 
-	// Open a simulation that already exists — the Load button, and the "Load it" answer when a run
-	// would have overwritten one. ONE path for both, so they cannot drift.
+	// Is there already a run of this benchmark at the file a RUN is about to write? Then offer it
+	// instead of spending the minutes again. Asked ONLY when Run is pressed — never while the dialog
+	// is being opened, where a question nobody asked for stands between the user and the tool.
+	// Returns true if a file was loaded (so the caller does not run).
+	bool benchOfferExisting() {
+		if (!benchSaveEdit) return false;
+		const QString out = benchSaveEdit->text().trimmed();
+		if (out.isEmpty() || !QFileInfo::exists(out)) return false;
+		QMessageBox box(win);
+		box.setWindowTitle("Benchmark 1");
+		box.setIcon(QMessageBox::Question);
+		box.setText("A simulation already exists at\n" + out);
+		box.setInformativeText("Load it, or run the model again and overwrite it?");
+		QPushButton *bLoad = box.addButton("Load it", QMessageBox::AcceptRole);
+		QPushButton *bRam  = box.addButton("Load it and keep it all in RAM", QMessageBox::AcceptRole);
+		box.addButton("Run again", QMessageBox::DestructiveRole);
+		box.setDefaultButton(bLoad);
+		box.exec();
+		if (box.clickedButton() == bRam && benchKeepRamCheck)
+			benchKeepRamCheck->setChecked(true);   // benchLoad passes this flag to the open
+		if (box.clickedButton() == bLoad || box.clickedButton() == bRam) { benchLoad(out); return true; }
+		return false;                              // "Run again"
+	}
+
+	// Open a simulation that already exists — what the "Load from disk…" button does.
 	void benchLoad(const QString &path) {
 		if (!scene_ || !sceneAlive(scene_)) return;
+		benchGotoNetcdf_ = true;      // same for a load: the file lands, the netCDF tab takes over
 		if (benchSaveEdit) benchSaveEdit->setText(QDir::toNativeSeparators(path));
 		benchRefreshRam();
 		QString reply;
@@ -930,6 +1037,20 @@ public:
 	// file when it exists, and predicted from the model the run will produce when it does not, so the
 	// number is there before anything has been computed.
 	void benchRefreshRam() {
+		if (!benchKeepRamCheck || !scene_ || !sceneAlive(scene_)) return;
+		// NEVER FROM INSIDE THE WINDOW'S CONSTRUCTION, and never while a slice is in flight: this is a
+		// blocking Julia call, and one made while the dialog is still being built (or while another
+		// one is running) is a stall with no visible cause. Deferred to the next turn of the loop, so
+		// the tab is on screen first, and skipped outright while the window is busy.
+		if (busy_) return;
+		auto alive = alive_;
+		QTimer::singleShot(0, win, [this, alive]() {
+			if (!*alive || busy_) return;
+			benchRefreshRamNow();
+		});
+	}
+
+	void benchRefreshRamNow() {
 		if (!benchKeepRamCheck || !scene_ || !sceneAlive(scene_)) return;
 		const QString path = benchSaveEdit ? benchSaveEdit->text().trimmed() : QString();
 		QString reply;
@@ -990,13 +1111,22 @@ public:
 	// answer can have changed: a file opened, the variable switched, the panel reopened on a scene
 	// that already had a cube loaded.
 	void refreshRamButton() {
-		if (!loadRamBtn || !opened_) return;
+		if (!loadRamBtn || !opened_ || busy_) return;   // never a blocking call on top of another
 		QString out;
 		if (aquaEval(scene_, QString("InteractiveGMT._aqua_in_ram(%1)").arg(aquaScenePtr(scene_)), out)
 		    && out.trimmed() == "1")
 			markCubeInRam();
 		else
 			markCubeOnDisk();
+	}
+
+	// The step buttons, off while a slice is being drawn and on again after. Qt drops clicks aimed at a
+	// disabled widget, so a held (or hammered) < / > gives exactly ONE step per completed redraw
+	// instead of a queue of frames replayed afterwards. Play/Stop is deliberately NOT in here — the
+	// user must be able to stop an animation while its frame is still drawing.
+	void transportEnable(bool on) {
+		for (QPushButton *b : { cinePrevBtn, cineNextBtn, cineFirstBtn, cineLastBtn })
+			if (b) b->setEnabled(on);
 	}
 
 	// Show slice `k` (1-based) by MOVING THE SLIDER -- the one control that says which slice is up.
@@ -1027,9 +1157,14 @@ public:
 	void afterSliceShown() {
 		if (!scene_ || !sceneAlive(scene_)) return;
 		// An Aquamoto slice is always pushed as a flat draped image (showLayerImageTail sets
-		// layerImgMode), so 3-D has to be re-asserted after each one -- through the shared switch.
-		if (cine3DCheck && cine3DCheck->isChecked() && scene_->layerImgMode)
-			sceneSetShadedImage2D(scene_, false);
+		// layerImgMode), so the mode the window was in has to be re-asserted after each one -- through
+		// the shared switch, from the state fireSlice read off the scene just before the push.
+		if (wants3D_ && scene_->layerImgMode) sceneSetShadedImage2D(scene_, false);
+		// …and the Cinema box says what the window IS. It is a switch, not the owner of the mode.
+		if (cine3DCheck && cine3DCheck->isChecked() != wants3D_) {
+			QSignalBlocker b(cine3DCheck);
+			cine3DCheck->setChecked(wants3D_);
+		}
 		if (cinemaPlaying() && cineSpinCheck && cineSpinCheck->isChecked() && cineAzEdit) {
 			const double step = editNum(cineSpinEdit, 0.5);
 			if (step != 0.0) {
@@ -1150,7 +1285,13 @@ public:
 		// a NESTED runBlocking. The nested call clears the single `busy_` flag on return, so the outer
 		// call's close-defer logic (AquamotoCloseFilter -> closePending_ -> win->close()) desyncs and the
 		// user's Close is silently dropped. Refuse to start any new work while one is already in flight.
-		if (busy_) return;
+		// …AND WHAT ARRIVES DURING ONE IS NOT THROWN AWAY, IT IS COALESCED. Holding < or > (or dragging
+		// the slider) delivers click after click INTO the processEvents pump of the call already in
+		// flight. Dropping them left the screen behind the slider; running them all would run one
+		// blocking Julia round-trip per click, which is the whole UI stalled until the backlog drains.
+		// One flag: the slider already carries WHICH slice is wanted, so a single redraw at the end
+		// catches up with all of them.
+		if (busy_) { sliceDirty_ = true; return; }
 		if (!opened_ || !sliceSlider) return;
 		const int k = sliceSlider->value() - 1;              // 0-based for the Julia side
 		const bool split = splitDryWetCheck && splitDryWetCheck->isChecked();
@@ -1158,6 +1299,9 @@ public:
 		const double transp = waterTransparencySlider ? waterTransparencySlider->value() / 100.0 : 0.0;
 		const bool shadeWater = !shadeWaterBtn || shadeWaterBtn->isChecked();   // no button found -> behave as always-on
 		const bool shadeLand  = !shadeLandBtn  || shadeLandBtn->isChecked();
+		// The geometry mode the window is in RIGHT NOW, before the push flattens it (see wants3D_).
+		if (scene_ && sceneAlive(scene_)) wants3D_ = !scene_->layerImgMode;
+		transportEnable(false);      // a press that lands while this draws is dropped, not queued
 		QString out;
 		bool closedNow = false;
 		const bool ok = runBlocking(QString("InteractiveGMT._aquamoto_slice(%1,%2,%3,%4,%5,%6,%7)")
@@ -1166,8 +1310,15 @@ public:
 		                            .arg(transp, 0, 'f', 4)
 		                            .arg(shadeWater ? "true" : "false").arg(shadeLand ? "true" : "false"), out, closedNow);
 		if (closedNow) return;   // `this` may already be destroyed -- touch NOTHING below
+		transportEnable(true);
 		if (!ok && win) win->statusBar()->showMessage("Aquamoto: " + out, 5000);
 		if (ok) afterSliceShown();          // 3-D geometry, a spinning camera, the η(x) figure
+		// Requests that came in while this one was running: ONE catch-up redraw, on the next turn of
+		// the loop (never a recursive call), at whatever slice the slider ended up on.
+		if (sliceDirty_) {
+			sliceDirty_ = false;
+			QTimer::singleShot(0, win, [this]() { fireSlice(); });
+		}
 	}
 
 	void fireRunIn() {
@@ -1251,15 +1402,22 @@ static void aquamotoSetCmap(Scene *scene, int side, const char *cmap) {
 // Show this scene's Aquamoto window with the "Benchs" tab in front, opening NO file. A benchmark's
 // menu entry calls this FIRST: the dialog the user is about to work in must be there immediately,
 // not after a model has been built and a tank opened.
-static void aquamotoShowBenchs(Scene *scene) {
-	if (!sceneAlive(scene)) return;
+//
+// IT ASKS NOTHING. No question about an existing file, or anything else, stands between the user and
+// the tool while it is opening — the existing-run offer belongs to the Run button alone. It does TELL:
+// a run already on disk at the proposed path is announced in the status bar (benchAnnounceExisting),
+// which is information, not a prompt.
+static int aquamotoShowBenchs(Scene *scene) {
+	if (!sceneAlive(scene)) return 0;
 	AquamotoWindow::openFor(scene->win, scene);
 	AquamotoWindow *w = AquamotoWindow::registry().value(scene, nullptr);
-	if (!w || !w->win) return;
+	if (!w || !w->win) return 0;
 	if (auto *tabs = w->win->findChild<QTabWidget *>("mainTabWidget"))
 		if (QWidget *page = w->win->findChild<QWidget *>("benchsTab"))
 			tabs->setCurrentWidget(page);
+	w->benchAnnounceExisting();      // tell, before anything else happens
 	QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);   // paint it before the caller works
+	return 0;
 }
 
 static const struct AquamotoHookInstaller {

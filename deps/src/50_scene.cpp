@@ -1201,9 +1201,24 @@ static bool buildPaletteColorbar(Scene *s) {
 	return true;
 }
 
+// IS THIS AN AQUAMOTO (tsunami cube) WINDOW? The one question every "does this window's colour come
+// from the Aquamoto state" decision asks — the Scene Objects rows, the two colour bars, the file
+// wrapper group.
+//
+// It used to be spelled `s->customLayerTexture`, which is a DIFFERENT question: that flag says the
+// drape currently on screen is a host-composited texture, and it is deliberately CLEARED whenever the
+// layer is drawn as a 3-D surface instead (rebuildBaseFromStored). So in 3-D the window silently
+// stopped being "an Aquamoto window": it grew the GENERIC Color Bar row, whose colormap chooser
+// recolours the live LUT (gmtvtk_set_cpt) and nothing else — and the next slice pushed the colours
+// built from the Julia _AquaState again, i.e. the user's pick lasted exactly one frame and then went
+// back to polar. The state is the truth about the window; the texture flag is a fact about the frame.
+static inline bool sceneIsAquamoto(Scene *s) {
+	return s && g_aquamotoHasWindow && g_aquamotoHasWindow(s);
+}
+
 // Retarget the single rendered colorbar + the hover/coordinate readout to the active (topmost-visible)
 // grid. Called on every grid add / visibility toggle / restack / delete. No grid visible -> bar hidden.
-// For an Aquamoto layer (customLayerTexture): `bar` (built here as usual) is the WATER bar, shown
+// For an Aquamoto window: `bar` (built here as usual) is the WATER bar, shown
 // only while aquaShowWater is true; the separate, persistent aquaLandBar is shown only while it's
 // false -- the two are mutually exclusive, matching the dialog's Shade Water/Land radio.
 static void refreshGridColorbar(Scene *s) {
@@ -1230,7 +1245,7 @@ static void refreshGridColorbar(Scene *s) {
 		return;
 	}
 	destroyColorbar(s);
-	const bool isAqua = s->customLayerTexture;
+	const bool isAqua = sceneIsAquamoto(s);
 	// A FLAT layer has no scale to show. zmax == zmin is not a colour ramp: the bar comes out as one
 	// solid block of the LUT's first colour (the red strip). THE DECIDER is where that is settled --
 	// buildColorbar deliberately never second-guesses this call (see its own note) -- so a degenerate
@@ -2016,6 +2031,17 @@ static void rebuildSceneObjects(Scene *s) {
 	if (s->syncFlatBox) s->syncFlatBox();
 	if (!s->objPanel)
 		return;
+	// PAINT ONCE, AT THE END. The rebuild below empties the panel and repopulates it; with painting
+	// live, every intermediate state reaches the screen, so a caller that rebuilds repeatedly — an
+	// Aquamoto slice change, i.e. every frame of a playing tsunami — makes the whole Scene Objects
+	// tree visibly blink. Freezing updates for the duration collapses it to one repaint of the final
+	// tree. The guard is RAII so the many `return`s below cannot leave the panel frozen.
+	struct FreezeRepaint {
+		QWidget *w;
+		bool     was;
+		explicit FreezeRepaint(QWidget *p) : w(p), was(p && p->updatesEnabled()) { if (w) w->setUpdatesEnabled(false); }
+		~FreezeRepaint() { if (w && was) { w->setUpdatesEnabled(true); w->update(); } }
+	} freeze(s->objPanel);
 	// Wipe the previous layout + its checkboxes before rebuilding. deleteLater() (not delete) is
 	// deliberate -- this can run reentrantly from inside a row's own signal (a checkbox toggle that
 	// triggers a visibility change that ends up calling back in here), so the old row widgets must
@@ -2393,9 +2419,9 @@ static void rebuildSceneObjects(Scene *s) {
 	// ── AQUAMOTO FILE WRAPPER ── every variable loaded from the open tsunami netCDF -- the composited
 	// water/land surface below, PLUS bathymetry and any other static grid loaded alongside it as an
 	// extra -- nests under ONE collapsible parent named after the file: each variable gets its own
-	// group, all hosted in the main group for the file. Scoped strictly to customLayerTexture (an
-	// Aquamoto window) so a plain window's base grid + extras render exactly as before.
-	const bool aquaWrap = s->customLayerTexture;
+	// group, all hosted in the main group for the file. Scoped to the WINDOW being an Aquamoto one
+	// (sceneIsAquamoto -- never the per-frame texture flag), so the tree is the same in 2-D and 3-D.
+	const bool aquaWrap = sceneIsAquamoto(s);
 	if (aquaWrap) {
 		const QString fileNm = s->surfName.empty() ? QString("Tsunami") : QString::fromStdString(s->surfName);
 		beginGroupHandle(fileNm, IC_Surface, true, nullptr, nullptr, "Every variable loaded from this file");
@@ -2405,7 +2431,7 @@ static void rebuildSceneObjects(Scene *s) {
 	// image (view_image) is its own group (image row + axes). Non-grid objects follow, after a rule.
 	if (!s->imageOnly) {
 		if (vtkProp3D *sp = surfProp(s)) {                  // base relief grid group — header IS the surface handle
-			const QString nm = (s->customLayerTexture && !s->aquaVarLabel.empty()) ? QString::fromStdString(s->aquaVarLabel)
+			const QString nm = (aquaWrap && !s->aquaVarLabel.empty()) ? QString::fromStdString(s->aquaVarLabel)
 			                  : s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
 			// The CONTAINER's box says whether ANY part of the group is on — surface, drape, colour bar
 			// or axes. Reading only the surface actor made it lie the moment the Surface child row was
@@ -2414,7 +2440,7 @@ static void rebuildSceneObjects(Scene *s) {
 			const bool baseVis = sp->GetVisibility() != 0;
 			const bool baseGrpOn = baseVis || s->baseAxes.shown ||
 			                       (s->drape && s->drape->GetVisibility() != 0) ||
-			                       (s->customLayerTexture ? (s->surfShowBar || s->aquaLandShowBar) : s->surfShowBar);
+			                       (aquaWrap ? (s->surfShowBar || s->aquaLandShowBar) : s->surfShowBar);
 			beginGroupHandle(nm, IC_Surface, baseGrpOn,
 			        nullptr,                                              // container does NOT fold the Shading dock (the Surface leaf does)
 			        [s](const QPoint &g) { surfaceObjectMenu(s, g); },
@@ -2430,7 +2456,7 @@ static void rebuildSceneObjects(Scene *s) {
 			// (SACRED_LAW.md's "uncheck the source" when a derived result replaces it) switches these
 			// flags off for real, at the transition (baseLayerSetVisible), so the rows come up unchecked
 			// without this builder having to second-guess them from the surface actor.
-			if (s->customLayerTexture) {         // Aquamoto: same file group, but each variable's row is
+			if (aquaWrap) {                      // Aquamoto: same file group, but each variable's row is
 				                                  // its OWN independent handle -- never merged into one
 				                                  // combined label/row (that would mix variables together).
 				aquaWaterColorbarRow();

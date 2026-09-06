@@ -510,7 +510,7 @@ parsed into an `EmpAtt`. This is what replaces the hdfinfo/nc_funs MEXs.
 """
 function _emp_att(fname::String)::EmpAtt
 	fname = _emp_vsi(fname)					# read .gz/.zip in place, no temporary copy
-	info = gdalinfo(fname)
+	info = _gdalinfo(fname)
 	(info === nothing) && error("empilhador: GDAL could not read '$fname'")
 	att = EmpAtt(fname = fname)
 

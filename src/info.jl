@@ -40,7 +40,7 @@ function _info_report(obj, path::AbstractString, mode::AbstractString)::Nothing
 	src = isempty(path) ? obj : path
 	local r
 	try
-		r = (mode == "gdalinfo") ? GMT.gdalinfo(src) : GMT.grdinfo(src)
+		r = (mode == "gdalinfo") ? _gdalinfo(src) : GMT.grdinfo(src)
 	catch e
 		print("$mode failed: ", sprint(showerror, e))
 		return nothing

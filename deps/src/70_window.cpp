@@ -25073,7 +25073,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			if (!sceneAlive(s) || !g_juliaEval) return;
 			// THE DIALOG COMES UP FIRST, on its Benchs tab, before anything is built or opened — the
 			// user is looking at the controls while the tank is prepared, not at nothing.
-			if (g_aquamotoShowBenchs) g_aquamotoShowBenchs(s);
+			// …and if a run of this benchmark is already on disk it is offered right there: answering
+			// yes opens it, and there is then nothing to build.
+			if (g_aquamotoShowBenchs && g_aquamotoShowBenchs(s)) return;
 			if (s->win) s->win->statusBar()->showMessage("Catalina benchmark 1: t = 0");
 			// …and the model is built on the NEXT turn of the loop, so this click returns at once.
 			QTimer::singleShot(0, s->win, [s]() {

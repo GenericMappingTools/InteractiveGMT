@@ -7694,6 +7694,20 @@ GMTVTK_API int gmtvtk_show_layer_rgba_h(void *handle, const unsigned char *rgba,
 		const AquaSideShade &live = s->aquaShadeSelWater ? s->aquaWaterShade : s->aquaLandShade;
 		s->useHillshade = live.useHillshade; s->hillGrd = live.hillGrd; s->litBake = live.litBake;
 	}
+	// ALREADY STANDING ON THE 3-D SURFACE? Then this slice is A NEW Z FOR THE SAME SURFACE, not a new
+	// scene. Building the flat quad here and flipping it back to 3-D afterwards is a full teardown —
+	// remove the layer, rebuild it through the grid builder, destroy and rebuild the gizmo, rebuild
+	// Scene Objects: ~165 ms and a visible blink PER SLICE, which is the animation stalling in the
+	// middle of the display. `sceneUpdateBaseGridZ` is the fast path that already exists for exactly
+	// this (70_window.cpp) and it refuses anything that is not the same surface, so a real change of
+	// layer still falls through to the full builder below. The composite is kept with it, so
+	// re-checking "Shaded image (2-D)" restores the land/water blend from this very slice.
+	if (!s->layerImgMode && !s->aquaBaseRGBA.empty() &&
+	    sceneUpdateBaseGridZ(s, zhover, nx, ny, x0, x1, y0, y1, cz, crgb, ncolor, name, zlayout)) {
+		s->aquaBaseRGBA.assign(rgba, rgba + (size_t)nx * ny * 4);
+		refreshGridColorbar(s);        // the water scale moved with the slice
+		return 1;
+	}
 	return showLayerImageTail(s, rgba, nx, ny, zhover, nx, ny, x0, x1, y0, y1, geographic,
 	                          cz, crgb, ncolor, name, /*isCustom=*/true, zlayout);
 }
@@ -7755,6 +7769,20 @@ GMTVTK_API int gmtvtk_aqua_set_var_label_h(void *handle, const char *label) {
 // bridge) and raises its own progress dialog. A singleShot lets that callback finish first, so the
 // open runs from an idle loop -- no nested Julia -> C++ -> Julia eval, and the progress dialog gets
 // the clean turns it needs to come down again.
+// The host says whether this window's cube is now held WHOLE IN MEMORY. Julia calls it at the end of
+// every load-all (`_aqua_load_all`), so every route into RAM — the netCDF tab's own button, the Benchs
+// tab's checkbox, a run or a load asked to keep it — reports through one place, and the controls that
+// describe residency ("Load all in RAM" frozen at "In RAM ✓") cannot be left saying the opposite of
+// what is true. The reset in the other direction is the file open itself.
+GMTVTK_API void gmtvtk_aqua_set_ram_loaded_h(void *handle, int on) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return;
+	AquamotoWindow *w = AquamotoWindow::registry().value(s, nullptr);
+	if (!w) return;
+	if (on) w->markCubeInRam();
+	else    w->markCubeOnDisk();
+}
+
 GMTVTK_API void gmtvtk_aqua_queue_open(void *handle, const char *path) {
 	Scene *s = static_cast<Scene *>(handle);
 	if (!sceneAlive(s) || !path || !*path) return;

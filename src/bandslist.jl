@@ -45,7 +45,7 @@ function _bands_probe(path::String)
 	att = _emp_att(path)
 	n = att.nbands
 	n < 1 && return (0, String[], false, false)
-	info = GMT.gdalinfo(_emp_vsi(path))
+	info = _gdalinfo(_emp_vsi(path))
 	names = String[]
 	for m in eachmatch(r"Band \d+ Block=[^\n]*\n(?:\s+Description\s*=\s*([^\n\r]+))?", info)
 		push!(names, m.captures[1] === nothing ? "" : String(strip(String(m.captures[1]))))

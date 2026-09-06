@@ -115,9 +115,12 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_error_box, :gmtvtk_get_xfac,
 	:gmtvtk_take_messages, :gmtvtk_shutdown, :gmtvtk_set_headless,   # Qt's own warnings -> the failure sink; ordered teardown
 	:gmtvtk_save_png, :gmtvtk_orbit, :gmtvtk_set_stereo,
+	:gmtvtk_set_view_azel_h, :gmtvtk_get_view_azel_h, :gmtvtk_grid_row_h, :gmtvtk_set_title_extra_h,
+	:gmtvtk_layer_is_image_h, :gmtvtk_has_extern_shade_h, :gmtvtk_set_relief_look_h,
 	:gmtvtk_open_empty, :gmtvtk_set_drop_callback, :gmtvtk_set_paste_callback, :gmtvtk_add_surface_h,
 	:gmtvtk_promote_surface_h, :gmtvtk_replace_base_grid_h, :gmtvtk_show_layer_image_h, :gmtvtk_show_layer_rgba_h,
 	:gmtvtk_aqua_set_land_cpt_h, :gmtvtk_aqua_set_bathy_h, :gmtvtk_aqua_set_var_label_h,
+	:gmtvtk_aqua_set_ram_loaded_h,
 	:gmtvtk_aqua_queue_open,
 	:gmtvtk_remove_grid_h, :gmtvtk_remove_image_h, :gmtvtk_set_transplant_undo, :gmtvtk_unfold_scene_objects_h,
 	:gmtvtk_open_vtk_h, :gmtvtk_add_mesh_h, :gmtvtk_show_new_element_h, :gmtvtk_reframe_z_h,

@@ -22,6 +22,10 @@
 # shore well inside the 220 s the benchmark covers, and the analytic initial condition still carries
 # real amplitude out to ~29 km.
 #
+# RUN LENGTH: 250 s of model time (5000 cycles at dt = 0.05), one output step every 50 cycles = 100
+# steps. The benchmark's analytic solution is tabulated to 220 s; the run goes past it so the wave's
+# return down the slope is on screen too.
+#
 # A RUN GOES THROUGH nswing.jl's OWN RUNNER (`_nswing_run_external`) — off-process, watched by a
 # main-thread Timer that drives the progress bar. NSWING is one long ccall, and running it in this
 # process freezes the window even on a worker thread (a thread inside a long ccall never reaches a GC
@@ -294,7 +298,12 @@ function _bm1_display_cube(cube::String; xmin::Float64=-200.0, xmax::Float64=200
 	c1 > c0 || error("Catalina benchmark 1: the display window [$xmin, $xmax] holds no columns")
 	(c0 == 1 && c1 == Int(nx)) && return cube            # nothing to crop
 	dst = isempty(out) ? joinpath(dirname(cube),
-	                              splitext(basename(cube))[1] * "_$(Int(round(xmax))).nc") : out
+	                              # NAMED FOR WHAT IT IS. This is not the run — it is the run cropped to
+	                              # the display window, written beside it. A bare "_20000" said nothing
+	                              # and left two file names on screen with no way to tell which was
+	                              # which.
+	                              splitext(basename(cube))[1] *
+	                              "_display$(Int(round((xmax - xmin) / 1000)))km.nc") : out
 	# Already cropped from THIS cube (not an older run's): re-use it. Re-writing 88 layers on every
 	# click of the menu entry would be seconds of nothing for the user to look at.
 	(isfile(dst) && mtime(dst) >= mtime(cube)) && return dst
@@ -457,7 +466,7 @@ end
 # a frozen iGMT (SACRED_LAW.md).
 #
 # Off-process means the inputs must be FILES, so the two model grids are written beside the output.
-function _bm1_run_async(scene::Ptr{Cvoid}, outfile::String; ncycles::Int=4400, interval::Int=50,
+function _bm1_run_async(scene::Ptr{Cvoid}, outfile::String; ncycles::Int=5000, interval::Int=50,
                         dt::Float64=0.05, dx::Float64=25.0, xmin::Float64=-200.0,
                         xmax::Float64=20000.0, keepram::Bool=false)
 	_NSWING_RUNNING[] && error("a NSWING run is already going")
@@ -528,7 +537,7 @@ end
 # computed the file does not exist yet, so the estimate comes from the model the run will produce:
 # the display window's columns × the flume's 51 rows × one Float32 per node per step.
 function _bm1_ram_mb(path::String; xmin::Float64=-200.0, xmax::Float64=20000.0, dx::Float64=25.0,
-                     ncycles::Int=4400, interval::Int=50)::Float64
+                     ncycles::Int=5000, interval::Int=50)::Float64
 	nx, ny, nt = 0, 0, 0
 	if isfile(path)
 		try

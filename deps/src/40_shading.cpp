@@ -434,6 +434,17 @@ static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a) {
 // WATER snapshot, land pixels from the static bathymetry (s->aquaBathyZ) with the LAND snapshot.
 // Because each side re-bakes from its OWN snapshot, editing one side (only its snapshot changes, see
 // rebakeLayerImage) leaves the OTHER side pixel-identical — no colour, no light of the other touched.
+// IGMT_TRACE_AQUA, read the live process block. Not getenv(): on Windows the CRT keeps its own
+// snapshot taken at start-up, so a variable the host sets afterwards (Julia's ENV[...], which calls
+// SetEnvironmentVariableW) never appears in it — the same trap 70_window.cpp's envFlag documents.
+#ifdef _WIN32
+extern "C" __declspec(dllimport) unsigned long __stdcall
+GetEnvironmentVariableA(const char *name, char *buf, unsigned long size);
+static bool aquaTraceOn() { char b[8]; return GetEnvironmentVariableA("IGMT_TRACE_AQUA", b, sizeof b) > 0; }
+#else
+static bool aquaTraceOn() { const char *v = std::getenv("IGMT_TRACE_AQUA"); return v && *v; }
+#endif
+
 static void bakeAquaShade(Scene *s) {
 	if (!s || !s->layerImgMode || !s->customLayerTexture || !s->drape) return;
 	const int nx = s->gnx, ny = s->gny;
@@ -471,6 +482,24 @@ static void bakeAquaShade(Scene *s) {
 	const float *bathy = haveBathy ? s->aquaBathyZ.data() : nullptr;
 	const bool haveMask = ((int)s->aquaLandMask.size() == nx * ny);
 	const unsigned char *mask = haveMask ? s->aquaLandMask.data() : nullptr;
+	// TRACE (IGMT_TRACE_AQUA): what actually decides each pixel's side and light. Set the variable and
+	// the numbers say whether a land pixel is being SEEN as land, and whether the colour it starts
+	// from is already the water CPT's red or is turned red by the shading.
+	if (aquaTraceOn()) {
+		long nland = 0;
+		if (mask) for (long i = 0; i < (long)nx * ny; ++i) nland += (mask[i] != 0);
+		long li = -1;
+		if (mask) for (long i = 0; i < (long)nx * ny; ++i) if (mask[i] != 0) { li = i; break; }
+		fprintf(stdout, "[aqua] %dx%d stage=%d bathy=%d mask=%d landpx=%ld | water(hill=%d pbr=%d ext=%d shade=%d)"
+		                " land(hill=%d pbr=%d ext=%d shade=%d)",
+		        nx, ny, (int)haveStage, (int)haveBathy, (int)haveMask, nland,
+		        (int)wS.useHillshade, (int)wPbr, (int)wExt, (int)wShade,
+		        (int)lS.useHillshade, (int)lPbr, (int)lExt, (int)lShade);
+		if (li >= 0) fprintf(stdout, " | first land texel base RGB = %3d,%3d,%3d",
+		                     base[(size_t)li * 4], base[(size_t)li * 4 + 1], base[(size_t)li * 4 + 2]);
+		fprintf(stdout, "\n");
+		fflush(stdout);
+	}
 	const double dx = s->gdx != 0.0 ? s->gdx : 1.0, dy = s->gdy != 0.0 ? s->gdy : 1.0;
 	auto at = [](const float *z, int ix, int iy, int gny) -> double { return z[(size_t)ix * gny + iy]; };
 	// Per-row parallel: texel (row r = south..north, col) <-> grid (ix=col, iy=r); z is column-major
@@ -998,6 +1027,15 @@ static void sceneSetReliefLook(Scene *s, int look, bool keepExternShade = false)
 	s->useHillshade = (look == RL_HillLambert || look == RL_HillGrdimage);
 	s->hillGrd      = (look == RL_HillGrdimage);
 	s->litBake      = (look == RL_PBR);
+	// A LOOK IS THE WINDOW'S, NOT ONE SIDE'S. An Aquamoto layer keeps a light snapshot per side so the
+	// dock can edit water and land independently — but the LOOK (VTK PBR / grdimage / Lambert / none)
+	// is the whole window's choice, and it must land on BOTH. It used to reach only the side the Shade
+	// Water/Land radio happened to select (rebakeLayerImage snapshots that one), so picking "VTK (PBR)"
+	// lit the water with it and left the land on whatever it had — the two halves permanently out of
+	// step, and the method the user chose never applied to land at all.
+	// Only the three LOOK flags are copied: each side's own sun, gain and ambience stay its own.
+	for (AquaSideShade *A : { &s->aquaWaterShade, &s->aquaLandShade })
+		if (A->valid) { A->useHillshade = s->useHillshade; A->hillGrd = s->hillGrd; A->litBake = s->litBake; }
 	applyShading(s);                     // …which re-syncs the dock and re-bakes a flat image
 	if (s->syncFlatEnable) s->syncFlatEnable();   // which sliders are live depends on the chosen look
 }

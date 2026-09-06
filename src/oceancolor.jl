@@ -965,7 +965,7 @@ end
 # subdataset, so no raster is touched. Returns (lo, hi, islog), or `nothing` when the file says
 # nothing usable.
 function _oc_scaling(file::AbstractString)
-	txt = try GMT.gdalinfo("NETCDF:\"$(file)\":palette") catch; "" end
+	txt = try _gdalinfo("NETCDF:\"$(file)\":palette") catch; "" end
 	isempty(txt) && return nothing
 	att(k) = (m = match(Regex("suggested_image_scaling_$(k)=(.*)"), txt); m === nothing ? "" : String(strip(m.captures[1])))
 	lo = tryparse(Float64, att("minimum"))

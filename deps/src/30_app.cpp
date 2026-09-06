@@ -1058,7 +1058,7 @@ static void (*g_aquamotoDestroy)(Scene *scene) = nullptr;             // destroy
 static void (*g_aquamotoSetCmap)(Scene *scene, int side, const char *cmap) = nullptr;   // side 0=water,1=land; re-renders the current slice
 // Show the window with its "Benchs" tab in front, WITHOUT opening any file: what a benchmark's menu
 // entry calls first, so the dialog the user is about to work in is up before any model is built.
-static void (*g_aquamotoShowBenchs)(Scene *scene) = nullptr;
+static int (*g_aquamotoShowBenchs)(Scene *scene) = nullptr;   // returns 1 if it loaded an existing run
 
 // Same idea for the Binarize dialog (Image menu, 70_window.cpp): closing it only HIDES it, so the
 // image's Scene Objects handle offers "Binarize Image…" to bring it back with its mask and undo

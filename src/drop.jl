@@ -386,6 +386,25 @@ function _on_pointcloud_view(scene::Ptr{Cvoid}, actor::Ptr{Cvoid}, n::Integer, g
 	return nothing
 end
 
+# THE gdalinfo door of this package. `GMT.gdalinfo(fname)` opens the file with `Gdal.unsafe_read` and
+# never closes the dataset, so on Windows the FILE HANDLE lives for the rest of the session and the
+# file can no longer be deleted or overwritten: a second Benchmark 1 run died on
+# `unlink("…/benchmark1.nc"): resource busy or locked (EBUSY)` because merely LISTING the cube's
+# variables had pinned it. Verified with a probe (copy the file, run the call, try to delete it):
+# `gmtread("file.nc?var[0]")` leaves it deletable, `GMT.gdalinfo(path)` does not, and opening +
+# `GDALClose` here does. A dataset object handed in by a caller is not ours to close, so it goes
+# straight through.
+function _gdalinfo(src)::String
+	!(src isa AbstractString) && return String(GMT.gdalinfo(src))
+	ds = GMT.Gdal.unsafe_read(String(src))
+	(ds == C_NULL) && error("GDAL could not open '$src'")
+	try
+		return String(GMT.Gdal.gdalinfo(ds))
+	finally
+		GMT.Gdal.GDALClose(ds.ptr)
+	end
+end
+
 # Enumerate the named variables of a multi-variable netCDF file via GDAL's Subdatasets report.
 # Returns a Vector of (name, dims, typ) -- EMPTY for a plain single-variable grid (no Subdatasets
 # block) or a non-netCDF file, in which case the caller loads the file directly (no picker). `dims`
@@ -397,7 +416,7 @@ function _netcdf_subdatasets(path::AbstractString)::Vector{@NamedTuple{name::Str
 	(ext != ".nc" && ext != ".grd") && return out
 	local txt
 	try
-		txt = GMT.gdalinfo(String(path))
+		txt = _gdalinfo(String(path))
 	catch
 		return out
 	end
@@ -593,7 +612,19 @@ end
 # with it: it comes from the layer that was actually read. Both cube stackers go through here
 # (`_read_whole_cube` above, `_cube_prescan` below) so neither can forget it.
 function _cube_from_slabs(z3::Array{Float32,3}, g1::GMTgrid)::GMTgrid
-	C = GMT.mat2grid(z3; x = g1.x, y = g1.y)
+	# A ONE-LAYER CUBE IS BUILT HERE, not by `mat2grid`: that one replaces any `v` of length <= 1 with
+	# `linspace(hdr[5], hdr[6], size(mat,3))` — for a single layer, `linspace(zmin, zmax, 1)`, which
+	# throws ("endpoints differ") — and then reads `v[2] - v[1]` for the layer increment, which a
+	# single layer does not have either. So a one-step cube could not be held in RAM at all. The
+	# fields are the ones `_cube_layer_view` reads back out.
+	if size(z3, 3) == 1
+		lo, hi = _finite_extrema(z3)
+		return GMT.GMTgrid(; proj4=g1.proj4, wkt=g1.wkt, epsg=g1.epsg, geog=g1.geog,
+			range=Float64[g1.range[1], g1.range[2], g1.range[3], g1.range[4], lo, hi, 1.0, 1.0],
+			inc=Float64[g1.inc[1], g1.inc[2], 1.0], registration=g1.registration, nodata=g1.nodata,
+			x=g1.x, y=g1.y, v=[1.0], z=z3, layout=(isempty(g1.layout) ? "BCB" : g1.layout))
+	end
+	C = GMT.mat2grid(z3; x = g1.x, y = g1.y, v = collect(1.0:size(z3, 3)))
 	isempty(g1.layout) || (C.layout = g1.layout)
 	return C
 end

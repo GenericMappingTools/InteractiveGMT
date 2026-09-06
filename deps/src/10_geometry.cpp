@@ -958,6 +958,8 @@ struct Scene {
 	// appended for display, never stored into it, so re-setting the title cannot accumulate
 	// suffixes. sceneSetTitleBase() is the ONE setter.
 	std::string titleBase;
+	std::string titleExtra;                           // what the DATA adds after the zoom (an Aquamoto
+	                                                  // slice's model time); empty for everything else
 	QString     titleShown;                           // last string pushed to setWindowTitle (change gate)
 
 	// --- flat-2D (top-down ortho map) toggle --------------------------------
@@ -2433,6 +2435,10 @@ static void updateTitleZoom(Scene *s) {
 	QString t = QString::fromStdString(s->titleBase);
 	const double z = sceneZoomFactor(s);
 	if (z > 0.0) t += QString("   —   %1%").arg(qRound(z * 100.0));
+	// …and whatever the DATA on screen has to say about itself, after the zoom: an Aquamoto slice puts
+	// its model time here, so the window says WHEN as well as what. Set through sceneSetTitleExtra
+	// (gmtvtk_set_title_extra_h); empty for everything else, which composes exactly as before.
+	if (!s->titleExtra.empty()) t += QString("   —   %1").arg(QString::fromStdString(s->titleExtra));
 	if (t != s->titleShown) { s->titleShown = t; s->win->setWindowTitle(t); }
 }
 
@@ -2443,6 +2449,17 @@ static void sceneSetTitleBase(Scene *s, const QString &base) {
 	if (!s) return;
 	s->titleBase = base.toStdString();
 	s->titleShown.clear();                 // force the push even if the composed text is unchanged
+	updateTitleZoom(s);
+}
+
+// …and THE setter for the data's own suffix (an Aquamoto slice's model time). Same rule: stored
+// separately and composed by updateTitleZoom, never written into the base.
+static void sceneSetTitleExtra(Scene *s, const QString &extra) {
+	if (!s) return;
+	const std::string e = extra.toStdString();
+	if (e == s->titleExtra) return;
+	s->titleExtra = e;
+	s->titleShown.clear();
 	updateTitleZoom(s);
 }
 
@@ -5037,4 +5054,114 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 	} else {
 		s->win->statusBar()->showMessage("ready");
 	}
+}
+
+// The four view modes and THE switch between them (70_window.cpp, later in this TU).
+enum { IGVIEW_3D = 0, IGVIEW_FLAT2D = 1, IGVIEW_GLOBE = 2, IGVIEW_CUBE = 3 };
+static void sceneSetViewMode(Scene *s, int mode);
+
+// ============================================================================================
+//  Camera placement by AZIMUTH / ELEVATION / VISIBLE WIDTH, and a grid ROW read-out.
+//  Both are shared services: the Aquamoto Cinema tab drives them from its widgets, the host
+//  drives them from Julia through gmtvtk_set_view_azel_h / gmtvtk_grid_row_h (90_c_api.cpp).
+//  ONE implementation each -- a script that wants "look at it from 35 degrees" and a spin box
+//  that wants the same thing must not each carry their own camera maths (SACRED_LAW.md).
+// ============================================================================================
+
+// Place the camera. `azDeg` is the compass bearing the camera looks FROM (0 = from -y, i.e. the
+// south edge; 90 = from +x), `elDeg` its height angle above the horizontal, `widthData` the width
+// of the scene the view should span IN DATA UNITS (<= 0 keeps the current zoom), and `focusData`
+// the point looked at, also in data units (null = the centre of the drawn surface). `veOrNeg > 0`
+// sets the vertical exaggeration first, through the SAME door gmtvtk_apply_scene_state uses.
+//
+// Data units, not world: actors are drawn scaled by (xfac, 1, zfac*ve) (see applyVE), and no caller
+// should have to know that. The conversion happens here, once.
+void sceneSetViewAzElSpan(Scene *s, double azDeg, double elDeg, double widthData,
+                          const double *focusData, double veOrNeg) {
+	if (!s || !s->ren || !s->widget) return;
+	// THIS FUNCTION PLACES THE CAMERA AND NOTHING ELSE. It does NOT change the window's view mode:
+	// which mode a window is in is the window's own business (an Aquamoto tank is put in 3-D when it
+	// opens, 75_aquamoto.cpp), and a camera setter that silently switched modes would be deciding
+	// that for every caller behind its back.
+	if (veOrNeg > 0.0 && veOrNeg != s->ve) { s->ve = veOrNeg; applyVE(s); }
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	if (!cam) return;
+	double b[6];
+	surfGetBounds(s, b);
+	double f[3] = { 0.5 * (b[0] + b[1]), 0.5 * (b[2] + b[3]), 0.5 * (b[4] + b[5]) };
+	if (focusData) {
+		f[0] = focusData[0] * s->xfac;
+		f[1] = focusData[1];
+		f[2] = focusData[2] * s->zfac * s->ve;
+	}
+	const double a = vtkMath::RadiansFromDegrees(azDeg), e = vtkMath::RadiansFromDegrees(elDeg);
+	// Parallel projection: the distance sets no scale, only the clipping range, so it is simply kept
+	// well outside the data. The zoom is the parallel scale below.
+	double diag = std::max(1e-9, std::sqrt((b[1]-b[0])*(b[1]-b[0]) + (b[3]-b[2])*(b[3]-b[2]) +
+	                                       (b[5]-b[4])*(b[5]-b[4])));
+	const double dist = 4.0 * diag;
+	cam->ParallelProjectionOn();
+	cam->SetFocalPoint(f);
+	cam->SetPosition(f[0] + dist * std::sin(a) * std::cos(e),
+	                 f[1] - dist * std::cos(a) * std::cos(e),
+	                 f[2] + dist * std::sin(e));
+	cam->SetViewUp(0.0, 0.0, 1.0);
+	cam->OrthogonalizeViewUp();
+	if (widthData > 0.0) {
+		// vtkCamera's parallel scale is the viewport HALF-HEIGHT in world units; the widget asks for a
+		// WIDTH, so divide by the render window's aspect. A width in data units is a width in world
+		// units times xfac (the horizontal scale applyVE draws with).
+		const int *sz = s->widget->renderWindow() ? s->widget->renderWindow()->GetSize() : nullptr;
+		const double aspect = (sz && sz[1] > 0) ? double(sz[0]) / double(sz[1]) : 1.0;
+		cam->SetParallelScale(std::max(1e-9, widthData * s->xfac / (2.0 * aspect)));
+	}
+	s->ren->ResetCameraClippingRange();
+	if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// The window's CURRENT camera as the same three numbers, so a dialog's boxes can show where the
+// mouse has just put the view instead of lying about it. Returns false when there is no camera.
+bool sceneGetViewAzElSpan(Scene *s, double &azDeg, double &elDeg, double &widthData) {
+	if (!s || !s->ren || !s->widget) return false;
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	if (!cam) return false;
+	double p[3], f[3];
+	cam->GetPosition(p);
+	cam->GetFocalPoint(f);
+	const double dx = p[0] - f[0], dy = p[1] - f[1], dz = p[2] - f[2];
+	const double horiz = std::sqrt(dx * dx + dy * dy);
+	azDeg = vtkMath::DegreesFromRadians(std::atan2(dx, -dy));
+	elDeg = vtkMath::DegreesFromRadians(std::atan2(dz, std::max(1e-12, horiz)));
+	const int *sz = s->widget->renderWindow() ? s->widget->renderWindow()->GetSize() : nullptr;
+	const double aspect = (sz && sz[1] > 0) ? double(sz[0]) / double(sz[1]) : 1.0;
+	const double xfac = (s->xfac != 0.0) ? s->xfac : 1.0;
+	widthData = 2.0 * aspect * cam->GetParallelScale() / xfac;
+	return true;
+}
+
+// One ROW of the window's active data layer, as (x, z) in DATA units: the z values along the grid
+// row nearest `yData`, for the x range [x0, x1] (pass x1 <= x0 for "to the east edge"). This is the
+// layer the hover readout reads (Scene::gridZ, refreshed by every cube-layer / Aquamoto slice
+// switch), so a profile taken here always describes the slice on screen. Returns false when the
+// window carries no data layer.
+bool sceneGridRowSeries(Scene *s, double yData, double x0, double x1,
+                        std::vector<double> &xs, std::vector<double> &zs) {
+	xs.clear(); zs.clear();
+	if (!s || s->gridZ.empty() || s->gnx < 2 || s->gny < 1) return false;
+	const double dx = (s->gx1 - s->gx0) / double(s->gnx - 1);
+	const double dy = (s->gny > 1) ? (s->gy1 - s->gy0) / double(s->gny - 1) : 0.0;
+	int iy = (dy != 0.0) ? int(std::lround((yData - s->gy0) / dy)) : 0;
+	iy = std::max(0, std::min(s->gny - 1, iy));
+	const double xa = std::max(s->gx0, x0);
+	const double xb = (x1 > x0) ? std::min(s->gx1, x1) : s->gx1;
+	int ia = int(std::floor((xa - s->gx0) / dx)), ib = int(std::ceil((xb - s->gx0) / dx));
+	ia = std::max(0, std::min(s->gnx - 1, ia));
+	ib = std::max(ia, std::min(s->gnx - 1, ib));
+	xs.reserve(size_t(ib - ia + 1));
+	zs.reserve(size_t(ib - ia + 1));
+	for (int ix = ia; ix <= ib; ++ix) {                       // gridZ is column-major z[ix*gny + iy]
+		xs.push_back(s->gx0 + ix * dx);
+		zs.push_back(double(s->gridZ[size_t(ix) * size_t(s->gny) + size_t(iy)]));
+	}
+	return xs.size() >= 2;
 }

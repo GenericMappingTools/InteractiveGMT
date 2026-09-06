@@ -133,6 +133,13 @@ end
 
 # One grid, one side, pushed. The bbox is the grid's OWN range (the viewer samples the reflectance by
 # world position), so a caller never has to know how the two sides line up.
+# THE method declaration that follows a model push. A pushed reflectance is data; the look that
+# consumes it is a choice, and choices are made in exactly one place (`sceneSetReliefLook`, reached
+# through this export). RL_HillGrdimage = 3 is the shade a GMT-computed intensity is consumed by;
+# `keepModel = 1` so declaring it does not discard the model just handed over.
+_hs_declare_look(scene::Ptr{Cvoid}) =
+	ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), scene, Cint(3), Cint(1))
+
 function _hs_push_grid(scene::Ptr{Cvoid}, G::GMTgrid, model::Int, d::Dict{String,String}, side::Int)
 	R, (x0, x1, y0, y1) = _hs_reflectance_rng(G, model, d)
 	_hs_push(scene, R, x0, x1, y0, y1, model, side)
@@ -308,6 +315,22 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		# name is dropped and the source grid resolves normally below.
 		(gname == _HS_FALSECOLOR || gname == _HS_PPDRC) && (gname = "")
 
+		# THE C++ LOOKS (1 VTK/PBR, 5 Hillshade grdimage, 6 Hillshade Lambert, 7 Shade PBR). This file's
+		# header says they "never reach Julia" — but the dialog sends every method here, so they DID,
+		# and fell through to `_hs_reflectance`, which knows only 2/3/4 and threw
+		# "unknown illumination model: 1". Picking VTK (PBR) in the dialog therefore errored and the
+		# window kept whatever method it had. They are looks, not reflectances: set the look, through
+		# the ONE setter that may change a method (sceneSetReliefLook, via gmtvtk_set_relief_look_h),
+		# and stop. RL_: 0 none, 1 PBR, 2 Hillshade-Lambert, 3 Hillshade-grdimage.
+		if model in (1, 5, 6, 7)
+			rl = (model == 6) ? 2 : (model == 5) ? 3 : 1      # 1 and 7 are both the PBR look
+			ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), scene, Cint(rl), Cint(0))
+			# A look REPLACES a loaded model, so an Aquamoto layer must stop re-lighting itself from one.
+			haskey(_AQUA, scene) && empty!(_AQUA[scene].illum)
+			_session_record_illum!(scene, raw)
+			return Cint(1)
+		end
+
 		# "Remove illumination" (Mirone's ImageResetOrigImg_CB): EVERY light off, not just this tool's
 		# reflectance — model -1 is the viewer's code for that, and it leaves the grid in plain CPT
 		# colour. (model 0, used below, is the quieter clear: the model painted its own picture, so the
@@ -379,6 +402,11 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		# ONE reflectance function for every surface this tool lights (see `_hs_reflectance`): the plain
 		# grid here, and each Aquamoto side above. `side = 0` is "the window's surface".
 		_hs_push_grid(scene, G, model, d, 0)
+		# …and DECLARE the method, once, here. The push carries data only — it may not set the window's
+		# look (that is how a re-lit slice used to overwrite the user's chosen method). A GMT-computed
+		# reflectance is consumed by the grdimage-style shade, so that is the look this act chooses;
+		# `keepModel` because the model it consumes is the one just pushed.
+		_hs_declare_look(scene)
 		# Models 2/3/4 only MODULATE the grid already in the window, so the request block is the whole
 		# record of them (below). 9 is excluded on purpose: it also DELIVERS a derived grid, which has
 		# its own :generated recipe, and re-running the model on load would add that grid a second time.

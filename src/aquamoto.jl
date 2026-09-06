@@ -653,13 +653,22 @@ function _aqua_load_all(scene::Ptr{Cvoid})::Cint
 	try
 		st = get(_AQUA, scene, nothing)
 		st === nothing && return Cint(2)
-		haskey(st.ram, st.varname) && return Cint(0)         # already resident
+		# Already resident: still SAY so — a caller may be asking on a path where the dialog was never
+		# told (a task started before the file was even open).
+		if haskey(st.ram, st.varname)
+			_aqua_report_ram(scene, true)
+			return Cint(0)
+		end
 		g1 = _read_cube_layer("$(st.path)?$(st.varname)", 1)
 		g1 === nothing && return Cint(2)
 		_cube_fits_ram(length(g1.z) * sizeof(eltype(g1.z)), st.nsteps) || return Cint(1)
 		C = _read_whole_cube("$(st.path)?$(st.varname)", st.nsteps)
 		(C isa GMTgrid && ndims(C.z) == 3) || return Cint(2)
 		st.ram[st.varname] = C
+		# THE CONTROLS THAT DESCRIBE RESIDENCY LEARN IT HERE, at the one place that makes it true — so
+		# "Load all in RAM" freezes at "In RAM ✓" whichever route asked for the load: the button itself,
+		# the Benchs checkbox, or a run/load carrying the flag.
+		_aqua_report_ram(scene, true)
 		return Cint(0)
 	catch e
 		@error "Aquamoto load-all failed" exception=(e, catch_backtrace())
@@ -898,3 +907,9 @@ function _register_aquamoto()
 	warm_register("aquamoto", _aqua_warm)
 	return
 end
+
+# Tell the Aquamoto dialog whether this window's cube is now held whole in memory. Called by
+# `_aqua_load_all` itself, so no caller has to remember to report — and the file-open path does the
+# reset in the other direction (a new file is on disk until this says otherwise).
+_aqua_report_ram(scene::Ptr{Cvoid}, on::Bool) =
+	ccall(_fn(:gmtvtk_aqua_set_ram_loaded_h), Cvoid, (Ptr{Cvoid}, Cint), scene, Cint(on))

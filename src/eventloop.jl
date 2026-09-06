@@ -98,6 +98,7 @@ function _ensure_callbacks()
 	                    ("clipgrid",    _register_clipgrid),
 	                    ("binarize",    _register_binarize),
 	                    ("forget",      _register_forget),
+	                    ("aquamoto",    _register_aquamoto),
 	                    ("imagehisto",  _register_image_histo),
 	                    ("imageenhance", _register_image_enhance),
 	                    ("imageresize", _register_image_resize),
