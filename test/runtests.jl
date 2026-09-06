@@ -156,7 +156,14 @@ end
 # of wanting the unit tier alone on a build machine; it must be asked for, in writing.
 @testset "the GUI tier was not silently skipped" begin
 	waived = lowercase(strip(get(ENV, "INTERACTIVEGMT_TEST_NO_GUI", "0"), [' ', '"', '\''])) in
-	         ("1", "true", "yes", "on")
+	         ("1", "true", "yes", "on") ||
+	# ...and ALWAYS on CI, which decides tier per workflow and must not be second-guessed here.
+	# ci.yml opts the tier in explicitly (Xvfb + INTERACTIVEGMT_TEST_GUI=1); ReusableTest.yml
+	# deliberately runs the unit tier alone, on runners that DO have the rolling runtime in the
+	# depot — so keying off "the library is present" fails those jobs for doing exactly what they
+	# were written to do. The hole this guard exists to close is a DEVELOPER with a working local
+	# build getting a green suite that never entered the DLL; that is not a CI situation.
+	         get(ENV, "CI", "") != ""
 	haslib = isfile(InteractiveGMT._LOCAL_LIB) || isfile(InteractiveGMT._SHARED_LIB)
 	if !_RUN_GUI && haslib && !waived
 		@error "The :gui tier was SKIPPED although gmtvtk is built and present. Those items are " *
