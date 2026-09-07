@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>TttDialog</class>
+ <widget class="QDialog" name="TttDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>470</width>
+    <height>560</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Tsunami travel times</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <item>
+    <widget class="QGroupBox" name="group_source">
+     <property name="title">
+      <string>Source</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_source">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_lon">
+        <property name="text">
+         <string>Longitude</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="edit_lon"/>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="lbl_lat">
+        <property name="text">
+         <string>Latitude</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLineEdit" name="edit_lat"/>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lbl_srcfile">
+        <property name="text">
+         <string>…or file</string>
+        </property>
+        <property name="toolTip">
+         <string>A table of source points (lon lat, one per line). Overrides the boxes above.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1" colspan="2">
+       <widget class="QLineEdit" name="edit_srcfile"/>
+      </item>
+      <item row="1" column="3">
+       <widget class="QToolButton" name="btn_srcfile">
+        <property name="text">
+         <string>…</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_method">
+     <property name="title">
+      <string>Method</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_method">
+      <item>
+       <widget class="QRadioButton" name="rb_ttt">
+        <property name="text">
+         <string>Wessel ttt — Huygens wavefront (accurate, slower)</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="rb_mirone">
+        <property name="text">
+         <string>Mirone wavefront expansion (fast)</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_ttt">
+     <property name="title">
+      <string>ttt options</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_ttt">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_nodes">
+        <property name="text">
+         <string>Stencil nodes</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="cb_nodes"/>
+      </item>
+      <item row="0" column="2">
+       <widget class="QCheckBox" name="chk_bias">
+        <property name="text">
+         <string>Bias correction</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QCheckBox" name="chk_search">
+        <property name="text">
+         <string>Move source to water</string>
+        </property>
+        <property name="toolTip">
+         <string>Relocate a source that falls on land to the nearest water node.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_radius">
+        <property name="toolTip">
+         <string>Search radius, degrees.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lbl_radius">
+        <property name="text">
+         <string>search radius (deg)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lbl_srcdepth">
+        <property name="text">
+         <string>Source depth (m)</string>
+        </property>
+        <property name="toolTip">
+         <string>The source must be at least this deep. Negative down, 0 = no constraint.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLineEdit" name="edit_srcdepth"/>
+      </item>
+      <item row="2" column="2">
+       <widget class="QLabel" name="lbl_mindepth">
+        <property name="text">
+         <string>Shallow threshold (m)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="3">
+       <widget class="QLineEdit" name="edit_mindepth"/>
+      </item>
+      <item row="3" column="0" colspan="4">
+       <widget class="QCheckBox" name="chk_fillvoids">
+        <property name="text">
+         <string>Fill voids left by the wavefront (Mirone method only)</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_out">
+     <item>
+      <widget class="QLabel" name="lbl_outfile">
+       <property name="text">
+        <string>Save grid</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="edit_outfile">
+       <property name="toolTip">
+        <string>Optional. The result is always added to Scene Objects; this also writes it to disk.</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="btn_outfile">
+       <property name="text">
+        <string>…</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="text">
+        <string>Compute travel times</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_stations">
+     <property name="title">
+      <string>Arrival times at stations (reads the travel-time grid)</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_stations">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_stations">
+        <property name="text">
+         <string>Stations file</string>
+        </property>
+        <property name="toolTip">
+         <string>lon lat [name], one station per line.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1" colspan="2">
+       <widget class="QLineEdit" name="edit_stations"/>
+      </item>
+      <item row="0" column="3">
+       <widget class="QToolButton" name="btn_stations">
+        <property name="text">
+         <string>…</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lbl_origin">
+        <property name="text">
+         <string>Origin time</string>
+        </property>
+        <property name="toolTip">
+         <string>ISO date-time, e.g. 2011-03-11T05:46:24. Empty = elapsed times.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_origin"/>
+      </item>
+      <item row="1" column="2">
+       <widget class="QCheckBox" name="chk_utc">
+        <property name="text">
+         <string>UTC</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QPushButton" name="push_eta">
+        <property name="text">
+         <string>Arrival times</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="spacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_close">
+       <property name="text">
+        <string>Close</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

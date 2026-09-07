@@ -3176,7 +3176,9 @@ public:
 		auto makeEdit = [this]() {
 			auto *e = new QLineEdit(this);   // no validator: accepts decimal AND dd:mm:ss (Julia validates)
 			e->setAlignment(Qt::AlignLeft);
-			e->setMinimumWidth(90);
+			// Same widths as the canonical block this mirrors (deps/ui/grid_line_geometry.ui): 54/74,
+			// a third off the old 90. The two must be changed together or the fallback stops matching.
+			e->setMinimumWidth(54); e->setMaximumWidth(74);
 			return e;
 		};
 		xMin = makeEdit(); xMax = makeEdit(); xInc = makeEdit(); xN = makeEdit();
@@ -19600,6 +19602,39 @@ public:
 		beach->setMechanism(fStrike->text().toDouble(), fDip->text().toDouble(), dRake->text().toDouble());
 	}
 
+	// ── MINIMISE parks the dialog as a Scene Objects handle ────────────────────────────────────
+	// The shared parkTool/unparkTool pair every other tool uses, so a parked elastic-deformation
+	// dialog is the same kind of row, with the same ways back, as a parked grdsample or Tiles tool.
+	// A fault being modelled is worth getting out of the way without throwing the typed geometry away.
+	void unpark() {
+		unparkTool(scn, this);
+		setWindowState(windowState() & ~Qt::WindowMinimized);
+		showNormal();
+		raise();
+		activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { unparkTool(scn, this); close(); }
+		};
+	}
+	void parkNow() {
+		if (!sceneAlive(scn)) return;
+		setWindowState(windowState() & ~Qt::WindowMinimized);   // undo the WM's minimise
+		hide();
+		parkTool(scn, this, "Elastic deformation", IC_Rect,
+		         "Minimised Vertical elastic deformation — double-click to bring it back, "
+		         "click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);      // a handle nobody can see is no handle at all
+	}
+
 	// Snapshot every field into the Scene so the next open of this (rebuilt) dialog restores them.
 	void saveState() {
 		if (!scn) return;
@@ -19666,6 +19701,25 @@ public:
 		scn = scene;
 		collectSlip();          // discover Import-Model-Slip patches (drives the Segments / Faults selectors)
 		setWindowTitle("Vertical elastic deformation");
+		// The minimise button beside the X is what PARKS it in Scene Objects (parkNow above); the
+		// title bar has to offer one for that to be reachable at all.
+		setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		struct MinimiseParks : QObject {
+			ElasticDialog *dg;
+			MinimiseParks(QObject *p, ElasticDialog *g) : QObject(p), dg(g) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				// Qt reports the minimise AFTER the window manager has done it, so the restore+hide+park
+				// is deferred a turn rather than fought with mid-event.
+				if (e->type() == QEvent::WindowStateChange && dg &&
+				    dg->windowState().testFlag(Qt::WindowMinimized))
+					QTimer::singleShot(0, dg, [g = dg]() { g->parkNow(); });
+				return QObject::eventFilter(o, e);
+			}
+		};
+		installEventFilter(new MinimiseParks(this, this));
+		QObject::connect(this, &QObject::destroyed, this, [this]() {
+			if (sceneAlive(scn)) unparkTool(scn, this);      // never leave a row pointing at a dead dialog
+		});
 		auto *v = new QVBoxLayout(this);
 
 		// A labelled field with the label centred ABOVE the box (Mirone's table look).
@@ -19673,7 +19727,11 @@ public:
 			auto *w  = new QWidget(this);
 			auto *vl = new QVBoxLayout(w); vl->setContentsMargins(0, 0, 0, 0); vl->setSpacing(2);
 			auto *l  = new QLabel(lab, w); l->setAlignment(Qt::AlignHCenter);
-			e = new QLineEdit(init, w); e->setMinimumWidth(80);
+			e = new QLineEdit(init, w);
+			// The SAME box metrics as the Region block's (deps/ui/grid_line_geometry.ui), and both were
+			// cut by a third — 80/110 -> 54/74 — because a box that holds "38.4732" was three times
+			// wider than the number in it. Change them HERE and in that .ui together, never one alone.
+			e->setMinimumWidth(54); e->setMaximumWidth(74);
 			vl->addWidget(l); vl->addWidget(e);
 			return w;
 		};
@@ -19690,7 +19748,9 @@ public:
 		fg->addWidget(vfield("Dip",    fDip, "25"),   1, 1);
 		fg->addWidget(vfield("Depth",  fDepth, ""),   2, 0);
 		fg->addWidget(vfield("Depth to Top", fDepTop, "0"), 2, 1);
-		topRow->addWidget(faultGroup);
+		// Stretch 0 everywhere in this row (and a trailing stretch below): the three blocks keep their
+		// own sizeHint instead of being pulled apart across the dialog's width.
+		topRow->addWidget(faultGroup, 0);
 
 		// Middle column: Segments + Faults selectors (slip models only) then CONFIRM (coordinate mode).
 		auto *midCol = new QVBoxLayout();
@@ -19715,7 +19775,7 @@ public:
 		coordCombo->setToolTip("Coordinate type of the fault position and grid limits");
 		midCol->addWidget(coordCombo);
 		midCol->addStretch();
-		topRow->addLayout(midCol);
+		topRow->addLayout(midCol, 0);
 
 		// Dislocation Geometry. Mw lives at the bottom of this box.
 		auto *disGroup = new QGroupBox("Dislocation Geometry", this);
@@ -19731,32 +19791,66 @@ public:
 		dg->addWidget(vfield("N", dN, "20"),  2, 1);     // sub-fault discretisation
 		dg->addWidget(vfield("q", dQ, "0.3"), 2, 2);
 		mwLabel = new QLabel("Mw Magnitude = --", disGroup);
-		dg->addWidget(mwLabel, 3, 0, 1, 3);
+		dg->addWidget(mwLabel, 3, 0, 1, 2);
+		// Mu sits in the EMPTY THIRD COLUMN beside Mw, where the grid already reserves room, instead of
+		// on a row of its own under the group (which left a band of dead space next to the Mw label).
+		// It also belongs here: mu is what turns L/W/slip into the Mw shown to its left.
+		{
+			auto *muW = new QWidget(disGroup);
+			auto *mh  = new QHBoxLayout(muW);
+			mh->setContentsMargins(0, 0, 0, 0);
+			mh->setSpacing(4);
+			auto *muLab = new QLabel("Mu (x10^10)", muW);
+			muEdit = new QLineEdit("3.0", muW);
+			muEdit->setMinimumWidth(34); muEdit->setMaximumWidth(47);   // same third off
+			muEdit->setToolTip("Shear modulus / rigidity (×10^10 Pa)");
+			mh->addWidget(muLab); mh->addWidget(muEdit);
+			dg->addWidget(muW, 3, 2);
+		}
 		// N/q are only meaningful for the SCC Green functions — disabled until SCC is ticked.
 		dN->setEnabled(false); dQ->setEnabled(false);
 		QObject::connect(sccCheck, &QCheckBox::toggled, this, [this](bool on) {
 			dN->setEnabled(on); dQ->setEnabled(on); });
-		topRow->addWidget(disGroup);
+		topRow->addWidget(disGroup, 0);
+		topRow->addStretch(1);
 
 		v->addLayout(topRow);
 
-		// --- Mu (shear modulus) row ------------------------------------------------------------
-		auto *muRow = new QHBoxLayout();
-		muRow->addStretch();
-		muRow->addWidget(new QLabel("Mu (x10^10)", this));
-		muEdit = new QLineEdit("3.0", this);
-		muEdit->setMaximumWidth(80);
-		muEdit->setToolTip("Shear modulus / rigidity (×10^10 Pa)");
-		muRow->addWidget(muEdit);
-		v->addLayout(muRow);
+		// (Mu now lives beside Mw inside the Dislocation Geometry box — see above.)
 
-		// --- Griding Line Geometry (reused widget, no Ref-grid row here) + beachball & buttons ----
+		// --- Griding Line Geometry + beachball & buttons ------------------------------------------
+		// THE REGION BLOCK IS deps/ui/grid_line_geometry.ui, loaded at RUNTIME and adopted. That file
+		// is the canonical block (its own comment says so), it is what the user edits in Designer, and
+		// adopting it means this dialog shows the very layout that file describes — box widths, spacing
+		// and the "OR Ref grid" row included — instead of a hand-built lookalike that drifts from it.
+		// GeoGridGeometry::adopt() attaches the SAME behaviour (dim-fun cross-recompute, the "..."
+		// picker, region()/inc()/fillGeometry) to Designer's widgets, so there is one implementation
+		// whichever way the block got on screen. Code-built only if the .ui cannot be read, so a broken
+		// install degrades instead of losing the block.
 		auto *botRow = new QHBoxLayout();
-		geo = new GeoGridGeometry(this, /*withRefGrid=*/false);
-		botRow->addWidget(geo, 1);
+		QWidget *geoHost = nullptr;
+		{
+			QUiLoader loader;
+			QFile f(gmtvtkUiDir() + "/grid_line_geometry.ui");
+			if (f.open(QFile::ReadOnly)) { geoHost = loader.load(&f, this); f.close(); }
+		}
+		geo = geoHost ? GeoGridGeometry::adopt(geoHost) : nullptr;
+		if (!geo) {
+			if (geoHost) { delete geoHost; geoHost = nullptr; }
+			qWarning("ElasticDialog: grid_line_geometry.ui unavailable; using the built-in block");
+			auto *built = new GeoGridGeometry(this, /*withRefGrid=*/true);
+			geo = built; geoHost = built;
+		}
+		// The .ui's own size is what it asks for — never scaled or overridden here.
+		geoHost->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+		botRow->addWidget(geoHost, 1);
 
 		auto *rightCol = new QVBoxLayout();
 		beach = new BeachballWidget(this);
+		// A BUTTON here, not a canvas. BeachballWidget defaults to Expanding/Expanding because Focal
+		// Meca Studio uses it as its big square preview; in THIS dialog that let it swallow the whole
+		// right-hand column. Fixed square, only a little larger than the disc it draws.
+		beach->setFixedSize(52, 52);
 		beach->onClick = [this]() {
 			if (scn && scn->focalStudioDlg) {
 				scn->focalStudioDlg->raise();
@@ -19785,7 +19879,7 @@ public:
 		btnRow->addWidget(saveBtn);
 		btnRow->addWidget(computeBtn);
 		rightCol->addLayout(btnRow);
-		botRow->addLayout(rightCol);
+		botRow->addLayout(rightCol, 0);      // beachball + buttons keep their size; the Region block grows
 		v->addLayout(botRow);
 
 		// Prefill the geometry from the window's loaded grid/image (same logic as grdsample).
