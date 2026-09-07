@@ -11,9 +11,6 @@ grids, point clouds, and `GMTfv` solids / polygon meshes — in a **self-contain
 window. Its own Qt window, VTK render pipeline, interaction gizmo, cube
 axes, colour bar, shading, vertical curtains, in-window Julia console and data viewer.
 
-> Windows-only (the viewer ships as a Windows DLL). But there is nothing that prevents future Linux and MacOS versions
-
-
 ## Install
 
 See more extended instructions at [docs](https://www.generic-mapping-tools.org/InteractiveGMT/dev) but basically, have a GMT.jl updated version and do
