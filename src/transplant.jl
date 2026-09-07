@@ -206,12 +206,17 @@ function _on_transplant(scene::Ptr{Cvoid}, implant_path::String, res::Int=1, rec
 	return nothing
 end
 
-# "Transplant 2nd grid" on a "layerN" BLANK grid (the hollow grid the Nested-grids tool makes
-# for a rectangle). Unlike _on_transplant (which blends an implant into a real HOST grid over a smooth
-# seam), the nested grid has no data — every node is blank — so we simply SAMPLE the implant onto this
-# grid's own nodes and REPLACE the blank values. Nodes the implant doesn't cover keep their blank value.
-# `gname` = the blank grid's Scene Objects name ("layerN"); `implant_path` = grid to sample from.
-# The blank grid is dropped (viewer + registry) and a FILLED grid re-added under the SAME name (visible).
+# "Transplant 2nd grid" on a NESTING LEVEL's grid — the hollow "layerN" the Nested-grids tool makes
+# for a rectangle, or the "layerN.grd" NSWING wrote for that same level and the user opened again.
+# Unlike _on_transplant (which blends an implant into a real HOST grid over a smooth seam), a nesting
+# level is simply SAMPLED from the implant onto the level's own nodes; nodes the implant doesn't cover
+# keep the blank value. `gname` = the level's Scene Objects name; `implant_path` = grid to sample from.
+# The old grid is dropped (viewer + registry) and the filled one re-added under the SAME name (visible).
+#
+# The NODES come from the "Nested rectangle N" polygon, not from the grid on screen: the rectangle is
+# what defines a level, it re-quantizes on every drag/edit (nestReflow), and a REfill after a resize
+# must produce the level at its new size. So the caller passes the rectangle's current W/E/S/N + cell
+# size and a level whose grid no longer matches is REBUILT at those limits before being sampled into.
 
 # Pure core (no scene/registry/ccall — unit-tested): SAMPLE implant `I` onto blank grid `G`'s own node
 # spacing+registration over their overlap and write it INTO `G.z` IN PLACE. The blank grid is discarded
@@ -222,7 +227,14 @@ end
 function _nested_fill!(G::GMTgrid, I::GMTgrid)
 	x0, x1, y0, y1 = G.range[1], G.range[2], G.range[3], G.range[4]
 	dx, dy = G.inc[1], G.inc[2]
-	ny, nx = size(G.z)
+	# SACRED_LAW.md, grid memory-layout law: dims come from the COORDINATE VECTORS and the paste goes
+	# through `_zmat`, never `size(G.z)` / `G.z[iy,ix]`. A freshly created blank layer is column-major
+	# ("BCB") and the raw indexing happened to work; the SAME layer read back from a saved session is
+	# row-major ("TRB"), so writing grdsample's block straight into `G.z` filed a column-major buffer
+	# under a row-major label. Verified live (2026-09-06) on a reloaded tsunami session: the refilled
+	# layer's raw buffer matched the implant exactly while the grid it described correlated -0.19 with
+	# it — the data was there, scrambled, and every consumer that honours the layout read garbage.
+	nx, ny = _grid_dims(G)
 
 	# Region shared by the blank grid and the implant (grdsample can't leave the implant's extent),
 	# SNAPPED to the blank grid's own nodes so the sampled block lands on integer node indices.
@@ -240,9 +252,12 @@ function _nested_fill!(G::GMTgrid, I::GMTgrid)
 	Isamp = GMT.grdsample(I; region=(ws, es, sos, nos), inc=(dx, dy),
 	                      registration = (G.registration == 0 ? "g" : "p"))
 	c0 = ci0 + 1;  r0 = ri0 + 1
-	sy, sx = size(Isamp.z)
-	r1 = min(r0 + sy - 1, size(G.z, 1));  c1 = min(c0 + sx - 1, size(G.z, 2))
-	@views G.z[r0:r1, c0:c1] .= Isamp.z[1:(r1 - r0 + 1), 1:(c1 - c0 + 1)]
+	sx, sy = _grid_dims(Isamp)
+	r1 = min(r0 + sy - 1, ny);  c1 = min(c0 + sx - 1, nx)
+	# Both sides as (ny,nx) south-first views over their OWN memory — the write lands in G's buffer in
+	# whatever order that buffer is really in, so `G.layout` stays true after the paste.
+	Zg = _zmat(G);  Zs = _zmat(Isamp)
+	@views Zg[r0:r1, c0:c1] .= Zs[1:(r1 - r0 + 1), 1:(c1 - c0 + 1)]
 	# G.z was pasted by hand (not through a GMT call that recomputes the header) — G.range[5:6] (z_min,
 	# z_max) is still the blank grid's stale 0/0 unless refreshed here. This is the bug behind NSWING
 	# reading a "blank" nested grid despite real data in G.z: grdinfo (and anything trusting the header
@@ -251,11 +266,29 @@ function _nested_fill!(G::GMTgrid, I::GMTgrid)
 	return (r0 = r0, r1 = r1, c0 = c0, c1 = c1)
 end
 
-function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant_src::String)
+# True when `G` already IS the level the rectangle currently describes (same limits, same cell size),
+# so it can be filled where it lies. A NaN geometry means the caller had no rectangle to ask.
+function _nested_geom_matches(G::GMTgrid, x0, x1, y0, y1, xi, yi)
+	all(isfinite, (x0, x1, y0, y1, xi, yi)) || return true
+	tol(v) = 1e-6 * max(abs(v), 1.0)
+	return abs(G.range[1] - x0) <= tol(x0) && abs(G.range[2] - x1) <= tol(x1) &&
+	       abs(G.range[3] - y0) <= tol(y0) && abs(G.range[4] - y1) <= tol(y1) &&
+	       abs(G.inc[1]   - xi) <= tol(xi) && abs(G.inc[2]   - yi) <= tol(yi)
+end
+
+function _on_nested_transplant(scene::Ptr{Cvoid}, gname::AbstractString, implant_src::String,
+                               x0 = NaN, x1 = NaN, y0 = NaN, y1 = NaN, xi = NaN, yi = NaN)
 	try
 		name = String(gname)
 		G = _find_object(scene, :grid, name)
-		(G isa GMTgrid) || error("Nested blank grid '$name' not found in this window.")
+		(G isa GMTgrid) || error("Nested grid '$name' not found in this window.")
+		# The rectangle has been resized/re-quantized since this level was materialised: the level is
+		# REBUILT at the rectangle's current nodes (the one blank-grid constructor, nested.jl) and the
+		# implant sampled into that. Filling the old grid would refill the OLD size, which is the whole
+		# thing this option exists to avoid.
+		if !_nested_geom_matches(G, x0, x1, y0, y1, xi, yi)
+			G = _nested_blank(x0, x1, y0, y1, xi, yi, _isgeographic(G), name)
+		end
 
 		# `implant_src` is EITHER the name of a grid already in this window (the chooser's first
 		# option: layer0, or any loaded grid in the same coordinate kind whose region totally covers

@@ -74,6 +74,8 @@ function _find_object(scene::Ptr{Cvoid}, kind::Symbol, name::AbstractString)
 			for (k, n, d) in v
 				(k === kind && n == name) && return d
 			end
+			b = _find_base_named(scene, kind, name)      # the base under ITS OWN name (see below)
+			b === nothing || return b
 		end
 		for (k, n, d) in v
 			k === kind && return d                       # first of kind = the primary
@@ -98,6 +100,27 @@ function _find_object_exact(scene::Ptr{Cvoid}, kind::Symbol, name::AbstractStrin
 	v === nothing && return nothing
 	for (k, n, d) in v
 		(k === kind && n == name) && return d
+	end
+	return _find_base_named(scene, kind, name)
+end
+
+# The BASE surface, when `name` is the name the window itself knows it by. The base is registered in
+# `_SCENE_OBJS` under "" whenever it was opened by `view_grid`/`view_image` and RELABELLED afterwards
+# (`gmtvtk_set_surface_name_h`) — Load Session into a fresh window and "Move to new window" both do
+# exactly that — so the registry key and the Scene Objects label disagree, and every lookup that
+# starts from a name the USER picked in a menu misses. Live repro (2026-09-06): reload a tsunami
+# session, "Transplant 2nd grid…" on layer1, choose the bathymetry offered as "layer0.grd" — the name
+# resolved to no scene grid, fell through to being read as a FILE, and died with "Cannot find file
+# layer0.grd". One resolver for both name lookups, so a caller cannot see the base under one door and
+# not the other. The surfName is read from the LIVE scene, never cached: it is the panel's own label.
+function _find_base_named(scene::Ptr{Cvoid}, kind::Symbol, name::AbstractString)
+	(scene == C_NULL || isempty(name)) && return nothing
+	v = get(_SCENE_OBJS, scene, nothing)
+	v === nothing && return nothing
+	surf = try String(get(_scene_state(scene), "surf_name", "")) catch; "" end
+	surf == name || return nothing
+	for (k, n, d) in v
+		(k === kind && isempty(n)) && return d           # the base is the entry registered unnamed
 	end
 	return nothing
 end

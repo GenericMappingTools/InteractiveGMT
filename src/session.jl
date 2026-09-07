@@ -759,12 +759,40 @@ function _session_rebuild_texts!(fig, blob::String)
 	return
 end
 
+# A nesting level's chain number from a Scene Objects name: the in-window handle "layerN" the
+# Nested-grids tool made, and the "layerN.grd" NSWING wrote for that SAME level. 0 = not a level
+# ("layer0" is the base bathymetry, not a nesting level).
+_nest_level_handle(n::AbstractString) = (m = match(r"^layer([1-9]\d*)$", n); m === nothing ? 0 : parse(Int, m.captures[1]))
+_nest_level_file(n::AbstractString)   = (m = match(r"^layer([1-9]\d*)\.(?:grd|nc)$"i, n); m === nothing ? 0 : parse(Int, m.captures[1]))
+
+# Names Save Session must NOT write: the "layerN" handle of a level whose "layerN.grd" is ALSO in this
+# window. They are one level. The .grd row is file-backed (a path in the manifest, zero bytes in the
+# zip) and is the one that keeps the data; serializing the handle as well wrote the same grid a second
+# time as a multi-MB sidecar (7.4 MB of `sess1.igmtz` was exactly that). Dropped by explicit order,
+# 2026-09-07 — the level survives in its .grd row, which carries "Transplant 2nd grid…" and refills
+# from its "Nested rectangle N" at that rectangle's current size.
+function _session_dup_nest_handles(recipes::Vector{ElementRecipe})
+	havefile = Set{Int}()
+	for r in recipes
+		l = _nest_level_file(r.name);  l > 0 && push!(havefile, l)
+	end
+	skip = Set{String}()
+	isempty(havefile) && return skip
+	for r in recipes
+		l = _nest_level_handle(r.name)
+		(l > 0 && l in havefile) && push!(skip, r.name)
+	end
+	return skip
+end
+
 "File > Save Session: write the `scene` window's recipes + generated data to a `.igmtz` zip at `path`."
 function _on_save_session(scene::Ptr{Cvoid}, path::String)
 	recipes = get(_SESSION_LOG, scene, ElementRecipe[])
 	files = Tuple{String,Vector{UInt8}}[]
 	out = ElementRecipe[]; used = Set{String}(); seen = Set{Tuple{Symbol,String}}()
+	skipnest = _session_dup_nest_handles(recipes)
 	for r in recipes
+		r.name in skipnest && continue         # this level is already in the session as its .grd file
 		if r.origin === :generated
 			# Dedup: an element can get logged more than once (e.g. a nested layer re-materialized); a
 			# given (kind,name) is one Scene Objects element, so serialize + replay it exactly once.
@@ -935,6 +963,12 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 	elseif r.kind === :focal                             # re-dispatch the catalog request (newlines unescaped)
 		_on_focal(h, replace(get(r.params, "cparams", ""), '\x1e' => '\n'))
 		return fig
+	elseif r.kind === :elastic                           # recompute the Okada field from its request block
+		# A raster kind (see `israster`), so it replays with the grids and BEFORE the vectors -- adding a
+		# surface during the vector pass would outrank, and bury, every overlay already put back.
+		# adopt=false: the saved `checked` + `state` decide what this window shows and how it is framed.
+		_on_elastic(h, replace(get(r.params, "cparams", ""), '\x1e' => '\n'); adopt=false)
+		return fig
 	elseif r.kind === :illum                             # re-dispatch the Illumination model onto the rebuilt grid
 		# The reflectance is DERIVED, never stored: the same request block, through the same door the
 		# dialog uses, recomputes it from the layer that is now on screen. Replayed with the vectors
@@ -1014,34 +1048,36 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 		# Replay RASTERS first (grids/images/basemap), then vector/menu layers — vectors are always drawn on
 		# top of grids/images, and the shared draw-order pile ranks by add order, so vectors must be added
 		# LAST to outrank every raster (else e.g. a grid replayed after coastlines would bury them).
-		israster(r) = r.kind in (:basegrid, :image, :dropgrid, :dropimage, :basemap)
+		israster(r) = r.kind in (:basegrid, :image, :dropgrid, :dropimage, :basemap, :elastic)
 		nraster = count(israster, recipes)
 		ri = 0
-		lastraster = nothing                  # (name, data) of the last raster that actually replayed
 		for r in recipes
 			if israster(r)
 				ri += 1
 				ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), round(Int, 10 + 50*ri/nraster))
 				obj = _session_load_object(r, entries)
 				fig = _session_replay!(fig, r, obj, display, scene)
-				(obj === nothing) || (lastraster = (r.name, obj))
 			end
 		end
-		# SACRED_LAW.md, raster-own-axes law: EVERY raster add goes through the ONE transition
-		# `_adopt_new_element` — shown, everything else unchecked whatever its kind, axes reframed to
-		# its OWN extent — with no gate, no exception for any raster kind or any code path. Session
-		# replay was the exception nobody had closed: it added each raster with promote=false and
-		# NOTHING ELSE, so the last grid in the file came back with a Scene Objects row and nothing on
-		# screen (reported on C:/v/sess.igmtz: tejo10_geo.grd listed, never displayed). Adopting the
-		# LAST replayed raster is the same rule a drop of those same files in the same order gives.
-		# NO GATE. Not "if it has a name", not "if the window was empty", not "if it is an extra" —
-		# the law is explicit that writing such a condition around this call IS the recurring mistake,
-		# and it names the three earlier attempts that each added one. The base surface is not a
-		# special case either: replay names it (_session_set_name!), and the C side resolves the base
-		# by its own surfName and checks it back on when the base is what gets adopted.
-		if fig !== nothing && lastraster !== nothing
-			_adopt_new_element(getfield(fig, :h), lastraster[1], lastraster[2])
-		end
+		# NO ADOPT ON REPLAY. A layer must never change how another layer is drawn, and the adopt
+		# transition does exactly that: measured on a probe window, running `_adopt_new_element` and
+		# NOTHING else moved 90% of the pixels by a mean of 69 grey levels, with `look`, `noshade`,
+		# `sunaz`, `sunel`, `hillgain`, `ve` and `zfac` all identical before and after — it pins the
+		# window's view bounds, and every layer is then relit under that pin. On a tsunami session that
+		# is the reported bug verbatim: layer0 comes up correctly lit, the Okada layer replays, and
+		# layer0's illumination changes.
+		#
+		# The raster-own-axes law is not being dodged here — it governs a raster ARRIVING (a drop, an
+		# import, a derived result), where nothing else knows what the window should show. A session
+		# replay is the opposite case: the window's whole display was recorded when it was saved — the
+		# frame, the camera, and exactly which rows were checked — and it is put back below by
+		# `_session_apply_checked!` + `_session_apply_display!`. Deriving a frame from one replayed
+		# element would overwrite the one the user saved. Nothing to adopt, so nothing adopts.
+		#
+		# (The old code adopted the LAST replayed raster to cure a grid that came back listed but not
+		# displayed. That is the checkbox restore's job and it does it: it sets every row, base included,
+		# to the state it was saved in.)
+		# --- former adopt of the last replayed raster: DELETED, see above ---
 		nvec = length(recipes) - nraster
 		vi = 0
 		for r in recipes

@@ -1492,12 +1492,45 @@ static void sceneRemoveSurface(Scene *s) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
-// A "layerN" blank grid (hollow, made by the Nested-grids tool) can be FILLED by sampling a 2nd
-// grid onto its nodes ("Transplant 2nd grid…"). Transplantability is an INTRINSIC property of the grid
-// (encoded in its name, carried on G.title), NOT a per-window flag — so the option follows the grid
-// wherever its row lives: as a dropped EXTRA grid (gridObjectMenu) or, after "Move to new window", as
-// that window's BASE surface (surfaceObjectMenu). One predicate, one handler, offered identically.
-static bool gridIsNestedBlank(const QString &nm) { return QRegularExpression("^layer\\d+$").match(nm).hasMatch(); }
+// The grid that materialises "Nested rectangle N" can be (RE)FILLED by sampling a 2nd grid onto that
+// RECTANGLE's nodes ("Transplant 2nd grid…"). Returns the rectangle's 1-based chain position, 0 when
+// the name is not a nesting level's. Transplantability is an INTRINSIC property of the grid (encoded
+// in its name, carried on G.title), NOT a per-window flag — so the option follows the grid wherever
+// its row lives: as a dropped EXTRA grid (gridObjectMenu) or, after "Move to new window", as that
+// window's BASE surface (surfaceObjectMenu). One predicate, one handler, offered identically.
+//
+// The FILE forms count as the same layer: "Create blank grid" makes the in-window "layer1", and
+// running NSWING writes that level out as "layer1.grd" (nswing.jl `nest_paths`), which comes back as
+// its own row when opened. Both ARE nesting level 1, so both keep the option — a filled layer1.grd
+// must stay refillable, at a NEW SIZE if its rectangle has been resized since. "layer0" is the base
+// bathymetry, not a rectangle, and correctly yields 0.
+static int nestChainIndexOfGrid(const QString &nm) {
+	static const QRegularExpression re("^layer([0-9]+)(?:\\.(?:grd|nc))?$", QRegularExpression::CaseInsensitiveOption);
+	const QRegularExpressionMatch m = re.match(nm);
+	return m.hasMatch() ? m.captured(1).toInt() : 0;
+}
+
+// Geometry of the "Nested grids" rectangle at 1-based chain position `idx`, AS IT IS RIGHT NOW —
+// the rectangle is the authority on a nesting level's limits and cell size (nestReflow re-quantizes
+// it on every drag/edit), so a refill asks it rather than trusting the grid's own, possibly stale,
+// extent. False when there is no such rectangle or it has no cell size yet.
+static bool nestRectGeom(Scene *s, int idx, double &x0, double &x1, double &y0, double &y1,
+                         double &xi, double &yi) {
+	if (idx <= 0) return false;
+	int k = 0;
+	for (auto &pg : s->polys) {
+		if (pg.nestKind != 1) continue;
+		if (++k != idx) continue;
+		x0 = y0 = 1e300; x1 = y1 = -1e300;
+		for (auto &v : pg.v) {
+			x0 = std::min(x0, v[0]); x1 = std::max(x1, v[0]);
+			y0 = std::min(y0, v[1]); y1 = std::max(y1, v[1]);
+		}
+		xi = pg.nestXi; yi = pg.nestYi;
+		return (x1 > x0 && y1 > y0 && xi > 0 && yi > 0);
+	}
+	return false;
+}
 
 // Run the "Transplant 2nd grid…" fill on the nested blank grid named `nm`: pick an implant file and hand
 // it to Julia (_on_nested_transplant), which samples it onto this grid's nodes. Works for the base
@@ -1517,12 +1550,9 @@ static bool nestIsDeformation(const QString &n) { return n.startsWith("Okada z",
 // A NESTED LEVEL is not a source for another nested level: layer1, layer2 … are themselves filled
 // from a parent, at their own refined increment and covering only their own small window, so feeding
 // one into the next just resamples an already-resampled grid. layer0 is the exception and the whole
-// point — it is the parent bathymetry the chain was drawn on.
-static bool nestIsInnerLayer(const QString &n) {
-	static const QRegularExpression re("^layer([0-9]+)$");
-	const QRegularExpressionMatch m = re.match(n);
-	return m.hasMatch() && m.captured(1).toInt() > 0;
-}
+// point — it is the parent bathymetry the chain was drawn on. Same name rule as the option itself
+// (file forms included), so a level can never be offered to fill another one under its .grd name.
+static bool nestIsInnerLayer(const QString &n) { return nestChainIndexOfGrid(n) > 0; }
 
 static bool nestGridExtent(Scene *s, const QString &nm, double &x0, double &x1, double &y0,
                            double &y1, int &geog, int &nx, int &ny) {
@@ -1544,9 +1574,21 @@ static void runNestedTransplant(Scene *s, const QString &nm) {
 	// The nested layer being filled, and every in-window grid that could legitimately fill it. Listed
 	// by its Scene Objects label and nothing else — that is the name the user already knows the layer
 	// by, and the panel is right there if they want its extent.
-	double tx0, tx1, ty0, ty1; int tgeog, tnx, tny;
+	double tx0, tx1, ty0, ty1; int tgeog = s->baseGeog, tnx, tny;
 	QStringList cands;
-	if (nestGridExtent(s, nm, tx0, tx1, ty0, ty1, tgeog, tnx, tny)) {
+	bool haveT = nestGridExtent(s, nm, tx0, tx1, ty0, ty1, tgeog, tnx, tny);
+	// THE TARGET IS THE RECTANGLE, not the grid standing on screen. A nesting level's limits and cell
+	// size live on its "Nested rectangle N" polygon and change whenever it is dragged or edited
+	// (nestReflow re-quantizes the whole chain), so a refill must be sampled onto the rectangle's
+	// CURRENT nodes — that is what makes "refill with a different size" work at all. The grid's own
+	// extent is only the fallback for a level whose rectangle is gone.
+	double rx0, rx1, ry0, ry1, rxi, ryi;
+	const bool haveRect = nestRectGeom(s, nestChainIndexOfGrid(nm), rx0, rx1, ry0, ry1, rxi, ryi);
+	if (haveRect) {
+		tx0 = rx0; tx1 = rx1; ty0 = ry0; ty1 = ry1;
+		haveT = true;
+	}
+	if (haveT) {
 		auto covers = [&](double x0, double x1, double y0, double y1) {
 			const double eps = 1e-9;
 			return x0 <= tx0 + eps && x1 >= tx1 - eps && y0 <= ty0 + eps && y1 >= ty1 - eps;
@@ -1598,8 +1640,15 @@ static void runNestedTransplant(Scene *s, const QString &nm) {
 		src = fn;
 	}
 	// ONE entry point either way: Julia resolves `src` as an in-window grid name first, else as a path.
-	const QString cmd = QString("InteractiveGMT._on_nested_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",raw\"%3\")")
+	// The rectangle's geometry rides along when there is one: Julia builds the level at THAT size and
+	// samples into it, so a resized rectangle refills at its new size instead of the old grid's.
+	auto num = [](double v) { return QString::number(v, 'g', 15); };
+	QString cmd = QString("InteractiveGMT._on_nested_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",raw\"%3\"")
 		.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(nm).arg(src);
+	if (haveRect)
+		cmd += QString(",%1,%2,%3,%4,%5,%6").arg(num(rx0)).arg(num(rx1)).arg(num(ry0)).arg(num(ry1))
+		                                    .arg(num(rxi)).arg(num(ryi));
+	cmd += ")";
 	std::vector<char> buf(1 << 12);
 	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
 	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
@@ -1625,8 +1674,8 @@ static void surfaceObjectMenu(Scene *s, const QPoint &gp) {
 	QAction *aSave = m.addAction("Save grid…");
 	QAction *aInfo = m.addAction("Info (grdinfo)…");
 	QAction *aMove = m.addAction("Move to new window");      // re-open this grid in a fresh iGMT window, then drop it here
-	QAction *aTransplant = nullptr;                          // present iff this base grid is a nested blank (moved here)
-	if (g_juliaEval && gridIsNestedBlank(nm))
+	QAction *aTransplant = nullptr;                          // present iff this base grid is a nesting level (moved here)
+	if (g_juliaEval && nestChainIndexOfGrid(nm) > 0)
 		aTransplant = m.addAction("Transplant 2nd grid…");
 	QAction *aCube = nullptr;                                // present iff this base grid is a 3-D cube variable
 	if (s->cubeNLayers > 1 && g_juliaCubeSlider)
@@ -1660,11 +1709,12 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aSave  = m.addAction("Save grid…");
 	QAction *aInfo  = m.addAction("Info (grdinfo)…");
 	QAction *aMove  = m.addAction("Move to new window"); // re-open this grid in a fresh iGMT window, then drop it here
-	// A "Nested grid N" blank grid (created hollow by the Nested-grids tool) can be filled: implant a
-	// 2nd grid, sampled onto this grid's nodes, REPLACING the blank nodes. Julia removes this blank
-	// grid + re-adds a filled one under the same name (gmtvtk_remove_grid_h + _add_grid_to_scene).
+	// A nesting level's grid ("layer1" hollow from the Nested-grids tool, or the "layer1.grd" NSWING
+	// wrote for it) can be filled or REfilled: implant a 2nd grid, sampled onto the RECTANGLE's current
+	// nodes. Julia removes this grid + re-adds the filled one under the same name (gmtvtk_remove_grid_h
+	// + _add_grid_to_scene), at the rectangle's size — which may differ from the one on screen.
 	QAction *aTransplant = nullptr;
-	if (g_juliaEval && gridIsNestedBlank(nm))
+	if (g_juliaEval && nestChainIndexOfGrid(nm) > 0)
 		aTransplant = m.addAction("Transplant 2nd grid…");
 	QAction *aCube = nullptr;                             // present iff this extra grid is a 3-D cube variable
 	if (s->extras[idx].cubeLayers > 1 && g_juliaCubeSlider)

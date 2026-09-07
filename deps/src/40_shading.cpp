@@ -105,6 +105,25 @@ static inline double externShadeAt(const Scene *s, double x, double y) {
 	return externShadeAt(s->shadeIn, x, y);
 }
 
+// EACH LAYER IS LIT BY ITS OWN REFLECTANCE AND BY NOTHING ELSE. `layer` is a Scene Objects name
+// ("" = the base surface); the answer is true only when the loaded reflectance was computed FOR that
+// layer. Every consumer of the extern shade asks this first, so illuminating one grid can no longer
+// change how any other grid in the window is drawn (2026-09-07: reported as layer0's illumination
+// changing when another layer arrived). A reflectance with no owner (an older state) belongs to the
+// base surface, which is where the single-layer windows that predate this always applied it.
+static inline bool externShadeOwns(const Scene *s, const std::string &layer) {
+	if (!s || !haveExternShade(s->shadeIn)) return false;
+	return s->shadeIn.owner.empty() ? layer.empty() : (s->shadeIn.owner == layer);
+}
+
+// The Scene Objects name of the layer an actor belongs to: an extra by its own name, anything else
+// (the base surface and every LOD tile of it) the base's. ONE resolver, so "which layer is this
+// actor?" has one answer wherever it is asked.
+static inline std::string layerNameOfActor(Scene *s, vtkActor *a) {
+	const int idx = a ? extraIndexOfActor(s, a) : -1;
+	return (idx >= 0) ? s->extras[idx].name : s->surfName;
+}
+
 struct ReliefLight {
 	double Lx, Ly, Lz;          // sun dir, lit convention (Lambert / PBR key light)
 	double LxG, LyG, LzG;       // sun dir, grdimage (inverted elevation)
@@ -291,7 +310,9 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 	}
 	const double invspan = (hi > lo) ? (NT - 1) / (hi - lo) : 0.0;
 	const bool   pbr   = !s->useHillshade && s->litBake;   // flat PBR bake (approximates the lit surface)
-	const bool   ext   = haveExternShade(s);               // Hillshade tool: GMT-computed reflectance
+	// Hillshade tool: GMT-computed reflectance — consumed only when it is THIS layer's own. This bake
+	// paints the BASE surface's drape (its callers pass s->gridZ), so the owner asked about is the base.
+	const bool   ext   = externShadeOwns(s, s->surfName);
 	const bool   shade = s->useHillshade || pbr;           // any per-pixel shade (hillshade or PBR)
 	const ReliefLight L = makeReliefLight(s);      // SAME light/style the 3-D surface uses (one source of truth)
 	const GridLay zlay = gridLay(nx, ny, zlayout);                               // THE layout resolver (10_geometry.cpp)
@@ -773,7 +794,9 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// Hillshade tool: an externally computed reflectance, sampled at each point's TRUE-coord (x,y).
 	// The polydata carries true data coords (the actor holds xfac/ve), so this works for the single
 	// surface and for every LOD tile without either of them knowing its own grid index range.
-	const bool ext = haveExternShade(s);
+	// …and ONLY if that reflectance was computed for THIS actor's layer. Any other layer's light is
+	// not this layer's business (see externShadeOwns).
+	const bool ext = externShadeOwns(s, layerNameOfActor(s, act));
 	vtkPoints *pts = ext ? pd->GetPoints() : nullptr;
 	if (ext && !pts) return;
 	vtkSmartPointer<vtkUnsignedCharArray> col = vtkSmartPointer<vtkUnsignedCharArray>::New();

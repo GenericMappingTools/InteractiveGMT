@@ -54,9 +54,27 @@ end
 # First iteration: pass the window's loaded GMTgrid (its region + spacing) to GMT.okada and add the
 # resulting vertical-deformation grid back into the same window as "Okada z". R/I, SCC, N/q, Mu and the
 # hide flag are not used yet.
-function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
+_on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid = _on_elastic(scene, unsafe_string(cparams))
+
+# Save Session: the dialog's request block, verbatim, as the window's ONE :elastic recipe. The Okada
+# field is DERIVED — fault geometry + slip through `GMT.okada` on this window's grid — so the session
+# stores the REQUEST and recomputes it on load, exactly as :illum and :focal do. Writing the result as
+# a netCDF sidecar instead put ~1 MB of recomputable pixels in every tsunami session zip.
+_session_record_elastic!(scene::Ptr{Cvoid}, raw::String) =
+	_session_record_single!(scene, :elastic, :menu;
+	                        params = Dict{String,Any}("cparams" => replace(raw, '\n' => '\x1e')))
+
+# `adopt` is FALSE only on a session replay. Running the derived-variable transition then is not the
+# law being honoured, it is the law being applied to the wrong actor: a REPLAY is not a new result
+# arriving, it is a saved window being rebuilt, and that window's final display — which rows are
+# checked, the frame, the camera — is stored in the session and applied at the end of the load. The
+# transition pins the window's view bounds to the Okada layer's own (its Z range is centimetres of
+# deformation against kilometres of bathymetry), and NOTHING in the saved state can unpin it: measured
+# on a probe window, layer0's pixels came back 90% different with every shading knob identical, which
+# is exactly "loading a session changes layer0's illumination when Okada z is loaded".
+function _on_elastic(scene::Ptr{Cvoid}, craw::String; adopt::Bool = true)::Cvoid
 	try
-		parts   = split(unsafe_string(cparams), ';')
+		parts   = split(craw, ';')
 		getp(i) = length(parts) >= i ? String(strip(parts[i])) : ""
 		num(i)  = (v = tryparse(Float64, getp(i)); v === nothing ? NaN : v)
 
@@ -113,12 +131,14 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 				Gsum === nothing && error("no valid patches in the slip model")
 				zmn, zmx = extrema(Gsum.z); Gsum.range[5] = zmn; Gsum.range[6] = zmx   # z was summed by hand
 				_grid_command!(Gsum, "iGMT elastic deformation: sum of $(valid_count) GMT.okada sub-faults")
-				_add_grid_to_scene(scene, Gsum, "Okada z (model)")
+				# record=false: the session replays the REQUEST (below), never the pixels.
+				_add_grid_to_scene(scene, Gsum, "Okada z (model)"; record=false)
+				_session_record_elastic!(scene, craw)
 				# SACRED_LAW.md derived-variable display + axes laws, through the ONE shared transition
 				# (`_adopt_derived!`, grid.jl): the new result is checked, every other layer unchecked
 				# whatever its kind (never guessing which one was "the" fault-trace host), axes+camera
 				# on the deformation's own limits and units.
-				_adopt_derived!(scene, "Okada z (model)", Gsum)
+				adopt && _adopt_derived!(scene, "Okada z (model)", Gsum)
 				_viewer_log_info(scene, "Okada: summed $(valid_count) sub-faults → 'Okada z (model)' " *
 					"(z ∈ [$(round(zmn, digits=4)), $(round(zmx, digits=4))])")
 				return
@@ -132,8 +152,9 @@ function _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		                 strike=strike, dip=dip, rake=rake, slip=slip)
 
 		_grid_command!(Gdef, cmd)                     # stamp the exact okada call into GMTgrid.command
-		_add_grid_to_scene(scene, Gdef, "Okada z")
-		_adopt_derived!(scene, "Okada z", Gdef)      # same ONE transition as the summed-model branch
+		_add_grid_to_scene(scene, Gdef, "Okada z"; record=false)   # session replays the request, not the pixels
+		_session_record_elastic!(scene, craw)
+		adopt && _adopt_derived!(scene, "Okada z", Gdef)   # same ONE transition as the summed-model branch
 		_viewer_log_info(scene, "Okada: vertical deformation computed (z ∈ " *
 			"[$(round(minimum(Gdef.z), digits=4)), $(round(maximum(Gdef.z), digits=4))]) → 'Okada z'")
 	catch e

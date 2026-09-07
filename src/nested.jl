@@ -16,8 +16,12 @@ const _NESTED_COLORS = [
 # position in the nesting chain. The grid is named "layerN" so the names follow the grid stack
 # order (base grid first, then 1, 2, 3 inward) and gets an (unchecked) row in Scene Objects; the user
 # ticks it to show it. NO new window is ever opened. `geog` tags the grid as geographic.
-function _nested_blank_grid(scene::Ptr{Cvoid}, x0, x1, y0, y1, xi, yi, geog::Bool, n::Integer)
-	nm = "layer$(Int(n))"
+
+# THE constructor for a nesting level's grid: a zero grid at the rectangle's limits/increments, named
+# for the level. Used to CREATE the hollow layer ("Create blank grid", below) and to REBUILD it when a
+# refill finds the rectangle has been resized since (transplant.jl `_on_nested_transplant`) — one
+# function, so the two can never disagree on what "the grid for this level" is.
+function _nested_blank(x0, x1, y0, y1, xi, yi, geog::Bool, nm::String)
 	nx = round(Int, (x1 - x0) / xi) + 1
 	ny = round(Int, (y1 - y0) / yi) + 1
 	Z  = zeros(Float32, ny, nx)                       # row-major (y, x): GMT.jl matrix layout
@@ -29,6 +33,12 @@ function _nested_blank_grid(scene::Ptr{Cvoid}, x0, x1, y0, y1, xi, yi, geog::Boo
 	if geog
 		G.proj4 = "+proj=longlat +datum=WGS84 +no_defs"
 	end
+	return G
+end
+
+function _nested_blank_grid(scene::Ptr{Cvoid}, x0, x1, y0, y1, xi, yi, geog::Bool, n::Integer)
+	nm = "layer$(Int(n))"
+	G  = _nested_blank(x0, x1, y0, y1, xi, yi, geog, nm)
 	col = _NESTED_COLORS[((Int(n) - 1) % length(_NESTED_COLORS)) + 1]   # cycle a distinct solid colour
 	_add_grid_to_scene(scene, G, nm; color = col)     # adds as an extra surface (Scene Objects row)
 	ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, nm, Cint(0))  # hidden

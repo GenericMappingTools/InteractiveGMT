@@ -705,6 +705,7 @@ static int addTextsBatch(Scene *s, const double *xy, const char *texts, int n,
 static void polyRebuildLine(Scene *s, Polygon &pg);                         // rebuild a polygon actor from pg.v (85)
 static void polyRebuildFill(Scene *s, Polygon &pg);                         // rebuild a closed polygon's filled face (85)
 static int  polyIndexOfActor(Scene *s, vtkActor *a);                        // index of polygon whose line==a, or -1 (55)
+static int  extraIndexOfActor(Scene *s, vtkProp3D *a);                      // index of the extra owning this actor, or -1 (50)
 static bool lineClosedRing(Scene *s, const LineRef &lr);                    // closed polygon ring? (55)
 static int  polyHitPolygon(Scene *s, int x, int y, double tol);             // polygon under cursor? (85)
 static void nestReflow(Scene *s);                                            // re-quantize "Nested grids" chain (85); idempotent, so untouched rects (ancestors included) stay put
@@ -733,6 +734,12 @@ struct ExternShade {
 	int    nx = 0, ny = 0;
 	double x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0;
 	int    model = 0;              // the Mirone illum_model that produced it (0 = none loaded)
+	// WHOSE reflectance this is: the Scene Objects name of the layer it was computed for ("" = the
+	// base surface). A reflectance is computed FROM ONE LAYER's z, so it describes that layer and
+	// nothing else. Without an owner it was a window-wide value and every bake consumed it, so
+	// illuminating one grid re-lit every other grid in the window — layers interfering with each
+	// other, reported 2026-09-07. Read it through externShadeOwns(), never bare.
+	std::string owner;
 };
 
 struct AquaSideShade {
@@ -4137,14 +4144,29 @@ static double sceneZRef(Scene *s) {
 	// x and y, so there is nothing to normalise -- normalising it is what flattened a sphere into a
 	// cookie. GMTfv.zscale rides on top as Scene::ve, which is what view_fv promises.
 	if (s->fvTrueScale) return 1.0;
-	double zlo = s->zmin, zhi = s->zmax;
-	activeGridZRange(s, zlo, zhi);                     // active layer's own z span, else the window's
-	const double zspan = zhi - zlo;
+	// THE WINDOW'S OWN Z SPAN, never the active layer's. `zfac` is the scale EVERY actor in the window
+	// is drawn with, so deriving it from whichever layer happens to be active makes one layer re-scale
+	// all the others — and, because a relief shade is computed on the geometry AS DRAWN, re-LIGHT them
+	// too. That is the reported bug verbatim: loading C:\v\sess.igmtz, "Okada z" comes in visible,
+	// becomes the active grid, and its centimetres of deformation replace layer0's kilometres of
+	// bathymetry as the reference span — so layer0, which nobody touched, changes illumination.
+	// A layer never decides how another layer is drawn (SACRED_LAW: no cross-layer interference).
+	//
+	// This is NOT the derived-variable axes law being undone. That law is about what the AXES SAY, and
+	// it still holds: surfGetBounds() keeps overriding the reported Z range with activeGridZRange(), so
+	// the cube, its tick labels, the colour bar and the readout all still describe the active layer in
+	// its own units. Only the geometric normaliser stops moving.
+	const double zspan = s->zmax - s->zmin;
 	if (s->globe)
 		return (zspan > 0.0 && std::isfinite(zspan)) ? kVEReferenceGlobe * s->globeR / zspan : 1.0;
-	double x0 = s->x0, x1 = s->x1, y0 = s->y0, y1 = s->y1;
-	if (AxesSet *A = axesForActive(s)) { x0 = A->x0; x1 = A->x1; y0 = A->y0; y1 = A->y1; }
-	const double H = std::max(std::fabs(x1 - x0) * s->xfac, std::fabs(y1 - y0));
+	// …and the HORIZONTAL span is the WINDOW's too, for exactly the same reason as the z span above.
+	// It used to be taken from axesForActive(), so a small layer becoming active (tejo10_geo.grd, 0.8
+	// degrees, against layer0.grd's many) shrank H and rescaled every actor in the window — measured on
+	// C:\v\sess.igmtz as zfac 1.21e-4 for layer0 alone against 7.62e-6 for the same layer0 inside the
+	// loaded session, a 16x re-exaggeration of a layer nobody touched, and with it a new illumination.
+	// Both halves of this ratio are now window constants: showing, hiding or adding a layer cannot
+	// change how any other layer is drawn or lit.
+	const double H = std::max(std::fabs(s->x1 - s->x0) * s->xfac, std::fabs(s->y1 - s->y0));
 	if (!(zspan > 0.0) || !(H > 0.0) || !std::isfinite(zspan) || !std::isfinite(H)) return 1.0;
 	return kVEReference * H / zspan;                   // ve = 1 -> the reference look
 }
