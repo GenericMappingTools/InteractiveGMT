@@ -209,6 +209,51 @@ function _on_elastic(scene::Ptr{Cvoid}, craw::String; adopt::Bool = true)::Cvoid
 	return
 end
 
+# Called from C++ (Fault plane demo's "Compute inset", via g_juliaEval) — the deformation DEMO field:
+# `GMT.okada` over a zone three times the fault's own size with the fault at its centre, sampled on a
+# small cartesian grid (axes in metres, no proj4: the demo zone is a teaching picture, not a place on
+# the planet). It is the SAME okada the Compute button reaches through `_on_elastic` — the demo does
+# not own a second deformation, it owns a second REGION — and nothing here touches a window: the
+# nodes are handed straight back to the dialog, which draws them in its own inset renderer.
+# Output: "nx;ny;x0;x1;y0;y1;zmin;zmax" then nx*ny values, x-major (all y of x1, then all y of x2...),
+# ';'-separated, 5 significant digits. Prints nothing on any failure — the inset then stays as it was.
+function _okada_demo_field(L::Real, W::Real, strike::Real, dip::Real, depthTop::Real,
+                           rake::Real, slip::Real, n::Int = 61)
+	try
+		L = Float64(L); W = Float64(W)
+		(L > 0 && W > 0 && n > 3) || return nothing
+		# THREE TIMES the fault: half-span = 1.5 x its largest true dimension, so the zone is 3L (or 3W)
+		# across whichever way the plane is turned, and the fault sits dead centre of it whatever the
+		# strike. Metres, because a cartesian GMT grid's axes are metres against okada's kilometres.
+		half = 1.5 * max(L, W) * 1000.0
+		x = collect(range(-half, half, length = n))
+		y = collect(range(-half, half, length = n))
+		G = GMT.mat2grid(zeros(Float32, n, n); x = x, y = y)
+		# Fault CENTRED in that zone. A CARTESIAN `GMT.okada` reads the grid coordinates as already being in
+		# the fault-CENTROID frame (okada.jl: the x,y method "assumes x,y are already in the fault centroid
+		# reference"), so a zone centred on (0,0) has the fault at its centre by construction. x_start/y_start
+		# are required kwargs all the same, and they are given the geometrically right corner — the plane's
+		# UPPER-LEFT, half its length back along strike and half its HORIZONTAL width back along strike+90,
+		# since it dips to the right of the trace — so the call still reads true if this grid ever becomes
+		# geographic (that path does use them). Strike is CW from North: along-strike is (sind, cosd) in
+		# (x, y), along strike+90 is (cosd, -sind).
+		sa, ca = sind(strike), cosd(strike)
+		Wp = W * cosd(dip)                      # the plane's HORIZONTAL width, which is what the map sees
+		x0 = -(0.5 * L * sa + 0.5 * Wp * ca) * 1000.0
+		y0 = -(0.5 * L * ca - 0.5 * Wp * sa) * 1000.0
+		Gd = GMT.okada(G; x_start = x0, y_start = y0, L = L, W = W, depth = depthTop,
+		               strike = strike, dip = dip, rake = rake, slip = slip)
+		zmn, zmx = extrema(Gd.z)
+		print(n, ';', n, ';', -half, ';', half, ';', -half, ';', half, ';', zmn, ';', zmx)
+		for j in 1:n, i in 1:n          # j = x node, i = y node (ascending): x-major, y fastest
+			print(';', round(Float64(Gd.z[i, j]), sigdigits = 5))
+		end
+	catch e
+		@tool_error "Okada demo field FAILED" exception=(e,)
+	end
+	return nothing
+end
+
 function _register_elastic()
 	fptr = @cfunction((s, c) -> Base.invokelatest(_on_elastic, s, c), Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_elastic_callback), Cvoid, (Ptr{Cvoid},), fptr)

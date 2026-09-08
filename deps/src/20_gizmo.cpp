@@ -43,6 +43,10 @@ struct Gizmo {
 	// instead of riding the camera. Cleared by anything that redefines the centre of interest: 'c'
 	// / middle-click recentre, a number-key view snap, or a mouse-driven camera move.
 	double panOff[3] = {0,0,0};
+	// Screen size of the handle as a fraction of the viewport HEIGHT (see PlaceCB). One knob, so a view
+	// whose subject is deliberately small in the frame — the Fault plane demo opens zoomed out — can ask
+	// for a smaller handle without a second sizing rule living in that dialog.
+	double sizeFrac = 0.16;
 	double scale = 1.0;
 	double right[3] = {1,0,0};  // camera screen-right (horizontal-axis direction)
 	// THE GIZMO'S OWN VERTICAL. World +Z on a flat map — and on the GLOBE the RADIAL direction at the
@@ -310,7 +314,7 @@ void PlaceCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 		vph = 2.0 * cam->GetParallelScale();
 	else
 		vph = 2.0 * d * std::tan(cam->GetViewAngle() * 0.5 * vtkMath::Pi() / 180.0);
-	c->scale = std::max(1e-6, 0.16 * vph);
+	c->scale = std::max(1e-6, c->sizeFrac * vph);
 
 	// Tilt-ring offset = a FIXED multiple of `scale` (L = scale*kHaxisFallback): same screen size at
 	// every zoom and for any grid. Calibrating to the DATA half-width (haxisLen/scale) put the ring at
@@ -412,6 +416,16 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 	vtkRenderer *ren = c->s->ren;
 	vtkCamera *cam = (ren && ren->GetActiveCamera()) ? ren->GetActiveCamera() : nullptr;
 	bool handled = false;
+
+	// NOT OUR RENDERER, NOT OUR EVENT. The window may carry a second renderer in a corner (the Fault
+	// plane demo hangs its deformation inset there), and a drag poked into that one belongs to its
+	// camera — the interactor style already routes it there, and this handle must not rotate the body
+	// behind it. Only a handle ALREADY grabbed keeps following the mouse wherever it goes.
+	if (c->grab == Grab::None &&
+	    !renIsPoked(rwi, ren, rwi->GetEventPosition()[0], rwi->GetEventPosition()[1])) {
+		if (c->dragCmd) c->dragCmd->SetAbortFlagOnExecute(0);
+		return;
+	}
 
 	// The polygon tool / text label / colorbar own the left button while one of them is being
 	// dragged — the gizmo must NEVER rotate/tilt then (the drag must not also move the camera).
@@ -629,30 +643,26 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 			const int    H  = s->widget->renderWindow()->GetSize()[1];
 			const double dx = lp.x() * r;
 			const double dy = H - lp.y() * r;
-			// Display depth (z) of the focal plane; cam->Zoom() leaves the camera in place so this
-			// z is stable across the zoom and can be reused for the before/after unprojection.
+			// The world point under the cursor before and after the zoom, through THE shared unprojection
+			// (camWorldAtFocalDepth, 10_geometry.cpp — the same one 'c' and the middle-button pan aim with).
+			// cam->Zoom() leaves the camera in place, so the focal-plane depth it reads is the same both times.
 			double fp[3]; cam->GetFocalPoint(fp);
-			ren->SetWorldPoint(fp[0], fp[1], fp[2], 1.0); ren->WorldToDisplay();
-			const double fz = ren->GetDisplayPoint()[2];
-			auto unproject = [&](double out[3]) {
-				ren->SetDisplayPoint(dx, dy, fz); ren->DisplayToWorld();
-				double w[4]; ren->GetWorldPoint(w);
-				out[0] = w[0]/w[3]; out[1] = w[1]/w[3]; out[2] = w[2]/w[3];
-			};
-			double before[3]; unproject(before);
-			cam->Zoom(zin ? 1.25 : 1.0/1.25);
-			double after[3];  unproject(after);
-			double pos[3]; cam->GetPosition(pos);
-			const double sh[3] = { before[0]-after[0], before[1]-after[1], before[2]-after[2] };
-			// The handle stays ON the body. Cursor-centred zoom pans the camera AND its focal point
-			// by sh, and PlaceCB anchors the gizmo at the focal point, so without this it would ride along
-			// and drift off the world point it was standing on. Same bank-and-add-back as the arrow pan.
-			for (int i = 0; i < 3; ++i) c->panOff[i] -= sh[i];
-			cam->SetFocalPoint(fp[0]+sh[0], fp[1]+sh[1], fp[2]+sh[2]);
-			cam->SetPosition (pos[0]+sh[0], pos[1]+sh[1], pos[2]+sh[2]);
-			c->curView = 0;                  // zoom/pan moved the camera: a view key should re-snap
-			ren->ResetCameraClippingRange();
-			renderWin(c);
+			double before[3], after[3];
+			if (camWorldAtFocalDepth(ren, dx, dy, before)) {
+				cam->Zoom(zin ? 1.25 : 1.0/1.25);
+				camWorldAtFocalDepth(ren, dx, dy, after);
+				double pos[3]; cam->GetPosition(pos);
+				const double sh[3] = { before[0]-after[0], before[1]-after[1], before[2]-after[2] };
+				// The handle stays ON the body. Cursor-centred zoom pans the camera AND its focal point
+				// by sh, and PlaceCB anchors the gizmo at the focal point, so without this it would ride along
+				// and drift off the world point it was standing on. Same bank-and-add-back as the arrow pan.
+				for (int i = 0; i < 3; ++i) c->panOff[i] -= sh[i];
+				cam->SetFocalPoint(fp[0]+sh[0], fp[1]+sh[1], fp[2]+sh[2]);
+				cam->SetPosition (pos[0]+sh[0], pos[1]+sh[1], pos[2]+sh[2]);
+				c->curView = 0;                  // zoom/pan moved the camera: a view key should re-snap
+				ren->ResetCameraClippingRange();
+				renderWin(c);
+			}
 		}
 	}
 	// Arrow keys pan: Left/Right/Up/Down slide the MODEL in the screen plane, the way the arrow
@@ -670,18 +680,13 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 			vtkCamera *cam = ren->GetActiveCamera();
 			const int *wh = s->widget->renderWindow()->GetSize();
 			const double cx = wh[0] * 0.5, cy = wh[1] * 0.5;
+			// Screen axes in world space, from THE shared unprojection (camWorldAtFocalDepth, 10_geometry.cpp):
+			// the viewport centre and a one-pixel step in +x / +y, all at the focal-plane depth.
 			double fp[3]; cam->GetFocalPoint(fp);
-			ren->SetWorldPoint(fp[0], fp[1], fp[2], 1.0); ren->WorldToDisplay();
-			const double fz = ren->GetDisplayPoint()[2];
-			auto unproject = [&](double px, double py, double out[3]) {
-				ren->SetDisplayPoint(px, py, fz); ren->DisplayToWorld();
-				double w[4]; ren->GetWorldPoint(w);
-				out[0] = w[0]/w[3]; out[1] = w[1]/w[3]; out[2] = w[2]/w[3];
-			};
 			double c0[3], cxv[3], cyv[3];
-			unproject(cx, cy, c0);            // viewport centre at focal depth
-			unproject(cx + 1.0, cy, cxv);     // +1 px in screen x
-			unproject(cx, cy + 1.0, cyv);     // +1 px in screen y
+			if (!camWorldAtFocalDepth(ren, cx, cy, c0) ||
+			    !camWorldAtFocalDepth(ren, cx + 1.0, cy, cxv) ||
+			    !camWorldAtFocalDepth(ren, cx, cy + 1.0, cyv)) return;
 			const double step = wh[1] * 0.12; // pan distance in pixels
 			double sh[3] = {0,0,0};
 			if (pr || pl) { const double sg = pr ? step : -step;
@@ -861,11 +866,17 @@ void buildGeometry(Gizmo &c) {
 
 // Any interactor-driven camera move (wheel zoom, middle-button pan, trackball) invalidates
 // the active number-key view-snap, so the next view key re-snaps instead of no-op'ing.
-void ResetViewCB(vtkObject*, unsigned long, void *clientData, void*) {
-	if (Gizmo *c = static_cast<Gizmo*>(clientData)) {
-		c->curView = 0;
-		c->panOff[0] = c->panOff[1] = c->panOff[2] = 0.0;   // a mouse pan re-centres the handle
-	}
+void ResetViewCB(vtkObject *caller, unsigned long, void *clientData, void*) {
+	Gizmo *c = static_cast<Gizmo*>(clientData);
+	if (!c) return;
+	// Only an interaction with OUR OWN renderer redefines our centre: a drag in a second renderer's
+	// viewport (the Fault plane demo's inset) moves that camera, not this one, so clearing the pan
+	// offset here would jump the handle off the body for a gesture that never touched it.
+	if (auto *rwi = vtkRenderWindowInteractor::SafeDownCast(caller))
+		if (!renIsPoked(rwi, c->s ? c->s->ren : nullptr,
+		                rwi->GetEventPosition()[0], rwi->GetEventPosition()[1])) return;
+	c->curView = 0;
+	c->panOff[0] = c->panOff[1] = c->panOff[2] = 0.0;   // a mouse pan re-centres the handle
 }
 
 // Build, add to the scene, wire the follow + drag + key observers.

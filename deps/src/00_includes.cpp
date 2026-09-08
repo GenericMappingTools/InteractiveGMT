@@ -221,6 +221,8 @@
 #include <vtkPlaneSource.h>       // the flat unlit NaN-hole backdrop (nanPlaneUpdate)
 #include <vtkLineSource.h>
 #include <vtkBillboardTextActor3D.h>
+#include <vtkFollower.h>          // camera-facing 3-D text: the inset axes' z annotations
+#include <vtkVectorText.h>        // ...the SAME glyph source vtkAxisActor uses for its own labels
 #include <vtkTextActor3D.h>
 #include <vtkTransform.h>
 #include <vtkTransformPolyDataFilter.h>

@@ -2401,6 +2401,37 @@ static void displayPxFromQt(QWidget *w, vtkRenderWindow *rw, const QPoint &p, do
 
 // Drag the world under the cursor: move the camera by the world-space shift between two display
 // points taken at the focal point's depth. Caller renders.
+// Is this display-pixel event OWNED by `ren`? A render window can carry more than one renderer — the
+// Fault plane demo hangs its deformation inset in a corner of the same window — and then "the mouse is
+// over the scene" stops being the same statement as "the mouse is over THIS renderer".
+//
+// NOT a viewport test: the main renderer's viewport is the WHOLE window, so "inside my rectangle" is
+// true for it even when the pointer is deep inside the inset. The question is which renderer the event
+// is POKED into, and vtkRenderWindowInteractor::FindPokedRenderer already answers it — walking the
+// collection BACKWARDS, so a small renderer added after a full-window one wins inside its own box. Same
+// answer the interactor style uses to pick the camera it drives, so a handler asking this can never
+// disagree with the style about whose gesture it was.
+static bool renIsPoked(vtkRenderWindowInteractor *rwi, vtkRenderer *ren, int x, int y) {
+	return rwi && ren && rwi->FindPokedRenderer(x, y) == ren;
+}
+
+// The world point under a display pixel, taken at the FOCAL POINT'S depth. THE one place that maths
+// lives: `camPanByDisplay` drags the world with it, `camRecenterOnPick` falls back on it when there is
+// no geometry under the pointer, and the gizmo's +/- zoom and arrow-key pan (20_gizmo.cpp) aim with it.
+// Returns false when the renderer cannot answer (no camera, degenerate transform).
+static bool camWorldAtFocalDepth(vtkRenderer *ren, double x, double y, double out[3]) {
+	vtkCamera *cam = ren ? ren->GetActiveCamera() : nullptr;
+	if (!cam) return false;
+	double fp[3]; cam->GetFocalPoint(fp);
+	ren->SetWorldPoint(fp[0], fp[1], fp[2], 1.0); ren->WorldToDisplay();
+	const double depth = ren->GetDisplayPoint()[2];
+	ren->SetDisplayPoint(x, y, depth); ren->DisplayToWorld();
+	double w[4]; for (int i = 0; i < 4; ++i) w[i] = ren->GetWorldPoint()[i];
+	if (w[3] == 0.0) return false;
+	out[0] = w[0]/w[3]; out[1] = w[1]/w[3]; out[2] = w[2]/w[3];
+	return true;
+}
+
 static void camPanByDisplay(vtkRenderer *ren, double ox, double oy, double nx, double ny) {
 	vtkCamera *cam = ren ? ren->GetActiveCamera() : nullptr;
 	if (!cam) return;
