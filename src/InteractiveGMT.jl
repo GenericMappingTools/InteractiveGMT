@@ -76,6 +76,7 @@ include("tsunamittt.jl") # Geophysics > Tsunamis > Tsunami travel times (GMT.jl 
 include("igrf.jl")       # Geophysics > Magnetics > IGRF (port of Mirone igrf_options.m; GMT.magref)
 include("seismicity.jl") # Geophysics > Seismology > Seismicity (port of Mirone earthquakes.m)
 include("focal.jl")      # Geophysics > Seismology > Focal mechanisms (port of Mirone focal_meca.m)
+include("faultdemo.jl")  # Seismology > Fault plane demo: STL reconstruction at dip and fault-parallel slip
 include("deform.jl")     # Geophysics > Vertical elastic deformation: fault-trace endpoint (deform_mansinha.m)
 include("nested.jl")     # "Nested grids" rectangle tool: host-side blank-grid builder (nesting_sizes.m)
 include("transplant.jl") # Grid Tools > Transplant 2nd grid (port of Mirone utils/transplants.m)

@@ -198,6 +198,9 @@
 #include <vtkPLYReader.h>
 #include <vtkOBJReader.h>
 #include <vtkSTLReader.h>
+#include <vtkArrowSource.h>
+#include <vtkAxesActor.h>
+#include <vtkOrientationMarkerWidget.h>
 #include <vtkOFFReader.h>
 #include <vtkBYUReader.h>
 #include <vtkGLTFReader.h>

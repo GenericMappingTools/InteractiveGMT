@@ -1167,17 +1167,7 @@ public:
 		// the way, and the view and the picked rectangle come back with it.
 		setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		setWindowModality(Qt::NonModal);
-		struct MinimiseParks : QObject {
-			MapRegionPicker *dg;
-			MinimiseParks(QObject *p, MapRegionPicker *g) : QObject(p), dg(g) {}
-			bool eventFilter(QObject *o, QEvent *e) override {
-				if (e->type() == QEvent::WindowStateChange && dg &&
-				    dg->windowState().testFlag(Qt::WindowMinimized))
-					QTimer::singleShot(0, dg, [g = dg]() { g->parkNow(); });
-				return QObject::eventFilter(o, e);
-			}
-		};
-		installEventFilter(new MinimiseParks(this, this));
+		parkOnMinimise(this, [this]() { parkNow(); });   // the shared handler (50_scene.cpp)
 		QObject::connect(this, &QObject::destroyed, this, [s, this]() {
 			if (sceneAlive(s)) unparkTool(s, this);
 		});
@@ -25356,6 +25346,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			g_juliaFocal(s, p.toUtf8().constData());
 			closeBusyDialog();
 		});
+		mGphy->addAction("Fault plane demo", [win, s]() {
+			// The dialog's first act is a full mesh cut in Julia, on this thread. Start compiling it
+			// while the window is still being built — see warmupTool (30_app.cpp).
+			warmupTool("faultdemo");
+			faultDemoOpen(win, s);
+		});
 		mGphy->addAction("Focal Mechanisms demo", [win, s]() {
 			if (s->focalStudioDlg) { s->focalStudioDlg->raise(); s->focalStudioDlg->activateWindow(); return; }
 			auto *dlg = new FocalMecaStudioDialog(win, s, 0.0, 90.0, 180.0);
@@ -26648,4 +26644,3 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// non-blocking: return now; the host pumps gmtvtk_process_events().
 	return s;
 }
-

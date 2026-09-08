@@ -56,6 +56,34 @@ end
 # hide flag are not used yet.
 _on_elastic(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid = _on_elastic(scene, unsafe_string(cparams))
 
+# "w/e/s/n" -> the four limits, checked.
+function _elastic_region(R::String)
+	lims = [something(tryparse(Float64, t), NaN) for t in split(R, '/')]
+	(length(lims) == 4 && all(isfinite, lims) && lims[2] > lims[1] && lims[4] > lims[3]) ||
+		error("Region must be w/e/s/n with W < E and S < N (got \"$R\")")
+	return lims
+end
+
+# The NODES the deformation is computed on, when the request brings its own region/increment instead
+# of borrowing the window's grid. Values are zeros: `GMT.okada` writes the field into this geometry,
+# so all this has to carry is where the nodes are.
+function _elastic_target_grid(R::String, Ispec::String, geog::Bool)
+	lims = _elastic_region(R)
+	inc  = isempty(Ispec) ? Float64[] : [something(tryparse(Float64, t), NaN) for t in split(Ispec, '/')]
+	dx = isempty(inc) ? (lims[2]-lims[1])/200 : inc[1]
+	dy = length(inc) >= 2 ? inc[2] : dx
+	(isfinite(dx) && isfinite(dy) && dx > 0 && dy > 0) || error("Increment must be positive (got \"$Ispec\")")
+	x = collect(lims[1]:dx:lims[2]);  y = collect(lims[3]:dy:lims[4])
+	(length(x) > 1 && length(y) > 1) || error("Region is smaller than one increment")
+	G = GMT.mat2grid(zeros(Float32, length(y), length(x)); x=x, y=y)
+	# THE REFERENCING SYSTEM IS INHERITED, not assumed: the request says which kind of coordinates its
+	# region is in (field 2, filled from the window grid the user picked), and `GMT.okada` reads the
+	# grid's own CRS to decide how its kilometres meet the axes. A cartesian request keeps no proj4,
+	# which is what "these are metres, not degrees" looks like to GMT.
+	geog && (G.proj4 = "+proj=longlat +datum=WGS84 +no_defs")
+	return G
+end
+
 # Save Session: the dialog's request block, verbatim, as the window's ONE :elastic recipe. The Okada
 # field is DERIVED — fault geometry + slip through `GMT.okada` on this window's grid — so the session
 # stores the REQUEST and recomputes it on load, exactly as :illum and :focal do. Writing the result as
@@ -83,8 +111,20 @@ function _on_elastic(scene::Ptr{Cvoid}, craw::String; adopt::Bool = true)::Cvoid
 		depth  = num(7);  depTop = num(8);  rake   = num(9);  slip  = num(10)
 		x_start = num(18); y_start = num(19)
 
-		(isnan(x_start) || isnan(y_start)) &&
-			error("no fault trace found — draw a fault first, then Compute")
+		R      = getp(16);  Ispec = getp(17)
+
+		# No trace vertex? Then the request must say WHERE on its own, and the Region block is that
+		# statement: the fault is centred in the region and its start vertex is half its length back
+		# along strike. The walk is `GMT.geod` — the same direct geodesic `_on_faultgeom` uses to place
+		# a drawn fault's far end, never a second sphere formula (SACRED_LAW: one quantity, one function).
+		if isnan(x_start) || isnan(y_start)
+			isempty(R) && error("no fault trace found — draw a fault first, then Compute")
+			lims = _elastic_region(R)
+			isnan(L) && error("missing/invalid 'Length'")
+			isnan(strike) && error("missing/invalid 'Strike'")
+			dest, = GMT.geod([(lims[1]+lims[2])/2, (lims[3]+lims[4])/2], strike + 180.0, L/2; unit=:km)
+			x_start, y_start = dest[1], dest[2]
+		end
 		for (nm, val) in (("Length", L), ("Width", W), ("Strike", strike), ("Dip", dip),
 		                  ("Depth", depth), ("Depth to Top", depTop), ("Rake", rake), ("Slip", slip))
 			isnan(val) && error("missing/invalid '$nm'")
@@ -98,8 +138,14 @@ function _on_elastic(scene::Ptr{Cvoid}, craw::String; adopt::Bool = true)::Cvoid
 			return
 		end
 
+		# WHERE THE FIELD IS SAMPLED. The window's own grid when it has one — that is what the elastic
+		# dialog has always done — but a request may bring its OWN region/increment (fields 16/17, the
+		# Fault plane demo's Region block), and then those decide, because such a request has no window
+		# grid to borrow: the demo can be opened over an empty launcher.
 		fig = get(_FIGREG, scene, nothing)
-		G   = fig isa QtFigure ? fig.G : error("no grid loaded in this window")
+		G   = !isempty(R)                ? _elastic_target_grid(R, Ispec, getp(2) != "cart") :
+		      fig isa QtFigure           ? fig.G :
+		      error("no grid loaded in this window, and the request carries no Region")
 
 		# Slip model (Import Model Slip): the dialog appended a "MODELSLIP=<payload>" field carrying EVERY
 		# sub-fault patch ("x0/y0/L/W/strike/dip/depthTop/rake/slip", patches '|'-separated). Deform with

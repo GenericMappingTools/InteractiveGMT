@@ -38,7 +38,9 @@
 #include "65_xyplot.cpp"
 #include "67_gmtedit.cpp"
 #include "75_aquamoto.cpp"
+static QDialog *faultDemoOpen(QWidget *parent, Scene *scene);
 #include "70_window.cpp"
+#include "68_faultdemo.cpp"
 #include "80_rubberband.cpp"
 #include "85_polygon.cpp"
 #include "87_vtkio.cpp"

@@ -198,6 +198,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_faultgeom_callback,
 	:gmtvtk_set_elastic_callback, :gmtvtk_set_importfault_callback, :gmtvtk_add_fault_h,
 	:gmtvtk_add_fault_geom_h, :gmtvtk_set_modelslip_callback, :gmtvtk_add_slip_patches_h,
+	:gmtvtk_set_fault_demo_callback,
 	:gmtvtk_set_focal_callback, :gmtvtk_add_meca_h, :gmtvtk_set_meca_infos_h, :gmtvtk_add_text_h, :gmtvtk_add_texts_h, :gmtvtk_add_texts_ex_h,
 	:gmtvtk_set_meca_props_callback, :gmtvtk_remove_meca_group_h,
 	:gmtvtk_set_cube_layer_callback, :gmtvtk_set_cube_loadall_callback, :gmtvtk_set_cube_axes_zrange, :gmtvtk_show_cube_layer_dialog,

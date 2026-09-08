@@ -36,6 +36,7 @@ const _TEST_DLL = Ref{Ptr{Cvoid}}(C_NULL)
 const _TEST_FNS = Dict{Symbol,Ptr{Cvoid}}()
 
 const _TEST_SYMBOLS = (
+	:gmtvtk_fault_demo_test, :gmtvtk_set_fault_demo_callback,
 	:gmtvtk_fault_add_test, :gmtvtk_fault_apply_test, :gmtvtk_fault_plane_test, :gmtvtk_poly_edit_add_test,
 	:gmtvtk_settings_format_test,
 	:gmtvtk_set_flat2d_test, :gmtvtk_objrows_test,

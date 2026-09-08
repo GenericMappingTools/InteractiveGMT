@@ -141,6 +141,7 @@ function _ensure_callbacks()
 	                    ("palette",     _register_palette),
 	                    ("bands",       _register_bands),
 	                    ("focal",       _register_focal),
+	                    ("fault-demo",  _register_fault_demo),
 	                    ("meca-props",  _register_meca_props))
 		try
 			fn()

@@ -808,6 +808,9 @@ struct MovieAnno {
 struct Scene {
 	vtkSmartPointer<vtkRenderer>          ren;
 	vtkSmartPointer<vtkActor>             surf;
+	// What a RECENTRE gesture (middle-click, 'c') may land on, when the window's content is not one
+	// base surface — the Fault plane demo's two blocks. Empty = the base surface, the ordinary case.
+	std::vector<vtkProp *>                pickTargets;
 	// Tiled render (plain grid): the surface is split into tile actors held by `surfGroup`
 	// (a vtkAssembly) so ONE transform (base scale + VE) drives them all and GetBounds unions
 	// them. `tiles` lists the parts for per-actor ops (material / edges / colour map). Empty +
@@ -1487,6 +1490,8 @@ struct Scene {
 	QString nswingParams;                               // NSWING dialog fields, saved on close, restored on reopen (raw "key=value\n…" block)
 	QWidget *elasticDlg = nullptr;                      // open (non-modal) Vertical elastic deformation dialog, if any
 	QWidget *focalStudioDlg = nullptr;                  // open (non-modal) Focal Meca Studio demo dialog, if any
+	QWidget *faultDemoDlg = nullptr;                    // open Fault plane demo, if any: an UNPARENTED
+	                                                    // top-level, so findChild cannot be used to find it
 	QWidget *cubeDlg = nullptr;                         // open (non-modal) 3-D cube layer selector dialog, if any
 
 	// A tool window closed with its X does NOT die: it hides and PARKS as a handle in the bottom strip
@@ -2368,6 +2373,79 @@ static inline vtkProp3D *surfProp(Scene *s) {
 }
 static inline void surfSetScale(Scene *s, double x, double y, double z) {
 	if (vtkProp3D *p = surfProp(s)) p->SetScale(x, y, z);
+}
+
+// ── the 3-D view's camera gestures, in ONE place ─────────────────────────────────────────────────
+// Qt pixels -> VTK display pixels, the middle-button pan, and the recentre-on-what-is-under-the-
+// cursor that BOTH the middle-click and the 'c' key perform. They are free functions on a renderer
+// because they have three callers that must behave identically: the main window's widget (GLView,
+// 60_profile.cpp), the gizmo's key handler (20_gizmo.cpp) and the Fault plane demo's widget
+// (68_faultdemo.cpp). SACRED_LAW.md: same operation, same function.
+
+// WHAT A RECENTRE GESTURE MAY LAND ON. A window's base surface, unless the scene names its own props
+// (Scene::pickTargets) — the demo's two fault blocks, and any future scene whose content is not one
+// base raster. Never a per-call-site list: 'c' and the middle click must aim at the same things.
+static std::vector<vtkProp *> sceneRecenterTargets(Scene *s) {
+	if (!s) return {};
+	if (!s->pickTargets.empty()) return s->pickTargets;
+	if (vtkProp3D *p = surfProp(s)) return { p };
+	return {};
+}
+
+static void displayPxFromQt(QWidget *w, vtkRenderWindow *rw, const QPoint &p, double &dx, double &dy) {
+	const double r = w->devicePixelRatioF();
+	const int    H = rw->GetSize()[1];
+	dx = p.x() * r;                 // VTK display coords = bottom-up device px
+	dy = H - p.y() * r;
+}
+
+// Drag the world under the cursor: move the camera by the world-space shift between two display
+// points taken at the focal point's depth. Caller renders.
+static void camPanByDisplay(vtkRenderer *ren, double ox, double oy, double nx, double ny) {
+	vtkCamera *cam = ren ? ren->GetActiveCamera() : nullptr;
+	if (!cam) return;
+	double fp[3]; cam->GetFocalPoint(fp);
+	ren->SetWorldPoint(fp[0], fp[1], fp[2], 1.0); ren->WorldToDisplay();
+	const double depth = ren->GetDisplayPoint()[2];
+	ren->SetDisplayPoint(nx, ny, depth); ren->DisplayToWorld();
+	double np[4]; for (int i = 0; i < 4; ++i) np[i] = ren->GetWorldPoint()[i];
+	ren->SetDisplayPoint(ox, oy, depth); ren->DisplayToWorld();
+	double op[4]; for (int i = 0; i < 4; ++i) op[i] = ren->GetWorldPoint()[i];
+	if (np[3] != 0.0) { np[0] /= np[3]; np[1] /= np[3]; np[2] /= np[3]; }
+	if (op[3] != 0.0) { op[0] /= op[3]; op[1] /= op[3]; op[2] /= op[3]; }
+	const double m[3] = { op[0]-np[0], op[1]-np[1], op[2]-np[2] };
+	double pos[3]; cam->GetPosition(pos);
+	cam->SetFocalPoint(fp[0]+m[0], fp[1]+m[1], fp[2]+m[2]);
+	cam->SetPosition (pos[0]+m[0], pos[1]+m[1], pos[2]+m[2]);
+	ren->ResetCameraClippingRange();
+}
+
+// Put the rotation centre on whatever was picked, keeping the view direction and distance — the
+// middle-CLICK and the 'c' key are the same gesture with two triggers. Returns false when the pick
+// missed every target, so the caller can skip its render.
+static bool camRecenterOnPick(vtkRenderer *ren, const std::vector<vtkProp *> &targets, double x, double y) {
+	vtkCamera *cam = ren ? ren->GetActiveCamera() : nullptr;
+	if (!cam || targets.empty()) return false;
+	vtkNew<vtkCellPicker> pk; pk->SetTolerance(0.0005);
+	pk->PickFromListOn();
+	for (vtkProp *p : targets) if (p) pk->AddPickList(p);
+	if (!pk->Pick(x, y, 0.0, ren)) return false;
+	double pick[3]; pk->GetPickPosition(pick);
+	double pos[3], fp[3]; cam->GetPosition(pos); cam->GetFocalPoint(fp);
+	const double d[3] = { pos[0]-fp[0], pos[1]-fp[1], pos[2]-fp[2] };
+	cam->SetFocalPoint(pick);
+	cam->SetPosition(pick[0]+d[0], pick[1]+d[1], pick[2]+d[2]);
+	ren->ResetCameraClippingRange();
+	return true;
+}
+
+// The same gesture aimed by the MOUSE POINTER instead of a click position — what the 'c' key needs.
+// Returns false when there is no widget, or the pointer is over nothing pickable.
+static bool camRecenterAtCursor(Scene *s) {
+	if (!s || !s->ren || !s->widget) return false;
+	double dx, dy;
+	displayPxFromQt(s->widget, s->widget->renderWindow(), s->widget->mapFromGlobal(QCursor::pos()), dx, dy);
+	return camRecenterOnPick(s->ren, sceneRecenterTargets(s), dx, dy);
 }
 static inline void surfGetScale(Scene *s, double sc[3]) {
 	if (vtkProp3D *p = surfProp(s)) p->GetScale(sc); else { sc[0]=sc[1]=sc[2]=1.0; }

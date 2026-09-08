@@ -38,6 +38,11 @@ struct Gizmo {
 
 	// current placement (world)
 	double centre[3] = {0,0,0};
+	// Arrow-key pan banks the OPPOSITE of every camera shift here, and PlaceCB adds it to the focal
+	// point, so the handle keeps standing on the world point it was on and slides WITH the model
+	// instead of riding the camera. Cleared by anything that redefines the centre of interest: 'c'
+	// / middle-click recentre, a number-key view snap, or a mouse-driven camera move.
+	double panOff[3] = {0,0,0};
 	double scale = 1.0;
 	double right[3] = {1,0,0};  // camera screen-right (horizontal-axis direction)
 	// THE GIZMO'S OWN VERTICAL. World +Z on a flat map — and on the GLOBE the RADIAL direction at the
@@ -81,8 +86,14 @@ void renderWin(Gizmo *g) { g->s->widget->renderWindow()->Render(); }
 // overlay renderer and are NOT counted by ResetCamera) are not clipped. The projected size is
 // measured from the camera's composite transform (immediate, no Render needed); Zoom changes
 // the perspective view angle so a second pass corrects the slight non-linearity.
+// A scene does not have to own a base SURFACE to be framable: the Fault plane demo's scene holds two
+// block actors and states its extent through `viewBoundsOverride`, which is what surfGetBounds reads
+// below. Requiring `s->surf` here made the view keys dead in that window — the gizmo half-installed,
+// which is the thing SACRED_LAW.md forbids. What is really required is a renderer, a widget, and a
+// bbox somebody owns; the last of those is asserted just below.
 void fitSnapView(Scene *s, bool topMode, double fill = -1.0) {
-	if (!s || !s->ren || !s->surf || !s->widget) return;
+	if (!s || !s->ren || !s->widget) return;
+	if (!s->surf && !s->viewBoundsOverride && !s->globe) return;   // nobody has said what to frame
 	vtkRenderer *ren = s->ren;
 	vtkCamera   *cam = ren->GetActiveCamera();
 	ren->ResetCamera();                                   // baseline fit + distance
@@ -274,6 +285,7 @@ void PlaceCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 	if (!c || !ren || !ren->GetActiveCamera()) return;
 	vtkCamera *cam = ren->GetActiveCamera();
 	cam->GetFocalPoint(c->centre);
+	for (int i = 0; i < 3; ++i) c->centre[i] += c->panOff[i];   // arrow-key pan: stay on the body
 	double d = cam->GetDistance();
 	// GLOBE: the focal point is the PLANET'S CENTRE, so anchoring there buries the whole handle
 	// inside the sphere. It stands instead on the sea-level point facing the camera — the middle of
@@ -589,27 +601,15 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 	// point to that point and translate the camera by the same delta (pure pan) so the
 	// picked point lands at the centre of the viewport. Same path as the middle-click recenter.
 	if (key && (key[0]=='c' || key[0]=='C') && key[1]=='\0' && !rwi->GetControlKey()) {   // NOT Ctrl+C
-		Scene *s = c->s;                                                                  // (that's copy-armed-
-		if (s && s->ren && s->surf && s->widget) {                                        // symbol-to-clipboard)
-			vtkCamera *cam = s->ren->GetActiveCamera();
-			// Qt logical (top-down) cursor -> VTK display (bottom-up device) pixels.
-			const QPoint lp = s->widget->mapFromGlobal(QCursor::pos());
-			const double r = s->widget->devicePixelRatioF();
-			const int H = s->widget->renderWindow()->GetSize()[1];
-			const double dx = lp.x() * r;
-			const double dy = H - lp.y() * r;
-			vtkNew<vtkCellPicker> pk; pk->SetTolerance(0.0005);
-			pk->PickFromListOn(); pk->AddPickList(surfProp(s));
-			if (cam && pk->Pick(dx, dy, 0.0, s->ren)) {
-				double pick[3]; pk->GetPickPosition(pick);
-				double pos[3], fp[3]; cam->GetPosition(pos); cam->GetFocalPoint(fp);
-				const double d[3] = { pos[0]-fp[0], pos[1]-fp[1], pos[2]-fp[2] };
-				cam->SetFocalPoint(pick);
-				cam->SetPosition(pick[0]+d[0], pick[1]+d[1], pick[2]+d[2]);
-				c->curView = 0;                  // focal moved: a view key should re-snap
-				s->ren->ResetCameraClippingRange();
-				renderWin(c);
-			}
+		// It is LITERALLY the middle-click recentre, aimed by the pointer instead of by a click, so it
+		// runs the same camRecenterAtCursor (10_geometry.cpp) — which resolves what may be picked
+		// through sceneRecenterTargets, i.e. the base surface OR whatever a surface-less scene names
+		// (the Fault plane demo's blocks). It used to be a second copy of the maths gated on s->surf,
+		// which is what made the key dead in that window.
+		if (camRecenterAtCursor(c->s)) {
+			c->curView = 0;                      // focal moved: a view key should re-snap
+			c->panOff[0] = c->panOff[1] = c->panOff[2] = 0.0;   // recentring redefines the centre
+			renderWin(c);
 		}
 	}
 	// '+'/'-' zoom in/out, centred at the mouse pointer (not the viewport centre). Accept the
@@ -644,6 +644,10 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 			double after[3];  unproject(after);
 			double pos[3]; cam->GetPosition(pos);
 			const double sh[3] = { before[0]-after[0], before[1]-after[1], before[2]-after[2] };
+			// The handle stays ON the body. Cursor-centred zoom pans the camera AND its focal point
+			// by sh, and PlaceCB anchors the gizmo at the focal point, so without this it would ride along
+			// and drift off the world point it was standing on. Same bank-and-add-back as the arrow pan.
+			for (int i = 0; i < 3; ++i) c->panOff[i] -= sh[i];
 			cam->SetFocalPoint(fp[0]+sh[0], fp[1]+sh[1], fp[2]+sh[2]);
 			cam->SetPosition (pos[0]+sh[0], pos[1]+sh[1], pos[2]+sh[2]);
 			c->curView = 0;                  // zoom/pan moved the camera: a view key should re-snap
@@ -651,10 +655,10 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 			renderWin(c);
 		}
 	}
-	// Arrow keys pan the view: Left/Right/Up/Down translate camera + focal point in the screen
-	// plane. We unproject the viewport centre and a one-pixel step in +x / +y at the focal-plane
-	// depth to get the two world-space screen axes, then shift by ~12% of the window height. The
-	// camera moves WITH the arrow (Right -> camera moves right -> scene appears to slide left).
+	// Arrow keys pan: Left/Right/Up/Down slide the MODEL in the screen plane, the way the arrow
+	// points (Down -> the body goes down). We unproject the viewport centre and a one-pixel step in
+	// +x / +y at the focal-plane depth to get the two world-space screen axes, then move the camera
+	// by ~12% of the window height AGAINST the arrow, which is what makes the scene follow it.
 	{
 		const bool pl = key && !strcmp(key,"Left");
 		const bool pr = key && !strcmp(key,"Right");
@@ -684,6 +688,15 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 				for (int i=0;i<3;i++) sh[i] += sg * (cxv[i]-c0[i]); }
 			if (pu || pd) { const double sg = pu ? step : -step;
 				for (int i=0;i<3;i++) sh[i] += sg * (cyv[i]-c0[i]); }
+			// The SCENE follows the arrow: Down moves the body DOWN, so the camera travels the other
+			// way. (It used to move with the arrow, which slid the model the opposite way.)
+			for (int i = 0; i < 3; ++i) sh[i] = -sh[i];
+			// ...and the handle stays ON the body. The camera AND its focal point are about to move by
+			// sh, and PlaceCB anchors the gizmo at the focal point, so without this it would ride along
+			// and sit frozen at the viewport centre while the model slid out from under it. The
+			// opposite shift is banked here and PlaceCB adds it back, keeping the handle on the world
+			// point it was standing on — it travels WITH the body, which is the whole point of a handle.
+			for (int i = 0; i < 3; ++i) c->panOff[i] -= sh[i];
 			double pos[3]; cam->GetPosition(pos);
 			cam->SetFocalPoint(fp[0]+sh[0], fp[1]+sh[1], fp[2]+sh[2]);
 			cam->SetPosition (pos[0]+sh[0], pos[1]+sh[1], pos[2]+sh[2]);
@@ -705,6 +718,7 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 			cam->SetPosition(fp[0], fp[1] - dist, fp[2]);
 			fitSnapView(s, /*topMode=*/false);     // fill viewport width (annotations kept clear)
 			c->curView = 1;
+			c->panOff[0] = c->panOff[1] = c->panOff[2] = 0.0;   // a snap redefines the centre of interest
 			renderWin(c);
 		}
 	}
@@ -721,6 +735,7 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 			cam->SetPosition(fp[0], fp[1], fp[2] + dist);
 			fitSnapView(s, /*topMode=*/true);      // fill width OR height by data aspect
 			c->curView = 2;
+			c->panOff[0] = c->panOff[1] = c->panOff[2] = 0.0;   // a snap redefines the centre of interest
 			renderWin(c);
 		}
 	}
@@ -742,6 +757,7 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 			cam->SetPosition(fp[0] + dist, fp[1], fp[2]);
 			fitSnapView(s, /*topMode=*/false);     // fill viewport width (annotations kept clear)
 			c->curView = 3;
+			c->panOff[0] = c->panOff[1] = c->panOff[2] = 0.0;   // a snap redefines the centre of interest
 			renderWin(c);
 		}
 	}
@@ -757,6 +773,7 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 			cam->SetPosition(fp[0], fp[1] + dist, fp[2]);
 			fitSnapView(s, /*topMode=*/false);     // fill viewport width (annotations kept clear)
 			c->curView = 4;
+			c->panOff[0] = c->panOff[1] = c->panOff[2] = 0.0;   // a snap redefines the centre of interest
 			renderWin(c);
 		}
 	}
@@ -772,6 +789,7 @@ void KeyCB(vtkObject *caller, unsigned long, void *clientData, void*) {
 			cam->SetPosition(fp[0] - dist, fp[1], fp[2]);
 			fitSnapView(s, /*topMode=*/false);     // fill viewport width (annotations kept clear)
 			c->curView = 5;
+			c->panOff[0] = c->panOff[1] = c->panOff[2] = 0.0;   // a snap redefines the centre of interest
 			renderWin(c);
 		}
 	}
@@ -844,7 +862,10 @@ void buildGeometry(Gizmo &c) {
 // Any interactor-driven camera move (wheel zoom, middle-button pan, trackball) invalidates
 // the active number-key view-snap, so the next view key re-snaps instead of no-op'ing.
 void ResetViewCB(vtkObject*, unsigned long, void *clientData, void*) {
-	if (Gizmo *c = static_cast<Gizmo*>(clientData)) c->curView = 0;
+	if (Gizmo *c = static_cast<Gizmo*>(clientData)) {
+		c->curView = 0;
+		c->panOff[0] = c->panOff[1] = c->panOff[2] = 0.0;   // a mouse pan re-centres the handle
+	}
 }
 
 // Build, add to the scene, wire the follow + drag + key observers.

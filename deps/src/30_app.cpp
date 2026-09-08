@@ -2065,20 +2065,73 @@ static void addManualButton(QDialog *dlg, std::function<QString()> moduleOf) {
 //
 // The grid is read ONLY by the "..." button (or a double-click in the box, which clicks it) — never
 // from an edit box's own signal: see only-action-button-executes-dialog.
-static void addRefGridRow(QDialog *dlg, QGridLayout *regionGrid,
-                          QLineEdit *xmin, QLineEdit *xmax, QLineEdit *ymin, QLineEdit *ymax,
-                          QLineEdit *xinc = nullptr, QLineEdit *yinc = nullptr) {
-	if (!dlg || !regionGrid || !xmin || !xmax || !ymin || !ymax) return;
+// Companion to addRefGridRow, one row below it: the grids ALREADY LOADED in the window the dialog was
+// opened from. Same Region boxes, same "somebody else's geometry fills these in" job — the difference
+// is only where the geometry comes from, a file on disk or a layer on screen, so the two rows sit
+// together and behave alike. Picking one also reports its COORDINATE KIND through `onPick`
+// (non-zero = lon/lat), so the tool computes in the reference system of the grid it was aimed at
+// instead of assuming one.
+// One candidate for either grid-source row: a grid that can hand its own geometry to a Region.
+struct RegionGridCand { QString name; double x0, x1, y0, y1, dx, dy; int geog; };
+
+// THE behaviour of the "OR Window grid" row, given a combo box that already exists. A dialog whose
+// .ui declares the row (fault_plane_demo.ui) calls this directly; addWindowGridRow() below creates
+// the standard row and then calls this very function. SACRED_LAW: one operation, ONE function — a
+// .ui-declared row must never grow a second copy of this logic, and a fix here fixes both.
+static void wireWindowGridRow(QDialog *dlg, QComboBox *combo, Scene *s,
+                              QLineEdit *xmin, QLineEdit *xmax, QLineEdit *ymin, QLineEdit *ymax,
+                              QLineEdit *xinc = nullptr, QLineEdit *yinc = nullptr,
+                              std::function<void(int)> onPick = nullptr) {
+	if (!dlg || !combo || !s || !xmin || !xmax || !ymin || !ymax) return;
+	std::vector<RegionGridCand> cands;
+	if (s->gnx > 1 && s->gny > 1)                     // the base surface, when it is a grid at all
+		cands.push_back({ QString::fromStdString(s->surfName.empty() ? std::string("Surface") : s->surfName),
+		                  s->gx0, s->gx1, s->gy0, s->gy1, s->gdx, s->gdy, s->baseGeog });
+	for (auto &ex : s->extras) {                      // every dropped / computed grid layer
+		if (ex.isImage || ex.isMesh || ex.gnx < 2 || ex.gny < 2) continue;
+		cands.push_back({ QString::fromStdString(ex.name), ex.gx0, ex.gx1, ex.gy0, ex.gy1,
+		                  (ex.gx1 - ex.gx0)/(ex.gnx - 1), (ex.gy1 - ex.gy0)/(ex.gny - 1), ex.geog });
+	}
+	combo->setToolTip("A grid already loaded in the iGMT window this dialog belongs to: its region, "
+	                  "spacing and coordinate kind fill in above.");
+	combo->clear();
+	combo->addItem(cands.empty() ? "(no grid in the window)" : "(pick a grid)");
+	for (const RegionGridCand &c : cands) combo->addItem(c.name);
+	combo->setEnabled(!cands.empty());
+	QObject::connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+		[cands, xmin, xmax, ymin, ymax, xinc, yinc, onPick](int i) {
+			if (i <= 0 || i > int(cands.size())) return;
+			const RegionGridCand &c = cands[size_t(i - 1)];
+			xmin->setText(QString::number(c.x0, 'g', 12));  xmax->setText(QString::number(c.x1, 'g', 12));
+			ymin->setText(QString::number(c.y0, 'g', 12));  ymax->setText(QString::number(c.y1, 'g', 12));
+			if (xinc && c.dx > 0) xinc->setText(QString::number(c.dx, 'g', 12));
+			if (yinc && c.dy > 0) yinc->setText(QString::number(c.dy, 'g', 12));
+			if (onPick) onPick(c.geog);
+		});
+}
+
+static void addWindowGridRow(QDialog *dlg, QGridLayout *regionGrid, Scene *s,
+                             QLineEdit *xmin, QLineEdit *xmax, QLineEdit *ymin, QLineEdit *ymax,
+                             QLineEdit *xinc = nullptr, QLineEdit *yinc = nullptr,
+                             std::function<void(int)> onPick = nullptr) {
+	if (!dlg || !regionGrid || !s) return;
 	const int row = regionGrid->rowCount();
-	auto *lbl = new QLabel("OR Ref grid", dlg);
-	auto *edit = new QLineEdit(dlg);
+	auto *lbl   = new QLabel("OR Window grid", dlg);
+	auto *combo = new QComboBox(dlg);
+	combo->setMaximumWidth(280);   // spans 4 shared columns — must not blow their width up (own region law)
+	regionGrid->addWidget(lbl,   row, 0);
+	regionGrid->addWidget(combo, row, 1, 1, 4);
+	wireWindowGridRow(dlg, combo, s, xmin, xmax, ymin, ymax, xinc, yinc, std::move(onPick));
+}
+
+// THE behaviour of the "OR Ref grid" row, given a box and a browse button that already exist — same
+// split as wireWindowGridRow above, same reason.
+static void wireRefGridRow(QDialog *dlg, QLineEdit *edit, QAbstractButton *btn,
+                           QLineEdit *xmin, QLineEdit *xmax, QLineEdit *ymin, QLineEdit *ymax,
+                           QLineEdit *xinc = nullptr, QLineEdit *yinc = nullptr) {
+	if (!dlg || !edit || !btn || !xmin || !xmax || !ymin || !ymax) return;
 	edit->setToolTip("Pick a grid/image; its own region fills the boxes above.");
-	auto *btn = new QToolButton(dlg);
-	btn->setText("...");
-	regionGrid->addWidget(lbl,  row, 0);
-	regionGrid->addWidget(edit, row, 1, 1, 3);
-	regionGrid->addWidget(btn,  row, 4);
-	QObject::connect(btn, &QToolButton::clicked, dlg, [dlg, edit, xmin, xmax, ymin, ymax, xinc, yinc]() {
+	QObject::connect(btn, &QAbstractButton::clicked, dlg, [dlg, edit, xmin, xmax, ymin, ymax, xinc, yinc]() {
 		QString f = QFileDialog::getOpenFileName(dlg, "Select reference grid", prefStartDir(),
 		                                         "Grid/Image files (*.nc *.grd *.tif *.tiff);;All files (*)");
 		if (f.isEmpty()) return;
@@ -2097,6 +2150,22 @@ static void addRefGridRow(QDialog *dlg, QGridLayout *regionGrid,
 		}
 	});
 	fileBoxDoubleClick(edit, btn);
+}
+
+static void addRefGridRow(QDialog *dlg, QGridLayout *regionGrid,
+                          QLineEdit *xmin, QLineEdit *xmax, QLineEdit *ymin, QLineEdit *ymax,
+                          QLineEdit *xinc = nullptr, QLineEdit *yinc = nullptr) {
+	if (!dlg || !regionGrid) return;
+	const int row = regionGrid->rowCount();
+	auto *lbl = new QLabel("OR Ref grid", dlg);
+	auto *edit = new QLineEdit(dlg);
+	edit->setMaximumWidth(240);   // spans 3 shared columns — must not blow their width up (own region law)
+	auto *btn = new QToolButton(dlg);
+	btn->setText("...");
+	regionGrid->addWidget(lbl,  row, 0);
+	regionGrid->addWidget(edit, row, 1, 1, 3);
+	regionGrid->addWidget(btn,  row, 4);
+	wireRefGridRow(dlg, edit, btn, xmin, xmax, ymin, ymax, xinc, yinc);
 }
 
 // Procedural HDR environment for image-based lighting. A flat azimuthal gradient

@@ -2845,6 +2845,11 @@ GMTVTK_API void gmtvtk_set_focal_callback(JuliaFocalFn fn) {
 	g_juliaFocal = fn;
 }
 
+GMTVTK_API void gmtvtk_set_fault_demo_callback(JuliaFaultDemoFn fn, JuliaFaultDemoMeshFn meshFn) {
+	g_juliaFaultDemo = fn;
+	g_juliaFaultDemoMesh = meshFn;
+}
+
 // Build ONE flat "meca" patch (outline + fill) directly, bypassing the shared polyRebuildFill
 // triangulator (85_polygon.cpp). That path runs vtkTriangleFilter -> vtkPolygon::Triangulate,
 // which assumes a SIMPLE (non-self-intersecting) polygon; patch_meca's equal-area boundary can
@@ -4324,6 +4329,70 @@ GMTVTK_API void gmtvtk_shutdown(void) {
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
 #ifdef GMTVTK_TEST_API
+
+// Drive the actual fault-demo controls, inspect displayed matrices, and capture the whole dialog.
+GMTVTK_API int gmtvtk_fault_demo_test(void *handle, const char *control, int value,
+	const char *png, double *out) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->win) return 0;
+	auto *d = qobject_cast<QDialog *>(s->faultDemoDlg);   // unparented top-level: ask the Scene
+	if (!d) return 0;
+	auto *f = static_cast<FaultDemo *>(d->property("faultDemoState").value<void *>());
+	if (!f) return 0;
+	const QString name = control ? QString::fromUtf8(control) : QString();
+	if (name == "close") { d->close(); QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); return 1; }
+	if (name == "keyC") {                  // the gizmo's 'c' = recentre on what is under the pointer
+		QCursor::setPos(f->view->mapToGlobal(QPoint(f->view->width()/2, f->view->height()/2)));
+		QApplication::processEvents();
+		auto *rwi = f->view->interactor();
+		rwi->SetControlKey(0);
+		rwi->SetKeyCode('c');
+		rwi->SetKeySym("c");
+		rwi->InvokeEvent(vtkCommand::KeyPressEvent, nullptr);
+	}
+	else if (name.startsWith("ve:")) {     // what the gizmo's vertical-exaggeration handle does, minus the drag
+		if (!f->gizScene) return 0;
+		f->gizScene->ve = name.mid(3).toDouble();
+		applyVE(f->gizScene);
+	}
+	else if (!name.isEmpty()) {
+		if (auto *slider = d->findChild<QSlider *>(name)) slider->setValue(value);
+		else if (auto *button = d->findChild<QPushButton *>(name)) button->click();
+		else return 0;
+	}
+	QApplication::processEvents();
+	if (out) {
+		for (int b = 0; b < 2; ++b)
+			for (int i = 0; i < 4; ++i)
+				for (int j = 0; j < 4; ++j) out[b*16+i*4+j] = f->matrices[b]->GetElement(i,j);
+		out[32] = f->meshes[0]->GetNumberOfCells();
+		out[33] = f->meshes[1]->GetNumberOfCells();
+		out[34] = f->slip->value();
+		out[35] = f->timer->isActive() ? 1 : 0;
+		for (int b = 0; b < 2; ++b) {
+			double bounds[6];
+			f->meshes[b]->GetBounds(bounds);
+			out[36+2*b] = bounds[4]; out[37+2*b] = bounds[5];
+		}
+		out[40] = d->findChild<QSpinBox *>("rakeValue")->width();
+		out[41] = f->beach->width();
+		out[42] = f->beach->strike;
+		out[43] = f->beach->dip;
+		out[44] = f->beach->rake;
+		out[45] = f->gizScene ? f->gizScene->ve : 0.0;
+		double ab[6]; f->blocks[0]->GetBounds(ab);
+		out[46] = ab[5];                                   // footwall top AS DRAWN (VE included)
+		out[47] = (f->gizScene && f->gizScene->giz) ? 1 : 0;
+		double foc[3] = {};
+		if (auto *cam = f->renderer->GetActiveCamera()) cam->GetFocalPoint(foc);
+		out[48] = foc[0]; out[49] = foc[1]; out[50] = foc[2];   // rotation centre ('c' / middle-click)
+	}
+	if (png && png[0]) {
+		f->view->renderWindow()->Render();
+		return d->grab().save(QString::fromUtf8(png)) ? 1 : 0;
+	}
+	return 1;
+}
 // test hook: HOW FAR OFF THE GROUND is a vector element standing, ON THE BODY, as the renderer draws
 // it. This is the one measurement that catches the class of bug where a line that has been clamped to
 // the terrain is then lifted away from it by the body's vector transform (the coastline hanging in the

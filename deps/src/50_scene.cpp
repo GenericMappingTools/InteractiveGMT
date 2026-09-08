@@ -3199,6 +3199,7 @@ static void parkTool(Scene *s, QWidget *win, const QString &label, int icon, con
 		pt.label = label;  pt.tip = tip;  pt.icon = icon;
 		pt.unpark = std::move(unpark);  pt.menu = std::move(menu);
 		rebuildSceneObjects(s);
+		unfoldSceneObjects(s);
 		return;
 	}
 	Scene::ParkedTool pt;
@@ -3206,6 +3207,12 @@ static void parkTool(Scene *s, QWidget *win, const QString &label, int icon, con
 	pt.unpark = std::move(unpark);  pt.menu = std::move(menu);
 	s->parkedTools.push_back(std::move(pt));
 	rebuildSceneObjects(s);
+	// A HANDLE NOBODY CAN SEE IS NO HANDLE AT ALL. Revealing the dock is part of parking, not an extra
+	// step each caller has to remember: the region picker, the profile windows and the histogram all
+	// called unfoldSceneObjects right after parkTool, the Fault plane demo did not — so its window
+	// vanished into a folded dock and read as destroyed. Doing it HERE is the only way a new parkable
+	// tool cannot forget a step it never has to take (same shape as makeGridCTF and the NaN colour).
+	unfoldSceneObjects(s);
 }
 
 // Drop `win`'s parked entry — it is either coming back on screen or being destroyed for good. No-op
@@ -3218,6 +3225,34 @@ static void unparkTool(Scene *s, QWidget *win) {
 	if (s->parkedTools.size() != before) rebuildSceneObjects(s);
 }
 
+
+// MINIMISE MEANS PARK — ONE implementation for every parkable tool, installed as a filter on the
+// window itself. Two things in here are not decoration:
+//   * the minimise is undone with the window-state FLAG, never showNormal(): showNormal() re-shows a
+//     window Qt is in the middle of minimising, and that is what tore the Fault plane demo down
+//     instead of parking it (its own hand-rolled copy of this handler called showNormal + hide);
+//   * the work is deferred with a zero-timer, because acting inside the WindowStateChange handler
+//     acts on a state change Qt has not finished applying.
+// `park` is the tool's own park closure (parkTool + whatever else it wants); everything around it —
+// the state flag, the hide, the deferral — is the same for all of them, so it lives here once.
+static void parkOnMinimise(QWidget *win, std::function<void()> park) {
+	if (!win || !park) return;
+	struct MinimiseParks : QObject {
+		QWidget *w;
+		std::function<void()> park;
+		MinimiseParks(QWidget *win, std::function<void()> p) : QObject(win), w(win), park(std::move(p)) {}
+		bool eventFilter(QObject *o, QEvent *e) override {
+			if (e->type() == QEvent::WindowStateChange && w->windowState().testFlag(Qt::WindowMinimized))
+				QTimer::singleShot(0, w, [this]() {
+					w->setWindowState(w->windowState() & ~Qt::WindowMinimized);   // undo the WM's minimise
+					w->hide();
+					park();
+				});
+			return QObject::eventFilter(o, e);
+		}
+	};
+	win->installEventFilter(new MinimiseParks(win, std::move(park)));
+}
 // World units per SCREEN PIXEL at the camera's focal point. ONE source for every "how big is this on
 // screen" question (gmtvtk_label_width_world_h's px->world conversion AND the world scale a flat
 // contour label is given), so a measured width and the actor built from it can never disagree. One

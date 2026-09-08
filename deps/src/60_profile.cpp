@@ -403,47 +403,17 @@ protected:
 	QPoint midPress, midLast;
 
 	void devPx(const QPoint &p, double &dx, double &dy) {
-		const double r = devicePixelRatioF();
-		const int    H = renderWindow()->GetSize()[1];
-		dx = p.x() * r;                 // VTK display coords = bottom-up device px
-		dy = H - p.y() * r;
+		displayPxFromQt(this, renderWindow(), p, dx, dy);
 	}
 	void recenterAt(const QPoint &p) {
-		if (!s || !s->ren || !s->surf) return;
-		vtkRenderer *ren = s->ren; vtkCamera *cam = ren->GetActiveCamera();
-		if (!cam) return;
+		if (!s || !s->ren) return;
 		double x, y; devPx(p, x, y);
-		vtkNew<vtkCellPicker> pk; pk->SetTolerance(0.0005);
-		pk->PickFromListOn(); pk->AddPickList(surfProp(s));
-		if (pk->Pick(x, y, 0.0, ren)) {
-			double pick[3]; pk->GetPickPosition(pick);
-			double pos[3], fp[3]; cam->GetPosition(pos); cam->GetFocalPoint(fp);
-			const double d[3] = { pos[0]-fp[0], pos[1]-fp[1], pos[2]-fp[2] };
-			cam->SetFocalPoint(pick);
-			cam->SetPosition(pick[0]+d[0], pick[1]+d[1], pick[2]+d[2]);
-			ren->ResetCameraClippingRange();
-			renderWindow()->Render();
-		}
+		if (camRecenterOnPick(s->ren, sceneRecenterTargets(s), x, y)) renderWindow()->Render();
 	}
 	void panBy(const QPoint &prev, const QPoint &cur) {
 		if (!s || !s->ren) return;
-		vtkRenderer *ren = s->ren; vtkCamera *cam = ren->GetActiveCamera();
-		if (!cam) return;
 		double ox, oy, nx, ny; devPx(prev, ox, oy); devPx(cur, nx, ny);
-		double fp[3]; cam->GetFocalPoint(fp);
-		ren->SetWorldPoint(fp[0], fp[1], fp[2], 1.0); ren->WorldToDisplay();
-		const double depth = ren->GetDisplayPoint()[2];
-		ren->SetDisplayPoint(nx, ny, depth); ren->DisplayToWorld();
-		double np[4]; for (int i=0;i<4;++i) np[i]=ren->GetWorldPoint()[i];
-		ren->SetDisplayPoint(ox, oy, depth); ren->DisplayToWorld();
-		double op[4]; for (int i=0;i<4;++i) op[i]=ren->GetWorldPoint()[i];
-		if (np[3]!=0.0) { np[0]/=np[3]; np[1]/=np[3]; np[2]/=np[3]; }
-		if (op[3]!=0.0) { op[0]/=op[3]; op[1]/=op[3]; op[2]/=op[3]; }
-		const double m[3] = { op[0]-np[0], op[1]-np[1], op[2]-np[2] };
-		double pos[3]; cam->GetPosition(pos);
-		cam->SetFocalPoint(fp[0]+m[0], fp[1]+m[1], fp[2]+m[2]);
-		cam->SetPosition (pos[0]+m[0], pos[1]+m[1], pos[2]+m[2]);
-		ren->ResetCameraClippingRange();
+		camPanByDisplay(s->ren, ox, oy, nx, ny);
 		renderWindow()->Render();
 	}
 	void mousePressEvent(QMouseEvent *e) override {
