@@ -19006,6 +19006,47 @@ protected:
 	}
 };
 
+// Open (or unpark and raise) the "Fault plane demo" for a window, warmed up exactly the way the
+// Geophysics menu entry warms it. THE one place that knows how this demo is opened from elsewhere:
+// parented on the MAIN WINDOW and never on the caller's dialog, because faultDemoOpen ties the
+// demo's life to its parent and every caller here can be closed while the demo must stay.
+static QDialog *faultDemoFor(Scene *scene) {
+	warmupTool("faultdemo");
+	return faultDemoOpen(scene ? scene->win : nullptr, scene);
+}
+
+// Hand ONE focal mechanism to the "Fault plane demo" and have that demo show the Okada deformation
+// it causes. THE one hand-off: the Focal Meca Studio's "Show in Fault plane" button and a plotted
+// beachball's own right-click entry (mecaBallMenu, 85_polygon.cpp) both come here. The demo is
+// OPENED (or unparked and raised) through its own opener and driven through its OWN controls -
+// nothing of its geometry and nothing of the deformation request is re-derived at either site.
+static void showMechanismInFaultPlane(Scene *scene, double strike, double dip, double rake) {
+	QDialog *dlg = faultDemoFor(scene);
+	if (!dlg) return;
+	// The demo's three mechanism sliders, by the names its .ui gives them (it calls the strike
+	// "azimuth"). A renamed widget comes back null and the hand-off does nothing, never a crash.
+	auto *demoStrike = dlg->findChild<QSlider *>("azimuthSlider");
+	auto *demoDip    = dlg->findChild<QSlider *>("dipSlider");
+	auto *demoRake   = dlg->findChild<QSlider *>("rakeSlider");
+	if (!demoStrike || !demoDip || !demoRake) return;
+	// Slip back to zero through the demo's OWN "Reset slip" button (it also stops the play
+	// animation): while the slip slider is negative the demo's signed rake is rake+180
+	// (faultDemoRake), so a running animation would hand Okada a mechanism that is NOT the one
+	// being handed over here.
+	if (auto *resetSlip = dlg->findChild<QPushButton *>("resetSlipButton")) resetSlip->click();
+	demoStrike->setValue((int)std::lround(strike));      // QSlider clamps to the .ui's own ranges
+	demoDip->setValue((int)std::lround(dip));
+	demoRake->setValue((int)std::lround(rake));
+	// "Demo inset" checkbox + its "Compute inset" button: the Okada field over a zone three times
+	// the fault, shown inside the demo. Computed by pressing the very button the user would press -
+	// not by a second copy of that request. The real "Compute deformation" is left alone: that one
+	// writes into the window and needs a region neither caller has a say in.
+	auto *insetCheck = dlg->findChild<QCheckBox *>("insetDemoCheck");
+	auto *insetBtn   = dlg->findChild<QPushButton *>("insetComputeButton");
+	if (insetCheck && !insetCheck->isChecked()) insetCheck->setChecked(true);
+	if (insetBtn && insetBtn->isEnabled()) insetBtn->click();
+}
+
 // ============================================================================================
 // FocalMecaStudioDialog — "Focal Meca Studio": a standalone Strike/Dip/Rake sandbox for a single
 // focal mechanism. Opened by clicking the elastic-deformation dialog's BeachballWidget icon (see
@@ -19019,12 +19060,14 @@ public:
 	QSlider *sliderStrike, *sliderDip, *sliderRake;
 	QLineEdit *editStrike, *editDip, *editRake;
 	BeachballWidget *beach;
+	Scene *hostScene = nullptr;        // the window this Studio belongs to: whose Fault plane demo the button drives
 
 	FocalMecaStudioDialog(QWidget *parent, Scene *scene, double strike0, double dip0, double rake0)
 		: QDialog(parent)
 	{
 		setWindowTitle("Focal Meca Studio");
 		setAttribute(Qt::WA_DeleteOnClose);
+		hostScene = scene;
 
 		auto makeRow = [this](const QString &label, int lo, int hi, int val,
 		                       QSlider *&sliderOut, QLineEdit *&editOut) {
@@ -19074,6 +19117,13 @@ public:
 		root->addLayout(beachRow);
 
 		auto *btnRow = new QHBoxLayout();
+		// "Show in Fault plane" QPushButton, LOWER-LEFT corner of the dialog: hands this mechanism's
+		// strike/dip/rake to the Fault plane demo and has that demo compute the Okada deformation it
+		// causes. Left of the stretch, so it sits in the corner while "GMT comm" stays on the right.
+		auto *btnFaultPlane = new QPushButton("Show in Fault plane", this);
+		btnFaultPlane->setToolTip("Open the Fault plane demo at this strike, dip and rake and compute "
+		                         "the Okada deformation it causes");
+		btnRow->addWidget(btnFaultPlane);
 		btnRow->addStretch(1);
 		auto *btnGmtComm = new QPushButton("GMT comm", this);
 		btnGmtComm->setToolTip("Show the GMT command that reproduces this beachball");
@@ -19099,6 +19149,12 @@ public:
 			[this]{ sliderDip->setValue(editDip->text().toInt()); });
 		QObject::connect(editRake, &QLineEdit::editingFinished, this,
 			[this]{ sliderRake->setValue(editRake->text().toInt()); });
+
+		// Straight to the SHARED hand-off (showMechanismInFaultPlane, above) — the same one a plotted
+		// beachball's right-click entry uses. Nothing about the demo is known here beyond these three angles.
+		QObject::connect(btnFaultPlane, &QPushButton::clicked, this, [this]{
+			showMechanismInFaultPlane(hostScene, sliderStrike->value(), sliderDip->value(), sliderRake->value());
+		});
 
 		QObject::connect(btnGmtComm, &QPushButton::clicked, this, [this]{
 			const QString cmd = QString("GMT.meca((0.0,0.0), strike=%1, dip=%2, rake=%3, mag=5, aki=true)")
@@ -19132,11 +19188,9 @@ static void geoLineLenAz(double lon1, double lat1, double lon2, double lat2, dou
 // whether it is geographic. Length is km (geographic) or data units (cartesian); strike is deg from
 // north, CW. Returns false if there is no fault line. `geog` follows the window CRS when set, else a
 // crude lon/lat-range guess (mirrors GMT.guessgeog) so an unreferenced lon/lat fault still reads geo.
-static bool faultLineGeom(Scene *s, double &len, double &az, bool &geog) {
-	int pi = -1;
-	for (size_t i = 0; i < s->polys.size(); ++i) if (s->polys[i].isFault) { pi = (int)i; break; }
-	if (pi < 0 || s->polys[pi].v.size() < 2) return false;
-	const auto &v = s->polys[pi].v;
+static bool faultPolyGeom(Scene *s, const Polygon &pg, double &len, double &az, bool &geog) {
+	if (pg.v.size() < 2) return false;
+	const auto &v = pg.v;
 	geog = s->crsProj4.find("longlat") != std::string::npos || s->crsProj4.find("latlong") != std::string::npos;
 	if (s->crsProj4.empty()) {                                  // unknown CRS -> crude range test
 		double x0 = 1e300, x1 = -1e300, y0 = 1e300, y1 = -1e300;
@@ -19181,6 +19235,75 @@ static bool faultLineGeom(Scene *s, double &len, double &az, bool &geog) {
 	if (geog) { double d; geoLineLenAz(A[0], A[1], B[0], B[1], d, az); }
 	else        az = std::fmod(std::atan2(B[0] - A[0], B[1] - A[1]) * 180.0 / 3.14159265358979323846 + 360.0, 360.0);
 	return true;
+}
+
+// The WINDOW's Draw-Fault line, for the callers that just want "the fault" (the elastic dialog
+// seeds itself from it). A finder, nothing more: the maths is faultPolyGeom's, once.
+static bool faultLineGeom(Scene *s, double &len, double &az, bool &geog) {
+	for (auto &pg : s->polys) if (pg.isFault) return faultPolyGeom(s, pg, len, az, geog);
+	return false;
+}
+
+// Put a number into one of the demo's narrow boxes so its START is what shows. Two things hide the
+// leading digits otherwise: a right-aligned box shows the tail, and a QLineEdit leaves the cursor at
+// the END after setText and scrolls there — so "1234.567" in a 60 px box reads "4.567". Left-align
+// and cursor 0 fix both. Called with the box's own text for the Region boxes, which are filled by
+// the shared wireWindowGridRow (30_app.cpp) and are only DISPLAYED differently here.
+static void faultDemoShowNum(QLineEdit *e, const QString &txt) {
+	if (!e) return;
+	e->setText(txt);
+	e->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+	e->setCursorPosition(0);
+}
+
+// Hand a DRAWN FAULT TRACE (Draw fault > its own "Show in Fault plane") to the Fault plane demo.
+// A trace knows only three of the demo's numbers: where it starts, how long it is, and which way
+// it runs. Dip, rake, width, depth and slip are NOT knowable from a line on a map, so nothing here
+// touches them and nothing is computed — the user fills the rest in the demo and presses its own
+// Compute. Opened through the same faultDemoFor and driven through the demo's OWN controls as
+// every other hand-off (showMechanismInFaultPlane above).
+static void showFaultTraceInFaultPlane(Scene *scene, vtkActor *a) {
+	if (!scene) return;
+	const int pi = polyIndexOfActor(scene, a);
+	if (pi < 0 || !scene->polys[pi].isFault) return;
+	double len = 0.0, az = 0.0; bool geog = false;
+	if (!faultPolyGeom(scene, scene->polys[pi], len, az, geog)) return;
+	const double ox = scene->polys[pi].v.front()[0], oy = scene->polys[pi].v.front()[1];
+	QDialog *dlg = faultDemoFor(scene);
+	if (!dlg) return;
+	// STRIKE: the demo calls it "azimuth". The slider is whole degrees, like every other route in.
+	if (auto *demoStrike = dlg->findChild<QSlider *>("azimuthSlider"))
+		demoStrike->setValue((int)std::lround(az));
+	// TRUE LENGTH: km for a geographic trace (faultPolyGeom's own units), data units otherwise —
+	// the box is labelled "Length (km)" and a cartesian trace goes in as it measured.
+	faultDemoShowNum(dlg->findChild<QLineEdit *>("trueLength"), QString::number(len, 'f', 3));
+	// WIDTH follows the length, by the SAME rule the "Vertical elastic deformation" dialog seeds a
+	// fresh fault with: W = L/4 (Mirone edit_FaultWidth_CB). A trace says nothing about down-dip
+	// extent, so this is a seed like that dialog's, not a measurement — the user overrides it in
+	// the demo. One rule, stated in one place; never a second ratio invented here.
+	faultDemoShowNum(dlg->findChild<QLineEdit *>("trueWidth"), QString::number(len / 4.0, 'f', 3));
+	// ORIGIN: the trace's FIRST vertex. With the Fault trace origin boxes filled, the demo runs the
+	// fault from there along the strike instead of centring it in the region (see its Compute
+	// handler, 68_faultdemo.cpp) — so the deformation lands where the line was actually drawn.
+	faultDemoShowNum(dlg->findChild<QLineEdit *>("traceOriginX"), QString::number(ox, 'f', 8));
+	faultDemoShowNum(dlg->findChild<QLineEdit *>("traceOriginY"), QString::number(oy, 'f', 8));
+	// REGION: a trace drawn on a window inherits that window's grid, so the demo's Region block is
+	// filled from it — W/E/S/N, both increments AND the coordinate kind (degrees vs metres, which is
+	// what Okada reads its distances against). Done by picking the demo's OWN "grid in this window"
+	// combo, which is the one filler for those six boxes (wireWindowGridRow, 30_app.cpp): index 1 is
+	// the window's base grid. Re-picked from 0 when it is already there, because a combo that does
+	// not CHANGE emits nothing, and boxes the user has since edited would stay edited.
+	if (auto *winCombo = dlg->findChild<QComboBox *>("windowGridCombo")) {
+		if (winCombo->isEnabled() && winCombo->count() > 1) {
+			if (winCombo->currentIndex() == 1) winCombo->setCurrentIndex(0);
+			winCombo->setCurrentIndex(1);
+		}
+	}
+	// Those six came from the shared filler as 'g',12 numbers — long enough to be clipped down to
+	// their tail in these narrow boxes. Same left-align + cursor-0 treatment, display only: their
+	// VALUES are the filler's, untouched.
+	for (const char *nm : { "regionXmin", "regionXmax", "regionYmin", "regionYmax", "regionXinc", "regionYinc" })
+		if (auto *e = dlg->findChild<QLineEdit *>(nm)) faultDemoShowNum(e, e->text());
 }
 
 // Move the fault trace's end vertex so the line matches (strike, len) — port of Mirone's

@@ -2243,6 +2243,35 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 			s->widget->renderWindow()->Render();
 			return true;
 		}
+		// RIGHT-CLICK ON A PLOTTED BEACHBALL -> its own one-entry context menu. Focal-mechanism balls
+		// get NO individual Scene Objects row (ONE row per batch, rebuildSceneObjects), so this is the
+		// only place a SINGLE event is addressable. Same hit test the hover tooltip and the ball drag
+		// already use, so all three gestures agree on which ball is under the cursor.
+		const int mbi = mecaHitAt(s, x, y);
+		if (mbi >= 0) {
+			const double st = s->mecaBalls[mbi].strike, dp = s->mecaBalls[mbi].dip, rk = s->mecaBalls[mbi].rake;
+			// The angles ride on the ball itself (gmtvtk_set_meca_sdr_h, attached per batch right after
+			// the catalog is plotted).
+			const bool haveSDR = s->mecaBalls[mbi].hasSDR;
+			// Popped AFTER this press event returns: a menu runs its own modal loop, and opening one from
+			// inside the handler eats the matching release (same reason polyPlaceText defers, SH_Text below).
+			QTimer::singleShot(0, s->widget, [s, st, dp, rk, haveSDR]() {
+				QMenu m(s->widget);
+				QAction *aFP = m.addAction("Show in Fault plane");
+				if (m.exec(QCursor::pos()) != aFP) return;
+				// The angles are attached per batch, right after the balls are plotted. If that never
+				// happened this ball has none, and SAYING SO is the only useful thing left to do — the
+				// menu itself stays clean, and a right-click is never silently inert.
+				if (!haveSDR) {
+					QMessageBox::warning(s->widget, "Show in Fault plane",
+						"This beachball carries no strike/dip/rake — the catalog was plotted by a viewer "
+						"build that cannot attach them. Re-plot the catalog to get them.");
+					return;
+				}
+				showMechanismInFaultPlane(s, st, dp, rk);      // THE shared hand-off (70_window.cpp)
+			});
+			return true;                                 // consumed: no camera dolly under an open menu
+		}
 		return false;
 	}
 	if (s->polyMode) {                                   // draw mode: dispatch by active shape

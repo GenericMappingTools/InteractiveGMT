@@ -687,6 +687,24 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 			(Ptr{Cvoid}, Cstring, Ptr{Cstring}, Cint),
 			scene, "Focal mechanisms", infos, Cint(length(infos)))
 	end
+	# Each ball also CARRIES its own strike/dip/rake from here on: the scene stores a beachball as
+	# patch geometry, so without this its numbers cannot be read back off the display, and right-
+	# clicking one event could not hand that event's mechanism to the Fault plane demo. Taken from
+	# `mtab` (the Aki & Richards table built above, columns 4/5/6 of each 7-wide event record) - not
+	# accumulated a second time - and sent as ONE batch call, like the tooltips above.
+	if (n > 0 && !isempty(mtab))
+		nev = length(mtab) ÷ 7
+		sdr = Vector{Float64}(undef, 3nev)
+		# 1-based on purpose: `3e+1` would be the FLOAT LITERAL 30.0, not 3*e+1.
+		for k = 1:nev
+			sdr[3k-2] = mtab[7k-3]      # strike (column 4 of this event's 7-wide record)
+			sdr[3k-1] = mtab[7k-2]      # dip    (column 5)
+			sdr[3k]   = mtab[7k-1]      # rake   (column 6)
+		end
+		GC.@preserve sdr ccall(_fn(:gmtvtk_set_meca_sdr_h), Cint,
+			(Ptr{Cvoid}, Cstring, Ptr{Cdouble}, Cint),
+			scene, "Focal mechanisms", sdr, Cint(nev))
+	end
 	# Keep the plotted events' own Aki & Richards numbers with the window (see _meca_table_store!):
 	# the scene holds only patch geometry, so this is what lets the GMT.jl script export ask GMT for
 	# real beachballs (`meca!`) instead of freezing these ones into anonymous polygons.

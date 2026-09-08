@@ -391,7 +391,7 @@ Use Slip or Play to move the hanging wall.</string>
           <widget class="QLineEdit" name="trueLength">
            <property name="maximumSize">
             <size>
-             <width>60</width>
+             <width>70</width>
              <height>16777215</height>
             </size>
            </property>
@@ -431,7 +431,7 @@ Use Slip or Play to move the hanging wall.</string>
           <widget class="QLineEdit" name="trueDepthTop">
            <property name="maximumSize">
             <size>
-             <width>60</width>
+             <width>70</width>
              <height>16777215</height>
             </size>
            </property>

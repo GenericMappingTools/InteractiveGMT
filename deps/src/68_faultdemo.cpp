@@ -137,6 +137,10 @@ struct FaultDemo {
 	// draws its x/y labels with and read horizontally across the axis. Anchor + width are what
 	// faultDemoInsetLabelCB needs to place and size them each frame.
 	vtkSmartPointer<vtkFollower>   insetZLab[3];
+	// The E/N/Up TRIEDRON on the inset — the same marker the 3-D view carries in its own corner,
+	// built by the same faultDemoTriedron() and following the INSET camera instead of the view's.
+	// Kept here because it is switched with the "Demo inset" checkbox, exactly like insetRen.
+	vtkSmartPointer<vtkOrientationMarkerWidget> compass, insetCompass;
 	vtkSmartPointer<vtkVectorText> insetZTxt[3];
 	double insetZAnchor[3][3] = {};
 	double insetZWidth[3] = {};
@@ -147,10 +151,10 @@ struct FaultDemo {
 // it on the matrix and not with vtkProp3D::SetScale matters — a prop scale is applied INSIDE the user
 // matrix, which would exaggerate the blocks but leave the gap and the slip offset unexaggerated, and
 // the two walls would then interpenetrate.
-// The X PARKS this dialog into the Scene Objects panel of the window it belongs to — a tool window is
-// never destroyed by its own X, and the panel is where a parked tool lives (parkTool, 50_scene.cpp:
-// ONE list and ONE row builder for every parkable tool). Double-clicking the row, or ticking it,
-// brings the demo back exactly as it was; only the row's own Remove really closes it.
+// MINIMISING this dialog parks it into the Scene Objects panel of the window it belongs to, which is
+// where a parked tool lives (parkTool, 50_scene.cpp: ONE list and ONE row builder for every
+// parkable tool). Double-clicking the row, or ticking it, brings the demo back exactly as it was;
+// the row's own Remove closes it for good. The X does NOT come here: it closes and destroys.
 class FaultDemoParkFilter : public QObject {
 public:
 	FaultDemoParkFilter(QDialog *d, Scene *host)
@@ -181,8 +185,8 @@ bool FaultDemoParkFilter::eventFilter(QObject *o, QEvent *e) {
 	if (o != dlg || closing) return QObject::eventFilter(o, e);
 	// ESCAPE DOES NOTHING. By default it reaches QDialog::reject(), which hides the window without
 	// even sending a QEvent::Close, so the demo just disappeared under a stray key. Swallowed here:
-	// no reject, no hide, no park. The dialog is closed only by the X, the title-bar minimise or the
-	// button below, all three of which park it and leave a Scene Objects row behind.
+	// no reject, no hide, no park. The dialog goes away only through the X (which destroys it) or the
+	// title-bar minimise (which parks it and leaves a Scene Objects row behind).
 	if (e->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape)
 		return true;
 	// ENTER/RETURN DOES NOTHING EITHER. In a QDialog, Return from any child — a QSpinBox included —
@@ -195,15 +199,14 @@ bool FaultDemoParkFilter::eventFilter(QObject *o, QEvent *e) {
 		const int k = static_cast<QKeyEvent *>(e)->key();
 		if (k == Qt::Key_Return || k == Qt::Key_Enter) return true;
 	}
-	if (e->type() == QEvent::Close) {
-		e->ignore();                      // the X is a MINIMISE: hide, and leave a row behind
-		dlg->hide();
-		faultDemoPark(dlg, s, this);
-		return true;
-	}
-	// The TITLE BAR's minimise button parks too, instead of dropping the dialog into the taskbar where
-	// the Scene Objects row would not know about it: come straight back out of the minimised state and
-	// park. Same destination for all three routes — the button below, the X, and this one.
+	// THE X CLOSES THIS DIALOG FOR GOOD (WA_DeleteOnClose, see faultDemoOpen) — it is NOT a park.
+	// It used to swallow QEvent::Close and park instead, which meant the demo could never be
+	// dismissed by the one gesture that dismisses every other window. Parking is still there,
+	// on the title-bar MINIMISE (parkOnMinimise, below) — the gesture that actually means
+	// "put it away for now".
+	// The TITLE BAR's minimise button parks, instead of dropping the dialog into the taskbar where the
+	// Scene Objects row would not know about it: come straight back out of the minimised state and
+	// park. That is now the ONLY route to a park — the X destroys.
 	// (The title-bar minimise is NOT handled here any more: it goes through parkOnMinimise,
 	// 50_scene.cpp, the one implementation every parkable tool shares. This filter's own copy called
 	// showNormal() inside the state change and killed the dialog instead of parking it.)
@@ -354,10 +357,34 @@ static void faultDemoAnchorCB(vtkObject *caller, unsigned long, void *cd, void *
 	for (int i = 0; i < 3; ++i) s->giz->panOff[i] = f->view->gizAnchor[i] - fp[i];
 }
 
+// Put the inset triedron in the inset's LOWER-LEFT corner and keep it there. The ABSOLUTE rect is
+// written straight onto the marker's own renderer: its normal placement is a RELATIVE Viewport
+// times whatever CurrentRenderer happens to be, and VTK moves that target on its own
+// (SetEnabled(0) nulls it, the next enable re-resolves it to the poked renderer = the big 3-D
+// view). Driven from BOTH renderers' StartEvent, so it is re-applied on every frame the window
+// draws, whether or not the inset renderer itself emitted one.
+static void faultDemoPinInsetTriedron(FaultDemo *f) {
+	if (!f || !f->insetCompass || !f->insetRen) return;
+	vtkRenderer *mr = f->insetCompass->GetRenderer();
+	if (!mr) return;
+	double v[4];
+	f->insetRen->GetViewport(v);                 // the panel's live rect, so an inset resize follows
+	const double w = v[2] - v[0], h = v[3] - v[1];
+	// WHOLLY INSIDE THE PANEL, flush in its bottom-left corner. The marker's ORIGIN sits at the CENTRE
+	// of its rect (the widget frames the axes actor as if its bounds were symmetric about the origin),
+	// so the rect is kept SMALL — that is what brings the triedron close to the corner, since half the
+	// rect is always the gap between corner and origin. SetZoom (faultDemoTriedron) then fills that
+	// small rect, so small does not mean a speck.
+	const double bw = 0.16 * w, bh = 0.20 * h;
+	mr->SetViewport(v[0], v[1], v[0] + bw, v[1] + bh);
+}
+
 static void faultDemoInsetLabelCB(vtkObject *caller, unsigned long, void *cd, void *) {
 	auto *f = static_cast<FaultDemo *>(cd);
 	auto *ren = vtkRenderer::SafeDownCast(caller);
-	if (!f || !ren || !f->insetAxes || !ren->GetActiveCamera()) return;
+	if (!f || !ren) return;
+	faultDemoPinInsetTriedron(f);                // before every early return below
+	if (!f->insetAxes || !ren->GetActiveCamera()) return;
 	vtkCamera *cam = ren->GetActiveCamera();
 	const int *sz = ren->GetSize();
 	if (!sz || sz[1] <= 0) return;
@@ -378,6 +405,48 @@ static void faultDemoInsetLabelCB(vtkObject *caller, unsigned long, void *cd, vo
 		                             a[1] - back*right[1] - 0.35*s*up[1],
 		                             a[2] - back*right[2] - 0.35*s*up[2]);
 	}
+}
+
+// THE triedron builder for this dialog. The 3-D view and the deformation inset each carry an
+// E/N/Up marker; they differ only in WHICH camera they follow and WHERE they sit, so they are
+// built here once instead of twice (a second copy is how the two would end up with different
+// labels or a different size). `follow` is the renderer whose camera the marker tracks — set
+// BEFORE SetEnabled, or the widget picks the poked renderer on its own. The viewport is given in
+// coords RELATIVE TO the followed renderer's own viewport (VTK scales them into it — so for a
+// renderer that owns a corner of the window, 1.0 is that CORNER's width, not the window's).
+static vtkSmartPointer<vtkOrientationMarkerWidget>
+faultDemoTriedron(vtkRenderWindowInteractor *rwi, vtkRenderer *follow,
+                  double x0, double y0, double x1, double y1) {
+	if (!rwi || !follow) return nullptr;
+	vtkNew<vtkAxesActor> axes;
+	axes->SetXAxisLabelText("E"); axes->SetYAxisLabelText("N"); axes->SetZAxisLabelText("Up");
+	auto w = vtkSmartPointer<vtkOrientationMarkerWidget>::New();
+	w->SetOrientationMarker(axes);
+	w->SetInteractor(rwi);
+	w->SetCurrentRenderer(follow);
+	w->SetViewport(x0, y0, x1, y1);
+	w->SetEnabled(1);
+	w->InteractiveOff();          // a fixed marker, never a widget the mouse can grab and move
+	// FILL the box. vtkAxesActor draws its three arms in +X/+Y/+Z ONLY, but the widget frames it as
+	// if its bounds were symmetric about the origin (the class documents that requirement), so half
+	// the box is empty space in the negative directions and the marker floats well inside its own
+	// rectangle. Zoom pushes the arms out to the box edges, which is what puts the triedron IN the
+	// corner instead of a marker-width away from it.
+	w->SetZoom(2.0);
+	return w;
+}
+
+// Switch one of those markers on/off. NOT symmetric, and this is why it needs a function of its own:
+// VTK's SetEnabled(0) NULLS the widget's CurrentRenderer, and the next SetEnabled(1) re-resolves it
+// with FindPokedRenderer — which on this window is the big 3-D view. The inset's marker therefore
+// left the inset and reappeared in the VIEW's corner (its viewport is computed relative to whatever
+// CurrentRenderer is, see UpdateInternalViewport), following the wrong camera. Re-assert the
+// renderer every time it is switched back on.
+static void faultDemoTriedronShow(vtkOrientationMarkerWidget *w, vtkRenderer *follow, bool on) {
+	if (!w) return;
+	if (!on) { w->SetEnabled(0); return; }
+	w->SetCurrentRenderer(follow);
+	w->SetEnabled(1);
 }
 
 static void faultDemoInsetInit(FaultDemo *f, vtkRenderWindow *rw) {
@@ -595,9 +664,10 @@ static void faultDemoCamera(FaultDemo *f) {
 	double bb[6];
 	if (faultDemoBounds(f, bb)) f->renderer->ResetCamera(bb);
 	else                        f->renderer->ResetCamera();
-	// Open ZOOMED OUT: 1.12 was a tight fit, times 1.953125 = three taps of the '-' key (1/1.25 each),
-	// so the body starts small with room around it instead of filling the frame.
-	c->SetParallelScale(c->GetParallelScale()*2.1875);
+	// Open with room around the body, but not lost in it: 1.12 is a tight fit, times 1.25 = ONE tap of
+	// the '-' key. This used to be 2.1875 (three taps out) and the model came up too small — 1.4 is
+	// that framing zoomed in TWICE with '+', since a tap is cam->Zoom(1.25) either way (20_gizmo.cpp).
+	c->SetParallelScale(c->GetParallelScale()*1.4);
 	// The model sits LOW in the frame: the controls column next to it is tall, and the blocks read
 	// better with the empty space above them than centred. Moving the camera UP moves the model down.
 	{
@@ -769,8 +839,10 @@ static QDialog *faultDemoOpen(QWidget *parent, Scene *scene) {
 	f->dialog->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 	f->dialog->setWindowModality(Qt::NonModal);
 	f->dialog->setModal(false);
-	// NOT WA_DeleteOnClose: the X parks this dialog (FaultDemoParkFilter) instead of destroying it, so
-	// the model, the sliders and the true-size numbers are all still there when it comes back.
+	// The X DESTROYS this dialog (the destroyed() connections above and below drop the Scene's
+	// pointer and tear the demo state down). To keep the model, the sliders and the true-size
+	// numbers alive across a dismissal, MINIMISE it instead: that parks it into Scene Objects.
+	f->dialog->setAttribute(Qt::WA_DeleteOnClose);
 	auto *parkFilter = new FaultDemoParkFilter(f->dialog, scene);
 	f->dialog->installEventFilter(parkFilter);
 	// Minimise parks, through the SHARED handler (parkOnMinimise, 50_scene.cpp) that the region
@@ -861,6 +933,7 @@ static QDialog *faultDemoOpen(QWidget *parent, Scene *scene) {
 	veCB->SetCallback([](vtkObject *, unsigned long, void *cd, void *) {
 		auto *fd = static_cast<FaultDemo *>(cd);
 		if (fd->gizScene && fd->gizScene->ve != fd->veApplied) faultDemoApplyVE(fd);
+		faultDemoPinInsetTriedron(fd);           // the inset panel may not emit its own StartEvent
 	});
 	veCB->SetClientData(f);
 	f->renderer->AddObserver(vtkCommand::StartEvent, veCB);
@@ -873,16 +946,18 @@ static QDialog *faultDemoOpen(QWidget *parent, Scene *scene) {
 	f->arrow->GetProperty()->SetColor(0.85, 0.12, 0.10);
 	f->renderer->AddActor(f->arrow);
 	// A second viewport gives a camera-linked compass without changing the demo camera bounds.
-	vtkNew<vtkAxesActor> axes;
-	axes->SetXAxisLabelText("E"); axes->SetYAxisLabelText("N"); axes->SetZAxisLabelText("Up");
-	vtkNew<vtkOrientationMarkerWidget> compass;
-	compass->SetOrientationMarker(axes);
-	compass->SetInteractor(f->view->interactor());
-	compass->SetViewport(0.0, 0.0, 0.22, 0.22);
-	compass->SetEnabled(1); compass->InteractiveOff();
-	// Retain the marker until the dialog is destroyed (before deleting its interactor).
-	QObject::connect(f->dialog, &QObject::destroyed, [compass = vtkSmartPointer<vtkOrientationMarkerWidget>(compass)] {
-		compass->SetEnabled(0); compass->SetInteractor(nullptr);
+	// TWO of them: one for the 3-D view, one for the deformation inset — same builder, so the
+	// inset's triedron is the view's triedron and can never drift into a second look.
+	f->compass      = faultDemoTriedron(f->view->interactor(), f->renderer, 0.0, 0.0, 0.22, 0.22);
+	// Bottom-LEFT corner of the inset panel, the obvious place for it. The numbers are FRACTIONS
+	// OF THE INSET'S OWN rectangle (see faultDemoTriedron) — the inset is 0.40 x 0.425 of the
+	// window, so 0.30 of it is a real ~130 px marker, not a window-fraction speck. Flush INTO the
+	// corner (0,0), no inset margin — same as the view compass and as VTK's own default. Follows the
+	// INSET camera (parallel projection, its own orbit), not the view's.
+	f->insetCompass = faultDemoTriedron(f->view->interactor(), f->insetRen, 0.0, 0.0, 0.30, 0.30);
+	// Retain both markers until the dialog is destroyed (before deleting their interactor).
+	QObject::connect(f->dialog, &QObject::destroyed, [c = f->compass, ic = f->insetCompass] {
+		for (auto &w : { c, ic }) if (w) { w->SetEnabled(0); w->SetInteractor(nullptr); }
 	});
 	auto *inset = new QLabel(host);
 	inset->setObjectName("parameterInset");
@@ -1040,6 +1115,7 @@ static QDialog *faultDemoOpen(QWidget *parent, Scene *scene) {
 		// instead of being assumed off, and it is given CONTENT: an empty white box in the corner is not a
 		// demo. Deferred by one event loop turn so the dialog paints and answers the mouse first, because
 		// the field is a Julia call (GMT.okada) and the first one in a session compiles as it goes.
+		faultDemoTriedronShow(f->insetCompass, f->insetRen, insetCheck->isChecked());
 		if (insetCheck->isChecked() && f->insetRen) {
 			f->insetRen->DrawOn(); f->insetRen->InteractiveOn();
 			QTimer::singleShot(0, f->dialog, [insetBtn]() { insetBtn->click(); });
@@ -1050,6 +1126,9 @@ static QDialog *faultDemoOpen(QWidget *parent, Scene *scene) {
 				on ? f->insetRen->DrawOn() : f->insetRen->DrawOff();
 				on ? f->insetRen->InteractiveOn() : f->insetRen->InteractiveOff();   // shown = it owns its corner
 			}
+			// The panel's triedron is part of the panel: it goes with it, never left floating over an
+			// empty corner — and it comes back INTO the panel, not into the view (faultDemoTriedronShow).
+			faultDemoTriedronShow(f->insetCompass, f->insetRen, on);
 			f->view->renderWindow()->Render();
 		});
 	}

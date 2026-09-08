@@ -931,6 +931,10 @@ static void rectOceanColorRegion(Scene *s, const LineRef &lr) {
 // ElasticDialog class — this fragment is #included before it, so forward-declare it here).
 static void faultRunDialog(Scene *s, vtkActor *seedPatch = nullptr);
 
+// Hand this fault trace to the Fault plane demo (origin + true length + azimuth; the rest is the
+// user's to fill in there). Also 70_window.cpp, so forward-declared for the same reason.
+static void showFaultTraceInFaultPlane(Scene *s, vtkActor *a);
+
 // Start a "Copy me" clone-and-follow-mouse (defined in 85_polygon.cpp, #included after this fragment —
 // same forward-declare pattern as faultRunDialog above).
 static void copyMeStart(Scene *s, const Polygon &src);
@@ -1208,6 +1212,11 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 	// lists every patch of the model in its Faults combo.
 	if (isFault || isSlip) {
 		m.addAction("Vertical elastic deformation", [s, a]() { faultRunDialog(s, a); });
+		// A DRAWN TRACE only (not a slip patch): send its origin, true length and azimuth to the Fault
+		// plane demo. Dip, rake, width, depth and slip cannot be read off a line on a map, so the demo
+		// keeps whatever it has for those and the user completes them there.
+		if (isFault)
+			m.addAction("Show in Fault plane", [s, a]() { showFaultTraceInFaultPlane(s, a); });
 		m.addSeparator();
 	}
 

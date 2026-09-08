@@ -3868,6 +3868,28 @@ GMTVTK_API int gmtvtk_set_meca_infos_h(void *handle, const char *name, const cha
 	return nset;
 }
 
+// Attach per-EVENT Aki & Richards angles to an already-plotted focal-mechanism batch:
+// sdr[3*ei], sdr[3*ei+1], sdr[3*ei+2] (strike, dip, rake, degrees) go to the group's ball whose
+// event index is ei — the same pairing gmtvtk_set_meca_infos_h uses, and the same 0-based ei the
+// host encoded as evid = ei*3+role in gmtvtk_add_meca_h, so the three calls pair naturally. The
+// scene stores a beachball as PATCH GEOMETRY, so without this the numbers that produced it cannot
+// be read back off the display (see _MECA_TABLE, src/session.jl); this is what lets ONE ball's
+// right-click menu hand its own mechanism to the Fault plane demo. Batch form on purpose — one
+// call per catalog, never one per event. Returns the number of balls that received angles.
+GMTVTK_API int gmtvtk_set_meca_sdr_h(void *handle, const char *name, const double *sdr, int n) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !sdr || n < 1) return 0;
+	const std::string grp = (name && name[0]) ? name : "Focal mechanisms";
+	int nset = 0;
+	for (auto &b : s->mecaBalls)
+		if (b.groupName == grp && b.event >= 0 && b.event < n) {
+			b.strike = sdr[3*b.event];  b.dip = sdr[3*b.event + 1];  b.rake = sdr[3*b.event + 2];
+			b.hasSDR = true;
+			++nset;
+		}
+	return nset;
+}
+
 // Register the callback for the focal-mechanism GROUP properties dialog (mecaGroupPropsDialog,
 // 50_scene.cpp): fn(scene, groupName, "key=value\n…") on Apply. nullptr to detach.
 GMTVTK_API void gmtvtk_set_meca_props_callback(JuliaMecaPropsFn fn) {
@@ -4342,7 +4364,24 @@ GMTVTK_API int gmtvtk_fault_demo_test(void *handle, const char *control, int val
 	const QString name = control ? QString::fromUtf8(control) : QString();
 	if (name == "close") { d->close(); QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); return 1; }
 	if (name == "keyC") {                  // the gizmo's 'c' = recentre on what is under the pointer
-		QCursor::setPos(f->view->mapToGlobal(QPoint(f->view->width()/2, f->view->height()/2)));
+		// Point at the MODEL, not at the raw geometric centre of the view. faultDemoCamera frames the
+		// blocks deliberately LOW (the controls column beside them is tall), so the middle of the
+		// viewport is empty space ABOVE the model: camRecenterAtCursor picks nothing there, returns
+		// false and the focal point never moves — the gesture looked dead when it is not. Project the
+		// blocks' own bounds centre to display pixels instead, which is what "the pointer is over the
+		// model" actually means for this dialog.
+		QPoint at(f->view->width()/2, f->view->height()/2);
+		double bb[6];
+		if (faultDemoBounds(f, bb)) {
+			f->renderer->SetWorldPoint(0.5*(bb[0]+bb[1]), 0.5*(bb[2]+bb[3]), 0.5*(bb[4]+bb[5]), 1.0);
+			f->renderer->WorldToDisplay();
+			double dp[3];
+			f->renderer->GetDisplayPoint(dp);
+			const double r = f->view->devicePixelRatioF();
+			const int H = f->view->renderWindow()->GetSize()[1];
+			at = QPoint(int(dp[0]/r), int((H - dp[1])/r));   // VTK device px, bottom-up -> Qt logical, top-down
+		}
+		QCursor::setPos(f->view->mapToGlobal(at));
 		QApplication::processEvents();
 		auto *rwi = f->view->interactor();
 		rwi->SetControlKey(0);

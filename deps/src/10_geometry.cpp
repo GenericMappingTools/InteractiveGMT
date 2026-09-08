@@ -571,6 +571,12 @@ struct MecaBall {
 	                                     // mecaBuildLines' own cross-primitive-safe technique, not
 	                                     // polyMakeLineActor's terrain line-offset).
 	std::string info;                   // hover metadata (date/magnitude/depth), gmtvtk_set_meca_infos_h
+	double strike = 0, dip = 0, rake = 0;    // this event's Aki & Richards angles, gmtvtk_set_meca_sdr_h.
+	bool   hasSDR = false;                   // A ball is PATCH GEOMETRY, so the numbers that produced it
+	                                         // cannot be read back off the display (see _MECA_TABLE,
+	                                         // src/session.jl) - they are attached, per batch, by the
+	                                         // plotting side. false = never attached (a batch plotted
+	                                         // by an older host), and that ball offers no menu entry.
 	std::vector<vtkActor*> actors;      // this event's fill(s) + line actor
 	vtkSmartPointer<vtkActor>    anchor;     // drag-trail LINE, built lazily on first drag
 	vtkSmartPointer<vtkPolyData> anchorPD;
