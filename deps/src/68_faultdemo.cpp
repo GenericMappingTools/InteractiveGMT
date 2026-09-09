@@ -469,7 +469,11 @@ static void faultDemoInsetInit(FaultDemo *f, vtkRenderWindow *rw) {
 	f->insetLabel->GetTextProperty()->SetColor(0.15, 0.15, 0.15);
 	f->insetLabel->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
 	f->insetLabel->GetPositionCoordinate()->SetValue(0.04, 0.90);
-	f->insetRen->AddActor2D(f->insetLabel);
+	// AddViewProp, not AddActor2D: VTK 9.7 drops vtkViewport::AddActor2D and the Linux CI builds
+	// against 9.7 while this machine is on 9.6, so the 2D-specific spelling compiles here and breaks
+	// there ("class vtkRenderer has no member named AddActor2D", LinuxBinaries run 34362686125).
+	// AddViewProp takes any vtkProp in both versions and is what the rest of the app already uses.
+	f->insetRen->AddViewProp(f->insetLabel);
 	// The z annotations are re-sized and re-placed every frame from the cube's own AutoScale formula.
 	vtkNew<vtkCallbackCommand> zlabCB;
 	zlabCB->SetCallback(faultDemoInsetLabelCB);
