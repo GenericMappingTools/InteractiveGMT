@@ -91,7 +91,7 @@ static inline void dropExternShade(Scene *s) {
 	if (!s) return;
 	s->shadeIn     = ExternShade();
 	s->shadeInLand = ExternShade();   // both sides, or the dock would move one image and not the other
-	s->noShade = false;      // asking for a light ends "Remove illumination"
+	activeLook(s).noShade = false;   // asking for a light ends "Remove illumination" on THAT layer
 }
 // Reflectance at TRUE-coord (x,y), or NaN outside the grid / on a NaN node.
 // Deliberately NOT longitude-aware: a reflectance arrives already in the frame of the grid it lights
@@ -127,24 +127,30 @@ static inline std::string layerNameOfActor(Scene *s, vtkActor *a) {
 struct ReliefLight {
 	double Lx, Ly, Lz;          // sun dir, lit convention (Lambert / PBR key light)
 	double LxG, LyG, LzG;       // sun dir, grdimage (inverted elevation)
-	double fx, fz, fzRef;       // normal-correction factors: 1/xfac, 1/(zfac·ve), 1/zfac (ve = 1)
+	double fx, fz, fzRef;       // normal-correction: 1/xfac, 1/(zfacShade·ve), 1/zfacShade (ve = 1)
 	double amb, gain, twoOverPi;
 	bool   grd;
 	double rough, metal, keyI, fillI;   // PBR bake: roughness, metalness, key + fill light intensity
 };
-static ReliefLight makeReliefLight(Scene *s) {
+// `ve` is THE LAYER BEING SHADED's own exaggeration (ExtraObj::ve, or Scene::ve for the base), never
+// a window-wide one: a grid drawn at its own VE has to be lit at that same VE or its slopes get
+// corrected by a number belonging to a different layer.
+// `zfac` is THIS layer's own axis mapping (sceneZRefFor over its own z range) and `ve` its own
+// exaggeration, so the normal correction describes the relief exactly AS DRAWN -- which, the VE being
+// defined against the displayed dimensions, is also the relief the eye sees. One pair, one layer.
+static ReliefLight makeReliefLight(Scene *s, const LayerShade &lk, double zfac, double ve) {
 	ReliefLight L;
-	const double az  = s->lightAz * vtkMath::Pi() / 180.0;
-	const double el  = s->lightEl * vtkMath::Pi() / 180.0;
+	const double az  = lk.lightAz * vtkMath::Pi() / 180.0;
+	const double el  = lk.lightEl * vtkMath::Pi() / 180.0;
 	L.Lx = std::sin(az) * std::cos(el);  L.Ly = std::cos(az) * std::cos(el);  L.Lz = std::sin(el);
-	const double elG = (90.0 - s->lightEl) * vtkMath::Pi() / 180.0;   // grdimage inverts elevation
+	const double elG = (90.0 - lk.lightEl) * vtkMath::Pi() / 180.0;   // grdimage inverts elevation
 	L.LxG = std::sin(az) * std::cos(elG); L.LyG = std::cos(az) * std::cos(elG); L.LzG = std::sin(elG);
 	L.fx    = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
-	L.fz    = (s->zfac * s->ve != 0.0) ? 1.0 / (s->zfac * s->ve) : 1.0;
-	L.fzRef = (s->zfac != 0.0) ? 1.0 / s->zfac : 1.0;      // same, at the reference VE (ve = 1)
-	L.amb = s->hillAmbient;  L.gain = s->hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = s->hillGrd;
-	L.rough = s->roughness < 0.05 ? 0.05 : s->roughness;   // clamp so the GGX lobe stays finite
-	L.metal = s->metallic < 0.0 ? 0.0 : (s->metallic > 1.0 ? 1.0 : s->metallic);
+	L.fz    = (zfac * ve != 0.0) ? 1.0 / (zfac * ve) : 1.0;
+	L.fzRef = (zfac != 0.0) ? 1.0 / zfac : 1.0;            // same, at the reference VE (ve = 1)
+	L.amb = lk.hillAmbient;  L.gain = lk.hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = lk.hillGrd;
+	L.rough = lk.roughness < 0.05 ? 0.05 : lk.roughness;   // clamp so the GGX lobe stays finite
+	L.metal = lk.metallic < 0.0 ? 0.0 : (lk.metallic > 1.0 ? 1.0 : lk.metallic);
 	L.keyI = s->lightIntensity;  L.fillI = s->fillIntensity;
 	return L;
 }
@@ -309,12 +315,13 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 		}
 	}
 	const double invspan = (hi > lo) ? (NT - 1) / (hi - lo) : 0.0;
-	const bool   pbr   = !s->useHillshade && s->litBake;   // flat PBR bake (approximates the lit surface)
+	const bool   pbr   = !s->look.useHillshade && s->look.litBake;   // flat PBR bake (approximates the lit surface)
 	// Hillshade tool: GMT-computed reflectance — consumed only when it is THIS layer's own. This bake
 	// paints the BASE surface's drape (its callers pass s->gridZ), so the owner asked about is the base.
 	const bool   ext   = externShadeOwns(s, s->surfName);
-	const bool   shade = s->useHillshade || pbr;           // any per-pixel shade (hillshade or PBR)
-	const ReliefLight L = makeReliefLight(s);      // SAME light/style the 3-D surface uses (one source of truth)
+	const bool   shade = s->look.useHillshade || pbr;           // any per-pixel shade (hillshade or PBR)
+	// the BASE relief's own look, own axis mapping (Scene::zfac) and own VE
+	const ReliefLight L = makeReliefLight(s, s->look, s->zfac, s->ve);
 	const GridLay zlay = gridLay(nx, ny, zlayout);                               // THE layout resolver (10_geometry.cpp)
 	auto Zc = [&](int ix, int iy) -> double { return zlay.at(z, ix, iy); };
 	auto clampi = [](int v, int hi2) { return v < 0 ? 0 : (v > hi2 ? hi2 : v); };
@@ -423,15 +430,17 @@ static void invalidateLayerDetail(Scene *s);   // fwd (defined below)
 // Snapshot the live Shading-dock illumination into a per-side struct (one side's OWN light).
 static AquaSideShade snapshotShade(Scene *s) {
 	AquaSideShade a; a.valid = true;
-	a.useHillshade = s->useHillshade; a.hillGrd = s->hillGrd; a.litBake = s->litBake;
-	a.lightAz = s->lightAz; a.lightEl = s->lightEl; a.hillAmbient = s->hillAmbient; a.hillGain = s->hillGain;
-	a.roughness = s->roughness; a.metallic = s->metallic;
+	a.useHillshade = s->look.useHillshade; a.hillGrd = s->look.hillGrd; a.litBake = s->look.litBake;
+	a.lightAz = s->look.lightAz; a.lightEl = s->look.lightEl; a.hillAmbient = s->look.hillAmbient; a.hillGain = s->look.hillGain;
+	a.roughness = s->look.roughness; a.metallic = s->look.metallic;
 	a.lightIntensity = s->lightIntensity; a.fillIntensity = s->fillIntensity;
 	return a;
 }
 // makeReliefLight, but with the light/style taken from a per-side snapshot (geometry xfac/zfac/ve still
 // live from the Scene). Lets WATER and LAND shade with independent suns through the SAME applyReliefShade.
 static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a) {
+	const double ve = s->ve;                      // the tank IS the base relief -- its own VE and look
+	const LayerShade &lk = s->look;
 	ReliefLight L;
 	const double az  = a.lightAz * vtkMath::Pi() / 180.0;
 	const double el  = a.lightEl * vtkMath::Pi() / 180.0;
@@ -439,8 +448,11 @@ static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a) {
 	const double elG = (90.0 - a.lightEl) * vtkMath::Pi() / 180.0;
 	L.LxG = std::sin(az) * std::cos(elG); L.LyG = std::cos(az) * std::cos(elG); L.LzG = std::sin(elG);
 	L.fx    = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
-	L.fz    = (s->zfac * s->ve != 0.0) ? 1.0 / (s->zfac * s->ve) : 1.0;
-	L.fzRef = (s->zfac != 0.0) ? 1.0 / s->zfac : 1.0;      // same, at the reference VE (ve = 1)
+	// The LIGHTING reference, like every other shade path (makeReliefLight) — never the geometry's
+	// horizontal-scale normaliser, or the tank's water and land both wash out to flat colour.
+	const double zsh = s->zfac;
+	L.fz    = (zsh * ve != 0.0) ? 1.0 / (zsh * ve) : 1.0;
+	L.fzRef = (zsh != 0.0) ? 1.0 / zsh : 1.0;              // same, at the reference VE (ve = 1)
 	L.amb = a.hillAmbient;  L.gain = a.hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = a.hillGrd;
 	L.rough = a.roughness < 0.05 ? 0.05 : a.roughness;
 	L.metal = a.metallic < 0.0 ? 0.0 : (a.metallic > 1.0 ? 1.0 : a.metallic);
@@ -702,37 +714,39 @@ static void syncShadeChecks(Scene *s) {
 	s->cbFlat->setEnabled(s->gnx > 1 && !s->gridZ.empty());
 	s->cbFlat->setChecked(s->layerImgMode);
 	s->cbShadow->setChecked(s->useShadows);
-	s->cbHillL->setChecked(s->useHillshade && !s->hillGrd);
-	s->cbHillG->setChecked(s->useHillshade &&  s->hillGrd);
+	const LayerShade &lkA = activeLook(s);        // the dock shows the ACTIVE layer's own look
+	s->cbHillL->setChecked(lkA.useHillshade && !lkA.hillGrd);
+	s->cbHillG->setChecked(lkA.useHillshade &&  lkA.hillGrd);
 	// PBR = the lit look with no hillshade / shadows. On a 3-D surface that IS the default (all off);
 	// on a flat image it means the PBR bake is on (litBake). Reflect both so the box tracks reality.
-	s->cbPBR->setChecked(!s->useHillshade && !s->useShadows && (s->layerImgMode ? s->litBake : true));
+	s->cbPBR->setChecked(!lkA.useHillshade && !s->useShadows && (s->layerImgMode ? lkA.litBake : true));
 	if (s->syncFlatEnable) s->syncFlatEnable();   // grey the flat-dead controls when a layer enters image mode
 }
 
 // Baked hillshade for ONE surface mapper (single actor or a LOD tile). Two ALTERNATIVE styles,
-// selected by s->hillGrd; both bake a per-point RGB "hillshade" field (active z scalars untouched,
+// selected by s->look.hillGrd; both bake a per-point RGB "hillshade" field (active z scalars untouched,
 // so the colour bar still maps z) and the caller renders the surface UNLIT. When off: revert to
 // live CPT scalar colouring.
 //
-//  (A) s->hillGrd == false — LAMBERT (the original look): per-node colour = CPT(z) * Lambert shade.
+//  (A) s->look.hillGrd == false — LAMBERT (the original look): per-node colour = CPT(z) * Lambert shade.
 //      The mesh normal is VE-CORRECTED to the displayed relief — normalize(n.x/xfac, n.y,
 //      n.z/(zfac*ve)) — dotted with the sun, with a hillAmbient floor so valleys aren't pure black.
 //      Darken-only (multiply). Shade tracks the on-screen exaggeration.
 //
-//  (B) s->hillGrd == true  — GMT grdimage from the z-GRADIENT (VE-independent): the baked normal is
+//  (B) s->look.hillGrd == true  — GMT grdimage from the z-GRADIENT (VE-independent): the baked normal is
 //      already n = normalize(-dz/dx, -dz/dy, 1) in TRUE DATA units, so it IS the z-gradient. With
 //      sun L (az from north CW, el above horizon) the Lambertian reflectance n.L is recentred to a
 //      signed relief signal  raw = 2*(n.L) - 1  (so a sun OVERHEAD, el=90, lights flat ground
 //      brightest and grazing sun darkens — el behaves like a real sun), soft-clipped to (-1,1) by
-//      an atan (grdgradient -Nt style, amp = s->hillGain), then gmt_illuminate() blends it into the
+//      an atan (grdgradient -Nt style, amp = s->look.hillGain), then gmt_illuminate() blends it into the
 //      CPT colour the way grdimage -I does (lightens AND darkens, hue preserved).
 static void hillshadeMapper(Scene *s, vtkActor *act) {
 	if (!act) return;
+	const LayerShade &lk = lookOfActor(s, act);   // THIS layer's own look, never the window's
 	vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(act->GetMapper());
 	if (!m) return;
 
-	if (!s->useHillshade) {                       // revert to whatever this geometry's colouring IS
+	if (!lk.useHillshade) {                       // revert to whatever this geometry's colouring IS
 		// NOT hard-coded to "point data, through the LUT" any more. That is right for a grid and
 		// wrong for every MESH: a per-vertex RGB array pushed through a LUT is mapped by its
 		// MAGNITUDE, so a magenta model rendered as one flat red off the top of the ramp, and a
@@ -780,7 +794,11 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	vtkScalarsToColors *lut = m->GetLookupTable() ? m->GetLookupTable() : (s->surfLut ? s->surfLut.Get() : nullptr);
 	if (!nrm || !zs || !lut) return;              // no normals/scalars/LUT -> leave as-is
 
-	const ReliefLight L = makeReliefLight(s);      // SAME light/style the flat 2-D image bake uses (one source of truth)
+	double lzf = 1.0, lve = 1.0;
+	layerZOf(s, act, lzf, lve);                    // THIS actor's own normaliser + VE (VE is what we want)
+	// ...and THIS actor's own LIGHTING reference, from its own z range, in place of the geometry
+	// normaliser: see makeReliefLight. Each layer lights like terrain from its own numbers.
+	const ReliefLight L = makeReliefLight(s, lookOfActor(s, act), lzf, lve);
 
 	const vtkIdType n = pd->GetNumberOfPoints();
 	// Map EVERY z to its CPT colour in one serial batch: vtkScalarsToColors::MapValue is NOT
@@ -829,8 +847,9 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 // style toggles. Shared by applyShading (all actors) and ensureNodeActor (each new LOD tile),
 // so a tile built mid-flight matches the rest.
 static void applySurfStyle(Scene *s, vtkActor *a) {
+	const LayerShade &lk = lookOfActor(s, a);   // THIS layer's own look, never the window's
 	vtkProperty *prop = a->GetProperty();
-	if (s->noShade) {
+	if (lk.noShade) {
 		// No illumination at all: flat, fully ambient, so the CPT colour shows exactly as the colour
 		// bar says. hillshadeMapper below reverts the mapper to live CPT scalars (useHillshade is off
 		// whenever this is on), so nothing modulates the colour either.
@@ -838,7 +857,7 @@ static void applySurfStyle(Scene *s, vtkActor *a) {
 		prop->SetAmbient(1.0); prop->SetDiffuse(0.0); prop->SetSpecular(0.0);
 		prop->SetAmbientColor(1.0, 1.0, 1.0);
 	}
-	else if (s->useHillshade) {
+	else if (lk.useHillshade) {
 		// Baked shade IS the shading -> render UNLIT (flat ambient) so colours show verbatim.
 		prop->SetInterpolationToFlat();
 		prop->SetAmbient(1.0); prop->SetDiffuse(0.0); prop->SetSpecular(0.0);
@@ -855,9 +874,9 @@ static void applySurfStyle(Scene *s, vtkActor *a) {
 		prop->SetAmbient(0.0); prop->SetDiffuse(1.0); prop->SetSpecular(0.0);
 		prop->SetAmbientColor(1.0, 1.0, 1.0);
 		prop->SetInterpolationToPBR();
-		prop->SetMetallic(s->metallic);
-		prop->SetRoughness(s->roughness);
-		prop->SetBaseIOR(s->ior);
+		prop->SetMetallic(lk.metallic);
+		prop->SetRoughness(lk.roughness);
+		prop->SetBaseIOR(lk.ior);
 	}
 	hillshadeMapper(s, a);   // bake or revert the per-node colours to match the material
 }
@@ -888,8 +907,12 @@ static void applyShading(Scene *s) {
 	// dir points FROM the scene TO the sun; for a directional light only the
 	// Position-minus-FocalPoint direction matters.
 	{
-		const double az = s->lightAz * vtkMath::Pi() / 180.0;
-		const double el = s->lightEl * vtkMath::Pi() / 180.0;
+		// The renderer holds ONE light rig -- OpenGL cannot give each raster its own -- so it is aimed
+		// by the ACTIVE layer's sun, the same layer the dock is editing. The BAKED relief shade, which is
+		// what a grid's look actually is, is computed per layer on the CPU and does follow each layer's own.
+		const LayerShade &lkS = activeLook(s);
+		const double az = lkS.lightAz * vtkMath::Pi() / 180.0;
+		const double el = lkS.lightEl * vtkMath::Pi() / 180.0;
 		const double dx = std::sin(az) * std::cos(el);   // east
 		const double dy = std::cos(az) * std::cos(el);   // north
 		const double dz = std::sin(el);                  // up
@@ -1047,9 +1070,12 @@ static void sceneSetReliefLook(Scene *s, int look, bool keepExternShade = false)
 	if (!s) return;
 	if (!keepExternShade)
 		dropExternShade(s);             // a look picked here replaces a loaded Illumination model
-	s->useHillshade = (look == RL_HillLambert || look == RL_HillGrdimage);
-	s->hillGrd      = (look == RL_HillGrdimage);
-	s->litBake      = (look == RL_PBR);
+	// The look lands on the ACTIVE layer -- picking "Lambert" over a gravity anomaly must not
+	// re-shade the bathymetry underneath it (SACRED_LAW.md: each grid independent of any other).
+	LayerShade &lkA = activeLook(s);
+	lkA.useHillshade = (look == RL_HillLambert || look == RL_HillGrdimage);
+	lkA.hillGrd      = (look == RL_HillGrdimage);
+	lkA.litBake      = (look == RL_PBR);
 	// A LOOK IS THE WINDOW'S, NOT ONE SIDE'S. An Aquamoto layer keeps a light snapshot per side so the
 	// dock can edit water and land independently — but the LOOK (VTK PBR / grdimage / Lambert / none)
 	// is the whole window's choice, and it must land on BOTH. It used to reach only the side the Shade
@@ -1058,7 +1084,7 @@ static void sceneSetReliefLook(Scene *s, int look, bool keepExternShade = false)
 	// step, and the method the user chose never applied to land at all.
 	// Only the three LOOK flags are copied: each side's own sun, gain and ambience stay its own.
 	for (AquaSideShade *A : { &s->aquaWaterShade, &s->aquaLandShade })
-		if (A->valid) { A->useHillshade = s->useHillshade; A->hillGrd = s->hillGrd; A->litBake = s->litBake; }
+		if (A->valid) { A->useHillshade = lkA.useHillshade; A->hillGrd = lkA.hillGrd; A->litBake = lkA.litBake; }
 	applyShading(s);                     // …which re-syncs the dock and re-bakes a flat image
 	if (s->syncFlatEnable) s->syncFlatEnable();   // which sliders are live depends on the chosen look
 }
@@ -1071,3 +1097,6 @@ static void sceneSetReliefLook(Scene *s, int look, bool keepExternShade = false)
 // Rebuild the Scene Objects panel: one checkbox per scene element (surface, image
 // drape, each line/point overlay) that toggles the actor's visibility. Re-called
 // whenever the overlay set changes, since overlays are added after the window shows.
+// `zfac` is THIS layer's own axis mapping (sceneZRefFor over its own z range) and `ve` its own
+// exaggeration, so the normal correction describes the relief exactly AS DRAWN -- which, the VE
+// being defined against the displayed dimensions, is also the relief the eye sees.

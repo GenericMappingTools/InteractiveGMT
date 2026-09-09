@@ -424,7 +424,7 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 	if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
 	if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
 	const double dirx = fr[0] - nr[0], diry = fr[1] - nr[1], dirz = fr[2] - nr[2];
-	const double zsc = s->zfac * s->ve;
+	const double zsc = sceneZScale(s);
 	const double gx  = (s->xfac != 0.0) ? s->xfac : 1.0;
 
 	if (!s->gridZ.empty()) {
@@ -542,7 +542,7 @@ static vtkSmartPointer<vtkActor> polyMakeLineActor(Scene *s, vtkPolyData *pd, do
 	a->GetProperty()->SetLineWidth(2.5);
 	a->GetProperty()->LightingOff();
 	a->PickableOff();
-	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	a->SetScale(s->xfac, 1.0, layerZScale(s, activeOwnerTag(s)));
 	return a;
 }
 
@@ -694,7 +694,7 @@ static void polyRebuildFill(Scene *s, Polygon &pg) {
 	}
 	pg.fill->GetProperty()->SetColor(pg.fillColor[0], pg.fillColor[1], pg.fillColor[2]);
 	pg.fill->GetProperty()->SetOpacity(pg.fillOpacity);
-	pg.fill->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	pg.fill->SetScale(s->xfac, 1.0, layerZScale(s, pg.veOwner));
 	pg.fill->SetVisibility(pg.fillOpacity > 0.0 ? 1 : 0);   // no fill drawn until the user raises opacity
 }
 
@@ -863,7 +863,7 @@ static void polyRebuildHandles(Scene *s) {
 		s->polyHandles->GetProperty()->SetRenderPointsAsSpheres(false);
 		s->polyHandles->GetProperty()->LightingOff();
 		s->polyHandles->PickableOff();
-		s->polyHandles->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		s->polyHandles->SetScale(s->xfac, 1.0, sceneZScale(s));
 		s->ren->AddActor(s->polyHandles);
 	}
 	s->polyHandles->SetVisibility(polyEditing(s) ? 1 : 0);
@@ -927,7 +927,7 @@ static void symRebuildHandle(Scene *s) {
 		s->symHandle->GetProperty()->SetRenderPointsAsSpheres(false);
 		s->symHandle->GetProperty()->LightingOff();
 		s->symHandle->PickableOff();
-		s->symHandle->SetScale(1.0, 1.0, s->zfac * s->ve);
+		s->symHandle->SetScale(1.0, 1.0, sceneZScale(s));
 		// Goes into the OVERLAY renderer (s->axesRen, layer 1 — same one the Z-axis tick labels use,
 		// "own depth, never occluded by the surface"), NOT s->ren — a separate compositing layer with
 		// its own depth buffer wins trivially against the main scene, no coincident-topology-offset
@@ -1006,6 +1006,7 @@ static void polyFinalize(Scene *s, std::vector<std::array<double,3>> verts, bool
 	pg.name = pre + std::to_string(idx);
 	polyRebuildLine(s, pg);
 	pg.stack = s->vecSeq++;                 // new polygon lands on top of the shared vector pile
+	pg.veOwner = activeOwnerTag(s);
 	s->polys.push_back(pg);
 	applyVectorStacking(s);                // normalize ranks + set this polygon's draw-order offset
 	s->polyCur.clear();
@@ -1228,6 +1229,7 @@ static void nestNewChild(Scene *s) {
 	// and the chain can keep being extended with consistent rectangles.
 	if (inner.line && pg.line) pg.line->GetProperty()->DeepCopy(inner.line->GetProperty());
 	pg.stack = s->vecSeq++;
+	pg.veOwner = activeOwnerTag(s);
 	s->polys.push_back(pg);
 	applyVectorStacking(s);
 	nestReflow(s);
@@ -1515,6 +1517,7 @@ static bool rulerSetLabel(Scene *s, int id, int leg, bool cum, const QString &tx
 	textApplyProps(s, tl);
 	ba->GetTextProperty()->SetShadow(true); ba->GetTextProperty()->SetShadowOffset(1, -1);
 	s->axesRen->AddActor(ba);
+	tl.veOwner = activeOwnerTag(s);
 	s->texts.push_back(tl);
 	return true;
 }
@@ -1831,7 +1834,7 @@ static void mecaUpdateAnchor(Scene *s, int bi) {
 		mb.anchor->GetProperty()->LightingOff();
 		mb.anchor->PickableOff();
 		mb.anchor->ForceOpaqueOn();
-		mb.anchor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		mb.anchor->SetScale(s->xfac, 1.0, layerZScale(s, mb.veOwner));
 		(s->axesRen ? s->axesRen : s->ren)->AddActor(mb.anchor);
 
 		vtkNew<vtkPoints> dpts; dpts->InsertNextPoint(mb.x0, mb.y0, z);
@@ -1846,7 +1849,7 @@ static void mecaUpdateAnchor(Scene *s, int bi) {
 		mb.anchorDot->GetProperty()->LightingOff();
 		mb.anchorDot->PickableOff();
 		mb.anchorDot->ForceOpaqueOn();
-		mb.anchorDot->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		mb.anchorDot->SetScale(s->xfac, 1.0, layerZScale(s, mb.veOwner));
 		(s->axesRen ? s->axesRen : s->ren)->AddActor(mb.anchorDot);
 	}
 
@@ -2021,6 +2024,7 @@ static void polyPlaceText(Scene *s, const double w[3]) {
 		// Add to the overlay layer (axesRen): it shares the main camera but clears its own depth, so
 		// the relief can NEVER occlude the label — text is always on top, camera-facing.
 		(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
+		tl.veOwner = activeOwnerTag(s);
 		s->texts.push_back(tl);
 		rebuildSceneObjects(s);
 	}
@@ -2428,6 +2432,7 @@ static void overlayPromoteSegmentToPolygon(Scene *s, Overlay &ov, int segIdx) {
 	pg.line->GetProperty()->SetColor(col[0], col[1], col[2]);   // keep the overlay's own look, not the default orange
 	pg.line->GetProperty()->SetLineWidth(lw > 0.0 ? lw : 2.5);
 	pg.stack = s->vecSeq++;
+	pg.veOwner = activeOwnerTag(s);
 	s->polys.push_back(pg);
 	const int newIdx = (int)s->polys.size() - 1;
 

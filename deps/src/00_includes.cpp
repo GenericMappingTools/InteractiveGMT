@@ -317,3 +317,9 @@
 #include <set>
 #include <unordered_set>
 
+
+// Earth metrics for geographic grids. Lives HERE, above every fragment, because the VERTICAL
+// NORMALISER (sceneZRefFor, 10_geometry.cpp) is derived from the HORIZONTAL scale -- degrees of
+// latitude per metre for geographic data -- and so needs this constant before 90_c_api.cpp, which
+// used to own it, is reached.
+static const double kMetersPerDegLat = 111111.0;

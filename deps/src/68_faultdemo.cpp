@@ -432,7 +432,7 @@ faultDemoTriedron(vtkRenderWindowInteractor *rwi, vtkRenderer *follow,
 	// the box is empty space in the negative directions and the marker floats well inside its own
 	// rectangle. Zoom pushes the arms out to the box edges, which is what puts the triedron IN the
 	// corner instead of a marker-width away from it.
-	w->SetZoom(2.0);
+	w->SetZoom(1.5);
 	return w;
 }
 
@@ -920,7 +920,7 @@ static QDialog *faultDemoOpen(QWidget *parent, Scene *scene) {
 	f->gizScene->giz    = enableGizmo(f->gizScene, 0.01);
 	// A SMALLER handle than a map window gets: this view opens deliberately zoomed out, and the stock
 	// 16% of the viewport height then dwarfs the blocks it is supposed to be a handle for.
-	if (f->gizScene->giz) f->gizScene->giz->sizeFrac = 0.10;
+	if (f->gizScene->giz) f->gizScene->giz->sizeFrac = 0.15;
 	// ...and the handle is pinned to its world anchor before every frame (see faultDemoAnchorCB).
 	vtkNew<vtkCallbackCommand> anchorCB;
 	anchorCB->SetCallback(faultDemoAnchorCB);
@@ -948,7 +948,7 @@ static QDialog *faultDemoOpen(QWidget *parent, Scene *scene) {
 	// A second viewport gives a camera-linked compass without changing the demo camera bounds.
 	// TWO of them: one for the 3-D view, one for the deformation inset — same builder, so the
 	// inset's triedron is the view's triedron and can never drift into a second look.
-	f->compass      = faultDemoTriedron(f->view->interactor(), f->renderer, 0.0, 0.0, 0.22, 0.22);
+	f->compass      = faultDemoTriedron(f->view->interactor(), f->renderer, 0.0, 0.0, 0.15, 0.15);
 	// Bottom-LEFT corner of the inset panel, the obvious place for it. The numbers are FRACTIONS
 	// OF THE INSET'S OWN rectangle (see faultDemoTriedron) — the inset is 0.40 x 0.425 of the
 	// window, so 0.30 of it is a real ~130 px marker, not a window-fraction speck. Flush INTO the
@@ -961,8 +961,18 @@ static QDialog *faultDemoOpen(QWidget *parent, Scene *scene) {
 	});
 	auto *inset = new QLabel(host);
 	inset->setObjectName("parameterInset");
+	// DEVICE PIXELS, not logical ones. The file is 803x510; scaling it to a flat 300x191 pixmap and
+	// handing that to a label on a 150%-scaled screen makes Qt blow those 300 px back up to 450 — a
+	// 2.7x downsample followed by a 1.5x upsample, which is why line art that is sharp in the file
+	// arrived mushy on screen. Scale to size*dpr and STAMP the ratio on the pixmap, which is the dpr
+	// rule the rest of the app already follows wherever a pixmap meets a widget (85_polygon.cpp's
+	// header note, 67_gmtedit.cpp): paint in device pixels, lay out in logical ones.
+	const double idpr = host->devicePixelRatioF() > 0 ? host->devicePixelRatioF() : 1.0;
 	QPixmap reference(QDir(gmtvtkDataDir()).filePath("fault_plane_demo/parameters.jpg"));
-	inset->setPixmap(reference.scaled(300, 191, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+	QPixmap shown = reference.scaled(int(300*idpr + 0.5), int(191*idpr + 0.5),
+	                                 Qt::KeepAspectRatio, Qt::SmoothTransformation);
+	shown.setDevicePixelRatio(idpr);
+	inset->setPixmap(shown);
 	inset->setFixedSize(312, 203);
 	inset->setContentsMargins(6, 6, 6, 6);
 	inset->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -1177,6 +1187,21 @@ static QDialog *faultDemoOpen(QWidget *parent, Scene *scene) {
 			QObject::connect(sl, &QSlider::valueChanged, f->dialog, [insetCheck, insetDebounce](int) {
 				if (insetCheck->isChecked()) insetDebounce->start();
 			});
+		// The True size boxes ARE the fault the inset draws — Length, Width, Depth to top and Slip all
+		// change the Okada field exactly as dip/azimuth/rake do, so the panel follows them too. On
+		// editingFinished (Enter / focus-out), not on every keystroke: the half-typed "1" of "150" is not
+		// a value the user asked for, the same reason the spin boxes run with keyboardTracking off. A
+		// focus-out that changed nothing is not a change either, hence the last-value guard.
+		for (QLineEdit *le : { trueLength, trueWidth, trueDepthTop, trueSlip }) {
+			if (!le) continue;
+			le->setProperty("insetLastText", le->text().trimmed());
+			QObject::connect(le, &QLineEdit::editingFinished, f->dialog, [le, insetCheck, insetDebounce]() {
+				const QString now = le->text().trimmed();
+				if (now == le->property("insetLastText").toString()) return;
+				le->setProperty("insetLastText", now);
+				if (insetCheck->isChecked()) insetDebounce->start();
+			});
+		}
 	}
 	QObject::connect(f->dialog, &QObject::destroyed, [f] {
 		// Same teardown order as a window's: the gizmo's props/light/observers come off the renderer

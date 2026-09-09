@@ -6006,12 +6006,12 @@ public:
 		                        "Highlight tightness: bigger = smaller, harder glint (+s)."));
 		// Methods 4/5 read the SAME two Scene values the dock's sliders write (hillGain, hillAmbient),
 		// seeded from the window's live state so the dialog opens showing what is actually on screen.
-		eGain     = mkEdit(QString::number(scn ? scn->hillGain : 2.0, 'g', 3));
+		eGain     = mkEdit(QString::number(scn ? activeLook(scn).hillGain : 2.0, 'g', 3));
 		eGain->setToolTip("grdimage relief contrast — the atan gain on the z-gradient signal "
 		                  "(grdgradient -Nt's amp).");
 		flLook->addRow("Gain", eGain);
 		flLook->addRow("Ambient",
-		               mkSlider(sShadeAmb, 0.0, 1.0, scn ? scn->hillAmbient : 0.25, 2, "Ambient", "",
+		               mkSlider(sShadeAmb, 0.0, 1.0, scn ? activeLook(scn).hillAmbient : 0.25, 2, "Ambient", "",
 		                        "Lambert shadow floor: 0 = black valleys, 1 = no shade."));
 		// Methods 1 and 7, the PBR material. The sun is this dialog's own Azimuth compass and Elevation
 		// quarter-circle, reused, never a second pair of controls. These four are the dock's "Light",
@@ -6024,11 +6024,11 @@ public:
 		              mkSlider(sFillI, 0.0, 1.0, scn ? scn->fillIntensity : 0.3, 2, "Fill", "",
 		                       "Hemispherical fill from above: lifts the shadow side."));
 		flPBR->addRow("Roughness",
-		              mkSlider(sRough, 0.0, 1.0, scn ? scn->roughness : 0.3, 2, "Roughness", "",
+		              mkSlider(sRough, 0.0, 1.0, scn ? activeLook(scn).roughness : 0.3, 2, "Roughness", "",
 		                       "GGX microfacet spread: 0 = a tight mirror glint, 1 = a broad matte "
 		                       "sheen. Clamped to 0.05 so the lobe stays finite."));
 		flPBR->addRow("Metallic",
-		              mkSlider(sMetal, 0.0, 1.0, scn ? scn->metallic : 0.0, 2, "Metallic", "",
+		              mkSlider(sMetal, 0.0, 1.0, scn ? activeLook(scn).metallic : 0.0, 2, "Metallic", "",
 		                       "0 = dielectric (4% white highlight, full diffuse); 1 = metal (the "
 		                       "highlight takes the surface's own colour and the diffuse lobe goes)."));
 		// METHOD 1 ONLY, from here down. These are render-path controls — an image-based light, the
@@ -6346,8 +6346,8 @@ public:
 		// Without that, picking 1 on a flat-image window would silently hand back 7, and picking 7 on
 		// a surface would hand back 1: two buttons that do whatever the window happens to already be.
 		if (model == 1 || model == 5 || model == 6 || model == 7) {
-			scn->lightAz = eAzim->text().trimmed().toDouble();
-			scn->lightEl = eElev->text().trimmed().toDouble();
+			activeLook(scn).lightAz = eAzim->text().trimmed().toDouble();
+			activeLook(scn).lightEl = eElev->text().trimmed().toDouble();
 			// THE RENDER PASSES belong to method 1 and to nothing else — IBL, ambient occlusion, tone
 			// mapping, FXAA and CAST SHADOWS. None of them is a look: they are stages of the VTK path
 			// the VTK (PBR) method draws through, and no other method draws through it (a baked flat
@@ -6366,16 +6366,16 @@ public:
 			if (model == 5) {
 				bool ok = false;
 				const double g = eGain->text().trimmed().toDouble(&ok);
-				if (ok) scn->hillGain = g;
+				if (ok) activeLook(scn).hillGain = g;
 			}
 			else if (model == 6)
-				scn->hillAmbient = std::clamp(sShadeAmb.value(), 0.0, 1.0);
+				activeLook(scn).hillAmbient = std::clamp(sShadeAmb.value(), 0.0, 1.0);
 			else {
 				// The material: one set of Scene fields, read by BOTH PBR methods, one set of widgets.
 				scn->lightIntensity = sKeyI.value();
 				scn->fillIntensity  = sFillI.value();
-				scn->roughness      = sRough.value();
-				scn->metallic       = sMetal.value();
+				activeLook(scn).roughness      = sRough.value();
+				activeLook(scn).metallic       = sMetal.value();
 				// Put the window in the mode this method IS. Rebuilds nothing when it is already there.
 				//
 				// EXCEPT for a HOST-COMPOSITED layer (an Aquamoto tsunami). Its colours ARE the
@@ -6389,7 +6389,7 @@ public:
 			}
 			HillshadeState ls;                       // remember the aim like every other method does
 			ls.valid = true;  ls.model = model;
-			ls.azim = scn->lightAz;  ls.elev = scn->lightEl;
+			ls.azim = activeLook(scn).lightAz;  ls.elev = activeLook(scn).lightEl;
 			ls.azR = eAzR->text().trimmed().toDouble();
 			ls.azG = eAzG->text().trimmed().toDouble();
 			ls.azB = eAzB->text().trimmed().toDouble();
@@ -19408,7 +19408,7 @@ static vtkSmartPointer<vtkActor> faultMakePlaneActor(Scene *s, vtkPolyData *pd) 
 	a->GetProperty()->EdgeVisibilityOff();     // draped fine mesh: a clean gray fill, not a wireframe
 	a->GetProperty()->LightingOff();
 	a->PickableOff();
-	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	a->SetScale(s->xfac, 1.0, sceneZScale(s));
 	return a;
 }
 
@@ -19427,7 +19427,7 @@ static vtkSmartPointer<vtkActor> faultMakePlane3DActor(Scene *s, vtkPolyData *pd
 	a->GetProperty()->BackfaceCullingOff();   // a fault plane is two-sided: show it from either face
 	a->GetProperty()->LightingOff();
 	a->PickableOff();
-	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	a->SetScale(s->xfac, 1.0, sceneZScale(s));
 	return a;
 }
 
@@ -19446,7 +19446,7 @@ static vtkSmartPointer<vtkActor> faultMakeArrowsActor(Scene *s, vtkPolyData *pd)
 	a->GetProperty()->BackfaceCullingOff();
 	a->GetProperty()->LightingOff();
 	a->PickableOff();
-	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	a->SetScale(s->xfac, 1.0, sceneZScale(s));
 	return a;
 }
 
@@ -19546,7 +19546,7 @@ static void faultUpdatePlane(Scene *s, double width, double dip, double strike, 
 	}
 	{
 		const double sx = (s->xfac != 0.0 ? s->xfac : 1.0);
-		const double sz = (s->zfac * s->ve != 0.0 ? s->zfac * s->ve : 1.0);
+		const double sz = (sceneZScale(s) != 0.0 ? sceneZScale(s) : 1.0);
 		auto toR = [&](const std::array<double,3> &p, double o[3]){ o[0]=p[0]*sx; o[1]=p[1]; o[2]=p[2]*sz; };
 		double R0[3],R1[3],R2[3],R3[3];
 		toR(plane3d[0],R0); toR(plane3d[1],R1); toR(plane3d[2],R2); toR(plane3d[3],R3);
@@ -21757,11 +21757,18 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	// BEFORE sceneZRef reads it -- so a grid or image built into this window afterwards clears it by
 	// construction, instead of every one of those callers having to remember to.
 	s->fvTrueScale = trueScaleMesh;
+	// ...and for the SAME reason, this window's COORDINATE KIND, which used to be set some sixty lines
+	// below beside the CPT. The normaliser is the scale of the HORIZONTAL dimensions (sceneZRefFor,
+	// 10_geometry.cpp), so it asks whether x,y are degrees or plain units: read before this was set, a
+	// geographic grid got normalised as CARTESIAN -- z metres drawn 1:1 against degrees of longitude, a
+	// vertical wall tens of thousands of units tall, and the first camera fit (which happens below,
+	// before any applyVE could re-derive it) found no surface on screen at all.
+	s->baseGeog = geographic;
 	// The vertical normaliser, BEFORE anything is built: every actor below is given
-	// SetScale(xfac, 1, zfac*ve), and `zfac` is derived from the drawn geometry (sceneZRef,
-	// 10_geometry.cpp) rather than from any assumption about z's unit. The caller's contract has
-	// already set x0..y1 / zmin..zmax / xfac / ve, which is all it needs. (applyVE re-derives it on
-	// every later change; this is the one point that comes before the first applyVE.)
+	// SetScale(xfac, 1, zfac*ve), and `zfac` is the scale of the horizontal dimensions (sceneZRefFor,
+	// 10_geometry.cpp) -- never a grid's own z span or units. The caller's contract has already set
+	// x0..y1 / zmin..zmax / xfac / ve, which with the two flags above is all it needs. (applyVE
+	// re-derives it on every later change; this is the one point that comes before the first applyVE.)
 	s->zfac = sceneZRef(s);
 	// Drop any previous content first (promotion rebuilds into an existing scene; a fresh scene has
 	// none of these so every removal is a no-op). RemoveActor on an actor not in the renderer is safe.
@@ -21824,7 +21831,7 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	// Remember the base CPT + geographic flag so the Shading dock can rebuild this grid as a flat image
 	// or a surface on demand (rebuildBaseFromStored) without the host re-sending the data.
 	if (cz && crgb && ncolor > 0) { s->baseCz.assign(cz, cz + ncolor); s->baseCrgb.assign(crgb, crgb + 3 * ncolor); }
-	s->baseGeog = geographic;
+	// s->baseGeog is set at the TOP of this function now (the normaliser reads it) -- not here.
 
 	// ===== surface: tiled grid (gz) OR single actor (pd) =====================
 	// Declared out here so the drape block below (single-actor path) can share them.
@@ -22016,7 +22023,7 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 		s->profLine->GetProperty()->LightingOff();
 		s->profLine->GetProperty()->SetColor(1.0, 0.15, 0.15);   // red track, Fledermaus-style
 		s->profLine->GetProperty()->SetLineWidth(2.5);
-		s->profLine->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		s->profLine->SetScale(s->xfac, 1.0, sceneZScale(s));
 		s->profLine->SetVisibility(0);
 		s->ren->AddActor(s->profLine);
 	}
@@ -24400,7 +24407,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// relief its form-revealing gradients. (F3D: vtkF3DRenderer::UpdateLights.)
 	// Lighting: one user-aimed directional KEY light (azimuth/elevation) + a dim
 	// FILL light, both managed by applyShading. Direction is set there from
-	// s->lightAz / s->lightEl so the Shading dock can move the "sun" live.
+	// s->look.lightAz / s->look.lightEl so the Shading dock can move the "sun" live.
 	s->ren->SetAutomaticLightCreation(false);
 	s->keyLight = vtkSmartPointer<vtkLight>::New();
 	s->keyLight->SetLightTypeToSceneLight();
@@ -24496,9 +24503,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	auto actVE = [s]() {
 		bool ok = false;
+		// The ACTIVE layer's own VE, in and out -- same resolver as the gizmo, the readout and the
+		// colour bar, so this dialog can never edit a layer other than the one on screen.
 		double v = QInputDialog::getDouble(s->win, "Vertical exaggeration",
-										   "VE factor:", s->ve, 0.01, 1.0e4, 3, &ok);
-		if (ok) { s->ve = v; applyVE(s); }
+										   "VE factor:", activeVE(s), 1.0e-6, 1.0e6, 3, &ok);   // bounds are arithmetic guards, not a look limit
+		if (!ok) return;
+		if (double *vp = activeVEPtr(s)) { *vp = v; applyVE(s); }
 	};
 	auto actShot = [s]() {
 		QString fn = QFileDialog::getSaveFileName(s->win, "Save screenshot", prefStartDir("gmtvtk.png"), "PNG (*.png)");
@@ -25442,7 +25452,21 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		mGphy->clear();
 		mGphy->setTitle("Seismology ▾");
 		backItem("Seismology");
+		// ORDER IS THE GROUPING, and the separators say where one group ends: catalogues of EVENTS
+		// first (own file, the built-in 1990-2009 set, the USGS feed), then FOCAL MECHANISMS (plot a
+		// catalogue, fetch one), then the two TEACHING dialogs, then the MODELLING tools.
 		mGphy->addAction("Seismicity…", [openSeismicity]() { openSeismicity(false); });
+		mGphy->addAction("Global seismicity (1990-2009)", [openSeismicity]() { openSeismicity(true); });
+		// Direct plot, no dialog: format=1 with no bounds -> GMT.seismicity's own defaults
+		// (events of the last 30 days, M >= 3) over the visible region.
+		mGphy->addAction("USGS recent seismicity", [s, sendSeismicity]() {
+			if (!g_juliaSeismicity) {
+				if (s->win) s->win->statusBar()->showMessage("Seismicity: callback not registered", 3000);
+				return;
+			}
+			sendSeismicity("format=1");
+		});
+		mGphy->addSeparator();
 		mGphy->addAction("Focal mechanisms", [win, s, visibleRegion]() {
 			if (!g_juliaFocal) {
 				if (s->win) s->win->statusBar()->showMessage("Focal mechanisms: callback not registered", 3000);
@@ -25469,12 +25493,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			g_juliaFocal(s, p.toUtf8().constData());
 			closeBusyDialog();
 		});
-		mGphy->addAction("Fault plane demo", [win, s]() {
-			// The dialog's first act is a full mesh cut in Julia, on this thread. Start compiling it
-			// while the window is still being built — see warmupTool (30_app.cpp).
-			warmupTool("faultdemo");
-			faultDemoOpen(win, s);
-		});
+		mGphy->addAction("CMT Catalog (Web download)", geoTODO("CMT Catalog"));
+		mGphy->addSeparator();
 		mGphy->addAction("Focal Mechanisms demo", [win, s]() {
 			if (s->focalStudioDlg) { s->focalStudioDlg->raise(); s->focalStudioDlg->activateWindow(); return; }
 			auto *dlg = new FocalMecaStudioDialog(win, s, 0.0, 90.0, 180.0);
@@ -25483,18 +25503,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			QObject::connect(dlg, &QObject::destroyed, s->win, [s]{ s->focalStudioDlg = nullptr; });
 			dlg->show();
 		});
-		mGphy->addAction("CMT Catalog (Web download)",    geoTODO("CMT Catalog"));
-		mGphy->addAction("Global seismicity (1990-2009)", [openSeismicity]() { openSeismicity(true); });
-		// Direct plot, no dialog: format=1 with no bounds -> GMT.seismicity's own defaults
-		// (events of the last 30 days, M >= 3) over the visible region.
-		mGphy->addAction("USGS recent seismicity", [s, sendSeismicity]() {
-			if (!g_juliaSeismicity) {
-				if (s->win) s->win->statusBar()->showMessage("Seismicity: callback not registered", 3000);
-				return;
-			}
-			sendSeismicity("format=1");
+		mGphy->addAction("Fault plane demo", [win, s]() {
+			// The dialog's first act is a full mesh cut in Julia, on this thread. Start compiling it
+			// while the window is still being built — see warmupTool (30_app.cpp).
+			warmupTool("faultdemo");
+			faultDemoOpen(win, s);
 		});
-		mGphy->addAction("Ground motions",                geoTODO("Ground motions"));
+		mGphy->addSeparator();
+		mGphy->addAction("Ground motions", geoTODO("Ground motions"));
 		mGphy->addSeparator();
 		mGphy->addMenu(mElastic);
 		reopen();

@@ -159,7 +159,7 @@ static void enableRubberBand(Scene *s, vtkSmartPointer<vtkPolyData> cloud, doubl
 	s->rbHL->GetProperty()->SetRenderPointsAsSpheres(true);
 	s->rbHL->GetProperty()->LightingOff();
 	s->rbHL->PickableOff();
-	s->rbHL->SetScale(s->xfac, 1.0, s->zfac * s->ve);   // track the cloud's scale / VE
+	s->rbHL->SetScale(s->xfac, 1.0, sceneZScale(s));     // track the ACTIVE layer's scale / VE
 	s->rbHL->SetVisibility(0);
 	s->ren->AddActor(s->rbHL);
 	s->rbHLPts = hpts; s->rbHLPoly = hpoly;

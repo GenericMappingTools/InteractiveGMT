@@ -368,7 +368,11 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			# Scene Objects list reads "Coastlines"/"Boundaries"/"Rivers" instead of an anonymous "Line N".
 			# A session may carry saved pen edits (param.pen_*) to re-apply after the default-pen add.
 			src = _geo_layer_name(kind)
-			_add_geo_overlay(scene, D; color=coastrgb, name=src)
+			# noConvertToPoints: a coastline, a border, a river IS a line -- "Convert to points" on one
+			# offers to turn a shoreline into a dot cloud, and the user has ruled it out. Every other geo
+			# add already passed this flag (earthregions.jl, gadm.jl); this one, the coast/borders/rivers
+			# add where it matters most, was the one that did not.
+			_add_geo_overlay(scene, D; color=coastrgb, name=src, noConvertToPoints = true)
 		end
 		# Reached only when a layer was actually added (empty branches return early above): remember the
 		# exact request so Save Session can reproduce this feature. :menu -> no data stored.

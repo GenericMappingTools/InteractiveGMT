@@ -7,41 +7,36 @@
 #  define GMTVTK_API extern "C"
 #endif
 
-// Earth metrics for geographic grids.
-static const double kMetersPerDegLat = 111111.0;
+// Earth metrics for geographic grids: kMetersPerDegLat now lives in 00_includes.cpp, so the
+// vertical normaliser (sceneZRefFor, 10_geometry.cpp) can derive itself from the horizontal scale.
 
-// The exaggeration every window opens at. VE is dimensionless and measured against the picture
-// (Scene::ve / sceneZRef, 10_geometry.cpp): 1 = the reference look, the relief spanning a tenth of
-// the map's own horizontal size. Same starting look for a bathymetry grid in metres, a gravity
-// anomaly in mGal and a subsidence rate in mm/yr — and the same useful range for all of them.
+// The VE every window opens at. A CONSTANT, and it stays one.
 static const double kVEDefault = 1.0;
 
-// Work out the base actor scales + an initial vertical exaggeration from the data
-// extents. The displayed VE factor is relative to TRUE scale (VE 1 = 1:1), but if
-// the true relief is < 10% of the horizontal size we start exaggerated so the
-// surface is not a flat sheet.
-//   geographic: x,y are degrees -> xfac = cos(midlat) makes the lon axis the right
-//     physical width vs lat; zfac = 1/111111 converts z (assumed metres) into the
-//     lat-degree base unit so VE 1 is physically true.
-//   cartesian:  xfac = zfac = 1 (z assumed in the same unit as x,y).
-// The 10% floor also rescues non-metre z (the assumption may be wrong): whatever
-// the unit, the relief is forced to a visible fraction of the footprint.
+// Work out the base actor scales. NOTHING about the VE is CALCULATED anywhere -- not here, not from
+// the grid's horizontal extent, not from its z span, not from the two together.
+//
+//   drawn height = z * zfac * ve
+//     zfac : the scale of the HORIZONTAL dimensions (sceneZRefFor, 10_geometry.cpp) -- 1/111111 for
+//            geographic (degrees of latitude per metre), 1 for Cartesian. Not computed here.
+//     ve   : the user's own multiplier. Opens at 1 = TRUE SCALE, and only the user moves it.
+//
+// GONE, and not coming back (user's order, 2026-09-09, stated twice): `openingVE`, which computed an
+// opening exaggeration as 0.1 * H / (zspan * zfac) -- a VE calculated from the grid's horizontal
+// distances AND its vertical distances. That is exactly what is forbidden, whether the result lands
+// in `zfac` (the old two-branch fit) or in `ve`. If a window opens looking flat, it is because the
+// data IS flat at true scale, and raising the VE is the user's decision to make.
+//
+//   geographic: x,y are degrees -> xfac = cos(midlat) makes the lon axis the right physical width.
+//   cartesian:  xfac = 1 (z assumed in the same unit as x,y).
 static void computeScales(int geographic, double x0, double x1, double y0, double y1,
 						  double zmin, double zmax,
 						  double &xfac, double &zfac, double &ve0) {
-	(void)x0; (void)x1; (void)zmin; (void)zmax;
+	(void)x0; (void)x1; (void)zmin; (void)zmax;   // DELIBERATELY UNUSED: no VE is derived from them
 	// HORIZONTAL basis only. xfac makes the x axis physically right against y.
 	xfac = geographic ? std::max(1e-6, std::cos(0.5 * (y0 + y1) * vtkMath::Pi() / 180.0)) : 1.0;
-	// Z: nothing to compute here, and nothing to assume. The drawn z scale is `zfac * ve`, where
-	// `ve` is a DIMENSIONLESS fraction of the map's horizontal size (Scene::ve) and `zfac` is derived
-	// from the drawn geometry by sceneZRef() (10_geometry.cpp) — the ONE place that decides it. So
-	// every window, whatever its z unit, opens at the same look: relief a tenth of the map's width.
 	zfac = 1.0;                      // placeholder; sceneZRef() fills it before anything is drawn
-	ve0  = kVEDefault;
-	// GONE, do not bring back: the old two-branch fit — a "VE 1 = true 1:1" rule that needed z in
-	// METRES, plus a Cartesian branch that folded an arbitrary auto-fit factor INTO zfac and reset
-	// ve to 1. One quantity, two formulas, picked by a flag about the HORIZONTAL units; and for any
-	// grid whose z was not metres (mGal, nT, mm/yr) the exaggeration ran into the thousands.
+	ve0  = kVEDefault;               // 1. A constant. Never a function of this grid's numbers.
 }
 
 // View a GMT.jl grid (non-blocking; pump gmtvtk_process_events to run the loop).
@@ -1178,6 +1173,9 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 		// layer (regression guard). Reads the set that raster OWNS, like everything else now does.
 		if (AxesSet *A = axesForActive(s))
 			if (A->cube) { double ab[6]; A->cube->GetBounds(ab); kvd("axZ0", ab[4]); kvd("axZ1", ab[5]); }
+		// What the VE HANDLE is showing: the ACTIVE layer's own exaggeration, the number the user
+		// reads off the gizmo. 0 = no handle on this window.
+		kvd("gizve", gizmoShownVE(s));
 		kvi("n_extras",   (long)s->extras.size());
 		kvi("n_overlays", (long)s->overlays.size());
 		kvi("n_curtains", (long)s->curtains.size());
@@ -1234,7 +1232,15 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 	auto kvd = [&](const char *k, double v) { snprintf(t, sizeof(t), "%s=%.12g;", k, v); o += t; };
 	if (sceneAlive(s)) {
 		kvi("alive", 1);
-		kvd("ve", s->ve);
+		kvd("ve", s->ve);                             // the BASE relief's own vertical exaggeration
+		// ...and every dropped grid/image's own, keyed by its STABLE tag (ExtraObj::tag, never reused),
+		// because each layer carries its own parameter set and the VE is one of them (SACRED_LAW.md).
+		// A session written before this existed simply has no ve_<tag> keys and those layers restore at
+		// the default 1, which is what they were drawn at when it was saved.
+		for (auto &ex : s->extras) {
+			char k[32]; snprintf(k, sizeof(k), "ve_%d", ex.tag);
+			kvd(k, ex.ve);
+		}
 		// The geometry scale factors applyVE actually uses — (xfac, 1, zfac*ve). `zfac` is re-derived
 		// from the drawn geometry (sceneZRef), so these two are the only honest description of how far
 		// z is stretched relative to x. Anything that has to reproduce this window's vertical
@@ -1274,12 +1280,26 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 		// sceneSetReliefLook is what puts it back and the flags are its implementation. The legacy
 		// per-flag keys are still ACCEPTED by gmtvtk_apply_scene_state (a session written before
 		// this, or a host driving the window by hand); they are just no longer what is written.
-		kvi("look", s->useHillshade ? (s->hillGrd ? 3 : 2) : (s->litBake ? 1 : 0));
-		kvi("noshade", s->noShade ? 1 : 0);       // "Remove illumination": no light at all
+		kvi("look", s->look.useHillshade ? (s->look.hillGrd ? 3 : 2) : (s->look.litBake ? 1 : 0));
+		kvi("noshade", s->look.noShade ? 1 : 0);       // "Remove illumination": no light at all
 		kvi("imgmode", s->layerImgMode ? 1 : 0);  // flat baked image vs 3-D surface (the look's geometry)
-		kvd("sunaz", s->lightAz); kvd("sunel", s->lightEl);
-		kvd("hillgain", s->hillGain); kvd("hillamb", s->hillAmbient);
-		kvd("rough", s->roughness); kvd("metal", s->metallic);
+		kvd("sunaz", s->look.lightAz); kvd("sunel", s->look.lightEl);
+		kvd("hillgain", s->look.hillGain); kvd("hillamb", s->look.hillAmbient);
+		kvd("rough", s->look.roughness); kvd("metal", s->look.metallic);
+		// ...and EVERY dropped grid's own shade set, one compact record per layer keyed by its stable
+		// tag: look,noshade,sunaz,sunel,hillgain,hillamb,rough,metal. The keys above stay exactly what
+		// they were -- the BASE relief's -- so an older reader still finds what it expects, and a
+		// session written before per-layer looks simply has no lk_<tag> records (SACRED_LAW.md: each
+		// grid its own parameters, and one code path that writes them).
+		for (auto &ex : s->extras) {
+			char k[32]; snprintf(k, sizeof(k), "lk_%d", ex.tag);
+			const LayerShade &L = ex.look;
+			const int lookId = L.useHillshade ? (L.hillGrd ? 3 : 2) : (L.litBake ? 1 : 0);
+			char v[192];
+			snprintf(v, sizeof(v), "%s=%d,%d,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g;", k, lookId,
+			         L.noShade ? 1 : 0, L.lightAz, L.lightEl, L.hillGain, L.hillAmbient, L.roughness, L.metallic);
+			o += v;
+		}
 		kvd("keyi", s->lightIntensity); kvd("filli", s->fillIntensity); kvd("envi", s->envIntensity);
 		kvd("ssaorad", s->ssaoRadius);
 		// The render PASSES of the VTK (PBR) path -- not looks, but the user turned them on and off
@@ -1324,7 +1344,22 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 	auto geti = [&](const char *k, int &out) -> bool { double d; if (!getd(k, d)) return false; out = (int)d; return true; };
 
 	double d; int i;
-	if (getd("ve", d) && d > 0.0) { s->ve = d; applyVE(s); }         // VE first: rescales all actors
+	// Each layer's own VE goes in FIRST, so the single applyVE below draws every one of them at its
+	// own exaggeration in one pass (SACRED_LAW.md: one code path, each grid its own parameters).
+	// A LAYER WITH NO SAVED ve_<tag> OPENS AT ITS OWN DEFAULT (1), never at the base's number.
+	// It used to fall back to the base `ve` so that a session written before per-layer VE existed
+	// would come back looking as it did -- but that is a VE value passed FROM one grid TO others, which
+	// is forbidden outright (SACRED_LAW.md; the user's standing order: no VE crosses between grids, for
+	// any reason, compatibility included). An old session therefore restores its base exaggeration and
+	// leaves every other layer at 1, which the user raises per layer if wanted.
+	const bool haveBase = getd("ve", d) && d > 0.0;
+	for (auto &ex : s->extras) {
+		char k[32]; snprintf(k, sizeof(k), "ve_%d", ex.tag);
+		double dv;
+		if (getd(k, dv) && dv > 0.0) ex.ve = dv;       // THIS layer's own, and nothing else's
+	}
+	if (haveBase) s->ve = d;                                         // the base relief's own
+	applyVE(s);                                                      // VE first: rescales all actors
 	// … then the view mode. `viewmode` is the whole four-state and wins when the session has one; a
 	// file written before it existed still restores through `flat2d`, which is the same switch with
 	// the two body modes left out. One entry point either way (sceneSetViewMode), never two paths.
@@ -1357,9 +1392,9 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 		int i = 0; double d2 = 0.0; bool touched = false;
 		auto kd = [&](const char *k, double &f) { if (getd(k, d2)) { f = d2; touched = true; } };
 		auto kb = [&](const char *k, bool &f)   { if (geti(k, i))  { f = (i != 0); touched = true; } };
-		kd("sunaz", s->lightAz);        kd("sunel", s->lightEl);
-		kd("hillgain", s->hillGain);    kd("hillamb", s->hillAmbient);
-		kd("rough", s->roughness);      kd("metal", s->metallic);
+		kd("sunaz", s->look.lightAz);        kd("sunel", s->look.lightEl);
+		kd("hillgain", s->look.hillGain);    kd("hillamb", s->look.hillAmbient);
+		kd("rough", s->look.roughness);      kd("metal", s->look.metallic);
 		kd("keyi", s->lightIntensity);  kd("filli", s->fillIntensity);
 		kd("envi", s->envIntensity);    kd("ssaorad", s->ssaoRadius);
 		kb("ibl", s->useIBL);           kb("ssao", s->useSSAO);
@@ -1376,7 +1411,7 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 			// A session written before `look` existed (or a host driving the window by hand) still
 			// speaks the three flags sceneSetReliefLook sets. Same state, older spelling — so it is
 			// TRANSLATED into a look and set through the one setter, never written flag by flag here.
-			int hs = s->useHillshade, hg = s->hillGrd, lb = s->litBake, any = 0;
+			int hs = s->look.useHillshade, hg = s->look.hillGrd, lb = s->look.litBake, any = 0;
 			if (geti("hillshade", i)) { hs = (i != 0); any = 1; }
 			if (geti("hillgrd",   i)) { hg = (i != 0); any = 1; }
 			if (geti("litbake",   i)) { lb = (i != 0); any = 1; }
@@ -1384,7 +1419,27 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 				sceneSetReliefLook(s, hs ? (hg ? RL_HillGrdimage : RL_HillLambert) : (lb ? RL_PBR : RL_None),
 				                   /*keepExternShade=*/true);
 		}
-		if (geti("noshade", i) && (i != 0) != s->noShade) { s->noShade = (i != 0); touched = true; }
+		if (geti("noshade", i) && (i != 0) != s->look.noShade) { s->look.noShade = (i != 0); touched = true; }
+		// Each dropped layer's own set, from its lk_<tag> record. Written straight into that layer's
+		// LayerShade -- sceneSetReliefLook is the setter for the ACTIVE layer, which is not what this
+		// is restoring; the single applyShading below re-bakes every layer from its own numbers.
+		for (auto &ex : s->extras) {
+			char k[40]; snprintf(k, sizeof(k), ";lk_%d=", ex.tag);
+			const size_t p = buf.find(k);
+			if (p == std::string::npos) continue;
+			int lookId = 0, ns = 0;
+			double az = 0, el = 0, gn = 0, am = 0, ro = 0, me = 0;
+			if (sscanf(buf.c_str() + p + strlen(k), "%d,%d,%lf,%lf,%lf,%lf,%lf,%lf",
+			           &lookId, &ns, &az, &el, &gn, &am, &ro, &me) != 8) continue;
+			ex.look.useHillshade = (lookId == 2 || lookId == 3);
+			ex.look.hillGrd      = (lookId == 3);
+			ex.look.litBake      = (lookId == 1);
+			ex.look.noShade = (ns != 0);
+			ex.look.lightAz = az;   ex.look.lightEl     = el;
+			ex.look.hillGain = gn;  ex.look.hillAmbient = am;
+			ex.look.roughness = ro; ex.look.metallic    = me;
+			touched = true;
+		}
 		if (touched) applyShading(s);
 	}
 	bool okbar = false; double bx, by;
@@ -2035,7 +2090,7 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 			// it goes where every other method choice goes instead of writing the look flags here —
 			// otherwise this function has an exception to the rule that a data push never sets the look.
 			sceneSetReliefLook(s, RL_None, /*keepExternShade=*/true);
-			s->noShade    = true;       // 3-D surface   -> unlit, plain CPT (applySurfStyle)
+			s->look.noShade    = true;       // 3-D surface   -> unlit, plain CPT (applySurfStyle)
 			// Removal undoes exactly what the push did (and only that): loading a model switched each
 			// Aquamoto side's OWN snapshot to "hillshade", so the ✕ switches both back. Without this the
 			// tsunami stayed lit by a light the user never asked the dock for. `model == 0` (a model
@@ -2828,6 +2883,7 @@ GMTVTK_API int gmtvtk_add_slip_patches_h(void *handle, const double *xy, const i
 		polyRebuildLine(s, pg);                        // builds the outline + the filled face from pg
 		if (pg.line) { pg.line->GetProperty()->SetColor(0.0, 0.0, 0.0); pg.line->GetProperty()->SetLineWidth(0.4); }  // thin black edges (Mirone patch default)
 		pg.stack = s->vecSeq++;                        // each patch lands on the shared vector pile
+		pg.veOwner = activeOwnerTag(s);
 		s->polys.push_back(pg);
 		++added;
 	}
@@ -2956,7 +3012,7 @@ static void mecaBuildPatch(Scene *s, Polygon &pg, double z0, int rank, double zS
 	pg.fill->PickableOff();
 	pg.fill->ForceOpaqueOn();     // hard-pin to VTK's opaque render pass, never the translucent/blended one
 	pg.line->ForceOpaqueOn();
-	pg.fill->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	pg.fill->SetScale(s->xfac, 1.0, layerZScale(s, pg.veOwner));
 	pg.fill->SetPosition(0.0, 0.0, rank * zStep);   // cross-ball depth rank — see comment above
 	(s->axesRen ? s->axesRen : s->ren)->AddActor(pg.fill);
 }
@@ -2991,7 +3047,7 @@ static void mecaBuildLines(Scene *s, Polygon &pg, double z0, int rank, double zS
 	pg.line->GetProperty()->LightingOff();
 	pg.line->PickableOff();
 	pg.line->ForceOpaqueOn();
-	pg.line->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	pg.line->SetScale(s->xfac, 1.0, layerZScale(s, pg.veOwner));
 	pg.line->SetPosition(0.0, 0.0, rank * zStep);   // cross-ball depth rank — MUST match mecaBuildPatch
 	(s->axesRen ? s->axesRen : s->ren)->AddActor(pg.line);
 }
@@ -3013,6 +3069,7 @@ GMTVTK_API int gmtvtk_add_text_h(void *handle, double x, double y, const char *t
 	tl.actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();     // ALWAYS billboard, see TextLabel
 	textApplyProps(s, tl);
 	(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
+	tl.veOwner = activeOwnerTag(s);
 	s->texts.push_back(tl);
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
@@ -3217,11 +3274,11 @@ GMTVTK_API int gmtvtk_layer_display(void *handle, const char *name, char *buf, i
 			if      (!s->aquaBaseRGBA.empty())     why = "host-composited Aquamoto image";
 			else if (s->drape)                     why = "draped image texture";
 			else if (s->useShadows)                why = "cast shadows";
-			else if (s->useHillshade)              why = s->hillGrd ? "baked grdimage hillshade" : "baked Lambert hillshade";
+			else if (activeLook(s).useHillshade)        why = activeLook(s).hillGrd ? "baked grdimage hillshade" : "baked Lambert hillshade";
 			else if (!s->shadeIn.inten.empty() ||
 			         !s->shadeInLand.inten.empty()) why = "external illumination grid";
-			else if (s->layerTexW > 0 && s->litBake) why = "baked PBR shaded image";
-			else if (!s->noShade)                  why = "lit 3-D surface (PBR key+fill light)";
+			else if (s->layerTexW > 0 && activeLook(s).litBake) why = "baked PBR shaded image";
+			else if (!activeLook(s).noShade)                  why = "lit 3-D surface (PBR key+fill light)";
 		}
 		o += "repro="; o += (why ? '0' : '1'); o += ';';
 		o += "why="; o += (why ? why : ""); o += ';';
@@ -3413,6 +3470,7 @@ GMTVTK_API int gmtvtk_add_poly_full(void *handle, const double *xyz, int npts, i
 	polyRebuildLine(s, pg);
 	if (pg.line) { pg.line->GetProperty()->SetColor(lr, lg, lb); pg.line->GetProperty()->SetLineWidth(lw); }
 	pg.stack = s->vecSeq++;
+	pg.veOwner = activeOwnerTag(s);
 	s->polys.push_back(pg);
 	applyVectorStacking(s);
 	rebuildSceneObjects(s);
@@ -3603,6 +3661,7 @@ GMTVTK_API int gmtvtk_add_nested_rect(void *handle, const double *xy, int npts,
 	if (pg.v.size() >= 2 && !(pg.v.front() == pg.v.back())) pg.v.push_back(pg.v.front());   // close the ring
 	polyRebuildLine(s, pg);
 	pg.stack = s->vecSeq++;
+	pg.veOwner = activeOwnerTag(s);
 	s->polys.push_back(pg);
 	applyVectorStacking(s);
 	nestReflow(s);                                 // idempotent: saved verts already obey the rule, so this only recomputes the chain indices
@@ -3768,7 +3827,8 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
 			const int ei = rank / 3, role = rank % 3;
 			MecaBall *mb = nullptr;
 			for (auto &b : s->mecaBalls) if (b.groupName == grp && b.event == ei) { mb = &b; break; }
-			if (!mb) { s->mecaBalls.push_back(MecaBall{}); mb = &s->mecaBalls.back(); mb->groupName = grp; mb->event = ei; }
+			if (!mb) { s->mecaBalls.push_back(MecaBall{}); mb = &s->mecaBalls.back(); mb->groupName = grp; mb->event = ei;
+			                 mb->veOwner = activeOwnerTag(s); }
 			if (pg.fill) mb->actors.push_back(pg.fill.Get());
 			if (pg.line) mb->actors.push_back(pg.line.Get());
 			if (!pg.v.empty()) mb->zLow = std::min(mb->zLow, pg.v[0][2]);   // vertex Z is z0 only now (rank lives in actor Position) — mecaHitAt/mecaUpdateAnchor placeholder, not a real occlusion key
@@ -3785,6 +3845,7 @@ GMTVTK_API int gmtvtk_add_meca_h(void *handle, const double *xy, const int *vcou
 			}
 		}
 		pg.stack = s->vecSeq++;                        // lands on the shared vector pile
+		pg.veOwner = activeOwnerTag(s);
 		s->polys.push_back(pg);
 		++added;
 	}
@@ -4746,6 +4807,7 @@ GMTVTK_API int gmtvtk_fault_add_test(void *scene, double lon1, double lat1, doub
 	pg.v = { { lon1, lat1, 0.0 }, { lon2, lat2, 0.0 } };
 	pg.stack = s->vecSeq++;
 	polyRebuildLine(s, pg);
+	pg.veOwner = activeOwnerTag(s);
 	s->polys.push_back(pg);
 	int n = 0; for (auto &p : s->polys) if (p.isFault) ++n;
 	return n;
@@ -4761,6 +4823,7 @@ GMTVTK_API int gmtvtk_poly_edit_add_test(void *scene, const double *xyz, int npt
 	for (int i = 0; i < npts; ++i) pg.v.push_back({ xyz[3*i], xyz[3*i+1], xyz[3*i+2] });
 	pg.stack = s->vecSeq++;
 	polyRebuildLine(s, pg);
+	pg.veOwner = activeOwnerTag(s);
 	s->polys.push_back(pg);
 	const int idx = (int)s->polys.size() - 1;
 	polyEnterEdit(s, idx);
@@ -5102,7 +5165,7 @@ GMTVTK_API int gmtvtk_symbol_ui_drag_test(void *scene, double x1, double y1, dou
 	Scene *s = (Scene*)scene;
 	if (!s || !s->widget || !s->ren || !s->widget->renderWindow()) return 0;
 	vtkRenderer *ren = s->ren;
-	const double zc = s->zfac * s->ve;
+	const double zc = sceneZScale(s);
 	const double dpr = s->widget->devicePixelRatioF();
 	const int Hpx = s->widget->renderWindow()->GetSize()[1];
 	auto toLogical = [&](double wx, double wy, double wz) -> QPointF {
@@ -5140,7 +5203,7 @@ GMTVTK_API int gmtvtk_symbol_click_jitter_test(void *scene, double x, double y, 
 	Scene *s = (Scene*)scene;
 	if (!s || !s->widget || !s->ren || !s->widget->renderWindow()) return 0;
 	vtkRenderer *ren = s->ren;
-	const double zc = s->zfac * s->ve;
+	const double zc = sceneZScale(s);
 	const double dpr = s->widget->devicePixelRatioF();
 	const int Hpx = s->widget->renderWindow()->GetSize()[1];
 	double wp[3];  sceneGeoToWorld(s, x, y, z, wp);
@@ -6977,7 +7040,7 @@ static void sceneReframeToContent(Scene *s) {
 	if (!sceneAlive(s) || !s->ren) return;
 	double b[6]; surfGetBounds(s, b);
 	const double xf = (s->xfac != 0.0) ? s->xfac : 1.0;
-	const double zs = s->zfac * s->ve;
+	const double zs = sceneZScale(s);
 	const double zf = (zs != 0.0) ? zs : 1.0;
 	double zlo, zhi;
 	const bool hasGrid = activeGridZRange(s, zlo, zhi);
@@ -7145,7 +7208,7 @@ GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const 
 	ex.actor->GetProperty()->SetInterpolationToPBR();
 	ex.actor->GetProperty()->SetMetallic(0.0);
 	ex.actor->GetProperty()->SetRoughness(0.45);
-	ex.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	ex.actor->SetScale(s->xfac, 1.0, s->zfac * ex.ve);   // this layer's own VE
 	ex.actor->SetVisibility(0);
 	s->ren->AddActor(ex.actor);
 	ex.name = (name && name[0]) ? name : ("Mesh " + std::to_string((int)s->extras.size() + 1));
@@ -7155,6 +7218,7 @@ GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const 
 	// intent alone now (rebuildAxisLabels), so a default-true `shown` would box an empty frame around a
 	// layer that is not on screen yet; the caller's gmtvtk_show_new_element_h turns both on together.
 	ex.ax.shown = (ex.actor && ex.actor->GetVisibility() != 0);
+	ex.ax.owner = ex.tag;                    // THIS layer's axes ride THIS layer's VE, nobody else's
 	s->extras.push_back(ex);
 	{
 		// A mesh is a raster layer in this respect too: it gets ITS OWN axes, framed to its own XY
@@ -7298,7 +7362,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		ex.actor->GetProperty()->SetInterpolationToPBR();
 		ex.actor->GetProperty()->SetMetallic(0.0);
 		ex.actor->GetProperty()->SetRoughness(0.45);
-		ex.actor->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+		ex.actor->SetScale(s->xfac, 1.0, s->zfac * ex.ve);   // this layer's own VE
 		// A newly ADDED grid starts UNCHECKED (hidden): this function stacks a new grid on top of
 		// whatever the window already shows, and two grids visible/checked at once is never wanted —
 		// the user can't tell anything happened (they overlap) and it's confusing besides. The
@@ -7334,7 +7398,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 			ex.drape = vtkSmartPointer<vtkActor>::New();
 			ex.drape->SetMapper(dmap); ex.drape->SetTexture(tex);
 			ex.drape->GetProperty()->LightingOff();
-			ex.drape->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+			ex.drape->SetScale(s->xfac, 1.0, s->zfac * ex.ve);   // welded to its own grid
 			s->ren->AddActor(ex.drape);
 		}
 	}
@@ -7355,10 +7419,17 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	ex.name = (name && name[0]) ? name : ("Object " + std::to_string((int)s->extras.size() + 1));
 	const bool addedGrid = !ex.isImage;
 	if (addedGrid) ex.gstack = s->vecSeq++;  // unified pile: newest grid lands on top of EVERYTHING
-	if (addedGrid) ex.tag    = ++s->gridTagSeq;  // UNIQUE, STABLE group tag (the Color Bar resolves by this)
+	// UNIQUE, STABLE group tag (the Color Bar resolves by this). Given to EVERY layer, an image
+	// included: it is also the name its own per-layer parameters answer to — its `ve` in a saved
+	// session (ve_%d), its shade set (lk_%d) and, since the per-layer-VE fix, its AXES (AxesSet::owner
+	// -> veOfOwner). An untagged layer's axes would have fallen back to the base relief's VE and been
+	// boxed at a height its own geometry never has. Every grid-only consumer already guards with
+	// `!ex.isImage` or compares against a resolved grid tag, so tagging images changes nothing there.
+	ex.tag = ++s->gridTagSeq;
 	// Added HIDDEN (a grid) or visible (an image): its axes intent starts the same way — see the note in
 	// gmtvtk_add_mesh_h. gmtvtk_show_new_element_h switches layer + axes on together when it is adopted.
 	ex.ax.shown = (ex.actor && ex.actor->GetVisibility() != 0);
+	ex.ax.owner = ex.tag;                    // THIS layer's axes ride THIS layer's VE, nobody else's
 	s->extras.push_back(ex);
 	{
 		// This raster's OWN axes, born WITH it (SACRED_LAW.md Raster-own-axes law). Framed to ITS OWN
@@ -7756,7 +7827,7 @@ GMTVTK_API int gmtvtk_show_layer_image_h(void *handle, const float *z, int nx, i
 	// A cube opens as an illuminated relief map: default a FRESH cube window to the grdimage hillshade
 	// (done before the bake so the very first texture is already shaded). The Shading dock then switches
 	// style (Lambert / off) or moves the sun and relights live via rebakeLayerImage.
-	if (s->emptyStart && !s->layerImgMode) { s->useHillshade = true; s->hillGrd = true; }
+	if (s->emptyStart && !s->layerImgMode) { s->look.useHillshade = true; s->look.hillGrd = true; }
 
 	const double dx = (nx > 1) ? (x1 - x0) / (nx - 1) : 0.0;
 	const double dy = (ny > 1) ? (y1 - y0) / (ny - 1) : 0.0;
@@ -7806,7 +7877,7 @@ GMTVTK_API int gmtvtk_show_layer_rgba_h(void *handle, const unsigned char *rgba,
 		// Live dock state mirrors whichever side aquaShadeSelWater currently edits, so the Shading
 		// dock checkboxes reflect the truth the first time it's opened on this file.
 		const AquaSideShade &live = s->aquaShadeSelWater ? s->aquaWaterShade : s->aquaLandShade;
-		s->useHillshade = live.useHillshade; s->hillGrd = live.hillGrd; s->litBake = live.litBake;
+		s->look.useHillshade = live.useHillshade; s->look.hillGrd = live.hillGrd; s->look.litBake = live.litBake;
 	}
 	// ALREADY STANDING ON THE 3-D SURFACE? Then this slice is A NEW Z FOR THE SAME SURFACE, not a new
 	// scene. Building the flat quad here and flipping it back to 3-D afterwards is a full teardown —

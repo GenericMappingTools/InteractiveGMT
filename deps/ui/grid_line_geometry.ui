@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>GeoGridGeometry</class>
+ <widget class="QWidget" name="GeoGridGeometry">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>274</width>
+    <height>110</height>
+   </rect>
+  </property>
+  <!--
+    CANONICAL saved copy of the "Griding Line Geometry" block — the shared C++ widget
+    (deps/src/70_window.cpp:887, class GeoGridGeometry) used by grdsample AND
+    elastic_deformation, and now igrf_calculator. Object names match the C++ member names
+    exactly (xMin/xMax/xInc/xN/yMin/yMax/yInc/yN/refEdit/refBtn/helpBtn) on purpose.
+
+    Qt Designer renders a promoted custom widget (native="true") as a BLANK placeholder box —
+    it never runs the C++ constructor, so it can't preview GeoGridGeometry's actual layout.
+    That blank box is what made igrf_calculator.ui look broken. There is no "include this .ui
+    inside that .ui" mechanism in the Designer format, so the only way for a consuming dialog
+    to render the real layout in Designer is to copy this file's <layout> contents verbatim
+    into the consuming .ui (see igrf_calculator.ui's geoGroup for the copy). This file is the
+    one source of truth to copy FROM — edit it here first, then re-copy into every dialog that
+    embeds this block, rather than re-deriving the layout by hand each time.
+  -->
+  <layout class="QVBoxLayout" name="outerLayout">
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
+   <item>
+    <widget class="QGroupBox" name="geoGroup">
+     <property name="title"><string>Griding Line Geometry</string></property>
+     <layout class="QGridLayout" name="geoLayout">
+      <property name="horizontalSpacing"><number>8</number></property>
+      <property name="verticalSpacing"><number>4</number></property>
+      <item row="0" column="1"><widget class="QLabel" name="minLab"><property name="alignment"><set>Qt::AlignHCenter</set></property><property name="text"><string>Min</string></property></widget></item>
+      <item row="0" column="2"><widget class="QLabel" name="maxLab"><property name="alignment"><set>Qt::AlignHCenter</set></property><property name="text"><string>Max</string></property></widget></item>
+      <item row="0" column="3"><widget class="QLabel" name="spacingLab"><property name="alignment"><set>Qt::AlignHCenter</set></property><property name="text"><string>Spacing</string></property></widget></item>
+      <item row="0" column="4"><widget class="QLabel" name="nLinesLab"><property name="alignment"><set>Qt::AlignHCenter</set></property><property name="text"><string># of lines</string></property></widget></item>
+
+      <item row="1" column="0"><widget class="QLabel" name="xDirLab"><property name="text"><string>X Direction</string></property></widget></item>
+      <item row="1" column="1"><widget class="QLineEdit" name="xMin"><property name="minimumWidth"><number>54</number></property><property name="maximumWidth"><number>74</number></property><property name="text"><string>-180</string></property></widget></item>
+      <item row="1" column="2"><widget class="QLineEdit" name="xMax"><property name="minimumWidth"><number>54</number></property><property name="maximumWidth"><number>74</number></property><property name="text"><string>180</string></property></widget></item>
+      <item row="1" column="3"><widget class="QLineEdit" name="xInc"><property name="minimumWidth"><number>54</number></property><property name="maximumWidth"><number>74</number></property><property name="text"><string>1</string></property></widget></item>
+      <item row="1" column="4"><widget class="QLineEdit" name="xN"><property name="minimumWidth"><number>54</number></property><property name="maximumWidth"><number>74</number></property><property name="text"><string>361</string></property></widget></item>
+
+      <item row="2" column="0"><widget class="QLabel" name="yDirLab"><property name="text"><string>Y Direction</string></property></widget></item>
+      <item row="2" column="1"><widget class="QLineEdit" name="yMin"><property name="minimumWidth"><number>54</number></property><property name="maximumWidth"><number>74</number></property><property name="text"><string>-89</string></property></widget></item>
+      <item row="2" column="2"><widget class="QLineEdit" name="yMax"><property name="minimumWidth"><number>54</number></property><property name="maximumWidth"><number>74</number></property><property name="text"><string>89</string></property></widget></item>
+      <item row="2" column="3"><widget class="QLineEdit" name="yInc"><property name="minimumWidth"><number>54</number></property><property name="maximumWidth"><number>74</number></property><property name="text"><string>1</string></property></widget></item>
+      <item row="2" column="4"><widget class="QLineEdit" name="yN"><property name="minimumWidth"><number>54</number></property><property name="maximumWidth"><number>74</number></property><property name="text"><string>179</string></property></widget></item>
+
+      <item row="1" column="5" rowspan="2">
+       <widget class="QToolButton" name="helpBtn">
+        <property name="text"><string>?</string></property>
+        <property name="toolTip"><string>Edit any two of Min/Max/Spacing/# and the rest are derived.</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="refRow">
+     <item><widget class="QLabel" name="refLab"><property name="text"><string>OR Ref grid</string></property></widget></item>
+     <item>
+      <widget class="QLineEdit" name="refEdit">
+       <property name="toolTip"><string>Pick a grid/image; its region, spacing and size fill the boxes above.</string></property>
+      </widget>
+     </item>
+     <item><widget class="QToolButton" name="refBtn"><property name="text"><string>...</string></property></widget></item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

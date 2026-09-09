@@ -264,6 +264,8 @@ struct Overlay {
 	                                          // Magnetics > Import *.gmt/*.nc cruise tracks: thousands of raw
 	                                          // nav fixes, no useful per-row content). Default false preserves
 	                                          // every existing overlay's table.
+	// Owner layer: see Curtain::veOwner. THIS element's VE, nobody else's.
+	int veOwner = -1;                        // == kAxesOwnerBase
 };
 
 // A generic SCREEN-CONSTANT symbol layer (volcanoes, seismicity, cities, …): N glyphs of one
@@ -328,6 +330,8 @@ struct SymbolLayer {
 	double posVE   = 0.0;                     // the drawn z scale (zfac*ve) the GLOBE positions were built
 	                                           // with — there the exaggeration is baked into the radius, so
 	                                           // a VE change has to move the points. -1 forces a rebuild.
+	// Owner layer: see Curtain::veOwner. THIS element's VE, nobody else's.
+	int veOwner = -1;                        // == kAxesOwnerBase
 };
 
 // SymbolLayer carries exactly ONE of glyph (flat shapes) / glyphMapper (solid3D sphere/cube) — every
@@ -365,6 +369,12 @@ static double symPointSizePx(SymbolLayer &sl, vtkIdType i) {
 struct Curtain {
 	vtkSmartPointer<vtkActor> actor;
 	std::string name;                        // label shown in the Scene Objects panel
+	// THE LAYER THIS ELEMENT BELONGS TO: the ExtraObj::tag of the grid that was ACTIVE when it was
+	// created, or kAxesOwnerBase for the base relief. It is the ONLY exaggeration this element is ever
+	// drawn with (layerZScale) -- no other layer's VE can reach it. Same field, same meaning, on every
+	// map-space element (Overlay, Curtain, Polygon, SymbolLayer, TextLabel, MecaBall), so "whose VE
+	// scales this?" has ONE answer and ONE lookup for all of them (SACRED_LAW.md).
+	int veOwner = -1;                        // == kAxesOwnerBase
 };
 
 // An INDEXED image's palette, as a colour bar. The palette IS the legend — one labelled block per
@@ -414,10 +424,46 @@ struct AxesSet {
 	double zLo = 0, zHi = 0;
 	bool   shown = true;     // the owning handle's "Axes" checkbox (its OWN intent)
 	bool   built = false;    // actors created + added to the renderers
+	// THE LAYER THIS SET BELONGS TO: the ExtraObj::tag of the raster that owns it, or kAxesOwnerBase
+	// for the base relief's own set. The set's drawn Z scale is THAT layer's exaggeration, never the
+	// active layer's -- see axesZScale. A frame boxed with another grid's VE draws a raster's axes at
+	// a height its own geometry never has: the axis ran off past its own data (a lat axis reaching 0
+	// under a grid spanning 34-40), the camera fit followed the box and lost the surface on rotation,
+	// and every set in the window moved together as though the VE were window-wide -- which is exactly
+	// what per-layer VE exists to prevent (SACRED_LAW.md: each grid its own parameters, axes included).
+	int    owner = -1;       // == kAxesOwnerBase
 };
+static const int kAxesOwnerBase = -1;   // AxesSet::owner value meaning "the base relief's own set"
 
 // An extra dataset dropped into an existing window (a second grid/image surface). Listed in
 // the Scene Objects panel with its own show/hide checkbox. `drape` is its optional image actor.
+// HOW ONE RASTER LAYER IS LIT AND SHADED -- one layer's own, never the window's.
+// SACRED_LAW.md: every grid carries its own independent set of parameters. A window holding a
+// bathymetry grid and a gravity anomaly must be able to hillshade one and leave the other on plain
+// CPT colours, with its own sun and its own contrast, exactly as it already carries its own CPT,
+// its own z range, its own axes and (since the same fix) its own vertical exaggeration.
+// Held by BOTH Scene (the BASE relief's own set) and ExtraObj (each dropped grid's), so there is
+// ONE shape and ONE resolver -- lookOfActor() / activeLookPtr() -- and no second code path that
+// answers "how is this layer shaded" differently depending on which kind of layer is asking.
+// NOT here, and deliberately: the renderer-level passes (SSAO, tone mapping, FXAA, IBL, cast
+// shadows) and the vtkLight objects themselves. Those belong to the RENDERER, not to a raster --
+// one scene cannot hold two OpenGL light rigs. The baked relief shade, which is what a grid's
+// look actually is, is computed per layer on the CPU and so is fully per layer here.
+struct LayerShade {
+	bool   useHillshade = false;      // baked hillshade master on/off; rendered UNLIT so relief reads
+	                                  // even flat-on (2-D map). Alt to lit/PBR. Two styles (hillGrd):
+	bool   hillGrd      = false;      //   false = Lambert (mesh-normal N.L, VE-corrected, darken-only),
+	                                  //   true  = GMT grdimage (z-gradient, VE-independent, HSV illuminate).
+	double hillAmbient  = 0.25;       // Lambert hillshade shadow floor (0 = black valleys, 1 = no shade)
+	double hillGain     = 2.0;        // grdimage relief contrast: atan slope on the z-gradient signal
+	bool   litBake      = true;       // FLAT image only: bake a CPU PBR shade (approximates the lit 3-D
+	                                  // surface) so "Shaded image" alone reproduces the loaded-grid look.
+	                                  // Mutually exclusive with useHillshade; both off (flat) = plain CPT.
+	bool   noShade      = false;      // "Remove illumination": NO light at all, plain CPT, unlit.
+	double lightAz = 315.0, lightEl = 45.0;   // THIS layer's sun: azimuth (deg from north, CW) + elevation
+	double roughness = 0.3, metallic = 0.0, ior = 1.5;   // its PBR material (F3D defaults)
+};
+
 struct ExtraObj {
 	vtkSmartPointer<vtkActor> actor;
 	// This raster's OWN axes (Raster-own-axes law above). Built when the extra is adopted; torn
@@ -463,6 +509,14 @@ struct ExtraObj {
 	// out on any window whose displayed grid was not the base one.
 	std::vector<double> cz, crgb;
 	bool   showBar = true;                   // user wants this grid's colorbar shown (when it is active)
+	LayerShade look;                         // THIS grid's own lighting + shading set (see LayerShade)
+	// THIS GRID'S OWN VERTICAL EXAGGERATION (SACRED_LAW.md: every grid carries its own parameter set,
+	// and the VE is one of them). Dimensionless, same meaning as Scene::ve -- which is now the BASE
+	// relief's own number, not a window-wide one. The VE gizmo and the VE dialog edit whichever layer
+	// is ACTIVE, so exaggerating a gravity anomaly cannot stretch the bathymetry underneath it. The
+	// NORMALISER (Scene::zfac) stays window-wide on purpose -- see sceneZRef: deriving that per layer
+	// re-scales and re-LIGHTS layers nobody touched, which is the opposite of this same law.
+	double ve = 1.0;
 	int    cubeLayers = 0;                   // >1 iff this grid is a 3-D-cube variable (its menu offers
 	                                         // "Cube layers…", opening the slider bound to THIS cube)
 	PaletteLegend palette;                   // images only: an indexed image's class legend (see above)
@@ -521,6 +575,8 @@ struct Polygon {
 	int    nestReg = 0;                       // 0 grid / 1 pixel registration (carried into COMCOT/NSWING info)
 	int    nestIx0 = 0, nestIx1 = 0;          // parent-grid node indices of the snapped W/E edges (1-based on display)
 	int    nestIy0 = 0, nestIy1 = 0;          // parent-grid node indices of the snapped S/N edges
+	// Owner layer: see Curtain::veOwner. THIS element's VE, nobody else's.
+	int veOwner = -1;                        // == kAxesOwnerBase
 };
 
 // Cached compression/dilatation/rim colour + rim width for ONE focal-mechanism batch (keyed by its
@@ -587,6 +643,8 @@ struct MecaBall {
 	                                         // it); mecaDragTo repositions it alongside the ball's own actors.
 	                                         // Only SetPosition (vtkProp3D) is ever called on it, so the
 	                                         // billboard-vs-flat concrete type underneath never matters here.
+	// Owner layer: see Curtain::veOwner. THIS element's VE, nobody else's.
+	int veOwner = -1;                        // == kAxesOwnerBase
 };
 
 // A text label: either a user-placed toolbar annotation (the "T" Text tool), or a batch-owned
@@ -653,6 +711,8 @@ struct TextLabel {
 	int mecaEvent = -1;                      // valid iff groupName non-empty: the 0-based event index
 	                                          // (evid/3) this label belongs to — gmtvtk_add_meca_h uses it
 	                                          // to wire MecaBall::dateLabel so a drag carries the label along
+	// Owner layer: see Curtain::veOwner. THIS element's VE, nobody else's.
+	int veOwner = -1;                        // == kAxesOwnerBase
 };
 
 // ONE ruler measurement: the vertices the user clicked, the measured length of each leg, and the
@@ -856,14 +916,19 @@ struct Scene {
 	                                                      // genuinely different picker, not a special case).
 	QVTKOpenGLNativeWidget *widget = nullptr;
 	QMainWindow *win    = nullptr;
-	// VERTICAL EXAGGERATION — DIMENSIONLESS, AND IT STAYS THAT WAY.
-	// `ve` is measured against WHAT YOU SEE, not against z's unit: ve = 1 is the reference look, the
-	// relief spanning a tenth of the map's own horizontal size; ve = 2 is twice as tall, ve = 0.5
-	// half. That is the whole definition. It says nothing about z's unit, because z's unit is NOT
-	// KNOWN — metres, mGal, nT, mm/yr, seconds and counts are all grids this app displays. Any rule
-	// of the form "VE 1 = true 1:1" needs a metres assumption, and when that assumption is wrong the
-	// number explodes (a 200 mGal anomaly over 700 km needed VE ~3500 before anything was visible).
-	double ve = 1.0;            // see above: 1 = the reference look, whatever the data and its unit
+	// VERTICAL EXAGGERATION — A PLAIN MULTIPLIER ON THE HORIZONTAL SCALE, AND IT STAYS THAT WAY.
+	// The drawn height of a z value is `zfac * ve`, where `zfac` is the scale of the HORIZONTAL
+	// dimensions (sceneZRefFor: degrees of latitude per metre for geographic data, 1 for Cartesian)
+	// and `ve` is this number. So ve = 1 draws z at the same scale as the map's own horizontal axes,
+	// ve = 2 twice as tall, ve = 0.5 half.
+	// WHAT IT IS NOT, AND MUST NEVER BECOME: a function of the GRID's numbers. Not its z span, not
+	// its min/max, not the ratio of its vertical unit to its horizontal one — those units are
+	// unrelated quantities (metres under degrees, mGal over kilometres) and the exaggeration does not
+	// depend on them. A z-span rule is also how one layer's VE reached another, which is separately
+	// forbidden: see the rule above sceneZRefFor.
+	// THIS FIELD IS THE BASE RELIEF'S OWN. Every dropped layer carries its own (ExtraObj::ve) and
+	// moves nothing but itself; this one moves the base relief and the shared map space with it.
+	double ve = 1.0;            // the base relief's own multiplier on the horizontal scale
 	double zmin = 0, zmax = 0;  // true (unscaled) z range
 	double x0 = 0, x1 = 1;      // true x range (for cube-axis labels / readout)
 	double y0 = 0, y1 = 1;      // true y range
@@ -872,14 +937,16 @@ struct Scene {
 	                            // window was built", i.e. baseGeog. Only a change of COORDINATE KIND
 	                            // (Tools > Project: degrees in, metres out) makes them wrong, and
 	                            // gmtvtk_show_new_element_h re-derives them when this says so.
-	// Z NORMALISER — **NOT A UNIT CONVERSION**. Cached value of `sceneZRef()`: the number that turns
-	// the ACTIVE layer's own z span into the map's horizontal span, so that `zfac * ve` (the drawn z
-	// scale every actor is given) means exactly what `ve` says above. It is DERIVED FROM THE DRAWN
-	// GEOMETRY and re-derived whenever anything about it changes; it never encodes a physical unit.
-	// It used to be 1/111111 ("metres -> degrees of latitude") for geographic data and an arbitrary
-	// auto-fit factor for everything else — one quantity, two formulas, chosen by a flag about the
-	// HORIZONTAL units. Do not put a unit back in here.
-	double zfac = 1.0;          // = sceneZRef(): horizontal span / active layer's z span
+	// Z NORMALISER = THE SCALE OF THE HORIZONTAL DIMENSIONS, and nothing else. Cached value of
+	// `sceneZRef()` (sceneZRefFor, this file): degrees of latitude per metre for geographic data, 1 for
+	// Cartesian, the sphere's own for the globe. `zfac * ve` is the drawn z scale.
+	// NO GRID'S NUMBERS ENTER IT: not a z span, not a min/max, not the ratio of a layer's vertical unit
+	// to its horizontal one. That is the user's standing order, and it is also what keeps one layer's
+	// exaggeration off every other layer -- a z-span term made this a function of whichever layer was
+	// active, so selecting or deriving a layer re-scaled and re-lit layers nobody had touched.
+	// It is a property of the MAP, which is why it is a single window-level number while the
+	// exaggeration itself is per layer (Scene::ve for the base, ExtraObj::ve for each dropped grid).
+	double zfac = 1.0;          // = sceneZRef(): the horizontal scale (re-derived, never assumed)
 	// SACRED_LAW.md "derived-variable axes law": once a crop/derive reframes the window onto a
 	// SUBREGION (gmtvtk_reframe_h), surfGetBounds() must report THAT subregion instead of the
 	// primary surface's own full bounds — every bounds-driven function (applyVE's axes-cube resize,
@@ -1153,22 +1220,14 @@ struct Scene {
 	vtkSmartPointer<vtkCameraPass>        shadowCam;   // cached cast-shadow opaque sequence (sun self-shadowing terrain)
 	vtkSmartPointer<vtkShadowMapBakerPass> shadowBaker; // its depth-map baker (resolution lives here)
 	double ssaoRadius = 0.5, ssaoBias = 1e-4;
-	double lightAz = 315.0, lightEl = 45.0;   // sun azimuth (deg from north, CW) + elevation
-	// F3D material defaults (vtkF3DGenericImporter): roughness 0.3, IOR 1.5, PBR, metallic 0.
-	double roughness = 0.3, metallic = 0.0, ior = 1.5;
+	// THE BASE RELIEF'S OWN lighting + shading set. Every dropped grid holds the same struct
+	// (ExtraObj::look), so "how is this layer shaded" has ONE shape and ONE resolver for every
+	// layer in the window -- lookOfActor() below. Nothing here is window-wide any more.
+	LayerShade look;
 	double lightIntensity = 1.0, fillIntensity = 0.35, envIntensity = 1.0;
 	bool   useSSAO = true, useTone = true, useFXAA = true, useIBL = false;
 	bool   useShadows = false;        // sun cast-shadows (terrain self-shadowing) — OFF by default (opt-in; mutually exclusive with useHillshade)
 	int    shadowRes  = 2048;         // shadow depth-map resolution (higher = crisper shadow edges)
-	bool   useHillshade = false;      // baked hillshade master on/off; rendered UNLIT so relief reads
-									  // even flat-on (2-D map). Alt to lit/PBR. Two styles (s->hillGrd):
-	bool   hillGrd      = false;      //   false = Lambert (mesh-normal N.L, VE-corrected, darken-only),
-									  //   true  = GMT grdimage (z-gradient, VE-independent, HSV illuminate).
-	double hillAmbient  = 0.25;       // Lambert hillshade shadow floor (0 = black valleys, 1 = no shade)
-	double hillGain     = 2.0;        // grdimage relief contrast: atan slope on the z-gradient signal (grdgradient -Nt amp)
-	bool   litBake      = true;       // FLAT image only: bake a CPU PBR shade (approximates the lit 3-D
-	                                  // surface) so "Shaded image" alone reproduces the loaded-grid look.
-	                                  // Mutually exclusive with useHillshade; both off (flat) = plain CPT.
 	// --- EXTERNAL illumination (View > "Illumination (Hillshade)…", port of Mirone shading_params.m).
 	// A per-node REFLECTANCE grid computed by GMT grdgradient in Julia (src/hillshade.jl) and pushed
 	// down by gmtvtk_set_shade_intensity_h. When it is present the shade engine takes the intensity
@@ -1187,7 +1246,6 @@ struct Scene {
 	// surface renders UNLIT with its plain CPT colours. Distinct from every look toggle, because
 	// "no hillshade" still leaves the PBR scene lights on and the grid still looks illuminated.
 	// Cleared by anything that turns a light back on (the dock's looks, the sun sliders, a new model).
-	bool   noShade = false;
 
 	bool   matteSurf = false;        // fv colour mesh: keep s->surf MATTE (Phong, no specular/IBL) so the
 									 // data colour reads true; glossy PBR mirrored the bright sky env to grey
@@ -1544,7 +1602,126 @@ struct Scene {
 // is ALREADY in flat-2D (every base map) must land flat immediately, not only after the user happens
 // to toggle 3-D and back. The layer's POINTS always keep the true hypocentre depth; only this scale
 // changes, so tilting the view restores the cloud (SACRED_LAW.md: same operation, same function).
-static inline double symbolZScale(Scene *s) { return (s && s->flat2d) ? 0.0 : (s ? s->zfac * s->ve : 1.0); }
+// THE VERTICAL EXAGGERATION IN FORCE for anything drawn in MAP space (vector overlays, polygons,
+// symbol layers, beachball anchors, rulers, text): the ACTIVE layer's own, resolved in 50_scene.cpp
+// through the SAME resolveActiveGrid the hover readout, the colour bar and the Z axis already share --
+// so an overlay can never ride a different exaggeration than the grid it is drawn on. Every grid keeps
+// its OWN number (ExtraObj::ve; Scene::ve is the BASE relief's), which is why this is a lookup and not
+// a plain Scene field (SACRED_LAW.md: each grid its own parameters, one code path that resolves them).
+static double sceneZRefFor(Scene *s, double zlo, double zhi);   // this file, below: ONE layer's normaliser
+static double activeVE(Scene *s);                        // 50_scene.cpp, beside resolveActiveGrid
+static double *activeVEPtr(Scene *s);                    // ...and its writable face, for the VE controls
+void gizmoSyncVE(Scene *s);                              // 20_gizmo.cpp -- re-read the handle's number
+double gizmoShownVE(Scene *s);                           // ...and what it is showing right now
+static LayerShade *activeLookPtr(Scene *s);              // 50_scene.cpp -- the ACTIVE layer's shade set
+// ...and the drawn z scale that follows from it: THE ONE expression every map-space actor is scaled by.
+// THE DRAWN Z SCALE of the MAP itself -- the base relief's own normaliser times the base relief's own
+// VE. What rides it: everything that is drawn in map space and belongs to no single grid (vector
+// overlays, drawn polygons and their fault planes, symbol layers, beachball anchors, rulers, text
+// labels, the profile drape, the selection highlight).
+//
+// It is the BASE relief's and NOT the active layer's, deliberately. Reading the active layer's here
+// was how one grid's VE reached everything else in the window: exaggerating a gravity anomaly, or
+// merely making it the active layer, re-scaled every drawn line and symbol on the map -- the fault
+// traces of C:\v\sessa.igmtz, at their true -5 km and -37 km, ended up as two rows of dashes hanging
+// in space far below the terrain they belong to. Each grid keeps its OWN exaggeration and moves
+// NOTHING but itself (SACRED_LAW.md: each grid independent of all others); the shared map keeps one
+// scale, which is the base relief's.
+static inline double sceneZScale(Scene *s) { return s ? s->zfac * s->ve : 1.0; }
+
+// The shade set every Shading control EDITS: the ACTIVE layer's own. One accessor, so no control has
+// to know whether the layer on screen is the base relief or a dropped grid.
+static inline LayerShade &activeLook(Scene *s) {
+	static LayerShade orphan;                     // no scene: writes land somewhere harmless
+	LayerShade *p = s ? activeLookPtr(s) : nullptr;
+	return p ? *p : orphan;
+}
+
+// The exaggeration of the layer THIS ACTOR belongs to: a dropped grid/image carries its own
+// (ExtraObj::ve), everything else is the base relief's (Scene::ve). Needed wherever a computation
+// has to match the geometry AS DRAWN for one SPECIFIC layer rather than for the active one --
+// the relief shading's normal correction above all, which bakes into that layer's own colours.
+// The SHADE SET of the layer THIS ACTOR belongs to: a dropped grid carries its own (ExtraObj::look),
+// everything else is the base relief's (Scene::look). The shading engine is handed an actor at every
+// entry point it has (applySurfStyle, hillshadeMapper, the per-actor bake), so one resolver here is
+// all it takes for each layer to be lit and shaded by ITS OWN settings -- no second code path, and no
+// control that behaves differently depending on which layer it lands on (SACRED_LAW.md).
+static const LayerShade &lookOfActor(Scene *s, vtkProp3D *a) {
+	static const LayerShade fallback;                 // no scene: struct defaults, never a null deref
+	if (!s) return fallback;
+	if (a)
+		for (auto &ex : s->extras)
+			if (ex.actor.Get() == a || ex.drape.Get() == a) return ex.look;
+	return s->look;
+}
+
+// The DRAWN Z SCALE of the layer this actor belongs to: that layer's own normaliser times its own ve.
+// The pair, resolved together, because a layer's height is the product and nothing may take one half
+// from one layer and the other half from another.
+static void layerZOf(Scene *s, vtkProp3D *a, double &zfac, double &ve) {
+	zfac = s ? s->zfac : 1.0;  ve = s ? s->ve : 1.0;
+	if (!s || !a) return;
+	for (auto &ex : s->extras)
+		if (ex.actor.Get() == a || ex.drape.Get() == a) {
+			// BOTH halves are this layer's: its own axis mapping and its own ve. Taking the mapping from
+			// the window while the ve came from the layer is what lit one grid by another's numbers.
+			zfac = sceneZRefFor(s, ex.zmin, ex.zmax);  ve = ex.ve;  return;
+		}
+}
+
+// NO AUTOMATIC OPENING VE. Tried 2026-09-09 and reverted the same hour: seeding a new layer with the
+// exaggeration that would make ITS OWN span reach the reference height drew a small-range layer (an
+// Okada deformation of centimetres over kilometres of bathymetry, ~1e4x) far outside the shared frame
+// -- outside the axes box, outside the camera fit, off the screen entirely. Inside ONE shared 3-D
+// space a layer's height is only meaningful against the other layers, so a layer opens at ve = 1 like
+// every other and the user raises it deliberately. That is what per-layer ve is FOR, and with the
+// arithmetic-only bounds on the VE handle it now stretches that layer alone.
+static double veOfActor(Scene *s, vtkProp3D *a) {
+	if (!s) return 1.0;
+	if (a)
+		for (auto &ex : s->extras)
+			if (ex.actor.Get() == a || ex.drape.Get() == a) return ex.ve;
+	return s->ve;
+}
+
+// NO SEPARATE LIGHTING REFERENCE, and none is needed: with the VE defined against the DISPLAYED
+// dimensions, a layer at ve = 1 already stands a tenth of the map's drawn width tall, so the
+// relief the shading engine sees IS the relief the eye sees. `shadeZRefFor` / `kShadeReference`
+// existed only while the geometry was drawn at true scale (flat), and are deleted with it.
+
+// The exaggeration of the layer named by an AxesSet::owner tag: kAxesOwnerBase -> the base relief's
+// own (Scene::ve), else the dropped grid carrying that tag (ExtraObj::ve). The same lookup veOfActor
+// does, asked by TAG rather than by actor, because an axes set is not one of its layer's actors -- it
+// is the frame drawn around it -- and a tag outlives that layer's actors being rebuilt.
+static int activeOwnerTag(Scene *s);   // 50_scene.cpp -- the ACTIVE grid's tag, kAxesOwnerBase if none
+
+static double veOfOwner(Scene *s, int owner) {
+	if (!s) return 1.0;
+	if (owner != kAxesOwnerBase)
+		for (auto &ex : s->extras)
+			if (ex.tag == owner) return ex.ve;
+	return s->ve;
+}
+
+// THE DRAWN Z SCALE OF ONE OWNED ELEMENT: the map's horizontal-scale normaliser times the VE of the
+// layer that element BELONGS to (Overlay::veOwner and friends). Every map-space actor is scaled by
+// this, with its own owner, so a line drawn on a gravity anomaly rides THAT grid's exaggeration and
+// one drawn on the bathymetry rides the bathymetry's -- and moving either moves only what belongs to
+// it. sceneZScale (the base relief's) remains the scale of things that belong to no layer at all.
+// THE AXIS MAPPING OF ONE LAYER: kVEReference x displayed horizontal size / THAT layer's own z
+// range (sceneZRefFor). Asked per layer, never shared, so no layer's range can set another's
+// height. Scene::zfac caches the BASE's, which is all it ever means now.
+static double zfacOfOwner(Scene *s, int owner) {
+	if (!s) return 1.0;
+	if (owner != kAxesOwnerBase)
+		for (auto &ex : s->extras)
+			if (ex.tag == owner) return sceneZRefFor(s, ex.zmin, ex.zmax);
+	return s->zfac;
+}
+
+static inline double layerZScale(Scene *s, int owner) { return s ? zfacOfOwner(s, owner) * veOfOwner(s, owner) : 1.0; }
+
+static inline double symbolZScale(Scene *s, int owner) { return (s && s->flat2d) ? 0.0 : layerZScale(s, owner); }
 
 // The globe's ONE mapping (defined just below, next to the rest of the globe engine). Declared here
 // because symbolApplyZ — which is the same "put this element where THIS view mode says" rule applied
@@ -1575,7 +1752,8 @@ static void applyVectorStacking(Scene *s);             // 50_scene.cpp: re-rank 
 static inline void symbolApplyZ(Scene *s, SymbolLayer &sl) {
 	if (!sl.actor) return;
 	const bool globe = (s && s->globe);
-	sl.actor->SetScale(1.0, 1.0, globe ? 1.0 : (s ? s->zfac * s->ve : 1.0));   // x already baked in
+	sl.actor->SetScale(1.0, 1.0, globe ? 1.0 : layerZScale(s, sl.veOwner)); // ITS OWN layer s VE
+	// x already baked in
 	vtkPolyData *pd = symInputPD(sl);
 	if (!pd || !pd->GetPoints() || sl.zOrig.empty()) return;
 	vtkPoints *pts = pd->GetPoints();
@@ -1585,7 +1763,7 @@ static inline void symbolApplyZ(Scene *s, SymbolLayer &sl) {
 	// The globe's positions depend on VE (the radius carries the relief), so that state is stale when
 	// the exaggeration moved — but ONLY then. Re-writing every point of a catalog on every pass (this
 	// runs per frame now, via sceneGlobeSync) would be a per-frame rewrite of a million-point layer.
-	const double ve = (s ? s->zfac * s->ve : 1.0);
+	const double ve = layerZScale(s, sl.veOwner);
 	if (want == sl.posMode && (want != 2 || sl.posVE == ve)) return;
 	sl.posVE = ve;
 	const bool haveXY = (sl.xyOrig.size() == (size_t)n * 2);
@@ -1655,7 +1833,7 @@ static inline void textApplyPos(Scene *s, TextLabel &tl, double addX = 0.0, doub
 		return;
 	}
 	tl.actor->SetPosition(lon * (s ? s->xfac : 1.0) - tl.offX, lat - tl.offY,
-	                      tl.pos[2] * (s ? s->zfac * s->ve : 1.0));
+	                      tl.pos[2] * layerZScale(s, tl.veOwner));   // ITS OWN layer s VE
 }
 
 // ============================================================================================
@@ -2001,7 +2179,7 @@ static void sceneGlobeUpdateTransform(Scene *s) {
 		}
 		s->globeXfKind = kind;
 	}
-	const double k = s->zfac * s->ve;                // the SAME drawn z scale every flat actor gets
+	const double k = sceneZScale(s);                // the SAME drawn z scale every flat actor gets
 	if (kind == 1) {
 		auto *cx = static_cast<vtkQSCCubeTransform *>(s->cubeXf.Get());
 		cx->SetRadius(s->globeR);
@@ -2067,7 +2245,7 @@ static void sceneGlobeUpdateTransform(Scene *s) {
 // (graticule, limb, any future projected annotation) — always the same object the render uses.
 static inline void sceneGeoToWorld(Scene *s, double lon, double lat, double z, double out[3]) {
 	if (!s || !s->globe) { out[0] = lon * (s ? s->xfac : 1.0); out[1] = lat;
-	                       out[2] = z * (s ? s->zfac * s->ve : 1.0); return; }
+	                       out[2] = z * (s ? sceneZScale(s) : 1.0); return; }
 	if (!s->globeXf) sceneGlobeUpdateTransform(s);
 	const double in[3] = { lon, lat, z };
 	s->globeXf->TransformPoint(in, out);
@@ -2079,7 +2257,7 @@ static inline bool sceneWorldToGeo(Scene *s, const double p[3], double &lon, dou
 	if (!s || !s->globe) {
 		lon = p[0] / ((s && s->xfac != 0.0) ? s->xfac : 1.0);
 		lat = p[1];
-		const double zs = s ? s->zfac * s->ve : 1.0;
+		const double zs = s ? sceneZScale(s) : 1.0;
 		z = (zs != 0.0) ? p[2] / zs : 0.0;
 		return true;
 	}
@@ -2514,7 +2692,7 @@ static inline void surfGetBounds(Scene *s, double b[6]) {
 	// returns its own zmin/zmax = the actor bounds, i.e. no change to the ordinary single-grid case.
 	double zlo, zhi;
 	if (activeGridZRange(s, zlo, zhi)) {
-		const double zs = s->zfac * s->ve;
+		const double zs = sceneZScale(s);
 		b[4] = zlo * zs; b[5] = zhi * zs;
 	}
 }
@@ -3587,9 +3765,23 @@ static void placeAxisTitle(Scene *s, vtkBillboardTextActor3D *t, int axis,
 // or extra alike, because a cube mounted as an extra layer is the same thing as one mounted as the
 // base and gets the same treatment. Scales the stored (unscaled) data range by the current zfac*ve,
 // matching surfGetBounds' scaled space.
+// THE DRAWN Z SCALE OF ONE AXES SET: the map's normaliser times the exaggeration of the layer that
+// OWNS this set -- never the active layer's. The ONE place a set's Z becomes world height, so a
+// raster's cube box, its Z tick billboards and the camera fit onto it all read the SAME number, and a
+// raster standing at a different VE gets a different one.
+// NO FLAT-2-D EXCEPTION. One was written here on the assumption that flat-2-D squashes the window's Z
+// to zero — it does not (it is a top-down orthographic CAMERA; the relief and its VE stay exactly as
+// in 3-D, see sceneSetViewMode). All the exception did was hand every set the BASE layer's scale in
+// the mode a window OPENS in, so a dropped grid's box ignored its own VE until the view was tilted —
+// caught by the runtime proof, not by reading the code.
+static inline double axesZScale(Scene *s, const AxesSet &A) {
+	if (!s) return 1.0;
+	return layerZScale(s, A.owner);   // ITS OWN layer's mapping and ITS OWN ve
+}
+
 static inline void pinAxesZ(Scene *s, const AxesSet &A, double b[6]) {
 	if (!A.zLock) return;
-	const double zs = s->zfac * s->ve;
+	const double zs = axesZScale(s, A);
 	b[4] = A.zLo * zs;
 	b[5] = A.zHi * zs;
 }
@@ -3632,7 +3824,7 @@ static inline void axesSetBounds(Scene *s, AxesSet &A, const double bIn[6]) {
 // data limits become world coordinates — the cube box, the tick billboards and the camera fit all
 // read it, so they can never disagree about where a raster's axes are.
 static inline void axesScaledBox(Scene *s, const AxesSet &A, double b[6]) {
-	const double zs = s->zfac * s->ve;
+	const double zs = axesZScale(s, A);      // THIS set's own layer's, never the active layer's
 	b[0] = A.x0 * s->xfac; b[1] = A.x1 * s->xfac;
 	b[2] = A.y0;           b[3] = A.y1;
 	b[4] = A.z0 * zs;      b[5] = A.z1 * zs;
@@ -4131,12 +4323,17 @@ static inline bool extraVisible(const ExtraObj &ex) {
 // ticked. Reported on a loaded session, where the lower-stack grids kept their checkboxes after the
 // last raster was adopted. A layer-level hide therefore switches the bar intent off here too, in the
 // SAME one function, and never in a caller.
+// SELECTING A LAYER RE-READS THE VE HANDLE. Every VE is per layer now, so the number on the gizmo
+// (and the cone it sizes) describes whichever layer is ACTIVE -- and this setter, with its base twin
+// below, is the ONE transition a layer selection goes through (the by-prop door delegates to them,
+// and so do the Scene Objects checkboxes, hide_other_grids and the session restore). Syncing HERE
+// means no caller has to remember to, which is how the handle came to sit on a stale number.
 static inline void rasterLayerSetVisible(Scene *s, ExtraObj &ex, bool on) {
 	if (ex.actor) ex.actor->SetVisibility(on ? 1 : 0);
 	if (ex.drape) ex.drape->SetVisibility(on ? 1 : 0);
 	ex.ax.shown = on;
 	if (!on) { axesHideAll(ex.ax); ex.showBar = false; }
-	(void)s;
+	gizmoSyncVE(s);                       // the handle now states THIS selection's own VE
 }
 static inline void baseLayerSetVisible(Scene *s, bool on) {
 	if (!s) return;
@@ -4144,6 +4341,7 @@ static inline void baseLayerSetVisible(Scene *s, bool on) {
 	if (s->drape) s->drape->SetVisibility(on ? 1 : 0);
 	s->baseAxes.shown = on;
 	if (!on) { axesHideAll(s->baseAxes); s->surfShowBar = false; s->aquaLandShowBar = false; }
+	gizmoSyncVE(s);                       // same rule as rasterLayerSetVisible above
 }
 // The BY-PROP door onto the same two setters — Swipe/Link switch layers by actor pointer, and a
 // layer switch there is a layer switch like any other: its axes travel with it. A prop that is not
@@ -4169,6 +4367,14 @@ static void sceneGlobeSync(Scene *s);                   // below: put the WHOLE 
 
 static void rebuildAxisLabels(Scene *s) {
 	if (!s || !s->ren || !s->ren->GetActiveCamera()) return;
+	// THE VE HANDLE STATES THE ACTIVE LAYER'S OWN NUMBER, EVERY FRAME. Hooking the individual paths
+	// that change which grid is active was not enough: the visibility setters were covered, but
+	// SWAPPING grids -- the pile order (applyStacking), Swipe, Link, a derived layer being adopted, a
+	// session restoring one -- changes the ACTIVE layer without touching a visibility flag, and the
+	// handle went on showing the previous layer's VE. This runs inside the render's StartEvent, which
+	// every one of those paths ends in, and gizmoSyncVE returns at once when the number has not moved,
+	// so it costs nothing, cannot loop, and no future path can get it wrong either.
+	gizmoSyncVE(s);
 	// EVERY FRAME, while the globe is up: make sure everything in the scene is actually ON it. The
 	// alternative — each of the twenty-odd places that build an actor remembering to hook it — is the
 	// per-call-site fix this file's own SACRED_LAW notes warn about, and it had already failed once:
@@ -4224,67 +4430,69 @@ static void AxisLabelCB(vtkObject*, unsigned long, void *cd, void*) {
 	updateTitleZoom(s);                        // cheap: gated on the composed title really changing
 }
 
-// Apply vertical exaggeration. The actor carries the base scale (xfac aspect +
-// zfac unit conversion); the gizmo factor `ve` multiplies the Z. Cube-axis labels
-// stay TRUE because their ranges are pinned to the data ranges, not the bounds.
-// THE vertical normaliser. `ve` is dimensionless and measured against the picture (Scene::ve:
-// ve = 1 = the relief spans a tenth of the map's width), so the number that turns a z VALUE into
-// drawn height is simply
+// Apply vertical exaggeration. The actor carries the base scale (xfac aspect + zfac); the gizmo
+// factor `ve` multiplies the Z. Cube-axis labels stay TRUE because their ranges are pinned to the
+// data ranges, not the bounds.
 //
-//     zfac = kVEReference * horizontal span drawn / z span of the layer being looked at
+// THE VE IS CALCULATED UNIQUELY FROM THE PLOTTED / DISPLAYED DIMENSIONS (user's order, 2026-09-09).
 //
-// and the drawn z scale is `zfac * ve`. Nothing here knows or asks what z's unit is: a bathymetry
-// grid in metres, a gravity anomaly in mGal and a subsidence rate in mm/yr all open looking the
-// same and all keep VE in the same handful-around-1 range. THE ONE PLACE this is decided.
+// VE is a statement about the PICTURE and about nothing else:
 //
-// Both spans come from the ACTIVE layer, through the same resolvers the axes box, the colour bar
-// and the hover readout already share (activeGridZRange / axesForActive), so a change of layer
-// cannot leave the exaggeration describing a different layer than the numbers around it.
+//     ve = (the relief's DISPLAYED height) / (kVEReference x the map's DISPLAYED horizontal size)
+//
+// so ve = 1 means "this layer's relief stands a tenth of the map's own drawn width tall", ve = 2
+// twice that, ve = 0.5 half. Both quantities in that ratio are PLOT dimensions, measured in the
+// world units the scene is drawn in. Nothing in it is a distance on the ground, a unit of z, or a
+// ratio between the units of z and of x,y.
+//
+// The number that carries a z VALUE into that displayed height is `zfac`, and it is the plain axis
+// mapping every plot has -- the layer's own z axis range spread over the displayed height the VE
+// asks for -- exactly as GMT's -JZ maps a z range onto a z axis of so many centimetres:
+//
+//     zfac = kVEReference x (displayed horizontal size) / (this layer's own z range)
+//     drawn height of z   = z x zfac x ve
+//
+// FORBIDDEN, and each of these has been written here and torn back out:
+//   * A UNIT RECONCILIATION. `1/111111` -- metres of z turned into degrees of latitude -- is the
+//     ratio of the vertical unit to the horizontal one, and z's unit is unknowable anyway (metres,
+//     mGal, nT, mm/yr). Never again.
+//   * ANY VE VALUE COMPUTED FROM A GRID, whether it lands in `zfac` (the old two-branch auto-fit) or
+//     in `ve` (the `openingVE` I wrote and deleted the same hour). `ve` opens at the constant 1.
+//   * PER-LAYER SPANS FED THROUGH ONE WINDOW-WIDE NUMBER. `zfac` used to be asked about whichever
+//     layer was ACTIVE and then applied to every layer, so selecting or deriving a layer re-scaled
+//     and re-lit layers nobody had touched. EVERY layer is now mapped by ITS OWN range and drawn at
+//     ITS OWN ve (layerZScale / veOfOwner), so a grid's height depends on that grid alone.
 static AxesSet *axesForActive(Scene *s);               // 50_scene.cpp — the active raster's own frame
 
-// The reference look VE = 1 means: the relief spans a TENTH of the map's own horizontal size. The
-// only magic number in the whole scheme, and it is a picture-composition choice, not a unit.
+// VE = 1 draws a layer's relief this tall, as a fraction of the map's own DISPLAYED horizontal size.
+// The only number in the scheme, and it is a statement about the PICTURE.
 static const double kVEReference = 0.1;
-// …and the globe's own reference, for the same reason the flat one exists: on a sphere the picture
-// is not "a map with relief on it", it is a PLANET, and the horizontal size that matters is the
-// RADIUS, not the longitude span. Feeding the flat rule a global grid gives H = 360 degrees of
-// longitude, so ve = 1 came out as relief 36 world units tall on a radius of 57 — two thirds of the
-// planet, which is what made a global grid render as a bed of spikes. 2% of the radius reads as
-// real, exaggerated topography (Earth's true relief is 0.14%) and leaves the gizmo room both ways.
+// The globe's own, for the same reason: there the displayed horizontal size that matters is the
+// planet's RADIUS, not a longitude span. 2% of the radius reads as real, exaggerated topography
+// (Earth's true relief is 0.14%) instead of the bed of spikes 10% of a 360-degree span produced.
 static const double kVEReferenceGlobe = 0.02;
 
-static double sceneZRef(Scene *s) {
+static double sceneZRefFor(Scene *s, double zlo, double zhi) {
 	if (!s) return 1.0;
-	// An FV MESH is already in true coordinates (see Scene::fvTrueScale): its z is the SAME unit as its
-	// x and y, so there is nothing to normalise -- normalising it is what flattened a sphere into a
+	// An FV MESH is already in true coordinates (Scene::fvTrueScale): its z IS one of the displayed
+	// dimensions already, so there is nothing to map -- mapping it is what flattened a sphere into a
 	// cookie. GMTfv.zscale rides on top as Scene::ve, which is what view_fv promises.
 	if (s->fvTrueScale) return 1.0;
-	// THE WINDOW'S OWN Z SPAN, never the active layer's. `zfac` is the scale EVERY actor in the window
-	// is drawn with, so deriving it from whichever layer happens to be active makes one layer re-scale
-	// all the others — and, because a relief shade is computed on the geometry AS DRAWN, re-LIGHT them
-	// too. That is the reported bug verbatim: loading C:\v\sess.igmtz, "Okada z" comes in visible,
-	// becomes the active grid, and its centimetres of deformation replace layer0's kilometres of
-	// bathymetry as the reference span — so layer0, which nobody touched, changes illumination.
-	// A layer never decides how another layer is drawn (SACRED_LAW: no cross-layer interference).
-	//
-	// This is NOT the derived-variable axes law being undone. That law is about what the AXES SAY, and
-	// it still holds: surfGetBounds() keeps overriding the reported Z range with activeGridZRange(), so
-	// the cube, its tick labels, the colour bar and the readout all still describe the active layer in
-	// its own units. Only the geometric normaliser stops moving.
-	const double zspan = s->zmax - s->zmin;
-	if (s->globe)
-		return (zspan > 0.0 && std::isfinite(zspan)) ? kVEReferenceGlobe * s->globeR / zspan : 1.0;
-	// …and the HORIZONTAL span is the WINDOW's too, for exactly the same reason as the z span above.
-	// It used to be taken from axesForActive(), so a small layer becoming active (tejo10_geo.grd, 0.8
-	// degrees, against layer0.grd's many) shrank H and rescaled every actor in the window — measured on
-	// C:\v\sess.igmtz as zfac 1.21e-4 for layer0 alone against 7.62e-6 for the same layer0 inside the
-	// loaded session, a 16x re-exaggeration of a layer nobody touched, and with it a new illumination.
-	// Both halves of this ratio are now window constants: showing, hiding or adding a layer cannot
-	// change how any other layer is drawn or lit.
+	const double zspan = zhi - zlo;                    // the layer's own axis range (see the rule above)
+	if (s->globe) {
+		const double R = (s->globeR > 0.0 && std::isfinite(s->globeR)) ? s->globeR : 1.0;
+		return (zspan > 0.0 && std::isfinite(zspan)) ? kVEReferenceGlobe * R / zspan : 1.0;
+	}
+	// H -- THE DISPLAYED HORIZONTAL SIZE of the map, in the world units the picture is drawn in: the
+	// lon span times the aspect factor the x axis is actually drawn with, or the lat span, whichever is
+	// the larger. This is a PLOT dimension, not a distance on the ground.
 	const double H = std::max(std::fabs(s->x1 - s->x0) * s->xfac, std::fabs(s->y1 - s->y0));
 	if (!(zspan > 0.0) || !(H > 0.0) || !std::isfinite(zspan) || !std::isfinite(H)) return 1.0;
-	return kVEReference * H / zspan;                   // ve = 1 -> the reference look
+	return kVEReference * H / zspan;
 }
+
+// The BASE relief's own, which is what Scene::zfac caches.
+static double sceneZRef(Scene *s) { return s ? sceneZRefFor(s, s->zmin, s->zmax) : 1.0; }
 
 // Put the WHOLE scene on the globe, or take it all back off — the list is deliberately the SAME one
 // applyVE scales, and for the same reason: an actor that rides the vertical exaggeration is an actor
@@ -4339,29 +4547,44 @@ static void applyVE(Scene *s) {
 	sceneGlobeUpdateTransform(s);                 // radius/VE first: the attached filters read it
 	const bool   G  = s->globe;
 	const double kx = G ? 1.0 : s->xfac;
-	const double kz = G ? 1.0 : s->zfac * s->ve;
-	surfSetScale(s, kx, 1.0, kz);
-	if (s->drape) s->drape->SetScale(kx, 1.0, kz);  // overlay tracks the base
-	for (auto &ov : s->overlays)                                       // line/point overlays track the base too
-		if (ov.actor) ov.actor->SetScale(kx, 1.0, kz);
-	for (auto &cu : s->curtains)                                       // curtains hang in the same scaled space
-		if (cu.actor) cu.actor->SetScale(kx, 1.0, kz);
-	for (auto &ex : s->extras) {                                       // dropped grids/images track the base scale + VE
-		if (ex.actor) ex.actor->SetScale(kx, 1.0, kz);  // (flat image z=zpos is baked in geometry -> scale carries VE)
-		if (ex.drape) ex.drape->SetScale(kx, 1.0, kz);
+	// ONE scale for the MAP -- the base relief, its drape, and every map-space actor that belongs to no
+	// single grid (overlays, polygons, symbols, anchors, rulers, text) -- and then EACH dropped layer on
+	// ITS OWN, inside the extras loop below (s->zfac * ex.ve). That is the whole per-layer VE rule: a
+	// grid's exaggeration moves that grid and nothing else, and the shared map has a scale of its own
+	// that no grid can drag around. The normaliser (s->zfac, sceneZRefFor) is horizontal-derived, so no
+	// layer's data enters it either.
+	const double kzBase = G ? 1.0 : sceneZScale(s);
+	const double kzAct  = kzBase;             // same thing now, kept so the call sites below read plainly
+	surfSetScale(s, kx, 1.0, kzBase);
+	if (s->drape) s->drape->SetScale(kx, 1.0, kzBase);  // welded to the base surface
+	// EVERY map-space element on the VE OF THE LAYER IT BELONGS TO (its own veOwner, stamped when it was
+	// created from the grid then active). A contour set traced on a gravity anomaly rides that anomaly's
+	// exaggeration; a track drawn on the bathymetry rides the bathymetry's. Nothing here reads the
+	// ACTIVE layer, so selecting a layer moves nothing, and exaggerating one moves only what is ITS OWN.
+	for (auto &ov : s->overlays)
+		if (ov.actor) ov.actor->SetScale(kx, 1.0, G ? 1.0 : layerZScale(s, ov.veOwner));
+	for (auto &cu : s->curtains)
+		if (cu.actor) cu.actor->SetScale(kx, 1.0, G ? 1.0 : layerZScale(s, cu.veOwner));
+	for (auto &ex : s->extras) {                                       // each dropped grid/image at ITS OWN VE
+		// ITS OWN axis mapping times ITS OWN ve -- both this layer's, neither the window's.
+		const double kzEx = G ? 1.0 : sceneZRefFor(s, ex.zmin, ex.zmax) * ex.ve;
+		if (ex.actor) ex.actor->SetScale(kx, 1.0, kzEx);  // (flat image z=zpos is baked in geometry -> scale carries VE)
+		if (ex.drape) ex.drape->SetScale(kx, 1.0, kzEx);
 	}
-	if (s->profLine) s->profLine->SetScale(kx, 1.0, kz);  // profile drape tracks the base
-	if (s->rbHL)     s->rbHL->SetScale(kx, 1.0, kz);      // selection highlight tracks the cloud
-	for (auto &pg : s->polys) {                                            // user polygons hang in the scaled space
-		if (pg.line)        pg.line->SetScale(kx, 1.0, kz);
-		if (pg.fill)        pg.fill->SetScale(kx, 1.0, kz);          // filled face rides VE with its outline
-		if (pg.faultPlane)  pg.faultPlane->SetScale(kx, 1.0, kz);   // gray patch rides VE
-		if (pg.faultPlane3D) pg.faultPlane3D->SetScale(kx, 1.0, kz);// buried plane rides VE too
-		if (pg.faultArrows) pg.faultArrows->SetScale(kx, 1.0, kz);  // slip arrows ride VE with the plane
+	if (s->profLine) s->profLine->SetScale(kx, 1.0, kzAct);  // profile drape tracks the base
+	if (s->rbHL)     s->rbHL->SetScale(kx, 1.0, kzAct);      // selection highlight tracks the cloud
+	for (auto &pg : s->polys) {                                    // each polygon on ITS OWN layer's VE
+		const double kzPg = G ? 1.0 : layerZScale(s, pg.veOwner);
+		if (pg.line)        pg.line->SetScale(kx, 1.0, kzPg);
+		if (pg.fill)        pg.fill->SetScale(kx, 1.0, kzPg);          // filled face rides VE with its outline
+		if (pg.faultPlane)  pg.faultPlane->SetScale(kx, 1.0, kzPg);   // gray patch rides VE
+		if (pg.faultPlane3D) pg.faultPlane3D->SetScale(kx, 1.0, kzPg);// buried plane rides VE too
+		if (pg.faultArrows) pg.faultArrows->SetScale(kx, 1.0, kzPg);  // slip arrows ride VE with the plane
 	}
-	for (auto &mb : s->mecaBalls) {                                        // drag-anchor line + dot ride VE too
-		if (mb.anchor)    mb.anchor->SetScale(kx, 1.0, kz);
-		if (mb.anchorDot) mb.anchorDot->SetScale(kx, 1.0, kz);
+	for (auto &mb : s->mecaBalls) {                                // drag-anchor line + dot, same rule
+		const double kzMb = G ? 1.0 : layerZScale(s, mb.veOwner);
+		if (mb.anchor)    mb.anchor->SetScale(kx, 1.0, kzMb);
+		if (mb.anchorDot) mb.anchorDot->SetScale(kx, 1.0, kzMb);
 	}
 	// Text labels sit on the XY plane (pos[2] = 0) unless they annotate something at a real height —
 	// a contour label rides at its own contour's z, so it must follow VE like every other z-bearing
@@ -4387,15 +4610,16 @@ static void applyVE(Scene *s) {
 	// a map marker that must show regardless. That decision lives in applyStacking, so re-run it —
 	// once, after the whole loop — or the tilted view keeps drawing events through the surface.
 	if (kindChanged) applyVectorStacking(s);
-	if (s->polyPreview) s->polyPreview->SetScale(kx, 1.0, kz);  // in-progress draw preview
-	if (s->polyHandles) s->polyHandles->SetScale(kx, 1.0, kz);  // edit-mode vertex handles
+	if (s->polyPreview) s->polyPreview->SetScale(kx, 1.0, kzAct);  // in-progress draw preview
+	if (s->polyHandles) s->polyHandles->SetScale(kx, 1.0, kzAct);  // edit-mode vertex handles
 	for (auto &rr : s->rulers)                                   // every ruler track and the
-		if (rr.line) rr.line->SetScale(kx, 1.0, kz);            // draw gesture's radius
-	if (s->rulerCircle) s->rulerCircle->SetScale(kx, 1.0, kz);  // circle ride VE like the rest
+		if (rr.line) rr.line->SetScale(kx, 1.0, kzAct);            // draw gesture's radius
+	if (s->rulerCircle) s->rulerCircle->SetScale(kx, 1.0, kzAct);  // circle ride VE like the rest
 	// Every actor that just got this mode's scale also gets (or loses) this mode's GEOMETRY — one
 	// walk, same list, so the two halves of "what this view mode does to an element" can never be
 	// applied to different sets of actors.
 	sceneGlobeSync(s);
+	gizmoSyncVE(s);   // the VE handle states the ACTIVE layer's number, whoever just changed it
 	// EVERY raster's axes ride VE, each from its OWN frame — there is no window box to resize. The
 	// per-set work (box + degenerate-Z guard + gridline/Z-axis toggles + the billboards) is exactly
 	// what rebuildAxisLabels already does for all of them, so VE only has to re-point the cameras and
@@ -5032,7 +5256,7 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 	if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
 	if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
 	const double dirx = fr[0] - nr[0], diry = fr[1] - nr[1], dirz = fr[2] - nr[2];
-	const double zsc = s->zfac * s->ve;
+	const double zsc = sceneZScale(s);
 	const double gx  = (s->xfac != 0.0) ? s->xfac : 1.0;
 	// March against the ACTIVE (topmost-visible) grid so the readout tracks the grid actually shown.
 	const bool haveActive = (s->actZ && !s->actZ->empty()) || !s->gridZ.empty();
@@ -5147,7 +5371,10 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 	sceneWorldToGeo(s, w, rdX, rdY, rdZ);
 	if (onPlane) {
 		// Plane hit: z is the plane's OWN depth (undo the actor's z scale), not the surface elevation.
-		const double zsc = s->zfac * s->ve;
+		// A fault plane is map-space geometry, so it rides the MAP's scale (sceneZScale, the base
+		// relief's) — and that is therefore also the VE this readout must name. Printing the active
+		// layer's here stated a number that had not scaled the thing under the cursor.
+		const double zsc = sceneZScale(s);
 		s->win->statusBar()->showMessage(
 			QString("fault plane:  x = %1    y = %2    z = %3   (VE ×%4)")
 				.arg(rdX, 0, 'f', 3).arg(rdY, 0, 'f', 3)
@@ -5179,14 +5406,14 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 				zknown = !std::isnan(ztrue);   // NaN hole in the grid -> report z = NaN, never blank
 			}
 			else {
-				const double zsc = s->zfac * s->ve;
+				const double zsc = sceneZScale(s);
 				ztrue = (zsc != 0.0) ? w[2] / zsc : 0.0;
 			}
 			const QString zstr = zknown ? QString::number(ztrue, 'f', 3) : QStringLiteral("NaN");
 			s->win->statusBar()->showMessage(                  // true coords
 				QString("x = %1    y = %2    z = %3   (VE ×%4)")
 					.arg(truex, 0, 'f', 3).arg(truey, 0, 'f', 3)
-					.arg(zstr).arg(s->ve, 0, 'f', 2));
+					.arg(zstr).arg(activeVE(s), 0, 'f', 2));
 		}
 	} else {
 		s->win->statusBar()->showMessage("ready");
@@ -5220,7 +5447,10 @@ void sceneSetViewAzElSpan(Scene *s, double azDeg, double elDeg, double widthData
 	// which mode a window is in is the window's own business (an Aquamoto tank is put in 3-D when it
 	// opens, 75_aquamoto.cpp), and a camera setter that silently switched modes would be deciding
 	// that for every caller behind its back.
-	if (veOrNeg > 0.0 && veOrNeg != s->ve) { s->ve = veOrNeg; applyVE(s); }
+	if (veOrNeg > 0.0) {
+		double *vp = activeVEPtr(s);          // the ACTIVE layer's own ve, like every other VE control
+		if (vp && veOrNeg != *vp) { *vp = veOrNeg; applyVE(s); }
+	}
 	vtkCamera *cam = s->ren->GetActiveCamera();
 	if (!cam) return;
 	double b[6];
@@ -5229,7 +5459,7 @@ void sceneSetViewAzElSpan(Scene *s, double azDeg, double elDeg, double widthData
 	if (focusData) {
 		f[0] = focusData[0] * s->xfac;
 		f[1] = focusData[1];
-		f[2] = focusData[2] * s->zfac * s->ve;
+		f[2] = focusData[2] * sceneZScale(s);
 	}
 	const double a = vtkMath::RadiansFromDegrees(azDeg), e = vtkMath::RadiansFromDegrees(elDeg);
 	// Parallel projection: the distance sets no scale, only the clipping range, so it is simply kept

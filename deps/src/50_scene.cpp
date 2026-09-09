@@ -802,7 +802,7 @@ static void imageRebuildActor(Scene *s, ExtraObj &ex) {
 	vtkSmartPointer<vtkActor> a = vtkSmartPointer<vtkActor>::New();
 	a->SetMapper(map); a->SetTexture(ex.tex);
 	a->GetProperty()->LightingOff();          // a finished picture: full albedo, no shading
-	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);
+	a->SetScale(s->xfac, 1.0, s->zfac * ex.ve);   // THIS extra's own VE, not the window's
 	ex.actor = a;
 	s->ren->AddActor(a);
 }
@@ -1074,6 +1074,59 @@ static ActiveGrid resolveActiveGrid(Scene *s, bool requireVisible = true) {
 	return ag;
 }
 
+// THE ONE resolver for "whose vertical exaggeration is this?" -- a WRITABLE handle on the ACTIVE
+// layer's own `ve`, so the VE gizmo, the VE dialog and the session restore all edit exactly the number
+// the drawn scale reads back. Resolved through resolveActiveGrid with requireVisible=false, for the
+// same reason the colour bar uses that face: with every surface unticked there is no visible grid, and
+// the VE handle still belongs to the layer whose row is ticked. A change of active layer therefore
+// moves the controls onto that layer's own number with no call-site changes anywhere.
+// Base relief, point cloud, or nothing resolved -> Scene::ve, which IS the base layer's own number.
+// SACRED_LAW.md: every grid carries its own parameter set, and ONE code path resolves which set is meant.
+// THE ACTIVE layer's shade set, writable -- what every Shading-dock control edits. Same resolver, same
+// requireVisible=false face, same reasoning as activeVEPtr below: the dock belongs to the layer whose
+// row is ticked, so switching layer moves the whole dock onto that layer's own settings and nothing
+// the dock does can reach across into another grid (SACRED_LAW.md: each grid independent of any other).
+static LayerShade *activeLookPtr(Scene *s) {
+	if (!s) return nullptr;
+	const ActiveGrid ag = resolveActiveGrid(s);
+	if (ag.valid && ag.tag >= 0)
+		for (auto &ex : s->extras)
+			if (ex.tag == ag.tag) return &ex.look;
+	return &s->look;
+}
+
+static double *activeVEPtr(Scene *s) {
+	if (!s) return nullptr;
+	// requireVisible = TRUE: this number SCALES GEOMETRY. A layer nobody can see must never decide how
+	// the window is drawn: a hidden layer that still fed the drawn scale, while activeGridZRange
+	// (requireVisible=true) fed the range it multiplies, put the Z axis off the screen once already.
+	// The colour bar keeps its requireVisible=false face: a bar can legitimately belong to a layer whose
+	// Surface row is unticked. Geometry cannot.
+	const ActiveGrid ag = resolveActiveGrid(s);
+	if (ag.valid && ag.tag >= 0)
+		for (auto &ex : s->extras)
+			if (ex.tag == ag.tag) return &ex.ve;
+	return &s->ve;
+}
+
+// Read-only face of the same resolver -- forward-declared in 10_geometry.cpp, where sceneZScale (the
+// drawn z scale every map-space actor gets) needs it above this file in the include order.
+// THE OWNER TAG a map-space element created RIGHT NOW belongs to: the ACTIVE grid s tag, or
+// kAxesOwnerBase when no grid is active (a bare image window, an empty launcher). Stamped once, at
+// creation, into Overlay/Polygon/SymbolLayer/TextLabel/Curtain::veOwner -- so the thing is drawn
+// forever after at the exaggeration of the layer it was drawn ON, and no other layer s VE can move
+// it (SACRED_LAW.md: each grid its own parameters; nothing crosses).
+static int activeOwnerTag(Scene *s) {
+	if (!s) return kAxesOwnerBase;
+	const ActiveGrid ag = resolveActiveGrid(s);
+	return (ag.valid && ag.tag >= 0) ? ag.tag : kAxesOwnerBase;
+}
+
+static double activeVE(Scene *s) {
+	const double *p = activeVEPtr(s);
+	return (p && *p > 0.0) ? *p : 1.0;
+}
+
 // The z (data) range the AXES must annotate — forward-declared in 10_geometry.cpp, where
 // surfGetBounds needs it. SACRED_LAW.md derived-variable axes law: a NEW grid is a NEW quantity
 // with its OWN Z axis and units (a gravity anomaly in mGal computed over a bathymetry grid in m),
@@ -1343,6 +1396,12 @@ static void applyStacking(Scene *s) {
 		// showed the defect bare. The coplanar z-fight against the surface the line LIES on is broken by
 		// the offset ramp below exactly as it is for every other vector — the layer was never what did that.
 		const bool onBody  = (s && s->globe);
+		// IN 3-D, REAL GEOMETRY DECIDES for a vector that lives at a real height -- a solid3D body, a
+		// line CLAMPED to the relief, anything on a globe/cube. Confirmed by the user 2026-09-09 after I
+		// had briefly promoted every vector to the depth-cleared layer in 3-D as well: NO, not in 3-D.
+		// Flat-2-D is the exception and stays one: a top-down MAP shows every line whatever its depth.
+		// The rasters-below-vectors SORT above is absolute in both modes; this decides only which of
+		// the two -- render order or the depth buffer -- resolves occlusion once they are drawn.
 		const bool byDepth = solid3D || realZ || onBody;     // let real geometry decide, no bias ramp
 		const bool onTop = vec && (!byDepth || s->flat2d) && topRasterRank >= 0 && k > topRasterRank;
 		for (vtkActor *a : it[ord[k]].actors) {
@@ -3362,7 +3421,7 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	a->GetProperty()->SetPointSize(pointsize > 0.0 ? pointsize : 6.0);
 	if (mode == 0)
 		a->GetProperty()->SetRenderPointsAsSpheres(true);   // round points (toggle in the menu)
-	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);             // register with the surface
+	a->SetScale(s->xfac, 1.0, layerZScale(s, activeOwnerTag(s)));  // the layer it is drawn ON
 
 	s->ren->AddActor(a);
 	Overlay ov{ a, mode };
@@ -3422,6 +3481,7 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	}
 	ov.cptColorable = cptColorable;
 	ov.stack = s->vecSeq++;                    // new overlay lands on top of the shared vector pile
+	ov.veOwner = activeOwnerTag(s);   // the grid it was drawn on -- its VE, nobody else s
 	s->overlays.push_back(ov);
 	if (!ov.gapAnchors.empty()) overlayRebuildGapCells(s, s->overlays.back());   // cut the label holes
 	applyVectorStacking(s);                   // normalize ranks + set this overlay's draw-order offset
@@ -3480,6 +3540,7 @@ static int addTextsBatch(Scene *s, const double *xy, const char *texts, int n,
 			else         tl.actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
 			textApplyProps(s, tl);
 			(s->axesRen ? s->axesRen : s->ren)->AddActor(tl.actor);
+			tl.veOwner = activeOwnerTag(s);
 			s->texts.push_back(tl);
 			++added;
 		}
@@ -3696,7 +3757,7 @@ static void symbolRescaleCB(vtkObject*, unsigned long, void *clientData, void*) 
 		}
 		else continue;
 		if (sl.solid3D && sl.zfix) {           // cancel the actor's (1,1,zfac*ve) Z-squash, see SymbolLayer
-			const double zc = s->zfac * s->ve;
+			const double zc = sceneZScale(s);
 			const double zInv = (std::fabs(zc) > 1e-12) ? (1.0 / zc) : 0.0;   // ve==0 (flat) -> degenerate, harmless
 			sl.zfix->Identity();
 			sl.zfix->Scale(1.0, 1.0, zInv);
@@ -3930,7 +3991,7 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
 	// caller: a window already in flat 2-D (every base map) must get the flat counterpart right away,
 	// exactly as symbolApplyZ lands the layer flattened rather than waiting for a toggle.
 	symbolSetPipeline(s, sl, in, sl.wantSolid && !(s && s->flat2d));
-	a->SetScale(1.0, 1.0, symbolZScale(s));            // ride VE, flat in 2-D; x already baked
+	a->SetScale(1.0, 1.0, symbolZScale(s, sl.veOwner));            // ride VE, flat in 2-D; x already baked
 	sl.oneShot = oneShot;                // Symbols draw tool: exactly one point, whole-layer drag applies
 	// Remember WHERE each point was PLOTTED, so any view mode can put it back without ever touching the
 	// glyph's colour, lighting or size (symbolApplyZ). zOrig is the plotted depth (flat-2D writes 0 and
@@ -3961,6 +4022,7 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
 		if ((int)recs.size() == npts)
 			sl.info = std::move(recs);
 	}
+	sl.veOwner = activeOwnerTag(s);
 	s->symbols.push_back(sl);
 	// Z scale + the shading that goes with it, from the ONE place that decides both (symbolApplyZ,
 	// 10_geometry.cpp). Done here as well as in applyVE because a layer created while the window is
@@ -4601,10 +4663,11 @@ static void addCurtain(Scene *s, const double *px, const double *py, const doubl
 	a->SetMapper(map);
 	a->SetTexture(tex);
 	a->GetProperty()->LightingOff();          // unlit = the emissive curtain look (true image colour)
-	a->SetScale(s->xfac, 1.0, s->zfac * s->ve);   // hang in the surface's scaled space
+	a->SetScale(s->xfac, 1.0, layerZScale(s, activeOwnerTag(s)));  // the layer it hangs from
 
 	s->ren->AddActor(a);
 	Curtain cu{ a, "Curtain " + std::to_string((int)s->curtains.size() + 1) };
+	cu.veOwner = activeOwnerTag(s);
 	s->curtains.push_back(cu);
 	rebuildSceneObjects(s);                   // refresh the Scene Objects checkbox list
 	if (s->widget && s->widget->renderWindow())

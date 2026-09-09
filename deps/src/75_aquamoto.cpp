@@ -1215,7 +1215,7 @@ public:
 		put(cineAzEdit, az, 4);
 		put(cineElEdit, el, 3);
 		put(cineZoomEdit, wd, 6);
-		put(cineVeEdit, scene_->ve, 3);
+		put(cineVeEdit, activeVE(scene_), 3);   // the ACTIVE layer's own, like every other VE control
 	}
 
 	void cinemaResetView() {

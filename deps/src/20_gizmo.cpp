@@ -178,9 +178,12 @@ void updateVCone(Gizmo &c) {
 	c.vconeSrc->SetDirection(0.0, 0.0, 1.0);
 	c.vconeSrc->SetCenter(0.0, 0.0, kBodyZ + 0.5 * h); // base fixed at shaft top
 }
+// The number shown is THE ACTIVE LAYER'S, read live -- never a remembered one. With every grid carrying
+// its own ve, a label fed from the gizmo's last drag reads 1.00 over a layer standing at 1000.
 void updateLabel(Gizmo &c) {
 	if (!c.label) return;
-	char buf[64]; std::snprintf(buf, sizeof(buf), "z x %.2f", c.curSz);
+	const double ve = c.s ? activeVE(c.s) : c.curSz;
+	char buf[64]; std::snprintf(buf, sizeof(buf), "z x %.2f", ve);
 	c.label->SetInput(buf);
 }
 
@@ -455,7 +458,9 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 			// centre is chosen.
 			c->grab = c->s->flat2d ? Grab::None : hitTest(*c, ren, x, y);
 			if (c->veOnly && c->grab != Grab::VScale && c->grab != Grab::Profile) c->grab = Grab::None;
-			if (c->grab == Grab::VScale) { c->startY = y; c->startSz = c->curSz; }
+			if (c->grab == Grab::VScale) {              // re-seed from the ACTIVE layer: it may have changed
+				c->startY = y; c->curSz = activeVE(c->s); c->startSz = c->curSz;
+			}
 			else if (c->grab == Grab::None) {     // gizmo miss: try an overlay, else rotate/tilt
 				vtkActor *sym = pickSymbolAt(c->s, x, y);   // symbols sit on top -> first
 				int ovMode = 1;
@@ -485,9 +490,20 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 			// relief spans, whatever z's unit is. Every window opens at 0.1, so the useful range is
 			// the same for every dataset — the old ceiling of 1e4 existed only because a "VE 1 =
 			// true 1:1" rule sent grids whose z was not metres into the thousands.
-			sz = std::clamp(sz, 1.0e-4, 1.0e2);
+			// The ONLY reason a bound exists is arithmetic: a scale of 0 collapses the geometry and an
+			// unbounded one overflows the actor matrix. It is NOT a limit on how tall a layer may be
+			// drawn. The old 1e2 ceiling was left over from the "VE 1 = true 1:1 metres" era, when a
+			// grid whose z was not metres needed thousands to show anything; since each layer is
+			// normalised by ITS OWN z span (sceneZRefFor), every dataset works in the same handful
+			// around 1 and a ceiling that low could only ever get in the way.
+			sz = std::clamp(sz, 1.0e-6, 1.0e6);
 			c->curSz = sz; updateVCone(*c); updateLabel(*c);
-			c->s->ve = sz; applyVE(c->s);   // drives Scene::ve + cube-axes sync + render
+			// THE ACTIVE LAYER'S own exaggeration -- resolved by activeVEPtr (50_scene.cpp), the same
+			// resolver the readout, the colour bar and the Z axis use. Dragging the handle over a
+			// window holding a bathymetry grid and a gravity anomaly stretches ONLY the one being
+			// looked at (SACRED_LAW.md: each grid its own parameters).
+			if (double *vp = activeVEPtr(c->s)) *vp = sz;
+			applyVE(c->s);                  // cube-axes sync + render
 			handled = true;
 		}
 		else if (c->grab == Grab::Profile) {
@@ -908,8 +924,8 @@ void disableGizmo(Scene *s) {
 Gizmo *enableGizmo(Scene *s, double sensitivity) {
 	Gizmo *c = new Gizmo();
 	c->s = s;
-	c->curSz = s->ve;                 // reflect the initial exaggeration on the cone/label
-	c->veBase = (s->ve > 0.0) ? s->ve : 1.0;   // baseline so the cone starts at default size regardless of auto-VE
+	c->curSz = activeVE(s);           // reflect the ACTIVE layer's exaggeration on the cone/label
+	c->veBase = c->curSz;             // baseline so the cone starts at default size regardless of auto-VE
 	c->sensitivity = (sensitivity > 0.0) ? sensitivity : 0.01;
 
 	vtkRenderer *ren = s->ren;
@@ -959,6 +975,29 @@ Gizmo *enableGizmo(Scene *s, double sensitivity) {
 }
 
 } // namespace (gizmo)
+
+// Bring the handle back in step with whatever the window is now showing: a different layer became
+// active, the VE dialog wrote a number, a session restored one. Called from applyVE, so every path
+// that changes an exaggeration refreshes the handle through this ONE function and none of them has
+// to remember to (SACRED_LAW.md: same operation, same function). Lives OUTSIDE the anonymous
+// namespace above because applyVE (10_geometry.cpp) calls it by its global declaration.
+// THE NUMBER THE VE HANDLE IS CURRENTLY SHOWING (its label reads "z x <this>"), or 0 when there
+// is no handle. Exposed for gmtvtk_scene_state so the regression suite can assert what the user
+// actually sees instead of a screenshot -- the handle sitting on a stale layer's VE was a real bug.
+double gizmoShownVE(Scene *s) { return (s && s->giz) ? s->giz->curSz : 0.0; }
+
+void gizmoSyncVE(Scene *s) {
+	if (!s || !s->giz) return;
+	Gizmo &c = *s->giz;
+	const double v = activeVE(s);
+	// NOTHING TO DO WHEN NOTHING CHANGED -- and that guard is what lets this be called from the
+	// per-render path (rebuildAxisLabels): touching the label or the cone source Modified()s them,
+	// which inside a render would ask for another render forever.
+	if (v == c.curSz) return;
+	c.curSz = v;
+	updateVCone(c);
+	updateLabel(c);
+}
 
 // One shared QApplication for the whole process (created lazily). The viewer is
 // NON-BLOCKING: buildAndShow creates and shows a window then returns; the host
