@@ -14879,7 +14879,7 @@ public:
 	QDialog *dlg = nullptr;
 	Scene *scn = nullptr;
 	QComboBox *collCb = nullptr, *dsetCb = nullptr, *resCb = nullptr, *regCb = nullptr;
-	QLineEdit *codeEdit = nullptr, *roundEdit = nullptr, *nameEdit = nullptr;
+	QLineEdit *codeEdit = nullptr, *roundEdit = nullptr;
 	QLineEdit *xmin = nullptr, *xmax = nullptr, *ymin = nullptr, *ymax = nullptr;
 	QCheckBox *exactChk = nullptr, *countryChk = nullptr;
 	QWidget *rasterBox = nullptr;
@@ -14929,7 +14929,6 @@ public:
 		regCb     = d->findChild<QComboBox *>("cb_registration");
 		codeEdit  = d->findChild<QLineEdit *>("edit_code");
 		roundEdit = d->findChild<QLineEdit *>("edit_round");
-		nameEdit  = d->findChild<QLineEdit *>("edit_name");
 		xmin = d->findChild<QLineEdit *>("edit_xmin");  xmax = d->findChild<QLineEdit *>("edit_xmax");
 		ymin = d->findChild<QLineEdit *>("edit_ymin");  ymax = d->findChild<QLineEdit *>("edit_ymax");
 		exactChk   = d->findChild<QCheckBox *>("chk_exact");
@@ -14992,6 +14991,20 @@ public:
 		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
 		if (auto *b = d->findChild<QPushButton *>("push_list"))    QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runList(d); });
 		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_plot"))    QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runPlot(d); });
+		// THE TUTORIAL, in the browser: this tool's own page of the iGMT manual (docs/src/
+		// 71-earthregions.md), which walks through the collections, the listing, the plot and the
+		// datasets with figures. Not the green ? disk below — that one opens a GMT *module* page on
+		// GMT.jl's site, a different manual with a per-module URL, and `coast` has nothing to say
+		// about this dialog. Same plain openUrl the Help menu's "InteractiveGMT Manual" uses, so it
+		// keeps working when the Julia bridge is not up.
+		if (auto *b = d->findChild<QPushButton *>("push_tutorial"))
+			QObject::connect(b, &QPushButton::clicked, d, [d]() {
+				const QUrl u("https://www.generic-mapping-tools.org/InteractiveGMT/dev/71-earthregions/");
+				if (!QDesktopServices::openUrl(u))
+					QMessageBox::warning(d, "Earth regions",
+						QString("Could not open a browser for\n\n%1").arg(u.toString()));
+			});
 		// No Close button: the title bar's X closes, and the minimise beside it parks. Get is the
 		// only button on that row, where Close used to sit.
 		addManualButton(d, "coast");               // the green ? disk: earthregions lives on coast's page
@@ -15037,6 +15050,113 @@ public:
 			alive->raise();
 			alive->activateWindow();
 		});
+		fitListingWidth(*popup, text);
+	}
+
+	// A listing is a fixed-width TABLE (Code, Region, West, East, South, North), and showInfoText
+	// opens every popup at its own generic 580px — narrower than a row, so the last columns sit
+	// behind the horizontal scrollbar and the table reads as truncated. Widen the popup THIS
+	// dialog was handed to the text THIS dialog asked for; showInfoText itself is untouched, since
+	// its other callers show prose, not columns.
+	static void fitListingWidth(QDialog *popup, const QString &text) {
+		if (!popup) return;
+		auto *te = popup->findChild<QPlainTextEdit *>();
+		if (!te) return;
+		int cols = 0;
+		for (const QString &ln : text.split('\n')) cols = std::max(cols, int(ln.size()));
+		if (cols <= 0) return;
+		// Monospace (showInfoText sets Consolas), so one '0' advance IS one column. +2 for the
+		// caret column and a breath of right margin; the rest is the frame, the layout margins and
+		// the vertical scrollbar a 255-row listing always has.
+		const QFontMetrics fm(te->font());
+		int w = fm.horizontalAdvance(QString(cols + 2, QLatin1Char('0')))
+		      + 2 * te->frameWidth()
+		      + te->verticalScrollBar()->sizeHint().width();
+		if (auto *lay = popup->layout()) {
+			const QMargins m = lay->contentsMargins();
+			w += m.left() + m.right();
+		}
+		const QRect avail = popup->screen() ? popup->screen()->availableGeometry()
+		                                    : QRect(0, 0, 1280, 900);
+		popup->resize(std::min(std::max(w, popup->width()), int(avail.width() * 0.9)),
+		              popup->height());
+	}
+
+	// The map `earthregions` draws for a region, handed back by Julia as a PNG on disk
+	// (gmtvtk_earthregions_set_plot). A FIGURE, not a layer: it opens in its own window and nothing
+	// about this scene changes — no axes, no re-frame, no Scene Objects row. The pixmap is scaled to
+	// the screen's DEVICE pixels and stamped with its ratio, so the plot is as sharp as GMT drew it
+	// (the same dpr rule as the fault demo's reference figure, 68_faultdemo.cpp).
+	void showPlot(const QString &title, const QString &path, const QString &script) {
+		QPixmap pm(path);
+		if (pm.isNull()) {
+			QMessageBox::warning(dlg, "Earth regions", "The plot came back but could not be read:\n" + path);
+			return;
+		}
+		auto *w = new QDialog(dlg);
+		w->setAttribute(Qt::WA_DeleteOnClose);
+		w->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		w->setWindowTitle(title);
+		auto *lay = new QVBoxLayout(w);
+		lay->setContentsMargins(4, 4, 4, 4);
+		auto *area = new QScrollArea(w);
+		area->setWidgetResizable(false);
+		auto *lb = new QLabel(area);
+		const double r = w->devicePixelRatioF() > 0 ? w->devicePixelRatioF() : 1.0;
+		// The PNG is already at GMT's own resolution: it is only ever scaled DOWN, to fit a screen
+		// that is smaller than the figure, and never blown up past 1:1.
+		const QSize screen = w->screen() ? (w->screen()->availableGeometry().size() * 0.9) : QSize(900, 700);
+		QPixmap shown = pm;
+		if (pm.width() > screen.width()*r || pm.height() > screen.height()*r)
+			shown = pm.scaled(QSize(int(screen.width()*r), int(screen.height()*r)),
+			                  Qt::KeepAspectRatio, Qt::SmoothTransformation);
+		shown.setDevicePixelRatio(r);
+		lb->setPixmap(shown);
+		lb->resize(shown.deviceIndependentSize().toSize());
+		area->setWidget(lb);
+		lay->addWidget(area, 1);
+
+		// SAVE IT, and SEE HOW IT WAS MADE. The figure is a temporary file this window happens to be
+		// showing; without these two it can only be looked at. "Save…" copies the very bytes GMT
+		// wrote — no re-encoding through Qt, so the saved file IS the figure — and "GMT command"
+		// opens the GMT.jl that produced it in the shared read-only text popup, ready to be copied
+		// into a REPL and taken further than this dialog can go.
+		auto *row = new QHBoxLayout();
+		row->setContentsMargins(0, 0, 0, 0);
+		auto *bCmd = new QPushButton("GMT command", w);
+		bCmd->setAutoDefault(false);  bCmd->setDefault(false);
+		bCmd->setEnabled(!script.isEmpty());
+		bCmd->setToolTip("The GMT.jl call that drew this figure");
+		auto *bSave = new QPushButton("Save…", w);
+		bSave->setAutoDefault(false);  bSave->setDefault(false);
+		bSave->setToolTip("Write this figure to a file of your own");
+		row->addWidget(bCmd);
+		row->addStretch(1);
+		row->addWidget(bSave);
+		lay->addLayout(row);
+		QObject::connect(bCmd, &QPushButton::clicked, w, [w, title, script]() {
+			showInfoText(w, title + " — GMT command", script);
+		});
+		QObject::connect(bSave, &QPushButton::clicked, w, [w, path, title]() {
+			// Suggested name from the region's own title ("Earth regions — PT" -> "PT.png"), since a
+			// tempname() is no name at all.
+			QString stem = title.section(QString::fromUtf8("\xE2\x80\x94"), -1).trimmed();
+			stem.replace(QRegularExpression("[^A-Za-z0-9_.-]+"), "_");
+			if (stem.isEmpty()) stem = "region";
+			const QString out = QFileDialog::getSaveFileName(w, "Save the figure",
+				QDir(prefStartDir()).filePath(stem + ".png"), "PNG image (*.png);;All files (*)");
+			if (out.isEmpty()) return;
+			if (QFile::exists(out) && !QFile::remove(out)) {          // getSaveFileName already asked
+				QMessageBox::warning(w, "Earth regions", "Could not overwrite:\n" + out);
+				return;
+			}
+			if (!QFile::copy(path, out))
+				QMessageBox::warning(w, "Earth regions", "Could not write:\n" + out);
+		});
+
+		w->resize(lb->width() + 24, lb->height() + 64);
+		w->show();
+		w->raise();
 	}
 
 	// MINIMISE parks the dialog as a Scene Objects handle — the same shared parkTool/unparkTool pair
@@ -15109,36 +15229,70 @@ public:
 		g_juliaEarthRegions(scn, this, kv.join("\n").toUtf8().constData());
 	}
 
-	void runCompute(QDialog *d) {
-		if (!g_juliaEarthRegions) {
-			QMessageBox::warning(d, "Earth regions", "Earth regions: callback not registered (rebuild/restart needed?).");
-			return;
-		}
-		auto txt = [](QLineEdit *e) { return e ? e->text().trimmed() : QString(); };
-		// The Region block, when filled, IS the region — the code box is then not consulted at all.
-		// All four or none: three numbers is not a box, and the one missing side would be guessed.
+	QString txt(QLineEdit *e) const { return e ? e->text().trimmed() : QString(); }
+
+	// WHICH REGION was asked for — the one question both buttons have to answer, so they ask it the
+	// same way and refuse the same half-filled requests. The Region block, when filled, IS the
+	// region and the code box is then not consulted at all; all four or none, because three numbers
+	// is not a box and the missing side would have to be guessed. Returns false (having said why)
+	// when there is nothing to act on.
+	bool collectRegion(QDialog *d, QString &region) {
 		const int nReg = (!txt(xmin).isEmpty()) + (!txt(xmax).isEmpty()) +
 		                 (!txt(ymin).isEmpty()) + (!txt(ymax).isEmpty());
 		if (nReg != 0 && nReg != 4) {
 			QMessageBox::warning(d, "Earth regions", "Give all four Region boxes, or leave them all "
 			                                         "empty and use a region code.");
-			return;
+			return false;
 		}
-		const QString region = (nReg == 4)
-			? txt(xmin) + "/" + txt(xmax) + "/" + txt(ymin) + "/" + txt(ymax) : QString();
+		region = (nReg == 4) ? txt(xmin) + "/" + txt(xmax) + "/" + txt(ymin) + "/" + txt(ymax) : QString();
 		if (region.isEmpty() && txt(codeEdit).isEmpty()) {
 			QMessageBox::warning(d, "Earth regions",
 			                     "Give the code of the region, or fill the Region boxes. \"List its "
 			                     "regions\" writes the codes of the chosen collection to this window's "
 			                     "message pane.");
+			return false;
+		}
+		return true;
+	}
+
+	// The region as a PICTURE: `earthregions`'s own map branch (a filled `coast` over the region it
+	// resolves), rendered to a PNG and shown in a window of its own. It is not a layer and never
+	// becomes one — nothing is downloaded, nothing is added to the scene — which is why it sits by
+	// the region block and not in "Dataset to bring back", and why it ignores the dataset boxes.
+	void runPlot(QDialog *d) {
+		if (!g_juliaEarthRegions) {
+			QMessageBox::warning(d, "Earth regions", "Earth regions: callback not registered (rebuild/restart needed?).");
 			return;
 		}
+		QString region;
+		if (!collectRegion(d, region)) return;
+		QStringList kv;
+		kv << "mode=plot";
+		if (!region.isEmpty()) kv << "region=" + region;
+		kv << "code=" + txt(codeEdit);
+		if (!txt(roundEdit).isEmpty()) kv << "round=" + txt(roundEdit);
+		kv << QString("exact=%1").arg(exactChk && exactChk->isChecked() ? 1 : 0);
+		kv << QString("country=%1").arg(countryChk && countryChk->isChecked() ? 1 : 0);
+
+		showBusyDialog("Drawing the map…");
+		const int ok = g_juliaEarthRegions(scn, this, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "Earth regions",
+		                              "The plot failed — see this window's Errors console for details.");
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaEarthRegions) {
+			QMessageBox::warning(d, "Earth regions", "Earth regions: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		QString region;
+		if (!collectRegion(d, region)) return;
 		QStringList kv;
 		kv << "mode=raster";
 		if (!region.isEmpty()) kv << "region=" + region;
 		kv << "code=" + txt(codeEdit);
 		if (!txt(roundEdit).isEmpty()) kv << "round=" + txt(roundEdit);
-		if (!txt(nameEdit).isEmpty())  kv << "name=" + txt(nameEdit);
 		kv << QString("exact=%1").arg(exactChk && exactChk->isChecked() ? 1 : 0);
 		kv << QString("country=%1").arg(countryChk && countryChk->isChecked() ? 1 : 0);
 		kv << "dataset=" + (dsetCb ? dsetCb->currentText() : QString("earth_relief"));
@@ -26627,8 +26781,59 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	errOut->setMaximumBlockCount(2000);
 	errOut->setFont(QFont("Consolas", 10));
 	errOut->setPlaceholderText("Execution errors from menu actions / background callbacks appear here.");
+	// CLEAR, on the log's own right-click menu. Read-only, that menu carries just Copy and Select
+	// All, so a pane that only ever grows is one you eventually stop reading. The action is appended
+	// to the STANDARD menu rather than replacing it with a private one, and it also puts the status
+	// bubble's red dot out: an empty log has nothing unread in it.
+	errOut->setContextMenuPolicy(Qt::CustomContextMenu);
+	QObject::connect(errOut, &QWidget::customContextMenuRequested, errOut, [s, errOut](const QPoint &p) {
+		QMenu *m = errOut->createStandardContextMenu();
+		m->addSeparator();
+		QAction *clr = m->addAction("Clear messages");
+		clr->setEnabled(!errOut->document()->isEmpty());
+		QObject::connect(clr, &QAction::triggered, errOut, [s, errOut]() {
+			errOut->clear();
+			sceneMessagesUnread(s, false);
+		});
+		m->setAttribute(Qt::WA_DeleteOnClose);
+		m->popup(errOut->mapToGlobal(p));
+	});
 	QDockWidget *msgDock = new QDockWidget("Messages", win);
 	msgDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
+	// …and the same Clear as a BUTTON, IN THE TITLE BAR. A row of its own over the log cost a strip of
+	// height on every line the log will ever show, for one button; the title bar is already there and
+	// has nothing in it but the word "Messages". Same shape as the Panels dock's custom title bar
+	// (below): flat auto-raise tool buttons beside the label. Both this and the right-click entry call
+	// the same two lines — one clear, one implementation.
+	//
+	// A custom title bar REPLACES the dock's own, close button included, so that one is rebuilt here:
+	// without it a floating Messages window would have no way back but the status-corner bubble.
+	QWidget *msgTitle = new QWidget(msgDock);
+	QHBoxLayout *msgTitleLay = new QHBoxLayout(msgTitle);
+	msgTitleLay->setContentsMargins(6, 2, 4, 2);
+	msgTitleLay->setSpacing(4);
+	msgTitleLay->addWidget(new QLabel("Messages", msgTitle));
+	msgTitleLay->addStretch(1);
+	QToolButton *msgClear = new QToolButton(msgTitle);
+	msgClear->setText("Clear");
+	msgClear->setAutoRaise(true);
+	msgClear->setCursor(Qt::PointingHandCursor);
+	msgClear->setFocusPolicy(Qt::NoFocus);
+	msgClear->setToolTip("Empty this log");
+	msgTitleLay->addWidget(msgClear);
+	QToolButton *msgClose = new QToolButton(msgTitle);
+	msgClose->setText(QString::fromUtf8("\xE2\x9C\x95"));      // ✕
+	msgClose->setAutoRaise(true);
+	msgClose->setCursor(Qt::PointingHandCursor);
+	msgClose->setFocusPolicy(Qt::NoFocus);
+	msgClose->setToolTip("Close the Messages window");
+	msgTitleLay->addWidget(msgClose);
+	msgDock->setTitleBarWidget(msgTitle);
+	QObject::connect(msgClear, &QToolButton::clicked, msgTitle, [s, errOut]() {
+		errOut->clear();
+		sceneMessagesUnread(s, false);
+	});
+	QObject::connect(msgClose, &QToolButton::clicked, msgDock, [msgDock]() { msgDock->hide(); });
 	msgDock->setWidget(errOut);
 	win->addDockWidget(Qt::BottomDockWidgetArea, msgDock);
 	installDockGeometryMemory(win, msgDock, "messagesDock");    // same undock/re-dock memory as every other dock

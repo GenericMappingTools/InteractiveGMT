@@ -54,7 +54,13 @@ function _viewer_log_error(scene::Ptr{Cvoid}, msg::AbstractString)
 	# Loud the instant it happens for a user; under the test suite the verdict testsets print every
 	# unclaimed one at the end instead, so a run does not bury the terminal in expected refusals.
 	_TEST_MODE[] ? (@debug msg) : (@error msg)
-	_viewer_log_info(scene, msg)   # ...and so does the window that was asked to do the work
+	# ...and so does the window that was asked to do the work. gmtvtk_log_error, NOT the info twin:
+	# the two write the same line into the same log, and what separates them is the RED DOT on the
+	# status corner's bubble. A failure raises it; a notice does not.
+	try
+		ccall(_fn(:gmtvtk_log_error), Cvoid, (Ptr{Cvoid}, Cstring), scene, String(msg))
+	catch
+	end
 	return
 end
 
@@ -63,10 +69,12 @@ end
 # nothing was downloaded". They travelled through _viewer_log_error only because it was the only way
 # to put a line in that console — and the day the failures started being RECORDED, every one of these
 # notices became a phantom error in the sink (`earthregions` reporting success and "logging an error"
-# was the first one to trip `_errored`). Display is shared, intent is not: this one does not record.
+# was the first one to trip `_errored`). Display is shared, intent is not: this one does not record,
+# and on the C side it goes to gmtvtk_log_info, which writes the line WITHOUT lighting the status
+# corner's red dot — a dot raised by "nothing was downloaded" is a dot nobody reads twice.
 function _viewer_log_info(scene::Ptr{Cvoid}, msg::AbstractString)
 	try
-		ccall(_fn(:gmtvtk_log_error), Cvoid, (Ptr{Cvoid}, Cstring), scene, String(msg))
+		ccall(_fn(:gmtvtk_log_info), Cvoid, (Ptr{Cvoid}, Cstring), scene, String(msg))
 	catch
 	end
 	return

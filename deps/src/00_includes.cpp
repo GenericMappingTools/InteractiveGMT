@@ -38,6 +38,7 @@
 #include <QMouseEvent>
 #include <QDockWidget>
 #include <QWidget>
+#include <QScrollArea>
 #include <QFormLayout>
 #include <QVBoxLayout>
 #include <QHBoxLayout>

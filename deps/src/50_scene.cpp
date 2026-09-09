@@ -70,14 +70,18 @@ static void sceneMessagesUnread(Scene *s, bool on);   // 70_window.cpp — statu
 // Append one execution-error line to a window's read-only message log (so a failure in a background
 // op is VISIBLE in the window, not just on the REPL's stderr). Shared by the gmtvtk_log_error export
 // and the fire-and-forget g_juliaEval callers below. Best-effort / no-throw.
-static void sceneLogError(Scene *s, const QString &msg) {
+// `isError` is what the RED DOT means. This one console carries both failures and plain notices
+// ("Saved session -> …", "already in this window; nothing was downloaded"), and a dot raised by a
+// notice says nothing: the user opens the window, finds a success message, and learns to ignore the
+// next dot. Notices are written and left to be found; only a failure flags the bubble.
+static void sceneLogError(Scene *s, const QString &msg, bool isError = true) {
 	if (!s || !sceneAlive(s) || !s->errConsole) return;
 	s->errConsole->appendPlainText(QString("[%1]  %2")
 		.arg(QTime::currentTime().toString("HH:mm:ss")).arg(msg));
 	// The log lives in its own "Messages" dock (was the Panels > Errors tab): raise it if the user
 	// already has it open, else flag the status corner's bubble so the new line isn't lost.
 	if (s->msgDock && s->msgDock->isVisible()) s->msgDock->raise();
-	else                                       sceneMessagesUnread(s, true);
+	else if (isError)                          sceneMessagesUnread(s, true);
 }
 
 // Hand a colormap NAME back to the Julia host, which recomputes CPT nodes over the surface's data

@@ -1615,6 +1615,15 @@ GMTVTK_API void gmtvtk_log_error(void *scene, const char *msg) {
 	if (msg) sceneLogError(static_cast<Scene*>(scene), QString::fromUtf8(msg));
 }
 
+// The SAME line in the SAME log, for a message that is NOT a failure — the counterpart of Julia's
+// `_viewer_log_info` (console.jl), which is where the notices come from: "Saved session -> …",
+// "Pasted 412 points", "already in this window; nothing was downloaded". Written and left to be
+// found: it does NOT raise the status corner's red dot, which is reserved for things that went
+// wrong. Everything else about it is gmtvtk_log_error.
+GMTVTK_API void gmtvtk_log_info(void *scene, const char *msg) {
+	if (msg) sceneLogError(static_cast<Scene*>(scene), QString::fromUtf8(msg), false);
+}
+
 // Modal error box — for host failures the user MUST see. sceneLogError alone silently drops the
 // message when the window has no Errors console (the bare empty launcher), and even with one the
 // bottom tabs may be folded — "it failed but the reason was written somewhere invisible" reads as
@@ -2543,6 +2552,17 @@ GMTVTK_API void gmtvtk_earthregions_set_region(void *dlg, double w, double e, do
 	auto *d = static_cast<EarthRegionsDialog *>(dlg);
 	if (!d || !d->dlg) return;
 	d->fillRegion(w, e, s, n);
+}
+
+// Julia hands the Earth regions dialog the PNG of the map it was asked to draw ("Plot it"). The file
+// is GMT's own output, written to a temporary path by the Julia side; it is READ here and shown in a
+// window of its own. Nothing about the scene changes — a figure is not a layer.
+GMTVTK_API void gmtvtk_earthregions_set_plot(void *dlg, const char *title, const char *path,
+                                             const char *script) {
+	auto *d = static_cast<EarthRegionsDialog *>(dlg);
+	if (!d || !d->dlg || !path) return;
+	d->showPlot(QString::fromUtf8(title ? title : "Earth regions"), QString::fromUtf8(path),
+	            QString::fromUtf8(script ? script : ""));
 }
 
 // Register the Earth regions callback (Tools menu). fn(scene, dlg, params) with the "key=value" block

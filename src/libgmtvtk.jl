@@ -115,7 +115,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
 	:gmtvtk_view_points, :gmtvtk_promote_points_h, :gmtvtk_selection_count, :gmtvtk_get_selection,
 	:gmtvtk_set_object_visible,
-	:gmtvtk_view_fv, :gmtvtk_promote_fv_h, :gmtvtk_set_julia_eval, :gmtvtk_set_table, :gmtvtk_log_error,
+	:gmtvtk_view_fv, :gmtvtk_promote_fv_h, :gmtvtk_set_julia_eval, :gmtvtk_set_table, :gmtvtk_log_error, :gmtvtk_log_info,
 	:gmtvtk_error_box, :gmtvtk_get_xfac,
 	:gmtvtk_take_messages, :gmtvtk_shutdown, :gmtvtk_set_headless,   # Qt's own warnings -> the failure sink; ordered teardown
 	:gmtvtk_save_png, :gmtvtk_orbit, :gmtvtk_set_stereo,
@@ -188,7 +188,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_gmtflexure_callback, :gmtvtk_set_grdflexure_callback,
 	:gmtvtk_set_grdvolume_callback, :gmtvtk_set_gravprisms_callback,
 	:gmtvtk_set_grdvector_callback, :gmtvtk_set_earthregions_callback,
-	:gmtvtk_earthregions_set_listing, :gmtvtk_earthregions_set_region,
+	:gmtvtk_earthregions_set_listing, :gmtvtk_earthregions_set_region, :gmtvtk_earthregions_set_plot,
 	:gmtvtk_set_dgt_callback, :gmtvtk_dgt_log, :gmtvtk_lidar_set_bg,
 	:gmtvtk_set_gadm_callback, :gmtvtk_gadm_set_listing, :gmtvtk_gadm_set_countries, :gmtvtk_set_interpolate_callback, :gmtvtk_set_project_callback, :gmtvtk_set_ui_dir,
 	:gmtvtk_overlay_set_table_h,

@@ -45,15 +45,21 @@ const _ER_RESOLUTIONS = ("01d", "30m", "20m", "15m", "10m", "06m", "05m", "04m",
 # `round` travels as text: a bare number, a slash-separated list, or one of GMT's own +r/+R/+e
 # strings. The function itself validates the string form; what is checked here is only that a
 # non-string is really a number, so a typo does not reach GMT as a silent 0.
-function _er_round(s::AbstractString)
-	t = strip(String(s))
+function _er_round(s::String)
+	t = String(strip(s))
 	isempty(t) && return 0
 	startswith(t, "+") && return t                    # +r / +R / +e — GMT's own syntax, passed whole
+	# A bare number, or a slash-separated list of them, travels as a NUMBER (or a vector of them):
+	# GMT.jl builds the "+r…" itself from a Real/tuple/vector, and REJECTS a numeric string outright
+	# ("must start with one of +r, +R or +e"), so "1" reaching it as text is an error, not a step.
+	v = Float64[]
 	for p in split(t, '/')
-		(tryparse(Float64, p) === nothing) &&
+		x = tryparse(Float64, p)
+		(x === nothing) &&
 			error("the rounding step is a number, inc/inc, or four incs — or a +r/+R/+e string, not '$s'")
+		push!(v, x)
 	end
-	return t
+	return length(v) == 1 ? v[1] : v
 end
 
 # Where GMT.jl keeps the collection tables. This mirrors `_earthregions`'s own `pato`, and it is the
@@ -101,10 +107,27 @@ function _er_region(s::AbstractString)::String
 	length(p) == 4 || error("the region takes four numbers, West/East/South/North, not '$s'")
 	v = tryparse.(Float64, p)
 	any(x -> x === nothing, v) && error("the region takes four NUMBERS, not '$s'")
-	(v[1] < v[2]) || error("West must be smaller than East")
+	# West == East is GMT's own way of saying "all 360 degrees of longitude", and it is what the
+	# collections hand back for a polar region: AQ (Antarctica) resolves to -R0/0/-90/-63. The
+	# dialog SHOWS those limits in its boxes, so refusing them here refused Antarctica itself.
+	(v[1] <= v[2]) || error("West must be smaller than East (or equal, for the whole 360°)")
 	(v[3] < v[4]) || error("South must be smaller than North")
 	(-90 <= v[3] && v[4] <= 90) || error("South and North are latitudes, between -90 and 90")
 	return t
+end
+
+# "0/0" LONGITUDES -> "-180/180". The collections give a polar region the whole planet in longitude
+# written as West == East: AQ (Antarctica) comes back as -R0/0/-90/-63. GMT's own modules then refuse
+# that -R ("Offending option -R0/0/-90/-63") on the Polyconic projection the same call selects, so
+# `GMT.earthregions("AQ")` fails on its own — plot and grid alike. Spelling the same 360 degrees out
+# as -180/180 is accepted everywhere and is the identical region, so every -R that leaves this file
+# goes through here first. Anything that is not four plain numbers is passed through untouched.
+function _er_fix_global_lon(R::AbstractString)::String
+	p = split(strip(String(R)), '/')
+	length(p) == 4 || return String(R)
+	v = tryparse.(Float64, p)
+	any(x -> x === nothing, v) && return String(R)
+	return (v[1] == v[2]) ? string("-180/180/", p[3], "/", p[4]) : String(R)
 end
 
 # The W/E/S/N `earthregions` resolved for a code, taken from its OWN dry run: with Vd=2 the `coast`
@@ -116,7 +139,7 @@ function _er_limits(code::AbstractString, country::Bool, rnd, exact::Bool)::Stri
 	isa(cmd, AbstractString) || error("could not resolve the region '$code'")
 	m = match(r"-R(\S+)", String(cmd))
 	m === nothing && error("no region came back for '$code'")
-	return String(m.captures[1])
+	return _er_fix_global_lon(String(m.captures[1]))
 end
 
 # The country / region outline, as VECTORS — the one thing about a region that is neither a raster
@@ -137,6 +160,110 @@ function _er_draw_border(scene::Ptr{Cvoid}, code::AbstractString, name::Abstract
 	                 noConvertToPoints = true) ||
 		error("could not draw the border of '$code' in this window")
 	return nothing
+end
+
+# The region as a MAP — `earthregions`'s map branch, rendered to a PNG this window can show.
+#
+# THE COMMAND IS THE FUNCTION'S OWN. Asked with Vd=2 the map branch returns the `pscoast` command it
+# would have issued instead of drawing it (the same dry run `_er_limits` reads the -R out of), and
+# that string carries every choice GMT.jl makes for a region map: the projection it guessed, the
+# land and sea fills, the frame, and the DCW outline when the country tick is on. Those options are
+# turned back into keywords one by one and handed to `coast` with `savefig`, so what is drawn is the
+# function's own map — not a second opinion here about how a region should look.
+#
+# Returns the path of the PNG.
+function _er_plot(code_or_region::AbstractString, country::Bool, rnd, exact::Bool)::Tuple{String,String}
+	cmd = GMT.earthregions(String(code_or_region); country = country, round = rnd, exact = exact,
+	                       show = false, Vd = 2)
+	isa(cmd, AbstractString) || error("could not resolve the region '$code_or_region'")
+	opts = strip(replace(String(cmd), r"^\s*ps?coast\s*" => ""))
+	isempty(opts) && error("no coast command came back for '$code_or_region'")
+	kw = Dict{Symbol,Any}()
+	for tok in split(opts)
+		(startswith(tok, "-") && length(tok) >= 2) || continue
+		# -J goes in as `proj`, NOT as `J`. Same value either way, but the keyword is what makes
+		# GMT.jl parse the projection and remember its width (CTRL.pocket_J) — and the nested inset
+		# below is built from that memory. Passed as a bare `J` string it is handed straight to the
+		# module, the pocket stays empty, and the inset dies with "Found no history for option -J1".
+		k = tok[2] == 'J' ? :proj : Symbol(tok[2])
+		v = String(tok[3:end])
+		# -B comes twice in that command (the ticks, then the sides). GMT.jl reads them as one
+		# space-separated string, which is how a repeated option survives becoming a keyword.
+		kw[k] = haskey(kw, k) ? string(kw[k], " ", v) : v
+	end
+	# NATIONAL BOUNDARIES on top of the fills — the one thing added to the function's own command,
+	# because a land/sea map of a region says nothing about who is in it. -N1 is the national level
+	# (not the state/province ones), at the same 0.5p the DCW outline uses. Only if the command did
+	# not already carry an -N, so the function stays the authority wherever it has an opinion.
+	haskey(kw, :N) || (kw[:N] = "1/0.5p")
+	haskey(kw, :R) && (kw[:R] = _er_fix_global_lon(kw[:R]))   # AQ's 0/0 longitudes, see the helper
+	# A POLAR CAP GETS A POLAR PROJECTION. `earthregions` guesses Polyconic for Antarctica
+	# (-JPoly0.0/-76.5/15c) and GMT then refuses the pair: a polyconic map cannot hold all 360
+	# degrees of longitude ("Offending option -R-180/180/-90/-63"), so AQ fails inside GMT.jl itself,
+	# before this file is in the picture. A region that reaches a pole is exactly what polar
+	# stereographic is for, so that is what it gets — centred on the pole it touches, at the width
+	# the guessed projection was going to use.
+	rv = tryparse.(Float64, split(get(kw, :R, "")::AbstractString, '/'))
+	if length(rv) == 4 && !any(x -> x === nothing, rv) && (rv[3] <= -89.9 || rv[4] >= 89.9)
+		w = match(r"([0-9.]+)c\b", string(get(kw, :proj, "")))
+		kw[:proj] = string("S", (rv[1] + rv[2]) / 2, "/", rv[3] <= -89.9 ? -90 : 90)
+		kw[:figsize] = w === nothing ? 15.0 : parse(Float64, w.captures[1])
+	end
+	# LOCATOR GLOBE, top-right: an orthographic hemisphere centred on the region, with the region's
+	# own box drawn on it in red (`rect` takes that box from the main map's -R, so the two can never
+	# disagree). A region map answers "what does it look like"; this answers "where on Earth is it",
+	# which for a code out of a collection is the question a reader actually has.
+	#
+	# Only when the -R is four plain numbers: a centre has to come from somewhere, and "+r" or global
+	# forms give none. No inset then — a map without a locator beats a locator pointing anywhere.
+	c = tryparse.(Float64, split(get(kw, :R, "")::AbstractString, '/'))
+	if length(c) == 4 && !any(x -> x === nothing, c)
+		lonc, latc = (c[1] + c[2]) / 2, (c[3] + c[4]) / 2
+		# TR, AT THE CORNER: anchor TR with NO offset. A square 1.8 cm panel — both numbers given
+		# because a globe is round, and with only a width GMT.jl derives the height from the MAIN
+		# map's aspect ratio, which on a tall figure gives a panel taller than the corner it sits in.
+		#
+		# No `F`: the white panel with its 1p clearance is what the inset machinery already gives.
+		kw[:inset] = (GMT.coast, R = "d", proj = (name = :ortho, center = (lonc, latc)),
+		              land = :gray, water = :white, area = 5000, rect = (:red, 1.0),
+		              pos = (anchor = :TR, offset = 0, width = "1.8/1.8"))
+	end
+	png = tempname() * ".png"
+	GMT.coast(; show = false, savefig = png, kw...)
+	isfile(png) || error("the map was drawn but no PNG came out of it")
+	return png, _er_plot_script(code_or_region, country, rnd, exact, String(cmd), kw, png)
+end
+
+# The GMT.jl that made the figure, written out so it can be READ, copied into a REPL and re-run. Not
+# a log of what happened: the same keywords, in a form that is a working script — which is the only
+# version worth showing, since the reason to look is to take the map further than this dialog can.
+function _er_plot_script(what, country::Bool, rnd, exact::Bool, drycmd::AbstractString,
+                         kw::Dict{Symbol,Any}, png::AbstractString)::String
+	# Values come back as Julia literals: a string keeps its quotes, the inset tuple prints as the
+	# tuple it is. `repr` on the function `GMT.coast` inside that tuple prints as "GMT.coast", which
+	# is exactly what a reader would type.
+	lit(v) = isa(v, AbstractString) ? repr(String(v)) : repr(v)
+	order = [:R, :proj, :figsize, :B, :G, :S, :N, :E, :D, :A, :V, :inset]   # the readable order
+	keys_sorted = vcat([k for k in order if haskey(kw, k)],
+	                   sort!([k for k in keys(kw) if !(k in order)], by = string))
+	io = IOBuffer()
+	println(io, "# 1. The region, and the coast command GMT.jl itself would issue for it")
+	println(io, "#    (its own dry run — nothing about a region is decided here):")
+	println(io, "#")
+	println(io, "cmd = GMT.earthregions(", repr(String(what)), "; country = ", country,
+	            ", round = ", lit(rnd), ", exact = ", exact, ", show = false, Vd = 2)")
+	println(io, "#  -> ", strip(String(drycmd)))
+	println(io, "#")
+	println(io, "# 2. That command's options, as keywords, plus the national boundaries (-N1) and the")
+	println(io, "#    locator globe. This is the call that produced the figure:")
+	println(io, "#")
+	println(io, "coast(")
+	for k in keys_sorted
+		println(io, "    ", k, " = ", lit(kw[k]), ",")
+	end
+	println(io, "    show = false, savefig = ", repr(String(png)))
+	println(io, ")")
+	return String(take!(io))
 end
 
 # C callback (Get button): `cparams` is the newline-separated "key=value" block described in
@@ -179,6 +306,32 @@ function _on_earthregions(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring):
 			return Cint(1)
 		end
 
+		# ---- The region as a PICTURE (see `_er_plot`). A figure, not a layer: nothing is downloaded
+		# and nothing is added to the window, so this branch never touches `scene`.
+		#
+		# THE CODE GOES WHOLE when there is one. Not the four boxes, even though they are filled:
+		# typing a code fills them FROM it (`lookupLimits`), so preferring them would send the
+		# function its own answer back as a name — "Could not find the code '112/160/-56/-8' in any
+		# of the collections", which is what AU did. The code is also what picks the projection and
+		# what the DCW outline is drawn from. Four coordinates are used only when there is no code,
+		# and then exactly as the raster branch uses them: `exact` so they are read as limits and not
+		# looked up, and no `round`, which belongs to turning a code into numbers.
+		if mode == "plot"
+			c = strip(_get(d, "code"))
+			png, script = if !isempty(c)
+				_er_plot(String(c), _on(d, "country"), _er_round(_get(d, "round")), _on(d, "exact"))
+			else
+				isempty(region) &&
+					error("give a region code, or the four Region boxes, to plot — press \"List its regions\" to see the codes")
+				_on(d, "country") &&
+					error("the border lines need a country code — four coordinates name no country")
+				_er_plot(region, false, 0, true)
+			end
+			ccall(_fn(:gmtvtk_earthregions_set_plot), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cstring),
+			      dlg, "Earth regions — " * (isempty(c) ? region : String(c)), png, script)
+			return Cint(1)
+		end
+
 		# THE REGION IS THE REQUEST. The collections, the codes and the listing exist only to fill the
 		# four Region boxes; whatever stands in them is what the data are fetched over. A code with
 		# the boxes still empty (nothing has looked it up yet) is resolved to its four numbers right
@@ -201,9 +354,10 @@ function _on_earthregions(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring):
 		# wearing the clothes of a validation refusal.
 		(country && isempty(code)) &&
 			error("the border lines need a country code — four coordinates name no country")
-		# The layer's name: the code when there is one, since "-10/-6/36/39" names nothing.
-		name = strip(_get(d, "name"))
-		isempty(name) && (name = isempty(code) ? "Region" : String(code))
+		# The layer's name IS the region's code — "-10/-6/36/39" names nothing, so a box without a
+		# code is just "Region". There is no name box in the dialog any more: a layer is named after
+		# what was asked for, and renaming one is what the Scene Objects row is for.
+		name = isempty(code) ? "Region" : String(code)
 
 		(mode == "raster") || error("unknown mode '$mode'")
 
