@@ -1,4 +1,34 @@
 cmake_minimum_required(VERSION 3.21)  # 3.21+ for install(... RUNTIME_DEPENDENCIES ...)
+
+# macOS DEPLOYMENT FLOOR. Set here, BEFORE project(): after it CMake has already run its compiler
+# checks and the variable no longer reaches them. CMAKE_HOST_APPLE, not APPLE -- APPLE itself is
+# only defined BY project().
+#
+# Nothing set this at all, so a bundle silently inherited the BUILD machine's OS as its floor. The
+# CI runners are macos-15 and macos-15-intel (MacBinaries.yml), so the published tarballs carried a
+# 15.x floor and would not load on 13 or 14 either -- and nothing at build time said so; it fails
+# on the user's machine, as a dyld error naming nothing useful.
+#
+# 14.0 is not a preference, it is where two floors meet. Qt's own documented runtime floor for Qt
+# 6.11 is macOS 13 ("macOS 13 or higher"), and Qt warns that going BELOW its default crashes at
+# runtime instead of failing to build -- so 13 is the lowest Qt permits. The bundle cannot reach it:
+# the staged Homebrew VTK/Qt/TBB dylibs carry the floor of the release their bottle was poured for,
+# and macos-14 is the oldest standard runner image GitHub still offers (macos-13 retired December
+# 2025). 14.0 is therefore the lowest floor the shipped arm64 bundle actually honours, so it is the
+# number we declare rather than a 13 we could not keep.
+#
+# The x86_64 bundle is a release HIGHER, at 15.x, because the only standard Intel labels are
+# macos-15-intel and macos-26-intel -- there is no free macOS 14 Intel runner. See the header of
+# .github/workflows/MacBinaries.yml.
+#
+# Reaching further back -- a Big Sur 11.x machine -- is NOT a flag change: it needs Qt 6.5 LTS plus
+# VTK built from source, Homebrew having poured no bottles for Big Sur since Sonoma. So this floor
+# moves when the Qt or the runner image moves, and not otherwise. Overridable from the command line
+# (-DCMAKE_OSX_DEPLOYMENT_TARGET=...) for anyone deliberately building against a different Qt.
+if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+	set(CMAKE_OSX_DEPLOYMENT_TARGET 14.0 CACHE STRING "Minimum macOS version the binaries run on")
+endif()
+
 # C as well as CXX: src/mbgrid.c (the MBGRID gridder) is a real C translation unit, not one of the
 # NN_*.cpp fragments — see the GMTVTK_SRC comment below. Without C in this list CMake has no C
 # compiler configured and refuses the file outright.
