@@ -20,14 +20,14 @@
       </item>
       <item row="0" column="1">
        <widget class="QComboBox" name="cb_country">
-        <property name="toolTip"><string>The country, by name and ISO 3166 alpha-3 code. The first use of one downloads its GADM file into ~/.gmt/cache, which takes a while. Type to jump to a name.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;The country, by name and ISO 3166 alpha-3 code. The first use&lt;br&gt;of one downloads its GADM file into ~/.gmt/cache, which takes&lt;br&gt;a while. Type to jump to a name.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
        <widget class="QPushButton" name="push_list">
         <property name="minimumSize"><size><width>120</width><height>24</height></size></property>
         <property name="text"><string>List subregions</string></property>
-        <property name="toolTip"><string>Print the names of the administrative children of what is filled in above (the country, or the last subregion). Double-click a name to add it.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Print the names of the administrative children of what is&lt;br&gt;filled in above (the country, or the last subregion).&lt;br&gt;Double-click a name to add it.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="0">
@@ -35,25 +35,25 @@
       </item>
       <item row="1" column="1" colspan="2">
        <widget class="QLineEdit" name="edit_subs">
-        <property name="toolTip"><string>Optional, in hierarchical order and comma separated: province, then district, … e.g. "Cabo Delgado". Leave empty for the whole country.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Optional, in hierarchical order and comma separated: province,&lt;br&gt;then district, … e.g. "Cabo Delgado". Leave empty for the&lt;br&gt;whole country.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="2" column="1" colspan="2">
        <widget class="QCheckBox" name="chk_children">
         <property name="text"><string>Plot all its children (the next administrative level)</string></property>
-        <property name="toolTip"><string>gadm(..., children=true): the boundaries of every subregion of what was asked for, instead of just its own outline.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;gadm(..., children=true): the boundaries of every subregion of&lt;br&gt;what was asked for, instead of just its own outline.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="3" column="1" colspan="2">
        <widget class="QCheckBox" name="chk_grand">
         <property name="text"><string>…and the level below that (grandchildren)</string></property>
-        <property name="toolTip"><string>The children of each child: a country's districts rather than its provinces. Every one of them is fetched, so it takes longer than the level above.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;The children of each child: a country's districts rather than&lt;br&gt;its provinces. Every one of them is fetched, so it takes&lt;br&gt;longer than the level above.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="4" column="1" colspan="2">
        <widget class="QCheckBox" name="chk_all">
         <property name="text"><string>Plot every level BELOW the chosen unit</string></property>
-        <property name="toolTip"><string>Every administrative level under what is selected above: for a country, its provinces AND their districts AND their parishes, down to the deepest level that country has.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Every administrative level under what is selected above: for a&lt;br&gt;country, its provinces AND their districts AND their parishes,&lt;br&gt;down to the deepest level that country has.&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>

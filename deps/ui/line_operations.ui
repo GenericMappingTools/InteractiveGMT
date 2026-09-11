@@ -47,7 +47,7 @@
         <bool>true</bool>
        </property>
        <property name="toolTip">
-        <string>Click each line in the 3-D window to add it to the selection. The button stays down until you press it again.</string>
+        <string>&lt;html&gt;Click each line in the 3-D window to add it to the selection.&lt;br&gt;The button stays down until you press it again.&lt;/html&gt;</string>
        </property>
       </widget>
      </item>
@@ -108,7 +108,7 @@
    <item>
     <widget class="QLineEdit" name="edit_cmd">
      <property name="toolTip">
-      <string>The command that Apply runs. Choosing an operation above fills in its template; edit the arguments here.</string>
+      <string>&lt;html&gt;The command that Apply runs. Choosing an operation above fills&lt;br&gt;in its template; edit the arguments here.&lt;/html&gt;</string>
      </property>
     </widget>
    </item>

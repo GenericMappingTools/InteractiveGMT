@@ -71,7 +71,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Left click on the target colors/gray levels. Stop with a right click or a double-click</string>
+    <string>&lt;html&gt;Left click on the target colors/gray levels. Stop with a right&lt;br&gt;click or a double-click&lt;/html&gt;</string>
    </property>
    <property name="text">
     <string>click-define</string>

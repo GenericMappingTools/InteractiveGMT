@@ -28,7 +28,7 @@
      <layout class="QGridLayout" name="gridLayout_input">
       <item row="0" column="0" colspan="3">
        <widget class="QCheckBox" name="chk_usescene">
-        <property name="toolTip"><string>Take the first component from the layer this window is showing, instead of a file</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Take the first component from the layer this window is&lt;br&gt;showing, instead of a file&lt;/html&gt;</string></property>
         <property name="text"><string>First component = the layer on display</string></property>
         <property name="checked"><bool>true</bool></property>
        </widget>
@@ -51,7 +51,7 @@
       </item>
       <item row="2" column="1">
        <widget class="QLineEdit" name="edit_grid2">
-        <property name="toolTip"><string>The y component grid — a file, or the name of another layer in this window. It must sit on exactly the same nodes as the first.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;The y component grid — a file, or the name of another layer in&lt;br&gt;this window. It must sit on exactly the same nodes as the&lt;br&gt;first.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="2" column="2">
@@ -61,19 +61,19 @@
       </item>
       <item row="3" column="0" colspan="3">
        <widget class="QCheckBox" name="chk_polar">
-        <property name="toolTip"><string>A: the grids hold magnitude r and direction theta (degrees counter-clockwise from +x) instead of the x and y components</string></property>
+        <property name="toolTip"><string>&lt;html&gt;A: the grids hold magnitude r and direction theta (degrees&lt;br&gt;counter-clockwise from +x) instead of the x and y components&lt;/html&gt;</string></property>
         <property name="text"><string>Polar components: r and theta (A)</string></property>
        </widget>
       </item>
       <item row="4" column="0" colspan="3">
        <widget class="QCheckBox" name="chk_azimuth">
-        <property name="toolTip"><string>Z: theta is an AZIMUTH, clockwise from north, not a direction counter-clockwise from east. Implies polar components.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Z: theta is an AZIMUTH, clockwise from north, not a direction&lt;br&gt;counter-clockwise from east. Implies polar components.&lt;/html&gt;</string></property>
         <property name="text"><string>theta is an azimuth, clockwise from north (Z)</string></property>
        </widget>
       </item>
       <item row="5" column="0" colspan="3">
        <widget class="QCheckBox" name="chk_geog">
-        <property name="toolTip"><string>Geographic grid: divide the east component by cos(latitude), so a uniform field looks uniform on a lon/lat map instead of shrinking towards the poles</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Geographic grid: divide the east component by cos(latitude),&lt;br&gt;so a uniform field looks uniform on a lon/lat map instead of&lt;br&gt;shrinking towards the poles&lt;/html&gt;</string></property>
         <property name="text"><string>Geographic grid (correct the east component for cos latitude)</string></property>
        </widget>
       </item>
@@ -132,7 +132,7 @@
       </item>
       <item row="1" column="1">
        <widget class="QLineEdit" name="edit_scale">
-        <property name="toolTip"><string>In the map's own x/y units — this window has no paper size to measure inches against</string></property>
+        <property name="toolTip"><string>&lt;html&gt;In the map's own x/y units — this window has no paper size to&lt;br&gt;measure inches against&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>
@@ -149,7 +149,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QComboBox" name="cb_heads">
-        <property name="toolTip"><string>Which end of the arrow carries a head. None gives the stick plot the module draws by default.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Which end of the arrow carries a head. None gives the stick&lt;br&gt;plot the module draws by default.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -157,7 +157,7 @@
       </item>
       <item row="0" column="3">
        <widget class="QLineEdit" name="edit_headlen">
-        <property name="toolTip"><string>Head length as a FRACTION of the arrow (0 to 1). An absolute size means nothing in a window with no fixed size.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Head length as a FRACTION of the arrow (0 to 1). An absolute&lt;br&gt;size means nothing in a window with no fixed size.&lt;/html&gt;</string></property>
         <property name="text"><string>0.33</string></property>
        </widget>
       </item>
@@ -175,7 +175,7 @@
       </item>
       <item row="1" column="3">
        <widget class="QLineEdit" name="edit_norm">
-        <property name="toolTip"><string>+n: arrows shorter than this length get a head shrunk in proportion. Empty = every head the same.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;+n: arrows shorter than this length get a head shrunk in&lt;br&gt;proportion. Empty = every head the same.&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>
@@ -192,12 +192,12 @@
       </item>
       <item row="0" column="1">
        <widget class="QComboBox" name="cb_color">
-        <property name="toolTip"><string>The colour of the whole field. Line WIDTH is not here: right-click the row in Scene Objects for Line Properties, as with every other overlay.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;The colour of the whole field. Line WIDTH is not here:&lt;br&gt;right-click the row in Scene Objects for Line Properties, as&lt;br&gt;with every other overlay.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2" colspan="2">
        <widget class="QCheckBox" name="chk_bymag">
-        <property name="toolTip"><string>C: colour each arrow by its magnitude instead, in equal-width classes from blue to red</string></property>
+        <property name="toolTip"><string>&lt;html&gt;C: colour each arrow by its magnitude instead, in equal-width&lt;br&gt;classes from blue to red&lt;/html&gt;</string></property>
         <property name="text"><string>Colour by magnitude (C)</string></property>
        </widget>
       </item>
@@ -206,13 +206,13 @@
       </item>
       <item row="1" column="1">
        <widget class="QLineEdit" name="edit_nclass">
-        <property name="toolTip"><string>How many magnitude classes (2 to 24). One overlay carries one colour, so this is how many the field is split into.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;How many magnitude classes (2 to 24). One overlay carries one&lt;br&gt;colour, so this is how many the field is split into.&lt;/html&gt;</string></property>
         <property name="text"><string>7</string></property>
        </widget>
       </item>
       <item row="1" column="2" colspan="2">
        <widget class="QCheckBox" name="chk_drape">
-        <property name="toolTip"><string>Lift every arrow onto the displayed surface so the field follows the relief. Unticked, the arrows lie flat at z = 0 like the coastlines.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Lift every arrow onto the displayed surface so the field&lt;br&gt;follows the relief. Unticked, the arrows lie flat at z = 0&lt;br&gt;like the coastlines.&lt;/html&gt;</string></property>
         <property name="text"><string>Drape on the surface</string></property>
         <property name="checked"><bool>true</bool></property>
        </widget>
@@ -228,7 +228,7 @@
       </item>
       <item row="3" column="0" colspan="4">
        <widget class="QCheckBox" name="chk_table">
-        <property name="toolTip"><string>Also send x, y, u, v, magnitude and direction of every node that got an arrow to this window's Data Viewer</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Also send x, y, u, v, magnitude and direction of every node&lt;br&gt;that got an arrow to this window's Data Viewer&lt;/html&gt;</string></property>
         <property name="text"><string>Send the field to the Data Viewer</string></property>
        </widget>
       </item>
@@ -275,7 +275,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_outfile">
-       <property name="toolTip"><string>Optional table of x, y, u, v, magnitude and direction for the nodes that got an arrow. Leave empty to keep it in this window only.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Optional table of x, y, u, v, magnitude and direction for the&lt;br&gt;nodes that got an arrow. Leave empty to keep it in this window&lt;br&gt;only.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>

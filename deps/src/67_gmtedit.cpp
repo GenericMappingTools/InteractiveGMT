@@ -554,10 +554,10 @@ static void geOutliersDialog(GmtEdit *s) {
 	edP->setToolTip("Enter a Smoothing Parameter between [0 1]");
 	QLineEdit *edT = new QLineEdit("4");
 	edT->setValidator(new QDoubleValidator(0.0, 1e12, 6, edT));
-	edT->setToolTip("Residues greater or equal than this are outliers.\n"
-	                "Notice that we use small numbers because the spline\n"
-	                "smoothing will do only a mild smoothing, so the residues\n"
-	                "are naturally small. Unless you decrease the p parameter");
+	edT->setToolTip("<html>Residues greater or equal than this are outliers.<br>"
+	                "Notice that we use small numbers because the spline<br>"
+	                "smoothing will do only a mild smoothing, so the residues<br>"
+	                "are naturally small. Unless you decrease the p parameter</html>");
 
 	QRadioButton *rb[3];
 	QButtonGroup *grp = new QButtonGroup(dlg);

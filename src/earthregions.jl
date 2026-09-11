@@ -354,10 +354,12 @@ function _on_earthregions(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring):
 		# wearing the clothes of a validation refusal.
 		(country && isempty(code)) &&
 			error("the border lines need a country code — four coordinates name no country")
-		# The layer's name IS the region's code — "-10/-6/36/39" names nothing, so a box without a
-		# code is just "Region". There is no name box in the dialog any more: a layer is named after
-		# what was asked for, and renaming one is what the Scene Objects row is for.
-		name = isempty(code) ? "Region" : String(code)
+		# The layer's name IS the region's code. A box WITHOUT a code carries its four numbers instead:
+		# calling every coordinate request "Region" made them all share one title, and the
+		# already-in-this-window check below matches on that title — so a second, completely different
+		# box was recognised as the first one and silently NOT downloaded. The numbers are what was
+		# asked for, so they are what the layer is called. Renaming one is the Scene Objects row's job.
+		name = isempty(code) ? "Region " * String(region) : String(code)
 
 		(mode == "raster") || error("unknown mode '$mode'")
 

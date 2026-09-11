@@ -866,9 +866,10 @@ public:
 		}
 		cboCache->setCurrentIndex(0);
 		cboCache->setToolTip(
-			"Directory where downloaded tiles are cached. The default ~/.gmt maps to GMT's "
-			"~/.gmt/cache_tileserver. Pick more dirs with '...'; used dirs are remembered across "
-			"sessions in this drop-down. Leave empty to use the system TMP directory.");
+			"<html>Directory where downloaded tiles are cached. The default ~/.gmt<br>"
+			"maps to GMT's ~/.gmt/cache_tileserver. Pick more dirs with '...';<br>"
+			"used dirs are remembered across sessions in this drop-down.<br>"
+			"Leave empty to use the system TMP directory.</html>");
 		auto *btnDir = new QToolButton(this); btnDir->setText("...");  btnDir->setToolTip("Select a cache directory");
 		bot->addWidget(cboCache, 1); bot->addWidget(btnDir);
 		v->addLayout(bot);
@@ -2464,8 +2465,8 @@ public:
 		cmbDefaultDir = new QComboBox(this);
 		cmbDefaultDir->setGeometry(20, 90, 365, 24);
 		cmbDefaultDir->setEditable(true);
-		cmbDefaultDir->setToolTip("Loading and saving files will start at this directory by default. "
-		                          "But will change for the used last directory.");
+		cmbDefaultDir->setToolTip("<html>Loading and saving files will start at this directory by<br>"
+		                          "default. But will change for the used last directory.</html>");
 		auto *btnBrowse = new QToolButton(this);
 		btnBrowse->setGeometry(392, 90, 28, 24);
 		btnBrowse->setText("...");
@@ -6097,8 +6098,8 @@ public:
 			flPBR->addRow("Cast shadows", pbrRowShadow);
 		}
 		eWave     = mkEdit("");      flWave->addRow("Wavelength (px)", eWave);
-		eWave->setToolTip("Cut-in wavelength of the highpass filter, in pixels. Empty = half the "
-		                  "longer grid side, the ppdrc default.");
+		eWave->setToolTip("<html>Cut-in wavelength of the highpass filter, in pixels.<br>"
+		                  "Empty = half the longer grid side, the ppdrc default.</html>");
 		// False colour: Mirone's two exclusive radios + the Amp factor the old algorithm reads.
 		// shading_params.m gives radio_oldAlgo Value 1, so the old algorithm is the default.
 		rbOldAlgo = new QRadioButton("Old algorithm", d);
@@ -11375,6 +11376,598 @@ public:
 		else if (!eta)
 			QMessageBox::information(d, "Tsunami travel times",
 				"Done — the travel-time grid (hours) is in Scene Objects as \"Travel time (h)\".");
+	}
+};
+
+class EcmwfDialog;
+// One dialog per window, alive while parked — so re-picking the menu entry brings THAT one back,
+// with everything still set in it, instead of opening a second empty one.
+static std::map<Scene *, EcmwfDialog *> g_ecmwfDlgs;
+
+// ============================================================================================
+// Copernicus / ECMWF download (Geophysics > Copernicus) — GMT.jl's `ecmwf`: the Climate Data Store
+// (ERA5 reanalysis, needs a ~/.cdsapirc key) and the ECMWF open-data forecasts (no credentials).
+// Loaded at RUNTIME via QUiLoader from deps/ui/ecmwf_dialog.ui.
+//
+// ONE dialog for both, because GMT.jl made them ONE function (`ecmwf` / `ecmwf(:forecast, …)`), and
+// the same division of labour TttDialog uses: the two sources are RADIOS, and the group the other
+// source owns is greyed out — never hidden, never silently ignored.
+//
+// The variable boxes take the catalogue IDs ("t2m", "10u"), which nobody remembers, so the "…"
+// button opens a picker filled from GMT's OWN variable tables (what=listvars through the same
+// callback) — never a list copied into this file, which would rot the day GMT's tables change.
+// ============================================================================================
+static void sceneShowMessages(Scene *s, bool show);   // below — opens the window's Messages log
+
+class EcmwfDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QRadioButton *rbEra5 = nullptr, *rbFc = nullptr;
+	QGroupBox *grpEra5 = nullptr, *grpFc = nullptr;
+	QComboBox *cbDataset = nullptr, *cbTime = nullptr, *cbModel = nullptr, *cbStream = nullptr,
+	          *cbType = nullptr, *cbFormat = nullptr, *cbLonFrame = nullptr, *cbTunit = nullptr;
+	QLineEdit *eVars = nullptr, *eLevels = nullptr, *eDate5 = nullptr, *eHour = nullptr,
+	          *eFcVars = nullptr, *eFcLevels = nullptr, *eSteps = nullptr, *eDate = nullptr,
+	          *eRegion = nullptr, *eOut = nullptr;
+	QPlainTextEdit *eParams = nullptr;
+	QCheckBox *chkPressure = nullptr, *chkClip = nullptr, *chkCube = nullptr, *chkLoad = nullptr;
+	QPushButton *btnExample = nullptr;
+
+	explicit EcmwfDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/ecmwf_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("EcmwfDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("EcmwfDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		// The MINIMISE button has to be there for minimising to mean anything — it is what PARKS the
+		// dialog as a Scene Objects handle (parkNow below), the same gesture Earth regions, the FFT
+		// tool and Load Bands use.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+		parkOnMinimise(d, [this]() { parkNow(); });          // the shared handler (50_scene.cpp)
+		g_ecmwfDlgs[scn] = this;                             // one dialog per window, alive while parked
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			if (sceneAlive(scn)) unparkTool(scn, dlg);
+			auto it = g_ecmwfDlgs.find(scn);
+			if (it != g_ecmwfDlgs.end() && it->second == this) g_ecmwfDlgs.erase(it);
+		});
+
+		rbEra5   = d->findChild<QRadioButton *>("rb_reanalysis");
+		rbFc     = d->findChild<QRadioButton *>("rb_forecast");
+		grpEra5  = d->findChild<QGroupBox *>("group_era5");
+		grpFc    = d->findChild<QGroupBox *>("group_fc");
+		cbDataset= d->findChild<QComboBox *>("cb_dataset");
+		cbTime   = d->findChild<QComboBox *>("cb_time");
+		cbModel  = d->findChild<QComboBox *>("cb_model");
+		cbStream = d->findChild<QComboBox *>("cb_stream");
+		cbType   = d->findChild<QComboBox *>("cb_type");
+		cbFormat = d->findChild<QComboBox *>("cb_format");
+		cbLonFrame = d->findChild<QComboBox *>("cb_lonframe");
+		cbTunit    = d->findChild<QComboBox *>("cb_tunit");
+		eVars    = d->findChild<QLineEdit *>("edit_vars");
+		eLevels  = d->findChild<QLineEdit *>("edit_levels");
+		eDate5   = d->findChild<QLineEdit *>("edit_date5");
+		eHour    = d->findChild<QLineEdit *>("edit_hour");
+		eFcVars  = d->findChild<QLineEdit *>("edit_fcvars");
+		eFcLevels= d->findChild<QLineEdit *>("edit_fclevels");
+		eSteps   = d->findChild<QLineEdit *>("edit_steps");
+		eDate    = d->findChild<QLineEdit *>("edit_date");
+		eRegion  = d->findChild<QLineEdit *>("edit_region");
+		eOut     = d->findChild<QLineEdit *>("edit_out");
+		eParams  = d->findChild<QPlainTextEdit *>("edit_params");
+		chkPressure = d->findChild<QCheckBox *>("chk_pressure");
+		chkClip     = d->findChild<QCheckBox *>("chk_clipboard");
+		chkCube     = d->findChild<QCheckBox *>("chk_cube");
+		chkLoad     = d->findChild<QCheckBox *>("chk_load");
+
+		if (cbDataset) {
+			// ONLY the item list is filled from here. The combo's WIDTH is the .ui's business — its
+			// sizeAdjustPolicy / minimumContentsLength live there, so what Designer shows is what the
+			// dialog shows. Never size a .ui widget from code.
+			for (const char *s : { "reanalysis-era5-single-levels", "reanalysis-era5-pressure-levels",
+			                       "reanalysis-era5-land", "reanalysis-era5-single-levels-monthly-means",
+			                       "reanalysis-era5-pressure-levels-monthly-means",
+			                       "reanalysis-era5-land-monthly-means" })
+				cbDataset->addItem(s);
+		}
+		// An empty run hour means "whatever the server has most recently" — GMT.jl resolves that
+		// itself, so the choice is offered as a value, not as a second checkbox.
+		if (cbTime)   { cbTime->addItem("most recent", QString()); for (const char *s : { "0", "6", "12", "18" }) cbTime->addItem(s, QString(s)); }
+		if (cbModel)  { cbModel->addItem("ifs"); cbModel->addItem("aifs"); }
+		if (cbStream) for (const char *s : { "oper", "enfo", "waef", "wave", "scda", "scwv", "mmsf" }) cbStream->addItem(s);
+		if (cbType)   for (const char *s : { "fc", "ef", "ep", "tf" }) cbType->addItem(s);
+		if (cbFormat) { cbFormat->addItem("netcdf"); cbFormat->addItem("grib"); }
+
+		// The dataset follows the "Pressure levels" tick: the single- and pressure-level ERA5 sets are
+		// two different CDS datasets, and a variable picked from one catalogue does not exist in the
+		// other. Only the two stock names are moved — a dataset the user typed is left alone.
+		if (chkPressure && cbDataset) {
+			QObject::connect(chkPressure, &QCheckBox::toggled, d, [this](bool on) {
+				const QString cur = cbDataset->currentText();
+				if (cur == "reanalysis-era5-single-levels" && on)
+					cbDataset->setCurrentText("reanalysis-era5-pressure-levels");
+				else if (cur == "reanalysis-era5-pressure-levels" && !on)
+					cbDataset->setCurrentText("reanalysis-era5-single-levels");
+			});
+		}
+
+		auto syncMode = [this]() {
+			const bool fc = rbFc && rbFc->isChecked();
+			if (grpEra5) grpEra5->setEnabled(!fc);
+			if (grpFc)   grpFc->setEnabled(fc);
+		};
+		// With "Example" down, the Source radio moves the example too: the block that has just become
+		// the active one is the one that gets filled, so the button always describes what is on screen.
+		for (QRadioButton *rb : { rbEra5, rbFc })
+			if (rb) QObject::connect(rb, &QRadioButton::toggled, d, [this, syncMode](bool on) {
+				syncMode();
+				if (on && btnExample && btnExample->isChecked()) applyExample(true);
+			});
+		syncMode();
+
+		// A pasted request carries its own variables and dates, so the boxes it overrides say so by
+		// going grey instead of quietly not mattering.
+		auto syncClip = [this]() {
+			const bool clip = chkClip && chkClip->isChecked();
+			const bool raw  = clip || (eParams && !eParams->toPlainText().trimmed().isEmpty());
+			for (QWidget *w : { (QWidget *)eVars, (QWidget *)eLevels, (QWidget *)eDate5,
+			                    (QWidget *)eHour, (QWidget *)chkPressure })
+				if (w) w->setEnabled(!raw);
+			if (eParams) eParams->setEnabled(!clip);
+		};
+		if (chkClip)  QObject::connect(chkClip, &QCheckBox::toggled, d, [syncClip](bool) { syncClip(); });
+		if (eParams)  QObject::connect(eParams, &QPlainTextEdit::textChanged, d, [syncClip]() { syncClip(); });
+		syncClip();
+
+		// The region box is left EXACTLY as the .ui has it (empty = the whole globe). It is filled only
+		// when the user asks for it with this button — never prefilled behind their back, which on a
+		// window with no raster wrote the placeholder 0/1/0/1 into a box the .ui had deliberately left
+		// blank.
+		if (auto *rb = d->findChild<QPushButton *>("btn_region"))
+			QObject::connect(rb, &QPushButton::clicked, d, [this]() { fillRegionFromView(); });
+
+		auto pickVars = [this, d](QLineEdit *box, bool forecast) {
+			if (!box) return;
+			const bool pressure = !forecast && chkPressure && chkPressure->isChecked();
+			QString cat = ask(QString("what=listvars\nsource=%1\npressure=%2")
+			                      .arg(forecast ? "fc" : "era5").arg(pressure ? 1 : 0), d);
+			if (cat.isEmpty()) return;
+			QStringList chosen = pickFromCatalog(d, cat, box->text());
+			if (!chosen.isEmpty() || !box->text().isEmpty()) box->setText(chosen.join(","));
+		};
+		if (auto *b = d->findChild<QToolButton *>("btn_vars"))
+			QObject::connect(b, &QToolButton::clicked, d, [pickVars, this]() { pickVars(eVars, false); });
+		if (auto *b = d->findChild<QToolButton *>("btn_fcvars"))
+			QObject::connect(b, &QToolButton::clicked, d, [pickVars, this]() { pickVars(eFcVars, true); });
+
+		if (auto *ob = d->findChild<QToolButton *>("btn_out")) {
+			if (eOut) {
+				QObject::connect(ob, &QToolButton::clicked, d, [this, d]() {
+					QString p = QFileDialog::getSaveFileName(d, "Save the downloaded data as", prefStartDir(),
+						"netCDF (*.nc *.grd);;GRIB (*.grib *.grib2);;All files (*)");
+					if (!p.isEmpty()) { eOut->setText(p); rememberStartDir(p); }
+				});
+				fileBoxDoubleClick(eOut, ob);
+			}
+		}
+
+		// The two date boxes take text (a list, a range, or — for the forecast — a plain days-back
+		// count), so the calendar ADDS a date to the box instead of owning it: the ERA5 box appends to
+		// a list being built, the forecast box holds one date and is replaced.
+		// Both date boxes keep the FULL width of their grid cell, flush with the boxes around them, so
+		// the calendar rides INSIDE the box as a trailing action instead of eating width beside it.
+		// The ERA5 box may hold a list or a range, so its calendar APPENDS; the forecast box holds one
+		// date and is replaced.
+		auto addCalendar = [this, d](QLineEdit *box, bool append) {
+			if (!box) return;
+			QAction *a = box->addAction(calendarIcon(16), QLineEdit::TrailingPosition);
+			a->setToolTip("Pick a date from a calendar.");
+			QObject::connect(a, &QAction::triggered, d, [this, d, box, append]() { pickDate(d, box, append); });
+		};
+		addCalendar(eDate5, true);
+		addCalendar(eDate,  false);
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_download"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, false); });
+		if (auto *b = d->findChild<QPushButton *>("push_dryrun"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, true); });
+		// "Example" fills the block the Source radio has active with a request that runs as it stands.
+		// It is a TOGGLE, and it remembers every box it overwrote: pressing it again puts back exactly
+		// what was there, so it can never eat something the user had typed.
+		btnExample = d->findChild<QPushButton *>("btn_example");
+		if (btnExample)
+			QObject::connect(btnExample, &QPushButton::toggled, d, [this](bool on) { applyExample(on); });
+
+		// "Save as", left empty, still lands somewhere — and the box says WHERE, greyed, instead of
+		// letting the user guess. The path is ASKED FOR (`_ecmwf_tmpdir`, the one function that decides
+		// it) rather than rebuilt here, so the two sides cannot drift apart.
+		if (eOut && g_juliaEcmwf) {
+			const QString dd = ask("what=destdir", d).trimmed();
+			if (!dd.isEmpty())
+				eOut->setPlaceholderText(dd + QDir::separator() + "ERA5_<variable>_<date>.nc");
+		}
+
+		// THE TUTORIAL, in the browser: this tool's own page of the iGMT manual (docs/src/72-ecmwf.md),
+		// which walks through the two sources, the CDS key, the variable picker, the levels and the
+		// output naming. Not the green ? disk below — that one opens GMT.jl's `ecmwf` page, the
+		// function's own manual, which says nothing about this dialog. Same plain openUrl the Help
+		// menu's "InteractiveGMT Manual" uses, so it keeps working when the Julia bridge is not up.
+		if (auto *b = d->findChild<QPushButton *>("push_tutorial"))
+			QObject::connect(b, &QPushButton::clicked, d, [d]() {
+				const QUrl u("https://www.generic-mapping-tools.org/InteractiveGMT/dev/72-ecmwf/");
+				if (!QDesktopServices::openUrl(u))
+					QMessageBox::warning(d, "Copernicus / ECMWF",
+						QString("Could not open a browser for\n\n%1").arg(u.toString()));
+			});
+
+		// The green ? disk, lower-left as in every other module dialog. `ecmwf` is a GMT.jl function,
+		// so its page lives under utilities/, not modules/.
+		addManualButton(d, "utilities/ecmwf");
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	// The boxes "Example" filled — so releasing it EMPTIES exactly those, whichever block was filled,
+	// even if the Source radio moved meanwhile. Releasing leaves a clean dialog, not the state from
+	// before: the example is a demonstration, and what follows it is a request of the user's own.
+	std::vector<QWidget *> exFilled;
+
+	static void clearBox(QWidget *w) {
+		if (auto *e = qobject_cast<QLineEdit *>(w)) e->clear();
+		else if (auto *c = qobject_cast<QComboBox *>(w)) {
+			if (c->isEditable()) c->setCurrentText(QString());
+			else                 c->setCurrentIndex(0);
+		}
+	}
+	static void setBoxText(QWidget *w, const QString &v) {
+		if (auto *e = qobject_cast<QLineEdit *>(w)) e->setText(v);
+		else if (auto *c = qobject_cast<QComboBox *>(w)) c->setCurrentText(v);
+	}
+
+	// A working request for whichever block is active: 2-m temperature, one day and hour (ERA5) or three
+	// steps of the most recent IFS run (forecast). `2t` is the open-data name of ERA5's `t2m` — the two
+	// catalogues spell the same field differently, so the example uses each side's own ID rather than
+	// one that only half of them knows.
+	//
+	// The LEVEL BOXES ARE LEFT EMPTY, and the Pressure tick down, because `t2m`/`2t` are SURFACE fields:
+	// a level beside them is what the level tooltips call ignored, and with the tick up it is worse than
+	// ignored — `era5vars(…; single=false)` then hunts t2m in the pressure-level table and the request
+	// dies with "Variable t2m not found in the dataset". An example must not show a combination the
+	// dialog's own tooltips call meaningless.
+	//
+	// Neither block's example touches Region / output: it is about WHAT to ask for, not where to put it.
+	void applyExample(bool on) {
+		if (!on) {
+			for (QWidget *w : exFilled)
+				clearBox(w);
+			if (chkPressure) chkPressure->setChecked(false);
+			exFilled.clear();
+			return;
+		}
+		const bool fc = rbFc && rbFc->isChecked();
+		std::vector<std::pair<QWidget *, QString>> ex;
+		if (fc) {
+			ex = { { eFcVars, "2t" }, { eFcLevels, QString() }, { eSteps, "0,6,12" },
+			       { eDate, QString() }, { cbTime, "most recent" }, { cbModel, "ifs" },
+			       { cbStream, "oper" }, { cbType, "fc" } };
+		}
+		else {
+			ex = { { cbDataset, "reanalysis-era5-single-levels" }, { eVars, "t2m" },
+			       { eLevels, QString() }, { eDate5, "2024-12-06" }, { eHour, "12" } };
+		}
+		// Whatever a previous press of the button filled goes first — swapping the Source radio with the
+		// button down must leave ONE example standing, not two half-filled blocks.
+		for (QWidget *w : exFilled)
+			clearBox(w);
+		exFilled.clear();
+		// The pressure tick moves the dataset name behind our back (its own toggled handler), so it goes
+		// down BEFORE the dataset does, never after. It goes DOWN, not up: the example asks for `t2m`,
+		// a SINGLE-level field, and a ticked box sends `era5vars(…; single=false)` looking for it in the
+		// pressure-level table, where it does not exist ("Variable t2m not found in the dataset").
+		if (chkPressure) chkPressure->setChecked(false);
+		for (auto &kv : ex) {
+			if (!kv.first) continue;
+			exFilled.push_back(kv.first);
+			setBoxText(kv.first, kv.second);
+		}
+	}
+
+	// A little calendar glyph, PAINTED (like the manual button's green disk) rather than an emoji or a
+	// shipped asset: a QLineEdit trailing action draws its ICON, never its text, and a font that has
+	// no 📅 would leave an invisible button.
+	static QIcon calendarIcon(int px) {
+		QPixmap pm(px, px);
+		pm.fill(Qt::transparent);
+		QPainter p(&pm);
+		p.setRenderHint(QPainter::Antialiasing, true);
+		const QColor ink(90, 90, 95);
+		p.setPen(QPen(ink, 1.2));
+		p.setBrush(Qt::NoBrush);
+		QRectF body(1.5, 3.0, px - 3.0, px - 4.5);
+		p.drawRoundedRect(body, 1.5, 1.5);
+		p.drawLine(QPointF(body.left(), body.top() + 3.5), QPointF(body.right(), body.top() + 3.5));
+		p.drawLine(QPointF(body.left() + 3.0, 1.2), QPointF(body.left() + 3.0, 3.6));   // the two rings
+		p.drawLine(QPointF(body.right() - 3.0, 1.2), QPointF(body.right() - 3.0, 3.6));
+		p.setBrush(ink);
+		p.setPen(Qt::NoPen);
+		p.drawRect(QRectF(body.left() + 2.5, body.top() + 6.0, 2.0, 2.0));              // one marked day
+		p.end();
+		return QIcon(pm);
+	}
+
+	// A calendar popup for a box that holds TEXT. `append` is the ERA5 box, which may hold a list or a
+	// range: a picked date is added to what is there (so two picks make "d1,d2", and the user turns
+	// that comma into a colon for a range). The forecast box holds one date and is replaced.
+	void pickDate(QWidget *parent, QLineEdit *box, bool append) {
+		if (!box) return;
+		QDialog pop(parent, Qt::Popup);
+		auto *lay = new QVBoxLayout(&pop);
+		lay->setContentsMargins(0, 0, 0, 0);
+		auto *cal = new QCalendarWidget(&pop);
+		cal->setGridVisible(true);
+		// Seed on the last date already in the box, so a second pick starts where the first left off.
+		const QStringList had = box->text().split(QRegularExpression("[,;:]"), Qt::SkipEmptyParts);
+		for (int i = had.size(); i-- > 0; ) {
+			const QDate dd = QDate::fromString(had[i].trimmed(), "yyyy-MM-dd");
+			if (dd.isValid()) { cal->setSelectedDate(dd); break; }
+		}
+		lay->addWidget(cal);
+		// The click on a day IS the commit — no OK button to hunt for, the same contract the Ocean
+		// Color date box uses.
+		QObject::connect(cal, &QCalendarWidget::activated, &pop, [&pop](const QDate &) { pop.accept(); });
+		QObject::connect(cal, &QCalendarWidget::clicked,   &pop, [&pop](const QDate &) { pop.accept(); });
+		pop.move(box->mapToGlobal(QPoint(0, box->height())));
+		if (pop.exec() != QDialog::Accepted) return;
+		const QString picked = cal->selectedDate().toString("yyyy-MM-dd");
+		const QString cur = box->text().trimmed();
+		box->setText((append && !cur.isEmpty()) ? cur + "," + picked : picked);
+	}
+
+	// MINIMISE parks the dialog as a Scene Objects handle — the same shared parkTool/unparkTool pair
+	// every other parkable tool uses, so a parked Copernicus dialog is the same kind of row with the
+	// same ways back (double-click, its checkbox, or "Show" in its menu), with every box still set.
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { unparkTool(scn, dlg); dlg->close(); }
+		};
+	}
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);   // undo the WM's minimise
+		dlg->hide();
+		parkTool(scn, dlg, "Copernicus", IC_Image,
+		         "Minimised Copernicus / ECMWF download — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);      // a handle nobody can see is no handle at all
+	}
+
+	// W/E/S/N of what the window is showing, in the same syntax every other GMT region box takes.
+	// A window with no raster in it has no region to hand over: gx0..gy1 then still hold their struct
+	// defaults (0..1), which is not a place on Earth. Say so and touch nothing.
+	void fillRegionFromView() {
+		if (!eRegion || !scn) return;
+		if (scn->gnx < 2 || scn->gny < 2 || !(scn->gx1 > scn->gx0) || !(scn->gy1 > scn->gy0)) {
+			if (scn->win) scn->win->statusBar()->showMessage(
+				"Copernicus: this window is not showing a grid or image — no region to take.", 4000);
+			return;
+		}
+		eRegion->setText(QString("%1/%2/%3/%4").arg(scn->gx0, 0, 'g', 10).arg(scn->gx1, 0, 'g', 10)
+		                                       .arg(scn->gy0, 0, 'g', 10).arg(scn->gy1, 0, 'g', 10));
+	}
+
+	// ONE way into Julia for every request this dialog makes (the catalogue, the dry run and the
+	// download): same buffer, same "callback not registered" answer, same error reporting.
+	// A failure goes to the window's Messages log, and OPENS it. A modal box over the dialog covers the
+	// very boxes the message is about, and takes the text away with it the moment it is clicked; the
+	// log keeps it, next to whatever the Julia side printed on its own way up.
+	void fail(const QString &msg) {
+		sceneLogError(scn, "Copernicus / ECMWF: " + msg);
+		sceneShowMessages(scn, true);
+	}
+
+	QString ask(const QString &kv, QWidget *parent) {
+		(void)parent;
+		if (!g_juliaEcmwf) {
+			fail("callback not registered.");
+			return QString();
+		}
+		std::vector<char> buf(1 << 18);
+		buf[0] = '\0';
+		const int ok = g_juliaEcmwf(scn, kv.toUtf8().constData(), buf.data(), (int)buf.size());
+		lastAnswer = QString::fromUtf8(buf.data());
+		if (!ok) {
+			fail(lastAnswer.isEmpty() ? QString("failed, and the Julia side said nothing about why.")
+			                          : lastAnswer);
+			return QString();
+		}
+		return lastAnswer.isEmpty() ? QString(" ") : lastAnswer;     // non-empty = "it worked"
+	}
+	QString lastAnswer;
+
+	// The variable picker: GMT's catalogue as "id\tname\tunits" lines, filtered as the user types,
+	// with whatever the box already held pre-ticked.
+	static QStringList pickFromCatalog(QWidget *parent, const QString &catalog, const QString &current) {
+		QDialog pick(parent);
+		pick.setWindowTitle("Variables");
+		pick.resize(560, 460);
+		auto *lay = new QVBoxLayout(&pick);
+		auto *filter = new QLineEdit(&pick);
+		filter->setPlaceholderText("Filter…");
+		// Rich text with the line breaks WRITTEN IN: a plain tooltip is word-wrapped by Qt at a width of
+		// its own choosing, which on a long text comes out ragged, and its \n are not honoured.
+		filter->setToolTip("<html>Type any part of a variable's ID, name or units and the list<br>"
+		                   "keeps only the rows containing it &mdash; \"temp\" finds both<br>"
+		                   "2m_temperature and skin_temperature, \"[K]\" every variable<br>"
+		                   "in kelvin. Case does not matter, and it is plain text, not a<br>"
+		                   "pattern.<br><br>"
+		                   "Filtering only HIDES rows: anything already ticked stays ticked<br>"
+		                   "and is still returned, so you can tick, filter again, tick more,<br>"
+		                   "and take the lot with OK.<br>"
+		                   "Clear the box to see the whole catalogue again.</html>");
+		auto *list = new QListWidget(&pick);
+		auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &pick);
+		lay->addWidget(filter);   lay->addWidget(list);   lay->addWidget(bb);
+
+		QSet<QString> already;
+		for (const QString &s : current.split(QRegularExpression("[ ,;]"), Qt::SkipEmptyParts))
+			already.insert(s.trimmed());
+		for (const QString &line : catalog.split('\n', Qt::SkipEmptyParts)) {
+			const QStringList f = line.split('\t');
+			if (f.isEmpty()) continue;
+			const QString id = f[0].trimmed();
+			if (id.isEmpty()) continue;
+			QString label = id;
+			if (f.size() > 1) label += "  —  " + f[1].trimmed();
+			if (f.size() > 2 && !f[2].trimmed().isEmpty()) label += "  [" + f[2].trimmed() + "]";
+			auto *it = new QListWidgetItem(label, list);
+			it->setData(Qt::UserRole, id);
+			it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+			it->setCheckState(already.contains(id) ? Qt::Checked : Qt::Unchecked);
+		}
+		tightenListRows(list);
+		// Filtering HIDES rows, it never rebuilds the list — a variable ticked before typing the
+		// filter is still ticked (and still returned) after it.
+		QObject::connect(filter, &QLineEdit::textChanged, &pick, [list](const QString &t) {
+			for (int i = 0; i < list->count(); ++i)
+				list->item(i)->setHidden(!t.isEmpty() && !list->item(i)->text().contains(t, Qt::CaseInsensitive));
+		});
+		QObject::connect(bb, &QDialogButtonBox::accepted, &pick, &QDialog::accept);
+		QObject::connect(bb, &QDialogButtonBox::rejected, &pick, &QDialog::reject);
+		QStringList out;
+		if (pick.exec() != QDialog::Accepted) return QStringList();
+		for (int i = 0; i < list->count(); ++i)
+			if (list->item(i)->checkState() == Qt::Checked)
+				out << list->item(i)->data(Qt::UserRole).toString();
+		return out;
+	}
+
+	// The running download: poll Julia, pump Qt, show what has landed. Each poll hands the Julia task
+	// its slice of time (it sleeps 100 ms inside), so the fetch advances between two calls and the bar
+	// and the rest of the application stay alive. The CDS gives no total size — the request sits in a
+	// queue first and the file appears only at the end — so the bar is a BUSY one with the byte count
+	// written on it, which is the honest thing to show rather than a percentage of an unknown whole.
+	QString runDownload(QDialog *d) {
+		QProgressDialog pg("Waiting for the Copernicus server…", QString(), 0, 0, d);
+		pg.setWindowTitle("Copernicus / ECMWF");
+		pg.setWindowModality(Qt::NonModal);           // the window stays usable, that is the point
+		pg.setMinimumDuration(0);
+		pg.setAutoClose(false);
+		pg.show();
+		for (;;) {
+			const QString st = ask("what=poll", d).trimmed();
+			if (st.isEmpty()) return QString();                       // fail() already logged it
+			if (st.startsWith("FAIL")) { fail(st.mid(5)); return QString(); }
+			if (st == "DONE") break;
+			if (st.startsWith("BUSY")) {
+				const qlonglong n = st.mid(5).toLongLong();
+				pg.setLabelText(n > 0 ? QString("Downloading… %1 MB").arg(n / 1048576.0, 0, 'f', 1)
+				                      : QString("Waiting for the Copernicus server…"));
+			}
+			QApplication::processEvents();
+		}
+		pg.setLabelText("Reading what was downloaded…");
+		QApplication::processEvents();
+		return ask("what=finish", d);
+	}
+
+	// BOTH buttons, one function: a dry run and a download differ by `what`, never by how the request
+	// is built.
+	void run(QDialog *d, bool dry) {
+		const bool fc = rbFc && rbFc->isChecked();
+		QStringList kv;
+		kv << (dry ? "what=dryrun" : "what=download");
+		kv << (fc ? "mode=fc" : "mode=era5");
+		if (fc) {
+			if (!eFcVars || eFcVars->text().trimmed().isEmpty()) {
+				fail("give me at least one forecast variable (the \"…\" button lists them).");
+				return;
+			}
+			kv << "fcvars="   + eFcVars->text().trimmed();
+			if (eFcLevels) kv << "fclevels=" + eFcLevels->text().trimmed();
+			if (eSteps)    kv << "steps="    + eSteps->text().trimmed();
+			if (eDate)     kv << "date="     + eDate->text().trimmed();
+			if (cbTime)    kv << "time="     + cbTime->currentData().toString();
+			if (cbModel)   kv << "model="    + cbModel->currentText();
+			if (cbStream)  kv << "stream="   + cbStream->currentText();
+			if (cbType)    kv << "type="     + cbType->currentText();
+			kv << QString("cube=%1").arg(chkCube && chkCube->isChecked() ? 1 : 0);
+		}
+		else {
+			if (cbDataset) kv << "dataset=" + cbDataset->currentText().trimmed();
+			kv << QString("clipboard=%1").arg(chkClip && chkClip->isChecked() ? 1 : 0);
+			// A pasted JSON request goes over as ONE line: the key=value block is newline-separated,
+			// and JSON does not care about the whitespace that is dropped here (GMT.jl's own
+			// parse_request strips it too).
+			if (eParams) {
+				QString p = eParams->toPlainText();
+				p.replace('\r', ' ').replace('\n', ' ');
+				kv << "params=" + p.trimmed();
+			}
+			if (eVars)   kv << "vars="   + eVars->text().trimmed();
+			kv << QString("pressure=%1").arg(chkPressure && chkPressure->isChecked() ? 1 : 0);
+			if (eLevels) kv << "levels=" + eLevels->text().trimmed();
+			if (eDate5)  kv << "dates="  + eDate5->text().trimmed();
+			if (eHour)   kv << "hour="   + eHour->text().trimmed();
+		}
+		if (eRegion)  kv << "region=" + eRegion->text().trimmed();
+		// How a GLOBAL result is framed, and what unit a temperature arrives in. Both are post-download
+		// steps, and both go into the file's name (Julia's `_ecmwf_autoname`) so that asking again with
+		// the other choice fetches its own file instead of reusing one already converted.
+		if (cbLonFrame) kv << "lonframe=" + QString(cbLonFrame->currentText().startsWith('0') ? "360" : "180");
+		if (cbTunit)    kv << "tunit="    + QString(cbTunit->currentText().left(1));   // C, K or F
+		if (cbFormat) kv << "format=" + cbFormat->currentText();
+		if (eOut)     kv << "out="    + eOut->text().trimmed();
+		kv << QString("load=%1").arg(chkLoad && chkLoad->isChecked() ? 1 : 0);
+
+		showBusyDialog(dry ? "Preparing the request…" : "Downloading from the ECMWF…");
+		QString answer = ask(kv.join("\n"), d);
+		closeBusyDialog();
+		if (answer.isEmpty()) return;                   // ask() already said what went wrong
+		// A download does not happen inside that one call any more: Julia started a task and said so.
+		// Drive it from here — poll, pump Qt, move the bar — so the minutes a CDS request takes are
+		// spent with a live window instead of a frozen one.
+		if (!dry && answer.trimmed() == "STARTED") {
+			answer = runDownload(d);
+			if (answer.isEmpty()) return;
+		}
+		// The dialog stays OPEN whatever happens — another variable, another step or another region is
+		// the normal next step, not a reason to reopen it.
+		const QString text = answer.trimmed();
+		// A dry run exists to be USED elsewhere — pasted into a script, a mail, a CDS page — so its one
+		// button puts the request on the clipboard. The window's own close box dismisses it.
+		QMessageBox box(QMessageBox::Information,
+		                dry ? "Copernicus / ECMWF — dry run" : "Copernicus / ECMWF",
+		                text, dry ? QMessageBox::NoButton : QMessageBox::Ok, d);
+		box.setTextInteractionFlags(Qt::TextSelectableByMouse);
+		if (dry) {
+			QPushButton *cp = box.addButton("Copy to clipboard", QMessageBox::ActionRole);
+			QObject::connect(cp, &QPushButton::clicked, &box, [text]() {
+				QApplication::clipboard()->setText(text);
+			});
+		}
+		box.exec();
 	}
 };
 
@@ -18105,9 +18698,11 @@ public:
 		}
 		QSignalBlocker b(ne);
 		ne->setText(QString::number(nPts));
-		ne->setToolTip(QString("The range interval is divided into this number of equally spaced points\n"
-		                       "Alternatively use the form N*Delta (e.g. 100*0.1) to set up both range and "
-		                       "resolution\nActual point spacing is = %1").arg(d, 0, 'g', 6));
+		ne->setToolTip(QString("<html>The range interval is divided into this number of equally<br>"
+		                       "spaced points.<br>"
+		                       "Alternatively use the form N*Delta (e.g. 100*0.1) to set up<br>"
+		                       "both range and resolution.<br>"
+		                       "Actual point spacing is = %1</html>").arg(d, 0, 'g', 6));
 	}
 
 	void recyclePole() {
@@ -21020,28 +21615,9 @@ protected:
 	}
 };
 
-// Intercepts the X on the cube-layer dock: closing it would make the cube's layers unreachable, so
-// instead of hiding/destroying, the X RE-DOCKS the panel into the window. The X stays visible (the
-// dock is Closable); this filter just swallows the close and docks it.
-class CubeDockCloseFilter : public QObject {
-public:
-	QDockWidget *dock;
-	explicit CubeDockCloseFilter(QDockWidget *d) : QObject(d), dock(d) {}
-	bool eventFilter(QObject *obj, QEvent *ev) override {
-		if (obj == dock && ev->type() == QEvent::Close) {
-			ev->ignore();
-			dock->setFloating(false);   // re-dock into its home (bottom) area
-			// ...and land in the area + size it was last docked at, like every other panel:
-			// the same restore the float buttons use, never a second re-dock rule. (setFloating(false)
-			// above already fired topLevelChanged, which schedules it; this is the explicit call for
-			// the case where the dock was not floating and nothing was scheduled.)
-			dockRestoreLayout(qobject_cast<QMainWindow*>(dock->parentWidget()), dock);
-			dock->show();
-			return true;                // swallow the close -> never destroyed
-		}
-		return QObject::eventFilter(obj, ev);
-	}
-};
+// (CubeDockCloseFilter lived here: it re-docked the cube-layer panel when its X was pressed. The
+// cube layer selector is not a dock any more — it is a window whose minimise parks it in Scene
+// Objects, and nowhere else — so the filter has no subject and is gone.)
 
 // ── Cube Layer Selector Dialog ───────────────────────────────────────────────────────────────
 // Non-modal dialog for scrubbing through layers of a 3-D NetCDF cube: a native QScrollBar (arrow
@@ -21071,6 +21647,8 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 		if (sb)  { sb->setRange(1, nLayers);  sb->setValue(1); }
 		if (spn) { spn->setRange(1, nLayers); spn->setValue(1); }
 		if (lbl) lbl->setText(QString("3D Cube: %1 (%2 layers)").arg(cubeName).arg(nLayers));
+		s->cubeDlg->setWindowTitle(QString("Cube layers — %1  (%2 layers)").arg(cubeName).arg(nLayers));
+		unparkTool(s, s->cubeDlg);        // a re-drop brings it back on screen, so it is not parked
 		// New cube in this dock: it is NOT in RAM yet (Julia cleared _CUBE_RAM on the fresh drop),
 		// so re-enable the "Load all in RAM" button.
 		if (auto *rb = s->cubeDlg->findChild<QPushButton *>("loadRamBtn")) {
@@ -21127,22 +21705,35 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 	sb->setRange(1, nLayers);  sb->setValue(1);
 	spn->setRange(1, nLayers); spn->setValue(1);
 
-	QDockWidget *dock = new QDockWidget("Cube layers", mw);
-	dock->setObjectName("cubeLayerDock");
-	dock->setAllowedAreas(Qt::AllDockWidgetAreas);
-	// Keep the X visible (Closable); a filter turns it into "re-dock" instead of destroy so the
-	// layers can never become unreachable. Bottom is its home dock area.
-	dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
-	dock->setWidget(content);
-	mw->addDockWidget(Qt::BottomDockWidgetArea, dock);
-	installDockGeometryMemory(mw, dock, "cubeLayerDock");   // undock -> re-dock puts it back exactly
-	dock->installEventFilter(new CubeDockCloseFilter(dock));
-
-	// Start FLOATING, centered inside the viewer window. Use the .ui's OWN size verbatim — no
-	// override. A floating dock is a top-level widget, so position in global coords from the centre.
-	dock->setFloating(true);
+	// A WINDOW OF ITS OWN, and the only place it may be put away is Scene Objects. It used to be a
+	// QDockWidget that could be dragged into any dock area of the viewer — so it could end up glued to
+	// a side of the window, which is not a place this tool belongs and was never asked for. Minimise
+	// parks it as a Scene Objects handle, the same gesture every other parkable tool uses
+	// (parkOnMinimise / parkTool, 50_scene.cpp); there is no other parking place.
+	QDialog *dock = new QDialog(mw);
+	dock->setObjectName("cubeLayerDlg");
+	dock->setWindowTitle(QString("Cube layers — %1  (%2 layers)").arg(cubeName).arg(nLayers));
+	dock->setAttribute(Qt::WA_DeleteOnClose);
+	dock->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+	dock->setWindowModality(Qt::NonModal);
+	auto *lay = new QVBoxLayout(dock);
+	lay->setContentsMargins(0, 0, 0, 0);
+	lay->addWidget(content);
+	// The .ui's OWN size, verbatim, centred on the viewer window.
 	dock->resize(content->sizeHint());
 	dock->move(mw->mapToGlobal(mw->rect().center()) - QPoint(dock->width() / 2, dock->height() / 2));
+	parkOnMinimise(dock, [s, dock, cubeName, nLayers]() {
+		parkTool(s, dock, QString("Cube layers (%1)").arg(nLayers), IC_Rect,
+		         QString("Minimised cube layer selector — %1, %2 layers. Double-click to bring it back.")
+		             .arg(cubeName).arg(nLayers),
+		         [s, dock]() {                       // the shared unpark: drop the handle, show the window
+		             unparkTool(s, dock);
+		             dock->setWindowState(dock->windowState() & ~Qt::WindowMinimized);
+		             dock->showNormal();  dock->raise();  dock->activateWindow();
+		         },
+		         nullptr);
+	});
+	QObject::connect(dock, &QObject::destroyed, mw, [s, dock]{ if (sceneAlive(s)) unparkTool(s, dock); });
 
 	s->cubeDlg = dock;
 	// Clear the Scene slot when the dock is destroyed (its X, or when the window dies and takes it
@@ -25260,8 +25851,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// draw-tool group (s->shapeActs) so it untoggles the toolbar shape tools and vice-versa.
 	QAction *actDrawFault = mElastic->addAction("Draw Fault");
 	actDrawFault->setCheckable(true);
-	actDrawFault->setToolTip("Draw a fault line: click the start point, then the end (double-click ends it). "
-	                         "Its properties hold the Vertical elastic deformation dialog.");
+	actDrawFault->setToolTip("<html>Draw a fault line: click the start point, then the end<br>"
+	                         "(double-click ends it). Its properties hold the Vertical<br>"
+	                         "elastic deformation dialog.</html>");
 	QObject::connect(actDrawFault, &QAction::toggled,
 		[s, actDrawFault](bool on) { polygonToolToggled(s, actDrawFault, Scene::SH_Fault, on); });
 	s->shapeActs.push_back(actDrawFault);
@@ -25304,8 +25896,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// routed through the same polygonToolToggled.
 	QAction *actNestedGridsTsu = new QAction(makeNestedRectIcon(), "Nested grids", win);
 	actNestedGridsTsu->setCheckable(true);
-	actNestedGridsTsu->setToolTip("Draw a nested-grids rectangle (constrained dimensions + custom "
-	                              "context menus): click one corner, then the opposite corner.");
+	actNestedGridsTsu->setToolTip("<html>Draw a nested-grids rectangle (constrained dimensions +<br>"
+	                              "custom context menus): click one corner, then the opposite<br>"
+	                              "corner.</html>");
 	QObject::connect(actNestedGridsTsu, &QAction::toggled,
 		[s, actNestedGridsTsu](bool on) { polygonToolToggled(s, actNestedGridsTsu, Scene::SH_RectN, on); });
 	s->shapeActs.push_back(actNestedGridsTsu);
@@ -25316,6 +25909,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto *fMag    = new std::function<void()>();    // show Magnetics
 	auto *fGrav   = new std::function<void()>();    // show Gravity
 	auto *fPlates = new std::function<void()>();    // show Plates
+	auto *fCoper  = new std::function<void()>();    // show Copernicus
 
 	// Re-open the menu at its menubar slot after a rotate (deferred so it runs once the triggering
 	// click has finished closing the menu).
@@ -25326,7 +25920,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 	};
 
-	*fGroup = [mGphy, win, s, fTsu, fSeis, fMag, fGrav, fPlates]() {
+	*fGroup = [mGphy, win, s, fTsu, fSeis, fMag, fGrav, fPlates, fCoper]() {
 		mGphy->clear();
 		mGphy->setTitle("Geophysics ▾");
 		s->gphyPage = 0;                        // back at the discipline chooser
@@ -25335,6 +25929,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		mGphy->addAction("Magnetics",  [fMag]()    { (*fMag)(); });
 		mGphy->addAction("Gravity",    [fGrav]()   { (*fGrav)(); });
 		mGphy->addAction("Plates",     [fPlates]() { (*fPlates)(); });
+		mGphy->addAction("Copernicus", [fCoper]()  { (*fCoper)(); });
 		mGphy->addSeparator();
 		// Ocean Color: a single tool, not a discipline — it opens its dialog instead of rotating the
 		// menu, so it sits below the separator rather than in the discipline list above it.
@@ -25374,22 +25969,23 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Page ids, the one mapping between a discipline's name and the number a session stores.
 	auto gphyPageId = [](const QString &n) {
 		return n == "Tsunamis" ? 1 : n == "Seismology" ? 2 : n == "Magnetics" ? 3 :
-		       n == "Gravity"  ? 4 : n == "Plates"     ? 5 : 0;
+		       n == "Gravity"  ? 4 : n == "Plates"     ? 5 : n == "Copernicus" ? 6 : 0;
 	};
 	// Put the menu on a given page from OUTSIDE the menu code — what session restore calls. Same
 	// lambdas the menu items themselves run, so there is no second way to switch page.
-	s->gphySetPage = [fGroup, fTsu, fSeis, fMag, fGrav, fPlates](int p) {
+	s->gphySetPage = [fGroup, fTsu, fSeis, fMag, fGrav, fPlates, fCoper](int p) {
 		switch (p) {
 			case 1: (*fTsu)();    break;
 			case 2: (*fSeis)();   break;
 			case 3: (*fMag)();    break;
 			case 4: (*fGrav)();   break;
 			case 5: (*fPlates)(); break;
+			case 6: (*fCoper)();  break;
 			default: (*fGroup)(); break;
 		}
 	};
 
-	auto backItem = [mGphy, s, gphyPageId, fTsu, fSeis, fMag, fGrav, fPlates](const QString &current) {
+	auto backItem = [mGphy, s, gphyPageId, fTsu, fSeis, fMag, fGrav, fPlates, fCoper](const QString &current) {
 		s->gphyPage = gphyPageId(current);      // every page announces itself here, once
 		// Single entry — itself a submenu, direct access to any OTHER discipline (skips the
 		// chooser page entirely). Each fXxx already reopens the menu itself at its end.
@@ -25399,6 +25995,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (current != "Magnetics")  mBack->addAction("Magnetics",  [fMag]()    { (*fMag)();    });
 		if (current != "Gravity")    mBack->addAction("Gravity",    [fGrav]()   { (*fGrav)();   });
 		if (current != "Plates")     mBack->addAction("Plates",     [fPlates]() { (*fPlates)(); });
+		if (current != "Copernicus") mBack->addAction("Copernicus", [fCoper]()  { (*fCoper)();  });
 		mGphy->addSeparator();
 	};
 
@@ -25743,6 +26340,29 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				open();
 			};
 			(*step)();
+		});
+		reopen();
+	};
+
+	// Copernicus discipline — the Copernicus/ECMWF data services through GMT.jl's `ecmwf`: the
+	// Climate Data Store (ERA5 reanalysis) and the ECMWF open-data forecasts. ONE dialog for both,
+	// since they are one GMT.jl function (EcmwfDialog, above).
+	*fCoper = [mGphy, win, s, backItem, reopen]() {
+		mGphy->clear();
+		mGphy->setTitle("Copernicus ▾");
+		backItem("Copernicus");
+		mGphy->addAction("ERA5 / ECMWF download…", [win, s]() {
+			// Already open or parked in this window? Bring THAT one back — never a second dialog.
+			auto it = g_ecmwfDlgs.find(s);
+			if (it != g_ecmwfDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+			auto *w = new EcmwfDialog(win, s);      // deletes itself with its QDialog
+			// NO warm-up here, deliberately. Measured cold, in a fresh session: the variable catalogue
+			// costs 86 ms (and 0 once GMT.jl caches its table — helper_ecmwf_vars, weather.jl) and a dry
+			// run 1.25 s, all of it JIT. That is not worth a background task that can freeze the dialog
+			// it just opened, which is what warming this tool did.
+			if (w->dlg) w->dlg->show();
+			else        QMessageBox::warning(win, "Copernicus / ECMWF",
+			                QString("Could not load %1/ecmwf_dialog.ui").arg(gmtvtkUiDir()));
 		});
 		reopen();
 	};
@@ -26347,8 +26967,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// double-click ends it — the same three gestures every other vertex tool uses.
 	QAction *actRuler = tb->addAction(makeRulerIcon(), "");
 	actRuler->setCheckable(true);
-	actRuler->setToolTip("Ruler: left-click adds vertices, right-click undoes the last, double-click finishes. "
-	                     "2D measures between vertices; 3D follows the terrain. Distance type and units come from Preferences.");
+	actRuler->setToolTip("<html>Ruler: left-click adds vertices, right-click undoes the last,<br>"
+	                     "double-click finishes. 2D measures between vertices; 3D follows<br>"
+	                     "the terrain. Distance type and units come from Preferences.</html>");
 	QObject::connect(actRuler, &QAction::toggled, [s, actRuler](bool on){ polygonToolToggled(s, actRuler, Scene::SH_Ruler, on); });
 	s->rulerAct = actRuler;
 	s->shapeActs.push_back(actRuler);

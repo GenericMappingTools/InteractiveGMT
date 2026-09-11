@@ -181,7 +181,7 @@
       </item>
       <item row="5" column="1" colspan="2">
        <widget class="QDoubleSpinBox" name="spin_width">
-        <property name="toolTip"><string>Width of the terminator lines. Every line and every painted side is a normal Scene Objects element afterwards — recolour or restyle any of them from its own properties.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Width of the terminator lines. Every line and every painted&lt;br&gt;side is a normal Scene Objects element afterwards — recolour&lt;br&gt;or restyle any of them from its own properties.&lt;/html&gt;</string></property>
         <property name="decimals"><number>1</number></property>
         <property name="minimum"><double>0.5</double></property>
         <property name="maximum"><double>10.0</double></property>
@@ -216,7 +216,7 @@
       </item>
       <item row="1" column="1">
        <widget class="QLineEdit" name="edit_lon">
-        <property name="toolTip"><string>Optional observer position. Give both boxes to also get sunrise, noon, sunset and the day length there.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Optional observer position. Give both boxes to also get&lt;br&gt;sunrise, noon, sunset and the day length there.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="2">
@@ -224,7 +224,7 @@
       </item>
       <item row="1" column="3">
        <widget class="QLineEdit" name="edit_lat">
-        <property name="toolTip"><string>Optional observer position. Give both boxes to also get sunrise, noon, sunset and the day length there.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Optional observer position. Give both boxes to also get&lt;br&gt;sunrise, noon, sunset and the day length there.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="2" column="0" colspan="2">
@@ -255,7 +255,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_outfile">
-       <property name="toolTip"><string>Optional table to also write the drawn terminator polygons to. Leave empty to keep them only in this window.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Optional table to also write the drawn terminator polygons to.&lt;br&gt;Leave empty to keep them only in this window.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>

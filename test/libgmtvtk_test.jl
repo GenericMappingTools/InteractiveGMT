@@ -41,6 +41,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_settings_format_test,
 	:gmtvtk_set_flat2d_test, :gmtvtk_objrows_test,
 	:gmtvtk_fft_dialog_test, :gmtvtk_fft_sizes_test, :gmtvtk_fft_park_test, :gmtvtk_scene_adopt_test,
+	:gmtvtk_ecmwf_dialog_test,
 	:gmtvtk_set_fftstuff_callback,
 	:gmtvtk_fault_open_dialog_test, :gmtvtk_fault_close_dialog_test, :gmtvtk_trace_zbounds_test,
 	:gmtvtk_meca_drag_test,

@@ -82,7 +82,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Loading and saving files will start at this directory by default. But will change for the used last directory.</string>
+    <string>&lt;html&gt;Loading and saving files will start at this directory by&lt;br&gt;default. But will change for the used last directory.&lt;/html&gt;</string>
    </property>
    <property name="editable">
     <bool>true</bool>

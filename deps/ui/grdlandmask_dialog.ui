@@ -109,7 +109,7 @@
       <layout class="QVBoxLayout" name="verticalLayout_flags">
        <item>
         <widget class="QCheckBox" name="chk_gridReg">
-         <property name="toolTip"><string>Gridline registration (nodes on the region corners). Unchecked = pixel registration (-r).</string></property>
+         <property name="toolTip"><string>&lt;html&gt;Gridline registration (nodes on the region corners). Unchecked&lt;br&gt;= pixel registration (-r).&lt;/html&gt;</string></property>
          <property name="text"><string>Grid registration</string></property>
          <property name="checked"><bool>true</bool></property>
         </widget>
@@ -158,7 +158,7 @@
         </item>
         <item>
          <widget class="QLineEdit" name="edit_border">
-          <property name="toolTip"><string>Optional line-tracing values: one value, or cborder/lborder/iborder/pborder. Empty = plain -E.</string></property>
+          <property name="toolTip"><string>&lt;html&gt;Optional line-tracing values: one value, or&lt;br&gt;cborder/lborder/iborder/pborder. Empty = plain -E.&lt;/html&gt;</string></property>
          </widget>
         </item>
        </layout>
@@ -168,7 +168,7 @@
    </item>
    <item>
     <widget class="QCheckBox" name="chk_clip">
-     <property name="toolTip"><string>Second method: instead of a bare mask, apply it to this window's grid — nodes that get the first node value are cleared (use NaN there to punch holes).</string></property>
+     <property name="toolTip"><string>&lt;html&gt;Second method: instead of a bare mask, apply it to this&lt;br&gt;window's grid — nodes that get the first node value are&lt;br&gt;cleared (use NaN there to punch holes).&lt;/html&gt;</string></property>
      <property name="text"><string>Apply the mask to this window's grid</string></property>
     </widget>
    </item>

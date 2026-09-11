@@ -127,7 +127,7 @@
      <item>
       <widget class="QPushButton" name="loadRamBtn">
        <property name="toolTip">
-        <string>Load the whole cube into memory so layer switching is instant (needs enough free RAM)</string>
+        <string>&lt;html&gt;Load the whole cube into memory so layer switching is instant&lt;br&gt;(needs enough free RAM)&lt;/html&gt;</string>
        </property>
        <property name="text">
         <string>Load all in RAM</string>

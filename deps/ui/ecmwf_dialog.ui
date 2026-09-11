@@ -1,0 +1,496 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>EcmwfDialog</class>
+ <widget class="QDialog" name="EcmwfDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>491</width>
+    <height>756</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Copernicus / ECMWF</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <item>
+    <widget class="QGroupBox" name="group_mode">
+     <property name="title">
+      <string>Source</string>
+     </property>
+     <layout class="QHBoxLayout" name="horizontalLayout_mode">
+      <item>
+       <widget class="QRadioButton" name="rb_reanalysis">
+        <property name="toolTip">
+         <string>Climate Data Store. Needs a ~/.cdsapirc file with your API key.</string>
+        </property>
+        <property name="text">
+         <string>ERA5 reanalysis (CDS)</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="rb_forecast">
+        <property name="toolTip">
+         <string>https://data.ecmwf.int/forecasts - no credentials needed.</string>
+        </property>
+        <property name="text">
+         <string>ECMWF forecast (open data)</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_era5">
+     <property name="title">
+      <string>ERA5 reanalysis</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_era5" columnstretch="0,1,0,0">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_dataset">
+        <property name="text">
+         <string>Dataset</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1" colspan="3">
+       <widget class="QComboBox" name="cb_dataset">
+        <property name="toolTip">
+         <string>The CDS dataset name, as shown on the dataset's download page.</string>
+        </property>
+        <property name="editable">
+         <bool>true</bool>
+        </property>
+        <property name="sizeAdjustPolicy">
+         <enum>QComboBox::SizeAdjustPolicy::AdjustToMinimumContentsLengthWithIcon</enum>
+        </property>
+        <property name="minimumContentsLength">
+         <number>22</number>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lbl_vars">
+        <property name="text">
+         <string>Variables</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1" colspan="3">
+       <layout class="QHBoxLayout" name="hl_edit_vars">
+        <item>
+         <widget class="QLineEdit" name="edit_vars">
+          <property name="toolTip">
+           <string>&lt;html&gt;Variable IDs, comma separated (e.g. t2m,skt). Use the button&lt;br&gt;to pick them from the catalogue.&lt;/html&gt;</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QToolButton" name="btn_vars">
+          <property name="text">
+           <string>…</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="2" column="0">
+       <widget class="QCheckBox" name="chk_pressure">
+        <property name="toolTip">
+         <string>&lt;html&gt;Pick the variables from the pressure-level catalogue instead&lt;br&gt;of the single-level one.&lt;/html&gt;</string>
+        </property>
+        <property name="text">
+         <string>Pressure levels</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="lbl_date5">
+        <property name="text">
+         <string>Date(s)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QLineEdit" name="edit_date5">
+        <property name="toolTip">
+         <string>&lt;html&gt;One date (2024-12-06), a list (2024-12-06,2024-12-08) or a&lt;br&gt;range (2024-12-06:2024-12-10). Empty = 5 days ago. CDS&lt;br&gt;requests are year x month x day, so a span crossing a month&lt;br&gt;also asks for the other month's days.&lt;/html&gt;</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="2" colspan="2">
+       <layout class="QHBoxLayout" name="horizontalLayout_hour">
+        <item>
+         <widget class="QLabel" name="lbl_hour">
+          <property name="text">
+           <string>Hour</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="edit_hour">
+          <property name="toolTip">
+           <string>Hours 0-23. One, a list (0,6,12) or a range (10:14).</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="4" column="0" colspan="4">
+       <widget class="QCheckBox" name="chk_clipboard">
+        <property name="toolTip">
+         <string>&lt;html&gt;Use the JSON request copied from the CDS site's &quot;Show API&lt;br&gt;request&quot; button. Everything above is then ignored.&lt;/html&gt;</string>
+        </property>
+        <property name="text">
+         <string>Request from clipboard (optional)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0" colspan="4">
+       <widget class="QPlainTextEdit" name="edit_params">
+        <property name="toolTip">
+         <string>&lt;html&gt;The request body as generated by the CDS site. The Dataset box&lt;br&gt;above is then mandatory.&lt;/html&gt;</string>
+        </property>
+        <property name="placeholderText">
+         <string>…or paste the whole JSON request here (overrides the boxes above)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1" colspan="3">
+       <widget class="QLineEdit" name="edit_levels">
+        <property name="toolTip">
+         <string>&lt;html&gt;Pressure levels in hPa: one (850), a list (1000,925,850)&lt;br&gt;or a range (1000:-100:500).&lt;br&gt;Legal values: 1000, 925, 850, 700, 500, 300, 250, 200, 50&lt;br&gt;(also 5, 4, 3, 2, 1), or &quot;all&quot;.&lt;br&gt;Empty sends no pressure level at all, which only a&lt;br&gt;SINGLE-level dataset accepts - a pressure-level dataset&lt;br&gt;needs this box filled.&lt;br&gt;Needs a 3-D variable (t, u, v, w, z, q, r, ...); a surface&lt;br&gt;one like t2m ignores it.&lt;/html&gt;</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_fc">
+     <property name="title">
+      <string>ECMWF forecast</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_fc" columnstretch="0,1,0,0">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_fcvars">
+        <property name="text">
+         <string>Variables</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1" colspan="3">
+       <layout class="QHBoxLayout" name="hl_edit_fcvars">
+        <item>
+         <widget class="QLineEdit" name="edit_fcvars">
+          <property name="toolTip">
+           <string>Forecast variable IDs, comma separated (e.g. 10u,10v,2t).</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QToolButton" name="btn_fcvars">
+          <property name="text">
+           <string>…</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lbl_fclevels">
+        <property name="text">
+         <string>Pressure levels</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="edit_fclevels">
+        <property name="toolTip">
+         <string>&lt;html&gt;Pressure levels in hPa: one (850), a list (850,500) or a&lt;br&gt;range (1000:-100:500).&lt;br&gt;Legal values: 1000, 925, 850, 700, 500, 300, 250, 200, 50&lt;br&gt;(also 5, 4, 3, 2, 1), or &quot;all&quot;.&lt;br&gt;Empty = 1000 hPa.&lt;br&gt;Only for 3-D variables (t, u, v, w, gh, q, r, d, vo); a&lt;br&gt;surface one like 2t ignores it.&lt;/html&gt;</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lbl_steps">
+        <property name="text">
+         <string>Steps (h)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QLineEdit" name="edit_steps">
+        <property name="toolTip">
+         <string>Forecast steps in hours: one, a list (0,3,6) or a range (0:3:12).</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lbl_date">
+        <property name="text">
+         <string>Date</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLineEdit" name="edit_date">
+        <property name="toolTip">
+         <string>&lt;html&gt;Days back (0-3), or a full date YYYY-MM-DD. The calendar icon&lt;br&gt;inside the box picks one. Empty = the most recent run.&lt;/html&gt;</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="2">
+       <widget class="QLabel" name="lbl_time">
+        <property name="text">
+         <string>Run hour</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="3">
+       <widget class="QComboBox" name="cb_time">
+        <property name="toolTip">
+         <string>The forecast run: 00, 06, 12 or 18 UTC.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="lbl_model">
+        <property name="text">
+         <string>Model</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QComboBox" name="cb_model"/>
+      </item>
+      <item row="3" column="2">
+       <widget class="QLabel" name="lbl_stream">
+        <property name="text">
+         <string>Stream</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="3">
+       <widget class="QComboBox" name="cb_stream"/>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="lbl_type">
+        <property name="text">
+         <string>Type</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QComboBox" name="cb_type"/>
+      </item>
+      <item row="4" column="2" colspan="2">
+       <widget class="QCheckBox" name="chk_cube">
+        <property name="text">
+         <string>Save multi-level/step as a 3-D cube</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_common">
+     <property name="title">
+      <string>Region and output</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_common" columnstretch="0,1,0,0">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_region">
+        <property name="text">
+         <string>Region</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1" colspan="3">
+       <layout class="QHBoxLayout" name="hl_edit_region">
+        <item>
+         <widget class="QLineEdit" name="edit_region">
+          <property name="toolTip">
+           <string>W/E/S/N, or a GMT region code (e.g. PT, IHO23). Empty = the whole globe.</string>
+          </property>
+          <property name="placeholderText">
+           <string>Global if empty</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btn_region">
+          <property name="text">
+           <string>Use current view</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lbl_format">
+        <property name="text">
+         <string>Format</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QComboBox" name="cb_format"/>
+      </item>
+      <item row="1" column="2" colspan="2">
+       <widget class="QCheckBox" name="chk_load">
+        <property name="text">
+         <string>Load the result into this window</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lbl_out">
+        <property name="text">
+         <string>Save as</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="lbl_lonframe">
+        <property name="text">
+         <string>Longitude</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QComboBox" name="cb_lonframe">
+        <property name="toolTip">
+         <string>&lt;html&gt;The longitude frame a GLOBAL download is put in before it is&lt;br&gt;shown. ERA5 serves 0/360; -180/180 is what the rest of iGMT&lt;br&gt;works in, so it is the default. GMT does the shift (grdedit -S),&lt;br&gt;which moves values, never resamples them.&lt;br&gt;A request with a Region of its own is left in its own frame.&lt;/html&gt;</string>
+        </property>
+        <item>
+         <property name="text">
+          <string>-180/180</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>0/360</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item row="3" column="2">
+       <widget class="QLabel" name="lbl_tunit">
+        <property name="text">
+         <string>Temperature</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="3">
+       <widget class="QComboBox" name="cb_tunit">
+        <property name="toolTip">
+         <string>&lt;html&gt;ECMWF serves temperatures in kelvin, which reads badly on a&lt;br&gt;colour bar. Celsius (the default) subtracts 273.15 from the&lt;br&gt;downloaded grid and relabels its unit.&lt;br&gt;Only fields whose unit really is K are touched - a wind&lt;br&gt;component or a pressure is never converted.&lt;/html&gt;</string>
+        </property>
+        <item>
+         <property name="text">
+          <string>Celsius</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>Kelvin</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item row="2" column="1" colspan="3">
+       <layout class="QHBoxLayout" name="hl_edit_out">
+        <item>
+         <widget class="QLineEdit" name="edit_out">
+          <property name="toolTip">
+           <string>&lt;html&gt;Destination file. A directory is enough for the forecast mode,&lt;br&gt;which names each variable's file itself.&lt;/html&gt;</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QToolButton" name="btn_out">
+          <property name="text">
+           <string>…</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <widget class="QPushButton" name="btn_example">
+       <property name="toolTip">
+        <string>&lt;html&gt;Fill the block selected above with a working example request.&lt;br&gt;Switching Source while it is down moves the example to the&lt;br&gt;other block. Press it again to empty every box it filled.&lt;/html&gt;</string>
+       </property>
+       <property name="text">
+        <string>Example</string>
+       </property>
+       <property name="checkable">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_dryrun">
+       <property name="toolTip">
+        <string>Show the request (or the URL) that would be sent, and download nothing.</string>
+       </property>
+       <property name="text">
+        <string>Dry run</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_tutorial">
+       <property name="toolTip">
+        <string>Open the Copernicus / ECMWF tutorial (iGMT documentation) in your browser.</string>
+       </property>
+       <property name="text">
+        <string>Tutorial</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="spacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_download">
+       <property name="text">
+        <string>Download</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

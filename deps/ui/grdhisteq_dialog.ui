@@ -79,7 +79,7 @@
       </item>
       <item row="2" column="0" colspan="2">
        <widget class="QRadioButton" name="rb_gaussian">
-        <property name="toolTip"><string>Standard normal scores (N): the values become Gaussian with zero mean and unit variance, keeping their places. The module forbids combining this with the cells or the quadratic option.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Standard normal scores (N): the values become Gaussian with&lt;br&gt;zero mean and unit variance, keeping their places. The module&lt;br&gt;forbids combining this with the cells or the quadratic option.&lt;/html&gt;</string></property>
         <property name="text"><string>Normal scores</string></property>
        </widget>
       </item>
@@ -144,7 +144,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_outfile">
-       <property name="toolTip"><string>Optional output file: a grid, or a table for the level list. Leave empty to keep the result only in this window.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Optional output file: a grid, or a table for the level list.&lt;br&gt;Leave empty to keep the result only in this window.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>

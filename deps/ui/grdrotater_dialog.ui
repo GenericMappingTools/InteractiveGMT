@@ -68,7 +68,7 @@
       </item>
       <item row="3" column="1" colspan="2">
        <widget class="QLineEdit" name="edit_efile">
-        <property name="toolTip"><string>A file of total reconstruction rotations (lon lat tstart [tstop] angle). Double-click to browse.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;A file of total reconstruction rotations (lon lat tstart&lt;br&gt;[tstop] angle). Double-click to browse.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="3" column="3">
@@ -81,7 +81,7 @@
       </item>
       <item row="4" column="1" colspan="3">
        <widget class="QLineEdit" name="edit_eplates">
-        <property name="toolTip"><string>Two GPlates plate IDs joined by a hyphen, e.g. PAC-MBL — the rotation is taken from the GPlates database</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Two GPlates plate IDs joined by a hyphen, e.g. PAC-MBL — the&lt;br&gt;rotation is taken from the GPlates database&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>
@@ -98,7 +98,7 @@
       </item>
       <item row="0" column="1" colspan="2">
        <widget class="QLineEdit" name="edit_polyfile">
-        <property name="toolTip"><string>A closed polygon file naming the part of the grid to rotate. Empty = the whole grid. Double-click to browse.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;A closed polygon file naming the part of the grid to rotate.&lt;br&gt;Empty = the whole grid. Double-click to browse.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="3">

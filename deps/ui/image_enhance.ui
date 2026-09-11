@@ -315,7 +315,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Specifies the fraction of the image (or R band) to saturate at low and high intensities.</string>
+    <string>&lt;html&gt;Specifies the fraction of the image (or R band) to saturate at&lt;br&gt;low and high intensities.&lt;/html&gt;</string>
    </property>
    <property name="styleSheet">
     <string notr="true">background-color: rgb(255, 0, 0);</string>
@@ -337,7 +337,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Specifies the fraction of the Green band to saturate at low and high intensities.</string>
+    <string>&lt;html&gt;Specifies the fraction of the Green band to saturate at low&lt;br&gt;and high intensities.&lt;/html&gt;</string>
    </property>
    <property name="styleSheet">
     <string notr="true">background-color: rgb(0, 255, 0);</string>
@@ -407,7 +407,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Increase the image contrast with parameters deduced from the &quot;colored&quot; histograms portion</string>
+    <string>&lt;html&gt;Increase the image contrast with parameters deduced from the&lt;br&gt;&quot;colored&quot; histograms portion&lt;/html&gt;</string>
    </property>
    <property name="text">
     <string>Contrast Stretch</string>
@@ -423,7 +423,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Do a decorrelation stretch using as tolerance the value of the R band outliers percentage</string>
+    <string>&lt;html&gt;Do a decorrelation stretch using as tolerance the value of the&lt;br&gt;R band outliers percentage&lt;/html&gt;</string>
    </property>
    <property name="text">
     <string>Decorrelation Stretch</string>

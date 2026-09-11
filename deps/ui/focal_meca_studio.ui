@@ -197,7 +197,7 @@
     <layout class="QHBoxLayout" name="btnRow">
      <item>
       <widget class="QPushButton" name="btnFaultPlane">
-       <property name="toolTip"><string>Open the Fault plane demo at this strike, dip and rake and compute the Okada deformation it causes</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Open the Fault plane demo at this strike, dip and rake and&lt;br&gt;compute the Okada deformation it causes&lt;/html&gt;</string></property>
        <property name="text"><string>Show in Fault plane</string></property>
       </widget>
      </item>

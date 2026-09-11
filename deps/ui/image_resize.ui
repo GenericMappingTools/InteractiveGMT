@@ -349,7 +349,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Area Relation averages the source pixels each new pixel covers (gdalwarp -r average)</string>
+    <string>&lt;html&gt;Area Relation averages the source pixels each new pixel covers&lt;br&gt;(gdalwarp -r average)&lt;/html&gt;</string>
    </property>
    <item>
     <property name="text">

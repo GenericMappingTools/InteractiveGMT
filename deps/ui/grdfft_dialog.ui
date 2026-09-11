@@ -59,7 +59,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QLineEdit" name="edit_azim">
-        <property name="toolTip"><string>Directional derivative in this azimuth, degrees CW from north (A). Empty = not used.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Directional derivative in this azimuth, degrees CW from north&lt;br&gt;(A). Empty = not used.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -67,7 +67,7 @@
       </item>
       <item row="0" column="3">
        <widget class="QLineEdit" name="edit_upward">
-        <property name="toolTip"><string>Upward continue this many meters, or downward with a negative value (C). Empty = not used.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Upward continue this many meters, or downward with a negative&lt;br&gt;value (C). Empty = not used.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="0">
@@ -78,7 +78,7 @@
       </item>
       <item row="1" column="1">
        <widget class="QLineEdit" name="edit_dfdz">
-        <property name="toolTip"><string>Optional scale, or the letter g: the data are geoid heights in m and the result is gravity in mGal</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Optional scale, or the letter g: the data are geoid heights in&lt;br&gt;m and the result is gravity in mGal&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="2">
@@ -89,12 +89,12 @@
       </item>
       <item row="1" column="3">
        <widget class="QLineEdit" name="edit_integrate">
-        <property name="toolTip"><string>Optional scale, or the letter g: the data are gravity anomalies in mGal and the result is geoid height in m</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Optional scale, or the letter g: the data are gravity&lt;br&gt;anomalies in mGal and the result is geoid height in m&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="2" column="0" colspan="2">
        <widget class="QCheckBox" name="chk_noop">
-        <property name="toolTip"><string>No wavenumber operation at all (Q) — for writing out the FFT's own intermediate products with the modifiers below</string></property>
+        <property name="toolTip"><string>&lt;html&gt;No wavenumber operation at all (Q) — for writing out the FFT's&lt;br&gt;own intermediate products with the modifiers below&lt;/html&gt;</string></property>
         <property name="text"><string>No wavenumber operation</string></property>
        </widget>
       </item>
@@ -112,7 +112,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QComboBox" name="cb_ftype">
-        <property name="toolTip"><string>Band-pass filter shape. The wavelengths are in the grid's own units (meters, or degrees converted with Geographic).</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Band-pass filter shape. The wavelengths are in the grid's own&lt;br&gt;units (meters, or degrees converted with Geographic).&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -193,7 +193,7 @@
       </item>
       <item row="2" column="1" colspan="2">
        <widget class="QLineEdit" name="edit_grid2">
-        <property name="toolTip"><string>Optional: with a second grid over the same region the result is the 17-column cross-spectrum (X/Y power, coherent and noise power, phase, admittance, gain, coherency). Double-click to browse.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Optional: with a second grid over the same region the result&lt;br&gt;is the 17-column cross-spectrum (X/Y power, coherent and noise&lt;br&gt;power, phase, admittance, gain, coherency). Double-click to&lt;br&gt;browse.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="2" column="3">
@@ -257,7 +257,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_scale">
-       <property name="toolTip"><string>Multiply the result by this factor in the space domain, or give d to turn a deflection of the vertical into micro-radians</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Multiply the result by this factor in the space domain, or&lt;br&gt;give d to turn a deflection of the vertical into micro-radians&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>
@@ -265,7 +265,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_mgal45">
-       <property name="toolTip"><string>Gravity in mGal at 45 degrees latitude, used for the geoid conversions [980619.9203, Earth]. Change it for another planet.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Gravity in mGal at 45 degrees latitude, used for the geoid&lt;br&gt;conversions [980619.9203, Earth]. Change it for another&lt;br&gt;planet.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>
@@ -283,7 +283,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_outfile">
-       <property name="toolTip"><string>Optional output file: a grid, or a table for the spectrum. Leave empty to keep the result only in this window.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Optional output file: a grid, or a table for the spectrum.&lt;br&gt;Leave empty to keep the result only in this window.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>

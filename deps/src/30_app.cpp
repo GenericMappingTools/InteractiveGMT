@@ -390,6 +390,24 @@ static JuliaRtp3DFn g_juliaRtp3D = nullptr;
 typedef int (*JuliaTttFn)(void *scene, const char *params);
 static JuliaTttFn g_juliaTtt = nullptr;
 
+// Copernicus / ECMWF download (Geophysics > Copernicus) — GMT.jl's `ecmwf` through src/ecmwf.jl:
+// the Climate Data Store (ERA5 reanalysis) and the ECMWF open-data forecasts, the two halves of the
+// SAME GMT.jl function, so ONE dialog (EcmwfDialog, 70_window.cpp, loads deps/ui/ecmwf_dialog.ui)
+// and ONE callback serve both — `what` says what is being asked for.
+// NEWLINE-separated "key=value" block:
+//   what=download|dryrun|listvars, mode=era5|fc, source=era5|fc (listvars only),
+//   dataset=, vars=, pressure=0|1, levels=, dates=<one, a list, or first:last>, hour=,
+//   params=<JSON, one line>,
+//   clipboard=0|1, fcvars=, fclevels=, steps=, date=, time=, model=, stream=, type=, cube=0|1,
+//   region=, format=netcdf|grib, out=, load=0|1
+// (every key optional bar `what`; an absent key means "use GMT.jl's own default").
+// `out`/`cap` carry the answer back as text: the variable catalogue ("id\tname\tunits" lines) for
+// `listvars`, the request the dry run would post, or the list of files that were downloaded — and
+// the error text when the call fails. Returns 1 on success, 0 on failure: the dialog is what the
+// user is looking at, so it needs a real yes/no, not only the window's Errors console.
+typedef int (*JuliaEcmwfFn)(void *scene, const char *params, char *out, int cap);
+static JuliaEcmwfFn g_juliaEcmwf = nullptr;
+
 // The FFT tool (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum). One request
 // string does every operation: "op;grid1;grid2;newRows;newCols;coords;detrend;value" -- see
 // _on_fftstuff (src/fftstuff.jl) for what each field means. Returns 1 on success, 0 on failure.
@@ -1528,6 +1546,31 @@ public:
 	}
 };
 
+// App-wide rule: A TOOLTIP STAYS UP WHILE THE POINTER IS STILL ON THE THING IT DESCRIBES. Qt's own
+// tooltip self-destructs after a few seconds (a duration it computes from the text length), which on
+// the explanatory tooltips this app writes means the sentence vanishes mid-read. Shown here through
+// QToolTip::showText with an explicit LONG duration and the widget's own rect: Qt then hides it when
+// the pointer leaves that rect — i.e. when the mouse moves on, which is the only thing that should
+// end it. Installed once on the QApplication (like EnterDefocusFilter), so every tooltip in every
+// dialog behaves the same and no dialog has to remember anything.
+class StickyTooltipFilter : public QObject {
+public:
+	using QObject::QObject;
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		if (ev->type() == QEvent::ToolTip) {
+			QWidget *w = qobject_cast<QWidget *>(obj);
+			if (w && !w->toolTip().isEmpty()) {
+				auto *he = static_cast<QHelpEvent *>(ev);
+				// One hour: long enough to be "until the mouse moves", finite so a tooltip can never
+				// outlive the widget it belongs to.
+				QToolTip::showText(he->globalPos(), w->toolTip(), w, w->rect(), 60 * 60 * 1000);
+				return true;                       // ours now: Qt must not show its own short-lived one
+			}
+		}
+		return QObject::eventFilter(obj, ev);
+	}
+};
+
 // ---------------------------------------------------------------------------------------------
 // QT'S OWN DIAGNOSTICS ARE ERRORS. Not warnings — errors.
 //
@@ -1598,6 +1641,7 @@ static void ensureApp() {
 		"QPushButton:checked, QToolButton:checked {"
 		"  background-color: #b9cbe0; border: 2px inset #4a6c8a; }");
 	g_app->installEventFilter(new EnterDefocusFilter(g_app));   // Enter defocuses any QLineEdit (app-wide)
+	g_app->installEventFilter(new StickyTooltipFilter(g_app));  // tooltips stay up until the mouse moves on
 }
 
 // THE SHUTDOWN THE PROCESS NEVER HAD, and the reason every session ended with
@@ -2092,8 +2136,8 @@ static void wireWindowGridRow(QDialog *dlg, QComboBox *combo, Scene *s,
 		cands.push_back({ QString::fromStdString(ex.name), ex.gx0, ex.gx1, ex.gy0, ex.gy1,
 		                  (ex.gx1 - ex.gx0)/(ex.gnx - 1), (ex.gy1 - ex.gy0)/(ex.gny - 1), ex.geog });
 	}
-	combo->setToolTip("A grid already loaded in the iGMT window this dialog belongs to: its region, "
-	                  "spacing and coordinate kind fill in above.");
+	combo->setToolTip("<html>A grid already loaded in the iGMT window this dialog belongs<br>"
+	                  "to: its region, spacing and coordinate kind fill in above.</html>");
 	combo->clear();
 	combo->addItem(cands.empty() ? "(no grid in the window)" : "(pick a grid)");
 	for (const RegionGridCand &c : cands) combo->addItem(c.name);

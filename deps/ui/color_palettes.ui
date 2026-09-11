@@ -136,7 +136,7 @@
      </rect>
     </property>
     <property name="toolTip">
-     <string>Double-click to insert a colour marker; drag it to reshape the palette; double-click it again to remove it</string>
+     <string>&lt;html&gt;Double-click to insert a colour marker; drag it to reshape the&lt;br&gt;palette; double-click it again to remove it&lt;/html&gt;</string>
     </property>
    </widget>
    <widget class="QLabel" name="h_txt_cZ">

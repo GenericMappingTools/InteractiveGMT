@@ -26,7 +26,7 @@
       <string>Region (WGS84 degrees)</string>
      </property>
      <property name="toolTip">
-      <string>The area to download. Only Portugal is covered by this survey (-9.6/-6.1/36.9/42.2).</string>
+      <string>&lt;html&gt;The area to download. Only Portugal is covered by this survey&lt;br&gt;(-9.6/-6.1/36.9/42.2).&lt;/html&gt;</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_region">
       <item row="0" column="0">
@@ -67,7 +67,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QComboBox" name="cb_collection">
-        <property name="toolTip"><string>Which product to download: MDT = terrain model, MDS = surface model, at 2 m or 50 cm; LAZ = the raw point cloud.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Which product to download: MDT = terrain model, MDS = surface&lt;br&gt;model, at 2 m or 50 cm; LAZ = the raw point cloud.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -78,7 +78,7 @@
       </item>
       <item row="0" column="3">
        <widget class="QComboBox" name="cb_compress">
-        <property name="toolTip"><string>DGT ships uncompressed GeoTIFFs. "GeoTIFF (DEFLATE)" and "netCDF4" recompress each tile as it lands, which saves a lot of disk. Not applied to LAZ.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;DGT ships uncompressed GeoTIFFs. "GeoTIFF (DEFLATE)" and&lt;br&gt;"netCDF4" recompress each tile as it lands, which saves a lot&lt;br&gt;of disk. Not applied to LAZ.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="0">
@@ -86,7 +86,7 @@
       </item>
       <item row="1" column="1" colspan="2">
        <widget class="QLineEdit" name="edit_outdir">
-        <property name="toolTip"><string>Root directory for the downloaded tiles (they go in a per-collection subdirectory). Empty = ~/.gmt/DGT. A name starting with "_" is taken under ~/.gmt/DGT (e.g. _algarve -> ~/.gmt/DGT/algarve).</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Root directory for the downloaded tiles (they go in a&lt;br&gt;per-collection subdirectory). Empty = ~/.gmt/DGT. A name&lt;br&gt;starting with "_" is taken under ~/.gmt/DGT (e.g. _algarve ->&lt;br&gt;~/.gmt/DGT/algarve).&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="3">
@@ -106,13 +106,13 @@
       <item row="2" column="2" colspan="2">
        <widget class="QCheckBox" name="chk_latest">
         <property name="text"><string>Latest version only</string></property>
-        <property name="toolTip"><string>DGT keeps older versions of a tile (_v01, _v02 ...). Ticked, only the most recent one of each is downloaded.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;DGT keeps older versions of a tile (_v01, _v02 ...). Ticked,&lt;br&gt;only the most recent one of each is downloaded.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="3" column="0" colspan="4">
        <widget class="QCheckBox" name="chk_dry">
         <property name="text"><string>Dry run — list the tiles that would be downloaded, download nothing</string></property>
-        <property name="toolTip"><string>Queries the DGT catalogue and writes the tile names it found to the log below, without downloading anything.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Queries the DGT catalogue and writes the tile names it found&lt;br&gt;to the log below, without downloading anything.&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>
@@ -129,7 +129,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QLineEdit" name="edit_user">
-        <property name="toolTip"><string>The e-mail of your account at https://cdd.dgterritorio.gov.pt. Left empty, it is read from ~/.dgt.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;The e-mail of your account at https://cdd.dgterritorio.gov.pt.&lt;br&gt;Left empty, it is read from ~/.dgt.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -160,7 +160,7 @@
      <property name="checkable"><bool>true</bool></property>
      <property name="checked"><bool>true</bool></property>
      <property name="toolTip">
-      <string>Unticked, the tiles are only downloaded. Ticked, they are also assembled into a single grid over the region above.</string>
+      <string>&lt;html&gt;Unticked, the tiles are only downloaded. Ticked, they are also&lt;br&gt;assembled into a single grid over the region above.&lt;/html&gt;</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_mosaic" columnstretch="0,1,0,1">
       <item row="0" column="0">
@@ -168,14 +168,14 @@
       </item>
       <item row="0" column="1">
        <widget class="QComboBox" name="cb_dest">
-        <property name="toolTip"><string>Where the mosaic goes: straight into this window (nothing written to disk), or to a file (which is then also displayed).</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Where the mosaic goes: straight into this window (nothing&lt;br&gt;written to disk), or to a file (which is then also displayed).&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2" colspan="2">
        <layout class="QHBoxLayout" name="horizontalLayout_outfile">
         <item>
          <widget class="QLineEdit" name="edit_outfile">
-          <property name="toolTip"><string>Output file. The extension picks the format: .tif/.tiff = compressed GeoTIFF, .nc = netCDF4.</string></property>
+          <property name="toolTip"><string>&lt;html&gt;Output file. The extension picks the format: .tif/.tiff =&lt;br&gt;compressed GeoTIFF, .nc = netCDF4.&lt;/html&gt;</string></property>
          </widget>
         </item>
         <item>
@@ -191,7 +191,7 @@
       </item>
       <item row="1" column="1">
        <widget class="QLineEdit" name="edit_inc">
-        <property name="toolTip"><string>Optional cell size, in the tiles' own CRS units (metres). Empty = keep the tiles' resolution.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Optional cell size, in the tiles' own CRS units (metres).&lt;br&gt;Empty = keep the tiles' resolution.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="2">
@@ -210,7 +210,7 @@
       </item>
       <item row="2" column="1" colspan="3">
        <widget class="QLineEdit" name="edit_proj">
-        <property name="toolTip"><string>Optional target CRS: an EPSG number (32629), an authority string (EPSG:32629), a proj string, or "geog" for lon/lat. Empty = keep the tiles' CRS (PT-TM06 / ETRS89, metres).</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Optional target CRS: an EPSG number (32629), an authority&lt;br&gt;string (EPSG:32629), a proj string, or "geog" for lon/lat.&lt;br&gt;Empty = keep the tiles' CRS (PT-TM06 / ETRS89, metres).&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>
@@ -235,7 +235,7 @@
       <widget class="QPushButton" name="push_mosaic">
        <property name="minimumSize"><size><width>120</width><height>24</height></size></property>
        <property name="text"><string>Mosaic what I have</string></property>
-       <property name="toolTip"><string>Skip the download and mosaic the tiles already on disk for this region and collection.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Skip the download and mosaic the tiles already on disk for&lt;br&gt;this region and collection.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>

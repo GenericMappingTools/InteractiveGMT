@@ -162,7 +162,7 @@
      </rect>
     </property>
     <property name="toolTip">
-     <string>Find out all bounding polygons that share the selected colors. Click every shape you want, then right-click or double-click in the figure to finish</string>
+     <string>&lt;html&gt;Find out all bounding polygons that share the selected colors.&lt;br&gt;Click every shape you want, then right-click or double-click&lt;br&gt;in the figure to finish&lt;/html&gt;</string>
     </property>
     <property name="text">
      <string>Pick multiple shapes</string>

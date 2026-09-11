@@ -170,7 +170,7 @@
         <item row="0" column="1">
          <widget class="QLineEdit" name="le_incGrid">
           <property name="toolTip">
-           <string>Optional. Whatever is not given as a grid comes from IGRF. May be coarser than the anomaly grid.</string>
+           <string>&lt;html&gt;Optional. Whatever is not given as a grid comes from IGRF. May&lt;br&gt;be coarser than the anomaly grid.&lt;/html&gt;</string>
           </property>
          </widget>
         </item>
@@ -191,7 +191,7 @@
         <item row="1" column="1">
          <widget class="QLineEdit" name="le_decGrid">
           <property name="toolTip">
-           <string>Optional. Whatever is not given as a grid comes from IGRF. May be coarser than the anomaly grid.</string>
+           <string>&lt;html&gt;Optional. Whatever is not given as a grid comes from IGRF. May&lt;br&gt;be coarser than the anomaly grid.&lt;/html&gt;</string>
           </property>
          </widget>
         </item>
@@ -258,7 +258,7 @@
          <string>5</string>
         </property>
         <property name="toolTip">
-         <string>Inside each bin the ambient field and the magnetization vector are taken as constant</string>
+         <string>&lt;html&gt;Inside each bin the ambient field and the magnetization vector&lt;br&gt;are taken as constant&lt;/html&gt;</string>
         </property>
        </widget>
       </item>
@@ -360,7 +360,7 @@
       <item row="1" column="1" colspan="3">
        <widget class="QLineEdit" name="le_outfile">
         <property name="toolTip">
-         <string>Optional. The result is always added to this window; give a name here to also write it to disk.</string>
+         <string>&lt;html&gt;Optional. The result is always added to this window; give a&lt;br&gt;name here to also write it to disk.&lt;/html&gt;</string>
         </property>
        </widget>
       </item>

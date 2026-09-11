@@ -81,7 +81,7 @@
       </item>
       <item row="3" column="1">
        <widget class="QLineEdit" name="edit_qinc">
-        <property name="toolTip"><string>Not needed when the plate thickness comes from a file — that file already says where the nodes are.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Not needed when the plate thickness comes from a file — that&lt;br&gt;file already says where the nodes are.&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>
@@ -96,7 +96,7 @@
       </item>
       <item row="0" column="1" colspan="2">
        <widget class="QLineEdit" name="edit_te">
-        <property name="toolTip"><string>Elastic thickness in metres, or with k for km (e.g. 10k). Above 1e10 it is read as a flexural rigidity instead. Or the name of a file of variable thickness — double-click to browse.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Elastic thickness in metres, or with k for km (e.g. 10k).&lt;br&gt;Above 1e10 it is read as a flexural rigidity instead. Or the&lt;br&gt;name of a file of variable thickness — double-click to browse.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="3">
@@ -181,7 +181,7 @@
       </item>
       <item row="0" column="3">
        <widget class="QLineEdit" name="edit_water">
-        <property name="toolTip"><string>In metres, or with k for km. Topography above it is rescaled for the air contrast.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;In metres, or with k for km. Topography above it is rescaled&lt;br&gt;for the air contrast.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="0">
@@ -189,7 +189,7 @@
       </item>
       <item row="1" column="1">
        <widget class="QLineEdit" name="edit_zobs">
-        <property name="toolTip"><string>Distance from the observation level down to the undeformed surface, in metres or with k for km. Subtracted before output.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Distance from the observation level down to the undeformed&lt;br&gt;surface, in metres or with k for km. Subtracted before output.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="2">

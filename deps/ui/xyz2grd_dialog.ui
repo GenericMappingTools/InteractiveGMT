@@ -76,7 +76,7 @@
       </item>
       <item row="2" column="3">
        <widget class="QLineEdit" name="edit_zflags">
-        <property name="toolTip"><string>Read a bare one-column table of z values in the node order given by these flags (Z), e.g. TLa. The manual page (the green ? disk) lists them all. Empty = a normal x,y,z table.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Read a bare one-column table of z values in the node order&lt;br&gt;given by these flags (Z), e.g. TLa. The manual page (the green&lt;br&gt;? disk) lists them all. Empty = a normal x,y,z table.&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>

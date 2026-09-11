@@ -208,7 +208,7 @@
           <item>
            <widget class="QListWidget" name="lstGrids">
             <property name="toolTip">
-             <string>Grids are shown in this order, one per frame. Each must have the same size, registration, range and increment as the window's current grid.</string>
+             <string>&lt;html&gt;Grids are shown in this order, one per frame. Each must have&lt;br&gt;the same size, registration, range and increment as the&lt;br&gt;window's current grid.&lt;/html&gt;</string>
             </property>
            </widget>
           </item>

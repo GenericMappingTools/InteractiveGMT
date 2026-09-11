@@ -33,7 +33,7 @@
      </item>
      <item row="0" column="1">
       <widget class="QLineEdit" name="edit_infile">
-       <property name="toolTip"><string>The cross-sections of one or more bodies, one polygon per segment. Double-click to browse.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;The cross-sections of one or more bodies, one polygon per&lt;br&gt;segment. Double-click to browse.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item row="0" column="2">
@@ -70,7 +70,7 @@
       </item>
       <item row="1" column="1">
        <widget class="QLineEdit" name="edit_density">
-        <property name="toolTip"><string>One density contrast for every body, overriding the segment headers. Below 10 is read as g/cm3, above as kg/m3. Empty = take each body's density from its own segment header.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;One density contrast for every body, overriding the segment&lt;br&gt;headers. Below 10 is read as g/cm3, above as kg/m3. Empty =&lt;br&gt;take each body's density from its own segment header.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="2" colspan="2">
@@ -142,7 +142,7 @@
       </item>
       <item row="4" column="1" colspan="2">
        <widget class="QLineEdit" name="edit_trackfile">
-        <property name="toolTip"><string>A file of x [z] positions. A second column is taken as the observation level unless one is given below. Double-click to browse.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;A file of x [z] positions. A second column is taken as the&lt;br&gt;observation level unless one is given below. Double-click to&lt;br&gt;browse.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="4" column="3">
@@ -177,7 +177,7 @@
       </item>
       <item row="1" column="1">
        <widget class="QLineEdit" name="edit_y25min">
-        <property name="toolTip"><string>Near end of the body's extent along strike. Free-air anomalies only; empty = a truly 2-D body.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Near end of the body's extent along strike. Free-air anomalies&lt;br&gt;only; empty = a truly 2-D body.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="2">

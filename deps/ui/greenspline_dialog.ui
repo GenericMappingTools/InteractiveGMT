@@ -40,7 +40,7 @@
           </item>
           <item row="0" column="1" colspan="2">
            <widget class="QLineEdit" name="edit_infile">
-            <property name="toolTip"><string>The scattered data. Columns are x[,y[,z]] then the value, as the distance mode below decides. Double-click to browse.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;The scattered data. Columns are x[,y[,z]] then the value, as&lt;br&gt;the distance mode below decides. Double-click to browse.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="0" column="3">
@@ -62,7 +62,7 @@
           </item>
           <item row="2" column="0" colspan="4">
            <widget class="QCheckBox" name="chk_uncert">
-            <property name="toolTip"><string>W: the LAST column holds one-sigma uncertainties. Weights inversely proportional to their squares are computed from them.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;W: the LAST column holds one-sigma uncertainties. Weights&lt;br&gt;inversely proportional to their squares are computed from&lt;br&gt;them.&lt;/html&gt;</string></property>
             <property name="text"><string>Last column holds one-sigma uncertainties (W)</string></property>
            </widget>
           </item>
@@ -84,7 +84,7 @@
           </item>
           <item row="0" column="1" colspan="3">
            <widget class="QComboBox" name="cb_dmode">
-            <property name="toolTip"><string>What the coordinates mean, and with them how many dimensions the problem has. A grid can only come back from the two-dimensional modes.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;What the coordinates mean, and with them how many dimensions&lt;br&gt;the problem has. A grid can only come back from the&lt;br&gt;two-dimensional modes.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="1" column="0">
@@ -92,7 +92,7 @@
           </item>
           <item row="1" column="1" colspan="3">
            <widget class="QComboBox" name="cb_spline">
-            <property name="toolTip"><string>The Green's function. The last two live on a sphere and go with the -D5 mode; the others do not.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;The Green's function. The last two live on a sphere and go&lt;br&gt;with the -D5 mode; the others do not.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="2" column="0">
@@ -131,14 +131,14 @@
          <layout class="QGridLayout" name="gridLayout_what">
           <item row="0" column="0" colspan="3">
            <widget class="QRadioButton" name="rb_grid">
-            <property name="toolTip"><string>A grid, added to this window. Only the two-dimensional distance modes can make one.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;A grid, added to this window. Only the two-dimensional&lt;br&gt;distance modes can make one.&lt;/html&gt;</string></property>
             <property name="text"><string>A grid</string></property>
             <property name="checked"><bool>true</bool></property>
            </widget>
           </item>
           <item row="1" column="0" colspan="3">
            <widget class="QRadioButton" name="rb_nodes">
-            <property name="toolTip"><string>N: evaluate the spline at the locations listed in a file. The answer is a table, and it is the only way a 1-D or 3-D problem can be seen here.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;N: evaluate the spline at the locations listed in a file. The&lt;br&gt;answer is a table, and it is the only way a 1-D or 3-D problem&lt;br&gt;can be seen here.&lt;/html&gt;</string></property>
             <property name="text"><string>Values at the locations in a file (N)</string></property>
            </widget>
           </item>
@@ -216,7 +216,7 @@
             </item>
             <item>
              <widget class="QLineEdit" name="edit_maskgrid">
-              <property name="toolTip"><string>Evaluate only where this grid is not NaN, on its own nodes. Giving one replaces the region and spacing above. Double-click to browse.</string></property>
+              <property name="toolTip"><string>&lt;html&gt;Evaluate only where this grid is not NaN, on its own nodes.&lt;br&gt;Giving one replaces the region and spacing above. Double-click&lt;br&gt;to browse.&lt;/html&gt;</string></property>
              </widget>
             </item>
             <item>
@@ -226,7 +226,7 @@
           </item>
           <item>
            <widget class="QCheckBox" name="chk_plotpts">
-            <property name="toolTip"><string>Also put the data points on top of the new grid, from the very table that was gridded</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Also put the data points on top of the new grid, from the very&lt;br&gt;table that was gridded&lt;/html&gt;</string></property>
             <property name="text"><string>Plot the data points on the result</string></property>
            </widget>
           </item>
@@ -247,7 +247,7 @@
          <layout class="QGridLayout" name="gridLayout_approx">
           <item row="0" column="0" colspan="4">
            <widget class="QCheckBox" name="chk_approx">
-            <property name="toolTip"><string>Solve by SVD and drop the smallest eigenvalues, which turns the exact interpolator into a smoother</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Solve by SVD and drop the smallest eigenvalues, which turns&lt;br&gt;the exact interpolator into a smoother&lt;/html&gt;</string></property>
             <property name="text"><string>Solve by SVD and cut the eigenvalues</string></property>
            </widget>
           </item>
@@ -299,7 +299,7 @@
           </item>
           <item row="1" column="1">
            <widget class="QLineEdit" name="edit_gradformat">
-            <property name="toolTip"><string>1 to 5, as the greenspline manual lists them (+f). The green ? button opens that page.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;1 to 5, as the greenspline manual lists them (+f). The green ?&lt;br&gt;button opens that page.&lt;/html&gt;</string></property>
             <property name="text"><string>1</string></property>
            </widget>
           </item>
@@ -316,7 +316,7 @@
           </item>
           <item row="3" column="0" colspan="4">
            <widget class="QCheckBox" name="chk_misfit">
-            <property name="toolTip"><string>E: evaluate the spline at the data points and report how far it missed (mean, standard deviation, rms)</string></property>
+            <property name="toolTip"><string>&lt;html&gt;E: evaluate the spline at the data points and report how far&lt;br&gt;it missed (mean, standard deviation, rms)&lt;/html&gt;</string></property>
             <property name="text"><string>Report the misfit at the data points (E)</string></property>
            </widget>
           </item>
@@ -344,7 +344,7 @@
           </item>
           <item row="6" column="0" colspan="2">
            <widget class="QCheckBox" name="chk_notrend">
-            <property name="toolTip"><string>Lt: leave the linear (1-D) or planar (2-D) trend in the data instead of removing it first</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Lt: leave the linear (1-D) or planar (2-D) trend in the data&lt;br&gt;instead of removing it first&lt;/html&gt;</string></property>
             <property name="text"><string>Do not remove the trend (Lt)</string></property>
            </widget>
           </item>
@@ -381,7 +381,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_outfile">
-       <property name="toolTip"><string>Optional. A grid, or a table when the answer is one. Leave empty to keep it in this window only.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Optional. A grid, or a table when the answer is one. Leave&lt;br&gt;empty to keep it in this window only.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>

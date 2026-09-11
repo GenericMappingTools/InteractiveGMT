@@ -187,7 +187,7 @@
      <item>
       <widget class="QLineEdit" name="edit_outfile">
        <property name="toolTip">
-        <string>Optional. The result is always added to Scene Objects; this also writes it to disk.</string>
+        <string>&lt;html&gt;Optional. The result is always added to Scene Objects; this&lt;br&gt;also writes it to disk.&lt;/html&gt;</string>
        </property>
       </widget>
      </item>

@@ -46,7 +46,7 @@
             </sizepolicy>
            </property>
            <property name="maximumSize"><size><width>16777215</width><height>90</height></size></property>
-           <property name="toolTip"><string>Every line element of this window (imported tables and drawn lines alike). Ctrl/Shift-click to rotate several at once.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Every line element of this window (imported tables and drawn&lt;br&gt;lines alike). Ctrl/Shift-click to rotate several at once.&lt;/html&gt;</string></property>
            <property name="selectionMode"><enum>QAbstractItemView::SelectionMode::ExtendedSelection</enum></property>
           </widget>
          </item>
@@ -55,7 +55,7 @@
            <item>
             <widget class="QPushButton" name="push_pick">
              <property name="minimumSize"><size><width>96</width><height>24</height></size></property>
-             <property name="toolTip"><string>Stays down: every line you click in the 3-D window is added to the selection. Click the button again to stop.</string></property>
+             <property name="toolTip"><string>&lt;html&gt;Stays down: every line you click in the 3-D window is added to&lt;br&gt;the selection. Click the button again to stop.&lt;/html&gt;</string></property>
              <property name="text"><string>Pick in view</string></property>
              <property name="checkable"><bool>true</bool></property>
             </widget>
@@ -63,7 +63,7 @@
            <item>
             <widget class="QPushButton" name="push_rect">
              <property name="minimumSize"><size><width>96</width><height>24</height></size></property>
-             <property name="toolTip"><string>Drag a rectangle in the 3-D window: every line crossing it is added to the selection (click one corner, then the opposite one).</string></property>
+             <property name="toolTip"><string>&lt;html&gt;Drag a rectangle in the 3-D window: every line crossing it is&lt;br&gt;added to the selection (click one corner, then the opposite&lt;br&gt;one).&lt;/html&gt;</string></property>
              <property name="text"><string>Rect select</string></property>
              <property name="checkable"><bool>true</bool></property>
             </widget>
@@ -97,7 +97,7 @@
             <layout class="QHBoxLayout" name="horizontalLayout_polesFile">
              <item>
               <widget class="QLineEdit" name="edit_polesFile">
-               <property name="toolTip"><string>GMT rotation file: stage poles (lon lat tstart tend angle) or total reconstruction poles (lon lat age angle). Double-click to browse.</string></property>
+               <property name="toolTip"><string>&lt;html&gt;GMT rotation file: stage poles (lon lat tstart tend angle) or&lt;br&gt;total reconstruction poles (lon lat age angle). Double-click&lt;br&gt;to browse.&lt;/html&gt;</string></property>
               </widget>
              </item>
              <item>
@@ -115,7 +115,7 @@
            </item>
            <item>
             <widget class="QCheckBox" name="chk_geodetic">
-             <property name="toolTip"><string>Treat the input latitudes as geodetic: convert to geocentric before rotating and back after (mapproject -Ng)</string></property>
+             <property name="toolTip"><string>&lt;html&gt;Treat the input latitudes as geodetic: convert to geocentric&lt;br&gt;before rotating and back after (mapproject -Ng)&lt;/html&gt;</string></property>
              <property name="text"><string>Geodetic Lats</string></property>
             </widget>
            </item>
@@ -128,7 +128,7 @@
             <layout class="QHBoxLayout" name="horizontalLayout_agesFile">
              <item>
               <widget class="QLineEdit" name="edit_agesFile">
-               <property name="toolTip"><string>One age per line, optionally followed by a chron name. Or type the ages directly, e.g. 10 20 30, or a range 0:5:50. Double-click to browse.</string></property>
+               <property name="toolTip"><string>&lt;html&gt;One age per line, optionally followed by a chron name. Or type&lt;br&gt;the ages directly, e.g. 10 20 30, or a range 0:5:50.&lt;br&gt;Double-click to browse.&lt;/html&gt;</string></property>
               </widget>
              </item>
              <item>
@@ -339,7 +339,7 @@
         <layout class="QHBoxLayout" name="horizontalLayout_finiteFile">
          <item>
           <widget class="QLineEdit" name="edit_finiteFile">
-           <property name="toolTip"><string>Total reconstruction poles: lon lat age angle (GMT order) or lon lat angle age (Mirone order) — both are read. Double-click to browse.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Total reconstruction poles: lon lat age angle (GMT order) or&lt;br&gt;lon lat angle age (Mirone order) — both are read. Double-click&lt;br&gt;to browse.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item>
@@ -375,7 +375,7 @@
         <layout class="QHBoxLayout" name="horizontalLayout_agesFile2">
          <item>
           <widget class="QLineEdit" name="edit_agesFile2">
-           <property name="toolTip"><string>Ages to interpolate at: a file, a list (10 20 30) or a range (0:5:50). Double-click to browse.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Ages to interpolate at: a file, a list (10 20 30) or a range&lt;br&gt;(0:5:50). Double-click to browse.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item>

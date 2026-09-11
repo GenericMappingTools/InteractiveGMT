@@ -46,7 +46,7 @@
          </item>
          <item row="1" column="1" colspan="2">
           <widget class="QCheckBox" name="chk_loadkm">
-           <property name="toolTip"><string>The grid's x,y are in km, not metres (+uk on the file name). Geographic grids use the tick below instead.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;The grid's x,y are in km, not metres (+uk on the file name).&lt;br&gt;Geographic grids use the tick below instead.&lt;/html&gt;</string></property>
            <property name="text"><string>its x,y are in km (+uk)</string></property>
           </widget>
          </item>
@@ -55,7 +55,7 @@
          </item>
          <item row="2" column="1">
           <widget class="QLineEdit" name="edit_rhogrid">
-           <property name="toolTip"><string>Optional grid of load densities, node by node. Giving one replaces the fixed load density below. Double-click to browse.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Optional grid of load densities, node by node. Giving one&lt;br&gt;replaces the fixed load density below. Double-click to browse.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item row="2" column="2">
@@ -78,7 +78,7 @@
           </item>
           <item row="0" column="3">
            <widget class="QLineEdit" name="edit_rhol">
-            <property name="toolTip"><string>Fixed load density. Greyed out when a load-density grid is given — the module then wants a dash here, and gets one.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Fixed load density. Greyed out when a load-density grid is&lt;br&gt;given — the module then wants a dash here, and gets one.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="1" column="0">
@@ -100,7 +100,7 @@
           </item>
           <item row="2" column="1">
            <widget class="QLineEdit" name="edit_rhoroot">
-            <property name="toolTip"><string>Fixed density of the infill just beneath the load. The load topography is rescaled by load/root and the load density reset to it.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Fixed density of the infill just beneath the load. The load&lt;br&gt;topography is rescaled by load/root and the load density reset&lt;br&gt;to it.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="2" column="2">
@@ -121,7 +121,7 @@
          </item>
          <item row="0" column="1">
           <widget class="QLineEdit" name="edit_water">
-           <property name="toolTip"><string>In metres, or with k for km. Topography above it is rescaled for the air contrast.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;In metres, or with k for km. Topography above it is rescaled&lt;br&gt;for the air contrast.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item row="0" column="2">
@@ -129,12 +129,12 @@
          </item>
          <item row="0" column="3">
           <widget class="QLineEdit" name="edit_zobs">
-           <property name="toolTip"><string>Distance from the observation level down to the undeformed surface, in metres or with k for km. Subtracted before output.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Distance from the observation level down to the undeformed&lt;br&gt;surface, in metres or with k for km. Subtracted before output.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item row="1" column="0" colspan="4">
           <widget class="QCheckBox" name="chk_geog">
-           <property name="toolTip"><string>The grids are in lon/lat (fg): distances are converted to metres by a flat-Earth approximation</string></property>
+           <property name="toolTip"><string>&lt;html&gt;The grids are in lon/lat (fg): distances are converted to&lt;br&gt;metres by a flat-Earth approximation&lt;/html&gt;</string></property>
            <property name="text"><string>Grids are geographic (lon, lat)</string></property>
           </widget>
          </item>
@@ -163,7 +163,7 @@
           </item>
           <item row="0" column="1">
            <widget class="QLineEdit" name="edit_te">
-            <property name="toolTip"><string>Elastic thickness in metres, or with k for km (e.g. 10k). Above 1e10 it is read as a flexural rigidity. EMPTY means no plate at all — a purely viscous response, which needs the firmoviscous model below.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Elastic thickness in metres, or with k for km (e.g. 10k).&lt;br&gt;Above 1e10 it is read as a flexural rigidity. EMPTY means no&lt;br&gt;plate at all — a purely viscous response, which needs the&lt;br&gt;firmoviscous model below.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="0" column="2">
@@ -171,7 +171,7 @@
           </item>
           <item row="0" column="3">
            <widget class="QLineEdit" name="edit_te2">
-            <property name="toolTip"><string>A second, final thickness selects the general linear viscoelastic model — which also needs a Maxwell time.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;A second, final thickness selects the general linear&lt;br&gt;viscoelastic model — which also needs a Maxwell time.&lt;/html&gt;</string></property>
            </widget>
           </item>
          </layout>
@@ -186,7 +186,7 @@
           </item>
           <item row="0" column="1">
            <widget class="QLineEdit" name="edit_nua">
-            <property name="toolTip"><string>Firmoviscous: viscosity of the half-space, or of the asthenosphere when the two boxes beside it are filled. In Pa s.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Firmoviscous: viscosity of the half-space, or of the&lt;br&gt;asthenosphere when the two boxes beside it are filled. In Pa&lt;br&gt;s.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="0" column="2">
@@ -202,7 +202,7 @@
           </item>
           <item row="1" column="1">
            <widget class="QLineEdit" name="edit_num">
-            <property name="toolTip"><string>Viscosity of the lower mantle, in Pa s. Give it together with the asthenosphere thickness, or neither.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Viscosity of the lower mantle, in Pa s. Give it together with&lt;br&gt;the asthenosphere thickness, or neither.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="1" column="2">
@@ -210,7 +210,7 @@
           </item>
           <item row="1" column="3">
            <widget class="QLineEdit" name="edit_maxwell">
-            <property name="toolTip"><string>Viscoelastic: the Maxwell time in years, or with k for kyr and M for Myr. Cannot be mixed with the firmoviscous viscosities.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Viscoelastic: the Maxwell time in years, or with k for kyr and&lt;br&gt;M for Myr. Cannot be mixed with the firmoviscous viscosities.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="2" column="0" colspan="4">
@@ -267,7 +267,7 @@
        </item>
        <item>
         <widget class="QCheckBox" name="chk_transfer">
-         <property name="toolTip"><string>Compute no flexure at all (Q): write this rheology's transfer function for seven elastic thicknesses, and plot them. The files land in the working directory under the module's own fixed names.</string></property>
+         <property name="toolTip"><string>&lt;html&gt;Compute no flexure at all (Q): write this rheology's transfer&lt;br&gt;function for seven elastic thicknesses, and plot them. The&lt;br&gt;files land in the working directory under the module's own&lt;br&gt;fixed names.&lt;/html&gt;</string></property>
          <property name="text"><string>Transfer functions only — no flexure (Q)</string></property>
         </widget>
        </item>
@@ -294,7 +294,7 @@
           </item>
           <item row="0" column="1">
            <widget class="QLineEdit" name="edit_t0">
-            <property name="toolTip"><string>A time in years, or with k for kyr and M for Myr. On its own it is one time. Empty = one instantaneous (elastic) solution.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;A time in years, or with k for kyr and M for Myr. On its own&lt;br&gt;it is one time. Empty = one instantaneous (elastic) solution.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="0" column="2">
@@ -336,7 +336,7 @@
          </item>
          <item row="0" column="1">
           <widget class="QLineEdit" name="edit_outfile">
-           <property name="toolTip"><string>Without times: optional — leave empty to keep the flexure in this window only. WITH times the module writes one grid per time and this must be a TEMPLATE containing %, e.g. flex_%s.nc</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Without times: optional — leave empty to keep the flexure in&lt;br&gt;this window only. WITH times the module writes one grid per&lt;br&gt;time and this must be a TEMPLATE containing %, e.g. flex_%s.nc&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item row="0" column="2">

@@ -17,6 +17,7 @@ const titles = Dict(
     "60-geography.md" => "Geography Tools",
     "70-tools.md" => "Tools",
     "71-earthregions.md" => "Earth Regions",
+    "72-ecmwf.md" => "Copernicus / ECMWF",
     "75-mbgrid.md" => "mbgrid",
     "80-benchmark1.md" => "Catalina Benchmark 1",
     "90-user-manual.md" => "User Manual",

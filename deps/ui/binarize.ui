@@ -42,7 +42,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Grey-level histogram. Drag the line (or the window edges/centre) to set the threshold.</string>
+    <string>&lt;html&gt;Grey-level histogram. Drag the line (or the window&lt;br&gt;edges/centre) to set the threshold.&lt;/html&gt;</string>
    </property>
   </widget>
   <widget class="QPushButton" name="otsuButton">
@@ -241,9 +241,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>When &gt; 0 make a mask with that label.
-You need to run first the &quot;Label matrix&quot; with 0
-and move the mouse to find the label number.</string>
+    <string>&lt;html&gt;When &gt; 0 make a mask with that label. You need to run first&lt;br&gt;the &quot;Label matrix&quot; with 0 and move the mouse to find&lt;br&gt;the label number.&lt;/html&gt;</string>
    </property>
    <property name="text">
     <string>0</string>

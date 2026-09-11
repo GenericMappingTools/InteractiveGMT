@@ -51,7 +51,7 @@
       <widget class="QComboBox" name="cb_master">
        <property name="editable"><bool>true</bool></property>
        <property name="minimumSize"><size><width>180</width><height>0</height></size></property>
-       <property name="toolTip"><string>A GMT master CPT name, or the path of a .cpt file. Type any name the list does not carry.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;A GMT master CPT name, or the path of a .cpt file. Type any&lt;br&gt;name the list does not carry.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>
@@ -72,7 +72,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QLineEdit" name="edit_tmin">
-        <property name="toolTip"><string>Lowest z of the new CPT. Leave the whole row empty to keep the master's own range.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Lowest z of the new CPT. Leave the whole row empty to keep the&lt;br&gt;master's own range.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -88,7 +88,7 @@
       </item>
       <item row="1" column="1">
        <widget class="QLineEdit" name="edit_tinc">
-        <property name="toolTip"><string>Optional: the slice width, or the number of slice boundaries — see the box on the right</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Optional: the slice width, or the number of slice boundaries —&lt;br&gt;see the box on the right&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="2" colspan="2">
@@ -116,7 +116,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QLineEdit" name="edit_nlevels">
-        <property name="toolTip"><string>Resample the colour table into this many equidistant slices (E). Empty = the module's own histogram-equalized levels.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Resample the colour table into this many equidistant slices&lt;br&gt;(E). Empty = the module's own histogram-equalized levels.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2" colspan="2">
@@ -130,7 +130,7 @@
       </item>
       <item row="1" column="1">
        <widget class="QLineEdit" name="edit_lmin">
-        <property name="toolTip"><string>Ignore data below this when building the palette (L). Either limit may be left empty.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Ignore data below this when building the palette (L). Either&lt;br&gt;limit may be left empty.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="2">
@@ -146,7 +146,7 @@
       </item>
       <item row="2" column="1" colspan="3">
        <widget class="QComboBox" name="cb_symmetric">
-        <property name="toolTip"><string>Force the table to be symmetric about zero, with the range taken from one end or the other (S)</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Force the table to be symmetric about zero, with the range&lt;br&gt;taken from one end or the other (S)&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>
@@ -227,7 +227,7 @@
       </item>
       <item row="4" column="2">
        <widget class="QCheckBox" name="chk_categorical">
-        <property name="toolTip"><string>Do not interpolate the master; take its colours in order (W) — for categorical tables</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Do not interpolate the master; take its colours in order (W) —&lt;br&gt;for categorical tables&lt;/html&gt;</string></property>
         <property name="text"><string>Categorical</string></property>
        </widget>
       </item>

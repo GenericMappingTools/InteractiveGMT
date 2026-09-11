@@ -31,7 +31,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QComboBox" name="cb_collection">
-        <property name="toolTip"><string>A collection is a list of named regions. Listing one writes its codes, names and boundaries to this window's message pane, so a code can be copied into the box below.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;A collection is a list of named regions. Listing one writes&lt;br&gt;its codes, names and boundaries to this window's message pane,&lt;br&gt;so a code can be copied into the box below.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -46,13 +46,13 @@
       </item>
       <item row="1" column="1" colspan="2">
        <widget class="QLineEdit" name="edit_code">
-        <property name="toolTip"><string>One region code (codes are unique across the collections), e.g. IHO31. For the DCW collection a comma-separated list of country codes works too, e.g. PT,ES,FR.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;One region code (codes are unique across the collections),&lt;br&gt;e.g. IHO31. For the DCW collection a comma-separated list of&lt;br&gt;country codes works too, e.g. PT,ES,FR.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="2" column="1" colspan="2">
        <widget class="QCheckBox" name="chk_exact">
         <property name="text"><string>Exact GMT limits (not the rounded ones)</string></property>
-        <property name="toolTip"><string>The collections carry boundaries rounded to friendlier numbers. Tick this to use GMT's own strict limits instead.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;The collections carry boundaries rounded to friendlier&lt;br&gt;numbers. Tick this to use GMT's own strict limits instead.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="3" column="0">
@@ -60,7 +60,7 @@
       </item>
       <item row="3" column="1" colspan="2">
        <widget class="QLineEdit" name="edit_round">
-        <property name="toolTip"><string>Optional: enlarge the boundaries to whole multiples of this step. A number, or inc/inc, or the four winc/einc/sinc/ninc; a string starting with +r, +R or +e is passed to GMT verbatim.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Optional: enlarge the boundaries to whole multiples of this&lt;br&gt;step. A number, or inc/inc, or the four winc/einc/sinc/ninc; a&lt;br&gt;string starting with +r, +R or +e is passed to GMT verbatim.&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>
@@ -72,7 +72,7 @@
       <string>OR a region of your own</string>
      </property>
      <property name="toolTip">
-      <string>Filled in, these four take the place of the region code above: the data are fetched over exactly this box. Leave them empty to use the code.</string>
+      <string>&lt;html&gt;Filled in, these four take the place of the region code above:&lt;br&gt;the data are fetched over exactly this box. Leave them empty&lt;br&gt;to use the code.&lt;/html&gt;</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_region">
       <item row="0" column="0">
@@ -126,7 +126,7 @@
        <widget class="QPushButton" name="push_plot">
         <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
         <property name="text"><string>Plot it</string></property>
-        <property name="toolTip"><string>Draw the region as a GMT figure (coast, land/sea filled, with a locator globe) and show the PNG here. Nothing is added to the window and nothing is downloaded.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Draw the region as a GMT figure (coast, land/sea filled, with&lt;br&gt;a locator globe) and show the PNG here. Nothing is added to&lt;br&gt;the window and nothing is downloaded.&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>
@@ -150,7 +150,7 @@
          </item>
          <item row="0" column="1" colspan="3">
           <widget class="QComboBox" name="cb_dataset">
-           <property name="toolTip"><string>One of GMT's remote datasets. earth_day and earth_night are IMAGES and are not tiled on the server, so the first use downloads the whole file.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;One of GMT's remote datasets. earth_day and earth_night are&lt;br&gt;IMAGES and are not tiled on the server, so the first use&lt;br&gt;downloads the whole file.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item row="1" column="0">
@@ -158,7 +158,7 @@
          </item>
          <item row="1" column="1">
           <widget class="QComboBox" name="cb_res">
-           <property name="toolTip"><string>Leave on "automatic" to let GMT pick a resolution that suits the region's extent. Not every dataset offers every resolution; the finest ones are refused where they do not exist.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Leave on "automatic" to let GMT pick a resolution that suits&lt;br&gt;the region's extent. Not every dataset offers every&lt;br&gt;resolution; the finest ones are refused where they do not&lt;br&gt;exist.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item row="1" column="2">
@@ -169,7 +169,7 @@
          </item>
          <item row="1" column="3">
           <widget class="QComboBox" name="cb_registration">
-           <property name="toolTip"><string>Gridline or pixel registration. A registration can only be asked for together with a resolution.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Gridline or pixel registration. A registration can only be&lt;br&gt;asked for together with a resolution.&lt;/html&gt;</string></property>
           </widget>
          </item>
         </layout>
@@ -179,7 +179,7 @@
       <item>
        <widget class="QCheckBox" name="chk_country">
         <property name="text"><string>Draw the country / region border lines (DCW codes only)</string></property>
-        <property name="toolTip"><string>Draws the outline of the code above as a line overlay, on top of the grid or image just fetched. Only the DCW collection has border polygons, and only a code names one — four coordinates do not.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Draws the outline of the code above as a line overlay, on top&lt;br&gt;of the grid or image just fetched. Only the DCW collection has&lt;br&gt;border polygons, and only a code names one — four coordinates&lt;br&gt;do not.&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>

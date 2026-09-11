@@ -76,7 +76,7 @@
       </item>
       <item row="1" column="3">
        <widget class="QLineEdit" name="edit_radius">
-        <property name="toolTip"><string>Nearest-neighbour search radius in PIXELS. Empty = the module's own (the grid's diagonal).</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Nearest-neighbour search radius in PIXELS. Empty = the&lt;br&gt;module's own (the grid's diagonal).&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="2" column="0">
@@ -92,7 +92,7 @@
       </item>
       <item row="3" column="1" colspan="2">
        <widget class="QLineEdit" name="edit_gridfile">
-        <property name="toolTip"><string>A (possibly coarser) grid to read the hole nodes' values from. Double-click to browse.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;A (possibly coarser) grid to read the hole nodes' values from.&lt;br&gt;Double-click to browse.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="3" column="3">
@@ -117,7 +117,7 @@
       </item>
       <item>
        <widget class="QCheckBox" name="chk_draw">
-        <property name="toolTip"><string>Also draw those polygons on the map, as their own line layer. Re-running replaces it.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Also draw those polygons on the map, as their own line layer.&lt;br&gt;Re-running replaces it.&lt;/html&gt;</string></property>
         <property name="text"><string>Draw them on the map</string></property>
         <property name="checked"><bool>true</bool></property>
        </widget>
@@ -193,7 +193,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_outfile">
-       <property name="toolTip"><string>Optional output file: the filled grid, or a table for the hole list. Leave empty to keep the result only in this window.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Optional output file: the filled grid, or a table for the hole&lt;br&gt;list. Leave empty to keep the result only in this window.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>

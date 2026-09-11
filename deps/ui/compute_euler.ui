@@ -163,7 +163,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Press it down, then DOUBLE-CLICK each line in the figure: the first goes to First Line, the second to Second Line. It stays down until both are picked</string>
+    <string>&lt;html&gt;Press it down, then DOUBLE-CLICK each line in the figure: the&lt;br&gt;first goes to First Line, the second to Second Line. It stays&lt;br&gt;down until both are picked&lt;/html&gt;</string>
    </property>
    <property name="text">
     <string>Pick lines from Figure</string>
@@ -658,7 +658,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Plot the signed residues between isochron and rotated isochron. No pole is computed</string>
+    <string>&lt;html&gt;Plot the signed residues between isochron and rotated&lt;br&gt;isochron. No pole is computed&lt;/html&gt;</string>
    </property>
    <property name="text">
     <string>Plot residues only</string>

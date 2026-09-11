@@ -838,6 +838,7 @@ function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::C
 			                    useglob=(use_global != 0))
 			_cube_push_cpt(scene, chosen)
 			_mark_cube(scene, layer_index, use_global)
+			_cube_set_title(scene, info, cur.G, layer_i)
 			_snapshot_cube!(scene)
 			return
 		end
@@ -876,12 +877,55 @@ function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::C
 		                    useglob=(use_global != 0))
 		_cube_push_cpt(scene, chosen)
 		_mark_cube(scene, layer_index, use_global)
+		_cube_set_title(scene, info, Gk, layer_i)
 		_snapshot_cube!(scene)
 	catch e
 		@error "Failed to load cube layer" exception=(e, catch_backtrace())
 	end
 	return
 end
+
+# The window title follows the layer the slider is on. `gmtvtk_set_title_extra_h` is THE title-suffix
+# call — the same one Aquamoto's time step uses (`_aqua_set_title_time`), never a second title path.
+# The layer's own name is used when the cube carries one (netCDF band names), then its `v` coordinate
+# (a depth, a pressure level, a date), and only failing both the bare index.
+function _cube_layer_title(scene::Ptr{Cvoid}, info, Gk, k::Int)::String
+	# The WHOLE cube is what carries the per-layer names and the third coordinate; a one-layer read
+	# does not (its `v` comes back as a single 0.0). So the cube in RAM is asked first, and the slice
+	# only as a fallback for the cubes that are never fully read.
+	nm = _cube_layer_label(get(_CUBE_RAM, scene, nothing), k)
+	# The slice can still carry a band NAME, but never a usable `v`: a one-layer read reports 0.0 for
+	# it, and a title saying "0.0" for every layer is worse than one saying nothing.
+	isempty(nm) && (nm = _cube_layer_label(Gk, 1; names_only=true))
+	n = get(info, :n_layers, 0)
+	head = n > 0 ? "layer $k/$n" : "layer $k"
+	return isempty(nm) ? head : "$head: $nm"
+end
+
+# `names[k]` (a netCDF band description) if the cube has one, else its `v[k]` (a depth, a pressure
+# level, a date) — whichever this cube actually carries.
+function _cube_layer_label(C, k::Int; names_only::Bool=false)::String
+	C === nothing && return ""
+	try
+		ns = C.names
+		if (ns isa AbstractVector && length(ns) >= k)
+			s = strip(String(ns[k]))
+			!isempty(s) && return s
+		end
+	catch
+	end
+	names_only && return ""
+	try
+		v = C.v
+		(v isa AbstractVector && length(v) >= k) && return string(v[k])
+	catch
+	end
+	return ""
+end
+
+_cube_set_title(scene::Ptr{Cvoid}, info, Gk, k::Int) =
+	ccall(_fn(:gmtvtk_set_title_extra_h), Cvoid, (Ptr{Cvoid}, Cstring), scene,
+	      _cube_layer_title(scene, info, Gk, k))
 
 # Tell the viewer this window is showing cube layer `layer_index` (0-based) with the given colour-range
 # choice, so the Shading dock can re-render THIS layer when the user switches shading algorithm.

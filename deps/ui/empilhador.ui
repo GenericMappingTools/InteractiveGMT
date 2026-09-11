@@ -25,7 +25,7 @@
      <item>
       <widget class="QLineEdit" name="namesLineEdit">
        <property name="toolTip">
-        <string>The list file with the names to stack. May also be a wildcard request, e.g.  C:/a1/*.nc ? -sst4</string>
+        <string>&lt;html&gt;The list file with the names to stack. May also be a wildcard&lt;br&gt;request, e.g. C:/a1/*.nc ? -sst4&lt;/html&gt;</string>
        </property>
       </widget>
      </item>
@@ -103,7 +103,7 @@
             <string>L2 magic</string>
            </property>
            <property name="toolTip">
-            <string>Reinterpolate MODIS/VIIRS/SeaWiFS L2 scenes from sensor to geographic coordinates</string>
+            <string>&lt;html&gt;Reinterpolate MODIS/VIIRS/SeaWiFS L2 scenes from sensor to&lt;br&gt;geographic coordinates&lt;/html&gt;</string>
            </property>
           </widget>
          </item>
@@ -251,7 +251,7 @@
           <item>
            <widget class="QComboBox" name="qualityComboBox">
             <property name="toolTip">
-             <string>Drop the qual_sst pixels worse than this. A negative value instead makes the 0/1 mask of the pixels at least that good.</string>
+             <string>&lt;html&gt;Drop the qual_sst pixels worse than this. A negative value&lt;br&gt;instead makes the 0/1 mask of the pixels at least that good.&lt;/html&gt;</string>
             </property>
             <item>
              <property name="text">
@@ -334,7 +334,7 @@
              </size>
             </property>
             <property name="toolTip">
-             <string>Only nodes within this many cells of a datum survive (surface -M&lt;n&gt;c, the -C of gmtmbgrid). 0 disables it.</string>
+             <string>&lt;html&gt;Only nodes within this many cells of a datum survive (surface&lt;br&gt;-M&lt;n&gt;c, the -C of gmtmbgrid). 0 disables it.&lt;/html&gt;</string>
             </property>
            </widget>
           </item>

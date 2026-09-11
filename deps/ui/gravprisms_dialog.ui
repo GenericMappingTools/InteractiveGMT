@@ -56,7 +56,7 @@
           </item>
           <item row="0" column="1">
            <widget class="QLineEdit" name="edit_infile">
-            <property name="toolTip"><string>x y z_low z_high [dx dy] [density], one prism per record. Double-click to browse.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;x y z_low z_high [dx dy] [density], one prism per record.&lt;br&gt;Double-click to browse.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="0" column="2">
@@ -67,7 +67,7 @@
           </item>
           <item row="1" column="1" colspan="2">
            <widget class="QLineEdit" name="edit_dxdy">
-            <property name="toolTip"><string>One size for every prism, when the table holds only the centres and the z range. Empty = the table carries its own dx and dy columns.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;One size for every prism, when the table holds only the&lt;br&gt;centres and the z range. Empty = the table carries its own dx&lt;br&gt;and dy columns.&lt;/html&gt;</string></property>
            </widget>
           </item>
          </layout>
@@ -75,7 +75,7 @@
        </item>
        <item>
         <widget class="QRadioButton" name="rb_create">
-         <property name="toolTip"><string>Build the prisms here (C), from a seamount shape or from the layer between two surfaces</string></property>
+         <property name="toolTip"><string>&lt;html&gt;Build the prisms here (C), from a seamount shape or from the&lt;br&gt;layer between two surfaces&lt;/html&gt;</string></property>
          <property name="text"><string>Create the prisms (C)</string></property>
         </widget>
        </item>
@@ -88,7 +88,7 @@
           </item>
           <item row="0" column="1">
            <widget class="QLineEdit" name="edit_shape">
-            <property name="toolTip"><string>Grid of the full seamount heights. On its own it means the whole feature, from a base of 0 up to those heights. Double-click to browse.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Grid of the full seamount heights. On its own it means the&lt;br&gt;whole feature, from a base of 0 up to those heights.&lt;br&gt;Double-click to browse.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="0" column="2">
@@ -121,7 +121,7 @@
           </item>
           <item row="3" column="1" colspan="2">
            <widget class="QLineEdit" name="edit_dz">
-            <property name="toolTip"><string>Height of the stacked sub-prisms (+z). Required by — and only allowed with — the radial density model on the Density tab.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Height of the stacked sub-prisms (+z). Required by — and only&lt;br&gt;allowed with — the radial density model on the Density tab.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="4" column="0">
@@ -137,7 +137,7 @@
           </item>
           <item row="5" column="0" colspan="3">
            <widget class="QCheckBox" name="chk_quit">
-            <property name="toolTip"><string>Stop once the prisms are saved (+q): build them, show them, compute no anomaly. Needs a file to save them to.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Stop once the prisms are saved (+q): build them, show them,&lt;br&gt;compute no anomaly. Needs a file to save them to.&lt;/html&gt;</string></property>
             <property name="text"><string>Stop after saving the prisms — compute nothing</string></property>
            </widget>
           </item>
@@ -171,7 +171,7 @@
           </item>
           <item row="0" column="1">
            <widget class="QLineEdit" name="edit_density">
-            <property name="toolTip"><string>A constant density contrast (below 10 is read as g/cm3, above as kg/m3), or the name of a grid of vertically-averaged densities. Double-click to browse for a grid.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;A constant density contrast (below 10 is read as g/cm3, above&lt;br&gt;as kg/m3), or the name of a grid of vertically-averaged&lt;br&gt;densities. Double-click to browse for a grid.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="0" column="2">
@@ -179,7 +179,7 @@
           </item>
           <item row="1" column="0" colspan="3">
            <widget class="QCheckBox" name="chk_contrast">
-            <property name="toolTip"><string>Subtract this density from each prism's own instead of replacing it (+c) — e.g. seawater under a seamount</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Subtract this density from each prism's own instead of&lt;br&gt;replacing it (+c) — e.g. seawater under a seamount&lt;/html&gt;</string></property>
             <property name="text"><string>Subtract it rather than replace (+c)</string></property>
            </widget>
           </item>
@@ -188,7 +188,7 @@
        </item>
        <item>
         <widget class="QCheckBox" name="chk_radial">
-         <property name="toolTip"><string>Use the ad-hoc radial density model of grdseamount (H), which needs the prisms split into a stack of sub-prisms</string></property>
+         <property name="toolTip"><string>&lt;html&gt;Use the ad-hoc radial density model of grdseamount (H), which&lt;br&gt;needs the prisms split into a stack of sub-prisms&lt;/html&gt;</string></property>
          <property name="text"><string>Density varies with radius and depth (H)</string></property>
         </widget>
        </item>
@@ -209,7 +209,7 @@
           </item>
           <item row="0" column="3">
            <widget class="QLineEdit" name="edit_boost">
-            <property name="toolTip"><string>Multiply the seamount height by this to imitate the denser start of a truncated guyot [1]</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Multiply the seamount height by this to imitate the denser&lt;br&gt;start of a truncated guyot [1]&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="1" column="0">
@@ -254,7 +254,7 @@
          </item>
          <item row="0" column="1">
           <widget class="QLineEdit" name="edit_avedens">
-           <property name="toolTip"><string>Optional output grid of the vertically-averaged prism densities. Only meaningful when the prisms are created with the radial density model.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Optional output grid of the vertically-averaged prism&lt;br&gt;densities. Only meaningful when the prisms are created with&lt;br&gt;the radial density model.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item row="0" column="2">
@@ -297,7 +297,7 @@
           </item>
           <item row="0" column="3">
            <widget class="QLineEdit" name="edit_lat">
-            <property name="toolTip"><string>Latitude at which normal gravity is evaluated for the geoid [mid-grid, or mid-profile with a locations file]. Geoid only.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;Latitude at which normal gravity is evaluated for the geoid&lt;br&gt;[mid-grid, or mid-profile with a locations file]. Geoid only.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="1" column="0" colspan="2">
@@ -308,7 +308,7 @@
           </item>
           <item row="1" column="2" colspan="2">
            <widget class="QCheckBox" name="chk_geog">
-            <property name="toolTip"><string>The model is in lon/lat (fg): distances are converted to km by a flat-Earth approximation</string></property>
+            <property name="toolTip"><string>&lt;html&gt;The model is in lon/lat (fg): distances are converted to km by&lt;br&gt;a flat-Earth approximation&lt;/html&gt;</string></property>
             <property name="text"><string>Geographic (lon, lat)</string></property>
            </widget>
           </item>
@@ -344,7 +344,7 @@
          </item>
          <item>
           <widget class="QRadioButton" name="rb_obsgrid">
-           <property name="toolTip"><string>Compute on the nodes of a grid of observation levels, which also sets the region (Z)</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Compute on the nodes of a grid of observation levels, which&lt;br&gt;also sets the region (Z)&lt;/html&gt;</string></property>
            <property name="text"><string>On an observation grid</string></property>
           </widget>
          </item>
@@ -414,7 +414,7 @@
           </item>
           <item row="0" column="1">
            <widget class="QLineEdit" name="edit_trackfile">
-            <property name="toolTip"><string>A file of x, y [, z] positions. Without an observation level below it must have that third column. Double-click to browse.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;A file of x, y [, z] positions. Without an observation level&lt;br&gt;below it must have that third column. Double-click to browse.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="0" column="2">
@@ -438,7 +438,7 @@
           </item>
           <item row="0" column="1">
            <widget class="QLineEdit" name="edit_zgrid">
-            <property name="toolTip"><string>A grid whose values are the observation levels. It also sets the region of the result. Double-click to browse.</string></property>
+            <property name="toolTip"><string>&lt;html&gt;A grid whose values are the observation levels. It also sets&lt;br&gt;the region of the result. Double-click to browse.&lt;/html&gt;</string></property>
            </widget>
           </item>
           <item row="0" column="2">
@@ -462,7 +462,7 @@
          </item>
          <item row="1" column="1">
           <widget class="QLineEdit" name="edit_outfile">
-           <property name="toolTip"><string>Optional output file — a grid, or a table when computing at listed locations. Leave empty to keep the result in this window only.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Optional output file — a grid, or a table when computing at&lt;br&gt;listed locations. Leave empty to keep the result in this&lt;br&gt;window only.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item row="1" column="2">

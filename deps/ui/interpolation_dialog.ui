@@ -59,7 +59,7 @@
        <layout class="QHBoxLayout" name="horizontalLayout_infile">
         <item>
          <widget class="QLineEdit" name="edit_infile">
-          <property name="toolTip"><string>x,y,z table to grid. Double-click to browse. Its own limits fill the geometry boxes below.</string></property>
+          <property name="toolTip"><string>&lt;html&gt;x,y,z table to grid. Double-click to browse. Its own limits&lt;br&gt;fill the geometry boxes below.&lt;/html&gt;</string></property>
          </widget>
         </item>
         <item><widget class="QToolButton" name="btn_infile"><property name="text"><string>...</string></property></widget></item>
@@ -128,7 +128,7 @@
      <item><widget class="QLabel" name="lb_coords"><property name="text"><string>Coordinates</string></property></widget></item>
      <item>
       <widget class="QComboBox" name="cb_coords">
-       <property name="toolTip"><string>Whether x,y are longitude/latitude (-fg). "auto" asks GMT to guess from the data.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Whether x,y are longitude/latitude (-fg). "auto" asks GMT to&lt;br&gt;guess from the data.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>
@@ -147,7 +147,7 @@
       <item>
        <widget class="QLineEdit" name="edit_radius">
         <property name="maximumWidth"><number>90</number></property>
-        <property name="toolTip"><string>Nodes with no data point closer than this stay empty (-S). Required by Near Neighbor.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Nodes with no data point closer than this stay empty (-S).&lt;br&gt;Required by Near Neighbor.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item><widget class="QLabel" name="lb_units"><property name="text"><string>Unities</string></property></widget></item>

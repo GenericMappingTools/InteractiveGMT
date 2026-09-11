@@ -71,7 +71,7 @@
             <string>Demo seamount</string>
            </property>
            <property name="toolTip">
-            <string>Fill the dialog with the grdseamount example: a circular Gaussian seamount at 1W 2S with 30 km basal radius and 4500 m height, on a 1 arc minute grid.</string>
+            <string>&lt;html&gt;Fill the dialog with the grdseamount example: a circular&lt;br&gt;Gaussian seamount at 1W 2S with 30 km basal radius and 4500 m&lt;br&gt;height, on a 1 arc minute grid.&lt;/html&gt;</string>
            </property>
           </widget>
          </item>
@@ -82,7 +82,7 @@
          <item>
           <widget class="QLineEdit" name="le_table">
            <property name="toolTip">
-            <string>lon lat radius height — or lon lat azimuth semi-major semi-minor height when elliptical. Extra columns: flattening (F with no value), then start/stop time (T).</string>
+            <string>&lt;html&gt;lon lat radius height — or lon lat azimuth semi-major&lt;br&gt;semi-minor height when elliptical. Extra columns: flattening&lt;br&gt;(F with no value), then start/stop time (T).&lt;/html&gt;</string>
            </property>
           </widget>
          </item>
@@ -261,7 +261,7 @@
          <item row="1" column="1">
           <widget class="QLineEdit" name="le_flattening">
            <property name="toolTip">
-            <string>0 (none) up to but not including 1. Truncates seamounts to guyots; ignored for a disc.</string>
+            <string>&lt;html&gt;0 (none) up to but not including 1. Truncates seamounts to&lt;br&gt;guyots; ignored for a disc.&lt;/html&gt;</string>
            </property>
           </widget>
          </item>
@@ -282,7 +282,7 @@
          <item row="2" column="1">
           <widget class="QComboBox" name="cb_unit">
            <property name="toolTip">
-            <string>Horizontal distance unit of the input table. Not allowed for geographic data, which is converted to km automatically.</string>
+            <string>&lt;html&gt;Horizontal distance unit of the input table. Not allowed for&lt;br&gt;geographic data, which is converted to km automatically.&lt;/html&gt;</string>
            </property>
            <item>
             <property name="text">
@@ -505,7 +505,7 @@
          <item>
           <widget class="QLineEdit" name="le_outgrid">
            <property name="toolTip">
-            <string>Optional; the result is added to this window anyway. With Time set this MUST be a filename template, e.g. smt_%3.1f_%s.nc</string>
+            <string>&lt;html&gt;Optional; the result is added to this window anyway. With Time&lt;br&gt;set this MUST be a filename template, e.g. smt_%3.1f_%s.nc&lt;/html&gt;</string>
            </property>
           </widget>
          </item>
@@ -655,7 +655,7 @@
           <item row="2" column="1" colspan="4">
            <widget class="QLineEdit" name="le_list">
             <property name="toolTip">
-             <string>Write the times and names of all grids created to this file (input for grdflexure)</string>
+             <string>&lt;html&gt;Write the times and names of all grids created to this file&lt;br&gt;(input for grdflexure)&lt;/html&gt;</string>
             </property>
            </widget>
           </item>

@@ -23,7 +23,7 @@
   </widget>
   <widget class="QComboBox" name="combo_proj">
    <property name="geometry"><rect><x>380</x><y>5</y><width>151</width><height>22</height></rect></property>
-   <property name="toolTip"><string>Pick a projection to fill the Destination box with its PROJ4 string. Edit it freely afterwards.</string></property>
+   <property name="toolTip"><string>&lt;html&gt;Pick a projection to fill the Destination box with its PROJ4&lt;br&gt;string. Edit it freely afterwards.&lt;/html&gt;</string></property>
   </widget>
 
   <widget class="QLabel" name="lb_source">
@@ -32,7 +32,7 @@
   </widget>
   <widget class="QPlainTextEdit" name="edit_source">
    <property name="geometry"><rect><x>10</x><y>32</y><width>521</width><height>41</height></rect></property>
-   <property name="toolTip"><string>PROJ4 (or WKT / EPSG:nnnn) describing the source coordinate system. Blank defaults to geogs.</string></property>
+   <property name="toolTip"><string>&lt;html&gt;PROJ4 (or WKT / EPSG:nnnn) describing the source coordinate&lt;br&gt;system. Blank defaults to geogs.&lt;/html&gt;</string></property>
   </widget>
 
   <widget class="QLabel" name="lb_target">
@@ -41,7 +41,7 @@
   </widget>
   <widget class="QPlainTextEdit" name="edit_target">
    <property name="geometry"><rect><x>10</x><y>101</y><width>521</width><height>41</height></rect></property>
-   <property name="toolTip"><string>PROJ4 (or WKT / EPSG:nnnn) with the target coordinate system. Blank defaults to geogs.</string></property>
+   <property name="toolTip"><string>&lt;html&gt;PROJ4 (or WKT / EPSG:nnnn) with the target coordinate system.&lt;br&gt;Blank defaults to geogs.&lt;/html&gt;</string></property>
   </widget>
 
   <widget class="QGroupBox" name="gb_interp">

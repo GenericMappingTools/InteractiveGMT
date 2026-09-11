@@ -35,7 +35,7 @@
       </size>
      </property>
      <property name="toolTip">
-      <string>The expression to evaluate. Write a grid by its name, as shown in the list below (double-click a name to insert it) - blanks and all. Everything else is plain arithmetic: + - * / ^ ( ) and the functions on the right. A grid whose name is also a function name (abs, log, ...) must be written &amp;name.</string>
+      <string>&lt;html&gt;The expression to evaluate. Write a grid by its name, as shown&lt;br&gt;in the list below (double-click a name to insert it) - blanks&lt;br&gt;and all. Everything else is plain arithmetic: + - * / ^ ( )&lt;br&gt;and the functions on the right. A grid whose name is also a&lt;br&gt;function name (abs, log, ...) must be written &amp;name.&lt;/html&gt;</string>
      </property>
     </widget>
    </item>
@@ -53,7 +53,7 @@
         </size>
        </property>
        <property name="toolTip">
-        <string>Grids of this window that share the SAME limits and increments (plus any grid added with &quot;Load Grid&quot;). Double-click a name to push it into the expression box.</string>
+        <string>&lt;html&gt;Grids of this window that share the SAME limits and increments&lt;br&gt;(plus any grid added with &quot;Load Grid&quot;). Double-click&lt;br&gt;a name to push it into the expression box.&lt;/html&gt;</string>
        </property>
       </widget>
      </item>

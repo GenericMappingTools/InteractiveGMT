@@ -225,7 +225,7 @@
          <item row="3" column="0">
           <widget class="QLabel" name="lblSlip">
            <property name="toolTip">
-            <string>Move the hanging wall along rake. ±100 equals ±30% of block length; the gap stays constant.</string>
+            <string>&lt;html&gt;Move the hanging wall along rake. ±100 equals ±30% of block&lt;br&gt;length; the gap stays constant.&lt;/html&gt;</string>
            </property>
            <property name="text">
             <string>Slip</string>
@@ -235,7 +235,7 @@
          <item row="3" column="1">
           <widget class="QSlider" name="slipSlider">
            <property name="toolTip">
-            <string>Move the hanging wall along rake. ±100 equals ±30% of block length; the gap stays constant.</string>
+            <string>&lt;html&gt;Move the hanging wall along rake. ±100 equals ±30% of block&lt;br&gt;length; the gap stays constant.&lt;/html&gt;</string>
            </property>
            <property name="minimum">
             <number>-100</number>
@@ -328,7 +328,7 @@ Use Slip or Play to move the hanging wall.</string>
       <item>
        <widget class="QGroupBox" name="originGroup">
         <property name="toolTip">
-         <string>Upper-left vertex of the fault trace. Leave blank to centre the fault in the Region below (default).</string>
+         <string>&lt;html&gt;Upper-left vertex of the fault trace. Leave blank to centre&lt;br&gt;the fault in the Region below (default).&lt;/html&gt;</string>
         </property>
         <property name="title">
          <string>Fault trace origin</string>
@@ -374,7 +374,7 @@ Use Slip or Play to move the hanging wall.</string>
       <item>
        <widget class="QGroupBox" name="trueSizeGroup">
         <property name="toolTip">
-         <string>The fault's REAL dimensions, used only by the Okada computation. The 3-D model above stays 1:1 whatever these say, so it keeps reading clearly.</string>
+         <string>&lt;html&gt;The fault's REAL dimensions, used only by the Okada&lt;br&gt;computation. The 3-D model above stays 1:1 whatever these say,&lt;br&gt;so it keeps reading clearly.&lt;/html&gt;</string>
         </property>
         <property name="title">
          <string>True size</string>
@@ -466,7 +466,7 @@ Use Slip or Play to move the hanging wall.</string>
       <item>
        <widget class="QGroupBox" name="regionGroup">
         <property name="toolTip">
-         <string>Where the deformation is computed. The fault is centred in this region, along the strike above.</string>
+         <string>&lt;html&gt;Where the deformation is computed. The fault is centred in&lt;br&gt;this region, along the strike above.&lt;/html&gt;</string>
         </property>
         <property name="title">
          <string>Region</string>
@@ -653,7 +653,7 @@ Use Slip or Play to move the hanging wall.</string>
          <item row="1" column="1" colspan="2">
           <widget class="QComboBox" name="windowGridCombo">
            <property name="toolTip">
-            <string>A grid already loaded in the iGMT window this dialog belongs to: its region, spacing and coordinate kind fill in above.</string>
+            <string>&lt;html&gt;A grid already loaded in the iGMT window this dialog belongs&lt;br&gt;to: its region, spacing and coordinate kind fill in above.&lt;/html&gt;</string>
            </property>
           </widget>
          </item>
@@ -663,7 +663,7 @@ Use Slip or Play to move the hanging wall.</string>
       <item>
        <widget class="QPushButton" name="computeButton">
         <property name="toolTip">
-         <string>Okada (1985) vertical deformation for the true size above, into the window this demo was opened from.</string>
+         <string>&lt;html&gt;Okada (1985) vertical deformation for the true size above,&lt;br&gt;into the window this demo was opened from.&lt;/html&gt;</string>
         </property>
         <property name="text">
          <string>Compute deformation</string>
@@ -678,7 +678,7 @@ Use Slip or Play to move the hanging wall.</string>
         <item>
          <widget class="QCheckBox" name="insetDemoCheck">
           <property name="toolTip">
-           <string>Show the deformation demo inset in the top-left corner of the view: the Okada field over a zone three times the fault's true size, with the fault at its centre.</string>
+           <string>&lt;html&gt;Show the deformation demo inset in the top-left corner of the&lt;br&gt;view: the Okada field over a zone three times the fault's true&lt;br&gt;size, with the fault at its centre.&lt;/html&gt;</string>
           </property>
           <property name="text">
            <string>Demo inset</string>
@@ -691,7 +691,7 @@ Use Slip or Play to move the hanging wall.</string>
         <item>
          <widget class="QPushButton" name="insetComputeButton">
           <property name="toolTip">
-           <string>Compute ONLY the inset deformation: nothing is sent to the window this demo was opened from.</string>
+           <string>&lt;html&gt;Compute ONLY the inset deformation: nothing is sent to the&lt;br&gt;window this demo was opened from.&lt;/html&gt;</string>
           </property>
           <property name="text">
            <string>Compute inset</string>

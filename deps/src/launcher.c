@@ -190,6 +190,34 @@ static int copy_file(const char *src, const char *dst, int executable)
 #endif
 }
 
+/* Are these two files byte-for-byte the same? Used before the launcher copies itself into the
+ * package root: --install-shortcut runs on EVERY precompile, and copying an unchanged binary over
+ * itself is not free — on Windows the existing igmt.exe has to be moved aside first (igmt.old.exe),
+ * so an untouched launcher left a fresh .old.exe in the package root after every `] dev`, every
+ * Pkg.update and every precompile. Same bytes, nothing to do. */
+static int files_identical(const char *a, const char *b)
+{
+	FILE *fa, *fb;
+	char ba[65536], bb[65536];
+	size_t ka, kb;
+	int same = 1;
+	if ((fa = fopen(a, "rb")) == NULL) return 0;
+	if ((fb = fopen(b, "rb")) == NULL) { fclose(fa); return 0; }
+	if (fseek(fa, 0, SEEK_END) == 0 && fseek(fb, 0, SEEK_END) == 0 && ftell(fa) != ftell(fb))
+		same = 0;
+	rewind(fa);
+	rewind(fb);
+	while (same) {
+		ka = fread(ba, 1, sizeof(ba), fa);
+		kb = fread(bb, 1, sizeof(bb), fb);
+		if (ka != kb || memcmp(ba, bb, ka) != 0) { same = 0; break; }
+		if (ka == 0) break;                      /* both hit EOF together */
+	}
+	fclose(fa);
+	fclose(fb);
+	return same;
+}
+
 static const char *home_dir(void)
 {
 	static char h[MAXP];
@@ -1458,6 +1486,10 @@ static const char *install_stable_copy(const char *root)
 	self_path(self, sizeof(self));
 	joinp(dst, sizeof(dst), root, "igmt" EXESUF);
 	if (strcmp(self, dst) == 0) return dst;
+	/* Already the same binary: leave it alone. --install-shortcut runs on every precompile, and the
+	 * Windows branch below has to displace the existing copy before overwriting it — so a launcher
+	 * that had not changed still left a new igmt.old.exe in the package root every single time. */
+	if (file_exists(dst) && files_identical(self, dst)) return dst;
 #ifdef _WIN32
 	{
 		/* A previous copy may be running (the user's own splash), which would fail the overwrite

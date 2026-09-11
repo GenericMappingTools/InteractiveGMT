@@ -2007,6 +2007,13 @@ GMTVTK_API void gmtvtk_set_ttt_callback(JuliaTttFn fn) {
 	g_juliaTtt = fn;
 }
 
+// Register the Copernicus/ECMWF download callback (Geophysics > Copernicus). fn(scene, params, out,
+// cap) with the newline-separated "key=value" block documented at JuliaEcmwfFn (30_app.cpp) runs
+// GMT.jl's `ecmwf` and answers in `out`. nullptr to detach.
+GMTVTK_API void gmtvtk_set_ecmwf_callback(JuliaEcmwfFn fn) {
+	g_juliaEcmwf = fn;
+}
+
 // Register the FFT tool callback (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum).
 // fn(scene, params) with params = "op;grid1;grid2;newRows;newCols;coords;detrend;value" runs the
 // spectrum/correlation/field-transform asked for and adds its result to `scene`. nullptr to detach.
@@ -4574,7 +4581,7 @@ GMTVTK_API int gmtvtk_vector_ground_gap_test(void *scene, const char *name, doub
 
 // test hook: drive and read back one dock's undock / re-dock, so the dock geometry memory
 // (installDockGeometryMemory, 10_geometry.cpp) is PROVED rather than eyeballed. `name` is the dock's
-// objectName ("panelsDock", "sceneObjectsDock", "messagesDock", "cubeLayerDock").
+// objectName ("panelsDock", "sceneObjectsDock", "messagesDock").
 //   action 0 = report only
 //          1 = undock (float)      -- through dockToggleFloat, the title-bar buttons' own path
 //          2 = re-dock             -- likewise
@@ -4750,6 +4757,26 @@ GMTVTK_API int gmtvtk_fft_dialog_test(void *handle, const char *button, const ch
 		if (!d->grab().save(QString::fromUtf8(path), "PNG")) ok = 0;
 	}
 	return ok;
+}
+
+// test hook: open the Copernicus / ECMWF download dialog on `scene` and grab it as a PNG, so a test
+// (or a pair of eyes) sees the LIVE dialog — the runtime-added bits included (the calendar icons
+// that sit inside the two date boxes are added in C++, so they are invisible in the .ui itself).
+// Returns 1 when the dialog opened and, if asked, the grab was written.
+GMTVTK_API int gmtvtk_ecmwf_dialog_test(void *handle, const char *path) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s) return 0;
+	auto *w = new EcmwfDialog(nullptr, s);
+	if (!w->dlg) return 0;
+	w->dlg->show();
+	QApplication::processEvents();
+	int ok = 1;
+	if (path && *path) {
+		QApplication::processEvents();
+		if (!w->dlg->grab().save(QString::fromUtf8(path), "PNG")) ok = 0;
+	}
+	// The LOGICAL size (what the .ui's geometry is in), not the grab's device pixels.
+	return ok ? (w->dlg->width() * 10000 + w->dlg->height()) : 0;
 }
 
 // test hook: tell THIS dll that `scene` is alive. `g_scenes` — the set `sceneAlive` answers from —

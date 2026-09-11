@@ -76,9 +76,7 @@
   </widget>
   <widget class="QLineEdit" name="edit_Nrows">
    <property name="geometry"><rect><x>390</x><y>34</y><width>58</width><height>24</height></rect></property>
-   <property name="toolTip"><string>The default value is the number of rows in the grid.
-For reducing border effects pick a larger value from the list beside it:
-the extra points are obtained by data extension and tapered to zero.</string></property>
+   <property name="toolTip"><string>&lt;html&gt;The default value is the number of rows in the grid. For&lt;br&gt;reducing border effects pick a larger value from the list&lt;br&gt;beside it: the extra points are obtained by data extension and&lt;br&gt;tapered to zero.&lt;/html&gt;</string></property>
   </widget>
   <widget class="QListWidget" name="listbox_nny">
    <property name="geometry"><rect><x>452</x><y>12</y><width>62</width><height>80</height></rect></property>
@@ -91,9 +89,7 @@ the extra points are obtained by data extension and tapered to zero.</string></p
   </widget>
   <widget class="QLineEdit" name="edit_Ncols">
    <property name="geometry"><rect><x>520</x><y>34</y><width>58</width><height>24</height></rect></property>
-   <property name="toolTip"><string>The default value is the number of columns in the grid.
-For reducing border effects pick a larger value from the list beside it:
-the extra points are obtained by data extension and tapered to zero.</string></property>
+   <property name="toolTip"><string>&lt;html&gt;The default value is the number of columns in the grid. For&lt;br&gt;reducing border effects pick a larger value from the list&lt;br&gt;beside it: the extra points are obtained by data extension and&lt;br&gt;tapered to zero.&lt;/html&gt;</string></property>
   </widget>
   <widget class="QListWidget" name="listbox_nnx">
    <property name="geometry"><rect><x>582</x><y>12</y><width>62</width><height>80</height></rect></property>

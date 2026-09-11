@@ -31,7 +31,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QComboBox" name="cb_field">
-        <property name="toolTip"><string>What to compute: free-air anomaly (with or without the slab / zero far-field correction), Bouguer, geoid, vertical gravity gradient or a deflection of the vertical</string></property>
+        <property name="toolTip"><string>&lt;html&gt;What to compute: free-air anomaly (with or without the slab /&lt;br&gt;zero far-field correction), Bouguer, geoid, vertical gravity&lt;br&gt;gradient or a deflection of the vertical&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -87,7 +87,7 @@
          </item>
          <item>
           <widget class="QLineEdit" name="edit_density">
-           <property name="toolTip"><string>A constant density contrast in kg/m^3, or a co-registered grid holding a variable one. Double-click to browse for a grid.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;A constant density contrast in kg/m^3, or a co-registered grid&lt;br&gt;holding a variable one. Double-click to browse for a grid.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item>
@@ -122,13 +122,13 @@
        </item>
        <item>
         <widget class="QCheckBox" name="chk_flextopo">
-         <property name="toolTip"><string>Write the flexural topography (the "gravimetric Moho", z positive up) instead of a field (Q)</string></property>
+         <property name="toolTip"><string>&lt;html&gt;Write the flexural topography (the "gravimetric Moho", z&lt;br&gt;positive up) instead of a field (Q)&lt;/html&gt;</string></property>
          <property name="text"><string>Flexural topography (Q)</string></property>
         </widget>
        </item>
        <item>
         <widget class="QCheckBox" name="chk_subplate">
-         <property name="toolTip"><string>Field due to a subplate load under the current bathymetry (S). Needs both compensation depths; the Parker expansion is restricted to one term.</string></property>
+         <property name="toolTip"><string>&lt;html&gt;Field due to a subplate load under the current bathymetry (S).&lt;br&gt;Needs both compensation depths; the Parker expansion is&lt;br&gt;restricted to one term.&lt;/html&gt;</string></property>
          <property name="text"><string>Subplate load response (S)</string></property>
         </widget>
        </item>
@@ -150,7 +150,7 @@
          </item>
          <item>
           <widget class="QLineEdit" name="edit_grid2">
-           <property name="toolTip"><string>The second grid: gravity or geoid over the SAME region and geometry as this window's grid. Double-click to browse.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;The second grid: gravity or geoid over the SAME region and&lt;br&gt;geometry as this window's grid. Double-click to browse.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item>
@@ -195,7 +195,7 @@
          </item>
          <item>
           <widget class="QComboBox" name="cb_theomodel">
-           <property name="toolTip"><string>Add a fourth column with the theoretical admittance of the elastic plate model set below (t = loading from top, b = loading from below). Only for the free-air anomaly or the geoid.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Add a fourth column with the theoretical admittance of the&lt;br&gt;elastic plate model set below (t = loading from top, b =&lt;br&gt;loading from below). Only for the free-air anomaly or the&lt;br&gt;geoid.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item>
@@ -224,7 +224,7 @@
          </item>
          <item row="0" column="1">
           <widget class="QLineEdit" name="edit_cn">
-           <property name="toolTip"><string>Number of points of the curve. Points x wavelength is the profile length in meters.</string></property>
+           <property name="toolTip"><string>&lt;html&gt;Number of points of the curve. Points x wavelength is the&lt;br&gt;profile length in meters.&lt;/html&gt;</string></property>
           </widget>
          </item>
          <item row="0" column="2">
@@ -274,7 +274,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QLineEdit" name="edit_te">
-        <property name="toolTip"><string>Elastic thickness in meters. Zero gives the Airy response; a value &gt; 1e10 is taken as the flexural rigidity.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Elastic thickness in meters. Zero gives the Airy response; a&lt;br&gt;value &gt; 1e10 is taken as the flexural rigidity.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -306,7 +306,7 @@
       </item>
       <item row="2" column="1">
        <widget class="QLineEdit" name="edit_rhoi">
-        <property name="toolTip"><string>Optional density of the material filling the flexural depression [same as the load]</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Optional density of the material filling the flexural&lt;br&gt;depression [same as the load]&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="2" column="2">
@@ -322,7 +322,7 @@
       </item>
       <item row="3" column="3">
        <widget class="QLineEdit" name="edit_zl">
-        <property name="toolTip"><string>Average depth of the sub-surface load, only for the "loading from below" model (Z zm/zl)</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Average depth of the sub-surface load, only for the "loading&lt;br&gt;from below" model (Z zm/zl)&lt;/html&gt;</string></property>
        </widget>
       </item>
      </layout>
@@ -381,7 +381,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_outfile">
-       <property name="toolTip"><string>Optional output file (a grid, or a table for the admittance/coherence). Leave empty to keep the result only in this session.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Optional output file (a grid, or a table for the&lt;br&gt;admittance/coherence). Leave empty to keep the result only in&lt;br&gt;this session.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>

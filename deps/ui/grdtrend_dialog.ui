@@ -91,7 +91,7 @@
      </item>
      <item>
       <widget class="QComboBox" name="cb_axis">
-       <property name="toolTip"><string>A full surface in x and y, or a 1-D trend along one axis only (+x / +y, model 1-4)</string></property>
+       <property name="toolTip"><string>&lt;html&gt;A full surface in x and y, or a 1-D trend along one axis only&lt;br&gt;(+x / +y, model 1-4)&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>

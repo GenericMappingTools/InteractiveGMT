@@ -33,7 +33,7 @@
      </item>
      <item row="0" column="1">
       <widget class="QLineEdit" name="edit_infile">
-       <property name="toolTip"><string>The horizontal contours of the body, one contour per segment, each segment header holding "depth density". Double-click to browse.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;The horizontal contours of the body, one contour per segment,&lt;br&gt;each segment header holding "depth density". Double-click to&lt;br&gt;browse.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item row="0" column="2">
@@ -62,7 +62,7 @@
       </item>
       <item row="0" column="3">
        <widget class="QLineEdit" name="edit_lat">
-        <property name="toolTip"><string>Latitude at which normal gravity is evaluated for the geoid [mid-grid, or mid-profile with a locations file]. Geoid only.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Latitude at which normal gravity is evaluated for the geoid&lt;br&gt;[mid-grid, or mid-profile with a locations file]. Geoid only.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="0">
@@ -70,7 +70,7 @@
       </item>
       <item row="1" column="1">
        <widget class="QLineEdit" name="edit_density">
-        <property name="toolTip"><string>One density contrast for every slice, overriding the segment headers. Below 10 is read as g/cm3, above as kg/m3. Empty = take each slice's density from its own segment header.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;One density contrast for every slice, overriding the segment&lt;br&gt;headers. Below 10 is read as g/cm3, above as kg/m3. Empty =&lt;br&gt;take each slice's density from its own segment header.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="1" column="2" colspan="2">
@@ -93,7 +93,7 @@
       </item>
       <item row="3" column="0" colspan="4">
        <widget class="QCheckBox" name="chk_geog">
-        <property name="toolTip"><string>The model is in lon/lat (fg): distances are converted to km by a flat-Earth approximation</string></property>
+        <property name="toolTip"><string>&lt;html&gt;The model is in lon/lat (fg): distances are converted to km by&lt;br&gt;a flat-Earth approximation&lt;/html&gt;</string></property>
         <property name="text"><string>Coordinates are geographic (lon, lat)</string></property>
        </widget>
       </item>
@@ -117,7 +117,7 @@
      </item>
      <item>
       <widget class="QRadioButton" name="rb_obsgrid">
-       <property name="toolTip"><string>Compute on the nodes of a grid of observation levels, which also sets the region (Z)</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Compute on the nodes of a grid of observation levels, which&lt;br&gt;also sets the region (Z)&lt;/html&gt;</string></property>
        <property name="text"><string>On an observation grid</string></property>
       </widget>
      </item>
@@ -191,7 +191,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QLineEdit" name="edit_trackfile">
-        <property name="toolTip"><string>A file of x, y [, z] positions. A third column is taken as the observation level unless one is given below. Double-click to browse.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;A file of x, y [, z] positions. A third column is taken as the&lt;br&gt;observation level unless one is given below. Double-click to&lt;br&gt;browse.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -219,7 +219,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QLineEdit" name="edit_zgrid">
-        <property name="toolTip"><string>A grid whose values are the observation levels. It also sets the region of the result, so no region or increment is needed. Double-click to browse.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;A grid whose values are the observation levels. It also sets&lt;br&gt;the region of the result, so no region or increment is needed.&lt;br&gt;Double-click to browse.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -237,7 +237,7 @@
      </item>
      <item row="0" column="1">
       <widget class="QLineEdit" name="edit_level">
-       <property name="toolTip"><string>A constant observation level [0]. With a locations file it overrides a third column there.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;A constant observation level [0]. With a locations file it&lt;br&gt;overrides a third column there.&lt;/html&gt;</string></property>
       </widget>
      </item>
     </layout>
@@ -249,7 +249,7 @@
      </item>
      <item row="0" column="1">
       <widget class="QLineEdit" name="edit_outfile">
-       <property name="toolTip"><string>Optional output file — a grid, or a table when computing at listed locations. Leave empty to keep the result in this window only.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Optional output file — a grid, or a table when computing at&lt;br&gt;listed locations. Leave empty to keep the result in this&lt;br&gt;window only.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item row="0" column="2">

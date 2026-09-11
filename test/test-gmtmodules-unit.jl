@@ -48,7 +48,14 @@ end
 	                 x = collect(range(0, 9, length = 10)), y = collect(range(0, 9, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D712E4D))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "topo", G)]
-	call(kv) = IG._on_grdtrend(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdtrend"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_grdtrend(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "grdtrend")
+	end
 	try
 		# The weights are a by-product of the ROBUST fit; asking for them without it is refused.
 		@test call(["what=weights", "model=3", "robust=0", "axis=", "grid=topo"]) == 0
@@ -72,7 +79,14 @@ end
 	                                       y = collect(range(36, 39, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D714A5C))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "topo", G)]
-	call(kv) = IG._on_grdlandmask(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdlandmask"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_grdlandmask(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "grdlandmask")
+	end
 	try
 		# A half-filled Griding Line Geometry leaves an empty field in the region string.
 		@test call(["clip=0", "region=-10//36/39", "inc=0.1", "res=l", "grid=topo"]) == 0
@@ -153,7 +167,14 @@ end
 	                 x = collect(range(0, 9, length = 10)), y = collect(range(0, 9, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D71FF71))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "bat", G)]
-	call(kv) = IG._on_gravfft(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "gravfft"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_gravfft(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "gravfft")
+	end
 	plate = ["te=7000", "rhol=2700", "rhom=3300", "rhow=1035"]
 	try
 		# The geopotential of a surface needs the density contrast (-D).
@@ -223,7 +244,14 @@ end
 	                 x = collect(range(-5, 5, length = 10)), y = collect(range(-5, 5, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D710807))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "topo", G)]
-	call(kv) = IG._on_grdrotater(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdrotater"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_grdrotater(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "grdrotater")
+	end
 	pole = ["emode=pole", "elon=-40.8", "elat=32.8", "eangle=-12.9"]
 	try
 		@test call(["emode=pole", "elon=-40.8", "grid=topo"]) == 0            # half a pole
@@ -354,7 +382,14 @@ end
 	IG = InteractiveGMT
 	scene = Ptr{Cvoid}(UInt(0x9D712D00))
 	model = tempname() * ".txt";  write(model, "> 1700\n0 0\n1 0\n1 -1\n0 -1\n")
-	call(kv) = IG._on_talwani2d(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "talwani2d"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_talwani2d(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "talwani2d")
+	end
 	base = ["infile=" * model, "field=f"]
 	try
 		@test call(["field=f", "tmin=-1", "tmax=1", "tinc=0.1"]) == 0          # no model at all
@@ -376,7 +411,14 @@ end
 	IG = InteractiveGMT
 	scene = Ptr{Cvoid}(UInt(0x9D713D00))
 	model = tempname() * ".txt";  write(model, "> -5 1700\n0 0\n1 0\n1 1\n0 1\n")
-	call(kv) = IG._on_talwani3d(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "talwani3d"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_talwani3d(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "talwani3d")
+	end
 	base = ["infile=" * model, "field=f"]
 	try
 		@test call(["field=f", "mode=grid", "region=0/1/0/1", "inc=0.1"]) == 0   # no model at all
@@ -489,7 +531,14 @@ end
 	IG = InteractiveGMT
 	tbl = tempname() * ".txt";  write(tbl, "0 0 1\n1 0 2\n0 1 3\n1 1 4\n")
 	scene = Ptr{Cvoid}(UInt(0x9D71A500))
-	call(kv) = IG._on_greenspline(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "greenspline"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_greenspline(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "greenspline")
+	end
 	# Every case below is refused BEFORE the table is read, so no GMT module ever runs here.
 	base = ["infile=" * tbl, "dmode=1", "spline=t", "tension=0.5", "what=grid"]
 	geom = ["region=0/1/0/1", "inc=0.1"]
@@ -571,7 +620,14 @@ end
 	IG = InteractiveGMT
 	scene = Ptr{Cvoid}(UInt(0x9D71F200))
 	load = tempname() * ".txt";  write(load, "-100 0\n0 2000\n100 0\n")
-	call(kv) = IG._on_gmtflexure(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "gmtflexure"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_gmtflexure(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "gmtflexure")
+	end
 	base = ["te=10k", "rhom=3300", "rhol=2700", "rhow=1035", "qmode=t", "loadfile=" * load]
 	try
 		@test call(["rhom=3300", "rhol=2700", "rhow=1035", "qmode=t", "loadfile=" * load]) == 0  # no -E
@@ -649,7 +705,14 @@ end
 	IG = InteractiveGMT
 	scene = Ptr{Cvoid}(UInt(0x9D71F300))
 	grid = tempname() * ".grd";  write(grid, "not a grid, but it EXISTS")
-	call(kv) = IG._on_grdflexure(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdflexure"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_grdflexure(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "grdflexure")
+	end
 	base = ["loadgrid=" * grid, "rhom=3300", "rhol=2700", "rhow=1035", "te=10k"]
 	try
 		@test call(["rhom=3300", "rhol=2700", "rhow=1035", "te=10k"]) == 0            # no load grid
@@ -703,7 +766,14 @@ end
 	                 x = collect(range(0, 9, length = 10)), y = collect(range(0, 9, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D710101))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "topo", G)]
-	call(kv) = IG._on_grdvolume(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdvolume"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_grdvolume(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "grdvolume")
+	end
 	try
 		# Slices measure the gaps BETWEEN contours, so they need a range of them.
 		@test call(["cmode=above", "cval=0", "slices=1", "grid=topo"]) == 0
@@ -764,7 +834,14 @@ end
 	scene = Ptr{Cvoid}(UInt(0x9D719000))
 	table = tempname() * ".txt";  write(table, "0 0 0 1000 2000 2000 1700\n")
 	grid  = tempname() * ".grd";  write(grid, "not really a grid, but it EXISTS")
-	call(kv) = IG._on_gravprisms(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "gravprisms"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_gravprisms(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "gravprisms")
+	end
 	where = ["mode=grid", "region=-1/1/-1/1", "inc=0.1"]
 	rad = ["radial=1", "href=6000", "rholo=2400", "rhohi=2700"]
 	try
@@ -928,7 +1005,14 @@ end
 	scene = Ptr{Cvoid}(UInt(0x9D71C700))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "u", U), (:grid, "v", V),
 	                                                 (:grid, "small", W), (:grid, "flat", Z0)]
-	call(kv) = IG._on_grdvector(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdvector"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_grdvector(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "grdvector")
+	end
 	base = ["usescene=0", "grid1=u", "grid2=v", "incmode=auto", "scalemode=auto", "heads=e"]
 	try
 		@test call(["usescene=0", "grid1=u", "grid2="]) == 0                 # a field is TWO grids
@@ -959,9 +1043,11 @@ end
 	IG = InteractiveGMT
 	@test IG._er_round("") == 0
 	@test IG._er_round("  ") == 0
-	@test IG._er_round("2") == "2"
-	@test IG._er_round("2/1") == "2/1"
-	@test IG._er_round("1/1/1/1") == "1/1/1/1"
+	# A bare number travels as a NUMBER (a Real, or a Vector of them for a list): GMT.jl builds the
+	# "+r…" itself and rejects a numeric STRING outright, so "2" must not reach it as text.
+	@test IG._er_round("2") == 2.0
+	@test IG._er_round("2/1") == [2.0, 1.0]
+	@test IG._er_round("1/1/1/1") == [1.0, 1.0, 1.0, 1.0]
 	@test IG._er_round("+r2") == "+r2"               # GMT's own syntax travels whole
 	@test IG._er_round("+e") == "+e"
 	@test_throws ErrorException IG._er_round("coarse")
@@ -1041,7 +1127,10 @@ end
 	try
 		# Same name, same dataset, same resolution: recognised, and NOTHING is downloaded (this test
 		# has no network and would hang or fail if it were).
-		@test call(["mode=raster", "region=-10/-6/36/39", "name=PT",
+		# The region's identity travels as `code` — there is no `name` key, and a request that sent
+		# one was never recognised at all (it fell through to the download the test says must not
+		# happen).
+		@test call(["mode=raster", "region=-10/-6/36/39", "code=PT",
 		            "dataset=earth_relief", "res=10m"]) == 1
 		# A different resolution, or a different dataset, is a different layer — those are not caught
 		# here, so they would go to the network; only the option check is exercised.
@@ -1062,7 +1151,14 @@ end
 	                 x = collect(range(0, 9, length = 10)), y = collect(range(0, 9, length = 10)))
 	scene = Ptr{Cvoid}(UInt(0x9D71F117))
 	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:grid, "topo", G)]
-	call(kv) = IG._on_grdfilter(scene, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, join(kv, "\n")))) |> (r -> IG._errored(r, "grdfilter"))
+	# The byte buffer is HELD while the callback reads it: a Cstring made inline from a temporary
+	# points into something nothing keeps alive, and under the runner's allocation pressure it can be
+	# collected before the tool parses it — which is how an item passed alone and failed in the suite.
+	function call(kv)
+		buf = Base.cconvert(Cstring, join(kv, "\n"))
+		r = GC.@preserve buf IG._on_grdfilter(scene, Base.unsafe_convert(Cstring, buf))
+		IG._errored(r, "grdfilter")
+	end
 	try
 		@test call(["filter=", "distance=0", "grid=topo"]) == 0
 		@test call(["filter=g0.4", "distance=", "grid=topo"]) == 0

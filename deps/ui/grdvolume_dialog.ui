@@ -65,7 +65,7 @@
       </item>
       <item row="3" column="2" colspan="2">
        <widget class="QCheckBox" name="chk_slices">
-        <property name="toolTip"><string>Measure each horizontal SLICE between consecutive contours (D) instead of everything above each one. Needs a range.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Measure each horizontal SLICE between consecutive contours (D)&lt;br&gt;instead of everything above each one. Needs a range.&lt;/html&gt;</string></property>
         <property name="text"><string>Slice by slice</string></property>
        </widget>
       </item>
@@ -83,7 +83,7 @@
       </item>
       <item row="0" column="1">
        <widget class="QLineEdit" name="edit_base">
-        <property name="toolTip"><string>Also add the volume from the contour down to this level. Empty = measure from the contour itself.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Also add the volume from the contour down to this level. Empty&lt;br&gt;= measure from the contour itself.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -99,7 +99,7 @@
       </item>
       <item row="1" column="1" colspan="3">
        <widget class="QComboBox" name="cb_tmax">
-        <property name="toolTip"><string>Also report the single contour that maximizes the mean height, or the curvature of height versus contour (the Optimal Robust Separator)</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Also report the single contour that maximizes the mean height,&lt;br&gt;or the curvature of height versus contour (the Optimal Robust&lt;br&gt;Separator)&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="2" column="0">
@@ -115,12 +115,12 @@
       </item>
       <item row="2" column="3">
        <widget class="QLineEdit" name="edit_zshift">
-        <property name="toolTip"><string>Subtracted BEFORE the scaling. The contour and base levels refer to the scaled values.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Subtracted BEFORE the scaling. The contour and base levels&lt;br&gt;refer to the scaled values.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="3" column="0" colspan="4">
        <widget class="QCheckBox" name="chk_plot">
-        <property name="toolTip"><string>With a range of contours, also draw area, volume and mean height against the contour level in the X,Y plot tool</string></property>
+        <property name="toolTip"><string>&lt;html&gt;With a range of contours, also draw area, volume and mean&lt;br&gt;height against the contour level in the X,Y plot tool&lt;/html&gt;</string></property>
         <property name="text"><string>Plot the curves (a range of contours only)</string></property>
         <property name="checked"><bool>true</bool></property>
        </widget>
@@ -168,7 +168,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_outfile">
-       <property name="toolTip"><string>Optional table to write the result to. Leave empty to keep it only in this window's Data Viewer.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Optional table to write the result to. Leave empty to keep it&lt;br&gt;only in this window's Data Viewer.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>

@@ -28,7 +28,7 @@
      <layout class="QGridLayout" name="gridLayout_input">
       <item row="0" column="0" colspan="3">
        <widget class="QLineEdit" name="edit_infile">
-        <property name="toolTip"><string>Table with x, y, z (and a fourth column of weights or sigmas when Weights is used). Double-click to browse.</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Table with x, y, z (and a fourth column of weights or sigmas&lt;br&gt;when Weights is used). Double-click to browse.&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="3">
@@ -65,7 +65,7 @@
       <item row="0" column="1">
        <widget class="QComboBox" name="cb_model">
         <property name="minimumSize"><size><width>70</width><height>0</height></size></property>
-        <property name="toolTip"><string>Terms of z(x,y) = m1 + m2*x + m3*y + m4*xy + m5*x^2 + m6*y^2 + ... : 4 = bilinear, 6 = quadratic</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Terms of z(x,y) = m1 + m2*x + m3*y + m4*xy + m5*x^2 + m6*y^2 +&lt;br&gt;... : 4 = bilinear, 6 = quadratic&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="0" column="2">
@@ -76,7 +76,7 @@
       </item>
       <item row="1" column="0" colspan="2">
        <widget class="QCheckBox" name="chk_iterate">
-        <property name="toolTip"><string>Add terms one at a time, stopping when the variance reduction stops being significant (I)</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Add terms one at a time, stopping when the variance reduction&lt;br&gt;stops being significant (I)&lt;/html&gt;</string></property>
         <property name="text"><string>Iterate to significance</string></property>
        </widget>
       </item>
@@ -93,7 +93,7 @@
       </item>
       <item row="2" column="2" colspan="2">
        <widget class="QLineEdit" name="edit_condition">
-        <property name="toolTip"><string>Largest allowed ratio of largest to smallest eigenvalue in the damped least-squares solution [1e6]</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Largest allowed ratio of largest to smallest eigenvalue in the&lt;br&gt;damped least-squares solution [1e6]&lt;/html&gt;</string></property>
        </widget>
       </item>
       <item row="3" column="0">
@@ -166,7 +166,7 @@
       </item>
       <item row="3" column="0" colspan="6">
        <widget class="QCheckBox" name="chk_plotpts">
-        <property name="toolTip"><string>Also drop the fitted points on the map, each carrying its fitted row as a tooltip</string></property>
+        <property name="toolTip"><string>&lt;html&gt;Also drop the fitted points on the map, each carrying its&lt;br&gt;fitted row as a tooltip&lt;/html&gt;</string></property>
         <property name="text"><string>Plot the points on the map</string></property>
        </widget>
       </item>
@@ -180,7 +180,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_outfile">
-       <property name="toolTip"><string>Optional table to write the result to. Leave empty to keep it only in this window's Data Viewer.</string></property>
+       <property name="toolTip"><string>&lt;html&gt;Optional table to write the result to. Leave empty to keep it&lt;br&gt;only in this window's Data Viewer.&lt;/html&gt;</string></property>
       </widget>
      </item>
      <item>

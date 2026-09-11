@@ -166,7 +166,7 @@
          <item row="1" column="1" colspan="3">
           <widget class="QLineEdit" name="le_pad">
            <property name="toolTip">
-            <string>n_pad (fake outer-rim width), a pad distance, or w/e/s/n — extends the computation domain beyond the output region</string>
+            <string>&lt;html&gt;n_pad (fake outer-rim width), a pad distance, or w/e/s/n —&lt;br&gt;extends the computation domain beyond the output region&lt;/html&gt;</string>
            </property>
           </widget>
          </item>
@@ -182,7 +182,7 @@
           <string>Geographic — grid x,y are lon/lat  (f=:g)</string>
          </property>
          <property name="toolTip">
-          <string>Convert lon/lat to meters with a Flat Earth approximation. Leave unchecked when the grid coordinates are already metres.</string>
+          <string>&lt;html&gt;Convert lon/lat to meters with a Flat Earth approximation.&lt;br&gt;Leave unchecked when the grid coordinates are already metres.&lt;/html&gt;</string>
          </property>
         </widget>
        </item>
@@ -407,7 +407,7 @@
             <bool>false</bool>
            </property>
            <property name="toolTip">
-            <string>Over a large region the ambient field is not constant: -H+i / -H+n take the inclination/declination from IGRF at each node</string>
+            <string>&lt;html&gt;Over a large region the ambient field is not constant: -H+i /&lt;br&gt;-H+n take the inclination/declination from IGRF at each node&lt;/html&gt;</string>
            </property>
            <item>
             <property name="text">
@@ -607,7 +607,7 @@
          <item>
           <widget class="QLineEdit" name="le_track">
            <property name="toolTip">
-            <string>x,y file with the locations where the anomaly is computed. Mutually exclusive with a grid output — the result comes back as a table.</string>
+            <string>&lt;html&gt;x,y file with the locations where the anomaly is computed.&lt;br&gt;Mutually exclusive with a grid output — the result comes back&lt;br&gt;as a table.&lt;/html&gt;</string>
            </property>
           </widget>
          </item>
@@ -633,7 +633,7 @@
          <item>
           <widget class="QLineEdit" name="le_outfile">
            <property name="toolTip">
-            <string>Optional. The result is always added to this window; give a name here to also write it to disk.</string>
+            <string>&lt;html&gt;Optional. The result is always added to this window; give a&lt;br&gt;name here to also write it to disk.&lt;/html&gt;</string>
            </property>
           </widget>
          </item>
