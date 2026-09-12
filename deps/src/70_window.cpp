@@ -11971,6 +11971,436 @@ public:
 	}
 };
 
+class SentinelHubDialog;
+// One dialog per window, alive while parked — same contract as the Copernicus/ECMWF one above.
+static std::map<Scene *, SentinelHubDialog *> g_shubDlgs;
+
+// ============================================================================================
+// Sentinel Hub imagery (Geophysics > Copernicus) — a port of the QGIS SentinelHub plugin
+// (github.com/sentinel-hub/sentinelhub-qgis-plugin). Loaded at RUNTIME via QUiLoader from
+// deps/ui/sentinelhub_dialog.ui; everything that touches the network is src/sentinelhub.jl.
+//
+// The plugin's three tabs are kept: Login (the OAuth client), Image (what to ask the service for)
+// and Download (the same request sized in metres and written to a folder). What is NOT kept is the
+// plugin's "create a live WMS layer" idea — QGIS has streaming raster layers and iGMT has not, so
+// every request here is ONE image that lands through the shared file door, which is where the
+// raster laws (own axes, own Z, unconditional reframe) are applied.
+//
+// The credentials follow the DGT LIDAR tool, not the QGIS settings store: a plain `~/.sentinelhub`,
+// read whenever the two boxes are empty, written when "Remember them" is ticked.
+// ============================================================================================
+class SentinelHubDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QLineEdit *eId = nullptr, *eSecret = nullptr, *eT0 = nullptr, *eT1 = nullptr,
+	          *eX0 = nullptr, *eX1 = nullptr, *eY0 = nullptr, *eY1 = nullptr, *eSize = nullptr,
+	          *eResX = nullptr, *eResY = nullptr, *eFolder = nullptr,
+	          *eDX0 = nullptr, *eDX1 = nullptr, *eDY0 = nullptr, *eDY1 = nullptr;
+	QComboBox *cbUrl = nullptr, *cbConfig = nullptr, *cbLayer = nullptr, *cbCrs = nullptr,
+	          *cbPriority = nullptr, *cbFmt = nullptr;
+	QCheckBox *chkSave = nullptr, *chkExact = nullptr, *chkLogo = nullptr, *chkLoad = nullptr;
+	QSlider *slMaxcc = nullptr;
+	QLabel *lbMaxcc = nullptr;
+	QPlainTextEdit *txtLog = nullptr;
+	QCalendarWidget *cal = nullptr;
+	QRadioButton *rbCur = nullptr, *rbCustom = nullptr;
+	QWidget *wCustom = nullptr;
+
+	explicit SentinelHubDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/sentinelhub_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("SentinelHubDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("SentinelHubDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+		parkOnMinimise(d, [this]() { parkNow(); });
+		g_shubDlgs[scn] = this;
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			if (sceneAlive(scn)) unparkTool(scn, dlg);
+			auto it = g_shubDlgs.find(scn);
+			if (it != g_shubDlgs.end() && it->second == this) g_shubDlgs.erase(it);
+		});
+
+		eId      = d->findChild<QLineEdit *>("edit_client_id");
+		eSecret  = d->findChild<QLineEdit *>("edit_client_secret");
+		eT0      = d->findChild<QLineEdit *>("edit_start_time");
+		eT1      = d->findChild<QLineEdit *>("edit_end_time");
+		eX0      = d->findChild<QLineEdit *>("edit_lon_min");
+		eX1      = d->findChild<QLineEdit *>("edit_lon_max");
+		eY0      = d->findChild<QLineEdit *>("edit_lat_min");
+		eY1      = d->findChild<QLineEdit *>("edit_lat_max");
+		eSize    = d->findChild<QLineEdit *>("edit_size");
+		eResX    = d->findChild<QLineEdit *>("edit_res_x");
+		eResY    = d->findChild<QLineEdit *>("edit_res_y");
+		eFolder  = d->findChild<QLineEdit *>("edit_folder");
+		eDX0     = d->findChild<QLineEdit *>("edit_dl_lon_min");
+		eDX1     = d->findChild<QLineEdit *>("edit_dl_lon_max");
+		eDY0     = d->findChild<QLineEdit *>("edit_dl_lat_min");
+		eDY1     = d->findChild<QLineEdit *>("edit_dl_lat_max");
+		cbUrl    = d->findChild<QComboBox *>("cb_service_url");
+		cbConfig = d->findChild<QComboBox *>("cb_configuration");
+		cbLayer  = d->findChild<QComboBox *>("cb_layer");
+		cbCrs    = d->findChild<QComboBox *>("cb_crs");
+		cbPriority = d->findChild<QComboBox *>("cb_priority");
+		cbFmt    = d->findChild<QComboBox *>("cb_image_format");
+		chkSave  = d->findChild<QCheckBox *>("chk_savecred");
+		chkExact = d->findChild<QCheckBox *>("chk_exact_date");
+		chkLogo  = d->findChild<QCheckBox *>("chk_show_logo");
+		chkLoad  = d->findChild<QCheckBox *>("chk_load_after");
+		slMaxcc  = d->findChild<QSlider *>("slider_maxcc");
+		lbMaxcc  = d->findChild<QLabel *>("lbl_maxcc_value");
+		txtLog   = d->findChild<QPlainTextEdit *>("txt_login_log");
+		cal      = d->findChild<QCalendarWidget *>("calendar");
+		rbCur    = d->findChild<QRadioButton *>("rb_current_extent");
+		rbCustom = d->findChild<QRadioButton *>("rb_custom_extent");
+		wCustom  = d->findChild<QWidget *>("widget_custom_extent");
+
+		// The Region group grows its own "OR Ref grid" row — the shared builder every other Region
+		// group in the application uses, so a grid picked here fills the same four boxes the same way.
+		addRefGridRow(d, d->findChild<QGridLayout *>("gridLayout_region"), eX0, eX1, eY0, eY1);
+
+		if (slMaxcc && lbMaxcc) {
+			QObject::connect(slMaxcc, &QSlider::valueChanged, d, [this](int v) {
+				lbMaxcc->setText(QString::number(v) + "%");
+			});
+			lbMaxcc->setText(QString::number(slMaxcc->value()) + "%");
+		}
+
+		// The calendar fills whichever end of the range is still open: an empty "From" takes the first
+		// pick, the second goes to "To", and once both are set a pick starts a new range from scratch.
+		// With "Exact date" ticked there is only one date to fill, so every pick lands in "From".
+		if (cal) QObject::connect(cal, &QCalendarWidget::clicked, d, [this](const QDate &dd) {
+			const QString s = dd.toString("yyyy-MM-dd");
+			const bool exact = chkExact && chkExact->isChecked();
+			if (!eT0 || !eT1) return;
+			if (exact || eT0->text().trimmed().isEmpty() || !eT1->text().trimmed().isEmpty()) {
+				eT0->setText(s);
+				if (!exact) eT1->clear();
+			}
+			else {
+				eT1->setText(s);
+			}
+		});
+		if (chkExact && eT1) {
+			QObject::connect(chkExact, &QCheckBox::toggled, d, [this](bool on) { eT1->setEnabled(!on); });
+			eT1->setEnabled(!chkExact->isChecked());
+		}
+
+		// The custom-bbox boxes belong to the radio above them: greyed out while the request is to
+		// follow the window, never silently ignored.
+		auto syncExtent = [this]() {
+			if (wCustom) wCustom->setEnabled(rbCustom && rbCustom->isChecked());
+		};
+		if (rbCur)    QObject::connect(rbCur,    &QRadioButton::toggled, d, [syncExtent](bool) { syncExtent(); });
+		if (rbCustom) QObject::connect(rbCustom, &QRadioButton::toggled, d, [syncExtent](bool) { syncExtent(); });
+		syncExtent();
+
+		if (auto *b = d->findChild<QPushButton *>("btn_take_window"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() { fillFromView(eX0, eX1, eY0, eY1); });
+		// A window that is ALREADY showing a raster is the region the user almost certainly means, so
+		// the Image tab opens with its limits in the boxes. A window showing nothing is left ALONE —
+		// prefilling there writes the Scene's struct defaults (0..1), which is not a place on Earth
+		// (the mistake the Copernicus dialog's region box already carries a comment about).
+		fillFromView(eX0, eX1, eY0, eY1, true);
+		if (auto *b = d->findChild<QPushButton *>("btn_dl_take_window"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() { fillFromView(eDX0, eDX1, eDY0, eDY1); });
+
+		if (auto *b = d->findChild<QPushButton *>("btn_folder")) {
+			if (eFolder) {
+				QObject::connect(b, &QPushButton::clicked, d, [this, d]() {
+					const QString p = QFileDialog::getExistingDirectory(d, "Download folder", prefStartDir());
+					if (!p.isEmpty()) { eFolder->setText(p); rememberStartDir(p); }
+				});
+			}
+		}
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("btn_login"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { login(d); });
+
+		// THE TUTORIAL, in the browser: this tool's own page of the iGMT manual — the Copernicus
+		// registration, the OAuth client, the built-in collections and the two tabs. Same plain
+		// openUrl the Help menu uses, so it keeps working when the Julia bridge is not up.
+		if (auto *b = d->findChild<QPushButton *>("push_tutorial"))
+			QObject::connect(b, &QPushButton::clicked, d, [d]() {
+				const QUrl u("https://www.generic-mapping-tools.org/InteractiveGMT/dev/73-sentinelhub/");
+				if (!QDesktopServices::openUrl(u))
+					QMessageBox::warning(d, "Sentinel Hub",
+						QString("Could not open a browser for\n\n%1").arg(u.toString()));
+			});
+
+		// Credentials already on disk say so IN the two boxes, greyed: an empty box that is about to
+		// work looks exactly like an empty box that is about to fail, and the difference is the whole
+		// question the user has when the dialog opens. The file is read by the side that owns it.
+		if (g_juliaSentinelHub && eId && eSecret) {
+			const QString have = ask("what=credinfo", d).trimmed();
+			if (!have.isEmpty()) {
+				const QString shown = have.size() > 10 ? have.left(10) + "…" : have;
+				eId->setPlaceholderText(QString("%1  (from ~/.sentinelhub)").arg(shown));
+				eSecret->setPlaceholderText("the secret in ~/.sentinelhub");
+			}
+		}
+		if (auto *b = d->findChild<QPushButton *>("btn_get_image"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, false); });
+		if (auto *b = d->findChild<QPushButton *>("btn_download"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, true); });
+
+		// A configuration is a set of layers, so choosing one asks the service for ITS layers. The
+		// combo is never filled from a list written into this file — it comes from the account.
+		if (cbConfig)
+			QObject::connect(cbConfig, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
+			                 [this, d](int) { loadLayers(d); });
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	// ---- the window's own limits, into four boxes (the Image tab's, or the Download tab's) -------
+	// `quiet` is the call made ON OPEN: a window with nothing in it is not an error there, it simply
+	// means the user will type or pick the region themselves.
+	void fillFromView(QLineEdit *x0, QLineEdit *x1, QLineEdit *y0, QLineEdit *y1, bool quiet = false) {
+		if (!scn || !x0 || !x1 || !y0 || !y1) return;
+		if (scn->gnx < 2 || scn->gny < 2 || !(scn->gx1 > scn->gx0) || !(scn->gy1 > scn->gy0)) {
+			if (!quiet && scn->win) scn->win->statusBar()->showMessage(
+				"Sentinel Hub: this window is not showing a grid or image — no region to take.", 4000);
+			return;
+		}
+		x0->setText(QString::number(scn->gx0, 'g', 10));
+		x1->setText(QString::number(scn->gx1, 'g', 10));
+		y0->setText(QString::number(scn->gy0, 'g', 10));
+		y1->setText(QString::number(scn->gy1, 'g', 10));
+	}
+
+	void log(const QString &s) {
+		if (txtLog) txtLog->setPlainText(s);
+	}
+
+	void fail(const QString &msg) {
+		sceneLogError(scn, "Sentinel Hub: " + msg);
+		sceneShowMessages(scn, true);
+	}
+
+	// ONE way into Julia for every request this dialog makes, same shape as the Copernicus one.
+	QString ask(const QString &kv, QWidget *parent) {
+		(void)parent;
+		if (!g_juliaSentinelHub) {
+			fail("callback not registered.");
+			return QString();
+		}
+		std::vector<char> buf(1 << 18);
+		buf[0] = '\0';
+		const int ok = g_juliaSentinelHub(scn, kv.toUtf8().constData(), buf.data(), (int)buf.size());
+		lastAnswer = QString::fromUtf8(buf.data());
+		if (!ok) {
+			fail(lastAnswer.isEmpty() ? QString("failed, and the Julia side said nothing about why.")
+			                          : lastAnswer);
+			log(lastAnswer);
+			return QString();
+		}
+		return lastAnswer.isEmpty() ? QString(" ") : lastAnswer;
+	}
+	QString lastAnswer;
+
+	// The three keys every request carries: which deployment, and the OAuth client to reach it with.
+	// Left empty here, the Julia side reads ~/.sentinelhub — so the boxes are an override, never a
+	// second place the credentials live.
+	QStringList auth() const {
+		QStringList kv;
+		kv << "url="    + (cbUrl ? cbUrl->currentText().trimmed() : QString());
+		kv << "id="     + (eId ? eId->text().trimmed() : QString());
+		kv << "secret=" + (eSecret ? eSecret->text().trimmed() : QString());
+		return kv;
+	}
+
+	void login(QDialog *d) {
+		QStringList kv;
+		kv << "what=login" << auth();
+		kv << QString("savecred=%1").arg(chkSave && chkSave->isChecked() ? 1 : 0);
+		showBusyDialog("Asking the service for a token…");
+		const QString answer = ask(kv.join("\n"), d);
+		closeBusyDialog();
+		if (answer.isEmpty()) return;
+		log(answer.trimmed());
+		loadConfigurations(d);
+	}
+
+	// "id\tname" lines -> a combo whose DATA is the id and whose text is the name.
+	static void fillCombo(QComboBox *cb, const QString &catalog) {
+		if (!cb) return;
+		QSignalBlocker block(cb);
+		cb->clear();
+		for (const QString &line : catalog.split('\n', Qt::SkipEmptyParts)) {
+			const QStringList f = line.split('\t');
+			if (f.isEmpty() || f[0].trimmed().isEmpty()) continue;
+			cb->addItem(f.size() > 1 ? f[1].trimmed() : f[0].trimmed(), f[0].trimmed());
+		}
+	}
+
+	void loadConfigurations(QDialog *d) {
+		QStringList kv;
+		kv << "what=configs" << auth();
+		showBusyDialog("Reading your configurations…");
+		const QString cat = ask(kv.join("\n"), d);
+		closeBusyDialog();
+		if (cat.isEmpty()) return;
+		fillCombo(cbConfig, cat);
+		// The list always carries the built-in collections (the Process API needs no configuration
+		// instance), so an empty combo here means the service answered with nothing at all.
+		if (cbConfig && cbConfig->count() == 0) {
+			log(lastAnswer.trimmed() + "\n\nThe service returned no source at all — check the "
+			    "Service URL above.");
+			return;
+		}
+		loadLayers(d);
+	}
+
+	void loadLayers(QDialog *d) {
+		if (!cbConfig || cbConfig->count() == 0) return;
+		QStringList kv;
+		kv << "what=layers" << auth();
+		kv << "config=" + cbConfig->currentData().toString();
+		showBusyDialog("Reading the layers of this configuration…");
+		const QString cat = ask(kv.join("\n"), d);
+		closeBusyDialog();
+		if (!cat.isEmpty()) fillCombo(cbLayer, cat);
+	}
+
+	// The four region boxes, checked where the user can act on the answer. Empty, not a number, or
+	// west >= east / south >= north: the message names WHICH box and the cursor lands in it.
+	bool checkRegion(QDialog *d, QLineEdit *x0, QLineEdit *x1, QLineEdit *y0, QLineEdit *y1) {
+		struct { QLineEdit *box; const char *name; } boxes[4] =
+			{ { x0, "West" }, { x1, "East" }, { y0, "South" }, { y1, "North" } };
+		double v[4] = { 0, 0, 0, 0 };
+		for (int i = 0; i < 4; ++i) {
+			const QString t = boxes[i].box ? boxes[i].box->text().trimmed() : QString();
+			bool ok = false;
+			v[i] = t.toDouble(&ok);
+			if (t.isEmpty() || !ok) {
+				QMessageBox::warning(d, "Sentinel Hub",
+					QString("The region's %1 box %2.\n\nType the four limits, press "
+					        "\"From window\" to take the ones this window is showing, or pick a grid "
+					        "in \"OR Ref grid\".")
+						.arg(boxes[i].name, t.isEmpty() ? "is empty" : "does not hold a number"));
+				if (boxes[i].box) { boxes[i].box->setFocus(); boxes[i].box->selectAll(); }
+				return false;
+			}
+		}
+		if (!(v[1] > v[0]) || !(v[3] > v[2])) {
+			QMessageBox::warning(d, "Sentinel Hub",
+				"The region is empty — West must be smaller than East, and South smaller than North.");
+			return false;
+		}
+		return true;
+	}
+
+	// The service's own words for the three orderings the plugin offers.
+	QString priority() const {
+		if (!cbPriority) return "mostRecent";
+		const QString t = cbPriority->currentText();
+		if (t.startsWith("Least cloud")) return "leastCC";
+		if (t.startsWith("Least"))       return "leastRecent";
+		return "mostRecent";
+	}
+
+	// BOTH buttons, one function: "Get image" asks for a picture of a given pixel size, "Download"
+	// for one of a given ground resolution written to a folder. Everything else — the account, the
+	// layer, the time range, the cloud cover, the CRS — is assembled ONCE, here.
+	void run(QDialog *d, bool download) {
+		if (!cbConfig || cbConfig->count() == 0) {
+			fail("press Login first — the configuration and layer lists come from your account.");
+			return;
+		}
+		if (!cbLayer || cbLayer->count() == 0) {
+			fail("this configuration has no layer to ask for.");
+			return;
+		}
+		QStringList kv;
+		kv << (download ? "what=download" : "what=getimage") << auth();
+		kv << "config="   + cbConfig->currentData().toString();
+		kv << "layer="    + cbLayer->currentData().toString();
+		kv << "crs="      + (cbCrs ? cbCrs->currentText().trimmed() : QString("EPSG:4326"));
+		kv << "priority=" + priority();
+		kv << QString("maxcc=%1").arg(slMaxcc ? slMaxcc->value() : 100);
+		kv << "t0=" + (eT0 ? eT0->text().trimmed() : QString());
+		kv << "t1=" + (eT1 ? eT1->text().trimmed() : QString());
+		kv << QString("exact=%1").arg(chkExact && chkExact->isChecked() ? 1 : 0);
+		kv << QString("logo=%1").arg(chkLogo && chkLogo->isChecked() ? 1 : 0);
+		kv << QString("load=%1").arg((!download || (chkLoad && chkLoad->isChecked())) ? 1 : 0);
+
+		// WHERE. The Image tab has its own Region group; the Download tab offers the window's own
+		// extent as an alternative to typing one, which is the plugin's own pair of radios.
+		QLineEdit *x0 = eX0, *x1 = eX1, *y0 = eY0, *y1 = eY1;
+		if (download && rbCustom && rbCustom->isChecked()) { x0 = eDX0; x1 = eDX1; y0 = eDY0; y1 = eDY1; }
+		else if (download) {
+			fillFromView(eDX0, eDX1, eDY0, eDY1);
+			x0 = eDX0; x1 = eDX1; y0 = eDY0; y1 = eDY1;
+		}
+		// The region is CHECKED HERE, not by the Julia side: an empty box is a thing the user can see
+		// and fix in front of them, so it must be said over the boxes themselves — and the cursor put
+		// in the offending one — instead of travelling to the window's Errors log as a failed request.
+		if (!checkRegion(d, x0, x1, y0, y1)) return;
+		kv << "x0=" + (x0 ? x0->text().trimmed() : QString());
+		kv << "x1=" + (x1 ? x1->text().trimmed() : QString());
+		kv << "y0=" + (y0 ? y0->text().trimmed() : QString());
+		kv << "y1=" + (y1 ? y1->text().trimmed() : QString());
+
+		if (download) {
+			kv << "fmt="    + (cbFmt ? cbFmt->currentText().trimmed() : QString("TIFF"));
+			kv << "resx="   + (eResX ? eResX->text().trimmed() : QString());
+			kv << "resy="   + (eResY ? eResY->text().trimmed() : QString());
+			kv << "folder=" + (eFolder ? eFolder->text().trimmed() : QString());
+		}
+		else {
+			kv << "size=" + (eSize ? eSize->text().trimmed() : QString("1024"));
+		}
+
+		showBusyDialog(download ? "Downloading from Sentinel Hub…" : "Asking Sentinel Hub for the image…");
+		const QString answer = ask(kv.join("\n"), d);
+		closeBusyDialog();
+		if (answer.isEmpty()) return;      // ask() already said what went wrong
+		// The dialog stays OPEN: another date, another layer or another region is the normal next
+		// step, not a reason to reopen it.
+		QMessageBox::information(d, "Sentinel Hub", answer.trimmed());
+	}
+
+	// ---- minimise parks it as a Scene Objects handle, like every other parkable tool -------------
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { unparkTool(scn, dlg); dlg->close(); }
+		};
+	}
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->hide();
+		parkTool(scn, dlg, "Sentinel Hub", IC_Image,
+		         "Minimised Sentinel Hub dialog — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);
+	}
+};
+
 // ============================================================================================
 // grdfft (GMT menu) — the 2-D FFT of the window's grid: operate in the frequency domain and come
 // back (a grid), or estimate the power spectrum (a table). Loaded at RUNTIME via QUiLoader from
@@ -26351,7 +26781,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		mGphy->clear();
 		mGphy->setTitle("Copernicus ▾");
 		backItem("Copernicus");
-		mGphy->addAction("ERA5 / ECMWF download…", [win, s]() {
+		mGphy->addAction("ERA5 / ECMWF", [win, s]() {
 			// Already open or parked in this window? Bring THAT one back — never a second dialog.
 			auto it = g_ecmwfDlgs.find(s);
 			if (it != g_ecmwfDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
@@ -26363,6 +26793,16 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			if (w->dlg) w->dlg->show();
 			else        QMessageBox::warning(win, "Copernicus / ECMWF",
 			                QString("Could not load %1/ecmwf_dialog.ui").arg(gmtvtkUiDir()));
+		});
+		// Sentinel Hub imagery — the same discipline, a different service: Sentinel-1/2/3/5P and the
+		// Copernicus DEM as pictures, through the OGC endpoints (SentinelHubDialog, above).
+		mGphy->addAction("Sentinel Hub imagery…", [win, s]() {
+			auto it = g_shubDlgs.find(s);
+			if (it != g_shubDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+			auto *w = new SentinelHubDialog(win, s);   // deletes itself with its QDialog
+			if (w->dlg) w->dlg->show();
+			else        QMessageBox::warning(win, "Sentinel Hub",
+			                QString("Could not load %1/sentinelhub_dialog.ui").arg(gmtvtkUiDir()));
 		});
 		reopen();
 	};

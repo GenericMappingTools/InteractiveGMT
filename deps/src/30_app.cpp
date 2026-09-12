@@ -408,6 +408,22 @@ static JuliaTttFn g_juliaTtt = nullptr;
 typedef int (*JuliaEcmwfFn)(void *scene, const char *params, char *out, int cap);
 static JuliaEcmwfFn g_juliaEcmwf = nullptr;
 
+// Sentinel Hub imagery (Geophysics > Copernicus) — a port of the QGIS SentinelHub plugin through
+// src/sentinelhub.jl. ONE callback for the whole dialog (SentinelHubDialog, 70_window.cpp, loads
+// deps/ui/sentinelhub_dialog.ui), `what` says what is being asked for.
+// NEWLINE-separated "key=value" block:
+//   what=login|configs|layers|getimage|download,
+//   url=<service base URL>, id=, secret=, savecred=0|1,
+//   config=<instance id>, layer=<layer id>, crs=, priority=, maxcc=, size=,
+//   t0=, t1=, exact=0|1, x0=, x1=, y0=, y1=,
+//   fmt=PNG|JPEG|TIFF, resx=, resy=, folder=, logo=0|1, load=0|1
+// (every key optional bar `what`). `out`/`cap` carry the answer back as text: the login report, an
+// "id\tname"-per-line catalogue for the two combos, the path of the image that landed — and the
+// error text when the call fails. Returns 1 on success, 0 on failure, for the same reason the
+// ECMWF one does: the dialog needs a yes/no, not only the window's Errors console.
+typedef int (*JuliaSentinelHubFn)(void *scene, const char *params, char *out, int cap);
+static JuliaSentinelHubFn g_juliaSentinelHub = nullptr;
+
 // The FFT tool (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum). One request
 // string does every operation: "op;grid1;grid2;newRows;newCols;coords;detrend;value" -- see
 // _on_fftstuff (src/fftstuff.jl) for what each field means. Returns 1 on success, 0 on failure.

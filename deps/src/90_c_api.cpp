@@ -2014,6 +2014,13 @@ GMTVTK_API void gmtvtk_set_ecmwf_callback(JuliaEcmwfFn fn) {
 	g_juliaEcmwf = fn;
 }
 
+// Register the Sentinel Hub imagery callback (Geophysics > Copernicus). fn(scene, params, out, cap)
+// with the newline-separated "key=value" block documented at JuliaSentinelHubFn (30_app.cpp) logs
+// in, lists the configurations and layers, and brings an image back. nullptr to detach.
+GMTVTK_API void gmtvtk_set_sentinelhub_callback(JuliaSentinelHubFn fn) {
+	g_juliaSentinelHub = fn;
+}
+
 // Register the FFT tool callback (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum).
 // fn(scene, params) with params = "op;grid1;grid2;newRows;newCols;coords;detrend;value" runs the
 // spectrum/correlation/field-transform asked for and adds its result to `scene`. nullptr to detach.

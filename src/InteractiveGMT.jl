@@ -74,6 +74,7 @@ include("aquamoto.jl")   # Geophysics > Tsunamis > Aquamoto viewer (port of Miro
 include("tsunamicatalog.jl") # Geophysics > Tsunamis > NOAA historical catalog (NCEI event database)
 include("tsunamittt.jl") # Geophysics > Tsunamis > Tsunami travel times (GMT.jl ttt / wave_travel_time / tttimes)
 include("ecmwf.jl")      # Geophysics > Copernicus > ERA5 / ECMWF download (GMT.jl ecmwf / era5vars / era5time)
+include("sentinelhub.jl")# Geophysics > Copernicus > Sentinel Hub imagery (port of the QGIS SentinelHub plugin)
 include("igrf.jl")       # Geophysics > Magnetics > IGRF (port of Mirone igrf_options.m; GMT.magref)
 include("seismicity.jl") # Geophysics > Seismology > Seismicity (port of Mirone earthquakes.m)
 include("focal.jl")      # Geophysics > Seismology > Focal mechanisms (port of Mirone focal_meca.m)

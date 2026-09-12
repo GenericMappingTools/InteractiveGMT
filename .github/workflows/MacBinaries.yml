@@ -12,6 +12,17 @@
 # explicit deployment choice, not incidental -- do not change them to macos-latest without meaning
 # to move that target as GitHub updates the alias.
 #
+# THE TWO ARCHES DO NOT REACH THE SAME FLOOR, and the reason is GitHub's runner catalogue, not us:
+#   arm64  -- macos-14 is the OLDEST standard image still offered, so the bundle's floor is 14.x.
+#   x86_64 -- the only standard Intel labels are macos-15-intel and macos-26-intel. There is NO
+#             free macOS 14 Intel runner (macos-14-large is a LARGER, billed runner), so this leg
+#             stays on 15 and its bundle's real floor is 15.x, whatever deps/CMakeLists.txt
+#             declares. Our own objects carry the declared 14.0 minimum; the Homebrew VTK/Qt/TBB
+#             dylibs staged beside them carry the floor of the release their bottle was poured for,
+#             and that is the binding one.
+# Lowering the Intel floor needs either a billed larger runner or Qt+VTK built from source. Do not
+# "fix" the asymmetry by pointing x86_64 at a label that is not in the standard free set.
+#
 # NOTHING IS PUBLISHED AUTOMATICALLY. A push builds and verifies, and leaves the archives as
 # workflow artifacts. Uploading to a release happens only on a manual run that explicitly asks for
 # it, because a release asset is user-facing: `rolling` re-uploads the small library archive to the
@@ -58,10 +69,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15     # Apple Silicon
+          - os: macos-14     # Apple Silicon -- oldest standard arm64 image; sets the 14.x floor
             arch: arm64
             julia_arch: aarch64
-          - os: macos-15-intel
+          - os: macos-15-intel   # no free macOS 14 Intel runner exists; see the header
             arch: x86_64
             julia_arch: x64
     steps:
