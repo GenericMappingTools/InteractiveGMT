@@ -261,6 +261,7 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_open_movie_dialog_h,# movie tool: open that dialog on one window
 	:gmtvtk_capture_view_rgb,  # GMT.jl script export: the whole viewport, for the globe/cube modes
 	:gmtvtk_set_meca_sdr_h,    # focal mechanisms: attach each event's strike/dip/rake to its ball
+	:gmtvtk_set_sentinelhub_callback, # Copernicus > Sentinel Hub imagery (src/sentinelhub.jl)
 )
 
 # Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is

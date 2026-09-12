@@ -1,6 +1,6 @@
 # Copernicus / ECMWF
 
-*Geophysics → Copernicus → ERA5 / ECMWF download…*
+*Geophysics → Copernicus → ERA5 / ECMWF*
 
 Weather and climate data, fetched from the two European services and dropped straight into the
 window. The tool wraps GMT.jl's `ecmwf`, which is **one function with two halves** — and so this is
