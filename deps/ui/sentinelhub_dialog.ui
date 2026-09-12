@@ -1,0 +1,787 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SentinelHubDialog</class>
+ <widget class="QDialog" name="SentinelHubDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>470</width>
+    <height>620</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Sentinel Hub</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <item>
+    <widget class="QTabWidget" name="tabs">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+     <widget class="QWidget" name="tab_login">
+      <attribute name="title">
+       <string>Login</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_login">
+       <item>
+        <widget class="QLabel" name="lbl_welcome">
+         <property name="text">
+          <string>&lt;html&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot;font-size:12pt; font-weight:600;&quot;&gt;Copernicus Data Space / Sentinel Hub&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="group_credentials">
+         <property name="title">
+          <string>OAuth client (leave empty to use ~/.sentinelhub)</string>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_credentials" columnstretch="0,1">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_client_id">
+            <property name="text">
+             <string>Client ID</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_client_id">
+            <property name="toolTip">
+             <string>&lt;html&gt;The OAuth client id created in the Copernicus Data Space user&lt;br&gt;dashboard. Left empty, it is read from ~/.sentinelhub.&lt;/html&gt;</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_client_secret">
+            <property name="text">
+             <string>Client secret</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="edit_client_secret">
+            <property name="echoMode">
+             <enum>QLineEdit::Password</enum>
+            </property>
+            <property name="toolTip">
+             <string>&lt;html&gt;The secret of that OAuth client. Left empty, it is read from&lt;br&gt;~/.sentinelhub.&lt;/html&gt;</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lbl_service_url">
+            <property name="text">
+             <string>Service URL</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QComboBox" name="cb_service_url">
+            <property name="editable">
+             <bool>true</bool>
+            </property>
+            <item>
+             <property name="text">
+              <string>https://sh.dataspace.copernicus.eu</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>https://services.sentinel-hub.com</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>https://services-uswest2.sentinel-hub.com</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item row="3" column="0">
+           <widget class="QCheckBox" name="chk_savecred">
+            <property name="text">
+             <string>Remember them in ~/.sentinelhub</string>
+            </property>
+            <property name="toolTip">
+             <string>Writes the two above to ~/.sentinelhub (plain text) so they need not be typed again.</string>
+            </property>
+            <property name="checked">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <layout class="QHBoxLayout" name="horizontalLayout_login_btn">
+            <item>
+             <spacer name="spacer_login">
+              <property name="orientation">
+               <enum>Qt::Horizontal</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>40</width>
+                <height>20</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btn_login">
+              <property name="text">
+               <string>Login</string>
+              </property>
+              <property name="toolTip">
+               <string>&lt;html&gt;Asks the service for a token with the credentials above (or, if&lt;br&gt;they are empty, with the ones in ~/.sentinelhub) and says whether&lt;br&gt;it was accepted. Ticked above, it writes the file first.&lt;/html&gt;</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPlainTextEdit" name="txt_login_log">
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+         <property name="toolTip">
+          <string>What the login attempt did.</string>
+         </property>
+         <property name="plainText">
+          <string>Not logged in.</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lbl_oauth_help">
+         <property name="text">
+          <string>&lt;html&gt;&lt;body&gt;&lt;p&gt;&lt;a href=&quot;https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Overview/Authentication.html#registering-oauth-client&quot;&gt;&lt;span style=&quot;text-decoration: underline; color:#0000ff;&quot;&gt;Create OAuth client&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+         </property>
+         <property name="openExternalLinks">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lbl_patience">
+         <property name="text">
+          <string>&lt;html&gt;&lt;body&gt;&lt;p&gt;&lt;b&gt;Be patient with Copernicus.&lt;/b&gt; Registering an account and creating an
+OAuth client there is slower and more confusing than it has any right to be: the
+instructions are scattered over several pages, the dashboard is not where the
+documentation says it is, and the secret is shown &lt;i&gt;once&lt;/i&gt; &amp;mdash; copy it
+immediately. None of that is iGMT talking to you; it is the service. Allow
+yourself a quiet quarter of an hour the first time. What to do with the
+credentials once you have them is in &lt;b&gt;Usage tutorial&lt;/b&gt;, at the bottom of
+this dialog.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="spacer_login_bottom">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>40</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_image">
+      <attribute name="title">
+       <string>Image</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_image">
+       <item>
+        <widget class="QGroupBox" name="group_source">
+         <property name="title">
+          <string>Source</string>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_source" columnstretch="0,1,0,1">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_configuration">
+            <property name="text">
+             <string>Configuration</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1" colspan="3">
+           <widget class="QComboBox" name="cb_configuration">
+            <property name="toolTip">
+             <string>Configurations (instances) defined in your Copernicus / Sentinel Hub dashboard.</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_layer">
+            <property name="text">
+             <string>Layer</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1" colspan="3">
+           <widget class="QComboBox" name="cb_layer"/>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lbl_crs">
+            <property name="text">
+             <string>CRS</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QComboBox" name="cb_crs">
+            <property name="toolTip">
+             <string>&lt;html&gt;The CRS the image is requested in. The region boxes below are&lt;br&gt;always degrees &amp;mdash; a projected CRS is reached through GDAL.&lt;/html&gt;</string>
+            </property>
+            <item>
+             <property name="text">
+              <string>EPSG:3857</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>EPSG:4326</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="lbl_priority">
+            <property name="text">
+             <string>Image priority</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QComboBox" name="cb_priority">
+            <item>
+             <property name="text">
+              <string>Most recent</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>Least recent</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>Least cloud coverage</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item row="3" column="2">
+           <widget class="QLabel" name="lbl_maxcc">
+            <property name="text">
+             <string>Cloud coverage</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="3">
+           <layout class="QHBoxLayout" name="horizontalLayout_maxcc">
+            <item>
+             <widget class="QSlider" name="slider_maxcc">
+              <property name="maximum">
+               <number>100</number>
+              </property>
+              <property name="value">
+               <number>100</number>
+              </property>
+              <property name="orientation">
+               <enum>Qt::Horizontal</enum>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="lbl_maxcc_value">
+              <property name="text">
+               <string>100%</string>
+              </property>
+              <property name="minimumSize">
+               <size>
+                <width>36</width>
+                <height>0</height>
+               </size>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="4" column="0">
+           <widget class="QLabel" name="lbl_size">
+            <property name="text">
+             <string>Image size</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="1">
+           <widget class="QLineEdit" name="edit_size">
+            <property name="text">
+             <string>1024</string>
+            </property>
+            <property name="toolTip">
+             <string>&lt;html&gt;Pixels along the LONGER side of the region; the other side follows&lt;br&gt;the region's aspect. The service caps one request at 2500.&lt;/html&gt;</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="group_time">
+         <property name="title">
+          <string>Time range</string>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_time" columnstretch="0,1,0,1,0">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_start_time">
+            <property name="text">
+             <string>From</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_start_time">
+            <property name="placeholderText">
+             <string>Select start date</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lbl_end_time">
+            <property name="text">
+             <string>to</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="edit_end_time">
+            <property name="placeholderText">
+             <string>Select end date</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="4">
+           <widget class="QCheckBox" name="chk_exact_date">
+            <property name="text">
+             <string>Exact date</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0" colspan="5">
+           <widget class="QCalendarWidget" name="calendar">
+            <property name="gridVisible">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="group_region">
+         <property name="title">
+          <string>Region</string>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_region" columnstretch="0,1,0,1,0">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_lon">
+            <property name="text">
+             <string>Longitude</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_lon_min">
+            <property name="placeholderText">
+             <string>west</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lbl_lon_sep">
+            <property name="text">
+             <string>-</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="edit_lon_max">
+            <property name="placeholderText">
+             <string>east</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="4">
+           <widget class="QPushButton" name="btn_take_window">
+            <property name="text">
+             <string>From window</string>
+            </property>
+            <property name="toolTip">
+             <string>Take the limits of the raster showing in the active window.</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_lat">
+            <property name="text">
+             <string>Latitude</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="edit_lat_min">
+            <property name="placeholderText">
+             <string>south</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="lbl_lat_sep">
+            <property name="text">
+             <string>-</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QLineEdit" name="edit_lat_max">
+            <property name="placeholderText">
+             <string>north</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="group_target">
+         <property name="title">
+          <string>Target</string>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_target" columnstretch="0,1,0">
+          <item row="0" column="0" colspan="2">
+           <widget class="QLabel" name="lbl_new_image_hint">
+            <property name="text">
+             <string>The image lands in this window, with its own axes.</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QPushButton" name="btn_get_image">
+            <property name="text">
+             <string>Get image</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <spacer name="spacer_image_bottom">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>10</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_download">
+      <attribute name="title">
+       <string>Download</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_download">
+       <item>
+        <widget class="QGroupBox" name="group_extent">
+         <property name="title">
+          <string>Bounding box</string>
+         </property>
+         <layout class="QVBoxLayout" name="verticalLayout_extent">
+          <item>
+           <layout class="QHBoxLayout" name="horizontalLayout_extent_mode">
+            <item>
+             <widget class="QRadioButton" name="rb_current_extent">
+              <property name="text">
+               <string>Current window</string>
+              </property>
+              <property name="checked">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QRadioButton" name="rb_custom_extent">
+              <property name="text">
+               <string>Custom bounding box</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <widget class="QWidget" name="widget_custom_extent" native="true">
+            <layout class="QGridLayout" name="gridLayout_custom_extent" columnstretch="0,1,0,1,0">
+             <item row="0" column="0">
+              <widget class="QLabel" name="lbl_dl_lon">
+               <property name="text">
+                <string>Longitude</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QLineEdit" name="edit_dl_lon_min">
+               <property name="placeholderText">
+                <string>west</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="2">
+              <widget class="QLabel" name="lbl_dl_lon_sep">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="3">
+              <widget class="QLineEdit" name="edit_dl_lon_max">
+               <property name="placeholderText">
+                <string>east</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="4">
+              <widget class="QPushButton" name="btn_dl_take_window">
+               <property name="text">
+                <string>From window</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="lbl_dl_lat">
+               <property name="text">
+                <string>Latitude</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QLineEdit" name="edit_dl_lat_min">
+               <property name="placeholderText">
+                <string>south</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="2">
+              <widget class="QLabel" name="lbl_dl_lat_sep">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="3">
+              <widget class="QLineEdit" name="edit_dl_lat_max">
+               <property name="placeholderText">
+                <string>north</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="group_output">
+         <property name="title">
+          <string>Output</string>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_output" columnstretch="0,1,0,1,0">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_resolution">
+            <property name="text">
+             <string>Resolution</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="edit_res_x">
+            <property name="placeholderText">
+             <string>X (m)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="lbl_res_sep">
+            <property name="text">
+             <string>x</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLineEdit" name="edit_res_y">
+            <property name="placeholderText">
+             <string>Y (m)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_image_format">
+            <property name="text">
+             <string>Image format</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QComboBox" name="cb_image_format">
+            <item>
+             <property name="text">
+              <string>TIFF</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>PNG</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>JPEG</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item row="1" column="3" colspan="2">
+           <widget class="QCheckBox" name="chk_show_logo">
+            <property name="text">
+             <string>Show logo</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lbl_folder">
+            <property name="text">
+             <string>Folder</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1" colspan="3">
+           <widget class="QLineEdit" name="edit_folder"/>
+          </item>
+          <item row="2" column="4">
+           <widget class="QPushButton" name="btn_folder">
+            <property name="text">
+             <string>...</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="0" colspan="5">
+           <widget class="QCheckBox" name="chk_load_after">
+            <property name="text">
+             <string>Load the downloaded image into the window</string>
+            </property>
+            <property name="checked">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_download_btn">
+         <item>
+          <spacer name="spacer_download">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btn_download">
+           <property name="text">
+            <string>Download</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <spacer name="spacer_download_bottom">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>40</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_bottom">
+     <item>
+      <widget class="QLabel" name="lbl_status">
+       <property name="text">
+        <string/>
+       </property>
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="spacer_bottom">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_tutorial">
+       <property name="text">
+        <string>Usage tutorial</string>
+       </property>
+       <property name="toolTip">
+        <string>&lt;html&gt;How to USE this tool &amp;mdash; the sources, the two tabs and their boxes.&lt;br&gt;Opens this tool's page of the iGMT manual in a browser.&lt;/html&gt;</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
