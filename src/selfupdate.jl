@@ -80,6 +80,6 @@ function update!()
 			@tool_error "InteractiveGMT: deps/build.jl not found at $script -- binaries not synced."
 		end
 	end
-	println("InteractiveGMT: update complete. Restart Julia to use the new version.")
+	println("InteractiveGMT: update complete. Restart i'GMT to use the new version.")
 	return nothing
 end
