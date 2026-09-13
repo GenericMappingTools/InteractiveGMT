@@ -717,12 +717,6 @@ const _BM1_LEVELS = Dict{Ptr{Cvoid},Vector{String}}()
 # clear of each grid's outer edge where the nesting boundary condition lives.
 const _BM1_LEVEL_EDGES = (600.0, 1000.0)
 
-# The last reason a window was told it has no reference curve, per scene. The curves are asked for at
-# every slice, so this is what keeps the explanation to ONE line per condition instead of one per
-# click -- and a window that starts answering properly drops out of it, so the next fault is reported
-# again rather than swallowed as "already said".
-const _BM1_NOCURVE = Dict{Ptr{Cvoid},String}()
-
 # Note which of a run's per-level cubes are actually on disk. Called wherever a result is adopted, so
 # a run and a "Load from disk…" of the same file behave the same; a run made before this existed (or a
 # single-level one) simply registers nothing and the figure keeps the window's own curve.
@@ -844,34 +838,16 @@ function _aqua_eta_curves(scene::Ptr{Cvoid}, x0::Real, x1::Real, n::Real)::Cvoid
 		             isempty(xr) ? C_NULL : pointer(xr), isempty(yr) ? C_NULL : pointer(yr), Cint(length(xr)),
 		      name)
 	clear() = push(Float64[], Float64[], Float64[], Float64[], "")
-	# WHY A WINDOW HAS NO CURVES IS SAID OUT LOUD, ONCE. This is asked again at every slice, so the
-	# reason is logged only when it CHANGES for that window -- otherwise a window that legitimately has
-	# no reference (any ordinary Aquamoto cube) would spam the log at every click. Without it all five
-	# give-up paths below are silent, and `askEtaCurves` (75_aquamoto.cpp) throws the eval result away
-	# too: a figure with no reference curve had no way at all to say which condition stopped it.
-	#
-	# IT ONLY EVER SPEAKS ON A PATH THAT WAS ALREADY GIVING UP. The path that actually draws the two
-	# curves is untouched, and the logging itself is swallowed whole: this may only ever add a line to
-	# a log, never change or endanger what a window that works today puts on screen.
-	give_up(why::String) = (try
-		if get(_BM1_NOCURVE, scene, "") != why
-			_BM1_NOCURVE[scene] = why
-			_viewer_log_info(scene, "Catalina benchmark 1: no reference curve for this window -- $why")
-		end
-	catch
-	end; clear())
 	try
-		(scene in _BM1_SCENES) ||
-			return give_up("the window is not a registered benchmark (it was not opened by the Benchs tab's Run/Load)")
+		(scene in _BM1_SCENES) || return clear()
 		st = get(_AQUA, scene, nothing)
-		st === nothing && return give_up("the window has no Aquamoto session")
-		(0 <= st.cur < st.nsteps) || return give_up("slice $(st.cur) is outside the cube's $(st.nsteps) steps")
+		st === nothing && return clear()
+		(0 <= st.cur < st.nsteps) || return clear()
 		# The MODEL TIME of the slice on screen — the cube's own time coordinate, the same value the
 		# titlebar shows. A cube with no time axis has nothing to evaluate an analytic solution at.
-		st.cur + 1 <= length(st.times) ||
-			return give_up("the cube has no time coordinate for slice $(st.cur) ($(length(st.times)) times read)")
+		st.cur + 1 <= length(st.times) || return clear()
 		t = st.times[st.cur+1]
-		(isfinite(t) && t >= 0) || return give_up("slice $(st.cur) has a model time of $t")
+		(isfinite(t) && t >= 0) || return clear()
 		xa, ya = _bm1_analytic_curve(Float64(t), Float64(x0), Float64(x1), round(Int, n))
 		xm, ym = _bm1_model_curve(scene, st, st.cur, Float64(x0), Float64(x1))
 		length(xa) < 2 && (xa = Float64[]; ya = Float64[])

@@ -340,43 +340,6 @@ function _nswing_clean_env()
 	return env
 end
 
-# The environment a spawned `gmt` actually needs: ours (above), with the JLL wrapper's own LIBPATH
-# entries merged ON TOP. `GMT_jll.gmt()` normally returns a Cmd whose `env` already holds them as
-# "KEY=VALUE" strings; if a JLLWrappers version ever hands back a Cmd with no env, `LIBPATH[]` /
-# `LIBPATH_env` are the same values under their platform's variable name, so the artifact's
-# dependencies (libnetcdf, libhdf5, libgdal, ...) resolve either way. A system-wide `gmt` carries no
-# env at all and is left exactly as it was -- it resolves its own dependencies like any other
-# terminal invocation.
-#
-# A SYSTEM-WIDE BUILD LEAVES HERE WITH EXACTLY WHAT `_nswing_clean_env` GAVE -- the first line returns
-# before anything is merged, so the Windows route that works today is byte-for-byte what it was.
-function _nswing_jll_env(gmtcmd::Cmd)
-	env = _nswing_clean_env()
-	GMT.isJLL || return env
-	cenv = gmtcmd.env
-	if cenv !== nothing
-		for kv in cenv
-			i = findfirst('=', kv)
-			i === nothing && continue
-			env[kv[1:prevind(kv, i)]] = kv[nextind(kv, i):end]
-		end
-	else
-		libpath = GMT.GMT_jll.LIBPATH[]
-		key     = GMT.GMT_jll.LIBPATH_env
-		if !isempty(libpath)
-			old = get(env, key, "")
-			env[key] = isempty(old) ? libpath : libpath * (Sys.iswindows() ? ";" : ":") * old
-		end
-	end
-	# THE VTK/Qt STRIP IS RE-APPLIED OVER WHATEVER CAME BACK. The JLL wrapper captured its PATH when
-	# GMT_jll initialised, which on a JLL Windows build can be after libgmtvtk.jl prepended the
-	# toolchain bin dirs -- merging it back would hand the child exactly the prefix the reason above
-	# exists to remove. Stripping again here means no merge can ever undo it, on any platform.
-	prefix = _VTK_BIN * ";" * _QT_BIN * ";"
-	startswith(get(env, "PATH", ""), prefix) && (env["PATH"] = env["PATH"][length(prefix)+1:end])
-	return env
-end
-
 # File-path run: launch a detached `gmt nswing …` OS process, output → log the watcher tails. No thread /
 # redirect needed — a separate process never blocks the Julia runtime. `dir`, when given, becomes the
 # process's OWN working directory: nswing's output names (-G's stem, the -M-/-M+ mask files, a bare
@@ -393,21 +356,12 @@ function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Unio
 	# PATH exactly as before — nothing changes on such a machine) or the artifact's absolute path
 	# under GMT_jll, where there is no `gmt` on PATH at all. That is why the launch died there with
 	# "could not spawn" while the same run worked from the REPL, which goes through in-process libgmt.
-	# ... and WITH THAT BUILD'S OWN ENVIRONMENT. A JLL `gmt` is an artifact binary that does NOT find
-	# its shared libraries from the ambient environment: `GMT_jll.gmt()` hands back a Cmd carrying the
-	# LIBPATH entries (LD_LIBRARY_PATH / DYLD_FALLBACK_LIBRARY_PATH / PATH) that point at the
-	# netcdf/hdf5/gdal/proj artifacts it links against, and `GMT.GMTbin` is only `gmt()[1]` -- the
-	# executable path with that environment THROWN AWAY. Spawning the bare path is why Linux died with
-	#     gmt nswing exited with code 127
-	#     gmt: error while loading shared libraries: libnetcdf.so.22: cannot open shared object file
-	# while the identical command works from a terminal (which has the libs) and from the REPL (which
-	# goes through in-process libgmt). So take the JLL's Cmd WHOLE and merge ITS env over ours.
-	gmtcmd = GMT.isJLL ? GMT.GMT_jll.gmt() : Cmd(String["gmt"])
-	cmd   = Cmd(vcat(collect(gmtcmd.exec), "nswing", args))
+	gmtexe = GMT.isJLL ? GMT.GMTbin : "gmt"
+	cmd   = Cmd(vcat(gmtexe, "nswing", args))
 	if dir !== nothing
 		cmd = Cmd(cmd; dir = dir)
 	end
-	cmd = Cmd(cmd; env = _nswing_jll_env(gmtcmd))
+	cmd = Cmd(cmd; env = _nswing_clean_env())
 	proc = try
 		run(pipeline(cmd; stdout=io, stderr=io); wait=false)
 	catch e
