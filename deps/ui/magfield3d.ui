@@ -1,0 +1,306 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MagField3D</class>
+ <widget class="QWidget" name="MagField3D">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1080</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <layout class="QHBoxLayout" name="rootLayout" stretch="4,1">
+   <item>
+    <widget class="QWidget" name="viewHost" native="true">
+     <property name="minimumSize">
+      <size>
+       <width>520</width>
+       <height>520</height>
+      </size>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="controlsPanel" native="true">
+     <layout class="QVBoxLayout" name="controlsLayout">
+      <item>
+       <widget class="QGroupBox" name="modelGroup">
+        <property name="title">
+         <string>IGRF model</string>
+        </property>
+        <layout class="QGridLayout" name="modelLayout">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lblDate">
+           <property name="text">
+            <string>Date</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QDoubleSpinBox" name="dateBox">
+           <property name="toolTip">
+            <string>Decimal year. The IGRF generation and epoch are picked from it (valid 1900-2030).</string>
+           </property>
+           <property name="decimals">
+            <number>2</number>
+           </property>
+           <property name="minimum">
+            <double>1900.000000000000000</double>
+           </property>
+           <property name="maximum">
+            <double>2030.000000000000000</double>
+           </property>
+           <property name="singleStep">
+            <double>1.000000000000000</double>
+           </property>
+           <property name="value">
+            <double>2025.000000000000000</double>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="seedGroup">
+        <property name="title">
+         <string>Field lines</string>
+        </property>
+        <layout class="QGridLayout" name="seedLayout">
+         <item row="0" column="0">
+          <widget class="QLabel" name="lblLon">
+           <property name="text">
+            <string>Longitudes</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QSpinBox" name="lonBox">
+           <property name="toolTip">
+            <string>Field lines started at this many longitudes, on every latitude ring, in both hemispheres.</string>
+           </property>
+           <property name="minimum">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <number>180</number>
+           </property>
+           <property name="value">
+            <number>12</number>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lblRing">
+           <property name="text">
+            <string>Latitude rings</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QSpinBox" name="ringBox">
+           <property name="minimum">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <number>20</number>
+           </property>
+           <property name="value">
+            <number>4</number>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="lblLat0">
+           <property name="text">
+            <string>From latitude</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QDoubleSpinBox" name="lat0Box">
+           <property name="toolTip">
+            <string>Footpoint latitude of the innermost ring (mirrored into the southern hemisphere).</string>
+           </property>
+           <property name="decimals">
+            <number>1</number>
+           </property>
+           <property name="minimum">
+            <double>0.000000000000000</double>
+           </property>
+           <property name="maximum">
+            <double>89.000000000000000</double>
+           </property>
+           <property name="value">
+            <double>50.000000000000000</double>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="0">
+          <widget class="QLabel" name="lblLat1">
+           <property name="text">
+            <string>To latitude</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="1">
+          <widget class="QDoubleSpinBox" name="lat1Box">
+           <property name="decimals">
+            <number>1</number>
+           </property>
+           <property name="minimum">
+            <double>0.000000000000000</double>
+           </property>
+           <property name="maximum">
+            <double>89.000000000000000</double>
+           </property>
+           <property name="value">
+            <double>78.000000000000000</double>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="0">
+          <widget class="QLabel" name="lblRmax">
+           <property name="text">
+            <string>Max radius (R)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="1">
+          <widget class="QDoubleSpinBox" name="rmaxBox">
+           <property name="toolTip">
+            <string>A line is dropped once it passes this distance, in Earth radii, from the centre.</string>
+           </property>
+           <property name="decimals">
+            <number>1</number>
+           </property>
+           <property name="minimum">
+            <double>1.500000000000000</double>
+           </property>
+           <property name="maximum">
+            <double>30.000000000000000</double>
+           </property>
+           <property name="singleStep">
+            <double>0.500000000000000</double>
+           </property>
+           <property name="value">
+            <double>5.000000000000000</double>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="0">
+          <widget class="QLabel" name="lblTube">
+           <property name="text">
+            <string>Tube radius</string>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="1">
+          <widget class="QDoubleSpinBox" name="tubeBox">
+           <property name="toolTip">
+            <string>Drawn thickness of a field line, in Earth radii.</string>
+           </property>
+           <property name="decimals">
+            <number>3</number>
+           </property>
+           <property name="minimum">
+            <double>0.001000000000000</double>
+           </property>
+           <property name="maximum">
+            <double>0.100000000000000</double>
+           </property>
+           <property name="singleStep">
+            <double>0.002000000000000</double>
+           </property>
+           <property name="value">
+            <double>0.008000000000000</double>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="computeButton">
+        <property name="toolTip">
+         <string>Trace the field lines for the settings above.</string>
+        </property>
+        <property name="text">
+         <string>Compute</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="lookGroup">
+        <property name="title">
+         <string>Display</string>
+        </property>
+        <layout class="QVBoxLayout" name="lookLayout">
+         <item>
+          <widget class="QCheckBox" name="earthCheck">
+           <property name="toolTip">
+            <string>Drape GMT's Earth image on the sphere.</string>
+           </property>
+           <property name="text">
+            <string>Earth image</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QCheckBox" name="colorCheck">
+           <property name="toolTip">
+            <string>Colour the tubes by the IGRF total field at each point (logarithmic scale).</string>
+           </property>
+           <property name="text">
+            <string>Colour lines by |B|</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="resetViewButton">
+           <property name="text">
+            <string>Reset view</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="statusLabel">
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="tailSpacer">
+        <property name="orientation">
+         <enum>Qt::Vertical</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>20</width>
+          <height>10</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
