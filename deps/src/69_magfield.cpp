@@ -1461,7 +1461,9 @@ static QDialog *magFieldOpen(QWidget *parent, Scene *scene) {
 	m->yearTag->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
 	m->yearTag->SetPosition(0.5, 0.965);
 	m->yearTag->SetVisibility(0);
-	m->renderer->AddActor2D(m->yearTag);
+	m->renderer->AddViewProp(m->yearTag);      // AddActor2D is deprecated since VTK 9.5 (and compiled
+	                                           // out of the CI builds) — AddViewProp is what the rest
+	                                           // of this project uses for 2-D props
 	// The hover tag for the trails — one label, whichever trail the cursor is on.
 	m->trailTag = vtkSmartPointer<vtkBillboardTextActor3D>::New();
 	m->trailTag->GetTextProperty()->SetFontSize(15);

@@ -580,15 +580,47 @@ end
 # below is different: it asks for NO layout, so GMT hands the 3-D cube back column-major and that path
 # stays "BCB", its slab views inheriting `C.layout`. Do not "tidy" it into a TRB read without also
 # teaching `_cube_layer_view` to slice row-major memory — the label is what every consumer reads.
-_read_cube_layer(path::String, k::Int)::Union{GMTgrid,Nothing} =
-	occursin('?', path) ? _gmtread_trb("$(path)[$(k-1)]") : GMT.gmtread(path, layer=k, layout="TRB")
+_read_cube_layer(path::String, k::Int)::Union{GMTgrid,Nothing} = begin
+	if occursin('?', path)
+		_gmtread_trb("$(path)[$(k-1)]")
+	else
+		# THE VARIABLE IS NAMED BEFORE THE READ, not after a failure. A netCDF that carries MORE THAN
+		# ONE VARIABLE (every nswing cube does: `z` + `bathymetry`) reaches GDAL as SUBDATASETS, not
+		# as bands, so `gmtread(path, layer=k)` finds no raster at all — it returns nothing and
+		# PRINTS "does not contain cube data (more than one layer)", which is the "only one layer"
+		# every caller and every user ends up reading, whatever `grdinfo -Q` counted. When the file
+		# has a 3-D variable, address it by name and none of that happens. The name comes from the
+		# SAME `_netcdf_subdatasets` enumeration the multi-variable picker uses — never a hard-coded
+		# "z".
+		v = _cube_var(path)
+		v !== nothing ? _gmtread_trb("$(path)?$(v)[$(k-1)]") :
+		                (try GMT.gmtread(path, layer=k, layout="TRB") catch; nothing end)
+	end
+end
+
+# The name of the 3-D variable in a netCDF cube, or nothing when the file is not that shape. Cached:
+# every layer read of the same file would otherwise pay for a gdalinfo.
+const _CUBE_VAR = Dict{String,Union{String,Nothing}}()
+
+function _cube_var(path::String)::Union{String,Nothing}
+	get!(_CUBE_VAR, path) do
+		for s in _netcdf_subdatasets(path)
+			length(s.dims) == 3 && return s.name
+		end
+		return nothing
+	end
+end
 
 # Read a whole cube into a 3-D GMTgrid for the "Load all in RAM" cache. A plain single-var cube uses
 # GMT's layers=:all; a SUBDATASET spec stacks its native "?var[i]" slices into a (ny,nx,nlayers)
 # array -- the same slab layout _cube_layer_view slices in place.
 function _read_whole_cube(path::String, n::Int)::Union{GMTgrid,Nothing}
 	if !occursin('?', path)
-		C = GMT.gmtread(path, layers=:all)
+		# Same rule as `_read_cube_layer`: when the file has a 3-D variable, address it by name —
+		# GDAL's band-count route sees a multi-variable netCDF as subdatasets and answers "not a cube".
+		v = _cube_var(path)
+		v !== nothing && return _read_whole_cube("$(path)?$(v)", n)
+		C = try GMT.gmtread(path, layers=:all) catch; nothing end
 		return (C isa GMTgrid && ndims(C.z) == 3) ? C : nothing
 	end
 	# Same reader as `_read_cube_layer` above — one operation, one function. The stack then carries the

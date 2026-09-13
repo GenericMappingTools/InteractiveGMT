@@ -51,9 +51,64 @@ end
 # Start capturing this process's stdout, and say whether it worked. Capturing output is a
 # convenience; running the command the user typed is the job, so a process with no usable stdout
 # runs it uncaptured and says so in the console.
+# WHEN THERE IS NO fd 1, MAKE ONE. iGMT normally runs as a GUI process (the desktop launcher, no
+# console attached), where fd 1 is closed and the pipe capture above cannot start — the console then
+# showed "[this process has no stdout to capture]" and nothing else. That note is not an answer: the
+# whole output of `grdinfo`, `gmtinfo` and every other GMT module that REPORTS instead of returning
+# is written with C-level printf, so a console that cannot read fd 1 can never show it.
+#
+# A temporary file dup'd onto fd 1 captures both sides — C printf and Julia's own prints — and is
+# undone the moment the command ends. `Base.Libc.dup(src, target)` is dup2; fd 1 being closed is
+# exactly the case dup2 is for.
+# `fd(::IOStream)` is an Int on some Julia versions and a RawFD on others; dup wants a RawFD.
+_rawfd(x) = x isa RawFD ? x : RawFD(x)
+
+function _console_capture_file()
+	path = tempname()
+	local io
+	try
+		io = open(path, "w")
+	catch e
+		return nothing, "[this process has no stdout to capture: " * sprint(showerror, e) * "]\n"
+	end
+	saved = try Base.Libc.dup(RawFD(1)) catch; nothing end     # nothing when fd 1 really is closed
+	try
+		Base.Libc.dup(_rawfd(fd(io)), RawFD(1))
+	catch e
+		close(io); rm(path; force = true)
+		return nothing, "[this process has no stdout to capture: " * sprint(showerror, e) * "]\n"
+	end
+	old = stdout
+	try redirect_stdout(io) catch end                          # ...and Julia's own prints as well
+	return (path = path, io = io, saved = saved, old = old), ""
+end
+
+# Undo it and hand back what the command printed.
+function _console_capture_file_end(st)
+	st === nothing && return ""
+	try redirect_stdout(st.old) catch end
+	ccall(:fflush, Cint, (Ptr{Cvoid},), C_NULL)                # C stdio buffers, before the file is read
+	if st.saved !== nothing
+		try Base.Libc.dup(st.saved, RawFD(1)) catch end
+		try ccall(:close, Cint, (Cint,), Cint(st.saved.fd)) catch end
+	else
+		# There was no fd 1 to put back (the GUI case this exists for). Point it at the null device
+		# rather than at a temp file that is about to be deleted, so the next command starts from a
+		# clean, valid descriptor instead of writing into a hole.
+		try
+			devnull_io = open(Sys.iswindows() ? "NUL" : "/dev/null", "w")
+			Base.Libc.dup(_rawfd(fd(devnull_io)), RawFD(1))
+		catch
+		end
+	end
+	try close(st.io) catch end
+	txt = try read(st.path, String) catch; "" end
+	try rm(st.path; force = true) catch end
+	return txt
+end
+
 function _console_capture()
-	_stdout_capturable() ||
-		return nothing, nothing, nothing, "[this process has no stdout to capture]\n"
+	_stdout_capturable() || return nothing, nothing, nothing, ""   # the file route takes over
 	try
 		rd, wr = redirect_stdout()
 		# PARENTHESISED: `@async f(x), ""` would hand the macro the whole tuple and return three
@@ -75,6 +130,12 @@ function _console_eval_run(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap
 	# an async reader drains it so a chatty command can't deadlock on a full pipe buffer.
 	old = stdout
 	rd, wr, reader, note = _console_capture()
+	# No usable fd 1 (a GUI process): capture through a temp file dup'd onto it instead, so GMT's own
+	# printf output reaches the console like everything else.
+	fst = nothing
+	if reader === nothing
+		fst, note = _console_capture_file()
+	end
 	val = nothing;  err = nothing
 	try
 		val = Core.eval(Main, Meta.parseall(code))
@@ -86,7 +147,7 @@ function _console_eval_run(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap
 			close(wr)
 		end
 	end
-	txt = reader === nothing ? note : fetch(reader)
+	txt = reader !== nothing ? fetch(reader) : (fst !== nothing ? _console_capture_file_end(fst) : note)
 	rd === nothing || close(rd)
 	if err !== nothing
 		(!isempty(txt) && !endswith(txt, "\n")) && (txt *= "\n")
