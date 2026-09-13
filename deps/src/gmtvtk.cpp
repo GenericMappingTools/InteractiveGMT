@@ -21,6 +21,7 @@
 //   75_aquamoto    Aquamoto viewer (tsunami dry/wet netCDF viewer, port of Mirone aquamoto.m) --
 //                  included BEFORE 70_window.cpp, whose Geophysics menu constructs it by name
 //   70_window      buildAndShow — the Qt main window
+//   69_magfield    Magnetic field lines (3-D): IGRF streamlines traced round a textured globe
 //   80_rubberband  Ctrl+right-drag point-cloud selection
 //   85_polygon     toolbar polygon draw/edit tool (3-D vertices draped on the relief)
 //   87_vtkio       VTK's own file formats (.vtp/.vti/.vtu/... ) read + written natively by VTK
@@ -39,8 +40,10 @@
 #include "67_gmtedit.cpp"
 #include "75_aquamoto.cpp"
 static QDialog *faultDemoOpen(QWidget *parent, Scene *scene);
+static QDialog *magFieldOpen(QWidget *parent, Scene *scene);
 #include "70_window.cpp"
 #include "68_faultdemo.cpp"
+#include "69_magfield.cpp"
 #include "80_rubberband.cpp"
 #include "85_polygon.cpp"
 #include "87_vtkio.cpp"

@@ -217,6 +217,21 @@ end
 # nodes are handed straight back to the dialog, which draws them in its own inset renderer.
 # Output: "nx;ny;x0;x1;y0;y1;zmin;zmax" then nx*ny values, x-major (all y of x1, then all y of x2...),
 # ';'-separated, 5 significant digits. Prints nothing on any failure — the inset then stays as it was.
+# The fault demo's inset field, and its OWN callback into C.
+#
+# IT USED TO TRAVEL THROUGH THE CONSOLE. `faultDemoInsetCompute` built the Julia call as a STRING,
+# handed it to the in-window console's eval callback, and parsed the numbers out of whatever that
+# command had printed to stdout. Two ways that breaks, both seen on CI 2026-09-12:
+#   1. ANY other line that reaches stdout while the command runs (one GMT warning is enough) lands in
+#      front of the numbers, and the parser reads it as the grid's width -> "an unusable grid".
+#   2. The console captures stdout with `redirect_stdout()`, which dups the real file descriptor. A
+#      headless runner has none to dup, so on CI the payload could not be captured at all.
+# Neither is a console bug: a computation's result has no business being a side effect of printing.
+# It now goes through its own registered callback with the two-phase buffer protocol every other
+# Julia->C computation in this package uses (the fault demo's own mesh, magfield's field lines).
+const _OKADA_INSET = Ref{Tuple{Int,Float64,Float64,Float64,Matrix{Float64}}}(
+	(0, 0.0, 0.0, 0.0, zeros(0, 0)))
+
 function _okada_demo_field(L::Real, W::Real, strike::Real, dip::Real, depthTop::Real,
                            rake::Real, slip::Real, n::Int = 61)
 	try
@@ -244,14 +259,61 @@ function _okada_demo_field(L::Real, W::Real, strike::Real, dip::Real, depthTop::
 		Gd = GMT.okada(G; x_start = x0, y_start = y0, L = L, W = W, depth = depthTop,
 		               strike = strike, dip = dip, rake = rake, slip = slip)
 		zmn, zmx = extrema(Gd.z)
-		print(n, ';', n, ';', -half, ';', half, ';', -half, ';', half, ';', zmn, ';', zmx)
-		for j in 1:n, i in 1:n          # j = x node, i = y node (ascending): x-major, y fastest
-			print(';', round(Float64(Gd.z[i, j]), sigdigits = 5))
+		# x-major, y fastest — the order the C side reads it back in.
+		Z = Matrix{Float64}(undef, n, n)
+		for j in 1:n, i in 1:n          # j = x node, i = y node (ascending)
+			Z[i, j] = Float64(Gd.z[i, j])
 		end
+		return (n, half, Float64(zmn), Float64(zmx), Z)
 	catch e
 		@tool_error "Okada demo field FAILED" exception=(e,)
 	end
 	return nothing
+end
+
+# C callback — params = "L/W/strike/dip/depthTop/rake/slip[/n]".
+# Two-phase: `out == NULL` computes and reports dims = (nx, ny); the second call fills
+# [x0, x1, y0, y1, zmin, zmax, z(1,1) ... z(ny,nx)] (x-major, y fastest, y ascending).
+function _on_okada_inset(cparams::Cstring, out::Ptr{Cdouble}, capacity::Cint, dims::Ptr{Cint},
+                         err::Ptr{UInt8}, cap::Cint)::Cint
+	try
+		if out == C_NULL
+			p = split(unsafe_string(cparams), '/')
+			L, W, strike, dip, depthTop, rake, slip = parse.(Float64, p[1:7])
+			n = length(p) >= 8 ? parse(Int, p[8]) : 61
+			r = _okada_demo_field(L, W, strike, dip, depthTop, rake, slip, n)
+			r === nothing && error("the Okada inset field could not be computed for " *
+			                       "L=$L W=$W strike=$strike dip=$dip depth=$depthTop rake=$rake slip=$slip")
+			_OKADA_INSET[] = r
+		end
+		n, half, zmn, zmx, Z = _OKADA_INSET[]
+		n >= 2 || error("the Okada inset field is empty")
+		unsafe_store!(dims, Cint(n), 1)
+		unsafe_store!(dims, Cint(n), 2)
+		out == C_NULL && return Cint(1)
+		need = 6 + n * n
+		capacity >= need || error("Okada inset buffer is too small ($need doubles needed)")
+		for (k, v) in enumerate((-half, half, -half, half, zmn, zmx))
+			unsafe_store!(out, v, k)
+		end
+		k = 7
+		for j in 1:n, i in 1:n
+			unsafe_store!(out, Z[i, j], k)
+			k += 1
+		end
+		return Cint(1)
+	catch e
+		nb = _console_write(err, cap, sprint(showerror, e))
+		cap > 0 && unsafe_store!(err, 0x00, Int(nb)+1)
+		return Cint(0)
+	end
+end
+
+function _register_okada_inset()
+	fptr = @cfunction((p,o,c,d,e,x) -> Base.invokelatest(_on_okada_inset, p,o,c,d,e,x),
+		Cint, (Cstring,Ptr{Cdouble},Cint,Ptr{Cint},Ptr{UInt8},Cint))
+	ccall(_fn(:gmtvtk_set_okada_inset_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
 end
 
 function _register_elastic()

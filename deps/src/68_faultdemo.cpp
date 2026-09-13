@@ -2,8 +2,11 @@
 // Julia reconstructs both meshes when dip changes; azimuth and slip use actor transforms.
 using JuliaFaultDemoFn = int (*)(double, double, double, double, double *, char *, int);
 using JuliaFaultDemoMeshFn = int (*)(double, double *, int, int *, char *, int);
+// The demo inset's Okada field: params -> dims, then the values (two-phase, like the mesh above).
+using JuliaOkadaInsetFn = int (*)(const char *, double *, int, int *, char *, int);
 static JuliaFaultDemoFn g_juliaFaultDemo = nullptr;
 static JuliaFaultDemoMeshFn g_juliaFaultDemoMesh = nullptr;
+static JuliaOkadaInsetFn g_juliaOkadaInset = nullptr;
 
 static void faultDemoTrace(const char *line);   // gesture probe sink (defined below)
 
@@ -486,31 +489,50 @@ static void faultDemoInsetInit(FaultDemo *f, vtkRenderWindow *rw) {
 }
 
 // Compute the inset field and (re)build its surface. The DEFORMATION is Julia's — the same GMT.okada
-// the Compute button reaches, called through g_juliaEval as InteractiveGMT._okada_demo_field (see
-// src/deform.jl for the payload contract) — so there is no second Okada on this side of the wire, only
-// a mesh built from the nodes it returns. NOTHING is added to the host window: that is the whole point
-// of the inset, and what tells a teaching picture apart from the real deformation.
+// the Compute button reaches (InteractiveGMT._okada_demo_field, src/deform.jl) — so there is no second
+// Okada on this side of the wire, only a mesh built from the nodes it returns. NOTHING is added to the
+// host window: that is the whole point of the inset, and what tells a teaching picture apart from the
+// real deformation.
+//
+// IT HAS ITS OWN CALLBACK. This used to build the Julia call as a STRING, push it through the in-window
+// CONSOLE's eval, and read the numbers out of whatever that command printed. Two failures on CI
+// 2026-09-12 came straight out of that: any other line reaching stdout was parsed as the grid's width
+// ("an unusable grid"), and the console captures stdout with redirect_stdout(), which a headless runner
+// has no file descriptor to serve. A computed result is not a side effect of printing — so it now
+// travels the same two-phase buffer protocol as the demo's own mesh.
 static bool faultDemoInsetCompute(FaultDemo *f, double L, double W, double depthTop, double slip,
                                   QString &err) {
 	if (!f || !f->insetRen) { err = "the inset is not built."; return false; }
-	if (!g_juliaEval || !f->hostScene) { err = "the deformation tool is not wired."; return false; }
-	const QString cmd = QString("InteractiveGMT._okada_demo_field(%1,%2,%3,%4,%5,%6,%7)")
+	if (!g_juliaOkadaInset) { err = "the deformation tool is not wired."; return false; }
+	const QString params = QString("%1/%2/%3/%4/%5/%6/%7/61")
 	                        .arg(L, 0, 'f', 6).arg(W, 0, 'f', 6)
 	                        .arg(double(f->azimuth->value()), 0, 'f', 6)
 	                        .arg(double(f->dip->value()), 0, 'f', 6)
 	                        .arg(depthTop, 0, 'f', 6)
 	                        .arg(faultDemoRake(f), 0, 'f', 6).arg(slip, 0, 'f', 6);
-	std::vector<char> buf(1 << 20);
-	const int n = g_juliaEval(f->hostScene, cmd.toUtf8().constData(), buf.data(), int(buf.size()));
-	if (n <= 0) { err = "the inset deformation returned nothing (see the log)."; return false; }
-	const QStringList tok = QString::fromUtf8(buf.data(), n).split(';', Qt::SkipEmptyParts);
-	if (tok.size() < 8) { err = "the inset deformation returned a short payload."; return false; }
-	const int nx = tok[0].toInt(), ny = tok[1].toInt();
-	const double x0 = tok[2].toDouble(), x1 = tok[3].toDouble();
-	const double y0 = tok[4].toDouble(), y1 = tok[5].toDouble();
-	const double zmn = tok[6].toDouble(), zmx = tok[7].toDouble();
-	if (nx < 2 || ny < 2 || tok.size() < 8 + nx*ny || x1 <= x0 || y1 <= y0) {
-		err = "the inset deformation returned an unusable grid."; return false;
+	const QByteArray p = params.toUtf8();
+	int dims[2] = {};
+	char message[1024] = {};
+	if (!g_juliaOkadaInset(p.constData(), nullptr, 0, dims, message, sizeof(message))) {
+		err = message[0] ? QString::fromUtf8(message)
+		                 : QString("the inset deformation returned nothing (see the log).");
+		return false;
+	}
+	const int nx = dims[0], ny = dims[1];
+	if (nx < 2 || ny < 2) {
+		err = QString("the inset deformation returned an unusable grid (nx=%1 ny=%2).").arg(nx).arg(ny);
+		return false;
+	}
+	std::vector<double> val(size_t(6) + size_t(nx) * ny);
+	if (!g_juliaOkadaInset(p.constData(), val.data(), int(val.size()), dims, message, sizeof(message))) {
+		err = QString::fromUtf8(message); return false;
+	}
+	const double x0 = val[0], x1 = val[1], y0 = val[2], y1 = val[3];
+	const double zmn = val[4], zmx = val[5];
+	if (x1 <= x0 || y1 <= y0) {
+		err = QString("the inset deformation returned an unusable extent (x=%1..%2 y=%3..%4).")
+		          .arg(x0).arg(x1).arg(y0).arg(y1);
+		return false;
 	}
 	// The relief is EXAGGERATED and says so on the label: centimetres of deformation across tens of
 	// kilometres would otherwise be a flat sheet. The factor is chosen from the field's own amplitude,
@@ -523,7 +545,7 @@ static bool faultDemoInsetCompute(FaultDemo *f, double L, double W, double depth
 	vals->SetName("Okada z");
 	for (int j = 0; j < nx; ++j)                     // x-major, y fastest: the payload's own order
 		for (int i = 0; i < ny; ++i) {
-			const double v = tok[8 + j*ny + i].toDouble();
+			const double v = val[size_t(6) + size_t(j)*ny + i];
 			const vtkIdType id = vtkIdType(j)*ny + i;
 			pts->SetPoint(id, x0 + j*dx, y0 + i*dy, v * exag);
 			vals->SetTuple1(id, v);

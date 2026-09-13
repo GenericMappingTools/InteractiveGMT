@@ -172,3 +172,36 @@ end
 		IG._pump_once()
 	end
 end
+
+# The demo inset's Okada field travels on its OWN callback, with the two-phase buffer protocol -- it
+# used to be parsed out of whatever the command printed through the in-window console, which broke
+# two ways on CI (a stray stdout line read as the grid's width; a headless runner with no file
+# descriptor for redirect_stdout to dup). See src/deform.jl's header.
+@testitem "fault demo inset: the Okada field has its own callback" tags=[:unit] begin
+	IG = InteractiveGMT
+	params = "80.0/66.0/45.0/25.0/0.0/-90.0/5.0/31"
+	dims = zeros(Cint, 2);  err = zeros(UInt8, 1024)
+	ok = IG._on_okada_inset(Base.unsafe_convert(Cstring, params), Ptr{Cdouble}(C_NULL), Cint(0),
+	                        pointer(dims), pointer(err), Cint(1024))
+	@test ok == 1
+	@test dims == Cint[31, 31]
+	buf = zeros(Cdouble, 6 + 31*31)
+	@test IG._on_okada_inset(Base.unsafe_convert(Cstring, params), pointer(buf), Cint(length(buf)),
+	                         pointer(dims), pointer(err), Cint(1024)) == 1
+	x0, x1, y0, y1, zmn, zmx = buf[1:6]
+	@test x1 > x0 && y1 > y0
+	@test x0 == y0 && x1 == y1                  # the zone is square and centred on the fault
+	@test zmn <= zmx
+	@test any(!=(0.0), buf[7:end])              # 5 m of slip really deformed something
+	@test isapprox(minimum(buf[7:end]), zmn; atol = 1e-9)
+	@test isapprox(maximum(buf[7:end]), zmx; atol = 1e-9)
+	# A buffer that is too small is an error with a message, not a memory stomp.
+	small = zeros(Cdouble, 10)
+	@test IG._on_okada_inset(Base.unsafe_convert(Cstring, params), pointer(small), Cint(10),
+	                         pointer(dims), pointer(err), Cint(1024)) == 0
+	@test occursin("too small", unsafe_string(pointer(err)))
+	# A fault with no size is refused, and says so.
+	@test IG._on_okada_inset(Base.unsafe_convert(Cstring, "0.0/0.0/45.0/25.0/0.0/-90.0/5.0/31"),
+	                         Ptr{Cdouble}(C_NULL), Cint(0), pointer(dims), pointer(err), Cint(1024)) == 0
+	@test occursin("could not be computed", unsafe_string(pointer(err)))
+end

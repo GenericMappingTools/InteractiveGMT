@@ -26545,6 +26545,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			auto *w = new IgrfDialog(win, s);   // self-deletes when its QDialog closes (WA_DeleteOnClose)
 			if (w->dlg) w->dlg->show();
 		});
+		// The IGRF field itself, in 3-D: streamlines of B traced round a textured globe for a chosen
+		// date (69_magfield.cpp; the tracing is src/magfield.jl, through the same GMT.jl `magref`
+		// the IGRF dialog above uses).
+		mGphy->addAction("Magnetic field lines (3-D)", [win, s]() {
+			warmupTool("magfield");          // compile the tracer while the window is being built
+			magFieldOpen(win, s);
+		});
 		mGphy->addAction("Geomagnetic Bar Code", [win]() {
 			auto *w = new MagBarcodeDialog(win);
 			if (w->dlg) w->dlg->show();

@@ -15,24 +15,60 @@ function _console_write(buf::Ptr{UInt8}, cap::Cint, s::AbstractString)::Cint
 	return Cint(n)
 end
 
+# THE C ENTRY POINT NEVER THROWS. It is called from the Qt pump's callback, so an exception that
+# escapes it does not land on a user's `try` — it lands in the pump's `Timer`, which then DIES and
+# takes the whole window's event pumping with it ("Error in Timer: SystemError: dup: Bad file
+# descriptor", seen on every headless CI runner: see `_console_capture` below). A failure here is a
+# message in the console like any other, reported through the negative-byte-count convention.
 function _console_eval(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap::Cint)::Cint
+	try
+		return _console_eval_run(scene, cmd, buf, cap)
+	catch e
+		n = _console_write(buf, cap, sprint(showerror, e))
+		return Cint(-n)
+	end
+end
+
+# Start capturing this process's stdout, and say whether it worked. `redirect_stdout()` dups the
+# REAL file descriptor, so it throws wherever the process has no usable stdout to dup — a headless
+# CI runner under the test harness is exactly that, and the throw used to happen BEFORE the try
+# below, i.e. outside every handler in this file. Capturing output is a convenience; running the
+# command the user typed is the job, so a failure to capture runs it uncaptured.
+function _console_capture()
+	try
+		rd, wr = redirect_stdout()
+		# PARENTHESISED: `@async f(x), ""` would hand the macro the whole tuple and return three
+		# elements instead of four.
+		return rd, wr, (@async read(rd, String)), ""
+	catch e
+		# Said out loud in the console itself (not to stderr, where nobody is looking, and not into
+		# the failure sink, which would turn a headless run into a suite failure).
+		return nothing, nothing, nothing, "[this process has no stdout to capture: " *
+		                                  sprint(showerror, e) * "]\n"
+	end
+end
+
+function _console_eval_run(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap::Cint)::Cint
 	code = unsafe_string(cmd)
 	fig  = get(_FIGREG, scene, nothing)
 	fig !== nothing && Core.eval(Main, :(fig = $fig))   # console's `fig` = this window
 	# Capture the command's stdout through a real pipe (redirect_stdout rejects an IOBuffer);
 	# an async reader drains it so a chatty command can't deadlock on a full pipe buffer.
 	old = stdout
-	rd, wr = redirect_stdout()
-	reader = @async read(rd, String)
+	rd, wr, reader, note = _console_capture()
 	val = nothing;  err = nothing
 	try
 		val = Core.eval(Main, Meta.parseall(code))
 	catch e
 		err = e
 	finally
-		redirect_stdout(old);  close(wr)
+		if wr !== nothing
+			try redirect_stdout(old) catch end
+			close(wr)
+		end
 	end
-	txt = fetch(reader);  close(rd)
+	txt = reader === nothing ? note : fetch(reader)
+	rd === nothing || close(rd)
 	if err !== nothing
 		(!isempty(txt) && !endswith(txt, "\n")) && (txt *= "\n")
 		txt *= sprint(showerror, err)

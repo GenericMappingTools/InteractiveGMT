@@ -2940,6 +2940,19 @@ GMTVTK_API void gmtvtk_set_fault_demo_callback(JuliaFaultDemoFn fn, JuliaFaultDe
 	g_juliaFaultDemoMesh = meshFn;
 }
 
+// The fault demo's inset deformation field (68_faultdemo.cpp -> src/deform.jl's GMT.okada). Its own
+// callback, because a computed grid has no business travelling as the console's captured stdout.
+GMTVTK_API void gmtvtk_set_okada_inset_callback(JuliaOkadaInsetFn fn) {
+	g_juliaOkadaInset = fn;
+}
+
+// "Magnetic field lines (3-D)" (69_magfield.cpp): the IGRF streamline tracer and the Earth texture,
+// both computed on the Julia side (src/magfield.jl).
+GMTVTK_API void gmtvtk_set_magfield_callback(JuliaMagLinesFn linesFn, JuliaMagTexFn texFn) {
+	g_juliaMagLines = linesFn;
+	g_juliaMagTex   = texFn;
+}
+
 // Build ONE flat "meca" patch (outline + fill) directly, bypassing the shared polyRebuildFill
 // triangulator (85_polygon.cpp). That path runs vtkTriangleFilter -> vtkPolygon::Triangulate,
 // which assumes a SIMPLE (non-self-intersecting) polygon; patch_meca's equal-area boundary can
@@ -4446,6 +4459,44 @@ GMTVTK_API void gmtvtk_shutdown(void) {
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
 #ifdef GMTVTK_TEST_API
+
+// Drive the "Magnetic field lines (3-D)" window (69_magfield.cpp) and read its state back.
+// control: ""            just report
+//          "date:<year>" set the date box     "compute" press Compute
+//          "earth:0|1"   the Earth-image box  "color:0|1" the colour-by-|B| box
+//          "reset"       Reset view           "close"   close the window
+// out: [0] polylines  [1] points  [2] tube actor visible  [3] globe carries a texture
+//      [4] tubes coloured by scalars  [5] date box  [6] tube radius  [7] camera distance
+GMTVTK_API int gmtvtk_magfield_test(void *handle, const char *control, double value, double *out) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->win) return 0;
+	auto *d = qobject_cast<QDialog *>(s->magFieldDlg);    // unparented top-level: ask the Scene
+	if (!d) return 0;
+	auto *m = static_cast<MagField *>(d->property("magFieldState").value<void *>());
+	if (!m) return 0;
+	const QString name = control ? QString::fromUtf8(control) : QString();
+	if (name == "close") { d->close(); QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); return 1; }
+	if (name == "date")        m->date->setValue(value);
+	else if (name == "earth")  m->showEarth->setChecked(value != 0.0);
+	else if (name == "color")  m->colorByB->setChecked(value != 0.0);
+	else if (name == "lon")    m->nlon->setValue(int(value));
+	else if (name == "ring")   m->nring->setValue(int(value));
+	else if (name == "rmax")   m->rmax->setValue(value);
+	else if (name == "tube")   m->tubeR->setValue(value);
+	else if (name == "compute") { if (auto *b = d->findChild<QPushButton *>("computeButton")) b->click(); }
+	else if (name == "reset")   { if (auto *b = d->findChild<QPushButton *>("resetViewButton")) b->click(); }
+	QApplication::processEvents();
+	if (!out) return 1;
+	out[0] = m->lines ? double(m->lines->GetNumberOfLines()) : 0.0;
+	out[1] = m->lines ? double(m->lines->GetNumberOfPoints()) : 0.0;
+	out[2] = (m->tubes && m->tubes->GetVisibility()) ? 1.0 : 0.0;
+	out[3] = (m->globe && m->globe->GetTexture()) ? 1.0 : 0.0;
+	out[4] = (m->tubes && m->tubes->GetMapper() && m->tubes->GetMapper()->GetScalarVisibility()) ? 1.0 : 0.0;
+	out[5] = m->date->value();
+	out[6] = m->tubeFlt ? m->tubeFlt->GetRadius() : 0.0;
+	out[7] = m->renderer && m->renderer->GetActiveCamera() ? m->renderer->GetActiveCamera()->GetDistance() : 0.0;
+	return 1;
+}
 
 // Drive the actual fault-demo controls, inspect displayed matrices, and capture the whole dialog.
 GMTVTK_API int gmtvtk_fault_demo_test(void *handle, const char *control, int value,
@@ -8216,9 +8267,26 @@ GMTVTK_API void gmtvtk_set_transplant_undo(void *handle, int on) {
 GMTVTK_API int gmtvtk_process_events(void) {
 	static bool inPump = false;
 	if (inPump) return g_openWindows;              // a nested tick: let the outer one finish
+	// THE RE-ENTRY FLAG IS CLEARED ON EVERY EXIT PATH, including an exception thrown inside the
+	// pump. processEvents() runs the Julia callbacks (the in-window console, every tool's
+	// registration), and one of those throwing used to leave `inPump` stuck TRUE for the life of
+	// the process: from then on this function returned immediately without pumping anything, so the
+	// window stopped processing events entirely while still looking alive. That is the whole of
+	// what CI reported on 2026-09-12 (a console redirect_stdout throwing on a headless runner,
+	// src/console.jl): a QTimer that never advanced, and a close that destroyed a dialog whose
+	// deferred deletes had been piling up unprocessed. A Julia exception is not guaranteed to run
+	// C++ destructors on every platform, so this is belt AND braces: an RAII guard, plus a catch
+	// that records what it swallowed instead of losing it.
+	struct PumpGuard {
+		bool &flag;
+		~PumpGuard() { flag = false; }
+	} guard{inPump};
 	inPump = true;
-	if (g_app) g_app->processEvents();
-	inPump = false;
+	if (g_app) {
+		try { g_app->processEvents(); }
+		catch (const std::exception &e) { gmtvtkRecordMessage(QString("pump: ") + e.what()); }
+		catch (...) { gmtvtkRecordMessage("pump: a callback threw a non-C++ exception"); }
+	}
 	return g_openWindows;
 }
 

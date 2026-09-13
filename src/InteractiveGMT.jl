@@ -87,6 +87,7 @@ include("movieanno.jl")  # movie frame labels (GMT movie -L) + progress indicato
 include("moviedlg.jl")   # Tools > Make movie: the dialog's block -> the ONE movie() call
 include("measure.jl")    # line length/azimuth + polygon area for the vector context menu (CRS-aware)
 include("info.jl")       # toolbar "i" button: grdinfo / gdalinfo report on the active grid/image
+include("magfield.jl")   # Geophysics > Magnetics > Magnetic field lines (3-D): IGRF streamlines round a textured globe
 include("rtp3d.jl")      # Geophysics > Magnetics: reduce-to-pole via 2-D FFT (port of Mirone utils/rtp3d.m)
 include("fftstuff.jl")   # Mag/Grav > FFT tool, Grid Tools > Spectrum, Image > FFT Spectrum (fft_stuff.m)
 include("gravmag3d.jl")  # Geophysics > Magnetics > gmtgravmag3d: anomaly of a 3-D body (Okabe)

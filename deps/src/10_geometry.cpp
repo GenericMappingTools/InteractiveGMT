@@ -1556,6 +1556,8 @@ struct Scene {
 	QWidget *focalStudioDlg = nullptr;                  // open (non-modal) Focal Meca Studio demo dialog, if any
 	QWidget *faultDemoDlg = nullptr;                    // open Fault plane demo, if any: an UNPARENTED
 	                                                    // top-level, so findChild cannot be used to find it
+	QWidget *magFieldDlg = nullptr;                     // open "Magnetic field lines (3-D)" window, if any
+	                                                    // (69_magfield.cpp) — UNPARENTED, like the demo above
 	QWidget *cubeDlg = nullptr;                         // open (non-modal) 3-D cube layer selector dialog, if any
 
 	// A tool window closed with its X does NOT die: it hides and PARKS as a handle in the bottom strip

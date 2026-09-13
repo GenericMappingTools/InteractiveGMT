@@ -144,6 +144,8 @@ function _ensure_callbacks()
 	                    ("bands",       _register_bands),
 	                    ("focal",       _register_focal),
 	                    ("fault-demo",  _register_fault_demo),
+	                    ("magfield",    _register_magfield),
+	                    ("okada-inset", _register_okada_inset),
 	                    ("meca-props",  _register_meca_props))
 		try
 			fn()
