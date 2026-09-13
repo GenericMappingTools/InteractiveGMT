@@ -356,12 +356,34 @@ function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Unio
 	# PATH exactly as before — nothing changes on such a machine) or the artifact's absolute path
 	# under GMT_jll, where there is no `gmt` on PATH at all. That is why the launch died there with
 	# "could not spawn" while the same run worked from the REPL, which goes through in-process libgmt.
-	gmtexe = GMT.isJLL ? GMT.GMTbin : "gmt"
-	cmd   = Cmd(vcat(gmtexe, "nswing", args))
-	if dir !== nothing
-		cmd = Cmd(cmd; dir = dir)
+	#
+	# THE TWO PLATFORMS BUILD THIS COMMAND APART, ON PURPOSE. Windows keeps the exact expression it
+	# has always run -- the toolchain-PATH reason above is a Windows problem and `_nswing_clean_env`
+	# is its answer; nothing below may alter it. Unix takes a different door because `GMT.GMTbin` is
+	# `GMT_jll.gmt()[1]`: the artifact's executable path with the wrapper's ENVIRONMENT DROPPED. That
+	# environment is what carries LD_LIBRARY_PATH to the artifacts `gmt` links against, so spawning
+	# the bare path dies in the dynamic loader before nswing's first line:
+	#     gmt: error while loading shared libraries: libnetcdf.so.22: cannot open shared object file
+	#     ProcessExited(127)
+	# Confirmed live on the reporting machine, both halves: `run(\`$(GMT_jll.gmt()) nswing\`)` runs,
+	# `run(\`$(GMT.GMTbin) nswing\`)` is the 127 above. The fix is to spawn the JLL's Cmd WHOLE.
+	local cmd::Cmd
+	if Sys.iswindows()
+		gmtexe = GMT.isJLL ? GMT.GMTbin : "gmt"
+		cmd   = Cmd(vcat(gmtexe, "nswing", args))
+		if dir !== nothing
+			cmd = Cmd(cmd; dir = dir)
+		end
+		cmd = Cmd(cmd; env = _nswing_clean_env())
+	else
+		base = GMT.isJLL ? GMT.GMT_jll.gmt() : Cmd(String["gmt"])
+		cmd  = Cmd(vcat(collect(base.exec), "nswing", args))
+		if dir !== nothing
+			cmd = Cmd(cmd; dir = dir)
+		end
+		# A system-wide `gmt` carries no env and is spawned exactly as before, inheriting ours.
+		base.env === nothing || (cmd = Cmd(cmd; env = base.env))
 	end
-	cmd = Cmd(cmd; env = _nswing_clean_env())
 	proc = try
 		run(pipeline(cmd; stdout=io, stderr=io); wait=false)
 	catch e
