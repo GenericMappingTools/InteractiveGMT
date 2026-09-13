@@ -114,6 +114,10 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QFileInfo>
+#include <QThread>
+#include <QStandardPaths>        // finding ffmpeg for the pole-track MP4 (69_magfield.cpp)
+#include <QProcess>
+#include <QTemporaryDir>
 #include <QDateTime>
 #include <QDateTimeEdit>
 #include <QCalendarWidget>       // the Ocean Color date box's popup — its clicked/activated IS the commit

@@ -97,7 +97,10 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # from the HOST — a reference curve (a benchmark's analytic solution) and, for a model that is not one
 # grid (benchmark 1 stitches three nesting levels), the model curve itself. Earlier libraries have no
 # such export, so the push finds no symbol.
-const _ABI_REQUIRED = 12
+# Generation 13 = the magfield texture CALLBACK takes `which` and `date` ahead of its buffer. Its
+# setter's signature did not change, so a mismatched pair looks perfectly linked and then dies on the
+# first call — the callback's own signature is host-facing ABI like any export (90_c_api.cpp).
+const _ABI_REQUIRED = 13
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.
@@ -201,6 +204,9 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_add_fault_geom_h, :gmtvtk_set_modelslip_callback, :gmtvtk_add_slip_patches_h,
 	:gmtvtk_set_fault_demo_callback,
 	:gmtvtk_set_magfield_callback,
+	:gmtvtk_set_magfield_poles_callback,
+	:gmtvtk_set_magfield_coast_callback,
+	:gmtvtk_set_magfield_mask_callback,
 	:gmtvtk_set_okada_inset_callback,
 	:gmtvtk_set_focal_callback, :gmtvtk_add_meca_h, :gmtvtk_set_meca_infos_h, :gmtvtk_add_text_h, :gmtvtk_add_texts_h, :gmtvtk_add_texts_ex_h,
 	:gmtvtk_set_meca_props_callback, :gmtvtk_remove_meca_group_h,

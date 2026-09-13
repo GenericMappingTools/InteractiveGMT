@@ -103,9 +103,65 @@ end
 @testitem "magfield: the globe's texture is a real RGB(A) raster" tags=[:unit] begin
 	IG = InteractiveGMT
 	dims = zeros(Cint, 3);  err = zeros(UInt8, 512)
-	@test IG._on_magfield_texture(Ptr{UInt8}(C_NULL), Cint(0), pointer(dims), pointer(err), Cint(512)) == 1
+	@test IG._on_magfield_texture(Cint(0), Cdouble(2025.0), Ptr{UInt8}(C_NULL), Cint(0),
+	                              pointer(dims), pointer(err), Cint(512)) == 1
 	@test dims[1] > 1 && dims[2] > 1 && (dims[3] == 3 || dims[3] == 4)
 	buf = zeros(UInt8, prod(Int.(dims)))
-	@test IG._on_magfield_texture(pointer(buf), Cint(length(buf)), pointer(dims), pointer(err), Cint(512)) == 1
+	@test IG._on_magfield_texture(Cint(0), Cdouble(2025.0), pointer(buf), Cint(length(buf)),
+	                              pointer(dims), pointer(err), Cint(512)) == 1
 	@test any(!=(0), buf)
+end
+
+@testitem "magfield: the dip poles are where the field stands on end" tags=[:unit] begin
+	IG = InteractiveGMT
+	(lonN, latN, incN), (lonS, latS, incS) = IG._mag_dip_poles(2025.0)
+	# A dip pole is where the inclination reaches +-90 deg; the search must get essentially there.
+	@test incN > 89.99 && incS < -89.99
+	@test latN > 75.0 && latS < -60.0
+	@test -180.0 <= lonN <= 180.0 && -180.0 <= lonS <= 180.0
+	# Not antipodal -- the real field is not a centred dipole, which is why both are computed.
+	@test abs(abs(lonN - lonS) - 180.0) > 5.0 || abs(latN + latS) > 5.0
+	# The answer really is an extremum: the inclination right there beats a point a degree away.
+	P = Matrix{Float64}(undef, 2, 3)
+	for (k, (lo, la)) in enumerate(((lonN, latN), (lonN + 1.0, latN - 1.0)))
+		sla, cla = sincosd(la);  slo, clo = sincosd(lo)
+		P[k,1] = IG._MAG_R * cla * clo;  P[k,2] = IG._MAG_R * cla * slo;  P[k,3] = IG._MAG_R * sla
+	end
+	B, _, _ = IG._mag_B_cart(P, 2025.0)
+	dip(i) = abs(asind(clamp(-(B[i,1]*P[i,1] + B[i,2]*P[i,2] + B[i,3]*P[i,3]) /
+	                          (IG._MAG_R * sqrt(B[i,1]^2 + B[i,2]^2 + B[i,3]^2)), -1.0, 1.0)))
+	@test dip(1) > dip(2)
+	# They MOVE with the date -- the north dip pole crossed the Arctic in the 20th century.
+	(lon1900, lat1900, _), _ = IG._mag_dip_poles(1900.0)
+	@test abs(lon1900 - lonN) > 5.0 || abs(lat1900 - latN) > 1.0
+	# Out of the model's window the C entry point refuses, with a message.
+	out = zeros(Cdouble, 6);  err = zeros(UInt8, 512)
+	@test IG._on_magfield_poles(Cdouble(2099.0), pointer(out), pointer(err), Cint(512)) == 0
+	@test occursin("1900-2030", unsafe_string(pointer(err)))
+	@test IG._on_magfield_poles(Cdouble(2025.0), pointer(out), pointer(err), Cint(512)) == 1
+	@test out[2] > 75.0 && out[5] < -60.0
+end
+
+@testitem "magfield: the IGRF intensity skin is a real coloured image" tags=[:unit] begin
+	IG = InteractiveGMT
+	buf, nlon, nlat, comps, zmn, zmx = IG._mag_intensity_texture(2025.0; inc = 2.0)
+	@test nlon == 181 && nlat == 91                # 2-degree grid over the whole globe
+	@test comps == 3 || comps == 4
+	@test length(buf) == nlon * nlat * comps
+	@test zmn > 15000 && zmx < 75000               # nT: the field's own surface range
+	@test zmx > zmn
+	@test length(unique(buf)) > 16                 # a colour ramp, not one flat colour
+	# The same skin through the C entry point, for the same date.
+	dims = zeros(Cint, 3);  err = zeros(UInt8, 512)
+	@test IG._on_magfield_texture(Cint(1), Cdouble(2025.0), Ptr{UInt8}(C_NULL), Cint(0),
+	                              pointer(dims), pointer(err), Cint(512)) == 1
+	@test dims[1] > 1 && dims[2] > 1
+	tex = zeros(UInt8, prod(Int.(dims)))
+	@test IG._on_magfield_texture(Cint(1), Cdouble(2025.0), pointer(tex), Cint(length(tex)),
+	                              pointer(dims), pointer(err), Cint(512)) == 1
+	@test any(!=(0), tex)
+	# ...and it is refused outside the model's window rather than answered with another date.
+	@test IG._on_magfield_texture(Cint(1), Cdouble(1850.0), Ptr{UInt8}(C_NULL), Cint(0),
+	                              pointer(dims), pointer(err), Cint(512)) == 0
+	@test occursin("1900-2030", unsafe_string(pointer(err)))
 end

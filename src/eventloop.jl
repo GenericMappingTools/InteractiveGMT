@@ -145,6 +145,7 @@ function _ensure_callbacks()
 	                    ("focal",       _register_focal),
 	                    ("fault-demo",  _register_fault_demo),
 	                    ("magfield",    _register_magfield),
+	                    ("magfield-poles", _register_magfield_poles),
 	                    ("okada-inset", _register_okada_inset),
 	                    ("meca-props",  _register_meca_props))
 		try

@@ -159,6 +159,84 @@ function _mag_texture(res::String = "@earth_day_06m")
 	return buf, nlon, nlat, comps
 end
 
+# The OTHER skin the sphere can wear: the IGRF total field at the surface for this date, as a
+# coloured image. `magref`'s own grid mode builds it (the same mode igrf.jl's "Compute grid" button
+# uses — no second synthesis, no hand-rolled mesh loop), and the colours are a plain CPT over the
+# field's own range. Packed by `_drape_buf` like every other texture.
+function _mag_intensity_texture(date::Float64; inc::Float64 = 0.5, cmap = :turbo)
+	G = GMT.magref(; R = "-180/180/-90/90", I = "$inc/$inc", alt = 0.0, onetime = date, T = true)
+	zmn, zmx = Float64(G.range[5]), Float64(G.range[6])
+	zmx > zmn || error("the IGRF total field is constant over the globe ($zmn nT)")
+	C = GMT.makecpt(cmap = cmap, range = (zmn, zmx), continuous = true)
+	buf, nlon, nlat, comps = _drape_buf(GMT.mat2img(G; cmap = C))
+	return buf, nlon, nlat, comps, zmn, zmx
+end
+
+# The MAGNETIC (dip) POLES: where the field is vertical, i.e. |inclination| = 90 deg. There is no
+# closed form for them in a field with more than a dipole term, so they are found the way they are
+# defined — by looking for the extremum — on `magref`'s own inclination grid, over the polar cap of
+# each hemisphere and then on successively finer grids around the best node. Four passes take the
+# spacing from 1 deg to 0.001 deg for a few milliseconds of grid work.
+#
+# These are the DIP poles (where a compass needle stands on end), not the geomagnetic poles of the
+# best-fitting dipole, and not the same point in the two hemispheres — they are not antipodal, which
+# is exactly why both are computed instead of mirroring one.
+
+# WHERE THE SEARCH STARTS, measured rather than guessed. Over the whole IGRF window 1900-2030 the
+# north dip pole stays between 70.5 and 86.6 deg N and wanders through EVERY longitude (a point that
+# close to the rotation axis does); the south stays between 71.7 and 63.7 deg S and inside
+# 134.3-148.6 deg E. So the north cap keeps all longitudes and starts at 65 N, and the south search
+# is a BOX — 110-175 E, 80-55 S — which is what makes the year-by-year track affordable: the first
+# pass lands 6x finer in the south for the same node count, and four passes then reach the same
+# answer five used to (checked against an 8-pass reference over 1900-2030: worst case 0.27 km in the
+# north, 0.45 km in the south, i.e. nothing a marker or a track can show).
+const _MAG_CAP_N = (-180.0, 180.0,  65.0, 90.0)
+const _MAG_CAP_S = ( 110.0, 175.0, -80.0, -55.0)
+
+function _mag_dip_poles(date::Float64)
+	north = _mag_dip_pole(date, _MAG_CAP_N...; nx = 61, ny = 41)
+	south = _mag_dip_pole(date, _MAG_CAP_S...; nx = 41, ny = 31)
+	return north, south
+end
+
+# THE SEARCH RUNS ON H, NOT ON |I|, and they are the same point: the field is vertical exactly where
+# its HORIZONTAL component vanishes, so "maximum |inclination|" and "minimum H" define one place. The
+# difference is conditioning. |I| = atand(Z/H) saturates at 90 deg over a wide cap — around the north
+# pole it sits within 0.1 deg of vertical across tens of kilometres, so a grid search on it wanders
+# over a plateau and stops wherever rounding says. Measured against the published IGRF dip poles, the
+# |I| search landed ~70 km off in the north (the south, where the field is not as flat, was right).
+# H has a clean V-shaped zero at the same point and pins it. |I| is still what gets REPORTED — it is
+# the number that says "this is where a compass needle stands on end".
+#
+# The refinement box is scaled by 1/cos(lat) in longitude: at 86 deg a degree of longitude is 7 km, so
+# a box measured in plain degrees collapses in one direction and starves the search in the other.
+function _mag_dip_pole(date::Float64, lon0::Float64, lon1::Float64, lat0::Float64, lat1::Float64;
+                       nx::Int = 61, ny::Int = 41, passes::Int = 4)
+	w, e, s, n = lon0, lon1, lat0, lat1
+	lon = 0.5 * (lon0 + lon1);  lat = 0.5 * (lat0 + lat1)
+	for _ in 1:passes                     # nodes per pass; the box then shrinks by 6/(n-1) each time
+		# THE INCREMENT IS DERIVED FROM THE BOX, never chosen beside it: GMT requires the span to be an
+		# exact whole number of increments and warns ("x_max-x_min must equal (NX + eps) * x_inc") on
+		# every grid where it is not — which a fixed increment over a shrinking box cannot promise.
+		dlon = (e - w) / (nx - 1)
+		dlat = (n - s) / (ny - 1)
+		G = GMT.magref(; R = "$w/$e/$s/$n", I = "$dlon/$dlat", alt = 0.0, onetime = date, H = true)
+		k = argmin(G.z)                            # column-major (iy, ix), y ascending: magref's own grid
+		iy, ix = Tuple(k)
+		lon, lat = Float64(G.x[ix]), Float64(G.y[iy])
+		# ...and the next pass searches a box three nodes wide around it.
+		w = lon - 3dlon;  e = lon + 3dlon
+		s = max(-90.0, lat - 3dlat);  n = min(90.0, lat + 3dlat)
+		n - s < 1e-9 && break
+	end
+	lon > 180.0 && (lon -= 360.0)
+	lon < -180.0 && (lon += 360.0)
+	# The inclination AT the answer, which is what the label quotes.
+	D = GMT.magref([lon lat 0.0 date])
+	Dd = D isa AbstractVector ? D[1] : D
+	return (lon, lat, Float64(Dd.data[1, end]))
+end
+
 # C callback — params = "date/nlon/nring/lat0/lat1/rmax/maxsteps".
 # Two-phase, like the fault demo's mesh: `out == NULL` traces and reports the per-line point counts,
 # the second call copies x,y,z,|B| into the buffer.
@@ -201,13 +279,21 @@ function _on_magfield_lines(cparams::Cstring, out::Ptr{Cdouble}, capacity::Cint,
 	end
 end
 
-# C callback — the sphere's texture. Two-phase as well: `out == NULL` fills dims = (nlon, nlat,
+# C callback — the sphere's skin. `which` = 0 the Earth picture, 1 the IGRF total field at the
+# surface for `date`. Two-phase as well: `out == NULL` computes it and fills dims = (nlon, nlat,
 # comps), the second call copies the bytes.
-function _on_magfield_texture(out::Ptr{UInt8}, capacity::Cint, dims::Ptr{Cint},
-                              err::Ptr{UInt8}, cap::Cint)::Cint
+function _on_magfield_texture(which::Cint, date::Cdouble, out::Ptr{UInt8}, capacity::Cint,
+                              dims::Ptr{Cint}, err::Ptr{UInt8}, cap::Cint)::Cint
 	try
 		if out == C_NULL || isempty(_MAG_TEX[][1])
-			_MAG_TEX[] = _mag_texture()
+			_MAG_TEX[] = if which == 0
+				_mag_texture()
+			else
+				(1900.0 <= date <= 2030.0) ||
+					error("IGRF is defined for 1900-2030 only (asked for $date)")
+				b, nx, ny, nc, _, _ = _mag_intensity_texture(Float64(date))
+				(b, nx, ny, nc)
+			end
 		end
 		buf, nlon, nlat, comps = _MAG_TEX[]
 		unsafe_store!(dims, Cint(nlon), 1)
@@ -224,19 +310,149 @@ function _on_magfield_texture(out::Ptr{UInt8}, capacity::Cint, dims::Ptr{Cint},
 	end
 end
 
-# Compile the tracer (and fetch the texture) while the dialog is still being built — warmup.jl's
-# contract, the same one the fault demo uses. A tiny trace: two lines, few steps, same code path.
-function _magfield_warm()
+# C callback — the two dip poles for `date`, as [lonN, latN, incN, lonS, latS, incS].
+function _on_magfield_poles(date::Cdouble, out::Ptr{Cdouble}, err::Ptr{UInt8}, cap::Cint)::Cint
 	try
-		_mag_trace(_mag_seeds(2, 1, 60.0, 60.0), 2025.0; rmax = 1.5, maxsteps = 12)
-		yield()
-		_MAG_TEX[] = _mag_texture()
-		yield()
+		(1900.0 <= Float64(date) <= 2030.0) ||
+			error("IGRF is defined for 1900-2030 only (asked for $date)")
+		(lonN, latN, incN), (lonS, latS, incS) = _mag_dip_poles(Float64(date))
+		for (k, v) in enumerate((lonN, latN, incN, lonS, latS, incS))
+			unsafe_store!(out, v, k)
+		end
+		return Cint(1)
 	catch e
-		@tool_error "Magnetic field lines warm-up FAILED" exception=(e,)
+		n = _console_write(err, cap, sprint(showerror, e))
+		cap > 0 && unsafe_store!(err, 0x00, Int(n)+1)
+		return Cint(0)
 	end
+end
+
+
+# The polar-cap COASTLINE the 2-D track plot draws under the track, from the SAME GSHHG dump the
+# Geography menu's "Plot coastline" uses (`GMT.coast(..., M=true)`) — there is no second shoreline
+# source in this package. Handed over as lon/lat pairs with a (NaN, NaN) between segments, which is
+# how a polyline says "lift the pen".
+const _MAG_COAST = Ref{Tuple{Float64,Float64,Vector{Float64}}}((0.0, 0.0, Float64[]))
+
+function _mag_cap_coast(lat0::Float64, lat1::Float64)
+	k0, k1, V = _MAG_COAST[]
+	(k0 == lat0 && k1 == lat1 && !isempty(V)) && return V
+	D = GMT.coast(R = (-180.0, 180.0, lat0, lat1), D = :l, M = true)
+	segs = D isa AbstractVector ? D : [D]
+	out = Float64[]
+	for d in segs
+		xy = d.data
+		size(xy, 1) < 2 && continue
+		isempty(out) || append!(out, (NaN, NaN))
+		for i in axes(xy, 1)
+			push!(out, Float64(xy[i, 1]), Float64(xy[i, 2]))
+		end
+	end
+	_MAG_COAST[] = (lat0, lat1, out)
+	return out
+end
+
+# THE LAND ITSELF, not its outline. The shoreline dump above comes back as OPEN ARCS, cut at the
+# region's tile edges (six pieces for the Antarctic sector, none of them closed) — painting those as
+# polygons is what turned Antarctica into scribble. A land/sea MASK has no such problem: GMT's own
+# `grdlandmask` answers "is this node land" for every node of the sector, and the plot fills the
+# nodes that say yes. Same GSHHG data, no polygon reconstruction anywhere.
+#
+# The buffer is GMT's own grid order, handed over as it lies (grids read TRB law): column-major with
+# y ascending, so node (ix, iy) is at `ix*ny + iy`, iy counted from the south.
+const _MAG_MASK = Ref{Tuple{NTuple{5,Float64},Vector{UInt8},Int,Int}}(((0.,0.,0.,0.,0.), UInt8[], 0, 0))
+
+function _mag_land_mask(lon0::Float64, lon1::Float64, lat0::Float64, lat1::Float64, inc::Float64)
+	key = (lon0, lon1, lat0, lat1, inc)
+	k, V, nx, ny = _MAG_MASK[]
+	(k == key && !isempty(V)) && return V, nx, ny
+	G = GMT.grdlandmask(R = (lon0, lon1, lat0, lat1), I = inc, D = :l, N = "0/1/0/1/0")
+	z = G.z
+	out = Vector{UInt8}(undef, length(z))
+	@inbounds for i in eachindex(z)
+		out[i] = z[i] > 0.5 ? 0x01 : 0x00
+	end
+	ny2, nx2 = size(z)                      # magref/grdlandmask hand back (ny, nx), y ascending
+	_MAG_MASK[] = (key, out, nx2, ny2)
+	return out, nx2, ny2
+end
+
+# C callback — the land mask for a sector. Two-phase: `out == NULL` builds it and reports
+# dims = (nx, ny), the second call copies one byte per node.
+function _on_magfield_mask(lon0::Cdouble, lon1::Cdouble, lat0::Cdouble, lat1::Cdouble, inc::Cdouble,
+                           out::Ptr{UInt8}, capacity::Cint, dims::Ptr{Cint},
+                           err::Ptr{UInt8}, cap::Cint)::Cint
+	try
+		V, nx, ny = _mag_land_mask(Float64(lon0), Float64(lon1), Float64(lat0), Float64(lat1), Float64(inc))
+		unsafe_store!(dims, Cint(nx), 1)
+		unsafe_store!(dims, Cint(ny), 2)
+		out == C_NULL && return Cint(1)
+		capacity >= length(V) || error("The land-mask buffer is too small ($(length(V)) bytes needed)")
+		GC.@preserve V unsafe_copyto!(out, pointer(V), length(V))
+		return Cint(1)
+	catch e
+		n = _console_write(err, cap, sprint(showerror, e))
+		cap > 0 && unsafe_store!(err, 0x00, Int(n)+1)
+		return Cint(0)
+	end
+end
+
+# C callback — the cap coastline, two-phase: `out == NULL` builds it and reports the point count
+# (a NaN separator counts as a point), the second call copies lon/lat pairs.
+function _on_magfield_coast(lat0::Cdouble, lat1::Cdouble, out::Ptr{Cdouble}, capacity::Cint,
+                            count::Ptr{Cint}, err::Ptr{UInt8}, cap::Cint)::Cint
+	try
+		V = _mag_cap_coast(Float64(lat0), Float64(lat1))
+		unsafe_store!(count, Cint(length(V) ÷ 2), 1)
+		out == C_NULL && return Cint(1)
+		capacity >= length(V) || error("The coastline buffer is too small ($(length(V)) doubles needed)")
+		GC.@preserve V unsafe_copyto!(out, pointer(V), length(V))
+		return Cint(1)
+	catch e
+		n = _console_write(err, cap, sprint(showerror, e))
+		cap > 0 && unsafe_store!(err, 0x00, Int(n)+1)
+		return Cint(0)
+	end
+end
+
+
+function _register_magfield_poles()
+	pptr = @cfunction((d,o,e,c) -> Base.invokelatest(_on_magfield_poles, d,o,e,c),
+		Cint, (Cdouble,Ptr{Cdouble},Ptr{UInt8},Cint))
+	ccall(_fn(:gmtvtk_set_magfield_poles_callback), Cvoid, (Ptr{Cvoid},), pptr)
+	cptr = @cfunction((a,b,o,c,n,e,x) -> Base.invokelatest(_on_magfield_coast, a,b,o,c,n,e,x),
+		Cint, (Cdouble,Cdouble,Ptr{Cdouble},Cint,Ptr{Cint},Ptr{UInt8},Cint))
+	ccall(_fn(:gmtvtk_set_magfield_coast_callback), Cvoid, (Ptr{Cvoid},), cptr)
+	mptr = @cfunction((a,b,c2,d,i,o,cp,dm,e,x) -> Base.invokelatest(_on_magfield_mask, a,b,c2,d,i,o,cp,dm,e,x),
+		Cint, (Cdouble,Cdouble,Cdouble,Cdouble,Cdouble,Ptr{UInt8},Cint,Ptr{Cint},Ptr{UInt8},Cint))
+	ccall(_fn(:gmtvtk_set_magfield_mask_callback), Cvoid, (Ptr{Cvoid},), mptr)
+	return
+end
+
+# Warm-up for this tool — AND IT MUST NOT CALL GMT. `warm_start` (warmup.jl) runs the body with
+# `Threads.@spawn` whenever the session has more than one thread, so anything GMT this body does runs
+# on a WORKER thread while the dialog, on the UI thread, is already calling GMT for its own first
+# texture and trace. The GMT C API is not re-entrant and not thread-safe: the two sessions corrupt
+# each other's heap and the whole viewer dies on the spot — measured, `julia -t auto`, exit
+# 0xC0000374 (STATUS_HEAP_CORRUPTION) the instant the menu entry was triggered. A single-threaded
+# session survives, which is exactly why this passed every test here and killed the tool on the
+# user's desk.
+#
+# So the warm-up is type-level only: it asks for the callbacks to be compiled for their signatures
+# and calls nothing. The first Compute pays for the tracer's own compilation, which is a second, not
+# a crash. Any future warm body for a GMT-backed tool has the same rule — see the fault demo's, which
+# is pure Julia geometry and therefore safe to run off-thread.
+function _magfield_warm()
 	precompile(_on_magfield_lines, (Cstring, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Ptr{UInt8}, Cint))
-	precompile(_on_magfield_texture, (Ptr{UInt8}, Cint, Ptr{Cint}, Ptr{UInt8}, Cint))
+	precompile(_on_magfield_texture, (Cint, Cdouble, Ptr{UInt8}, Cint, Ptr{Cint}, Ptr{UInt8}, Cint))
+	precompile(_on_magfield_poles, (Cdouble, Ptr{Cdouble}, Ptr{UInt8}, Cint))
+	precompile(_on_magfield_coast, (Cdouble, Cdouble, Ptr{Cdouble}, Cint, Ptr{Cint}, Ptr{UInt8}, Cint))
+	precompile(_on_magfield_mask, (Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Ptr{UInt8}, Cint,
+	                               Ptr{Cint}, Ptr{UInt8}, Cint))
+	precompile(_mag_B_cart, (Matrix{Float64}, Float64))
+	precompile(_mag_trace, (Matrix{Float64}, Float64))
+	precompile(_mag_dip_poles, (Float64,))
+	precompile(_mag_intensity_texture, (Float64,))
 	return nothing
 end
 
@@ -244,8 +460,8 @@ function _register_magfield()
 	warm_register("magfield", _magfield_warm)
 	lptr = @cfunction((p,o,c,n,m,e,x) -> Base.invokelatest(_on_magfield_lines, p,o,c,n,m,e,x),
 		Cint, (Cstring,Ptr{Cdouble},Cint,Ptr{Cint},Cint,Ptr{UInt8},Cint))
-	tptr = @cfunction((o,c,d,e,x) -> Base.invokelatest(_on_magfield_texture, o,c,d,e,x),
-		Cint, (Ptr{UInt8},Cint,Ptr{Cint},Ptr{UInt8},Cint))
+	tptr = @cfunction((w,t,o,c,d,e,x) -> Base.invokelatest(_on_magfield_texture, w,t,o,c,d,e,x),
+		Cint, (Cint,Cdouble,Ptr{UInt8},Cint,Ptr{Cint},Ptr{UInt8},Cint))
 	ccall(_fn(:gmtvtk_set_magfield_callback), Cvoid, (Ptr{Cvoid},Ptr{Cvoid}), lptr, tptr)
 	return
 end

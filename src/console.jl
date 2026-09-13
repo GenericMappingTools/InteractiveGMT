@@ -29,12 +29,31 @@ function _console_eval(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap::Ci
 	end
 end
 
-# Start capturing this process's stdout, and say whether it worked. `redirect_stdout()` dups the
-# REAL file descriptor, so it throws wherever the process has no usable stdout to dup — a headless
-# CI runner under the test harness is exactly that, and the throw used to happen BEFORE the try
-# below, i.e. outside every handler in this file. Capturing output is a convenience; running the
-# command the user typed is the job, so a failure to capture runs it uncaptured.
+# Is file descriptor 1 something this process can still redirect through? `stat` on it fails with
+# EBADF when it is closed, which is the one question worth asking BEFORE touching redirect_stdout.
+#
+# ASKED FIRST BECAUSE THE FAILURE IS NOT CATCHABLE ON EVERY PLATFORM. With fd 1 closed, Windows
+# throws out of `redirect_stdout()` (SystemError: dup), which a try/catch handles — but Linux does
+# NOT throw: dup2 onto a closed descriptor succeeds, the pipe is created, and the process dies later
+# inside libuv when the reader task touches it:
+#     signal 6 (-6): Aborted ... uv__epoll_ctl_flush ... wait_readnb ... read(rd, String)
+# (seen on the ubuntu runner, 2026-09-12). There is no handler for an abort. So the capture is not
+# attempted at all unless the descriptor is known good.
+function _stdout_capturable()
+	try
+		stat(RawFD(1))
+		return true
+	catch
+		return false
+	end
+end
+
+# Start capturing this process's stdout, and say whether it worked. Capturing output is a
+# convenience; running the command the user typed is the job, so a process with no usable stdout
+# runs it uncaptured and says so in the console.
 function _console_capture()
+	_stdout_capturable() ||
+		return nothing, nothing, nothing, "[this process has no stdout to capture]\n"
 	try
 		rd, wr = redirect_stdout()
 		# PARENTHESISED: `@async f(x), ""` would hand the macro the whole tuple and return three

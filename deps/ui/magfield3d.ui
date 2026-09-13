@@ -214,7 +214,7 @@
             <double>0.002000000000000</double>
            </property>
            <property name="value">
-            <double>0.008000000000000</double>
+            <double>0.006000000000000</double>
            </property>
           </widget>
          </item>
@@ -238,16 +238,32 @@
         </property>
         <layout class="QVBoxLayout" name="lookLayout">
          <item>
-          <widget class="QCheckBox" name="earthCheck">
-           <property name="toolTip">
-            <string>Drape GMT's Earth image on the sphere.</string>
-           </property>
+          <widget class="QLabel" name="lblSkin">
            <property name="text">
-            <string>Earth image</string>
+            <string>Sphere</string>
            </property>
-           <property name="checked">
-            <bool>true</bool>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="skinCombo">
+           <property name="toolTip">
+            <string>What the globe wears: GMT's Earth image, the IGRF total field at the surface for the date above, or no image at all.</string>
            </property>
+           <item>
+            <property name="text">
+             <string>Earth image</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>IGRF total field (surface)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Plain</string>
+            </property>
+           </item>
           </widget>
          </item>
          <item>
@@ -257,6 +273,19 @@
            </property>
            <property name="text">
             <string>Colour lines by |B|</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QCheckBox" name="polesCheck">
+           <property name="toolTip">
+            <string>Mark the north and south magnetic poles for the date above — the points where the field is vertical, i.e. where |inclination| is greatest.</string>
+           </property>
+           <property name="text">
+            <string>Magnetic poles</string>
            </property>
            <property name="checked">
             <bool>true</bool>
@@ -274,19 +303,68 @@
        </widget>
       </item>
       <item>
-       <widget class="QLabel" name="statusLabel">
-        <property name="wordWrap">
-         <bool>true</bool>
+       <widget class="QGroupBox" name="trackGroup">
+        <property name="title">
+         <string>Pole track</string>
         </property>
+        <layout class="QVBoxLayout" name="trackLayout">
+         <item>
+          <widget class="QPushButton" name="trackButton">
+           <property name="toolTip">
+            <string>Walk both magnetic poles from 1900 to this year, one year per step. The field lines are put away while it plays; the year shows over the globe and in the title bar.</string>
+           </property>
+           <property name="text">
+            <string>Animate 1900 → now</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="restoreLinesButton">
+           <property name="toolTip">
+            <string>Put the 3-D field lines back and return the markers to the date above. Until it is pressed the globe carries the track alone, free to be turned and zoomed.</string>
+           </property>
+           <property name="text">
+            <string>Restore field lines</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="saveMovieButton">
+           <property name="toolTip">
+            <string>Play the whole track into an MP4 file, one frame per year, exactly as it looks in this window.</string>
+           </property>
+           <property name="text">
+            <string>Save animation (MP4)…</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="trackPlotButton">
+           <property name="toolTip">
+            <string>The same track as a pair of flat polar maps, one per hemisphere, with the year marked every ten years.</string>
+           </property>
+           <property name="text">
+            <string>2-D track plot…</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="statusLabel">
         <property name="text">
          <string/>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
         </property>
        </widget>
       </item>
       <item>
        <spacer name="tailSpacer">
         <property name="orientation">
-         <enum>Qt::Vertical</enum>
+         <enum>Qt::Orientation::Vertical</enum>
         </property>
         <property name="sizeHint" stdset="0">
          <size>

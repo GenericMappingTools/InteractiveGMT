@@ -2,6 +2,55 @@
 
 Two release streams, two cadences. `deps/build.jl` (the Julia `Pkg.build` hook) pulls from both.
 
+## 0. Who builds what — and why Linux/macOS CI goes red on its own
+
+The viewer library is ONE translation unit built per platform, and the three platforms are not built
+in the same place:
+
+| Platform | Built where | Published by |
+|----------|-------------|--------------|
+| Windows  | this desk, `deps/build.bat` + CPack | by hand, `gh release upload` |
+| Linux    | a GitHub runner (`LinuxBinaries.yml`); WSL `publish_linux.sh` as the backup | the workflow, on a manual dispatch |
+| macOS    | GitHub runners only, one job per architecture (`MacBinaries.yml`) — there is no Mac here | the workflow on a manual dispatch, or `julia deps/publish_mac.jl` |
+
+**The test workflow does not build the library. It downloads the published one** — the rolling
+asset on the `dll-latest` tag — and runs the suite against it. So the binaries and the source drift
+apart the moment the C API changes, and the drift is fatal rather than partial:
+`src/libgmtvtk.jl`'s `_LIB_SYMBOLS` is resolved symbol by symbol at load, and ONE missing export
+makes `__init__` declare the library stale. The viewer then never loads, and every test that opens a
+window fails at once with `viewer library not loaded (symbol :gmtvtk_…)`.
+
+That is the normal reason a Linux/macOS run is red while Windows is green: not a bug in the tests,
+just binaries older than the source. Adding any `gmtvtk_*` export (or changing one's signature) puts
+all three platforms in that state until each is rebuilt and republished.
+
+**The order that gets out of it, and it cannot be shortened:**
+
+1. Rebuild and upload the Windows rolling zip — that one is ours and is expected after every C++
+   change (section 1 + 2 below, including the `tar -tf` and `check_dll_deps.ps1` gates).
+2. Push the source. The runners build from the REPOSITORY, so a new export cannot reach a Linux or
+   macOS library until the commit that adds it is on `master`. Dispatching before that just rebuilds
+   the old code.
+3. Dispatch both binary workflows, asking for publication:
+
+   ```
+   gh workflow run MacBinaries.yml   -r master -f publish=full
+   gh workflow run LinuxBinaries.yml -r master -f publish=full
+   ```
+
+   A plain push builds them too, but leaves the archives as workflow ARTIFACTS — which expire, and
+   which nothing downloads. Only a manual run with `publish` touches a release. `rolling` replaces
+   the library archive on `dll-latest` (what CI downloads — the daily cadence); `full` does that AND
+   replaces the ~200 MB self-contained bundle on the tag named in `deps/RUNTIME_VERSION` (what a
+   user installing iGMT gets). Both upload with `--clobber`: same tags, same asset names, contents
+   overwritten in place, so every existing link keeps working and no version has to change anywhere.
+4. Re-run the failed test jobs (`gh run rerun <id> --failed`). Nothing re-runs them automatically,
+   and the verdict already recorded was reached with the OLD libraries. No new commit is needed: the
+   binaries are fetched fresh at test time.
+
+Windows is the asymmetric one in both directions — it never waits for a runner, and it never gets
+fixed by one either. A C++ change is not finished until its rolling zip is up.
+
 ## 1. Build the packages (CMake + CPack)
 
 Configure once with packaging on:
@@ -44,11 +93,11 @@ An NSIS installer (`iGMT-<version>-win64.exe`) also gets built alongside — it'
 
 ## 2. Upload to GitHub Releases
 
-**Runtime release** — tag = whatever's in `deps/RUNTIME_VERSION` (currently `runtime-0.2`).
+**Runtime release** — tag = whatever's in `deps/RUNTIME_VERSION` (currently `runtime-0.3`).
 Bump the tag + that file ONLY when the VTK/Qt/TBB module set changes (rare).
 
 ```
-gh release create runtime-0.2 deps/build/iGMT-win64-full.zip --repo GenericMappingTools/InteractiveGMT --title "gmtvtk runtime 0.2" --notes "Windows and Linux x86_64 VTK/Qt/TBB runtime bundles"
+gh release create runtime-0.3 deps/build/iGMT-win64-full.zip --repo GenericMappingTools/InteractiveGMT --title "gmtvtk runtime 0.3" --notes "Windows and Linux x86_64 VTK/Qt/TBB runtime bundles"
 ```
 
 The Linux assets have TWO routes, both running the same `deps/build.sh` and producing the same two

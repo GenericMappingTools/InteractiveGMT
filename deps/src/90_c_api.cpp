@@ -1146,7 +1146,16 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //       all). A mesh file's own colours — PLY red/green/blue, glTF COLOR_0 — are per vertex, and
 //       there was nowhere to put them. Every argument after the insertion point shifts, so a
 //       generation-9 library reads `facez` as the vertex colours and the CPT nodes as `facez`.
-GMTVTK_API int gmtvtk_abi_version(void) { return 12; }
+//  13 = the magfield TEXTURE CALLBACK gained two LEADING arguments: `which` (0 = the Earth picture,
+//       1 = the IGRF total field) and `date`. The callback pointer is installed through
+//       gmtvtk_set_magfield_callback, whose own signature did NOT change — so nothing about the
+//       export tells a mismatched pair apart, and the missing-export check passes. A generation-12
+//       library then calls a generation-13 host's callback with the OLD argument list: the host
+//       reads `which`/`date` off registers that hold nothing, takes the texture BUFFER POINTER from
+//       a slot that holds a byte count, and writes the picture through it. That is not a wrong
+//       picture, it is an instant process death — the whole viewer disappears the moment the tool
+//       is opened. A callback's signature is a host-facing ABI exactly like an export's.
+GMTVTK_API int gmtvtk_abi_version(void) { return 13; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -2953,6 +2962,24 @@ GMTVTK_API void gmtvtk_set_magfield_callback(JuliaMagLinesFn linesFn, JuliaMagTe
 	g_juliaMagTex   = texFn;
 }
 
+// ...and where its two magnetic (dip) poles are for a date — the extremum of |inclination|.
+GMTVTK_API void gmtvtk_set_magfield_poles_callback(JuliaMagPolesFn fn) {
+	g_juliaMagPoles = fn;
+}
+
+
+// ...and the polar-cap shoreline the 2-D track plot is drawn over (GSHHG, the same dump the
+// Geography menu's coastline uses).
+GMTVTK_API void gmtvtk_set_magfield_coast_callback(JuliaMagCoastFn fn) {
+	g_juliaMagCoast = fn;
+}
+
+// ...and the land/sea mask that plot FILLS with (grdlandmask), since a clipped shoreline dump is a
+// set of open arcs and cannot be filled as polygons.
+GMTVTK_API void gmtvtk_set_magfield_mask_callback(JuliaMagMaskFn fn) {
+	g_juliaMagMask = fn;
+}
+
 // Build ONE flat "meca" patch (outline + fill) directly, bypassing the shared polyRebuildFill
 // triangulator (85_polygon.cpp). That path runs vtkTriangleFilter -> vtkPolygon::Triangulate,
 // which assumes a SIMPLE (non-self-intersecting) polygon; patch_meca's equal-area boundary can
@@ -4463,10 +4490,12 @@ GMTVTK_API void gmtvtk_shutdown(void) {
 // Drive the "Magnetic field lines (3-D)" window (69_magfield.cpp) and read its state back.
 // control: ""            just report
 //          "date:<year>" set the date box     "compute" press Compute
-//          "earth:0|1"   the Earth-image box  "color:0|1" the colour-by-|B| box
+//          "skin:0|1|2"  the sphere combo     "color:0|1" the colour-by-|B| box
+//          "poles:0|1"   the dip-pole markers
 //          "reset"       Reset view           "close"   close the window
 // out: [0] polylines  [1] points  [2] tube actor visible  [3] globe carries a texture
 //      [4] tubes coloured by scalars  [5] date box  [6] tube radius  [7] camera distance
+//      [8] skin index  [9] pole markers visible  [10..11] N pole lon/lat  [12..13] S pole lon/lat
 GMTVTK_API int gmtvtk_magfield_test(void *handle, const char *control, double value, double *out) {
 	Scene *s = static_cast<Scene *>(handle);
 	if (!s || !s->win) return 0;
@@ -4477,8 +4506,9 @@ GMTVTK_API int gmtvtk_magfield_test(void *handle, const char *control, double va
 	const QString name = control ? QString::fromUtf8(control) : QString();
 	if (name == "close") { d->close(); QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); return 1; }
 	if (name == "date")        m->date->setValue(value);
-	else if (name == "earth")  m->showEarth->setChecked(value != 0.0);
+	else if (name == "skin")   m->skin->setCurrentIndex(int(value));
 	else if (name == "color")  m->colorByB->setChecked(value != 0.0);
+	else if (name == "poles")  m->showPoles->setChecked(value != 0.0);
 	else if (name == "lon")    m->nlon->setValue(int(value));
 	else if (name == "ring")   m->nring->setValue(int(value));
 	else if (name == "rmax")   m->rmax->setValue(value);
@@ -4495,6 +4525,20 @@ GMTVTK_API int gmtvtk_magfield_test(void *handle, const char *control, double va
 	out[5] = m->date->value();
 	out[6] = m->tubeFlt ? m->tubeFlt->GetRadius() : 0.0;
 	out[7] = m->renderer && m->renderer->GetActiveCamera() ? m->renderer->GetActiveCamera()->GetDistance() : 0.0;
+	out[8] = m->skin ? m->skin->currentIndex() : -1;
+	out[9] = (m->poleMark[0] && m->poleMark[0]->GetVisibility()) ? 1.0 : 0.0;
+	for (int k = 0; k < 2; ++k) {
+		out[10 + 2*k] = m->poleLonLat[k][0];
+		out[11 + 2*k] = m->poleLonLat[k][1];
+	}
+	// The pole-track / hover probe slots.
+	out[14] = double(m->hoverCalls);
+	out[15] = double(m->trailYear);
+	out[16] = (m->trailTag && m->trailTag->GetVisibility()) ? 1.0 : 0.0;
+	out[17] = (m->trail[0] && m->trail[0]->GetVisibility()) ? 1.0 : 0.0;
+	out[18] = m->restorePending ? 1.0 : 0.0;
+	out[19] = double(m->track.size());
+	out[20] = double(m->poleHover);
 	return 1;
 }
 
