@@ -351,7 +351,13 @@ function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Unio
 	io   = open(logf, "w")
 	progf = _nswing_progress_file()               # -W<file>: nswing rewrites it in place each tick
 	args  = vcat(args, "-W$(progf)")
-	cmd   = Cmd(vcat("gmt", "nswing", args))
+	# THE `gmt` TO RUN IS GMT.jl's OWN. `GMT.isJLL` says which build this session is on and
+	# `GMT.GMTbin` is that build's executable: the plain "gmt" of a system-wide install (resolved on
+	# PATH exactly as before — nothing changes on such a machine) or the artifact's absolute path
+	# under GMT_jll, where there is no `gmt` on PATH at all. That is why the launch died there with
+	# "could not spawn" while the same run worked from the REPL, which goes through in-process libgmt.
+	gmtexe = GMT.isJLL ? GMT.GMTbin : "gmt"
+	cmd   = Cmd(vcat(gmtexe, "nswing", args))
 	if dir !== nothing
 		cmd = Cmd(cmd; dir = dir)
 	end
