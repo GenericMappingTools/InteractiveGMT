@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>EcvDialog</class>
+ <widget class="QDialog" name="EcvDialog">
+  <property name="windowTitle">
+   <string>Essential Climate Variables</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <item>
+    <widget class="QLabel" name="lbl_intro">
+     <property name="text">
+      <string>CDS collection &lt;b&gt;ecv-for-climate-change&lt;/b&gt; — essential climate variables for assessment of climate variability from 1979 to present.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_request">
+     <property name="title">
+      <string>Request</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_request">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_vars">
+        <property name="text">
+         <string>Variables</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1" colspan="3">
+       <widget class="QListWidget" name="lst_vars">
+        <property name="toolTip">
+         <string>One or more variables. Ctrl-click to add to the selection.</string>
+        </property>
+        <property name="selectionMode">
+         <enum>QAbstractItemView::SelectionMode::ExtendedSelection</enum>
+        </property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lbl_origin">
+        <property name="text">
+         <string>Origin</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QComboBox" name="cb_origin">
+        <property name="toolTip">
+         <string>Which reanalysis the variable is taken from.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="lbl_product">
+        <property name="text">
+         <string>Product type</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QComboBox" name="cb_product">
+        <property name="toolTip">
+         <string>anomaly is the departure from the climate reference period below.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lbl_refperiod">
+        <property name="text">
+         <string>Reference period</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QComboBox" name="cb_refperiod">
+        <property name="toolTip">
+         <string>The climatology an anomaly is measured against. Ignored for monthly_mean.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="2">
+       <widget class="QLabel" name="lbl_timeagg">
+        <property name="text">
+         <string>Time aggregation</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="3">
+       <widget class="QComboBox" name="cb_timeagg">
+        <property name="toolTip">
+         <string>How the monthly fields are aggregated in time.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="lbl_years">
+        <property name="text">
+         <string>Years</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1" colspan="3">
+       <widget class="QLineEdit" name="edit_years">
+        <property name="toolTip">
+         <string>&lt;html&gt;One year, a comma-separated list, or a range: &lt;b&gt;2025&lt;/b&gt;, &lt;b&gt;2024,2025&lt;/b&gt;, &lt;b&gt;2020:2026&lt;/b&gt;.&lt;br&gt;The collection covers 1979 to 2026.&lt;/html&gt;</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="lbl_months">
+        <property name="text">
+         <string>Months</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1" colspan="3">
+       <widget class="QLineEdit" name="edit_months">
+        <property name="toolTip">
+         <string>&lt;html&gt;One month, a list, or a range: &lt;b&gt;07&lt;/b&gt;, &lt;b&gt;01,02,03&lt;/b&gt;, &lt;b&gt;1:11&lt;/b&gt;. Empty means all twelve.&lt;/html&gt;</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_output">
+     <property name="title">
+      <string>Output</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_output">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_format">
+        <property name="text">
+         <string>Format</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="cb_format">
+        <property name="toolTip">
+         <string>The server's own default for this collection is GRIB; netCDF4 is what iGMT reads directly.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lbl_out">
+        <property name="text">
+         <string>Save as</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1" colspan="2">
+       <widget class="QLineEdit" name="edit_out">
+        <property name="toolTip">
+         <string>Leave empty to let the download land in the session's temp folder.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QToolButton" name="btn_out">
+        <property name="text">
+         <string>…</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <widget class="QPushButton" name="push_dryrun">
+       <property name="text">
+        <string>Show request</string>
+       </property>
+       <property name="toolTip">
+        <string>Print the JSON body that would be posted, without contacting the server.</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="spacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_download">
+       <property name="text">
+        <string>Download</string>
+       </property>
+       <property name="default">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
