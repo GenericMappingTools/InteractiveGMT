@@ -1477,7 +1477,10 @@ GMTVTK_API void gmtvtk_set_cpt(void *handle, const double *cz, const double *crg
 	s->baseCz.assign(cz, cz + n);
 	s->baseCrgb.assign(crgb, crgb + (size_t)3 * n);
 	s->surfCtfRange = true;
-	if (s->bar) s->bar->SetLookupTable(s->surfLut);   // refresh the legend strip
+	// Rebuild the legend through THE decider (refreshGridColorbar), not by re-pointing the strip's
+	// LUT: the ticks are built there, from the nodes just stored, so the numbers follow the palette
+	// instead of staying on whatever range the bar was first built with.
+	refreshGridColorbar(s);
 	// In "flat image" relief look the surface is a PRE-BAKED RGBA texture, not scalar+LUT mapped --
 	// mutating the CTF alone recolours the colorbar but leaves the already-baked pixels untouched.
 	// rebakeLayerImage re-bakes the drape from the (now-updated) CTF; no-op when not in that mode.
@@ -1516,6 +1519,10 @@ GMTVTK_API void gmtvtk_set_cpt_grid(void *handle, int gridSel, const double *cz,
 		// Base relief in "flat image" look is a PRE-BAKED RGBA texture, not scalar+LUT mapped --
 		// re-bake it from the just-updated CTF (extras are always live LUT-mapped, no bake needed).
 		if (s->layerImgMode && !s->customLayerTexture) rebakeLayerImage(s);
+		// A CUBE keeps the palette it is given. Without this the next layer switch rebuilt its colours
+		// from the default colormap and threw the user's palette away one step later — the colour of a
+		// cube is a property of the cube, not of the layer that happens to be showing.
+		if (s->cubeNLayers > 1 && g_juliaCubeCpt) g_juliaCubeCpt(s, cz, crgb, n);
 	}
 	refreshGridColorbar(s);                   // retarget/refresh the single legend strip to the active grid
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
@@ -2021,6 +2028,13 @@ GMTVTK_API void gmtvtk_set_ttt_callback(JuliaTttFn fn) {
 // GMT.jl's `ecmwf` and answers in `out`. nullptr to detach.
 GMTVTK_API void gmtvtk_set_ecmwf_callback(JuliaEcmwfFn fn) {
 	g_juliaEcmwf = fn;
+}
+
+// Register the Copernicus/ECV callback (Geophysics > Copernicus). fn(scene, params, out, cap) with
+// the newline-separated "key=value" block documented at JuliaEcvFn (30_app.cpp) builds the
+// `ecv-for-climate-change` request and answers in `out`. nullptr to detach.
+GMTVTK_API void gmtvtk_set_ecv_callback(JuliaEcvFn fn) {
+	g_juliaEcv = fn;
 }
 
 // Register the Sentinel Hub imagery callback (Geophysics > Copernicus). fn(scene, params, out, cap)
@@ -6635,6 +6649,16 @@ GMTVTK_API void gmtvtk_set_cube_layer_callback(JuliaCubeLayerFn fn) {
 // Register the "Load all in RAM" callback for the cube layer dock. nullptr to detach.
 GMTVTK_API void gmtvtk_set_cube_loadall_callback(JuliaCubeLoadAllFn fn) {
 	g_juliaCubeLoadAll = fn;
+}
+
+// Register the "a palette was applied to a cube" callback. nullptr to detach.
+GMTVTK_API void gmtvtk_set_cube_cpt_callback(JuliaCubeCptFn fn) {
+	g_juliaCubeCpt = fn;
+}
+
+// Register the "Save as 3-D netCDF…" callback for the cube layer dock. nullptr to detach.
+GMTVTK_API void gmtvtk_set_cube_save_callback(JuliaCubeSaveFn fn) {
+	g_juliaCubeSave = fn;
 }
 
 // Register the per-element "Cube layers…" callback (reopen the slider bound to a named cube). nullptr to detach.

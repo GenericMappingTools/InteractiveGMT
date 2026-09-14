@@ -376,13 +376,51 @@ function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Unio
 		end
 		cmd = Cmd(cmd; env = _nswing_clean_env())
 	else
-		base = GMT.isJLL ? GMT.GMT_jll.gmt() : Cmd(String["gmt"])
-		cmd  = Cmd(vcat(collect(base.exec), "nswing", args))
+		# NOTHING HERE IS CONDITIONAL ON `GMT.isJLL` OR ON THE WRAPPER HANDING BACK AN ENVIRONMENT.
+		# The previous version asked for both and still spawned an env-less child on the reporting
+		# machine, which can only mean one of those two questions answered the wrong way. So the
+		# wrapper is asked for whatever it has, and the loader path is set from `LIBPATH[]` DIRECTLY
+		# as well -- the same value the wrapper would have put in its own env, applied even when it
+		# hands back none. A build with no GMT_jll at all falls through to the plain `gmt` on PATH,
+		# exactly as before.
+		base = try GMT.GMT_jll.gmt() catch; nothing end
+		exe  = base === nothing ? "gmt" : String(first(base.exec))
+		cmd  = Cmd(vcat(exe, "nswing", args))
 		if dir !== nothing
 			cmd = Cmd(cmd; dir = dir)
 		end
-		# A system-wide `gmt` carries no env and is spawned exactly as before, inheriting ours.
-		base.env === nothing || (cmd = Cmd(cmd; env = base.env))
+		if base !== nothing
+			env = copy(ENV)
+			if base.env !== nothing
+				for kv in base.env                     # the wrapper's own "KEY=VALUE" strings
+					i = findfirst('=', kv)
+					i === nothing && continue
+					env[kv[1:prevind(kv, i)]] = kv[nextind(kv, i):end]
+				end
+			end
+			try                                        # ...and the loader path, set outright
+				lp  = GMT.GMT_jll.LIBPATH[]
+				key = GMT.GMT_jll.LIBPATH_env
+				if !isempty(lp)
+					old = get(env, key, "")
+					env[key] = isempty(old) ? lp : lp * ":" * old
+				end
+			catch
+			end
+			cmd = Cmd(cmd; env = env)
+		end
+		# WHAT WAS ACTUALLY SPAWNED, EVERY TIME, on the platform where this has been failing. One
+		# line per run; it is the only way to tell an env-less child from a child whose environment
+		# simply did not help.
+		try
+			ld = cmd.env === nothing ? "NO ENV" :
+			     (something(findfirst(s -> startswith(s, GMT.GMT_jll.LIBPATH_env * "="), cmd.env), 0) == 0 ?
+			      "env set, no " * GMT.GMT_jll.LIBPATH_env :
+			      string(count(==(':'), cmd.env[findfirst(s -> startswith(s, GMT.GMT_jll.LIBPATH_env * "="), cmd.env)]) + 1,
+			             " ", GMT.GMT_jll.LIBPATH_env, " entries"))
+			_viewer_log_info(scene, "NSWING: spawning $exe -- $ld")
+		catch
+		end
 	end
 	proc = try
 		run(pipeline(cmd; stdout=io, stderr=io); wait=false)

@@ -408,6 +408,24 @@ static JuliaTttFn g_juliaTtt = nullptr;
 typedef int (*JuliaEcmwfFn)(void *scene, const char *params, char *out, int cap);
 static JuliaEcmwfFn g_juliaEcmwf = nullptr;
 
+// Copernicus / Essential Climate Variables (Geophysics > Copernicus) -- the CDS collection
+// `ecv-for-climate-change` through src/ecv.jl. A SECOND dialog (EcvDialog, 70_window.cpp, loads
+// deps/ui/ecv_dialog.ui) and not a dataset of the one above, because this collection's request has
+// four inputs the ERA5 request shape has not got (origin, product_type, climate_reference_period,
+// time_aggregation) and no area at all; offering it in the ERA5 combo would build the request in
+// ERA5's shape and the server would answer "invalid request". Everything AFTER the JSON body -- the
+// naming, the job, the polling, the file door -- is the ECMWF tool's own, called as it stands.
+// NEWLINE-separated "key=value" block:
+//   what=catalog|dryrun|download|poll|finish,
+//   vars=<comma-separated>, origin=, product=, refperiod=, timeagg=,
+//   years=<one, a list, or first:last>, months=<same, empty = all twelve>,
+//   format=netcdf4|grib, out=, load=0|1
+// (every key optional bar `what`). `out`/`cap` carry the answer back as text: the per-input value
+// lists ("input\tv1,v2,..." lines) for `catalog`, the JSON body for `dryrun`, the poll state, or the
+// files that landed -- and the error text when the call fails. 1 on success, 0 on failure.
+typedef int (*JuliaEcvFn)(void *scene, const char *params, char *out, int cap);
+static JuliaEcvFn g_juliaEcv = nullptr;
+
 // Sentinel Hub imagery (Geophysics > Copernicus) — a port of the QGIS SentinelHub plugin through
 // src/sentinelhub.jl. ONE callback for the whole dialog (SentinelHubDialog, 70_window.cpp, loads
 // deps/ui/sentinelhub_dialog.ui), `what` says what is being asked for.
@@ -1072,6 +1090,19 @@ static JuliaCubeLayerFn g_juliaCubeLayer = nullptr;
 // 0 = loaded OK, 1 = not enough free RAM (nothing loaded), 2 = error. Julia does the RAM check.
 typedef int (*JuliaCubeLoadAllFn)(void *scene);
 static JuliaCubeLoadAllFn g_juliaCubeLoadAll = nullptr;
+
+// "Save as 3-D netCDF…" button in the same dock: write every layer of the cube, in order, as one
+// 3-D netCDF at `path`. Returns 0 = written, 1 = the layers are not all the same size (not a cube,
+// nothing written), 2 = failed. Julia reads whatever is not already in RAM.
+typedef int (*JuliaCubeSaveFn)(void *scene, const char *path);
+static JuliaCubeSaveFn g_juliaCubeSave = nullptr;
+
+// A palette was applied to a CUBE's base grid (Color Palettes, the Scene Objects colormap chooser —
+// any road into gmtvtk_set_cpt_grid). The colour belongs to the CUBE, not to the layer that happened
+// to be on screen, so Julia is handed the nodes and colours every later layer with them instead of
+// the default colormap. `cz` is n values, `crgb` 3n (r,g,b in 0..1).
+typedef void (*JuliaCubeCptFn)(void *scene, const double *cz, const double *crgb, int n);
+static JuliaCubeCptFn g_juliaCubeCpt = nullptr;
 
 // "Cube layers…" item in a cube element's Scene Objects menu. A window can hold several cubes (each a
 // separate surface); this asks Julia to make the NAMED cube the active one and (re)open the slider

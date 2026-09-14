@@ -485,47 +485,13 @@ if(GMTVTK_PACKAGE AND WIN32)
   # needed on the destination machine. COMPONENT full only — the dll-only zip is just
   # the DLL, the .jl side is already on disk from the git clone.
   install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../src/"  DESTINATION src COMPONENT full)
-  install(FILES
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/focal_mechanisms.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/igrf_calculator.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/magnetic_barcode.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/cube_layer_selector.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/rtp3d.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/clipp_grid.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/aquamoto.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/gravmag3d_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdgravmag3d_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdredpol_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdgradient_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdseamount_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grid_calculator.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdtrend_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdlandmask_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdfilter_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/solar_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdfft_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdhisteq_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/xyz2grd_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdfill_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/gravfft_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdrotater_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/talwani2d_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/talwani3d_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/greenspline_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/gmtflexure_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdflexure_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdvolume_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/gravprisms_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/grdvector_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/earthregions_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/trend2d_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/cpt_build_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/project_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/euler_stuff.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/plate_calculator.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/ttt_dialog.ui"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ui/fault_plane_demo.ui"
-    DESTINATION deps/ui COMPONENT full)
+  # EVERY .ui, by directory. A hand-kept list of file names went stale the moment a dialog was added
+  # without being added here too: 39 of the 68 .ui files were listed, so 29 dialogs -- ecmwf_dialog,
+  # sentinelhub_dialog, nswing, ecv_dialog among them -- shipped in no bundle at all and could only
+  # ever open from a source tree. A directory install cannot forget a file. (" - Copy" scratch files
+  # are not part of the app.)
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/ui/" DESTINATION deps/ui COMPONENT full
+          FILES_MATCHING PATTERN "*.ui" PATTERN "*Copy*" EXCLUDE)
   install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../data/" DESTINATION data COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../Project.toml"        DESTINATION . COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../iview_app.jl"        DESTINATION . COMPONENT full)

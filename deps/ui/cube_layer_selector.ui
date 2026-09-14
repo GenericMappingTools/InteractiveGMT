@@ -100,8 +100,8 @@
     </layout>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="buttonRow">
-     <item>
+    <layout class="QGridLayout" name="buttonRow">
+     <item row="0" column="0">
       <widget class="QCheckBox" name="globalScaleCheck">
        <property name="text">
         <string>Scale color to global min/max</string>
@@ -111,20 +111,43 @@
        </property>
       </widget>
      </item>
-     <item>
+     <item row="0" column="1">
       <spacer name="btnSpacer">
        <property name="orientation">
         <enum>Qt::Orientation::Horizontal</enum>
        </property>
+       <property name="sizeType">
+        <enum>QSizePolicy::Policy::Fixed</enum>
+       </property>
        <property name="sizeHint" stdset="0">
         <size>
-         <width>40</width>
+         <width>12</width>
          <height>20</height>
         </size>
        </property>
       </spacer>
      </item>
-     <item>
+     <item row="1" column="0">
+      <widget class="QPushButton" name="paletteBtn">
+       <property name="toolTip">
+        <string>&lt;html&gt;Open Color Palettes to build a colour scale for this cube.&lt;br&gt;The palette applied there is kept for EVERY layer.&lt;/html&gt;</string>
+       </property>
+       <property name="text">
+        <string>Color Palettes…</string>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="2">
+      <widget class="QPushButton" name="saveCubeBtn">
+       <property name="toolTip">
+        <string>&lt;html&gt;Write every layer, in order, as one 3-D netCDF cube&lt;br&gt;(only possible when all layers have the same dimensions)&lt;/html&gt;</string>
+       </property>
+       <property name="text">
+        <string>Save as 3-D netCDF…</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="2">
       <widget class="QPushButton" name="loadRamBtn">
        <property name="toolTip">
         <string>&lt;html&gt;Load the whole cube into memory so layer switching is instant&lt;br&gt;(needs enough free RAM)&lt;/html&gt;</string>

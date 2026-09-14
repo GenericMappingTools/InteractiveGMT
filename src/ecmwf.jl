@@ -149,7 +149,12 @@ function _ecmwf_autoname(d::Dict{String,String}, mode::String, fmt::String)::Str
 	ext  = (fmt == "grib") ? ".grib" : ".nc"
 	vars = _ecmwf_varlist(_get(d, mode == "fc" ? "fcvars" : "vars"))
 	safe(s) = replace(String(strip(s)), ':' => '-', ',' => '-', '/' => '-', '\\' => '-', ' ' => "")
-	parts = String[mode == "fc" ? "ECMWF" : "ERA5"]
+	# The prefix says which TOOL asked, and a caller that is neither of the two built in here says so
+	# itself ("ECV" for the Essential Climate Variables collection) instead of borrowing "ERA5" and
+	# producing a file name that names the wrong product.
+	pfx = String(strip(_get(d, "nameprefix")))
+	isempty(pfx) && (pfx = mode == "fc" ? "ECMWF" : "ERA5")
+	parts = String[pfx]
 	push!(parts, isempty(vars) ? "request" : join(vars, '-'))
 	lev = safe(_get(d, mode == "fc" ? "fclevels" : "levels"));   isempty(lev) || push!(parts, lev * "hPa")
 	when = safe(_get(d, mode == "fc" ? "date" : "dates"));       isempty(when) || push!(parts, when)
@@ -171,6 +176,76 @@ end
 # own, never a hand-rolled roll of the matrix. A REGIONAL request is left in the frame its own region
 # asked for, and anything that is not a plain grid (a cube, an image, a file GMT will not open as a
 # grid) is left exactly as it is.
+# WHAT THE CDS SENDS IS NOT ALWAYS WHAT WAS ASKED FOR: a request whose result is more than one file
+# comes back as a ZIP, whatever extension the download was given. `GMT.ecmwf` avoids it for the
+# requests it BUILDS by writing `"download_format": "unarchived"` into them (weather.jl); a body
+# posted as it stands -- a pasted CDS snippet, or the Essential Climate Variables tool -- carries no
+# such line, and the archive then lands named ".nc". Seen for real: a 12-month SST anomaly saved as
+# ECV_sea_surface_temperature.nc that began with "PK\x03\x04", which gdalinfo rightly refused.
+#
+# So the first four bytes decide. A zip is unpacked beside itself and REPLACED by what came out of
+# it; anything else travels on untouched. Windows' own bsdtar reads zip (the same binary, and the
+# same reason for calling it by full path, as deps/build.jl's extractor: a bare `tar` can resolve to
+# a GNU tar that cannot).
+_ecmwf_tar()::String = Sys.iswindows() ?
+	joinpath(get(ENV, "SystemRoot", "C:\\Windows"), "System32", "tar.exe") :
+	something(Sys.which("tar"), "tar")
+
+function _ecmwf_unzip!(f::String)::Vector{String}
+	isfile(f) || return String[f]
+	magic = try
+		open(f, "r") do io; read(io, 4); end
+	catch
+		UInt8[]
+	end
+	(length(magic) == 4 && magic[1] == 0x50 && magic[2] == 0x4B) || return String[f]   # not "PK.."
+	# Its own folder, named after the download and the day it arrived: an archive holds MANY files
+	# (one per month, typically) and spilling a dozen of them into the shared temp folder next to
+	# every other download makes it impossible to tell which request they came from.
+	dir = joinpath(dirname(f), splitext(basename(f))[1] * "_" *
+	                           GMT.Dates.format(GMT.Dates.today(), "yyyymmdd"))
+	if isdir(dir)                       # same request, same day, asked twice
+		k = 2
+		while isdir(dir * "_$k"); k += 1; end
+		dir *= "_$k"
+	end
+	mkpath(dir)
+	try
+		run(`$(_ecmwf_tar()) -xf $f -C $dir`)
+	catch e
+		error("the server sent an archive and it could not be unpacked: $(sprint(showerror, e))")
+	end
+	new = String[]
+	for (root, _, fs) in walkdir(dir), n in fs
+		push!(new, joinpath(root, n))
+	end
+	isempty(new) && error("the server sent an archive that unpacked to nothing: $f")
+	rm(f; force = true)                 # the archive itself is not a result
+	return sort!(new)                   # ..._202501..., ..._202502..., : name order IS time order
+end
+
+# The members of an unpacked archive, as ONE raster: a .vrt that stacks them band by band, written
+# in their own folder and named after the download. That is what gets opened — a dozen separate
+# windows for a dozen months is not a result anybody asked for — and the multiband door
+# (`_bands_open_first!`, drop.jl) is the one that already knows what to do with a band stack.
+# `-separate` is what makes each file a BAND; without it gdalbuildvrt mosaics them side by side,
+# which for twelve identical global grids means eleven of them overwriting the first.
+function _ecmwf_vrt(archive::String, members::Vector{String})::String
+	rasters = String[m for m in members
+	                 if lowercase(splitext(m)[2]) in (".nc", ".nc4", ".grib", ".grb", ".grib2",
+	                                                  ".grb2", ".tif", ".tiff")]
+	isempty(rasters) && return first(members)
+	length(rasters) == 1 && return rasters[1]         # a one-file archive needs no stack
+	vrt = joinpath(dirname(rasters[1]), splitext(basename(archive))[1] * ".vrt")
+	try
+		GMT.gdalbuildvrt(rasters, ["-separate"]; save = vrt)
+	catch e
+		@warn "Copernicus: could not build a VRT over the unpacked files" exception=e
+		return rasters[1]
+	end
+	return isfile(vrt) ? vrt : rasters[1]
+end
+
 function _ecmwf_to_180!(f::String, want::String = "180")::String
 	want == "360" && return f            # ERA5's own frame: nothing to do
 	try
@@ -217,6 +292,13 @@ function _ecmwf_to_unit!(f::String, want::String)::String
 	try
 		G = GMT.gmtread(f, grd=true)
 		(G isa GMT.GMTgrid) || return f
+		# A CUBE IS LEFT ALONE, exactly as `_ecmwf_to_180!` leaves it alone. `gmtread(grd=true)` hands
+		# back ONE 2-D layer of a multi-time file, and the `gmtwrite` below would then replace the
+		# whole cube with that single layer -- the download destroyed, silently, in the step meant to
+		# make it nicer to read. Seen for real: a 12-month request came back as a file gdalinfo could
+		# not open. Converting a cube properly means reading and writing every layer, which is a
+		# different job from this one; until it exists, the server's kelvin is what the user gets.
+		(size(G.z, 3) > 1) && return f
 		(_ecmwf_unit(G.z_unit) in _ECMWF_KELVIN) || return f
 		G.z  = Float32.(G.z .- 273.15f0)
 		G.z_unit = "degrees_C"
@@ -471,12 +553,22 @@ function _ecmwf_job_finish(scene::Ptr{Cvoid}, out::Ptr{UInt8}, cap::Cint)::Cint
 		exp_abs = isempty(explicit) ? "" : (isabspath(explicit) ? explicit : joinpath(dir, explicit))
 		files = _ecmwf_new_files(dir, _ECMWF_BEFORE[], exp_abs)
 		isempty(files) && error("the request returned no file — see the Julia console for the server's answer")
-		# The two display choices, applied to what landed: the longitude frame (global grids only) and
-		# the temperature unit (fields that really are in kelvin only).
-		if isempty(String(strip(_get(d, "region"))))
-			files = String[_ecmwf_to_180!(f, _get(d, "lonframe", "180")) for f in files]
+		# An archived result is unpacked FIRST: everything below reads grids, and a zip is not one.
+		# Its members get the same treatment every plain download gets -- the longitude frame (global
+		# grids only) and the temperature unit (fields that really are in kelvin only) -- and only then
+		# are stacked into the one .vrt that stands for the download. An unarchived file is its own
+		# result and travels on alone.
+		global_grid = isempty(String(strip(_get(d, "region"))))
+		lonframe, tunit = _get(d, "lonframe", "180"), _get(d, "tunit", "C")
+		results = String[]
+		for f in files
+			members = _ecmwf_unzip!(f)
+			global_grid && (members = String[_ecmwf_to_180!(m, lonframe) for m in members])
+			members = String[_ecmwf_to_unit!(m, tunit) for m in members]
+			# Not an archive: `_ecmwf_unzip!` handed the file straight back.
+			push!(results, (length(members) == 1 && members[1] == f) ? f : _ecmwf_vrt(f, members))
 		end
-		files = String[_ecmwf_to_unit!(f, _get(d, "tunit", "C")) for f in files]
+		files = results
 		if _on(d, "load")
 			for f in files
 				_on_drop(scene, f)

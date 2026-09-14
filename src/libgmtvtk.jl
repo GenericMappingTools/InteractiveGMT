@@ -173,6 +173,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_rtp3d_callback,
 	:gmtvtk_set_ttt_callback,           # Tsunamis > Tsunami travel times (src/tsunamittt.jl)
 	:gmtvtk_set_ecmwf_callback,         # Copernicus > ERA5 / ECMWF download (src/ecmwf.jl)
+	:gmtvtk_set_ecv_callback,           # Copernicus > Essential Climate Variables (src/ecv.jl)
 	:gmtvtk_set_fftstuff_callback,
 	:gmtvtk_set_gravmag3d_callback, :gmtvtk_set_grdgravmag3d_callback, :gmtvtk_set_grdredpol_callback, :gmtvtk_set_manual_callback, :gmtvtk_set_grdgradient_callback, :gmtvtk_set_grdseamount_callback,
 	:gmtvtk_set_hillshade_callback, :gmtvtk_set_shade_intensity_h, :gmtvtk_set_warmup_callback,
@@ -212,7 +213,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_meca_props_callback, :gmtvtk_remove_meca_group_h,
 	:gmtvtk_set_cube_layer_callback, :gmtvtk_set_cube_loadall_callback, :gmtvtk_set_cube_axes_zrange, :gmtvtk_show_cube_layer_dialog,
 	:gmtvtk_cube_flat_mode, :gmtvtk_mark_cube, :gmtvtk_pick_netcdf_var,
-	:gmtvtk_set_cube_slider_callback, :gmtvtk_mark_element_cube,
+	:gmtvtk_set_cube_slider_callback, :gmtvtk_mark_element_cube, :gmtvtk_set_cube_save_callback, :gmtvtk_set_cube_cpt_callback,
 	:gmtvtk_scene_state,
 	:gmtvtk_frame_for_image_h, :gmtvtk_fit2d, :gmtvtk_hide_surface,
 	:gmtvtk_hide_other_grids, :gmtvtk_hide_other_images,

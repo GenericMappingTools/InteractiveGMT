@@ -85,6 +85,7 @@ function _ensure_callbacks()
 	                    ("rtp3d",       _register_rtp3d),
 	                    ("ttt",         _register_ttt),
 	                    ("ecmwf",       _register_ecmwf),
+	                    ("ecv",         _register_ecv),
 	                    ("sentinelhub", _register_sentinelhub),
 	                    ("fftstuff",    _register_fftstuff),
 	                    ("gravmag3d",   _register_gravmag3d),

@@ -189,7 +189,10 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 	end
 	n_layers, zmin, zmax = _cube_probe(spec)
 	if n_layers > 1
-		_on_3d_cube_dropped(scene, String(spec), name, empty, n_layers, zmin, zmax; prescan=prescan)
+		# A header that carries no global z-range (a band stack has none) MUST be scanned: the range is
+		# what the "global min/max" colour option and the axis pin are made of, and zeros are not it.
+		_on_3d_cube_dropped(scene, String(spec), name, empty, n_layers, zmin, zmax;
+		                    prescan = prescan || !(zmax > zmin))
 	else
 		data = _gmtread_trb(String(spec))
 		isempty(recent) || _record_recent(recent, data)
@@ -556,7 +559,7 @@ function _cube_probe(path::String)::Tuple{Int,Float64,Float64}
 	# the file part, not the whole spec (splitext of "…nc?var" yields ".nc?var", never ".nc").
 	base = first(split(path, '?'))
 	ext = lowercase(splitext(base)[2])
-	(ext != ".nc" && ext != ".grd") && return (0, 0.0, 0.0)
+	(ext != ".nc" && ext != ".grd") && return _multiband_probe(path)
 	local info
 	try
 		info = GMT.grdinfo(path, C=true, Q=true)
@@ -571,6 +574,48 @@ function _cube_probe(path::String)::Tuple{Int,Float64,Float64}
 	return n > 1 ? (n, Float64(info.data[iz1]), Float64(info.data[iz2])) : (0, 0.0, 0.0)
 end
 
+# A MULTIBAND DATA RASTER IS A CUBE. A .vrt (what a Copernicus archive is unpacked into), a
+# multiband elevation/anomaly tif — its bands are layers of one quantity, so they are navigated with
+# the SAME layer slider a netCDF cube uses, are held in RAM by the same button, and are saved as a
+# 3-D netCDF by the same one. Nothing here forks the cube machinery: the only thing a band stack
+# needs of its own is how a layer is READ (`_bands_read`) and where its layer NAMES come from.
+# PIXEL stacks (Byte/UInt16 — a photograph, a reflectance stack) are NOT this: they keep Mirone's
+# multiband open and Image > Load Bands (`_bands_open_first!`, bandslist.jl).
+#
+# The band names, per path, for the window title. Filled here because this is the one probe every
+# open goes through, and read by `_cube_band_name` when the slider moves.
+const _CUBE_BAND_NAMES = Dict{String,Vector{String}}()
+
+function _multiband_probe(path::String)::Tuple{Int,Float64,Float64}
+	occursin('?', path) && return (0, 0.0, 0.0)          # a subdataset spec is not a band stack
+	base = first(split(path, '?'))
+	(isfile(base) || startswith(base, "/vsi")) || return (0, 0.0, 0.0)
+	# Only files the band probe has ALREADY seen (every raster the open path offered to Load Bands,
+	# moments earlier -- `_bands_open_first!` runs first and caches its answer) or one of the
+	# multiband extensions by name. A dropped table or .cpt is not put through a gdalinfo to be told
+	# it is not a raster.
+	(haskey(_BANDS_PROBE, path) || lowercase(splitext(base)[2]) in _BANDS_EXT) || return (0, 0.0, 0.0)
+	n, names, _, isdata = try
+		_bands_probe(path)
+	catch
+		return (0, 0.0, 0.0)
+	end
+	(n > 1 && isdata) || return (0, 0.0, 0.0)
+	_CUBE_BAND_NAMES[path] = names
+	# No global z-range in a band-stack header: zmax == zmin is what tells the open path to prescan
+	# (it computes the true global min/max, and caches the cube while it is at it).
+	return (n, 0.0, 0.0)
+end
+
+_is_band_cube(path::String)::Bool = haskey(_CUBE_BAND_NAMES, path)
+
+# The k-th band's name (the VRT's k-th source file, a band Description, else "Band_k").
+function _cube_band_name(path::String, k::Int)::String
+	ns = get(_CUBE_BAND_NAMES, path, nothing)
+	(ns === nothing || k < 1 || k > length(ns)) && return ""
+	return ns[k]
+end
+
 # Read one 2-D slice (1-based `k`) of a cube on disk. A plain single-variable cube uses GMT's
 # `layer=` kwarg (GDAL cube reader). A SUBDATASET spec ("file.nc?var") must instead use GMT's own
 # native COARDS layer syntax "file.nc?var[i]" (0-based) -- the GDAL `layer=` path errors on a "?"
@@ -581,7 +626,10 @@ end
 # stays "BCB", its slab views inheriting `C.layout`. Do not "tidy" it into a TRB read without also
 # teaching `_cube_layer_view` to slice row-major memory — the label is what every consumer reads.
 _read_cube_layer(path::String, k::Int)::Union{GMTgrid,Nothing} = begin
-	if occursin('?', path)
+	if _is_band_cube(path)
+		g = try _bands_read(path, k) catch; nothing end
+		return g isa GMTgrid ? g : nothing
+	elseif occursin('?', path)
 		_gmtread_trb("$(path)[$(k-1)]")
 	else
 		# THE VARIABLE IS NAMED BEFORE THE READ, not after a failure. A netCDF that carries MORE THAN
@@ -615,6 +663,8 @@ end
 # GMT's layers=:all; a SUBDATASET spec stacks its native "?var[i]" slices into a (ny,nx,nlayers)
 # array -- the same slab layout _cube_layer_view slices in place.
 function _read_whole_cube(path::String, n::Int)::Union{GMTgrid,Nothing}
+	# A band stack reads band by band, through the same `_read_cube_layer` the slider uses.
+	_is_band_cube(path) && return _stack_cube_layers(path, n)
 	if !occursin('?', path)
 		# Same rule as `_read_cube_layer`: when the file has a 3-D variable, address it by name —
 		# GDAL's band-count route sees a multi-variable netCDF as subdatasets and answers "not a cube".
@@ -626,10 +676,20 @@ function _read_whole_cube(path::String, n::Int)::Union{GMTgrid,Nothing}
 	# Same reader as `_read_cube_layer` above — one operation, one function. The stack then carries the
 	# layout those slabs really have (`_cube_from_slabs`), because `_cube_layer_view` copies that label
 	# onto every layer view it hands out.
+	return _stack_cube_layers(path, n)
+end
+
+# Every layer of `path`, read one at a time and stacked into a 3-D grid. ONE function for both
+# sources that have no whole-cube reader of their own (a "?var" subdataset spec and a band stack):
+# each layer comes from `_read_cube_layer`, so the stack is built out of exactly the slices the
+# slider shows. `nothing` when a layer cannot be read, or when the layers are not all the same size
+# — a stack of differently-shaped layers is not a cube, and saying so beats a `cat` error.
+function _stack_cube_layers(path::String, n::Int)::Union{GMTgrid,Nothing}
 	slabs = GMTgrid[]
-	for i in 0:n-1
-		g = _gmtread_trb("$(path)[$(i)]")
+	for k in 1:n
+		g = _read_cube_layer(path, k)
 		g === nothing && return nothing
+		(isempty(slabs) || size(g.z) == size(slabs[1].z)) || return nothing
 		push!(slabs, g)
 	end
 	isempty(slabs) && return nothing
@@ -649,12 +709,21 @@ function _cube_from_slabs(z3::Array{Float32,3}, g1::GMTgrid)::GMTgrid
 	# throws ("endpoints differ") — and then reads `v[2] - v[1]` for the layer increment, which a
 	# single layer does not have either. So a one-step cube could not be held in RAM at all. The
 	# fields are the ones `_cube_layer_view` reads back out.
-	if size(z3, 3) == 1
+	#
+	# The SECOND case that cannot go through `mat2grid` is a slab whose Julia dims are (nx, ny) rather
+	# than (ny, nx) -- which is what a band read hands over (`gdaltranslate`, a .vrt band: 1440x721 for
+	# a 1440-column, 721-row grid, x fastest and SAID SO in its layout). `mat2grid` checks
+	# `length(x) == size(mat, 2)` and rejects it. Nothing here transposes anything (the grid-layout
+	# law): the buffer is kept where it lies and the fields `_cube_layer_view` reads are filled by
+	# hand, exactly as for the one-layer cube.
+	dims_swapped = (size(z3, 1) != length(g1.y) || size(z3, 2) != length(g1.x))
+	if size(z3, 3) == 1 || dims_swapped
 		lo, hi = _finite_extrema(z3)
+		nl = size(z3, 3)
 		return GMT.GMTgrid(; proj4=g1.proj4, wkt=g1.wkt, epsg=g1.epsg, geog=g1.geog,
-			range=Float64[g1.range[1], g1.range[2], g1.range[3], g1.range[4], lo, hi, 1.0, 1.0],
+			range=Float64[g1.range[1], g1.range[2], g1.range[3], g1.range[4], lo, hi, 1.0, Float64(nl)],
 			inc=Float64[g1.inc[1], g1.inc[2], 1.0], registration=g1.registration, nodata=g1.nodata,
-			x=g1.x, y=g1.y, v=[1.0], z=z3, layout=(isempty(g1.layout) ? "BCB" : g1.layout))
+			x=g1.x, y=g1.y, v=collect(1.0:nl), z=z3, layout=(isempty(g1.layout) ? "BCB" : g1.layout))
 	end
 	C = GMT.mat2grid(z3; x = g1.x, y = g1.y, v = collect(1.0:size(z3, 3)))
 	isempty(g1.layout) || (C.layout = g1.layout)
@@ -700,6 +769,7 @@ function _cube_load_common!(scene::Ptr{Cvoid}, path::String, name::String, isbas
 	                     zmin=zmin, zmax=zmax, n_layers=n_layers)
 	_CUBE_LOADED[scene] = false
 	delete!(_CUBE_RAM, scene)          # a fresh cube is not in RAM (the dock button re-enables to match)
+	delete!(_CUBE_CPT, scene)          # ...and wears its own default colormap until one is applied to it
 	delete!(_CUBE_CUR, scene)
 	delete!(_CUBE_LAYER_MINMAX, scene)
 	_CUBE_ACTIVE[scene] = name         # BEFORE any layer load, so its _snapshot_cube! keys the right cube
@@ -863,7 +933,8 @@ function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::C
 		# Same layer already resident -> reuse the cached slice (no re-read) for a colour toggle OR an
 		# algorithm switch (flat image <-> surface); only the render path differs.
 		if cur !== nothing && cur.layer == layer_i && loaded
-			chosen = use_global != 0 ? cur.glob : cur.loc
+			pal    = get(_CUBE_CPT, scene, nothing)      # a palette applied to the cube outranks both
+			chosen = pal !== nothing ? pal : (use_global != 0 ? cur.glob : cur.loc)
 			zr     = use_global != 0 ? (info.zmin, info.zmax) : nothing
 			_cube_write_surface!(scene, info, layer_name, cur.G, chosen, zr, flat, false)
 			_CUBE_CUR[scene] = (layer=layer_i, G=cur.G, cmap=cur.cmap, loc=cur.loc, glob=cur.glob, flat=flat,
@@ -893,13 +964,24 @@ function _on_load_cube_layer(scene::Ptr{Cvoid}, layer_index::Cint, use_global::C
 			loc = info.zmax > info.zmin ? glob : _cpt_nodes_range(v - 0.5, v + 0.5, cmap)
 		end
 		glob[3] < 2 && (glob = loc)
+		# The cube's own palette, when it has been given one, is what every layer wears — both the
+		# "this layer's range" and the "global min/max" choice then mean the same colours.
+		pal = get(_CUBE_CPT, scene, nothing)
+		if pal !== nothing
+			loc = pal;  glob = pal
+		end
 		chosen = use_global != 0 ? glob : loc
 		first  = !loaded
 		zr     = use_global != 0 ? (info.zmin, info.zmax) : nothing
 		_cube_write_surface!(scene, info, layer_name, Gk, chosen, zr, flat, first)
 		if first
 			_CUBE_LOADED[scene] = true
-			ram === nothing && info.isbase && _record_recent(info.path, Gk)
+			# A FILE THAT WAS OPENED IS RECENT, full stop. This used to be gated on `ram === nothing`
+			# ("only when the layer came off disk"), so any cube held in memory — every prescanned one,
+			# which is EVERY band stack (a .vrt has no z-range in its header, so it is always scanned)
+			# — opened without ever reaching File > Recent Files. Whether the bytes are cached is not a
+			# property of the file the user opened.
+			info.isbase && _record_recent(info.path, Gk)
 		end
 		# `useglob` records WHICH of the two CPTs this render used -- the dialog's "global min/max"
 		# checkbox. It is remembered for the same reason `_AquaState` remembers its display options: a
@@ -925,7 +1007,10 @@ function _cube_layer_title(scene::Ptr{Cvoid}, info, Gk, k::Int)::String
 	# The WHOLE cube is what carries the per-layer names and the third coordinate; a one-layer read
 	# does not (its `v` comes back as a single 0.0). So the cube in RAM is asked first, and the slice
 	# only as a fallback for the cubes that are never fully read.
-	nm = _cube_layer_label(get(_CUBE_RAM, scene, nothing), k)
+	# A band stack's layer names are the bands' own (the VRT's source files, a band Description) and
+	# they are known from the probe, before anything is read — so they are asked for first.
+	nm = _cube_band_name(get(info, :path, ""), k)
+	isempty(nm) && (nm = _cube_layer_label(get(_CUBE_RAM, scene, nothing), k))
 	# The slice can still carry a band NAME, but never a usable `v`: a one-layer read reports 0.0 for
 	# it, and a title saying "0.0" for every layer is worse than one saying nothing.
 	isempty(nm) && (nm = _cube_layer_label(Gk, 1; names_only=true))
@@ -1050,13 +1135,77 @@ function _on_cube_load_all(scene::Ptr{Cvoid})::Cint
 	end
 end
 
-# Register the cube layer callbacks (lazy registration): the per-layer slider callback and the
-# "Load all in RAM" button callback.
+# "Save as 3-D netCDF…" button callback: write the WHOLE cube — every layer, in order — as one 3-D
+# netCDF. The cube in RAM is used when it is there ("Load all in RAM" already paid for the reads);
+# otherwise every layer is read once, through the same `_read_cube_layer` the slider uses.
+#
+# THE ONE CONDITION: every layer must have the same dimensions. A band stack whose bands differ in
+# size is not a cube and cannot become one — `_stack_cube_layers` returns nothing for it, and this
+# says so (return 1) instead of writing a file that is wrong.
+#   0 = written, 1 = the layers are not all the same size, 2 = failed (the console carries the error)
+# THE palette of a cube. Set from C when one is applied to a cube's base grid (Color Palettes, the
+# Scene Objects colormap chooser — every road goes through `gmtvtk_set_cpt_grid`), and used for EVERY
+# layer from then on, in place of the per-layer default colormap. A cube is one quantity: its colour
+# scale cannot change under the user because the slider moved. Cleared when a new cube is loaded.
+const _CUBE_CPT = Dict{Ptr{Cvoid},Tuple{Vector{Float64},Vector{Float64},Int}}()
+
+function _on_cube_cpt(scene::Ptr{Cvoid}, cz::Ptr{Float64}, crgb::Ptr{Float64}, n::Cint)::Cvoid
+	try
+		k = Int(n)
+		(k < 2 || cz == C_NULL || crgb == C_NULL) && return
+		_CUBE_CPT[scene] = (copy(unsafe_wrap(Array, cz, k)), copy(unsafe_wrap(Array, crgb, 3k)), k)
+	catch e
+		@debug "cube palette: could not be remembered" exception=(e,)
+	end
+	return
+end
+
+function _on_cube_save(scene::Ptr{Cvoid}, cpath::Cstring)::Cint
+	try
+		info = get(_CUBE_INFO, scene, nothing)
+		info === nothing && return Cint(2)
+		path = String(unsafe_string(cpath))
+		isempty(path) && return Cint(2)
+		C = get(_CUBE_RAM, scene, nothing)
+		if !(C isa GMTgrid && ndims(C.z) == 3)
+			C = _read_whole_cube(info.path, info.n_layers)
+			# `nothing` here is either an unreadable layer or layers of different sizes. The size check
+			# is the one `_stack_cube_layers` makes; a re-read of layer 1 tells the two apart cheaply.
+			(C isa GMTgrid && ndims(C.z) == 3) || return Cint(_read_cube_layer(info.path, 1) === nothing ? 2 : 1)
+			_CUBE_RAM[scene] = C            # it is in memory now: the slider may as well use it
+			_snapshot_cube!(scene)
+		end
+		# The layer NAMES travel with the cube when the source has them (a band stack's are its
+		# sources' file names), so the saved file says what each layer is — the same names the window
+		# title shows while scrubbing.
+		ns = get(_CUBE_BAND_NAMES, info.path, nothing)
+		if ns !== nothing && length(ns) == size(C.z, 3)
+			try
+				C = deepcopy(C);  C.names = copy(ns)      # best effort: a name is not worth losing the file
+			catch
+			end
+		end
+		GMT.gmtwrite(path, C)
+		isfile(path) || return Cint(2)
+		return Cint(0)
+	catch e
+		@error "Saving the cube failed" exception=(e, catch_backtrace())
+		return Cint(2)
+	end
+end
+
+# Register the cube layer callbacks (lazy registration): the per-layer slider callback, the
+# "Load all in RAM" and the "Save as 3-D netCDF" button callbacks.
 function _register_cube_callback()
 	ccall(_fn(:gmtvtk_set_cube_layer_callback), Cvoid,
 		(Ptr{Cvoid},), @cfunction((s,a,b)->Base.invokelatest(_on_load_cube_layer,s,a,b), Cvoid, (Ptr{Cvoid}, Cint, Cint)))
 	ccall(_fn(:gmtvtk_set_cube_loadall_callback), Cvoid,
 		(Ptr{Cvoid},), @cfunction(s->Base.invokelatest(_on_cube_load_all,s), Cint, (Ptr{Cvoid},)))
+	ccall(_fn(:gmtvtk_set_cube_cpt_callback), Cvoid,
+		(Ptr{Cvoid},), @cfunction((s,a,b,n)->Base.invokelatest(_on_cube_cpt,s,a,b,n), Cvoid,
+		                          (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint)))
+	ccall(_fn(:gmtvtk_set_cube_save_callback), Cvoid,
+		(Ptr{Cvoid},), @cfunction((s,p)->Base.invokelatest(_on_cube_save,s,p), Cint, (Ptr{Cvoid}, Cstring)))
 	ccall(_fn(:gmtvtk_set_cube_slider_callback), Cvoid,
 		(Ptr{Cvoid},), @cfunction((s,c)->Base.invokelatest(_on_cube_slider,s,c), Cvoid, (Ptr{Cvoid}, Cstring)))
 end

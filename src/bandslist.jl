@@ -42,6 +42,17 @@ const _BANDS_EXT = (".vrt", ".n1", ".n14", ".n15", ".n16", ".n17")
 # the band's Description, else a `Band_*` metadata entry, else the source files a VRT points at, else
 # "Band_k". `_emp_att` (empilhador.jl) is THE gdalinfo parse in this package — never a second one.
 function _bands_probe(path::String)
+	return get!(_BANDS_PROBE, path) do
+		_bands_probe_now(path)
+	end
+end
+
+# The answer is a property of the FILE, and three different doors ask for it about the same file in
+# one open (the cube probe, the Load Bands registration, the layer reader). Each ask is a gdalinfo;
+# the cache is the same one `_CUBE_VAR` (drop.jl) keeps, for the same reason.
+const _BANDS_PROBE = Dict{String,Tuple{Int,Vector{String},Bool,Bool}}()
+
+function _bands_probe_now(path::String)
 	att = _emp_att(path)
 	n = att.nbands
 	n < 1 && return (0, String[], false, false)
@@ -112,8 +123,12 @@ end
 function _bands_get(scene::Ptr{Cvoid}, k::Int)
 	P = get(_BANDS_PCA, scene, nothing)
 	P !== nothing && return _bands_pca_layer(P, k)
-	return GMT.gdaltranslate(_emp_vsi(_BANDS_INFO[scene].path), ["-b", string(k)])
+	return _bands_read(_BANDS_INFO[scene].path, k)
 end
+
+# THE band reader, by path — the cube layer slider reads a band stack through this same call
+# (`_read_cube_layer`, drop.jl), so a band is fetched by ONE function whichever tool asks for it.
+_bands_read(path::String, k::Int) = GMT.gdaltranslate(_emp_vsi(path), ["-b", string(k)])
 
 # Can these bands be composed into an RGB picture at all? Only PIXEL bands can — Byte and UInt16.
 # Int16 and wider are measurements: they are grids, they carry no colour scale in common, and Mirone
@@ -421,6 +436,13 @@ function _bands_open_first!(scene::Ptr{Cvoid}, spec::String, name::String, promo
 	n > 1 || return false
 	info = _BANDS_INFO[scene]
 	(info.bytes && n <= 4) && return false            # an RGB(A) photo: let the normal image path show it
+	# A DATA stack (Int16 and wider — the .vrt a Copernicus archive is unpacked into, a multiband
+	# elevation/anomaly tif) is a CUBE: its bands are layers of one quantity, and layers are navigated
+	# with the layer slider, not by re-opening the file a band at a time. It leaves through the cube
+	# door instead (`_cube_probe` -> `_on_3d_cube_dropped`, drop.jl) — registered all the same, just
+	# above, so Image > Load Bands and the PCA still serve it. PIXEL stacks are untouched: they keep
+	# Mirone's multiband open, which is what this function was written for.
+	info.isdata && return false
 	B = _bands_get(scene, 1)                          # "display the first raster in the vrt"
 	isempty(recent) || _record_recent(recent, B)
 	bname = string(name, " — ", info.names[1])

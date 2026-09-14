@@ -54,6 +54,12 @@ static void sceneSetGridLayer(Scene *s, const float *z, int nx, int ny,
 	s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
 	s->gdx = (dx > 0.0) ? dx : ((nx > 1) ? (x1 - x0) / (nx - 1) : 0.0);
 	s->gdy = (dy > 0.0) ? dy : ((ny > 1) ? (y1 - y0) / (ny - 1) : 0.0);
+	// Does this grid HAVE holes? Asked once, here, where the buffer is stored — the NaN backdrop
+	// (nanPlaneUpdate) is shown only for a grid that needs one, and applyVE must not rescan a grid on
+	// every camera-driven call.
+	s->gridHasNaN = false;
+	if (!placeholder)
+		for (float v : s->gridZ) if (std::isnan(v)) { s->gridHasNaN = true; break; }
 	// The hover readout's ROUTING must follow the layer it reads — the two are one fact, so they are
 	// set in one place. refreshGridColorbar does it for a GRID window; it deliberately does nothing on
 	// an imageOnly one, so a bare image PROMOTED over an empty launcher kept the launcher placeholder's
@@ -1323,7 +1329,23 @@ static void refreshGridColorbar(Scene *s) {
 	}
 	else s->actZ = nullptr;
 	const bool showWaterBar = ag.showBar && (!isAqua || s->aquaShowWater);
-	if (showWaterBar) buildColorbar(s, ag.lut, ag.zmin, ag.zmax);
+	// THE BAR DESCRIBES THE PALETTE THAT IS ON IT. A palette carries its own z boundaries — Color
+	// Palettes' Min Z / Max Z, a CPT built with an explicit -T, the whole-cube range behind "global
+	// min/max" — and annotating those colours with the layer's DATA range prints numbers the colours
+	// do not have: apply a palette over -8/13.5 to a layer whose own range is -8/7.5 and the strip
+	// went grey while its ticks still said 7.5. The nodes last set on the layer are recorded (baseCz /
+	// ex.cz, by gmtvtk_set_cpt / gmtvtk_set_cpt_grid — the only two ways a layer's colours change), so
+	// the range is read from THEM, and falls back to the data range for a layer that has none.
+	double bz0 = ag.zmin, bz1 = ag.zmax;
+	{
+		const std::vector<double> *nodes = nullptr;
+		if (ag.tag < 0) nodes = &s->baseCz;
+		else for (auto &ex : s->extras) if (!ex.isImage && ex.tag == ag.tag) { nodes = &ex.cz; break; }
+		if (nodes && nodes->size() >= 2 && nodes->back() > nodes->front()) {
+			bz0 = nodes->front();  bz1 = nodes->back();
+		}
+	}
+	if (showWaterBar) buildColorbar(s, ag.lut, bz0, bz1);
 	if (isAqua) setAquaLandColorbarVisible(s, s->aquaLandShowBar && !s->aquaShowWater);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }

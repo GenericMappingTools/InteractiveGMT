@@ -11971,6 +11971,242 @@ public:
 	}
 };
 
+class EcvDialog;
+// One dialog per window, alive while parked — same contract as the Copernicus/ECMWF one above.
+static std::map<Scene *, EcvDialog *> g_ecvDlgs;
+
+// Copernicus / Essential Climate Variables (Geophysics > Copernicus) — the CDS collection
+// `ecv-for-climate-change` through src/ecv.jl. Loaded at RUNTIME via QUiLoader from
+// deps/ui/ecv_dialog.ui.
+//
+// A SECOND DIALOG, NOT A DATASET OF THE ONE ABOVE. See JuliaEcvFn (30_app.cpp) for the reason in
+// full: this collection's request carries four inputs the ERA5 request shape has not got, so
+// offering its name in the ERA5 dataset combo would build the wrong body and the server would
+// answer "invalid request". What is NOT duplicated is everything after the body — the Julia side
+// hands it to the ECMWF tool's own download path, so the naming, the "already on disk" reuse, the
+// polling and the file door are one implementation, not two (SACRED_LAW.md).
+//
+// EVERY VALUE IN THESE WIDGETS COMES FROM THE HOST ("what=catalog"), never from a list kept here:
+// two tables of the same enums would drift the first time the collection gains a variable.
+class EcvDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QListWidget *lstVars = nullptr;
+	QComboBox *cbOrigin = nullptr, *cbProduct = nullptr, *cbRef = nullptr, *cbAgg = nullptr,
+	          *cbFormat = nullptr;
+	QLineEdit *eYears = nullptr, *eMonths = nullptr, *eOut = nullptr;
+	QString lastAnswer;
+
+	explicit EcvDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/ecv_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("EcvDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("EcvDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+		parkOnMinimise(d, [this]() { parkNow(); });
+		g_ecvDlgs[scn] = this;
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			if (sceneAlive(scn)) unparkTool(scn, dlg);
+			auto it = g_ecvDlgs.find(scn);
+			if (it != g_ecvDlgs.end() && it->second == this) g_ecvDlgs.erase(it);
+		});
+
+		lstVars  = d->findChild<QListWidget *>("lst_vars");
+		cbOrigin = d->findChild<QComboBox *>("cb_origin");
+		cbProduct= d->findChild<QComboBox *>("cb_product");
+		cbRef    = d->findChild<QComboBox *>("cb_refperiod");
+		cbAgg    = d->findChild<QComboBox *>("cb_timeagg");
+		cbFormat = d->findChild<QComboBox *>("cb_format");
+		eYears   = d->findChild<QLineEdit *>("edit_years");
+		eMonths  = d->findChild<QLineEdit *>("edit_months");
+		eOut     = d->findChild<QLineEdit *>("edit_out");
+
+		fillFromCatalog();
+		// A first request somebody can press Download on without filling anything: last year's sea
+		// surface temperature anomaly, which is this collection's headline product.
+		if (lstVars && lstVars->count() > 0) lstVars->item(0)->setSelected(true);
+		if (eYears && eYears->text().isEmpty())
+			eYears->setText(QString::number(QDate::currentDate().year() - 1));
+
+		// Where an unnamed download lands, shown greyed in the box — asked for, never guessed here
+		// (the Julia side owns that path, exactly as in the ECMWF dialog).
+		if (eOut && g_juliaEcv) {
+			const QString dir = ask("what=destdir", d).trimmed();
+			if (!dir.isEmpty() && dir != " ") eOut->setPlaceholderText(dir);
+		}
+
+		if (QToolButton *b = d->findChild<QToolButton *>("btn_out"))
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				const QString p = QFileDialog::getSaveFileName(d, "Save the download as", eOut ? eOut->text() : QString());
+				if (!p.isEmpty() && eOut) eOut->setText(p);
+			});
+		if (QPushButton *b = d->findChild<QPushButton *>("push_dryrun"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, true); });
+		if (QPushButton *b = d->findChild<QPushButton *>("push_download"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, false); });
+		// `ecmwf` is the GMT.jl function behind this one too, so the green ? disk points at its page.
+		addManualButton(d, "utilities/ecmwf");
+	}
+
+	// "input\tv1,v2,…" lines -> the widgets. A combo the host did not describe is left alone rather
+	// than emptied: an older host paired with a newer dialog then still works with its own defaults.
+	void fillFromCatalog() {
+		const QString cat = ask("what=catalog", dlg);
+		if (cat.trimmed().isEmpty()) return;
+		for (const QString &line : cat.split('\n', Qt::SkipEmptyParts)) {
+			const int tab = line.indexOf('\t');
+			if (tab < 1) continue;
+			const QString key = line.left(tab).trimmed();
+			const QStringList vals = line.mid(tab + 1).trimmed().split(',', Qt::SkipEmptyParts);
+			if (vals.isEmpty()) continue;
+			if (key == "variable") {
+				if (lstVars) { lstVars->clear(); lstVars->addItems(vals); }
+			}
+			else {
+				QComboBox *cb = (key == "origin")                   ? cbOrigin  :
+				                (key == "product_type")             ? cbProduct :
+				                (key == "climate_reference_period") ? cbRef     :
+				                (key == "time_aggregation")         ? cbAgg     :
+				                (key == "data_format")              ? cbFormat  : nullptr;
+				if (cb) { cb->clear(); cb->addItems(vals); }
+			}
+		}
+	}
+
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { unparkTool(scn, dlg); dlg->close(); }
+		};
+	}
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->hide();
+		parkTool(scn, dlg, "Copernicus ECV", IC_Image,
+		         "Minimised Copernicus ECV download — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);
+	}
+
+	void fail(const QString &msg) {
+		sceneLogError(scn, "Copernicus / ECV: " + msg);
+		sceneShowMessages(scn, true);
+	}
+
+	QString ask(const QString &kv, QWidget *parent) {
+		(void)parent;
+		if (!g_juliaEcv) {
+			fail("callback not registered.");
+			return QString();
+		}
+		std::vector<char> buf(1 << 18);
+		buf[0] = '\0';
+		const int ok = g_juliaEcv(scn, kv.toUtf8().constData(), buf.data(), (int)buf.size());
+		lastAnswer = QString::fromUtf8(buf.data());
+		if (!ok) {
+			fail(lastAnswer.isEmpty() ? QString("failed, and the Julia side said nothing about why.")
+			                          : lastAnswer);
+			return QString();
+		}
+		return lastAnswer.isEmpty() ? QString(" ") : lastAnswer;
+	}
+
+	// The running download — the same poll/pump/report loop the ECMWF dialog runs, against this
+	// dialog's own callback. The CDS announces no total size, so the bar is a busy one carrying the
+	// byte count.
+	QString runDownload(QDialog *d) {
+		QProgressDialog pg("Waiting for the Copernicus server…", QString(), 0, 0, d);
+		pg.setWindowTitle("Copernicus / ECV");
+		pg.setWindowModality(Qt::NonModal);
+		pg.setMinimumDuration(0);
+		pg.setAutoClose(false);
+		pg.show();
+		for (;;) {
+			const QString st = ask("what=poll", d).trimmed();
+			if (st.isEmpty()) return QString();
+			if (st.startsWith("FAIL")) { fail(st.mid(5)); return QString(); }
+			if (st == "DONE") break;
+			if (st.startsWith("BUSY")) {
+				const qlonglong n = st.mid(5).toLongLong();
+				pg.setLabelText(n > 0 ? QString("Downloading… %1 MB").arg(n / 1048576.0, 0, 'f', 1)
+				                      : QString("Waiting for the Copernicus server…"));
+			}
+			QApplication::processEvents();
+		}
+		pg.setLabelText("Reading what was downloaded…");
+		QApplication::processEvents();
+		return ask("what=finish", d);
+	}
+
+	// BOTH buttons, one function: "Show request" and "Download" differ by `what`, never by how the
+	// request is built — so what the user is shown is what would be posted.
+	void run(QDialog *d, bool dry) {
+		QStringList vars;
+		if (lstVars)
+			for (QListWidgetItem *it : lstVars->selectedItems()) vars << it->text();
+		if (vars.isEmpty()) { fail("pick at least one variable."); return; }
+
+		QStringList kv;
+		kv << (dry ? "what=dryrun" : "what=download");
+		kv << "vars=" + vars.join(',');
+		if (cbOrigin)  kv << "origin="    + cbOrigin->currentText();
+		if (cbProduct) kv << "product="   + cbProduct->currentText();
+		if (cbRef)     kv << "refperiod=" + cbRef->currentText();
+		if (cbAgg)     kv << "timeagg="   + cbAgg->currentText();
+		if (eYears)    kv << "years="     + eYears->text().trimmed();
+		if (eMonths)   kv << "months="    + eMonths->text().trimmed();
+		if (cbFormat)  kv << "format="    + cbFormat->currentText();
+		if (eOut)      kv << "out="       + eOut->text().trimmed();
+		// No "load when it arrives" box here: what the server sends is unpacked into its own dated
+		// folder and stacked into ONE .vrt (ecmwf.jl), and that is always what opens. The Julia side
+		// sets the flag itself — see _ecv_run.
+
+		showBusyDialog(dry ? "Preparing the request…" : "Downloading from the Copernicus CDS…");
+		QString answer = ask(kv.join("\n"), d);
+		closeBusyDialog();
+		if (answer.isEmpty()) return;
+		if (!dry && answer.trimmed() == "STARTED") {
+			answer = runDownload(d);
+			if (answer.isEmpty()) return;
+		}
+		const QString text = answer.trimmed();
+		QMessageBox box(QMessageBox::Information,
+		                dry ? "Copernicus / ECV — request" : "Copernicus / ECV",
+		                text, dry ? QMessageBox::NoButton : QMessageBox::Ok, d);
+		box.setTextInteractionFlags(Qt::TextSelectableByMouse);
+		if (dry) {
+			QPushButton *cp = box.addButton("Copy to clipboard", QMessageBox::ActionRole);
+			QObject::connect(cp, &QPushButton::clicked, &box, [text]() {
+				QApplication::clipboard()->setText(text);
+			});
+		}
+		box.exec();
+	}
+};
+
 class SentinelHubDialog;
 // One dialog per window, alive while parked — same contract as the Copernicus/ECMWF one above.
 static std::map<Scene *, SentinelHubDialog *> g_shubDlgs;
@@ -22064,6 +22300,9 @@ protected:
 // close()d + delete'd a prior instance, and fired the first layer synchronously from its own
 // constructor deep inside the Julia drop callback) crashed with a use-after-free / reentrancy
 // access violation (QWidget handleClose / notifyInternal2); this is the rewrite.
+static void showColorPalettes(Scene *s);      // Image > Color Palettes (defined below) — the cube's
+                                              // palette button opens THE tool, never a second one.
+
 static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) {
 	if (!sceneAlive(s) || !s->win || nLayers <= 0) return;
 
@@ -22077,7 +22316,7 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 		if (sb)  { sb->setRange(1, nLayers);  sb->setValue(1); }
 		if (spn) { spn->setRange(1, nLayers); spn->setValue(1); }
 		if (lbl) lbl->setText(QString("3D Cube: %1 (%2 layers)").arg(cubeName).arg(nLayers));
-		s->cubeDlg->setWindowTitle(QString("Cube layers — %1  (%2 layers)").arg(cubeName).arg(nLayers));
+		s->cubeDlg->setWindowTitle(QString("%1  (%2 layers)").arg(cubeName).arg(nLayers));
 		unparkTool(s, s->cubeDlg);        // a re-drop brings it back on screen, so it is not parked
 		// New cube in this dock: it is NOT in RAM yet (Julia cleared _CUBE_RAM on the fresh drop),
 		// so re-enable the "Load all in RAM" button.
@@ -22142,7 +22381,7 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 	// (parkOnMinimise / parkTool, 50_scene.cpp); there is no other parking place.
 	QDialog *dock = new QDialog(mw);
 	dock->setObjectName("cubeLayerDlg");
-	dock->setWindowTitle(QString("Cube layers — %1  (%2 layers)").arg(cubeName).arg(nLayers));
+	dock->setWindowTitle(QString("%1  (%2 layers)").arg(cubeName).arg(nLayers));
 	dock->setAttribute(Qt::WA_DeleteOnClose);
 	dock->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 	dock->setWindowModality(Qt::NonModal);
@@ -22225,6 +22464,50 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 			else {
 				QMessageBox::warning(s->win, "Load all in RAM",
 					"Failed to load the cube into memory.");
+			}
+		});
+	}
+
+	// "Color Palettes…": the SAME tool the Image menu and the toolbar open (showColorPalettes), aimed
+	// at this window's active grid. What it applies lands on the cube, not on the layer that happens
+	// to be showing — gmtvtk_set_cpt_grid tells Julia (g_juliaCubeCpt), which then colours every layer
+	// with it instead of the default colormap.
+	if (auto *palBtn = content->findChild<QPushButton *>("paletteBtn")) {
+		QObject::connect(palBtn, &QPushButton::clicked, dock, [s]() {
+			if (sceneAlive(s)) showColorPalettes(s);
+		});
+	}
+
+	// "Save as 3-D netCDF…": every layer of THIS cube, in order, written as one 3-D netCDF. The file
+	// dialog is here (a path is a UI question); Julia does the reading, the same-size check and the
+	// write. A band stack (a .vrt of monthly grids, say) is what this exists for: the twelve files
+	// that arrived become one cube nothing has to unpack again.
+	if (auto *saveBtn = content->findChild<QPushButton *>("saveCubeBtn")) {
+		QObject::connect(saveBtn, &QPushButton::clicked, dock, [s, dock]() {
+			if (!sceneAlive(s) || !g_juliaCubeSave) return;
+			// The name of the cube the dock is driving RIGHT NOW (the dock is retargeted when another
+			// cube is opened), not the one it was built for.
+			QString suggested = QFileInfo(QString::fromStdString(s->surfName)).completeBaseName();
+			if (suggested.isEmpty()) suggested = "cube";
+			QString fn = QFileDialog::getSaveFileName(dock, "Save cube as 3-D netCDF",
+			                                          prefStartDir(suggested + "_cube.nc"),
+			                                          "netCDF (*.nc *.grd);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			QApplication::setOverrideCursor(Qt::WaitCursor);
+			QApplication::processEvents();               // let the cursor paint before we block
+			int rc = g_juliaCubeSave(s, fn.toUtf8().constData());
+			QApplication::restoreOverrideCursor();
+			if (rc == 0) {
+				if (s->win) s->win->statusBar()->showMessage("Cube written to " + fn, 5000);
+			}
+			else if (rc == 1) {
+				QMessageBox::warning(dock, "Save as 3-D netCDF",
+					"The layers do not all have the same dimensions, so they are not a cube.\n"
+					"Nothing was written.");
+			}
+			else {
+				QMessageBox::warning(dock, "Save as 3-D netCDF", "Failed to write the cube.");
 			}
 		});
 	}
@@ -25828,6 +26111,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				applyNanColorToLut(sc->surfLut, sc->nanColor);
 				for (auto &ex : sc->extras) applyNanColorToLut(ex.lut, sc->nanColor);
 				applyNanColorToLut(sc->aquaLandLut, sc->nanColor);
+				nanPlaneUpdate(sc);        // ...and the backdrop the HOLES themselves show
 				applyShading(sc);
 			}
 		}
@@ -26800,6 +27084,16 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			if (w->dlg) w->dlg->show();
 			else        QMessageBox::warning(win, "Copernicus / ECMWF",
 			                QString("Could not load %1/ecmwf_dialog.ui").arg(gmtvtkUiDir()));
+		});
+		// Essential Climate Variables — the same store, a collection whose request the ERA5 form
+		// cannot express (EcvDialog, above; JuliaEcvFn in 30_app.cpp says why it is its own dialog).
+		mGphy->addAction("Essential Climate Variables…", [win, s]() {
+			auto it = g_ecvDlgs.find(s);
+			if (it != g_ecvDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+			auto *w = new EcvDialog(win, s);        // deletes itself with its QDialog
+			if (w->dlg) w->dlg->show();
+			else        QMessageBox::warning(win, "Copernicus / ECV",
+			                QString("Could not load %1/ecv_dialog.ui").arg(gmtvtkUiDir()));
 		});
 		// Sentinel Hub imagery — the same discipline, a different service: Sentinel-1/2/3/5P and the
 		// Copernicus DEM as pictures, through the OGC endpoints (SentinelHubDialog, above).

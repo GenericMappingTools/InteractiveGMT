@@ -888,6 +888,11 @@ struct Scene {
 	// a real gap and nothing is left for the light to illuminate. This flat, UNLIT quad sits just under
 	// the grid floor in the Preferences NaN fill colour, so a hole reads as that colour instead of as
 	// the window background — and, being real geometry, it is what a click in a hole lands on.
+	// (It was promised in a comment and never written: holes showed the window background, so a white
+	// NaN preference came out as the dark backdrop. `nanPlaneUpdate` builds and maintains it.)
+	vtkSmartPointer<vtkActor>             nanPlane;
+	vtkSmartPointer<vtkPlaneSource>       nanPlaneSrc;
+	bool                                  gridHasNaN = false;   // set where the z layer is stored
 	// The BASE surface's OWN axes (SACRED_LAW.md Raster-own-axes law -- see AxesSet above). This is
 	// the PRIMARY raster's set, not "the window's axes": it is owned by the base surface's own master
 	// handle exactly as every ExtraObj owns `ex.ax`, and nothing else in the window may frame, hide or
@@ -1171,7 +1176,14 @@ struct Scene {
 	// re-renders the CURRENT layer through g_juliaCubeLayer when the choice changes.
 	bool   isCube = false;      // this window is showing a 3-D-cube layer (cube layer switches read cubeFlatImg)
 	int    cubeNLayers = 0;     // >1 iff the BASE surface is a 3-D-cube variable (its menu offers "Cube layers…")
-	bool   cubeFlatImg = true;  // render the base grid as the flat shaded IMAGE (else a real 3-D surface)
+	// A CUBE LAYER IS A GRID AND OPENS LIKE EVERY OTHER GRID -- a real 3-D surface, coloured through
+	// its own CTF, with the Surface / Color Bar / Axes rows a grid has and no draped texture. This
+	// used to default to TRUE, so a cube (and a .vrt band stack) came up as a baked flat IMAGE with
+	// an "Image drape" row in Scene Objects -- the same data wearing a different display than a plain
+	// grid, which is exactly the fork SACRED_LAW.md forbids. "Shaded image (2-D)" still switches into
+	// the flat look, for a cube and a plain grid alike, because that is a SHARED control
+	// (sceneSetShadedImage2D) and not something a file kind gets to decide on the user's behalf.
+	bool   cubeFlatImg = false; // render the base grid as the flat shaded IMAGE (else a real 3-D surface)
 	int    cubeLayerCur = 0;    // current cube layer index (0-based) + colour-range choice (bookkeeping)
 	int    cubeUseGlobal = 0;
 	QCheckBox *cbFlat = nullptr, *cbShadow = nullptr, *cbHillL = nullptr, *cbHillG = nullptr, *cbPBR = nullptr;   // Shading dock checkboxes
@@ -2559,6 +2571,56 @@ static inline vtkProp3D *surfProp(Scene *s) {
 }
 static inline void surfSetScale(Scene *s, double x, double y, double z) {
 	if (vtkProp3D *p = surfProp(s)) p->SetScale(x, y, z);
+}
+
+// THE NaN FILL COLOUR'S SURFACE — one flat, unlit quad under the grid floor, in `Scene::nanColor`.
+//
+// SACRED_LAW.md, preference-application law: the NaN colour is applied by CONSTRUCTION, at a point
+// every grid passes through. `makeGridCTF` does that for the LUT, but a LUT paints nothing where
+// there is no cell, and the mesh builders deliberately emit none over a NaN (a hole cannot be lit —
+// painting the quad and letting the light multiply it turned a white NaN beige). The colour has to
+// come from something BEHIND the hole, and that is this. Its absence is why a Copernicus grid's land
+// showed the window background instead of the white the Preferences promise.
+//
+// ONE plane per scene, driven from `applyVE` — the funnel every build, VE change, flat/3-D switch and
+// layer switch already ends in — so no builder has to remember a step, and from the Preferences
+// handler, so a colour change reaches it like it reaches every LUT. It carries the SURFACE's own
+// scale (read off the surface prop, never recomputed here) and is pushed a hair below it, so the
+// order is right in a tilted view and in the flat 2-D one, where the surface's Z scale is 0.
+static void nanPlaneUpdate(Scene *s) {
+	if (!s || !s->ren) return;
+	vtkProp3D *sp = surfProp(s);
+	const bool want = s->gridHasNaN && !s->globe && !s->imageOnly && !s->gridPlaceholder &&
+	                  sp != nullptr && sp->GetVisibility() != 0 && s->gx1 > s->gx0 && s->gy1 > s->gy0;
+	if (!want) {
+		if (s->nanPlane) s->nanPlane->SetVisibility(0);
+		return;
+	}
+	if (!s->nanPlane) {
+		s->nanPlaneSrc = vtkSmartPointer<vtkPlaneSource>::New();
+		s->nanPlaneSrc->SetResolution(1, 1);
+		vtkNew<vtkPolyDataMapper> map;
+		map->SetInputConnection(s->nanPlaneSrc->GetOutputPort());
+		map->ScalarVisibilityOff();                 // a flat colour, never a scalar mapped through a LUT
+		s->nanPlane = vtkSmartPointer<vtkActor>::New();
+		s->nanPlane->SetMapper(map);
+		s->nanPlane->GetProperty()->LightingOff();  // a hole is not a surface: no light may touch it
+		s->nanPlane->PickableOff();
+		s->ren->AddActor(s->nanPlane);
+	}
+	const double zf = s->zmin;                      // the grid floor: where NaN nodes' geometry is pinned
+	s->nanPlaneSrc->SetOrigin(s->gx0, s->gy0, zf);
+	s->nanPlaneSrc->SetPoint1(s->gx1, s->gy0, zf);
+	s->nanPlaneSrc->SetPoint2(s->gx0, s->gy1, zf);
+	s->nanPlaneSrc->Modified();
+	double sc[3] = { 1.0, 1.0, 1.0 };
+	sp->GetScale(sc);
+	s->nanPlane->SetScale(sc[0], sc[1], sc[2]);
+	// Position is applied AFTER the scale, so this offset survives a Z scale of 0 (flat 2-D) — where
+	// plane and surface would otherwise be coplanar and fight for the depth buffer.
+	s->nanPlane->SetPosition(0.0, 0.0, -0.002 * (s->gx1 - s->gx0) * (sc[0] != 0.0 ? sc[0] : 1.0));
+	s->nanPlane->GetProperty()->SetColor(s->nanColor[0], s->nanColor[1], s->nanColor[2]);
+	s->nanPlane->SetVisibility(1);
 }
 
 // ── the 3-D view's camera gestures, in ONE place ─────────────────────────────────────────────────
@@ -4621,6 +4683,7 @@ static void applyVE(Scene *s) {
 	// walk, same list, so the two halves of "what this view mode does to an element" can never be
 	// applied to different sets of actors.
 	sceneGlobeSync(s);
+	nanPlaneUpdate(s);   // the NaN fill colour's backdrop carries the surface's scale — see above
 	gizmoSyncVE(s);   // the VE handle states the ACTIVE layer's number, whoever just changed it
 	// EVERY raster's axes ride VE, each from its OWN frame — there is no window box to resize. The
 	// per-set work (box + degenerate-Z guard + gridline/Z-axis toggles + the billboards) is exactly
