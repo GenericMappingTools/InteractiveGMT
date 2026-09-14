@@ -96,7 +96,7 @@ static wchar_t *wide(const char *s)
 {
 	int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
 	wchar_t *w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
-	MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+			MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
 	return w;
 }
 
@@ -119,6 +119,17 @@ static int file_exists(const char *p)
 #else
 	struct stat st;
 	return stat(p, &st) == 0 && !S_ISDIR(st.st_mode);
+#endif
+}
+
+static void delete_file(const char *p)
+{
+#ifdef _WIN32
+	wchar_t *w = wide(p);
+	DeleteFileW(w);
+	free(w);
+#else
+	unlink(p);
 #endif
 }
 
@@ -565,10 +576,10 @@ static int find_julia(char *out, size_t n, const char *hint)
 
 /* Must match iview_app.jl's joinpath(tempdir(), "igmt_ready.flag") — Julia's tempdir() is
  * %TEMP% on Windows and $TMPDIR (per-user, /var/folders/... on macOS) else /tmp on Unix. */
-static void ready_flag_path(char *out, size_t n) {
+static void temp_file_path(const char *leaf, char *out, size_t n) {
 #ifdef _WIN32
 	const char *t = getenv("TEMP");
-	joinp(out, n, (t && *t) ? t : ".", "igmt_ready.flag");
+	joinp(out, n, (t && *t) ? t : ".", leaf);
 #else
 	const char *t = getenv("TMPDIR");
 	char dir[MAXP];
@@ -576,11 +587,53 @@ static void ready_flag_path(char *out, size_t n) {
 	snprintf(dir, sizeof(dir), "%s", (t && *t) ? t : "/tmp");
 	l = strlen(dir);
 	while (l > 1 && dir[l - 1] == '/') dir[--l] = 0;
-	joinp(out, n, dir, "igmt_ready.flag");
+	joinp(out, n, dir, leaf);
 #endif
 }
 
-static char g_flag[MAXP];
+/* Three files share that directory and all three are one handshake: the ready flag (the viewer
+ * window is up), the status line (what the wait is FOR) and the failure flag. */
+static void ready_flag_path(char *out, size_t n) { temp_file_path("igmt_ready.flag", out, n); }
+
+static char g_flag[MAXP];      /* written by the viewer the moment its window is visible */
+static char g_status[MAXP];    /* one line of caption, rewritten by iview_app.jl as it goes */
+static char g_fail[MAXP];      /* startup died: LOG: <path> plus this run's error text */
+static int  g_failed;          /* set by whichever splash loop saw it, read back in run() */
+#ifdef _WIN32
+static HANDLE g_child;         /* the julia we spawned - kept so its death is a signal */
+#endif
+
+/* THE CAPTION IS NOT FIXED. Precompiling GMT.jl and precompiling InteractiveGMT are minutes-long
+ * waits behind a HIDDEN console: with a fixed caption the user stares at an animated bar with no
+ * way to tell a compile from a hang. iview_app.jl names the phase (with a clock) in this file and
+ * the splash shows whatever is in it; missing or empty gives the generic caption every run had
+ * before. ASCII ONLY, by agreement with the writer: the X11 path draws it through a core font,
+ * which is Latin-1, and this file has a history with non-ASCII literals recorded below. */
+static int status_read(char *out, size_t n) {
+	FILE *f = fopen(g_status, "r");
+	size_t l;
+	out[0] = 0;
+	if (!f) return 0;
+	if (!fgets(out, (int)n, f)) { fclose(f); return 0; }
+	fclose(f);
+	l = strlen(out);
+	while (l && (out[l - 1] == '\n' || out[l - 1] == '\r')) out[--l] = 0;
+	return out[0] != 0;
+}
+
+/* Startup died - close the splash AT ONCE and let run() put the error on screen. Two signals,
+ * because they catch different failures: the flag file is written by iview_app.jl's own catch (a
+ * Julia-level error, the common case), and on Windows - where the child handle survives the
+ * spawn - a julia that exited without ever signalling its window, which covers every failure too
+ * early or too hard for that catch to run (no package, broken depot, a crash in the DLL). */
+static int launch_failed(void) {
+	if (file_exists(g_fail)) return 1;
+#ifdef _WIN32
+	if (g_child && WaitForSingleObject(g_child, 0) == WAIT_OBJECT_0 && !file_exists(g_flag))
+		return 1;
+#endif
+	return 0;
+}
 
 /* The picture, wherever this copy of the package keeps it: beside iview_app.jl in an installed
  * tree, under deps/assets in a git checkout. */
@@ -798,12 +851,20 @@ static void splash_paint(HWND hw) {
 		/* \x2026 is the ellipsis, written as a code point on purpose: MSVC reads this file with
 		 * the system codepage unless told otherwise, so a literal UTF-8 "…" in a wide string
 		 * came out as mojibake ("startingâ€¦"). Escapes cannot be misread. */
-		static const wchar_t *cap = L"Starting i'GMT\x2026";
+		const wchar_t *cap = L"Starting i'GMT\x2026";
+		wchar_t capbuf[512];
+		char st[512];
+		int longline = 0;
+		if (status_read(st, sizeof(st))) {   /* the phase line, when iview_app.jl wrote one */
+			MultiByteToWideChar(CP_UTF8, 0, st, -1, capbuf, 512);
+			cap = capbuf;
+			longline = (int)strlen(st) > 30;    /* a phase line is far longer than the caption */
+		}
 		/* ANTIALIASED_QUALITY, not CLEARTYPE_QUALITY: ClearType needs an opaque background to
 		 * blend its subpixels against, and GDI silently drops to ALIASED glyphs when it is asked
 		 * to draw with a TRANSPARENT background over an image — which is what made the caption
 		 * look low-resolution. Greyscale antialiasing has no such requirement. */
-		HFONT f = CreateFontW(-(rc.bottom / 16), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+		HFONT f = CreateFontW(-(rc.bottom / (longline ? 26 : 16)), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
 		                      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
 		                      DEFAULT_PITCH, L"Segoe UI");
 		HFONT old = (HFONT)SelectObject(dc, f);
@@ -880,6 +941,24 @@ static LRESULT CALLBACK splash_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
 		if (wp == 2 || file_exists(g_flag)) {
 			DestroyWindow(hw);
 			return 0;
+		}
+		if (launch_failed()) {      /* startup died: leave now, run() shows the error */
+			g_failed = 1;
+			DestroyWindow(hw);
+			return 0;
+		}
+		{	/* The phase text changed: repaint the caption band only - invalidating the whole
+			 * window would flicker the picture at 25 Hz. */
+			static char last[512];
+			char now[512];
+			status_read(now, sizeof(now));
+			if (strcmp(now, last) != 0) {
+				RECT rc, r;
+				snprintf(last, sizeof(last), "%s", now);
+				GetClientRect(hw, &rc);
+				SetRect(&r, 0, rc.bottom / 2 - rc.bottom / 8, rc.right, rc.bottom / 2 + rc.bottom / 8);
+				InvalidateRect(hw, &r, FALSE);
+			}
 		}
 		{	/* Animate the progress chunk: only the track needs repainting. */
 			RECT rc, r;
@@ -1115,6 +1194,13 @@ static void splash_run(const char *root)
 		while (!file_exists(g_flag) && time(NULL) - t0 < 180) {
 			NSEvent *e;
 			int closed = 0;
+			char st[512];
+			static char last[512];
+			if (launch_failed()) { g_failed = 1; break; }
+			if (status_read(st, sizeof(st)) && strcmp(st, last) != 0) {
+				snprintf(last, sizeof(last), "%s", st);
+				[lab setStringValue:[NSString stringWithUTF8String:st]];
+			}
 			/* Chunk position from the shared clock, in the track's own coordinates. */
 			[chunk setFrameOrigin:NSMakePoint(splash_chunk_x(0, barw, chunkw, now_ms()), 0)];
 			while ((e = [app nextEventMatchingMask:NSEventMaskAny
@@ -1244,7 +1330,9 @@ static void splash_run(const char *root)
 	static const char *fonts[] = {
 		"-*-helvetica-bold-r-*--24-*", "-*-dejavu sans-bold-r-*--24-*", "9x15bold", "fixed", NULL
 	};
-	static const char *caption = "Starting iGMT...";   /* X11 core fonts are Latin-1: no U+2026 */
+	/* X11 core fonts are Latin-1: no U+2026 - which is also why the phase line iview_app.jl
+	 * writes is ASCII. Not const: it is replaced as the phase changes. */
+	char caption[512] = "Starting iGMT...";
 	int i, tw = 0;
 
 	if (!(dpy = XOpenDisplay(NULL))) return;      /* no display (ssh, headless): no splash, no error */
@@ -1301,6 +1389,15 @@ static void splash_run(const char *root)
 			else if (ev.type == ButtonPress &&
 			         splash_pt_in_close(w, h, ev.xbutton.x, ev.xbutton.y)) closed = 1;
 		}
+		{	/* The phase line. A change re-measures the caption and forces a FULL repaint, which
+			 * is what puts the picture back over the old text. */
+			char st[512];
+			if (status_read(st, sizeof(st)) && strcmp(st, caption) != 0) {
+				snprintf(caption, sizeof(caption), "%s", st);
+				if (font) tw = XTextWidth(font, caption, (int)strlen(caption));
+				redraw = 1;
+			}
+		}
 		if (redraw) {
 			/* Background + icon in one blit (they share the buffer), then the caption with the
 			 * halo the .hta drew with text-shadow, then the 1px frame. */
@@ -1348,6 +1445,7 @@ static void splash_run(const char *root)
 		}
 		XFlush(dpy);
 
+		if (launch_failed()) { g_failed = 1; break; }
 		if (closed || file_exists(g_flag) || time(NULL) - t0 >= 180) break;
 		usleep(40000);
 	}
@@ -1360,6 +1458,108 @@ static void splash_run(const char *root)
 	XCloseDisplay(dpy);
 }
 #endif
+
+/* ------------------------------------------------------------------ startup failure report
+ *
+ * The user asked for exactly this: when startup dies, the launcher goes away AT ONCE and the log
+ * is put on screen. Without it a failed launch is completely silent - the console is hidden, the
+ * splash sits out its 180 s timeout, and iview_app.log is a file nobody knows exists.
+ */
+
+/* The last n-1 bytes of a file, trimmed forward to a line start so the box never opens mid-line. */
+static void read_tail(const char *path, char *out, size_t n)
+{
+	FILE *f = fopen(path, "rb");
+	long sz;
+	size_t k;
+	char *nl;
+	out[0] = 0;
+	if (!f) return;
+	fseek(f, 0, SEEK_END);
+	sz = ftell(f);
+	if (sz > (long)(n - 1)) fseek(f, sz - (long)(n - 1), SEEK_SET);
+	else                    fseek(f, 0, SEEK_SET);
+	k = fread(out, 1, n - 1, f);
+	out[k] = 0;
+	fclose(f);
+	if (sz > (long)(n - 1) && (nl = strchr(out, '\n')) != NULL)
+		memmove(out, nl + 1, strlen(nl + 1) + 1);
+}
+
+/* An error box, not message_box(): that one prints to stderr off Windows, which is /dev/null for
+ * a process started from a desktop icon - the very case this has to reach. */
+static void error_popup(const char *title, const char *text)
+{
+#if defined(_WIN32)
+	wchar_t *wt = wide(title), *wx = wide(text);
+	MessageBoxW(NULL, wx, wt, MB_ICONERROR | MB_OK | MB_SETFOREGROUND | MB_TOPMOST);
+	free(wt); free(wx);
+#elif defined(__APPLE__)
+	@autoreleasepool {
+		NSAlert *a = [[NSAlert alloc] init];
+		[a setAlertStyle:NSAlertStyleCritical];
+		[a setMessageText:[NSString stringWithUTF8String:title]];
+		[a setInformativeText:[NSString stringWithUTF8String:text]];
+		[[NSApplication sharedApplication] setActivationPolicy:NSApplicationActivationPolicyRegular];
+		[NSApp activateIgnoringOtherApps:YES];
+		[a runModal];
+	}
+#else
+	/* zenity if the desktop has it, xmessage as the fallback that is on every X install. */
+	pid_t p = fork();
+	if (p == 0) {
+		execlp("zenity", "zenity", "--error", "--no-wrap", "--title", title, "--text", text, (char *)NULL);
+		execlp("xmessage", "xmessage", "-center", text, (char *)NULL);
+		_exit(127);
+	}
+	if (p > 0) { int st; waitpid(p, &st, 0); }
+	fprintf(stderr, "%s: %s\n", title, text);
+#endif
+}
+
+/* Called by run() when a splash loop reported a failure. */
+static void report_startup_failure(const char *root)
+{
+	char txt[4096], log[MAXP], msg[4600], line[MAXP];
+	FILE *f;
+	size_t k;
+
+#ifdef _WIN32
+	/* Autokill: a julia still up after the error is unreachable with its console hidden. */
+	if (g_child && WaitForSingleObject(g_child, 0) == WAIT_TIMEOUT) TerminateProcess(g_child, 1);
+#endif
+
+	txt[0] = 0;
+	log[0] = 0;
+	/* iview_app.jl's flag: first line "LOG: <path>", the rest is THIS run's error - not the whole
+	 * appended history of iview_app.log, which is what a plain dump of the file would show. */
+	if ((f = fopen(g_fail, "rb")) != NULL) {
+		if (fgets(line, sizeof(line), f)) {
+			if (strncmp(line, "LOG: ", 5) == 0) {
+				size_t l;
+				snprintf(log, sizeof(log), "%s", line + 5);
+				l = strlen(log);
+				while (l && (log[l - 1] == '\n' || log[l - 1] == '\r')) log[--l] = 0;
+			}
+			else snprintf(txt, sizeof(txt), "%s", line);
+		}
+		k = strlen(txt);
+		k += fread(txt + k, 1, sizeof(txt) - k - 1, f);
+		txt[k] = 0;
+		fclose(f);
+	}
+	if (!log[0]) joinp(log, sizeof(log), root, "iview_app.log");
+	/* Nothing from Julia: it died before its own catch could run (which is how the child-handle
+	 * signal gets here). The tail of the log is then the best evidence there is. */
+	if (!txt[0]) read_tail(log, txt, sizeof(txt));
+	if (!txt[0])
+		snprintf(txt, sizeof(txt),
+				 "julia exited before the viewer window appeared, and wrote nothing to the log.");
+
+	snprintf(msg, sizeof(msg), "iGMT could not start.\n\n%s\n\nFull log: %s", txt, log);
+	error_popup("iGMT", msg);
+	delete_file(g_fail);
+}
 
 /* --------------------------------------------------------------------------------- spawning */
 
@@ -1415,7 +1615,7 @@ static int spawn_julia(const char *julia, const char *root, int nfiles, char **f
 	free(wdir);
 	if (!ok) return -1;
 	CloseHandle(pi.hThread);
-	CloseHandle(pi.hProcess);
+	g_child = pi.hProcess;      /* NOT closed: its exit is how a too-early death is noticed */
 	return 0;
 }
 #else
@@ -1748,26 +1948,27 @@ static int run(int argc, char **argv)
 		return 1;
 	}
 
-	/* Clear a stale ready-flag BEFORE launching, or the new splash sees the previous run's flag
-	 * and closes instantly. */
+	/* Clear the three handshake files BEFORE launching. A stale ready-flag would close the new
+	 * splash instantly; a stale status line would caption this run with the last one's phase; and
+	 * a stale failure flag would kill this run with the last one's error. */
 	ready_flag_path(g_flag, sizeof(g_flag));
-#ifdef _WIN32
-	{
-		wchar_t *w = wide(g_flag);
-		DeleteFileW(w);
-		free(w);
-	}
-#else
-	unlink(g_flag);
-#endif
+	temp_file_path("igmt_status.txt", g_status, sizeof(g_status));
+	temp_file_path("igmt_fail.flag", g_fail, sizeof(g_fail));
+	delete_file(g_flag);
+	delete_file(g_status);
+	delete_file(g_fail);
 
 	if (spawn_julia(julia, root, nfiles, files) != 0) {
 		message_box("iGMT", "Could not start julia.");
 		return 1;
 	}
 
-	splash_run(root);   /* returns when iview_app.jl signals its window is up */
+	splash_run(root);   /* returns when the window is up - or when startup died */
 	free(files);
+	if (g_failed || launch_failed()) {
+		report_startup_failure(root);
+		return 1;
+	}
 	return 0;
 }
 
