@@ -5,7 +5,8 @@
 #   julia --project=<this package dir> iview_app.jl
 #
 # Errors are appended to iview_app.log next to this file (the shortcut runs hidden, so without a
-# log a failure would be invisible).
+# log a failure would be invisible) AND written to the failure flag the launcher polls, which
+# closes the splash at once and puts the text on screen in a message box.
 #
 # Console hiding: we are launched with a VISIBLE console (so the GUI window is NOT force-hidden by
 # the launcher's SW_HIDE), then hide our own console window here. Hiding the console does NOT touch
@@ -35,8 +36,71 @@ const SPLASH_FLAG = joinpath(tempdir(), "igmt_ready.flag")
 # `splashDropOnShow` (70_window.cpp) writes it in the same statement that shows the window.
 ENV["IGMT_SPLASH_FLAG"] = SPLASH_FLAG
 
+# ------------------------------------------------------------------ splash status + failure
+#
+# Two more files in the same tempdir, both polled by the splash (launcher.c: status_read /
+# launch_failed). They are the ONLY way the user learns what the wait is: the console is hidden,
+# and the two slow cases — precompiling GMT.jl, precompiling InteractiveGMT — take minutes on a
+# first run with nothing on screen but an animated bar.
+const STATUS_FILE = joinpath(tempdir(), "igmt_status.txt")
+const FAIL_FLAG   = joinpath(tempdir(), "igmt_fail.flag")
+const APP_LOG     = joinpath(@__DIR__, "iview_app.log")
+const T0 = time()
+
+status(msg::String) = (try write(STATUS_FILE, msg) catch; end; nothing)
+#   ASCII ONLY: the X11 splash draws this through a core font, which is Latin-1.
+
+function elapsed()
+    s = round(Int, time() - T0)
+    s < 60 ? string(s, "s") : string(div(s, 60), "m", lpad(rem(s, 60), 2, '0'), "s")
+end
+
+# Is `name` still to be precompiled? Resolved through InteractiveGMT's OWN dependency context, not
+# the active project: an `] add`ed copy has no Manifest of its own and GMT is not necessarily a
+# name the default environment can see — identify_package(pkgid, name) asks the right question in
+# both layouts. Any failure (older Julia with no isprecompiled, unresolvable name) answers "no",
+# which costs nothing but a less specific caption.
+const IGMT_ID = try Base.identify_package("InteractiveGMT") catch; nothing end
+
+function stale(name::String)
+    try
+        id = name == "InteractiveGMT" ? IGMT_ID :
+             (IGMT_ID === nothing ? nothing : Base.identify_package(IGMT_ID, name))
+        id === nothing ? false : !Base.isprecompiled(id)
+    catch
+        false
+    end
+end
+
+# `using InteractiveGMT` below may precompile GMT.jl first and InteractiveGMT after it, inside one
+# blocking call. This task re-asks which of the two is still stale every couple of seconds and
+# rewrites the caption, so the splash tracks the real phase (and shows the clock, which is what
+# makes a five-minute wait tolerable). It runs because precompilation waits on subprocesses and
+# yields; if it never gets scheduled the caption simply stays at what was written before the call.
+const WATCH = Ref(true)
+
+function watch_compile()
+    while WATCH[]
+        g, i = stale("GMT"), stale("InteractiveGMT")
+        (g || i) || return
+        status(string(g ? "Compiling GMT.jl - first run, this can take several minutes" :
+                          "Compiling InteractiveGMT - this can take a few minutes",
+                      "   (", elapsed(), ")"))
+        sleep(2)
+    end
+end
+
+let g = stale("GMT"), i = stale("InteractiveGMT")
+    status(g ? "Compiling GMT.jl - first run, this can take several minutes" :
+           i ? "Compiling InteractiveGMT - this can take a few minutes" :
+               "Loading InteractiveGMT...")
+    (g || i) && (@async watch_compile())
+end
+
 try
     using InteractiveGMT
+    WATCH[] = false
+    status("Opening the viewer window...")
     if isempty(ARGS)
         iview()                       # no files: empty launcher window (drop files onto it)
     else
@@ -54,10 +118,20 @@ try
     end
     wait_windows()    # block (yielding, so the Qt pump runs) until the window(s) close
 catch e
-    open(joinpath(@__DIR__, "iview_app.log"), "a") do io
-        println(io, "[", Dates.now(), "] ", sprint(showerror, e, catch_backtrace()))
+    WATCH[] = false
+    txt = sprint(showerror, e, catch_backtrace())
+    try
+        open(APP_LOG, "a") do io
+            println(io, "[", Dates.now(), "] ", txt)
+        end
+    catch
     end
+    # The launcher polls this file: it kills the splash the moment it appears and shows the text.
+    # First line is the log path so the box can point at the full history.
+    try write(FAIL_FLAG, string("LOG: ", APP_LOG, "\n", txt)) catch; end
     rethrow()
 finally
+    WATCH[] = false
     isfile(SPLASH_FLAG) && rm(SPLASH_FLAG; force=true)
+    isfile(STATUS_FILE) && rm(STATUS_FILE; force=true)
 end
