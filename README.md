@@ -13,7 +13,7 @@ axes, colour bar, shading, vertical curtains, in-window Julia console and data v
 
 ## Install
 
-See more extended instructions at [docs](https://www.generic-mapping-tools.org/InteractiveGMT/dev) but basically, have a GMT.jl updated version and do
+See more extended instructions at [docs](https://www.generic-mapping-tools.org/InteractiveGMT/dev) but basically, have a GMT.jl updated version and do (works on Windows11, MacOS and Linux)
 
 ```julia
 using GMT
