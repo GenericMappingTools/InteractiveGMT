@@ -12638,6 +12638,312 @@ public:
 };
 
 // ============================================================================================
+// Satellite ground tracks (the Satellite menu) — SGP4/SDP4 through src/satellite.jl over the C in
+// deps/src/satellite.cpp (Bill Gray's sat_code, vendored at deps/src/sat_code/).
+//
+// Loaded at RUNTIME via QUiLoader from deps/ui/satellite.ui — no hand-built widget tree, so the
+// .ui stays the single source of truth and Designer can keep editing it (same technique as
+// IgrfDialog / SentinelHubDialog). Nothing here computes an orbit: every request goes through the
+// ONE `ask()` below into Julia, which owns the propagation and the plotting.
+//
+// The track lands as a VECTOR overlay on whatever the window is already showing, so — per
+// SACRED_LAW.md's vector-import law — it does NOT reframe the axes and does not spawn a set of its
+// own. That decision lives on the Julia side (plot_groundtrack! -> _add_dataset_to_scene); this
+// dialog never touches the frame.
+class SatelliteDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene   *scn = nullptr;
+	QRadioButton *rbFile = nullptr, *rbUrl = nullptr;
+	QLineEdit *leFile = nullptr, *leUrl = nullptr, *leSpan = nullptr, *leStep = nullptr;
+	QListWidget *lwSats = nullptr;
+	QComboBox *cbStart = nullptr, *cbSpanMode = nullptr, *cbPreset = nullptr;
+	QCheckBox *cbAltitude = nullptr;
+	QLabel *lblStatus = nullptr;
+	bool reallyClose = false;   // set by the parked row's "Delete": let the next close through
+
+	// Ready-made Celestrak queries, EARTH-OBSERVING FIRST because that is what this viewer is for:
+	// a GMT user asking for a satellite track is usually asking about Terra, Aqua, a Sentinel or a
+	// Landsat, not about a GPS bird. Each was CHECKED against the live service before being put
+	// here — `GROUP=resource` really is the Earth-resources list and really does contain TERRA,
+	// AQUA, LANDSAT and SENTINEL-1A/2A; there is no `GROUP=sentinel` (the service rejects it), which
+	// is why the Sentinels are a NAME query. `FORMAT=tle` on every one: the reader wants plain
+	// three-line text, not their JSON or CSV.
+	// The URL box stays editable — this list is a shortcut, never a restriction.
+	struct Preset { const char *label; const char *url; };
+	static const std::vector<Preset> &presets() {
+		static const std::vector<Preset> p = {
+			{ "— pick a ready-made list —", "" },
+			// --- Earth observation ---------------------------------------------------------
+			{ "Earth observation — all (Terra, Aqua, Landsat, Sentinel…)",
+			  "https://celestrak.org/NORAD/elements/gp.php?GROUP=resource&FORMAT=tle" },
+			{ "Terra (EOS AM-1)",      "https://celestrak.org/NORAD/elements/gp.php?NAME=TERRA&FORMAT=tle" },
+			{ "Aqua (EOS PM-1)",       "https://celestrak.org/NORAD/elements/gp.php?NAME=AQUA&FORMAT=tle" },
+			{ "Aura",                  "https://celestrak.org/NORAD/elements/gp.php?NAME=AURA&FORMAT=tle" },
+			{ "Sentinels (1, 2, 3, 6)","https://celestrak.org/NORAD/elements/gp.php?NAME=SENTINEL&FORMAT=tle" },
+			{ "Landsat",               "https://celestrak.org/NORAD/elements/gp.php?NAME=LANDSAT&FORMAT=tle" },
+			{ "Suomi NPP",             "https://celestrak.org/NORAD/elements/gp.php?NAME=SUOMI&FORMAT=tle" },
+			{ "ICESat-2",              "https://celestrak.org/NORAD/elements/gp.php?NAME=ICESAT&FORMAT=tle" },
+			{ "CryoSat-2",             "https://celestrak.org/NORAD/elements/gp.php?NAME=CRYOSAT&FORMAT=tle" },
+			{ "SWOT",                  "https://celestrak.org/NORAD/elements/gp.php?NAME=SWOT&FORMAT=tle" },
+			// --- everything else -----------------------------------------------------------
+			{ "Space stations (ISS, CSS)",
+			  "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle" },
+			{ "Weather",               "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle" },
+			{ "NOAA",                  "https://celestrak.org/NORAD/elements/gp.php?GROUP=noaa&FORMAT=tle" },
+			{ "GOES",                  "https://celestrak.org/NORAD/elements/gp.php?GROUP=goes&FORMAT=tle" },
+			{ "Science",               "https://celestrak.org/NORAD/elements/gp.php?GROUP=science&FORMAT=tle" },
+			{ "Geostationary",         "https://celestrak.org/NORAD/elements/gp.php?GROUP=geo&FORMAT=tle" },
+			{ "GPS operational",       "https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=tle" },
+			{ "Galileo",               "https://celestrak.org/NORAD/elements/gp.php?GROUP=galileo&FORMAT=tle" },
+			{ "Starlink",              "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle" },
+			{ "Active satellites (all — large)",
+			  "https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=tle" },
+		};
+		return p;
+	}
+
+	// Drop every registry entry pointing at this instance. BY VALUE, not by `scn`: when the owning
+	// viewer window is torn down the dialog dies with it and the Scene may already be gone, so the
+	// key cannot be trusted (same reason MovieDialog's destructor does this).
+	void forget();
+	~SatelliteDialog() { forget(); }
+
+	// Bring it back from the dock. ONE function for every way in — double-click, the row's checkbox,
+	// its "Show" item, and a second click of the menu entry.
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	// The parked row's menu — the properties button and the context menu are the same lambda.
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel = m.addAction("Delete");
+			QAction *pick = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				// Stop answering for this Scene THIS INSTANT: `deleteLater` only POSTS the delete, so
+				// until the event loop runs it the menu would still find this entry and unpark freed
+				// memory. (The Illumination dialog took the app down exactly this way.)
+				forget();
+				dlg->deleteLater();
+			}
+		};
+	}
+
+	// Hide and leave a handle in Scene Objects. Returns true when the close was swallowed.
+	bool parkNow() {
+		if (reallyClose || !dlg || !sceneAlive(scn)) return false;
+		dlg->hide();
+		parkTool(scn, dlg, "Satellite tracks", IC_Rect,
+		         "Closed Satellite dialog — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);             // a handle nobody can see is no handle at all
+		return true;
+	}
+
+	void say(const QString &m) {
+		if (lblStatus) lblStatus->setText(m);
+		if (scn && scn->win) scn->win->statusBar()->showMessage(m, 4000);
+	}
+
+	// ONE way into Julia for every request this dialog makes, same shape as the Copernicus one.
+	// Returns an empty string on failure, having already reported it.
+	QString ask(const QString &kv) {
+		if (!g_juliaSatellite) {
+			say("Satellite: callback not registered.");
+			return QString();
+		}
+		std::vector<char> buf(1 << 18);
+		buf[0] = '\0';
+		const int ok = g_juliaSatellite(scn, kv.toUtf8().constData(), buf.data(), (int)buf.size());
+		const QString ans = QString::fromUtf8(buf.data());
+		if (!ok) {
+			say(ans.isEmpty() ? QString("Satellite: failed, and the Julia side said nothing about why.")
+			                  : ans);
+			return QString();
+		}
+		return ans.isEmpty() ? QString(" ") : ans;
+	}
+
+	// The source half of the key=value block — shared by `list` and `plot` so the two can never
+	// disagree about WHICH file the selection indices refer to.
+	QString sourceKV() const {
+		const bool byFile = !rbUrl || !rbUrl->isChecked();
+		QString kv = QString("src=%1\n").arg(byFile ? "file" : "url");
+		kv += "path=" + (leFile ? leFile->text().trimmed() : QString()) + "\n";
+		kv += "url="  + (leUrl  ? leUrl->text().trimmed()  : QString()) + "\n";
+		return kv;
+	}
+
+	explicit SatelliteDialog(QWidget *parent, Scene *scene) {
+		scn = scene;
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/satellite.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("SatelliteDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("SatelliteDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		// WindowMinimizeButtonHint is what actually puts the MINIMISE button in the title bar.
+		// Without it (the default here is close-only) there is no way to minimise at all, however
+		// well the parking underneath works — which is exactly how this shipped broken.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;   // local copy — the member can't be lambda-captured
+
+		rbFile     = d->findChild<QRadioButton *>("rb_file");
+		rbUrl      = d->findChild<QRadioButton *>("rb_url");
+		leFile     = d->findChild<QLineEdit *>("le_file");
+		leUrl      = d->findChild<QLineEdit *>("le_url");
+		leSpan     = d->findChild<QLineEdit *>("le_span");
+		leStep     = d->findChild<QLineEdit *>("le_step");
+		lwSats     = d->findChild<QListWidget *>("lw_sats");
+		cbStart    = d->findChild<QComboBox *>("cb_start");
+		cbSpanMode = d->findChild<QComboBox *>("cb_spanmode");
+		cbPreset   = d->findChild<QComboBox *>("cb_preset");
+		cbAltitude = d->findChild<QCheckBox *>("cb_altitude");
+		lblStatus  = d->findChild<QLabel *>("lbl_status");
+
+		// Picking a ready-made query fills the URL box and switches the radio to URL — the box stays
+		// editable afterwards, so a preset is a starting point and never a lock.
+		if (cbPreset) {
+			for (const Preset &pr : presets()) cbPreset->addItem(QString::fromUtf8(pr.label));
+			QObject::connect(cbPreset, QOverload<int>::of(&QComboBox::currentIndexChanged),
+			                 [this](int i) {
+				const std::vector<Preset> &p = presets();
+				if (i <= 0 || i >= (int)p.size()) return;      // index 0 is the "pick one" placeholder
+				if (leUrl) leUrl->setText(QString::fromUtf8(p[(size_t)i].url));
+				if (rbUrl) rbUrl->setChecked(true);
+			});
+		}
+
+		QPushButton *btLoad  = d->findChild<QPushButton *>("btn_load");
+		QPushButton *btPlot  = d->findChild<QPushButton *>("btn_plot");
+		QPushButton *btClose = d->findChild<QPushButton *>("btn_close");
+		QToolButton *btBrowse = d->findChild<QToolButton *>("btn_browse");
+
+		// prefStartDir()/rememberStartDir() — the directory MRU every other file dialog in this app
+		// uses. A tool that opens somewhere else is a tool that forgot the user's Default dir.
+		if (btBrowse) QObject::connect(btBrowse, &QToolButton::clicked, [this, d] {
+			const QString fn = QFileDialog::getOpenFileName(d, "Open a TLE file", prefStartDir(),
+			                       "TLE files (*.tle *.txt *.dat);;All files (*)");
+			if (fn.isEmpty()) return;
+			rememberStartDir(fn);
+			if (leFile) leFile->setText(fn);
+			if (rbFile) rbFile->setChecked(true);
+		});
+
+		if (btLoad) QObject::connect(btLoad, &QPushButton::clicked, [this] { loadList(); });
+
+		// Double-clicking one entry is the obvious "just plot this one" gesture.
+		if (lwSats) QObject::connect(lwSats, &QListWidget::itemDoubleClicked,
+		                             [this](QListWidgetItem *) { plot(); });
+
+		if (btPlot)  QObject::connect(btPlot,  &QPushButton::clicked, [this] { plot(); });
+		if (btClose) QObject::connect(btClose, &QPushButton::clicked, [d] { d->close(); });
+
+		// The wrapper is a plain C++ object, so it must die WITH its dialog — otherwise the row's
+		// "Delete" frees the QDialog and leaves this object in the registry holding a dangling
+		// pointer for the menu to unpark.
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+
+		// Closing (the X or the Close button, both a QEvent::Close) PARKS instead of destroying:
+		// the dialog hides and leaves a row in Scene Objects that brings it back with its list and
+		// its settings intact. Same mechanism as Make movie / Illumination, not a second one.
+		struct CloseParks : QObject {
+			SatelliteDialog *sd;
+			CloseParks(QObject *parent, SatelliteDialog *s) : QObject(parent), sd(s) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (!sd) return QObject::eventFilter(o, e);
+				if (e->type() == QEvent::Close && sd->parkNow()) {
+					e->ignore();
+					return true;
+				}
+				// MINIMISE parks too, so the title-bar button and the Close button land in the same
+				// place instead of the dialog vanishing to the taskbar. Qt reports the state change
+				// AFTER the window manager has minimised, so the restore+hide+park is deferred one
+				// event-loop turn — doing it inside the handler fights the WM (same reason the
+				// region picker defers it).
+				if (e->type() == QEvent::WindowStateChange && sd->dlg &&
+				    sd->dlg->windowState().testFlag(Qt::WindowMinimized)) {
+					SatelliteDialog *s = sd;
+					QTimer::singleShot(0, s->dlg, [s]() {
+						if (!s->dlg) return;
+						s->dlg->setWindowState(s->dlg->windowState() & ~Qt::WindowMinimized);
+						s->parkNow();
+					});
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
+	}
+
+	// Read the source and fill the list. The INDEX of each row is what `plot` sends back, so the
+	// list and the Julia side's own vector stay in step by construction.
+	void loadList() {
+		if (!lwSats) return;
+		const QString kv = "what=list\n" + sourceKV();
+		const QString ans = ask(kv);
+		if (ans.isEmpty()) return;
+		lwSats->clear();
+		const QStringList names = ans.split('\n', Qt::SkipEmptyParts);
+		for (const QString &n : names) lwSats->addItem(n);
+		if (lwSats->count() > 0) lwSats->setCurrentRow(0);
+		say(QString("%1 satellite(s) loaded.").arg(lwSats->count()));
+	}
+
+	void plot() {
+		if (!lwSats) return;
+		QList<QListWidgetItem *> sel = lwSats->selectedItems();
+		if (sel.isEmpty()) {
+			say("Pick at least one satellite first (Load satellites, then select a row).");
+			return;
+		}
+		QStringList idx;
+		for (QListWidgetItem *it : sel) idx << QString::number(lwSats->row(it));
+
+		QString kv = "what=plot\n" + sourceKV();
+		kv += "sel=" + idx.join(',') + "\n";
+		kv += QString("start=%1\n").arg(cbStart && cbStart->currentIndex() == 1 ? "now" : "epoch");
+		kv += "span=" + (leSpan ? leSpan->text().trimmed() : QString("2")) + "\n";
+		// The combo's ORDER is the contract with the Julia side; send the word, not the index, so
+		// reordering the .ui cannot silently change what is asked for.
+		const int sm = cbSpanMode ? cbSpanMode->currentIndex() : 0;
+		kv += QString("spanmode=%1\n").arg(sm == 1 ? "minutes" : sm == 2 ? "hours" : "revs");
+		kv += "step=" + (leStep ? leStep->text().trimmed() : QString("30")) + "\n";
+		kv += QString("altitude=%1\n").arg(!cbAltitude || cbAltitude->isChecked() ? 1 : 0);
+
+		const QString ans = ask(kv);
+		if (!ans.isEmpty()) say(ans.trimmed());
+	}
+};
+
+// One dialog per window, so re-opening the menu entry raises the one that is already up with its
+// list and its settings intact instead of stacking a second copy on top of it.
+static std::map<Scene *, SatelliteDialog *> g_satelliteDlgs;
+
+// Out of line: the map it walks is declared above only after the class body.
+void SatelliteDialog::forget() {
+	for (auto it = g_satelliteDlgs.begin(); it != g_satelliteDlgs.end(); )
+		it = (it->second == this) ? g_satelliteDlgs.erase(it) : std::next(it);
+}
+
+// ============================================================================================
 // grdfft (GMT menu) — the 2-D FFT of the window's grid: operate in the frequency domain and come
 // back (a grid), or estimate the power spectrum (a table). Loaded at RUNTIME via QUiLoader from
 // deps/ui/grdfft_dialog.ui.
@@ -27109,6 +27415,29 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 
 	(*fGroup)();   // initial population: the discipline chooser
+
+	// --- Satellite menu: SGP4/SDP4 orbit propagation (src/satellite.jl over deps/src/satellite.cpp
+	// and the vendored sat_code). A NEW top-level menu, added on the user's explicit instruction —
+	// the standing rule is that a new tool gets one addAction in an EXISTING submenu, never a
+	// re-architected menu bar, so this is the exception and not a precedent.
+	QMenu *mSat = win->menuBar()->addMenu("Satellite");
+	mSat->addAction("Ground tracks…", [win, s]() {
+		auto it = g_satelliteDlgs.find(s);
+		if (it != g_satelliteDlgs.end() && it->second->dlg) {
+			it->second->unpark();   // already open OR parked in the dock — ONE way back in
+			return;
+		}
+		// Pay the Julia JIT now, while the dialog is opening, instead of in front of the user on
+		// the first Load — same as every other tool dialog here.
+		warmupTool("satellite");
+		SatelliteDialog *sd = new SatelliteDialog(win, s);
+		if (!sd->dlg) { delete sd; return; }
+		g_satelliteDlgs[s] = sd;
+		// NOTE: the wrapper's lifetime is owned by its own constructor (a `destroyed` connect that
+		// does `delete this`, which also calls forget() to drop this map entry). Do NOT add a second
+		// delete here — two of them on one object is a double free.
+		sd->dlg->show();
+	});
 
 	// --- Tools menu: open the standalone X,Y plot tool (blank; ready for File>Open or Julia) ----
 	QMenu *mTools = win->menuBar()->addMenu("&Tools");

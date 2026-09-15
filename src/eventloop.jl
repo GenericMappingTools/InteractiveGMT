@@ -87,6 +87,7 @@ function _ensure_callbacks()
 	                    ("ecmwf",       _register_ecmwf),
 	                    ("ecv",         _register_ecv),
 	                    ("sentinelhub", _register_sentinelhub),
+	                    ("satellite",   _register_satellite),   # Satellite > Ground tracks (satellite.jl)
 	                    ("fftstuff",    _register_fftstuff),
 	                    ("gravmag3d",   _register_gravmag3d),
 	                    ("grdgravmag3d",_register_grdgravmag3d),

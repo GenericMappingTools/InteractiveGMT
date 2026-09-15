@@ -170,7 +170,18 @@ find_package(VTK REQUIRED COMPONENTS
 # to stay compilable and testable on its own (the test_mbgrid target below). So it is a real second
 # translation unit in this list. Its gmtvtk-facing exports are listed in src/libgmtvtk.jl's
 # _LIB_SYMBOLS like every other export of this DLL.
-set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c)
+# src/satellite.cpp (the SGP4/SDP4 C API) and the ten src/sat_code/*.cpp it wraps are second
+# translation units for exactly the same reasons as mbgrid.c: libc-only numerics, no Qt, no VTK,
+# no file-static shared with the viewer, and testable on their own (test_satellite below). The
+# sat_code tree is Bill Gray's, MIT, vendored VERBATIM — see src/sat_code/PROVENANCE.md; never
+# edit it, and never #include any of it into gmtvtk.cpp.
+set(SAT_CODE_SRC
+  src/sat_code/sgp.cpp    src/sat_code/sgp4.cpp   src/sat_code/sgp8.cpp
+  src/sat_code/sdp4.cpp   src/sat_code/sdp8.cpp   src/sat_code/deep.cpp
+  src/sat_code/basics.cpp src/sat_code/common.cpp src/sat_code/get_el.cpp
+  src/sat_code/tle_out.cpp)
+
+set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c src/satellite.cpp ${SAT_CODE_SRC})
 
 # deps/ui/*.ui are loaded at RUNTIME (QUiLoader, see FocalMechanismsDialog in 70_window.cpp) for
 # dialogs where the .ui must stay the single source of truth — no hand-ported C++ to fall out of
@@ -214,6 +225,17 @@ if(NOT GMTVTK_PACKAGE)
   add_executable(test_mbgrid src/mbgrid.c src/test_mbgrid.c)
   if(NOT MSVC)
     target_link_libraries(test_mbgrid PRIVATE m)
+  endif()
+
+  # Numerics regression for satellite.cpp — same shape as test_mbgrid: pure C/C++, libm only,
+  # no Qt, no VTK, well under a second. It checks the propagator against Bill Gray's OWN
+  # published state vectors (src/sat_code/test2_reference.txt), so a bad vendoring or a broken
+  # model dispatch fails here rather than as a wrong ground track much later.
+  add_executable(test_satellite src/satellite.cpp ${SAT_CODE_SRC} src/test_satellite.c)
+  target_compile_definitions(test_satellite PRIVATE
+    SAT_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src/sat_code")
+  if(NOT MSVC)
+    target_link_libraries(test_satellite PRIVATE m)
   endif()
 endif()
 

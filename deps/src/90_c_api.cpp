@@ -2044,6 +2044,14 @@ GMTVTK_API void gmtvtk_set_sentinelhub_callback(JuliaSentinelHubFn fn) {
 	g_juliaSentinelHub = fn;
 }
 
+// Register the satellite ground-track callback (the Satellite menu). fn(scene, params, out, cap)
+// with the newline-separated "key=value" block documented at JuliaSatelliteFn (30_app.cpp) reads a
+// TLE source, lists what is in it, and plots the selected objects' ground tracks into `scene`.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_satellite_callback(JuliaSatelliteFn fn) {
+	g_juliaSatellite = fn;
+}
+
 // Register the FFT tool callback (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum).
 // fn(scene, params) with params = "op;grid1;grid2;newRows;newCols;coords;detrend;value" runs the
 // spectrum/correlation/field-transform asked for and adds its result to `scene`. nullptr to detach.
@@ -4501,15 +4509,32 @@ GMTVTK_API void gmtvtk_shutdown(void) {
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
 #ifdef GMTVTK_TEST_API
 
+// How many doubles gmtvtk_magfield_test writes. The ONE place this number is stated; the Julia side
+// reads it back through gmtvtk_magfield_test_n() rather than repeating the literal, so the buffer
+// and the writer cannot drift apart again.
+#define GMTVTK_MAGFIELD_TEST_N 21
+
+// The size above, callable — so a host allocates what this build actually writes instead of what
+// some comment said when the test was written.
+GMTVTK_API int gmtvtk_magfield_test_n(void) { return GMTVTK_MAGFIELD_TEST_N; }
+
 // Drive the "Magnetic field lines (3-D)" window (69_magfield.cpp) and read its state back.
 // control: ""            just report
 //          "date:<year>" set the date box     "compute" press Compute
 //          "skin:0|1|2"  the sphere combo     "color:0|1" the colour-by-|B| box
 //          "poles:0|1"   the dip-pole markers
 //          "reset"       Reset view           "close"   close the window
-// out: [0] polylines  [1] points  [2] tube actor visible  [3] globe carries a texture
+// out: THE CALLER MUST SUPPLY GMTVTK_MAGFIELD_TEST_N DOUBLES. Every slot below is written
+//      unconditionally, so a shorter buffer is a heap overrun in the caller's allocator, not a
+//      truncated answer — and the corruption surfaces later, in an unrelated allocation. That is
+//      exactly what happened: this list documented [0..13], the body grew [14..20], and the Julia
+//      test kept passing zeros(14), which killed the suite with an access violation inside the GC.
+//      Add a slot here and you MUST bump GMTVTK_MAGFIELD_TEST_N in the same edit.
+//      [0] polylines  [1] points  [2] tube actor visible  [3] globe carries a texture
 //      [4] tubes coloured by scalars  [5] date box  [6] tube radius  [7] camera distance
 //      [8] skin index  [9] pole markers visible  [10..11] N pole lon/lat  [12..13] S pole lon/lat
+//      [14] hover calls  [15] trail year  [16] trail tag visible  [17] trail visible
+//      [18] restore pending  [19] track size  [20] pole hover
 GMTVTK_API int gmtvtk_magfield_test(void *handle, const char *control, double value, double *out) {
 	Scene *s = static_cast<Scene *>(handle);
 	if (!s || !s->win) return 0;

@@ -136,6 +136,7 @@ include("grdvector.jl")  # GMT menu > grdvector: the vector field of two grids, 
 include("earthregions.jl")# Tools > Earth regions: a named region's raster or boundaries (GMT.jl earthregions)
 include("mbgrid.jl")     # MBGRID: Gaussian binning + zgrid/surface gap fill, via deps/src/mbgrid.c
 include("interpolate.jl")# GMT menu > Interpolate: grid an x,y,z table (surface, nearneighbor, mbgrid, block*, …)
+include("satellite.jl")  # SGP4/SDP4 orbit propagation + ground tracks, via deps/src/satellite.cpp
 include("project.jl")    # Tools > Project: reproject the window's raster with gdalwarp (Mirone gdal_project.m)
 include("lineops.jl")    # Tools > Vector Operations (port of Mirone src_figs/line_operations.m)
 include("plates.jl")     # Plates > Euler rotations (port of Mirone euler_stuff.m; GMT spotter modules)
@@ -155,7 +156,8 @@ export gmtscript, gmtreplay,
        set_layer!, nlayers, add_label!, add_progress!, remove_annotation!, movie_annotations,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot, rtp3d, shapenc, isoc2shapenc, shapenc2isoc,
-       gmtedit, mbgrid
+       gmtedit, mbgrid,
+       TLE, Satellite, read_tle, propagate, propagate_ecef, subpoint, groundtrack, plot_groundtrack!
 
 # --- precompile (ALL of it lives HERE, via PrecompileTools — never hidden in other files) ---
 # Callbacks are thin invokelatest trampolines registered lazily on first window open

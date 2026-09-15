@@ -271,6 +271,18 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_capture_view_rgb,  # GMT.jl script export: the whole viewport, for the globe/cube modes
 	:gmtvtk_set_meca_sdr_h,    # focal mechanisms: attach each event's strike/dip/rake to its ball
 	:gmtvtk_set_sentinelhub_callback, # Copernicus > Sentinel Hub imagery (src/sentinelhub.jl)
+	:gmtvtk_set_satellite_callback,   # Satellite > Ground tracks (src/satellite.jl)
+	# SGP4/SDP4 satellite propagation (deps/src/satellite.cpp over the vendored
+	# deps/src/sat_code/, a second translation unit of this DLL exactly like mbgrid.c).
+	# OPTIONAL rather than in _LIB_SYMBOLS above only because the C side is new: it
+	# graduates once it is on master, per this tier's own rule.
+	:sat_create, :sat_create_ex, :sat_destroy,
+	:sat_epoch_jd, :sat_norad_number, :sat_model, :sat_mean_motion,
+	:sat_inclination, :sat_eccentricity, :sat_intl_desig,
+	:sat_model_name, :sat_strerror,
+	:sat_propagate, :sat_propagate_tsince, :sat_propagate_ecef, :sat_groundtrack,
+	:sat_gmst, :sat_teme_to_ecef, :sat_ecef_to_geodetic,
+	:sat_cal_to_jd, :sat_jd_to_cal,
 )
 
 # Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is

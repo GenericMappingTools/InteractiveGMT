@@ -1,0 +1,249 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SatelliteDialog</class>
+ <widget class="QDialog" name="SatelliteDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>440</width>
+    <height>520</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Satellite ground tracks</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_main">
+   <item>
+    <widget class="QGroupBox" name="gb_source">
+     <property name="title">
+      <string>TLE source</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_source">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_preset">
+        <property name="text">
+         <string>Pick</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1" colspan="2">
+       <widget class="QComboBox" name="cb_preset">
+        <property name="toolTip">
+         <string>A ready-made Celestrak query. Picking one fills the URL box below, which you can then edit freely.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QRadioButton" name="rb_file">
+        <property name="text">
+         <string>File</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="le_file">
+        <property name="toolTip">
+         <string>A two- or three-line-element file (Celestrak/Space-Track download, or your own)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QToolButton" name="btn_browse">
+        <property name="toolTip">
+         <string>Browse for a TLE file</string>
+        </property>
+        <property name="text">
+         <string>...</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QRadioButton" name="rb_url">
+        <property name="text">
+         <string>URL</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1" colspan="2">
+       <widget class="QLineEdit" name="le_url">
+        <property name="toolTip">
+         <string>Any URL that returns TLE text. Edit it freely — nothing here is hard-wired to a particular service.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1" colspan="2">
+       <widget class="QPushButton" name="btn_load">
+        <property name="text">
+         <string>Load satellites</string>
+        </property>
+        <property name="toolTip">
+         <string>Read the source and fill the list below</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="lbl_sats">
+     <property name="text">
+      <string>Satellites (select one or more)</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QListWidget" name="lw_sats">
+     <property name="selectionMode">
+      <enum>QAbstractItemView::ExtendedSelection</enum>
+     </property>
+     <property name="toolTip">
+      <string>Every TLE found in the source. Ctrl/Shift-click to pick several.</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gb_span">
+     <property name="title">
+      <string>Time span</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_span">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lbl_start">
+        <property name="text">
+         <string>Start</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1" colspan="2">
+       <widget class="QComboBox" name="cb_start">
+        <property name="toolTip">
+         <string>A TLE is only good for a few days either side of its own epoch.</string>
+        </property>
+        <item>
+         <property name="text">
+          <string>TLE epoch</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>Now (UTC)</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="lbl_span">
+        <property name="text">
+         <string>Duration</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="le_span">
+        <property name="text">
+         <string>2</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QComboBox" name="cb_spanmode">
+        <item>
+         <property name="text">
+          <string>revolutions</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>minutes</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>hours</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="lbl_step">
+        <property name="text">
+         <string>Step (s)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLineEdit" name="le_step">
+        <property name="text">
+         <string>30</string>
+        </property>
+        <property name="toolTip">
+         <string>Sampling interval along the track. 30 s keeps a low-earth track smooth.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0" colspan="3">
+       <widget class="QCheckBox" name="cb_altitude">
+        <property name="text">
+         <string>Draw the orbit at its real altitude (3-D / globe)</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+        <property name="toolTip">
+         <string>On: the orbit is a 3-D curve at the satellite's true height, so it rises off the globe in 3-D. Off: it is drawn flat on the map as a plain ground track.</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="lbl_status">
+     <property name="text">
+      <string/>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item>
+      <spacer name="spacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_plot">
+       <property name="text">
+        <string>Plot ground track</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_close">
+       <property name="text">
+        <string>Close</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -442,6 +442,20 @@ static JuliaEcvFn g_juliaEcv = nullptr;
 typedef int (*JuliaSentinelHubFn)(void *scene, const char *params, char *out, int cap);
 static JuliaSentinelHubFn g_juliaSentinelHub = nullptr;
 
+// Satellite ground tracks (the Satellite menu) — SGP4/SDP4 through src/satellite.jl, over the C in
+// deps/src/satellite.cpp. ONE callback for the whole dialog (SatelliteDialog, 70_window.cpp, loads
+// deps/ui/satellite.ui), same shape as the Sentinel Hub one above; `what` says what is being asked.
+// NEWLINE-separated "key=value" block:
+//   what=list|plot
+//   src=file|url,  path=<TLE file>,  url=<any URL returning TLE text>
+//   sel=<comma-separated 0-based indices into the list the `list` call returned>
+//   start=epoch|now,  span=<number>,  spanmode=revs|minutes|hours,  step=<seconds>
+// `out`/`cap` carry the answer back as text: for `list`, one satellite name per line, in the order
+// `sel` indexes; for `plot`, a one-line report for the dialog's status label. On failure it is the
+// error text. Returns 1 on success, 0 on failure — the dialog needs a yes/no, not just the console.
+typedef int (*JuliaSatelliteFn)(void *scene, const char *params, char *out, int cap);
+static JuliaSatelliteFn g_juliaSatellite = nullptr;
+
 // The FFT tool (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum). One request
 // string does every operation: "op;grid1;grid2;newRows;newCols;coords;detrend;value" -- see
 // _on_fftstuff (src/fftstuff.jl) for what each field means. Returns 1 on success, 0 on failure.

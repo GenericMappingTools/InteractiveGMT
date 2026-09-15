@@ -7,8 +7,14 @@
 @testitem "magfield: the menu opens a globe with traced field lines on it" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	e = iview()
+	# SIZE COMES FROM THE LIBRARY, never a literal here: gmtvtk_magfield_test writes every slot it
+	# has unconditionally, so a buffer sized from a stale comment is a heap overrun that shows up
+	# later as an access violation inside Julia's GC (it did — zeros(14) against a body that writes
+	# 21). Asking the build how many it writes is the only version of this that cannot rot.
+	NSTATE = Int(ccall(_test_fn(:gmtvtk_magfield_test_n), Cint, ()))
+	@test NSTATE >= 14
 	state(control = "", value = 0.0) = begin
-		out = zeros(14)
+		out = zeros(NSTATE)
 		ok = ccall(_test_fn(:gmtvtk_magfield_test), Cint,
 			(Ptr{Cvoid}, Cstring, Cdouble, Ptr{Cdouble}), e.h, control, value, out)
 		@test ok == 1
