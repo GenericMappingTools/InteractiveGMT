@@ -413,11 +413,35 @@ function _orbit_lonlatalt(s::Satellite, j::Vector{Float64})
 	return (lon, lat, alt)
 end
 
-function groundtrack(s::Satellite, when; altitude::Bool = true)::Vector{GMT.GMTdataset}
+# WHICH FRAME the 3-D curve is drawn in. The two are different questions and NEITHER answers both:
+#
+#   :earthfixed — where the satellite is relative to the PLANET, lifted to its altitude. Every
+#                 revolution lands ~22.5° further west because the Earth turned under it, which is
+#                 the whole story of a low orbit: TERRA is sun-synchronous and must be seen to walk
+#                 around the globe, not to retrace one closed loop.
+#   :inertial   — the ORBIT itself, the closed path in the frame it is closed in. For a geosynchronous
+#                 satellite this is the only one that shows an orbit at all: Earth-fixed, it does not
+#                 travel, and its curve collapses to the analemma hanging over one longitude.
+#
+# :auto picks by the orbit's own physics, not by a list of names: a satellite that keeps station with
+# the Earth's rotation (period within 1 % of a sidereal day) has no Earth-fixed path worth drawing, so
+# it gets :inertial; everything else gets :earthfixed. The user can always say which one he wants —
+# the choice is a control, not a hidden branch, and ONE function serves every satellite either way.
+const _SIDEREAL_DAY_MIN = 1436.0682
+
+function _frame_for(s::Satellite, frame::Symbol)::Symbol
+	frame === :auto || return frame
+	return abs(period(s) - _SIDEREAL_DAY_MIN) <= 0.01 * _SIDEREAL_DAY_MIN ? :inertial : :earthfixed
+end
+
+function groundtrack(s::Satellite, when; altitude::Bool = true,
+                     frame::Symbol = :auto)::Vector{GMT.GMTdataset}
 	j = _jds(when)
-	# The 3-D orbit comes from the inertial path; the FLAT ground track is the sub-satellite point,
-	# which is exactly what that box means when it is unticked.
-	lon, lat, alt = altitude ? _orbit_lonlatalt(s, j) : subpoint(s, j)
+	fr = _frame_for(s, frame)
+	fr in (:inertial, :earthfixed) || error("groundtrack: frame must be :auto, :inertial or :earthfixed")
+	# The FLAT ground track is always the sub-satellite point — that is what the box means when it is
+	# unticked, and a flat map has no frame question to answer.
+	lon, lat, alt = (altitude && fr === :inertial) ? _orbit_lonlatalt(s, j) : subpoint(s, j)
 	segs = _split_dateline(lon, lat, alt, j)   # (n x 4) each: lon, lat, alt_km, jd
 	out = GMT.GMTdataset[]
 	for seg in segs
@@ -446,11 +470,11 @@ _revs_duration(s::Satellite, revolutions::Real)::Millisecond =
 function groundtrack(s::Satellite; altitude::Bool = true, start::Union{Nothing,DateTime} = nothing,
                      stop::Union{Nothing,DateTime} = nothing,
                      step::Period = Second(30),
-                     revolutions::Real = 1)::Vector{GMT.GMTdataset}
+                     revolutions::Real = 1, frame::Symbol = :auto)::Vector{GMT.GMTdataset}
 	t0 = start === nothing ? epoch(s) : start
 	t1 = stop === nothing ? t0 + _revs_duration(s, revolutions) : stop
 	t1 <= t0 && error("groundtrack: `stop` ($t1) must be after `start` ($t0)")
-	return groundtrack(s, collect(t0:step:t1); altitude = altitude)
+	return groundtrack(s, collect(t0:step:t1); altitude = altitude, frame = frame)
 end
 
 # --- plotting ----------------------------------------------------------------------------------
@@ -475,14 +499,15 @@ function plot_groundtrack!(scene::Ptr{Cvoid}, s::Satellite; color = _TRACK_COLOR
 	D = groundtrack(s; kw...)
 	nm = !isempty(name) ? name :
 	     !isempty(s.tle.name) ? s.tle.name : "NORAD " * string(norad_number(s))
-	return _plot_track!(scene, D, nm; color = color)
+	return _plot_track!(scene, D, nm; color = color, sat = s)
 end
 
 # The add half, split out so a caller that already has the track (the dialog, which then asks
 # whether it is on screen) does not propagate it a second time just to plot it. ONE add path —
 # `plot_groundtrack!` is this function plus the propagation, never a parallel copy of it.
 function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; color = _TRACK_COLOR,
-                      replaced::Union{Nothing,Ref{Int}} = nothing)
+                      replaced::Union{Nothing,Ref{Int}} = nothing,
+                      sat::Union{Nothing,Satellite} = nothing)
 	isempty(D) && (@warn "plot_groundtrack!: the track is empty"; return false)
 
 	# An EMPTY window has nothing to overlay ONTO, so the vector-import law does not apply here:
@@ -562,7 +587,7 @@ function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; 
 		# THE SPACECRAFT ITSELF, on the point of the track it occupies RIGHT NOW. The line says where
 		# the satellite has been and will be; the model says where it IS, which is the one place on it
 		# a reader actually looks for. Same add path for every caller — never plotted beside the track.
-		_plot_sat_now!(scene, D, nm)
+		_plot_sat_now!(scene, D, nm, sat, lift)
 		ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
 	end
 	return ok
@@ -607,10 +632,24 @@ const _SAT_MASTER = "Satellites"
 # makes it bigger exactly as the terrain and the orbit tube under it get bigger. The number is a
 # DIAMETER in world units — the unit one degree of equatorial arc is measured in, the same one the
 # orbit's own height is converted to (_KM_PER_DEG_ARC above) — pushed to the layer by
-# `gmtvtk_symbol_set_world_size_h`. 3.6 units is about 400 km: a real spacecraft is metres across and
-# would be invisible at any zoom that shows an orbit, so this is a deliberate symbolic size, read
-# against the 706 km altitude of the track it stands on.
-const _SAT_GLYPH_WORLD = 3.6
+# `gmtvtk_symbol_set_world_size_h`.
+#
+# AND IT IS SIZED AGAINST ITS OWN ORBIT, not fixed. A real spacecraft is metres across and invisible
+# at any zoom that shows an orbit, so the size is symbolic either way — but a symbol that is 400 km
+# for every orbit reads correctly on a 7000 km LEO ring and becomes a speck on a 42 164 km
+# geostationary one, which is exactly how it looked. A constant FRACTION OF THE ORBIT'S RADIUS reads
+# the same on both. Note only about a quarter of the glyph's declared width is solid body (the bus):
+# the solar wings are one hundredth of a unit thick and disappear edge-on, so the fraction has to
+# carry that too.
+const _SAT_GLYPH_FRAC = 0.035          # of the orbit's radius: ~1500 km at GEO, ~150 km at LEO…
+const _SAT_GLYPH_WORLD = 3.6           # …but never below this (~400 km), which is the LEO look
+# The viewer's globe radius in world units — globeR = 180/pi, i.e. one degree of equatorial arc is
+# one world unit (the same convention _KM_PER_DEG_ARC above is built on, 10_geometry.cpp).
+const _GLOBE_R_WORLD = 180 / pi
+
+# The body's diameter for a track whose highest point stands `lift` world units above the ground.
+_sat_glyph_world(lift::Float64)::Float64 =
+	max(_SAT_GLYPH_WORLD, _SAT_GLYPH_FRAC * (_GLOBE_R_WORLD + lift))
 # The pixel size is what the layer falls back to before the world size is applied (and what a flat-2-D
 # window's diamond counterpart is drawn at). In POINTS, converted at the rate the rest of the package
 # uses (96/72 dpi: symbols.jl, xyplot.jl).
@@ -632,7 +671,8 @@ that window so that, asked for "Now (UTC)", the span runs BACKWARD and the end o
 instant. The body is therefore never interpolated, never clamped and never off the line: it stands on
 a sample the propagator actually produced, and the hover block carries that sample's own epoch.
 """
-function _plot_sat_now!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String)::Bool
+function _plot_sat_now!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String,
+                        sat::Union{Nothing,Satellite} = nothing, lift::Float64 = 0.0)::Bool
 	mk = _sat_now_name(nm)
 	# Re-plotting a satellite is an UPDATE of where it is, exactly as the track itself is (above), so
 	# the old body goes first. Removing one that is not there is a no-op, so a first plot needs no case.
@@ -643,9 +683,15 @@ function _plot_sat_now!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String
 	xyz = Float64[lon, lat, z]
 	# `datetime` is this file's own JD -> DateTime (through the same C calendar `jd` uses), never a
 	# second conversion written here.
+	# The ORBIT's own identity belongs on the body, not only on the track: inclination is the number
+	# that says what kind of orbit this is (0° equatorial, 51.6° ISS-like, 98° sun-synchronous), and it
+	# is the first thing anyone checks when a ring does not look the way they expected.
+	incl = sat === nothing ? "" :
+	       string("\ninclination ", round(inclination(sat), digits = 3), "°   period ",
+	              round(period(sat), digits = 1), " min")
 	info = string(nm, '\n', GMT.Dates.format(datetime(tj), "yyyy-mm-dd HH:MM:SS"), " UTC\n",
 	              "lon ", round(lon, digits = 3), "°   lat ", round(lat, digits = 3), "°\n",
-	              "alt ", round(Int, altkm), " km")
+	              "alt ", round(Int, altkm), " km", incl)
 	# Light metal grey, lit: the glyph is a solid body and takes real shading, so it reads as a shape
 	# rather than as a coloured dot. No edge width — an assembly of primitives drawn with edges shows
 	# its whole triangulation (the C side excludes it for the same reason it excludes a sphere).
@@ -656,7 +702,7 @@ function _plot_sat_now!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String
 	           0.87, 0.88, 0.91, 0.0, 0.0, 0.0, 0.0, mk, info) != 0
 	if ok                     # world-sized from here on: the screen-constant rule stops applying to it
 		ccall(_fn(:gmtvtk_symbol_set_world_size_h), Cint, (Ptr{Cvoid}, Cstring, Cdouble),
-		      scene, mk, _SAT_GLYPH_WORLD)
+		      scene, mk, _sat_glyph_world(lift))
 	end
 	return ok
 end
@@ -718,16 +764,51 @@ function _sat_read_source(d::Dict{String,String})::Vector{TLE}
 	if src == "url"
 		url = get(d, "url", "")
 		isempty(url) && error("give me a URL that returns TLE text")
-		# Straight into memory — a TLE list is tens of kB, and this tool has no business leaving
-		# scratch files on the user's disk.
-		io = IOBuffer()
-		Downloads.download(url, io)
-		return read_tle(String(take!(io)))
+		# SEVERAL URLs, joined by '|', are read as one list. Celestrak splits its catalogue across
+		# per-purpose files — the Earth-observation group has no GOES and no Meteosat in it, those live
+		# in `goes` and `geo` — so a curated list that spans them has to name more than one file. The
+		# alternative, pulling the whole `active` catalogue and throwing 99 % of it away, is 1.5 MB per
+		# refresh and gets the user rate-limited (Celestrak answers 403), which is not a thing a preset
+		# may do to someone. '|' is not a legal URL character, so it cannot split a real one.
+		tles = TLE[]
+		for u in split(url, '|')
+			u = strip(u)
+			isempty(u) && continue
+			# Straight into memory — a TLE list is tens of kB, and this tool has no business leaving
+			# scratch files on the user's disk.
+			io = IOBuffer()
+			Downloads.download(String(u), io)
+			append!(tles, read_tle(String(take!(io))))
+		end
+		return _sat_filter(tles, d)
 	end
 	path = get(d, "path", "")
 	isempty(path) && error("pick a TLE file first")
 	isfile(path)  || error("no such file: " * path)
-	return read_tle(read(path, String))
+	return _sat_filter(read_tle(read(path, String)), d)
+end
+
+# The curated preset's name filter (`filter=` in the dialog's block, 70_window.cpp): a comma-separated
+# list of NAME PREFIXES, kept in the order the FILTER names them so the short list reads as it was
+# written rather than as the download happens to be ordered. Applied HERE, in the one reader both
+# `list` and `plot` go through, which is what keeps the dialog's row indices and this vector the same
+# thing — filtering in the lister alone would have `plot` indexing the unfiltered set.
+#
+# A prefix ON A WORD BOUNDARY, never a bare substring: the name must continue with something that is
+# not a letter or a digit, or stop there. "TERRA" then takes TERRA and not TERRASAR-X, "AQUA" takes
+# AQUA and not AQUARIUS, while "SENTINEL" still takes SENTINEL-1A and "GOES" takes GOES 16.
+_sat_name_hit(name::String, w::String)::Bool =
+	startswith(name, w) && (length(name) == length(w) || !isletter(name[length(w)+1]) && !isdigit(name[length(w)+1]))
+
+function _sat_filter(tles::Vector{TLE}, d::Dict{String,String})::Vector{TLE}
+	want = [uppercase(strip(x)) for x in split(get(d, "filter", ""), ',') if !isempty(strip(x))]
+	isempty(want) && return tles
+	out = TLE[]
+	for w in want, t in tles
+		_sat_name_hit(uppercase(t.name), w) && !(t in out) && push!(out, t)
+	end
+	isempty(out) && error("none of the wanted missions is in that list: " * join(want, ", "))
+	return out
 end
 
 # A stable key for _SAT_LOADED: whichever of the two source fields is actually in use.
@@ -772,6 +853,10 @@ function _on_satellite(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap:
 			useNow = get(d, "start", "epoch") == "now"
 			# Default ON: an orbit is a 3-D object, and the checkbox is checked in the .ui to match.
 			useAlt = get(d, "altitude", "1") != "0"
+			# The combo sends the WORD (70_window.cpp); anything unknown falls back to the automatic
+			# rule rather than erroring, because a frame is a view choice and never a reason not to plot.
+			fw = get(d, "frame", "auto")
+			frame = fw == "earthfixed" ? :earthfixed : fw == "inertial" ? :inertial : :auto
 
 			done = String[]
 			nupd = 0
@@ -793,8 +878,8 @@ function _on_satellite(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap:
 					                          _revs_duration(s, spanv)
 					kw  = useNow ? (; start = t0 - dur, stop = t0) : (; start = t0, stop = t0 + dur)
 					nm = isempty(s.tle.name) ? string(norad_number(s)) : s.tle.name
-					D  = groundtrack(s; step = step, altitude = useAlt, kw...)   # propagated ONCE, used twice
-					if _plot_track!(scene, D, nm; replaced = rep)
+					D  = groundtrack(s; step = step, altitude = useAlt, frame = frame, kw...)   # propagated ONCE, used twice
+					if _plot_track!(scene, D, nm; replaced = rep, sat = s)
 						push!(done, nm);  nupd += rep[]
 					end
 				finally

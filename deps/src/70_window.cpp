@@ -12657,9 +12657,10 @@ public:
 	QRadioButton *rbFile = nullptr, *rbUrl = nullptr;
 	QLineEdit *leFile = nullptr, *leUrl = nullptr, *leSpan = nullptr, *leStep = nullptr;
 	QListWidget *lwSats = nullptr;
-	QComboBox *cbStart = nullptr, *cbSpanMode = nullptr, *cbPreset = nullptr;
+	QComboBox *cbStart = nullptr, *cbSpanMode = nullptr, *cbPreset = nullptr, *cbFrame = nullptr;
 	QCheckBox *cbAltitude = nullptr;
 	QLabel *lblStatus = nullptr;
+	QString nameFilter;                    // the curated preset's name prefixes; empty = take everything
 	bool parked      = false;              // already sitting in the dock (parkNow is called from 3 places)
 	bool plottedOnce = false;              // the Time span block only goes live after a real plot
 	bool replotting  = false;              // re-entrancy guard for that live re-plot
@@ -12674,35 +12675,45 @@ public:
 	// is why the Sentinels are a NAME query. `FORMAT=tle` on every one: the reader wants plain
 	// three-line text, not their JSON or CSV.
 	// The URL box stays editable — this list is a shortcut, never a restriction.
-	struct Preset { const char *label; const char *url; };
+	// `filter`, when not empty, is a comma-separated list of NAME PREFIXES the host keeps out of the
+	// downloaded set (Julia: `_sat_read_source`). Celestrak has no query for "these twelve missions",
+	// and its own groups are either far too broad (`resource` is ~100 satellites, `active` is
+	// thousands) or split across files — GOES and Meteosat are not in the Earth-observation group at
+	// all. So the curated list downloads ONE file that contains everything and names what it wants.
+	struct Preset { const char *label; const char *url; const char *filter; };
 	static const std::vector<Preset> &presets() {
 		static const std::vector<Preset> p = {
-			{ "— pick a ready-made list —", "" },
+			{ "— pick a ready-made list —", "", "" },
 			// --- Earth observation ---------------------------------------------------------
+			// The short list first: it is what most people want, and it is 20-odd rows instead of 100.
+			// Three SMALL group files rather than the whole `active` catalogue: the Earth-observation
+			// group carries neither GOES nor Meteosat, and pulling 1.5 MB to keep 25 rows gets the user
+			// rate-limited by Celestrak. The host reads a '|'-joined list as one (satellite.jl).
+			{ "Earth observation — key missions (short list)",
+			  "https://celestrak.org/NORAD/elements/gp.php?GROUP=resource&FORMAT=tle"
+			  "|https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle"
+			  "|https://celestrak.org/NORAD/elements/gp.php?NAME=SENTINEL&FORMAT=tle"
+			  "|https://celestrak.org/NORAD/elements/gp.php?GROUP=goes&FORMAT=tle"
+			  "|https://celestrak.org/NORAD/elements/gp.php?GROUP=geo&FORMAT=tle",
+			  "TERRA,AQUA,LANDSAT 8,LANDSAT 9,SENTINEL,SUOMI NPP,NOAA 20,NOAA-20,SWOT,GOES,METEOSAT-11,METEOSAT-12" },
 			{ "Earth observation — all (Terra, Aqua, Landsat, Sentinel…)",
-			  "https://celestrak.org/NORAD/elements/gp.php?GROUP=resource&FORMAT=tle" },
-			{ "Terra (EOS AM-1)",      "https://celestrak.org/NORAD/elements/gp.php?NAME=TERRA&FORMAT=tle" },
-			{ "Aqua (EOS PM-1)",       "https://celestrak.org/NORAD/elements/gp.php?NAME=AQUA&FORMAT=tle" },
-			{ "Aura",                  "https://celestrak.org/NORAD/elements/gp.php?NAME=AURA&FORMAT=tle" },
-			{ "Sentinels (1, 2, 3, 6)","https://celestrak.org/NORAD/elements/gp.php?NAME=SENTINEL&FORMAT=tle" },
-			{ "Landsat",               "https://celestrak.org/NORAD/elements/gp.php?NAME=LANDSAT&FORMAT=tle" },
-			{ "Suomi NPP",             "https://celestrak.org/NORAD/elements/gp.php?NAME=SUOMI&FORMAT=tle" },
-			{ "ICESat-2",              "https://celestrak.org/NORAD/elements/gp.php?NAME=ICESAT&FORMAT=tle" },
-			{ "CryoSat-2",             "https://celestrak.org/NORAD/elements/gp.php?NAME=CRYOSAT&FORMAT=tle" },
-			{ "SWOT",                  "https://celestrak.org/NORAD/elements/gp.php?NAME=SWOT&FORMAT=tle" },
+			  "https://celestrak.org/NORAD/elements/gp.php?GROUP=resource&FORMAT=tle", "" },
+			{ "Terra (EOS AM-1)",      "https://celestrak.org/NORAD/elements/gp.php?NAME=TERRA&FORMAT=tle", "" },
+			{ "Aura",                  "https://celestrak.org/NORAD/elements/gp.php?NAME=AURA&FORMAT=tle", "" },
+			{ "ICESat-2",              "https://celestrak.org/NORAD/elements/gp.php?NAME=ICESAT&FORMAT=tle", "" },
+			{ "CryoSat-2",             "https://celestrak.org/NORAD/elements/gp.php?NAME=CRYOSAT&FORMAT=tle", "" },
 			// --- everything else -----------------------------------------------------------
 			{ "Space stations (ISS, CSS)",
-			  "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle" },
-			{ "Weather",               "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle" },
-			{ "NOAA",                  "https://celestrak.org/NORAD/elements/gp.php?GROUP=noaa&FORMAT=tle" },
-			{ "GOES",                  "https://celestrak.org/NORAD/elements/gp.php?GROUP=goes&FORMAT=tle" },
-			{ "Science",               "https://celestrak.org/NORAD/elements/gp.php?GROUP=science&FORMAT=tle" },
-			{ "Geostationary",         "https://celestrak.org/NORAD/elements/gp.php?GROUP=geo&FORMAT=tle" },
-			{ "GPS operational",       "https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=tle" },
-			{ "Galileo",               "https://celestrak.org/NORAD/elements/gp.php?GROUP=galileo&FORMAT=tle" },
-			{ "Starlink",              "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle" },
+			  "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle", "" },
+			{ "Weather",               "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle", "" },
+			{ "NOAA",                  "https://celestrak.org/NORAD/elements/gp.php?GROUP=noaa&FORMAT=tle", "" },
+			{ "GOES",                  "https://celestrak.org/NORAD/elements/gp.php?GROUP=goes&FORMAT=tle", "" },
+			{ "Science",               "https://celestrak.org/NORAD/elements/gp.php?GROUP=science&FORMAT=tle", "" },
+			{ "Geostationary",         "https://celestrak.org/NORAD/elements/gp.php?GROUP=geo&FORMAT=tle", "" },
+			{ "GPS operational",       "https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=tle", "" },
+			{ "Galileo",               "https://celestrak.org/NORAD/elements/gp.php?GROUP=galileo&FORMAT=tle", "" },
 			{ "Active satellites (all — large)",
-			  "https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=tle" },
+			  "https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=tle", "" },
 		};
 		return p;
 	}
@@ -12805,6 +12816,10 @@ public:
 		QString kv = QString("src=%1\n").arg(byFile ? "file" : "url");
 		kv += "path=" + (leFile ? leFile->text().trimmed() : QString()) + "\n";
 		kv += "url="  + (leUrl  ? leUrl->text().trimmed()  : QString()) + "\n";
+		// The curated preset's name filter travels WITH the source, in the same block `list` and `plot`
+		// both send — so the row indices the plot refers to are indices into the same filtered list the
+		// user picked from. Empty for every other preset and for any hand-typed source.
+		if (!nameFilter.isEmpty()) kv += "filter=" + nameFilter + "\n";
 		return kv;
 	}
 
@@ -12838,6 +12853,7 @@ public:
 		cbSpanMode = d->findChild<QComboBox *>("cb_spanmode");
 		cbPreset   = d->findChild<QComboBox *>("cb_preset");
 		cbAltitude = d->findChild<QCheckBox *>("cb_altitude");
+		cbFrame    = d->findChild<QComboBox *>("cb_frame");
 		lblStatus  = d->findChild<QLabel *>("lbl_status");
 
 		// Picking a ready-made query fills the URL box and switches the radio to URL — the box stays
@@ -12850,6 +12866,7 @@ public:
 				if (i <= 0 || i >= (int)p.size()) return;      // index 0 is the "pick one" placeholder
 				if (leUrl) leUrl->setText(QString::fromUtf8(p[(size_t)i].url));
 				if (rbUrl) rbUrl->setChecked(true);
+				nameFilter = QString::fromUtf8(p[(size_t)i].filter);   // empty for every plain group
 				loadList();             // picking a preset IS asking for its satellites
 			});
 		}
@@ -12883,6 +12900,16 @@ public:
 			if (rbUrl) rbUrl->setChecked(true);
 			loadList();
 		});
+		// A URL the user TYPES is his own query, so the curated preset's name filter stops applying —
+		// otherwise a hand-written query would silently come back with most of its rows missing. Only
+		// typing clears it; setText() from the preset above does not emit textEdited.
+		if (leUrl) QObject::connect(leUrl, &QLineEdit::textEdited, [this](const QString &) {
+			nameFilter.clear();
+		});
+		// Same for a FILE: it is not the preset's download, so nothing of the preset applies to it.
+		if (leFile) QObject::connect(leFile, &QLineEdit::textEdited, [this](const QString &) {
+			nameFilter.clear();
+		});
 		// Flipping the radio between two sources that are both already filled in re-reads the one
 		// now selected, so the list always describes the source the dialog is pointing at.
 		if (rbFile) QObject::connect(rbFile, &QRadioButton::toggled, [this](bool on) {
@@ -12913,6 +12940,8 @@ public:
 		auto live = [this] { replotIfPlotted(); };
 		if (cbStart)    QObject::connect(cbStart,    &QComboBox::currentIndexChanged,  live);
 		if (cbSpanMode) QObject::connect(cbSpanMode, &QComboBox::currentIndexChanged,  live);
+		if (cbFrame)    QObject::connect(cbFrame,    &QComboBox::currentIndexChanged,  live);
+		if (cbAltitude) QObject::connect(cbAltitude, &QCheckBox::toggled,              live);
 		if (leSpan)     QObject::connect(leSpan,     &QLineEdit::editingFinished,      live);
 		if (leStep)     QObject::connect(leStep,     &QLineEdit::editingFinished,      live);
 
@@ -13015,6 +13044,10 @@ public:
 		kv += QString("spanmode=%1\n").arg(sm == 1 ? "minutes" : sm == 2 ? "hours" : "revs");
 		kv += "step=" + (leStep ? leStep->text().trimmed() : QString("30")) + "\n";
 		kv += QString("altitude=%1\n").arg(!cbAltitude || cbAltitude->isChecked() ? 1 : 0);
+		// WHICH curve the 3-D orbit is (see cb_frame's tooltip). The word, not the index, so reordering
+		// the .ui cannot silently change what is asked for — same contract as the span-mode combo.
+		const int fr = cbFrame ? cbFrame->currentIndex() : 0;
+		kv += QString("frame=%1\n").arg(fr == 1 ? "earthfixed" : fr == 2 ? "inertial" : "auto");
 		return kv;
 	}
 

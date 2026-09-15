@@ -2710,9 +2710,10 @@ static void rebuildSceneObjects(Scene *s) {
 	// built twice — never a second builder, and never a re-parenting pass afterwards (the rows carry
 	// per-item widgets, and lifting one out with takeChild destroys its widget).
 	std::set<const SymbolLayer *> symShown;
-	auto emitSymbolRow = [&](SymbolLayer &sl) {
+	auto emitSymbolRow = [&](SymbolLayer &sl, const QString &label = QString()) {
 		vtkActor *a = sl.actor.Get();
-		makeRow(QString::fromStdString(sl.name), IC_Points, a && a->GetVisibility() != 0,
+		makeRow(label.isEmpty() ? QString::fromStdString(sl.name) : label, IC_Points,
+		        a && a->GetVisibility() != 0,
 		        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
 		        [s, a](const QPoint &g) { symbolLayerMenu(s, a, g); },
 		        "Left-click for symbol properties");
@@ -2827,15 +2828,44 @@ static void rebuildSceneObjects(Scene *s) {
 		bool ovReparented = false;
 		if (ov.groupName.empty())
 			if (QTreeWidgetItem *mi = masterItemFor(ov.name)) { curParent = mi; ovReparented = true; }
-		// An element of a mastered plot that also owns SYMBOL layers of the same name (a satellite: one
-		// track, one spacecraft body) gets them immediately after its own row, under the same parent —
-		// so the master reads one satellite at a time, not every track and then every body.
-		auto emitOwnSymbols = [&]() {
-			if (!ovReparented) return;                      // only for a row that sits under a master
+		// An element of a mastered plot that also owns SYMBOL layers of the same name is ONE OBJECT
+		// DRAWN IN TWO PARTS — a satellite: its track, and the spacecraft standing on it. It becomes a
+		// GROUP HANDLE named for the object, with one row per part, so the object can be switched as a
+		// whole from its own row and each part switched on its own underneath. The group's Remove takes
+		// BOTH parts (SACRED_LAW.md: killing a handle kills its descendants), and its checkbox cascades
+		// to both through beginGroupHandle's own toggle handler (group-uncheck law).
+		std::vector<SymbolLayer *> parts;
+		if (ovReparented)
 			for (auto &sl : s->symbols)
-				if (sl.name == ov.name && !symShown.count(&sl)) emitSymbolRow(sl);
+				if (sl.name == ov.name && !symShown.count(&sl)) parts.push_back(&sl);
+		auto emitOwnSymbols = [&]() {
+			for (SymbolLayer *p : parts) emitSymbolRow(*p);
 		};
 		LineRef lr{ LK_Overlay, ov.actor };
+		if (!parts.empty() && !hasLabels) {
+			const std::string on2 = ov.name;
+			// ONE menu on both buttons — the properties click and the context click are the same thing.
+			auto objMenu = [s, on2](const QPoint &g) {
+				QMenu m(s->widget);
+				QAction *rem = m.addAction("Remove");
+				if (m.exec(g) != rem) return;
+				// By TAG, both kinds, in ONE call — the same deleter every other group Remove uses.
+				sceneDeleteGroup(s, { GroupChild(GroupChild::Overlays,    on2),
+				                      GroupChild(GroupChild::SymbolLayer, on2) });
+			};
+			bool anyVis = (ov.actor && ov.actor->GetVisibility() != 0);
+			for (SymbolLayer *p : parts)
+				if (p->actor && p->actor->GetVisibility()) anyVis = true;
+			beginGroupHandle(QString::fromStdString(ov.name), ov.mode == 1 ? IC_Line : IC_Points, anyVis,
+			                 objMenu, objMenu,
+			                 "This satellite — click for Remove (takes the track and the spacecraft)",
+			                 /*startFolded=*/true);
+			addRow("Track", ov.actor, ov.mode == 1 ? IC_Line : IC_Points, &lr);
+			for (SymbolLayer *p : parts) emitSymbolRow(*p, QStringLiteral("Spacecraft"));
+			endGroup();
+			if (ovReparented) curParent = ovSaveParent;
+			continue;
+		}
 		if (!hasLabels) {
 			addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, &lr);
 			emitOwnSymbols();
@@ -3908,7 +3938,11 @@ static void symbolRescaleCB(vtkObject*, unsigned long, void *clientData, void*) 
 		// on it: its size is in world units and the camera is what makes it bigger or smaller, so the
 		// per-frame screen-constant rule is exactly what must NOT be applied to it. Everything else
 		// keeps worldSize == 0 and the pixel rule below, unchanged.
-		const double scale = (sl.worldSize > 0.0) ? sl.worldSize
+		// A world-sized body also obeys its floors (SymbolLayer::worldMin*): never thinner than twice
+		// the track it stands on, whether that track is currently a world-sized tube or a screen-width
+		// line. The pixel floor can only be compared here, where worldPerLogPx is known.
+		const double wfloor = std::max(sl.worldMinWorld, sl.worldMinPx * worldPerLogPx);
+		const double scale = (sl.worldSize > 0.0) ? std::max(sl.worldSize, wfloor)
 		                                          : std::max(1e-9, sl.sizePx * worldPerLogPx);
 		if (sl.glyphMapper) {                  // solid3D: GPU-instanced path (vtkGlyph3DMapper)
 			sl.glyphMapper->SetScaleFactor(scale);

@@ -61,13 +61,14 @@ actually valid. Use *Now (UTC)* when you have just downloaded fresh ones.
 
 | Control | What it does |
 |---|---|
-| **Pick** | A ready-made Celestrak query (Earth-observation ones first). Choosing one fills the URL box, which stays editable. |
+| **Pick** | A ready-made Celestrak query (Earth-observation ones first). Choosing one fills the URL box, which stays editable. The first entry, *key missions (short list)*, is a curated ~25-row set (Terra, Aqua, Landsat 8/9, the Sentinels, Suomi NPP, NOAA 20, SWOT, GOES, Meteosat-11/12): it reads several small group files — `\|`-joined URLs are read as one list — and keeps only the named missions, because Celestrak has no query for "these twelve" and its own groups are either far too broad or split across files. Typing in the URL box clears that filter; the query is then yours. |
 | **File** / **URL** | Which source to read. The radio button picks; the `...` button browses. |
 | **Satellite list** | Everything found. Ctrl/Shift-click for several; double-click plots one. |
 | **Start** | *Now (UTC)* (default) or *TLE epoch*. Anchored at **now** the span runs BACKWARD, so the track ENDS at this instant — which is where the spacecraft model is planted. Anchored at the TLE's own epoch it runs forward from there. |
 | **Duration** + unit | How much orbit to draw: `revolutions` (default), `minutes`, or `hours`. |
 | **Step (s)** | Sampling interval along the track. 30 s keeps a LEO track smooth. |
-| **Draw at real altitude** | On (default): the true 3-D ORBIT at the satellite's height (§6). A flat-2-D window is switched to 3-D, since looking straight down a 420 km lift is invisible. Off: the flat GROUND TRACK on the map — the sub-satellite point. |
+| **Draw at real altitude** | On (default): the true 3-D ORBIT at the satellite's height (§5). A flat-2-D window is switched to 3-D, since looking straight down a 420 km lift is invisible. Off: the flat GROUND TRACK on the map — the sub-satellite point. |
+| **Frame** | Which curve the 3-D orbit is: *Earth-fixed* (over the ground — each revolution lands further west), *Inertial* (the orbital plane, the closed ring), or *Automatic* (default: inertial for a geosynchronous orbit, Earth-fixed for everything else). See §5. |
 | **Plot track** | Propagates the selected objects and draws them. |
 | **Update orbit** | Brings what is already plotted up to THIS instant: sets the anchor to *Now* and re-propagates, so the track ends and the spacecraft stands where the satellite is right now. |
 
@@ -122,10 +123,22 @@ by silently re-framing the map you were looking at. **Open a world map, or an em
 
 ### Where it lands in Scene Objects
 
-One master row, **Satellites**, and under it each satellite's TWO rows in turn: its track (line icon)
-and the spacecraft body standing on it (symbol icon), both carrying the satellite's name. Separate
-rows because they are separately switchable; the master's **Remove** takes every one of them. Standard
-elements: toggle, properties, remove.
+One master row, **Satellites**, and under it ONE ROW PER SATELLITE, named after it. Each of those is a
+group holding the two parts it is drawn in:
+
+```
+Satellites
+  SENTINEL-1A
+      Track
+      Spacecraft
+  SENTINEL-2A
+      Track
+      Spacecraft
+```
+
+The satellite's own row switches it as a whole and its **Remove** takes both parts with it; each part
+keeps its own checkbox and its own properties menu underneath. The master's **Remove** takes every
+satellite. Standard elements throughout: toggle, properties, remove.
 
 *Show data table* gives `lon`, `lat`, `alt_km` and `time (UTC)` — what the track IS. The plotted `z`
 is deliberately NOT there: it is an internal of the drawing, described next.
@@ -152,24 +165,31 @@ across the plot. Each pass is its own segment, and the cut lands EXACTLY on ±18
 both sides — on the globe those two meridians are the same line, so the orbit stays continuous
 there instead of showing a gap.
 
-### The 3-D curve is the ORBIT, not the ground track lifted
+### Which FRAME the 3-D curve is drawn in
 
-An orbit is a closed path in the INERTIAL frame. The sub-satellite point is an EARTH-FIXED quantity —
-which piece of ground the satellite is over — and in that frame a geostationary satellite does not
-orbit at all: it hangs over one longitude while its subpoint wanders up and down by the orbit's
-inclination. Lifting THAT to 35 786 km draws a thin figure-of-eight standing beside the planet:
-geometrically right, and not an orbit. A LEO hides the problem, because in one revolution its subpoint
-really does sweep most of the way round the world.
+Two different questions, and neither answers both:
 
-So with **Draw at real altitude** on, the curve is built from the propagator's own inertial (TEME)
-positions and brought into the display frame by ONE rotation: the Earth's rotation angle at a single
-reference epoch, the END of the track — where the spacecraft body stands. The shape is then the true
-orbit and it is hung over the geography correctly for that instant. (Any other reference epoch just
-spins the ring about the pole.) That angle is not re-derived here: it is read off the same propagator
-by asking one epoch in both frames and taking the angle between them.
+- **Earth-fixed** — where the satellite goes relative to the PLANET, lifted to its altitude. Each
+  revolution lands about 22.5° further west, because the Earth turned underneath. That is the whole
+  story of a low orbit: TERRA is sun-synchronous and must be seen to walk around the globe.
+- **Inertial** — the ORBIT itself, the closed path in the frame it is closed in. For a geostationary
+  satellite this is the only one that shows an orbit at all: Earth-fixed it does not travel, and its
+  curve collapses to a thin figure-of-eight (the analemma) hanging over one longitude.
 
-With the box OFF you get the sub-satellite point, flat on the map — which is what a ground track is,
-and correct as it stands.
+The **Frame** combo picks. **Automatic** (the default) decides from the orbit's own physics and never
+from a list of names: a satellite that keeps station with the Earth's rotation — period within 1 % of
+a sidereal day — has no Earth-fixed path worth drawing and gets the inertial curve; everything else is
+drawn over the ground. Say which one you want and that always wins.
+
+The inertial curve is built from the propagator's own TEME positions and brought into the display
+frame by ONE rotation: the Earth's rotation angle at a single reference epoch, the END of the track —
+where the spacecraft body stands. The shape is then the true orbit and it is hung over the geography
+correctly for that instant. (Any other reference epoch just spins the ring about the pole.) That angle
+is not re-derived here: it is read off the same propagator by asking one epoch in both frames and
+taking the angle between them.
+
+With **Draw at real altitude** OFF you get the sub-satellite point, flat on the map — which is what a
+ground track is, and has no frame question to answer.
 
 A high orbit also has to FIT: a geostationary ring is 6.6 Earth radii, well outside a camera framed on
 the planet, so the view is backed off far enough to see it. Only when it does not already fit — a LEO
@@ -199,7 +219,9 @@ plot_groundtrack!(fig, s; revolutions = 2, step = Second(30))
 Other entry points:
 
 ```julia
-D = groundtrack(s; revolutions = 1, step = Second(60))          # the 3-D ORBIT (inertial, see §5)
+D = groundtrack(s; revolutions = 1, step = Second(60))          # 3-D, frame chosen by the orbit (§5)
+D = groundtrack(s; revolutions = 2, frame = :earthfixed)        # …over the ground, always
+D = groundtrack(s; revolutions = 1, frame = :inertial)          # …the orbital plane, always
 D = groundtrack(s; revolutions = 1, altitude = false)           # flat ground track (sub-satellite point)
 pos, vel = propagate(s, DateTime(2024,1,15,12,0,0))      # TEME state, km and km/s, 3×N
 ecef     = propagate_ecef(s, when)                       # earth-fixed, km, 3×N

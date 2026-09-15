@@ -191,6 +191,35 @@
         </property>
        </widget>
       </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="lbl_frame">
+        <property name="text">
+         <string>Frame</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1" colspan="2">
+       <widget class="QComboBox" name="cb_frame">
+        <property name="toolTip">
+         <string>WHICH curve the 3-D orbit is. Earth-fixed: where the satellite goes over the PLANET — every revolution lands further west, so a low orbit walks around the globe. Inertial: the orbit itself, the closed path around the Earth; the only one that shows an orbit for a geostationary satellite, which does not move over the ground at all. Automatic picks inertial for a geosynchronous orbit and Earth-fixed for everything else.</string>
+        </property>
+        <item>
+         <property name="text">
+          <string>Automatic (by orbit)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>Earth-fixed (over the ground)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>Inertial (the orbital plane)</string>
+         </property>
+        </item>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>

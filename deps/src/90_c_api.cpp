@@ -4230,10 +4230,26 @@ GMTVTK_API int gmtvtk_fit_camera_for_orbit_h(void *handle, double ztop) {
 GMTVTK_API int gmtvtk_symbol_set_world_size_h(void *handle, const char *name, double worldSize) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !name || !*name) return 0;
+	// THE FLOOR COMES FROM THE TRACK ITSELF. The body and the line it stands on share a name (they are
+	// one object), so the overlay of that name IS this body's track: the floor is twice what that line
+	// actually draws as — twice the tube's diameter while the tube is what you see, and twice the
+	// line's width in pixels once the tube has gone sub-pixel and the stroke is what you see. Read
+	// here, from the element itself, rather than passed in by a caller that would have to guess it.
+	double minWorld = 0.0, minPx = 0.0;
+	for (const auto &ov : s->overlays) {
+		if (ov.name != name || !ov.actor) continue;
+		const double lw = ov.actor->GetProperty()->GetLineWidth();
+		minPx = 2.0 * (lw > 0.0 ? lw : 1.0);
+		if (ov.tubeRadius > 0.0)                       // tubeRadius is in EARTH RADII (globeR = 1 R_E)
+			minWorld = 2.0 * (2.0 * ov.tubeRadius * (s->globeR > 0.0 ? s->globeR : 1.0));
+		break;
+	}
 	int hit = 0;
 	for (auto &sl : s->symbols) {
 		if (sl.name != name) continue;
-		sl.worldSize = (worldSize > 0.0) ? worldSize : 0.0;
+		sl.worldSize     = (worldSize > 0.0) ? worldSize : 0.0;
+		sl.worldMinWorld = minWorld;
+		sl.worldMinPx    = minPx;
 		hit++;
 	}
 	if (hit) {

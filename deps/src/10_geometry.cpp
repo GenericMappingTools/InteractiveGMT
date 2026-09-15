@@ -346,6 +346,14 @@ struct SymbolLayer {
 	                                           // REPLACES makeSolidGlyph's shape in symbolSetPipeline —
 	                                           // the size, colour and placement rules are untouched.
 	std::string customGlyphPath;              // where it came from, for the menu's own label
+	// FLOORS for a world-sized body, so it never draws thinner than the line it stands on. A
+	// spacecraft is a real object and its size is in world units, but a track is drawn EITHER as a
+	// tube (world) OR, once that tube goes sub-pixel, as a screen-width line (pixels) — at a
+	// geostationary zoom the ring is a 10 px stroke while a 400 km body is 4 px, and the thing the
+	// stroke is about becomes a speck on it. Both floors are carried because the two are not
+	// comparable until the frame's world-per-pixel is known (symbolRescaleCB does that comparison).
+	double worldMinWorld = 0.0;               // >= this many world units (twice the tube's diameter)
+	double worldMinPx    = 0.0;               // …and >= this many pixels (twice the line's width)
 	double worldSize = 0.0;                   // > 0: the glyph is a WORLD-SIZED BODY of this diameter in
 	                                           // world units, so it grows and shrinks with zoom like the
 	                                           // terrain it stands on — a spacecraft is an OBJECT in the

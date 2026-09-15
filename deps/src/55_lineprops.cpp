@@ -432,7 +432,14 @@ static void showLineDataTable(Scene *s, const LineRef &lr, const QString &name) 
 
 	// Editing writes back to a single polygon ring; only LK_Polygon has that 1:1 row<->pg.v mapping.
 	const bool editable = (lr.kind == LK_Polygon && polylines.size() == 1);
-	const std::vector<std::array<double,3>> &pl = polylines[0];
+	// EVERY VERTEX OF THE ELEMENT, not just its first polyline. A multi-segment element (a satellite
+	// track cut at the dateline, any multi-segment import) has its data spread over all of them, and
+	// counting only the first one both truncated the table and — worse — made the row count disagree
+	// with the source table below, so the element's OWN columns were silently rejected and the raw
+	// plotted x/y/z printed instead: a track reported as "X Y Z" with an internal world-unit Z and no
+	// altitude anywhere. Single-segment elements (every editable polygon) are unchanged by this.
+	std::vector<std::array<double,3>> pl;
+	for (const auto &seg : polylines) pl.insert(pl.end(), seg.begin(), seg.end());
 	const int nrows = (int)pl.size();
 	vtkActor *actor = lr.actor;
 
