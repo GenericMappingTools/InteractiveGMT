@@ -492,6 +492,56 @@ static bool vtkioLoad(const std::string &path, VtkIoLoad &out, std::string &err)
 	return true;
 }
 
+// Read a mesh file as a SYMBOL GLYPH source ("Symbol > Load 3-D model…", 50_scene.cpp). Same readers
+// as vtkioLoad above — this is not a second loader, it is the mesh half of the same one aimed at a
+// different consumer — plus the two things a glyph source must satisfy that a scene mesh need not:
+//
+//   * ONE cell type, with normals. vtkGlyph3DMapper instances the source as it stands, and a mixed
+//     polygon/strip soup with no normals shades in flat patches, which on a small body reads as a
+//     corrupt model rather than as a lighting problem.
+//   * THE UNIT CONTRACT. Every glyph in this app is centred on the origin and one unit across, which
+//     is what makes the size rules (sizePx, worldSize) mean the same thing for all of them. A model
+//     arrives in whatever units its author used — millimetres, metres, or an arbitrary modelling
+//     grid — so it is centred and scaled by its LONGEST side here, once, rather than every size
+//     consumer downstream learning about model units.
+static vtkSmartPointer<vtkPolyData> vtkioReadGlyphModel(const std::string &path, std::string &err) {
+	bool yUp = false;
+	vtkSmartPointer<vtkDataObject> obj = vtkioReadFile(path, err, yUp);
+	if (!obj) return nullptr;
+	int nblocks = 0;
+	bool merged = false;
+	vtkSmartPointer<vtkDataSet> ds = vtkioResolveDataSet(obj, nblocks, merged);
+	if (!ds || ds->GetNumberOfPoints() == 0) { err = "that file holds no geometry"; return nullptr; }
+	vtkSmartPointer<vtkPolyData> pd = vtkioAsPolyData(ds);
+	if (yUp) pd = vtkioYUpToZUp(pd);
+	if (!pd || pd->GetNumberOfPolys() + pd->GetNumberOfStrips() == 0) {
+		err = "that file holds no SURFACE geometry (a glyph needs faces, not points or lines)";
+		return nullptr;
+	}
+	vtkNew<vtkTriangleFilter> tri;
+	tri->SetInputData(pd);
+	vtkNew<vtkPolyDataNormals> nrm;
+	nrm->SetInputConnection(tri->GetOutputPort());
+	nrm->ComputePointNormalsOn(); nrm->ComputeCellNormalsOff(); nrm->SplittingOn();
+	nrm->Update();
+	vtkPolyData *lit = nrm->GetOutput();
+	if (!lit || lit->GetNumberOfPoints() == 0) { err = "that model could not be triangulated"; return nullptr; }
+	double b[6];
+	lit->GetBounds(b);
+	const double span = std::max(std::max(b[1] - b[0], b[3] - b[2]), b[5] - b[4]);
+	const double k = (span > 1e-12) ? 1.0 / span : 1.0;
+	vtkNew<vtkTransform> t;                     // PreMultiply: the translate runs first, then the scale
+	t->Scale(k, k, k);
+	t->Translate(-(b[0] + b[1]) * 0.5, -(b[2] + b[3]) * 0.5, -(b[4] + b[5]) * 0.5);
+	vtkNew<vtkTransformPolyDataFilter> xf;
+	xf->SetInputData(lit);
+	xf->SetTransform(t);
+	xf->Update();
+	vtkSmartPointer<vtkPolyData> out = vtkSmartPointer<vtkPolyData>::New();
+	out->DeepCopy(xf->GetOutput());             // owned outright: the filter chain dies with this call
+	return out;
+}
+
 // ── writing ────────────────────────────────────────────────────────────────────────────────────
 // The Save dialog's VTK entries (kGridFmts / kImageFmts, 30_app.cpp) never reach Julia: GMT and GDAL
 // cannot write these, so saveObjectDialog routes the vtk* format codes straight here.

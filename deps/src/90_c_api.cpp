@@ -649,7 +649,7 @@ GMTVTK_API int gmtvtk_set_overlay_style_h(void *handle, const char *name,
 	for (auto &ov : s->overlays) {
 		if (!ov.actor || ov.name != name) continue;
 		ov.actor->GetProperty()->SetColor(r, g, b);       // colour first: applyLineStyle bakes it into the stripe
-		ov.actor->GetProperty()->SetLineWidth(width);
+		overlaySetLineWidth(s, ov, width);
 		applyLineStyle(s, ov.actor, style);               // sets ov.lineStyle + rebuilds the stipple texture (also sets opacity)
 		if (style == 0) ov.actor->GetProperty()->SetOpacity(opacity);   // solid: honour saved opacity (stipple needs its own)
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
@@ -1155,7 +1155,7 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //       a slot that holds a byte count, and writes the picture through it. That is not a wrong
 //       picture, it is an instant process death — the whole viewer disappears the moment the tool
 //       is opened. A callback's signature is a host-facing ABI exactly like an export's.
-GMTVTK_API int gmtvtk_abi_version(void) { return 13; }
+GMTVTK_API int gmtvtk_abi_version(void) { return 15; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -4178,6 +4178,71 @@ GMTVTK_API int gmtvtk_remove_overlay_group_h(void *handle, const char *groupName
 // second one on the first — Geography > Sun and terminators does exactly that with the sub-solar
 // point. Returns 1 if the handle was alive, 0 otherwise; removing a layer that is not there is a
 // no-op, so a first run needs no special case.
+// Make the symbol layer called `name` a WORLD-SIZED body: `worldSize` is the glyph's diameter in
+// world units (the unit one degree of equatorial arc is measured in — globeR = 180/pi), and the layer
+// then grows and shrinks with zoom like the terrain it stands on, instead of holding a constant pixel
+// size. `worldSize <= 0` puts it back on the screen-constant rule, which is what every layer gets by
+// default. Used by the Satellite tool's spacecraft: a satellite is an OBJECT in the scene, not a
+// marker drawn on the map. Returns how many layers were changed.
+// Make sure an orbit standing `ztop` world units above the ground is INSIDE THE VIEW — camera only,
+// never the axes. A geostationary satellite is 35 786 km up: on the globe that is a ring of about 6.6
+// Earth radii, so a camera framed on the planet has it far outside the field and the orbit is drawn
+// perfectly and seen by nobody. Low orbits (an ISS track is 6 % of the radius) already fit and are
+// left alone — the test below is what keeps this from re-zooming a view the user has set.
+//
+// THE AXES ARE NOT TOUCHED, deliberately: a track is VECTOR data landing on whatever is displayed
+// (SACRED_LAW.md, vector-import law), so it gets no frame of its own. This only dollies the camera
+// back far enough to see what was already plotted.
+GMTVTK_API int gmtvtk_fit_camera_for_orbit_h(void *handle, double ztop) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->ren || !(ztop > 0.0)) return 0;
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	if (!cam) return 0;
+	const double k = sceneZScale(s);
+	double b[6];
+	if (s->globe) {                            // a sphere of orbit radius about the body's centre
+		const double R = s->globeR + ztop * k;
+		b[0] = b[2] = b[4] = -R;
+		b[1] = b[3] = b[5] =  R;
+	}
+	else {                                     // flat map / 3-D: the map's own extent, raised to the orbit
+		surfGetBounds(s, b);
+		b[5] = std::max(b[5], ztop * k);
+	}
+	// Does it already fit? Same camera maths the screen-constant symbols use: `vph` is the world height
+	// spanning the viewport at the focal plane. Half the bbox's largest extent has to sit inside half of
+	// that, with a little margin, or nothing here moves.
+	double vph;
+	if (cam->GetParallelProjection())
+		vph = 2.0 * cam->GetParallelScale();
+	else
+		vph = 2.0 * cam->GetDistance() * std::tan(cam->GetViewAngle() * 0.5 * vtkMath::Pi() / 180.0);
+	const double need = std::max(std::max(std::fabs(b[1]), std::fabs(b[0])),
+	                    std::max(std::max(std::fabs(b[3]), std::fabs(b[2])),
+	                             std::max(std::fabs(b[5]), std::fabs(b[4]))));
+	if (2.0 * need <= vph * 0.98) return 0;    // already on screen: leave the user's view alone
+	s->ren->ResetCamera(b);                    // keeps the view DIRECTION, only backs the camera off
+	s->ren->ResetCameraClippingRange();        // …and lets the far plane reach the new distance
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+GMTVTK_API int gmtvtk_symbol_set_world_size_h(void *handle, const char *name, double worldSize) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !*name) return 0;
+	int hit = 0;
+	for (auto &sl : s->symbols) {
+		if (sl.name != name) continue;
+		sl.worldSize = (worldSize > 0.0) ? worldSize : 0.0;
+		hit++;
+	}
+	if (hit) {
+		symbolRescaleCB(nullptr, 0, s, nullptr);      // the ONE sizer: apply it now, not next frame
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	}
+	return hit;
+}
+
 GMTVTK_API int gmtvtk_remove_symbols_h(void *handle, const char *name) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !name || !*name) return 0;
@@ -4502,6 +4567,81 @@ GMTVTK_API void gmtvtk_set_headless(int on) {
 // Safe to call twice, and safe to call when no window was ever opened.
 GMTVTK_API void gmtvtk_shutdown(void) {
 	appShutdown();
+}
+
+// Remove the overlay(s) called `name` — ONE element, matched by its own name rather than by the
+// group it hangs under. gmtvtk_remove_overlay_group_h deletes a whole tagged group, which is the
+// wrong tool when several elements share one group and only one of them is being replaced: every
+// satellite track hangs under "Satellite tracks", so removing by group would take them all.
+//
+// Deletion itself goes through sceneDeleteGroup like every other removal in this file — this only
+// resolves a name to an actor. Returns how many were removed.
+GMTVTK_API int gmtvtk_remove_overlay_named_h(void *handle, const char *name) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s) || !name || !*name) return 0;
+	const std::string want = name;
+	std::vector<GroupChild> kill;
+	for (auto &o : s->overlays)
+		if (o.actor && o.name == want) kill.push_back(GroupChild(GroupChild::Overlays, o.actor.Get()));
+	if (kill.empty()) return 0;
+	const int n = (int)kill.size();
+	sceneDeleteGroup(s, kill);
+	rebuildSceneObjects(s);
+	return n;
+}
+
+// Draw a named vector overlay as a TUBE instead of a screen-space line, and tell the globe how far
+// above the surface it stands. Both halves belong to the same act, which is why they are one call:
+// a line is drawn as a tube exactly when it is real 3-D geometry, and real 3-D geometry standing off
+// the planet is also what the globe's clip plane has to stop cutting short.
+//
+//   radius : tube radius in EARTH RADII — the same unit, and by default the same number
+//            (kCurveTubeR = 0.006), as the field-line dialog's own thickness box. <= 0 puts the
+//            element back to a plain line.
+//   lift   : > 0 marks this curve as standing OFF the planet. Such a curve is given no globe clip
+//            plane at all, exactly as the field lines have none: it is solid geometry against a
+//            solid sphere, so the depth buffer occludes it — including the arcs that carry on
+//            around the limb, which the centre plane used to cut off. 0 = an ordinary surface
+//            vector, clipped exactly as every other one in the app still is.
+//
+// ADDITIVE ON PURPOSE: this touches one named element after it exists. `addOverlay` — 24 parameters
+// and every vector in the application flowing through it — is not modified, so no existing caller's
+// pipeline or clipping changes in any way.
+GMTVTK_API int gmtvtk_overlay_tube_h(void *handle, const char *name, double radius, double lift) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !sceneAlive(s) || !name) return 0;
+	const std::string want = name;
+	int hit = 0;
+	for (auto &o : s->overlays) {
+		if (!o.actor || !o.baseLine) continue;
+		if (o.name != want && o.groupName != want) continue;
+		if (!o.actor->GetMapper()) continue;
+		o.tubeRadius = (radius > 0.0) ? radius : 0.0;
+		o.clipLift   = (lift   > 0.0) ? lift   : 0.0;
+		if (o.tubeRadius > 0.0) {
+			// makeCurveTube / curveTubeLook (10_geometry.cpp) — literally the field lines' tube.
+			// The radius arrives in EARTH RADII, the unit magfield3d.ui's own box uses, and is
+			// converted here to the world units this scene draws in (globeR = one Earth radius).
+			const double rw = o.tubeRadius * (s->globeR > 0.0 ? s->globeR : 1.0);
+			o.tubeFlt = makeCurveTube(o.baseLine, rw);
+			curveTubeLook(o.actor);
+			// The width the Width control scales this radius about (overlaySetLineWidth).
+			const double lw = o.actor->GetProperty()->GetLineWidth();
+			o.tubeRefWidth = (lw > 0.0) ? lw : 1.0;
+		}
+		else o.tubeFlt = nullptr;                  // back to the line it was built as
+		// overlayRefreshSource (50_scene.cpp) seats the mapper on whatever this element now wears —
+		// tube or raw line — and puts the globe transform back around it, in the right order. The
+		// same function a line-style edit goes through, so the two cannot handle it differently.
+		overlayRefreshSource(s, o);
+		hit++;
+	}
+	if (hit) {
+		sceneGlobeAimClip(s);            // aim the new per-actor plane before the next frame
+		applyVectorStacking(s);          // a tube is real geometry: let the depth buffer own it
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	}
+	return hit;
 }
 
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------

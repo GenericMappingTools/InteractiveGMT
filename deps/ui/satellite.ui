@@ -75,16 +75,6 @@
         </property>
        </widget>
       </item>
-      <item row="3" column="1" colspan="2">
-       <widget class="QPushButton" name="btn_load">
-        <property name="text">
-         <string>Load satellites</string>
-        </property>
-        <property name="toolTip">
-         <string>Read the source and fill the list below</string>
-        </property>
-       </widget>
-      </item>
      </layout>
     </widget>
    </item>
@@ -97,11 +87,11 @@
    </item>
    <item>
     <widget class="QListWidget" name="lw_sats">
-     <property name="selectionMode">
-      <enum>QAbstractItemView::ExtendedSelection</enum>
-     </property>
      <property name="toolTip">
       <string>Every TLE found in the source. Ctrl/Shift-click to pick several.</string>
+     </property>
+     <property name="selectionMode">
+      <enum>QAbstractItemView::SelectionMode::ExtendedSelection</enum>
      </property>
     </widget>
    </item>
@@ -121,7 +111,10 @@
       <item row="0" column="1" colspan="2">
        <widget class="QComboBox" name="cb_start">
         <property name="toolTip">
-         <string>A TLE is only good for a few days either side of its own epoch.</string>
+         <string>A TLE is only good for a few days either side of its own epoch. &quot;Now&quot; runs the span BACK from this instant, so the track ENDS where the satellite is right now — which is where the spacecraft model is planted.</string>
+        </property>
+        <property name="currentIndex">
+         <number>1</number>
         </property>
         <item>
          <property name="text">
@@ -145,7 +138,7 @@
       <item row="1" column="1">
        <widget class="QLineEdit" name="le_span">
         <property name="text">
-         <string>2</string>
+         <string>1</string>
         </property>
        </widget>
       </item>
@@ -177,24 +170,24 @@
       </item>
       <item row="2" column="1">
        <widget class="QLineEdit" name="le_step">
-        <property name="text">
-         <string>30</string>
-        </property>
         <property name="toolTip">
          <string>Sampling interval along the track. 30 s keeps a low-earth track smooth.</string>
+        </property>
+        <property name="text">
+         <string>30</string>
         </property>
        </widget>
       </item>
       <item row="3" column="0" colspan="3">
        <widget class="QCheckBox" name="cb_altitude">
+        <property name="toolTip">
+         <string>On: the orbit is a 3-D curve at the satellite's true height, so it rises off the globe in 3-D. Off: it is drawn flat on the map as a plain ground track.</string>
+        </property>
         <property name="text">
          <string>Draw the orbit at its real altitude (3-D / globe)</string>
         </property>
         <property name="checked">
          <bool>true</bool>
-        </property>
-        <property name="toolTip">
-         <string>On: the orbit is a 3-D curve at the satellite's true height, so it rises off the globe in 3-D. Off: it is drawn flat on the map as a plain ground track.</string>
         </property>
        </widget>
       </item>
@@ -214,9 +207,19 @@
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout_buttons">
      <item>
+      <widget class="QPushButton" name="btn_update">
+       <property name="toolTip">
+        <string>Re-propagate what is plotted up to THIS instant: the track ends at the current UTC time and the spacecraft moves to where it is now.</string>
+       </property>
+       <property name="text">
+        <string>Update orbit</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <spacer name="spacer_buttons">
        <property name="orientation">
-        <enum>Qt::Horizontal</enum>
+        <enum>Qt::Orientation::Horizontal</enum>
        </property>
        <property name="sizeHint" stdset="0">
         <size>
@@ -229,14 +232,7 @@
      <item>
       <widget class="QPushButton" name="btn_plot">
        <property name="text">
-        <string>Plot ground track</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="btn_close">
-       <property name="text">
-        <string>Close</string>
+        <string>Plot track</string>
        </property>
       </widget>
      </item>

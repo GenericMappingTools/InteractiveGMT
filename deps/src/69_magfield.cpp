@@ -1483,17 +1483,14 @@ static QDialog *magFieldOpen(QWidget *parent, Scene *scene) {
 	m->lut->SetNumberOfTableValues(256);
 	m->lut->Build();
 	m->lines = vtkSmartPointer<vtkPolyData>::New();
-	m->tubeFlt = vtkSmartPointer<vtkTubeFilter>::New();
-	m->tubeFlt->SetInputData(m->lines);
-	m->tubeFlt->SetNumberOfSides(8);
-	m->tubeFlt->CappingOn();
-	m->tubeFlt->SetRadius(m->tubeR->value());
+	// makeCurveTube / curveTubeLook (10_geometry.cpp) — the SAME tube a satellite orbit is drawn
+	// with. The sides, the capping and the shading live there now so the two cannot drift apart.
+	m->tubeFlt = makeCurveTube(m->lines, m->tubeR->value());
 	vtkNew<vtkPolyDataMapper> tmap;
 	tmap->SetInputConnection(m->tubeFlt->GetOutputPort());
 	m->tubes = vtkSmartPointer<vtkActor>::New();
 	m->tubes->SetMapper(tmap);
-	m->tubes->GetProperty()->SetAmbient(0.25);
-	m->tubes->GetProperty()->SetDiffuse(0.8);
+	curveTubeLook(m->tubes);
 	m->renderer->AddActor(m->tubes);
 	// GLView's middle button acts on a Scene's renderer, so give it one whose pick targets are this
 	// view's own two actors — the same arrangement the fault demo makes for its blocks.

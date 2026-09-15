@@ -157,6 +157,36 @@ struct ClickableLabel : QLabel {
 	bool pendingClick = false;
 };
 
+// ===== A 3-D CURVE DRAWN AS A TUBE — ONE constructor, ONE look, ONE default thickness =========
+// Magnetic field lines (69_magfield.cpp) and satellite orbits (gmtvtk_overlay_tube_h, 90_c_api.cpp)
+// are THE SAME OPERATION: a polyline that lives at a real height above the planet, drawn as solid
+// geometry so the depth buffer can occlude it against the globe. They therefore share this, rather
+// than each configuring a vtkTubeFilter of its own — the second copy was written and immediately
+// drifted (8 sides and capping matched, the radius did not: 0.12 world units against the field
+// lines' 0.006 Earth radii, i.e. three times too thin to see, reported as "the tubes aren't there").
+//
+// RADIUS IS IN EARTH RADII, the unit the field-line dialog's own box is labelled in, because that
+// is the only unit in which "how thick is this curve" means the same thing on the globe and on the
+// flat map. kCurveTubeR is that box's default, so an orbit and a field line come out alike.
+static const int    kCurveTubeSides = 8;
+static const double kCurveTubeR     = 0.006;     // Earth radii — magfield3d.ui's tubeBox default
+
+static vtkSmartPointer<vtkTubeFilter> makeCurveTube(vtkPolyData *lines, double radius) {
+	vtkSmartPointer<vtkTubeFilter> t = vtkSmartPointer<vtkTubeFilter>::New();
+	if (lines) t->SetInputData(lines);
+	t->SetNumberOfSides(kCurveTubeSides);
+	t->CappingOn();
+	t->SetRadius(radius);
+	return t;
+}
+
+// ...and the shading those tubes wear, so one does not end up flatter than the other.
+static void curveTubeLook(vtkActor *a) {
+	if (!a) return;
+	a->GetProperty()->SetAmbient(0.25);
+	a->GetProperty()->SetDiffuse(0.8);
+}
+
 // A caller-supplied GMTdataset drawn over the surface as lines or points. Each carries
 // its own vtkActor so the right-click context menu can retune its colour / line style /
 // point size live. Mode: 0 = points, 1 = lines.
@@ -166,6 +196,21 @@ struct Overlay {
 	vtkSmartPointer<vtkPolyData> baseLine;   // the mapper input polydata (points always; line- or vert-cells per mode)
 	vtkSmartPointer<vtkTexture>  stripeTex;  // 1-D stipple texture (kept alive) for dashed/dotted
 	int lineStyle = 0;                       // 0 solid, 1 dashed, 2 dotted (so colour edits rebuild it)
+	// --- drawn as a TUBE rather than a screen-space line (satellite orbits; the magnetic field
+	// lines in 69_magfield.cpp do the same thing with the same filter). 0 = a plain line, which is
+	// what every element that does not ask for this keeps. A tube is real 3-D geometry, so it takes
+	// perspective and occlusion properly instead of staying a constant-width screen stroke.
+	vtkSmartPointer<vtkTubeFilter> tubeFlt;
+	double tubeRadius = 0.0;
+	// The line width in force when this became a tube. The Width control scales the radius about it
+	// (overlaySetLineWidth, 50_scene.cpp), so the default width gives back the default thickness.
+	double tubeRefWidth = 0.0;
+	// HOW FAR ABOVE THE SURFACE this line's highest vertex sits, in world units. Only the globe's
+	// clip plane reads it: that plane is positioned at the sphere's CENTRE, which is the true limb
+	// for something lying ON the skin but cuts a raised line off early — an orbit at 420 km is still
+	// in view well past the ground horizon. Anything that stays on the surface leaves this 0 and is
+	// clipped exactly as before.
+	double clipLift = 0.0;
 	std::string name;                        // label shown in the Scene Objects panel
 	bool   realZ = false;                    // the vertices carry a real elevation, not a flat z=0 map
 	                                          // annotation -- i.e. this line is CLAMPED TO THE SURFACE
@@ -295,6 +340,17 @@ struct SymbolLayer {
 	vtkSmartPointer<vtkTransform> zfix;             // solid3D only: Z-cancelling pre-transform on the source
 	vtkSmartPointer<vtkTransformPolyDataFilter> zfixFilter;  // solid3D only: applies `zfix` to the unit source
 	double sizePx = 8.0;                      // requested on-screen size in PIXELS
+	vtkSmartPointer<vtkPolyData> customGlyph; // an EXTERNAL 3-D model loaded as this layer's glyph
+	                                           // ("Symbol > Load 3-D model…"), already normalised to the
+	                                           // unit contract (centred, longest side 1). When set it
+	                                           // REPLACES makeSolidGlyph's shape in symbolSetPipeline —
+	                                           // the size, colour and placement rules are untouched.
+	std::string customGlyphPath;              // where it came from, for the menu's own label
+	double worldSize = 0.0;                   // > 0: the glyph is a WORLD-SIZED BODY of this diameter in
+	                                           // world units, so it grows and shrinks with zoom like the
+	                                           // terrain it stands on — a spacecraft is an OBJECT in the
+	                                           // scene, not a map marker. 0 = the screen-constant rule
+	                                           // every other layer uses (symbolRescaleCB reads it).
 	bool   filled = true;                     // filled polygon glyph (fill+edge) vs open line glyph (edge only)
 	bool   solid3D = false;                   // the pipeline it is running RIGHT NOW: true = sphere/cube volume
 	bool   wantSolid = false;                 // what it was ASKED for ("o"/"u"): a volume in 3-D, and its FLAT
@@ -1103,6 +1159,13 @@ struct Scene {
 	struct GlobeHook {
 		vtkSmartPointer<vtkTransformPolyDataFilter> filt;
 		vtkSmartPointer<vtkAlgorithmOutput>         savedIn;
+		// ...AND the thing that produces it. Holding the port alone is not enough: vtkAlgorithmOutput
+		// keeps only a RAW pointer to its producer, so when the mapper's input is replaced below the
+		// producer can lose its last reference and be destroyed while this port object survives. The
+		// restore on detach then calls GetProducer()->GetExecutive() on freed memory — an access
+		// violation that takes the whole window out. It bites hardest when the input was set with
+		// SetInputData(), where the producer is an internal vtkTrivialProducer nothing else owns.
+		vtkSmartPointer<vtkAlgorithm>               savedProducer;
 		// When the actor's geometry had to be REFINED before the transform (globeDensifyPD), the filter
 		// is fed a copy — so the copy goes stale the moment the source changes (a line edited, a ruler
 		// extended). `srcPD` + `srcMTime` are what the copy was made from and when, so the next sync can
@@ -1741,6 +1804,7 @@ static inline double symbolZScale(Scene *s, int owner) { return (s && s->flat2d)
 // because symbolApplyZ — which is the same "put this element where THIS view mode says" rule applied
 // to a symbol layer — sits above it in this file.
 static inline void sceneGeoToWorld(Scene *s, double lon, double lat, double z, double out[3]);
+static inline void sceneGeoToWorldVec(Scene *s, double lon, double lat, double z, double out[3]);
 static inline bool sceneWorldToGeo(Scene *s, const double p[3], double &lon, double &lat, double &z);
 
 // THE glyph KIND of a symbol layer, same rule and same shape as symbolZScale above: a layer that asked
@@ -1786,7 +1850,7 @@ static inline void symbolApplyZ(Scene *s, SymbolLayer &sl) {
 		double p[3];  pts->GetPoint(i, p);
 		const double lon = haveXY ? sl.xyOrig[(size_t)i*2] : p[0] / gx;
 		const double lat = haveXY ? sl.xyOrig[(size_t)i*2+1] : p[1];
-		if (want == 2) sceneGeoToWorld(s, lon, lat, sl.zOrig[(size_t)i], p);
+		if (want == 2) sceneGeoToWorldVec(s, lon, lat, sl.zOrig[(size_t)i], p);   // VECTOR mapping: same radius as a line
 		else { p[0] = lon * gx;  p[1] = lat;  p[2] = (want == 1) ? 0.0 : sl.zOrig[(size_t)i]; }
 		pts->SetPoint(i, p);
 	}
@@ -1806,7 +1870,7 @@ static inline void symbolSetPointTrue(Scene *s, SymbolLayer &sl, vtkIdType i,
 	vtkPoints *pts = pd->GetPoints();
 	if (i < 0 || i >= pts->GetNumberOfPoints()) return;
 	double w[3];
-	if (s && s->globe) sceneGeoToWorld(s, lon, lat, z, w);
+	if (s && s->globe) sceneGeoToWorldVec(s, lon, lat, z, w);   // the writer must match symbolApplyZ exactly
 	else { w[0] = lon * (s && s->xfac != 0.0 ? s->xfac : 1.0);  w[1] = lat;
 	       w[2] = (sl.posMode == 1) ? 0.0 : z; }        // flat 2-D keeps the layer squashed on the map
 	pts->SetPoint(i, w);
@@ -2265,6 +2329,22 @@ static inline void sceneGeoToWorld(Scene *s, double lon, double lat, double z, d
 	s->globeXf->TransformPoint(in, out);
 }
 
+// The same mapping a VECTOR ELEMENT is rendered with: the body transform PLUS the radial vector lift
+// (globeVecXf, built above). A symbol layer is vector data — a marker, a catalog, a spacecraft — so a
+// point of it must land where a LINE at that same (lon, lat, z) lands, and `globeXf` alone is a
+// different radius: it omits the lift, which is the window's raster ceiling plus a hair. Placing
+// symbols with the raw body transform therefore put every one of them BELOW the vectors and under the
+// raster ceiling on the globe — visible as a satellite body floating off the orbit track it stands
+// on, by the whole (zTop*k/globeR + hair) of the window. One operation, one mapping (SACRED_LAW.md):
+// this is the ONE call a symbol's globe position goes through, never `sceneGeoToWorld` beside it.
+static inline void sceneGeoToWorldVec(Scene *s, double lon, double lat, double z, double out[3]) {
+	if (!s || !s->globe) { sceneGeoToWorld(s, lon, lat, z, out); return; }   // flat / 3-D: no lift exists
+	if (!s->globeVecXf) sceneGlobeUpdateTransform(s);
+	if (!s->globeVecXf) { sceneGeoToWorld(s, lon, lat, z, out); return; }
+	const double in[3] = { lon, lat, z };
+	s->globeVecXf->TransformPoint(in, out);
+}
+
 // World XYZ -> (lon, lat, z). The inverse of the same object, so a readout can never disagree with
 // what is drawn. Returns false only when the point is degenerate (dead centre of the sphere).
 static inline bool sceneWorldToGeo(Scene *s, const double p[3], double &lon, double &lat, double &z) {
@@ -2501,6 +2581,7 @@ static void globeAttachActor(Scene *s, vtkActor *a, bool on, int vec = VEC_NONE)
 		if (!src) return;
 		Scene::GlobeHook h;
 		h.savedIn = src;
+		h.savedProducer = src->GetProducer();   // keep it alive; see the field's note
 		h.filt = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
 		h.filt->SetTransform(want);
 		// Densify coarse geometry here and feed the refined copy to the filter: an image plane is a 2x2
@@ -2518,14 +2599,38 @@ static void globeAttachActor(Scene *s, vtkActor *a, bool on, int vec = VEC_NONE)
 		// exactly how a freshly plotted coastline ended up drawn in raw lon/lat, collapsed edge-on to a
 		// single black streak across the screen.
 		a->SetScale(1.0, 1.0, 1.0);
-		if (s->globeClip) m->AddClippingPlane(s->globeClip);   // the far hemisphere, gone
+		// The far hemisphere, gone — EXCEPT for a line that stands above the surface. `globeClip` is
+		// the plane through the sphere's centre, which is exactly the limb for geometry lying ON the
+		// skin (every coastline, border and draped track: they leave clipLift at 0 and are clipped
+		// precisely as before). A raised line is not in that position: a satellite at 420 km is still
+		// in view a long way past the ground horizon, and the centre plane chopped its orbit off
+		// there — the arcs that should carry on around the limb simply vanished. Such an actor gets
+		// its OWN plane, pushed back by its own height, so it is cut where IT actually goes out of
+		// sight. What the planet genuinely hides is then hidden by the depth buffer, which already
+		// owns that job on a body (applyVectorStacking's `onBody` branch, 50_scene.cpp).
+		double lift = 0.0;
+		for (const auto &ov : s->overlays)
+			if (ov.actor.Get() == a) { lift = ov.clipLift; break; }
+		// A RAISED CURVE GETS NO CLIP PLANE AT ALL — which is exactly what the magnetic field lines
+		// do (69_magfield.cpp adds none), and they are the same kind of object: solid tube geometry
+		// standing off the planet. The plane exists for vectors lying ON the skin, where the coplanar
+		// z-fight makes the depth test unreliable and the far hemisphere has to go geometrically. A
+		// tube at 400 km is not in that position: it is real 3-D geometry against a real sphere, so
+		// the DEPTH BUFFER occludes it correctly and for free, including the arcs that carry on
+		// around the limb. Clipping it at the centre plane cut those off; clipping it at its own
+		// height (what this first tried) was a second, invented rule for the same job.
+		if (lift <= 0.0 && s->globeClip) m->AddClippingPlane(s->globeClip);
 		s->globeHooks[a] = h;
 	}
 	else {
 		if (it == s->globeHooks.end()) return;
 		if (vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(a->GetMapper())) {
 			if (it->second.savedIn) m->SetInputConnection(it->second.savedIn);
-			if (s->globeClip) m->RemoveClippingPlane(s->globeClip);
+			// Take the plane off only if this actor was GIVEN one. A raised curve is attached
+			// without one (see the attach branch), and asking VTK to remove a plane from a mapper
+			// that has none is an error on the console every time the view mode changes.
+			if (s->globeClip && m->GetNumberOfClippingPlanes() > 0)
+				m->RemoveClippingPlane(s->globeClip);
 		}
 		s->globeHooks.erase(it);
 	}
@@ -2559,6 +2664,7 @@ static void sceneGlobeAimClip(Scene *s) {
 	// is not clipped away by rounding and made to flicker as the globe turns.)
 	s->globeClip->SetOrigin(-back * n[0], -back * n[1], -back * n[2]);
 	s->globeClip->SetNormal(n);
+
 }
 
 // --- surface accessors: one actor (cloud/FV/drape/image) or a tiled grid -----------------
@@ -4288,7 +4394,19 @@ static void rebuildAxesFor(Scene *s, AxesSet &A, bool visible) {
 	// Z axis: hide in flat-2D (top-down map -> Z points at the camera, meaningless) or when the
 	// drawn Z extent is degenerate. Drives the cube Z LINE/gridlines + the Z number billboards so
 	// the toggle is self-correcting every render (no stale state on 2D<->3D switch).
-	const bool zHide = s->flat2d || (b[5] - b[4]) <= 0.0;
+	// ...and, third, when the raster this set belongs to HAS NO ELEVATION AT ALL. An image is a
+	// picture on a flat plane: its pixel values are colour, not height, so there is no quantity for a
+	// Z axis to measure. Without this a Base Map viewed in 3-D grew a Z axis numbered 0..255 — the
+	// image's 8-bit range read as metres — with a fan of gridlines standing off the map.
+	// Asked of the SET'S OWN owner, not of the window: a window holding a relief grid AND an image
+	// must keep the grid's Z axis while the image's stays off.
+	bool ownerIsImage = false;
+	if (A.owner != kAxesOwnerBase) {
+		for (const auto &ex : s->extras)
+			if (ex.tag == A.owner) { ownerIsImage = ex.isImage; break; }
+	}
+	else ownerIsImage = s->imageOnly;          // the base itself is a bare picture
+	const bool zHide = s->flat2d || ownerIsImage || (b[5] - b[4]) <= 0.0;
 	A.cube->SetZAxisVisibility(zHide ? 0 : 1);
 	if (zHide) A.cube->DrawZGridlinesOff(); else A.cube->DrawZGridlinesOn();
 	// Flat map (no Z relief): the X/Y gridlines lie coplanar with the image, drawing a graticule

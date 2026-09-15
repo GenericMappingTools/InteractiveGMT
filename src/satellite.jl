@@ -278,21 +278,58 @@ end
 # a wrap. Nothing is inserted at the edge — the cut is between the two points, which is honest
 # about where the data actually is.
 function _split_dateline(lon::Vector{Float64}, lat::Vector{Float64}, alt::Vector{Float64},
-                         jds::Vector{Float64})::Vector{UnitRange{Int}}
-	segs = UnitRange{Int}[]
+                         jds::Vector{Float64})::Vector{Matrix{Float64}}
+	segs = Matrix{Float64}[]
 	n = length(lon)
 	n == 0 && return segs
-	start = 1
+	# Columns: lon, lat, alt_km, jd. Built as rows so the CROSSING POINT can be inserted, which a
+	# range of indices into the original samples cannot express.
+	cur = Vector{NTuple{4,Float64}}()
+	flush!() = (length(cur) > 1 && push!(segs, _rows_to_mat(cur)); empty!(cur))
+
+	push!(cur, (lon[1], lat[1], alt[1], jds[1]))
 	for i in 2:n
-		# A NaN (a failed epoch) also breaks the line; it is not a place.
-		if isnan(lon[i]) || isnan(lon[i-1]) || abs(lon[i] - lon[i-1]) > 180.0
-			i - 1 >= start && push!(segs, start:(i-1))
-			start = i
+		l0, l1 = lon[i-1], lon[i]
+		if isnan(l1) || isnan(l0)
+			flush!()                      # a failed epoch is a real gap: nothing to interpolate
+			!isnan(l1) && push!(cur, (l1, lat[i], alt[i], jds[i]))
+			continue
 		end
+		d = l1 - l0
+		if abs(d) > 180.0
+			# CROSS THE ±180 MERIDIAN EXACTLY, and put a point on BOTH sides of it. Cutting between
+			# the two samples (what this did first) throws away up to a whole step of longitude —
+			# about 4° at a 30 s cadence. On the flat map that is a small gap; on the GLOBE +180 and
+			# -180 are the same meridian, so the two ends should meet, and instead the orbit showed
+			# a broken arc with the tube's end-caps hanging in space.
+			# `d > 180` means the satellite ran WEST off -180 (e.g. -179 -> +179); `d < -180` means
+			# it ran EAST off +180. Unwrap the far sample, find the fraction of the step at which the
+			# meridian is reached, and interpolate everything else there.
+			west  = d > 0.0
+			l1u   = west ? l1 - 360.0 : l1 + 360.0
+			edge  = west ? -180.0 : 180.0
+			t     = (l1u - l0) == 0.0 ? 0.0 : (edge - l0) / (l1u - l0)
+			t     = clamp(t, 0.0, 1.0)
+			latc  = lat[i-1] + t * (lat[i] - lat[i-1])
+			altc  = alt[i-1] + t * (alt[i] - alt[i-1])
+			jdc   = jds[i-1] + t * (jds[i] - jds[i-1])
+			push!(cur, (edge, latc, altc, jdc))       # close this segment ON the meridian
+			flush!()
+			push!(cur, (-edge, latc, altc, jdc))      # ...and open the next one on its far side
+		end
+		push!(cur, (l1, lat[i], alt[i], jds[i]))
 	end
-	start <= n && push!(segs, start:n)
-	# Drop single-point runs: a one-vertex "line" is not drawable and only clutters the table.
-	return filter(r -> length(r) > 1, segs)
+	flush!()
+	return segs
+end
+
+# Rows -> the (n x 4) matrix the dataset is built from. One place, so the column ORDER is stated once.
+function _rows_to_mat(rows::Vector{NTuple{4,Float64}})::Matrix{Float64}
+	m = Matrix{Float64}(undef, length(rows), 4)
+	for (i, r) in enumerate(rows)
+		m[i,1] = r[1];  m[i,2] = r[2];  m[i,3] = r[3];  m[i,4] = r[4]
+	end
+	return m
 end
 
 # Altitude -> the viewer's vertical world units.
@@ -328,19 +365,69 @@ seconds, which keeps a LEO track smooth.
 
     groundtrack(sat; start = now(UTC), stop = now(UTC) + Hour(6), step = Minute(1))
 """
+# THE ORBIT, as an orbit. The sub-satellite point is an EARTH-FIXED quantity: it says which piece of
+# ground the satellite is over, and in that frame a geostationary satellite DOES NOT ORBIT — it hangs
+# over one longitude, and its subpoint only wanders up and down by the orbit's inclination. Plotted at
+# its real altitude that came out as a thin figure-of-eight (the analemma) standing beside the planet,
+# 6.6 Earth radii out: geometrically right, and not an orbit. A low orbit merely hid the problem,
+# because in one revolution its subpoint really does sweep most of the way round the world.
+#
+# So the 3-D curve is built from the INERTIAL positions the propagator actually produces (TEME, the
+# frame the orbit is a closed path in), turned into the display's Earth-fixed frame by ONE rotation —
+# the Earth's rotation angle at a single REFERENCE EPOCH, the end of the track, which is where the
+# spacecraft body stands. The shape is then the true orbit, and it is hung correctly over the geography
+# for that instant. (Any other choice of reference just spins the ring about the pole.)
+#
+# The rotation angle is not derived from a formula written here: the C side already knows it, so it is
+# read off the SAME propagator by asking for one epoch in both frames and taking the angle between
+# them (SACRED_LAW.md — the sidereal-time maths is not reimplemented on this side).
+function _orbit_lonlatalt(s::Satellite, j::Vector{Float64})
+	pos, _ = propagate(s, j)                      # TEME (inertial), km, 3 x N
+	n = size(pos, 2)
+	n == 0 && return (Float64[], Float64[], Float64[])
+	jref  = j[end]
+	pt, _ = propagate(s, [jref])                  # the reference epoch in both frames…
+	pe    = propagate_ecef(s, [jref])
+	th = atan(pt[2,1], pt[1,1]) - atan(pe[2,1], pe[1,1])    # …so this IS the Earth rotation angle
+	c, sn = cos(th), sin(th)
+	xyz = Matrix{Float64}(undef, n, 3)
+	bad = falses(n)
+	for i in 1:n
+		x, y, z = pos[1,i], pos[2,i], pos[3,i]
+		if !(isfinite(x) && isfinite(y) && isfinite(z))     # a failed epoch stays a gap, never a point
+			bad[i] = true
+			xyz[i,1] = xyz[i,2] = xyz[i,3] = 0.0
+			continue
+		end
+		xyz[i,1] = ( c * x + sn * y) * 1000.0     # Rz(-th), and km -> metres for mapproject
+		xyz[i,2] = (-sn * x + c  * y) * 1000.0
+		xyz[i,3] = z * 1000.0
+	end
+	# ECEF -> geodetic (lon, lat, height) through GMT's own converter, never a hand-rolled ellipsoid.
+	G = GMT.mapproject(xyz, E = true, I = true)
+	M = G isa GMT.GMTdataset ? G.data : G[1].data
+	lon = M[:,1];  lat = M[:,2];  alt = M[:,3] ./ 1000.0
+	for i in 1:n
+		bad[i] && (lon[i] = lat[i] = alt[i] = NaN)
+	end
+	return (lon, lat, alt)
+end
+
 function groundtrack(s::Satellite, when; altitude::Bool = true)::Vector{GMT.GMTdataset}
 	j = _jds(when)
-	lon, lat, alt = subpoint(s, j)
-	segs = _split_dateline(lon, lat, alt, j)
+	# The 3-D orbit comes from the inertial path; the FLAT ground track is the sub-satellite point,
+	# which is exactly what that box means when it is unticked.
+	lon, lat, alt = altitude ? _orbit_lonlatalt(s, j) : subpoint(s, j)
+	segs = _split_dateline(lon, lat, alt, j)   # (n x 4) each: lon, lat, alt_km, jd
 	out = GMT.GMTdataset[]
-	for r in segs
+	for seg in segs
 		# COLUMN 3 IS THE PLOTTED Z — the height the renderer actually draws the vertex at, and what
 		# lifts the orbit off the globe in 3-D. It is the altitude CONVERTED TO WORLD UNITS
 		# (_KM_PER_DEG_ARC above), never the raw kilometres: raw km put the line ~420 units over a
 		# 360-wide map, which is how this first shipped invisible.
 		# `altitude=false` gives a plain ground track, flat on the map.
-		zcol = altitude ? alt[r] ./ _KM_PER_DEG_ARC : zeros(length(r))
-		D = GMT.mat2ds(hcat(lon[r], lat[r], zcol, alt[r], j[r]))
+		zcol = altitude ? view(seg, :, 3) ./ _KM_PER_DEG_ARC : zeros(size(seg, 1))
+		D = GMT.mat2ds(hcat(seg[:,1], seg[:,2], zcol, seg[:,3], seg[:,4]))
 		D.colnames = ["lon", "lat", "z", "alt_km", "time_jd"]
 		D.proj4 = "+proj=longlat +datum=WGS84"
 		push!(out, D)
@@ -351,12 +438,17 @@ function groundtrack(s::Satellite, when; altitude::Bool = true)::Vector{GMT.GMTd
 	return out
 end
 
+# N revolutions, as a duration. ONE formula — `groundtrack`'s own default stop and the dialog's
+# "revs" span both read it, so the two can never disagree about how long a revolution is.
+_revs_duration(s::Satellite, revolutions::Real)::Millisecond =
+	Millisecond(round(Int, revolutions * period(s) * 60_000))
+
 function groundtrack(s::Satellite; altitude::Bool = true, start::Union{Nothing,DateTime} = nothing,
                      stop::Union{Nothing,DateTime} = nothing,
                      step::Period = Second(30),
                      revolutions::Real = 1)::Vector{GMT.GMTdataset}
 	t0 = start === nothing ? epoch(s) : start
-	t1 = stop === nothing ? t0 + Millisecond(round(Int, revolutions * period(s) * 60_000)) : stop
+	t1 = stop === nothing ? t0 + _revs_duration(s, revolutions) : stop
 	t1 <= t0 && error("groundtrack: `stop` ($t1) must be after `start` ($t0)")
 	return groundtrack(s, collect(t0:step:t1); altitude = altitude)
 end
@@ -377,7 +469,7 @@ of the map that is already there. It reaches the scene through `_add_dataset_to_
 function every other vector import uses, which is what gives it its Scene Objects row (one row per
 satellite, carrying every dateline segment) with properties and Remove.
 """
-function plot_groundtrack!(scene::Ptr{Cvoid}, s::Satellite; color = nothing,
+function plot_groundtrack!(scene::Ptr{Cvoid}, s::Satellite; color = _TRACK_COLOR,
                            name::String = "", kw...)
 	scene == C_NULL && error("plot_groundtrack!: no window")
 	D = groundtrack(s; kw...)
@@ -389,7 +481,8 @@ end
 # The add half, split out so a caller that already has the track (the dialog, which then asks
 # whether it is on screen) does not propagate it a second time just to plot it. ONE add path —
 # `plot_groundtrack!` is this function plus the propagation, never a parallel copy of it.
-function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; color = nothing)
+function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; color = _TRACK_COLOR,
+                      replaced::Union{Nothing,Ref{Int}} = nothing)
 	isempty(D) && (@warn "plot_groundtrack!: the track is empty"; return false)
 
 	# An EMPTY window has nothing to overlay ONTO, so the vector-import law does not apply here:
@@ -410,30 +503,191 @@ function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; 
 		_on_basemap(scene, "-180.0/180.0/-90.0/90.0/0/global")
 	end
 
-	ok = _add_dataset_to_scene(scene, D, nm; groupName = "Satellite tracks",
-	                           color = color, forceMode = :lines)
-	ok && ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+	# ONE TRACK PER SATELLITE. Plotting the same object again is an UPDATE of its orbit — a fresh
+	# TLE, a different time window — not a second track: two tracks for one satellite cannot both be
+	# right, and stacking them leaves the window with rows nobody can tell apart. So its existing
+	# element is removed first and the new one takes its place, keeping the name.
+	# By ELEMENT name, never by group: every track shares the "Satellite tracks" group, and removing
+	# that would take every other satellite with it.
+	nrep = Int(ccall(_fn(:gmtvtk_remove_overlay_named_h), Cint, (Ptr{Cvoid}, Cstring), scene, nm))
+	replaced === nothing || (replaced[] = nrep)
+
+	# noConvertToPoints: an orbit is a TRAJECTORY — the samples are a continuous path, not a set of
+	# places — so "Convert to points" is meaningless on it and the handle does not offer it.
+	# NO intermediate group: the track is a plain element whose MASTER is "Satellites" (declared in
+	# `_plot_sat_now!`, together with the body that carries the same name). The panel then reads
+	# Satellites > <name> (track) > <name> (body) — two sibling rows per satellite, each with its own
+	# checkbox, which is exactly the point: the track and the spacecraft are switched separately.
+	ok = _add_dataset_to_scene(scene, D, nm;
+	                           color = color, forceMode = :lines, noConvertToPoints = true)
+
+	# An orbit is drawn as a TUBE, the same way the magnetic field lines are (69_magfield.cpp): real
+	# 3-D geometry, so it takes perspective and occlusion instead of being a constant-width screen
+	# stroke. The same call tells the globe how high this line stands, because the globe's clip plane
+	# sits at the sphere's CENTRE — right for a coastline lying on the skin, wrong for an orbit, which
+	# stays visible well past the ground horizon and was being cut off there.
+	if ok
+		# ONE key parents BOTH rows: the track overlay and the body layer carry the same name, and the
+		# child -> master map is keyed by name. Declared HERE, beside the track's own add, so a window
+		# whose body could not be placed still shows its track under "Satellites" and never loose.
+		ccall(_fn(:gmtvtk_set_group_master_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, nm, _SAT_MASTER)
+		_track_table!(scene, nm, D)
+		lift = 0.0
+		for d in D
+			m = maximum(view(d.data, :, 3))
+			m > lift && (lift = m)
+		end
+				ccall(_fn(:gmtvtk_overlay_tube_h), Cint, (Ptr{Cvoid}, Cstring, Cdouble, Cdouble),
+		      scene, nm, _TRACK_TUBE_R, lift)
+		# DO WHAT THE BOX SAYS. The control reads "Draw the orbit at its real altitude (3-D / globe)",
+		# so ticking it asks for the orbit in its 3-D form — and that includes being shown in a view
+		# where a height EXISTS. A flat-2-D window looks straight down, where 420 km projects onto the
+		# same pixels as zero; and on a flat map the orbit's height is 1.1% of the map's width, against
+		# 6.8% of the radius on the globe. The globe is therefore the view this box is naming, and the
+		# window is put on it. Unticked, nothing here touches the view at all.
+		if lift > 0
+			# The globe is refused when the window holds nothing geographic; 3-D is then the best
+			# this box can honour, and it is still a view with a vertical axis.
+			if ccall(_fn(:gmtvtk_set_view_mode_h), Cint, (Ptr{Cvoid}, Cint), scene, Cint(2)) == 0
+				ccall(_fn(:gmtvtk_set_view_mode_h), Cint, (Ptr{Cvoid}, Cint), scene, Cint(0))
+			end
+			# …AND THE VIEW HAS TO REACH IT. A geostationary satellite is 35 786 km up — a ring of 6.6
+			# Earth radii, which a camera framed on the planet draws entirely outside its own field: the
+			# orbit was plotted correctly and seen by nobody ("METEOSAT shows nothing"). This backs the
+			# camera off just far enough, and ONLY when the orbit does not already fit, so a LEO track
+			# (6 % of the radius) leaves the user's view exactly as it was. Camera only — a vector import
+			# never touches the axes (SACRED_LAW.md).
+			ccall(_fn(:gmtvtk_fit_camera_for_orbit_h), Cint, (Ptr{Cvoid}, Cdouble), scene, lift)
+		end
+		# THE SPACECRAFT ITSELF, on the point of the track it occupies RIGHT NOW. The line says where
+		# the satellite has been and will be; the model says where it IS, which is the one place on it
+		# a reader actually looks for. Same add path for every caller — never plotted beside the track.
+		_plot_sat_now!(scene, D, nm)
+		ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+	end
 	return ok
 end
 
-# Does the window's current view actually contain any of `D`? A ground track is global, so dropping
-# one on a window framed to a small region puts it off-screen — correctly plotted and invisible.
-# The law forbids reframing over an existing raster, so the honest thing left is to SAY so.
-# Returns `nothing` when the window has no bounds to compare against (nothing to warn about).
-function _track_offscreen(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset})::Union{Nothing,Bool}
-	b = zeros(Float64, 4);  g = zeros(Cint, 1)
-	ok = ccall(_fn(:gmtvtk_get_display_bounds_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cint}), scene, b, g)
-	ok == 0 && return nothing
-	(b[1] == b[2] || b[3] == b[4]) && return nothing
+# The track's OWN data table, replacing the generic one the vector importer builds from the plotted
+# columns. What a satellite track IS, to a reader: where it is, how high, and when. The plotted `z` is
+# NOT data — it is the height in the renderer's world units (alt_km / _KM_PER_DEG_ARC), an internal of
+# the drawing, and it has no business in a table that claims to show the element's data. The time goes
+# in as a UTC stamp rather than a raw Julian Day for the same reason.
+# Rows are written in the SAME order the points were packed (segments in order, vertices in order),
+# which is what the viewer aligns them by.
+function _track_table!(scene::Ptr{Cvoid}, nm::String, D::Vector{GMT.GMTdataset})::Bool
+	rows = String[]
 	for d in D
-		for i in 1:size(d.data, 1)
-			x, y = d.data[i, 1], d.data[i, 2]
-			(isnan(x) || isnan(y)) && continue
-			(b[1] <= x <= b[2] && b[3] <= y <= b[4]) && return false   # at least one point visible
+		m = d.data
+		for i in 1:size(m, 1)
+			push!(rows, join((string(round(m[i,1], digits = 6)),
+			                  string(round(m[i,2], digits = 6)),
+			                  string(round(m[i,4], digits = 3)),
+			                  GMT.Dates.format(datetime(m[i,5]), "yyyy-mm-dd HH:MM:SS")), '\x1f'))
 		end
 	end
-	return true
+	isempty(rows) && return false
+	hdr = join(("lon", "lat", "alt_km", "time (UTC)"), '\x1f')
+	return ccall(_fn(:gmtvtk_overlay_set_table_h), Cint, (Ptr{Cvoid}, Cstring, Cstring, Cstring),
+	             scene, nm, hdr, join(rows, '\x1e')) != 0
 end
+
+# --- the spacecraft at the current epoch ---------------------------------------------------------
+# ONE master row, "Satellites", and NOTHING between it and the elements: every satellite puts its
+# TRACK and its BODY straight under it as two sibling rows carrying the SAME name (they are the same
+# object) and different icons — a line for the track, symbols for the body. Separate rows because they
+# are separately switchable, which is the whole reason they are not one row.
+# Declared through `gmtvtk_set_group_master_h`, the generic child -> master map the tree reads
+# (solar.jl does the same with its three elements); nothing here builds a row of its own, and the
+# master's Remove takes track and spacecraft together. The track and the body share one map key, so
+# ONE declaration covers both.
+const _SAT_MASTER = "Satellites"
+
+# THE BODY IS WORLD-SIZED, NOT SCREEN-CONSTANT: it is an object standing in the scene, so zooming in
+# makes it bigger exactly as the terrain and the orbit tube under it get bigger. The number is a
+# DIAMETER in world units — the unit one degree of equatorial arc is measured in, the same one the
+# orbit's own height is converted to (_KM_PER_DEG_ARC above) — pushed to the layer by
+# `gmtvtk_symbol_set_world_size_h`. 3.6 units is about 400 km: a real spacecraft is metres across and
+# would be invisible at any zoom that shows an orbit, so this is a deliberate symbolic size, read
+# against the 706 km altitude of the track it stands on.
+const _SAT_GLYPH_WORLD = 3.6
+# The pixel size is what the layer falls back to before the world size is applied (and what a flat-2-D
+# window's diamond counterpart is drawn at). In POINTS, converted at the rate the rest of the package
+# uses (96/72 dpi: symbols.jl, xyplot.jl).
+const _SAT_GLYPH_PT = 20.0
+const _SAT_GLYPH_PX = _SAT_GLYPH_PT * 96 / 72
+
+# The body's element name is the SATELLITE'S OWN NAME, with nothing appended: the row in Scene Objects
+# reads "LANDSAT 9", not "LANDSAT 9 (now)". It shares that name with its track, which is what they are
+# — one object — and the two live in different lists (symbol layers vs overlays), so neither remover
+# can reach the other. ONE place names the body; nothing builds this string a second time.
+_sat_now_name(nm::String)::String = nm
+
+"""
+Plant the 3-D spacecraft glyph ("sat", a real body built in 50_scene.cpp — not a flat marker) on the
+LAST point of the already-plotted track `D`, replacing any earlier one for this satellite.
+
+The last point is where the satellite IS at the end of the propagated window — and the dialog anchors
+that window so that, asked for "Now (UTC)", the span runs BACKWARD and the end of the track is this
+instant. The body is therefore never interpolated, never clamped and never off the line: it stands on
+a sample the propagator actually produced, and the hover block carries that sample's own epoch.
+"""
+function _plot_sat_now!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String)::Bool
+	mk = _sat_now_name(nm)
+	# Re-plotting a satellite is an UPDATE of where it is, exactly as the track itself is (above), so
+	# the old body goes first. Removing one that is not there is a no-op, so a first plot needs no case.
+	ccall(_fn(:gmtvtk_remove_symbols_h), Cint, (Ptr{Cvoid}, Cstring), scene, mk)
+	p = _track_end_point(D)
+	p === nothing && return false
+	lon, lat, z, altkm, tj = p
+	xyz = Float64[lon, lat, z]
+	# `datetime` is this file's own JD -> DateTime (through the same C calendar `jd` uses), never a
+	# second conversion written here.
+	info = string(nm, '\n', GMT.Dates.format(datetime(tj), "yyyy-mm-dd HH:MM:SS"), " UTC\n",
+	              "lon ", round(lon, digits = 3), "°   lat ", round(lat, digits = 3), "°\n",
+	              "alt ", round(Int, altkm), " km")
+	# Light metal grey, lit: the glyph is a solid body and takes real shading, so it reads as a shape
+	# rather than as a coloured dot. No edge width — an assembly of primitives drawn with edges shows
+	# its whole triangulation (the C side excludes it for the same reason it excludes a sphere).
+	ok = ccall(_fn(:gmtvtk_add_symbols_h), Cint,
+	           (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cstring, Cdouble, Cint,
+	            Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring),
+	           scene, xyz, Cint(1), "sat", _SAT_GLYPH_PX, Cint(1),
+	           0.87, 0.88, 0.91, 0.0, 0.0, 0.0, 0.0, mk, info) != 0
+	if ok                     # world-sized from here on: the screen-constant rule stops applying to it
+		ccall(_fn(:gmtvtk_symbol_set_world_size_h), Cint, (Ptr{Cvoid}, Cstring, Cdouble),
+		      scene, mk, _SAT_GLYPH_WORLD)
+	end
+	return ok
+end
+
+# The LAST point of the track: (lon, lat, z, alt_km, jd). Columns are groundtrack's
+# (lon, lat, z, alt_km, time_jd) — the z here is the PLOTTED world-unit height, so the body lands at
+# exactly the height of the line it stands on, in every view mode, flat map and globe alike.
+#
+# The segments are cut at the dateline (and at failed epochs) but stay in TIME order, so the last row
+# of the last non-empty segment is the end of the propagated window — no search, and nothing that can
+# put the body on a sample the propagator did not produce.
+function _track_end_point(D::Vector{GMT.GMTdataset})
+	for d in Iterators.reverse(D)
+		m = d.data
+		size(m, 1) == 0 && continue
+		return ntuple(k -> m[size(m, 1), k], 5)
+	end
+	return nothing
+end
+
+# Tube radius for an orbit, in EARTH RADII — the unit the C side takes and the one the magnetic
+# field-line dialog labels its own thickness box with (kCurveTubeR, 10_geometry.cpp, is that box.s
+# own default of 0.006). An orbit is drawn THINNER than a field line on purpose: a track is a
+# trajectory to be read against the map, not a flux tube to be looked at, and several satellites are
+# often up at once. 0.0022 Earth radii is about 14 km.
+const _TRACK_TUBE_R = 0.0022
+
+# ORANGE by default: a track has to read against ocean, land, ice and the night side of a shaded
+# globe alike, and black — the overlay default — disappears into bathymetry and into terrain shadow.
+# `:orange` is a name colors.jl already defines; this does not introduce a colour of its own.
+const _TRACK_COLOR = :orange
 
 plot_groundtrack!(fig::QtFigure, s::Satellite; kw...) = plot_groundtrack!(fig.h, s; kw...)
 
@@ -520,34 +774,35 @@ function _on_satellite(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap:
 			useAlt = get(d, "altitude", "1") != "0"
 
 			done = String[]
-			offscreen = 0
+			nupd = 0
+			rep  = Ref(0)
 			for i in sel
 				(i < 0 || i >= length(tles)) && continue
 				s = Satellite(tles[i+1])
 				try
-					t0 = useNow ? _sat_now_utc() : epoch(s)
-					kw = mode == "minutes" ? (; start = t0, stop = t0 + Minute(round(Int, spanv))) :
-					     mode == "hours"   ? (; start = t0, stop = t0 + Minute(round(Int, spanv * 60))) :
-					                         (; start = t0, revolutions = spanv)
+					# THE TRACK ENDS AT THE ANCHOR, and the spacecraft stands on its LAST point
+					# (`_plot_sat_now!`). Anchored at "now" the span therefore runs BACKWARD — the orbit
+					# just flown, ending exactly where the satellite is at this instant, which is the
+					# whole point of drawing the body. (Running it forward put the body at a future
+					# position it is not at yet, and the track nowhere near "now".) Anchored at the TLE's
+					# own epoch it still runs forward from there: that anchor means "the revolution this
+					# element set describes", and its last point is the satellite at the end of it.
+					t0  = useNow ? _sat_now_utc() : epoch(s)
+					dur = mode == "minutes" ? Minute(round(Int, spanv)) :
+					      mode == "hours"   ? Minute(round(Int, spanv * 60)) :
+					                          _revs_duration(s, spanv)
+					kw  = useNow ? (; start = t0 - dur, stop = t0) : (; start = t0, stop = t0 + dur)
 					nm = isempty(s.tle.name) ? string(norad_number(s)) : s.tle.name
 					D  = groundtrack(s; step = step, altitude = useAlt, kw...)   # propagated ONCE, used twice
-					if _plot_track!(scene, D, nm)
-						push!(done, nm)
-						# Checked AFTER the add, so an empty window that was just promoted is judged
-						# on the frame it actually ended up with, not on the nothing it had before.
-						_track_offscreen(scene, D) === true && (offscreen += 1)
+					if _plot_track!(scene, D, nm; replaced = rep)
+						push!(done, nm);  nupd += rep[]
 					end
 				finally
 					close!(s)          # the finalizer would get it, but not predictably
 				end
 			end
 			isempty(done) && error("nothing could be plotted")
-			msg = "Plotted: " * join(done, ", ")
-			# A track that is correctly plotted but outside the current view looks exactly like a
-			# tool that did nothing. Say it instead of leaving the user to guess.
-			offscreen > 0 && (msg *= offscreen == length(done) ?
-				"  — but it is OUTSIDE the area this window is showing, so you will not see it. Open a world map, or a window with no data in it, and plot there." :
-				"  — $offscreen of them fall outside the area this window is showing.")
+			msg = (nupd > 0 ? "Updated: " : "Plotted: ") * join(done, ", ")
 			_sat_reply(out, cap, msg)
 			return Cint(1)
 		end

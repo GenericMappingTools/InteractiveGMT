@@ -100,7 +100,12 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # Generation 13 = the magfield texture CALLBACK takes `which` and `date` ahead of its buffer. Its
 # setter's signature did not change, so a mismatched pair looks perfectly linked and then dies on the
 # first call — the callback's own signature is host-facing ABI like any export (90_c_api.cpp).
-const _ABI_REQUIRED = 13
+# Generation 14 = gmtvtk_symbol_set_world_size_h, a NEW export the Satellite tool calls on every plot
+# (the spacecraft body is world-sized, not screen-constant). A generation-13 library has no such
+# symbol, so the call finds nothing.
+# Generation 15 = gmtvtk_fit_camera_for_orbit_h, called on every orbit plot so a high orbit (a
+# geostationary satellite is 6.6 Earth radii out) is not drawn outside the camera's field.
+const _ABI_REQUIRED = 15
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.
@@ -115,6 +120,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_remove_polys_h, :gmtvtk_label_width_world_h, :gmtvtk_set_group_master_h,
 	:gmtvtk_add_overlay_gapped_h, :gmtvtk_world_per_pixel_h, :gmtvtk_dblclick_test,
 	:gmtvtk_add_symbols_h, :gmtvtk_add_symbols_ex_h, :gmtvtk_symbol_set_table_h, :gmtvtk_is_alive,
+	:gmtvtk_symbol_set_world_size_h, :gmtvtk_fit_camera_for_orbit_h,
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
 	:gmtvtk_view_points, :gmtvtk_promote_points_h, :gmtvtk_selection_count, :gmtvtk_get_selection,
 	:gmtvtk_set_object_visible,
@@ -283,6 +289,8 @@ const _LIB_OPTIONAL = (
 	:sat_propagate, :sat_propagate_tsince, :sat_propagate_ecef, :sat_groundtrack,
 	:sat_gmst, :sat_teme_to_ecef, :sat_ecef_to_geodetic,
 	:sat_cal_to_jd, :sat_jd_to_cal,
+	:gmtvtk_overlay_tube_h,           # draw an orbit as a tube + lift its globe clip (satellite.jl)
+	:gmtvtk_remove_overlay_named_h,   # replace ONE track on re-plot, not the whole group (satellite.jl)
 )
 
 # Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is

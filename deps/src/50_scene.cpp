@@ -9,6 +9,11 @@ static void rebuildSceneObjects(Scene *s);          // defined just below; refre
 static void unfoldSceneObjects(Scene *s);   // 70_window.cpp: reveal + unfold the dock
 static double sceneWorldPerPixel(Scene *s); // defined below: world units per screen pixel at the focal point
 static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp);   // symbol-layer properties (defined below)
+// Read a mesh file (.ply .obj .stl .off .byu .gltf .glb .vtk…) as a GLYPH source: triangulated,
+// normalled and normalised to the unit contract every glyph here obeys (centred on the origin,
+// longest side 1). Defined in 87_vtkio.cpp — the file that owns every mesh reader, so the symbol
+// menu does not grow a second one (SACRED_LAW.md).
+static vtkSmartPointer<vtkPolyData> vtkioReadGlyphModel(const std::string &path, std::string &err);
 static void toggleShadingFold(Scene *s);            // defined in 70_window.cpp (FoldTitleBar complete there)
 static void swipeRefreshAvailability(Scene *s);     // 57_swipe.cpp: the Swipe button needs >=2 rasters
 static void textApplyProps(Scene *s, TextLabel &tl); // 85_polygon.cpp: re-apply font fields to the actor
@@ -2043,8 +2048,14 @@ static void sceneDeleteGroup(Scene *s, const std::vector<GroupChild> &children) 
 		switch (c.kind) {
 		case GroupChild::Overlays:
 			for (int i = (int)s->overlays.size(); i-- > 0; ) {
+				// A TAG names an element the same way for every kind: its GROUP if it is in one, its OWN
+				// NAME if it is not. This branch used to test the group name alone, while the SymbolLayer
+				// branch below tested the element name — so a master's Remove took the symbol layers of a
+				// plot and left its ungrouped overlays standing (a satellite's track outliving its body).
+				// One identity rule, all kinds (SACRED_LAW.md); it is also what gmtvtk_remove_overlay_named_h
+				// already means by a name.
 				const bool hit = c.actor ? (s->overlays[i].actor.Get() == c.actor)
-				                         : (s->overlays[i].groupName == c.tag);
+				                         : (s->overlays[i].groupName == c.tag || s->overlays[i].name == c.tag);
 				if (!hit) continue;
 				if (s->ren     && s->overlays[i].actor) s->ren->RemoveActor(s->overlays[i].actor);
 				if (s->axesRen && s->overlays[i].actor) s->axesRen->RemoveActor(s->overlays[i].actor);
@@ -2692,6 +2703,21 @@ static void rebuildSceneObjects(Scene *s) {
 	// with planes becomes its own group, see below).
 	QString ovlGroupOpen;                                // name of the currently-open overlay-group node (empty = none)
 	QTreeWidgetItem *ovlMasterSave = nullptr;            // curParent to restore when a MASTERED group closes
+	// THE symbol-layer row builder, one copy, called from two places: the overlay loop below (which
+	// emits a mastered element's symbol rows right after its own, so one satellite reads track-then-
+	// body instead of the panel listing every track and then every body) and the symbols loop further
+	// down, for every layer the first pass did not claim. `symShown` is what keeps them from being
+	// built twice — never a second builder, and never a re-parenting pass afterwards (the rows carry
+	// per-item widgets, and lifting one out with takeChild destroys its widget).
+	std::set<const SymbolLayer *> symShown;
+	auto emitSymbolRow = [&](SymbolLayer &sl) {
+		vtkActor *a = sl.actor.Get();
+		makeRow(QString::fromStdString(sl.name), IC_Points, a && a->GetVisibility() != 0,
+		        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
+		        [s, a](const QPoint &g) { symbolLayerMenu(s, a, g); },
+		        "Left-click for symbol properties");
+		symShown.insert(&sl);
+	};
 	for (auto &ov : s->overlays) {
 		// Overlays sharing a non-empty groupName (e.g. Geography > Plate boundaries' 7 boundary-type
 		// layers, added back-to-back in one batch) fold under ONE collapsible parent row instead of
@@ -2788,9 +2814,32 @@ static void rebuildSceneObjects(Scene *s) {
 		if (!lgn.empty())
 			for (auto &t : s->texts)
 				if (t.groupName == lgn && t.mecaEvent < 0 && t.actor) { hasLabels = true; break; }
+		// An UNGROUPED overlay declared as part of a bigger plot — a satellite TRACK, whose master is
+		// "Satellites" and which shares its name with the spacecraft body standing on it — is a CHILD of
+		// that master row, exactly as a symbol layer already is below. Same row, same builder, different
+		// parent: no intermediate group node is invented for it, so the two rows of one satellite end up
+		// siblings under the master, each with its own checkbox.
+		// The flag is what says "this row was re-parented", NEVER the saved pointer: at top level
+		// curParent IS null, so testing the pointer made the first mastered element look un-parented —
+		// it then skipped its own symbol rows AND never restored curParent, leaving every later element
+		// nested by accident.
+		QTreeWidgetItem *ovSaveParent = curParent;
+		bool ovReparented = false;
+		if (ov.groupName.empty())
+			if (QTreeWidgetItem *mi = masterItemFor(ov.name)) { curParent = mi; ovReparented = true; }
+		// An element of a mastered plot that also owns SYMBOL layers of the same name (a satellite: one
+		// track, one spacecraft body) gets them immediately after its own row, under the same parent —
+		// so the master reads one satellite at a time, not every track and then every body.
+		auto emitOwnSymbols = [&]() {
+			if (!ovReparented) return;                      // only for a row that sits under a master
+			for (auto &sl : s->symbols)
+				if (sl.name == ov.name && !symShown.count(&sl)) emitSymbolRow(sl);
+		};
 		LineRef lr{ LK_Overlay, ov.actor };
 		if (!hasLabels) {
 			addRow(QString::fromStdString(ov.name), ov.actor, ov.mode == 1 ? IC_Line : IC_Points, &lr);
+			emitOwnSymbols();
+			if (ovReparented) curParent = ovSaveParent;
 			continue;
 		}
 		const QString onm = QString::fromStdString(ov.name);
@@ -2811,19 +2860,18 @@ static void rebuildSceneObjects(Scene *s) {
 		        },
 		        textBatchMenu(s, lgn), "Left-click for label properties");
 		endGroup();
+		emitOwnSymbols();                     // …after the element's own group node, still under the master
+		if (ovReparented) curParent = ovSaveParent;
 	}
 	if (!ovlGroupOpen.isEmpty()) endGroup();
 	if (ovlMasterSave) { curParent = ovlMasterSave; ovlMasterSave = nullptr; }   // leave the master row
 	for (auto &sl : s->symbols) {                        // screen-constant symbol layers (props menu)
-		vtkActor *a = sl.actor.Get();
+		if (symShown.count(&sl)) continue;               // already placed beside the element it belongs to
 		// A symbol layer declared as part of a bigger plot (the sub-solar marker of "Sun and
 		// terminators") is a CHILD of that plot's master row -- same row, different parent.
 		QTreeWidgetItem *save = curParent;
 		if (QTreeWidgetItem *mi = masterItemFor(sl.name)) curParent = mi;
-		makeRow(QString::fromStdString(sl.name), IC_Points, a && a->GetVisibility() != 0,
-		        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
-		        [s, a](const QPoint &g) { symbolLayerMenu(s, a, g); },
-		        "Left-click for symbol properties");
+		emitSymbolRow(sl);
 		curParent = save;
 	}
 	for (auto &cu : s->curtains)
@@ -3116,6 +3164,11 @@ static void rebuildSceneObjects(Scene *s) {
 	// a tool among the DATA elements and made this the second implementation of a shared operation.
 	// Its lifetime is still tied to its cube surface: that Remove destroys it, see g_aquamotoDestroy
 	// in sceneRemoveSurface.)
+	// (A MASTER's children are ordered BY ELEMENT, not by kind — a satellite's track then its body,
+	// then the next satellite. That is done WHERE THE ROWS ARE BUILT, in the overlay loop above, which
+	// pulls in the symbol rows sharing its name as it goes. It must NOT be done by re-parenting
+	// finished rows here: these rows carry per-item WIDGETS, and QTreeWidgetItem::takeChild destroys
+	// the widget of every item it lifts out — the whole panel came back blank.)
 	// Remember which groups the user opens / closes by hand (keyed by the label stamped on the item in
 	// beginGroupHandle), so the next rebuild restores that instead of re-folding what they just opened.
 	QObject::connect(tree, &QTreeWidget::itemExpanded, tree, [s](QTreeWidgetItem *it) {
@@ -3732,12 +3785,91 @@ static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string &sym, bool
 	return pd;
 }
 
+// A UNIT SATELLITE BODY — the 3-D glyph behind symbol code "sat" (the Satellite menu plants one on
+// each orbit at the current epoch). Built from VTK primitives rather than shipped as a mesh file:
+// ~500 triangles, no asset to install beside the DLL, no third-party licence, and it stays a
+// compiled-in constant like every other glyph here. Canonical frame, sized to the same Ø1 unit box
+// the other glyphs use: the solar wings run along X (x in ±0.50), +Z is the antenna mast and -Z the
+// nadir dish (z in -0.25..0.31), the body is thin in Y (±0.13).
+// Per-part colours are baked into the CellData as a NAMED array ("satRGB", never the active scalars):
+// inert today — the solid pipeline colours the whole glyph by the actor, like a sphere or a cube —
+// but they cost nothing and are what a per-part colour pass would read.
+static vtkSmartPointer<vtkPolyData> makeSatelliteGlyph() {
+	static const unsigned char kBus[3]   = { 218, 176,  84 };   // gold thermal blanket
+	static const unsigned char kWing[3]  = {  46,  84, 158 };   // solar cells
+	static const unsigned char kMetal[3] = { 200, 205, 212 };   // dish, mast, wing booms
+
+	vtkNew<vtkAppendPolyData> app;
+	std::vector<std::pair<vtkIdType, const unsigned char *>> parts;   // (ncells, colour), in append order
+
+	// Push one primitive through an affine placement into the pile, remembering its cell count so the
+	// colours below can be laid down per part. Everything is triangulated on the way in: vtkCubeSource
+	// emits quads and vtkConeSource a polygon cap, and a glyph source that mixes cell types shades
+	// unevenly under vtkGlyph3DMapper.
+	auto add = [&](vtkAlgorithmOutput *port, vtkTransform *t, const unsigned char *rgb) {
+		vtkNew<vtkTriangleFilter> tri;
+		tri->SetInputConnection(port);
+		vtkNew<vtkTransformPolyDataFilter> xf;
+		xf->SetInputConnection(tri->GetOutputPort());
+		xf->SetTransform(t);
+		xf->Update();
+		parts.emplace_back(xf->GetOutput()->GetNumberOfCells(), rgb);
+		vtkNew<vtkPolyData> part;
+		part->DeepCopy(xf->GetOutput());
+		app->AddInputData(part);            // the filter references it; the local smart pointer may die
+	};
+	vtkNew<vtkTransform> ident;
+
+	vtkNew<vtkCubeSource> bus;                          // spacecraft bus
+	bus->SetXLength(0.26); bus->SetYLength(0.24); bus->SetZLength(0.26);
+	add(bus->GetOutputPort(), ident, kBus);
+
+	for (int sx = -1; sx <= 1; sx += 2) {               // the two solar wings + the booms carrying them
+		vtkNew<vtkCubeSource> wing;
+		wing->SetXLength(0.30); wing->SetYLength(0.26); wing->SetZLength(0.015);
+		vtkNew<vtkTransform> tw; tw->Translate(sx * 0.35, 0.0, 0.0);
+		add(wing->GetOutputPort(), tw, kWing);
+
+		vtkNew<vtkCylinderSource> boom;                 // vtkCylinderSource runs along Y -> turn it to X
+		boom->SetRadius(0.010); boom->SetHeight(0.08); boom->SetResolution(8);
+		vtkNew<vtkTransform> tb; tb->Translate(sx * 0.17, 0.0, 0.0); tb->RotateZ(90.0);
+		add(boom->GetOutputPort(), tb, kMetal);
+	}
+
+	vtkNew<vtkConeSource> dish;                         // nadir dish: apex at the bus, open end facing -Z
+	dish->SetRadius(0.10); dish->SetHeight(0.12); dish->SetResolution(16);
+	dish->SetDirection(0.0, 0.0, 1.0); dish->SetCenter(0.0, 0.0, -0.19);
+	add(dish->GetOutputPort(), ident, kMetal);
+
+	vtkNew<vtkCylinderSource> mast;                     // antenna mast, +Z (away from Earth)
+	mast->SetRadius(0.008); mast->SetHeight(0.18); mast->SetResolution(8);
+	vtkNew<vtkTransform> tm; tm->Translate(0.0, 0.0, 0.22); tm->RotateX(90.0);
+	add(mast->GetOutputPort(), tm, kMetal);
+
+	vtkNew<vtkPolyDataNormals> norms;                   // hard edges: the bus must read as a box, not a blob
+	norms->SetInputConnection(app->GetOutputPort());
+	norms->ComputePointNormalsOn(); norms->ComputeCellNormalsOff(); norms->SplittingOn();
+	norms->Update();
+	vtkSmartPointer<vtkPolyData> out = norms->GetOutput();
+
+	const vtkIdType nc = out->GetNumberOfCells();       // splitting duplicates POINTS, never reorders cells
+	vtkNew<vtkUnsignedCharArray> cc;
+	cc->SetNumberOfComponents(3); cc->SetName("satRGB"); cc->SetNumberOfTuples(nc);
+	vtkIdType t = 0;
+	for (auto &pr : parts)
+		for (vtkIdType i = 0; i < pr.first && t < nc; ++i, ++t) cc->SetTypedTuple(t, pr.second);
+	for (; t < nc; ++t) cc->SetTypedTuple(t, kMetal);
+	out->GetCellData()->AddArray(cc);                   // AddArray, NOT SetScalars — see the note above
+	return out;
+}
+
 // Unit-diameter (radius 0.5) SOLID 3-D glyph for "o" (sphere) / "u" (cube) — a true volume, not a
 // flat XY polygon, so it stays visible from any camera angle (the flat glyphs above go edge-on
 // invisible in an oblique 3-D view). Always filled; normals included so LightingOn() actually
 // shades it (addSymbols turns lighting on only for these two codes).
 static vtkSmartPointer<vtkPolyData> makeSolidGlyph(const std::string &sym) {
-	if (sym == "u") {                      // cube: vtkCubeSource has no built-in normals -> compute them
+	if (sym == "sat") return makeSatelliteGlyph();     // spacecraft body (built above, already normalled)
+	if (sym == "u") {                   // cube: vtkCubeSource has no built-in normals -> compute them
 		vtkNew<vtkCubeSource> cube;
 		cube->SetXLength(1.0); cube->SetYLength(1.0); cube->SetZLength(1.0);
 		vtkNew<vtkPolyDataNormals> norms;
@@ -3772,7 +3904,12 @@ static void symbolRescaleCB(vtkObject*, unsigned long, void *clientData, void*) 
 	const double dpr = (s->widget) ? s->widget->devicePixelRatioF() : 1.0;
 	const double worldPerLogPx = (vph / Hpx) * dpr;
 	for (auto &sl : s->symbols) {
-		const double scale = std::max(1e-9, sl.sizePx * worldPerLogPx);
+		// A WORLD-SIZED layer (a spacecraft body) is a thing standing in the scene, not a marker drawn
+		// on it: its size is in world units and the camera is what makes it bigger or smaller, so the
+		// per-frame screen-constant rule is exactly what must NOT be applied to it. Everything else
+		// keeps worldSize == 0 and the pixel rule below, unchanged.
+		const double scale = (sl.worldSize > 0.0) ? sl.worldSize
+		                                          : std::max(1e-9, sl.sizePx * worldPerLogPx);
 		if (sl.glyphMapper) {                  // solid3D: GPU-instanced path (vtkGlyph3DMapper)
 			sl.glyphMapper->SetScaleFactor(scale);
 			sl.glyphMapper->Modified();
@@ -3803,7 +3940,13 @@ static void restackVector(Scene *s, int *stackPtr, int op) { restackStack(s, sta
 // The FLAT counterpart of a solid glyph: a sphere seen straight down on a 2-D map IS a circle, and a
 // cube IS a square. Used by symbolApplyKind — never by the plotters, which keep asking for what they
 // mean ("o") and let the viewer decide how that reads in the current view mode.
-static inline std::string symFlatCode(const std::string &sym) { return (sym == "u") ? "s" : "c"; }
+// ("sat" -> diamond: seen straight down on a flat map a spacecraft has no third dimension to be a
+// body in either, and a diamond keeps it distinct from the circles every other layer defaults to.)
+static inline std::string symFlatCode(const std::string &sym) {
+	if (sym == "u")   return "s";
+	if (sym == "sat") return "d";
+	return "c";
+}
 
 // THE constructor of a symbol layer's render pipeline — the only place either pipeline is wired.
 // addSymbols calls it to build a new layer, symbolApplyKind when the 2-D/3-D mode flips a solid layer
@@ -3817,7 +3960,12 @@ static void symbolSetPipeline(Scene *s, SymbolLayer &sl, vtkPolyData *in, bool s
 	if (!s || !in || !sl.actor) return;
 	const std::string code = solid ? sl.sym : (sl.wantSolid ? symFlatCode(sl.sym) : sl.sym);
 	bool glyphFilled = true;
-	vtkSmartPointer<vtkPolyData> src = solid ? makeSolidGlyph(code) : makeSymbolGlyph(code, glyphFilled);
+	// An external model loaded onto this layer IS its solid shape — makeSolidGlyph is the built-in
+	// catalogue, and a loaded model simply takes its place (it arrives normalised to the same unit
+	// contract, so every size/placement rule below is unchanged). The flat branch is untouched: a
+	// top-down 2-D map has no third dimension for a model to be a body in.
+	vtkSmartPointer<vtkPolyData> src = solid ? (sl.customGlyph ? sl.customGlyph : makeSolidGlyph(code))
+	                                         : makeSymbolGlyph(code, glyphFilled);
 	const bool wantFill = glyphFilled && (sl.wantFilled != 0);
 	const double fr = sl.fillRGB[0], fg = sl.fillRGB[1], fb = sl.fillRGB[2];
 	const double er = sl.edgeRGB[0], eg = sl.edgeRGB[1], eb = sl.edgeRGB[2];
@@ -3930,7 +4078,9 @@ static void symbolSetPipeline(Scene *s, SymbolLayer &sl, vtkPolyData *in, bool s
 		sl.actor->GetProperty()->SetEdgeColor(er, eg, eb);
 		// Cell-coloured glyphs (star) draw their outline as a coloured boundary line, NOT actor edges
 		// (which would expose the fill triangulation as spokes); edgeWidth sets that line's width.
-		sl.actor->GetProperty()->SetEdgeVisibility((edgeWidth > 0.0 && !cellColoured && code != "o") ? 1 : 0);
+		// (a spacecraft glyph is a many-facet assembly like the sphere — edges would draw its whole
+		// triangulation, so it is excluded for the same reason "o" is; a cube's box outline reads fine)
+		sl.actor->GetProperty()->SetEdgeVisibility((edgeWidth > 0.0 && !cellColoured && code != "o" && code != "sat") ? 1 : 0);
 		sl.actor->GetProperty()->SetLineWidth(edgeWidth > 0.0 ? edgeWidth : 1.0);
 	}
 	else {                                 // open glyph: drawn in the edge colour, no fill
@@ -4008,7 +4158,7 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
 	sl.actor = a;
 	sl.sizePx = (sizePx > 0.0 ? sizePx : 8.0);
 	sl.sym = sym;
-	sl.wantSolid = (sym == "o" || sym == "u");        // sphere / cube: a true volume — in 3-D
+	sl.wantSolid = (sym == "o" || sym == "u" || sym == "sat");   // sphere / cube / spacecraft: a true volume — in 3-D
 	sl.wantFilled = filled;
 	sl.fillRGB[0] = fr; sl.fillRGB[1] = fg; sl.fillRGB[2] = fb;
 	sl.edgeRGB[0] = er; sl.edgeRGB[1] = eg; sl.edgeRGB[2] = eb;
@@ -4424,10 +4574,35 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 		{"Circle","c"}, {"Square","s"}, {"Triangle","t"}, {"Inverted triangle","i"},
 		{"Diamond","d"}, {"Hexagon","h"}, {"Pentagon","n"}, {"Octagon","g"},
 		{"Star","a"}, {"Cross","x"}, {"Plus","+"}, {"Dash","-"} };
+	// A WORLD-SIZED layer is a BODY standing in the scene (a spacecraft), not a marker drawn on the
+	// map: it is measured in world units and grows with zoom, so "make it a dash" is not a shape it can
+	// take. Its list is the 3-D solids only, plus the door to an external model. Every other layer
+	// keeps the flat catalogue exactly as it was.
+	static const std::pair<const char*, const char*> SOLIDS[] = {
+		{"Sphere","o"}, {"Cube","u"}, {"Spacecraft","sat"} };
+	const bool bodyLayer = (sl->worldSize > 0.0);
 	std::vector<QAction*> kindActs;
-	for (const auto &k : KINDS) {
-		QAction *a = tm->addAction(k.first); a->setCheckable(true); a->setChecked(sl->sym == k.second);
-		kindActs.push_back(a);
+	QAction *loadModelA = nullptr;
+	if (bodyLayer) {
+		for (const auto &k : SOLIDS) {
+			QAction *a = tm->addAction(k.first);
+			a->setCheckable(true);
+			a->setChecked(!sl->customGlyph && sl->sym == k.second);
+			kindActs.push_back(a);
+		}
+		tm->addSeparator();
+		loadModelA = tm->addAction(sl->customGlyph
+			? QString("Loaded model: %1 — load another…")
+			  .arg(QFileInfo(QString::fromStdString(sl->customGlyphPath)).fileName())
+			: QString("Load 3-D model…"));
+		loadModelA->setCheckable(true);
+		loadModelA->setChecked(sl->customGlyph != nullptr);
+	}
+	else {
+		for (const auto &k : KINDS) {
+			QAction *a = tm->addAction(k.first); a->setCheckable(true); a->setChecked(sl->sym == k.second);
+			kindActs.push_back(a);
+		}
 	}
 	QMenu *propM = m.addMenu("Symb properties");
 	QAction *fillA = propM->addAction("Fill colour…");
@@ -4522,7 +4697,39 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 		return;
 	}
 
-	for (size_t i = 0; i < kindActs.size(); ++i) if (ch == kindActs[i]) {     // change shape (any -> flat glyph)
+	if (loadModelA && ch == loadModelA) {         // an external mesh becomes this body's shape
+		const QString f = QFileDialog::getOpenFileName(s->widget, "Load a 3-D model as this symbol",
+			prefStartDir(), "3-D models (*.ply *.obj *.stl *.off *.byu *.gltf *.glb *.vtk *.vtp);;All files (*)");
+		if (f.isEmpty()) return;
+		rememberStartDir(f);
+		std::string err;
+		vtkSmartPointer<vtkPolyData> mdl = vtkioReadGlyphModel(f.toStdString(), err);
+		if (!mdl) {
+			QMessageBox::warning(s->widget, "Load 3-D model",
+				QString("Could not use that file as a symbol:\n%1").arg(QString::fromStdString(err)));
+			return;
+		}
+		sl->customGlyph = mdl;
+		sl->customGlyphPath = f.toStdString();
+		sl->wantSolid = true;                      // a model is a volume: it is the 3-D shape of this layer
+		vtkPolyData *pd = symInputPD(*sl);
+		if (pd) symbolSetPipeline(s, *sl, pd, !(s && s->flat2d));
+		symbolRescaleCB(nullptr, 0, s, nullptr);
+		reRender(); return;
+	}
+	if (bodyLayer) {
+		for (size_t i = 0; i < kindActs.size(); ++i) if (ch == kindActs[i]) {   // back to a built-in solid
+			sl->sym = SOLIDS[i].second;
+			sl->customGlyph = nullptr;             // an explicit pick drops any loaded model
+			sl->customGlyphPath.clear();
+			sl->wantSolid = true;
+			vtkPolyData *pd = symInputPD(*sl);
+			if (pd) symbolSetPipeline(s, *sl, pd, !(s && s->flat2d));
+			symbolRescaleCB(nullptr, 0, s, nullptr);
+			reRender(); return;
+		}
+	}
+	for (size_t i = 0; i < kindActs.size() && !bodyLayer; ++i) if (ch == kindActs[i]) {  // change shape (any -> flat glyph)
 		// An explicit pick: from here on this layer IS that flat glyph, in every view mode (so a
 		// sphere layer the user turned into a triangle stays a triangle when the view tilts).
 		// Rebuilt by symbolSetPipeline — the same builder addSymbols uses, so a layer carrying
@@ -4775,6 +4982,61 @@ static void setStippleTCoords(vtkPolyData *pd, const double sc[3], double period
 // TEXTURE on the unchanged line geometry (one cell), so it is cheap and crash-proof regardless
 // of how densely the line is sampled. The texture carries the current colour, so a colour edit
 // re-runs this. `style` is remembered on the Overlay so the colour action can rebuild.
+// THE one place an overlay's mapper is pointed back at its own geometry.
+//
+// "Its own geometry" is not simply `baseLine` any more, and that is the whole reason this exists:
+//   * a TUBED element (a satellite orbit) is drawn from its vtkTubeFilter, not from the raw line;
+//   * an element ON THE GLOBE is drawn through the transform filter globeAttachActor splices in
+//     front of the mapper — the mapper's input is that filter's output, never the lon/lat line.
+// So `m->SetInputData(ov->baseLine)`, which is what this used to be written as inline under the
+// comment "geometry never changes", silently undoes BOTH: the tube reverts to a thin line and the
+// globe transform is dropped, so the element is drawn in raw lon/lat straight across a spherical
+// view. That is exactly what editing a line's thickness or style did — reported as "lines go
+// cartesian over an otherwise spherical projection".
+//
+// Every path that needs to re-seat a mapper's input goes through here, so none of them can forget
+// a stage the element is wearing.
+static void overlayRefreshSource(Scene *s, Overlay &o) {
+	if (!o.actor || !o.baseLine) return;
+	vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(o.actor->GetMapper());
+	if (!m) return;
+	// Off the globe first: the hook remembers the mapper's CURRENT input to restore later, so it
+	// has to be retired before that input is swapped (see GlobeHook::savedProducer).
+	const bool hooked = s && s->globe && s->globeHooks.count(o.actor.Get()) > 0;
+	if (hooked) globeAttachActor(s, o.actor, false);
+	if (o.tubeFlt && o.tubeRadius > 0.0) m->SetInputConnection(o.tubeFlt->GetOutputPort());
+	else                                 m->SetInputData(o.baseLine);
+	if (s && s->globe) globeAttachActor(s, o.actor, true);
+}
+
+// THE width of a vector line, whatever that element happens to be drawn with.
+//
+// A plain line obeys vtkProperty::SetLineWidth. A TUBED line (a satellite orbit) does not — it is
+// solid geometry, and its thickness is the tube's RADIUS — so setting only the property left the
+// Width box doing NOTHING for that one element type while it worked for every other line. That is
+// SACRED_LAW.md's opening diagnostic word for word: a shared control that does something different,
+// or nothing, for element X is the violation. One control, one function, every element type.
+//
+// The tube keeps the RATIO it was created with: `tubeRefWidth` is the line width in force at the
+// moment it became a tube, so the width box scales its radius about that point and the default
+// width reproduces the default thickness exactly.
+static void overlaySetLineWidth(Scene *s, Overlay &o, double w) {
+	if (!o.actor || !(w > 0.0)) return;
+	o.actor->GetProperty()->SetLineWidth(w);          // still right for a plain line, harmless for a tube
+	if (o.tubeFlt && o.tubeRadius > 0.0 && o.tubeRefWidth > 0.0) {
+		const double rw = o.tubeRadius * (s && s->globeR > 0.0 ? s->globeR : 1.0);
+		o.tubeFlt->SetRadius(rw * (w / o.tubeRefWidth));
+	}
+}
+
+// ...and by name, for the callers that have one instead of an Overlay in hand.
+static void overlaySetLineWidthByActor(Scene *s, vtkActor *a, double w) {
+	if (!s || !a) return;
+	for (auto &o : s->overlays)
+		if (o.actor.Get() == a) { overlaySetLineWidth(s, o, w); return; }
+	a->GetProperty()->SetLineWidth(w);                // not an overlay: the plain behaviour
+}
+
 static void applyLineStyle(Scene *s, vtkActor *a, int style) {
 	Overlay *ov = nullptr;
 	for (auto &o : s->overlays) if (o.actor.Get() == a) { ov = &o; break; }
@@ -4782,7 +5044,7 @@ static void applyLineStyle(Scene *s, vtkActor *a, int style) {
 	vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
 	if (!m) return;
 	ov->lineStyle = style;
-	m->SetInputData(ov->baseLine);              // geometry never changes
+	overlayRefreshSource(s, *ov);               // tube and globe survive a style edit
 	if (style == 0) {                           // solid: drop the texture + tcoords
 		a->SetTexture(nullptr);
 		ov->baseLine->GetPointData()->SetTCoords(nullptr);

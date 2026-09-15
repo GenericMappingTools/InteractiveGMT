@@ -1,3 +1,4 @@
+| **File** / **URL** | Which source to read. The radio button picks; the `...` button browses. Naming a source reads it at once — there is no "load" step. |
 # Satellite — orbit propagation and ground tracks
 
 SGP4/SDP4 satellite orbit propagation, from TLEs, plotted as ground tracks in an iGMT window.
@@ -13,7 +14,7 @@ program, no plugin to install, and no network access needed unless you fetch TLE
 1. Open a window showing a **world map** (or leave an empty launcher window — see §5).
 2. **Satellite → Ground tracks…**
 3. Paste a URL (§2) into the **URL** field, or browse to a `.tle` file.
-4. Press **Load satellites** — the list fills.
+4. The list fills as soon as the source is given.
 5. Select one or more, press **Plot ground track**.
 
 That is the whole loop. Double-clicking a name in the list plots it directly.
@@ -62,22 +63,27 @@ actually valid. Use *Now (UTC)* when you have just downloaded fresh ones.
 |---|---|
 | **Pick** | A ready-made Celestrak query (Earth-observation ones first). Choosing one fills the URL box, which stays editable. |
 | **File** / **URL** | Which source to read. The radio button picks; the `...` button browses. |
-| **Load satellites** | Reads the source and fills the list. Nothing is propagated yet. |
 | **Satellite list** | Everything found. Ctrl/Shift-click for several; double-click plots one. |
-| **Start** | *TLE epoch* (default, recommended) or *Now (UTC)*. |
+| **Start** | *Now (UTC)* (default) or *TLE epoch*. Anchored at **now** the span runs BACKWARD, so the track ENDS at this instant — which is where the spacecraft model is planted. Anchored at the TLE's own epoch it runs forward from there. |
 | **Duration** + unit | How much orbit to draw: `revolutions` (default), `minutes`, or `hours`. |
 | **Step (s)** | Sampling interval along the track. 30 s keeps a LEO track smooth. |
-| **Draw at real altitude** | On (default): a true 3-D curve at the satellite's height, so it rises off the globe in 3-D. Off: flat on the map. |
-| **Plot ground track** | Propagates the selected objects and draws them. |
-| **Close** | **Parks** the dialog (see §4) — it does not throw your settings away. |
+| **Draw at real altitude** | On (default): the true 3-D ORBIT at the satellite's height (§6). A flat-2-D window is switched to 3-D, since looking straight down a 420 km lift is invisible. Off: the flat GROUND TRACK on the map — the sub-satellite point. |
+| **Plot track** | Propagates the selected objects and draws them. |
+| **Update orbit** | Brings what is already plotted up to THIS instant: sets the anchor to *Now* and re-propagates, so the track ends and the spacecraft stands where the satellite is right now. |
+
+Every widget of the **Time span** block is live: changing the anchor, the duration, its unit or the
+step — Enter included — re-propagates and redraws at once, spacecraft body and all. Nothing is
+computed until you have plotted once, so typing in a fresh dialog does nothing.
 
 The status line at the bottom reports what happened, including warnings.
 
 ### Sensible values
 
 - **LEO** (ISS, Starlink, imaging satellites): 1–3 revolutions, step 30 s.
-- **Geostationary**: `revolutions` is nearly a whole day; the track is a tiny figure-of-eight or a
-  point. Step 300 s is plenty.
+- **Geostationary**: `revolutions` is nearly a whole day. The ORBIT is a full ring at 35 786 km, so
+  the view is backed off to take it in. Step 300 s is plenty. (The flat GROUND TRACK of the same
+  satellite is the tiny figure-of-eight — the analemma — because in the Earth-fixed frame a
+  geostationary satellite does not travel.)
 - **Molniya / highly eccentric**: 1–2 revolutions, step 60 s. These are deep-space orbits and are
   propagated with SDP4 automatically (§7).
 
@@ -85,8 +91,8 @@ The status line at the bottom reports what happened, including warnings.
 
 ## 4. Parking (minimise)
 
-Pressing **Close** (or the window's X) does **not** destroy the dialog. It hides and leaves a row
-in the **Scene Objects** dock called *Satellite tracks*. From there:
+The window's **X** (or Esc, or Minimise) does **not** destroy the dialog — there is no Close button.
+It hides and leaves a row in the **Scene Objects** dock called *Satellite tracks*. From there:
 
 - **double-click** the row — brings the dialog back, list and settings intact
 - **click** the row — a menu with **Show** and **Delete**
@@ -116,9 +122,13 @@ by silently re-framing the map you were looking at. **Open a world map, or an em
 
 ### Where it lands in Scene Objects
 
-Every track gets a row under one **Satellite tracks** group, named after the satellite. Standard
-element: toggle it, open its properties, remove it. The track carries `lon`, `lat`, `z`, `alt_km`,
-`time_jd` — visible in *Show data table*.
+One master row, **Satellites**, and under it each satellite's TWO rows in turn: its track (line icon)
+and the spacecraft body standing on it (symbol icon), both carrying the satellite's name. Separate
+rows because they are separately switchable; the master's **Remove** takes every one of them. Standard
+elements: toggle, properties, remove.
+
+*Show data table* gives `lon`, `lat`, `alt_km` and `time (UTC)` — what the track IS. The plotted `z`
+is deliberately NOT there: it is an internal of the drawing, described next.
 
 `z` is the *plotted* height, in the viewer's world units — the altitude divided by 111.195 km, one
 degree of equatorial arc. That conversion is the whole trick: the globe engine places a point at
@@ -132,8 +142,38 @@ draws the line 420 units over a 360-wide world — off-screen, and the reason it
 nothing had been plotted. With **Draw at real altitude** off, `z` is 0 and you get a plain flat
 ground track.
 
+The track is drawn as a thin ORANGE TUBE — real 3-D geometry (the same `makeCurveTube` the magnetic
+field lines use), so it takes perspective, stands off the globe at its true altitude, and is occluded
+by the planet rather than painted over it. Orange because a track has to read against ocean, land,
+ice and the night side alike.
+
 The track is **cut at the dateline**, so it draws as a proper map track instead of streaking back
-across the plot. Each pass therefore appears as its own segment.
+across the plot. Each pass is its own segment, and the cut lands EXACTLY on ±180 with a point on
+both sides — on the globe those two meridians are the same line, so the orbit stays continuous
+there instead of showing a gap.
+
+### The 3-D curve is the ORBIT, not the ground track lifted
+
+An orbit is a closed path in the INERTIAL frame. The sub-satellite point is an EARTH-FIXED quantity —
+which piece of ground the satellite is over — and in that frame a geostationary satellite does not
+orbit at all: it hangs over one longitude while its subpoint wanders up and down by the orbit's
+inclination. Lifting THAT to 35 786 km draws a thin figure-of-eight standing beside the planet:
+geometrically right, and not an orbit. A LEO hides the problem, because in one revolution its subpoint
+really does sweep most of the way round the world.
+
+So with **Draw at real altitude** on, the curve is built from the propagator's own inertial (TEME)
+positions and brought into the display frame by ONE rotation: the Earth's rotation angle at a single
+reference epoch, the END of the track — where the spacecraft body stands. The shape is then the true
+orbit and it is hung over the geography correctly for that instant. (Any other reference epoch just
+spins the ring about the pole.) That angle is not re-derived here: it is read off the same propagator
+by asking one epoch in both frames and taking the angle between them.
+
+With the box OFF you get the sub-satellite point, flat on the map — which is what a ground track is,
+and correct as it stands.
+
+A high orbit also has to FIT: a geostationary ring is 6.6 Earth radii, well outside a camera framed on
+the planet, so the view is backed off far enough to see it. Only when it does not already fit — a LEO
+track leaves your view untouched — and the camera only, never the axes.
 
 ---
 
@@ -159,8 +199,8 @@ plot_groundtrack!(fig, s; revolutions = 2, step = Second(30))
 Other entry points:
 
 ```julia
-D = groundtrack(s; revolutions = 1, step = Second(60))          # 3-D curve at true altitude
-D = groundtrack(s; revolutions = 1, altitude = false)           # flat ground track
+D = groundtrack(s; revolutions = 1, step = Second(60))          # the 3-D ORBIT (inertial, see §5)
+D = groundtrack(s; revolutions = 1, altitude = false)           # flat ground track (sub-satellite point)
 pos, vel = propagate(s, DateTime(2024,1,15,12,0,0))      # TEME state, km and km/s, 3×N
 ecef     = propagate_ecef(s, when)                       # earth-fixed, km, 3×N
 lon, lat, alt = subpoint(s, when)                        # sub-satellite point

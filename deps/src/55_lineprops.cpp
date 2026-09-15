@@ -106,7 +106,7 @@ static void showLineProperties(Scene *s, const LineRef &lr) {
 		[s, a, wptBox, pxPerPt, wGuard](double w) {
 			if (*wGuard) return;
 			*wGuard = true;
-			a->GetProperty()->SetLineWidth(w);
+			overlaySetLineWidthByActor(s, a, w);   // a tube changes RADIUS, a line changes width
 			wptBox->setValue(w / pxPerPt);
 			*wGuard = false;
 			if (s->widget) s->widget->renderWindow()->Render();
@@ -116,7 +116,7 @@ static void showLineProperties(Scene *s, const LineRef &lr) {
 			if (*wGuard) return;
 			*wGuard = true;
 			const double w = pt * pxPerPt;
-			a->GetProperty()->SetLineWidth(w);
+			overlaySetLineWidthByActor(s, a, w);
 			wBox->setValue(w);
 			*wGuard = false;
 			if (s->widget) s->widget->renderWindow()->Render();
@@ -144,7 +144,7 @@ static void showLineProperties(Scene *s, const LineRef &lr) {
 			a->GetProperty()->SetInterpolationToPhong();
 			a->GetProperty()->SetAmbient(0.25); a->GetProperty()->SetDiffuse(0.8);
 			a->GetProperty()->SetSpecular(0.3); a->GetProperty()->SetSpecularPower(20.0);
-			if (a->GetProperty()->GetLineWidth() < 10.0) { a->GetProperty()->SetLineWidth(10.0); wBox->setValue(10.0); }
+			if (a->GetProperty()->GetLineWidth() < 10.0) { overlaySetLineWidthByActor(s, a, 10.0); wBox->setValue(10.0); }
 		}
 		else a->GetProperty()->LightingOff();
 		if (s->widget) s->widget->renderWindow()->Render();

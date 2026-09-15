@@ -12660,6 +12660,10 @@ public:
 	QComboBox *cbStart = nullptr, *cbSpanMode = nullptr, *cbPreset = nullptr;
 	QCheckBox *cbAltitude = nullptr;
 	QLabel *lblStatus = nullptr;
+	bool parked      = false;              // already sitting in the dock (parkNow is called from 3 places)
+	bool plottedOnce = false;              // the Time span block only goes live after a real plot
+	bool replotting  = false;              // re-entrancy guard for that live re-plot
+	QString lastPlotKV;                    // the request last sent, so "no change" re-plots nothing
 	bool reallyClose = false;   // set by the parked row's "Delete": let the next close through
 
 	// Ready-made Celestrak queries, EARTH-OBSERVING FIRST because that is what this viewer is for:
@@ -12713,6 +12717,7 @@ public:
 	// its "Show" item, and a second click of the menu entry.
 	void unpark() {
 		if (!dlg) return;
+		parked = false;
 		unparkTool(scn, dlg);
 		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
 		dlg->showNormal();
@@ -12742,8 +12747,12 @@ public:
 	}
 
 	// Hide and leave a handle in Scene Objects. Returns true when the close was swallowed.
+	// Idempotent: EVERY way out of this dialog lands here (the X, Minimise, Esc/reject), so parking
+	// twice must not leave two rows in the dock.
 	bool parkNow() {
 		if (reallyClose || !dlg || !sceneAlive(scn)) return false;
+		if (parked) { dlg->hide(); return true; }
+		parked = true;
 		dlg->hide();
 		parkTool(scn, dlg, "Satellite tracks", IC_Rect,
 		         "Closed Satellite dialog — double-click to bring it back, click for Show / Delete",
@@ -12759,14 +12768,27 @@ public:
 
 	// ONE way into Julia for every request this dialog makes, same shape as the Copernicus one.
 	// Returns an empty string on failure, having already reported it.
+	//
+	// NO DEAD TIME (SACRED_LAW.md): reading a TLE set off disk or a URL and propagating N orbits both
+	// block this thread for seconds, and a frozen dialog with nothing moving reads as a crash. The
+	// busy notice goes up HERE, in the one door, so every request this dialog can make is covered and
+	// no future one can be added without it — `showBusyDialog` / `closeBusyDialog` (30_app.cpp) are the
+	// app's ONE busy notice, the same pair File > Open and every compute tool raise.
 	QString ask(const QString &kv) {
 		if (!g_juliaSatellite) {
 			say("Satellite: callback not registered.");
 			return QString();
 		}
+		// What the user is waiting FOR, off the request itself — never a generic "Please wait".
+		const QString what = kv.section("what=", 1, 1).section('\n', 0, 0).trimmed();
+		const QString busy = (what == "list") ? QStringLiteral("Reading two-line elements…")
+		                   : (what == "plot") ? QStringLiteral("Propagating orbits…")
+		                                      : QStringLiteral("Working…");
 		std::vector<char> buf(1 << 18);
 		buf[0] = '\0';
+		showBusyDialog(busy.toUtf8().constData());
 		const int ok = g_juliaSatellite(scn, kv.toUtf8().constData(), buf.data(), (int)buf.size());
+		closeBusyDialog();
 		const QString ans = QString::fromUtf8(buf.data());
 		if (!ok) {
 			say(ans.isEmpty() ? QString("Satellite: failed, and the Julia side said nothing about why.")
@@ -12828,12 +12850,12 @@ public:
 				if (i <= 0 || i >= (int)p.size()) return;      // index 0 is the "pick one" placeholder
 				if (leUrl) leUrl->setText(QString::fromUtf8(p[(size_t)i].url));
 				if (rbUrl) rbUrl->setChecked(true);
+				loadList();             // picking a preset IS asking for its satellites
 			});
 		}
 
-		QPushButton *btLoad  = d->findChild<QPushButton *>("btn_load");
-		QPushButton *btPlot  = d->findChild<QPushButton *>("btn_plot");
-		QPushButton *btClose = d->findChild<QPushButton *>("btn_close");
+		QPushButton *btPlot   = d->findChild<QPushButton *>("btn_plot");
+		QPushButton *btUpdate = d->findChild<QPushButton *>("btn_update");
 		QToolButton *btBrowse = d->findChild<QToolButton *>("btn_browse");
 
 		// prefStartDir()/rememberStartDir() — the directory MRU every other file dialog in this app
@@ -12845,16 +12867,54 @@ public:
 			rememberStartDir(fn);
 			if (leFile) leFile->setText(fn);
 			if (rbFile) rbFile->setChecked(true);
+			loadList();                 // choosing a file IS asking for its satellites
 		});
 
-		if (btLoad) QObject::connect(btLoad, &QPushButton::clicked, [this] { loadList(); });
+		// NO "Load" BUTTON. Naming a source IS the request to read it — a button that says "now
+		// really do the thing you just asked for" is a step with no decision in it. So the list
+		// fills the moment a source is given: a preset picked (above), a file chosen in the browser,
+		// or either box finished being edited. `editingFinished` and not `textChanged`: a box is
+		// re-read when the user is DONE with it, never on a keystroke.
+		if (leFile) QObject::connect(leFile, &QLineEdit::editingFinished, [this] {
+			if (rbFile) rbFile->setChecked(true);
+			loadList();
+		});
+		if (leUrl) QObject::connect(leUrl, &QLineEdit::editingFinished, [this] {
+			if (rbUrl) rbUrl->setChecked(true);
+			loadList();
+		});
+		// Flipping the radio between two sources that are both already filled in re-reads the one
+		// now selected, so the list always describes the source the dialog is pointing at.
+		if (rbFile) QObject::connect(rbFile, &QRadioButton::toggled, [this](bool on) {
+			if (on && leFile && !leFile->text().trimmed().isEmpty()) loadList();
+		});
+		if (rbUrl) QObject::connect(rbUrl, &QRadioButton::toggled, [this](bool on) {
+			if (on && leUrl && !leUrl->text().trimmed().isEmpty()) loadList();
+		});
 
 		// Double-clicking one entry is the obvious "just plot this one" gesture.
 		if (lwSats) QObject::connect(lwSats, &QListWidget::itemDoubleClicked,
 		                             [this](QListWidgetItem *) { plot(); });
 
-		if (btPlot)  QObject::connect(btPlot,  &QPushButton::clicked, [this] { plot(); });
-		if (btClose) QObject::connect(btClose, &QPushButton::clicked, [d] { d->close(); });
+		if (btPlot)   QObject::connect(btPlot,   &QPushButton::clicked, [this] { plot(); });
+		// "Update orbit" = bring what is plotted up to THIS instant. There is no Close button any more:
+		// the X (and Minimise) park the dialog, which is what closing it always did.
+		if (btUpdate) QObject::connect(btUpdate, &QPushButton::clicked, [this] { updateOrbit(); });
+
+		// THE TIME SPAN BLOCK IS LIVE. Anchor, duration, its unit and the step all describe the same
+		// thing — WHICH PIECE OF THE ORBIT IS ON SCREEN — so changing any of them re-propagates and
+		// re-draws at once, spacecraft body included, instead of leaving the window showing a span the
+		// dialog no longer says. Enter in an edit box counts: QLineEdit emits editingFinished on Return
+		// as well as on focus loss, so that one signal covers both without a second connection firing
+		// the same plot twice.
+		// This is the deliberate exception to the standing "only the action button computes" rule, and
+		// it is bounded by `replotIfPlotted`: nothing is ever computed for a window that has not been
+		// plotted into yet, so typing in a fresh dialog stays inert.
+		auto live = [this] { replotIfPlotted(); };
+		if (cbStart)    QObject::connect(cbStart,    &QComboBox::currentIndexChanged,  live);
+		if (cbSpanMode) QObject::connect(cbSpanMode, &QComboBox::currentIndexChanged,  live);
+		if (leSpan)     QObject::connect(leSpan,     &QLineEdit::editingFinished,      live);
+		if (leStep)     QObject::connect(leStep,     &QLineEdit::editingFinished,      live);
 
 		// The wrapper is a plain C++ object, so it must die WITH its dialog — otherwise the row's
 		// "Delete" frees the QDialog and leaves this object in the registry holding a dangling
@@ -12891,6 +12951,11 @@ public:
 			}
 		};
 		d->installEventFilter(new CloseParks(d, this));
+		// …and the OTHER way out, which that filter never sees: QDialog::reject() — Esc, and the title-bar
+		// X wherever the platform routes it through reject rather than a QEvent::Close. It runs done() →
+		// hide() with no Close event at all, so the dialog vanished leaving NO row in the dock and no way
+		// back to it. Same parkNow (idempotent), so whichever path fires first is the one that parks.
+		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });
 	}
 
 	// Read the source and fill the list. The INDEX of each row is what `plot` sends back, so the
@@ -12907,16 +12972,39 @@ public:
 		say(QString("%1 satellite(s) loaded.").arg(lwSats->count()));
 	}
 
-	void plot() {
-		if (!lwSats) return;
-		QList<QListWidgetItem *> sel = lwSats->selectedItems();
-		if (sel.isEmpty()) {
-			say("Pick at least one satellite first (Load satellites, then select a row).");
-			return;
-		}
-		QStringList idx;
-		for (QListWidgetItem *it : sel) idx << QString::number(lwSats->row(it));
+	// The live half of the Time span block: re-plot what is ALREADY on screen. Three gates, in order —
+	// nothing plotted yet (a fresh dialog is inert until the user plots once, so a stray keystroke can
+	// never start a propagation nobody asked for); a plot already running (editingFinished fires again
+	// while the busy notice takes the focus, and re-entering would stack propagations); and the request
+	// being identical to the last one (focus loss with nothing typed is not a change).
+	void replotIfPlotted() {
+		if (!plottedOnce || replotting) return;
+		if (lastPlotKV == plotKV()) return;
+		replotting = true;
+		plot();
+		replotting = false;
+	}
 
+	// "Update orbit": re-propagate to the CURRENT instant. The anchor is moved to "Now (UTC)" first —
+	// that is what the button says, and with the span running backward from the anchor (satellite.jl)
+	// it is what makes the track end, and the spacecraft stand, where the satellite is right now. An
+	// anchor left at the TLE epoch would re-draw the same arc for ever.
+	// The combo change would fire the live re-plot on its own, so the guard is raised around it and the
+	// single plot below is the one that runs — never two propagations for one click.
+	void updateOrbit() {
+		replotting = true;
+		if (cbStart) cbStart->setCurrentIndex(1);      // 0 = TLE epoch, 1 = Now (UTC)
+		replotting = false;
+		plot();
+	}
+
+	// The request block, built ONCE here and used by both the button and the live re-plot, so the two
+	// can never ask for different things.
+	QString plotKV() const {
+		if (!lwSats) return QString();
+		QStringList idx;
+		for (QListWidgetItem *it : lwSats->selectedItems()) idx << QString::number(lwSats->row(it));
+		if (idx.isEmpty()) return QString();
 		QString kv = "what=plot\n" + sourceKV();
 		kv += "sel=" + idx.join(',') + "\n";
 		kv += QString("start=%1\n").arg(cbStart && cbStart->currentIndex() == 1 ? "now" : "epoch");
@@ -12927,9 +13015,25 @@ public:
 		kv += QString("spanmode=%1\n").arg(sm == 1 ? "minutes" : sm == 2 ? "hours" : "revs");
 		kv += "step=" + (leStep ? leStep->text().trimmed() : QString("30")) + "\n";
 		kv += QString("altitude=%1\n").arg(!cbAltitude || cbAltitude->isChecked() ? 1 : 0);
+		return kv;
+	}
 
+	void plot() {
+		if (!lwSats) return;
+		QList<QListWidgetItem *> sel = lwSats->selectedItems();
+		if (sel.isEmpty()) {
+			say("Pick at least one satellite first (Load satellites, then select a row).");
+			return;
+		}
+		const QString kv = plotKV();
+		if (kv.isEmpty()) return;
 		const QString ans = ask(kv);
 		if (!ans.isEmpty()) say(ans.trimmed());
+		if (ans.isEmpty()) return;
+		// From here the window HAS satellites in it, and this is the request that put them there: the
+		// Time span block goes live, and a later edit that changes nothing re-plots nothing.
+		plottedOnce = true;
+		lastPlotKV  = kv;
 	}
 };
 

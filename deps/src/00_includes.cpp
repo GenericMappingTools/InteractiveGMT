@@ -164,6 +164,7 @@
 #include <vtkCubeAxesActor.h>
 #include <vtkCamera.h>
 #include <vtkPlane.h>              // Swipe tool: the camera-aligned cut plane (57_swipe.cpp)
+#include <vtkTubeFilter.h>         // vector overlays drawn as tubes (satellite orbits; see Overlay::tubeFlt)
 #include <vtkPlaneCollection.h>    // ... and the mapper's plane list, to stamp it idempotently
 #include <vtkCellPicker.h>
 #include <vtkPointPicker.h>
