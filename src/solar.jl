@@ -249,7 +249,8 @@ end
 # zero width: the visible terminator line is the line overlay beside this, and a painted region must
 # not draw a second one over the map's edge and the pole, where this polygon's own boundary runs.
 function _solar_paint!(scene::Ptr{Cvoid}, polys::Vector{Matrix{Float64}}, name::AbstractString,
-                       rgb::NTuple{3,Float64}, tr::Float64)::Int
+                       rgb::NTuple{3,Float64}, tr::Float64;
+                       group::String = _SOLAR_FILL_GROUP)::Int
 	n = 0
 	op = clamp(1.0 - tr / 100.0, 0.0, 1.0)
 	for (k, R) in enumerate(polys)
@@ -260,7 +261,7 @@ function _solar_paint!(scene::Ptr{Cvoid}, polys::Vector{Matrix{Float64}}, name::
 		            (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble,
 		             Cdouble, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring),
 		            scene, xyz, Cint(size(R, 1)), Cint(1), Cint(0),
-		            rgb[1], rgb[2], rgb[3], 0.0, Cint(0), rgb[1], rgb[2], rgb[3], op, nm, _SOLAR_FILL_GROUP)
+		            rgb[1], rgb[2], rgb[3], 0.0, Cint(0), rgb[1], rgb[2], rgb[3], op, nm, group)
 		idx >= 0 && (n += 1)
 	end
 	return n
@@ -352,4 +353,59 @@ function _register_solar()
 	fptr = @cfunction((s, c) -> Base.invokelatest(_on_solar, s, c)::Cint, Cint, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_solar_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
+end
+
+# --- DAY / NIGHT ----------------------------------------------------------------------------------
+# The night side of the Earth, darkened, for one instant. This is the Sun tool's OWN night region
+# asked for a single terminator and a single time: the same `-Td` ring, the same `_solar_night_polys`
+# that decides which shape the dark cap takes (blob, or ring closed over a pole), and the same
+# `_solar_paint!` that lays it down. Nothing here recomputes where the dark side is — a second
+# answer to that question is exactly what SACRED_LAW.md forbids.
+#
+# Its own GROUP, though, not the Sun tool's: the two are switched on from different places and each
+# has to be able to replace its own polygons without wiping the other's.
+const _DAYNIGHT_GROUP  = "Night side"
+const _DAYNIGHT_RGB    = (0.0, 0.0, 0.0)
+const _DAYNIGHT_TRANSP = 50.0            # per cent — the geography under it stays readable
+
+# Which windows are showing it, so a repaint (the satellite animation walks the clock) knows whether
+# there is anything to repaint. Keyed by the window, like every other per-window state here.
+const _DAYNIGHT_ON = Dict{UInt,Bool}()
+_daynight_on(scene::Ptr{Cvoid})::Bool = get(_DAYNIGHT_ON, UInt(scene), false)
+
+function _daynight_clear!(scene::Ptr{Cvoid})
+	ccall(_fn(:gmtvtk_remove_polys_h), Cint, (Ptr{Cvoid}, Cstring), scene, _DAYNIGHT_GROUP)
+	_DAYNIGHT_ON[UInt(scene)] = false
+	return nothing
+end
+
+"""
+Darken the night side of `scene` as it stands at `when` (UTC). Returns the number of polygons.
+
+`when` is the ONE input: today's instant, the anchor of a satellite plot, or any other date — the
+maths does not care which, so a date picker added later needs nothing new here.
+
+COST, MEASURED, because it decides what this can be used for: 0.163 s on a flat map and **3.76 s on
+the globe**. The night region is one hemisphere-sized polygon whose pole-closing edge is 360° long,
+and putting a polygon on the sphere goes through `globeDensifyPD`, which refines by splitting every
+triangle 1->4 until no edge exceeds 2° — up to eight passes, i.e. 65536 triangles for each one it
+starts with. That is fine for a toggle and far too slow to follow a clock: repainting it once per
+animation frame took the process out. Making the terminator animate means the night side has to stop
+being a polygon and become a real mesh (~2° cells, one actor) or a per-pixel darkening of the
+planet's own texture.
+"""
+function _daynight_paint!(scene::Ptr{Cvoid}, when::GMT.Dates.DateTime; W::Float64 = -180.0)::Int
+	scene == C_NULL && error("day/night: no window")
+	mods = "+d" * GMT.Dates.format(when, "yyyy-mm-ddTHH:MM:SS")
+	D = GMT.solar(T = "d" * mods, M = true)          # -Td: the day/night terminator, -M: hand it over
+	(D === nothing || isempty(D)) && error("solar returned no terminator for " * string(when))
+	ring = (D isa GMTdataset ? D : D[1]).data
+	polys = _solar_night_polys(ring, W, _solar_sunlat(mods))
+	isempty(polys) && error("the night side came out empty for " * string(when))
+	# REPLACE, never pile up — the terminator of 10:00 and the one of 10:04 are the same element seen
+	# at two instants, which is what makes this safe to call once per animation frame.
+	ccall(_fn(:gmtvtk_remove_polys_h), Cint, (Ptr{Cvoid}, Cstring), scene, _DAYNIGHT_GROUP)
+	n = _solar_paint!(scene, polys, "Night", _DAYNIGHT_RGB, _DAYNIGHT_TRANSP; group = _DAYNIGHT_GROUP)
+	_DAYNIGHT_ON[UInt(scene)] = n > 0
+	return n
 end

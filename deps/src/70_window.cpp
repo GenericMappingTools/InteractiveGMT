@@ -12658,7 +12658,7 @@ public:
 	QLineEdit *leFile = nullptr, *leUrl = nullptr, *leSpan = nullptr, *leStep = nullptr;
 	QListWidget *lwSats = nullptr;
 	QComboBox *cbStart = nullptr, *cbSpanMode = nullptr, *cbPreset = nullptr, *cbFrame = nullptr;
-	QCheckBox *cbAltitude = nullptr, *cbCoverage = nullptr;
+	QCheckBox *cbAltitude = nullptr, *cbCoverage = nullptr, *cbDayNight = nullptr;
 	QLabel *lblStatus = nullptr;
 	// The one-day animation: the host owns the clock. A loop on the Julia side would sit on the very
 	// thread that pumps this window's event loop and freeze what it is drawing, so the run is a QTimer
@@ -12872,6 +12872,7 @@ public:
 		cbPreset   = d->findChild<QComboBox *>("cb_preset");
 		cbAltitude = d->findChild<QCheckBox *>("cb_altitude");
 		cbCoverage = d->findChild<QCheckBox *>("cb_coverage");
+		cbDayNight = d->findChild<QCheckBox *>("cb_daynight");
 		cbFrame    = d->findChild<QComboBox *>("cb_frame");
 		lblStatus  = d->findChild<QLabel *>("lbl_status");
 
@@ -12950,6 +12951,21 @@ public:
 		// "Animate 1 day" — one satellite, the last 24 h wound onto the map (ending at NOW). Both it and the coverage
 		// box are driven by `syncAnimEnabled()`, which is the ONE place that decides what the current
 		// selection allows; the selection signal and the list refill both go through it.
+		// DAY / NIGHT is a VIEW of the Earth, not a property of a plot: the box IS its own action
+		// button, it acts at once, and it does not wait for a satellite to have been plotted (the
+		// deliberate difference from the Time span block's live widgets, which are gated on that).
+		// No time is sent — Julia uses this instant — and `when=` is the hook an arbitrary date needs.
+		if (cbDayNight) QObject::connect(cbDayNight, &QCheckBox::toggled, [this](bool on) {
+			const QString ans = ask(QString("what=daynight\non=%1\n").arg(on ? 1 : 0));
+			// A window with no map to darken refuses: put the box back rather than leave it ticked
+			// over a request that did not happen.
+			if (on && ans.isEmpty() && cbDayNight) {
+				QSignalBlocker b(cbDayNight);
+				cbDayNight->setChecked(false);
+			}
+			else if (!ans.trimmed().isEmpty()) say(ans.trimmed());
+		});
+
 		btAnim = d->findChild<QPushButton *>("btn_anim");
 		if (btAnim) QObject::connect(btAnim, &QPushButton::clicked, [this] { animToggle(); });
 		if (lwSats) QObject::connect(lwSats, &QListWidget::itemSelectionChanged,

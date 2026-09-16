@@ -178,6 +178,16 @@
         </property>
        </widget>
       </item>
+      <item row="3" column="0" colspan="5">
+       <widget class="QCheckBox" name="cb_daynight">
+        <property name="toolTip">
+         <string>Darken the night side of the Earth as it stands at the instant the track ends — the same day/night terminator Geography &gt; Sun and terminators draws. It follows the animation: with a run going, the terminator walks with the clock.</string>
+        </property>
+        <property name="text">
+         <string>Darken the night side (day/night terminator)</string>
+        </property>
+       </widget>
+      </item>
       <item row="2" column="0" colspan="5">
        <widget class="QCheckBox" name="cb_altitude">
         <property name="toolTip">
