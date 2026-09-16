@@ -161,14 +161,14 @@
         </item>
        </widget>
       </item>
-      <item row="2" column="0">
+      <item row="1" column="3">
        <widget class="QLabel" name="lbl_step">
         <property name="text">
          <string>Step (s)</string>
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
+      <item row="1" column="4">
        <widget class="QLineEdit" name="le_step">
         <property name="toolTip">
          <string>Sampling interval along the track. 30 s keeps a low-earth track smooth.</string>
@@ -178,7 +178,7 @@
         </property>
        </widget>
       </item>
-      <item row="3" column="0" colspan="3">
+      <item row="2" column="0" colspan="5">
        <widget class="QCheckBox" name="cb_altitude">
         <property name="toolTip">
          <string>On: the orbit is a 3-D curve at the satellite's true height, so it rises off the globe in 3-D. Off: it is drawn flat on the map as a plain ground track.</string>
@@ -191,14 +191,14 @@
         </property>
        </widget>
       </item>
-      <item row="4" column="0">
+      <item row="0" column="3">
        <widget class="QLabel" name="lbl_frame">
         <property name="text">
          <string>Frame</string>
         </property>
        </widget>
       </item>
-      <item row="4" column="1" colspan="2">
+      <item row="0" column="4">
        <widget class="QComboBox" name="cb_frame">
         <property name="toolTip">
          <string>WHICH curve the 3-D orbit is. Earth-fixed: where the satellite goes over the PLANET — every revolution lands further west, so a low orbit walks around the globe. Inertial: the orbit itself, the closed path around the Earth; the only one that shows an orbit for a geostationary satellite, which does not move over the ground at all. Automatic picks inertial for a geosynchronous orbit and Earth-fixed for everything else.</string>
@@ -242,6 +242,26 @@
        </property>
        <property name="text">
         <string>Update orbit</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_anim">
+       <property name="toolTip">
+        <string>Wind the last 24 hours onto the map: the track grows from a day ago up to NOW, the spacecraft rides its head and ends where the satellite actually is, and the ground coverage fills in behind it if the box beside this is ticked. One satellite at a time — select exactly one row. Click again to stop.</string>
+       </property>
+       <property name="text">
+        <string>Animate 1 day</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QCheckBox" name="cb_coverage">
+       <property name="toolTip">
+        <string>Paint the strip of ground the instrument covers as the animation runs. Available only for a satellite whose published swath width this app knows (Terra, Aqua, Landsat 8/9, the Sentinels, Suomi NPP, NOAA-20/21, SWOT).</string>
+       </property>
+       <property name="text">
+        <string>Ground coverage</string>
        </property>
       </widget>
      </item>

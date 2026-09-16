@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------------------------------------
-# Geophysics > Copernicus > "Sentinel Hub imagery…" — a port of the QGIS SentinelHub plugin
+# Satellite > Copernicus > "Sentinel Hub imagery…" — a port of the QGIS SentinelHub plugin
 # (github.com/sentinel-hub/sentinelhub-qgis-plugin, Sinergise) onto the iGMT dialog machinery.
 # The C++ half is SentinelHubDialog (70_window.cpp), which loads deps/ui/sentinelhub_dialog.ui at
 # runtime and talks to this file through gmtvtk_set_sentinelhub_callback with the newline-separated

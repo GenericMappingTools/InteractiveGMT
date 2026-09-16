@@ -9910,7 +9910,7 @@ public:
 };
 
 // ============================================================================================
-// Ocean Color Data Browser (Geophysics menu). Loaded at RUNTIME via QUiLoader from
+// Ocean Color Data Browser (Satellite menu). Loaded at RUNTIME via QUiLoader from
 // deps/ui/oceancolor_browser.ui (plain Qt widget classes only, same technique as the dialogs above).
 //
 // Browse the NASA OB.DAAC L3 archive: pick Instrument / Product / Period and the two preview tiles
@@ -11385,7 +11385,7 @@ class EcmwfDialog;
 static std::map<Scene *, EcmwfDialog *> g_ecmwfDlgs;
 
 // ============================================================================================
-// Copernicus / ECMWF download (Geophysics > Copernicus) — GMT.jl's `ecmwf`: the Climate Data Store
+// Copernicus / ECMWF download (Satellite > Copernicus) — GMT.jl's `ecmwf`: the Climate Data Store
 // (ERA5 reanalysis, needs a ~/.cdsapirc key) and the ECMWF open-data forecasts (no credentials).
 // Loaded at RUNTIME via QUiLoader from deps/ui/ecmwf_dialog.ui.
 //
@@ -11975,7 +11975,7 @@ class EcvDialog;
 // One dialog per window, alive while parked — same contract as the Copernicus/ECMWF one above.
 static std::map<Scene *, EcvDialog *> g_ecvDlgs;
 
-// Copernicus / Essential Climate Variables (Geophysics > Copernicus) — the CDS collection
+// Copernicus / Essential Climate Variables (Satellite > Copernicus) — the CDS collection
 // `ecv-for-climate-change` through src/ecv.jl. Loaded at RUNTIME via QUiLoader from
 // deps/ui/ecv_dialog.ui.
 //
@@ -12212,7 +12212,7 @@ class SentinelHubDialog;
 static std::map<Scene *, SentinelHubDialog *> g_shubDlgs;
 
 // ============================================================================================
-// Sentinel Hub imagery (Geophysics > Copernicus) — a port of the QGIS SentinelHub plugin
+// Sentinel Hub imagery (Satellite > Copernicus) — a port of the QGIS SentinelHub plugin
 // (github.com/sentinel-hub/sentinelhub-qgis-plugin). Loaded at RUNTIME via QUiLoader from
 // deps/ui/sentinelhub_dialog.ui; everything that touches the network is src/sentinelhub.jl.
 //
@@ -12658,8 +12658,14 @@ public:
 	QLineEdit *leFile = nullptr, *leUrl = nullptr, *leSpan = nullptr, *leStep = nullptr;
 	QListWidget *lwSats = nullptr;
 	QComboBox *cbStart = nullptr, *cbSpanMode = nullptr, *cbPreset = nullptr, *cbFrame = nullptr;
-	QCheckBox *cbAltitude = nullptr;
+	QCheckBox *cbAltitude = nullptr, *cbCoverage = nullptr;
 	QLabel *lblStatus = nullptr;
+	// The one-day animation: the host owns the clock. A loop on the Julia side would sit on the very
+	// thread that pumps this window's event loop and freeze what it is drawing, so the run is a QTimer
+	// here asking for ONE FRAME per tick (see satellite.jl's `_anim_frame!`).
+	QPushButton *btAnim = nullptr;
+	QTimer *animTimer = nullptr;
+	int animFrame = 0, animFrames = 0;
 	QString nameFilter;                    // the curated preset's name prefixes; empty = take everything
 	bool parked      = false;              // already sitting in the dock (parkNow is called from 3 places)
 	bool plottedOnce = false;              // the Time span block only goes live after a real plot
@@ -12809,6 +12815,18 @@ public:
 		return ans.isEmpty() ? QString(" ") : ans;
 	}
 
+	// The same door for a request that is a QUESTION, not a job: no busy notice (there is nothing to
+	// wait for — `swathknown` is a table lookup) and no status line on failure (it is asked on every
+	// change of selection, and a missing callback must not shout once per click).
+	QString askQuiet(const QString &kv) const {
+		if (!g_juliaSatellite) return QString();
+		std::vector<char> buf(1 << 12);
+		buf[0] = '\0';
+		if (!g_juliaSatellite(scn, kv.toUtf8().constData(), buf.data(), (int)buf.size()))
+			return QString();
+		return QString::fromUtf8(buf.data()).trimmed();
+	}
+
 	// The source half of the key=value block — shared by `list` and `plot` so the two can never
 	// disagree about WHICH file the selection indices refer to.
 	QString sourceKV() const {
@@ -12853,6 +12871,7 @@ public:
 		cbSpanMode = d->findChild<QComboBox *>("cb_spanmode");
 		cbPreset   = d->findChild<QComboBox *>("cb_preset");
 		cbAltitude = d->findChild<QCheckBox *>("cb_altitude");
+		cbCoverage = d->findChild<QCheckBox *>("cb_coverage");
 		cbFrame    = d->findChild<QComboBox *>("cb_frame");
 		lblStatus  = d->findChild<QLabel *>("lbl_status");
 
@@ -12927,6 +12946,15 @@ public:
 		// "Update orbit" = bring what is plotted up to THIS instant. There is no Close button any more:
 		// the X (and Minimise) park the dialog, which is what closing it always did.
 		if (btUpdate) QObject::connect(btUpdate, &QPushButton::clicked, [this] { updateOrbit(); });
+
+		// "Animate 1 day" — one satellite, the last 24 h wound onto the map (ending at NOW). Both it and the coverage
+		// box are driven by `syncAnimEnabled()`, which is the ONE place that decides what the current
+		// selection allows; the selection signal and the list refill both go through it.
+		btAnim = d->findChild<QPushButton *>("btn_anim");
+		if (btAnim) QObject::connect(btAnim, &QPushButton::clicked, [this] { animToggle(); });
+		if (lwSats) QObject::connect(lwSats, &QListWidget::itemSelectionChanged,
+		                             [this] { syncAnimEnabled(); });
+		syncAnimEnabled();
 
 		// THE TIME SPAN BLOCK IS LIVE. Anchor, duration, its unit and the step all describe the same
 		// thing — WHICH PIECE OF THE ORBIT IS ON SCREEN — so changing any of them re-propagates and
@@ -13025,6 +13053,103 @@ public:
 		if (cbStart) cbStart->setCurrentIndex(1);      // 0 = TLE epoch, 1 = Now (UTC)
 		replotting = false;
 		plot();
+	}
+
+	// WHAT THE CURRENT SELECTION ALLOWS — the ONE place that decides it, so the button and the box can
+	// never disagree with each other or with the list.
+	//   * the animation runs ONE satellite (a day of one orbit is a picture; a day of six is a ball of
+	//     wool), so the button needs exactly one row selected;
+	//   * the coverage box needs a satellite whose published swath this app actually carries. That is
+	//     a question only the Julia side can answer (it holds the table), so it is asked — a table
+	//     lookup, no work — and the box is greyed with a reason when the answer is no.
+	// Never while a run is going: changing the selection mid-animation must not re-arm anything.
+	void syncAnimEnabled() {
+		const bool running = (animTimer != nullptr);
+		if (running) return;
+		const int nsel = lwSats ? lwSats->selectedItems().size() : 0;
+		if (btAnim) btAnim->setEnabled(nsel == 1);
+		if (!cbCoverage) return;
+		bool known = false;
+		QString nm;
+		if (nsel == 1) {
+			nm = lwSats->selectedItems().first()->text().trimmed();
+			known = (askQuiet("what=swathknown\nname=" + nm + "\n") == "1");
+		}
+		cbCoverage->setEnabled(nsel == 1 && known);
+		if (!cbCoverage->isEnabled()) cbCoverage->setChecked(false);
+		cbCoverage->setToolTip(nsel != 1
+			? QString("Select exactly one satellite.")
+			: known ? QString("Paint the strip of ground %1's instrument covers as the animation runs.").arg(nm)
+			        : QString("No published swath is known for %1, so its ground coverage cannot be drawn.").arg(nm));
+	}
+
+	// One animation tick = one frame. The timer is the run: alive means running, and stopping it is
+	// the only way the run ends — both the user's second click and the last frame go through here.
+	void animToggle() {
+		if (animTimer) { animStop("Animation stopped."); return; }
+		if (!lwSats || lwSats->selectedItems().size() != 1) {
+			say("Select exactly one satellite to animate.");
+			return;
+		}
+		const int row = lwSats->row(lwSats->selectedItems().first());
+		QString kv = "what=animstart\n" + sourceKV();
+		kv += QString("sel=%1\n").arg(row);
+		kv += QString("altitude=%1\n").arg(!cbAltitude || cbAltitude->isChecked() ? 1 : 0);
+		const int fr = cbFrame ? cbFrame->currentIndex() : 0;
+		kv += QString("frame=%1\n").arg(fr == 1 ? "earthfixed" : fr == 2 ? "inertial" : "auto");
+		kv += QString("coverage=%1\n").arg(cbCoverage && cbCoverage->isEnabled() && cbCoverage->isChecked() ? 1 : 0);
+		// The setup propagates the day and walks the swath edges — seconds of work, so it goes behind
+		// the app's busy notice like every other blocking request (`ask`, above).
+		const QString ans = ask(kv);
+		if (ans.isEmpty()) return;
+		animFrames = ans.trimmed().toInt();
+		if (animFrames <= 0) { say("The animation could not be prepared."); return; }
+		animFrame = 0;
+		if (btAnim) btAnim->setText("Stop");
+		if (cbCoverage) cbCoverage->setEnabled(false);
+		// 100 ms is the ASK rate, not a promise: a frame that takes longer simply makes the next tick
+		// wait (single-shot chaining would be the same thing with more bookkeeping — Qt coalesces
+		// timer events it could not deliver, so the run slows down instead of piling up). The CAMERA
+		// does not run at this rate: it glides on its own 16 ms timer between these frames
+		// (gmtvtk_globe_look_at_h), which is what makes the globe turn smoothly instead of in steps.
+		animTimer = new QTimer(dlg);
+		animTimer->setInterval(100);
+		QObject::connect(animTimer, &QTimer::timeout, dlg, [this] { animTick(); });
+		animTimer->start();
+		plottedOnce = true;          // the window now HAS this satellite in it
+	}
+
+	void animTick() {
+		if (!animTimer) return;
+		++animFrame;
+		// The Julia side does not raise the busy notice for a frame — it is 40 ms of work, and a
+		// dialog flashing a modal notice 120 times is worse than the wait it would be reporting.
+		std::vector<char> buf(1 << 14);
+		buf[0] = '\0';
+		const QString kv = QString("what=animframe\nk=%1\n").arg(animFrame);
+		const int ok = g_juliaSatellite ? g_juliaSatellite(scn, kv.toUtf8().constData(),
+		                                                   buf.data(), (int)buf.size()) : 0;
+		const QString ans = QString::fromUtf8(buf.data());
+		if (!ok) { animStop(ans.isEmpty() ? QString("The animation failed.") : ans.trimmed()); return; }
+		say(QString("Animating: %1  (%2/%3)").arg(ans.trimmed()).arg(animFrame).arg(animFrames));
+		if (animFrame >= animFrames) animStop(QString("One day plotted, ending %1.").arg(ans.trimmed()));
+	}
+
+	// Ends the run, whatever ended it. Julia is told only when the run was cut short — the last frame
+	// drops its own state on the way out, and asking again would just be a no-op round trip.
+	void animStop(const QString &msg) {
+		if (!animTimer) return;
+		animTimer->stop();
+		animTimer->deleteLater();
+		animTimer = nullptr;
+		if (animFrame < animFrames && g_juliaSatellite) {
+			std::vector<char> buf(1 << 12);
+			buf[0] = '\0';
+			g_juliaSatellite(scn, "what=animstop\n", buf.data(), (int)buf.size());
+		}
+		if (btAnim) btAnim->setText("Animate 1 day");
+		say(msg);
+		syncAnimEnabled();
 	}
 
 	// The request block, built ONCE here and used by both the button and the live re-plot, so the two
@@ -27066,7 +27191,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto *fMag    = new std::function<void()>();    // show Magnetics
 	auto *fGrav   = new std::function<void()>();    // show Gravity
 	auto *fPlates = new std::function<void()>();    // show Plates
-	auto *fCoper  = new std::function<void()>();    // show Copernicus
+	// Copernicus and Ocean Color used to be here as a seventh discipline and a tool below it. They
+	// are satellite data services, and they live in the Satellite menu now (built further down).
 
 	// Re-open the menu at its menubar slot after a rotate (deferred so it runs once the triggering
 	// click has finished closing the menu).
@@ -27077,7 +27203,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 	};
 
-	*fGroup = [mGphy, win, s, fTsu, fSeis, fMag, fGrav, fPlates, fCoper]() {
+	*fGroup = [mGphy, s, fTsu, fSeis, fMag, fGrav, fPlates]() {
 		mGphy->clear();
 		mGphy->setTitle("Geophysics ▾");
 		s->gphyPage = 0;                        // back at the discipline chooser
@@ -27086,17 +27212,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		mGphy->addAction("Magnetics",  [fMag]()    { (*fMag)(); });
 		mGphy->addAction("Gravity",    [fGrav]()   { (*fGrav)(); });
 		mGphy->addAction("Plates",     [fPlates]() { (*fPlates)(); });
-		mGphy->addAction("Copernicus", [fCoper]()  { (*fCoper)(); });
-		mGphy->addSeparator();
-		// Ocean Color: a single tool, not a discipline — it opens its dialog instead of rotating the
-		// menu, so it sits below the separator rather than in the discipline list above it.
-		mGphy->addAction("Oceancolor…", [win, s]() {
-			// Already open or parked in this window? Bring THAT one back — never a second browser.
-			auto it = g_oceanColorDlgs.find(s);
-			if (it != g_oceanColorDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
-			warmupTool("oceancolor");
-			new OceanColorDialog(win, s);
-		});
 	};
 	// Clicking the "Geophysics ›" row ITSELF (not one of the disciplines in its flyout) goes back to
 	// the neutral chooser — menubar title "Geophysics ▾", all disciplines listed. Qt never emits
@@ -27126,23 +27241,23 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Page ids, the one mapping between a discipline's name and the number a session stores.
 	auto gphyPageId = [](const QString &n) {
 		return n == "Tsunamis" ? 1 : n == "Seismology" ? 2 : n == "Magnetics" ? 3 :
-		       n == "Gravity"  ? 4 : n == "Plates"     ? 5 : n == "Copernicus" ? 6 : 0;
+		       n == "Gravity"  ? 4 : n == "Plates"     ? 5 : 0;   // 6 was Copernicus, now a Satellite entry
 	};
 	// Put the menu on a given page from OUTSIDE the menu code — what session restore calls. Same
 	// lambdas the menu items themselves run, so there is no second way to switch page.
-	s->gphySetPage = [fGroup, fTsu, fSeis, fMag, fGrav, fPlates, fCoper](int p) {
+	s->gphySetPage = [fGroup, fTsu, fSeis, fMag, fGrav, fPlates](int p) {
 		switch (p) {
 			case 1: (*fTsu)();    break;
 			case 2: (*fSeis)();   break;
 			case 3: (*fMag)();    break;
 			case 4: (*fGrav)();   break;
 			case 5: (*fPlates)(); break;
-			case 6: (*fCoper)();  break;
+			// 6 was Copernicus. A session saved on that page reopens on the chooser, below.
 			default: (*fGroup)(); break;
 		}
 	};
 
-	auto backItem = [mGphy, s, gphyPageId, fTsu, fSeis, fMag, fGrav, fPlates, fCoper](const QString &current) {
+	auto backItem = [mGphy, s, gphyPageId, fTsu, fSeis, fMag, fGrav, fPlates](const QString &current) {
 		s->gphyPage = gphyPageId(current);      // every page announces itself here, once
 		// Single entry — itself a submenu, direct access to any OTHER discipline (skips the
 		// chooser page entirely). Each fXxx already reopens the menu itself at its end.
@@ -27152,7 +27267,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (current != "Magnetics")  mBack->addAction("Magnetics",  [fMag]()    { (*fMag)();    });
 		if (current != "Gravity")    mBack->addAction("Gravity",    [fGrav]()   { (*fGrav)();   });
 		if (current != "Plates")     mBack->addAction("Plates",     [fPlates]() { (*fPlates)(); });
-		if (current != "Copernicus") mBack->addAction("Copernicus", [fCoper]()  { (*fCoper)();  });
 		mGphy->addSeparator();
 	};
 
@@ -27508,49 +27622,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		reopen();
 	};
 
-	// Copernicus discipline — the Copernicus/ECMWF data services through GMT.jl's `ecmwf`: the
-	// Climate Data Store (ERA5 reanalysis) and the ECMWF open-data forecasts. ONE dialog for both,
-	// since they are one GMT.jl function (EcmwfDialog, above).
-	*fCoper = [mGphy, win, s, backItem, reopen]() {
-		mGphy->clear();
-		mGphy->setTitle("Copernicus ▾");
-		backItem("Copernicus");
-		mGphy->addAction("ERA5 / ECMWF", [win, s]() {
-			// Already open or parked in this window? Bring THAT one back — never a second dialog.
-			auto it = g_ecmwfDlgs.find(s);
-			if (it != g_ecmwfDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
-			auto *w = new EcmwfDialog(win, s);      // deletes itself with its QDialog
-			// NO warm-up here, deliberately. Measured cold, in a fresh session: the variable catalogue
-			// costs 86 ms (and 0 once GMT.jl caches its table — helper_ecmwf_vars, weather.jl) and a dry
-			// run 1.25 s, all of it JIT. That is not worth a background task that can freeze the dialog
-			// it just opened, which is what warming this tool did.
-			if (w->dlg) w->dlg->show();
-			else        QMessageBox::warning(win, "Copernicus / ECMWF",
-			                QString("Could not load %1/ecmwf_dialog.ui").arg(gmtvtkUiDir()));
-		});
-		// Essential Climate Variables — the same store, a collection whose request the ERA5 form
-		// cannot express (EcvDialog, above; JuliaEcvFn in 30_app.cpp says why it is its own dialog).
-		mGphy->addAction("Essential Climate Variables…", [win, s]() {
-			auto it = g_ecvDlgs.find(s);
-			if (it != g_ecvDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
-			auto *w = new EcvDialog(win, s);        // deletes itself with its QDialog
-			if (w->dlg) w->dlg->show();
-			else        QMessageBox::warning(win, "Copernicus / ECV",
-			                QString("Could not load %1/ecv_dialog.ui").arg(gmtvtkUiDir()));
-		});
-		// Sentinel Hub imagery — the same discipline, a different service: Sentinel-1/2/3/5P and the
-		// Copernicus DEM as pictures, through the OGC endpoints (SentinelHubDialog, above).
-		mGphy->addAction("Sentinel Hub imagery…", [win, s]() {
-			auto it = g_shubDlgs.find(s);
-			if (it != g_shubDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
-			auto *w = new SentinelHubDialog(win, s);   // deletes itself with its QDialog
-			if (w->dlg) w->dlg->show();
-			else        QMessageBox::warning(win, "Sentinel Hub",
-			                QString("Could not load %1/sentinelhub_dialog.ui").arg(gmtvtkUiDir()));
-		});
-		reopen();
-	};
-
 	(*fGroup)();   // initial population: the discipline chooser
 
 	// --- Satellite menu: SGP4/SDP4 orbit propagation (src/satellite.jl over deps/src/satellite.cpp
@@ -27558,7 +27629,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// the standing rule is that a new tool gets one addAction in an EXISTING submenu, never a
 	// re-architected menu bar, so this is the exception and not a precedent.
 	QMenu *mSat = win->menuBar()->addMenu("Satellite");
-	mSat->addAction("Ground tracks…", [win, s]() {
+	mSat->addAction("Satellite orbits…", [win, s]() {
 		auto it = g_satelliteDlgs.find(s);
 		if (it != g_satelliteDlgs.end() && it->second->dlg) {
 			it->second->unpark();   // already open OR parked in the dock — ONE way back in
@@ -27574,6 +27645,56 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// does `delete this`, which also calls forget() to drop this map entry). Do NOT add a second
 		// delete here — two of them on one object is a double free.
 		sd->dlg->show();
+	});
+	mSat->addSeparator();
+
+	// Copernicus — the satellite data services, moved here from the Geophysics menu on the user's
+	// instruction (they are satellite products, not a geophysical discipline). The three entries are
+	// the SAME ones that page carried, unchanged: one dialog each, reopened rather than duplicated.
+	QMenu *mCoper = mSat->addMenu("Copernicus");
+	// ERA5 / ECMWF — the Copernicus/ECMWF data services through GMT.jl's `ecmwf`: the Climate Data
+	// Store (ERA5 reanalysis) and the ECMWF open-data forecasts. ONE dialog for both, since they are
+	// one GMT.jl function (EcmwfDialog, above).
+	mCoper->addAction("ERA5 / ECMWF", [win, s]() {
+		// Already open or parked in this window? Bring THAT one back — never a second dialog.
+		auto it = g_ecmwfDlgs.find(s);
+		if (it != g_ecmwfDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+		auto *w = new EcmwfDialog(win, s);      // deletes itself with its QDialog
+		// NO warm-up here, deliberately. Measured cold, in a fresh session: the variable catalogue
+		// costs 86 ms (and 0 once GMT.jl caches its table — helper_ecmwf_vars, weather.jl) and a dry
+		// run 1.25 s, all of it JIT. That is not worth a background task that can freeze the dialog
+		// it just opened, which is what warming this tool did.
+		if (w->dlg) w->dlg->show();
+		else        QMessageBox::warning(win, "Copernicus / ECMWF",
+		                QString("Could not load %1/ecmwf_dialog.ui").arg(gmtvtkUiDir()));
+	});
+	// Essential Climate Variables — the same store, a collection whose request the ERA5 form cannot
+	// express (EcvDialog, above; JuliaEcvFn in 30_app.cpp says why it is its own dialog).
+	mCoper->addAction("Essential Climate Variables…", [win, s]() {
+		auto it = g_ecvDlgs.find(s);
+		if (it != g_ecvDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+		auto *w = new EcvDialog(win, s);        // deletes itself with its QDialog
+		if (w->dlg) w->dlg->show();
+		else        QMessageBox::warning(win, "Copernicus / ECV",
+		                QString("Could not load %1/ecv_dialog.ui").arg(gmtvtkUiDir()));
+	});
+	// Sentinel Hub imagery — the same family, a different service: Sentinel-1/2/3/5P and the
+	// Copernicus DEM as pictures, through the OGC endpoints (SentinelHubDialog, above).
+	mCoper->addAction("Sentinel Hub imagery…", [win, s]() {
+		auto it = g_shubDlgs.find(s);
+		if (it != g_shubDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+		auto *w = new SentinelHubDialog(win, s);   // deletes itself with its QDialog
+		if (w->dlg) w->dlg->show();
+		else        QMessageBox::warning(win, "Sentinel Hub",
+		                QString("Could not load %1/sentinelhub_dialog.ui").arg(gmtvtkUiDir()));
+	});
+	// Ocean Color — likewise moved from Geophysics: MODIS/VIIRS/SeaWiFS ocean-colour products.
+	mSat->addAction("Oceancolor…", [win, s]() {
+		// Already open or parked in this window? Bring THAT one back — never a second browser.
+		auto it = g_oceanColorDlgs.find(s);
+		if (it != g_oceanColorDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+		warmupTool("oceancolor");
+		new OceanColorDialog(win, s);
 	});
 
 	// --- Tools menu: open the standalone X,Y plot tool (blank; ready for File>Open or Julia) ----

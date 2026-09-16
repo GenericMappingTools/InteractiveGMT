@@ -277,7 +277,7 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_capture_view_rgb,  # GMT.jl script export: the whole viewport, for the globe/cube modes
 	:gmtvtk_set_meca_sdr_h,    # focal mechanisms: attach each event's strike/dip/rake to its ball
 	:gmtvtk_set_sentinelhub_callback, # Copernicus > Sentinel Hub imagery (src/sentinelhub.jl)
-	:gmtvtk_set_satellite_callback,   # Satellite > Ground tracks (src/satellite.jl)
+	:gmtvtk_set_satellite_callback,   # Satellite > Satellite orbits (src/satellite.jl)
 	# SGP4/SDP4 satellite propagation (deps/src/satellite.cpp over the vendored
 	# deps/src/sat_code/, a second translation unit of this DLL exactly like mbgrid.c).
 	# OPTIONAL rather than in _LIB_SYMBOLS above only because the C side is new: it
@@ -291,6 +291,9 @@ const _LIB_OPTIONAL = (
 	:sat_cal_to_jd, :sat_jd_to_cal,
 	:gmtvtk_overlay_tube_h,           # draw an orbit as a tube + lift its globe clip (satellite.jl)
 	:gmtvtk_remove_overlay_named_h,   # replace ONE track on re-plot, not the whole group (satellite.jl)
+	:gmtvtk_globe_spin_to_h,          # turn the globe about its own axis to a meridian (the animation)
+	:gmtvtk_freeze_scene_objects_h,   # hold the Scene Objects tree still while a run adds many elements
+	:gmtvtk_poly_globe_probe_h,       # probe: is a polygon really hooked onto the globe?
 )
 
 # Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is

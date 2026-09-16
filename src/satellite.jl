@@ -505,9 +505,14 @@ end
 # The add half, split out so a caller that already has the track (the dialog, which then asks
 # whether it is on screen) does not propagate it a second time just to plot it. ONE add path —
 # `plot_groundtrack!` is this function plus the propagation, never a parallel copy of it.
+# `live = true` marks ONE FRAME of the one-day animation: the same plot, minus the two steps that
+# only make sense once it has come to rest — the data table (2880 formatted rows rebuilt 120 times is
+# the whole cost of the animation) and the Scene Objects unfold (a tree rebuilt under the user's
+# cursor at 20 Hz). The last frame is drawn with `live = false`, so what is left on screen at the end
+# is exactly what a plain Plot track leaves.
 function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; color = _TRACK_COLOR,
                       replaced::Union{Nothing,Ref{Int}} = nothing,
-                      sat::Union{Nothing,Satellite} = nothing)
+                      sat::Union{Nothing,Satellite} = nothing, live::Bool = false)
 	isempty(D) && (@warn "plot_groundtrack!: the track is empty"; return false)
 
 	# An EMPTY window has nothing to overlay ONTO, so the vector-import law does not apply here:
@@ -556,7 +561,13 @@ function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; 
 		# child -> master map is keyed by name. Declared HERE, beside the track's own add, so a window
 		# whose body could not be placed still shows its track under "Satellites" and never loose.
 		ccall(_fn(:gmtvtk_set_group_master_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, nm, _SAT_MASTER)
-		_track_table!(scene, nm, D)
+		# THE TRACK IS KEPT, because the ground-coverage swath is the SAME curve widened (see
+		# `_swath_polys` below): recomputing it from the TLE would be a second propagation of an orbit
+		# already propagated, and — worse — a second answer to "where was this satellite", which is the
+		# fork SACRED_LAW.md forbids. The key carries the window, so two windows showing the same
+		# satellite over different spans cannot read each other's track.
+		_SAT_TRACKS[(UInt(scene), nm)] = D
+		live || _track_table!(scene, nm, D)
 		lift = 0.0
 		for d in D
 			m = maximum(view(d.data, :, 3))
@@ -588,7 +599,7 @@ function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; 
 		# the satellite has been and will be; the model says where it IS, which is the one place on it
 		# a reader actually looks for. Same add path for every caller — never plotted beside the track.
 		_plot_sat_now!(scene, D, nm, sat, lift)
-		ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+		live || ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
 	end
 	return ok
 end
@@ -737,6 +748,550 @@ const _TRACK_COLOR = :orange
 
 plot_groundtrack!(fig::QtFigure, s::Satellite; kw...) = plot_groundtrack!(fig.h, s; kw...)
 
+# --- the one-day animation ------------------------------------------------------------------------
+# "Animate 1 day" (the dialog, beside Update orbit) winds ONE satellite's LAST 24 hours onto the map, ending at NOW:
+# the track GROWS from now, the spacecraft rides its head, and — when the box is ticked — the swath
+# fills in behind it, so what the run really shows is how much of the planet that instrument sees in
+# a day. Cumulative, never a moving window: the whole point is what is left at the end.
+#
+# THE HOST DRIVES THE CLOCK. A loop here would sit on the UI thread that pumps Qt (eventloop.jl) and
+# freeze the window it is drawing into, so the dialog owns a QTimer and asks for ONE FRAME per tick.
+# Everything expensive is done once, in `_anim_start`: the day is propagated, and the swath edges —
+# the only costly part, two geodesic walks per sample — are walked for the WHOLE day and then sliced
+# per frame. A frame is a redraw, never a recomputation.
+const _ANIM_FRAMES  = 360        # frames for the whole day — 4 minutes of orbit each
+const _ANIM_STEP_S  = 60         # track sampling, seconds: 1441 points over 24 h
+
+# THE VIEW TURNS ABOUT THE EARTH'S OWN ROTATION AXIS, AND ONLY ABOUT IT. Over the animated day the
+# camera makes exactly ONE turn westward — the planet rotating under an orbit plane that stands still
+# in space — so every pass comes round onto a face that has turned to meet it, and the motion is a
+# steady spin of about 10°/s of screen time. Nothing tumbles, nothing reverses.
+#
+# THE SUB-SATELLITE POINT IS NOT THE TARGET, and two attempts at making it one are the reason this is
+# written down. A polar orbit's subpoint runs pole to pole and flips half the world in longitude
+# twice per revolution: aimed straight at it the view spins like a top (15° to 45° per frame), and
+# rate-limited it just wanders — measured on a real Aqua day, a median 90° off centre with the
+# satellite behind the planet for half the run. The axis is the one thing in the picture that does
+# not move; a turn about it is the only view change that reads as the Earth rotating.
+const _ANIM_CAM_TURN_PER_DAY = 360.0    # degrees, westward: one rotation of the planet
+# How far the camera may turn per 16 ms tick of its own glide (gmtvtk_globe_spin_to_h). The target
+# only asks for ~0.17° per tick, so this is a ceiling that keeps a catch-up (the first frames, or a
+# window the user has just dragged) from being a jump; it is never the rate in normal running.
+const _ANIM_CAM_STEP = 1.0
+
+mutable struct _SatAnim
+	scene::Ptr{Cvoid}
+	sat::Satellite
+	name::String
+	times::Vector{DateTime}
+	altitude::Bool
+	frame::Symbol
+	bands::Vector{Tuple{Float64,Float64}}   # empty = the coverage box was not ticked
+	# [segment][band] = (edgeA, edgeB) for the WHOLE day, in the segmentation of the whole day's
+	# track. A frame's own track is a PREFIX of that track, so its segments are the first ones of
+	# this list, the last one cut short — which is exactly a row slice of these matrices.
+	edges::Vector{Vector{Tuple{Matrix{Float64},Matrix{Float64}}}}
+	# HOW FAR EACH SEGMENT'S BAND IS ALREADY PAINTED, in rows. The band is CUMULATIVE: what is on the
+	# map stays on the map, and a frame adds only the stretch flown since the last one — so a pass that
+	# comes back over ground an earlier pass covered shows as two bands laid over each other, which is
+	# the whole reason to watch a day of it. Nothing is ever removed mid-run.
+	done::Vector{Int}
+	npolys::Int                             # running count, for the polygons' own names
+	lon0::Float64                           # the meridian the view starts on — where the satellite is
+	clock::Int                              # the on-screen clock's annotation id (0 = none)
+	bar::Int                                # …and its progress bar's
+end
+
+# THE CLOCK, on the map itself and not in the dialog: what is being watched is the globe, and a time
+# that lives in a status line behind it is a time nobody reads. It is a MOVIE ANNOTATION — the same
+# `gmtvtk_anno_*` label and progress indicator the Make-movie tool lays on a frame (movieanno.jl), so
+# an animation's clock is not a second kind of on-screen text with its own placement rules.
+# Justification 0 = top-left for the label; the bar is the movie tool's own default corner (TR).
+function _anim_clock_add!(scene::Ptr{Cvoid})
+	white = [1.0, 1.0, 1.0];  black = [0.0, 0.0, 0.0]
+	add(name, isprog, style, just, width) =
+		Int(ccall(_fn(:gmtvtk_anno_add_h), Cint,
+		          (Ptr{Cvoid}, Cstring, Cint, Cint, Cint, Cint, Cint,
+		           Cdouble, Cdouble, Cdouble, Cdouble, Ptr{Cdouble},
+		           Cint, Ptr{Cdouble}, Cint, Ptr{Cdouble}, Cdouble,
+		           Cdouble, Cint, Cint, Ptr{Cdouble}, Cdouble, Cint, Ptr{Cdouble}, Cdouble),
+		          scene, name, Cint(isprog), Cint(3), Cint(style), Cint(0), Cint(just),
+		          0.0, 0.0, width, 0.0, black,
+		          Cint(1), white, Cint(0), black, 0.0,
+		          0.0, Cint(1),
+		          Cint(0), black, 0.0, Cint(0), black, 0.0))
+	return (add("Animation clock", 0, 0, 0, 0.0), add("Animation progress", 1, 0, 2, 0.0))
+end
+
+function _anim_clock_drop!(scene::Ptr{Cvoid}, ids...)
+	for id in ids
+		id > 0 && ccall(_fn(:gmtvtk_anno_remove_h), Cint, (Ptr{Cvoid}, Cint), scene, Cint(id))
+	end
+	return nothing
+end
+
+_anim_clock_set!(scene::Ptr{Cvoid}, id::Int, txt::String, frac::Float64) =
+	id > 0 && ccall(_fn(:gmtvtk_anno_set_h), Cint, (Ptr{Cvoid}, Cint, Cstring, Cdouble, Cint),
+	                scene, Cint(id), txt, frac, Cint(1))
+
+# The Scene Objects tree is HELD STILL for the whole run and rebuilt once at the end (the thaw does
+# it). A run adds a swath piece and re-lays its track on every one of 360 frames, and a panel rebuilt
+# that often strobes — the user asked for the handles to settle only when the run does.
+_anim_freeze!(scene::Ptr{Cvoid}, on::Bool) =
+	ccall(_fn(:gmtvtk_freeze_scene_objects_h), Cint, (Ptr{Cvoid}, Cint), scene, Cint(on))
+
+# ONE animation at a time, for the same reason there is one track per satellite: two of them would be
+# two clocks writing the same rows. Starting a second replaces the first.
+const _SAT_ANIM = Ref{Union{Nothing,_SatAnim}}(nothing)
+
+function _anim_stop!()
+	a = _SAT_ANIM[]
+	a === nothing && return nothing
+	_SAT_ANIM[] = nothing
+	# The clock goes with the run that owns it, and the tree is let go LAST — its one rebuild is what
+	# finally shows the rows everything above added, so it has to happen after the clock is gone or
+	# the panel would be built around an element about to disappear.
+	try; _anim_clock_drop!(a.scene, a.clock, a.bar); catch; end
+	# The scratch group is a working surface, not a result: whatever segment was still growing when
+	# the run ended is settled into the band proper first, so stopping mid-run leaves ONE group with
+	# everything drawn in it and no half-named leftovers.
+	try
+		if !isempty(a.bands)
+			grp  = _sat_cover_group(a.name)
+			live = grp * _ANIM_LIVE_SUFFIX
+			ccall(_fn(:gmtvtk_remove_polys_h), Cint, (Ptr{Cvoid}, Cstring), a.scene, live)
+			for (i, e) in enumerate(a.edges)
+				a.done[i] <= 0 && continue               # settled already, or never reached
+				r = a.done[i]
+				for (A, B) in e, R in _swath_rings(A[1:r, :], B[1:r, :])
+					a.npolys += 1
+					_add_swath_ring!(a.scene, grp, R, a.npolys)
+				end
+			end
+			_cover_group_master!(a.scene, a.name; unfold = false)
+		end
+	catch
+	end
+	try; _anim_freeze!(a.scene, false); catch; end
+	try; close!(a.sat); catch; end        # the handle is ours; the finalizer is not predictable
+	return nothing
+end
+
+"""
+Set up the one-day run for `tle` and return the number of frames the host should ask for.
+Propagates the day once and walks the swath edges once; draws nothing.
+"""
+function _anim_start!(scene::Ptr{Cvoid}, tle::TLE, altitude::Bool, frame::Symbol,
+                      bands::Vector{Tuple{Float64,Float64}})::Int
+	_anim_stop!()
+	s  = Satellite(tle)
+	nm = isempty(s.tle.name) ? string(norad_number(s)) : s.tle.name
+	# THE DAY THAT HAS JUST HAPPENED, not the one to come: the run ENDS AT NOW, so its last frame is
+	# the satellite where it actually is at this instant — the same anchoring "Update orbit" and the
+	# dialog's "Now (UTC)" span use, and the only one for which the spacecraft standing on the head of
+	# the track is a statement of fact rather than a prediction.
+	t1 = _sat_now_utc()
+	times = collect((t1 - Hour(24)):Second(_ANIM_STEP_S):t1)
+	edges = Vector{Vector{Tuple{Matrix{Float64},Matrix{Float64}}}}()
+	if !isempty(bands)
+		# The whole day's track, in the SAME call every frame will make — so the segmentation the
+		# edges are indexed by is the segmentation the frames will see.
+		D = groundtrack(s, times; altitude = altitude, frame = frame)
+		for d in D
+			m = d.data
+			lon = Vector{Float64}(m[:,1])
+			lat = Vector{Float64}(m[:,2])
+			push!(edges, [_swath_edges(lon, lat, a, b) for (a, b) in bands])
+		end
+	end
+	# A NEW RUN STARTS FROM BARE GROUND: whatever band this satellite already had is this run's first
+	# frame's business, not something to draw the day's second pass on top of.
+	isempty(bands) ||
+		ccall(_fn(:gmtvtk_remove_polys_h), Cint, (Ptr{Cvoid}, Cstring), scene, _sat_cover_group(nm))
+	# The meridian the view opens on: where the satellite is when the run starts. From `subpoint` —
+	# the same sub-satellite point everything else here is built on, never a second derivation.
+	lo, _, _ = subpoint(s, [times[1]])
+	clock, bar = _anim_clock_add!(scene)
+	_anim_freeze!(scene, true)             # …and the panel settles when the run does, not 360 times
+	_SAT_ANIM[] = _SatAnim(scene, s, nm, times, altitude, frame, bands, edges,
+	                       zeros(Int, length(edges)), 0, isempty(lo) ? 0.0 : lo[1], clock, bar)
+	return _ANIM_FRAMES
+end
+
+"""
+Draw frame `k` (1-based, `k == _ANIM_FRAMES` is the last): the track from the start of the day up to
+this frame's instant, the spacecraft on its head, and the swath behind it when one was asked for.
+Returns the UTC stamp of that instant, for the dialog's status line.
+"""
+function _anim_frame!(k::Int)::String
+	a = _SAT_ANIM[]
+	a === nothing && error("no animation is running")
+	n = length(a.times)
+	last = (k >= _ANIM_FRAMES)
+	m = clamp(round(Int, k * n / _ANIM_FRAMES), 2, n)
+	# THE LAST FRAME IS DRAWN THAWED, so the rows it leaves behind — the track's, the swath's, the
+	# data table, the unfold — are built by the same code any other plot goes through. Thawing after
+	# it would rebuild the panel around an unfold that had nothing to unfold.
+	last && _anim_freeze!(a.scene, false)
+	D = groundtrack(a.sat, a.times[1:m]; altitude = a.altitude, frame = a.frame)
+	_plot_track!(a.scene, D, a.name; sat = a.sat, live = !last)
+	if !isempty(a.bands)
+		# ONE RIBBON PER TRACK SEGMENT, exactly as the menu's own band is built — never a patch per
+		# frame. A per-frame patch was tried and is wrong twice over: it left 455 polygons for a day
+		# (a handle, an actor and a mapper each, for what is one band), and the short ones that
+		# happened to straddle a pole were 4-to-12-point rings spanning up to 276° of longitude,
+		# which triangulate into sheets cutting clean through the planet — the patches seen floating
+		# in the equatorial plane. A whole segment's ribbon has none of that: it is the same ring the
+		# static path draws, pole stitch and all.
+		#
+		# So a segment is RE-LAID WHOLE while it grows, in a scratch group of its own that is thrown
+		# away and rebuilt each frame, and is moved into the band's real group ONCE, when the track
+		# has passed beyond it and its shape can no longer change. Only ever one segment is live, so
+		# a frame costs one removal and one or two polygons — and the day ends with ~20, the count
+		# the non-animated band has.
+		grp  = _sat_cover_group(a.name)
+		live = grp * _ANIM_LIVE_SUFFIX
+		ccall(_fn(:gmtvtk_remove_polys_h), Cint, (Ptr{Cvoid}, Cstring), a.scene, live)
+		added = false
+		nlive = 0
+		for (i, d) in enumerate(D)
+			i > length(a.edges) && break                 # a segmentation this frame grew past
+			a.done[i] < 0 && continue                    # settled: its shape is final, leave it alone
+			rfull = size(a.edges[i][1][1], 1)
+			r = min(size(d.data, 1), rfull)
+			r < 2 && continue
+			settle = (r >= rfull)                        # the track has moved past this segment
+			for (A, B) in a.edges[i]
+				for R in _swath_rings(A[1:r, :], B[1:r, :])
+					if settle
+						a.npolys += 1
+						_add_swath_ring!(a.scene, grp, R, a.npolys) && (added = true)
+					else
+						nlive += 1
+						_add_swath_ring!(a.scene, live, R, nlive)
+					end
+				end
+			end
+			a.done[i] = settle ? -1 : r
+		end
+		added && _cover_group_master!(a.scene, a.name; unfold = last)
+	end
+	# TURN THE PLANET UNDER THE ORBIT. The meridian the camera looks down walks steadily westward, one
+	# full turn over the animated day — the Earth's own rotation, and nothing else (see
+	# `_ANIM_CAM_TURN_PER_DAY`, and `gmtvtk_globe_spin_to_h` for why it is not aimed at the satellite).
+	# The FIRST frame goes there at once: a run should open on its subject, not creep towards it from
+	# wherever the window happened to be pointing. Camera only — a vector plot never touches the axes
+	# (SACRED_LAW.md) — and a no-op off the globe.
+	let elapsed = (a.times[m] - a.times[1]).value / 86_400_000,       # Millisecond period -> days
+	    lonc = a.lon0 - _ANIM_CAM_TURN_PER_DAY * elapsed
+		ccall(_fn(:gmtvtk_globe_spin_to_h), Cint, (Ptr{Cvoid}, Cdouble, Cdouble),
+		      a.scene, lonc, k <= 1 ? 0.0 : _ANIM_CAM_STEP)
+	end
+	# THE CLOCK, on the map: the instant being drawn, and how far through the day the run is.
+	_anim_clock_set!(a.scene, a.clock,
+	                 GMT.Dates.format(a.times[m], "yyyy-mm-dd HH:MM:SS") * " UTC", k / _ANIM_FRAMES)
+	_anim_clock_set!(a.scene, a.bar, "", k / _ANIM_FRAMES)
+	last && _anim_stop!()
+	return GMT.Dates.format(a.times[m], "yyyy-mm-dd HH:MM") * " UTC"
+end
+
+# --- ground coverage: the swath the instrument actually sees --------------------------------------
+# Clicking the spacecraft (symbolLayerMenu, 50_scene.cpp) toggles a grey, half-transparent band on the
+# ground: the strip of Earth the satellite's main instrument images along the track that is plotted.
+#
+# THE TRACK IS THE TRACK. The band is built from the ground track already on screen (`_SAT_TRACKS`),
+# never from a second propagation: one satellite, one answer to where it was (SACRED_LAW.md).
+#
+# The plotted track per window+satellite, kept by `_plot_track!`. Key = (window, name): the same
+# satellite may be up in two windows over two different spans, and each band must follow its own.
+const _SAT_TRACKS = Dict{Tuple{UInt,String},Vector{GMT.GMTdataset}}()
+
+# The polygons' Scene Objects group tag, and the name BOTH SIDES build: the C++ menu reads it to know
+# whether this satellite's band is already on screen (that is the checkbox), and removes it by the
+# same tag. ONE convention, written here and mirrored at exactly one place in 50_scene.cpp.
+_sat_cover_group(nm::String)::String = nm * " swath"
+
+# The scratch group the animation re-lays the GROWING segment into, thrown away and rebuilt every
+# frame. It never outlives a run (`_anim_stop!` drops it) and is never seen: the Scene Objects tree
+# is frozen while the run is on, and by the time it is rebuilt this group is gone.
+const _ANIM_LIVE_SUFFIX = " (in progress)"
+
+# PUBLISHED SWATH WIDTHS, per mission, as SIGNED ACROSS-TRACK OFFSETS in km: each entry is a list of
+# (near, far) bands, negative = left of the flight direction. A plain imager is ONE symmetric band;
+# SWOT's KaRIn is TWO, because it measures on both sides of a 20 km nadir gap and a single 120 km
+# band would claim coverage it does not have.
+#
+# The number is the instrument's own nadir swath — the ground arc, which is what a map wants. Where a
+# platform carries several instruments the entry is the one that defines its coverage (Terra/Aqua =
+# MODIS, not ASTER's 60 km; Sentinel-3 = OLCI, not SLSTR's 1420 km; Sentinel-1 = the IW mode the
+# mission acquires land and coast in).
+#
+# Matching is by PREFIX of the normalised name, longest first, so the series entry serves every member
+# of it: "SENTINEL 2" covers 2A/2B/2C, "LANDSAT 8" is its own because 8 and 9 are named separately in
+# the element sets. A mission that is not here is NOT guessed at — the menu asks for the width.
+const _SAT_SWATH = Tuple{String,Vector{Tuple{Float64,Float64}},String}[
+	("TERRA",        [(-1165.0, 1165.0)], "MODIS, 2330 km"),
+	("AQUA",         [(-1165.0, 1165.0)], "MODIS, 2330 km"),
+	("LANDSAT 8",    [( -92.5,   92.5)],  "OLI/TIRS, 185 km"),
+	("LANDSAT 9",    [( -92.5,   92.5)],  "OLI/TIRS, 185 km"),
+	("SENTINEL 1",   [(-125.0,  125.0)],  "SAR interferometric wide, 250 km"),
+	("SENTINEL 2",   [(-145.0,  145.0)],  "MSI, 290 km"),
+	("SENTINEL 3",   [(-635.0,  635.0)],  "OLCI, 1270 km"),
+	("SENTINEL 5",   [(-1300.0, 1300.0)], "TROPOMI, 2600 km"),
+	("SENTINEL 6",   [(  -6.0,    6.0)],  "Poseidon-4 altimeter footprint, 12 km"),
+	("SUOMI NPP",    [(-1530.0, 1530.0)], "VIIRS, 3060 km"),
+	("NOAA 20",      [(-1530.0, 1530.0)], "VIIRS, 3060 km"),
+	("NOAA 21",      [(-1530.0, 1530.0)], "VIIRS, 3060 km"),
+	("JPSS",         [(-1530.0, 1530.0)], "VIIRS, 3060 km"),
+	("SWOT",         [(-60.0, -10.0), (10.0, 60.0)], "KaRIn, 2 x 50 km either side of a 20 km gap"),
+]
+
+# Element-set names are written every way ("NOAA 20", "NOAA-20", "SUOMI-NPP"), so the key and the name
+# are compared in ONE normalised form: upper case, separators collapsed to single blanks.
+function _sat_norm(s::String)::String
+	t = uppercase(strip(s))
+	t = replace(t, '-' => ' ', '_' => ' ', '(' => ' ', ')' => ' ')
+	return strip(replace(t, r"\s+" => " "))
+end
+
+# The bands + the label for a satellite name, or `nothing` when the mission is not in the table above.
+function _swath_for(nm::String)
+	n = _sat_norm(nm)
+	best = nothing
+	for (k, bands, label) in _SAT_SWATH
+		startswith(n, k) || continue
+		(best === nothing || length(k) > length(best[1])) && (best = (k, bands, label))
+	end
+	return best === nothing ? nothing : (best[2], best[3])
+end
+
+# One point offset ACROSS TRACK by `dkm` (signed: + right of the flight direction, - left) from the
+# sub-satellite point at `(lon, lat)` whose forward azimuth is `az`. The step is `GMT.geod` — the same
+# direct geodesic deform.jl and computeeuler.jl walk with; no sphere formula is written here.
+function _geod_off(lon::Float64, lat::Float64, az::Float64, dkm::Float64)
+	dkm == 0.0 && return (lon, lat)
+	dest, = GMT.geod([lon, lat], az + (dkm >= 0.0 ? 90.0 : -90.0), abs(dkm); unit = :km)
+	return (Float64(dest[1]), Float64(dest[2]))
+end
+
+# The forward azimuth AT each track point (the last one inherits the previous leg's, there being no
+# next point to aim at). ONE `GMT.invgeod` call for the whole track — it is vectorised over rows.
+function _track_azimuths(lon::Vector{Float64}, lat::Vector{Float64})::Vector{Float64}
+	n = length(lon)
+	_, a1, _ = GMT.invgeod(hcat(lon[1:n-1], lat[1:n-1]), hcat(lon[2:n], lat[2:n]))
+	az1 = a1 isa Real ? Float64[a1] : Vector{Float64}(a1)
+	az = Vector{Float64}(undef, n)
+	az[1:n-1] = az1
+	az[n] = az1[end]
+	return az
+end
+
+# Clip a ring against the half-plane x <= c (`keepLE`) or x >= c — Sutherland-Hodgman against ONE
+# edge, which is all the dateline ever needs. Returns the (possibly empty) clipped ring.
+function _clip_x(P::Matrix{Float64}, c::Float64, keepLE::Bool)::Matrix{Float64}
+	n = size(P, 1)
+	n < 3 && return zeros(0, 2)
+	inside(x) = keepLE ? x <= c : x >= c
+	out = NTuple{2,Float64}[]
+	for i in 1:n
+		j = (i == n) ? 1 : i + 1
+		xi, yi = P[i,1], P[i,2]
+		xj, yj = P[j,1], P[j,2]
+		ii, ij = inside(xi), inside(xj)
+		ii && push!(out, (xi, yi))
+		if ii != ij && xj != xi
+			t = (c - xi) / (xj - xi)
+			push!(out, (c, yi + t * (yj - yi)))
+		end
+	end
+	isempty(out) && return zeros(0, 2)
+	R = Matrix{Float64}(undef, length(out), 2)
+	for (k, p) in enumerate(out)
+		R[k,1] = p[1];  R[k,2] = p[2]
+	end
+	return R
+end
+
+# Cut a ring whose longitudes run past ±180 into the pieces that live on the map, each shifted back
+# into [-180,180]. Same duty `_split_dateline` does for the track line: a band that runs from +179 to
+# -179 streaks straight across the map unless it is cut, and a filled band streaks as a painted bar.
+function _wrap_pieces(P::Matrix{Float64})::Vector{Matrix{Float64}}
+	out = Matrix{Float64}[]
+	stack = Matrix{Float64}[P]
+	guard = 0
+	while !isempty(stack) && (guard += 1) < 64
+		Q = pop!(stack)
+		size(Q, 1) < 3 && continue
+		lo, hi = extrema(view(Q, :, 1))
+		if hi > 180.0 || lo < -180.0
+			c = hi > 180.0 ? 180.0 : -180.0
+			keep = _clip_x(Q, c, hi > 180.0)          # the half already on the map
+			over = _clip_x(Q, c, !(hi > 180.0))       # …and the half that has run off its edge
+			size(keep, 1) >= 3 && push!(stack, keep)
+			if size(over, 1) >= 3
+				over[:,1] .+= (hi > 180.0) ? -360.0 : 360.0
+				push!(stack, over)
+			end
+			continue
+		end
+		push!(out, Q)
+	end
+	return out
+end
+
+# ONE band of the swath along ONE track segment, as closed rings ready to paint: the two edges walked
+# out to `d0`/`d1` km either side of each sub-satellite point, joined into a ribbon.
+#
+# THE RIBBON IS BUILT WHOLE, IN CONTINUOUS LONGITUDE, and cut at the very end — never assembled piece
+# by piece. A sun-synchronous descending node can run NEARLY PARALLEL to the dateline for a quarter of
+# a pass, and a builder that ends the ribbon at each sample whose edge steps off the map turns that
+# stretch into one four-corner scrap per sample (measured: 40 polygons for 21 track points). Cut once,
+# the same stretch is the two halves it really is.
+#
+# The unwrap is about the TRACK's own longitude, point by point: an edge is at most a half swath from
+# the sub-satellite point it belongs to, so "the representation nearest the centre line" is always the
+# true one — including where a wide scanner sweeps PAST A POLE and its edge genuinely does jump to the
+# far side of the world.
+#
+# A POLE IS WALKED THROUGH, NOT JUMPED OVER (`_stitch_pole` below).
+_stitch_pole(E::Matrix{Float64})::Matrix{Float64} = begin
+	n = size(E, 1)
+	out = NTuple{2,Float64}[]
+	for i in 1:n
+		push!(out, (E[i,1], E[i,2]))
+		i == n && continue
+		# The signature of a pole crossing, and nothing else: half the world in longitude between two
+		# consecutive samples, both of them close to the same pole. At 84° N, 120° of longitude is
+		# 1400 km — a step no sampling of an orbit produces.
+		(abs(E[i+1,1] - E[i,1]) > 120.0 && min(abs(E[i,2]), abs(E[i+1,2])) > 60.0) || continue
+		p = (E[i,2] >= 0.0 ? 90.0 : -90.0)
+		push!(out, (E[i,1],   p))          # up the meridian to the pole…
+		push!(out, (E[i+1,1], p))          # …across it (one point on the globe) and down the far side
+	end
+	R = Matrix{Float64}(undef, length(out), 2)
+	for (k, q) in enumerate(out)
+		R[k,1] = q[1];  R[k,2] = q[2]
+	end
+	R
+end
+
+# THE TWO EDGES of a band, as (near, far) matrices of (lon, lat) — the only expensive half of the
+# job (two geodesic walks per track point). Split out from the ring builder below because the one-day
+# ANIMATION redraws the same band 120 times over a growing prefix of the same track: the edges are
+# walked ONCE for the whole day and sliced per frame, never re-walked. Same function, one set of
+# numbers — the animated band and the static one cannot come out different.
+function _swath_edges(lon::Vector{Float64}, lat::Vector{Float64}, d0::Float64, d1::Float64)
+	n = length(lon)
+	n < 2 && return (zeros(0,2), zeros(0,2))
+	az = _track_azimuths(lon, lat)
+	A = Matrix{Float64}(undef, n, 2)
+	B = Matrix{Float64}(undef, n, 2)
+	c = copy(lon)                                  # the track's own longitude, made continuous
+	for i in 2:n
+		c[i] += 360.0 * round((c[i-1] - c[i]) / 360.0)
+	end
+	for i in 1:n
+		A[i,1], A[i,2] = _geod_off(lon[i], lat[i], az[i], d0)
+		B[i,1], B[i,2] = _geod_off(lon[i], lat[i], az[i], d1)
+		A[i,1] += 360.0 * round((c[i] - A[i,1]) / 360.0)
+		B[i,1] += 360.0 * round((c[i] - B[i,1]) / 360.0)
+	end
+	return (A, B)
+end
+
+# The closed rings of a band, from its two edges.
+#
+# A WIDE SCANNER REACHES OVER THE POLE: at 81.8° N a 1530 km half swath lands at 95.6°, which is
+# 84.4° on the FAR side — the edge really does step half the world in longitude. Left as a bare
+# step, the polygon's boundary runs straight along that latitude instead of over the pole, so the
+# cap above it falls OUTSIDE the ring (the round hole in the band) and the ±180 cut below then
+# slices the ribbon in two along a meridian (the gap). Both are the same missing vertex pair.
+function _swath_rings(A::Matrix{Float64}, B::Matrix{Float64})::Vector{Matrix{Float64}}
+	size(A, 1) < 2 && return Matrix{Float64}[]
+	return _wrap_pieces(vcat(_stitch_pole(A), _stitch_pole(B)[end:-1:1, :]))   # out along A, back along B
+end
+
+_swath_polys(lon::Vector{Float64}, lat::Vector{Float64}, d0::Float64, d1::Float64)::Vector{Matrix{Float64}} =
+	_swath_rings(_swath_edges(lon, lat, d0, d1)...)
+
+# GREY, HALF TRANSPARENT: the band is a mask over the map, not a layer with data of its own — the
+# geography under it has to stay readable, which is the whole reason it is not painted solid.
+const _SWATH_RGB = (0.5, 0.5, 0.5)
+const _SWATH_OPACITY = 0.55        # 45 % transparency
+
+"""
+Paint `nm`'s ground coverage into `scene` as one Scene Objects group (`_sat_cover_group(nm)`), under
+the "Satellites" master beside the track it belongs to. `bands` are signed across-track (near, far)
+offsets in km. Returns the number of polygons painted.
+
+A vector overlay landing on a map that is already framed: it does NOT reframe and does not spawn axes
+of its own (SACRED_LAW.md, vector-import law).
+"""
+#
+# THE ONE PAINTER. Both callers — the menu's toggle and every frame of the one-day animation — hand
+# their rings to this, so a band drawn while the animation runs is the same object, the same colour
+# and the same group as the one the toggle leaves behind.
+# ONE RING ONTO THE MAP. Every band polygon this file draws — the menu's toggle, and every frame of
+# the animation — is added HERE, so they are the same colour, the same opacity and the same group.
+function _add_swath_ring!(scene::Ptr{Cvoid}, grp::String, R::Matrix{Float64}, idx::Int)::Bool
+	size(R, 1) < 3 && return false
+	xyz = vec(permutedims(hcat(R, zeros(size(R, 1)))))
+	ccall(_fn(:gmtvtk_add_poly_full), Cint,
+	      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble,
+	       Cdouble, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring),
+	      scene, xyz, Cint(size(R, 1)), Cint(1), Cint(0),
+	      _SWATH_RGB[1], _SWATH_RGB[2], _SWATH_RGB[3], 0.0, Cint(0),
+	      _SWATH_RGB[1], _SWATH_RGB[2], _SWATH_RGB[3], _SWATH_OPACITY,
+	      string(grp, " (", idx, ")"), grp)
+	return true
+end
+
+# The band's group belongs to the SATELLITE, and the panel is opened on it once it exists.
+function _cover_group_master!(scene::Ptr{Cvoid}, nm::String; unfold::Bool = true)
+	grp = _sat_cover_group(nm)
+	ccall(_fn(:gmtvtk_set_group_master_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, grp, nm)
+	unfold && ccall(_fn(:gmtvtk_unfold_scene_objects_h), Cvoid, (Ptr{Cvoid},), scene)
+	return nothing
+end
+
+function _paint_coverage!(scene::Ptr{Cvoid}, nm::String, rings::Vector{Matrix{Float64}};
+                          unfold::Bool = true)::Int
+	grp = _sat_cover_group(nm)
+	# REPLACE, never pile up — the same rule the track itself follows on a re-plot. (The ANIMATION
+	# does NOT come through here: a run that repainted the whole band every frame would blink the
+	# band off and redraw forty polygons per tick, which is exactly how it looked. It ADDS the new
+	# stretch only — `_anim_frame!`.)
+	ccall(_fn(:gmtvtk_remove_polys_h), Cint, (Ptr{Cvoid}, Cstring), scene, grp)
+	n = 0
+	for R in rings
+		_add_swath_ring!(scene, grp, R, n + 1) && (n += 1)
+	end
+	n == 0 && return 0
+	_cover_group_master!(scene, nm; unfold = unfold)
+	return n
+end
+
+function _plot_coverage!(scene::Ptr{Cvoid}, nm::String, bands::Vector{Tuple{Float64,Float64}})::Int
+	D = get(_SAT_TRACKS, (UInt(scene), nm), nothing)
+	D === nothing && error("no ground track for \"$nm\" in this window — plot the satellite first")
+	rings = Matrix{Float64}[]
+	for d in D
+		m = d.data
+		size(m, 1) < 2 && continue
+		lon = Vector{Float64}(m[:,1])
+		lat = Vector{Float64}(m[:,2])
+		for (a, b) in bands
+			append!(rings, _swath_polys(lon, lat, a, b))
+		end
+	end
+	# THE BAND IS PART OF THE SATELLITE, not a plot of its own: `_paint_coverage!` declares its master
+	# to be the SATELLITE'S OWN NAME, so its row lands inside that satellite's group as a BROTHER of
+	# Track and Spacecraft — never a cousin one level up under "Satellites".
+	n = _paint_coverage!(scene, nm, rings)
+	n == 0 && error("the track of \"$nm\" is too short to give it a swath")
+	return n
+end
+
 # --- the Satellite menu's dialog -----------------------------------------------------------------
 # SatelliteDialog (70_window.cpp, deps/ui/satellite.ui) talks to this file through ONE callback, with
 # the newline "key=value" block documented at JuliaSatelliteFn (30_app.cpp). Same shape as the
@@ -757,8 +1312,58 @@ _sat_kv(params::String)::Dict{String,String} = begin
 	d
 end
 
-# Read the source named by the dialog's radio pair. A URL is fetched to a scratch file and read from
-# there, so the same `read_tle` handles both and there is one parser, not two.
+# --- the downloaded-TLE cache ---------------------------------------------------------------------
+# CELESTRAK RATE-LIMITS, AND A TLE DOES NOT CHANGE BY THE MINUTE. The curated preset alone pulls FIVE
+# files every time it is picked (its missions are spread across `resource`, `weather`, `goes`, `geo`
+# and a NAME query), so re-opening the dialog a few times is enough to be answered 403 — which is
+# what happened. Elements are issued a couple of times a day and are good for days either side of
+# their epoch, so a download held for two hours costs accuracy nothing and costs the service five
+# requests instead of fifty.
+#
+# The cache is also the ANSWER TO BEING RATE-LIMITED: when a fetch fails, a stale copy is used and
+# the user is told how old it is. A failed download with a perfectly good yesterday's file on disk
+# helps nobody.
+const _TLE_CACHE_DIR = joinpath(tempdir(), "iGMT_tle")
+const _TLE_CACHE_SECS = 2 * 3600.0
+
+# One file per URL, named by a hash of it — a URL is not a filename (query strings, '?', '&', '/').
+_tle_cache_file(url::String)::String =
+	joinpath(_TLE_CACHE_DIR, string(hash(url), base = 16) * ".tle")
+
+"""
+The text of `url`, from the cache when the copy there is younger than `_TLE_CACHE_SECS`, otherwise
+downloaded and cached. A download that fails falls back to whatever is on disk, however old.
+"""
+function _tle_fetch(url::String)::String
+	f = _tle_cache_file(url)
+	if isfile(f)
+		age = time() - mtime(f)
+		age < _TLE_CACHE_SECS && return read(f, String)
+	end
+	try
+		io = IOBuffer()
+		Downloads.download(url, io)
+		txt = String(take!(io))
+		# Write only something that looks like a TLE set: a 403 or an error page is not a cache entry,
+		# and caching one would keep serving the failure for two hours.
+		if occursin(r"(?m)^1 \d{5}", txt)
+			try
+				mkpath(_TLE_CACHE_DIR)
+				write(f, txt)
+			catch                       # a cache that cannot be written is not a reason to fail
+			end
+		end
+		return txt
+	catch e
+		isfile(f) || rethrow()
+		@warn string("Satellite: the download failed (", sprint(showerror, e),
+		             ") — using the copy cached ", round(Int, (time() - mtime(f)) / 60), " min ago.")
+		return read(f, String)
+	end
+end
+
+# Read the source named by the dialog's radio pair. A URL is fetched (through the cache above) and
+# parsed by the same `read_tle` a file goes through, so there is one parser, not two.
 function _sat_read_source(d::Dict{String,String})::Vector{TLE}
 	src = get(d, "src", "file")
 	if src == "url"
@@ -774,11 +1379,9 @@ function _sat_read_source(d::Dict{String,String})::Vector{TLE}
 		for u in split(url, '|')
 			u = strip(u)
 			isempty(u) && continue
-			# Straight into memory — a TLE list is tens of kB, and this tool has no business leaving
-			# scratch files on the user's disk.
-			io = IOBuffer()
-			Downloads.download(String(u), io)
-			append!(tles, read_tle(String(take!(io))))
+			# Through the cache (above): the same five files re-read every time the preset is picked is
+			# what got this rate-limited in the first place.
+			append!(tles, read_tle(_tle_fetch(String(u))))
 		end
 		return _sat_filter(tles, d)
 	end
@@ -816,6 +1419,7 @@ _sat_key(d::Dict{String,String})::String =
 	get(d, "src", "file") == "url" ? "url:" * get(d, "url", "") : "file:" * get(d, "path", "")
 
 function _on_satellite(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap::Cint)::Cint
+	what = ""                      # hoisted: the catch below needs to know WHICH request failed
 	try
 		d   = _sat_kv(unsafe_string(params))
 		key = _sat_key(d)
@@ -892,8 +1496,77 @@ function _on_satellite(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap:
 			return Cint(1)
 		end
 
+		# GROUND COVERAGE — asked by the click on the spacecraft itself (symbolLayerMenu, 50_scene.cpp).
+		# Only the PAINT half is here: the band is toggled OFF on the C++ side, which can see whether
+		# the polygons are on screen and needs no round trip to delete what it is already holding.
+		# `width` (km, the full swath) arrives only for a mission the table does not carry, after the
+		# menu has asked the user for it — a swath is a published instrument number, never a guess.
+		if what == "coverage"
+			scene == C_NULL && error("no window")
+			nm = get(d, "name", "")
+			isempty(nm) && error("no satellite named")
+			w = _sat_num(get(d, "width", ""), 0.0)
+			bands, label = if w > 0
+				([(-w / 2, w / 2)], string(round(w, digits = 1), " km"))
+			else
+				sw = _swath_for(nm)
+				# The one answer that is not a failure: the menu turns it into the width question.
+				sw === nothing && (_sat_reply(out, cap, "NEEDWIDTH"); return Cint(1))
+				sw
+			end
+			n = _plot_coverage!(scene, nm, bands)
+			_sat_reply(out, cap, string("Ground coverage: ", nm, " — ", label,
+			                            " (", n, n == 1 ? " polygon)" : " polygons)"))
+			return Cint(1)
+		end
+
+		# Does this mission have a published swath? The dialog asks on every change of selection, to
+		# decide whether its "Ground coverage" box can be ticked at all. A table lookup — no work.
+		if what == "swathknown"
+			_sat_reply(out, cap, _swath_for(get(d, "name", "")) === nothing ? "0" : "1")
+			return Cint(1)
+		end
+
+		# --- the one-day animation, driven frame by frame by the dialog's timer ----------------------
+		if what == "animstart"
+			scene == C_NULL && error("no window to plot into")
+			tles = get(_SAT_LOADED, key) do
+				t = _sat_read_source(d);  _SAT_LOADED[key] = t;  t
+			end
+			sel = [parse(Int, s) for s in split(get(d, "sel", ""), ',') if !isempty(strip(s))]
+			length(sel) == 1 || error("the animation runs one satellite at a time")
+			i = sel[1]
+			(i < 0 || i >= length(tles)) && error("that satellite is no longer in the list")
+			useAlt = get(d, "altitude", "1") != "0"
+			fw = get(d, "frame", "auto")
+			fr = fw == "earthfixed" ? :earthfixed : fw == "inertial" ? :inertial : :auto
+			bands = Tuple{Float64,Float64}[]
+			if get(d, "coverage", "0") == "1"
+				sw = _swath_for(isempty(tles[i+1].name) ? "" : tles[i+1].name)
+				# The box cannot be ticked for a mission with no published swath (the dialog greys it
+				# out), so this is a guard, not a branch the user can reach.
+				sw === nothing && error("no published swath is known for that satellite")
+				bands = sw[1]
+			end
+			_sat_reply(out, cap, string(_anim_start!(scene, tles[i+1], useAlt, fr, bands)))
+			return Cint(1)
+		end
+		if what == "animframe"
+			_sat_reply(out, cap, _anim_frame!(round(Int, _sat_num(get(d, "k", "1"), 1.0))))
+			return Cint(1)
+		end
+		if what == "animstop"
+			_anim_stop!()
+			_sat_reply(out, cap, "Animation stopped.")
+			return Cint(1)
+		end
+
 		error("unknown request: " * what)
 	catch e
+		# A FAILING FRAME ENDS THE RUN. The host stops its timer on a failed request, but the state
+		# here is dropped too — otherwise a half-built animation sits holding a Satellite handle, and
+		# one broken frame would raise one error window per tick.
+		startswith(what, "anim") && (try; _anim_stop!(); catch; end)
 		# NEVER let this throw: an exception escaping a Julia callback wedges the event pump.
 		try; _tool_failed(scene, "Satellite", e); catch; end
 		_sat_reply(out, cap, sprint(showerror, e))

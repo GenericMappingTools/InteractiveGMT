@@ -12,7 +12,7 @@ program, no plugin to install, and no network access needed unless you fetch TLE
 ## 1. Quick start
 
 1. Open a window showing a **world map** (or leave an empty launcher window — see §5).
-2. **Satellite → Ground tracks…**
+2. **Satellite → Satellite orbits…**
 3. Paste a URL (§2) into the **URL** field, or browse to a `.tle` file.
 4. The list fills as soon as the source is given.
 5. Select one or more, press **Plot ground track**.
@@ -48,6 +48,22 @@ Other `GROUP=` values Celestrak publishes: `weather`, `noaa`, `goes`, `resource`
 **space-track.org** has the full catalogue and historical elements, but requires a login, so its
 URLs will not work in the URL box. Download the file yourself and use **File** instead.
 
+### Downloads are cached for two hours
+
+**Celestrak rate-limits.** The curated preset alone pulls FIVE files every time it is picked — its
+missions are spread across `resource`, `weather`, `goes`, `geo` and a NAME query — so re-opening the
+dialog a handful of times is enough to be answered 403.
+
+Every downloaded URL is therefore kept in `%TEMP%/iGMT_tle` (one file per URL, named by a hash of it)
+and re-read from there for **two hours**. Elements are issued a couple of times a day and are good
+for days either side of their epoch, so this costs accuracy nothing and costs the service five
+requests instead of fifty.
+
+The cache is also the answer to *being* rate-limited: when a download fails, the copy on disk is used
+however old it is, and the status line says how old. A failed download with a perfectly good
+yesterday's file sitting there helps nobody. Only text that actually looks like a TLE set is cached,
+so a 403 page never becomes a two-hour-old "answer".
+
 ### TLEs go stale
 
 A TLE is accurate for roughly a few days either side of **its own epoch**, and a low-earth orbit
@@ -71,6 +87,8 @@ actually valid. Use *Now (UTC)* when you have just downloaded fresh ones.
 | **Frame** | Which curve the 3-D orbit is: *Earth-fixed* (over the ground — each revolution lands further west), *Inertial* (the orbital plane, the closed ring), or *Automatic* (default: inertial for a geosynchronous orbit, Earth-fixed for everything else). See §5. |
 | **Plot track** | Propagates the selected objects and draws them. |
 | **Update orbit** | Brings what is already plotted up to THIS instant: sets the anchor to *Now* and re-propagates, so the track ends and the spacecraft stands where the satellite is right now. |
+| **Animate 1 day** | Winds the last 24 hours onto the map, ending at NOW (below). Needs **exactly one** satellite selected, and is greyed out otherwise. Click again to stop. |
+| **Ground coverage** | Paint the swath as the animation runs. Only selectable for a satellite whose published swath width this app knows — see the table further down. |
 
 Every widget of the **Time span** block is live: changing the anchor, the duration, its unit or the
 step — Enter included — re-propagates and redraws at once, spacecraft body and all. Nothing is
@@ -99,7 +117,7 @@ It hides and leaves a row in the **Scene Objects** dock called *Satellite tracks
 - **click** the row — a menu with **Show** and **Delete**
 - **Delete** — really closes it
 
-Re-picking **Satellite → Ground tracks…** also brings back a parked dialog rather than opening a
+Re-picking **Satellite → Satellite orbits…** also brings back a parked dialog rather than opening a
 second one. This is the same parking mechanism as *Make movie* and *Illumination*.
 
 ---
@@ -131,6 +149,7 @@ Satellites
   SENTINEL-1A
       Track
       Spacecraft
+      SENTINEL-1A swath      (only once you ask for the ground coverage, below)
   SENTINEL-2A
       Track
       Spacecraft
@@ -164,6 +183,116 @@ The track is **cut at the dateline**, so it draws as a proper map track instead 
 across the plot. Each pass is its own segment, and the cut lands EXACTLY on ±180 with a point on
 both sides — on the globe those two meridians are the same line, so the orbit stays continuous
 there instead of showing a gap.
+
+### Animate one day
+
+**Animate 1 day** winds the last 24 hours onto the map: the track grows from a day ago up to **now**,
+the spacecraft rides its head, and — with **Ground coverage** ticked — the swath fills in behind it.
+The run ENDS AT NOW, so its last frame stands the spacecraft where the satellite actually is — the
+same anchoring **Update orbit** and the *Now (UTC)* span use, and the only one for which the body on
+the head of the track is a statement of fact rather than a prediction. It is
+cumulative, not a moving window, because the point of the run is what is left at the end: for a wide
+scanner like MODIS or VIIRS, a day's band is most of the planet; for Landsat's 185 km it is a set of
+thin stripes with big gaps between them, which is exactly why a Landsat scene takes 16 days to
+repeat.
+
+One satellite at a time — the button is greyed out unless exactly one row is selected. A day of one
+orbit is a picture; a day of six is a ball of wool.
+
+**The globe turns about its own rotation axis, and about nothing else.** Over the animated day the
+camera makes exactly **one** turn westward — the planet rotating under an orbit plane that stands
+still in space — so each pass comes round onto a face that has turned to meet it. The camera keeps
+its distance and its latitude: only the meridian it looks down changes
+(`gmtvtk_globe_spin_to_h`). On a flat map it does nothing — there is no sphere to turn.
+
+It is a steady 10°/s of screen time, and it never reverses. Between frames the camera has its own
+16 ms timer, so the turn is rendered about 60 times a second in steps of ~0.17° rather than once per
+frame in steps of 1°.
+
+**Why the camera is not aimed at the satellite**, which is the obvious thing and was tried twice: a
+polar orbit's sub-satellite point runs pole to pole and flips half the world in longitude twice per
+revolution. Aimed straight at it the view spins like a top — 15° to 45° per frame. Rate-limited, it
+stops spinning but then cannot chase a revolution at all: measured on a real Aqua day, the satellite
+sat a median 90° off centre and was behind the planet for half the run. The axis is the one thing in
+the picture that does not move, and a turn about it is the only view change that reads as the Earth
+rotating.
+
+**The band accumulates and nothing is ever taken back.** Each frame adds only the stretch flown since
+the last one, starting on the row the previous piece ended on so the two butt together. Passes that
+re-cover ground an earlier pass already saw therefore lie on top of each other and show as darker
+overlap, which is the whole reason to watch a day of it. (The first version repainted the entire band
+every frame — 44 polygons removed and re-added per tick — so it blinked off and rebuilt itself
+constantly. Measured on Aqua, the incremental rule adds 1 to 4 polygons per frame instead, 1.5 on
+average.)
+
+The clock lives in the dialog, not in Julia: a loop on the Julia side would sit on the same thread
+that pumps this window's events and freeze the very thing it is drawing. So the dialog runs a timer
+and asks for ONE FRAME per tick (360 frames for the day, one every 100 ms). Everything expensive happens once, when the
+run starts: the day is propagated, and the swath edges — the only costly part, two geodesic walks per
+sample — are walked for the whole day and then sliced per frame. A frame is a redraw, never a
+recomputation. The status line counts the frames and shows the UTC time being drawn.
+
+**A clock on the map**, not in the dialog: the instant being drawn, top left, with a progress bar top
+right. It is a movie annotation — the same `gmtvtk_anno_*` label and indicator the Make-movie tool
+lays on a frame — so an animation's clock is not a second kind of on-screen text with its own
+placement rules. Both disappear when the run ends.
+
+**Scene Objects is held still for the whole run** and rebuilt once at the end. A run adds a swath
+piece and re-lays its track on every one of 360 frames; a panel rebuilt that often strobes, and with
+the coverage box ticked it also stuttered the animation itself — a whole tree rebuilt and a whole
+scene redrawn for each polygon added. `gmtvtk_freeze_scene_objects_h` holds it; the thaw rebuilds
+once, so the rows you end up with are exactly the rows an unfrozen run would have left. (The
+propagation is not the cost and never was: a full 1441-point day re-propagates in 1.7 ms.)
+
+Stopping (a second click) leaves what is on screen. The last frame is drawn **after** the thaw, so
+the rows it leaves behind — the track's, the swath's, the data table, the unfold — are built by the
+same code any other plot goes through.
+
+### Ground coverage — the swath
+
+**Right-click the spacecraft** and tick **Ground coverage (swath)**: the strip of Earth that
+satellite's main instrument images along the track that is plotted is painted grey at 45 %
+transparency. The same entry, clicked again, takes it away — the tick is read off the scene itself,
+so removing the band from Scene Objects leaves the entry unticked, as it should. The polygons land in
+their own group, `<name> swath`, INSIDE that satellite's own row — a brother of **Track** and
+**Spacecraft**, not a cousin one level up. The satellite's checkbox cascades to it and its **Remove**
+takes it along, like every other part of the object.
+
+The band is built from the ground track already on screen, not from a second propagation: each
+sub-satellite point is walked out to the swath edges with `GMT.geod` along the track's own forward
+azimuth, and the ribbon is cut where it runs off the map — which happens a *half swath before* the
+track itself reaches the dateline.
+
+**A pole is walked through, not jumped over.** At 81.8° N a 1530 km half swath lands at 95.6°, i.e.
+84.4° on the far side of the pole: the edge really does step half the world in longitude between two
+consecutive samples. Left as a bare step, the ring's boundary runs along that latitude instead of over
+the pole, and the cap above it falls outside the polygon — a round hole in the band, with the forced
+±180 cut showing as a wide gap beside it. Both are the same missing pair of vertices, and
+`_stitch_pole` inserts them: up the meridian to lat ±90, across (one point, on a globe), and down the
+far side.
+
+The widths are the missions' published nadir swaths, as ground arc:
+
+| Mission | Instrument | Swath |
+|---|---|---|
+| TERRA, AQUA | MODIS | 2330 km |
+| LANDSAT 8, 9 | OLI/TIRS | 185 km |
+| SENTINEL-1 | SAR, interferometric wide | 250 km |
+| SENTINEL-2 | MSI | 290 km |
+| SENTINEL-3 | OLCI | 1270 km |
+| SENTINEL-5P | TROPOMI | 2600 km |
+| SENTINEL-6 | Poseidon-4 altimeter | ~12 km footprint |
+| SUOMI NPP, NOAA-20/21 (JPSS) | VIIRS | 3060 km |
+| SWOT | KaRIn | 2 × 50 km, either side of a 20 km nadir gap |
+
+Where a platform carries several instruments the entry is the one that defines its coverage — Terra
+and Aqua are MODIS, not ASTER's 60 km; Sentinel-3 is OLCI, not SLSTR's 1420 km. SWOT is two bands
+because it measures on both sides of a nadir gap and one 120 km band would claim coverage it does not
+have. Matching is by name prefix, so `SENTINEL-2C` is served by the Sentinel-2 entry.
+
+A mission that is **not** in that table is not guessed at: the menu asks you for the swath width in
+km and paints a symmetric band of it. A swath is an instrument's own published number, and an
+invented one would draw a lie on the map.
 
 ### Which FRAME the 3-D curve is drawn in
 

@@ -1,4 +1,4 @@
-# ecv.jl — Geophysics > Copernicus > "Essential Climate Variables…": the CDS collection
+# ecv.jl — Satellite > Copernicus > "Essential Climate Variables…": the CDS collection
 # `ecv-for-climate-change`, which the ERA5 dialog cannot express.
 #
 # WHY A SECOND DIALOG AND NOT A SECOND DATASET IN THE FIRST. The ERA5 dialog builds its request out

@@ -2170,6 +2170,11 @@ static std::function<void(const QPoint&)> textBatchMenu(Scene *s, const std::str
 static void rebuildSceneObjects(Scene *s) {
 	if (!s)
 		return;
+	// HELD STILL (Scene::objFrozen, set by gmtvtk_freeze_scene_objects_h): an animation that adds an
+	// element per frame would rebuild this whole tree several times a second and the panel strobes.
+	// The unfreeze rebuilds once, so the rows end up exactly as they would have anyway.
+	if (s->objFrozen)
+		return;
 	// The Shading dock's "Shaded image (2-D)" box describes the layer the window is SHOWING, so it is
 	// re-derived HERE — the one function every scene change ends in (add, show/hide, restack, delete,
 	// gmtvtk_show_new_element_h). Doing it in refreshGridColorbar was too early on the add path: a new
@@ -2369,13 +2374,31 @@ static void rebuildSceneObjects(Scene *s) {
 	// and it starts collapsed: a Compute that draws four terminators, four night polygons and a sun
 	// marker costs ONE row until the user opens it.
 	std::map<std::string, QTreeWidgetItem*> masterItems;
+	// A master may also be an OBJECT ROW that some earlier pass already built — a satellite's own group,
+	// which is not a master handle of its own but a group node under one. Anything declared with that
+	// object's name as its master hangs INSIDE it, beside the parts already there (a satellite's swath
+	// is a brother of its Track and its Spacecraft, not a cousin one level up).
+	std::map<std::string, QTreeWidgetItem*> objItems;
 	auto masterOf = [s](const std::string &nm) -> std::string {
 		auto it = s->groupMaster.find(nm);
 		return (it == s->groupMaster.end()) ? std::string() : it->second;
 	};
 	auto masterItemFor = [&](const std::string &member) -> QTreeWidgetItem* {
-		const std::string m = masterOf(member);
+		std::string m = masterOf(member);
 		if (m.empty()) return nullptr;                    // not declared: an ordinary top-level row
+		// Walk UP the declaration chain: the named parent first, and — when that parent has no row of
+		// its own this time round (a satellite plotted without its body) — whatever IT hangs under.
+		// Never invent a row for a name that is itself declared inside something else: that is how one
+		// object ends up with two rows, half its parts in each.
+		for (int hop = 0; hop < 8; ++hop) {
+			auto oi = objItems.find(m);
+			if (oi != objItems.end()) return oi->second;
+			auto mi = masterItems.find(m);
+			if (mi != masterItems.end()) return mi->second;
+			const std::string up = masterOf(m);
+			if (up.empty()) break;                        // m is a real master: its row is built below
+			m = up;
+		}
 		auto it = masterItems.find(m);
 		if (it != masterItems.end()) return it->second;
 		// The master's Remove takes EVERY declared member with it, in ONE sceneDeleteGroup call --
@@ -2423,7 +2446,22 @@ static void rebuildSceneObjects(Scene *s) {
 		// Checkbox toggles all children in this group.
 		QCheckBox *cb = new QCheckBox(row);
 		cb->setToolTip("Show / hide all patches");
-		cb->setChecked(true);   // start checked: patches visible by default
+		// FROM WHAT IS ACTUALLY ON SCREEN, never a hard "true": this function rebuilds the whole tree
+		// on every change, and a group whose members were hidden by its CONTAINER (a satellite's row
+		// unticked, cascading to its swath) would come back ticked with nothing drawn — the
+		// group-uncheck law broken by a stale default. A group with no members left keeps the old
+		// answer, which is the only case the hard-coded value was ever right for.
+		{
+			const std::string gn0 = name.toStdString();
+			bool anyPatch = false, patchVis = false;
+			for (const auto &p : s->polys) {
+				if (p.groupName != gn0) continue;
+				anyPatch = true;
+				if ((p.line && p.line->GetVisibility() != 0) || (p.fill && p.fill->GetVisibility() != 0))
+					{ patchVis = true; break; }
+			}
+			cb->setChecked(!anyPatch || patchVis);
+		}
 		QObject::connect(cb, &QCheckBox::toggled, [s, name](bool on) {
 			std::string gname = name.toStdString();
 			// Toggle all patches with this groupName directly on their actors.
@@ -2844,25 +2882,39 @@ static void rebuildSceneObjects(Scene *s) {
 		LineRef lr{ LK_Overlay, ov.actor };
 		if (!parts.empty() && !hasLabels) {
 			const std::string on2 = ov.name;
+			// Whatever ELSE this satellite has put in the scene under its own name: the ground-coverage
+			// swath is a polygon group called "<name> swath" (satellite.jl's `_sat_cover_group`). It is a
+			// PART of this object like the track and the body, so it belongs to this row's own visibility,
+			// its own Remove, and — through the declaration below — inside this group in the tree.
+			const std::string covGrp = on2 + " swath";
 			// ONE menu on both buttons — the properties click and the context click are the same thing.
-			auto objMenu = [s, on2](const QPoint &g) {
+			auto objMenu = [s, on2, covGrp](const QPoint &g) {
 				QMenu m(s->widget);
 				QAction *rem = m.addAction("Remove");
 				if (m.exec(g) != rem) return;
-				// By TAG, both kinds, in ONE call — the same deleter every other group Remove uses.
+				// By TAG, every kind, in ONE call — the same deleter every other group Remove uses.
+				// A group's Remove takes its descendants (SACRED_LAW.md), swath included.
 				sceneDeleteGroup(s, { GroupChild(GroupChild::Overlays,    on2),
-				                      GroupChild(GroupChild::SymbolLayer, on2) });
+				                      GroupChild(GroupChild::SymbolLayer, on2),
+				                      GroupChild(GroupChild::Polygons,    covGrp) });
 			};
 			bool anyVis = (ov.actor && ov.actor->GetVisibility() != 0);
 			for (SymbolLayer *p : parts)
 				if (p->actor && p->actor->GetVisibility()) anyVis = true;
-			beginGroupHandle(QString::fromStdString(ov.name), ov.mode == 1 ? IC_Line : IC_Points, anyVis,
-			                 objMenu, objMenu,
-			                 "This satellite — click for Remove (takes the track and the spacecraft)",
-			                 /*startFolded=*/true);
+			for (const auto &pg : s->polys)
+				if (pg.groupName == covGrp && ((pg.line && pg.line->GetVisibility() != 0) ||
+				                               (pg.fill && pg.fill->GetVisibility() != 0))) { anyVis = true; break; }
+			QTreeWidgetItem *objGrp =
+				beginGroupHandle(QString::fromStdString(ov.name), ov.mode == 1 ? IC_Line : IC_Points, anyVis,
+				                 objMenu, objMenu,
+				                 "This satellite — click for Remove (takes every part of it)",
+				                 /*startFolded=*/true);
 			addRow("Track", ov.actor, ov.mode == 1 ? IC_Line : IC_Points, &lr);
 			for (SymbolLayer *p : parts) emitSymbolRow(*p, QStringLiteral("Spacecraft"));
 			endGroup();
+			// Declared AFTER the row exists: the polygon pass runs later and resolves "<name> swath" to
+			// this very item, so the swath lands as a BROTHER of Track and Spacecraft.
+			objItems[on2] = objGrp;
 			if (ovReparented) curParent = ovSaveParent;
 			continue;
 		}
@@ -4568,6 +4620,28 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 	};
 
 	QMenu m(s->widget);
+	// A SPACECRAFT gets its GROUND COVERAGE at the top of the menu: the strip of Earth its instrument
+	// sees along the track that is plotted, painted grey and half transparent. It is a CHECKABLE
+	// entry, and the tick is read off the scene itself (are the polygons here?) rather than off a
+	// flag someone has to keep true — so the same click that paints it takes it away again, and a
+	// band removed from Scene Objects leaves the entry unticked, as it should.
+	// "This is a satellite" is the master row it was declared under (gmtvtk_set_group_master_h,
+	// satellite.jl) — the same key the tree groups its track and its body by, never a name match.
+	QAction *covA = nullptr;
+	std::string covGrp;
+	{
+		auto gm = s->groupMaster.find(sl->name);
+		if (gm != s->groupMaster.end() && gm->second == "Satellites" && g_juliaSatellite) {
+			covGrp = sl->name + " swath";          // ONE convention, mirrored at _sat_cover_group()
+			bool on = false;
+			for (const auto &pg : s->polys) if (pg.groupName == covGrp) { on = true; break; }
+			covA = m.addAction("Ground coverage (swath)");
+			covA->setCheckable(true);
+			covA->setChecked(on);
+			covA->setToolTip("Paint the strip of ground this satellite's instrument covers along its track");
+			m.addSeparator();
+		}
+	}
 	// Tide-station layers get two download entries at the TOP of the menu. They hand the star under
 	// the cursor (reuse the hover picker to grab its Name/Code/Country block) to Julia, which opens
 	// the Mareg download window in the requested mode. Only shown when a tides callback is registered.
@@ -4661,6 +4735,48 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 	QAction *ch = m.exec(gp);
 	if (!ch) return;
 
+	if (covA && ch == covA) {
+		// OFF is local: the polygons are here, tagged, and the shared group deleter takes them —
+		// asking Julia to delete what this side is holding would be a second removal path.
+		for (const auto &pg : s->polys) if (pg.groupName == covGrp) {
+			sceneDeleteGroup(s, { GroupChild(GroupChild::Polygons, covGrp) });
+			return;
+		}
+		// ON: the band is geodesy on the plotted track, which lives on the Julia side with the track.
+		// `sl` does not survive the call (the callback rebuilds the scene), so the name is copied out.
+		const std::string nm = sl->name;
+		// NO DEAD TIME (SACRED_LAW.md): walking a whole pass out to both swath edges blocks this
+		// thread, and a menu that vanishes onto a frozen window reads as a crash.
+		auto askJulia = [&](const QString &extra) -> QString {
+			std::vector<char> buf(1 << 16);
+			buf[0] = '\0';
+			const QString kv = QString("what=coverage\nname=%1\n").arg(QString::fromStdString(nm)) + extra;
+			showBusyDialog("Computing ground coverage…");
+			const int ok = g_juliaSatellite(s, kv.toUtf8().constData(), buf.data(), (int)buf.size());
+			closeBusyDialog();
+			const QString ans = QString::fromUtf8(buf.data());
+			if (!ok) {
+				QMessageBox::warning(s->widget, "Ground coverage",
+					ans.isEmpty() ? QString("The Julia side failed and said nothing about why.") : ans);
+				return QString();
+			}
+			return ans;
+		};
+		QString ans = askJulia(QString());
+		// A mission whose published swath this app does not carry is ASKED for, never guessed: a
+		// swath is an instrument's own number, and an invented one would draw a lie on the map.
+		if (ans == "NEEDWIDTH") {
+			bool okIn = false;
+			const double w = QInputDialog::getDouble(s->widget, "Ground coverage",
+				QString("No published swath is known for \"%1\".\nSwath width (km):")
+					.arg(QString::fromStdString(nm)),
+				200.0, 0.1, 6000.0, 1, &okIn);
+			if (!okIn) return;
+			ans = askJulia(QString("width=%1\n").arg(w, 0, 'f', 3));
+		}
+		if (!ans.isEmpty() && s->win) s->win->statusBar()->showMessage(ans, 5000);
+		return;
+	}
 	if (ch == tblA)  { showSymbolDataTable(s, act, QString::fromStdString(sl->name)); return; }
 	if (ch == saveA) { symbolSaveData(s, *sl); return; }
 	if (ch == plotTidesNowA) { g_juliaTideModel(s, "now", tideStation.c_str()); return; }

@@ -2023,21 +2023,21 @@ GMTVTK_API void gmtvtk_set_ttt_callback(JuliaTttFn fn) {
 	g_juliaTtt = fn;
 }
 
-// Register the Copernicus/ECMWF download callback (Geophysics > Copernicus). fn(scene, params, out,
+// Register the Copernicus/ECMWF download callback (Satellite > Copernicus). fn(scene, params, out,
 // cap) with the newline-separated "key=value" block documented at JuliaEcmwfFn (30_app.cpp) runs
 // GMT.jl's `ecmwf` and answers in `out`. nullptr to detach.
 GMTVTK_API void gmtvtk_set_ecmwf_callback(JuliaEcmwfFn fn) {
 	g_juliaEcmwf = fn;
 }
 
-// Register the Copernicus/ECV callback (Geophysics > Copernicus). fn(scene, params, out, cap) with
+// Register the Copernicus/ECV callback (Satellite > Copernicus). fn(scene, params, out, cap) with
 // the newline-separated "key=value" block documented at JuliaEcvFn (30_app.cpp) builds the
 // `ecv-for-climate-change` request and answers in `out`. nullptr to detach.
 GMTVTK_API void gmtvtk_set_ecv_callback(JuliaEcvFn fn) {
 	g_juliaEcv = fn;
 }
 
-// Register the Sentinel Hub imagery callback (Geophysics > Copernicus). fn(scene, params, out, cap)
+// Register the Sentinel Hub imagery callback (Satellite > Copernicus). fn(scene, params, out, cap)
 // with the newline-separated "key=value" block documented at JuliaSentinelHubFn (30_app.cpp) logs
 // in, lists the configurations and layers, and brings an image back. nullptr to detach.
 GMTVTK_API void gmtvtk_set_sentinelhub_callback(JuliaSentinelHubFn fn) {
@@ -3568,9 +3568,15 @@ GMTVTK_API int gmtvtk_add_poly_full(void *handle, const double *xyz, int npts, i
 	pg.stack = s->vecSeq++;
 	pg.veOwner = activeOwnerTag(s);
 	s->polys.push_back(pg);
-	applyVectorStacking(s);
-	rebuildSceneObjects(s);
-	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	applyVectorStacking(s);       // ALWAYS: it is what puts a vector on the overlay layer and off the
+	                              // raster's depth — a polygon that skipped it would z-fight the globe.
+	// FROZEN (Scene::objFrozen): the caller is adding many of these in a row and is driving its own
+	// redraws, so the tree rebuild and the render wait for the thaw. Those two are what made an
+	// animated swath stutter — a whole panel rebuilt and a whole scene redrawn per polygon.
+	if (!s->objFrozen) {
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	}
 	return (int)s->polys.size() - 1;
 }
 
@@ -4224,6 +4230,159 @@ GMTVTK_API int gmtvtk_fit_camera_for_orbit_h(void *handle, double ztop) {
 	s->ren->ResetCamera(b);                    // keeps the view DIRECTION, only backs the camera off
 	s->ren->ResetCameraClippingRange();        // …and lets the far plane reach the new distance
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// SPIN THE GLOBE ABOUT ITS OWN ROTATION AXIS until the meridian `lon` faces the camera — the view
+// motion of the one-day animation (satellite.jl's `_anim_frame!`). The camera keeps its DISTANCE and
+// its LATITUDE: the only thing that changes is which meridian it looks down, so the planet turns
+// under it exactly as it turns under the satellite. A no-op in any view that is not the globe.
+//
+// A ROTATION ABOUT THE POLE, AND NOTHING ELSE. Aiming the camera at the sub-satellite POINT was
+// tried twice and is wrong however it is damped: a polar orbit's subpoint swings from pole to pole
+// and flips half the world in longitude twice per revolution, so the view tumbles — set on the point
+// it spins like a top, and rate-limited it merely wanders (measured: a median 90° off centre, the
+// satellite behind the planet for half the run). The axis is the one physical thing in the picture
+// that does not move, and a turn about it is the only view change that reads as the Earth rotating.
+//
+// IT GLIDES THERE ON ITS OWN CLOCK. `stepDeg > 0` hands the target to a 16 ms timer that walks the
+// camera round a small step at a time and renders each one, so the motion is continuous no matter
+// how slowly the frames behind it arrive. `stepDeg <= 0` means "be there now" — what the first frame
+// of a run wants, so it opens on its subject instead of crawling to it from wherever the window was
+// pointing.
+//
+// The target meridian's own direction comes from `s->globeXf`, the body's OWN mapping — the very
+// transform every actor on the globe is bent by (sceneGlobeTransform, 10_geometry.cpp). No sphere
+// formula is written here; a second one would be free to disagree with the first (SACRED_LAW.md).
+struct GlobeGlide {
+	double  targetAz = 0.0;                    // world azimuth of the meridian being turned to, radians
+	double  stepDeg  = 1.0;                    // how far the view may turn per 16 ms tick
+	QTimer *timer    = nullptr;
+};
+static std::map<Scene *, GlobeGlide> g_globeGlide;
+
+// Put the camera at world azimuth `az`, keeping the latitude it already has and its distance.
+static void globeCamSetAz(Scene *s, double az) {
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	double c[3];  cam->GetPosition(c);
+	const double cn = vtkMath::Norm(c);
+	const double d  = cam->GetDistance();
+	if (!(cn > 0.0) || !(d > 0.0) || !std::isfinite(cn) || !std::isfinite(d)) return;
+	const double sinPhi = c[2] / cn;                        // the viewpoint's own latitude, kept
+	const double cosPhi = std::sqrt(std::max(0.0, 1.0 - sinPhi * sinPhi));
+	const double dh[3] = { cosPhi * std::cos(az), cosPhi * std::sin(az), sinPhi };
+	// NORTH, as seen from there: the world's +Z with the radial part taken out. Over a pole that
+	// vanishes, and then any perpendicular will do — there is no "north" to point at from above it.
+	double up[3] = { -dh[2]*dh[0], -dh[2]*dh[1], 1.0 - dh[2]*dh[2] };
+	if (vtkMath::Norm(up) < 1e-6) { up[0] = 0.0; up[1] = 1.0; up[2] = 0.0; }
+	cam->SetFocalPoint(0.0, 0.0, 0.0);                      // the body's centre: the axis passes through it
+	cam->SetPosition(dh[0]*d, dh[1]*d, dh[2]*d);
+	cam->SetViewUp(up);
+	cam->OrthogonalizeViewUp();
+	s->ren->ResetCameraClippingRange();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// The camera's current world azimuth, or NaN if it has no meaningful one.
+static double globeCamAz(Scene *s) {
+	double c[3];  s->ren->GetActiveCamera()->GetPosition(c);
+	const double h = std::sqrt(c[0]*c[0] + c[1]*c[1]);
+	if (!(h > 0.0) || !std::isfinite(h)) return std::numeric_limits<double>::quiet_NaN();
+	return std::atan2(c[1], c[0]);
+}
+
+// One tick of the glide: a small turn about the pole towards the target meridian, and a render.
+// Stops itself on arrival — a timer running on a view with nothing left to do is a window
+// repainting for no reason.
+static void globeGlideTick(Scene *s) {
+	auto it = g_globeGlide.find(s);
+	if (it == g_globeGlide.end()) return;
+	GlobeGlide &g = it->second;
+	if (!sceneAlive(s) || !s->ren || !s->globe || !s->ren->GetActiveCamera()) {
+		if (g.timer) g.timer->stop();
+		return;
+	}
+	const double cur = globeCamAz(s);
+	if (!std::isfinite(cur)) { if (g.timer) g.timer->stop(); return; }
+	double dif = g.targetAz - cur;                          // shortest way round
+	while (dif >  vtkMath::Pi()) dif -= 2.0 * vtkMath::Pi();
+	while (dif < -vtkMath::Pi()) dif += 2.0 * vtkMath::Pi();
+	const double difDeg = dif * 180.0 / vtkMath::Pi();
+	if (std::fabs(difDeg) <= 1e-3) { if (g.timer) g.timer->stop(); return; }
+	const double stepDeg = (std::fabs(difDeg) > g.stepDeg) ? (difDeg > 0 ? g.stepDeg : -g.stepDeg)
+	                                                       : difDeg;
+	globeCamSetAz(s, cur + stepDeg * vtkMath::Pi() / 180.0);
+}
+
+// PROBE: what is actually happening to a polygon on the body. `out8` comes back as
+//   [0] = 1 if a polygon of this name exists          [1] = 1 if its FILL actor carries a globe hook
+//   [2] = 1 if its LINE actor carries one             [3] = s->globe
+//   [4..7] = the fill actor's world bounds xmin,xmax,zmin,zmax — |x| ~ globeR (57.3) when the actor
+//            really is on the sphere, ~180 when it is still lying in raw lon/lat.
+// Exists because a swath drawn on a globe came out as flat patches in the z=0 plane and reading the
+// code could not settle whether the hook was missing or being undone.
+GMTVTK_API int gmtvtk_poly_globe_probe_h(void *handle, const char *name, double *out8) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !out8) return 0;
+	for (int i = 0; i < 8; ++i) out8[i] = 0.0;
+	out8[3] = s->globe ? 1.0 : 0.0;
+	for (auto &pg : s->polys) {
+		if (!name || pg.name != name) continue;
+		out8[0] = 1.0;
+		if (pg.fill) {
+			out8[1] = (s->globeHooks.find(pg.fill.Get()) != s->globeHooks.end()) ? 1.0 : 0.0;
+			double b[6];  pg.fill->GetBounds(b);
+			out8[4] = b[0];  out8[5] = b[1];  out8[6] = b[4];  out8[7] = b[5];
+		}
+		if (pg.line) out8[2] = (s->globeHooks.find(pg.line.Get()) != s->globeHooks.end()) ? 1.0 : 0.0;
+		return 1;
+	}
+	return 1;
+}
+
+// HOLD THE SCENE OBJECTS TREE STILL while something is drawing many elements in a row — the
+// satellite one-day animation adds a swath piece and re-lays its track on every one of 360 frames,
+// and rebuilding the whole panel each time makes it strobe. `on != 0` freezes; 0 thaws AND rebuilds
+// once, so the rows the user is left with are exactly the rows an unfrozen run would have built.
+// Only for a run the user is not expected to click inside: the panel is stale until it is thawed.
+GMTVTK_API int gmtvtk_freeze_scene_objects_h(void *handle, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	const int was = s->objFrozen;
+	s->objFrozen = (on != 0) ? 1 : 0;
+	if (was && !s->objFrozen) {
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	}
+	return 1;
+}
+
+GMTVTK_API int gmtvtk_globe_spin_to_h(void *handle, double lon, double stepDeg) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->ren || !s->globe || !s->globeXf) return 0;
+	if (!s->ren->GetActiveCamera()) return 0;
+	double p[3] = { lon, 0.0, 0.0 }, w[3];
+	s->globeXf->TransformPoint(p, w);                       // that meridian, on the equator
+	const double h = std::sqrt(w[0]*w[0] + w[1]*w[1]);
+	if (!(h > 0.0) || !std::isfinite(h)) return 0;
+	const double az = std::atan2(w[1], w[0]);
+	if (stepDeg <= 0.0) {                                   // be there now
+		auto it = g_globeGlide.find(s);
+		if (it != g_globeGlide.end() && it->second.timer) it->second.timer->stop();
+		globeCamSetAz(s, az);
+		return 1;
+	}
+	GlobeGlide &g = g_globeGlide[s];
+	g.targetAz = az;
+	g.stepDeg  = stepDeg;
+	if (!g.timer) {
+		g.timer = new QTimer(s->widget ? static_cast<QObject *>(s->widget) : nullptr);
+		QObject::connect(g.timer, &QTimer::timeout, g.timer, [s]() { globeGlideTick(s); });
+		// The timer OUTLIVES one target: a new frame just moves the goalposts, and the camera keeps
+		// turning. It stops itself on arrival, and is restarted here if it had stopped.
+		QObject::connect(g.timer, &QObject::destroyed, g.timer, [s]() { g_globeGlide.erase(s); });
+	}
+	if (!g.timer->isActive()) g.timer->start(16);           // ~60 renders a second
 	return 1;
 }
 

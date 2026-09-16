@@ -234,7 +234,7 @@ typedef void (*JuliaTilesFn)(void *scene, void *dlg, const char *params);
 static JuliaTilesFn g_juliaTiles = nullptr;
 static QString      g_tilesWorld;
 
-// Ocean Color Data Browser (Geophysics menu). The dialog (OceanColorDialog, 70_window.cpp, loads
+// Ocean Color Data Browser (Satellite menu). The dialog (OceanColorDialog, 70_window.cpp, loads
 // deps/ui/oceancolor_browser.ui) hands a newline-separated "key=value" block to Julia
 // (_on_oceancolor, src/oceancolor.jl), which knows the OB.DAAC catalogue and talks to the server:
 //   req=latest   -- the two newest browse images that exist for inst/prod/period
@@ -390,7 +390,7 @@ static JuliaRtp3DFn g_juliaRtp3D = nullptr;
 typedef int (*JuliaTttFn)(void *scene, const char *params);
 static JuliaTttFn g_juliaTtt = nullptr;
 
-// Copernicus / ECMWF download (Geophysics > Copernicus) — GMT.jl's `ecmwf` through src/ecmwf.jl:
+// Copernicus / ECMWF download (Satellite > Copernicus) — GMT.jl's `ecmwf` through src/ecmwf.jl:
 // the Climate Data Store (ERA5 reanalysis) and the ECMWF open-data forecasts, the two halves of the
 // SAME GMT.jl function, so ONE dialog (EcmwfDialog, 70_window.cpp, loads deps/ui/ecmwf_dialog.ui)
 // and ONE callback serve both — `what` says what is being asked for.
@@ -408,7 +408,7 @@ static JuliaTttFn g_juliaTtt = nullptr;
 typedef int (*JuliaEcmwfFn)(void *scene, const char *params, char *out, int cap);
 static JuliaEcmwfFn g_juliaEcmwf = nullptr;
 
-// Copernicus / Essential Climate Variables (Geophysics > Copernicus) -- the CDS collection
+// Copernicus / Essential Climate Variables (Satellite > Copernicus) -- the CDS collection
 // `ecv-for-climate-change` through src/ecv.jl. A SECOND dialog (EcvDialog, 70_window.cpp, loads
 // deps/ui/ecv_dialog.ui) and not a dataset of the one above, because this collection's request has
 // four inputs the ERA5 request shape has not got (origin, product_type, climate_reference_period,
@@ -426,7 +426,7 @@ static JuliaEcmwfFn g_juliaEcmwf = nullptr;
 typedef int (*JuliaEcvFn)(void *scene, const char *params, char *out, int cap);
 static JuliaEcvFn g_juliaEcv = nullptr;
 
-// Sentinel Hub imagery (Geophysics > Copernicus) — a port of the QGIS SentinelHub plugin through
+// Sentinel Hub imagery (Satellite > Copernicus) — a port of the QGIS SentinelHub plugin through
 // src/sentinelhub.jl. ONE callback for the whole dialog (SentinelHubDialog, 70_window.cpp, loads
 // deps/ui/sentinelhub_dialog.ui), `what` says what is being asked for.
 // NEWLINE-separated "key=value" block:

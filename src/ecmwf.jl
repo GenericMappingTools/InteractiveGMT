@@ -1,4 +1,4 @@
-# ecmwf.jl — Geophysics > Copernicus > "ERA5 / ECMWF download…": GMT.jl's `ecmwf` driven from the
+# ecmwf.jl — Satellite > Copernicus > "ERA5 / ECMWF download…": GMT.jl's `ecmwf` driven from the
 # viewer.
 #
 # TWO SOURCES, ONE TOOL, because GMT.jl already made them one function:

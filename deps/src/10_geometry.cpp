@@ -1354,6 +1354,13 @@ struct Scene {
 	// session that puts the window back has to put the menu back too — so the page id is recorded
 	// here and `gphySetPage` is how anything outside the menu code puts it back. 0 = the chooser.
 	int gphyPage = 0;
+	// SCENE OBJECTS, HELD STILL. While this is set, `rebuildSceneObjects` does nothing: an animation
+	// that adds an element per frame would otherwise rebuild the whole tree tens of times a second
+	// and the panel flickers like a strobe (the satellite one-day run, satellite.jl). Set and cleared
+	// through gmtvtk_freeze_scene_objects_h, which rebuilds ONCE on the way out — so the rows the user
+	// ends up with are the same rows an unfrozen run would have left, just built once instead of 360
+	// times. Never set for anything the user is expected to interact with mid-run.
+	int objFrozen = 0;
 	std::function<void(int)> gphySetPage;
 	bool hasCRS() const { return !crsProj4.empty() || !crsWkt.empty() || crsEpsg != 0; }
 
@@ -2564,6 +2571,23 @@ static void globeAttachActor(Scene *s, vtkActor *a, bool on, int vec = VEC_NONE)
 	if (vec == VEC_GND  && s->globeVecGndXf) want = s->globeVecGndXf.Get();
 	else if (vec != VEC_NONE && s->globeVecXf) want = s->globeVecXf.Get();
 	if (on) {
+		// IS THAT ENTRY STILL ABOUT THIS ACTOR? The map is keyed by a RAW vtkActor*, and nothing erases
+		// an entry when its actor dies — so an element that is deleted and rebuilt (a swath re-laid
+		// every frame of the satellite animation, a line edited, any tool that replaces its geometry)
+		// frees an actor and VTK hands the NEXT one the very same address. The stale entry then says
+		// "already on the globe" about an actor that has never been touched, this function returns at
+		// once, and the element draws in RAW LON/LAT for ever — flat grey patches lying in the z = 0
+		// plane beside the planet, which is exactly how it was found.
+		// The hook is only real if the mapper is actually reading through its filter. That is the one
+		// question worth asking here, it is a pointer compare, and it heals every such path at once
+		// rather than making each delete site remember to detach.
+		if (it != s->globeHooks.end()) {
+			vtkPolyDataMapper *mm = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
+			const bool live = mm && it->second.filt &&
+			                  mm->GetNumberOfInputConnections(0) > 0 &&
+			                  mm->GetInputConnection(0, 0) == it->second.filt->GetOutputPort();
+			if (!live) { s->globeHooks.erase(it); it = s->globeHooks.end(); }
+		}
 		if (it != s->globeHooks.end()) {
 			// …and if the element's own state has since changed what it should be wearing — "Clamp to
 			// ground" toggled on a line already on the body — re-point it. sceneGlobeSync runs this pass
