@@ -552,7 +552,7 @@ struct ExtraObj {
 	                                         // since ticked back on by hand.
 	double zpos    = 0.0;                    // flat-plane TRUE z — sits above/below the relief, NEVER at z=0
 	double bx0 = 0, bx1 = 0, by0 = 0, by1 = 0;  // image footprint (true coords): tcoords + grid-overlap test
-	int    gstack  = 0;                      // GRID draw-order rank in the grid pile (base relief + grids)
+	int    gstack  = 0;                   // GRID draw-order rank in the grid pile (base relief + grids)
 	int    tag     = 0;                      // UNIQUE, STABLE group tag (assigned once at creation from
 	                                         // Scene::gridTagSeq, never reused). The Color Bar row carries
 	                                         // this tag so a recolour always hits THIS grid, regardless of
@@ -1193,7 +1193,14 @@ struct Scene {
 	// instead of a rectangular axes box (the box is hidden while this is up — rebuildAxisLabels).
 	vtkSmartPointer<vtkActor> globeFrame;
 	double globeFrameR = -1.0;               // radius the graticule was last built for (rebuild when it moves)
+	int    globeFrameStack = 0;              // its rank in the unified draw-order pile (it is a LINE form,
+	                                         // so it rides the same pile every other vector does)
 	bool   globeFrameCube = false;           // …and which BODY it was built on (sphere and cube share a radius)
+	// The graticule is CLAMPED TO THE RELIEF (globeFrameUpdate), so its geometry depends on the
+	// surface it was draped over, not on the radius alone: these are the relief's own z limits and the
+	// exaggeration in force when the arcs were built. A new grid or a VE change moves the surface, so
+	// the frame is rebuilt instead of being left wrapped around the shape of a layer that is gone.
+	double globeFrameZ0 = 0.0, globeFrameZ1 = 0.0, globeFrameVE = -1.0;
 	bool   imageOnly = false;   // loaded as a bare image (no elevation): readout shows pixel colour, not z
 	PaletteLegend palette;      // the PRIMARY image's class legend, when that image is indexed (see
 	                            // PaletteLegend); an extra/derived image carries its own on its ExtraObj

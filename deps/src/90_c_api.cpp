@@ -1155,7 +1155,12 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //       a slot that holds a byte count, and writes the picture through it. That is not a wrong
 //       picture, it is an instant process death — the whole viewer disappears the moment the tool
 //       is opened. A callback's signature is a host-facing ABI exactly like an export's.
-GMTVTK_API int gmtvtk_abi_version(void) { return 15; }
+//  16 = gmtvtk_capture_view_rgb became gmtvtk_capture_view_rgba: the whole-view capture the GMT.jl
+//       script export plots for a globe/cube window now hands back FOUR bands, the window
+//       background transparent. Both the name and the band count changed, so a mismatched pair
+//       fails at the symbol lookup rather than reading a 4-band buffer as 3 (which would shear
+//       the picture into diagonal garbage and tint it).
+GMTVTK_API int gmtvtk_abi_version(void) { return 16; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -7362,32 +7367,44 @@ GMTVTK_API int gmtvtk_capture_rect_databaked(void *handle, double w, double e, d
 // vectors, labels, colour bar -- has to be IN it, where gmtvtk_capture_rect_rgb must hide them
 // because its caller draws them a second time itself.
 //
+// FOUR bands, RGBA: the window BACKGROUND is not part of the picture. A globe dropped into a GMT
+// figure must arrive as the planet alone — the viewer's wall colour is chrome, and pasting it into
+// the script's figure would paint a rectangle of it over whatever the script draws underneath. The
+// transparency comes from captureViewRGBA (50_scene.cpp), the SAME capture the Save dialog's Copy to
+// Clipboard uses, so the exported picture and the copied one can never differ.
+//
 // Caller owns the returned buffer (gmtvtk_free_rgb frees it); the layout is the same (band, col,
 // row) top-row-first one both rect captures hand back. Returns 1 on success, 0 if there is no
 // render window to read.
-GMTVTK_API int gmtvtk_capture_view_rgb(void *handle, unsigned char **outRgb, int *outW, int *outH) {
+GMTVTK_API int gmtvtk_capture_view_rgba(void *handle, unsigned char **outRgb, int *outW, int *outH) {
 	Scene *s = static_cast<Scene*>(handle);
-	if (!sceneAlive(s) || !s->ren || !s->widget || !s->widget->renderWindow()) return 0;
-	if (!outRgb || !outW || !outH) return 0;
-	s->widget->renderWindow()->Render();
-	vtkNew<vtkWindowToImageFilter> w2i;
-	w2i->SetInput(s->widget->renderWindow());
-	w2i->SetScale(2); w2i->Update();
-	vtkImageData *full = w2i->GetOutput();
+	if (!sceneAlive(s) || !outRgb || !outW || !outH) return 0;
+	vtkSmartPointer<vtkImageData> full = captureViewRGBA(s, 2);
+	if (!full) return 0;
 	int dims[3]; full->GetDimensions(dims);
-	if (dims[0] < 2 || dims[1] < 2) return 0;
+	if (dims[0] < 2 || dims[1] < 2 || full->GetNumberOfScalarComponents() != 4) return 0;
 	const int cw = dims[0], ch = dims[1];
-	unsigned char *buf = new unsigned char[size_t(cw) * size_t(ch) * 3];
+	unsigned char *buf = new unsigned char[size_t(cw) * size_t(ch) * 4];
 	for (int row = 0; row < ch; ++row) {
 		auto *src = static_cast<unsigned char*>(full->GetScalarPointer(0, row, 0));
-		std::memcpy(buf + size_t(ch - 1 - row) * size_t(cw) * 3, src, size_t(cw) * 3);  // bottom-up -> top-first
+		std::memcpy(buf + size_t(ch - 1 - row) * size_t(cw) * 4, src, size_t(cw) * 4);  // bottom-up -> top-first
 	}
 	*outRgb = buf; *outW = cw; *outH = ch;
 	return 1;
 }
 
+// Put what this window SHOWS on the system clipboard, background transparent — the same call the
+// Save dialog's "Copy to Clipboard" button makes (sceneCopyViewToClipboard, 87_vtkio.cpp). One
+// implementation, two doors. Returns 1 on success.
+GMTVTK_API int gmtvtk_copy_view_clipboard_h(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	std::string err;
+	return sceneCopyViewToClipboard(s, err) ? 1 : 0;
+}
+
 // Free a buffer returned by gmtvtk_capture_rect_rgb / gmtvtk_capture_rect_databaked /
-// gmtvtk_capture_view_rgb.
+// gmtvtk_capture_view_rgba.
 GMTVTK_API void gmtvtk_free_rgb(unsigned char *buf) { delete[] buf; }
 
 // Re-frame ONE RASTER's OWN axes + the camera onto an arbitrary world bbox (x0,x1,y0,y1 -- plain

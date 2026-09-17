@@ -265,11 +265,12 @@ static void lineGatherPolylines(Scene *s, const LineRef &lr,
 // Write the gathered polylines as a multisegment table. 2D = x y (corners). 3D = x y z, each
 // segment subdivided (one sub-point per grid node) with z INTERPOLATED from the grid below
 // (sampleZ); off a grid, the stored vertex z is used. Multi-segment uses GMT '>' headers.
-static bool lineWriteTable(Scene *s, const std::vector<std::vector<std::array<double,3>>> &polylines,
-						   bool threeD, const QString &path) {
-	QFile f(path);
-	if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
-	QTextStream out(&f);
+// The table's TEXT — the one place the 2-D/3-D formatting lives, so the file writer below and the
+// Save dialog's "Copy to Clipboard" can never emit different numbers.
+static QString lineTableText(Scene *s, const std::vector<std::vector<std::array<double,3>>> &polylines,
+							 bool threeD) {
+	QString txt;
+	QTextStream out(&txt);
 	const bool haveGrid = !s->gridZ.empty();
 	double spacing = 0.0;                                // grid node spacing for the 3-D subdivision
 	if (haveGrid) {
@@ -306,6 +307,15 @@ static bool lineWriteTable(Scene *s, const std::vector<std::vector<std::array<do
 		if (haveGrid) { const double h = sampleZ(s, last[0], last[1]); if (!std::isnan(h)) z = h; }
 		out << last[0] << '\t' << last[1] << '\t' << z << '\n';
 	}
+	return txt;
+}
+
+static bool lineWriteTable(Scene *s, const std::vector<std::vector<std::array<double,3>>> &polylines,
+						   bool threeD, const QString &path) {
+	QFile f(path);
+	if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+	QTextStream out(&f);
+	out << lineTableText(s, polylines, threeD);
 	f.close();
 	return true;
 }
@@ -320,12 +330,49 @@ static void lineSavePoints(Scene *s, const LineRef &lr) {
 	if (polylines.empty()) return;
 	const bool isPoly = (lr.kind == LK_Polygon);
 
-	QStringList opts; opts << "2D  (x y)" << "3D  (x y z)";
-	bool ok = false;
-	QString choice = QInputDialog::getItem(s->win, isPoly ? "Save polygon" : "Save line",
-										   "Coordinates:", opts, s->gridZ.empty() ? 0 : 1, false, &ok);
-	if (!ok) return;
-	const bool threeD = choice.startsWith("3D");
+	// A 3-D save needs a z to save: a grid under the line (z sampled from it), or vertices that
+	// actually carry different z's. A line drawn on a flat 2-D backdrop has neither, so the choice
+	// is not offered at all — it would only write a constant third column.
+	bool have3D = !s->gridZ.empty();
+	if (!have3D) {
+		double z0 = 0.0; bool first = true;
+		for (auto &pl : polylines) {
+			for (auto &p : pl) {
+				if (first) { z0 = p[2]; first = false; continue; }
+				if (std::abs(p[2] - z0) > 1e-12) { have3D = true; break; }
+			}
+			if (have3D) break;
+		}
+	}
+
+	const QString title = isPoly ? "Save polygon" : "Save line";
+	QDialog dlg(s->win);
+	dlg.setWindowTitle(title);
+	QVBoxLayout *v = new QVBoxLayout(&dlg);
+	v->addWidget(new QLabel("Coordinates:", &dlg));
+	QComboBox *combo = new QComboBox(&dlg);
+	combo->addItem("2D  (x y)");
+	if (have3D) { combo->addItem("3D  (x y z)"); combo->setCurrentIndex(1); }
+	v->addWidget(combo);
+
+	// No Cancel (Esc still closes): Save sits at the right end, Copy to Clipboard beside it.
+	QHBoxLayout *br = new QHBoxLayout();
+	QPushButton *clip = new QPushButton("Copy to Clipboard", &dlg);
+	br->addWidget(clip, 0);
+	br->addStretch(1);
+	QPushButton *saveBtn = new QPushButton("Save", &dlg);
+	saveBtn->setDefault(true);
+	br->addWidget(saveBtn, 0);
+	v->addLayout(br);
+
+	QObject::connect(saveBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+	QObject::connect(clip, &QPushButton::clicked, &dlg, [&dlg, s, &polylines, combo]() {
+		QApplication::clipboard()->setText(lineTableText(s, polylines, combo->currentIndex() == 1));
+		if (s->win) s->win->statusBar()->showMessage("Coordinates copied to clipboard", 4000);
+		dlg.reject();                                    // done — nothing to save, just close
+	});
+	if (dlg.exec() != QDialog::Accepted) return;
+	const bool threeD = (combo->currentIndex() == 1);
 
 	const QString defName = isPoly ? "polygon.gpkg" : "line.txt";
 	QString fn = QFileDialog::getSaveFileName(s->win, isPoly ? "Save polygon" : "Save line", prefStartDir(defName),

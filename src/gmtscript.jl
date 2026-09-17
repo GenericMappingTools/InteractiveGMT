@@ -455,18 +455,22 @@ georeference — the same reason the script emits it with `-JX` and no frame. La
 band-planar row-major "TRBa", the one `_display_image` documents.
 """
 function _view_image(scene::Ptr{Cvoid})
-	haskey(_LIB_FNS, :gmtvtk_capture_view_rgb) ||
-		error("gmtscript: this viewer library has no gmtvtk_capture_view_rgb, so a globe/cube window " *
+	haskey(_LIB_FNS, :gmtvtk_capture_view_rgba) ||
+		error("gmtscript: this viewer library has no gmtvtk_capture_view_rgba, so a globe/cube window " *
 		      "cannot be captured — rebuild deps/build/gmtvtk.dll")
 	pRgb = Ref{Ptr{UInt8}}(C_NULL); pW = Ref{Cint}(0); pH = Ref{Cint}(0)
-	ok = ccall(_fn(:gmtvtk_capture_view_rgb), Cint,
+	ok = ccall(_fn(:gmtvtk_capture_view_rgba), Cint,
 	           (Ptr{Cvoid}, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}), scene, pRgb, pW, pH)
 	ok == 0 && error("gmtscript: could not capture this window's view")
 	nx, ny = Int(pW[]), Int(pH[])
 	try
-		v = unsafe_wrap(Array, pRgb[], (3, nx, ny))    # (band, col, row), C memory, borrowed
-		I = GMT.mat2img(permutedims(v, (2, 3, 1));     # -> (col, row, band), owned: what grdimage plots
-		                x=[0.0, Float64(nx)], y=[0.0, Float64(ny)])
+		v = unsafe_wrap(Array, pRgb[], (4, nx, ny))    # (band, col, row) RGBA, C memory, borrowed
+		p = permutedims(v, (2, 3, 1))                  # -> (col, row, band), owned: what grdimage plots
+		I = GMT.mat2img(p[:, :, 1:3]; x=[0.0, Float64(nx)], y=[0.0, Float64(ny)])
+		# The FOURTH band is the window background's transparency, not a colour: it rides in the
+		# image's own `alpha` (a GMTimage field, not a mat2img kwarg) so the planet lands on the
+		# figure with nothing painted around it.
+		I.alpha = p[:, :, 4]
 		I.layout = "TRBa"                              # band-planar, ROW-major, north-first
 		return _georef_image!(I, 0.0, Float64(nx), 0.0, Float64(ny))
 	finally
@@ -497,10 +501,13 @@ function _script_body_view!(ctx::ScriptCtx, cube::Bool)
 	var = _script_var!(ctx, "I", I)
 	ctx.needs_base64 = true                            # the script asks the live window for the pixels
 	bind = DataBind(var, :capture, _script_view_capture_call(ctx.scene), "")
+	# `alpha_color` (-Q) is what makes GMT honour the capture's alpha band: without it the image is
+	# plotted opaque and the viewer's background comes back as a rectangle around the body.
 	kw = Pair{Symbol,Any}[:region  => ScriptVar(:REG, ctx.region),
 	                      :proj    => ScriptVar(:PROJ, ctx.proj),
 	                      :figsize => (ScriptVar(:FIGSIZE, ctx.figsize), 0),
-	                      :frame   => :none]
+	                      :frame   => :none,
+	                      :alpha_color => true]
 	return ScriptStep[ScriptStep("whole-view capture — $body", DataBind[bind], :grdimage, var, kw, false)]
 end
 

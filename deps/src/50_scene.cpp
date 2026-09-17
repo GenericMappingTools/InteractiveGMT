@@ -856,6 +856,22 @@ static void sceneRemoveExtraAt(Scene *s, size_t idx) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
+// "Copy to Clipboard", the image handle's own entry beside "Save image…": Save writes the DATA
+// (georeferenced, full precision), this puts the PICTURE — the view exactly as displayed, wrapped on
+// the globe or tilted in 3-D, background transparent — on the system clipboard. Both image-handle
+// menus (an extra image and the window's own) call THIS, so there is one behaviour and one message.
+static bool sceneCopyViewToClipboard(Scene *s, std::string &err);   // 87_vtkio.cpp
+static void copyViewToClipboardUI(Scene *s) {
+	std::string err;
+	if (sceneCopyViewToClipboard(s, err)) {
+		if (s && s->win) s->win->statusBar()->showMessage("View copied to clipboard", 4000);
+	}
+	else if (s && s->win) {
+		QMessageBox::warning(s->win, "Copy to Clipboard",
+		                     "Could not copy the view.\n\n" + QString::fromStdString(err));
+	}
+}
+
 static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	int idx = extraIndexOfActor(s, actor);
 	if (idx < 0) return;
@@ -892,6 +908,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aHisto = g_showImageHisto ? m.addAction("Show Histogram") : nullptr;
 	QAction *aResize = g_showImageResize ? m.addAction("Image resize…") : nullptr;
 	QAction *aSave = m.addAction("Save image…");
+	QAction *aClip = m.addAction("Copy to Clipboard");
 	// Same move a grid row offers (gridObjectMenu): re-open this image in a fresh iGMT window, then
 	// drop it from here. ONE function does the move for both kinds — moveObjectToNewWindow.
 	QAction *aMove = m.addAction("Move to new window");
@@ -907,6 +924,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 		return;
 	}
 	if (c == aSave) { saveObjectDialog(s, "image", QString::fromStdString(s->extras[idx].name)); return; }
+	if (c == aClip) { copyViewToClipboardUI(s); return; }
 	if (aStretch && c == aStretch) { stretchImageObject(s, QString::fromStdString(s->extras[idx].name)); return; }
 	ExtraObj &ex = s->extras[idx];            // vector unchanged during exec -> index still valid
 	const double step = imageStackStep(s);
@@ -986,6 +1004,13 @@ static std::vector<StackItem> gatherStackItems(Scene *s) {
 	for (auto &o  : s->overlays) if (o.actor) v.push_back({ { o.actor.Get()  }, &o.stack,  true, false, o.realZ });
 	for (auto &sl : s->symbols)  if (sl.actor) v.push_back({ { sl.actor.Get() }, &sl.stack, true, sl.solid3D });
 	for (auto &pg : s->polys)    if (pg.line && !pg.isMeca) v.push_back({ { pg.line.Get()  }, &pg.stack, true, false });
+	// The GRATICULE — the globe's axes — is a LINE FORM, so it joins the SAME pile: the rasters-below-
+	// vectors sort is what keeps it visible over an image drawn on the sphere. It used to sit outside
+	// the pile with the mapper's default (0,0) coincident offset, which loses the tie to a flat image
+	// lying at exactly sea level (its drape carries -1) — the axes vanished under the picture.
+	// realZ = it lies ON the body's own skin, so it takes the on-body coplanar nudge, not the full ramp.
+	if (s->globeFrame && s->globeFrame->GetVisibility())
+		v.push_back({ { s->globeFrame.Get() }, &s->globeFrameStack, true, false, true });
 	return v;
 }
 
@@ -2667,6 +2692,7 @@ static void rebuildSceneObjects(Scene *s) {
 			QAction *aHisto    = g_showImageHisto ? m.addAction("Show Histogram")  : nullptr;
 			QAction *aResize   = g_showImageResize ? m.addAction("Image resize…")  : nullptr;
 			QAction *aSave = m.addAction("Save image…");
+			QAction *aClip = m.addAction("Copy to Clipboard");
 			// Same move a grid row offers, for the window's own image: re-open it in a fresh iGMT
 			// window, then drop it from here (moveObjectToNewWindow — the one function for both kinds).
 			QAction *aMove = m.addAction("Move to new window");
@@ -2678,6 +2704,7 @@ static void rebuildSceneObjects(Scene *s) {
 			else if (aHisto && c == aHisto) g_showImageHisto(s, "");
 			else if (aResize && c == aResize) g_showImageResize(s, "");
 			else if (c == aSave) saveObjectDialog(s, "image", nm);
+			else if (c == aClip) copyViewToClipboardUI(s);
 			else if (c == aMove) { if (moveObjectToNewWindow(s, "image", "")) sceneRemoveSurface(s); }
 			else if (c == aRem) sceneRemoveSurface(s);
 		};
@@ -4006,7 +4033,12 @@ static void symbolRescaleCB(vtkObject*, unsigned long, void *clientData, void*) 
 		}
 		else continue;
 		if (sl.solid3D && sl.zfix) {           // cancel the actor's (1,1,zfac*ve) Z-squash, see SymbolLayer
-			const double zc = sceneZScale(s);
+			// …EXCEPT ON A BODY, WHERE THERE IS NO SQUASH TO CANCEL. `globeAttachActor` puts every
+			// hooked actor at scale (1,1,1) and the body transform has already folded z in, so undoing
+			// a squash that is not there multiplies the glyph's height by 1/zfac. On a grid in METRES
+			// that is ~1e5: the spacecraft became a sheet taller than the window, seen edge-on as a
+			// white vertical band across the globe. Cancel only what the actor is actually wearing.
+			const double zc = s->globe ? 1.0 : sceneZScale(s);
 			const double zInv = (std::fabs(zc) > 1e-12) ? (1.0 / zc) : 0.0;   // ve==0 (flat) -> degenerate, harmless
 			sl.zfix->Identity();
 			sl.zfix->Scale(1.0, 1.0, zInv);
@@ -5354,3 +5386,122 @@ static void popupProfileMenu(Scene *s, const QPoint &globalPos) {
 // Qt handlers: middle-click with no drag recenters the view on the surface point under the
 // cursor (identical math to the working `c` hotkey); middle-drag pans. Left/right/wheel fall
 // through to the base class unchanged, so VTK interaction + the context menu still work.
+
+// THE view capture — one function for every "give me a picture of what this window shows": the Save
+// dialog's Copy to Clipboard and the GMT.jl script export's globe/cube whole-view grdimage. It hands
+// back RGBA with the viewer's backdrop TRANSPARENT: the background is chrome, not data, so a globe
+// pasted into a slide or dropped into a GMT figure must arrive as the planet alone and not as a
+// rectangle of this window's wall colour.
+//
+// The alpha is MEASURED, not asked for. The window's buffer format is left exactly as it is — no
+// alpha bit planes switched on and off under a live GL context, which is a change to the surface the
+// widget is presenting from. Instead the frame is captured TWICE, over a black background and over a
+// white one, and the standard two-matte identities recover both channels exactly:
+//     over black:  B = a*F           over white:  W = a*F + (1-a)
+//     =>  a = 1 - (W - B)            F = B / a
+// Only the background COLOUR changes between the two, which is a plain renderer property restored
+// immediately afterwards. Anti-aliased edges and semi-transparent props come out right, because the
+// identities are the compositing maths itself rather than a guess at which pixels are "background".
+// Result is a DEEP COPY: the restore render cannot overwrite the pixels the caller is holding.
+// `scale` is vtkWindowToImageFilter's integer magnification (2 = slide resolution). Rows come back
+// bottom-up, as VTK always hands them over; flipping is the caller's business, as it already was.
+static vtkSmartPointer<vtkImageData> captureViewRGBA(Scene *s, int scale) {
+	if (!s || !s->ren || !s->widget || !s->widget->renderWindow()) return nullptr;
+	vtkRenderWindow *rw = s->widget->renderWindow();
+	double bg[3], bg2[3];
+	s->ren->GetBackground(bg);
+	s->ren->GetBackground2(bg2);
+	const int hadGradient = s->ren->GetGradientBackground();
+
+	auto shoot = [&](double r, double g, double b) {
+		s->ren->GradientBackgroundOff();
+		s->ren->SetBackground(r, g, b);
+		rw->Render();
+		vtkNew<vtkWindowToImageFilter> w2i;
+		w2i->SetInput(rw);
+		w2i->SetScale(scale > 0 ? scale : 1);
+		w2i->ShouldRerenderOn();                  // required by SetScale > 1
+		w2i->ReadFrontBufferOff();
+		w2i->Update();
+		vtkSmartPointer<vtkImageData> im = vtkSmartPointer<vtkImageData>::New();
+		im->DeepCopy(w2i->GetOutput());
+		return im;
+	};
+	vtkSmartPointer<vtkImageData> onBlack = shoot(0.0, 0.0, 0.0);
+	vtkSmartPointer<vtkImageData> onWhite = shoot(1.0, 1.0, 1.0);
+
+	s->ren->SetBackground(bg);                    // the window goes back exactly as it was …
+	s->ren->SetBackground2(bg2);
+	if (hadGradient) s->ren->GradientBackgroundOn();
+	rw->Render();                                 // … and is repainted before anyone can see otherwise
+
+	if (!onBlack || !onWhite) return nullptr;
+	int d1[3], d2[3];
+	onBlack->GetDimensions(d1);
+	onWhite->GetDimensions(d2);
+	if (d1[0] != d2[0] || d1[1] != d2[1] || d1[0] < 2 || d1[1] < 2) return nullptr;
+	if (onBlack->GetScalarType() != VTK_UNSIGNED_CHAR || onBlack->GetNumberOfScalarComponents() < 3)
+		return nullptr;
+	const int w = d1[0], h = d1[1];
+	const int nb = onBlack->GetNumberOfScalarComponents(), nw = onWhite->GetNumberOfScalarComponents();
+
+	vtkSmartPointer<vtkImageData> out = vtkSmartPointer<vtkImageData>::New();
+	out->SetDimensions(w, h, 1);
+	out->AllocateScalars(VTK_UNSIGNED_CHAR, 4);
+	const unsigned char *pb = (const unsigned char *)onBlack->GetScalarPointer();
+	const unsigned char *pw = (const unsigned char *)onWhite->GetScalarPointer();
+	unsigned char *po = (unsigned char *)out->GetScalarPointer();
+	const size_t np = (size_t)w * (size_t)h;
+	size_t nOpaque = 0;                           // how much of the frame survived as picture
+	for (size_t i = 0; i < np; ++i) {
+		const unsigned char *B = pb + i * nb;
+		const unsigned char *W = pw + i * nw;
+		// One coverage for the pixel: the channel that moved LEAST between the two backgrounds is the
+		// one least polluted by the background itself, and taking the max alpha over the three keeps a
+		// pixel that is opaque in any channel fully opaque (a black object over black must not vanish).
+		int a = 0;
+		for (int c = 0; c < 3; ++c) {
+			const int ac = 255 - (int(W[c]) - int(B[c]));
+			if (ac > a) a = ac;
+		}
+		if (a < 0)   a = 0;
+		if (a > 255) a = 255;
+		po[i * 4 + 3] = (unsigned char)a;
+		// A fully transparent pixel still carries a COLOUR, and it is the colour every application
+		// that drops the alpha will show: Windows' CF_DIB has no alpha channel at all, so PowerPoint,
+		// Paint or any plain bitmap paste renders exactly these RGB values. WHITE, therefore — a page
+		// is white, and a picture flattened onto white still reads. Black here would paste the globe
+		// inside a black slab, which is the same complaint as the background never having left.
+		if (a == 0) { po[i * 4] = po[i * 4 + 1] = po[i * 4 + 2] = 255; continue; }
+		++nOpaque;
+		for (int c = 0; c < 3; ++c) {             // un-premultiply: F = B / a
+			int v = (int)std::lround(255.0 * double(B[c]) / double(a));
+			po[i * 4 + c] = (unsigned char)(v < 0 ? 0 : (v > 255 ? 255 : v));
+		}
+	}
+	// SELF-CHECK, and it is not paranoia: an ENTIRELY INVISIBLE picture is the one outcome that must
+	// never leave this function. If a driver hands back two captures that hold only the cleared
+	// background — content missing from the grabbed frame for any reason — then W - B is 255 in every
+	// pixel and the maths above says "transparent everywhere", i.e. the user copies nothing at all.
+	// So the result is required to contain some picture; if it does not, the transparency attempt is
+	// ABANDONED and the frame is handed over opaque, exactly as it looks on screen. Background
+	// included is a lesser failure than nothing at all, and it is visible, so it can be reported.
+	if (nOpaque < np / 100) {                     // under 1% of the frame is picture -> matte failed
+		vtkSmartPointer<vtkImageData> plain = shoot(bg[0], bg[1], bg[2]);   // the view as it looks
+		s->ren->SetBackground(bg);
+		s->ren->SetBackground2(bg2);
+		if (hadGradient) s->ren->GradientBackgroundOn();
+		rw->Render();
+		if (!plain) return nullptr;
+		int dp[3];
+		plain->GetDimensions(dp);
+		if (dp[0] != w || dp[1] != h) return nullptr;
+		const int npc = plain->GetNumberOfScalarComponents();
+		const unsigned char *pp = (const unsigned char *)plain->GetScalarPointer();
+		for (size_t i = 0; i < np; ++i) {
+			for (int c = 0; c < 3; ++c) po[i * 4 + c] = pp[i * npc + c];
+			po[i * 4 + 3] = 255;
+		}
+	}
+	return out;
+}

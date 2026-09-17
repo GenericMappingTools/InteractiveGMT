@@ -671,3 +671,65 @@ static bool vtkioSaveObject(Scene *s, const std::string &name, const std::string
 
 // Does this Save format code belong to us (rather than Julia's GMT/GDAL writers)?
 static bool vtkioIsVtkSaveCode(const QString &code) { return code.startsWith(QLatin1String("vtk_")); }
+
+// Put WHAT IS ON SCREEN on the system clipboard as a bitmap — the rendered frame, not the source
+// raster. A picture wrapped on the globe (or tilted in 3-D, or exaggerated) is displayed by the
+// PROJECTION, which lives in the render, so copying the texture's own rows handed back a flat
+// Cartesian image that the user is not looking at. Saving to a FILE is the other job and keeps the
+// data (georeferenced, full precision); the clipboard is the picture.
+// Captured at scale 2 through captureViewRGBA (50_scene.cpp) — the SAME capture the GMT.jl script
+// export's globe/cube view uses — so it arrives WITHOUT the window background: the planet, the map
+// and its annotation over transparent pixels, ready to paste onto a slide. VTK image rows run
+// bottom-up, QImage top-down, hence the vertical mirror.
+static bool sceneCopyViewToClipboard(Scene *s, std::string &err) {
+	vtkSmartPointer<vtkImageData> im = captureViewRGBA(s, 2);   // the ONE capture (50_scene.cpp)
+	if (!im) { err = "the frame could not be captured"; return false; }
+	int dims[3] = {0, 0, 0};
+	im->GetDimensions(dims);
+	const int w = dims[0], h = dims[1];
+	const int comps = im->GetNumberOfScalarComponents();
+	if (w <= 0 || h <= 0 || im->GetScalarType() != VTK_UNSIGNED_CHAR || (comps != 3 && comps != 4)) {
+		err = "unsupported frame format (need 8-bit RGB or RGBA)";
+		return false;
+	}
+	const unsigned char *src = (const unsigned char *)im->GetScalarPointer();
+	if (!src) { err = "the captured frame has no pixels"; return false; }
+	QImage qi(w, h, comps == 4 ? QImage::Format_RGBA8888 : QImage::Format_RGB888);
+	const size_t rowBytes = (size_t)w * comps;
+	for (int y = 0; y < h; ++y)                       // row 0 of a VTK frame is the BOTTOM scanline
+		memcpy(qi.scanLine(h - 1 - y), src + (size_t)y * rowBytes, rowBytes);
+
+	// PNG ON THE CLIPBOARD, not just a bitmap. A plain setImage() publishes Windows' CF_DIB, which
+	// has no alpha channel: the receiving application then pastes the RGB underneath, and the RGB
+	// under a transparent pixel is still the viewer's background colour — so a capture that really
+	// IS transparent (alpha 0 over the whole backdrop) pastes as a rectangle of window background.
+	// PowerPoint, Word, browsers and image editors all prefer the PNG flavour when it is offered,
+	// and that one carries the alpha. The bitmap stays on as the fallback for anything that only
+	// speaks CF_DIB.
+	QByteArray png;
+	{
+		QBuffer buf(&png);
+		buf.open(QIODevice::WriteOnly);
+		qi.save(&buf, "PNG");
+	}
+	// THE BITMAP FLAVOUR MUST BE OPAQUE. Microsoft Word (and Office generally) takes the bitmap, not
+	// the PNG, and a 32-bit DIB that carries an alpha channel is read there as premultiplied — an
+	// image whose background alpha is 0 then pastes as NOTHING AT ALL, the whole picture invisible.
+	// So the DIB is handed over already composited on white, in a format with no alpha channel to
+	// misread (Format_RGB32), while the PNG below keeps the real transparency for everything that
+	// understands it. One capture, two flavours, each in the form its consumer can actually render.
+	QImage flat(qi.size(), QImage::Format_RGB32);
+	flat.fill(Qt::white);
+	{
+		QPainter p(&flat);
+		p.drawImage(0, 0, qi);
+	}
+	QMimeData *md = new QMimeData();                  // the clipboard takes ownership
+	md->setImageData(flat);
+	if (!png.isEmpty()) {
+		md->setData(QStringLiteral("PNG"), png);       // the Windows "PNG" registered clipboard format
+		md->setData(QStringLiteral("image/png"), png); // the MIME name, for X11/Wayland hosts
+	}
+	QApplication::clipboard()->setMimeData(md);
+	return true;
+}

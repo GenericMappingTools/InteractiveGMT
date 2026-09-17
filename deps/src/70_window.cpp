@@ -22227,12 +22227,11 @@ public:
 	QLineEdit *maregInEdit, *maregOutEdit, *cumintEdit;
 	QLineEdit *cyclesEdit, *jumpEdit, *dtEdit, *grnEdit;
 	QComboBox *levelCombo;
+	QComboBox *maxLevelCombo;             // deepest nesting level a RUN may use ("maxlevel", -1 = all)
 	std::map<int, QString> nestNames;     // level -> in-scene "layerN" name (populateFromScene)
 	QRadioButton *rGrids, *rAnuga, *rMost;
 	QRadioButton *rSurf, *rTotal;
 	QCheckBox *cMax, *cVel, *cMom, *cMareg, *cGeog, *cCoriolis;
-	QString bcPath;                       // "Bordering": optional boundary-condition file (-B)
-	QPushButton *btnBorder = nullptr;     // label mirrors bcPath ("Bordering" / "Bordering: <file>")
 	Scene *scene_ = nullptr;              // owning window's scene (grid inventory + RUN callback target)
 	std::map<QLineEdit*, std::function<void()>> fileBrowsers;   // edit -> its "..." browse action (fileRow); double-click runs it too
 	bool nestReady_ = false;              // gate: don't run the load-time nest check during construction/seed
@@ -22344,6 +22343,18 @@ public:
 		levelCombo->addItems({"0 -- level ready to use", "1", "2", "3", "4", "5"});
 		levelCombo->setToolTip("Nesting level of the Nest grid (0 = no nesting / ready to use)");
 		iv->addWidget(levelCombo);
+		// How DEEP the run goes. The chain above says which grids EXIST; this says how many of them a
+		// RUN is allowed to use — "level 1" runs level 0 + level 1 and ignores everything below, so a
+		// deep chain can be tried out cheaply without dismantling it. Default stays "all available".
+		auto *mlrow = new QHBoxLayout();
+		mlrow->addWidget(new QLabel("Max level to use", gIn));
+		maxLevelCombo = new QComboBox(gIn);
+		maxLevelCombo->addItems({"All available", "level 0", "level 1", "level 2", "level 3", "level 4", "level 5"});
+		maxLevelCombo->setToolTip("Deepest nesting level this run may use — \"level 1\" simulates with\n"
+		                          "levels 0 and 1 only. \"All available\" (default) uses the whole chain.");
+		mlrow->addWidget(maxLevelCombo);
+		mlrow->addStretch();
+		iv->addLayout(mlrow);
 		v->addWidget(gIn);
 
 		// Seed Source + the nest chain from the window's grids: pick an "Okada z" grid as Source and every
@@ -22366,16 +22377,9 @@ public:
 		levelCombo->setCurrentIndex(std::min(nextOpenLevel(), levelCombo->count() - 1));
 		showLevel(levelCombo->currentIndex());
 
-		// --- Bordering: pick an (experimental) boundary-condition file (-B) ----------------------
-		btnBorder = new QPushButton("Bordering", this);
-		btnBorder->setEnabled(false);        // frozen: the -O boundary-condition path is not in service
-		btnBorder->setToolTip("Boundary-condition file (nswing -O) — disabled");
-		QObject::connect(btnBorder, &QPushButton::clicked, this, [this]() {
-			QString p = QFileDialog::getOpenFileName(this, "Select boundary-condition file", prefStartDir(),
-			                                         "BC files (*.dat *.txt);;All files (*)");
-			if (!p.isEmpty()) { bcPath = p; rememberStartDir(p); btnBorder->setText("Bordering: " + QFileInfo(p).fileName()); }
-		});
-		v->addWidget(btnBorder);
+		// ("Bordering" — a picker for nswing's experimental -O boundary-condition file — lived here. It
+		// was permanently disabled and the -O path is not in service, so the button is gone, along with
+		// the "bc" parameter key it was the only producer of.)
 
 		// --- Output target + name stem ----------------------------------------------------------
 		auto *gOut = new QGroupBox("Output", this);
@@ -22701,7 +22705,9 @@ public:
 		// currently showing in the box above) — a run needs every level, not just the last-selected one.
 		for (auto &pr : nestNames)
 			if (!pr.second.isEmpty()) kv(("nestL" + std::to_string(pr.first)).c_str(), pr.second);
-		kv("bc",       bcPath);
+		// Deepest level the run may use: -1 ("All available", item 0) = the whole chain, else the level
+		// number itself. nswing.jl truncates the nest chain to it in _nswing_validate.
+		kv("maxlevel", QString::number(maxLevelCombo->currentIndex() - 1));
 		kv("outmode",  mode);
 		kv("name",     nameEdit->text().trimmed());
 		kv("field",    field);
@@ -22745,8 +22751,10 @@ public:
 		int lvl = get("level").toInt();
 		if (lvl >= 0 && lvl < levelCombo->count()) levelCombo->setCurrentIndex(lvl);
 		showLevel(levelCombo->currentIndex());   // explicit: setCurrentIndex above only re-fires showLevel on an actual index CHANGE
-		bcPath = get("bc");
-		if (!bcPath.isEmpty()) btnBorder->setText("Bordering: " + QFileInfo(bcPath).fileName());
+		// Absent key (a block saved before this option existed) = "All available", the default.
+		const QString maxlvl = get("maxlevel");
+		const int mi = maxlvl.isEmpty() ? 0 : maxlvl.toInt() + 1;
+		if (mi >= 0 && mi < maxLevelCombo->count()) maxLevelCombo->setCurrentIndex(mi);
 		nameEdit->setText(get("name"));
 		manningEdit->setText(get("manning"));
 		maregInEdit->setText(get("maregin"));
@@ -22828,6 +22836,15 @@ public:
 			                                       : QString::number(i));
 			if (model) model->item(i)->setEnabled(i == 0 || filled || i == nextOpen);
 		}
+		// "Max level to use" can only offer levels that EXIST: 0 .. highest filled. Item 0 is "All
+		// available" (always legal), so level L sits at index L+1. A selection that a chain edit just
+		// invalidated (levels removed under it) falls back to "All available" rather than silently
+		// capping the run at a level that is no longer there.
+		const int maxAvail = nextOpen - 1;                    // highest filled level (0 when none)
+		auto *mmodel = qobject_cast<QStandardItemModel *>(maxLevelCombo->model());
+		for (int i = 0; i < maxLevelCombo->count(); ++i)
+			if (mmodel) mmodel->item(i)->setEnabled(i == 0 || i - 1 <= maxAvail);
+		if (maxLevelCombo->currentIndex() - 1 > maxAvail) maxLevelCombo->setCurrentIndex(0);
 	}
 
 	// Reflect the selected level in the Nest box: level 0 needs no file ("In memory grid" placeholder,
@@ -23675,10 +23692,31 @@ static void buildIGStatusBar(Scene *s, QMainWindow *win) {
 // it the same way, instead of asking a look-alike question like gmtvtk_has_surface — that one is
 // `surf && !emptyStart`, which also answers "empty" for a populated window whose raster arrived as
 // an ExtraObj image, and would drop a second base map on top of it.
-static bool sceneNeedsBase(Scene *s) { return s && s->emptyStart; }
+// A WHOLE-WORLD BASE MAP IS BUILT ONLY WHEN THERE IS NO RECIPIENT AT ALL. A window that already
+// holds a raster — grid OR image, primary or dropped extra — has something to plot on, and dropping
+// a global picture into it is the violation: it covers the user's own data with a world map he did
+// not ask for. `emptyStart` alone answered the wrong question (it is "was this window born as a bare
+// launcher"), so a populated window whose raster arrived by a path that never cleared the flag got a
+// world map slapped over its grid. The question is what the window HOLDS, asked through the same
+// sceneHasGrid/sceneHasImage every other feature asks it with.
+static bool sceneHasRaster(Scene *s) { return s && (sceneHasGrid(s) || sceneHasImage(s)); }
+static bool sceneNeedsBase(Scene *s) { return s && !sceneHasRaster(s); }
 
 static bool sceneEnsureBase(Scene *s) {
-	if (!sceneNeedsBase(s)) return true;
+	if (!sceneNeedsBase(s)) {
+		// …and a recipient only counts if it is REFERENCED. Geographic data (a catalog in lon/lat,
+		// coastlines, plate boundaries) cannot be placed on a raster whose coordinates mean nothing,
+		// and the answer there is to say so — never to bury that raster under a global map.
+		if (!s->hasCRS()) {
+			if (s->win) s->win->statusBar()->showMessage(
+				"This window's data carries no referencing system — geographic data cannot be placed on it", 6000);
+			sceneLogError(s, "Plot: this window's raster has no known referencing system, so geographic "
+			                 "data cannot be georeferenced onto it. Open a referenced grid/image (or a "
+			                 "Base Map) first.");
+			return false;
+		}
+		return true;
+	}
 	if (!g_juliaBaseMap) {
 		if (s->win) s->win->statusBar()->showMessage("Base Map callback not registered", 3000);
 		return false;
@@ -25861,32 +25899,71 @@ public:
 // on the globe and hides it everywhere else, so no mode can end up wearing both frames or neither.
 static void globeFrameUpdate(Scene *s, bool visible) {
 	if (!s || !s->ren) return;
-	if (!s->globe || !visible) { if (s->globeFrame) s->globeFrame->SetVisibility(0); return; }
-	// THE GRATICULE LIES ON THE ZERO LEVEL — the sea-level sphere itself, r = globeR, exactly where
-	// z = 0 maps. It used to be lifted clear of the tallest relief, which made it a cage hanging in
-	// space around the planet instead of a set of lines drawn ON it. Terrain standing above sea level
-	// now correctly stands in front of the lines, which is what tells you it is above sea level.
-	const double R = s->globeR;
+	// The graticule is a pile element (gatherStackItems), so every entry/exit re-ranks the pile —
+	// that is what hands it the on-body coplanar offset instead of the mapper's bare default.
+	const bool wasVis = (s->globeFrame && s->globeFrame->GetVisibility() != 0);
+	if (!s->globe || !visible) {
+		if (s->globeFrame) s->globeFrame->SetVisibility(0);
+		if (wasVis) applyStacking(s);
+		return;
+	}
+	// THE GRATICULE IS THIS BODY'S FRAME, so it is drawn ON THE SURFACE THE PICTURE IS PAINTED ON —
+	// its outer circle has to BE the body's silhouette, not a ring hanging outside it. That surface is
+	// z = 0 (the sea-level sphere, r = globeR) for a relief globe, and the IMAGE PLANE for a globe
+	// wearing an image: an image does not lie on the skin, it rides at ex.zpos = zmax + imageStackStep
+	// (50_scene.cpp), which the body transform turns into a bigger radius — that is what the picture's
+	// own limb is, so that is where the frame belongs.
+	//
+	// NOT the vector lift (sceneGeoToWorldVec): that one is the window's raster CEILING plus a hair,
+	// deliberately above everything so a coastline can never be buried. On a relief globe the ceiling
+	// is the highest PEAK, so the frame became a sphere at Everest's radius floating clear of the
+	// planet everywhere else — the ring standing outside the body. The z-fight against the surface it
+	// now lies on is broken by the pile's coplanar offset instead (gatherStackItems, applyStacking),
+	// which is the mechanism every other on-body line uses.
+	// The IMAGE plane, when one is up: an image does not lie on the skin, it rides at
+	// ex.zpos = zmax + imageStackStep (50_scene.cpp), and that radius IS the picture's own limb.
+	double zFrame = 0.0;
+	for (const auto &ex : s->extras)
+		if (ex.isImage && (ex.actor || ex.drape) && ex.zpos > zFrame) zFrame = ex.zpos;
+	// …and on a RELIEF globe the body's edge is the TERRAIN, which is not a constant radius: a
+	// sea-level sphere stands outside the ocean floor and inside the mountains, which is the ring
+	// floating off the body. So each arc point is CLAMPED TO THE SURFACE, sampled through the same
+	// sampleActiveZ a draped vector uses — the frame then follows the body exactly, everywhere.
+	const bool clampToRelief = !s->gridZ.empty() || (s->actZ && !s->actZ->empty());
+	// The cache key is the radius the arcs are actually BUILT at — so a new image (a different plane),
+	// a VE change or a body swap all rebuild the graticule. Read back off the shared transform, never
+	// recomputed here.
+	double probe[3] = { 0.0, 0.0, 0.0 };
+	sceneGeoToWorld(s, 0.0, 0.0, zFrame, probe);
+	const double Rv = std::sqrt(probe[0]*probe[0] + probe[1]*probe[1] + probe[2]*probe[2]);
 	// The BODY is part of the cache key, not just the radius: a sphere and a cube of the same globeR
 	// need completely different graticules, and keying on R alone left the sphere's arcs floating
 	// inside the cube (they agree only at the face centres and the cube's own edges).
 	if (s->globeFrame && s->globeFrameCube == s->cube
-	    && std::fabs(R - s->globeFrameR) < 1e-6 * std::max(1.0, R)) {
+	    && std::fabs(Rv - s->globeFrameR) < 1e-6 * std::max(1.0, Rv)
+	    && s->globeFrameZ0 == s->zmin && s->globeFrameZ1 == s->zmax && s->globeFrameVE == s->ve) {
 		s->globeFrame->SetVisibility(1);
+		if (!wasVis) applyStacking(s);
 		return;                                  // unchanged: keep the geometry we already have
 	}
 	// Meridians every 30 deg (pole to pole) and parallels every 30 deg, both sampled every 2 deg so
 	// the arcs read as arcs.
-	const double zLift = 0.0;
+	const double zLift = zFrame;                  // the displayed surface, computed above
 	vtkNew<vtkPoints> pts;  pts->SetDataTypeToDouble();
 	vtkNew<vtkCellArray> lines;
 	auto strip = [&](bool meridian, double fixed) {
 		std::vector<vtkIdType> ids;
 		const double a0 = meridian ? -90.0 : -180.0, a1 = meridian ? 90.0 : 180.0;
 		for (double a = a0; a <= a1 + 1e-9; a += 2.0) {
+			const double lon = meridian ? fixed : a;
+			const double lat = meridian ? a : fixed;
+			double z = zLift;                     // the image plane when one is up (it covers the body)
+			if (zLift <= 0.0 && clampToRelief) {  // otherwise ON the relief — ocean floor included, so
+				const double hz = sampleActiveZ(s, lon, lat);   // the frame never stands outside it
+				if (!std::isnan(hz)) z = hz;
+			}
 			double w[3];
-			if (meridian) sceneGeoToWorld(s, fixed, a, zLift, w);
-			else          sceneGeoToWorld(s, a, fixed, zLift, w);
+			sceneGeoToWorld(s, lon, lat, z, w);
 			ids.push_back(pts->InsertNextPoint(w));
 		}
 		if (ids.size() > 1) lines->InsertNextCell((vtkIdType)ids.size(), ids.data());
@@ -25915,8 +25992,10 @@ static void globeFrameUpdate(Scene *s, bool visible) {
 	s->globeFrame->SetScale(1.0, 1.0, 1.0);
 	vtkPolyDataMapper::SafeDownCast(s->globeFrame->GetMapper())->SetInputData(pd);
 	s->globeFrame->SetVisibility(1);
-	s->globeFrameR = R;
+	s->globeFrameR = Rv;
 	s->globeFrameCube = s->cube;
+	s->globeFrameZ0 = s->zmin;  s->globeFrameZ1 = s->zmax;  s->globeFrameVE = s->ve;
+	if (!wasVis) applyStacking(s);
 }
 
 // SINGLE source of truth for the view-mode switch, all THREE modes of it: 3-D perspective, the flat
@@ -26552,16 +26631,22 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (!ok) return;
 		if (double *vp = activeVEPtr(s)) { *vp = v; applyVE(s); }
 	};
+	// Save Screenshot img: the PNG carries the view WITHOUT the window background, through the SAME
+	// captureViewRGBA (50_scene.cpp) the clipboard copy and the GMT.jl script export use — the
+	// backdrop is chrome, and a screenshot that drags this window's wall colour into a slide or a
+	// figure is the same defect there as on the clipboard. PNG keeps the alpha; nothing else changes.
 	auto actShot = [s]() {
 		QString fn = QFileDialog::getSaveFileName(s->win, "Save screenshot", prefStartDir("gmtvtk.png"), "PNG (*.png)");
 		if (fn.isEmpty()) return;
 		rememberStartDir(fn);
-		vtkNew<vtkWindowToImageFilter> w2i;
-		w2i->SetInput(s->widget->renderWindow());
-		w2i->SetScale(2); w2i->Update();
+		vtkSmartPointer<vtkImageData> im = captureViewRGBA(s, 2);
+		if (!im) {
+			if (s->win) s->win->statusBar()->showMessage("Screenshot: the frame could not be captured", 4000);
+			return;
+		}
 		vtkNew<vtkPNGWriter> wr;
 		wr->SetFileName(fn.toLocal8Bit().constData());
-		wr->SetInputConnection(w2i->GetOutputPort());
+		wr->SetInputData(im);
 		wr->Write();
 	};
 	// Screenshot-GeoTIFF capture: fit the primary raster edge-to-edge in flat top-down 2-D (the
@@ -26727,6 +26812,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// every menu open so it tracks drops, basemap tiles, etc.
 	QAction *aSaveGrid  = mFile->addAction("Save &Grid…",  [s]() { saveObjectDialog(s, "grid",  QString()); });
 	QAction *aSaveImage = mFile->addAction("Save &Image…", [s]() { saveObjectDialog(s, "image", QString()); });
+	// …and the clipboard twin of Save Screenshot img, in the same menu the user goes to for a picture:
+	// the displayed view (globe wrap, tilt, VE) with a transparent background. Same one function the
+	// image handle's own "Copy to Clipboard" runs — copyViewToClipboardUI (50_scene.cpp).
+	mFile->addAction("&Copy to Clipboard", [s]() { copyViewToClipboardUI(s); });
 	// Background region: open a blank white 2-D map framed to W/E/S/N (default the whole geographic
 	// earth). The dialog hands "W/E/S/N/geographic" to Julia (g_juliaBgRegion), which opens a fresh
 	// window — ready to drop coastlines / overlays onto. Reports if the callback is not wired.

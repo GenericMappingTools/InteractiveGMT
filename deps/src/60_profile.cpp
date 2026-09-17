@@ -390,6 +390,7 @@ static bool polygonHandleDblClick(Scene *s, int x, int y);
 static bool polygonHandleMove(Scene *s, int x, int y);
 static bool polygonHandleRelease(Scene *s);
 static int  polyHitHandle(Scene *s, int x, int y, double tol);   // vertex handle under cursor (85)
+static bool polyEditCopyToClipboard(Scene *s);                   // Ctrl+C in vertex-edit mode (85)
 static int  polyHitText(Scene *s, int x, int y, double tol);     // text label under cursor (85)
 static int  mecaHitAt(Scene *s, int x, int y);                   // focal-mechanism ball under cursor (85)
 static bool symHitHandle(Scene *s, int x, int y, double tol);    // armed symbol under cursor (85)
@@ -504,10 +505,10 @@ protected:
 	// Ctrl+C while a symbol is armed (double-click "edit mode" selection, see Scene::symArmed) copies
 	// its X/Y[/Z] (TRUE coords, x un-baked out of xfac) to the clipboard as a tab-separated line —
 	// same numeric formatting as the Show Data Table / Save line float precision.
-	// Ctrl+C while a line-family object (polygon/polyline/rect/circle/fault) is in vertex-edit mode
-	// (double-click selection, see Scene::polyEdit) copies EVERY vertex, one tab-separated row per
-	// line — same X/Y/Z columns and 'g',10 precision as showLineDataTable (55_lineprops.cpp), and
-	// the same Z-drop in flat-2D.
+	// Ctrl+C while ANY vector element is in vertex-edit mode (handles showing: a drawn
+	// polygon/polyline/rect/circle/fault via Scene::polyEdit, or an overlay line/contour edited in
+	// place via Scene::ovEdit) copies EVERY vertex — polyEditCopyToClipboard (85_polygon.cpp), the
+	// one implementation, reading through the same EditVerts the handles and the drag use.
 	void keyPressEvent(QKeyEvent *e) override {
 		if (s && s->symArmed >= 0 && s->symArmed < (int)s->symbols.size() && e->matches(QKeySequence::Copy)) {
 			SymbolLayer &sl = s->symbols[s->symArmed];
@@ -522,17 +523,8 @@ protected:
 			}
 			return;
 		}
-		if (s && s->polyEdit >= 0 && s->polyEdit < (int)s->polys.size() && e->matches(QKeySequence::Copy)) {
-			const Polygon &pg = s->polys[s->polyEdit];
-			QStringList rows;
-			for (const auto &v : pg.v) {
-				QString row = QString::number(v[0], 'g', 10) + "\t" + QString::number(v[1], 'g', 10);
-				if (!s->flat2d) row += "\t" + QString::number(v[2], 'g', 10);
-				rows << row;
-			}
-			QApplication::clipboard()->setText(rows.join("\n"));
+		if (s && e->matches(QKeySequence::Copy) && polyEditCopyToClipboard(s))
 			return;
-		}
 		QVTKOpenGLNativeWidget::keyPressEvent(e);
 	}
 };

@@ -105,7 +105,9 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # symbol, so the call finds nothing.
 # Generation 15 = gmtvtk_fit_camera_for_orbit_h, called on every orbit plot so a high orbit (a
 # geostationary satellite is 6.6 Earth radii out) is not drawn outside the camera's field.
-const _ABI_REQUIRED = 15
+# Generation 16 = gmtvtk_capture_view_rgb -> gmtvtk_capture_view_rgba: the globe/cube whole-view
+# capture the script export plots now returns FOUR bands, with the window background transparent.
+const _ABI_REQUIRED = 16
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.
@@ -274,7 +276,8 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_anno_count_h,      # movie tool: how many the window carries (-1 = window gone)
 	:gmtvtk_set_movie_callback,# movie tool: Tools > Make movie -> _on_movie
 	:gmtvtk_open_movie_dialog_h,# movie tool: open that dialog on one window
-	:gmtvtk_capture_view_rgb,  # GMT.jl script export: the whole viewport, for the globe/cube modes
+	:gmtvtk_capture_view_rgba, # GMT.jl script export: the whole viewport (RGBA, transparent background)
+	:gmtvtk_copy_view_clipboard_h,  # the displayed view -> system clipboard (PNG, background transparent)
 	:gmtvtk_set_meca_sdr_h,    # focal mechanisms: attach each event's strike/dip/rake to its ball
 	:gmtvtk_set_sentinelhub_callback, # Copernicus > Sentinel Hub imagery (src/sentinelhub.jl)
 	:gmtvtk_set_satellite_callback,   # Satellite > Satellite orbits (src/satellite.jl)

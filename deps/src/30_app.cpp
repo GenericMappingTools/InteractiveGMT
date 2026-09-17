@@ -1259,6 +1259,7 @@ static const SaveFmt kImageFmts[] = {
 // The "little window" the user asked for: pick an output format from a combo, then a file (Browse
 // runs the native save dialog filtered to that format; changing the format re-suffixes the path).
 // On accept, `code` + `path` carry the choice. isGrid selects the grid vs image format list.
+
 struct SaveFormatDialog : QDialog {
 	const SaveFmt *fmts; int nfmt;
 	QComboBox *combo; QLineEdit *pathEdit; QPushButton *okBtn;
@@ -1299,10 +1300,16 @@ struct SaveFormatDialog : QDialog {
 		pr->addWidget(browse, 0);
 		v->addLayout(pr);
 
-		QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
-		v->addWidget(bb);
-		okBtn = bb->button(QDialogButtonBox::Save);
+		// No Cancel (Esc still closes): Save takes its place at the right end of the row. "Copy to
+		// Clipboard" is NOT here — it is an entry of the image handle's own menu, right after
+		// "Save image…" (copyViewToClipboardUI, 50_scene.cpp); this dialog is about writing a file.
+		QHBoxLayout *br = new QHBoxLayout();
+		br->addStretch(1);
+		okBtn = new QPushButton("Save", this);
+		okBtn->setDefault(true);
 		okBtn->setEnabled(false);
+		br->addWidget(okBtn, 0);
+		v->addLayout(br);
 
 		const QString seed = objName.isEmpty() ? QString() : sanitize(objName);
 		QObject::connect(browse, &QPushButton::clicked, this, [this, seed]() {
@@ -1316,12 +1323,11 @@ struct SaveFormatDialog : QDialog {
 		                 [this](const QString &t) { okBtn->setEnabled(!t.trimmed().isEmpty()); });
 		QObject::connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
 		                 [this](int) { swapExt(); });
-		QObject::connect(bb, &QDialogButtonBox::accepted, this, [this]() {
+		QObject::connect(okBtn, &QPushButton::clicked, this, [this]() {
 			code = fmts[combo->currentIndex()].code;
 			path = pathEdit->text().trimmed();
 			accept();
 		});
-		QObject::connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
 	}
 };
 

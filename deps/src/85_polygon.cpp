@@ -835,6 +835,29 @@ static EditVerts editVerts(Scene *s) {
 // True while ANY element is under vertex edit — a drawn polygon or an overlay line.
 static bool polyEditing(Scene *s) { return s && (s->polyEdit >= 0 || s->ovEdit >= 0); }
 
+// Ctrl+C while something is in vertex-edit mode (square handles showing): EVERY vertex of that
+// element to the clipboard, one tab-separated row per line, X/Y[/Z] in TRUE data coords (Z dropped
+// in flat-2D), 'g',10 like Show Data Table. Reads through EditVerts, so a drawn polygon and an
+// edited-in-place overlay line/contour copy through the SAME code — no per-kind branch. false =
+// nothing under edit, the key is not ours.
+static bool polyEditCopyToClipboard(Scene *s) {
+	EditVerts e = editVerts(s);
+	if (!e.valid()) return false;
+	QStringList rows;
+	const int m = e.n();
+	for (int i = 0; i < m; ++i) {
+		double p[3];
+		e.get(i, p);
+		QString row = QString::number(p[0], 'g', 10) + "\t" + QString::number(p[1], 'g', 10);
+		if (!s->flat2d) row += "\t" + QString::number(p[2], 'g', 10);
+		rows << row;
+	}
+	QApplication::clipboard()->setText(rows.join("\n"));
+	if (s->win)
+		s->win->statusBar()->showMessage(QString("%1 vertices copied to clipboard").arg(m), 4000);
+	return true;
+}
+
 // Rebuild the square vertex handles shown for the element under edit (polygon or overlay segment).
 static void polyRebuildHandles(Scene *s) {
 	if (!s->polyHandlePD) s->polyHandlePD = vtkSmartPointer<vtkPolyData>::New();
