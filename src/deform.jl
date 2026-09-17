@@ -84,6 +84,47 @@ function _elastic_target_grid(R::String, Ispec::String, geog::Bool)
 	return G
 end
 
+# WHERE THE FIELD IS SAMPLED — the ONE decision, so every caller makes it the same way and a test can
+# pin it. The window's own grid WINS whenever the window has one: the Okada field is added to that
+# bathymetry (NSWING's initial condition), so it must land on exactly its nodes. The request's Region/
+# Increment block is only a text PREFILL of that same geometry; rebuilding a grid from it re-derives
+# the nodes and a pixel-registered grid comes back with a different nx/ny. Fields 16/17 decide ONLY
+# when there is no window grid to borrow (the Fault plane demo over an empty launcher).
+function _elastic_sample_grid(fig, R::String, Ispec::String, geog::Bool)
+	fig isa QtFigure && return fig.G
+	isempty(R) && error("no grid loaded in this window, and the request carries no Region")
+	return _elastic_target_grid(R, Ispec, geog)
+end
+
+# THE ONE call to `GMT.okada` — every Okada field in this file is computed through it, so the rule
+# below cannot be forgotten at one of the call sites.
+#
+# LAW, no exception: a deformation computed FROM a grid comes back on THAT GRID'S geometry, agreeing
+# to the last decimal place. The Okada field is added to the bathymetry it was computed over (it IS
+# the tsunami model's initial condition), so a grid that differs by one node, half a cell or one ulp
+# of an increment is not "close" — it is a broken model. `GMT.okada` rebuilds x/y with `linspace`
+# from the header and, for a pixel-registered grid, hands back CELL CENTRES where GMT's own reader
+# keeps CELL EDGES — two different vectors describing the same nodes. So the source's own header is
+# COPIED onto the result, by construction, and the one thing that cannot be copied — the node COUNT,
+# baked into the field that was just computed — is CHECKED, and a disagreement is an error: never a
+# resample, never a warning.
+#
+# `layout` is NOT copied: it describes the memory `GMT.okada` actually wrote (column-major, "BCB"),
+# which is a property of the buffer, not of the geometry. `_z_as` is what pairs it with a source
+# grid that lies differently.
+function _okada_on_grid(G::GMTgrid; kw...)
+	Gd = GMT.okada(G; kw...)
+	nx, ny = _grid_dims(G);  ndx, ndy = _grid_dims(Gd)
+	(ndx, ndy) == (nx, ny) || error("Okada grid is $(ndx)x$(ndy) but the grid it was computed on is " *
+		"$(nx)x$(ny) — the deformation must land on the source grid's own nodes")
+	Gd.x = copy(G.x);  Gd.y = copy(G.y)
+	Gd.range[1:4] = G.range[1:4]
+	Gd.inc = copy(G.inc)
+	Gd.registration = G.registration
+	Gd.proj4 = G.proj4;  Gd.wkt = G.wkt;  Gd.epsg = G.epsg
+	return Gd
+end
+
 # Save Session: the dialog's request block, verbatim, as the window's ONE :elastic recipe. The Okada
 # field is DERIVED — fault geometry + slip through `GMT.okada` on this window's grid — so the session
 # stores the REQUEST and recomputes it on load, exactly as :illum and :focal do. Writing the result as
@@ -138,14 +179,8 @@ function _on_elastic(scene::Ptr{Cvoid}, craw::String; adopt::Bool = true)::Cvoid
 			return
 		end
 
-		# WHERE THE FIELD IS SAMPLED. The window's own grid when it has one — that is what the elastic
-		# dialog has always done — but a request may bring its OWN region/increment (fields 16/17, the
-		# Fault plane demo's Region block), and then those decide, because such a request has no window
-		# grid to borrow: the demo can be opened over an empty launcher.
 		fig = get(_FIGREG, scene, nothing)
-		G   = !isempty(R)                ? _elastic_target_grid(R, Ispec, getp(2) != "cart") :
-		      fig isa QtFigure           ? fig.G :
-		      error("no grid loaded in this window, and the request carries no Region")
+		G   = _elastic_sample_grid(fig, R, Ispec, getp(2) != "cart")
 
 		# Slip model (Import Model Slip): the dialog appended a "MODELSLIP=<payload>" field carrying EVERY
 		# sub-fault patch ("x0/y0/L/W/strike/dip/depthTop/rake/slip", patches '|'-separated). Deform with
@@ -167,7 +202,7 @@ function _on_elastic(scene::Ptr{Cvoid}, craw::String; adopt::Bool = true)::Cvoid
 					x0 = parse(Float64,f[1]); y0 = parse(Float64,f[2]); Lp = parse(Float64,f[3]); Wp = parse(Float64,f[4])
 					strk = parse(Float64,f[5]); dp = parse(Float64,f[6]); dtop = parse(Float64,f[7])
 					rk = parse(Float64,f[8]); sl = parse(Float64,f[9])
-					Gp = GMT.okada(G; x_start=x0, y_start=y0, L=Lp, W=Wp, depth=dtop,
+					Gp = _okada_on_grid(G; x_start=x0, y_start=y0, L=Lp, W=Wp, depth=dtop,
 					               strike=strk, dip=dp, rake=rk, slip=sl)
 					Gsum === nothing ? (Gsum = Gp) : (Gsum.z .+= Gp.z)
 					valid_count += 1
@@ -194,7 +229,7 @@ function _on_elastic(scene::Ptr{Cvoid}, craw::String; adopt::Bool = true)::Cvoid
 		      "strike=$strike, dip=$dip, rake=$rake, slip=$slip)"
 		_viewer_log_info(scene, "Okada: $cmd")
 
-		Gdef = GMT.okada(G; x_start=x_start, y_start=y_start, L=L, W=W, depth=depTop,
+		Gdef = _okada_on_grid(G; x_start=x_start, y_start=y_start, L=L, W=W, depth=depTop,
 		                 strike=strike, dip=dip, rake=rake, slip=slip)
 
 		_grid_command!(Gdef, cmd)                     # stamp the exact okada call into GMTgrid.command

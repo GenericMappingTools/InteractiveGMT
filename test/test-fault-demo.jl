@@ -205,3 +205,70 @@ end
 	                         Ptr{Cdouble}(C_NULL), Cint(0), pointer(dims), pointer(err), Cint(1024)) == 0
 	@test occursin("could not be computed", unsafe_string(pointer(err)))
 end
+# The Okada field is sampled on the WINDOW'S OWN GRID, never on a grid rebuilt from the dialog's
+# Region/Increment text. That text is only a prefill of the same geometry, and re-deriving nodes from
+# it (x0:dx:x1 accumulates; a pixel-registered grid comes back with one row/column fewer) produced
+# deformation grids that no longer matched the bathymetry they are added to -- which breaks the
+# tsunami run that consumes both.
+@testitem "elastic: the field is sampled on the window's own grid" tags=[:unit] begin
+	IG = InteractiveGMT
+	using GMT
+	# A PIXEL-registered bathymetry: the case the text round-trip gets wrong.
+	G = GMT.mat2grid(zeros(Float32, 40, 60); x = collect(range(-3.0, 3.0, length = 61)),
+	                 y = collect(range(-2.0, 2.0, length = 41)), reg = 1)
+	fig = IG.QtFigure(Ptr{Cvoid}(0), G)
+	R = "-3/3/-2/2";  Ispec = "0.1/0.1"
+	Gs = IG._elastic_sample_grid(fig, R, Ispec, true)
+	@test Gs === G                                   # the window's grid itself, never a rebuild
+	@test size(Gs.z) == size(G.z)
+	# Without a window grid the Region block decides (the Fault plane demo over an empty launcher)...
+	Gd = IG._elastic_sample_grid(nothing, R, Ispec, true)
+	@test Gd isa GMTgrid
+	@test size(Gd.z) != size(G.z)                    # and that rebuild is NOT the bathymetry's geometry
+	# ...and with neither, it is an error, not a guess.
+	@test_throws Exception IG._elastic_sample_grid(nothing, "", Ispec, true)
+end
+
+# THE LAW, tested: a deformation computed FROM a grid comes back on THAT GRID'S geometry — every
+# parameter equal to the last decimal place, for node AND pixel registration. The Okada field is the
+# tsunami model's initial condition, added to the very bathymetry it was computed over; one node or
+# half a cell of disagreement is a broken model, and `GMT.okada` on its own does NOT guarantee it
+# (it rebuilds x/y by linspace, and for a pixel-registered grid hands back cell CENTRES where GMT's
+# reader keeps cell EDGES). `_okada_on_grid` is the one call that makes it hold.
+@testitem "elastic: the Okada grid matches its source grid exactly" tags=[:unit] begin
+	IG = InteractiveGMT
+	using GMT
+	okd(G) = IG._okada_on_grid(G; x_start = -1.0, y_start = 36.0, L = 20.0, W = 10.0,
+	                           depth = 0.0, strike = 45.0, dip = 30.0, rake = 90.0, slip = 5.0)
+	# Through a REAL GMT write/read round-trip, so the headers are the ones a dropped file really has
+	# (an inc of 0.050000000000000176, a range of 35.00000000000005 — the last decimals that must agree).
+	tmp = joinpath(mktempdir(), "src.grd")
+	for reg in (0, 1)
+		nx, ny = 60, 40
+		z = Float32.([sinpi(i/13) * cospi(j/11) for j = 1:(ny + 1 - reg), i = 1:(nx + 1 - reg)])
+		G0 = GMT.mat2grid(z; x = collect(range(-3.0, 3.0, length = nx + 1)),
+		                  y = collect(range(35.0, 37.0, length = ny + 1)), reg = reg)
+		GMT.gmtwrite(tmp, G0)
+		G = GMT.gmtread(tmp)
+		Gd = okd(G)
+		@test IG._grid_dims(Gd) == IG._grid_dims(G)        # SAME node count
+		@test size(Gd.z) == size(G.z)
+		@test Gd.registration == G.registration
+		@test Gd.inc === Gd.inc && Gd.inc == G.inc          # bit for bit, not isapprox
+		@test Gd.range[1:4] == G.range[1:4]
+		@test length(Gd.x) == length(G.x) && all(Gd.x .== G.x)
+		@test length(Gd.y) == length(G.y) && all(Gd.y .== G.y)
+		@test Gd.proj4 == G.proj4
+		@test any(!=(0.0f0), Gd.z)                          # and it really did deform something
+		# The result is its OWN grid: writing its header must not have touched the source's.
+		@test G.x !== Gd.x && G.y !== Gd.y && G.inc !== Gd.inc
+	end
+	# A node count the deformation could NOT honour is an ERROR, never a silent resample. Real shape of
+	# it: a row-major ("TRB") pixel-registered grid whose x/y are cell CENTRES — `GMT.okada` sizes such a
+	# grid as length(x) - registration and computes a field one node short in each direction.
+	Gbad = GMT.mat2grid(zeros(Float32, 40, 60); x = collect(range(-3.0, 3.0, length = 60)),
+	                    y = collect(range(35.0, 37.0, length = 40)))
+	Gbad.layout = "TRB";  Gbad.registration = 1     # centres kept, pixel header (mat2grid wants edges)
+	@test GMT.getsize(Gbad) != IG._grid_dims(Gbad)      # the disagreement this guards against
+	@test_throws Exception okd(Gbad)
+end
