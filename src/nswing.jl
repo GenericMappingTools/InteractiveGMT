@@ -106,8 +106,6 @@ function _nswing_opts(d::Dict{String,String}; max_nest_level::Int=0)
 	_on(d, "geog") && push!(args, "-fg")                 # geographical coordinates (module auto-detects
 	                                                      # from grid metadata anyway; this only reinforces it)
 
-	bc = _get(d, "bc")
-	isempty(bc) || push!(args, "-O$(bc)")                # boundary condition file (experimental)
 
 	return args, msgs
 end
@@ -559,17 +557,7 @@ end
 # from — `src` is already resolved here (Scene Objects grid or raw path) so callers never re-resolve.
 # `nests` entries are (level, GMTgrid-or-path), same either/or convention as `src`.
 function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
-	# Get nests first to count levels for -M-/-M+ option
 	nests = _nswing_scene_nests(scene)               # [(N, G)…] from the live "layerN" scene chain
-	# Count max nested grid level (level 2+ means at least layer2 exists)
-	max_nest_level = length(nests) > 0 ? maximum(first(n) for (n, _) in nests) : 0
-
-	opts, msgs = _nswing_opts(d; max_nest_level=max_nest_level)
-	for m in msgs
-		_viewer_log_error(scene, "NSWING: $m")
-	end
-
-	# Process nests (already fetched above)
 	# The dialog's own Nest chain only fills GAPS: a level the live scene chain doesn't already cover
 	# (e.g. a file picked directly instead of built in-scene). A level the scene chain already has
 	# wins — it's the live, editable one.
@@ -578,6 +566,21 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 		extra[1] in have || push!(nests, extra)
 	end
 	sort!(nests; by=first)
+
+	# "Max level to use" (dialog's maxlevel combo): run with levels 0..maxlvl only, deeper ones dropped
+	# here — BEFORE anything else looks at the chain, so the nesting checks, the -M-/-M+ decision and
+	# the grids actually handed to nswing all describe the SAME truncated chain. -1 (or a missing key,
+	# from a params block saved before this option existed) = the whole chain, the default.
+	maxlvl = something(tryparse(Int, _get(d, "maxlevel", "-1")), -1)
+	maxlvl >= 0 && filter!(p -> first(p) <= maxlvl, nests)
+
+	# Count max nested grid level (level 2+ means at least layer2 exists) — for the -M-/-M+ option
+	max_nest_level = isempty(nests) ? 0 : maximum(first(n) for n in nests)
+
+	opts, msgs = _nswing_opts(d; max_nest_level=max_nest_level)
+	for m in msgs
+		_viewer_log_error(scene, "NSWING: $m")
+	end
 
 	# EVERY nest level gets the SAME checks below, whether it came from a live scene grid or a
 	# dialog-typed/browsed file — a typed path is loaded here (grdread, header + data) SPECIFICALLY so
