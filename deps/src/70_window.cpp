@@ -5569,6 +5569,7 @@ public:
 	double az[3] = { 0.0, 120.0, 240.0 };            // red, green, blue hands
 	bool   three = false;                            // false colour -> show/drag all three
 	std::function<void(int, double)> onChange;       // (hand 0..2, azimuth in degrees)
+	std::function<void()> onRelease;                 // drag finished -> the dialog re-applies (no OK button)
 	explicit AzimuthDial(QWidget *p) : QWidget(p) {
 		setMinimumSize(112, 112);
 		setCursor(Qt::SizeAllCursor);                // STANDING RULE: every drag uses SizeAll
@@ -5642,7 +5643,9 @@ protected:
 		update();
 		if (onChange) onChange(drag, az[drag]);
 	}
-	void mouseReleaseEvent(QMouseEvent *) override { drag = -1; }
+	// Let go of a hand = the sun has been aimed. `onRelease` is what the dialog re-applies on (there is
+	// no OK button); it fires ONCE, here, and never during the drag — an apply is a full re-illumination.
+	void mouseReleaseEvent(QMouseEvent *) override { const bool moved = (drag >= 0); drag = -1; if (moved && onRelease) onRelease(); }
 };
 
 // Mirone's axes2 — the elevation quarter-circle. The hand swings between 0 (horizon, pointing east)
@@ -5651,6 +5654,7 @@ class ElevationDial : public QWidget {
 public:
 	double elev = 30.0;
 	std::function<void(double)> onChange;
+	std::function<void()> onRelease;         // drag finished -> the dialog re-applies (there is no OK)
 	explicit ElevationDial(QWidget *p) : QWidget(p) {
 		setMinimumSize(66, 66);
 		setCursor(Qt::SizeAllCursor);
@@ -5681,7 +5685,7 @@ protected:
 	}
 	void mousePressEvent(QMouseEvent *e) override { drag = true; setFromPoint(e->position()); }
 	void mouseMoveEvent(QMouseEvent *e) override { if (drag) setFromPoint(e->position()); }
-	void mouseReleaseEvent(QMouseEvent *) override { drag = false; }
+	void mouseReleaseEvent(QMouseEvent *) override { const bool moved = drag; drag = false; if (moved && onRelease) onRelease(); }
 };
 
 // Remember the last illumination across openings of the dialog (Mirone rebuilds its window each
@@ -5968,8 +5972,8 @@ public:
 		// A reflectance term is a SLIDER here, exactly as in the Shading dock — including the dock's
 		// live tooltip, which is what makes a slider readable at all: it names the parameter, its
 		// current value and its full range, and pops at the cursor while dragging.
-		auto mkSlider = [d](ParamSlider &ps, double rmin, double rmax, double val, int dec,
-		                    const QString &name, const QString &unit, const QString &tip) {
+		auto mkSlider = [this, d](ParamSlider &ps, double rmin, double rmax, double val, int dec,
+		                          const QString &name, const QString &unit, const QString &tip) {
 			ps.rmin = rmin;  ps.rmax = rmax;  ps.dec = dec;
 			ps.sl = new QSlider(Qt::Horizontal, d);
 			ps.sl->setRange(0, 100);
@@ -5990,6 +5994,11 @@ public:
 				sl->setToolTip(fmt(v));
 				QToolTip::showText(QCursor::pos(), fmt(v), sl);
 			});
+			// …and the value is APPLIED when the handle is let go. There is no OK button any more, so a
+			// knob that only remembered its number would be a knob that does nothing. On RELEASE, not on
+			// every valueChanged: the GMT models re-run grdgradient over the whole grid per apply, and a
+			// drag would fire that on every pixel of travel.
+			QObject::connect(sl, &QSlider::sliderReleased, sl, [this]() { apply(); });
 			return sl;
 		};
 		// Method 3's four terms, straight onto grdgradient's -E…+a+d+p+s.
@@ -6165,9 +6174,10 @@ public:
 		row->addSpacing(12);
 		row->addWidget(eElev);
 		row->addStretch(1);
-		auto *okBtn = new QPushButton("OK", d);
-		okBtn->setDefault(true);
-		row->addWidget(okBtn);
+		// NO OK BUTTON (user order, 2026-09-18). Every control in this dialog applies itself: the method
+		// buttons on the click, the dials when the hand is let go, the sliders on release, the boxes and
+		// radios when their value is committed. A button that only repeated what the controls already did
+		// is one more thing to press for nothing.
 		outer->addLayout(row);
 
 		// --- restore the last light, then wire everything ----------------------------------------
@@ -6195,6 +6205,9 @@ public:
 			e->setText(QString::number(a, 'f', 0));
 		};
 		elevDial->onChange = [this](double v) { eElev->setText(QString::number(v, 'f', 0)); };
+		// …and the aimed sun is applied when the hand is released, once per drag.
+		dial->onRelease     = [this]() { apply(); };
+		elevDial->onRelease = [this]() { apply(); };
 		// Boxes -> dial (typing a number must move the hand, or the two would disagree).
 		auto bindBox = [this](QLineEdit *e, int hand) {
 			QObject::connect(e, &QLineEdit::editingFinished, dlg, [this, e, hand]() {
@@ -6203,6 +6216,7 @@ public:
 				if (!ok) return;
 				dial->az[hand] = std::fmod(std::fmod(v, 360.0) + 360.0, 360.0);
 				dial->update();
+				apply();               // committed value, no OK button to press afterwards
 			});
 		};
 		bindBox(eAzim, 0);  bindBox(eAzR, 0);  bindBox(eAzG, 1);  bindBox(eAzB, 2);
@@ -6212,13 +6226,24 @@ public:
 			if (!ok) return;
 			elevDial->elev = std::clamp(v, 0.0, 90.0);
 			elevDial->update();
+			apply();
 		});
 
-		QObject::connect(models, &QButtonGroup::idClicked, d, [this](int id) { setModel(id); });
+		// PICKING A METHOD IS THE ACT. The numbered buttons ARE the choice of illumination, so clicking
+		// one applies it there and then (user order, 2026-09-18) — and since the OK button is gone, so
+		// does every other control, each at the moment its value is committed: the dials on release, the
+		// sliders on release, the boxes on editingFinished, the radios and boxes below on toggle. What
+		// the standing rule forbids is a compute fired per KEYSTROKE; nothing here does that.
+		QObject::connect(models, &QButtonGroup::idClicked, d, [this](int id) { setModel(id); apply(); });
 		// The false colour's algorithm radio decides whether elevation + Amp factor are read at all,
 		// so it re-runs the same show/hide pass (Mirone's radio_oldAlgo_CB / radio_grdgrad_CB).
-		QObject::connect(algos, &QButtonGroup::idClicked, d, [this](int) { setModel(model); });
-		QObject::connect(okBtn, &QPushButton::clicked, d, [this]() { apply(); });
+		QObject::connect(algos, &QButtonGroup::idClicked, d, [this](int) { setModel(model); apply(); });
+		// The rest of the knobs, through the same one door. A control that is here and changes the
+		// picture must APPLY the picture: with OK gone there is nowhere else for it to be committed.
+		for (QLineEdit *e : { eGain, eWave, eAmp })
+			if (e) QObject::connect(e, &QLineEdit::editingFinished, d, [this]() { apply(); });
+		for (QCheckBox *c : { cbIBLx, cbSSAOx, cbTonex, cbFXAAx, cbShadowx })
+			if (c) QObject::connect(c, &QCheckBox::toggled, d, [this](bool) { apply(); });
 
 		if (auto *b = models->button(model)) b->setChecked(true);
 		setModel(model);   // sizes the window too — SetFixedSize, see `outer` above
@@ -6314,7 +6339,8 @@ public:
 		g_juliaHillshade(scn, p.constData());
 	}
 
-	// STANDING RULE: only this action button runs anything — no edit box ever triggers a compute.
+	// STANDING RULE: no EDIT BOX ever triggers a compute. The action buttons do: OK, and the numbered
+	// method buttons themselves (see the `models` connect above — picking a method applies it at once).
 	void apply() {
 		if (!g_juliaHillshade && model != 1 && (model < 5 || model > 7)) {   // 1, 5-7 are C++ looks
 			QMessageBox::warning(dlg, "Error", "Illumination: callback not registered "
