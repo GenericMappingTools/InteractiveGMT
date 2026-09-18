@@ -1587,6 +1587,11 @@ struct Scene {
 	// unfold would snap shut again on the next rebuild. A grid group starts FOLDED (only the container
 	// row shows, not Surface/Color Bar/Axes) and appears here once opened.
 	std::unordered_set<std::string> objExpanded;
+	// A panel rebuild has been asked for from inside a row's own handler and is waiting for the
+	// current event to finish (sceneQueueRebuildObjects, 50_scene.cpp). Rebuilding the tree deletes
+	// every row widget in it, including the checkbox Qt is still dispatching, so it may never happen
+	// inline. Coalesces: many requests in one event produce one rebuild.
+	bool   objRebuildQueued = false;
 	int    vecSeq = 0;                                  // monotonic seed for shared vector-pile stack ranks
 	int    surfStack = 0;                               // base relief's rank in the GRID pile (base + grids)
 	int    gridSeq   = 0;                               // monotonic seed for grid-pile ranks (newest on top)

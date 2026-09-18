@@ -4879,6 +4879,31 @@ GMTVTK_API int gmtvtk_image_probe_h(void *handle, const char *name, double *out)
 	return 0;
 }
 
+// CLICK a Scene Objects row's checkbox, exactly as the user does — the widget itself, through Qt's
+// own signal, not the by-name C setter (which bypasses every row handler and so never exercised the
+// path that crashed). `label` is the row's text ("LongBeach", "z", "Color Bar", …), matched on the
+// first row that carries it. Returns 1 if a row was clicked.
+GMTVTK_API int gmtvtk_scene_row_click_h(void *handle, const char *label, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !label || !s->objPanel) return 0;
+	QTreeWidget *tree = s->objPanel->findChild<QTreeWidget*>();
+	if (!tree) return 0;
+	const QString want = QString::fromUtf8(label);
+	QTreeWidgetItemIterator it(tree);
+	for (; *it; ++it) {
+		QWidget *w = tree->itemWidget(*it, 0);
+		if (!w) continue;
+		bool hit = false;
+		for (QLabel *l : w->findChildren<QLabel*>()) if (l->text() == want) { hit = true; break; }
+		if (!hit) continue;
+		QCheckBox *cb = w->findChild<QCheckBox*>();
+		if (!cb) continue;
+		cb->setChecked(on != 0);            // fires the row's own handler, like a click
+		return 1;
+	}
+	return 0;
+}
+
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.

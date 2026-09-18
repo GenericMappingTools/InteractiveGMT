@@ -2331,6 +2331,31 @@ static std::function<void(const QPoint&)> textBatchMenu(Scene *s, const std::str
 	};
 }
 
+// Rebuild the Scene Objects panel AFTER the current event has finished.
+//
+// `rebuildSceneObjects` throws the whole tree away: every QTreeWidgetItem and every row widget in it
+// is DELETED. Calling it from inside a row's own checkbox handler therefore destroys the very
+// QCheckBox Qt is still dispatching the `toggled` signal for, and — worse — the group checkbox
+// cascade (beginGroupHandle) is then left walking a QTreeWidgetItem that no longer exists, reading
+// freed child widgets one after another. That is a use-after-free, and it is what crashed the window
+// after a few checks/unchecks of an Aquamoto group (its two colour-bar rows rebuilt inline). A row
+// context menu has the same problem: the ClickableLabel whose click is being handled dies under it.
+//
+// So: anything reached from a row handler queues the rebuild through here. Requests coalesce, and
+// the timer is owned by the window, so a closed window never fires one.
+static void sceneQueueRebuildObjects(Scene *s) {
+	if (!s || !sceneAlive(s) || s->objRebuildQueued) return;
+	QObject *ctx = s->win ? static_cast<QObject*>(s->win)
+	                      : (s->widget ? static_cast<QObject*>(s->widget) : nullptr);
+	if (!ctx) return;                       // no owner to hang the timer on: nothing to rebuild either
+	s->objRebuildQueued = true;
+	QTimer::singleShot(0, ctx, [s]() {
+		if (!sceneAlive(s)) return;
+		s->objRebuildQueued = false;
+		rebuildSceneObjects(s);
+	});
+}
+
 static void rebuildSceneObjects(Scene *s) {
 	if (!s)
 		return;
@@ -2496,11 +2521,22 @@ static void rebuildSceneObjects(Scene *s) {
 		// part (surface, drape, colorbar, axes, trace, plane, …) toggles through its own handler.
 		const std::string gname = name.toStdString();
 		QObject::connect(cb, &QCheckBox::toggled, [s, grp, tree, gname](bool on) {
+			// COLLECT FIRST, THEN TOGGLE. Each child's own handler runs inside `setChecked`, and a
+			// handler is allowed to change the scene — if one of them ever rebuilds this panel, every
+			// item and row widget here is deleted mid-loop and `grp->childCount()` / `tree->itemWidget`
+			// read freed memory (that crash is why rebuilds from handlers are queued now,
+			// sceneQueueRebuildObjects). Guarded QPointers make the cascade survive it regardless: a
+			// box that died is simply skipped.
+			std::vector<QPointer<QCheckBox>> boxes;
+			boxes.reserve((size_t)grp->childCount());
 			for (int i = 0; i < grp->childCount(); ++i) {
 				QWidget *cw = tree->itemWidget(grp->child(i), 0);
 				if (!cw) continue;
-				QCheckBox *ccb = cw->findChild<QCheckBox*>();
-				if (ccb && ccb->isChecked() != on) ccb->setChecked(on);   // fires the child's own toggle
+				if (QCheckBox *ccb = cw->findChild<QCheckBox*>()) boxes.push_back(ccb);
+			}
+			for (QPointer<QCheckBox> &ccb : boxes) {
+				if (!ccb) continue;                                       // deleted by an earlier handler
+				if (ccb->isChecked() != on) ccb->setChecked(on);          // fires the child's own toggle
 			}
 			// A batch's TEXT LABELS carry this group's tag and deliberately have no row of their own
 			// (they would flood the panel), so the loop above cannot reach them — they have to be
@@ -2731,7 +2767,7 @@ static void rebuildSceneObjects(Scene *s) {
 	auto aquaWaterColorbarRow = [&]() {
 		const bool vis = s->bar && s->bar->GetVisibility() != 0;
 		makeRow("Color Bar water", IC_ColorBar, vis,
-		        [s](bool on) { s->surfShowBar = on; if (on) s->aquaShowWater = true; refreshGridColorbar(s); rebuildSceneObjects(s); },
+		        [s](bool on) { s->surfShowBar = on; if (on) s->aquaShowWater = true; refreshGridColorbar(s); sceneQueueRebuildObjects(s); },
 		        [s](const QPoint &g) {
 		            chooseColormap(s, g, [s](const QString &nm) {
 		                if (g_aquamotoSetCmap) g_aquamotoSetCmap(s, 0, nm.toUtf8().constData());
@@ -2742,7 +2778,7 @@ static void rebuildSceneObjects(Scene *s) {
 	auto aquaLandColorbarRow = [&]() {
 		const bool vis = s->aquaLandBar && s->aquaLandBar->GetVisibility() != 0;
 		makeRow("Color Bar Land", IC_ColorBar, vis,
-		        [s](bool on) { s->aquaLandShowBar = on; if (on) s->aquaShowWater = false; refreshGridColorbar(s); rebuildSceneObjects(s); },
+		        [s](bool on) { s->aquaLandShowBar = on; if (on) s->aquaShowWater = false; refreshGridColorbar(s); sceneQueueRebuildObjects(s); },
 		        [s](const QPoint &g) {
 		            chooseColormap(s, g, [s](const QString &nm) {
 		                if (g_aquamotoSetCmap) g_aquamotoSetCmap(s, 1, nm.toUtf8().constData());
@@ -3235,7 +3271,7 @@ static void rebuildSceneObjects(Scene *s) {
 			            for (auto &p : s->polys) if (p.faultPlane.Get() == fp) {
 			                p.faultPlane = nullptr; p.faultPlanePD = nullptr; break;
 			            }
-			            rebuildSceneObjects(s);
+			            sceneQueueRebuildObjects(s);   // never inline: this row's label is the click being handled
 			            if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 			        },
 			        "Gray surface projection of the fault plane · left-click for Remove");
@@ -3266,7 +3302,7 @@ static void rebuildSceneObjects(Scene *s) {
 			                p.faultArrows = nullptr; p.faultArrowsPD = nullptr;
 			                p.faultPlane3D = nullptr; p.faultPlane3DPD = nullptr; break;
 			            }
-			            rebuildSceneObjects(s);
+			            sceneQueueRebuildObjects(s);   // never inline: this row's label is the click being handled
 			            if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 			        },
 			        "Buried 3-D fault plane (visible from below the surface) · left-click for Remove");
