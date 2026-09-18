@@ -101,6 +101,7 @@ include("manual.jl")     # the green "?" disk on every module dialog -> that mod
 include("mgd77tracks.jl") # Geophysics > Magnetics > Import *.gmt/*.nc file(s): cruise tracks (port of mirone.m GeophysicsImportGmtFile_CB)
 include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid clipping (port of Mirone ml_clip.m)
 include("binarize.jl")   # Image > Binarize Image: threshold an image into a B&W mask (port of Mirone thresholdit.m)
+include("digitize.jl")   # a mask handle's "Digitize whites": the white region's outline via GDALPolygonize
 include("imagehisto.jl") # Image > Show Histogram: histogram of the DISPLAYED image (port of Mirone image_histo.m)
 include("imageenhance.jl") # Image > Image Enhance > 1 - Indexed and RGB (port of Mirone image_enhance.m)
 include("imageresize.jl")  # Image > Image resize (port of Mirone imageresize.m; resampling via gdalwarp)

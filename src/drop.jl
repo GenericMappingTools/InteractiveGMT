@@ -1611,6 +1611,11 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 	# so only this side can tell — say it here, once, for every image that enters a window.
 	(ok != 0) && ccall(_fn(:gmtvtk_image_set_rgb_h), Cvoid, (Ptr{Cvoid}, Cstring, Cint),
 	                   scene, String(name), Cint(_rgbx_is_rgb(I)))
+	# "Digitize whites" traces the boundary between a MASK's two states, so it is offered only for a
+	# handle that IS a mask. Same shape as the RGB flag above: only this side can tell (the viewer sees
+	# every image as an RGBA texture), so it says so once, here, for every image entering a window.
+	(ok != 0) && ccall(_fn(:gmtvtk_set_mask_flag_h), Cvoid, (Ptr{Cvoid}, Cstring, Cint),
+	                   scene, String(name), Cint(_is_mask_image(I)))
 	# Save Session: known file path -> file ref (:file); no path -> serialize the image (:generated).
 	# `record=false` suppresses this when a higher-level tool logs its own (menu) recipe (e.g. basemap).
 	(ok != 0 && record) && _session_record!(scene, promote ? :image : :dropimage,

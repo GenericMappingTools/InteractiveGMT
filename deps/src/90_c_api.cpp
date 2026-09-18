@@ -2402,6 +2402,18 @@ GMTVTK_API void gmtvtk_image_set_rgb_h(void *handle, const char *name, int on) {
 	imageFlagSet(s, s->imgRGB, name ? name : "", on != 0);
 }
 
+// Is this handle a MASK — a raster with exactly two states (0/1)? Only such a handle offers
+// "Digitize whites", which traces the boundary of its white region. Julia is the only side that sees
+// the raster's real values (the viewer gets a texture, or a height field with a colour table), so it
+// says. Set for IMAGE and GRID handles alike: a tsunami file's inundation footprint arrives as a
+// picture, the same mask opened as a file of its own arrives as a grid, and one action digitizes
+// both. `name` = the handle's Scene Objects name ("" = the window's primary raster).
+GMTVTK_API void gmtvtk_set_mask_flag_h(void *handle, const char *name, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	imageFlagSet(s, s->maskNames, name ? name : "", on != 0);
+}
+
 // Replace the PIXELS of an existing image IN PLACE, keeping everything else about it: the same
 // actor, the same plane, the same z position in the stack, the same Scene Objects row, the same
 // georeference. `img` is the packed RGB(A) texture buffer the host already builds for every image
@@ -4833,6 +4845,38 @@ GMTVTK_API int gmtvtk_overlay_tube_h(void *handle, const char *name, double radi
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	}
 	return hit;
+}
+
+// What a named IMAGE handle actually IS inside the renderer, so a "it is checked but I see nothing"
+// report can be MEASURED instead of guessed: out[0] found, out[1] actor visibility, out[2] zpos,
+// out[3..8] the actor's world bounds, out[9] its drawn z scale, out[10] whether the renderer holds
+// it. Returns 1 when the name matched an image extra.
+GMTVTK_API int gmtvtk_image_probe_h(void *handle, const char *name, double *out) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !out) return 0;
+	for (auto &ex : s->extras) {
+		if (!ex.isImage || ex.name != name) continue;
+		double b[6] = {0,0,0,0,0,0};
+		if (ex.actor) ex.actor->GetBounds(b);
+		out[0] = 1.0;
+		out[1] = ex.actor ? (double)ex.actor->GetVisibility() : -1.0;
+		out[2] = ex.zpos;
+		for (int i = 0; i < 6; ++i) out[3 + i] = b[i];
+		out[9]  = layerZScale(s, kAxesOwnerBase);
+		out[10] = (ex.actor && s->ren && s->ren->HasViewProp(ex.actor)) ? 1.0 : 0.0;
+		vtkActor *a = vtkActor::SafeDownCast(ex.actor);
+		out[11] = a && a->GetProperty() ? a->GetProperty()->GetOpacity() : -1.0;
+		out[12] = a && a->GetTexture() ? 1.0 : 0.0;
+		out[13] = a && a->GetMapper() ? (double)a->GetMapper()->GetInput()->GetNumberOfPoints() : -1.0;
+		// ...and where the BASE is standing, so "above/below" can be compared instead of assumed.
+		double bb[6] = {0,0,0,0,0,0};
+		if (vtkProp3D *bp = surfProp(s)) bp->GetBounds(bb);
+		out[14] = bb[4];  out[15] = bb[5];
+		out[16] = (s->drape && s->drape->GetVisibility()) ? 1.0 : 0.0;
+		if (s->drape) { double db[6]; s->drape->GetBounds(db); out[17] = db[4]; out[18] = db[5]; }
+		return 1;
+	}
+	return 0;
 }
 
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
@@ -7874,7 +7918,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		ex.tex->SetInputData(tex_img); ex.tex->InterpolateOn();
 		ex.isImage = true;
 		ex.bx0 = x0; ex.bx1 = x1; ex.by0 = y0; ex.by1 = y1;
-		ex.zpos = s->zmax + imageStackStep(s);     // default: sit just above the relief, never at z=0
+		ex.zpos = imageTopZ(s);                    // default: clear of everything on screen, never at z=0
 		imageRebuildActor(s, ex);                  // builds ex.actor (flat plane) + adds it to the renderer
 	} else {
 		// A grid: CPT-coloured surface (+ optional image drape on top).

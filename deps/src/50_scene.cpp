@@ -732,10 +732,54 @@ static bool imageOverlapsGrid(Scene *s, const ExtraObj &ex) {
 	return ex.bx0 < s->gx1 && ex.bx1 > s->gx0 && ex.by0 < s->gy1 && ex.by1 > s->gy0;
 }
 
-// Vertical step for "stack up/down" + the default on-top gap: 2% of the relief range.
+// The TRUE-z range of what is actually STANDING in this window. `s->zmin/zmax` is the BASE LAYER's
+// own data range, which is not the same thing: on an Aquamoto window it is the WATER STAGE (±0.03 m
+// on a real tsunami file) while the land that stage is composited on rises tens to hundreds of
+// metres. An image placed from `s->zmax` alone then sits BURIED INSIDE the terrain — which is why a
+// checked beach mask, a footprint that lives exactly on that land, drew nothing at all.
+//
+// The surface actor's bounds are the DRAWN geometry (scaled by sceneZScale = zfac*ve), so they come
+// back to true z by dividing by that same factor. An ordinary single-grid window gets its own
+// zmin/zmax back unchanged — the actor IS that grid. The globe is excluded: there the actor's bounds
+// are a sphere in world XYZ, a quantity that is not a z at all (surfGetBounds says the same).
+static void sceneTrueZRange(Scene *s, double &lo, double &hi) {
+	lo = s->zmin;  hi = s->zmax;
+	if (!s || s->globe) return;
+	vtkProp3D *p = surfProp(s);
+	if (!p) return;
+	double b[6];
+	p->GetBounds(b);
+	const double k = sceneZScale(s);
+	if (!(k > 0) || !std::isfinite(b[4]) || !std::isfinite(b[5]) || b[5] < b[4]) return;
+	const double tlo = b[4] / k, thi = b[5] / k;
+	if (tlo < lo) lo = tlo;
+	if (thi > hi) hi = thi;
+}
+
+// Vertical step for "stack up/down" + the default on-top gap: 2% of the relief range — the range of
+// what is on screen (above), never the base layer's data range alone.
 static double imageStackStep(Scene *s) {
-	const double r = s->zmax - s->zmin;
-	return (r > 0) ? 0.02 * r : 1.0;
+	double lo, hi;
+	sceneTrueZRange(s, lo, hi);
+	const double r = hi - lo;
+	if (r > 0) return 0.02 * r;
+	// A FLAT window has no vertical range to take a percentage of: an Aquamoto composite, a cube layer
+	// shown as a baked image, a bare image canvas — everything stands at z = 0. A fixed 1.0 here parked
+	// the plane a whole unit above a scene that is one pixel thick, i.e. outside what the flat-2-D
+	// camera shows, and the image (a mask, above all) simply never appeared. The separation has to be
+	// small ON THE SCALE OF THE PICTURE, so it comes from the horizontal extent, which always exists.
+	double b[6] = {0,0,0,0,0,0};
+	if (vtkProp3D *p = surfProp(s)) p->GetBounds(b);
+	const double span = std::max(b[1] - b[0], b[3] - b[2]);
+	return (span > 0) ? 1e-3 * span : 1e-3;
+}
+
+// Where a NEW image goes by default: clear of everything standing in the window. ONE answer, so the
+// add path and the stacking menu cannot disagree about what "on top" means.
+static double imageTopZ(Scene *s) {
+	double lo, hi;
+	sceneTrueZRange(s, lo, hi);
+	return hi + imageStackStep(s);
 }
 
 // (Re)build the image actor for its current flat/draped state and (re)register it in the renderer.
@@ -839,7 +883,37 @@ static void imageRebuildActor(Scene *s, ExtraObj &ex) {
 	a->GetProperty()->LightingOff();          // a finished picture: full albedo, no shading
 	a->SetScale(s->xfac, 1.0, s->zfac * ex.ve);   // THIS extra's own VE, not the window's
 	ex.actor = a;
+	ex.zposGeom = ex.zpos;                    // the height these points were built at (see zposGeom)
 	s->ren->AddActor(a);
+}
+
+// Re-float every AUTO-placed image plane on the window's CURRENT bounds. Declared in 10_geometry.cpp
+// and called from applyVE — the one path every bounds change already goes through.
+//
+// An image is added before the window necessarily HAS content: an Aquamoto companion mask is added
+// while the composite surface has not been built yet, so the height it could be given at that moment
+// came from an empty scene (zero z range). The surface standing up afterwards then towered over it —
+// measured on tsu_time.nc: mask quad at drawn z 1.5e-7, composite up to 0.0333 — so the mask was
+// CHECKED in Scene Objects and invisible on screen. Placement is not a one-shot property of the add;
+// it is a property of what is standing in the window, and it is re-answered here.
+//
+// An image the user has stacked BY HAND (Stack order) carries zposAuto = false and never moves.
+//
+// THE PLANE IS MOVED, NEVER REBUILT. Scene Objects rows, the draw-order pile and the picking hooks
+// all hold this actor's RAW pointer (captured when the row was built), so replacing the actor under
+// them is a use-after-free — doing that from here crashed the window outright. The quad's points stay
+// where they were built (`zposGeom`) and the actor carries the difference as a POSITION, applied in
+// drawn units because a position is not multiplied by the actor's own scale.
+static void sceneRefloatAutoImages(Scene *s) {
+	if (!s || s->globe) return;                   // on the sphere an image is positioned by the globe map
+	const double want = imageTopZ(s);
+	if (!std::isfinite(want)) return;
+	for (auto &ex : s->extras) {
+		if (!ex.isImage || !ex.zposAuto || ex.draped || !ex.actor) continue;
+		ex.zpos = want;
+		const double k = s->zfac * ex.ve;         // the scale its geometry is drawn at (see applyVE)
+		ex.actor->SetPosition(0.0, 0.0, (want - ex.zposGeom) * k);
+	}
 }
 
 // Properties menu for a dropped image (left-click its Scene Objects row): order it relative to the
@@ -892,6 +966,29 @@ static void copyViewToClipboardUI(Scene *s) {
 	}
 }
 
+// "Digitize whites" — trace the boundary of a MASK's white (1) region and draw it as a red line
+// overlay. The tracing is GDAL's (GDALPolygonize), host-side, on the handle's own raster: the viewer
+// holds a texture / a height field, not the mask's values. ONE entry point for every kind of mask
+// handle (an image row, a grid row, the window's own primary raster) — the host resolves the name.
+static void digitizeWhitesUI(Scene *s, const std::string &name) {
+	if (!s || !g_juliaEval) return;
+	std::string esc;                                   // a Scene Objects name is free text: quote it safely
+	for (char ch : name) {
+		if (ch == '\\' || ch == '"') esc.push_back('\\');
+		esc.push_back(ch);
+	}
+	const std::string cmd = "InteractiveGMT._digitize_whites(Ptr{Cvoid}(UInt(" +
+	                        std::to_string((unsigned long long)reinterpret_cast<uintptr_t>(s)) +
+	                        ")), \"" + esc + "\")";
+	std::vector<char> buf(1 << 12);
+	// Polygonizing a big mask is seconds of host work: the busy notice goes around the blocking call
+	// (no-dead-time law), never a frozen window with nothing on it.
+	showBusyDialog("Digitizing mask boundary...");
+	int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+	closeBusyDialog();
+	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+}
+
 static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	int idx = extraIndexOfActor(s, actor);
 	if (idx < 0) return;
@@ -927,6 +1024,9 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	// has to guess which image is displayed; here the handle already says which one).
 	QAction *aHisto = g_showImageHisto ? m.addAction("Show Histogram") : nullptr;
 	QAction *aResize = g_showImageResize ? m.addAction("Image resize…") : nullptr;
+	// A MASK (two states, 0/1 — a tsunami file's inundation footprint, a beach) can be DIGITIZED: the
+	// outline of its whites, as vector geometry. Offered only for a handle Julia flagged as a mask.
+	QAction *aDigit = s->maskNames.count(s->extras[idx].name) ? m.addAction("Digitize whites") : nullptr;
 	QAction *aSave = m.addAction("Save image…");
 	QAction *aClip = m.addAction("Copy to Clipboard");
 	// Same move a grid row offers (gridObjectMenu): re-open this image in a fresh iGMT window, then
@@ -935,6 +1035,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aDel = m.addAction("Remove");
 	QAction *c = m.exec(g);
 	if (!c) return;
+	if (aDigit && c == aDigit) { digitizeWhitesUI(s, s->extras[idx].name); return; }
 	if (aHisto && c == aHisto) { g_showImageHisto(s, s->extras[idx].name.c_str()); return; }
 	if (aResize && c == aResize) { g_showImageResize(s, s->extras[idx].name.c_str()); return; }
 	if (c == aMove) {
@@ -975,14 +1076,19 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 		else if (c == aUp)  dest = std::min(pos + 1, (int)pile.size());   // climb one slot (may cross the surface)
 		else if (c == aDn)  dest = std::max(pos - 1, 0);                  // sink one slot
 		pile.insert(pile.begin() + dest, tgt);
-		// Re-derive z: images below the surface go under zmin, images above go over zmax (step apart).
+		// Re-derive z: images below the surface go under the pile's FLOOR, images above over its TOP
+		// (step apart). Floor and top are what is STANDING in the window (sceneTrueZRange) — the same
+		// answer a fresh add uses, so "Place on top" and the default placement cannot disagree.
+		double zlo, zhi;
+		sceneTrueZRange(s, zlo, zhi);
 		int si = -1; for (size_t k = 0; k < pile.size(); ++k) if (pile[k].surf) { si = (int)k; break; }
 		for (int k = 0; k < (int)pile.size(); ++k) {
 			if (pile[k].surf) continue;
 			ExtraObj &e = s->extras[pile[k].idx];
-			e.zpos = (si < 0)      ? s->zmax + (k + 1) * step          // no surface: stack all above z=zmax
-			       : (k < si)      ? s->zmin - (si - k) * step          // below the relief
-			                       : s->zmax + (k - si) * step;         // above the relief
+			e.zposAuto = false;                   // placed BY HAND now: the window stops re-floating it
+			e.zpos = (si < 0)      ? zhi + (k + 1) * step               // no surface: stack all above the top
+			       : (k < si)      ? zlo - (si - k) * step              // below the relief
+			                       : zhi + (k - si) * step;             // above the relief
 		}
 		for (auto &e : s->extras) if (e.isImage) imageRebuildActor(s, e);
 	}
@@ -2732,6 +2838,9 @@ static void rebuildSceneObjects(Scene *s) {
 			// rule as imageObjectMenu above: a handle menu carries what belongs to THIS object.
 			QAction *aHisto    = g_showImageHisto ? m.addAction("Show Histogram")  : nullptr;
 			QAction *aResize   = g_showImageResize ? m.addAction("Image resize…")  : nullptr;
+			// Same entry the extra-image handles carry (imageObjectMenu), for the window's OWN image:
+			// a mask is a mask whichever door it came in by.
+			QAction *aDigit    = s->maskNames.count(std::string()) ? m.addAction("Digitize whites") : nullptr;
 			QAction *aSave = m.addAction("Save image…");
 			QAction *aClip = m.addAction("Copy to Clipboard");
 			// Same move a grid row offers, for the window's own image: re-open it in a fresh iGMT
@@ -2742,6 +2851,7 @@ static void rebuildSceneObjects(Scene *s) {
 			QAction *c = m.exec(g);
 			if (!c) return;
 			if (aStretch && c == aStretch) stretchImageObject(s, nm);
+			else if (aDigit && c == aDigit) digitizeWhitesUI(s, std::string());
 			else if (aHisto && c == aHisto) g_showImageHisto(s, "");
 			else if (aResize && c == aResize) g_showImageResize(s, "");
 			else if (c == aSave) saveObjectDialog(s, "image", nm);

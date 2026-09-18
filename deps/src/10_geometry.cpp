@@ -551,6 +551,21 @@ struct ExtraObj {
 	                                         // (stacking, VE) cannot keep re-clearing what the user has
 	                                         // since ticked back on by hand.
 	double zpos    = 0.0;                    // flat-plane TRUE z — sits above/below the relief, NEVER at z=0
+	// Is that z still the one the WINDOW decides (just clear of everything standing in it), or did the
+	// user place this image by hand through Stack order? An image is added before the window's content
+	// necessarily exists -- an Aquamoto companion mask is added while the composite surface has not
+	// been built yet, so the z range it could be given at that moment was ZERO. Left at that, the mask
+	// ended up buried the instant the surface stood up (measured: quad at 1.5e-7, surface to 0.033),
+	// checked in Scene Objects and invisible on screen. An auto-placed image therefore re-floats
+	// whenever the scene's bounds change (sceneRefloatAutoImages, called from applyVE); one the user
+	// has stacked by hand never moves again.
+	bool   zposAuto = true;
+	double zposGeom = 0.0;                   // the zpos the QUAD's points were actually built at. A
+	                                         // re-float moves the ACTOR (SetPosition), it never
+	                                         // rebuilds it: Scene Objects rows, the stacking pile and
+	                                         // the picking hooks all hold this actor's raw pointer, and
+	                                         // swapping it under them is a use-after-free (it crashed
+	                                         // the window when the re-float did rebuild).
 	double bx0 = 0, bx1 = 0, by0 = 0, by1 = 0;  // image footprint (true coords): tcoords + grid-overlap test
 	int    gstack  = 0;                   // GRID draw-order rank in the grid pile (base relief + grids)
 	int    tag     = 0;                      // UNIQUE, STABLE group tag (assigned once at creation from
@@ -1215,6 +1230,11 @@ struct Scene {
 	// (gmtvtk_image_set_rgb_h), which is the only side that knows how many bands an image really has:
 	// every image reaches the viewer as an RGBA texture, indexed and grey ones included.
 	std::set<std::string> imgRGB;
+	// Handles that hold a MASK -- a raster with exactly two states (0/1), whatever kind it arrived as:
+	// an 8-bit picture or a 0/1 grid (a tsunami file's inundation footprint is written either way).
+	// "Digitize whites" traces the boundary between those two states, so it is offered only for these.
+	// Set from Julia (gmtvtk_set_mask_flag_h), the only side that sees the raster's real values.
+	std::set<std::string> maskNames;
 	bool   emptyStart = false;  // full-chrome launcher with no data yet (hidden placeholder); drop -> promote
 	bool   gridAdopted = false; // a real grid was dropped onto an imageOnly canvas (Background region /
 	                            // bare image) and adopted as the hover heightfield -> readout shows z,
@@ -4558,6 +4578,12 @@ static inline void rasterLayerSetVisible(Scene *s, ExtraObj &ex, bool on) {
 	// hidden image group still reported CHECKED off its stale legend intent -- the group-uncheck law
 	// broken from the same end already fixed for grids below, just missed for images.
 	if (!on) { axesHideAll(ex.ax); ex.showBar = false; ex.palette.show = false; }
+	// ...and SYMMETRICALLY on the way back. A hide clears the bar intents above, so a layer that was
+	// added hidden and then checked came up with no colour bar at all and no way to get one: an
+	// Aquamoto companion MASK is exactly that case (added, then hidden, then checked by the user), and
+	// its palette IS its legend -- the 0/1 black-and-white bar that says what the picture means. The
+	// group-uncheck law cascades a hide to every child row; this is the same rule read forwards.
+	else { ex.showBar = true; if (ex.palette.n > 0) ex.palette.show = true; }
 	gizmoSyncVE(s);                       // the handle now states THIS selection's own VE
 }
 static inline void baseLayerSetVisible(Scene *s, bool on) {
@@ -4589,6 +4615,9 @@ static inline void sceneLayerSetVisibleByProp(Scene *s, vtkProp3D *p, bool on) {
 // visible rasters draw two sets of axes, each fitted to and numbered in its own limits and units.
 static void globeFrameUpdate(Scene *s, bool visible);   // 70_window.cpp: the graticule, the globe's frame
 static void sceneGlobeSync(Scene *s);                   // below: put the WHOLE scene on the sphere / take it off
+// Defined in 50_scene.cpp (it needs the image placement + actor rebuild); declared here because
+// applyVE drives it — see ExtraObj::zposAuto.
+static void sceneRefloatAutoImages(Scene *s);
 
 static void rebuildAxisLabels(Scene *s) {
 	if (!s || !s->ren || !s->ren->GetActiveCamera()) return;
@@ -4856,6 +4885,12 @@ static void applyVE(Scene *s) {
 	// walk, same list, so the two halves of "what this view mode does to an element" can never be
 	// applied to different sets of actors.
 	sceneGlobeSync(s);
+	// An AUTO-placed image plane re-floats on the window's CURRENT bounds. An image is added before
+	// the window necessarily has content -- an Aquamoto companion mask is added while the composite
+	// surface is not built yet, so the z it could be given then was derived from an empty scene, and
+	// the surface standing up afterwards buried it. This is the one place every bounds change already
+	// passes through, so no builder has to remember it (see ExtraObj::zposAuto).
+	sceneRefloatAutoImages(s);
 	nanPlaneUpdate(s);   // the NaN fill colour's backdrop carries the surface's scale — see above
 	gizmoSyncVE(s);   // the VE handle states the ACTIVE layer's number, whoever just changed it
 	// EVERY raster's axes ride VE, each from its OWN frame — there is no window box to resize. The

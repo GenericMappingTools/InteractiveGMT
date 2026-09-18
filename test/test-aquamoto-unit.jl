@@ -32,6 +32,9 @@ end
 # 0/1 index values as literal RGB — near-black on near-black, present in the scene, invisible on
 # screen. The fix is the guard this test locks down: not indexed -> get an explicit B/W palette,
 # through the SAME setter every other indexed image in this codebase uses (`_img_set_palette!`).
+#
+# A MASK IMAGE IS BLACK AND WHITE, and OPAQUE. Nothing here is to be "improved" into transparency or
+# a colour scale: the asserts below are the specification, not a snapshot.
 @testitem "aquamoto: a mask with no on-disk palette gets an explicit B/W one, never raw 0/1 as RGB" tags=[:unit, :fast] begin
 	IG = InteractiveGMT
 	# Exactly the shape gdalread hands back for a real netCDF byte mask: 2-D UInt8, no colour table.
@@ -39,6 +42,7 @@ end
 	I.n_colors = 0
 	I.colormap = Int32[]
 	@test !IG._img_is_indexed(I)
+	@test IG._is_mask_image(I)                      # recognised by its VALUES (digitize.jl)
 	# The exact guard `_aqua_mask_image` runs on a non-indexed mask.
 	IG._img_is_indexed(I) || IG._img_set_palette!(I, UInt8[0 0 0; 255 255 255])
 	@test IG._img_is_indexed(I)
@@ -60,6 +64,28 @@ end
 		@test a == 0xff                                 # opaque -- never see-through where the mask covers
 		@test (r,g,b) == (0x00,0x00,0x00) || (r,g,b) == (0xff,0xff,0xff)
 	end
+end
+
+# "Digitize whites": the outline of the white region, traced by GDAL (GDALPolygonize) on the mask
+# itself. One closed ring around a single square block, in the mask's OWN coordinates — a boundary
+# that comes back somewhere else is a transposed/flipped read of the buffer.
+@testitem "digitize whites: GDAL traces the white region's own outline" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	m = zeros(UInt8, 9, 9)
+	m[4:6, 2:3] .= 0x01                                  # a block of 1s, row 1 = south
+	I = IG.GMT.mat2img(m; x = collect(1.0:9.0), y = collect(1.0:9.0))
+	@test IG._is_mask_image(I)                           # UInt8, two states: a mask
+	@test IG._mask_white(I) == 1
+	# Not masks: a third state, and a single state.
+	@test !IG._is_mask_image(IG.GMT.mat2img(UInt8[0 1 2; 1 1 0; 0 0 1]))
+	@test !IG._is_mask_image(IG.GMT.mat2img(zeros(UInt8, 3, 3)))
+	xyz, segoff, nseg, npts = IG._digitize_rings(I, 1)
+	@test nseg == 1 && npts >= 5                         # one closed ring around one block
+	xs = xyz[1:3:end];  ys = xyz[2:3:end]
+	@test all(iszero, xyz[3:3:end])                      # a mask boundary has no elevation
+	# The ring hugs the block's own cells, to within the half cell a node-registered edge sits at.
+	@test extrema(xs) == (1.5, 3.5)
+	@test extrema(ys) == (3.5, 6.5)
 end
 
 @testitem "aqua_range: local extrema vs global, degenerate range nudged" tags=[:unit, :fast] begin
