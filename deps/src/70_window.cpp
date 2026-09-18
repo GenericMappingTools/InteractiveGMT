@@ -22232,6 +22232,7 @@ public:
 	QRadioButton *rGrids, *rAnuga, *rMost;
 	QRadioButton *rSurf, *rTotal;
 	QCheckBox *cMax, *cVel, *cMom, *cMareg, *cGeog, *cCoriolis;
+	QCheckBox *cAutoLoad;                 // bottom row: open the finished cube in Aquamoto ("autoload")
 	Scene *scene_ = nullptr;              // owning window's scene (grid inventory + RUN callback target)
 	std::map<QLineEdit*, std::function<void()>> fileBrowsers;   // edit -> its "..." browse action (fileRow); double-click runs it too
 	bool nestReady_ = false;              // gate: don't run the load-time nest check during construction/seed
@@ -22627,8 +22628,17 @@ public:
 			"QPushButton:hover { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #ffffff, stop:1 #e8e8e8); }"
 			"QPushButton:pressed { background: #cfcfcf; }");
 
+		// Between the two action buttons: what happens once the run ENDS. Checked by default — the
+		// normal reason to run a simulation is to look at it, and the cube it just wrote is the thing
+		// to look at. Unchecked, the run still writes its file, it just is not opened.
+		cAutoLoad = new QCheckBox("Auto load simulation", this);
+		cAutoLoad->setChecked(true);
+		cAutoLoad->setToolTip("When the run finishes, open its 3-D netCDF in Aquamoto");
+
 		auto *btnRow = new QHBoxLayout();
 		btnRow->addWidget(saveRunBtn);
+		btnRow->addStretch();
+		btnRow->addWidget(cAutoLoad);
 		btnRow->addStretch();
 		btnRow->addWidget(runBtn);
 		v->addLayout(btnRow);
@@ -22725,6 +22735,7 @@ public:
 		kv("dt",       dtEdit->text().trimmed());
 		kv("grn",      grnEdit->text().trimmed());
 		kv("geog",     cGeog->isChecked()  ? "1" : "0");
+		kv("autoload", cAutoLoad->isChecked() ? "1" : "0");
 		return L.join("\n");
 	}
 
@@ -22773,6 +22784,8 @@ public:
 		cCoriolis->setChecked(get("coriolis") == "1");
 		cMareg->setChecked(get("maregs") == "1");
 		cGeog->setChecked(get("geog") == "1");
+		// Absent key (a block saved before this option existed) keeps the default, which is CHECKED.
+		{ const QString al = get("autoload"); cAutoLoad->setChecked(al.isEmpty() ? true : al == "1"); }
 	}
 
 	// Seed the Input-grids widgets from the window's live grids (Scene Objects). Source <- the first grid

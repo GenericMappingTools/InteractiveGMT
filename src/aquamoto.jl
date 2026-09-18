@@ -190,6 +190,39 @@ function _aqua_read_times(path::String, nsteps::Int)::Vector{Float64}
 	return out
 end
 
+# A cube's static 2-D companions include MASKS — a byte array, one flag per node (an inundation
+# footprint, a beach). A mask is a BLACK-AND-WHITE PICTURE, not a field of numbers, so it is read and
+# shown as one: `GMT.gdalread` on the NETCDF subdataset hands back the bytes as they are, a
+# `GMTimage{UInt8}` with its full georef (range, inc, x, y, registration). `gmtread("file?var")`
+# would convert the same variable to a Float32 GRID — a mask dressed up as data, with a colour scale
+# and a z range it has no business having.
+#
+# Recognised by the on-disk TYPE (8-bit), never by the variable's name: those names belong to whoever
+# built the model, and a hard-coded name list is the bug this package already has a law about.
+#
+# THE BYTES ARE NOT TOUCHED. The mask is an INDEXED image: its values are 0 and 1, meant to be shown
+# as an entry into a black/white palette. VERIFIED against GMT.jl's own gdalread (gdal_utils.jl:67-76):
+# `n_colors`/`colormap` are populated ONLY from a real GDAL raster colour table, and confirmed on this
+# project's own byte masks (long_beach.grd / short_beach.grd, `gdalinfo` → "ColorInterp=Undefined", no
+# colour table) that a netCDF byte variable never carries one. So `_img_is_indexed` was always false
+# here, `_pixaccess_img` fell back to the raw 0/1 values as literal RGB, and the mask rendered as
+# near-black on near-black -- present in the scene, invisible on screen. Rescaling those values to
+# 0/255 "so black is black" would be wrong the same way: an 8-bit index of 255 means something only
+# once a palette says so. So the palette is supplied here, explicitly, through the SAME setter every
+# other indexed image in this codebase uses (`_img_set_palette!`, drape.jl) — never a bespoke path.
+function _aqua_mask_image(path::String, varname::String)::GMTimage
+	I = GMT.gdalread("NETCDF:\"$(path)\":$(varname)")
+	I isa GMTimage || error("Aquamoto: '$varname' did not read back as an image")
+	_img_is_indexed(I) || _img_set_palette!(I, UInt8[0 0 0; 255 255 255])
+	eltype(I.image) == UInt8 || error("Aquamoto: '$varname' is not an 8-bit mask")
+	return I
+end
+
+# Which DOOR a companion variable comes in by -- the image reader above for an 8-bit flag array, the
+# grid reader for everything else. Nothing else in the viewer knows or cares that it is a mask: it is
+# an image, and it behaves exactly like every other image in the window.
+_aqua_is_byte_raster(v) = length(v.dims) == 2 && v.typ == "UInt8"
+
 function _aqua_find_all_varnames(path::String, skip::String)
 	found = String[]
 	for v in _netcdf_subdatasets(path)
@@ -341,9 +374,15 @@ function _aqua_drop_var_rows(scene::Ptr{Cvoid}, path::String, varnames::Vector{S
 		union!(names, old.varnames)
 	end
 	union!(names, varnames)
+	# A companion variable is dropped BY NAME, whatever kind it came in as: the quantity variables and
+	# the bathymetry are grids, an 8-bit mask is an image (`_aqua_mask_image`). Dropping only the grid
+	# kind left every mask actor and handle standing, so a second open piled a new one on top of a
+	# stale one under the same name.
 	for nm in names
-		ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, nm)
-		_forget_object!(scene, :grid, nm)
+		ccall(_fn(:gmtvtk_remove_grid_h),  Cint, (Ptr{Cvoid}, Cstring), scene, nm)
+		ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), scene, nm)
+		_forget_object!(scene, :grid,  nm)
+		_forget_object!(scene, :image, nm)
 	end
 	return nothing
 end
@@ -446,8 +485,18 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	for v in _netcdf_subdatasets(path)
 		lowercase(v.name) in skipvars && continue
 		try
-			G = _aqua_clipx(_gmtread_trb("$(path)?$(v.name)"), xwin)
-			_add_grid_to_scene(scene, G, v.name; promote = false, source = "$(path)?$(v.name)")
+			if _aqua_is_byte_raster(v)    # an 8-bit flag array: a B&W MASK IMAGE, never a grid
+				# Added EXACTLY like every other companion of the cube, image or grid: through the normal
+				# add, with its OWN axes set built and framed to its own extent at birth (the image branch
+				# of gmtvtk_add_surface_h), then left unchecked. No adopt here and none for the grid
+				# companions either -- an adopt is the "this is what the window shows now" transition, and
+				# what this window shows is the simulation being opened.
+				_add_image_to_scene(scene, _aqua_mask_image(String(path), v.name), v.name;
+				                    promote = false, source = "$(path)?$(v.name)")
+			else
+				G = _aqua_clipx(_gmtread_trb("$(path)?$(v.name)"), xwin)
+				_add_grid_to_scene(scene, G, v.name; promote = false, source = "$(path)?$(v.name)")
+			end
 			ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, v.name, Cint(0))
 		catch e
 			@tool_error "Aquamoto: could not load variable '$(v.name)'" exception=e

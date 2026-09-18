@@ -1300,6 +1300,26 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 				  : isFault    ? "Save trace fault…"
 				  : (lr.kind == LK_Polygon && lineClosedRing(s, lr) ? "Save polygon…" : "Save line…"),
 					[s, lr]() { lineSavePoints(s, lr); });   // 2D / 3D (grid-interpolated z)
+		// EVERY vector element can be copied, not just saved: the coordinates go to the clipboard
+		// through `lineTableText` — the SAME text the Save dialog's own Copy button and the written
+		// file are built from, so the three can never disagree. 3-D (grid-interpolated z) whenever the
+		// element has a z worth writing, exactly as the file would.
+		m.addAction("Copy to Clipboard", [s, lr]() {
+			std::vector<std::vector<std::array<double,3>>> polylines;
+			lineGatherPolylines(s, lr, polylines);
+			if (polylines.empty()) return;
+			bool have3D = false;
+			for (const auto &pl : polylines) {
+				double z0 = 0;  bool first = true;
+				for (const auto &p : pl) {
+					if (first) { z0 = p[2];  first = false;  continue; }
+					if (std::abs(p[2] - z0) > 1e-12) { have3D = true;  break; }
+				}
+				if (have3D) break;
+			}
+			QApplication::clipboard()->setText(lineTableText(s, polylines, have3D));
+			if (s->win) s->win->statusBar()->showMessage("Coordinates copied to clipboard", 4000);
+		});
 		if (!ovp || !ovp->noDataTable)                                       // e.g. mgd77 cruise tracks: no table
 			m.addAction("Show data table…",                                  // floating vertex table viewer
 						[s, lr, name]() { showLineDataTable(s, lr, name); });

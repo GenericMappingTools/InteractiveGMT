@@ -19,8 +19,46 @@
 @testitem "aquamoto helpers present" tags=[:unit, :fast] begin
 	for s in (:_aqua_find_all_varnames, :_aqua_colorize, :_aqua_pack_rgba, :_aqua_range,
 	          :_aqua_composite_rgb, :_aquamoto_open, :_aquamoto_slice, :_aquamoto_runin,
-	          :_aqua_global_minmax, :_aquamoto_set_var)
+	          :_aqua_global_minmax, :_aquamoto_set_var, :_aqua_mask_image, :_aqua_is_byte_raster)
 		@test isdefined(InteractiveGMT, s)
+	end
+end
+
+# 2026-09-18: an Aquamoto byte mask (LongBeach/ShortBeach — an inundation footprint) read back from
+# gdalread as UInt8 with n_colors=0 and an empty colormap: netCDF byte variables carry no GDAL raster
+# colour table (verified against GMT.jl's gdal_utils.jl, and against this project's own long_beach.grd
+# / short_beach.grd via `gdalinfo` -> ColorInterp=Undefined). `_aqua_mask_image` used to assume the
+# file's own palette made the picture black/white; with none, `_pixaccess_img` fell back to the raw
+# 0/1 index values as literal RGB — near-black on near-black, present in the scene, invisible on
+# screen. The fix is the guard this test locks down: not indexed -> get an explicit B/W palette,
+# through the SAME setter every other indexed image in this codebase uses (`_img_set_palette!`).
+@testitem "aquamoto: a mask with no on-disk palette gets an explicit B/W one, never raw 0/1 as RGB" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	# Exactly the shape gdalread hands back for a real netCDF byte mask: 2-D UInt8, no colour table.
+	I = IG.GMT.mat2img(UInt8[0 1 0; 1 1 0; 0 0 1])
+	I.n_colors = 0
+	I.colormap = Int32[]
+	@test !IG._img_is_indexed(I)
+	# The exact guard `_aqua_mask_image` runs on a non-indexed mask.
+	IG._img_is_indexed(I) || IG._img_set_palette!(I, UInt8[0 0 0; 255 255 255])
+	@test IG._img_is_indexed(I)
+	@test I.image == UInt8[0 1 0; 1 1 0; 0 0 1]     # THE BYTES ARE NOT TOUCHED -- only the palette is added
+
+	pix, nb, nlon, nlat, rowmajor = IG._pixaccess_img(I)
+	seen = Set{Tuple{UInt8,UInt8,UInt8}}()
+	for lat in 1:nlat, lon in 1:nlon
+		push!(seen, (pix(lat, lon, 1), pix(lat, lon, 2), pix(lat, lon, 3)))
+	end
+	# Every pixel is pure black or pure white -- never a near-black raw index value.
+	@test seen == Set([(0x00, 0x00, 0x00), (0xff, 0xff, 0xff)])
+
+	buf, iw, ih, ibands = IG._drape_to_bbox(I, I.range[1], I.range[2], I.range[3], I.range[4];
+	                                        outside=:transparent, fill=(200,200,200))
+	@test ibands == 4
+	for p in 0:(iw*ih - 1)
+		r, g, b, a = buf[p*4+1], buf[p*4+2], buf[p*4+3], buf[p*4+4]
+		@test a == 0xff                                 # opaque -- never see-through where the mask covers
+		@test (r,g,b) == (0x00,0x00,0x00) || (r,g,b) == (0xff,0xff,0xff)
 	end
 end
 

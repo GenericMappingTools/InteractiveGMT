@@ -299,3 +299,57 @@ end
 		for p in (png1, png2); isfile(p) && rm(p, force=true); end
 	end
 end
+
+# 2026-09-18: an Aquamoto mask (a flat B/W image, no elevation of its own) collapsed to a sliver
+# above the relief and vanished the moment real elevation arrived (the window's first slice). Root
+# cause: applyVE fed EVERY extra's zmin/zmax to the GRID's per-layer z-reference (sceneZRefFor),
+# but an image never gets zmin/zmax (only gmtvtk_add_surface_h's grid branch sets them) -- they sit
+# at their ExtraObj default, 0/0, which is a degenerate span sceneZRefFor answers with the FALLBACK
+# 1.0 instead of the window's real zfac. The image was built at s->zfac*ex.ve (imageRebuildActor);
+# the very next VE recompute (a second layer, a VE drag, Aquamoto's own first slice) then silently
+# rescaled it down to ~1.0*ex.ve, collapsing its drawn height to a sliver against a relief that had
+# just grown much taller. `ve_<tag>`/`zfac` alone cannot see this: both still read as the INTENDED
+# numbers. `zscale_<tag>` (gmtvtk_scene_state_full) is the actor's OWN scale -- ground truth.
+@testitem "VE law 2: an image's own Z-scale survives a VE change (does not collapse to 1.0)" tags=[:gui, :ve] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "ve_helpers.jl"))
+	G = ve_grid(zspan = 500.0)             # a real elevation span -> a real (non-1.0) zfac
+	f = view_grid(G, geographic=true)
+	try
+		ve_pump()
+		I = IG.GMT.mat2img(UInt8[0 255; 255 0])
+		I.range = [-14.0, -13.0, 36.0, 37.0, 0.0, 255.0]
+		@test IG._add_image_to_scene(f.h, I, "mask_test"; promote=false)
+		ve_pump()
+
+		# The image's own tag (from its "zscale_<tag>" key) and, from the SAME state read, its own
+		# "ve_<tag>" — whichever layer ve_set_active below actually targets, the invariant applyVE owes
+		# an image is always zscale_<tag> == zfac * ve_<tag>, ITS OWN ve, never a bare 1.0 fallback.
+		function img_zscale_and_ve(st)
+			ks = [k for k in keys(st) if startswith(k, "zscale_")]
+			@test length(ks) == 1
+			tag = ks[1][(length("zscale_") + 1):end]
+			parse(Float64, string(st[ks[1]])), parse(Float64, string(st["ve_$tag"]))
+		end
+
+		st1 = ve_state_full(f.h)
+		zfac1 = parse(Float64, string(st1["zfac"]))
+		zscale1, ve1 = img_zscale_and_ve(st1)
+		@test isapprox(zscale1, zfac1 * ve1, rtol=1e-9)      # freshly built: already correct
+
+		# Force applyVE to run again with a DIFFERENT ve than the image was built with (whichever layer
+		# this actually targets — base or image, either way the invariant below must still hold for it).
+		ve_set_active(f.h, 4.0)
+		ve_pump()
+		st2 = ve_state_full(f.h)
+		zfac2 = parse(Float64, string(st2["zfac"]))
+		zscale2, ve2 = img_zscale_and_ve(st2)
+		@test isapprox(zscale2, zfac2 * ve2, rtol=1e-9)
+		# The regression: applyVE fell back to sceneZRefFor's degenerate-span 1.0 for an image, so its
+		# actor scale collapsed to bare ve2 regardless of the window's real zfac. zfac is nowhere near 1
+		# for this grid (zspan=500 over a wide footprint), so zscale == 1.0*ve2 would mean the bug is back.
+		@test !isapprox(zscale2, ve2, rtol=1e-6)
+	finally
+		ve_close(f.h)
+	end
+end

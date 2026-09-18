@@ -1254,6 +1254,17 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 		for (auto &ex : s->extras) {
 			char k[32]; snprintf(k, sizeof(k), "ve_%d", ex.tag);
 			kvd(k, ex.ve);
+			// The ACTOR'S OWN Z-scale, ground truth rather than the formula that is supposed to have
+			// produced it: an image's zmin/zmax are never set (only a grid's are), and applyVE used to
+			// feed them to the grid-only per-layer reference anyway, which silently fell back to 1.0 on
+			// the degenerate 0/0 span -- ve_<tag>/zfac above would still read as if nothing were wrong,
+			// because they are the INTENDED numbers, not what got applied. This is what a test checks
+			// instead (test-ve-rules-gui.jl "an image's own Z-scale survives a VE change").
+			if (ex.actor) {
+				double sc[3]; ex.actor->GetScale(sc);
+				char k2[32]; snprintf(k2, sizeof(k2), "zscale_%d", ex.tag);
+				kvd(k2, sc[2]);
+			}
 		}
 		// The geometry scale factors applyVE actually uses — (xfac, 1, zfac*ve). `zfac` is re-derived
 		// from the drawn geometry (sceneZRef), so these two are the only honest description of how far

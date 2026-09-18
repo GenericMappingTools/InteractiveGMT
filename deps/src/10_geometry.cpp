@@ -4553,7 +4553,11 @@ static inline void rasterLayerSetVisible(Scene *s, ExtraObj &ex, bool on) {
 	if (ex.actor) ex.actor->SetVisibility(on ? 1 : 0);
 	if (ex.drape) ex.drape->SetVisibility(on ? 1 : 0);
 	ex.ax.shown = on;
-	if (!on) { axesHideAll(ex.ax); ex.showBar = false; }
+	// ex.palette.show is an IMAGE's own equivalent of a grid's showBar (50_scene.cpp's group checkbox
+	// ORs it in exactly the same way: `ex.palette.n > 0 && ex.palette.show`). Left untouched here, a
+	// hidden image group still reported CHECKED off its stale legend intent -- the group-uncheck law
+	// broken from the same end already fixed for grids below, just missed for images.
+	if (!on) { axesHideAll(ex.ax); ex.showBar = false; ex.palette.show = false; }
 	gizmoSyncVE(s);                       // the handle now states THIS selection's own VE
 }
 static inline void baseLayerSetVisible(Scene *s, bool on) {
@@ -4787,8 +4791,20 @@ static void applyVE(Scene *s) {
 	for (auto &cu : s->curtains)
 		if (cu.actor) cu.actor->SetScale(kx, 1.0, G ? 1.0 : layerZScale(s, cu.veOwner));
 	for (auto &ex : s->extras) {                                       // each dropped grid/image at ITS OWN VE
-		// ITS OWN axis mapping times ITS OWN ve -- both this layer's, neither the window's.
-		const double kzEx = G ? 1.0 : sceneZRefFor(s, ex.zmin, ex.zmax) * ex.ve;
+		// A GRID has a real elevation span (ex.zmin/ex.zmax, set by gmtvtk_add_surface_h's grid branch) and
+		// rides ITS OWN axis mapping times ITS OWN ve. An IMAGE has no span of its own -- it is a flat plane
+		// at ex.zpos, never given ex.zmin/ex.zmax (they stay the ExtraObj default, 0/0) -- so feeding them to
+		// sceneZRefFor hit its degenerate-span guard and returned the FALLBACK 1.0 instead of the window's
+		// real scale. It was built at s->zfac*ex.ve (imageRebuildActor); every later applyVE (triggered the
+		// moment real z data arrives, e.g. Aquamoto's first slice) then rescaled it down to ~1.0*ex.ve --
+		// its world-space height collapsed while everything else scaled up, so it ended up glued flat
+		// against, and buried under, the base surface it should have stood well above (invisible mask).
+		// NOT sceneZScale(s) for the image branch -- that is s->zfac*s->ve (the BASE's own ve baked in),
+		// which would then get multiplied by ex.ve AGAIN below and double-count the base's exaggeration
+		// on top of the image's own (caught by test-ve-rules-gui.jl: changing ONLY the base's ve moved
+		// an image whose own ve never changed). imageRebuildActor built it at s->zfac*ex.ve -- window
+		// zfac, this layer's own ve, nothing else -- so applyVE must reproduce exactly that.
+		const double kzEx = G ? 1.0 : (ex.isImage ? s->zfac : sceneZRefFor(s, ex.zmin, ex.zmax)) * ex.ve;
 		if (ex.actor) ex.actor->SetScale(kx, 1.0, kzEx);  // (flat image z=zpos is baked in geometry -> scale carries VE)
 		if (ex.drape) ex.drape->SetScale(kx, 1.0, kzEx);
 	}

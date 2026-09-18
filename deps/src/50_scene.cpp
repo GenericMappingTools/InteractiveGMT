@@ -520,9 +520,29 @@ static void textPropsDialog(Scene *s, vtkProp3D *act) {
 static void textLabelMenu(Scene *s, vtkProp3D *act, const QPoint &globalPos) {
 	QMenu m(s->widget);
 	QAction *props = m.addAction("Text Properties…");
+	// A label is vector data too: its position and its text, as a table line, like every other
+	// vector element's Copy to Clipboard.
+	QAction *clip  = m.addAction("Copy to Clipboard");
 	QAction *del   = m.addAction("Remove");
 	QAction *chosen = m.exec(globalPos);
 	if (chosen == props) { textPropsDialog(s, act); return; }
+	if (chosen == clip) {
+		for (const auto &t : s->texts) {
+			if (t.actor.Get() != act) continue;
+			const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
+			QString txt;
+			QTextStream out(&txt);
+			out << "#X\tY\tZ\tText\n"
+			    << QString::number(t.pos[0] * xfacInv, 'g', 10) << '\t'
+			    << QString::number(t.pos[1], 'g', 10) << '\t'
+			    << QString::number(t.pos[2], 'g', 10) << '\t'
+			    << QString::fromStdString(t.text) << '\n';
+			QApplication::clipboard()->setText(txt);
+			if (s->win) s->win->statusBar()->showMessage("Label copied to clipboard", 4000);
+			return;
+		}
+		return;
+	}
 	if (chosen != del) return;
 	for (size_t i = 0; i < s->texts.size(); ++i) {
 		if (s->texts[i].actor.Get() != act) continue;
@@ -1358,6 +1378,19 @@ static void refreshGridColorbar(Scene *s) {
 		s->actX0 = vis.x0; s->actX1 = vis.x1; s->actY0 = vis.y0; s->actY1 = vis.y1;
 	}
 	else s->actZ = nullptr;
+	// THE SINGLE BAR SLOT belongs to whichever checked legend sits ON TOP. An image's own indexed
+	// palette (its Scene Objects "Color Bar" row) is drawn ABOVE any active grid -- the same "topmost
+	// visible image owns it" rule resolveActiveAxesAndReadout already applies to axes/readout above --
+	// so a CHECKED image legend must win the slot over the grid's z-bar. Before this, buildPaletteColorbar
+	// was only ever reached from the two "nothing but a bare image" early returns above: the moment any
+	// grid was active (every Aquamoto window, always), a checked mask/image Color Bar row simply never
+	// got drawn -- the checkbox said one thing, the screen another (the exact lie this project's own
+	// SACRED_LAW.md bans: no displayed image or grid may announce a colour bar it isn't showing).
+	if (buildPaletteColorbar(s)) {
+		if (isAqua) setAquaLandColorbarVisible(s, false);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return;
+	}
 	const bool showWaterBar = ag.showBar && (!isAqua || s->aquaShowWater);
 	// THE BAR DESCRIBES THE PALETTE THAT IS ON IT. A palette carries its own z boundaries — Color
 	// Palettes' Min Z / Max Z, a CPT built with an explicit -T, the whole-cube range behind "global
@@ -2633,7 +2666,15 @@ static void rebuildSceneObjects(Scene *s) {
 	const bool aquaWrap = sceneIsAquamoto(s);
 	if (aquaWrap) {
 		const QString fileNm = s->surfName.empty() ? QString("Tsunami") : QString::fromStdString(s->surfName);
-		beginGroupHandle(fileNm, IC_Surface, true, nullptr, nullptr, "Every variable loaded from this file");
+		// SAME menu as the inner "z" surface group two rows below (surfaceObjectMenu -> Remove ->
+		// sceneRemoveSurface, which already tears down the whole Aquamoto file/window). The master
+		// per-file handle had NO onProps/onContext at all -- every other handle in this panel gets a
+		// properties menu (SACRED_LAW.md "every element has properties"); this wrapper was the one
+		// exception, reachable only by opening it and right-clicking the child instead.
+		beginGroupHandle(fileNm, IC_Surface, true,
+		        [s](const QPoint &g) { surfaceObjectMenu(s, g); },
+		        [s](const QPoint &g) { surfaceObjectMenu(s, g); },
+		        "Every variable loaded from this file · right-click to save / remove");
 	}
 
 	// ── GRID GROUPS ── each grid = [surface][drape?][colorbar][axes], split by a light rule. A bare
@@ -4356,25 +4397,17 @@ static int symbolLayerIndexOfActor(Scene *s, vtkActor *a) {
 // its DATA table when it carries one (a catalog's lon/lat/depth/mag/date, header line included),
 // else the plotted coordinates. One function, called by the data table's "Save…" button and by the
 // layer's own "Save data…" menu entry — never two paths that could write different files.
-static void symbolSaveData(Scene *s, SymbolLayer &sl) {
-	if (!s) return;
+// The layer's data AS TEXT — its own table when it carries one, else the plotted coordinates. The
+// ONE builder behind both the file this save writes and the layer's "Copy to Clipboard", so the two
+// can never emit different numbers (same rule `lineTableText` follows for lines, 55_lineprops.cpp).
+static QString symbolDataText(Scene *s, SymbolLayer &sl) {
+	QString txt;
 	vtkPolyData *pd = symInputPD(sl);
-	if (!pd || !pd->GetPoints()) return;
+	if (!s || !pd || !pd->GetPoints()) return txt;
 	const int n = (int)pd->GetPoints()->GetNumberOfPoints();
-	if (n == 0) return;
+	if (n == 0) return txt;
+	QTextStream out(&txt);
 	const bool haveData = (!sl.dataHdr.empty() && (int)sl.dataRows.size() == n);
-	QString defName = QString::fromStdString(sl.name.empty() ? "symbols" : sl.name).simplified();
-	defName.replace(QRegularExpression("[^A-Za-z0-9._-]+"), "_");
-	QString fn = QFileDialog::getSaveFileName(s->win, "Save data", prefStartDir(defName + ".dat"),
-	                                          "Data files (*.dat *.txt);;All files (*)");
-	if (fn.isEmpty()) return;
-	rememberStartDir(fn);
-	QFile f(fn);
-	if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-		QMessageBox::warning(s->win, "Save", "Could not write " + fn);
-		return;
-	}
-	QTextStream out(&f);
 	const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
 	if (haveData) {
 		out << '#';
@@ -4394,6 +4427,28 @@ static void symbolSaveData(Scene *s, SymbolLayer &sl) {
 			    << QString::number(sl.zOrig.size() == (size_t)n ? sl.zOrig[(size_t)k] : p[2], 'g', 10) << '\n';
 		}
 	}
+	return txt;
+}
+
+static void symbolSaveData(Scene *s, SymbolLayer &sl) {
+	if (!s) return;
+	vtkPolyData *pd = symInputPD(sl);
+	if (!pd || !pd->GetPoints()) return;
+	const int n = (int)pd->GetPoints()->GetNumberOfPoints();
+	if (n == 0) return;
+	QString defName = QString::fromStdString(sl.name.empty() ? "symbols" : sl.name).simplified();
+	defName.replace(QRegularExpression("[^A-Za-z0-9._-]+"), "_");
+	QString fn = QFileDialog::getSaveFileName(s->win, "Save data", prefStartDir(defName + ".dat"),
+	                                          "Data files (*.dat *.txt);;All files (*)");
+	if (fn.isEmpty()) return;
+	rememberStartDir(fn);
+	QFile f(fn);
+	if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+		QMessageBox::warning(s->win, "Save", "Could not write " + fn);
+		return;
+	}
+	QTextStream out(&f);
+	out << symbolDataText(s, sl);
 	f.close();
 }
 
@@ -4705,6 +4760,7 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 	}
 	QAction *tblA  = m.addAction("Show data table…");     // THE shared table dialog (Save button included)
 	QAction *saveA = m.addAction("Save data…");           // …and the same save that button calls
+	QAction *clipA = m.addAction("Copy to Clipboard");    // the same text, to the clipboard (symbolDataText)
 	// Any linked name labels (Cities' city names) get their OWN properties menu on a right-click of
 	// the LABEL itself (70_window.cpp's view dispatch -> batchTextLabelsDialog) — never nested in
 	// here. This menu stays symbol-only: shape/colour/size/stacking/remove.
@@ -4811,6 +4867,11 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 	}
 	if (ch == tblA)  { showSymbolDataTable(s, act, QString::fromStdString(sl->name)); return; }
 	if (ch == saveA) { symbolSaveData(s, *sl); return; }
+	if (ch == clipA) {
+		QApplication::clipboard()->setText(symbolDataText(s, *sl));
+		if (s->win) s->win->statusBar()->showMessage("Data copied to clipboard", 4000);
+		return;
+	}
 	if (ch == plotTidesNowA) { g_juliaTideModel(s, "now", tideStation.c_str()); return; }
 	if (ch == plotTidesCalA) {
 		const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
