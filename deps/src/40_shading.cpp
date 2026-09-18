@@ -740,21 +740,96 @@ static void syncShadeChecks(Scene *s) {
 //      brightest and grazing sun darkens — el behaves like a real sun), soft-clipped to (-1,1) by
 //      an atan (grdgradient -Nt style, amp = s->look.hillGain), then gmt_illuminate() blends it into the
 //      CPT colour the way grdimage -I does (lightens AND darkens, hue preserved).
+// THE LAND BAR PAINTS THE LAND — ON THE 3-D SURFACE TOO.
+//
+// An Aquamoto layer is not one quantity with one colour scale. Its WET nodes are water heights and
+// belong to the water bar; its DRY nodes are ground elevations and belong to the LAND bar
+// (`gmtvtk_aqua_set_land_cpt_h` -> `Scene::aquaLandLut`), and the dry/wet line is the host's own mask,
+// the SAME one the flat composite was painted with and `bakeAquaShade` splits its two lights by
+// (`Scene::aquaLandMask`). The flat 2-D image has always been built that way host-side. The 3-D
+// surface was not: it mapped the WHOLE stage through the water CPT alone, so every dry node came out
+// at the top of :polar — a solid red continent standing over the sea, with the land colorbar hanging
+// beside it describing colours that were nowhere on screen.
+//
+// So the node's colour is looked up in the node's OWN bar, at the node's OWN quantity: the stage z
+// through the water LUT for water, the BATHYMETRY (`Scene::aquaBathyZ`, the land side's surface — and
+// on a dry node the stage equals it) through the land LUT for land. Nothing else changes: the shade
+// that multiplies these colours, the normals it uses, and the light it uses are the existing ones.
+//
+// Returns the per-point land colours (RGBA tuples, same indexing as the caller's `mapped`) and fills
+// `isLand` with one flag per point, or nullptr when this is not an Aquamoto layer — in which case
+// there is one bar, and the caller's own lookup is the whole answer.
+static vtkSmartPointer<vtkUnsignedCharArray> aquaLandColors(Scene *s, vtkPolyData *pd,
+                                                            std::vector<unsigned char> &isLand) {
+	isLand.clear();
+	if (!s || !pd || !s->aquaLandLut) return nullptr;
+	const int nx = s->gnx, ny = s->gny;
+	if (nx < 2 || ny < 2) return nullptr;
+	if ((int)s->aquaLandMask.size() != nx * ny || (int)s->aquaBathyZ.size() != nx * ny) return nullptr;
+	vtkPoints *pts = pd->GetPoints();
+	if (!pts) return nullptr;
+	const vtkIdType n = pd->GetNumberOfPoints();
+	if (n < 1) return nullptr;
+	const double dx = s->gdx != 0.0 ? s->gdx : 1.0, dy = s->gdy != 0.0 ? s->gdy : 1.0;
+	isLand.assign((size_t)n, 0);
+	// The land quantity, per point: the bathymetry under it. A wet point is given the same value as its
+	// stage lookup would use -- it is never read back (isLand decides), it only keeps the array dense.
+	vtkNew<vtkFloatArray> lz;
+	lz->SetNumberOfComponents(1);
+	lz->SetNumberOfTuples(n);
+	for (vtkIdType i = 0; i < n; ++i) {
+		double p[3]; pts->GetPoint(i, p);
+		int ix = (int)std::lround((p[0] - s->gx0) / dx);
+		int iy = (int)std::lround((p[1] - s->gy0) / dy);
+		ix = std::min(std::max(ix, 0), nx - 1);
+		iy = std::min(std::max(iy, 0), ny - 1);
+		const bool land = s->aquaLandMask[(size_t)iy * nx + ix] != 0;   // mask: row-major, row 0 = south
+		isLand[(size_t)i] = land ? 1 : 0;
+		lz->SetTypedComponent(i, 0, s->aquaBathyZ[(size_t)ix * ny + iy]);   // bathy: column-major, like gridZ
+	}
+	// NO "this piece has no land, so skip it". The layer decides, never the piece: the base surface is a
+	// pyramid of LOD TILES, and a tile that happens to hold only sea would have taken a different
+	// colouring path from its neighbours -- the caller's plain-LUT branch instead of the baked one. That
+	// is one layer painted two ways, and it showed as exactly what it is: a rectangle of visibly
+	// different water, tile-shaped, hanging in the middle of the map (the SW quadrant of tsu_time.nc,
+	// the one quadrant with no coast in it). Every tile of an Aquamoto layer goes through here; the
+	// all-water ones simply come back with `isLand` all zeros and are painted by the water bar alone.
+	// MapScalars is the thread-safe, vectorised lookup (MapValue is not) -- the same call the water side
+	// above is served by, so both bars are read exactly one way.
+	// …AND IT MUST BE BUILT FIRST. `makeGridCTF` returns a vtkDiscretizableColorTransferFunction, which
+	// maps an ARRAY through an internal 1024-entry table; that table is filled by Build(). The water LUT
+	// is a mapper's LUT, so the render pass builds it and the call below just works. This one belongs to
+	// no mapper — it only ever paints the land colorbar — so unbuilt it mapped EVERY node to black, land
+	// coming out a black continent instead of the geo ramp the bar beside it was showing.
+	s->aquaLandLut->Build();
+	vtkSmartPointer<vtkUnsignedCharArray> out = vtkSmartPointer<vtkUnsignedCharArray>::Take(
+		s->aquaLandLut->MapScalars(lz, VTK_COLOR_MODE_MAP_SCALARS, 0));
+	if (aquaTraceOn()) {
+		long nl = 0; for (vtkIdType i = 0; i < n; ++i) nl += isLand[(size_t)i];
+		double lo = 1e30, hi = -1e30;
+		for (vtkIdType i = 0; i < n; ++i) {
+			if (!isLand[(size_t)i]) continue;
+			const double v = lz->GetTypedComponent(i, 0);
+			if (v < lo) lo = v;  if (v > hi) hi = v;
+		}
+		vtkIdType li = -1; for (vtkIdType i = 0; i < n; ++i) if (isLand[(size_t)i]) { li = i; break; }
+		fprintf(stdout, "[aqua-land] pts=%lld land=%ld bathy(land) %.2f..%.2f | mapped=%d comps=%d",
+		        (long long)n, nl, lo, hi, (int)(out != nullptr), out ? out->GetNumberOfComponents() : 0);
+		if (out && li >= 0) {
+			const unsigned char *p = out->GetPointer(li * out->GetNumberOfComponents());
+			fprintf(stdout, " | first land RGB = %3d,%3d,%3d at z=%.2f", p[0], p[1], p[2],
+			        lz->GetTypedComponent(li, 0));
+		}
+		fprintf(stdout, "\n"); fflush(stdout);
+	}
+	return out;
+}
+
 static void hillshadeMapper(Scene *s, vtkActor *act) {
 	if (!act) return;
 	const LayerShade &lk = lookOfActor(s, act);   // THIS layer's own look, never the window's
 	vtkPolyDataMapper *m = vtkPolyDataMapper::SafeDownCast(act->GetMapper());
 	if (!m) return;
-
-	if (!lk.useHillshade) {                       // revert to whatever this geometry's colouring IS
-		// NOT hard-coded to "point data, through the LUT" any more. That is right for a grid and
-		// wrong for every MESH: a per-vertex RGB array pushed through a LUT is mapped by its
-		// MAGNITUDE, so a magenta model rendered as one flat red off the top of the ramp, and a
-		// solid's per-FACE colours were reverted onto point data they do not live on. The mesh doors
-		// set an explicit mode and this ran after them, so it silently won.
-		fvRestoreColorMode(m);                    // 10_geometry.cpp — one decision, every actor
-		return;
-	}
 
 	// PULL THE PIPELINE FIRST. A mapper wired with SetInputConnection (a grid added as an EXTRA goes
 	// through a vtkPolyDataNormals filter) has no computed output until something asks for it — so
@@ -785,6 +860,22 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 		if (m->GetNumberOfInputConnections(0) > 0) m->Update();
 		pd = vtkPolyData::SafeDownCast(m->GetInput());
 	}
+	// THE SECOND BAR, if this layer has one (an Aquamoto land/water surface). It is asked for BEFORE
+	// the hillshade question, because it is not a light: a tsunami's dry nodes must wear the land bar's
+	// colours whether or not the window is currently hillshading. Nothing else in this app gets a
+	// non-null here.
+	std::vector<unsigned char> isLand;
+	vtkSmartPointer<vtkUnsignedCharArray> landCol = pd ? aquaLandColors(s, pd, isLand) : nullptr;
+
+	if (!lk.useHillshade && !landCol) {           // revert to whatever this geometry's colouring IS
+		// NOT hard-coded to "point data, through the LUT" any more. That is right for a grid and
+		// wrong for every MESH: a per-vertex RGB array pushed through a LUT is mapped by its
+		// MAGNITUDE, so a magenta model rendered as one flat red off the top of the ramp, and a
+		// solid's per-FACE colours were reverted onto point data they do not live on. The mesh doors
+		// set an explicit mode and this ran after them, so it silently won.
+		fvRestoreColorMode(m);                    // 10_geometry.cpp — one decision, every actor
+		return;
+	}
 	if (!pd) return;
 	vtkDataArray *nrm = pd->GetPointData()->GetNormals();
 	vtkDataArray *zs  = pd->GetPointData()->GetScalars();
@@ -792,7 +883,8 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// scene's primary LUT. For the primary surface/tiles these are the same object, so this is a no-op
 	// there but lets an extra grid hillshade with its true colours instead of the canvas LUT.
 	vtkScalarsToColors *lut = m->GetLookupTable() ? m->GetLookupTable() : (s->surfLut ? s->surfLut.Get() : nullptr);
-	if (!nrm || !zs || !lut) return;              // no normals/scalars/LUT -> leave as-is
+	if (!zs || !lut)   return;                    // no scalars/LUT -> leave as-is
+	if (!nrm && lk.useHillshade) return;          // …normals only matter to the shade itself
 
 	double lzf = 1.0, lve = 1.0;
 	layerZOf(s, act, lzf, lve);                    // THIS actor's own normaliser + VE (VE is what we want)
@@ -809,6 +901,11 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 		vtkSmartPointer<vtkUnsignedCharArray>::Take(lut->MapScalars(zs, VTK_COLOR_MODE_MAP_SCALARS, 0));
 	if (!mapped) return;
 	const int mc = mapped->GetNumberOfComponents();      // RGBA = 4
+	// The land bar's own lookup, same shape, same indexing (see aquaLandColors). Dropped if it did not
+	// come back with one tuple per point -- a colour taken from the wrong index is worse than one bar.
+	const bool twoBar = landCol && landCol->GetNumberOfTuples() == pd->GetNumberOfPoints() &&
+	                    isLand.size() == (size_t)pd->GetNumberOfPoints();
+	const int lc = twoBar ? landCol->GetNumberOfComponents() : 0;
 	// Hillshade tool: an externally computed reflectance, sampled at each point's TRUE-coord (x,y).
 	// The polydata carries true data coords (the actor holds xfac/ve), so this works for the single
 	// surface and for every LOD tile without either of them knowing its own grid index range.
@@ -825,17 +922,30 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// read-only. GetTuple(i, buf) writes the caller's own buffer, so it is safe under concurrent reads.
 	vtkSMPTools::For(0, n, [&](vtkIdType iBeg, vtkIdType iEnd) {
 	for (vtkIdType i = iBeg; i < iEnd; ++i) {
-		double nv[3]; nrm->GetTuple(i, nv);
-		const unsigned char *rgb8 = mapped->GetPointer(i * mc);     // CPT colour for this z (pre-mapped)
+		double nv[3] = { 0.0, 0.0, 1.0 };
+		if (nrm) nrm->GetTuple(i, nv);
+		// EACH NODE FROM ITS OWN BAR: a dry node's ground elevation through the LAND lut, a wet node's
+		// stage through the water one. One bar -> `twoBar` is false and this is the lookup it always was.
+		const bool land = twoBar && isLand[(size_t)i] != 0;
+		const unsigned char *rgb8 = land ? landCol->GetPointer(i * lc)    // land bar, at the bathymetry
+		                                 : mapped->GetPointer(i * mc);    // water bar, at the stage z
 		double c[3] = { rgb8[0] / 255.0, rgb8[1] / 255.0, rgb8[2] / 255.0 };
 		double ei = std::numeric_limits<double>::quiet_NaN();
 		if (ext) { double p[3]; pts->GetPoint(i, p); ei = externShadeAt(s, p[0], p[1]); }
-		applyReliefShade(L, nv, c, std::isnan(ei) ? nullptr : &ei);  // SHARED shade (extern / grdimage / Lambert)
+		if (lk.useHillshade)                                         // colour only when the look is unlit
+			applyReliefShade(L, nv, c, std::isnan(ei) ? nullptr : &ei);  // SHARED shade (extern / grdimage / Lambert)
 		col->SetTypedComponent(i, 0, (unsigned char)(c[0] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 1, (unsigned char)(c[1] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 2, (unsigned char)(c[2] * 255.0 + 0.5));
 	}
 	});
+	if (aquaTraceOn()) {
+		double b[6]; act->GetBounds(b);
+		fprintf(stdout, "[bake] x %8.3f..%8.3f y %8.3f..%8.3f | hill=%d grd=%d twoBar=%d ext=%d n=%lld\n",
+		        b[0], b[1], b[2], b[3], (int)lk.useHillshade, (int)lk.hillGrd, (int)twoBar, (int)ext,
+		        (long long)n);
+		fflush(stdout);
+	}
 	pd->GetPointData()->AddArray(col);
 	m->SetScalarModeToUsePointFieldData();
 	m->SelectColorArray("hillshade");
