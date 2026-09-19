@@ -1135,6 +1135,10 @@ static void (*g_aquamotoSetVisible)(Scene *scene, int on) = nullptr;   // Scene 
 static bool (*g_aquamotoIsVisible)(Scene *scene) = nullptr;            // current window visibility (checkbox initial state)
 static void (*g_aquamotoDestroy)(Scene *scene) = nullptr;             // destroy the window (lifetime-tied to its nc cube surface)
 static void (*g_aquamotoSetCmap)(Scene *scene, int side, const char *cmap) = nullptr;   // side 0=water,1=land; re-renders the current slice
+// …and the same side given an ARBITRARY palette (the Color Bar row's "Color Palettes…" editor, which
+// a grid's row has always offered): the palette rows + the z each sits at, straight to the host that
+// paints the composite. Same act as above, said with a palette instead of a name.
+static void (*g_aquamotoSetCPT)(Scene *scene, int side, const double *cz, const double *crgb, int n) = nullptr;
 // Show the window with its "Benchs" tab in front, WITHOUT opening any file: what a benchmark's menu
 // entry calls first, so the dialog the user is about to work in is up before any model is built.
 static int (*g_aquamotoShowBenchs)(Scene *scene) = nullptr;   // returns 1 if it loaded an existing run

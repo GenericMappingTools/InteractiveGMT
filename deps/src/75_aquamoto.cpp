@@ -278,7 +278,14 @@ public:
 	QLineEdit *sliceSpin = nullptr;       // a PLAIN edit box (replaces the .ui's QSpinBox at runtime --
 	                                      // see the constructor), not a spinner: user wants a simple box
 	QCheckBox *splitDryWetCheck = nullptr, *scaleGlobalCheck = nullptr;
-	QPushButton *loadRamBtn = nullptr, *runInBtn = nullptr;
+	QPushButton *loadRamBtn = nullptr, *runInBtn = nullptr, *addTrackBtn = nullptr;
+	// "Add Track": a line drawn over the water that the η(x) figure then follows, so the wave is
+	// watched ALONG THE USER'S OWN TRANSECT instead of the mid-tank row. The line itself is an
+	// ordinary drawn polyline — the Line tool draws it, Scene Objects owns it, its own Remove
+	// deletes it — and this dialog only remembers WHICH one it is, by name.
+	std::string trackName_;              // empty = no track; else the drawn line's Scene Objects name
+	QTimer  *trackWatch_ = nullptr;      // armed while the user is drawing the track
+	size_t   trackArmCount_ = 0;         // s->polys.size() at the moment the tool was armed
 	// Benchs tab — "10% slope beach, Benchmark 1": run it, load a previous run, say where it is saved,
 	// and watch it advance.
 	QPushButton *benchRunBtn = nullptr, *benchLoadBtn = nullptr, *benchBrowseBtn = nullptr;
@@ -400,6 +407,7 @@ public:
 		scaleGlobalCheck        = w->findChild<QCheckBox *>("scaleColorGlobalCheckBox");
 		loadRamBtn            = w->findChild<QPushButton *>("loadRamButton");
 		runInBtn                = w->findChild<QPushButton *>("plotRunInButton");
+		addTrackBtn             = w->findChild<QPushButton *>("addTrackButton");
 		benchRunBtn             = w->findChild<QPushButton *>("benchRunButton");
 		benchLoadBtn            = w->findChild<QPushButton *>("benchLoadButton");
 		benchBrowseBtn          = w->findChild<QPushButton *>("benchSaveBrowseButton");
@@ -699,6 +707,7 @@ public:
 		}
 		if (loadRamBtn) QObject::connect(loadRamBtn, &QPushButton::clicked, w, [this]() { fireLoadAllRam(); });
 		if (runInBtn) QObject::connect(runInBtn, &QPushButton::clicked, w, [this]() { fireRunIn(); });
+		if (addTrackBtn) QObject::connect(addTrackBtn, &QPushButton::clicked, w, [this]() { armTrack(); });
 
 		wireCinemaTab(w);
 		wireBenchsTab(w);
@@ -1421,11 +1430,103 @@ public:
 		if (on) { etaFig->raise(); updateEtaFigure(); }
 	}
 
-	// The profile of the slice ON SCREEN: the row of the window's active data layer nearest mid-tank,
-	// over [x0, x0+length]. The layer is the one the hover readout reads, refreshed by every slice, so
-	// the curve can never describe a different slice than the surface does.
+	// "ADD TRACK" ARMS THE ORDINARY LINE TOOL — the very QAction the toolbar's shape flyout carries,
+	// so the drawing is the app's one drawing path (polygonToolToggled, 85_polygon.cpp) and nothing
+	// here re-implements it. What the user draws is an ordinary Scene Objects element with its own
+	// row, properties and Remove; this dialog only remembers WHICH line it is, by name.
+	void armTrack() {
+		Scene *s = scene_;
+		if (!s || !sceneAlive(s)) return;
+		QAction *lineAct = nullptr;
+		for (QAction *a : s->shapeActs)
+			if (a && a->text() == "Line") { lineAct = a; break; }
+		if (!lineAct) return;
+		trackArmCount_ = s->polys.size();
+		lineAct->setChecked(true);                  // exactly what clicking Line in the flyout does
+		if (!trackWatch_) {
+			trackWatch_ = new QTimer(win);
+			trackWatch_->setInterval(150);
+			QObject::connect(trackWatch_, &QTimer::timeout, win, [this]() { pollTrack(); });
+		}
+		trackWatch_->start();
+		if (s->win)
+			s->win->statusBar()->showMessage("Add Track: click the start point, then the end point over the water.", 6000);
+	}
+
+	// THE TRACK IS THE LINE THAT WAS JUST DRAWN. The drawing code is not hooked into at all: this
+	// dialog watches only its OWN arm window, and the line that appears inside it is the one the user
+	// made here. It is named on arrival, so every later step addresses it BY NAME — never by position
+	// in the pile, never by "the topmost one".
+	void pollTrack() {
+		Scene *s = scene_;
+		if (!s || !sceneAlive(s)) { if (trackWatch_) trackWatch_->stop(); return; }
+		if (s->polys.size() <= trackArmCount_) return;              // still drawing
+		int idx = 1;
+		for (const auto &p : s->polys)
+			if (p.name.rfind("Wave track", 0) == 0) ++idx;          // numbered per window, like "polygon N"
+		Polygon &pg = s->polys.back();
+		pg.name = "Wave track " + std::to_string(idx);
+		trackName_ = pg.name;
+		if (trackWatch_) trackWatch_->stop();
+		if (s->polyAct) s->polyAct->setChecked(false);              // the tool disarms itself once it is done
+		rebuildSceneObjects(s);
+		updateEtaFigure();
+	}
+
+	// (distance along the track, η) for the slice ON SCREEN, sampled with `sampleZ` — the SAME
+	// bilinear sampler the hover readout and the Ctrl-drag profile use, so the curve, the readout and
+	// the surface can never describe the layer differently. False when there is no track, or the user
+	// has removed the line (its Remove is the only way it goes, and then the figure falls back to the
+	// Cinema row curve on its own).
+	bool trackSeries(std::vector<double> &ss, std::vector<double> &zs) const {
+		ss.clear();  zs.clear();
+		Scene *s = scene_;
+		if (!s || !sceneAlive(s) || trackName_.empty()) return false;
+		const Polygon *pg = nullptr;
+		for (const auto &p : s->polys) if (p.name == trackName_) { pg = &p; break; }
+		if (!pg || pg->v.size() < 2) return false;
+		std::vector<double> cum(pg->v.size(), 0.0);        // arc length at each vertex
+		for (size_t i = 1; i < pg->v.size(); ++i) {
+			const double dx = pg->v[i][0] - pg->v[i-1][0], dy = pg->v[i][1] - pg->v[i-1][1];
+			cum[i] = cum[i-1] + std::sqrt(dx*dx + dy*dy);
+		}
+		const double total = cum.back();
+		if (!(total > 0.0)) return false;
+		// One station per grid column's worth of track, so the curve is as fine as the data and no
+		// finer; clamped so a very short or very long track still costs a sane number of samples.
+		const int n = std::max(2, std::min(2000, s->gnx > 1 ? s->gnx : 400));
+		ss.reserve(n);  zs.reserve(n);
+		size_t seg = 1;
+		for (int k = 0; k < n; ++k) {
+			const double d = total * double(k) / double(n - 1);
+			while (seg + 1 < cum.size() && cum[seg] < d) ++seg;
+			const double t = (cum[seg] > cum[seg-1]) ? (d - cum[seg-1]) / (cum[seg] - cum[seg-1]) : 0.0;
+			const double x = pg->v[seg-1][0] + t * (pg->v[seg][0] - pg->v[seg-1][0]);
+			const double y = pg->v[seg-1][1] + t * (pg->v[seg][1] - pg->v[seg-1][1]);
+			ss.push_back(d);
+			zs.push_back(sampleZ(s, x, y));
+		}
+		return true;
+	}
+
+	// The profile of the slice ON SCREEN: along the user's own TRACK when one was drawn, else the row
+	// of the window's active data layer nearest mid-tank, over [x0, x0+length]. The layer is the one
+	// the hover readout reads, refreshed by every slice, so the curve can never describe a different
+	// slice than the surface does.
 	void updateEtaFigure() {
 		if (!etaFig || !etaFig->isVisible() || !scene_ || !sceneAlive(scene_)) return;
+		// THE TRACK, WHEN THERE IS ONE — and never on a window whose curves the HOST owns (Benchmark 1
+		// draws its own pair through setEtaCurves; painting over it is the flicker documented below).
+		// Tracking therefore happens only while this figure is UNPARKED, which is the isVisible test
+		// above: parked, nothing here runs, and no track is sampled.
+		if (!etaHostCurves_) {
+			std::vector<double> ts, tz;
+			if (trackSeries(ts, tz)) {
+				etaFig->setCurve(ts, tz, QString::fromStdString(trackName_), "s (m)", "\xCE\xB7 (m)");
+				etaSetTimeTitle();
+				return;                  // the host is NOT asked: its curves belong to the benchmark path
+			}
+		}
 		const double x0  = editNum(cineProfX0Edit, scene_->gx0);
 		const double len = editNum(cineProfLenEdit, 5000.0);
 		std::vector<double> xs, zs;
@@ -1437,13 +1538,19 @@ public:
 		// pair arrives, and both curves are then set together, in one repaint.
 		if (!etaHostCurves_)
 			etaFig->setCurve(xs, zs, etaCurveTitle(), "x (m)", "\xCE\xB7 (m)");
-		// The slice's MODEL TIME in the figure's own title strip. It is the very string the data
-		// already publishes for the viewer's titlebar (_aqua_title_time -> gmtvtk_set_title_extra_h
-		// -> Scene::titleExtra), read back here: one time value, one format, two places showing it.
+		etaSetTimeTitle();
+		scheduleEtaCurves(xs.front(), xs.back(), (int)xs.size());
+	}
+
+	// The slice's MODEL TIME in the figure's own title strip. It is the very string the data already
+	// publishes for the viewer's titlebar (_aqua_title_time -> gmtvtk_set_title_extra_h ->
+	// Scene::titleExtra), read back here: one time value, one format, two places showing it. Both
+	// curves (the row and the track) title the figure through this one function.
+	void etaSetTimeTitle() {
+		if (!etaFig || !scene_ || !sceneAlive(scene_)) return;
 		const QString when = QString::fromStdString(scene_->titleExtra);
 		etaFig->setTitle(when.isEmpty() ? QString("\xCE\xB7 (x)")
 		                                : QString("\xCE\xB7 (x)   \xE2\x80\x94   %1").arg(when));
-		scheduleEtaCurves(xs.front(), xs.back(), (int)xs.size());
 	}
 
 	// THE HOST IS ASKED ONCE THE SLICE HAS SETTLED, NEVER ON EVERY CLICK. `askEtaCurves` is a BLOCKING
@@ -1641,6 +1748,28 @@ static void aquamotoSetCmap(Scene *scene, int side, const char *cmap) {
 	if (!ok) { if (w->win) w->win->statusBar()->showMessage("Aquamoto: " + out, 5000); return; }
 	w->fireSlice();
 }
+// The same side, given an ARBITRARY palette by the Color Bar row's "Color Palettes…" editor. It goes
+// to the host for the same reason the named colormap does: the tsunami layer is a picture Julia
+// composites, so the palette has to reach the thing that paints it — `gmtvtk_set_cpt_grid`, which the
+// editor uses for a plain grid, recolours a scalar+LUT surface this layer does not have.
+static void aquamotoSetCPT(Scene *scene, int side, const double *cz, const double *crgb, int n) {
+	AquamotoWindow *w = AquamotoWindow::registry().value(scene, nullptr);
+	if (!w || !cz || !crgb || n < 2) return;
+	QString zs, cs;                                  // Julia literals: [z1,z2,…], [r1,g1,b1,r2,…]
+	zs.reserve(n * 12);  cs.reserve(n * 36);
+	for (int i = 0; i < n; ++i) {
+		if (i) { zs += ','; cs += ','; }
+		zs += QString::number(cz[i], 'g', 12);
+		cs += QString("%1,%2,%3").arg(crgb[3*i], 0, 'g', 6).arg(crgb[3*i+1], 0, 'g', 6).arg(crgb[3*i+2], 0, 'g', 6);
+	}
+	QString out; bool closedNow = false;
+	const bool ok = w->runBlocking(QString("InteractiveGMT._aquamoto_set_cpt(%1,%2,Float64[%3],Float64[%4])")
+	                    .arg(aquaScenePtr(scene)).arg(side).arg(zs, cs), out, closedNow);
+	if (closedNow) return;   // `w` may already be destroyed -- touch NOTHING below
+	if (!ok) { if (w->win) w->win->statusBar()->showMessage("Aquamoto: " + out, 5000); return; }
+	w->fireSlice();
+}
+
 // Show this scene's Aquamoto window with the "Benchs" tab in front, opening NO file. A benchmark's
 // menu entry calls this FIRST: the dialog the user is about to work in must be there immediately,
 // not after a model has been built and a tank opened.
@@ -1671,5 +1800,6 @@ static const struct AquamotoHookInstaller {
 		g_aquamotoSetVisible = &aquamotoSetVisible;
 		g_aquamotoDestroy   = &aquamotoDestroy;
 		g_aquamotoSetCmap   = &aquamotoSetCmap;
+		g_aquamotoSetCPT    = &aquamotoSetCPT;
 	}
 } g_aquamotoHookInstaller;

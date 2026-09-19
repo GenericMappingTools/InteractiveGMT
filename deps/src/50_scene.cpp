@@ -424,6 +424,23 @@ static bool colorbarRelease(Scene *s) {
 // surface, and needs its own Julia entry point + a slice re-render (g_aquamotoSetCmap).
 // Defined in 70_window.cpp (needs the dialog class); declared here so a Color Bar row can offer it.
 static void showColorPalettes(Scene *s, int gridSel, double zmin, double zmax);
+// …and the same editor aimed at ONE SIDE of an Aquamoto layer (0 water, 1 land): same window, same
+// palettes, same z boxes — its Apply reaches the host that composites the layer instead of a LUT.
+static void showColorPalettesAquaSide(Scene *s, int side, double zmin, double zmax);
+
+// THE LIMITS THE EDITOR OPENS ON for one Aquamoto side: WHAT IS ALREADY ACTIVE, never a fresh
+// opinion. Water = the CPT the layer is drawn with (`baseCz`, the nodes the last slice pushed, which
+// the water bar is annotated from); land = its own bar's span. `zmin`/`zmax` are deliberately NOT
+// used for water: on a tsunami those describe the SURFACE, whose dry nodes carry the land elevation,
+// so they open the editor on the highest hill. ONE function, so the Color Bar row and anything else
+// that opens this editor can never propose different numbers.
+static void aquaSideEditorRange(Scene *s, int side, double &lo, double &hi) {
+	lo = 0.0;  hi = 1.0;
+	if (!s) return;
+	if (side == 1) { lo = s->aquaLandBarLo;  hi = s->aquaLandBarHi;  return; }
+	if (s->baseCz.size() >= 2 && s->baseCz.back() > s->baseCz.front()) { lo = s->baseCz.front();  hi = s->baseCz.back(); }
+	else                                                               { lo = s->zmin;            hi = s->zmax; }
+}
 
 // `more` (optional) adds the "Color Palettes…" entry below the quick list — the full editor
 // (ColorPalettesWindow, 70_window.cpp, port of Mirone's color_palettes.m). Only the rows that can
@@ -2771,7 +2788,13 @@ static void rebuildSceneObjects(Scene *s) {
 		        [s](const QPoint &g) {
 		            chooseColormap(s, g, [s](const QString &nm) {
 		                if (g_aquamotoSetCmap) g_aquamotoSetCmap(s, 0, nm.toUtf8().constData());
-		            });
+		            },
+		            // …AND THE FULL EDITOR, the same entry a grid's Color Bar row offers. Its absence here
+		            // was one control doing less for one element type (SACRED_LAW.md); it applies through
+		            // g_aquamotoSetCPT, the door this layer's colours are painted behind.
+		            // …OPENED ON WHAT IS ALREADY ACTIVE — see aquaSideEditorRange.
+		            [s]() { double lo, hi; aquaSideEditorRange(s, 0, lo, hi);
+		                    showColorPalettesAquaSide(s, 0, lo, hi); });
 		        },
 		        "Show / hide the Water colorbar · checking it switches to Shade Water · left-click the label to choose a colormap");
 	};
@@ -2782,7 +2805,10 @@ static void rebuildSceneObjects(Scene *s) {
 		        [s](const QPoint &g) {
 		            chooseColormap(s, g, [s](const QString &nm) {
 		                if (g_aquamotoSetCmap) g_aquamotoSetCmap(s, 1, nm.toUtf8().constData());
-		            });
+		            },
+		            // The LAND side's own span, through the same resolver the water side uses.
+		            [s]() { double lo, hi; aquaSideEditorRange(s, 1, lo, hi);
+		                    showColorPalettesAquaSide(s, 1, lo, hi); });
 		        },
 		        "Show / hide the Land colorbar · checking it switches to Shade Land · left-click the label to choose a colormap");
 	};
@@ -2917,7 +2943,13 @@ static void rebuildSceneObjects(Scene *s) {
 			beginGroupHandle(nm, IC_Image, ivis0 || ex.ax.shown || (ex.palette.n > 0 && ex.palette.show),
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
-			        "Left- or right-click for image properties (incl. Save)");
+			        "Left- or right-click for image properties (incl. Save)",
+			        // FOLDED, exactly like the dropped-GRID group below. An extra's group is one row until
+			        // the user opens it; only the image branch was missing the flag, so a tsunami file's
+			        // byte masks (LongBeach / ShortBeach) arrived expanded while its bathymetry arrived
+			        // folded — one operation behaving differently for one element type (SACRED_LAW.md).
+			        // `objExpanded` still remembers whatever the user opens afterwards.
+			        /*startFolded=*/true);
 			makeRow("Image", IC_Image, a && a->GetVisibility() != 0,   // Image leaf handle kept as a child
 			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },

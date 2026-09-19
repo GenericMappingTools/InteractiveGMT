@@ -307,12 +307,26 @@
          </spacer>
         </item>
         <item>
+         <layout class="QHBoxLayout" name="trackButtonsLayout">
+          <item>
+           <widget class="QPushButton" name="addTrackButton">
+            <property name="toolTip">
+             <string>Draw a line over the water; the η(x) profile window then follows the wave along it</string>
+            </property>
+            <property name="text">
+             <string>Add Track</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
          <layout class="QHBoxLayout" name="actionButtonsLayout">
           <item>
            <widget class="QPushButton" name="plotRunInButton">
             <property name="font">
              <font>
-              <bold>true</bold>
+              <bold>false</bold>
              </font>
             </property>
             <property name="text">
@@ -324,7 +338,7 @@
            <widget class="QPushButton" name="loadRamButton">
             <property name="font">
              <font>
-              <bold>true</bold>
+              <bold>false</bold>
              </font>
             </property>
             <property name="toolTip">

@@ -4913,6 +4913,24 @@ GMTVTK_API int gmtvtk_scene_row_click_h(void *handle, const char *label, int on)
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
 #ifdef GMTVTK_TEST_API
 
+// Open the Color Palettes editor on one Aquamoto side exactly as that side's Color Bar row does --
+// through the SAME `aquaSideEditorRange` + `showColorPalettesAquaSide` pair, never a second opinion
+// about the limits -- and report the limits it opened on in `out2`. Exists so a test can assert the
+// two things the editor owes the user: it proposes WHAT IS ALREADY ACTIVE, and it changes NOTHING
+// until Apply. Returns 1 on success.
+GMTVTK_API int gmtvtk_color_palettes_open_test(void *handle, int side, double *out2) {
+	Scene *s = static_cast<Scene*>(handle);
+	// NOT sceneAlive(): the live-scene registry is a file-static, so the test twin holds its own empty
+	// copy and every scene made by the shipped library looks dead in here (see libgmtvtk_test.jl's
+	// note on what does and does not cross the DLL boundary). The sibling hooks test the pointer only.
+	if (!s) return 0;
+	double lo = 0.0, hi = 1.0;
+	aquaSideEditorRange(s, side, lo, hi);
+	if (out2) { out2[0] = lo; out2[1] = hi; }
+	showColorPalettesAquaSide(s, side, lo, hi);
+	return 1;
+}
+
 // How many doubles gmtvtk_magfield_test writes. The ONE place this number is stated; the Julia side
 // reads it back through gmtvtk_magfield_test_n() rather than repeating the literal, so the buffer
 // and the writer cannot drift apart again.

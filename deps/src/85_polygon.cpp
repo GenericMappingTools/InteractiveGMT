@@ -273,16 +273,39 @@ static QIcon makeLinkIcon() {
 
 // Cube: front face + top/right parallelograms (simple isometric box).
 // Colour Palettes: a stack of colour bands, the thing the tool actually picks.
+// AN ARTIST'S PALETTE: a blue blob with a thumb hole, a thumb notch bitten out of its lower edge,
+// and five paint blobs around the rim. It replaces a six-band colour ramp, which read as "colour
+// bar" — the thing the Color Bar rows already show — rather than "pick/edit a palette".
+//
+// The body is ONE path: an ellipse with the hole and the notch SUBTRACTED, so the transparent
+// pixels are really transparent (a hole painted in the background colour is a white disc the moment
+// the toolbar is dark). The rim is the same path stroked a shade darker, which is what keeps the
+// glyph readable at 24 px against a light or a dark toolbar.
 static QIcon makePaletteIcon() {
 	QPixmap pm = iconCanvas();
-	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, false);
-	static const QColor band[] = { QColor(40, 60, 160), QColor(60, 150, 210), QColor(120, 200, 150),
-	                               QColor(240, 215, 100), QColor(225, 130, 60), QColor(180, 45, 45) };
-	for (int i = 0; i < 6; ++i)
-		p.fillRect(QRectF(5, 4.0 + i * 2.7, 14, 2.7), band[i]);
-	p.setRenderHint(QPainter::Antialiasing, true);
-	p.setPen(QPen(QColor(40, 40, 40), 1.2)); p.setBrush(Qt::NoBrush);
-	p.drawRect(QRectF(5, 4, 14, 16.2));
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	QPainterPath body;
+	body.addEllipse(QRectF(1.8, 2.6, 20.4, 17.6));
+	QPainterPath hole;  hole.addEllipse(QPointF(12.7, 13.6), 2.05, 2.05);   // the thumb hole
+	QPainterPath notch; notch.addEllipse(QPointF(8.6, 22.0), 3.9, 3.9);     // the bite in the lower edge
+	body = body.subtracted(hole).subtracted(notch);
+	p.setBrush(QColor(45, 175, 235));                                       // the palette's blue
+	p.setPen(QPen(QColor(25, 130, 190), 1.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	p.drawPath(body);
+	// The paints, in the picture's own order around the rim: red, yellow, green, blue, purple.
+	struct Blob { double x, y; QColor c; };
+	static const Blob blobs[] = {
+		{  5.9, 13.1, QColor(235,  55,  85) }, {  7.4,  8.2, QColor(250, 190,  45) },
+		{ 11.9,  6.5, QColor( 55, 200,  70) }, { 16.5,  7.6, QColor( 45, 120, 215) },
+		{ 18.4, 12.5, QColor(175,  85, 230) },
+	};
+	p.setPen(Qt::NoPen);
+	for (const Blob &b : blobs) {
+		p.setBrush(b.c.darker(115));                    // a hair of rim, so a blob never melts into the blue
+		p.drawEllipse(QPointF(b.x, b.y), 2.05, 2.05);
+		p.setBrush(b.c);
+		p.drawEllipse(QPointF(b.x, b.y - 0.12), 1.85, 1.85);
+	}
 	p.end(); return QIcon(pm);
 }
 

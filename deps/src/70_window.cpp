@@ -2907,6 +2907,14 @@ static bool sceneUpdateBaseGridZ(Scene *s, const float *z, int nx, int ny,
 		if (vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(s->surfLut)) {
 			ctf->RemoveAllPoints();
 			for (int i = 0; i < ncolor; ++i) ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
+			// …AND MAKE THE NEW NODES THE ONES THAT MAP. `surfLut` is a
+			// vtkDiscretizableColorTransferFunction: MapScalars answers out of an INTERNAL discretized
+			// table, and editing the transfer function's nodes does not rebuild it in time for the
+			// applyShading call three lines below — which runs in this very function. So the bake kept
+			// painting the PREVIOUS palette and the new one appeared only at the next push, i.e. one
+			// slider move late (measured: water texels stayed [244.65, 242.32, 252.67] through the first
+			// redraw, became [240.01, 66.88, 154.05] on the second). Build() rebuilds that table now.
+			ctf->Build();
 		}
 		s->baseCz.assign(cz, cz + ncolor);
 		s->baseCrgb.assign(crgb, crgb + (size_t)3 * ncolor);
@@ -24293,13 +24301,12 @@ static std::vector<PalRGB> palMakeCmapBat(double zmin, double zmax, int hinge,
 
 // The colours a grid layer is CURRENTLY drawn with, sampled from its own colour transfer function
 // over [zmin,zmax] — the dialog's "Current" entry (Mirone's `get(hCallingFig,'Colormap')`).
-static std::vector<PalRGB> palFromLayer(Scene *s, int gridSel, double zmin, double zmax, int n = 256) {
+// A LUT read back as palette rows, sampled evenly over [zmin, zmax]. The one place that turns a
+// live lookup into the editor's rows — `palFromLayer` resolves WHICH lut and comes here, and so does
+// an Aquamoto side, whose lut the extras list does not hold.
+static std::vector<PalRGB> palFromLut(vtkScalarsToColors *lut, double zmin, double zmax, int n = 256) {
 	std::vector<PalRGB> out;
-	if (!s || n < 2) return out;
-	vtkScalarsToColors *lut = nullptr;
-	if (gridSel < 0) lut = s->surfLut;
-	else for (auto &ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
-	if (!lut) return out;
+	if (!lut || n < 2) return out;
 	if (!(zmax > zmin)) { zmin = 0; zmax = 1; }
 	out.resize(n);
 	for (int i = 0; i < n; ++i) {
@@ -24309,6 +24316,14 @@ static std::vector<PalRGB> palFromLayer(Scene *s, int gridSel, double zmin, doub
 		out[i] = { rgb[0], rgb[1], rgb[2] };
 	}
 	return out;
+}
+
+static std::vector<PalRGB> palFromLayer(Scene *s, int gridSel, double zmin, double zmax, int n = 256) {
+	if (!s) return std::vector<PalRGB>();
+	vtkScalarsToColors *lut = nullptr;
+	if (gridSel < 0) lut = s->surfLut;
+	else for (auto &ex : s->extras) if (!ex.isImage && ex.tag == gridSel) { lut = ex.lut; break; }
+	return palFromLut(lut, zmin, zmax, n);
 }
 
 // The palette strip + its colour markers (color_palettes.m's axes1 with bdn_pal/bdn_pico/wbm_pico).
@@ -24440,6 +24455,10 @@ public:
 	QMainWindow    *win = nullptr;
 	Scene          *scene_ = nullptr;
 	int             gridSel_ = -1;             // the layer being recoloured (-1 = base relief)
+	// …or ONE SIDE of an Aquamoto tsunami layer (0 water, 1 land; -1 = not a tsunami side). Same
+	// editor, same palettes, same Min Z / Max Z, same Logaritmize — only the last step differs,
+	// because that layer's colour is a picture the host composites rather than a scalar+LUT surface.
+	int             aquaSide_ = -1;
 	double          zmin_ = 0, zmax_ = 1;      // its own data range (Mirone's z_min_orig/z_max_orig)
 	bool            haveGrid_ = false;
 	PaletteBarArea *bar = nullptr;
@@ -24495,23 +24514,51 @@ public:
 		unfoldSceneObjects(scene_);      // a handle nobody can see is no handle at all
 	}
 	// One dialog per viewer window; a second request raises the one already open.
-	static void openFor(Scene *s, int gridSel, double zmin, double zmax) {
+	static void openFor(Scene *s, int gridSel, double zmin, double zmax, int aquaSide = -1) {
 		auto it = registry().find(s);
 		if (it != registry().end() && it.value()->win) {
-			it.value()->retarget(gridSel, zmin, zmax);
+			it.value()->retarget(gridSel, zmin, zmax, aquaSide);
 			it.value()->win->show();  it.value()->win->raise();  it.value()->win->activateWindow();
 			return;
 		}
-		auto *w = new ColorPalettesWindow(s, gridSel, zmin, zmax);
+		auto *w = new ColorPalettesWindow(s, gridSel, zmin, zmax, aquaSide);
 		if (!w->win) { delete w; return; }
 		registry().insert(s, w);
 		w->win->show();
 	}
 
-	void retarget(int gridSel, double zmin, double zmax) {
-		gridSel_ = gridSel;  zmin_ = zmin;  zmax_ = zmax;
+	// RE-AIMED AT ANOTHER LAYER (or another Aquamoto side): the window then shows WHAT THAT TARGET IS
+	// WEARING — its own limits AND its own palette — and changes nothing until the user asks. Seeding
+	// the boxes but leaving the previous target's palette strip up would propose a palette that is not
+	// the one on screen, which is the same lie as applying on open.
+	void retarget(int gridSel, double zmin, double zmax, int aquaSide = -1) {
+		gridSel_ = gridSel;  zmin_ = zmin;  zmax_ = zmax;  aquaSide_ = aquaSide;
 		haveGrid_ = scene_ && (zmax > zmin);
+		loading_ = true;                      // re-aiming the window is not the user asking for a change
 		seedZBoxes();
+		palOriginal = currentLayerPalette();
+		if (palOriginal.size() >= 2) setPalette(palOriginal, NAN, NAN, 0, false);
+		loading_ = false;
+	}
+
+	// THE PALETTE THE TARGET IS WEARING RIGHT NOW, sampled over the limits the window opened on. An
+	// Aquamoto LAND side reads its own LUT (`aquaLandLut`, what its colour bar is drawn from); every
+	// other target — the water side included — reads the layer LUT `palFromLayer` resolves.
+	std::vector<PalRGB> currentLayerPalette() const {
+		if (aquaSide_ == 1 && scene_ && scene_->aquaLandLut)
+			return palFromLut(scene_->aquaLandLut, zmin_, zmax_);
+		return palFromLayer(scene_, gridSel_, zmin_, zmax_);
+	}
+
+	// THE SAME WINDOW, aimed at one side of an Aquamoto layer. One dialog per viewer window either
+	// way — asking for the water side while the land side is open re-aims the open one, exactly as
+	// switching between two grids does.
+	static void openForAquaSide(Scene *s, int side, double zmin, double zmax) {
+		openFor(s, -1, zmin, zmax, side);
+		auto it = registry().find(s);
+		if (it == registry().end() || !it.value() || !it.value()->win) return;
+		it.value()->win->setWindowTitle(side == 1 ? "Color Palettes  —  LAND side"
+		                                         : "Color Palettes  —  WATER side");
 	}
 
 	// ---- the Julia bridge ------------------------------------------------------------------
@@ -24568,9 +24615,24 @@ public:
 		}
 		for (int i = 0; i < n; ++i)
 			for (int c = 0; c < 3; ++c) crgb[3 * i + c] = std::clamp(bar->pal[i][c], 0.0, 1.0);
+		// AN AQUAMOTO SIDE IS PAINTED BY THE HOST, so that is where its palette goes. Everything above
+		// — the rows, the z spacing, the boxes — is the same code that serves a plain grid; only the
+		// delivery differs, which is the whole reason this row may offer the editor at all.
+		if (aquaSide_ >= 0) {
+			if (g_aquamotoSetCPT) g_aquamotoSetCPT(scene_, aquaSide_, cz.data(), crgb.data(), n);
+			return;
+		}
 		gmtvtk_set_cpt_grid(scene_, gridSel_, cz.data(), crgb.data(), n);
 	}
-	void autoApply() { if (actAutoApply && actAutoApply->isChecked()) applyNow(); }
+	// NOTHING IS APPLIED UNTIL THE USER ASKS FOR IT. `loading_` is up while the window is seeding
+	// itself with the palette the layer ALREADY wears (the constructor's setPalette, and every
+	// retarget), and setPalette ends in autoApply() — so merely OPENING the editor used to push a CPT
+	// down onto the layer, with whatever Min Z / Max Z the window had just been seeded with. On an
+	// Aquamoto water side that instantly re-ranged the water scale over the land's own heights. An
+	// editor may not change the picture by being opened; only Apply (or an edit made with Auto Apply
+	// on) may. See "only the action button executes" — the same rule every other dialog here follows.
+	bool loading_ = false;
+	void autoApply() { if (!loading_ && actAutoApply && actAutoApply->isChecked()) applyNow(); }
 
 	// ---- palette loading -------------------------------------------------------------------
 	// Min Z / Max Z always start at THE GRID'S OWN min/max — the same numbers the colour bar is
@@ -24757,8 +24819,8 @@ public:
 	}
 
 	// ---- construction ----------------------------------------------------------------------
-	ColorPalettesWindow(Scene *s, int gridSel, double zmin, double zmax) {
-		scene_ = s;  gridSel_ = gridSel;  zmin_ = zmin;  zmax_ = zmax;
+	ColorPalettesWindow(Scene *s, int gridSel, double zmin, double zmax, int aquaSide = -1) {
+		scene_ = s;  gridSel_ = gridSel;  zmin_ = zmin;  zmax_ = zmax;  aquaSide_ = aquaSide;
 		haveGrid_ = s && (zmax > zmin);
 		PaletteUiLoader loader;
 		QFile f(gmtvtkUiDir() + "/color_palettes.ui");
@@ -24919,7 +24981,7 @@ public:
 		seedZBoxes();
 		// "Current" = the colours the target layer is drawn with right now; with no grid to read,
 		// jet(256) — exactly what color_palettes.m falls back to.
-		palOriginal = palFromLayer(scene_, gridSel_, zmin_, zmax_);
+		palOriginal = currentLayerPalette();
 		if (palOriginal.size() < 2) {
 			std::vector<PalRGB> rows;
 			if (palCall("pal;ML;jet", rows, false)) palOriginal = rows;
@@ -24927,7 +24989,10 @@ public:
 		list->addItem("Current");
 		tightenListRows(list);
 		fillList("ML");
+		// Seeded, not applied: this is the palette the layer is already wearing (see `loading_`).
+		loading_ = true;
 		if (palOriginal.size() >= 2) setPalette(palOriginal, NAN, NAN, 0, false);
+		loading_ = false;
 	}
 };
 
@@ -24936,6 +25001,9 @@ public:
 // same way every other per-layer operation does — by TAG, never "the first grid".
 static void showColorPalettes(Scene *s, int gridSel, double zmin, double zmax) {
 	ColorPalettesWindow::openFor(s, gridSel, zmin, zmax);
+}
+static void showColorPalettesAquaSide(Scene *s, int side, double zmin, double zmax) {
+	ColorPalettesWindow::openForAquaSide(s, side, zmin, zmax);
 }
 static void showColorPalettes(Scene *s) {
 	ActiveGrid ag = resolveActiveGrid(s);

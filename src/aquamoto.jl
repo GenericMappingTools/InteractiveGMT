@@ -56,6 +56,11 @@ mutable struct _AquaState
 	first::Bool                             # true until the first slice has been shown (Save/Session bookkeeping)
 	watercmap::Symbol                       # user-selectable via "Color Bar water" (default :polar)
 	landcmap::Symbol                        # user-selectable via "Color Bar Land" (default :geo)
+	# …and the SAME row's "Color Palettes…" editor, which hands over an ARBITRARY palette rather than
+	# the name of one: its rows plus the z each row sits at (log spacing included). EMPTY = that side
+	# is still on its named colormap. TWO INSTANCES OF ONE THING, indexed by the side code the viewer
+	# speaks (0 water / 1 land, +1 for Julia), exactly like `illum` below.
+	cpt::NTuple{2,Tuple{Vector{Float64},Vector{Float64}}}   # (cz, crgb) per side; crgb is flat, 3 per node
 	cur::Int                                # 0-based index of the slice on screen (the time slider)
 	illum::NTuple{2,Dict{String,String}}    # the Illumination dialog's params, ONE PER SIDE:
 	                                        # illum[1] = WATER (the live stage), illum[2] = LAND (the
@@ -266,10 +271,69 @@ end
 # convention as cpt.jl's `_z_to_hex`, generalized to a whole array). No NaN handling -- this file
 # class is guaranteed clean Float32 data. Returns a flat greyed-out array if the cpt itself fails to
 # build (`_cpt_nodes_range` returned nothing usable).
+# WHAT COLOURS A SIDE: the name of a colormap (the quick list), or an explicit palette the "Color
+# Palettes…" editor built (its rows + the z each row sits at, log spacing included). One alias, so
+# every function that colours a side takes both forms and none of them has to know which arrived —
+# the editor is not a second colouring path (SACRED_LAW.md), only another way to say what the palette
+# is.
+const _AquaPal = Union{Symbol,Tuple{Vector{Float64},Vector{Float64}}}
+
+# THE PALETTE OF ONE SIDE (`side` 0 water / 1 land): the editor's, when it has been used on that
+# side, else the named colormap. Every builder below asks HERE and nowhere else.
+_aqua_side_pal(st::_AquaState, side::Int)::_AquaPal =
+	isempty(st.cpt[side + 1][1]) ? (side == 1 ? st.landcmap : st.watercmap) : st.cpt[side + 1]
+
+# …and its NODES over [lo, hi]. A named colormap is built fresh over that span; an editor palette
+# carries its own z (that is the whole point of its Min Z / Max Z boxes) and is handed back as it is.
+function _aqua_side_nodes(st::_AquaState, side::Int, lo::Float64, hi::Float64)
+	p = _aqua_side_pal(st, side)
+	p isa Symbol && return _cpt_nodes_range(lo, hi, p)
+	return (p[1], p[2], length(p[1]))
+end
+
 function _aqua_colorize(Z::Matrix{Float32}, zlo::Float64, zhi::Float64, cmap::Symbol)::Array{UInt8,3}
+	cz, crgb, n = _cpt_nodes_range(zlo, zhi, cmap)
+	return _aqua_colorize(Z, zlo, zhi, cz, crgb, n)
+end
+
+# An EDITOR palette colours by ITS OWN node z values: they can be log-spaced, and they can span a
+# range the user typed rather than the data's. So the lookup is a search in `cz`, not the even-step
+# index the named path can afford. Same interpolation between neighbours either way, so a palette
+# picked from the quick list and the same palette applied from the editor paint identically.
+function _aqua_colorize(Z::Matrix{Float32}, cz::Vector{Float64}, crgb::Vector{Float64})::Array{UInt8,3}
 	ny, nx = size(Z)
 	rgb = Array{UInt8}(undef, ny, nx, 3)
-	cz, crgb, n = _cpt_nodes_range(zlo, zhi, cmap)
+	n = length(cz)
+	(n < 2) && (fill!(rgb, 0xa0); return rgb)
+	@inbounds for j in 1:nx, i in 1:ny
+		v = Float64(Z[i, j])
+		k = searchsortedlast(cz, v)
+		if k < 1
+			b = 0
+			w = 0.0
+		elseif k >= n
+			b = 3 * (n - 1)
+			w = 0.0
+		else
+			b = 3 * (k - 1)
+			w = (cz[k+1] > cz[k]) ? (v - cz[k]) / (cz[k+1] - cz[k]) : 0.0
+		end
+		b1 = (w > 0.0) ? b + 3 : b
+		for c in 1:3
+			rgb[i, j, c] = round(UInt8, clamp(((1 - w) * crgb[b+c] + w * crgb[b1+c]) * 255, 0, 255))
+		end
+	end
+	return rgb
+end
+
+# The palette in either form, over [zlo, zhi]: the ONE door the composite colours a side through.
+_aqua_colorize(Z::Matrix{Float32}, zlo::Float64, zhi::Float64, pal::Tuple{Vector{Float64},Vector{Float64}})::Array{UInt8,3} =
+	_aqua_colorize(Z, pal[1], pal[2])
+
+function _aqua_colorize(Z::Matrix{Float32}, zlo::Float64, zhi::Float64,
+                        cz::Vector{Float64}, crgb::Vector{Float64}, n::Int)::Array{UInt8,3}
+	ny, nx = size(Z)
+	rgb = Array{UInt8}(undef, ny, nx, 3)
 	# 256-entry LUT (`_cpt_nodes_range` resamples any master CPT to 256 continuous nodes): index each
 	# pixel into it. As long as the [zlo,zhi] range is matched to the data, the full 256-colour palette
 	# is spanned -- the banding earlier came from a MIS-matched range (e.g. :geo over the full bathymetry
@@ -336,13 +400,25 @@ end
 # overall max of a bathymetry grid always lands on a land cell, since land is defined as z>=0 and
 # the sea floor is negative) -- no scan. Called once at file-open (_aquamoto_open) and again whenever
 # the user picks a different land colormap (_aquamoto_set_cmap, side=1).
-function _aqua_push_land_cpt!(scene::Ptr{Cvoid}, bat::GMTgrid, cmap::Symbol)
+function _aqua_push_land_cpt!(scene::Ptr{Cvoid}, bat::GMTgrid, cmap::_AquaPal)
 	lbarlo = 0.0                                # displayed LAND range: [0, max land elevation]
 	lbarhi = max(bat.range[6], lbarlo + 0.1)    # falls back to lbarlo+0.1 when the whole area is ocean
 	# Build the CPT DIRECTLY over the land-only span so all 256 nodes land on [0,lbarhi] -- building
 	# over the full bathymetry range (as before) and then keeping only the z>=0 nodes wasted almost
 	# the whole ramp on ocean-floor depths, leaving land with only a handful of distinct colours.
-	lcz, lcrgb, ln = _cpt_nodes_range(lbarlo, lbarhi, cmap)
+	# …an EDITOR palette carries its own nodes and its own z span, so the legend shows the span the
+	# user typed in the editor — the bar and the pixels are then annotated by one and the same thing.
+	local lcz::Vector{Float64}, lcrgb::Vector{Float64}, ln::Int
+	if cmap isa Symbol
+		lcz, lcrgb, ln = _cpt_nodes_range(lbarlo, lbarhi, cmap)
+	else
+		lcz, lcrgb = cmap[1], cmap[2]
+		ln = length(lcz)
+		if ln >= 2
+			lbarlo = lcz[1]
+			lbarhi = max(lcz[end], lbarlo + 0.1)
+		end
+	end
 	ln < 2 && error("Aquamoto: colormap '$cmap' failed (makecpt)")
 	ccall(_fn(:gmtvtk_aqua_set_land_cpt_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cdouble, Cdouble),
 	      scene, lcz, lcrgb, Cint(ln), Cdouble(lbarlo), Cdouble(lbarhi))
@@ -360,14 +436,43 @@ function _aquamoto_set_cmap(scene::Ptr{Cvoid}, side::Int, cmap::String)
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && error("Aquamoto: no file open in this window")
 	sym = Symbol(cmap)
+	(side == 0 || side == 1) || error("Aquamoto: unknown colorbar side $side (0=water, 1=land)")
+	# A NAME REPLACES WHATEVER THAT SIDE WORE, editor palette included: the quick list and the editor
+	# are two ways of saying the same thing, so the last one used is the side's palette, full stop.
+	empty!(st.cpt[side + 1][1]);  empty!(st.cpt[side + 1][2])
 	if side == 0
 		st.watercmap = sym
-	elseif side == 1
+	else
 		st.landcmap = sym
 		st.imgbat = Array{UInt8}(undef, 0, 0, 0)   # cached bathymetry colourisation used the OLD cmap
 		_aqua_push_land_cpt!(scene, st.bat, sym)
-	else
-		error("Aquamoto: unknown colorbar side $side (0=water, 1=land)")
+	end
+	return nothing
+end
+
+# The SAME row's "Color Palettes…" editor (50_scene.cpp's aqua colour-bar rows -> ColorPalettesWindow
+# -> g_aquamotoSetCPT), which hands over an ARBITRARY palette instead of the name of one: `cz` is the
+# z each palette row sits at (log-spaced when the editor's Logaritmize is on) and `crgb` its colours,
+# flat, three per node in 0..1. Everything else is `_aquamoto_set_cmap`'s contract verbatim -- the
+# land cache is dropped, the land legend re-pushed, and the caller re-renders the current slice.
+#
+# WHY IT EXISTS: a grid's Color Bar row has always offered this editor (colorbarRow -> showColorPalettes),
+# and Aquamoto's two rows offered only the quick list, because the editor applies through
+# `gmtvtk_set_cpt_grid`, which recolours a scalar+LUT surface -- and a tsunami layer is a picture the
+# host composites. Same control, less function for one element type: SACRED_LAW.md, verbatim. The
+# editor now reaches the composite through the door the composite is painted behind.
+function _aquamoto_set_cpt(scene::Ptr{Cvoid}, side::Int, cz::Vector{Float64}, crgb::Vector{Float64})
+	st = get(_AQUA, scene, nothing)
+	(st === nothing) && error("Aquamoto: no file open in this window")
+	(side == 0 || side == 1) || error("Aquamoto: unknown colorbar side $side (0=water, 1=land)")
+	(length(cz) >= 2 && length(crgb) == 3 * length(cz)) ||
+		error("Aquamoto: palette has $(length(cz)) nodes and $(length(crgb)) colour components")
+	p = st.cpt[side + 1]                       # the tuple is fixed; the vectors in it are the state
+	empty!(p[1]);  append!(p[1], cz)
+	empty!(p[2]);  append!(p[2], crgb)
+	if side == 1
+		st.imgbat = Array{UInt8}(undef, 0, 0, 0)   # cached bathymetry colourisation used the OLD palette
+		_aqua_push_land_cpt!(scene, st.bat, (p[1], p[2]))
 	end
 	return nothing
 end
@@ -531,7 +636,9 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	# global scaling off, no transparency, both sides shaded). They are overwritten by the first
 	# `_aquamoto_slice`, i.e. before anything is on screen, so they only ever matter to a caller that
 	# asks for a slice before the dialog has drawn one.
-	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, :polar, :geo, 0,
+	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, :polar, :geo,
+	                          ((Float64[], Float64[]), (Float64[], Float64[])),   # no palette editor applied yet
+	                          0,
 		                          (Dict{String,String}(), Dict{String,String}()),
 	                          true, false, 0.0, true, true, _aqua_read_times(String(path), nsteps),
 	                          Dict{String,GMTgrid}(), xwin, false)   # twosurf: see `_aqua_push_two_surfaces`
@@ -643,7 +750,7 @@ function _aqua_composite_rgb(bat::Matrix{Float32}, Z::Matrix{Float32}, splitDryW
                              waterlo::Float64, waterhi::Float64, transparency::Float64,
                              imgbat::Array{UInt8,3}, landhi::Float64,
                              shadeWater::Bool=true, shadeLand::Bool=true,
-                             watercmap::Symbol=:polar, landcmap::Symbol=:geo)
+                             watercmap::_AquaPal=:polar, landcmap::_AquaPal=:geo)
 	ny, nx = size(Z)
 	if !splitDryWet
 		return _aqua_colorize(Z, waterlo, waterhi, watercmap), imgbat
@@ -1088,12 +1195,12 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 		_aqua_push_two_surfaces(scene, st, G, bat, Z, splitDryWet, k)
 		return nothing
 	end
-	cz, crgb, n = _cpt_nodes_range(waterlo, waterhi, st.watercmap)   # the water scale = the colourbar
+	cz, crgb, n = _aqua_side_nodes(st, 0, waterlo, waterhi)          # the water scale = the colourbar
 	zhover, znx, zny, zlay = _grid_zbuf(G)             # stage buffer + the layout code the VIEWER reads it with
 	r = st.bat.range
 	name = basename(st.path)                           # handle named after the file, like every other layer
 	rgb, st.imgbat = _aqua_composite_rgb(bat, Z, splitDryWet, waterlo, waterhi, transparency, st.imgbat, landhi,
-	                                     shadeWater, shadeLand, st.watercmap, st.landcmap)
+	                                     shadeWater, shadeLand, _aqua_side_pal(st, 0), _aqua_side_pal(st, 1))
 	# THE LIGHT IS NOT IN THIS PICTURE. The composite carries the COLOURS; the Illumination tool's
 	# light is a reflectance the viewer modulates them with, pushed per side (`_aqua_illuminate!`,
 	# `_aqua_relight_water!` below) — one operation, one function, the same one every grid uses.
