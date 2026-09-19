@@ -57,10 +57,18 @@ mutable struct _AquaState
 	watercmap::Symbol                       # user-selectable via "Color Bar water" (default :polar)
 	landcmap::Symbol                        # user-selectable via "Color Bar Land" (default :geo)
 	cur::Int                                # 0-based index of the slice on screen (the time slider)
-	illum::Dict{String,String}              # View > "Illumination (Hillshade)" params, EMPTY = none
-	                                        # loaded. Kept because the WATER side stands on a surface
-	                                        # that changes at every timestep, so its reflectance has to
-	                                        # be recomputed per slice (_aqua_relight_water!).
+	illum::NTuple{2,Dict{String,String}}    # the Illumination dialog's params, ONE PER SIDE:
+	                                        # illum[1] = WATER (the live stage), illum[2] = LAND (the
+	                                        # static bathymetry). EMPTY = that side has no model loaded.
+	                                        # TWO INSTANCES OF ONE THING, never two differently-named
+	                                        # fields (SACRED_LAW.md, two-surface illumination law): the
+	                                        # sides are indexed by the very `side` code the viewer and
+	                                        # `_hs_push` speak (0 water / 1 land, +1 for Julia).
+	                                        # Kept because the WATER side stands on a surface that
+	                                        # changes at every timestep, so its reflectance has to be
+	                                        # rebuilt per slice by `_aqua_shaded_rgb`, the land half with
+	                                        # it — the bathymetry is static but the SHORELINE is not, so
+	                                        # the half it is masked down to changes at every timestep.
 	# The display options the DIALOG last drew a slice with, recorded by `_aquamoto_slice` itself.
 	# A programmatic slice change (`set_layer!`, movie.jl) reads them back and calls THE SAME slice
 	# function with them, so an animation looks exactly like the slice the user is looking at instead
@@ -77,6 +85,14 @@ mutable struct _AquaState
 	                                        # each is its own cube; absent = that variable is read off
 	                                        # disk one layer at a time, as before.
 	xwin::Tuple{Float64,Float64}            # the DISPLAY WINDOW in x (NaNs = the whole file) -- see below
+	                                        # OFF (user order, 2026-09-19): the tsunami is shown as THE
+	                                        # COMPOSITE IMAGE OF THE TWO HALVES — one picture, painted
+	                                        # from the water half and the land half — never as two
+	                                        # surfaces each blanked to NaN outside its own nodes.
+	twosurf::Bool                           # show the layer as TWO SURFACES (water + land), the way the
+	                                        # two halves are shown on their own, instead of one composited
+	                                        # texture. The composite cannot carry a per-side VTK (PBR)
+	                                        # material; two actors can.
 end
 
 const _AQUA = Dict{Ptr{Cvoid}, _AquaState}()
@@ -260,13 +276,21 @@ function _aqua_colorize(Z::Matrix{Float32}, zlo::Float64, zhi::Float64, cmap::Sy
 	# left land in only ~16 of the 256 nodes), not from too few palette entries.
 	span = (zhi > zlo) ? (zhi - zlo) : 1.0
 	invspan = (n - 1) / span
+	# INTERPOLATED, like the viewer's own colour transfer function. Snapping to the nearest of the 256
+	# nodes is a 256-step staircase, and the SAME half shown as a plain grid goes through VTK's
+	# continuous CTF — so the composite and the standalone half were two different pictures of one
+	# colour scale. Same z, same palette, same colour now.
 	@inbounds for j in 1:nx, i in 1:ny
 		v = Float64(Z[i, j])
-		idx = clamp(round(Int, (v - zlo) * invspan) + 1, 1, n)
-		b = 3 * (idx - 1)
-		rgb[i, j, 1] = round(UInt8, clamp(crgb[b+1] * 255, 0, 255))
-		rgb[i, j, 2] = round(UInt8, clamp(crgb[b+2] * 255, 0, 255))
-		rgb[i, j, 3] = round(UInt8, clamp(crgb[b+3] * 255, 0, 255))
+		t = clamp((v - zlo) * invspan, 0.0, Float64(n - 1))
+		i0 = floor(Int, t)
+		i1 = min(i0 + 1, n - 1)
+		w  = t - i0
+		b0 = 3 * i0
+		b1 = 3 * i1
+		rgb[i, j, 1] = round(UInt8, clamp(((1 - w) * crgb[b0+1] + w * crgb[b1+1]) * 255, 0, 255))
+		rgb[i, j, 2] = round(UInt8, clamp(((1 - w) * crgb[b0+2] + w * crgb[b1+2]) * 255, 0, 255))
+		rgb[i, j, 3] = round(UInt8, clamp(((1 - w) * crgb[b0+3] + w * crgb[b1+3]) * 255, 0, 255))
 	end
 	return rgb
 end
@@ -507,9 +531,10 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	# global scaling off, no transparency, both sides shaded). They are overwritten by the first
 	# `_aquamoto_slice`, i.e. before anything is on screen, so they only ever matter to a caller that
 	# asks for a slice before the dialog has drawn one.
-	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, :polar, :geo, 0, Dict{String,String}(),
+	_AQUA[scene] = _AquaState(String(path), varname, varnames, scans, bat, nsteps, geog, Array{UInt8}(undef, 0, 0, 0), true, :polar, :geo, 0,
+		                          (Dict{String,String}(), Dict{String,String}()),
 	                          true, false, 0.0, true, true, _aqua_read_times(String(path), nsteps),
-	                          Dict{String,GMTgrid}(), xwin)
+	                          Dict{String,GMTgrid}(), xwin, false)   # twosurf: see `_aqua_push_two_surfaces`
 	print(nsteps, "|", varname, "|", join(varnames, ","))
 	return nothing
 end
@@ -632,8 +657,14 @@ function _aqua_composite_rgb(bat::Matrix{Float32}, Z::Matrix{Float32}, splitDryW
 		# LAND-ONLY range, same as the colorbar (_aquamoto_open) -- colorizing over the FULL bathymetry
 		# range (incl. ocean depths) wasted most of the 256-node ramp on sea floor, leaving land itself
 		# with only a handful of distinct colours (blocky look, and mismatched vs the legend).
-		blo = 0.0
-		bhi = max(landhi, blo + 0.1)
+		# …and the land's own extrema, exactly as the land half shown alone is coloured: the palette
+		# spans the DRY NODES' min..max, not 0..max and not the whole bathymetry (which buries the
+		# coast in the top fraction of the ramp). Same rule as the water above — each side coloured as
+		# a grid of that side alone.
+		dz  = view(bat, indland)
+		blo = isempty(dz) ? 0.0 : Float64(minimum(dz))
+		bhi = isempty(dz) ? 1.0 : Float64(maximum(dz))
+		(bhi > blo) || (bhi = blo + 0.1)
 		imgbat = _aqua_colorize(bat, blo, bhi, landcmap)    # :geo default already has its own land/sea break
 	end
 	# ALWAYS colour BOTH sides -- land from the cached bathymetry, water from the wet stage. NEVER grey a
@@ -669,16 +700,50 @@ end
 # Illuminating "the grid this window shows" instead resolved to the bathymetry and then lit the SEA
 # with the sea FLOOR's relief -- the dry/wet split gone, which is precisely what the dock exists to
 # keep. Models 8/9 build a new variable rather than modulating and never come here (hillshade.jl).
-function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String})
+#
+# `side` says WHICH surface the user aimed the dialog at: -1 (the toolbar button) lights both, 0 the
+# water alone, 1 the land alone. The two palette buttons beside Shade Water / Shade Land send 0 and 1,
+# and a method chosen for one side leaves the other's exactly as it was — which is the same law read
+# one level up: the two sides are two surfaces, so the METHOD is a per-side choice too.
+"""
+    _aqua_forget_illum!(st, side)
+
+Forget the Illumination model of ONE side (`side` 0 water / 1 land), or of BOTH when `side < 0`.
+Called wherever a light is replaced by a look or taken off: the remembered params are what make the
+water re-light itself at every timestep, so a side that no longer has a model must no longer have
+params either.
+"""
+function _aqua_forget_illum!(st::_AquaState, side::Int)
+	for sd in (side < 0 ? (0, 1) : (side,))
+		empty!(st.illum[sd + 1])
+	end
+	# Method 1 renders each half in an off-screen window kept between frames (`_PBR_WIN`,
+	# aquashade.jl). With no model loaded on either side nothing will photograph them again, so they
+	# go now rather than idling with a GL context for the rest of the session.
+	all(isempty, st.illum) && aqua_pbr_release!()
+	return nothing
+end
+
+function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String}, side::Int = -1)
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && error("Aquamoto: no file open in this window")
-	st.illum = copy(d)                        # remembered: the water side is re-lit at every timestep
-	st.illum["model"] = string(model)
-	_hs_push_grid(scene, st.bat, model, st.illum, 1)    # LAND  <- the static bathymetry
-	_aqua_relight_water!(scene, st)                     # WATER <- the CURRENT slice's own stage
+	# Remembered PER SIDE: each side keeps its own method and its own light, and a run aimed at one
+	# leaves the other's exactly as it was.
+	for sd in (side < 0 ? (0, 1) : (side,))
+		p = st.illum[sd + 1]                  # the tuple is fixed; the dictionaries in it are the state
+		empty!(p); merge!(p, d)
+		p["model"] = string(model)
+	end
+	# THE LIGHT IS A REFLECTANCE PUSHED TO THE VIEWER, one per side, each computed from ITS OWN
+	# surface: the LAND from the static bathymetry, the WATER from the stage of the slice on screen.
+	# The viewer then modulates the composite it already paints (bakeAquaShade / the 3-D surface's
+	# baked colours) with them, which is what every other grid in this app does with an Illumination
+	# model — same operation, same function (`_hs_reflectance`), no second picture.
+	(side < 0 || side == 1) && _hs_push_grid(scene, st.bat, model, st.illum[2], 1)   # LAND
+	(side < 0 || side == 0) && _aqua_relight_water!(scene, st)                        # WATER
 	# The method is DECLARED here, by the act that chose it — never by the pushes above, which are
-	# data and run again at every slice. Both sides get it (sceneSetReliefLook copies the look to both).
-	_hs_declare_look(scene)
+	# data and run again at every slice.
+	_hs_declare_look(scene, side)
 	return nothing
 end
 
@@ -687,17 +752,18 @@ end
 # computed once would light slice 40's wave with slice 3's relief. `G` is the slice the caller has
 # already read (never re-read it); without one, the slice on screen is read here.
 function _aqua_relight_water!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,Nothing}=nothing)
-	isempty(st.illum) && return nothing
+	p = st.illum[1]
+	isempty(p) && return nothing
 	# …AND ONLY WHILE THAT MODEL IS STILL THE WINDOW'S LIGHT. Picking a relief look (VTK PBR, grdimage,
 	# Lambert) REPLACES a loaded Illumination model — sceneSetReliefLook drops it — so re-pushing the
 	# remembered one here would put the window straight back on a hillshade method (every push force-
 	# sets useHillshade/hillGrd), i.e. the method the user just chose silently reverting at the next
 	# slice. Ask the viewer whether the model is still loaded; when it is not, forget it.
 	if ccall(_fn(:gmtvtk_has_extern_shade_h), Cint, (Ptr{Cvoid},), scene) == 0
-		empty!(st.illum)
+		empty!(p)
 		return nothing
 	end
-	model = parse(Int, st.illum["model"])
+	model = parse(Int, p["model"])
 	Gw = G === nothing ? _aqua_layer(st, st.cur) : G     # st.cur is 0-based; THE layer read (RAM or disk)
 	Gw === nothing && error("Aquamoto: could not read layer $(st.cur + 1) of '$(st.varname)' from $(st.path)")
 	R = _aqua_water_reflectance(st, Gw, model)
@@ -708,6 +774,124 @@ function _aqua_relight_water!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgri
 end
 
 # THE WATER SIDE's reflectance. Two things, and both matter:
+#
+# 1. THE FIELD IS THE WET STAGE. A tsunami stage stores the LAND ELEVATION on its dry cells, so the
+#    raw array is not a water surface: it is a water surface with the coastline welded into it. Every
+#    model scales its intensity from the data's OWN range, so those cliffs, not the sea, decided the
+#    light. The dry cells are dropped with `_aqua_indland`, THE dry/wet test the composite itself
+#    paints with, so the stretch sees the wave field and nothing else.
+#
+# 2. WHAT GOES DOWN IS NEVER NaN — the dropped cells are pushed as intensity ZERO. `gmtIlluminate`
+#    returns immediately on 0, so those texels keep the composite's colour byte for byte. A NaN there
+#    instead makes `externShadeAt` return NaN, which sends the pixel down bakeAquaShade's OTHER branch
+#    (normal-derived shading) — a different code path, and therefore a different colour, on pixels
+#    this tool was never asked to touch.
+function _aqua_water_reflectance(st::_AquaState, G::GMTgrid, model::Int)
+	(size(st.bat.z) == size(G.z)) ||
+		error("Aquamoto: '$(st.varname)' ($(size(G.z))) and bathymetry ($(size(st.bat.z))) sizes differ")
+	(_grid_layout_code(G) == _grid_layout_code(st.bat)) ||
+		error("Aquamoto: '$(st.varname)' ($(G.layout)) and bathymetry ($(st.bat.layout)) have different memory layouts")
+	dry = _aqua_indland(st.bat.z, G.z)         # element-wise, both buffers as they lie -- no layout
+	all(dry) && return nothing
+	W = deepcopy(G)
+	W.z[dry] .= NaN32                          # out of the FIELD, so they are out of the STRETCH
+	wet = view(W.z, .!dry)
+	W.range[5], W.range[6] = Float64(minimum(wet)), Float64(maximum(wet))
+	R = _hs_reflectance(W, model, st.illum[1])
+	# ...and back in as NEUTRAL. Covers the dropped cells and the one-cell NaN fringe GMT leaves
+	# around them: every node the light has nothing to say about says exactly nothing.
+	@inbounds for k in eachindex(R)
+		isfinite(R[k]) || (R[k] = 0.0f0)
+	end
+	return R
+end
+
+# THE ILLUMINATED PICTURE for the slice on screen, band-planar in THE GRID'S OWN element order —
+# which is what `_aqua_pack_rgba` consumes, exactly like the plain composite it stands in for.
+# `nothing` when no side carries a method, so the plain composite is used unchanged.
+#
+# `aqua_shade_image` hands back a plain (row, col, band) picture — it de-interleaves each half itself
+# (`_aqua_rgb_plane`) so a grdimage half and a VTK-rendered one compose in the same combine — and it
+# came from THIS grid, so its pixel order IS the grid's element order (row-major, north first).
+function _aqua_shaded_rgb(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid, splitDryWet::Bool)::Union{Array{UInt8,3},Nothing}
+	splitDryWet || return nothing                     # no dry/wet split -> no two halves to combine
+	# EVERY LAYER, NO GATE ON A STORED MODEL. The combined image is what this window shows, so it is
+	# built at every timestep whether or not the Illumination dialog has been through here: with no
+	# model stored the sides fall back to the defaults below (2, the classic reflectance).
+	pw, pl = st.illum[1], st.illum[2]
+	num(p, key, dflt) = (isempty(p) && return dflt; v = _get(p, key); isempty(v) ? dflt : parse(Float64, v))
+	mdl(p, dflt) = isempty(p) ? dflt : parse(Int, p["model"])
+	img, = aqua_shade_image(st.bat, G;
+	                        method_water = mdl(pw, 2), method_land = mdl(pl, 2),
+	                        azim_water = num(pw, "azim", 45.0), elev_water = num(pw, "elev", 30.0),
+	                        azim_land  = num(pl, "azim", 45.0), elev_land  = num(pl, "elev", 30.0),
+	                        cmap_water = st.watercmap, cmap_land = st.landcmap,
+	                        scene = scene)   # render the halves in THIS window — never open one
+	# HANDED OVER AS IT LIES. It is a PICTURE — one pixel per node, row 1 = NORTH, col 1 = WEST — and
+	# it is packed as one: the caller passes layout code 2 for it, which is exactly what a Julia
+	# (ny, nx) column-major array with its first row in the north IS to `_aqua_pack_rgba`. Re-ordering
+	# it into the grid's element order here was a second place that had to agree about layout, and it
+	# is the place the water half was lost.
+	A = img.image
+	nx, ny = _grid_dims(G)
+	(size(A, 1) == ny && size(A, 2) == nx) ||
+		error("Aquamoto: the illuminated picture is $(size(A,1))x$(size(A,2)) for a $(ny)x$(nx) grid")
+	_AQUA_LAST_COMBINED[scene] = img                  # the button shows THIS, never a second build
+	return A
+end
+
+# The last combined image this window drew, kept so the "Combined image" button can show exactly what
+# is on the layer without paying for a rebuild — the picture is the product of the slice that just ran.
+const _AQUA_LAST_COMBINED = Dict{Ptr{Cvoid},Any}()
+
+# The one window the "Combined image" button owns. Closed and replaced at every press — see
+# `_aqua_combined_popup`.
+const _AQUA_POPUP_WIN = Ref{Ptr{Cvoid}}(C_NULL)
+
+# THE COMBINED IMAGE, ON DEMAND, IN A DISPLAY OF ITS OWN.
+#
+# Called by the Aquamoto dialog's "Combined image" button (75_aquamoto.cpp), never on its own: it
+# builds the picture for the layer currently on screen through `aqua_shade_image` — the SAME function
+# the drape uses, so what pops up is what the layer wears — and opens it in a new window.
+#
+# TEMPORARY, and here to be looked at.
+function _aqua_combined_popup(scene::Ptr{Cvoid})::Cint
+	st = get(_AQUA, scene, nothing)
+	(st === nothing) && return Cint(0)
+	# BUILT HERE, FOR THE SLICE ON SCREEN. The layer itself is drawn as the plain composite modulated
+	# by the Illumination tool's reflectances (`_aqua_illuminate!`), so nothing else makes this picture
+	# any more — this button is the one place that asks for it. `_aqua_shaded_rgb` caches what it
+	# builds in `_AQUA_LAST_COMBINED`, so a second press on an unchanged slice costs nothing.
+	G = _aqua_layer(st, st.cur)
+	G === nothing && return Cint(0)                   # no layer drawn yet: nothing to show
+	rgb = _aqua_shaded_rgb(scene, st, G, st.split)
+	(rgb === nothing) && return Cint(0)               # no dry/wet split -> no two halves to combine
+	img = get(_AQUA_LAST_COMBINED, scene, nothing)
+	(img === nothing) && return Cint(0)
+	# EACH PRESS UNDOES THE LAST. The previous popup is closed before a new one opens, so this button
+	# can never leave a pile of windows behind — every one of them is a live scene the event loop
+	# carries for the rest of the session, which is exactly how a "look at this" button ends up
+	# slowing the tool it belongs to. One window, replaced, and nothing else kept.
+	if _AQUA_POPUP_WIN[] != C_NULL
+		ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), _AQUA_POPUP_WIN[])
+		_AQUA_POPUP_WIN[] = C_NULL
+		_pump_once()
+	end
+	fig = iview_image_obj(img, "combined image"; title = "Combined image — layer $(st.cur + 1)")
+	_AQUA_POPUP_WIN[] = fig.h
+	return Cint(1)
+end
+
+# THE REFLECTANCE-PUSH PATH IS GONE (2026-09-19). The tsunami used to be lit by pushing a per-side
+# reflectance down to the viewer, which then modulated the composite's colours. It is now lit where
+# its colours are MADE: `aqua_shade_image` (aquashade.jl) splits the slice, lights each half as a
+# picture of its own and combines the two by the dry/wet mask, and that single image IS the layer.
+# One act, not two -- so there is no reflectance to pair back against the grid's nodes, which is
+# where every layout bug in this file came from.
+# WHAT MASKING A HALF BEFORE LIGHTING IT USED TO BUY — kept as the measurement, NOT as instructions:
+# masking is banned (user order, 2026-09-19), so `aqua_shade_image` lights each half over its whole
+# field — scoped by its RANGE, not by a blanked copy — and the consequence recorded in 1. is the
+# accepted one. Read this before proposing any change to how a side's contrast is set:
 #
 # 1. THE FIELD IS THE WET STAGE. A tsunami stage stores the LAND ELEVATION on its dry cells (365 m in
 #    aiai.nc — see this file's header and `_aquamoto_slice`'s colourbar note), so the raw array is not
@@ -727,25 +911,12 @@ end
 #    instead makes `externShadeAt` return NaN, which sends the pixel down bakeAquaShade's OTHER branch
 #    (normal-derived shading) — a different code path, and therefore a different colour, on pixels
 #    this tool was never asked to touch. That is what wrecked the colours the first time.
-function _aqua_water_reflectance(st::_AquaState, G::GMTgrid, model::Int)
-	(size(st.bat.z) == size(G.z)) ||
-		error("Aquamoto: '$(st.varname)' ($(size(G.z))) and bathymetry ($(size(st.bat.z))) sizes differ")
-	(_grid_layout_code(G) == _grid_layout_code(st.bat)) ||
-		error("Aquamoto: '$(st.varname)' ($(G.layout)) and bathymetry ($(st.bat.layout)) have different memory layouts")
-	dry = _aqua_indland(st.bat.z, G.z)         # element-wise, both buffers as they lie -- no layout
-	all(dry) && return nothing
-	W = deepcopy(G)
-	W.z[dry] .= NaN32                          # out of the FIELD, so they are out of the STRETCH
-	wet = view(W.z, .!dry)
-	W.range[5], W.range[6] = Float64(minimum(wet)), Float64(maximum(wet))
-	R = _hs_reflectance(W, model, st.illum)
-	# ...and back in as NEUTRAL. Covers the dropped cells and the one-cell NaN fringe GMT leaves
-	# around them: every node the light has nothing to say about says exactly nothing.
-	@inbounds for k in eachindex(R)
-		isfinite(R[k]) || (R[k] = 0.0f0)
-	end
-	return R
-end
+#
+# 3. THE LAND SIDE IS MASKED FOR THE SAME REASON. Every model scales from the data's OWN spread, so a
+#    stretch that includes 4 km of sea floor is a different light from one over the coastal strip the
+#    user is looking at — which is why the two halves shown in SEPARATE windows (TsuIllum.jl, each a
+#    plain grid of its own half) looked right and the composite looked wrong: the standalone land
+#    window is the dry-masked bathymetry, the composite's land was not.
 
 # THE read of one Aquamoto cube layer (`k` 0-based): out of memory when this variable's cube has been
 # pulled in by "Load all in RAM", off disk one layer at a time otherwise. Every slice path goes
@@ -842,7 +1013,7 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && error("Aquamoto: no file open in this window")
 	(0 <= k < st.nsteps) || error("Aquamoto: slice $k out of range (0..$(st.nsteps - 1))")
-	st.cur = k                                         # the slice on screen, for _aqua_relight_water!
+	st.cur = k                                         # the slice on screen, for the illuminated redraw
 	# Record the look this slice is being drawn with, so a programmatic slice change reproduces it
 	# rather than picking its own options (see `_AquaState`, and `set_layer!` in movie.jl).
 	st.split, st.globalmm, st.transp = splitDryWet, globalMM, transparency
@@ -888,9 +1059,14 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	# with it. Centre the scale on zero and let the amplitude set its half-width, so calm water is the
 	# palette's middle at every slice and the two sides mean what they say. The "global min/max"
 	# checkbox lands here too — one rule for both, no per-branch special case.
-	amp = max(abs(waterlo), abs(waterhi))
-	amp > 0 || (amp = 1.0)
-	waterlo, waterhi = -amp, amp
+	# …THAT IS NOT WHAT A HALF SHOWN ON ITS OWN DOES, AND THE TWO MUST BE THE SAME PICTURE. Split the
+	# tsunami into its water half and its land half, open each as a plain grid, and each one's palette
+	# spans ITS OWN DATA EXTREMA (`_cpt_nodes`, the one scale-builder every grid in this app goes
+	# through). Centring the water on zero made the composite a different picture from that half —
+	# same data, same palette, different colours — so the centring is gone and the composite now
+	# colours each side exactly as a grid of that side alone is coloured. (TsuIllum.jl is that
+	# reference, side by side.)
+	(waterhi > waterlo) || (waterhi = waterlo + 1.0)
 	landhi = st.bat.range[6]                           # max land elevation, straight from the grid's OWN known range
 
 	# THE COMPOSITE IS THE TSUNAMI. Land is coloured from the bathymetry with the LAND colormap, water
@@ -901,12 +1077,27 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	#
 	# What the geometry question is still good for is the FAST PATH: the same-size push repaints the
 	# texture instead of rebuilding the scene (showLayerImageTail).
+	# TWO SURFACES, NOT ONE COMPOSITE. The tsunami is shown the way the two halves are shown on their
+	# own — water on its surface, land on its surface, in this one window — because that is the only
+	# shape in which every illumination method means what it says per side. VTK (PBR) above all: it is
+	# VTK's own render path and the material belongs to an ACTOR, so a single composited actor can only
+	# ever carry one, which is how method 1 silently became method 7's CPU bake. Two actors, two
+	# materials, two lights, two palettes, each spanning its own data — nothing shared, nothing baked
+	# together (SACRED_LAW.md's two-surface law, taken all the way).
+	if st.twosurf
+		_aqua_push_two_surfaces(scene, st, G, bat, Z, splitDryWet, k)
+		return nothing
+	end
 	cz, crgb, n = _cpt_nodes_range(waterlo, waterhi, st.watercmap)   # the water scale = the colourbar
 	zhover, znx, zny, zlay = _grid_zbuf(G)             # stage buffer + the layout code the VIEWER reads it with
 	r = st.bat.range
 	name = basename(st.path)                           # handle named after the file, like every other layer
 	rgb, st.imgbat = _aqua_composite_rgb(bat, Z, splitDryWet, waterlo, waterhi, transparency, st.imgbat, landhi,
 	                                     shadeWater, shadeLand, st.watercmap, st.landcmap)
+	# THE LIGHT IS NOT IN THIS PICTURE. The composite carries the COLOURS; the Illumination tool's
+	# light is a reflectance the viewer modulates them with, pushed per side (`_aqua_illuminate!`,
+	# `_aqua_relight_water!` below) — one operation, one function, the same one every grid uses.
+	# `aqua_shade_image` still builds the lit picture on demand for the "Combined image" button.
 
 	# The composite was coloured element-wise off `G` itself, so the pack must follow THE GRID's own
 	# layout, not the one `_grid_zbuf` hands the viewer -- those differ only in the degraded case
@@ -944,6 +1135,123 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 		_session_record!(scene, :basegrid, :file, st.path; name = name)
 		st.first = false
 	end
+	return nothing
+end
+
+const AQUA_WATER = "WATER stage"        # the two surfaces' Scene Objects names — what the Illumination
+const AQUA_LAND  = "LAND bathymetry"    # dialog aims at, one per side
+
+"""
+    _aqua_water_range(Gw) -> (lo, hi)
+
+The water half's colour span: SYMMETRIC about zero, `amp = max(|min|, |max|)` over its own wet nodes,
+so calm water sits at the centre of the diverging palette and trough and crest read as the two sides
+they are.
+"""
+function _aqua_water_range(Gw::GMTgrid)
+	lo, hi = Float64(Gw.range[5]), Float64(Gw.range[6])
+	amp = max(abs(lo), abs(hi))
+	amp > 0 || (amp = 1.0)
+	return (-amp, amp)
+end
+
+"""
+    _aqua_split(st, G, bat, Z, splitDryWet) -> (Gwater, Gland)
+
+THE SPLIT, and the only place it happens: the slice's stage with every DRY node NaN, and the
+bathymetry with every WET node NaN. Each comes back as a first-class grid whose z-range is its OWN
+data's — which is what makes it colour and light exactly like that half shown in a window of its own.
+`splitDryWet` off means the whole layer is water, so there is no land grid.
+"""
+function _aqua_split(st::_AquaState, G::GMTgrid, bat::Matrix{Float32}, Z::Matrix{Float32},
+                     splitDryWet::Bool)
+	if !splitDryWet
+		return deepcopy(G), nothing
+	end
+	dry = _aqua_indland(bat, Z)
+	wet = .!dry
+	Gw = deepcopy(G);      Gw.z[dry] .= NaN32
+	Gl = deepcopy(st.bat); Gl.z[wet] .= NaN32
+	for (H, m) in ((Gw, wet), (Gl, dry))
+		if any(m)
+			v = view(H.z, m)
+			H.range[5], H.range[6] = Float64(minimum(v)), Float64(maximum(v))
+		end
+	end
+	return Gw, (any(dry) ? Gl : nothing)
+end
+
+# The two surfaces pushed into ONE window. The water is the window's base (it is the quantity the
+# slider drives); the land is a second surface beside it, built once — the bathymetry does not change
+# with time, only which of its nodes are dry does, and that is the water's business.
+function _aqua_push_two_surfaces(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid,
+                                 bat::Matrix{Float32}, Z::Matrix{Float32}, splitDryWet::Bool, k::Int)
+	Gw, Gl = _aqua_split(st, G, bat, Z, splitDryWet)
+	first = st.first
+	if first
+		# The water half OPENS the window, exactly as a grid does — on the tsunami's own colour scale:
+		# SYMMETRIC about zero, so calm water is the diverging palette's centre and trough/crest read as
+		# the two sides they are. A raw min/max span puts the resting sea wherever the slice's extremes
+		# happen to leave it (white, at this one), which is not a picture of a wave.
+		_add_grid_to_scene(scene, Gw, AQUA_WATER; cmap = st.watercmap, promote = true,
+		                   zrange = _aqua_water_range(Gw), source = "$(st.path)?$(st.varname)")
+		if Gl !== nothing
+			_add_grid_to_scene(scene, Gl, AQUA_LAND; cmap = st.landcmap, promote = false,
+			                   source = "$(st.path)?bathymetry")
+			# …AND SHOWN. A grid added to a window that already has one is registered hidden (the file's
+			# other variables — bathymetry, the beach masks — are meant to arrive unchecked). This one is
+			# not an alternative view of the layer, it is HALF OF IT.
+			ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint),
+			      scene, AQUA_LAND, Cint(1))
+		end
+		st.first = false
+		# REAL SURFACES, NOT A FLAT IMAGE. The flat-image form is one textured quad covering the whole
+		# bbox, so the side that owns it hides the other behind its own NaN texels — and a texture has
+		# no material, which is the other half of why VTK (PBR) could not be per side. Two surfaces
+		# only make sense as surfaces.
+		#
+		# …AND THE WINDOW MUST BE IN 3-D TO SHOW THAT. `imgmode=0` only leaves LAYER-IMAGE mode; it says
+		# nothing about flat 2-D, and `_add_grid_to_scene(promote=true)` opens the window flat top-down
+		# the way a plain grid does (`gmtvtk_promote_surface_h`). The per-slice `replace_base_grid_h`
+		# then preserves the camera on purpose, so a window that started flat STAYS flat for every
+		# timestep: the stage height was on the surface all along (the viewer's zmin/zmax track each
+		# slice) and was being drawn as a picture. A TSUNAMI IS ITS SEA HEIGHT — the quantity the slider
+		# drives is the water's z, so this window opens in 3-D. Through `flat2d`, i.e. the ONE
+		# `sceneSetFlat2D` the 2D/3D toolbar button goes through (apply_scene_state, 90_c_api.cpp) —
+		# never a camera set of our own.
+		ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), scene, "imgmode=0;flat2d=0;")
+		_session_record!(scene, :basegrid, :file, st.path; name = AQUA_WATER)
+	else
+		# A NEW TIMESTEP IS A NEW Z FOR THE WATER SURFACE, nothing else: the land surface is untouched,
+		# so its light, its palette and its material survive every slice change by construction.
+		z, nx, ny, zlay = _grid_zbuf(Gw)
+		wlo, whi = _aqua_water_range(Gw)              # the same symmetric scale at every timestep
+		cz, crgb, n = _cpt_nodes_range(wlo, whi, st.watercmap)
+		ok = ccall(_fn(:gmtvtk_replace_base_grid_h), Cint,
+		           (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+		            Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring, Cint),
+		           scene, z, Cint(nx), Cint(ny), Gw.range[1], Gw.range[2], Gw.range[3], Gw.range[4],
+		           Cint(st.geog), cz, crgb, Cint(n), AQUA_WATER, zlay)
+		(ok == 0) && error("Aquamoto: the viewer rejected the new water surface (window closed?)")
+		_forget_object!(scene, :grid, AQUA_WATER)
+		_remember_object!(scene, :grid, AQUA_WATER, Gw)
+	end
+	# The water stands on a NEW surface at every step, so its own reflectance is recomputed from it —
+	# from the HALF GRID itself, through the plain `_hs_reflectance` a grid window uses, because in
+	# this mode the water IS a plain grid. A C++ LOOK (1 VTK PBR, 5, 6, 7) carries no reflectance and
+	# needs nothing here: it lives on the actor and survives the z replacement.
+	let p = st.illum[1]
+		if !isempty(p)
+			m = parse(Int, p["model"])
+			if m in (2, 3, 4)
+				R = _hs_reflectance(Gw, m, p)
+				@inbounds for i in eachindex(R); isfinite(R[i]) || (R[i] = 0.0f0); end
+				_hs_push(scene, R, Float64(Gw.range[1]), Float64(Gw.range[2]),
+				         Float64(Gw.range[3]), Float64(Gw.range[4]), m, 0)
+			end
+		end
+	end
+	_aqua_set_title_time(scene, st, k)
 	return nothing
 end
 
@@ -1020,7 +1328,7 @@ function _aqua_warm()
 	precompile(_aqua_colorize,   (Matrix{Float32}, Float64, Float64, Symbol))
 	precompile(_cpt_nodes_range, (Float64, Float64, Symbol))
 	precompile(_aquamoto_slice,  (Ptr{Cvoid}, Int, Bool, Bool, Float64, Bool, Bool))
-	precompile(_aqua_relight_water!, (Ptr{Cvoid}, _AquaState, Nothing))
+	precompile(_aqua_shaded_rgb, (Ptr{Cvoid}, _AquaState, GMTgrid{Float32,2}, Bool))
 	precompile(_aqua_set_title_time, (Ptr{Cvoid}, _AquaState, Int))
 	precompile(_read_cube_layer, (String, Int))
 	precompile(_aqua_read_times, (String, Int))

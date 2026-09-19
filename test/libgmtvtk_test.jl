@@ -68,6 +68,8 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_earthregions_list_test, :gmtvtk_earthregions_pick_test, :gmtvtk_earthregions_code_test,
 	:gmtvtk_earthregions_region_test, :gmtvtk_earthregions_type_test,
 	:gmtvtk_compute_euler_progress,
+	:gmtvtk_aqua_side_rgb_test,       # per-side mean RGB off the live tsunami texture
+
 	:gmtvtk_platecalc_open_dialog_test, :gmtvtk_platecalc_close_dialog_test,
 	:gmtvtk_platecalc_delete_dialog_test, :gmtvtk_platecalc_parked_test,
 	:gmtvtk_platecalc_select_test, :gmtvtk_platecalc_calc_test,

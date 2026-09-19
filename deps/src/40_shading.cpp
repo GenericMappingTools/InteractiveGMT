@@ -93,6 +93,15 @@ static inline void dropExternShade(Scene *s) {
 	s->shadeInLand = ExternShade();   // both sides, or the dock would move one image and not the other
 	activeLook(s).noShade = false;   // asking for a light ends "Remove illumination" on THAT layer
 }
+// …the same, for ONE Aquamoto side. An Aquamoto layer's two sides each hold their own reflectance,
+// so a method chosen for one side replaces THAT side's model and must leave the other's standing.
+// `side`: 1 = LAND (the static bathymetry), anything else = WATER (the live stage). `noShade` is the
+// window's, not a side's, so it is cleared here too: asking for a light ends "Remove illumination".
+static inline void dropExternShadeSide(Scene *s, int side) {
+	if (!s) return;
+	((side == 1) ? s->shadeInLand : s->shadeIn) = ExternShade();
+	activeLook(s).noShade = false;
+}
 // Reflectance at TRUE-coord (x,y), or NaN outside the grid / on a NaN node.
 // Deliberately NOT longitude-aware: a reflectance arrives already in the frame of the grid it lights
 // (hillshade.jl rolls a GMT module's re-wrapped output back before pushing it), so a wrap-around
@@ -601,12 +610,18 @@ static void bakeAquaShade(Scene *s) {
 
 static void rebakeLayerImage(Scene *s) {
 	if (!s || !s->layerImgMode || !s->drape || s->gridZ.empty() || s->gnx < 2 || s->gny < 2) return;
-	if (s->customLayerTexture) {   // Aquamoto: shade via the SHARED engine, but ONE SIDE AT A TIME
-		// A Shading-dock edit updates ONLY the side the Shade Water/Land radio selected (aquaShadeSelWater;
-		// false = Land). The OTHER side's snapshot is left untouched, so bakeAquaShade re-bakes it
-		// pixel-identical -- editing one image changes nothing (no colour, no light) of the other.
-		if (s->aquaShadeSelWater) s->aquaWaterShade = snapshotShade(s);
-		else                      s->aquaLandShade  = snapshotShade(s);
+	if (s->customLayerTexture) {   // Aquamoto: shade via the SHARED engine, ONE SIDE AT A TIME
+		// A BAKE IS NOT AN EDIT. It re-draws what the two sides already say; it may not WRITE either
+		// side's light. This used to snapshot the live look into whichever side the Shade Water/Land
+		// radio happened to select, at EVERY bake -- and a bake runs for reasons that have nothing to
+		// do with editing a side: every water re-light (one per timestep), every reflectance push,
+		// every applyShading. So lighting the WATER re-stamped the LAND's snapshot with the live look
+		// whenever Land was the selected radio, and that is exactly "changing the water changed the
+		// land". WATER AND LAND ARE INDEPENDENT, FULL STOP.
+		//
+		// A side's light is now written ONLY by the act that aims that side: sceneSetReliefLookAquaSide
+		// (the two Illumination buttons beside Shade Water / Shade Land) and sceneSetReliefLook (the
+		// window-wide pick, which is the whole window's choice and says so). One writer per fact.
 		bakeAquaShade(s);
 		return;
 	}
@@ -884,7 +899,9 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// there but lets an extra grid hillshade with its true colours instead of the canvas LUT.
 	vtkScalarsToColors *lut = m->GetLookupTable() ? m->GetLookupTable() : (s->surfLut ? s->surfLut.Get() : nullptr);
 	if (!zs || !lut)   return;                    // no scalars/LUT -> leave as-is
-	if (!nrm && lk.useHillshade) return;          // …normals only matter to the shade itself
+	// …normals only matter to the shade itself — and an Aquamoto surface shades from its two sides'
+	// own lights even when the window look is off, so it needs them too.
+	if (!nrm && (lk.useHillshade || landCol)) return;
 
 	double lzf = 1.0, lve = 1.0;
 	layerZOf(s, act, lzf, lve);                    // THIS actor's own normaliser + VE (VE is what we want)
@@ -912,8 +929,22 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// …and ONLY if that reflectance was computed for THIS actor's layer. Any other layer's light is
 	// not this layer's business (see externShadeOwns).
 	const bool ext = externShadeOwns(s, layerNameOfActor(s, act));
-	vtkPoints *pts = ext ? pd->GetPoints() : nullptr;
-	if (ext && !pts) return;
+	// AN AQUAMOTO SURFACE HAS TWO SIDES HERE TOO. `twoBar` already says, per node, which side a point
+	// belongs to -- it is how the two colour bars are applied -- so the LIGHT follows the same split:
+	// water nodes from the WATER snapshot and the water reflectance, land nodes from the LAND ones.
+	// Without this the 3-D surface had a SINGLE light for the whole tank (s->shadeIn + the window
+	// look), which is the flat-image path's two-surface law broken on the other geometry: choosing a
+	// method for the water lit the land with it, and the reverse. Non-Aquamoto actors never get a
+	// `landCol`, so `aqua` is false for them and every line below behaves exactly as before.
+	const bool aqua = twoBar;
+	const AquaSideShade wS = s->aquaWaterShade.valid ? s->aquaWaterShade : snapshotShade(s);
+	const AquaSideShade lS = s->aquaLandShade.valid  ? s->aquaLandShade  : snapshotShade(s);
+	const ReliefLight Lw = aqua ? makeReliefLightSide(s, wS) : L;   // SAME per-side light builder the
+	const ReliefLight Ll = aqua ? makeReliefLightSide(s, lS) : L;   // composited path uses -- never a copy
+	const bool wExt = aqua && haveExternShade(s->shadeIn);
+	const bool lExt = aqua && haveExternShade(s->shadeInLand);
+	vtkPoints *pts = (ext || wExt || lExt) ? pd->GetPoints() : nullptr;
+	if ((ext || wExt || lExt) && !pts) return;
 	vtkSmartPointer<vtkUnsignedCharArray> col = vtkSmartPointer<vtkUnsignedCharArray>::New();
 	col->SetName("hillshade");
 	col->SetNumberOfComponents(3);
@@ -931,9 +962,24 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 		                                 : mapped->GetPointer(i * mc);    // water bar, at the stage z
 		double c[3] = { rgb8[0] / 255.0, rgb8[1] / 255.0, rgb8[2] / 255.0 };
 		double ei = std::numeric_limits<double>::quiet_NaN();
-		if (ext) { double p[3]; pts->GetPoint(i, p); ei = externShadeAt(s, p[0], p[1]); }
-		if (lk.useHillshade)                                         // colour only when the look is unlit
-			applyReliefShade(L, nv, c, std::isnan(ei) ? nullptr : &ei);  // SHARED shade (extern / grdimage / Lambert)
+		if (aqua) {
+			// THIS NODE'S SIDE, and nothing of the other's: its own reflectance, its own light, its own
+			// on/off. The two sides are independent, so a side whose light is off keeps its colour
+			// verbatim while the other shades.
+			const bool sideExt = land ? lExt : wExt;
+			if (sideExt) { double p[3]; pts->GetPoint(i, p); ei = externShadeAt(land ? s->shadeInLand : s->shadeIn, p[0], p[1]); }
+			const AquaSideShade &A = land ? lS : wS;
+			const ReliefLight   &Ls = land ? Ll : Lw;
+			if (A.useHillshade || sideExt)
+				applyReliefShade(Ls, nv, c, std::isnan(ei) ? nullptr : &ei);
+			else if (A.litBake)
+				applyPBRShade(Ls, nv, c);
+		}
+		else if (ext || lk.useHillshade) {
+			if (ext) { double p[3]; pts->GetPoint(i, p); ei = externShadeAt(s, p[0], p[1]); }
+			if (lk.useHillshade)                                         // colour only when the look is unlit
+				applyReliefShade(L, nv, c, std::isnan(ei) ? nullptr : &ei);  // SHARED shade (extern / grdimage / Lambert)
+		}
 		col->SetTypedComponent(i, 0, (unsigned char)(c[0] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 1, (unsigned char)(c[1] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 2, (unsigned char)(c[2] * 255.0 + 0.5));
@@ -959,6 +1005,18 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 static void applySurfStyle(Scene *s, vtkActor *a) {
 	const LayerShade &lk = lookOfActor(s, a);   // THIS layer's own look, never the window's
 	vtkProperty *prop = a->GetProperty();
+	// AN AQUAMOTO SURFACE IS ALWAYS UNLIT. Its colours are baked PER NODE, per side, by
+	// hillshadeMapper, so the renderer must show them verbatim — and, decisively, the material may not
+	// depend on the window look: that look is written when a side is aimed, and flipping the actor
+	// between lit and unlit re-rendered BOTH halves of the tank on a one-side act. Keyed off the layer
+	// having two surfaces (`aquaBathyZ`), never off a light.
+	if (!s->aquaBathyZ.empty() && !s->aquaLandMask.empty()) {
+		prop->SetInterpolationToFlat();
+		prop->SetAmbient(1.0); prop->SetDiffuse(0.0); prop->SetSpecular(0.0);
+		prop->SetAmbientColor(1.0, 1.0, 1.0);
+		hillshadeMapper(s, a);
+		return;
+	}
 	if (lk.noShade) {
 		// No illumination at all: flat, fully ambient, so the CPT colour shows exactly as the colour
 		// bar says. hillshadeMapper below reverts the mapper to live CPT scalars (useHillshade is off
@@ -1197,6 +1255,34 @@ static void sceneSetReliefLook(Scene *s, int look, bool keepExternShade = false)
 		if (A->valid) { A->useHillshade = lkA.useHillshade; A->hillGrd = lkA.hillGrd; A->litBake = lkA.litBake; }
 	applyShading(s);                     // …which re-syncs the dock and re-bakes a flat image
 	if (s->syncFlatEnable) s->syncFlatEnable();   // which sliders are live depends on the chosen look
+}
+
+// THE SAME ACT, AIMED AT ONE AQUAMOTO SIDE. A tsunami layer is two images standing on two surfaces
+// (SACRED_LAW.md, two-surface illumination law), so water and land each get their OWN method — the
+// two palette buttons beside Shade Water / Shade Land aim the Illumination dialog at one of them.
+// `side`: 1 = LAND, anything else = WATER.
+//
+// The look flags are written where every look is written (the live `activeLook`), and the side's own
+// snapshot is then taken by `snapshotShade` — the VERY function a Shading-dock edit snapshots with, so
+// a side aimed here and a side edited in the dock are described by one piece of code, never two. The
+// OTHER side's snapshot is not touched, which is what leaves its own method standing.
+static void sceneSetReliefLookAquaSide(Scene *s, int look, int side, bool keepExternShade = false) {
+	if (!s) return;
+	if (!keepExternShade)
+		dropExternShadeSide(s, side);    // a look picked here replaces THIS side's loaded model
+	// THE WINDOW LOOK IS NOT TOUCHED. Writing the three flags into `activeLook` was the last piece of
+	// this operation that both sides could see: `applySurfStyle` keys the actor's MATERIAL off them,
+	// so aiming the water flipped the whole tank between lit and unlit and the land visibly changed
+	// with it. The choice belongs to the side that was aimed, and nowhere else.
+	// `aquaShadeSelWater` is NOT touched either: it is a SELECTOR (which side the colour bar shows /
+	// the radio names), and aiming one side's light may not move what the other side displays.
+	AquaSideShade &A = (side == 1) ? s->aquaLandShade : s->aquaWaterShade;
+	A = snapshotShade(s);                // the live sun / gain / material the dialog just wrote…
+	A.useHillshade = (look == RL_HillLambert || look == RL_HillGrdimage);   // …with THIS side's look
+	A.hillGrd      = (look == RL_HillGrdimage);
+	A.litBake      = (look == RL_PBR);
+	applyShading(s);
+	if (s->syncFlatEnable) s->syncFlatEnable();
 }
 
 // Add a GMTdataset overlay (lines or points) to an existing scene. `xyz` is npts

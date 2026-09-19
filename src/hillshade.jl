@@ -137,8 +137,12 @@ end
 # consumes it is a choice, and choices are made in exactly one place (`sceneSetReliefLook`, reached
 # through this export). RL_HillGrdimage = 3 is the shade a GMT-computed intensity is consumed by;
 # `keepModel = 1` so declaring it does not discard the model just handed over.
-_hs_declare_look(scene::Ptr{Cvoid}) =
-	ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), scene, Cint(3), Cint(1))
+# `side` aims the declaration at ONE Aquamoto surface (0 water, 1 land); -1, the default, is the whole
+# window. Same act either way, so it is the same export with the side spelled out — never a second
+# setter for the tsunami case.
+_hs_declare_look(scene::Ptr{Cvoid}, side::Int = -1) =
+	ccall(_fn(:gmtvtk_set_relief_look_side_h), Cvoid, (Ptr{Cvoid}, Cint, Cint, Cint),
+	      scene, Cint(3), Cint(1), Cint(side))
 
 function _hs_push_grid(scene::Ptr{Cvoid}, G::GMTgrid, model::Int, d::Dict{String,String}, side::Int)
 	R, (x0, x1, y0, y1) = _hs_reflectance_rng(G, model, d)
@@ -284,9 +288,29 @@ _on_hillshade(scene::Ptr{Cvoid}, cparams::Cstring)::Cint = _on_hillshade(scene, 
 # replaces the first -- the models are alternatives, never a pipeline, so a window is lit by exactly
 # one of them). Newlines are escaped to RS because a manifest value is one line, the same way the
 # :focal recipe carries its catalog request.
-_session_record_illum!(scene::Ptr{Cvoid}, raw::String) =
-	_session_record_single!(scene, :illum, :menu;
+#
+# ONE PER SIDE on an Aquamoto layer (`side` 0 water / 1 land; -1 = the whole window). The two sides
+# are lit independently, so each keeps its own recipe and a run aimed at one replaces only that one —
+# `name` carries the side, and the forget below matches on it. A window-wide run replaces ALL of them:
+# it IS the whole window's light, and leaving a side recipe behind would re-apply an older per-side
+# model on top of it at load.
+_session_illum_name(side::Int) = side < 0 ? "" : (side == 1 ? "land" : "water")
+
+function _session_forget_illum!(scene::Ptr{Cvoid}, side::Int)
+	scene == C_NULL && return nothing
+	side < 0 && return _session_forget!(scene, :illum)      # the whole window: every side recipe goes
+	rs = get(_SESSION_LOG, scene, nothing)
+	rs === nothing || filter!(r -> !(r.kind === :illum && r.name == _session_illum_name(side)), rs)
+	return nothing
+end
+
+function _session_record_illum!(scene::Ptr{Cvoid}, raw::String, side::Int = -1)
+	_session_forget_illum!(scene, side)
+	# A side recipe must not survive under a window-wide one either — the window-wide forget above
+	# already took them; here only this side's older entry is gone.
+	return _session_record!(scene, :illum, :menu; name = _session_illum_name(side),
 	                        params = Dict{String,Any}("cparams" => replace(raw, '\n' => '\x1e')))
+end
 
 # The dialog's request block reproduces the illumination exactly, so Save Session stores it verbatim
 # as an :illum recipe (no data: a reflectance is derived, never a document) and Load re-dispatches
@@ -303,6 +327,10 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		d = _nswing_parse(raw)
 		model = parse(Int, _get(d, "model"))
 		num(key, dflt) = (v = _get(d, key); isempty(v) ? dflt : parse(Float64, v))
+		# WHICH SIDE the dialog was aimed at: -1 (absent) = the whole window, which is every ordinary
+		# window and the toolbar button; 0 = an Aquamoto layer's WATER, 1 = its LAND. The two palette
+		# buttons beside Shade Water / Shade Land send it, so the method lands on that side alone.
+		side = (v = _get(d, "side"); isempty(v) ? -1 : parse(Int, v))
 
 		# WHICH GRID: the one the window is CURRENTLY SHOWING. The dialog resolves it C++-side through
 		# the same `resolveActiveGrid` the colour bar, the Z axis and the hover readout use, and sends
@@ -323,11 +351,17 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		# the ONE setter that may change a method (sceneSetReliefLook, via gmtvtk_set_relief_look_h),
 		# and stop. RL_: 0 none, 1 PBR, 2 Hillshade-Lambert, 3 Hillshade-grdimage.
 		if model in (1, 5, 6, 7)
+			# NOTE: the C++ side already applied this look when the method button was pressed (the dialog
+			# calls the look setter itself for 1/5/6/7). This branch exists for the session-replay door,
+			# which arrives with the same request block and no dialog behind it — and it must honour the
+			# side the block carries, exactly as the dialog does.
 			rl = (model == 6) ? 2 : (model == 5) ? 3 : 1      # 1 and 7 are both the PBR look
-			ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), scene, Cint(rl), Cint(0))
-			# A look REPLACES a loaded model, so an Aquamoto layer must stop re-lighting itself from one.
-			haskey(_AQUA, scene) && empty!(_AQUA[scene].illum)
-			_session_record_illum!(scene, raw)
+			ccall(_fn(:gmtvtk_set_relief_look_side_h), Cvoid, (Ptr{Cvoid}, Cint, Cint, Cint),
+			      scene, Cint(rl), Cint(0), Cint(side))
+			# A look REPLACES a loaded model, so an Aquamoto layer must stop re-lighting itself from one
+			# — on the side this look was aimed at, and on that side only.
+			haskey(_AQUA, scene) && _aqua_forget_illum!(_AQUA[scene], side)
+			_session_record_illum!(scene, raw, side)
 			return Cint(1)
 		end
 
@@ -336,13 +370,19 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		# colour. (model 0, used below, is the quieter clear: the model painted its own picture, so the
 		# reflectance goes but the Shading dock keeps its look.)
 		if model == 10
-			_hs_push(scene, Matrix{Float32}(undef, 0, 0), 0.0, 0.0, 0.0, 0.0, -1)
+			# AIMED AT ONE SIDE, the ✕ takes that side's light off and leaves the other's standing — the
+			# window-wide removal drops both on purpose, so it is not what a side-aimed ✕ means.
+			if side >= 0
+				ccall(_fn(:gmtvtk_clear_shade_side_h), Cvoid, (Ptr{Cvoid}, Cint), scene, Cint(side))
+			else
+				_hs_push(scene, Matrix{Float32}(undef, 0, 0), 0.0, 0.0, 0.0, 0.0, -1)
+			end
 			# Removal undoes what the models did: an Aquamoto layer also stops re-lighting itself at
 			# every new timestep (the loaded model is what makes _aquamoto_slice do that).
-			haskey(_AQUA, scene) && empty!(_AQUA[scene].illum)
+			haskey(_AQUA, scene) && _aqua_forget_illum!(_AQUA[scene], side)
 			# ...and the session forgets the light too: a saved window whose illumination was removed
-			# must reload unlit, not re-run the model the user just took off.
-			_session_forget!(scene, :illum)
+			# must reload unlit, not re-run the model the user just took off. That side's recipe only.
+			_session_forget_illum!(scene, side)
 			_hs_restore_original(scene, gname)
 			return Cint(1)
 		end
@@ -361,9 +401,12 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		# So each side is illuminated FROM ITS OWN SURFACE, through the same _hs_reflectance, and the
 		# water is re-lit again at every timestep because its surface is a different one each time.
 		# Models 8/9 make a NEW variable rather than modulating, so they fall through to the plain path.
-		if haskey(_AQUA, scene) && model in (2, 3, 4)
-			_aqua_illuminate!(scene, model, d)
-			_session_record_illum!(scene, raw)
+		# …unless the window is showing the layer as TWO SURFACES. Then each side is a plain grid with
+		# its own name, and the tool lights it exactly as it lights any grid — no composite, no side
+		# codes, and every method (VTK PBR included) means on a tsunami what it means everywhere else.
+		if haskey(_AQUA, scene) && !_AQUA[scene].twosurf && model in (2, 3, 4)
+			_aqua_illuminate!(scene, model, d, side)
+			_session_record_illum!(scene, raw, side)
 			return Cint(1)
 		end
 
@@ -410,7 +453,7 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		# Models 2/3/4 only MODULATE the grid already in the window, so the request block is the whole
 		# record of them (below). 9 is excluded on purpose: it also DELIVERS a derived grid, which has
 		# its own :generated recipe, and re-running the model on load would add that grid a second time.
-		model in (2, 3, 4) && _session_record_illum!(scene, raw)
+		model in (2, 3, 4) && _session_record_illum!(scene, raw, side)
 		return Cint(1)
 	catch e
 		_tool_failed(scene, "Illumination", e)

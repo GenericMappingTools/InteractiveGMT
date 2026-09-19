@@ -5786,6 +5786,18 @@ public:
 	QButtonGroup *models = nullptr, *algos = nullptr;
 	int model = 1;              // VTK (PBR) — see HillshadeState::model
 	bool reallyClose = false;   // set by the parked row's "Delete": let the next close through
+	QString titleBase = "Illumination";   // the picked method's name; the side (if any) is appended
+
+	// WHICH SIDE THIS DIALOG IS AIMED AT, read straight off the Scene (`aquaIllumSide`: -1 the whole
+	// window, 0 the tsunami's water, 1 its land) so the title, the request block and the look setter
+	// can never disagree about where the method lands — one fact, one place, as everywhere else.
+	int side() const { return sceneAlive(scn) ? scn->aquaIllumSide : -1; }
+	void retitle() {
+		if (!dlg) return;
+		const int sd = side();
+		dlg->setWindowTitle(sd < 0 ? titleBase
+		                           : titleBase + (sd == 1 ? "  —  LAND side" : "  —  WATER side"));
+	}
 
 	// Bring the dialog back from the dock (double-click, the row's checkbox, its "Show" item). ONE
 	// function for every way back in, like xyUnpark / ContourDialog::unpark.
@@ -6317,7 +6329,8 @@ public:
 			{ 8, "False color" },          { 9, "Dynamic Range Compression" },
 		};
 		for (const auto &n : names)
-			if (n.m == m) dlg->setWindowTitle(n.title);
+			if (n.m == m) titleBase = n.title;
+		retitle();
 		// THE WINDOW IS EXACTLY THE PICKED METHOD'S SIZE — method 1 is the only tall one, and nothing
 		// else may inherit its height. The outer layout carries QLayout::SetFixedSize (set in the
 		// constructor), so ACTIVATING it sets the window to the freshly computed hint, up or down;
@@ -6334,8 +6347,11 @@ public:
 	// dialog itself is left exactly as it was, so the light you had aimed is still there to re-apply.
 	void applyRemove() {
 		if (!g_juliaHillshade || !sceneAlive(scn)) return;
-		const QByteArray p = QString("model=10\nazim=0\nelev=0\ngrid=%1\n")
-		                     .arg(QString::fromStdString(activeGridName(scn))).toUtf8();
+		// …and it removes the light of the SIDE this dialog is aimed at, never the other's: the ✕ under
+		// a "LAND side" title must not put the water back to plain colour.
+		const QByteArray p = QString("model=10\nazim=0\nelev=0\ngrid=%1\n%2")
+		                     .arg(QString::fromStdString(activeGridName(scn)),
+		                          side() >= 0 ? QString("side=%1\n").arg(side()) : QString()).toUtf8();
 		g_juliaHillshade(scn, p.constData());
 	}
 
@@ -6372,7 +6388,38 @@ public:
 		// switch, `sceneSetShadedImage2D` (the same call the "Shaded image (2-D)" box makes).
 		// Without that, picking 1 on a flat-image window would silently hand back 7, and picking 7 on
 		// a surface would hand back 1: two buttons that do whatever the window happens to already be.
-		if (model == 1 || model == 5 || model == 6 || model == 7) {
+		// …EXCEPT METHOD 1 ON A HOST-COMPOSITED LAYER (an Aquamoto tsunami), which is NOT a look this
+		// window can wear. The branch below reasons it out itself, two screens down, for the geometry
+		// switch: a composited layer "has no plain-grid form". The same is true of the MATERIAL — one
+		// actor carries a texture of TWO surfaces, so a PBR material on it cannot light water from the
+		// stage and land from the bathymetry, which is the entire point of the per-side illumination.
+		// VTK (PBR) there means what it means everywhere else: VTK's own PBR RENDER, taken PER SIDE and
+		// combined (aqua_shade_image, aquashade.jl) — so the request goes to the host like methods 2-4,
+		// instead of being swallowed here. Without this the dialog set a look, Julia never heard of the
+		// pick, and the tsunami kept the plain composite: the method appeared to do nothing.
+		// METHOD 1 ON A HOST-COMPOSITED LAYER (an Aquamoto tsunami) IS NOT A LOOK THIS WINDOW CAN WEAR.
+		// One actor carries a texture of TWO surfaces, so a PBR material on it cannot light water from
+		// the stage and land from the bathymetry — which is the point of the per-side illumination. It
+		// goes to the host like methods 2-4, which build the combined image (aqua_shade_image) and drape
+		// it. Swallowed here, the pick never reached Julia at all and the tsunami kept the plain
+		// composite. The branch below already reasons the same way for the geometry switch.
+		// IS THIS A TSUNAMI WINDOW — not "is it flat right now". `customLayerTexture` is only true in
+		// the flat-image mode; the 3-D surface path clears it (see sceneSetShadedImage2D's else branch),
+		// so gating on it alone sent VTK (PBR) back to the look branch whenever the window happened to
+		// be in 3-D, and the pick did nothing. The layer's own bathymetry is what says "tsunami", in
+		// either geometry.
+		// THE TEST IS "DOES THIS SCENE HAVE AN AQUAMOTO", asked of the registry that owns the answer.
+		// `customLayerTexture` only means "flat-image mode right now" (the 3-D path clears it) and
+		// `aquaBathyZ` is filled only on some paths, so both let the gate silently miss and the pick
+		// fell back to a look.
+		const bool composited = scn && ((g_aquamotoHasWindow && g_aquamotoHasWindow(scn)) ||
+		                                scn->customLayerTexture || !scn->aquaBathyZ.empty());
+		// ONLY METHOD 1 GOES TO THE HOST ON A TSUNAMI. It is VTK's own RENDER and the material lives on
+		// an ACTOR, so a single composited actor cannot carry one per side — it has to be taken per
+		// side and combined (`aqua_shade_image`). 5, 6 and 7 stay C++ looks, re-lighting the existing
+		// composite in place: that is instant, and routing them to the host instead made every change
+		// of method pay a full rebuild.
+		if (model == 5 || model == 6 || model == 7 || (model == 1 && !composited)) {
 			activeLook(scn).lightAz = eAzim->text().trimmed().toDouble();
 			activeLook(scn).lightEl = eElev->text().trimmed().toDouble();
 			// THE RENDER PASSES belong to method 1 and to nothing else — IBL, ambient occlusion, tone
@@ -6425,9 +6472,15 @@ public:
 			ls.wavelength = eWave->text().trimmed();  ls.amp = eAmp->text().trimmed();
 			ls.oldAlgo = rbOldAlgo->isChecked();
 			g_hillshadeState = ls;
-			sceneSetReliefLook(scn, model == 5 ? RL_HillGrdimage
-			                      : model == 6 ? RL_HillLambert
-			                                   : RL_PBR);
+			const int look = model == 5 ? RL_HillGrdimage
+			               : model == 6 ? RL_HillLambert
+			                            : RL_PBR;
+			// AIMED AT ONE SIDE when the dialog was opened from the Aquamoto palette buttons: a tsunami
+			// layer's water and land stand on different surfaces and each carries its own method, so the
+			// window-wide setter (which copies the look to BOTH sides, deliberately — see its comment)
+			// is not what a side-aimed pick means. Same act, the side variant of the same function.
+			if (side() >= 0) sceneSetReliefLookAquaSide(scn, look, side());
+			else             sceneSetReliefLook(scn, look);
 			return;
 		}
 
@@ -6448,6 +6501,10 @@ public:
 		QStringList kv;
 		kv << QString("model=%1").arg(model);
 		kv << "grid=" + QString::fromStdString(gname);   // illuminate the DISPLAYED layer, not the base
+		// WHICH SIDE (Aquamoto only; absent/-1 = the whole window). It travels IN THE REQUEST BLOCK, so
+		// the session recipe reproduces the aim along with the method — a light saved on the land side
+		// comes back on the land side.
+		if (side() >= 0) kv << QString("side=%1").arg(side());
 		kv << QString("azim=%1").arg(st.azim);
 		kv << QString("elev=%1").arg(st.elev);
 		if (model == 4) {
@@ -6474,6 +6531,30 @@ public:
 			                                          "See the Julia console for the reason.");
 	}
 };
+
+// THE ONE DOOR to the Illumination dialog. Every way in comes through here — the toolbar button
+// (`side < 0`: the whole window) and the two palette buttons beside Shade Water / Shade Land in the
+// Aquamoto dialog (`side` 0 / 1: that tsunami side alone). The aim is written to the Scene BEFORE the
+// dialog is shown, so a dialog that is already open (or parked) is RE-AIMED rather than duplicated:
+// the method the user picks next lands on the side whose button they just pressed, and the title says
+// which. One dialog per window, one place that opens it (SACRED_LAW.md: same operation, same function).
+static void showIllumination(QWidget *parent, Scene *s, int side) {
+	if (!sceneAlive(s)) return;
+	// Start compiling the illumination models NOW, while the user is still choosing one — see
+	// warmupTool (30_app.cpp). Fires on the re-open path too: the warm-up itself only ever runs once
+	// per session, so the second call costs nothing and we never have to reason about which path was
+	// taken.
+	warmupTool("illumination");
+	s->aquaIllumSide = side;
+	auto it = g_hillshadeDlgs.find(s);       // parked or already open -> the SAME dialog, never a 2nd
+	if (it != g_hillshadeDlgs.end() && it->second && it->second->dlg) {
+		it->second->retitle();
+		it->second->unpark();
+		return;
+	}
+	auto *w = new HillshadeDialog(parent, s);
+	if (w->dlg) { w->retitle(); w->dlg->show(); }
+}
 
 class MovieDialog;
 static std::map<Scene *, MovieDialog *> g_movieDlgs;   // one dialog per window, so re-opening unparks it
@@ -28585,17 +28666,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QObject::connect(tbPalette, &QAction::triggered, [s]() { showColorPalettes(s); });
 	QAction *tbIllum = tb->addAction(makeHillshadeIcon(), "Illumination (Hillshade)");
 	tbIllum->setToolTip("Illumination (Hillshade): aim the light that shades the grid");
-	QObject::connect(tbIllum, &QAction::triggered, [win, s]() {
-		// Start compiling the illumination models NOW, while the user is still choosing one — see
-		// warmupTool (30_app.cpp). Fires on the re-open path too: the warm-up itself only ever runs
-		// once per session, so the second call costs nothing and we never have to reason about which
-		// of the two paths the user took.
-		warmupTool("illumination");
-		auto it = g_hillshadeDlgs.find(s);       // parked or already open -> the SAME dialog, never a 2nd
-		if (it != g_hillshadeDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
-		auto *w = new HillshadeDialog(win, s);
-		if (w->dlg) w->dlg->show();
-	});
+	// …through the ONE opener (showIllumination). `-1` = the whole window: the toolbar button is the
+	// window's own door, so it clears any side the Aquamoto buttons had aimed the dialog at.
+	QObject::connect(tbIllum, &QAction::triggered, [win, s]() { showIllumination(win, s, -1); });
 
 	// Swipe / Link: ONE toolbar slot, two ways to compare two rasters (57_swipe.cpp), sitting
 	// immediately before the Info flyout. Shaped like the 2D/3D flyout (icon-only slot + a native

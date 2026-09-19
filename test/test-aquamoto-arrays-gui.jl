@@ -83,18 +83,18 @@ end
 			IG._on_drop(f.h, nc);  aqf_pump(40)
 			shot = joinpath(dir, "before.png")
 			@test aqf_shoot(f.h, shot)
-			before = aqf_mask_pixels(shot)       # the mask is unchecked: its whites are not drawn yet
+			before = aqf_mask_pixels(shot)       # the mask is unchecked: none of its pixels are drawn yet
 
 			@test aqf_show(f.h, "LongBeach", true);  aqf_pump(15)
 			after = joinpath(dir, "after.png")
 			@test aqf_shoot(f.h, after)
 			whites = aqf_mask_pixels(after)
-			# THE REGRESSION, in the only terms that cannot lie: checking the mask must put its white
+			# THE REGRESSION, in the only terms that cannot lie: checking the mask must put its own
 			# region on the screen. It used to add nothing at all — the plane was parked at a height
 			# fixed before the composite existed, and the composite then stood over it.
 			@test whites > before + 200
-			# …and the picture drawn is the MASK, not a tinted copy of something else: its whites are
-			# white (a black-and-white picture, opaque), and they cover a small part of the view.
+			# …and the picture drawn is the MASK, not a tinted copy of something else: a two-state
+			# black-and-white picture, opaque, covering a small part of the view.
 			@test whites < 0.5 * aqf_pixel_count(after)
 
 			# It must STAY on screen when the window's geometry moves under it — a new slice, a

@@ -25,6 +25,13 @@
 // the first match discarding the rest (see aquamoto.jl's _aqua_find_all_varnames/_aquamoto_set_var).
 // ============================================================================================
 
+// The Illumination dialog's ONE opener and the toolbar glyph that stands for it, both defined in
+// later fragments of this same translation unit (70_window.cpp and 85_polygon.cpp). Declared here
+// because this fragment is #included BEFORE them (see gmtvtk.cpp's ordered list) — the same
+// forward-declaration 70_window.cpp itself uses for makeHillshadeIcon.
+static void showIllumination(QWidget *parent, Scene *s, int side);
+static QIcon makeHillshadeIcon();
+
 // Run a Julia expression synchronously via the console-eval bridge, with `scene` as the acting
 // window. Fills `out` with printed stdout and returns true on success; on failure (an exception in
 // the evaluated code, or the bridge not registered yet) fills `out` with the error text and
@@ -263,6 +270,10 @@ public:
 	QLineEdit *pathEdit = nullptr;
 	QLabel *timeStepsLabel = nullptr, *waterTransparencyLabel = nullptr;
 	QScrollBar *sliceSlider = nullptr;    // QScrollBar, NOT QSlider -- arrow buttons at each tip (Mirone-style)
+	// The Debug tab's COPY of the slice row. It drives `sliceSlider`; it is refreshed FROM it only in
+	// afterSliceShown, so nothing of the mirror runs while the arrows auto-repeat.
+	QScrollBar *dbgSlider_ = nullptr;
+	QLineEdit  *dbgSpin_   = nullptr;
 	QSlider *waterTransparencySlider = nullptr;
 	QLineEdit *sliceSpin = nullptr;       // a PLAIN edit box (replaces the .ui's QSpinBox at runtime --
 	                                      // see the constructor), not a spinner: user wants a simple box
@@ -289,6 +300,7 @@ public:
 	QString activeVar_;                   // the varname currently selected in the quantity picker
 	bool settingVar_ = false;              // guard: suppress fireSlice while WE are (un)checking radios
 	QRadioButton *shadeWaterBtn = nullptr, *shadeLandBtn = nullptr;   // split which side's colour scale is shown
+	QToolButton *illumWaterBtn = nullptr, *illumLandBtn = nullptr;    // …and each side's own Illumination dialog
 	bool opened_ = false;                 // a file has been successfully opened this session
 
 	// ---- Cinema tab: playback, the view boxes and the floating η(x) figure -------------------
@@ -396,6 +408,8 @@ public:
 		benchKeepRamCheck       = w->findChild<QCheckBox *>("benchKeepRamCheck");
 		shadeWaterBtn           = w->findChild<QRadioButton *>("shadeWaterButton");
 		shadeLandBtn            = w->findChild<QRadioButton *>("shadeLandButton");
+		illumWaterBtn           = w->findChild<QToolButton *>("illumWaterButton");
+		illumLandBtn            = w->findChild<QToolButton *>("illumLandButton");
 		stageRadioButton        = w->findChild<QRadioButton *>("stageRadioButton");
 		xmomentRadioButton      = w->findChild<QRadioButton *>("xmomentRadioButton");
 		ymomentRadioButton      = w->findChild<QRadioButton *>("ymomentRadioButton");
@@ -471,6 +485,106 @@ public:
 				});
 			}
 		}
+		// THE ANUGA TAB IS LOCKED — the feature is not working yet, so the tab is there to be seen and
+		// not to be used. `enabled=false` on the page (set in the .ui) greys its contents; the TAB
+		// ITSELF is disabled here, which only a QTabBar can do, so it cannot be selected at all.
+		if (auto *tabs = w->findChild<QTabWidget *>("mainTabWidget")) {
+			if (QWidget *anuga = w->findChild<QWidget *>("anugaTab")) {
+				const int idx = tabs->indexOf(anuga);
+				if (idx >= 0) {
+					tabs->setTabEnabled(idx, false);
+					tabs->setTabToolTip(idx, "ANUGA support is not working yet");
+				}
+			}
+		}
+
+		// THE DIALOG IS NO TALLER THAN THE "Cinema" TAB NEEDS.
+		//
+		// A QTabWidget's height is the TALLEST page's, so one long page makes the whole dialog long no
+		// matter which tab you are on. The height that is wanted is Cinema's — and it is not a number
+		// invented here: it is that page's OWN sizeHint, out of the .ui. Every page that needs more
+		// than that gets a scroll area and scrolls inside it; the .ui's own geometry is never
+		// multiplied, overridden or second-guessed.
+		if (auto *tabs = w->findChild<QTabWidget *>("mainTabWidget")) {
+			if (QWidget *cine = w->findChild<QWidget *>("cinemaTab")) {
+				const int cap = cine->sizeHint().height();
+				if (cap > 0) {
+					for (int i = 0; i < tabs->count(); ++i) {
+						QWidget *page = tabs->widget(i);
+						if (!page || page == cine) continue;
+						if (page->sizeHint().height() <= cap) continue;
+						// Re-parent this page's own layout into a scroll area, so the page keeps every
+						// widget and every connection it already has — nothing is rebuilt.
+						QLayout *inner = page->layout();
+						if (!inner) continue;
+						auto *host = new QWidget;
+						host->setLayout(inner);
+						auto *sa = new QScrollArea(page);
+						sa->setWidgetResizable(true);
+						sa->setFrameShape(QFrame::NoFrame);
+						sa->setWidget(host);
+						auto *outer = new QVBoxLayout(page);
+						outer->setContentsMargins(0, 0, 0, 0);
+						outer->addWidget(sa);
+					}
+					tabs->setMaximumHeight(cap + tabs->tabBar()->sizeHint().height() + 8);
+				}
+			}
+		}
+
+		// THE DEBUG TAB'S SLICE ROW IS A SECOND SET OF WIDGETS FOR THE SAME THING. A Qt layout has one
+		// parent, so "the slice group on both tabs" is two copies — and two copies must never be two
+		// sources of truth. `sliceSlider` stays THE slider (every slice request in this file goes
+		// through it, see fireSlice); the Debug copy only forwards to it and mirrors it back, so
+		// whichever tab you are on you are moving the same value and reading the same number.
+		if (auto *dbgSlider = w->findChild<QScrollBar *>("dbgSliceSlider")) {
+			auto *dbgSpin  = w->findChild<QLineEdit *>("dbgSliceNSpinBox");
+			auto *dbgLabel = w->findChild<QLabel *>("dbgSliceNLabel");
+			dbgSlider->setStyleSheet(sliceSlider ? sliceSlider->styleSheet() : QString());
+			if (sliceSlider) {
+				dbgSlider->setRange(sliceSlider->minimum(), sliceSlider->maximum());
+				dbgSlider->setValue(sliceSlider->value());
+				// The Debug copy DRIVES the real slider…
+				QObject::connect(dbgSlider, &QScrollBar::valueChanged, w, [this](int v) {
+					if (sliceSlider && sliceSlider->value() != v) sliceSlider->setValue(v);
+				});
+				// …and FOLLOWS it only once a slice has actually been drawn (afterSliceShown), NEVER on
+				// every valueChanged. The arrow buttons auto-repeat: hooking the mirror to valueChanged
+				// put two widget updates inside each repeat, on the same thread that is blocking on the
+				// host for the slice, and holding an arrow down stalled the update. Nothing of this
+				// mirror may sit in that path.
+				dbgSlider_ = dbgSlider;
+				dbgSpin_   = dbgSpin;
+				QObject::connect(sliceSlider, &QScrollBar::rangeChanged, w,
+				                 [dbgSlider](int lo, int hi) { dbgSlider->setRange(lo, hi); });
+			}
+			if (dbgSpin) {
+				dbgSpin->setText(QString::number(dbgSlider->value()));
+				QObject::connect(dbgSpin, &QLineEdit::returnPressed, w, [this, dbgSpin]() {
+					bool ok = false; const int v = dbgSpin->text().trimmed().toInt(&ok);
+					if (ok && sliceSlider) sliceSlider->setValue(v);
+				});
+			}
+			// The header label is mirrored from the netCDF tab's own, found by name — this dialog keeps
+			// no member for it, and inventing one would be a second source for the same text.
+			if (dbgLabel) {
+				if (auto *srcLabel = w->findChild<QLabel *>("sliceNLabel"))
+					dbgLabel->setText(srcLabel->text());
+			}
+		}
+
+		// "Combined image" (Debug tab) — the button is IN THE .ui, like every other widget in this
+		// dialog; only its wiring belongs here. It was briefly built in code and inserted under the
+		// slider, which is exactly the "modify the .ui under the hood" this project forbids.
+		if (auto *combBtn = w->findChild<QPushButton *>("combinedImageButton")) {
+			QObject::connect(combBtn, &QPushButton::clicked, w, [this]() {
+				QString out; bool closedNow = false;
+				runBlocking(QString("InteractiveGMT._aqua_combined_popup(%1)").arg(aquaScenePtr(scene_)),
+				            out, closedNow);
+				if (!closedNow && win && !out.isEmpty())
+					win->statusBar()->showMessage("Combined image: " + out, 5000);
+			});
+		}
 
 		bool *guard = new bool(false);    // slider<->spin re-entrancy guard, freed with the window
 		QObject::connect(w, &QObject::destroyed, w, [guard]{ delete guard; });
@@ -527,6 +641,32 @@ public:
 				refreshGridColorbar(scene_); rebuildSceneObjects(scene_);
 			}
 		});
+		// EACH SIDE'S OWN ILLUMINATION. A tsunami layer is two images standing on two surfaces (water on
+		// the live stage, land on the static bathymetry), so the METHOD that lights it is a per-side
+		// choice — SACRED_LAW.md's two-surface illumination law, applied to the choice as well as to the
+		// arithmetic. These two buttons open the ONE Illumination dialog (showIllumination, 70_window.cpp
+		// — the very door the viewer's toolbar button uses, never a second copy of it) AIMED at their own
+		// side: whatever method is picked there lands on that side alone and the other's is left standing.
+		//
+		// THEY TOUCH NOTHING ELSE. In particular they do NOT move the Shade Water / Shade Land radio:
+		// that radio swaps the on-screen colour bar and travels to `_aquamoto_slice` as shadeWater /
+		// shadeLand, so checking it from here made aiming the LAND's light change what the WATER shows.
+		// Aiming a light aims a light.
+		auto aimIllum = [this](bool water) {
+			if (!scene_ || !sceneAlive(scene_)) return;
+			// Parented to the VIEWER window, not to this one: the dialog parks in that window's Scene
+			// Objects dock and must outlive an Aquamoto window the user closes.
+			QWidget *owner = scene_->widget ? scene_->widget->window() : (QWidget *)win;
+			showIllumination(owner, scene_, water ? 0 : 1);
+		};
+		if (illumWaterBtn) {
+			illumWaterBtn->setIcon(makeHillshadeIcon());
+			QObject::connect(illumWaterBtn, &QToolButton::clicked, w, [aimIllum]() { aimIllum(true); });
+		}
+		if (illumLandBtn) {
+			illumLandBtn->setIcon(makeHillshadeIcon());
+			QObject::connect(illumLandBtn, &QToolButton::clicked, w, [aimIllum]() { aimIllum(false); });
+		}
 		// Primary-quantities picker: Stage/Xmoment/Ymoment/Or… switches which nc variable is the
 		// ACTIVE one (see aquamoto.jl's _aquamoto_set_var). Exclusive as a group -- an explicit
 		// QButtonGroup, same reasoning as the shadeWater/shadeLand group above (QUiLoader nesting
@@ -1169,6 +1309,15 @@ public:
 	// fireSlice, so it covers the slider, the transport buttons, the timer and the display toggles
 	// alike -- there is no second path by which a slice reaches the screen.
 	void afterSliceShown() {
+		// THE DEBUG TAB'S COPY IS REFRESHED HERE — once per drawn slice, off the auto-repeat path.
+		if (dbgSlider_ && sliceSlider) {
+			const int v = sliceSlider->value();
+			if (dbgSlider_->value() != v) {
+				QSignalBlocker b(dbgSlider_);        // it drives the real slider; don't let it drive back
+				dbgSlider_->setValue(v);
+			}
+			if (dbgSpin_) dbgSpin_->setText(QString::number(v));
+		}
 		if (!scene_ || !sceneAlive(scene_)) return;
 		// An Aquamoto slice is always pushed as a flat draped image (showLayerImageTail sets
 		// layerImgMode), so the mode the window was in has to be re-asserted after each one -- through

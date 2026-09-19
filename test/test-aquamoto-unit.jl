@@ -185,13 +185,19 @@ end
 	IG = InteractiveGMT
 	# The tsunami composite stands on TWO surfaces (water on the live stage, land on the static
 	# bathymetry), so the tool computes ONE reflectance PER SIDE and pushes each with its own `side`.
-	for s in (:_aqua_illuminate!, :_aqua_relight_water!, :_hs_reflectance, :_hs_push_grid)
+	for s in (:_aqua_illuminate!, :_aqua_shaded_rgb, :aqua_shade_image, :_hs_reflectance)
 		@test isdefined(InteractiveGMT, s)
 	end
-	# The state carries what a per-slice relight needs: which slice is on screen, and the loaded model.
+	# ...and the two halves are NEVER paired node-by-node in Julia: the composition is the composite's
+	# own (bakeAquaShade, by the aquaLandMask the image was painted with). A Julia-side merge re-indexed
+	# a BCB reflectance against a TRB mask and striped the water.
+	@test !isdefined(InteractiveGMT, :_aqua_merge_half!)
+	@test !isdefined(InteractiveGMT, :_aqua_combined_reflectance)
+	# The state carries what a per-slice relight needs: which slice is on screen, and the loaded model
+	# OF EACH SIDE (two instances of one thing, indexed by the `side` code the viewer speaks).
 	@test :cur in fieldnames(IG._AquaState)
 	@test :illum in fieldnames(IG._AquaState)
-	@test fieldtype(IG._AquaState, :illum) === Dict{String,String}
+	@test fieldtype(IG._AquaState, :illum) === NTuple{2,Dict{String,String}}
 
 	# ONE reflectance function for every surface: same call, different grid. Two DIFFERENT surfaces
 	# must give two DIFFERENT reflectances -- that difference IS the land/ocean split the old
@@ -212,4 +218,20 @@ end
 		@test Rb != Rs
 	end
 	@test_throws ErrorException IG._hs_reflectance(bat, 99, d)
+end
+
+@testitem "aquamoto: a GMT reflectance comes back in a DIFFERENT layout than its source grid" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	# THE MEASUREMENT THAT EXPLAINS THE STRIPES. `grdgradient` returns a PLAIN (BCB) grid whatever
+	# layout it was handed, so a reflectance may NEVER be paired node-by-node with a mask built in the
+	# source grid's own order. That pairing is what striped the water, and it is why the two halves are
+	# composed by the composite itself (bakeAquaShade) and never in Julia.
+	x = collect(range(0.0, 1.0; length=16))
+	G = IG.GMT.mat2grid(Float32[Float32(sin(6xx) * cos(6yy)) for yy in x, xx in x]; x=x, y=x)
+	G.layout = "TRB"
+	for kw in (Dict{Symbol,Any}(:A => 45.0, :N => "t"), Dict{Symbol,Any}(:E => "s45.0/30.0"))
+		g = IG.GMT.grdgradient(deepcopy(G); kw...)
+		@test size(g.z) == size(G.z)
+		@test g.layout[1:2] != G.layout[1:2]      # it did NOT keep the source's order
+	end
 end

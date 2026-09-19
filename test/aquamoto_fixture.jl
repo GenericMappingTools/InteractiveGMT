@@ -34,8 +34,14 @@ mask `LongBeach`, whose 1s fill the `mask_rows` x `mask_cols` block (everything 
 # 100`), and the mask reader (`_aqua_mask_image`) is a gdalread call — a narrow fixture comes back
 # as an empty GMTdataset and every item below fails for a reason that has nothing to do with the
 # code under test. Real tsunami files are thousands of columns wide.
+#
+# `coast = true` gives the file a REAL COASTLINE instead of an all-wet tank: the bathymetry runs from
+# deep water in the west to +200 m in the east across a wavy shoreline, and the quantity cube stores
+# THE LAND ELEVATION ITSELF on every dry node — which is what an NSWING file does, and what
+# `_aqua_isdry` (|bathymetry - stage| < 1e-2) recognises as dry. Without it the fixture has two dry
+# nodes in the whole grid, so anything measured "on the land side" is measured on two points.
 function aqf_make_tsunami_nc(path::String; nx::Int = 128, ny::Int = 96, nt::Int = 4,
-                             mask_rows = 30:45, mask_cols = 20:40)
+                             mask_rows = 30:45, mask_cols = 20:40, coast::Bool = false)
 	ccall((:GDALAllRegister, AQF_LG), Cvoid, ())
 	drv = aqf_ck(ccall((:GDALGetDriverByName, AQF_LG), Ptr{Cvoid}, (Cstring,), "netCDF"), "find the netCDF driver")
 	ds  = aqf_ck(ccall((:GDALCreateMultiDimensional, AQF_LG), Ptr{Cvoid},
@@ -82,12 +88,18 @@ function aqf_make_tsunami_nc(path::String; nx::Int = 128, ny::Int = 96, nt::Int 
 	    attrs = ["axis" => "Y", "long_name" => "latitude", "standard_name" => "latitude", "units" => "degrees_north"])
 	arr("time", (dt,), f64, collect(Float64, 1:nt), (nt,); attrs = ["axis" => "T", "units" => "seconds"])
 	# Sea in the west, land rising to the east, so the composite really has two sides.
-	arr("bathymetry", (dy, dx), f32,
-	    vec(Float32[-40 + 160 * (x + 9.5) + 20 * (y - 38.5) for x in xs, y in ys]), (ny, nx);
-	    attrs = ["long_name" => "bathymetry"])
-	arr("z", (dt, dy, dx), f32,
-	    vec(Float32[0.1f0 * sin(Float32(k + 20 * (x + 9.5) + 10 * (y - 38.5))) for x in xs, y in ys, k in 1:nt]),
-	    (nt, ny, nx); attrs = ["long_name" => "z"])
+	# THE SHORELINE, when `coast` is on: depth/elevation across a wavy coast, and the cube carrying the
+	# land's own elevation on the dry side (see the note above the signature).
+	bathy = coast ?
+		Float32[-120 + 400 * ((x + 9.5) / 0.5) + 60 * sin(12 * (y - 38.5)) - 130 for x in xs, y in ys] :
+		Float32[-40 + 160 * (x + 9.5) + 20 * (y - 38.5) for x in xs, y in ys]
+	arr("bathymetry", (dy, dx), f32, vec(bathy), (ny, nx); attrs = ["long_name" => "bathymetry"])
+	cube = coast ?
+		Float32[bathy[i, j] > 0 ? bathy[i, j] :                       # DRY: the stage IS the ground
+		        Float32(2.5 * sin(0.6 * k + 26 * (xs[i] + 9.5)) * exp(-((ys[j] - 38.7) / 0.12)^2))
+		        for i in 1:nx, j in 1:ny, k in 1:nt] :
+		Float32[0.1f0 * sin(Float32(k + 20 * (x + 9.5) + 10 * (y - 38.5))) for x in xs, y in ys, k in 1:nt]
+	arr("z", (dt, dy, dx), f32, vec(cube), (nt, ny, nx); attrs = ["long_name" => "z"])
 	msk = zeros(UInt8, nx, ny)
 	msk[mask_cols, mask_rows] .= 0x01
 	arr("LongBeach", (dy, dx), u8, vec(msk), (ny, nx); attrs = ["long_name" => "LongBeach"])
@@ -114,19 +126,28 @@ aqf_shoot(h, path::AbstractString) =
 	ccall(InteractiveGMT._fn(:gmtvtk_window_screenshot), Cint,
 	      (Ptr{Cvoid}, Cstring), h, String(path)) != 0
 
-# HOW MANY OF THE MASK'S OWN WHITE PIXELS ARE ON SCREEN. A mask is a black-and-white picture, so the
-# only thing it can add to a rendered frame is WHITE — and white is what no other part of this scene
-# draws (the composite is a colour ramp over relief, the chrome is grey). Counting them is therefore
-# the one measurement that a layer which is registered, checked and invisible cannot satisfy, which
-# is exactly the bug these tests exist for. Never a whole-image comparison: the tsunami surface moves
-# between frames all by itself.
+# HOW MANY OF THE MASK'S OWN PIXELS ARE ON SCREEN, counted on its BLACK state.
+#
+# A mask is a black-and-white picture, and PURE BLACK is the one tone nothing else in this window
+# draws: the chrome is light grey (0xf3), the composite is a colour ramp, and the axes' text is
+# antialiased grey. So a frame's pure-black pixels are the mask's off-state and nothing else —
+# measured 0 in every frame taken before a mask is checked. A layer that is registered, checked and
+# invisible therefore still cannot satisfy this, which is the bug these tests exist for.
+#
+# IT USED TO COUNT WHITE, AND THAT WAS NOT A MEASUREMENT OF THE MASK. `> 0xf2 on all three channels`
+# also matches the window chrome and the WATER PALETTE'S OWN WHITE BAND (:polar is white at zero, and
+# a calm stage is mostly zero), which together are ~300k pixels of a 4.4 Mpx frame. Checking the mask
+# then LOWERED the count — its opaque black covers more of that white band than its own white block
+# adds — so the assertion "the mask put pixels on screen" failed while the mask was plainly on screen
+# (verified by eye: white block on a black field). Never a whole-image comparison either: the tsunami
+# surface moves between frames all by itself.
 function aqf_mask_pixels(png::AbstractString)
 	I = InteractiveGMT.GMT.gmtread(String(png))
 	A = I.image
-	(ndims(A) == 2) && return count(>(0xf2), A)
+	(ndims(A) == 2) && return count(==(0x00), A)
 	n = 0
 	@inbounds for k in 1:size(A, 1), j in 1:size(A, 2)
-		(A[k, j, 1] > 0xf2 && A[k, j, 2] > 0xf2 && A[k, j, 3] > 0xf2) && (n += 1)
+		(A[k, j, 1] == 0x00 && A[k, j, 2] == 0x00 && A[k, j, 3] == 0x00) && (n += 1)
 	end
 	return n
 end

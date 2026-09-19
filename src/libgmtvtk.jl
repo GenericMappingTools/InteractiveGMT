@@ -132,6 +132,8 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_save_png, :gmtvtk_orbit, :gmtvtk_set_stereo,
 	:gmtvtk_set_view_azel_h, :gmtvtk_get_view_azel_h, :gmtvtk_grid_row_h, :gmtvtk_set_title_extra_h,
 	:gmtvtk_layer_is_image_h, :gmtvtk_has_extern_shade_h, :gmtvtk_set_relief_look_h,
+	:gmtvtk_set_relief_look_side_h, :gmtvtk_clear_shade_side_h, :gmtvtk_has_extern_shade_side_h,
+	:gmtvtk_show_illumination_h,
 	:gmtvtk_open_empty, :gmtvtk_set_drop_callback, :gmtvtk_set_paste_callback, :gmtvtk_add_surface_h,
 	:gmtvtk_promote_surface_h, :gmtvtk_replace_base_grid_h, :gmtvtk_show_layer_image_h, :gmtvtk_show_layer_rgba_h,
 	:gmtvtk_aqua_set_land_cpt_h, :gmtvtk_aqua_set_bathy_h, :gmtvtk_aqua_set_var_label_h,
@@ -227,6 +229,13 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_frame_for_image_h, :gmtvtk_fit2d, :gmtvtk_hide_surface,
 	:gmtvtk_hide_other_grids, :gmtvtk_hide_other_images,
 	:gmtvtk_capture_rect_rgb, :gmtvtk_capture_rect_databaked, :gmtvtk_free_rgb, :gmtvtk_get_crs, :gmtvtk_reframe_h,
+	:gmtvtk_lod_settle_h,          # drive the tile pyramid to convergence before grabbing its pixels
+	:gmtvtk_pref_nan_color,        # THE Preferences NaN fill colour, for a host that paints NaNs itself
+	:gmtvtk_set_capture_scale_h,   # magnification gmtvtk_capture_rect_rgb photographs a window at
+	:gmtvtk_set_render_size_h,     # size a window's GL surface, for a window that exists to be photographed
+	:gmtvtk_make_photo_window_h,   # …and take it off the screen + strip its chrome: a render target, never seen
+	:gmtvtk_aquamoto_open_h,       # the Geophysics > Tsunamis > Aquamoto menu act, reachable from the host
+	:gmtvtk_pbr_render_offscreen,  # method 1: VTK's PBR render into an offscreen buffer — no window at all
 	:gmtvtk_show_profile_xy,
 	:gmtvtk_xyplot_open, :gmtvtk_xyplot_add_series, :gmtvtk_xyplot_clear,
 	:gmtvtk_xyplot_is_alive, :gmtvtk_xyplot_close, :gmtvtk_xyplot_raise, :gmtvtk_xyplot_set_owner,

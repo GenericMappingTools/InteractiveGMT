@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>386</width>
-    <height>525</height>
+    <width>420</width>
+    <height>581</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -108,88 +108,6 @@
            </layout>
           </item>
          </layout>
-        </item>
-        <item>
-         <widget class="QGroupBox" name="primaryQuantitiesGroupBox">
-          <property name="sizePolicy">
-           <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
-            <horstretch>0</horstretch>
-            <verstretch>0</verstretch>
-           </sizepolicy>
-          </property>
-          <property name="title">
-           <string>Primary quantities (ANUGA)</string>
-          </property>
-          <layout class="QVBoxLayout" name="primaryQuantitiesVLayout">
-           <item>
-            <layout class="QHBoxLayout" name="primaryQuantitiesRadioLayout">
-             <item>
-              <widget class="QRadioButton" name="stageRadioButton">
-               <property name="text">
-                <string>Stage</string>
-               </property>
-               <property name="checked">
-                <bool>true</bool>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QRadioButton" name="xmomentRadioButton">
-               <property name="text">
-                <string>Xmoment</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QRadioButton" name="ymomentRadioButton">
-               <property name="text">
-                <string>Ymoment</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QComboBox" name="orComboBox">
-               <item>
-                <property name="text">
-                 <string>Or ...</string>
-                </property>
-               </item>
-              </widget>
-             </item>
-            </layout>
-           </item>
-           <item>
-            <layout class="QHBoxLayout" name="derivedVarLayout">
-             <item>
-              <widget class="QCheckBox" name="derivedVarCheckBox">
-               <property name="enabled">
-                <bool>false</bool>
-               </property>
-               <property name="text">
-                <string>Derived var</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QComboBox" name="derivedVarComboBox">
-               <item>
-                <property name="text">
-                 <string>Absolute Velocity (V)</string>
-                </property>
-               </item>
-              </widget>
-             </item>
-             <item>
-              <widget class="QToolButton" name="derivedVarApplyButton">
-               <property name="text">
-                <string>↗</string>
-               </property>
-              </widget>
-             </item>
-            </layout>
-           </item>
-          </layout>
-         </widget>
         </item>
         <item>
          <layout class="QVBoxLayout" name="sliceGroupLayout">
@@ -309,8 +227,17 @@
         </item>
         <item>
          <layout class="QHBoxLayout" name="shadeTogglesLayout">
+          <property name="spacing">
+           <number>2</number>
+          </property>
           <item>
            <widget class="QRadioButton" name="shadeWaterButton">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
             <property name="text">
              <string>Shade Water</string>
             </property>
@@ -320,11 +247,46 @@
            </widget>
           </item>
           <item>
+           <spacer name="shadeTogglesGapSpacer">
+            <property name="orientation">
+             <enum>Qt::Orientation::Horizontal</enum>
+            </property>
+            <property name="sizeType">
+             <enum>QSizePolicy::Policy::Fixed</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>18</width>
+              <height>10</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
            <widget class="QRadioButton" name="shadeLandButton">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
             <property name="text">
              <string>Shade Land</string>
             </property>
            </widget>
+          </item>
+          <item>
+           <spacer name="shadeTogglesTailSpacer">
+            <property name="orientation">
+             <enum>Qt::Orientation::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>0</width>
+              <height>10</height>
+             </size>
+            </property>
+           </spacer>
           </item>
          </layout>
         </item>
@@ -359,32 +321,17 @@
            </widget>
           </item>
           <item>
-           <widget class="QPushButton" name="showMeshButton">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="font">
-             <font>
-              <bold>true</bold>
-             </font>
-            </property>
-            <property name="text">
-             <string>Show mesh</string>
-            </property>
-           </widget>
-          </item>
-          <item>
            <widget class="QPushButton" name="loadRamButton">
             <property name="font">
              <font>
               <bold>true</bold>
              </font>
             </property>
-            <property name="text">
-             <string>Load all in RAM</string>
-            </property>
             <property name="toolTip">
              <string>Read the whole cube into memory, so slice changes stop hitting the disk</string>
+            </property>
+            <property name="text">
+             <string>Load all in RAM</string>
             </property>
            </widget>
           </item>
@@ -392,20 +339,308 @@
         </item>
        </layout>
       </widget>
-      <widget class="QWidget" name="shadingImageTab">
+      <widget class="QWidget" name="debugTab">
        <attribute name="title">
-        <string>Shading OR Image</string>
+        <string>Debug</string>
        </attribute>
-       <layout class="QVBoxLayout" name="shadingImageTabLayout">
+       <layout class="QVBoxLayout" name="debugTabLayout">
         <item>
-         <widget class="QLabel" name="shadingImagePlaceholderLabel">
-          <property name="text">
-           <string>Shading / Image options go here</string>
+         <layout class="QVBoxLayout" name="dbgSliceGroupLayout">
+          <property name="spacing">
+           <number>0</number>
           </property>
-          <property name="alignment">
-           <set>Qt::AlignmentFlag::AlignCenter</set>
+          <item>
+           <layout class="QHBoxLayout" name="dbgSliceHeaderLayout">
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item>
+             <spacer name="dbgSliceHeaderSpacer">
+              <property name="orientation">
+               <enum>Qt::Orientation::Horizontal</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>0</width>
+                <height>0</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QLabel" name="dbgSliceNLabel">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="text">
+               <string>Slice n?</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <layout class="QHBoxLayout" name="dbgSliceSliderLayout">
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item>
+             <widget class="QScrollBar" name="dbgSliceSlider">
+              <property name="minimum">
+               <number>1</number>
+              </property>
+              <property name="maximum">
+               <number>180</number>
+              </property>
+              <property name="value">
+               <number>1</number>
+              </property>
+              <property name="orientation">
+               <enum>Qt::Orientation::Horizontal</enum>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLineEdit" name="dbgSliceNSpinBox">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>50</width>
+                <height>16777215</height>
+               </size>
+              </property>
+              <property name="text">
+               <string>1</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="debugIllumLayout">
+          <property name="spacing">
+           <number>6</number>
+          </property>
+          <item>
+           <widget class="QPushButton" name="combinedImageButton">
+            <property name="toolTip">
+             <string>Show this layer's combined water/land image in a display of its own</string>
+            </property>
+            <property name="text">
+             <string>Combined image</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QToolButton" name="illumWaterButton">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="toolTip">
+             <string>Illumination of the WATER side: pick the method the wet surface is lit with</string>
+            </property>
+            <property name="text">
+             <string/>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QToolButton" name="illumLandButton">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="toolTip">
+             <string>Illumination of the LAND side: pick the method the dry surface is lit with</string>
+            </property>
+            <property name="text">
+             <string/>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="debugIllumTailSpacer">
+            <property name="orientation">
+             <enum>Qt::Orientation::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>0</width>
+              <height>10</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <spacer name="debugTailSpacer">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>1</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="anugaTab">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <attribute name="title">
+        <string>ANUGA</string>
+       </attribute>
+       <attribute name="toolTip">
+        <string>ANUGA support is not working yet</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="anugaTabLayout">
+        <item>
+         <widget class="QGroupBox" name="primaryQuantitiesGroupBox">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="title">
+           <string>Primary quantities (ANUGA)</string>
+          </property>
+          <layout class="QVBoxLayout" name="primaryQuantitiesVLayout">
+           <item>
+            <layout class="QHBoxLayout" name="primaryQuantitiesRadioLayout">
+             <item>
+              <widget class="QRadioButton" name="stageRadioButton">
+               <property name="text">
+                <string>Stage</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QRadioButton" name="xmomentRadioButton">
+               <property name="text">
+                <string>Xmoment</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QRadioButton" name="ymomentRadioButton">
+               <property name="text">
+                <string>Ymoment</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QComboBox" name="orComboBox">
+               <item>
+                <property name="text">
+                 <string>Or ...</string>
+                </property>
+               </item>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="derivedVarLayout">
+             <item>
+              <widget class="QCheckBox" name="derivedVarCheckBox">
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+               <property name="text">
+                <string>Derived var</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QComboBox" name="derivedVarComboBox">
+               <item>
+                <property name="text">
+                 <string>Absolute Velocity (V)</string>
+                </property>
+               </item>
+              </widget>
+             </item>
+             <item>
+              <widget class="QToolButton" name="derivedVarApplyButton">
+               <property name="text">
+                <string>↗</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="showMeshButton">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+          <property name="font">
+           <font>
+            <bold>true</bold>
+           </font>
+          </property>
+          <property name="text">
+           <string>Show mesh</string>
           </property>
          </widget>
+        </item>
+        <item>
+         <spacer name="anugaSpacer">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>1</height>
+           </size>
+          </property>
+         </spacer>
         </item>
        </layout>
       </widget>
@@ -423,223 +658,223 @@
            <string>Playback</string>
           </property>
           <layout class="QVBoxLayout" name="cinemaPlaybackGroupBoxLayout">
-         <item>
-          <layout class="QHBoxLayout" name="cinemaTransportLayout">
-            <item>
-             <widget class="QPushButton" name="cinemaFirstButton">
-              <property name="maximumSize">
-               <size>
-                <width>34</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>|&lt;</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="cinemaPrevButton">
-              <property name="maximumSize">
-               <size>
-                <width>34</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>&lt;</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="cinemaPlayButton">
-              <property name="maximumSize">
-               <size>
-                <width>64</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>Play</string>
-              </property>
-              <property name="checkable">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="cinemaNextButton">
-              <property name="maximumSize">
-               <size>
-                <width>34</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>&gt;</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="cinemaLastButton">
-              <property name="maximumSize">
-               <size>
-                <width>34</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>&gt;|</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <spacer name="cinemaTransportSpacer">
-              <property name="orientation">
-               <enum>Qt::Orientation::Horizontal</enum>
-              </property>
-              <property name="sizeHint" stdset="0">
-               <size>
-                <width>0</width>
-                <height>0</height>
-               </size>
-              </property>
-             </spacer>
-            </item>
-          </layout>
-         </item>
-         <item>
-          <layout class="QHBoxLayout" name="cinemaRateLayout">
-            <item>
-             <widget class="QLabel" name="cinemaRateLabel">
-              <property name="text">
-               <string>Frames/s</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="cinemaRateEdit">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>56</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>5</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLabel" name="cinemaFromLabel">
-              <property name="text">
-               <string>From</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="cinemaFromEdit">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>56</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>1</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLabel" name="cinemaToLabel">
-              <property name="text">
-               <string>To</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="cinemaToEdit">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>56</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>1</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <spacer name="cinemaRateSpacer">
-              <property name="orientation">
-               <enum>Qt::Orientation::Horizontal</enum>
-              </property>
-              <property name="sizeHint" stdset="0">
-               <size>
-                <width>0</width>
-                <height>0</height>
-               </size>
-              </property>
-             </spacer>
-            </item>
-          </layout>
-         </item>
-         <item>
-          <layout class="QHBoxLayout" name="cinemaLoopLayout">
-            <item>
-             <widget class="QCheckBox" name="cinemaLoopCheckBox">
-              <property name="text">
-               <string>Loop</string>
-              </property>
-              <property name="checked">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QCheckBox" name="cinema3DCheckBox">
-              <property name="text">
-               <string>3-D surface</string>
-              </property>
-              <property name="checked">
-               <bool>false</bool>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <spacer name="cinemaLoopSpacer">
-              <property name="orientation">
-               <enum>Qt::Orientation::Horizontal</enum>
-              </property>
-              <property name="sizeHint" stdset="0">
-               <size>
-                <width>0</width>
-                <height>0</height>
-               </size>
-              </property>
-             </spacer>
-            </item>
-          </layout>
-         </item>
+           <item>
+            <layout class="QHBoxLayout" name="cinemaTransportLayout">
+             <item>
+              <widget class="QPushButton" name="cinemaFirstButton">
+               <property name="maximumSize">
+                <size>
+                 <width>34</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>|&lt;</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="cinemaPrevButton">
+               <property name="maximumSize">
+                <size>
+                 <width>34</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>&lt;</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="cinemaPlayButton">
+               <property name="maximumSize">
+                <size>
+                 <width>64</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>Play</string>
+               </property>
+               <property name="checkable">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="cinemaNextButton">
+               <property name="maximumSize">
+                <size>
+                 <width>34</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>&gt;</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="cinemaLastButton">
+               <property name="maximumSize">
+                <size>
+                 <width>34</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>&gt;|</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="cinemaTransportSpacer">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="cinemaRateLayout">
+             <item>
+              <widget class="QLabel" name="cinemaRateLabel">
+               <property name="text">
+                <string>Frames/s</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="cinemaRateEdit">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>56</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>5</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="cinemaFromLabel">
+               <property name="text">
+                <string>From</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="cinemaFromEdit">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>56</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>1</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="cinemaToLabel">
+               <property name="text">
+                <string>To</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="cinemaToEdit">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>56</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>1</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="cinemaRateSpacer">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="cinemaLoopLayout">
+             <item>
+              <widget class="QCheckBox" name="cinemaLoopCheckBox">
+               <property name="text">
+                <string>Loop</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="cinema3DCheckBox">
+               <property name="text">
+                <string>3-D surface</string>
+               </property>
+               <property name="checked">
+                <bool>false</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="cinemaLoopSpacer">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
           </layout>
          </widget>
         </item>
@@ -649,207 +884,207 @@
            <string>View</string>
           </property>
           <layout class="QVBoxLayout" name="cinemaViewGroupBoxLayout">
-         <item>
-          <layout class="QHBoxLayout" name="cinemaAzElLayout">
-            <item>
-             <widget class="QLabel" name="cinemaAzimuthLabel">
-              <property name="text">
-               <string>Azimuth</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="cinemaAzimuthEdit">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>56</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>-35</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLabel" name="cinemaElevationLabel">
-              <property name="text">
-               <string>Elevation</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="cinemaElevationEdit">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>56</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>20</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <spacer name="cinemaAzElSpacer">
-              <property name="orientation">
-               <enum>Qt::Orientation::Horizontal</enum>
-              </property>
-              <property name="sizeHint" stdset="0">
-               <size>
-                <width>0</width>
-                <height>0</height>
-               </size>
-              </property>
-             </spacer>
-            </item>
-          </layout>
-         </item>
-         <item>
-          <layout class="QHBoxLayout" name="cinemaZoomLayout">
-            <item>
-             <widget class="QLabel" name="cinemaZoomLabel">
-              <property name="text">
-               <string>Zoom (width)</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="cinemaZoomEdit">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>76</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string></string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLabel" name="cinemaVeLabel">
-              <property name="text">
-               <string>z ×</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="cinemaVeEdit">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>56</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>1</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <spacer name="cinemaZoomSpacer">
-              <property name="orientation">
-               <enum>Qt::Orientation::Horizontal</enum>
-              </property>
-              <property name="sizeHint" stdset="0">
-               <size>
-                <width>0</width>
-                <height>0</height>
-               </size>
-              </property>
-             </spacer>
-            </item>
-          </layout>
-         </item>
-         <item>
-          <layout class="QHBoxLayout" name="cinemaSpinLayout">
-            <item>
-             <widget class="QCheckBox" name="cinemaSpinCheckBox">
-              <property name="text">
-               <string>Spin while playing</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="cinemaSpinEdit">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>56</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>0.5</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLabel" name="cinemaSpinLabel">
-              <property name="text">
-               <string>°/frame</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <spacer name="cinemaSpinSpacer">
-              <property name="orientation">
-               <enum>Qt::Orientation::Horizontal</enum>
-              </property>
-              <property name="sizeHint" stdset="0">
-               <size>
-                <width>0</width>
-                <height>0</height>
-               </size>
-              </property>
-             </spacer>
-            </item>
-            <item>
-             <widget class="QPushButton" name="cinemaResetViewButton">
-              <property name="maximumSize">
-               <size>
-                <width>90</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>Reset view</string>
-              </property>
-             </widget>
-            </item>
-          </layout>
-         </item>
+           <item>
+            <layout class="QHBoxLayout" name="cinemaAzElLayout">
+             <item>
+              <widget class="QLabel" name="cinemaAzimuthLabel">
+               <property name="text">
+                <string>Azimuth</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="cinemaAzimuthEdit">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>56</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>-35</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="cinemaElevationLabel">
+               <property name="text">
+                <string>Elevation</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="cinemaElevationEdit">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>56</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>20</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="cinemaAzElSpacer">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="cinemaZoomLayout">
+             <item>
+              <widget class="QLabel" name="cinemaZoomLabel">
+               <property name="text">
+                <string>Zoom (width)</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="cinemaZoomEdit">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>76</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string/>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="cinemaVeLabel">
+               <property name="text">
+                <string>z ×</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="cinemaVeEdit">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>56</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>1</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="cinemaZoomSpacer">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="cinemaSpinLayout">
+             <item>
+              <widget class="QCheckBox" name="cinemaSpinCheckBox">
+               <property name="text">
+                <string>Spin while playing</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="cinemaSpinEdit">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>56</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>0.5</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="cinemaSpinLabel">
+               <property name="text">
+                <string>°/frame</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="cinemaSpinSpacer">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+             <item>
+              <widget class="QPushButton" name="cinemaResetViewButton">
+               <property name="maximumSize">
+                <size>
+                 <width>90</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>Reset view</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
           </layout>
          </widget>
         </item>
@@ -859,124 +1094,111 @@
            <string>Profile figure</string>
           </property>
           <layout class="QVBoxLayout" name="cinemaProfileGroupBoxLayout">
-         <item>
-          <layout class="QHBoxLayout" name="cinemaProfileShowLayout">
-            <item>
-             <widget class="QCheckBox" name="cinemaProfileCheckBox">
-              <property name="text">
-               <string>Show η(x) profile</string>
-              </property>
-              <property name="checked">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <spacer name="cinemaProfileShowSpacer">
-              <property name="orientation">
-               <enum>Qt::Orientation::Horizontal</enum>
-              </property>
-              <property name="sizeHint" stdset="0">
-               <size>
-                <width>0</width>
-                <height>0</height>
-               </size>
-              </property>
-             </spacer>
-            </item>
-          </layout>
-         </item>
-         <item>
-          <layout class="QHBoxLayout" name="cinemaProfileLenLayout">
-            <item>
-             <widget class="QLabel" name="cinemaProfileFromLabel">
-              <property name="text">
-               <string>x from</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="cinemaProfileX0Edit">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>56</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string></string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLabel" name="cinemaProfileLenLabel">
-              <property name="text">
-               <string>length</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="cinemaProfileLenEdit">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>76</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>5000</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLabel" name="cinemaProfileUnitLabel">
-              <property name="text">
-               <string>m</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <spacer name="cinemaProfileLenSpacer">
-              <property name="orientation">
-               <enum>Qt::Orientation::Horizontal</enum>
-              </property>
-              <property name="sizeHint" stdset="0">
-               <size>
-                <width>0</width>
-                <height>0</height>
-               </size>
-              </property>
-             </spacer>
-            </item>
-          </layout>
-         </item>
+           <item>
+            <layout class="QHBoxLayout" name="cinemaProfileShowLayout">
+             <item>
+              <widget class="QCheckBox" name="cinemaProfileCheckBox">
+               <property name="text">
+                <string>Show η(x) profile</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="cinemaProfileShowSpacer">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="cinemaProfileLenLayout">
+             <item>
+              <widget class="QLabel" name="cinemaProfileFromLabel">
+               <property name="text">
+                <string>x from</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="cinemaProfileX0Edit">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>56</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string/>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="cinemaProfileLenLabel">
+               <property name="text">
+                <string>length</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="cinemaProfileLenEdit">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>76</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>5000</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="cinemaProfileUnitLabel">
+               <property name="text">
+                <string>m</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="cinemaProfileLenSpacer">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
           </layout>
          </widget>
-        </item>
-        <item>
-         <spacer name="cinemaTabVSpacer">
-          <property name="orientation">
-           <enum>Qt::Orientation::Vertical</enum>
-          </property>
-          <property name="sizeHint" stdset="0">
-           <size>
-            <width>0</width>
-            <height>0</height>
-           </size>
-          </property>
-         </spacer>
         </item>
        </layout>
       </widget>
@@ -998,21 +1220,21 @@
             <layout class="QHBoxLayout" name="bench1ButtonsLayout">
              <item>
               <widget class="QPushButton" name="benchRunButton">
-               <property name="text">
-                <string>Run simulation</string>
-               </property>
                <property name="toolTip">
                 <string>Run NSWING over the full 50 km flume, then show the result here</string>
+               </property>
+               <property name="text">
+                <string>Run simulation</string>
                </property>
               </widget>
              </item>
              <item>
               <widget class="QPushButton" name="benchLoadButton">
-               <property name="text">
-                <string>Load from disk…</string>
-               </property>
                <property name="toolTip">
                 <string>Open a simulation that was run before</string>
+               </property>
+               <property name="text">
+                <string>Load from disk…</string>
                </property>
               </widget>
              </item>
@@ -1036,14 +1258,14 @@
              </item>
              <item>
               <widget class="QPushButton" name="benchSaveBrowseButton">
-               <property name="text">
-                <string>…</string>
-               </property>
                <property name="maximumSize">
                 <size>
                  <width>28</width>
                  <height>16777215</height>
                 </size>
+               </property>
+               <property name="text">
+                <string>…</string>
                </property>
               </widget>
              </item>
@@ -1051,16 +1273,14 @@
            </item>
            <item>
             <widget class="QCheckBox" name="benchKeepRamCheck">
-             <property name="text">
-              <string>Keep whole cube in RAM</string>
-             </property>
              <property name="toolTip">
               <string>Read every timestep into memory, so slice changes stop hitting the disk</string>
              </property>
+             <property name="text">
+              <string>Keep whole cube in RAM</string>
+             </property>
             </widget>
-
            </item>
-
            <item>
             <widget class="QProgressBar" name="benchProgressBar">
              <property name="value">
@@ -1156,7 +1376,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>386</width>
+     <width>420</width>
      <height>25</height>
     </rect>
    </property>

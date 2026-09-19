@@ -1104,6 +1104,13 @@ struct Scene {
 	bool     surfCtfRange = false;
 	double   nanColor[3] = { 1.0, 1.0, 1.0 };         // Preferences "NaN fill colour" (seeded from QSettings at build)
 	int      surfEdges = 0;                           // current wire-edge state (applied to new tiles)
+	// Magnification gmtvtk_capture_rect_rgb photographs this window at (vtkWindowToImageFilter's
+	// integer scale). 2 is the default every interactive caller wants -- Roi Crop's "Crop Image" grabs
+	// at slide resolution. A host that photographs a window PER ANIMATION FRAME wants 1: the cost of
+	// the grab is the pixel count, and the extra pixels are thrown away by a consumer that needs the
+	// picture at the grid's own node resolution. Set through gmtvtk_set_capture_scale_h; there is
+	// still ONE capture function (SACRED_LAW.md -- never a second one that drifts).
+	int      captureScale = 2;
 	uint64_t lodFrame = 0;                            // bumped each refine; tiles store lastUsed
 	size_t   lodResidentBytes = 0;                    // approx resident tile geometry bytes
 	size_t   lodBudgetBytes = (size_t)1 << 30;        // ~1 GiB cap; LRU-evict offscreen tiles past it
@@ -1268,6 +1275,14 @@ struct Scene {
 	bool aquaShadeSelWater = true;  // which side the Shading dock edits (Shade Water/Land radio). PURE
 	                                // selector: flipping it changes NOTHING visible, NOT the colorbar --
 	                                // it only routes the NEXT shading edit to water (true) or land (false).
+	// WHICH SIDE THE ILLUMINATION DIALOG IS AIMED AT. -1 = the whole window (every ordinary window, and
+	// the toolbar button on an Aquamoto one); 0 = the tsunami's WATER side; 1 = its LAND side. Set by
+	// the two palette buttons beside Shade Water / Shade Land (75_aquamoto.cpp) and by the toolbar
+	// button, ALWAYS immediately before the dialog is opened, so the dialog never inherits a stale aim.
+	// The method picked in the dialog then lands on that side alone -- a tsunami layer is two images
+	// standing on two surfaces (SACRED_LAW.md, two-surface illumination law), so each side's method is
+	// its own choice.
+	int  aquaIllumSide = -1;
 	// 3-D-cube shading selection. A cube layer can be shown either as the fast flat shaded IMAGE (the new
 	// "Shaded image (2-D)" algorithm) or, if the user picks one of the surface looks (Cast shadows /
 	// Hillshade Lambert / grdimage) in the Shading dock, as a real 3-D surface with that look. The dock

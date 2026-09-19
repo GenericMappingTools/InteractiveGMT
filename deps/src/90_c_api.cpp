@@ -2206,8 +2206,12 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 	// no LOD pyramid — hillshadeMapper bakes it once, which is already direct — and rebuilding the base
 	// underneath it would re-make a layer the user is not even looking at. Asked through the SAME
 	// resolveActiveGrid every other "which layer?" question uses (activeGridName).
+	// …and NEVER for a two-sided (Aquamoto) layer, in either geometry. Rebuilding the base is a
+	// WHOLE-SURFACE act: a reflectance pushed for ONE side would re-make the water's half of the
+	// picture too, which is one side's operation reaching the other. `aquaBathyZ` is what says this
+	// layer has two surfaces (the flat form is already excluded by customLayerTexture above).
 	if (activeGridName(s) == s->surfName && !s->layerImgMode && !s->customLayerTexture &&
-	    !s->gridZ.empty() && s->gnx > 1 && s->gny > 1)
+	    s->aquaBathyZ.empty() && !s->gridZ.empty() && s->gnx > 1 && s->gny > 1)
 		rebuildBaseFromStored(s, /*asImage=*/true);
 	applyShading(s);
 }
@@ -6849,6 +6853,128 @@ GMTVTK_API int gmtvtk_aqua_force_land_bar_test(void *scene) {
 	return 1;
 }
 
+// test hook: WHAT IS ACTUALLY ON THE TSUNAMI TEXTURE, one side at a time. `side`: 0 = water, 1 =
+// land, split by the SAME `aquaLandMask` the composite was painted with and the shading reads —
+// never a second opinion about which pixel is which. `out3` gets the mean R, G, B (0..255) of that
+// side's texels; the return value is the texel count, 0 when there is no composite to measure.
+//
+// It exists so "changing the water did not touch the land" is a MEASUREMENT of the pixels, not a
+// claim about the code: light one side, read both sides' means, and the untouched one must come back
+// bit-identical. Reads the live drape texture, changes nothing.
+GMTVTK_API int gmtvtk_aqua_side_rgb_test(void *scene, int side, double *out3) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !out3) return 0;
+	const int want = (side == 1) ? 1 : 0;
+	double sum[3] = { 0.0, 0.0, 0.0 };
+	long n = 0;
+	const int nx = s->gnx, ny = s->gny;
+	// FLAT-IMAGE MODE: the composited drape texture, split by the pushed mask.
+	vtkTexture   *tx = s->drape ? s->drape->GetTexture() : nullptr;
+	vtkImageData *id = tx ? vtkImageData::SafeDownCast(tx->GetInput()) : nullptr;
+	int dims[3] = { 0, 0, 0 };
+	if (id) id->GetDimensions(dims);
+	const bool haveMask = (nx > 1 && ny > 1 && (int)s->aquaLandMask.size() == nx * ny &&
+	                       id && dims[0] == nx && dims[1] == ny);
+	// A PLAIN GRID in flat-image mode has no side split: average the whole texture, so a standalone
+	// half-window can be compared with the same half inside the composite, like with like.
+	const bool plainTex = (!haveMask && id && dims[0] > 1 && dims[1] > 1 && s->layerImgMode);
+	if (haveMask || plainTex) {
+		const unsigned char *px = static_cast<const unsigned char*>(id->GetScalarPointer());
+		if (!px) return 0;
+		const long np = haveMask ? (long)nx * ny : (long)dims[0] * dims[1];
+		const int nc = id->GetNumberOfScalarComponents();
+		for (long i = 0; i < np; ++i) {
+			if (haveMask && (s->aquaLandMask[i] != 0 ? 1 : 0) != want) continue;
+			if (nc >= 4 && px[i * nc + 3] == 0) continue;      // fully transparent texel: not shown
+			sum[0] += px[i * nc]; sum[1] += px[i * nc + 1]; sum[2] += px[i * nc + 2];
+			++n;
+		}
+	}
+	else {
+		// 3-D SURFACE MODE: the BAKED per-vertex colours ("hillshade"), split by the same dry/wet test
+		// the two colour bars are applied with (`aquaLandColors`) — the surface's own side split, not a
+		// second opinion. This is the mode a tsunami window actually opens in, so a per-side test that
+		// only knew about the texture measured nothing.
+		// THE SURFACE, not whatever else the window holds: the biggest actor carrying a baked
+		// "hillshade" array. A flat quad (4 points) also answers to surfActors, and averaging it
+		// instead of the grid is how this hook came back with four nodes and a meaningless colour.
+		vtkPolyData *best = nullptr;
+		vtkIdType bestN = 0;
+		for (vtkActor *a : surfActors(s)) {
+			vtkPolyDataMapper *m = a ? vtkPolyDataMapper::SafeDownCast(a->GetMapper()) : nullptr;
+			if (!m) continue;
+			if (m->GetNumberOfInputConnections(0) > 0) m->Update();
+			vtkPolyData *p = vtkPolyData::SafeDownCast(m->GetInput());
+			if (!p || !p->GetPointData()->GetArray("hillshade")) continue;
+			if (p->GetNumberOfPoints() > bestN) { bestN = p->GetNumberOfPoints(); best = p; }
+		}
+		for (int once = 0; best && once == 0; ++once) {
+			vtkPolyData *pd = best;
+			std::vector<unsigned char> isLand;
+			vtkSmartPointer<vtkUnsignedCharArray> lc = aquaLandColors(s, pd, isLand);
+			// A PLAIN GRID WINDOW (no two-sided layer) has no side split: `side` is ignored and every
+			// node counts. That is what makes a standalone half-window directly comparable with the
+			// same half inside the composite — the point of the whole measurement.
+			const bool split = lc && isLand.size() == (size_t)pd->GetNumberOfPoints();
+			vtkUnsignedCharArray *col =
+				vtkUnsignedCharArray::SafeDownCast(pd->GetPointData()->GetArray("hillshade"));
+			if (!col || col->GetNumberOfTuples() != pd->GetNumberOfPoints()) continue;
+			for (vtkIdType i = 0; i < col->GetNumberOfTuples(); ++i) {
+				if (split && (isLand[(size_t)i] != 0 ? 1 : 0) != want) continue;
+				sum[0] += col->GetTypedComponent(i, 0);
+				sum[1] += col->GetTypedComponent(i, 1);
+				sum[2] += col->GetTypedComponent(i, 2);
+				++n;
+			}
+		}
+	}
+	if (n == 0) return 0;
+	out3[0] = sum[0] / n; out3[1] = sum[1] / n; out3[2] = sum[2] / n;
+	return (int)n;
+}
+
+// test hook: the light a side (or the window, `side < 0`) is actually shading with —
+// {useHillshade, hillGrd, ambient, gain, litBake, roughness, metallic}. The external-reflectance
+// path consumes only the first four, so two windows that disagree there cannot produce the same
+// picture from the same reflectance; this is how that is checked instead of assumed.
+GMTVTK_API int gmtvtk_side_light_test(void *scene, int side, double *out7) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !out7) return 0;
+	if (side < 0) {
+		const LayerShade &lk = s->look;
+		out7[0] = lk.useHillshade; out7[1] = lk.hillGrd; out7[2] = lk.hillAmbient;
+		out7[3] = lk.hillGain;     out7[4] = lk.litBake; out7[5] = lk.roughness; out7[6] = lk.metallic;
+		return 1;
+	}
+	const AquaSideShade &A = (side == 1) ? s->aquaLandShade : s->aquaWaterShade;
+	if (!A.valid) return 0;
+	out7[0] = A.useHillshade; out7[1] = A.hillGrd; out7[2] = A.hillAmbient;
+	out7[3] = A.hillGain;     out7[4] = A.litBake; out7[5] = A.roughness; out7[6] = A.metallic;
+	return 1;
+}
+
+// test hook: hand back the window's LAYER TEXTURE, raw. `dims3` gets {width, height, components};
+// with `buf` null (or too small) nothing is copied and the needed byte count is returned, so a caller
+// sizes its buffer from the same call. This is the picture itself — no window chrome, no screenshot
+// scaling — which is what lets two windows be compared pixel for pixel.
+GMTVTK_API int gmtvtk_layer_texture_test(void *scene, unsigned char *buf, int cap, int *dims3) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !s->drape) return 0;
+	vtkTexture   *tx = s->drape->GetTexture();
+	vtkImageData *id = tx ? vtkImageData::SafeDownCast(tx->GetInput()) : nullptr;
+	if (!id) return 0;
+	int d[3] = { 0, 0, 0 }; id->GetDimensions(d);
+	const int nc = id->GetNumberOfScalarComponents();
+	if (d[0] < 2 || d[1] < 2 || nc < 3) return 0;
+	if (dims3) { dims3[0] = d[0]; dims3[1] = d[1]; dims3[2] = nc; }
+	const int need = d[0] * d[1] * nc;
+	if (!buf || cap < need) return need;
+	const unsigned char *px = static_cast<const unsigned char*>(id->GetScalarPointer());
+	if (!px) return 0;
+	std::memcpy(buf, px, (size_t)need);
+	return need;
+}
+
 // test hook: is the VISIBLE Swipe/Link toolbar button currently enabled? Direct property read, no
 // simulated click -- lets a test catch a model/view desync (swipeAct enabled but the on-screen
 // tbSwipe button left disabled, or vice versa) that driving only the QAction would never expose.
@@ -7299,6 +7425,228 @@ GMTVTK_API void gmtvtk_hide_other_images(void *handle, const char *keepname) {
 // Capture the CURRENT render as RGB pixels, cropped to the on-screen rectangle that world bbox
 // (w,e,south,north — plain data coordinates, same convention rectRoiCrop already computes) projects
 // to at the CURRENT camera state (no flat2d forcing, unlike the GeoTIFF export — works at any
+// THE MAGNIFICATION gmtvtk_capture_rect_rgb photographs THIS window at.
+//
+// That export grabs through vtkWindowToImageFilter at an integer scale, hard-wired to 2 — right for
+// every interactive caller (Roi Crop's "Crop Image" wants slide resolution), wrong for a host that
+// photographs a window once per ANIMATION FRAME: the grab costs its pixel count, and at scale 2 a
+// 640x385 grid came back 1962x2550, twenty times the pixels a node-resolution consumer can use.
+//
+// Set per window, and it is the ONE capture function that reads it — never a second capture export
+// beside the first, which would be the fork SACRED_LAW.md forbids and would drift the moment one of
+// the two got a fix. Default 2, so a window nobody calls this on behaves exactly as before and every
+// existing caller is untouched; 0 or less restores the default.
+GMTVTK_API void gmtvtk_set_capture_scale_h(void *handle, int scale) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	s->captureScale = (scale > 0) ? scale : 2;
+}
+
+// OPEN THIS SCENE'S AQUAMOTO WINDOW — the same act as Geophysics > Tsunamis > "Aquamoto viewer…".
+//
+// The menu entry is `AquamotoWindow::openFor(win, s)` and nothing else (70_window.cpp), and this is
+// that call, reachable from the host so a session can be driven end to end without a hand on the
+// menu. It is NOT a second way to open the tool: same function, same window, same registry entry —
+// re-opening one that already exists just re-shows it, exactly as the menu does.
+//
+// Returns 1 when the window is up, 0 when the scene is dead or the tool declined to open.
+GMTVTK_API int gmtvtk_aquamoto_open_h(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	if (!g_aquamotoReopen) return 0;
+	g_aquamotoReopen(s);
+	QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+	return (g_aquamotoHasWindow && g_aquamotoHasWindow(s)) ? 1 : 0;
+}
+
+// METHOD 1 (VTK PBR) WITHOUT A WINDOW — VTK's own render path, into an OFFSCREEN buffer.
+//
+// Method 1 IS the render: `SetInterpolationToPBR` on an actor, the sky environment lighting it, VTK
+// rasterising it. Nothing may stand in for that (never the CPU bake, which is method 7 and a
+// different picture). But a host that composes a tsunami layer out of TWO such renders, once per
+// animation frame, cannot be opening windows for them: a window shows on the desktop, costs ~0.15 s
+// to build and ~0.35 s to tear down, and — if it is borrowed from the user, or moved off-screen —
+// either hijacks what they are looking at or loses its framebuffer and grabs the background.
+//
+// So the render happens in a vtkRenderWindow of its own with OffScreenRendering ON: no desktop, no
+// visibility to depend on, nothing to flicker, and the same material, the same lights and the same
+// environment the on-screen path uses — `makeGridFromArray` for the surface, `makeSkyEnv` for the
+// environment, the same property calls `applySurfStyle` makes. One render, one grab, no window.
+//
+// The camera is parallel and straight down, framed EXACTLY on the data bbox, so the returned image
+// is the map and nothing else: `outW x outH` pixels covering x0..x1, y0..y1, first row NORTH,
+// RGB triplets. Caller owns the buffer (gmtvtk_free_rgb frees it). Returns 1, or 0 on failure.
+GMTVTK_API int gmtvtk_pbr_render_offscreen(const float *z, int nx, int ny, int zlayout,
+                                           double x0, double x1, double y0, double y1,
+                                           const double *cz, const double *crgb, int ncolor,
+                                           double azim, double elev, double rough, double metal,
+                                           double keyI, double fillI, int outW, int outH,
+                                           unsigned char **outRgb, int *oW, int *oH) {
+	if (!z || nx < 2 || ny < 2 || !outRgb || !oW || !oH) return 0;
+	if (outW < 2) outW = nx;
+	if (outH < 2) outH = ny;
+
+	double zmin = 0.0, zmax = 1.0;
+	vtkSmartPointer<vtkPolyData> pd =
+		makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, /*triangulate=*/true,
+		                  /*wantTC=*/false, zlayout);
+	if (!pd) return 0;
+
+	// The colour transfer function through THE constructor every grid's LUT goes through, so the NaN
+	// fill colour and the discretisation are this program's, not a second recipe (SACRED_LAW.md).
+	vtkSmartPointer<vtkScalarsToColors> lut = makeGridCTF(nullptr, cz, crgb, ncolor);
+
+	vtkNew<vtkPolyDataNormals> norm;
+	norm->SetInputData(pd);
+	norm->SplittingOff();
+	norm->ConsistencyOn();
+	norm->ComputePointNormalsOn();
+
+	vtkNew<vtkPolyDataMapper> map;
+	map->SetInputConnection(norm->GetOutputPort());
+	if (lut) { map->SetLookupTable(lut); map->SetScalarVisibility(1); map->UseLookupTableScalarRangeOn(); }
+
+	vtkNew<vtkActor> act;
+	act->SetMapper(map);
+	// THE SAME GEOMETRY SCALING THE ON-SCREEN SURFACE WEARS. x/y are degrees and z is metres, so an
+	// unscaled surface is a cliff-face of relief against a fraction of a degree of ground: every normal
+	// points sideways and the render washes out. `computeScales` is the one place those factors come
+	// from (the same call every window's surface is built through), and the actor is scaled by them.
+	double xfac = 1.0, zfac = 1.0, ve0 = 1.0;
+	computeScales(/*geographic=*/1, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
+	act->SetScale(xfac, 1.0, zfac * ve0);
+	// THE PBR MATERIAL — the same calls applySurfStyle makes for a grid the user is looking at.
+	vtkProperty *prop = act->GetProperty();
+	prop->SetAmbient(0.0); prop->SetDiffuse(1.0); prop->SetSpecular(0.0);
+	prop->SetAmbientColor(1.0, 1.0, 1.0);
+	prop->SetInterpolationToPBR();
+	prop->SetMetallic(metal < 0.0 ? 0.0 : (metal > 1.0 ? 1.0 : metal));
+	prop->SetRoughness(rough < 0.05 ? 0.45 : rough);
+
+	vtkNew<vtkRenderer> ren;
+	ren->AddActor(act);
+	ren->SetBackground(1.0, 1.0, 1.0);
+	// IBL, exactly as the on-screen path lights a PBR surface — without it a PBR material renders
+	// near-black, since the environment IS most of its light.
+	// The sky at a QUARTER gain. At 1.0 it floods the map: measured mean brightness 222/255 over the
+	// whole picture, colour washed out of both the relief and the sea, while the key light's azimuth
+	// still moved the mean by only 4 counts — the environment was doing nearly all the lighting.
+	vtkSmartPointer<vtkTexture> env = makeSkyEnv(0.25);
+	if (env) { ren->UseImageBasedLightingOn(); ren->SetEnvironmentTexture(env); }
+
+	// The sun: direction from azimuth (deg from north, clockwise) + elevation, as everywhere else.
+	const double az = azim * vtkMath::Pi() / 180.0, el = elev * vtkMath::Pi() / 180.0;
+	vtkNew<vtkLight> key;
+	key->SetLightTypeToSceneLight();
+	key->SetPosition(std::sin(az) * std::cos(el), std::cos(az) * std::cos(el), std::sin(el));
+	key->SetFocalPoint(0.0, 0.0, 0.0);
+	key->SetIntensity(keyI > 0.0 ? keyI : 1.0);
+	ren->AddLight(key);
+	// NO HEADLIGHT unless the caller asks for one. The sky environment already lights every face, so a
+	// headlight on top of it washed the whole map pale — the relief was there but the colour was gone.
+	if (fillI > 0.0) {
+		vtkNew<vtkLight> fill;
+		fill->SetLightTypeToHeadlight();
+		fill->SetIntensity(fillI);
+		ren->AddLight(fill);
+	}
+
+	vtkNew<vtkRenderWindow> rw;
+	rw->SetOffScreenRendering(1);            // no desktop, no visibility to depend on
+	rw->AddRenderer(ren);
+	rw->SetSize(outW, outH);
+	rw->SetMultiSamples(0);
+
+	// STRAIGHT DOWN, PARALLEL, FRAMED ON THE BBOX — so a pixel is a place and the grab needs no
+	// projection arithmetic afterwards.
+	vtkCamera *cam = ren->GetActiveCamera();
+	// Framed on the ACTOR'S OWN BOUNDS (it is scaled, so the data bbox is not where it sits), then
+	// forced straight down and parallel. ResetCamera first so the clipping range brackets the whole
+	// surface — set by hand it clipped the relief away and the gaps showed as background.
+	ren->ResetCamera();
+	cam->ParallelProjectionOn();
+	double b[6]; act->GetBounds(b);
+	const double cx = 0.5 * (b[0] + b[1]), cy = 0.5 * (b[2] + b[3]);
+	cam->SetFocalPoint(cx, cy, 0.5 * (b[4] + b[5]));
+	cam->SetPosition(cx, cy, b[5] + std::max(1.0, (b[5] - b[4]) * 4.0 + 1.0));
+	cam->SetViewUp(0.0, 1.0, 0.0);
+	// THE SCALE MUST COVER BOTH AXES. A parallel camera's scale is HALF THE HEIGHT it shows, so setting
+	// it from y alone leaves the map narrower than the frame whenever the data is wider than the
+	// viewport — white bars down the left and right, because x is squeezed by `xfac` (cos of the mid
+	// latitude) while the viewport is nx:ny. Take whichever axis needs more.
+	const double halfY = 0.5 * (b[3] - b[2]), halfX = 0.5 * (b[1] - b[0]);
+	const double aspect = (outH > 0) ? double(outW) / double(outH) : 1.0;
+	cam->SetParallelScale(std::max(halfY, halfX / (aspect > 0.0 ? aspect : 1.0)));
+	ren->ResetCameraClippingRange();
+	rw->Render();
+
+	vtkNew<vtkWindowToImageFilter> w2i;
+	w2i->SetInput(rw);
+	w2i->SetScale(1);
+	w2i->ReadFrontBufferOff();
+	w2i->Update();
+	vtkImageData *im = w2i->GetOutput();
+	if (!im) return 0;
+	int dims[3] = { 0, 0, 0 }; im->GetDimensions(dims);
+	if (dims[0] < 1 || dims[1] < 1) return 0;
+
+	const int W = dims[0], H = dims[1];
+	unsigned char *buf = new unsigned char[(size_t)W * H * 3];
+	for (int r = 0; r < H; ++r) {                    // VTK hands rows bottom-up; we return north first
+		auto *src = static_cast<unsigned char*>(im->GetScalarPointer(0, r, 0));
+		std::memcpy(buf + (size_t)(H - 1 - r) * W * 3, src, (size_t)W * 3);
+	}
+	*outRgb = buf; *oW = W; *oH = H;
+	return 1;
+}
+
+// THE PREFERENCES "NaN fill colour", for a host that paints grid NaNs itself.
+//
+// SACRED_LAW.md's preference-application law: the value is read from ONE place. In-window that place
+// is `prefNanColorRGB` (30_app.cpp), read once where the Scene is created and applied by
+// `makeGridCTF` so no builder can forget it. A host building a picture of a grid OUTSIDE the viewer
+// (Aquamoto's half images, which are coloured by GMT's own grdimage) has the same duty and must not
+// acquire a second source for it — it asks HERE, and gets the identical read.
+//
+// rgb: three doubles, 0..1. Never fails; a missing/invalid setting yields the documented white.
+GMTVTK_API void gmtvtk_pref_nan_color(double *rgb) {
+	if (!rgb) return;
+	prefNanColorRGB(rgb[0], rgb[1], rgb[2]);
+}
+
+// DRIVE THE TILE PYRAMID TO CONVERGENCE, and say how many passes it took.
+//
+// The base grid renders as a quadtree of LOD tiles, refined by `refineQuadtree` (70_window.cpp) from
+// the CAMERA observer — i.e. only when the camera moves. A host that sets up a window and then grabs
+// its pixels without ever moving the camera can therefore capture a surface whose quadrants are
+// still sitting at different levels: a coarser tile is decimated geometry, its normals are smoother,
+// and under the PBR material that shades to a visibly different tone, so the tile edge reads as a
+// clean step across the picture. (Measured on a tsunami stage: seams exactly at the capture's row
+// and column midpoints — the root's four children — a ~6/255 offset that repeated passes removed.)
+//
+// `Scene::lodPending` cannot answer "is it settled?": the per-pass cell cap it belonged to was
+// removed (see refineQuadtree's own note, 70_window.cpp), so it is now cleared at the top of every
+// pass and never set — it is always false. What a pass actually did is visible in the build
+// counters, so convergence is asked of those: run passes until one neither BUILDS a tile nor RE-ADDS
+// a cached one, which is the definition of "nothing left to refine at this camera".
+//
+// Returns the number of passes run (>= 1), or 0 when the window has no tiled surface to settle
+// (untiled grid, image-only, dead scene) — the caller then has nothing to wait for.
+GMTVTK_API int gmtvtk_lod_settle_h(void *handle, int maxPasses) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->quadRoot || s->tiles.empty()) return 0;
+	if (maxPasses <= 0) maxPasses = 32;
+	int passes = 0;
+	while (passes < maxPasses) {
+		const long b0 = g_lodBuilt, r0 = g_lodReadd;
+		refineQuadtree(s);
+		++passes;
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		if (g_lodBuilt == b0 && g_lodReadd == r0) break;   // nothing built, nothing re-added -> settled
+	}
+	return passes;
+}
+
 // tilt/zoom). Same proven NDC-projection technique as captureAxesInteriorRGB (70_window.cpp, Save
 // Screenshot GeoTIFF), applied to an arbitrary caller-supplied bbox instead of the whole data bbox.
 // Z isn't sampled per-point (would need the real terrain height under the rectangle); the corners
@@ -7350,7 +7698,7 @@ GMTVTK_API int gmtvtk_capture_rect_rgb(void *handle, double w, double e, double 
 
 	vtkNew<vtkWindowToImageFilter> w2i;
 	w2i->SetInput(s->widget->renderWindow());
-	w2i->SetScale(2); w2i->Update();
+	w2i->SetScale(s->captureScale > 0 ? s->captureScale : 2); w2i->Update();
 	vtkImageData *full = w2i->GetOutput();
 	int dims[3]; full->GetDimensions(dims);
 
@@ -8806,6 +9154,79 @@ GMTVTK_API int gmtvtk_render_size_h(void *handle, int *w, int *h) {
 	return (sz[0] > 0 && sz[1] > 0) ? 1 : 0;
 }
 
+// TURN THIS WINDOW INTO A PHOTO BOOTH: off the screen, stripped of chrome, surface sized to the data.
+//
+// A host that composes a picture from renders (Aquamoto's per-side illumination) needs a window to
+// render INTO, and that window has no business being seen: during an animation two of them would sit
+// beside the user's window flickering once per frame. It also has no business carrying a menu bar,
+// docks, a status bar or the bottom tab strip, which claim the frame's height before the GL widget
+// gets any -- which is why asking a normal window for a 640x385 surface left the widget two pixels
+// tall (measured; the capture came back 125x2).
+//
+// So: every dock and every piece of chrome hidden, then the window moved far off-screen, then the
+// surface sized. It is still a REAL window with a real GL context -- VTK renders and
+// gmtvtk_capture_rect_rgb grabs exactly as before, because nothing about the pipeline changes when
+// the frame is not on a monitor. It is simply never shown to anybody.
+//
+// Returns 1 when the surface came out within a couple of pixels of w x h, 0 otherwise (the window is
+// still a usable photo booth either way -- the caller just works at the size it got).
+GMTVTK_API int gmtvtk_set_render_size_h(void *handle, int w, int h);   // defined just below
+
+GMTVTK_API int gmtvtk_make_photo_window_h(void *handle, int w, int h) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->win || !s->widget) return 0;
+	for (QDockWidget *d : s->win->findChildren<QDockWidget*>())
+		d->hide();
+	if (QMenuBar *mb = s->win->menuBar())       mb->hide();
+	if (QStatusBar *sb = s->win->statusBar())   sb->hide();
+	if (s->bottomTabs)                          s->bottomTabs->hide();
+	if (QToolBar *tb = s->win->findChild<QToolBar*>()) tb->hide();
+	for (QToolBar *tb : s->win->findChildren<QToolBar*>()) tb->hide();
+	// OFF THE SCREEN, not hidden: hiding a window tears its GL surface down on some drivers, and a
+	// torn-down surface renders nothing. Moved instead, so it keeps a live context nobody can see.
+	s->win->move(-32000, -32000);
+	QApplication::processEvents();
+	return (w > 1 && h > 1) ? gmtvtk_set_render_size_h(handle, w, h) : 1;
+}
+
+// SIZE THIS WINDOW'S RENDER SURFACE to w x h pixels (the GL viewport, not the frame).
+//
+// For a host that photographs a window rather than looking at it, the render size IS the cost: a
+// 640x385 grid shown in a ~980x1275 viewport renders and grabs five times the pixels a
+// node-resolution consumer can use. Sizing the surface to the data makes the capture native.
+//
+// The top level is resized by the DELTA between the current surface and the wanted one, so menu bar,
+// docks and frame are accounted for without assuming any of their sizes. Returns 1 when the surface
+// ended up within a pixel or two of the request (Qt clamps to the widget's minimums and to the
+// screen), 0 when it could not be honoured -- the caller then simply works at whatever size it got.
+GMTVTK_API int gmtvtk_set_render_size_h(void *handle, int w, int h) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->widget || !s->win || w < 2 || h < 2) return 0;
+	vtkRenderWindow *rw = s->widget->renderWindow();
+	if (!rw) return 0;
+	const int *sz = rw->GetSize();
+	if (!sz || sz[0] <= 0 || sz[1] <= 0) return 0;
+	if (sz[0] == w && sz[1] == h) return 1;
+	// The GL widget lives in a layout, so it cannot be resized directly -- grow/shrink the window by
+	// the shortfall and let the layout hand the difference to the widget.
+	//
+	// AND VERIFY, BECAUSE THE LAYOUT MAY REFUSE. Menu bar, docks, status bar and the bottom tab strip
+	// all claim height first; asking a window for less than they need leaves the GL widget with
+	// whatever is left, which can be a couple of pixels. (Measured: requesting 640x385 produced a
+	// surface so short the capture came back 125x2.) A resize that did not land is UNDONE -- the
+	// caller gets 0 and a window exactly as it was, never a ruined one.
+	const int ow = s->win->width(), oh = s->win->height();
+	s->widget->setMinimumSize(1, 1);
+	s->win->resize(ow + (w - sz[0]), oh + (h - sz[1]));
+	QApplication::processEvents();
+	const int *now = rw->GetSize();
+	if (now && std::abs(now[0] - w) <= 2 && std::abs(now[1] - h) <= 2)
+		return 1;
+	s->win->resize(ow, oh);
+	QApplication::processEvents();
+	return 0;
+}
+
 // Save a PNG of one SPECIFIC Scene render surface. Movie generation must never depend on
 // g_lastRW: another window can become "last" between frames while the Qt event loop is pumping.
 // `scale` uses vtkWindowToImageFilter's integer magnification and leaves the on-screen window size
@@ -8921,6 +9342,53 @@ GMTVTK_API void gmtvtk_set_relief_look_h(void *handle, int look, int keepModel) 
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	sceneSetReliefLook(s, look, keepModel != 0);
+}
+
+// Open the Illumination dialog on this window, aimed at one side (`side`: 0 water, 1 land, -1 the
+// whole window) — the SAME door the viewer's toolbar button and the two buttons beside Shade Water /
+// Shade Land go through (`showIllumination`, 70_window.cpp), so a host that opens it gets exactly the
+// dialog a click gets, aim and title included.
+GMTVTK_API void gmtvtk_show_illumination_h(void *handle, int side) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	showIllumination(s->widget ? s->widget->window() : nullptr, s, side);
+}
+
+// THE method setter AIMED AT ONE AQUAMOTO SIDE (`side`: 0 = water, 1 = land; < 0 = the whole window,
+// which is the plain setter above). A tsunami layer's water and land stand on different surfaces and
+// each carries its own method, so the two palette buttons beside Shade Water / Shade Land send their
+// choice here instead of to the window-wide setter — which would put BOTH sides on it.
+GMTVTK_API void gmtvtk_set_relief_look_side_h(void *handle, int look, int keepModel, int side) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	if (side < 0) sceneSetReliefLook(s, look, keepModel != 0);
+	else          sceneSetReliefLookAquaSide(s, look, side, keepModel != 0);
+}
+
+// Drop ONE Aquamoto side's loaded Illumination model ("Remove illumination" aimed at a side). The
+// window-wide removal is `gmtvtk_set_shade_intensity_h` with a null grid and model < 0, and it drops
+// BOTH sides on purpose; this is the same act for a single side, so removing the water's light leaves
+// the land's exactly as the user set it. That side also stops shading (its snapshot's own look flags
+// go off), which is what "removed" means to the eye — the other side's snapshot is untouched.
+GMTVTK_API void gmtvtk_clear_shade_side_h(void *handle, int side) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	dropExternShadeSide(s, side);
+	AquaSideShade &A = (side == 1) ? s->aquaLandShade : s->aquaWaterShade;
+	A.useHillshade = false;
+	A.litBake      = false;
+	applyShading(s);
+}
+
+// Is an Illumination MODEL still loaded on ONE Aquamoto side (`side`: 0 = water, 1 = land)? 1 = yes.
+// The per-side counterpart of the question below, and asked for the same reason: the water side is
+// re-lit at every timestep from the model it was given, and picking a LOOK for that side drops it —
+// so the host must ask about THAT side, not about "either side", or the water would keep re-pushing a
+// model the user replaced just because the land still holds one.
+GMTVTK_API int gmtvtk_has_extern_shade_side_h(void *handle, int side) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	return haveExternShade((side == 1) ? s->shadeInLand : s->shadeIn) ? 1 : 0;
 }
 
 // Is an Illumination MODEL still loaded on this window (an externally computed reflectance)? 1 = yes.

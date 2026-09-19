@@ -96,6 +96,7 @@ include("grdgravmag3d.jl") # Geophysics > Magnetics > grdgravmag3d: same anomaly
 include("grdredpol.jl")  # Geophysics > Magnetics > grdredpol: continuous (differential) RTP
 include("grdgradient.jl") # GMT menu > grdgradient: directional derivative / slope / aspect
 include("hillshade.jl")  # View > Illumination (Hillshade): GMT illumination models (port of Mirone shading_params.m)
+include("aquashade.jl")  # the tsunami's picture: split dry/wet, illuminate each half, combine by the mask
 include("grdseamount.jl") # GMT menu > grdseamount: synthetic seamounts from a parameter table
 include("manual.jl")     # the green "?" disk on every module dialog -> that module's GMTjl_doc page
 include("mgd77tracks.jl") # Geophysics > Magnetics > Import *.gmt/*.nc file(s): cruise tracks (port of mirone.m GeophysicsImportGmtFile_CB)
@@ -157,7 +158,7 @@ export gmtscript, gmtreplay,
        set_layer!, nlayers, add_label!, add_progress!, remove_annotation!, movie_annotations,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot, rtp3d, shapenc, isoc2shapenc, shapenc2isoc,
-       gmtedit, mbgrid,
+       gmtedit, mbgrid, tsushade, tsupbr, aqua_shade_image,
        TLE, Satellite, read_tle, propagate, propagate_ecef, subpoint, groundtrack, plot_groundtrack!
 
 # --- precompile (ALL of it lives HERE, via PrecompileTools — never hidden in other files) ---
