@@ -7546,9 +7546,32 @@ GMTVTK_API int gmtvtk_pbr_render_offscreen(const float *z, int nx, int ny, int z
 		                  /*wantTC=*/false, zlayout);
 	if (!pd) return 0;
 
+	// THE ALBEDO IS LINEARISED FIRST — a PBR material's colour is LINEAR light, not a screen colour.
+	//
+	// A CPT node is an sRGB colour (what the palette shows on a monitor). VTK's PBR path takes the
+	// property colour as linear radiance and gamma-encodes the result on its way out, so an sRGB value
+	// fed in straight comes back encoded TWICE: c^(1/2.2) on top of c. That lifts every mid-tone
+	// toward white and strips the colour out of the picture — measured over the wet nodes of a tsunami
+	// stage, the palette's own saturation is 24.6% and the render gave back 15.6%, a wash of a third,
+	// which is what made this half look pale beside the same palette drawn by grdimage.
+	//
+	// Undo it where the colour enters: linearise each node (c^2.2) so the encode on the way out lands
+	// on the palette's own colour. `makeGridCTF` still builds the LUT — the one constructor, with the
+	// NaN fill colour and the discretisation (SACRED_LAW.md) — it is only handed light instead of
+	// screen values.
+	std::vector<double> lin;
+	const double *albedo = crgb;
+	if (crgb && ncolor > 0) {
+		lin.resize((size_t)ncolor * 3);
+		for (size_t i = 0; i < lin.size(); ++i) {
+			const double c = crgb[i] < 0.0 ? 0.0 : (crgb[i] > 1.0 ? 1.0 : crgb[i]);
+			lin[i] = std::pow(c, 2.2);
+		}
+		albedo = lin.data();
+	}
 	// The colour transfer function through THE constructor every grid's LUT goes through, so the NaN
 	// fill colour and the discretisation are this program's, not a second recipe (SACRED_LAW.md).
-	vtkSmartPointer<vtkScalarsToColors> lut = makeGridCTF(nullptr, cz, crgb, ncolor);
+	vtkSmartPointer<vtkScalarsToColors> lut = makeGridCTF(nullptr, cz, albedo, ncolor);
 
 	vtkNew<vtkPolyDataNormals> norm;
 	norm->SetInputData(pd);
@@ -7569,6 +7592,27 @@ GMTVTK_API int gmtvtk_pbr_render_offscreen(const float *z, int nx, int ny, int z
 	double xfac = 1.0, zfac = 1.0, ve0 = 1.0;
 	computeScales(/*geographic=*/1, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
 	act->SetScale(xfac, 1.0, zfac * ve0);
+	// THE PICTURE IS THE GRID, NODE FOR NODE — SO IT CANNOT BE LETTERBOXED.
+	//
+	// This render is not looked at: it is a HALF of a composited image, and its consumer
+	// (`_aqua_combine_halves`, aquashade.jl) reads node (r,c) at the same FRACTION of the picture.
+	// That pairing holds only if the picture covers the grid's bbox and nothing else. Framing the
+	// actor to fit — a parallel scale taken from "whichever axis needs more" — leaves BACKGROUND BARS
+	// on the other axis, and then every node reads a shifted pixel while the nodes under the bars read
+	// the renderer's background: a flat slab with straight edges laid across the map, and a sea that
+	// is the render's background instead of the water. Measured on a tsunami stage (385x640): the
+	// water half came back 30% one flat grey, the composite wore a grey rectangle over the coast.
+	//
+	// The fix is to make the WORLD aspect equal the PIXEL aspect, by scaling x — then the frame is the
+	// bbox exactly and there is nothing to letterbox. (For a geographic grid with square cells this
+	// simply renders in degree space; the relief's own z scaling is untouched.)
+	{
+		double bb[6]; act->GetBounds(bb);
+		const double wantA = (outH > 0) ? double(outW) / double(outH) : 1.0;
+		const double haveA = (bb[3] - bb[2]) > 0.0 ? (bb[1] - bb[0]) / (bb[3] - bb[2]) : 0.0;
+		if (haveA > 0.0 && std::isfinite(haveA) && wantA > 0.0)
+			act->SetScale(xfac * (wantA / haveA), 1.0, zfac * ve0);
+	}
 	// THE PBR MATERIAL — the same calls applySurfStyle makes for a grid the user is looking at.
 	vtkProperty *prop = act->GetProperty();
 	prop->SetAmbient(0.0); prop->SetDiffuse(1.0); prop->SetSpecular(0.0);
@@ -7624,13 +7668,13 @@ GMTVTK_API int gmtvtk_pbr_render_offscreen(const float *z, int nx, int ny, int z
 	cam->SetFocalPoint(cx, cy, 0.5 * (b[4] + b[5]));
 	cam->SetPosition(cx, cy, b[5] + std::max(1.0, (b[5] - b[4]) * 4.0 + 1.0));
 	cam->SetViewUp(0.0, 1.0, 0.0);
-	// THE SCALE MUST COVER BOTH AXES. A parallel camera's scale is HALF THE HEIGHT it shows, so setting
-	// it from y alone leaves the map narrower than the frame whenever the data is wider than the
-	// viewport — white bars down the left and right, because x is squeezed by `xfac` (cos of the mid
-	// latitude) while the viewport is nx:ny. Take whichever axis needs more.
-	const double halfY = 0.5 * (b[3] - b[2]), halfX = 0.5 * (b[1] - b[0]);
-	const double aspect = (outH > 0) ? double(outW) / double(outH) : 1.0;
-	cam->SetParallelScale(std::max(halfY, halfX / (aspect > 0.0 ? aspect : 1.0)));
+	// THE FRAME IS THE BBOX, EXACTLY. The actor was re-scaled above so the world aspect IS the pixel
+	// aspect, so half the height frames both axes with no bars — never a max() of the two, which is
+	// what put a background slab on whichever axis lost (see the note at the SetScale above).
+	// The half CELL: a pixel is a cell, a node sits at its centre, so the frame covers ny cells while
+	// the nodes span ny-1 of them. Without this the picture is off by half a cell in each direction.
+	const double halfY = 0.5 * (b[3] - b[2]) * ((outH > 1) ? double(outH) / double(outH - 1) : 1.0);
+	cam->SetParallelScale(halfY);
 	ren->ResetCameraClippingRange();
 	rw->Render();
 

@@ -285,6 +285,10 @@ public:
 	QLineEdit *sliceSpin = nullptr;       // a PLAIN edit box (replaces the .ui's QSpinBox at runtime --
 	                                      // see the constructor), not a spinner: user wants a simple box
 	QCheckBox *splitDryWetCheck = nullptr, *scaleGlobalCheck = nullptr;
+	// Debug tab: the illumination MODEL (1..7) each half is lit with when "Combined image" builds the
+	// picture. Kept in iGMT.ini (aquamoto/illumWater, aquamoto/illumLand) so the choice is remembered.
+	QSpinBox *dbgIllumWater_ = nullptr, *dbgIllumLand_ = nullptr;
+	bool dbgIllumWaterSet_ = false, dbgIllumLandSet_ = false;   // the user typed in that box himself
 	QPushButton *loadRamBtn = nullptr, *runInBtn = nullptr, *addTrackBtn = nullptr;
 	// "Add Track": a line drawn over the water that the η(x) figure then follows, so the wave is
 	// watched ALONG THE USER'S OWN TRANSECT instead of the mid-tank row. The line itself is an
@@ -595,18 +599,83 @@ public:
 			}
 		}
 
+		// The per-side illumination MODEL (1..7) the "Combined image" button builds with. The boxes
+		// STATE WHAT THE LAYER IS WEARING: they are seeded from the side's own stored model
+		// (syncIllumModelSpins, re-read every time the Debug tab is raised), so pressing the button
+		// without touching them reproduces exactly the picture on the layer — never a default of the
+		// box's own imposed over the Illumination tool's choice. Only a side with NO model stored
+		// falls back, to the value this dialog remembered in iGMT.ini (prefs live there, never in the
+		// registry), and a value the user types is written back there.
+		dbgIllumWater_ = w->findChild<QSpinBox *>("illumWaterModelSpinBox");
+		dbgIllumLand_  = w->findChild<QSpinBox *>("illumLandModelSpinBox");
+		// A BOX THE USER HAS NOT TOUCHED SENDS NOTHING (0 = "the model this side already carries"), so
+		// this control cannot change a picture nobody asked it to change. Only an edit made HERE, by
+		// hand, overrides — the flag is set in the valueChanged handler, which the seeding blocks.
+		if (dbgIllumWater_) {
+			dbgIllumWater_->setValue(igmtSettings().value("aquamoto/illumWater", 2).toInt());
+			QObject::connect(dbgIllumWater_, QOverload<int>::of(&QSpinBox::valueChanged), w,
+			        [this](int v) { dbgIllumWaterSet_ = true; igmtSettings().setValue("aquamoto/illumWater", v); });
+		}
+		if (dbgIllumLand_) {
+			dbgIllumLand_->setValue(igmtSettings().value("aquamoto/illumLand", 2).toInt());
+			QObject::connect(dbgIllumLand_, QOverload<int>::of(&QSpinBox::valueChanged), w,
+			        [this](int v) { dbgIllumLandSet_ = true; igmtSettings().setValue("aquamoto/illumLand", v); });
+		}
+		if (auto *tabs = w->findChild<QTabWidget *>("mainTabWidget")) {
+			QObject::connect(tabs, &QTabWidget::currentChanged, w, [this, tabs](int i) {
+				QWidget *page = tabs->widget(i);
+				if (page && page->objectName() == "debugTab") syncIllumModelSpins();
+			});
+		}
+
 		// "Combined image" (Debug tab) — the button is IN THE .ui, like every other widget in this
 		// dialog; only its wiring belongs here. It was briefly built in code and inserted under the
 		// slider, which is exactly the "modify the .ui under the hood" this project forbids.
 		if (auto *combBtn = w->findChild<QPushButton *>("combinedImageButton")) {
 			QObject::connect(combBtn, &QPushButton::clicked, w, [this]() {
 				QString out; bool closedNow = false;
-				runBlocking(QString("InteractiveGMT._aqua_combined_popup(%1)").arg(aquaScenePtr(scene_)),
+				const int mw = (dbgIllumWater_ && dbgIllumWaterSet_) ? dbgIllumWater_->value() : 0;
+				const int ml = (dbgIllumLand_  && dbgIllumLandSet_)  ? dbgIllumLand_->value()  : 0;
+				// THE CLOCK STARTS AT THE PRESS, and it is stopped on the far side — in Julia, right
+				// before the picture is handed to a new iGMT window. Both ends read the SAME clock (the
+				// Unix epoch: QDateTime::currentMSecsSinceEpoch here, `time()` there), so the number
+				// covers everything between the two events, bridge crossing included.
+				const double t0 = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+				runBlocking(QString("InteractiveGMT._aqua_combined_popup(%1,%2,%3,%4)")
+				                .arg(aquaScenePtr(scene_)).arg(mw).arg(ml)
+				                .arg(QString::number(t0, 'f', 3)),
 				            out, closedNow);
-				if (!closedNow && win && !out.isEmpty())
-					win->statusBar()->showMessage("Combined image: " + out, 5000);
+				if (closedNow) return;
+				if (!out.isEmpty()) {
+					// The Messages dock is the window's message text area: the timing line goes THERE,
+					// where it can be read and kept, not only into a status bar that clears itself.
+					sceneLogError(scene_, "Combined image: " + out, /*isError=*/false);
+					if (win) win->statusBar()->showMessage("Combined image: " + out, 5000);
+				}
 			});
 		}
+
+		// "Water side" / "Land side" (Debug tab): the same picture, one half of it. They go through the
+		// same build as "Combined image" and show the half THAT build took, never one made again here.
+		auto wireSide = [this, w](const char *objName, int side) {
+			QPushButton *b = w->findChild<QPushButton *>(objName);
+			if (!b) return;
+			QObject::connect(b, &QPushButton::clicked, w, [this, side]() {
+				QString out; bool closedNow = false;
+				const int mw = (dbgIllumWater_ && dbgIllumWaterSet_) ? dbgIllumWater_->value() : 0;
+				const int ml = (dbgIllumLand_  && dbgIllumLandSet_)  ? dbgIllumLand_->value()  : 0;
+				const double t0 = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+				runBlocking(QString("InteractiveGMT._aqua_side_popup(%1,%2,%3,%4,%5)")
+				                .arg(aquaScenePtr(scene_)).arg(side).arg(mw).arg(ml)
+				                .arg(QString::number(t0, 'f', 3)),
+				            out, closedNow);
+				if (closedNow || out.isEmpty()) return;
+				sceneLogError(scene_, out, /*isError=*/false);
+				if (win) win->statusBar()->showMessage(out, 5000);
+			});
+		};
+		wireSide("waterSideButton", 0);
+		wireSide("landSideButton",  1);
 
 		bool *guard = new bool(false);    // slider<->spin re-entrancy guard, freed with the window
 		QObject::connect(w, &QObject::destroyed, w, [guard]{ delete guard; });
@@ -776,6 +845,30 @@ public:
 		if (!*alive) { closedNow = true; return ok; }   // `this` was destroyed during the pump -- bail
 		busy_ = false;
 		return ok;
+	}
+
+	// THE TWO MODEL BOXES SAY WHAT THE LAYER IS WEARING. Each side's model lives in ONE place — the
+	// Illumination tool's per-side store (`st.illum`, aquamoto.jl) — and is read back from there, so
+	// the boxes cannot drift from the light actually on the picture, and pressing "Combined image"
+	// with untouched boxes builds exactly what is on screen. A side with no model stored keeps the
+	// value this dialog remembered; nothing here writes the store.
+	void syncIllumModelSpins() {
+		if (!dbgIllumWater_ && !dbgIllumLand_) return;
+		QString out; bool closedNow = false;
+		if (!runBlocking(QString("InteractiveGMT._aqua_illum_models(%1)").arg(aquaScenePtr(scene_)),
+		                 out, closedNow) || closedNow) return;
+		const QStringList q = out.trimmed().split(',');
+		if (q.size() != 2) return;
+		auto put = [](QSpinBox *sb, const QString &txt) {
+			if (!sb) return;
+			bool ok = false;
+			const int v = txt.trimmed().toInt(&ok);
+			if (!ok || v < sb->minimum() || v > sb->maximum()) return;   // 0 = no model stored: keep ours
+			QSignalBlocker block(sb);        // seeding is not the user choosing: the .ini keeps his
+			sb->setValue(v);
+		};
+		put(dbgIllumWater_, q[0]);
+		put(dbgIllumLand_,  q[1]);
 	}
 
 	// "This file is now the session's file": show it in the path box, then open it. THE one entry for

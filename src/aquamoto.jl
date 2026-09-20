@@ -831,6 +831,22 @@ function _aqua_forget_illum!(st::_AquaState, side::Int)
 	return nothing
 end
 
+"""
+    _aqua_illum_models(scene) -> prints "mw,ml"
+
+The model number each side is CURRENTLY lit with — water first, land second, 0 when that side has
+no model stored. Read straight off `st.illum`, the one place a side's method lives, so the Debug
+tab's two boxes state what the layer actually wears instead of a default of their own. Printed for
+the C++ side (75_aquamoto.cpp) to parse.
+"""
+function _aqua_illum_models(scene::Ptr{Cvoid})::Cint
+	st = get(_AQUA, scene, nothing)
+	(st === nothing) && (print("0,0"); return Cint(0))
+	m(p) = isempty(p) ? 0 : parse(Int, p["model"])
+	print(m(st.illum[1]), ',', m(st.illum[2]))
+	return Cint(1)
+end
+
 function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String}, side::Int = -1)
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && error("Aquamoto: no file open in this window")
@@ -920,7 +936,14 @@ end
 # `aqua_shade_image` hands back a plain (row, col, band) picture — it de-interleaves each half itself
 # (`_aqua_rgb_plane`) so a grdimage half and a VTK-rendered one compose in the same combine — and it
 # came from THIS grid, so its pixel order IS the grid's element order (row-major, north first).
-function _aqua_shaded_rgb(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid, splitDryWet::Bool)::Union{Array{UInt8,3},Nothing}
+#
+# `model_water` / `model_land` OVERRIDE the model that side's stored illumination carries (0 = use
+# the stored one, which is what every per-slice call passes). The Debug tab's two 1..7 boxes come in
+# through here, so the picture the button builds is made by THIS function, with the same halves, the
+# same ranges and the same combine as the one the layer wears — never a second composition path
+# (SACRED_LAW.md).
+function _aqua_shaded_rgb(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid, splitDryWet::Bool;
+                          model_water::Int = 0, model_land::Int = 0)::Union{Array{UInt8,3},Nothing}
 	splitDryWet || return nothing                     # no dry/wet split -> no two halves to combine
 	# EVERY LAYER, NO GATE ON A STORED MODEL. The combined image is what this window shows, so it is
 	# built at every timestep whether or not the Illumination dialog has been through here: with no
@@ -928,8 +951,11 @@ function _aqua_shaded_rgb(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid, splitDr
 	pw, pl = st.illum[1], st.illum[2]
 	num(p, key, dflt) = (isempty(p) && return dflt; v = _get(p, key); isempty(v) ? dflt : parse(Float64, v))
 	mdl(p, dflt) = isempty(p) ? dflt : parse(Int, p["model"])
-	img, = aqua_shade_image(st.bat, G;
-	                        method_water = mdl(pw, 2), method_land = mdl(pl, 2),
+	mw = model_water > 0 ? model_water : mdl(pw, 2)
+	ml = model_land  > 0 ? model_land  : mdl(pl, 2)
+	_AQUA_LAST_MODELS[scene] = (mw, ml)               # what the picture was ACTUALLY built with
+	img, iw, il = aqua_shade_image(st.bat, G;
+	                        method_water = mw, method_land = ml,
 	                        azim_water = num(pw, "azim", 45.0), elev_water = num(pw, "elev", 30.0),
 	                        azim_land  = num(pl, "azim", 45.0), elev_land  = num(pl, "elev", 30.0),
 	                        cmap_water = st.watercmap, cmap_land = st.landcmap,
@@ -944,12 +970,24 @@ function _aqua_shaded_rgb(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid, splitDr
 	(size(A, 1) == ny && size(A, 2) == nx) ||
 		error("Aquamoto: the illuminated picture is $(size(A,1))x$(size(A,2)) for a $(ny)x$(nx) grid")
 	_AQUA_LAST_COMBINED[scene] = img                  # the button shows THIS, never a second build
+	_AQUA_LAST_HALVES[scene] = (iw, il)               # …and the Debug tab's two side buttons show THESE
 	return A
 end
+
+# The two halves of the last build, exactly as the combine took them: water first, land second. The
+# Debug tab's "Water side" / "Land side" buttons show these — never a half built a second time for
+# looking at, which would be a second composition path (SACRED_LAW.md).
+const _AQUA_LAST_HALVES = Dict{Ptr{Cvoid},Tuple{Array{UInt8,3},Array{UInt8,3}}}()
 
 # The last combined image this window drew, kept so the "Combined image" button can show exactly what
 # is on the layer without paying for a rebuild — the picture is the product of the slice that just ran.
 const _AQUA_LAST_COMBINED = Dict{Ptr{Cvoid},Any}()
+
+# The model number each side was ACTUALLY lit with on the last build — the resolved pair, after the
+# Debug boxes' override and the stored-model fallback have both been applied. Reported by the
+# "Combined image" button, so the message line states what made the picture rather than what was
+# asked for.
+const _AQUA_LAST_MODELS = Dict{Ptr{Cvoid},Tuple{Int,Int}}()
 
 # The one window the "Combined image" button owns. Closed and replaced at every press — see
 # `_aqua_combined_popup`.
@@ -961,8 +999,14 @@ const _AQUA_POPUP_WIN = Ref{Ptr{Cvoid}}(C_NULL)
 # builds the picture for the layer currently on screen through `aqua_shade_image` — the SAME function
 # the drape uses, so what pops up is what the layer wears — and opens it in a new window.
 #
+# `model_water` / `model_land` are the Debug tab's two 1..7 boxes (0 = that side's stored model), and
+# `t0` is the UNIX EPOCH SECOND THE BUTTON WAS PRESSED, read on the C++ side. The elapsed time is
+# taken right before the picture is handed to a new iGMT window and PRINTED, which is how it reaches
+# the dialog's message text window: what this function prints is what the caller shows.
+#
 # TEMPORARY, and here to be looked at.
-function _aqua_combined_popup(scene::Ptr{Cvoid})::Cint
+function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_land::Int = 0,
+                              t0::Float64 = 0.0)::Cint
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && return Cint(0)
 	# BUILT HERE, FOR THE SLICE ON SCREEN. The layer itself is drawn as the plain composite modulated
@@ -971,7 +1015,7 @@ function _aqua_combined_popup(scene::Ptr{Cvoid})::Cint
 	# builds in `_AQUA_LAST_COMBINED`, so a second press on an unchanged slice costs nothing.
 	G = _aqua_layer(st, st.cur)
 	G === nothing && return Cint(0)                   # no layer drawn yet: nothing to show
-	rgb = _aqua_shaded_rgb(scene, st, G, st.split)
+	rgb = _aqua_shaded_rgb(scene, st, G, st.split; model_water = model_water, model_land = model_land)
 	(rgb === nothing) && return Cint(0)               # no dry/wet split -> no two halves to combine
 	img = get(_AQUA_LAST_COMBINED, scene, nothing)
 	(img === nothing) && return Cint(0)
@@ -984,8 +1028,73 @@ function _aqua_combined_popup(scene::Ptr{Cvoid})::Cint
 		_AQUA_POPUP_WIN[] = C_NULL
 		_pump_once()
 	end
+	# THE CLOCK STOPS HERE — the last instant before the image leaves for a window of its own, which is
+	# what the button was asked to time. The line also STATES WHAT MADE THE PICTURE: the models the
+	# build resolved to (not the ones asked for), the dry/wet split it was combined by and the water
+	# span it was coloured over — the three inputs that decide what the water half looks like, so a
+	# picture that comes out wrong says why on the spot instead of having to be guessed at.
+	mw, ml = get(_AQUA_LAST_MODELS, scene, (0, 0))
+	dry = _aqua_indland(st.bat.z, G.z)
+	nd, nw = count(dry), count(.!dry)
+	ws = _aqua_water_span(G.z, .!dry)
+	print("layer $(st.cur + 1): water model $(mw), land model $(ml), dry $(nd) / wet $(nw), ",
+	      "water span ", round(ws[1]; digits = 3), " .. ", round(ws[2]; digits = 3))
+	(t0 > 0) && print(" — built in ", round(time() - t0; digits = 3), " s")
 	fig = iview_image_obj(img, "combined image"; title = "Combined image — layer $(st.cur + 1)")
 	_AQUA_POPUP_WIN[] = fig.h
+	return Cint(1)
+end
+
+# ONE SIDE ON ITS OWN, in the same window the combined image uses. `side` 0 = water, 1 = land.
+#
+# What it shows is THE HALF THE COMBINE TOOK — `_AQUA_LAST_HALVES`, filled by the one build in
+# `_aqua_shaded_rgb` — so the side seen alone and the side seen inside the composite are the same
+# pixels, never two pictures of the same thing (SACRED_LAW.md).
+function _aqua_side_popup(scene::Ptr{Cvoid}, side::Int, model_water::Int = 0, model_land::Int = 0,
+                          t0::Float64 = 0.0)::Cint
+	st = get(_AQUA, scene, nothing)
+	(st === nothing) && return Cint(0)
+	G = _aqua_layer(st, st.cur)
+	G === nothing && return Cint(0)
+	rgb = _aqua_shaded_rgb(scene, st, G, st.split; model_water = model_water, model_land = model_land)
+	(rgb === nothing) && return Cint(0)
+	nm = side == 0 ? AQUA_WATER : AQUA_LAND
+	H  = get(_AQUA_HALF_GRID, nm, nothing)
+	(H === nothing) && return Cint(0)
+	# SHOWN THE WAY TsuIllum SHOWS IT: the half is a PLAIN GRID, so it goes into a plain grid window
+	# with its own palette, and is lit by the app's illumination push with that side's own model —
+	# `illuminate!`'s two steps (`_hs_push_grid` + `_hs_declare_look`), which is what TsuIllum copied
+	# from here in the first place. No image is composed, nothing is drawn for it: it is the grid.
+	mw, ml = get(_AQUA_LAST_MODELS, scene, (0, 0))
+	model  = side == 0 ? mw : ml
+	p      = st.illum[side + 1]
+	cmap   = side == 0 ? st.watercmap : st.landcmap
+	if _AQUA_POPUP_WIN[] != C_NULL                    # one window, replaced — same rule as the combined
+		ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), _AQUA_POPUP_WIN[])
+		_AQUA_POPUP_WIN[] = C_NULL
+		_pump_once()
+	end
+	ttl = (side == 0 ? "Water side" : "Land side") * " — layer $(st.cur + 1)"
+	print(ttl, ": model ", model, ", range ", round(H.range[5]; digits = 3), " .. ",
+	      round(H.range[6]; digits = 3))
+	(t0 > 0) && print(" — built in ", round(time() - t0; digits = 3), " s")
+	fig = view_grid(H; cmap = cmap, title = ttl)
+	_AQUA_POPUP_WIN[] = fig.h
+	az = _get(p, "azim") == "" ? "45" : _get(p, "azim")
+	el = _get(p, "elev") == "" ? "30" : _get(p, "elev")
+	if model == 1
+		# MODEL 1 IS THE RENDER. It is not a reflectance to push: it is the window's own PBR look with
+		# this side's sun — `gmtvtk_set_relief_look_h` with RL_PBR, the same call the Illumination
+		# dialog makes for a plain grid.
+		ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), fig.h,
+		      "sunaz=$(az);sunel=$(el);")
+		ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), fig.h, Cint(1), Cint(0))
+		_pump_once()
+	else
+		_hs_push_grid(fig.h, H, model, Dict{String,String}("azim" => az, "elev" => el), -1)
+		_hs_declare_look(fig.h, -1)
+		_pump_once()
+	end
 	return Cint(1)
 end
 

@@ -71,7 +71,12 @@ function aqua_shade_image(bat::GMTgrid, G::GMTgrid;
 	# (min, max) — +0.705 m on a slice measured at (-0.662, 2.072) — so the palette drew a white band
 	# along the 0.705 m contour, which hugs the shoreline. That was the "line of NaN along the coast":
 	# `:polar`'s own white, in the wrong place, because a second range function had been written here.
-	wrng = range_water === nothing ? _aqua_water_span(G.z, wet)   : range_water
+	# EACH HALF'S OWN EXTREMA, over its own nodes — TsuIllum's rule for both figures ("its palette
+	# spans its OWN data extrema, which is what `_cpt_nodes` does for every grid this app shows. This
+	# is the REFERENCE the composite has to reproduce"). The water half used to be given a span made
+	# symmetric about zero here; that is a rule of the LAYER's colour bar, not of this picture, and it
+	# put the palette's white somewhere the half's own data does not.
+	wrng = range_water === nothing ? _aqua_half_range(G.z, wet)   : range_water
 	lrng = range_land  === nothing ? _aqua_half_range(bat.z, dry) : range_land
 	kw = (ambient = ambient, diffuse = diffuse, specular = specular, shine = shine, gain = gain)
 
@@ -117,8 +122,14 @@ end
 function _aqua_combine_halves(Aw::Array{UInt8,3}, Al::Array{UInt8,3}, bat::GMTgrid, G::GMTgrid)
 	nx, ny   = _grid_dims(G)
 	drym     = _aqua_indland(_zmat(bat), _zmat(G))     # (iy, ix), row 1 = SOUTH — the ONE accessor's view
-	Hw, Ww   = size(Aw, 1), size(Aw, 2)
-	Hl, Wl   = size(Al, 1), size(Al, 2)
+	# BOTH HALVES ARE THIS GRID, PIXEL FOR NODE. Nothing is resampled here: the combine used to map
+	# each node into each half by a FRACTION and round to the nearest pixel, which is a resample — and
+	# a resample of a picture onto its own nodes is a blur, by construction. A half that is not the
+	# grid is not a half, and says so.
+	(size(Aw, 1) == ny && size(Aw, 2) == nx) ||
+		error("Aquamoto: the water half is $(size(Aw,1))x$(size(Aw,2)) for a $(ny)x$(nx) grid")
+	(size(Al, 1) == ny && size(Al, 2) == nx) ||
+		error("Aquamoto: the land half is $(size(Al,1))x$(size(Al,2)) for a $(ny)x$(nx) grid")
 	# ROW 1 IS THE SOUTH ROW, and the image is labelled "BCBa" below — column-major, band-planar,
 	# bottom-first, which is exactly what `GMT.mat2img` yields from a grid-derived matrix and what
 	# every consumer in this program is written around (`_pixaccess_img` / `_north_first`, drape.jl).
@@ -126,16 +137,12 @@ function _aqua_combine_halves(Aw::Array{UInt8,3}, Al::Array{UInt8,3}, bat::GMTgr
 	out      = Array{UInt8,3}(undef, ny, nx, 3)
 	@inbounds for r in 1:ny
 		iy = r                                          # row 1 = SOUTH, counting up
-		fy = ny > 1 ? (ny - r) / (ny - 1) : 0.0         # …as a fraction from the NORTH, which is where
-		                                                # both halves' row 1 is
+		rr = ny - r + 1                                 # the same node in the halves, whose row 1 is NORTH
 		for c in 1:nx
-			fx = nx > 1 ? (c - 1) / (nx - 1) : 0.0
-			A, Hh, Wh = drym[iy, c] ? (Al, Hl, Wl) : (Aw, Hw, Ww)
-			rr = clamp(1 + round(Int, fy * (Hh - 1)), 1, Hh)
-			cc = clamp(1 + round(Int, fx * (Wh - 1)), 1, Wh)
-			out[r, c, 1] = A[rr, cc, 1]
-			out[r, c, 2] = A[rr, cc, 2]
-			out[r, c, 3] = A[rr, cc, 3]
+			A = drym[iy, c] ? Al : Aw                   # the half that OWNS this node
+			out[r, c, 1] = A[rr, c, 1]
+			out[r, c, 2] = A[rr, c, 2]
+			out[r, c, 3] = A[rr, c, 3]
 		end
 	end
 	I = GMT.mat2img(out; x = [Float64(G.range[1]), Float64(G.range[2])],
@@ -177,13 +184,38 @@ end
 function _aqua_side_picture(G::GMTgrid, other::AbstractArray{Bool}, method::Int, azim::Float64,
                             elev::Float64, cmap, zrange::Tuple{Float64,Float64}, name::String;
                             scene::Ptr{Cvoid} = C_NULL, kw...)
+	# THE HALF IS TsuIllum's HALF, verbatim (TsuIllum.jl `split_middle`, the reference this composite
+	# has to reproduce): the grid with THE OTHER SIDE'S NODES NaN — "the wave, nothing else" / "the
+	# ground, nothing else" — and a palette spanning ITS OWN data extrema. Nothing else is done to it:
+	# it is then coloured and lit exactly like the plain grid TsuIllum puts in a window of its own.
 	H = deepcopy(G)
-	H.z[other] .= 0f0                                   # the empty side: flat, defined, never NaN
-	H.range[5], H.range[6] = zrange[1], zrange[2]       # its OWN range still scopes it
+	H.z[other] .= NaN32
+	H.range[5], H.range[6] = zrange[1], zrange[2]       # its OWN range scopes it
+	# The half GRID itself, kept under its side's name. The Debug tab's "Water side" / "Land side"
+	# buttons open THIS object — the very grid the combine's half was drawn from, never one built a
+	# second time for looking at.
+	_AQUA_HALF_GRID[name] = H
 	if method == 1
 		return _pbr_capture(H, name, cmap, azim, elev, scene)
 	end
-	R = _aqua_half_reflectance(H, method, azim, elev; kw...)
+	# `_hs_reflectance` (hillshade.jl) is THE reflectance — the one every surface in this program is
+	# lit by. This file used to carry its own method table beside it; a second implementation of one
+	# quantity is exactly what SACRED_LAW.md forbids, and it is gone.
+	# It hands back a plain matrix over this grid's own box, so it goes back into this grid's header —
+	# no resampling, no second geometry.
+	# Lit from THAT grid — the half's own nodes, the other side NaN, exactly as TsuIllum lights each of
+	# its two figures (`illuminate!`: one reflectance function, each half from its own grid).
+	Rm = _hs_reflectance(H, method, Dict{String,String}("azim" => string(azim), "elev" => string(elev)))
+	(size(Rm) == size(H.z)) ||
+		error("Aquamoto: the $name reflectance is $(size(Rm)) for a $(size(H.z)) half")
+	R = deepcopy(H)
+	R.z = Rm
+	# IT CARRIES ITS OWN LAYOUT. `_hs_reflectance` builds a fresh Julia matrix — column-major, row 1 in
+	# the SOUTH — so it is "BCB", whatever the grid it was computed from is stored as (SACRED_LAW.md's
+	# grid-memory-layout law: a buffer travels with the code that describes it). Left wearing the half's
+	# own TRB label, the intensity lands on the wrong nodes and shreds the picture into stripes.
+	R.layout = "BCB"
+	R.range[5], R.range[6] = Float64(minimum(Rm)), Float64(maximum(Rm))
 	C = GMT.makecpt(cmap = cmap, range = (zrange[1], zrange[2]))
 	_aqua_set_nan_color!(C)
 	return _aqua_rgb_plane(GMT.grdimage(_hs_lend(H), C = C, I = R, A = ""))  # A="" -> in memory
@@ -229,39 +261,6 @@ function _aqua_rgb_plane(I)::Array{UInt8,3}
 		end
 	end
 	return out
-end
-
-# THE reflectance for one half, by method. Every branch is a GMT module call -- `_hs_classic` is the
-# very function the Illumination tool's own model 2 uses (hillshade.jl), so there is one classic
-# reflectance in this program, not two.
-function _aqua_half_reflectance(G::GMTgrid, method::Int, azim::Float64, elev::Float64;
-                                ambient::Float64 = 0.55, diffuse::Float64 = 0.6,
-                                specular::Float64 = 0.4, shine::Float64 = 10.0, gain::Float64 = 1.0)
-	azim = mod(azim, 360.0)
-	if method == 1
-		error("Aquamoto: method 1 is a RENDER, not a reflectance — it is produced by " *
-		      "`_aqua_side_picture`, which never calls this")
-	elseif method == 7
-		error("Aquamoto: illumination method 7 (Shade PBR) is the CPU Cook-Torrance bake " *
-		      "(applyPBRShade, 40_shading.cpp), not a reflectance — producing it here would be a " *
-		      "second implementation of that maths")
-	elseif method == 2
-		return _hs_classic(G, azim)
-	elseif method == 3
-		return GMT.grdgradient(_hs_lend(G); E = "s$(azim)/$(elev)")
-	elseif method == 4
-		return GMT.grdgradient(_hs_lend(G); E = "$(azim)/$(90.0 - elev)+a$(ambient)+d$(diffuse)" *
-		                                        "+p$(specular)+s$(shine)")
-	elseif method == 5
-		g = _hs_classic(G, azim)                          # grdimage's own hillshade, with a gain
-		gain == 1.0 || (g.z .= Float32.(clamp.(g.z .* gain, -1.0, 1.0)))
-		return g
-	elseif method == 6
-		g = GMT.grdgradient(_hs_lend(G); E = "s$(azim)/$(elev)")
-		ambient == 0.0 || (g.z .= Float32.(clamp.(g.z .* (1.0 - ambient) .+ ambient, -1.0, 1.0)))
-		return g
-	end
-	error("Aquamoto: unknown illumination method $method")
 end
 
 # THE WATER HALF'S COLOUR SPAN, over the nodes `m` selects. The extrema are this file's own, the
@@ -363,6 +362,10 @@ const _PBR_WIN = Dict{String,Ptr{Cvoid}}()
 # that decides the picture changes.
 const _AQUA_LAND_CACHE = Dict{Any,Array{UInt8,3}}()
 
+# The two half GRIDS of the last build, by side name (AQUA_WATER / AQUA_LAND) — the objects the two
+# Debug-tab side buttons open.
+const _AQUA_HALF_GRID = Dict{String,GMTgrid}()
+
 """
     aqua_pbr_release!()
 
@@ -411,110 +414,11 @@ function _pbr_capture(H::GMTgrid, name::String, cmap, azim::Float64, elev::Float
 			end
 		end
 	end
-	# NO WINDOW OF ITS OWN WHEN THE CALLER HAS ONE. A render target is a window, and a window costs
-	# ~0.15 s to build and ~0.35 s to tear down — per half, per layer — besides flashing on screen.
-	# The caller's own window already has a live GL context and the right camera, so the half is pushed
-	# into IT through `gmtvtk_replace_base_grid_h` (the in-place swap every grid change uses), lit,
-	# photographed, and left; the slice's own push, which follows immediately, puts the composite back.
-	if scene != C_NULL
-		zb, nxc, nyc, zlay = _grid_zbuf(H)
-		cz, crgb, ncol = _cpt_nodes_range(Float64(H.range[5]), Float64(H.range[6]), cmap)
-		ccall(_fn(:gmtvtk_replace_base_grid_h), Cint,
-		      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring, Cint),
-		      scene, zb, nxc, nyc, H.range[1], H.range[2], H.range[3], H.range[4], Cint(1),
-		      cz, crgb, Cint(ncol), name, zlay)
-		_remember_object!(scene, :grid, name, H)
-		_pump_once()
-		# THE LOOK IS SET DIRECTLY, NOT THROUGH `_on_hillshade`. That function is the Illumination
-		# dispatcher, and on an Aquamoto scene model 1 routes straight back into `_aqua_illuminate!` ->
-		# slice -> `_aqua_shaded_rgb` -> here: unbounded recursion, and the crash you get on picking the
-		# method. `gmtvtk_set_relief_look_h` with RL_PBR (1) IS what model 1 means — the very call the
-		# dialog makes for a plain grid — and it cannot recurse.
-		ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), scene,
-		      "sunaz=$(azim);sunel=$(elev);")     # this half's own sun
-		ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), scene, Cint(1), Cint(0))
-		_pump_once()
-		haskey(_LIB_FNS, :gmtvtk_lod_settle_h) &&
-			ccall(_fn(:gmtvtk_lod_settle_h), Cint, (Ptr{Cvoid}, Cint), scene, Cint(0))
-		img = _capture_rect_image(scene, H.range[1], H.range[2], H.range[3], H.range[4];
-		                          coords = false, prefer_screen = true)
-		(img === nothing) && error("Aquamoto: the $name render could not be captured")
-		return img.image
-	end
-	# A FRESH TARGET EVERY TIME. Keeping the window between layers and pushing the new grid through
-	# `gmtvtk_replace_base_grid_h` was faster and WRONG: the water half came back as a picture of the
-	# window BACKGROUND — its surface stopped being drawn after the swap, while the land half (the same
-	# code, a grid with real relief) survived it. Measured on one deep-sea node, same slice, same call:
-	#     reused target -> [25, 40, 59]     the background's own colour
-	#     fresh  target -> [114, 114, 219]  the water's polar blue
-	# The picture is the product; a faster way to make a wrong one is worth nothing. Reuse can come
-	# back when the swap is understood, not before.
-	h = get(_PBR_WIN, name, C_NULL)
-	if h != C_NULL
-		ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)
-		delete!(_PBR_WIN, name)
-		_pump_once()
-		h = C_NULL
-	end
-	fresh = true
-	if fresh
-		fig = view_grid(H; cmap = cmap, title = name)
-		h = fig.h
-		_PBR_WIN[name] = h
-		# The surface needs its NAME on both sides — the C side's (what the dialog aims at) and the
-		# Julia registry's (what `_find_object` hands back) — or the tool refuses the window.
-		ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), h, name)
-		# Straight down, flat 2-D, and SSAO off for good: a screen-space pass does not stitch under
-		# `gmtvtk_capture_rect_rgb`'s scale-2 tiled magnification and left a seam at the picture's row
-		# and column midlines (7.89/255; 0.03 with it off, while tone mapping and FXAA changed nothing).
-		# These windows exist only to be photographed, so the setting is made once and left.
-		ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), h, "imgmode=0;flat2d=1;ssao=0;")
-		# …and photograph it at 1x, not the interactive 2x. The grab costs its pixel count, and the
-		# consumer (`_aqua_shaded_rgb`) needs the picture at the grid's own node resolution anyway, so
-		# every extra pixel is bought and thrown away — it was 0.146 s of the 0.2 s a half took.
-		haskey(_LIB_FNS, :gmtvtk_set_capture_scale_h) &&
-			ccall(_fn(:gmtvtk_set_capture_scale_h), Cvoid, (Ptr{Cvoid}, Cint), h, Cint(1))
-		# NOT MOVED OFF THE SCREEN. It was, to keep two render targets from flickering beside the user's
-		# window during an animation — and that is what turned the water half into a picture of the
-		# window BACKGROUND: a window sitting at (-32000, -32000) stops drawing, and the grab then
-		# returns whatever is behind it. Measured: sea pixels came back [25,39,59], the background's own
-		# colour, while the land half (drawn in a window that still had a framebuffer) was correct.
-		# The picture is what matters; hiding these windows is a comfort that cost the image.
-	else
-		# A LATER FRAME: same window, same camera, new data — the in-place swap, not a new window.
-		zb, nxc, nyc, zlay = _grid_zbuf(H)
-		cz, crgb, ncol = _cpt_nodes_range(Float64(H.range[5]), Float64(H.range[6]), cmap)
-		ccall(_fn(:gmtvtk_replace_base_grid_h), Cint,
-		      (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
-		       Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cstring, Cint),
-		      h, zb, nxc, nyc, H.range[1], H.range[2], H.range[3], H.range[4], Cint(1),
-		      cz, crgb, Cint(ncol), name, zlay)
-	end
-	_remember_object!(h, :grid, name, H)
-	_pump_once()
-	_on_hillshade(h, "model=1\ngrid=$name\nazim=$azim\nelev=$elev\n")
-	_pump_once()
-	# …AND WAIT FOR THE TILES. The base grid renders as a quadtree of LOD tiles refined only when the
-	# CAMERA MOVES, so a window that is set up and then grabbed — no camera event ever fired — can be
-	# captured before the pyramid has settled at this camera. `gmtvtk_lod_settle_h` runs refine passes
-	# until one neither builds nor re-adds a tile.
-	if haskey(_LIB_FNS, :gmtvtk_lod_settle_h)
-		ccall(_fn(:gmtvtk_lod_settle_h), Cint, (Ptr{Cvoid}, Cint), h, Cint(0))
-		_pump_once()
-	end
-	img = _capture_rect_image(h, H.range[1], H.range[2], H.range[3], H.range[4];
-	                          coords = false, prefer_screen = true)
-	# CLOSED AS SOON AS IT HAS BEEN PHOTOGRAPHED. It is a render target, not a window the user asked
-	# for: left standing until the next layer, the two of them (water and land) sit on screen beside
-	# the Aquamoto window for the whole session.
-	delete!(_PBR_WIN, name)
-	ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)
-	_pump_once()
-	(img === nothing) && error("Aquamoto: the $name render could not be captured")
-	# `_capture_rect_image` already hands over a (row, col, band) array of its own (it de-interleaves
-	# the grab on the way out), first row NORTH — the shape the combine takes from every half.
-	return img.image
+	# THERE IS NO OTHER WAY TO MAKE THIS HALF. The two window routes that used to stand here —
+	# photographing the caller's own window, or opening one to photograph — grabbed at the WINDOW's
+	# resolution, and the combine then resampled that grab down onto the nodes: a picture built out of
+	# interpolated screen pixels, which is the fuzz. A half is one pixel per node or it is not a half.
+	error("Aquamoto: the $name half could not be rendered (gmtvtk_pbr_render_offscreen)")
 end
 
 _pbr_pump(n::Int) = for _ in 1:n; _pump_once(); sleep(0.02); end
