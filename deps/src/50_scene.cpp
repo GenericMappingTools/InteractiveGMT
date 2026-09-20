@@ -1987,7 +1987,10 @@ static void aquaFileObjectMenu(Scene *s, const QPoint &gp) {
 	if (g_aquamotoReopen && g_aquamotoHasWindow && g_aquamotoHasWindow(s))
 		aAqua = m.addAction("Aquamoto viewer…");          // re-show the hidden Aquamoto control window
 	if (aAqua) m.addSeparator();
-	QAction *aRem = m.addAction("Remove file (all variables)");
+	// "Remove" — the SAME word every other Scene Objects handle carries. A master row's Remove takes
+	// its whole group by definition (SACRED_LAW.md group law), so it needs no invented wording of its
+	// own to say so.
+	QAction *aRem = m.addAction("Remove");
 	QAction *c = m.exec(gp);
 	if (!c) return;
 	if (aAqua && c == aAqua) { g_aquamotoReopen(s); return; }

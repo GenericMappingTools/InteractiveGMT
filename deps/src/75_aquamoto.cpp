@@ -65,6 +65,13 @@ static std::function<void(const QPoint &)> aquamotoParkedMenu(Scene *scene);
 // it never rebuilds a surface of its own (SACRED_LAW.md).
 static void sceneSetShadedImage2D(Scene *s, bool on);
 
+// The drawn-shape DELETE and the ruler's measuring leg (85_polygon.cpp, included after this
+// fragment). "Add Track" replaces its previous track through the very function the shape's own
+// Remove calls, and measures the track with the very function the ruler and "Line length…" use —
+// one operation, one function (SACRED_LAW.md).
+static void polygonDelete(Scene *s, vtkActor *lineActor);
+static double rulerExactLeg(Scene *s, const std::array<double,3> &a, const std::array<double,3> &b, QString &unit);
+
 // ============================================================================================
 //  The little η(x) figure that floats over the 3-D view (Cinema tab, "Show η(x) profile").
 //
@@ -286,6 +293,13 @@ public:
 	std::string trackName_;              // empty = no track; else the drawn line's Scene Objects name
 	QTimer  *trackWatch_ = nullptr;      // armed while the user is drawing the track
 	size_t   trackArmCount_ = 0;         // s->polys.size() at the moment the tool was armed
+	// The track's REAL along-track distance, cached: one cumulative value per vertex, in the
+	// Preferences measure unit ("km" for a geographic window), measured by the ruler's own leg
+	// function. Re-measured only when the line's vertices actually change (the user may drag them),
+	// never per slice — the round trip is a Julia call.
+	std::vector<double> trackCum_;
+	QString trackUnit_ = "km";
+	std::vector<std::array<double,3>> trackVerts_;   // the vertices trackCum_ was measured over
 	// Benchs tab — "10% slope beach, Benchmark 1": run it, load a previous run, say where it is saved,
 	// and watch it advance.
 	QPushButton *benchRunBtn = nullptr, *benchLoadBtn = nullptr, *benchBrowseBtn = nullptr;
@@ -1430,6 +1444,36 @@ public:
 		if (on) { etaFig->raise(); updateEtaFigure(); }
 	}
 
+	// EVERYTHING THIS DIALOG PUT ON THE VIEW GOES WITH IT. The η(x) figure is a child of the RENDER
+	// WIDGET, not of this dialog, so deleting the dialog does NOT take it: it must be torn down here,
+	// together with its parked row (it may be sitting in the dock's parked strip) and the wave track,
+	// which exists only to feed it. Called by aquamotoDestroy, i.e. by the file handle's Remove — a
+	// group's Remove takes EVERY descendant (SACRED_LAW.md), and these are descendants.
+	void destroyEtaFigure() {
+		if (etaFig) {
+			if (scene_ && sceneAlive(scene_)) unparkTool(scene_, etaFig);   // no-op when it was not parked
+			etaFig->hide();
+			etaFig->deleteLater();
+			etaFig = nullptr;
+		}
+		dropTrack();
+	}
+
+	// Delete the track this dialog currently owns, if it is still there. The shape goes through
+	// polygonDelete (85_polygon.cpp) — the one deletion path — and the cached measurement goes with it.
+	void dropTrack() {
+		Scene *s = scene_;
+		if (trackName_.empty()) { trackCum_.clear();  trackVerts_.clear();  return; }
+		if (s && sceneAlive(s)) {
+			vtkActor *old = nullptr;
+			for (const auto &p : s->polys) if (p.name == trackName_) { old = p.line.Get(); break; }
+			if (old) polygonDelete(s, old);
+		}
+		trackName_.clear();
+		trackCum_.clear();
+		trackVerts_.clear();
+	}
+
 	// "ADD TRACK" ARMS THE ORDINARY LINE TOOL — the very QAction the toolbar's shape flyout carries,
 	// so the drawing is the app's one drawing path (polygonToolToggled, 85_polygon.cpp) and nothing
 	// here re-implements it. What the user draws is an ordinary Scene Objects element with its own
@@ -1461,16 +1505,41 @@ public:
 		Scene *s = scene_;
 		if (!s || !sceneAlive(s)) { if (trackWatch_) trackWatch_->stop(); return; }
 		if (s->polys.size() <= trackArmCount_) return;              // still drawing
-		int idx = 1;
-		for (const auto &p : s->polys)
-			if (p.name.rfind("Wave track", 0) == 0) ++idx;          // numbered per window, like "polygon N"
-		Polygon &pg = s->polys.back();
-		pg.name = "Wave track " + std::to_string(idx);
-		trackName_ = pg.name;
+		// ONE TRACK, NEVER TWO. The figure follows a single transect, so the line just drawn REPLACES
+		// the previous one: the old track is deleted through polygonDelete — the same function its own
+		// Scene Objects "Remove" calls — never left behind as a second "Wave track" row.
+		vtkActor *fresh = s->polys.back().line.Get();
+		dropTrack();                                                // the previous one, if any
+		Polygon *pg = nullptr;
+		for (auto &p : s->polys) if (p.line.Get() == fresh) { pg = &p; break; }
+		if (!pg) { if (trackWatch_) trackWatch_->stop(); return; }
+		pg->name = "Wave track";
+		trackName_ = pg->name;
 		if (trackWatch_) trackWatch_->stop();
 		if (s->polyAct) s->polyAct->setChecked(false);              // the tool disarms itself once it is done
 		rebuildSceneObjects(s);
 		updateEtaFigure();
+	}
+
+	// THE TRACK'S DISTANCE AXIS, IN REAL GROUND UNITS. The x of the η(x) figure is a DISTANCE, so it
+	// is measured with the function every other distance in the app is measured with — rulerExactLeg
+	// (85_polygon.cpp) -> _ruler_length -> _seg_dist_azim, honouring the Preferences "Dist/Azim type"
+	// and "Measure units" (km by default on a geographic window). Raw lon/lat differences are NOT a
+	// distance: that is what used to be plotted, and labelled metres.
+	// Measured ONCE per track geometry: the vertices are cached and re-measured only when they move,
+	// never per slice — each leg is a blocking Julia round trip.
+	void trackMeasure(Scene *s, const Polygon *pg) {
+		if (trackVerts_ == pg->v && trackCum_.size() == pg->v.size()) return;
+		trackVerts_ = pg->v;
+		trackCum_.assign(pg->v.size(), 0.0);
+		QString unit;
+		for (size_t i = 1; i < pg->v.size(); ++i) {
+			QString u;
+			const double d = rulerExactLeg(s, pg->v[i-1], pg->v[i], u);
+			if (!u.isEmpty()) unit = u;
+			trackCum_[i] = trackCum_[i-1] + d;
+		}
+		if (!unit.isEmpty()) trackUnit_ = unit;
 	}
 
 	// (distance along the track, η) for the slice ON SCREEN, sampled with `sampleZ` — the SAME
@@ -1478,18 +1547,16 @@ public:
 	// the surface can never describe the layer differently. False when there is no track, or the user
 	// has removed the line (its Remove is the only way it goes, and then the figure falls back to the
 	// Cinema row curve on its own).
-	bool trackSeries(std::vector<double> &ss, std::vector<double> &zs) const {
+	bool trackSeries(std::vector<double> &ss, std::vector<double> &zs) {
 		ss.clear();  zs.clear();
 		Scene *s = scene_;
 		if (!s || !sceneAlive(s) || trackName_.empty()) return false;
 		const Polygon *pg = nullptr;
 		for (const auto &p : s->polys) if (p.name == trackName_) { pg = &p; break; }
 		if (!pg || pg->v.size() < 2) return false;
-		std::vector<double> cum(pg->v.size(), 0.0);        // arc length at each vertex
-		for (size_t i = 1; i < pg->v.size(); ++i) {
-			const double dx = pg->v[i][0] - pg->v[i-1][0], dy = pg->v[i][1] - pg->v[i-1][1];
-			cum[i] = cum[i-1] + std::sqrt(dx*dx + dy*dy);
-		}
+		trackMeasure(s, pg);
+		const std::vector<double> &cum = trackCum_;       // REAL distance at each vertex (trackUnit_)
+		if (cum.size() != pg->v.size()) return false;
 		const double total = cum.back();
 		if (!(total > 0.0)) return false;
 		// One station per grid column's worth of track, so the curve is as fine as the data and no
@@ -1522,7 +1589,8 @@ public:
 		if (!etaHostCurves_) {
 			std::vector<double> ts, tz;
 			if (trackSeries(ts, tz)) {
-				etaFig->setCurve(ts, tz, QString::fromStdString(trackName_), "s (m)", "\xCE\xB7 (m)");
+				etaFig->setCurve(ts, tz, QString::fromStdString(trackName_),
+				                 QString("s (%1)").arg(trackUnit_), "\xCE\xB7 (m)");
 				etaSetTimeTitle();
 				return;                  // the host is NOT asked: its curves belong to the benchmark path
 			}
@@ -1730,6 +1798,10 @@ static void aquamotoDestroy(Scene *scene) {
 	if (w->cineTimer)     w->cineTimer->stop();
 	if (w->etaAskTimer)   w->etaAskTimer->stop();     // it would fire a Julia call at a freed Scene
 	if (w->viewSyncTimer) w->viewSyncTimer->stop();
+	// The η(x) figure and the wave track are NOT children of this dialog — they live on the render
+	// widget and in the scene's shape pile, and would survive the delete below, floating over a window
+	// whose tsunami file is gone. They go here, with it.
+	w->destroyEtaFigure();
 	w->win->hide();
 	w->win->deleteLater();
 }
