@@ -254,6 +254,95 @@ static inline void applyReliefShade(const ReliefLight &L, const double nv[3], do
 }
 
 // ============================================================================
+// DAY / NIGHT — the night side darkened, as a FACTOR on the colour a bake has already decided.
+//
+// It is a second modulation standing BESIDE the relief shade, never on top of its data: nothing here
+// reads or writes Scene::shadeInten, the ExternShade snapshots or any Shading-dock field, so the dock
+// keeps sole ownership of what it owns and the two factors simply multiply. Every call is gated on
+// `s->dayNight.on`, which is false until a host asks for it — with it off, `applyDayNight` returns
+// before touching anything and the bakes are bit-identical to what they were.
+//
+// The geometry is one dot product: the cosine of the solar zenith angle at (lon, lat), i.e. the sine
+// of the sun's elevation there. WHERE THE SUN IS comes from the host (GMT.solar, the one source of
+// truth this app has for that); this end only asks "how high is it here".
+static inline double dayNightFactor(const Scene *s, double lon, double lat) {
+	const Scene::DayNightShade &dn = s->dayNight;
+	if (!dn.on) return 1.0;
+	const double d2r = vtkMath::Pi() / 180.0;
+	const double sinE = std::sin(lat * d2r) * std::sin(dn.sunLat * d2r) +
+	                    std::cos(lat * d2r) * std::cos(dn.sunLat * d2r) *
+	                    std::cos((lon - dn.sunLon) * d2r);
+	const double elev = std::asin(sinE > 1.0 ? 1.0 : (sinE < -1.0 ? -1.0 : sinE)) / d2r;
+	// Smoothstep across [-twilight, +twilight] of solar elevation: full day above it, `night` below,
+	// and a soft band between — a hard cut reads as a drawn line rather than as dusk.
+	const double w = (dn.twilight > 1e-6) ? dn.twilight : 1e-6;
+	double t = (elev + w) / (2.0 * w);
+	t = (t < 0.0) ? 0.0 : (t > 1.0 ? 1.0 : t);
+	t = t * t * (3.0 - 2.0 * t);
+	return dn.night + (1.0 - dn.night) * t;
+}
+
+// THE one place the factor is applied. `dn >= 1` is the full-daylight / feature-off case and returns
+// without doing arithmetic at all, which is what makes "off" cost nothing and change nothing.
+static inline void applyDayNight(double dn, double rgb[3]) {
+	if (dn >= 1.0) return;
+	rgb[0] *= dn;  rgb[1] *= dn;  rgb[2] *= dn;
+}
+
+// DAY / NIGHT on a textured IMAGE layer. `applyShading` deliberately leaves image extras alone —
+// they are pictures, not shaded surfaces — so the factor cannot reach them through any bake. It
+// reaches them here, by rewriting the texture itself. Called for every image extra on every shading
+// pass; with day/night off and never used on this layer it returns on the first line.
+static void dayNightImageLayer(Scene *s, ExtraObj &ex) {
+	if (!ex.isImage || !ex.tex) return;
+	if (!s->dayNight.on) {
+		// Put the picture back exactly as it arrived — the copy is dropped, so nothing is kept for a
+		// layer that is not being darkened.
+		if (ex.dnPristine) {
+			ex.tex->SetInputData(ex.dnPristine);
+			ex.tex->Modified();
+			ex.dnPristine = nullptr;
+		}
+		return;
+	}
+	if (!ex.dnPristine) {
+		ex.dnPristine = vtkImageData::SafeDownCast(ex.tex->GetInput());
+		if (!ex.dnPristine) return;
+	}
+	vtkImageData *src = ex.dnPristine;
+	vtkUnsignedCharArray *sa = vtkUnsignedCharArray::SafeDownCast(src->GetPointData()->GetScalars());
+	if (!sa) return;
+	int dims[3];  src->GetDimensions(dims);
+	const int W = dims[0], H = dims[1], nc = sa->GetNumberOfComponents();
+	if (W < 1 || H < 1 || nc < 3) return;
+	vtkNew<vtkImageData> dst;
+	dst->DeepCopy(src);
+	vtkUnsignedCharArray *da = vtkUnsignedCharArray::SafeDownCast(dst->GetPointData()->GetScalars());
+	if (!da) return;
+	// Texel -> true coords across the layer's own footprint. Row 0 is the SOUTH edge: that is the
+	// tcoord convention the image plane is built with (by0 at v = 0), so this reads the same way up
+	// as the picture is drawn.
+	const double dx = (W > 1) ? (ex.bx1 - ex.bx0) / (W - 1) : 0.0;
+	const double dy = (H > 1) ? (ex.by1 - ex.by0) / (H - 1) : 0.0;
+	vtkSMPTools::For(0, H, [&](int jBeg, int jEnd) {
+	for (int j = jBeg; j < jEnd; ++j) {
+		const double lat = ex.by0 + j * dy;
+		unsigned char *row = da->GetPointer((vtkIdType)j * W * nc);
+		for (int i = 0; i < W; ++i) {
+			const double f = dayNightFactor(s, ex.bx0 + i * dx, lat);
+			if (f >= 1.0) continue;
+			unsigned char *p = row + (vtkIdType)i * nc;
+			p[0] = (unsigned char)(p[0] * f + 0.5);
+			p[1] = (unsigned char)(p[1] * f + 0.5);
+			p[2] = (unsigned char)(p[2] * f + 0.5);
+		}
+	}
+	});
+	ex.tex->SetInputData(dst);
+	ex.tex->Modified();
+}
+
+// ============================================================================
 // Flat illuminated IMAGE bake (3-D-cube layer scrubbing). A cube layer is drawn as a flat quad
 // carrying a hillshade texture instead of a warped surface (see gmtvtk_show_layer_image_h,
 // 90_c_api.cpp). The SAME illumination the 3-D relief uses is baked per texture pixel here, honouring
@@ -395,6 +484,30 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 		}
 	}
 	});
+
+	// DAY / NIGHT, as its own pass over the finished texture. Deliberately NOT folded into the loop
+	// above: that loop has three different exits (no shade, extern reflectance, gradient shade) and a
+	// factor applied at three places is three places to get it wrong. One pass, one condition, and it
+	// does not run at all unless a host has asked for it — so this cannot alter any existing bake.
+	if (s->dayNight.on) {
+		const double txdx = (txW > 1) ? (wx1 - wx0) / (txW - 1) : 0.0;
+		const double txdy = (txH > 1) ? (wy1 - wy0) / (txH - 1) : 0.0;
+		vtkSMPTools::For(0, txH, [&](int jBeg, int jEnd) {
+		for (int j = jBeg; j < jEnd; ++j) {
+			const double ty = wy0 + j * txdy;
+			unsigned char *row = &out[(size_t)j * txW * 4];
+			for (int i = 0; i < txW; ++i) {
+				unsigned char *p = row + (size_t)i * 4;
+				if (p[3] == 0) continue;                    // untouched texel: nothing to darken
+				const double f = dayNightFactor(s, wx0 + i * txdx, ty);
+				if (f >= 1.0) continue;
+				p[0] = (unsigned char)(p[0] * f + 0.5);
+				p[1] = (unsigned char)(p[1] * f + 0.5);
+				p[2] = (unsigned char)(p[2] * f + 0.5);
+			}
+		}
+		});
+	}
 }
 
 // The visible TRUE-coord rectangle (W,E,S,N) = the part of the flat map on screen at the current
@@ -487,6 +600,31 @@ static bool aquaTraceOn() { char b[8]; return GetEnvironmentVariableA("IGMT_TRAC
 static bool aquaTraceOn() { const char *v = std::getenv("IGMT_TRACE_AQUA"); return v && *v; }
 #endif
 
+// DAY / NIGHT on the Aquamoto composite. The tsunami layer is a host-composited TEXTURE — no CPT,
+// no node bake — so the night factor reaches it HERE, in the same bake that decides its pixels, and
+// nowhere else (`dayNightNodeBake` keeps the per-node path off this quad; a bake there would tint
+// the whole picture with one flat CPT colour). Applied AFTER the two-sided relief shade, as the
+// second factor it is: land and water are darkened alike because the terminator is not a property
+// of the surface, and each side keeps the light its own snapshot gave it.
+// Texel (r = south..north, col) -> true coords, the SAME mapping the shading loop below uses.
+static void dayNightAquaPass(Scene *s, unsigned char *out, int nx, int ny) {
+	if (!s->dayNight.on) return;
+	const double dx = s->gdx != 0.0 ? s->gdx : 1.0, dy = s->gdy != 0.0 ? s->gdy : 1.0;
+	vtkSMPTools::For(0, ny, [&](vtkIdType rBeg, vtkIdType rEnd) {
+	for (int r = (int)rBeg; r < (int)rEnd; ++r) {
+		const double lat = s->gy0 + r * dy;
+		for (int col = 0; col < nx; ++col) {
+			const double f = dayNightFactor(s, s->gx0 + col * dx, lat);
+			if (f >= 1.0) continue;
+			unsigned char *p = out + ((size_t)r * nx + col) * 4;
+			p[0] = (unsigned char)(p[0] * f + 0.5);
+			p[1] = (unsigned char)(p[1] * f + 0.5);
+			p[2] = (unsigned char)(p[2] * f + 0.5);
+		}
+	}
+	});
+}
+
 static void bakeAquaShade(Scene *s) {
 	if (!s || !s->layerImgMode || !s->customLayerTexture || !s->drape) return;
 	const int nx = s->gnx, ny = s->gny;
@@ -516,6 +654,7 @@ static void bakeAquaShade(Scene *s) {
 	const bool lPbr = !lS.useHillshade && lS.litBake, lShade = (lS.useHillshade || lPbr) || lExt;
 	if (!wShade && !lShade) {                            // neither side shades -> the composite verbatim
 		memcpy(out, base, (size_t)nx * ny * 4);
+		dayNightAquaPass(s, out, nx, ny);                // …still night where it is night
 		id->Modified(); tx->Modified();
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return;
@@ -604,6 +743,7 @@ static void bakeAquaShade(Scene *s) {
 		}
 	}
 	});
+	dayNightAquaPass(s, out, nx, ny);                    // the second factor, over the finished composite
 	id->Modified(); tx->Modified();
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
@@ -840,6 +980,34 @@ static vtkSmartPointer<vtkUnsignedCharArray> aquaLandColors(Scene *s, vtkPolyDat
 	return out;
 }
 
+// MAY day/night bake per-NODE colours onto this actor? ONLY when the actor's colour really is the
+// CPT's — i.e. when a node bake is what decides the pixel. Everything else wears a picture or its
+// own colours, and writing an RGB array onto it does not darken it, it REPLACES what it looks like:
+//   * a TEXTURED actor (a drape, and the flat quad a grid-shown-as-an-image rides on) has VTK
+//     MODULATE the texture by the vertex colour, so a bake tints the picture. The Aquamoto quad is
+//     the worst case: its geometry is a flat z=0 rectangle, so every node maps to the SAME CPT
+//     colour and the whole tsunami composite — land included — came out washed in that one colour.
+//     Those layers are darkened in their OWN bake (bakeLayerRGBA / bakeAquaShade / dayNightImageLayer),
+//     which is where their pixels are decided.
+//   * a mesh with its own colours (per-vertex/per-face RGB, or per-face z) would have them pushed
+//     through the LUT by MAGNITUDE — the flat-red failure `fvRestoreColorMode` exists to stop.
+// That last question is asked of `fvMeshColorMode`, the ONE function that answers "what colouring
+// does this geometry really have" (10_geometry.cpp) — never of the mapper's live colour mode, which
+// this very function sets to DirectScalars on every successful bake and would therefore stop
+// recognising its own grids from the second pass on.
+// This is a QUESTION, not a change: it only ever gates the day/night-only path, so with the feature
+// off nothing here can run at all.
+static bool dayNightNodeBake(Scene *s, vtkActor *act, vtkPolyDataMapper *m) {
+	if (!act || !m) return false;
+	if (act->GetTexture()) return false;                       // a picture rides on this actor
+	if (s->layerImgMode) {                                      // flat-image quad (cube layer / Aquamoto):
+		for (vtkActor *a : surfActors(s)) if (a == act) return false;   // its pixels are the drape texture
+	}
+	bool fRGB = false, vRGB = false, cZ = false;
+	if (fvMeshColorMode(m, fRGB, vRGB, cZ)) return false;      // mesh's own colours, not LUT values
+	return true;
+}
+
 static void hillshadeMapper(Scene *s, vtkActor *act) {
 	if (!act) return;
 	const LayerShade &lk = lookOfActor(s, act);   // THIS layer's own look, never the window's
@@ -882,7 +1050,14 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	std::vector<unsigned char> isLand;
 	vtkSmartPointer<vtkUnsignedCharArray> landCol = pd ? aquaLandColors(s, pd, isLand) : nullptr;
 
-	if (!lk.useHillshade && !landCol) {           // revert to whatever this geometry's colouring IS
+	// DAY / NIGHT keeps the bake alive when no relief shade is selected: the night side still has to
+	// be darkened, and the only place a surface's colour can be modulated per NODE is here. The whole
+	// condition is false unless a host has asked for day/night, so with the feature off every line
+	// below behaves exactly as it always has.
+	//
+	// ...and ONLY for an actor whose colour really is the LUT's. `dayNightNodeBake` is what says so.
+	const bool dnOn = s->dayNight.on && dayNightNodeBake(s, act, m);
+	if (!lk.useHillshade && !landCol && !dnOn) {  // revert to whatever this geometry's colouring IS
 		// NOT hard-coded to "point data, through the LUT" any more. That is right for a grid and
 		// wrong for every MESH: a per-vertex RGB array pushed through a LUT is mapped by its
 		// MAGNITUDE, so a magenta model rendered as one flat red off the top of the ramp, and a
@@ -943,8 +1118,10 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	const ReliefLight Ll = aqua ? makeReliefLightSide(s, lS) : L;   // composited path uses -- never a copy
 	const bool wExt = aqua && haveExternShade(s->shadeIn);
 	const bool lExt = aqua && haveExternShade(s->shadeInLand);
-	vtkPoints *pts = (ext || wExt || lExt) ? pd->GetPoints() : nullptr;
-	if ((ext || wExt || lExt) && !pts) return;
+	// The points are needed by the extern reflectance samplers AND by day/night, which asks each node
+	// where it is on the Earth. Same array, one reason more to fetch it.
+	vtkPoints *pts = (ext || wExt || lExt || dnOn) ? pd->GetPoints() : nullptr;
+	if ((ext || wExt || lExt || dnOn) && !pts) return;
 	vtkSmartPointer<vtkUnsignedCharArray> col = vtkSmartPointer<vtkUnsignedCharArray>::New();
 	col->SetName("hillshade");
 	col->SetNumberOfComponents(3);
@@ -980,6 +1157,10 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 			if (lk.useHillshade)                                         // colour only when the look is unlit
 				applyReliefShade(L, nv, c, std::isnan(ei) ? nullptr : &ei);  // SHARED shade (extern / grdimage / Lambert)
 		}
+		// …and THEN the night, as the second factor on whatever colour the lines above decided. Never
+		// instead of them: with no relief shade selected the CPT colour is what this layer looks like
+		// in daylight, and this multiply is the whole of the change.
+		if (dnOn) { double pw[3]; pts->GetPoint(i, pw); applyDayNight(dayNightFactor(s, pw[0], pw[1]), c); }
 		col->SetTypedComponent(i, 0, (unsigned char)(c[0] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 1, (unsigned char)(c[1] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 2, (unsigned char)(c[2] * 255.0 + 0.5));
@@ -1071,6 +1252,10 @@ static void applyShading(Scene *s) {
 	// Image extras are textured pictures (kept unlit) and are left untouched.
 	for (auto &ex : s->extras)
 		if (!ex.isImage && ex.actor) applySurfStyle(s, ex.actor.Get());
+	// …and the IMAGE extras, which no bake reaches, get the day/night factor written into their own
+	// texture. A no-op unless day/night is on (or was, on this layer — then it restores it).
+	for (auto &ex : s->extras)
+		if (ex.isImage) dayNightImageLayer(s, ex);
 	// key light: aim from azimuth (deg from north, clockwise) + elevation.
 	// dir points FROM the scene TO the sun; for a directional light only the
 	// Position-minus-FocalPoint direction matters.

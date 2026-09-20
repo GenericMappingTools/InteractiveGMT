@@ -187,6 +187,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_fftstuff_callback,
 	:gmtvtk_set_gravmag3d_callback, :gmtvtk_set_grdgravmag3d_callback, :gmtvtk_set_grdredpol_callback, :gmtvtk_set_manual_callback, :gmtvtk_set_grdgradient_callback, :gmtvtk_set_grdseamount_callback,
 	:gmtvtk_set_hillshade_callback, :gmtvtk_set_shade_intensity_h, :gmtvtk_set_warmup_callback,
+	:gmtvtk_set_daynight_h,             # day/night terminator, as a colour factor (src/solar.jl)
 	:gmtvtk_set_import_gmt_callback,
 	:gmtvtk_set_binarize_callback, :gmtvtk_binarize_set_histogram, :gmtvtk_binarize_set_preview,
 	:gmtvtk_set_image_histo_callback, :gmtvtk_histo_set_counts,

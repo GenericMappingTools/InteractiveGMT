@@ -1969,6 +1969,31 @@ static void surfaceObjectMenu(Scene *s, const QPoint &gp) {
 	if (c == aRem) sceneRemoveSurface(s);
 }
 
+// Remove the WHOLE Aquamoto file group: every variable nested under the master row, then the base.
+// A group's Remove takes every child (SACRED_LAW.md). Through the same per-element removals the
+// children's own rows use — back to front, since sceneRemoveExtraAt erases from s->extras.
+static void aquaRemoveFileGroup(Scene *s) {
+	if (!s) return;
+	for (size_t i = s->extras.size(); i-- > 0; ) sceneRemoveExtraAt(s, i);
+	sceneRemoveSurface(s);      // last: also destroys the Aquamoto control window
+}
+
+// The master row's own menu: what means something for the FILE. Save / grdinfo / Move / stacking stay
+// on the z variable's group inside, where they describe what they act on.
+static void aquaFileObjectMenu(Scene *s, const QPoint &gp) {
+	if (!s) return;
+	QMenu m(s->widget);
+	QAction *aAqua = nullptr;
+	if (g_aquamotoReopen && g_aquamotoHasWindow && g_aquamotoHasWindow(s))
+		aAqua = m.addAction("Aquamoto viewer…");          // re-show the hidden Aquamoto control window
+	if (aAqua) m.addSeparator();
+	QAction *aRem = m.addAction("Remove file (all variables)");
+	QAction *c = m.exec(gp);
+	if (!c) return;
+	if (aAqua && c == aAqua) { g_aquamotoReopen(s); return; }
+	if (c == aRem) aquaRemoveFileGroup(s);
+}
+
 // Properties menu for a dropped GRID surface (its Scene Objects row). EVERY added element must carry
 // a handle menu — for a grid that is: save it to disk, stack it in the grid pile, or delete it.
 // Reached by a left- OR right-click on the row label.
@@ -2834,15 +2859,12 @@ static void rebuildSceneObjects(Scene *s) {
 	const bool aquaWrap = sceneIsAquamoto(s);
 	if (aquaWrap) {
 		const QString fileNm = s->surfName.empty() ? QString("Tsunami") : QString::fromStdString(s->surfName);
-		// SAME menu as the inner "z" surface group two rows below (surfaceObjectMenu -> Remove ->
-		// sceneRemoveSurface, which already tears down the whole Aquamoto file/window). The master
-		// per-file handle had NO onProps/onContext at all -- every other handle in this panel gets a
-		// properties menu (SACRED_LAW.md "every element has properties"); this wrapper was the one
-		// exception, reachable only by opening it and right-clicking the child instead.
+		// This row is the FILE, not the z surface: its own menu, whose Remove takes every child
+		// (aquaRemoveFileGroup). Borrowing surfaceObjectMenu left the other variables behind.
 		beginGroupHandle(fileNm, IC_Surface, true,
-		        [s](const QPoint &g) { surfaceObjectMenu(s, g); },
-		        [s](const QPoint &g) { surfaceObjectMenu(s, g); },
-		        "Every variable loaded from this file · right-click to save / remove");
+		        [s](const QPoint &g) { aquaFileObjectMenu(s, g); },
+		        [s](const QPoint &g) { aquaFileObjectMenu(s, g); },
+		        "Every variable loaded from this file · right-click to remove the whole file");
 	}
 
 	// ── GRID GROUPS ── each grid = [surface][drape?][colorbar][axes], split by a light rule. A bare

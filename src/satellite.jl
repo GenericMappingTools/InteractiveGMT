@@ -987,12 +987,12 @@ function _anim_frame!(k::Int)::String
 		ccall(_fn(:gmtvtk_globe_spin_to_h), Cint, (Ptr{Cvoid}, Cdouble, Cdouble),
 		      a.scene, lonc, k <= 1 ? 0.0 : _ANIM_CAM_STEP)
 	end
-	# THE NIGHT SIDE DOES NOT WALK WITH THE CLOCK YET, and that is deliberate, not an oversight: on the
-	# globe one repaint of it measures 3.76 s (0.163 s on a flat map), because the night region is a
-	# hemisphere-sized POLYGON whose pole-closing edge is 360° long and `globeDensifyPD` subdivides it
-	# 1->4 up to eight times to bend it onto the sphere. Thirty repaints in a row took the process out.
-	# A terminator that moves with the animation needs the night side to stop being a polygon — see the
-	# note at `_daynight_paint!` (solar.jl).
+	# THE NIGHT SIDE WALKS WITH THE CLOCK, when the window is showing it. Only then — the animation does
+	# not switch it on, it keeps it honest: a day of orbits drawn over a terminator frozen at the
+	# instant the run started would put the satellite in daylight over ground that is dark.
+	# (This is what the per-pixel darkening bought. The polygon it replaced cost 3.76 s a repaint on
+	# the globe and took the process out when asked for it once a frame — see `_daynight_set!`.)
+	_daynight_on(a.scene) && (try; _daynight_set!(a.scene, a.times[m]); catch; end)
 	# THE CLOCK, on the map: the instant being drawn, and how far through the day the run is.
 	_anim_clock_set!(a.scene, a.clock,
 	                 GMT.Dates.format(a.times[m], "yyyy-mm-dd HH:MM:SS") * " UTC", k / _ANIM_FRAMES)
@@ -1504,7 +1504,7 @@ function _on_satellite(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap:
 			# standing. Re-derived on every plot so "Update orbit" moves the terminator too; only when
 			# the window is already showing it.
 			if _daynight_on(scene)
-				try; _daynight_paint!(scene, tend[]); catch; end
+				try; _daynight_set!(scene, tend[]); catch; end
 			end
 			msg = (nupd > 0 ? "Updated: " : "Plotted: ") * join(done, ", ")
 			_sat_reply(out, cap, msg)
@@ -1536,7 +1536,7 @@ function _on_satellite(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap:
 		end
 
 		# DAY / NIGHT on the Earth — the dialog's own checkbox. The maths is the Sun tool's night region
-		# (solar.jl's `_daynight_paint!`), asked for ONE instant; nothing about where the dark side is
+		# (solar.jl's `_daynight_set!`), asked for ONE instant; nothing about where the dark side is
 		# is worked out here. `when` is an ISO stamp, or absent for this instant — which is the hook a
 		# date picker needs later and the reason the time is a parameter rather than a call to `now`
 		# buried inside the painter.
@@ -1551,7 +1551,7 @@ function _on_satellite(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap:
 				error("open a map first — there is nothing to darken")
 			w = strip(get(d, "when", ""))
 			t = isempty(w) ? _sat_now_utc() : DateTime(String(w))
-			_daynight_paint!(scene, t)
+			_daynight_set!(scene, t)
 			_sat_reply(out, cap, "Night side shown for " *
 			           GMT.Dates.format(t, "yyyy-mm-dd HH:MM") * " UTC.")
 			return Cint(1)

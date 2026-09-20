@@ -356,56 +356,66 @@ function _register_solar()
 end
 
 # --- DAY / NIGHT ----------------------------------------------------------------------------------
-# The night side of the Earth, darkened, for one instant. This is the Sun tool's OWN night region
-# asked for a single terminator and a single time: the same `-Td` ring, the same `_solar_night_polys`
-# that decides which shape the dark cap takes (blob, or ring closed over a pole), and the same
-# `_solar_paint!` that lays it down. Nothing here recomputes where the dark side is — a second
-# answer to that question is exactly what SACRED_LAW.md forbids.
+# The night side of the Earth, darkened, for one instant.
 #
-# Its own GROUP, though, not the Sun tool's: the two are switched on from different places and each
-# has to be able to replace its own polygons without wiping the other's.
-const _DAYNIGHT_GROUP  = "Night side"
-const _DAYNIGHT_RGB    = (0.0, 0.0, 0.0)
-const _DAYNIGHT_TRANSP = 50.0            # per cent — the geography under it stays readable
+# IT IS NOT A DARK SHEET LAID OVER THE MAP, and that is the whole design. The first version painted
+# the night region as a filled polygon — the Sun tool's own `-Td` ring closed over a pole — and it
+# worked, but putting a hemisphere-sized polygon on the globe costs **3.76 s** (0.163 s on a flat
+# map): it goes through `globeDensifyPD`, which splits every triangle 1->4 until no edge exceeds 2°,
+# and the ring's pole-closing edge is 360° long. Repainting it once per animation frame took the
+# process out.
+#
+# So the darkening is a FACTOR ON THE COLOUR each bake already produces, per pixel and per node
+# (`dayNightFactor` / `applyDayNight`, 40_shading.cpp). One multiply per sample; a globe costs the
+# same as a flat map because no geometry is created at all. The only thing computed here is WHERE
+# THE SUN IS, from `GMT.solar` — the one source of truth this app has for that.
+#
+# What this side owns, and nothing else: the instant. `when` is today, the anchor of a satellite
+# plot, or any other date, so a date picker needs nothing new here.
 
-# Which windows are showing it, so a repaint (the satellite animation walks the clock) knows whether
-# there is anything to repaint. Keyed by the window, like every other per-window state here.
+# Which windows have it on. Keyed by the window, like every other per-window state in this file.
 const _DAYNIGHT_ON = Dict{UInt,Bool}()
 _daynight_on(scene::Ptr{Cvoid})::Bool = get(_DAYNIGHT_ON, UInt(scene), false)
 
-function _daynight_clear!(scene::Ptr{Cvoid})
-	ccall(_fn(:gmtvtk_remove_polys_h), Cint, (Ptr{Cvoid}, Cstring), scene, _DAYNIGHT_GROUP)
-	_DAYNIGHT_ON[UInt(scene)] = false
-	return nothing
+# How dark the deep night gets (1 = no darkening) and the half-width, in degrees of solar elevation,
+# of the band the factor fades across — so dusk is a soft edge and not a drawn line. Defaults live on
+# the C side too; these are what this door asks for.
+const _DAYNIGHT_LEVEL    = 0.42
+const _DAYNIGHT_TWILIGHT = 6.0
+
+"""
+    _sun_lonlat(when) -> (lon, lat)
+
+The sub-solar point at `when` (UTC), from `GMT.solar -I -C`. The SAME call the Sun tool's report
+uses; no astronomy is done on this side or the C one.
+"""
+function _sun_lonlat(when::GMT.Dates.DateTime)::Tuple{Float64,Float64}
+	v = _solar_row(GMT.solar(I = "+d" * GMT.Dates.format(when, "yyyy-mm-ddTHH:MM:SS"), C = true))
+	length(v) >= 2 || error("solar -C returned $(length(v)) values, expected the sun's lon/lat")
+	return (v[1], v[2])
 end
 
 """
-Darken the night side of `scene` as it stands at `when` (UTC). Returns the number of polygons.
+Darken the night side of `scene` as it stands at `when` (UTC).
 
-`when` is the ONE input: today's instant, the anchor of a satellite plot, or any other date — the
-maths does not care which, so a date picker added later needs nothing new here.
-
-COST, MEASURED, because it decides what this can be used for: 0.163 s on a flat map and **3.76 s on
-the globe**. The night region is one hemisphere-sized polygon whose pole-closing edge is 360° long,
-and putting a polygon on the sphere goes through `globeDensifyPD`, which refines by splitting every
-triangle 1->4 until no edge exceeds 2° — up to eight passes, i.e. 65536 triangles for each one it
-starts with. That is fine for a toggle and far too slow to follow a clock: repainting it once per
-animation frame took the process out. Making the terminator animate means the night side has to stop
-being a polygon and become a real mesh (~2° cells, one actor) or a per-pixel darkening of the
-planet's own texture.
+Cheap enough to follow a clock: the whole call is one `GMT.solar` (~0.6 ms) plus one re-shade of
+whatever the window is showing.
 """
-function _daynight_paint!(scene::Ptr{Cvoid}, when::GMT.Dates.DateTime; W::Float64 = -180.0)::Int
+function _daynight_set!(scene::Ptr{Cvoid}, when::GMT.Dates.DateTime)::Bool
 	scene == C_NULL && error("day/night: no window")
-	mods = "+d" * GMT.Dates.format(when, "yyyy-mm-ddTHH:MM:SS")
-	D = GMT.solar(T = "d" * mods, M = true)          # -Td: the day/night terminator, -M: hand it over
-	(D === nothing || isempty(D)) && error("solar returned no terminator for " * string(when))
-	ring = (D isa GMTdataset ? D : D[1]).data
-	polys = _solar_night_polys(ring, W, _solar_sunlat(mods))
-	isempty(polys) && error("the night side came out empty for " * string(when))
-	# REPLACE, never pile up — the terminator of 10:00 and the one of 10:04 are the same element seen
-	# at two instants, which is what makes this safe to call once per animation frame.
-	ccall(_fn(:gmtvtk_remove_polys_h), Cint, (Ptr{Cvoid}, Cstring), scene, _DAYNIGHT_GROUP)
-	n = _solar_paint!(scene, polys, "Night", _DAYNIGHT_RGB, _DAYNIGHT_TRANSP; group = _DAYNIGHT_GROUP)
-	_DAYNIGHT_ON[UInt(scene)] = n > 0
-	return n
+	lon, lat = _sun_lonlat(when)
+	ok = ccall(_fn(:gmtvtk_set_daynight_h), Cint,
+	           (Ptr{Cvoid}, Cint, Cdouble, Cdouble, Cdouble, Cdouble),
+	           scene, Cint(1), lon, lat, _DAYNIGHT_TWILIGHT, _DAYNIGHT_LEVEL) != 0
+	_DAYNIGHT_ON[UInt(scene)] = ok
+	return ok
+end
+
+function _daynight_clear!(scene::Ptr{Cvoid})
+	scene == C_NULL && return nothing
+	ccall(_fn(:gmtvtk_set_daynight_h), Cint,
+	      (Ptr{Cvoid}, Cint, Cdouble, Cdouble, Cdouble, Cdouble),
+	      scene, Cint(0), 0.0, 0.0, 0.0, 0.0)
+	_DAYNIGHT_ON[UInt(scene)] = false
+	return nothing
 end

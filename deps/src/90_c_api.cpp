@@ -2216,6 +2216,42 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 	applyShading(s);
 }
 
+// DAY / NIGHT: darken the night side of the Earth, for ONE instant.
+//
+// `on` = 0 switches it off and puts every layer back exactly as it was (an image extra's texture is
+// restored from the pristine copy dayNightImageLayer kept). `sunLon`/`sunLat` are the SUB-SOLAR POINT
+// in degrees — the host computes it with GMT.solar (src/solar.jl, the app's one source of truth for
+// where the sun is); nothing on this side does any astronomy. `twilight` is the half-width of the
+// dusk band in DEGREES OF SOLAR ELEVATION (0 -> a hard terminator), `night` the factor the deep night
+// side is multiplied by (1 = no darkening).
+//
+// It is NOT a light and NOT part of the Shading dock's state: it is a second FACTOR multiplied into
+// the colour each bake already produced (dayNightFactor / applyDayNight, 40_shading.cpp), which is
+// why it costs one multiply per sample and is cheap enough to follow a clock — the polygon it
+// replaced cost 3.76 s a repaint on the globe. Cheap enough, too, that the whole of the work here is
+// to store the numbers and re-run the SAME applyShading every other shading change runs.
+GMTVTK_API int gmtvtk_set_daynight_h(void *handle, int on, double sunLon, double sunLat,
+                                     double twilight, double night) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	Scene::DayNightShade &dn = s->dayNight;
+	const bool was = dn.on;
+	dn.on = (on != 0);
+	if (dn.on) {
+		dn.sunLon   = sunLon;
+		dn.sunLat   = sunLat;
+		dn.twilight = twilight;
+		dn.night    = (night < 0.0) ? 0.0 : (night > 1.0 ? 1.0 : night);
+	}
+	if (!dn.on && !was) return 0;                // off, and it already was: nothing to re-bake
+	// The flat-image / Aquamoto drape is baked by rebakeLayerImage, the surfaces and the image extras
+	// by applyShading. Both are the SAME functions every other shading change goes through.
+	if (s->layerImgMode) rebakeLayerImage(s);
+	applyShading(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return dn.on ? 1 : 0;
+}
+
 // Register the grdseamount Compute callback (GMT menu). fn(scene, params) with params a
 // newline-separated "key=value" block (see JuliaGrdSeamountFn in 30_app.cpp) builds the synthetic
 // seamount grid and adds it to `scene`. nullptr to detach.

@@ -535,6 +535,9 @@ struct ExtraObj {
 	AxesSet ax;
 	vtkSmartPointer<vtkActor> drape;
 	vtkSmartPointer<vtkTexture> tex;         // dropped-image texture (reused to rebuild flat plane / drape)
+	// Day/night only: the texture as it arrived, so the darkening is reversible (dayNightImageLayer,
+	// 40_shading.cpp). Null whenever day/night is off -- no second copy of any image otherwise.
+	vtkSmartPointer<vtkImageData> dnPristine;
 	std::string name;                        // label shown in the Scene Objects panel (file name)
 	bool   isImage = false;                  // dropped IMAGE (flat plane / drapeable) vs grid surface
 	bool   isMesh  = false;                  // a POLYGON MESH layer (a VTK .vtp/.vtu surface, a GMTfv
@@ -1367,6 +1370,18 @@ struct Scene {
 	// reflectance from that side's OWN surface and pushes it here; every other window has water only.
 	ExternShade shadeIn;             // the window's reflectance (in Aquamoto: the WATER side's)
 	ExternShade shadeInLand;         // Aquamoto only: the LAND side's own reflectance
+
+	// DAY / NIGHT: a FACTOR multiplied into the colour a bake already decided, never a light and never
+	// part of the dock's state (dayNightFactor / applyDayNight, 40_shading.cpp). The sub-solar point
+	// comes from the host (GMT.solar). `on` gates every call, so off = bit-identical bakes.
+	struct DayNightShade {
+		bool   on       = false;     // the whole feature's gate (gmtvtk_set_daynight_h)
+		double sunLon   = 0.0;       // sub-solar point, degrees
+		double sunLat   = 0.0;
+		double twilight = 6.0;       // half-width of the dusk band, in DEGREES OF SOLAR ELEVATION
+		double night    = 0.42;      // the deep-night factor (1 = no darkening at all)
+	};
+	DayNightShade dayNight;
 	// "Remove illumination" (the tool's ✕, Mirone's ImageResetOrigImg_CB): NO light at all — the
 	// surface renders UNLIT with its plain CPT colours. Distinct from every look toggle, because
 	// "no hillshade" still leaves the PBR scene lights on and the grid still looks illuminated.
