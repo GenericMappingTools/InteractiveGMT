@@ -942,6 +942,24 @@ end
 # through here, so the picture the button builds is made by THIS function, with the same halves, the
 # same ranges and the same combine as the one the layer wears — never a second composition path
 # (SACRED_LAW.md).
+# WHICH MODEL EACH SIDE IS LIT WITH — the ONE place that decides, for every caller.
+#
+# `wbox` / `lbox` are the Debug tab's two spin boxes as the dialog sends them: a box the user has
+# typed in this session sends its 1..7 value, an untouched one sends 0 meaning "the model this side
+# already carries". With nothing carried either, the fallback is 2 — and that number is what the
+# Debug boxes display for an unset side, so what the box says and what the picture uses are the same
+# statement (75_aquamoto.cpp `syncIllumModelSpins`).
+#
+# Records the resolved pair in `_AQUA_LAST_MODELS`, so the message line reports what the picture was
+# ACTUALLY built with rather than what was asked for.
+function _aqua_resolve_models(scene::Ptr{Cvoid}, st::_AquaState, wbox::Int, lbox::Int)
+	mdl(p, dflt) = isempty(p) ? dflt : parse(Int, p["model"])
+	mw = wbox > 0 ? wbox : mdl(st.illum[1], 2)
+	ml = lbox > 0 ? lbox : mdl(st.illum[2], 2)
+	_AQUA_LAST_MODELS[scene] = (mw, ml)
+	return mw, ml
+end
+
 function _aqua_shaded_rgb(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid, splitDryWet::Bool;
                           model_water::Int = 0, model_land::Int = 0)::Union{Array{UInt8,3},Nothing}
 	splitDryWet || return nothing                     # no dry/wet split -> no two halves to combine
@@ -950,10 +968,7 @@ function _aqua_shaded_rgb(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid, splitDr
 	# model stored the sides fall back to the defaults below (2, the classic reflectance).
 	pw, pl = st.illum[1], st.illum[2]
 	num(p, key, dflt) = (isempty(p) && return dflt; v = _get(p, key); isempty(v) ? dflt : parse(Float64, v))
-	mdl(p, dflt) = isempty(p) ? dflt : parse(Int, p["model"])
-	mw = model_water > 0 ? model_water : mdl(pw, 2)
-	ml = model_land  > 0 ? model_land  : mdl(pl, 2)
-	_AQUA_LAST_MODELS[scene] = (mw, ml)               # what the picture was ACTUALLY built with
+	mw, ml = _aqua_resolve_models(scene, st, model_water, model_land)
 	img, iw, il = aqua_shade_image(st.bat, G;
 	                        method_water = mw, method_land = ml,
 	                        azim_water = num(pw, "azim", 45.0), elev_water = num(pw, "elev", 30.0),
@@ -990,8 +1005,145 @@ const _AQUA_LAST_COMBINED = Dict{Ptr{Cvoid},Any}()
 const _AQUA_LAST_MODELS = Dict{Ptr{Cvoid},Tuple{Int,Int}}()
 
 # The one window the "Combined image" button owns. Closed and replaced at every press — see
-# `_aqua_combined_popup`.
+# `_aqua_combined_popup`. Still used by `_aqua_side_popup`; the combined image itself now lands in
+# the Aquamoto window as a handle of its own.
 const _AQUA_POPUP_WIN = Ref{Ptr{Cvoid}}(C_NULL)
+
+# The Scene Objects row the combined image lands in. ONE name, so a second press replaces the row
+# instead of stacking a second handle under it.
+const AQUA_COMBINED_NAME = "Combined image"
+
+# The OFF-SCREEN staging window the method-1 render is drawn in and photographed from. One per
+# session, kept and reused — see `_aqua_capture_combined`.
+const _AQUA_STAGE_WIN = Ref{Ptr{Cvoid}}(C_NULL)
+
+# A mask grown by ONE node in every direction (8-connected), in GRID SPACE.
+#
+# Needed by `_aqua_capture_combined` below to close the shoreline. It is a NEIGHBOUR test, which is
+# the one thing a raw grid buffer cannot answer: these grids are read "TRB" (row-major), so `M[i±1,j]`
+# on `G.z` walks the WRONG axis and the ring smears into slabs across the sea (SACRED_LAW.md, grid
+# memory-layout law — the caller hands this `_zmat`'s view, never `G.z`).
+function _aqua_dilate1(M::AbstractMatrix{Bool})::Matrix{Bool}
+	ny, nx = size(M)
+	D = Matrix{Bool}(M)
+	@inbounds for j in 1:nx, i in 1:ny
+		M[i, j] || continue
+		for jj in max(1, j - 1):min(nx, j + 1), ii in max(1, i - 1):min(ny, i + 1)
+			D[ii, jj] = true
+		end
+	end
+	return D
+end
+
+# THE COMBINED IMAGE, MADE THE ONLY WAY METHOD 1 CAN EXIST: RENDERED, THEN PHOTOGRAPHED.
+#
+# Method 1 is VTK'S OWN PBR RENDER. It happens on a SURFACE, on the GPU. Two routes were tried and
+# neither can produce it, for the same reason:
+#   * `aqua_shade_image` composites two half PICTURES on the CPU — a picture has no surface to
+#     render, so method 1 silently degrades to a flat shaded look;
+#   * capturing the AQUAMOTO LAYER gives the same thing, because that layer IS that composite,
+#     draped as a flat texture. Photographing it returns the CPU composite, method 1 or not.
+# So the two halves are put up AS TWO SURFACES, each lit by name through the Illumination tool's own
+# door, the renderer draws them, and THAT is photographed. The staging window is closed before this
+# returns — what comes back is an IMAGE, nothing is left on screen.
+#
+# THE TWO RINGS. A surface is built CELL by cell and `makeGridFromArray` DROPS any cell with a NaN
+# corner, so two halves cut on the same shoreline both drop the cells straddling it — a one-node gap
+# belonging to neither, through which the window shows its NaN plane (white by default). Each half
+# is therefore extended ONE NODE into the other:
+#   * the LAND takes its wet neighbours' ground, set a hair BELOW the stage so the water covers it
+#     and its colour is never seen — it is there for geometry only;
+#   * the WATER takes the mean of its OWN wet neighbours, never the dry node's own stage (at a dry
+#     node the stage IS the ground, tens of metres up, which falls off the water palette and paints
+#     the coast in the palette's extreme colour instead).
+# The water ends up δ above the land ring, so the waterline is drawn by the water.
+#
+# Returns the captured GMTimage, or `nothing` if the window could not be built.
+function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
+                                azw::Float64, elw::Float64, azl::Float64, ell::Float64)
+	bat = st.bat
+	dry = _aqua_indland(bat.z, G.z)                  # element-wise, both buffers as they lie
+	any(dry) || return nothing                       # no dry/wet split -> nothing to combine
+	Gw = deepcopy(G);  Gw.z[dry] .= NaN32            # WATER: the wave, nothing else
+	Gl = deepcopy(bat)
+
+	drym = _aqua_indland(_zmat(bat), _zmat(G))       # the SAME test, in grid space
+	ny_, nx_ = size(drym)
+	keep = _aqua_dilate1(drym)
+	Zl, Zw, Zm = _zmat(Gl), _zmat(Gw), _zmat(G)
+	Zl[.!keep] .= NaN32
+	fin = filter(isfinite, bat.z)
+	δ   = Float32(max(1f-3 * (maximum(fin) - minimum(fin)), eps(Float32)))
+	ring = keep .& .!drym
+	any(ring) && (Zl[ring] .= Float32.(Zm[ring]) .- δ)
+	wring = _aqua_dilate1(.!drym) .& drym
+	@inbounds for j in 1:nx_, i in 1:ny_
+		wring[i, j] || continue
+		acc = 0.0f0; cnt = 0
+		for jj in max(1, j - 1):min(nx_, j + 1), ii in max(1, i - 1):min(ny_, i + 1)
+			(drym[ii, jj] || !isfinite(Zm[ii, jj])) && continue
+			acc += Float32(Zm[ii, jj]); cnt += 1
+		end
+		cnt > 0 && (Zw[i, j] = acc / cnt)
+	end
+	# Each half's palette spans ITS OWN data, exactly as a plain grid's does.
+	for (H, m) in ((Gw, .!dry), (Gl, dry))
+		v = view(H.z, m)
+		H.range[5], H.range[6] = Float64(minimum(v)), Float64(maximum(v))
+	end
+
+	# THE STAGING WINDOW IS OFF-SCREEN AND IT IS KEPT.
+	#
+	# It used to be a normal window opened and closed on every press: a white, empty window flashing
+	# up for the half-second the build took (measured: 0.145 s to open + 0.107 s to close, plus the
+	# flash itself). `gmtvtk_open_empty_offscreen` builds it exactly as `gmtvtk_open_empty` does —
+	# one builder — and then moves it off every screen at zero opacity, so it renders (the capture
+	# reads the BACK buffer, which does not care where the window is) and is never seen.
+	#
+	# Kept for the session and reused, so that cost is paid once instead of on every press. Its
+	# contents are replaced each time: the two surfaces are removed by name before the new pair goes
+	# in, the same remove-then-add `_aqua_drop_var_rows` uses against stale same-named handles.
+	h = _AQUA_STAGE_WIN[]
+	if h == C_NULL
+		h = ccall(_fn(:gmtvtk_open_empty_offscreen), Ptr{Cvoid}, (Cstring,), "Combined image staging")
+		h == C_NULL && return nothing
+		_register_fig!(QtEmpty(h))
+		_AQUA_STAGE_WIN[] = h
+		_pump_once()
+	else
+		for nm in (AQUA_WATER, AQUA_LAND)
+			ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), h, nm)
+			_forget_object!(h, :grid, nm)
+		end
+	end
+	try
+		# The water's palette over the SYMMETRIC scale `_aqua_water_range` gives, so a diverging
+		# palette's centre sits on the calm sea instead of wherever the slice's extremes leave it.
+		_add_grid_to_scene(h, Gw, AQUA_WATER; cmap = st.watercmap, promote = true,
+		                   zrange = _aqua_water_range(Gw), record = false)
+		ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), h, AQUA_WATER)
+		_remember_object!(h, :grid, AQUA_WATER, Gw)
+		_add_grid_to_scene(h, Gl, AQUA_LAND; cmap = st.landcmap, promote = false, record = false)
+		# …AND SHOWN: a grid added to a window that already has one is registered hidden, and this one
+		# is not an alternative view of the layer, it is HALF OF IT.
+		ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), h, AQUA_LAND, Cint(1))
+		for _ in 1:40; _pump_once(); end
+		_on_hillshade(h, "model=$mw\ngrid=$AQUA_WATER\nazim=$azw\nelev=$elw\n")
+		_on_hillshade(h, "model=$ml\ngrid=$AQUA_LAND\nazim=$azl\nelev=$ell\n")
+		for _ in 1:40; _pump_once(); end
+		# STRAIGHT DOWN, through the ONE 2D/3D door, and captured at SCALE 1: `SetScale(n>1)` builds
+		# the frame from n x n TILES with the camera window shifted per tile, and every view-dependent
+		# term — which is all of PBR with image-based lighting — then differs between them, so the tile
+		# seams show as a cross through the picture. More pixels come from a bigger window.
+		ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), h, "flat2d=1;")
+		ccall(_fn(:gmtvtk_set_capture_scale_h), Cvoid, (Ptr{Cvoid}, Cint), h, Cint(1))
+		for _ in 1:40; _pump_once(); end
+		return _display_image(h, Float64(Gw.range[1]), Float64(Gw.range[2]),
+		                         Float64(Gw.range[3]), Float64(Gw.range[4]))
+	finally
+		_pump_once()      # the staging window is KEPT (off-screen) and reused — see above
+	end
+end
 
 # THE COMBINED IMAGE, ON DEMAND, IN A DISPLAY OF ITS OWN.
 #
@@ -1009,15 +1161,23 @@ function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_lan
                               t0::Float64 = 0.0)::Cint
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && return Cint(0)
-	# BUILT HERE, FOR THE SLICE ON SCREEN. The layer itself is drawn as the plain composite modulated
-	# by the Illumination tool's reflectances (`_aqua_illuminate!`), so nothing else makes this picture
-	# any more — this button is the one place that asks for it. `_aqua_shaded_rgb` caches what it
-	# builds in `_AQUA_LAST_COMBINED`, so a second press on an unchanged slice costs nothing.
 	G = _aqua_layer(st, st.cur)
 	G === nothing && return Cint(0)                   # no layer drawn yet: nothing to show
-	rgb = _aqua_shaded_rgb(scene, st, G, st.split; model_water = model_water, model_land = model_land)
-	(rgb === nothing) && return Cint(0)               # no dry/wet split -> no two halves to combine
-	img = get(_AQUA_LAST_COMBINED, scene, nothing)
+	st.split || return Cint(0)                        # no dry/wet split -> no two halves to combine
+	# NOTHING IS COMPOSITED FOR THIS BUTTON ANY MORE.
+	#
+	# `_aqua_shaded_rgb` used to run here: the CPU composite of two half PICTURES, 0.32 s, and its
+	# result was then thrown away because what pops up is the RENDER, captured. It is gone from this
+	# path. The two things it also did are done directly instead — the model pair is resolved by
+	# `_aqua_resolve_models` (the same rule, in one place now), and the halves the Debug tab's two
+	# side buttons show are built by `_aqua_side_popup` itself, which calls `_aqua_shaded_rgb` on its
+	# own and always did.
+	mw, ml = _aqua_resolve_models(scene, st, model_water, model_land)
+	pw, pl = st.illum[1], st.illum[2]
+	numv(p, key, dflt) = (isempty(p) && return dflt; v = _get(p, key); isempty(v) ? dflt : parse(Float64, v))
+	img = _aqua_capture_combined(st, G, mw, ml,
+	                             numv(pw, "azim", 45.0), numv(pw, "elev", 30.0),
+	                             numv(pl, "azim", 45.0), numv(pl, "elev", 30.0))
 	(img === nothing) && return Cint(0)
 	# EACH PRESS UNDOES THE LAST. The previous popup is closed before a new one opens, so this button
 	# can never leave a pile of windows behind — every one of them is a live scene the event loop
@@ -1040,8 +1200,28 @@ function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_lan
 	print("layer $(st.cur + 1): water model $(mw), land model $(ml), dry $(nd) / wet $(nw), ",
 	      "water span ", round(ws[1]; digits = 3), " .. ", round(ws[2]; digits = 3))
 	(t0 > 0) && print(" — built in ", round(time() - t0; digits = 3), " s")
-	fig = iview_image_obj(img, "combined image"; title = "Combined image — layer $(st.cur + 1)")
-	_AQUA_POPUP_WIN[] = fig.h
+	# INTO THIS WINDOW, AS ITS OWN HANDLE — no second iGMT window.
+	#
+	# A new window costs ~0.34 s of the press (measured) and leaves a whole live scene behind for the
+	# event loop to carry. The picture is a raster over the layer's OWN bbox, so it belongs in the
+	# window the layer is in, as a row the user can toggle, inspect and Remove like any other.
+	#
+	# REMOVE-THEN-ADD, BY NAME: a second press REPLACES the row instead of stacking another one under
+	# the same name (the pile `_aqua_drop_var_rows` exists to prevent — a checkbox that controls only
+	# the first of two identically-named handles is a checkbox lying about what it controls).
+	#
+	# NOT RE-LIT, AND NOTHING WINDOW-WIDE IS TOUCHED. The picture already carries its light: each half
+	# was lit as it was made. In its own window that was ensured with RL_None, but that call is
+	# WINDOW-WIDE and here it would change the tsunami layer's look too. It is not needed: image
+	# extras are left alone by the shading pass on purpose (40_shading.cpp — "applyShading
+	# deliberately leaves image extras alone — they are pictures, not shaded surfaces"), so an image
+	# added here is shown exactly as it was handed over.
+	nm = AQUA_COMBINED_NAME
+	ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), scene, nm)
+	_forget_object!(scene, :image, nm)
+	_add_image_to_scene(scene, img, nm; promote = false, record = false)
+	ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, nm, Cint(1))
+	_pump_once()
 	return Cint(1)
 end
 

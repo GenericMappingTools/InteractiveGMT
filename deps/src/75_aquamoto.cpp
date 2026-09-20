@@ -627,6 +627,11 @@ public:
 				if (page && page->objectName() == "debugTab") syncIllumModelSpins();
 			});
 		}
+		// …AND ONCE NOW. `currentChanged` only fires when the tab is CHANGED, so a dialog whose Debug
+		// tab is raised for the first time (or is the current tab already) had never been seeded: the
+		// boxes still held the .ui's 1 while the button built with 2. Seeding here means they are
+		// honest from the moment the dialog exists, not from the first tab switch.
+		syncIllumModelSpins();
 
 		// "Combined image" (Debug tab) — the button is IN THE .ui, like every other widget in this
 		// dialog; only its wiring belongs here. It was briefly built in code and inserted under the
@@ -859,11 +864,28 @@ public:
 		                 out, closedNow) || closedNow) return;
 		const QStringList q = out.trimmed().split(',');
 		if (q.size() != 2) return;
-		auto put = [](QSpinBox *sb, const QString &txt) {
+		auto put = [this](QSpinBox *sb, const QString &txt) {
 			if (!sb) return;
 			bool ok = false;
-			const int v = txt.trimmed().toInt(&ok);
-			if (!ok || v < sb->minimum() || v > sb->maximum()) return;   // 0 = no model stored: keep ours
+			int v = txt.trimmed().toInt(&ok);
+			if (!ok) return;
+			// NO MODEL STORED (0) SHOWS THE MODEL THAT WILL ACTUALLY BE USED, WHICH IS 2.
+			//
+			// A box the user has not touched sends 0, and the host then falls back to the side's own
+			// stored model, or — with none stored — to 2 (`_aqua_shaded_rgb`: `mdl(pw, 2)`). Leaving
+			// the box on whatever it happened to hold (the .ui's 1, or a value remembered in iGMT.ini
+			// from another session) made it STATE A MODEL THE BUTTON WOULD NOT USE: the box read 1 and
+			// the picture was built with 2. The box's whole job is to say what the layer is wearing,
+			// so it says the fallback when there is nothing stored to say instead.
+			//
+			// Not for a box the user HAS typed in this session: that value IS what gets sent, so it is
+			// already the truth and must not be overwritten.
+			if (v == 0) {
+				if ((sb == dbgIllumWater_ && dbgIllumWaterSet_) || (sb == dbgIllumLand_ && dbgIllumLandSet_))
+					return;
+				v = 2;
+			}
+			if (v < sb->minimum() || v > sb->maximum()) return;
 			QSignalBlocker block(sb);        // seeding is not the user choosing: the .ini keeps his
 			sb->setValue(v);
 		};

@@ -403,7 +403,9 @@ function _pbr_capture(H::GMTgrid, name::String, cmap, azim::Float64, elev::Float
 		            Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
 		            Cdouble, Cdouble, Cint, Cint, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
 		           zb, nxc, nyc, zlay, H.range[1], H.range[2], H.range[3], H.range[4],
-		           cz, crgb, Cint(ncol), azim, elev, 0.45, 0.0, 1.0, 0.3,
+		           # THE WINDOW'S OWN MATERIAL AND LIGHTS: roughness 0.3, metallic 0, key 1.0, fill 0.35
+		           # — the Scene's defaults (10_geometry.cpp), not a rig of this call's own.
+		           cz, crgb, Cint(ncol), azim, elev, 0.3, 0.0, 1.0, 0.35,
 		           nxc, nyc, pRgb, pW, pH)
 		if ok != 0
 			try

@@ -7606,12 +7606,18 @@ GMTVTK_API int gmtvtk_pbr_render_offscreen(const float *z, int nx, int ny, int z
 	// The fix is to make the WORLD aspect equal the PIXEL aspect, by scaling x — then the frame is the
 	// bbox exactly and there is nothing to letterbox. (For a geographic grid with square cells this
 	// simply renders in degree space; the relief's own z scaling is untouched.)
+	// BOTH AXES CARRY THE SAME HALF-CELL. A pixel is a CELL and a node sits at its CENTRE, so the
+	// frame spans nx cells while the nodes span nx-1 of them — in x AND in y. Expanding only y (as
+	// this did at first) leaves x scaled by (nx-1)/nx and shifted half a cell, so every pixel samples
+	// BETWEEN nodes: the picture comes out soft and its coastline sits beside the grid's.
 	{
 		double bb[6]; act->GetBounds(bb);
+		const double ex = (outW > 1) ? double(outW) / double(outW - 1) : 1.0;
+		const double ey = (outH > 1) ? double(outH) / double(outH - 1) : 1.0;
+		const double Xw = (bb[1] - bb[0]) * ex, Yw = (bb[3] - bb[2]) * ey;
 		const double wantA = (outH > 0) ? double(outW) / double(outH) : 1.0;
-		const double haveA = (bb[3] - bb[2]) > 0.0 ? (bb[1] - bb[0]) / (bb[3] - bb[2]) : 0.0;
-		if (haveA > 0.0 && std::isfinite(haveA) && wantA > 0.0)
-			act->SetScale(xfac * (wantA / haveA), 1.0, zfac * ve0);
+		if (Xw > 0.0 && Yw > 0.0 && wantA > 0.0)
+			act->SetScale(xfac * (wantA * Yw / Xw), 1.0, zfac * ve0);
 	}
 	// THE PBR MATERIAL — the same calls applySurfStyle makes for a grid the user is looking at.
 	vtkProperty *prop = act->GetProperty();
@@ -7619,7 +7625,9 @@ GMTVTK_API int gmtvtk_pbr_render_offscreen(const float *z, int nx, int ny, int z
 	prop->SetAmbientColor(1.0, 1.0, 1.0);
 	prop->SetInterpolationToPBR();
 	prop->SetMetallic(metal < 0.0 ? 0.0 : (metal > 1.0 ? 1.0 : metal));
-	prop->SetRoughness(rough < 0.05 ? 0.45 : rough);
+	prop->SetRoughness(rough < 0.05 ? 0.3 : rough);
+	prop->SetBaseIOR(1.5);              // the on-screen PBR look's own IOR (applySurfStyle) — it was
+	                                    // missing here, so this render was a different material
 
 	vtkNew<vtkRenderer> ren;
 	ren->AddActor(act);
@@ -7629,7 +7637,10 @@ GMTVTK_API int gmtvtk_pbr_render_offscreen(const float *z, int nx, int ny, int z
 	// The sky at a QUARTER gain. At 1.0 it floods the map: measured mean brightness 222/255 over the
 	// whole picture, colour washed out of both the relief and the sea, while the key light's azimuth
 	// still moved the mean by only 4 counts — the environment was doing nearly all the lighting.
-	vtkSmartPointer<vtkTexture> env = makeSkyEnv(0.25);
+	// THE SKY THE WINDOW USES. A Scene's `envIntensity` is 1.0 and that is the light the PBR half the
+	// user approves is rendered under; a quarter of it here made this render a different picture from
+	// the same grid shown in a window.
+	vtkSmartPointer<vtkTexture> env = makeSkyEnv(1.0);
 	if (env) { ren->UseImageBasedLightingOn(); ren->SetEnvironmentTexture(env); }
 
 	// The sun: direction from azimuth (deg from north, clockwise) + elevation, as everywhere else.
@@ -8342,6 +8353,31 @@ GMTVTK_API void *gmtvtk_open_empty(const char *title) {
 	s->win->raise();
 	s->win->activateWindow();
 	s->widget->renderWindow()->Render();
+	return s;
+}
+
+// AN EMPTY WINDOW THE USER NEVER SEES — a staging area for a render that is only ever photographed.
+//
+// Aquamoto's "Combined image" puts the two halves up as two SURFACES and captures them, because
+// method 1 IS VTK's GPU render and cannot exist in a CPU-composited picture. That staging window was
+// a normal one: it appeared, white and empty, for the half-second the build took, then closed — a
+// parasite window flashing on every press.
+//
+// It cannot simply be left unshown: the GL context a QVTKOpenGLNativeWidget renders through is
+// created when the widget is first shown, so a window that was never shown has nothing to render
+// with. It is therefore built and shown exactly as `gmtvtk_open_empty` builds it — one code path,
+// never a second window builder (SACRED_LAW.md) — and then put where no screen is, with zero
+// opacity as well, in the same call. The capture reads the BACK buffer, which does not care where
+// the window sits.
+//
+// Caller closes it with `gmtvtk_close`, or keeps it and reuses it: reuse is what makes the cost zero
+// after the first press.
+GMTVTK_API void *gmtvtk_open_empty_offscreen(const char *title) {
+	Scene *s = static_cast<Scene*>(gmtvtk_open_empty(title));
+	if (!s || !s->win) return s;
+	s->win->setWindowOpacity(0.0);           // invisible even if a compositor ignores the move
+	s->win->move(-32000, -32000);            // …and off every screen
+	s->win->lower();
 	return s;
 }
 
@@ -9280,6 +9316,13 @@ GMTVTK_API int gmtvtk_make_photo_window_h(void *handle, int w, int h) {
 	if (s->bottomTabs)                          s->bottomTabs->hide();
 	if (QToolBar *tb = s->win->findChild<QToolBar*>()) tb->hide();
 	for (QToolBar *tb : s->win->findChildren<QToolBar*>()) tb->hide();
+	// A MAXIMIZED WINDOW CANNOT BE RESIZED. `resize()` on one is ignored by the window manager, so the
+	// GL surface stayed at the screen's size and every grab came back at screen resolution — measured:
+	// asked for 640x385, surface 2475x1800, and the capture 1585 px wide. The state goes first, then
+	// the size can land.
+	s->win->setWindowState(s->win->windowState() & ~Qt::WindowMaximized & ~Qt::WindowFullScreen);
+	s->win->showNormal();
+	QApplication::processEvents();
 	// OFF THE SCREEN, not hidden: hiding a window tears its GL surface down on some drivers, and a
 	// torn-down surface renders nothing. Moved instead, so it keeps a live context nobody can see.
 	s->win->move(-32000, -32000);

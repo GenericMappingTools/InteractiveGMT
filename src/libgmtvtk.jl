@@ -134,7 +134,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_layer_is_image_h, :gmtvtk_has_extern_shade_h, :gmtvtk_set_relief_look_h,
 	:gmtvtk_set_relief_look_side_h, :gmtvtk_clear_shade_side_h, :gmtvtk_has_extern_shade_side_h,
 	:gmtvtk_show_illumination_h,
-	:gmtvtk_open_empty, :gmtvtk_set_drop_callback, :gmtvtk_set_paste_callback, :gmtvtk_add_surface_h,
+	:gmtvtk_open_empty, :gmtvtk_open_empty_offscreen, :gmtvtk_set_drop_callback, :gmtvtk_set_paste_callback, :gmtvtk_add_surface_h,
 	:gmtvtk_promote_surface_h, :gmtvtk_replace_base_grid_h, :gmtvtk_show_layer_image_h, :gmtvtk_show_layer_rgba_h,
 	:gmtvtk_aqua_set_land_cpt_h, :gmtvtk_aqua_set_bathy_h, :gmtvtk_aqua_set_var_label_h,
 	:gmtvtk_aqua_set_ram_loaded_h,
