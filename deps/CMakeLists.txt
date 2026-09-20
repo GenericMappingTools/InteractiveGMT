@@ -532,8 +532,6 @@ if(GMTVTK_PACKAGE AND WIN32)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/crystalball.bmp" DESTINATION . COMPONENT full)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/igmt_splash.bmp" DESTINATION . COMPONENT full)
   endif()
-  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../iview_splash.hta"    DESTINATION . COMPONENT full)
-  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/installer/iview_launch.vbs" DESTINATION . COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/igmt.ico"        DESTINATION . COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.png"    DESTINATION . COMPONENT full)  # Linux .desktop icon
   # The launcher itself, beside gmtvtk.dll. `igmt --install-shortcut` then makes the desktop icon
