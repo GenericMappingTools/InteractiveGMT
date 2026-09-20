@@ -522,7 +522,16 @@ if(GMTVTK_PACKAGE AND WIN32)
   # whichever platform's launcher is looking, and so a git checkout and an installed tree behave
   # the same — splash_image_path() looks here first, then in deps/assets.
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/crystalball.jpg" DESTINATION . COMPONENT full)
-  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/crystalball.bmp" DESTINATION . COMPONENT full)
+  # …and the .bmp ONLY WHERE IT IS READ. Win32 decodes the .jpg through WIC and Cocoa through
+  # NSImage (launcher.c's splash_win32/splash_cocoa); only the X11 path reads a .bmp, because Xlib
+  # decodes no image format at all. An uncompressed 24-bit BMP is 3 bytes per pixel -- shipping it
+  # to Windows and macOS added ~800 kB to those bundles for a file their launchers never open.
+  # `igmt_splash.bmp` (the icon overlay that same X11 path blits) was never installed at all, so an
+  # installed tree silently lost the icon on the splash; it travels with the background now.
+  if(UNIX AND NOT APPLE)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/crystalball.bmp" DESTINATION . COMPONENT full)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/igmt_splash.bmp" DESTINATION . COMPONENT full)
+  endif()
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../iview_splash.hta"    DESTINATION . COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/installer/iview_launch.vbs" DESTINATION . COMPONENT full)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/igmt.ico"        DESTINATION . COMPONENT full)
