@@ -27647,7 +27647,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				const std::string cmd = "InteractiveGMT._on_catalina_benchmark1(Ptr{Cvoid}(UInt(" +
 				                        std::to_string((unsigned long long)reinterpret_cast<uintptr_t>(s)) + ")))";
 				std::vector<char> buf(1 << 12);
+				// NO DEAD TIME (SACRED_LAW.md). Building the tank is seconds of bathymetry, an analytic
+				// free surface and a netCDF written to disk, all inside this one blocking call — the
+				// dialog is already up on its Benchs tab, so without this the user watches a window that
+				// looks finished and is not. The notice says what he is waiting FOR.
+				showBusyDialog("Setting up the benchmark 1 experiment\xE2\x80\xA6");
 				const int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+				closeBusyDialog();
 				if (!sceneAlive(s)) return;              // the window went away meanwhile
 				if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
 				else if (s->win) s->win->statusBar()->showMessage("Catalina benchmark 1 — t = 0", 5000);

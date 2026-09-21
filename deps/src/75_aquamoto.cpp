@@ -1506,6 +1506,11 @@ public:
 			if (benchOfferExisting()) return;
 			benchGotoNetcdf_ = true;      // when the run lands, the netCDF tab is what is wanted
 			if (benchProgress) { benchProgress->setValue(0); g_progressMirror = benchProgress; }
+			// …AND THE SILENCE BEFORE THE FIRST TICK IS COVERED TOO. The bar only starts moving once
+			// the solver reports; the grids, the nests and the initial condition are built before that,
+			// and that stretch used to say nothing at all. Not a modal notice here — this run lasts
+			// minutes and the bar must stay visible — but the status bar states what is happening.
+			if (win) win->statusBar()->showMessage("Benchmark 1: setting up the run\xE2\x80\xA6");
 			QString reply;
 			bool closedNow = false;
 			const bool keepram = benchKeepRamCheck && benchKeepRamCheck->isChecked();
@@ -1562,10 +1567,18 @@ public:
 		QString reply;
 		bool closedNow = false;
 		const bool keepram = benchKeepRamCheck && benchKeepRamCheck->isChecked();
+		// NO DEAD TIME (SACRED_LAW.md). Opening a run means reading the cube's header, its time axis
+		// and its first slice off disk — and, with "keep in RAM" on, the whole cube — before Aquamoto
+		// has anything to say about it. That silence is what the user sees as a hung dialog, so the
+		// notice goes up here, at the one door both the Load button and the "a run already exists"
+		// offer pass through.
+		showBusyDialog(keepram ? "Loading the simulation into memory\xE2\x80\xA6"
+		                       : "Loading the simulation\xE2\x80\xA6");
 		const bool ok = runBlocking(QString("InteractiveGMT._on_bench1_load(%1,raw\"%2\",%3)")
 		                            .arg(aquaScenePtr(scene_)).arg(QDir::toNativeSeparators(path))
 		                            .arg(keepram ? 1 : 0), reply, closedNow);
-		if (closedNow) return;
+		closeBusyDialog();              // taken down first: it outlives `this` if the window went away
+		if (closedNow) return;          // `this` may be gone — touch no member below
 		if (!ok) QMessageBox::warning(win, "Benchmark 1",
 		                              reply.isEmpty() ? "could not open that file" : reply);
 	}
