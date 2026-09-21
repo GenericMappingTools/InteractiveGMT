@@ -80,7 +80,8 @@ struct Spectrum
     Bw::Vector{Float64}       # B(omega) times omega quadrature weights
 end
 
-function spectrum(p::Parameters; xi_max=15.0, nxi=3001, omega_max=100.0, nomega=3001)
+function spectrum(p::Parameters; xi_max=15.0, nxi=3001, omega_max=100.0, nomega=3001,
+                  truncate::Bool=true)
     xi = collect(range(0.0, xi_max; length=nxi))
     omega = collect(range(0.0, omega_max; length=nomega))
     wx = trapweights(nxi, xi[2]-xi[1])
@@ -94,6 +95,22 @@ function spectrum(p::Parameters; xi_max=15.0, nxi=3001, omega_max=100.0, nomega=
             acc += source[i] * j1(w*xi[i])
         end
         B[k] = acc * ww[k]
+    end
+    # THE MODES THAT CONTRIBUTE NOTHING ARE DROPPED HERE, ONCE. `fields` sums over every mode at every
+    # Newton iteration of every point, so the length of these two vectors IS the cost of the whole
+    # solution. B(omega) is the transform of a compact source and it dies out: measured on the default
+    # parameters, |B| falls below 1e-12 of its peak past k = 517 (omega = 17.2) out of 3001 — so 5 of
+    # every 6 modes were being summed to add nothing. Keeping the tail down to that relative level
+    # leaves the profile unchanged to 2.5e-9 m (max |d eta| over a 400-point snapshot at t = 137 s,
+    # against the untruncated sum) and makes that snapshot 0.147 s -> 0.027 s. The integration itself
+    # is NOT changed: omega_max, nomega and the quadrature are what they were, and a parameter set
+    # whose spectrum reaches further simply keeps more modes.
+    # `truncate=false` keeps every mode: the untruncated sum, for the test that pins the two against
+    # each other (test-benchmark1-analytic.jl). Nothing in the app asks for it.
+    mx = truncate ? maximum(abs, B) : 0.0
+    if mx > 0
+        kmax = something(findlast(b -> abs(b) > 1e-12 * mx, B), length(B))
+        kmax < length(B) && return Spectrum(omega[1:kmax], B[1:kmax])
     end
     return Spectrum(omega, B)
 end

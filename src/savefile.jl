@@ -327,6 +327,13 @@ function _forget_window!(scene::Ptr{Cvoid})
 		delete!(d, scene)
 	end
 	delete!(_BM1_SCENES, scene)          # a Set, not a Dict -- same purge, its own call
+	# THE TWO WINDOWS AQUAMOTO HOLDS BY POINTER. The off-screen staging window goes with the last real
+	# window (70_window.cpp), and the "Water side"/"Land side" popup goes whenever the user closes it —
+	# either way the Ref here would keep pointing at a freed Scene, and the next build would hand that
+	# address to `gmtvtk_close`. The window's own death is what clears it, so there is no stale handle
+	# to guess about. The staging window's caches describe what STOOD IN IT, so they go with it.
+	scene == _AQUA_STAGE_WIN[] && _aqua_stage_forget!()
+	scene == _AQUA_POPUP_WIN[] && (_AQUA_POPUP_WIN[] = C_NULL)
 	return
 end
 

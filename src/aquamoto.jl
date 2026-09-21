@@ -1068,6 +1068,61 @@ const _AQUA_STAGE_LAND = Ref{Any}(nothing)
 # render + capture.
 const _AQUA_LAND_SHOT = Ref{Any}(nothing)
 
+# …AND IT IS KEPT ONLY WHILE IT IS BEING USED. An off-screen window is still a whole viewer — a GL
+# context, a render window, two surfaces and their textures, plus the grids and pictures cached below
+# it — and holding that for the rest of the session so that a press five minutes from now saves a
+# quarter of a second is the wrong trade: measured, opening it costs 0.145 s and closing it 0.107 s,
+# once, against a window's worth of memory held for ever. It is therefore torn down after
+# `_AQUA_STAGE_IDLE_S` with no build, and rebuilt by the next one — a run of slices (where the saving
+# actually matters, one press after another) never reaches the timeout.
+const _AQUA_STAGE_IDLE_S = 60.0
+const _AQUA_STAGE_WATCH  = Ref{Union{Nothing,Timer}}(nothing)   # the idle watchdog, one per session
+const _AQUA_STAGE_USED   = Ref{Float64}(0.0)                    # time() of the last build
+const _AQUA_STAGE_BUSY   = Ref{Bool}(false)                     # a build is in flight: never close under it
+
+# The staging window and everything cached about what stood in it. Called by the watchdog, and safe
+# to call at any time: the next build simply opens a fresh one.
+function _aqua_stage_close!()
+	h = _AQUA_STAGE_WIN[]
+	_aqua_stage_forget!()             # cleared FIRST: the close fires the forget callback, which
+	h == C_NULL || ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)   # comes back through here
+	return
+end
+
+# Everything this session remembers ABOUT the staging window, dropped — with no call on the window
+# itself. This is the half `_forget_window!` (savefile.jl) needs when the window is already dying of
+# its own accord, and `_aqua_stage_close!` above is that same half plus the close: one place that
+# knows what the stage owns, never two lists to keep in step.
+function _aqua_stage_forget!()
+	_AQUA_STAGE_WIN[]    = C_NULL
+	_AQUA_STAGE_LOADED[] = nothing
+	_AQUA_STAGE_HALVES[] = nothing
+	_AQUA_STAGE_LAND[]   = nothing
+	_AQUA_LAND_SHOT[]    = nothing
+	if _AQUA_STAGE_WATCH[] !== nothing
+		close(_AQUA_STAGE_WATCH[])
+		_AQUA_STAGE_WATCH[] = nothing
+	end
+	return
+end
+
+# Mark the staging window used, and arm the watchdog if it is not already running. The watchdog ticks
+# on a Julia `Timer`, i.e. on this same thread between tasks — never inside a build, which is what
+# `_AQUA_STAGE_BUSY` states for the case where a tick lands on a pump inside one.
+function _aqua_stage_touch!()
+	_AQUA_STAGE_USED[] = time()
+	_AQUA_STAGE_WATCH[] === nothing || return
+	_AQUA_STAGE_WATCH[] = Timer(_AQUA_STAGE_IDLE_S / 4, interval = _AQUA_STAGE_IDLE_S / 4) do _
+		try
+			(_AQUA_STAGE_BUSY[] || _AQUA_STAGE_WIN[] == C_NULL) && return
+			time() - _AQUA_STAGE_USED[] < _AQUA_STAGE_IDLE_S && return
+			_aqua_stage_close!()
+		catch
+		end
+	end
+	return
+end
+
 # THE SEA BED's own staging window and its own picture — the REAL bathymetry, unclamped, which the
 # water is blended over when "Water transparency" is not zero. A window of its own so that its z
 # span (down to the abyssal plain) cannot reach the water's pass and flatten its relief.
@@ -1274,6 +1329,8 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 		_AQUA_STAGE_WIN[] = h
 		_pump_once()
 	end
+	_aqua_stage_touch!()          # used now: the idle watchdog restarts its count (and is armed once)
+	_AQUA_STAGE_BUSY[] = true
 	try
 		# THE SURFACES ARE REBUILT ONLY WHEN THE SLICE CHANGES. They are the same two grids at every
 		# press on the same layer; only the LIGHT differs, and that is pushed onto surfaces already
@@ -1411,7 +1468,9 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 		end
 		return imgW
 	finally
-		_pump_once()      # the staging window is KEPT (off-screen) and reused — see above
+		_AQUA_STAGE_BUSY[] = false
+		_AQUA_STAGE_USED[] = time()   # the idle clock runs from the END of the build, not its start
+		_pump_once()      # the staging window is kept (off-screen) until it goes idle — see above
 	end
 end
 

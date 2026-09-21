@@ -142,6 +142,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_aqua_set_ram_loaded_h,
 	:gmtvtk_aqua_queue_open,
 	:gmtvtk_aqua_set_eta_curves_h,
+	:gmtvtk_aqua_set_benchmark_h,
 	:gmtvtk_remove_grid_h, :gmtvtk_remove_image_h, :gmtvtk_set_transplant_undo, :gmtvtk_unfold_scene_objects_h,
 	:gmtvtk_open_vtk_h, :gmtvtk_add_mesh_h, :gmtvtk_show_new_element_h, :gmtvtk_reframe_z_h,
 	:gmtvtk_grow_z_frame_h,

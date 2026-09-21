@@ -26790,7 +26790,18 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// Same call the cube surface's own Remove makes (sceneRemoveSurface), so there is one way an
 		// Aquamoto dies, not two.
 		if (g_aquamotoDestroy && g_aquamotoHasWindow && g_aquamotoHasWindow(s)) g_aquamotoDestroy(s);
-		--g_openWindows;
+		// A HELPER WINDOW WAS NEVER COUNTED (Scene::helperWindow, set by gmtvtk_open_empty_offscreen),
+		// so it is not discounted either — and when the last window the USER has goes, the helpers go
+		// with it: one the user cannot see or reach must not be what keeps the session alive.
+		if (!s->helperWindow) {
+			--g_openWindows;
+			if (g_openWindows <= 0) {
+				std::vector<Scene*> helpers;
+				for (Scene *o : g_scenes)
+					if (o && o != s && o->helperWindow && !o->tearingDown && o->win) helpers.push_back(o);
+				for (Scene *o : helpers) o->win->close();      // WA_DeleteOnClose -> real destruction
+			}
+		}
 		if (g_lastScene == s) g_lastScene = nullptr;   // don't let add_overlay touch a freed scene
 		if (g_lastRW == rwp) g_lastRW = nullptr;       // don't let gmtvtk_save_png capture a freed window (crash)
 		linkUnlinkWindows(s);                          // drop a Link partner's pointer to this scene

@@ -52,6 +52,11 @@ public:
 	// Read the currently shown series (for "Open in X,Y plot tool" + its C API).
 	const std::vector<double> &seriesX() const { return m_s; }
 	const std::vector<double> &seriesY() const { return m_z; }
+	// …and the SECOND curve, the reference/analytic one. Read-only, for the test that asserts it
+	// follows the slice (gmtvtk_aqua_eta_curve_test): a reference that stops moving is a figure
+	// comparing the wave against a solution from another instant, which is worse than no reference.
+	const std::vector<double> &seriesX2() const { return m_s2; }
+	const std::vector<double> &seriesY2() const { return m_z2; }
 	QString seriesTitle()  const { return m_title; }
 	QString seriesXLabel() const { return m_xlabel; }
 	QString seriesYLabel() const { return m_ylabel; }

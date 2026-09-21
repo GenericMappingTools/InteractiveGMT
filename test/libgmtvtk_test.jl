@@ -69,6 +69,11 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_earthregions_region_test, :gmtvtk_earthregions_type_test,
 	:gmtvtk_compute_euler_progress,
 	:gmtvtk_aqua_side_rgb_test,       # per-side mean RGB off the live tsunami texture
+	:gmtvtk_aqua_hold_arrow_test,     # hold the slice slider's < / > down for real, report the travel
+	:gmtvtk_aqua_eta_curve_test,      # the eta(x) figure's live curve: point count + sum of y
+	:gmtvtk_aqua_show_eta_test,       # put the eta(x) figure up through the Cinema tab's own box
+	:gmtvtk_aqua_set_prof_range_test, # the Cinema profile x0/length boxes (the span the host is asked for)
+	:gmtvtk_widget_enabled_test,      # is a named widget enabled? (the benchmark lock, on the widget)
 
 	:gmtvtk_platecalc_open_dialog_test, :gmtvtk_platecalc_close_dialog_test,
 	:gmtvtk_platecalc_delete_dialog_test, :gmtvtk_platecalc_parked_test,

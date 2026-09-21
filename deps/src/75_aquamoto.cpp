@@ -370,6 +370,12 @@ public:
 	std::vector<double> trackCum_;
 	QString trackUnit_ = "km";
 	std::vector<std::array<double,3>> trackVerts_;   // the vertices trackCum_ was measured over
+	// THE TRACK'S STATIONS, AS THE LAST SAMPLING LEFT THEM: the along-track distance of each station
+	// (the figure's own abscissa) and the GRID x it sits at. A reference solution is a function of the
+	// grid's x, so a track curve gets its reference by evaluating it AT EACH STATION'S x and drawing it
+	// at that station's distance — the two curves then describe the same points in space, which is the
+	// whole reason the reference is a second series in this panel and not a plot of its own.
+	std::vector<double> trackDs_, trackXs_;
 	// Benchs tab — "10% slope beach, Benchmark 1": run it, load a previous run, say where it is saved,
 	// and watch it advance.
 	QPushButton *benchRunBtn = nullptr, *benchLoadBtn = nullptr, *benchBrowseBtn = nullptr;
@@ -418,12 +424,15 @@ public:
 	bool wants3D_ = false;
 	bool sliceDirty_ = false;             // a slice was asked for while one was in flight (see fireSlice)
 	QPointer<EtaFigure> etaFig;           // lives in the RENDER widget, which can outlive/predecease us
-	// The η(x) figure's HOST curves are fetched on a debounce, never per slice — see scheduleEtaCurves.
-	QTimer *etaAskTimer = nullptr;
+	// The η(x) figure's HOST curves are fetched for every slice drawn — see scheduleEtaCurves.
 	bool    etaHostCurves_ = false;       // the host draws this figure (benchmark 1) -> never paint over it
-	double  etaAskX0_ = 0.0, etaAskX1_ = 0.0;
-	int     etaAskN_  = 0;
-	static constexpr int kEtaAskDelayMs = 180;
+	// HOW MANY POINTS THE REFERENCE IS ASKED FOR — NOT how many the figure draws. The host evaluates an
+	// analytic solution point by point and its cost is linear in this number: measured on benchmark 1,
+	// 0.147 s at 400 points, 0.428 s at 1201, 0.765 s at 2000, every slice. The reference is a smooth
+	// curve and is resampled onto the figure's own abscissa here anyway (setEtaCurves), so asking for
+	// more than this buys nothing and is paid for at every press of < / >. A drawn track has one station
+	// per grid column (up to 2000), which is where that 0.77 s came from.
+	static constexpr int kEtaAskMaxN = 400;
 	QTimer *viewSyncTimer = nullptr;      // the boxes FOLLOW the mouse (see syncViewBoxes)
 
 	explicit AquamotoWindow(QWidget *parent, Scene *scene) : scene_(scene) {
@@ -571,7 +580,7 @@ public:
 				const int idx = row->indexOf(sliceSlider);
 				auto *leftBtn  = new QToolButton(w);
 				auto *rightBtn = new QToolButton(w);
-				sliceArrowL_ = leftBtn;  sliceArrowR_ = rightBtn;   // transportEnable turns them off while a slice draws
+				sliceArrowL_ = leftBtn;  sliceArrowR_ = rightBtn;   // held-down state gates the η(x) ask
 				leftBtn->setArrowType(Qt::LeftArrow);
 				rightBtn->setArrowType(Qt::RightArrow);
 				leftBtn->setAutoRepeat(true);
@@ -1652,10 +1661,17 @@ public:
 	// disabled widget, so a held (or hammered) < / > gives exactly ONE step per completed redraw
 	// instead of a queue of frames replayed afterwards. Play/Stop is deliberately NOT in here — the
 	// user must be able to stop an animation while its frame is still drawing.
+	// THE SLIDER'S OWN < / > ARROWS ARE NEVER DISABLED. They AUTO-REPEAT, and Qt cancels a pressed
+	// button's repeat the moment the button is disabled: the press is dropped, the mouse grab goes,
+	// and the repeat does NOT come back when it is re-enabled — it needs a fresh press. Disabling them
+	// for the duration of a slice draw therefore gave exactly ONE step per hold, and holding the button
+	// down after that did nothing at all. That is what "pushing > < continuously does nothing" was.
+	//
+	// They do not need disabling: a press that lands while a slice is drawing is already COALESCED —
+	// fireSlice sees `busy_`, records `sliceDirty_` and the draw's tail catches up once, at whatever
+	// slice the slider ended on. That is the design, and it only works if the presses actually arrive.
 	void transportEnable(bool on) {
 		for (QPushButton *b : { cinePrevBtn, cineNextBtn, cineFirstBtn, cineLastBtn })
-			if (b) b->setEnabled(on);
-		for (QToolButton *b : { sliceArrowL_, sliceArrowR_ })
 			if (b) b->setEnabled(on);
 	}
 
@@ -1819,7 +1835,7 @@ public:
 	// polygonDelete (85_polygon.cpp) — the one deletion path — and the cached measurement goes with it.
 	void dropTrack() {
 		Scene *s = scene_;
-		if (trackName_.empty()) { trackCum_.clear();  trackVerts_.clear();  return; }
+		if (trackName_.empty()) { trackCum_.clear();  trackVerts_.clear();  trackDs_.clear();  trackXs_.clear();  return; }
 		if (s && sceneAlive(s)) {
 			vtkActor *old = nullptr;
 			for (const auto &p : s->polys) if (p.name == trackName_) { old = p.line.Get(); break; }
@@ -1828,6 +1844,8 @@ public:
 		trackName_.clear();
 		trackCum_.clear();
 		trackVerts_.clear();
+		trackDs_.clear();
+		trackXs_.clear();
 	}
 
 	// "ADD TRACK" ARMS THE ORDINARY LINE TOOL — the very QAction the toolbar's shape flyout carries,
@@ -1962,6 +1980,8 @@ public:
 		// finer; clamped so a very short or very long track still costs a sane number of samples.
 		const int n = std::max(2, std::min(2000, s->gnx > 1 ? s->gnx : 400));
 		ss.reserve(n);  zs.reserve(n);
+		trackDs_.clear();  trackXs_.clear();
+		trackDs_.reserve(n);  trackXs_.reserve(n);
 		size_t seg = 1;
 		for (int k = 0; k < n; ++k) {
 			const double d = total * double(k) / double(n - 1);
@@ -1971,6 +1991,8 @@ public:
 			const double y = pg->v[seg-1][1] + t * (pg->v[seg][1] - pg->v[seg-1][1]);
 			ss.push_back(d);
 			zs.push_back(sampleZ(s, x, y));
+			trackDs_.push_back(d);
+			trackXs_.push_back(x);
 		}
 		return true;
 	}
@@ -2001,13 +2023,23 @@ public:
 		// draws its own pair through setEtaCurves; painting over it is the flicker documented below).
 		// Tracking therefore happens only while this figure is UNPARKED, which is the isVisible test
 		// above: parked, nothing here runs, and no track is sampled.
-		if (!etaHostCurves_) {
+		// …AND IT IS DRAWN AT EVERY SLICE, on every window. This was skipped once the host owned the
+		// figure (`etaHostCurves_`), which froze the track on whichever slice was up when the host
+		// first answered: `<` / `>` redrew the wave and the curve stood still. A drawn track is the
+		// user's own choice of where this figure looks; nothing overrides it.
+		{
 			std::vector<double> ts, tz;
 			if (trackSeries(ts, tz)) {
 				etaFig->setCurve(ts, tz, QString::fromStdString(trackName_),
 				                 QString("s (%1)").arg(trackUnit_), "\xCE\xB7 (m)");
 				etaSetTimeTitle();
-				return;                  // the host is NOT asked: its curves belong to the benchmark path
+				// …and the host is asked for THIS slice's reference, over the x the track crosses.
+				if (trackXs_.size() >= 2) {
+					const auto mm = std::minmax_element(trackXs_.begin(), trackXs_.end());
+					if (*mm.first < *mm.second)
+						scheduleEtaCurves(*mm.first, *mm.second, (int)trackXs_.size());
+				}
+				return;
 			}
 		}
 		const double x0  = editNum(cineProfX0Edit, scene_->gx0);
@@ -2020,8 +2052,7 @@ public:
 		// profile replaced it — a different curve for every slice, with the reference arriving in a
 		// second step of its own. Host-owned windows keep the previous pair on screen until the new
 		// pair arrives, and both curves are then set together, in one repaint.
-		if (!etaHostCurves_)
-			etaFig->setCurve(xs, zs, etaCurveTitle(), "x (m)", "\xCE\xB7 (m)");
+		etaFig->setCurve(xs, zs, etaCurveTitle(), "x (m)", "\xCE\xB7 (m)");
 		etaSetTimeTitle();
 		scheduleEtaCurves(xs.front(), xs.back(), (int)xs.size());
 	}
@@ -2037,33 +2068,17 @@ public:
 		                                : QString("\xCE\xB7 (x)   \xE2\x80\x94   %1").arg(when));
 	}
 
-	// THE HOST IS ASKED ONCE THE SLICE HAS SETTLED, NEVER ON EVERY CLICK. `askEtaCurves` is a BLOCKING
-	// Julia round trip (it reads the run's finer cubes and evaluates an analytic solution), and doing
-	// that inside every slice change is what made holding `<` / `>` stall: each press paid the trip
-	// before the next redraw could start, and fireSlice's own coalescing (sliceDirty_) could not
-	// collapse presses that were already through it. The curve the figure shows in the meantime is the
-	// one read straight off the scene, which costs nothing.
+	// THE HOST IS ASKED FOR EVERY SLICE THAT IS DRAWN, INCLUDING UNDER A HELD BUTTON. The reference is
+	// the analytic solution AT THIS SLICE'S MODEL TIME — a different curve at every timestep — so it
+	// travels with the slice, not with the user's finger coming off the button. It was debounced, then
+	// deferred while a transport button was down, to keep a blocking round trip out of the gap between
+	// two auto-repeats; that was the wrong end to fix it at (the stall came from the arrows being
+	// DISABLED during a draw, see transportEnable) and the price was a curve that stood still for the
+	// whole hold. It costs 0.021 s against a ~100 ms repeat, and it runs inside fireSlice's own
+	// reentrancy guard, so a press landing during it is coalesced and caught up by fireSlice's tail.
 	void scheduleEtaCurves(double x0, double x1, int n) {
-		etaAskX0_ = x0;  etaAskX1_ = x1;  etaAskN_ = n;
-		if (!etaAskTimer) {
-			etaAskTimer = new QTimer(win);
-			etaAskTimer->setSingleShot(true);
-			QObject::connect(etaAskTimer, &QTimer::timeout, win, [this]() {
-				// Still catching up with the transport buttons? Let the last one schedule the ask.
-				if (busy_ || sliceDirty_) { etaAskTimer->start(kEtaAskDelayMs); return; }
-				askEtaCurves(etaAskX0_, etaAskX1_, etaAskN_);
-				// A PRESS THAT LANDED *DURING* THE ASK MUST STILL BE DRAWN. askEtaCurves is a blocking
-				// Julia call that pumps the event loop, so `<` / `>` clicks arrive inside it: fireSlice
-				// sees busy_, records sliceDirty_ and returns — and nothing else would ever act on that
-				// flag, because the catch-up redraw lives at the END of fireSlice, which is not running.
-				// The slider would sit at a slice the screen never got: a dead display.
-				if (sliceDirty_) {
-					sliceDirty_ = false;
-					QTimer::singleShot(0, win, [this]() { fireSlice(); });
-				}
-			});
-		}
-		etaAskTimer->start(kEtaAskDelayMs);          // restarted by each slice: only the last one pays
+		if (busy_) return;                // a slice is drawing: its own tail asks again when it lands
+		askEtaCurves(x0, x1, std::max(2, std::min(n, kEtaAskMaxN)));
 	}
 
 	// WHAT THE FIGURE DRAWS, from the host, for the window it is drawing. Two curves come back
@@ -2247,7 +2262,6 @@ static void aquamotoDestroy(Scene *scene) {
 	// freed Scene. Stopping them and hiding here closes that gap, and it is also what the user sees:
 	// the viewer goes, its Aquamoto goes with it, in the same instant.
 	if (w->cineTimer)     w->cineTimer->stop();
-	if (w->etaAskTimer)   w->etaAskTimer->stop();     // it would fire a Julia call at a freed Scene
 	if (w->viewSyncTimer) w->viewSyncTimer->stop();
 	// The η(x) figure and the wave track are NOT children of this dialog — they live on the render
 	// widget and in the scene's shape pile, and would survive the delete below, floating over a window
@@ -2261,6 +2275,30 @@ static void aquamotoDestroy(Scene *scene) {
 // (_aquamoto_set_cmap) then re-renders the current slice through the SAME fireSlice() every other
 // Aquamoto control (split/global/transparency/shade toggles) already uses, so the composited
 // texture AND the picked side's colorbar legend both pick up the new colormap in one call.
+// BENCHMARK 1 LOCKS THE "Rendered image" BLOCK. On a benchmark window that group is worse than
+// useless: it repaints the layer through a full two-sided render once per slice — the long half of
+// every step — to produce a prettier picture of a numerical flume whose whole point is the η(x)
+// curve. Locked means LOCKED: the box is unchecked first (so nothing it started keeps running) and
+// the whole group is disabled, its two illumination models and their dialog buttons with it, so the
+// controls state plainly that they do not apply here rather than quietly doing nothing.
+//
+// Called from benchmark1.jl's `_bm1_mark_scene!` — the one place a window is declared a benchmark
+// window — so a window can never be in `_BM1_SCENES` with the block still live.
+static void aquamotoSetBenchmarkLock(Scene *scene, bool on) {
+	AquamotoWindow *w = AquamotoWindow::registry().value(scene, nullptr);
+	if (!w || !w->win) return;
+	if (on && w->renderedImageCheck && w->renderedImageCheck->isChecked()) {
+		QSignalBlocker b(w->renderedImageCheck);
+		w->renderedImageCheck->setChecked(false);
+	}
+	if (QGroupBox *g = w->win->findChild<QGroupBox *>("renderedImageGroupBox")) {
+		g->setEnabled(!on);
+		g->setToolTip(on ? "<html>Locked for Catalina benchmark 1: the rendered image costs a full "
+		                   "two-sided render per slice and says nothing the \xCE\xB7 (x) figure does not.</html>"
+		                 : QString());
+	}
+}
+
 static void aquamotoSetCmap(Scene *scene, int side, const char *cmap) {
 	AquamotoWindow *w = AquamotoWindow::registry().value(scene, nullptr);
 	if (!w || !cmap || !cmap[0]) return;

@@ -6916,6 +6916,167 @@ GMTVTK_API int gmtvtk_aqua_force_land_bar_test(void *scene) {
 	return 1;
 }
 
+// test hook: THE CINEMA TAB'S PROFILE RANGE BOXES — the x the figure is drawn over, and therefore the
+// span the host is asked for its reference on. A fixture tank is metres wide while a benchmark's is
+// kilometres, so a test that wants the analytic curve to exist at all has to ask over a range the
+// solution actually covers. Same two boxes the user types in; returns 1 when both were found.
+GMTVTK_API int gmtvtk_aqua_set_prof_range_test(void *scene, double x0, double len) {
+	(void)scene;
+	QLineEdit *e0 = nullptr, *e1 = nullptr;
+	for (QWidget *tl : QApplication::topLevelWidgets()) {
+		if (QLineEdit *a = tl->findChild<QLineEdit *>("cinemaProfileX0Edit"))  e0 = a;
+		if (QLineEdit *b = tl->findChild<QLineEdit *>("cinemaProfileLenEdit")) e1 = b;
+	}
+	if (!e0 || !e1) return 0;
+	e0->setText(QString::number(x0, 'g', 12));
+	e1->setText(QString::number(len, 'g', 12));
+	QApplication::processEvents(QEventLoop::AllEvents, 10);
+	return 1;
+}
+
+// test hook: IS THIS WIDGET ENABLED? By object name, over the shared QApplication's top-level list.
+// It is how "the Rendered image block is LOCKED on a benchmark window" is asserted on the widget
+// itself rather than on the code that was supposed to lock it. -1 = no widget of that name.
+GMTVTK_API int gmtvtk_widget_enabled_test(const char *name) {
+	if (!name || !*name) return -1;
+	const QString n = QString::fromUtf8(name);
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		if (QWidget *w = tl->findChild<QWidget *>(n))
+			return w->isEnabled() ? 1 : 0;
+	return -1;
+}
+
+// test hook: PUT THE η(x) FIGURE UP (or take it down), through the Cinema tab's own box — the one
+// control that owns it, clicked the way the user clicks it, so nothing here can show a figure the
+// dialog would not. Returns 1 when the box was found and set.
+GMTVTK_API int gmtvtk_aqua_show_eta_test(void *scene, int on) {
+	(void)scene;
+	QCheckBox *box = nullptr;
+	int n = 0;
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		if (QCheckBox *c = tl->findChild<QCheckBox *>("cinemaProfileCheckBox")) { box = c; ++n; }
+	if (!box || n != 1) return 0;
+	box->setChecked(on != 0);          // its own toggled handler runs showEtaFigure
+	QApplication::processEvents(QEventLoop::AllEvents, 10);
+	return 1;
+}
+
+// test hook: WHAT THE η(x) FIGURE IS SHOWING RIGHT NOW — its point count, and the sum of its y
+// values in `outSum`. It exists so "the track figure FOLLOWED the slice" is a measurement of the
+// curve on screen and not a claim about the code: step the transport, read this again, and the
+// number must have moved. A figure frozen on an earlier slice (what the `etaHostCurves_` gate did
+// to a drawn track) returns the very same sum for ever.
+//
+// Found the same way as the arrows below: the figure is a child of the render widget, and its
+// ProfilePanel is the only one under it, so the shared QApplication's top-level list reaches it
+// without this dll needing the other one's registry.
+GMTVTK_API int gmtvtk_aqua_eta_curve_test(void *scene, double *outSum, int which) {
+	(void)scene;
+	const ProfilePanel *panel = nullptr;
+	int n = 0;
+	// dynamic_cast, not findChildren<EtaFigure*>: EtaFigure carries no Q_OBJECT (it is not moc'd), so
+	// Qt has no metaobject to match it by — the type test has to be C++'s own.
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		for (QWidget *w : tl->findChildren<QWidget *>())
+			if (EtaFigure *f = dynamic_cast<EtaFigure *>(w))
+				if (f->panel) { panel = f->panel; ++n; }
+	if (!panel) return -2;
+	if (n != 1)  return -3;
+	// `which`: 0 = the curve itself (the slice's profile / the track), 1 = the REFERENCE curve, the
+	// benchmark's analytic solution at this slice's model time. Both must move when the slice does.
+	const std::vector<double> &y = (which == 1) ? panel->seriesY2() : panel->seriesY();
+	double sum = 0.0;
+	for (double v : y) sum += v;
+	if (outSum) *outSum = sum;
+	return (int)y.size();
+}
+
+
+// test hook: HOLD THE SLICE SLIDER'S ARROW DOWN, FOR REAL, AND REPORT HOW FAR IT GOT.
+//
+// This is the only way to prove the transport actually steps: the defect it exists for lives in Qt's
+// own auto-repeat, and no source reading and no Julia-level call can see it. A QToolButton with
+// autoRepeat starts its repeat timer in QAbstractButton::mousePressEvent and CANCELS it the moment
+// the button is disabled — so a `transportEnable(false)` covering these arrows gave exactly ONE step
+// per hold, however long the user held it, and the code looked perfectly reasonable.
+//
+// `dir` < 0 = the left arrow, otherwise the right. The press and the release are synthetic
+// QMouseEvents delivered to the button itself, so Qt's repeat machinery runs exactly as it does under
+// a real finger; in between, the event loop is pumped for `ms` milliseconds, which is what lets each
+// repeat's slice actually draw. `outSlice` (optional) gets the slider's value at the end. Returns the
+// NUMBER OF SLICES the hold advanced — 1 is the defect, >1 is a transport that repeats.
+GMTVTK_API int gmtvtk_aqua_hold_arrow_test(void *scene, int dir, int ms, int *outSlice,
+                                           int *outDistinct, int *outDistinctCurve) {
+	// THE WIDGETS ARE FOUND THROUGH Qt, NOT THROUGH THE REGISTRY. This hook is compiled into
+	// gmtvtk_test.dll, which BORROWS the window built by the production dll (see the test-hook note
+	// above gmtvtk_open_empty): `AquamotoWindow::registry()` is a file-static and this dll's copy is
+	// empty. Both dlls share the one QApplication, so the dialog's own widgets are reachable by name
+	// off the top-level list — `sliceSlider` is the .ui's name for the slice scrollbar, and the two
+	// arrows are the QToolButtons beside it, told apart by their arrow type.
+	// NO sceneAlive() HERE. This dll keeps its OWN `g_scenes`, and a window built by the production
+	// dll is not in it (that is the borrowing this whole test block is built around) — the check
+	// rejected every live window. It is not needed either: nothing below touches the Scene, the
+	// widgets are found through the shared QApplication.
+	(void)scene;
+	QScrollBar *slider = nullptr;
+	int nFound = 0;
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		if (QScrollBar *sb = tl->findChild<QScrollBar *>("sliceSlider")) { slider = sb; ++nFound; }
+	// Distinct codes, so a failing test says WHICH step failed instead of "something": -2 = no
+	// Aquamoto dialog is open at all, -3 = more than one is (the hook cannot tell which is meant).
+	if (!slider)     return -2;
+	if (nFound != 1) return -3;
+	QToolButton *btn = nullptr;
+	if (QWidget *row = slider->parentWidget())
+		for (QToolButton *b : row->findChildren<QToolButton *>())
+			if (b->arrowType() == (dir < 0 ? Qt::LeftArrow : Qt::RightArrow)) { btn = b; break; }
+	if (!btn) return -4;                             // the arrows are not where they are built
+	const int start = slider->value();
+	const QPoint c = btn->rect().center();
+	const QPointF cf(c);
+	QMouseEvent press(QEvent::MouseButtonPress, cf, btn->mapToGlobal(c),
+	                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+	QApplication::sendEvent(btn, &press);
+	// SAMPLED WHILE THE BUTTON IS STILL DOWN. The question this hook has to answer is not "did the
+	// figure catch up once the user let go" — it is whether the analytic curve travels WITH the slice
+	// under the finger. So the reference curve's checksum is read at every distinct slice the hold
+	// passes through, and `outDistinct` reports how many DIFFERENT ones were seen before the release.
+	// 1 means the curve stood still for the whole hold; that is the defect.
+	QElapsedTimer t;  t.start();
+	std::vector<double> seenRef, seenCurve;
+	int lastSlice = start;
+	while (t.elapsed() < ms) {
+		QApplication::processEvents(QEventLoop::AllEvents, 10);
+		if (slider->value() != lastSlice) {
+			lastSlice = slider->value();
+			// BOTH CURVES, at every slice the hold passes through: the figure's own curve (the track,
+			// or the row it follows when no track is drawn) and the analytic reference. Either of them
+			// standing still under the finger is the defect, so both are counted.
+			double sum = 0.0;
+			if (gmtvtk_aqua_eta_curve_test(nullptr, &sum, 1) >= 2) {
+				bool fresh = true;
+				for (double v : seenRef) if (v == sum) { fresh = false; break; }
+				if (fresh) seenRef.push_back(sum);
+			}
+			double sc = 0.0;
+			if (gmtvtk_aqua_eta_curve_test(nullptr, &sc, 0) >= 2) {
+				bool fresh = true;
+				for (double v : seenCurve) if (v == sc) { fresh = false; break; }
+				if (fresh) seenCurve.push_back(sc);
+			}
+		}
+	}
+	if (outDistinct)      *outDistinct      = (int)seenRef.size();
+	if (outDistinctCurve) *outDistinctCurve = (int)seenCurve.size();
+	QMouseEvent rel(QEvent::MouseButtonRelease, cf, btn->mapToGlobal(c),
+	                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+	QApplication::sendEvent(btn, &rel);
+	QApplication::processEvents(QEventLoop::AllEvents, 10);
+	const int end = slider->value();
+	if (outSlice) *outSlice = end;
+	return std::abs(end - start);
+}
+
 // test hook: WHAT IS ACTUALLY ON THE TSUNAMI TEXTURE, one side at a time. `side`: 0 = water, 1 =
 // land, split by the SAME `aquaLandMask` the composite was painted with and the shading reads —
 // never a second opinion about which pixel is which. `out3` gets the mean R, G, B (0..255) of that
@@ -8384,6 +8545,20 @@ GMTVTK_API void *gmtvtk_open_empty(const char *title) {
 GMTVTK_API void *gmtvtk_open_empty_offscreen(const char *title) {
 	Scene *s = static_cast<Scene*>(gmtvtk_open_empty(title));
 	if (!s || !s->win) return s;
+	// NOT ONE OF THE USER'S WINDOWS, and it must not look like one. Off-screen and transparent is not
+	// enough on Windows: a plain top-level still takes a TASKBAR BUTTON and an Alt-Tab slot, and the
+	// taskbar's own thumbnail renders it — the user saw a second "i'GMT" he could not open, could not
+	// close, and which kept the session (and its RAM) alive after every real window was gone.
+	// Qt::Tool takes it out of both, and Scene::helperWindow takes it out of `g_openWindows` and has
+	// it closed with the last real window.
+	s->helperWindow = true;
+	if (g_openWindows > 0) --g_openWindows;  // the shared builder counted it; a helper is not counted
+	// NO setWindowFlags HERE. Qt::Tool would take the taskbar button away, but changing a window's
+	// flags after it is shown DESTROYS AND RECREATES THE NATIVE WINDOW — and with it the GL context
+	// this window exists to render through. That is not a cosmetic risk: this is the surface every
+	// "Rendered image" is drawn on, once per slice. The taskbar button is instead dealt with by the
+	// window not OUTLIVING its purpose: it is uncounted (above), closed with the last real window
+	// (70_window.cpp) and torn down once it goes idle (`_aqua_stage_close!`, aquamoto.jl).
 	s->win->setWindowOpacity(0.0);           // invisible even if a compositor ignores the move
 	s->win->move(-32000, -32000);            // …and off every screen
 	s->win->lower();
@@ -9088,6 +9263,17 @@ GMTVTK_API void gmtvtk_aqua_set_eta_curves_h(void *handle,
 	if (xm && ym && nm >= 2) { XM.assign(xm, xm + nm); YM.assign(ym, ym + nm); }
 	if (xr && yr && nr >= 2) { XR.assign(xr, xr + nr); YR.assign(yr, yr + nr); }
 	w->setEtaCurves(XM, YM, XR, YR, (name && *name) ? QString::fromUtf8(name) : QString());
+}
+
+// A WINDOW IS DECLARED A BENCHMARK WINDOW HERE, and the dialog locks what does not apply to one: the
+// "Rendered image" block, which would spend a full two-sided render per slice on a numerical flume
+// whose answer is the η(x) curve. `on = 0` gives it back. Called by benchmark1.jl's
+// `_bm1_mark_scene!`, the single place that registers a window in `_BM1_SCENES`, so the lock and the
+// registration can never disagree.
+GMTVTK_API void gmtvtk_aqua_set_benchmark_h(void *handle, int on) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return;
+	aquamotoSetBenchmarkLock(s, on != 0);
 }
 
 GMTVTK_API void gmtvtk_aqua_queue_open(void *handle, const char *path) {

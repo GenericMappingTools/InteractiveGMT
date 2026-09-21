@@ -1496,6 +1496,13 @@ struct Scene {
 	// window dying — an X,Y plot's own destroyed handler rebuilding this window's Scene Objects dock
 	// is the case that caught it — would then paint a dock whose contents are freed memory.
 	bool tearingDown = false;
+	// A HELPER WINDOW IS NOT ONE OF THE USER'S WINDOWS. The off-screen staging window the Aquamoto
+	// "Combined image" renders in (gmtvtk_open_empty_offscreen) is built by the very same builder as a
+	// real viewer, so without this flag it took a taskbar button, an Alt-Tab slot and a place in
+	// `g_openWindows` — and a user who closed every window he could see was left with an invisible one
+	// he could not reach, holding the session (and its RAM) open. Set only by that call; it removes the
+	// window from the count and has it closed with the last real one.
+	bool helperWindow = false;
 	QWidget *objPanel = nullptr;     // Scene Objects dock content (rebuilt when overlays change)
 	QDockWidget *objDock = nullptr;  // the Scene Objects dock itself (re-shown when the first nested rect lands)
 	FoldTitleBar *objFoldBar = nullptr;  // Scene Objects dock fold toggle (call ->onClick() to fold/unfold programmatically)

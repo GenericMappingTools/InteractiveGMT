@@ -399,7 +399,7 @@ function catalina_benchmark1(scene::Ptr{Cvoid}; xmin::Float64=-200.0, xmax::Floa
                              azim::Float64=-35.0, elev::Float64=20.0, ve::Float64=0.15)::String
 	# ALREADY IN THIS WINDOW (the entry clicked twice): the drop door would ignore the file, so there is
 	# nothing to open — just put the window back in 3-D and be done.
-	push!(_BM1_SCENES, scene)                 # this window has an analytic solution (η(x) reference curve)
+	_bm1_mark_scene!(scene)                   # this window has an analytic solution (η(x) reference curve)
 	_AQUA_XWIN[scene] = (xmin, xmax)          # ...and shows [xmin, xmax] of the 50 km flume, clipped at READ
 	here = get(_AQUA, scene, nothing)
 	if here !== nothing && occursin("benchmark1_t0", here.path)
@@ -587,7 +587,7 @@ end
 # `_AQUA_XWIN` and is applied where the grids are READ (`_aqua_clipx`, aquamoto.jl).
 function _bm1_open_result(scene::Ptr{Cvoid}, cube::String; xmin::Float64=-200.0,
                           xmax::Float64=20000.0)::String
-	push!(_BM1_SCENES, scene)                 # a window has an analytic solution (η(x) reference curve)
+	_bm1_mark_scene!(scene)                   # a window has an analytic solution (η(x) reference curve)
 	_bm1_register_levels!(scene, cube)        # ...and, if the finer runs are there, a stitched profile
 	# WHAT IS ON SCREEN IS THE CUBE'S OWN EXTENT, INTERSECTED WITH THE DISPLAY WINDOW — never the
 	# window alone. A NESTED run's output is written by nswing on the FINEST level (verified live: a
@@ -701,6 +701,21 @@ _on_bench1_ram_mb(path::AbstractString)::Float64 = _bm1_ram_mb(String(path))
 # it. Membership is what says "this window has an analytic solution", never a guess from the file
 # name (a run is saved wherever the user pointed the Save box).
 const _BM1_SCENES = Set{Ptr{Cvoid}}()
+
+"""
+    _bm1_mark_scene!(scene)
+
+DECLARE A WINDOW A BENCHMARK 1 WINDOW. The one door: it registers the window (which is what makes the
+η(x) figure ask for the analytic reference) AND tells the Aquamoto dialog, which locks the controls
+that do not apply to a benchmark — the "Rendered image" block, a full two-sided render per slice on a
+numerical flume whose answer is the η(x) curve. Two facts about the same window, set in one place, so
+they cannot drift apart (SACRED_LAW.md).
+"""
+function _bm1_mark_scene!(scene::Ptr{Cvoid})
+	push!(_BM1_SCENES, scene)
+	ccall(_fn(:gmtvtk_aqua_set_benchmark_h), Cvoid, (Ptr{Cvoid}, Cint), scene, Cint(1))
+	return
+end
 
 # THE PROFILE IS STITCHED FROM THE NESTING LEVELS, finest first: the run writes one cube per level
 # (see `_bm1_run_async`), and the η(x) curve takes each stretch of x from the finest grid that

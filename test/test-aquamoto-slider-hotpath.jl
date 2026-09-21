@@ -59,3 +59,36 @@ end
 	# …and the code only WIRES them: no `new QPushButton` for the combined-image button.
 	@test !occursin(r"new\s+QPushButton\s*\(\s*\"Combined image\"", src)
 end
+
+# (An item here asserted that the η(x) reference ask DEFERRED itself while a transport button was
+# down. That requirement is dead: deferring it is exactly what left the analytic curve standing still
+# under the finger, and the order now is that both curves follow every slice DURING the hold. The ask
+# is made inline per slice, and what it does is measured on the figure itself in
+# test-aquamoto-transport-gui.jl, "the analytic reference follows every slice" — which counts how many
+# different analytic curves appear while the button is held, and goes red the moment one does not.)
+
+# HOLDING `<` / `>` MUST KEEP STEPPING. The two arrows beside the slice slider AUTO-REPEAT, and Qt
+# cancels a pressed button's repeat the moment that button is DISABLED: the press is dropped, the
+# grab goes, and the repeat does not resume when it is re-enabled — it needs a fresh press. So a
+# `transportEnable(false)` that reaches those two arrows gives exactly ONE step per hold and then
+# silence, which is what "pushing > < continuously does nothing" was (2026-09-21, reported three
+# times). They need no disabling: a press landing during a draw is COALESCED by `busy_`/`sliceDirty_`
+# and caught up once at the end — a design that only works if the presses actually arrive.
+@testitem "aquamoto: the auto-repeating slider arrows are never disabled" tags=[:unit, :fast] begin
+	src = read(joinpath(dirname(dirname(pathof(InteractiveGMT))), "deps", "src", "75_aquamoto.cpp"),
+	           String)
+	# The arrows exist and auto-repeat…
+	@test occursin(r"leftBtn->setAutoRepeat\(true\)", src)
+	@test occursin(r"rightBtn->setAutoRepeat\(true\)", src)
+	# …and NOTHING sets their enabled state, anywhere.
+	for w in ("sliceArrowL_", "sliceArrowR_")
+		@test !occursin(Regex(w * raw"\s*->\s*setEnabled"), src)
+	end
+	i = findfirst("void transportEnable(bool on)", src)
+	@test i !== nothing
+	body = src[first(i):min(lastindex(src), first(i) + 400)]
+	@test occursin("setEnabled(on)", body)          # it still gates the single-shot Cinema buttons…
+	@test !occursin("sliceArrowL_", body)           # …and never the auto-repeating arrows
+	@test !occursin("sliceArrowR_", body)
+	@test !occursin("QToolButton", body)
+end
