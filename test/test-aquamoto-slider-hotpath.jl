@@ -31,34 +31,13 @@
 	@test occursin("fireSlice()", body)
 end
 
-@testitem "aquamoto: the Debug slice row mirrors only after a slice is drawn" tags=[:unit, :fast] begin
-	src = read(joinpath(dirname(dirname(pathof(InteractiveGMT))), "deps", "src", "75_aquamoto.cpp"),
-	           String)
-	# The Debug copy exists…
-	@test occursin("dbgSliceSlider", src)
-	# …it drives the real slider (one direction, no host work of its own)…
-	@test occursin(r"connect\s*\(\s*dbgSlider\s*,\s*&QScrollBar::valueChanged", src)
-	# …and the refresh FROM the real slider lives in afterSliceShown, which runs once per drawn slice.
-	i = findfirst("void afterSliceShown()", src)
-	@test i !== nothing
-	tail = src[first(i):min(lastindex(src), first(i) + 1200)]
-	@test occursin("dbgSlider_", tail)
-	# The mirror must not be able to drive back while it is being refreshed.
-	@test occursin("QSignalBlocker", tail)
-end
-
-@testitem "aquamoto: the Debug tab's widgets are in the .ui, not built in code" tags=[:unit, :fast] begin
-	root = dirname(dirname(pathof(InteractiveGMT)))
-	ui  = read(joinpath(root, "deps", "ui", "aquamoto.ui"), String)
-	src = read(joinpath(root, "deps", "src", "75_aquamoto.cpp"), String)
-	# Every widget this session added belongs to the .ui — the dialog is loaded from it at runtime and
-	# hand-building widgets in code is the "modify the .ui under the hood" this project forbids.
-	for name in ("combinedImageButton", "dbgSliceSlider", "dbgSliceNSpinBox", "debugTab", "anugaTab")
-		@test occursin(name, ui)
-	end
-	# …and the code only WIRES them: no `new QPushButton` for the combined-image button.
-	@test !occursin(r"new\s+QPushButton\s*\(\s*\"Combined image\"", src)
-end
+# (Two items here guarded the DEBUG TAB: that its duplicate slice row mirrored the real slider only
+# after a slice was drawn, and that its widgets lived in the .ui rather than being built in code. The
+# tab is gone — with its slice row, its "Combined image" / "Water side" / "Land side" buttons and its
+# own model boxes — so both items went with it. What survived of that tab is the netCDF tab's
+# "Rendered image" group, which is now the only place the composited picture is built, and the rule
+# the first item protected is unchanged and still pinned below: nothing may hang off the slider's
+# valueChanged but the slice itself.)
 
 # (An item here asserted that the η(x) reference ask DEFERRED itself while a transport button was
 # down. That requirement is dead: deferring it is exactly what left the analytic curve standing still

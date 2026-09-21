@@ -337,21 +337,15 @@ public:
 	// The slider's own < / > arrows (built in the constructor). They AUTO-REPEAT, so they belong in
 	// transportEnable with the Cinema steps: held down while a slice draws, Qt must drop the repeats.
 	QToolButton *sliceArrowL_ = nullptr, *sliceArrowR_ = nullptr;
-	// The Debug tab's COPY of the slice row. It drives `sliceSlider`; it is refreshed FROM it only in
-	// afterSliceShown, so nothing of the mirror runs while the arrows auto-repeat.
-	QScrollBar *dbgSlider_ = nullptr;
-	QLineEdit  *dbgSpin_   = nullptr;
 	QSlider *waterTransparencySlider = nullptr;
 	QLineEdit *sliceSpin = nullptr;       // a PLAIN edit box (replaces the .ui's QSpinBox at runtime --
 	                                      // see the constructor), not a spinner: user wants a simple box
 	QCheckBox *splitDryWetCheck = nullptr, *scaleGlobalCheck = nullptr;
-	// Debug tab: the illumination MODEL (1..7) each half is lit with when "Combined image" builds the
-	// picture. Kept in iGMT.ini (aquamoto/illumWater, aquamoto/illumLand) so the choice is remembered.
-	QSpinBox *dbgIllumWater_ = nullptr, *dbgIllumLand_ = nullptr;
-	// The netCDF tab's pair, in the "Rendered image" group. ONE value per side: these and the Debug
-	// pair above are two views of the same number (modelBoxEdited keeps them equal), never two states.
+	// The illumination MODEL (1..7) each half is lit with when the "Rendered image" group builds the
+	// picture — one box per side, in that group. Kept in iGMT.ini (aquamoto/illumWater,
+	// aquamoto/illumLand) so the choice is remembered.
 	QSpinBox *netIllumWater_ = nullptr, *netIllumLand_ = nullptr;
-	bool dbgIllumWaterSet_ = false, dbgIllumLandSet_ = false;   // the user typed in that box himself
+	bool illumWaterSet_ = false, illumLandSet_ = false;   // the user typed in that box himself
 	QPushButton *loadRamBtn = nullptr, *runInBtn = nullptr, *addTrackBtn = nullptr;
 	// "Rendered image" (netCDF tab): while checked, every slice change runs what the Debug tab's
 	// "Combined image" button runs (`runCombinedImage`). A render per slice, hence a deliberate box.
@@ -642,46 +636,10 @@ public:
 			}
 		}
 
-		// THE DEBUG TAB'S SLICE ROW IS A SECOND SET OF WIDGETS FOR THE SAME THING. A Qt layout has one
-		// parent, so "the slice group on both tabs" is two copies — and two copies must never be two
-		// sources of truth. `sliceSlider` stays THE slider (every slice request in this file goes
-		// through it, see fireSlice); the Debug copy only forwards to it and mirrors it back, so
-		// whichever tab you are on you are moving the same value and reading the same number.
-		if (auto *dbgSlider = w->findChild<QScrollBar *>("dbgSliceSlider")) {
-			auto *dbgSpin  = w->findChild<QLineEdit *>("dbgSliceNSpinBox");
-			auto *dbgLabel = w->findChild<QLabel *>("dbgSliceNLabel");
-			dbgSlider->setStyleSheet(sliceSlider ? sliceSlider->styleSheet() : QString());
-			if (sliceSlider) {
-				dbgSlider->setRange(sliceSlider->minimum(), sliceSlider->maximum());
-				dbgSlider->setValue(sliceSlider->value());
-				// The Debug copy DRIVES the real slider…
-				QObject::connect(dbgSlider, &QScrollBar::valueChanged, w, [this](int v) {
-					if (sliceSlider && sliceSlider->value() != v) sliceSlider->setValue(v);
-				});
-				// …and FOLLOWS it only once a slice has actually been drawn (afterSliceShown), NEVER on
-				// every valueChanged. The arrow buttons auto-repeat: hooking the mirror to valueChanged
-				// put two widget updates inside each repeat, on the same thread that is blocking on the
-				// host for the slice, and holding an arrow down stalled the update. Nothing of this
-				// mirror may sit in that path.
-				dbgSlider_ = dbgSlider;
-				dbgSpin_   = dbgSpin;
-				QObject::connect(sliceSlider, &QScrollBar::rangeChanged, w,
-				                 [dbgSlider](int lo, int hi) { dbgSlider->setRange(lo, hi); });
-			}
-			if (dbgSpin) {
-				dbgSpin->setText(QString::number(dbgSlider->value()));
-				QObject::connect(dbgSpin, &QLineEdit::returnPressed, w, [this, dbgSpin]() {
-					bool ok = false; const int v = dbgSpin->text().trimmed().toInt(&ok);
-					if (ok && sliceSlider) sliceSlider->setValue(v);
-				});
-			}
-			// The header label is mirrored from the netCDF tab's own, found by name — this dialog keeps
-			// no member for it, and inventing one would be a second source for the same text.
-			if (dbgLabel) {
-				if (auto *srcLabel = w->findChild<QLabel *>("sliceNLabel"))
-					dbgLabel->setText(srcLabel->text());
-			}
-		}
+		// (The Debug tab and everything on it — its duplicate slice row, the "Combined image" /
+		// "Water side" / "Land side" buttons and their own model boxes — is gone. What survived of
+		// it lives in the netCDF tab's "Rendered image" group, which is the one place that builds
+		// the composited picture now.)
 
 		// The per-side illumination MODEL (1..7) the "Combined image" button builds with. The boxes
 		// STATE WHAT THE LAYER IS WEARING: they are seeded from the side's own stored model
@@ -690,8 +648,6 @@ public:
 		// box's own imposed over the Illumination tool's choice. Only a side with NO model stored
 		// falls back, to the value this dialog remembered in iGMT.ini (prefs live there, never in the
 		// registry), and a value the user types is written back there.
-		dbgIllumWater_ = w->findChild<QSpinBox *>("illumWaterModelSpinBox");
-		dbgIllumLand_  = w->findChild<QSpinBox *>("illumLandModelSpinBox");
 		// A BOX THE USER HAS NOT TOUCHED SENDS NOTHING (0 = "the model this side already carries"), so
 		// this control cannot change a picture nobody asked it to change. Only an edit made HERE, by
 		// hand, overrides — the flag is set in the valueChanged handler, which the seeding blocks.
@@ -710,14 +666,12 @@ public:
 			QObject::connect(sb, QOverload<int>::of(&QSpinBox::valueChanged), w,
 			                 [this, side](int v) { modelBoxEdited(side, v); });
 		};
-		wireBox(dbgIllumWater_, 0);
-		wireBox(dbgIllumLand_,  1);
 		wireBox(netIllumWater_, 0);
 		wireBox(netIllumLand_,  1);
 		if (auto *tabs = w->findChild<QTabWidget *>("mainTabWidget")) {
 			QObject::connect(tabs, &QTabWidget::currentChanged, w, [this, tabs](int i) {
-				QWidget *page = tabs->widget(i);
-				if (page && page->objectName() == "debugTab") syncIllumModelSpins();
+				(void)i;                       // whichever tab comes forward: the boxes state the
+				syncIllumModelSpins();         // side's own stored model, so they are re-read
 			});
 		}
 		// …AND ONCE NOW. `currentChanged` only fires when the tab is CHANGED, so a dialog whose Debug
@@ -726,27 +680,21 @@ public:
 		// honest from the moment the dialog exists, not from the first tab switch.
 		syncIllumModelSpins();
 
-		// "Combined image" (Debug tab) — the button is IN THE .ui, like every other widget in this
-		// dialog; only its wiring belongs here. It was briefly built in code and inserted under the
-		// slider, which is exactly the "modify the .ui under the hood" this project forbids.
-		if (auto *combBtn = w->findChild<QPushButton *>("combinedImageButton"))
-			QObject::connect(combBtn, &QPushButton::clicked, w, [this]() { runCombinedImage(); });
-
-		// "Water side" / "Land side" (Debug tab): the same picture, one half of it. They go through the
-		// same build as "Combined image" and show the half THAT build took, never one made again here.
+		// "Water side": the same picture, one half of it. It goes through the same build the "Rendered
+		// image" box runs and shows the half THAT build took, never one made again here.
 		auto wireSide = [this, w](const char *objName, int side) {
 			QPushButton *b = w->findChild<QPushButton *>(objName);
 			if (!b) return;
 			QObject::connect(b, &QPushButton::clicked, w, [this, side]() {
 				QString out; bool closedNow = false;
 				// WHAT THE BOX SAYS IS WHAT IS APPLIED. The value is sent unconditionally. It used to be
-				// sent only if the user had TYPED in the box this session (`dbgIllum*Set_`), so a box
+				// sent only if the user had TYPED in the box this session (`illum*Set_`), so a box
 				// seeded to 1 sent 0 instead and the host resolved that to the stored model, or to 2 —
 				// the box stated a method and a different one was used. A control that does that is a
 				// control that lies; `syncIllumModelSpins` keeps the box showing the side's own stored
 				// model, so sending it always is also what reproduces the layer.
-				const int mw = dbgIllumWater_ ? dbgIllumWater_->value() : 0;
-				const int ml = dbgIllumLand_  ? dbgIllumLand_->value()  : 0;
+				const int mw = netIllumWater_ ? netIllumWater_->value() : 0;
+				const int ml = netIllumLand_  ? netIllumLand_->value()  : 0;
 				const double t0 = QDateTime::currentMSecsSinceEpoch() / 1000.0;
 				runBlocking(QString("InteractiveGMT._aqua_side_popup(%1,%2,%3,%4,%5)")
 				                .arg(aquaScenePtr(scene_)).arg(side).arg(mw).arg(ml)
@@ -757,9 +705,7 @@ public:
 				if (win) win->statusBar()->showMessage(out, 5000);
 			});
 		};
-		wireSide("waterSideButton", 0);
-		wireSide("landSideButton",  1);
-		wireSide("renderedWaterSideButton", 0);   // the netCDF group's copy -- same call, same side
+		wireSide("renderedWaterSideButton", 0);
 
 		bool *guard = new bool(false);    // slider<->spin re-entrancy guard, freed with the window
 		QObject::connect(w, &QObject::destroyed, w, [guard]{ delete guard; });
@@ -840,9 +786,9 @@ public:
 			// (70_window.cpp) and, when it is merely unparked, keeps whatever it last showed — so the
 			// number is put in both places: the seed for a fresh dialog, `setModel` for a living one.
 			const int m = water ? (netIllumWater_ ? netIllumWater_->value()
-			                                      : (dbgIllumWater_ ? dbgIllumWater_->value() : 0))
+			                                      : (netIllumWater_ ? netIllumWater_->value() : 0))
 			                    : (netIllumLand_  ? netIllumLand_->value()
-			                                      : (dbgIllumLand_  ? dbgIllumLand_->value()  : 0));
+			                                      : (netIllumLand_  ? netIllumLand_->value()  : 0));
 			illumSeedModel(scene_, m);          // a fresh dialog opens on it…
 			// Parented to the VIEWER window, not to this one: the dialog parks in that window's Scene
 			// Objects dock and must outlive an Aquamoto window the user closes.
@@ -1002,12 +948,11 @@ public:
 	// again if it is armed.
 	void illumApplied(int side, int model) {
 		if (side < 0 || side > 1 || model < 1 || model > 7) return;
-		(side == 0 ? dbgIllumWaterSet_ : dbgIllumLandSet_) = true;
+		(side == 0 ? illumWaterSet_ : illumLandSet_) = true;
 		igmtSettings().setValue(side == 0 ? "aquamoto/illumWater" : "aquamoto/illumLand", model);
-		QSpinBox *twins[2] = { side == 0 ? dbgIllumWater_ : dbgIllumLand_,
-		                       side == 0 ? netIllumWater_ : netIllumLand_ };
-		for (QSpinBox *sb : twins)
-			if (sb && sb->value() != model) { QSignalBlocker b(sb); sb->setValue(model); }
+		// ONE BOX PER SIDE (the Debug tab's duplicate pair is gone with the tab).
+		if (QSpinBox *sb = (side == 0 ? netIllumWater_ : netIllumLand_))
+			if (sb->value() != model) { QSignalBlocker b(sb); sb->setValue(model); }
 		if (busy_) return;                  // a slice is drawing: its own tail rebuilds the picture
 		if (renderedImageCheck && renderedImageCheck->isChecked()) runCombinedImage();
 	}
@@ -1083,12 +1028,10 @@ public:
 	void modelBoxEdited(int side, int v) {
 		if (modelBoxBusy_) return;                  // the twin's setValue must not come back round
 		modelBoxBusy_ = true;
-		(side == 0 ? dbgIllumWaterSet_ : dbgIllumLandSet_) = true;
+		(side == 0 ? illumWaterSet_ : illumLandSet_) = true;
 		igmtSettings().setValue(side == 0 ? "aquamoto/illumWater" : "aquamoto/illumLand", v);
-		QSpinBox *twins[2] = { side == 0 ? dbgIllumWater_ : dbgIllumLand_,
-		                       side == 0 ? netIllumWater_ : netIllumLand_ };
-		for (QSpinBox *sb : twins)
-			if (sb && sb->value() != v) { QSignalBlocker b(sb); sb->setValue(v); }
+		if (QSpinBox *sb = (side == 0 ? netIllumWater_ : netIllumLand_))
+			if (sb->value() != v) { QSignalBlocker b(sb); sb->setValue(v); }
 		modelBoxBusy_ = false;
 		if (!opened_ || busy_ || !scene_ || !sceneAlive(scene_)) return;
 		QString out; bool closedNow = false;
@@ -1100,7 +1043,7 @@ public:
 	bool modelBoxBusy_ = false;
 
 	void syncIllumModelSpins() {
-		if (!dbgIllumWater_ && !dbgIllumLand_ && !netIllumWater_ && !netIllumLand_) return;
+		if (!netIllumWater_ && !netIllumLand_ && !netIllumWater_ && !netIllumLand_) return;
 		if (busy_ || !opened_) return;     // never a blocking call on top of another, nor with no file
 		QString out; bool closedNow = false;
 		if (!runBlocking(QString("InteractiveGMT._aqua_illum_models(%1)").arg(aquaScenePtr(scene_)),
@@ -1133,8 +1076,8 @@ public:
 		// A SIDE THE USER HAS SET HIMSELF IS NOT RE-SEEDED. His number is what the build uses and what
 		// the dialog opens on; re-reading the host over it silently replaced his choice with a stored
 		// model (or with the fallback 2) and the picture then ignored what the box said.
-		if (!dbgIllumWaterSet_) { put(dbgIllumWater_, q[0]); put(netIllumWater_, q[0]); }
-		if (!dbgIllumLandSet_)  { put(dbgIllumLand_,  q[1]); put(netIllumLand_,  q[1]); }
+		if (!illumWaterSet_) put(netIllumWater_, q[0]);
+		if (!illumLandSet_)  put(netIllumLand_,  q[1]);
 	}
 
 	// "This file is now the session's file": show it in the path box, then open it. THE one entry for
@@ -1714,15 +1657,6 @@ public:
 	// fireSlice, so it covers the slider, the transport buttons, the timer and the display toggles
 	// alike -- there is no second path by which a slice reaches the screen.
 	void afterSliceShown() {
-		// THE DEBUG TAB'S COPY IS REFRESHED HERE — once per drawn slice, off the auto-repeat path.
-		if (dbgSlider_ && sliceSlider) {
-			const int v = sliceSlider->value();
-			if (dbgSlider_->value() != v) {
-				QSignalBlocker b(dbgSlider_);        // it drives the real slider; don't let it drive back
-				dbgSlider_->setValue(v);
-			}
-			if (dbgSpin_) dbgSpin_->setText(QString::number(v));
-		}
 		if (!scene_ || !sceneAlive(scene_)) return;
 		// An Aquamoto slice is always pushed as a flat draped image (showLayerImageTail sets
 		// layerImgMode), so the mode the window was in has to be re-asserted after each one -- through
@@ -2143,8 +2077,8 @@ public:
 		QString out; bool closedNow = false;
 		// WHAT THE BOX SAYS IS WHAT IS APPLIED: the model pair is sent unconditionally, and
 		// `syncIllumModelSpins` keeps each box showing its side's own stored model.
-		const int mw = dbgIllumWater_ ? dbgIllumWater_->value() : 0;
-		const int ml = dbgIllumLand_  ? dbgIllumLand_->value()  : 0;
+		const int mw = netIllumWater_ ? netIllumWater_->value() : 0;
+		const int ml = netIllumLand_  ? netIllumLand_->value()  : 0;
 		// THE CLOCK STARTS HERE and is stopped on the far side, in Julia, off the same clock (the Unix
 		// epoch), so the number covers the bridge crossing too.
 		const double t0 = QDateTime::currentMSecsSinceEpoch() / 1000.0;
