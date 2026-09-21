@@ -69,8 +69,6 @@ static void sceneSetShadedImage2D(Scene *s, bool on);
 // fresh dialog and switches one that is already open/parked. The two illumination buttons here pass
 // their side's model box, so the dialog always comes up on the number the box shows.
 static void illumSeedModel(Scene *s, int model);
-// …and what it is aiming now, so the box follows the dialog and the picture follows the light.
-static bool illumAimSnapshot(Scene *s, int *model, double *azim, double *elev, int *side);
 
 // The drawn-shape DELETE and the ruler's measuring leg (85_polygon.cpp, included after this
 // fragment). "Add Track" replaces its previous track through the very function the shape's own
@@ -94,6 +92,9 @@ static double rulerExactLeg(Scene *s, const std::array<double,3> &a, const std::
 class EtaFigure : public QFrame {
 public:
 	ProfilePanel *panel = nullptr;
+	// WHERE THE CURVE COMES FROM, ON SCREEN. Bottom-left of the figure, because that is where it
+	// belongs: it switches the TRACK this figure is sampling, not anything about the window.
+	QCheckBox *showTrack = nullptr;
 
 	EtaFigure(QWidget *parent, const QString &title) : QFrame(parent), title_(title) {
 		setFrameShape(QFrame::StyledPanel);
@@ -104,6 +105,17 @@ public:
 		panel = new ProfilePanel(this);
 		panel->setMinimumHeight(60);                 // the figure is small: override the panel's own 170
 		lay->addWidget(panel);
+		// NOT IN THE LAYOUT: a row of its own would push the figure taller. It sits in the empty
+		// lower-left corner the plot already has, placed by resizeEvent.
+		showTrack = new QCheckBox("Show track", this);
+		{
+			QFont f = showTrack->font();
+			f.setPointSizeF(f.pointSizeF() - 1.0);   // a small box: the figure is small
+			showTrack->setFont(f);
+		}
+		showTrack->setToolTip("<html>Draw the track this curve is sampled along, in the window.</html>");
+		showTrack->setAttribute(Qt::WA_TransparentForMouseEvents, false);
+		showTrack->raise();
 		resize(380, 200);
 	}
 
@@ -143,6 +155,18 @@ protected:
 	bool    moving_ = false, resizing_ = false;
 
 	QRect gripRect() const { return QRect(width() - kGrip, height() - kGrip, kGrip, kGrip); }
+
+	// "Show track" rides in the plot's LOWER-RIGHT corner — the lower-left is where the coordinate
+	// readout sits. Clear of the resize grip, and placed by hand over the panel so it costs the figure
+	// NO height: the window keeps the size it had.
+	void resizeEvent(QResizeEvent *e) override {
+		QFrame::resizeEvent(e);
+		if (!showTrack) return;
+		const QSize sh = showTrack->sizeHint();
+		showTrack->setGeometry(width() - kMargin - kGrip - sh.width(),
+		                       height() - kMargin - sh.height(), sh.width(), sh.height());
+		showTrack->raise();
+	}
 
 	void paintEvent(QPaintEvent *e) override {
 		QFrame::paintEvent(e);
@@ -257,6 +281,19 @@ public:
 	explicit AquamotoActivateSync(QObject *parent) : QObject(parent) {}
 	bool eventFilter(QObject *obj, QEvent *ev) override {
 		if (ev->type() == QEvent::WindowActivate && onActivate) onActivate();
+		return QObject::eventFilter(obj, ev);
+	}
+};
+
+// A widget that refreshes something of its own the moment the pointer arrives — the global min/max
+// hint on Aquamoto's "Scale colour to global min/max" box, whose numbers belong to the file and the
+// variable currently open.
+class AquamotoHoverRefresh : public QObject {
+public:
+	std::function<void()> onHover;
+	explicit AquamotoHoverRefresh(QObject *parent) : QObject(parent) {}
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		if ((ev->type() == QEvent::Enter || ev->type() == QEvent::ToolTip) && onHover) onHover();
 		return QObject::eventFilter(obj, ev);
 	}
 };
@@ -445,10 +482,6 @@ public:
 			act->onActivate = [this]() { syncIllumModelSpins(); };
 			win->installEventFilter(act);
 		}
-		illumWatch_ = new QTimer(win);
-		illumWatch_->setInterval(250);
-		QObject::connect(illumWatch_, &QTimer::timeout, win, [this]() { illumWatchTick(); });
-		illumWatch_->start();
 		QObject::connect(win, &QObject::destroyed, win, [this]() { registry().remove(scene_); delete this; });
 
 		QMainWindow *w = win;   // local copy for lambda capture (member `win` still usable directly)
@@ -756,7 +789,14 @@ public:
 			});
 		}
 		if (splitDryWetCheck) QObject::connect(splitDryWetCheck, &QCheckBox::toggled, w, [this](bool) { fireSlice(); });
-		if (scaleGlobalCheck) QObject::connect(scaleGlobalCheck, &QCheckBox::toggled, w, [this](bool) { fireSlice(); });
+		if (scaleGlobalCheck) {
+			QObject::connect(scaleGlobalCheck, &QCheckBox::toggled, w, [this](bool) { fireSlice(); });
+			// …and it states the range it means, fetched when the pointer lands on it.
+			scaleGlobalCheck->setToolTip(QString(kGlobalMMTipBase) + "</html>");   // text from the start
+			auto *hov = new AquamotoHoverRefresh(scaleGlobalCheck);
+			hov->onHover = [this]() { refreshGlobalMMTip(); };
+			scaleGlobalCheck->installEventFilter(hov);
+		}
 		// Shade Water / Shade Land radio = the selector of WHERE the Shading dock operates (water or land).
 		// Flipping it SWAPS the on-screen colorbar (water bar <-> land bar) as the INDICATOR of which side
 		// can now be changed, and routes the next Shading-dock edit to that side (aquaShadeSelWater). It
@@ -800,13 +840,6 @@ public:
 			QWidget *owner = scene_->widget ? scene_->widget->window() : (QWidget *)win;
 			showIllumination(owner, scene_, water ? 0 : 1);
 			illumSeedModel(scene_, m);          // …and one that was merely unparked is switched to it
-			// The watcher's baseline is THIS aim, so merely opening the dialog is not read as a change
-			// and does not cost a rebuild. From here on, what the user picks in it is the change.
-			{
-				int mm = 0, sdd = -1;  double aa = 0.0, ee = 0.0;
-				if (illumAimSnapshot(scene_, &mm, &aa, &ee, &sdd))
-					{ seenModel_ = mm;  seenAz_ = aa;  seenEl_ = ee;  seenSide_ = sdd; }
-			}
 		};
 		if (illumWaterBtn) {
 			illumWaterBtn->setIcon(makeHillshadeIcon());
@@ -863,7 +896,27 @@ public:
 		if (renderedImageCheck)
 			QObject::connect(renderedImageCheck, &QCheckBox::toggled, w, [this](bool on) {
 				syncRenderedEnable();
-				if (on) runCombinedImage();
+				if (!on) {                            // the ROW is unchecked with the box -- never removed
+					QString out; bool closedNow = false;
+					runBlocking(QString("InteractiveGMT._aqua_render_image_show(%1,false)")
+					                .arg(aquaScenePtr(scene_)), out, closedNow);
+					return;
+				}
+				// SAID ONCE, WHILE THE FIRST ONE IS BEING MADE: a progress notice, not a question —
+				// nothing to dismiss, no input taken, and it goes when the picture is there.
+				static bool warned = false;          // once per session, not once per dialog
+				const bool first = !warned;
+				if (first) { warned = true; showFirstNotice(); }
+				{
+					// The row is CHECKED again with the box (it may have been unchecked by unchecking
+					// this box). Here only, not per slice: this is the one call that touches the tree.
+					QString o; bool cn = false;
+					runBlocking(QString("InteractiveGMT._aqua_render_image_show(%1,true)")
+					                .arg(aquaScenePtr(scene_)), o, cn);
+					if (cn) return;
+				}
+				runCombinedImage();
+				if (first) closeFirstNotice();
 			});
 		syncRenderedEnable();
 
@@ -933,30 +986,74 @@ public:
 	// the boxes cannot drift from the light actually on the picture, and pressing "Combined image"
 	// with untouched boxes builds exactly what is on screen. A side with no model stored keeps the
 	// value this dialog remembered; nothing here writes the store.
-	// THE DIALOG'S CHOICES COME BACK HERE. The Illumination dialog is modeless and has no OK — every
-	// control applies itself — so there is no single moment to hook. This watches the aim it published
-	// (illumAimSnapshot, 70_window.cpp): when the method or the sun moves, the side's model box is
-	// corrected to what was picked and the rendered image is rebuilt if it is armed. Costs a map
-	// lookup and three compares while a dialog is open, nothing at all when none is.
-	void illumWatchTick() {
-		if (!scene_ || !sceneAlive(scene_) || busy_) return;
-		int m = 0, sd = -1;  double az = 0.0, el = 0.0;
-		if (!illumAimSnapshot(scene_, &m, &az, &el, &sd)) return;
-		if (sd < 0 || sd > 1 || m < 1 || m > 7) return;
-		if (m == seenModel_ && az == seenAz_ && el == seenEl_ && sd == seenSide_) return;
-		seenModel_ = m;  seenAz_ = az;  seenEl_ = el;  seenSide_ = sd;
-		// The box STATES the method: it is the dialog's pick now, not the number that opened it.
-		(sd == 0 ? dbgIllumWaterSet_ : dbgIllumLandSet_) = true;
-		igmtSettings().setValue(sd == 0 ? "aquamoto/illumWater" : "aquamoto/illumLand", m);
-		QSpinBox *twins[2] = { sd == 0 ? dbgIllumWater_ : dbgIllumLand_,
-		                       sd == 0 ? netIllumWater_ : netIllumLand_ };
+	// THE ILLUMINATION DIALOG JUST APPLIED, aimed at `side` with method `model`. Called by its own
+	// apply() (70_window.cpp -> aquamotoIllumApplied), so this runs once, when it happens.
+	//
+	// Two things follow: the side's model box states what was picked, and the rendered image is built
+	// again if it is armed.
+	void illumApplied(int side, int model) {
+		if (side < 0 || side > 1 || model < 1 || model > 7) return;
+		(side == 0 ? dbgIllumWaterSet_ : dbgIllumLandSet_) = true;
+		igmtSettings().setValue(side == 0 ? "aquamoto/illumWater" : "aquamoto/illumLand", model);
+		QSpinBox *twins[2] = { side == 0 ? dbgIllumWater_ : dbgIllumLand_,
+		                       side == 0 ? netIllumWater_ : netIllumLand_ };
 		for (QSpinBox *sb : twins)
-			if (sb && sb->value() != m) { QSignalBlocker b(sb); sb->setValue(m); }
+			if (sb && sb->value() != model) { QSignalBlocker b(sb); sb->setValue(model); }
+		if (busy_) return;                  // a slice is drawing: its own tail rebuilds the picture
 		if (renderedImageCheck && renderedImageCheck->isChecked()) runCombinedImage();
 	}
-	int    seenModel_ = 0, seenSide_ = -1;
-	double seenAz_ = 0.0, seenEl_ = 0.0;
-	QTimer *illumWatch_ = nullptr;
+
+	// "Scale colour to global min/max" SAYS WHAT THAT RANGE IS, on hover. Asked at the moment the
+	// pointer arrives (the numbers depend on the file and the variable, both of which change), off the
+	// same `_aqua_global_minmax` the colour scale itself uses.
+	static constexpr const char *kGlobalMMTipBase =
+		"<html>Colour the water on the WHOLE CUBE's range instead of this slice's own.";
+
+	void refreshGlobalMMTip() {
+		if (!scaleGlobalCheck) return;
+		// A REFUSAL STILL SAYS SOMETHING. The box always carries the base line, plus the numbers when
+		// they can be had and the reason when they cannot — a hover that shows nothing at all is the
+		// one outcome this cannot have.
+		auto put = [this](const QString &tail) {
+			scaleGlobalCheck->setToolTip(QString(kGlobalMMTipBase) + tail + "</html>");
+		};
+		if (!opened_)              { put("<br>(no file open yet)"); return; }
+		if (busy_)                 { put("<br>(a slice is being drawn)"); return; }
+		if (!scene_ || !sceneAlive(scene_)) { put(""); return; }
+		QString out; bool closedNow = false;
+		const bool ok = runBlocking(QString("InteractiveGMT._aqua_global_mm(%1)").arg(aquaScenePtr(scene_)),
+		                            out, closedNow);
+		if (closedNow) return;
+		const QStringList q = out.trimmed().split(',');
+		if (!ok || q.size() != 3) { put("<br>(range unavailable: " + out.trimmed() + ")"); return; }
+		bool okLo = false, okHi = false;
+		const double lo = q[1].toDouble(&okLo), hi = q[2].toDouble(&okHi);
+		if (!okLo || !okHi) { put("<br>(range unreadable: " + out.trimmed() + ")"); return; }
+		put(QString("<br>%1: %2 to %3").arg(q[0]).arg(lo, 0, 'g', 6).arg(hi, 0, 'g', 6));
+	}
+
+	// THE FIRST BUILD'S NOTICE. NON-MODAL: it states why this one is slow and takes no input, so the
+	// program is not stopped waiting to be dismissed. Raised before the build, closed after it.
+	QPointer<QProgressDialog> firstNotice_;
+	void showFirstNotice() {
+		auto *d = new QProgressDialog("First rendered image: the render path is compiled and the "
+		                              "off-screen staging windows are built now, so this one takes a "
+		                              "few seconds.\nThe ones after it are faster.",
+		                              QString(), 0, 0, win);
+		d->setWindowTitle("Rendered image");
+		d->setCancelButton(nullptr);
+		d->setWindowModality(Qt::NonModal);
+		d->setMinimumDuration(0);
+		d->setAttribute(Qt::WA_DeleteOnClose);
+		firstNotice_ = d;
+		d->show();
+		d->raise();
+		QApplication::processEvents();     // painted NOW: the build never returns to the event loop
+	}
+	void closeFirstNotice() {
+		if (firstNotice_) { firstNotice_->close(); firstNotice_ = nullptr; }
+		QApplication::processEvents();
+	}
 
 	// The "Rendered image" group's own controls (the two illumination buttons and the two model
 	// boxes) serve THAT picture, so they are live only while the box is checked.
@@ -1068,6 +1165,7 @@ public:
 			sliceSpin->setText("1");
 			sliceSpin->setEnabled(true);
 		}
+		refreshGlobalMMTip();       // the new file's own whole-cube range, before any hover asks
 		// A NEW FILE IS ON DISK UNTIL SOMETHING SAYS OTHERWISE. This resets "In RAM ✓" — the previous
 		// file's residency says nothing about this one.
 		markCubeOnDisk();
@@ -1693,6 +1791,9 @@ public:
 				});
 				unfoldSceneObjects(sc);      // a handle the user cannot see is no handle at all
 			};
+			if (etaFig->showTrack)
+				QObject::connect(etaFig->showTrack, &QCheckBox::toggled, etaFig,
+				                 [this](bool onT) { setTrackShown(onT); });
 		}
 		if (!etaFig) return;
 		etaFig->setVisible(on);
@@ -1733,6 +1834,35 @@ public:
 	// so the drawing is the app's one drawing path (polygonToolToggled, 85_polygon.cpp) and nothing
 	// here re-implements it. What the user draws is an ordinary Scene Objects element with its own
 	// row, properties and Remove; this dialog only remembers WHICH line it is, by name.
+	// "Show track" (the η(x) figure's own box): the track the curve is sampled along, drawn in the
+	// window. TWO CASES, ONE BOX:
+	//   * a track the user DREW ("Add Track") is already an element of its own — it is shown/hidden;
+	//   * otherwise the figure samples the grid row the Cinema boxes describe, and THAT row is drawn
+	//     as its own element, held above the water so it does not cover the wave it measures
+	//     (`_aqua_show_track`, aquamoto.jl).
+	void setTrackShown(bool on) {
+		Scene *s = scene_;
+		if (!s || !sceneAlive(s)) return;
+		if (!trackName_.empty()) {
+			for (auto &p : s->polys)
+				if (p.name == trackName_ && p.line) {
+					p.line->SetVisibility(on ? 1 : 0);
+					rebuildSceneObjects(s);
+					if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+					return;
+				}
+		}
+		if (!opened_ || busy_) return;
+		const double x0  = editNum(cineProfX0Edit, s->gx0);
+		const double len = editNum(cineProfLenEdit, 5000.0);
+		const double y   = 0.5 * (s->gy0 + s->gy1);      // the row the figure samples, by default
+		QString out; bool closedNow = false;
+		runBlocking(QString("InteractiveGMT._aqua_show_track(%1,%2,%3,%4,%5)")
+		                .arg(aquaScenePtr(s)).arg(on ? "true" : "false")
+		                .arg(x0, 0, 'g', 12).arg(x0 + len, 0, 'g', 12).arg(y, 0, 'g', 12),
+		            out, closedNow);
+	}
+
 	void armTrack() {
 		Scene *s = scene_;
 		if (!s || !sceneAlive(s)) return;
@@ -1772,6 +1902,20 @@ public:
 		trackName_ = pg->name;
 		if (trackWatch_) trackWatch_->stop();
 		if (s->polyAct) s->polyAct->setChecked(false);              // the tool disarms itself once it is done
+		// THE DEFAULT TRACK IS GONE FOR GOOD. A drawn track replaces it — the figure follows the drawn
+		// one from here on — so the row it had in Scene Objects is deleted, not merely unchecked.
+		{
+			QString o; bool cn = false;
+			runBlocking(QString("InteractiveGMT._aqua_show_track(%1,false,0,1,0)").arg(aquaScenePtr(s)),
+			            o, cn);
+			if (cn) return;                                          // `this` may be gone -- touch nothing
+		}
+		// …and the figure's box now speaks for THIS track, which is on screen: it says so, without
+		// re-running the handler that would put it back up.
+		if (etaFig && etaFig->showTrack) {
+			QSignalBlocker b(etaFig->showTrack);
+			etaFig->showTrack->setChecked(true);
+		}
 		rebuildSceneObjects(s);
 		updateEtaFigure();
 	}
@@ -1835,6 +1979,22 @@ public:
 	// of the window's active data layer nearest mid-tank, over [x0, x0+length]. The layer is the one
 	// the hover readout reads, refreshed by every slice, so the curve can never describe a different
 	// slice than the surface does.
+	// THE DEFAULT TRACK STOPS AT THE LAND. On a tsunami layer the row carries the stage height on wet
+	// nodes and the GROUND ELEVATION on dry ones, so the first sample above this height is where the
+	// track has walked onto the beach — and the hillside is not what this figure is about. The same
+	// number the drawn track uses (`AQUA_TRACK_Z`, aquamoto.jl), so the curve and the line on screen
+	// end at the same place.
+	static constexpr double kTrackStopZ = 15.0;
+
+	static void trimRowAtLand(std::vector<double> &xs, std::vector<double> &zs) {
+		for (size_t i = 0; i < zs.size() && i < xs.size(); ++i)
+			if (std::isfinite(zs[i]) && zs[i] > kTrackStopZ) {
+				if (i < 2) return;            // it starts on land: nothing to cut, leave it be
+				xs.resize(i);  zs.resize(i);
+				return;
+			}
+	}
+
 	void updateEtaFigure() {
 		if (!etaFig || !etaFig->isVisible() || !scene_ || !sceneAlive(scene_)) return;
 		// THE TRACK, WHEN THERE IS ONE — and never on a window whose curves the HOST owns (Benchmark 1
@@ -1854,6 +2014,7 @@ public:
 		const double len = editNum(cineProfLenEdit, 5000.0);
 		std::vector<double> xs, zs;
 		if (!sceneGridRowSeries(scene_, 0.5 * (scene_->gy0 + scene_->gy1), x0, x0 + len, xs, zs)) return;
+		trimRowAtLand(xs, zs);       // the track stops where the ground rises past kTrackStopZ
 		// A WINDOW WHOSE CURVES THE HOST OWNS IS NEVER PAINTED FROM THE SCENE. Doing both is what made
 		// the figure flicker: the scene's own row went up at once, and ~200 ms later the host's stitched
 		// profile replaced it — a different curve for every slice, with the reference arriving in a
@@ -1964,11 +2125,11 @@ public:
 		                .arg(QString::number(t0, 'f', 3)),
 		            out, closedNow);
 		if (closedNow) return;
-		if (!out.isEmpty()) {
-			// The Messages dock keeps the timing line; the status bar clears itself.
-			sceneLogError(scene_, "Combined image: " + out, /*isError=*/false);
-			if (win) win->statusBar()->showMessage("Combined image: " + out, 5000);
-		}
+		// The Messages dock keeps the line (the status bar clears itself): the timing on a build, the
+		// REASON on a refusal — the host prints one either way, so a slice that rebuilt nothing says so.
+		const QString msg = out.isEmpty() ? QString("nothing was built and the host gave no reason") : out;
+		sceneLogError(scene_, "Rendered image: " + msg, /*isError=*/false);
+		if (win) win->statusBar()->showMessage("Rendered image: " + msg, 5000);
 	}
 
 	void fireSlice() {
@@ -2034,6 +2195,13 @@ public:
 // Install the hooks surfaceObjectMenu (50_scene.cpp) uses to offer "Aquamoto viewer…" on an Aquamoto
 // layer's surface handle. This fragment is compiled AFTER 50_scene.cpp/30_app.cpp in the single TU, so
 // the globals already exist; a file-scope initializer wires them at load, before any menu can pop.
+// The Illumination dialog's apply() calls this (70_window.cpp) right after it has applied: the
+// Aquamoto window of that scene, if there is one, puts the method in its box and rebuilds its
+// rendered image. No-op for a window that has no Aquamoto open.
+static void aquamotoIllumApplied(Scene *scene, int side, int model) {
+	if (AquamotoWindow *w = AquamotoWindow::registry().value(scene, nullptr)) w->illumApplied(side, model);
+}
+
 static bool aquamotoHasWindow(Scene *scene) { return AquamotoWindow::registry().contains(scene); }
 static void aquamotoReopen(Scene *scene)    { AquamotoWindow::openFor(nullptr, scene); rebuildSceneObjects(scene); }
 static bool aquamotoIsVisible(Scene *scene) {

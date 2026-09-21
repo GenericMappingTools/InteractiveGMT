@@ -6489,6 +6489,9 @@ public:
 			// is not what a side-aimed pick means. Same act, the side variant of the same function.
 			if (side() >= 0) sceneSetReliefLookAquaSide(scn, look, side());
 			else             sceneSetReliefLook(scn, look);
+			// APPLIED — say so, once, to the Aquamoto window that aimed this (its model box states the
+			// method and its rendered image is rebuilt). No-op when no Aquamoto window owns this scene.
+			if (side() >= 0) aquamotoIllumApplied(scn, side(), model);
 			return;
 		}
 
@@ -6537,6 +6540,9 @@ public:
 		if (!ok)
 			QMessageBox::warning(dlg, "Illumination", "The illumination could not be computed. "
 			                                          "See the Julia console for the reason.");
+		// …and the same notice on the Julia-computed models (2/3/4, the ones a tsunami side uses).
+		else if (side() >= 0)
+			aquamotoIllumApplied(scn, side(), model);
 	}
 };
 
@@ -6568,21 +6574,6 @@ static void showIllumination(QWidget *parent, Scene *s, int side) {
 // illumination buttons, 75_aquamoto.cpp, which pass their own model box). A fresh dialog reads
 // `g_hillshadeState`; one that is already open or parked keeps what it last showed, so both are
 // pointed at the number: the seed for the first case, setModel + its method button for the second.
-// WHAT THE DIALOG IS AIMING RIGHT NOW — model, sun, and the side it was opened for. Read-only, for a
-// caller that must FOLLOW the dialog: Aquamoto's "Rendered image" group (75_aquamoto.cpp) states the
-// method in its box and rebuilds its picture when the light moves. Returns false when this window has
-// no Illumination dialog alive, so a caller can poll it for nothing.
-static bool illumAimSnapshot(Scene *s, int *model, double *azim, double *elev, int *side) {
-	auto it = g_hillshadeDlgs.find(s);
-	if (it == g_hillshadeDlgs.end() || !it->second || !it->second->dlg) return false;
-	if (!g_hillshadeState.valid) return false;
-	if (model) *model = g_hillshadeState.model;
-	if (azim)  *azim  = g_hillshadeState.azim;
-	if (elev)  *elev  = g_hillshadeState.elev;
-	if (side)  *side  = s ? s->aquaIllumSide : -1;
-	return true;
-}
-
 static void illumSeedModel(Scene *s, int model) {
 	if (model < 1 || model > 7) return;
 	g_hillshadeState.valid = true;

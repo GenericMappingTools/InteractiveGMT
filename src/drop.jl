@@ -1567,6 +1567,27 @@ function _stretch_to_u8(I::GMTimage)
 	return ndims(out) == 2 ? _img_gray_palette!(J) : _img_drop_palette!(J)
 end
 
+# REPAINT AN IMAGE HANDLE THAT IS ALREADY IN THE WINDOW — same row, same plane, new pixels.
+#
+# For a picture that is REMADE over and over under one name (Aquamoto's "Rendered image", rebuilt at
+# every slice). Removing and re-adding it rebuilds the WHOLE Scene Objects tree three times — the
+# remove, the add and the show each call `rebuildSceneObjects` — which is the group visibly blinking.
+# Nothing about the row changes here, so nothing is rebuilt: only the texture's bytes are sent.
+#
+# Packed by `_drape_to_bbox`, the same packer `_add_image_to_scene` uses, so the two paths cannot
+# hand the viewer differently-shaped pixels. Returns false when the window has no handle by that
+# name (then the caller adds it the ordinary way).
+function _update_image_pixels!(scene::Ptr{Cvoid}, name, I::GMTimage)::Bool
+	(eltype(I.image) == UInt8) || return false        # the texture path is UInt8-only, as on the add
+	ir = I.range
+	img, iw, ih, ibands = _drape_to_bbox(I, ir[1], ir[2], ir[3], ir[4];
+	                                     outside = :transparent, fill = (UInt8(200), UInt8(200), UInt8(200)))
+	ok = ccall(_fn(:gmtvtk_image_set_pixels_h), Cint,
+	           (Ptr{Cvoid}, Cstring, Ptr{Cuchar}, Cint, Cint, Cint),
+	           scene, String(name), img, Cint(iw), Cint(ih), Cint(ibands))
+	return ok != 0
+end
+
 # Add a dropped image as a flat textured plane in the window (promote = reuse the empty launcher).
 function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false, source="", record=true)
 	# A non-8-bit raster (e.g. a 16-bit Landsat/Sentinel surface-reflectance band) reads as a

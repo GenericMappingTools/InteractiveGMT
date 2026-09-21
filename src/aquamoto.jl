@@ -674,6 +674,22 @@ end
 
 # The whole-cube WET-cell min/max, derived from the per-layer arrays `_aquamoto_open` already
 # scanned up front (an entirely-dry layer is flagged in `wetany` and excluded here).
+"""
+    _aqua_global_mm(scene) -> Cint
+
+The whole-cube min/max of the variable on screen, printed as "var,lo,hi" for the dialog's
+"Scale colour to global min/max" box to show on hover. Read through `_aqua_global_minmax`, the one
+place that number comes from, so the hint and the colour scale can never disagree.
+"""
+function _aqua_global_mm(scene::Ptr{Cvoid})::Cint
+	st = get(_AQUA, scene, nothing)
+	(st === nothing) && return Cint(0)
+	haskey(st.scans, st.varname) || return Cint(0)
+	lo, hi = _aqua_global_minmax(st)
+	print(st.varname, ',', lo, ',', hi)
+	return Cint(1)
+end
+
 function _aqua_global_minmax(st::_AquaState)
 	sc = st.scans[st.varname]
 	any(sc.wetany) || return (0.0, 1.0)
@@ -1411,13 +1427,30 @@ end
 # the dialog's message text window: what this function prints is what the caller shows.
 #
 # TEMPORARY, and here to be looked at.
+"""
+    _aqua_render_image_show(scene, on) -> Cint
+
+The dialog's box and the "Rendered image" row in Scene Objects are one state: unchecking the box
+UNCHECKS the row (the handle stays, with its picture), checking it checks the row again. Nothing is
+removed — the row is the user's to Remove.
+"""
+function _aqua_render_image_show(scene::Ptr{Cvoid}, on::Bool)::Cint
+	r = ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint),
+	          scene, AQUA_COMBINED_NAME, Cint(on))
+	_pump_once()
+	return r
+end
+
 function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_land::Int = 0,
                               t0::Float64 = 0.0)::Cint
 	st = get(_AQUA, scene, nothing)
-	(st === nothing) && return Cint(0)
+	# A REFUSAL SAYS WHY. These three used to return a bare 0, so a press (or a slice change) that
+	# built nothing looked like a control doing nothing at all.
+	(st === nothing) && (print("no tsunami file open in this window"); return Cint(0))
 	G = _aqua_layer(st, st.cur)
-	G === nothing && return Cint(0)                   # no layer drawn yet: nothing to show
-	st.split || return Cint(0)                        # no dry/wet split -> no two halves to combine
+	G === nothing && (print("layer $(st.cur + 1) could not be read"); return Cint(0))
+	st.split || (print("needs Split Dry/Wet — without it there are no two halves to combine");
+	             return Cint(0))
 	# NOTHING IS COMPOSITED FOR THIS BUTTON ANY MORE.
 	#
 	# `_aqua_shaded_rgb` used to run here: the CPU composite of two half PICTURES, 0.32 s, and its
@@ -1437,7 +1470,7 @@ function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_lan
 	img = _aqua_capture_combined(st, G, mw, ml,
 	                             numv(pw, "azim", 45.0), numv(pw, "elev", 30.0),
 	                             numv(pl, "azim", 45.0), numv(pl, "elev", 30.0))
-	(img === nothing) && return Cint(0)
+	(img === nothing) && (print("the render could not be captured"); return Cint(0))
 	tbuilt = time()
 	# EACH PRESS UNDOES THE LAST. The previous popup is closed before a new one opens, so this button
 	# can never leave a pile of windows behind — every one of them is a live scene the event loop
@@ -1476,10 +1509,17 @@ function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_lan
 	# deliberately leaves image extras alone — they are pictures, not shaded surfaces"), so an image
 	# added here is shown exactly as it was handed over.
 	nm = AQUA_COMBINED_NAME
-	ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), scene, nm)
-	_forget_object!(scene, :image, nm)
-	_add_image_to_scene(scene, img, nm; promote = false, record = false)
-	ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, nm, Cint(1))
+	# THE ROW IS REPAINTED, NOT REPLACED. Remove-then-add rebuilt the whole Scene Objects tree three
+	# times per build (the remove, the add and the show each call `rebuildSceneObjects`) — the tsunami
+	# group blinking at every slice. The handle, its plane and its bbox are the same thing at every
+	# slice; only the pixels differ, so only the pixels are sent (`_update_image_pixels!`). The add is
+	# what runs the first time, when there is no row yet.
+	if !_update_image_pixels!(scene, nm, img)
+		ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), scene, nm)
+		_forget_object!(scene, :image, nm)
+		_add_image_to_scene(scene, img, nm; promote = false, record = false)
+		ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, nm, Cint(1))
+	end
 	_pump_once()
 	# THE CLOCK, SPLIT, AND STOPPED AT THE END. `t0` is stamped in C++ at the CLICK, so a single
 	# number covered the `runBlocking` bridge crossing (Qt -> the Julia console -> back) as well as
@@ -1801,6 +1841,61 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 		st.first = false
 	end
 	return nothing
+end
+
+# THE DEFAULT η(x) TRACK, AS A LINE IN THE WINDOW. The figure samples the grid row the dialog's
+# "x from"/"length" boxes describe; this is that row, drawn, so the user can see where the curve comes
+# from. Its own Scene Objects row, like every other vector element, and its own name so showing it
+# again replaces it instead of stacking a second one.
+#
+# HELD AT A FIXED HEIGHT ABOVE THE WATER (`AQUA_TRACK_Z`), not on the surface: a line lying on the
+# stage covers the very wave the figure is measuring.
+#
+# "Add Track" replaces all of this — a drawn track is its own element, already visible, and the
+# figure follows it instead (see `trackSeries`, 75_aquamoto.cpp).
+const AQUA_TRACK_NAME = "Wave track (default)"
+const AQUA_TRACK_Z = 15.0               # metres above the datum
+
+"""
+    _aqua_track_end(st, x0, x1, y) -> x
+
+Where the default track STOPS: the first node along the row `y`, walking from `x0` toward `x1`, whose
+BATHYMETRY has risen to `AQUA_TRACK_Z`. The line then ends on the beach slope at its own height
+instead of running up over the land, where it lies across the wave the figure is measuring. `x1`
+itself when the row never gets that high (an all-wet tank).
+
+Read off `st.bat` through `_zmat` — the one accessor for `z[iy,ix]`, row 1 = south (SACRED_LAW.md's
+grid memory-layout law); never off `bat.z` directly.
+"""
+function _aqua_track_end(st::_AquaState, x0::Float64, x1::Float64, y::Float64)::Float64
+	B = st.bat
+	xv, yv = vec(Float64.(B.x)), vec(Float64.(B.y))
+	(length(xv) < 2 || length(yv) < 2) && return x1
+	M = _zmat(B)
+	iy = clamp(argmin(abs.(yv .- y)), 1, size(M, 1))
+	step = x1 >= x0 ? 1 : -1
+	i0 = clamp(argmin(abs.(xv .- x0)), 1, length(xv))
+	i1 = clamp(argmin(abs.(xv .- x1)), 1, length(xv))
+	@inbounds for ix in i0:step:i1
+		z = Float64(M[iy, min(ix, size(M, 2))])
+		(isfinite(z) && z >= AQUA_TRACK_Z) && return xv[ix]
+	end
+	return x1
+end
+
+function _aqua_show_track(scene::Ptr{Cvoid}, on::Bool, x0::Float64, x1::Float64, y::Float64)::Cint
+	ccall(_fn(:gmtvtk_remove_overlay_named_h), Cint, (Ptr{Cvoid}, Cstring), scene, AQUA_TRACK_NAME)
+	on || return Cint(1)
+	(isfinite(x0) && isfinite(x1) && isfinite(y) && x1 != x0) || return Cint(0)
+	st = get(_AQUA, scene, nothing)
+	xe = st === nothing ? x1 : _aqua_track_end(st, x0, x1, y)
+	(isfinite(xe) && xe != x0) || return Cint(0)
+	n = 64                              # enough vertices to follow a curved (geographic) window
+	xs = collect(range(x0, xe; length = n))
+	D = GMT.mat2ds([xs fill(y, n) fill(AQUA_TRACK_Z, n)])
+	ok = _add_dataset_to_scene(scene, D, AQUA_TRACK_NAME; color = :yellow, forceMode = :lines,
+	                           noConvertToPoints = true)
+	return Cint(ok ? 1 : 0)
 end
 
 const AQUA_WATER = "WATER stage"        # the two surfaces' Scene Objects names — what the Illumination
