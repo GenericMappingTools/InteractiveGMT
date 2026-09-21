@@ -611,6 +611,10 @@ public:
 		// A BOX THE USER HAS NOT TOUCHED SENDS NOTHING (0 = "the model this side already carries"), so
 		// this control cannot change a picture nobody asked it to change. Only an edit made HERE, by
 		// hand, overrides — the flag is set in the valueChanged handler, which the seeding blocks.
+		// WHAT THE BOX SAYS IS WHAT GETS APPLIED. The value is always sent (see the button handlers),
+		// so this seeding is a statement of the method that will be used, not a remembered preference
+		// sitting next to a different one. `syncIllumModelSpins` then raises it to the side's own
+		// STORED model whenever there is one, and that value is in turn what the button sends.
 		if (dbgIllumWater_) {
 			dbgIllumWater_->setValue(igmtSettings().value("aquamoto/illumWater", 2).toInt());
 			QObject::connect(dbgIllumWater_, QOverload<int>::of(&QSpinBox::valueChanged), w,
@@ -639,8 +643,14 @@ public:
 		if (auto *combBtn = w->findChild<QPushButton *>("combinedImageButton")) {
 			QObject::connect(combBtn, &QPushButton::clicked, w, [this]() {
 				QString out; bool closedNow = false;
-				const int mw = (dbgIllumWater_ && dbgIllumWaterSet_) ? dbgIllumWater_->value() : 0;
-				const int ml = (dbgIllumLand_  && dbgIllumLandSet_)  ? dbgIllumLand_->value()  : 0;
+				// WHAT THE BOX SAYS IS WHAT IS APPLIED. The value is sent unconditionally. It used to be
+				// sent only if the user had TYPED in the box this session (`dbgIllum*Set_`), so a box
+				// seeded to 1 sent 0 instead and the host resolved that to the stored model, or to 2 —
+				// the box stated a method and a different one was used. A control that does that is a
+				// control that lies; `syncIllumModelSpins` keeps the box showing the side's own stored
+				// model, so sending it always is also what reproduces the layer.
+				const int mw = dbgIllumWater_ ? dbgIllumWater_->value() : 0;
+				const int ml = dbgIllumLand_  ? dbgIllumLand_->value()  : 0;
 				// THE CLOCK STARTS AT THE PRESS, and it is stopped on the far side — in Julia, right
 				// before the picture is handed to a new iGMT window. Both ends read the SAME clock (the
 				// Unix epoch: QDateTime::currentMSecsSinceEpoch here, `time()` there), so the number
@@ -667,8 +677,14 @@ public:
 			if (!b) return;
 			QObject::connect(b, &QPushButton::clicked, w, [this, side]() {
 				QString out; bool closedNow = false;
-				const int mw = (dbgIllumWater_ && dbgIllumWaterSet_) ? dbgIllumWater_->value() : 0;
-				const int ml = (dbgIllumLand_  && dbgIllumLandSet_)  ? dbgIllumLand_->value()  : 0;
+				// WHAT THE BOX SAYS IS WHAT IS APPLIED. The value is sent unconditionally. It used to be
+				// sent only if the user had TYPED in the box this session (`dbgIllum*Set_`), so a box
+				// seeded to 1 sent 0 instead and the host resolved that to the stored model, or to 2 —
+				// the box stated a method and a different one was used. A control that does that is a
+				// control that lies; `syncIllumModelSpins` keeps the box showing the side's own stored
+				// model, so sending it always is also what reproduces the layer.
+				const int mw = dbgIllumWater_ ? dbgIllumWater_->value() : 0;
+				const int ml = dbgIllumLand_  ? dbgIllumLand_->value()  : 0;
 				const double t0 = QDateTime::currentMSecsSinceEpoch() / 1000.0;
 				runBlocking(QString("InteractiveGMT._aqua_side_popup(%1,%2,%3,%4,%5)")
 				                .arg(aquaScenePtr(scene_)).arg(side).arg(mw).arg(ml)
@@ -880,11 +896,9 @@ public:
 			//
 			// Not for a box the user HAS typed in this session: that value IS what gets sent, so it is
 			// already the truth and must not be overwritten.
-			if (v == 0) {
-				if ((sb == dbgIllumWater_ && dbgIllumWaterSet_) || (sb == dbgIllumLand_ && dbgIllumLandSet_))
-					return;
-				v = 2;
-			}
+			// NO MODEL STORED (0): leave the box on what it shows — that value IS what the button
+			// sends now, so it is already the truth. Nothing to correct.
+			if (v == 0) return;
 			if (v < sb->minimum() || v > sb->maximum()) return;
 			QSignalBlocker block(sb);        // seeding is not the user choosing: the .ini keeps his
 			sb->setValue(v);

@@ -1834,6 +1834,15 @@ GMTVTK_API void gmtvtk_oc_status(void *dlg, const char *msg) {
 	reinterpret_cast<OceanColorDialog *>(dlg)->setStatus(QString::fromUtf8(msg ? msg : ""));
 }
 
+// THE APP'S ONE BUSY NOTICE, reachable from the host (SACRED_LAW.md, no-dead-time law: any
+// operation that keeps the UI thread for more than an eyeblink SHOWS THE USER THAT IT IS WORKING).
+// `showBusyDialog`/`closeBusyDialog` (30_app.cpp) are what File > Open, the drop path and every
+// compute tool raise; these two are the same pair and nothing else, so a Julia-side tool cannot end
+// up with a second, differently-behaved notice. The title says what the user is waiting FOR, never
+// a generic "Please wait".
+GMTVTK_API void gmtvtk_busy_show(const char *title) { showBusyDialog(title ? title : ""); }
+GMTVTK_API void gmtvtk_busy_close() { closeBusyDialog(); }
+
 // Ask for the NASA Earthdata username/password (a modal dialog on `handle`'s window) and copy them
 // into the caller's buffers. Returns 1 when both were given, 0 on Cancel or an empty field — which
 // the host must treat as "do not download", never as a reason to try anonymously. The busy overlay

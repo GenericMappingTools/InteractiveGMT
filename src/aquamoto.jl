@@ -1017,6 +1017,28 @@ const AQUA_COMBINED_NAME = "Combined image"
 # session, kept and reused — see `_aqua_capture_combined`.
 const _AQUA_STAGE_WIN = Ref{Ptr{Cvoid}}(C_NULL)
 
+# The two half grids of the slice the staging window last built, and which slice they are: the split
+# depends on the layer and on nothing else, so a second press on the same slice reuses them.
+const _AQUA_STAGE_HALVES = Ref{Any}(nothing)
+
+# …and which slice's SURFACES are currently standing in that window, so they are rebuilt only when
+# the slice changes. Only the light differs between presses.
+const _AQUA_STAGE_LOADED = Ref{Any}(nothing)
+
+# The LAND grid, built once per file: the bathymetry never changes with the timestep.
+const _AQUA_STAGE_LAND = Ref{Any}(nothing)
+
+# …and its rendered PICTURE, cached against the only three things it can depend on — the file, the
+# land method and the land sun. A press that only moved the wave reuses it and skips a whole
+# render + capture.
+const _AQUA_LAND_SHOT = Ref{Any}(nothing)
+
+# THE SEA BED's own staging window and its own picture — the REAL bathymetry, unclamped, which the
+# water is blended over when "Water transparency" is not zero. A window of its own so that its z
+# span (down to the abyssal plain) cannot reach the water's pass and flatten its relief.
+const _AQUA_BATHY_WIN  = Ref{Ptr{Cvoid}}(C_NULL)
+const _AQUA_BATHY_SHOT = Ref{Any}(nothing)
+
 # A mask grown by ONE node in every direction (8-connected), in GRID SPACE.
 #
 # Needed by `_aqua_capture_combined` below to close the shoreline. It is a NEIGHBOUR test, which is
@@ -1059,23 +1081,127 @@ end
 # The water ends up δ above the land ring, so the waterline is drawn by the water.
 #
 # Returns the captured GMTimage, or `nothing` if the window could not be built.
+# THE SEA BED, RENDERED ONCE, FOR "WATER TRANSPARENCY" TO SHOW THROUGH.
+#
+# The land surface the combine uses is FLATTENED under the shore (see `_aqua_land_grid`), because its
+# z span feeds the window's relief normalisation and a surface running to -4000 m flattens the
+# water's own relief to nothing. That flat plateau is exactly the wrong thing to look at through
+# transparent water, so the sea bed gets a picture of its OWN: the real bathymetry, unclamped,
+# rendered in a window of its OWN so its span cannot reach the water's pass.
+#
+# Built on the FIRST request that needs it and kept for the session — it is the same bathymetry at
+# every timestep and under every water setting, so it depends only on the file, the land palette and
+# this side's light.
+function _aqua_bathy_shot(st::_AquaState, model::Int, az::Float64, el::Float64,
+                          w::Float64, e::Float64, s::Float64, n::Float64)
+	hit = _AQUA_BATHY_SHOT[]
+	(hit !== nothing && hit[1] === st && hit[2] == model && hit[3] == az && hit[4] == el) && return hit[5]
+	# IT IS ABOUT TO BUILD, SO IT SAYS SO (SACRED_LAW.md, no-dead-time law). The FIRST press with the
+	# transparency slider off zero pays for a second staging window and a render of the whole
+	# bathymetry — measured 1.65 s against 1.18 s for every press after it — and a dialog that sits
+	# there doing nothing for a second and a half cannot be told from one that has hung. Raised
+	# through the app's ONE busy notice, never a second one of this tool's own, and taken down in a
+	# `finally` so no path can leave it up.
+	ccall(_fn(:gmtvtk_busy_show), Cvoid, (Cstring,), "Rendering the sea bed…")
+	try
+	h = _AQUA_BATHY_WIN[]
+	if h == C_NULL
+		h = ccall(_fn(:gmtvtk_open_empty_offscreen), Ptr{Cvoid}, (Cstring,), "Sea bed staging")
+		h == C_NULL && return nothing
+		_register_fig!(QtEmpty(h))
+		_AQUA_BATHY_WIN[] = h
+		_pump_once()
+		_add_grid_to_scene(h, st.bat, AQUA_LAND; cmap = st.landcmap, promote = true, record = false)
+		ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), h, AQUA_LAND)
+		_remember_object!(h, :grid, AQUA_LAND, st.bat)
+		ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), h, "flat2d=1;")
+		ccall(_fn(:gmtvtk_set_capture_scale_h), Cvoid, (Ptr{Cvoid}, Cint), h, Cint(1))
+		for _ in 1:20; _pump_once(); end
+	end
+	_on_hillshade(h, "model=$model\ngrid=$AQUA_LAND\nazim=$az\nelev=$el\n")
+	img = _display_image(h, w, e, s, n)   # no pumps: see `shoot` in `_aqua_capture_combined`
+	img === nothing || (_AQUA_BATHY_SHOT[] = (st, model, az, el, img))
+	return img
+	finally
+		ccall(_fn(:gmtvtk_busy_close), Cvoid, ())
+	end
+end
+
+# THE LAND SURFACE, BUILT ONCE PER FILE. The bathymetry as it is — no NaN, no ring, no dependence on
+# which timestep is showing. Its palette spans the LAND (nodes at or above sea level), so it is the
+# same set of colours at every slice; the sea bed it also covers is never read, because the merge
+# takes a land pixel only where the dry/wet mask says dry.
+function _aqua_land_grid(st::_AquaState)
+	hit = _AQUA_STAGE_LAND[]
+	(hit !== nothing && hit[1] === st) && return hit[2]
+	Gl = deepcopy(st.bat)
+	land = filter(v -> isfinite(v) && v >= 0, Gl.z)
+	fin  = filter(isfinite, Gl.z)
+	isempty(fin) && return Gl
+	lo, hi = isempty(land) ? (Float64(minimum(fin)), Float64(maximum(fin))) :
+	                         (Float64(minimum(land)), Float64(maximum(land)))
+	# …AND DOWN TO THE LOWEST STAGE THE WAVE EVER REACHES, over the WHOLE cube.
+	#
+	# The clamp level is what the wet part of this surface is flattened to, so it has to stay UNDER
+	# the water at every timestep: set at the shore's own level it sits ABOVE a deep trough, and the
+	# sea bed would surface through the wave — the land showing where it is supposed to be covered.
+	# The cube's own per-layer wet minima are already scanned at open time, so the global floor costs
+	# a `minimum` over a vector, and it is the same number at every slice.
+	sc = get(st.scans, st.varname, nothing)
+	if sc !== nothing && !isempty(sc.wetlo)
+		wet = [sc.wetlo[k] for k in eachindex(sc.wetlo) if sc.wetany[k] && isfinite(sc.wetlo[k])]
+		isempty(wet) || (lo = min(lo, minimum(wet)))
+	end
+	# FLATTENED AT SEA LEVEL BELOW THE SHORE, not carried down to the sea bed.
+	#
+	# The surface has to cover every node so there are no dropped cells at the coast, but its Z SPAN
+	# is not free: it feeds the window's relief normalisation, and a land grid running to -4000 m
+	# made the water's own relief negligible beside it — the PBR pass then lit the sea almost
+	# uniformly and the picture came back as flat palette colour, a pure white sea with a blown-out
+	# wave. Clamping the wet part to the shore's own level keeps the span exactly what the old
+	# dry-only half had, and those nodes are under the water and never read by the merge anyway.
+	lof = Float32(lo)
+	Gl.z .= max.(Gl.z, lof)
+	Gl.range[5], Gl.range[6] = lo, hi
+	_AQUA_STAGE_LAND[] = (st, Gl)
+	return Gl
+end
+
 function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
                                 azw::Float64, elw::Float64, azl::Float64, ell::Float64)
+	# THE SPLIT IS CACHED PER SLICE. It depends on the layer and nothing else — not on the methods,
+	# not on the sun — so pressing the button again on the same slice must not pay for it twice
+	# (0.195 s of a ~1 s press, measured). Keyed by the state object and the slice index, so a new
+	# slice, a new file or another window all miss it and rebuild.
+	local Gw, Gl, drym, ny_, nx_
+	hit = _AQUA_STAGE_HALVES[]
+	if hit !== nothing && hit[1] === st && hit[2] == st.cur
+		Gw, Gl, drym = hit[3], hit[4], hit[5]
+		ny_, nx_ = size(drym)
+		@goto staged
+	end
 	bat = st.bat
 	dry = _aqua_indland(bat.z, G.z)                  # element-wise, both buffers as they lie
 	any(dry) || return nothing                       # no dry/wet split -> nothing to combine
 	Gw = deepcopy(G);  Gw.z[dry] .= NaN32            # WATER: the wave, nothing else
-	Gl = deepcopy(bat)
+
+	# THE LAND HALF IS THE WHOLE BATHYMETRY, AND IT NEVER CHANGES.
+	#
+	# It used to be the slice's DRY nodes plus a one-node ring, which made it depend on the timestep
+	# and cost a rebuild, a re-add and a render on every press. But the sea floor does not move: what
+	# moves is the SHORELINE, and that is the water's business — the merge below reads a land pixel
+	# only where the mask says dry, so a land surface that also covers the sea bed costs nothing and
+	# is the same surface at every timestep. It also retires the land's coastal ring: a surface with
+	# no NaN has no dropped cells to fill.
+	#
+	# Its palette spans the land, i.e. the nodes at or above sea level — a fixed set, so the colours
+	# do not shift from slice to slice either. (The previous per-slice dry range came out
+	# -0.084 .. 216.8 on this file, which is that same set.)
+	Gl = _aqua_land_grid(st)
 
 	drym = _aqua_indland(_zmat(bat), _zmat(G))       # the SAME test, in grid space
 	ny_, nx_ = size(drym)
-	keep = _aqua_dilate1(drym)
-	Zl, Zw, Zm = _zmat(Gl), _zmat(Gw), _zmat(G)
-	Zl[.!keep] .= NaN32
-	fin = filter(isfinite, bat.z)
-	δ   = Float32(max(1f-3 * (maximum(fin) - minimum(fin)), eps(Float32)))
-	ring = keep .& .!drym
-	any(ring) && (Zl[ring] .= Float32.(Zm[ring]) .- δ)
+	Zw, Zm = _zmat(Gw), _zmat(G)
 	wring = _aqua_dilate1(.!drym) .& drym
 	@inbounds for j in 1:nx_, i in 1:ny_
 		wring[i, j] || continue
@@ -1086,11 +1212,13 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 		end
 		cnt > 0 && (Zw[i, j] = acc / cnt)
 	end
-	# Each half's palette spans ITS OWN data, exactly as a plain grid's does.
-	for (H, m) in ((Gw, .!dry), (Gl, dry))
-		v = view(H.z, m)
-		H.range[5], H.range[6] = Float64(minimum(v)), Float64(maximum(v))
+	# The water's palette spans ITS OWN data, exactly as a plain grid's does. (The land's is fixed —
+	# see `_aqua_land_grid`.)
+	let v = view(Gw.z, .!dry)
+		Gw.range[5], Gw.range[6] = Float64(minimum(v)), Float64(maximum(v))
 	end
+	_AQUA_STAGE_HALVES[] = (st, st.cur, Gw, Gl, drym)
+	@label staged
 
 	# THE STAGING WINDOW IS OFF-SCREEN AND IT IS KEPT.
 	#
@@ -1110,36 +1238,143 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 		_register_fig!(QtEmpty(h))
 		_AQUA_STAGE_WIN[] = h
 		_pump_once()
-	else
-		for nm in (AQUA_WATER, AQUA_LAND)
-			ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), h, nm)
-			_forget_object!(h, :grid, nm)
-		end
 	end
 	try
-		# The water's palette over the SYMMETRIC scale `_aqua_water_range` gives, so a diverging
-		# palette's centre sits on the calm sea instead of wherever the slice's extremes leave it.
-		_add_grid_to_scene(h, Gw, AQUA_WATER; cmap = st.watercmap, promote = true,
-		                   zrange = _aqua_water_range(Gw), record = false)
-		ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), h, AQUA_WATER)
-		_remember_object!(h, :grid, AQUA_WATER, Gw)
-		_add_grid_to_scene(h, Gl, AQUA_LAND; cmap = st.landcmap, promote = false, record = false)
-		# …AND SHOWN: a grid added to a window that already has one is registered hidden, and this one
-		# is not an alternative view of the layer, it is HALF OF IT.
-		ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), h, AQUA_LAND, Cint(1))
-		for _ in 1:40; _pump_once(); end
-		_on_hillshade(h, "model=$mw\ngrid=$AQUA_WATER\nazim=$azw\nelev=$elw\n")
-		_on_hillshade(h, "model=$ml\ngrid=$AQUA_LAND\nazim=$azl\nelev=$ell\n")
-		for _ in 1:40; _pump_once(); end
-		# STRAIGHT DOWN, through the ONE 2D/3D door, and captured at SCALE 1: `SetScale(n>1)` builds
-		# the frame from n x n TILES with the camera window shifted per tile, and every view-dependent
-		# term — which is all of PBR with image-based lighting — then differs between them, so the tile
-		# seams show as a cross through the picture. More pixels come from a bigger window.
-		ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), h, "flat2d=1;")
-		ccall(_fn(:gmtvtk_set_capture_scale_h), Cvoid, (Ptr{Cvoid}, Cint), h, Cint(1))
-		for _ in 1:40; _pump_once(); end
-		return _display_image(h, Float64(Gw.range[1]), Float64(Gw.range[2]),
-		                         Float64(Gw.range[3]), Float64(Gw.range[4]))
+		# THE SURFACES ARE REBUILT ONLY WHEN THE SLICE CHANGES. They are the same two grids at every
+		# press on the same layer; only the LIGHT differs, and that is pushed onto surfaces already
+		# standing. Removing and re-adding them was costing 0.22 s a press for an identical result.
+		loaded = _AQUA_STAGE_LOADED[]
+		if loaded === nothing || loaded[1] !== st || loaded[2] != st.cur
+			# ONLY THE WATER SURFACE IS REPLACED. The land's is the same grid at every timestep (see
+			# `_aqua_land_grid`), so it is added once per file and then left standing.
+			if loaded !== nothing
+				ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), h, AQUA_WATER)
+				_forget_object!(h, :grid, AQUA_WATER)
+			end
+			# The water's palette over the SYMMETRIC scale `_aqua_water_range` gives, so a diverging
+			# palette's centre sits on the calm sea instead of wherever the slice's extremes leave it.
+			_add_grid_to_scene(h, Gw, AQUA_WATER; cmap = st.watercmap, promote = true,
+			                   zrange = _aqua_water_range(Gw), record = false)
+			ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), h, AQUA_WATER)
+			_remember_object!(h, :grid, AQUA_WATER, Gw)
+			if loaded === nothing || loaded[1] !== st
+				_add_grid_to_scene(h, Gl, AQUA_LAND; cmap = st.landcmap, promote = false, record = false)
+				# …AND SHOWN: a grid added to a window that already has one is registered hidden, and
+				# this one is not an alternative view of the layer, it is HALF OF IT.
+				ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), h, AQUA_LAND, Cint(1))
+			end
+			# STRAIGHT DOWN, through the ONE 2D/3D door, and captured at SCALE 1: `SetScale(n>1)` builds
+			# the frame from n x n TILES with the camera window shifted per tile, and every view-dependent
+			# term — which is all of PBR with image-based lighting — then differs between them, so the
+			# tile seams show as a cross through the picture. More pixels come from a bigger window.
+			ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), h, "flat2d=1;")
+			ccall(_fn(:gmtvtk_set_capture_scale_h), Cvoid, (Ptr{Cvoid}, Cint), h, Cint(1))
+			_AQUA_STAGE_LOADED[] = (st, st.cur)
+			for _ in 1:20; _pump_once(); end
+		end
+		w, e, s, n = Float64(Gw.range[1]), Float64(Gw.range[2]), Float64(Gw.range[3]), Float64(Gw.range[4])
+		# ONE PASS: only the side being lit is on screen.
+		#
+		# A method is applied to the window's ACTIVE layer — `sceneSetReliefLook` writes
+		# `activeLook(s)` and `_on_hillshade` drops the grid name entirely for the look models
+		# (1/5/6/7). With both surfaces up, which of the two received the method was decided by
+		# `resolveActiveGrid`, not by the name sent: pressing with water=2, land=1 left the water on
+		# the PREVIOUS press's PBR look, so it rendered as method 1 whatever the box said. Hiding the
+		# other side makes the active layer the one being lit, by construction. Its pixels are the
+		# only ones this pass contributes, so what the hidden side would have shown does not matter.
+		vis(nm, on) = ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint),
+		                    h, nm, Cint(on))
+		shoot(model, gname, az, el) = begin
+			vis(gname, 1)
+			vis(gname == AQUA_WATER ? AQUA_LAND : AQUA_WATER, 0)
+			_on_hillshade(h, "model=$model\ngrid=$gname\nazim=$az\nelev=$el\n")
+			# NO PUMPS AT ALL BEFORE THE CAPTURE. Every call above applies itself synchronously on the
+			# C++ side, and the capture then forces its OWN deterministic re-render
+			# (`ShouldRerenderOn`), so the event loop has nothing to contribute. And it is not free:
+			# after a light push each pump does the re-shading work over again — measured 12 ms each,
+			# so the six that used to sit here cost 71 ms PER PASS, 142 ms of a 230 ms build. Checked
+			# against six pumps on the same request: the captured image is identical, sample for
+			# sample. If a future change ever needs one here, it needs a reason and a measurement.
+			_display_image(h, w, e, s, n)
+		end
+
+		# ANY COMBINATION OF METHODS, BY RENDERING ONCE PER METHOD.
+		#
+		# A method is not per grid. Models 1/5/6/7 are LOOKS and `_on_hillshade` (hillshade.jl) sends
+		# them straight to the look setter, which DROPS the grid name and writes the window's active
+		# layer; models 2/3/4 are reflectances and are pushed into the window's one `ExternShade`
+		# (or, on a real Aquamoto layer, into one of its two SIDE slots — slots this staging window
+		# does not have). Either way, two grids in one window cannot each hold their own method: the
+		# second request overwrote the first, so the LAND always won and the water's box did nothing.
+		# Measured: changing the water model moved exactly 0 pixels, changing the land model moved
+		# 2 470 126.
+		#
+		# So the window is rendered ONCE PER METHOD and each side's pixels are taken from the pass
+		# that was lit its way. Same surfaces, same camera, same size — the two captures are aligned
+		# by construction, so this is a SELECTION, not a blend: no pixel is ever mixed or resampled.
+		# Equal methods need one pass, which is the common case and the fast one.
+		# ALWAYS TWO PASSES, equal methods included: each pass is defined by its side being the only
+		# thing on screen, so there is no one-pass form of it. The cost is one extra render + capture
+		# (~0.1 s), and it buys a method that is applied to the layer it names, every time.
+		imgW = shoot(mw, AQUA_WATER, azw, elw)
+		# THE LAND PASS IS SKIPPED WHILE ITS ANSWER CANNOT HAVE CHANGED. The land surface is the same
+		# at every timestep, so its picture depends only on its METHOD and its SUN — not on the slice.
+		# Cached against exactly those three, it is rendered once and reused, which takes a whole
+		# render + capture out of every press that only moved the wave.
+		lhit = _AQUA_LAND_SHOT[]
+		imgL = (lhit !== nothing && lhit[1] === st && lhit[2] == ml && lhit[3] == azl && lhit[4] == ell) ?
+		       lhit[5] : nothing
+		if imgL === nothing
+			imgL = shoot(ml, AQUA_LAND, azl, ell)
+			imgL === nothing || (_AQUA_LAND_SHOT[] = (st, ml, azl, ell, imgL))
+		end
+		(imgW === nothing || imgL === nothing) && return imgW
+
+		# THE PICK, BY THE SAME DRY/WET MASK THE HALVES WERE CUT BY — never a test made again here.
+		# The picture is "TRBa": (col, row, band), row 1 = NORTH; `drym` is (iy, ix) with row 1 = SOUTH.
+		A = imgW.image;  B = imgL.image
+		nxp, nyp = size(A, 1), size(A, 2)
+		# The pixel -> node maps are COLUMN-wise and ROW-wise separable, so they are built once as two
+		# small vectors instead of a `round`+`clamp` per pixel (2.1 M of them, ~0.1 s a press).
+		ixs = [clamp(round(Int, (c - 1) / max(nxp - 1, 1) * (nx_ - 1)) + 1, 1, nx_) for c in 1:nxp]
+		iys = [clamp(ny_ - round(Int, (r - 1) / max(nyp - 1, 1) * (ny_ - 1)), 1, ny_)  for r in 1:nyp]
+		# WATER TRANSPARENCY, at last honoured. `st.transp` (0 = opaque, 1 = clear) is the dialog's
+		# slider, and it was read and then ignored: the composite had nothing to show underneath. Here
+		# the sea bed exists as its own picture (`_aqua_bathy_shot`), so a wet pixel is the water over
+		# it: out = (1-t)*water + t*seabed. t = 0 leaves the water untouched and costs nothing.
+		t = clamp(Float64(st.transp), 0.0, 1.0)
+		Sb = nothing
+		if t > 0
+			imgS = _aqua_bathy_shot(st, ml, azl, ell, w, e, s, n)
+			imgS === nothing || (Sb = imgS.image)
+		end
+		# TWO LOOPS, NOT ONE WITH A BRANCH. Opaque water is the normal case and it is a pure SELECTION
+		# — the wet pixels are already right and must not be touched at all. Carrying the blend's test
+		# into that loop cost ~0.05 s a press for a branch that never fired.
+		if Sb === nothing
+			@inbounds for r in 1:nyp
+				iy = iys[r]
+				for c in 1:nxp
+					drym[iy, ixs[c]] || continue         # wet: the water pass already holds it
+					A[c, r, 1] = B[c, r, 1];  A[c, r, 2] = B[c, r, 2];  A[c, r, 3] = B[c, r, 3]
+				end
+			end
+		else
+			tf, tc = Float32(t), Float32(1 - t)
+			@inbounds for r in 1:nyp
+				iy = iys[r]
+				for c in 1:nxp
+					if drym[iy, ixs[c]]
+						A[c, r, 1] = B[c, r, 1];  A[c, r, 2] = B[c, r, 2];  A[c, r, 3] = B[c, r, 3]
+					else                                 # wet AND see-through: water over the sea bed
+						for bb in 1:3
+							A[c, r, bb] = round(UInt8, clamp(tc * A[c, r, bb] + tf * Sb[c, r, bb], 0f0, 255f0))
+						end
+					end
+				end
+			end
+		end
+		return imgW
 	finally
 		_pump_once()      # the staging window is KEPT (off-screen) and reused — see above
 	end
@@ -1175,10 +1410,16 @@ function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_lan
 	mw, ml = _aqua_resolve_models(scene, st, model_water, model_land)
 	pw, pl = st.illum[1], st.illum[2]
 	numv(p, key, dflt) = (isempty(p) && return dflt; v = _get(p, key); isempty(v) ? dflt : parse(Float64, v))
+	# WHERE THE TIME GOES, SPLIT. `t0` is stamped in C++ at the CLICK, so the single number this used
+	# to print covered the `runBlocking` bridge crossing (Qt -> the Julia console -> back) as well as
+	# the work. They are very different things to look at: the build is what this code controls, the
+	# bridge is what the door costs. Both are reported.
+	tin = time()
 	img = _aqua_capture_combined(st, G, mw, ml,
 	                             numv(pw, "azim", 45.0), numv(pw, "elev", 30.0),
 	                             numv(pl, "azim", 45.0), numv(pl, "elev", 30.0))
 	(img === nothing) && return Cint(0)
+	tbuilt = time()
 	# EACH PRESS UNDOES THE LAST. The previous popup is closed before a new one opens, so this button
 	# can never leave a pile of windows behind — every one of them is a live scene the event loop
 	# carries for the rest of the session, which is exactly how a "look at this" button ends up
@@ -1199,7 +1440,6 @@ function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_lan
 	ws = _aqua_water_span(G.z, .!dry)
 	print("layer $(st.cur + 1): water model $(mw), land model $(ml), dry $(nd) / wet $(nw), ",
 	      "water span ", round(ws[1]; digits = 3), " .. ", round(ws[2]; digits = 3))
-	(t0 > 0) && print(" — built in ", round(time() - t0; digits = 3), " s")
 	# INTO THIS WINDOW, AS ITS OWN HANDLE — no second iGMT window.
 	#
 	# A new window costs ~0.34 s of the press (measured) and leaves a whole live scene behind for the
@@ -1222,6 +1462,16 @@ function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_lan
 	_add_image_to_scene(scene, img, nm; promote = false, record = false)
 	ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, nm, Cint(1))
 	_pump_once()
+	# THE CLOCK, SPLIT, AND STOPPED AT THE END. `t0` is stamped in C++ at the CLICK, so a single
+	# number covered the `runBlocking` bridge crossing (Qt -> the Julia console -> back) as well as
+	# the work, and reading it as "the build" was wrong by however long the door takes. `build` is
+	# the render + capture + merge, `show` is putting the picture into the window as a handle, and
+	# `bridge` is everything before this function was entered. Printed LAST, so `total` covers the
+	# whole press instead of stopping before the image was on screen.
+	(t0 > 0) && print(" — build ", round(tbuilt - tin; digits = 3),
+	                  " s, show ",   round(time() - tbuilt; digits = 3),
+	                  " s, bridge ", round(tin - t0; digits = 3),
+	                  " s, TOTAL ",  round(time() - t0; digits = 3), " s")
 	return Cint(1)
 end
 
