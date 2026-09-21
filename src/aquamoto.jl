@@ -847,6 +847,24 @@ function _aqua_illum_models(scene::Ptr{Cvoid})::Cint
 	return Cint(1)
 end
 
+"""
+    _aqua_set_illum_model(scene, side, model) -> Cint
+
+The METHOD of one side, set from the dialog's model spin box. The side keeps the light it already
+carries (azimuth, elevation, material); only the model number changes, and it is applied through
+`_aqua_illuminate!` — the one setter the Illumination dialog itself goes through, so a box and the
+dialog cannot mean two different things.
+"""
+function _aqua_set_illum_model(scene::Ptr{Cvoid}, side::Int, model::Int)::Cint
+	st = get(_AQUA, scene, nothing)
+	(st === nothing) && return Cint(0)
+	(0 <= side <= 1) || return Cint(0)
+	d = copy(st.illum[side+1])
+	d["model"] = string(model)
+	_aqua_illuminate!(scene, model, d, side)
+	return Cint(1)
+end
+
 function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String}, side::Int = -1)
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && error("Aquamoto: no file open in this window")
@@ -1009,9 +1027,10 @@ const _AQUA_LAST_MODELS = Dict{Ptr{Cvoid},Tuple{Int,Int}}()
 # the Aquamoto window as a handle of its own.
 const _AQUA_POPUP_WIN = Ref{Ptr{Cvoid}}(C_NULL)
 
-# The Scene Objects row the combined image lands in. ONE name, so a second press replaces the row
-# instead of stacking a second handle under it.
-const AQUA_COMBINED_NAME = "Combined image"
+# The Scene Objects row the rendered image lands in. ONE name for both doors — the Debug tab's
+# "Combined image" button and the netCDF tab's "Rendered image" box — so a second build replaces the
+# row instead of stacking a second handle under it.
+const AQUA_COMBINED_NAME = "Rendered image"
 
 # The OFF-SCREEN staging window the method-1 render is drawn in and photographed from. One per
 # session, kept and reused — see `_aqua_capture_combined`.

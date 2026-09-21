@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>420</width>
-    <height>581</height>
+    <height>543</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -226,69 +226,203 @@
          </spacer>
         </item>
         <item>
-         <layout class="QHBoxLayout" name="shadeTogglesLayout">
-          <property name="spacing">
-           <number>2</number>
+         <widget class="QGroupBox" name="renderedImageGroupBox">
+          <property name="title">
+           <string>Rendered image (better looking but slower)</string>
           </property>
-          <item>
-           <widget class="QRadioButton" name="shadeWaterButton">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>Shade Water</string>
-            </property>
-            <property name="checked">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <spacer name="shadeTogglesGapSpacer">
-            <property name="orientation">
-             <enum>Qt::Orientation::Horizontal</enum>
-            </property>
-            <property name="sizeType">
-             <enum>QSizePolicy::Policy::Fixed</enum>
-            </property>
-            <property name="sizeHint" stdset="0">
-             <size>
-              <width>18</width>
-              <height>10</height>
-             </size>
-            </property>
-           </spacer>
-          </item>
-          <item>
-           <widget class="QRadioButton" name="shadeLandButton">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>Shade Land</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <spacer name="shadeTogglesTailSpacer">
-            <property name="orientation">
-             <enum>Qt::Orientation::Horizontal</enum>
-            </property>
-            <property name="sizeHint" stdset="0">
-             <size>
-              <width>0</width>
-              <height>10</height>
-             </size>
-            </property>
-           </spacer>
-          </item>
-         </layout>
+          <layout class="QVBoxLayout" name="renderedImageGroupLayout">
+           <property name="spacing">
+            <number>5</number>
+           </property>
+           <property name="leftMargin">
+            <number>4</number>
+           </property>
+           <property name="topMargin">
+            <number>0</number>
+           </property>
+           <property name="rightMargin">
+            <number>4</number>
+           </property>
+           <property name="bottomMargin">
+            <number>4</number>
+           </property>
+           <item>
+            <layout class="QHBoxLayout" name="renderedImageLayout">
+             <item>
+              <widget class="QCheckBox" name="renderedImageCheck">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="toolTip">
+                <string>Create/update the RENDERED IMAGE (the two halves put up as surfaces, lit per side and captured) as a handle of its own. While checked it is rebuilt at every slice change, which costs a render each time.</string>
+               </property>
+               <property name="text">
+                <string>Rendered image</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="renderedImageSpacer">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+             <item>
+              <widget class="QPushButton" name="renderedWaterSideButton">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="toolTip">
+                <string>Show the WATER half alone — the very picture the combine takes it from</string>
+               </property>
+               <property name="text">
+                <string>Water side</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QGridLayout" name="illumGridLayout">
+             <property name="horizontalSpacing">
+              <number>2</number>
+             </property>
+             <property name="verticalSpacing">
+              <number>5</number>
+             </property>
+             <item row="0" column="0">
+              <widget class="QLabel" name="waterIllumLabel">
+               <property name="text">
+                <string>Water illumination</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QToolButton" name="waterIllumButton">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="toolTip">
+                <string>Illumination of the WATER side: pick the method the wet surface is lit with</string>
+               </property>
+               <property name="text">
+                <string/>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="2">
+              <widget class="QSpinBox" name="waterIllumModelSpinBox">
+               <property name="minimumSize">
+                <size>
+                 <width>45</width>
+                 <height>0</height>
+                </size>
+               </property>
+               <property name="toolTip">
+                <string>Illumination model (1-7) the WATER half is lit with</string>
+               </property>
+               <property name="minimum">
+                <number>1</number>
+               </property>
+               <property name="maximum">
+                <number>7</number>
+               </property>
+               <property name="value">
+                <number>2</number>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="3">
+              <spacer name="shadeTogglesGapSpacer">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="landIllumLabel">
+               <property name="text">
+                <string>Land illumination</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QToolButton" name="landIllumButton">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="toolTip">
+                <string>Illumination of the LAND side: pick the method the dry surface is lit with</string>
+               </property>
+               <property name="text">
+                <string/>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="2">
+              <widget class="QSpinBox" name="landIllumModelSpinBox">
+               <property name="minimumSize">
+                <size>
+                 <width>45</width>
+                 <height>0</height>
+                </size>
+               </property>
+               <property name="toolTip">
+                <string>Illumination model (1-7) the LAND half is lit with</string>
+               </property>
+               <property name="minimum">
+                <number>1</number>
+               </property>
+               <property name="maximum">
+                <number>7</number>
+               </property>
+               <property name="value">
+                <number>2</number>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="3">
+              <spacer name="shadeTogglesTailSpacer">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+          </layout>
+         </widget>
         </item>
         <item>
          <spacer name="netcdfTabVSpacer">
@@ -759,7 +893,7 @@
        </attribute>
        <layout class="QVBoxLayout" name="cinemaTabLayout">
         <property name="spacing">
-         <number>8</number>
+         <number>5</number>
         </property>
         <item>
          <widget class="QGroupBox" name="cinemaPlaybackGroupBox">
@@ -767,6 +901,21 @@
            <string>Playback</string>
           </property>
           <layout class="QVBoxLayout" name="cinemaPlaybackGroupBoxLayout">
+           <property name="spacing">
+            <number>5</number>
+           </property>
+           <property name="leftMargin">
+            <number>4</number>
+           </property>
+           <property name="topMargin">
+            <number>0</number>
+           </property>
+           <property name="rightMargin">
+            <number>4</number>
+           </property>
+           <property name="bottomMargin">
+            <number>4</number>
+           </property>
            <item>
             <layout class="QHBoxLayout" name="cinemaTransportLayout">
              <item>
@@ -993,6 +1142,21 @@
            <string>View</string>
           </property>
           <layout class="QVBoxLayout" name="cinemaViewGroupBoxLayout">
+           <property name="spacing">
+            <number>5</number>
+           </property>
+           <property name="leftMargin">
+            <number>4</number>
+           </property>
+           <property name="topMargin">
+            <number>0</number>
+           </property>
+           <property name="rightMargin">
+            <number>4</number>
+           </property>
+           <property name="bottomMargin">
+            <number>4</number>
+           </property>
            <item>
             <layout class="QHBoxLayout" name="cinemaAzElLayout">
              <item>
@@ -1183,7 +1347,7 @@
               <widget class="QPushButton" name="cinemaResetViewButton">
                <property name="maximumSize">
                 <size>
-                 <width>90</width>
+                 <width>45</width>
                  <height>16777215</height>
                 </size>
                </property>
@@ -1203,6 +1367,21 @@
            <string>Profile figure</string>
           </property>
           <layout class="QVBoxLayout" name="cinemaProfileGroupBoxLayout">
+           <property name="spacing">
+            <number>5</number>
+           </property>
+           <property name="leftMargin">
+            <number>4</number>
+           </property>
+           <property name="topMargin">
+            <number>0</number>
+           </property>
+           <property name="rightMargin">
+            <number>4</number>
+           </property>
+           <property name="bottomMargin">
+            <number>4</number>
+           </property>
            <item>
             <layout class="QHBoxLayout" name="cinemaProfileShowLayout">
              <item>
