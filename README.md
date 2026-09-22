@@ -23,7 +23,6 @@ iGMTinstall()
 
 If you do not have Julia, do this:
 
-```julia
 1- Install Julia:
  - On Windows download https://julialang-s3.julialang.org/bin/winnt/x64/1.10/julia-1.10.12-win64.exe
    - IMPORTANT: Follow recomendations. It must be added to path. Install under `c:\programs\julia.10`
@@ -32,6 +31,7 @@ If you do not have Julia, do this:
 2- Open the Julia console (the three colored dots icon) and type `] add GMT`
 
 3- When it finishes (it takes time), hit backscpace and do
+```julia
   - using GMT
   - iGMTinstall()
 ```
