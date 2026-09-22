@@ -1493,7 +1493,10 @@ end
 
 # Add a dropped grid as a CPT-coloured surface in the window. On the empty launcher `promote`
 # reconfigures THAT window in place (gmtvtk_promote_surface_h); otherwise it is added as an extra.
-function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false, source="", record=true, zrange=nothing, geographic=nothing)
+#
+# `drape` (a GMTimage over the grid's box) is painted ON this grid's own surface, through the image
+# arguments `gmtvtk_add_surface_h` has always had. `nothing` = the call it always was.
+function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false, source="", record=true, zrange=nothing, geographic=nothing, drape::Union{Nothing,GMTimage}=nothing)
 	# A cube must never reach here (the cube-detection probe in _on_drop is supposed to intercept it
 	# first); fail loudly if it ever does, instead of silently rendering wrong/truncated data.
 	ndims(G.z) == 3 && error("_add_grid_to_scene got a 3-D cube grid ($(size(G.z))) -- cube detection missed it upstream")
@@ -1514,17 +1517,20 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 	# would label the axes "lon"/"lat". A known truth always beats a heuristic.
 	geog = geographic === nothing ? _isgeographic(G) : geographic::Bool
 	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
+	# The drape texture: row 0 = south, west->east (`_drape_buf`, THE packer). Passed as the array so
+	# ccall roots it for the duration of the call.
+	dbuf, dw, dh, db = drape === nothing ? (UInt8[], 0, 0, 0) : _drape_buf(drape)
 	ok = promote ?
 		ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
 		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
 		  scene, z, nx, ny, r[1], r[2], r[3], r[4], Cint(geog),
-		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name), zlay) :
+		  cz, crgb, Cint(ncolor), dbuf, Cint(dw), Cint(dh), Cint(db), Cint(0), String(name), zlay) :
 		ccall(_fn(fn), Cint,
 		  (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
 		   Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
 		  scene, z, nx, ny, r[1], r[2], r[3], r[4], Cint(geog),
-		  cz, crgb, Cint(ncolor), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name), zlay)
+		  cz, crgb, Cint(ncolor), dbuf, Cint(dw), Cint(dh), Cint(db), Cint(0), String(name), zlay)
 	ok == 0 && @warn "drop: window is closed; grid not added"
 	ok != 0 && _remember_object!(scene, :grid, name, G)   # Scene Objects "Save…" / File>Save can write it
 	# Save Session: known file path -> store a file ref (:file); no path -> serialize the grid (:generated).

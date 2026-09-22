@@ -159,3 +159,80 @@ function _aqua_sat_south_first_of(rgb::Array{UInt8,3}, bat::GMTgrid)::Array{UInt
 	end
 	return out
 end
+
+# THE 3-D DRAPE IS NOT BOUND TO THE NODES. The per-node albedo above feeds the 2-D composite, which is
+# one pixel per node by construction. A texture draped on the land SURFACE has no such limit, so it is
+# fetched finer (two zoom levels) and warped onto the grid's box at up to 4x the node count. Cached on
+# the box and the texture size; the tiles themselves live in GMT's cache.
+const _AQUA_SAT_TEX_MAX = 4096
+const _AQUA_SAT_HI_CACHE = Dict{Tuple{NTuple{4,Float64},Int,Int},GMTimage}()
+
+function _aqua_sat_hires(bat::GMTgrid)::GMTimage
+	nx, ny = _grid_dims(bat)
+	box = (Float64(bat.range[1]), Float64(bat.range[2]), Float64(bat.range[3]), Float64(bat.range[4]))
+	f = clamp(_AQUA_SAT_TEX_MAX ÷ max(nx, ny), 1, 4)
+	W, Hh = nx * f, ny * f
+	key = (box, W, Hh)
+	haskey(_AQUA_SAT_HI_CACHE, key) && return _AQUA_SAT_HI_CACHE[key]
+	z = min(_aqua_sat_zoom(bat) + 2, 19)
+	I = lock(_TILE_LOCK) do
+		GMT.mosaic([box[1], box[2]], [box[3], box[4]]; zoom = z, cache = "gmt")
+	end
+	# ONTO THE BOX THE SURFACE'S TEXTURE COORDINATES SPAN: u,v run 0..1 over x0..x1 / y0..y1 (the
+	# grid's range, makeGridFromArray), so the picture's outer edges are exactly that range.
+	opts = ["-t_srs", "EPSG:4326",
+	        "-te", string(box[1]), string(box[3]), string(box[2]), string(box[4]),
+	        "-ts", string(W), string(Hh), "-r", "bilinear"]
+	return _AQUA_SAT_HI_CACHE[key] = GMT.gdalwarp(_to_band_planar(I), opts)
+end
+
+# The node reflectance `R` ((ny, nx), row 1 = SOUTH) at every pixel of a W x Hh texture over the same
+# box: node k sits at u = (k-1)/(nx-1), pixel i's centre at u = (i-0.5)/W. Bilinear; a NaN node (the
+# other side) stays NaN around it, which grdimage leaves unshaded.
+function _aqua_upsample_nodes(R::AbstractMatrix, W::Int, Hh::Int)::Matrix{Float32}
+	ny, nx = size(R)
+	out = Matrix{Float32}(undef, Hh, W)
+	@inbounds for j in 1:Hh
+		fy = ((j - 0.5) / Hh) * (ny - 1) + 1
+		y0 = clamp(floor(Int, fy), 1, ny - 1); ty = Float32(fy - y0)
+		for i in 1:W
+			fx = ((i - 0.5) / W) * (nx - 1) + 1
+			x0 = clamp(floor(Int, fx), 1, nx - 1); tx = Float32(fx - x0)
+			a = (1 - tx) * R[y0, x0]     + tx * R[y0, x0 + 1]
+			b = (1 - tx) * R[y0 + 1, x0] + tx * R[y0 + 1, x0 + 1]
+			out[j, i] = (1 - ty) * a + ty * b
+		end
+	end
+	return out
+end
+
+"""
+    _aqua_land_drape(scene, st) -> Union{Nothing,GMTimage}
+
+The LAND half as a picture to drape on a land SURFACE: `nothing` unless "Sat img" is on. The
+satellite mosaic at texture resolution (`_aqua_sat_hires`), lit by THE land half's reflectance
+(`_hs_reflectance`, with the land's own model and sun — method 1 is lit as 2, as in the composite)
+through the same `grdimage -I` painter `_aqua_side_picture` uses. Laid south-first, labelled "BCBa",
+the convention `_drape_buf` reads a grid-derived image by.
+"""
+function _aqua_land_drape(scene::Ptr{Cvoid}, st::_AquaState)::Union{Nothing,GMTimage}
+	st.satimg || return nothing
+	H = get(_AQUA_HALF_GRID, AQUA_LAND, nothing)
+	H === nothing && return nothing
+	J = _aqua_sat_hires(st.bat)
+	_, _, W, Hh, _ = _pixaccess_img(J)
+	_, ml = get(_AQUA_LAST_MODELS, scene, (2, 2))
+	m = (ml in (2, 3, 4)) ? ml : 2
+	p = st.illum[2]
+	az = _get(p, "azim") == "" ? "45" : _get(p, "azim")
+	el = _get(p, "elev") == "" ? "30" : _get(p, "elev")
+	Rn = _hs_reflectance(H, m, Dict{String,String}("azim" => az, "elev" => el))
+	Rh = _aqua_upsample_nodes(Rn, W, Hh)
+	b = st.bat.range
+	Rg = GMT.mat2grid(Rh; reg = 1, x = collect(range(b[1], b[2], length = W + 1)),
+	                  y = collect(range(b[3], b[4], length = Hh + 1)))
+	rgb = _aqua_rgb_plane(GMT.grdimage(J, I = Rg, A = ""))          # row 1 = NORTH
+	I = GMT.mat2img(reverse(rgb, dims = 1))
+	I.layout = "BCBa"
+	return I
+end

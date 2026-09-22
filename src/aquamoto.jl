@@ -518,6 +518,7 @@ function _aquamoto_sat_img(scene::Ptr{Cvoid}, on::Bool)
 		return nothing
 	end
 	A = _aqua_land_albedo(st)                      # downloads + warps NOW, so a failure throws HERE
+	_aqua_sat_hires(st.bat)                        # …and the 3-D drape's finer texture, same click
 	nx, ny = _grid_dims(st.bat)
 	print("Land side: satellite imagery, $(nx)x$(ny) nodes at zoom $(_aqua_sat_zoom(st.bat))")
 	return nothing
@@ -1704,48 +1705,55 @@ function _aqua_side_popup(scene::Ptr{Cvoid}, side::Int, model_water::Int = 0, mo
 	print(ttl, ": model ", model, ", range ", round(H.range[5]; digits = 3), " .. ",
 	      round(H.range[6]; digits = 3))
 	(t0 > 0) && print(" — built in ", round(time() - t0; digits = 3), " s")
-	fig = view_grid(H; cmap = cmap, title = ttl)
+	# "Sat img": the land half wears the satellite picture, draped on its own surface.
+	landimg = _aqua_land_drape(scene, st)
+	Hw = get(_AQUA_HALF_GRID, AQUA_WATER, nothing)
+	Hl = get(_AQUA_HALF_GRID, AQUA_LAND, nothing)
+	(Hw === nothing) && return Cint(0)
+	# ONE SCENE FOR BOTH BUTTONS: the WATER is always the window's base and the LAND is always added
+	# beside it. The two buttons differ only in which half is lit, framed and carries the colour bar.
+	# Built the other way round (land as base, water added) the water — an added grid, stretched by its
+	# own 2 cm z range — floated over the land with a gap all along the coast.
+	fig = view_grid(Hw; cmap = st.watercmap, title = ttl)
+	ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), fig.h, AQUA_WATER)
 	_AQUA_POPUP_WIN[] = fig.h
-	az = _get(p, "azim") == "" ? "45" : _get(p, "azim")
-	el = _get(p, "elev") == "" ? "30" : _get(p, "elev")
-	if model == 1
-		# MODEL 1 IS THE RENDER. It is not a reflectance to push: it is the window's own PBR look with
-		# this side's sun — `gmtvtk_set_relief_look_h` with RL_PBR, the same call the Illumination
-		# dialog makes for a plain grid.
-		ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), fig.h,
-		      "sunaz=$(az);sunel=$(el);")
-		ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), fig.h, Cint(1), Cint(0))
-		_pump_once()
-	else
-		_hs_push_grid(fig.h, H, model, Dict{String,String}("azim" => az, "elev" => el), -1)
-		_hs_declare_look(fig.h, -1)
+	# THE LIGHT, on the window's ACTIVE layer — which is why the water is lit BEFORE the land is added
+	# and the land AFTER (a last-added raster is the active one). EACH HALF WITH ITS OWN model and sun,
+	# in BOTH popups: the scene is one and the same, only the side being looked at differs. (Leaving the
+	# water unlit on the Land side is what left it floating as a slab above the land's zero.)
+	light!(G, model, p) = begin
+		az = _get(p, "azim") == "" ? "45" : _get(p, "azim")
+		el = _get(p, "elev") == "" ? "30" : _get(p, "elev")
+		if model == 1
+			# MODEL 1 IS THE RENDER. It is not a reflectance to push: it is the window's own PBR look with
+			# this side's sun — `gmtvtk_set_relief_look_h` with RL_PBR, the same call the Illumination
+			# dialog makes for a plain grid.
+			ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), fig.h,
+			      "sunaz=$(az);sunel=$(el);")
+			ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), fig.h, Cint(1), Cint(0))
+		else
+			_hs_push_grid(fig.h, G, model, Dict{String,String}("azim" => az, "elev" => el), -1)
+			_hs_declare_look(fig.h, -1)
+		end
 		_pump_once()
 	end
-	# THE OTHER HALF STANDS BESIDE IT, so the side shown alone is not a picture with a hole in it: the
-	# nodes this half left NaN are the OTHER half's ground, and it is put there as the surface it is —
-	# its own grid, its own palette, its own relief. Added AFTER the light above, because a reflectance
-	# is stamped with the window's ACTIVE grid (gmtvtk_set_shade_intensity_h -> E.owner) and the active
-	# one must still be the half this popup is about when that push happens.
-	#
-	# Through `_add_grid_to_scene` + `gmtvtk_set_object_visible`, the SAME two steps
-	# `_aqua_push_two_surfaces` uses to stand the tsunami's land beside its water (SACRED_LAW.md: same
-	# operation, same function). No reframe: both halves are the same layer, on the same nodes, in the
-	# same box — this is the main window's two-surface picture, shown one side at a time.
-	other = side == 0 ? AQUA_LAND : AQUA_WATER
-	Ho    = get(_AQUA_HALF_GRID, other, nothing)
-	if Ho !== nothing
-		_add_grid_to_scene(fig.h, Ho, other;
-		                   cmap = (side == 0 ? st.landcmap : st.watercmap), promote = false,
-		                   source = "$(st.path)?$(side == 0 ? "bathymetry" : st.varname)")
+	light!(Hw, mw, st.illum[1])
+	# THE LAND STANDS BESIDE IT, so neither side is a picture with a hole in it: the nodes one half left
+	# NaN are the other half's. Through `_add_grid_to_scene` + `gmtvtk_set_object_visible`, the SAME two
+	# steps `_aqua_push_two_surfaces` uses (SACRED_LAW.md: same operation, same function).
+	if Hl !== nothing
+		_add_grid_to_scene(fig.h, Hl, AQUA_LAND; cmap = st.landcmap, promote = false,
+		                   source = "$(st.path)?bathymetry", drape = landimg)
 		ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint),
-		      fig.h, other, Cint(1))
-		# …WITHOUT ITS OWN AXES. Every raster builds a set of its own (SACRED_LAW.md, raster-own-axes),
-		# which is right for two rasters that describe different ground — these two describe THE SAME
-		# ground, node for node, so the second box only doubles the frame and the lon/lat labels over
-		# the first one. Its own set is hidden (the programmatic form of that raster's Axes checkbox);
-		# nothing is re-pointed, and the half this popup is about keeps framing the window.
+		      fig.h, AQUA_LAND, Cint(1))
+		# THE LAND'S LIGHT — unless it wears the satellite picture: that drape IS the lit half the combine
+		# took (`_hs_reflectance`, or method 1's render), and a second light pushed on the land re-shades
+		# its colour-mapped surface over the drape.
+		landimg === nothing && light!(Hl, ml, st.illum[2])
+		# ONE SET OF AXES: the other half's is hidden. These two describe THE SAME ground, node for node,
+		# so a second box only doubles the frame (the programmatic form of that raster's Axes checkbox).
 		ccall(_fn(:gmtvtk_set_axes_shown_h), Cvoid, (Ptr{Cvoid}, Cstring, Cint),
-		      fig.h, other, Cint(0))
+		      fig.h, side == 0 ? AQUA_LAND : AQUA_WATER, Cint(0))
 		# …AND THE CAMERA RE-FIT TO WHAT THE WINDOW NOW HOLDS. Flat 2-D parks the camera just above the
 		# z-max of whatever raster set it — the water half, 3 m — so a companion 2 km tall sat behind it
 		# and the land was simply missing until the user toggled 3-D and back.

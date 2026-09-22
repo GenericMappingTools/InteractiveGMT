@@ -759,14 +759,14 @@ public:
 					return;
 				}
 				QString out; bool closedNow = false;
-				// NO BUSY DIALOG HERE. `showBusyDialog` raises a modal notice while `runBlocking` pumps
-				// `processEvents`, and this dialog's own controls — "Water side" above all — live behind
-				// that pump. A new checkbox does not get to put a modal grab over a window whose buttons
-				// already worked. The wait is announced by the status bar line the host prints instead.
-				if (win) win->statusBar()->showMessage(on ? "Fetching satellite imagery…" : "Restoring the land colour map…");
+				// NO DEAD TIME (SACRED_LAW.md). Turning it on downloads satellite tiles — seconds, on a
+				// network — so the app's ONE busy notice is up for the whole wait, the same pair the
+				// Benchmark 1 load below raises around its own `runBlocking`.
+				showBusyDialog(on ? "Downloading satellite imagery\xE2\x80\xA6" : "Restoring the land colour map\xE2\x80\xA6");
 				const bool ok = runBlocking(QString("InteractiveGMT._aquamoto_sat_img(%1,%2)")
 				                                .arg(aquaScenePtr(scene_)).arg(QString(on ? "true" : "false")),
 				                            out, closedNow);
+				closeBusyDialog();              // taken down first: it outlives `this` if the window went away
 				if (closedNow) return;
 				// IT ALWAYS SAYS WHAT HAPPENED. On success the host prints the one line describing what
 				// the land side now wears; on failure `out` is the reason (no network, a region the

@@ -208,6 +208,11 @@ function _aqua_side_picture(G::GMTgrid, other::AbstractArray{Bool}, method::Int,
 	# the colours the light multiplies come from somewhere else. Method 1 is a RENDER and is never
 	# stood in for — it takes the albedo as a TEXTURE on the very same PBR surface (`_pbr_capture`),
 	# because substituting a CPU bake for it is the one thing that file's own note forbids.
+	# …EXCEPT METHOD 1 UNDER A SATELLITE PICTURE. The PBR render washes a photograph out to grey (its
+	# chroma measured 8-10x below the mosaic's), and what this side is for when "Sat img" is on is the
+	# picture itself (user order, 2026-09-22). So a satellite land half is lit by the classic
+	# reflectance (2) instead; method 1 still renders every colour-mapped half.
+	(method == 1 && albedo !== nothing) && (method = 2)
 	if method == 1
 		return _pbr_capture(H, name, cmap, azim, elev, scene; albedo = albedo)
 	end
