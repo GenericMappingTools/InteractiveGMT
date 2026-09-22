@@ -1771,7 +1771,9 @@ struct Scene {
 // so an overlay can never ride a different exaggeration than the grid it is drawn on. Every grid keeps
 // its OWN number (ExtraObj::ve; Scene::ve is the BASE relief's), which is why this is a lookup and not
 // a plain Scene field (SACRED_LAW.md: each grid its own parameters, one code path that resolves them).
-static double sceneZRefFor(Scene *s, double zlo, double zhi);   // this file, below: ONE layer's normaliser
+static double sceneZRefFor(Scene *s, double zlo, double zhi,   // this file, below: ONE layer's normaliser
+                           double lx0, double lx1, double ly0, double ly1);
+static double sceneZRefForExtra(Scene *s, const ExtraObj &ex); // ...asked about a dropped layer's own frame
 static double activeVE(Scene *s);                        // 50_scene.cpp, beside resolveActiveGrid
 static double *activeVEPtr(Scene *s);                    // ...and its writable face, for the VE controls
 void gizmoSyncVE(Scene *s);                              // 20_gizmo.cpp -- re-read the handle's number
@@ -1828,7 +1830,7 @@ static void layerZOf(Scene *s, vtkProp3D *a, double &zfac, double &ve) {
 		if (ex.actor.Get() == a || ex.drape.Get() == a) {
 			// BOTH halves are this layer's: its own axis mapping and its own ve. Taking the mapping from
 			// the window while the ve came from the layer is what lit one grid by another's numbers.
-			zfac = sceneZRefFor(s, ex.zmin, ex.zmax);  ve = ex.ve;  return;
+			zfac = sceneZRefForExtra(s, ex);  ve = ex.ve;  return;
 		}
 }
 
@@ -1878,7 +1880,7 @@ static double zfacOfOwner(Scene *s, int owner) {
 	if (!s) return 1.0;
 	if (owner != kAxesOwnerBase)
 		for (auto &ex : s->extras)
-			if (ex.tag == owner) return sceneZRefFor(s, ex.zmin, ex.zmax);
+			if (ex.tag == owner) return sceneZRefForExtra(s, ex);
 	return s->zfac;
 }
 
@@ -2940,9 +2942,15 @@ static inline void surfGetBounds(Scene *s, double b[6]) {
 	// (applyVE's axes box, fitSnapView's camera fit, rebuildAxisLabels' tick billboards, the gizmo),
 	// so they all follow the active layer automatically. When the base surface IS the active grid this
 	// returns its own zmin/zmax = the actor bounds, i.e. no change to the ordinary single-grid case.
+	// ...and at the ACTIVE LAYER'S OWN drawn z scale. `sceneZScale(s)` is `s->zfac * s->ve` -- the BASE
+	// relief's normaliser and the BASE relief's VE -- so taking the active layer's z RANGE and scaling
+	// it by that took one half of the product from one layer and the other from another: exactly what
+	// layerZOf's comment forbids, in the one place every bounds consumer reads. It put the axes cube's
+	// z box and fitSnapView's camera fit at the wrong height for any layer but the base (the camera
+	// then framed a box tens of times too short and flew inside the grid).
 	double zlo, zhi;
 	if (activeGridZRange(s, zlo, zhi)) {
-		const double zs = sceneZScale(s);
+		const double zs = layerZScale(s, activeOwnerTag(s));   // THIS layer's own zfac * its own ve
 		b[4] = zlo * zs; b[5] = zhi * zs;
 	}
 }
@@ -4793,7 +4801,17 @@ static const double kVEReference = 0.1;
 // (Earth's true relief is 0.14%) instead of the bed of spikes 10% of a 360-degree span produced.
 static const double kVEReferenceGlobe = 0.02;
 
-static double sceneZRefFor(Scene *s, double zlo, double zhi) {
+// BOTH halves of the ratio are THIS LAYER's. The z span was already per-layer; the horizontal size
+// H was not -- it was read off `s->x0..y1`, the BASE surface's footprint, so a layer's height was the
+// ratio of ITS OWN z range to SOMEONE ELSE'S map width. That is the third bullet above ("per-layer
+// spans fed through one window-wide number") surviving in the half nobody looked at, and it is a real
+// bug, not a nicety: dropping a 12.7-degree-wide bathymetry grid into a window whose base is a
+// 0.43-degree tsunami patch made H 30x too small, so the grid was drawn 30x flat AND -- since the
+// relief light corrects normals by 1/(zfac*ve), makeReliefLight -- lit 30x too hard, all black gashes
+// and blown highlights. `s->xfac` stays shared: it is the ONE actor x scale the whole scene is drawn
+// with, so (lx1-lx0)*xfac IS this layer's own drawn width in that same world.
+static double sceneZRefFor(Scene *s, double zlo, double zhi,
+                           double lx0, double lx1, double ly0, double ly1) {
 	if (!s) return 1.0;
 	// An FV MESH is already in true coordinates (Scene::fvTrueScale): its z IS one of the displayed
 	// dimensions already, so there is nothing to map -- mapping it is what flattened a sphere into a
@@ -4804,16 +4822,31 @@ static double sceneZRefFor(Scene *s, double zlo, double zhi) {
 		const double R = (s->globeR > 0.0 && std::isfinite(s->globeR)) ? s->globeR : 1.0;
 		return (zspan > 0.0 && std::isfinite(zspan)) ? kVEReferenceGlobe * R / zspan : 1.0;
 	}
-	// H -- THE DISPLAYED HORIZONTAL SIZE of the map, in the world units the picture is drawn in: the
-	// lon span times the aspect factor the x axis is actually drawn with, or the lat span, whichever is
-	// the larger. This is a PLOT dimension, not a distance on the ground.
-	const double H = std::max(std::fabs(s->x1 - s->x0) * s->xfac, std::fabs(s->y1 - s->y0));
+	// H -- THE DISPLAYED HORIZONTAL SIZE of THIS LAYER, in the world units the picture is drawn in: its
+	// own lon span times the aspect factor the x axis is actually drawn with, or its own lat span,
+	// whichever is the larger. This is a PLOT dimension, not a distance on the ground.
+	double H = std::max(std::fabs(lx1 - lx0) * s->xfac, std::fabs(ly1 - ly0));
+	// A layer that never got a footprint of its own (a degenerate/unset frame) falls back to the
+	// window's, which is the old behaviour and the only thing left to say -- never to a bare 1.0, which
+	// would collapse the layer onto the z axis.
+	if (!(H > 0.0) || !std::isfinite(H))
+		H = std::max(std::fabs(s->x1 - s->x0) * s->xfac, std::fabs(s->y1 - s->y0));
 	if (!(zspan > 0.0) || !(H > 0.0) || !std::isfinite(zspan) || !std::isfinite(H)) return 1.0;
 	return kVEReference * H / zspan;
 }
 
-// The BASE relief's own, which is what Scene::zfac caches.
-static double sceneZRef(Scene *s) { return s ? sceneZRefFor(s, s->zmin, s->zmax) : 1.0; }
+// ONE dropped grid layer's own normaliser: its own z range over its OWN x/y footprint. THE accessor
+// every per-layer caller uses, so no call site has to remember which four fields an extra's frame
+// lives in (`gx0..gy1`, the grid's true corners).
+static double sceneZRefForExtra(Scene *s, const ExtraObj &ex) {
+	return sceneZRefFor(s, ex.zmin, ex.zmax, ex.gx0, ex.gx1, ex.gy0, ex.gy1);
+}
+
+// The BASE relief's own, which is what Scene::zfac caches -- its own z range over its own footprint,
+// which for the base IS the window's (s->x0..y1 are the base surface's true corners).
+static double sceneZRef(Scene *s) {
+	return s ? sceneZRefFor(s, s->zmin, s->zmax, s->x0, s->x1, s->y0, s->y1) : 1.0;
+}
 
 // Put the WHOLE scene on the globe, or take it all back off — the list is deliberately the SAME one
 // applyVE scales, and for the same reason: an actor that rides the vertical exaggeration is an actor
@@ -4900,7 +4933,7 @@ static void applyVE(Scene *s) {
 		// on top of the image's own (caught by test-ve-rules-gui.jl: changing ONLY the base's ve moved
 		// an image whose own ve never changed). imageRebuildActor built it at s->zfac*ex.ve -- window
 		// zfac, this layer's own ve, nothing else -- so applyVE must reproduce exactly that.
-		const double kzEx = G ? 1.0 : (ex.isImage ? s->zfac : sceneZRefFor(s, ex.zmin, ex.zmax)) * ex.ve;
+		const double kzEx = G ? 1.0 : (ex.isImage ? s->zfac : sceneZRefForExtra(s, ex)) * ex.ve;
 		if (ex.actor) ex.actor->SetScale(kx, 1.0, kzEx);  // (flat image z=zpos is baked in geometry -> scale carries VE)
 		if (ex.drape) ex.drape->SetScale(kx, 1.0, kzEx);
 	}

@@ -54,6 +54,7 @@ function aqua_shade_image(bat::GMTgrid, G::GMTgrid;
                           range_land::Union{Nothing,Tuple{Float64,Float64}} = nothing,
                           ambient::Float64 = 0.55, diffuse::Float64 = 0.6,
                           specular::Float64 = 0.4, shine::Float64 = 10.0, gain::Float64 = 1.0,
+                          albedo_land::Union{Nothing,GMTimage} = nothing,
                           scene::Ptr{Cvoid} = C_NULL)
 	# ---- 1. THE SPLIT -------------------------------------------------------------------------
 	# No entry checks. This runs per animation frame and the caller is Aquamoto, which read both
@@ -90,11 +91,16 @@ function aqua_shade_image(bat::GMTgrid, G::GMTgrid;
 	# only moves when the user moves it — so re-rendering and re-grabbing it per timestep was half the
 	# cost of a frame for nothing. Cached on everything that can change it; the wet mask is in the key
 	# because the zero-fill follows the shoreline, which moves with the wave.
-	lkey = (method_land, azim_land, elev_land, cmap_land, lrng, hash(wet))
+	# `albedo_land` is in the key too: it REPLACES cmap_land as the half's colours, so a cache that
+	# could not see it would keep serving the colourmapped picture after "Sat img" was ticked (and the
+	# satellite one after it was unticked). `objectid` is enough — the albedo is the cached per-node
+	# array `_aqua_land_albedo` hands out, rebuilt only when it genuinely changes.
+	lkey = (method_land, azim_land, elev_land, cmap_land, lrng, hash(wet),
+	        albedo_land === nothing ? UInt(0) : objectid(albedo_land))
 	il = get(_AQUA_LAND_CACHE, lkey, nothing)
 	if il === nothing
 		il = _aqua_side_picture(bat, wet, method_land, azim_land, elev_land, cmap_land, lrng,
-		                        AQUA_LAND; scene=scene, kw...)
+		                        AQUA_LAND; albedo=albedo_land, scene=scene, kw...)
 		empty!(_AQUA_LAND_CACHE)                       # one entry: the current settings, nothing older
 		_AQUA_LAND_CACHE[lkey] = il
 	end
@@ -183,6 +189,7 @@ end
 # taken over its own nodes and passed in explicitly. Nothing is blanked to set contrast.
 function _aqua_side_picture(G::GMTgrid, other::AbstractArray{Bool}, method::Int, azim::Float64,
                             elev::Float64, cmap, zrange::Tuple{Float64,Float64}, name::String;
+                            albedo::Union{Nothing,GMTimage} = nothing,
                             scene::Ptr{Cvoid} = C_NULL, kw...)
 	# THE HALF IS TsuIllum's HALF, verbatim (TsuIllum.jl `split_middle`, the reference this composite
 	# has to reproduce): the grid with THE OTHER SIDE'S NODES NaN — "the wave, nothing else" / "the
@@ -195,8 +202,14 @@ function _aqua_side_picture(G::GMTgrid, other::AbstractArray{Bool}, method::Int,
 	# buttons open THIS object — the very grid the combine's half was drawn from, never one built a
 	# second time for looking at.
 	_AQUA_HALF_GRID[name] = H
+	# AN ALBEDO REPLACES THE PALETTE, NOT THE LIGHT. "Sat img" hands this half a satellite mosaic on
+	# its own nodes; the half is still lit by `_hs_reflectance` over ITS OWN surface, method for
+	# method, exactly as the colourmapped half is (SACRED_LAW.md's two-surface illumination law). Only
+	# the colours the light multiplies come from somewhere else. Method 1 is a RENDER and is never
+	# stood in for — it takes the albedo as a TEXTURE on the very same PBR surface (`_pbr_capture`),
+	# because substituting a CPU bake for it is the one thing that file's own note forbids.
 	if method == 1
-		return _pbr_capture(H, name, cmap, azim, elev, scene)
+		return _pbr_capture(H, name, cmap, azim, elev, scene; albedo = albedo)
 	end
 	# `_hs_reflectance` (hillshade.jl) is THE reflectance — the one every surface in this program is
 	# lit by. This file used to carry its own method table beside it; a second implementation of one
@@ -216,6 +229,13 @@ function _aqua_side_picture(G::GMTgrid, other::AbstractArray{Bool}, method::Int,
 	# own TRB label, the intensity lands on the wrong nodes and shreds the picture into stripes.
 	R.layout = "BCB"
 	R.range[5], R.range[6] = Float64(minimum(Rm)), Float64(maximum(Rm))
+	# THE SAME PAINTER, A DIFFERENT PICTURE TO PAINT. `grdimage` modulates whatever it is given by the
+	# intensity `-I`; given a grid it colours it through a CPT first, given an IMAGE it shades the
+	# image's own pixels. So the satellite half and the colourmapped half go through one call, with
+	# one intensity, and differ only in what carries the colour.
+	if albedo !== nothing
+		return _aqua_rgb_plane(GMT.grdimage(albedo, I = R, A = ""))          # A="" -> in memory
+	end
 	C = GMT.makecpt(cmap = cmap, range = (zrange[1], zrange[2]))
 	_aqua_set_nan_color!(C)
 	return _aqua_rgb_plane(GMT.grdimage(_hs_lend(H), C = C, I = R, A = ""))  # A="" -> in memory
@@ -388,7 +408,8 @@ end
 # no sleep changed 3 991 bytes out of 15 009 300 (0.027 %, max 19). The event loop is pumped only to
 # let Qt deliver what was just asked for.
 function _pbr_capture(H::GMTgrid, name::String, cmap, azim::Float64, elev::Float64,
-                      scene::Ptr{Cvoid} = C_NULL)::Array{UInt8,3}
+                      scene::Ptr{Cvoid} = C_NULL;
+                      albedo::Union{Nothing,GMTimage} = nothing)::Array{UInt8,3}
 	# NO WINDOW AT ALL. `gmtvtk_pbr_render_offscreen` runs VTK's own PBR render — the same material,
 	# the same sky environment, the same lights the on-screen path uses — into an OFFSCREEN buffer, at
 	# the grid's node resolution. Nothing appears on the desktop, nothing of the user's is borrowed,
@@ -397,16 +418,37 @@ function _pbr_capture(H::GMTgrid, name::String, cmap, azim::Float64, elev::Float
 	if haskey(_LIB_FNS, :gmtvtk_pbr_render_offscreen)
 		zb, nxc, nyc, zlay = _grid_zbuf(H)
 		cz, crgb, ncol = _cpt_nodes_range(Float64(H.range[5]), Float64(H.range[6]), cmap)
+		# THE TEXTURE, through `_drape_buf` — THE packer every draped surface in this program is fed
+		# by (drape.jl): row 0 = south, west->east, which is exactly what the VTK texture origin wants
+		# and what the C side documents it takes. Nothing about a satellite albedo makes it a different
+		# kind of drape, so it is not packed a second way here.
+		tex, texW, texH, texB = albedo === nothing ?
+			(UInt8[], 0, 0, 0) : _drape_buf(albedo)
 		pRgb = Ref{Ptr{UInt8}}(C_NULL); pW = Ref{Cint}(0); pH = Ref{Cint}(0)
-		ok = ccall(_fn(:gmtvtk_pbr_render_offscreen), Cint,
+		# WITHOUT AN ALBEDO THIS IS THE CALL IT ALWAYS WAS, to the export it always called — the water
+		# half and every colourmapped land half go down that line untouched. The textured variant is a
+		# SEPARATE export that only a satellite albedo ever reaches.
+		ok = albedo === nothing ?
+		  ccall(_fn(:gmtvtk_pbr_render_offscreen), Cint,
 		           (Ptr{Cfloat}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
 		            Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
 		            Cdouble, Cdouble, Cint, Cint, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
 		           zb, nxc, nyc, zlay, H.range[1], H.range[2], H.range[3], H.range[4],
+		           cz, crgb, Cint(ncol), azim, elev, 0.3, 0.0, 1.0, 0.35,
+		           nxc, nyc, pRgb, pW, pH) :
+		  ccall(_fn(:gmtvtk_pbr_render_offscreen_tex), Cint,
+		           (Ptr{Cfloat}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
+		            Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
+		            Cdouble, Cdouble, Cint, Cint, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint},
+		            Ptr{Cuchar}, Cint, Cint, Cint),
+		           zb, nxc, nyc, zlay, H.range[1], H.range[2], H.range[3], H.range[4],
 		           # THE WINDOW'S OWN MATERIAL AND LIGHTS: roughness 0.3, metallic 0, key 1.0, fill 0.35
 		           # — the Scene's defaults (10_geometry.cpp), not a rig of this call's own.
 		           cz, crgb, Cint(ncol), azim, elev, 0.3, 0.0, 1.0, 0.35,
-		           nxc, nyc, pRgb, pW, pH)
+		           # The buffer goes over AS THE ARRAY, never as a bare `pointer(...)`: ccall roots an
+		           # argument it converts itself, a raw pointer it does not, and the C side reads this
+		           # after the call has begun. `texW == 0` is what says "no texture", not a null.
+		           nxc, nyc, pRgb, pW, pH, tex, Cint(texW), Cint(texH), Cint(texB))
 		if ok != 0
 			try
 				v = unsafe_wrap(Array, pRgb[], (3, Int(pW[]), Int(pH[])))   # (band, col, row), borrowed

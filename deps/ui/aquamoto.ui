@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>401</width>
-    <height>531</height>
+    <height>561</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -299,6 +299,22 @@
                </property>
                <property name="text">
                 <string>Water side</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="renderedSatImgCheckBox">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="toolTip">
+                <string>&lt;html&gt;Drape SATELLITE IMAGERY on the LAND side instead of colouring its relief. The land is still lit by the same illumination method it already wears — only the colours it multiplies change. Tiles are downloaded once and kept in GMT's cache.&lt;/html&gt;</string>
+               </property>
+               <property name="text">
+                <string>Sat img</string>
                </property>
               </widget>
              </item>

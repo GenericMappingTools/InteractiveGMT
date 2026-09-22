@@ -98,6 +98,14 @@ mutable struct _AquaState
 	                                        # two halves are shown on their own, instead of one composited
 	                                        # texture. The composite cannot carry a per-side VTK (PBR)
 	                                        # material; two actors can.
+	satimg::Bool                            # "Sat img": the LAND side wears a downloaded satellite
+	                                        # mosaic instead of a colourmap of its relief. Albedo only —
+	                                        # the land is still lit by `_hs_reflectance` over the
+	                                        # bathymetry, per side, exactly as before (SACRED_LAW.md's
+	                                        # two-surface illumination law is untouched by this). The
+	                                        # mosaic itself is cached in aquasat.jl; `imgbat` above is
+	                                        # this side's per-node albedo whichever source made it, so
+	                                        # toggling this empties it like a colormap change does.
 end
 
 const _AQUA = Dict{Ptr{Cvoid}, _AquaState}()
@@ -450,6 +458,71 @@ function _aquamoto_set_cmap(scene::Ptr{Cvoid}, side::Int, cmap::String)
 	return nothing
 end
 
+# ── THE LAND SIDE'S ALBEDO ───────────────────────────────────────────────────────────────────────
+# ONE function for "what colour is the land?", asked by every land painter there is: the flat
+# composite (`_aqua_composite_rgb`), the lit combine (`aqua_shade_image` -> `_aqua_side_picture`) and
+# the two-surface land actor (`_aqua_push_two_surfaces`). With "Sat img" off it answers EMPTY, which
+# means "colour it from the land colormap as you always did"; with it on it answers the satellite
+# mosaic on the bathymetry's own nodes. A painter that decided this for itself would be the fork
+# SACRED_LAW.md forbids — and would be visible immediately, as one side of the window wearing tiles
+# and another wearing :geo.
+#
+# The answer is CACHED in `st.imgbat`, the same field the colourmapped albedo has always lived in, so
+# it is invalidated by the same one line every other land-colour change already uses.
+function _aqua_land_albedo(st::_AquaState)::Array{UInt8,3}
+	isempty(st.imgbat) || return st.imgbat
+	st.satimg || return st.imgbat          # empty -> the painter colourises from st.landcmap, as before
+	st.imgbat = _aqua_sat_rgb(st.bat)
+	return st.imgbat
+end
+
+# The same answer as a georeferenced IMAGE, for the painters that take a picture rather than a
+# per-node array (`grdimage`'s `-I` modulation, the PBR render's texture). `nothing` = "Sat img" is
+# off and that painter keeps its colormap. One source, two shapes of the same thing — never a second
+# fetch and never a second resample.
+function _aqua_land_image(st::_AquaState)::Union{Nothing,GMTimage}
+	st.satimg || return nothing
+	A = _aqua_land_albedo(st)
+	# MEMOISED ON THE ALBEDO ITSELF. The lit land half is cached on this image's identity
+	# (`aqua_shade_image`'s `lkey`), so handing back a freshly built image every slice would make that
+	# key change every slice and re-render the static land half at every timestep — the exact cost
+	# that cache exists to avoid. One image per albedo array; a new albedo (a "Sat img" toggle, a new
+	# region) is a new array and therefore a new image.
+	get!(_AQUA_LAND_IMG, objectid(A)) do
+		_aqua_sat_image(A, st.bat)
+	end
+end
+
+const _AQUA_LAND_IMG = Dict{UInt,GMTimage}()
+
+# "Sat img" (the checkbox under the "Water side" button). Drops the cached land albedo so the next
+# paint asks `_aqua_land_albedo` again, and drops the LIT land half too — that cache is keyed on the
+# land colormap, which is exactly the thing this replaces, so a key that cannot see the change would
+# keep serving the picture made before it. The caller (C++) re-renders the current slice.
+#
+# IT FETCHES HERE, NOT LATER. The albedo used to be built lazily, at the next paint: a download that
+# failed then surfaced as a broken SLICE, seconds after the click, with nothing tying the two
+# together — and a download that SUCCEEDED said nothing at all, so a box that had done its whole job
+# looked identical to one that was not wired. Both are the same defect: a control the user cannot
+# tell the outcome of. The work happens inside the click, behind the click's own busy notice, and
+# this prints ONE line saying what the land side now wears — which the caller shows.
+function _aquamoto_sat_img(scene::Ptr{Cvoid}, on::Bool)
+	st = get(_AQUA, scene, nothing)
+	(st === nothing) && error("Aquamoto: no file open in this window")
+	st.satimg = on
+	st.imgbat = Array{UInt8}(undef, 0, 0, 0)
+	empty!(_AQUA_LAND_CACHE)
+	empty!(_AQUA_LAND_IMG)
+	if !on
+		print("Land side: colour map ($(st.landcmap))")
+		return nothing
+	end
+	A = _aqua_land_albedo(st)                      # downloads + warps NOW, so a failure throws HERE
+	nx, ny = _grid_dims(st.bat)
+	print("Land side: satellite imagery, $(nx)x$(ny) nodes at zoom $(_aqua_sat_zoom(st.bat))")
+	return nothing
+end
+
 # The SAME row's "Color Palettes…" editor (50_scene.cpp's aqua colour-bar rows -> ColorPalettesWindow
 # -> g_aquamotoSetCPT), which hands over an ARBITRARY palette instead of the name of one: `cz` is the
 # z each palette row sits at (log-spaced when the editor's Logaritmize is on) and `crgb` its colours,
@@ -641,7 +714,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	                          0,
 		                          (Dict{String,String}(), Dict{String,String}()),
 	                          true, false, 0.0, true, true, _aqua_read_times(String(path), nsteps),
-	                          Dict{String,GMTgrid}(), xwin, false)   # twosurf: see `_aqua_push_two_surfaces`
+	                          Dict{String,GMTgrid}(), xwin, false, false)   # twosurf: see `_aqua_push_two_surfaces`; satimg: "Sat img"
 	print(nsteps, "|", varname, "|", join(varnames, ","))
 	return nothing
 end
@@ -1008,6 +1081,11 @@ function _aqua_shaded_rgb(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid, splitDr
 	                        azim_water = num(pw, "azim", 45.0), elev_water = num(pw, "elev", 30.0),
 	                        azim_land  = num(pl, "azim", 45.0), elev_land  = num(pl, "elev", 30.0),
 	                        cmap_water = st.watercmap, cmap_land = st.landcmap,
+	                        # "Sat img": the LAND half's colours come from the satellite mosaic instead
+	                        # of cmap_land. Asked at the same one door the flat composite asks
+	                        # (`_aqua_land_albedo`), so the lit picture and the flat one can never be
+	                        # showing different land. Nothing = that side keeps its colormap.
+	                        albedo_land = _aqua_land_image(st),
 	                        scene = scene)   # render the halves in THIS window — never open one
 	# HANDED OVER AS IT LIES. It is a PICTURE — one pixel per node, row 1 = NORTH, col 1 = WEST — and
 	# it is packed as one: the caller passes layout code 2 for it, which is exactly what a Julia
@@ -1893,7 +1971,11 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	zhover, znx, zny, zlay = _grid_zbuf(G)             # stage buffer + the layout code the VIEWER reads it with
 	r = st.bat.range
 	name = basename(st.path)                           # handle named after the file, like every other layer
-	rgb, st.imgbat = _aqua_composite_rgb(bat, Z, splitDryWet, waterlo, waterhi, transparency, st.imgbat, landhi,
+	# THE land albedo, asked at the one door (`_aqua_land_albedo`): the satellite mosaic when "Sat img"
+	# is on, else empty, which is `_aqua_composite_rgb`'s own signal to colourise from st.landcmap the
+	# way it always has. Either way it goes into the SAME cache field and is used the SAME way below —
+	# the composite has no idea which source painted it, and must not.
+	rgb, st.imgbat = _aqua_composite_rgb(bat, Z, splitDryWet, waterlo, waterhi, transparency, _aqua_land_albedo(st), landhi,
 	                                     shadeWater, shadeLand, _aqua_side_pal(st, 0), _aqua_side_pal(st, 1))
 	# THE LIGHT IS NOT IN THIS PICTURE. The composite carries the COLOURS; the Illumination tool's
 	# light is a reflectance the viewer modulates them with, pushed per side (`_aqua_illuminate!`,
@@ -2052,6 +2134,11 @@ function _aqua_push_two_surfaces(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid,
 		_add_grid_to_scene(scene, Gw, AQUA_WATER; cmap = st.watercmap, promote = true,
 		                   zrange = _aqua_water_range(Gw), source = "$(st.path)?$(st.varname)")
 		if Gl !== nothing
+			# NOT TOUCHED BY "Sat img". Draping the land actor here would mean changing
+			# `_add_grid_to_scene`, which every grid add in this program goes through — a new feature
+			# does not get to alter that. The two-surface mode therefore keeps its colourmapped land
+			# for now; the composite and the lit combine carry the satellite albedo, and this mode
+			# gets it when it can be done without editing a shared door.
 			_add_grid_to_scene(scene, Gl, AQUA_LAND; cmap = st.landcmap, promote = false,
 			                   source = "$(st.path)?bathymetry")
 			# …AND SHOWN. A grid added to a window that already has one is registered hidden (the file's

@@ -240,6 +240,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_make_photo_window_h,   # …and take it off the screen + strip its chrome: a render target, never seen
 	:gmtvtk_aquamoto_open_h,       # the Geophysics > Tsunamis > Aquamoto menu act, reachable from the host
 	:gmtvtk_pbr_render_offscreen,  # method 1: VTK's PBR render into an offscreen buffer — no window at all
+	:gmtvtk_pbr_render_offscreen_tex,  # …the same render with the albedo as a TEXTURE (Aquamoto "Sat img")
 	:gmtvtk_show_profile_xy,
 	:gmtvtk_xyplot_open, :gmtvtk_xyplot_add_series, :gmtvtk_xyplot_clear,
 	:gmtvtk_xyplot_is_alive, :gmtvtk_xyplot_close, :gmtvtk_xyplot_raise, :gmtvtk_xyplot_set_owner,

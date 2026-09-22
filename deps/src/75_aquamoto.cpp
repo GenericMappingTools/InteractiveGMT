@@ -737,6 +737,56 @@ public:
 		};
 		wireSide("renderedWaterSideButton", 0);
 
+		// "Sat img": the LAND side wears a downloaded satellite mosaic instead of a colourmap of its
+		// own relief. ALBEDO ONLY — the land is still lit by the illumination method it already
+		// carries, from its own surface, exactly as before (SACRED_LAW.md's two-surface illumination
+		// law is untouched by this). The host records the intent and drops its cached land albedo;
+		// the picture is then drawn again through the SAME `fireSlice` every other display option on
+		// this dialog goes through, so this box has no rendering path of its own.
+		if (QCheckBox *satBox = w->findChild<QCheckBox *>("renderedSatImgCheckBox")) {
+			QObject::connect(satBox, &QCheckBox::toggled, w, [this, satBox](bool on) {
+				// THERE IS NO LAND SIDE TO DRAPE WITH "Split Dry/Wet" OFF. That picture is the wet
+				// stage over the WHOLE grid — `_aqua_composite_rgb` returns before it ever colours a
+				// land half — so this box could only be a control that does nothing and says nothing.
+				// Say so, and put the box back.
+				if (on && splitDryWetCheck && !splitDryWetCheck->isChecked()) {
+					QSignalBlocker b(satBox);
+					satBox->setChecked(false);
+					const QString why = "Sat img needs \"Split Dry/Wet\": without it the picture is all "
+					                    "water and has no land side to drape.";
+					sceneLogError(scene_, why, /*isError=*/false);
+					if (win) win->statusBar()->showMessage(why, 8000);
+					return;
+				}
+				QString out; bool closedNow = false;
+				// NO BUSY DIALOG HERE. `showBusyDialog` raises a modal notice while `runBlocking` pumps
+				// `processEvents`, and this dialog's own controls — "Water side" above all — live behind
+				// that pump. A new checkbox does not get to put a modal grab over a window whose buttons
+				// already worked. The wait is announced by the status bar line the host prints instead.
+				if (win) win->statusBar()->showMessage(on ? "Fetching satellite imagery…" : "Restoring the land colour map…");
+				const bool ok = runBlocking(QString("InteractiveGMT._aquamoto_sat_img(%1,%2)")
+				                                .arg(aquaScenePtr(scene_)).arg(QString(on ? "true" : "false")),
+				                            out, closedNow);
+				if (closedNow) return;
+				// IT ALWAYS SAYS WHAT HAPPENED. On success the host prints the one line describing what
+				// the land side now wears; on failure `out` is the reason (no network, a region the
+				// provider has no tiles for) AND the box goes back to what the host actually holds — a
+				// box reading "on" over a host that said no is a control that lies.
+				if (!ok) {
+					QSignalBlocker b(satBox);
+					satBox->setChecked(!on);
+					sceneLogError(scene_, out, /*isError=*/true);
+					if (win) win->statusBar()->showMessage("Sat img failed: " + out, 8000);
+					return;
+				}
+				if (!out.isEmpty()) {
+					sceneLogError(scene_, out, /*isError=*/false);
+					if (win) win->statusBar()->showMessage(out, 6000);
+				}
+				fireSlice();
+			});
+		}
+
 		bool *guard = new bool(false);    // slider<->spin re-entrancy guard, freed with the window
 		QObject::connect(w, &QObject::destroyed, w, [guard]{ delete guard; });
 

@@ -7787,15 +7787,55 @@ GMTVTK_API int gmtvtk_pbr_render_offscreen(const float *z, int nx, int ny, int z
                                            const double *cz, const double *crgb, int ncolor,
                                            double azim, double elev, double rough, double metal,
                                            double keyI, double fillI, int outW, int outH,
+                                           unsigned char **outRgb, int *oW, int *oH);
+GMTVTK_API int gmtvtk_pbr_render_offscreen_tex(const float *z, int nx, int ny, int zlayout,
+                                           double x0, double x1, double y0, double y1,
+                                           const double *cz, const double *crgb, int ncolor,
+                                           double azim, double elev, double rough, double metal,
+                                           double keyI, double fillI, int outW, int outH,
+                                           unsigned char **outRgb, int *oW, int *oH,
+                                           const unsigned char *texRgb, int texW, int texH, int texBands);
+
+GMTVTK_API int gmtvtk_pbr_render_offscreen(const float *z, int nx, int ny, int zlayout,
+                                           double x0, double x1, double y0, double y1,
+                                           const double *cz, const double *crgb, int ncolor,
+                                           double azim, double elev, double rough, double metal,
+                                           double keyI, double fillI, int outW, int outH,
                                            unsigned char **outRgb, int *oW, int *oH) {
+	// THE ORIGINAL EXPORT, UNCHANGED. Its signature is ABI and method 1 goes through it for BOTH
+	// halves — the water side included — so a new feature does not get to touch it. The textured
+	// variant is a SEPARATE export below (`gmtvtk_pbr_render_offscreen_tex`); this forwards to its
+	// no-texture case, so there is still exactly one implementation.
+	return gmtvtk_pbr_render_offscreen_tex(z, nx, ny, zlayout, x0, x1, y0, y1, cz, crgb, ncolor,
+	                                       azim, elev, rough, metal, keyI, fillI, outW, outH,
+	                                       outRgb, oW, oH, nullptr, 0, 0, 0);
+}
+
+// The same render, optionally with the albedo as a TEXTURE instead of a CPT: Aquamoto's "Sat img"
+// drapes a satellite mosaic on the land half, and method 1 is a RENDER that is never stood in for by
+// a CPU bake — so the render itself takes the picture. A NEW export, called by nothing that existed
+// before it, so no previously-working caller changes and the ABI generation does not move.
+// `texRgb` NULL (or `texW` 0) = exactly the old behaviour. The image is row 0 = SOUTH, west->east,
+// `texBands` (3 or 4) per pixel.
+GMTVTK_API int gmtvtk_pbr_render_offscreen_tex(const float *z, int nx, int ny, int zlayout,
+                                           double x0, double x1, double y0, double y1,
+                                           const double *cz, const double *crgb, int ncolor,
+                                           double azim, double elev, double rough, double metal,
+                                           double keyI, double fillI, int outW, int outH,
+                                           unsigned char **outRgb, int *oW, int *oH,
+                                           const unsigned char *texRgb, int texW, int texH, int texBands) {
 	if (!z || nx < 2 || ny < 2 || !outRgb || !oW || !oH) return 0;
 	if (outW < 2) outW = nx;
 	if (outH < 2) outH = ny;
+	const bool useTex = (texRgb && texW > 0 && texH > 0 && (texBands == 3 || texBands == 4));
 
 	double zmin = 0.0, zmax = 1.0;
+	// TEXTURE COORDINATES ONLY WHEN THERE IS A TEXTURE. `makeGridFromArray` is the ONE grid-surface
+	// builder (10_geometry.cpp) and it already knows how to lay u,v across the bbox — the same ones a
+	// draped on-screen surface wears — so nothing new is computed here.
 	vtkSmartPointer<vtkPolyData> pd =
 		makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, /*triangulate=*/true,
-		                  /*wantTC=*/false, zlayout);
+		                  /*wantTC=*/useTex, zlayout);
 	if (!pd) return 0;
 
 	// THE ALBEDO IS LINEARISED FIRST — a PBR material's colour is LINEAR light, not a screen colour.
@@ -7833,10 +7873,31 @@ GMTVTK_API int gmtvtk_pbr_render_offscreen(const float *z, int nx, int ny, int z
 
 	vtkNew<vtkPolyDataMapper> map;
 	map->SetInputConnection(norm->GetOutputPort());
-	if (lut) { map->SetLookupTable(lut); map->SetScalarVisibility(1); map->UseLookupTableScalarRangeOn(); }
+	if (lut && !useTex) { map->SetLookupTable(lut); map->SetScalarVisibility(1); map->UseLookupTableScalarRangeOn(); }
+	else if (useTex)    { map->ScalarVisibilityOff(); }   // the texture IS the colour; scalars would fight it
 
 	vtkNew<vtkActor> act;
 	act->SetMapper(map);
+	// THE ALBEDO AS A PICTURE. Same linearisation reason as the CPT above: a PBR base colour is LINEAR
+	// light and VTK gamma-encodes on the way out, so an sRGB texture fed in straight comes back
+	// encoded twice and washes out. VTK does that correction itself when the texture says it holds
+	// sRGB — `UseSRGBColorSpaceOn` — which is the same fix applied at the door the data enters,
+	// rather than a second pow() loop of our own over every texel.
+	// It goes on the PROPERTY as the BASE COLOUR, never on the actor: VTK's PBR shader samples only
+	// `SetBaseColorTexture` (40_shading.cpp says the same of the on-screen drape), so an actor texture
+	// is silently ignored and the surface renders the property's plain white — measured: land mean 227
+	// and no correlation at all with the mosaic. Attached below, once `prop` exists.
+	vtkSmartPointer<vtkTexture> tex;
+	if (useTex) {
+		vtkNew<vtkImageData> tex_img;
+		tex_img->SetDimensions(texW, texH, 1);
+		tex_img->AllocateScalars(VTK_UNSIGNED_CHAR, texBands);
+		memcpy(tex_img->GetScalarPointer(), texRgb, (size_t)texW * texH * texBands);
+		tex = vtkSmartPointer<vtkTexture>::New();
+		tex->SetInputData(tex_img);
+		tex->InterpolateOn();
+		tex->UseSRGBColorSpaceOn();
+	}
 	// THE SAME GEOMETRY SCALING THE ON-SCREEN SURFACE WEARS. x/y are degrees and z is metres, so an
 	// unscaled surface is a cliff-face of relief against a fraction of a degree of ground: every normal
 	// points sideways and the render washes out. `computeScales` is the one place those factors come
@@ -7880,6 +7941,7 @@ GMTVTK_API int gmtvtk_pbr_render_offscreen(const float *z, int nx, int ny, int z
 	prop->SetRoughness(rough < 0.05 ? 0.3 : rough);
 	prop->SetBaseIOR(1.5);              // the on-screen PBR look's own IOR (applySurfStyle) — it was
 	                                    // missing here, so this render was a different material
+	if (tex) prop->SetBaseColorTexture(tex);
 
 	vtkNew<vtkRenderer> ren;
 	ren->AddActor(act);
@@ -8736,6 +8798,11 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		ex.gnx = nx; ex.gny = ny;
 		ex.gx0 = x0; ex.gx1 = x1; ex.gy0 = y0; ex.gy1 = y1;
 		ex.zmin = zmin; ex.zmax = zmax; ex.lut = lut; ex.geog = geographic ? 1 : 0;
+		// ...and NOW that this layer's own frame and z range are known, put it on ITS OWN drawn z scale.
+		// The SetScale above ran before either was filled in, so all it could use was `s->zfac` -- the
+		// BASE relief's normaliser -- and nothing here calls applyVE afterwards, so that borrowed number
+		// was what the layer was actually drawn (and, through hillshadeMapper, lit) at.
+		ex.actor->SetScale(s->xfac, 1.0, sceneZRefForExtra(s, ex) * ex.ve);
 		// Keep the CPT NODES too, not just the built lut: flipping this layer to the flat image look and
 		// back rebuilds its colours, and a lut cannot be rebuilt from. Mirrors Scene::baseCz/baseCrgb.
 		if (cz && crgb && ncolor > 0) {
@@ -8756,7 +8823,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 			ex.drape = vtkSmartPointer<vtkActor>::New();
 			ex.drape->SetMapper(dmap); ex.drape->SetTexture(tex);
 			ex.drape->GetProperty()->LightingOff();
-			ex.drape->SetScale(s->xfac, 1.0, s->zfac * ex.ve);   // welded to its own grid
+			ex.drape->SetScale(s->xfac, 1.0, sceneZRefForExtra(s, ex) * ex.ve);   // welded to its own grid
 			s->ren->AddActor(ex.drape);
 		}
 	}

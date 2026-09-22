@@ -74,6 +74,37 @@ function ve_add_layer(h, G, name::AbstractString)
 	ok
 end
 
+# The scene's CURRENT x actor scale, as the window itself reports it. `xfac` is scene-wide BY DESIGN
+# -- one projection, one world, every layer drawn in it -- and a re-frame onto another raster
+# re-derives it from THAT raster's latitude band (sceneRederiveScales). So a per-layer expectation
+# takes the FOOTPRINT from the layer and the X SCALE from the window; a helper that computed xfac
+# from the layer's own midlatitude would be asserting something the viewer never promised.
+ve_xfac(h) = parse(Float64, string(ve_state_full(h)["xfac"]))
+
+# The height THIS layer must be drawn at in THIS window:
+#     zspan * zfac * ve  =  zspan * (kVEReference * H_layer / zspan) * ve  =  kVEReference * H_layer * ve
+# The z span cancels, which is the whole point -- a layer's drawn height depends on ITS OWN footprint
+# and nothing else. H_layer is that footprint at the window's current x scale.
+ve_drawn_span_here(h, G, ve::Real = 1.0) =
+	VE_REFERENCE * max(abs(Float64(G.range[2]) - Float64(G.range[1])) * ve_xfac(h),
+	                   abs(Float64(G.range[4]) - Float64(G.range[3]))) * float(ve)
+
+# The same add, WITHOUT the adopt transition: gmtvtk_add_surface_h and nothing else, then the layer
+# is merely switched on. `_adopt_derived!` re-frames, and a re-frame runs applyVE, which would repair
+# a wrong scale handed out at build time -- so a test that always adopts cannot see whether the ADD
+# itself put the layer on its own mapping. It did not, once: the actor was scaled before the layer's
+# own frame and z range had been written into it, so all the builder had was the base's `zfac`.
+function ve_add_layer_raw(h, G, name::AbstractString)
+	z = Float32.(G.z'[:]);  ny, nx = size(G.z)
+	ok = ccall(InteractiveGMT._fn(:gmtvtk_add_surface_h), Cint,
+	     (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint,
+	      Ptr{Cdouble}, Ptr{Cdouble}, Cint, Ptr{Cuchar}, Cint, Cint, Cint, Cint, Cstring, Cint),
+	     h, z, Cint(nx), Cint(ny), G.range[1], G.range[2], G.range[3], G.range[4], Cint(1),
+	     C_NULL, C_NULL, Cint(0), C_NULL, Cint(0), Cint(0), Cint(0), Cint(0), String(name), Cint(1))
+	ve_pump()
+	ok
+end
+
 # Set the ACTIVE layer's ve through gmtvtk_set_view_azel_h -- the same activeVEPtr door the gizmo
 # drag and the VE dialog use, so a test cannot pass by writing a field no user can reach.
 ve_set_active(h, ve::Real) = ccall(InteractiveGMT._fn(:gmtvtk_set_view_azel_h), Cint,

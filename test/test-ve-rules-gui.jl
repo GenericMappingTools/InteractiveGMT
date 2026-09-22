@@ -353,3 +353,102 @@ end
 		ve_close(f.h)
 	end
 end
+
+# ── The 2026-09-22 regression: BOTH halves of the ratio must be the layer's own ───────────────────
+# Every item above this line builds its grids on ONE footprint (ve_grid's default), which is exactly
+# why none of them could see the bug: `zfac = kVEReference * H / zspan` had been made per-layer in
+# its `zspan` and left window-wide in its `H` -- read off `s->x0..y1`, the BASE surface's corners.
+# With one footprint in the window the two are the same number and every assertion passed.
+# The items below therefore differ in FOOTPRINT, which is the only way to tell the two apart.
+
+@testitem "VE law 1: a layer's zfac uses ITS OWN footprint, never the base surface's" tags=[:gui, :ve] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "ve_helpers.jl"))
+	# The user's own repro, to scale: a 0.43-degree tsunami patch in the window, a 12.7-degree
+	# bathymetry grid dropped on top. Taking H from the base made the dropped grid's zfac ~30x too
+	# small -- drawn 30x flat and, since makeReliefLight corrects normals by 1/(zfac*ve), lit 30x too
+	# hard (black gashes, blown highlights).
+	Gsmall = ve_grid(zspan =    8.0, x = ( -9.52, -9.09), y = (38.50, 38.75))
+	Gwide  = ve_grid(zspan = 8400.0, x = (-18.45, -5.72), y = (32.60, 40.52))
+	@test ve_H_displayed(Gwide) > 25 * ve_H_displayed(Gsmall)   # the footprints really are far apart
+
+	# SMALL base, WIDE layer (the reported direction).
+	f = view_grid(Gsmall, geographic=true)
+	try
+		ve_pump(); h = f.h
+		ve_add_layer(h, Gwide, "wide")
+		# Expected height is kVEReference * (Gwide's OWN footprint): the z span cancels out of the rule, so
+		# this number cannot be produced from the base's footprint at all.
+		@test ve_active_drawn_span(h) ≈ ve_drawn_span_here(h, Gwide) rtol=1e-6
+		# ...and the base, active again, still gets its own (it always did -- assert it did not break).
+		ve_show(h, "wide", false); ve_show(h, "", true)
+		@test ve_active_drawn_span(h) ≈ ve_drawn_span_here(h, Gsmall) rtol=1e-6
+	finally
+		ve_close(f.h)
+	end
+
+	# ...and the OTHER direction, because a fix that simply swapped which footprint is borrowed would
+	# pass the half above: WIDE base, SMALL layer.
+	f2 = view_grid(Gwide, geographic=true)
+	try
+		ve_pump(); h = f2.h
+		ve_add_layer(h, Gsmall, "patch")
+		@test ve_active_drawn_span(h) ≈ ve_drawn_span_here(h, Gsmall) rtol=1e-6
+		ve_show(h, "patch", false); ve_show(h, "", true)
+		@test ve_active_drawn_span(h) ≈ ve_drawn_span_here(h, Gwide) rtol=1e-6
+	finally
+		ve_close(f2.h)
+	end
+end
+
+@testitem "VE law 1: a layer is on its own mapping AT BUILD TIME, before any re-frame" tags=[:gui, :ve] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "ve_helpers.jl"))
+	# gmtvtk_add_surface_h scales the new actor, and nothing in it calls applyVE afterwards -- so if the
+	# builder uses a borrowed normaliser, the borrowed one is what the layer is drawn and LIT at until
+	# something unrelated happens to re-frame the window. `ve_add_layer_raw` deliberately skips the
+	# adopt transition (which does re-frame) so this item measures the ADD and nothing else.
+	Gsmall = ve_grid(zspan =    8.0, x = ( -9.52, -9.09), y = (38.50, 38.75))
+	Gwide  = ve_grid(zspan = 8400.0, x = (-18.45, -5.72), y = (32.60, 40.52))
+	f = view_grid(Gsmall, geographic=true)
+	try
+		ve_pump(); h = f.h
+		ve_add_layer_raw(h, Gwide, "wide")          # added HIDDEN, as every added grid is
+		ve_show(h, "wide", true)                    # ...just switched on: no adopt, no re-frame
+		@test ve_active_drawn_span(h) ≈ ve_drawn_span_here(h, Gwide) rtol=1e-6
+	finally
+		ve_close(f.h)
+	end
+end
+
+@testitem "VE law 2: the base relief's ve never scales the ACTIVE layer's box" tags=[:gui, :ve] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "ve_helpers.jl"))
+	# surfGetBounds is THE bounds source every frame-driven function reads (the axes cube, the camera
+	# fit, the tick billboards, the gizmo). It took the ACTIVE layer's z RANGE and multiplied it by
+	# `sceneZScale(s)` = the BASE's zfac x the BASE's ve -- one half of the product from one layer and
+	# the other half from another, which is exactly what this law forbids. Raising the BASE's ve while
+	# another layer is active is the shortest way to see it.
+	Gsmall = ve_grid(zspan =    8.0, x = ( -9.52, -9.09), y = (38.50, 38.75))
+	Gwide  = ve_grid(zspan = 8400.0, x = (-18.45, -5.72), y = (32.60, 40.52))
+	f = view_grid(Gsmall, geographic=true)
+	try
+		ve_pump(); h = f.h
+		ve_add_layer(h, Gwide, "wide")
+		span0 = ve_active_drawn_span(h)
+		@test span0 ≈ ve_drawn_span_here(h, Gwide) rtol=1e-6
+		# Give the BASE a ve of its own, through the same door the gizmo uses, while it is the active one.
+		ve_show(h, "wide", false); ve_show(h, "", true)
+		ve_set_active(h, 5.0)
+		st = IG._parse_scene_state(IG._scene_state_full_raw(h))
+		@test parse(Float64, string(st["ve"]))   == 5.0
+		@test parse(Float64, string(st["ve_1"])) == 1.0      # the dropped layer never asked for one
+		# Back on the dropped layer: its box is ITS span x ITS mapping x ITS OWN ve, bit for bit what it
+		# was before the base moved. Nothing the base did may appear in this number.
+		ve_show(h, "wide", true)
+		@test ve_active_drawn_span(h) ≈ span0 rtol=1e-9
+		@test ve_active_drawn_span(h) ≈ ve_drawn_span_here(h, Gwide) rtol=1e-6
+	finally
+		ve_close(f.h)
+	end
+end

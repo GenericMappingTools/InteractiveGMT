@@ -97,6 +97,7 @@ include("grdredpol.jl")  # Geophysics > Magnetics > grdredpol: continuous (diffe
 include("grdgradient.jl") # GMT menu > grdgradient: directional derivative / slope / aspect
 include("hillshade.jl")  # View > Illumination (Hillshade): GMT illumination models (port of Mirone shading_params.m)
 include("aquashade.jl")  # the tsunami's picture: split dry/wet, illuminate each half, combine by the mask
+include("aquasat.jl")    # …and "Sat img": a satellite mosaic as the LAND side's albedo, on its own nodes
 include("grdseamount.jl") # GMT menu > grdseamount: synthetic seamounts from a parameter table
 include("manual.jl")     # the green "?" disk on every module dialog -> that module's GMTjl_doc page
 include("mgd77tracks.jl") # Geophysics > Magnetics > Import *.gmt/*.nc file(s): cruise tracks (port of mirone.m GeophysicsImportGmtFile_CB)
