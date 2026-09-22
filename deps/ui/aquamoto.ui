@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>420</width>
+    <width>340</width>
     <height>531</height>
    </rect>
   </property>
@@ -428,6 +428,28 @@
                </property>
               </spacer>
              </item>
+             <item row="1" column="4">
+              <widget class="QToolButton" name="renderedHelpButton">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>22</width>
+                 <height>22</height>
+                </size>
+               </property>
+               <property name="toolTip">
+                <string>What the Rendered image is, how to use it, why it is slow</string>
+               </property>
+               <property name="text">
+                <string>?</string>
+               </property>
+              </widget>
+             </item>
             </layout>
            </item>
           </layout>
@@ -629,6 +651,12 @@
         </property>
         <item>
          <widget class="QGroupBox" name="cinemaPlaybackGroupBox">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
           <property name="title">
            <string>Playback</string>
           </property>
@@ -870,6 +898,12 @@
         </item>
         <item>
          <widget class="QGroupBox" name="cinemaViewGroupBox">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
           <property name="title">
            <string>View</string>
           </property>
@@ -1075,150 +1109,26 @@
                </property>
               </spacer>
              </item>
-             <item>
-              <widget class="QPushButton" name="cinemaResetViewButton">
-               <property name="maximumSize">
-                <size>
-                 <width>45</width>
-                 <height>16777215</height>
-                </size>
-               </property>
-               <property name="text">
-                <string>Reset view</string>
-               </property>
-              </widget>
-             </item>
             </layout>
            </item>
           </layout>
          </widget>
         </item>
         <item>
-         <widget class="QGroupBox" name="cinemaProfileGroupBox">
-          <property name="title">
-           <string>Profile figure</string>
+         <spacer name="cinemaTabTailSpacer">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
           </property>
-          <layout class="QVBoxLayout" name="cinemaProfileGroupBoxLayout">
-           <property name="spacing">
-            <number>5</number>
-           </property>
-           <property name="leftMargin">
-            <number>4</number>
-           </property>
-           <property name="topMargin">
-            <number>0</number>
-           </property>
-           <property name="rightMargin">
-            <number>4</number>
-           </property>
-           <property name="bottomMargin">
-            <number>4</number>
-           </property>
-           <item>
-            <layout class="QHBoxLayout" name="cinemaProfileShowLayout">
-             <item>
-              <widget class="QCheckBox" name="cinemaProfileCheckBox">
-               <property name="text">
-                <string>Show η(x) profile</string>
-               </property>
-               <property name="checked">
-                <bool>true</bool>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <spacer name="cinemaProfileShowSpacer">
-               <property name="orientation">
-                <enum>Qt::Orientation::Horizontal</enum>
-               </property>
-               <property name="sizeHint" stdset="0">
-                <size>
-                 <width>0</width>
-                 <height>0</height>
-                </size>
-               </property>
-              </spacer>
-             </item>
-            </layout>
-           </item>
-           <item>
-            <layout class="QHBoxLayout" name="cinemaProfileLenLayout">
-             <item>
-              <widget class="QLabel" name="cinemaProfileFromLabel">
-               <property name="text">
-                <string>x from</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QLineEdit" name="cinemaProfileX0Edit">
-               <property name="sizePolicy">
-                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                 <horstretch>0</horstretch>
-                 <verstretch>0</verstretch>
-                </sizepolicy>
-               </property>
-               <property name="maximumSize">
-                <size>
-                 <width>56</width>
-                 <height>16777215</height>
-                </size>
-               </property>
-               <property name="text">
-                <string/>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QLabel" name="cinemaProfileLenLabel">
-               <property name="text">
-                <string>length</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QLineEdit" name="cinemaProfileLenEdit">
-               <property name="sizePolicy">
-                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                 <horstretch>0</horstretch>
-                 <verstretch>0</verstretch>
-                </sizepolicy>
-               </property>
-               <property name="maximumSize">
-                <size>
-                 <width>76</width>
-                 <height>16777215</height>
-                </size>
-               </property>
-               <property name="text">
-                <string>5000</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QLabel" name="cinemaProfileUnitLabel">
-               <property name="text">
-                <string>m</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <spacer name="cinemaProfileLenSpacer">
-               <property name="orientation">
-                <enum>Qt::Orientation::Horizontal</enum>
-               </property>
-               <property name="sizeHint" stdset="0">
-                <size>
-                 <width>0</width>
-                 <height>0</height>
-                </size>
-               </property>
-              </spacer>
-             </item>
-            </layout>
-           </item>
-          </layout>
-         </widget>
+          <property name="sizeType">
+           <enum>QSizePolicy::Policy::Expanding</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>0</width>
+            <height>110</height>
+           </size>
+          </property>
+         </spacer>
         </item>
        </layout>
       </widget>

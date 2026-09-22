@@ -7493,6 +7493,79 @@ GMTVTK_API void gmtvtk_set_cube_axes_zrange(void *handle, const char *name, doub
 	else             { A->zLock = false; }
 }
 
+// Show or hide the axes set OWNED BY the raster called `name` — the programmatic form of that
+// raster's own "Axes" checkbox in Scene Objects (rebuildSceneObjects' axesRow, 50_scene.cpp), and it
+// touches exactly what the checkbox touches: THAT set's `shown`, nothing else.
+//
+// For the companion surface of a layer that stands on two of them — the Aquamoto half a Water/Land
+// popup puts beside the half it is about — where a second box, a second pair of "lon"/"lat" labels
+// and a second Z scale describe nodes the first box already covers. It is a HIDE, never a re-point:
+// the set stays the raster's own (SACRED_LAW.md, no-fallback-to-someone-else's-set), and `axesForName`
+// answers nothing when no raster owns the name, in which case this does nothing at all.
+GMTVTK_API void gmtvtk_set_axes_shown_h(void *handle, const char *name, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	AxesSet *A = axesForName(s, name ? name : "");
+	if (!A) return;
+	A->shown = (on != 0);
+	if (!A->shown) axesHideAll(*A);
+	rebuildAxisLabels(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Move the raster called `name` inside the window's ONE draw-order pile: `op` is the same code the
+// Scene Objects "Stack order" menu uses (0 top, 1 bottom, 2 forward, 3 backward), through the same
+// `restackGrid` those four actions call — never a second ordering of our own.
+//
+// The pile's top is also WHICH LAYER THE WINDOW IS ABOUT: `resolveActiveGrid` takes the highest rank,
+// and the colour bar, the Z axis annotation and the hover readout all follow it. So a companion
+// surface added beside the one a window exists to show (the Aquamoto half a Water/Land popup stands
+// next to its own half) is sent to the bottom here — otherwise, being added last, it would arrive on
+// top and the window would describe the companion instead of its subject.
+// "" is the window's primary, the same convention gmtvtk_set_object_visible uses.
+GMTVTK_API int gmtvtk_restack_grid_h(void *handle, const char *name, int op) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return 0;
+	int *sp = nullptr;
+	for (auto &ex : s->extras) if (ex.name == name) { sp = &ex.gstack; break; }
+	if (!sp && s->surf && (!*name || s->surfName == name)) sp = &s->surfStack;
+	if (!sp) return 0;
+	restackGrid(s, sp, op);
+	refreshGridColorbar(s);
+	rebuildAxisLabels(s);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// Re-fit the camera to what the window now holds, in the mode it is already in — the same fit the
+// 2-D/3-D switch performs, without the switch.
+//
+// A raster added to a window that is ALREADY in flat 2-D is why: that mode parks the camera just
+// above the surface's own z-max (sceneSetViewMode's FLAT2D branch) and, in parallel projection,
+// anything taller than the raster that set it lands behind the camera or outside the clipping range
+// — the Aquamoto land companion (2245 m) simply did not appear next to a water half whose z-max is
+// 3 m, until the user toggled 3-D and back. The bounds are read again here, so the fit follows the
+// content instead of whatever set it first.
+GMTVTK_API void gmtvtk_refit_view_h(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->ren) return;
+	if (s->flat2d) {
+		double b[6]; surfGetBounds(s, b);
+		if (vtkCamera *cam = s->ren->GetActiveCamera()) {
+			const double fp[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
+			cam->SetFocalPoint(fp[0], fp[1], fp[2]);
+			cam->SetViewUp(0.0, 1.0, 0.0);
+			cam->SetPosition(fp[0], fp[1], b[5] + (b[5] - b[4]) + 1.0);
+			cam->ParallelProjectionOn();
+		}
+	}
+	s->ren->ResetCameraClippingRange();
+	fitSnapView(s, /*topMode=*/s->flat2d);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // Show the non-modal 3D cube layer selector dialog. `scene` is the target window, `name` is the
 // cube's base name (for the dialog title), `nLayers` is the number of layers in the cube. The
 // dialog stays open until the user closes it, allowing quick layer switching.
@@ -8900,6 +8973,7 @@ GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, 
 
 	const double tC = trace ? lodNowMs() : 0.0;
 	applyVE(s);              // re-scale surface + extras + cube axes to the current VE and new bounds
+	sceneRedrapeImages(s);   // the base's heights just changed -> every draped image follows them
 	const double tD = trace ? lodNowMs() : 0.0;
 	applyStacking(s);        // re-offset extras/vectors against the rebuilt base + refresh colorbar
 	const double tE = trace ? lodNowMs() : 0.0;
@@ -8985,6 +9059,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 			if (s->surfShowBar && (!s->customLayerTexture || s->aquaShowWater))
 				buildColorbar(s, s->surfLut, s->zmin, s->zmax);
 
+			sceneRedrapeImages(s);      // this slice's z is a new relief -> re-lay every draped image
 			invalidateLayerDetail(s);   // the zoom detail tile is for the OLD layer -> refresh on settle
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 			return 1;
@@ -9082,6 +9157,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 
 	applyVE(s);
 	applyStacking(s);
+	sceneRedrapeImages(s);   // new base heights -> every draped image is re-laid on them
 	rebuildSceneObjects(s);
 	applyShading(s);
 	s->ren->ResetCameraClippingRange();

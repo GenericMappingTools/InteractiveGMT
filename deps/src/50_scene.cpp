@@ -799,6 +799,64 @@ static double imageTopZ(Scene *s) {
 	return hi + imageStackStep(s);
 }
 
+// THE drape mesh — the ONE place an image's draped geometry is built (SACRED_LAW.md: same operation,
+// same function). Built on the host grid's OWN NODES over the image∩grid footprint, so it is
+// vertex-for-vertex the relief. Two callers: the first build/flip (imageRebuildActor) and the
+// re-drape that follows a change of the relief's heights (sceneRedrapeImages). Neither owns a copy
+// of this maths.
+//
+// This used to resample the heightfield onto a capped 256x256 lattice. That lattice is a COARSE
+// APPROXIMATION of the surface: between its samples it cuts straight through the real relief, so
+// every ridge finer than a lattice cell poked out THROUGH the picture and painted the grid's own
+// CPT colours over it (the user's repro: yellowish grid relief piercing a draped I.tiff). No
+// depth bias can fix that — the error is geometric, tens of metres, not z-buffer noise. Sampling
+// on the nodes themselves makes the drape vertex-for-vertex identical to the surface, so there
+// is nothing left to pierce.
+static vtkSmartPointer<vtkPolyData> imageDrapePD(Scene *s, ExtraObj &ex) {
+	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
+	const double dx = (s->gnx > 1) ? (s->gx1 - s->gx0) / (s->gnx - 1) : 0.0;
+	const double dy = (s->gny > 1) ? (s->gy1 - s->gy0) / (s->gny - 1) : 0.0;
+	if (dx <= 0.0 || dy <= 0.0 || (int)s->gridZ.size() < s->gnx * s->gny) return pd;
+	const double cx0 = std::max(ex.bx0, s->gx0), cx1 = std::min(ex.bx1, s->gx1);
+	const double cy0 = std::max(ex.by0, s->gy0), cy1 = std::min(ex.by1, s->gy1);
+	// Node index window covering the intersection (inclusive), clamped to the grid.
+	const int i0 = std::max(0, (int)std::floor((cx0 - s->gx0) / dx));
+	const int i1 = std::min(s->gnx - 1, (int)std::ceil((cx1 - s->gx0) / dx));
+	const int j0 = std::max(0, (int)std::floor((cy0 - s->gy0) / dy));
+	const int j1 = std::min(s->gny - 1, (int)std::ceil((cy1 - s->gy0) / dy));
+	const int nx = i1 - i0 + 1, ny = j1 - j0 + 1;
+	if (nx < 2 || ny < 2) return pd;
+	vtkNew<vtkPoints> pts; pts->SetDataTypeToFloat(); pts->Allocate(nx * ny);
+	vtkNew<vtkFloatArray> tc; tc->SetNumberOfComponents(2); tc->SetName("tc"); tc->Allocate(2 * nx * ny);
+	std::vector<char> ok((size_t)nx * ny, 0);          // node carries real elevation (not NaN)
+	for (int j = 0; j < ny; ++j) {
+		const double y = s->gy0 + (j0 + j) * dy;
+		for (int i = 0; i < nx; ++i) {
+			const double x = s->gx0 + (i0 + i) * dx;
+			// Straight NODE read (not an interpolation): the surface's own vertex value, so the two
+			// meshes share their vertices exactly. Column-major z[i*gny + j], the gridZ layout.
+			const float zf = s->gridZ[(size_t)(i0 + i) * s->gny + (j0 + j)];
+			const bool good = !std::isnan(zf);
+			ok[(size_t)j * nx + i] = good ? 1 : 0;
+			pts->InsertNextPoint(x, y, good ? (double)zf : 0.0);
+			tc->InsertNextTuple2((x - ex.bx0) / (ex.bx1 - ex.bx0), (y - ex.by0) / (ex.by1 - ex.by0));
+		}
+	}
+	vtkNew<vtkCellArray> cells;
+	for (int j = 0; j < ny - 1; ++j)
+		for (int i = 0; i < nx - 1; ++i) {
+			// Skip any cell touching a NaN node: the surface has no facet there either, and a
+			// NaN-as-zero corner would spike the drape down to z=0 through the relief.
+			if (!ok[(size_t)j*nx+i] || !ok[(size_t)j*nx+i+1] ||
+			    !ok[(size_t)(j+1)*nx+i+1] || !ok[(size_t)(j+1)*nx+i]) continue;
+			vtkIdType q[4] = { (vtkIdType)(j*nx+i), (vtkIdType)(j*nx+i+1),
+			                   (vtkIdType)((j+1)*nx+i+1), (vtkIdType)((j+1)*nx+i) };
+			cells->InsertNextCell(4, q);
+		}
+	pd->SetPoints(pts); pd->SetPolys(cells); pd->GetPointData()->SetTCoords(tc);
+	return pd;
+}
+
 // (Re)build the image actor for its current flat/draped state and (re)register it in the renderer.
 static void imageRebuildActor(Scene *s, ExtraObj &ex) {
 	if (ex.actor) s->ren->RemoveActor(ex.actor);
@@ -828,58 +886,7 @@ static void imageRebuildActor(Scene *s, ExtraObj &ex) {
 		}
 	}
 	else ex.drapeApplied = false;             // a later re-drape is a new episode and fires again
-	if (drape) {
-		// Drape: the image is painted ON the relief, so the drape mesh must BE the relief — built on
-		// the grid's OWN NODES, at full resolution, over the image∩grid footprint. A polygon offset
-		// (below) then wins the depth tie, exactly as the base surface's own drape does (70_window.cpp:
-		// it simply SHARES the surface polydata, which is the same idea taken to its limit).
-		//
-		// This used to resample the heightfield onto a capped 256x256 lattice. That lattice is a COARSE
-		// APPROXIMATION of the surface: between its samples it cuts straight through the real relief, so
-		// every ridge finer than a lattice cell poked out THROUGH the picture and painted the grid's own
-		// CPT colours over it (the user's repro: yellowish grid relief piercing a draped I.tiff). No
-		// depth bias can fix that — the error is geometric, tens of metres, not z-buffer noise. Sampling
-		// on the nodes themselves makes the drape vertex-for-vertex identical to the surface, so there
-		// is nothing left to pierce.
-		const double dx = (s->gnx > 1) ? (s->gx1 - s->gx0) / (s->gnx - 1) : 0.0;
-		const double dy = (s->gny > 1) ? (s->gy1 - s->gy0) / (s->gny - 1) : 0.0;
-		const double cx0 = std::max(ex.bx0, s->gx0), cx1 = std::min(ex.bx1, s->gx1);
-		const double cy0 = std::max(ex.by0, s->gy0), cy1 = std::min(ex.by1, s->gy1);
-		// Node index window covering the intersection (inclusive), clamped to the grid.
-		const int i0 = std::max(0, (int)std::floor((cx0 - s->gx0) / dx));
-		const int i1 = std::min(s->gnx - 1, (int)std::ceil((cx1 - s->gx0) / dx));
-		const int j0 = std::max(0, (int)std::floor((cy0 - s->gy0) / dy));
-		const int j1 = std::min(s->gny - 1, (int)std::ceil((cy1 - s->gy0) / dy));
-		const int nx = i1 - i0 + 1, ny = j1 - j0 + 1;
-		vtkNew<vtkPoints> pts; pts->SetDataTypeToFloat(); pts->Allocate(nx * ny);
-		vtkNew<vtkFloatArray> tc; tc->SetNumberOfComponents(2); tc->SetName("tc"); tc->Allocate(2 * nx * ny);
-		std::vector<char> ok((size_t)nx * ny, 0);          // node carries real elevation (not NaN)
-		for (int j = 0; j < ny; ++j) {
-			const double y = s->gy0 + (j0 + j) * dy;
-			for (int i = 0; i < nx; ++i) {
-				const double x = s->gx0 + (i0 + i) * dx;
-				// Straight NODE read (not an interpolation): the surface's own vertex value, so the two
-				// meshes share their vertices exactly. Column-major z[i*gny + j], the gridZ layout.
-				const float zf = s->gridZ[(size_t)(i0 + i) * s->gny + (j0 + j)];
-				const bool good = !std::isnan(zf);
-				ok[(size_t)j * nx + i] = good ? 1 : 0;
-				pts->InsertNextPoint(x, y, good ? (double)zf : 0.0);
-				tc->InsertNextTuple2((x - ex.bx0) / (ex.bx1 - ex.bx0), (y - ex.by0) / (ex.by1 - ex.by0));
-			}
-		}
-		vtkNew<vtkCellArray> cells;
-		for (int j = 0; j < ny - 1; ++j)
-			for (int i = 0; i < nx - 1; ++i) {
-				// Skip any cell touching a NaN node: the surface has no facet there either, and a
-				// NaN-as-zero corner would spike the drape down to z=0 through the relief.
-				if (!ok[(size_t)j*nx+i] || !ok[(size_t)j*nx+i+1] ||
-				    !ok[(size_t)(j+1)*nx+i+1] || !ok[(size_t)(j+1)*nx+i]) continue;
-				vtkIdType q[4] = { (vtkIdType)(j*nx+i), (vtkIdType)(j*nx+i+1),
-				                   (vtkIdType)((j+1)*nx+i+1), (vtkIdType)((j+1)*nx+i) };
-				cells->InsertNextCell(4, q);
-			}
-		pd->SetPoints(pts); pd->SetPolys(cells); pd->GetPointData()->SetTCoords(tc);
-	}
+	if (drape) pd = imageDrapePD(s, ex);      // THE drape mesh (one builder, shared with sceneRedrapeImages)
 	else {
 		// Flat horizontal plane at ex.zpos spanning the image bbox (single quad, full-texture tcoords).
 		vtkNew<vtkPoints> pts; pts->SetDataTypeToFloat();
@@ -930,6 +937,36 @@ static void sceneRefloatAutoImages(Scene *s) {
 		ex.zpos = want;
 		const double k = s->zfac * ex.ve;         // the scale its geometry is drawn at (see applyVE)
 		ex.actor->SetPosition(0.0, 0.0, (want - ex.zposGeom) * k);
+	}
+}
+
+// RE-DRAPE every draped image onto the relief's CURRENT heights. Declared in 10_geometry.cpp and
+// called from the three (and only three) places the window's base height field is (re)installed:
+// the in-place z update of an animating layer (sceneUpdateBaseGridZ), the full base rebuild
+// (gmtvtk_replace_base_grid_h) and the flat-image fast repaint (showLayerImageTail).
+//
+// A drape is BUILT ON THE SURFACE'S OWN NODES, so it is only the relief while the relief still has
+// those heights. An Aquamoto rendered image draped on z and then left alone through slice after
+// slice kept the z of the slice it was draped at: the wave moved under a picture that did not, so
+// the relief came up THROUGH it in more and more places (the user's "bits of z trespass the
+// surface", cured by undrape + drape again). That manual undrape/drape IS this function — a drape
+// is not a one-shot property of the add, it is a property of the heights standing in the window,
+// and it is re-answered here.
+//
+// THE ACTOR IS KEPT, ONLY ITS GEOMETRY IS REPLACED. Scene Objects rows, the draw-order pile and the
+// picking hooks all hold this actor's RAW pointer, so swapping the actor from here is a
+// use-after-free (the same reason sceneRefloatAutoImages moves its planes instead of rebuilding
+// them). The mapper takes the new polydata; nothing above the mapper changes.
+static void sceneRedrapeImages(Scene *s) {
+	if (!s || s->globe) return;                   // on the sphere geometry comes from the globe map
+	for (auto &ex : s->extras) {
+		if (!ex.isImage || !ex.draped || !ex.actor) continue;
+		vtkPolyDataMapper *map = vtkPolyDataMapper::SafeDownCast(ex.actor->GetMapper());
+		if (!map) continue;
+		vtkSmartPointer<vtkPolyData> pd = imageDrapePD(s, ex);
+		if (pd->GetNumberOfPoints() < 4) continue;   // no overlap left -> keep what is showing
+		map->SetInputData(pd);
+		map->Modified();
 	}
 }
 

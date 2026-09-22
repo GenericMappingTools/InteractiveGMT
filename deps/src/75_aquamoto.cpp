@@ -668,6 +668,28 @@ public:
 		};
 		wireBox(netIllumWater_, 0);
 		wireBox(netIllumLand_,  1);
+
+		// The group's own "?" (lower-right corner): what this block makes, how to use it, why it costs.
+		// Short on purpose -- the controls carry their own tooltips; this answers the three questions a
+		// tooltip cannot: what the thing IS, what to do with it, and where the time goes.
+		if (QToolButton *hb = w->findChild<QToolButton *>("renderedHelpButton")) {
+			QWidget *parent = w;
+			QObject::connect(hb, &QToolButton::clicked, w, [parent]() {
+				QMessageBox::information(parent, "Rendered image",
+					"WHAT IT IS\n"
+					"A picture of the slice as the 3-D window would draw it: water and land are put up as\n"
+					"two surfaces, each lit with its own illumination method, and the result is captured\n"
+					"as one image. It lands as its own handle in Scene Objects.\n\n"
+					"HOW TO USE IT\n"
+					"Tick the box to build it, and it is rebuilt at every slice change. Set each side's\n"
+					"method with the two illumination buttons (the spin box is the model, 1-7).\n"
+					"\"Water side\" shows the wet half alone. Right-click its Scene Objects row to drape\n"
+					"it back on z for a lit 3-D view -- the drape follows later slices on its own.\n\n"
+					"WHY IT IS SLOW\n"
+					"Every slice costs a full two-sided render plus the readback of the pixels, instead of\n"
+					"the plain flat composite. Untick the box while scrubbing or playing.");
+			});
+		}
 		if (auto *tabs = w->findChild<QTabWidget *>("mainTabWidget")) {
 			QObject::connect(tabs, &QTabWidget::currentChanged, w, [this, tabs](int i) {
 				(void)i;                       // whichever tab comes forward: the boxes state the

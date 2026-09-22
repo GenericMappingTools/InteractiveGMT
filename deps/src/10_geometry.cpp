@@ -2797,44 +2797,16 @@ static inline void surfSetScale(Scene *s, double x, double y, double z) {
 // scale (read off the surface prop, never recomputed here) and is pushed a hair below it, so the
 // order is right in a tilted view and in the flat 2-D one, where the surface's Z scale is 0.
 static void nanPlaneUpdate(Scene *s) {
-	if (!s || !s->ren) return;
-	vtkProp3D *sp = surfProp(s);
-	// FLAT-2-D ONLY (user order, 2026-09-22). A backdrop behind a hole is what a TOP-DOWN map needs:
-	// seen from above, the quad is exactly the hole and nothing else. In a TILTED 3-D view the very
-	// same quad is a full-extent SHEET standing under the relief -- a base plane, which is forbidden
-	// here. So the backdrop exists in the flat map and does not exist in 3-D; `applyVE` runs on every
-	// mode switch, so it appears and disappears with the view with no other call site involved.
-	const bool want = s->gridHasNaN && s->flat2d && !s->globe && !s->imageOnly && !s->gridPlaceholder &&
-	                  sp != nullptr && sp->GetVisibility() != 0 && s->gx1 > s->gx0 && s->gy1 > s->gy0;
-	if (!want) {
-		if (s->nanPlane) s->nanPlane->SetVisibility(0);
-		return;
-	}
-	if (!s->nanPlane) {
-		s->nanPlaneSrc = vtkSmartPointer<vtkPlaneSource>::New();
-		s->nanPlaneSrc->SetResolution(1, 1);
-		vtkNew<vtkPolyDataMapper> map;
-		map->SetInputConnection(s->nanPlaneSrc->GetOutputPort());
-		map->ScalarVisibilityOff();                 // a flat colour, never a scalar mapped through a LUT
-		s->nanPlane = vtkSmartPointer<vtkActor>::New();
-		s->nanPlane->SetMapper(map);
-		s->nanPlane->GetProperty()->LightingOff();  // a hole is not a surface: no light may touch it
-		s->nanPlane->PickableOff();
-		s->ren->AddActor(s->nanPlane);
-	}
-	const double zf = s->zmin;                      // the grid floor: where NaN nodes' geometry is pinned
-	s->nanPlaneSrc->SetOrigin(s->gx0, s->gy0, zf);
-	s->nanPlaneSrc->SetPoint1(s->gx1, s->gy0, zf);
-	s->nanPlaneSrc->SetPoint2(s->gx0, s->gy1, zf);
-	s->nanPlaneSrc->Modified();
-	double sc[3] = { 1.0, 1.0, 1.0 };
-	sp->GetScale(sc);
-	s->nanPlane->SetScale(sc[0], sc[1], sc[2]);
-	// Position is applied AFTER the scale, so this offset survives a Z scale of 0 (flat 2-D) — where
-	// plane and surface would otherwise be coplanar and fight for the depth buffer.
-	s->nanPlane->SetPosition(0.0, 0.0, -0.002 * (s->gx1 - s->gx0) * (sc[0] != 0.0 ? sc[0] : 1.0));
-	s->nanPlane->GetProperty()->SetColor(s->nanColor[0], s->nanColor[1], s->nanColor[2]);
-	s->nanPlane->SetVisibility(1);
+	// THE BACKDROP IS GONE. FORBIDDEN, IN EVERY MODE (user order, 2026-09-22, repeated).
+	//
+	// It was one flat unlit quad at the grid floor in the Preferences NaN fill colour, so a hole read
+	// as that colour instead of as the window background. Whatever it bought in a top-down map, in a
+	// tilted view it IS a white base plane standing under the relief, and it also painted the collar
+	// along an Aquamoto layer's land/water line. Gating it (flat-2-D only, then "no other raster in
+	// the window") was not enough -- it came back. So it is not built, not shown, not maintained: the
+	// function stays as the ONE place that would have to change if a hole ever needs a backdrop
+	// again, and every caller (applyVE, the Preferences handler) keeps calling it and gets nothing.
+	if (s && s->nanPlane) s->nanPlane->SetVisibility(0);
 }
 
 // ── the 3-D view's camera gestures, in ONE place ─────────────────────────────────────────────────
@@ -3496,15 +3468,38 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 	}
 	if (zmin > zmax) { zmin = 0.0; zmax = 1.0; }   // all-NaN guard
 
-	// Pin NaN nodes' GEOMETRY z to the grid floor so a filled hole is a flat sheet (the z SCALAR
-	// stays NaN, so the CTF still paints it with the NaN fill colour). Same id order as the insert
-	// loop above (id = j*nx + i). A NaN coordinate would otherwise corrupt any quad referencing it.
+	// NaN nodes' GEOMETRY z. A NaN node on the RIM of a hole — one that still has data neighbours —
+	// takes the MEAN OF THOSE NEIGHBOURS, in z and in its scalar alike; a NaN node with no data
+	// around it is pinned to the grid floor as before (it carries no cell, so only its coordinate
+	// has to be finite). Same id order as the insert loop above (id = j*nx + i).
+	//
+	// THE RIM IS WHY. A cell whose corners straddle a hole's edge used to be dropped, and where TWO
+	// grids are cut from one field by the same mask (an Aquamoto layer's water half and land half)
+	// BOTH of them dropped it: a one-cell slot ran along the whole coastline, owned by nobody —
+	// invisible from above, wide open as the camera tilts. The rim node gives that cell four finite
+	// corners with honest values, so the two meshes meet along it instead of both refusing it.
+	std::vector<float> rimZ;                   // written after the scan, so a rim never feeds a rim
+	std::vector<vtkIdType> rimId;
 	for (int j = 0; j < ny; ++j) {
 		for (int i = 0; i < nx; ++i) {
-			if (std::isnan(lay.at(z, i, j)))
-				pts->SetPoint((vtkIdType)j * nx + i, x0 + i * dx, y0 + j * dy, zmin);
+			if (!std::isnan(lay.at(z, i, j))) continue;
+			double acc = 0.0; int n = 0;
+			for (int dj = -1; dj <= 1; ++dj)
+				for (int di = -1; di <= 1; ++di) {
+					if (!di && !dj) continue;
+					const int ii = i + di, jj = j + dj;
+					if (ii < 0 || ii >= nx || jj < 0 || jj >= ny) continue;
+					const double v = lay.at(z, ii, jj);
+					if (!std::isnan(v)) { acc += v; ++n; }
+				}
+			const vtkIdType id = (vtkIdType)j * nx + i;
+			pts->SetPoint(id, x0 + i * dx, y0 + j * dy, n ? acc / n : zmin);
+			if (n) { rimId.push_back(id); rimZ.push_back((float)(acc / n)); }
 		}
 	}
+	// The scalar too: left NaN, the CTF would paint the rim in the NaN fill colour and draw a bright
+	// collar around every hole — the cell is real now, so it must carry a real value.
+	for (size_t k = 0; k < rimId.size(); ++k) zval->SetValue(rimId[k], rimZ[k]);
 
 	vtkNew<vtkCellArray> cells;
 	// vtkCellArray defaults to 64-bit ids on win64. A grid id is < nx*ny; when that fits in
@@ -3516,15 +3511,17 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 			vtkIdType b =  j      * nx + i + 1;
 			vtkIdType c = (j + 1) * nx + i + 1;
 			vtkIdType d = (j + 1) * nx + i;
-			// A NaN IS A DATA HOLE. No cell is emitted where any corner is NaN, so the hole is a real
-			// gap in the mesh: no geometry, no normal, and above all NOTHING FOR THE LIGHT TO HIT.
-			// Emitting the quad and relying on the NaN scalar -> CTF NanColor (what this did before)
-			// paints the right colour and then lets the PBR light multiply it — white NaN came out
-			// beige. A hole cannot be illuminated. The NaN fill colour is shown by the flat unlit
-			// backdrop behind the surface (nanPlaneUpdate), which is also what a click lands on.
-			if (std::isnan(lay.at(z, i, j    )) || std::isnan(lay.at(z, i + 1, j    )) ||
-			    std::isnan(lay.at(z, i + 1, j + 1)) || std::isnan(lay.at(z, i,     j + 1)))
-				continue;
+			// A NaN IS A DATA HOLE, and the hole stays a real gap in the mesh: no geometry, no normal,
+			// NOTHING FOR THE LIGHT TO HIT (emitting the quad and relying on the NaN scalar -> CTF
+			// NanColor paints the right colour and then lets the PBR light multiply it — white NaN
+			// came out beige). What changed is only the hole's RIM: a cell with at least one corner
+			// on data is kept, its NaN corners carrying the neighbour mean set above, so the edge is
+			// a full cell wide instead of half of one. A cell with NO data at all is still dropped.
+			{
+				const int nanN = (int)std::isnan(lay.at(z, i,     j    )) + (int)std::isnan(lay.at(z, i + 1, j    )) +
+				                 (int)std::isnan(lay.at(z, i + 1, j + 1)) + (int)std::isnan(lay.at(z, i,     j + 1));
+				if (nanN == 4) continue;
+			}
 			if (triangulate) {
 				vtkIdType t1[3] = { a, b, c };   // lower-right tri
 				vtkIdType t2[3] = { a, c, d };   // upper-left  tri
@@ -3607,10 +3604,26 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 		for (int ii = 0; ii < tw; ++ii) {
 			const int i = xs[ii]; const double x = x0 + i * dx;
 			const float zz = z[(vtkIdType)i * ny + j];
-			// NaN node: geometry z pinned to the floor (valid mesh, flat hole), z SCALAR kept NaN so
-			// the CTF paints it with the NaN fill colour.
-			pts->InsertNextPoint(x, y, std::isnan(zz) ? fillZ : zz);
-			zval->InsertNextValue(zz);
+			// NaN node. On the RIM of a hole (data among its full-res neighbours) it takes their MEAN,
+			// in geometry and in scalar alike -- the same rule makeGridFromArray uses, and for the same
+			// reason: the rim cell is kept now, so its NaN corners must carry honest finite values or
+			// the hole's edge is half a cell short and the CTF paints a collar around it. With no data
+			// around it at all, it is pinned to the floor as before (it carries no cell).
+			float zrim = zz;
+			if (std::isnan(zz)) {
+				double acc = 0.0; int n = 0;
+				for (int dj = -1; dj <= 1; ++dj)
+					for (int di = -1; di <= 1; ++di) {
+						if (!di && !dj) continue;
+						const int ii2 = i + di, jj2 = j + dj;
+						if (ii2 < 0 || ii2 >= nx || jj2 < 0 || jj2 >= ny) continue;
+						const float v = z[(vtkIdType)ii2 * ny + jj2];
+						if (!std::isnan(v)) { acc += v; ++n; }
+					}
+				if (n) zrim = (float)(acc / n);
+			}
+			pts->InsertNextPoint(x, y, std::isnan(zrim) ? fillZ : zrim);
+			zval->InsertNextValue(zrim);
 			// ILLUMINATION COMES FROM THE GRID, NOT FROM THE MESH. The normal is computed from this
 			// node's TRUE FULL-RESOLUTION neighbours (i±1, j±1), never from the LOD-sampled ones, so
 			// one node has ONE normal at every zoom level -- which is the only way the hillshade can
@@ -3654,9 +3667,13 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 			// A NaN IS A DATA HOLE — same rule as makeGridFromArray above, same reason (a hole has
 			// no geometry, so no light can reach it). The sampled corner nodes are the ones actually
 			// meshed at this LOD step, so a coarse tile's hole follows what it draws.
-			if (std::isnan(z[(vtkIdType)xs[ii  ]*ny + ys[jj  ]]) || std::isnan(z[(vtkIdType)xs[ii+1]*ny + ys[jj  ]]) ||
-			    std::isnan(z[(vtkIdType)xs[ii+1]*ny + ys[jj+1]]) || std::isnan(z[(vtkIdType)xs[ii  ]*ny + ys[jj+1]]))
-				continue;
+			{   // ...and the hole's RIM is kept: dropped only when ALL FOUR corners are NaN.
+				const int nanN = (int)std::isnan(z[(vtkIdType)xs[ii  ]*ny + ys[jj  ]]) +
+				                 (int)std::isnan(z[(vtkIdType)xs[ii+1]*ny + ys[jj  ]]) +
+				                 (int)std::isnan(z[(vtkIdType)xs[ii+1]*ny + ys[jj+1]]) +
+				                 (int)std::isnan(z[(vtkIdType)xs[ii  ]*ny + ys[jj+1]]);
+				if (nanN == 4) continue;
+			}
 			const vtkIdType quad[4] = { a, b, c, d };
 			cells->InsertNextCell(4, quad);
 		}
@@ -4667,6 +4684,7 @@ static void sceneGlobeSync(Scene *s);                   // below: put the WHOLE 
 // Defined in 50_scene.cpp (it needs the image placement + actor rebuild); declared here because
 // applyVE drives it — see ExtraObj::zposAuto.
 static void sceneRefloatAutoImages(Scene *s);
+static void sceneRedrapeImages(Scene *s);      // re-lay every draped image on the relief's CURRENT z
 
 static void rebuildAxisLabels(Scene *s) {
 	if (!s || !s->ren || !s->ren->GetActiveCamera()) return;

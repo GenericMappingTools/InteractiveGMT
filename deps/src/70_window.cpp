@@ -2921,6 +2921,7 @@ static bool sceneUpdateBaseGridZ(Scene *s, const float *z, int nx, int ny,
 	}
 	freeSubtreeActors(s, s->quadRoot);   // every cached mesh describes the OLD heights
 	refineQuadtree(s);                   // re-mesh exactly what the camera can see, no more
+	sceneRedrapeImages(s);               // …and so does every draped image: re-lay it on the new z
 	applyShading(s);                     // the relief moved -> so did its light
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return true;
