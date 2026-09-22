@@ -12,6 +12,10 @@
 #   layers  — `set_layer!` over a cube's layer axis. Either kind of 3-D cube.
 #   grids   — `replace_grid!` over a list of same-geometry grids. Any grid window.
 
+# Has a Stop been asked for? The flag lives on the C side, set by the Cinema tab's "Stop" button and
+# cleared by its "Go", so the render loop below reads it between frames and ends the run itself.
+_movie_aborted()::Bool = ccall(_fn(:gmtvtk_movie_aborted_h), Cint, ()) != 0
+
 # The window a scene pointer belongs to, as the figure handle every movie entry point takes.
 function _moviedlg_fig(scene::Ptr{Cvoid})
 	fig = get(_FIGREG, scene, nothing)
@@ -114,6 +118,10 @@ function _on_movie(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		_progress_show_async(nf + 1, "Make movie — rendering…")
 		out = try
 			movie(fig; frames = frames, common...) do fg, f
+				# STOP, asked for between frames. The Cinema tab's "Stop" only raises a flag on the C
+				# side (gmtvtk_movie_abort_h); the run is ended HERE, by the loop that owns it, so the
+				# `finally` below still closes the progress bar and `movie`'s own cleanup still runs.
+				_movie_aborted() && error("Make movie: stopped")
 				mutate(fg, f)
 				# The encode runs INSIDE `movie`, after the last frame, so the only place to announce it
 				# from out here is the last frame's own callback.

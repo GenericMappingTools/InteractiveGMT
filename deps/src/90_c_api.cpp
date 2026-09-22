@@ -4708,6 +4708,15 @@ GMTVTK_API void gmtvtk_set_movie_callback(JuliaMovieFn fn) {
 	g_juliaMovie = fn;
 }
 
+// STOP A RUNNING MOVIE. The render loop lives in the host (src/moviedlg.jl), one frame callback per
+// frame, so the only thing a Stop button can do is RAISE A FLAG that the loop reads between frames —
+// it must not kill anything mid-encode. The flag is set by the Cinema tab's "Stop" and cleared by its
+// "Go"; the host asks for it with gmtvtk_movie_aborted_h and ends the run itself, which is what makes
+// the partial file and the progress bar get cleaned up by the code that owns them.
+static int g_movieAbort = 0;
+GMTVTK_API void gmtvtk_movie_abort_h(int on) { g_movieAbort = on ? 1 : 0; }
+GMTVTK_API int  gmtvtk_movie_aborted_h(void) { return g_movieAbort; }
+
 // Open Tools > Make movie on this window, the same dialog the menu entry opens (one constructor, so
 // the menu and this cannot drift). Returns 1 when it is up, 0 when the window is gone or the .ui
 // could not be loaded. Its counterpart for the cube slider is gmtvtk_show_cube_layer_dialog.

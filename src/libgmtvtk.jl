@@ -125,7 +125,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_symbol_set_world_size_h, :gmtvtk_fit_camera_for_orbit_h,
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
 	:gmtvtk_view_points, :gmtvtk_promote_points_h, :gmtvtk_selection_count, :gmtvtk_get_selection,
-	:gmtvtk_set_object_visible,
+	:gmtvtk_set_object_visible, :gmtvtk_set_axes_shown_h, :gmtvtk_restack_grid_h, :gmtvtk_refit_view_h,
 	:gmtvtk_view_fv, :gmtvtk_promote_fv_h, :gmtvtk_set_julia_eval, :gmtvtk_set_table, :gmtvtk_log_error, :gmtvtk_log_info,
 	:gmtvtk_error_box, :gmtvtk_get_xfac,
 	:gmtvtk_take_messages, :gmtvtk_shutdown, :gmtvtk_set_headless,   # Qt's own warnings -> the failure sink; ordered teardown
@@ -290,6 +290,7 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_anno_count_h,      # movie tool: how many the window carries (-1 = window gone)
 	:gmtvtk_set_movie_callback,# movie tool: Tools > Make movie -> _on_movie
 	:gmtvtk_open_movie_dialog_h,# movie tool: open that dialog on one window
+	:gmtvtk_movie_aborted_h,    # movie tool: has the Cinema tab's "Stop" been pressed?
 	:gmtvtk_capture_view_rgba, # GMT.jl script export: the whole viewport (RGBA, transparent background)
 	:gmtvtk_copy_view_clipboard_h,  # the displayed view -> system clipboard (PNG, background transparent)
 	:gmtvtk_set_meca_sdr_h,    # focal mechanisms: attach each event's strike/dip/rake to its ball

@@ -298,6 +298,9 @@ public:
 	}
 };
 
+// fwd (defined in 90_c_api.cpp, same TU) -- the Stop flag the host's movie loop reads between frames.
+extern "C" __declspec(dllexport) void gmtvtk_movie_abort_h(int on);
+
 class AquamotoWindow {
 public:
 	QMainWindow *win = nullptr;           // the loaded aquamoto.ui window itself (NOT wrapped/copied)
@@ -409,6 +412,11 @@ public:
 	          *cineSpinEdit = nullptr, *cineProfX0Edit = nullptr, *cineProfLenEdit = nullptr;
 	QCheckBox *cineLoopCheck = nullptr, *cine3DCheck = nullptr, *cineSpinCheck = nullptr,
 	          *cineProfCheck = nullptr;
+	// The Movie group: output file, container, and the two buttons that start and end a recording.
+	QLineEdit   *cineMovieName_   = nullptr;
+	QComboBox   *cineMovieFormat_ = nullptr;
+	QDoubleSpinBox *cineMovieRate_ = nullptr;
+	QPushButton *cineMovieGo_ = nullptr, *cineMovieStop_ = nullptr;
 	// WHAT THE SLICE MUST STAND ON, read off the SCENE before each push overwrites it (fireSlice) and
 	// put back after it (afterSliceShown). Not the Cinema checkbox: that box is only ONE of the
 	// switches that can put this window on the 3-D surface (the Shading dock's "Shaded image (2-D)"
@@ -1308,6 +1316,46 @@ public:
 			if (e) QObject::connect(e, &QLineEdit::editingFinished, w, applyView);
 		if (cineResetViewBtn) QObject::connect(cineResetViewBtn, &QPushButton::clicked, w, [this]() { cinemaResetView(); });
 
+		// THE MOVIE GROUP (below View): "Movie file", "Format", Go, Stop.
+		//
+		// NO NEW MOVIE MAKER. Go sends the SAME `key=value` block Tools > Make movie sends, to the SAME
+		// host entry point (g_juliaMovie -> src/moviedlg.jl `_on_movie`), with `source=layers` and the
+		// range read off the Cinema tab's own From / To / Frames per second boxes. The two surfaces
+		// offer different amounts of the same option language; neither renders a frame of its own.
+		//
+		// A MOVIE PLAYS THE RANGE ONCE: Loop is switched off before the run (a looping playback has no
+		// last frame, so the recording would never end) and Play is switched on with it.
+		cineMovieName_   = w->findChild<QLineEdit *>("cinemaMovieNameEdit");
+		cineMovieFormat_ = w->findChild<QComboBox *>("cinemaMovieFormatCombo");
+		cineMovieRate_   = w->findChild<QDoubleSpinBox *>("cinemaMovieRateSpin");
+		cineMovieGo_     = w->findChild<QPushButton *>("cinemaMovieGoButton");
+		cineMovieStop_   = w->findChild<QPushButton *>("cinemaMovieStopButton");
+		QPushButton *movieBrowse = w->findChild<QPushButton *>("cinemaMovieBrowseButton");
+		// `png` is not a movie: the host (moviedlg.jl) skips the encode for it, so the run ends with a
+		// directory of stills and no file to play. The other three are containers this Go really writes.
+		if (cineMovieFormat_)
+			cineMovieFormat_->addItems(QStringList{"mp4", "webm", "gif"});
+		// THE NAME STATES THE FORMAT. Changing the container rewrites the box's extension, so the file
+		// on disk and the combo can never disagree (the host re-stems the name anyway, which used to
+		// leave the box saying .mp4 next to a .webm that was actually written).
+		if (cineMovieFormat_)
+			QObject::connect(cineMovieFormat_, &QComboBox::currentTextChanged, w, [this](const QString &f) {
+				if (!cineMovieName_) return;
+				const QString t = cineMovieName_->text().trimmed();
+				if (t.isEmpty()) return;
+				QFileInfo fi(t);
+				const QString dir = fi.path(), base = fi.completeBaseName();
+				if (base.isEmpty()) return;
+				cineMovieName_->setText((dir.isEmpty() || dir == ".") ? base + "." + f
+				                                                      : dir + "/" + base + "." + f);
+			});
+		if (movieBrowse)
+			QObject::connect(movieBrowse, &QPushButton::clicked, w, [this]() { pickMovieFile(); });
+		if (cineMovieName_ && movieBrowse) fileBoxDoubleClick(cineMovieName_, movieBrowse);
+		if (cineMovieGo_)   QObject::connect(cineMovieGo_,   &QPushButton::clicked, w, [this]() { runMovie(); });
+		if (cineMovieStop_) QObject::connect(cineMovieStop_, &QPushButton::clicked, w, []() {
+			gmtvtk_movie_abort_h(1); });                        // the loop ends itself, between frames
+
 		// THE BOXES FOLLOW THE MOUSE. Rotating or zooming with the mouse is the same operation the
 		// Azimuth/Elevation/Zoom boxes perform, so the window has ONE view and the boxes must report
 		// it — a box that still says -35 while the view is at 12 is simply lying. The camera is read
@@ -1735,6 +1783,56 @@ public:
 		if (cineVeEdit)   cineVeEdit->setText("1");
 		if (cineZoomEdit) cineZoomEdit->setText(QString::number(scene_->gx1 - scene_->gx0, 'g', 6));
 		applyCameraFromBoxes();
+	}
+
+	// ---- the Movie group ---------------------------------------------------------------------
+	void pickMovieFile() {
+		if (!cineMovieName_) return;
+		const QString ext = cineMovieFormat_ ? cineMovieFormat_->currentText() : QString("mp4");
+		const QString fn = QFileDialog::getSaveFileName(win, "Movie file", cineMovieName_->text(),
+		                                                QString("Movie (*.%1);;All files (*)").arg(ext));
+		if (!fn.isEmpty()) cineMovieName_->setText(fn);
+	}
+
+	// GO. The block below is the movie dialog's own `source=layers` block, nothing invented: the host
+	// (src/moviedlg.jl `_on_movie`) is the only thing that renders and encodes, here as there.
+	void runMovie() {
+		if (!scene_ || !sceneAlive(scene_) || !g_juliaMovie) return;
+		const QString name = cineMovieName_ ? cineMovieName_->text().trimmed() : QString();
+		if (name.isEmpty()) { pickMovieFile(); return; }         // no file named yet -> ask for one
+		if (cineLoopCheck) cineLoopCheck->setChecked(false);      // a movie plays the range ONCE
+		// EVERY RECORDING STARTS AT `From`. After a run the transport is sitting on the LAST slice, and
+		// a second Go pressed there had nothing left to play: the frames all came back on that one
+		// slice, so the file was a single layer repeated. The slider is rewound first, so a movie
+		// always begins where the range begins -- a second Go is the same run as the first.
+		if (sliceSlider) sliceSlider->setValue(cinemaFrom());
+		const bool wasPlaying = cinemaPlaying();
+		if (cinePlayBtn) cinePlayBtn->setChecked(true);          // …and it IS the Play transport
+		QStringList kv;
+		kv << "source=layers";
+		kv << QString("from=%1").arg(cinemaFrom());
+		kv << QString("to=%1").arg(cinemaTo());
+		kv << "step=1";
+		kv << "name=" + name;
+		kv << "format=" + (cineMovieFormat_ ? cineMovieFormat_->currentText() : QString("mp4"));
+		// WHAT THE BOX SAYS IS WHAT GETS USED. A QDoubleSpinBox only turns its typed text into a value
+		// on editingFinished, so "12" typed and then Go clicked straight away still reported the old
+		// 24 — the control stated one frame rate and the movie was encoded at another. interpretText()
+		// commits the text first, so the number sent is the number on screen.
+		if (cineMovieRate_) cineMovieRate_->interpretText();
+		kv << QString("rate=%1").arg(cineMovieRate_ ? cineMovieRate_->value() : 24.0);
+		kv << "clean=1";
+		gmtvtk_movie_abort_h(0);                                 // a fresh run starts un-stopped
+		if (cineMovieGo_)   cineMovieGo_->setEnabled(false);
+		if (cineMovieStop_) cineMovieStop_->setEnabled(true);
+		const QByteArray p = kv.join('\n').toUtf8();
+		const int ok = g_juliaMovie(scene_, p.constData());
+		gmtvtk_movie_abort_h(0);
+		if (cineMovieGo_)   cineMovieGo_->setEnabled(true);
+		if (cineMovieStop_) cineMovieStop_->setEnabled(false);
+		if (cinePlayBtn && !wasPlaying) cinePlayBtn->setChecked(false);   // the transport goes back
+		if (!ok)
+			sceneLogError(scene_, "Movie: it could not be made -- see the Julia console.", /*isError=*/true);
 	}
 
 	// ---- the floating η(x) figure ----------------------------------------------------------
