@@ -207,26 +207,20 @@ function _aqua_upsample_nodes(R::AbstractMatrix, W::Int, Hh::Int)::Matrix{Float3
 end
 
 """
-    _aqua_land_drape(scene, st) -> Union{Nothing,GMTimage}
+    _aqua_sat_lit(st, G, model, p) -> GMTimage
 
-The LAND half as a picture to drape on a land SURFACE: `nothing` unless "Sat img" is on. The
-satellite mosaic at texture resolution (`_aqua_sat_hires`), lit by THE land half's reflectance
-(`_hs_reflectance`, with the land's own model and sun — method 1 is lit as 2, as in the composite)
-through the same `grdimage -I` painter `_aqua_side_picture` uses. Laid south-first, labelled "BCBa",
-the convention `_drape_buf` reads a grid-derived image by.
+The satellite mosaic at texture resolution (`_aqua_sat_hires`), lit by grid `G`'s reflectance
+(`_hs_reflectance`, with `model` and the sun in `p` — method 1 is lit as 2, as in the composite)
+through the same `grdimage -I` painter `_aqua_side_picture` uses. `G` must stand on the bathymetry's
+nodes. Laid south-first, labelled "BCBa", the convention `_drape_buf` reads a grid-derived image by.
 """
-function _aqua_land_drape(scene::Ptr{Cvoid}, st::_AquaState)::Union{Nothing,GMTimage}
-	st.satimg || return nothing
-	H = get(_AQUA_HALF_GRID, AQUA_LAND, nothing)
-	H === nothing && return nothing
+function _aqua_sat_lit(st::_AquaState, G::GMTgrid, model::Int, p::Dict{String,String})::GMTimage
 	J = _aqua_sat_hires(st.bat)
 	_, _, W, Hh, _ = _pixaccess_img(J)
-	_, ml = get(_AQUA_LAST_MODELS, scene, (2, 2))
-	m = (ml in (2, 3, 4)) ? ml : 2
-	p = st.illum[2]
+	m = (model in (2, 3, 4)) ? model : 2
 	az = _get(p, "azim") == "" ? "45" : _get(p, "azim")
 	el = _get(p, "elev") == "" ? "30" : _get(p, "elev")
-	Rn = _hs_reflectance(H, m, Dict{String,String}("azim" => az, "elev" => el))
+	Rn = _hs_reflectance(G, m, Dict{String,String}("azim" => az, "elev" => el))
 	Rh = _aqua_upsample_nodes(Rn, W, Hh)
 	b = st.bat.range
 	Rg = GMT.mat2grid(Rh; reg = 1, x = collect(range(b[1], b[2], length = W + 1)),
@@ -235,4 +229,18 @@ function _aqua_land_drape(scene::Ptr{Cvoid}, st::_AquaState)::Union{Nothing,GMTi
 	I = GMT.mat2img(reverse(rgb, dims = 1))
 	I.layout = "BCBa"
 	return I
+end
+
+"""
+    _aqua_land_drape(scene, st) -> Union{Nothing,GMTimage}
+
+The LAND half as a picture to drape on a land SURFACE: `nothing` unless "Sat img" is on. The land
+half the last combine cut (`_AQUA_HALF_GRID`), lit with the land's own model and sun.
+"""
+function _aqua_land_drape(scene::Ptr{Cvoid}, st::_AquaState)::Union{Nothing,GMTimage}
+	st.satimg || return nothing
+	H = get(_AQUA_HALF_GRID, AQUA_LAND, nothing)
+	H === nothing && return nothing
+	_, ml = get(_AQUA_LAST_MODELS, scene, (2, 2))
+	return _aqua_sat_lit(st, H, ml, st.illum[2])
 end

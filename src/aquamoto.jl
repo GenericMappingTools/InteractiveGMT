@@ -1139,6 +1139,9 @@ const _AQUA_STAGE_HALVES = Ref{Any}(nothing)
 # the slice changes. Only the light differs between presses.
 const _AQUA_STAGE_LOADED = Ref{Any}(nothing)
 
+# …and what the staging LAND surface was last built wearing: (state, ("Sat img", method, azim, elev)).
+const _AQUA_STAGE_LANDKEY = Ref{Any}(nothing)
+
 # The LAND grid, built once per file: the bathymetry never changes with the timestep.
 const _AQUA_STAGE_LAND = Ref{Any}(nothing)
 
@@ -1178,6 +1181,7 @@ function _aqua_stage_forget!()
 	_AQUA_STAGE_HALVES[] = nothing
 	_AQUA_STAGE_LAND[]   = nothing
 	_AQUA_LAND_SHOT[]    = nothing
+	_AQUA_STAGE_LANDKEY[] = nothing
 	if _AQUA_STAGE_WATCH[] !== nothing
 		close(_AQUA_STAGE_WATCH[])
 		_AQUA_STAGE_WATCH[] = nothing
@@ -1415,9 +1419,16 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 		# press on the same layer; only the LIGHT differs, and that is pushed onto surfaces already
 		# standing. Removing and re-adding them was costing 0.22 s a press for an identical result.
 		loaded = _AQUA_STAGE_LOADED[]
-		if loaded === nothing || loaded[1] !== st || loaded[2] != st.cur
-			# ONLY THE WATER SURFACE IS REPLACED. The land's is the same grid at every timestep (see
-			# `_aqua_land_grid`), so it is added once per file and then left standing.
+		needW = loaded === nothing || loaded[1] !== st || loaded[2] != st.cur
+		# THE LAND SURFACE AND WHAT IT WEARS. With "Sat img" it wears the satellite picture, LIT with the
+		# land's method and sun — the light is baked into that drape — so it is added again whenever any
+		# of those changes; otherwise once per file, as before.
+		lkey  = st.satimg ? (true, ml, azl, ell) : (false, 0, 0.0, 0.0)
+		lk    = _AQUA_STAGE_LANDKEY[]
+		needL = lk === nothing || lk[1] !== st || lk[2] != lkey
+		if needW
+			# ONLY THE WATER SURFACE IS REPLACED per slice. The land's is the same grid at every timestep
+			# (see `_aqua_land_grid`).
 			if loaded !== nothing
 				ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), h, AQUA_WATER)
 				_forget_object!(h, :grid, AQUA_WATER)
@@ -1428,12 +1439,20 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 			                   zrange = _aqua_water_range(Gw), record = false)
 			ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), h, AQUA_WATER)
 			_remember_object!(h, :grid, AQUA_WATER, Gw)
-			if loaded === nothing || loaded[1] !== st
-				_add_grid_to_scene(h, Gl, AQUA_LAND; cmap = st.landcmap, promote = false, record = false)
-				# …AND SHOWN: a grid added to a window that already has one is registered hidden, and
-				# this one is not an alternative view of the layer, it is HALF OF IT.
-				ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), h, AQUA_LAND, Cint(1))
+		end
+		if needL
+			if lk !== nothing
+				ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), h, AQUA_LAND)
+				_forget_object!(h, :grid, AQUA_LAND)
 			end
+			_add_grid_to_scene(h, Gl, AQUA_LAND; cmap = st.landcmap, promote = false, record = false,
+			                   drape = st.satimg ? _aqua_sat_lit(st, Gl, ml, st.illum[2]) : nothing)
+			# …AND SHOWN: a grid added to a window that already has one is registered hidden, and
+			# this one is not an alternative view of the layer, it is HALF OF IT.
+			ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), h, AQUA_LAND, Cint(1))
+			_AQUA_STAGE_LANDKEY[] = (st, lkey)
+		end
+		if needW || needL
 			# STRAIGHT DOWN, through the ONE 2D/3D door, and captured at SCALE 1: `SetScale(n>1)` builds
 			# the frame from n x n TILES with the camera window shifted per tile, and every view-dependent
 			# term — which is all of PBR with image-based lighting — then differs between them, so the
@@ -1492,12 +1511,14 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 		# at every timestep, so its picture depends only on its METHOD and its SUN — not on the slice.
 		# Cached against exactly those three, it is rendered once and reused, which takes a whole
 		# render + capture out of every press that only moved the wave.
+		# "Sat img" is in the key: it changes what the land wears. A satellite land is never shot with
+		# method 1 (its PBR render washes a photograph grey) — lit as 2, anonymously, as everywhere.
 		lhit = _AQUA_LAND_SHOT[]
-		imgL = (lhit !== nothing && lhit[1] === st && lhit[2] == ml && lhit[3] == azl && lhit[4] == ell) ?
-		       lhit[5] : nothing
+		imgL = (lhit !== nothing && lhit[1] === st && lhit[2] == ml && lhit[3] == azl && lhit[4] == ell &&
+		        lhit[5] == st.satimg) ? lhit[6] : nothing
 		if imgL === nothing
-			imgL = shoot(ml, AQUA_LAND, azl, ell)
-			imgL === nothing || (_AQUA_LAND_SHOT[] = (st, ml, azl, ell, imgL))
+			imgL = shoot((st.satimg && ml == 1) ? 2 : ml, AQUA_LAND, azl, ell)
+			imgL === nothing || (_AQUA_LAND_SHOT[] = (st, ml, azl, ell, st.satimg, imgL))
 		end
 		(imgW === nothing || imgL === nothing) && return imgW
 
