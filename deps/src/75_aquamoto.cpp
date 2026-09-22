@@ -730,7 +730,24 @@ public:
 				                .arg(aquaScenePtr(scene_)).arg(side).arg(mw).arg(ml)
 				                .arg(QString::number(t0, 'f', 3)),
 				            out, closedNow);
-				if (closedNow || out.isEmpty()) return;
+				if (closedNow) return;
+				// THE BOXES STATE THE USER'S METHODS, AND THIS BUTTON NEVER CHANGES THEM. Whatever the build
+				// does under the hood — a "Sat img" land half lit with 2 instead of 1 — is anonymous (user
+				// order, 2026-09-22). Put back without firing modelBoxEdited; say so on stderr, so the writer
+				// that moved them can be found.
+				auto keep = [](QSpinBox *sb, int v, const char *nm) {
+					if (!sb || sb->value() == v) return;
+					fprintf(stderr, "Aquamoto: %s model box moved %d -> %d during the side popup; restored\n",
+					        nm, v, sb->value());
+					QSignalBlocker b(sb);
+					sb->setValue(v);
+				};
+				keep(netIllumWater_, mw, "water");
+				keep(netIllumLand_,  ml, "land");
+				// …and the re-seed on re-activation (syncIllumModelSpins) must not overwrite them either:
+				// the values this press sent ARE the user's.
+				illumWaterSet_ = illumLandSet_ = true;
+				if (out.isEmpty()) return;
 				sceneLogError(scene_, out, /*isError=*/false);
 				if (win) win->statusBar()->showMessage(out, 5000);
 			});

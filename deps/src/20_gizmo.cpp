@@ -74,8 +74,11 @@ namespace {
 
 // Local-space layout (gizmo-relative units; z=0 at the focal point / rotation centre).
 constexpr double kBodyZ  = 1.4;     // floating control-body height above focal pt
-constexpr double kConeR  = 0.047;   // vertical arrowhead base radius
-constexpr double kConeH0 = 0.11;    // vertical arrowhead height at scale 1
+constexpr double kConeR  = 0.0705;  // vertical arrowhead base radius (x1.5 of 0.047, user 2026-09-22)
+constexpr double kConeH0 = 0.165;   // vertical arrowhead height at scale 1 (x1.5 of 0.11)
+// Shortest the cone may get, as a fraction of kConeH0. At VE 0 the old 0.15 left a sliver nobody could
+// grab to raise the VE again; the cone never goes flat (user order, 2026-09-22).
+constexpr double kConeMinFrac = 0.6;
 constexpr double kRingR  = 0.35;    // ring radius (shared by both rings)
 constexpr double kRingH  = 0.078;   // ring band width (shared)
 constexpr double kHaxisFallback = 1.8;  // tilt-ring offset / horizontal-arm length (fixed multiple of `scale`)
@@ -170,9 +173,15 @@ void ringLook(vtkActor *a) { a->GetProperty()->SetColor(0.50,0.50,0.50); litLook
 // function, so the drawn cone and its grab region (hitTest) can never be sized by different rules.
 inline double coneR(const Gizmo &c) { return kConeR * ((c.s && c.s->globe) ? 1.5 : 1.0); }
 
+// ...and its height, ONE rule for the drawn cone and its grab region alike (hitTest).
+inline double coneH(const Gizmo &c) {
+	const double r = (c.veBase > 0.0) ? c.curSz / c.veBase : 1.0;   // relative to enable VE -> default size at startup
+	return kConeH0 * std::clamp(std::isfinite(r) ? r : 1.0, kConeMinFrac, 8.0);
+}
+
 void updateVCone(Gizmo &c) {
 	if (!c.vconeSrc) return;
-	double h = kConeH0 * std::clamp(c.curSz / c.veBase, 0.15, 8.0);  // relative to enable VE -> default size at startup
+	double h = coneH(c);
 	c.vconeSrc->SetHeight(h);
 	c.vconeSrc->SetRadius(coneR(c));
 	c.vconeSrc->SetDirection(0.0, 0.0, 1.0);
@@ -377,7 +386,7 @@ Grab hitTest(Gizmo &c, vtkRenderer *ren, int x, int y) {
 	if (!ren) return Grab::None;
 	const double *p = c.centre;
 	const double s = c.scale;
-	const double coneH = kConeH0 * std::clamp(c.curSz / c.veBase, 0.15, 8.0);
+	const double cH = coneH(c);
 
 	// Cone grab = the base->apex SEGMENT with the (thin) base radius. Measuring a
 	// radius from the cone CENTRE would balloon with a tall cone (big VE) and eat
@@ -386,7 +395,7 @@ Grab hitTest(Gizmo &c, vtkRenderer *ren, int x, int y) {
 	// the grab region would sit somewhere the cone is not.
 	double baseC[2], apexC[2], baseE[2], q[3];
 	gizPoint(c, kBodyZ, 0.0, q);           worldToDisplay(ren, q[0], q[1], q[2], baseC);
-	gizPoint(c, kBodyZ + coneH, 0.0, q);   worldToDisplay(ren, q[0], q[1], q[2], apexC);
+	gizPoint(c, kBodyZ + cH, 0.0, q);   worldToDisplay(ren, q[0], q[1], q[2], apexC);
 	gizPoint(c, kBodyZ, coneR(c), q);      worldToDisplay(ren, q[0], q[1], q[2], baseE);
 	double rBase = std::sqrt(dist2(baseC, baseE[0], baseE[1]));
 	double rGrab = std::max(rBase*1.6, 12.0);

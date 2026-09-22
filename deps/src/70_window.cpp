@@ -26844,13 +26844,24 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		s->widget->renderWindow()->Render();
 	};
 	auto actVE = [s]() {
-		bool ok = false;
 		// The ACTIVE layer's own VE, in and out -- same resolver as the gizmo, the readout and the
 		// colour bar, so this dialog can never edit a layer other than the one on screen.
-		double v = QInputDialog::getDouble(s->win, "Vertical exaggeration",
-										   "VE factor:", activeVE(s), 1.0e-6, 1.0e6, 3, &ok);   // bounds are arithmetic guards, not a look limit
-		if (!ok) return;
-		if (double *vp = activeVEPtr(s)) { *vp = v; applyVE(s); }
+		// LIVE (user order, 2026-09-22): every change of the box is applied at once, through the same
+		// two lines OK used to run. OK keeps the value; Cancel puts the layer's own VE back.
+		const double v0 = activeVE(s);
+		QInputDialog dlg(s->win);
+		dlg.setWindowTitle("Vertical exaggeration");
+		dlg.setLabelText("VE factor:");
+		dlg.setInputMode(QInputDialog::DoubleInput);
+		dlg.setDoubleRange(1.0e-6, 1.0e6);   // bounds are arithmetic guards, not a look limit
+		dlg.setDoubleDecimals(3);
+		dlg.setDoubleValue(v0);
+		auto apply = [s](double v) {
+			if (double *vp = activeVEPtr(s)) { *vp = v; applyVE(s); }
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		};
+		QObject::connect(&dlg, &QInputDialog::doubleValueChanged, &dlg, apply);
+		if (dlg.exec() != QDialog::Accepted) apply(v0);
 	};
 	// Save Screenshot img: the PNG carries the view WITHOUT the window background, through the SAME
 	// captureViewRGBA (50_scene.cpp) the clipboard copy and the GMT.jl script export use — the
