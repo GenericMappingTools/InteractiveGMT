@@ -970,6 +970,8 @@ struct Scene {
 	// a real gap and nothing is left for the light to illuminate. This flat, UNLIT quad sits just under
 	// the grid floor in the Preferences NaN fill colour, so a hole reads as that colour instead of as
 	// the window background — and, being real geometry, it is what a click in a hole lands on.
+	// FLAT-2-D ONLY: in a tilted 3-D view the quad would read as a base plane under the relief, which
+	// is forbidden — see nanPlaneUpdate.
 	// (It was promised in a comment and never written: holes showed the window background, so a white
 	// NaN preference came out as the dark backdrop. `nanPlaneUpdate` builds and maintains it.)
 	vtkSmartPointer<vtkActor>             nanPlane;
@@ -2797,7 +2799,12 @@ static inline void surfSetScale(Scene *s, double x, double y, double z) {
 static void nanPlaneUpdate(Scene *s) {
 	if (!s || !s->ren) return;
 	vtkProp3D *sp = surfProp(s);
-	const bool want = s->gridHasNaN && !s->globe && !s->imageOnly && !s->gridPlaceholder &&
+	// FLAT-2-D ONLY (user order, 2026-09-22). A backdrop behind a hole is what a TOP-DOWN map needs:
+	// seen from above, the quad is exactly the hole and nothing else. In a TILTED 3-D view the very
+	// same quad is a full-extent SHEET standing under the relief -- a base plane, which is forbidden
+	// here. So the backdrop exists in the flat map and does not exist in 3-D; `applyVE` runs on every
+	// mode switch, so it appears and disappears with the view with no other call site involved.
+	const bool want = s->gridHasNaN && s->flat2d && !s->globe && !s->imageOnly && !s->gridPlaceholder &&
 	                  sp != nullptr && sp->GetVisibility() != 0 && s->gx1 > s->gx0 && s->gy1 > s->gy0;
 	if (!want) {
 		if (s->nanPlane) s->nanPlane->SetVisibility(0);
