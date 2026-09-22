@@ -351,20 +351,6 @@ end
 const _EARTH_MEAN_R_KM = 6371.0
 const _KM_PER_DEG_ARC  = 2pi * _EARTH_MEAN_R_KM / 360    # 111.195 km
 
-"""
-    groundtrack(sat; start, stop, step) -> Vector{GMTdataset}
-    groundtrack(sat, when)              -> Vector{GMTdataset}
-
-The sub-satellite track, as a multi-segment dataset ready to plot: columns are
-`lon`, `lat`, `alt_km`, `time` (Julian Day), and the track is **cut at the dateline** so it draws
-as a map track instead of streaking back across the plot.
-
-With keywords, `start` defaults to the TLE's own epoch (a TLE is only good for a few days either
-side of it), `stop` to one orbital period later — i.e. exactly one revolution — and `step` to 30
-seconds, which keeps a LEO track smooth.
-
-    groundtrack(sat; start = now(UTC), stop = now(UTC) + Hour(6), step = Minute(1))
-"""
 # THE ORBIT, as an orbit. The sub-satellite point is an EARTH-FIXED quantity: it says which piece of
 # ground the satellite is over, and in that frame a geostationary satellite DOES NOT ORBIT — it hangs
 # over one longitude, and its subpoint only wanders up and down by the orbit's inclination. Plotted at
@@ -434,6 +420,20 @@ function _frame_for(s::Satellite, frame::Symbol)::Symbol
 	return abs(period(s) - _SIDEREAL_DAY_MIN) <= 0.01 * _SIDEREAL_DAY_MIN ? :inertial : :earthfixed
 end
 
+"""
+    groundtrack(sat; start, stop, step) -> Vector{GMTdataset}
+    groundtrack(sat, when)              -> Vector{GMTdataset}
+
+The sub-satellite track, as a multi-segment dataset ready to plot: columns are
+`lon`, `lat`, `alt_km`, `time` (Julian Day), and the track is **cut at the dateline** so it draws
+as a map track instead of streaking back across the plot.
+
+With keywords, `start` defaults to the TLE's own epoch (a TLE is only good for a few days either
+side of it), `stop` to one orbital period later — i.e. exactly one revolution — and `step` to 30
+seconds, which keeps a LEO track smooth.
+
+    groundtrack(sat; start = now(UTC), stop = now(UTC) + Hour(6), step = Minute(1))
+"""
 function groundtrack(s::Satellite, when; altitude::Bool = true,
                      frame::Symbol = :auto)::Vector{GMT.GMTdataset}
 	j = _jds(when)

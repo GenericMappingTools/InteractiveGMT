@@ -1643,6 +1643,43 @@ function _aqua_side_popup(scene::Ptr{Cvoid}, side::Int, model_water::Int = 0, mo
 		_hs_declare_look(fig.h, -1)
 		_pump_once()
 	end
+	# THE OTHER HALF STANDS BESIDE IT, so the side shown alone is not a picture with a hole in it: the
+	# nodes this half left NaN are the OTHER half's ground, and it is put there as the surface it is —
+	# its own grid, its own palette, its own relief. Added AFTER the light above, because a reflectance
+	# is stamped with the window's ACTIVE grid (gmtvtk_set_shade_intensity_h -> E.owner) and the active
+	# one must still be the half this popup is about when that push happens.
+	#
+	# Through `_add_grid_to_scene` + `gmtvtk_set_object_visible`, the SAME two steps
+	# `_aqua_push_two_surfaces` uses to stand the tsunami's land beside its water (SACRED_LAW.md: same
+	# operation, same function). No reframe: both halves are the same layer, on the same nodes, in the
+	# same box — this is the main window's two-surface picture, shown one side at a time.
+	other = side == 0 ? AQUA_LAND : AQUA_WATER
+	Ho    = get(_AQUA_HALF_GRID, other, nothing)
+	if Ho !== nothing
+		_add_grid_to_scene(fig.h, Ho, other;
+		                   cmap = (side == 0 ? st.landcmap : st.watercmap), promote = false,
+		                   source = "$(st.path)?$(side == 0 ? "bathymetry" : st.varname)")
+		ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint),
+		      fig.h, other, Cint(1))
+		# …WITHOUT ITS OWN AXES. Every raster builds a set of its own (SACRED_LAW.md, raster-own-axes),
+		# which is right for two rasters that describe different ground — these two describe THE SAME
+		# ground, node for node, so the second box only doubles the frame and the lon/lat labels over
+		# the first one. Its own set is hidden (the programmatic form of that raster's Axes checkbox);
+		# nothing is re-pointed, and the half this popup is about keeps framing the window.
+		ccall(_fn(:gmtvtk_set_axes_shown_h), Cvoid, (Ptr{Cvoid}, Cstring, Cint),
+		      fig.h, other, Cint(0))
+		# …AND THE CAMERA RE-FIT TO WHAT THE WINDOW NOW HOLDS. Flat 2-D parks the camera just above the
+		# z-max of whatever raster set it — the water half, 3 m — so a companion 2 km tall sat behind it
+		# and the land was simply missing until the user toggled 3-D and back.
+		ccall(_fn(:gmtvtk_refit_view_h), Cvoid, (Ptr{Cvoid},), fig.h)
+		# THE PILE IS LEFT ALONE. The companion arrives on top, which is where a last-added raster
+		# belongs, and the colour bar follows it (resolveActiveGrid reads the pile's top). Sending it
+		# to the bottom to keep the bar on the water was tried and REPAINTS THE LAND IN THE WATER'S
+		# PALETTE — the half this window is about ends up lending its colours to the other half, which
+		# is a worse lie than a bar naming the wrong side. Measured, not assumed: the land came back
+		# white-on-white at sea level under the tsunami's diverging ramp.
+		_pump_once()
+	end
 	return Cint(1)
 end
 
