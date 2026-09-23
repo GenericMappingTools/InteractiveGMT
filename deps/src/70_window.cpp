@@ -5790,17 +5790,19 @@ public:
 	// panels with a Roughness slider each would be two controls writing one value, which is how they
 	// come to disagree. The sun is the dialog's own compass + quarter-circle, reused by both.
 	ParamSlider sKeyI, sFillI, sRough, sMetal;
-	// Method 1 only: the render-path knobs a baked texture has no use for (a flat image is a picture
-	// — IBL, occlusion and the screen passes need real 3-D geometry). Rows hidden for method 7.
+	// The render-path knobs. IBL, its intensity and FXAA are method 1's alone (rows hidden for method
+	// 7). Tone mapping, occlusion (with its radius) and cast shadows serve both: method 1 through
+	// VTK's passes, method 7 through its own bake (Scene::bakeTone/bakeAO/bakeShadows).
 	ParamSlider sEnvI, sSSAO;
 	double ssaoSeed = 0.5;                             // the dock's rule: the slider is 0..200% of this
-	QCheckBox *cbIBLx = nullptr, *cbSSAOx = nullptr, *cbTonex = nullptr, *cbFXAAx = nullptr;
+	QCheckBox *cbSSAOx = nullptr, *cbTonex = nullptr, *cbFXAAx = nullptr;
+	QLabel *lFXAA = nullptr;                          // FXAA's own label, inside the Cast shadows row
 	QCheckBox *cbShadowx = nullptr;   // Cast shadows — a render PASS on this path, not a look
 	QWidget *pbrRowShadow = nullptr;
-	// The four boxes sit TWO PER ROW (IBL | Tone mapping, Occlusion | FXAA): four rows of one box
-	// each made method 1 taller than the compass beside it for no gain, when a checkbox needs a
-	// fraction of the width its row has. These are the row containers, hidden as a unit.
-	QWidget *pbrRowIBL = nullptr, *pbrRowSSAO = nullptr;
+	// The four boxes sit TWO PER ROW (Tone mapping | Occlusion, Cast shadows | FXAA): four rows of
+	// one box each made method 1 taller than the compass beside it for no gain, when a checkbox needs
+	// a fraction of the width its row has. These are the row containers.
+	QWidget *pbrRowToneAO = nullptr;
 	QWidget *optSlot = nullptr;                        // the shared per-model panel cell (see setModel)
 	// COMMON CONTROL — not a method's own: the drape blend is a property of the picture laid over the
 	// surface, not of the light, so it stands under every method.
@@ -5808,6 +5810,8 @@ public:
 	QWidget *drapeRow = nullptr;                       // …its row, so the label goes with it
 	QLabel *lAzim, *lElev;
 	QWidget *elevWrap = nullptr;                                       // "Elevation" caption + its dial
+	QWidget *azRowW = nullptr;                                         // the Azimuth/Elevation boxes' row
+	QVBoxLayout *azHostSide = nullptr, *azHostBottom = nullptr;        // its two slots (see placeAzRow)
 	QWidget *reflBox = nullptr, *waveBox = nullptr, *fcBox = nullptr, *lookBox = nullptr;  // per-model panels
 	QWidget *pbrBox = nullptr;                                         // methods 1/7: the PBR panel
 	QRadioButton *rbOldAlgo = nullptr, *rbGrdGrad = nullptr;
@@ -5967,8 +5971,17 @@ public:
 		elevDial = new ElevationDial(d);
 		dial->setFixedSize(112, 112);
 		elevDial->setFixedSize(72, 72);
-		band->addWidget(dial, 0, Qt::AlignVCenter);
-		band->addSpacing(14);
+		// THE LEFT COLUMN: the two dials, and under them a slot for the Azimuth/Elevation boxes. Methods
+		// 1 and 7 put the boxes there, level with the PBR panel's last row (Cast shadows), instead of in
+		// a row of their own under the whole band (setModel -> placeAzRow). Stretches above and between
+		// keep the dials centred when the slot is empty.
+		auto *leftCol = new QVBoxLayout();
+		leftCol->setContentsMargins(0, 0, 0, 0);
+		leftCol->setSpacing(0);
+		auto *dials = new QHBoxLayout();
+		dials->setSpacing(0);
+		dials->addWidget(dial, 0, Qt::AlignVCenter);
+		dials->addSpacing(14);
 		// "Elevation" sits DIRECTLY on its dial (2 px apart), and the caption+dial pair is centred
 		// against the compass beside it — not floated to the top of a tall grid row.
 		lElev = new QLabel("Elevation", d);
@@ -5979,7 +5992,15 @@ public:
 		elevCol->setSpacing(2);
 		elevCol->addWidget(lElev);
 		elevCol->addWidget(elevDial, 0, Qt::AlignHCenter);
-		band->addWidget(elevWrap, 0, Qt::AlignVCenter);
+		dials->addWidget(elevWrap, 0, Qt::AlignVCenter);
+		dials->addStretch(1);
+		leftCol->addStretch(1);
+		leftCol->addLayout(dials);
+		leftCol->addStretch(1);
+		azHostSide = new QVBoxLayout();
+		azHostSide->setContentsMargins(0, 0, 0, 0);
+		leftCol->addLayout(azHostSide);
+		band->addLayout(leftCol);
 		band->addSpacing(24);
 
 		auto mkEdit = [d](const QString &txt) {
@@ -6081,10 +6102,10 @@ public:
 		              mkSlider(sMetal, 0.0, 1.0, scn ? activeLook(scn).metallic : 0.0, 2, "Metallic", "",
 		                       "0 = dielectric (4% white highlight, full diffuse); 1 = metal (the "
 		                       "highlight takes the surface's own colour and the diffuse lobe goes)."));
-		// METHOD 1 ONLY, from here down. These are render-path controls — an image-based light, the
-		// ambient-occlusion pass and the two screen passes — and a baked flat texture has no use for
-		// any of them, which is exactly why the dock greys them out in flat mode (syncFlatEnable).
-		// The rows exist once and are hidden for method 7 rather than living in a second panel.
+		// The render-path controls. Env (IBL) and FXAA are method 1's alone and are hidden for method
+		// 7. Tone mapping, Ambient occlusion, SSAO radius and Cast shadows show for both: method 7's
+		// bake does those three itself, from the grid (reliefOcclusion).
+		// The rows exist once, never in a second panel.
 		flPBR->addRow("Env (IBL)",
 		              mkSlider(sEnvI, 0.0, 3.0, scn ? scn->envIntensity : 1.0, 2, "Env (IBL)", "",
 		                       "Image-based-light intensity: the sky environment's contribution."));
@@ -6118,34 +6139,28 @@ public:
 			h->addWidget(boxR);
 			h->addStretch(1);
 			flPBR->addRow(labL, row);
+			return lr;
 		};
-		mkCheckPair(pbrRowIBL, "Image-based light",
-		            mkBox(cbIBLx, scn ? scn->useIBL : false,
-		                  "Light the surface with a sky environment as well as the sun."),
-		            "Tone mapping",
+		// Paired by WHO READS THEM: tone mapping and occlusion serve both PBR methods (method 7 does
+		// them itself, from the grid), and so do cast shadows. FXAA is method 1's alone, so its box and
+		// label are hidden for method 7 inside a row that stays.
+		mkCheckPair(pbrRowToneAO, "Tone mapping",
 		            mkBox(cbTonex, scn ? scn->useTone : false,
-		                  "Neutral PBR tone-mapping pass — tames blown-out highlights."),
-		            "Neutral PBR tone-mapping pass — tames blown-out highlights.");
-		mkCheckPair(pbrRowSSAO, "Ambient occlusion",
+		                  "Neutral PBR tone mapping: tames blown-out highlights."),
+		            "Ambient occlusion",
 		            mkBox(cbSSAOx, scn ? scn->useSSAO : false,
-		                  "Screen-space ambient occlusion: darkens creases and valley floors."),
-		            "FXAA",
-		            mkBox(cbFXAAx, scn ? scn->useFXAA : false,
-		                  "Fast approximate anti-aliasing on the finished frame."),
-		            "Fast approximate anti-aliasing on the finished frame.");
-		// Cast shadows: the sun's own self-shadowing, a VTK shadow-map pass. A PASS on this render
-		// path, exactly like the four above — not a way of deriving a reflectance, so it is a control
-		// here and never a method of its own.
-		pbrRowShadow = new QWidget(optSlot);
-		{
-			auto *h = new QHBoxLayout(pbrRowShadow);
-			h->setContentsMargins(0, 0, 0, 0);
-			h->addWidget(mkBox(cbShadowx, scn ? scn->useShadows : false,
-			                   "Terrain shadows cast along the sun's azimuth and elevation. Needs real "
-			                   "3-D geometry."));
-			h->addStretch(1);
-			flPBR->addRow("Cast shadows", pbrRowShadow);
-		}
+		                  "Ambient occlusion: darkens creases and valley floors."),
+		            "Ambient occlusion: darkens creases and valley floors.");
+		// Cast shadows: the sun's own self-shadowing, a PASS on the render path (method 1's shadow map,
+		// method 7's march over the grid), not a way of deriving a reflectance — a control here and
+		// never a method of its own. It took the place of "Image-based light", which is gone.
+		lFXAA = mkCheckPair(pbrRowShadow, "Cast shadows",
+		                    mkBox(cbShadowx, scn ? scn->useShadows : false,
+		                          "Terrain shadows cast along the sun's azimuth and elevation."),
+		                    "FXAA",
+		                    mkBox(cbFXAAx, scn ? scn->useFXAA : false,
+		                          "Fast approximate anti-aliasing on the finished frame."),
+		                    "Fast approximate anti-aliasing on the finished frame.");
 		eWave     = mkEdit("");      flWave->addRow("Wavelength (px)", eWave);
 		eWave->setToolTip("<html>Cut-in wavelength of the highpass filter, in pixels.<br>"
 		                  "Empty = half the longer grid side, the ppdrc default.</html>");
@@ -6198,8 +6213,12 @@ public:
 		common->addStretch(1);
 		outer->addLayout(common);
 
-		// --- azimuth / elevation boxes + OK -------------------------------------------------------
-		auto *row = new QHBoxLayout();
+		// --- azimuth / elevation boxes ------------------------------------------------------------
+		// One widget, moved between two slots by placeAzRow: here, under the whole band, or beside the
+		// PBR panel under the dials (methods 1 and 7).
+		azRowW = new QWidget(d);
+		auto *row = new QHBoxLayout(azRowW);
+		row->setContentsMargins(0, 0, 0, 0);
 		lAzim = new QLabel("Azimuth", d);
 		eAzim = mkEdit("0");
 		eAzR  = mkEdit("0");    eAzR->setStyleSheet("background:#ff5555;");
@@ -6218,7 +6237,10 @@ public:
 		// buttons on the click, the dials when the hand is let go, the sliders on release, the boxes and
 		// radios when their value is committed. A button that only repeated what the controls already did
 		// is one more thing to press for nothing.
-		outer->addLayout(row);
+		azHostBottom = new QVBoxLayout();
+		azHostBottom->setContentsMargins(0, 0, 0, 0);
+		azHostBottom->addWidget(azRowW);
+		outer->addLayout(azHostBottom);
 
 		// --- restore the last light, then wire everything ----------------------------------------
 		const HillshadeState &st = g_hillshadeState;
@@ -6269,6 +6291,14 @@ public:
 			apply();
 		});
 
+		// A dialog that opens on method 7 shows method 7's own three switches, not the GPU passes'
+		// (the boxes were built from the latter). Nothing is connected yet, so this applies nothing.
+		if (model == 7 && scn) {
+			cbTonex->setChecked(scn->bakeTone);
+			cbSSAOx->setChecked(scn->bakeAO);
+			cbShadowx->setChecked(scn->bakeShadows);
+		}
+
 		// PICKING A METHOD IS THE ACT. The numbered buttons ARE the choice of illumination, so clicking
 		// one applies it there and then (user order, 2026-09-18) — and since the OK button is gone, so
 		// does every other control, each at the moment its value is committed: the dials on release, the
@@ -6282,11 +6312,21 @@ public:
 		// picture must APPLY the picture: with OK gone there is nowhere else for it to be committed.
 		for (QLineEdit *e : { eGain, eWave, eAmp })
 			if (e) QObject::connect(e, &QLineEdit::editingFinished, d, [this]() { apply(); });
-		for (QCheckBox *c : { cbIBLx, cbSSAOx, cbTonex, cbFXAAx, cbShadowx })
+		for (QCheckBox *c : { cbSSAOx, cbTonex, cbFXAAx, cbShadowx })
 			if (c) QObject::connect(c, &QCheckBox::toggled, d, [this](bool) { apply(); });
 
 		if (auto *b = models->button(model)) b->setChecked(true);
 		setModel(model);   // sizes the window too — SetFixedSize, see `outer` above
+	}
+
+	// The Azimuth/Elevation boxes under the dials (`beside`, methods 1 and 7: level with the PBR
+	// panel's last row, which saves the height of a whole row) or under the whole band (the rest).
+	void placeAzRow(bool beside) {
+		if (!azRowW || !azHostSide || !azHostBottom) return;
+		QVBoxLayout *to = beside ? azHostSide : azHostBottom, *from = beside ? azHostBottom : azHostSide;
+		if (to->indexOf(azRowW) >= 0) return;
+		from->removeWidget(azRowW);
+		to->addWidget(azRowW);
 	}
 
 	// shading_params.m's show_needed + toggle_uis: only the controls the picked model actually reads
@@ -6306,6 +6346,7 @@ public:
 		const bool takesElev = (m == 3 || m == 4) || look || pbr || oldAlgo;
 		const bool takesRefl = (m == 4);
 		const bool takesWave = (m == 9);
+		placeAzRow(pbr);
 		lAzim->setVisible(takesAzim || merc);
 		eAzim->setVisible(takesAzim);
 		eAzR->setVisible(merc);  eAzG->setVisible(merc);  eAzB->setVisible(merc);
@@ -6321,18 +6362,18 @@ public:
 			if (QWidget *w = fl->labelForField(eGain))        w->setVisible(m == 5);
 			if (QWidget *w = fl->labelForField(sShadeAmb.sl)) w->setVisible(m == 6);
 		}
-		// The material rows serve both PBR methods; the render-path rows belong to method 1 alone —
-		// a baked flat texture has no environment light, no occlusion pass and no screen passes.
+		// The material rows, tone mapping, occlusion and cast shadows serve both PBR methods. The
+		// environment light and FXAA belong to method 1 alone: a baked flat texture has no sky and
+		// no screen pass.
 		if (auto *fl = qobject_cast<QFormLayout *>(pbrBox->layout())) {
-			// The two checkbox ROWS, not the four boxes: each row carries a pair, and hiding a box
-			// inside a row that is still there would leave its label standing alone.
-			QWidget *vtkOnly[] = { sEnvI.sl, sSSAO.sl, pbrRowIBL, pbrRowSSAO, pbrRowShadow };
-			for (QWidget *w : vtkOnly) {
-				if (!w) continue;
-				w->setVisible(vtk);
-				if (QWidget *lab = fl->labelForField(w)) lab->setVisible(vtk);
+			if (sEnvI.sl) {
+				sEnvI.sl->setVisible(vtk);
+				if (QWidget *lab = fl->labelForField(sEnvI.sl)) lab->setVisible(vtk);
 			}
 		}
+		// FXAA shares the Cast shadows row, which both methods show: its box and label go on their own.
+		if (cbFXAAx) cbFXAAx->setVisible(vtk);
+		if (lFXAA)   lFXAA->setVisible(vtk);
 		eAmp->setVisible(oldAlgo);        // the Amp factor belongs to the old algorithm alone
 		if (auto *lbl = fcBox->layout() ? qobject_cast<QFormLayout *>(fcBox->layout()) : nullptr)
 			if (QWidget *w = lbl->labelForField(eAmp)) w->setVisible(oldAlgo);
@@ -6456,15 +6497,20 @@ public:
 			// texture has no environment to light it, no depth to occlude or cast from, and renders
 			// its colours verbatim). Set unconditionally, so picking another method TURNS THEM OFF
 			// instead of leaving a pass running under a look that cannot use it.
-			scn->useIBL     = (model == 1) && cbIBLx->isChecked();
+			scn->useIBL     = false;      // the "Image-based light" box is gone (user order, 2026-09-24)
 			scn->useSSAO    = (model == 1) && cbSSAOx->isChecked();
 			scn->useTone    = (model == 1) && cbTonex->isChecked();
 			scn->useFXAA    = (model == 1) && cbFXAAx->isChecked();
 			scn->useShadows = (model == 1) && cbShadowx->isChecked();
-			if (model == 1) {
-				scn->envIntensity = sEnvI.value();
-				scn->ssaoRadius   = ssaoSeed * sSSAO.value() / 100.0;
+			if (model == 1) scn->envIntensity = sEnvI.value();
+			// Method 7 does three of those itself, in the bake, and keeps its own switches for them so
+			// no GPU pass runs over the baked texture as well (a second tone mapping, most of all).
+			if (model == 7) {
+				scn->bakeTone    = cbTonex->isChecked();
+				scn->bakeAO      = cbSSAOx->isChecked();
+				scn->bakeShadows = cbShadowx->isChecked();
 			}
+			if (model == 1 || model == 7) scn->ssaoRadius = ssaoSeed * sSSAO.value() / 100.0;
 			if (model == 5) {
 				bool ok = false;
 				const double g = eGain->text().trimmed().toDouble(&ok);

@@ -1332,6 +1332,9 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 		kvi("ibl", s->useIBL ? 1 : 0);   kvi("ssao", s->useSSAO ? 1 : 0);
 		kvi("tone", s->useTone ? 1 : 0); kvi("fxaa", s->useFXAA ? 1 : 0);
 		kvi("shadows", s->useShadows ? 1 : 0); kvi("shadowres", s->shadowRes);
+		// …and method 7's own three, which its bake does itself (see Scene::bakeTone).
+		kvi("baketone", s->bakeTone ? 1 : 0); kvi("bakeao", s->bakeAO ? 1 : 0);
+		kvi("bakeshadows", s->bakeShadows ? 1 : 0);
 		kvd("barX0", s->barX0); kvd("barY0", s->barY0);
 		if (s->ren) {
 			if (vtkCamera *cam = s->ren->GetActiveCamera()) {
@@ -1425,6 +1428,8 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 		kb("ibl", s->useIBL);           kb("ssao", s->useSSAO);
 		kb("tone", s->useTone);         kb("fxaa", s->useFXAA);
 		kb("shadows", s->useShadows);
+		kb("baketone", s->bakeTone);    kb("bakeao", s->bakeAO);
+		kb("bakeshadows", s->bakeShadows);
 		if (geti("shadowres", i) && i > 0) { s->shadowRes = i; touched = true; }
 		// The geometry the look is drawn on (3-D surface vs flat baked image), through its ONE switch.
 		if (geti("imgmode", i) && (i != 0) != s->layerImgMode) { sceneSetShadedImage2D(s, i != 0); touched = false; }

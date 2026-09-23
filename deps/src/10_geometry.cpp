@@ -1358,6 +1358,12 @@ struct Scene {
 	bool   useSSAO = true, useTone = true, useFXAA = true, useIBL = false;
 	bool   useShadows = false;        // sun cast-shadows (terrain self-shadowing) — OFF by default (opt-in; mutually exclusive with useHillshade)
 	int    shadowRes  = 2048;         // shadow depth-map resolution (higher = crisper shadow edges)
+	// METHOD 7's own copies of three of those passes. The flat-image bake cannot run through VTK's
+	// passes (a tone pass over an already-toned texture tones it twice, and a flat quad has nothing to
+	// occlude or shadow), so applyPBRShade does the same three things itself, from the grid, and reads
+	// THESE. Separate from useTone/useSSAO/useShadows because those switch GPU passes on. Defaults are
+	// method 1's (tone and occlusion on, shadows off), so the two methods start from one picture.
+	bool   bakeTone = true, bakeAO = true, bakeShadows = false;
 	// --- EXTERNAL illumination (View > "Illumination (Hillshade)…", port of Mirone shading_params.m).
 	// A per-node REFLECTANCE grid computed by GMT grdgradient in Julia (src/hillshade.jl) and pushed
 	// down by gmtvtk_set_shade_intensity_h. When it is present the shade engine takes the intensity

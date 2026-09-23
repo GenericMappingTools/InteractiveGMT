@@ -142,6 +142,7 @@ struct ReliefLight {
 	double rough, metal, keyI, fillI;   // PBR bake: roughness, metalness, key + fill light intensity
 	double baseF0;                      // PBR bake: dielectric reflectance at normal incidence, from the IOR
 	double Gx, Gy, Gz, gizI;            // PBR bake: the gizmo's own scene light (gizI 0 = none / switched off)
+	bool   tone;                        // PBR bake: NeutralPBR tone mapping (Scene::bakeTone)
 };
 
 // THE REST OF METHOD 1's LIGHT RIG, read off the live renderer objects so the CPU bake is lit by the
@@ -152,6 +153,10 @@ static void reliefLightRig(Scene *s, double ior, ReliefLight &L) {
 	const double r = (ior > 0.0) ? (ior - 1.0) / (ior + 1.0) : 0.2;
 	L.baseF0 = r * r;                                        // vtkProperty::ComputeReflectanceFromIOR
 	L.Gx = 0.0;  L.Gy = 0.0;  L.Gz = 1.0;  L.gizI = 0.0;
+	L.tone = s ? s->bakeTone : true;
+	// Method 1 mutes the gizmo's light while cast shadows are on (applyShading), because it would
+	// flood them. The bake's own shadows get the same rig.
+	if (s && s->bakeShadows) return;
 	if (!s || !s->giz || !s->giz->light || !s->giz->light->GetSwitch()) return;
 	double p[3], f[3];
 	s->giz->light->GetPosition(p);
@@ -227,8 +232,15 @@ static inline void reliefDrawnNormal(const ReliefLight &L, const double nv[3], b
 //     so the same curve is the last stage here. SSAO, FXAA and the IBL sky are screen/environment
 //     passes this bake has no scene for; with IBL off (the default) method 1 has no environment term
 //     either, so there is nothing to stand in for it.
+//   * TONE, OCCLUSION AND SHADOWS follow method 1's three passes, from method 7's own switches
+//     (Scene::bakeTone/bakeAO/bakeShadows). `ao` and `sunVis` come from reliefOcclusion, computed
+//     over the grid. VTK's order is: shader output gamma-encoded, SSAO multiplies that, and the tone
+//     pass linearises it again, so with tone mapping on the occlusion reaches the radiance as ao^2.2.
+//     With tone mapping off it multiplies the encoded colour. A shadowed pixel loses the sun only;
+//     the headlight and the gizmo light still reach it, as in method 1's shadow-map pass.
 // A 2-D map is viewed straight down, so V = +Z.
-static inline void applyPBRShade(const ReliefLight &L, const double nvRaw[3], double rgb[3]) {
+static inline void applyPBRShade(const ReliefLight &L, const double nvRaw[3], double rgb[3],
+                                 double ao = 1.0, double sunVis = 1.0) {
 	double N[3];
 	reliefDrawnNormal(L, nvRaw, /*withVE=*/true, N);
 	auto clampd = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
@@ -271,9 +283,19 @@ static inline void applyPBRShade(const ReliefLight &L, const double nvRaw[3], do
 		const double NdH = clampd(N[0]*H[0] + N[1]*H[1] + N[2]*H[2], 1e-5, 1.0);
 		addLight(NdH, NdL, HdL, radiance);
 	};
-	addDirectional(L.Lx, L.Ly, L.Lz, L.keyI);                             // the sun
+	addDirectional(L.Lx, L.Ly, L.Lz, L.keyI * sunVis);                    // the sun (0 in cast shadow)
 	addDirectional(L.Gx, L.Gy, L.Gz, L.gizI);                             // the gizmo's light (0 = none)
 	addLight(NdV, NdV, 1.0, L.fillI);                                     // the headlight: L = H = V
+	ao = clampd(ao, 0.0, 1.0);
+	if (!L.tone) {                                                        // no tone pass: encode, then SSAO
+		for (int i = 0; i < 3; ++i)
+			rgb[i] = clampd(std::pow(clampd(Lo[i], 0.0, 1.0), 1.0 / 2.2) * ao, 0.0, 1.0);
+		return;
+	}
+	if (ao < 1.0) {                                                       // SSAO before the tone pass
+		const double a = std::pow(ao, 2.2);
+		for (int i = 0; i < 3; ++i) Lo[i] *= a;
+	}
 	// NeutralPBR (Khronos PBR Neutral), then the sRGB encode — vtkToneMappingPass verbatim.
 	const double startCompression = 0.8 - 0.04, desaturation = 0.15;
 	const double x = std::min(Lo[0], std::min(Lo[1], Lo[2]));
@@ -291,6 +313,106 @@ static inline void applyPBRShade(const ReliefLight &L, const double nvRaw[3], do
 	}
 	for (int i = 0; i < 3; ++i)
 		rgb[i] = std::pow(clampd(t[i], 0.0, 1.0), 1.0 / 2.2);
+}
+
+// METHOD 7's AMBIENT OCCLUSION AND CAST SHADOW, computed from the grid.
+// Method 1 gets both from VTK passes that work on the rendered depth. A flat image has no depth, so
+// here they are computed on the relief AS DRAWN: heights z/L.fz and horizontal distances x/L.fx, y,
+// the same scaling reliefDrawnNormal gives the normal. With that, the occlusion radius is method 1's
+// own number (Scene::ssaoRadius, in world units of the drawn scene) and the shadows follow the VE.
+template <class ZAt>
+static double gridTopZ(int nx, int ny, const ZAt &zAt) {        // highest non-NaN z; NaN if none
+	double top = -std::numeric_limits<double>::infinity();
+	for (int ix = 0; ix < nx; ++ix)
+		for (int iy = 0; iy < ny; ++iy) {
+			const double v = zAt(ix, iy);
+			if (v > top) top = v;
+		}
+	return std::isinf(top) ? std::numeric_limits<double>::quiet_NaN() : top;
+}
+struct BakeOcclusion {
+	bool   ao = false, shadow = false;
+	double R = 0.0;          // occlusion radius, drawn units (Scene::ssaoRadius)
+	double hTop = 0.0;       // highest drawn height in the grid: a shadow ray above it cannot be blocked
+};
+static BakeOcclusion makeBakeOcclusion(const Scene *s, const ReliefLight &L, double zTop) {
+	BakeOcclusion O;
+	if (!s) return O;
+	O.ao = s->bakeAO && s->ssaoRadius > 0.0;
+	O.R  = s->ssaoRadius;
+	O.shadow = s->bakeShadows && !std::isnan(zTop);
+	O.hTop = zTop / L.fz;
+	return O;
+}
+// `zAt(ix, iy)` is the grid node's z (NaN allowed), iy counted from the south. The outputs are the two
+// factors applyPBRShade takes: ao (1 = unoccluded) and sunVis (0 = the sun is blocked).
+// Occlusion: horizon-based, 8 directions x 6 samples inside R. Each direction contributes how far the
+// terrain rises above the pixel's own tangent plane (sin of the horizon angle minus sin of the tangent
+// angle), weighted down toward R. That is the fraction of the normal's hemisphere the terrain hides,
+// which is what SSAO's hemisphere samples count.
+// Shadow: march from the node toward the sun, bilinear heights, step one cell growing slowly with
+// distance, until the ray is above the highest point of the grid or leaves it.
+template <class ZAt>
+static void reliefOcclusion(const ReliefLight &L, const BakeOcclusion &O, const ZAt &zAt, int nx, int ny,
+                            double dx, double dy, int ix, int iy, const double nv[3],
+                            double &ao, double &sunVis) {
+	ao = 1.0;  sunVis = 1.0;
+	if ((!O.ao && !O.shadow) || nx < 2 || ny < 2 || dx == 0.0 || dy == 0.0) return;
+	const double z0 = zAt(ix, iy);
+	if (std::isnan(z0)) return;
+	const double h0 = z0 / L.fz;
+	const double kx = L.fx / dx, ky = 1.0 / dy;                  // drawn distance -> grid index
+	const double cell = std::min(std::fabs(dx) / L.fx, std::fabs(dy));
+	const double NaN = std::numeric_limits<double>::quiet_NaN();
+	auto hAt = [&](double fx, double fy) -> double {             // bilinear drawn height; NaN off the grid
+		if (!(fx >= 0.0 && fy >= 0.0 && fx <= nx - 1 && fy <= ny - 1)) return NaN;
+		const int x0 = (int)fx, y0 = (int)fy;
+		const int x1 = std::min(x0 + 1, nx - 1), y1 = std::min(y0 + 1, ny - 1);
+		const double tx = fx - x0, ty = fy - y0;
+		const double a = zAt(x0, y0), b = zAt(x1, y0), c = zAt(x0, y1), d = zAt(x1, y1);
+		return ((a * (1.0 - tx) + b * tx) * (1.0 - ty) + (c * (1.0 - tx) + d * tx) * ty) / L.fz;
+	};
+	if (O.shadow && L.Lz > 0.0) {
+		const double hl = std::sqrt(L.Lx * L.Lx + L.Ly * L.Ly);
+		if (hl > 1e-6) {
+			const double ux = L.Lx / hl, uy = L.Ly / hl, tanEl = L.Lz / hl;
+			const double bias = 0.25 * cell * tanEl;                 // keeps a lit slope from shadowing itself
+			double t = cell;
+			for (int k = 0; k < 512; ++k) {
+				const double ray = h0 + t * tanEl;
+				if (ray > O.hTop) break;
+				const double fx = ix + ux * t * kx, fy = iy + uy * t * ky;
+				if (!(fx >= 0.0 && fy >= 0.0 && fx <= nx - 1 && fy <= ny - 1)) break;
+				const double h = hAt(fx, fy);
+				if (!std::isnan(h) && h > ray + bias) { sunVis = 0.0; break; }
+				t += cell * (1.0 + k / 64.0);
+			}
+		}
+	}
+	if (O.ao && O.R > cell) {
+		double N[3];
+		reliefDrawnNormal(L, nv, /*withVE=*/true, N);
+		const int ND = 8, NS = 6;
+		double occ = 0.0;
+		for (int d = 0; d < ND; ++d) {
+			const double ang = 2.0 * vtkMath::Pi() * d / ND;
+			const double cx = std::cos(ang), sy = std::sin(ang);
+			const double tanT = N[2] > 1e-6 ? -(N[0] * cx + N[1] * sy) / N[2] : 0.0;
+			const double sinT = tanT / std::sqrt(1.0 + tanT * tanT);
+			double best = 0.0;
+			for (int j = 0; j < NS; ++j) {
+				const double r = O.R * (j + 0.5) / NS;
+				const double h = hAt(ix + cx * r * kx, iy + sy * r * ky);
+				if (std::isnan(h)) continue;
+				const double dh = h - h0;
+				const double sinH = dh / std::sqrt(dh * dh + r * r);
+				const double w = 1.0 - (r / O.R) * (r / O.R);
+				best = std::max(best, (sinH - sinT) * w);
+			}
+			occ += best;
+		}
+		ao = std::clamp(1.0 - occ / ND, 0.0, 1.0);
+	}
 }
 // Modulate rgb (0..1, in/out) by the relief shade for a TRUE-coord surface normal nv.
 // `externI`, when given, is a reflectance somebody else already computed for THIS point — the GMT
@@ -485,6 +607,10 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 	const GridLay zlay = gridLay(nx, ny, zlayout);                               // THE layout resolver (10_geometry.cpp)
 	auto Zc = [&](int ix, int iy) -> double { return zlay.at(z, ix, iy); };
 	auto clampi = [](int v, int hi2) { return v < 0 ? 0 : (v > hi2 ? hi2 : v); };
+	// Method 7's occlusion and cast shadows (reliefOcclusion). The shadow march needs the grid's top.
+	double zTop = std::numeric_limits<double>::quiet_NaN();
+	if (pbr && s->bakeShadows) zTop = gridTopZ(nx, ny, [&](int ix, int iy) { return Zc(ix, iy); });
+	const BakeOcclusion occ = pbr ? makeBakeOcclusion(s, L, zTop) : BakeOcclusion();
 	// Per-row parallel: every output row is a disjoint slice of `out`, and every read (z, tbl LUT,
 	// light L) is shared read-only, so no locks. vtkSMPTools runs on VTK's SMP backend (TBB here).
 	vtkSMPTools::For(0, txH, [&](vtkIdType rBeg, vtkIdType rEnd) {
@@ -537,7 +663,11 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 			if (len > 0.0) { n0 /= len; n1 /= len; n2 /= len; }
 			const double nv[3] = { n0, n1, n2 };
 			double c[3] = { cr / 255.0, cg / 255.0, cb / 255.0 };
-			if (pbr) applyPBRShade(L, nv, c);                    // PBR lit look (no hillshade selected)
+			if (pbr) {                                           // PBR lit look (no hillshade selected)
+				double ao, sunVis;
+				reliefOcclusion(L, occ, Zc, nx, ny, dx, dy, ix, iy, nv, ao, sunVis);
+				applyPBRShade(L, nv, c, ao, sunVis);
+			}
 			else     applyReliefShade(L, nv, c);                 // SHARED hillshade (grdimage or Lambert), matches the surface
 			p[0] = (unsigned char)std::min(255.0, c[0] * 255.0 + 0.5);
 			p[1] = (unsigned char)std::min(255.0, c[1] * 255.0 + 0.5);
@@ -746,6 +876,15 @@ static void bakeAquaShade(Scene *s) {
 	}
 	const double dx = s->gdx != 0.0 ? s->gdx : 1.0, dy = s->gdy != 0.0 ? s->gdy : 1.0;
 	auto at = [](const float *z, int ix, int iy, int gny) -> double { return z[(size_t)ix * gny + iy]; };
+	// Method 7's occlusion and cast shadows, PER SIDE: each side is occluded by its own surface, as it
+	// is lit from its own (two-surface illumination law).
+	auto zStage = [&](int ix, int iy) -> double { return at(stage, ix, iy, ny); };
+	auto zBathy = [&](int ix, int iy) -> double { return at(bathy, ix, iy, ny); };
+	const double NaN = std::numeric_limits<double>::quiet_NaN();
+	const BakeOcclusion occW = (wPbr && stage) ?
+		makeBakeOcclusion(s, Lw, s->bakeShadows ? gridTopZ(nx, ny, zStage) : NaN) : BakeOcclusion();
+	const BakeOcclusion occL = (lPbr && bathy) ?
+		makeBakeOcclusion(s, Ll, s->bakeShadows ? gridTopZ(nx, ny, zBathy) : NaN) : BakeOcclusion();
 	// Per-row parallel: texel (row r = south..north, col) <-> grid (ix=col, iy=r); z is column-major
 	// z[ix*ny+iy] (same layout as gridZ), the composite RGBA is row-major row0=south (aqua_pack_rgba).
 	vtkSMPTools::For(0, ny, [&](vtkIdType rBeg, vtkIdType rEnd) {
@@ -797,7 +936,12 @@ static void bakeAquaShade(Scene *s) {
 			if (len > 0.0) { n0 /= len; n1 /= len; n2 /= len; }
 			const double nv[3] = { n0, n1, n2 };
 			double c[3] = { base[t] / 255.0, base[t+1] / 255.0, base[t+2] / 255.0 };
-			if (pbr) applyPBRShade(L, nv, c);            // SAME PBR bake as the flat CPT image
+			if (pbr) {                                   // SAME PBR bake as the flat CPT image
+				double ao, sunVis;
+				if (land) reliefOcclusion(L, occL, zBathy, nx, ny, dx, dy, ix, iy, nv, ao, sunVis);
+				else      reliefOcclusion(L, occW, zStage, nx, ny, dx, dy, ix, iy, nv, ao, sunVis);
+				applyPBRShade(L, nv, c, ao, sunVis);
+			}
 			else     applyReliefShade(L, nv, c);         // SAME grdimage/Lambert shade as every surface
 			out[t]   = (unsigned char)std::min(255.0, c[0] * 255.0 + 0.5);
 			out[t+1] = (unsigned char)std::min(255.0, c[1] * 255.0 + 0.5);
