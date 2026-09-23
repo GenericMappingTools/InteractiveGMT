@@ -7347,6 +7347,105 @@ GMTVTK_API int gmtvtk_visible_region_test(void *scene, double *out4) {
 	out4[0] = W; out4[1] = E; out4[2] = S; out4[3] = N;
 	return 1;
 }
+
+// test hook: THE GRID MESH'S NaN CONTRACT, measured on what makeGridTile really builds. `z` is a BCB
+// buffer (column-major, south-first: z[i*ny + j]); the whole grid is meshed as ONE tile at `step`,
+// with the builder's own holeRim / pixelCells switches. Nothing is inferred from the code -- every
+// number is counted off the returned polydata:
+//   out[0] cells                      out[1] points
+//   out[2] cells with a NaN scalar at any of their points
+//   out[3] cells whose centroid's nearest node is NaN  (a square/cell standing ON a NaN)
+//   out[4] cell points whose scalar is not the value of THEIR OWN node (an invented value)
+//   out[5] real SAMPLED nodes (step grid) that no cell centroid falls nearest to (pixelCells only)
+// Returns 1, or 0 on bad input.
+GMTVTK_API int gmtvtk_tile_mesh_test(const float *z, int nx, int ny, int step, int holeRim,
+                                     int pixelCells, double *out) {
+	if (!z || nx < 2 || ny < 2 || !out) return 0;
+	const double x0 = 0.0, dx = 1.0, y0 = 0.0, dy = 1.0;
+	float zmin = std::numeric_limits<float>::max();
+	for (vtkIdType k = 0; k < (vtkIdType)nx * ny; ++k) if (!std::isnan(z[k]) && z[k] < zmin) zmin = z[k];
+	vtkSmartPointer<vtkPolyData> pd = makeGridTile(z, nx, ny, 0, nx - 1, 0, ny - 1, x0, dx, y0, dy,
+	                                               (double)zmin, step, holeRim != 0, pixelCells != 0);
+	if (!pd) return 0;
+	auto Zn = [&](int i, int j) -> float {
+		i = i < 0 ? 0 : (i > nx - 1 ? nx - 1 : i);  j = j < 0 ? 0 : (j > ny - 1 ? ny - 1 : j);
+		return z[(vtkIdType)i * ny + j];
+	};
+	vtkDataArray *sc = pd->GetPointData()->GetScalars();
+	vtkCellArray *polys = pd->GetPolys();
+	double nCells = 0, nNaNCell = 0, nOnNaN = 0, nInvented = 0;
+	std::vector<char> covered((size_t)nx * ny, 0);
+	vtkNew<vtkIdList> ids;
+	polys->InitTraversal();
+	while (polys->GetNextCell(ids)) {
+		++nCells;
+		double cx = 0.0, cy = 0.0; bool hasNaN = false;
+		const vtkIdType np = ids->GetNumberOfIds();
+		for (vtkIdType k = 0; k < np; ++k) {
+			double p[3]; pd->GetPoint(ids->GetId(k), p);
+			cx += p[0]; cy += p[1];
+			const double v = sc ? sc->GetTuple1(ids->GetId(k)) : 0.0;
+			if (std::isnan(v)) hasNaN = true;
+			if (!pixelCells) {
+				// corner mesh: a point sits ON a node, and must carry that node's own value
+				const int pi = (int)std::lround((p[0] - x0) / dx), pj = (int)std::lround((p[1] - y0) / dy);
+				const float own = Zn(pi, pj);
+				if (!(std::isnan(own) ? std::isnan(v) : std::fabs(v - own) <= 1e-5 * (1.0 + std::fabs(own))))
+					++nInvented;
+			}
+		}
+		if (hasNaN) ++nNaNCell;
+		cx /= (double)np; cy /= (double)np;
+		// a square is centred on its node only at step 1; at a coarse step the node is its lower-left
+		// quarter, so the owning node is the sampled one the square STARTS at
+		int ci, cj;
+		if (pixelCells) {
+			double b[6];                          // bounds of this cell
+			b[0] = b[2] = 1e300; b[1] = b[3] = -1e300;
+			for (vtkIdType k = 0; k < np; ++k) {
+				double p[3]; pd->GetPoint(ids->GetId(k), p);
+				b[0] = std::min(b[0], p[0]); b[1] = std::max(b[1], p[0]);
+				b[2] = std::min(b[2], p[1]); b[3] = std::max(b[3], p[1]);
+			}
+			ci = (int)std::lround(b[0] + 0.5);  cj = (int)std::lround(b[2] + 0.5);
+			const float own = Zn(ci, cj);
+			for (vtkIdType k = 0; k < np; ++k) {
+				const double v = sc ? sc->GetTuple1(ids->GetId(k)) : 0.0;
+				if (!(std::fabs(v - own) <= 1e-5 * (1.0 + std::fabs(own)))) { ++nInvented; break; }
+			}
+		}
+		else {
+			ci = (int)std::lround(cx);  cj = (int)std::lround(cy);
+		}
+		if (std::isnan(Zn(ci, cj)) && pixelCells) ++nOnNaN;
+		if (!pixelCells) {
+			// a corner-mesh cell stands on a NaN when ANY of its corner nodes is NaN and it still exists
+			// with a finite-looking value there -- already counted in nInvented; here count cells whose
+			// every corner node is NaN (nothing real under it at all)
+			bool anyReal = false;
+			for (vtkIdType k = 0; k < np; ++k) {
+				double p[3]; pd->GetPoint(ids->GetId(k), p);
+				if (!std::isnan(Zn((int)std::lround(p[0]), (int)std::lround(p[1])))) anyReal = true;
+			}
+			if (!anyReal) ++nOnNaN;
+		}
+		if (ci >= 0 && ci < nx && cj >= 0 && cj < ny) covered[(size_t)ci * ny + cj] = 1;
+	}
+	double nMissed = 0;
+	if (pixelCells) {
+		for (int i = 0; i < nx; i += step)
+			for (int j = 0; j < ny; j += step)
+				if (!std::isnan(Zn(i, j)) && !covered[(size_t)i * ny + j]) ++nMissed;
+		// the grid's last row/column are nodes of their own even off the step lattice
+		for (int j = 0; j < ny; j += step)
+			if ((nx - 1) % step && !std::isnan(Zn(nx - 1, j)) && !covered[(size_t)(nx - 1) * ny + j]) ++nMissed;
+		for (int i = 0; i < nx; i += step)
+			if ((ny - 1) % step && !std::isnan(Zn(i, ny - 1)) && !covered[(size_t)i * ny + ny - 1]) ++nMissed;
+	}
+	out[0] = nCells; out[1] = (double)pd->GetNumberOfPoints(); out[2] = nNaNCell;
+	out[3] = nOnNaN; out[4] = nInvented; out[5] = nMissed;
+	return 1;
+}
 #endif // GMTVTK_TEST_API
 
 // Register the grid-metadata callback used by the grdsample dialog's "OR Ref grid" picker.
@@ -7835,7 +7934,10 @@ GMTVTK_API int gmtvtk_pbr_render_offscreen_tex(const float *z, int nx, int ny, i
 	// draped on-screen surface wears — so nothing new is computed here.
 	vtkSmartPointer<vtkPolyData> pd =
 		makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, /*triangulate=*/true,
-		                  /*wantTC=*/useTex, zlayout);
+		                  /*wantTC=*/useTex, zlayout,
+		                  // ALWAYS the tsunami rim: this render exists only for the Aquamoto halves
+		                  // (_pbr_capture), so their mesh is exactly what it has always been.
+		                  /*holeRim=*/true);
 	if (!pd) return 0;
 
 	// THE ALBEDO IS LINEARISED FIRST — a PBR material's colour is LINEAR light, not a screen colour.
@@ -8732,7 +8834,8 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	// hillshadeMapper's per-point bake on every swap) turned a grid's illumination into work that
 	// repeated for the whole time the user was zooming. Grid illumination is computed from the GRID,
 	// once; the mesh is not allowed to make it happen again.
-	auto pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, false, /*wantTC=*/true, zlayout);
+	auto pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, false, /*wantTC=*/true, zlayout,
+	                            s->aquaWindow);
 
 	vtkNew<vtkPolyDataNormals> norms;
 	norms->SetInputData(pd);
@@ -8919,7 +9022,8 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 	const float *gz = nullptr; int gnx = 0, gny = 0;
 	if (hasImg) {
 		double zlo = zmin, zhi = zmax;
-		pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zlo, zhi, /*triangulate=*/true, /*wantTC=*/true, zlayout);
+		pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zlo, zhi, /*triangulate=*/true, /*wantTC=*/true, zlayout,
+		                       s->aquaWindow);
 	} else {
 		gz = z; gnx = nx; gny = ny;
 	}
@@ -9438,6 +9542,16 @@ GMTVTK_API void gmtvtk_aqua_queue_open(void *handle, const char *path) {
 		AquamotoWindow *w = AquamotoWindow::registry().value(s, nullptr);
 		if (w) w->setAndOpenPath(p);
 	});
+}
+
+// Mark a window as a TSUNAMI one (Scene::aquaWindow, sceneSetAquaWindow): it never wears the NaN
+// backdrop. The Aquamoto viewer's own window is marked by openFor; this is for the windows
+// aquamoto.jl opens itself (the sea-bed and combined-image staging windows, the Water/Land side
+// popup), called right after the window exists.
+GMTVTK_API void gmtvtk_set_aqua_window_h(void *handle, int on) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return;
+	sceneSetAquaWindow(s, on != 0);
 }
 
 // Open a VTK-readable file (.vtp/.vti/.vtr/.vts/.vtu/.vtm/.vtk/.vtkhdf and the .pvt* parallel forms,

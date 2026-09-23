@@ -313,6 +313,7 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_globe_spin_to_h,          # turn the globe about its own axis to a meridian (the animation)
 	:gmtvtk_freeze_scene_objects_h,   # hold the Scene Objects tree still while a run adds many elements
 	:gmtvtk_poly_globe_probe_h,       # probe: is a polygon really hooked onto the globe?
+	:gmtvtk_set_aqua_window_h,           # mark a tsunami window: its grid meshes keep the NaN-hole rim (aquamoto.jl)
 )
 
 # Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is

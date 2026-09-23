@@ -2738,7 +2738,9 @@ static void ensureNodeActor(Scene *s, QuadNode *n) {
 	g_lodBuilt++; g_lodCells += cells;
 	const double t0 = g_lodTrace ? lodNowMs() : 0.0;
 	auto tpd = makeGridTile(s->gridZ.data(), s->gnx, s->gny,
-							n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, s->zmin, n->step);
+							n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, s->zmin, n->step,
+							s->aquaWindow,
+							/*pixelCells=*/s->gridHasNaN && !s->aquaWindow);   // NaNs: each node its own square
 	vtkNew<vtkPolyDataMapper> m; m->SetInputData(tpd);
 	configureGridMapper(m, s->surfLut, s->zmin, s->zmax, s->surfCtfRange);
 	auto a = vtkSmartPointer<vtkActor>::New(); a->SetMapper(m);
@@ -2979,6 +2981,23 @@ static void refineQuadtree(Scene *s) {
 
 static void onLodCamera(vtkObject*, unsigned long, void *cd, void*) {
 	refineQuadtree(static_cast<Scene*>(cd));               // the BASE surface's tile pyramid
+}
+
+// THE ONE SETTER of Scene::aquaWindow (10_geometry.cpp): this window is a TSUNAMI one -- the Aquamoto
+// viewer's own scene (openFor, 75_aquamoto.cpp) or a staging / side-popup window aquamoto.jl opens.
+// It keeps the window's grid meshes on the tsunami's NaN-hole rim (makeGridFromArray / makeGridTile
+// `holeRim`, exactly the meshes these windows have always had) and keeps the NaN backdrop off
+// (nanPlaneUpdate). A base pyramid already built (a popup opened by view_grid before the host can
+// mark it) is re-meshed through the same free + refine pair an in-place z update uses.
+static void sceneSetAquaWindow(Scene *s, bool on) {
+	if (!s || s->aquaWindow == on) return;
+	s->aquaWindow = on;
+	nanPlaneUpdate(s);
+	if (s->quadRoot && s->surfGroup && !s->gridZ.empty()) {
+		freeSubtreeActors(s, s->quadRoot);
+		refineQuadtree(s);
+	}
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
 // Rebuild the window's BASE grid as a flat shaded IMAGE (asImage=true) or a real 3-D SURFACE

@@ -114,6 +114,14 @@ function _ge_nc_open(path::String, update::Bool)
 end
 
 _ge_nc_close(ds) = ccall((:GDALClose, GMT.libgdal), Cvoid, (Ptr{Cvoid},), ds)
+# …with the ROOT GROUP released first. A live group handle keeps the netCDF open after GDALClose for
+# the rest of the process — and `_ge_is_mgd77plus` runs on EVERY netCDF that is opened or dropped, so
+# every such file stayed locked on Windows (cannot be deleted or overwritten; the test suite's
+# "mktempdir cleanup ... EBUSY"). A file opened for writing may also not be fully flushed until then.
+function _ge_nc_close(ds, root)
+	root == C_NULL || ccall((:GDALGroupRelease, GMT.libgdal), Cvoid, (Ptr{Cvoid},), root)
+	_ge_nc_close(ds)
+end
 
 _ge_nc_array(root, name::String) =
 	ccall((:GDALGroupOpenMDArray, GMT.libgdal), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring, Ptr{Ptr{UInt8}}), root, name, C_NULL)
@@ -169,13 +177,19 @@ function _ge_nc_global_attrs(root)::Dict{String,String}
 	            (Ptr{Cvoid}, Ref{Csize_t}, Ptr{Ptr{UInt8}}), root, nref, C_NULL)
 	out = Dict{String,String}()
 	(lst == C_NULL) && return out
-	for k in 1:Int(nref[])                            # counted, NOT NULL-terminated
-		a = unsafe_load(lst, k)
-		a == C_NULL && continue
-		np = ccall((:GDALAttributeGetName, GMT.libgdal), Cstring, (Ptr{Cvoid},), a)
-		vp = ccall((:GDALAttributeReadAsString, GMT.libgdal), Cstring, (Ptr{Cvoid},), a)
-		np == C_NULL && continue
-		out[unsafe_string(np)] = (vp == C_NULL ? "" : unsafe_string(vp))
+	try
+		for k in 1:Int(nref[])                        # counted, NOT NULL-terminated
+			a = unsafe_load(lst, k)
+			a == C_NULL && continue
+			np = ccall((:GDALAttributeGetName, GMT.libgdal), Cstring, (Ptr{Cvoid},), a)
+			vp = ccall((:GDALAttributeReadAsString, GMT.libgdal), Cstring, (Ptr{Cvoid},), a)
+			np == C_NULL && continue
+			out[unsafe_string(np)] = (vp == C_NULL ? "" : unsafe_string(vp))
+		end
+	finally
+		# Every attribute handle keeps the netCDF open after GDALClose, exactly like the root group
+		# (see _ge_nc_close(ds, root)); GDALReleaseAttributes releases them all and frees the list.
+		ccall((:GDALReleaseAttributes, GMT.libgdal), Cvoid, (Ptr{Ptr{Cvoid}}, Csize_t), lst, nref[])
 	end
 	return out
 end
@@ -466,11 +480,13 @@ end
 function _ge_is_mgd77plus(path::String)::Bool
 	try
 		ds = _ge_nc_open(path, false)
+		root = C_NULL
 		try
-			a = _ge_nc_global_attrs(_shnc_root(ds))
+			root = _shnc_root(ds)
+			a = _ge_nc_global_attrs(root)
 			return haskey(a, "Format_Acronym") || haskey(a, "Data_Center_File_Number")
 		finally
-			_ge_nc_close(ds)
+			_ge_nc_close(ds, root)
 		end
 	catch
 		return false
@@ -701,7 +717,7 @@ function _ge_read(path::String, vars::Vector{String}, xISdist::Bool,
 		                      get(hdr, "Source_Institution", ""), xISdist, velSlot, false,
 		                      got !== nothing, false)
 	finally
-		_ge_nc_close(ds)
+		_ge_nc_close(ds, root)
 	end
 	return (track, extraVals, hdr, varlist)
 end
@@ -1103,7 +1119,7 @@ function _ge_save(tr::GmtEditTrack, flags::Vector{Vector{Bool}}, yvals::Vector{V
 			nwritten += 1
 		end
 	finally
-		_ge_nc_close(ds)
+		_ge_nc_close(ds, root)
 	end
 	nwritten == 0 && error("gmtedit: nothing to save — no channel was edited")
 	return out
@@ -1307,7 +1323,7 @@ function _ge_setvar!(edit::Ptr{Cvoid}, slot::Int, name::String, overlay::Bool)
 			lab = _ge_label(root, name)
 			isempty(v) || (v = _ge_fit_length(v, tr.n))
 		finally
-			_ge_nc_close(ds)
+			_ge_nc_close(ds, root)
 		end
 	end
 	isempty(v) && (_ge_log(edit, "Variable \"$name\" not found in $(basename(tr.path))"; err=true); return)

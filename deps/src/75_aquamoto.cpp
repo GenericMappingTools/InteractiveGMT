@@ -319,6 +319,10 @@ public:
 	// and every other bit of state intact -- if there is one, else build a fresh window. Used by both
 	// the Geophysics menu and the grid handle's "Aquamoto viewer…" entry.
 	static void openFor(QWidget *parent, Scene *scene) {
+		// A TSUNAMI WINDOW NEVER WEARS THE NaN BACKDROP (Scene::aquaWindow, nanPlaneUpdate). Every door
+		// into the viewer comes through here (the menu, a dropped NSWING file, the queued open, the grid
+		// handle's re-show), and it runs before the file's grids are built.
+		sceneSetAquaWindow(scene, true);
 		AquamotoWindow *w = registry().value(scene, nullptr);
 		if (!w || !w->win) {
 			w = new AquamotoWindow(parent, scene);

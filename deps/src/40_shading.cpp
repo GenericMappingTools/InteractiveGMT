@@ -140,7 +140,28 @@ struct ReliefLight {
 	double amb, gain, twoOverPi;
 	bool   grd;
 	double rough, metal, keyI, fillI;   // PBR bake: roughness, metalness, key + fill light intensity
+	double baseF0;                      // PBR bake: dielectric reflectance at normal incidence, from the IOR
+	double Gx, Gy, Gz, gizI;            // PBR bake: the gizmo's own scene light (gizI 0 = none / switched off)
 };
+
+// THE REST OF METHOD 1's LIGHT RIG, read off the live renderer objects so the CPU bake is lit by the
+// same lights the VTK render is. The key (sun) and the headlight fill are already in ReliefLight; the
+// third light is the gizmo's (20_gizmo.cpp enableGizmo: a directional scene light at 1.4, brighter
+// than the sun), which is on whenever the gizmo exists and cast shadows is off. Only READ here.
+static void reliefLightRig(Scene *s, double ior, ReliefLight &L) {
+	const double r = (ior > 0.0) ? (ior - 1.0) / (ior + 1.0) : 0.2;
+	L.baseF0 = r * r;                                        // vtkProperty::ComputeReflectanceFromIOR
+	L.Gx = 0.0;  L.Gy = 0.0;  L.Gz = 1.0;  L.gizI = 0.0;
+	if (!s || !s->giz || !s->giz->light || !s->giz->light->GetSwitch()) return;
+	double p[3], f[3];
+	s->giz->light->GetPosition(p);
+	s->giz->light->GetFocalPoint(f);
+	double d[3] = { p[0] - f[0], p[1] - f[1], p[2] - f[2] };
+	const double len = std::sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+	if (!(len > 0.0)) return;
+	L.Gx = d[0] / len;  L.Gy = d[1] / len;  L.Gz = d[2] / len;
+	L.gizI = s->giz->light->GetIntensity();
+}
 // `ve` is THE LAYER BEING SHADED's own exaggeration (ExtraObj::ve, or Scene::ve for the base), never
 // a window-wide one: a grid drawn at its own VE has to be lit at that same VE or its slopes get
 // corrected by a number belonging to a different layer.
@@ -161,6 +182,7 @@ static ReliefLight makeReliefLight(Scene *s, const LayerShade &lk, double zfac, 
 	L.rough = lk.roughness < 0.05 ? 0.05 : lk.roughness;   // clamp so the GGX lobe stays finite
 	L.metal = lk.metallic < 0.0 ? 0.0 : (lk.metallic > 1.0 ? 1.0 : lk.metallic);
 	L.keyI = s->lightIntensity;  L.fillI = s->fillIntensity;
+	reliefLightRig(s, lk.ior, L);
 	return L;
 }
 
@@ -180,55 +202,95 @@ static inline void reliefDrawnNormal(const ReliefLight &L, const double nv[3], b
 	if (len > 0.0) { o[0] /= len; o[1] /= len; o[2] /= len; }
 }
 
-// CPU approximation of the GPU PBR SURFACE look, baked per flat-image pixel so "Shaded image" alone
-// reproduces the shaded relief a freshly loaded 3-D grid shows — WITHOUT triangulating the grid
-// (the GPU shader rasterises triangles; this shades straight from the data-space normal nv). A 2-D
-// map is viewed straight down, so the view vector is +Z. Cook-Torrance: GGX distribution + Smith
-// geometry + Schlick Fresnel for the key light, plus a soft hemispherical fill and a small ambient
-// floor so the shadow side matches the lit surface (which the fill + scene light also lift). Not
-// pixel-identical to the GPU pass — the live Light/Fill/Roughness/Metallic sliders tune it.
-// rgb (0..1, in albedo / out shaded).
+// METHOD 7: method 1's picture computed on the CPU, per flat-image pixel, from the data-space normal
+// nv. rgb is 0..1, the albedo in and the shaded colour out.
 //
-// METALNESS IS REAL HERE, and follows VTK's own PBR shader rather than a lookalike: F0 is the
-// dielectric 4% lerped toward the ALBEDO (so a metal's highlight wears the surface's colour), and
-// the diffuse lobe is scaled by (1 - metallic), because a metal has no subsurface scatter. It was
-// hard-wired to the dielectric case, which is why the dock's Metallic slider moved nothing on a
-// flat image while it visibly changed the 3-D surface (SetMetallic on the real PBR material).
-// The fill + ambient stand in for the environment this bake has no map of, so they are tinted by F0
-// for a metal instead of dropped: killing them outright would take a fully metallic map to black,
-// where the GPU path reflects the IBL sky.
+// IT IS VTK 9.6's OWN PBR FRAGMENT SHADER, TERM FOR TERM — not a lookalike Cook-Torrance. The
+// sources are vtkOpenGLPolyDataMapper.cxx (ReplaceShaderLight), glsl/vtkPBRFunctions.glsl and
+// vtkToneMappingPass.cxx (NeutralPBR). The first version of this bake was a textbook BRDF with its
+// own fill and a 0.12 ambient floor, and it differed from the render in every stage, which is why
+// it looked nothing like method 1:
+//   * ALBEDO. VTK takes the CPT colour as LINEAR light ("VTK colors are expressed in linear color
+//     space") and gamma-encodes the result, pow(1/2.2). The old bake stayed in screen values with no
+//     encode, so it came out much darker and more saturated than the render.
+//   * DIFFUSE is Lambert's albedo/PI, times (1 - F) * (1 - metallic). The old one had no 1/PI.
+//   * SPECULAR is GGX D * the height-correlated Smith visibility * Schlick F with VTK's F90 (specular
+//     occlusion) and HdL, not V·H and the separable Smith G over 4·NdV·NdL.
+//   * THE LIGHTS are method 1's rig as the renderer holds it: the key (sun), the HEADLIGHT fill
+//     (L = V: straight down in a top-down map; VTK passes HdL = 1 for it), and the gizmo's own 1.4
+//     scene light whenever it is switched on (reliefLightRig). The old bake had a hemispherical fill
+//     and an invented ambient floor instead, and no gizmo light, which is the brightest of the three.
+//   * THE NORMAL is the relief AS DRAWN, at the window's own VE: the actor is scaled by
+//     (xfac, 1, zfac*ve) and VTK's normal matrix carries exactly that onto the mesh normals.
+//   * TONE. Method 1 draws through the NeutralPBR tone-mapping pass (on by default; the pass
+//     linearises the frame, compresses the highlights with a slight desaturation, and re-encodes),
+//     so the same curve is the last stage here. SSAO, FXAA and the IBL sky are screen/environment
+//     passes this bake has no scene for; with IBL off (the default) method 1 has no environment term
+//     either, so there is nothing to stand in for it.
+// A 2-D map is viewed straight down, so V = +Z.
 static inline void applyPBRShade(const ReliefLight &L, const double nvRaw[3], double rgb[3]) {
-	// Same rule as applyReliefShade: shade the relief AS DRAWN, never the raw data-space normal —
-	// otherwise the look depends on whether x,y happen to be degrees or metres.
-	double nv[3];
-	reliefDrawnNormal(L, nvRaw, /*withVE=*/false, nv);
-	const double Lk[3] = { L.Lx, L.Ly, L.Lz };
-	double NdotL = nv[0]*Lk[0] + nv[1]*Lk[1] + nv[2]*Lk[2]; if (NdotL < 0.0) NdotL = 0.0;
-	double NdotV = nv[2] < 0.0 ? 0.0 : nv[2];                             // V = +Z
-	double H[3] = { Lk[0], Lk[1], Lk[2] + 1.0 };                          // half-vector of Lk and +Z
-	const double hl = std::sqrt(H[0]*H[0] + H[1]*H[1] + H[2]*H[2]);
-	if (hl > 0.0) { H[0] /= hl; H[1] /= hl; H[2] /= hl; }
-	double NdotH = nv[0]*H[0] + nv[1]*H[1] + nv[2]*H[2]; if (NdotH < 0.0) NdotH = 0.0;
-	const double VdotH = H[2] < 0.0 ? 0.0 : H[2];                         // V·H = H.z (V = +Z)
-	const double a2 = L.rough*L.rough*L.rough*L.rough;                    // a = rough^2, a2 = a^2
-	const double dn = NdotH*NdotH*(a2 - 1.0) + 1.0;
-	const double D  = a2 / (vtkMath::Pi()*dn*dn + 1e-9);
-	const double k  = L.rough*L.rough*0.5;
-	const double G  = (NdotV/(NdotV*(1.0-k)+k+1e-9)) * (NdotL/(NdotL*(1.0-k)+k+1e-9));
-	const double fres = std::pow(1.0 - VdotH, 5.0);                      // Schlick's (1 - V·H)^5
-	const double DG   = (D*G) / (4.0*NdotV*NdotL + 1e-4);                // the colour-free half of spec
-	const double met  = L.metal;
+	double N[3];
+	reliefDrawnNormal(L, nvRaw, /*withVE=*/true, N);
+	auto clampd = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
+	const double NdV = clampd(N[2], 1e-5, 1.0);                           // V = +Z
+	const double rough = L.rough, met = L.metal;
+	const double recPI = 1.0 / vtkMath::Pi();
+	double alb[3], F0[3], F90[3];
 	for (int i = 0; i < 3; ++i) {
-		const double F0 = 0.04 + (rgb[i] - 0.04) * met;   // dielectric 4% -> the albedo itself, for a metal
-		const double F  = F0 + (1.0 - F0) * fres;
-		const double kd = (1.0 - F) * (1.0 - met);        // a metal has no diffuse lobe
-		const double env = (1.0 - met) + met * F0;        // 1 for a dielectric, the metal's own tint
-		const double lit  = (kd*rgb[i] + DG*F) * L.keyI * NdotL;         // key light (diffuse + specular)
-		const double fill = rgb[i] * L.fillI * (0.5 + 0.5*nv[2]) * env;  // hemispherical fill from above
-		const double amb  = rgb[i] * 0.12 * env;                         // scene-light floor (no black valleys)
-		const double v = lit + fill + amb;
-		rgb[i] = v > 1.0 ? 1.0 : v;
+		alb[i] = clampd(rgb[i], 0.0, 1.0);
+		F0[i]  = L.baseF0 + (alb[i] - L.baseF0) * met;                    // mix(baseF0, albedo, metallic)
 	}
+	// Specular occlusion: an F0 under 2% loses its grazing lobe; edgeTint is VTK's default white.
+	const double f90 = clampd((F0[0] + F0[1] + F0[2]) * (50.0 * 0.33), 0.0, 1.0);
+	for (int i = 0; i < 3; ++i) F90[i] = f90 + (1.0 - f90) * met;
+	// D_GGX and V_SmithCorrelated exactly as vtkPBRFunctions.glsl writes them (the latter takes
+	// roughness^2 as its a2, which is VTK's convention and is kept so the lobe is VTK's lobe).
+	const double a  = rough * rough, a2 = a * a;
+	double Lo[3] = { 0.0, 0.0, 0.0 };
+	auto addLight = [&](double NdH, double NdL, double HdL, double radiance) {
+		if (!(radiance > 0.0)) return;
+		const double d    = (NdH * a2 - NdH) * NdH + 1.0;
+		const double D    = a2 / (vtkMath::Pi() * d * d);
+		const double ggxV = NdL * std::sqrt(a + NdV * (NdV - a * NdV));
+		const double ggxL = NdV * std::sqrt(a + NdL * (NdL - a * NdL));
+		const double Vis  = 0.5 / (ggxV + ggxL);
+		const double fw   = std::pow(1.0 - HdL, 5.0);
+		for (int i = 0; i < 3; ++i) {
+			const double F    = F0[i] + (F90[i] - F0[i]) * fw;
+			const double spec = D * Vis * F;
+			const double diff = (1.0 - met) * (1.0 - F) * alb[i] * recPI;
+			Lo[i] += radiance * (diff + spec) * NdL;
+		}
+	};
+	auto addDirectional = [&](double lx, double ly, double lz, double radiance) {
+		double H[3] = { lx, ly, lz + 1.0 };                                // normalize(V + L), V = +Z
+		const double hl = std::sqrt(H[0]*H[0] + H[1]*H[1] + H[2]*H[2]);
+		if (hl > 0.0) { H[0] /= hl; H[1] /= hl; H[2] /= hl; }
+		const double HdL = clampd(H[0]*lx + H[1]*ly + H[2]*lz, 1e-5, 1.0);
+		const double NdL = clampd(N[0]*lx + N[1]*ly + N[2]*lz, 1e-5, 1.0);
+		const double NdH = clampd(N[0]*H[0] + N[1]*H[1] + N[2]*H[2], 1e-5, 1.0);
+		addLight(NdH, NdL, HdL, radiance);
+	};
+	addDirectional(L.Lx, L.Ly, L.Lz, L.keyI);                             // the sun
+	addDirectional(L.Gx, L.Gy, L.Gz, L.gizI);                             // the gizmo's light (0 = none)
+	addLight(NdV, NdV, 1.0, L.fillI);                                     // the headlight: L = H = V
+	// NeutralPBR (Khronos PBR Neutral), then the sRGB encode — vtkToneMappingPass verbatim.
+	const double startCompression = 0.8 - 0.04, desaturation = 0.15;
+	const double x = std::min(Lo[0], std::min(Lo[1], Lo[2]));
+	const double offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+	double t[3] = { Lo[0] - offset, Lo[1] - offset, Lo[2] - offset };
+	const double peak = std::max(t[0], std::max(t[1], t[2]));
+	if (peak >= startCompression) {
+		const double d = 1.0 - startCompression;
+		const double newPeak = 1.0 - d * d / (peak + d - startCompression);
+		const double g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+		for (int i = 0; i < 3; ++i) {
+			t[i] *= newPeak / peak;
+			t[i] = t[i] + (newPeak - t[i]) * g;
+		}
+	}
+	for (int i = 0; i < 3; ++i)
+		rgb[i] = std::pow(clampd(t[i], 0.0, 1.0), 1.0 / 2.2);
 }
 // Modulate rgb (0..1, in/out) by the relief shade for a TRUE-coord surface normal nv.
 // `externI`, when given, is a reflectance somebody else already computed for THIS point — the GMT
@@ -579,6 +641,7 @@ static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a) {
 	L.rough = a.roughness < 0.05 ? 0.05 : a.roughness;
 	L.metal = a.metallic < 0.0 ? 0.0 : (a.metallic > 1.0 ? 1.0 : a.metallic);
 	L.keyI = a.lightIntensity;  L.fillI = a.fillIntensity;
+	reliefLightRig(s, lk.ior, L);
 	return L;
 }
 

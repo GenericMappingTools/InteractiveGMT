@@ -125,6 +125,18 @@ const _AQUA_NOWIN = (NaN, NaN)
 
 _aqua_xwin(scene::Ptr{Cvoid}) = get(_AQUA_XWIN, scene, _AQUA_NOWIN)
 
+# A TSUNAMI WINDOW KEEPS THE NaN-HOLE RIM in its grid meshes (Scene::aquaWindow, 10_geometry.cpp): the
+# water and land halves are cut from one field by one mask, and the rim is what closes the one-cell
+# slot between them along the coast. Every other window meshes a hole exactly. The Aquamoto viewer's
+# own window is marked by the C side (AquamotoWindow::openFor); this marks the windows THIS file opens
+# itself, right after each exists and before its halves are added. Optional export: with a library
+# that predates it the call is skipped, and that library meshes every window with the rim anyway.
+function _aqua_mark_window(h::Ptr{Cvoid})
+	(h == C_NULL || !haskey(_LIB_FNS, :gmtvtk_set_aqua_window_h)) && return nothing
+	ccall(_fn(:gmtvtk_set_aqua_window_h), Cvoid, (Ptr{Cvoid}, Cint), h, Cint(1))
+	return nothing
+end
+
 """
     _aqua_clipx(G, win) -> GMTgrid
 
@@ -195,6 +207,7 @@ function _aqua_read_times(path::String, nsteps::Int)::Vector{Float64}
 	out = Float64[]
 	try
 		ds = _shnc_open_multidim_read(path)
+		root = C_NULL
 		try
 			root = _shnc_root(ds)
 			arr = _shnc_group_open_array(root, "time")
@@ -211,6 +224,11 @@ function _aqua_read_times(path::String, nsteps::Int)::Vector{Float64}
 			end
 			_shnc_release_array(arr)
 		finally
+			# THE ROOT GROUP IS RELEASED BEFORE THE CLOSE, on every path (the no-`time` return included).
+			# A live group handle keeps the netCDF file open after GDALClose for the rest of the
+			# process: on Windows the tsunami file then cannot be deleted or overwritten
+			# (the test suite's "mktempdir cleanup ... EBUSY" on every Aquamoto fixture).
+			root == C_NULL || ccall((:GDALGroupRelease, GMT.libgdal), Cvoid, (Ptr{Cvoid},), root)
 			ccall((:GDALClose, GMT.libgdal), Cvoid, (Ptr{Cvoid},), ds)
 		end
 	catch
@@ -1282,6 +1300,7 @@ function _aqua_bathy_shot(st::_AquaState, model::Int, az::Float64, el::Float64,
 		h = ccall(_fn(:gmtvtk_open_empty_offscreen), Ptr{Cvoid}, (Cstring,), "Sea bed staging")
 		h == C_NULL && return nothing
 		_register_fig!(QtEmpty(h))
+		_aqua_mark_window(h)        # a tsunami window: its halves keep the NaN-hole rim
 		_AQUA_BATHY_WIN[] = h
 		_pump_once()
 		_add_grid_to_scene(h, st.bat, AQUA_LAND; cmap = st.landcmap, promote = true, record = false)
@@ -1409,6 +1428,7 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 		h = ccall(_fn(:gmtvtk_open_empty_offscreen), Ptr{Cvoid}, (Cstring,), "Combined image staging")
 		h == C_NULL && return nothing
 		_register_fig!(QtEmpty(h))
+		_aqua_mark_window(h)        # a tsunami window: its halves keep the NaN-hole rim
 		_AQUA_STAGE_WIN[] = h
 		_pump_once()
 	end
@@ -1736,6 +1756,9 @@ function _aqua_side_popup(scene::Ptr{Cvoid}, side::Int, model_water::Int = 0, mo
 	# Built the other way round (land as base, water added) the water — an added grid, stretched by its
 	# own 2 cm z range — floated over the land with a gap all along the coast.
 	fig = view_grid(Hw; cmap = st.watercmap, title = ttl)
+	# A tsunami window: its halves keep the NaN-hole rim. view_grid has already built the water's tile
+	# pyramid, so the setter re-meshes it (sceneSetAquaWindow) before the land half is added beside it.
+	_aqua_mark_window(fig.h)
 	ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), fig.h, AQUA_WATER)
 	_AQUA_POPUP_WIN[] = fig.h
 	# THE LIGHT, on the window's ACTIVE layer — which is why the water is lit BEFORE the land is added

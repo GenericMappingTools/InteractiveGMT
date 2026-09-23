@@ -87,6 +87,7 @@ const _TEST_SYMBOLS = (
 	                                  # callback registration into this dll's own global.
 	:gmtvtk_set_euler_callback, :gmtvtk_euler_result,   # same, for the Plates dialogs.
 	:gmtvtk_set_ui_dir,               # ditto: the .ui directory is a file-static override per dll.
+	:gmtvtk_tile_mesh_test,           # the grid mesh's NaN contract, counted off makeGridTile's output
 )
 
 function _load_test_library()
@@ -114,6 +115,21 @@ function _test_fn(sym::Symbol)::Ptr{Cvoid}
 	p = get(_TEST_FNS, sym, C_NULL)
 	p == C_NULL && error("$_TEST_LIB_NAME missing symbol :$sym")
 	return p
+end
+
+# Mesh a grid with the real makeGridTile (one tile, whole grid) and count what it built. `Z` is
+# indexed Z[i, j] with i along x and j along y (south first), i.e. exactly the BCB memory the builder
+# reads. Returns a NamedTuple of the counters gmtvtk_tile_mesh_test documents.
+function tile_mesh_stats(Z::Matrix{Float32}; step::Int = 1, holeRim::Bool = false, pixelCells::Bool = false)
+	nx, ny = size(Z)
+	zb = vec(permutedims(Z))                    # z[i*ny + j]: j fastest
+	out = zeros(Float64, 6)
+	ok = ccall(_test_fn(:gmtvtk_tile_mesh_test), Cint,
+	           (Ptr{Cfloat}, Cint, Cint, Cint, Cint, Cint, Ptr{Cdouble}),
+	           zb, nx, ny, step, holeRim, pixelCells, out)
+	ok == 1 || error("gmtvtk_tile_mesh_test refused the input")
+	return (cells = Int(out[1]), points = Int(out[2]), nan_cells = Int(out[3]),
+	        on_nan = Int(out[4]), invented = Int(out[5]), missed = Int(out[6]))
 end
 
 # The FFT tool (Mag/Grav > FFT tool, Image > FFT Spectrum) asks Julia for everything it does, so a
