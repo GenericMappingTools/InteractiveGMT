@@ -983,6 +983,17 @@ function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String}
 		empty!(p); merge!(p, d)
 		p["model"] = string(model)
 	end
+	# 1, 5, 6, 7 ARE LOOKS, NOT REFLECTANCES: set on the aimed side(s) through the ONE side-look setter,
+	# the same mapping the Illumination dialog's own branch uses (hillshade.jl). The model stays stored
+	# in `st.illum`, so the side's boxes keep stating it; there is nothing to push.
+	if model in (1, 5, 6, 7)
+		rl = (model == 6) ? 2 : (model == 5) ? 3 : 1
+		for sd in (side < 0 ? (0, 1) : (side,))
+			ccall(_fn(:gmtvtk_set_relief_look_side_h), Cvoid, (Ptr{Cvoid}, Cint, Cint, Cint),
+			      scene, Cint(rl), Cint(0), Cint(sd))
+		end
+		return nothing
+	end
 	# THE LIGHT IS A REFLECTANCE PUSHED TO THE VIEWER, one per side, each computed from ITS OWN
 	# surface: the LAND from the static bathymetry, the WATER from the stage of the slice on screen.
 	# The viewer then modulates the composite it already paints (bakeAquaShade / the 3-D surface's
@@ -1003,6 +1014,8 @@ end
 function _aqua_relight_water!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,Nothing}=nothing)
 	p = st.illum[1]
 	isempty(p) && return nothing
+	# A LOOK (1, 5, 6, 7) carries no reflectance: it lives on the viewer and survives the slice change.
+	(parse(Int, p["model"]) in (2, 3, 4)) || return nothing
 	# …AND ONLY WHILE THAT MODEL IS STILL THE WINDOW'S LIGHT. Picking a relief look (VTK PBR, grdimage,
 	# Lambert) REPLACES a loaded Illumination model — sceneSetReliefLook drops it — so re-pushing the
 	# remembered one here would put the window straight back on a hillshade method (every push force-
@@ -1775,6 +1788,13 @@ function _aqua_side_popup(scene::Ptr{Cvoid}, side::Int, model_water::Int = 0, mo
 			ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), fig.h,
 			      "sunaz=$(az);sunel=$(el);")
 			ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), fig.h, Cint(1), Cint(0))
+		elseif model in (5, 6, 7)
+			# 5/6/7 ARE LOOKS TOO (Hillshade grdimage, Hillshade Lambert, Shade PBR), set through the same
+			# setter with the same mapping the Illumination dialog's own branch uses (hillshade.jl).
+			ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), fig.h,
+			      "sunaz=$(az);sunel=$(el);")
+			rl = (model == 6) ? 2 : (model == 5) ? 3 : 1
+			ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), fig.h, Cint(rl), Cint(0))
 		else
 			_hs_push_grid(fig.h, G, model, Dict{String,String}("azim" => az, "elev" => el), -1)
 			_hs_declare_look(fig.h, -1)

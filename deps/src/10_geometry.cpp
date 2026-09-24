@@ -5134,7 +5134,11 @@ static void applyVE(Scene *s) {
 		// on top of the image's own (caught by test-ve-rules-gui.jl: changing ONLY the base's ve moved
 		// an image whose own ve never changed). imageRebuildActor built it at s->zfac*ex.ve -- window
 		// zfac, this layer's own ve, nothing else -- so applyVE must reproduce exactly that.
-		const double kzEx = G ? 1.0 : (ex.isImage ? s->zfac : sceneZRefForExtra(s, ex)) * ex.ve;
+		// A DRAPED image is the exception: its points ARE the base relief's own nodes (imageDrapePD reads
+		// s->gridZ), so it is welded to the base exactly like s->drape and rides kzBase. At its own ve the
+		// base flattened under VE -> 0 while the picture on it kept standing at ve 1.
+		const double kzEx = G ? 1.0 : (ex.isImage && ex.draped) ? kzBase
+		                  : (ex.isImage ? s->zfac : sceneZRefForExtra(s, ex)) * ex.ve;
 		if (ex.actor) ex.actor->SetScale(kx, 1.0, kzEx);  // (flat image z=zpos is baked in geometry -> scale carries VE)
 		if (ex.drape) ex.drape->SetScale(kx, 1.0, kzEx);
 	}

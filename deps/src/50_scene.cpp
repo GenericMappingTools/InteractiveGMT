@@ -905,7 +905,9 @@ static void imageRebuildActor(Scene *s, ExtraObj &ex) {
 	vtkSmartPointer<vtkActor> a = vtkSmartPointer<vtkActor>::New();
 	a->SetMapper(map); a->SetTexture(ex.tex);
 	a->GetProperty()->LightingOff();          // a finished picture: full albedo, no shading
-	a->SetScale(s->xfac, 1.0, s->zfac * ex.ve);   // THIS extra's own VE, not the window's
+	// A flat plane rides THIS extra's own VE; a drape is the base relief's own nodes, so it is welded to
+	// the base's scale (same rule as applyVE).
+	a->SetScale(s->xfac, 1.0, drape ? sceneZScale(s) : s->zfac * ex.ve);
 	ex.actor = a;
 	ex.zposGeom = ex.zpos;                    // the height these points were built at (see zposGeom)
 	s->ren->AddActor(a);

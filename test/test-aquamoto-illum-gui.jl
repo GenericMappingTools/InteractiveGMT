@@ -117,3 +117,48 @@ end
 		end
 	end
 end
+
+# EVERY METHOD THE DIALOG OFFERS (1..7) BUILDS BOTH HALVES. The combine's half builder used to know
+# only the reflectance models 2/3/4, so 5, 6 and 7 — the C++ looks, 7 being the water side's default
+# — died with "unknown illumination model" on "Water side" / "Land side" / "Rendered image", and on
+# every edit of a model box. Each door is called with each method; none may throw, and each half
+# must come back one pixel per node.
+@testitem "Aquamoto illumination: every method 1..7 builds the halves and sets a side" tags=[:gui, :aquamoto] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "aquamoto_fixture.jl"))
+
+	mktempdir() do dir
+		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_methods.nc"))
+		f = iview()
+		try
+			IG._on_drop(f.h, nc);  aqf_pump(40)
+			st = IG._AQUA[f.h]
+			G  = IG._aqua_layer(st, st.cur)
+			nx, ny = IG._grid_dims(G)
+			for m in 1:7
+				# the model boxes' door, each side
+				@test IG._aqua_set_illum_model(f.h, 0, m) == 1
+				@test IG._aqua_set_illum_model(f.h, 1, m) == 1
+				aqf_pump(5)
+				# the combine every button builds
+				A = IG._aqua_shaded_rgb(f.h, st, G, true; model_water = m, model_land = m)
+				@test A !== nothing && size(A) == (ny, nx, 3)
+				iw, il = IG._AQUA_LAST_HALVES[f.h]
+				@test size(iw) == (ny, nx, 3)
+				@test size(il) == (ny, nx, 3)
+				# "Water side" / "Land side"
+				for side in (0, 1)
+					@test redirect_stdout(devnull) do
+						IG._aqua_side_popup(f.h, side, m, m)
+					end == 1
+					aqf_pump(5)
+				end
+			end
+		finally
+			if IG._AQUA_POPUP_WIN[] != C_NULL
+				aqf_close(IG._AQUA_POPUP_WIN[]);  IG._AQUA_POPUP_WIN[] = C_NULL
+			end
+			aqf_close(f.h)
+		end
+	end
+end

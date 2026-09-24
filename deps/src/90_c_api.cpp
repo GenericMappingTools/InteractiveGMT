@@ -8365,6 +8365,114 @@ GMTVTK_API int gmtvtk_copy_view_clipboard_h(void *handle) {
 // gmtvtk_capture_view_rgba.
 GMTVTK_API void gmtvtk_free_rgb(unsigned char *buf) { delete[] buf; }
 
+// ONE AQUAMOTO HALF LIT WITH A C++ LOOK — methods 5 (Hillshade grdimage), 6 (Hillshade Lambert) and
+// 7 (Shade PBR) — as a node-resolution RGB picture, for the host's combined "Rendered image".
+//
+// Those three methods are not reflectances: they are the shading engine's own looks, and the host's
+// reflectance function (`_hs_reflectance`, 2/3/4 only) cannot make them — which is why asking the
+// combine for a 5/6/7 half died with "unknown illumination model". So the half is lit HERE, by the
+// very pieces bakeAquaShade lights the live layer with: that side's own light snapshot
+// (makeReliefLightSide), applyReliefShade for 5/6, reliefOcclusion + applyPBRShade for 7. Nothing of
+// that maths is re-implemented; only the method flags and the sun come from the request.
+//
+// `z` is the half grid (other side NaN) in its own layout `zlayout` (GridLay); the palette is the CPT
+// nodes cz/crgb, built through makeGridCTF (the one LUT constructor), or the optional albedo texRgb.
+// `side`: 1 = LAND, else WATER.
+// Output: nx*ny RGB triplets, FIRST ROW NORTH — the layout gmtvtk_pbr_render_offscreen returns, so
+// the host unpacks both the same way. Caller frees with gmtvtk_free_rgb. Returns 1, or 0 on failure.
+GMTVTK_API int gmtvtk_aqua_half_bake_rgb(void *handle, const float *z, int nx, int ny, int zlayout,
+                                         double x0, double x1, double y0, double y1,
+                                         const double *cz, const double *crgb, int ncolor,
+                                         int method, int side, double azim, double elev,
+                                         const unsigned char *texRgb, int texW, int texH, int texBands,
+                                         unsigned char **outRgb, int *oW, int *oH) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !z || nx < 2 || ny < 2 || !cz || !crgb || ncolor < 2 || !outRgb || !oW || !oH)
+		return 0;
+	if (method != 5 && method != 6 && method != 7) return 0;
+	// Optional ALBEDO (Aquamoto "Sat img"): row 0 = SOUTH, west->east, texBands per pixel. It replaces
+	// the palette as the colour the light multiplies, nothing else.
+	const bool useTex = (texRgb && texW > 0 && texH > 0 && (texBands == 3 || texBands == 4));
+	const double dx = (x1 - x0) / (nx - 1), dy = (y1 - y0) / (ny - 1);
+	if (dx == 0.0 || dy == 0.0) return 0;
+	// THIS SIDE's light, exactly as bakeAquaShade takes it, with the requested look and sun.
+	const AquaSideShade &own = (side == 1) ? s->aquaLandShade : s->aquaWaterShade;
+	AquaSideShade A = own.valid ? own : snapshotShade(s);
+	A.useHillshade = (method == 5 || method == 6);
+	A.hillGrd      = (method == 5);
+	A.litBake      = (method == 7);
+	A.lightAz = azim;  A.lightEl = elev;
+	const ReliefLight L = makeReliefLightSide(s, A);
+	const bool pbr = (method == 7);
+	const GridLay lay = gridLay(nx, ny, zlayout);
+	auto Zc = [&](int ix, int iy) -> double { return lay.at(z, ix, iy); };
+	const double NaN = std::numeric_limits<double>::quiet_NaN();
+	const BakeOcclusion occ = pbr ? makeBakeOcclusion(s, L, s->bakeShadows ? gridTopZ(nx, ny, Zc) : NaN)
+	                              : BakeOcclusion();
+	auto ctf = makeGridCTF(s, cz, crgb, ncolor);
+	const double lo = cz[0], hi = cz[ncolor - 1];
+	const int NT = 1024;                                 // the CPT discretised once, as bakeLayerRGBA does
+	std::vector<unsigned char> tbl((size_t)NT * 3);
+	{
+		const double span = (hi > lo) ? (hi - lo) : 1.0;
+		double c[3];
+		for (int i = 0; i < NT; ++i) {
+			ctf->GetColor(lo + span * i / (NT - 1), c);
+			tbl[3*i+0] = (unsigned char)(c[0]*255.0+0.5);
+			tbl[3*i+1] = (unsigned char)(c[1]*255.0+0.5);
+			tbl[3*i+2] = (unsigned char)(c[2]*255.0+0.5);
+		}
+	}
+	const double invspan = (hi > lo) ? (NT - 1) / (hi - lo) : 0.0;
+	unsigned char *buf = new unsigned char[(size_t)nx * ny * 3];
+	vtkSMPTools::For(0, ny, [&](vtkIdType rBeg, vtkIdType rEnd) {
+	for (int iy = (int)rBeg; iy < (int)rEnd; ++iy) {         // iy counted from the SOUTH
+		const int iym = iy > 0 ? iy - 1 : iy, iyp = iy < ny - 1 ? iy + 1 : iy;
+		unsigned char *row = buf + (size_t)(ny - 1 - iy) * nx * 3;   // output row 0 = NORTH
+		for (int ix = 0; ix < nx; ++ix) {
+			unsigned char *p = row + (size_t)ix * 3;
+			const double zc = Zc(ix, iy);
+			if (std::isnan(zc)) {                        // the other side: never read by the combine
+				p[0] = (unsigned char)(s->nanColor[0]*255.0+0.5);
+				p[1] = (unsigned char)(s->nanColor[1]*255.0+0.5);
+				p[2] = (unsigned char)(s->nanColor[2]*255.0+0.5);
+				continue;
+			}
+			double c[3];
+			if (useTex) {                                // the albedo's pixel over this node (nearest)
+				const int tx = std::min(texW - 1, (int)std::lround((double)ix * (texW - 1) / (nx - 1)));
+				const int ty = std::min(texH - 1, (int)std::lround((double)iy * (texH - 1) / (ny - 1)));
+				const unsigned char *t = texRgb + ((size_t)ty * texW + tx) * texBands;
+				c[0] = t[0] / 255.0;  c[1] = t[1] / 255.0;  c[2] = t[2] / 255.0;
+			}
+			else {
+				int ti = (int)((zc - lo) * invspan); if (ti < 0) ti = 0; else if (ti > NT - 1) ti = NT - 1;
+				c[0] = tbl[3*ti] / 255.0;  c[1] = tbl[3*ti+1] / 255.0;  c[2] = tbl[3*ti+2] / 255.0;
+			}
+			const int ixm = ix > 0 ? ix - 1 : ix, ixp = ix < nx - 1 ? ix + 1 : ix;
+			const double za = Zc(ixp, iy), zb = Zc(ixm, iy), zu = Zc(ix, iyp), zd = Zc(ix, iym);
+			const double dzdx = (ixp == ixm || std::isnan(za) || std::isnan(zb)) ? 0.0 : (za - zb) / ((ixp - ixm) * dx);
+			const double dzdy = (iyp == iym || std::isnan(zu) || std::isnan(zd)) ? 0.0 : (zu - zd) / ((iyp - iym) * dy);
+			double n0 = -dzdx, n1 = -dzdy, n2 = 1.0;
+			const double len = std::sqrt(n0*n0 + n1*n1 + n2*n2);
+			if (len > 0.0) { n0 /= len; n1 /= len; n2 /= len; }
+			const double nv[3] = { n0, n1, n2 };
+			if (pbr) {
+				double ao, sunVis;
+				reliefOcclusion(L, occ, Zc, nx, ny, dx, dy, ix, iy, nv, ao, sunVis);
+				applyPBRShade(L, nv, c, ao, sunVis);
+			}
+			else applyReliefShade(L, nv, c);
+			p[0] = (unsigned char)std::min(255.0, c[0] * 255.0 + 0.5);
+			p[1] = (unsigned char)std::min(255.0, c[1] * 255.0 + 0.5);
+			p[2] = (unsigned char)std::min(255.0, c[2] * 255.0 + 0.5);
+		}
+	}
+	});
+	*outRgb = buf; *oW = nx; *oH = ny;
+	return 1;
+}
+
 // Re-frame ONE RASTER's OWN axes + the camera onto an arbitrary world bbox (x0,x1,y0,y1 -- plain
 // data coordinates). SACRED_LAW.md Raster-own-axes law + derived-variable axes law: a crop, an RTP,
 // a grdgravmag3d anomaly is a NEW quantity in ITS OWN units, so it is framed and numbered in ITS OWN
