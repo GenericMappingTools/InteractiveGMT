@@ -294,6 +294,9 @@
                  <verstretch>0</verstretch>
                 </sizepolicy>
                </property>
+               <property name="visible">
+                <bool>false</bool>
+               </property>
                <property name="toolTip">
                 <string>&lt;html&gt;Show the WATER half alone — the very picture the combine takes it from&lt;/html&gt;</string>
                </property>
@@ -315,6 +318,47 @@
                </property>
                <property name="text">
                 <string>Sat img</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="renderedSatResLabel">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="text">
+                <string>Res</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="renderedSatResEdit">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="minimumSize">
+                <size>
+                 <width>36</width>
+                 <height>0</height>
+                </size>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>36</width>
+                 <height>16777215</height>
+                </size>
+               </property>
+               <property name="toolTip">
+                <string>&lt;html&gt;Satellite image REFINEMENT FACTOR over the land grid's node spacing: 1 = one image pixel per node, 2 = twice finer, 0.5 = twice coarser. Hover shows the resulting resolution in metres; the download picks the tile level closest to it.&lt;/html&gt;</string>
+               </property>
+               <property name="text">
+                <string>4</string>
                </property>
               </widget>
              </item>

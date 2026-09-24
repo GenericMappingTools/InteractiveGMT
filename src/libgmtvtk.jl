@@ -246,6 +246,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_aqua_side_light_h,     # a tsunami side's own sun + material, for that render
 	:gmtvtk_aqua_side_method_h,    # the method a tsunami side carries, as the viewer holds it
 	:gmtvtk_aqua_set_land_plain_h, # "Sat img": the land side shows the photograph unlit
+	:gmtvtk_image_set_draped_h,    # drape an image extra on the grid (its "Drape" menu item)
 	:gmtvtk_show_profile_xy,
 	:gmtvtk_xyplot_open, :gmtvtk_xyplot_add_series, :gmtvtk_xyplot_clear,
 	:gmtvtk_xyplot_is_alive, :gmtvtk_xyplot_close, :gmtvtk_xyplot_raise, :gmtvtk_xyplot_set_owner,

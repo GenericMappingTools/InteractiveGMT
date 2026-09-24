@@ -31,12 +31,21 @@ near 1:1 resample instead of a big downsample of tiles nobody needed. Web-Mercat
 `156543.034 * cos(lat) / 2^z` metres per pixel; the grid's is its x increment on the ground.
 Clamped to the levels tile servers actually serve.
 """
-function _aqua_sat_zoom(bat::GMTgrid)::Int
-	nx, ny = _grid_dims(bat)
+function _aqua_sat_zoom(bat::GMTgrid, factor::Float64 = 1.0)::Int
+	coslat = max(cos(0.5 * (Float64(bat.range[3]) + Float64(bat.range[4])) * pi / 180), 1e-6)
+	m = _aqua_sat_res_m(bat, factor)
+	(m > 0) || return 12
+	return clamp(round(Int, log2(156543.03392 * coslat / m)), 1, 19)
+end
+
+# The land grid's node spacing ON THE GROUND (metres, x increment at the box's mid latitude) divided
+# by the dialog's "Res" refinement factor: the satellite resolution that factor asks for. The ONE
+# place that number is made — the hover text and the download zoom both read it.
+function _aqua_sat_res_m(bat::GMTgrid, factor::Float64 = 1.0)::Float64
+	nx, _ = _grid_dims(bat)
 	coslat = max(cos(0.5 * (Float64(bat.range[3]) + Float64(bat.range[4])) * pi / 180), 1e-6)
 	mx = abs(Float64(bat.range[2]) - Float64(bat.range[1])) / max(nx - 1, 1) * 111320.0 * coslat
-	(mx > 0) || return 12
-	return clamp(round(Int, log2(156543.03392 * coslat / mx)), 1, 19)
+	return (factor > 0) ? mx / factor : mx
 end
 
 """
@@ -125,7 +134,9 @@ function _aqua_sat_in_grid_order(S::Array{UInt8,3}, bat::GMTgrid)::Array{UInt8,3
 	out = Array{UInt8,3}(undef, size(bat.z, 1), size(bat.z, 2), 3)
 	x, y = Float64.(bat.x), Float64.(bat.y)
 	for b in 1:3
-		Sg = GMT.mat2grid(Float32.(S[:, :, b]); x = x, y = y)
+		# THE GRID'S OWN REGISTRATION: a pixel-registered grid's x/y are its nx+1 / ny+1 cell EDGES, and
+		# mat2grid refuses them as gridline nodes ("size of x,y vectors incompatible").
+		Sg = GMT.mat2grid(Float32.(S[:, :, b]); x = x, y = y, reg = Int(bat.registration))
 		out[:, :, b] = round.(UInt8, _z_as(Sg, bat))
 	end
 	return out
@@ -158,6 +169,80 @@ function _aqua_sat_south_first_of(rgb::Array{UInt8,3}, bat::GMTgrid)::Array{UInt
 		out[:, :, b] = round.(UInt8, Matrix(_zmat(Gb)))
 	end
 	return out
+end
+
+# THE SATELLITE LAND AT THE RESOLUTION "Res" ASKS FOR — ON SCREEN, not only in the download.
+#
+# The layer draws its land one pixel per bathymetry node, so a finer download averaged back onto the
+# nodes showed nothing finer. The picture is therefore its OWN image, W x H = the node count times the
+# factor (capped), fetched at the matching tile zoom, and DRAPED on the relief as a Scene Objects row
+# of its own ("Satellite image") that the user sees, toggles and removes like any image. Its WATER
+# texels are fully transparent, so the live, lit water of the layer shows through; the dry/wet mask
+# moves with the wave, so the alpha is re-cut at every slice (`_aqua_sat_drape!`).
+const AQUA_SAT_NAME = "Satellite image"
+const _AQUA_SAT_MAXPIX = 16_000_000
+const _AQUA_SAT_DRAPE_CACHE = Dict{Tuple{NTuple{4,Float64},Int,Int,Int},Array{UInt8,3}}()
+
+# The mosaic warped onto the layer's box at W x H, as (row, col, band) RGB, row 1 = SOUTH.
+function _aqua_sat_drape_rgb(bat::GMTgrid, W::Int, H::Int, zoom::Int)::Array{UInt8,3}
+	box = (Float64(bat.range[1]), Float64(bat.range[2]), Float64(bat.range[3]), Float64(bat.range[4]))
+	key = (box, W, H, zoom)
+	haskey(_AQUA_SAT_DRAPE_CACHE, key) && return _AQUA_SAT_DRAPE_CACHE[key]
+	I = lock(_TILE_LOCK) do
+		GMT.mosaic([box[1], box[2]], [box[3], box[4]]; zoom = zoom, cache = "gmt")
+	end
+	opts = ["-t_srs", "EPSG:4326", "-te", string(box[1]), string(box[3]), string(box[2]), string(box[4]),
+	        "-ts", string(W), string(H), "-r", "bilinear"]
+	Wr = GMT.gdalwarp(_to_band_planar(I), opts)
+	pix, nb, nlon, nlat, rowmajor = _pixaccess_img(Wr)
+	(nlon == W && nlat == H) || error("Aquamoto: the satellite drape warped to $(nlon)x$(nlat), not $(W)x$(H)")
+	north = _north_first(Wr.layout, rowmajor)
+	S = Array{UInt8,3}(undef, H, W, 3)
+	@inbounds for r in 1:H
+		lat = north ? (H - r + 1) : r
+		for c in 1:W, b in 1:3
+			S[r, c, b] = UInt8(pix(lat, c, b <= nb ? b : nb))
+		end
+	end
+	empty!(_AQUA_SAT_DRAPE_CACHE)                 # one entry: the current box, size and zoom
+	return _AQUA_SAT_DRAPE_CACHE[key] = S
+end
+
+# Put up / refresh / take down the satellite drape. `on` false removes it. Called by the "Sat img"
+# box and after every slice while it is on (the land/water mask moves with the wave).
+function _aqua_sat_drape!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,Nothing} = nothing)
+	if !st.satimg
+		if ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), scene, AQUA_SAT_NAME) != 0
+			_forget_object!(scene, :image, AQUA_SAT_NAME)
+		end
+		return nothing
+	end
+	Gw = G === nothing ? _aqua_layer(st, st.cur) : G
+	Gw === nothing && return nothing
+	nx, ny = _grid_dims(st.bat)
+	f = get(_AQUA_SAT_FACTOR, st, 1.0)
+	W, H = max(2, round(Int, nx * f)), max(2, round(Int, ny * f))
+	if W * H > _AQUA_SAT_MAXPIX                    # capped, aspect kept
+		sc = sqrt(_AQUA_SAT_MAXPIX / (W * H));  W = max(2, round(Int, W * sc));  H = max(2, round(Int, H * sc))
+	end
+	S = _aqua_sat_drape_rgb(st.bat, W, H, _aqua_sat_zoom(st.bat, f))
+	dm = _aqua_indland(_zmat(st.bat), _zmat(Gw))   # (iy, ix), row 1 = SOUTH: true = dry land
+	A = Array{UInt8,3}(undef, H, W, 4)
+	ixs = [clamp(round(Int, (c - 0.5) / W * (nx - 1)) + 1, 1, nx) for c in 1:W]
+	iys = [clamp(round(Int, (r - 0.5) / H * (ny - 1)) + 1, 1, ny) for r in 1:H]
+	@inbounds for c in 1:W, r in 1:H
+		A[r, c, 1] = S[r, c, 1];  A[r, c, 2] = S[r, c, 2];  A[r, c, 3] = S[r, c, 3]
+		A[r, c, 4] = dm[iys[r], ixs[c]] ? 0xff : 0x00        # water: see-through to the lit layer
+	end
+	r = st.bat.range
+	I = GMT.mat2img(A; x = [Float64(r[1]), Float64(r[2])], y = [Float64(r[3]), Float64(r[4])])
+	I.layout = "BCBa"
+	if !_update_image_pixels!(scene, AQUA_SAT_NAME, I)
+		_add_image_to_scene(scene, I, AQUA_SAT_NAME; promote = false, record = false)
+		ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, AQUA_SAT_NAME, Cint(1))
+		ccall(_fn(:gmtvtk_image_set_draped_h), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, AQUA_SAT_NAME, Cint(1))
+	end
+	return nothing
 end
 
 # THE 3-D DRAPE IS NOT BOUND TO THE NODES. The per-node albedo above feeds the 2-D composite, which is

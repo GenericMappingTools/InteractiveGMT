@@ -757,6 +757,12 @@ public:
 			});
 		};
 		wireSide("renderedWaterSideButton", 0);
+		// HIDDEN in deps/ui/aquamoto.ui (visible=false; user order, 2026-09-24). TODO — AT THE END,
+		// DELETE IT: this button, `wireSide` above,
+		// its <widget> in deps/ui/aquamoto.ui, and everything only it calls — `_aqua_side_popup`
+		// (aquamoto.jl) and, once nothing else uses them, `_AQUA_POPUP_WIN`, `_AQUA_LAST_HALVES`, the
+		// side pictures in `_aqua_shaded_rgb`, `_aqua_land_drape` / `_AQUA_HALF_GRID` (aquasat.jl,
+		// aquashade.jl). Grep each before deleting.
 
 		// "Sat img": the LAND side wears a downloaded satellite mosaic instead of a colourmap of its
 		// own relief. ALBEDO ONLY — the land is still lit by the illumination method it already
@@ -764,8 +770,21 @@ public:
 		// law is untouched by this). The host records the intent and drops its cached land albedo;
 		// the picture is then drawn again through the SAME `fireSlice` every other display option on
 		// this dialog goes through, so this box has no rendering path of its own.
+		// "Res": the satellite refinement factor over the land nodes. Editing it refreshes its hover
+		// text (the metres it asks for) and, while "Sat img" is on, fetches and shows the satellite land
+		// at the new resolution AT ONCE, through the box's own body (user order, 2026-09-24).
+		satResEdit_ = w->findChild<QLineEdit *>("renderedSatResEdit");
+		if (satResEdit_) {
+			satResEdit_->setValidator(new QDoubleValidator(0.05, 64.0, 3, satResEdit_));
+			QObject::connect(satResEdit_, &QLineEdit::editingFinished, w, [this]() {
+				refreshSatResTip();
+				if (satBox_ && satBox_->isChecked() && satApply_) satApply_(true);
+			});
+		}
 		if (QCheckBox *satBox = w->findChild<QCheckBox *>("renderedSatImgCheckBox")) {
-			QObject::connect(satBox, &QCheckBox::toggled, w, [this, satBox](bool on) {
+			satBox_ = satBox;
+			// ONE body for the box and for "Res": a Res edit while the box is on re-downloads at once.
+			satApply_ = [this, satBox](bool on) {
 				// THERE IS NO LAND SIDE TO DRAPE WITH "Split Dry/Wet" OFF. That picture is the wet
 				// stage over the WHOLE grid — `_aqua_composite_rgb` returns before it ever colours a
 				// land half — so this box could only be a control that does nothing and says nothing.
@@ -784,8 +803,9 @@ public:
 				// network — so the app's ONE busy notice is up for the whole wait, the same pair the
 				// Benchmark 1 load below raises around its own `runBlocking`.
 				showBusyDialog(on ? "Downloading satellite imagery\xE2\x80\xA6" : "Restoring the land colour map\xE2\x80\xA6");
-				const bool ok = runBlocking(QString("InteractiveGMT._aquamoto_sat_img(%1,%2)")
-				                                .arg(aquaScenePtr(scene_)).arg(QString(on ? "true" : "false")),
+				const bool ok = runBlocking(QString("InteractiveGMT._aquamoto_sat_img(%1,%2,%3)")
+				                                .arg(aquaScenePtr(scene_)).arg(QString(on ? "true" : "false"))
+				                                .arg(QString::number(satResFactor(), 'f', 6)),
 				                            out, closedNow);
 				closeBusyDialog();              // taken down first: it outlives `this` if the window went away
 				if (closedNow) return;
@@ -805,7 +825,8 @@ public:
 					if (win) win->statusBar()->showMessage(out, 6000);
 				}
 				fireSlice();
-			});
+			};
+			QObject::connect(satBox, &QCheckBox::toggled, w, [this](bool on) { satApply_(on); });
 		}
 
 		bool *guard = new bool(false);    // slider<->spin re-entrancy guard, freed with the window
@@ -1006,6 +1027,7 @@ public:
 					if (runInBtn) runInBtn->setEnabled(true);
 					populateVarPicker(parts[2], parts[3].split(',', Qt::SkipEmptyParts));
 					opened_ = true;
+					refreshSatResTip();
 					refreshRamButton();   // this scene may already have its cube in memory
 					cinemaSetRange(n);
 				}
@@ -1143,6 +1165,32 @@ public:
 	}
 	bool modelBoxBusy_ = false;
 
+	// The "Res" box (satellite refinement factor) and its hover text: the .ui's own explanation plus the
+	// metres the factor asks for on THIS file's land grid (`_aqua_sat_res_text`, the one place that
+	// number is made).
+	QLineEdit *satResEdit_ = nullptr;
+	QString    satResTipBase_;
+	QCheckBox *satBox_ = nullptr;                   // "Sat img"
+	std::function<void(bool)> satApply_;            // its one body (the box and "Res" both run it)
+	double satResFactor() const {
+		bool ok = false;
+		const double f = satResEdit_ ? satResEdit_->text().trimmed().toDouble(&ok) : 1.0;
+		return (ok && f > 0.0) ? f : 1.0;
+	}
+	void refreshSatResTip() {
+		if (!satResEdit_) return;
+		if (satResTipBase_.isEmpty()) satResTipBase_ = satResEdit_->toolTip();
+		QString out;
+		if (opened_ && scene_ && sceneAlive(scene_) &&
+		    aquaEval(scene_, QString("InteractiveGMT._aqua_sat_res_text(%1,%2)")
+		                         .arg(aquaScenePtr(scene_)).arg(QString::number(satResFactor(), 'f', 6)), out) &&
+		    !out.trimmed().isEmpty())
+			satResEdit_->setToolTip("<html><b>" + out.trimmed().toHtmlEscaped() + "</b><br>" +
+			                        satResTipBase_.mid(satResTipBase_.startsWith("<html>") ? 6 : 0));
+		else
+			satResEdit_->setToolTip(satResTipBase_);
+	}
+
 	void syncIllumModelSpins() {
 		if (!netIllumWater_ && !netIllumLand_ && !netIllumWater_ && !netIllumLand_) return;
 		if (busy_ || !opened_) return;     // never a blocking call on top of another, nor with no file
@@ -1211,6 +1259,7 @@ public:
 		int n = parts.isEmpty() ? 0 : parts[0].toInt(&ok);
 		if (!ok || n < 1) n = 1;
 		opened_ = true;
+		refreshSatResTip();          // the "Res" hover now states THIS file's metres
 		if (timeStepsLabel) timeStepsLabel->setText(QString("Time steps = %1").arg(n));
 		if (sliceSlider) { sliceSlider->setRange(1, n); sliceSlider->setValue(1); sliceSlider->setEnabled(true); }
 		if (sliceSpin) {

@@ -2478,6 +2478,21 @@ GMTVTK_API void gmtvtk_set_mask_flag_h(void *handle, const char *name, int on) {
 // image's placement may move. Handing the whole buffer back (instead of flipping the texture here)
 // keeps ONE implementation of the flip — the host's, on the stored GMTimage — with this call only
 // uploading what the stored image now says. Returns 1 if an image was found and re-uploaded.
+// Drape (on != 0) or undrape the image extra called `name` on the window's grid — the SAME act as its
+// Scene Objects "Drape" menu item (ex.draped + imageRebuildActor), for a host that adds an image that
+// belongs on the relief (Aquamoto's satellite land). Returns 1, 0 when no such image extra.
+GMTVTK_API int gmtvtk_image_set_draped_h(void *handle, const char *name, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	bool isPrimary = false;
+	ExtraObj *ex = imageExtraByName(s, name ? name : "", isPrimary);
+	if (!ex) return 0;
+	if (ex->draped != (on != 0)) { ex->draped = (on != 0); imageRebuildActor(s, *ex); applyVE(s); }
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return ex->draped == (on != 0) ? 1 : 0;
+}
+
 GMTVTK_API int gmtvtk_image_set_pixels_h(void *handle, const char *name, const unsigned char *img,
                                          int iw, int ih, int ibands) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -7020,6 +7035,36 @@ GMTVTK_API int gmtvtk_aqua_eta_curve_test(void *scene, double *outSum, int which
 // a real finger; in between, the event loop is pumped for `ms` milliseconds, which is what lets each
 // repeat's slice actually draw. `outSlice` (optional) gets the slider's value at the end. Returns the
 // NUMBER OF SLICES the hold advanced — 1 is the defect, >1 is a transport that repeats.
+// test hook: TYPE INTO an Aquamoto dialog line edit (by its .ui object name) and finish the edit, as
+// a user does — `editingFinished` fires — then hand back the widget's tooltip, i.e. what hovering it
+// shows. Found through the shared QApplication like the hook below. Returns 1, -2 no such widget.
+GMTVTK_API int gmtvtk_aqua_edit_tip_test(void *scene, const char *objName, const char *text,
+                                         char *outTip, int cap) {
+	(void)scene;
+	QLineEdit *le = nullptr;
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		if (QLineEdit *e = tl->findChild<QLineEdit *>(QString::fromUtf8(objName ? objName : ""))) { le = e; break; }
+	if (!le) return -2;
+	if (text) { le->setText(QString::fromUtf8(text)); emit le->editingFinished(); }
+	QApplication::processEvents();
+	const QByteArray tip = le->toolTip().toUtf8();
+	if (outTip && cap > 0) { const int n = std::min(cap - 1, (int)tip.size()); memcpy(outTip, tip.constData(), n); outTip[n] = 0; }
+	return 1;
+}
+
+// test hook: TICK / UNTICK an Aquamoto dialog checkbox by its .ui object name, as a click does
+// (`toggled` fires and its handler runs to the end). Returns 1, -2 no such checkbox.
+GMTVTK_API int gmtvtk_aqua_check_test(void *scene, const char *objName, int on) {
+	(void)scene;
+	QCheckBox *cb = nullptr;
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		if (QCheckBox *c = tl->findChild<QCheckBox *>(QString::fromUtf8(objName ? objName : ""))) { cb = c; break; }
+	if (!cb) return -2;
+	cb->setChecked(on != 0);
+	QApplication::processEvents();
+	return 1;
+}
+
 GMTVTK_API int gmtvtk_aqua_hold_arrow_test(void *scene, int dir, int ms, int *outSlice,
                                            int *outDistinct, int *outDistinctCurve) {
 	// THE WIDGETS ARE FOUND THROUGH Qt, NOT THROUGH THE REGISTRY. This hook is compiled into

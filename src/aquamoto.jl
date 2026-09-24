@@ -490,8 +490,25 @@ end
 function _aqua_land_albedo(st::_AquaState)::Array{UInt8,3}
 	isempty(st.imgbat) || return st.imgbat
 	st.satimg || return st.imgbat          # empty -> the painter colourises from st.landcmap, as before
-	st.imgbat = _aqua_sat_rgb(st.bat)
+	st.imgbat = _aqua_sat_rgb(st.bat; zoom = _aqua_sat_zoom(st.bat, get(_AQUA_SAT_FACTOR, st, 1.0)))
 	return st.imgbat
+end
+
+# The dialog's "Res" refinement factor per open file (1 = one image pixel per land node).
+const _AQUA_SAT_FACTOR = IdDict{_AquaState,Float64}()
+
+"""
+    _aqua_sat_res_text(scene, factor) -> Cint
+
+Prints the satellite resolution `factor` asks for, in metres, for the "Res" box's hover text.
+"""
+function _aqua_sat_res_text(scene::Ptr{Cvoid}, factor::Float64)::Cint
+	st = get(_AQUA, scene, nothing)
+	(st === nothing) && return Cint(0)
+	m = _aqua_sat_res_m(st.bat, factor)
+	print("Sat image resolution ≈ ", round(m; sigdigits = 3), " m (land nodes ",
+	      round(_aqua_sat_res_m(st.bat, 1.0); sigdigits = 3), " m / ", factor, ")")
+	return Cint(1)
 end
 
 # The same answer as a georeferenced IMAGE, for the painters that take a picture rather than a
@@ -524,23 +541,27 @@ const _AQUA_LAND_IMG = Dict{UInt,GMTimage}()
 # looked identical to one that was not wired. Both are the same defect: a control the user cannot
 # tell the outcome of. The work happens inside the click, behind the click's own busy notice, and
 # this prints ONE line saying what the land side now wears — which the caller shows.
-function _aquamoto_sat_img(scene::Ptr{Cvoid}, on::Bool)
+function _aquamoto_sat_img(scene::Ptr{Cvoid}, on::Bool, factor::Float64 = 1.0)
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && error("Aquamoto: no file open in this window")
 	st.satimg = on
+	_AQUA_SAT_FACTOR[st] = factor > 0 ? factor : 1.0     # the "Res" box, read at the click
 	# The land side shows the photograph as it is: no light over it (aquaBakeNodes).
 	ccall(_fn(:gmtvtk_aqua_set_land_plain_h), Cvoid, (Ptr{Cvoid}, Cint), scene, Cint(on))
 	st.imgbat = Array{UInt8}(undef, 0, 0, 0)
 	empty!(_AQUA_LAND_CACHE)
 	empty!(_AQUA_LAND_IMG)
 	if !on
+		_aqua_sat_drape!(scene, st)                # takes the satellite image down
 		print("Land side: colour map ($(st.landcmap))")
 		return nothing
 	end
 	A = _aqua_land_albedo(st)                      # downloads + warps NOW, so a failure throws HERE
-	_aqua_sat_hires(st.bat)                        # …and the 3-D drape's finer texture, same click
+	_aqua_sat_drape!(scene, st)                    # …and ON SCREEN at that resolution: its own draped image
 	nx, ny = _grid_dims(st.bat)
-	print("Land side: satellite imagery, $(nx)x$(ny) nodes at zoom $(_aqua_sat_zoom(st.bat))")
+	f = _AQUA_SAT_FACTOR[st]
+	print("Land side: satellite imagery, $(nx)x$(ny) nodes at zoom $(_aqua_sat_zoom(st.bat, f)) ",
+	      "(asked ≈ $(round(_aqua_sat_res_m(st.bat, f); sigdigits = 3)) m)")
 	return nothing
 end
 
@@ -782,6 +803,24 @@ function _aqua_global_mm(scene::Ptr{Cvoid})::Cint
 	lo, hi = _aqua_global_minmax(st)
 	print(st.varname, ',', lo, ',', hi)
 	return Cint(1)
+end
+
+# THE TANK'S Z FRAME: the lowest and highest point the SURFACE ever reaches — the water over the WHOLE
+# run (the prescan's wet extrema) and the land it stands on (the bathymetry's dry nodes, bat >= 0) —
+# pinned on the layer's own axes set. The frame is fixed through the animation, as it must be, and
+# sits around every slice: framed on one slice's range, a deeper trough later on pierced its floor.
+function _aqua_pin_axes_z!(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid)
+	wlo, whi = haskey(st.scans, st.varname) ? _aqua_global_minmax(st) : _aqua_water_range(G)
+	lo, hi = Float64(wlo), Float64(whi)
+	for v in st.bat.z
+		(isfinite(v) && v >= 0) || continue
+		v < lo && (lo = Float64(v));  v > hi && (hi = Float64(v))
+	end
+	hi > lo || return nothing
+	lo -= 0.02 * (hi - lo)                         # BELOW the deepest point, never touching it
+	ccall(_fn(:gmtvtk_set_cube_axes_zrange), Cvoid, (Ptr{Cvoid}, Cstring, Cdouble, Cdouble),
+	      scene, basename(st.path), lo, hi)
+	return nothing
 end
 
 function _aqua_global_minmax(st::_AquaState)
@@ -1806,6 +1845,8 @@ end
 # the side seen in the layer are the same pixels, never a second picture of the same thing
 # (SACRED_LAW.md). The boxes' models are applied to the layer first, so the side shows the method its
 # box states.
+# TODO — DELETE AT THE END: the "Water side" button that calls this is hidden (2026-09-24); remove it
+# and this function together (see the note at wireSide, 75_aquamoto.cpp).
 function _aqua_side_popup(scene::Ptr{Cvoid}, side::Int, model_water::Int = 0, model_land::Int = 0,
                           t0::Float64 = 0.0)::Cint
 	st = get(_AQUA, scene, nothing)
@@ -2067,6 +2108,8 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	# No-op unless the Illumination tool has a model loaded; the LAND side needs nothing here, its
 	# surface (the bathymetry) is the same one at every timestep.
 	_aqua_relight_water!(scene, st, G)
+	_aqua_pin_axes_z!(scene, st, G)                    # the fixed frame spans the whole run
+	st.satimg && _aqua_sat_drape!(scene, st, G)       # the satellite land follows the moving shoreline
 	# THE GRID THIS WINDOW IS SHOWING is the stage of the slice just drawn — not the bathymetry.
 	# Everything that asks Julia for "the grid on display" by the window's Scene Objects name reaches
 	# this entry: `_find_object`, and through it `_extract_profile` (a drawn line's "Extract profile"),

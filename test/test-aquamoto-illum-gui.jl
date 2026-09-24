@@ -194,3 +194,98 @@ end
 		end
 	end
 end
+
+# THE 3-D AXES NEVER PIERCE THE TANK. The box is a fixed frame through the animation, and its floor
+# sits below the lowest point the surface reaches in ANY slice (it used to be framed on one slice's
+# range, so a deeper trough later came up through the floor's grid lines).
+@testitem "Aquamoto axes: the box floor is below the surface in every slice" tags=[:gui, :aquamoto] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "aquamoto_fixture.jl"))
+	state(h, fn = :gmtvtk_scene_state) = (buf = Vector{UInt8}(undef, 1 << 16);
+	            ccall(IG._fn(fn), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, buf, length(buf));
+	            Dict(split(kv, '=')[1] => split(kv, '=')[2] for kv in split(unsafe_string(pointer(buf)), ';') if occursin('=', kv)))
+	mktempdir() do dir
+		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_axes.nc"))
+		f = iview()
+		try
+			IG._on_drop(f.h, nc);  aqf_pump(40)
+			st = IG._AQUA[f.h]
+			floors = Float64[]
+			for k in 0:st.nsteps-1
+				IG._aquamoto_slice(f.h, k, true, false, 0.0);  aqf_pump(5)
+				d = state(f.h)
+				@test d["cubeZLock"] == "1"
+				ax0 = parse(Float64, d["axZ0"])
+				df  = state(f.h, :gmtvtk_scene_state_full)
+				zs  = parse(Float64, df["zfac"]) * parse(Float64, df["ve"])   # the tank's drawn z scale
+				push!(floors, ax0)
+				# the drawn floor strictly below this slice's drawn lowest point
+				@test ax0 < parse(Float64, d["zmin"]) * zs
+			end
+			@test length(unique(floors)) == 1                  # a FIXED frame
+		finally
+			aqf_close(f.h)
+		end
+	end
+end
+
+# THE "Res" BOX, DRIVEN AS A USER DRIVES IT: typed into, edit finished, hovered. Its hover must state
+# the metres the factor asks for, and the Sat img call the dialog makes with that factor must run —
+# both used to die on a factor typed as a plain integer ("1"), reaching Julia as Int64.
+@testitem "Aquamoto Sat img: the Res box hover states the metres, the call runs" tags=[:gui, :aquamoto] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "aquamoto_fixture.jl"))
+	tip(h, txt) = (buf = Vector{UInt8}(undef, 4096);
+	               r = ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_edit_tip_test), Cint,
+	                         (Ptr{Cvoid}, Cstring, Cstring, Ptr{UInt8}, Cint), h, "renderedSatResEdit", txt, buf, length(buf));
+	               (Int(r), unsafe_string(pointer(buf))))
+	mktempdir() do dir
+		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_satres.nc"))
+		f = iview()
+		try
+			IG._on_drop(f.h, nc);  aqf_pump(40)
+			st = IG._AQUA[f.h]
+			for (txt, fac) in (("1", 1.0), ("2", 2.0), ("0.5", 0.5))
+				r, t = tip(f.h, txt)
+				@test r == 1
+				m = round(IG._aqua_sat_res_m(st.bat, fac); sigdigits = 3)
+				@test occursin("≈ $(m) m", t)
+			end
+			# the exact call the "Sat img" box makes (factor formatted the way the dialog formats it)
+			@test redirect_stdout(devnull) do
+				IG._aquamoto_sat_img(f.h, false, 1.000000)
+			end === nothing
+		finally
+			aqf_close(f.h)
+		end
+	end
+end
+
+# …AND THE REAL DOWNLOAD, at two factors: the zoom must follow the factor, and the land albedo must
+# land on the bathymetry's own nodes (a pixel-registered grid used to fail here with "size of x,y
+# vectors incompatible with 2D array size"). Needs the network.
+@testitem "Aquamoto Sat img: the download follows the Res factor" tags=[:gui, :aquamoto, :net] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "aquamoto_fixture.jl"))
+	mktempdir() do dir
+		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_satnet.nc"))
+		f = iview()
+		try
+			IG._on_drop(f.h, nc);  aqf_pump(40)
+			st = IG._AQUA[f.h]
+			nx, ny = IG._grid_dims(st.bat)
+			for fac in (1.0, 2.0)
+				out = joinpath(dir, "msg.txt")
+				open(out, "w") do io
+					redirect_stdout(io) do; IG._aquamoto_sat_img(f.h, true, fac); end
+				end
+				msg = read(out, String)
+				@test occursin("zoom $(IG._aqua_sat_zoom(st.bat, fac))", msg)
+				@test size(st.imgbat, 3) == 3 && length(st.imgbat) == nx * ny * 3
+			end
+			@test IG._aqua_sat_zoom(st.bat, 2.0) == IG._aqua_sat_zoom(st.bat, 1.0) + 1
+		finally
+			aqf_close(f.h)
+		end
+	end
+end
